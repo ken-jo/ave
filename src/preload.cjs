@@ -10,6 +10,7 @@ const api = {
   getMeetingTranscript: async (sessionId) => ipcRenderer.invoke("ave:meeting:transcript", sessionId),
   listMarketplacePlugins: async () => ipcRenderer.invoke("ave:plugins:marketplace:list"),
   installMarketplacePlugin: async (pluginId) => ipcRenderer.invoke("ave:plugins:install", pluginId),
+  uninstallMarketplacePlugin: async (pluginId) => ipcRenderer.invoke("ave:plugins:uninstall", pluginId),
   listPluginUiExtensions: async () => ipcRenderer.invoke("ave:plugins:ui:list"),
   callPluginMethod: async (method, payload) => ipcRenderer.invoke("ave:plugins:call", method, payload),
   onViewActivate: (handler) => {
