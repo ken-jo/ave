@@ -77,6 +77,12 @@ const api = {
     >,
   callPluginMethod: async (method: string, payload?: unknown) =>
     ipcRenderer.invoke("ave:plugins:call", method, payload) as Promise<unknown>,
+  addTask: async (task: unknown) => ipcRenderer.invoke("ave:tasks:add", task),
+  queryTasks: async (filter?: unknown) => ipcRenderer.invoke("ave:tasks:query", filter),
+  updateTask: async (id: string, patch: unknown) => ipcRenderer.invoke("ave:tasks:update", id, patch),
+  deleteTask: async (id: string) => ipcRenderer.invoke("ave:tasks:delete", id),
+  getTodayTasks: async () => ipcRenderer.invoke("ave:tasks:today"),
+  getOverdueTasks: async () => ipcRenderer.invoke("ave:tasks:overdue"),
   onViewActivate: (handler: (viewKey: string) => void) => {
     const listener = (_event: unknown, payload: { viewKey?: string }) => {
       handler(payload?.viewKey ?? "home");

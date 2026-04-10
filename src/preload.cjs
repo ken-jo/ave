@@ -13,6 +13,12 @@ const api = {
   uninstallMarketplacePlugin: async (pluginId) => ipcRenderer.invoke("ave:plugins:uninstall", pluginId),
   listPluginUiExtensions: async () => ipcRenderer.invoke("ave:plugins:ui:list"),
   callPluginMethod: async (method, payload) => ipcRenderer.invoke("ave:plugins:call", method, payload),
+  addTask: async (task) => ipcRenderer.invoke("ave:tasks:add", task),
+  queryTasks: async (filter) => ipcRenderer.invoke("ave:tasks:query", filter),
+  updateTask: async (id, patch) => ipcRenderer.invoke("ave:tasks:update", id, patch),
+  deleteTask: async (id) => ipcRenderer.invoke("ave:tasks:delete", id),
+  getTodayTasks: async () => ipcRenderer.invoke("ave:tasks:today"),
+  getOverdueTasks: async () => ipcRenderer.invoke("ave:tasks:overdue"),
   onViewActivate: (handler) => {
     const listener = (_event, payload) => handler(payload?.viewKey ?? "home");
     ipcRenderer.on("ave:view:activate", listener);
