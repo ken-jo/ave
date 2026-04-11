@@ -42,6 +42,19 @@ export function registerIpcHandlers(
     return { ok: true };
   });
 
+  // ─── Web Search Keys ───────────────────────────
+  ipcMain.handle("ave:settings:set-web-api-key", (_e, provider: string, apiKey: string) => {
+    settingsService.setSecret(`web.apiKey.${provider}`, apiKey);
+    return { ok: true };
+  });
+  ipcMain.handle("ave:settings:has-web-api-key", (_e, provider: string) => {
+    return settingsService.getSecret(`web.apiKey.${provider}`) !== null;
+  });
+  ipcMain.handle("ave:settings:delete-web-api-key", (_e, provider: string) => {
+    settingsService.deleteSecret(`web.apiKey.${provider}`);
+    return { ok: true };
+  });
+
   // ─── Chat (ConversationLoop) ────────────────────
   ipcMain.handle("ave:chat:has-provider", () => conversationLoop.hasProvider());
 

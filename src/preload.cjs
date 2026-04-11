@@ -7,6 +7,9 @@ const api = {
   setApiKey: async (vendor, apiKey) => ipcRenderer.invoke("ave:settings:set-api-key", vendor, apiKey),
   hasApiKey: async (vendor) => ipcRenderer.invoke("ave:settings:has-api-key", vendor),
   deleteApiKey: async (vendor) => ipcRenderer.invoke("ave:settings:delete-api-key", vendor),
+  setWebApiKey: async (provider, apiKey) => ipcRenderer.invoke("ave:settings:set-web-api-key", provider, apiKey),
+  hasWebApiKey: async (provider) => ipcRenderer.invoke("ave:settings:has-web-api-key", provider),
+  deleteWebApiKey: async (provider) => ipcRenderer.invoke("ave:settings:delete-web-api-key", provider),
 
   // Chat (ConversationLoop)
   chatHasProvider: async () => ipcRenderer.invoke("ave:chat:has-provider"),
