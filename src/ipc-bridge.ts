@@ -83,6 +83,19 @@ export function registerIpcHandlers(
     return { ok: true };
   });
 
+  ipcMain.handle("ave:chat:sessions", () => ({
+    current: conversationLoop.getSessionId(),
+    sessions: conversationLoop.listSessions().slice(0, 20).map((s) => ({
+      id: s.id,
+      modifiedAt: s.modifiedAt.toISOString(),
+    })),
+  }));
+
+  ipcMain.handle("ave:chat:load-session", (_e, sessionId: string) => {
+    const loaded = conversationLoop.loadSession(sessionId);
+    return { ok: loaded, sessionId: loaded ? sessionId : null };
+  });
+
   // ─── Memory ─────────────────────────────────────
   ipcMain.handle("ave:memory:notes:list", () => memoryManager.listNotes());
   ipcMain.handle("ave:memory:notes:save", (_e, title: string, content: string) =>
