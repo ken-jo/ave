@@ -46,6 +46,18 @@ const api = {
   getTodayTasks: async () => ipcRenderer.invoke("ave:tasks:today"),
   getOverdueTasks: async () => ipcRenderer.invoke("ave:tasks:overdue"),
 
+  // ─── MCP ─────────────────────────────────────────
+  mcp: {
+    servers: async () => ipcRenderer.invoke("ave:mcp:servers"),
+    kill: async (id: string) => ipcRenderer.invoke("ave:mcp:kill", id),
+  },
+
+  // ─── Permission ───────────────────────────────────
+  permission: {
+    getMode: async () => ipcRenderer.invoke("ave:permission:get-mode"),
+    setMode: async (mode: string) => ipcRenderer.invoke("ave:permission:set-mode", mode),
+  },
+
   // ─── View Events ─────────────────────────────────
   onViewActivate: (handler: (viewKey: string) => void) => {
     const listener = (_event: unknown, payload: { viewKey?: string }) => handler(payload?.viewKey ?? "home");
