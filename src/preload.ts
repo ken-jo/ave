@@ -56,6 +56,30 @@ const api = {
   permission: {
     getMode: async () => ipcRenderer.invoke("ave:permission:get-mode"),
     setMode: async (mode: string) => ipcRenderer.invoke("ave:permission:set-mode", mode),
+    listRules: async () => ipcRenderer.invoke("ave:permission:list-rules"),
+    addRule: async (pattern: string, action: string) =>
+      ipcRenderer.invoke("ave:permission:add-rule", pattern, action),
+    removeRule: async (pattern: string, action: string) =>
+      ipcRenderer.invoke("ave:permission:remove-rule", pattern, action),
+  },
+
+  // ─── Policy (Governance) ─────────────────────────
+  policy: {
+    get: async () => ipcRenderer.invoke("ave:policy:get"),
+    set: async (patch: unknown) => ipcRenderer.invoke("ave:policy:set", patch),
+  },
+
+  // ─── Approval Gate (§6.3 Layer 3 + §8) ─────────
+  approval: {
+    /** main→renderer 단방향 이벤트 구독 */
+    onRequest: (cb: (req: unknown) => void) => {
+      const listener = (_event: unknown, req: unknown) => cb(req);
+      ipcRenderer.on("ave:approval:request", listener);
+      return () => ipcRenderer.removeListener("ave:approval:request", listener);
+    },
+    /** 사용자 결정을 main으로 전송 */
+    respond: async (decision: unknown) =>
+      ipcRenderer.invoke("ave:approval:respond", decision),
   },
 
   // ─── View Events ─────────────────────────────────
@@ -67,3 +91,11 @@ const api = {
 };
 
 contextBridge.exposeInMainWorld("aveApi", api);
+
+// ─── ave 네임스페이스 (B1: Approval Gate + Permission) ──
+// renderer에서 window.ave.approval / window.ave.permission으로 접근
+contextBridge.exposeInMainWorld("ave", {
+  permission: api.permission,
+  approval: api.approval,
+  policy: api.policy,
+});

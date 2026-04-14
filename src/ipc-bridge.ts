@@ -6,6 +6,8 @@
  */
 import { ipcMain, type BrowserWindow } from "electron";
 import type { AppServices } from "./boot.js";
+import type { ApprovalDecision } from "./core/approval-gate.js";
+import { loadPolicy, savePolicy } from "./core/policy-store.js";
 
 export function registerIpcHandlers(
   services: AppServices,
@@ -18,6 +20,7 @@ export function registerIpcHandlers(
     settingsService,
     memoryManager,
     conversationLoop,
+    approvalGate,
   } = services;
 
   // ─── Settings (벤더별 API 키) ────────────────────
@@ -157,15 +160,86 @@ export function registerIpcHandlers(
   ipcMain.handle("ave:mcp:kill", (_e, serverId: string) => services.mcpManager.killSwitch(serverId));
 
   // ─── Permission Prompt (§6.3 Layer 3) ─────────
-  // ToolExecutor sends request → renderer shows dialog → user responds
-  // For now: expose permission mode control via IPC
   ipcMain.handle("ave:permission:get-mode", () => {
-    // Access permissionManager from conversationLoop or services
-    return { mode: "default" }; // TODO: expose from ConversationLoop
+    const mode = conversationLoop.permissionManager?.getMode() ?? "default";
+    return { mode };
   });
-  ipcMain.handle("ave:permission:set-mode", (_e, mode: string) => {
-    // TODO: expose setMode from ConversationLoop
+  ipcMain.handle("ave:permission:set-mode", async (_e, mode: string) => {
+    // §F8: whitelist 검증 — 유효하지 않은 mode는 거부
+    const VALID_MODES = ["default", "strict", "auto"] as const;
+    if (!VALID_MODES.includes(mode as typeof VALID_MODES[number])) {
+      return { ok: false, error: "invalid-mode", message: `유효하지 않은 실행 모드: '${mode}'. 허용값: ${VALID_MODES.join(", ")}` };
+    }
+    const pm = conversationLoop.permissionManager;
+    if (pm) {
+      await pm.setModePersist(mode as import("./core/permission-manager.js").ExecutionMode);
+    }
     return { ok: true, mode };
+  });
+  ipcMain.handle("ave:permission:list-rules", async () => {
+    const pm = conversationLoop.permissionManager;
+    if (!pm) return [];
+    return pm.listPersistedRules();
+  });
+  ipcMain.handle("ave:permission:add-rule", async (_e, pattern: string, action: "allow" | "deny") => {
+    // §F8: 입력 검증
+    if (typeof pattern !== "string" || pattern.trim().length === 0) {
+      return { ok: false, error: "invalid-pattern", message: "패턴은 빈 문자열일 수 없습니다." };
+    }
+    if (pattern.length > 128) {
+      return { ok: false, error: "invalid-pattern", message: "패턴은 128자를 초과할 수 없습니다." };
+    }
+    if (action !== "allow" && action !== "deny") {
+      return { ok: false, error: "invalid-action", message: `유효하지 않은 action: '${action}'. 허용값: allow, deny` };
+    }
+    const pm = conversationLoop.permissionManager;
+    if (!pm) return { ok: false };
+    if (action === "allow") {
+      await pm.addAlwaysAllowedPersist(pattern);
+    } else {
+      await pm.addAlwaysDeniedPersist(pattern);
+    }
+    return { ok: true };
+  });
+  ipcMain.handle("ave:permission:remove-rule", async (_e, pattern: string, action: "allow" | "deny") => {
+    const pm = conversationLoop.permissionManager;
+    if (!pm) return { ok: false };
+    await pm.removeRule(pattern, action);
+    return { ok: true };
+  });
+
+  // ─── Approval Gate (§6.3 Layer 3 + §8) ────────
+  // ave:approval:request 방향은 main→renderer (webContents.send) — ipcMain.handle 불필요
+  ipcMain.handle("ave:approval:respond", (_e, decision: ApprovalDecision) => {
+    if (approvalGate) {
+      approvalGate.resolve(decision.requestId, decision);
+    }
+    return { ok: true };
+  });
+
+  // ─── Policy (Governance) ──────────────────────
+  ipcMain.handle("ave:policy:get", async () => {
+    return loadPolicy();
+  });
+  ipcMain.handle("ave:policy:set", async (_e, patch: Record<string, unknown>) => {
+    // §F8: patch 검증 — managed 키 거부, requireExplicitApproval은 boolean만 허용
+    if ("managed" in patch) {
+      return { ok: false, error: "invalid-patch", message: "'managed' 필드는 사용자가 변경할 수 없습니다." };
+    }
+    if ("requireExplicitApproval" in patch && typeof patch.requireExplicitApproval !== "boolean") {
+      return { ok: false, error: "invalid-patch", message: "'requireExplicitApproval'은 boolean이어야 합니다." };
+    }
+    try {
+      const updated = await savePolicy(patch as Parameters<typeof savePolicy>[0]);
+      // 즉시 반영: ApprovalGate에 새 policy 주입
+      if (approvalGate) {
+        approvalGate.setPolicy(updated);
+      }
+      return { ok: true, policy: updated };
+    } catch (err) {
+      // managed 오류는 throw 대신 { ok: false, error: "managed" } 반환
+      return { ok: false, error: "managed", message: (err as Error).message };
+    }
   });
 
   // ─── Tasks ──────────────────────────────────────
