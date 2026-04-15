@@ -253,4 +253,7 @@ export function registerIpcHandlers(
   ipcMain.handle("ave:tasks:pending", () => taskService.getPendingByPriority());
   ipcMain.handle("ave:tasks:overdue", () => taskService.getOverdue());
   ipcMain.handle("ave:tasks:today", () => taskService.getDueToday());
+
+  // ─── Daily Briefing ──────────────────────────────
+  ipcMain.handle("ave:briefing:get", () => conversationLoop.generateBriefing());
 }
