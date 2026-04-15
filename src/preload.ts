@@ -46,6 +46,9 @@ const api = {
   getTodayTasks: async () => ipcRenderer.invoke("ave:tasks:today"),
   getOverdueTasks: async () => ipcRenderer.invoke("ave:tasks:overdue"),
 
+  // ─── Daily Briefing ──────────────────────────────
+  getBriefing: async () => ipcRenderer.invoke("ave:briefing:get"),
+
   // ─── MCP ─────────────────────────────────────────
   mcp: {
     servers: async () => ipcRenderer.invoke("ave:mcp:servers"),
