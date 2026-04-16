@@ -133,22 +133,22 @@ export function registerIpcHandlers(
   );
 
   // ─── Plugin Methods (proxy) ─────────────────────
-  ipcMain.handle("ave:index:scan", () => pluginRuntime.call("index.scan"));
-  ipcMain.handle("ave:index:documents", () => pluginRuntime.call("index.documents"));
+  ipcMain.handle("ave:index:scan", () => pluginRuntime.call("index_scan"));
+  ipcMain.handle("ave:index:documents", () => pluginRuntime.call("index_documents"));
   ipcMain.handle("ave:chat:preview", (_e, question: string) =>
-    pluginRuntime.call("chat.preview", { question }),
+    pluginRuntime.call("chat_preview", { question }),
   );
   ipcMain.handle("ave:meeting:start", (_e, sessionId: string, context?: unknown) =>
-    pluginRuntime.call("meeting.start", { sessionId, context }),
+    pluginRuntime.call("meeting_start", { sessionId, context }),
   );
   ipcMain.handle("ave:meeting:push-chunk", (_e, sessionId: string, chunk: unknown) =>
-    pluginRuntime.call("meeting.pushChunk", { sessionId, chunk }),
+    pluginRuntime.call("meeting_pushChunk", { sessionId, chunk }),
   );
   ipcMain.handle("ave:meeting:stop", (_e, sessionId: string) =>
-    pluginRuntime.call("meeting.stop", { sessionId }),
+    pluginRuntime.call("meeting_stop", { sessionId }),
   );
   ipcMain.handle("ave:meeting:transcript", (_e, sessionId: string) =>
-    pluginRuntime.call("meeting.transcript", { sessionId }),
+    pluginRuntime.call("meeting_transcript", { sessionId }),
   );
 
   // ─── Marketplace ────────────────────────────────
