@@ -1,4 +1,6 @@
-import { contextBridge, ipcRenderer } from "electron";
+import electron from "electron";
+
+const { contextBridge, ipcRenderer } = electron;
 
 const api = {
   // ─── Settings ────────────────────────────────────
@@ -15,7 +17,7 @@ const api = {
   chatHasProvider: async () => ipcRenderer.invoke("ave:chat:has-provider") as Promise<boolean>,
   chatSend: async (input: string) => ipcRenderer.invoke("ave:chat:send", input),
   chatNew: async () => ipcRenderer.invoke("ave:chat:new"),
-  onChatStream: (handler: (event: { type: string; text?: string; name?: string; error?: string; result?: string; isError?: boolean }) => void) => {
+  onChatStream: (handler: (event: { type: string; text?: string; thought?: string; name?: string; error?: string; result?: string; isError?: boolean; input?: Record<string, unknown>; groupId?: string; toolUseId?: string; displayOrder?: number; roundIndex?: number; stopReason?: "end_turn" | "tool_use"; hasToolCalls?: boolean }) => void) => {
     const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
     ipcRenderer.on("ave:chat:stream", listener);
     return () => ipcRenderer.removeListener("ave:chat:stream", listener);
