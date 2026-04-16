@@ -43,6 +43,7 @@ import { ApprovalGate } from "./permissions/approval-gate.js";
 import { loadPolicy } from "./permissions/policy-store.js";
 import { DefaultAgentActionRequester } from "./permissions/agent-action-requester.js";
 import type { PluginHostApi } from "./plugins/types.js";
+import { LyraMailService } from "./main/lyra-mail-service.js";
 
 export interface AppServices {
   pluginRuntime: PluginRuntime;
@@ -106,6 +107,13 @@ export async function bootstrap(projectRoot: string, mainWindow: BrowserWindow):
 
   // §4.2 Step 0.5: Governance Services (Agent 6)
   const bashAstValidator = new BashAstValidator({ mode: "deny" });
+
+  // Microsoft Graph 공유 인증 서비스 (이메일·캘린더 플러그인 공용)
+  const lyraMailService = new LyraMailService(app.getPath("userData"));
+  await lyraMailService.loadSavedToken();
+  if (lyraMailService.isAuthenticated()) {
+    console.log("[ave] boot: lyra-mail token loaded —", lyraMailService.getAccountName());
+  }
   const auditService = new AuditService();
   await auditService.start();
 
@@ -199,6 +207,14 @@ export async function bootstrap(projectRoot: string, mainWindow: BrowserWindow):
       getSecret: (key) => {
         return settingsService.getSecret(key);
       },
+      // ─── Microsoft Graph 공유 인증 ────────────────────────────────
+      getLyraMailToken: () => lyraMailService.getAccessToken(),
+      startLyraMailAuth: async (openBrowser) => {
+        await lyraMailService.startInteractiveAuth(openBrowser);
+      },
+      isLyraMailAuthenticated: () => lyraMailService.isAuthenticated(),
+      getLyraMailAccount: () => lyraMailService.getAccountName(),
+      onLyraMailAuthChange: (handler) => lyraMailService.onAuthChange(handler),
     }),
   });
 

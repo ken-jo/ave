@@ -272,5 +272,10 @@ function createNoopHostApi(): PluginHostApi {
     addTask: () => {},
     saveNote: () => {},
     getSecret: () => null,
+    getLyraMailToken: async () => null,
+    startLyraMailAuth: async () => {},
+    isLyraMailAuthenticated: () => false,
+    getLyraMailAccount: () => null,
+    onLyraMailAuthChange: () => {},
   };
 }

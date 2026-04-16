@@ -30,7 +30,9 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.88.0",
+    "@azure/msal-node": "^5.1.2",
     "@google/generative-ai": "^0.24.1",
+    "@ave/plugin-calendar": "file:../ave-plugin-lyra-cal",
     "@ave/plugin-email": "file:../ave-plugin-lyra-post",
     "@ave/plugin-meeting": "file:../ave-plugin-meeting",
     "@ave/plugin-pageindex": "file:../ave-plugin-pyxis",
