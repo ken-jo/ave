@@ -64,14 +64,27 @@ export function registerIpcHandlers(
   ipcMain.handle("ave:chat:send", async (_e, input: string) => {
     const win = getMainWindow();
     const result = await conversationLoop.runTurn(input, {
+      onReasoningDelta: (text) => {
+        win?.webContents.send("ave:chat:stream", { type: "reasoning_delta", text });
+      },
       onTextDelta: (text) => {
         win?.webContents.send("ave:chat:stream", { type: "text_delta", text });
       },
-      onToolStart: (name, toolInput) => {
-        win?.webContents.send("ave:chat:stream", { type: "tool_start", name, input: toolInput });
+      onAssistantRound: ({ roundIndex, text, thought, stopReason, hasToolCalls }) => {
+        win?.webContents.send("ave:chat:stream", {
+          type: "assistant_round",
+          roundIndex,
+          text,
+          thought,
+          stopReason,
+          hasToolCalls,
+        });
       },
-      onToolEnd: (name, toolResult, isError) => {
-        win?.webContents.send("ave:chat:stream", { type: "tool_end", name, result: toolResult, isError });
+      onToolStart: (name, toolInput, meta) => {
+        win?.webContents.send("ave:chat:stream", { type: "tool_start", name, input: toolInput, ...meta });
+      },
+      onToolEnd: (name, toolResult, isError, meta) => {
+        win?.webContents.send("ave:chat:stream", { type: "tool_end", name, result: toolResult, isError, ...meta });
       },
       onError: (error) => {
         win?.webContents.send("ave:chat:stream", { type: "error", error });
