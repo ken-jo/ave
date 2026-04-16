@@ -9,6 +9,62 @@ import type { AppServices } from "./boot.js";
 import type { ApprovalDecision } from "./permissions/approval-gate.js";
 import { loadPolicy, savePolicy } from "./permissions/policy-store.js";
 
+/**
+ * All IPC channels reserved by the host. Plugin manifests must not declare
+ * ipcBindings that collide with these, as doing so would shadow privileged
+ * host handlers and create unpredictable (or malicious) behaviour.
+ *
+ * MAINTAINERS: add a new entry here whenever you register a new host channel
+ * with ipcMain.handle() inside registerIpcHandlers().
+ */
+const RESERVED_HOST_CHANNELS = new Set([
+  "ave:settings:get",
+  "ave:settings:update",
+  "ave:settings:set-api-key",
+  "ave:settings:has-api-key",
+  "ave:settings:delete-api-key",
+  "ave:settings:set-web-api-key",
+  "ave:settings:has-web-api-key",
+  "ave:settings:delete-web-api-key",
+  "ave:chat:has-provider",
+  "ave:chat:send",
+  "ave:chat:new",
+  "ave:chat:sessions",
+  "ave:chat:load-session",
+  "ave:memory:notes:list",
+  "ave:memory:notes:save",
+  "ave:memory:notes:delete",
+  "ave:memory:notes:search",
+  "ave:memory:ave-md:get",
+  "ave:memory:ave-md:update",
+  "ave:memory:user-prefs:get",
+  "ave:memory:user-prefs:update",
+  "ave:plugins:marketplace:list",
+  "ave:plugins:install",
+  "ave:plugins:uninstall",
+  "ave:plugins:ui:list",
+  "ave:plugins:call",
+  "ave:mcp:servers",
+  "ave:mcp:kill",
+  "ave:permission:get-mode",
+  "ave:permission:set-mode",
+  "ave:permission:list-rules",
+  "ave:permission:add-rule",
+  "ave:permission:remove-rule",
+  "ave:approval:respond",
+  "ave:policy:get",
+  "ave:policy:set",
+  "ave:tasks:add",
+  "ave:tasks:update",
+  "ave:tasks:get",
+  "ave:tasks:delete",
+  "ave:tasks:query",
+  "ave:tasks:pending",
+  "ave:tasks:overdue",
+  "ave:tasks:today",
+  "ave:briefing:get",
+]);
+
 export function registerIpcHandlers(
   services: AppServices,
   getMainWindow: () => BrowserWindow | null,
@@ -133,23 +189,19 @@ export function registerIpcHandlers(
   );
 
   // ─── Plugin Methods (proxy) ─────────────────────
-  ipcMain.handle("ave:index:scan", () => pluginRuntime.call("index_scan"));
-  ipcMain.handle("ave:index:documents", () => pluginRuntime.call("index_documents"));
-  ipcMain.handle("ave:chat:preview", (_e, question: string) =>
-    pluginRuntime.call("chat_preview", { question }),
-  );
-  ipcMain.handle("ave:meeting:start", (_e, sessionId: string, context?: unknown) =>
-    pluginRuntime.call("meeting_start", { sessionId, context }),
-  );
-  ipcMain.handle("ave:meeting:push-chunk", (_e, sessionId: string, chunk: unknown) =>
-    pluginRuntime.call("meeting_push_chunk", { sessionId, chunk }),
-  );
-  ipcMain.handle("ave:meeting:stop", (_e, sessionId: string) =>
-    pluginRuntime.call("meeting_stop", { sessionId }),
-  );
-  ipcMain.handle("ave:meeting:transcript", (_e, sessionId: string) =>
-    pluginRuntime.call("meeting_transcript", { sessionId }),
-  );
+  // Legacy IPC channel compatibility is now manifest-driven.
+  for (const binding of pluginRuntime.listIpcBindings()) {
+    if (RESERVED_HOST_CHANNELS.has(binding.channel)) {
+      console.warn(
+        `[ipc-bridge] Plugin '${binding.pluginId}' declares ipcBinding channel '${binding.channel}' ` +
+        `which is reserved by the host — binding skipped.`,
+      );
+      continue;
+    }
+    ipcMain.handle(binding.channel, (_e, ...args: unknown[]) =>
+      pluginRuntime.call(binding.method, toPluginPayload(args, binding.args)),
+    );
+  }
 
   // ─── Marketplace ────────────────────────────────
   ipcMain.handle("ave:plugins:marketplace:list", () => pluginMarketplace.list());
@@ -269,4 +321,22 @@ export function registerIpcHandlers(
 
   // ─── Daily Briefing ──────────────────────────────
   ipcMain.handle("ave:briefing:get", () => conversationLoop.generateBriefing());
+}
+
+function toPluginPayload(args: unknown[], argNames?: string[]): unknown {
+  if (args.length === 0) {
+    return undefined;
+  }
+  if (!argNames || argNames.length === 0) {
+    if (args.length === 1) {
+      return args[0];
+    }
+    return args;
+  }
+  const payload: Record<string, unknown> = {};
+  const count = Math.min(argNames.length, args.length);
+  for (let i = 0; i < count; i += 1) {
+    payload[argNames[i]] = args[i];
+  }
+  return payload;
 }

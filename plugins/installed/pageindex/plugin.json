@@ -13,6 +13,25 @@
     "index_remove_folder",
     "chat_preview"
   ],
+  "capabilities": [
+    "worker-client",
+    "knowledge-index"
+  ],
+  "ipcBindings": [
+    {
+      "channel": "ave:index:scan",
+      "method": "index_scan"
+    },
+    {
+      "channel": "ave:index:documents",
+      "method": "index_documents"
+    },
+    {
+      "channel": "ave:chat:preview",
+      "method": "chat_preview",
+      "args": ["question"]
+    }
+  ],
   "config": {
     "scanFolders": [
       "fixtures"
