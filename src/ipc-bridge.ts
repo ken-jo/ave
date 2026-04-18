@@ -63,6 +63,7 @@ const RESERVED_HOST_CHANNELS = new Set([
   "ave:tasks:overdue",
   "ave:tasks:today",
   "ave:briefing:get",
+  "ave:proactive:dismiss-briefing",
 ]);
 
 export function registerIpcHandlers(
@@ -312,4 +313,14 @@ export function registerIpcHandlers(
 
   // ─── Daily Briefing ──────────────────────────────
   ipcMain.handle("ave:briefing:get", () => conversationLoop.generateBriefing());
+
+  // Sprint 2-D: user dismissal — sets lastDismissedAt, which suppresses the
+  // gated ProactiveEngine.generateDailyBriefing for the following 24h.
+  ipcMain.handle("ave:proactive:dismiss-briefing", () => {
+    const cur = settingsService.get("proactive") ?? { enableDailyBriefing: false };
+    settingsService.patch({
+      proactive: { ...cur, lastDismissedAt: new Date().toISOString() },
+    });
+    return { ok: true };
+  });
 }
