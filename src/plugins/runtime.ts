@@ -407,5 +407,6 @@ function createNoopHostApi(): PluginHostApi {
     isLyraMailAuthenticated: () => false,
     getLyraMailAccount: () => null,
     onLyraMailAuthChange: () => {},
+    callLlm: async () => { throw new Error("LLM not available in noop context"); },
   };
 }
