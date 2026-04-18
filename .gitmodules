@@ -1,0 +1,3 @@
+[submodule "packages/plugin-sdk"]
+	path = packages/plugin-sdk
+	url = https://github.com/former_org/ave-plugin-sdk.git
