@@ -17,6 +17,19 @@ const api = {
   chatHasProvider: async () => ipcRenderer.invoke("ave:chat:has-provider") as Promise<boolean>,
   chatSend: async (input: string) => ipcRenderer.invoke("ave:chat:send", input),
   chatNew: async () => ipcRenderer.invoke("ave:chat:new"),
+  // Sprint 4.C — conversation UX
+  chatGetHistory: async () => ipcRenderer.invoke("ave:chat:get-history"),
+  chatEditResend: async (messageIndex: number, newText: string) =>
+    ipcRenderer.invoke("ave:chat:edit-resend", messageIndex, newText),
+  chatFork: async (messageIndex: number) => ipcRenderer.invoke("ave:chat:fork", messageIndex),
+  chatRetryEffort: async (opts?: { thinkingBudgetTokens?: number; enableThinking?: boolean }) =>
+    ipcRenderer.invoke("ave:chat:retry-effort", opts),
+  chatExport: async (format: "markdown" | "json") => ipcRenderer.invoke("ave:chat:export", format),
+  starredList: async () => ipcRenderer.invoke("ave:starred:list"),
+  starredAdd: async (entry: { sessionId?: string; messageIndex: number; role: string; text: string }) =>
+    ipcRenderer.invoke("ave:starred:add", entry),
+  starredRemove: async (opts: { id?: string; sessionId?: string; messageIndex?: number }) =>
+    ipcRenderer.invoke("ave:starred:remove", opts),
   onChatStream: (handler: (event: { type: string; text?: string; thought?: string; name?: string; error?: string; result?: string; isError?: boolean; input?: Record<string, unknown>; groupId?: string; toolUseId?: string; displayOrder?: number; roundIndex?: number; stopReason?: "end_turn" | "tool_use"; hasToolCalls?: boolean }) => void) => {
     const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
     ipcRenderer.on("ave:chat:stream", listener);
@@ -50,6 +63,9 @@ const api = {
 
   // ─── Daily Briefing ──────────────────────────────
   getBriefing: async () => ipcRenderer.invoke("ave:briefing:get"),
+
+  // ─── Usage Observability (Sprint 4.B) ────────────
+  getUsageSummary: async (days?: number) => ipcRenderer.invoke("ave:usage:summary", days),
 
   // ─── Proactive (Sprint 3-A: briefing card + snooze/dismiss) ───
   onProactiveBriefing: (handler: (briefing: { generatedAt: string; items: Array<{ category: string; priority: string; title: string; detail?: string }>; summary?: string }) => void) => {
