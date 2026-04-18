@@ -51,6 +51,15 @@ const api = {
   // ─── Daily Briefing ──────────────────────────────
   getBriefing: async () => ipcRenderer.invoke("ave:briefing:get"),
 
+  // ─── Proactive (Sprint 3-A: briefing card + snooze/dismiss) ───
+  onProactiveBriefing: (handler: (briefing: { generatedAt: string; items: Array<{ category: string; priority: string; title: string; detail?: string }>; summary?: string }) => void) => {
+    const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
+    ipcRenderer.on("ave:proactive:briefing", listener);
+    return () => ipcRenderer.removeListener("ave:proactive:briefing", listener);
+  },
+  dismissBriefing: async () => ipcRenderer.invoke("ave:proactive:dismiss-briefing") as Promise<{ ok: boolean; debounced?: boolean }>,
+  snoozeBriefing: async () => ipcRenderer.invoke("ave:proactive:snooze-briefing") as Promise<{ ok: boolean; lastDismissedAt?: string }>,
+
   // ─── MCP ─────────────────────────────────────────
   mcp: {
     servers: async () => ipcRenderer.invoke("ave:mcp:servers"),
