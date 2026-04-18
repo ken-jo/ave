@@ -61,6 +61,7 @@ const api = {
   installMarketplacePlugin: async (pluginId: string) => ipcRenderer.invoke("ave:plugins:install", pluginId),
   uninstallMarketplacePlugin: async (pluginId: string) => ipcRenderer.invoke("ave:plugins:uninstall", pluginId),
   listPluginUiExtensions: async () => ipcRenderer.invoke("ave:plugins:ui:list"),
+  listPluginCards: async () => ipcRenderer.invoke("ave:plugins:cards"),
   callPluginMethod: async (method: string, payload?: unknown) => ipcRenderer.invoke("ave:plugins:call", method, payload),
 
   // ─── Tasks ───────────────────────────────────────
