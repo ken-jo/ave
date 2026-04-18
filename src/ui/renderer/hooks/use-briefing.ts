@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { BriefingPayload, AveApi } from "../types.js";
 
 /**
@@ -11,14 +11,17 @@ import type { BriefingPayload, AveApi } from "../types.js";
  */
 export function useBriefing(api: AveApi) {
   const [briefing, setBriefing] = useState<BriefingPayload | null>(null);
+  // aliveRef — guards late setBriefing(null) from dismiss/snooze promises that
+  // resolve after unmount. See Copilot HIGH #3.
+  const aliveRef = useRef(true);
 
   useEffect(() => {
-    let alive = true;
+    aliveRef.current = true;
     const unsubscribe = api.onProactiveBriefing((b) => {
-      if (alive) setBriefing(b);
+      if (aliveRef.current) setBriefing(b);
     });
     return () => {
-      alive = false;
+      aliveRef.current = false;
       unsubscribe();
     };
   }, [api]);
@@ -26,6 +29,7 @@ export function useBriefing(api: AveApi) {
   const dismiss = useCallback(
     (feedback?: { reason: string; details?: string }) => {
       void api.dismissBriefing(feedback).then((r) => {
+        if (!aliveRef.current) return;
         if (r?.ok) setBriefing(null);
         else console.warn("[ave] dismissBriefing skipped:", r);
       }).catch((e: Error) => {
@@ -37,6 +41,7 @@ export function useBriefing(api: AveApi) {
 
   const snooze = useCallback(() => {
     void api.snoozeBriefing().then((r) => {
+      if (!aliveRef.current) return;
       if (r?.ok) setBriefing(null);
       else console.warn("[ave] snoozeBriefing skipped:", r);
     }).catch((e: Error) => {
