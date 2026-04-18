@@ -17,6 +17,16 @@ const api = {
   chatHasProvider: async () => ipcRenderer.invoke("ave:chat:has-provider") as Promise<boolean>,
   chatSend: async (input: string) => ipcRenderer.invoke("ave:chat:send", input),
   chatNew: async () => ipcRenderer.invoke("ave:chat:new"),
+  chatSessions: async () =>
+    ipcRenderer.invoke("ave:chat:sessions") as Promise<{
+      current: string;
+      sessions: Array<{ id: string; modifiedAt: string }>;
+    }>,
+  chatLoadSession: async (sessionId: string) =>
+    ipcRenderer.invoke("ave:chat:load-session", sessionId) as Promise<{
+      ok: boolean;
+      sessionId: string | null;
+    }>,
   // Sprint 4.C — conversation UX
   chatGetHistory: async () => ipcRenderer.invoke("ave:chat:get-history"),
   chatEditResend: async (messageIndex: number, newText: string) =>
