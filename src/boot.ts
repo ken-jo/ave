@@ -21,6 +21,7 @@ import { McpGovernance } from "./mcp/mcp-governance.js";
 import { McpManager } from "./mcp/mcp-manager.js";
 import type { PluginHostApi } from "./plugins/types.js";
 import { requiredCapabilityForEmit } from "./plugins/capabilities.js";
+import { withLyraMailRetry } from "./main/lyra-mail-retry.js";
 
 import { emitEvent, onEvent, type AppServices } from "./boot/types.js";
 import { bootstrapCoreServices } from "./boot/services.js";
@@ -273,6 +274,10 @@ export async function bootstrap(projectRoot: string, mainWindow: BrowserWindow):
       onLyraMailAuthChange: (handler) => {
         if (!hasLyraMailCapability(pluginId)) throw new Error(capabilityDeniedMsg(pluginId));
         lyraMailService.onAuthChange(handler);
+      },
+      withLyraMailRetry: async (fn) => {
+        if (!hasLyraMailCapability(pluginId)) throw new Error(capabilityDeniedMsg(pluginId));
+        return withLyraMailRetry(fn, () => lyraMailService.getAccessToken());
       },
       callLlm: async (prompt, opts) => {
         // Sprint 4-B §B-7 — rate-limited + audited path; fall back to the

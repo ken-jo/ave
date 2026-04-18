@@ -55,7 +55,7 @@ export const ENFORCED_CAPABILITIES: ReadonlyMap<string, CapabilityPolicy> = new 
     "lyra-mail-consumer",
     {
       description:
-        "Required to call HostApi LYRA Mail auth methods (getLyraMailToken, startLyraMailAuth, isLyraMailAuthenticated, getLyraMailAccount, onLyraMailAuthChange).",
+        "Required to call HostApi LYRA Mail auth methods (getLyraMailToken, startLyraMailAuth, isLyraMailAuthenticated, getLyraMailAccount, onLyraMailAuthChange, withLyraMailRetry).",
       enforcement: "enforced",
       gates: [
         "getLyraMailToken",
@@ -63,6 +63,7 @@ export const ENFORCED_CAPABILITIES: ReadonlyMap<string, CapabilityPolicy> = new 
         "isLyraMailAuthenticated",
         "getLyraMailAccount",
         "onLyraMailAuthChange",
+        "withLyraMailRetry",
       ],
     },
   ],
