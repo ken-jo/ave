@@ -145,6 +145,9 @@ export function registerIpcHandlers(
       onError: (error) => {
         win?.webContents.send("ave:chat:stream", { type: "error", error });
       },
+      onCompactOccurred: ({ removedMessages, freedTokens }) => {
+        win?.webContents.send("ave:chat:stream", { type: "compact_notice", removedMessages, freedTokens });
+      },
     });
     win?.webContents.send("ave:chat:stream", { type: "done" });
     return result;

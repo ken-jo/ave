@@ -13,6 +13,7 @@ import { HookRunner } from "../hooks/hook-runner.js";
 import { shouldCompact, compactMessages, isContextLengthError, getModelContextWindow } from "./auto-compact.js";
 import { createProvider, secretKeyFor } from "./llm/provider-factory.js";
 import type { LLMProvider, StreamEvent, ToolCallBlock, ToolSchema, GenericMessage, TokenUsage, ThinkingBlock } from "./llm/types.js";
+import { classifyProviderError } from "./llm/error-classifier.js";
 import type { SystemPromptBuilder } from "../prompts/system-prompt-builder.js";
 import type { KeywordEngine } from "../core/keyword-engine.js";
 import type { RouteEngine } from "../core/route-engine.js";
@@ -41,6 +42,7 @@ export interface TurnCallbacks {
   }) => void;
   onTurnComplete?: (fullText: string) => void;
   onError?: (error: string) => void;
+  onCompactOccurred?: (result: { removedMessages: number; freedTokens: number }) => void;
 }
 
 export interface TurnResult {
@@ -76,9 +78,31 @@ export interface ConversationLoopDeps {
    * test harnesses that instantiate ConversationLoop directly).
    */
   hookRunner?: HookRunner;
+  /**
+   * Phase 1.5 Option C — plugin runtime reference used for:
+   *   - request_plugin 메타 툴 pluginId 유효성 검증
+   *   - inactive plugin 카탈로그 공급 (SystemPromptBuilder가 읽음)
+   * Omitted in lightweight unit tests; scope expansion becomes a no-op.
+   */
+  pluginRuntime?: {
+    listPluginIds(): string[];
+  };
 }
 
 const MAX_TOOL_ROUNDS = 10;
+
+/** Phase 1.5 Option C — LLM 요청 기반 plugin 활성화 턴당 최대 횟수. */
+const MAX_PLUGIN_EXPANSION = 2;
+
+/** Phase 1.5 Option C — 메타 툴 이름. scope filter와 무관히 항상 노출. */
+const REQUEST_PLUGIN_TOOL = "request_plugin";
+
+/** Phase 1 Lazy Tool Scoping — 매 턴 LLM에 노출할 도구 집합 정의. */
+interface ToolScope {
+  activePluginIds: Set<string>;
+  includeBuiltins: boolean;
+  includeMcp: boolean;
+}
 
 // §11 리스크: LLM agentic 토큰 폭발 방지 — knowledge 도구 turn당 호출 횟수 hard cap
 const KNOWLEDGE_DEPTH_CAP = 3;
@@ -99,6 +123,12 @@ export class ConversationLoop {
   private provider: LLMProvider | null = null;
   private sessionId: string = crypto.randomUUID();
   private cumulativeUsage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
+  /**
+   * Phase 1 Lazy Tool Scoping — 직전 턴의 active plugin 집합.
+   * Keyword miss (type==="general") 시 fallback으로 재사용한다.
+   * null = 이전 턴 없음 → builtin-only scope.
+   */
+  private lastTurnScope: Set<string> | null = null;
 
   constructor(deps: ConversationLoopDeps) {
     this.deps = deps;
@@ -117,6 +147,14 @@ export class ConversationLoop {
   /** B1: PermissionManager 참조 — IPC bridge에서 mode 조회/변경에 사용 */
   get permissionManager(): import("../permissions/permission-manager.js").PermissionManager | undefined {
     return this.deps.permissionManager;
+  }
+
+  /**
+   * HIGH-1: plugin disable 시 lastTurnScope에서 해당 pluginId 제거.
+   * boot.ts의 onDisable 콜백에서 호출된다.
+   */
+  onPluginDisabled(pluginId: string): void {
+    this.lastTurnScope?.delete(pluginId);
   }
 
   /** 설정 변경 시 Provider 재생성 — 벤더별 API 키 조회 */
@@ -260,8 +298,18 @@ ${briefingData}
 
     this.history.append({ role: "user", content: userContent });
 
+    // Phase 1 Lazy Tool Scoping — 이 턴에서 노출할 plugin 집합 결정.
+    // SystemPromptBuilder Tool Schemas 섹션도 동일 scope로 필터링되도록
+    // build() 호출 전에 setToolScope 수행.
+    const scope = this.resolveToolScope(input);
+    // Guard: test mocks may stub SystemPromptBuilder without this method.
+    this.deps.systemPromptBuilder.setToolScope?.(scope);
+
     const systemPrompt = this.deps.systemPromptBuilder.build();
-    const result = await this.queryLoop(systemPrompt, callbacks);
+    const result = await this.queryLoop(systemPrompt, scope, callbacks);
+    // lastTurnScope must reflect any Option C request_plugin expansions so
+    // the next turn's keyword-miss fallback keeps those plugins visible.
+    this.lastTurnScope = new Set(scope.activePluginIds);
 
     // §4.5.5 Post-Turn Hook Chain (Agent 6: compact → saveSession → extractMemory → audit → idle-poke)
     if (this.deps.postTurnHookChain) {
@@ -292,7 +340,8 @@ ${briefingData}
         if (cr.compacted) {
           this.history.clear();
           this.history.restore(compacted);
-          console.log(`[ave] auto-compact: removed ${cr.removedMessages} msgs, freed ~${cr.freedTokens} tokens`);
+          if (process.env.NODE_ENV !== "production") console.log(`[ave] auto-compact: removed ${cr.removedMessages} msgs, freed ~${cr.freedTokens} tokens`);
+          callbacks?.onCompactOccurred?.({ removedMessages: cr.removedMessages, freedTokens: cr.freedTokens });
         }
       }
       this.deps.memoryManager.saveSession(this.sessionId, this.history.getMessages());
@@ -316,18 +365,27 @@ ${briefingData}
 
   private async queryLoop(
     systemPrompt: string,
+    scope: ToolScope,
     callbacks?: TurnCallbacks,
   ): Promise<{ text: string; toolCalls: Array<{ name: string; input: Record<string, unknown>; result: string }>; usage?: TokenUsage }> {
     const llmSettings = this.deps.settingsService.get("llm");
     const model = llmSettings.model;
-    const toolSchemas: ToolSchema[] = this.deps.toolRegistry.getToolSchemas().map((s) => ({
-      name: s.name,
-      description: s.description,
-      // Tool.toJsonSchema() returns `unknown` (may be Zod-generated or raw
-      // plugin/MCP schema); LLM providers all expect the flat
-      // `{type: "object", properties, required?}` shape.
-      inputSchema: s.input_schema as ToolSchema["inputSchema"],
-    }));
+    // Phase 1.5 Option C: scope is mutable within the turn — request_plugin
+    // tool_use results add to scope.activePluginIds, and toolSchemas are
+    // rebuilt each round. Mutating the caller's Set directly means the
+    // next turn's fallback sees every plugin that was activated here.
+    const mutableScope = scope;
+    let pluginExpansions = 0;
+    const rebuildToolSchemas = (): ToolSchema[] =>
+      this.deps.toolRegistry.getToolSchemasForScope(mutableScope).map((s) => ({
+        name: s.name,
+        description: s.description,
+        // Tool.toJsonSchema() returns `unknown` (may be Zod-generated or raw
+        // plugin/MCP schema); LLM providers all expect the flat
+        // `{type: "object", properties, required?}` shape.
+        inputSchema: s.input_schema as ToolSchema["inputSchema"],
+      }));
+    let toolSchemas: ToolSchema[] = rebuildToolSchemas();
     const allToolCalls: Array<{ name: string; input: Record<string, unknown>; result: string }> = [];
     let turnUsage: TokenUsage | undefined;
     // turn당 knowledge 도구 호출 횟수 카운터 (depth ≤ 3 hard cap)
@@ -401,11 +459,13 @@ ${briefingData}
                 restoreUsage();
                 return { earlyReturn: false as const, streamContextError: event.error };
               }
-              callbacks?.onError?.(event.error);
-              // Escalate message when second attempt (post-compact) also fails.
+              // Classify before notifying so renderer toast + history both
+              // see the same user-friendly Korean message.
+              const classified = classifyProviderError(event.error);
               const userMsg = reactiveCompacted && isContextLengthError(event.error)
                 ? `오류: 대화 기록을 압축한 뒤에도 모델 컨텍스트 한도를 초과했습니다. 새 세션을 시작하거나 이전 첨부를 정리해 주세요 (원인: ${event.error})`
-                : `오류: ${event.error}`;
+                : `오류: ${classified.userMessage}`;
+              callbacks?.onError?.(userMsg);
               this.history.append({ role: "assistant", content: userMsg });
               return { earlyReturn: true as const, text: userMsg };
           }
@@ -440,7 +500,8 @@ ${briefingData}
             compacted = true;
             this.history.clear();
             this.history.restore(compactedMsgs);
-            console.log(`[ave] reactive-compact: removed ${cr.removedMessages} msgs, freed ~${cr.freedTokens} tokens`);
+            if (process.env.NODE_ENV !== "production") console.log(`[ave] reactive-compact: removed ${cr.removedMessages} msgs, freed ~${cr.freedTokens} tokens`);
+            callbacks?.onCompactOccurred?.({ removedMessages: cr.removedMessages, freedTokens: cr.freedTokens });
           }
         } catch (compactErr) {
           console.warn("[ave] reactive-compact: compactMessages threw, skipping retry:", compactErr);
@@ -460,7 +521,7 @@ ${briefingData}
 
       // assistant 응답을 히스토리에 추가 — thinkingBlocks는 tool_use 체인이
       // 이어지는 다음 요청에만 signature 그대로 포함되어야 Anthropic이 수락한다.
-      const preserveThinkingBlocks = stopReason === "tool_use" && pendingToolCalls.length > 0;
+      const preserveThinkingBlocks = (stopReason as string) === "tool_use" && pendingToolCalls.length > 0;
       this.history.append({
         role: "assistant",
         content: textContent,
@@ -487,10 +548,77 @@ ${briefingData}
         id: tc.id, name: tc.name, input: tc.input,
       }));
 
+      // Phase 1.5 Option C — request_plugin 메타 툴 가로채기.
+      // 실제 tool executor에 넘기지 않고 scope를 확장한 뒤 합성된 tool_result를
+      // 히스토리에 추가한다. 다음 round에서 rebuildToolSchemas()로 새 plugin의
+      // tool이 LLM에 노출된다. MAX_PLUGIN_EXPANSION 초과 시 에러 결과 반환.
+      const requestPluginResults: Array<{ tool_use_id: string; content: string; is_error: boolean }> = [];
+      const remainingToolUses: ToolUseBlock[] = [];
+      for (const tu of toolUses) {
+        if (tu.name !== REQUEST_PLUGIN_TOOL) {
+          remainingToolUses.push(tu);
+          continue;
+        }
+        const pluginId = (tu.input as { pluginId?: unknown })?.pluginId;
+        const availableIds = this.deps.pluginRuntime?.listPluginIds() ?? [];
+        if (typeof pluginId !== "string" || pluginId.length === 0) {
+          requestPluginResults.push({
+            tool_use_id: tu.id,
+            content: `request_plugin 오류: pluginId (string) 필수. Available: ${availableIds.join(", ") || "(none)"}`,
+            is_error: true,
+          });
+        } else if (!availableIds.includes(pluginId)) {
+          requestPluginResults.push({
+            tool_use_id: tu.id,
+            content: `Unknown pluginId '${pluginId}'. Available: ${availableIds.join(", ") || "(none)"}`,
+            is_error: true,
+          });
+        } else if (pluginExpansions >= MAX_PLUGIN_EXPANSION) {
+          requestPluginResults.push({
+            tool_use_id: tu.id,
+            content: `request_plugin 한도 초과 (턴당 최대 ${MAX_PLUGIN_EXPANSION}회). '${pluginId}' 활성화 거부.`,
+            is_error: true,
+          });
+        } else {
+          const prevToolCount = toolSchemas.length;
+          mutableScope.activePluginIds.add(pluginId);
+          pluginExpansions += 1;
+          toolSchemas = rebuildToolSchemas();
+          const addedToolCount = Math.max(0, toolSchemas.length - prevToolCount);
+          requestPluginResults.push({
+            tool_use_id: tu.id,
+            content: `Plugin '${pluginId}' activated. ${addedToolCount} new tool(s) now available (${toolSchemas.length} total in scope).`,
+            is_error: false,
+          });
+          allToolCalls.push({
+            name: tu.name,
+            input: tu.input,
+            result: `activated:${pluginId}`,
+          });
+        }
+      }
+
+      // request_plugin tool_result를 히스토리에 추가 (executor 우회)
+      for (const rr of requestPluginResults) {
+        this.history.append({
+          role: "tool_result",
+          toolUseId: rr.tool_use_id,
+          toolName: REQUEST_PLUGIN_TOOL,
+          content: rr.content,
+          ...(rr.is_error && { isError: true }),
+        });
+      }
+
+      // request_plugin만 있고 실제 실행할 tool이 없으면 다음 round로 진입
+      // (LLM이 새로 활성화된 plugin의 tool을 호출할 수 있도록).
+      if (remainingToolUses.length === 0) {
+        continue;
+      }
+
       // §11 depth cap: knowledge 도구 turn당 최대 KNOWLEDGE_DEPTH_CAP 회
       const cappedToolUses: ToolUseBlock[] = [];
       const capBlockResults: Array<{ tool_use_id: string; content: string; is_error: boolean }> = [];
-      for (const tu of toolUses) {
+      for (const tu of remainingToolUses) {
         if (KNOWLEDGE_TOOL_NAMES.has(tu.name)) {
           if (knowledgeCallCount >= KNOWLEDGE_DEPTH_CAP) {
             capBlockResults.push({
@@ -523,7 +651,7 @@ ${briefingData}
       }
       // cap 차단 결과도 audit trail에 포함 (depth cap 감사 근거 누락 방지)
       for (const blocked of capBlockResults) {
-        const origTool = toolUses.find((tu) => tu.id === blocked.tool_use_id);
+        const origTool = remainingToolUses.find((tu) => tu.id === blocked.tool_use_id);
         if (origTool) {
           allToolCalls.push({
             name: origTool.name,
@@ -538,7 +666,7 @@ ${briefingData}
         this.history.append({
           role: "tool_result",
           toolUseId: tr.tool_use_id,
-          toolName: toolUses.find((tu) => tu.id === tr.tool_use_id)?.name,
+          toolName: remainingToolUses.find((tu) => tu.id === tr.tool_use_id)?.name,
           content: tr.content,
           ...(tr.is_error && { isError: true }),
         });
@@ -552,6 +680,27 @@ ${briefingData}
   // cycle 1 MED: extractMemory inline 로직 제거.
   // PostTurnHookChain의 memory-extract hook이 단일 진실 소스이며,
   // fallback 경로에서도 중복 추출을 수행하지 않는다.
+
+  // ─── Private: Tool Scope Resolution (Phase 1 Lazy Tool Scoping) ───
+
+  /**
+   * 입력에서 활성 plugin 집합을 유도하여 ToolScope를 반환한다.
+   *
+   * - KeywordEngine.matchAllPluginIds() → 이번 턴 active plugin Set
+   * - 매치 없음(일반 대화) → lastTurnScope fallback, 그마저 없으면 빈 Set (builtin-only)
+   * - Builtins + MCP는 항상 포함 (host-side tool은 항시 사용 가능)
+   */
+  private resolveToolScope(input: string): ToolScope {
+    const matched = this.deps.keywordEngine.matchAllPluginIds(input);
+    const activePluginIds = matched.size > 0
+      ? matched
+      : (this.lastTurnScope ?? new Set<string>());
+    return {
+      activePluginIds,
+      includeBuiltins: true,
+      includeMcp: true,
+    };
+  }
 
   // ─── Private: Command Handler ─────────────────────
 
