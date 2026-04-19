@@ -100,10 +100,18 @@ jobs:
           cd ave/packages/plugin-sdk
           bun install --frozen-lockfile
           bun run build
-      - run: bun install --frozen-lockfile
+      - name: Install plugin dependencies
+        run: |
+          bun install --frozen-lockfile --cwd ../ave-plugin-pyxis
+          bun install --frozen-lockfile --cwd ../ave-plugin-meeting
+          bun install --frozen-lockfile --cwd ../ave-plugin-lyra-post
+          bun install --frozen-lockfile --cwd ../ave-plugin-lyra-cal
         working-directory: ave
       - name: Build all plugins
         run: bun run prepare:plugins
+        working-directory: ave
+      - name: Install app dependencies
+        run: bun install --frozen-lockfile
         working-directory: ave
       - name: Build app
         run: bun run build

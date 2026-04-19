@@ -9,10 +9,10 @@ import {
   rmSync,
   existsSync,
   readdirSync,
-  statSync,
+  statSync
 } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { vi } from "vitest";
 
 vi.mock("node:os", async (importOriginal) => {
@@ -27,7 +27,7 @@ let testHome: string;
 let auditDir: string;
 
 beforeEach(() => {
-  testHome = join(tmpdir(), `ave-audit-rot-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  testHome = join(homedir(), ".ave", "test-tmp", `ave-audit-rot-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   auditDir = join(testHome, ".ave", "audit");
   mkdirSync(auditDir, { recursive: true });
   vi.mocked(homedir).mockReturnValue(testHome);
