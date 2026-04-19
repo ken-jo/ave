@@ -12,26 +12,34 @@ jobs:
         with:
           path: ave
           submodules: recursive
+      - name: Generate plugin read token
+        id: app-token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547  # v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: former_org
+          repositories: ave-plugin-meeting,ave-plugin-lyra-post,ave-plugin-pyxis,ave-plugin-lyra-cal
       - uses: actions/checkout@v6
         with:
           repository: former_org/ave-plugin-meeting
           path: ave-plugin-meeting
-          token: ${{ secrets.HOST_READ_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
       - uses: actions/checkout@v6
         with:
           repository: former_org/ave-plugin-lyra-post
           path: ave-plugin-lyra-post
-          token: ${{ secrets.HOST_READ_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
       - uses: actions/checkout@v6
         with:
           repository: former_org/ave-plugin-pyxis
           path: ave-plugin-pyxis
-          token: ${{ secrets.HOST_READ_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
       - uses: actions/checkout@v6
         with:
           repository: former_org/ave-plugin-lyra-cal
           path: ave-plugin-lyra-cal
-          token: ${{ secrets.HOST_READ_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
       - uses: oven-sh/setup-bun@v2
       - name: Build plugin-sdk submodule
         run: |
