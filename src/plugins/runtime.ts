@@ -1005,7 +1005,7 @@ function createNoopHostApi(): PluginHostApi {
     emitEvent: () => {},
     onEvent: () => () => {},
     addTask: () => {},
-    saveNote: () => {},
+    saveNote: async () => {},
     getSecret: () => null,
     getLyraMailToken: async () => null,
     startLyraMailAuth: async () => {},
