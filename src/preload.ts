@@ -82,6 +82,8 @@ const api = {
 
   // ─── Usage Observability (Sprint 4.B) ────────────
   getUsageSummary: async (days?: number) => ipcRenderer.invoke("ave:usage:summary", days),
+  getUsageRange: async (opts: { dateFrom: string; dateTo: string }) => ipcRenderer.invoke("ave:usage:range", opts),
+  exportUsageCsv: async (rows: Array<Record<string, string | number>>) => ipcRenderer.invoke("ave:usage:export-csv", rows),
 
   // ─── Proactive (Sprint 3-A: briefing card + snooze/dismiss) ───
   onProactiveBriefing: (handler: (briefing: { generatedAt: string; items: Array<{ category: string; priority: string; title: string; detail?: string }>; summary?: string }) => void) => {
@@ -134,6 +136,11 @@ const api = {
     /** 사용자 결정을 main으로 전송 */
     respond: async (decision: unknown) =>
       ipcRenderer.invoke("ave:approval:respond", decision),
+  },
+
+  // ─── DLP Hit Statistics (Observability) ─────────
+  dlp: {
+    getStats: async (days: number) => ipcRenderer.invoke("ave:dlp:stats", days),
   },
 
   // ─── Audit Log Search (Observability) ────────────
