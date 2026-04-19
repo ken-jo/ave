@@ -48,6 +48,11 @@ const api = {
     ipcRenderer.on("ave:chat:stream", listener);
     return () => ipcRenderer.removeListener("ave:chat:stream", listener);
   },
+  onChatFallback: (handler: (payload: { from: string; to: string }) => void) => {
+    const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
+    ipcRenderer.on("ave:chat:fallback", listener);
+    return () => ipcRenderer.removeListener("ave:chat:fallback", listener);
+  },
 
   // ─── Memory ──────────────────────────────────────
   memoryListNotes: async () => ipcRenderer.invoke("ave:memory:notes:list"),
