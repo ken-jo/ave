@@ -8,7 +8,7 @@
  * Schema mirrors StarredStore pattern (src/data/starred-store.ts).
  */
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 
 export interface FeedbackEntry {
@@ -36,8 +36,8 @@ export class FeedbackStore {
 
   constructor(options?: FeedbackStoreOptions) {
     const resolvedPath = resolve(options?.filePath ?? join(homedir(), ".ave", "feedback.jsonl"));
-    const aveDir = join(homedir(), ".ave");
-    if (!resolvedPath.startsWith(aveDir + "/") && resolvedPath !== aveDir) {
+    const aveDir = resolve(join(homedir(), ".ave"));
+    if (!resolvedPath.startsWith(aveDir + sep) && resolvedPath !== aveDir) {
       throw new Error(`feedback-store: path confinement violation — ${resolvedPath} is outside ${aveDir}`);
     }
     this.filePath = resolvedPath;
