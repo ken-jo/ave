@@ -10,7 +10,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          path: ave
           submodules: recursive
+      - uses: actions/checkout@v4
+        with:
+          repository: former_org/ave-plugin-meeting
+          path: ave-plugin-meeting
+          token: ${{ secrets.HOST_READ_TOKEN }}
+      - uses: actions/checkout@v4
+        with:
+          repository: former_org/ave-plugin-lyra-post
+          path: ave-plugin-lyra-post
+          token: ${{ secrets.HOST_READ_TOKEN }}
+      - uses: actions/checkout@v4
+        with:
+          repository: former_org/ave-plugin-pyxis
+          path: ave-plugin-pyxis
+          token: ${{ secrets.HOST_READ_TOKEN }}
+      - uses: actions/checkout@v4
+        with:
+          repository: former_org/ave-plugin-lyra-cal
+          path: ave-plugin-lyra-cal
+          token: ${{ secrets.HOST_READ_TOKEN }}
       - uses: oven-sh/setup-bun@v2
       - name: Stub sibling plugin packages for CI
         run: |
@@ -21,5 +42,8 @@ jobs:
             touch "$dir/dist/hostPlugin.js"
           done
       - run: bun install --frozen-lockfile
+        working-directory: ave
       - run: bun run build
+        working-directory: ave
       - run: bunx vitest run
+        working-directory: ave
