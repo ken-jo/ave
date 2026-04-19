@@ -89,6 +89,7 @@ const RESERVED_HOST_CHANNELS = new Set([
   "ave:memory:notes:save",
   "ave:memory:notes:delete",
   "ave:memory:notes:search",
+  "ave:memory:sessions:search",
   "ave:memory:ave-md:get",
   "ave:memory:ave-md:update",
   "ave:memory:user-prefs:get",
@@ -337,6 +338,10 @@ export function registerIpcHandlers(
   // read-only, sender guard optional
   ipcMain.handle("ave:memory:notes:search", (_e, query: string) =>
     memoryManager.searchNotes(query),
+  );
+  // read-only, sender guard optional — D5 memory search panel
+  ipcMain.handle("ave:memory:sessions:search", (_e, query: string) =>
+    memoryManager.searchSessions(query),
   );
   // read-only, sender guard optional
   ipcMain.handle("ave:memory:ave-md:get", () => memoryManager.getAveMd());

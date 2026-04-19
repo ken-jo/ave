@@ -54,6 +54,7 @@ const api = {
   memorySaveNote: async (title: string, content: string) => ipcRenderer.invoke("ave:memory:notes:save", title, content),
   memoryDeleteNote: async (filename: string) => ipcRenderer.invoke("ave:memory:notes:delete", filename),
   memorySearchNotes: async (query: string) => ipcRenderer.invoke("ave:memory:notes:search", query),
+  memorySearchSessions: async (query: string) => ipcRenderer.invoke("ave:memory:sessions:search", query),
   memoryGetAveMd: async () => ipcRenderer.invoke("ave:memory:ave-md:get") as Promise<string>,
   memoryUpdateAveMd: async (content: string) => ipcRenderer.invoke("ave:memory:ave-md:update", content),
   memoryGetUserPrefs: async () => ipcRenderer.invoke("ave:memory:user-prefs:get") as Promise<string>,
