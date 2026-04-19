@@ -131,6 +131,8 @@ const RESERVED_HOST_CHANNELS = new Set([
   "ave:starred:remove",
   "ave:plugins:cards",
   "ave:telemetry:consent-answer",
+  "ave:audit:search",
+  "ave:audit:stats",
 ]);
 
 /**
@@ -178,6 +180,7 @@ export function registerIpcHandlers(
     approvalGate,
     refreshPluginNotifications,
     starredStore,
+    auditLogger,
   } = services;
 
   // ─── Settings (벤더별 API 키) ────────────────────
@@ -642,6 +645,14 @@ export function registerIpcHandlers(
       return { ok: starredStore.removeBySessionAndIndex(opts.sessionId, opts.messageIndex) };
     }
     return { ok: false, error: "invalid-args" };
+  });
+
+  // ─── Audit Log Search (Observability) ──────────
+  ipcMain.handle("ave:audit:search", async (_e, filter: Parameters<typeof auditLogger.search>[0]) => {
+    return auditLogger.search(filter);
+  });
+  ipcMain.handle("ave:audit:stats", async (_e, lastDays: number) => {
+    return auditLogger.getStats(typeof lastDays === "number" ? lastDays : 7);
   });
 
   // S12 — telemetry consent prompt answer (Yes/No from renderer).
