@@ -133,6 +133,7 @@ const RESERVED_HOST_CHANNELS = new Set([
   "ave:telemetry:consent-answer",
   "ave:audit:search",
   "ave:audit:stats",
+  "ave:plugins:perf-stats",
 ]);
 
 /**
@@ -302,6 +303,7 @@ export function registerIpcHandlers(
   });
   ipcMain.handle("ave:plugins:ui:list", () => pluginRuntime.listUiExtensions());
   ipcMain.handle("ave:plugins:cards", () => pluginRuntime.listPluginCards());
+  ipcMain.handle("ave:plugins:perf-stats", () => pluginRuntime.getPerfStats());
   // H2: renderer-originated plugin calls go through callFromUi() which enforces
   // the per-plugin uiCallable[] allowlist. Methods not declared there must go
   // through ConversationLoop so permission / scope / expansion caps apply.

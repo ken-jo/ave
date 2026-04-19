@@ -64,6 +64,11 @@ const api = {
   listPluginCards: async () => ipcRenderer.invoke("ave:plugins:cards"),
   callPluginMethod: async (method: string, payload?: unknown) => ipcRenderer.invoke("ave:plugins:call", method, payload),
 
+  // ─── Plugin Performance (Observability) ──────────
+  plugins: {
+    getPerfStats: async () => ipcRenderer.invoke("ave:plugins:perf-stats"),
+  },
+
   // ─── Tasks ───────────────────────────────────────
   addTask: async (task: unknown) => ipcRenderer.invoke("ave:tasks:add", task),
   queryTasks: async (filter?: unknown) => ipcRenderer.invoke("ave:tasks:query", filter),

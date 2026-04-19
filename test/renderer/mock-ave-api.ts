@@ -131,6 +131,10 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     }),
 
     onMarketplaceUpdatesAvailable: vi.fn(() => () => {}),
+
+    plugins: {
+      getPerfStats: vi.fn(async () => ({})),
+    },
   };
 
   api.starredAdd = api.addStarred;
