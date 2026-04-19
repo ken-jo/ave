@@ -106,6 +106,18 @@ const api = {
     return () => ipcRenderer.removeListener("marketplace:updates-available", listener);
   },
 
+  // ─── Plugin Events (§35 real-time streaming) ─────
+  onPluginEvent: (
+    eventType: string,
+    handler: (data: unknown) => void,
+  ): (() => void) => {
+    const listener = (_event: unknown, type: string, data: unknown) => {
+      if (type === eventType) handler(data);
+    };
+    ipcRenderer.on("ave:plugin:event", listener);
+    return () => ipcRenderer.removeListener("ave:plugin:event", listener);
+  },
+
   // ─── MCP ─────────────────────────────────────────
   mcp: {
     servers: async () => ipcRenderer.invoke("ave:mcp:servers"),
