@@ -136,7 +136,11 @@ function createWindow() {
   });
 
   const win = mainWindow;
-  win.webContents.openDevTools();
+  // Skip DevTools in E2E mode — the DevTools DOM (role="tablist" etc.) leaks
+  // into the Playwright page context and breaks selector-based assertions.
+  if (process.env.AVE_E2E !== "1") {
+    win.webContents.openDevTools();
+  }
 
   win.once("ready-to-show", () => {
     console.log("[ave] window ready-to-show");
