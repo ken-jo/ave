@@ -37,6 +37,7 @@ const api = {
   chatExport: async (format: "markdown" | "json") => ipcRenderer.invoke("ave:chat:export", format),
   chatCompact: async () => ipcRenderer.invoke("ave:chat:compact"),
   chatSessionResume: async (sessionId: string) => ipcRenderer.invoke("ave:chat:session-resume", sessionId),
+  chatAbort: async () => ipcRenderer.invoke("ave:chat:abort") as Promise<{ ok: boolean }>,
   starredList: async () => ipcRenderer.invoke("ave:starred:list"),
   starredAdd: async (entry: { sessionId?: string; messageIndex: number; role: string; text: string }) =>
     ipcRenderer.invoke("ave:starred:add", entry),

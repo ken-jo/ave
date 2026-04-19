@@ -140,6 +140,7 @@ const RESERVED_HOST_CHANNELS = new Set([
   "ave:audit:stats",
   "ave:plugins:perf-stats",
   "ave:dlp:stats",
+  "ave:chat:abort",
 ]);
 
 /**
@@ -280,6 +281,13 @@ export function registerIpcHandlers(
       }
     }
     return runStreamedTurn(conversationLoop, effective, win?.webContents, "ave:chat:stream");
+  });
+
+  // B4: abort current streaming turn
+  ipcMain.handle("ave:chat:abort", (e) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:chat:abort", e); return UNAUTHORIZED_FRAME; }
+    conversationLoop.abortCurrentTurn();
+    return { ok: true };
   });
 
   ipcMain.handle("ave:chat:new", (e) => {
