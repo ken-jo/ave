@@ -129,6 +129,8 @@ const RESERVED_HOST_CHANNELS = new Set([
   "ave:chat:fork",
   "ave:chat:retry-effort",
   "ave:chat:export",
+  "ave:chat:compact",
+  "ave:chat:session-resume",
   "ave:starred:list",
   "ave:starred:add",
   "ave:starred:remove",
@@ -299,6 +301,18 @@ export function registerIpcHandlers(
     if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:chat:load-session", e); return UNAUTHORIZED_FRAME; }
     const loaded = conversationLoop.loadSession(sessionId);
     return { ok: loaded, sessionId: loaded ? sessionId : null };
+  });
+
+  // B1 — /compact manual command IPC
+  ipcMain.handle("ave:chat:compact", (e) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:chat:compact", e); return UNAUTHORIZED_FRAME; }
+    return conversationLoop.manualCompact();
+  });
+
+  // B1 — session-resume IPC (load + state reset + auto-compact check)
+  ipcMain.handle("ave:chat:session-resume", (e, sessionId: string) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:chat:session-resume", e); return UNAUTHORIZED_FRAME; }
+    return conversationLoop.resetAndResume(sessionId);
   });
 
   // ─── Memory ─────────────────────────────────────

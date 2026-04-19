@@ -35,6 +35,8 @@ const api = {
   chatRetryEffort: async (opts?: { thinkingBudgetTokens?: number; enableThinking?: boolean }) =>
     ipcRenderer.invoke("ave:chat:retry-effort", opts),
   chatExport: async (format: "markdown" | "json") => ipcRenderer.invoke("ave:chat:export", format),
+  chatCompact: async () => ipcRenderer.invoke("ave:chat:compact"),
+  chatSessionResume: async (sessionId: string) => ipcRenderer.invoke("ave:chat:session-resume", sessionId),
   starredList: async () => ipcRenderer.invoke("ave:starred:list"),
   starredAdd: async (entry: { sessionId?: string; messageIndex: number; role: string; text: string }) =>
     ipcRenderer.invoke("ave:starred:add", entry),
