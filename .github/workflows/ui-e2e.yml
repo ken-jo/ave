@@ -19,29 +19,29 @@ jobs:
       AVE_E2E: "1"
     steps:
       - name: Checkout ave
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: ave
 
       # Sibling plugin repos are required because ave declares
       # file:../ave-plugin-* dependencies in package.json.
       - name: Checkout ave-plugin-pyxis
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: former_org/ave-plugin-pyxis
           path: ave-plugin-pyxis
       - name: Checkout ave-plugin-meeting
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: former_org/ave-plugin-meeting
           path: ave-plugin-meeting
       - name: Checkout ave-plugin-lyra-post
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: former_org/ave-plugin-lyra-post
           path: ave-plugin-lyra-post
       - name: Checkout ave-plugin-lyra-cal
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: former_org/ave-plugin-lyra-cal
           path: ave-plugin-lyra-cal

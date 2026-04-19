@@ -8,26 +8,26 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           path: ave
           submodules: recursive
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           repository: former_org/ave-plugin-meeting
           path: ave-plugin-meeting
           token: ${{ secrets.HOST_READ_TOKEN }}
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           repository: former_org/ave-plugin-lyra-post
           path: ave-plugin-lyra-post
           token: ${{ secrets.HOST_READ_TOKEN }}
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           repository: former_org/ave-plugin-pyxis
           path: ave-plugin-pyxis
           token: ${{ secrets.HOST_READ_TOKEN }}
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           repository: former_org/ave-plugin-lyra-cal
           path: ave-plugin-lyra-cal
