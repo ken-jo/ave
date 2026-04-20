@@ -69,8 +69,9 @@ interface PluginManifest {
   eventSubscriptions?: string[];
   /**
    * Renderer → plugin IPC (`ave:plugins:call`) 허용 메서드 allowlist.
-   * `tools[]` 의 부분집합이어야 하며, destructive verb suffix 는 managed+signed
-   * 에서만 허용된다. §2.2 참조.
+   * `tools[]` 의 부분집합이어야 한다. 도구 이름 접미사에 대한 제한은 없다 —
+   * 파괴적 동작의 사용자 확인 UX 는 플러그인이 자체 UI 로 구현하며, 보안은
+   * 코드 리뷰·마켓플레이스 심사·서명 검증으로 보장한다. §2.2 참조.
    */
   uiCallable?: string[];
   /**
@@ -178,28 +179,24 @@ interface PluginManifest {
 
 > **번들 키 롤오버:** `BUNDLED_PUBLISHER_PUBLIC_KEYS` 배열에 신규 키를 추가하고 검증기가 OR 매칭한다. 구 키는 롤오버 완료 후 PR 로 제거.
 
-### 2.2 uiCallable 보안 경계 (Sprint 4-B §B-3)
+### 2.2 uiCallable 보안 경계
 
-Renderer UI 는 `ave:plugins:call` IPC 를 통해 플러그인 메서드를 직접 호출할 수 있다. 이 경로는 ConversationLoop 의 permission/scope/expansion cap 을 **우회**하므로 매니페스트 allowlist 로 좁혀야 한다.
+Renderer UI 는 `ave:plugins:call` IPC 를 통해 플러그인 메서드를 직접 호출할 수 있다. 이 경로는 ConversationLoop 의 permission/scope/expansion cap 을 **우회**하므로 매니페스트 allowlist 로 좁혀야 한다. (AI 가 개시한 도구 호출은 별개로 `ApprovalGate` / `PermissionManager` 확인 UX 를 그대로 거친다.)
 
 **규칙:**
 
-1. **`uiCallable ⊂ tools[]`** — allowlist 에 들어간 이름은 반드시 `tools[]` 에 선언된 이름이어야 한다. 어긋나면 매니페스트 로드 거부.
-2. **Destructive verb 차단** — 다음 regex 로 끝나는 tool 은 `uiCallable` 에 넣을 수 없다 (managed + signed 플러그인만 예외):
-   ```
-   /_(delete|remove|send|destroy|erase|purge)$/i
-   ```
-   위반 시 로드 거부 + `plugin_uiCallable_destructive_rejected` 감사 기록.
+1. **`uiCallable ⊂ tools[]`** — allowlist 에 들어간 이름은 반드시 `tools[]` 에 선언된 이름이어야 한다. 어긋나면 매니페스트 로드 거부. 이 구조적 제약만 런타임에서 강제된다.
+2. **도구 이름 제한 없음** — 어떤 접미사든 `uiCallable` 에 넣을 수 있다. 파괴적 동작의 사용자 확인은 플러그인 UI 가 자체 구현한다 (예: 삭제 버튼 → "정말 삭제?" 다이얼로그). 보안은 코드 리뷰·마켓플레이스 심사·서명 검증으로 보장한다. 실제 위험 작업(민감 파일 경로 접근, 샌드박스 탈출 등)은 호스트의 `sensitive-paths.ts`·샌드박스 계층에서 이름이 아닌 작업의 실체로 차단한다.
 3. **Renderer IPC 게이트** — `PluginRuntime.callFromUi(method, payload)` 는 매번 `manifest.uiCallable` 을 재확인한다. allowlist 바깥 호출은 throw.
 
 **예시:**
 
 ```jsonc
-// OK — read-only 메서드만 UI 에 노출
+// OK — read-only 메서드
 "uiCallable": ["meeting_transcript", "meeting_sessions"]
 
-// REJECT — destructive verb. managed+signed 가 아니면 manifest 로드 실패
-"uiCallable": ["email_send"]
+// OK — 파괴적 동작도 등록 가능. 플러그인이 자체 UI 에서 확인 다이얼로그를 구현해야 함
+"uiCallable": ["email_send", "calendar_delete", "index_remove_folder"]
 
 // REJECT — tools[] 에 없는 이름
 "uiCallable": ["meeting_unknown"]
@@ -249,7 +246,6 @@ plugin.json
 │    - tool name regex             │
 │    - startupTools ⊂ tools        │
 │    - uiCallable ⊂ tools          │
-│    - destructive verb guard      │
 │    - startupTimeoutMs > 0        │
 │    - notificationEvents shape    │  → 실패 시
 │                                  │     Invalid plugin manifest '<id>' at '<field>' (<path>): <reason>. Example: <example>
@@ -474,7 +470,7 @@ Ave 는 IPC/RPC 를 **시스템 레벨 전용**으로 확정한다. 플러그인
 플러그인은 **tool 레벨만** 사용한다:
 
 - **LLM → plugin tool**: `ToolRegistry` 경유. manifest `tools[]` 에 선언된 이름이 LLM 에 노출, 호출 시 `handlers[toolName]` 로 라우팅. IPC 채널 없음.
-- **Renderer UI → plugin tool**: 호스트가 제공하는 generic 핸들러 `ave:plugins:call(toolName, payload)` 단 하나 경유. `manifest.uiCallable` allowlist 로 gating (§2.2). 플러그인이 채널을 직접 선언하지 않는다.
+- **Renderer UI → plugin tool**: 호스트가 제공하는 generic 핸들러 `ave:plugins:call(toolName, payload)` 단 하나 경유. `manifest.uiCallable` allowlist 로 구조적 gating (§2.2) — 이름 패턴 차단은 없으며, 확인 UX 는 플러그인이 자체 UI 로 구현한다. 플러그인이 채널을 직접 선언하지 않는다.
 - **Plugin → host service**: `PluginHostApi` 메서드 직접 호출 (in-process).
 - **Plugin → plugin**: 이벤트 버스(`hostApi.emitEvent` / `onEvent`) 만. 직접 호출 불가. emit 은 capability 로, subscribe 는 namespace 분류로 gating.
 
@@ -491,7 +487,7 @@ Ave 는 IPC/RPC 를 **시스템 레벨 전용**으로 확정한다. 플러그인
 **주요 handler:** `meeting_start` / `meeting_push_chunk` / `meeting_stop` / `meeting_transcript` / `meeting_sessions`.
 
 - `capabilities: ["meeting-recorder"]` — `meeting.*` emit 게이트 통과.
-- `uiCallable: ["meeting_transcript", "meeting_sessions"]` — 읽기 전용만 UI 노출.
+- `uiCallable: ["meeting_transcript", "meeting_sessions"]` — 렌더러에서 직접 호출해도 안전한 조회용 메서드를 노출. (파괴적 도구를 추가할 수도 있으며, 그 경우 플러그인 UI 가 확인 다이얼로그를 책임진다.)
 - `toolSchemas` 는 `meeting_push_chunk` 에 추가 (PCM `number[]` 추론 실패 방지).
 - `meeting_stop` 반환값이 크므로 LLM context 소비 주의 — 요약만 반환.
 
@@ -512,7 +508,7 @@ Ave 는 IPC/RPC 를 **시스템 레벨 전용**으로 확정한다. 플러그인
 - LYRA Mail OAuth 상태 확인이 모든 인증 필요 handler 진입부에 중복 — `if (!hostApi.isLyraMailAuthenticated()) throw`.
 - `email_analyze` 는 내부적으로 LLM 을 직접 호출하거나 `hostApi.callLlm` 으로 전환 가능.
 - `email_start_watcher`/`email_stop_watcher` 는 `startupTools` 나 UI 에서 호출하는 것이 자연스럽다.
-- `email_send` 같은 destructive 메서드는 `uiCallable` 에 넣을 수 없다 (§2.2).
+- `email_send` 같은 파괴적 메서드도 `uiCallable` 에 넣을 수 있다 (§2.2) — 플러그인이 전송 전 확인 다이얼로그를 자체 UI 로 구현해야 한다.
 
 ### 5.4 Calendar (`ave-plugin-lyra-cal`)
 
@@ -549,7 +545,7 @@ HostApi 에 새 메서드를 추가하려면:
 |------|------|------|
 | **worker_threads / process 격리** | ❌ 기각 | in-process + try/catch 로 95% 장애 커버. 격리 시 IPC 오버헤드 + 디버깅 복잡도 증가. |
 | **manifest signature 검증 재도입** | ✅ **승인** (Sprint 3-B, §9.6) | managed 플러그인에 ed25519 서명 필수 (`plugin.json.sig`), user 플러그인은 warn-on-missing. `scripts/sign-manifest.mjs` + `src/plugins/publisher-keys.ts` 참조. §2.1. |
-| **`permissions[]` 선언형 필드** | ⚠️ **부분 승인** | full permission 문자열 배열은 기각되었지만, 다음 3종의 선언형 게이트가 대체 도입됨: (1) `uiCallable[]` — renderer→plugin allowlist + destructive verb guard, (2) `capabilities[]` — `lyra-mail-consumer` HostApi gate + event-emit namespace gate, (3) `PLUGIN_PRIVATE_NAMESPACES` — subscription deny-list. §2.2, §2.3. |
+| **`permissions[]` 선언형 필드** | ⚠️ **부분 승인** | full permission 문자열 배열은 기각되었지만, 다음 3종의 선언형 게이트가 대체 도입됨: (1) `uiCallable[]` — renderer→plugin allowlist (구조적 `⊂ tools[]` 제약만 강제, 파괴적 도구의 확인 UX 는 플러그인이 책임), (2) `capabilities[]` — `lyra-mail-consumer` HostApi gate + event-emit namespace gate, (3) `PLUGIN_PRIVATE_NAMESPACES` — subscription deny-list. §2.2, §2.3. |
 | **LLM invoke HostApi 추상화 (full surface)** | ❌ 기각 (callLlm 만 채택) | 단발 텍스트 생성 `callLlm()` 만 Phase 1에서 채택 (§4). streaming·tool_choice·thinking·multi-turn 등 vendor 편차 큰 surface 는 여전히 기각. |
 | **파일 watcher HostApi (`watchFiles`)** | ❌ 기각 | pageindex 1개 플러그인만 필요. "3+ 플러그인 규칙" 미충족. |
 | **zod 자동 schema 추출** | ❌ 기각 | 번들 크기 증가, zod 버전 충돌. 수기 작성이 LLM 최적화 면에서도 우수. |
