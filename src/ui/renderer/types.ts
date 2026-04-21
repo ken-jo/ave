@@ -227,6 +227,7 @@ export type AvePluginConfigApi = {
 
 export type AvePluginsApi = {
   cards: () => Promise<PluginCardSummary[]>;
+  uninstallMarketplacePlugin: (id: string) => Promise<unknown>;
 };
 
 export type AveMcpApi = {

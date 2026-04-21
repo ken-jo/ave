@@ -211,6 +211,7 @@ contextBridge.exposeInMainWorld("ave", {
   mcp: api.mcp,
   plugins: {
     cards: () => ipcRenderer.invoke("ave:plugins:cards"),
+    uninstallMarketplacePlugin: (id: string) => ipcRenderer.invoke("ave:plugins:uninstall", id),
   },
   pluginConfig: {
     get: (pluginId: string) => ipcRenderer.invoke("ave:plugins:config:get", pluginId),
