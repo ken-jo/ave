@@ -1,4 +1,5 @@
 import electron from "electron";
+import type { McpServerConfig } from "./mcp/types.js";
 
 const { contextBridge, ipcRenderer } = electron;
 
@@ -129,6 +130,10 @@ const api = {
   mcp: {
     servers: async () => ipcRenderer.invoke("ave:mcp:servers"),
     kill: async (id: string) => ipcRenderer.invoke("ave:mcp:kill", id),
+    getConfigs: async () => ipcRenderer.invoke("ave:mcp:config:get"),
+    getConfigPath: async () => ipcRenderer.invoke("ave:mcp:config:path"),
+    addConfig: async (config: McpServerConfig) => ipcRenderer.invoke("ave:mcp:config:add", config),
+    removeConfig: async (id: string) => ipcRenderer.invoke("ave:mcp:config:remove", id),
   },
 
   // ─── Permission ───────────────────────────────────
@@ -203,4 +208,5 @@ contextBridge.exposeInMainWorld("ave", {
   permission: api.permission,
   approval: api.approval,
   policy: api.policy,
+  mcp: api.mcp,
 });

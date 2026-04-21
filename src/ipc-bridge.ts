@@ -107,6 +107,10 @@ const RESERVED_HOST_CHANNELS = new Set([
   "ave:plugins:call",
   "ave:mcp:servers",
   "ave:mcp:kill",
+  "ave:mcp:config:get",
+  "ave:mcp:config:path",
+  "ave:mcp:config:add",
+  "ave:mcp:config:remove",
   "ave:permission:get-mode",
   "ave:permission:set-mode",
   "ave:permission:list-rules",
@@ -455,11 +459,29 @@ export function registerIpcHandlers(
   });
 
   // ─── MCP ──────────────────────────────────────
-  // read-only, sender guard optional
-  ipcMain.handle("ave:mcp:servers", () => services.mcpManager.listServers());
+  ipcMain.handle("ave:mcp:servers", (e) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:mcp:servers", e); return UNAUTHORIZED_FRAME; }
+    return services.mcpManager.listServers();
+  });
   ipcMain.handle("ave:mcp:kill", (e, serverId: string) => {
     if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:mcp:kill", e); return UNAUTHORIZED_FRAME; }
     return services.mcpManager.killSwitch(serverId);
+  });
+  ipcMain.handle("ave:mcp:config:get", (e) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:mcp:config:get", e); return UNAUTHORIZED_FRAME; }
+    return services.mcpManager.getConfigs();
+  });
+  ipcMain.handle("ave:mcp:config:path", (e) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:mcp:config:path", e); return UNAUTHORIZED_FRAME; }
+    return services.mcpManager.getConfigPath();
+  });
+  ipcMain.handle("ave:mcp:config:add", async (e, config: unknown) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:mcp:config:add", e); return UNAUTHORIZED_FRAME; }
+    return services.mcpManager.addConfig(config as import("./mcp/types.js").McpServerConfig);
+  });
+  ipcMain.handle("ave:mcp:config:remove", async (e, serverId: string) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:mcp:config:remove", e); return UNAUTHORIZED_FRAME; }
+    return services.mcpManager.removeConfig(serverId);
   });
 
   // ─── Permission Prompt (§6.3 Layer 3) ─────────
@@ -508,6 +530,7 @@ export function registerIpcHandlers(
       } else {
         await pm.addAlwaysDeniedPersist(normalized);
       }
+      services.toolRegistry.setDenyRules(pm.getVisibilityDenyRules());
       return { ok: true, rule: { pattern: normalized, action } };
     } catch (err) {
       return { ok: false, error: "add-failed", message: (err as Error).message };
@@ -519,6 +542,7 @@ export function registerIpcHandlers(
     if (!pm) return { ok: false, error: "no-permission-manager", message: "권한 매니저가 초기화되지 않았습니다." };
     try {
       await pm.removeRule(pattern, action);
+      services.toolRegistry.setDenyRules(pm.getVisibilityDenyRules());
       return { ok: true };
     } catch (err) {
       return { ok: false, error: "remove-failed", message: (err as Error).message };
@@ -926,4 +950,3 @@ export function registerIpcHandlers(
     }
   });
 }
-
