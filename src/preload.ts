@@ -114,6 +114,17 @@ const api = {
     return () => ipcRenderer.removeListener("marketplace:updates-available", listener);
   },
 
+  // ─── ave:// deep-link install lifecycle ─────────
+  // Fires when a marketplace install triggered via ave://install/{slug} has
+  // finished installing + restartAll() in the main process. Renderer uses
+  // this to refresh its plugin UI list so newly-installed sidebar views
+  // appear without requiring an app restart.
+  onPluginInstallResult: (handler: (payload: { slug: string; success: boolean; error?: string }) => void) => {
+    const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
+    ipcRenderer.on("ave:plugins:install-result", listener);
+    return () => ipcRenderer.removeListener("ave:plugins:install-result", listener);
+  },
+
   // ─── Plugin Events (§35 real-time streaming) ─────
   onPluginEvent: (
     eventType: string,
