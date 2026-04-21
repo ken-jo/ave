@@ -6,7 +6,7 @@
   "description": "Test Electron host app for Ave plugins.",
   "main": "dist/src/main.js",
   "scripts": {
-    "postinstall": "node scripts/ensure-submodules.mjs && electron-rebuild && node scripts/fetch-uv.mjs",
+    "postinstall": "node scripts/ensure-submodules.mjs && bun run --cwd packages/plugin-sdk build && electron-rebuild && node scripts/fetch-uv.mjs",
     "prepare:plugins": "bun run --cwd ../ave-plugin-pyxis build && bun run --cwd ../ave-plugin-meeting build && bun run --cwd ../ave-plugin-lyra-post build && bun run --cwd ../ave-plugin-lyra-cal build",
     "prepare:plugins:npm": "npm run --prefix ../ave-plugin-pyxis build && npm run --prefix ../ave-plugin-meeting build && npm run --prefix ../ave-plugin-lyra-post build && npm run --prefix ../ave-plugin-lyra-cal build",
     "build:main": "tsc -p tsconfig.json",
