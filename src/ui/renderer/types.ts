@@ -220,6 +220,15 @@ export type AvePolicyApi = {
   set: (patch: unknown) => Promise<{ ok: boolean; policy?: unknown; error?: string; message?: string }>;
 };
 
+export type AvePluginConfigApi = {
+  get: (pluginId: string) => Promise<Record<string, unknown>>;
+  set: (pluginId: string, config: Record<string, unknown>) => Promise<void>;
+};
+
+export type AvePluginsApi = {
+  cards: () => Promise<PluginCardSummary[]>;
+};
+
 export type AveMcpApi = {
   servers: () => Promise<McpServerState[]>;
   kill: (id: string) => Promise<void>;
@@ -247,6 +256,8 @@ declare global {
       approval: AveApprovalApi;
       policy: AvePolicyApi;
       mcp: AveMcpApi;
+      plugins: AvePluginsApi;
+      pluginConfig: AvePluginConfigApi;
     };
   }
 }

@@ -209,4 +209,11 @@ contextBridge.exposeInMainWorld("ave", {
   approval: api.approval,
   policy: api.policy,
   mcp: api.mcp,
+  plugins: {
+    cards: () => ipcRenderer.invoke("ave:plugins:cards"),
+  },
+  pluginConfig: {
+    get: (pluginId: string) => ipcRenderer.invoke("ave:plugins:config:get", pluginId),
+    set: (pluginId: string, config: Record<string, unknown>) => ipcRenderer.invoke("ave:plugins:config:set", pluginId, config),
+  },
 });

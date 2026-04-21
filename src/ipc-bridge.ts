@@ -146,6 +146,8 @@ const RESERVED_HOST_CHANNELS = new Set([
   "ave:starred:add",
   "ave:starred:remove",
   "ave:plugins:cards",
+  "ave:plugins:config:get",
+  "ave:plugins:config:set",
   "ave:feedback:submit",
   "ave:telemetry:consent-answer",
   "ave:audit:search",
@@ -448,6 +450,13 @@ export function registerIpcHandlers(
   });
   // read-only, sender guard optional
   ipcMain.handle("ave:plugins:cards", () => pluginRuntime.listPluginCards());
+  // read-only, sender guard optional
+  ipcMain.handle("ave:plugins:config:get", (_e, pluginId: string) =>
+    settingsService.getPluginConfig(pluginId));
+  ipcMain.handle("ave:plugins:config:set", async (e, pluginId: string, config: unknown) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:plugins:config:set", e); return UNAUTHORIZED_FRAME; }
+    await settingsService.setPluginConfig(pluginId, config as Record<string, unknown>);
+  });
   // read-only, sender guard optional
   ipcMain.handle("ave:plugins:perf-stats", () => pluginRuntime.getPerfStats());
   // H2: renderer-originated plugin calls go through callFromUi() which enforces
