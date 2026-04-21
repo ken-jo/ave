@@ -46,6 +46,16 @@ Electron 앱 좌측 사이드바의 **플러그인 마켓플레이스** 영역�
 `kind: "embedded-module"` 확장은 플러그인 패키지 내부 UI 모듈(예: `dist/ui/meeting-control.js`)을 호스트가 동적 import하여 인라인으로 마운트합니다.
 UI 렌더링 책임은 호스트(`ave` renderer)에 있으며, 플러그인은 `plugin.json`의 `ui` 메타데이터와 실제 UI 모듈 자산, 그리고 기능 메서드를 제공합니다.
 
+### Managed plugin install / refresh
+
+- `ensureManagedInstalled()` 는 앱 부팅 시 marketplace 카탈로그의 managed 플러그인을 확인하고, registry 에 stale entry 만 남아 있는 경우에도 실제 manifest 존재 여부를 다시 검사해 재설치합니다.
+- `ave://install/{slug}` 딥링크 설치가 완료되면 renderer 는 install-result 이벤트를 받아 플러그인 뷰/마켓플레이스 목록을 자동 refresh 합니다.
+
+### Plugin config safety
+
+- Settings > 플러그인 설정 저장 경로는 sender-guarded IPC 를 통해서만 접근됩니다.
+- 플러그인 설정값은 plain JSON-compatible object/array/primitive 만 허용하며, `__proto__`, `constructor`, `prototype`, `"*"` 같은 위험 키는 저장 시 차단됩니다.
+
 ## 독립 플러그인 아키텍처
 - 메인 앱은 플러그인 구현을 직접 import하지 않고 `PluginRuntime`이 매니페스트를 읽어 런타임 동적 로드합니다.
 - 각 플러그인은 자체 host entry(`host-plugin`)를 제공하고, 메서드 단위(`index_scan`, `meeting_start` 등)로 기능을 노출합니다.
