@@ -3,6 +3,48 @@ import type { McpServerConfig } from "./mcp/types.js";
 
 const { contextBridge, ipcRenderer } = electron;
 
+type PluginActionResult =
+  | { ok: true; pluginId: string; installed?: true; uninstalled?: true; version?: string }
+  | { ok: false; error: string; message?: string };
+
+function invalidPluginActionResult(): PluginActionResult {
+  return {
+    ok: false,
+    error: "invalid-result",
+    message: "플러그인 작업 결과가 올바르지 않습니다.",
+  };
+}
+
+function normalizePluginActionResult(result: unknown): PluginActionResult {
+  if (result && typeof result === "object" && "ok" in result && result.ok === false) {
+    return result as PluginActionResult;
+  }
+
+  const payload = result && typeof result === "object"
+    ? result as { pluginId?: unknown; installed?: unknown; uninstalled?: unknown; version?: unknown }
+    : {};
+  const pluginId = typeof payload.pluginId === "string" ? payload.pluginId.trim() : "";
+  const installed = payload.installed === true;
+  const uninstalled = payload.uninstalled === true;
+  if (!pluginId || (!installed && !uninstalled)) {
+    return invalidPluginActionResult();
+  }
+  const normalized: PluginActionResult = {
+    ok: true,
+    pluginId,
+  };
+  if (installed) {
+    normalized.installed = true;
+  }
+  if (uninstalled) {
+    normalized.uninstalled = true;
+  }
+  if (typeof payload.version === "string") {
+    normalized.version = payload.version;
+  }
+  return normalized;
+}
+
 const api = {
   // ─── Settings ────────────────────────────────────
   getSettings: async () => ipcRenderer.invoke("ave:settings:get"),
@@ -68,8 +110,10 @@ const api = {
 
   // ─── Plugins ─────────────────────────────────────
   listMarketplacePlugins: async () => ipcRenderer.invoke("ave:plugins:marketplace:list"),
-  installMarketplacePlugin: async (pluginId: string) => ipcRenderer.invoke("ave:plugins:install", pluginId),
-  uninstallMarketplacePlugin: async (pluginId: string) => ipcRenderer.invoke("ave:plugins:uninstall", pluginId),
+  installMarketplacePlugin: async (pluginId: string) =>
+    normalizePluginActionResult(await ipcRenderer.invoke("ave:plugins:install", pluginId)),
+  uninstallMarketplacePlugin: async (pluginId: string) =>
+    normalizePluginActionResult(await ipcRenderer.invoke("ave:plugins:uninstall", pluginId)),
   listPluginUiExtensions: async () => ipcRenderer.invoke("ave:plugins:ui:list"),
   readPluginUiModule: async (pluginId: string, viewId: string) =>
     ipcRenderer.invoke("ave:plugins:ui:read-module", { pluginId, viewId }) as Promise<string>,
@@ -112,6 +156,17 @@ const api = {
     const listener = (_event: unknown, updates: Parameters<typeof handler>[0]) => handler(updates);
     ipcRenderer.on("marketplace:updates-available", listener);
     return () => ipcRenderer.removeListener("marketplace:updates-available", listener);
+  },
+
+  // ─── ave:// deep-link install lifecycle ─────────
+  // Fires when a marketplace install triggered via ave://install/{slug} has
+  // finished installing + restartAll() in the main process. Renderer uses
+  // this to refresh its plugin UI list so newly-installed sidebar views
+  // appear without requiring an app restart.
+  onPluginInstallResult: (handler: (payload: { slug: string; success: boolean; error?: string }) => void) => {
+    const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
+    ipcRenderer.on("ave:plugins:install-result", listener);
+    return () => ipcRenderer.removeListener("ave:plugins:install-result", listener);
   },
 
   // ─── Plugin Events (§35 real-time streaming) ─────
@@ -209,4 +264,13 @@ contextBridge.exposeInMainWorld("ave", {
   approval: api.approval,
   policy: api.policy,
   mcp: api.mcp,
+  plugins: {
+    cards: () => ipcRenderer.invoke("ave:plugins:cards"),
+    uninstallMarketplacePlugin: async (id: string) =>
+      normalizePluginActionResult(await ipcRenderer.invoke("ave:plugins:uninstall", id)),
+  },
+  pluginConfig: {
+    get: (pluginId: string) => ipcRenderer.invoke("ave:plugins:config:get", pluginId),
+    set: (pluginId: string, config: Record<string, unknown>) => ipcRenderer.invoke("ave:plugins:config:set", pluginId, config),
+  },
 });
