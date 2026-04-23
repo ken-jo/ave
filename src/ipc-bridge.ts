@@ -289,8 +289,8 @@ export function registerIpcHandlers(
   });
 
   // ─── Microsoft Graph — dual-environment login ──────
-  // 모든 상태 조회는 read-only 라 sender guard 선택. 전환/로그인/로그아웃은
-  // side-effect 가 있어 sender guard + audit.
+  // 모든 상태 조회는 read-only 라 sender guard 선택.
+  // 환경 전환 / sign-in / sign-out 은 side-effect 가 있어 sender guard + audit 전부 수행.
   ipcMain.handle("ave:lyra-mail:get-state", () => {
     const environments = LYRA_MAIL_ENVIRONMENTS.map((env) => ({
       id: env,
@@ -318,19 +318,42 @@ export function registerIpcHandlers(
 
   ipcMain.handle("ave:lyra-mail:sign-in", async (e) => {
     if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:lyra-mail:sign-in", e); return UNAUTHORIZED_FRAME; }
+    const envAtStart = lyraMailService.getEnvironment();
     try {
       await lyraMailService.startInteractiveAuth(async (url: string) => {
         await shell.openExternal(url);
       });
-      return { ok: true, state: lyraMailService.getState() };
+      const state = lyraMailService.getState();
+      auditLogger.log({
+        timestamp: new Date().toISOString(),
+        sessionId: "host",
+        type: "info",
+        output: `lyra-mail sign-in: env=${envAtStart} account=${state.account ?? "?"} success=${state.isAuthenticated}`,
+      });
+      return { ok: true, state };
     } catch (err) {
-      return { ok: false, error: (err as Error).message };
+      const msg = (err as Error).message;
+      auditLogger.log({
+        timestamp: new Date().toISOString(),
+        sessionId: "host",
+        type: "warn",
+        output: `lyra-mail sign-in failed: env=${envAtStart} error=${msg}`,
+      });
+      return { ok: false, error: msg };
     }
   });
 
   ipcMain.handle("ave:lyra-mail:sign-out", async (e) => {
     if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:lyra-mail:sign-out", e); return UNAUTHORIZED_FRAME; }
+    const envAtStart = lyraMailService.getEnvironment();
+    const accountAtStart = lyraMailService.getAccountName();
     await lyraMailService.signOut();
+    auditLogger.log({
+      timestamp: new Date().toISOString(),
+      sessionId: "host",
+      type: "info",
+      output: `lyra-mail sign-out: env=${envAtStart} account=${accountAtStart ?? "?"}`,
+    });
     return { ok: true, state: lyraMailService.getState() };
   });
 
