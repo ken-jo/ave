@@ -114,6 +114,10 @@ const RESERVED_HOST_CHANNELS = new Set([
   "ave:memory:notes:save",
   "ave:memory:notes:delete",
   "ave:memory:notes:search",
+  "ave:memory:entries:list",
+  "ave:memory:entries:save",
+  "ave:memory:entries:delete",
+  "ave:memory:entries:search",
   "ave:memory:sessions:list",
   "ave:memory:sessions:search",
   "ave:memory:ave-md:get",
@@ -428,7 +432,29 @@ ${input}`;
   });
   ipcMain.handle("ave:memory:notes:search", (e, query: string) => {
     if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:memory:notes:search", e); return UNAUTHORIZED_FRAME; }
-    return memoryManager.searchNotes(query);
+    return memoryManager.searchNotesEntries(query);
+  });
+  ipcMain.handle("ave:memory:entries:list", (e) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:memory:entries:list", e); return UNAUTHORIZED_FRAME; }
+    return memoryManager.listMemoryEntries();
+  });
+  ipcMain.handle("ave:memory:entries:save", async (e, title: string, content: string) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:memory:entries:save", e); return UNAUTHORIZED_FRAME; }
+    return memoryManager.saveMemory(title, content);
+  });
+  ipcMain.handle("ave:memory:entries:delete", (e, filename: string) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:memory:entries:delete", e); return UNAUTHORIZED_FRAME; }
+    return memoryManager.deleteMemory(filename);
+  });
+  ipcMain.handle("ave:memory:entries:search", (e, query: string) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:memory:entries:search", e); return UNAUTHORIZED_FRAME; }
+    return memoryManager.searchMemoryEntries(query).map((note) => ({
+      filename: note.filename,
+      title: note.title,
+      content: note.content,
+      excerpt: note.content.replace(/^#\s+.+(?:\r?\n)+/, "").trim(),
+      updatedAt: note.updatedAt ?? new Date().toISOString(),
+    }));
   });
   ipcMain.handle("ave:memory:sessions:list", () => memoryManager.listSessionEntries());
   ipcMain.handle("ave:memory:sessions:search", (e, query: string) => {
