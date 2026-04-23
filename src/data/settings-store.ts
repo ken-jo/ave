@@ -335,6 +335,9 @@ export class SettingsService {
     if (partial.audit) {
       this.settings.audit = { ...this.settings.audit, ...partial.audit };
     }
+    if (partial.lyraMail) {
+      this.settings.lyraMail = { ...this.settings.lyraMail, ...partial.lyraMail };
+    }
     if (partial.pluginConfigs) {
       const sanitized: Record<string, PluginConfigRecord> = {};
       for (const [pluginId, config] of Object.entries(partial.pluginConfigs)) {
