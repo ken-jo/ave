@@ -49,19 +49,29 @@ export async function bootstrapCoreServices(mainWindow: BrowserWindow): Promise<
   // §4.2 Step 0.5: Governance Services (Agent 6)
   const bashAstValidator = new BashAstValidator({ mode: "deny" });
 
-  // Microsoft Graph 공유 인증 서비스 (이메일·캘린더 플러그인 공용)
-  const lyraMailService = new LyraMailService(app.getPath("userData"));
-  await lyraMailService.loadSavedToken();
-  if (lyraMailService.isAuthenticated()) {
-    console.log("[ave] boot: lyra-mail token loaded —", lyraMailService.getAccountName());
-  }
   const auditService = new AuditService();
   await auditService.start();
 
-  // §4.2 Step 1: Config
+  // §4.2 Step 1: Config — LyraMailService 가 이 설정(lyraMail.environment) 을 읽으므로 먼저 init.
   const settingsService = new SettingsService({
     userDataPath: app.getPath("userData"),
   });
+
+  // Microsoft Graph 공유 인증 서비스 (이메일·캘린더 플러그인 공용).
+  // 환경(external / corporate) 는 settings 에서 택1 — lyra-mail-auth-config.ts 참조.
+  const lyraMailEnv = settingsService.get("lyraMail")?.environment ?? "external";
+  const lyraMailService = new LyraMailService(
+    app.getPath("userData"),
+    lyraMailEnv,
+  );
+  await lyraMailService.loadSavedToken();
+  if (lyraMailService.isAuthenticated()) {
+    console.log(
+      `[ave] boot: lyra-mail token loaded [${lyraMailEnv}] — ${lyraMailService.getAccountName()}`,
+    );
+  } else {
+    console.log(`[ave] boot: lyra-mail env=${lyraMailEnv}, unauthenticated`);
+  }
 
   // §14.2 Audit log rotation + retention — boot-time check + 1h interval
   const auditLogger = new AuditLogger();

@@ -4,7 +4,7 @@
  * 모든 IPC 핸들러를 등록하는 모듈.
  * main.ts에서 인라인으로 30개 핸들러를 두지 않고 여기에 집중.
  */
-import { dialog, ipcMain, type BrowserWindow, type IpcMainInvokeEvent } from "electron";
+import { dialog, ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent } from "electron";
 import { realpathSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -18,6 +18,12 @@ import type { GenericMessage } from "./engine/llm/types.js";
 import type { ConversationLoop } from "./engine/conversation-loop.js";
 import type { WebContents } from "electron";
 import { findMethodByCapability } from "./boot/plugins.js";
+import {
+  LYRA_MAIL_ENVIRONMENTS,
+  LYRA_MAIL_ENVIRONMENT_CONFIGS,
+  isEnvironmentConfigured,
+  type LyraMailEnvironment,
+} from "./main/lyra-mail-auth-config.js";
 
 /**
  * Convert the UI's "user-assistant-only ordinal" to the real index into
@@ -104,6 +110,10 @@ const RESERVED_HOST_CHANNELS = new Set([
   "ave:settings:set-web-api-key",
   "ave:settings:has-web-api-key",
   "ave:settings:delete-web-api-key",
+  "ave:lyra-mail:get-state",
+  "ave:lyra-mail:switch-environment",
+  "ave:lyra-mail:sign-in",
+  "ave:lyra-mail:sign-out",
   "ave:chat:has-provider",
   "ave:chat:send",
   "ave:chat:guide",
@@ -255,6 +265,7 @@ export function registerIpcHandlers(
     starredStore,
     feedbackStore,
     auditLogger,
+    lyraMailService,
   } = services;
 
   // Wire DLP audit logging so redactForLLM records hits to audit JSONL.
@@ -301,6 +312,96 @@ export function registerIpcHandlers(
     if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:settings:delete-web-api-key", e); return UNAUTHORIZED_FRAME; }
     await settingsService.deleteSecret(`web.apiKey.${provider}`);
     return { ok: true };
+  });
+
+  // ─── Microsoft Graph — dual-environment login ──────
+  // 모든 상태 조회는 read-only 라 sender guard 선택.
+  // 환경 전환 / sign-in / sign-out 은 side-effect 가 있어 sender guard + audit 전부 수행.
+  ipcMain.handle("ave:lyra-mail:get-state", (e) => {
+    // get-state 는 read-only 지만 account (UPN/이메일) 을 노출하므로
+    // sender guard 를 걸어 untrusted frame 의 identity leak 을 차단한다.
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:lyra-mail:get-state", e); return UNAUTHORIZED_FRAME; }
+    const environments = LYRA_MAIL_ENVIRONMENTS.map((env) => ({
+      id: env,
+      label: LYRA_MAIL_ENVIRONMENT_CONFIGS[env].label,
+      description: LYRA_MAIL_ENVIRONMENT_CONFIGS[env].description,
+      configured: isEnvironmentConfigured(env),
+    }));
+    return { ...lyraMailService.getState(), environments };
+  });
+
+  ipcMain.handle("ave:lyra-mail:switch-environment", async (e, envInput: unknown) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:lyra-mail:switch-environment", e); return UNAUTHORIZED_FRAME; }
+    // 허용된 env id 만 수용 — typo/alien value 를 silent 하게 external 로
+    // 떨어뜨리지 않고 명시적으로 거부해 호출자가 잘못을 인지하게 한다.
+    if (envInput !== "external" && envInput !== "corporate") {
+      return { ok: false, error: `invalid environment: ${String(envInput)}` };
+    }
+    const env: LyraMailEnvironment = envInput;
+    await lyraMailService.switchEnvironment(env);
+    // 사용자 선택을 settings 에 영속화 → 다음 부팅 시 자동 복구.
+    await settingsService.patch({ lyraMail: { environment: env } });
+    auditLogger.log({
+      timestamp: new Date().toISOString(),
+      sessionId: "host",
+      type: "info",
+      output: `lyra-mail environment switched: ${env}`,
+    });
+    return { ok: true, state: lyraMailService.getState() };
+  });
+
+  ipcMain.handle("ave:lyra-mail:sign-in", async (e) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:lyra-mail:sign-in", e); return UNAUTHORIZED_FRAME; }
+    const envAtStart = lyraMailService.getEnvironment();
+    try {
+      await lyraMailService.startInteractiveAuth(async (url: string) => {
+        await shell.openExternal(url);
+      });
+      const state = lyraMailService.getState();
+      if (!state.isAuthenticated) {
+        const error =
+          state.environment !== envAtStart
+            ? "environment-switched-during-sign-in"
+            : "sign-in-did-not-complete";
+        auditLogger.log({
+          timestamp: new Date().toISOString(),
+          sessionId: "host",
+          type: "warn",
+          output: `lyra-mail sign-in failed: env=${envAtStart} error=${error}`,
+        });
+        return { ok: false, error, state };
+      }
+      auditLogger.log({
+        timestamp: new Date().toISOString(),
+        sessionId: "host",
+        type: "info",
+        output: `lyra-mail sign-in: env=${envAtStart} account=${state.account ?? "?"} success=${state.isAuthenticated}`,
+      });
+      return { ok: true, state };
+    } catch (err) {
+      const msg = (err as Error).message;
+      auditLogger.log({
+        timestamp: new Date().toISOString(),
+        sessionId: "host",
+        type: "warn",
+        output: `lyra-mail sign-in failed: env=${envAtStart} error=${msg}`,
+      });
+      return { ok: false, error: msg };
+    }
+  });
+
+  ipcMain.handle("ave:lyra-mail:sign-out", async (e) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:lyra-mail:sign-out", e); return UNAUTHORIZED_FRAME; }
+    const envAtStart = lyraMailService.getEnvironment();
+    const accountAtStart = lyraMailService.getAccountName();
+    await lyraMailService.signOut();
+    auditLogger.log({
+      timestamp: new Date().toISOString(),
+      sessionId: "host",
+      type: "info",
+      output: `lyra-mail sign-out: env=${envAtStart} account=${accountAtStart ?? "?"}`,
+    });
+    return { ok: true, state: lyraMailService.getState() };
   });
 
   // ─── Chat (ConversationLoop) ────────────────────
@@ -1031,7 +1132,12 @@ ${input}`;
   ipcMain.handle("ave:feedback:submit", async (e, payload: { sessionId: string; messageIndex: number; rating: "up" | "down"; reason?: string }) => {
     if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:feedback:submit", e); return UNAUTHORIZED_FRAME; }
     const { sessionId, messageIndex, rating, reason } = payload ?? {};
-    if (typeof sessionId !== "string" || typeof messageIndex !== "number" || (rating !== "up" && rating !== "down")) {
+    if (
+      typeof sessionId !== "string" ||
+      typeof messageIndex !== "number" ||
+      messageIndex < 0 ||
+      (rating !== "up" && rating !== "down")
+    ) {
       return { ok: false, error: "invalid-args" };
     }
     // Write free-text reason to FeedbackStore only — keeps PII out of audit log (GDPR).
