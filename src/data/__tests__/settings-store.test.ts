@@ -83,3 +83,28 @@ describe("SettingsService marketplace defaults", () => {
     });
   });
 });
+
+describe("SettingsService lyraMail patching", () => {
+  let userDataPath: string;
+
+  beforeEach(() => {
+    mkdirSync(join(homedir(), ".ave", "test-tmp"), { recursive: true });
+    userDataPath = mkdtempSync(join(homedir(), ".ave", "test-tmp", "settings-store-lyramail-"));
+    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(false);
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    rmSync(userDataPath, { recursive: true, force: true });
+  });
+
+  it("patch() persists lyraMail environment changes across restart", async () => {
+    const service = new SettingsService({ userDataPath });
+
+    await service.patch({ lyraMail: { environment: "corporate" } });
+    expect(service.get("lyraMail")).toEqual({ environment: "corporate" });
+
+    const reloaded = new SettingsService({ userDataPath });
+    expect(reloaded.get("lyraMail")).toEqual({ environment: "corporate" });
+  });
+});

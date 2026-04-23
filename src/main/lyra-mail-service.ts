@@ -3,26 +3,41 @@
  *
  * 이메일·캘린더 등 LYRA Mail를 쓰는 모든 플러그인이 하나의 토큰을 공유.
  * MSAL PublicClientApplication을 싱글톤으로 유지하고
- * <userData>/lyra-mail-token.json 에 토큰을 영속화(Electron safeStorage 암호화).
- * userData 경로는 생성자에서 주입 (boot.ts: app.getPath("userData")).
+ * <userData>/lyra-mail-token-{env}.json 에 환경별로 토큰을 영속화 (Electron safeStorage 암호화).
+ *
+ * 환경 (external / corporate) 별로 **별도 app registration + 별도 token cache** 를 쓴다.
+ * Active 환경이 HostApi 에 노출되며, `switchEnvironment()` 로 런타임 전환 가능.
+ * 전환 시 이전 환경 토큰 파일은 그대로 남으므로 되돌릴 때 재로그인 없이 복구.
+ *
+ * 환경 설정은 `lyra-mail-auth-config.ts` 에서 관리 — 사내 IT 로부터 받은 corp
+ * client/tenant ID 를 거기서 교체.
  */
 
 import { safeStorage } from "electron";
 import { PublicClientApplication } from "@azure/msal-node";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
+import {
+  DEFAULT_LYRA_MAIL_ENVIRONMENT,
+  DEFAULT_LYRA_MAIL_SCOPES,
+  LYRA_MAIL_ENVIRONMENT_CONFIGS,
+  getEnvironmentConfig,
+  isEnvironmentConfigured,
+  normalizeEnvironment,
+  type LyraMailEnvironment,
+  type LyraMailEnvironmentConfig,
+} from "./lyra-mail-auth-config.js";
 
-const CLIENT_ID = "00000000-0000-0000-0000-000000000001";
-const AUTHORITY = "https://login.microsoftonline.com/common";
+/**
+ * 기본 스코프 상수.
+ *
+ * @deprecated 환경별 스코프는 `getEnvironmentConfig(env).scopes` 에서 읽을 것.
+ * 기존 호출부 호환을 위해 re-export 유지.
+ */
+export const LYRA_MAIL_SCOPES = DEFAULT_LYRA_MAIL_SCOPES;
 
-/** 앱 전체에서 공유하는 LYRA Mail 스코프 */
-export const LYRA_MAIL_SCOPES = [
-  "Mail.Read",
-  "Mail.Send",
-  "User.Read",
-  "Calendars.ReadWrite",
-  "offline_access",
-];
+export type { LyraMailEnvironment } from "./lyra-mail-auth-config.js";
 
 interface SavedToken {
   accessToken: string;
@@ -32,9 +47,21 @@ interface SavedToken {
 
 type AuthChangeHandler = () => void;
 
+export interface LyraMailServiceState {
+  environment: LyraMailEnvironment;
+  isAuthenticated: boolean;
+  account: string | null;
+  configured: boolean;
+  label: string;
+}
+
 export class LyraMailService {
-  private readonly tokenPath: string;
-  private readonly pca: PublicClientApplication;
+  private readonly aveRoot: string;
+
+  private environment: LyraMailEnvironment;
+  private config: LyraMailEnvironmentConfig;
+  private tokenPath: string;
+  private pca: PublicClientApplication;
 
   private accessToken: string | null = null;
   private tokenExpiry: Date | null = null;
@@ -43,16 +70,99 @@ export class LyraMailService {
   private pendingSilentRefresh: Promise<string | null> | null = null;
   private changeHandlers: AuthChangeHandler[] = [];
   private authExpiredHandlers: AuthChangeHandler[] = [];
+  /**
+   * Sprint 4-E T2 race-guard: switchEnvironment() 이 호출될 때마다 +1.
+   * silentRefresh / startInteractiveAuth 시작 시점에 스냅샷을 찍고, 결과
+   * 콜백에서 epoch 가 바뀌어 있으면 persist 를 건너뛴다 — A env 에서 시작한
+   * 토큰이 B env 파일에 기록되는 cross-env 오염을 막는다.
+   */
+  private envEpoch = 0;
 
-  constructor(aveRoot: string) {
-    this.tokenPath = resolve(aveRoot, "lyra-mail-token.json");
-    this.pca = new PublicClientApplication({
-      auth: { clientId: CLIENT_ID, authority: AUTHORITY },
-    });
+  constructor(
+    aveRoot: string,
+    environment: LyraMailEnvironment = DEFAULT_LYRA_MAIL_ENVIRONMENT,
+  ) {
+    this.aveRoot = aveRoot;
+    this.environment = normalizeEnvironment(environment);
+    this.config = getEnvironmentConfig(this.environment);
+    this.tokenPath = tokenPathFor(aveRoot, this.environment);
+    this.pca = createPca(this.config);
   }
 
-  /** 앱 시작 시 저장된 토큰 로드 */
+  /** 현재 active 환경 */
+  getEnvironment(): LyraMailEnvironment {
+    return this.environment;
+  }
+
+  /** 현재 active 환경의 설정 정보 (UI 표시용) */
+  getState(): LyraMailServiceState {
+    return {
+      environment: this.environment,
+      isAuthenticated: this.isAuthenticated(),
+      account: this.accountName,
+      configured: isEnvironmentConfigured(this.environment),
+      label: this.config.label,
+    };
+  }
+
+  /**
+   * 환경 전환. 이전 환경의 in-memory 토큰은 비우고, 새 환경의 저장된 토큰을
+   * 로드한다. 전환 후에도 이전 환경 파일은 그대로 남아 되돌림 시 재로그인 불필요.
+   *
+   * 동일 환경 전환은 no-op. 미구성 환경(`__FILL_IN__` placeholder)으로 전환은
+   * 허용하되 sign-in 시도 시점에 에러.
+   */
+  async switchEnvironment(next: LyraMailEnvironment): Promise<void> {
+    const target = normalizeEnvironment(next);
+    if (target === this.environment) return;
+    console.log(
+      `[lyra-mail] environment switch: ${this.environment} → ${target}`,
+    );
+
+    // Race guard — envEpoch 증가시키면 진행 중인 silentRefresh/auth 콜백이
+    // 완료 시점에 `startEpoch !== this.envEpoch` 로 자기가 stale 임을 감지하고
+    // persistToken 을 skip 한다 (아래 silentRefresh / startInteractiveAuth 참조).
+    this.envEpoch += 1;
+    this.environment = target;
+    this.config = getEnvironmentConfig(target);
+    this.tokenPath = tokenPathFor(this.aveRoot, target);
+    this.pca = createPca(this.config);
+    this.accessToken = null;
+    this.tokenExpiry = null;
+    this.accountName = null;
+    this.authInProgress = null;
+    this.pendingSilentRefresh = null;
+
+    await this.loadSavedToken();
+    this.notifyChange();
+  }
+
+  /**
+   * 앱 시작 시 저장된 토큰 로드 (현재 active 환경에 한함).
+   *
+   * Legacy migration: 환경 분리 이전 버전에서 `lyra-mail-token.json` 이
+   * 존재하고 external 환경이면서 새 파일(`lyra-mail-token-external.json`)이
+   * 아직 없다면, 기존 파일을 external 파일로 rename 해 재로그인 회귀를 막는다.
+   */
   async loadSavedToken(): Promise<void> {
+    if (
+      this.environment === "external" &&
+      !existsSync(this.tokenPath) &&
+      existsSync(legacyTokenPath(this.aveRoot))
+    ) {
+      try {
+        await rename(legacyTokenPath(this.aveRoot), this.tokenPath);
+        console.log(
+          `[lyra-mail] legacy 토큰 파일 migration: ${legacyTokenPath(this.aveRoot)} → ${this.tokenPath}`,
+        );
+      } catch (err) {
+        console.warn(
+          "[lyra-mail] legacy 토큰 migration 실패 (non-fatal):",
+          (err as Error).message,
+        );
+      }
+    }
+
     try {
       const raw = await readFile(this.tokenPath, "utf-8");
       const saved = JSON.parse(raw) as SavedToken;
@@ -63,16 +173,19 @@ export class LyraMailService {
       if (saved.accessToken.startsWith("plain:")) {
         accessToken = saved.accessToken.slice(6);
       } else if (safeStorage.isEncryptionAvailable()) {
-        accessToken = safeStorage.decryptString(Buffer.from(saved.accessToken, "base64"));
+        accessToken = safeStorage.decryptString(
+          Buffer.from(saved.accessToken, "base64"),
+        );
       } else {
-        // Encrypted but safeStorage unavailable (e.g. different keychain) — skip
         return;
       }
 
       this.accessToken = accessToken;
       this.tokenExpiry = expiry;
       this.accountName = saved.account;
-      console.log(`[lyra-mail] 저장된 토큰 로드 — ${this.accountName}`);
+      console.log(
+        `[lyra-mail] 저장된 토큰 로드 [${this.environment}] — ${this.accountName}`,
+      );
     } catch {
       // 없으면 무시
     }
@@ -88,22 +201,11 @@ export class LyraMailService {
 
   /**
    * 현재 유효한 액세스 토큰 반환.
-   *
-   * Sprint 4-D T1: 캐시된 토큰이 만료되었거나 없으면 MSAL 의 내부 캐시에 저장된
-   * refresh token 을 이용해 `acquireTokenSilent` 로 조용히 갱신한다.
-   * - 갱신 성공: 새 토큰 캐시 + 반환
-   * - `InteractionRequired` 류 실패 (refresh token 만료 등): `lyra-mail.auth.expired`
-   *   핸들러 통지 + null 반환 (호출측이 `startLyraMailAuth` 유도)
-   * - 일시적 네트워크 오류: null 반환 (expired 통지 X — 다음 호출에서 재시도)
-   *
-   * 동시 호출은 단일 in-flight promise 로 코얼레스 (thundering herd 방지).
+   * 자세한 흐름은 `silentRefresh()` 주석 참조.
    */
   async getAccessToken(): Promise<string | null> {
     if (this.isAuthenticated()) return this.accessToken;
-
-    // 이미 진행 중인 silent refresh 가 있으면 합류
     if (this.pendingSilentRefresh) return this.pendingSilentRefresh;
-
     this.pendingSilentRefresh = this.silentRefresh().finally(() => {
       this.pendingSilentRefresh = null;
     });
@@ -112,7 +214,14 @@ export class LyraMailService {
 
   /** MSAL refresh token 으로 조용히 갱신 시도 */
   private async silentRefresh(): Promise<string | null> {
-    const cache = this.pca.getTokenCache();
+    // Sprint 4-E T2 race guard: PCA + scopes + epoch 를 같이 스냅샷 해서
+    // account 조회 / acquireTokenSilent await 중 switchEnvironment 가 들어와도
+    // 옛 env 의 config 로 끝까지 밀고간다. env 바뀌면 결과 폐기 (cross-env
+    // scope mismatch 와 token 오염 둘 다 차단).
+    const startEpoch = this.envEpoch;
+    const startPca = this.pca;
+    const startScopes = this.config.scopes;
+    const cache = startPca.getTokenCache();
     let account;
     try {
       const all = await cache.getAllAccounts();
@@ -125,26 +234,33 @@ export class LyraMailService {
       return null;
     }
     if (!account) {
-      // 저장된 계정 없음 → 인터랙티브 로그인 필요
       return null;
     }
 
     try {
-      const result = await this.pca.acquireTokenSilent({
-        scopes: LYRA_MAIL_SCOPES,
+      const result = await startPca.acquireTokenSilent({
+        scopes: startScopes,
         account,
       });
       if (!result || !result.accessToken || !result.expiresOn) {
         return null;
       }
+      // Race guard — env 가 바뀌었으면 결과 폐기 (cross-env persist 방지).
+      if (startEpoch !== this.envEpoch) {
+        console.warn(
+          "[lyra-mail] silent refresh 결과 폐기: env 전환 감지 (stale token)",
+        );
+        return null;
+      }
       const accountId =
         result.account?.username ?? result.account?.name ?? this.accountName ?? "Unknown";
       await this.persistToken(result.accessToken, result.expiresOn, accountId);
-      console.log(`[lyra-mail] silent refresh 성공 — ${accountId}`);
+      console.log(
+        `[lyra-mail] silent refresh 성공 [${this.environment}] — ${accountId}`,
+      );
       this.notifyChange();
       return result.accessToken;
     } catch (err) {
-      // MSAL 은 refresh token 만료 / 사용자 재동의 필요 등은 InteractionRequiredAuthError
       const name =
         (err as { name?: string } | null)?.name ??
         (err as { errorCode?: string } | null)?.errorCode ??
@@ -167,17 +283,36 @@ export class LyraMailService {
     }
   }
 
-  /** 브라우저 기반 인터랙티브 인증 시작 */
-  async startInteractiveAuth(openBrowser: (url: string) => Promise<void>): Promise<void> {
+  /**
+   * 브라우저 기반 인터랙티브 인증 시작.
+   *
+   * 현재 active 환경의 client/authority 로 로그인. 미구성 환경에선
+   * 즉시 에러 throw — 사용자에게 "corp app 정보 먼저 등록하세요" 안내 의도.
+   */
+  async startInteractiveAuth(
+    openBrowser: (url: string) => Promise<void>,
+  ): Promise<void> {
+    if (!isEnvironmentConfigured(this.environment)) {
+      throw new Error(
+        `LyraMail 환경 "${this.environment}" 이 아직 설정되지 않았습니다. ` +
+          `src/main/lyra-mail-auth-config.ts 에 app 등록 정보를 입력해주세요.`,
+      );
+    }
     if (this.authInProgress) return this.authInProgress;
 
-    this.authInProgress = this.pca
+    // Same race-guard snapshot pattern as silentRefresh — PCA + scopes +
+    // epoch + label 함께 고정. env 바뀌면 완료 콜백이 결과 폐기.
+    const startEpoch = this.envEpoch;
+    const startPca = this.pca;
+    const startScopes = this.config.scopes;
+    const startLabel = this.config.label;
+    this.authInProgress = startPca
       .acquireTokenInteractive({
-        scopes: LYRA_MAIL_SCOPES,
+        scopes: startScopes,
         openBrowser,
         successTemplate: `
           <html><body style="font-family:sans-serif;text-align:center;padding:60px;background:#0b1222;color:#e2e8f0">
-            <h2 style="color:#60a5fa">인증 완료!</h2>
+            <h2 style="color:#60a5fa">인증 완료! (${startLabel})</h2>
             <p>이 창을 닫고 앱으로 돌아가세요.</p>
           </body></html>`,
         errorTemplate: `
@@ -186,10 +321,17 @@ export class LyraMailService {
             <p>다시 시도해주세요.</p>
           </body></html>`,
       })
-      .then(async (result: { accessToken: string; expiresOn: Date | null; account?: { username?: string; name?: string } | null } | null) => {
+      .then(async (result) => {
         if (!result) return;
         if (!result.expiresOn) {
           throw new Error("Interactive authentication did not return a token expiry.");
+        }
+        // Race guard — auth 진행 중 env 가 전환됐으면 결과 폐기.
+        if (startEpoch !== this.envEpoch) {
+          console.warn(
+            "[lyra-mail] interactive auth 결과 폐기: env 전환 감지 (stale token)",
+          );
+          return;
         }
         const account = result.account?.username ?? result.account?.name ?? "Unknown";
         await this.persistToken(result.accessToken, result.expiresOn, account);
@@ -203,21 +345,46 @@ export class LyraMailService {
     return this.authInProgress!;
   }
 
+  /**
+   * 현재 active 환경에서 로그아웃. MSAL token cache + 로컬 token 파일 모두 제거.
+   * 다른 환경의 토큰/캐시는 건드리지 않음.
+   */
+  async signOut(): Promise<void> {
+    try {
+      const cache = this.pca.getTokenCache();
+      const accounts = await cache.getAllAccounts();
+      for (const acc of accounts) {
+        await cache.removeAccount(acc);
+      }
+    } catch (err) {
+      console.warn("[lyra-mail] signOut: MSAL 캐시 제거 실패 —", err);
+    }
+    this.accessToken = null;
+    this.tokenExpiry = null;
+    this.accountName = null;
+    try {
+      await writeFile(this.tokenPath, "", { encoding: "utf-8", mode: 0o600 });
+    } catch {
+      // 파일 없으면 무시
+    }
+    console.log(`[lyra-mail] 로그아웃 완료 [${this.environment}]`);
+    this.notifyChange();
+  }
+
   /** 인증 상태 변경 구독 */
   onAuthChange(handler: AuthChangeHandler): void {
     this.changeHandlers.push(handler);
   }
 
-  /**
-   * Sprint 4-D T1: silent refresh 가 `InteractionRequired` 로 실패했을 때
-   * (refresh token 만료 → 사용자 재로그인 필요) 호출되는 핸들러 등록.
-   * 렌더러 측 `lyra-mail.auth.expired` 배너 트리거 지점.
-   */
   onAuthExpired(handler: AuthChangeHandler): void {
     this.authExpiredHandlers.push(handler);
   }
 
-  private async persistToken(token: string, expiry: Date, account: string): Promise<void> {
+  private async persistToken(
+    token: string,
+    expiry: Date,
+    account: string,
+  ): Promise<void> {
     this.accessToken = token;
     this.tokenExpiry = expiry;
     this.accountName = account;
@@ -226,17 +393,22 @@ export class LyraMailService {
     if (safeStorage.isEncryptionAvailable()) {
       tokenToStore = safeStorage.encryptString(token).toString("base64");
     } else {
-      // 암호화 불가 환경 — 평문 저장 (개발 환경 등)
       tokenToStore = `plain:${token}`;
     }
 
     await mkdir(dirname(this.tokenPath), { recursive: true });
     await writeFile(
       this.tokenPath,
-      JSON.stringify({ accessToken: tokenToStore, expiry: expiry.toISOString(), account }, null, 2),
+      JSON.stringify(
+        { accessToken: tokenToStore, expiry: expiry.toISOString(), account },
+        null,
+        2,
+      ),
       { encoding: "utf-8", mode: 0o600 },
     );
-    console.log(`[lyra-mail] 토큰 저장 완료 — ${account}`);
+    console.log(
+      `[lyra-mail] 토큰 저장 완료 [${this.environment}] — ${account}`,
+    );
   }
 
   private notifyChange(): void {
@@ -251,3 +423,29 @@ export class LyraMailService {
     }
   }
 }
+
+function tokenPathFor(aveRoot: string, env: LyraMailEnvironment): string {
+  return resolve(aveRoot, `lyra-mail-token-${env}.json`);
+}
+
+function createPca(cfg: LyraMailEnvironmentConfig): PublicClientApplication {
+  return new PublicClientApplication({
+    auth: {
+      clientId: cfg.clientId,
+      authority: cfg.authority,
+    },
+  });
+}
+
+/** Test/boot helper — 기존 토큰 파일 (환경 분리 전) 의 migration 경로. */
+export function legacyTokenPath(aveRoot: string): string {
+  return resolve(aveRoot, "lyra-mail-token.json");
+}
+
+// Re-export config utilities for callers that need environment metadata.
+export {
+  LYRA_MAIL_ENVIRONMENT_CONFIGS,
+  isEnvironmentConfigured,
+  getEnvironmentConfig,
+  normalizeEnvironment,
+} from "./lyra-mail-auth-config.js";
