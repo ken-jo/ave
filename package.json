@@ -51,6 +51,7 @@
     "@azure/msal-node": "^5.1.2",
     "@ave/plugin-calendar": "file:../ave-plugin-lyra-cal",
     "@ave/plugin-email": "file:../ave-plugin-lyra-post",
+    "@ave/plugin-orion-api": "file:../ave-plugin-orion-api",
     "@ave/plugin-meeting": "file:../ave-plugin-meeting",
     "@ave/plugin-pageindex": "file:../ave-plugin-pyxis",
     "@ave/plugin-sdk": "file:./packages/plugin-sdk",
