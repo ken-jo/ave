@@ -1,32 +1,19 @@
 import { useEffect, useState } from "react";
 import { Button } from "../../../components/ui/button.js";
+import type { AveApi } from "../types.js";
 
 type Environment = "external" | "corporate";
 
-interface EnvironmentInfo {
-  id: Environment;
-  label: string;
-  description: string;
-  configured: boolean;
-}
+/**
+ * 다른 tab 들과 동일한 패턴 — 전체 AveApi 를 import 해서 실제 쓰는 method 만
+ * `Pick` 으로 좁힌다. preload IPC surface 가 확장돼도 이 타입 자동 추종.
+ */
+type LyraMailApi = Pick<
+  AveApi,
+  "lyraMailGetState" | "lyraMailSwitchEnvironment" | "lyraMailSignIn" | "lyraMailSignOut"
+>;
 
-interface LyraMailState {
-  environment: Environment;
-  isAuthenticated: boolean;
-  account: string | null;
-  configured: boolean;
-  label: string;
-  environments: EnvironmentInfo[];
-}
-
-interface Api {
-  lyraMailGetState: () => Promise<LyraMailState>;
-  lyraMailSwitchEnvironment: (
-    env: Environment,
-  ) => Promise<{ ok: boolean; state?: unknown }>;
-  lyraMailSignIn: () => Promise<{ ok: boolean; error?: string; state?: unknown }>;
-  lyraMailSignOut: () => Promise<{ ok: boolean; state?: unknown }>;
-}
+type LyraMailState = Awaited<ReturnType<LyraMailApi["lyraMailGetState"]>>;
 
 /**
  * Microsoft Graph 로그인 환경 택1 + 현재 계정 관리.
@@ -36,7 +23,7 @@ interface Api {
  *
  * 미구성 환경(`__FILL_IN__` placeholder 남아있는 경우) 는 선택 불가 + 안내 노출.
  */
-export function LyraMailTab({ api }: { api: Api }) {
+export function LyraMailTab({ api }: { api: LyraMailApi }) {
   const [state, setState] = useState<LyraMailState | null>(null);
   const [busy, setBusy] = useState<null | "switch" | "sign-in" | "sign-out">(
     null,
