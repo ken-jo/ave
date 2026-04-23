@@ -4,7 +4,7 @@
  * 모든 IPC 핸들러를 등록하는 모듈.
  * main.ts에서 인라인으로 30개 핸들러를 두지 않고 여기에 집중.
  */
-import { dialog, ipcMain, type BrowserWindow, type IpcMainInvokeEvent } from "electron";
+import { dialog, ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent } from "electron";
 import { realpathSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -18,6 +18,11 @@ import type { GenericMessage } from "./engine/llm/types.js";
 import type { ConversationLoop } from "./engine/conversation-loop.js";
 import type { WebContents } from "electron";
 import { findMethodByCapability } from "./boot/plugins.js";
+import {
+  LYRA_MAIL_ENVIRONMENTS,
+  LYRA_MAIL_ENVIRONMENT_CONFIGS,
+  isEnvironmentConfigured,
+} from "./main/lyra-mail-auth-config.js";
 
 /**
  * Convert the UI's "user-assistant-only ordinal" to the real index into
@@ -85,6 +90,10 @@ const RESERVED_HOST_CHANNELS = new Set([
   "ave:settings:set-web-api-key",
   "ave:settings:has-web-api-key",
   "ave:settings:delete-web-api-key",
+  "ave:lyra-mail:get-state",
+  "ave:lyra-mail:switch-environment",
+  "ave:lyra-mail:sign-in",
+  "ave:lyra-mail:sign-out",
   "ave:chat:has-provider",
   "ave:chat:send",
   "ave:chat:new",
@@ -230,6 +239,7 @@ export function registerIpcHandlers(
     starredStore,
     feedbackStore,
     auditLogger,
+    lyraMailService,
   } = services;
 
   // Wire DLP audit logging so redactForLLM records hits to audit JSONL.
@@ -276,6 +286,52 @@ export function registerIpcHandlers(
     if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:settings:delete-web-api-key", e); return UNAUTHORIZED_FRAME; }
     await settingsService.deleteSecret(`web.apiKey.${provider}`);
     return { ok: true };
+  });
+
+  // ─── Microsoft Graph — dual-environment login ──────
+  // 모든 상태 조회는 read-only 라 sender guard 선택. 전환/로그인/로그아웃은
+  // side-effect 가 있어 sender guard + audit.
+  ipcMain.handle("ave:lyra-mail:get-state", () => {
+    const environments = LYRA_MAIL_ENVIRONMENTS.map((env) => ({
+      id: env,
+      label: LYRA_MAIL_ENVIRONMENT_CONFIGS[env].label,
+      description: LYRA_MAIL_ENVIRONMENT_CONFIGS[env].description,
+      configured: isEnvironmentConfigured(env),
+    }));
+    return { ...lyraMailService.getState(), environments };
+  });
+
+  ipcMain.handle("ave:lyra-mail:switch-environment", async (e, envInput: unknown) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:lyra-mail:switch-environment", e); return UNAUTHORIZED_FRAME; }
+    const env = envInput === "corporate" ? "corporate" : "external";
+    await lyraMailService.switchEnvironment(env);
+    // 사용자 선택을 settings 에 영속화 → 다음 부팅 시 자동 복구.
+    await settingsService.patch({ lyraMail: { environment: env } });
+    auditLogger.log({
+      timestamp: new Date().toISOString(),
+      sessionId: "host",
+      type: "info",
+      output: `lyra-mail environment switched: ${env}`,
+    });
+    return { ok: true, state: lyraMailService.getState() };
+  });
+
+  ipcMain.handle("ave:lyra-mail:sign-in", async (e) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:lyra-mail:sign-in", e); return UNAUTHORIZED_FRAME; }
+    try {
+      await lyraMailService.startInteractiveAuth(async (url: string) => {
+        await shell.openExternal(url);
+      });
+      return { ok: true, state: lyraMailService.getState() };
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("ave:lyra-mail:sign-out", async (e) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:lyra-mail:sign-out", e); return UNAUTHORIZED_FRAME; }
+    await lyraMailService.signOut();
+    return { ok: true, state: lyraMailService.getState() };
   });
 
   // ─── Chat (ConversationLoop) ────────────────────

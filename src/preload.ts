@@ -56,6 +56,38 @@ const api = {
   hasWebApiKey: async (provider: string) => ipcRenderer.invoke("ave:settings:has-web-api-key", provider) as Promise<boolean>,
   deleteWebApiKey: async (provider: string) => ipcRenderer.invoke("ave:settings:delete-web-api-key", provider),
 
+  // ─── Microsoft Graph — dual-environment login ────
+  lyraMailGetState: async () =>
+    ipcRenderer.invoke("ave:lyra-mail:get-state") as Promise<{
+      environment: "external" | "corporate";
+      isAuthenticated: boolean;
+      account: string | null;
+      configured: boolean;
+      label: string;
+      environments: Array<{
+        id: "external" | "corporate";
+        label: string;
+        description: string;
+        configured: boolean;
+      }>;
+    }>,
+  lyraMailSwitchEnvironment: async (env: "external" | "corporate") =>
+    ipcRenderer.invoke("ave:lyra-mail:switch-environment", env) as Promise<{
+      ok: boolean;
+      state?: unknown;
+    }>,
+  lyraMailSignIn: async () =>
+    ipcRenderer.invoke("ave:lyra-mail:sign-in") as Promise<{
+      ok: boolean;
+      error?: string;
+      state?: unknown;
+    }>,
+  lyraMailSignOut: async () =>
+    ipcRenderer.invoke("ave:lyra-mail:sign-out") as Promise<{
+      ok: boolean;
+      state?: unknown;
+    }>,
+
   // ─── Chat (ConversationLoop) ─────────────────────
   chatHasProvider: async () => ipcRenderer.invoke("ave:chat:has-provider") as Promise<boolean>,
   chatSend: async (input: string) => ipcRenderer.invoke("ave:chat:send", input),
