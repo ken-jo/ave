@@ -60,11 +60,13 @@ export const DEFAULT_LYRA_MAIL_SCOPES: string[] = [
 
 // Corporate (the organization) — Ave Desktop Assistant app registration.
 // AppName:     Ave Desktop Assistant
+// Object ID:   00000000-0000-0000-0000-000000000004
 // Client ID:   00000000-0000-0000-0000-000000000003
-// Directory:   5096cde4-642a-45c0-8094-d0c2dec10be3 (the organization tenant)
-// 수령일:      2026-04-23, IT 담당자 제공.
+// Directory:   00000000-0000-0000-0000-000000000002 (the organization tenant)
+// 수령일:      2026-04-23, IT 담당자 제공 + Azure Portal Overview 재검증.
+//             (초기 값 `5096cde4-...` 는 4-5번째 자리 오타로 AADSTS90002 발생.)
 const CORP_CLIENT_ID = "00000000-0000-0000-0000-000000000003";
-const CORP_TENANT_ID = "5096cde4-642a-45c0-8094-d0c2dec10be3";
+const CORP_TENANT_ID = "00000000-0000-0000-0000-000000000002";
 
 export const LYRA_MAIL_ENVIRONMENT_CONFIGS: Record<
   LyraMailEnvironment,
