@@ -91,6 +91,7 @@ const api = {
   // ─── Chat (ConversationLoop) ─────────────────────
   chatHasProvider: async () => ipcRenderer.invoke("ave:chat:has-provider") as Promise<boolean>,
   chatSend: async (input: string) => ipcRenderer.invoke("ave:chat:send", input),
+  chatGuide: async (input: string) => ipcRenderer.invoke("ave:chat:guide", input),
   chatNew: async () => ipcRenderer.invoke("ave:chat:new"),
   chatSessions: async () =>
     ipcRenderer.invoke("ave:chat:sessions") as Promise<{
@@ -134,6 +135,11 @@ const api = {
   memorySaveNote: async (title: string, content: string) => ipcRenderer.invoke("ave:memory:notes:save", title, content),
   memoryDeleteNote: async (filename: string) => ipcRenderer.invoke("ave:memory:notes:delete", filename),
   memorySearchNotes: async (query: string) => ipcRenderer.invoke("ave:memory:notes:search", query),
+  memoryListEntries: async () => ipcRenderer.invoke("ave:memory:entries:list"),
+  memorySaveEntry: async (title: string, content: string) => ipcRenderer.invoke("ave:memory:entries:save", title, content),
+  memoryDeleteEntry: async (filename: string) => ipcRenderer.invoke("ave:memory:entries:delete", filename),
+  memorySearchEntries: async (query: string) => ipcRenderer.invoke("ave:memory:entries:search", query),
+  memoryListSessions: async () => ipcRenderer.invoke("ave:memory:sessions:list"),
   memorySearchSessions: async (query: string) => ipcRenderer.invoke("ave:memory:sessions:search", query),
   memoryGetAveMd: async () => ipcRenderer.invoke("ave:memory:ave-md:get") as Promise<string>,
   memoryUpdateAveMd: async (content: string) => ipcRenderer.invoke("ave:memory:ave-md:update", content),
@@ -304,5 +310,9 @@ contextBridge.exposeInMainWorld("ave", {
   pluginConfig: {
     get: (pluginId: string) => ipcRenderer.invoke("ave:plugins:config:get", pluginId),
     set: (pluginId: string, config: Record<string, unknown>) => ipcRenderer.invoke("ave:plugins:config:set", pluginId, config),
+  },
+  env: {
+    isDev: process.env.AVE_DEV === "1",
+    enableDevConsole: process.env.AVE_ENABLE_DEV_CONSOLE === "1",
   },
 });
