@@ -82,10 +82,11 @@ const CHANNEL_MANIFEST: Record<string, "tier1" | "tier2" | "tier3"> = {
   "ave:tasks:pending": "tier3",
   "ave:tasks:overdue": "tier3",
   "ave:tasks:today": "tier3",
-  // Briefing / proactive
-  "ave:briefing:get": "tier3",
-  "ave:proactive:dismiss-briefing": "tier1",
-  "ave:proactive:snooze-briefing": "tier1",
+  // Routine briefing
+  "ave:routine:dismiss-briefing": "tier1",
+  "ave:routine:snooze-briefing": "tier1",
+  "ave:routine:get-latest-briefing": "tier3",
+  "ave:routines:dev-reset-daily-briefing": "tier1",
   // Usage / observability
   "ave:usage:summary": "tier3",
   // Conversation UX extras
