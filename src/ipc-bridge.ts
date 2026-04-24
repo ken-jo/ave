@@ -24,6 +24,20 @@ import {
   isEnvironmentConfigured,
   type LyraMailEnvironment,
 } from "./main/lyra-mail-auth-config.js";
+import { REGISTERED_ROUTINES, getRegisteredRoutine } from "./routines/registry.js";
+import {
+  DEFAULT_SHUTDOWN_PROMPT,
+  DEFAULT_WAKEUP_PROMPT,
+  MAX_HEARTBEAT_ENTRIES,
+  heartbeatScheduleToCron,
+  isValidHeartbeatEntries,
+  normalizeHeartbeatEntries,
+} from "./routines/schedule.js";
+import {
+  clearLatestRoutineBriefing,
+  deliverRoutineBriefing,
+  getLatestRoutineBriefing,
+} from "./routines/briefing-delivery.js";
 
 /**
  * Convert the UI's "user-assistant-only ordinal" to the real index into
@@ -42,6 +56,26 @@ function entryOrdinalToHistoryIndex(history: GenericMessage[], ordinal: number):
     }
   }
   return -1;
+}
+
+function isRoutineEnabled(
+  routine: { id: string },
+  settings: {
+    enableDailyBriefing?: boolean;
+    enableHeartbeat?: boolean;
+    enableShutdownSummary?: boolean;
+  } | null | undefined,
+): boolean {
+  switch (routine.id) {
+    case "daily-briefing":
+      return settings?.enableDailyBriefing ?? false;
+    case "heartbeat":
+      return settings?.enableHeartbeat ?? true;
+    case "shutdown-summary":
+      return settings?.enableShutdownSummary ?? true;
+    default:
+      return false;
+  }
 }
 
 /**
@@ -71,8 +105,8 @@ async function runStreamedTurn(
       send({ type: "assistant_round", roundIndex, text, thought, stopReason, hasToolCalls }),
     onToolStart: (name, toolInput, meta) =>
       send({ type: "tool_start", name, input: toolInput, ...meta }),
-    onToolEnd: (name, toolResult, isError, meta) =>
-      send({ type: "tool_end", name, result: toolResult, isError, ...meta }),
+    onToolEnd: (name, toolResult, isError, meta, uiPayload) =>
+      send({ type: "tool_end", name, result: toolResult, isError, ...meta, ...(uiPayload && { uiPayload }) }),
     onError: (error) => send({ type: "error", error }),
     onCompactOccurred: ({ removedMessages, freedTokens }) =>
       send({ type: "compact_notice", removedMessages, freedTokens }),
@@ -146,6 +180,7 @@ const RESERVED_HOST_CHANNELS = new Set([
   "ave:mcp:config:path",
   "ave:mcp:config:add",
   "ave:mcp:config:remove",
+  "ave:mcp:ui-resource",
   "ave:permission:get-mode",
   "ave:permission:set-mode",
   "ave:permission:list-rules",
@@ -162,9 +197,10 @@ const RESERVED_HOST_CHANNELS = new Set([
   "ave:tasks:pending",
   "ave:tasks:overdue",
   "ave:tasks:today",
-  "ave:briefing:get",
-  "ave:proactive:dismiss-briefing",
-  "ave:proactive:snooze-briefing",
+  "ave:routine:dismiss-briefing",
+  "ave:routine:snooze-briefing",
+  "ave:routine:get-latest-briefing",
+  "ave:routines:dev-reset-daily-briefing",
   // Sprint 4.B — usage observability
   "ave:usage:summary",
   "ave:usage:range",
@@ -260,6 +296,7 @@ export function registerIpcHandlers(
     settingsService,
     memoryManager,
     conversationLoop,
+    routineEngine,
     approvalGate,
     refreshPluginNotifications,
     starredStore,
@@ -502,6 +539,114 @@ ${input}`;
     })),
   }));
 
+  ipcMain.handle("ave:routines:list", () => {
+    const routineSettings = settingsService.get("routine");
+    return REGISTERED_ROUTINES.map((routine) => {
+      const sessions = conversationLoop.listRoutineSessions(routine.id, 20).map((session) => ({
+        id: session.id,
+        modifiedAt: session.modifiedAt.toISOString(),
+        title: session.title,
+      }));
+      return {
+        id: routine.id,
+        title: routine.title,
+        description: routine.description,
+        trigger: routine.trigger,
+        enabled: isRoutineEnabled(routine, routineSettings),
+        scheduleTimeKst: routine.id === "daily-briefing" ? routineSettings.scheduleTimeKst ?? "08:30" : undefined,
+        contextPrompt: routine.id === "daily-briefing"
+          ? routineSettings.wakeupPrompt ?? DEFAULT_WAKEUP_PROMPT
+          : routine.id === "shutdown-summary"
+            ? routineSettings.shutdownPrompt ?? DEFAULT_SHUTDOWN_PROMPT
+            : undefined,
+        heartbeatEntries: routine.id === "heartbeat"
+          ? normalizeHeartbeatEntries(routineSettings.heartbeatEntries).map((entry) => ({
+            ...entry,
+            cron: heartbeatScheduleToCron(entry.schedule),
+          }))
+          : undefined,
+        postTurnEnabled: routine.id === "daily-briefing" ? routineSettings.enablePostTurnBriefing ?? false : undefined,
+        sessionCount: sessions.length,
+        sessions,
+      };
+    });
+  });
+
+  ipcMain.handle("ave:routines:update", async (e, routineId: string, patch: Record<string, unknown>) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:routines:update", e); return UNAUTHORIZED_FRAME; }
+    const routine = getRegisteredRoutine(routineId);
+    if (!routine) return { ok: false, error: "routine-not-found" };
+    const current = settingsService.get("routine") ?? { enableDailyBriefing: false };
+    const next = { ...current };
+    if (routineId === "daily-briefing") {
+      if (typeof patch.enabled === "boolean") next.enableDailyBriefing = patch.enabled;
+      if (typeof patch.postTurnEnabled === "boolean") next.enablePostTurnBriefing = patch.postTurnEnabled;
+      if (typeof patch.scheduleTimeKst === "string") next.scheduleTimeKst = patch.scheduleTimeKst;
+      if (typeof patch.contextPrompt === "string") {
+        next.wakeupPrompt = patch.contextPrompt.trim() || DEFAULT_WAKEUP_PROMPT;
+      }
+    } else if (routineId === "heartbeat") {
+      if (typeof patch.enabled === "boolean") next.enableHeartbeat = patch.enabled;
+      if ("heartbeatEntries" in patch) {
+        const rawEntries = (patch as { heartbeatEntries?: unknown }).heartbeatEntries;
+        if (Array.isArray(rawEntries) && rawEntries.length > MAX_HEARTBEAT_ENTRIES) {
+          return { ok: false, error: "too-many-heartbeats" };
+        }
+        const entries = normalizeHeartbeatEntries(rawEntries);
+        if (!isValidHeartbeatEntries(entries)) return { ok: false, error: "invalid-heartbeat-entries" };
+        next.heartbeatEntries = entries;
+      }
+    } else if (routineId === "shutdown-summary") {
+      if (typeof patch.enabled === "boolean") next.enableShutdownSummary = patch.enabled;
+      if (typeof patch.contextPrompt === "string") {
+        next.shutdownPrompt = patch.contextPrompt.trim() || DEFAULT_SHUTDOWN_PROMPT;
+      }
+    }
+    await settingsService.patch({ routine: next });
+    return { ok: true };
+  });
+
+  ipcMain.handle("ave:routines:start-session", async (e, routineId: string) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:routines:start-session", e); return UNAUTHORIZED_FRAME; }
+    const routine = getRegisteredRoutine(routineId);
+    if (!routine) return { ok: false, error: "routine-not-found" };
+    const sessionId = await conversationLoop.startRoutineConversation(routine.id, routine.title);
+    return { ok: true, sessionId };
+  });
+
+  ipcMain.handle("ave:routine:get-latest-briefing", () => getLatestRoutineBriefing());
+
+  ipcMain.handle("ave:routines:dev-reset-daily-briefing", async (e) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:routines:dev-reset-daily-briefing", e); return UNAUTHORIZED_FRAME; }
+    const isDev = process.env.AVE_DEV === "1" || process.env.AVE_ALLOW_LINKED_PLUGIN_ENTRY === "1";
+    if (!isDev) return { ok: false, error: "dev-only" };
+    if (!routineEngine) return { ok: false, error: "routine-engine-unavailable" };
+
+    const current = settingsService.get("routine") ?? { enableDailyBriefing: false };
+    await settingsService.patch({
+      routine: {
+        ...current,
+        lastBriefingAt: undefined,
+        lastDismissedAt: undefined,
+      },
+    });
+
+    const result = await routineEngine.generateDailyBriefing({
+      idleState: "triggered",
+      triggerReason: "dev-reset",
+    });
+    if (result.status !== "generated") {
+      return { ok: true, generated: false, reason: result.reason };
+    }
+
+    try {
+      await deliverRoutineBriefing(getMainWindow(), memoryManager, result.briefing);
+    } catch (error) {
+      return { ok: false, error: (error as Error).message };
+    }
+    return { ok: true, generated: true };
+  });
+
   ipcMain.handle("ave:chat:load-session", (e, sessionId: string) => {
     if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:chat:load-session", e); return UNAUTHORIZED_FRAME; }
     const loaded = conversationLoop.loadSession(sessionId);
@@ -720,6 +865,10 @@ ${input}`;
     if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:mcp:config:remove", e); return UNAUTHORIZED_FRAME; }
     return services.mcpManager.removeConfig(serverId);
   });
+  ipcMain.handle("ave:mcp:ui-resource", async (e, serverId: string, uri: string) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:mcp:ui-resource", e); return UNAUTHORIZED_FRAME; }
+    return services.mcpManager.readUiResource(serverId, uri);
+  });
 
   // ─── Permission Prompt (§6.3 Layer 3) ─────────
   // read-only, sender guard optional
@@ -849,10 +998,6 @@ ${input}`;
   // read-only, sender guard optional
   ipcMain.handle("ave:tasks:today", () => taskService.getDueToday());
 
-  // ─── Daily Briefing ──────────────────────────────
-  // read-only, sender guard optional
-  ipcMain.handle("ave:briefing:get", () => conversationLoop.generateBriefing());
-
   // ─── Usage Observability (Sprint 4.B) ───────────
   // read-only, sender guard optional
   ipcMain.handle("ave:usage:summary", async (_e, days?: number) => {
@@ -888,17 +1033,18 @@ ${input}`;
   // accidental double-click / rapid-fire IPC abuse.
   let lastDismissAcceptedAt = 0;
   const DISMISS_DEBOUNCE_MS = 1000;
-  ipcMain.handle("ave:proactive:dismiss-briefing", async (e, feedback?: { reason?: string; details?: string }) => {
+  ipcMain.handle("ave:routine:dismiss-briefing", async (e, feedback?: { reason?: string; details?: string }) => {
     if (!validateSender(e)) return UNAUTHORIZED_FRAME;
     const now = Date.now();
     if (now - lastDismissAcceptedAt < DISMISS_DEBOUNCE_MS) {
       return { ok: false, debounced: true };
     }
     lastDismissAcceptedAt = now;
-    const cur = settingsService.get("proactive") ?? { enableDailyBriefing: false };
+    const cur = settingsService.get("routine") ?? { enableDailyBriefing: false };
     await settingsService.patch({
-      proactive: { ...cur, lastDismissedAt: new Date(now).toISOString() },
+      routine: { ...cur, lastDismissedAt: new Date(now).toISOString() },
     });
+    clearLatestRoutineBriefing();
     // Sprint E §2 — persist user feedback to ~/.ave/notes/briefing-feedback.md
     const allowed = new Set(["inaccurate", "uninteresting", "busy", "other"]);
     if (feedback?.reason && allowed.has(feedback.reason)) {
@@ -923,13 +1069,13 @@ ${input}`;
   let lastSnoozeAcceptedAt = 0;
   const SNOOZE_DEBOUNCE_MS = 1000;
   const SNOOZE_MAX_AHEAD_MS = 7 * 24 * 60 * 60 * 1000;
-  ipcMain.handle("ave:proactive:snooze-briefing", async (e) => {
+  ipcMain.handle("ave:routine:snooze-briefing", async (e) => {
     if (!validateSender(e)) return UNAUTHORIZED_FRAME;
     const now = Date.now();
     if (now - lastSnoozeAcceptedAt < SNOOZE_DEBOUNCE_MS) {
       return { ok: false, debounced: true };
     }
-    const cur = settingsService.get("proactive") ?? { enableDailyBriefing: false };
+    const cur = settingsService.get("routine") ?? { enableDailyBriefing: false };
     const baseMs = cur.lastDismissedAt
       ? new Date(cur.lastDismissedAt).getTime()
       : now;
@@ -941,8 +1087,9 @@ ${input}`;
     lastSnoozeAcceptedAt = now;
     const shifted = new Date(shiftedMs).toISOString();
     await settingsService.patch({
-      proactive: { ...cur, lastDismissedAt: shifted },
+      routine: { ...cur, lastDismissedAt: shifted },
     });
+    clearLatestRoutineBriefing();
     return { ok: true, lastDismissedAt: shifted };
   });
 

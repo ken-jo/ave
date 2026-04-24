@@ -281,6 +281,9 @@ export async function initPluginRuntime(
         if (!hasLyraMailCapability(manifest)) throw new Error(capabilityDeniedMsg(pluginId));
         lyraMailService.onAuthChange(handler);
       },
+      callTool: async <T = unknown>(toolName: string, payload?: unknown): Promise<T> => {
+        return pluginRuntime.call(toolName, payload) as Promise<T>;
+      },
       withLyraMailRetry: async (fn) => {
         if (!hasLyraMailCapability(manifest)) throw new Error(capabilityDeniedMsg(pluginId));
         return withLyraMailRetry(fn, () => lyraMailService.getAccessToken());

@@ -1,5 +1,6 @@
 import electron from "electron";
 import type { McpServerConfig } from "./mcp/types.js";
+import type { HeartbeatAgentId, HeartbeatSchedule } from "./routines/schedule.js";
 
 const { contextBridge, ipcRenderer } = electron;
 
@@ -171,23 +172,48 @@ const api = {
   getTodayTasks: async () => ipcRenderer.invoke("ave:tasks:today"),
   getOverdueTasks: async () => ipcRenderer.invoke("ave:tasks:overdue"),
 
-  // ─── Daily Briefing ──────────────────────────────
-  getBriefing: async () => ipcRenderer.invoke("ave:briefing:get"),
+  listRoutines: async () => ipcRenderer.invoke("ave:routines:list"),
+  updateRoutine: async (
+    routineId: string,
+    patch: {
+      enabled?: boolean;
+      scheduleTimeKst?: string;
+      contextPrompt?: string;
+      postTurnEnabled?: boolean;
+      heartbeatEntries?: Array<{
+        id: string;
+        enabled: boolean;
+        agentId: HeartbeatAgentId;
+        schedule: HeartbeatSchedule;
+        prompt: string;
+      }>;
+    },
+  ) => ipcRenderer.invoke("ave:routines:update", routineId, patch),
+  startRoutineSession: async (routineId: string) =>
+    ipcRenderer.invoke("ave:routines:start-session", routineId) as Promise<{ ok: boolean; sessionId?: string; error?: string }>,
+  getLatestRoutineBriefing: async () =>
+    ipcRenderer.invoke("ave:routine:get-latest-briefing") as Promise<{
+      generatedAt: string;
+      items: Array<{ category: string; priority: string; title: string; detail?: string }>;
+      summary?: string;
+    } | null>,
+  resetDailyBriefingDev: async () =>
+    ipcRenderer.invoke("ave:routines:dev-reset-daily-briefing") as Promise<{ ok: boolean; generated?: boolean; reason?: string; error?: string }>,
 
   // ─── Usage Observability (Sprint 4.B) ────────────
   getUsageSummary: async (days?: number) => ipcRenderer.invoke("ave:usage:summary", days),
   getUsageRange: async (opts: { dateFrom: string; dateTo: string }) => ipcRenderer.invoke("ave:usage:range", opts),
   exportUsageCsv: async (rows: Array<Record<string, string | number>>) => ipcRenderer.invoke("ave:usage:export-csv", rows),
 
-  // ─── Proactive (Sprint 3-A: briefing card + snooze/dismiss) ───
-  onProactiveBriefing: (handler: (briefing: { generatedAt: string; items: Array<{ category: string; priority: string; title: string; detail?: string }>; summary?: string }) => void) => {
+  // ─── Routine briefing (Sprint 3-A: briefing card + snooze/dismiss) ───
+  onRoutineBriefing: (handler: (briefing: { generatedAt: string; items: Array<{ category: string; priority: string; title: string; detail?: string }>; summary?: string }) => void) => {
     const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
-    ipcRenderer.on("ave:proactive:briefing", listener);
-    return () => ipcRenderer.removeListener("ave:proactive:briefing", listener);
+    ipcRenderer.on("ave:routine:briefing", listener);
+    return () => ipcRenderer.removeListener("ave:routine:briefing", listener);
   },
   dismissBriefing: async (feedback?: { reason: string; details?: string }) =>
-    ipcRenderer.invoke("ave:proactive:dismiss-briefing", feedback) as Promise<{ ok: boolean; debounced?: boolean }>,
-  snoozeBriefing: async () => ipcRenderer.invoke("ave:proactive:snooze-briefing") as Promise<{ ok: boolean; lastDismissedAt?: string }>,
+    ipcRenderer.invoke("ave:routine:dismiss-briefing", feedback) as Promise<{ ok: boolean; debounced?: boolean }>,
+  snoozeBriefing: async () => ipcRenderer.invoke("ave:routine:snooze-briefing") as Promise<{ ok: boolean; lastDismissedAt?: string }>,
 
   // ─── Marketplace update notifications (S8) ───────
   onMarketplaceUpdatesAvailable: (handler: (updates: Array<{ pluginId: string; installedVersion: string; latestVersion: string }>) => void) => {
@@ -227,6 +253,7 @@ const api = {
     getConfigPath: async () => ipcRenderer.invoke("ave:mcp:config:path"),
     addConfig: async (config: McpServerConfig) => ipcRenderer.invoke("ave:mcp:config:add", config),
     removeConfig: async (id: string) => ipcRenderer.invoke("ave:mcp:config:remove", id),
+    readUiResource: async (serverId: string, uri: string) => ipcRenderer.invoke("ave:mcp:ui-resource", serverId, uri) as Promise<string>,
   },
 
   // ─── Permission ───────────────────────────────────

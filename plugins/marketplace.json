@@ -154,6 +154,94 @@
           "exportName": "mount"
         }
       ]
+    },
+    {
+      "id": "vega-early",
+      "slug": "vega-early",
+      "name": "Ave Vega Early",
+      "description": "Routine이 호출하는 메일/캘린더/미팅 번들 proactive 플러그인",
+      "packageSpec": "file:../ave-plugin-vega-early",
+      "packageName": "@ave/plugin-vega-early",
+      "deployment": "managed",
+      "deliveryMode": "bundled",
+      "bundleDependencies": [
+        "calendar",
+        "email",
+        "meeting"
+      ],
+      "requires": {
+        "capabilities": [
+          "calendar-source"
+        ]
+      },
+      "publisher": "the organization's IT",
+      "capabilities": [
+        "routine-provider"
+      ],
+      "routineTools": {
+        "wakeupBriefing": "vega_early_generate_wakeup_briefing",
+        "shutdownSummary": "vega_early_generate_shutdown_summary",
+        "heartbeat": "vega_early_run_heartbeat"
+      },
+      "tools": [
+        "vega_early_generate_wakeup_briefing",
+        "vega_early_generate_shutdown_summary",
+        "vega_early_run_heartbeat"
+      ],
+      "toolSchemas": {
+        "vega_early_generate_wakeup_briefing": {
+          "description": "오늘 메일/캘린더/미팅 맥락을 바탕으로 아침 브리핑을 생성합니다.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "trigger": { "type": "string" },
+              "nowIso": { "type": "string" },
+              "routinePrompt": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "vega_early_generate_shutdown_summary": {
+          "description": "오늘 메일/캘린더/미팅 작업을 바탕으로 종료 요약을 생성합니다.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "trigger": { "type": "string" },
+              "nowIso": { "type": "string" },
+              "routinePrompt": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "vega_early_run_heartbeat": {
+          "description": "Routine heartbeat에 맞춰 proactive 내부 캐시를 갱신합니다.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "trigger": { "type": "string" },
+              "nowIso": { "type": "string" },
+              "heartbeatId": { "type": "string" },
+              "heartbeatAgentId": {
+                "type": "string",
+                "enum": ["monitor", "briefing", "follow-up"]
+              },
+              "heartbeatPrompt": { "type": "string" },
+              "heartbeatSchedule": {
+                "type": "object",
+                "properties": {
+                  "minute": { "type": "string" },
+                  "hour": { "type": "string" },
+                  "dayOfMonth": { "type": "string" },
+                  "month": { "type": "string" },
+                  "dayOfWeek": { "type": "string" }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      }
     }
   ]
 }
