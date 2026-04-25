@@ -1,6 +1,6 @@
 import electron from "electron";
 import type { McpServerConfig } from "./mcp/types.js";
-import type { HeartbeatAgentId, HeartbeatSchedule } from "./routines/schedule.js";
+import type { ScheduleAgentId, ScheduleRoutineSchedule } from "./routines/schedule.js";
 
 const { contextBridge, ipcRenderer } = electron;
 
@@ -132,10 +132,6 @@ const api = {
   },
 
   // ─── Memory ──────────────────────────────────────
-  memoryListNotes: async () => ipcRenderer.invoke("ave:memory:notes:list"),
-  memorySaveNote: async (title: string, content: string) => ipcRenderer.invoke("ave:memory:notes:save", title, content),
-  memoryDeleteNote: async (filename: string) => ipcRenderer.invoke("ave:memory:notes:delete", filename),
-  memorySearchNotes: async (query: string) => ipcRenderer.invoke("ave:memory:notes:search", query),
   memoryListEntries: async () => ipcRenderer.invoke("ave:memory:entries:list"),
   memorySaveEntry: async (title: string, content: string) => ipcRenderer.invoke("ave:memory:entries:save", title, content),
   memoryDeleteEntry: async (filename: string) => ipcRenderer.invoke("ave:memory:entries:delete", filename),
@@ -149,10 +145,6 @@ const api = {
 
   // ─── Plugins ─────────────────────────────────────
   listMarketplacePlugins: async () => ipcRenderer.invoke("ave:plugins:marketplace:list"),
-  installMarketplacePlugin: async (pluginId: string) =>
-    normalizePluginActionResult(await ipcRenderer.invoke("ave:plugins:install", pluginId)),
-  uninstallMarketplacePlugin: async (pluginId: string) =>
-    normalizePluginActionResult(await ipcRenderer.invoke("ave:plugins:uninstall", pluginId)),
   listPluginUiExtensions: async () => ipcRenderer.invoke("ave:plugins:ui:list"),
   readPluginUiModule: async (pluginId: string, viewId: string) =>
     ipcRenderer.invoke("ave:plugins:ui:read-module", { pluginId, viewId }) as Promise<string>,
@@ -179,41 +171,38 @@ const api = {
       enabled?: boolean;
       scheduleTimeKst?: string;
       contextPrompt?: string;
-      postTurnEnabled?: boolean;
-      heartbeatEntries?: Array<{
+      scheduleEntries?: Array<{
         id: string;
         enabled: boolean;
-        agentId: HeartbeatAgentId;
-        schedule: HeartbeatSchedule;
+        agentId: ScheduleAgentId;
+        schedule: ScheduleRoutineSchedule;
         prompt: string;
       }>;
     },
   ) => ipcRenderer.invoke("ave:routines:update", routineId, patch),
   startRoutineSession: async (routineId: string) =>
     ipcRenderer.invoke("ave:routines:start-session", routineId) as Promise<{ ok: boolean; sessionId?: string; error?: string }>,
-  getLatestRoutineBriefing: async () =>
-    ipcRenderer.invoke("ave:routine:get-latest-briefing") as Promise<{
+  getLatestRoutineResult: async () =>
+    ipcRenderer.invoke("ave:routine:get-latest-result") as Promise<{
+      routineId: string;
+      trigger: string;
+      summary: string;
       generatedAt: string;
-      items: Array<{ category: string; priority: string; title: string; detail?: string }>;
-      summary?: string;
     } | null>,
-  resetDailyBriefingDev: async () =>
-    ipcRenderer.invoke("ave:routines:dev-reset-daily-briefing") as Promise<{ ok: boolean; generated?: boolean; reason?: string; error?: string }>,
+  triggerWakeupRoutineDev: async () =>
+    ipcRenderer.invoke("ave:routines:dev-trigger-wakeup") as Promise<{ ok: boolean; summary?: string; error?: string }>,
 
   // ─── Usage Observability (Sprint 4.B) ────────────
   getUsageSummary: async (days?: number) => ipcRenderer.invoke("ave:usage:summary", days),
   getUsageRange: async (opts: { dateFrom: string; dateTo: string }) => ipcRenderer.invoke("ave:usage:range", opts),
   exportUsageCsv: async (rows: Array<Record<string, string | number>>) => ipcRenderer.invoke("ave:usage:export-csv", rows),
 
-  // ─── Routine briefing (Sprint 3-A: briefing card + snooze/dismiss) ───
-  onRoutineBriefing: (handler: (briefing: { generatedAt: string; items: Array<{ category: string; priority: string; title: string; detail?: string }>; summary?: string }) => void) => {
+  // ─── Routine completed event (신규: RoutineResult 전달) ──────────────────
+  onRoutineCompleted: (handler: (result: { routineId: string; trigger: string; summary: string; generatedAt: string }) => void) => {
     const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
-    ipcRenderer.on("ave:routine:briefing", listener);
-    return () => ipcRenderer.removeListener("ave:routine:briefing", listener);
+    ipcRenderer.on("ave:routine:completed", listener);
+    return () => ipcRenderer.removeListener("ave:routine:completed", listener);
   },
-  dismissBriefing: async (feedback?: { reason: string; details?: string }) =>
-    ipcRenderer.invoke("ave:routine:dismiss-briefing", feedback) as Promise<{ ok: boolean; debounced?: boolean }>,
-  snoozeBriefing: async () => ipcRenderer.invoke("ave:routine:snooze-briefing") as Promise<{ ok: boolean; lastDismissedAt?: string }>,
 
   // ─── Marketplace update notifications (S8) ───────
   onMarketplaceUpdatesAvailable: (handler: (updates: Array<{ pluginId: string; installedVersion: string; latestVersion: string }>) => void) => {
@@ -322,6 +311,20 @@ const api = {
 
 contextBridge.exposeInMainWorld("aveApi", api);
 
+let hostMarketplaceApiClaimed = false;
+contextBridge.exposeInMainWorld("aveHost", {
+  takePluginMarketplaceApi: () => {
+    if (hostMarketplaceApiClaimed) return null;
+    hostMarketplaceApiClaimed = true;
+    return {
+      installMarketplacePlugin: async (pluginId: string) =>
+        normalizePluginActionResult(await ipcRenderer.invoke("ave:plugins:install", pluginId)),
+      uninstallMarketplacePlugin: async (pluginId: string) =>
+        normalizePluginActionResult(await ipcRenderer.invoke("ave:plugins:uninstall", pluginId)),
+    };
+  },
+});
+
 // ─── ave 네임스페이스 (B1: Approval Gate + Permission) ──
 // renderer에서 window.ave.approval / window.ave.permission으로 접근
 contextBridge.exposeInMainWorld("ave", {
@@ -331,8 +334,6 @@ contextBridge.exposeInMainWorld("ave", {
   mcp: api.mcp,
   plugins: {
     cards: () => ipcRenderer.invoke("ave:plugins:cards"),
-    uninstallMarketplacePlugin: async (id: string) =>
-      normalizePluginActionResult(await ipcRenderer.invoke("ave:plugins:uninstall", id)),
   },
   pluginConfig: {
     get: (pluginId: string) => ipcRenderer.invoke("ave:plugins:config:get", pluginId),
