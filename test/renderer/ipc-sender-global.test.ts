@@ -81,6 +81,8 @@ const CHANNEL_MANIFEST: Record<string, "tier1" | "tier2" | "tier3"> = {
   // Routine
   "ave:routine:get-latest-result": "tier3",
   "ave:routines:dev-trigger-wakeup": "tier1",
+  "ave:routines:dev-trigger-schedule": "tier1",
+  "ave:routines:dev-trigger-shutdown": "tier1",
   // Usage / observability
   "ave:usage:summary": "tier3",
   // Conversation UX extras
