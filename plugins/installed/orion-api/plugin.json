@@ -2,7 +2,6 @@
   "id": "orion-api",
   "name": "Ave ORION",
   "version": "0.1.0",
-  "deployment": "managed",
   "publisher": "the organization's IT",
   "description": "EP(corporate 오리온 익스텐션) SSO 로그인 · 회의실 예약 조회",
   "entry": "../../../node_modules/@ave/plugin-orion-api/dist/hostPlugin.js",

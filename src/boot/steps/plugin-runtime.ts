@@ -4,7 +4,7 @@
  * Extracted from boot.ts to keep orchestration thin. This module:
  *   • constructs the PluginDeploymentGuard + SignatureVerifier
  *   • builds the per-plugin HostApi factory (registerKeywords / emitEvent /
- *     onEvent / addTask / saveNote / getSecret / lyraMail* / callLlm /
+ *     onEvent / addTask / getSecret / lyraMail* / callLlm /
  *     logEvent / onShutdown)
  *   • creates the PluginRuntime, starts plugins, wires manifest startupTools
  *     and the dev hot-reload watcher
@@ -234,9 +234,11 @@ export async function initPluginRuntime(
             return;
           }
         }
-        emitEvent(type, { pluginId, ...((data as Record<string, unknown>) ?? {}) });
+        pluginRuntime.assertPluginEventEmitAccess(pluginId, type);
+        emitEvent(type, { ...((data as Record<string, unknown>) ?? {}), pluginId });
       },
       onEvent: (type, handler) => {
+        pluginRuntime.assertPluginEventAccess(pluginId, type);
         const unsubscribe = onEvent(type, handler);
         pluginRuntime.registerDisposer(pluginId, unsubscribe);
         return unsubscribe;
@@ -253,10 +255,6 @@ export async function initPluginRuntime(
           status: "pending",
         });
         console.log(`[ave] plugin:${pluginId} created task: "${task.title.slice(0, 50)}"`);
-      },
-      saveNote: async (title, content) => {
-        await memoryManager.saveNote(title, content);
-        console.log(`[ave] plugin:${pluginId} saved note: "${title}"`);
       },
       getSecret: (key) => {
         return settingsService.getSecret(key);
@@ -282,6 +280,7 @@ export async function initPluginRuntime(
         lyraMailService.onAuthChange(handler);
       },
       callTool: async <T = unknown>(toolName: string, payload?: unknown): Promise<T> => {
+        pluginRuntime.assertPluginToolAccess(pluginId, toolName);
         return pluginRuntime.call(toolName, payload) as Promise<T>;
       },
       withLyraMailRetry: async (fn) => {

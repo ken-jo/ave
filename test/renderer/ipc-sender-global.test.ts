@@ -43,10 +43,6 @@ const CHANNEL_MANIFEST: Record<string, "tier1" | "tier2" | "tier3"> = {
   "ave:chat:retry-effort": "tier2",
   "ave:chat:export": "tier2",
   // Memory
-  "ave:memory:notes:list": "tier3",
-  "ave:memory:notes:save": "tier1",
-  "ave:memory:notes:delete": "tier1",
-  "ave:memory:notes:search": "tier3",
   "ave:memory:ave-md:get": "tier3",
   "ave:memory:ave-md:update": "tier1",
   "ave:memory:user-prefs:get": "tier3",
@@ -82,11 +78,9 @@ const CHANNEL_MANIFEST: Record<string, "tier1" | "tier2" | "tier3"> = {
   "ave:tasks:pending": "tier3",
   "ave:tasks:overdue": "tier3",
   "ave:tasks:today": "tier3",
-  // Routine briefing
-  "ave:routine:dismiss-briefing": "tier1",
-  "ave:routine:snooze-briefing": "tier1",
-  "ave:routine:get-latest-briefing": "tier3",
-  "ave:routines:dev-reset-daily-briefing": "tier1",
+  // Routine
+  "ave:routine:get-latest-result": "tier3",
+  "ave:routines:dev-trigger-wakeup": "tier1",
   // Usage / observability
   "ave:usage:summary": "tier3",
   // Conversation UX extras
