@@ -222,7 +222,6 @@ Renderer UI 는 `ave:plugins:call` IPC 를 통해 플러그인 메서드를 직�
 | `knowledge-index` | **enforced** | `index.*` emit 게이트. |
 | `background-watcher` | advisory | `startupTools` 기반 폴러/감시자 사용 선언. 런타임 게이트 없음 (향후 enforce 예정). |
 | `worker-client` | advisory | 외부 프로세스(Python uv 등) 워커 래퍼 선언. |
-| `conversation-trigger` | **enforced** | `triggerConversation()` 호출 필수. 사용자가 입력하지 않은 prompt 로 ConversationLoop 를 발사하는 차별화 surface — 일반 plugin 에 부여하지 말 것. proactive 두뇌 plugin 전용. 자세한 설계는 [`conversation-trigger.md`](./conversation-trigger.md) 참조. |
 
 **이벤트 subscription 정책** (`classifySubscription`):
 
@@ -408,7 +407,6 @@ top-level 은 반드시 `"type": "object"` — 모든 LLM vendor 공통 요구�
 | `onLyraMailAuthChange(handler)` ([lyra-mail-consumer]) | 인증 상태 변화 감지 (logout 처리 등) | — |
 | `callLlm(prompt, options?)` | 호스트 LLM 으로 단발 텍스트 생성 (선제성 본문·분류·요약) | 대화 히스토리·streaming·tool_use 필요 시 (플러그인이 직접 SDK 사용) |
 | `openAuthWindow(options)` ([external-auth-consumer] 필요) | 외부 포털 interactive 로그인 창을 띄우고 지정 도메인 쿠키 수집 (Selenium/webdriver 대체) | OAuth-style localhost callback이 되는 표준 플로우 (→ LYRA Mail 패턴 사용) |
-| `triggerConversation(spec)` ([conversation-trigger] 필요) | 관찰된 신호를 바탕으로 ConversationLoop 를 능동적으로 발사 ("먼저 말 거는 비서" 차별화) | 사용자 input → tool 결과 패턴 (chat 으로 충분) — 자세한 사용 패턴 / 안전 계약은 [`conversation-trigger.md`](./conversation-trigger.md) |
 | `logEvent(level, message, data?)` | 호스트 감사 로그에 플러그인 이벤트 기록 | 디버그 전용 고빈도 로깅 (성능) |
 | `onShutdown(handler)` | 앱 종료 전 정리 작업 (DB flush, 파일 저장 등) | 긴 비동기 작업 (5s 제한) |
 
@@ -589,7 +587,6 @@ HostApi 에 새 메서드를 추가하려면:
 | **`toolSchemas` output schema (Phase 1)** | ❌ 기각 | 응답은 LLM 이 string 으로 재소비 가능. Phase 2 에서 재검토. |
 | **Full capability grant system** | ❌ 기각 | 현행 capability taxonomy (§2.3) + HostApi boundary 로 충분. |
 | **Hot reload (Phase 1)** | ❌ 기각 | 개발 편의 기능. GA 블로커 아님. |
-| **`triggerConversation` HostApi + `conversation-trigger` capability** | ✅ **승인** (Brain P0) | §6.1 예외 #2 — proactive trigger 는 사용자 입력 없이 ConversationLoop 를 발사하므로 audit / source-aware permission / capability gate / per-plugin rate limit (60s/6) / dedupe / source-pattern + length cap / prompt-length cap 같은 통제가 필수. 단일 consumer 라도 host 에 둠 (plugin-side 재구현 시 통제 일관성 X). 안전 계약 / spec / gate 는 [`conversation-trigger.md`](./conversation-trigger.md). |
 
 ---
 
