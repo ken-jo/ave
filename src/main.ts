@@ -175,7 +175,18 @@ async function handleAveUri(url: string) {
   // phase events fire — see PluginConfigTab + Sidebar progress UI.
   mainWindow?.webContents.send("ave:plugins:install-progress", { slug: params.slug, phase: "installing" });
   void services.pluginMarketplace
-    .install(params.slug)
+    .install(params.slug, "user", (evt) => {
+      if (evt.phase === "downloading") {
+        mainWindow?.webContents.send("ave:plugins:install-progress", {
+          slug: params.slug,
+          phase: "downloading",
+          bytesDownloaded: evt.bytesDownloaded,
+          bytesTotal: evt.bytesTotal,
+        });
+      } else {
+        mainWindow?.webContents.send("ave:plugins:install-progress", { slug: params.slug, phase: evt.phase });
+      }
+    })
     .then(async () => {
       aveDevLog("[ave] handleAveUri: install succeeded", { slug: params.slug });
       // Mirror the post-install steps from the ave:plugins:install IPC handler
