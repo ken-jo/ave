@@ -145,111 +145,23 @@ type ConversationTurnResult = {
   stopReason?: "end_turn" | "tool_use" | "interrupted";
 };
 
-/**
- * All IPC channels reserved by the host. Plugin manifests must not declare
- * channels that collide with these, as doing so would shadow privileged
- * host handlers and create unpredictable (or malicious) behaviour.
- *
- * MAINTAINERS: add a new entry here whenever you register a new host channel
- * with ipcMain.handle() inside registerIpcHandlers().
- */
-const RESERVED_HOST_CHANNELS = new Set([
-  "ave:settings:get",
-  "ave:settings:update",
-  "ave:settings:set-api-key",
-  "ave:settings:has-api-key",
-  "ave:settings:delete-api-key",
-  "ave:settings:set-web-api-key",
-  "ave:settings:has-web-api-key",
-  "ave:settings:delete-web-api-key",
-  "ave:lyra-mail:get-state",
-  "ave:lyra-mail:switch-environment",
-  "ave:lyra-mail:sign-in",
-  "ave:lyra-mail:sign-out",
-  "ave:chat:has-provider",
-  "ave:chat:send",
-  "ave:chat:guide",
-  "ave:chat:new",
-  "ave:chat:sessions",
-  "ave:chat:load-session",
-  "ave:memory:entries:list",
-  "ave:memory:entries:save",
-  "ave:memory:entries:delete",
-  "ave:memory:entries:search",
-  "ave:memory:sessions:list",
-  "ave:memory:sessions:search",
-  "ave:memory:ave-md:get",
-  "ave:memory:ave-md:update",
-  "ave:memory:user-prefs:get",
-  "ave:memory:user-prefs:update",
-  "ave:plugins:marketplace:list",
-  "ave:plugins:install",
-  "ave:plugins:uninstall",
-  "ave:plugins:ui:list",
-  "ave:plugins:ui:read-module",
-  "ave:plugins:call",
-  "ave:mcp:servers",
-  "ave:mcp:kill",
-  "ave:mcp:config:get",
-  "ave:mcp:config:path",
-  "ave:mcp:config:add",
-  "ave:mcp:config:remove",
-  "ave:mcp:ui-resource",
-  "ave:permission:get-mode",
-  "ave:permission:set-mode",
-  "ave:permission:list-rules",
-  "ave:permission:add-rule",
-  "ave:permission:remove-rule",
-  "ave:approval:respond",
-  "ave:policy:get",
-  "ave:policy:set",
-  "ave:tasks:add",
-  "ave:tasks:update",
-  "ave:tasks:get",
-  "ave:tasks:delete",
-  "ave:tasks:query",
-  "ave:tasks:pending",
-  "ave:tasks:overdue",
-  "ave:tasks:today",
-  "ave:routine:get-latest-result",
-  "ave:routines:dev-trigger-wakeup",
-  "ave:routines:dev-trigger-schedule",
-  "ave:routines:dev-trigger-shutdown",
-  // Brain — proactive trigger renderer-side IPC
-  "ave:trigger:dismiss",
-  "ave:trigger:import",
-  // Sprint 4.B — usage observability
-  "ave:usage:summary",
-  "ave:usage:range",
-  "ave:usage:export-csv",
-  // Sprint 4.C — conversation UX
-  "ave:chat:get-history",
-  "ave:chat:edit-resend",
-  "ave:chat:fork",
-  "ave:chat:retry-effort",
-  "ave:chat:export",
-  "ave:chat:compact",
-  "ave:chat:session-resume",
-  "ave:starred:list",
-  "ave:starred:add",
-  "ave:starred:remove",
-  "ave:plugins:cards",
-  "ave:plugins:config:get",
-  "ave:plugins:config:set",
-  "ave:feedback:submit",
-  "ave:telemetry:consent-answer",
-  "ave:audit:search",
-  "ave:audit:stats",
-  "ave:plugins:perf-stats",
-  "ave:dlp:stats",
-  "ave:chat:abort",
-  "ave:pageindex:scan-paths",
-  // #237 Option B — plugin webview bridge channels (plugin-preload.ts only)
-  "ave:plugin:call-tool",
-  "ave:plugin:emit-event",
-  "ave:plugin:get-entry-url",
-  "ave:plugin:register-webview",
-]);
+// R2-CR-5: previously a `RESERVED_HOST_CHANNELS` Set was declared here as
+// "documentation" of host-owned `ave:*` channels. It was never `.has()`-ed
+// anywhere — adding entries to it provided zero defense against plugins
+// registering colliding channel names, so it functioned as an attractive
+// nuisance for maintainers (a list that LOOKS like a check but isn't).
+//
+// The actual defense lives elsewhere and is much narrower: plugin code only
+// runs inside a sandboxed `<webview>` partition (#237 Option B) whose
+// preload (`plugin-preload.ts`) exposes ONLY the `avePlugin` bridge —
+// `aveApi` (the host's privileged surface) is never injected. So a plugin
+// cannot reach `ipcRenderer.invoke("ave:settings:set-api-key", …)` even
+// if it knew the channel name. Channel-name collisions on the renderer
+// side are therefore not a useful threat model in this build.
+//
+// If a future host design ever loads plugin code into the same context as
+// the renderer (don't), reintroduce a Set here and check it at registration
+// time so the documentation matches the code.
 
 /**
  * M3 — IPC sender validation. Sensitive handlers (api-key mutation, plugin
@@ -385,6 +297,9 @@ export function registerIpcHandlers(
     feedbackStore,
     auditLogger,
     lyraMailService,
+    askUserQuestionGate,
+    remindersStore,
+    sessionTodoStore,
   } = services;
 
   // Wire DLP audit logging so redactForLLM records hits to audit JSONL.
@@ -1674,4 +1589,85 @@ ${input}`;
       return { ok: false, error: (err as Error).message };
     }
   });
+
+  // ─── Workflow tools (S1+S2) ─────────────────────────────────────────────
+  // ask_user_question response — renderer dispatches when the user clicks a
+  // choice / submits free text / dismisses. Sender guarded so untrusted
+  // frames cannot inject answers on behalf of the user.
+  ipcMain.handle("ave:ask-user-question:respond", (e, response: unknown) => {
+    if (!validateSender(e)) {
+      auditUnauthorized(auditLogger, "ave:ask-user-question:respond", e);
+      return UNAUTHORIZED_FRAME;
+    }
+    if (!askUserQuestionGate) {
+      return { ok: false, error: "ask-user-question gate not configured" };
+    }
+    const r = (response ?? {}) as Record<string, unknown>;
+    const requestId = typeof r.requestId === "string" ? r.requestId : "";
+    if (!requestId) return { ok: false, error: "invalid-request-id" };
+    askUserQuestionGate.resolve({
+      requestId,
+      choice: typeof r.choice === "string" ? r.choice : undefined,
+      freeText: typeof r.freeText === "string" ? r.freeText : undefined,
+      dismissed: r.dismissed === true,
+    });
+    return { ok: true };
+  });
+
+  // reminders — list + dismiss + remove. M3: list is technically read-only
+  // but exposes user-authored content (PII risk if a third-party plugin
+  // webview probes it), so it goes through validateSender + audit just
+  // like the mutation channels. Mirrors the ave:lyra-mail:get-state pattern.
+  ipcMain.handle("ave:reminders:list", (e) => {
+    if (!validateSender(e)) {
+      auditUnauthorized(auditLogger, "ave:reminders:list", e);
+      return UNAUTHORIZED_FRAME;
+    }
+    if (!remindersStore) return [];
+    return remindersStore.listActive();
+  });
+  ipcMain.handle("ave:reminders:dismiss", async (e, id: string) => {
+    if (!validateSender(e)) {
+      auditUnauthorized(auditLogger, "ave:reminders:dismiss", e);
+      return UNAUTHORIZED_FRAME;
+    }
+    if (!remindersStore) return { ok: false, error: "no-store" };
+    const ok = await remindersStore.dismiss(id);
+    return { ok };
+  });
+  ipcMain.handle("ave:reminders:remove", async (e, id: string) => {
+    if (!validateSender(e)) {
+      auditUnauthorized(auditLogger, "ave:reminders:remove", e);
+      return UNAUTHORIZED_FRAME;
+    }
+    if (!remindersStore) return { ok: false, error: "no-store" };
+    const ok = await remindersStore.remove(id);
+    return { ok };
+  });
+
+  // session-todo — read-only list per chat session (defaults to current
+  // ConversationLoop session). The renderer subscribes to push updates via
+  // `ave:session-todo:changed` events emitted by SessionTodoStore listeners.
+  // M3: read-only but exposes user-authored content; gate behind validateSender.
+  ipcMain.handle("ave:session-todo:list", (e, sessionId?: string) => {
+    if (!validateSender(e)) {
+      auditUnauthorized(auditLogger, "ave:session-todo:list", e);
+      return UNAUTHORIZED_FRAME;
+    }
+    if (!sessionTodoStore) return [];
+    const sid = sessionId ?? conversationLoop.getSessionId();
+    return sessionTodoStore.list(sid);
+  });
+  if (sessionTodoStore) {
+    sessionTodoStore.onChange((sessionId, items) => {
+      try {
+        getMainWindow()?.webContents.send("ave:session-todo:changed", {
+          sessionId,
+          items,
+        });
+      } catch (err) {
+        console.warn("[ave] session-todo emit failed:", (err as Error).message);
+      }
+    });
+  }
 }
