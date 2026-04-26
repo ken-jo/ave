@@ -146,6 +146,11 @@ const api = {
   // ─── Plugins ─────────────────────────────────────
   listMarketplacePlugins: async () => ipcRenderer.invoke("ave:plugins:marketplace:list"),
   listPluginUiExtensions: async () => ipcRenderer.invoke("ave:plugins:ui:list"),
+  // #237 — host renderer pre-binds (webContents.id → pluginId, entryUrl)
+  // before each plugin webview navigates. Main rejects unknown pluginId
+  // and any non-host frame.
+  registerPluginWebview: async (payload: { webContentsId: number; pluginId: string; entryUrl: string }) =>
+    ipcRenderer.invoke("ave:plugin:register-webview", payload) as Promise<{ ok: boolean; error?: string }>,
   readPluginUiModule: async (pluginId: string, viewId: string) =>
     ipcRenderer.invoke("ave:plugins:ui:read-module", { pluginId, viewId }) as Promise<string>,
   listPluginCards: async () => ipcRenderer.invoke("ave:plugins:cards"),
