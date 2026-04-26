@@ -266,6 +266,21 @@ const api = {
     ipcRenderer.on("ave:trigger:expired", listener);
     return () => ipcRenderer.removeListener("ave:trigger:expired", listener);
   },
+  onTriggerImported: (
+    handler: (payload: {
+      sessionId: string;
+      source: string;
+      prompt: string;
+      summary: string;
+      toolCallCount: number;
+      importedAt: string;
+      wrappedPrompt: string;
+    }) => void,
+  ) => {
+    const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
+    ipcRenderer.on("ave:trigger:imported", listener);
+    return () => ipcRenderer.removeListener("ave:trigger:imported", listener);
+  },
   dismissTrigger: async (sessionId: string) =>
     ipcRenderer.invoke("ave:trigger:dismiss", sessionId) as Promise<{
       ok: boolean;
