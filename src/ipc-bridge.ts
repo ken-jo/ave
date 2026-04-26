@@ -789,9 +789,15 @@ ${input}`;
   ipcMain.handle("ave:plugins:marketplace:list", () => pluginMarketplace.list());
   ipcMain.handle("ave:plugins:install", async (e, pluginId: string) => {
     if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:plugins:install", e); return UNAUTHORIZED_FRAME; }
+    // Renderer renders a skeleton card / sidebar placeholder while these
+    // phase events fire — see PluginConfigTab + Sidebar progress UI.
+    const win = getMainWindow();
+    win?.webContents.send("ave:plugins:install-progress", { slug: pluginId, phase: "installing" });
     const result = await pluginMarketplace.install(pluginId);
+    win?.webContents.send("ave:plugins:install-progress", { slug: pluginId, phase: "restarting" });
     await pluginRuntime.restartAll();
     refreshPluginNotifications?.();
+    win?.webContents.send("ave:plugins:install-result", { slug: pluginId, success: true });
     return result;
   });
   ipcMain.handle("ave:plugins:uninstall", async (e, pluginId: string) => {

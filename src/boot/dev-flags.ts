@@ -90,6 +90,18 @@ export function devPluginReloadEnabled(packaged: boolean = isPackagedCached): bo
 }
 
 /**
+ * Re-inject `--no-sandbox` into the OS-registered `ave://` protocol command
+ * so OS-launched second instances on corp/VDI boxes can clear Chromium's
+ * sandbox init failure. Hard-gated on `!packaged` for the same reason as
+ * every other dev flag — a packaged binary that inherits this env var must
+ * not silently weaken Chromium sandboxing.
+ */
+export function devNoSandboxAllowed(packaged: boolean = isPackagedCached): boolean {
+  if (packaged) return false;
+  return envEquals("AVE_DEV_NO_SANDBOX", "1");
+}
+
+/**
  * Returns true if any AVE_DEV* / AVE_ALLOW_* env var is set in a packaged
  * build — caller should log a single audit warning so operators can detect
  * tampered launches without the helper leaking which flag.
@@ -102,6 +114,7 @@ export function shouldWarnPackagedFlagsIgnored(packaged: boolean = isPackagedCac
     || process.env.AVE_ALLOW_TEST_MARKETPLACE_KEYS !== undefined
     || process.env.AVE_DEV_SKIP_SIG !== undefined
     || process.env.AVE_DEV_RELOAD !== undefined
+    || process.env.AVE_DEV_NO_SANDBOX !== undefined
   );
 }
 
