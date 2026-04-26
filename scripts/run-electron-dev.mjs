@@ -220,6 +220,11 @@ function launchElectron() {
       AVE_ALLOW_LINKED_PLUGIN_ENTRY: process.env.AVE_ALLOW_LINKED_PLUGIN_ENTRY ?? "1",
       AVE_ENABLE_DEV_CONSOLE: process.env.AVE_ENABLE_DEV_CONSOLE ?? "1",
       AVE_DEV_SKIP_SIG: process.env.AVE_DEV_SKIP_SIG ?? "1",
+      // The launcher already passes --no-sandbox via WINDOWS_SAFE_ELECTRON_FLAGS
+      // for the foreground dev process; mirror that into the ave:// protocol
+      // command we register so OS-launched second instances can also boot on
+      // corp/VDI machines whose Chromium sandbox init fails without the flag.
+      AVE_DEV_NO_SANDBOX: process.env.AVE_DEV_NO_SANDBOX ?? "1",
     });
     delete e.ELECTRON_RUN_AS_NODE;
     return e;
