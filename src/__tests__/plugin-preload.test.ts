@@ -59,7 +59,9 @@ describe("plugin-preload bridge", () => {
     expect(exposed.has("ave")).toBe(false);
   });
 
-  it("callTool invokes ave:plugin:call-tool IPC channel", async () => {
+  it("callTool invokes ave:plugin:call-tool IPC channel without pluginId arg", async () => {
+    // pluginId is now resolved by main from event.sender.id, NOT supplied
+    // by the renderer — the bridge MUST NOT pass it.
     const bridge = exposed.get("avePlugin") as { callTool: (name: string, args?: unknown) => Promise<unknown> };
     mockInvoke.mockResolvedValueOnce({ ok: true, result: "pong" });
 
@@ -67,13 +69,12 @@ describe("plugin-preload bridge", () => {
 
     expect(mockInvoke).toHaveBeenCalledWith(
       "ave:plugin:call-tool",
-      expect.any(String), // pluginId from query string (empty string in test env)
       "agent_hub_status",
       { verbose: true },
     );
   });
 
-  it("emitEvent invokes ave:plugin:emit-event IPC channel", async () => {
+  it("emitEvent invokes ave:plugin:emit-event IPC channel without pluginId arg", async () => {
     const bridge = exposed.get("avePlugin") as { emitEvent: (type: string, data?: unknown) => Promise<void> };
     mockInvoke.mockResolvedValueOnce({ ok: true });
 
@@ -81,10 +82,29 @@ describe("plugin-preload bridge", () => {
 
     expect(mockInvoke).toHaveBeenCalledWith(
       "ave:plugin:emit-event",
-      expect.any(String), // pluginId
       "my.custom.event",
       { foo: "bar" },
     );
+  });
+
+  it("getEntryUrl invokes ave:plugin:get-entry-url and unwraps the success sentinel", async () => {
+    const bridge = exposed.get("avePlugin") as { getEntryUrl: () => Promise<string> };
+    mockInvoke.mockResolvedValueOnce({
+      ok: true,
+      entryUrl: "file:///plugins/agent-hub/dist/ui/agent-hub-panel.js",
+    });
+
+    const url = await bridge.getEntryUrl();
+
+    expect(mockInvoke).toHaveBeenCalledWith("ave:plugin:get-entry-url");
+    expect(url).toBe("file:///plugins/agent-hub/dist/ui/agent-hub-panel.js");
+  });
+
+  it("getEntryUrl throws when main returns a rejection sentinel", async () => {
+    const bridge = exposed.get("avePlugin") as { getEntryUrl: () => Promise<string> };
+    mockInvoke.mockResolvedValueOnce({ ok: false, error: "unauthorized-frame" });
+
+    await expect(bridge.getEntryUrl()).rejects.toThrow(/unauthorized-frame/);
   });
 
   it("onEvent registers listener on ave:plugin:event IPC channel and returns unsubscribe", () => {
