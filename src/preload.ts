@@ -56,6 +56,9 @@ const api = {
   setWebApiKey: async (provider: string, apiKey: string) => ipcRenderer.invoke("ave:settings:set-web-api-key", provider, apiKey),
   hasWebApiKey: async (provider: string) => ipcRenderer.invoke("ave:settings:has-web-api-key", provider) as Promise<boolean>,
   deleteWebApiKey: async (provider: string) => ipcRenderer.invoke("ave:settings:delete-web-api-key", provider),
+  setMarketplaceApiKey: async (apiKey: string) => ipcRenderer.invoke("ave:settings:marketplace:set-api-key", apiKey),
+  hasMarketplaceApiKey: async () => ipcRenderer.invoke("ave:settings:marketplace:has-api-key") as Promise<boolean>,
+  deleteMarketplaceApiKey: async () => ipcRenderer.invoke("ave:settings:marketplace:delete-api-key"),
 
   // ─── Microsoft Graph — dual-environment login ────
   lyraMailGetState: async () =>
