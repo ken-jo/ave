@@ -59,6 +59,10 @@ const api = {
   setMarketplaceApiKey: async (apiKey: string) => ipcRenderer.invoke("ave:settings:marketplace:set-api-key", apiKey),
   hasMarketplaceApiKey: async () => ipcRenderer.invoke("ave:settings:marketplace:has-api-key") as Promise<boolean>,
   deleteMarketplaceApiKey: async () => ipcRenderer.invoke("ave:settings:marketplace:delete-api-key"),
+  // #FU259 — MCP marketplace catalog + install
+  listMcpCatalog: async () => ipcRenderer.invoke("ave:mcp:catalog:list"),
+  installMcpFromMarketplace: async (slug: string) =>
+    ipcRenderer.invoke("ave:mcp:install-from-marketplace", slug),
 
   // ─── Microsoft Graph — dual-environment login ────
   lyraMailGetState: async () =>
