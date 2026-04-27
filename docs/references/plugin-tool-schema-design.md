@@ -227,7 +227,7 @@ Renderer UI 는 `ave:plugins:call` IPC 를 통해 플러그인 메서드를 직�
 **이벤트 subscription 정책** (`classifySubscription`):
 
 - `memory.private.*`, `settings.apiKey.*`, `audit.*`, `dlp.*` → `PLUGIN_PRIVATE_NAMESPACES` 에 매칭되어 **subscription 거부** (wiring 시 throw).
-- `meeting`, `calendar`, `email`, `index`, `task`, `briefing` → public. 조용히 허용. (`task.*` namespace 는 `ave-plugin-cetus` 가 owner — Phase 3 부터 `task.created` / `task.updated` / `task.completed` / `task.deleted` / `task.deadline.approaching` / `task.deadline.overdue` 발행. tasks-plugin-split 참조.)
+- `meeting`, `calendar`, `email`, `index`, `task`, `briefing` → public. 조용히 허용. `task.*` namespace 는 host 의 `task-deadline-poller` 가 owner — `task.deadline.approaching` 등 발행 예정 (구현 단계).
 - 그 외 → neutral. 허용하되 namespace drift 추적 warn.
 
 ### 2.4 AJV 매니페스트 검증 플로우
@@ -398,7 +398,7 @@ top-level 은 반드시 `"type": "object"` — 모든 LLM vendor 공통 요구�
 | `registerKeywords(keywords)` | boot 시 KeywordEngine에 트리거 등록 | 런타임 중 동적 추가 (boot 전용) |
 | `emitEvent(name, payload)` | 다른 플러그인·ProactiveEngine에 이벤트 발행 (capability gate) | 직접 플러그인 간 함수 호출 대체 |
 | `onEvent(name, handler)` | 다른 플러그인 이벤트 구독 (private namespace 차단) | 폴링 대체 (push 모델로 충분) |
-| `addTask(task)` | 액션 아이템 → Ave 태스크 자동 생성. **Phase 2 이후**: `ave-plugin-cetus` 가 owner — `addTask` 는 `callTool("task_add", …)` 로 위임되는 thin shim 이 된다. 호출자(meeting/email) 변경 없음. | UI 직접 조작 대체 |
+| `addTask(task)` | 액션 아이템 → Ave 태스크 자동 생성 (host `taskService` → `~/.ave/tasks/ave-tasks.db` SQLite). | UI 직접 조작 대체 |
 | `saveNote(title, content)` | `~/.ave/notes/`에 회의록·요약 저장 | 대용량 바이너리 저장 |
 | `getSecret(key)` | 암호화된 API 키 조회 | 키를 메모리에 캐시 후 재사용 (매번 호출) |
 | `getLyraMailToken()` ([lyra-mail-consumer] 필요) | Office 365 API 호출 전 토큰 획득 | email/calendar 외 플러그인 |
