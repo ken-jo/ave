@@ -1084,9 +1084,6 @@ Phase 3 리팩터 기준 `ave/src/` 모듈 경계다. Phase 1~2의 `src/agent/` 
 ave/src/
 ├── main.ts, boot.ts, preload.ts, ipc-bridge.ts,
 │   plugin-ui-host.tsx, taskService.ts                        # 엔트리 / 브릿지
-│   # NOTE(tasks-plugin-split, Phase 0): taskService.ts 는 ave-plugin-cetus 로 이전
-│   # 예정. Phase 2 cutover 이후 이 줄에서 제거되고, addTask 는 plugin tool RPC 로
-│   # 위임된다 (§9.4a 참조).
 │
 ├── renderer.tsx   # minimal entry — mounts ui/renderer/App.tsx
 ├── ui/renderer/   # Renderer composition root (Phase 1~4.6 split 완료)
@@ -1739,7 +1736,7 @@ flowchart LR
 | **idle** | `createIdleSignal()` | IdleScheduler 가 IDLE_SCAN 상태일 때 fire |
 | **schedule** | `createScheduleSignal()` | KST 08:30 (기본) 5분 윈도우 내 1일 1회 fire |
 | **meeting** | `createMeetingSignal()` | calendar-source capability 플러그인 이벤트 — 미팅 10분 전 fire |
-| **task-deadline** | _(예정)_ `ave-plugin-cetus` 의 `task.deadline.approaching` 이벤트 구독 | pending 태스크 dueAt 2시간 내 fire. **Phase 0 갱신 (2026-04-26)**: 호스트의 `createTaskDeadlineSignal()` 은 만들지 않는다. 데드라인 폴링·이벤트 발행은 `ave-plugin-cetus` 가 owner 로 가져가고, brain 은 이벤트를 구독해 `triggerConversation()` 을 호출한다. 현재 코드에는 미구현 — 플러그인 split (Phase 3) 이후 brain 의 `task-deadline-detector` 와 함께 들어온다. |
+| **task-deadline** | _(예정)_ host 의 `task-deadline-poller` 가 `task.deadline.approaching` 발행 → brain 구독 | pending 태스크 dueAt 2시간 내 fire. **2026-04-27 갱신**: tasks-plugin-split 이 paused 됨 (memory `feedback-tasks-plugin-split-paused` 참조). 따라서 detector 의 observer 측 (폴링 + 이벤트 emit) 은 host 에 둔다. brain (vega-early 등) 이 `pluginAccess.events` 로 구독해 `triggerConversation()` 호출 — 다른 detector 들과 동일한 observer/judge 분리 패턴. 미구현 단계. |
 | **post-turn** ✅ | `createPostTurnSignal()` | 대화 턴 완료 후 `PostTurnHookChain` → `coordinator.notify("post-turn")`. 10분 cooldown. (B5 PR #134) |
 
 | 트리거 유형 | 예시 | 의도 |
@@ -2150,7 +2147,7 @@ stateDiagram-v2
 | `registerKeywords(keywords)` | KeywordEngine에 트리거 키워드 등록 (boot 시 1회) | 전체 |
 | `emitEvent(name, payload)` | 다른 플러그인·ProactiveEngine에 이벤트 발행 | 전체 |
 | `onEvent(name, handler)` | 이벤트 구독 | 전체 |
-| `addTask(task)` | Ave 태스크 생성. **Phase 0 (2026-04-26)**: 현재는 호스트 `taskService.ts` 가 SQLite 에 직접 기록. Phase 2 cutover 이후 이 메서드는 `hostApi.callTool("task_add", …)` 로 위임되는 thin shim 으로 바뀐다 (`ave-plugin-cetus` 가 owner). 호출자(meeting/email) API 는 그대로 유지. | meeting, email |
+| `addTask(task)` | Ave 태스크 생성. host `taskService.ts` 가 SQLite (`~/.ave/tasks/ave-tasks.db`) 에 직접 기록. tasks-plugin-split 은 paused (memory 참조) — 별도 plugin 으로 옮기지 않고 host 에서 owner 유지. | meeting, email |
 | `saveNote(title, content)` | 플러그인 자기 dir 안에 메모 저장 (`~/.ave/plugins/<id>/notes/`) | meeting |
 | `getSecret(key)` | 암호화된 API 키 조회 | meeting, email, calendar |
 | `getLyraMailToken()` | Microsoft Graph Bearer 토큰 획득 | email, calendar |
@@ -3225,7 +3222,7 @@ v4 §4.5 의 11-step 쿼리 루프(`onUserMessage → ... → onTurnComplete`)�
 
 v4 §5 의 `~/.ave/` 파일 기반 경량 구조는 유지된다. 운영 안정성을 위해 다음을 덧붙인다.
 
-- **Cross-process file lock**: 모든 상태 파일 (`memory/*.md`, `tasks.json`, `audit.log`, `approval-queue.json`) 쓰기 경로에 `proper-lockfile` 을 적용. 두 Electron 인스턴스 또는 메인/렌더러 레이스 상황에서도 손상 방지. **2026-04-27 갱신**: 현재 host 의 task 저장소는 `tasks.json` 이 아닌 SQLite (`~/.ave/tasks/ave-tasks.db`, WAL 모드) 이며, file lock 이 아닌 SQLite 자체 락에 의존한다. tasks-plugin-split Phase 2 이후에는 `ave-plugin-cetus` 가 자체 데이터 디렉터리(`~/.ave/plugins/ave-plugin-cetus/tasks.db`) 에서 동일하게 SQLite WAL 로 운영하므로, 본 host-level cross-process lock 정책에서 tasks 항목은 제거 대상이다.
+- **Cross-process file lock**: 모든 상태 파일 (`memory/*.md`, `audit.log`, `approval-queue.json`) 쓰기 경로에 `proper-lockfile` 을 적용. 두 Electron 인스턴스 또는 메인/렌더러 레이스 상황에서도 손상 방지. host 의 task 저장소는 SQLite (`~/.ave/tasks/ave-tasks.db`, WAL 모드) 이라 file lock 이 아닌 SQLite 자체 락에 의존하므로 본 정책에서 제외.
 - **Audit log rotation/retention**: `~/.ave/audit/audit-YYYY-MM-DD.log` 일 단위 회전. 기본 retention 90일. 사이즈 한계(예: 50MB) 초과 시 그 날짜 내에서 `audit-YYYY-MM-DD.N.log` 로 분할.
 - **Write contract**: 락 획득 실패 시 최대 5회, 100ms 백오프 재시도. 최종 실패는 §6.6 Observability 의 Audit sink 로 `state.write.lock_failed` 이벤트를 남긴다.
 
