@@ -326,6 +326,10 @@ const api = {
     ipcRenderer.on("ave:bootstrap:status", listener);
     return () => ipcRenderer.removeListener("ave:bootstrap:status", listener);
   },
+  // Phase 2d FU — banner-driven retry. Re-emits the start/complete/error
+  // status sequence so the banner subscriber updates without needing a
+  // separate result channel.
+  retryBootstrap: () => ipcRenderer.invoke("ave:bootstrap:retry"),
 
   // ─── ave:// deep-link install lifecycle ─────────
   // Fires when a marketplace install triggered via ave://install/{slug} has
