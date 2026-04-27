@@ -63,6 +63,11 @@ const api = {
   listMcpCatalog: async () => ipcRenderer.invoke("ave:mcp:catalog:list"),
   installMcpFromMarketplace: async (slug: string) =>
     ipcRenderer.invoke("ave:mcp:install-from-marketplace", slug),
+  // #FU262 — Claude Desktop config import (two-phase: preview → apply).
+  previewClaudeDesktopMcpImport: async (raw: string) =>
+    ipcRenderer.invoke("ave:mcp:import:claude-desktop:preview", raw),
+  applyClaudeDesktopMcpImport: async (payload: { raw: string; conflictPolicy?: "skip" | "overwrite" }) =>
+    ipcRenderer.invoke("ave:mcp:import:claude-desktop:apply", payload),
 
   // ─── Microsoft Graph — dual-environment login ────
   lyraMailGetState: async () =>
