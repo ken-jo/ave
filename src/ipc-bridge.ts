@@ -338,6 +338,21 @@ export function registerIpcHandlers(
     return { ok: true };
   });
 
+  // ─── Marketplace API Key ──────────────────────
+  ipcMain.handle("ave:settings:marketplace:set-api-key", async (e, apiKey: string) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:settings:marketplace:set-api-key", e); return UNAUTHORIZED_FRAME; }
+    await settingsService.setSecret("marketplace.apiKey", apiKey);
+    return { ok: true };
+  });
+  ipcMain.handle("ave:settings:marketplace:has-api-key", () =>
+    settingsService.getSecret("marketplace.apiKey") != null,
+  );
+  ipcMain.handle("ave:settings:marketplace:delete-api-key", async (e) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:settings:marketplace:delete-api-key", e); return UNAUTHORIZED_FRAME; }
+    await settingsService.deleteSecret("marketplace.apiKey");
+    return { ok: true };
+  });
+
   // ─── Web Search Keys ───────────────────────────
   ipcMain.handle("ave:settings:set-web-api-key", async (e, provider: string, apiKey: string) => {
     if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:settings:set-web-api-key", e); return UNAUTHORIZED_FRAME; }
