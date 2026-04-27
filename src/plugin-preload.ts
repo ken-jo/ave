@@ -31,16 +31,15 @@
 // undefined while the preload appeared to have executed cleanly.
 import { contextBridge, ipcRenderer } from "electron";
 
-// Diagnostic probe — gated behind AVE_DEV=1 (same convention as dev-flags.ts)
-// to avoid console noise in production. Surfaces in the plugin webview's
-// DevTools console at preload boot. If `[ave:plugin-preload] loaded` is
-// missing under AVE_DEV=1, the preload script never ran (URL wrong, sandbox
-// isolation, etc.). Cheap, safe, and a high-value leave-behind for triage.
-if (process.env.AVE_DEV === "1") {
-  console.log("[ave:plugin-preload] loaded", {
-    url: typeof window !== "undefined" ? window.location?.href : "no-window",
-  });
-}
+// Diagnostic probe — temporarily ungated while we verify the
+// session.setPreloads() fix for sandboxed <webview> preload loading.
+// Surfaces in the plugin webview's DevTools console at preload boot. If
+// `[ave:plugin-preload] loaded` is missing, the preload script never ran
+// (URL wrong, sandbox isolation, etc.). Once the fix is confirmed working
+// in the wild, re-gate behind `process.env.AVE_DEV === "1"`.
+console.log("[ave:plugin-preload] loaded", {
+  url: typeof window !== "undefined" ? window.location?.href : "no-window",
+});
 
 contextBridge.exposeInMainWorld("avePlugin", {
   callTool: (name: string, args?: unknown): Promise<unknown> =>
