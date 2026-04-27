@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdir, rm, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PluginRuntime } from "../runtime.js";
+import { mkdtempSync } from "node:fs";
 
 describe("PluginRuntime config overrides", () => {
   let testDir: string;
@@ -10,7 +11,7 @@ describe("PluginRuntime config overrides", () => {
   let registryPath: string;
 
   beforeEach(async () => {
-    testDir = join(homedir(), ".ave", "test-tmp", `ave-runtime-config-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    testDir = mkdtempSync(join(tmpdir(), "ave-runtime-config-"));
     installedDir = join(testDir, "plugins", "installed");
     registryPath = join(testDir, "plugins", "registry.json");
     await mkdir(installedDir, { recursive: true });
