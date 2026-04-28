@@ -723,6 +723,7 @@ async function main() {
       "../ave-plugin-lyra-mail",
       "../ave-plugin-orion-api",
       "../ave-plugin-vega-early",
+      "../ave-plugin-hydra",
     ].filter((relPath) => !disabledPluginIds.has(relPath.replace("../ave-plugin-", "")));
 
     const bunEnv = getBunInstallEnv();
