@@ -31,7 +31,6 @@ import { requiredCapabilityForEmit } from "../../plugins/capabilities.js";
 import { resolvePluginPaths } from "../../plugins/plugin-paths.js";
 import { PROACTIVE_SOURCE_PATTERN } from "../../engine/proactive-source.js";
 import { TaskSourceRegistry, deriveCategoryId } from "../../plugins/task-source-registry.js";
-import { withLyraMailRetry } from "../../main/lyra-mail-retry.js";
 import type {
   ConversationTriggerResult,
   ConversationTriggerSpec,
@@ -43,7 +42,6 @@ import type { ToolRegistry } from "../../tools/registry.js";
 import type { SettingsService } from "../../data/settings-store.js";
 import type { MemoryManager } from "../../memory/memory-manager.js";
 import type { TaskService } from "../../taskService.js";
-import type { LyraMailService } from "../../main/lyra-mail-service.js";
 import { emitEvent, onEvent } from "../types.js";
 import {
   buildPluginConfigOverrides,
@@ -480,7 +478,6 @@ export interface InitPluginRuntimeInput {
   keywordEngine: KeywordEngine;
   toolRegistry: ToolRegistry;
   taskService: TaskService;
-  lyraMailService: LyraMailService;
   pythonPath: string | undefined;
   bootAuditLogger: AuditLogger;
   mainWindow: BrowserWindow;
@@ -515,7 +512,6 @@ export async function initPluginRuntime(
     keywordEngine,
     toolRegistry,
     taskService,
-    lyraMailService,
     pythonPath,
     bootAuditLogger,
     mainWindow,
@@ -606,14 +602,10 @@ export async function initPluginRuntime(
     console.warn("[ave] boot: AVE_DEV_SKIP_SIG=1 — plugin signature verification disabled (dev-only)");
   }
 
-  // Capability gate helper (§B-5) — lyraMail HostApi methods.
-  // Note: hasLyraMailCapability now uses the manifest passed directly to createHostApi
-  // to avoid a timing bug where getPluginManifest() returns undefined during createPlugin().
+  // PR 3c: lyra-mail 자체 인증으로 이전 후 host 측 MS HostApi 메서드 / capability gate 제거.
+  // lyra-mail-consumer capability 는 plugin 자기 식별 라벨로 plugin.json 에 남지만
+  // host 의 capability 검증 게이트는 더 이상 존재하지 않는다 (plugin 이 자체 MSAL 소유).
   let pluginRuntime!: PluginRuntime;
-  const capabilityDeniedMsg = (pluginId: string) =>
-    `[plugin:${pluginId}] capability not declared: lyra-mail-consumer`;
-  const hasLyraMailCapability = (manifest: PluginManifest): boolean =>
-    manifest.capabilities?.includes("lyra-mail-consumer") ?? false;
 
   // Phase 1 §Step 1 + §Step 2 — thread the user-installed dir as a second
   // trust root and the unsigned-user-plugin opt-in flag.
@@ -693,33 +685,9 @@ export async function initPluginRuntime(
       getSecret: (key) => {
         return settingsService.getSecret(key);
       },
-      getLyraMailToken: () => {
-        if (!hasLyraMailCapability(manifest)) throw new Error(capabilityDeniedMsg(pluginId));
-        return lyraMailService.getAccessToken();
-      },
-      startLyraMailAuth: async (openBrowser) => {
-        if (!hasLyraMailCapability(manifest)) throw new Error(capabilityDeniedMsg(pluginId));
-        await lyraMailService.startInteractiveAuth(openBrowser);
-      },
-      isLyraMailAuthenticated: () => {
-        if (!hasLyraMailCapability(manifest)) throw new Error(capabilityDeniedMsg(pluginId));
-        return lyraMailService.isAuthenticated();
-      },
-      getLyraMailAccount: () => {
-        if (!hasLyraMailCapability(manifest)) throw new Error(capabilityDeniedMsg(pluginId));
-        return lyraMailService.getAccountName();
-      },
-      onLyraMailAuthChange: (handler) => {
-        if (!hasLyraMailCapability(manifest)) throw new Error(capabilityDeniedMsg(pluginId));
-        lyraMailService.onAuthChange(handler);
-      },
       callTool: async <T = unknown>(toolName: string, payload?: unknown): Promise<T> => {
         pluginRuntime.assertPluginToolAccess(pluginId, toolName);
         return pluginRuntime.call(toolName, payload) as Promise<T>;
-      },
-      withLyraMailRetry: async (fn) => {
-        if (!hasLyraMailCapability(manifest)) throw new Error(capabilityDeniedMsg(pluginId));
-        return withLyraMailRetry(fn, () => lyraMailService.getAccessToken());
       },
       callLlm: async (prompt, opts) => {
         if (lateBinding.pluginCallLlmRef.fn) {

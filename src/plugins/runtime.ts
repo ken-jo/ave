@@ -1534,16 +1534,8 @@ function createNoopHostApi(): PluginHostApi {
     onEvent: () => () => {},
     addTask: () => {},
     getSecret: () => null,
-    getLyraMailToken: async () => null,
-    startLyraMailAuth: async () => {},
-    isLyraMailAuthenticated: () => false,
-    getLyraMailAccount: () => null,
-    onLyraMailAuthChange: () => {},
     callTool: async () => {
       throw new Error("Plugin tool invocation not available in noop context");
-    },
-    withLyraMailRetry: async () => {
-      throw new Error("LYRA Mail not available in noop context");
     },
     callLlm: async () => { throw new Error("LLM not available in noop context"); },
     logEvent: () => {},

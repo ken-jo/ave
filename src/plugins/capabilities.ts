@@ -59,16 +59,9 @@ export const ENFORCED_CAPABILITIES: ReadonlyMap<string, CapabilityPolicy> = new 
     "lyra-mail-consumer",
     {
       description:
-        "Required to call HostApi LYRA Mail auth methods (getLyraMailToken, startLyraMailAuth, isLyraMailAuthenticated, getLyraMailAccount, onLyraMailAuthChange, withLyraMailRetry).",
-      enforcement: "enforced",
-      gates: [
-        "getLyraMailToken",
-        "startLyraMailAuth",
-        "isLyraMailAuthenticated",
-        "getLyraMailAccount",
-        "onLyraMailAuthChange",
-        "withLyraMailRetry",
-      ],
+        "Self-identification label for plugins that consume Microsoft Graph (Outlook mail / calendar). PR 3c 이후 host 측 MS HostApi 메서드는 모두 제거되어 강제할 게이트가 없으므로 advisory 로 강등. lyra-mail 플러그인이 자체 MSAL + safeStorage 로 직접 인증을 처리한다.",
+      enforcement: "advisory",
+      gates: [],
     },
   ],
   [

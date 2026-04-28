@@ -204,22 +204,7 @@ export type AveApi = {
       }
     | { ok: false; error: string }
   >;
-  lyraMailGetState: () => Promise<{
-    environment: "external" | "corporate";
-    isAuthenticated: boolean;
-    account: string | null;
-    configured: boolean;
-    label: string;
-    environments: Array<{
-      id: "external" | "corporate";
-      label: string;
-      description: string;
-      configured: boolean;
-    }>;
-  }>;
-  lyraMailSwitchEnvironment: (env: "external" | "corporate") => Promise<{ ok: boolean; state?: unknown }>;
-  lyraMailSignIn: () => Promise<{ ok: boolean; error?: string; state?: unknown }>;
-  lyraMailSignOut: () => Promise<{ ok: boolean; state?: unknown }>;
+  // PR 3c: lyraMail* bridge methods removed — lyra-mail plugin owns auth.
   chatHasProvider: () => Promise<boolean>;
   chatSend: (input: string) => Promise<unknown>;
   chatGuide: (input: string) => Promise<unknown>;
