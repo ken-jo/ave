@@ -720,8 +720,7 @@ async function main() {
     const pluginRoots = [
       "../ave-plugin-pyxis",
       "../ave-plugin-meeting",
-      "../ave-plugin-lyra-post",
-      "../ave-plugin-lyra-cal",
+      "../ave-plugin-lyra-mail",
       "../ave-plugin-orion-api",
       "../ave-plugin-vega-early",
     ].filter((relPath) => !disabledPluginIds.has(relPath.replace("../ave-plugin-", "")));
