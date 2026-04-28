@@ -298,6 +298,11 @@ const api = {
     ipcRenderer.on("ave:trigger:imported", listener);
     return () => ipcRenderer.removeListener("ave:trigger:imported", listener);
   },
+  onAskFromPlugin: (handler: (payload: { pluginId: string; text: string }) => void) => {
+    const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
+    ipcRenderer.on("ave:host:plugin-ask", listener);
+    return () => ipcRenderer.removeListener("ave:host:plugin-ask", listener);
+  },
   dismissTrigger: async (sessionId: string) =>
     ipcRenderer.invoke("ave:trigger:dismiss", sessionId) as Promise<{
       ok: boolean;
