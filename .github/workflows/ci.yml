@@ -23,7 +23,7 @@ jobs:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           owner: former_org
-          repositories: ave-plugin-meeting,ave-plugin-lyra-post,ave-plugin-pyxis,ave-plugin-lyra-cal,ave-plugin-orion-api
+          repositories: ave-plugin-meeting,ave-plugin-lyra-post,ave-plugin-pyxis,ave-plugin-lyra-cal,ave-plugin-orion-api,ave-plugin-vega-early
       - uses: actions/checkout@v6
         with:
           repository: former_org/ave-plugin-meeting
@@ -48,6 +48,11 @@ jobs:
         with:
           repository: former_org/ave-plugin-orion-api
           path: ave-plugin-orion-api
+          token: ${{ steps.app-token.outputs.token }}
+      - uses: actions/checkout@v6
+        with:
+          repository: former_org/ave-plugin-vega-early
+          path: ave-plugin-vega-early
           token: ${{ steps.app-token.outputs.token }}
       - uses: oven-sh/setup-bun@v2
       - name: Build plugin-sdk submodule
