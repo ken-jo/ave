@@ -22,12 +22,6 @@ import { findMethodByCapability } from "./boot/plugins.js";
 import { emitEvent as emitHostEvent } from "./boot/types.js";
 import { requiredCapabilityForEmit } from "./plugins/capabilities.js";
 import {
-  LYRA_MAIL_ENVIRONMENTS,
-  LYRA_MAIL_ENVIRONMENT_CONFIGS,
-  isEnvironmentConfigured,
-  type LyraMailEnvironment,
-} from "./main/lyra-mail-auth-config.js";
-import {
   REGISTERED_ROUTINES,
   buildRoutineForTrigger,
   getRegisteredRoutine,
@@ -300,7 +294,6 @@ export function registerIpcHandlers(
     starredStore,
     feedbackStore,
     auditLogger,
-    lyraMailService,
     askUserQuestionGate,
     remindersStore,
     sessionTodoStore,
@@ -369,95 +362,10 @@ export function registerIpcHandlers(
     return { ok: true };
   });
 
-  // ─── Microsoft Graph — dual-environment login ──────
-  // 모든 상태 조회는 read-only 라 sender guard 선택.
-  // 환경 전환 / sign-in / sign-out 은 side-effect 가 있어 sender guard + audit 전부 수행.
-  ipcMain.handle("ave:lyra-mail:get-state", (e) => {
-    // get-state 는 read-only 지만 account (UPN/이메일) 을 노출하므로
-    // sender guard 를 걸어 untrusted frame 의 identity leak 을 차단한다.
-    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:lyra-mail:get-state", e); return UNAUTHORIZED_FRAME; }
-    const environments = LYRA_MAIL_ENVIRONMENTS.map((env) => ({
-      id: env,
-      label: LYRA_MAIL_ENVIRONMENT_CONFIGS[env].label,
-      description: LYRA_MAIL_ENVIRONMENT_CONFIGS[env].description,
-      configured: isEnvironmentConfigured(env),
-    }));
-    return { ...lyraMailService.getState(), environments };
-  });
-
-  ipcMain.handle("ave:lyra-mail:switch-environment", async (e, envInput: unknown) => {
-    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:lyra-mail:switch-environment", e); return UNAUTHORIZED_FRAME; }
-    // 허용된 env id 만 수용 — typo/alien value 를 silent 하게 external 로
-    // 떨어뜨리지 않고 명시적으로 거부해 호출자가 잘못을 인지하게 한다.
-    if (envInput !== "external" && envInput !== "corporate") {
-      return { ok: false, error: `invalid environment: ${String(envInput)}` };
-    }
-    const env: LyraMailEnvironment = envInput;
-    await lyraMailService.switchEnvironment(env);
-    // 사용자 선택을 settings 에 영속화 → 다음 부팅 시 자동 복구.
-    await settingsService.patch({ lyraMail: { environment: env } });
-    auditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId: "host",
-      type: "info",
-      output: `lyra-mail environment switched: ${env}`,
-    });
-    return { ok: true, state: lyraMailService.getState() };
-  });
-
-  ipcMain.handle("ave:lyra-mail:sign-in", async (e) => {
-    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:lyra-mail:sign-in", e); return UNAUTHORIZED_FRAME; }
-    const envAtStart = lyraMailService.getEnvironment();
-    try {
-      await lyraMailService.startInteractiveAuth(async (url: string) => {
-        await shell.openExternal(url);
-      });
-      const state = lyraMailService.getState();
-      if (!state.isAuthenticated) {
-        const error =
-          state.environment !== envAtStart
-            ? "environment-switched-during-sign-in"
-            : "sign-in-did-not-complete";
-        auditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: "host",
-          type: "warn",
-          output: `lyra-mail sign-in failed: env=${envAtStart} error=${error}`,
-        });
-        return { ok: false, error, state };
-      }
-      auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "host",
-        type: "info",
-        output: `lyra-mail sign-in: env=${envAtStart} account=${state.account ?? "?"} success=${state.isAuthenticated}`,
-      });
-      return { ok: true, state };
-    } catch (err) {
-      const msg = (err as Error).message;
-      auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "host",
-        type: "warn",
-        output: `lyra-mail sign-in failed: env=${envAtStart} error=${msg}`,
-      });
-      return { ok: false, error: msg };
-    }
-  });
-
-  ipcMain.handle("ave:lyra-mail:sign-out", async (e) => {
-    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:lyra-mail:sign-out", e); return UNAUTHORIZED_FRAME; }
-    const envAtStart = lyraMailService.getEnvironment();
-    const accountAtStart = lyraMailService.getAccountName();
-    await lyraMailService.signOut();
-    auditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId: "host",
-      type: "info",
-      output: `lyra-mail sign-out: env=${envAtStart} account=${accountAtStart ?? "?"}`,
-    });
-    return { ok: true, state: lyraMailService.getState() };
-  });
+  // PR 3c: lyra-mail 인증은 lyra-mail 플러그인이 자체 소유한다. host 의
+  // `ave:lyra-mail:*` IPC 채널 (get-state / switch-environment / sign-in /
+  // sign-out) 은 모두 제거됨. renderer 는 plugin 의 lyramail_status /
+  // lyramail_auth / lyramail_signout tool 을 직접 호출.
 
   // ─── Chat (ConversationLoop) ────────────────────
   // read-only, sender guard optional

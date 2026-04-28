@@ -98,37 +98,8 @@ const api = {
   applyClaudeDesktopMcpImport: async (payload: { raw: string; conflictPolicy?: "skip" | "overwrite" }) =>
     ipcRenderer.invoke("ave:mcp:import:claude-desktop:apply", payload),
 
-  // ─── Microsoft Graph — dual-environment login ────
-  lyraMailGetState: async () =>
-    ipcRenderer.invoke("ave:lyra-mail:get-state") as Promise<{
-      environment: "external" | "corporate";
-      isAuthenticated: boolean;
-      account: string | null;
-      configured: boolean;
-      label: string;
-      environments: Array<{
-        id: "external" | "corporate";
-        label: string;
-        description: string;
-        configured: boolean;
-      }>;
-    }>,
-  lyraMailSwitchEnvironment: async (env: "external" | "corporate") =>
-    ipcRenderer.invoke("ave:lyra-mail:switch-environment", env) as Promise<{
-      ok: boolean;
-      state?: unknown;
-    }>,
-  lyraMailSignIn: async () =>
-    ipcRenderer.invoke("ave:lyra-mail:sign-in") as Promise<{
-      ok: boolean;
-      error?: string;
-      state?: unknown;
-    }>,
-  lyraMailSignOut: async () =>
-    ipcRenderer.invoke("ave:lyra-mail:sign-out") as Promise<{
-      ok: boolean;
-      state?: unknown;
-    }>,
+  // PR 3c: ave:lyra-mail:* IPC 채널 + bridge 메서드 제거 — lyra-mail
+  // 플러그인이 자체 인증을 소유한다.
 
   // ─── Chat (ConversationLoop) ─────────────────────
   chatHasProvider: async () => ipcRenderer.invoke("ave:chat:has-provider") as Promise<boolean>,

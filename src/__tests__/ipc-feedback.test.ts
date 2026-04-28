@@ -51,20 +51,6 @@ function makeServices(overrides: Record<string, unknown> = {}) {
     pluginMarketplace: { list: vi.fn(() => []), install: vi.fn(), uninstall: vi.fn() },
     taskService: { add: vi.fn(), update: vi.fn(), get: vi.fn(), delete: vi.fn(), query: vi.fn(() => []), getPendingByPriority: vi.fn(() => []), getOverdue: vi.fn(() => []), getDueToday: vi.fn(() => []) },
     memoryManager: { listMemoryEntries: vi.fn(() => []), saveMemory: vi.fn(), deleteMemory: vi.fn(), searchMemoryEntries: vi.fn(() => []), getMemoryContext: vi.fn(() => ""), getAveMd: vi.fn(() => ""), updateAveMd: vi.fn(), getUserPreferences: vi.fn(() => ""), updateUserPreferences: vi.fn(), saveSession: vi.fn() },
-    lyraMailService: {
-      getEnvironment: vi.fn(() => "external"),
-      getState: vi.fn(() => ({
-        environment: "external",
-        isAuthenticated: false,
-        account: null,
-        configured: true,
-        label: "External",
-      })),
-      startInteractiveAuth: vi.fn(async () => undefined),
-      signOut: vi.fn(async () => undefined),
-      switchEnvironment: vi.fn(async () => undefined),
-      getAccountName: vi.fn(() => null),
-    },
     approvalGate: null,
     refreshPluginNotifications: vi.fn(),
     mcpManager: { listServers: vi.fn(() => []), killSwitch: vi.fn() },
@@ -165,46 +151,5 @@ describe("ave:feedback:submit", () => {
   });
 });
 
-describe("ave:lyra-mail:sign-in", () => {
-  beforeEach(() => {
-    handlers.clear();
-    vi.clearAllMocks();
-  });
-
-  it("returns an explicit stale-sign-in error when the environment changed mid-auth", async () => {
-    const lyraMailService = {
-      getEnvironment: vi.fn(() => "external"),
-      startInteractiveAuth: vi.fn(async () => undefined),
-      getState: vi.fn(() => ({
-        environment: "corporate",
-        isAuthenticated: false,
-        account: null,
-        configured: true,
-        label: "Corporate",
-      })),
-      signOut: vi.fn(async () => undefined),
-      switchEnvironment: vi.fn(async () => undefined),
-      getAccountName: vi.fn(() => null),
-    };
-    registerIpcHandlers(makeServices({ lyraMailService }) as never, () => null);
-
-    const handler = handlers.get("ave:lyra-mail:sign-in")!;
-    const result = await handler(null);
-
-    expect(result).toEqual({
-      ok: false,
-      error: "environment-switched-during-sign-in",
-      state: {
-        environment: "corporate",
-        isAuthenticated: false,
-        account: null,
-        configured: true,
-        label: "Corporate",
-      },
-    });
-    expect(auditLog).toHaveBeenCalledWith(expect.objectContaining({
-      type: "warn",
-      output: "lyra-mail sign-in failed: env=external error=environment-switched-during-sign-in",
-    }));
-  });
-});
+// PR 3c: ave:lyra-mail:* IPC 채널 제거 — lyra-mail 플러그인이 자체 인증 소유.
+// 관련 IPC 통합 테스트도 함께 제거됨.
