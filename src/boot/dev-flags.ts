@@ -118,6 +118,10 @@ export function devNoSandboxAllowed(packaged: boolean = isPackagedCached): boole
 }
 
 /**
+ * @deprecated AVE_PLUGINS_DIR is no longer used by the dev runner.
+ * Use `bun run dev:link` instead which installs plugins directly into
+ * ~/.ave/plugins/. This function is retained for test isolation only.
+ *
  * `AVE_PLUGINS_DIR` redirects the user-installed plugin layout to an
  * arbitrary path. Used by tests, portable installs, and CI sandbox isolation.
  * Hard-gated on `!packaged` so a packaged build that inherits this env var
