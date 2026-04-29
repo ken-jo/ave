@@ -294,10 +294,11 @@ describe("Phase 1 — plugin trust boundary", () => {
   // ───────────────────────────── §Step 4 ─────────────────────────────
 
   describe("dev-flags helpers hard-gate on app.isPackaged", () => {
+    // Round-3 cleanup: AVE_ALLOW_LINKED_PLUGIN_ENTRY and
+    // AVE_ALLOW_TEST_MARKETPLACE_KEYS were removed — AVE_DEV=1 is the
+    // master dev unlock that already subsumed them.
     const ENV_NAMES = [
       "AVE_DEV",
-      "AVE_ALLOW_LINKED_PLUGIN_ENTRY",
-      "AVE_ALLOW_TEST_MARKETPLACE_KEYS",
       "AVE_DEV_SKIP_SIG",
       "AVE_DEV_RELOAD",
     ] as const;

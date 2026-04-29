@@ -11,7 +11,7 @@
 //   - Dev/prod launchers always inject --no-sandbox on Windows (their corp-VDI
 //     reliability bar) modulo AVE_KEEP_GPU.
 //   - main.ts only re-injects --no-sandbox into the protocol-registered command
-//     when AVE_DEV_NO_SANDBOX=1 is set, so a packaged build that hasn't asked
+//     when AVE_WIN_NO_SANDBOX=1 is set, so a packaged build that hasn't asked
 //     for the bypass keeps Chromium's sandbox.
 //
 // Keep this module dependency-free.
@@ -31,7 +31,7 @@ export const WINDOWS_SAFE_GPU_FLAGS = Object.freeze([
 /**
  * Chromium sandbox bypass. Required on corp/VDI boxes whose sandbox init
  * fails (silent crash on launch). The launchers always inject this on
- * Windows; main.ts re-injects it only behind AVE_DEV_NO_SANDBOX=1 so a
+ * Windows; main.ts re-injects it only behind AVE_WIN_NO_SANDBOX=1 so a
  * packaged build that never set the env var preserves Chromium's default
  * protection.
  */
