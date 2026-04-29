@@ -17,6 +17,9 @@
  *  - `AVE_ALLOW_LINKED_PLUGIN_ENTRY` removed — `AVE_DEV=1` is the master
  *    dev unlock and already subsumed every use site.
  *  - `AVE_ALLOW_TEST_MARKETPLACE_KEYS` removed — same rationale.
+ *  - Sidecar signature bypass removed with the sidecar gate. Marketplace
+ *    envelope verification and install receipt integrity are not bypassable by
+ *    dev env flags.
  *  - `AVE_PLUGINS_DIR` env tier removed from path resolution. Plugin path
  *    overrides flow through constructor injection (`resolvePluginPaths`'s
  *    `pluginsRoot` argument). The env name remains in
@@ -50,7 +53,6 @@ let configured = false;
  */
 const PACKAGED_FORBIDDEN_VARS = [
   "AVE_DEV",
-  "AVE_DEV_SKIP_SIG",
   "AVE_DEV_RELOAD",
   "AVE_DEV_CONSOLE",
   "AVE_WIN_NO_SANDBOX",
@@ -103,7 +105,6 @@ export function isDevModeUnlocked(packaged: boolean = isPackagedCached): boolean
   if (packaged) return false;
   return (
     envEquals("AVE_DEV", "1")
-    || envEquals("AVE_DEV_SKIP_SIG", "1")
     || envEquals("AVE_DEV_RELOAD", "1")
   );
 }
@@ -132,24 +133,6 @@ export function devLinkedEntryAllowed(packaged: boolean = isPackagedCached): boo
 export function devLinkedInstallAllowed(packaged: boolean = isPackagedCached): boolean {
   if (packaged) return false;
   return envEquals("AVE_DEV", "1");
-}
-
-/**
- * Include marketplace test keys in the bundled publisher key set. Test keys
- * must NEVER be trusted in a packaged build.
- */
-export function testMarketplaceKeysAllowed(packaged: boolean = isPackagedCached): boolean {
-  if (packaged) return false;
-  return envEquals("AVE_DEV", "1");
-}
-
-/**
- * Skip plugin manifest signature verification entirely (dev escape hatch
- * for fast-iterate). Production builds must always verify.
- */
-export function devSkipSignature(packaged: boolean = isPackagedCached): boolean {
-  if (packaged) return false;
-  return envEquals("AVE_DEV_SKIP_SIG", "1");
 }
 
 /**
@@ -248,3 +231,4 @@ export function assertMockMarketplaceAllowed(packaged: boolean = isPackagedCache
     );
   }
 }
+

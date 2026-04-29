@@ -34,7 +34,7 @@ describe("dev-flags tamper snapshot", () => {
   });
 
   it("returns false for unpackaged builds even if vars were tampered", () => {
-    _setTamperedSnapshotForTest(["AVE_DEV", "AVE_DEV_SKIP_SIG"]);
+    _setTamperedSnapshotForTest(["AVE_DEV", "AVE_DEV_RELOAD"]);
     expect(shouldWarnPackagedFlagsIgnored(false)).toBe(false);
   });
 
@@ -66,12 +66,12 @@ describe("dev-flags tamper snapshot", () => {
   it("lists all tampered vars for the audit log message body", () => {
     _setTamperedSnapshotForTest([
       "AVE_DEV",
-      "AVE_DEV_SKIP_SIG",
+      "AVE_DEV_RELOAD",
       "AVE_WIN_NO_SANDBOX",
     ]);
     const names = tamperedVarsAtBoot();
     expect(names).toContain("AVE_DEV");
-    expect(names).toContain("AVE_DEV_SKIP_SIG");
+    expect(names).toContain("AVE_DEV_RELOAD");
     expect(names).toContain("AVE_WIN_NO_SANDBOX");
     expect(names).toHaveLength(3);
   });
