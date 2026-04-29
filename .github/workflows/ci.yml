@@ -12,7 +12,6 @@ jobs:
       - uses: actions/checkout@v6
         with:
           path: ave
-          submodules: recursive
       - name: Clone sibling plugin repos
         # Self-hosted runner has gh CLI authenticated as ubuntu user (repo scope).
         # We use that token instead of GitHub App auth — the App is install-pinned
@@ -25,12 +24,10 @@ jobs:
             git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/former_org/${slug}.git" "$slug"
           done
       - uses: oven-sh/setup-bun@v2
-      - name: Build plugin-sdk submodule
-        run: |
-          cd ave/packages/plugin-sdk
-          bun install --frozen-lockfile
-          bun run build
       - run: bun install --frozen-lockfile
+        working-directory: ave
+      - name: Check plugin SDK drift
+        run: bun run --cwd packages/plugin-sdk check:drift
         working-directory: ave
       - run: bun run build
         working-directory: ave
