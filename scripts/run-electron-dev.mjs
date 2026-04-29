@@ -7,7 +7,7 @@
 // Env:
 //   AVE_DEV=1 (forced)
 //   AVE_DEV_SKIP_SIG=1 (default, skip plugin signature checks in dev)
-//   Plugins are installed into ~/.ave/plugins/ via dev:link (no AVE_PLUGINS_DIR override)
+//   Plugins are installed into ~/.ave/plugins/ via dev:link (single source of truth)
 //
 // Behavior:
 //   - tsc --watch for main (src -> dist/src)
@@ -519,14 +519,13 @@ function launchElectron() {
     const e = applyUtf8Env({
       ...process.env,
       AVE_DEV: "1",
-      AVE_ALLOW_LINKED_PLUGIN_ENTRY: process.env.AVE_ALLOW_LINKED_PLUGIN_ENTRY ?? "1",
-      AVE_ENABLE_DEV_CONSOLE: process.env.AVE_ENABLE_DEV_CONSOLE ?? "1",
+      AVE_DEV_CONSOLE: process.env.AVE_DEV_CONSOLE ?? "1",
       AVE_DEV_SKIP_SIG: process.env.AVE_DEV_SKIP_SIG ?? "1",
       // The launcher already passes --no-sandbox via WINDOWS_SAFE_ELECTRON_FLAGS
       // for the foreground dev process; mirror that into the ave:// protocol
       // command we register so OS-launched second instances can also boot on
       // corp/VDI machines whose Chromium sandbox init fails without the flag.
-      AVE_DEV_NO_SANDBOX: process.env.AVE_DEV_NO_SANDBOX ?? "1",
+      AVE_WIN_NO_SANDBOX: process.env.AVE_WIN_NO_SANDBOX ?? "1",
     });
     delete e.ELECTRON_RUN_AS_NODE;
     return e;
@@ -684,8 +683,8 @@ async function main() {
   }
 
   // Install dev-built sibling plugins into ~/.ave/plugins/ via real plugin.json
-  // + symlinked dist/. No AVE_PLUGINS_DIR override — the runtime always reads
-  // from ~/.ave/plugins/ regardless of environment.
+  // + symlinked dist/. The runtime always reads from ~/.ave/plugins/
+  // (single source of truth — Round-3 removed the env-tier override).
   // Skip when --no-plugins is passed so the dev runner can start without touching
   // the user plugin directory (useful for CI and plugin-free debug sessions).
   if (!skipPlugins) {
