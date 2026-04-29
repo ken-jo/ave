@@ -6,7 +6,6 @@
 //
 // Env:
 //   AVE_DEV=1 (forced)
-//   AVE_DEV_SKIP_SIG=1 (default, skip plugin signature checks in dev)
 //   Plugins are installed into ~/.ave/plugins/ via dev:link (single source of truth)
 //
 // Behavior:
@@ -520,7 +519,6 @@ function launchElectron() {
       ...process.env,
       AVE_DEV: "1",
       AVE_DEV_CONSOLE: process.env.AVE_DEV_CONSOLE ?? "1",
-      AVE_DEV_SKIP_SIG: process.env.AVE_DEV_SKIP_SIG ?? "1",
       // The launcher already passes --no-sandbox via WINDOWS_SAFE_ELECTRON_FLAGS
       // for the foreground dev process; mirror that into the ave:// protocol
       // command we register so OS-launched second instances can also boot on

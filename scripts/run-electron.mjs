@@ -17,15 +17,6 @@ function ensureWindowsUserDataDir(argsList, envVars, profileName) {
   return argsList;
 }
 
-// `bun run start` is still an unpackaged local run: it builds sibling plugins,
-// then launches Electron against registry manifests under plugins/installed/*
-// whose entries resolve into ../../../node_modules/@ave/... and are unsigned.
-// Keep those local compatibility relaxations here so normal local runs keep
-// loading managed plugins, while dev-only UX (watchers, AVE_DEV, dev console)
-// remains exclusive to scripts/run-electron-dev.mjs.
-if (!env.AVE_DEV_SKIP_SIG) {
-  env.AVE_DEV_SKIP_SIG = "1";
-}
 if (!env.AVE_DEV_CONSOLE) {
   env.AVE_DEV_CONSOLE = "0";
 }
@@ -90,7 +81,7 @@ if (process.platform === "win32") {
   if (env.AVE_DEBUG === "1") {
     process.stderr.write(
       `[run-electron] args=${JSON.stringify(args)}\n` +
-        `[run-electron] AVE_DEV=${env.AVE_DEV} AVE_DEV_SKIP_SIG=${env.AVE_DEV_SKIP_SIG} AVE_KEEP_GPU=${env.AVE_KEEP_GPU ?? "<unset>"}\n`,
+        `[run-electron] AVE_DEV=${env.AVE_DEV} AVE_KEEP_GPU=${env.AVE_KEEP_GPU ?? "<unset>"}\n`,
     );
   }
   const quote = (s) => `"${String(s).replace(/"/g, '""')}"`;

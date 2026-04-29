@@ -17,8 +17,7 @@
     "rootDir": ".",
     "baseUrl": ".",
     "paths": {
-      "@ave/plugin-sdk": ["./packages/plugin-sdk/src/index.ts"],
-      "@ave/plugin-sdk/keys": ["./packages/plugin-sdk/src/keys.ts"]
+      "@ave/plugin-sdk": ["./packages/plugin-sdk/src/index.ts"]
     }
   },
   "include": [

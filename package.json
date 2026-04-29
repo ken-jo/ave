@@ -6,7 +6,7 @@
   "description": "Test Electron host app for Ave plugins.",
   "main": "dist/src/main.js",
   "scripts": {
-    "postinstall": "node scripts/ensure-submodules.mjs && bun run --cwd packages/plugin-sdk build && electron-rebuild && node scripts/fetch-uv.mjs",
+    "postinstall": "electron-rebuild && node scripts/fetch-uv.mjs",
     "prepare:plugins": "bun run --cwd ../ave-plugin-pyxis build && bun run --cwd ../ave-plugin-meeting build && bun run --cwd ../ave-plugin-lyra-mail build && bun run --cwd ../ave-plugin-orion-api build && bun run --cwd ../ave-plugin-vega-early build && bun run --cwd ../ave-plugin-hydra build",
     "prepare:plugins:npm": "npm run --prefix ../ave-plugin-pyxis build && npm run --prefix ../ave-plugin-meeting build && npm run --prefix ../ave-plugin-lyra-mail build && npm run --prefix ../ave-plugin-orion-api build && npm run --prefix ../ave-plugin-vega-early build && npm run --prefix ../ave-plugin-hydra build",
     "build:main": "tsc -p tsconfig.json",
@@ -38,8 +38,6 @@
     "test:meeting-flow:npm": "npm run prepare:plugins:npm && tsx scripts/test-meeting-flow.ts",
     "test:main-flow": "bun run prepare:plugins && tsx scripts/test-main-flow.ts",
     "test:main-flow:npm": "npm run prepare:plugins:npm && tsx scripts/test-main-flow.ts",
-    "sign:manifest": "node scripts/sign-manifest.mjs",
-    "keygen:publisher": "node scripts/keygen-publisher.mjs",
     "release": "node scripts/release.mjs",
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build"
