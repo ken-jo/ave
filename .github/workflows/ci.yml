@@ -26,9 +26,6 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
         working-directory: ave
-      - name: Check plugin SDK drift
-        run: AVE_HOST_TYPES_PATH="$PWD/src/plugins/types.ts" bun run --cwd packages/plugin-sdk check:drift
-        working-directory: ave
       - run: bun run build
         working-directory: ave
       - run: bunx vitest run

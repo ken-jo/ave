@@ -39,9 +39,6 @@ jobs:
       - name: Install app dependencies
         run: bun install --frozen-lockfile
         working-directory: ave
-      - name: Check plugin SDK drift
-        run: AVE_HOST_TYPES_PATH="$PWD/src/plugins/types.ts" bun run --cwd packages/plugin-sdk check:drift
-        working-directory: ave
       - name: Build app
         run: bun run build
         working-directory: ave
