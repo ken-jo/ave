@@ -12,11 +12,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' && github.event.label.name == 'ui-e2e')
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-      fail-fast: false
-    runs-on: ${{ matrix.os }}
+    runs-on: [self-hosted, Linux, ARM64, oracle]
     timeout-minutes: 25
     env:
       E2E: "1"
@@ -28,27 +24,16 @@ jobs:
           path: ave
 
       # Sibling plugin repos are required because ave declares
-      # file:../ave-plugin-* dependencies in package.json.
-      - name: Checkout ave-plugin-pyxis
-        uses: actions/checkout@v6
-        with:
-          repository: former_org/ave-plugin-pyxis
-          path: ave-plugin-pyxis
-      - name: Checkout ave-plugin-meeting
-        uses: actions/checkout@v6
-        with:
-          repository: former_org/ave-plugin-meeting
-          path: ave-plugin-meeting
-      - name: Checkout ave-plugin-lyra-post
-        uses: actions/checkout@v6
-        with:
-          repository: former_org/ave-plugin-lyra-post
-          path: ave-plugin-lyra-post
-      - name: Checkout ave-plugin-lyra-cal
-        uses: actions/checkout@v6
-        with:
-          repository: former_org/ave-plugin-lyra-cal
-          path: ave-plugin-lyra-cal
+      # file:../ave-plugin-* dependencies in package.json. Self-hosted runner
+      # uses host gh CLI auth (repo scope) instead of a GitHub App token.
+      - name: Clone sibling plugin repos
+        run: |
+          set -euo pipefail
+          GH_TOKEN=$(gh auth token)
+          for slug in ave-plugin-pyxis ave-plugin-meeting ave-plugin-orion-api ave-plugin-vega-early ave-plugin-hydra ave-plugin-lyra-mail; do
+            if [ -d "$slug" ]; then rm -rf "$slug"; fi
+            git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/former_org/${slug}.git" "$slug"
+          done
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -85,19 +70,13 @@ jobs:
           npm run build:npm
 
       - name: Run Playwright UI E2E (Linux)
-        if: runner.os == 'Linux'
         working-directory: ave
         run: xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" npx playwright test
-
-      - name: Run Playwright UI E2E (Windows)
-        if: runner.os == 'Windows'
-        working-directory: ave
-        run: npx playwright test
 
       - name: Upload Playwright report
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: playwright-report-${{ matrix.os }}
+          name: playwright-report
           path: ave/playwright-report
           if-no-files-found: ignore

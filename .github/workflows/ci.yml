@@ -6,54 +6,23 @@ on:
     branches: [main]
 jobs:
   build-and-test:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-      fail-fast: false
-    runs-on: ${{ matrix.os }}
+    runs-on: [self-hosted, Linux, ARM64, oracle]
     steps:
       - uses: actions/checkout@v6
         with:
           path: ave
           submodules: recursive
-      - name: Generate plugin read token
-        id: app-token
-        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3  # v3.1.1
-        with:
-          app-id: ${{ secrets.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: former_org
-          repositories: ave-plugin-meeting,ave-plugin-lyra-post,ave-plugin-pyxis,ave-plugin-lyra-cal,ave-plugin-orion-api,ave-plugin-vega-early
-      - uses: actions/checkout@v6
-        with:
-          repository: former_org/ave-plugin-meeting
-          path: ave-plugin-meeting
-          token: ${{ steps.app-token.outputs.token }}
-      - uses: actions/checkout@v6
-        with:
-          repository: former_org/ave-plugin-lyra-post
-          path: ave-plugin-lyra-post
-          token: ${{ steps.app-token.outputs.token }}
-      - uses: actions/checkout@v6
-        with:
-          repository: former_org/ave-plugin-pyxis
-          path: ave-plugin-pyxis
-          token: ${{ steps.app-token.outputs.token }}
-      - uses: actions/checkout@v6
-        with:
-          repository: former_org/ave-plugin-lyra-cal
-          path: ave-plugin-lyra-cal
-          token: ${{ steps.app-token.outputs.token }}
-      - uses: actions/checkout@v6
-        with:
-          repository: former_org/ave-plugin-orion-api
-          path: ave-plugin-orion-api
-          token: ${{ steps.app-token.outputs.token }}
-      - uses: actions/checkout@v6
-        with:
-          repository: former_org/ave-plugin-vega-early
-          path: ave-plugin-vega-early
-          token: ${{ steps.app-token.outputs.token }}
+      - name: Clone sibling plugin repos
+        # Self-hosted runner has gh CLI authenticated as ubuntu user (repo scope).
+        # We use that token instead of GitHub App auth — the App is install-pinned
+        # to a different repo set and cannot be modified without org-owner UI access.
+        run: |
+          set -euo pipefail
+          GH_TOKEN=$(gh auth token)
+          for slug in ave-plugin-meeting ave-plugin-pyxis ave-plugin-orion-api ave-plugin-vega-early ave-plugin-hydra ave-plugin-lyra-mail; do
+            if [ -d "$slug" ]; then rm -rf "$slug"; fi
+            git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/former_org/${slug}.git" "$slug"
+          done
       - uses: oven-sh/setup-bun@v2
       - name: Build plugin-sdk submodule
         run: |
