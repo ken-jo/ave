@@ -27,6 +27,7 @@ import {
   devSkipSignature,
   setIsPackaged,
   shouldWarnPackagedFlagsIgnored,
+  tamperedVarsAtBoot,
 } from "../dev-flags.js";
 import { requiredCapabilityForEmit } from "../../plugins/capabilities.js";
 import { resolvePluginPaths } from "../../plugins/plugin-paths.js";
@@ -590,7 +591,12 @@ export async function initPluginRuntime(
   // get a single audit warning, never a per-flag enumeration.
   setIsPackaged(app.isPackaged);
   if (shouldWarnPackagedFlagsIgnored()) {
-    console.error("[ave] AVE_DEV* ignored in packaged build");
+    // Snapshot was captured at `dev-flags.ts` import time, BEFORE
+    // `main.ts:67-73` scrubbed the vars from `process.env`. Listing the
+    // specific names lets operators distinguish a stale launcher
+    // (`AVE_PLUGINS_DIR`) from an active dev tamper (`AVE_DEV=1`).
+    const names = tamperedVarsAtBoot();
+    console.error(`[ave] AVE_DEV* ignored in packaged build: ${names.join(", ")}`);
   }
 
   // Sprint 4-B §B-4 — signature verifier wired end-to-end.
