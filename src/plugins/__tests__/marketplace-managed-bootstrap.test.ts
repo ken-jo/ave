@@ -22,7 +22,8 @@ describe("PluginMarketplaceService managed bootstrap", () => {
   beforeEach(async () => {
     setIsPackaged(false);
     // Phase 2b-1: file:-spec catalog entries route through the dev branch.
-    process.env.AVE_ALLOW_LINKED_PLUGIN_ENTRY = "1";
+    // Round-3: AVE_DEV=1 subsumes the deprecated AVE_ALLOW_LINKED_PLUGIN_ENTRY.
+    process.env.AVE_DEV = "1";
     testDir = join(
       tmpdir(),
       `ave-managed-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -38,7 +39,7 @@ describe("PluginMarketplaceService managed bootstrap", () => {
   });
 
   afterEach(async () => {
-    delete process.env.AVE_ALLOW_LINKED_PLUGIN_ENTRY;
+    delete process.env.AVE_DEV;
     vi.restoreAllMocks();
     await rm(testDir, { recursive: true, force: true });
     _resetForTest();
