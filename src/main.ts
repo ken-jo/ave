@@ -206,7 +206,9 @@ async function handleAveUri(url: string) {
       // so deep-link installs behave identically to in-app installs.
       try {
         mainWindow?.webContents.send("ave:plugins:install-progress", { slug: params.slug, phase: "restarting" });
-        await services!.pluginRuntime.restartAll();
+        // US-A3 — single-plugin lifecycle: only the deep-link-installed
+        // plugin starts up. Other plugins keep their in-memory state.
+        await services!.pluginRuntime.addPlugin(params.slug);
         services!.refreshPluginNotifications?.();
       } catch (err) {
         console.error("[ave] post-install steps failed for ave:// install", err);
