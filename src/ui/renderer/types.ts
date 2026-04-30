@@ -390,6 +390,7 @@ export type AveApi = {
         question: string;
         choices?: string[];
         allowFreeText: boolean;
+        suggestedAnswers?: string[];
       }>;
       urgent: boolean;
       createdAt: number;
