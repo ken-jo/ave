@@ -40,6 +40,8 @@ jobs:
         with:
           node-version: "20"
 
+      - uses: oven-sh/setup-bun@v2
+
       - name: Install xvfb + Electron runtime deps
         if: runner.os == 'Linux'
         run: |
@@ -53,25 +55,21 @@ jobs:
 
       - name: Install ave deps
         working-directory: ave
-        run: npm ci
+        run: bun install --frozen-lockfile
 
       - name: Install Playwright browsers (none needed for electron, skip deps)
         working-directory: ave
-        run: npx playwright install --with-deps=false || true
+        run: bunx playwright install --with-deps=false || true
 
       - name: Build app + plugins
         working-directory: ave
-        run: npm run start:npm --dry-run || true
-        # Use explicit build step rather than start (which also launches electron).
-      - name: Build
-        working-directory: ave
         run: |
-          npm run prepare:plugins:npm
-          npm run build:npm
+          bun run prepare:plugins
+          bun run build
 
       - name: Run Playwright UI E2E (Linux)
         working-directory: ave
-        run: xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" npx playwright test
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" bunx playwright test
 
       - name: Upload Playwright report
         if: always()
