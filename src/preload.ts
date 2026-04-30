@@ -696,6 +696,9 @@ contextBridge.exposeInMainWorld("ave", {
   pluginConfig: {
     get: (pluginId: string) => ipcRenderer.invoke("ave:plugins:config:get", pluginId),
     set: (pluginId: string, config: Record<string, unknown>) => ipcRenderer.invoke("ave:plugins:config:set", pluginId, config),
+    getSchema: (pluginId: string) => ipcRenderer.invoke("ave:plugins:config:schema:get", pluginId),
+    setSecret: (pluginId: string, key: string, value: string) =>
+      ipcRenderer.invoke("ave:plugins:config:secret:set", pluginId, key, value),
   },
   env: {
     isDev: process.env.AVE_DEV === "1",
