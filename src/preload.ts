@@ -699,6 +699,10 @@ contextBridge.exposeInMainWorld("ave", {
     getSchema: (pluginId: string) => ipcRenderer.invoke("ave:plugins:config:schema:get", pluginId),
     setSecret: (pluginId: string, key: string, value: string) =>
       ipcRenderer.invoke("ave:plugins:config:secret:set", pluginId, key, value),
+    // US-3c.1: batch secret-presence query — returns keys for which the
+    // keychain holds a value. Fewer IPC round-trips than per-key checks.
+    listSecretKeys: (pluginId: string) =>
+      ipcRenderer.invoke("ave:plugins:config:secret:list-keys", pluginId),
   },
   env: {
     isDev: process.env.AVE_DEV === "1",
