@@ -252,7 +252,7 @@ export interface DenyListEntry {
       {
         "id": "ave-plugin-pyxis",
         "version": "0.2.0",
-        "source": "https://internal.portal.example.com/ave/marketplace/api/v1/plugins/ave-plugin-pyxis/0.2.0.tgz",
+        "source": "https://internal.your-corp.example/ave/marketplace/api/v1/plugins/ave-plugin-pyxis/0.2.0.tgz",
         "sha256": "abc123def456...",
         "forceInstall": true,
         "autoUpdate": true,
@@ -262,7 +262,7 @@ export interface DenyListEntry {
       {
         "id": "ave-plugin-meeting",
         "version": "1.1.3",
-        "source": "https://internal.portal.example.com/ave/marketplace/api/v1/plugins/ave-plugin-meeting/1.1.3.tgz",
+        "source": "https://internal.your-corp.example/ave/marketplace/api/v1/plugins/ave-plugin-meeting/1.1.3.tgz",
         "sha256": "def789abc012...",
         "forceInstall": true,
         "autoUpdate": true
@@ -301,7 +301,7 @@ export class ManagedPolicySync {
   constructor(
     private readonly opts: {
       policyDir: string;            // ~/.ave/governance
-      apiEndpoint: string;          // https://internal.portal.example.com/ave/policy
+      apiEndpoint: string;          // https://internal.your-corp.example/ave/policy
       trustedCaPath: string;        // ~/.ave/governance/trusted-ca.pem
       auditService: AuditService;
     },

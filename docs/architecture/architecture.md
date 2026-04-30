@@ -2345,12 +2345,12 @@ graph TB
       "transport": "stdio"
     },
     "hr-system": {
-      "url": "https://hr-api.portal.example.com/mcp",
+      "url": "https://hr-api.your-corp.example/mcp",
       "transport": "sse",
       "auth": "sso"
     },
     "erp-realtime": {
-      "url": "wss://erp.portal.example.com/mcp",
+      "url": "wss://erp.your-corp.example/mcp",
       "transport": "websocket",
       "auth": "sso"
     }
@@ -2489,7 +2489,7 @@ Step 1-8:  기존 boot sequence
       {
         "id": "ave-plugin-pyxis",
         "version": "0.2.0",
-        "source": "https://internal.portal.example.com/ave/marketplace/api/v1/plugins/ave-plugin-pyxis/0.2.0",
+        "source": "https://internal.your-corp.example/ave/marketplace/api/v1/plugins/ave-plugin-pyxis/0.2.0",
         "sha256": "...",
         "forceInstall": true,
         "autoUpdate": true
