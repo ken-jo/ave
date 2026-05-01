@@ -35,7 +35,7 @@ function makeItem(
   return {
     id,
     name: id,
-    description: "",
+    description: "Test fixture.",
     packageSpec: `@ave/${id}@1.0.0`,
     packageName: `@ave/${id}`,
     tools: [],
@@ -70,6 +70,7 @@ async function setupTestDir(
         version: "1.0.0",
         entry: "dist/index.js",
         tools: [],
+        description: "Test fixture.",
         capabilities: p.capabilities
       }),
     );
@@ -172,6 +173,7 @@ describe("marketplace install dependency guard (S14)", () => {
         version: "1.0.0",
         entry: "dist/index.js",
         tools: [],
+        description: "Test fixture.",
         capabilities: ["cap-b"]
       }),
     );
