@@ -564,7 +564,8 @@ ${input}`;
     })),
   }));
 
-  ipcMain.handle("ave:routines:list", () => {
+  // read-only; sender guard optional but added for cross-window consistency
+  ipcMain.handle("ave:routines:list", (_e) => {
     const routineSettings = settingsService.get("routine");
     return REGISTERED_ROUTINES.map((routine) => {
       const sessions = conversationLoop.listRoutineSessions(routine.id, 20).map((session) => ({
@@ -1507,12 +1508,15 @@ ${input}`;
     return getUsageSummary(typeof days === "number" ? days : 60);
   });
 
-  ipcMain.handle("ave:usage:range", async (_e, opts: { dateFrom: string; dateTo: string }) => {
+  // read-only; sender guard optional but added for cross-window consistency
+  ipcMain.handle("ave:usage:range", async (e, opts: { dateFrom: string; dateTo: string }) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:usage:range", e); return UNAUTHORIZED_FRAME; }
     const { getUsageRange } = await import("./engine/usage-stats.js");
     return getUsageRange(opts);
   });
 
-  ipcMain.handle("ave:usage:export-csv", async (_e, rows: Array<Record<string, string | number>>) => {
+  ipcMain.handle("ave:usage:export-csv", async (e, rows: Array<Record<string, string | number>>) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:usage:export-csv", e); return UNAUTHORIZED_FRAME; }
     const { dialog, BrowserWindow } = await import("electron");
     const win = BrowserWindow.getFocusedWindow() ?? undefined;
     const result = win
