@@ -226,6 +226,16 @@ Renderer UI 는 `ave:plugins:call` IPC 를 통해 플러그인 메서드를 직�
 - `meeting`, `calendar`, `email`, `index`, `task`, `briefing` → public. 조용히 허용. `task.*` namespace 는 host 의 `TaskDeadlinePoller` (`src/main/task-deadline-poller.ts`) 가 owner — 현재 `task.deadline.approaching` 발행 (msUntilDeadline 포함). 추가 task lifecycle 이벤트 는 향후 확장.
 - 그 외 → neutral. 허용하되 namespace drift 추적 warn.
 
+**이벤트 emit 측 host-only 예약** (`HOST_ONLY_EMIT_NAMESPACES` in `src/plugins/capabilities.ts`):
+
+| Namespace | 발행자 | 비고 |
+|----------|-------|------|
+| `plugin.*` | host (`emitEvent` from `boot/types.ts`) | `plugin.installed` / `plugin.uninstalled` lifecycle. plugin 의 `hostApi.emitEvent` 와 plugin webview IPC bridge 양쪽 모두 거부. vega-early 의 `onPluginsChanged` 가 self-event filter + `source` discriminator 로 구독. 자세한 contract 는 architecture.md §9.4a. |
+
+`task.*` 도 사실상 host-only 지만 별도 set 에 등록하지 않음 — plugin 측 emit 이 owner-mismatch 로 이미 거부되기 때문 (tasks-plugin-split paused 상태에서 plugin 측 emitter 부재).
+
+`onPluginsChanged` 의 `PluginLifecycleEvent` union 에는 `_future` sentinel variant (`{type: "_future"; readonly __exhaustive: never}`) 가 포함된다. 런타임에는 절대 발생하지 않으며, 향후 `"updated"` 같은 신규 variant 추가 시 exhaustive `switch (event.type)` consumer 가 silently 누락되지 않도록 `default:` branch 를 강제하는 type-level forward-compat 가드다.
+
 ### 2.4 AJV 매니페스트 검증 플로우
 
 ```
@@ -401,6 +411,8 @@ top-level 은 반드시 `"type": "object"` — 모든 LLM vendor 공통 요구�
 | `callLlm(prompt, options?)` | 호스트 LLM 으로 단발 텍스트 생성 (선제성 본문·분류·요약) | 대화 히스토리·streaming·tool_use 필요 시 (플러그인이 직접 SDK 사용) |
 | `openAuthWindow(options)` ([external-auth-consumer] 필요) | 외부 포털 interactive 로그인 창을 띄우고 지정 도메인 쿠키 수집 (Selenium/webdriver 대체) | OAuth-style localhost callback이 되는 표준 플로우 (→ LYRA Mail 패턴 사용) |
 | `triggerConversation(spec)` ([conversation-trigger] 필요) | 관찰된 신호를 바탕으로 ConversationLoop 를 능동적으로 발사 ("먼저 말 거는 비서" 차별화) | 사용자 input → tool 결과 패턴 (chat 으로 충분) — 자세한 사용 패턴 / 안전 계약은 [`conversation-trigger.md`](./conversation-trigger.md) |
+| `getInstalledPluginIds()` | 다른 플러그인 설치 여부 체크 — 의존성-인식 detector / 조건부 UI (예: vega-early 가 lyra-mail 설치 시에만 메일 detector 등록) | 우선순위 추론 (insertion order ≠ priority). 향후 capability-filtered 변종 (`getProvidersFor(capability)`) 가 superseding 예정 — Phase 1 은 unscoped |
+| `onPluginsChanged(handler)` | install/uninstall 발생 시 reactive 재구성 (예: detector list rebuild). handler 는 `PluginLifecycleEvent` 받음 (`{type, pluginId, source}` discriminated union, self-event 자동 필터). production consumer 는 `source: "local-dev"` 무시 권장 | `updated` (버전 bump) — 별도 spec 진행 중 (P0 미지원). handler 는 forward-compat 위해 `default:` 분기 필수 |
 | `logEvent(level, message, data?)` | 호스트 감사 로그에 플러그인 이벤트 기록 | 디버그 전용 고빈도 로깅 (성능) |
 | `onShutdown(handler)` | 앱 종료 전 정리 작업 (DB flush, 파일 저장 등) | 긴 비동기 작업 (5s 제한) |
 
