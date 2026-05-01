@@ -29,6 +29,7 @@ function makeCatalogPlugin(id: string, version: string): PluginMarketplaceItem {
     id,
     name: id,
     description: "",
+    publisher: "Test fixture",
     packageSpec: `@ave/${id}@${version}`,
     packageName: `@ave/${id}`,
     tools: [],
