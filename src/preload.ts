@@ -113,7 +113,8 @@ const api = {
 
   // ─── Chat (ConversationLoop) ─────────────────────
   chatHasProvider: async () => ipcRenderer.invoke("ave:chat:has-provider") as Promise<boolean>,
-  chatSend: async (input: string) => ipcRenderer.invoke("ave:chat:send", input),
+  chatSend: async (input: string, attachments?: unknown[]) =>
+    ipcRenderer.invoke("ave:chat:send", input, attachments),
   chatGuide: async (input: string) => ipcRenderer.invoke("ave:chat:guide", input),
   chatNew: async () => ipcRenderer.invoke("ave:chat:new"),
   chatSessions: async () =>
@@ -788,5 +789,14 @@ contextBridge.exposeInMainWorld("ave", {
   env: {
     isDev: process.env.AVE_DEV === "1",
     enableDevConsole: process.env.AVE_DEV_CONSOLE === "1",
+  },
+  attach: {
+    openFile: () => ipcRenderer.invoke("ave:attach:openFile"),
+    readImage: (filePath: string) =>
+      ipcRenderer.invoke("ave:attach:readImage", filePath),
+    saveClipboardImage: (base64: string) =>
+      ipcRenderer.invoke("ave:attach:saveClipboardImage", { base64 }),
+    openExternal: (filePath: string) =>
+      ipcRenderer.invoke("ave:attach:openExternal", filePath),
   },
 });
