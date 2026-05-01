@@ -15,6 +15,8 @@
 import type { BrowserWindow } from "electron";
 import type { PluginRuntime } from "../../plugins/runtime.js";
 import { onEvent } from "../types.js";
+import { createLogger } from "../../lib/logger.js";
+const log = createLogger("ave");
 
 /** True if the event type is a high-frequency transcript stream event. */
 export function isTranscriptEvent(type: string): boolean {
@@ -90,7 +92,7 @@ export function registerPluginEventBridge(
       try {
         win.webContents.send("ave:plugin:event", type, data);
       } catch (e) {
-        console.warn(`[ave] boot: ${type} send failed:`, (e as Error).message);
+        log.warn(`boot: ${type} send failed: %s`, (e as Error).message);
       }
     };
     const sendFn = isTranscriptEvent(type)
