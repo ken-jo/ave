@@ -311,7 +311,6 @@ interface PluginHostApi {
   startLyraMailAuth(openBrowser: (url: string) => Promise<void>): Promise<void>;
   isLyraMailAuthenticated(): boolean;
   getLyraMailAccount(): string | null;                 // ← 문자열 또는 null
-  onLyraMailAuthChange(handler: () => void): void;      // ← 인자 없음
 
   // Sprint 1-A / 4-B 확장
   callLlm(prompt: string, options?: { maxTokens?: number; systemPrompt?: string }): Promise<string>;
@@ -407,8 +406,8 @@ await hostApi.startLyraMailAuth(async (url) => {
 // 액세스 토큰 (자동 갱신 포함)
 const token: string | null = await hostApi.getLyraMailToken();
 
-// 인증 상태 변경 알림 (인자 없음; 현재 상태는 isLyraMailAuthenticated() 로 조회)
-hostApi.onLyraMailAuthChange(() => {
+// 인증 상태 변경은 `lyra-mail.auth.changed` 이벤트로 수신
+hostApi.onEvent("lyra-mail.auth.changed", () => {
   context.log(`auth changed → ${hostApi.isLyraMailAuthenticated()}`);
 });
 ```
@@ -536,7 +535,7 @@ capability 는 호스트가 특정 pluginId 를 몰라도 통합 지점을 결�
 | `knowledge-index` | 문서 인덱스/검색 제공 | advisory | pageindex |
 | `lyra-mail-consumer` | HostApi 의 LYRA Mail 메서드 사용 | **강제** (§B-5) | email, calendar |
 
-현재 **런타임이 강제하는 capability 는 `lyra-mail-consumer` 하나뿐**입니다. 미선언 플러그인이 `getLyraMailToken` / `startLyraMailAuth` / `isLyraMailAuthenticated` / `getLyraMailAccount` / `onLyraMailAuthChange` 중 하나라도 호출하면 `capability not declared: lyra-mail-consumer` 예외가 발생합니다.
+현재 **런타임이 강제하는 capability 는 `lyra-mail-consumer` 하나뿐**입니다. 미선언 플러그인이 `getLyraMailToken` / `startLyraMailAuth` / `isLyraMailAuthenticated` / `getLyraMailAccount` 중 하나라도 호출하면 `capability not declared: lyra-mail-consumer` 예외가 발생합니다.
 
 나머지는 discoverability 용 — 정책·UI·라우팅이 필요에 따라 조회합니다. enum 화 및 capability 기반 게이팅 확대는 [열린 TODO](#미구현--열린-todo) 참고.
 
@@ -683,7 +682,6 @@ const hostApi: PluginHostApi = {
   startLyraMailAuth: vi.fn(async (_openBrowser) => {}),
   isLyraMailAuthenticated: vi.fn(() => false),
   getLyraMailAccount: vi.fn(() => null),    // string | null
-  onLyraMailAuthChange: vi.fn(),             // () => void handler
   callLlm: vi.fn(async () => "mock"),
   logEvent: vi.fn(),
   onShutdown: vi.fn(),
