@@ -19,6 +19,8 @@ import { startCrashReporter } from "../../main/crash-reporter.js";
 import { TelemetryService } from "../../main/telemetry.js";
 import { PluginTelemetryClient } from "../../telemetry/client.js";
 import { onEvent } from "../types.js";
+import { createLogger } from "../../lib/logger.js";
+const log = createLogger("ave");
 
 export interface ReleasePrepOutput {
   telemetry?: TelemetryService;
@@ -65,7 +67,7 @@ export function wireReleasePrep(input: ReleasePrepInput): ReleasePrepOutput {
             mainWindow.webContents.send("ave:telemetry:consent-prompt");
           }
         } catch (e) {
-          console.warn("[ave] boot: telemetry consent prompt send failed:", (e as Error).message);
+          log.warn("boot: telemetry consent prompt send failed: %s", (e as Error).message);
         }
       }, 500);
     }
@@ -115,7 +117,7 @@ export function wireReleasePrep(input: ReleasePrepInput): ReleasePrepOutput {
         ptClient.stop();
         void ptClient.flush();
       } catch (err) {
-        console.warn("[ave] shutdown: plugin telemetry final flush failed:", (err as Error).message);
+        log.warn("shutdown: plugin telemetry final flush failed: %s", (err as Error).message);
       }
     });
 
@@ -132,12 +134,12 @@ export function wireReleasePrep(input: ReleasePrepInput): ReleasePrepOutput {
         retainedTelemetry.stop();
         void retainedTelemetry.flush();
       } catch (err) {
-        console.warn("[ave] shutdown: telemetry final flush failed:", (err as Error).message);
+        log.warn("shutdown: telemetry final flush failed: %s", (err as Error).message);
       }
     });
-    console.log("[ave] boot: release prep wired (updater/crash/telemetry)");
+    log.info("boot: release prep wired (updater/crash/telemetry)");
   } catch (err) {
-    console.warn("[ave] boot: release prep init failed (non-fatal):", (err as Error).message);
+    log.warn("boot: release prep init failed (non-fatal): %s", (err as Error).message);
   }
 
   return { telemetry, pluginTelemetry, autoUpdaterStop };
@@ -178,18 +180,18 @@ export function wireUpdateCheck(input: UpdateCheckInput): void {
         .sort()
         .join("|");
       if (key === lastBroadcastKey) {
-        console.debug("[ave] update-check: no change (%d)", updates.length);
+        log.debug("update-check: no change (%d)", updates.length);
         return;
       }
       lastBroadcastKey = key;
       mainWindow?.webContents?.send("marketplace:updates-available", updates);
       if (updates.length > 0) {
-        console.log("[ave] update-check: %d plugin update(s) available", updates.length);
+        log.info("update-check: %d plugin update(s) available", updates.length);
       } else {
-        console.debug("[ave] update-check: cleared previous updates");
+        log.debug("update-check: cleared previous updates");
       }
     } catch (err) {
-      console.warn("[ave] update-check: error:", (err as Error).message);
+      log.warn("update-check: error: %s", (err as Error).message);
     }
   };
 
