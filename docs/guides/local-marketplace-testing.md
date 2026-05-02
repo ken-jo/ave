@@ -67,14 +67,14 @@ Ave 마켓플레이스는 **git-based publish** (Go 모듈 프록시 스타일).
 | slug | 레포 디렉토리명 | install policy | 비고 |
 |------|------------------|----------------|------|
 | `meeting` | `ave-plugin-meeting` | user (명시) | |
-| `pageindex` | `ave-plugin-pyxis` | admin (fallback) | `install_policy`/`deployment` 키 생략 → fallback 룰로 admin |
+| `local-indexer` | `ave-plugin-local-indexer` | admin (fallback) | `install_policy`/`deployment` 키 생략 → fallback 룰로 admin |
 | `lyra-mail` | `ave-plugin-lyra-mail` | user (명시) | 구 email + calendar 플러그인 합본 |
-| `orion-api` | `ave-plugin-orion-api` | admin (fallback) | 위 pageindex 와 동일 |
+| `orion-api` | `ave-plugin-orion-api` | admin (fallback) | 위 local-indexer 와 동일 |
 | `vega-early` | `ave-plugin-vega-early` | user (명시) | |
 | `agent-hub` | `ave-plugin-hydra` | user (명시) | |
 | `hello-world` (합성) | (코드 안에 dummy zip) | free | 부팅 시 자동 publish — install-flow 테스트용 |
 
-> ⚠️ **fallback 룰 주의**: `MANAGED_SOURCES` 항목에서 `install_policy` / `deployment` 를 둘 다 생략하면 `admin`/`managed` 로 간주됩니다 (`bootstrap.py:651-655`). 새 user-policy 플러그인은 반드시 둘 다 명시(`install_policy="user", deployment="user"`)하세요. pageindex/orion-api 가 admin 인 것은 두 필드를 모두 생략한 결과지 의도된 admin 정책이라는 보장은 코드 차원입니다.
+> ⚠️ **fallback 룰 주의**: `MANAGED_SOURCES` 항목에서 `install_policy` / `deployment` 를 둘 다 생략하면 `admin`/`managed` 로 간주됩니다 (`bootstrap.py:651-655`). 새 user-policy 플러그인은 반드시 둘 다 명시(`install_policy="user", deployment="user"`)하세요. local-indexer/orion-api 가 admin 인 것은 두 필드를 모두 생략한 결과지 의도된 admin 정책이라는 보장은 코드 차원입니다.
 
 이 6개 중 하나를 수정하고 있다면 §3 의 dev 루프로 바로 진입. 새 플러그인은 §6 참고.
 
@@ -95,7 +95,7 @@ former_org/
 ├── ave/
 ├── agent-marketplace/         ← 서버
 ├── ave-plugin-meeting/      ← bootstrap 이 git pull 대상으로 인식
-├── ave-plugin-pyxis/
+├── ave-plugin-local-indexer/
 ├── ave-plugin-lyra-post/
 ├── ave-plugin-lyra-cal/
 ├── ave-plugin-orion-api/
@@ -140,7 +140,7 @@ docker compose up
 ```
 bootstrap: meeting@1.0.0 unchanged — preserving existing artifact
 bootstrap: orion-api@0.1.1 published (123456 bytes, abcdef012345…)
-bootstrap: repo missing, skipped: /path/to/ave-plugin-pyxis
+bootstrap: repo missing, skipped: /path/to/ave-plugin-local-indexer
 ```
 
 > log 의 "skipped" 줄은 slug prefix 가 없는 풀 경로 형태입니다.
