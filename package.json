@@ -6,7 +6,7 @@
   "description": "Test Electron host app for Ave plugins.",
   "main": "dist/src/main.js",
   "scripts": {
-    "postinstall": "electron-rebuild && node scripts/fetch-uv.mjs",
+    "postinstall": "electron-rebuild && node scripts/fetch-uv.mjs && node scripts/register-ave-protocol.mjs",
     "prepare:plugins": "bun run --cwd ../ave-plugin-pyxis build && bun run --cwd ../ave-plugin-meeting build && bun run --cwd ../ave-plugin-lyra-mail build && bun run --cwd ../ave-plugin-orion-api build && bun run --cwd ../ave-plugin-vega-early build && bun run --cwd ../ave-plugin-hydra build",
     "build:main": "tsc -p tsconfig.json",
     "build:renderer": "esbuild src/renderer.tsx --bundle --platform=browser --format=esm --splitting --outdir=dist/src --out-extension:.js=.js",
