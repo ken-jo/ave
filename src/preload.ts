@@ -129,6 +129,11 @@ const api = {
     }>,
   // Sprint 4.C — conversation UX
   chatGetHistory: async () => ipcRenderer.invoke("ave:chat:get-history"),
+  chatSessionHistory: async (sessionId: string) =>
+    ipcRenderer.invoke("ave:chat:session-history", sessionId) as Promise<{
+      ok: boolean;
+      messages: Array<{ index: number; role: string; content: string; toolName?: string; isError?: boolean }>;
+    }>,
   chatEditResend: async (messageIndex: number, newText: string) =>
     ipcRenderer.invoke("ave:chat:edit-resend", messageIndex, newText),
   chatFork: async (messageIndex: number) => ipcRenderer.invoke("ave:chat:fork", messageIndex),
