@@ -12,9 +12,12 @@
 
 ```bash
 cd ave
-bun run prepare:plugins   # 형제 ave-plugin-* 빌드
-bun run dev               # 자동: dev:link → ~/.ave/plugins/<id>/ → Electron 기동
+bun run prepare:plugins                                      # 형제 ave-plugin-* 빌드
+ave-cli install file://../ave-plugin-<id>/dist.zip        # 로컬 marketplace install
+bun run dev                                                  # ~/.ave/plugins/ 만 읽음
 ```
+
+> 2026-05-02 기준: 호스트의 `bun run dev:link` 워크플로우는 완전히 제거되었습니다. 모든 플러그인 설치는 marketplace (정식 publish) 또는 `ave-cli install file://<dist.zip>` (로컬-dev) 단일 경로로 통일되었습니다.
 
 **B. 외부 빌드 폴더 sideload — UI (PR #306 신기능)**
 
@@ -229,7 +232,7 @@ watch 빌드가 `dist/*.js` 를 갱신하면 호스트 watcher 가 디바운스 
 | 증상 | 원인 / 해결 |
 |------|-------------|
 | 부팅 후 플러그인이 안 보이고 `[plugin-runtime] ignoring untrusted registry manifest path for <id>` 로그 | manifest 가 trust-root 밖. §3-1 참고 — `~/.ave/plugins/<id>/` 안으로 복사하거나 [local-marketplace-testing.md](./local-marketplace-testing.md) 사용. symlink 도 안 됨 (`realpathSync` 검사). |
-| `bun run plugins:list` 결과가 기대와 다름 | CLI 와 Electron 모두 `~/.ave/plugins/` 를 플러그인 루트로 사용합니다. 오래된 `.ave-dev` 잔재나 직접 편집한 registry 를 확인하고 `bun run dev:link` 를 다시 실행하세요. |
+| `bun run plugins:list` 결과가 기대와 다름 | CLI 와 Electron 모두 `~/.ave/plugins/` 를 플러그인 루트로 사용합니다. 오래된 `.ave-dev` 잔재나 직접 편집한 registry 를 확인하고 `ave-cli install file://<dist.zip>` 으로 재설치하세요. |
 | `[manifest:<id>] schema validation failed (<jsonpath>): ...` | AJV 검증 실패. `plugin.json` 의 해당 필드 확인. SDK 빌드시 `bun run validate:hostapi` 로 미리 잡힘. |
 | `plugin signature required` 또는 `plugin signature verification failed` (packaged 빌드에서) | §4 참고 — packaged 빌드는 dev skip flag 무시. 정식 publish 또는 사용자 토글 필요. |
 | `Plugin already exists: <id>` (`plugins:add`) | 같은 id 가 registry 에 이미 있음. `bun run plugins:remove -- <id>` 후 재등록. |
@@ -240,15 +243,15 @@ watch 빌드가 `dist/*.js` 를 갱신하면 호스트 watcher 가 디바운스 
 
 ## 7. 기존 dev 환경에서 단일 루트(`~/.ave/plugins/`)로 마이그레이션
 
-> **대상**: 이전 세대 dev 환경에서 `AVE_PLUGINS_DIR` 환경변수, `ave/.ave-dev/plugins/` 등을 사용하던 기존 Ave 개발자.
-> **목표**: 충돌 없이 새 단일 루트 + `dev:link` 워크플로우로 전환.
+> **대상**: 이전 세대 dev 환경에서 `AVE_PLUGINS_DIR` 환경변수, `ave/.ave-dev/plugins/`, `bun run dev:link` 등을 사용하던 기존 Ave 개발자.
+> **목표**: 충돌 없이 새 단일 루트 + `ave-cli install file://<dist.zip>` 워크플로우로 전환.
 
 ### 7-1. 무엇이 바뀌었나
 
 | 변경 전 (deprecated) | 변경 후 (canonical) |
 |---|---|
 | `AVE_PLUGINS_DIR` 가 dev runner 에서 자동 세팅 | dev runner 는 `AVE_PLUGINS_DIR` 를 더 이상 사용하지 않음 — 런타임은 항상 `~/.ave/plugins/` 사용 |
-| `ave/.ave-dev/plugins/` 에 sibling repo 별 등록 | 단일 루트 `~/.ave/plugins/` + `dev-link-plugins.mjs` 가 sibling repo `dist/` 를 symlink |
+| `ave/.ave-dev/plugins/` 에 sibling repo 별 등록 | 단일 루트 `~/.ave/plugins/` + `ave-cli install file://<dist.zip>` 로 marketplace 경로 통일 |
 | 마켓플레이스 서명 키: SDK 또는 플러그인 패키지가 키 소유 | 앱 호스트 `marketplace-keys.ts` + 서버 env 가 trust root 를 소유 |
 | 외부 개발자 sideload: 수동 파일 복사만 | UI: Settings → Plugin Config → "로컬 폴더에서 설치" 버튼 |
 
@@ -296,7 +299,7 @@ unset AVE_PLUGINS_DIR
 mv ~/.ave/plugins ~/.ave/plugins.bak.$(date +%s)
 ```
 
-**(4) 단일 루트로 dev 빌드 + 링크**
+**(4) 단일 루트로 dev 빌드 + 설치**
 
 ```bash
 cd ave
@@ -304,10 +307,15 @@ cd ave
 # sibling 플러그인 빌드
 bun run prepare:plugins
 
-# ~/.ave/plugins/<id>/{plugin.json, dist→symlink} 등록
-bun run dev:link
+# 각 플러그인을 marketplace CLI 로 설치 (zip 만들어서 file:// install)
+for r in ../ave-plugin-pyxis ../ave-plugin-meeting \
+         ../ave-plugin-lyra-mail ../ave-plugin-orion-api \
+         ../ave-plugin-vega-early ../ave-plugin-hydra; do
+  (cd "$r" && bun run pack)  # dist.zip 생성 (agent-marketplace pack 스크립트)
+  ave-cli install "file://$r/dist.zip"
+done
 
-# 또는 한 번에 (Electron 까지 기동):
+# Electron 기동 (~/.ave/plugins/ 만 읽음)
 bun run dev
 ```
 
@@ -328,8 +336,9 @@ bun run dev
 |------|-------------|
 | `Cannot find module '@ave/plugin-sdk/keys'` 또는 관련 keys export 오류 | 로컬 working copy / SDK 서브모듈 stale 또는 오래된 코드가 SDK 키 소유 모델을 참조 중. `git pull && git submodule update --recursive` 후 앱 호스트의 `src/plugins/marketplace-keys.ts` 경로를 사용하세요. |
 | `bun install --frozen-lockfile` 실패 | bun.lock 갱신 필요 → `bun install` (frozen 없이) 후 커밋 |
-| 플러그인이 안 보임 | `~/.ave/plugins/registry.json` 확인 + `bun run dev:link` 재실행 |
-| 두 위치에서 플러그인 충돌 | `.ave-dev` 잔재 삭제 + `~/.ave/plugins/registry.json` 정리 후 `bun run dev:link` 재실행 |
+| 플러그인이 안 보임 | `~/.ave/plugins/registry.json` 확인 + `ave-cli install file://<dist.zip>` 으로 재설치 |
+| 두 위치에서 플러그인 충돌 | `.ave-dev` 잔재 삭제 + `~/.ave/plugins/registry.json` 정리 후 `ave-cli install file://<dist.zip>` 재설치 |
+| `installSource: "dev-link"` 이 registry 에 남아 있음 (구 `bun run dev:link` 잔재) | 부팅 시 자동으로 `local-dev` 로 rewrite + 경고 로그. 이후 receipt 검증을 통과하지 못하므로 `ave-cli install file://<dist.zip>` 으로 재설치 필요 |
 | 서명 검증 실패 (dev) | `AVE_DEV=1 AVE_DEV_SKIP_SIG=1` (이미 `bun run dev` 기본값) |
 | sideload 패널이 안 보임 | `AVE_DEV=1` 환경변수 적용 확인. packaged 빌드는 dev 패널 비활성 |
 

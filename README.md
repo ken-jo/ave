@@ -6,7 +6,7 @@
 - `~/.ave/plugins/registry.json` 기반 manifestPath 동적 로딩
 - `@ave/plugin-pageindex`, `@ave/plugin-meeting`, `@ave/plugin-lyra-mail`,
   `@ave/plugin-orion-api`, `@ave/plugin-vega-early`, `@ave/plugin-agent-hub`
-  마켓플레이스 install 또는 `bun run dev:link` 으로 사이드로드
+  마켓플레이스 install 또는 `ave-cli install file://<path-to-dist.zip>` 으로 사이드로드
 - 앱 시작 시 PageIndex 워커 + 자동 인덱서 구동
 - 실제 채팅 UI(렌더러) + preload IPC 브리지
 - IPC 핸들러
@@ -31,7 +31,7 @@ bun run plugins:enable -- <plugin-id>
 bun run plugins:disable -- <plugin-id>
 ```
 
-설치는 더 이상 이 CLI 가 다루지 않습니다. 마켓플레이스 카드 / `ave://install/<slug>` 딥링크 / `bun run dev:link` (사이드 레포 dev) 가 현재 install 진입점입니다.
+설치는 더 이상 이 CLI 가 다루지 않습니다. 마켓플레이스 카드 / `ave://install/<slug>` 딥링크 / `ave-cli install file://<path-to-dist.zip>` (사이드 레포 dev) 가 현재 install 진입점입니다.
 
 예시:
 ```bash
