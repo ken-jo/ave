@@ -6,6 +6,7 @@
  * they retain the same semantics in their new home.
  */
 import { describe, it, expect, vi } from "vitest";
+import os from "node:os";
 import type { IpcMainInvokeEvent } from "electron";
 import {
   validateSender,
@@ -68,6 +69,20 @@ describe("auditUnauthorized", () => {
     const parsed = JSON.parse(call.input as string);
     expect(parsed.channel).toBe("ave:test:channel");
     expect(parsed.frameUrl).toBe("https://evil.example.com/");
+  });
+
+  // Issue #471 — auditUnauthorized is the single shared call site for ~50
+  // IPC handlers, so the redact lands everywhere a frame URL is captured.
+  it("redacts the user's home directory in file:// frame URLs", () => {
+    const mockLogger = { log: vi.fn() };
+    const home = os.homedir();
+    const event = ev(`file://${home}/Documents/former_org/ave/dist/src/plugin-ui-shell.html`) as IpcMainInvokeEvent;
+    auditUnauthorized(mockLogger as never, "ave:test:channel", event);
+    const parsed = JSON.parse(
+      mockLogger.log.mock.calls[0][0].input as string,
+    );
+    expect(parsed.frameUrl).toBe("file://<home>/Documents/former_org/ave/dist/src/plugin-ui-shell.html");
+    expect(parsed.frameUrl).not.toContain(home);
   });
 });
 
