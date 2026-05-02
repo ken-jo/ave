@@ -108,6 +108,9 @@ const api = {
   applyClaudeDesktopMcpImport: async (payload: { raw: string; conflictPolicy?: "skip" | "overwrite" }) =>
     ipcRenderer.invoke("ave:mcp:import:claude-desktop:apply", payload),
 
+  notifyPluginTheme: (payload: { theme: string; chatTheme: string; codeTheme: string }) =>
+    ipcRenderer.invoke("ave:host:plugin-theme-notify", payload),
+
   // PR 3c: ave:lyra-mail:* IPC 채널 + bridge 메서드 제거 — lyra-mail
   // 플러그인이 자체 인증을 소유한다.
 

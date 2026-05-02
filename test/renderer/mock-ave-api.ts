@@ -70,6 +70,7 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
   const viewHandlers = new Set<(v: string) => void>();
 
   const api: MockAveApi = {
+    notifyPluginTheme: vi.fn(async () => ({ ok: true })),
     getSettings: vi.fn(async () => settings),
     updateSettings: vi.fn(async (p: unknown) => ({ ...(settings as object), ...(p as object) })),
     setApiKey: vi.fn(async () => ({ ok: true })),
