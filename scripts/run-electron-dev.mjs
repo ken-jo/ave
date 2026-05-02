@@ -6,7 +6,8 @@
 //
 // Env:
 //   AVE_DEV=1 (forced)
-//   Plugins are installed into ~/.ave/plugins/ via dev:link (single source of truth)
+//   Plugins must already be installed into ~/.ave/plugins/ via the marketplace
+//   server (`ave-cli install file://...`) — no host-side sideload bootstrap.
 //
 // Behavior:
 //   - tsc --watch for main (src -> dist/src)
@@ -678,28 +679,6 @@ async function main() {
       await shutdown(1);
       return;
     }
-  }
-
-  // Install dev-built sibling plugins into ~/.ave/plugins/ via real plugin.json
-  // + symlinked dist/. The runtime always reads from ~/.ave/plugins/
-  // (single source of truth — Round-3 removed the env-tier override).
-  // Skip when --no-plugins is passed so the dev runner can start without touching
-  // the user plugin directory (useful for CI and plugin-free debug sessions).
-  if (!skipPlugins) {
-    const devLinkScript = resolve(repoRoot, "scripts/dev-link-plugins.mjs");
-    const devLinkResult = spawnSync(process.execPath, [devLinkScript], {
-      cwd: repoRoot,
-      stdio: "inherit",
-    });
-    if (devLinkResult.status !== 0) {
-      const errMsg = devLinkResult.error?.message ? `; error=${devLinkResult.error.message}` : "";
-      log("plugins", `dev:link failed (exit=${devLinkResult.status ?? "null"}${errMsg})`);
-      await shutdown(1);
-      return;
-    }
-    log("plugins", `dev:link installed plugins into ~/.ave/plugins/`);
-  } else {
-    log("plugins", "dev:link skipped (--no-plugins)");
   }
 
   // Initial html copy
