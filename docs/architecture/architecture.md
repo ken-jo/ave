@@ -2189,6 +2189,36 @@ boot 시 `PluginRuntime.startAll()`은 로드된 플러그인을 순차 `await`�
 
 **현행 (Sprint 1-A 이후):** `PluginRuntime.startAll`은 `Promise.allSettled` 병렬 실행, 5초 초과 시 slow-plugin warn 로깅, `manifest.startupTimeoutMs` 선언 시 `Promise.race` 기반 하드 타임아웃 적용(실제 플러그인 작업은 cancellation되지 않으며, 호스트가 해당 플러그인을 drop하고 계속 진행한다). 실패한 플러그인은 fail-soft로 drop되며 나머지는 계속 로드된다.
 
+### 9.3b Plugin Webview Registration Protocol (#237 Option B)
+
+Sidebar/panel 슬롯에 마운트되는 플러그인 UI는 Electron `<webview>` 안에서 실행된다 (contextIsolation=yes, nodeIntegration=no, sandbox=yes). 플러그인 코드는 `window.avePlugin` 브릿지(`plugin-preload.ts`)만 접근할 수 있으며, `window.aveApi`는 미노출이다.
+
+**등록 흐름 (register-before-attach, #447)**
+
+```
+Host Renderer                     Main Process                 Plugin Webview
+─────────────────────────────────────────────────────────────────────────────
+1. webview 마운트 (src="")
+   ─── did-attach event ──►
+2. registerPluginWebview IPC ─────►
+   (webContentsId, pluginId, entryUrl)
+                                  pluginWebviewRegistry.set(id, binding)
+                                  ◄─────────────── { ok: true }
+3. setShellSrcBinding → src = plugin-ui-shell.html
+                                                  4. shell 로드
+                                                  5. getEntryUrl() IPC ──►
+                                                     ◄── { ok: true, entryUrl }
+                                                  6. import(entryUrl)
+                                                  7. mount({ root, bridge })
+```
+
+**불변식**: `did-attach`는 Electron webview의 navigation 시작 이전에 발화한다. 호스트 렌더러가 이 이벤트에서 `registerPluginWebview` IPC 완료를 `await`한 뒤 `src`를 설정하므로, shell의 `getEntryUrl()` IPC가 도착할 때 `pluginWebviewRegistry`에 해당 binding이 항상 존재한다. wait queue 및 retry loop가 필요 없다.
+
+**보안 경계**:
+- `ave:plugin:register-webview` — `validateSender`(호스트 렌더러 전용). plugin frame은 직접 호출 불가.
+- `ave:plugin:get-entry-url` / `call-tool` / `emit-event` — `validatePluginFrame`(shell 프레임 전용). 호스트 렌더러는 이 채널에 접근하지 않는다.
+- `pluginId`는 main-authoritative: renderer가 `webContentsId`를 전달하면 main이 `pluginWebviewRegistry.get(sender.id)`로 해석. renderer가 pluginId를 위조할 방법이 없다.
+
 ### 9.4 Plugin Scenario — 회의록 플러그인
 
 ```mermaid
@@ -2384,6 +2414,10 @@ Ave는 IPC/RPC를 **시스템 레벨 전용**으로 확정한다. 플러그인�
 | Host ↔ Renderer | Electron `ipcMain.handle()` (`ave:settings:*`, `ave:chat:*` 등) | UI ↔ 메인 프로세스 상태 동기화 |
 | Marketplace / Governance | HTTPS REST | 플러그인 카탈로그·정책·감사 업로드 |
 | MCP | stdio/HTTP | 외부 MCP 서버 통신 |
+| **Plugin Webview Bridge** | `ave:plugin:register-webview` | 호스트 렌더러 → main: webContentsId↔pluginId 바인딩 등록 (validateSender) |
+| Plugin Webview Bridge | `ave:plugin:get-entry-url` | plugin shell → main: 검증된 entryUrl 동기 조회 (validatePluginFrame) |
+| Plugin Webview Bridge | `ave:plugin:call-tool` | plugin shell → main: 플러그인 자신의 tool 호출 (validatePluginFrame, 교차 플러그인 차단) |
+| Plugin Webview Bridge | `ave:plugin:emit-event` | plugin shell → main: 이벤트 버스 발행 (validatePluginFrame, capability-gate) |
 
 **플러그인 통신 경계 (tool 레벨만):**
 
