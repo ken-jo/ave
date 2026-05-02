@@ -3,7 +3,7 @@
  *
  * Full-window translucent overlay that appears when the user drags files over
  * the Electron window. On drop, extracts absolute paths via
- * window.aveApi.pageindexScanPaths() (preload bridge → IPC → plugin
+ * window.aveApi.fileScanPaths() (preload bridge → IPC → plugin
  * document-indexer capability) and shows a brief toast result.
  *
  * Design constraints:
@@ -68,7 +68,7 @@ export function DropZoneOverlay({ onResult }: DropZoneOverlayProps) {
       // provides real paths via the IPC handler (using webContents.getPathForFile).
       // However, the idiomatic Electron approach is to use webUtils in the
       // renderer context (exposed via preload) or rely on the IPC bridge.
-      // We use window.aveApi.pageindexScanPaths which accepts paths.
+      // We use window.aveApi.fileScanPaths which accepts paths.
       // Electron 28+ exposes webUtils in renderer via contextBridge — but since
       // our preload doesn't expose it yet, we use the File.path property that
       // Electron makes available on File objects in the renderer.
@@ -88,7 +88,7 @@ export function DropZoneOverlay({ onResult }: DropZoneOverlayProps) {
       }
 
       try {
-        const result = await (window as Window & { aveApi?: { pageindexScanPaths?: (p: string[]) => Promise<{ ok: boolean; indexed?: number; failed?: number; error?: string }> } }).aveApi?.pageindexScanPaths?.(paths);
+        const result = await (window as Window & { aveApi?: { fileScanPaths?: (p: string[]) => Promise<{ ok: boolean; indexed?: number; failed?: number; error?: string }> } }).aveApi?.fileScanPaths?.(paths);
         if (!result) {
           showToast("인덱서 응답 없음");
           return;

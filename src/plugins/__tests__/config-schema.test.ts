@@ -197,7 +197,7 @@ describe("US-B1 regression — baseline manifest WITHOUT configSchema still vali
   it("AJV strict accepts a manifest that omits configSchema (legacy plugins)", async () => {
     const ajv = buildAjv();
     const validate = ajv.compile(await loadHostManifestSchema());
-    // Replicates the shape of the existing meeting / pageindex / lyra-mail
+    // Replicates the shape of the existing meeting / local-indexer / lyra-mail
     // manifests — no configSchema, but heavy use of toolSchemas and
     // capabilities. Must keep loading without modification (DoD §4).
     const ok = validate({
