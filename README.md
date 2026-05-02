@@ -7,7 +7,7 @@
 - `@ave/plugin-local-indexer`, `@ave/plugin-meeting`, `@ave/plugin-lyra-mail`,
   `@ave/plugin-orion-api`, `@ave/plugin-vega-early`, `@ave/plugin-agent-hub`
   마켓플레이스 install 또는 `ave-cli install file://<path-to-dist.zip>` 으로 사이드로드
-- 앱 시작 시 PageIndex 워커 + 자동 인덱서 구동
+- 앱 시작 시 Local Indexer 워커 + 자동 인덱서 구동
 - 실제 채팅 UI(렌더러) + preload IPC 브리지
 - IPC 핸들러
   - `ave:index:scan`

@@ -97,7 +97,7 @@ Ave는 사내 임직원 데스크톱에서 실행되는 엔터프라이즈 AI �
 ~/.ave/
 ├── plugins/
 │   ├── managed/                        # IT 강제 배포 (사용자 수정 불가)
-│   │   ├── ave-plugin-pyxis/
+│   │   ├── ave-plugin-local-indexer/
 │   │   │   ├── 0.2.0/                  # 버전 디렉터리 (rollback 대비)
 │   │   │   │   ├── plugin.json
 │   │   │   │   ├── dist/
@@ -176,7 +176,7 @@ export interface PluginDeploymentMetadata {
 }
 ```
 
-**Backward compatibility**: `deployment` 필드가 없는 기존 매니페스트는 `"user"`로 해석. Phase 1에서 이미 설치된 3개 번들 플러그인(pageindex, meeting, email)은 Phase 1.5 전까지 user로 잡히다가, IT가 정책을 push하면서 자동으로 managed로 전환된다.
+**Backward compatibility**: `deployment` 필드가 없는 기존 매니페스트는 `"user"`로 해석. Phase 1에서 이미 설치된 3개 번들 플러그인(local-indexer, meeting, email)은 Phase 1.5 전까지 user로 잡히다가, IT가 정책을 push하면서 자동으로 managed로 전환된다.
 
 ---
 
@@ -250,9 +250,9 @@ export interface DenyListEntry {
   "enforcements": {
     "managedPlugins": [
       {
-        "id": "ave-plugin-pyxis",
+        "id": "ave-plugin-local-indexer",
         "version": "0.2.0",
-        "source": "https://internal.your-corp.example/ave/marketplace/api/v1/plugins/ave-plugin-pyxis/0.2.0.tgz",
+        "source": "https://internal.your-corp.example/ave/marketplace/api/v1/plugins/ave-plugin-local-indexer/0.2.0.tgz",
         "sha256": "abc123def456...",
         "forceInstall": true,
         "autoUpdate": true,
@@ -678,7 +678,7 @@ ipcMain.handle("ave:plugins:disable", async (_e, pluginId: string) => {
 │                                                      │
 │  📦 회사 배포 (managed)                              │
 │  ─────────────────────────────────────────────       │
-│  🔒 Ave PageIndex          v0.2.0    [활성]        │
+│  🔒 Ave Local Indexer      v0.2.0    [활성]        │
 │     → 회사 정책 — 제거 불가                          │
 │                                                      │
 │  🔒 Ave Meeting            v1.1.3    [활성]        │
@@ -804,7 +804,7 @@ ipcMain.handle("ave:plugins:disable", async (_e, pluginId: string) => {
 - `ave/src/plugin-runtime/plugin-deployment-guard.ts` (경량 version)
 - `ave/src/plugin-runtime/runtime.ts` (guard 주입)
 - `ave/src/renderer.tsx` (UI 잠금 표시)
-- `ave-plugin-{pageindex,meeting,email}/plugin.json` (`deployment: "managed"` 추가)
+- `ave-plugin-{local-indexer,meeting,email}/plugin.json` (`deployment: "managed"` 추가)
 
 ### Phase 2 — IT Admin API 연동
 
@@ -860,7 +860,7 @@ ipcMain.handle("ave:plugins:disable", async (_e, pluginId: string) => {
 
 ## 14. 마이그레이션 계획
 
-현재 Phase 1 종료 시점에서 번들된 3개 플러그인(`ave-plugin-pyxis`, `-meeting`, `-email`)은 `deployment` 필드가 없으므로 자동으로 **user**로 분류된다. IT 부서가 정책을 push하기 전까지는 사용자가 이들을 제거할 수 있다.
+현재 Phase 1 종료 시점에서 번들된 3개 플러그인(`ave-plugin-local-indexer`, `-meeting`, `-email`)은 `deployment` 필드가 없으므로 자동으로 **user**로 분류된다. IT 부서가 정책을 push하기 전까지는 사용자가 이들을 제거할 수 있다.
 
 **마이그레이션 단계**:
 

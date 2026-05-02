@@ -33,7 +33,7 @@ const PLUGIN_TABS = [
  * of whether they have a UI extension.
  */
 const ALL_PLUGIN_NAMES = [
-  'Ave PageIndex',
+  'Ave Local Indexer',
   'Ave Meeting',
   'Ave Lyra Mail',
 ] as const;
