@@ -11,7 +11,7 @@
  *   chat         ave:chat:*, ave:routines:*, ave:routine:*, ave:trigger:*,
  *                ave:memory:*, ave:starred:*, ave:feedback:*, ave:ask-user-question:*
  *   plugins      ave:plugins:*, ave:bootstrap:*, ave:runtime:*, ave:marketplace:*,
- *                ave:mcp:*, ave:plugin:*, ave:pageindex:*, ave:notification:clicked
+ *                ave:mcp:*, ave:plugin:*, ave:file:*, ave:notification:clicked
  *   usage        ave:usage:*
  *   audit        ave:audit:*, ave:dlp:*
  *   permissions  ave:permission:*, ave:approval:*, ave:policy:*
