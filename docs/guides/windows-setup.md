@@ -210,7 +210,7 @@ bun run start
 cd ave
 git pull --recurse-submodules
 
-cd ..\ave-plugin-pyxis      ; git pull
+cd ..\ave-plugin-local-indexer      ; git pull
 cd ..\ave-plugin-meeting        ; git pull
 cd ..\ave-plugin-lyra-mail       ; git pull
 cd ..\ave-plugin-orion-api        ; git pull

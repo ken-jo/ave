@@ -19,7 +19,7 @@ jobs:
         run: |
           set -euo pipefail
           GH_TOKEN=$(gh auth token)
-          for slug in ave-plugin-meeting ave-plugin-pyxis ave-plugin-orion-api ave-plugin-vega-early ave-plugin-hydra ave-plugin-lyra-mail; do
+          for slug in ave-plugin-meeting ave-plugin-local-indexer ave-plugin-orion-api ave-plugin-vega-early ave-plugin-hydra ave-plugin-lyra-mail; do
             if [ -d "$slug" ]; then rm -rf "$slug"; fi
             git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/former_org/${slug}.git" "$slug"
           done
@@ -30,5 +30,4 @@ jobs:
         working-directory: ave
       - run: bunx vitest run
         working-directory: ave
-
 
