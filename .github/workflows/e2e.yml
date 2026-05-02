@@ -15,27 +15,7 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           path: ave
-      - name: Clone sibling plugin repos
-        run: |
-          set -euo pipefail
-          GH_TOKEN=$(gh auth token)
-          for slug in ave-plugin-meeting ave-plugin-pyxis ave-plugin-orion-api ave-plugin-vega-early ave-plugin-hydra ave-plugin-lyra-mail; do
-            if [ -d "$slug" ]; then rm -rf "$slug"; fi
-            git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/former_org/${slug}.git" "$slug"
-          done
       - uses: oven-sh/setup-bun@v2
-      - name: Install plugin dependencies
-        run: |
-          bun install --frozen-lockfile --cwd ../ave-plugin-pyxis
-          bun install --frozen-lockfile --cwd ../ave-plugin-meeting
-          bun install --frozen-lockfile --cwd ../ave-plugin-orion-api
-          bun install --frozen-lockfile --cwd ../ave-plugin-vega-early
-          bun install --frozen-lockfile --cwd ../ave-plugin-hydra
-          bun install --frozen-lockfile --cwd ../ave-plugin-lyra-mail
-        working-directory: ave
-      - name: Build all plugins
-        run: bun run prepare:plugins
-        working-directory: ave
       - name: Install app dependencies
         run: bun install --frozen-lockfile
         working-directory: ave
