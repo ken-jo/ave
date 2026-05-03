@@ -2418,6 +2418,7 @@ Ave는 IPC/RPC를 **시스템 레벨 전용**으로 확정한다. 플러그인�
 | Plugin Webview Bridge | `ave:plugin:get-entry-url` | plugin shell → main: 검증된 entryUrl 동기 조회 (validatePluginFrame) |
 | Plugin Webview Bridge | `ave:plugin:call-tool` | plugin shell → main: 플러그인 자신의 tool 호출 (validatePluginFrame, 교차 플러그인 차단) |
 | Plugin Webview Bridge | `ave:plugin:emit-event` | plugin shell → main: 이벤트 버스 발행 (validatePluginFrame, capability-gate) |
+| Plugin Webview Bridge | `ave:host:plugin-theme-notify` | 호스트 렌더러 → main → 등록된 모든 plugin webview: theme/chatTheme/codeTheme + computed `--ave-*` token 값 (validateSender, key/value 이중 검증). 플러그인 SDK `useTheme()` → `applyThemeTokens()` 경로로 소비. |
 
 **플러그인 통신 경계 (tool 레벨만):**
 
