@@ -49,8 +49,17 @@ const pluginWebviewRegistry = new Map<number, PluginWebviewBinding>();
 const ALLOWED_THEMES = new Set(["light", "dark", "high-contrast"]);
 const ALLOWED_CHAT_THEMES = new Set(["default", "lg", "purple", "orange", "blue"]);
 const ALLOWED_CODE_THEMES = new Set(["light", "dark"]);
-// CSS exfil / injection patterns — same regex as ave-plugin-sdk inject.ts
-const _UNSAFE_TOKEN_VALUE = /url\s*\(|expression\s*\(|<[a-zA-Z]/i;
+// Closed key allowlist — mirrors AVE_TOKEN_NAMES in ave-plugin-sdk/src/ui/tokens/index.ts.
+// Update both when adding a token.
+const PLUGIN_TOKEN_NAMES = new Set([
+  "--ave-bg", "--ave-surface", "--ave-fg", "--ave-fg-muted",
+  "--ave-primary", "--ave-primary-fg", "--ave-secondary", "--ave-secondary-fg",
+  "--ave-danger", "--ave-danger-fg", "--ave-warning", "--ave-warning-fg",
+  "--ave-success", "--ave-border", "--ave-ring", "--ave-radius", "--ave-radius-sm",
+]);
+// Allowlist-based value guard: only HSL colors, hex colors, and dimension values pass.
+// Blocklist patterns (url(), expression(), Unicode-escaped equivalents) would all fail this check.
+const _SAFE_TOKEN_VALUE = /^(hsl\(\s*-?\d+(?:\.\d+)?\s*,\s*\d+(?:\.\d+)?%\s*,\s*\d+(?:\.\d+)?%\s*(?:,\s*[\d.]+)?\s*\)|#[0-9a-fA-F]{3,8}|\d+(?:\.\d+)?(?:rem|em|px|%))$/;
 
 async function resolveInstalledManifestPath(pluginId: string): Promise<string | undefined> {
   const pluginPaths = resolvePluginPaths();
@@ -77,9 +86,9 @@ async function preparePythonRuntimeForInstalledPlugin(
 }
 
 export type SafeThemePayload = {
-  theme: string;
-  chatTheme: string;
-  codeTheme: string;
+  theme: "light" | "dark" | "high-contrast";
+  chatTheme: "default" | "lg" | "purple" | "orange" | "blue";
+  codeTheme: "light" | "dark";
   tokens?: Record<string, string>;
 };
 
@@ -91,12 +100,15 @@ export function validateThemePayload(payload: unknown):
   if (typeof p.theme !== "string" || !ALLOWED_THEMES.has(p.theme)) return { ok: false, error: "invalid-theme" };
   if (typeof p.chatTheme !== "string" || !ALLOWED_CHAT_THEMES.has(p.chatTheme)) return { ok: false, error: "invalid-chat-theme" };
   if (typeof p.codeTheme !== "string" || !ALLOWED_CODE_THEMES.has(p.codeTheme)) return { ok: false, error: "invalid-code-theme" };
-  const safe: SafeThemePayload = { theme: p.theme, chatTheme: p.chatTheme, codeTheme: p.codeTheme };
+  const safe: SafeThemePayload = {
+    theme: p.theme as SafeThemePayload["theme"],
+    chatTheme: p.chatTheme as SafeThemePayload["chatTheme"],
+    codeTheme: p.codeTheme as SafeThemePayload["codeTheme"],
+  };
   if (p.tokens && typeof p.tokens === "object" && !Array.isArray(p.tokens)) {
     const safeTokens: Record<string, string> = {};
     for (const [k, v] of Object.entries(p.tokens as Record<string, unknown>)) {
-      if (typeof k === "string" && k.startsWith("--ave-") &&
-          typeof v === "string" && !_UNSAFE_TOKEN_VALUE.test(v)) {
+      if (PLUGIN_TOKEN_NAMES.has(k) && typeof v === "string" && _SAFE_TOKEN_VALUE.test(v)) {
         safeTokens[k] = v;
       }
     }
