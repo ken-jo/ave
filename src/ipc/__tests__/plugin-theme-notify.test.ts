@@ -41,14 +41,91 @@ describe("validateThemePayload", () => {
     expect(result).toEqual({ ok: false, error: "invalid-code-theme" });
   });
 
-  it("rejects extra injected fields — safe output has only 3 keys", () => {
+  it("rejects extra injected fields — safe output has only theme/chatTheme/codeTheme keys", () => {
     const result = validateThemePayload({
       theme: "dark", chatTheme: "default", codeTheme: "dark",
       evil: "injected", __proto__: { polluted: true },
     });
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(Object.keys(result.safe)).toEqual(["theme", "chatTheme", "codeTheme"]);
+      expect(result.safe.theme).toBe("dark");
+      expect(result.safe.chatTheme).toBe("default");
+      expect(result.safe.codeTheme).toBe("dark");
+      expect(result.safe.tokens).toBeUndefined();
+    }
+  });
+
+  it("passes through valid --ave-* tokens", () => {
+    const result = validateThemePayload({
+      theme: "dark", chatTheme: "lg", codeTheme: "dark",
+      tokens: { "--ave-bg": "hsl(0, 0%, 15%)", "--ave-primary": "#734dff" },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.safe.tokens).toEqual({ "--ave-bg": "hsl(0, 0%, 15%)", "--ave-primary": "#734dff" });
+    }
+  });
+
+  it("drops token keys that don't start with --ave-", () => {
+    const result = validateThemePayload({
+      theme: "dark", chatTheme: "default", codeTheme: "dark",
+      tokens: { "--ave-bg": "#fff", "--evil-key": "red", "color": "blue" },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.safe.tokens).toEqual({ "--ave-bg": "#fff" });
+    }
+  });
+
+  it("drops token values with url() injection", () => {
+    const result = validateThemePayload({
+      theme: "dark", chatTheme: "default", codeTheme: "dark",
+      tokens: { "--ave-bg": "url(https://evil.com?leak=1)" },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.safe.tokens).toBeUndefined();
+    }
+  });
+
+  it("drops token values with expression() injection", () => {
+    const result = validateThemePayload({
+      theme: "dark", chatTheme: "default", codeTheme: "dark",
+      tokens: { "--ave-bg": "expression(alert(1))" },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.safe.tokens).toBeUndefined();
+    }
+  });
+
+  it("drops token values with HTML tag injection", () => {
+    const result = validateThemePayload({
+      theme: "dark", chatTheme: "default", codeTheme: "dark",
+      tokens: { "--ave-bg": "<script>x</script>" },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.safe.tokens).toBeUndefined();
+    }
+  });
+
+  it("does not include tokens key when all token entries are invalid", () => {
+    const result = validateThemePayload({
+      theme: "dark", chatTheme: "default", codeTheme: "dark",
+      tokens: { "--evil": "red" },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.safe.tokens).toBeUndefined();
+    }
+  });
+
+  it("accepts tokens=undefined gracefully", () => {
+    const result = validateThemePayload({ theme: "dark", chatTheme: "default", codeTheme: "dark" });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.safe.tokens).toBeUndefined();
     }
   });
 });

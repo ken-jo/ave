@@ -17,7 +17,7 @@ import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { act, render, waitFor } from "@testing-library/react";
 import { useEffect } from "react";
-import { ThemeProvider, useTheme, useOptionalTheme } from "../theme/ThemeProvider.js";
+import { ThemeProvider, useTheme, useOptionalTheme, resolvePluginTokens } from "../theme/ThemeProvider.js";
 import {
   applyChatThemeToDocument,
   applyCodeThemeToDocument,
@@ -499,5 +499,63 @@ describe("<ThemeProvider> + reduced-motion", () => {
     const inline = document.documentElement.getAttribute("style") ?? "";
     expect(inline).not.toMatch(/transition/i);
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+  });
+});
+
+describe("resolvePluginTokens", () => {
+  it("dark/default — returns all 17 --ave-* keys", () => {
+    const tokens = resolvePluginTokens("dark", "default");
+    expect(Object.keys(tokens)).toHaveLength(17);
+    expect(tokens["--ave-bg"]).toMatch(/^hsl\(/);
+    expect(tokens["--ave-radius"]).toBe("0.6rem");
+  });
+
+  it("light/default — bg is white", () => {
+    const tokens = resolvePluginTokens("light", "default");
+    expect(tokens["--ave-bg"]).toBe("hsl(0, 0%, 100%)");
+  });
+
+  it("high-contrast — primary is yellow regardless of chatTheme", () => {
+    const hc = resolvePluginTokens("high-contrast", "purple");
+    expect(hc["--ave-primary"]).toBe("hsl(60, 100%, 50%)");
+    // No chatTheme overlay should apply
+    expect(hc["--ave-primary"]).not.toMatch(/262/);
+  });
+
+  it("dark/lg — uses ACME surface (Grey-1 bg) and vivid purple primary", () => {
+    const tokens = resolvePluginTokens("dark", "lg");
+    expect(tokens["--ave-bg"]).toBe("hsl(0, 0%, 15%)");           // Grey-1
+    expect(tokens["--ave-primary"]).toBe("hsl(253, 100%, 65%)");   // #734dff
+    expect(tokens["--ave-danger"]).toBe("hsl(1, 98%, 59%)");       // ACME red
+  });
+
+  it("light/lg — uses warm-grey surface", () => {
+    const tokens = resolvePluginTokens("light", "lg");
+    expect(tokens["--ave-bg"]).toBe("hsl(40, 25%, 92%)");  // Grey-6 #F0ECE4
+    expect(tokens["--ave-primary"]).toBe("hsl(253, 100%, 65%)");
+  });
+
+  it("dark/purple — only primary/ring change, surface stays dark", () => {
+    const tokens = resolvePluginTokens("dark", "purple");
+    expect(tokens["--ave-primary"]).toBe("hsl(262, 83%, 58%)");
+    expect(tokens["--ave-bg"]).toBe("hsl(222.2, 84%, 4.9%)");  // dark base unchanged
+  });
+
+  it("light/orange vs dark/orange — primary differs by shell", () => {
+    const darkOrange = resolvePluginTokens("dark", "orange");
+    const lightOrange = resolvePluginTokens("light", "orange");
+    expect(darkOrange["--ave-primary"]).not.toBe(lightOrange["--ave-primary"]);
+  });
+
+  it("ThemeProvider calls notifyPluginTheme with tokens field", async () => {
+    const { api } = makeMockAveApi();
+    await act(async () => {
+      render(<ThemeProvider api={api} initialPreference="dark" initialChatTheme="lg" initialCodeTheme="dark"><div /></ThemeProvider>);
+    });
+    expect(api.notifyPluginTheme).toHaveBeenCalled();
+    const call = (api.notifyPluginTheme as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call.tokens).toBeDefined();
+    expect(typeof call.tokens["--ave-bg"]).toBe("string");
+    expect(call.tokens["--ave-primary"]).toBe("hsl(253, 100%, 65%)");  // ACME purple
   });
 });
