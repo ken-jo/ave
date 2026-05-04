@@ -1120,7 +1120,7 @@ Phase 3 리팩터 기준 `ave/src/` 모듈 경계다. Phase 1~2의 `src/agent/` 
 ```
 ave/src/
 ├── main.ts, boot.ts, preload.ts, ipc-bridge.ts,
-│   plugin-ui-host.tsx, taskService.ts                        # 엔트리 / 브릿지
+│   plugin-ui-host.tsx                                        # 엔트리 / 브릿지
 │
 ├── renderer.tsx   # minimal entry — mounts ui/renderer/App.tsx
 ├── ui/renderer/   # Renderer composition root (Phase 1~4.6 split 완료)
@@ -1134,7 +1134,7 @@ ave/src/
 │   ├── components/              # BriefingCard, AssistantCard, UserMessageEditor,
 │   │                            #  ReasoningCard, ToolApprovalDialog, ToolGroupCard,
 │   │                            #  ChatSearchOverlay, Sparkline, UsageDashboard,
-│   │                            #  HtmlPreview, TaskView, StarredView,
+│   │                            #  HtmlPreview, StarredView,
 │   │                            #  MarketplaceUpdateBanner
 │   ├── dialogs/                 # ApprovalDialog, PluginInstallDialog,
 │   │                            #  PluginUninstallDialog, CommandPaletteDialog
@@ -1288,7 +1288,6 @@ artifact 와 save data 를 함께 보관한다 (호스트 root 에 끼어들지 
 ├── traces/              # FileTracer 디버그 trace
 ├── certs/               # 사내 CA 캐시
 ├── governance/          # MCP / 플러그인 admin 정책
-├── tasks/               # SQLite task DB (ave-tasks.db)
 ├── mcp/                 # MCP servers config + install dir
 │   ├── servers.json
 │   └── <slug>/          # marketplace install
@@ -1939,7 +1938,7 @@ flowchart LR
 | **idle** | `createIdleSignal()` | IdleScheduler 가 IDLE_SCAN 상태일 때 fire |
 | **schedule** | `createScheduleSignal()` | KST 08:30 (기본) 5분 윈도우 내 1일 1회 fire |
 | **meeting** | `createMeetingSignal()` | calendar-source capability 플러그인 이벤트 — 미팅 10분 전 fire |
-| **task-deadline** | host 의 `TaskDeadlinePoller` (`src/main/task-deadline-poller.ts`) 가 `task.deadline.approaching` 발행 | pending 태스크 dueAt 2시간 내 fire. 60s 폴링, 30분 cooldown 으로 dedupe (judgment 재시도 가능). brain (vega-early 등) 이 `pluginAccess.events` 로 구독해 `triggerConversation()` 호출 — calendar/email 등 다른 detector 와 동일한 observer/judge 분리 패턴. tasks-plugin-split 이 paused (memory `feedback-tasks-plugin-split-paused`) 라 observer 가 host 에 살지만 wire shape 은 동일. brain subscriber 는 별도 PR. |
+| **task-deadline** | ~~host `TaskDeadlinePoller`~~ **(2026-05-05 host Tasks removal Phase 4)** host-side poller 제거됨 — `task.deadline.approaching` 이벤트는 더 이상 host 에서 발행되지 않음. task 소유권이 agent-hub 플러그인으로 이전 완료 (Phase 1–4 참조). | 폐기됨 (agent-hub PR #94 + Phase 4 app PR). |
 | **post-turn** ✅ | `createPostTurnSignal()` | 대화 턴 완료 후 `PostTurnHookChain` → `coordinator.notify("post-turn")`. 10분 cooldown. (B5 PR #134) |
 
 **Detector lifecycle (reactive registration).** 각 detector 는 `requires?: string[]` 로 의존하는 plugin id 를 선언한다 (예: 메일/캘린더 detector 는 `["lyra-mail"]`). vega-early 는 boot 시 + `hostApi.onPluginsChanged()` 발사 시마다 `partitionByDeps(DEFAULT_DETECTORS, getInstalledPluginIds())` 로 satisfied detector 만 `onEvent(source, ...)` 등록 → lyra-mail 미설치 시 메일/캘린더 detector 는 자동으로 잠자고, 사용자가 lyra-mail 를 설치하면 host 재시작 없이 detector 가 활성화된다. audit 채널 `vega-early:detectors:active` 에 `{active, missing, sources}` 로 기록되어 "왜 이 detector 가 조용한가" 를 추적할 수 있다.
@@ -2383,7 +2382,7 @@ stateDiagram-v2
 | `registerKeywords(keywords)` | KeywordEngine에 트리거 키워드 등록 (boot 시 1회) | 전체 |
 | `emitEvent(name, payload)` | 다른 플러그인·ProactiveEngine에 이벤트 발행 | 전체 |
 | `onEvent(name, handler)` | 이벤트 구독 | 전체 |
-| `addTask(task)` | Ave 태스크 생성. host `taskService.ts` 가 SQLite (`~/.ave/tasks/ave-tasks.db`) 에 직접 기록. tasks-plugin-split 은 paused (memory 참조) — 별도 plugin 으로 옮기지 않고 host 에서 owner 유지. | meeting, email |
+| ~~`addTask(task)`~~ | **(2026-05-05 Phase 4 제거)** host `TaskService` + SQLite 경로 삭제. task 소유권은 agent-hub 플러그인으로 완전 이전 (Phase 1–4). `agent_hub.notification.surfaced` 이벤트가 일반 알림 채널 역할, `meeting.summary.created.actionItems` 가 액션아이템 캐리어. | 제거됨 |
 | `saveNote(title, content)` | 플러그인 자기 dir 안에 메모 저장 (`~/.ave/plugins/<id>/notes/`) | meeting |
 | `getSecret(key)` | 암호화된 API 키 조회 | meeting, lyra-mail |
 | `logEvent(level, message, data?)` | **[Phase 2]** 호스트 감사 로그에 플러그인 이벤트 기록. `level`: `"info"\|"warn"\|"error"` | 전체 |
@@ -2401,7 +2400,7 @@ stateDiagram-v2
 - **subscriber**: 일반 plugin 은 `hostApi.onPluginsChanged(handler)` 로만 구독. handler 는 self-event (자기 자신이 subject 인 경우) 가 자동 필터된 상태로 받는다. 현재 vega-early 의 detector lifecycle 재계산이 유일한 consumer (§7 detector lifecycle 참조).
 - **`source` discriminator**: install 시 `marketplace` / `local-dev` 구분. production consumer 는 `local-dev` 무시 권장 — 개발자의 로컬 테스트 플러그인이 downstream cascade 를 trigger 하지 않도록.
 
-같은 host-only 정신을 갖는 `task.*` namespace 는 별도 set 에 등록하지 않았다 — plugin 측에 emitter 가 없어 owner-mismatch 로 이미 거부되기 때문 (tasks-plugin-split paused 상태). plugin 이 `task.*` 를 emit 하기 시작하면 `tasks-source` capability 도입 또는 host-only set 추가가 필요하다.
+**(2026-05-05 Phase 4)** `task.*` namespace 는 host-side owner 삭제로 함께 폐기됨. `TaskService`, `TaskDeadlinePoller`, `TaskView`, sidebar Tasks 탭, `ave:tasks:*` IPC 채널, preload bridge 메서드 전체 제거 완료. tasks-plugin-split 은 COMPLETE (host out, agent-hub in).
 
 **Plugin-Owned OAuth Authentication (PR 3 — 신 정책)**
 
@@ -2818,7 +2817,7 @@ guard in agent-hub-panel-v3.tsx throws if host omits the namespaces.
 - ✅ **Direct Message POC**: `ave-agent-hub`의 기존 `/api/v1/messages` Direct 1:1 메시지 API를 `ave-plugin-hydra` bridge가 호출
 - ✅ **First-class Approval POC**: `ave-agent-hub`의 `approval_requests` 테이블 + `pending → approved/rejected` 상태 전이를 `ave-plugin-hydra` bridge가 호출
 - ✅ **Approval notification/audit**: 승인 요청/결정은 Agent Hub backend에 저장되고 `notifications(kind=approval)` 및 `audit_log`에 기록됨
-- ✅ **Host Task 호환성**: `hostApi.addTask()`는 SQLite-backed TaskService에 지속 task를 생성하는 기존 호환 경로로 유지하되, Agent Hub 승인 상태 저장소로 사용하지 않음
+- ~~✅ **Host Task 호환성**: `hostApi.addTask()` 호환 경로~~ **(2026-05-05 Phase 4 제거)** `addTask` + `TaskService` 전체 삭제. task 소유권 agent-hub 플러그인으로 완전 이전.
 
 **아직 미구현 (Full Agent Hub 선행 조건):**
 - ❌ 팀/조직/전체 범위 게시 — 범위별 승인 정책 + UI 없음
@@ -2898,7 +2897,7 @@ Agent Hub는 모든 사원 레플리카 에이전트가 모인 비동기 메시�
 
 ### 10.1 Architecture (Full Agent Hub Target)
 
-**주의**: 다음 다이어그램은 **최종 목표** 상태(Phase 6 Enterprise Rollout)를 나타낸다. 현재 구현은 Work Board 읽기, Direct 1:1 메시지 POC, ApprovalRequest verdict POC, host Task 호환 부분만 포함한다.
+**주의**: 다음 다이어그램은 **최종 목표** 상태(Phase 6 Enterprise Rollout)를 나타낸다. 현재 구현은 Work Board 읽기, Direct 1:1 메시지 POC, ApprovalRequest verdict POC 만 포함한다. (host Task 호환 경로는 2026-05-05 Phase 4 에서 제거됨)
 
 ```mermaid
 graph TB
@@ -3006,7 +3005,7 @@ sequenceDiagram
 - Personal Mailbox는 Direct 1:1 메시지 저장/조회만 가능하며 채널/지식보드 라우팅은 없음
 - Work Log Board는 개인/팀 읽기 중심이며 팀/조직/전체 공개 게시는 아직 범위별 승인 정책이 없어 차단됨
 - ApprovalRequest는 backend verdict 기록과 notification/audit까지만 가능하며 승인 후 행위 실행은 연결되지 않음
-- hostApi.addTask()는 SQLite-backed TaskService에 지속 task를 생성하므로 durable side effect가 있지만, 이것이 Agent Hub "승인 시스템"은 아님을 명시함
+- ~~hostApi.addTask() TaskService 경로~~ — (2026-05-05 Phase 4 에서 완전 제거됨. agent-hub 플러그인이 task ownership 보유)
 - Team Channel, Project Board, Knowledge Board, Broadcast는 구현되지 않음
 
 ---
@@ -3687,7 +3686,7 @@ v4 §4.5 의 11-step 쿼리 루프(`onUserMessage → ... → onTurnComplete`)�
 
 v4 §5 의 `~/.ave/` 파일 기반 경량 구조는 유지된다. 운영 안정성을 위해 다음을 덧붙인다.
 
-- **Cross-process file lock**: 모든 상태 파일 (`memory/*.md`, `audit.log`, `approval-queue.json`) 쓰기 경로에 `proper-lockfile` 을 적용. 두 Electron 인스턴스 또는 메인/렌더러 레이스 상황에서도 손상 방지. host 의 task 저장소는 SQLite (`~/.ave/tasks/ave-tasks.db`, WAL 모드) 이라 file lock 이 아닌 SQLite 자체 락에 의존하므로 본 정책에서 제외.
+- **Cross-process file lock**: 모든 상태 파일 (`memory/*.md`, `audit.log`, `approval-queue.json`) 쓰기 경로에 `proper-lockfile` 을 적용. 두 Electron 인스턴스 또는 메인/렌더러 레이스 상황에서도 손상 방지.
 - **Audit log rotation/retention**: `~/.ave/audit/audit-YYYY-MM-DD.log` 일 단위 회전. 기본 retention 90일. 사이즈 한계(예: 50MB) 초과 시 그 날짜 내에서 `audit-YYYY-MM-DD.N.log` 로 분할.
 - **Write contract**: 락 획득 실패 시 최대 5회, 100ms 백오프 재시도. 최종 실패는 §6.6 Observability 의 Audit sink 로 `state.write.lock_failed` 이벤트를 남긴다.
 

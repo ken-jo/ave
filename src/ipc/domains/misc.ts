@@ -8,31 +8,7 @@ import { createLogger } from "../../lib/logger.js";
 const log = createLogger("ave");
 
 export function registerMiscHandlers(deps: IpcDeps): void {
-  const { taskService, remindersStore, sessionTodoStore, conversationLoop, auditLogger, getMainWindow } = deps;
-
-  // ─── Tasks ──────────────────────────────────────
-  ipcMain.handle("ave:tasks:add", (e, task) => {
-    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:tasks:add", e); return UNAUTHORIZED_FRAME; }
-    return taskService.add(task);
-  });
-  ipcMain.handle("ave:tasks:update", (e, id: string, patch) => {
-    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:tasks:update", e); return UNAUTHORIZED_FRAME; }
-    return taskService.update(id, patch);
-  });
-  // read-only, sender guard optional
-  ipcMain.handle("ave:tasks:get", (_e, id: string) => taskService.get(id));
-  ipcMain.handle("ave:tasks:delete", (e, id: string) => {
-    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:tasks:delete", e); return UNAUTHORIZED_FRAME; }
-    return taskService.delete(id);
-  });
-  // read-only, sender guard optional
-  ipcMain.handle("ave:tasks:query", (_e, filter) => taskService.query(filter));
-  // read-only, sender guard optional
-  ipcMain.handle("ave:tasks:pending", () => taskService.getPendingByPriority());
-  // read-only, sender guard optional
-  ipcMain.handle("ave:tasks:overdue", () => taskService.getOverdue());
-  // read-only, sender guard optional
-  ipcMain.handle("ave:tasks:today", () => taskService.getDueToday());
+  const { remindersStore, sessionTodoStore, conversationLoop, auditLogger, getMainWindow } = deps;
 
   // ─── Reminders ──────────────────────────────────
   ipcMain.handle("ave:reminders:list", (e) => {
