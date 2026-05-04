@@ -16,7 +16,7 @@
  *   audit        ave:audit:*, ave:dlp:*
  *   permissions  ave:permission:*, ave:approval:*, ave:policy:*
  *   window       window:*
- *   misc         ave:tasks:*, ave:reminders:*, ave:session-todo:*
+ *   misc         ave:reminders:*, ave:session-todo:*
  */
 import { initDlpAudit } from "../audit/dlp-filter.js";
 import { registerSettingsHandlers } from "./domains/settings.js";

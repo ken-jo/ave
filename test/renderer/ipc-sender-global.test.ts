@@ -69,15 +69,6 @@ const CHANNEL_MANIFEST: Record<string, "tier1" | "tier2" | "tier3"> = {
   // Policy
   "ave:policy:get": "tier3",
   "ave:policy:set": "tier1",
-  // Tasks
-  "ave:tasks:add": "tier1",
-  "ave:tasks:update": "tier1",
-  "ave:tasks:get": "tier3",
-  "ave:tasks:delete": "tier1",
-  "ave:tasks:query": "tier3",
-  "ave:tasks:pending": "tier3",
-  "ave:tasks:overdue": "tier3",
-  "ave:tasks:today": "tier3",
   // Routine
   "ave:routine:get-latest-result": "tier3",
   "ave:routines:dev-trigger-wakeup": "tier1",
