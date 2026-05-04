@@ -2410,6 +2410,7 @@ PR 3 에서 Microsoft Graph 인증이 호스트에서 플러그인으로 이전�
 - `src/auth/token-store.ts` — Electron `safeStorage` 암호화, `<hostRoot>/plugins/lyra-mail/tokens/token-{env}.json`
 - `src/auth/migrator.ts` — 구 host `~/.ave/lyra-mail-token-{env}.json` 1회 자동 이전 (PR 3b 호환 유틸)
 - 환경 (external / corporate) 선택은 PluginConfigTab 의 `pluginConfigs["lyra-mail"].environment` key
+- v0.1.30 부터 sidebar embedded-module UI (`lyramail-calendar-control` / `lyramail-email-control`) 제거 — settings 는 host `PluginConfigTab` 단독, sidebar 모듈 reference 는 `meeting` 플러그인으로 이전. 이 결정은 CLAUDE.md 의 "dumb pipe" identity (LLM-free fetch + 폴링 + 이벤트 발행만) 와 align.
 
 **lyra-mail 한정 escape hatch — `loginInExternalBrowser` 토글 (v0.1.29 +)**: 기본은 in-app `BrowserWindow` (PR #44, agent-hub mirror) 이지만, 사용자가 configSchema 로 `loginInExternalBrowser=true` 를 설정하면 `shell.openExternal` 로 시스템 기본 브라우저에 IdP 페이지를 띄우는 옛 흐름으로 전환할 수 있다 — corp-CA / WebView2 GPO / SSO 쿠키 격리 같은 환경 회귀의 안전망. MSAL loopback redirect 가 양쪽 모드에서 동일하게 동작하기 때문에 가능한 우연이며, **다른 OAuth 플러그인이 일반화하지 말 것** (Slack/Notion/Google 등은 redirect 메커니즘이 다를 수 있음). default off 라 §9.4a "agent-hub mirror" 정책은 그대로 유효.
 
