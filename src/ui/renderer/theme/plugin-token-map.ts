@@ -10,7 +10,7 @@ const _H = (h: number, s: number, l: number) => `hsl(${h}, ${s}%, ${l}%)`;
 
 // Theme-invariant tokens — same across dark/light/HC.
 // Not sent separately; spread into every base map at resolve time.
-const _INVARIANT: Record<string, string> = {
+const _INVARIANT = {
   "--ave-radius-xs":       "0.15rem",
   "--ave-radius-lg":       "0.75rem",
   "--ave-radius-full":     "9999px",
@@ -27,9 +27,9 @@ const _INVARIANT: Record<string, string> = {
   "--ave-space-4":         "1rem",
   "--ave-motion-fast":     "150ms",
   "--ave-motion-normal":   "200ms",
-};
+} satisfies Partial<Record<AveTokenName, string>>;
 
-const _DARK_BASE: Record<string, string> = {
+const _DARK_BASE = {
   "--ave-bg":              _H(222.2, 84,   4.9),
   "--ave-surface":         _H(222.2, 84,   7  ),
   "--ave-surface-overlay": _H(222.2, 60,   10 ),
@@ -50,9 +50,9 @@ const _DARK_BASE: Record<string, string> = {
   "--ave-ring":            _H(224.3, 76.3,48  ),
   "--ave-radius":          "0.6rem",
   "--ave-radius-sm":       "0.25rem",
-};
+} satisfies Partial<Record<AveTokenName, string>>;
 
-const _LIGHT_BASE: Record<string, string> = {
+const _LIGHT_BASE = {
   "--ave-bg":              _H(0,     0,  100  ),
   "--ave-surface":         _H(0,     0,  100  ),
   "--ave-surface-overlay": _H(220,   9,   90  ),
@@ -73,9 +73,9 @@ const _LIGHT_BASE: Record<string, string> = {
   "--ave-ring":            _H(217.2, 91.2,59.8),
   "--ave-radius":          "0.6rem",
   "--ave-radius-sm":       "0.25rem",
-};
+} satisfies Partial<Record<AveTokenName, string>>;
 
-const _HC_BASE: Record<string, string> = {
+const _HC_BASE = {
   "--ave-bg":              _H(0,   0,   0  ),
   "--ave-surface":         _H(0,   0,   0  ),
   "--ave-surface-overlay": _H(0,   0,  10  ),
@@ -96,20 +96,20 @@ const _HC_BASE: Record<string, string> = {
   "--ave-ring":            _H(60, 100,  50  ),
   "--ave-radius":          "0.6rem",
   "--ave-radius-sm":       "0.25rem",
-};
+} satisfies Partial<Record<AveTokenName, string>>;
 
 // Accent tokens that override any shell base for ACME brand theme.
 // Spread AFTER surface so ACME-red danger and vivid-purple primary
 // always win even if a surface map accidentally defines them.
-const _ACME_ACCENT: Record<string, string> = {
+const _ACME_ACCENT = {
   "--ave-primary":     _H(253, 100, 65),   // #734dff vivid purple SEND
   "--ave-primary-fg":  _H(0,     0, 100),
   "--ave-ring":        _H(263,  70,  50),   // p-purple-600
   "--ave-danger":      _H(1,    98,  59),   // #FD312E ACME red
   "--ave-danger-fg":   _H(0,     0, 100),
-};
+} satisfies Partial<Record<AveTokenName, string>>;
 
-const _ACME_LIGHT_SURFACE: Record<string, string> = {
+const _ACME_LIGHT_SURFACE = {
   "--ave-bg":           _H(40,  25,  92),   // Grey-6 #F0ECE4
   "--ave-surface":      _H(44,  37,  94),   // Grey-7 #F6F3EB
   "--ave-fg":           _H(0,    0,  15),   // Grey-1 #262626
@@ -117,9 +117,9 @@ const _ACME_LIGHT_SURFACE: Record<string, string> = {
   "--ave-secondary":    _H(44,  37,  94),
   "--ave-secondary-fg": _H(0,    0,  15),
   "--ave-border":       _H(40,  10,  78),   // Grey-4 #CBC8C2
-};
+} satisfies Partial<Record<AveTokenName, string>>;
 
-const _ACME_DARK_SURFACE: Record<string, string> = {
+const _ACME_DARK_SURFACE = {
   "--ave-bg":           _H(0,    0,  15),   // Grey-1 #262626
   "--ave-surface":      _H(0,    0,  18),
   "--ave-fg":           _H(44,  37,  94),   // Grey-7 #F6F3EB
@@ -127,7 +127,7 @@ const _ACME_DARK_SURFACE: Record<string, string> = {
   "--ave-secondary":    _H(0,    0,  20),
   "--ave-secondary-fg": _H(44,  37,  94),
   "--ave-border":       _H(0,    0,  28),
-};
+} satisfies Partial<Record<AveTokenName, string>>;
 
 export function resolvePluginTokens(
   theme: ResolvedTheme,
@@ -135,24 +135,24 @@ export function resolvePluginTokens(
 ): Record<AveTokenName, string> {
   const base = theme === "light" ? _LIGHT_BASE : theme === "high-contrast" ? _HC_BASE : _DARK_BASE;
   // HC locks primary/ring to yellow; no chat-theme overlay applies.
-  if (theme === "high-contrast") return { ..._INVARIANT, ...base } as Record<AveTokenName, string>;
+  if (theme === "high-contrast") return { ..._INVARIANT, ...base };
   switch (chatTheme) {
     case "lg": {
       const surface = theme === "dark" ? _ACME_DARK_SURFACE : _ACME_LIGHT_SURFACE;
       // surface first, then accent — accent must always win (ACME red, vivid purple).
-      return { ..._INVARIANT, ...base, ...surface, ..._ACME_ACCENT } as Record<AveTokenName, string>;
+      return { ..._INVARIANT, ...base, ...surface, ..._ACME_ACCENT };
     }
     case "purple":
-      return { ..._INVARIANT, ...base, "--ave-primary": _H(262, 83, 58), "--ave-primary-fg": _H(0, 0, 100), "--ave-ring": _H(263, 70, 50) } as Record<AveTokenName, string>;
+      return { ..._INVARIANT, ...base, "--ave-primary": _H(262, 83, 58), "--ave-primary-fg": _H(0, 0, 100), "--ave-ring": _H(263, 70, 50) };
     case "orange":
       return theme === "dark"
-        ? { ..._INVARIANT, ...base, "--ave-primary": _H(25, 95, 53), "--ave-primary-fg": _H(0, 0, 100), "--ave-ring": _H(21, 90, 48) } as Record<AveTokenName, string>
-        : { ..._INVARIANT, ...base, "--ave-primary": _H(21, 90, 48), "--ave-primary-fg": _H(0, 0, 100), "--ave-ring": _H(25, 95, 53) } as Record<AveTokenName, string>;
+        ? { ..._INVARIANT, ...base, "--ave-primary": _H(25, 95, 53), "--ave-primary-fg": _H(0, 0, 100), "--ave-ring": _H(21, 90, 48) }
+        : { ..._INVARIANT, ...base, "--ave-primary": _H(21, 90, 48), "--ave-primary-fg": _H(0, 0, 100), "--ave-ring": _H(25, 95, 53) };
     case "blue":
       return theme === "dark"
-        ? { ..._INVARIANT, ...base, "--ave-primary": _H(217.2, 91.2, 59.8), "--ave-ring": _H(224.3, 76.3, 48) } as Record<AveTokenName, string>
-        : { ..._INVARIANT, ...base, "--ave-primary": _H(224.3, 76.3, 48), "--ave-ring": _H(217.2, 91.2, 59.8) } as Record<AveTokenName, string>;
+        ? { ..._INVARIANT, ...base, "--ave-primary": _H(217.2, 91.2, 59.8), "--ave-ring": _H(224.3, 76.3, 48) }
+        : { ..._INVARIANT, ...base, "--ave-primary": _H(224.3, 76.3, 48), "--ave-ring": _H(217.2, 91.2, 59.8) };
     default:   // "default" — no overlay
-      return { ..._INVARIANT, ...base } as Record<AveTokenName, string>;
+      return { ..._INVARIANT, ...base };
   }
 }
