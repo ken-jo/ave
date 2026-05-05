@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config";
+import path from "node:path";
 
 /**
  * Phase 1 renderer split — test infrastructure.
@@ -34,5 +35,13 @@ export default defineConfig({
   },
   resolve: {
     extensions: [".ts", ".tsx", ".mjs", ".js", ".jsx", ".json"],
+    // SDK is installed from GitHub — its prepare (tsup) script may not run
+    // in CI without trusted-dependencies. Point vitest directly at the SDK
+    // TypeScript sources so the dist/ absence does not break test imports.
+    alias: {
+      "@ave/plugin-sdk/ui/tokens": path.resolve("node_modules/@ave/plugin-sdk/src/ui/tokens/index.ts"),
+      "@ave/plugin-sdk/ui": path.resolve("node_modules/@ave/plugin-sdk/src/ui/index.ts"),
+      "@ave/plugin-sdk": path.resolve("node_modules/@ave/plugin-sdk/src/index.ts"),
+    },
   },
 });
