@@ -1,5 +1,5 @@
 import type { ChatThemePreference, ResolvedTheme } from "./types.js";
-import type { AveTokenName } from "@ave/plugin-sdk/ui/tokens";
+import type { AveTokenName } from "../../../shared/plugin-ui-tokens.js";
 
 // Derives the full set of --ave-* CSS custom properties from the current
 // (resolved shell theme, chat theme) combination. Values are literal HSL
