@@ -143,13 +143,13 @@ describe("plugin-preload bridge", () => {
     const bridge = exposed.get("avePlugin") as { getEntryUrl: () => Promise<string> };
     mockInvoke.mockResolvedValueOnce({
       ok: true,
-      entryUrl: "file:///plugins/agent-hub/dist/ui/agent-hub-panel.js",
+      entryUrl: "ave-plugin://asset/dist/ui/agent-hub-panel.js",
     });
 
     const url = await bridge.getEntryUrl();
 
     expect(mockInvoke).toHaveBeenCalledWith("ave:plugin:get-entry-url");
-    expect(url).toBe("file:///plugins/agent-hub/dist/ui/agent-hub-panel.js");
+    expect(url).toBe("ave-plugin://asset/dist/ui/agent-hub-panel.js");
   });
 
   it("getEntryUrl throws when main returns a rejection sentinel", async () => {
