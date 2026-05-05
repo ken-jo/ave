@@ -436,6 +436,26 @@ canonical 예시 — 새 플러그인은 템플릿에서 fork 하면 자동 보�
   `ave-tokens.css :root` + first consumer (or reserved 마커) 한 PR 안에서
   lockstep. 위반 시 architect P0 follow-up.
 
+**Import 패턴 (SDK v3.10.0+)**:
+
+플러그인이 SDK UI primitive 를 쓸 때는 **per-component subpath** 가 canonical.
+barrel `@ave/plugin-sdk/ui` 는 모든 컴포넌트의 `injectTokenCss` side-effect 를
+끌어와 tree-shake 안 됨 → 한 컴포넌트만 써도 전체가 번들됨.
+
+```ts
+// canonical
+import { Stack, Inline } from "@ave/plugin-sdk/ui/components/Stack";
+import { Toggle } from "@ave/plugin-sdk/ui/components/Toggle";
+
+// legacy / prototyping
+import { Stack, Toggle } from "@ave/plugin-sdk/ui";
+```
+
+자세한 subpath 목록 + dedup-by-id 계약은 `ave-plugin-sdk` README "UI imports".
+번들 크기 절감 효과는 host-provided React 결정 (`ave-plugin-sdk` issue #103) 후
+의미가 커짐 — 그 전엔 React 1MB 가 dominant 라 subpath 효과가 시각적으로 안
+드러남. 그러나 import 자체는 항상 subpath 가 정도.
+
 ---
 
 ## 3. toolSchemas 작성 가이드
