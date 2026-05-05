@@ -503,9 +503,9 @@ describe("<ThemeProvider> + reduced-motion", () => {
 });
 
 describe("resolvePluginTokens", () => {
-  it("dark/default — returns all 17 --ave-* keys", () => {
+  it("dark/default — returns all 36 --ave-* keys", () => {
     const tokens = resolvePluginTokens("dark", "default");
-    expect(Object.keys(tokens)).toHaveLength(17);
+    expect(Object.keys(tokens)).toHaveLength(36);
     expect(tokens["--ave-bg"]).toMatch(/^hsl\(/);
     expect(tokens["--ave-radius"]).toBe("0.6rem");
   });
