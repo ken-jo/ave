@@ -793,6 +793,7 @@ contextBridge.exposeInMainWorld("ave", {
   env: {
     isDev: process.env.AVE_DEV === "1",
     enableDevConsole: process.env.AVE_DEV_CONSOLE === "1",
+    debugStream: process.env.VITE_DEBUG_STREAM === "1",
   },
   attach: {
     openFile: () => ipcRenderer.invoke("ave:attach:openFile"),
