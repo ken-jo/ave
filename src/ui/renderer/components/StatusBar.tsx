@@ -1,4 +1,5 @@
 import type { PersistentItem, StatusBarSeverity, ToastItem } from "../hooks/use-status-bar.js";
+import { AveLogo } from "./AveLogo.js";
 
 /**
  * Bottom status bar (#231). Two slots:
@@ -57,7 +58,10 @@ export function StatusBar(props: StatusBarProps) {
     >
       <div className="flex min-w-0 items-center gap-3 truncate">
         {persistent.length === 0 ? (
-          <span className="opacity-50">Ave</span>
+          <span className="flex items-center gap-1.5 opacity-60">
+            <AveLogo className="h-3.5 w-3.5 shrink-0" decorative />
+            <span>Ave</span>
+          </span>
         ) : (
           persistent.map((item) => (
             <span key={item.id} className="flex min-w-0 items-center gap-1.5 truncate">

@@ -23,11 +23,12 @@ export type RenderAppReturn = {
   emitChatStream: (ev: unknown) => void;
   emitRoutineCompleted: (r: unknown) => void;
   emitViewActivate: (v: string) => void;
+  emitAskUserQuestion: (r: unknown) => void;
   emitApproval: (r: unknown) => void;
 };
 
 export async function renderApp(opts: RenderAppOpts = {}): Promise<RenderAppReturn> {
-  const { api, emitChatStream, emitRoutineCompleted, emitViewActivate } = makeMockAveApi(opts);
+  const { api, emitChatStream, emitRoutineCompleted, emitViewActivate, emitAskUserQuestion } = makeMockAveApi(opts);
   const { ns, emitApproval } = makeMockAveNamespace();
 
   vi.stubGlobal("aveApi", api);
@@ -46,6 +47,7 @@ export async function renderApp(opts: RenderAppOpts = {}): Promise<RenderAppRetu
     emitChatStream,
     emitRoutineCompleted,
     emitViewActivate,
+    emitAskUserQuestion,
     emitApproval,
   };
 }

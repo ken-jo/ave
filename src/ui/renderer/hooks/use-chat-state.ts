@@ -268,6 +268,7 @@ export function useChatState(api: AveApi) {
             freedTokens: freed,
             ...(ev.tier ? { tier: ev.tier } : {}),
             ...(ev.revertSessionId ? { revertSessionId: ev.revertSessionId } : {}),
+            ...(ev.summary ? { summary: ev.summary } : {}),
           },
         ]);
       } else if (ev.type === "done") {
