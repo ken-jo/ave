@@ -16,7 +16,7 @@ import { registerIpcHandlers, registerWindowEventListeners, unregisterPluginWebv
 import { ensureCorporateCa } from "./main/corp-ca-loader.js";
 import { installHtmlPreviewPartitionBlock, installPluginPartitionPolicy } from "./main/html-preview-partition.js";
 import { registerPluginAssetProtocolScheme } from "./main/plugin-asset-protocol.js";
-import { findAveProtocolUri } from "./main/ave-protocol.js";
+import { findAveProtocolUri, parseAgentHubAuthUri } from "./main/ave-protocol.js";
 import { buildDevProtocolArgs } from "./main/electron-protocol-args.js";
 import { devNoSandboxAllowed, setIsPackaged } from "./boot/dev-flags.js";
 import { emitEvent as emitHostEvent } from "./boot/types.js";
@@ -198,6 +198,20 @@ const aveDevWarn = (msg: string, obj?: object) => {
 
 async function handleAveUri(url: string) {
   aveDevLog("[ave] handleAveUri called", { url });
+
+  // Route agent-hub OAuth callback (`ave://agent-hub-auth?code=<code>`)
+  // to a host event so the agent-hub plugin can exchange the code.
+  // Validation lives in parseAgentHubAuthUri — bad URIs silently drop
+  // (DoS / probing defense). Plain-text `code` MUST NOT be logged.
+  const authParams = parseAgentHubAuthUri(url);
+  if (authParams) {
+    aveDevLog("[ave] handleAveUri: agent-hub auth callback received", {
+      codeLength: authParams.code.length,
+    });
+    emitHostEvent("agent-hub.auth.code.received", { code: authParams.code });
+    return;
+  }
+
   const params = parseAveInstallUri(url);
   if (!params) {
     aveDevWarn("[ave] handleAveUri: parseAveInstallUri returned null", { url });
