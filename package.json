@@ -4,7 +4,10 @@
   "private": true,
   "type": "module",
   "description": "Test Electron host app for Ave plugins.",
-  "author": "former_org",
+  "author": {
+    "name": "former_org",
+    "email": "jo.dreame@gmail.com"
+  },
   "main": "dist/src/main.js",
   "scripts": {
     "postinstall": "electron-rebuild && node scripts/fetch-uv.mjs && node scripts/register-ave-protocol.mjs",
