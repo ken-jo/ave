@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findAveProtocolUri, parseAgentHubAuthUri } from "../ave-protocol.js";
+import { findAveProtocolUri, parsePluginAuthUri } from "../ave-protocol.js";
 
 describe("findAveProtocolUri", () => {
   it("returns the custom protocol URI from argv", () => {
@@ -33,87 +33,109 @@ describe("findAveProtocolUri", () => {
   });
 });
 
-describe("parseAgentHubAuthUri", () => {
-  // 32-char URL-safe code — representative of a real agent-hub callback.
+describe("parsePluginAuthUri", () => {
+  // 32-char URL-safe code — representative of a real plugin OAuth callback.
   const validCode = "abc123_DEF456-ghi789.JKL012~mno3";
 
-  it("parses a well-formed agent-hub-auth URL", () => {
-    expect(parseAgentHubAuthUri(`ave://agent-hub-auth?code=${validCode}`)).toEqual({
+  it("parses a well-formed plugin-auth URL with pluginId 'agent-hub'", () => {
+    expect(parsePluginAuthUri(`ave://plugin-auth/agent-hub?code=${validCode}`)).toEqual({
+      pluginId: "agent-hub",
       code: validCode,
     });
   });
 
-  it("accepts a trailing slash on the host (`ave://agent-hub-auth/?code=...`)", () => {
-    expect(parseAgentHubAuthUri(`ave://agent-hub-auth/?code=${validCode}`)).toEqual({
+  it("parses a well-formed plugin-auth URL with a different pluginId", () => {
+    expect(parsePluginAuthUri(`ave://plugin-auth/some-other-plugin?code=${validCode}`)).toEqual({
+      pluginId: "some-other-plugin",
       code: validCode,
     });
   });
 
   it("ignores URL fragments — they never reach the host process anyway", () => {
     expect(
-      parseAgentHubAuthUri(`ave://agent-hub-auth?code=${validCode}#noise`),
-    ).toEqual({ code: validCode });
+      parsePluginAuthUri(`ave://plugin-auth/agent-hub?code=${validCode}#noise`),
+    ).toEqual({ pluginId: "agent-hub", code: validCode });
   });
 
   it("rejects empty code (`?code=`)", () => {
-    expect(parseAgentHubAuthUri("ave://agent-hub-auth?code=")).toBeNull();
+    expect(parsePluginAuthUri("ave://plugin-auth/agent-hub?code=")).toBeNull();
   });
 
   it("rejects missing code", () => {
-    expect(parseAgentHubAuthUri("ave://agent-hub-auth")).toBeNull();
+    expect(parsePluginAuthUri("ave://plugin-auth/agent-hub")).toBeNull();
   });
 
   it("rejects code shorter than the minimum length", () => {
-    expect(parseAgentHubAuthUri("ave://agent-hub-auth?code=short")).toBeNull();
+    expect(parsePluginAuthUri("ave://plugin-auth/agent-hub?code=short")).toBeNull();
   });
 
   it("rejects code longer than the maximum length (>256)", () => {
     const tooLong = "a".repeat(257);
-    expect(parseAgentHubAuthUri(`ave://agent-hub-auth?code=${tooLong}`)).toBeNull();
+    expect(parsePluginAuthUri(`ave://plugin-auth/agent-hub?code=${tooLong}`)).toBeNull();
   });
 
   it("rejects parameter pollution (`?code=a&code=b`)", () => {
     expect(
-      parseAgentHubAuthUri(`ave://agent-hub-auth?code=${validCode}&code=${validCode}`),
+      parsePluginAuthUri(`ave://plugin-auth/agent-hub?code=${validCode}&code=${validCode}`),
     ).toBeNull();
   });
 
-  it("rejects non-agent-hub-auth host (`ave://install/...`)", () => {
-    expect(parseAgentHubAuthUri("ave://install/my-plugin")).toBeNull();
+  it("rejects missing pluginId (`ave://plugin-auth?code=...`)", () => {
+    expect(parsePluginAuthUri(`ave://plugin-auth?code=${validCode}`)).toBeNull();
+  });
+
+  it("rejects empty pluginId (`ave://plugin-auth/?code=...`)", () => {
+    expect(parsePluginAuthUri(`ave://plugin-auth/?code=${validCode}`)).toBeNull();
+  });
+
+  it("rejects pluginId with invalid characters (uppercase, '!')", () => {
+    expect(
+      parsePluginAuthUri(`ave://plugin-auth/Bad-PluginID!?code=${validCode}`),
+    ).toBeNull();
+  });
+
+  it("rejects pluginId starting with a digit", () => {
+    expect(
+      parsePluginAuthUri(`ave://plugin-auth/1plugin?code=${validCode}`),
+    ).toBeNull();
+  });
+
+  it("rejects extra path segments under plugin-auth", () => {
+    expect(
+      parsePluginAuthUri(`ave://plugin-auth/agent-hub/extra?code=${validCode}`),
+    ).toBeNull();
+  });
+
+  it("rejects the legacy `ave://agent-hub-auth?code=...` host (no backwards compat)", () => {
+    expect(parsePluginAuthUri(`ave://agent-hub-auth?code=${validCode}`)).toBeNull();
   });
 
   it("rejects unrelated host (`ave://other-host?code=...`)", () => {
-    expect(parseAgentHubAuthUri(`ave://other-host?code=${validCode}`)).toBeNull();
+    expect(parsePluginAuthUri(`ave://other-host?code=${validCode}`)).toBeNull();
   });
 
   it("rejects non-ave schemes", () => {
-    expect(parseAgentHubAuthUri(`https://agent-hub-auth?code=${validCode}`)).toBeNull();
-  });
-
-  it("rejects path segments under agent-hub-auth", () => {
-    expect(
-      parseAgentHubAuthUri(`ave://agent-hub-auth/extra?code=${validCode}`),
-    ).toBeNull();
+    expect(parsePluginAuthUri(`https://plugin-auth/agent-hub?code=${validCode}`)).toBeNull();
   });
 
   it("rejects code with disallowed characters", () => {
     // Spaces decode but aren't in the unreserved class.
     expect(
-      parseAgentHubAuthUri("ave://agent-hub-auth?code=has%20space1234567"),
+      parsePluginAuthUri("ave://plugin-auth/agent-hub?code=has%20space1234567"),
     ).toBeNull();
     // Slashes are not URL-safe-base64.
     expect(
-      parseAgentHubAuthUri("ave://agent-hub-auth?code=has/slash1234567"),
+      parsePluginAuthUri("ave://plugin-auth/agent-hub?code=has/slash1234567"),
     ).toBeNull();
   });
 
   it("rejects malformed URLs", () => {
-    expect(parseAgentHubAuthUri("not a url")).toBeNull();
-    expect(parseAgentHubAuthUri("")).toBeNull();
+    expect(parsePluginAuthUri("not a url")).toBeNull();
+    expect(parsePluginAuthUri("")).toBeNull();
   });
 
-  it("does not collide with parseAveInstallUri's domain (`ave://install/...`)", () => {
+  it("does not collide with the install route — `ave://install/<slug>` is not auth", () => {
     // Documents that install URIs don't accidentally satisfy auth parser.
-    expect(parseAgentHubAuthUri("ave://install/my-plugin?code=" + validCode)).toBeNull();
+    expect(parsePluginAuthUri("ave://install/my-plugin?code=" + validCode)).toBeNull();
   });
 });
