@@ -121,10 +121,10 @@ const api = {
     ipcRenderer.invoke("ave:chat:send", input, attachments),
   chatGuide: async (input: string) => ipcRenderer.invoke("ave:chat:guide", input),
   chatNew: async () => ipcRenderer.invoke("ave:chat:new"),
-  chatSessions: async () =>
-    ipcRenderer.invoke("ave:chat:sessions") as Promise<{
+  chatSessions: async (opts?: { limit?: number; before?: string }) =>
+    ipcRenderer.invoke("ave:chat:sessions", opts) as Promise<{
       current: string;
-      sessions: Array<{ id: string; modifiedAt: string }>;
+      sessions: Array<{ id: string; modifiedAt: string; title: string }>;
     }>,
   chatLoadSession: async (sessionId: string) =>
     ipcRenderer.invoke("ave:chat:load-session", sessionId) as Promise<{
@@ -157,7 +157,7 @@ const api = {
     ipcRenderer.invoke("ave:starred:add", entry),
   starredRemove: async (opts: { id?: string; sessionId?: string; messageIndex?: number }) =>
     ipcRenderer.invoke("ave:starred:remove", opts),
-  onChatStream: (handler: (event: { type: string; text?: string; thought?: string; name?: string; error?: string; result?: string; isError?: boolean; input?: Record<string, unknown>; groupId?: string; toolUseId?: string; displayOrder?: number; roundIndex?: number; stopReason?: "end_turn" | "tool_use"; hasToolCalls?: boolean }) => void) => {
+  onChatStream: (handler: (event: { type: string; text?: string; thought?: string; name?: string; error?: string; result?: string; isError?: boolean; input?: Record<string, unknown>; groupId?: string; toolUseId?: string; displayOrder?: number; roundIndex?: number; stopReason?: "end_turn" | "tool_use"; hasToolCalls?: boolean; removedMessages?: number; freedTokens?: number; tier?: "hard-token" | "semantic-llm" | "soft-time"; revertSessionId?: string; summary?: string }) => void) => {
     const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
     ipcRenderer.on("ave:chat:stream", listener);
     return () => ipcRenderer.removeListener("ave:chat:stream", listener);
@@ -795,7 +795,9 @@ contextBridge.exposeInMainWorld("ave", {
   env: {
     isDev: process.env.AVE_DEV === "1",
     enableDevConsole: process.env.AVE_DEV_CONSOLE === "1",
-    debugStream: process.env.VITE_DEBUG_STREAM === "1",
+    debugStream:
+      process.env.VITE_DEBUG_STREAM === "1" ||
+      (process.env.AVE_DEV === "1" && process.env.AVE_DEV_CONSOLE === "1"),
   },
   attach: {
     openFile: () => ipcRenderer.invoke("ave:attach:openFile"),
