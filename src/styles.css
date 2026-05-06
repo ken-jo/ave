@@ -759,4 +759,10 @@
   .ave-prose :where(code):not(:where(pre code, [class~="not-prose"] *))::after {
     content: "";
   }
+  .ave-prose :where(pre, table, img, video, canvas, iframe):not(:where([class~="not-prose"] *)) {
+    max-width: 100%;
+  }
+  .ave-prose :where(pre, table):not(:where([class~="not-prose"] *)) {
+    overflow-x: auto;
+  }
 }
