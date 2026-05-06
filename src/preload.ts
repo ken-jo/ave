@@ -121,7 +121,7 @@ const api = {
     ipcRenderer.invoke("ave:chat:send", input, attachments),
   chatGuide: async (input: string) => ipcRenderer.invoke("ave:chat:guide", input),
   chatNew: async () => ipcRenderer.invoke("ave:chat:new"),
-  chatSessions: async (opts?: { limit?: number; before?: string; beforeId?: string }) =>
+  chatSessions: async (opts?: { limit?: number; before?: string; beforeId?: string; after?: string }) =>
     ipcRenderer.invoke("ave:chat:sessions", opts) as Promise<{
       current: string;
       sessions: Array<{ id: string; modifiedAt: string; title: string }>;
