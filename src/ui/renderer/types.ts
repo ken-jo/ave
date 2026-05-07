@@ -486,6 +486,7 @@ export type AveApi = {
       summary?: string;
       toolCallCount?: number;
       message?: string;
+      toolUseId?: string;
     }) => void,
   ) => () => void;
   onSkillLoaded: (
