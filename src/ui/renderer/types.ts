@@ -431,7 +431,6 @@ export type AveApi = {
         allowFreeText: boolean;
         suggestedAnswers?: string[];
       }>;
-      urgent: boolean;
       createdAt: number;
     }) => void,
   ) => () => void;
