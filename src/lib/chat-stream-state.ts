@@ -1,16 +1,11 @@
 /**
- * 3-tier checkpoint trigger that classifies *why* a rotation/compact happened.
- * Mirrors `CheckpointTriggerType` in `engine/auto-compact.ts` but kept as a
- * string-literal union here so the renderer side has zero engine imports.
- *
- * - "hard-token":   ctxUsage ≥ 85% → emergency rotation
- * - "semantic-llm": LLM emitted [checkpoint] marker → topic shift
- * - "soft-time":    24h / 30 messages → natural rest checkpoint
- *
- * Absent from `compact_notice` events triggered by plain auto/reactive
- * compaction outside the rotation path.
+ * Checkpoint trigger reason on `compact_notice` events.
+ * - "auto-compact": Layer 0 preflight 가 Layer 2 compact 를 실행 (post-infinity-session-v3 default)
+ * - "manual":       사용자 명시 trigger (/compact)
+ * Mirrors `CheckpointTrigger` in `memory/memory-manager.ts` but kept as a
+ * string-literal union here so the renderer side has zero memory layer imports.
  */
-export type CheckpointTier = "hard-token" | "semantic-llm" | "soft-time";
+export type CheckpointTier = "auto-compact" | "manual";
 
 export const EMPTY_ASSISTANT_RESPONSE_TEXT =
   "응답이 비어있습니다. (도구 호출만 있었거나 LLM이 텍스트를 생성하지 않음)";
@@ -33,16 +28,9 @@ export type StreamEvent = {
   hasToolCalls?: boolean;
   removedMessages?: number;
   freedTokens?: number;
-  /** Rotation tier on `compact_notice` (rotation-driven only). */
+  /** Compact trigger tier on `compact_notice` — Layer 0 auto vs manual. */
   tier?: CheckpointTier;
-  /**
-   * §457 Phase 3: parent session id from which a rotation forked. Present
-   * on `compact_notice` events when the compact was rotation-driven, so
-   * the renderer can offer a revert-to-parent action on the matching
-   * CheckpointDivider.
-   */
-  revertSessionId?: string;
-  /** Rolling summary attached to a rotation checkpoint, when generated. */
+  /** Rolling summary attached to a compact checkpoint (rendered preamble). */
   summary?: string;
   /** Set to "command" on `done` events when the turn was a slash command. */
   route?: "command";
@@ -126,26 +114,15 @@ export type ChatEntry =
       rows: Array<{ label: string; value: string }>;
     }
   | { kind: "system"; text: string }
-  // §457 PR-A: structured replacement for the legacy
-  // "💾 이전 N개 대화를 요약했습니다" system bubble. Carries the rotation
-  // tier so the checkpoint UI can render tier-aware label/color
-  // (emergency vs topic-shift vs natural rest) without parsing prose.
-  // Plain auto/reactive compaction (no rotation) emits an entry with
-  // `tier` undefined, in which case the renderer falls back to the
-  // generic "자동 정리" label.
+  // Structured replacement for the legacy "💾 이전 N개 대화를 요약했습니다"
+  // system bubble. tier 는 Layer 0 auto-compact 또는 manual `/compact`. 기존
+  // fork-based revertSessionId 는 PR-2-F-2 에서 폐지 (sessionId 불변).
   | {
       kind: "checkpoint";
       tier?: CheckpointTier;
       removedMessages: number;
       freedTokens: number;
       summary?: string;
-      /**
-       * §457 Phase 3: when set, the CheckpointDivider renders a "여기로
-       * 되돌아가기" action that resumes the parent session via
-       * `ave:chat:session-resume`. Absent for non-rotation checkpoints
-       * (legacy auto/reactive compact) where there is no fork to return to.
-       */
-      revertSessionId?: string;
     }
   // §457 PR-A: marker placed at the head of a resumed child session's
   // historical entry list when the parent session left a rolling
