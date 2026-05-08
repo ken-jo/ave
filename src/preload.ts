@@ -152,6 +152,11 @@ const api = {
   chatCompact: async () => ipcRenderer.invoke("ave:chat:compact"),
   chatSessionResume: async (sessionId: string) => ipcRenderer.invoke("ave:chat:session-resume", sessionId),
   chatAbort: async () => ipcRenderer.invoke("ave:chat:abort") as Promise<{ ok: boolean }>,
+  // PR-4: lazy-load verbatim tool_result content (in-session only)
+  chatGetVerbatimToolResult: async (sessionId: string, toolUseId: string) =>
+    ipcRenderer.invoke("ave:chat:get-verbatim-tool-result", { sessionId, toolUseId }) as Promise<
+      { content: string; lineCount: number } | null
+    >,
   starredList: async () => ipcRenderer.invoke("ave:starred:list"),
   starredAdd: async (entry: { sessionId?: string; messageIndex: number; role: string; text: string }) =>
     ipcRenderer.invoke("ave:starred:add", entry),
