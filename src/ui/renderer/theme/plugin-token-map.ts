@@ -41,9 +41,7 @@ const _INVARIANT: Partial<Record<AveTokenName, string>> = {
 /**
  * Derive the full --ave-* plugin token map from an active ThemeBundle.
  *
- * Replaces the old `resolvePluginTokens(theme, chatTheme)` which required the
- * caller to carry both axes. Bundles are self-contained so no axis resolution
- * is needed.
+ * Bundles are self-contained — no legacy axis resolution needed.
  */
 export function bundleToPluginTokens(bundle: ThemeBundle): Record<AveTokenName, string> {
   const t = bundle.tokens;

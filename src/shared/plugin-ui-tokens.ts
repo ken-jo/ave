@@ -65,10 +65,8 @@ export const AVE_CSS_ONLY_TOKEN_NAMES = [
 export type AveCssOnlyTokenName = typeof AVE_CSS_ONLY_TOKEN_NAMES[number];
 
 export interface AveThemePayload {
-  v?: 2;
-  theme: "light" | "dark" | "high-contrast";
-  chatTheme: "default" | "lg" | "purple" | "orange" | "blue";
-  codeTheme: "light" | "dark";
+  bundleId: string;
+  shell: "light" | "dark";
   colorScheme?: "light" | "dark";
   reducedMotion?: boolean;
   fonts?: { family: string };
