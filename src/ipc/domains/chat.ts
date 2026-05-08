@@ -338,9 +338,16 @@ ${input}`;
     return trackStreamTurn(() => runStreamedTurn(conversationLoop, effective, win?.webContents, "ave:chat:stream", streamId, streamTurnOptions));
   });
 
-  ipcMain.handle("ave:chat:abort", (e) => {
+  ipcMain.handle("ave:chat:abort", async (e) => {
     if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:chat:abort", e); return UNAUTHORIZED_FRAME; }
     conversationLoop.abortCurrentTurn();
+    if (activeStreamTurn) {
+      try {
+        await activeStreamTurn;
+      } catch {
+        // expected: interrupted turns may reject
+      }
+    }
     return { ok: true };
   });
 
