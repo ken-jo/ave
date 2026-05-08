@@ -69,11 +69,6 @@ const CHANNEL_MANIFEST: Record<string, "tier1" | "tier2" | "tier3"> = {
   // Policy
   "ave:policy:get": "tier3",
   "ave:policy:set": "tier1",
-  // Routine
-  "ave:routine:get-latest-result": "tier3",
-  "ave:routines:dev-trigger-wakeup": "tier1",
-  "ave:routines:dev-trigger-schedule": "tier1",
-  "ave:routines:dev-trigger-shutdown": "tier1",
   // Usage / observability
   "ave:usage:summary": "tier3",
   // Conversation UX extras
@@ -85,6 +80,16 @@ const CHANNEL_MANIFEST: Record<string, "tier1" | "tier2" | "tier3"> = {
   "ave:audit:stats": "tier3",
   // Telemetry
   "ave:telemetry:consent-answer": "tier1",
+  // Routines v2 — invoke channels only (fired/running-started/running-finished are main→renderer push, no handle)
+  "ave:routines:v2:list": "tier3",
+  "ave:routines:v2:add": "tier1",
+  "ave:routines:v2:dismiss": "tier1",
+  "ave:routines:v2:remove": "tier1",
+  "ave:routines:v2:trigger-now": "tier1",
+  "ave:routines:v2:list-sessions": "tier3",
+  "ave:routines:v2:read-session": "tier2",
+  // Overlay v1 — primary-action is renderer→main invoke (write influence); show/update/dismiss are main→renderer push events
+  "ave:overlay:primary-action": "tier1",
 };
 
 // ─── validateSender unit tests ───────────────────────────────────────────────
