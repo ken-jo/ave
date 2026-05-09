@@ -38,12 +38,13 @@ export const ROUTINES_V2 = {
   failed: "ave:routines:v2:failed",
 } as const;
 
-export const PERMISSIONS_Q12 = {
+export const PERMISSIONS = {
   reviewerDispatch: "ave:permissions:reviewer-dispatch",
   deferredList: "ave:permissions:deferred-list",
   deferredResolve: "ave:permissions:deferred-resolve",
   deferredPending: "ave:permissions:deferred-pending",
   auditShow: "ave:permissions:audit-show",
   auditVerify: "ave:permissions:audit-verify",
+  hookTrustList: "ave:permissions:hook-trust-list",
   manifestViolation: "ave:permissions:manifest-violation",
 } as const;

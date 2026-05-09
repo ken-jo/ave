@@ -1,5 +1,5 @@
 /**
- * sensitive-paths unit tests — Tier S1+S2 + Q12 P2.5 expansion
+ * sensitive-paths unit tests — Tier S1+S2 + Permission policy P2.5 expansion
  *
  * Covers SENSITIVE_PATH_PATTERNS, isSensitivePath(), policyMatchPaths(),
  * canonicalizePathForMatch (frozen-canonical + bounded walk-up), and
@@ -41,7 +41,7 @@ describe("SENSITIVE_PATH_PATTERNS", () => {
     expect(SENSITIVE_PATH_PATTERNS).toContain("**/ave-secrets.json");
   });
 
-  it("Q12 P2.5 — contains OS sensitive paths", () => {
+  it("Permission policy P2.5 — contains OS sensitive paths", () => {
     expect(SENSITIVE_PATH_PATTERNS).toContain("**/etc/shadow");
     expect(SENSITIVE_PATH_PATTERNS).toContain("**/etc/sudoers");
     expect(SENSITIVE_PATH_PATTERNS).toContain("**/.netrc");
@@ -60,7 +60,7 @@ describe("SENSITIVE_PATH_PATTERNS", () => {
     expect(SENSITIVE_PATH_PATTERNS).toContain("**/id_ecdsa");
   });
 
-  it("Q12 P2.5 — contains Ave-internal sensitive paths", () => {
+  it("Permission policy P2.5 — contains Ave-internal sensitive paths", () => {
     expect(SENSITIVE_PATH_PATTERNS).toContain("**/.ave/audit/**");
     expect(SENSITIVE_PATH_PATTERNS).toContain("**/.ave/audit.log");
     expect(SENSITIVE_PATH_PATTERNS).toContain(
@@ -179,9 +179,9 @@ describe("isSensitivePath — negative cases", () => {
   });
 });
 
-// ─── Q12 P2.5 — Layer 0 expansion: OS + Ave-internal hits ───────
+// ─── Permission policy P2.5 — Layer 0 expansion: OS + Ave-internal hits ───────
 
-describe("isSensitivePath — Q12 P2.5 OS sensitive paths", () => {
+describe("isSensitivePath — Permission policy P2.5 OS sensitive paths", () => {
   it("matches /etc/shadow (and macOS /private/etc/shadow form)", () => {
     expect(isSensitivePath("/etc/shadow")).toBe("**/etc/shadow");
     expect(isSensitivePath("/private/etc/shadow")).toBe("**/etc/shadow");
@@ -232,7 +232,7 @@ describe("isSensitivePath — Q12 P2.5 OS sensitive paths", () => {
   });
 });
 
-describe("isSensitivePath — Q12 P2.5 Ave-internal", () => {
+describe("isSensitivePath — Permission policy P2.5 Ave-internal", () => {
   it("matches ~/.ave/audit/today.jsonl", () => {
     expect(isSensitivePath("/Users/example/.ave/audit/today.jsonl")).toBe(
       "**/.ave/audit/**",
@@ -264,7 +264,7 @@ describe("isSensitivePath — Q12 P2.5 Ave-internal", () => {
   });
 });
 
-// ─── Q12 P2.5 — canonicalizePathForMatch (frozen-canonical) ───────
+// ─── Permission policy P2.5 — canonicalizePathForMatch (frozen-canonical) ───────
 
 describe("canonicalizePathForMatch", () => {
   it("resolves .. segments via path.resolve()", () => {
