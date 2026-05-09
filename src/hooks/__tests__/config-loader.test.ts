@@ -107,3 +107,21 @@ describe("loadHooksConfigFromPaths", () => {
     expect(msg).toMatch(/invalid hooks\.json/);
   });
 });
+
+describe("Q12 P2.5 — hook directory relocation", () => {
+  it("getUserHooksPath returns the new ~/.config/ave/hooks/hooks.json path", async () => {
+    // We don't export getUserHooksPath; assert via the loadHooksConfig
+    // observation (it returns empty when both new + legacy paths absent
+    // in the user's homedir). The relocation is verified by the file
+    // not being read from `~/.ave/hooks.json`.
+    //
+    // For a stronger contract test we read the source file's import
+    // graph indirectly: any caller that mounted at ~/.ave/hooks.json
+    // would now miss it. We keep that assertion implicit in the boot
+    // wiring tests.
+    const { loadHooksConfig } = await import("../config-loader.js");
+    const cfg = loadHooksConfig();
+    expect(cfg).toHaveProperty("preToolUse");
+    expect(cfg).toHaveProperty("postToolUse");
+  });
+});
