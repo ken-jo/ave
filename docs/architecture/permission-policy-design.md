@@ -1,8 +1,8 @@
-# Q12 Permission Policy — Design Document (v2.2)
+# Permission Policy — Design Document (v2.2)
 
 > **Status:** Draft v2.2 — multi-agent + Copilot review loop applied
 > **Issue:** #627
-> **PR:** #632 (feat/q12-permission-policy)
+> **PR:** #632
 > **Last updated:** 2026-05-09
 > **v2.2 delta:** current implementation snapshot + future direction aligned to PR #632 head
 
@@ -24,7 +24,7 @@ PR #626 (Routine v2) 의 production smoke test 에서 발견된 *headless routin
 - Network firewall (OS/Tailscale layer)
 - Plugin sandbox (§9 — 변경 없음)
 - LLM provider authentication (§15)
-- Hook signing (Q13 — v1 은 strict-deny quarantine 후 user-keyboard `/permission hooks accept` 기반 명시적 신뢰 등록)
+- Hook signing (follow-up — v1 은 strict-deny quarantine 후 user-keyboard `/permission hooks accept` 기반 명시적 신뢰 등록)
 
 ## 1. Design principles
 
@@ -120,7 +120,7 @@ INPUT origin classification (user-keyboard | plugin-emitted | llm-tool-arg | fil
 │  Layer 6:  Hook chain (v1 deny-only baseline)               │
 │   ├ ~/.config/ave/hooks/{pre,post,perm}-*.sh              │
 │   ├ Sequential, deny precedence                             │
-│   ├ v1: deny | allow 만 허용. modify 는 Q13 (signing 후)    │
+│   ├ v1: deny | allow 만 허용. modify 는 signing 후속 작업  │
 │   ├ Boot-time hash check + strict-deny quarantine           │
 │   │   (changed/new → .disabled; user-keyboard accept only)  │
 │   └ exit !=0 = deny (fail-safe)                             │
@@ -442,7 +442,7 @@ interface VerdictCacheEntry {
 ```
 
 **v1 restrictions (critic M3):**
-- `modify` action 은 **Q13 까지 deferred** (signing 이 없으면 modify 가 attack vector)
+- `modify` action 은 **hook-signing follow-up 까지 deferred** (signing 이 없으면 modify 가 attack vector)
 - `allow` action 은 deny 가 발생할 hypothetical 결정을 *허용으로 바꾸지 못함* — Layer 6 의 `allow` 는 *additional approval signal* 이지 *override mechanism* 이 아님
 - 즉 v1 의 hook 은 **"deny 만 가능"** + audit
 - exit !=0 = deny (fail-safe)
@@ -538,7 +538,7 @@ Electron preload/contextBridge. Docker 불필요.
 
 ## 4. Reference matrix (verified — document-specialist findings applied)
 
-| 차원 | Ave Q12 | OpenCode | OpenHands | Kilo | Warp | Claude Code | OpenHarness | Hermes | Codex CLI | Copilot |
+| 차원 | Ave Permission Policy | OpenCode | OpenHands | Kilo | Warp | Claude Code | OpenHarness | Hermes | Codex CLI | Copilot |
 |---|---|---|---|---|---|---|---|---|---|---|
 | Action model | 3-action allow/ask/deny + denyReasons[] ✅ | allow/ask/deny + Question.Service | LOW/MED/HIGH/UNKNOWN (4 levels) | per-tool Allow/Ask/Deny rule-based | scoped autonomy [unverified] | deny→ask→allow (first match) | rule-based + Pre/Post hooks | manual/smart/off + Tirith verdict | 5 approval types | --yolo / --allow-all / --allow-all-paths |
 | Read/Write 분리 | 5-axis read/write/shell/network/meta + input-aware ✅ | wildcard | risk level | per-tool | tool toggles | tool-level rules | path_rules | Tirith content scan | sandbox modes | --allow-all-paths flag |
@@ -560,25 +560,25 @@ Electron preload/contextBridge. Docker 불필요.
 |---|---|---|
 | **Goose** (block/goose) | 3-level Always/Ask/Never + Manual/Smart 두 modes | Layer 8 mode 의 Smart 패턴 차용 — read auto, state-changing ask |
 | **Cline** | Plan/Act mode + per-tool auto-approve toggles | Layer 8 의 strict mode 가 유사 |
-| **Aider** | git-boundary based (--read FILE, --subtree-only, --no-auto-commits) | Layer 1 directories 와 보완적 — git tree boundary 도 향후 (Q13) |
+| **Aider** | git-boundary based (--read FILE, --subtree-only, --no-auto-commits) | Layer 1 directories 와 보완적 — git tree boundary 도 향후 검토 |
 
 ## 5. Current implementation and forward direction
 
 ### 5.0 Current implementation snapshot (PR #632 head)
 
-현재 Q12 v1 은 **single-path strict implementation** 으로 정렬한다. 레거시
+현재 Permission Policy v1 은 **single-path strict implementation** 으로 정렬한다. 레거시
 compat/fallback surface 는 제외하고, host/app/plugin contract 는 다음 경계로
 고정한다.
 
 | 영역 | 현재 구현 | SOT / 파일 |
 |---|---|---|
 | Tool category contract | Host registry 는 `read/write/shell/network/meta`; plugin manifest 는 고정 allow-list `read/write/shell/network` 만 허용. 미래 host-only category 가 추가되어도 plugin contract 는 자동 확장되지 않음. | `src/permissions/category-registry.ts`, `src/plugins/runtime/manifest-validation.ts` |
-| Permission IPC | Q12 IPC channel 은 `PERMISSIONS_Q12` 상수만 사용. main handler / preload bridge / sender-guard tests 가 같은 SOT 를 참조. | `src/shared/ipc-channels.ts`, `src/ipc/domains/permissions.ts`, `src/preload.ts` |
+| Permission IPC | Permission IPC channel 은 `PERMISSIONS` 상수만 사용. main handler / preload bridge / sender-guard tests 가 같은 SOT 를 참조. | `src/shared/ipc-channels.ts`, `src/ipc/domains/permissions.ts`, `src/preload.ts` |
 | Slash origin gate | `/permission` dispatch 는 `user-keyboard` origin 만. plugin-emitted / LLM / file content 는 leading slash 를 모두 제거해 plain text 로 처리. | `src/shared/slash-sanitizer.ts`, `src/permissions/permission-slash.ts` |
 | Reviewer lane | Boot 시 `wireReviewerAgent()` 는 fail-fast. `mode=llm` 인데 provider/API key 가 없으면 silent downgrade 없이 boot 오류로 드러남. | `src/boot.ts`, `src/boot/steps/reviewer-wiring.ts` |
-| Deferred queue | HIGH verdict 는 queue append, foreground UI 에서 approve/reject, resolution 은 Q12 audit chain 에 `deferred_resolve` 로 기록. Queue file append 는 O(1), rewrite 후 chmod 보정. | `src/permissions/reviewer/deferred-queue.ts`, `src/ipc/domains/permissions.ts` |
+| Deferred queue | HIGH verdict 는 queue append, foreground UI 에서 approve/reject, resolution 은 permission audit chain 에 `deferred_resolve` 로 기록. Queue file append 는 O(1), rewrite 후 chmod 보정. | `src/permissions/reviewer/deferred-queue.ts`, `src/ipc/domains/permissions.ts` |
 | Hook chain | Legacy `hooks.json` command/http executor 는 boot path 에서 제거. Script hook 은 `~/.config/ave/hooks/{pre,post,perm}-*.sh` 단일 경로, strict-deny quarantine + explicit typed trust registration 만 허용. | `src/hooks/script-hook-*`, `src/boot/steps/hook-system-wiring.ts` |
-| Audit | Q12 audit 는 discriminated union + HMAC chain + daily seal. Recent-read path 는 tail-scan 으로 UI freeze risk 를 낮춤. | `src/audit/*`, `src/permissions/permission-audit-runner.ts` |
+| Audit | permission audit 는 discriminated union + HMAC chain + daily seal. Recent-read path 는 tail-scan 으로 UI freeze risk 를 낮춤. | `src/audit/*`, `src/permissions/permission-audit-runner.ts` |
 
 ### 5.1 Completed implementation map
 
@@ -594,7 +594,8 @@ compat/fallback surface 는 제외하고, host/app/plugin contract 는 다음 �
 - Category registry pattern (Open-Closed)
 - 기존 `dangerous` 마이그레이션 (bash → shell, agent-spawn/ask-user → meta + decisionOverride)
 - Native file tools Phase 1: `read_file`, `list_files`, `glob_files`, `grep_files`, `write_file`, `edit_file`
-- Native tools Phase 2 recommended: `apply_patch`, `move_file`, `delete_file`, `powershell`
+- Native tools Phase 2: `apply_patch`, `move_file`, `delete_file`, `powershell`
+- Authority-sensitive tool approval identity: tools may publish `approvalCacheKey(input)` so allow/deny rules bind to the exact capability scope, not only the tool name. `schedule_routine` keys include the normalized `allowedPlugins` scope so high-trust approvals cannot authorize a lower-trust or broader plugin scope.
 - PermissionManager rules → registry-driven
 - `executeOne(invocation, scope, options)` ExecuteOptions bundling (9 → 3 args)
 - `routine.scope.{pluginIds, forcedPluginIds, directories}` rename + discriminated union
@@ -623,7 +624,8 @@ compat/fallback surface 는 제외하고, host/app/plugin contract 는 다음 �
 
 ### Phase 4 — Hook system (v1 deny-only) + manifest integrity proxy
 - ScriptHookManager integration (PreToolUse / PostToolUse / PermissionRequest)
-- `~/.config/ave/hooks/` discovery + boot-time hash check + strict-deny quarantine + `/permission hooks accept|disable|list` (typed command trust registration, no renderer fallback prompt/modal)
+- `~/.config/ave/hooks/` discovery + boot-time hash check + strict-deny quarantine + `/permission hooks accept|disable|list` (typed command trust registration, no renderer approval prompt/modal)
+- Boot-time quarantine emits legacy `AuditLogger.log` entries with `input.kind = "hook.quarantined"` and surfaces a non-modal Permissions tab notice backed by `PERMISSIONS.hookTrustList`.
 - Hook invocation contract (JSON in/out, exit code)
 - Deny precedence enforcement
 - ManifestIntegrityProxy (read-declared plugin tools wrapped with read-only fs proxy)
@@ -636,7 +638,7 @@ compat/fallback surface 는 제외하고, host/app/plugin contract 는 다음 �
 - Audit schema discriminated union + HMAC chain + daily seal
 - arch.md §6.3 **rewrite** (not append) — old 3-layer → new 10-layer
 - arch.md §6.4 Tool Registry table update (5-axis)
-- arch.md §8 cross-reference Q12 Layer 3 (avoid double-approval)
+- arch.md §8 cross-reference permission policy Layer 3 (avoid double-approval)
 - CLAUDE.md "Permission Policy (REQUIRED)" rule entry + hard removal date for category grace
 - Tests: slash injection regression, audit tamper detection, mode change durability
 
@@ -651,20 +653,20 @@ compat/fallback surface 는 제외하고, host/app/plugin contract 는 다음 �
 
 ### 5.2 Forward direction
 
-후속 구현은 Q12 경계를 넓히지 않고, 별도 issue/PR 로 다음 순서만 허용한다.
+후속 구현은 permission policy 경계를 넓히지 않고, 별도 issue/PR 로 다음 순서만 허용한다.
 
 | 단계 | 방향 | 원칙 |
 |---|---|---|
-| Q13 hook hardening | Signed hook (minisign 또는 동등 수준), hook hash 를 reviewer cache `invalidationKey` 에 포함, `modify` action 검토 | signing 전까지 v1 hook 은 deny-only 유지 |
-| Q13 DLP depth | Hook stdin / reviewer input 의 bounded deep-redaction (cycle/size guard 포함) | "nested object 는 host 밖으로 나갈 수 있다"는 현재 contract 를 더 강하게 만드는 방향만 허용 |
-| Q14 plugin sandbox | V8 isolate / Worker thread / permissioned fs facade 비교 후 manifest integrity proxy 를 보조층으로 격하 | app 이 plugin code 를 역참조하지 않음 |
-| Q14 manifest hard fail | 모든 active plugin category 선언 완료 후 boot-warn grace 제거 | legacy shim 없이 hard fail |
-| Q15 governance integration | §8 Agent Approval 과 Q12 tool permission audit 를 공통 timeline 으로 연결 | single decision / single prompt 원칙 유지 |
+| Hook hardening follow-up | Signed hook (minisign 또는 동등 수준), hook hash 를 reviewer cache `invalidationKey` 에 포함, `modify` action 검토 | signing 전까지 v1 hook 은 deny-only 유지 |
+| DLP depth follow-up | Hook stdin / reviewer input 의 bounded deep-redaction (cycle/size guard 포함) | "nested object 는 host 밖으로 나갈 수 있다"는 현재 contract 를 더 강하게 만드는 방향만 허용 |
+| Plugin sandbox follow-up | V8 isolate / Worker thread / permissioned fs facade 비교 후 manifest integrity proxy 를 보조층으로 격하 | app 이 plugin code 를 역참조하지 않음 |
+| Manifest hard-fail follow-up | 모든 active plugin category 선언 완료 후 boot-warn grace 제거 | legacy shim 없이 hard fail |
+| Governance integration follow-up | §8 Agent Approval 과 permission tool audit 를 공통 timeline 으로 연결 | single decision / single prompt 원칙 유지 |
 
 ## 6. Open questions
 
-- **Hook signing for Q13** — v1 은 strict-deny quarantine + explicit `/permission hooks accept` + post-install hash check. Signed hook (e.g., minisign) 은 별도 PR
-- **Plugin sandboxing** — Layer 9 변경 없음. Manifest integrity proxy 가 partial guard. Q14 에서 V8 isolated context / Worker thread 검토
+- **Hook signing follow-up** — v1 은 strict-deny quarantine + explicit `/permission hooks accept` + post-install hash check. Signed hook (e.g., minisign) 은 별도 PR
+- **Plugin sandboxing** — Layer 9 변경 없음. Manifest integrity proxy 가 partial guard. 후속 작업에서 V8 isolated context / Worker thread 검토
 - **Reviewer cache 동작 측정** — 캐시 hit rate / staleness 실측 필요. Settings 변경 invalidation 시 미세 race condition 가능성
 
 ## 7. Decision log
@@ -686,7 +688,7 @@ compat/fallback surface 는 제외하고, host/app/plugin contract 는 다음 �
 | Manifest integrity runtime proxy | ✅ critic C2 unique | review |
 | HMAC chain + daily seal audit | ✅ security M2 | review |
 | Hook directory `~/.config/ave/hooks/` (out of ~/.ave) | ✅ security M4 + critic M3 | review |
-| v1 hook deny-only (modify deferred to Q13) | ✅ critic M3 | review |
+| v1 hook deny-only (modify deferred to hook-signing follow-up) | ✅ critic M3 | review |
 | Layer 10 collapse into Layer 1 | ✅ architect + critic 합의 | review |
 
 ## 8. Multi-agent review checklist (for v3 if needed)
@@ -778,11 +780,11 @@ Phase 2 executor 작업 중 사용자가 결정한 4 항목 — spec 에 binding
 - Plugin manifest category 는 registry-derived 가 아니라 fixed plugin allow-list
   `read/write/shell/network` 로 고정했다. Host-only `meta` 및 미래 host category 는
   plugin contract 에 자동 포함되지 않는다.
-- Q12 permission IPC 는 `PERMISSIONS_Q12` channel SOT 로 통일한다. main handler,
+- Permission IPC 는 `PERMISSIONS` channel SOT 로 통일한다. main handler,
   preload bridge, sender-guard tests 는 같은 상수를 참조한다.
 - Reviewer LLM wiring 은 fail-fast 로 유지한다. `mode=llm` 설정에서 provider/API key
   가 없으면 silent downgrade 하지 않는다.
 - Hook trust 용어는 **strict-deny quarantine + explicit typed trust
   registration** 으로 통일한다.
-- Future direction 은 Q13 signed hooks/deep DLP, Q14 plugin sandbox/hard-fail
-  manifest cutover, Q15 governance timeline integration 으로 분리한다.
+- Future direction 은 signed hooks/deep DLP, plugin sandbox/hard-fail
+  manifest cutover, governance timeline integration 으로 분리한다.
