@@ -31,8 +31,14 @@ const log = createLogger("hook-system-wiring");
 export const IPC_HOOKS_TRUST_PROMPT = "ave:hooks:trust-prompt";
 /** IPC channel — renderer → main accept (per-file decision). */
 export const IPC_HOOKS_ACCEPT = "ave:hooks:accept";
-/** IPC channel — renderer → main disable (per-file rejection). */
-export const IPC_HOOKS_DISABLE = "ave:hooks:disable";
+/**
+ * IPC channel — renderer → main reject everything in the current
+ * pending request. Matches the actual handler + preload registration
+ * (`src/ipc/domains/hooks.ts`, `src/preload.ts`). Previously named
+ * `IPC_HOOKS_DISABLE` with a mismatched value of `ave:hooks:disable`,
+ * which never reached any handler.
+ */
+export const IPC_HOOKS_REJECT_ALL = "ave:hooks:reject-all";
 
 export interface WireHookSystemDeps {
   /** Optional renderer for the TOFU prompt. Headless boot omits. */
