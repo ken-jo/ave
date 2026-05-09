@@ -6,7 +6,7 @@
  */
 
 /**
- * Q11 — Overlay IPC channels for main↔renderer overlay state sync.
+ * Overlay IPC channels for main↔renderer overlay state sync.
  *
  * main → renderer: show / update / dismiss (pushed from plugin-runtime overlay runner)
  * renderer → main: primaryAction (user confirm — audit log + plugin notification)
@@ -31,14 +31,15 @@ export const ROUTINES_V2 = {
   fired: "ave:routines:v2:fired",
   listSessions: "ave:routines:v2:list-sessions",
   readSession: "ave:routines:v2:read-session",
-  // Q10 — running indicator events (renderer reflects LLM session progress)
+  // Running indicator events (renderer reflects LLM session progress)
   runningStarted: "ave:routines:v2:running-started",
   runningFinished: "ave:routines:v2:running-finished",
-  // M8 — emitted when an LLM session errors out so renderer can clear running state
+  // Emitted when an LLM session errors out so renderer can clear running state
   failed: "ave:routines:v2:failed",
 } as const;
 
 export const PERMISSIONS = {
+  dirDispatch: "ave:permissions:dir-dispatch",
   reviewerDispatch: "ave:permissions:reviewer-dispatch",
   deferredList: "ave:permissions:deferred-list",
   deferredResolve: "ave:permissions:deferred-resolve",
