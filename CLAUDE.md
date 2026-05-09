@@ -110,7 +110,7 @@ Ave host + plugin 의 모든 user-data storage 는 **`~/.ave/<feature>/`** 디�
 ~/.ave/
 ├── sessions/                          # main chat (host)
 │   └── <sessionId>.jsonl
-├── routine/                           # routine v2 (host) — Q9 isolation
+├── routine/                           # routine v2 (host) — isolated sessions
 │   ├── routines.json
 │   └── sessions/<routineId>/<firedAt>.jsonl
 ├── settings.json                      # cross-cutting host settings
@@ -142,7 +142,7 @@ Ave host + plugin 의 모든 user-data storage 는 **`~/.ave/<feature>/`** 디�
 - plugin 이 host 의 `~/.ave/sessions/` 직접 read → host API 통한 access
 - 새 feature 추가 시 root 에 새 파일 추가 → `~/.ave/<new-feature>/` 신설
 
-위반 사례 (2026-05-09 Routine v2 PR #626 도입 전): `~/.ave/routines.json` + `~/.ave/routine-sessions/` 두 path 가 root 에 분산 → 단일 namespace `~/.ave/routine/` 로 consolidate. Q9 isolation lock 의 정확한 운영.
+위반 사례 (2026-05-09 Routine v2 PR #626 도입 전): `~/.ave/routines.json` + `~/.ave/routine-sessions/` 두 path 가 root 에 분산 → 단일 namespace `~/.ave/routine/` 로 consolidate. Routine session isolation lock 의 정확한 운영.
 
 ## Key Principles
 
@@ -191,12 +191,12 @@ UI/렌더러 변경은 **반드시 Playwright e2e 검증** 거친 후 머지. �
 
 ## Permission Policy (REQUIRED)
 
-Q12 permission policy 구현은 `docs/architecture/q12-permission-policy-design.md` 와 `docs/architecture/architecture.md` §6.3 을 single source of truth 로 따른다.
+Permission policy 구현은 `docs/architecture/permission-policy-design.md` 와 `docs/architecture/architecture.md` §6.3 을 single source of truth 로 따른다.
 
 - Host app 은 plugin 코드를 직접 참조하지 않는다. Plugin 권한/도구/경로 정보는 manifest, SDK schema, HostApi self-registration 으로만 전달한다.
 - Plugin tool 의 filesystem path 판정은 `toolSchemas[*].pathFields` 선언이 유일한 SOT 이다. Builtin tool 만 host 내부 default path extraction 을 가질 수 있다.
 - Plugin manifest `toolSchemas[*].category` 는 `read | write | shell | network` 만 허용한다. `meta` 는 host builtin category 전용이며 plugin manifest 에서 금지한다.
-- Category 미선언 plugin grace 는 boot-warn only 이며 **hard removal date 는 2026-05-23 KST**. 이후 미선언 plugin 은 load/registration hard fail 로 전환한다. 연장은 CLAUDE.md 와 Q12 design 문서에 명시된 공식 결정 없이는 금지한다.
+- Category 미선언 plugin grace 는 boot-warn only 이며 **hard removal date 는 2026-05-23 KST**. 이후 미선언 plugin 은 load/registration hard fail 로 전환한다. 연장은 CLAUDE.md 와 permission policy design 문서에 명시된 공식 결정 없이는 금지한다.
 - Hook v1 은 deny-only + slash-based TOFU 이다. Boot 시 new/changed hook 은 실행하지 않고 `.disabled/` 로 격리한다. 신뢰 등록은 사용자가 직접 입력한 `/permission hooks accept <name>` 만 허용하며 renderer fallback prompt/modal 은 만들지 않는다.
 - Non-user-origin 입력(plugin overlay, file-content, LLM tool arg)은 slash command 로 dispatch 되면 안 된다. Leading slash 는 plain text 로 sanitize 하고, `/permission` dispatcher 는 `trustOrigin === "user-keyboard"` 만 처리한다.
 - Headless/routine 실행은 allow rule/auto mode 로 write/shell/network 를 우회하지 않는다. Mutating tool 은 reviewer layer 를 먼저 통과하고 HIGH 는 deferred queue 로 보낸다.

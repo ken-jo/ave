@@ -1510,7 +1510,7 @@ verdict-cache invalidation.
 #### 6.3.5 — Hook chain (v1 deny-only)
 
 `~/.config/ave/hooks/` (deliberately outside `~/.ave/` — plugin 의
-default allowed dir 안에 hook 디렉토리 두지 않기 위해 security M4).
+default allowed dir 안에 hook 디렉토리 두지 않기 위해).
 세 prefix 가 각각 PreToolUse / PostToolUse / PermissionRequest 를
 gate.
 
@@ -1524,7 +1524,7 @@ gate.
 hook 정책 가능). DLP-redacted input — secrets / credentials / PII 가
 remote SIEM 으로 새지 않도록 `redactForLLM` 적용.
 
-**Deny-only v1 (critic M3):** `modify` action 은 hook-signing follow-up
+**Deny-only v1:** `modify` action 은 hook-signing follow-up
 이후로 deferred. v1 의 `allow` 는 *additional approval signal* — Layer
 0/1/2/3 deny 를 upgrade 하지 못함.
 
@@ -1534,7 +1534,8 @@ strict-deny 로 `.disabled/` 이동. Renderer 승인 prompt/modal 은 없다. �
 `/permission hooks list` 로 확인하고 `/permission hooks accept <name>` 을
 직접 입력한 경우에만 lockfile 에 등록되어 다음 실행부터 trusted hook 으로
 동작한다. 이 typed command 가 명시적 신뢰 등록 표면이다. Boot-time quarantine
-은 legacy `AuditLogger.log` 에 `input.kind = "hook.quarantined"` 로 남고,
+은 HMAC-chained `AuditDeny` 로 남으며, general telemetry `AuditLogger.log`
+에도 전환기 관측용 `input.kind = "hook.quarantined"` 를 double-write 한다.
 Permissions tab 은 `PERMISSIONS.hookTrustList` 를 통해 비차단 알림을 표시한다.
 
 **v1 binding decision (§11 v2.1):** 빈 디렉토리만 ship. Sample hook
@@ -1574,6 +1575,7 @@ type PermissionAuditEntry =
   | AuditAsk           // 사용자 컨펌 요청
   | AuditDeny          // 거부 (denyReasons[])
   | AuditDeferred      // Layer 5 HIGH → deferred queue
+  | AuditDeferredResolve // foreground 사용자 resolution
   | AuditModeChange    // /permission mode 변경
   | AuditManifestViolation; // §3.5 위반
 ```
@@ -1589,6 +1591,10 @@ chain — line N 변조 시 line N+1 의 prevHash 가 mismatch (forensics
 **Path protection:** `~/.ave/audit*` 자체가 Layer 0 sensitive
 (write 차단). compromised tool 이 *새 entry* 추가는 막지만 기존 log
 rewrite 불가능.
+
+**Tool-call channel:** executor hot path 는 tool allow/deny 결정을
+HMAC-chained channel 에 기록한다. General telemetry `AuditLogger.log`
+tool_call 은 renderer/ops parity 검증이 끝날 때까지 유지한다.
 
 **Atomic cutover (No-Fallback):** keychain 미사용 환경 (Electron
 `safeStorage` 미가용) 에서는 0o600 file fallback 만 허용. boot 시
@@ -1618,6 +1624,7 @@ Spec §3 Layer 8 grammar (final, Phase 5):
 /permission hooks list
 /permission hooks accept <name>
 /permission hooks disable <name>
+/permission hooks reject <name>
 ```
 
 **Trust origin gate (security C2):** `dispatchPermissionSlash` 가
@@ -1625,9 +1632,13 @@ Spec §3 Layer 8 grammar (final, Phase 5):
 leading `/` 를 strip 후 plain text 로 처리 (chat 에 slash hint 로
 오인되지 않도록).
 
-**Durable mutations:** `mode --durable`, `hooks accept|disable` 는
-modal confirm 필수 (origin 무관 — 사람이 button 눌러야 함). 일반
-session-only 변경은 modal 없이 즉시 적용.
+**Hook trust mutations:** `hooks accept|disable|reject` 는 typed
+user-keyboard command 자체가 approval surface 이다. Renderer fallback
+prompt/modal 은 만들지 않는다.
+
+**Directory UI parity:** Permissions tab exposes CRUD for
+`permissions.additionalDirectories` through the same `/permission dir`
+dispatcher IPC path, so slash and settings UI share one mutation path.
 
 **Audit panel UX:** `/permission audit show` 가 side-panel
 (`AuditPanel.tsx`) 을 연다. 마지막 N entries (default 50, max 1000),
