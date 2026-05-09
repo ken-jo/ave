@@ -486,6 +486,9 @@ const api = {
       return () =>
         ipcRenderer.removeListener("ave:permissions:deferred-pending", listener);
     },
+    /** Q12 P3 — `/permission reviewer ...` slash dispatch via IPC. */
+    reviewerDispatch: async (rawArgs: string) =>
+      ipcRenderer.invoke("ave:permissions:reviewer-dispatch", { rawArgs }),
   },
 
   // ─── Policy (Governance) ─────────────────────────
