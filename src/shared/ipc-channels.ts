@@ -37,3 +37,13 @@ export const ROUTINES_V2 = {
   // M8 — emitted when an LLM session errors out so renderer can clear running state
   failed: "ave:routines:v2:failed",
 } as const;
+
+export const PERMISSIONS_Q12 = {
+  reviewerDispatch: "ave:permissions:reviewer-dispatch",
+  deferredList: "ave:permissions:deferred-list",
+  deferredResolve: "ave:permissions:deferred-resolve",
+  deferredPending: "ave:permissions:deferred-pending",
+  auditShow: "ave:permissions:audit-show",
+  auditVerify: "ave:permissions:audit-verify",
+  manifestViolation: "ave:permissions:manifest-violation",
+} as const;
