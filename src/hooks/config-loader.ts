@@ -2,6 +2,17 @@
  * Portions adapted from OpenHarness (MIT License)
  * https://github.com/HKUDS/OpenHarness/blob/main/src/openharness/hooks/loader.py
  * Copyright (c) 2026 HKU Data Intelligence Lab
+ *
+ * Q12 Phase 2.5 — hook directory relocated from `~/.ave/hooks.json`
+ * (single file) → `~/.config/ave/hooks/hooks.json`. Spec security
+ * review M3 + M4: hook supply-chain protection requires hooks live
+ * outside the Ave data directory so a compromised Ave process cannot
+ * trivially mutate them. Phase 4 will add TOFU + boot-time hash check
+ * + per-hook discrete files; for Phase 2.5 we only relocate.
+ *
+ * Old-path migration: a one-time WARN logged at boot when
+ * `~/.ave/hooks.json` still exists. We do NOT auto-migrate (data
+ * integrity — admin must move the file deliberately).
  */
 import { existsSync, readFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
@@ -11,6 +22,17 @@ import { createLogger } from "../lib/logger.js";
 const log = createLogger("hooks");
 
 function getUserHooksPath(): string {
+  // Q12 P2.5 — relocated to ~/.config/ave/hooks/. Layer 0 also lists
+  // this directory as a sensitive path (deny-list) so plugin/MCP tools
+  // cannot read or write hook config at runtime.
+  return join(homedir(), ".config", "ave", "hooks", "hooks.json");
+}
+
+/**
+ * Q12 P2.5 — legacy path retained ONLY for boot-time migration warn.
+ * Never read for actual hook execution after relocation.
+ */
+function getLegacyUserHooksPath(): string {
   return join(homedir(), ".ave", "hooks.json");
 }
 
@@ -45,7 +67,31 @@ function parseFile(path: string): HooksConfig | null {
   }
 }
 
+/**
+ * Q12 P2.5 migration helper — emits a one-shot warn (no auto-migrate)
+ * when the legacy `~/.ave/hooks.json` is still present after the
+ * relocation to `~/.config/ave/hooks/hooks.json`.
+ *
+ * Exported so boot can call this once at startup; loadHooksConfig also
+ * calls it idempotently (the underlying log.warn is itself idempotent
+ * per process via the createLogger contract).
+ */
+let legacyHooksWarnEmitted = false;
+export function checkLegacyUserHooksPath(): void {
+  if (legacyHooksWarnEmitted) return;
+  const legacy = getLegacyUserHooksPath();
+  if (existsSync(legacy)) {
+    log.warn(
+      "legacy hooks.json detected at %s — Q12 P2.5 relocated this to %s. Move the file manually; auto-migration is not performed (data integrity).",
+      legacy,
+      getUserHooksPath(),
+    );
+    legacyHooksWarnEmitted = true;
+  }
+}
+
 export function loadHooksConfig(): HooksConfig {
+  checkLegacyUserHooksPath();
   const adminPath = getAdminHooksPath();
   const adminConfig = adminPath && existsSync(adminPath) ? parseFile(adminPath) : null;
   const userPath = getUserHooksPath();
