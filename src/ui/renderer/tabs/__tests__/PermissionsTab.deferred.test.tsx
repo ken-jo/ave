@@ -37,6 +37,16 @@ function installAveApi() {
     })),
     deferredResolve: vi.fn(async () => ({ ok: true })),
     onDeferredPending: vi.fn(() => () => {}),
+    reviewerDispatch: vi.fn(async () => ({
+      ok: true,
+      verb: "show",
+      settings: {
+        mode: "disabled",
+        provider: "openai",
+        model: "gpt-4o-mini",
+        fallbackOnError: "deny",
+      },
+    })),
   };
   (window as unknown as { ave: unknown }).ave = {
     permission,
