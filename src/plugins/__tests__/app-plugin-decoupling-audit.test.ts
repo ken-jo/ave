@@ -29,15 +29,15 @@ const FORBIDDEN_LIVE_APP_LITERALS = [
   },
   {
     needle: "vega-early",
-    reason: "Proactive brain implementation names must stay plugin-owned and capability-driven.",
+    reason: "Overlay trigger implementation names must stay plugin-owned and capability-driven.",
   },
   {
     needle: "vega_early",
-    reason: "Proactive brain tool/event names must stay plugin-owned and manifest-driven.",
+    reason: "Overlay trigger tool/event names must stay plugin-owned and manifest-driven.",
   },
   {
     needle: "ave-plugin-vega-early",
-    reason: "Host runtime must not depend on a concrete proactive plugin repository.",
+    reason: "Host runtime must not depend on a concrete overlay-trigger plugin repository.",
   },
 ] as const;
 
