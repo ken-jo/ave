@@ -251,7 +251,7 @@ const api = {
   getUsageRange: async (opts: { dateFrom: string; dateTo: string }) => ipcRenderer.invoke("ave:usage:range", opts),
   exportUsageCsv: async (rows: Array<Record<string, string | number>>) => ipcRenderer.invoke("ave:usage:export-csv", rows),
 
-  // ─── Brain — proactive trigger lifecycle ────────────────────────────────
+  // ─── Overlay trigger lifecycle ────────────────────────────────────────
   onTriggerStarted: (
     handler: (payload: {
       sessionId: string;

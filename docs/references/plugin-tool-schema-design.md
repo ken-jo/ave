@@ -145,7 +145,7 @@ interface PluginManifest {
 | `keywords[]` | KeywordEngine 등록 | boot |
 | `ui[]` | plugin-ui-host.tsx 마운트 | boot + UI 렌더 |
 | `startupTools[]` | boot 시 자동 호출 (init 류) | boot |
-| `eventSubscriptions[]` | ProactiveEngine · 이벤트 라우팅 | boot |
+| `eventSubscriptions[]` | 호스트 이벤트 라우팅 | boot |
 | `notificationEvents[]` | `registerPluginNotifications()` — OS 알림 자동 등록 | boot |
 | `uiCallable[]` | `PluginRuntime.callFromUi()` allowlist | renderer IPC 호출 |
 | `capabilities[]` | HostApi LYRA Mail 게이트 + `emitEvent` namespace 게이트 | 런타임 전반 |
@@ -302,8 +302,7 @@ Renderer UI 는 `ave:plugins:call` IPC 를 통해 allowlist 된 플러그인 too
 | `knowledge-index` | **enforced** | `index.*` emit 게이트. |
 | `background-watcher` | advisory | `startupTools` 기반 폴러/감시자 사용 선언. 런타임 게이트 없음 (향후 enforce 예정). |
 | `worker-client` | advisory | 외부 프로세스(Python uv 등) 워커 래퍼 선언. |
-| `host:overlay` | **enforced** | `triggerConversation()` 호출 필수. 사용자가 입력하지 않은 prompt 를 host overlay 에 staged 하고, 사용자 확인 후 main chat 에 삽입하는 surface — 일반 plugin 에 부여하지 말 것. proactive 두뇌 plugin 전용. 자세한 설계는 [`conversation-trigger.md`](./conversation-trigger.md) 참조. |
-| `conversation-trigger` | advisory | `triggerConversation()` 사용 의도를 표시하는 자기 식별 라벨. 런타임 게이트는 `host:overlay` 가 담당한다. |
+| `host:overlay` | **enforced** | `triggerConversation()` 호출 필수. 사용자가 입력하지 않은 plugin-authored prompt 를 host overlay 에 staged 하고, 사용자 확인 후 main chat 에 삽입하는 surface — 일반 plugin 에 부여하지 말 것. 자세한 설계는 [`overlay-trigger.md`](./overlay-trigger.md) 참조. |
 
 **이벤트 subscription 정책** (`classifySubscription`):
 
@@ -622,16 +621,16 @@ import { Stack, Toggle } from "@ave/plugin-sdk/ui";
 | 메서드 | 언제 쓰나 | 언제 쓰지 말아야 하나 |
 |--------|-----------|----------------------|
 | `registerKeywords(keywords)` | boot 시 KeywordEngine에 트리거 등록 | 런타임 중 동적 추가 (boot 전용) |
-| `emitEvent(name, payload)` | 다른 플러그인·ProactiveEngine에 이벤트 발행 (capability gate) | 직접 플러그인 간 함수 호출 대체 |
+| `emitEvent(name, payload)` | 다른 플러그인·호스트 이벤트 버스에 이벤트 발행 (capability gate) | 직접 플러그인 간 함수 호출 대체 |
 | `onEvent(name, handler)` | 다른 플러그인 이벤트 구독 (private namespace 차단) | 폴링 대체 (push 모델로 충분) |
 | `addTask(task)` | 액션 아이템 → Ave 태스크 자동 생성 (host `taskService` → `~/.ave/tasks/ave-tasks.db` SQLite). | UI 직접 조작 대체 |
 | `saveNote(title, content)` | `~/.ave/notes/`에 회의록·요약 저장 | 대용량 바이너리 저장 |
 | `getSecret(key)` | 암호화된 API 키 조회 | 키를 메모리에 캐시 후 재사용 (매번 호출) |
 | `callTool(toolName, payload?)` | manifest `pluginAccess.tools[]` 로 허용한 다른 플러그인 tool 을 호출. Host 가 PluginRuntime access check 후 ToolExecutor 권한 경로로 위임 | peer plugin module import, handler 직접 호출, 권한 우회 |
 <!-- PR 3c: getLyraMailToken / startLyraMailAuth / isLyraMailAuthenticated / getLyraMailAccount / onLyraMailAuthChange / withLyraMailRetry — host HostApi 에서 제거됨. lyra-mail 플러그인이 자체 MSAL 소유. architecture.md §9.4a "Plugin-Owned OAuth Authentication" 참조. -->
-| `callLlm(prompt, options?)` | 호스트 LLM 으로 단발 텍스트 생성 (선제성 본문·분류·요약) | 대화 히스토리·streaming·tool_use 필요 시 (플러그인이 직접 SDK 사용) |
+| `callLlm(prompt, options?)` | 호스트 LLM 으로 단발 텍스트 생성 (플러그인 분류·요약) | 대화 히스토리·streaming·tool_use 필요 시 (플러그인이 직접 SDK 사용) |
 | `openAuthWindow(options)` ([external-auth-consumer] 필요) | 외부 포털 interactive 로그인 창을 띄우고 지정 도메인 쿠키 수집 (Selenium/webdriver 대체) | OAuth-style localhost callback이 되는 표준 플로우 (→ LYRA Mail 패턴 사용) |
-| `triggerConversation(spec)` ([host:overlay] 필요) | 관찰된 신호를 바탕으로 proactive prompt 를 host overlay 에 staged ("먼저 말 거는 비서" 차별화) | 사용자 input → tool 결과 패턴 (chat 으로 충분) — 자세한 사용 패턴 / 안전 계약은 [`conversation-trigger.md`](./conversation-trigger.md) |
+| `triggerConversation(spec)` ([host:overlay] 필요) | 관찰된 신호를 바탕으로 overlay prompt 를 host overlay 에 staged | 사용자 input → tool 결과 패턴 (chat 으로 충분) — 자세한 사용 패턴 / 안전 계약은 [`overlay-trigger.md`](./overlay-trigger.md) |
 | `getInstalledPluginIds()` | 다른 플러그인 설치 여부 체크 — 의존성-인식 detector / 조건부 UI | 우선순위 추론 (insertion order ≠ priority). 향후 capability-filtered 변종 (`getProvidersFor(capability)`) 가 superseding 예정 — Phase 1 은 unscoped |
 | `onPluginsChanged(handler)` | install/uninstall 발생 시 reactive 재구성 (예: detector list rebuild). handler 는 `PluginLifecycleEvent` 받음 (`{type, pluginId, source}` discriminated union, self-event 자동 필터). production consumer 는 `source: "local-dev"` 무시 권장 | `updated` (버전 bump) — 별도 spec 진행 중 (P0 미지원). handler 는 forward-compat 위해 `default:` 분기 필수 |
 | `logEvent(level, message, data?)` | 호스트 감사 로그에 플러그인 이벤트 기록 | 디버그 전용 고빈도 로깅 (성능) |
@@ -774,8 +773,7 @@ Ave 는 IPC/RPC 를 **시스템 레벨 전용**으로 확정한다. 플러그인
 
 **파일:** `ave-plugin-hydra/src/hostPlugin.ts`
 
-- `capabilities: ["host:overlay"]` — proactive overlay staging 호출의 단일 런타임 게이트.
-- `conversation-trigger` 는 자기 식별 라벨일 뿐이며, `hostApi.triggerConversation()` 권한은 `host:overlay` 로만 부여된다.
+- `capabilities: ["host:overlay"]` — overlay staging 호출의 단일 런타임 게이트.
 - 다른 플러그인 tool 호출은 `pluginAccess.tools[]` 선언 + `hostApi.callTool()` 위임 경로만 사용한다.
 
 ---
@@ -812,7 +810,7 @@ HostApi 에 새 메서드를 추가하려면:
 | **`toolSchemas` output schema (Phase 1)** | ❌ 기각 | 응답은 LLM 이 string 으로 재소비 가능. Phase 2 에서 재검토. |
 | **Full capability grant system** | ❌ 기각 | 현행 capability taxonomy (§2.3) + HostApi boundary 로 충분. |
 | **Hot reload (Phase 1)** | ❌ 기각 | 개발 편의 기능. GA 블로커 아님. |
-| **`triggerConversation` HostApi + `host:overlay` capability** | ✅ **승인** (Brain P0) | §6.1 예외 #2 — proactive trigger 는 사용자 입력 없이 host overlay 에 prompt 를 staged 하므로 audit / source-aware permission / capability gate / per-plugin rate limit (60s/6) / dedupe / source-pattern + length cap / prompt-length cap 같은 통제가 필수. 단일 consumer 라도 host 에 둠 (plugin-side 재구현 시 통제 일관성 X). `conversation-trigger` 는 advisory self-identification label 이며 런타임 권한을 부여하지 않는다. 안전 계약 / spec / gate 는 [`conversation-trigger.md`](./conversation-trigger.md). |
+| **`triggerConversation` HostApi + `host:overlay` capability** | ✅ **승인** | §6.1 예외 #2 — plugin-authored prompt 를 사용자 입력 없이 host overlay 에 staged 하므로 audit / source-aware permission / capability gate / per-plugin rate limit (60s/6) / dedupe / source-pattern + length cap / prompt-length cap 같은 통제가 필수. 단일 consumer 라도 host 에 둠 (plugin-side 재구현 시 통제 일관성 X). 런타임 권한은 `host:overlay` 단일 capability 가 부여한다. 안전 계약 / spec / gate 는 [`overlay-trigger.md`](./overlay-trigger.md). |
 
 ---
 
