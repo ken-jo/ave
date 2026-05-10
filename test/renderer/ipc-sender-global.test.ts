@@ -11,8 +11,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it, expect } from "vitest";
-import { validateSender } from "../../src/ipc-bridge.js";
-import { OVERLAY_V1, ROUTINES_V2 } from "../../src/shared/ipc-channels.js";
+import { OVERLAY_V1, PERMISSIONS, ROUTINES_V2 } from "../../src/shared/ipc-channels.js";
+import { validateSender } from "../../src/ipc/gated.js";
 import type { IpcMainInvokeEvent } from "electron";
 
 // ─── Channel manifest ────────────────────────────────────────────────────────
@@ -65,6 +65,13 @@ const CHANNEL_MANIFEST: Record<string, "tier1" | "tier2" | "tier3"> = {
   "ave:permission:list-rules": "tier3",
   "ave:permission:add-rule": "tier1",
   "ave:permission:remove-rule": "tier1",
+  [PERMISSIONS.dirDispatch]: "tier1",
+  [PERMISSIONS.reviewerDispatch]: "tier2",
+  [PERMISSIONS.deferredList]: "tier2",
+  [PERMISSIONS.deferredResolve]: "tier1",
+  [PERMISSIONS.auditShow]: "tier2",
+  [PERMISSIONS.auditVerify]: "tier2",
+  [PERMISSIONS.hookTrustList]: "tier2",
   // Approval
   "ave:approval:respond": "tier1",
   // Policy
@@ -175,16 +182,45 @@ describe("ipc-bridge.ts — TIER 1/2 channels have validateSender guard", () => 
   const tier3Channels = Object.entries(CHANNEL_MANIFEST)
     .filter(([, tier]) => tier === "tier3")
     .map(([channel]) => channel);
+  const channelConstantAliases: Record<string, string> = {
+    "ave:routines:v2:list": "ROUTINES_V2.list",
+    "ave:routines:v2:add": "ROUTINES_V2.add",
+    "ave:routines:v2:dismiss": "ROUTINES_V2.dismiss",
+    "ave:routines:v2:remove": "ROUTINES_V2.remove",
+    "ave:routines:v2:trigger-now": "ROUTINES_V2.triggerNow",
+    "ave:routines:v2:list-sessions": "ROUTINES_V2.listSessions",
+    "ave:routines:v2:read-session": "ROUTINES_V2.readSession",
+    "ave:overlay:primary-action": "OVERLAY_V1.primaryAction",
+    "ave:permission:get-mode": "PERMISSIONS.getMode",
+    "ave:permission:set-mode": "PERMISSIONS.setMode",
+    "ave:permission:list-rules": "PERMISSIONS.listRules",
+    "ave:permission:add-rule": "PERMISSIONS.addRule",
+    "ave:permission:remove-rule": "PERMISSIONS.removeRule",
+    "ave:approval:respond": "PERMISSIONS.approvalRespond",
+    "ave:policy:get": "PERMISSIONS.policyGet",
+    "ave:policy:set": "PERMISSIONS.policySet",
+    [PERMISSIONS.dirDispatch]: "PERMISSIONS.dirDispatch",
+    [PERMISSIONS.reviewerDispatch]: "PERMISSIONS.reviewerDispatch",
+    [PERMISSIONS.deferredList]: "PERMISSIONS.deferredList",
+    [PERMISSIONS.deferredResolve]: "PERMISSIONS.deferredResolve",
+    [PERMISSIONS.auditShow]: "PERMISSIONS.auditShow",
+    [PERMISSIONS.auditVerify]: "PERMISSIONS.auditVerify",
+    [PERMISSIONS.hookTrustList]: "PERMISSIONS.hookTrustList",
+  };
+  const escapeRegex = (value: string): string =>
+    value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const handlePatternFor = (channel: string): RegExp => {
+    const literal = `"${escapeRegex(channel)}"`;
+    const alias = channelConstantAliases[channel];
+    const target = alias ? `(?:${literal}|${escapeRegex(alias)})` : literal;
+    return new RegExp(`ipcMain\\.handle\\(\\s*${target}\\s*,`);
+  };
 
   for (const channel of gatedChannels) {
     it(`${channel} has validateSender guard`, () => {
       // Find the ipcMain.handle block for this channel and check that
       // validateSender appears between this channel registration and the next.
-      const channelPattern = new RegExp(
-        // Tolerate multi-line `ipcMain.handle(\n    "<channel>"` form too —
-        // some handlers are written across lines for readability.
-        `ipcMain\\.handle\\(\\s*"${channel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`,
-      );
+      const channelPattern = handlePatternFor(channel);
       const channelIdx = source.search(channelPattern);
       expect(channelIdx, `channel "${channel}" not found in ipc-bridge.ts`).toBeGreaterThan(-1);
 
@@ -205,11 +241,7 @@ describe("ipc-bridge.ts — TIER 1/2 channels have validateSender guard", () => 
 
   for (const channel of tier3Channels) {
     it(`${channel} is classified read-only (TIER 3)`, () => {
-      const channelPattern = new RegExp(
-        // Tolerate multi-line `ipcMain.handle(\n    "<channel>"` form too —
-        // some handlers are written across lines for readability.
-        `ipcMain\\.handle\\(\\s*"${channel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`,
-      );
+      const channelPattern = handlePatternFor(channel);
       const channelIdx = source.search(channelPattern);
       expect(channelIdx, `channel "${channel}" not found in ipc-bridge.ts`).toBeGreaterThan(-1);
     });
