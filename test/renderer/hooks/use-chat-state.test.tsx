@@ -52,6 +52,23 @@ describe("useChatState", () => {
     });
   });
 
+  it("dispatches a permission badge refresh event when slash mode changes", async () => {
+    const { api, emitChatStream } = makeMockAveApi();
+    const listener = vi.fn();
+    window.addEventListener("ave:permissions:mode-changed", listener);
+    renderHook(() => useChatState(api as unknown as AveApi));
+
+    act(() => {
+      emitChatStream({ type: "permission_mode_changed", mode: "allow" });
+    });
+
+    await waitFor(() => {
+      expect(listener).toHaveBeenCalledTimes(1);
+    });
+    expect(listener.mock.calls[0]?.[0]).toMatchObject({ detail: { mode: "allow" } });
+    window.removeEventListener("ave:permissions:mode-changed", listener);
+  });
+
   it("splices marker-only assistant rounds when no tool/checkpoint sibling exists (#619)", async () => {
     const { api, emitChatStream } = makeMockAveApi();
     const { result } = renderHook(() => useChatState(api as unknown as AveApi));
