@@ -116,7 +116,7 @@ const api = {
   }) =>
     ipcRenderer.invoke("ave:host:plugin-theme-notify", payload),
 
-  // PR 3c: ave:lyra-mail:* IPC 채널 + bridge 메서드 제거 — lyra-mail
+  // Plugin-owned OAuth removed host-owned provider auth IPC bridges.
   // 플러그인이 자체 인증을 소유한다.
 
   // ─── Chat (ConversationLoop) ─────────────────────
