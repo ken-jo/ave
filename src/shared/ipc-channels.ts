@@ -39,6 +39,14 @@ export const ROUTINES_V2 = {
 } as const;
 
 export const PERMISSIONS = {
+  getMode: "ave:permission:get-mode",
+  setMode: "ave:permission:set-mode",
+  listRules: "ave:permission:list-rules",
+  addRule: "ave:permission:add-rule",
+  removeRule: "ave:permission:remove-rule",
+  approvalRespond: "ave:approval:respond",
+  policyGet: "ave:policy:get",
+  policySet: "ave:policy:set",
   dirDispatch: "ave:permissions:dir-dispatch",
   reviewerDispatch: "ave:permissions:reviewer-dispatch",
   deferredList: "ave:permissions:deferred-list",
