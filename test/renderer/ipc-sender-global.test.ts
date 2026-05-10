@@ -11,8 +11,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it, expect } from "vitest";
-import { validateSender } from "../../src/ipc-bridge.js";
 import { OVERLAY_V1, PERMISSIONS, ROUTINES_V2 } from "../../src/shared/ipc-channels.js";
+import { validateSender } from "../../src/ipc/gated.js";
 import type { IpcMainInvokeEvent } from "electron";
 
 // ─── Channel manifest ────────────────────────────────────────────────────────
@@ -65,6 +65,7 @@ const CHANNEL_MANIFEST: Record<string, "tier1" | "tier2" | "tier3"> = {
   "ave:permission:list-rules": "tier3",
   "ave:permission:add-rule": "tier1",
   "ave:permission:remove-rule": "tier1",
+  [PERMISSIONS.dirDispatch]: "tier1",
   [PERMISSIONS.reviewerDispatch]: "tier2",
   [PERMISSIONS.deferredList]: "tier2",
   [PERMISSIONS.deferredResolve]: "tier1",
@@ -190,6 +191,15 @@ describe("ipc-bridge.ts — TIER 1/2 channels have validateSender guard", () => 
     "ave:routines:v2:list-sessions": "ROUTINES_V2.listSessions",
     "ave:routines:v2:read-session": "ROUTINES_V2.readSession",
     "ave:overlay:primary-action": "OVERLAY_V1.primaryAction",
+    "ave:permission:get-mode": "PERMISSIONS.getMode",
+    "ave:permission:set-mode": "PERMISSIONS.setMode",
+    "ave:permission:list-rules": "PERMISSIONS.listRules",
+    "ave:permission:add-rule": "PERMISSIONS.addRule",
+    "ave:permission:remove-rule": "PERMISSIONS.removeRule",
+    "ave:approval:respond": "PERMISSIONS.approvalRespond",
+    "ave:policy:get": "PERMISSIONS.policyGet",
+    "ave:policy:set": "PERMISSIONS.policySet",
+    [PERMISSIONS.dirDispatch]: "PERMISSIONS.dirDispatch",
     [PERMISSIONS.reviewerDispatch]: "PERMISSIONS.reviewerDispatch",
     [PERMISSIONS.deferredList]: "PERMISSIONS.deferredList",
     [PERMISSIONS.deferredResolve]: "PERMISSIONS.deferredResolve",
