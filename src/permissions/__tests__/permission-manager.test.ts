@@ -302,7 +302,7 @@ describe("PermissionManager (B1 persistence)", () => {
       "builtin",
       "write",
       null,
-      { approvalCacheKey: "schedule_routine:scope:allow:local-indexer,vega-early" },
+      { approvalCacheKey: "schedule_routine:scope:allow:alpha-plugin,beta-plugin" },
     );
 
     expect(sameScope.decision).toBe("allow");
