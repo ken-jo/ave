@@ -235,7 +235,7 @@ export type AveApi = {
       }
     | { ok: false; error: string }
   >;
-  // PR 3c: lyraMail* bridge methods removed — lyra-mail plugin owns auth.
+  // Provider-auth bridge methods are plugin-owned.
   chatHasProvider: () => Promise<boolean>;
   chatSend: (
     input: string,

@@ -98,11 +98,14 @@ export const SENSITIVE_PATH_PATTERNS: readonly string[] = Object.freeze([
   "**/.ave/ave-secrets.json", // legacy consolidated secrets file
   "**/ave-secrets.json", // shallow sibling form
   // ── Permission policy P2.5 — Ave-internal sensitive paths ───────
+  "**/.ave/settings.json", // app settings and permission configuration
+  "**/.ave/permissions.json", // legacy/current permission settings file
+  "**/.ave/policy.json", // policy SOT
+  "**/.ave/permissions/**", // reviewer cache, deferred queue, permission state
   "**/.ave/audit", // audit log directory (self-tampering)
   "**/.ave/audit/**", // audit log files inside dir
   "**/.ave/audit.log", // legacy audit log file
   "**/.ave/audit.log.*", // rotated audit archives
-  "**/.ave/permissions/deferred-queue.jsonl",
   "**/.ave/sessions/**", // chat session JSONL
   "**/.config/ave/hooks/**", // hook supply-chain protection
 ]);

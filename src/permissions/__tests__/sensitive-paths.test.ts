@@ -61,11 +61,12 @@ describe("SENSITIVE_PATH_PATTERNS", () => {
   });
 
   it("Permission policy P2.5 — contains Ave-internal sensitive paths", () => {
+    expect(SENSITIVE_PATH_PATTERNS).toContain("**/.ave/settings.json");
+    expect(SENSITIVE_PATH_PATTERNS).toContain("**/.ave/permissions.json");
+    expect(SENSITIVE_PATH_PATTERNS).toContain("**/.ave/policy.json");
+    expect(SENSITIVE_PATH_PATTERNS).toContain("**/.ave/permissions/**");
     expect(SENSITIVE_PATH_PATTERNS).toContain("**/.ave/audit/**");
     expect(SENSITIVE_PATH_PATTERNS).toContain("**/.ave/audit.log");
-    expect(SENSITIVE_PATH_PATTERNS).toContain(
-      "**/.ave/permissions/deferred-queue.jsonl",
-    );
     expect(SENSITIVE_PATH_PATTERNS).toContain("**/.ave/sessions/**");
     expect(SENSITIVE_PATH_PATTERNS).toContain("**/.config/ave/hooks/**");
   });
@@ -125,6 +126,13 @@ describe("isSensitivePath — positive matches", () => {
     expect(isSensitivePath("/Users/example/.ave/secrets/openai.key")).toBe(
       "**/.ave/secrets/**",
     );
+  });
+
+  it("matches Ave permission control-plane files", () => {
+    expect(isSensitivePath("/Users/example/.ave/settings.json")).toBe("**/.ave/settings.json");
+    expect(isSensitivePath("/Users/example/.ave/permissions.json")).toBe("**/.ave/permissions.json");
+    expect(isSensitivePath("/Users/example/.ave/policy.json")).toBe("**/.ave/policy.json");
+    expect(isSensitivePath("/Users/example/.ave/permissions/reviewer-cache.jsonl")).toBe("**/.ave/permissions/**");
   });
 
   it("matches /Users/example/.ave/ave-secrets.json (corporate addition)", () => {
@@ -252,7 +260,7 @@ describe("isSensitivePath — Permission policy P2.5 Ave-internal", () => {
   it("matches ~/.ave/permissions/deferred-queue.jsonl", () => {
     expect(
       isSensitivePath("/Users/example/.ave/permissions/deferred-queue.jsonl"),
-    ).toBe("**/.ave/permissions/deferred-queue.jsonl");
+    ).toBe("**/.ave/permissions/**");
   });
 
   it("matches ~/.ave/sessions/<sessionId>.jsonl", () => {
