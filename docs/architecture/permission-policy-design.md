@@ -600,7 +600,7 @@ compat/fallback surface 는 제외하고, host/app/plugin contract 는 다음 �
 | Permission IPC | Permission IPC channel 은 `PERMISSIONS` 상수만 사용. main handler / preload bridge / sender-guard tests 가 같은 SOT 를 참조. | `src/shared/ipc-channels.ts`, `src/ipc/domains/permissions.ts`, `src/preload.ts` |
 | Slash origin gate | `/permission` dispatch 는 `user-keyboard` origin 만. plugin-emitted / LLM / file content 는 leading slash 를 모두 제거해 plain text 로 처리. | `src/shared/slash-sanitizer.ts`, `src/permissions/permission-slash.ts` |
 | Reviewer lane | Boot 시 `wireReviewerAgent()` 는 fail-fast. `mode=llm` 인데 provider/API key 가 없으면 silent downgrade 없이 boot 오류로 드러남. | `src/boot.ts`, `src/boot/steps/reviewer-wiring.ts` |
-| Deferred queue | HIGH verdict 는 queue append, foreground UI 에서 approve/reject, resolution 은 permission audit chain 에 `deferred_resolve` 로 기록. Queue file append 는 O(1), rewrite 후 chmod 보정. | `src/permissions/reviewer/deferred-queue.ts`, `src/ipc/domains/permissions.ts` |
+| Deferred queue | Headless MED/HIGH verdict 는 queue append, foreground UI 에서 approve/reject, resolution 은 permission audit chain 에 `deferred_resolve` 로 기록. Queue file append 는 O(1), rewrite 후 chmod 보정. | `src/permissions/reviewer/deferred-queue.ts`, `src/ipc/domains/permissions.ts` |
 | Hook chain | Legacy `hooks.json` command/http executor 는 boot path 에서 제거. Script hook 은 `~/.config/ave/hooks/{pre,post,perm}-*.sh` 단일 경로, strict-deny quarantine + explicit typed trust registration 만 허용. | `src/hooks/script-hook-*`, `src/boot/steps/hook-system-wiring.ts` |
 | Audit | permission audit 는 discriminated union + HMAC chain + daily seal. Recent-read path 는 tail-scan 으로 UI freeze risk 를 낮춤. | `src/audit/*`, `src/permissions/permission-audit-runner.ts` |
 
