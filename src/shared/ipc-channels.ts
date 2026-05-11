@@ -29,6 +29,8 @@ export const ROUTINES_V2 = {
   remove: "ave:routines:v2:remove",
   triggerNow: "ave:routines:v2:trigger-now",
   fired: "ave:routines:v2:fired",
+  pendingResults: "ave:routines:v2:pending-results",
+  acknowledgeResult: "ave:routines:v2:ack-result",
   listSessions: "ave:routines:v2:list-sessions",
   readSession: "ave:routines:v2:read-session",
   // Running indicator events (renderer reflects LLM session progress)
