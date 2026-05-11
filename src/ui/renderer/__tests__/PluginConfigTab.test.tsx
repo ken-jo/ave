@@ -299,7 +299,7 @@ describe("PluginConfigSchemaForm — values prop sync", () => {
 
     const { rerender } = render(
       <PluginConfigSchemaForm
-        pluginId="vega-early"
+        pluginId="vega-helper"
         schema={schema}
         values={{}}
         secretsPresent={{}}
@@ -308,14 +308,14 @@ describe("PluginConfigSchemaForm — values prop sync", () => {
       />,
     );
     const input = document.querySelector(
-      '[id="pcfg:vega-early:meetingDetectorAllowedSenderDomains"]',
+      '[id="pcfg:vega-helper:meetingDetectorAllowedSenderDomains"]',
     ) as HTMLInputElement;
     expect(input).not.toBeNull();
     expect(input.value).toBe("");
 
     rerender(
       <PluginConfigSchemaForm
-        pluginId="vega-early"
+        pluginId="vega-helper"
         schema={schema}
         values={{ meetingDetectorAllowedSenderDomains: ["outlook.com"] }}
         secretsPresent={{}}

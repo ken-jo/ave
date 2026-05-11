@@ -70,7 +70,7 @@ Ave 마켓플레이스는 **git-based publish** (Go 모듈 프록시 스타일).
 | `local-indexer` | `ave-plugin-local-indexer` | admin (fallback) | `install_policy`/`deployment` 키 생략 → fallback 룰로 admin |
 | `lyra-mail` | `ave-plugin-lyra-mail` | user (명시) | 구 email + calendar 플러그인 합본 |
 | `orion-api` | `ave-plugin-orion-api` | admin (fallback) | 위 local-indexer 와 동일 |
-| `vega-early` | `ave-plugin-vega-early` | user (명시) | |
+| `vega-helper` | `ave-plugin-vega-helper` | user (명시) | |
 | `agent-hub` | `ave-plugin-hydra` | user (명시) | |
 | `hello-world` (합성) | (코드 안에 dummy zip) | free | 부팅 시 자동 publish — install-flow 테스트용 |
 
@@ -99,7 +99,7 @@ former_org/
 ├── ave-plugin-lyra-post/
 ├── ave-plugin-lyra-cal/
 ├── ave-plugin-orion-api/
-├── ave-plugin-vega-early/
+├── ave-plugin-vega-helper/
 └── ave-plugin-hydra/
 ```
 

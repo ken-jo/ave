@@ -583,8 +583,8 @@ describe("PluginRuntime.disable", () => {
     };
 
     const workManifestPath = await writePlugin(
-      "vega-early",
-      "vega_early_ping",
+      "vega-helper",
+      "vega_helper_ping",
       {
         pluginAccess: {
           plugins: [
@@ -600,7 +600,7 @@ describe("PluginRuntime.disable", () => {
     const meetingManifestPath = await writePlugin("meeting", "meeting_ping");
     await writeRegistry([
       {
-        id: "vega-early",
+        id: "vega-helper",
         manifestPath: workManifestPath,
         enabled: true,
         approvedPluginAccess: {
@@ -619,14 +619,14 @@ describe("PluginRuntime.disable", () => {
     const runtime = makeRuntime();
     await runtime.load();
 
-    expect(() => runtime.assertPluginToolAccess("vega-early", "calendar_today")).not.toThrow();
-    expect(() => runtime.assertPluginEventAccess("vega-early", "email.action.needed")).not.toThrow();
-    expect(() => runtime.assertPluginEventAccess("vega-early", "meeting.summary.created")).not.toThrow();
-    expect(() => runtime.assertPluginToolAccess("calendar", "vega_early_ping")).toThrow(/not allowed/i);
+    expect(() => runtime.assertPluginToolAccess("vega-helper", "calendar_today")).not.toThrow();
+    expect(() => runtime.assertPluginEventAccess("vega-helper", "email.action.needed")).not.toThrow();
+    expect(() => runtime.assertPluginEventAccess("vega-helper", "meeting.summary.created")).not.toThrow();
+    expect(() => runtime.assertPluginToolAccess("calendar", "vega_helper_ping")).toThrow(/not allowed/i);
     expect(() => runtime.assertPluginEventAccess("calendar", "email.action.needed")).toThrow(/not allowed/i);
   });
 
-  it("allows vega-early to subscribe to granted calendar events (P4 detector grants)", async () => {
+  it("allows vega-helper to subscribe to granted calendar events (P4 detector grants)", async () => {
     // Regression net for the host catalog ↔ registry grants paired
     // with the overlay-trigger plugin's calendar-* detectors:
     //   - `calendar-event-detector` (PR #7) → `calendar.event.upcoming`
@@ -670,7 +670,7 @@ describe("PluginRuntime.disable", () => {
       "calendar.event.upcoming",
       "calendar.event.conflict.detected",
     ];
-    const workManifestPath = await writePlugin("vega-early", "vega_early_ping", {
+    const workManifestPath = await writePlugin("vega-helper", "vega_helper_ping", {
       pluginAccess: {
         plugins: [
           {
@@ -684,7 +684,7 @@ describe("PluginRuntime.disable", () => {
     const calendarManifestPath = await writePlugin("calendar", "calendar_today");
     await writeRegistry([
       {
-        id: "vega-early",
+        id: "vega-helper",
         manifestPath: workManifestPath,
         enabled: true,
         approvedPluginAccess: {
@@ -706,14 +706,14 @@ describe("PluginRuntime.disable", () => {
     // Granted path: each event in the grant is allowed.
     for (const ev of grantedEvents) {
       expect(() =>
-        runtime.assertPluginEventAccess("vega-early", ev),
+        runtime.assertPluginEventAccess("vega-helper", ev),
       ).not.toThrow();
     }
     // Negative path — least-privilege: only the events explicitly
     // listed in the grant pass. `calendar.event.starting` is also a
     // calendar event but NOT in the grant, so the runtime denies.
     expect(() =>
-      runtime.assertPluginEventAccess("vega-early", "calendar.event.starting"),
+      runtime.assertPluginEventAccess("vega-helper", "calendar.event.starting"),
     ).toThrow(/not allowed/i);
   });
 
