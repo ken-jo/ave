@@ -221,8 +221,8 @@ describe("readPluginRegistry — legacy installedBy/_devLinked migration", () =>
         version: 1,
         plugins: [
           {
-            id: "vega-early",
-            manifestPath: "vega-early/plugin.json",
+            id: "vega-helper",
+            manifestPath: "vega-helper/plugin.json",
             enabled: true,
             installedBy: "user",
             bundleRefs: ["x-bundle"],
@@ -235,8 +235,8 @@ describe("readPluginRegistry — legacy installedBy/_devLinked migration", () =>
 
     const registry = await readPluginRegistry(registryPath);
     expect(registry.plugins[0]).toEqual({
-      id: "vega-early",
-      manifestPath: "vega-early/plugin.json",
+      id: "vega-helper",
+      manifestPath: "vega-helper/plugin.json",
       enabled: true,
       installSource: "user",
       bundleRefs: ["x-bundle"],

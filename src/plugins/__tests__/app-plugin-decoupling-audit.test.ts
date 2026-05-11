@@ -28,15 +28,15 @@ const FORBIDDEN_LIVE_APP_LITERALS = [
     reason: "Microsoft Graph tool names must stay plugin-owned and manifest-driven.",
   },
   {
-    needle: "vega-early",
+    needle: "vega-helper",
     reason: "Overlay trigger implementation names must stay plugin-owned and capability-driven.",
   },
   {
-    needle: "vega_early",
+    needle: "vega_helper",
     reason: "Overlay trigger tool/event names must stay plugin-owned and manifest-driven.",
   },
   {
-    needle: "ave-plugin-vega-early",
+    needle: "ave-plugin-vega-helper",
     reason: "Host runtime must not depend on a concrete overlay-trigger plugin repository.",
   },
 ] as const;

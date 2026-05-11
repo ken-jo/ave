@@ -186,11 +186,11 @@ describe("PluginMarketplaceService managed bootstrap", () => {
             installPolicy: "admin",
           },
           {
-            id: "vega-early",
+            id: "vega-helper",
             name: "Vega Early",
             description: "fixture",
-            packageSpec: "file:../ave-plugin-vega-early",
-            packageName: "@ave/plugin-vega-early",
+            packageSpec: "file:../ave-plugin-vega-helper",
+            packageName: "@ave/plugin-vega-helper",
             tools: [],
             installPolicy: "user",
             dependencies: ["calendar", "email", "meeting"],
@@ -212,14 +212,14 @@ describe("PluginMarketplaceService managed bootstrap", () => {
       .spyOn((service as unknown as { artifactStore: { cacheVersionFromManifest: (...args: unknown[]) => Promise<void> } }).artifactStore, "cacheVersionFromManifest")
       .mockResolvedValue();
 
-    const result = await service.install("vega-early", "it-admin");
+    const result = await service.install("vega-helper", "it-admin");
 
-    expect(result).toEqual({ pluginId: "vega-early", installed: true });
+    expect(result).toEqual({ pluginId: "vega-helper", installed: true });
     expect(installSpy.mock.calls.map(([plugin]) => (plugin as { id: string }).id)).toEqual([
       "calendar",
       "email",
       "meeting",
-      "vega-early",
+      "vega-helper",
     ]);
     expect(cacheSpy).toHaveBeenCalledTimes(4);
   });
@@ -241,11 +241,11 @@ describe("PluginMarketplaceService managed bootstrap", () => {
             capabilities: ["calendar-source"],
           },
           {
-            id: "vega-early",
+            id: "vega-helper",
             name: "Vega Early",
             description: "fixture",
-            packageSpec: "file:../ave-plugin-vega-early",
-            packageName: "@ave/plugin-vega-early",
+            packageSpec: "file:../ave-plugin-vega-helper",
+            packageName: "@ave/plugin-vega-helper",
             tools: [],
             installPolicy: "user",
             dependencies: ["calendar"],
@@ -282,8 +282,8 @@ describe("PluginMarketplaceService managed bootstrap", () => {
     vi
       .spyOn((service as unknown as { artifactStore: { cacheVersionFromManifest: (...args: unknown[]) => Promise<void> } }).artifactStore, "cacheVersionFromManifest")
       .mockResolvedValue();
-    await expect(service.install("vega-early", "it-admin")).resolves.toEqual({
-      pluginId: "vega-early",
+    await expect(service.install("vega-helper", "it-admin")).resolves.toEqual({
+      pluginId: "vega-helper",
       installed: true,
     });
   });
@@ -323,11 +323,11 @@ describe("PluginMarketplaceService managed bootstrap", () => {
             installPolicy: "user",
           },
           {
-            id: "vega-early",
+            id: "vega-helper",
             name: "Vega Early",
             description: "fixture",
-            packageSpec: "file:../ave-plugin-vega-early",
-            packageName: "@ave/plugin-vega-early",
+            packageSpec: "file:../ave-plugin-vega-helper",
+            packageName: "@ave/plugin-vega-helper",
             tools: [],
             installPolicy: "user",
             dependencies: ["calendar", "email", "meeting"],
@@ -349,15 +349,15 @@ describe("PluginMarketplaceService managed bootstrap", () => {
       .spyOn((service as unknown as { artifactStore: { cacheVersionFromManifest: (...args: unknown[]) => Promise<void> } }).artifactStore, "cacheVersionFromManifest")
       .mockResolvedValue();
 
-    await expect(service.install("vega-early", "user")).resolves.toEqual({
-      pluginId: "vega-early",
+    await expect(service.install("vega-helper", "user")).resolves.toEqual({
+      pluginId: "vega-helper",
       installed: true,
     });
     expect(installSpy.mock.calls.map(([plugin]) => (plugin as { id: string }).id)).toEqual([
       "calendar",
       "email",
       "meeting",
-      "vega-early",
+      "vega-helper",
     ]);
   });
 
@@ -370,7 +370,7 @@ describe("PluginMarketplaceService managed bootstrap", () => {
     await mkdir(join(testDir, "plugin-src", "calendar"), { recursive: true });
     await mkdir(join(testDir, "plugin-src", "email"), { recursive: true });
     await mkdir(join(testDir, "plugin-src", "meeting"), { recursive: true });
-    await mkdir(join(testDir, "plugin-src", "vega-early"), { recursive: true });
+    await mkdir(join(testDir, "plugin-src", "vega-helper"), { recursive: true });
     const providerDir = join(testDir, "plugins", "installed", "calendar");
     await mkdir(providerDir, { recursive: true });
     await writeFile(
@@ -420,12 +420,12 @@ describe("PluginMarketplaceService managed bootstrap", () => {
             installPolicy: "user",
           },
           {
-            id: "vega-early",
+            id: "vega-helper",
             name: "Vega Early",
             description: "fixture",
-            packageSpec: "file:./plugin-src/vega-early",
-            packageName: "@ave/plugin-vega-early",
-            tools: ["vega_early_generate_wakeup_briefing"],
+            packageSpec: "file:./plugin-src/vega-helper",
+            packageName: "@ave/plugin-vega-helper",
+            tools: ["vega_helper_generate_wakeup_briefing"],
             installPolicy: "user",
             dependencies: [
               { pluginId: "calendar", required: true },
@@ -439,10 +439,10 @@ describe("PluginMarketplaceService managed bootstrap", () => {
                 { pluginId: "meeting", events: ["meeting.summary.created", "meeting.ended"] },
               ],
             },
-            capabilities: ["vega-early-provider"],
+            capabilities: ["vega-helper-provider"],
             requires: { capabilities: ["calendar-source"] },
             toolSchemas: {
-              vega_early_generate_wakeup_briefing: {
+              vega_helper_generate_wakeup_briefing: {
                 description: "Generate wakeup briefing",
                 inputSchema: {
                   type: "object",
@@ -469,15 +469,15 @@ describe("PluginMarketplaceService managed bootstrap", () => {
       .spyOn(service as unknown as { runNpmInstall: (spec: string) => Promise<void> }, "runNpmInstall")
       .mockResolvedValue();
 
-    await expect(service.install("vega-early", "it-admin")).resolves.toEqual({
-      pluginId: "vega-early",
+    await expect(service.install("vega-helper", "it-admin")).resolves.toEqual({
+      pluginId: "vega-helper",
       installed: true,
     });
 
     const registry = JSON.parse(await readFile(registryPath, "utf-8")) as {
       plugins: Array<{ id: string; manifestPath: string }>;
     };
-    const manifestPath = registry.plugins.find((entry) => entry.id === "vega-early")?.manifestPath;
+    const manifestPath = registry.plugins.find((entry) => entry.id === "vega-helper")?.manifestPath;
     expect(manifestPath).toBeTruthy();
     // Phase 2a: registry entries hold manifest paths relative to
     // dirname(registryPath). Resolve to absolute before reading the file.
@@ -497,8 +497,8 @@ describe("PluginMarketplaceService managed bootstrap", () => {
       ],
     });
     expect(manifest.requires).toEqual({ capabilities: ["calendar-source"] });
-    expect(manifest.capabilities).toEqual(["vega-early-provider"]);
-    expect(manifest.toolSchemas?.vega_early_generate_wakeup_briefing?.description).toBe(
+    expect(manifest.capabilities).toEqual(["vega-helper-provider"]);
+    expect(manifest.toolSchemas?.vega_helper_generate_wakeup_briefing?.description).toBe(
       "Generate wakeup briefing",
     );
   });
@@ -598,7 +598,7 @@ describe("PluginMarketplaceService managed bootstrap", () => {
             manifestPath: "installed/email/plugin.json",
             enabled: true,
             installSource: "user",
-            bundleRefs: ["vega-early"],
+            bundleRefs: ["vega-helper"],
           },
         ],
       }),
@@ -647,7 +647,7 @@ describe("PluginMarketplaceService managed bootstrap", () => {
   });
 
   it("removes bundle members only when explicitly requested and still unreferenced", async () => {
-    for (const pluginId of ["vega-early", "email", "meeting", "calendar"]) {
+    for (const pluginId of ["vega-helper", "email", "meeting", "calendar"]) {
       const pluginDir = join(testDir, "plugins", "installed", pluginId);
       await mkdir(pluginDir, { recursive: true });
       await writeFile(
@@ -669,8 +669,8 @@ describe("PluginMarketplaceService managed bootstrap", () => {
         version: 1,
         plugins: [
           {
-            id: "vega-early",
-            manifestPath: "installed/vega-early/plugin.json",
+            id: "vega-helper",
+            manifestPath: "installed/vega-helper/plugin.json",
             enabled: true,
             installSource: "user",
           },
@@ -679,21 +679,21 @@ describe("PluginMarketplaceService managed bootstrap", () => {
             manifestPath: "installed/email/plugin.json",
             enabled: true,
             installSource: "user",
-            bundleRefs: ["vega-early"],
+            bundleRefs: ["vega-helper"],
           },
           {
             id: "meeting",
             manifestPath: "installed/meeting/plugin.json",
             enabled: true,
             installSource: "user",
-            bundleRefs: ["vega-early", "other-bundle"],
+            bundleRefs: ["vega-helper", "other-bundle"],
           },
           {
             id: "calendar",
             manifestPath: "installed/calendar/plugin.json",
             enabled: true,
             installSource: "admin",
-            bundleRefs: ["vega-early"],
+            bundleRefs: ["vega-helper"],
           },
         ],
       }),
@@ -701,8 +701,8 @@ describe("PluginMarketplaceService managed bootstrap", () => {
     );
 
     const service = makeManagedService(testDir, marketplacePath);
-    await expect(service.uninstall("vega-early", { removeBundleMembers: true })).resolves.toEqual({
-      pluginId: "vega-early",
+    await expect(service.uninstall("vega-helper", { removeBundleMembers: true })).resolves.toEqual({
+      pluginId: "vega-helper",
       uninstalled: true,
     });
 

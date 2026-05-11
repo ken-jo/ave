@@ -87,7 +87,7 @@ describe("capabilities module namespace policy", () => {
   it("HOST-only namespaces reject plugin emit regardless of declared capabilities", () => {
     // `plugin.*` is reserved for host-side emit (lifecycle: plugin.installed,
     // plugin.uninstalled). A plugin spoofing `plugin.installed` could trick
-    // vega-early's onPluginsChanged subscribers into reacting to fake
+    // vega-helper's onPluginsChanged subscribers into reacting to fake
     // lifecycle. Gate here.
     expect(canEmitEvent("plugin.installed", [])).toBe(false);
     expect(canEmitEvent("plugin.uninstalled", [])).toBe(false);
