@@ -197,4 +197,33 @@ describe("preload — plugin webview asset URLs", () => {
 
     expect(env["debugStream"]).toBe(true);
   });
+
+  it("exposes memoryGetIndex and invokes the memory index IPC channel", async () => {
+    const api = await loadAveApi();
+
+    expect(typeof api["memoryGetIndex"]).toBe("function");
+    await (api["memoryGetIndex"] as () => Promise<unknown>)();
+
+    expect(mockInvoke).toHaveBeenCalledWith("ave:memory:index:get");
+  });
+
+  it.each([
+    ["memoryGetAgentsMd", "ave:memory:agents-md:get"],
+    ["memoryUpdateAgentsMd", "ave:memory:agents-md:update", "# Agents"],
+    ["memoryGetAveMd", "ave:memory:ave-md:get"],
+    ["memoryUpdateAveMd", "ave:memory:ave-md:update", "# Agents"],
+    ["memoryGetUserPrefs", "ave:memory:user-prefs:get"],
+    ["memoryUpdateUserPrefs", "ave:memory:user-prefs:update", "# Preferences"],
+  ])("exposes %s and invokes %s", async (apiKey, channel, payload) => {
+    const api = await loadAveApi();
+
+    expect(typeof api[apiKey]).toBe("function");
+    await (api[apiKey] as (value?: string) => Promise<unknown>)(payload);
+
+    if (payload === undefined) {
+      expect(mockInvoke).toHaveBeenCalledWith(channel);
+    } else {
+      expect(mockInvoke).toHaveBeenCalledWith(channel, payload);
+    }
+  });
 });

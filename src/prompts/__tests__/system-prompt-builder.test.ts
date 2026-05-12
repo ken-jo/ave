@@ -18,7 +18,9 @@ import { ToolRegistry } from "../../tools/registry.js";
 function makeBuilder({ continuousBackend = true }: { continuousBackend?: boolean } = {}): SystemPromptBuilder {
   const builder = new SystemPromptBuilder({
     memoryManager: {
+      getAgentsMd: () => "",
       getAveMd: () => "",
+      getMemoryIndex: () => "",
       getUserPreferences: () => "",
       getMemoryContext: () => "",
     } as never,
@@ -28,7 +30,29 @@ function makeBuilder({ continuousBackend = true }: { continuousBackend?: boolean
   return builder;
 }
 
+function makeMemoryBuilder(memoryIndex: string): SystemPromptBuilder {
+  return new SystemPromptBuilder({
+    memoryManager: {
+      getAgentsMd: () => "# Agents",
+      getAveMd: () => "# Agents",
+      getMemoryIndex: () => memoryIndex,
+      getUserPreferences: () => "",
+      getMemoryContext: () => "",
+    } as never,
+    toolRegistry: new ToolRegistry(),
+  });
+}
+
 describe("SystemPromptBuilder — Conversation Continuity Guard", () => {
+  it("injects AGENTS.md and MEMORY.md index as distinct context sections", () => {
+    const prompt = makeMemoryBuilder("# Memory Index\n\n- [A](./a.md)").build();
+    expect(prompt).toContain("<ave-agents-context>");
+    expect(prompt).toContain("# Agents");
+    expect(prompt).toContain("<ave-memory-index>");
+    expect(prompt).toContain("- [A](./a.md)");
+    expect(prompt).not.toContain("<ave-context>");
+  });
+
   it("prioritizes direct plugin tool calls over agent_spawn", () => {
     const builder = makeBuilder();
     const prompt = builder.build();

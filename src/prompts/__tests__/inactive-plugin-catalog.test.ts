@@ -19,7 +19,9 @@ function makeBuilder(cards: Array<{
 }>): SystemPromptBuilder {
   return new SystemPromptBuilder({
     memoryManager: {
+      getAgentsMd: () => "",
       getAveMd: () => "",
+      getMemoryIndex: () => "",
       getUserPreferences: () => "",
       getMemoryContext: () => "",
     } as never,
