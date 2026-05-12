@@ -51,19 +51,6 @@ export type AveTokenMap = { readonly [K in AveTokenName]: string };
 /** @deprecated Use AveTokenMap instead. */
 export type AveThemeTokens = AveTokenMap;
 
-/**
- * CSS-only static tokens — defined in the SDK fallback stylesheet as offline
- * defaults, but not sent over IPC because their value syntax is broader than
- * the host's safe token-value allowlist.
- */
-export const AVE_CSS_ONLY_TOKEN_NAMES = [
-  "--ave-shadow-sm",
-  "--ave-shadow-md",
-  "--ave-easing",
-] as const;
-
-export type AveCssOnlyTokenName = typeof AVE_CSS_ONLY_TOKEN_NAMES[number];
-
 import { BUNDLE_IDS, type BundleId } from "./theme-bundles.js";
 
 /**
