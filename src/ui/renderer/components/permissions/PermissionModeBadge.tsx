@@ -9,8 +9,8 @@
  * Layer 8 — runtime mode switching via `/permission mode ...`.
  *
  * Polls `window.ave.permission.getMode()` on mount + on a custom
- * `ave:permissions:mode-changed` window event so user gestures
- * elsewhere (Settings dialog, slash) reflect immediately.
+ * `ave:permissions:mode-changed` events so user gestures elsewhere
+ * (Settings window, slash) reflect immediately.
  *
  * Keep this component visual-only. Mode mutation lives in the slash
  * dispatcher + Settings tab; the badge is read-only.
@@ -196,16 +196,22 @@ export function PermissionModeBadge({
 }
 
 /**
- * Default subscription path — wires a `mode-changed` window event so
+ * Default subscription path — wires the preload IPC event plus the legacy
+ * local `mode-changed` window event so
  * the badge updates without prop-drilling state through every chat
- * surface that hosts it. The event is dispatched by the slash
- * dispatcher when a `mode_change` audit row lands.
+ * surface that hosts it.
  */
 function defaultModeSubscriber(handler: (mode: ModeBadgeVariant) => void): () => void {
+  const unsubscribeIpc = window.ave?.permission?.onModeChanged?.((mode) => {
+    handler(normalizeMode(mode));
+  });
   const listener = (event: Event) => {
     const detail = (event as CustomEvent<{ mode: string }>).detail;
     if (detail?.mode) handler(normalizeMode(detail.mode));
   };
   window.addEventListener("ave:permissions:mode-changed", listener);
-  return () => window.removeEventListener("ave:permissions:mode-changed", listener);
+  return () => {
+    unsubscribeIpc?.();
+    window.removeEventListener("ave:permissions:mode-changed", listener);
+  };
 }

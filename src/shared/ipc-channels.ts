@@ -43,6 +43,7 @@ export const ROUTINES_V2 = {
 export const PERMISSIONS = {
   getMode: "ave:permission:get-mode",
   setMode: "ave:permission:set-mode",
+  modeChanged: "ave:permissions:mode-changed",
   listRules: "ave:permission:list-rules",
   addRule: "ave:permission:add-rule",
   removeRule: "ave:permission:remove-rule",
@@ -58,4 +59,8 @@ export const PERMISSIONS = {
   auditVerify: "ave:permissions:audit-verify",
   hookTrustList: "ave:permissions:hook-trust-list",
   manifestViolation: "ave:permissions:manifest-violation",
+} as const;
+
+export const SETTINGS = {
+  updated: "ave:settings:updated",
 } as const;
