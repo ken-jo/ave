@@ -145,7 +145,7 @@ describe("Theme bundles — chat and code text contrast must clear WCAG AA", () 
 });
 
 describe("ave-prose CSS coverage — markdown tables stay readable", () => {
-  const css = readFileSync("src/styles.css", "utf-8");
+  const css = readFileSync("src/styles.css", "utf-8").replace(/\r\n/g, "\n");
 
   it("uses .prose.ave-prose specificity so Typography defaults cannot repaint text black", () => {
     expect(css).toContain(".prose.ave-prose {");
@@ -163,5 +163,43 @@ describe("ave-prose CSS coverage — markdown tables stay readable", () => {
   it("keeps nested bold and inline text inside table cells inheriting readable cell color", () => {
     expect(css).toContain(".prose.ave-prose :where(th *, td *)");
     expect(css).toContain(".ave-prose :is(th, td) :is(p, span, strong, em)");
+  });
+
+  it("keeps ave-prose rules UNLAYERED so they beat Tailwind Typography's @layer utilities", () => {
+    /*
+     * Regression guard for the 2026-05-13 dark-theme bold/strong/th issue
+     * (PR #665 review). Tailwind v4 emits the typography plugin under
+     * `@layer utilities` which includes a hard-coded
+     *   .prose { --tw-prose-bold: oklch(21% …) }  /* dark color *\/
+     * Wrapping `.ave-prose` overrides in `@layer components` (or any
+     * earlier layer) silently loses to `@layer utilities` per the CSS
+     * cascade-layers spec REGARDLESS of selector specificity. The only
+     * reliable fix is to keep the ave-prose block unlayered.
+     *
+     * This test reads the source CSS and asserts the ave-prose block is
+     * not wrapped in any @layer directive.
+     */
+    const aveAnchor = css.indexOf(".prose.ave-prose,\n  .ave-prose {");
+    expect(aveAnchor).toBeGreaterThan(0);
+    // Walk backwards looking for the nearest unbalanced `@layer NAME {`
+    // (i.e. one whose matching `}` is after aveAnchor).
+    const head = css.slice(0, aveAnchor);
+    let depth = 0;
+    let i = head.length;
+    while (i > 0) {
+      const ch = head[i - 1];
+      if (ch === "}") depth++;
+      else if (ch === "{") {
+        if (depth === 0) {
+          // Found enclosing open-brace. Inspect what comes before it.
+          const before = head.slice(Math.max(0, i - 80), i - 1).trim();
+          expect(before).not.toMatch(/@layer\s+\w/);
+          return;
+        }
+        depth--;
+      }
+      i--;
+    }
+    // Reached file start without finding an enclosing `{` → unlayered. OK.
   });
 });
