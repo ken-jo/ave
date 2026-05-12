@@ -157,7 +157,6 @@ export function PermissionsTab() {
         const res = await window.ave.permission.setMode(m);
         if (res.ok) {
           setMode(res.mode as ExecMode);
-          window.dispatchEvent(new CustomEvent("ave:permissions:mode-changed", { detail: { mode: res.mode } }));
           modeChanged = true;
         } else {
           showBanner("error", res.message ?? res.error ?? "실행 모드 변경에 실패했습니다.");
