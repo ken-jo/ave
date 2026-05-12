@@ -2101,7 +2101,7 @@ SDK 가 보조 fallback artifact 를 들고 있지 않으므로 lockstep 부담�
 |---|---|---|---|
 | **SoT** ThemeBundle | `ave/src/ui/renderer/theme/bundles/*.ts` | `--ave-*` 토큰 값의 단일 출처. 디자인 팔레트가 바뀌면 **여기만** 수정 | 손-편집 |
 | Host `_INVARIANT` | `ave/src/ui/renderer/theme/plugin-token-map.ts` | 번들 무관 invariant 토큰 16 개 (radius/text/weight/space/motion) | 손-편집 |
-| `bundleToPluginTokens` | `ave/src/ui/renderer/theme/plugin-token-map.ts` | active bundle + `_INVARIANT` → 17 개 `--ave-*` token map derive | 함수 호출 (`ThemeProvider`, `getInitialThemeArgs`) |
+| `bundleToPluginTokens` | `ave/src/ui/renderer/theme/plugin-token-map.ts` | active bundle + `_INVARIANT` → 전체 `--ave-*` token map (invariant 16 + bundle-derived 20) derive | 함수 호출 (`ThemeProvider`, `getInitialThemeArgs`) |
 | `additionalArguments` priming | `ave/src/main.ts:initialThemeArgs` (`1696f92`) | 모든 BrowserWindow webPreferences 에 primed token payload 주입 | `WindowManager.openDetachedTab` 콜백 |
 | `host.theme.changed` broadcast | `EventBus` (`channels.ts`) | 런타임 테마 변경시 plugin webview 에 live payload 전파 | `ThemeProvider` 가 bundle 변경시 호출 |
 
