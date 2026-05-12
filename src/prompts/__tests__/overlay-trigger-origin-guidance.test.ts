@@ -16,7 +16,9 @@ import { ToolRegistry } from "../../tools/registry.js";
 function makeBuilder(): SystemPromptBuilder {
   return new SystemPromptBuilder({
     memoryManager: {
+      getAgentsMd: () => "",
       getAveMd: () => "",
+      getMemoryIndex: () => "",
       getUserPreferences: () => "",
       getMemoryContext: () => "",
     } as never,

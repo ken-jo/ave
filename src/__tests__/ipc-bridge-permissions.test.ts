@@ -101,7 +101,22 @@ function makeServices(pm: ReturnType<typeof makeMockPM>, gate = makeMockGate()) 
       getPluginConfig: vi.fn(() => ({})),
       setPluginConfig: vi.fn(async (_pluginId: string, config: unknown) => config),
     } as any,
-    memoryManager: { listMemoryEntries: vi.fn(() => []), saveMemory: vi.fn(), deleteMemory: vi.fn(), searchMemoryEntries: vi.fn(() => []), getMemoryContext: vi.fn(() => ""), getAveMd: vi.fn(), updateAveMd: vi.fn(), getUserPreferences: vi.fn(), updateUserPreferences: vi.fn() } as any,
+    memoryManager: {
+      listMemoryEntries: vi.fn(() => []),
+      saveMemory: vi.fn(),
+      deleteMemory: vi.fn(),
+      searchMemoryEntries: vi.fn(() => []),
+      getMemoryIndex: vi.fn(() => "# Memory"),
+      listSessionEntries: vi.fn(() => []),
+      searchSessions: vi.fn(() => []),
+      getMemoryContext: vi.fn(() => ""),
+      getAgentsMd: vi.fn(() => "# Agents"),
+      getAveMd: vi.fn(() => "# Agents"),
+      updateAveMd: vi.fn(),
+      updateAgentsMd: vi.fn(),
+      getUserPreferences: vi.fn(() => "# Preferences"),
+      updateUserPreferences: vi.fn(),
+    } as any,
     conversationLoop: makeMockLoop(pm) as any,
     approvalGate: gate as any,
     mcpManager: { listServers: vi.fn(() => []), killSwitch: vi.fn() } as any,
@@ -328,6 +343,23 @@ describe("ave:memory:entries:*", () => {
       "ave:memory:entries:search",
       { senderFrame: { url: "https://evil.example.com/" } },
       "query",
+    );
+
+    expect(result).toEqual({ ok: false, error: "unauthorized-frame" });
+  });
+
+  it.each([
+    "ave:memory:index:get",
+    "ave:memory:sessions:list",
+    "ave:memory:agents-md:get",
+    "ave:memory:ave-md:get",
+    "ave:memory:user-prefs:get",
+  ])("%s rejects unauthorized frames", async (channel) => {
+    await setupHandlers();
+
+    const result = await invokeWithEvent(
+      channel,
+      { senderFrame: { url: "https://evil.example.com/" } },
     );
 
     expect(result).toEqual({ ok: false, error: "unauthorized-frame" });

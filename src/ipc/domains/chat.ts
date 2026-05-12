@@ -659,9 +659,10 @@ ${input}`;
     if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:memory:entries:save", e); return UNAUTHORIZED_FRAME; }
     return memoryManager.saveMemory(title, content);
   });
-  ipcMain.handle("ave:memory:entries:delete", (e, filename: string) => {
+  ipcMain.handle("ave:memory:entries:delete", async (e, filename: string) => {
     if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:memory:entries:delete", e); return UNAUTHORIZED_FRAME; }
-    return memoryManager.deleteMemory(filename);
+    await memoryManager.deleteMemory(filename);
+    return undefined;
   });
   ipcMain.handle("ave:memory:entries:search", (e, query: string) => {
     if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:memory:entries:search", e); return UNAUTHORIZED_FRAME; }
@@ -673,19 +674,38 @@ ${input}`;
       updatedAt: note.updatedAt ?? new Date().toISOString(),
     }));
   });
-  ipcMain.handle("ave:memory:sessions:list", () => memoryManager.listSessionEntries());
+  ipcMain.handle("ave:memory:index:get", (e) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:memory:index:get", e); return UNAUTHORIZED_FRAME; }
+    return memoryManager.getMemoryIndex();
+  });
+  ipcMain.handle("ave:memory:sessions:list", (e) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:memory:sessions:list", e); return UNAUTHORIZED_FRAME; }
+    return memoryManager.listSessionEntries();
+  });
   ipcMain.handle("ave:memory:sessions:search", (e, query: string) => {
     if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:memory:sessions:search", e); return UNAUTHORIZED_FRAME; }
     return memoryManager.searchSessions(query);
   });
-  // read-only, sender guard optional
-  ipcMain.handle("ave:memory:ave-md:get", () => memoryManager.getAveMd());
+  ipcMain.handle("ave:memory:agents-md:get", (e) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:memory:agents-md:get", e); return UNAUTHORIZED_FRAME; }
+    return memoryManager.getAgentsMd();
+  });
+  ipcMain.handle("ave:memory:ave-md:get", (e) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:memory:ave-md:get", e); return UNAUTHORIZED_FRAME; }
+    return memoryManager.getAgentsMd();
+  });
+  ipcMain.handle("ave:memory:agents-md:update", async (e, content: string) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:memory:agents-md:update", e); return UNAUTHORIZED_FRAME; }
+    return memoryManager.updateAgentsMd(content);
+  });
   ipcMain.handle("ave:memory:ave-md:update", async (e, content: string) => {
     if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:memory:ave-md:update", e); return UNAUTHORIZED_FRAME; }
-    return memoryManager.updateAveMd(content);
+    return memoryManager.updateAgentsMd(content);
   });
-  // read-only, sender guard optional
-  ipcMain.handle("ave:memory:user-prefs:get", () => memoryManager.getUserPreferences());
+  ipcMain.handle("ave:memory:user-prefs:get", (e) => {
+    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:memory:user-prefs:get", e); return UNAUTHORIZED_FRAME; }
+    return memoryManager.getUserPreferences();
+  });
   ipcMain.handle("ave:memory:user-prefs:update", async (e, content: string) => {
     if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:memory:user-prefs:update", e); return UNAUTHORIZED_FRAME; }
     return memoryManager.updateUserPreferences(content);
