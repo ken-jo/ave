@@ -107,6 +107,7 @@ function makeServices(pm: ReturnType<typeof makeMockPM>, gate = makeMockGate()) 
       deleteMemory: vi.fn(),
       searchMemoryEntries: vi.fn(() => []),
       getMemoryIndex: vi.fn(() => "# Memory"),
+      updateMemoryIndex: vi.fn(),
       listSessionEntries: vi.fn(() => []),
       searchSessions: vi.fn(() => []),
       getMemoryContext: vi.fn(() => ""),
@@ -348,12 +349,25 @@ describe("ave:memory:entries:*", () => {
     expect(result).toEqual({ ok: false, error: "unauthorized-frame" });
   });
 
+  it("memory index update targets updateMemoryIndex", async () => {
+    const pm = makeMockPM();
+    const services = makeServices(pm);
+    const { registerIpcHandlers } = await import("../ipc-bridge.js");
+    registerIpcHandlers(services, () => null);
+
+    await invoke("ave:memory:index:update", "# Memory\n\n## Urgent Memory\n\nKeep this.");
+
+    expect(services.memoryManager.updateMemoryIndex).toHaveBeenCalledWith("# Memory\n\n## Urgent Memory\n\nKeep this.");
+  });
+
   it.each([
     "ave:memory:index:get",
+    "ave:memory:index:update",
     "ave:memory:sessions:list",
     "ave:memory:agents-md:get",
     "ave:memory:ave-md:get",
     "ave:memory:user-prefs:get",
+    "ave:memory:user-prefs:refresh",
   ])("%s rejects unauthorized frames", async (channel) => {
     await setupHandlers();
 
