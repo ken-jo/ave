@@ -518,6 +518,42 @@ broadcast 시점에 같은 화이트리스트로 silently drop 하므로, 그 �
    build-time validator 가 못 보는 위치다 (string strip 단계에서 erase). 토큰
    참조는 항상 `injectTokenCss` 의 template-literal CSS 블록에 두자. SDK 컴포넌트
    가 모두 같은 패턴.
+4. **Mount contract — `primeTheme` 가 첫 await** (Decision 2026-05-12) —
+   플러그인의 `mount()` (또는 entry module) 는 React render / vanilla DOM
+   build 이전에 `primeTheme(bridge, opts?)` 를 호출해야 한다. 이 헬퍼가
+   `avePlugin.getTheme()` pull + paint + `host.theme.changed` 구독 3 경로를
+   캡슐화하므로 플러그인 측 글루 코드는 한 줄로 줄어든다. detached
+   BrowserWindow / scoped sidebar 는 `opts.target` (`Document | HTMLElement`)
+   으로 가리키고, sidebar custom 토큰 매핑 같은 use-case 는 `opts.onPayload`
+   콜백으로 흡수한다 (별도 `bridge.onEvent("host.theme.changed", …)` 두 번째
+   구독 금지 — drift 회귀 케이스). React 측은 `useTheme(bridge, opts?)` 가
+   `primeTheme` 위의 얇은 wrapper 라 동일 옵션 surface 를 갖는다. 자세한
+   결정 근거 + 마이그레이션 시퀀스는 `docs/architecture/proposals/2026-05-12-plugin-theme-unification.md`
+   참조.
+
+```ts
+// React 플러그인 — App 최상위
+import { useTheme } from "@ave/plugin-sdk/ui/hooks/useTheme";
+
+function App({ bridge, rootEl }: { bridge: PluginBridge; rootEl?: HTMLElement }) {
+  useTheme(bridge, {
+    target: rootEl,                            // 옵션: scoped root 가 있을 때만
+    onPayload: (e) => mapSidebarTokens(e),     // 옵션: custom 매핑
+  });
+  // …
+}
+
+// Vanilla 플러그인 — mount entry (detached window 포함)
+import { primeTheme } from "@ave/plugin-sdk/ui/hooks/primeTheme";
+
+export function mount(host: PluginHost): PluginInstance {
+  const { dispose } = primeTheme(host.bridge, {
+    target: host.targetDocument ?? document,
+  });
+  // … plugin DOM build …
+  return { unmount: () => { dispose(); /* … */ } };
+}
+```
 
 **Build-time validator** (SDK v3.8.0+):
 
