@@ -225,10 +225,12 @@ describe("preload — plugin webview asset URLs", () => {
   it.each([
     ["memoryGetAgentsMd", "ave:memory:agents-md:get"],
     ["memoryUpdateAgentsMd", "ave:memory:agents-md:update", "# Agents"],
+    ["memoryUpdateIndex", "ave:memory:index:update", "# Memory"],
     ["memoryGetAveMd", "ave:memory:ave-md:get"],
     ["memoryUpdateAveMd", "ave:memory:ave-md:update", "# Agents"],
     ["memoryGetUserPrefs", "ave:memory:user-prefs:get"],
     ["memoryUpdateUserPrefs", "ave:memory:user-prefs:update", "# Preferences"],
+    ["memoryRefreshUserPrefs", "ave:memory:user-prefs:refresh"],
   ])("exposes %s and invokes %s", async (apiKey, channel, payload) => {
     const api = await loadAveApi();
 

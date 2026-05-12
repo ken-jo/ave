@@ -358,6 +358,7 @@ const api = {
   memoryDeleteEntry: async (filename: string) => ipcRenderer.invoke("ave:memory:entries:delete", filename),
   memorySearchEntries: async (query: string) => ipcRenderer.invoke("ave:memory:entries:search", query),
   memoryGetIndex: async () => ipcRenderer.invoke("ave:memory:index:get") as Promise<string>,
+  memoryUpdateIndex: async (content: string) => ipcRenderer.invoke("ave:memory:index:update", content),
   memoryListSessions: async () => ipcRenderer.invoke("ave:memory:sessions:list"),
   memorySearchSessions: async (query: string) => ipcRenderer.invoke("ave:memory:sessions:search", query),
   memoryGetAgentsMd: async () => ipcRenderer.invoke("ave:memory:agents-md:get") as Promise<string>,
@@ -366,6 +367,7 @@ const api = {
   memoryUpdateAveMd: async (content: string) => ipcRenderer.invoke("ave:memory:ave-md:update", content),
   memoryGetUserPrefs: async () => ipcRenderer.invoke("ave:memory:user-prefs:get") as Promise<string>,
   memoryUpdateUserPrefs: async (content: string) => ipcRenderer.invoke("ave:memory:user-prefs:update", content),
+  memoryRefreshUserPrefs: async () => ipcRenderer.invoke("ave:memory:user-prefs:refresh"),
 
   // ─── Plugins ─────────────────────────────────────
   listMarketplacePlugins: async () => ipcRenderer.invoke("ave:plugins:marketplace:list"),
