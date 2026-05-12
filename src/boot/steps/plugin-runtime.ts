@@ -838,11 +838,11 @@ export async function initPluginRuntime(
   }
 
   // §7.2 Plugin Deployment Guard.
-  // Plugin layout anchors at `~/.ave/plugins/<id>/` — single root for both
+  // Plugin layout anchors at `aveHome()/plugins/<id>/` — single root for both
   // user-installed and admin-injected plugins (distinguished by metadata,
   // not by physical directory). The resolver always uses
-  // `homedir()/.ave/plugins`; tests pass an explicit `pluginsRoot` for
-  // sandbox isolation (Round-3 removed the env-tier override).
+  // `aveHome()/plugins`; E2E overrides AVE_HOME once and every caller
+  // follows the same app-home SOT.
   const pluginPaths = resolvePluginPaths();
   // mkdir the root once so the trust-root realpath check in PluginRuntime
   // (and any first-install write under pluginsRoot/<id>/) doesn't trip on a
