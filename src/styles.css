@@ -1467,6 +1467,7 @@
    shell" combination still has a readable embedded code panel.
 ──────────────────────────────────────────────────────────────────────────── */
 @layer components {
+  .prose.ave-prose,
   .ave-prose {
     /* Body + inline content */
     --tw-prose-body: hsl(var(--foreground));
@@ -1498,6 +1499,10 @@
   /* Inline code chip — the typography plugin paints a transparent bg by
      default, which can render unreadable on tinted bubbles. Force the code
      surface so the chip stays legible across all 16 theme combinations. */
+  .prose.ave-prose {
+    color: hsl(var(--foreground));
+  }
+  .prose.ave-prose :where(code):not(:where(pre code, [class~="not-prose"] *)),
   .ave-prose :where(code):not(:where(pre code, [class~="not-prose"] *)) {
     background-color: hsl(var(--code-bg));
     color: hsl(var(--code-fg));
@@ -1508,27 +1513,51 @@
     overflow-wrap: anywhere;
     word-break: break-word;
   }
+  .prose.ave-prose :where(code):not(:where(pre code, [class~="not-prose"] *))::before,
+  .prose.ave-prose :where(code):not(:where(pre code, [class~="not-prose"] *))::after,
   .ave-prose :where(code):not(:where(pre code, [class~="not-prose"] *))::before,
   .ave-prose :where(code):not(:where(pre code, [class~="not-prose"] *))::after {
     content: "";
   }
+  .prose.ave-prose :where(pre, table, img, video, canvas, iframe):not(:where([class~="not-prose"] *)),
   .ave-prose :where(pre, table, img, video, canvas, iframe):not(:where([class~="not-prose"] *)) {
     max-width: 100%;
   }
-  .ave-prose :where(p, li, blockquote, dd, figcaption, h1, h2, h3, h4, h5, h6, a, strong, em):not(:where([class~="not-prose"] *)) {
+  .prose.ave-prose :where(p, li, blockquote, dd, figcaption, h1, h2, h3, h4, h5, h6, span, b, strong, em, del, ins, table, thead, tbody, tr, th, td, caption):not(:where([class~="not-prose"] *)),
+  .ave-prose :is(p, li, blockquote, dd, figcaption, h1, h2, h3, h4, h5, h6, a, strong, em, table, thead, tbody, tr, th, td, caption):not(:where([class~="not-prose"] *)) {
     color: hsl(var(--foreground));
     min-width: 0;
     overflow-wrap: anywhere;
     word-break: break-word;
   }
+  .prose.ave-prose :where(td):not(:where([class~="not-prose"] *)),
+  .ave-prose :is(td):not(:where([class~="not-prose"] *)) {
+    color: hsl(var(--foreground) / 0.88);
+  }
+  .prose.ave-prose :where(th):not(:where([class~="not-prose"] *)),
+  .ave-prose :is(th):not(:where([class~="not-prose"] *)) {
+    color: hsl(var(--foreground));
+    font-weight: 650;
+  }
+  .prose.ave-prose :where(th *, td *):not(:where(a, code, pre, [class~="not-prose"], [class~="not-prose"] *)),
+  .ave-prose :is(th, td) :is(p, span, strong, em):not(:where([class~="not-prose"] *)) {
+    color: inherit;
+  }
+  .prose.ave-prose :where(thead, tbody, tr, th, td):not(:where([class~="not-prose"] *)),
+  .ave-prose :is(thead, tbody, tr, th, td):not(:where([class~="not-prose"] *)) {
+    border-color: hsl(var(--border));
+  }
+  .prose.ave-prose :where(a, a strong, a b, a em, a span):not(:where([class~="not-prose"] *)),
   .ave-prose :where(a):not(:where([class~="not-prose"] *)) {
     color: hsl(var(--link-fg));
   }
+  .prose.ave-prose :where(pre, table):not(:where([class~="not-prose"] *)),
   .ave-prose :where(pre, table):not(:where([class~="not-prose"] *)) {
     display: block;
     max-width: 100%;
     overflow-x: auto;
   }
+  .prose.ave-prose :where(pre):not(:where([class~="not-prose"] *)),
   .ave-prose :where(pre):not(:where([class~="not-prose"] *)) {
     border: 1px solid hsl(var(--code-border));
     background-color: hsl(var(--code-bg));
@@ -1536,6 +1565,7 @@
     border-radius: 0.375rem;
     padding: 0.75rem;
   }
+  .prose.ave-prose :where(pre code):not(:where([class~="not-prose"] *)),
   .ave-prose :where(pre code):not(:where([class~="not-prose"] *)) {
     background-color: transparent;
     color: hsl(var(--code-fg));

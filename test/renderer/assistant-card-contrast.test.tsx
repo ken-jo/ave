@@ -25,6 +25,7 @@
 import "./setup.js";
 import { describe, it, expect } from "vitest";
 import { render } from "@testing-library/react";
+import { readFileSync } from "node:fs";
 import { AssistantCard } from "../../src/ui/renderer/components/AssistantCard.js";
 import type { ChatEntry } from "../../src/lib/chat-stream-state.js";
 import { BUNDLES } from "../../src/ui/renderer/theme/bundles/index.js";
@@ -141,4 +142,26 @@ describe("Theme bundles — chat and code text contrast must clear WCAG AA", () 
       expect(ratio).toBeGreaterThanOrEqual(4.5);
     });
   }
+});
+
+describe("ave-prose CSS coverage — markdown tables stay readable", () => {
+  const css = readFileSync("src/styles.css", "utf-8");
+
+  it("uses .prose.ave-prose specificity so Typography defaults cannot repaint text black", () => {
+    expect(css).toContain(".prose.ave-prose {");
+    expect(css).toMatch(/\.prose\.ave-prose\s+:where\([^)]*\bp\b[^)]*\bstrong\b[^)]*\bth\b[^)]*\btd\b[^)]*\)/);
+  });
+
+  it("forces table cells and headers onto semantic foreground tokens", () => {
+    expect(css).toMatch(/\.prose\.ave-prose\s+:where\(td\).*color:\s*hsl\(var\(--foreground\) \/ 0\.88\)/s);
+    expect(css).toMatch(/\.prose\.ave-prose\s+:where\(th\).*color:\s*hsl\(var\(--foreground\)\)/s);
+    expect(css).toMatch(/\.ave-prose\s+:is\([^)]*\bth\b[^)]*\btd\b[^)]*\)/);
+    expect(css).toMatch(/\.ave-prose\s+:is\(td\).*color:\s*hsl\(var\(--foreground\) \/ 0\.88\)/s);
+    expect(css).toMatch(/\.ave-prose\s+:is\(th\).*color:\s*hsl\(var\(--foreground\)\)/s);
+  });
+
+  it("keeps nested bold and inline text inside table cells inheriting readable cell color", () => {
+    expect(css).toContain(".prose.ave-prose :where(th *, td *)");
+    expect(css).toContain(".ave-prose :is(th, td) :is(p, span, strong, em)");
+  });
 });
