@@ -94,6 +94,34 @@ describe("MemoryManager AGENTS.md and MEMORY.md layout", () => {
     expect(mm.getMemoryIndex()).toContain("500자 내외 긴급 기억");
   });
 
+  it("updates MEMORY.md sections under the current file lock without dropping saved memories", async () => {
+    await mm.saveMemory("Meeting Notes", "weekly sync discussion");
+    await mm.updateMemoryIndex("# Ave Memory Index\n\n## Urgent Memory\n\nold urgent\n\n## References\n\nold link\n\n## Saved Memories\n\n- [Meeting Notes](./meeting-notes.md) — weekly sync discussion\n");
+
+    await mm.updateMemoryIndexSections({
+      urgentMemory: "new urgent",
+      references: "new link",
+    });
+
+    const index = readFileSync(join(dir, "memories", "MEMORY.md"), "utf-8");
+    expect(index).toContain("## Urgent Memory\n\nnew urgent");
+    expect(index).not.toContain("old urgent");
+    expect(index).toContain("## References\n\nnew link");
+    expect(index).not.toContain("old link");
+    expect(index).toContain("[Meeting Notes](./meeting-notes.md)");
+  });
+
+  it("compare-and-set updates MEMORY.md only when unchanged", async () => {
+    mm.load();
+    const before = mm.getMemoryIndex();
+    await expect(mm.updateMemoryIndexIfUnchanged(before, "# Ave Memory Index\nfresh")).resolves.toBe(true);
+    expect(mm.getMemoryIndex()).toContain("fresh");
+
+    writeFileSync(join(dir, "memories", "MEMORY.md"), "# Ave Memory Index\nmanual edit", "utf-8");
+    await expect(mm.updateMemoryIndexIfUnchanged("# Ave Memory Index\nfresh", "# Ave Memory Index\nstale")).resolves.toBe(false);
+    expect(mm.getMemoryIndex()).toContain("manual edit");
+  });
+
   it("compare-and-set updates user-preferences.md only when unchanged", async () => {
     mm.load();
     const before = mm.getUserPreferences();

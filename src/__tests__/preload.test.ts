@@ -226,6 +226,7 @@ describe("preload — plugin webview asset URLs", () => {
     ["memoryGetAgentsMd", "ave:memory:agents-md:get"],
     ["memoryUpdateAgentsMd", "ave:memory:agents-md:update", "# Agents"],
     ["memoryUpdateIndex", "ave:memory:index:update", "# Memory"],
+    ["memoryUpdateIndexSections", "ave:memory:index:sections:update", { urgentMemory: "Keep this." }],
     ["memoryGetAveMd", "ave:memory:ave-md:get"],
     ["memoryUpdateAveMd", "ave:memory:ave-md:update", "# Agents"],
     ["memoryGetUserPrefs", "ave:memory:user-prefs:get"],
@@ -242,5 +243,14 @@ describe("preload — plugin webview asset URLs", () => {
     } else {
       expect(mockInvoke).toHaveBeenCalledWith(channel, payload);
     }
+  });
+
+  it("exposes memoryUpdateIndexIfUnchanged with expected and next content", async () => {
+    const api = await loadAveApi();
+
+    expect(typeof api["memoryUpdateIndexIfUnchanged"]).toBe("function");
+    await (api["memoryUpdateIndexIfUnchanged"] as (expected: string, next: string) => Promise<unknown>)("# Old", "# New");
+
+    expect(mockInvoke).toHaveBeenCalledWith("ave:memory:index:update-if-unchanged", "# Old", "# New");
   });
 });
