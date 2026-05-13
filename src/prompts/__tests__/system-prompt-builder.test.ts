@@ -53,6 +53,14 @@ describe("SystemPromptBuilder — Conversation Continuity Guard", () => {
     expect(prompt).not.toContain("<ave-context>");
   });
 
+  it("injects the selected role preset as a per-turn system prompt section", () => {
+    const builder = makeBuilder();
+    builder.setActiveRolePrompt({ name: "Reviewer", systemPromptAdd: "Review carefully." });
+    const prompt = builder.build();
+    expect(prompt).toContain('<ave-active-role-prompt name="Reviewer">');
+    expect(prompt).toContain("Review carefully.");
+  });
+
   it("prioritizes direct plugin tool calls over agent_spawn", () => {
     const builder = makeBuilder();
     const prompt = builder.build();
