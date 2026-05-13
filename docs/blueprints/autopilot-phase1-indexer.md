@@ -71,7 +71,6 @@
 │       ├── Resources/
 │       │   ├── uv/
 │       │   │   ├── darwin-arm64/uv                  # R3 standalone ~20MB
-│       │   │   ├── darwin-x64/uv
 │       │   │   ├── win32-x64/uv.exe
 │       │   │   ├── linux-x64/uv
 │       │   │   └── linux-arm64/uv
@@ -227,7 +226,7 @@ t=1.30s  [boot 완료]
 
 | 파일 |
 |---|
-| `ave/resources/uv/{darwin-arm64,darwin-x64,win32-x64,linux-x64,linux-arm64}/uv[.exe]` |
+| `ave/resources/uv/{darwin-arm64,win32-x64,linux-x64,linux-arm64}/uv[.exe]` |
 | `ave/scripts/fetch-uv.mjs` |
 | `ave/build/entitlements.mac.plist` |
 
