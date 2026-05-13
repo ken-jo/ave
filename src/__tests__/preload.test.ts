@@ -217,6 +217,7 @@ describe("preload — plugin webview asset URLs", () => {
     const api = await loadAveApi();
 
     expect(typeof api["memoryGetIndex"]).toBe("function");
+    expect(api["memoryUpdateIndex"]).toBeUndefined();
     await (api["memoryGetIndex"] as () => Promise<unknown>)();
 
     expect(mockInvoke).toHaveBeenCalledWith("ave:memory:index:get");
@@ -225,7 +226,6 @@ describe("preload — plugin webview asset URLs", () => {
   it.each([
     ["memoryGetAgentsMd", "ave:memory:agents-md:get"],
     ["memoryUpdateAgentsMd", "ave:memory:agents-md:update", "# Agents"],
-    ["memoryUpdateIndex", "ave:memory:index:update", "# Memory"],
     ["memoryUpdateIndexSections", "ave:memory:index:sections:update", { urgentMemory: "Keep this." }],
     ["memoryGetAveMd", "ave:memory:ave-md:get"],
     ["memoryUpdateAveMd", "ave:memory:ave-md:update", "# Agents"],

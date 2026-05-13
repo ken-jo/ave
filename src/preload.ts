@@ -360,7 +360,6 @@ const api = {
   memoryDeleteEntry: async (filename: string) => ipcRenderer.invoke("ave:memory:entries:delete", filename),
   memorySearchEntries: async (query: string) => ipcRenderer.invoke("ave:memory:entries:search", query),
   memoryGetIndex: async () => ipcRenderer.invoke("ave:memory:index:get") as Promise<string>,
-  memoryUpdateIndex: async (content: string) => ipcRenderer.invoke("ave:memory:index:update", content),
   memoryUpdateIndexIfUnchanged: async (expectedContent: string, nextContent: string) =>
     ipcRenderer.invoke("ave:memory:index:update-if-unchanged", expectedContent, nextContent) as Promise<boolean>,
   memoryUpdateIndexSections: async (sections: { urgentMemory?: string; references?: string }) =>
