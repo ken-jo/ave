@@ -45,6 +45,7 @@ function installAveApi() {
         provider: "openai",
         model: "gpt-4o-mini",
         fallbackOnError: "deny",
+        interactive: { autoApprove: "off" },
       },
     })),
   };
