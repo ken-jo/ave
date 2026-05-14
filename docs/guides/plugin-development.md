@@ -72,7 +72,6 @@ interface PluginManifest {
   // ── 런타임/정책 ──
   config?: Record<string, unknown>;  // 기본 설정값
   capabilities?: string[];           // 기능 태그 (§capabilities 체계)
-  startupTools?: string[];           // 부팅 시 자동 실행할 tools[] 항목
   startupTimeoutMs?: number;         // start() 하드 타임아웃 (1 ≤ n ≤ 60000)
 
   // ── UI / LLM 통합 ──
@@ -166,10 +165,6 @@ interface PluginManifest {
 
 - 기능 태그. `lyra-mail-consumer` 만 런타임에서 강제되고, 나머지는 선언 기반 discoverability 용. 자세히는 [capabilities 체계](#capabilities-체계).
 
-#### startupTools (선택)
-
-- 부팅 직후 실행할 도구 목록. 모든 항목은 `tools[]` 에 존재해야 하며, 불일치 시 매니페스트 로드 거부.
-
 #### startupTimeoutMs (선택)
 
 - 플러그인 `start()` 에 대한 하드 타임아웃 (ms). 범위: `1 ≤ n ≤ 60000`.
@@ -207,7 +202,7 @@ interface PluginManifest {
 ### 역참조 방지 체크리스트
 
 1. `boot.ts`, `ipc-bridge.ts` 에서 플러그인 id 문자열을 직접 비교하지 않습니다.
-2. 플러그인별 분기는 `capabilities` · `startupTools` · `eventSubscriptions` 중 하나로 선언합니다.
+2. 플러그인별 분기는 `capabilities` · `eventSubscriptions` 중 하나로 선언합니다. 백그라운드 watcher / poller 는 플러그인 자체 `start()` lifecycle 안에서 기동합니다.
 3. 신규 이벤트 연동은 `eventSubscriptions` 또는 `notificationEvents` 를 통해 호스트에 노출합니다.
 4. 플러그인 리네임/교체 시 호스트 코드는 수정 없이 매니페스트만 갱신되어야 합니다.
 
@@ -530,7 +525,7 @@ capability 는 호스트가 특정 pluginId 를 몰라도 통합 지점을 결�
 | `meeting-recorder` | 실시간 음성 캡처 + STT | advisory | meeting |
 | `mail-source` | 이메일 소스 연결 | advisory | lyra-mail |
 | `calendar-source` | 캘린더 소스 연결 | advisory | lyra-mail |
-| `background-watcher` | `startupTools` 로 폴러/워처 기동 | advisory | lyra-mail |
+| `background-watcher` | 플러그인 `start()` lifecycle 안에서 폴러/워처 기동 | advisory | lyra-mail |
 | `worker-client` | 외부 프로세스(Python 등) 워커 래퍼 | advisory | local-indexer |
 | `knowledge-index` | 문서 인덱스/검색 제공 | advisory | local-indexer |
 | `lyra-mail-consumer` | HostApi 의 LYRA Mail 메서드 사용 | **강제** (§B-5) | lyra-mail |
@@ -775,7 +770,6 @@ Meeting / Microsoft 365 (Outlook 메일+캘린더) / Local Indexer 의 실제 �
 5. **`eventSubscriptions` 민감 이벤트 allowlist / 네임스페이스 정책** — 임의 플러그인이 `email.*`, `calendar.*` 같은 타 플러그인 네임스페이스를 구독할 수 있음.
 6. **프로덕션 marketplace 공개키 회전** — `src/plugins/marketplace-keys.ts` 의 POC 키는 프로덕션 릴리스 전 실제 운영 키로 교체해야 함.
 7. **`ui[]` kind 별 필드 규약** 은 스키마가 담고 있지만, 실제 로더는 엄격한 fallback 처리(`entry ?? page`)를 하므로 일부 오탈자가 silent 하게 넘어갈 여지가 남음.
-8. **`startupTools` 실패 정책** — 항목 하나가 실패해도 전체 플러그인은 계속 로드됨 (fail-soft). 명시적 요구 실패를 원하는 도구는 직접 throw 로직을 가져야 함.
 
 ---
 
