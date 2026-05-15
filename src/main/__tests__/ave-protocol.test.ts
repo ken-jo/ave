@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findAveProtocolUri, parsePluginAuthUri } from "../ave-protocol.js";
+import { findAveProtocolUri, parseMarketplacePluginActionUri, parsePluginAuthUri } from "../ave-protocol.js";
 
 describe("findAveProtocolUri", () => {
   it("returns the custom protocol URI from argv", () => {
@@ -137,5 +137,33 @@ describe("parsePluginAuthUri", () => {
   it("does not collide with the install route — `ave://install/<slug>` is not auth", () => {
     // Documents that install URIs don't accidentally satisfy auth parser.
     expect(parsePluginAuthUri("ave://install/my-plugin?code=" + validCode)).toBeNull();
+  });
+});
+
+describe("parseMarketplacePluginActionUri", () => {
+  it("parses install and uninstall plugin action URLs", () => {
+    expect(parseMarketplacePluginActionUri("ave://install/agent-hub")).toEqual({
+      action: "install",
+      slug: "agent-hub",
+    });
+    expect(parseMarketplacePluginActionUri("ave://uninstall/agent-hub")).toEqual({
+      action: "uninstall",
+      slug: "agent-hub",
+    });
+  });
+
+  it("accepts URL-encoded slug paths after decoding", () => {
+    expect(parseMarketplacePluginActionUri("ave://uninstall/agent.hub_2")).toEqual({
+      action: "uninstall",
+      slug: "agent.hub_2",
+    });
+  });
+
+  it("rejects query strings, fragments, unknown hosts, and unsafe slugs", () => {
+    expect(parseMarketplacePluginActionUri("ave://uninstall/agent-hub?confirm=1")).toBeNull();
+    expect(parseMarketplacePluginActionUri("ave://uninstall/agent-hub#confirm")).toBeNull();
+    expect(parseMarketplacePluginActionUri("ave://remove/agent-hub")).toBeNull();
+    expect(parseMarketplacePluginActionUri("ave://uninstall/%2E%2E%2Fagent-hub")).toBeNull();
+    expect(parseMarketplacePluginActionUri("ave://uninstall/%E0%A4%A")).toBeNull();
   });
 });
