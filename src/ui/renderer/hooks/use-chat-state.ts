@@ -64,7 +64,7 @@ export function useChatState(api: AveApi) {
 
   // Stream subscription absorbed from App.tsx.
   useEffect(() => {
-    const unsub = api.onChatStream((ev) => {
+    const handleStreamEvent = (ev: Parameters<Parameters<typeof api.onChatStream>[0]>[0]) => {
       if (!aliveRef.current) return;
       const debugStreamEnabled = isDebugStreamEnabled();
       // `process` is not defined in the renderer (browser context — esbuild
@@ -367,8 +367,30 @@ export function useChatState(api: AveApi) {
         }
         activeStreamIdRef.current = null;
       }
-    });
-    return () => { unsub(); };
+    };
+    const unsub = api.onChatStream(handleStreamEvent);
+
+    // E2E test seam — only exposed when AVE_DEV=1 (preload reads the env at
+    // runtime, so the gate stays inert in packaged production builds where the
+    // launcher never sets that flag). Playwright specs use this to inject
+    // synthetic tool_start / tool_end events without a live LLM provider.
+    // NOTE: `__aveDevMode` cannot be used as the gate here — esbuild inlines
+    // NODE_ENV at preload bundle time, so that flag is always `false` in the
+    // built app regardless of how the process is launched.
+    const w = window as unknown as {
+      ave?: { env?: { isDev?: boolean } };
+      __aveChatStream?: { _emit: typeof handleStreamEvent };
+    };
+    if (w.ave?.env?.isDev === true) {
+      w.__aveChatStream = { _emit: handleStreamEvent };
+    }
+
+    return () => {
+      unsub();
+      if (w.__aveChatStream && w.__aveChatStream._emit === handleStreamEvent) {
+        delete w.__aveChatStream;
+      }
+    };
   }, [api]);
 
   // Imperative method exposed to App.tsx — App owns the trigger-import
