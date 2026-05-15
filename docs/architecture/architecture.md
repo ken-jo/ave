@@ -2631,6 +2631,15 @@ boot 시 `PluginRuntime.startAll()`은 로드된 플러그인을 순차 `await`�
 
 **현행 (Sprint 1-A 이후):** `PluginRuntime.startAll`은 `Promise.allSettled` 병렬 실행, 5초 초과 시 slow-plugin warn 로깅, `manifest.startupTimeoutMs` 선언 시 `Promise.race` 기반 하드 타임아웃 적용(실제 플러그인 작업은 cancellation되지 않으며, 호스트가 해당 플러그인을 drop하고 계속 진행한다). 실패한 플러그인은 fail-soft로 drop되며 나머지는 계속 로드된다.
 
+**Lifecycle callback 쌍 — `onDisable` / `onEnable`:** `PluginRuntime`은 `PluginRuntimeOptions`로 두 개의 host-provided 콜백을 받는다.
+
+- `onDisable(pluginId)` — 플러그인의 tear-down 직후 발화한다. 호스트는 이 콜백으로 `keywordEngine.unregisterByPlugin` / `toolRegistry.unregisterByPlugin` / `conversationLoop.onPluginDisabled`를 호출해 transient host state를 정리한다. 발화 지점: `restartPlugin` stop phase, `restartAll` stop phase (per plugin), `disable`, `removePlugin`, `reloadPlugin` stop phase.
+- `onEnable(pluginId)` — 플러그인이 "loaded + started" 상태에 도달한 직후 발화한다(`onDisable`과 대칭). 호스트는 이 콜백으로 `syncPluginToolRegistry(pluginRuntime, toolRegistry)`를 호출해 `onDisable`이 비운 ToolRegistry를 다시 채운다. 발화 지점: `restartPlugin` start 성공, `restartAll` start 성공 (per plugin), `addPlugin` fresh-load branch의 `instantiateAndStartSinglePlugin` start 성공, `reloadPlugin` start 성공.
+
+이 쌍은 "post-boot lifecycle event ⇒ ToolRegistry 자동 재동기화"를 계약화한다. 따라서 `hostApi.config.set` wrapper / IPC `ave:plugins:config:set` / dev-reload watcher / managed-marketplace `restartAll` 등 모든 외부 caller는 별도의 `syncPluginToolRegistry` 호출이 필요 없다. 호출자 측에서 sync를 잊으면 `onDisable`이 ToolRegistry에서 도구를 지운 직후 그대로 비어 있는 상태가 되어 chat-surface가 `도구를 찾을 수 없습니다: <tool>` 에러를 노출하는 회귀(PR #760)가 발생하는데, `onEnable` 콜백이 이를 contract-level에서 닫는다.
+
+부트 초기 1회는 예외다. `startAll()` 직후 boot는 `registerPluginTools(pluginRuntime, toolRegistry)`로 ToolRegistry를 일괄 채우므로 `startAll`이 매 플러그인마다 `onEnable`을 발화하지 않는다. `plugin.installed` 호스트 이벤트 listener는 partition policy 설치 책임만 유지하고 ToolRegistry sync는 더 이상 호출하지 않는다 (`onEnable`이 cover). `plugin.uninstalled` listener는 `onEnable`이 cover하지 못하는 ghost-tool sweep 책임(설치 해제 후 stale 항목 제거)을 위해 sync를 유지한다.
+
 ### 9.3b Plugin Webview Registration Protocol (#237 Option B)
 
 Plugin UI 슬롯에 마운트되는 플러그인 UI는 Electron `<webview>` 안에서 실행된다 (contextIsolation=yes, nodeIntegration=no, sandbox=yes). 플러그인 코드는 `window.avePlugin` 브릿지(`plugin-preload.ts`)만 접근할 수 있으며, `window.aveApi`는 미노출이다.
