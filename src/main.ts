@@ -34,7 +34,7 @@ import { isLinkOwned } from "./main/link-window-registry.js";
 import { shouldBlockGlobalWebviewNavigation } from "./main/webview-navigation-policy.js";
 import { installHtmlPreviewPartitionBlock, installPluginPartitionPolicy } from "./main/html-preview-partition.js";
 import { registerPluginAssetProtocolScheme } from "./main/plugin-asset-protocol.js";
-import { findAveProtocolUri, parsePluginAuthUri } from "./main/ave-protocol.js";
+import { findAveProtocolUri, parseMarketplacePluginActionUri, parsePluginAuthUri } from "./main/ave-protocol.js";
 import { buildDevProtocolArgs } from "./main/electron-protocol-args.js";
 import { devNoSandboxAllowed, setIsPackaged } from "./boot/dev-flags.js";
 import { emitEvent as emitHostEvent } from "./boot/types.js";
@@ -45,6 +45,7 @@ import { AVE_LOGO_PATH, AVE_LOGO_VIEW_BOX } from "./shared/ave-logo.js";
 import { normalizeSettingsTab } from "./shared/settings-tabs.js";
 import { preparePythonRuntimeForInstalledPlugin, withPluginInstallLock } from "./plugins/install-lifecycle.js";
 import { ensureWorkspaceCwd } from "./main/ensure-workspace-cwd.js";
+import { uninstallPluginWithLifecycle } from "./plugins/uninstall-lifecycle.js";
 const log = createLogger("ave");
 
 function errorMessage(err: unknown): string {
@@ -172,7 +173,6 @@ let pendingRendererReload = false;
 let appShutdownStarted = false;
 let appShutdownCompleted = false;
 
-const SLUG_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 const MAIN_WINDOW_WIDTH = 460;
 const MAIN_WINDOW_HEIGHT = 840;
 const MAIN_WINDOW_MIN_WIDTH = 460;
@@ -223,20 +223,6 @@ function parsePluginSmokeFlag(argv: readonly string[]): string[] | null {
 
 const pluginSmokeIds = parsePluginSmokeFlag(process.argv);
 
-function parseAveInstallUri(url: string): { slug: string } | null {
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== "ave:") return null;
-    if (parsed.hostname !== "install") return null;
-    if (parsed.search || parsed.hash) return null;
-    const slug = decodeURIComponent(parsed.pathname.replace(/^\//, ""));
-    if (!slug || !SLUG_RE.test(slug)) return null;
-    return { slug };
-  } catch {
-    return null;
-  }
-}
-
 /**
  * Diagnostic log gate — diagnostic console output is dev-only. Packaged
  * builds skip these noisy traces so end-user log files stay clean.
@@ -259,6 +245,28 @@ const aveDevWarn = (msg: string, obj?: object) => {
   else log.warn(msg);
 };
 
+async function resolveMarketplaceActionTarget(
+  activeServices: AppServices,
+  slug: string,
+): Promise<{ pluginId: string; name: string; installed?: boolean; isManaged?: boolean }> {
+  try {
+    const catalogItems = await activeServices.pluginMarketplace.list();
+    const item = catalogItems.find((candidate) => candidate.id === slug || candidate.slug === slug);
+    return {
+      pluginId: item?.id ?? slug,
+      name: item?.name ?? slug,
+      installed: item?.installed,
+      isManaged: item?.isManaged,
+    };
+  } catch (err) {
+    aveDevWarn("[ave] marketplace target lookup failed; falling back to slug", {
+      slug,
+      error: errorMessage(err),
+    });
+    return { pluginId: slug, name: slug };
+  }
+}
+
 async function handleAveUri(url: string) {
   aveDevLog("[ave] handleAveUri called", { url });
 
@@ -279,14 +287,21 @@ async function handleAveUri(url: string) {
     return;
   }
 
-  const params = parseAveInstallUri(url);
+  const params = parseMarketplacePluginActionUri(url);
   if (!params) {
-    aveDevWarn("[ave] handleAveUri: parseAveInstallUri returned null", { url });
+    aveDevWarn("[ave] handleAveUri: parseMarketplacePluginActionUri returned null", { url });
     return;
   }
-  aveDevLog("[ave] handleAveUri parsed", { slug: params.slug, servicesReady: !!services });
+  aveDevLog("[ave] handleAveUri parsed", {
+    action: params.action,
+    slug: params.slug,
+    servicesReady: !!services,
+  });
   if (!services) {
-    aveDevLog("[ave] handleAveUri: services not ready, queueing", { slug: params.slug });
+    aveDevLog("[ave] handleAveUri: services not ready, queueing", {
+      action: params.action,
+      slug: params.slug,
+    });
     pendingAveUri = url;
     return;
   }
@@ -308,9 +323,89 @@ async function handleAveUri(url: string) {
   const win = mainWindow;
   if (!win) {
     // createWindow() failed or was destroyed — abort rather than install silently.
-    log.warn("handleAveUri: no window available, aborting install");
+    log.warn(`handleAveUri: no window available, aborting ${params.action}`);
     return;
   }
+  if (params.action === "uninstall") {
+    const target = await resolveMarketplaceActionTarget(activeServices, params.slug);
+    if (target.isManaged) {
+      await dialog.showMessageBox(win, {
+        type: "warning",
+        buttons: ["확인"],
+        defaultId: 0,
+        cancelId: 0,
+        message: `플러그인 '${target.name}'은(는) 제거할 수 없습니다.`,
+        detail: "관리자가 설치한 플러그인은 사용자 요청으로 제거할 수 없습니다.",
+      });
+      broadcastPluginLifecycleEvent("ave:plugins:uninstall-result", {
+        slug: target.pluginId,
+        success: false,
+        error: "Admin plugin cannot be uninstalled by user",
+      });
+      return;
+    }
+    if (target.installed === false) {
+      await dialog.showMessageBox(win, {
+        type: "info",
+        buttons: ["확인"],
+        defaultId: 0,
+        cancelId: 0,
+        message: `플러그인 '${target.name}'은(는) 설치되어 있지 않습니다.`,
+        detail: "외부 링크의 제거 요청을 처리하지 않았습니다.",
+      });
+      broadcastPluginLifecycleEvent("ave:plugins:uninstall-result", {
+        slug: target.pluginId,
+        success: false,
+        error: "Plugin not installed",
+      });
+      return;
+    }
+    aveDevLog("[ave] handleAveUri: showing uninstall confirmation dialog", {
+      slug: params.slug,
+      pluginId: target.pluginId,
+    });
+    const { response } = await dialog.showMessageBox(win, {
+      type: "warning",
+      buttons: ["제거", "취소"],
+      defaultId: 1,
+      cancelId: 1,
+      message: `플러그인 '${target.name}'을(를) 제거하시겠습니까?`,
+      detail: "외부 링크로부터 요청된 제거입니다. 플러그인 파일, 로컬 데이터, 설정, 저장된 비밀값, 기록된 로그인 세션이 삭제됩니다.",
+    });
+    aveDevLog("[ave] handleAveUri: uninstall dialog response", {
+      slug: params.slug,
+      pluginId: target.pluginId,
+      response,
+    });
+    if (response !== 0) return;
+    void (async () => {
+      const result = await uninstallPluginWithLifecycle(target.pluginId, {
+        pluginMarketplace: activeServices.pluginMarketplace,
+        pluginRuntime: activeServices.pluginRuntime,
+        settingsService: activeServices.settingsService,
+        pluginPaths: activeServices.pluginPaths,
+        clearAuthPartitionService: activeServices.clearAuthPartitionService,
+        listPluginAuthPartitionsService: activeServices.listPluginAuthPartitionsService,
+        forgetPluginAuthPartitionsService: activeServices.forgetPluginAuthPartitionsService,
+        refreshPluginNotifications: activeServices.refreshPluginNotifications,
+        emitHostEvent,
+        log,
+      });
+      broadcastPluginLifecycleEvent("ave:plugins:uninstall-result", {
+        slug: result.pluginId,
+        success: true,
+      });
+    })().catch((err: Error) => {
+      log.error({ slug: params.slug, error: err.message, stack: err.stack }, "ave:// uninstall failed");
+      broadcastPluginLifecycleEvent("ave:plugins:uninstall-result", {
+        slug: params.slug,
+        success: false,
+        error: err.message,
+      });
+    });
+    return;
+  }
+
   aveDevLog("[ave] handleAveUri: showing confirmation dialog", { slug: params.slug });
   const { response } = await dialog.showMessageBox(win, {
     type: "question",
