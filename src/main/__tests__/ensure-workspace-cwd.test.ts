@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, realpathSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,22 +6,22 @@ import { ensureWorkspaceCwd } from "../ensure-workspace-cwd.js";
 
 describe("ensureWorkspaceCwd", () => {
   let prevCwd: string;
-  let prevAveHome: string | undefined;
   let tmpHome: string;
 
   beforeEach(() => {
     prevCwd = process.cwd();
-    prevAveHome = process.env.AVE_HOME;
     // realpathSync normalizes macOS /var/folders → /private/var/folders so the
     // path matches process.cwd() after chdir (kernel resolves the symlink).
     tmpHome = realpathSync(mkdtempSync(join(tmpdir(), "ave-workspace-cwd-")));
-    process.env.AVE_HOME = tmpHome;
+    // vi.stubEnv tracks the mutation so vi.unstubAllEnvs() in afterEach
+    // restores the prior value automatically — safer than manual save/restore
+    // and forward-compatible with `it.concurrent`.
+    vi.stubEnv("AVE_HOME", tmpHome);
   });
 
   afterEach(() => {
     process.chdir(prevCwd);
-    if (prevAveHome === undefined) delete process.env.AVE_HOME;
-    else process.env.AVE_HOME = prevAveHome;
+    vi.unstubAllEnvs();
     rmSync(tmpHome, { recursive: true, force: true });
   });
 
@@ -48,8 +48,8 @@ describe("ensureWorkspaceCwd", () => {
   });
 
   it("honors AVE_HOME env override", () => {
-    const customHome = mkdtempSync(join(tmpdir(), "ave-custom-home-"));
-    process.env.AVE_HOME = customHome;
+    const customHome = realpathSync(mkdtempSync(join(tmpdir(), "ave-custom-home-")));
+    vi.stubEnv("AVE_HOME", customHome);
     try {
       const workspaceDir = ensureWorkspaceCwd();
       expect(workspaceDir).toBe(join(customHome, "workspace"));
