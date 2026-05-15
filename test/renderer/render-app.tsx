@@ -21,6 +21,8 @@ export type RenderAppReturn = {
   unmount: RenderResult["unmount"];
   api: MockAveApi;
   emitChatStream: (ev: unknown) => void;
+  emitOverlayShow: (item: unknown) => void;
+  emitOverlayDismiss: (id: string) => void;
   emitRoutineFiredV2: (r: unknown) => void;
   emitViewActivate: (v: string) => void;
   emitAskUserQuestion: (r: unknown) => void;
@@ -28,7 +30,15 @@ export type RenderAppReturn = {
 };
 
 export async function renderApp(opts: RenderAppOpts = {}): Promise<RenderAppReturn> {
-  const { api, emitChatStream, emitRoutineFiredV2, emitViewActivate, emitAskUserQuestion } = makeMockAveApi(opts);
+  const {
+    api,
+    emitChatStream,
+    emitOverlayShow,
+    emitOverlayDismiss,
+    emitRoutineFiredV2,
+    emitViewActivate,
+    emitAskUserQuestion,
+  } = makeMockAveApi(opts);
   const { ns, emitApproval } = makeMockAveNamespace();
 
   vi.stubGlobal("aveApi", api);
@@ -45,6 +55,8 @@ export async function renderApp(opts: RenderAppOpts = {}): Promise<RenderAppRetu
     unmount: result.unmount,
     api,
     emitChatStream,
+    emitOverlayShow,
+    emitOverlayDismiss,
     emitRoutineFiredV2,
     emitViewActivate,
     emitAskUserQuestion,
