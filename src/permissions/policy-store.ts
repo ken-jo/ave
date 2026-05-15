@@ -20,13 +20,13 @@
  */
 import { mkdir, open, readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { homedir } from "node:os";
 import { createLogger } from "../lib/logger.js";
+import { aveHome } from "../shared/ave-home.js";
 const log = createLogger("policy-store");
 
 // ─── 기본 경로 ────────────────────────────────────────
 
-const DEFAULT_USER_POLICY_PATH = resolve(homedir(), ".ave", "policy.json");
+const DEFAULT_USER_POLICY_PATH = resolve(aveHome(), "policy.json");
 
 /**
  * 플랫폼별 admin-dir policy 경로.

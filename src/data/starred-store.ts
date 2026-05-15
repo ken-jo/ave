@@ -6,8 +6,8 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { homedir } from "node:os";
 import { createLogger } from "../lib/logger.js";
+import { aveHome } from "../shared/ave-home.js";
 const log = createLogger("starred-store");
 
 export interface StarredMessage {
@@ -35,7 +35,7 @@ export class StarredStore {
   private cache: StarredMessage[] = [];
 
   constructor(options?: StarredStoreOptions) {
-    this.filePath = resolve(options?.filePath ?? join(homedir(), ".ave", "starred.json"));
+    this.filePath = resolve(options?.filePath ?? join(aveHome(), "starred.json"));
     this.load();
   }
 

@@ -10,8 +10,8 @@
 
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { createLogger } from "../lib/logger.js";
+import { aveHome } from "../shared/ave-home.js";
 const log = createLogger("audit");
 
 export interface AuditEvent {
@@ -37,7 +37,7 @@ export class AuditService {
   private readonly currentFile: string;
 
   constructor(private readonly opts: AuditServiceOptions = {}) {
-    this.baseDir = opts.baseDir ?? join(homedir(), ".ave", "audit");
+    this.baseDir = opts.baseDir ?? join(aveHome(), "audit");
     this.currentFile = join(this.baseDir, "audit.ndjson");
   }
 

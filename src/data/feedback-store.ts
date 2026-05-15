@@ -9,7 +9,7 @@
  */
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
-import { homedir } from "node:os";
+import { aveHome } from "../shared/ave-home.js";
 
 export interface FeedbackEntry {
   /** uuid */
@@ -35,8 +35,8 @@ export class FeedbackStore {
   private readonly retentionDays: number;
 
   constructor(options?: FeedbackStoreOptions) {
-    const resolvedPath = resolve(options?.filePath ?? join(homedir(), ".ave", "feedback.jsonl"));
-    const aveDir = resolve(join(homedir(), ".ave"));
+    const resolvedPath = resolve(options?.filePath ?? join(aveHome(), "feedback.jsonl"));
+    const aveDir = resolve(aveHome());
     if (!resolvedPath.startsWith(aveDir + sep) && resolvedPath !== aveDir) {
       throw new Error(`feedback-store: path confinement violation — ${resolvedPath} is outside ${aveDir}`);
     }

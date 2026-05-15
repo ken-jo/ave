@@ -13,7 +13,7 @@
  */
 import { appendFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { aveHome } from "../shared/ave-home.js";
 
 /** §4.5.2 11-step 경로 — canonical step 이름. */
 export type TraceStepName =
@@ -97,6 +97,6 @@ export function createTracer(
 ): ConversationTracer {
   const enabled = opts?.enabled ?? isTraceEnabled();
   if (!enabled) return new NullTracer();
-  const dir = opts?.traceDir ?? join(homedir(), ".ave", "traces");
+  const dir = opts?.traceDir ?? join(aveHome(), "traces");
   return new FileTracer(sessionId, dir);
 }
