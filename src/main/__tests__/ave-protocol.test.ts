@@ -145,10 +145,12 @@ describe("parseMarketplacePluginActionUri", () => {
     expect(parseMarketplacePluginActionUri("ave://install/agent-hub")).toEqual({
       action: "install",
       slug: "agent-hub",
+      packageType: "plugin",
     });
     expect(parseMarketplacePluginActionUri("ave://uninstall/agent-hub")).toEqual({
       action: "uninstall",
       slug: "agent-hub",
+      packageType: "plugin",
     });
   });
 
@@ -156,6 +158,20 @@ describe("parseMarketplacePluginActionUri", () => {
     expect(parseMarketplacePluginActionUri("ave://uninstall/agent.hub_2")).toEqual({
       action: "uninstall",
       slug: "agent.hub_2",
+      packageType: "plugin",
+    });
+  });
+
+  it("parses package-typed marketplace action URLs", () => {
+    expect(parseMarketplacePluginActionUri("ave://install/agent/research-helper")).toEqual({
+      action: "install",
+      slug: "research-helper",
+      packageType: "agent",
+    });
+    expect(parseMarketplacePluginActionUri("ave://uninstall/skill/summarizer")).toEqual({
+      action: "uninstall",
+      slug: "summarizer",
+      packageType: "skill",
     });
   });
 
@@ -165,5 +181,7 @@ describe("parseMarketplacePluginActionUri", () => {
     expect(parseMarketplacePluginActionUri("ave://remove/agent-hub")).toBeNull();
     expect(parseMarketplacePluginActionUri("ave://uninstall/%2E%2E%2Fagent-hub")).toBeNull();
     expect(parseMarketplacePluginActionUri("ave://uninstall/%E0%A4%A")).toBeNull();
+    expect(parseMarketplacePluginActionUri("ave://install/theme/agent-hub")).toBeNull();
+    expect(parseMarketplacePluginActionUri("ave://install/agent/agent-hub/extra")).toBeNull();
   });
 });
