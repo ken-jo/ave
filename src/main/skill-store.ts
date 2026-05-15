@@ -15,9 +15,9 @@
  */
 import { readFile, readdir, realpath } from "node:fs/promises";
 import { resolve, join, relative, isAbsolute } from "node:path";
-import { homedir } from "node:os";
 import { BUILTIN_SKILLS } from "./builtin-skills.js";
 import { createLogger } from "../lib/logger.js";
+import { aveHome } from "../shared/ave-home.js";
 const log = createLogger("ave");
 
 /**
@@ -47,7 +47,7 @@ export interface LoadedSkill {
   filePath: string;
 }
 
-const USER_SKILLS_DIR = resolve(homedir(), ".ave", "skills");
+const USER_SKILLS_DIR = resolve(aveHome(), "skills");
 
 /**
  * Parse a YAML-ish frontmatter block. Supports `key: value` lines and

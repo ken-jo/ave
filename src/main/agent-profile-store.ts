@@ -11,9 +11,9 @@
  */
 import { readFile, readdir, realpath } from "node:fs/promises";
 import { resolve, join, relative, isAbsolute } from "node:path";
-import { homedir } from "node:os";
 import type { Dirent } from "node:fs";
 import { createLogger } from "../lib/logger.js";
+import { aveHome } from "../shared/ave-home.js";
 
 const log = createLogger("ave");
 
@@ -45,7 +45,7 @@ export interface AgentProfileStoreOptions {
   userDir?: string;
 }
 
-const USER_AGENTS_DIR = resolve(homedir(), ".ave", "agents");
+const USER_AGENTS_DIR = resolve(aveHome(), "agents");
 
 export function parseAgentFrontmatter(raw: string): {
   fm: AgentProfileFrontmatter;

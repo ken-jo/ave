@@ -9,11 +9,11 @@
  */
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { aveHome } from "../shared/ave-home.js";
 
 // Q9: consolidated under ~/.ave/routine/sessions/ (same namespace as routines.json)
-const DEFAULT_SESSIONS_ROOT = resolve(homedir(), ".ave", "routine", "sessions");
+const DEFAULT_SESSIONS_ROOT = resolve(aveHome(), "routine", "sessions");
 
 export interface RoutineSessionRecord {
   routineId: string;

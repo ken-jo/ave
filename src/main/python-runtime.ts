@@ -14,7 +14,6 @@ import { spawn } from "node:child_process";
 import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import * as os from "node:os";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 import type { BrowserWindow } from "electron";
@@ -22,6 +21,7 @@ import { createLogger } from "../lib/logger.js";
 import { resolvePluginPaths } from "../plugins/plugin-paths.js";
 import { readPluginRegistry, resolveManifestPathsFromRegistry } from "../plugins/registry.js";
 import { resolveUvTarget, type UvTarget } from "../../scripts/uv-targets.mjs";
+import { aveHome } from "../shared/ave-home.js";
 const log = createLogger("python-runtime");
 
 const __filename = fileURLToPath(import.meta.url);
@@ -56,7 +56,7 @@ interface ReadySentinel {
 
 // ─── 상수 ────────────────────────────────────────────
 
-const AVE_RUNTIME_DIR = path.join(os.homedir(), ".ave", "runtime");
+const AVE_RUNTIME_DIR = path.join(aveHome(), "runtime");
 const VENV_DIR = path.join(AVE_RUNTIME_DIR, "venv");
 const PYTHON_INSTALL_DIR = path.join(AVE_RUNTIME_DIR, "python");
 // Co-locate uv cache with the venv so hardlinks from cache → site-packages stay
