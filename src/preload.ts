@@ -698,6 +698,7 @@ const api = {
     getConfigs: async () => ipcRenderer.invoke("ave:mcp:config:get"),
     getConfigPath: async () => ipcRenderer.invoke("ave:mcp:config:path"),
     addConfig: async (config: McpServerConfig) => ipcRenderer.invoke("ave:mcp:config:add", config),
+    setApiKey: async (id: string, apiKey: string) => ipcRenderer.invoke("ave:mcp:config:set-api-key", id, apiKey),
     removeConfig: async (id: string) => ipcRenderer.invoke("ave:mcp:config:remove", id),
     readUiResource: async (serverId: string, uri: string) => ipcRenderer.invoke("ave:mcp:ui-resource", serverId, uri) as Promise<string>,
   },
