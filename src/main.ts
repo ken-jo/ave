@@ -764,6 +764,12 @@ async function handleAveUri(url: string) {
         const message = errorMessage(err) || "addPlugin failed";
         log.error({ pluginId, err }, "post-install steps failed for ave:// install");
         try {
+          await activeServices.pluginRuntime.removePlugin(pluginId).catch((rmPluginErr) => {
+            log.warn(
+              { pluginId, rmPluginErr },
+              "ave:// install rollback removePlugin failed",
+            );
+          });
           await activeServices.pluginMarketplace.uninstall(pluginId);
         } catch (rollbackErr) {
           log.warn(
