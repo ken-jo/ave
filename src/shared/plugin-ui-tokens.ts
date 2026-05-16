@@ -24,6 +24,15 @@ export const AVE_TOKEN_NAMES = [
   "--ave-success-fg",
   "--ave-border",
   "--ave-ring",
+  // Derived tinted-surface tokens — pre-computed color-mix values shipped by the host.
+  // Plugins use these directly instead of reinventing color-mix derivations.
+  "--ave-danger-bg-subtle",
+  "--ave-focus-shadow",
+  "--ave-primary-bg-strong",
+  "--ave-primary-bg-subtle",
+  "--ave-success-bg-subtle",
+  "--ave-surface-hover",
+  "--ave-warning-bg-subtle",
   "--ave-radius-xs",
   "--ave-radius-sm",
   "--ave-radius",

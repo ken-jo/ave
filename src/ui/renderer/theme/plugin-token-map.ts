@@ -48,33 +48,74 @@ const _INVARIANT: Partial<Record<AveTokenName, string>> = {
 };
 
 /**
+ * Build a color-mix() tinted surface value.
+ *
+ * @param color  - Resolved CSS color for the tint (e.g. `hsl(217, 91%, 60%)`)
+ * @param base   - Resolved CSS color for the base surface (e.g. `hsl(222, 84%, 5%)`)
+ * @param pct    - Percentage of `color` to mix in (remainder is `base`)
+ */
+function _tint(color: string, base: string, pct: number): string {
+  return `color-mix(in srgb, ${color} ${pct}%, ${base})`;
+}
+
+/**
  * Derive the full --ave-* plugin token map from an active ThemeBundle.
  *
  * Bundles are self-contained — no legacy axis resolution needed.
  */
 export function bundleToPluginTokens(bundle: ThemeBundle): Record<AveTokenName, string> {
   const t = bundle.tokens;
+  const isLight = bundle.shell === "light";
+  const isHighContrast = bundle.highContrast;
+
+  // Resolved base colors reused for derivations.
+  const primary   = tripleToHsl(t.primary);
+  const surface   = tripleToHsl(t.card);
+  const danger    = tripleToHsl(t.destructive);
+  const warning   = tripleToHsl(t.warning);
+  const success   = tripleToHsl(t.success);
+  const secondary = tripleToHsl(t.secondary);
+  const fg        = tripleToHsl(t.foreground);
+  const ring      = tripleToHsl(t.ring);
+
+  // Mix percentages scale by shell mode and high-contrast requirement.
+  // AA contrast on dark surfaces; HC bundle bumps mix to 24/40 for elevated contrast over body background.
+  const primarySubtlePct = isHighContrast ? 24 : isLight ? 14 : 18;
+  const primaryStrongPct = isHighContrast ? 40 : isLight ? 28 : 32;
+  const statusSubtlePct  = isHighContrast ? 24 : 14;
+  const hoverPct         = isHighContrast ? 14 : isLight ?  6 : 10;
+
   const bundleTokens: Partial<Record<AveTokenName, string>> = {
     "--ave-bg":              tripleToHsl(t.background),
-    "--ave-surface":         tripleToHsl(t.card),
+    "--ave-surface":         surface,
     "--ave-surface-overlay": tripleToHsl(t.popover),
-    "--ave-fg":              tripleToHsl(t.foreground),
+    "--ave-fg":              fg,
     "--ave-fg-muted":        tripleToHsl(t["muted-foreground"]),
     "--ave-fg-disabled":     tripleToHsl(t["muted-foreground"]),
-    "--ave-primary":         tripleToHsl(t.primary),
+    "--ave-primary":         primary,
     "--ave-primary-fg":      tripleToHsl(t["primary-foreground"]),
-    "--ave-secondary":       tripleToHsl(t.secondary),
+    "--ave-secondary":       secondary,
     "--ave-secondary-fg":    tripleToHsl(t["secondary-foreground"]),
-    "--ave-danger":          tripleToHsl(t.destructive),
+    "--ave-danger":          danger,
     "--ave-danger-fg":       tripleToHsl(t["destructive-foreground"]),
-    "--ave-warning":         tripleToHsl(t.warning),
+    "--ave-warning":         warning,
     "--ave-warning-fg":      tripleToHsl(t["warning-foreground"]),
-    "--ave-success":         tripleToHsl(t.success),
+    "--ave-success":         success,
     "--ave-success-fg":      _H(210, 40, 98),  // invariant — no component surfaces success-fg yet
     "--ave-border":          tripleToHsl(t.border),
-    "--ave-ring":            tripleToHsl(t.ring),
+    "--ave-ring":            ring,
     "--ave-radius":          "0.6rem",
     "--ave-radius-sm":       "0.25rem",
+    // ── Derived tinted-surface tokens ────────────────────────────────────────
+    // Pre-computed so plugins use var(--ave-primary-bg-subtle) instead of
+    // reinventing color-mix() across --pm-*, --accent-bg, --ah-* namespaces.
+    "--ave-primary-bg-subtle":  _tint(primary, surface, primarySubtlePct),
+    "--ave-primary-bg-strong":  _tint(primary, surface, primaryStrongPct),
+    "--ave-danger-bg-subtle":   _tint(danger,  "transparent", statusSubtlePct),
+    "--ave-warning-bg-subtle":  _tint(warning, "transparent", statusSubtlePct),
+    "--ave-success-bg-subtle":  _tint(success, "transparent", statusSubtlePct),
+    "--ave-surface-hover":      _tint(fg, secondary, hoverPct),
+    "--ave-focus-shadow":       _tint(ring, "transparent", 62),
   };
   return { ..._INVARIANT, ...bundleTokens } as Record<AveTokenName, string>;
 }
