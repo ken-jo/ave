@@ -146,13 +146,13 @@ describe("SettingsService plugin uninstall cleanup", () => {
   it("does not delete another dotted plugin id's secret by prefix", async () => {
     const service = new SettingsService({ userDataPath });
 
-    await service.setSecret("plugin.com.ep.token", "abc");
-    await service.setSecret("plugin.com.ep.mail.token", "preserved");
+    await service.setSecret("plugin.com.example.token", "abc");
+    await service.setSecret("plugin.com.example.mail.token", "preserved");
 
     await expect(service.deletePluginSecrets("com.example", ["token"])).resolves.toBe(1);
 
-    expect(service.getSecret("plugin.com.ep.token")).toBeNull();
-    expect(service.getSecret("plugin.com.ep.mail.token")).toBe("preserved");
+    expect(service.getSecret("plugin.com.example.token")).toBeNull();
+    expect(service.getSecret("plugin.com.example.mail.token")).toBe("preserved");
   });
 });
 
@@ -274,7 +274,7 @@ describe("SettingsService LLM per-vendor patching", () => {
     // undefined and crash refreshProvider at first turn.
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ llm: { provider: "internal-search" } }),
+      JSON.stringify({ llm: { provider: "unknown-vendor" } }),
       "utf-8",
     );
 

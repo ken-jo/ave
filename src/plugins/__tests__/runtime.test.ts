@@ -155,11 +155,11 @@ describe("PluginRuntime.disable", () => {
     expect(runtime.listPluginIds()).toContain("p-existing");
   });
 
-  it("plugin with dotted reverse-domain id (com.ep.xxx) and underscore methods loads correctly", async () => {
+  it("plugin with dotted reverse-domain id (com.example.plugin) and underscore methods loads correctly", async () => {
     // Plugin ID may use reverse-domain dots (package identity namespace)
     // Tool names (methods[]) must still be underscore-only (LLM tool name namespace)
-    const pluginId = "com.ep.test";
-    const pluginDir = join(installedDir, "com-ep-test");
+    const pluginId = "com.example.plugin";
+    const pluginDir = join(installedDir, "com-example-test");
     await mkdir(pluginDir, { recursive: true });
 
     await writeFile(

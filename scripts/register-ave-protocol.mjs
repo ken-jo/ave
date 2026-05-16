@@ -71,7 +71,7 @@ if (!realPlist.startsWith(realRoot + "/")) {
 }
 
 const SCHEME = "ave";
-const ENTRY_NAME = "com.ep.ave.dev"; // disambiguate from production build.appId in lsregister dumps
+const ENTRY_NAME = "ai.agent-connector.ave.dev"; // disambiguate from production build.appId in lsregister dumps
 
 function reportSpawnFailure(label, r) {
   if (r.error) {
