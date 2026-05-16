@@ -48,6 +48,7 @@ function installAveApi() {
         interactive: { autoApprove: "off" },
       },
     })),
+    reviewerProviderHasKey: vi.fn(async (provider: string) => provider === "openai"),
   };
   (window as unknown as { ave: unknown }).ave = {
     permission,

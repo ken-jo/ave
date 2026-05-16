@@ -52,6 +52,7 @@ export const PERMISSIONS = {
   policySet: "ave:policy:set",
   dirDispatch: "ave:permissions:dir-dispatch",
   reviewerDispatch: "ave:permissions:reviewer-dispatch",
+  reviewerProviderHasKey: "ave:permissions:reviewer-provider-has-key",
   deferredList: "ave:permissions:deferred-list",
   deferredResolve: "ave:permissions:deferred-resolve",
   deferredPending: "ave:permissions:deferred-pending",
