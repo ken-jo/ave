@@ -71,3 +71,7 @@ export const PERMISSIONS = {
 export const SETTINGS = {
   updated: "ave:settings:updated",
 } as const;
+
+export const SUGGESTED_REPLIES = {
+  updated: "ave:chat:suggested-replies-updated",
+} as const;
