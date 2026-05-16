@@ -805,6 +805,24 @@ const api = {
       ipcRenderer.invoke(PERMISSIONS.approvalRespond, decision),
   },
 
+  // ─── R-2 User-Approval Store (PR-A4) ─────────────
+  userApproval: {
+    /** Record a user approval decision (scope: session | persistent). */
+    record: async (entry: {
+      toolName: string;
+      args: string;
+      source: string;
+      scope: "session" | "persistent";
+      verdictAtApproval: "low" | "medium" | "high";
+      nlJustification: string | null;
+    }) => ipcRenderer.invoke(PERMISSIONS.userApprovalRecord, entry),
+    /** Revoke an approval by raw composite key. */
+    revokeByKey: async (key: string) =>
+      ipcRenderer.invoke(PERMISSIONS.userApprovalRevoke, key),
+    /** List all approval entries (for PermissionsTab display). */
+    list: async () => ipcRenderer.invoke(PERMISSIONS.userApprovalList),
+  },
+
   // ─── DLP Hit Statistics (Observability) ─────────
   dlp: {
     getStats: async (days: number) => ipcRenderer.invoke("ave:dlp:stats", days),
@@ -1183,6 +1201,7 @@ contextBridge.exposeInMainWorld("aveWindow", {
 contextBridge.exposeInMainWorld("ave", {
   permission: api.permission,
   approval: api.approval,
+  userApproval: api.userApproval,
   policy: api.policy,
   mcp: api.mcp,
   plugins: {
