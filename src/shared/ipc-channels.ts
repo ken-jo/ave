@@ -32,7 +32,6 @@ export const ROUTINES_V2 = {
   pendingResults: "ave:routines:v2:pending-results",
   acknowledgeResult: "ave:routines:v2:ack-result",
   listSessions: "ave:routines:v2:list-sessions",
-  readSession: "ave:routines:v2:read-session",
   // Running indicator events (renderer reflects LLM session progress)
   runningStarted: "ave:routines:v2:running-started",
   runningFinished: "ave:routines:v2:running-finished",
