@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { findAveProtocolUri, parseMarketplacePluginActionUri, parsePluginAuthUri } from "../ave-protocol.js";
+import {
+  findAveProtocolUri,
+  parseMarketplacePluginActionUri,
+  parseMcpLoginUri,
+  parsePluginAuthUri,
+} from "../ave-protocol.js";
 
 describe("findAveProtocolUri", () => {
   it("returns the custom protocol URI from argv", () => {
@@ -183,5 +188,22 @@ describe("parseMarketplacePluginActionUri", () => {
     expect(parseMarketplacePluginActionUri("ave://uninstall/%E0%A4%A")).toBeNull();
     expect(parseMarketplacePluginActionUri("ave://install/theme/agent-hub")).toBeNull();
     expect(parseMarketplacePluginActionUri("ave://install/agent/agent-hub/extra")).toBeNull();
+  });
+});
+
+describe("parseMcpLoginUri", () => {
+  it("parses a marketplace MCP OAuth login URL", () => {
+    expect(parseMcpLoginUri("ave://mcp-login/context7-mcp")).toEqual({
+      slug: "context7-mcp",
+    });
+  });
+
+  it("rejects malformed MCP login URLs", () => {
+    expect(parseMcpLoginUri("ave://mcp-login/context7-mcp?next=1")).toBeNull();
+    expect(parseMcpLoginUri("ave://mcp-login/context7-mcp#frag")).toBeNull();
+    expect(parseMcpLoginUri("ave://mcp-login/context7-mcp/extra")).toBeNull();
+    expect(parseMcpLoginUri("ave://mcp-login/%2E%2E%2Fcontext7-mcp")).toBeNull();
+    expect(parseMcpLoginUri("ave://install/mcp/context7-mcp")).toBeNull();
+    expect(parseMcpLoginUri("https://mcp-login/context7-mcp")).toBeNull();
   });
 });
