@@ -403,6 +403,10 @@ describe("ave:chat:send provenance", () => {
       },
       {
         channel: "ave:chat:stream",
+        payload: expect.objectContaining({ type: "suggested_replies", replies: [], streamId: 1 }),
+      },
+      {
+        channel: "ave:chat:stream",
         payload: expect.objectContaining({ type: "done", streamId: 1 }),
       },
     ]);
