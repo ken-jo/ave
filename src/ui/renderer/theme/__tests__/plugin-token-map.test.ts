@@ -14,6 +14,9 @@
 import { describe, it, expect } from "vitest";
 import { bundleToPluginTokens } from "../plugin-token-map.js";
 import { tokyoNightBundle } from "../bundles/tokyo-night.js";
+import { violetLightBundle } from "../bundles/violet-light.js";
+import { violetDarkBundle } from "../bundles/violet-dark.js";
+import { highContrastBundle } from "../bundles/high-contrast.js";
 import type { ThemeBundle } from "../bundles/types.js";
 
 function withTokens(base: ThemeBundle, overrides: Partial<ThemeBundle["tokens"]>): ThemeBundle {
@@ -42,5 +45,53 @@ describe("tripleToHsl — alpha channel support (issue #616)", () => {
     const bundle = withTokens(tokyoNightBundle, { primary: "var(--p-blue-500)" });
     const tokens = bundleToPluginTokens(bundle);
     expect(tokens["--ave-primary"]).toBe("var(--p-blue-500)");
+  });
+});
+
+describe("bundleToPluginTokens — derived value snapshot (architect fix #4)", () => {
+  it("derives --ave-primary-bg-subtle correctly per shell mode", () => {
+    const light = bundleToPluginTokens(violetLightBundle);
+    const dark  = bundleToPluginTokens(violetDarkBundle);
+    const hc    = bundleToPluginTokens(highContrastBundle);
+
+    // light shell: primarySubtlePct = 14
+    expect(light["--ave-primary-bg-subtle"]).toMatch(/color-mix\(in srgb,.*14%/);
+    // dark shell: primarySubtlePct = 18
+    expect(dark["--ave-primary-bg-subtle"]).toMatch(/color-mix\(in srgb,.*18%/);
+    // high-contrast: primarySubtlePct = 24
+    expect(hc["--ave-primary-bg-subtle"]).toMatch(/color-mix\(in srgb,.*24%/);
+  });
+
+  it("derives --ave-primary-bg-strong correctly per shell mode", () => {
+    const light = bundleToPluginTokens(violetLightBundle);
+    const dark  = bundleToPluginTokens(violetDarkBundle);
+    const hc    = bundleToPluginTokens(highContrastBundle);
+
+    // light: 28%, dark: 32%, hc: 40%
+    expect(light["--ave-primary-bg-strong"]).toMatch(/color-mix\(in srgb,.*28%/);
+    expect(dark["--ave-primary-bg-strong"]).toMatch(/color-mix\(in srgb,.*32%/);
+    expect(hc["--ave-primary-bg-strong"]).toMatch(/color-mix\(in srgb,.*40%/);
+  });
+
+  it("derives --ave-surface-hover correctly per shell mode", () => {
+    const light = bundleToPluginTokens(violetLightBundle);
+    const dark  = bundleToPluginTokens(violetDarkBundle);
+    const hc    = bundleToPluginTokens(highContrastBundle);
+
+    // light: 6%, dark: 10%, hc: 14%
+    expect(light["--ave-surface-hover"]).toMatch(/color-mix\(in srgb,.*6%/);
+    expect(dark["--ave-surface-hover"]).toMatch(/color-mix\(in srgb,.*10%/);
+    expect(hc["--ave-surface-hover"]).toMatch(/color-mix\(in srgb,.*14%/);
+  });
+
+  it("derives --ave-focus-shadow as ring-based color-mix at 62%", () => {
+    const light = bundleToPluginTokens(violetLightBundle);
+    const dark  = bundleToPluginTokens(violetDarkBundle);
+    const hc    = bundleToPluginTokens(highContrastBundle);
+
+    // focus-shadow is invariant to shell mode — always 62% ring over transparent
+    expect(light["--ave-focus-shadow"]).toMatch(/color-mix\(in srgb,.*62%/);
+    expect(dark["--ave-focus-shadow"]).toMatch(/color-mix\(in srgb,.*62%/);
+    expect(hc["--ave-focus-shadow"]).toMatch(/color-mix\(in srgb,.*62%/);
   });
 });
