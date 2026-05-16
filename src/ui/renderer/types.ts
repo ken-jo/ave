@@ -662,6 +662,27 @@ export type ApprovalDecision = {
   respond: (decision: ApprovalDecision) => Promise<unknown>;
 };
 
+/** R-2 User-Approval Store API (PR-A4) */
+export type AveUserApprovalApi = {
+  record: (entry: {
+    toolName: string;
+    args: string;
+    source: string;
+    scope: "session" | "persistent";
+    verdictAtApproval: "low" | "medium" | "high";
+    nlJustification: string | null;
+  }) => Promise<{ ok: boolean; error?: string; message?: string }>;
+  revokeByKey: (key: string) => Promise<{ ok: boolean; error?: string; message?: string }>;
+  list: () => Promise<Array<{
+    key: string;
+    approvedAt: string;
+    scope: "session" | "persistent";
+    verdictAtApproval: "low" | "medium" | "high";
+    nlJustification: string | null;
+    revokedAt: string | null;
+  }>>;
+};
+
 export type PermissionRule = { pattern: string; action: "allow" | "deny"; source?: string };
 
 export type AddRuleResult =
@@ -970,6 +991,7 @@ declare global {
     ave: {
       permission: AvePermissionApi;
       approval: AveApprovalApi;
+      userApproval: AveUserApprovalApi;
       policy: AvePolicyApi;
       mcp: AveMcpApi;
       plugins: AvePluginsApi;

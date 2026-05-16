@@ -60,6 +60,10 @@ export const PERMISSIONS = {
   auditVerify: "ave:permissions:audit-verify",
   hookTrustList: "ave:permissions:hook-trust-list",
   manifestViolation: "ave:permissions:manifest-violation",
+  // R-2 user-approval store (PR-A4)
+  userApprovalRecord: "ave:permissions:user-approval-record",
+  userApprovalRevoke: "ave:permissions:user-approval-revoke",
+  userApprovalList: "ave:permissions:user-approval-list",
 } as const;
 
 export const SETTINGS = {
