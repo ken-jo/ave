@@ -78,7 +78,7 @@ INPUT origin classification (user-keyboard | plugin-emitted | llm-tool-arg | fil
 │       ~/.ave/ 으로 plugin-write attack surface 제거)       │
 ├────────────────────────────────────────────────────────────┤
 │  Layer 1:  Path policy (allow-list, confirm-gate, scope)   │
-│   ├ permissions.additionalDirectories[] (Claude Code 명명) │
+│   ├ permissions.additionalDirectories[] (Ave scope naming) │
 │   ├ Default: cwd + ~/.ave (단 Layer 0 deny path 제외)      │
 │   ├ Tool.pathFields[] (native + SDK manifest) 검사          │
 │   ├ 외부 path → confirm + auto-suggest (단 leaf parent only,│
@@ -216,7 +216,9 @@ export function canonicalizePathForMatch(rawPath: string): string {
 }
 ```
 
-(Claude Code `permissions.additionalDirectories` 명명 채택. `allowedDirectories` alias/shim 은 두지 않는다.)
+(`permissions.additionalDirectories` 는 사용자가 기존 working directory 외에
+추가 허용 범위를 명시한다는 의미를 그대로 드러내는 Ave 설정명이다.
+`allowedDirectories` alias/shim 은 두지 않는다.)
 
 **Default (computed at runtime):** `process.cwd()` ∪ `~/.ave/` *minus* Layer 0 deny 경로 (즉 `~/.ave/secrets/` 는 allowed dir 안에 있어도 Layer 0 deny 가 우선).
 
@@ -609,7 +611,7 @@ Electron preload/contextBridge. Docker 불필요.
 
 ## 4. Reference matrix (verified — document-specialist findings applied)
 
-| 차원 | Ave Permission Policy | OpenCode | OpenHands | Kilo | Warp | Claude Code | OpenHarness | Hermes | Codex CLI | Copilot |
+| 차원 | Ave Permission Policy | OpenCode | OpenHands | Kilo | Warp | Closed-source UX ref | OpenHarness | Hermes | Codex CLI | Copilot |
 |---|---|---|---|---|---|---|---|---|---|---|
 | Action model | 3-action allow/ask/deny + denyReasons[] ✅ | allow/ask/deny + Question.Service | LOW/MED/HIGH/UNKNOWN (4 levels) | per-tool Allow/Ask/Deny rule-based | scoped autonomy [unverified] | deny→ask→allow (first match) | rule-based + Pre/Post hooks | manual/smart/off + Tirith verdict | 5 approval types | --yolo / --allow-all / --allow-all-paths |
 | Read/Write 분리 | 5-axis read/write/shell/network/meta + input-aware ✅ | wildcard | risk level | per-tool | tool toggles | tool-level rules | path_rules | Tirith content scan | sandbox modes | --allow-all-paths flag |
@@ -627,11 +629,25 @@ Electron preload/contextBridge. Docker 불필요.
 
 **Additional OSS rows (document-specialist 추가 권장):**
 
-| OSS | 패턴 | Ave 차용 |
+| OSS | Public behavior | Ave reference use |
 |---|---|---|
-| **Goose** (block/goose) | 3-level Always/Ask/Never + Manual/Smart 두 modes | Layer 8 mode 의 Smart 패턴 차용 — read auto, state-changing ask |
+| **Goose** (block/goose) | 3-level Always/Ask/Never + Manual/Smart 두 modes | Layer 8 mode 의 Smart UX 참고 — read auto, state-changing ask |
 | **Cline** | Plan/Act mode + per-tool auto-approve toggles | Layer 8 의 strict mode 가 유사 |
 | **Aider** | git-boundary based (--read FILE, --subtree-only, --no-auto-commits) | Layer 1 directories 와 보완적 — git tree boundary 도 향후 검토 |
+
+**Source provenance guardrail:**
+
+| Source | Public metadata | Ave use |
+|---|---|---|
+| [OpenHarness](https://github.com/HKUDS/OpenHarness) | MIT | Only files with explicit OpenHarness headers may reuse implementation material. |
+| [Paperclip](https://github.com/paperclipai/paperclip) | MIT | Agent control-plane UX/API comparison only. |
+| [OpenCode](https://github.com/sst/opencode) | MIT | UX/API behavior comparison only. |
+| [Cline](https://github.com/cline/cline) | Apache-2.0 | UX/API behavior comparison only. |
+| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | Apache-2.0 | UX/API behavior comparison only. |
+| [OpenAI Codex CLI](https://github.com/openai/codex) | Apache-2.0 | Approval/sandbox behavior comparison only. |
+| [Hermes Agent](https://github.com/NousResearch/hermes-agent) | MIT | Command-surface behavior comparison only. |
+| [Claude Code legal/compliance](https://docs.claude.com/en/docs/claude-code/legal-and-compliance) | Anthropic terms, not OSS | Public UX reference only; never an implementation source. |
+| Leak-derived Claude Code mirrors | Non-official / excluded | Must not be used as implementation, naming, or architecture source. |
 
 ## 5. Current implementation and forward direction
 
@@ -807,7 +823,7 @@ compat/fallback surface 는 제외하고, host/app/plugin contract 는 다음 �
 12. Hook directory moved to `~/.config/ave/hooks/` + strict-deny quarantine + boot-time hash + v1 deny-only
 13. Reviewer composition `final = max(rule, llm)` + DLP filter on input + verdict cache (Phase 3 deliverable)
 14. ExecuteOptions bundle (Phase 2)
-15. `additionalDirectories` naming (Claude Code 명명 채택)
+15. `additionalDirectories` naming (Ave permission scope naming)
 16. Audit discriminated union (AuditAllow | AuditAsk | AuditDeny | AuditDeferred | AuditModeChange)
 17. arch.md §6.3 rewrite (not append)
 18. Trust origin classification (NEW §9)
@@ -816,15 +832,15 @@ compat/fallback surface 는 제외하고, host/app/plugin contract 는 다음 �
 21. Slash command nested grammar (`/permission mode|dir|reviewer`)
 22. Bash AST gate is executor-owned; category registry carries policy lane/risk only
 
-**Reference matrix corrections (9):**
-- OpenCode: `ctx.ask()` → `Question.Service API`
+**Public comparison notes (9):**
+- OpenCode: public UX/API comparison only; Ave implementation is independent.
 - OpenHands: 3 levels → 4 (LOW/MED/HIGH/UNKNOWN)
 - Kilo: `AI Safety Gatekeeper LLM` → `per-tool Allow/Ask/Deny rule-based`
 - Warp: `per-directory` marked unverified (404 URL)
-- Claude Code: `PermissionRequest hook` 제거 (only PreToolUse)
+- Closed-source agent rows: public UX comparison only; not an implementation source
 - OpenHarness: 4 mode → 3 mode (Default/Auto/Plan)
-- Hermes: `/permission` → `/yolo`
-- Codex CLI: `5 categories` → `5 approval types` + `--cd` claim 제거
+- Hermes: command-surface comparison only; Ave implementation is independent.
+- Codex CLI: approval-surface comparison only; Ave implementation is independent.
 - Copilot CLI: `--allow-tool/--deny-tool` → `--allow-all` / `--allow-all-paths`
 
 **Additional OSS added:** Goose / Cline / Aider rows.

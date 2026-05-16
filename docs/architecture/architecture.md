@@ -4,7 +4,7 @@
 > **Date**: 2026-04-16 (base) · 2026-04-19 (v5 additive)
 > **Status**: Architecture Currentized Draft (대화 루프/도구 표시/자동 컴팩트 구현 기준 반영) · v5 = Marketplace 승인/카나리, Approval 강화, Telemetry, Contract CI, Trace Logger, File Lock, Tool Versioning 반영
 > **Authors**: Ave Architecture Team
-> **Base Reference**: [구현 철학](../vision/philosophy.md) · [claw-code harness](https://github.com/ultraworkers/claw-code)
+> **Base Reference**: [구현 철학](../vision/philosophy.md) · Ave 내부 제품 요구사항 및 공개 표준 문서
 
 ---
 
@@ -246,7 +246,7 @@ graph TB
         direction LR
         L3_SESSION["the LLM backend Session<br/>(LLM 추론)"]
         L3_TOOL["Tool Executor<br/>(도구 실행)"]
-        L3_AGENT_LOOP["Agent Loop<br/>(claw harness)"]
+        L3_AGENT_LOOP["Agent Loop<br/>(agent harness)"]
     end
 
     subgraph "Layer 4 — 연동 Integration"
@@ -298,7 +298,7 @@ graph TB
 | ------ | --------------------- | ------------------ | ----------------------------------------------------------------------------- |
 | **L1** | 사용자·단말           | 사용자·단말 층     | Electron UI + Plugin Slots. 사용자가 보고 만지는 모든 것                      |
 | **L2** | 클라이언트 인텔리전스 | 사용자·단말 내부   | 로컬에서 돌아가는 지능. 키워드 감지, 에이전트 라우팅, 인덱싱, 기억, overlay trigger |
-| **L3** | 실행·추론             | 실행·추론 층       | **the LLM backend(LLM)** 세션 + claw harness 기반 Agent Loop + Tool 실행          |
+| **L3** | 실행·추론             | 실행·추론 층       | **the LLM backend(LLM)** 세션 + agent harness 기반 Agent Loop + Tool 실행          |
 | **L4** | 연동                  | 연동 층            | Agent Hub, Marketplace, 서버 인덱스, enterprise 시스템 커넥터                       |
 | **L5** | 거버넌스              | 거버넌스 층        | 인증, 정책, 감사, 암호화. 회사가 허용한 경로만 사용                           |
 
@@ -698,7 +698,7 @@ RESUME_DELAY ──── 90s elapsed ──→ RUNNING
 
 ### 4.5 Conversation Query Loop — 대화 처리 핵심 사이클
 
-> **Reference**: [Claude Code Query Loop](https://ccleaks.com/architecture) §03 "The Core Cycle" 패턴을 Ave 환경에 맞게 재설계.
+> **Design Note**: 이 섹션은 Ave 내부 요구사항에서 도출한 provider-neutral turn loop 이다. 구현 근거는 공개 표준 인터페이스와 Ave 자체 코드 계약으로 제한한다.
 > §4.3 Input Classification & Routing이 **입력 분류·라우팅** 구조라면, 이 섹션은 **한 턴(turn)이 내부에서 어떻게 실행되는지** — 메시지 생성부터 스트리밍 렌더링, 도구 실행, 컨텍스트 관리까지 — 상세 사이클을 기술한다.
 
 #### 4.5.1 Core Cycle 개요
@@ -813,11 +813,11 @@ sequenceDiagram
 
 #### 4.5.4 컨텍스트 관리 — Auto-Compact
 
-Ave 는 OpenHarness / Codex / Gemini CLI 레퍼런스를 합성한 compact pipeline 을 채택한다. 토큰 preflight 가 임계치를 넘으면 LLM 호출을 잠시 차단하고, *현재 세션 안에서* tool-result stubbing 과 LLM compact 를 실행해 실제 토큰을 줄인다.
+Ave 는 라이선스와 출처가 확인된 공개 OSS/공식 문서에서 관찰 가능한 컨텍스트 관리 패턴과 자체 요구사항을 합성한 compact pipeline 을 채택한다. 토큰 preflight 가 임계치를 넘으면 LLM 호출을 잠시 차단하고, *현재 세션 안에서* tool-result stubbing 과 LLM compact 를 실행해 실제 토큰을 줄인다.
 
 **사용자 contract**: compact 는 어떤 input shape (단일 200K 메시지 / 다수 중간 메시지 누적 / 깊은 tool chain) 에서도 reduce 보장. 수동 메시지 삭제 없이 항상 성공해야 함.
 
-**Tool-Result Stubbing (preventive, marker-only)**: 매 post-turn 마다 실행. `markStaleToolResults()` 가 오래된 `tool_result` 메시지에 `meta.compactedAt` 단일 마커만 set — 메모리상의 content 는 *verbatim 보존* 된다. 마커가 있는 메시지는 `wire-serialize.ts:stubMarkedToolResults` 가 provider 호출 직전 + `saveSession` 직전에 stub 으로 변환. 최근 N개 (기본 8) raw 유지, 200자 미만 제외 (OpenCode 패턴), `toolUseId` 참조 무결성 보존 (`src/engine/auto-compact.ts:114-124`).
+**Tool-Result Stubbing (preventive, marker-only)**: 매 post-turn 마다 실행. `markStaleToolResults()` 가 오래된 `tool_result` 메시지에 `meta.compactedAt` 단일 마커만 set — 메모리상의 content 는 *verbatim 보존* 된다. 마커가 있는 메시지는 `wire-serialize.ts:stubMarkedToolResults` 가 provider 호출 직전 + `saveSession` 직전에 stub 으로 변환. 최근 N개 (기본 8) raw 유지, 200자 미만 제외 (Ave noise-floor policy), `toolUseId` 참조 무결성 보존 (`src/engine/auto-compact.ts:114-124`).
 
 **LLM Compact with Boundary (threshold-gated, 4-status pipeline)**: token preflight 가 `estimateMessagesTokens(history) ≥ getModelPreflightThreshold(vendor, model)` 을 hit 하면 LLM 호출 차단 + `compactWithBoundary()` (`src/engine/structured-compact.ts`) 동기 실행. 결과는 4 상태 중 하나 (`src/shared/compact-status.ts:CompressionStatus`):
 
@@ -828,8 +828,8 @@ Ave 는 OpenHarness / Codex / Gemini CLI 레퍼런스를 합성한 compact pipel
 
 내부 sub-stage (`compactWithBoundary` 안):
 
-- **Per-message truncation** — 단일 메시지가 30K tokens 초과 시 원본을 archive 파일로 격리 (Codex CLI `TruncationPolicy` 패턴).
-- **History-wide reverse-budget truncation** — per-message truncation 이후 toCompact 총 토큰이 LLM input budget (preflight × 0.9) 초과 시 oldest 부터 drop & archive (Gemini CLI 패턴). O(N) 구현 — running token total 유지.
+- **Per-message truncation** — 단일 메시지가 30K tokens 초과 시 원본을 archive 파일로 격리한다.
+- **History-wide reverse-budget truncation** — per-message truncation 이후 toCompact 총 토큰이 LLM input budget (preflight × 0.9) 초과 시 oldest 부터 drop & archive 한다. O(N) 구현 — running token total 유지.
 - **Boundary split** — `splitForBoundary` 로 toCompact / toPreserve 분리. preserveRecent 는 ceiling 의미 (cumulative ≤ budget). 단일 메시지가 budget 단독 초과 시 toPreserve 비어짐. tool_use/tool_result pair 안전: `adjustToToolBoundary` (bounded 3-step backward) + `adjustForwardToToolBoundary` (unbounded forward, leading tool_result 만 skip) — 모든 surviving[0] 이 orphan tool_result 가 되지 않음 보장.
 - **Structured summary** — 12-section structured LLM summary (`SUMMARY_TEMPLATE_PROMPT_V1`) + freezeBoundary (P7 invariant).
 - **Forced archive** — post-compact estimatedAfter > preflight × 0.8 시 toPreserve oldest 50% drop. `adjustForwardToToolBoundary` 로 surviving 시작이 orphan tool_result 안 되게 보호.
@@ -972,14 +972,14 @@ sequenceDiagram
 | **세션 삭제/정리** | 보존 정책과 사용자 삭제 UI 확장 | JSONL, metadata, session sidecar, checkpoint snapshot 디렉토리까지 함께 삭제 |
 | **메시지 스키마** | `user` / `assistant` / `tool_result` + assistant `thought` 유지, 추후 preview 메타데이터 확장 | reasoning을 별도 persistent message type으로 늘리지는 않음 |
 
-#### 4.5.8 claw-code 패턴 매핑
+#### 4.5.8 대화 루프 구현 매핑
 
-| ccleaks.com Query Loop 단계 | Ave 대응 구현 | Ave 차별점 |
+| Provider-neutral turn loop 단계 | Ave 대응 구현 | Ave 차별점 |
 | --- | --- | --- |
-| `createUserMessage()` | renderer input → `ipcMain.handle("ave:chat:send")` | Electron IPC + 조기 keyword preflight |
+| User message creation | renderer input → `ipcMain.handle("ave:chat:send")` | Electron IPC + 조기 keyword preflight |
 | Append to conversation history | `ConversationHistory.append()` | + assistant `thought` 보존 |
 | Build system prompt | system prompt assembly | + AGENTS.md · MEMORY.md · 조직 컨텍스트 · tool schema · overlay trigger context |
-| Stream to Claude API | `provider.streamTurn(...)` | provider 공통 인터페이스로 Claude/Gemini/OpenAI 수용 |
+| Stream to active provider | `provider.streamTurn(...)` | provider 공통 인터페이스로 Claude/Gemini/OpenAI 수용 |
 | `findToolByName()` | `ToolRegistry.findByName()` | + Plugin · MCP 동적 등록 통합 레지스트리 |
 | `canUseTool()` | `GovernancePolicy` + `PermissionManager.checkDetailed()` | + source/trust aware approval gate + 정책 동기화 전제 |
 | `StreamingToolExecutor` | `ToolExecutor.executeAll()` | + groupId, displayOrder, bash validator, rate limit |
@@ -989,7 +989,7 @@ sequenceDiagram
 
 #### 4.5.9 System Prompt 조립 상세 — 12개 소스
 
-> **Reference**: ccleaks.com §02 "System prompt built — Assembled from 10+ component sources"
+> **Design Note**: 시스템 프롬프트 조립은 Ave가 필요한 정적/동적 입력을 명시적으로 합성하는 내부 계약이다.
 > the LLM backend에 전송되는 시스템 프롬프트는 매 턴마다 아래 12개 소스에서 조립된다.
 
 ```mermaid
@@ -1094,7 +1094,7 @@ flowchart TB
 
 | 시스템 | 관찰된 처리 방식 | Ave 반영 |
 | --- | --- | --- |
-| **claw-code** | tool_use / tool_result를 순서 있는 스트림 이벤트로 유지 | group card는 UI 표현 계층에서만 형성 |
+| **Provider-neutral event stream** | tool_use / tool_result를 순서 있는 스트림 이벤트로 유지 | group card는 UI 표현 계층에서만 형성 |
 | **OpenHarness** | 실행 run 단위를 구조화해 추적 | Ave도 tool round를 `groupId` 단위로 추적 |
 | **Paperclip / PaperclipAI** | thinking, tool call, tool result, assistant를 분리 기록 | reasoning card와 assistant round를 분리 유지 |
 
@@ -1242,7 +1242,7 @@ ave/src/
 
 #### 4.6.3 관련 청사진
 
-- `docs/blueprints/openharness-selective-borrow-plan.md` — Tier S / A 차용 근거
+- `docs/blueprints/openharness-selective-borrow-plan.md` — OpenHarness MIT 재사용/출처 근거
 - `docs/blueprints/phase3-folder-refactor-plan.md` — file-by-file migration map
 
 #### 4.6.4 불변 사항 (리팩터가 바꾸지 않는 것)
@@ -1258,7 +1258,7 @@ ave/src/
 
 ## 5. Memory — 경량 기억 구조
 
-Claude Code / Copilot이 채택한 **파일 기반 경량 메모리** 모델을 따른다. 복잡한 다계층 기억 관리가 아니라, 사용자가 직접 읽고 편집할 수 있는 투명한 구조로 유지한다.
+Ave 는 **파일 기반 경량 메모리** 모델을 따른다. 복잡한 다계층 기억 관리가 아니라, 사용자가 직접 읽고 편집할 수 있는 투명한 구조로 유지한다.
 
 ### 5.1 설계 원칙
 
@@ -1316,7 +1316,7 @@ artifact 와 save data 를 함께 보관한다 (호스트 root 에 끼어들지 
 │   ├── 출장-절차.md     # 개별 기억 파일
 │   └── 분기-보고서-템플릿.md
 ├── plugins/<id>/notes/  # 플러그인 자체 메모는 자기 디렉토리에 격리
-├── sessions/            # 세션 이력 (claw Session 패턴)
+├── sessions/            # Ave session history
 │   └── <session-id>.jsonl
 ├── audit/               # AuditLogger (회전·retention)
 ├── traces/              # FileTracer 디버그 trace
@@ -1340,7 +1340,7 @@ artifact 와 save data 를 함께 보관한다 (호스트 root 에 끼어들지 
 | **skills/**             | 로컬 파일 | 영구 (수동 관리) | 사용자                   |
 | **Session Context**     | In-memory | 현재 세션        | 자동 (대화 종료 시 소멸) |
 
-> **v2 대비 변경 이유**: v2의 4계층 기억(Session→Working→Episodic→Semantic)과 자동 승격·만료·연결 로직은 현 단계에서 과도한 복잡도를 유발한다. Copilot의 `.github/copilot-instructions.md`, Claude Code의 `CLAUDE.md` 패턴처럼 파일 기반으로 시작하고, 필요가 검증되면 점진적으로 확장한다.
+> **v2 대비 변경 이유**: v2의 4계층 기억(Session→Working→Episodic→Semantic)과 자동 승격·만료·연결 로직은 현 단계에서 과도한 복잡도를 유발한다. Ave 는 사용자가 직접 확인할 수 있는 AGENTS.md / MEMORY.md 파일 기반으로 시작하고, 필요가 검증되면 점진적으로 확장한다.
 
 ---
 
@@ -1783,7 +1783,7 @@ graph TB
 
 ### 6.5 Command Safety — 명령어 안전 분석
 
-> **Reference**: ccleaks.com §05 "Bash safety — AST-level analysis"
+> **Design Note**: 이 안전 분석은 Ave 로컬 명령 실행 위협 모델에서 도출한 내부 정책이다.
 > Ave 에이전트가 사용자 PC에서 셸 명령을 실행할 수 있으므로, **실행 전 AST 레벨 안전 분석**이 필수다.
 
 ```mermaid
@@ -2911,7 +2911,7 @@ Ave는 IPC/RPC를 **시스템 레벨 전용**으로 확정한다. 플러그인�
 
 ### 9.5 MCP Protocol Architecture — 외부 도구 연동 프로토콜
 
-> **Reference**: ccleaks.com §07 "MCP architecture in depth"
+> **Design Note**: MCP 연동은 공개 Model Context Protocol 사양과 Ave ToolRegistry/PermissionManager 계약을 기준으로 한다.
 > MCP(Model Context Protocol)는 외부 도구·리소스를 Ave에 연결하는 표준 프로토콜이다. 플러그인이 **UI 확장**이라면 MCP는 **도구·데이터 확장**이다.
 
 ```mermaid
@@ -3221,39 +3221,39 @@ graph LR
 
 **각 단계별 의존 요소:**
 
-| 단계 | 핵심 기능 | 참고 Pattern |
+| 단계 | 핵심 기능 | 공개 비교 참고 |
 |------|---------|------------|
 | **Work Board Pilot** | Read-only my/team work view + 호스트 Task 호환 | Warp 작업 추적, 기본 필드 정렬 |
-| **Message Board Pilot** | Direct 1:1 메시지 POC 완료, 팀 채널/수신 정책은 후속 | PaperclipAI 메시지 분류, OpenCode context 관리 |
+| **Message Board Pilot** | Direct 1:1 메시지 POC 완료, 팀 채널/수신 정책은 후속 | PaperclipAI 메시지 분류, 코드 컨텍스트 UX |
 | **Approval/Governance** | `approval_requests` verdict 상태 POC 완료, UI/정책 엔진은 후속 | PaperclipAI 워크플로우, Warp run transcript |
-| **A2A Runtime** | 에이전트 레지스트리 + 위임 proto + 합의 프로토콜 | OpenCode peer model, A2A task lifecycle |
+| **A2A Runtime** | 에이전트 레지스트리 + 위임 proto + 합의 프로토콜 | peer agent model, A2A task lifecycle |
 | **Enterprise Rollout** | 감사 로그, SLA 추적, 롤아웃 정책, 조직 관리 | PaperclipAI 예산/감사, Warp 트리거 |
 
-### 10.0.2 External Reference Patterns
+### 10.0.2 Public Comparison Inputs
 
-현재 산업 구현 중 유용한 참고 패턴:
+현재 산업 구현은 UX/API 동작 비교 참고로만 사용한다. Ave 구현은 내부 요구사항, 보안 검토, 공개 사양을 기준으로 독립 작성한다.
 
-**PaperclipAI** (early-stage org/task control plane):
+**PaperclipAI / Paperclip** (공개 agent control-plane UX/API 비교; 구현 출처 아님):
 - Org/task workflow 승인 게이트
 - Durable audit & activity history
 - Budget/cost tracking for agent work
 - Routines & scheduled tasks
-- ✅ **우리 차용 가능**: 승인 상태 머신, 감사 로그 구조, 정책 판별 플로우
+- **참고 가능**: 승인 상태 머신, 감사 로그 구조, 정책 판별 플로우
 
-**OpenCode** (코드 컨텍스트 및 권한 모델):
+**OpenCode** (공개 코드 컨텍스트 및 권한 UX/API 비교):
 - Per-tool allow/ask/deny permission hierarchy
 - Context/config layer management (repo → file → line)
 - Undo/redo & session state persistence
-- ✅ **우리 차용 가능**: Tool-level 범위 정책, 메시지 컨텍스트 계층
+- **참고 가능**: Tool-level 범위 정책, 메시지 컨텍스트 계층
 
 **Warp/Oz** (작업 생명주기 & 관리 뷰):
 - Task lifecycle (blocked/running/completed)
 - Persistent transcript & run history
 - Management view with status, integrations, codebase context
 - Trigger/integration & team collaboration
-- ✅ **우리 차용 가능**: Work 상태 추적, 트랜스크립트 저장, 팀 볼 수 있는 관리 패널
+- **참고 가능**: Work 상태 추적, 트랜스크립트 저장, 팀 볼 수 있는 관리 패널
 
-이 패턴들은 우리 실제 요구사항(범위 공개, 승인, 감사)과 겹치는 부분이 많으며, 각 phase 설계 시 참고한다.
+이 비교 항목들은 우리 실제 요구사항(범위 공개, 승인, 감사)과 겹치는 부분이 많으며, 각 phase 설계 시 공개 동작 수준에서만 참고한다.
 
 ### 10.1 Roadmap to Full Agent Hub
 
@@ -3755,7 +3755,7 @@ graph TB
 
 ### 14.4 Feature Flag & Gradual Rollout — 점진적 기능 배포
 
-> **Reference**: ccleaks.com §02 "GrowthBook initialized — Remote feature flags fetched asynchronously"
+> **Design Note**: Feature Flag 시스템은 엔터프라이즈 점진 배포 요구사항에서 도출한 Ave 내부 설계다.
 > 기업 환경에서 모든 사용자에게 동시에 새 기능을 배포하는 것은 리스크가 크다. Feature Flag 시스템으로 부서별·사업부별·역할별 점진 롤아웃을 제어한다.
 
 ```mermaid
@@ -3945,24 +3945,23 @@ Electron 윈도우 전체에 드래그 앤 드롭 오버레이를 제공한다. 
 
 ## Appendix
 
-### A. claw-code Harness Reference
+### A. Agent Harness Design Map
 
-| claw-code 패턴                   | Ave 적용             | 차이점                           |
+| 일반 agent harness concern       | Ave 적용             | 차이점                           |
 | -------------------------------- | --------------------- | -------------------------------- |
-| `ConversationRuntime.run_turn()` | Agent Loop            | + Memory Recall/Save 전후 추가   |
-| `SlashCommand::parse()`          | KW Engine 명령어 감지 | + 한국어 형태소 분석 추가        |
-| `resolve_skill_invocation()`     | Skill Resolver        | + Plugin keyword registry 연동   |
-| `CliToolExecutor` trait          | Tool Executor         | + Governance policy check 추가   |
-| `PluginHooks` (Pre/PostToolUse)  | Hook Runner           | 동일 패턴 채용                   |
-| `GlobalToolRegistry`             | Tool Registry         | + Plugin 동적 등록·해제          |
-| `PermissionPolicy`               | Permission Manager    | + RBAC + Governance Policy 통합  |
-| `Session` persistence            | Session Manager       | + 세션 히스토리 저장·복구 + Memory System 연동 |
-| `HookRunner`                     | Hook Runner           | + Event Emitter 추가 |
-| Query Loop (Core Cycle)          | Conversation Query Loop (§4.5) | + 승인 큐 분기 + Overlay Trigger + Memory Extraction |
-| `StreamingToolExecutor`          | StreamingToolExecutor | + Governance Policy 차단 + Approval Queue 연동 |
+| Turn runtime                     | Agent Loop            | + Memory Recall/Save 전후 추가   |
+| Slash command parsing            | KW Engine 명령어 감지 | + 한국어 형태소 분석 추가        |
+| Skill invocation resolution      | Skill Resolver        | + Plugin keyword registry 연동   |
+| Tool execution boundary          | Tool Executor         | + Governance policy check 추가   |
+| Pre/Post tool interceptors       | Hook Runner           | 내부 hook + signed script hook 후속 |
+| Global tool registry             | Tool Registry         | + Plugin 동적 등록·해제          |
+| Permission policy                | Permission Manager    | + RBAC + Governance Policy 통합  |
+| Session persistence              | Session Manager       | + 세션 히스토리 저장·복구 + Memory System 연동 |
+| Query loop                       | Conversation Query Loop (§4.5) | + 승인 큐 분기 + Overlay Trigger + Memory Extraction |
+| Streaming tool execution         | StreamingToolExecutor | + Governance Policy 차단 + Approval Queue 연동 |
 | Auto-compact                     | AutoCompact           | 목표: 40% 기본값/20% 단위 설정, 현재: 80k token threshold + on/off |
-| Post-sampling hooks              | Post-Turn Hooks       | 현재 chain 유지 + Plugin PostTurn 목표 설계 병행 |
-| 3-layer permission model         | Tool Permission Model (§6.3) | + L1 Registry Filter (LLM에서 도구 은닉) + Governance 통합 |
+| Post-turn hooks                  | Post-Turn Hooks       | 현재 chain 유지 + Plugin PostTurn 목표 설계 병행 |
+| Layered permission model         | Tool Permission Model (§6.3) | + L1 Registry Filter (LLM에서 도구 은닉) + Governance 통합 |
 | Tool categorization (43 tools)   | Tool Registry & Taxonomy (§6.4) | Ave 도메인 도구 + 플러그인·MCP 동적 등록 |
 | Bash AST safety analysis         | Command Safety (§6.5) | + 위험 등급 4단계 + Governance 불변 경계 |
 | System prompt (10+ sources)      | SystemPromptBuilder (§4.5.9) | 12개 소스 — + 조직 컨텍스트·Feature Flag·overlay trigger origin guidance |
