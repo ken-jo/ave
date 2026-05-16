@@ -64,6 +64,8 @@ export const PERMISSIONS = {
   userApprovalRecord: "ave:permissions:user-approval-record",
   userApprovalRevoke: "ave:permissions:user-approval-revoke",
   userApprovalList: "ave:permissions:user-approval-list",
+  // 4.1: memory-hit auto-approve disclosure (main → renderer)
+  userApprovalHit: "ave:permissions:user-approval-hit",
 } as const;
 
 export const SETTINGS = {
