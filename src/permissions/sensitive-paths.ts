@@ -91,7 +91,7 @@ export const SENSITIVE_PATH_PATTERNS: readonly string[] = Object.freeze([
   "**/id_ed25519.pub",
   "**/id_ecdsa",
   "**/id_ecdsa.pub",
-  // ── corporate / Ave-specific additions ───────────────────
+  // ── Ave-specific additions ─────────────────────────
   "**/.ave/certs/**", // corporate CA bundle + extracted certs
   "**/.ave/secrets/**", // API keys, tokens
   "**/.ave/keys/**", // signing / encryption keys

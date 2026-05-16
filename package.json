@@ -139,7 +139,7 @@
     "esbuild"
   ],
   "build": {
-    "appId": "com.ep.ave",
+    "appId": "ai.agent-connector.ave",
     "productName": "Ave",
     "icon": "build/icon.png",
     "electronLanguages": [

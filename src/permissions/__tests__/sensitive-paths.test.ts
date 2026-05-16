@@ -33,7 +33,7 @@ describe("SENSITIVE_PATH_PATTERNS", () => {
     expect(SENSITIVE_PATH_PATTERNS).toContain("**/.kube/config");
   });
 
-  it("contains corporate/Ave-specific additions", () => {
+  it("contains Ave-specific additions", () => {
     expect(SENSITIVE_PATH_PATTERNS).toContain("**/.ave/certs/**");
     expect(SENSITIVE_PATH_PATTERNS).toContain("**/.ave/secrets/**");
     expect(SENSITIVE_PATH_PATTERNS).toContain("**/.ave/keys/**");
@@ -117,12 +117,12 @@ describe("isSensitivePath — positive matches", () => {
     expect(isSensitivePath("/home/ken/.kube/config")).toBe("**/.kube/config");
   });
 
-  it("matches /Users/example/.ave/certs/corp-ca.pem (corporate addition)", () => {
+  it("matches /Users/example/.ave/certs/corp-ca.pem (Ave addition)", () => {
     const result = isSensitivePath("/Users/example/.ave/certs/corp-ca.pem");
     expect(result).toBe("**/.ave/certs/**");
   });
 
-  it("matches /Users/example/.ave/secrets/openai.key (corporate addition)", () => {
+  it("matches /Users/example/.ave/secrets/openai.key (Ave addition)", () => {
     expect(isSensitivePath("/Users/example/.ave/secrets/openai.key")).toBe(
       "**/.ave/secrets/**",
     );
@@ -135,7 +135,7 @@ describe("isSensitivePath — positive matches", () => {
     expect(isSensitivePath("/Users/example/.ave/permissions/reviewer-cache.jsonl")).toBe("**/.ave/permissions/**");
   });
 
-  it("matches /Users/example/.ave/ave-secrets.json (corporate addition)", () => {
+  it("matches /Users/example/.ave/ave-secrets.json (Ave addition)", () => {
     expect(isSensitivePath("/Users/example/.ave/ave-secrets.json")).toBe(
       "**/.ave/ave-secrets.json",
     );
