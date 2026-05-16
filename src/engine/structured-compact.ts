@@ -1,18 +1,18 @@
 /**
- * Structured Compact — Layer 2 of `docs/blueprints/infinity-session-redesign-v3.md`.
+ * Structured Compact — checkpoint compaction for the current session model.
  *
  * 이 파일은 interface + parser + prompt + LLM call (`compactWithBoundary`) 모두 제공.
- * `ConversationLoop.runPreflightGuard` 가 caller — Layer 0 preflight 도달 시 await.
+ * `ConversationLoop.runPreflightGuard` 가 caller — token preflight 도달 시 await.
  *
  * 핵심 추상화:
- *   - `CompactBoundary` — provider-neutral opaque-state slot (codex CLI v2 회귀 권장)
+ *   - `CompactBoundary` — provider-neutral opaque-state slot
  *     OpenAI 향후 path 의 `openaiCompactionItem` 전체 저장 + Anthropic/Gemini 의
  *     `structuredSummary` 양쪽을 단일 인터페이스로 표현.
- *   - `ParsedSummary` — 12-section SUMMARY_TEMPLATE 의 구조화 결과 (OpenCode 7 + GPT-5 prompting 5).
- *   - `freezeBoundary()` — P7 invariant. ⑧ slot + Layer 3 storage + history[0] 3 view 일관 보장.
- *   - `compactWithBoundary()` — Layer 2 LLM call (동일 vendor 동급 모델, codex Q2 default).
+ *   - `ParsedSummary` — 12-section SUMMARY_TEMPLATE 의 구조화 결과.
+ *   - `freezeBoundary()` — prompt slot + checkpoint storage + history[0] view 일관 보장.
+ *   - `compactWithBoundary()` — LLM compact call.
  *
- * 청사진 §4.3, §5, §7.1 참조.
+ * See `docs/architecture/session-model-v2.md` for the session/fork boundary.
  */
 
 import * as fs from "node:fs/promises";
@@ -31,7 +31,7 @@ import {
 
 const log = createLogger("compact");
 
-/** 12-section SUMMARY_TEMPLATE 헤더 (v3 §5.1). 순서/이름 모두 contract — 변경 시 templateVersion bump 필수. */
+/** 12-section SUMMARY_TEMPLATE 헤더. 순서/이름 모두 contract — 변경 시 templateVersion bump 필수. */
 export const SUMMARY_TEMPLATE_HEADERS_V1 = [
   "Goal",
   "Constraints & Preferences",
@@ -64,17 +64,17 @@ export interface ParsedSummary {
 }
 
 /**
- * Provider-neutral opaque-state slot — codex CLI v2 회귀 권장 패턴 (P2).
+ * Provider-neutral opaque-state slot.
  *
  * - `vendorOpaqueState`: OpenAI 향후 path. compaction item 전체 (`{type: "compaction", encrypted_content, ...}`)
- *   를 저장. 현재 PR-2 범위에서는 Anthropic/Gemini 만 활성화되므로 placeholder.
+ *   를 저장. 현재는 Anthropic/Gemini 만 활성화되므로 placeholder.
  * - `structuredSummary`: 모든 vendor 의 차선 — 12-section 인간 readable.
  * - `recentVerbatim`: Cline preserve-recent 패턴. 끝 N 토큰 (per-model PRESERVE_RECENT_TOKENS).
  * - `pinnedArtifacts`: skill 도구 출력 + `meta.lock=true` 메시지의 영구 보존.
- * - `toolBoundaryLedger`: 마지막 K 라운드 tool_use/result 요약 — R6 fallback 시
+ * - `toolBoundaryLedger`: 마지막 K 라운드 tool_use/result 요약 — fallback 시
  *   LLM 이 prior tool-chain 회상.
  *
- * Vendor precedence rule (architect v3 정정):
+ * Vendor precedence rule:
  *   `vendorOpaqueState` 가 *현재 활성 vendor* 와 일치하면 그것 *만* 직렬화 (`structuredSummary` 미포함).
  *   일치 안 하거나 부재 시 `structuredSummary` + `recentVerbatim` 으로 fallback.
  *   *두 채널 동시 직렬화 금지* — double-state hallucination 방지.
@@ -100,7 +100,7 @@ export type VendorOpaqueState =
 
 /**
  * OpenAI Responses API 의 compaction item — `/v1/responses/compact` 결과 그대로.
- * `encrypted_content` 는 ZDR/AES-encrypted opaque token (codex CLI v1 회귀 검증).
+ * `encrypted_content` 는 ZDR/AES-encrypted opaque token.
  * 이 type 은 향후 OpenAI path 활성화 시까지 placeholder.
  */
 export interface OpenAICompactionItem {
@@ -111,7 +111,7 @@ export interface OpenAICompactionItem {
 }
 
 /**
- * Tool boundary ledger entry — Codex GPT-5 prompting guide "last tool boundary" 패턴.
+ * Tool boundary ledger entry — captures the last tool boundary for recall.
  * LLM 이 이 ledger 를 read 하면 prior tool 사용 흐름 회상 가능.
  */
 export interface ToolCallSummary {
@@ -123,17 +123,17 @@ export interface ToolCallSummary {
 }
 
 /**
- * SUMMARY_TEMPLATE LLM 프롬프트 (v3 §5.1) — 12-section + 절차 규칙 5개 (P4).
+ * SUMMARY_TEMPLATE LLM 프롬프트 — 12-section + 절차 규칙 5개.
  *
  * `{{conversationText}}` placeholder 는 호출자가 messagesToCompact 직렬화 결과로 치환.
  * `{{timestamp}}` / `{{compactNum}}` 도 마찬가지.
  *
  * NOTE: 이 prompt 의 `Critical Context` 섹션은 Ave domain specific 항목 포함 — 활성 plugin /
- * routine ID / 작업 PR 번호 / 권한 모드. 청사진 Q1 의 default 결정 (사용자 도메인 입력으로 추가 확장 가능).
+ * routine ID / 작업 식별자 / 권한 모드. 사용자 도메인 입력으로 추가 확장 가능.
  */
 export const SUMMARY_TEMPLATE_PROMPT_V1 = `당신은 대화 상태 관리자입니다. 아래 대화를 다음 12 섹션으로 요약하세요.
 
-【절차 규칙 — Codex GPT-5 prompting guide】
+【절차 규칙】
 1. context-gathering budget: 본문에 명시된 사실만 사용. 추가 검색/추론 금지.
 2. early stop: 한 번의 read-through 로 12 섹션 채우기. iterative 정제 금지.
 3. done criteria: 12 헤더 모두 *non-empty* 또는 명시적 "(미정)". 빈 섹션 금지.
@@ -166,7 +166,7 @@ export const SUMMARY_TEMPLATE_PROMPT_V1 = `당신은 대화 상태 관리자입�
 잃으면 안 되는 것 — secret/ticket/endpoint/규칙. Ave 도메인 specific 도 포함:
 - 활성 plugin 목록
 - 활성 routine ID
-- 작업 PR 번호
+- 작업 식별자
 - 권한 모드 (propose-only / auto)
 
 ## Current Plan
@@ -190,7 +190,7 @@ export const SUMMARY_TEMPLATE_PROMPT_V1 = `당신은 대화 상태 관리자입�
 /**
  * SUMMARY_TEMPLATE LLM 응답을 파싱. 12 섹션 모두 존재 + non-empty 인지 검증.
  *
- * 누락 시 호출자가 1회 재시도 (P4 절차 4). 2회째 실패 시 `raw` field 로 fallback —
+ * 누락 시 호출자가 1회 재시도. 2회째 실패 시 `raw` field 로 fallback —
  * LLM 은 raw text 라도 의미 추론 가능하므로 hard-fail 보다 graceful.
  *
  * @returns 파싱 성공 시 sections 채워진 ParsedSummary. 실패 시 raw 만 채워진 객체.
@@ -243,7 +243,7 @@ export function parseSummary(text: string): ParsedSummary {
 }
 
 /**
- * Generic deep-freeze — P7 invariant 보장을 위해 CompactBoundary 의 모든
+ * Generic deep-freeze — freeze invariant 보장을 위해 CompactBoundary 의 모든
  * nested object 를 재귀적으로 freeze.
  *
  * - primitive / null / undefined: 그대로 반환 (freeze 불필요)
@@ -262,27 +262,27 @@ function deepFreeze<T>(obj: T): T {
 }
 
 /**
- * P7 invariant — boundary object 와 그 자식 구조를 *deeply freeze*.
+ * Freeze invariant — boundary object 와 그 자식 구조를 *deeply freeze*.
  *
- * ⑧ slot + Layer 3 checkpoint storage + history[0] system block — 3 view 가
+ * prompt slot + checkpoint storage + history[0] system block 이
  * 동일 immutable reference 를 가리키도록 보장. step 9 이후 어떤 view 에서든
  * boundary 가 mutate 되면 race 발생하므로 deepFreeze 로 hard-block.
  *
  * GenericMessage 의 nested mutable fields (content array / toolCalls / thinkingBlocks 등)
- * 도 모두 재귀 freeze — Copilot round 2 지적 (PR-2 round 3 fix).
+ * 도 모두 재귀 freeze.
  */
 export function freezeBoundary(boundary: CompactBoundary): Readonly<CompactBoundary> {
   deepFreeze(boundary);
   return boundary;
 }
 
-// ─── Layer 2 — compactWithBoundary (LLM call) ──────────
+// ─── compactWithBoundary (LLM call) ─────────────────────
 
 /** Stub message body 가 history 에 들어감 — 진짜 본문은 ⑧ slot 의 preamble. */
 const BOUNDARY_STUB_TEMPLATE = (n: number): string =>
   `[이전 대화 요약 #${n} — 자세한 내용은 system prompt 의 ⑧ Compact Summary 섹션 참조]`;
 
-/** parser 실패 시 1회 재시도. 2회째 raw fallback (R2). */
+/** parser 실패 시 1회 재시도. 2회째 raw fallback. */
 const MAX_PARSE_RETRY = 1;
 
 /** Tool boundary ledger 에 보존할 마지막 K 라운드. */
@@ -415,7 +415,7 @@ function rebuildMessageWithText(msg: GenericMessage, newText: string): GenericMe
 /**
  * Archive a slice of messages to `~/.ave/sessions/<id>/truncated/` as a JSON
  * file. Used by:
- *   - Layer A.5 (history-wide reverse-budget truncation): oldest messages
+ *   - History-wide reverse-budget truncation: oldest messages
  *     beyond the LLM's input budget are archived rather than fed to the LLM.
  *   - REDUCED_INSUFFICIENT_FORCED path: oldest preserve slice that gets
  *     dropped is archived rather than silently destroyed.
@@ -440,7 +440,7 @@ async function archiveDroppedMessages(
 }
 
 /**
- * Layer A.5 — history-wide reverse-budget truncation.
+ * History-wide reverse-budget truncation.
  *
  * After `splitForBoundary` produces `toCompact`, this pass guarantees
  * `toCompact` fits into the LLM's input budget before the summary call.
@@ -481,7 +481,7 @@ async function dropOldestUntilUnderBudget(
   let cursor = 0;
   // Keep at least 1 message — `surviving.length > 1` invariant stops the loop
   // before emptying toCompact (which would then trigger NOOP / no LLM call).
-  // If a single message is genuinely huge, Layer A (per-message truncation)
+  // If a single message is genuinely huge, per-message truncation
   // already clipped it.
   while (currentTotal > budget && surviving.length > 1) {
     const oldest = surviving.shift();
@@ -495,19 +495,19 @@ async function dropOldestUntilUnderBudget(
 }
 
 /**
- * Layer 2 — Structured compact with LLM call + opaque-state slot.
+ * Structured compact with LLM call + opaque-state slot.
  *
- * 알고리즘 (v3 §4.3.3, P1 sync chain):
+ * 알고리즘:
  *   1. preserveRecentTokens 로 split (toCompact / toPreserve), tool_use/tool_result 무결성 보존
- *   2. SUMMARY_TEMPLATE_PROMPT_V1 LLM call — 동일 vendor 동급 모델 (codex 권장)
+ *   2. SUMMARY_TEMPLATE_PROMPT_V1 LLM call — 동일 vendor 동급 모델
  *   3. parseSummary (실패 시 1회 재시도, 그래도 실패 시 raw fallback)
  *   4. pinnedArtifacts 수집 (skill / lock=true)
  *   5. toolBoundaryLedger 생성 (마지막 K 라운드)
  *   6. CompactBoundary assemble + freezeBoundary
  *   7. newHistory = [stub user message + boundary meta, ...toPreserve]
  *
- * 호출자 (queryLoop, PR-2-C) 는 step 7 결과로 `history.restore()` + `setSummaryPreamble(renderBoundaryAsPreamble(boundary))`
- * 를 *동기* 순서로 실행해야 ⑧ slot 정합성 보장 (architect N2 sync chain).
+ * 호출자 는 step 7 결과로 `history.restore()` + `setSummaryPreamble(renderBoundaryAsPreamble(boundary))`
+ * 를 *동기* 순서로 실행해야 summary slot 정합성 보장.
  */
 export async function compactWithBoundary(
   args: CompactWithBoundaryArgs,
@@ -516,7 +516,7 @@ export async function compactWithBoundary(
 
   // 0. Per-message truncation pre-pass (Phase 2, Codex pattern).
   //    단일 거대 메시지 (>30K tokens) 가 LLM input context 초과하는 케이스 방지.
-  const { messages: workingMessages, truncatedCount, truncatedDir: layerATruncDir } =
+  const { messages: workingMessages, truncatedCount, truncatedDir: perMessageTruncDir } =
     await truncateOversizeMessages(messages, sessionId, compactNum);
 
   // 1. Split — 끝에서부터 preserveRecentTokens 만큼 보존, tool 페어 안전.
@@ -524,7 +524,7 @@ export async function compactWithBoundary(
 
   if (toCompact.length === 0) {
     if (truncatedCount > 0) {
-      // CONTENT_TRUNCATED — Layer A 만으로 충분히 reduce (LLM 호출 skip).
+      // CONTENT_TRUNCATED — per-message truncation 만으로 충분히 reduce (LLM 호출 skip).
       const estimatedAfter = estimateMessagesTokens(workingMessages);
       log.info(`compact: status=content_truncated truncated=${truncatedCount} estimatedAfter=${estimatedAfter} compactNum=${compactNum}`);
       return {
@@ -533,7 +533,7 @@ export async function compactWithBoundary(
         newHistory: workingMessages,
         removedCount: truncatedCount,
         estimatedAfter,
-        truncatedDir: layerATruncDir,
+        truncatedDir: perMessageTruncDir,
         truncatedCount,
       };
     }
@@ -550,23 +550,23 @@ export async function compactWithBoundary(
     };
   }
 
-  // 1a. Layer A.5 — history-wide reverse-budget truncation (Gemini pattern,
+  // 1a. History-wide reverse-budget truncation (Gemini pattern,
   //     CRITICAL contract fix). Per-message truncation handles ONE huge
   //     message, but many medium messages (예: 200 × 1K tokens) summing
   //     to > preflight will still overflow the LLM input context. Drop
   //     oldest from `toCompact` (archive to disk) until total <= 90% preflight.
   const llmInputBudget = preflightTokens > 0 ? Math.floor(preflightTokens * 0.9) : Infinity;
-  const layerAHalfResult = await dropOldestUntilUnderBudget(
+  const reverseBudgetResult = await dropOldestUntilUnderBudget(
     toCompact,
     llmInputBudget,
     sessionId,
     compactNum,
   );
-  const finalToCompact = layerAHalfResult.messages;
-  const layerAHalfDir = layerAHalfResult.truncatedDir;
-  const totalTruncatedFromLayerA = truncatedCount + layerAHalfResult.droppedCount;
+  const finalToCompact = reverseBudgetResult.messages;
+  const reverseBudgetDir = reverseBudgetResult.truncatedDir;
+  const totalTruncatedCount = truncatedCount + reverseBudgetResult.droppedCount;
 
-  // 2-3. LLM call + parse with retry-once (R2 mitigation).
+  // 2-3. LLM call + parse with retry-once.
   const conversationText = renderConversation(finalToCompact);
   let summary: ParsedSummary | null = null;
   let lastRawText = "";
@@ -590,11 +590,11 @@ export async function compactWithBoundary(
   }
 
   // 4-5. Pinned artifacts + tool boundary ledger — finalToCompact 기준
-  //     (Layer A.5 archive 이후 LLM 에 실제로 들어간 메시지들).
+  //     (reverse-budget archive 이후 LLM 에 실제로 들어간 메시지들).
   const pinnedArtifacts = collectPinned(finalToCompact);
   const toolBoundaryLedger = makeToolLedger(finalToCompact, TOOL_BOUNDARY_LEDGER_K);
 
-  // 6. Build + freeze boundary (P7 invariant — 3 view 동일 reference).
+  // 6. Build + freeze boundary (동일 reference 보장).
   const boundary = freezeBoundary({
     templateVersion: 1,
     structuredSummary: summary,
@@ -612,7 +612,7 @@ export async function compactWithBoundary(
     meta: {
       compactBoundary: true,
       compactNum,
-      removedCount: finalToCompact.length + layerAHalfResult.droppedCount,
+      removedCount: finalToCompact.length + reverseBudgetResult.droppedCount,
       compactedAt: boundary.createdAt,
       boundary,
     },
@@ -639,9 +639,9 @@ export async function compactWithBoundary(
     );
     newHistory = [stubMessage, ...survivingPreserve];
     estimatedAfter = estimateMessagesTokens(newHistory);
-    const finalTruncDir = forcedArchiveDir || layerAHalfDir || layerATruncDir || "";
-    const finalTruncCount = totalTruncatedFromLayerA + dropCount;
-    const forcedRemoved = finalToCompact.length + layerAHalfResult.droppedCount + dropCount;
+    const finalTruncDir = forcedArchiveDir || reverseBudgetDir || perMessageTruncDir || "";
+    const finalTruncCount = totalTruncatedCount + dropCount;
+    const forcedRemoved = finalToCompact.length + reverseBudgetResult.droppedCount + dropCount;
     log.warn(`compact: status=reduced_insufficient_forced removed=${forcedRemoved} truncated=${finalTruncCount} estimatedAfter=${estimatedAfter} preflight=${preflightTokens} compactNum=${compactNum}`);
     return {
       status: CompressionStatus.REDUCED_INSUFFICIENT_FORCED,
@@ -658,16 +658,16 @@ export async function compactWithBoundary(
   // 처리됐고 (toCompact.length === 0 분기), dropOldestUntilUnderBudget 는
   // surviving.length > 1 invariant 를 유지하므로 여기 도달 시 finalToCompact 가
   // 비어있을 가능성 없음.
-  const summarizedTruncDir = layerAHalfDir || layerATruncDir || "";
-  const summarizedRemoved = finalToCompact.length + layerAHalfResult.droppedCount;
-  log.info(`compact: status=summarized removed=${summarizedRemoved} truncated=${totalTruncatedFromLayerA} estimatedAfter=${estimatedAfter} compactNum=${compactNum}`);
+  const summarizedTruncDir = reverseBudgetDir || perMessageTruncDir || "";
+  const summarizedRemoved = finalToCompact.length + reverseBudgetResult.droppedCount;
+  log.info(`compact: status=summarized removed=${summarizedRemoved} truncated=${totalTruncatedCount} estimatedAfter=${estimatedAfter} compactNum=${compactNum}`);
   return {
     status: CompressionStatus.SUMMARIZED,
     boundary,
     newHistory,
     removedCount: summarizedRemoved,
     estimatedAfter,
-    truncatedCount: totalTruncatedFromLayerA,
+    truncatedCount: totalTruncatedCount,
     ...(summarizedTruncDir !== "" ? { truncatedDir: summarizedTruncDir } : {}),
   };
 }
@@ -676,7 +676,7 @@ export async function compactWithBoundary(
  * CompactBoundary → system prompt ⑧ slot preamble 텍스트 변환.
  *
  * Anthropic / Gemini 는 이 텍스트가 system prompt 안 `<prior-context-summary>` fence
- * 안에 들어감 (`system-prompt-builder.ts:447-453`) — prompt-injection vector 차단 (R9).
+ * 안에 들어감 (`system-prompt-builder.ts:447-453`) — prompt-injection vector 차단.
  * raw fallback 경우 raw 그대로 반환.
  */
 export function renderBoundaryAsPreamble(boundary: CompactBoundary): string {
@@ -725,7 +725,7 @@ export function renderBoundaryAsPreamble(boundary: CompactBoundary): string {
  *   - tool_use/tool_result 페어가 boundary 에 의해 갈리는 경우
  *     `adjustToToolBoundary` 가 최대 3 step backward walk 하여 페어를 같은
  *     쪽으로 정렬한다. 더 깊은 tool chain 이면 partial-pair 허용 (LLM summary
- *     의 R2 raw fallback 이 처리).
+ *     의 raw fallback 이 처리).
  */
 function splitForBoundary(
   messages: GenericMessage[],
@@ -772,7 +772,7 @@ function splitForBoundary(
  *
  * 대신 backward 를 3-step 으로 bound — 더 깊은 tool chain 이면 partial-pair
  * 허용. LLM summary 는 orphan tool_use/tool_result 가 있어도 12-section
- * 생성 가능 (R2 raw fallback 과 동일 원리).
+ * 생성 가능 (raw fallback 과 동일 원리).
  */
 function adjustToToolBoundary(messages: GenericMessage[], idx: number): number {
   const minIdx = Math.max(0, idx - 3);
@@ -837,7 +837,7 @@ function renderConversation(messages: GenericMessage[]): string {
   return lines.join("\n");
 }
 
-/** SUMMARY_TEMPLATE LLM 호출. 동일 vendor 동급 모델 (codex 권장 — Q2 default). */
+/** SUMMARY_TEMPLATE LLM 호출. 동일 vendor 동급 모델. */
 async function callSummaryLLM(args: {
   llm: LLMProvider;
   model: string;
@@ -866,14 +866,14 @@ async function callSummaryLLM(args: {
     ...(args.abortSignal !== undefined && { abortSignal: args.abortSignal }),
   }) as AsyncIterable<StreamEvent>) {
     if (args.abortSignal?.aborted) {
-      throw new Error("Layer 2 compact aborted by signal");
+      throw new Error("LLM compact aborted by signal");
     }
     if (ev.type === "text_delta" && ev.text) {
       text += ev.text;
     } else if (ev.type === "message_complete") {
       break;
     } else if (ev.type === "error") {
-      throw new Error(`Layer 2 LLM error: ${ev.error}`);
+      throw new Error(`LLM compact error: ${ev.error}`);
     }
   }
   return text.trim();
@@ -899,7 +899,7 @@ function collectPinned(messages: GenericMessage[]): string[] {
   return Array.from(pinned);
 }
 
-/** 마지막 K 라운드 tool_use/tool_result 쌍을 ledger 로 — Codex GPT-5 prompting "last tool boundary" 패턴. */
+/** 마지막 K 라운드 tool_use/tool_result 쌍을 ledger 로 저장. */
 function makeToolLedger(messages: GenericMessage[], k: number): ToolCallSummary[] {
   const entries: ToolCallSummary[] = [];
   let round = 0;

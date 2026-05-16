@@ -4,9 +4,9 @@
  * Two concerns:
  *  1. validateSender() allows trusted frames (file://, localhost) and rejects
  *     untrusted origins.
- *  2. Every channel classified as TIER 1 or TIER 2 in the channel manifest has
+ *  2. Every channel classified as mutating or sensitive in the channel manifest has
  *     a validateSender() guard present in the IPC domain source files
- *     (src/ipc/domains/*). TIER 3 (read-only) channels are excluded.
+ *     (src/ipc/domains/*). Public read-only channels are excluded.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -18,95 +18,93 @@ import type { IpcMainInvokeEvent } from "electron";
 // ─── Channel manifest ────────────────────────────────────────────────────────
 
 /**
- * TIER 1: destructive or settings/permissions/plugins/files/network mutators.
- * TIER 2: triggers LLM calls, writes memory/tasks, or reads sensitive local context.
- * TIER 3: pure non-sensitive read-only queries — guard not required.
+ * mutating: destructive or settings/permissions/plugins/files/network mutators.
+ * sensitive: triggers LLM calls, writes memory/tasks, or reads sensitive local context.
+ * public read-only: pure non-sensitive read-only queries — guard not required.
  */
-const CHANNEL_MANIFEST: Record<string, "tier1" | "tier2" | "tier3"> = {
+const CHANNEL_MANIFEST: Record<string, "mutating" | "sensitive" | "public-read"> = {
   // Settings
-  "ave:settings:get": "tier3",
-  "ave:settings:update": "tier1",
-  "ave:settings:set-api-key": "tier1",
-  "ave:settings:has-api-key": "tier3",
-  "ave:settings:delete-api-key": "tier1",
-  "ave:settings:set-web-api-key": "tier1",
-  "ave:settings:has-web-api-key": "tier3",
-  "ave:settings:delete-web-api-key": "tier1",
+  "ave:settings:get": "public-read",
+  "ave:settings:update": "mutating",
+  "ave:settings:set-api-key": "mutating",
+  "ave:settings:has-api-key": "public-read",
+  "ave:settings:delete-api-key": "mutating",
+  "ave:settings:set-web-api-key": "mutating",
+  "ave:settings:has-web-api-key": "public-read",
+  "ave:settings:delete-web-api-key": "mutating",
   // Chat
-  "ave:chat:has-provider": "tier3",
-  "ave:chat:send": "tier2",
-  "ave:chat:new": "tier1",
-  "ave:chat:sessions": "tier3",
-  "ave:chat:load-session": "tier1",
-  "ave:chat:get-history": "tier3",
-  "ave:chat:edit-resend": "tier2",
-  "ave:chat:fork": "tier2",
-  "ave:chat:retry-effort": "tier2",
-  "ave:chat:export": "tier2",
+  "ave:chat:has-provider": "public-read",
+  "ave:chat:send": "sensitive",
+  "ave:chat:new": "mutating",
+  "ave:chat:sessions": "public-read",
+  "ave:chat:get-history": "public-read",
+  "ave:chat:edit-resend": "sensitive",
+  "ave:chat:fork": "sensitive",
+  "ave:chat:retry-effort": "sensitive",
+  "ave:chat:export": "sensitive",
   // Memory
-  "ave:memory:entries:list": "tier2",
-  "ave:memory:entries:save": "tier2",
-  "ave:memory:entries:delete": "tier1",
-  "ave:memory:entries:search": "tier2",
-  "ave:memory:index:get": "tier2",
-  "ave:memory:sessions:list": "tier2",
-  "ave:memory:sessions:search": "tier2",
-  "ave:memory:agents-md:get": "tier2",
-  "ave:memory:agents-md:update": "tier1",
-  "ave:memory:ave-md:get": "tier2",
-  "ave:memory:ave-md:update": "tier1",
-  "ave:memory:user-prefs:get": "tier2",
-  "ave:memory:user-prefs:update": "tier1",
+  "ave:memory:entries:list": "sensitive",
+  "ave:memory:entries:save": "sensitive",
+  "ave:memory:entries:delete": "mutating",
+  "ave:memory:entries:search": "sensitive",
+  "ave:memory:index:get": "sensitive",
+  "ave:memory:sessions:list": "sensitive",
+  "ave:memory:sessions:search": "sensitive",
+  "ave:memory:agents-md:get": "sensitive",
+  "ave:memory:agents-md:update": "mutating",
+  "ave:memory:ave-md:get": "sensitive",
+  "ave:memory:ave-md:update": "mutating",
+  "ave:memory:user-prefs:get": "sensitive",
+  "ave:memory:user-prefs:update": "mutating",
   // Plugins
-  "ave:plugins:marketplace:list": "tier3",
-  "ave:plugins:install": "tier1",
-  "ave:plugins:uninstall": "tier1",
-  "ave:plugins:ui:list": "tier3",
-  "ave:plugins:cards": "tier3",
-  "ave:plugins:perf-stats": "tier3",
-  "ave:plugins:call": "tier2",
+  "ave:plugins:marketplace:list": "public-read",
+  "ave:plugins:install": "mutating",
+  "ave:plugins:uninstall": "mutating",
+  "ave:plugins:ui:list": "public-read",
+  "ave:plugins:cards": "public-read",
+  "ave:plugins:perf-stats": "public-read",
+  "ave:plugins:call": "sensitive",
   // MCP
-  "ave:mcp:servers": "tier3",
-  "ave:mcp:kill": "tier1",
+  "ave:mcp:servers": "public-read",
+  "ave:mcp:kill": "mutating",
   // Permissions
-  "ave:permission:get-mode": "tier3",
-  "ave:permission:set-mode": "tier1",
-  "ave:permission:list-rules": "tier3",
-  "ave:permission:add-rule": "tier1",
-  "ave:permission:remove-rule": "tier1",
-  [PERMISSIONS.dirDispatch]: "tier1",
-  [PERMISSIONS.reviewerDispatch]: "tier2",
-  [PERMISSIONS.deferredList]: "tier2",
-  [PERMISSIONS.deferredResolve]: "tier1",
-  [PERMISSIONS.auditShow]: "tier2",
-  [PERMISSIONS.auditVerify]: "tier2",
-  [PERMISSIONS.hookTrustList]: "tier2",
+  "ave:permission:get-mode": "public-read",
+  "ave:permission:set-mode": "mutating",
+  "ave:permission:list-rules": "public-read",
+  "ave:permission:add-rule": "mutating",
+  "ave:permission:remove-rule": "mutating",
+  [PERMISSIONS.dirDispatch]: "mutating",
+  [PERMISSIONS.reviewerDispatch]: "sensitive",
+  [PERMISSIONS.deferredList]: "sensitive",
+  [PERMISSIONS.deferredResolve]: "mutating",
+  [PERMISSIONS.auditShow]: "sensitive",
+  [PERMISSIONS.auditVerify]: "sensitive",
+  [PERMISSIONS.hookTrustList]: "sensitive",
   // Approval
-  "ave:approval:respond": "tier1",
+  "ave:approval:respond": "mutating",
   // Policy
-  "ave:policy:get": "tier3",
-  "ave:policy:set": "tier1",
+  "ave:policy:get": "public-read",
+  "ave:policy:set": "mutating",
   // Usage / observability
-  "ave:usage:summary": "tier3",
+  "ave:usage:summary": "public-read",
   // Conversation UX extras
-  "ave:starred:list": "tier3",
-  "ave:starred:add": "tier2",
-  "ave:starred:remove": "tier2",
+  "ave:starred:list": "public-read",
+  "ave:starred:add": "sensitive",
+  "ave:starred:remove": "sensitive",
   // Audit
-  "ave:audit:search": "tier3",
-  "ave:audit:stats": "tier3",
+  "ave:audit:search": "public-read",
+  "ave:audit:stats": "public-read",
   // Telemetry
-  "ave:telemetry:consent-answer": "tier1",
+  "ave:telemetry:consent-answer": "mutating",
   // Routines v2 — invoke channels only (fired/running-started/running-finished are main→renderer push, no handle)
-  "ave:routines:v2:list": "tier3",
-  "ave:routines:v2:add": "tier1",
-  "ave:routines:v2:dismiss": "tier1",
-  "ave:routines:v2:remove": "tier1",
-  "ave:routines:v2:trigger-now": "tier1",
-  "ave:routines:v2:list-sessions": "tier3",
-  "ave:routines:v2:read-session": "tier2",
+  "ave:routines:v2:list": "public-read",
+  "ave:routines:v2:add": "mutating",
+  "ave:routines:v2:dismiss": "mutating",
+  "ave:routines:v2:remove": "mutating",
+  "ave:routines:v2:trigger-now": "mutating",
+  "ave:routines:v2:list-sessions": "public-read",
   // Overlay v1 — primary-action is renderer→main invoke (write influence); show/update/dismiss are main→renderer push events
-  "ave:overlay:primary-action": "tier1",
+  "ave:overlay:primary-action": "mutating",
 };
 
 // ─── validateSender unit tests ───────────────────────────────────────────────
@@ -153,7 +151,7 @@ describe("validateSender", () => {
 
 // ─── Source-level guard audit ────────────────────────────────────────────────
 
-describe("ipc-bridge.ts — TIER 1/2 channels have validateSender guard", () => {
+describe("ipc-bridge.ts — mutating/sensitive channels have validateSender guard", () => {
   // ipc-bridge.ts is now a thin re-export shim; all handler source lives in
   // src/ipc/domains/*. Aggregate the full source so the channel + guard checks
   // remain valid against the actual implementation files.
@@ -185,11 +183,11 @@ describe("ipc-bridge.ts — TIER 1/2 channels have validateSender guard", () => 
   }
 
   const gatedChannels = Object.entries(CHANNEL_MANIFEST)
-    .filter(([, tier]) => tier === "tier1" || tier === "tier2")
+    .filter(([, access]) => access === "mutating" || access === "sensitive")
     .map(([channel]) => channel);
 
-  const tier3Channels = Object.entries(CHANNEL_MANIFEST)
-    .filter(([, tier]) => tier === "tier3")
+  const publicReadChannels = Object.entries(CHANNEL_MANIFEST)
+    .filter(([, access]) => access === "public-read")
     .map(([channel]) => channel);
   const channelConstantAliases: Record<string, string> = {
     "ave:routines:v2:list": "ROUTINES_V2.list",
@@ -198,7 +196,6 @@ describe("ipc-bridge.ts — TIER 1/2 channels have validateSender guard", () => 
     "ave:routines:v2:remove": "ROUTINES_V2.remove",
     "ave:routines:v2:trigger-now": "ROUTINES_V2.triggerNow",
     "ave:routines:v2:list-sessions": "ROUTINES_V2.listSessions",
-    "ave:routines:v2:read-session": "ROUTINES_V2.readSession",
     "ave:overlay:primary-action": "OVERLAY_V1.primaryAction",
     "ave:permission:get-mode": "PERMISSIONS.getMode",
     "ave:permission:set-mode": "PERMISSIONS.setMode",
@@ -248,8 +245,8 @@ describe("ipc-bridge.ts — TIER 1/2 channels have validateSender guard", () => 
     });
   }
 
-  for (const channel of tier3Channels) {
-    it(`${channel} is classified read-only (TIER 3)`, () => {
+  for (const channel of publicReadChannels) {
+    it(`${channel} is classified read-only (public read-only)`, () => {
       const channelPattern = handlePatternFor(channel);
       const channelIdx = source.search(channelPattern);
       expect(channelIdx, `channel "${channel}" not found in ipc-bridge.ts`).toBeGreaterThan(-1);
