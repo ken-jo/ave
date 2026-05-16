@@ -11,7 +11,7 @@
   "description": "Test Electron host app for Ave plugins.",
   "homepage": "https://github.com/former_org/ave",
   "author": {
-    "name": "former_org",
+    "name": "Ken Jo",
     "email": "jo.dreame@gmail.com"
   },
   "engines": {
