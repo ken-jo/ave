@@ -65,6 +65,11 @@ export const PERMISSIONS = {
   userApprovalList: "ave:permissions:user-approval-list",
   // 4.1: memory-hit auto-approve disclosure (main → renderer)
   userApprovalHit: "ave:permissions:user-approval-hit",
+  // Broadcast: directory config changed (main → all renderers). Emitted
+  // when allowed-directories list mutates (session-add, slash-allow,
+  // PermissionsTab dirDispatch). Multi-window PermissionsTab subscribes
+  // to refresh its "session additions" view without manual reload.
+  configChanged: "ave:permissions:config-changed",
 } as const;
 
 export const SETTINGS = {
