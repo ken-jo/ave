@@ -5,6 +5,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
   captureDemoCredentials,
+  getDemoActiveVendor,
   getDemoVendorConfig,
   getDemoKey,
   isDemoEnabled,
@@ -105,6 +106,36 @@ describe("captureDemoCredentials — vertex-ai env vars", () => {
     expect(config).not.toBeNull();
     expect(config!.vertexProject).toBeUndefined();
     expect(config!.vertexLocation).toBeUndefined();
+  });
+});
+
+describe("captureDemoCredentials — AVE_DEMO_VENDOR (#893 top-level)", () => {
+  it("captures AVE_DEMO_VENDOR and exposes it via getDemoActiveVendor", () => {
+    process.env.AVE_DEMO_ENABLED = "1";
+    process.env.AVE_DEMO_VENDOR = "claude";
+    captureDemoCredentials();
+    expect(getDemoActiveVendor()).toBe("claude");
+  });
+
+  it("defaults to openai when AVE_DEMO_VENDOR is absent", () => {
+    process.env.AVE_DEMO_ENABLED = "1";
+    delete process.env.AVE_DEMO_VENDOR;
+    captureDemoCredentials();
+    expect(getDemoActiveVendor()).toBe("openai");
+  });
+
+  it("falls back to openai when AVE_DEMO_VENDOR is not a known vendor", () => {
+    process.env.AVE_DEMO_ENABLED = "1";
+    process.env.AVE_DEMO_VENDOR = "not-a-vendor";
+    captureDemoCredentials();
+    expect(getDemoActiveVendor()).toBe("openai");
+  });
+
+  it("accepts every known LLM vendor", () => {
+    process.env.AVE_DEMO_ENABLED = "1";
+    process.env.AVE_DEMO_VENDOR = "azure-foundry";
+    captureDemoCredentials();
+    expect(getDemoActiveVendor()).toBe("azure-foundry");
   });
 });
 
