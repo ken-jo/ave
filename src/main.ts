@@ -48,6 +48,7 @@ import { ensureWorkspaceCwd } from "./main/ensure-workspace-cwd.js";
 import { uninstallPluginWithLifecycle } from "./plugins/uninstall-lifecycle.js";
 import { aveHome } from "./shared/ave-home.js";
 import { runShutdownRoutines } from "./main/shutdown-routines.js";
+import { captureDemoCredentials } from "./main/demo-credentials.js";
 const log = createLogger("ave");
 
 function errorMessage(err: unknown): string {
@@ -117,9 +118,20 @@ function applyRuntimeAppIcon() {
 // `AVE_DEV_NO_SANDBOX`, which made it incorrectly look like a dev flag;
 // the rename moves it out of the dev mask but it's still hard-gated on
 // `!app.isPackaged` by `dev-flags.ts:devNoSandboxAllowed()`.
+// #893 / PR #894 B1 — Capture `AVE_DEMO_*` BEFORE the scrub so the mockup
+// auth handler can still consume the demo keys + enable flag through an
+// internal channel, while the renderer/preload/workers never observe them
+// via inherited `process.env`. Capture is idempotent; the scrub below
+// runs unconditionally to close the env side-channel.
+captureDemoCredentials();
+
 if (app.isPackaged) {
   for (const key of Object.keys(process.env)) {
-    if (key.startsWith("AVE_DEV") || key === "AVE_WIN_NO_SANDBOX") {
+    if (
+      key.startsWith("AVE_DEV") ||
+      key.startsWith("AVE_DEMO") ||
+      key === "AVE_WIN_NO_SANDBOX"
+    ) {
       delete process.env[key];
     }
   }
