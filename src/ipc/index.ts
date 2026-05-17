@@ -8,6 +8,7 @@
  *
  * Domain → channel prefix mapping:
  *   settings     ave:settings:*, ave:shell:*, ave:telemetry:consent-answer
+ *   auth         ave:auth:* (#893 mockup login)
  *   chat         ave:chat:*, ave:routines:*, ave:routine:*, ave:trigger:*,
  *                ave:memory:*, ave:starred:*, ave:feedback:*, ave:ask-user-question:*
  *   plugins      ave:plugins:*, ave:bootstrap:*, ave:runtime:*, ave:marketplace:*,
@@ -22,6 +23,7 @@
 import { initDlpAudit } from "../audit/dlp-filter.js";
 import { getIsPackaged } from "../boot/dev-flags.js";
 import { registerSettingsHandlers } from "./domains/settings.js";
+import { registerAuthHandlers } from "./domains/auth.js";
 import { registerChatHandlers } from "./domains/chat.js";
 import { registerPluginsHandlers } from "./domains/plugins.js";
 import { registerUsageHandlers } from "./domains/usage.js";
@@ -56,6 +58,7 @@ export function registerIpcHandlers(
   initDlpAudit(deps.auditLogger, deps.conversationLoop.getSessionId());
 
   registerSettingsHandlers(deps);
+  registerAuthHandlers(deps);
   registerChatHandlers(deps);
   registerPluginsHandlers(deps);
   registerUsageHandlers(deps);

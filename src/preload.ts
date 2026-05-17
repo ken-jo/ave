@@ -240,6 +240,14 @@ const api = {
   setMarketplaceApiKey: async (apiKey: string) => ipcRenderer.invoke("ave:settings:marketplace:set-api-key", apiKey),
   hasMarketplaceApiKey: async () => ipcRenderer.invoke("ave:settings:marketplace:has-api-key") as Promise<boolean>,
   deleteMarketplaceApiKey: async () => ipcRenderer.invoke("ave:settings:marketplace:delete-api-key"),
+  // #893 — mockup credential login. Hard-coded `demo`/`demo123` (env override
+  // via `AVE_DEMO_USER` / `AVE_DEMO_PASS`); on success the per-vendor demo
+  // key env var (`AVE_DEMO_KEY_<VENDOR>`) is moved into the encrypted secret
+  // store under `llm.apiKey.<vendor>`.
+  loginMockup: async (payload: { username: string; password: string; vendor: string }) =>
+    ipcRenderer.invoke("ave:auth:login-mockup", payload) as Promise<
+      { ok: true; vendor: string } | { ok: false; error: string }
+    >,
   openSettingsWindow: async (initialTab?: string) =>
     ipcRenderer.invoke("ave:settings-window:open", initialTab) as Promise<
       { ok: true; windowId: number } | { ok: false; error: string }
