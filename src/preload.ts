@@ -262,6 +262,36 @@ const api = {
         }
       | { ok: false; error: string }
     >,
+  // Tutorial-A — login screen variant preference. The host stores the
+  // chosen variant under `~/.ave/login-prefs/login-prefs.json`; reading
+  // returns the persisted value or the default. The `onChanged` channel
+  // fires after a successful set so every open window can remount its
+  // LoginModal without an app restart.
+  loginPrefsGet: async () =>
+    ipcRenderer.invoke("ave:login-prefs:get") as Promise<
+      | { ok: true; prefs: { loginVariant: "conversational" | "cli-agent" } }
+      | { ok: false; error: string; message: string }
+    >,
+  loginPrefsSet: async (payload: { loginVariant: "conversational" | "cli-agent" }) =>
+    ipcRenderer.invoke("ave:login-prefs:set", payload) as Promise<
+      | { ok: true; prefs: { loginVariant: "conversational" | "cli-agent" } }
+      | { ok: false; error: string; message: string }
+    >,
+  onLoginPrefsChanged: (
+    handler: (prefs: { loginVariant: "conversational" | "cli-agent" }) => void,
+  ) => {
+    const listener = (
+      _event: unknown,
+      payload: { loginVariant?: unknown },
+    ) => {
+      const variant = payload?.loginVariant;
+      if (variant === "conversational" || variant === "cli-agent") {
+        handler({ loginVariant: variant });
+      }
+    };
+    ipcRenderer.on("ave:login-prefs:changed", listener);
+    return () => ipcRenderer.removeListener("ave:login-prefs:changed", listener);
+  },
   openSettingsWindow: async (initialTab?: string) =>
     ipcRenderer.invoke("ave:settings-window:open", initialTab) as Promise<
       { ok: true; windowId: number } | { ok: false; error: string }
