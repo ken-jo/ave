@@ -80,13 +80,26 @@ describe("PluginMarketplaceService managed bootstrap", () => {
     );
 
     const service = makeManagedService(testDir, marketplacePath);
+    // Redesign #964: ensureManagedInstalled drives `installWithDependencies`
+    // directly with actor="it-admin" (catalog-derived escalation lives in
+    // the public `install()`; the managed-bootstrap path already holds the
+    // catalog item, so it bypasses the catalog re-fetch). Spy on the
+    // internal method to assert the actor is still "it-admin".
     const installSpy = vi
-      .spyOn(service, "install")
+      .spyOn(
+        service as unknown as {
+          installWithDependencies: (...args: unknown[]) => Promise<{ pluginId: string; installed: true }>;
+        },
+        "installWithDependencies",
+      )
       .mockResolvedValue({ pluginId: "meeting", installed: true });
 
     const result = await service.ensureManagedInstalled();
 
-    expect(installSpy).toHaveBeenCalledWith("meeting", "it-admin");
+    expect(installSpy).toHaveBeenCalled();
+    const [pluginId, actor] = installSpy.mock.calls[0]!;
+    expect(pluginId).toBe("meeting");
+    expect(actor).toBe("it-admin");
     expect(result.installed).toEqual(["meeting"]);
     expect(result.failed).toEqual([]);
   });
@@ -141,13 +154,23 @@ describe("PluginMarketplaceService managed bootstrap", () => {
     );
 
     const service = makeManagedService(testDir, marketplacePath);
+    // Redesign #964: spy on installWithDependencies (see note in the
+    // first `reinstalls managed plugins …` case above).
     const installSpy = vi
-      .spyOn(service, "install")
+      .spyOn(
+        service as unknown as {
+          installWithDependencies: (...args: unknown[]) => Promise<{ pluginId: string; installed: true }>;
+        },
+        "installWithDependencies",
+      )
       .mockResolvedValue({ pluginId: "meeting", installed: true });
 
     const result = await service.ensureManagedInstalled();
 
-    expect(installSpy).toHaveBeenCalledWith("meeting", "it-admin");
+    expect(installSpy).toHaveBeenCalled();
+    const [pluginId, actor] = installSpy.mock.calls[0]!;
+    expect(pluginId).toBe("meeting");
+    expect(actor).toBe("it-admin");
     expect(result.installed).toEqual(["meeting"]);
     expect(result.failed).toEqual([]);
   });
@@ -212,7 +235,7 @@ describe("PluginMarketplaceService managed bootstrap", () => {
       .spyOn((service as unknown as { artifactStore: { cacheVersionFromManifest: (...args: unknown[]) => Promise<void> } }).artifactStore, "cacheVersionFromManifest")
       .mockResolvedValue();
 
-    const result = await service.install("vega-helper", "it-admin");
+    const result = await service.install("vega-helper");
 
     expect(result).toEqual({ pluginId: "vega-helper", installed: true });
     expect(installSpy.mock.calls.map(([plugin]) => (plugin as { id: string }).id)).toEqual([
@@ -282,7 +305,7 @@ describe("PluginMarketplaceService managed bootstrap", () => {
     vi
       .spyOn((service as unknown as { artifactStore: { cacheVersionFromManifest: (...args: unknown[]) => Promise<void> } }).artifactStore, "cacheVersionFromManifest")
       .mockResolvedValue();
-    await expect(service.install("vega-helper", "it-admin")).resolves.toEqual({
+    await expect(service.install("vega-helper")).resolves.toEqual({
       pluginId: "vega-helper",
       installed: true,
     });
@@ -469,7 +492,7 @@ describe("PluginMarketplaceService managed bootstrap", () => {
       .spyOn(service as unknown as { runNpmInstall: (spec: string) => Promise<void> }, "runNpmInstall")
       .mockResolvedValue();
 
-    await expect(service.install("vega-helper", "it-admin")).resolves.toEqual({
+    await expect(service.install("vega-helper")).resolves.toEqual({
       pluginId: "vega-helper",
       installed: true,
     });
