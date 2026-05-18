@@ -140,6 +140,7 @@ import {
 import { runManagedBootstrap } from "./boot/managed-marketplace.js";
 import { createLogger } from "./lib/logger.js";
 import { aveHome } from "./shared/ave-home.js";
+import { seedAveHomeDocs } from "./main/seed-ave-home-docs.js";
 const log = createLogger("ave");
 
 export type { AppServices } from "./boot/types.js";
@@ -172,6 +173,23 @@ export async function bootstrap(
   getMainWindow: () => BrowserWindow | null = () => mainWindow,
 ): Promise<AppServices> {
   log.info("boot: starting...");
+
+  // Seed user-facing docs into `~/.ave/` before any other component reads
+  // home state. AGENTS.md is the LLM-facing system reference; on first boot
+  // it is copied from packaged resources, and on subsequent upgrades a
+  // `.new` sibling is dropped next to the user's edited copy for diff/merge.
+  // Non-fatal — failures log and continue.
+  try {
+    const seeded = seedAveHomeDocs();
+    if (seeded.seeded.length > 0) {
+      log.info(`boot: seeded ave-home docs: ${seeded.seeded.join(", ")}`);
+    }
+    if (seeded.upgraded.length > 0) {
+      log.info(`boot: ave-home docs upgrade available: ${seeded.upgraded.join(", ")}`);
+    }
+  } catch (err) {
+    log.warn(`boot: seedAveHomeDocs failed (non-fatal): ${String(err)}`);
+  }
 
   // §4.2 Step 0-1 + 4-5: Core services.
   const core = await bootstrapCoreServices(mainWindow);
