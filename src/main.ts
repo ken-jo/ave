@@ -746,7 +746,7 @@ async function handleAveUri(url: string) {
     const installLockId =
       catalogItems.find((item) => item.id === params.slug || item.slug === params.slug)?.id ?? params.slug;
     return await withPluginInstallLock(installLockId, async () => {
-      const result = await activeServices.pluginMarketplace.install(params.slug, "user", (evt) => {
+      const result = await activeServices.pluginMarketplace.install(params.slug, (evt) => {
         if (evt.phase === "downloading") {
           broadcastPluginLifecycleEvent("ave:plugins:install-progress", {
             slug: params.slug,
