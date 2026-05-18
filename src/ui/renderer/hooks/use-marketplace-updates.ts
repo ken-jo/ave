@@ -3,6 +3,7 @@ import type { AveApi } from "../types.js";
 
 export interface PluginUpdateInfo {
   pluginId: string;
+  pluginName?: string;
   installedVersion: string;
   latestVersion: string;
 }
