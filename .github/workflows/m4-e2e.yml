@@ -36,6 +36,7 @@ jobs:
         with:
           repository: former_org/agent-marketplace
           path: agent-marketplace
+          token: ${{ secrets.M4_MARKETPLACE_CHECKOUT_TOKEN }}
 
       - name: Setup Python
         uses: actions/setup-python@v6
