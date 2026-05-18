@@ -240,6 +240,24 @@ const api = {
   setMarketplaceApiKey: async (apiKey: string) => ipcRenderer.invoke("ave:settings:marketplace:set-api-key", apiKey),
   hasMarketplaceApiKey: async () => ipcRenderer.invoke("ave:settings:marketplace:has-api-key") as Promise<boolean>,
   deleteMarketplaceApiKey: async () => ipcRenderer.invoke("ave:settings:marketplace:delete-api-key"),
+  // #893 — top-level mockup credential login. Hard-coded `demo`/`demo123`
+  // (env override via `AVE_DEMO_USER` / `AVE_DEMO_PASS`). Vendor is no
+  // longer sent by the renderer; the backend picks via `AVE_DEMO_VENDOR`
+  // (default `"openai"`) and reports it back on success along with the
+  // applied baseUrl/model/vertex config.
+  loginMockup: async (payload: { username: string; password: string }) =>
+    ipcRenderer.invoke("ave:auth:login-mockup", payload) as Promise<
+      | {
+          ok: true;
+          vendor: string;
+          model?: string;
+          baseUrl?: string;
+          vertexProject?: string;
+          vertexLocation?: string;
+          fieldsApplied: string[];
+        }
+      | { ok: false; error: string }
+    >,
   openSettingsWindow: async (initialTab?: string) =>
     ipcRenderer.invoke("ave:settings-window:open", initialTab) as Promise<
       { ok: true; windowId: number } | { ok: false; error: string }
