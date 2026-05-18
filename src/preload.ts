@@ -292,6 +292,67 @@ const api = {
     ipcRenderer.on("ave:login-prefs:changed", listener);
     return () => ipcRenderer.removeListener("ave:login-prefs:changed", listener);
   },
+  // Tutorial-C — SpotlightTour state bridge. Host stores tour completion
+  // under `~/.ave/onboarding/tour-state.json`; `tour.start` broadcasts a
+  // `ave:tour:start` event to every open window so detached panes also
+  // launch the tour. `getState` is read-never-throws (returns the default
+  // shape on any failure) per the project storage contract.
+  tour: {
+    getState: async () =>
+      ipcRenderer.invoke("ave:tour:get-state") as Promise<
+        | {
+            ok: true;
+            state: {
+              lastSeenScenario: string | null;
+              completedScenarios: string[];
+              dismissedAt: string | null;
+            };
+          }
+        | { ok: false; error: string; message: string }
+      >,
+    markComplete: async (scenarioId: string) =>
+      ipcRenderer.invoke("ave:tour:mark-complete", { scenarioId }) as Promise<
+        | {
+            ok: true;
+            state: {
+              lastSeenScenario: string | null;
+              completedScenarios: string[];
+              dismissedAt: string | null;
+            };
+          }
+        | { ok: false; error: string; message: string }
+      >,
+    dismiss: async (scenarioId: string) =>
+      ipcRenderer.invoke("ave:tour:dismiss", { scenarioId }) as Promise<
+        | {
+            ok: true;
+            state: {
+              lastSeenScenario: string | null;
+              completedScenarios: string[];
+              dismissedAt: string | null;
+            };
+          }
+        | { ok: false; error: string; message: string }
+      >,
+    start: async (scenarioId: string) =>
+      ipcRenderer.invoke("ave:tour:start", { scenarioId }) as Promise<
+        | { ok: true; scenarioId: string }
+        | { ok: false; error: string; message: string }
+      >,
+    onStart: (handler: (payload: { scenarioId: string }) => void) => {
+      const listener = (
+        _event: unknown,
+        payload: { scenarioId?: unknown },
+      ) => {
+        const id = payload?.scenarioId;
+        if (typeof id === "string" && id.length > 0) {
+          handler({ scenarioId: id });
+        }
+      };
+      ipcRenderer.on("ave:tour:start", listener);
+      return () => ipcRenderer.removeListener("ave:tour:start", listener);
+    },
+  },
   openSettingsWindow: async (initialTab?: string) =>
     ipcRenderer.invoke("ave:settings-window:open", initialTab) as Promise<
       { ok: true; windowId: number } | { ok: false; error: string }
