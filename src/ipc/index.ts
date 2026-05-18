@@ -10,7 +10,8 @@
  *   settings     ave:settings:*, ave:shell:*, ave:telemetry:consent-answer
  *   auth         ave:auth:* (#893 mockup login)
  *   login-prefs  ave:login-prefs:* — login screen variant toggle
- *   tour         ave:tour:* — Tutorial-C SpotlightTour state + broadcast
+ *   tour         ave:tour:*        — Tutorial-C SpotlightTour state + broadcast
+ *   tutorial     ave:tutorial:*    — Tutorial-D Discovery Swipe state + open trigger
  *   chat         ave:chat:*, ave:routines:*, ave:routine:*, ave:trigger:*,
  *                ave:memory:*, ave:starred:*, ave:feedback:*, ave:ask-user-question:*
  *   plugins      ave:plugins:*, ave:bootstrap:*, ave:runtime:*, ave:marketplace:*,
@@ -29,6 +30,7 @@ import { registerSettingsHandlers } from "./domains/settings.js";
 import { registerAuthHandlers } from "./domains/auth.js";
 import { registerLoginPrefsHandlers } from "./domains/login-prefs.js";
 import { registerTourHandlers } from "./domains/tour.js";
+import { registerTutorialHandlers } from "./domains/tutorial.js";
 import { registerChatHandlers } from "./domains/chat.js";
 import { registerPluginsHandlers } from "./domains/plugins.js";
 import { registerUsageHandlers } from "./domains/usage.js";
@@ -67,6 +69,7 @@ export function registerIpcHandlers(
   registerAuthHandlers(deps);
   registerLoginPrefsHandlers(deps);
   registerTourHandlers(deps);
+  registerTutorialHandlers(deps);
   registerChatHandlers(deps);
   registerPluginsHandlers(deps);
   registerUsageHandlers(deps);
