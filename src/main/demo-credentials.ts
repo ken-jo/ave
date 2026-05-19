@@ -1,20 +1,22 @@
 /**
  * Demo credentials capture (#893 / PR #894 review B1).
  *
- * Mockup login keys (`AVE_DEMO_KEY_<VENDOR>`) and the `AVE_DEMO_ENABLED`
- * gate are *dev/demo affordances only*. In packaged builds, `main.ts` scrubs
- * `AVE_DEV*` / `AVE_DEMO*` from `process.env` before any preload/renderer
- * inherits the environment. The scrub itself happens early at boot — but
- * the auth IPC handler still needs to know whether demo was enabled and
- * which vendor keys were provided.
+ * Mockup login keys (`AVE_DEMO_KEY_<VENDOR>`) are *dev/demo affordances
+ * only*. In packaged builds, `main.ts` scrubs `AVE_DEV*` / `AVE_DEMO*`
+ * from `process.env` before any preload/renderer inherits the environment.
+ * The scrub itself happens early at boot — but the auth IPC handler still
+ * needs to know whether demo was enabled and which vendor keys were
+ * provided.
  *
  * Solution: capture demo state from `process.env` at module load (very
  * early in `main.ts`, BEFORE the scrub runs), store it in module-scoped
  * state, and expose only typed accessors. After the scrub, the captured
  * values remain but `process.env` no longer leaks them — closing the
- * forensic side-channel without breaking the demo loop. Production builds
- * never call `enableDemoCapture()` (or it would set `enabled=false`), so
- * `registerAuthHandlers` no-ops.
+ * forensic side-channel without breaking the demo loop. The capture
+ * derives `enabled` from the presence of `AVE_DEMO_KEY_*` entries — a
+ * valid activation payload always ships ≥1 vendor key, so a non-empty key
+ * set is the canonical "demo activated" signal. No separate toggle env
+ * var is required or honored — the activation code itself is the gate.
  *
  * Extended env vars captured (#893 full-config expansion):
  *   AVE_DEMO_BASEURL_<VENDOR>   — Azure Foundry / custom endpoint URL
@@ -108,7 +110,6 @@ let didCapture = false;
 export function captureDemoCredentials(): void {
   if (didCapture) return;
   didCapture = true;
-  const enabled = process.env.AVE_DEMO_ENABLED === "1";
   const user = process.env.AVE_DEMO_USER;
   const pass = process.env.AVE_DEMO_PASS;
   const keys = new Map<string, string>();
@@ -136,6 +137,11 @@ export function captureDemoCredentials(): void {
     ? rawActiveVendor
     : DEFAULT_DEMO_VENDOR;
 
+  // A valid activation payload always ships ≥1 `AVE_DEMO_KEY_<VENDOR>`
+  // entry; a non-empty key set is the canonical "demo activated" signal.
+  // No separate toggle env var is honored — the activation code is the gate.
+  const enabled = keys.size > 0;
+
   captured = {
     enabled,
     activeVendor,
@@ -153,9 +159,10 @@ export function captureDemoCredentials(): void {
 }
 
 /**
- * `true` when demo mode was enabled via `AVE_DEMO_ENABLED=1` at boot.
- * Production builds without this env var return `false`, gating the
- * mockup login IPC handler off so the channel never registers.
+ * `true` when demo mode was activated at boot — i.e. `captureDemoCredentials`
+ * found ≥1 `AVE_DEMO_KEY_<VENDOR>` entry in `process.env`. A boot without
+ * any captured vendor key returns `false`, gating the mockup login IPC
+ * handler off so the channel never registers.
  */
 export function isDemoEnabled(): boolean {
   return captured.enabled;

@@ -67,7 +67,6 @@ function makeDeps() {
 }
 
 const SAMPLE_ENV = [
-  "AVE_DEMO_ENABLED=1",
   "AVE_DEMO_VENDOR=azure-foundry",
   "AVE_DEMO_KEY_AZURE_FOUNDRY=sk-activated-key",
   "AVE_DEMO_BASEURL_AZURE_FOUNDRY=https://example.openai.azure.com/openai/v1/",
@@ -190,7 +189,6 @@ describe("ave:demo:activate — first-activation relaunch (v0.2.1 hotfix)", () =
     // Simulate the second-boot path: `.env.demo` already on disk →
     // `captureDemoCredentials` ran with the right env → `isDemoEnabled()`
     // returns true → activation handler captures `demoWasEffectiveAtBoot=true`.
-    process.env.AVE_DEMO_ENABLED = "1";
     process.env.AVE_DEMO_VENDOR = "azure-foundry";
     process.env.AVE_DEMO_KEY_AZURE_FOUNDRY = "sk-boot-key";
     process.env.AVE_DEMO_BASEURL_AZURE_FOUNDRY = "https://example.openai.azure.com/openai/v1/";
@@ -309,7 +307,7 @@ describe("ave:demo:relaunch-after-activation — sender guard", () => {
 describe("ave:demo:activate — no-vendor", () => {
   it("rejects a payload missing AVE_DEMO_VENDOR", async () => {
     const { codec, demoMod } = await loadDemoModule();
-    const payloadWithoutVendor = "AVE_DEMO_ENABLED=1\nAVE_DEMO_KEY_OPENAI=k\n";
+    const payloadWithoutVendor = "AVE_DEMO_KEY_OPENAI=k\n";
     const code = codec.encryptActivationPayload(payloadWithoutVendor);
 
     const deps = makeDeps();

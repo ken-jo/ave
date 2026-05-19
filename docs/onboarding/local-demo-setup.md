@@ -32,9 +32,13 @@ hard-coded `demo` / `demo123` mockup credentials; the IPC handler then
 looks up the per-vendor API key from `AVE_DEMO_KEY_<VENDOR>` and persists
 it into the encrypted secret store.
 
+Demo mode is activated implicitly when `captureDemoCredentials()` finds at
+least one `AVE_DEMO_KEY_<VENDOR>` entry in `process.env` at boot — no
+separate gate variable is required. In packaged builds the mockup IPC
+handler still refuses to register unless a key was captured pre-scrub.
+
 | Env var | Purpose |
 |---|---|
-| `AVE_DEMO_ENABLED=1` | Master gate. Without this, the IPC handler refuses to register in packaged builds. |
 | `AVE_DEMO_VENDOR=azure-foundry` | Top-level vendor the login activates (default is `azure-foundry` for the internal organization demo target). |
 | `AVE_DEMO_KEY_AZURE_FOUNDRY=<api-key>` | The Azure Foundry API key to provision. |
 | `AVE_DEMO_BASEURL_AZURE_FOUNDRY=<endpoint>` | The Azure Foundry endpoint URL. |
@@ -105,7 +109,6 @@ source .env.demo && bun run start
 Full variable reference for `.env.demo`:
 
 ```bash
-AVE_DEMO_ENABLED=1
 AVE_DEMO_VENDOR=azure-foundry
 AVE_DEMO_KEY_AZURE_FOUNDRY=<paste-api-key-here>
 AVE_DEMO_BASEURL_AZURE_FOUNDRY=https://aif-example.openai.azure.com/openai/v1/
