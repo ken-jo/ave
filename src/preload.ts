@@ -262,6 +262,233 @@ const api = {
         }
       | { ok: false; error: string }
     >,
+  // Tutorial-X1 — Auth progress IPC. The host emits `ave:auth:progress`
+  // events at each real step of `loginMockup` (credentials-validating →
+  // llm-key-issuing → sandbox-preparing → complete) so the LoginModal
+  // checklist animates against actual main-process work instead of a
+  // renderer `setTimeout` illusion. Channel is one-way (main → renderer);
+  // each event payload is `{ step, status, vendor?, error? }` where
+  // `step`/`status` are kebab-case English (CLAUDE.md error-language).
+  auth: {
+    onProgress: (
+      handler: (event: {
+        step: "credentials-validating" | "llm-key-issuing" | "sandbox-preparing" | "complete";
+        status: "running" | "done" | "failed";
+        vendor?: string;
+        error?: string;
+      }) => void,
+    ) => {
+      const validSteps = new Set([
+        "credentials-validating",
+        "llm-key-issuing",
+        "sandbox-preparing",
+        "complete",
+      ]);
+      const validStatuses = new Set(["running", "done", "failed"]);
+      const listener = (
+        _event: unknown,
+        payload: {
+          step?: unknown;
+          status?: unknown;
+          vendor?: unknown;
+          error?: unknown;
+        },
+      ) => {
+        const step = payload?.step;
+        const status = payload?.status;
+        if (typeof step !== "string" || !validSteps.has(step)) return;
+        if (typeof status !== "string" || !validStatuses.has(status)) return;
+        handler({
+          step: step as
+            | "credentials-validating"
+            | "llm-key-issuing"
+            | "sandbox-preparing"
+            | "complete",
+          status: status as "running" | "done" | "failed",
+          ...(typeof payload?.vendor === "string" ? { vendor: payload.vendor } : {}),
+          ...(typeof payload?.error === "string" ? { error: payload.error } : {}),
+        });
+      };
+      ipcRenderer.on("ave:auth:progress", listener);
+      return () => ipcRenderer.removeListener("ave:auth:progress", listener);
+    },
+  },
+  /**
+   * Demo activation bridge. The LoginModal chip 1 funnels through here
+   * before invoking `loginMockup`: the user pastes a `AVE-DEMO:v1:<...>`
+   * activation string, the main process decrypts it back into the original
+   * `.env.demo` payload, persists it under `~/.ave/secrets/.env.demo`
+   * (0o600), and re-runs the demo-credentials capture so the subsequent
+   * `loginMockup` call observes the freshly-injected vendor keys.
+   *
+   * Error codes (kebab-case English per CLAUDE.md):
+   *   - `invalid-code`     bad prefix, corrupt base64, auth-tag mismatch,
+   *                        or empty input.
+   *   - `no-vendor`        decrypted payload missing `AVE_DEMO_VENDOR`.
+   *   - `persist-failed`   filesystem write failure (permission/disk).
+   *   - `unauthorized-frame` rejected sender frame (shared with gated IPC).
+   * The renderer translates each into the Korean user-facing message.
+   */
+  demo: {
+    activate: async (code: string) =>
+      ipcRenderer.invoke("ave:demo:activate", { code }) as Promise<
+        | { ok: true; vendor: string }
+        | { ok: false; error: "invalid-code" | "no-vendor" | "persist-failed" | "unauthorized-frame" }
+      >,
+  },
+  // Tutorial-C — SpotlightTour state bridge. Host stores tour completion
+  // under `~/.ave/onboarding/tour-state.json`; `tour.start` broadcasts a
+  // `ave:tour:start` event to every open window so detached panes also
+  // launch the tour. `getState` is read-never-throws (returns the default
+  // shape on any failure) per the project storage contract.
+  tour: {
+    getState: async () =>
+      ipcRenderer.invoke("ave:tour:get-state") as Promise<
+        | {
+            ok: true;
+            state: {
+              lastSeenScenario: string | null;
+              completedScenarios: string[];
+              dismissedAt: string | null;
+            };
+          }
+        | { ok: false; error: string; message: string }
+      >,
+    markComplete: async (scenarioId: string) =>
+      ipcRenderer.invoke("ave:tour:mark-complete", { scenarioId }) as Promise<
+        | {
+            ok: true;
+            state: {
+              lastSeenScenario: string | null;
+              completedScenarios: string[];
+              dismissedAt: string | null;
+            };
+          }
+        | { ok: false; error: string; message: string }
+      >,
+    dismiss: async (scenarioId: string) =>
+      ipcRenderer.invoke("ave:tour:dismiss", { scenarioId }) as Promise<
+        | {
+            ok: true;
+            state: {
+              lastSeenScenario: string | null;
+              completedScenarios: string[];
+              dismissedAt: string | null;
+            };
+          }
+        | { ok: false; error: string; message: string }
+      >,
+    start: async (scenarioId: string) =>
+      ipcRenderer.invoke("ave:tour:start", { scenarioId }) as Promise<
+        | { ok: true; scenarioId: string }
+        | { ok: false; error: string; message: string }
+      >,
+    onStart: (handler: (payload: { scenarioId: string }) => void) => {
+      const listener = (
+        _event: unknown,
+        payload: { scenarioId?: unknown },
+      ) => {
+        const id = payload?.scenarioId;
+        if (typeof id === "string" && id.length > 0) {
+          handler({ scenarioId: id });
+        }
+      };
+      ipcRenderer.on("ave:tour:start", listener);
+      return () => ipcRenderer.removeListener("ave:tour:start", listener);
+    },
+  },
+  // Tutorial-D — Discovery Swipe IPC bridges. The host persists the
+  // outcome under `~/.ave/tutorial/preferences.json` and broadcasts an
+  // `open` signal to every window so the dialog mounts on top of any
+  // surface (chat, settings, plugin webview). The dialog itself routes
+  // the final scenario dispatch through the Tutorial-C `tour.start`
+  // bridge above so there is one SpotlightTour entry point.
+  tutorialGetPreferences: async () =>
+    ipcRenderer.invoke("ave:tutorial:get-preferences") as Promise<
+      | { ok: true; prefs: { liked: string[]; disliked: string[]; lastShownAt: string } }
+      | { ok: false; error: string; message: string }
+    >,
+  tutorialRecord: async (payload: {
+    cardId: string;
+    action: "liked" | "disliked" | "skipped" | "undone";
+  }) =>
+    ipcRenderer.invoke("ave:tutorial:record", payload) as Promise<
+      | { ok: true; prefs: { liked: string[]; disliked: string[]; lastShownAt: string } }
+      | { ok: false; error: string; message: string }
+    >,
+  tutorialOpen: async () =>
+    ipcRenderer.invoke("ave:tutorial:open") as Promise<
+      { ok: true } | { ok: false; error: string; message: string }
+    >,
+  tutorialShowContextMenu: async () =>
+    ipcRenderer.invoke("ave:tutorial:show-context-menu") as Promise<
+      { ok: true } | { ok: false; error: string; message: string }
+    >,
+  // Tutorial-X2 — Discovery Swipe + Memory Seed plugin install bridge.
+  // Delegates to the canonical `ave:plugins:install` IPC (same handler
+  // the marketplace UI uses); the renderer wraps the response into the
+  // tutorial result shape so the dialogs can react to success/failure
+  // without depending on the marketplace `PluginMarketplaceActionResult`
+  // schema. Errors come back as kebab-case English (CLAUDE.md).
+  tutorialInstallPlugin: async (pluginId: string) => {
+    const raw = (await ipcRenderer.invoke(
+      "ave:plugins:install",
+      pluginId,
+    )) as {
+      ok?: boolean;
+      pluginId?: string;
+      error?: string;
+      message?: string;
+    } | null;
+    if (raw && raw.ok === true && typeof raw.pluginId === "string") {
+      return { ok: true as const, pluginId: raw.pluginId };
+    }
+    return {
+      ok: false as const,
+      error: typeof raw?.error === "string" ? raw.error : "install-failed",
+      message: typeof raw?.message === "string" ? raw.message : "plugin install failed",
+    };
+  },
+  // Tutorial-X4 — Onboarding Context writer. Called once by the renderer
+  // after the Memory Seed wizard dismisses with a short markdown block
+  // (호칭 + 자기소개 + installed plugin slugs). The host writes the file
+  // under `~/.ave/onboarding/onboarding-context.md`; the SystemPromptBuilder
+  // then injects it as section id=9.86 "User Onboarding Context" on each
+  // subsequent turn until the user clears it.
+  onboardingContextSet: async (content: string) =>
+    ipcRenderer.invoke("ave:onboarding:context:set", { content }) as Promise<
+      | { ok: true }
+      | { ok: false; error: string; message: string }
+    >,
+  onTutorialOpen: (handler: (payload: { source: string }) => void) => {
+    const listener = (_event: unknown, payload: { source?: unknown }) => {
+      const source = typeof payload?.source === "string" ? payload.source : "ipc";
+      handler({ source });
+    };
+    ipcRenderer.on("ave:tutorial:open", listener);
+    return () => ipcRenderer.removeListener("ave:tutorial:open", listener);
+  },
+  onTutorialPreferencesChanged: (
+    handler: (prefs: { liked: string[]; disliked: string[]; lastShownAt: string }) => void,
+  ) => {
+    const listener = (
+      _event: unknown,
+      payload: { liked?: unknown; disliked?: unknown; lastShownAt?: unknown },
+    ) => {
+      const liked = Array.isArray(payload?.liked)
+        ? payload.liked.filter((v): v is string => typeof v === "string")
+        : [];
+      const disliked = Array.isArray(payload?.disliked)
+        ? payload.disliked.filter((v): v is string => typeof v === "string")
+        : [];
+      const lastShownAt =
+        typeof payload?.lastShownAt === "string" ? payload.lastShownAt : "";
+      handler({ liked, disliked, lastShownAt });
+    };
+    ipcRenderer.on("ave:tutorial:preferences-changed", listener);
+    return () =>
+      ipcRenderer.removeListener("ave:tutorial:preferences-changed", listener);
+  },
   openSettingsWindow: async (initialTab?: string) =>
     ipcRenderer.invoke("ave:settings-window:open", initialTab) as Promise<
       { ok: true; windowId: number } | { ok: false; error: string }
@@ -745,6 +972,22 @@ const api = {
       online: boolean;
     }>,
 
+  // Settings "일반" dashboard — host metadata. SoT for `version` is the
+  // Ave project package.json (resolved by the main process via
+  // `app.getAppPath()`); stack fields come from `process.versions`. The
+  // renderer never hard-codes these values.
+  getAppInfo: async () =>
+    ipcRenderer.invoke("ave:app:info") as Promise<{
+      version: string;
+      electronVersion: string;
+      nodeVersion: string;
+      chromeVersion: string;
+      v8Version: string;
+      platform: NodeJS.Platform;
+      arch: string;
+      userDataPath: string;
+    }>,
+
   // ─── Plugin Events ──────────────────────────────
   onPluginEvent: (
     eventType: string,
@@ -945,6 +1188,16 @@ const api = {
       offset?: number;
     }) => ipcRenderer.invoke("ave:audit:search", filter),
     getStats: async (lastDays: number) => ipcRenderer.invoke("ave:audit:stats", lastDays),
+    /**
+     * Live Auto-play — renderer reports each demo phase. The main-side
+     * handler enforces the `[demo-autoplay]` prefix + `route: "demo-autoplay"`
+     * so analytics queries can filter the demo channel without inspecting
+     * per-field payloads. Proposal: docs/architecture/proposals/live-autoplay.md §8.
+     */
+    logDemoAutoplay: async (payload: { scriptId: string; phase: string; detail?: string }) =>
+      ipcRenderer.invoke("ave:audit:log-demo-autoplay", payload) as Promise<
+        { ok: true } | { ok: false; error: string; message: string }
+      >,
   },
 
   // ─── D6 — Message feedback ───────────────────────
@@ -1342,6 +1595,12 @@ contextBridge.exposeInMainWorld("ave", {
     debugStream:
       process.env.VITE_DEBUG_STREAM === "1" ||
       (process.env.AVE_DEV === "1" && process.env.AVE_DEV_CONSOLE === "1"),
+    /**
+     * Live Auto-play (proposal §7) — vendor id pre-staged by env. Surfaced
+     * to the renderer so `useDemoAutoplay()` can short-circuit when
+     * `AVE_DEMO_VENDOR` is unset (production dead-path).
+     */
+    demoVendor: typeof process.env.AVE_DEMO_VENDOR === "string" ? process.env.AVE_DEMO_VENDOR : null,
   },
   attach: {
     openFile: () => ipcRenderer.invoke("ave:attach:openFile"),
