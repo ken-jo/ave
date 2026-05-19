@@ -163,6 +163,23 @@ export function registerMiscHandlers(deps: IpcDeps): void {
     return undefined;
   });
 
+  // ─── App info ────────────────────────────────────
+  // Read-only host metadata for the Settings "일반" tab dashboard. Returns
+  // the canonical app version (electron `app.getVersion()` — single source
+  // of truth) plus the host's `process.platform` so the renderer can show
+  // the OS label without duplicating a userAgent parser.
+  // Read-only and idempotent; no sender guard required (mirrors
+  // `ave:settings:get` / `ave:audit:stats`).
+  ipcMain.handle("ave:app:info", async () => {
+    const { app } = await import("electron");
+    return {
+      version: app.getVersion(),
+      platform: process.platform,
+      arch: process.arch,
+      userDataPath: app.getPath("userData"),
+    };
+  });
+
   // ─── Session Todo ────────────────────────────────
   ipcMain.handle("ave:session-todo:list", (e, sessionId?: string) => {
     if (!validateSender(e)) {
