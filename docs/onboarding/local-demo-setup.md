@@ -44,30 +44,38 @@ AVE_DEMO_HOST_MAP="aif-example.cognitiveservices.azure.com=10.0.100.174,aif-exam
 When `AVE_DEMO_VENDOR` is anything other than `azure-foundry`, the host
 map is ignored (other vendors resolve via public DNS).
 
-## Local launch — `.env.demo` template
+## Local launch — `.env.demo` setup
 
-Create `~/.ave/.env.demo` (or pass via your launch script) with the demo
-credentials. The file is gitignored by repo convention — never commit it.
+A template is committed at `.env.demo.example`. Copy it to `.env.demo`
+(gitignored) and fill in the real credentials:
 
 ```bash
-# ~/.ave/.env.demo — local demo credentials (DO NOT COMMIT)
-
-export AVE_DEMO_ENABLED=1
-export AVE_DEMO_VENDOR=azure-foundry
-
-# Azure Foundry endpoint (corporate issued; intranet-only)
-export AVE_DEMO_KEY_AZURE_FOUNDRY="<paste-api-key-here>"
-export AVE_DEMO_BASEURL_AZURE_FOUNDRY="https://aif-example.openai.azure.com/openai/v1/"
-export AVE_DEMO_MODEL_AZURE_FOUNDRY="gpt-4o"
-
-# Host resolver — Electron-only, no /etc/hosts mutation
-export AVE_DEMO_HOST_MAP="aif-example.cognitiveservices.azure.com=10.0.100.174,aif-example.openai.azure.com=10.0.100.175,aif-example.services.ai.azure.com=10.0.100.176"
+cp .env.demo.example .env.demo
+# Open .env.demo and replace <paste-api-key-here> with the corporate-issued key.
 ```
 
-Then launch the app with:
+`scripts/run-electron.mjs` automatically loads `.env.demo` when the file is
+present in the repo root, so **no manual `source` is required**:
 
 ```bash
-source ~/.ave/.env.demo && bun run start
+bun run start   # .env.demo is picked up automatically
+```
+
+If you prefer to export variables manually (e.g. in a wrapper script):
+
+```bash
+source .env.demo && bun run start
+```
+
+Full variable reference for `.env.demo`:
+
+```bash
+AVE_DEMO_ENABLED=1
+AVE_DEMO_VENDOR=azure-foundry
+AVE_DEMO_KEY_AZURE_FOUNDRY=<paste-api-key-here>
+AVE_DEMO_BASEURL_AZURE_FOUNDRY=https://aif-example.openai.azure.com/openai/v1/
+AVE_DEMO_MODEL_AZURE_FOUNDRY=gpt-4o
+AVE_DEMO_HOST_MAP=aif-example.cognitiveservices.azure.com=10.0.100.174,aif-example.openai.azure.com=10.0.100.175,aif-example.services.ai.azure.com=10.0.100.176
 ```
 
 When the Login modal opens, click the green **"데모 자격증명으로 30초 안에 체험"**
@@ -79,8 +87,10 @@ and closes the modal.
 
 - **`로그인 처리 중 오류가 발생했습니다.`** — IPC channel error. Check the
   main-process log for the underlying exception.
-- **`데모 API 키가 환경 변수에 설정되어 있지 않습니다.`** — `AVE_DEMO_KEY_AZURE_FOUNDRY`
-  is unset. Verify the `.env.demo` file is sourced before launch.
+- **`데모 모드 설정 확인이 필요해요. 환경 변수 AVE_DEMO_VENDOR=azure-foundry …`** —
+  `AVE_DEMO_KEY_AZURE_FOUNDRY` is unset or `AVE_DEMO_VENDOR` is not `azure-foundry`.
+  Create or source `.env.demo` before launch (`bun run start` does this automatically
+  when the file is present in the repo root).
 - **`데모 자격증명이 올바르지 않습니다.`** — the renderer chip used the wrong
   username/password. Should never happen with the chip-driven flow; if it
   does, file an issue with the auth audit log.
