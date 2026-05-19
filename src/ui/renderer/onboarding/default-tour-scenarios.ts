@@ -199,29 +199,33 @@ const DOC_SEARCH_TOUR: TourScenario = {
   ],
 };
 
-const PROACTIVE_WORK_TOUR: TourScenario = {
-  id: "proactive-work-tour",
+const VEGA_HELPER_TOUR: TourScenario = {
+  // Renamed from `proactive-work-tour` to align with the canonical
+  // 업무 도우미 brand. Plugin tour-anchors live in ave-plugin-vega-early
+  // (package repo) and use the manifest id (vega-helper) on their DOM
+  // attributes — the test/e2e fixture pins `manifest.id="vega-helper"`.
+  id: "vega-helper-tour",
   title: "이메일 → 할 일 가이드",
   steps: [
     {
-      anchorSelector: '[data-tour-anchor="vega-early-connect"]',
+      anchorSelector: '[data-tour-anchor="vega-helper-connect"]',
       title: "1단계 · 이메일 계정 연결",
-      body: "vega-early 플러그인에서 이메일 계정 (LYRA Mail 등) 을 연결합니다. 인증은 시스템 브라우저에서 진행돼요.",
+      body: "업무 도우미 플러그인에서 이메일 계정 (LYRA Mail 등) 을 연결합니다. 인증은 시스템 브라우저에서 진행돼요.",
     },
     {
-      anchorSelector: '[data-tour-anchor="vega-early-scan"]',
+      anchorSelector: '[data-tour-anchor="vega-helper-scan"]',
       title: "2단계 · 받은편지함 스캔",
       body: "주기적으로 받은편지함을 스캔해 액션 아이템 후보를 추출합니다. 모든 후보는 오버레이 카드로 표시되어 사용자가 검토할 수 있습니다.",
     },
     {
-      anchorSelector: '[data-tour-anchor="vega-early-overlay"]',
+      anchorSelector: '[data-tour-anchor="vega-helper-overlay"]',
       title: "3단계 · 후보 승인 또는 무시",
       body: "오버레이 카드에서 '✓ 채택' 을 누르면 Ave 가 후속 작업을 자동 시작합니다. 무시하면 후보는 사라지고 audit 로그에 기록됩니다.",
     },
     {
       anchorSelector: '[data-tour-anchor="composer-input"]',
       title: "4단계 · 가이드 완료",
-      body: "이메일 스캔 주기는 설정 → 플러그인 → vega-early 에서 조정할 수 있어요.",
+      body: "이메일 스캔 주기는 설정 → 플러그인 → 업무 도우미에서 조정할 수 있어요.",
       keyHint: ["⌘+?"],
     },
   ],
@@ -320,22 +324,24 @@ const INDEXER_WALKTHROUGH: TourScenario = {
   ],
 };
 
-const PROACTIVE_WALKTHROUGH: TourScenario = {
-  id: "proactive-walkthrough",
-  title: "업무 알림 둘러보기",
+const VEGA_HELPER_WALKTHROUGH: TourScenario = {
+  // Renamed from `proactive-walkthrough`. Discovery card
+  // `vega-helper.spotlightScenarioId` dispatches into this scenario id.
+  id: "vega-helper-walkthrough",
+  title: "업무 도우미 둘러보기",
   steps: [
     {
-      anchorSelector: '[data-tour-anchor="plugin-shell:proactive-inbox"]',
+      anchorSelector: '[data-tour-anchor="plugin-shell:vega-helper-inbox"]',
       title: "받은 메일 자동 스캔",
       body: "받은편지함에서 액션 아이템 후보를 자동으로 추출합니다. 외부로 보내지 않고 로컬에서만 분석.",
     },
     {
-      anchorSelector: '[data-tour-anchor="plugin-shell:proactive-actions"]',
+      anchorSelector: '[data-tour-anchor="plugin-shell:vega-helper-actions"]',
       title: "할 일 후보 카드",
       body: "후보별로 한 줄 요약 + '할 일 추가' 버튼이 있어요. 항상 사용자 승인 후에 Ave 작업이 됩니다.",
     },
     {
-      anchorSelector: '[data-tour-anchor="plugin-shell:proactive-rules"]',
+      anchorSelector: '[data-tour-anchor="plugin-shell:vega-helper-rules"]',
       title: "규칙 편집",
       body: "어떤 발신자/키워드를 우선 처리할지 직접 정합니다. 변경은 즉시 반영.",
     },
@@ -362,10 +368,10 @@ export const DEFAULT_TOUR_SCENARIOS: Readonly<Record<string, TourScenario>> = Ob
   [FIRST_BOOT_ESSENTIALS.id]: FIRST_BOOT_ESSENTIALS,
   [MEETING_WALKTHROUGH.id]: MEETING_WALKTHROUGH,
   [INDEXER_WALKTHROUGH.id]: INDEXER_WALKTHROUGH,
-  [PROACTIVE_WALKTHROUGH.id]: PROACTIVE_WALKTHROUGH,
+  [VEGA_HELPER_WALKTHROUGH.id]: VEGA_HELPER_WALKTHROUGH,
   [MEETING_SUMMARY_TOUR.id]: MEETING_SUMMARY_TOUR,
   [DOC_SEARCH_TOUR.id]: DOC_SEARCH_TOUR,
-  [PROACTIVE_WORK_TOUR.id]: PROACTIVE_WORK_TOUR,
+  [VEGA_HELPER_TOUR.id]: VEGA_HELPER_TOUR,
   [MULTI_AGENT_TOUR.id]: MULTI_AGENT_TOUR,
 });
 
