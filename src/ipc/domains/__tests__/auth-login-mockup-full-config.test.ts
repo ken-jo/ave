@@ -81,6 +81,8 @@ async function loadAuthModule() {
 
 describe("auth:login-mockup — full vendor config application (#893)", () => {
   it("applies only apiKey when no extra demo env vars are set (backward compat)", async () => {
+    // Path 2 hotfix: pin vendor to openai (default is now azure-foundry).
+    process.env.AVE_DEMO_VENDOR = "openai";
     process.env.AVE_DEMO_KEY_OPENAI = "sk-openai-only";
     // No AVE_DEMO_BASEURL_OPENAI, no AVE_DEMO_MODEL_OPENAI.
     const deps = makeDeps();
@@ -140,6 +142,8 @@ describe("auth:login-mockup — full vendor config application (#893)", () => {
   });
 
   it("applies apiKey + model when AVE_DEMO_MODEL_<VENDOR> is set", async () => {
+    // Path 2 hotfix: pin vendor to openai (default is now azure-foundry).
+    process.env.AVE_DEMO_VENDOR = "openai";
     process.env.AVE_DEMO_KEY_OPENAI = "sk-openai-key";
     process.env.AVE_DEMO_MODEL_OPENAI = "gpt-5";
     const deps = makeDeps();
