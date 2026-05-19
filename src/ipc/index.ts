@@ -12,7 +12,7 @@
  *   demo         ave:demo:* (activation-code → .env.demo decrypt + persist)
  *   tour         ave:tour:*        — Tutorial-C SpotlightTour state + broadcast
  *   tutorial     ave:tutorial:*    — Tutorial-D Discovery Swipe state + open trigger
- *   chat         ave:chat:*, ave:routines:*, ave:routine:*, ave:trigger:*,
+ *   chat         ave:chat:*, ave:llm:*, ave:routines:*, ave:routine:*, ave:trigger:*,
  *                ave:memory:*, ave:starred:*, ave:feedback:*, ave:ask-user-question:*
  *   plugins      ave:plugins:*, ave:bootstrap:*, ave:runtime:*, ave:marketplace:*,
  *                ave:mcp:*, ave:plugin:*, ave:file:*, ave:notification:clicked

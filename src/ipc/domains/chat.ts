@@ -430,6 +430,13 @@ export function registerChatHandlers(deps: IpcDeps): void {
 
   // read-only, sender guard optional
   ipcMain.handle("ave:chat:has-provider", () => conversationLoop.hasProvider());
+  ipcMain.handle("ave:llm:ping", async (e) => {
+    if (!validateSender(e)) {
+      auditUnauthorized(auditLogger, "ave:llm:ping", e);
+      return UNAUTHORIZED_FRAME;
+    }
+    return conversationLoop.pingProvider();
+  });
 
   let activeStreamTurn: Promise<TurnResult> | null = null;
   let nextStreamId = 0;
