@@ -60,10 +60,14 @@ const MATRIX: MatrixRow[] = [
     marketplaceSlug: "ave-plugin-local-indexer",
   },
   {
-    pluginId: "vega-early",
-    label: "vega-early",
+    // Manifest id is `vega-helper` (per plugin manifest); the repo slug
+    // `ave-plugin-vega-early` is the legacy marketplace package name
+    // kept for backward-compat installs. Display label is the user-facing
+    // 업무 도우미 brand — "vega-early" is no longer a user-visible term.
+    pluginId: "vega-helper",
+    label: "업무 도우미",
     emoji: "💼",
-    keywords: ["업무", "할일", "todo", "task", "proactive", "일정"],
+    keywords: ["업무", "할일", "todo", "task", "proactive", "assistant", "일정"],
     marketplaceSlug: "ave-plugin-vega-early",
   },
   {

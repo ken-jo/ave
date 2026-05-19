@@ -21,10 +21,10 @@ describe("inferRecommendedPlugins", () => {
     const ids = inferRecommendedPlugins(
       "회의록 정리하고 문서 검색도 자주 합니다. 일정 관리 자동화",
     ).map((r) => r.pluginId);
-    // Matrix order: meeting → local-indexer → vega-early → lyra-mail → agent-hub
-    // "일정" hits both vega-early and lyra-mail rows (shared keyword by design —
+    // Matrix order: meeting → local-indexer → vega-helper → lyra-mail → agent-hub
+    // "일정" hits both vega-helper and lyra-mail rows (shared keyword by design —
     // scheduling spans both surfaces).
-    expect(ids).toEqual(["meeting", "local-indexer", "vega-early", "lyra-mail"]);
+    expect(ids).toEqual(["meeting", "local-indexer", "vega-helper", "lyra-mail"]);
   });
 
   it("collapses duplicate hits from synonyms", () => {

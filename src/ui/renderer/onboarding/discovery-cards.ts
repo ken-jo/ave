@@ -81,13 +81,18 @@ export const DISCOVERY_CARDS: readonly DiscoveryCard[] = [
     ],
   },
   {
-    id: "proactive-work",
+    // Card id renamed from `proactive-work` → `vega-helper` so persisted
+    // tutorial preferences (~/.ave/tutorial/) align with the canonical
+    // brand. The marketplace `pluginId` stays `ave-plugin-vega-early`
+    // because that is still the published package slug; the install
+    // pipeline resolves the slug to manifest id `vega-helper`.
+    id: "vega-helper",
     icon: "💼",
     title: "이메일 → 할 일 자동 추출 + 알림",
     description:
-      "vega-early 가 받은편지함을 스캔해 액션 아이템 후보를 알려줍니다.",
+      "업무 도우미가 받은편지함을 스캔해 액션 아이템 후보를 알려줍니다.",
     tags: ["오버레이", "알림", "수동 승인"],
-    spotlightScenarioId: "proactive-walkthrough",
+    spotlightScenarioId: "vega-helper-walkthrough",
     pluginId: "ave-plugin-vega-early",
     previewSteps: [
       "이메일 연결",
