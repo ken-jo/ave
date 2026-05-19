@@ -313,36 +313,6 @@ const api = {
       return () => ipcRenderer.removeListener("ave:auth:progress", listener);
     },
   },
-  // Tutorial-A — login screen variant preference. The host stores the
-  // chosen variant under `~/.ave/login-prefs/login-prefs.json`; reading
-  // returns the persisted value or the default. The `onChanged` channel
-  // fires after a successful set so every open window can remount its
-  // LoginModal without an app restart.
-  loginPrefsGet: async () =>
-    ipcRenderer.invoke("ave:login-prefs:get") as Promise<
-      | { ok: true; prefs: { loginVariant: "conversational" | "cli-agent" } }
-      | { ok: false; error: string; message: string }
-    >,
-  loginPrefsSet: async (payload: { loginVariant: "conversational" | "cli-agent" }) =>
-    ipcRenderer.invoke("ave:login-prefs:set", payload) as Promise<
-      | { ok: true; prefs: { loginVariant: "conversational" | "cli-agent" } }
-      | { ok: false; error: string; message: string }
-    >,
-  onLoginPrefsChanged: (
-    handler: (prefs: { loginVariant: "conversational" | "cli-agent" }) => void,
-  ) => {
-    const listener = (
-      _event: unknown,
-      payload: { loginVariant?: unknown },
-    ) => {
-      const variant = payload?.loginVariant;
-      if (variant === "conversational" || variant === "cli-agent") {
-        handler({ loginVariant: variant });
-      }
-    };
-    ipcRenderer.on("ave:login-prefs:changed", listener);
-    return () => ipcRenderer.removeListener("ave:login-prefs:changed", listener);
-  },
   // Tutorial-C — SpotlightTour state bridge. Host stores tour completion
   // under `~/.ave/onboarding/tour-state.json`; `tour.start` broadcasts a
   // `ave:tour:start` event to every open window so detached panes also
