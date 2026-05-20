@@ -20,6 +20,9 @@
  *
  * Extended env vars captured (#893 full-config expansion):
  *   AVE_DEMO_BASEURL_<VENDOR>   — Azure Foundry / custom endpoint URL
+ *   AVE_DEMO_ENDPOINT_<VENDOR>  — accepted v1 activation payload alias;
+ *                                  normalized to baseUrl at the external
+ *                                  activation boundary.
  *   AVE_DEMO_MODEL_<VENDOR>     — default model id (optional override)
  *   AVE_DEMO_VERTEX_PROJECT     — Vertex AI GCP project (vertex-ai only)
  *   AVE_DEMO_VERTEX_LOCATION    — Vertex AI GCP region (vertex-ai only)
@@ -124,6 +127,9 @@ export function captureDemoCredentials(): void {
     } else if (k.startsWith("AVE_DEMO_BASEURL_")) {
       const suffix = k.slice("AVE_DEMO_BASEURL_".length);
       if (suffix.length > 0) baseUrls.set(suffix, v);
+    } else if (k.startsWith("AVE_DEMO_ENDPOINT_")) {
+      const suffix = k.slice("AVE_DEMO_ENDPOINT_".length);
+      if (suffix.length > 0 && !baseUrls.has(suffix)) baseUrls.set(suffix, v);
     } else if (k.startsWith("AVE_DEMO_MODEL_")) {
       const suffix = k.slice("AVE_DEMO_MODEL_".length);
       if (suffix.length > 0) models.set(suffix, v);
