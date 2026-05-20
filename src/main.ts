@@ -44,7 +44,7 @@ import { createLogger } from "./lib/logger.js";
 import { AVE_LOGO_PATH, AVE_LOGO_VIEW_BOX } from "./shared/ave-logo.js";
 import { getAveAppVersion } from "./shared/app-version.js";
 import { normalizeSettingsTab } from "./shared/settings-tabs.js";
-import { preparePythonRuntimeForInstalledPlugin, withPluginInstallLock } from "./plugins/install-lifecycle.js";
+import { startInstalledPluginWithLifecycle, withPluginInstallLock } from "./plugins/install-lifecycle.js";
 import { ensureWorkspaceCwd } from "./main/ensure-workspace-cwd.js";
 import { uninstallPluginWithLifecycle } from "./plugins/uninstall-lifecycle.js";
 import { aveHome } from "./shared/ave-home.js";
@@ -546,12 +546,12 @@ async function handleMcpMarketplaceAction(
       throw new Error("MCP marketplace install is unavailable: marketplace backend is disabled in this build.");
     }
     const { installMcpFromMarketplace } = await import("./mcp/mcp-marketplace-install.js");
-    const result = await installMcpFromMarketplace(params.slug, {
+    await installMcpFromMarketplace(params.slug, {
       fetcher: activeServices.pluginMarketplace.getFetcher(),
       store: activeServices.mcpArtifactStore,
       pythonPath: activeServices.pythonPath,
+      registerConfig: (config) => activeServices.mcpManager.addConfig(config),
     });
-    await activeServices.mcpManager.addConfig(result.config);
   })().catch((err: Error) => {
     log.error({ slug: params.slug, error: err.message, stack: err.stack }, "ave:// MCP install failed");
   });
@@ -585,12 +585,12 @@ async function handleMcpLoginAction(
       throw new Error("MCP marketplace login is unavailable: marketplace backend is disabled in this build.");
     }
     const { installMcpFromMarketplace } = await import("./mcp/mcp-marketplace-install.js");
-    const result = await installMcpFromMarketplace(params.slug, {
+    await installMcpFromMarketplace(params.slug, {
       fetcher: activeServices.pluginMarketplace.getFetcher(),
       store: activeServices.mcpArtifactStore,
       pythonPath: activeServices.pythonPath,
+      registerConfig: (config) => activeServices.mcpManager.addConfig(config),
     });
-    await activeServices.mcpManager.addConfig(result.config);
     openSettingsWindow("mcp");
   })().catch((err: Error) => {
     log.error({ slug: params.slug, error: err.message, stack: err.stack }, "ave:// MCP login failed");
@@ -795,25 +795,27 @@ async function handleAveUri(url: string) {
   aveDevLog("[ave] handleAveUri: dialog response", { slug: params.slug, response });
   if (response !== 0) return;
   aveDevLog("[ave] handleAveUri: starting install", { slug: params.slug });
-  // Renderer renders a skeleton card while these phase events fire — see
-  // PluginConfigTab + plugin grid progress UI.
-  const lifecycleSlug = params.slug;
-  broadcastPluginLifecycleEvent("ave:plugins:install-progress", { slug: lifecycleSlug, phase: "installing" });
+  let installProgressSlug = params.slug;
   void (async () => {
     const catalogItems = await activeServices.pluginMarketplace.list();
     const installLockId =
       catalogItems.find((item) => item.id === params.slug || item.slug === params.slug)?.id ?? params.slug;
+    installProgressSlug = installLockId;
+    // Renderer renders a skeleton card while these phase events fire — see
+    // PluginConfigTab + plugin grid progress UI. Key every phase by the
+    // canonical plugin id so alias deep-links don't leave stale in-flight rows.
+    broadcastPluginLifecycleEvent("ave:plugins:install-progress", { slug: installLockId, phase: "installing" });
     return await withPluginInstallLock(installLockId, async () => {
       const result = await activeServices.pluginMarketplace.install(params.slug, (evt) => {
         if (evt.phase === "downloading") {
           broadcastPluginLifecycleEvent("ave:plugins:install-progress", {
-            slug: lifecycleSlug,
+            slug: installLockId,
             phase: "downloading",
             bytesDownloaded: evt.bytesDownloaded,
             bytesTotal: evt.bytesTotal,
           });
         } else {
-          broadcastPluginLifecycleEvent("ave:plugins:install-progress", { slug: lifecycleSlug, phase: evt.phase });
+          broadcastPluginLifecycleEvent("ave:plugins:install-progress", { slug: installLockId, phase: evt.phase });
         }
       });
       const pluginId = result.pluginId;
@@ -821,42 +823,32 @@ async function handleAveUri(url: string) {
       // Mirror the post-install steps from the ave:plugins:install IPC handler
       // so deep-link installs behave identically to in-app installs.
       try {
-        broadcastPluginLifecycleEvent("ave:plugins:install-progress", { slug: lifecycleSlug, phase: "restarting" });
-        await preparePythonRuntimeForInstalledPlugin(pluginId, {
-          pythonRuntime: activeServices.pythonRuntime,
+        await startInstalledPluginWithLifecycle({
+          pluginId,
+          source: "marketplace",
+          rollbackMode: "marketplace",
           pluginRuntime: activeServices.pluginRuntime,
-          getMainWindow: () => mainWindow,
+          pluginMarketplace: activeServices.pluginMarketplace,
+          broadcastInstallProgress: (payload) =>
+            broadcastPluginLifecycleEvent("ave:plugins:install-progress", payload),
+          emitPluginInstalled: (payload) => emitHostEvent("plugin.installed", payload),
+          refreshPluginNotifications: activeServices.refreshPluginNotifications,
+          log,
         });
-        // US-A3 — single-plugin lifecycle: only the deep-link-installed
-        // plugin starts up. Other plugins keep their in-memory state.
-        await activeServices.pluginRuntime.addPlugin(pluginId);
-        emitHostEvent("plugin.installed", { pluginId, source: "marketplace" });
-        activeServices.refreshPluginNotifications?.();
       } catch (err) {
         const message = errorMessage(err) || "addPlugin failed";
         log.error({ pluginId, err }, "post-install steps failed for ave:// install");
-        try {
-          await activeServices.pluginRuntime.removePlugin(pluginId).catch((rmPluginErr) => {
-            log.warn(
-              { pluginId, rmPluginErr },
-              "ave:// install rollback removePlugin failed",
-            );
-          });
-          await activeServices.pluginMarketplace.uninstall(pluginId);
-        } catch (rollbackErr) {
-          log.warn(
-            { pluginId, rollbackErr },
-            "ave:// install rollback uninstall failed",
-          );
-        }
-        broadcastPluginLifecycleEvent("ave:plugins:install-result", { slug: lifecycleSlug, success: false, error: message });
+        broadcastPluginLifecycleEvent("ave:plugins:install-result", { slug: pluginId, success: false, error: message });
         return;
       }
-      broadcastPluginLifecycleEvent("ave:plugins:install-result", { slug: lifecycleSlug, success: true });
+      broadcastPluginLifecycleEvent("ave:plugins:install-result", {
+        slug: pluginId,
+        success: true,
+      });
     });
   })().catch((err: Error) => {
     log.error({ slug: params.slug, error: err.message, stack: err.stack }, "ave:// install failed");
-    broadcastPluginLifecycleEvent("ave:plugins:install-result", { slug: lifecycleSlug, success: false, error: err.message });
+    broadcastPluginLifecycleEvent("ave:plugins:install-result", { slug: installProgressSlug, success: false, error: err.message });
   });
 }
 
