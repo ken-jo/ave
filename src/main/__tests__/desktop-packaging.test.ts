@@ -60,13 +60,17 @@ describe("desktop packaging", () => {
     expect(script).not.toContain("AVE_HOME:-");
   });
 
-  it("keeps Windows uninstall registered without deleting user data by default", () => {
+  it("removes user data on Windows uninstall (Roaming + ~/.ave cleanup wired)", () => {
     const pkg = readPackageJson();
     expect(pkg.build.nsis).toMatchObject({
       oneClick: true,
       createStartMenuShortcut: true,
       uninstallDisplayName: "Ave",
-      deleteAppDataOnUninstall: false,
+      // electron-builder auto-removes `%APPDATA%\Ave\` (Roaming userData).
+      deleteAppDataOnUninstall: true,
+      // Custom NSIS hook covers what `deleteAppDataOnUninstall` cannot —
+      // `%USERPROFILE%\.ave\` (AVE_HOME) and `%LOCALAPPDATA%\Ave\` residuals.
+      include: "build/installer.nsh",
     });
   });
 });

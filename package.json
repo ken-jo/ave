@@ -280,7 +280,8 @@
       "differentialPackage": true,
       "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,
-      "deleteAppDataOnUninstall": false,
+      "deleteAppDataOnUninstall": true,
+      "include": "build/installer.nsh",
       "uninstallDisplayName": "Ave",
       "shortcutName": "Ave",
       "artifactName": "${productName}-${version}-windows-${arch}-setup.${ext}"
