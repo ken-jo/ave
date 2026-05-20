@@ -21,10 +21,10 @@ describe("main process plugin lifecycle regression guards", () => {
     const addIndex = lifecycleSection!.indexOf("await activeServices.pluginRuntime.addPlugin(pluginId)");
     const rollbackIndex = lifecycleSection!.indexOf("await activeServices.pluginMarketplace.uninstall(pluginId)");
     const failureIndex = lifecycleSection!.indexOf(
-      'broadcastPluginLifecycleEvent("ave:plugins:install-result", { slug: pluginId, success: false, error: message })',
+      'broadcastPluginLifecycleEvent("ave:plugins:install-result", { slug: lifecycleSlug, success: false, error: message })',
     );
     const successIndex = lifecycleSection!.indexOf(
-      'broadcastPluginLifecycleEvent("ave:plugins:install-result", { slug: pluginId, success: true })',
+      'broadcastPluginLifecycleEvent("ave:plugins:install-result", { slug: lifecycleSlug, success: true })',
     );
 
     expect(lockIndex).toBeGreaterThanOrEqual(0);
