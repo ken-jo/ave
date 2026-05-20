@@ -20,6 +20,9 @@
  *
  * Extended env vars captured (#893 full-config expansion):
  *   AVE_DEMO_BASEURL_<VENDOR>   — Azure Foundry / custom endpoint URL
+ *   AVE_DEMO_ENDPOINT_<VENDOR>  — accepted v1 activation payload alias;
+ *                                  normalized to baseUrl at the external
+ *                                  activation boundary.
  *   AVE_DEMO_MODEL_<VENDOR>     — default model id (optional override)
  *   AVE_DEMO_VERTEX_PROJECT     — Vertex AI GCP project (vertex-ai only)
  *   AVE_DEMO_VERTEX_LOCATION    — Vertex AI GCP region (vertex-ai only)
@@ -32,13 +35,10 @@
  *                                  Read via `getDemoActiveVendor()`.
  *
  * Path 2 hotfix (internal organization demo):
- *   When `AVE_DEMO_KEY_AZURE_FOUNDRY` / `AVE_DEMO_BASEURL_AZURE_FOUNDRY`
- *   are absent and `getDemoVendorConfig("azure-foundry")` would otherwise
- *   return `null`, a baked-in internal-issued endpoint + key is returned.
- *   This is *security-reviewed user-authorized hardcoding* — see the PR
- *   description for the constraint envelope (internal organization demo
- *   only, reachable only via the Electron `host-resolver-rules` switch
- *   that maps to the 10.0.100.0/24 intranet block).
+ *   Azure Foundry remains the default demo vendor, but the actual API key
+ *   and endpoint must come from launch env or persisted `.env.demo`
+ *   activation. `getDemoVendorConfig("azure-foundry")` returns `null`
+ *   without a captured key.
  */
 import { createLogger } from "../lib/logger.js";
 import { isLLMVendor, type LLMVendor } from "../shared/llm-vendor-defaults.js";
@@ -124,6 +124,9 @@ export function captureDemoCredentials(): void {
     } else if (k.startsWith("AVE_DEMO_BASEURL_")) {
       const suffix = k.slice("AVE_DEMO_BASEURL_".length);
       if (suffix.length > 0) baseUrls.set(suffix, v);
+    } else if (k.startsWith("AVE_DEMO_ENDPOINT_")) {
+      const suffix = k.slice("AVE_DEMO_ENDPOINT_".length);
+      if (suffix.length > 0 && !baseUrls.has(suffix)) baseUrls.set(suffix, v);
     } else if (k.startsWith("AVE_DEMO_MODEL_")) {
       const suffix = k.slice("AVE_DEMO_MODEL_".length);
       if (suffix.length > 0) models.set(suffix, v);
@@ -170,7 +173,7 @@ export function isDemoEnabled(): boolean {
 
 /**
  * #893 — Vendor the top-level Login button should activate. Captured from
- * `AVE_DEMO_VENDOR`; defaults to `"openai"` when absent or invalid.
+ * `AVE_DEMO_VENDOR`; defaults to `"azure-foundry"` when absent or invalid.
  *
  * The auth IPC handler reads this to decide which vendor to persist the
  * demo apiKey under; the renderer never has to pick a vendor when the user

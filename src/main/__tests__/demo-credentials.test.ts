@@ -37,6 +37,27 @@ describe("captureDemoCredentials — baseUrl / model env vars", () => {
     expect(config!.baseUrl).toBe("https://my-resource.openai.azure.com/");
   });
 
+  it("normalizes AVE_DEMO_ENDPOINT_<VENDOR> activation payloads into baseUrl", () => {
+    process.env.AVE_DEMO_KEY_AZURE_FOUNDRY = "sk-azure-key";
+    process.env.AVE_DEMO_ENDPOINT_AZURE_FOUNDRY = "https://endpoint.example/openai/v1/";
+    captureDemoCredentials();
+
+    const config = getDemoVendorConfig("azure-foundry");
+    expect(config).not.toBeNull();
+    expect(config!.baseUrl).toBe("https://endpoint.example/openai/v1/");
+  });
+
+  it("prefers AVE_DEMO_BASEURL_<VENDOR> over the endpoint alias", () => {
+    process.env.AVE_DEMO_KEY_AZURE_FOUNDRY = "sk-azure-key";
+    process.env.AVE_DEMO_BASEURL_AZURE_FOUNDRY = "https://baseurl.example/openai/v1/";
+    process.env.AVE_DEMO_ENDPOINT_AZURE_FOUNDRY = "https://endpoint.example/openai/v1/";
+    captureDemoCredentials();
+
+    const config = getDemoVendorConfig("azure-foundry");
+    expect(config).not.toBeNull();
+    expect(config!.baseUrl).toBe("https://baseurl.example/openai/v1/");
+  });
+
   it("captures AVE_DEMO_MODEL_<VENDOR> and exposes it via getDemoVendorConfig", () => {
     process.env.AVE_DEMO_KEY_OPENAI = "sk-openai-key";
     process.env.AVE_DEMO_MODEL_OPENAI = "gpt-5";
