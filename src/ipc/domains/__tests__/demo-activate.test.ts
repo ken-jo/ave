@@ -506,6 +506,71 @@ describe("ave:demo:activate — invalid endpoint", () => {
   });
 });
 
+describe("ave:demo:clear", () => {
+  it("removes .env.demo, scrubs AVE_DEMO_* env vars, and resets the captured demo state", async () => {
+    // 2026-05-20 — Settings 의 로그아웃 path. activate → clear 의 한 round-trip
+    // 으로 .env.demo 파일이 사라지고, process.env 의 AVE_DEMO_* 가 모두
+    // 비워지며, main 의 captured demo state 가 inactive 로 회귀하는지 검증.
+    const { codec, credsMod, demoMod } = await loadDemoModule();
+    const code = codec.encryptActivationPayload(SAMPLE_ENV);
+
+    const deps = makeDeps();
+    demoMod.registerDemoHandlers(deps as never);
+
+    const activateResult = (await invoke("ave:demo:activate", { code })) as {
+      ok: true;
+    };
+    expect(activateResult.ok).toBe(true);
+    expect(existsSync(join(tempHome, "secrets", ".env.demo"))).toBe(true);
+    expect(process.env.AVE_DEMO_KEY_AZURE_FOUNDRY).toBe("sk-activated-key");
+    expect(credsMod.isDemoEnabled()).toBe(true);
+
+    const clearResult = await invoke("ave:demo:clear");
+    expect(clearResult).toEqual({ ok: true });
+
+    expect(existsSync(join(tempHome, "secrets", ".env.demo"))).toBe(false);
+    for (const k of Object.keys(process.env)) {
+      expect(k.startsWith("AVE_DEMO_")).toBe(false);
+    }
+    expect(credsMod.isDemoEnabled()).toBe(false);
+    expect(credsMod.getDemoVendorConfig("azure-foundry")).toBeNull();
+
+    // Audit row for the clear event.
+    expect(deps.auditLogger.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "info",
+        input: expect.stringContaining("[demo-activation] cleared"),
+      }),
+    );
+
+    // Subsequent relaunch IPC should be unarmed.
+    const relaunch = await invoke("ave:demo:relaunch-after-activation");
+    expect(relaunch).toEqual({ ok: false, error: "not-armed" });
+  });
+
+  it("is idempotent — clearing twice without an active demo still returns ok:true", async () => {
+    const { demoMod } = await loadDemoModule();
+    const deps = makeDeps();
+    demoMod.registerDemoHandlers(deps as never);
+
+    const first = await invoke("ave:demo:clear");
+    expect(first).toEqual({ ok: true });
+    const second = await invoke("ave:demo:clear");
+    expect(second).toEqual({ ok: true });
+  });
+
+  it("rejects an untrusted sender frame", async () => {
+    const { demoMod } = await loadDemoModule();
+    const deps = makeDeps();
+    demoMod.registerDemoHandlers(deps as never);
+    const result = await invokeWithEvent(
+      "ave:demo:clear",
+      { senderFrame: { url: "https://evil.example/app" } },
+    );
+    expect(result).toEqual({ ok: false, error: "unauthorized-frame" });
+  });
+});
+
 describe("ave:demo:activate — persist-failed audit", () => {
   it("emits a warn audit row when disk persistence fails (M3)", async () => {
     // critic MAJOR M3 (2026-05-19): persist-failed branch previously
