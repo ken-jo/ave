@@ -40,6 +40,7 @@ const CHANNEL_MANIFEST: Record<string, "mutating" | "sensitive" | "public-read">
   "ave:chat:get-history": "public-read",
   "ave:chat:edit-resend": "sensitive",
   "ave:chat:fork": "sensitive",
+  "ave:chat:continue-last-user": "sensitive",
   "ave:chat:retry-effort": "sensitive",
   "ave:chat:export": "sensitive",
   // Memory

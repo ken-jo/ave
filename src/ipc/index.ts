@@ -11,7 +11,6 @@
  *   auth         ave:auth:* (#893 mockup login)
  *   demo         ave:demo:* (activation-code → .env.demo decrypt + persist)
  *   tour         ave:tour:*        — Tutorial-C SpotlightTour state + broadcast
- *   tutorial     ave:tutorial:*    — Tutorial-D Discovery Swipe state + open trigger
  *   chat         ave:chat:*, ave:llm:*, ave:routines:*, ave:routine:*, ave:trigger:*,
  *                ave:memory:*, ave:starred:*, ave:feedback:*, ave:ask-user-question:*
  *   plugins      ave:plugins:*, ave:bootstrap:*, ave:runtime:*, ave:marketplace:*,
@@ -30,7 +29,6 @@ import { registerSettingsHandlers } from "./domains/settings.js";
 import { registerAuthHandlers } from "./domains/auth.js";
 import { registerDemoHandlers } from "./domains/demo.js";
 import { registerTourHandlers } from "./domains/tour.js";
-import { registerTutorialHandlers } from "./domains/tutorial.js";
 import { registerChatHandlers } from "./domains/chat.js";
 import { registerPluginsHandlers } from "./domains/plugins.js";
 import { registerUsageHandlers } from "./domains/usage.js";
@@ -69,7 +67,6 @@ export function registerIpcHandlers(
   registerAuthHandlers(deps);
   registerDemoHandlers(deps);
   registerTourHandlers(deps);
-  registerTutorialHandlers(deps);
   registerChatHandlers(deps);
   registerPluginsHandlers(deps);
   registerUsageHandlers(deps);
