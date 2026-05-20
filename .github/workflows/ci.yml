@@ -62,3 +62,20 @@ jobs:
       - run: bun run test
         working-directory: ave
 
+  windows-permission-tests:
+    name: Windows permission path tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: ave
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+        working-directory: ave
+      - name: Run Windows permission regressions
+        working-directory: ave
+        run: >
+          bun run test --
+          src/permissions/__tests__/allowed-directories.test.ts
+          src/tools/__tests__/executor.test.ts
+          src/boot/__tests__/plugin-surface-permissions.test.ts
