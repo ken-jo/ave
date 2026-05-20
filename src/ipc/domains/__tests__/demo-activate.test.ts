@@ -6,8 +6,8 @@
  *      env inject → recapture of demo credentials.
  *   2. Invalid code / tampered ciphertext → `invalid-code` error.
  *   3. Payload missing `AVE_DEMO_VENDOR` → `no-vendor` error.
- *   4. Unknown vendor / invalid Azure Foundry endpoint → fail closed before
- *      persistence or env mutation.
+ *   4. Unknown vendor / missing vendor key / invalid Azure Foundry endpoint
+ *      → fail closed before persistence or env mutation.
  *   5. Filesystem write failure → `persist-failed` error.
  *   6. Empty/whitespace input → `invalid-code` (renderer-friendly).
  *
@@ -433,6 +433,56 @@ describe("ave:demo:activate — no-vendor", () => {
 });
 
 describe("ave:demo:activate — invalid endpoint", () => {
+  it("rejects missing active vendor key before persistence, env injection, or relaunch arming", async () => {
+    const { codec, credsMod, demoMod } = await loadDemoModule();
+    const code = codec.encryptActivationPayload(
+      [
+        "AVE_DEMO_VENDOR=azure-foundry",
+        "AVE_DEMO_BASEURL_AZURE_FOUNDRY=https://example.openai.azure.com/openai/v1/",
+        "",
+      ].join("\n"),
+    );
+
+    const deps = makeDeps();
+    demoMod.registerDemoHandlers(deps as never);
+
+    const result = await invoke("ave:demo:activate", { code });
+    expect(result).toEqual({ ok: false, error: "no-demo-key" });
+    expect(existsSync(join(tempHome, "secrets", ".env.demo"))).toBe(false);
+    expect(process.env.AVE_DEMO_VENDOR).toBeUndefined();
+    expect(process.env.AVE_DEMO_BASEURL_AZURE_FOUNDRY).toBeUndefined();
+    expect(credsMod.isDemoEnabled()).toBe(false);
+    expect(credsMod.getDemoVendorConfig("azure-foundry")).toBeNull();
+
+    const relaunch = await invoke("ave:demo:relaunch-after-activation");
+    expect(relaunch).toEqual({ ok: false, error: "not-armed" });
+    expect(relaunchMock).not.toHaveBeenCalled();
+    expect(exitMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects missing Azure Foundry endpoint before persistence, env injection, or relaunch arming", async () => {
+    const { codec, credsMod, demoMod } = await loadDemoModule();
+    const code = codec.encryptActivationPayload(
+      "AVE_DEMO_VENDOR=azure-foundry\nAVE_DEMO_KEY_AZURE_FOUNDRY=sk-key\n",
+    );
+
+    const deps = makeDeps();
+    demoMod.registerDemoHandlers(deps as never);
+
+    const result = await invoke("ave:demo:activate", { code });
+    expect(result).toEqual({ ok: false, error: "missing-foundry-endpoint" });
+    expect(existsSync(join(tempHome, "secrets", ".env.demo"))).toBe(false);
+    expect(process.env.AVE_DEMO_VENDOR).toBeUndefined();
+    expect(process.env.AVE_DEMO_KEY_AZURE_FOUNDRY).toBeUndefined();
+    expect(credsMod.isDemoEnabled()).toBe(false);
+    expect(credsMod.getDemoVendorConfig("azure-foundry")).toBeNull();
+
+    const relaunch = await invoke("ave:demo:relaunch-after-activation");
+    expect(relaunch).toEqual({ ok: false, error: "not-armed" });
+    expect(relaunchMock).not.toHaveBeenCalled();
+    expect(exitMock).not.toHaveBeenCalled();
+  });
+
   it("rejects invalid Azure Foundry endpoint before persistence, env injection, or relaunch arming", async () => {
     const { codec, credsMod, demoMod } = await loadDemoModule();
     const code = codec.encryptActivationPayload(SAMPLE_ENV_INVALID_ENDPOINT_ALIAS);
