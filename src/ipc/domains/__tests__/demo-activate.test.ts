@@ -76,7 +76,7 @@ const SAMPLE_ENV = [
 const SAMPLE_ENV_ENDPOINT_ALIAS = [
   "AVE_DEMO_VENDOR=azure-foundry",
   "AVE_DEMO_KEY_AZURE_FOUNDRY=sk-activated-key",
-  "AVE_DEMO_ENDPOINT_AZURE_FOUNDRY=https://endpoint.example/openai/v1/",
+  "AVE_DEMO_ENDPOINT_AZURE_FOUNDRY=https://endpoint.openai.azure.com/openai/v1/",
   "",
 ].join("\n");
 
@@ -188,12 +188,12 @@ describe("ave:demo:activate — happy path", () => {
     );
     expect(persisted).toBe(SAMPLE_ENV_ENDPOINT_ALIAS);
     expect(process.env.AVE_DEMO_ENDPOINT_AZURE_FOUNDRY).toBe(
-      "https://endpoint.example/openai/v1/",
+      "https://endpoint.openai.azure.com/openai/v1/",
     );
 
     const cfg = credsMod.getDemoVendorConfig("azure-foundry");
     expect(cfg?.apiKey).toBe("sk-activated-key");
-    expect(cfg?.baseUrl).toBe("https://endpoint.example/openai/v1/");
+    expect(cfg?.baseUrl).toBe("https://endpoint.openai.azure.com/openai/v1/");
   });
 });
 
@@ -353,6 +353,22 @@ describe("ave:demo:activate — no-vendor", () => {
     expect(result).toEqual({ ok: false, error: "no-vendor" });
     // No persistence on validation failure.
     expect(existsSync(join(tempHome, "secrets", ".env.demo"))).toBe(false);
+  });
+
+  it("rejects a payload with an unknown AVE_DEMO_VENDOR", async () => {
+    const { codec, demoMod } = await loadDemoModule();
+    const code = codec.encryptActivationPayload(
+      "AVE_DEMO_VENDOR=not-a-vendor\nAVE_DEMO_KEY_AZURE_FOUNDRY=sk-key\n",
+    );
+
+    const deps = makeDeps();
+    demoMod.registerDemoHandlers(deps as never);
+
+    const result = await invoke("ave:demo:activate", { code });
+    expect(result).toEqual({ ok: false, error: "invalid-vendor" });
+    expect(existsSync(join(tempHome, "secrets", ".env.demo"))).toBe(false);
+    expect(relaunchMock).not.toHaveBeenCalled();
+    expect(exitMock).not.toHaveBeenCalled();
   });
 });
 
