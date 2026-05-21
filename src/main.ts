@@ -44,7 +44,7 @@ import { createLogger } from "./lib/logger.js";
 import { AVE_LOGO_PATH, AVE_LOGO_VIEW_BOX } from "./shared/ave-logo.js";
 import { getAveAppVersion } from "./shared/app-version.js";
 import { normalizeSettingsTab } from "./shared/settings-tabs.js";
-import { startInstalledPluginWithLifecycle, withPluginInstallLock } from "./plugins/install-lifecycle.js";
+import { installMarketplacePluginWithLifecycle } from "./plugins/install-lifecycle.js";
 import { ensureWorkspaceCwd } from "./main/ensure-workspace-cwd.js";
 import { uninstallPluginWithLifecycle } from "./plugins/uninstall-lifecycle.js";
 import { aveHome } from "./shared/ave-home.js";
@@ -804,47 +804,23 @@ async function handleAveUri(url: string) {
     // Renderer renders a skeleton card while these phase events fire — see
     // PluginConfigTab + plugin grid progress UI. Key every phase by the
     // canonical plugin id so alias deep-links don't leave stale in-flight rows.
-    broadcastPluginLifecycleEvent("ave:plugins:install-progress", { slug: installLockId, phase: "installing" });
-    return await withPluginInstallLock(installLockId, async () => {
-      const result = await activeServices.pluginMarketplace.install(params.slug, (evt) => {
-        if (evt.phase === "downloading") {
-          broadcastPluginLifecycleEvent("ave:plugins:install-progress", {
-            slug: installLockId,
-            phase: "downloading",
-            bytesDownloaded: evt.bytesDownloaded,
-            bytesTotal: evt.bytesTotal,
-          });
-        } else {
-          broadcastPluginLifecycleEvent("ave:plugins:install-progress", { slug: installLockId, phase: evt.phase });
-        }
-      });
-      const pluginId = result.pluginId;
-      aveDevLog("[ave] handleAveUri: install succeeded", { slug: pluginId });
-      // Mirror the post-install steps from the ave:plugins:install IPC handler
-      // so deep-link installs behave identically to in-app installs.
-      try {
-        await startInstalledPluginWithLifecycle({
-          pluginId,
-          source: "marketplace",
-          rollbackMode: "marketplace",
-          pluginRuntime: activeServices.pluginRuntime,
-          pluginMarketplace: activeServices.pluginMarketplace,
-          broadcastInstallProgress: (payload) =>
-            broadcastPluginLifecycleEvent("ave:plugins:install-progress", payload),
-          emitPluginInstalled: (payload) => emitHostEvent("plugin.installed", payload),
-          refreshPluginNotifications: activeServices.refreshPluginNotifications,
-          log,
-        });
-      } catch (err) {
-        const message = errorMessage(err) || "addPlugin failed";
-        log.error({ pluginId, err }, "post-install steps failed for ave:// install");
-        broadcastPluginLifecycleEvent("ave:plugins:install-result", { slug: pluginId, success: false, error: message });
-        return;
-      }
-      broadcastPluginLifecycleEvent("ave:plugins:install-result", {
-        slug: pluginId,
-        success: true,
-      });
+    const result = await installMarketplacePluginWithLifecycle({
+      requestedPluginId: params.slug,
+      eventSlug: installLockId,
+      lifecyclePluginId: installLockId,
+      pluginRuntime: activeServices.pluginRuntime,
+      pluginMarketplace: activeServices.pluginMarketplace,
+      broadcastInstallProgress: (payload) =>
+        broadcastPluginLifecycleEvent("ave:plugins:install-progress", payload),
+      emitPluginInstalled: (payload) => emitHostEvent("plugin.installed", payload),
+      refreshPluginNotifications: activeServices.refreshPluginNotifications,
+      log,
+    });
+    const pluginId = result.pluginId;
+    aveDevLog("[ave] handleAveUri: install succeeded", { slug: pluginId });
+    broadcastPluginLifecycleEvent("ave:plugins:install-result", {
+      slug: pluginId,
+      success: true,
     });
   })().catch((err: Error) => {
     log.error({ slug: params.slug, error: err.message, stack: err.stack }, "ave:// install failed");
