@@ -253,6 +253,7 @@ describe("auth:login-mockup IPC handler (#893 top-level)", () => {
     process.env.AVE_DEMO_KEY_AZURE_FOUNDRY = "sk-azure-demo";
     process.env.AVE_DEMO_BASEURL_AZURE_FOUNDRY =
       "https://example.openai.azure.com/openai/v1/";
+    process.env.AVE_DEMO_HOST_MAP = "example.openai.azure.com=10.0.100.24";
     const deps = makeDeps();
     const { registerAuthHandlers, demoKeyEnvVar } = await loadAuthModule();
     registerAuthHandlers(deps as never);
