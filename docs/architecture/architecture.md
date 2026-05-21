@@ -823,21 +823,27 @@ Ave 는 라이선스와 출처가 확인된 공개 OSS/공식 문서에서 관�
 - `NOOP` — history 가 이미 작음. boundary 없이 반환.
 - `CONTENT_TRUNCATED` — per-message truncation 만으로 충분히 reduce. LLM 호출 skip. 원본은 `~/.ave/sessions/<id>/truncated/` 에 격리.
 - `SUMMARIZED` — 정상 LLM 요약 경로. boundary stub + recentVerbatim 으로 history 교체.
-- `REDUCED_INSUFFICIENT_FORCED` — 위 모두 후에도 over-budget. last-resort 로 toPreserve oldest 50% 강제 drop + archive.
+- `REDUCED_INSUFFICIENT_FORCED` — 위 모두 후에도 over-budget. last-resort 로 protected recent turn 바깥의 toPreserve oldest 50% 강제 drop + archive.
 
 내부 sub-stage (`compactWithBoundary` 안):
 
 - **Per-message truncation** — 단일 메시지가 30K tokens 초과 시 원본을 archive 파일로 격리한다.
 - **History-wide reverse-budget truncation** — per-message truncation 이후 toCompact 총 토큰이 LLM input budget (preflight × 0.9) 초과 시 oldest 부터 drop & archive 한다. O(N) 구현 — running token total 유지.
-- **Boundary split** — `splitForBoundary` 로 toCompact / toPreserve 분리. preserveRecent 는 ceiling 의미 (cumulative ≤ budget). 단일 메시지가 budget 단독 초과 시 toPreserve 비어짐. tool_use/tool_result pair 안전: `adjustToToolBoundary` (bounded 3-step backward) + `adjustForwardToToolBoundary` (unbounded forward, leading tool_result 만 skip) — 모든 surviving[0] 이 orphan tool_result 가 되지 않음 보장.
+- **Boundary split** — `splitForBoundary` 로 toCompact / toPreserve 분리. preserveRecentTokens 는 ceiling 이지만 최근 5개 user turn(+ compact 직전 pending user question)은 token budget 과 별개로 verbatim 보존한다. tool_use/tool_result pair 안전: `adjustToToolBoundary` (bounded 3-step backward) + `adjustForwardToToolBoundary` (unbounded forward, leading tool_result 만 skip) — 모든 surviving[0] 이 orphan tool_result 가 되지 않음 보장.
 - **Structured summary** — 12-section structured LLM summary (`SUMMARY_TEMPLATE_PROMPT_V1`) + freezeBoundary (P7 invariant).
-- **Forced archive** — post-compact estimatedAfter > preflight × 0.8 시 toPreserve oldest 50% drop. `adjustForwardToToolBoundary` 로 surviving 시작이 orphan tool_result 안 되게 보호.
+- **Forced archive** — post-compact estimatedAfter > preflight × 0.8 시 protected recent turn 바깥의 toPreserve oldest 50% drop. `adjustForwardToToolBoundary` 로 surviving 시작이 orphan tool_result 안 되게 보호.
+
+Auto-compact trigger:
+
+- `estimateMessagesTokens(history) ≥ getModelPreflightThreshold(vendor, model)`
+- `getModelPreflightThreshold` 는 모델별 usable context budget 의 80%
+- message count 기반 자동 압축/eviction 없음. 같은 `sessionId` 안에서 checkpoint compact 만 수행
 
 Adaptive `preserveRecentTokens` (runPreflightGuard 가 결정):
 
 - usagePct < 80%: `preflight × 0.4` (정상)
 - usagePct in [80, 100): `preflight × 0.2` (orange zone)
-- usagePct ≥ 100%: `0` (red zone — 전체 compact, boundary stub 만 남김)
+- usagePct ≥ 100%: `0` (red zone — 단, 최근 5 user turn 보존 invariant 는 유지)
 
 CONTENT_TRUNCATED / REDUCED_INSUFFICIENT_FORCED 경로의 `truncatedDir` 은 `onCompactOccurred` 콜백 → IPC `compact_notice` → renderer `CheckpointDivider` 의 footnote 까지 plumb. 사용자가 archive 위치를 가시 확인 가능.
 
@@ -854,7 +860,7 @@ flowchart LR
     BoundarySplit["Boundary split<br/>+ tool-pair safe"]
     SummaryCall["LLM summary<br/>+ boundary stub"]
     ForcedCheck{"Still > 0.8 preflight?"}
-    Forced["FORCED: oldest 50% drop<br/>+ archive"]
+    Forced["FORCED: oldest non-protected preserve drop<br/>+ archive"]
     Continue["Same sessionId 계속<br/>(status 별 banner)"]
 
     PostTurn --> MarkStale --> Continue
@@ -872,7 +878,7 @@ flowchart LR
 | 트리거 | 매 post-turn (항상) | token preflight hit |
 | 함수 | `markStaleToolResults()` | `compactWithBoundary()` |
 | 결과 | wire/disk 토큰 절감 | 4 status (NOOP / CONTENT_TRUNCATED / SUMMARIZED / REDUCED_INSUFFICIENT_FORCED) |
-| 보존 규칙 | 최근 8 raw + 200자 미만 제외 | adaptive `preserveRecentTokens`: 0.4/0.2/0 × preflight (usagePct 별) |
+| 보존 규칙 | 최근 8 raw + 200자 미만 제외 | 최근 5 user turn verbatim + adaptive `preserveRecentTokens`: 0.4/0.2/0 × preflight (usagePct 별) |
 | 수동 트리거 | (자동만) | `/compact` 슬래시 명령어 |
 | 원본 보존 | content verbatim (in-memory) | `~/.ave/sessions/<id>/truncated/` archive (CONTENT_TRUNCATED, FORCED 경로) |
 
