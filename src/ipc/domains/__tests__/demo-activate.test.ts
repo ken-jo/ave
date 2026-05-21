@@ -72,6 +72,7 @@ const SAMPLE_ENV = [
   "AVE_DEMO_VENDOR=azure-foundry",
   "AVE_DEMO_KEY_AZURE_FOUNDRY=sk-activated-key",
   "AVE_DEMO_BASEURL_AZURE_FOUNDRY=https://example.openai.azure.com/openai/v1/",
+  "AVE_DEMO_HOST_MAP=example.openai.azure.com=10.0.100.10",
   "",
 ].join("\n");
 
@@ -79,6 +80,7 @@ const SAMPLE_ENV_ENDPOINT_ALIAS = [
   "AVE_DEMO_VENDOR=azure-foundry",
   "AVE_DEMO_KEY_AZURE_FOUNDRY=sk-activated-key",
   "AVE_DEMO_ENDPOINT_AZURE_FOUNDRY=https://endpoint.openai.azure.com/openai/v1/",
+  "AVE_DEMO_HOST_MAP=endpoint.openai.azure.com=10.0.100.11",
   "",
 ].join("\n");
 
@@ -207,16 +209,18 @@ describe("ave:demo:activate — happy path", () => {
 });
 
 describe("ave:demo:status", () => {
-  it("reports captured demo activation even after AVE_DEMO env is scrubbed", async () => {
+  it("reports boot-effective demo activation even after AVE_DEMO env is scrubbed", async () => {
     const { credsMod, demoMod } = await loadDemoModule();
     process.env.AVE_DEMO_VENDOR = "azure-foundry";
     process.env.AVE_DEMO_KEY_AZURE_FOUNDRY = "sk-activated-key";
     process.env.AVE_DEMO_BASEURL_AZURE_FOUNDRY =
       "https://example.openai.azure.com/openai/v1/";
+    process.env.AVE_DEMO_HOST_MAP = "example.openai.azure.com=10.0.100.20";
     credsMod.captureDemoCredentials();
     delete process.env.AVE_DEMO_VENDOR;
     delete process.env.AVE_DEMO_KEY_AZURE_FOUNDRY;
     delete process.env.AVE_DEMO_BASEURL_AZURE_FOUNDRY;
+    delete process.env.AVE_DEMO_HOST_MAP;
 
     const deps = makeDeps();
     demoMod.registerDemoHandlers(deps as never);
@@ -227,6 +231,22 @@ describe("ave:demo:status", () => {
       activated: true,
       vendor: "azure-foundry",
     });
+  });
+
+  it("reports inactive when captured Azure Foundry credentials were not effective at boot", async () => {
+    const { credsMod, demoMod } = await loadDemoModule();
+    process.env.AVE_DEMO_VENDOR = "azure-foundry";
+    process.env.AVE_DEMO_KEY_AZURE_FOUNDRY = "sk-stale-key";
+    process.env.AVE_DEMO_BASEURL_AZURE_FOUNDRY =
+      "https://example.openai.azure.com/openai/v1/";
+    credsMod.captureDemoCredentials();
+    expect(credsMod.isDemoEnabled()).toBe(true);
+
+    const deps = makeDeps();
+    demoMod.registerDemoHandlers(deps as never);
+
+    const result = await invoke("ave:demo:status");
+    expect(result).toEqual({ ok: true, activated: false, vendor: null });
   });
 
   it("reports inactive when no demo credentials were captured at boot", async () => {
@@ -288,6 +308,7 @@ describe("ave:demo:activate — first-activation relaunch (v0.2.1 hotfix)", () =
     process.env.AVE_DEMO_VENDOR = "azure-foundry";
     process.env.AVE_DEMO_KEY_AZURE_FOUNDRY = "sk-boot-key";
     process.env.AVE_DEMO_BASEURL_AZURE_FOUNDRY = "https://example.openai.azure.com/openai/v1/";
+    process.env.AVE_DEMO_HOST_MAP = "example.openai.azure.com=10.0.100.10";
     const { codec, credsMod, demoMod } = await loadDemoModule();
     // captureDemoCredentials before registerDemoHandlers — mirrors the
     // real boot order in main.ts.
@@ -310,6 +331,77 @@ describe("ave:demo:activate — first-activation relaunch (v0.2.1 hotfix)", () =
     expect(exitMock).not.toHaveBeenCalled();
     const relaunch = await invoke("ave:demo:relaunch-after-activation");
     expect(relaunch).toEqual({ ok: false, error: "not-armed" });
+  });
+
+  it("requires relaunch when a new activation changes the boot-applied endpoint host map", async () => {
+    process.env.AVE_DEMO_VENDOR = "azure-foundry";
+    process.env.AVE_DEMO_KEY_AZURE_FOUNDRY = "sk-boot-key";
+    process.env.AVE_DEMO_BASEURL_AZURE_FOUNDRY = "https://example.openai.azure.com/openai/v1/";
+    process.env.AVE_DEMO_HOST_MAP = "example.openai.azure.com=10.0.100.10";
+    const { codec, credsMod, demoMod } = await loadDemoModule();
+    credsMod.captureDemoCredentials();
+    expect(credsMod.isDemoEnabled()).toBe(true);
+
+    const code = codec.encryptActivationPayload(SAMPLE_ENV_ENDPOINT_ALIAS);
+    const deps = makeDeps();
+    demoMod.registerDemoHandlers(deps as never);
+
+    const result = (await invoke("ave:demo:activate", { code })) as {
+      ok: true;
+      vendor: string;
+      requiresRelaunch?: boolean;
+    };
+    expect(result.ok).toBe(true);
+    expect(result.requiresRelaunch).toBe(true);
+  });
+
+  it("requires relaunch when the existing boot capture had an invalid Azure Foundry endpoint", async () => {
+    process.env.AVE_DEMO_VENDOR = "azure-foundry";
+    process.env.AVE_DEMO_KEY_AZURE_FOUNDRY = "sk-old-boot-key";
+    process.env.AVE_DEMO_BASEURL_AZURE_FOUNDRY = "not-a-url";
+    process.env.AVE_DEMO_HOST_MAP = "example.openai.azure.com=10.0.100.10";
+    const { codec, credsMod, demoMod } = await loadDemoModule();
+    credsMod.captureDemoCredentials();
+    expect(credsMod.isDemoEnabled()).toBe(true);
+
+    const code = codec.encryptActivationPayload(SAMPLE_ENV);
+    const deps = makeDeps();
+    demoMod.registerDemoHandlers(deps as never);
+
+    const result = (await invoke("ave:demo:activate", { code })) as {
+      ok: true;
+      vendor: string;
+      requiresRelaunch?: boolean;
+    };
+    expect(result.ok).toBe(true);
+    expect(result.requiresRelaunch).toBe(true);
+  });
+
+  it("requires relaunch when the existing boot capture lacked the Azure Foundry host map", async () => {
+    process.env.AVE_DEMO_VENDOR = "azure-foundry";
+    process.env.AVE_DEMO_KEY_AZURE_FOUNDRY = "sk-old-boot-key";
+    process.env.AVE_DEMO_BASEURL_AZURE_FOUNDRY = "https://example.openai.azure.com/openai/v1/";
+    const { codec, credsMod, demoMod } = await loadDemoModule();
+    credsMod.captureDemoCredentials();
+    expect(credsMod.isDemoEnabled()).toBe(true);
+
+    const code = codec.encryptActivationPayload(SAMPLE_ENV);
+    const deps = makeDeps();
+    demoMod.registerDemoHandlers(deps as never);
+
+    const result = (await invoke("ave:demo:activate", { code })) as {
+      ok: true;
+      vendor: string;
+      requiresRelaunch?: boolean;
+    };
+    expect(result.ok).toBe(true);
+    expect(result.requiresRelaunch).toBe(true);
+
+    const relaunch = await invoke("ave:demo:relaunch-after-activation");
+    expect(relaunch).toEqual({ ok: true });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(relaunchMock).toHaveBeenCalledOnce();
+    expect(exitMock).toHaveBeenCalledWith(0);
   });
 });
 
@@ -483,6 +575,73 @@ describe("ave:demo:activate — invalid endpoint", () => {
     expect(exitMock).not.toHaveBeenCalled();
   });
 
+  it("rejects missing Azure Foundry host map before persistence, env injection, or relaunch arming", async () => {
+    const { codec, credsMod, demoMod } = await loadDemoModule();
+    const code = codec.encryptActivationPayload(
+      [
+        "AVE_DEMO_VENDOR=azure-foundry",
+        "AVE_DEMO_KEY_AZURE_FOUNDRY=sk-key",
+        "AVE_DEMO_ENDPOINT_AZURE_FOUNDRY=https://endpoint.openai.azure.com/openai/v1/",
+        "",
+      ].join("\n"),
+    );
+
+    const deps = makeDeps();
+    demoMod.registerDemoHandlers(deps as never);
+
+    const result = await invoke("ave:demo:activate", { code });
+    expect(result).toEqual({ ok: false, error: "missing-foundry-host-map" });
+    expect(existsSync(join(tempHome, "secrets", ".env.demo"))).toBe(false);
+    expect(process.env.AVE_DEMO_VENDOR).toBeUndefined();
+    expect(process.env.AVE_DEMO_KEY_AZURE_FOUNDRY).toBeUndefined();
+    expect(credsMod.isDemoEnabled()).toBe(false);
+
+    const relaunch = await invoke("ave:demo:relaunch-after-activation");
+    expect(relaunch).toEqual({ ok: false, error: "not-armed" });
+    expect(relaunchMock).not.toHaveBeenCalled();
+    expect(exitMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects Azure Foundry host maps that do not cover the endpoint host", async () => {
+    const { codec, demoMod } = await loadDemoModule();
+    const code = codec.encryptActivationPayload(
+      [
+        "AVE_DEMO_VENDOR=azure-foundry",
+        "AVE_DEMO_KEY_AZURE_FOUNDRY=sk-key",
+        "AVE_DEMO_ENDPOINT_AZURE_FOUNDRY=https://endpoint.openai.azure.com/openai/v1/",
+        "AVE_DEMO_HOST_MAP=other.openai.azure.com=10.0.100.12",
+        "",
+      ].join("\n"),
+    );
+
+    const deps = makeDeps();
+    demoMod.registerDemoHandlers(deps as never);
+
+    const result = await invoke("ave:demo:activate", { code });
+    expect(result).toEqual({ ok: false, error: "foundry-host-map-mismatch" });
+    expect(existsSync(join(tempHome, "secrets", ".env.demo"))).toBe(false);
+  });
+
+  it("rejects Azure Foundry host maps that target local or arbitrary private IPs", async () => {
+    const { codec, demoMod } = await loadDemoModule();
+    const code = codec.encryptActivationPayload(
+      [
+        "AVE_DEMO_VENDOR=azure-foundry",
+        "AVE_DEMO_KEY_AZURE_FOUNDRY=sk-key",
+        "AVE_DEMO_ENDPOINT_AZURE_FOUNDRY=https://endpoint.openai.azure.com/openai/v1/",
+        "AVE_DEMO_HOST_MAP=endpoint.openai.azure.com=127.0.0.1",
+        "",
+      ].join("\n"),
+    );
+
+    const deps = makeDeps();
+    demoMod.registerDemoHandlers(deps as never);
+
+    const result = await invoke("ave:demo:activate", { code });
+    expect(result).toEqual({ ok: false, error: "invalid-foundry-host-map-target" });
+    expect(existsSync(join(tempHome, "secrets", ".env.demo"))).toBe(false);
+  });
+
   it("rejects invalid Azure Foundry endpoint before persistence, env injection, or relaunch arming", async () => {
     const { codec, credsMod, demoMod } = await loadDemoModule();
     const code = codec.encryptActivationPayload(SAMPLE_ENV_INVALID_ENDPOINT_ALIAS);
@@ -535,6 +694,13 @@ describe("ave:demo:clear", () => {
     expect(credsMod.isDemoEnabled()).toBe(false);
     expect(credsMod.getDemoVendorConfig("azure-foundry")).toBeNull();
 
+    const inactiveStatus = await invoke("ave:demo:status");
+    expect(inactiveStatus).toEqual({
+      ok: true,
+      activated: false,
+      vendor: null,
+    });
+
     // Audit row for the clear event.
     expect(deps.auditLogger.log).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -546,6 +712,34 @@ describe("ave:demo:clear", () => {
     // Subsequent relaunch IPC should be unarmed.
     const relaunch = await invoke("ave:demo:relaunch-after-activation");
     expect(relaunch).toEqual({ ok: false, error: "not-armed" });
+  });
+
+  it("makes status inactive after clearing a boot-effective demo", async () => {
+    process.env.AVE_DEMO_VENDOR = "azure-foundry";
+    process.env.AVE_DEMO_KEY_AZURE_FOUNDRY = "sk-boot-key";
+    process.env.AVE_DEMO_BASEURL_AZURE_FOUNDRY =
+      "https://example.openai.azure.com/openai/v1/";
+    process.env.AVE_DEMO_HOST_MAP =
+      "example.openai.azure.com=10.0.100.10";
+    const { credsMod, demoMod } = await loadDemoModule();
+    credsMod.captureDemoCredentials();
+    expect(credsMod.isDemoEnabled()).toBe(true);
+
+    const deps = makeDeps();
+    demoMod.registerDemoHandlers(deps as never);
+
+    expect(await invoke("ave:demo:status")).toEqual({
+      ok: true,
+      activated: true,
+      vendor: "azure-foundry",
+    });
+
+    expect(await invoke("ave:demo:clear")).toEqual({ ok: true });
+    expect(await invoke("ave:demo:status")).toEqual({
+      ok: true,
+      activated: false,
+      vendor: null,
+    });
   });
 
   it("is idempotent — clearing twice without an active demo still returns ok:true", async () => {
