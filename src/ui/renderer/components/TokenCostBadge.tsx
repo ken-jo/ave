@@ -10,21 +10,27 @@
  *     billing 가중치 (full input price) 가 그대로 적용되는 부분.
  *   - `tokensOut` = turn 전체 output 합산.
  *   - `cacheReadTokens`, `cacheWriteTokens` = turn 전체 cache 합산.
- *   - `tokensIn` = 마지막 라운드의 raw input (= fresh + cache, 컨텍스트 윈도우
- *     fill 표시용 — TokenProgressRing 이 사용. 이 배지에서는 tooltip 의
- *     "context (last)" 보조 정보로만 노출).
+ *   - `tokensIn` = 턴 종료 시점의 projected context input. TokenProgressRing 과
+ *     footer 가 같은 값을 보도록 하는 context-fill SOT 이며, 이 배지에서는
+ *     tooltip 의 보조 정보로 노출한다.
  *
  * Headline = `freshInputTokens + tokensOut` — 사용자가 "이번 턴에 어떤 일이
  * 일어났나" 를 가장 잘 보여주는 단일 수치. 캐시 read 는 가중치가 1/10 이라
  * headline 에 더하면 직관에 어긋남 (e.g. 100k 캐시 hit 으로 "100k 토큰 사용"
  * 보이면 사용자가 비용을 과대 추정).
  *
- * `pricing` 이 없으면 cost 모드 자체를 표시하지 않는다 (토글 비활성).
- * 잘못된 비용을 보여주느니 비용 표시를 안 하는 쪽이 정직.
+ * `pricing` 이 없으면 cost 모드 토글은 비활성화하되 "미정" 을 visible
+ * state 로 남긴다. 토큰-only 배지와 가격 미상 배지를 사용자가 구분해야
+ * 비용 화면의 신뢰성이 유지된다.
  */
 import { useState } from "react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
-import { computeCost, type ModelPricing } from "../../../shared/pricing-data.js";
+import {
+  computeCost,
+  lookupBillablePricingOptional,
+  normalizeAiSdkUsageForCost,
+  type ModelPricing,
+} from "../../../shared/pricing-data.js";
 import type { LLMVendor } from "../../../shared/llm-vendor-defaults.js";
 
 export interface TokenCostBadgePricing {
@@ -37,8 +43,7 @@ export interface TokenCostBadgePricing {
 }
 
 export interface TokenCostBadgeProps {
-  /** Last-round raw input tokens (includes cache reads). Tooltip-only here;
-   *  TokenProgressRing reads this from turn_summary directly for context fill. */
+  /** Turn-end projected context input. Tooltip-only here. */
   tokensIn: number;
   /** Turn-aggregate fresh input — billing weight, drives headline + cost. */
   freshInputTokens: number;
@@ -51,14 +56,28 @@ export interface TokenCostBadgeProps {
    * cost formula. Mirrors the asymmetry encoded in
    * `engine/llm/pricing.ts:computeCost`:
    *   - "claude": cache is additive (Anthropic ratios applied).
-   *   - everyone else: cache is already inside `freshInputTokens` /
-   *     prompt_tokens (provider's billing pipeline auto-discounts cached
-   *     portion); the badge ignores cache fields in cost mode to avoid
-   *     double-charging.
+   *   - everyone else: provider raw prompt_tokens includes cached tokens, so
+   *     the badge reconstructs raw input as fresh + cache before calling the
+   *     shared formula.
    * Optional for backward-compat in tests; production callers always
    * propagate the active vendor from ChatContext.
    */
   vendor?: LLMVendor;
+  /**
+   * Per provider request usage segments. When present, cost is summed per
+   * segment so request-tier pricing such as OpenAI long-context surcharge is
+   * not accidentally applied to an Ave turn aggregate.
+   */
+  usageByModel?: Array<{
+    vendorProvider: LLMVendor;
+    vendorModel: string;
+    tokenUsage: {
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens?: number;
+      cacheWriteTokens?: number;
+    };
+  }>;
 }
 
 function formatTokens(n: number): string {
@@ -83,6 +102,7 @@ export function TokenCostBadge({
   cacheWriteTokens = 0,
   pricing,
   vendor,
+  usageByModel,
 }: TokenCostBadgeProps) {
   // Default = tokens. 사용자 요청: 청구액보다 토큰 수치가 더 직관적.
   // 클릭으로 cost 토글 가능 (pricing 이 있을 때만).
@@ -93,20 +113,38 @@ export function TokenCostBadge({
   // Single source of truth for cost math — shared `computeCost` (browser-safe
   // via `shared/pricing-data.ts`) is the same function the engine billing
   // pipeline calls. Keeps the badge from drifting when vendor branches evolve.
+  const effectiveVendor = vendor ?? "claude";
+  const costInputTokens = effectiveVendor === "claude"
+    ? freshInputTokens
+    : freshInputTokens + cacheReadTokens + cacheWriteTokens;
   // `contextWindow` is irrelevant to the cost formula but `ModelPricing`
   // requires it structurally, so we pin a dummy 0 — computeCost never reads
   // it. Effective vendor defaults to "claude" for back-compat with tests that
   // omit the prop (production callers always propagate from ChatContext).
-  const cost = pricing
+  const segmentCost = usageByModel && usageByModel.length > 0
+    ? usageByModel.reduce<number | null>((sum, segment) => {
+        if (sum === null) return null;
+        const segmentPricing = lookupBillablePricingOptional(segment.vendorProvider, segment.vendorModel);
+        if (!segmentPricing) return null;
+        return sum + computeCost(
+          normalizeAiSdkUsageForCost(segment.tokenUsage, segment.vendorProvider),
+          segmentPricing,
+          segment.vendorProvider,
+        );
+      }, 0)
+    : undefined;
+  const cost = segmentCost !== undefined
+    ? segmentCost
+    : pricing
     ? computeCost(
         {
-          inputTokens: freshInputTokens,
+          inputTokens: costInputTokens,
           outputTokens: tokensOut,
           cacheReadTokens,
           cacheWriteTokens,
         },
         { ...(pricing as ModelPricing), contextWindow: (pricing as Partial<ModelPricing>).contextWindow ?? 0 },
-        vendor ?? "claude",
+        effectiveVendor,
       )
     : null;
 
@@ -134,7 +172,10 @@ export function TokenCostBadge({
           {showCostMode ? (
             <span className="text-success">≈ {formatCost(cost!)}</span>
           ) : (
-            <span>🪙 {formatTokens(headlineTokens)}</span>
+            <>
+              <span>🪙 {formatTokens(headlineTokens)}</span>
+              {cost === null && <span className="text-muted-foreground">미정</span>}
+            </>
           )}
           {cost !== null && <span className="text-[8px] opacity-50">⇅</span>}
         </button>
@@ -169,13 +210,19 @@ export function TokenCostBadge({
             <span>{headlineTokens.toLocaleString()}</span>
           </div>
           <div className="flex justify-between gap-3 opacity-70">
-            <span>context (last round):</span>
+            <span>context (turn-end):</span>
             <span>{tokensIn.toLocaleString()}</span>
           </div>
           {cost !== null && (
             <div className="flex justify-between gap-3 font-semibold text-success pt-0.5 border-t border-border/40">
               <span>≈ cost:</span>
               <span>{formatCost(cost)}</span>
+            </div>
+          )}
+          {cost === null && (
+            <div className="flex justify-between gap-3 font-semibold text-muted-foreground pt-0.5 border-t border-border/40">
+              <span>cost:</span>
+              <span>pricing unknown</span>
             </div>
           )}
         </div>
