@@ -21,7 +21,7 @@ describe("McpTab remove flow", () => {
       servers: vi.fn(async () => []),
       kill: vi.fn(async () => undefined),
       getConfigs: vi.fn(async () => [{ id: "srv-a", transport: "http" as const, url: "https://example.com/mcp" }]),
-      getConfigPath: vi.fn(async () => "/Users/example/workspace/GIT/github/former_org/.isolated/pr191-opus-loop/ave/.mcp.json"),
+      getConfigPath: vi.fn(async () => "/tmp/ave-test-fixture/.mcp.json"),
       addConfig: vi.fn(async () => ({ connected: true })),
       removeConfig: vi.fn(() => removal.promise),
     };
