@@ -1,5 +1,5 @@
 /**
- * Phase 1 — mockable AveApi surface for renderer tests.
+ * Mockable AveApi surface for renderer tests.
  *
  * Every method is a `vi.fn()` so tests can spy on calls, and the default
  * return values are sensible empty/pass values so <App /> can mount without
