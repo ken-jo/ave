@@ -16,7 +16,7 @@ import { aveHome } from "../shared/ave-home.js";
  * Currently seeds:
  *   - AGENTS.md — Ave system reference for LLMs running inside the host
  *   - agents/*.md — built-in sub-agent profiles (executor, researcher,
- *     planner, local-explorer) for the `agent_spawn` tool
+ *     planner, explorer) for the `agent_spawn` tool
  *
  * Behavior (per file):
  *   - If `~/.ave/<path>` does not exist → copy from packaged resources.

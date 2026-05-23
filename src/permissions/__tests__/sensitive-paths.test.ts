@@ -182,8 +182,10 @@ describe("isSensitivePath — negative cases", () => {
     expect(isSensitivePath("/Users/example/Documents/aws-notes.md")).toBeNull();
   });
 
-  it("returns null for /Users/example/.ave/notes/meeting.md (non-sensitive subdir of .ave)", () => {
-    expect(isSensitivePath("/Users/example/.ave/notes/meeting.md")).toBeNull();
+  it("returns null for /Users/example/.ave/plugins/meeting/notes/2026-05.md (non-sensitive plugin subdir of .ave)", () => {
+    expect(
+      isSensitivePath("/Users/example/.ave/plugins/meeting/notes/2026-05.md"),
+    ).toBeNull();
   });
 
   it("returns null for empty string", () => {
