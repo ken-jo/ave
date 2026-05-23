@@ -120,7 +120,7 @@ export interface AppServices {
   knowledgeAvailable: boolean;
   /** Sprint 4.C — starred messages persistence (~/.ave/starred.json) */
   starredStore?: StarredStore;
-  /** D6 privacy hardening — feedback persistence separate from audit log (~/.ave/feedback.jsonl) */
+  /** Privacy hardening — feedback persistence separate from audit log (~/.ave/feedback.jsonl) */
   feedbackStore?: FeedbackStore;
   /** Workflow tools — exposed for IPC handlers + shutdown wiring. */
   routinesStore?: import("../main/routines-store.js").RoutinesStore;
