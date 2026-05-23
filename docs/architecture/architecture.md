@@ -4067,6 +4067,7 @@ v5 는 v4 Final 의 설계를 그대로 유지한 상태에서, **실구현 머�
 | --- | --- | --- |
 | §4.2 Boot Sequence | 8-step 부팅 | **§4.2.X (신규 v5)** `ensure-submodules` postinstall + dev 모드 플러그인 live-reload 워처 |
 | §4.5 Conversation Query Loop | 11-step 메시지 라이프사이클 | **§4.5.X (신규 v5)** `ConversationTracer` + `FileTracer` 11-step 계측 (K4) |
+| §4.5 Sub-Agent Harness (`agent_spawn`) | profile `model`/`mode` 는 informational | **§4.5.Z (신규 v5)** Agent Profile Model Resolution (복잡도 tier → 모델, parent fallback) + **§4.5.Z2 (신규 v5)** Mode + Skill Auto-Mapping (posture preamble + 추천 skill, 승인 게이트 보존) |
 | §5 Memory — File-based | 파일 기반 경량 구조 | **§5.X (신규 v5)** `proper-lockfile` 크로스프로세스 파일 락 + audit log rotation/retention |
 | §6.4 Tool Registry & Taxonomy | 6 카테고리 + 동적 등록 | **§6.4.X (신규 v5)** Tool meta `version` / `deprecatedSince` / `replacedBy` 필드 |
 | §7 Marketplace Hub | 플러그인 배포·업데이트 | **§7.X (신규 v5) — S13 승인 워크플로우**, **§7.Y (신규 v5) — S15 카나리 롤아웃** |
@@ -4092,6 +4093,53 @@ v4 §4.5 의 11-step 쿼리 루프(`onUserMessage → ... → onTurnComplete`)�
 - **`FileTracer` 구현**: `~/.ave/traces/{yyyy-mm-dd}/{turnId}.jsonl` 에 append-only JSONL 로 기록. 회전/보존 정책은 §5.X 와 동일.
 - **Feature flag**: `conversation.trace.enabled`. Default off. 디버깅/QA 전용이며 운영에서는 `opt-in`.
 - **PII 보호**: 기록 전 §12.X PII scrubber 를 통과시킨다.
+
+#### §4.5.Z Agent Profile Model Resolution — Sub-Agent 모델 선택 (신규 v5)
+
+`agent_spawn` 으로 띄우는 sub-agent 는 `~/.ave/agents/<name>.md` 프로필의 `model:` frontmatter 에 따라 child `ConversationLoop` 의 LLM 모델을 선택한다. Ave 는 멀티벤더(claude / openai / gemini / copilot / azure-foundry / vertex-ai)이므로 프로필에 vendor-specific 모델 ID 를 박지 않고 **복잡도 tier** 로 표현하는 것이 기본이다.
+
+**SOT — `src/shared/model-complexity-map.ts`**
+
+- `MODEL_COMPLEXITY_MAP[vendor][tier]` — `(vendor, "low" | "mid" | "high")` → 구체 모델 ID. vendor 별 tier 매핑이 이 파일에만 존재하는 단일 SOT.
+- `resolveModelForComplexity(vendor, tier)` — 매핑 조회. 벤더가 해당 tier 를 갖지 않으면 `null`.
+- `findOrphanedComplexityModels()` — 모든 tier 매핑이 `LLM_VENDOR_MODEL_OPTIONS` 에 존재하는지 검증하는 가드(테스트에서 강제). tier 경로가 산출하는 모델 ID 는 항상 selectable option 임이 보장된다.
+- `isModelComplexityLevel(value)` — 디스크에서 파싱된 frontmatter(`unknown`)용 런타임 가드.
+
+**해석 순서 — `SubAgentRunner.resolveSubAgentModel(profileModel, activeVendor)`**
+
+1. `undefined` / 공백 → `null` (child 는 부모 모델 유지)
+2. 복잡도 tier (`low`/`mid`/`high`) → `MODEL_COMPLEXITY_MAP[vendor][tier]`. 벤더가 해당 tier 를 못 가지면 `null` (design-intent 부모-모델 fallback, audit warn)
+3. 명시적 모델 ID → **활성 벤더가 실제 제공 가능한 경우에만** 사용(`isModelAvailableForVendor` 가 `LLM_VENDOR_MODEL_OPTIONS` 와 대조). 제공 불가하면 `null` (부모-모델 fallback, audit warn)
+
+`null` 반환 = "override 없음" → caller 가 `modelOverride` 를 설정하지 않아 `refreshProvider()` 가 벤더 블록의 설정 모델을 사용한다. **non-null 결과는 모두 활성 벤더가 서빙 가능한 모델임이 보장**된다(tier-resolved 또는 option-validated). 따라서 override 가 provider 에 `model_not_found` 를 먹여 hard-fail 시키지 않는다 — `fallback-chain.ts` 의 `isNonRetryable` 가 `model_not_found`/`invalid_model`/4xx 를 fallback 대상에서 제외하므로, 검증 없이 명시 ID 를 통과시키면 sub-agent 가 즉시 죽을 수 있다.
+
+**No Fallback Code 정합**: 부모-모델 fallback 은 *design-intent 안전 경로*(legacy alias 아님)이며, 발생 시 항상 `log.warn` 으로 audit 에 남긴다 — fallback 이 조용히 버그를 가리지 못하도록 강제. 비기술 사용자(총무/회계/인사/기획)가 프로필 `.md` 의 모델 ID 를 오타내도 sub-agent 가 opaque provider 에러로 죽지 않고 부모 모델로 degrade 한다.
+
+**builtin profile model tier**: executor `mid` · researcher `mid` · planner `high` · explorer `low`.
+
+> Out of scope (별도 epic): plugin agent(marketplace 설치)의 model 처리(SDK 변경 필요), cost-aware auto-routing, 사용자 settings UI 의 vendor 별 model list editor.
+
+#### §4.5.Z2 Agent Profile Mode + Skill Auto-Mapping (신규 v5)
+
+`agent_spawn` 의 sub-agent 는 프로필 `mode:` frontmatter 에 따라 **작업 자세(working posture)** preamble + **skill 추천**을 instructions 앞에 prepend 받고, spawn 호출이 `maxTurns` 를 생략했을 때 mode 가 그 기본값을 seed 한다.
+
+**SOT — `src/shared/agent-mode-map.ts`**
+
+- 4 모드(`execute` / `plan` / `research` / `explore`) + inert `default`. 각 모드는 `reasoningHint`(자세 한 줄), `autoSkills`(추천 skill 목록), `maxToolRoundsHint`(turn seed) 보유.
+- `resolveAgentMode(mode)` → `{ config, matched, requested }`. 알 수 없거나 없는 mode → `default` (design-intent fallback). `matched=false` 는 비어있지 않은 mode 문자열이 매칭 실패한 경우만 — caller 가 "unknown mode" audit 라인을 남기는 신호.
+- builtin profile mode: executor `execute` · researcher `research` · planner `plan` · explorer `explore`.
+
+**Skill auto-mapping SECURITY MODEL (load-bearing)**
+
+Ave 는 **모든** skill 을 body-hash 승인 게이트(§9 skill-load + skill-approvals-store) 뒤에 둔다. mode 가 `autoSkills` 를 system prompt 에 *force-load* 하면 이 게이트를 **우회** — 보안 회귀. 따라서 `autoSkills` 는 **추천(RECOMMENDATION)이며 force-load 가 아니다**:
+
+- `buildModePreamble(config)` 는 `<ave-agent-mode-skills>` 텍스트 블록만 emit 하여 "이 작업에 유용한 skill 목록 + `skill_load` 로 직접 로드하라(첫 로드 시 승인 모달)"을 LLM 에게 알린다.
+- SubAgentRunner 는 mode 로부터 child SkillOverlay 에 **아무것도 등록하지 않는다**. skill body 는 사용자가 `skill_load` 를 통해 승인한 뒤에만 주입된다 — 수동 요청 skill 과 정확히 동일.
+- 결과: body-hash TOFU 게이트가 완전히 보존되며, ergonomic 이득(에이전트 mode 가 적합 skill 을 surface)만 취한다.
+
+**행동 knob 최소주의**: Ave 는 vendor 별 temperature/sampling 파라미터를 제거(modern frontier 모델이 무시 — `llm-vendor-defaults.ts` CHANGELOG)했으므로 mode 는 temperature 를 갖지 않는다. `reasoningHint`(자세 텍스트) + `maxToolRoundsHint`(turn seed) 만 기존 surface 에 매핑된다.
+
+**maxTurns ceiling 정합**: mode 의 `maxToolRoundsHint`(execute 20 / plan 30 / research 25 / explore 15)는 spawn 호출이 `maxTurns` 를 생략했을 때만 seed 하며, 명시적 `input.maxTurns` 가 항상 우선한다. 모든 경로의 상한은 child loop 의 실제 per-run hard bound 인 `MAX_TOOL_ROUNDS`(30)에 정렬된 `MAX_TURNS_CAP = 30`(SOT, `subagent-runner.ts` export)이다. `agent_spawn` 의 schema `maximum` + clamp 도 이 SOT 를 import 하여 LLM 에게 loop 가 조용히 버리는 라운드(31-60)를 광고하지 않는다.
 
 #### §5.X File-based State 동시성·보존 (신규 v5)
 
