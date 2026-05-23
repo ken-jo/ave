@@ -61,11 +61,11 @@ export const FIRST_TASK_PROPOSALS: readonly FirstTaskProposal[] = [
     composerSeed: "인덱싱할 문서 폴더를 추가해줘",
   },
   {
-    // The marketplace package slug is `ave-plugin-vega-early`
-    // (the published repo name); the user-facing brand is 업무 도우미
-    // (vega-helper). The pluginId field here matches the marketplace
-    // slug so the installed-plugin map lookup succeeds.
-    pluginId: "ave-plugin-vega-early",
+    // The marketplace package slug is `ave-plugin-vega-helper`
+    // (the published repo name); the user-facing brand is 업무 도우미.
+    // The pluginId field here matches the marketplace slug so the
+    // installed-plugin map lookup succeeds.
+    pluginId: "ave-plugin-vega-helper",
     priority: 30,
     headlineKo: "오늘 처리할 일을 정리해드릴까요?",
     bodyKo:

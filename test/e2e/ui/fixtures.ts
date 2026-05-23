@@ -17,7 +17,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const E2E_PLUGIN_REPOS = [
   'ave-plugin-local-indexer',
   'ave-plugin-meeting',
-  'ave-plugin-vega-early',
+  'ave-plugin-vega-helper',
   'ave-plugin-hydra',
 ] as const;
 
