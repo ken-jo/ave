@@ -1,5 +1,5 @@
 /**
- * Permission policy Phase 2.5 — `~/.ave/settings.json` permissions block.
+ * Permission policy — `~/.ave/settings.json` permissions block.
  *
  * Spec ref: docs/architecture/permission-policy-design.md §3 Layer 1.
  *

@@ -575,7 +575,7 @@ const api = {
         branchedAt?: string;
       }>;
     }>,
-  // Sprint 4.C — conversation UX
+  // Conversation UX
   chatGetHistory: async () =>
     ipcRenderer.invoke("ave:chat:get-history") as Promise<{
       sessionId: string;
@@ -703,7 +703,7 @@ const api = {
     getPerfStats: async () => ipcRenderer.invoke("ave:plugins:perf-stats"),
   },
 
-  // ─── Usage Observability (Sprint 4.B) ────────────
+  // ─── Usage Observability ─────────────────────────
   getUsageSummary: async (days?: number) => ipcRenderer.invoke("ave:usage:summary", days),
   getUsageRange: async (opts: { dateFrom: string; dateTo: string }) => ipcRenderer.invoke("ave:usage:range", opts),
   exportUsageCsv: async (rows: Array<Record<string, string | number>>) => ipcRenderer.invoke("ave:usage:export-csv", rows),
@@ -833,7 +833,7 @@ const api = {
   confirmInstallAppUpdate: () =>
     ipcRenderer.invoke("ave:update:confirm-install") as Promise<{ confirmed: boolean }>,
 
-  // ─── Phase 2d — managed bootstrap status ─────────
+  // ─── Managed bootstrap status ────────────────────
   // The host emits these around `ensureManagedInstalled()` so the renderer
   // can show a banner / toast during startup install. Three lifecycle states:
   //   - { phase: "start" }
@@ -852,7 +852,7 @@ const api = {
     ipcRenderer.on("ave:bootstrap:status", listener);
     return () => ipcRenderer.removeListener("ave:bootstrap:status", listener);
   },
-  // Phase 2d FU — banner-driven retry. Re-emits the start/complete/error
+  // Banner-driven retry. Re-emits the start/complete/error
   // status sequence so the banner subscriber updates without needing a
   // separate result channel.
   retryBootstrap: () => ipcRenderer.invoke("ave:bootstrap:retry"),
@@ -1210,11 +1210,11 @@ const api = {
       >,
   },
 
-  // ─── D6 — Message feedback ───────────────────────
+  // ─── Message feedback ────────────────────────────
   submitFeedback: async (payload: { sessionId: string; messageIndex: number; rating: "up" | "down"; reason?: string }) =>
     ipcRenderer.invoke("ave:feedback:submit", payload) as Promise<{ ok: boolean; error?: string }>,
 
-  // ─── D7 — file drag & drop indexing ───────────────
+  // ─── File drag & drop indexing ────────────────────
   fileScanPaths: async (paths: string[]) =>
     ipcRenderer.invoke("ave:file:scan-paths", { paths }) as Promise<{ ok: boolean; indexed?: number; failed?: number; jobId?: string; error?: string }>,
 
