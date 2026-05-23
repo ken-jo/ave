@@ -35,7 +35,7 @@ import multiAgent from "./scripts/multi-agent-demo.json" with { type: "json" };
  * Catalog mapping (ScenarioShowcase Option A — 2026-05-19):
  *   meeting       → meeting-summary-demo
  *   docs          → doc-search-demo
- *   work          → vega-helper-demo (renamed from vega-early)
+ *   work          → vega-helper-demo
  *   multi-agent   → multi-agent-demo
  *
  * `getScriptByScenarioId()` resolves a ScenarioShowcase card id to the
