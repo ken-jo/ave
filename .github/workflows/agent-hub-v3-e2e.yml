@@ -52,7 +52,7 @@ jobs:
             echo "::warning::No AVE_REPO_READ_TOKEN or gh auth token available; attempting unauthenticated sibling clones."
           fi
           sibling_ref="${AVE_SIBLING_REPO_REF:-${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-}}}"
-          for slug in ave-plugin-local-indexer ave-plugin-meeting ave-plugin-vega-early ave-plugin-hydra; do
+          for slug in ave-plugin-local-indexer ave-plugin-meeting ave-plugin-vega-helper ave-plugin-hydra; do
             if [ -d "$slug" ]; then rm -rf "$slug"; fi
             clone_url="https://github.com/former_org/${slug}.git"
             if [ -n "$repo_token" ]; then

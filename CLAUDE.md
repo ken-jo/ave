@@ -102,7 +102,7 @@ src/
 
 ## Storage Namespace per Feature (REQUIRED)
 
-Ave host + plugin 의 모든 user-data storage 는 **`~/.ave/<feature>/`** 디렉토리 namespace 로 격리한다. *feature* 는 host 도메인 (chat sessions, routine, audit log 등) 또는 plugin id (`vega-early`, `meeting`, `local-indexer` 등).
+Ave host + plugin 의 모든 user-data storage 는 **`~/.ave/<feature>/`** 디렉토리 namespace 로 격리한다. *feature* 는 host 도메인 (chat sessions, routine, audit log 등) 또는 plugin id (`vega-helper`, `meeting`, `local-indexer` 등).
 
 ### 정합 패턴
 

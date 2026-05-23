@@ -221,7 +221,7 @@ const DOC_SEARCH_TOUR: TourScenario = {
 
 const VEGA_HELPER_TOUR: TourScenario = {
   // Renamed from `proactive-work-tour` to align with the canonical
-  // 업무 도우미 brand. Plugin tour-anchors live in ave-plugin-vega-early
+  // 업무 도우미 brand. Plugin tour-anchors live in ave-plugin-vega-helper
   // (package repo) and use the manifest id (vega-helper) on their DOM
   // attributes — the test/e2e fixture pins `manifest.id="vega-helper"`.
   id: "vega-helper-tour",

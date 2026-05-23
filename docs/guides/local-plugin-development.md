@@ -273,7 +273,7 @@ git stash pop  # 필요 시
 
 # 모든 sibling 플러그인 최신화
 cd ..
-for r in ave-plugin-meeting ave-plugin-local-indexer ave-plugin-vega-early \
+for r in ave-plugin-meeting ave-plugin-local-indexer ave-plugin-vega-helper \
          ave-plugin-vega-helper ave-plugin-lyra-mail \
          ave-plugin-hydra ave-plugin-template ave-plugin-sdk \
          agent-marketplace ave-agent-hub; do
