@@ -221,7 +221,7 @@ function renderAgentProfilePrompt(
   taskInstructions: string,
 ): string {
   return [
-    `<ave-agent-profile name="${escapeAttr(profile.name)}" source="${profile.source}">`,
+    `<ave-agent-profile name="${escapeAttr(profile.name)}">`,
     neutralizeAgentProfileFence(profile.body),
     "</ave-agent-profile>",
     "",

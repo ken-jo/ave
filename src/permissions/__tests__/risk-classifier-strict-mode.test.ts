@@ -59,7 +59,7 @@ describe("StrictRiskClassifier — issue #664 defer-all", () => {
     const v = c.classify(
       ctx({
         category: "read",
-        finalInput: { path: "/Users/example/.ave/notes.md" },
+        finalInput: { path: "/Users/example/.ave/sessions/recent.md" },
       }),
     );
     expect(v.level).toBe("high");
