@@ -1,4 +1,4 @@
-// Phase 2: stateless helpers over window.aveApi.
+// Stateless helpers over window.aveApi.
 
 import type { AveApi, PluginUiExtension } from "./types.js";
 
