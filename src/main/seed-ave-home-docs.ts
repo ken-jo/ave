@@ -17,6 +17,10 @@ import { aveHome } from "../shared/ave-home.js";
  *   - AGENTS.md — Ave system reference for LLMs running inside the host
  *   - agents/*.md — built-in sub-agent profiles (executor, researcher,
  *     planner, explorer) for the `agent_spawn` tool
+ *   - skills/*.md — built-in skills (report-writing, meeting-minutes,
+ *     email-polish, decision-record, data-summary) for the `skill_load`
+ *     tool. Shipping skills as files (not inline TS) lets users edit
+ *     each prompt to match their team's tone/format.
  *
  * Behavior (per file):
  *   - If `~/.ave/<path>` does not exist → copy from packaged resources.
@@ -44,6 +48,7 @@ export function seedAveHomeDocs(): { seeded: string[]; upgraded: string[] } {
 
   seedOne(home, "AGENTS.md", result);
   seedDir(home, "agents", result);
+  seedDir(home, "skills", result);
   return result;
 }
 
