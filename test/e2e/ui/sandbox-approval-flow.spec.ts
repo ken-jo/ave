@@ -1,3 +1,4 @@
+import { buildE2eBaseSettings, buildIsolatedElectronEnv } from "./seeded-electron";
 /**
  * Playwright E2E — Sandbox approval flow (PR-A4 R-2/R-3/R-4)
  *
@@ -62,17 +63,24 @@ test.describe("Sandbox approval flow", () => {
   test.beforeEach(async () => {
     userDataDir = mkdtempSync(resolve(tmpdir(), "ave-sandbox-approval-"));
     tempHome = mkdtempSync(resolve(tmpdir(), "ave-sandbox-home-"));
+    writeFileSync(
+      resolve(userDataDir, "ave-settings.json"),
+      JSON.stringify(buildE2eBaseSettings(true), null, 2) + "\n",
+      "utf-8",
+    );
     mkdirSync(resolve(tempHome, ".ave", "permissions"), { recursive: true });
 
     app = await electron.launch({
-      args: [MAIN_ENTRY],
-      env: {
-        ...process.env,
+      args: [MAIN_ENTRY, `--user-data-dir=${userDataDir}`, "--no-sandbox"],
+      env: buildIsolatedElectronEnv({
+        HOME: tempHome,
+        USERPROFILE: tempHome,
         AVE_HOME: tempHome,
         AVE_SANDBOX_ENABLED: "0", // Keep sandbox off for E2E stability
+        AVE_MAIN_ENTRY: MAIN_ENTRY,
         NODE_ENV: "test",
         ELECTRON_IS_DEV: "0",
-      },
+      }),
       executablePath: undefined,
     });
     page = await app.firstWindow();

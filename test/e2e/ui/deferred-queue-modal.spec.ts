@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildE2eBaseSettings, buildIsolatedElectronEnv } from "./seeded-electron";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "../../..");
@@ -31,7 +32,13 @@ test.describe("deferred queue modal", () => {
   test.beforeEach(async () => {
     userDataDir = mkdtempSync(resolve(tmpdir(), "ave-deferred-modal-user-data-"));
     tempHome = mkdtempSync(resolve(tmpdir(), "ave-deferred-modal-home-"));
-    const queueDir = resolve(tempHome, ".ave", "permissions");
+    writeFileSync(
+      resolve(userDataDir, "ave-settings.json"),
+      JSON.stringify(buildE2eBaseSettings(true), null, 2) + "\n",
+      "utf-8",
+    );
+    const aveHome = resolve(tempHome, ".ave");
+    const queueDir = resolve(aveHome, "permissions");
     mkdirSync(queueDir, { recursive: true });
     writeFileSync(
       resolve(queueDir, "deferred-queue.jsonl"),
@@ -50,15 +57,16 @@ test.describe("deferred queue modal", () => {
 
     app = await electron.launch({
       args: [MAIN_ENTRY, `--user-data-dir=${userDataDir}`, "--no-sandbox"],
-      env: {
-        ...process.env,
+      env: buildIsolatedElectronEnv({
         HOME: tempHome,
         USERPROFILE: tempHome,
+        AVE_HOME: aveHome,
         AVE_DEV: "1",
         AVE_E2E: "1",
+        AVE_MAIN_ENTRY: MAIN_ENTRY,
         NODE_ENV: "test",
         ELECTRON_DISABLE_SECURITY_WARNINGS: "1",
-      },
+      }),
       timeout: 30_000,
     });
     page = await app.firstWindow();
