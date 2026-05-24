@@ -22,7 +22,6 @@ import type {
   UserKeyboardIntent,
   UserKeyboardIntentSnapshot,
 } from "./shared/chat-origin.js";
-import type { SelectedAssistantContext } from "./shared/assistant-context.js";
 import type {
   AssistantContextMenuAction,
   AssistantContextMenuPayload,
@@ -545,15 +544,13 @@ const api = {
     attachments: unknown[] | undefined,
     inputOrigin: ChatSendInputOrigin,
     userIntent?: UserKeyboardIntentSnapshot,
-    rolePrompt?: { name: string; systemPromptAdd: string },
-    assistantContext?: SelectedAssistantContext,
+    personaPromptId?: string,
   ) =>
     ipcRenderer.invoke("ave:chat:send", {
       input,
       attachments,
       inputOrigin,
-      ...(rolePrompt ? { rolePrompt } : {}),
-      ...(assistantContext ? { assistantContext } : {}),
+      ...(personaPromptId ? { personaPromptId } : {}),
       ...(inputOrigin === "user-keyboard"
         ? { userActivation: consumeUserKeyboardIntent(userIntent) }
         : {}),
@@ -677,6 +674,11 @@ const api = {
 
   // ─── Plugins ─────────────────────────────────────
   listMarketplacePlugins: async () => ipcRenderer.invoke("ave:plugins:marketplace:list"),
+  listPersonaPromptSummaries: async () => ipcRenderer.invoke("ave:prompts:list-summaries"),
+  listPersonaPrompts: async () => ipcRenderer.invoke("ave:prompts:list"),
+  savePersonaPrompt: async (prompt: { id: string; name: string; systemPromptAdd: string }) =>
+    ipcRenderer.invoke("ave:prompts:save", prompt),
+  deletePersonaPrompt: async (id: string) => ipcRenderer.invoke("ave:prompts:delete", id),
   listAgentProfiles: async () => ipcRenderer.invoke("ave:agents:list"),
   listSkills: async () => ipcRenderer.invoke("ave:skills:list"),
   installAgentFromMarketplace: async (slug: string) =>
@@ -899,6 +901,11 @@ const api = {
     const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
     ipcRenderer.on("ave:plugins:uninstall-result", listener);
     return () => ipcRenderer.removeListener("ave:plugins:uninstall-result", listener);
+  },
+  onPersonaPromptsUpdated: (handler: () => void) => {
+    const listener = () => handler();
+    ipcRenderer.on("ave:prompts:updated", listener);
+    return () => ipcRenderer.removeListener("ave:prompts:updated", listener);
   },
 
   onAgentInstallResult: (handler: (payload: { slug: string; success: boolean; agentId?: string; error?: string }) => void) => {
