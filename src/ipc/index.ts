@@ -15,6 +15,7 @@
  *                ave:memory:*, ave:starred:*, ave:feedback:*, ave:ask-user-question:*
  *   plugins      ave:plugins:*, ave:bootstrap:*, ave:runtime:*, ave:marketplace:*,
  *                ave:mcp:*, ave:plugin:*, ave:file:*, ave:notification:clicked
+ *   prompts      ave:prompts:*
  *   usage        ave:usage:*
  *   audit        ave:audit:*, ave:dlp:*
  *   permissions  ave:permission:*, ave:approval:*, ave:policy:*
@@ -31,6 +32,7 @@ import { registerDemoHandlers } from "./domains/demo.js";
 import { registerTourHandlers } from "./domains/tour.js";
 import { registerChatHandlers } from "./domains/chat.js";
 import { registerPluginsHandlers } from "./domains/plugins.js";
+import { registerPromptHandlers } from "./domains/prompts.js";
 import { registerUsageHandlers } from "./domains/usage.js";
 import { registerAuditHandlers } from "./domains/audit.js";
 import { registerPermissionsHandlers } from "./domains/permissions.js";
@@ -69,6 +71,7 @@ export function registerIpcHandlers(
   registerTourHandlers(deps);
   registerChatHandlers(deps);
   registerPluginsHandlers(deps);
+  registerPromptHandlers(deps);
   registerUsageHandlers(deps);
   registerAuditHandlers(deps);
   registerPermissionsHandlers(deps);
