@@ -335,20 +335,6 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
        bootstrap dies). Resolved via the shared `aveHome()` helper. */
     const aveHomeForTest = path.join(userDataDir, 'ave-state');
     fs.mkdirSync(aveHomeForTest, { recursive: true, mode: 0o700 });
-    // First-boot onboarding (ScenarioShowcase) mounts a modal overlay that
-    // covers the entire UI until the funnel completes. A clean AVE_HOME
-    // (always true on CI; only masked locally by a dev's stale keychain key
-    // that makes the boot probe see an existing vendor key) leaves it up
-    // forever, timing out every UI interaction behind it. Seed
-    // `onboardingCompleted` so the boot probe skips the onboarding chain on
-    // every platform. Funnel specs opt out via AVE_E2E_ONBOARDING_FUNNEL.
-    if (launchEnv.AVE_E2E_ONBOARDING_FUNNEL !== '1') {
-      fs.writeFileSync(
-        path.join(aveHomeForTest, 'settings.json'),
-        JSON.stringify({ features: { onboardingCompleted: true } }),
-        { mode: 0o600 },
-      );
-    }
     const e2eWhitelistEnv = await seedE2ePlugins(
       repoRoot,
       aveHomeForTest,
