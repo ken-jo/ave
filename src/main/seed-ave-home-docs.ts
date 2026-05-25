@@ -11,6 +11,13 @@ import {
 import { join } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
 
+export interface AveHomeDocUpgradeMarker {
+  sourcePath: string;
+  markerPath: string;
+}
+
+const SEEDED_DOC_DIRS = ["", "agents", "skills", "prompts"] as const;
+
 /**
  * Seed user-facing reference docs into `~/.ave/` on first launch.
  *
@@ -55,6 +62,41 @@ export function seedAveHomeDocs(): { seeded: string[]; upgraded: string[] } {
   seedDir(home, "skills", result);
   seedDir(home, "prompts", result);
   return result;
+}
+
+export function listAveHomeDocUpgradeMarkers(home = aveHome()): AveHomeDocUpgradeMarker[] {
+  const markers: AveHomeDocUpgradeMarker[] = [];
+  for (const subdir of SEEDED_DOC_DIRS) {
+    const dir = subdir.length > 0 ? join(home, subdir) : home;
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw err;
+    }
+    for (const entry of entries) {
+      if (!isUpgradeMarkerName(entry)) continue;
+      const markerPath = subdir.length > 0 ? join(subdir, entry) : entry;
+      markers.push({
+        markerPath,
+        sourcePath: sourcePathForUpgradeMarker(markerPath),
+      });
+    }
+  }
+  return markers.sort((a, b) => a.markerPath.localeCompare(b.markerPath));
+}
+
+function isUpgradeMarkerName(name: string): boolean {
+  const markerIndex = name.indexOf(".md.new");
+  if (markerIndex === -1) return false;
+  const suffix = name.slice(markerIndex + ".md.new".length);
+  return suffix === "" || suffix.startsWith(".");
+}
+
+function sourcePathForUpgradeMarker(markerPath: string): string {
+  const markerIndex = markerPath.indexOf(".new");
+  return markerIndex === -1 ? markerPath : markerPath.slice(0, markerIndex);
 }
 
 function seedOne(
