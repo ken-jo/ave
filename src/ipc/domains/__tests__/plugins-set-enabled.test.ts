@@ -128,4 +128,30 @@ describe("ave:plugins:set-enabled", () => {
     expect(setPluginEnabled).not.toHaveBeenCalled();
     expect(deps.auditLogger.log).toHaveBeenCalled();
   });
+
+  it("rejects plugin UI shell file frames for this host-internal mutation", async () => {
+    const { deps, setPluginEnabled } = await setup();
+    const handler = handlers.get("ave:plugins:set-enabled");
+    expect(handler).toBeDefined();
+    const pluginShellEvent = { senderFrame: { url: "file:///dist/src/plugin-ui-shell.html" } };
+    const res = await handler!(pluginShellEvent, "com.example.meeting", false);
+    expect(res).toEqual({ ok: false, error: "unauthorized-frame" });
+    expect(setPluginEnabled).not.toHaveBeenCalled();
+    expect(deps.auditLogger.log).toHaveBeenCalled();
+  });
+
+  it("maps runtime I/O failures to generic toggle-failed without broadcasting", async () => {
+    const { setPluginEnabled, appWindows } = await setup();
+    setPluginEnabled.mockRejectedValueOnce(new Error("EACCES: permission denied, open /Users/example/.ave/plugins/registry.json"));
+    const res = await invoke("ave:plugins:set-enabled", "com.example.meeting", false);
+    expect(res).toEqual({
+      ok: false,
+      error: "toggle-failed",
+      message: "plugin enabled state could not be changed",
+    });
+    expect(hostEventMock.emit).not.toHaveBeenCalled();
+    for (const win of appWindows) {
+      expect(win.webContents.send).not.toHaveBeenCalledWith("ave:plugins:enabled-changed", expect.anything());
+    }
+  });
 });
