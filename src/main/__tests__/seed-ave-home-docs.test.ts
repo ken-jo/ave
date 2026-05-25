@@ -37,7 +37,10 @@ import { app } from "electron";
 
 vi.mock("electron", () => ({ app: { isPackaged: false } }));
 
-import { seedAveHomeDocs } from "../seed-ave-home-docs.js";
+import {
+  listAveHomeDocUpgradeMarkers,
+  seedAveHomeDocs,
+} from "../seed-ave-home-docs.js";
 
 let fixtures: string;
 let home: string;
@@ -170,6 +173,24 @@ describe("seedAveHomeDocs — upgrade markers", () => {
     );
     expect(dated).toHaveLength(1);
     expect(readFileSync(join(home, dated[0]), "utf8")).toBe("AGENTS v3\n");
+  });
+
+  it("lists pending .new upgrade markers across seeded doc directories", () => {
+    seedAveHomeDocs();
+    writeFileSync(join(home, "AGENTS.md"), "user edited\n");
+    writeFileSync(join(home, "agents", "executor.md"), "user executor\n");
+    writeRes("AGENTS.md", "AGENTS v2\n");
+    writeRes(join("agents", "executor.md"), "executor v2\n");
+
+    seedAveHomeDocs();
+
+    expect(listAveHomeDocUpgradeMarkers(home)).toEqual([
+      { markerPath: "AGENTS.md.new", sourcePath: "AGENTS.md" },
+      {
+        markerPath: join("agents", "executor.md.new"),
+        sourcePath: join("agents", "executor.md"),
+      },
+    ]);
   });
 
   it("is a no-op when the existing .new already matches the packaged content", () => {
