@@ -13,7 +13,14 @@ import {
   type MockAveApi,
 } from "./mock-ave-api.js";
 
-type RenderAppOpts = Parameters<typeof makeMockAveApi>[0];
+type RenderAppOpts = Parameters<typeof makeMockAveApi>[0] & {
+  aveEnv?: Partial<{
+    isDev: boolean;
+    isE2E: boolean;
+    enableDevConsole: boolean;
+    debugStream: boolean;
+  }>;
+};
 
 export type RenderAppReturn = {
   container: RenderResult["container"];
@@ -30,6 +37,7 @@ export type RenderAppReturn = {
 };
 
 export async function renderApp(opts: RenderAppOpts = {}): Promise<RenderAppReturn> {
+  const { aveEnv, ...apiOpts } = opts;
   const {
     api,
     emitChatStream,
@@ -38,8 +46,8 @@ export async function renderApp(opts: RenderAppOpts = {}): Promise<RenderAppRetu
     emitRoutineFiredV2,
     emitViewActivate,
     emitAskUserQuestion,
-  } = makeMockAveApi(opts);
-  const { ns, emitApproval } = makeMockAveNamespace();
+  } = makeMockAveApi(apiOpts);
+  const { ns, emitApproval } = makeMockAveNamespace({ env: aveEnv });
 
   vi.stubGlobal("aveApi", api);
   vi.stubGlobal("ave", ns);

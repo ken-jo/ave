@@ -1631,10 +1631,11 @@ contextBridge.exposeInMainWorld("ave", {
   },
   env: {
     isDev: process.env.AVE_DEV === "1",
+    isE2E: process.env.AVE_E2E === "1",
     enableDevConsole: process.env.AVE_DEV_CONSOLE === "1",
     debugStream:
       process.env.VITE_DEBUG_STREAM === "1" ||
-      (process.env.AVE_DEV === "1" && process.env.AVE_DEV_CONSOLE === "1"),
+      process.env.AVE_DEBUG_STREAM === "1",
     /**
      * Legacy dev/debug surface only. Demo activation decisions now use
      * `api.demo.status()` because packaged builds scrub `AVE_DEMO_*`

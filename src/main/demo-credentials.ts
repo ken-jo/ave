@@ -2,8 +2,9 @@
  * Demo credentials capture (#893 / PR #894 review B1).
  *
  * Mockup login keys (`AVE_DEMO_KEY_<VENDOR>`) are *dev/demo affordances
- * only*. In packaged builds, `main.ts` scrubs `AVE_DEV*` / `AVE_DEMO*`
- * from `process.env` before any preload/renderer inherits the environment.
+ * only*. In packaged builds, `main.ts` scrubs `AVE_DEV*`, `AVE_E2E`,
+ * debug-stream toggles, and `AVE_DEMO*` from `process.env` before any
+ * preload/renderer inherits the environment.
  * The scrub itself happens early at boot — but the auth IPC handler still
  * needs to know whether demo was enabled and which vendor keys were
  * provided.
