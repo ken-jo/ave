@@ -1008,7 +1008,7 @@ flowchart LR
 
     subgraph "Dynamic Sources (매 턴 갱신)"
         S5["⑤ Tool Schemas<br/>L1 Filter 통과한 도구 스키마"]
-        S6["⑥ Plugin/Tool Catalog<br/>비활성·지연 도구 발견 (request_plugin·tool_search)"]
+        S6["⑥ Plugin/Tool Catalog<br/>미선택 플러그인·지연 도구 발견 (request_plugin·tool_search)"]
         S7["⑦ Memory / MEMORY.md<br/>사용자 축적 기억 인덱스"]
         S8["⑧ Rolling Summary Preamble<br/>id=2.5 (체크포인트 prior context 요약, 있을 경우)"]
     end
@@ -1043,7 +1043,7 @@ flowchart LR
 | ③ | Employee Profile | 부팅 시 | 0.5~1K | 사용자 이름·직급·부서·역할 |
 | ④ | Org Context | 부팅 시 | 1~2K | 조직 구조 요약, 팀원 목록, 보고 라인 |
 | ⑤ | Tool Schemas | 매 턴 | 3~8K | L1 Filter 통과 후 the LLM backend에 노출할 도구 JSON 스키마 |
-| ⑥ | Plugin/Tool Catalog | 매 턴 (조건부) | 0.5~2K | 비활성 플러그인 카탈로그 + 지연 도구 카탈로그 (`tool_search`, `experimental.toolDeferral`). 활성 플러그인 도구 스키마는 ⑤에 포함 |
+| ⑥ | Plugin/Tool Catalog | 매 턴 (조건부) | 0.5~2K | 현재 턴에 아직 선택되지 않은 enabled 플러그인 카탈로그 + 대형 도구 표면용 지연 도구 카탈로그 (`tool_search`, `EAGER_TOOL_EXPOSURE_CEILING`). 사용자 비활성 플러그인은 카탈로그에서 제외된다. 활성 플러그인 도구 스키마는 200개 미만에서는 ⑤에 eager 포함, 200개 이상에서는 선택 로드 |
 | ⑦ | MEMORY.md | 파일 변경 시 | 1~3K | 사용자 축적 기억 인덱스 — 선호, 루틴, 프로젝트 정보 |
 | ⑧ | Rolling Summary Preamble (id=2.5) | on-change | 2~5K | 체크포인트에서 이어받은 prior context summary. `summaryPreamble` 가 set 된 모든 턴에서 주입. |
 | ⑨ | OS / Environment | 부팅 시 | 0.3~0.5K | OS 종류, 홈 디렉터리, 시간대, 현재 시각 |
@@ -2683,14 +2683,15 @@ boot 시 `PluginRuntime.startAll()`은 로드된 플러그인을 순차 `await`�
 
 **현행:** `PluginRuntime.startAll`은 `Promise.allSettled` 병렬 실행, 5초 초과 시 slow-plugin warn 로깅, `manifest.startupTimeoutMs` 선언 시 `Promise.race` 기반 하드 타임아웃 적용(실제 플러그인 작업은 cancellation되지 않으며, 호스트가 해당 플러그인을 drop하고 계속 진행한다). 실패한 플러그인은 fail-soft로 drop되며 나머지는 계속 로드된다.
 
-**Lifecycle callback 쌍 — `onDisable` / `onEnable`:** `PluginRuntime`은 `PluginRuntimeOptions`로 두 개의 host-provided 콜백을 받는다.
+**Lifecycle callback — `onDisable` / `onEnable` / `onActiveStateChange`:** `PluginRuntime`은 `PluginRuntimeOptions`로 host-provided lifecycle 콜백을 받는다.
 
 - `onDisable(pluginId)` — 플러그인의 tear-down 직후 발화한다. 호스트는 이 콜백으로 `keywordEngine.unregisterByPlugin` / `toolRegistry.unregisterByPlugin` / `conversationLoop.onPluginDisabled`를 호출해 transient host state를 정리한다. 발화 지점: `restartPlugin` stop phase, `restartAll` stop phase (per plugin), `disable`, `removePlugin`, `reloadPlugin` stop phase.
-- `onEnable(pluginId)` — 플러그인이 "loaded + started" 상태에 도달한 직후 발화한다(`onDisable`과 대칭). 호스트는 이 콜백으로 `syncPluginToolRegistry(pluginRuntime, toolRegistry)`를 호출해 `onDisable`이 비운 ToolRegistry를 다시 채운다. 발화 지점: `restartPlugin` start 성공, `restartAll` start 성공 (per plugin), `addPlugin` fresh-load branch의 `instantiateAndStartSinglePlugin` start 성공, `reloadPlugin` start 성공.
+- `onEnable(pluginId)` — 플러그인이 "loaded + started" 상태에 도달한 직후 발화한다(`onDisable`과 대칭). 호스트는 이 콜백으로 `syncPluginToolRegistryForPlugin(pluginRuntime, toolRegistry, pluginId)`를 호출해 `onDisable`이 비운 해당 플러그인의 ToolRegistry 항목만 다시 채운다. 발화 지점: `restartPlugin` start 성공, `restartAll` start 성공 (per plugin), `addPlugin` fresh-load branch의 `instantiateAndStartSinglePlugin` start 성공, `reloadPlugin` start 성공.
+- `onActiveStateChange(pluginId, enabled)` — 사용자 활성/비활성 토글에서만 발화하며 runtime unload가 아니다. 비활성화 시 호스트는 keyword와 ConversationLoop transient scope만 정리하고 ToolRegistry는 유지한다. 따라서 auth/config/UI 호출은 계속 runtime 도구를 실행할 수 있고, 모델 노출만 ConversationLoop tool scope에서 차단된다. 재활성화 시 manifest keyword만 필요 시 재등록한다.
 
-이 쌍은 "post-boot lifecycle event ⇒ ToolRegistry 자동 재동기화"를 계약화한다. 따라서 `hostApi.config.set` wrapper / IPC `ave:plugins:config:set` / dev-reload watcher / managed-marketplace `restartAll` 등 모든 외부 caller는 별도의 `syncPluginToolRegistry` 호출이 필요 없다. 호출자 측에서 sync를 잊으면 `onDisable`이 ToolRegistry에서 도구를 지운 직후 그대로 비어 있는 상태가 되어 chat-surface가 `도구를 찾을 수 없습니다: <tool>` 에러를 노출하는 회귀(PR #760)가 발생하는데, `onEnable` 콜백이 이를 contract-level에서 닫는다.
+이 lifecycle 계약은 "post-boot lifecycle event ⇒ ToolRegistry 자동 재동기화"를 보장한다. 따라서 `hostApi.config.set` wrapper / IPC `ave:plugins:config:set` / dev-reload watcher / managed-marketplace `restartAll` 등 모든 외부 caller는 별도의 `syncPluginToolRegistry` 호출이 필요 없다. 호출자 측에서 sync를 잊으면 `onDisable`이 ToolRegistry에서 도구를 지운 직후 그대로 비어 있는 상태가 되어 chat-surface가 `도구를 찾을 수 없습니다: <tool>` 에러를 노출하는 회귀(PR #760)가 발생하는데, `onEnable` 콜백이 이를 contract-level에서 닫는다.
 
-부트 초기 1회는 예외다. `startAll()` 직후 boot는 `registerPluginTools(pluginRuntime, toolRegistry)`로 ToolRegistry를 일괄 채우므로 `startAll`이 매 플러그인마다 `onEnable`을 발화하지 않는다. `plugin.installed` 호스트 이벤트 listener는 partition policy 설치 책임만 유지하고 ToolRegistry sync는 더 이상 호출하지 않는다 (`onEnable`이 cover). `plugin.uninstalled` listener는 `onEnable`이 cover하지 못하는 ghost-tool sweep 책임(설치 해제 후 stale 항목 제거)을 위해 sync를 유지한다.
+부트 초기 1회는 예외다. `startAll()` 직후 boot는 `syncPluginToolRegistry(pluginRuntime, toolRegistry)`로 ToolRegistry를 일괄 채우므로 `startAll`이 매 플러그인마다 `onEnable`을 발화하지 않는다. `plugin.installed` 호스트 이벤트 listener는 partition policy 설치 책임만 유지하고 ToolRegistry sync는 더 이상 호출하지 않는다 (`onEnable`이 cover). `plugin.uninstalled` listener는 `onEnable`이 cover하지 못하는 ghost-tool sweep 책임(설치 해제 후 stale 항목 제거)을 위해 full `syncPluginToolRegistry`를 유지한다.
 
 ### 9.3b Plugin Webview Registration Protocol (#237 Option B)
 
@@ -4071,7 +4072,7 @@ v5 는 v4 Final 의 설계를 그대로 유지한 상태에서, **실구현 머�
 | §5 Memory — File-based | 파일 기반 경량 구조 | **§5.X (신규 v5)** `proper-lockfile` 크로스프로세스 파일 락 + audit log rotation/retention |
 | §6.4 Tool Registry & Taxonomy | 6 카테고리 + 동적 등록 | **§6.4.X (신규 v5)** Tool meta `version` / `deprecatedSince` / `replacedBy` 필드 |
 | §7 Marketplace Hub | 플러그인 배포·업데이트 | **§7.X (신규 v5) — S13 승인 워크플로우**, **§7.Y (신규 v5) — S15 카나리 롤아웃** |
-| §8 Agent Approval | 승인이 기본 | **§8.X (신규 v5)** HMAC nonce + FIFO queue cap + DLP arg mask + 병렬 tool 실행 |
+| §8 Agent Approval | 승인이 기본 | **§8.X (신규 v5)** HMAC nonce + FIFO queue cap + DLP arg mask + 순서 보존 tool 실행 |
 | §9 Plugin System | manifest + UI slots + MCP | **§9.X (신규 v5)** manifest JSON Schema (AJV CI) + HostApi contract CI + tool/event namespace CI |
 | §12 Use Case Mapping | 7개 매핑 | **§12.X (신규 v5) — S12+FU1 Client Telemetry** (opt-in, device_uuid, PII scrubber, URL allowlist, install_token header-only) |
 | §14 Deployment & Governance | 배포·거버넌스·Feature Flag | **§14.X (신규 v5)** SDK public 분리 + plugin template repo + drift-check nightly + 태그 정책 manual |
@@ -4216,7 +4217,7 @@ v4 §7 의 Marketplace Hub 배포 플로우는 유지된다. v5 는 **publisher 
 - **Stage 전이 운영**: `canary` 는 기본 10% → 50% → 100% 단계적 증대. `ga` 전환 시 `rollout_percent` 는 100 으로 고정된다.
 - **클라이언트 동작**: 매니페스트 업데이트 폴링(§9) 은 슬롯 검증 후 대상이 아니면 현재 설치 버전을 유지한다. 이 과정은 사용자에게 불투명(no UI flicker).
 
-#### §8.X Approval System — HMAC/큐/UI/DLP/병렬 (신규 v5)
+#### §8.X Approval System — HMAC/큐/UI/DLP/순서 실행 (신규 v5)
 
 v4 §8 "승인이 기본" 모델을 강화한다.
 
@@ -4224,7 +4225,7 @@ v4 §8 "승인이 기본" 모델을 강화한다.
 - **큐 cap**: Renderer approval FIFO queue 는 `DEFAULT_APPROVAL_QUEUE_MAX = 50` 이며 cap 도달 시 새 push 를 drop-newest 한다. 이미 사용자가 보고 있는 head-of-queue 를 보존하기 위한 DoS 방어다.
 - **승인 UI**: 사용자-facing 승인은 한 요청씩 결정한다. `clear` 는 행정적 queue reset 용도이며 unseen request 를 일괄 승인하지 않는다.
 - **DLP arg mask**: 승인 화면에 노출되는 인자 중 이메일·전화번호·사번·카드번호 패턴은 `****` 로 마스킹(로그는 원문 암호화 보관). §12.X PII scrubber 규칙 공유.
-- **병렬 tool 실행**: 승인이 끝난 tool 호출 배열은 현행 `ToolExecutor.executeAll()` 경로에서 5개 단위 batch 로 나뉘고, 각 batch 는 `Promise.all` 로 병렬 실행된다. batch 사이에는 순차 진행한다. 의존성 인식 scheduling 은 executor 내부 기능이 아니므로, 종속 호출은 caller 가 별도 turn/batch 로 분리해야 한다.
+- **순서 보존 tool 실행**: 같은 assistant 메시지에 들어온 tool 호출 배열은 현행 `ToolExecutor.executeAll()` 경로에서 LLM 이 나열한 순서대로 하나씩 실행된다. 이는 `todo_session_write` 같은 상태/워크플로우 도구가 다음 작업 도구보다 앞에 배치되면 UI 상태가 먼저 갱신된다는 계약을 보장한다. 독립 호출도 같은 메시지에 묶을 수 있지만, host 는 side effect 안정성을 위해 순서 실행한다.
 
 #### §9.X Plugin System — 계약 CI (신규 v5)
 
