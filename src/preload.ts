@@ -1344,6 +1344,8 @@ const api = {
   // todo_session_write — assistant's current-turn checklist
   listSessionTodos: async (sessionId?: string) =>
     ipcRenderer.invoke("ave:session-todo:list", sessionId),
+  clearSessionTodos: async (sessionId?: string) =>
+    ipcRenderer.invoke("ave:session-todo:clear", sessionId),
   onSessionTodoChanged: (
     handler: (payload: {
       sessionId: string;
