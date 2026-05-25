@@ -21,6 +21,7 @@ import {
   _resetForTest,
   _setTamperedSnapshotForTest,
   devNoSandboxAllowed,
+  isPackagedForbiddenEnvVar,
   setIsPackaged,
   shouldWarnPackagedFlagsIgnored,
   tamperedVarsAtBoot,
@@ -69,13 +70,39 @@ describe("dev-flags tamper snapshot", () => {
     _setTamperedSnapshotForTest([
       "AVE_DEV",
       "AVE_DEV_RELOAD",
+      "AVE_DEV_CONSOLE",
+      "AVE_E2E",
+      "AVE_DEBUG_STREAM",
+      "VITE_DEBUG_STREAM",
       "AVE_WIN_NO_SANDBOX",
+      "AVE_PLUGINS_DIR",
     ]);
     const names = tamperedVarsAtBoot();
     expect(names).toContain("AVE_DEV");
     expect(names).toContain("AVE_DEV_RELOAD");
+    expect(names).toContain("AVE_DEV_CONSOLE");
+    expect(names).toContain("AVE_E2E");
+    expect(names).toContain("AVE_DEBUG_STREAM");
+    expect(names).toContain("VITE_DEBUG_STREAM");
     expect(names).toContain("AVE_WIN_NO_SANDBOX");
-    expect(names).toHaveLength(3);
+    expect(names).toContain("AVE_PLUGINS_DIR");
+    expect(names).toHaveLength(8);
+  });
+
+  it("defines the packaged dev/test env scrub predicate", () => {
+    expect(isPackagedForbiddenEnvVar("AVE_DEV")).toBe(true);
+    expect(isPackagedForbiddenEnvVar("AVE_DEV_CONSOLE")).toBe(true);
+    expect(isPackagedForbiddenEnvVar("AVE_DEV_SOMETHING_NEW")).toBe(true);
+    expect(isPackagedForbiddenEnvVar("AVE_E2E")).toBe(true);
+    expect(isPackagedForbiddenEnvVar("AVE_DEBUG_STREAM")).toBe(true);
+    expect(isPackagedForbiddenEnvVar("VITE_DEBUG_STREAM")).toBe(true);
+    expect(isPackagedForbiddenEnvVar("AVE_WIN_NO_SANDBOX")).toBe(true);
+    expect(isPackagedForbiddenEnvVar("AVE_PLUGINS_DIR")).toBe(true);
+    expect(isPackagedForbiddenEnvVar("AVE_WHITELIST_OFFLINE")).toBe(true);
+
+    expect(isPackagedForbiddenEnvVar("AVE_DEMO_VENDOR")).toBe(false);
+    expect(isPackagedForbiddenEnvVar("AVE_HOME")).toBe(false);
+    expect(isPackagedForbiddenEnvVar("NODE_ENV")).toBe(false);
   });
 
   it("keeps AVE_WIN_NO_SANDBOX Windows-only and packaged-gated", () => {

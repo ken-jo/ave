@@ -14,7 +14,9 @@ const mockOn = vi.fn();
 const mockRemoveListener = vi.fn();
 const mockUserActivation = { isActive: false };
 const originalDebugStreamEnv = process.env.VITE_DEBUG_STREAM;
+const originalAveDebugStreamEnv = process.env.AVE_DEBUG_STREAM;
 const originalAveDevEnv = process.env.AVE_DEV;
+const originalAveE2eEnv = process.env.AVE_E2E;
 const originalAveDevConsoleEnv = process.env.AVE_DEV_CONSOLE;
 
 // Named exports only — mirrors the named-import shape in preload.ts.
@@ -72,7 +74,9 @@ describe("preload — plugin webview asset URLs", () => {
     mockUserActivation.isActive = false;
     vi.resetModules();
     delete process.env.VITE_DEBUG_STREAM;
+    delete process.env.AVE_DEBUG_STREAM;
     delete process.env.AVE_DEV;
+    delete process.env.AVE_E2E;
     delete process.env.AVE_DEV_CONSOLE;
   });
 
@@ -82,10 +86,20 @@ describe("preload — plugin webview asset URLs", () => {
     } else {
       process.env.VITE_DEBUG_STREAM = originalDebugStreamEnv;
     }
+    if (originalAveDebugStreamEnv === undefined) {
+      delete process.env.AVE_DEBUG_STREAM;
+    } else {
+      process.env.AVE_DEBUG_STREAM = originalAveDebugStreamEnv;
+    }
     if (originalAveDevEnv === undefined) {
       delete process.env.AVE_DEV;
     } else {
       process.env.AVE_DEV = originalAveDevEnv;
+    }
+    if (originalAveE2eEnv === undefined) {
+      delete process.env.AVE_E2E;
+    } else {
+      process.env.AVE_E2E = originalAveE2eEnv;
     }
     if (originalAveDevConsoleEnv === undefined) {
       delete process.env.AVE_DEV_CONSOLE;
@@ -214,9 +228,28 @@ describe("preload — plugin webview asset URLs", () => {
 
     expect(env).toMatchObject({
       isDev: false,
+      isE2E: false,
       enableDevConsole: false,
       debugStream: false,
     });
+  });
+
+  it("reflects AVE_E2E in the preload bridge", async () => {
+    process.env.AVE_E2E = "1";
+    const ave = await loadAveNamespace();
+    const env = ave["env"] as Record<string, unknown>;
+
+    expect(env["isE2E"]).toBe(true);
+    expect(env["debugStream"]).toBe(false);
+  });
+
+  it("does not treat AVE_E2E as dev mode by itself", async () => {
+    process.env.AVE_E2E = "1";
+    const ave = await loadAveNamespace();
+    const env = ave["env"] as Record<string, unknown>;
+
+    expect(env["isDev"]).toBe(false);
+    expect(env["isE2E"]).toBe(true);
   });
 
   it("reflects VITE_DEBUG_STREAM in the preload bridge", async () => {
@@ -227,9 +260,20 @@ describe("preload — plugin webview asset URLs", () => {
     expect(env["debugStream"]).toBe(true);
   });
 
-  it("enables debugStream when the dev console is enabled in dev mode", async () => {
+  it("keeps debugStream separate from the dev console flag", async () => {
     process.env.AVE_DEV = "1";
     process.env.AVE_DEV_CONSOLE = "1";
+    const ave = await loadAveNamespace();
+    const env = ave["env"] as Record<string, unknown>;
+
+    expect(env["enableDevConsole"]).toBe(true);
+    expect(env["debugStream"]).toBe(false);
+  });
+
+  it("reflects AVE_DEBUG_STREAM in the preload bridge", async () => {
+    process.env.AVE_DEV = "1";
+    process.env.AVE_DEV_CONSOLE = "1";
+    process.env.AVE_DEBUG_STREAM = "1";
     const ave = await loadAveNamespace();
     const env = ave["env"] as Record<string, unknown>;
 

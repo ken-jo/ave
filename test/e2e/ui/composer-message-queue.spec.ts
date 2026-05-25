@@ -3,8 +3,9 @@
  *
  * Spec: docs/blueprints/composer-redesign-message-queue.md
  *
- * 본 e2e 는 큐의 동적 동작 (⌘⏎ 인터럽트 / 자연 인입 / busy state) 은 검증 X —
- * 실제 LLM streaming 필요. 대신 v6 layout 의 정적 DOM 구조만 검증:
+ * 본 e2e 는 v6 layout 구조와 queue-auto done event 인입을 검증한다.
+ * ⌘⏎ 인터럽트 / 자연 인입 / busy state 는 실제 LLM streaming 의존도가 높아
+ * 별도 renderer 단위 테스트에서 다룬다.
  *
  * - composer textarea-only (input-bar 안 SEND/Stop/Guide 0)
  * - BottomActionRow 가 TokenRing slot + ⇧⏎ kbd + Send 노출
@@ -54,6 +55,33 @@ test('idle: MessageQueuePanel 미렌더 (큐 비어 있음 sentinel)', async ({ 
   await expect(panel).toHaveCount(0);
 });
 
+test.describe('renderer debug stream env', () => {
+  test.use({ launchEnv: { AVE_DEV_CONSOLE: '1' } });
+
+  test('dev console flag does not enable renderer debugStream by default', async ({ mainWindow }) => {
+    const env = await mainWindow.evaluate(() => {
+      const ave = (window as unknown as {
+        ave?: {
+          env?: {
+            isDev?: boolean;
+            isE2E?: boolean;
+            enableDevConsole?: boolean;
+            debugStream?: boolean;
+          };
+        };
+      }).ave;
+      return ave?.env ?? null;
+    });
+
+    expect(env).toMatchObject({
+      isDev: true,
+      isE2E: true,
+      enableDevConsole: true,
+      debugStream: false,
+    });
+  });
+});
+
 test('InputActionBar trailing: 📎 → 권한 → (승인 optional) → 👤 페르소나 → Thinking 순서', async ({ mainWindow }) => {
   // attach button 존재
   const attachBtn = mainWindow.locator('[data-testid="iab-attach-button"]');
@@ -86,6 +114,31 @@ test('큐 항목 수정 (더블클릭) — input 진입 + Enter commit', async (
 });
 
 test('queue-auto 자동 인입 — done event 시 큐 항목이 user bubble + "↪ 큐에서" hint 로 표시', async ({ app, mainWindow }) => {
+  // The default shared fixture intentionally starts without an LLM key. Seed
+  // the active provider with a dummy key so handleAsk passes its API-key gate;
+  // chatSend may fail later, but the queue user bubble must be appended first.
+  const hasSeededKey = await mainWindow.evaluate(async () => {
+    const api = (window as unknown as {
+      aveApi: {
+        getSettings: () => Promise<unknown>;
+        hasApiKey: (provider: string) => Promise<boolean>;
+        setApiKey: (provider: string, key: string) => Promise<unknown>;
+      };
+    }).aveApi;
+    const settings = await api.getSettings();
+    const provider =
+      settings && typeof settings === 'object' &&
+      'llm' in settings &&
+      settings.llm &&
+      typeof settings.llm === 'object' &&
+      'provider' in settings.llm &&
+      typeof settings.llm.provider === 'string'
+        ? settings.llm.provider
+        : 'azure';
+    await api.setApiKey(provider, 'ave-e2e-dummy-key');
+    return api.hasApiKey(provider);
+  });
+  expect(hasSeededKey).toBe(true);
   // 큐에 항목 적재 후 done event 시뮬 (preload 의 stream IPC) → user bubble
   // 등장 + injectHint="queue" 배지. queue-auto inputOrigin path 의 통합 검증.
   await mainWindow.evaluate(() => {
@@ -96,8 +149,7 @@ test('queue-auto 자동 인입 — done event 시 큐 항목이 user bubble + "�
     }
   });
   const row = mainWindow.locator('[data-testid="message-queue-row-text"]').first();
-  const queueRowVisible = await row.isVisible().catch(() => false);
-  if (!queueRowVisible) test.skip();
+  await expect(row).toBeVisible();
   // done event 발화 — main 프로세스에서 broadcast.
   await app.evaluate(({ BrowserWindow }) => {
     const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
@@ -106,10 +158,8 @@ test('queue-auto 자동 인입 — done event 시 큐 항목이 user bubble + "�
     return true;
   });
   // user bubble 에 "↪ 큐에서" 배지 확인.
-  const queueHint = mainWindow.locator('text=↪ 큐에서').first();
-  const found = await queueHint.waitFor({ state: 'visible', timeout: 5_000 }).then(() => true).catch(() => false);
-  // chatSend mock 안 돼서 LLM 호출은 timeout 가능. user bubble + hint 만 검증.
-  expect(found || true).toBe(true); // best-effort — 실제 환경에서만 strict
+  await expect(mainWindow.locator('text=↪ 큐에서').first()).toBeVisible({ timeout: 5_000 });
+  await expect(mainWindow.locator('text=끝나면 요약').first()).toBeVisible();
 });
 
 test('ApprovalQueueStatus floating chip 제거 (v6 spec)', async ({ mainWindow }) => {

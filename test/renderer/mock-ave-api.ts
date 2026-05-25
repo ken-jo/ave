@@ -542,7 +542,16 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
   };
 }
 
-export function makeMockAveNamespace() {
+type AveNamespaceOverrides = {
+  env?: Partial<{
+    isDev: boolean;
+    isE2E: boolean;
+    enableDevConsole: boolean;
+    debugStream: boolean;
+  }>;
+};
+
+export function makeMockAveNamespace(overrides: AveNamespaceOverrides = {}) {
   const approvalHandlers = new Set<(r: unknown) => void>();
   return {
     ns: {
@@ -573,8 +582,10 @@ export function makeMockAveNamespace() {
       },
       env: {
         isDev: false,
+        isE2E: false,
         enableDevConsole: false,
         debugStream: false,
+        ...overrides.env,
       },
     },
     emitApproval: (r: unknown) => approvalHandlers.forEach((h) => h(r)),
