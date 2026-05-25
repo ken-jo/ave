@@ -437,6 +437,34 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     }
   });
 
+  // #1176 — toggle a plugin's active/inactive state. Persists `enabled` to the
+  // registry and broadcasts a lifecycle event so the renderer refreshes its
+  // plugin cards. The plugin stays loaded; only its per-turn tool exposure is
+  // gated (PluginRuntime.setPluginEnabled does not unload/reload).
+  ipcMain.handle(
+    "ave:plugins:set-enabled",
+    async (e, pluginId: unknown, enabled: unknown) => {
+      if (!validateSender(e)) {
+        auditUnauthorized(auditLogger, "ave:plugins:set-enabled", e);
+        return UNAUTHORIZED_FRAME;
+      }
+      if (typeof pluginId !== "string" || pluginId.length === 0) {
+        return pluginConfigError("invalid-plugin-id", "pluginId must be a non-empty string");
+      }
+      if (typeof enabled !== "boolean") {
+        return pluginConfigError("invalid-enabled", "enabled must be a boolean");
+      }
+      try {
+        await pluginRuntime.setPluginEnabled(pluginId, enabled);
+      } catch (err) {
+        return pluginConfigError("no-such-plugin", errMessage(err) || `unknown plugin: ${pluginId}`);
+      }
+      emitHostEvent("plugin.enabled-changed", { pluginId, enabled });
+      broadcastPluginLifecycleEvent("ave:plugins:enabled-changed", { pluginId, enabled });
+      return { ok: true, pluginId, enabled } as const;
+    },
+  );
+
   ipcMain.handle("ave:plugins:install-local", async (e) => {
     if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:plugins:install-local", e); return UNAUTHORIZED_FRAME; }
     if (!isDevModeUnlocked()) {
