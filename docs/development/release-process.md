@@ -56,10 +56,11 @@ Build Installers workflow 완료 후:
 gh release view vX.Y.Z -R former_org/ave --json assets -q '[.assets[].name]'
 ```
 
-**기대 asset (11종, v0.2.1 기준)**:
+**기대 asset (23종 = version/update metadata 13 + stable alias 10)**:
 - Linux: `Ave-X.Y.Z-linux-amd64.deb`, `Ave-X.Y.Z-linux-x86_64.AppImage`, `Ave-X.Y.Z-linux-x86_64.rpm`, `latest-linux.yml`
-- Mac arm64: `Ave-X.Y.Z-mac-arm64.dmg` + `.blockmap`, `Ave-X.Y.Z-mac-arm64.zip`, `latest-mac.yml`
-- Windows: `Ave-X.Y.Z-windows-x64-setup.exe`, `Ave-X.Y.Z-win-x64.zip`, `latest.yml`
+- Mac arm64: `Ave-X.Y.Z-mac-arm64.dmg` + `.blockmap`, `Ave-X.Y.Z-mac-arm64.zip` + `.blockmap`, `latest-mac.yml`
+- Windows: `Ave-X.Y.Z-windows-x64-setup.exe` + `.blockmap`, `Ave-X.Y.Z-win-x64.zip`, `latest.yml`
+- Stable website aliases: matching `Ave-latest-*` copies for each installer/archive and `.blockmap`.
 
 ### 6. Release body + publish
 
