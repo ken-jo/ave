@@ -1282,7 +1282,7 @@ export type AvePluginsApi = {
 };
 
 export type AveHostMarketplaceApi = {
-  installMarketplacePlugin: (id: string) => Promise<PluginMarketplaceActionResult>;
+  installMarketplacePlugin: (id: string, expectedVersion?: string) => Promise<PluginMarketplaceActionResult>;
   uninstallMarketplacePlugin: (id: string) => Promise<PluginMarketplaceActionResult>;
   installMarketplaceAgent?: (slug: string) => Promise<PluginMarketplaceActionResult>;
   uninstallMarketplaceAgent?: (slug: string) => Promise<PluginMarketplaceActionResult>;
