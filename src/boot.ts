@@ -149,6 +149,7 @@ import {
 import { runManagedBootstrap } from "./boot/managed-marketplace.js";
 import { createLogger } from "./lib/logger.js";
 import { aveHome } from "./shared/ave-home.js";
+import { t } from "./i18n/index.js";
 import {
   listAveHomeDocUpgradeMarkers,
   seedAveHomeDocs,
@@ -302,11 +303,11 @@ export async function bootstrap(
     const markerSummary =
       aveHomeDocUpgradeMarkers.length === 1
         ? `~/.ave/${aveHomeDocUpgradeMarkers[0].markerPath}`
-        : `~/.ave reference ${aveHomeDocUpgradeMarkers.length}개 파일`;
+        : t("be_boot.upgradeMarkersPlural", { count: String(aveHomeDocUpgradeMarkers.length) });
     notificationService.fire({
       kind: "system",
-      title: "Ave reference 업데이트 사용 가능",
-      body: `검토 대상: ${markerSummary}. 병합하거나 삭제하세요.`,
+      title: t("be_boot.upgradeNotificationTitle"),
+      body: t("be_boot.upgradeNotificationBody", { markerSummary }),
     });
   }
   // Routine delivery sites pass `notificationService` explicitly per-call so
@@ -1045,7 +1046,7 @@ export async function bootstrap(
     try {
       notificationService?.fire({
         kind: "routine",
-        title: routine.notificationTitle ?? routine.title ?? "루틴 알림",
+        title: routine.notificationTitle ?? routine.title ?? t("be_boot.routineNotificationFallbackTitle"),
         body: routine.notificationBody ?? "",
         contextRef: { routineId: routine.id },
       });
