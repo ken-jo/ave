@@ -116,8 +116,6 @@ function makeServices(pm: ReturnType<typeof makeMockPM>, gate = makeMockGate()) 
       searchSessions: vi.fn(() => []),
       getMemoryContext: vi.fn(() => ""),
       getAgentsMd: vi.fn(() => "# Agents"),
-      getAveMd: vi.fn(() => "# Agents"),
-      updateAveMd: vi.fn(),
       updateAgentsMd: vi.fn(),
       getUserPreferences: vi.fn(() => "# Preferences"),
       updateUserPreferences: vi.fn(),
@@ -374,7 +372,6 @@ describe("ave:memory:entries:*", () => {
     "ave:memory:index:sections:update",
     "ave:memory:sessions:list",
     "ave:memory:agents-md:get",
-    "ave:memory:ave-md:get",
     "ave:memory:user-prefs:get",
     "ave:memory:user-prefs:refresh",
   ])("%s rejects unauthorized frames", async (channel) => {

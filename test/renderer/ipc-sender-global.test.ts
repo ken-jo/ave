@@ -53,8 +53,6 @@ const CHANNEL_MANIFEST: Record<string, "mutating" | "sensitive" | "public-read">
   "ave:memory:sessions:search": "sensitive",
   "ave:memory:agents-md:get": "sensitive",
   "ave:memory:agents-md:update": "mutating",
-  "ave:memory:ave-md:get": "sensitive",
-  "ave:memory:ave-md:update": "mutating",
   "ave:memory:user-prefs:get": "sensitive",
   "ave:memory:user-prefs:update": "mutating",
   // Plugins
@@ -104,8 +102,6 @@ const CHANNEL_MANIFEST: Record<string, "mutating" | "sensitive" | "public-read">
   "ave:routines:v2:remove": "mutating",
   "ave:routines:v2:trigger-now": "mutating",
   "ave:routines:v2:list-sessions": "public-read",
-  // Overlay v1 — primary-action is renderer→main invoke (write influence); show/update/dismiss are main→renderer push events
-  "ave:overlay:primary-action": "mutating",
 };
 
 // ─── validateSender unit tests ───────────────────────────────────────────────
@@ -197,7 +193,6 @@ describe("ipc-bridge.ts — mutating/sensitive channels have validateSender guar
     "ave:routines:v2:remove": "ROUTINES_V2.remove",
     "ave:routines:v2:trigger-now": "ROUTINES_V2.triggerNow",
     "ave:routines:v2:list-sessions": "ROUTINES_V2.listSessions",
-    "ave:overlay:primary-action": "OVERLAY_V1.primaryAction",
     "ave:permission:get-mode": "PERMISSIONS.getMode",
     "ave:permission:set-mode": "PERMISSIONS.setMode",
     "ave:permission:list-rules": "PERMISSIONS.listRules",

@@ -294,8 +294,6 @@ describe("preload — plugin webview asset URLs", () => {
     ["memoryGetAgentsMd", "ave:memory:agents-md:get"],
     ["memoryUpdateAgentsMd", "ave:memory:agents-md:update", "# Agents"],
     ["memoryUpdateIndexSections", "ave:memory:index:sections:update", { urgentMemory: "Keep this." }],
-    ["memoryGetAveMd", "ave:memory:ave-md:get"],
-    ["memoryUpdateAveMd", "ave:memory:ave-md:update", "# Agents"],
     ["memoryGetUserPrefs", "ave:memory:user-prefs:get"],
     ["memoryUpdateUserPrefs", "ave:memory:user-prefs:update", "# Preferences"],
     ["memoryRefreshUserPrefs", "ave:memory:user-prefs:refresh"],

@@ -1028,16 +1028,8 @@ export function registerChatHandlers(deps: IpcDeps): void {
     if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:memory:agents-md:get", e); return UNAUTHORIZED_FRAME; }
     return memoryManager.getAgentsMd();
   });
-  ipcMain.handle("ave:memory:ave-md:get", (e) => {
-    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:memory:ave-md:get", e); return UNAUTHORIZED_FRAME; }
-    return memoryManager.getAgentsMd();
-  });
   ipcMain.handle("ave:memory:agents-md:update", async (e, content: string) => {
     if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:memory:agents-md:update", e); return UNAUTHORIZED_FRAME; }
-    return memoryManager.updateAgentsMd(content);
-  });
-  ipcMain.handle("ave:memory:ave-md:update", async (e, content: string) => {
-    if (!validateSender(e)) { auditUnauthorized(auditLogger, "ave:memory:ave-md:update", e); return UNAUTHORIZED_FRAME; }
     return memoryManager.updateAgentsMd(content);
   });
   ipcMain.handle("ave:memory:user-prefs:get", (e) => {

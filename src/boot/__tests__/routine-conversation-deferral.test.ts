@@ -22,7 +22,6 @@ class RecordingProvider implements LLMProvider {
 function memoryManagerStub() {
   return {
     getAgentsMd: () => "",
-    getAveMd: () => "",
     getMemoryIndex: () => "",
     getUserPreferences: () => "",
     getMemoryContext: () => "",

@@ -4,7 +4,7 @@
  *         ave:mcp:*, ave:plugin:* (webview bridge), ave:file:*,
  *         ave:notification:clicked
  */
-import { app, dialog, ipcMain, webContents } from "electron";
+import { dialog, ipcMain, webContents } from "electron";
 import { t } from "../../i18n/index.js";
 import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -382,7 +382,6 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       pluginRuntime,
       mainWindow: getMainWindow(),
       marketplace,
-      isPackaged: app.isPackaged,
     });
     return { ok: true } as const;
   });
