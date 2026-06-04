@@ -46,7 +46,6 @@ function makeBuilder(toolRegistry: ToolRegistry): SystemPromptBuilder {
   return new SystemPromptBuilder({
     memoryManager: {
       getAgentsMd: () => "",
-      getAveMd: () => "",
       getMemoryIndex: () => "",
       getUserPreferences: () => "",
       getMemoryContext: () => "",

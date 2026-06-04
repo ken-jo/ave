@@ -137,8 +137,6 @@ function makeMinimalDeps(
       deleteMemory: vi.fn(),
       searchMemoryEntries: vi.fn(() => []),
       searchSessions: vi.fn(() => []),
-      getAveMd: vi.fn(),
-      updateAveMd: vi.fn(),
       getUserPreferences: vi.fn(),
       updateUserPreferences: vi.fn(),
       listSessionEntries: vi.fn(() => []),

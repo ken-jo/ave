@@ -379,8 +379,6 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     memorySearchSessions: vi.fn(async () => []),
     memoryGetAgentsMd: vi.fn(async () => "# Agents"),
     memoryUpdateAgentsMd: vi.fn(async () => undefined),
-    memoryGetAveMd: vi.fn(async () => "# Agents"),
-    memoryUpdateAveMd: vi.fn(async () => undefined),
     memoryGetUserPrefs: vi.fn(async () => "# Preferences"),
     memoryUpdateUserPrefs: vi.fn(async () => undefined),
     memoryRefreshUserPrefs: vi.fn(async () => ({ ok: true, content: "# Refreshed Preferences" })),
@@ -478,7 +476,6 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
       overlayDismissHandlers.add(handler);
       return () => overlayDismissHandlers.delete(handler);
     }),
-    notifyOverlayPrimary: vi.fn(async () => undefined),
 
     onAskUserQuestion: vi.fn((h: (r: unknown) => void) => {
       askUserQuestionHandlers.add(h);

@@ -305,8 +305,6 @@ function makeServicesForListSecretKeys(secretsMap: Record<string, string | null>
       deleteMemory: vi.fn(),
       searchMemoryEntries: vi.fn(() => []),
       getMemoryContext: vi.fn(() => ""),
-      getAveMd: vi.fn(),
-      updateAveMd: vi.fn(),
       getUserPreferences: vi.fn(),
       updateUserPreferences: vi.fn(),
     } as any,
