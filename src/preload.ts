@@ -910,6 +910,11 @@ const api = {
     ipcRenderer.on("ave:plugins:enabled-changed", listener);
     return () => ipcRenderer.removeListener("ave:plugins:enabled-changed", listener);
   },
+  onPluginRuntimeUpdated: (handler: (payload: { pluginId: string }) => void) => {
+    const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
+    ipcRenderer.on("ave:plugins:runtime-updated", listener);
+    return () => ipcRenderer.removeListener("ave:plugins:runtime-updated", listener);
+  },
   onPersonaPromptsUpdated: (handler: () => void) => {
     const listener = () => handler();
     ipcRenderer.on("ave:prompts:updated", listener);
