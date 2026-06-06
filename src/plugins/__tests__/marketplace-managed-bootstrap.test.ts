@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 import { dirname, join, resolve } from "node:path";
@@ -24,10 +25,10 @@ describe("PluginMarketplaceService managed bootstrap", () => {
     // Phase 2b-1: file:-spec catalog entries route through the dev branch.
     // Round-3: AVE_DEV=1 subsumes the deprecated AVE_ALLOW_LINKED_PLUGIN_ENTRY.
     process.env.AVE_DEV = "1";
-    testDir = join(
-      tmpdir(),
-      `ave-managed-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    );
+    // mkdtempSync (atomic, unpredictable suffix, mode 0700) — the secure temp
+    // pattern; a `tmpdir()`+Date.now()/Math.random() path trips CodeQL
+    // js/insecure-temporary-file.
+    testDir = mkdtempSync(join(tmpdir(), "ave-managed-"));
     // Phase 2a: registry.json lives under pluginsRoot (= testDir/plugins
     // when the helper picks defaults). marketplace.json is the dev mock
     // catalog and lives outside that tree so writes never collide with the
