@@ -91,6 +91,11 @@ export async function runOneHookScript(
       AVE_HOOK_TYPE: payload.hookType,
       AVE_HOOK_TOOL_NAME: payload.toolName,
       AVE_HOOK_TRUST_ORIGIN: payload.trustOrigin,
+      // Per-request MCP-aligned origin (#811 hooks-on-mcp-calls): a hook can deny
+      // by the SPECIFIC server/plugin via env (the convenient path, alongside the
+      // full stdin JSON), e.g. `[ "$AVE_HOOK_MCP_SERVER_ID" = badsrv ] && deny`.
+      ...(payload.mcpServerId !== undefined ? { AVE_HOOK_MCP_SERVER_ID: payload.mcpServerId } : {}),
+      ...(payload.pluginId !== undefined ? { AVE_HOOK_PLUGIN_ID: payload.pluginId } : {}),
     };
     const hookCommand = `${shellEnvAssignments(hookEnv)} ${shellCommandForHookPath(shell, hook.path)}`;
     const child = spawn(shell.cmd, shell.shellArgs(hookCommand), {
