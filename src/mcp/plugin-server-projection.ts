@@ -1,0 +1,166 @@
+/**
+ * Pure projection: an Ave {@link PluginManifest} / `toolSchemas` → the MCP
+ * `2026-07-28` RC server shapes a plugin-as-MCP-server exposes
+ * (`server/discover`'s `DiscoverResult` and `tools/list`'s `Tool[]`).
+ *
+ * Design: docs/architecture/mcp-alignment-design.md §3.2 (manifest → discover)
+ * and §3.3 (toolSchemas → Tool), against the verified §8 wire shapes.
+ *
+ * This module is intentionally PURE (no I/O, no host deps) — it is the spec'd
+ * transformation that the `plugin-loopback-server` milestone wires into a real
+ * per-plugin MCP server. Keeping it pure makes the contract independently
+ * testable before any runtime wiring.
+ *
+ * Key invariants:
+ *  - **Category is the authoritative policy SOT**, carried under reverse-DNS
+ *    `_meta["xyz.ave/category"]`. MCP `ToolAnnotations` are ALSO projected, but
+ *    they are interop hints only — host policy reads `_meta`, never the
+ *    (untrusted) annotations (design §3.3, §8 "annotations untrusted").
+ *  - `_meta` keys use the `xyz.ave/` prefix; per §8 any prefix whose second
+ *    label is `mcp`/`modelcontextprotocol` is RESERVED for MCP, so Ave keys
+ *    MUST NOT use those.
+ *  - `inputSchema` dialect moves draft-07 → JSON Schema 2020-12 (a relabel —
+ *    Ave plugin tool schemas use a 2020-12 subset, no `$ref` network deref).
+ *  - `manifest.capabilities[]` (the advisory kebab-case dependency tags) are
+ *    Ave-internal and are NOT projected into MCP `ServerCapabilities`.
+ */
+import type { PluginManifest, PluginToolCategory } from "../plugins/types.js";
+
+/** The RC protocol revision Ave plugin-servers speak. */
+const MCP_PROTOCOL_VERSION = "2026-07-28";
+
+/** Reverse-DNS prefix for Ave-private `_meta` keys (second label ≠ mcp). */
+const AVE_META_PREFIX = "xyz.ave/";
+
+/** JSON Schema 2020-12 dialect URI (the RC default for tool inputSchema). */
+const JSON_SCHEMA_2020_12 = "https://json-schema.org/draft/2020-12/schema";
+
+/** MCP `ToolAnnotations` (hints only — NOT authoritative). */
+export interface McpToolAnnotations {
+  readOnlyHint: boolean;
+  destructiveHint: boolean;
+  idempotentHint: boolean;
+  openWorldHint: boolean;
+}
+
+/** An MCP `Tool` projected from one Ave `toolSchemas` entry. */
+export interface McpToolProjection {
+  name: string;
+  description: string;
+  inputSchema: {
+    $schema: string;
+    type: "object";
+    properties: Record<string, unknown>;
+    required?: string[];
+    additionalProperties?: boolean;
+  };
+  annotations: McpToolAnnotations;
+  _meta: Record<string, unknown>;
+}
+
+/** A `server/discover` `DiscoverResult` projected from a plugin manifest. */
+export interface McpDiscoverProjection {
+  resultType: "complete";
+  supportedVersions: string[];
+  serverInfo: { name: string; version: string; description: string };
+  capabilities: {
+    tools?: { listChanged: boolean };
+    extensions?: Record<string, unknown>;
+  };
+  instructions: string;
+}
+
+type ToolSchemaEntry = NonNullable<PluginManifest["toolSchemas"]>[string];
+
+/**
+ * Project the Ave permission `category` to MCP `ToolAnnotations` hints. The
+ * mapping is deliberately conservative (writes/shell are destructive; only
+ * `read` is read-only/idempotent; `network` opens the world). These are
+ * interop hints; the authoritative category lives in `_meta` (§3.3).
+ */
+export function annotationsForCategory(category: PluginToolCategory): McpToolAnnotations {
+  return {
+    readOnlyHint: category === "read",
+    destructiveHint: category === "write" || category === "shell",
+    idempotentHint: category === "read",
+    openWorldHint: category === "network",
+  };
+}
+
+/**
+ * Project one `toolSchemas[name]` entry to an MCP `Tool`. `manifestVersion` is
+ * the per-tool version fallback (a tool without its own `version` inherits the
+ * manifest version — §6.4).
+ */
+export function toolSchemaToMcpTool(
+  name: string,
+  entry: ToolSchemaEntry,
+  manifestVersion: string,
+): McpToolProjection {
+  const inputSchema = { ...entry.inputSchema, $schema: JSON_SCHEMA_2020_12 };
+
+  const meta: Record<string, unknown> = {
+    [`${AVE_META_PREFIX}category`]: entry.category,
+    [`${AVE_META_PREFIX}version`]: entry.version ?? manifestVersion,
+  };
+  if (entry.pathFields !== undefined) meta[`${AVE_META_PREFIX}pathFields`] = entry.pathFields;
+  if (entry.writesToOwnSandbox !== undefined) meta[`${AVE_META_PREFIX}writesToOwnSandbox`] = entry.writesToOwnSandbox;
+  if (entry.deprecatedSince !== undefined) meta[`${AVE_META_PREFIX}deprecatedSince`] = entry.deprecatedSince;
+  if (entry.replacedBy !== undefined) meta[`${AVE_META_PREFIX}replacedBy`] = entry.replacedBy;
+
+  return {
+    name,
+    description: entry.description,
+    inputSchema,
+    annotations: annotationsForCategory(entry.category),
+    _meta: meta,
+  };
+}
+
+/**
+ * Project the manifest's declared tools to MCP `Tool[]`. A `tools[]` entry with
+ * no matching `toolSchemas` entry is skipped (UI-only runtime methods live in
+ * `uiCallable[]`, not `toolSchemas`, and are not model-callable MCP tools).
+ */
+export function manifestToolsToMcpTools(manifest: PluginManifest): McpToolProjection[] {
+  const schemas = manifest.toolSchemas ?? {};
+  const out: McpToolProjection[] = [];
+  for (const name of manifest.tools ?? []) {
+    const entry = schemas[name];
+    if (entry === undefined) continue;
+    out.push(toolSchemaToMcpTool(name, entry, manifest.version));
+  }
+  return out;
+}
+
+/**
+ * Project a plugin manifest to a `server/discover` `DiscoverResult`. Capability
+ * flags are derived from what the plugin actually contributes (tools present →
+ * `tools.listChanged`; UI extension → the MCP Apps extension). `manifest.capabilities[]`
+ * is NOT projected — it is Ave-internal dependency metadata, not MCP
+ * `ServerCapabilities` (§3.2).
+ */
+export function manifestToDiscoverResult(manifest: PluginManifest): McpDiscoverProjection {
+  const capabilities: McpDiscoverProjection["capabilities"] = {};
+  if ((manifest.tools?.length ?? 0) > 0) {
+    capabilities.tools = { listChanged: true };
+  }
+  const extensions: Record<string, unknown> = {};
+  if ((manifest.ui?.length ?? 0) > 0) {
+    extensions["io.modelcontextprotocol/ui"] = { mimeTypes: ["text/html;profile=mcp-app"] };
+  }
+  if (Object.keys(extensions).length > 0) {
+    capabilities.extensions = extensions;
+  }
+  return {
+    resultType: "complete",
+    supportedVersions: [MCP_PROTOCOL_VERSION],
+    serverInfo: {
+      name: manifest.name,
+      version: manifest.version,
+      description: manifest.description,
+    },
+    capabilities,
+    instructions: manifest.description,
+  };
+}
