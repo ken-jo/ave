@@ -237,6 +237,7 @@ const api = {
   // ─── Settings ────────────────────────────────────
   getSettings: async () => ipcRenderer.invoke("ave:settings:get"),
   updateSettings: async (partial: unknown) => ipcRenderer.invoke("ave:settings:update", partial),
+  applyHostMap: async (hostResolverMap: string) => ipcRenderer.invoke(SETTINGS.applyHostMap, hostResolverMap),
   onSettingsUpdated: (handler: (settings: unknown) => void) => {
     const listener = (_event: unknown, settings: unknown) => handler(settings);
     ipcRenderer.on(SETTINGS.updated, listener);
