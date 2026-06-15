@@ -75,6 +75,10 @@ export const SETTINGS = {
   applyHostMap: "ave:settings:apply-host-map",
 } as const;
 
+export const MARKETPLACE = {
+  announcements: "ave:marketplace:announcements",
+} as const;
+
 export const UI = {
   assistantContextMenu: "ave:ui:assistant-context-menu",
   assistantContextAction: "ave:ui:assistant-context-action",
