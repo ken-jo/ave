@@ -856,6 +856,8 @@ const api = {
    *  (ok:false) otherwise. */
   installAppUpdate: () =>
     ipcRenderer.invoke("ave:update:install-now") as Promise<{ ok: boolean; reason?: string }>,
+  skipAppUpdate: () =>
+    ipcRenderer.invoke("ave:update:skip-version") as Promise<{ ok: boolean; reason?: string }>,
 
   // ─── Managed bootstrap status ────────────────────
   // The host emits these around `ensureManagedInstalled()` so the renderer
