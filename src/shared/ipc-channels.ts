@@ -36,6 +36,29 @@ export const ROUTINES_V2 = {
   failed: "ave:routines:v2:failed",
 } as const;
 
+export const WORK_BOARD = {
+  list: "ave:work-board:list",
+  get: "ave:work-board:get",
+  add: "ave:work-board:add",
+  update: "ave:work-board:update",
+  transition: "ave:work-board:transition",
+  complete: "ave:work-board:complete",
+  reopen: "ave:work-board:reopen",
+  remove: "ave:work-board:remove",
+  run: "ave:work-board:run",
+  generateReport: "ave:work-board:generate-report",
+  // Emitted when any item is created/updated/transitioned/removed so the
+  // renderer board view refreshes without polling.
+  itemChanged: "ave:work-board:item-changed",
+  // Running indicator events (renderer reflects report/run session progress)
+  runningStarted: "ave:work-board:running-started",
+  runningFinished: "ave:work-board:running-finished",
+  // Emitted when a run/report session errors out so renderer can clear state
+  failed: "ave:work-board:failed",
+  // Emitted when an item's due_at enters the pre-due window
+  dueSoon: "ave:work-board:due-soon",
+} as const;
+
 export const PERMISSIONS = {
   getMode: "ave:permission:get-mode",
   setMode: "ave:permission:set-mode",

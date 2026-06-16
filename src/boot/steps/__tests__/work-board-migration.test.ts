@@ -1,0 +1,114 @@
+/**
+ * Legacy-plugin → host work-board migration (one-shot, idempotent).
+ *
+ * Every case points `AVE_HOME` at a per-test temp dir (mirroring the
+ * feature-namespace test harness) so the scan of `~/.ave/plugins/*​/board.json`
+ * and the write to `~/.ave/work-board/board.json` stay entirely inside the
+ * temp root — the real `~/.ave` is never read or written.
+ *
+ * Policy under test:
+ *   - Runs once when the destination is absent AND exactly one legacy plugin
+ *     board exists; returns true and copies (does not move) the source.
+ *   - Skips (returns false) when the destination already exists — idempotent.
+ *   - Skips + warns when more than one legacy board exists (ambiguous source).
+ *   - Skips when the legacy board is not valid JSON.
+ */
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { migrateAgentHubBoardToWorkBoard } from "../work-board-migration.js";
+
+const SAMPLE_BOARD = { version: 1, nextId: 3, items: [{ id: 1, title: "legacy task", status: "planned", priority: "medium", created_at: "x", updated_at: "x" }] };
+
+function pluginBoardPath(home: string, pluginId: string): string {
+  // Plugins persist under their PluginStorage `data/` subdir.
+  return join(home, "plugins", pluginId, "data", "board.json");
+}
+
+function writePluginBoard(home: string, pluginId: string, contents: string): string {
+  const path = pluginBoardPath(home, pluginId);
+  mkdirSync(join(home, "plugins", pluginId, "data"), { recursive: true });
+  writeFileSync(path, contents, "utf-8");
+  return path;
+}
+
+describe("work-board migration", () => {
+  let prevAveHome: string | undefined;
+  let home: string;
+  let destPath: string;
+
+  beforeEach(() => {
+    prevAveHome = process.env.AVE_HOME;
+    home = mkdtempSync(join(tmpdir(), "ave-wb-mig-"));
+    process.env.AVE_HOME = home;
+    destPath = join(home, "work-board", "board.json");
+  });
+
+  afterEach(() => {
+    if (prevAveHome === undefined) delete process.env.AVE_HOME;
+    else process.env.AVE_HOME = prevAveHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("migrates once: dest absent + exactly one legacy board → copies + returns true", async () => {
+    const legacyPath = writePluginBoard(home, "agent-hub", JSON.stringify(SAMPLE_BOARD));
+
+    const migrated = await migrateAgentHubBoardToWorkBoard();
+
+    expect(migrated).toBe(true);
+    expect(existsSync(destPath)).toBe(true);
+    expect(JSON.parse(readFileSync(destPath, "utf-8"))).toEqual(SAMPLE_BOARD);
+    // COPY, not move — the legacy source is left in place for forensics.
+    expect(existsSync(legacyPath)).toBe(true);
+    expect(JSON.parse(readFileSync(legacyPath, "utf-8"))).toEqual(SAMPLE_BOARD);
+  });
+
+  it("is idempotent: a second run with the dest present skips and returns false", async () => {
+    writePluginBoard(home, "agent-hub", JSON.stringify(SAMPLE_BOARD));
+    expect(await migrateAgentHubBoardToWorkBoard()).toBe(true);
+
+    // A pre-existing destination is the idempotency marker.
+    const second = await migrateAgentHubBoardToWorkBoard();
+    expect(second).toBe(false);
+  });
+
+  it("skips when the destination already exists (never overwrites host board)", async () => {
+    mkdirSync(join(home, "work-board"), { recursive: true });
+    const hostBoard = { version: 1, nextId: 1, items: [] };
+    writeFileSync(destPath, JSON.stringify(hostBoard), "utf-8");
+    writePluginBoard(home, "agent-hub", JSON.stringify(SAMPLE_BOARD));
+
+    const migrated = await migrateAgentHubBoardToWorkBoard();
+
+    expect(migrated).toBe(false);
+    // Host board untouched — legacy content was NOT adopted over it.
+    expect(JSON.parse(readFileSync(destPath, "utf-8"))).toEqual(hostBoard);
+  });
+
+  it("skips + warns when more than one legacy board exists (ambiguous source)", async () => {
+    writePluginBoard(home, "agent-hub", JSON.stringify(SAMPLE_BOARD));
+    writePluginBoard(home, "vega-helper", JSON.stringify({ version: 1, nextId: 1, items: [] }));
+
+    const migrated = await migrateAgentHubBoardToWorkBoard();
+
+    expect(migrated).toBe(false);
+    // Ambiguity → no destination written.
+    expect(existsSync(destPath)).toBe(false);
+  });
+
+  it("returns false when there is no legacy plugin board at all", async () => {
+    // No plugins dir, no board.
+    expect(await migrateAgentHubBoardToWorkBoard()).toBe(false);
+    expect(existsSync(destPath)).toBe(false);
+  });
+
+  it("skips when the single legacy board is not valid JSON", async () => {
+    writePluginBoard(home, "agent-hub", "{ not valid json");
+
+    const migrated = await migrateAgentHubBoardToWorkBoard();
+
+    expect(migrated).toBe(false);
+    expect(existsSync(destPath)).toBe(false);
+  });
+});
