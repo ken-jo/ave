@@ -36,6 +36,21 @@ export const ROUTINES_V2 = {
   failed: "ave:routines:v2:failed",
 } as const;
 
+export const WORK_BOARD = {
+  list: "ave:work-board:list",
+  get: "ave:work-board:get",
+  add: "ave:work-board:add",
+  update: "ave:work-board:update",
+  transition: "ave:work-board:transition",
+  complete: "ave:work-board:complete",
+  reopen: "ave:work-board:reopen",
+  remove: "ave:work-board:remove",
+  // Emitted by the work-board IPC domain after any successful mutation
+  // (created/updated/transitioned/completed/reopened/removed) so the renderer
+  // board view re-lists without polling.
+  itemChanged: "ave:work-board:item-changed",
+} as const;
+
 export const PERMISSIONS = {
   getMode: "ave:permission:get-mode",
   setMode: "ave:permission:set-mode",
