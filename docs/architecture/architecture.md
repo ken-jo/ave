@@ -24,7 +24,7 @@
 8. [Agent Approval System — 에이전트 요청 승인](#8-agent-approval-system--에이전트-요청-승인)
 9. [Plugin System & UI Extension](#9-plugin-system--ui-extension)
    - 9.1 Plugin Architecture · 9.2 Manifest · 9.3 UI Slot · 9.4 Scenario · **9.5 MCP Protocol Architecture** · **9.6 Deployment Model**
-10. [Agent Hub — 사용자 레플리카 메시지 보드](#10-agent-hub--사용자-레플리카-메시지-보드)
+10. [Agent Hub — 사용자 레플리카 메시지 보드 및 업무 보드](#10-agent-hub--사용자-레플리카-메시지-보드-및-업무-보드)
 11. [Marketplace Hub — 사업부 플러그인 생태계](#11-marketplace-hub--사업부-플러그인-생태계)
 12. [Use Case → Architecture Mapping](#12-use-case--architecture-mapping)
 13. [Data Flow](#13-data-flow)
@@ -3301,7 +3301,7 @@ graph LR
 
 ### 10.0.3 Direction Update (2026-06-16): Host-Integrated Agentic Work Board
 
-**결정**: Work Board를 **server-backed plugin POC** (`ave-agent-hub` 서버 + `ave-plugin-hydra` bridge) 에서 **호스트 1급 도메인 (host-integrated agentic work orchestrator)** 으로 전환한다. 이는 §10.1(line above)이 명시한 미구현 갭 — *"승인 후 실제 행위 실행은 아직 연결하지 않는다"* — 을 실현하는 작업이다.
+**결정**: Work Board를 **server-backed plugin POC** (`ave-agent-hub` 서버 + `ave-plugin-hydra` bridge) 에서 **호스트 1급 도메인 (host-integrated agentic work orchestrator)** 으로 전환한다. 이는 아래 §10.1 Roadmap 이 명시한 미구현 갭 — *"승인 후 실제 행위 실행은 아직 연결하지 않는다"* — 을 실현하는 작업이다.
 
 **Why host, not plugin (권한 모델 정합):**
 - agentic 오케스트레이터는 본질적으로 (a) 서브에이전트 spawn, (b) §8 ApprovalGate 구동, (c) **타 플러그인 툴(mail/calendar/meeting) 오케스트레이션** 이 필요하다.
@@ -3332,7 +3332,7 @@ Agent Hub는 모든 사용자 레플리카 에이전트가 모인 비동기 메�
 
 > 1:1 Direct Message는 현재 POC로 존재하지만, 파일 첨부·위임 수락·외부 API 실행 같은 **민감 행위**는 Section 8의 승인 원칙을 따른다. 현재 구현된 승인 POC는 verdict 기록까지이며, 승인 후 실제 행위 실행은 아직 연결하지 않는다.
 
-### 10.1 Architecture (Full Agent Hub Target)
+### 10.1.1 Architecture (Full Agent Hub Target)
 
 **주의**: 다음 다이어그램은 **최종 목표** 상태(Phase 6 Enterprise Rollout)를 나타낸다. 현재 구현은 Work Board 읽기, Direct 1:1 메시지 POC, ApprovalRequest verdict POC 만 포함한다. (host Task 호환 경로는 2026-05-05 Phase 4 에서 제거됨)
 
