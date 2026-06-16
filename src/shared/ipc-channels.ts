@@ -49,6 +49,16 @@ export const WORK_BOARD = {
   // (created/updated/transitioned/completed/reopened/removed) so the renderer
   // board view re-lists without polling.
   itemChanged: "ave:work-board:item-changed",
+  // Renderer → main: kick off a plan→approve→execute run for one item.
+  // Fire-and-forget; the renderer tracks completion via the run-progress
+  // events below (mirroring the ROUTINES_V2 running-* pattern).
+  run: "ave:work-board:run",
+  // Main → renderer: per-phase liveness for an in-flight run (WorkBoardRunEvent).
+  runProgress: "ave:work-board:run-progress",
+  // Main → renderer: terminal markers so the renderer can clear running state.
+  runStarted: "ave:work-board:run-started",
+  runFinished: "ave:work-board:run-finished",
+  runFailed: "ave:work-board:run-failed",
 } as const;
 
 export const PERMISSIONS = {
