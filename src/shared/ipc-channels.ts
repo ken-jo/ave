@@ -45,18 +45,10 @@ export const WORK_BOARD = {
   complete: "ave:work-board:complete",
   reopen: "ave:work-board:reopen",
   remove: "ave:work-board:remove",
-  run: "ave:work-board:run",
-  generateReport: "ave:work-board:generate-report",
-  // Emitted when any item is created/updated/transitioned/removed so the
-  // renderer board view refreshes without polling.
+  // Emitted by the work-board IPC domain after any successful mutation
+  // (created/updated/transitioned/completed/reopened/removed) so the renderer
+  // board view re-lists without polling.
   itemChanged: "ave:work-board:item-changed",
-  // Running indicator events (renderer reflects report/run session progress)
-  runningStarted: "ave:work-board:running-started",
-  runningFinished: "ave:work-board:running-finished",
-  // Emitted when a run/report session errors out so renderer can clear state
-  failed: "ave:work-board:failed",
-  // Emitted when an item's due_at enters the pre-due window
-  dueSoon: "ave:work-board:due-soon",
 } as const;
 
 export const PERMISSIONS = {
