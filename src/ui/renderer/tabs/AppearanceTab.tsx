@@ -57,7 +57,7 @@ function BundleMock({ bundle }: { bundle: ThemeBundle }) {
   // All mock geometry lives in the `.ave-theme-card-mock-*` classes in
   // styles.css. The only thing that varies per bundle is the color set, so
   // those flow in as `--mock-*` custom properties the classes consume.
-  const mockVars = {
+  const previewVars = {
     "--mock-bg": bg,
     "--mock-text": text,
     "--mock-accent": accent,
@@ -66,7 +66,7 @@ function BundleMock({ bundle }: { bundle: ThemeBundle }) {
   } as CSSProperties;
 
   return (
-    <div className="ave-theme-card-mock-inner" style={mockVars}>
+    <div className="ave-theme-card-mock-inner" style={previewVars}>
       {/* title bar mock */}
       <div className="ave-theme-card-mock-bar" />
       {/* assistant bubble row */}
