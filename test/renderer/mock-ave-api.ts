@@ -279,6 +279,7 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
       auditVerify: vi.fn(async () => ({ ok: true, intact: true, totalFiles: 0, totalEntries: 0, perDay: [] })),
       onManifestViolation: vi.fn(() => () => undefined),
       onUserApprovalHit: vi.fn(() => () => undefined),
+      onReviewSuggestion: vi.fn(() => () => undefined),
     },
     policy: {
       get: vi.fn(async () => ({
@@ -596,6 +597,7 @@ export function makeMockAveNamespace(overrides: AveNamespaceOverrides = {}) {
         listRules: vi.fn(async () => []),
         addRule: vi.fn(async () => ({ ok: true })),
         removeRule: vi.fn(async () => ({ ok: true })),
+        onReviewSuggestion: vi.fn(() => () => undefined),
       },
       approval: {
         onRequest: vi.fn((cb: (r: unknown) => void) => {

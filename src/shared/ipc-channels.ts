@@ -62,6 +62,9 @@ export const WORK_BOARD = {
   // Renderer → main: generate a daily / weekly personal work report from the
   // board state + activity log + learned memory. Returns the markdown.
   generateReport: "ave:work-board:generate-report",
+  // Renderer → main: read a past run's persisted transcript
+  // (sessions/<itemId>/<runId>.jsonl) for the run-history view.
+  runTranscript: "ave:work-board:run-transcript",
 } as const;
 
 export const PERMISSIONS = {
@@ -93,6 +96,8 @@ export const PERMISSIONS = {
   userApprovalList: "ave:permissions:user-approval-list",
   // 4.1: memory-hit auto-approve disclosure (main → renderer)
   userApprovalHit: "ave:permissions:user-approval-hit",
+  // Default-mode approval pattern hint (main → renderer)
+  reviewSuggestion: "ave:permissions:review-suggestion",
   // Broadcast: directory config changed (main → all renderers). Emitted
   // when allowed-directories list mutates (session-add, slash-allow,
   // PermissionsTab dirDispatch). Multi-window PermissionsTab subscribes
