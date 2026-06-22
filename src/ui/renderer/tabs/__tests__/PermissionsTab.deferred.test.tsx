@@ -49,6 +49,14 @@ function installAveApi() {
       },
     })),
     reviewerProviderHasKey: vi.fn(async (provider: string) => provider === "openai"),
+    sandboxCapability: vi.fn(async () => ({
+      platform: "linux" as NodeJS.Platform,
+      enabled: false,
+      available: true,
+      kind: "full" as const,
+      reason: "",
+      confines: { filesystem: true, process: true, network: true },
+    })),
   };
   (window as unknown as { ave: unknown }).ave = {
     permission,
@@ -60,6 +68,10 @@ function installAveApi() {
       })),
       set: vi.fn(),
     },
+  };
+  (window as unknown as { aveApi: unknown }).aveApi = {
+    getSettings: vi.fn(async () => ({ features: { osToolSandbox: false } })),
+    updateSettings: vi.fn(async () => ({})),
   };
   return permission;
 }

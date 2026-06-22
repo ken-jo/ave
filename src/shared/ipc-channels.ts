@@ -84,6 +84,9 @@ export const PERMISSIONS = {
   auditVerify: "ave:permissions:audit-verify",
   hookTrustList: "ave:permissions:hook-trust-list",
   manifestViolation: "ave:permissions:manifest-violation",
+  // Read-only: OS sandbox capability for the current platform — drives the
+  // honest, platform-aware "OS 도구 샌드박스" toggle description in PermissionsTab.
+  sandboxCapability: "ave:permissions:sandbox-capability",
   // User-approval store
   userApprovalRecord: "ave:permissions:user-approval-record",
   userApprovalRevoke: "ave:permissions:user-approval-revoke",
