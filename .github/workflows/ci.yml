@@ -16,7 +16,7 @@ jobs:
     # clone step below (skipped when no AVE_REPO_READ_TOKEN is available).
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           path: ave
       - name: Clone sibling plugin repos
@@ -68,7 +68,7 @@ jobs:
     name: Windows permission path tests
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           path: ave
       - uses: oven-sh/setup-bun@v2

@@ -36,12 +36,12 @@ jobs:
       MARKETPLACE_SIGNING_PRIVATE_KEY_POC_V1: ${{ secrets.M4_MARKETPLACE_SIGNING_KEY_POC_V1 }}
     steps:
       - name: Checkout ave
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           path: ave
 
       - name: Checkout agent-marketplace
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: former_org/agent-marketplace
           path: agent-marketplace
