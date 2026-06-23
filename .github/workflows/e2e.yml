@@ -66,7 +66,7 @@ jobs:
             echo "::warning::No AVE_REPO_READ_TOKEN or gh auth token available; attempting unauthenticated sibling clones."
           fi
           sibling_ref="${AVE_SIBLING_REPO_REF:-${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-}}}"
-          for slug in ave-plugin-local-indexer ave-plugin-meeting ave-plugin-vega-helper ave-plugin-hydra; do
+          for slug in ave-plugin-local-indexer ave-plugin-meeting ave-plugin-vega-helper; do
             if [ -d "$slug" ]; then rm -rf "$slug"; fi
             clone_url="https://github.com/former_org/${slug}.git"
             if [ -n "$repo_token" ]; then
@@ -104,12 +104,6 @@ jobs:
       - name: Install ave deps
         working-directory: ave
         run: bun install --frozen-lockfile
-
-      - name: Build Agent Hub plugin fixture
-        working-directory: ave-plugin-hydra
-        run: |
-          bun install --frozen-lockfile
-          bun run build
 
       - name: Install Playwright Chromium
         working-directory: ave
