@@ -25,14 +25,18 @@ function toast(overrides: Partial<ToastItem> = {}): ToastItem {
 }
 
 describe("StatusBar", () => {
-  it("renders the Ave placeholder when there are no persistent items", () => {
+  // wb-final removed the Ave brand mark from app chrome. The empty status bar
+  // renders no brand logo/text — only a zero-footprint spacer that keeps the
+  // flex layout stable until the first persistent item arrives.
+  it("renders no Ave brand placeholder when there are no persistent items", () => {
     render(<StatusBar persistent={[]} visibleToast={null} />);
-    expect(screen.getByText("Ave")).toBeInTheDocument();
+    expect(screen.queryByText("Ave")).toBeNull();
+    expect(screen.queryByRole("img", { name: "Ave" })).toBeNull();
   });
 
-  it("marks the placeholder logo as decorative so Ave is announced once", () => {
+  it("still renders the status-bar container when empty", () => {
     render(<StatusBar persistent={[]} visibleToast={null} />);
-    expect(screen.queryByRole("img", { name: "Ave" })).toBeNull();
+    expect(screen.getByTestId("status-bar")).toBeInTheDocument();
   });
 
   it("renders persistent items with label and value", () => {
