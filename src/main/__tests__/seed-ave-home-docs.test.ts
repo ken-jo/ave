@@ -13,10 +13,13 @@
  *   - an already-offered `.new` identical to the packaged copy is a no-op
  *   - seeded files are chmod 0o600 (POSIX)
  *
- * Dev-mode resolution (`app.isPackaged === false`) reads packaged resources
- * from `join(app.getAppPath(), "resources", …)` — a cwd-independent anchor — so
- * the test points `app.getAppPath()` at a temp fixtures root and `AVE_HOME` at
- * a temp home — no real ~/.ave or repo resources are touched.
+ * Dev-mode resolution (`app.isPackaged === false`) walks up from the module's
+ * own location to the first ancestor containing `resources/skills` — a fully
+ * cwd-independent anchor that also ignores `app.getAppPath()` (wrong under
+ * `bun run start`, where the launcher passes a script-file arg and getAppPath
+ * resolves to the script dir `dist/src/main`). The test points the
+ * `AVE_RESOURCE_ROOT` override at a temp fixtures root and `AVE_HOME` at a
+ * temp home — no real ~/.ave or repo resources are touched.
  *
  * The packaged launch smoke verifies that resources ship and seed on real
  * first launch; this file keeps the deterministic seed/upgrade semantics.
@@ -36,7 +39,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { app } from "electron";
 
-vi.mock("electron", () => ({ app: { isPackaged: false, getAppPath: () => "" } }));
+vi.mock("electron", () => ({ app: { isPackaged: false } }));
 
 import {
   listAveHomeDocUpgradeMarkers,
@@ -45,8 +48,8 @@ import {
 
 let fixtures: string;
 let home: string;
-let appPathSpy: ReturnType<typeof vi.spyOn>;
 const prevAveHome = process.env.AVE_HOME;
+const prevResourceRoot = process.env.AVE_RESOURCE_ROOT;
 const originalResourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
 
 /** Write a packaged resource fixture under <fixtures>/resources/<rel>. */
@@ -60,7 +63,7 @@ beforeEach(() => {
   fixtures = mkdtempSync(join(tmpdir(), "ave-seed-fix-"));
   home = mkdtempSync(join(tmpdir(), "ave-seed-home-"));
   process.env.AVE_HOME = home;
-  appPathSpy = vi.spyOn(app, "getAppPath").mockReturnValue(fixtures);
+  process.env.AVE_RESOURCE_ROOT = fixtures;
 
   writeRes("AGENTS.md", "AGENTS v1\n");
   writeRes(join("agents", "executor.md"), "executor v1\n");
@@ -69,11 +72,12 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  appPathSpy.mockRestore();
   rmSync(fixtures, { recursive: true, force: true });
   rmSync(home, { recursive: true, force: true });
   if (prevAveHome === undefined) delete process.env.AVE_HOME;
   else process.env.AVE_HOME = prevAveHome;
+  if (prevResourceRoot === undefined) delete process.env.AVE_RESOURCE_ROOT;
+  else process.env.AVE_RESOURCE_ROOT = prevResourceRoot;
   (app as { isPackaged: boolean }).isPackaged = false;
   (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath = originalResourcesPath;
 });
@@ -102,8 +106,9 @@ describe("seedAveHomeDocs — first boot", () => {
 
   it("resolves dev resources independent of process.cwd() (regression: chdir-before-seed)", () => {
     // ensureWorkspaceCwd() chdir()s the main process to ~/.ave/workspace before
-    // boot. Seeding must still find the repo's resources/ via the stable
-    // app.getAppPath() anchor, not a cwd-relative join.
+    // boot. Seeding must still find the repo's resources/ via the module-anchored
+    // walk-up, not a cwd-relative join (and not app.getAppPath(), which points at
+    // the script dir under `bun run start`).
     const originalCwd = process.cwd();
     const elsewhere = mkdtempSync(join(tmpdir(), "ave-seed-cwd-"));
     process.chdir(elsewhere);
