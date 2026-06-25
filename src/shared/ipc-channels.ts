@@ -90,6 +90,14 @@ export const PERMISSIONS = {
   // Read-only: OS sandbox capability for the current platform — drives the
   // honest, platform-aware "OS 도구 샌드박스" toggle description in PermissionsTab.
   sandboxCapability: "ave:permissions:sandbox-capability",
+  // Read-only: Windows srt-win install readiness (group + WFP state) + the
+  // verbatim ASRT install instructions. Drives the win32 consent panel in
+  // PermissionsTab. Non-win32 returns a clean "not-applicable" shape.
+  sandboxWindowsStatus: "ave:permissions:sandbox-windows-status",
+  // MUTATING (sender-frame-guarded): the ONLY user-consented privilege
+  // escalation entry point — triggers ASRT installWindowsSandbox's single
+  // self-elevating UAC prompt. Never auto-triggered.
+  sandboxWindowsInstall: "ave:permissions:sandbox-windows-install",
   // User-approval store
   userApprovalRecord: "ave:permissions:user-approval-record",
   userApprovalRevoke: "ave:permissions:user-approval-revoke",
