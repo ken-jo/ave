@@ -1759,8 +1759,15 @@ Layer 0–8 의 permission policy 는 *어떤 도구 호출을 허용/거부* �
   도메인에 도달할 수 있다. Ave 1st-party plugin 신뢰 모델 하에서 허용되며,
   true per-worker 격리는 per-process proxy 를 갖춘 future ASRT 가 필요하다.
 - **Gate**: `osToolSandbox` feature flag (Settings → 권한) 또는
-  `AVE_SANDBOX_ENABLED=1`. **DEFAULT ON** (PR #1390; `hostClassifiesRisk` 도
-  default ON 으로 함께 flip). 활성 불가 시 동작은 on-signal 출처로 갈린다:
+  `AVE_SANDBOX_ENABLED=1`. **STAGED default (macOS-first)** (PR #1390 의
+  default-ON 을 단계화): `osToolSandbox` 기본값 = **`darwin` ON / `linux`+`win32`
+  OFF(opt-in)** — live-verified-active 인 macOS 만 우선 ON, Linux/Windows 는
+  C/D-series 샌드박스 QA 가 green 될 때까지 Settings 토글로 opt-in. *Convergence
+  plan*: C/D QA 통과 시 `src/data/settings-store.ts` 의
+  `osToolSandbox: process.platform === "darwin"` 단일 표현식을 `true` 로 flip.
+  `hostClassifiesRisk` 는 **전 플랫폼 default ON** — non-sandbox 플랫폼에서도
+  안전한 이유는 read-relaxation 이 sandbox-active 와 커플링되어(아래) fallback
+  하기 때문. 활성 불가 시 동작은 on-signal 출처로 갈린다:
   **EXPLICIT** (`AVE_SANDBOX_ENABLED=1`, 명시적 power-user/CI 강제) +
   mac/linux deps-missing → boot **fail-closed abort** (no-fallback 보존);
   **DEFAULT/settings-on** (env 없이 기본값/토글로 ON) → **graceful degrade**
@@ -1770,6 +1777,33 @@ Layer 0–8 의 permission policy 는 *어떤 도구 호출을 허용/거부* �
   skip|activate|degrade|abort)` 한 곳. host-classify↔sandbox interlock 경고는
   실제 `sandboxActive` 상태에서 발화(degrade 경로 포함). Gate 는 boot 에서
   *정확히 한 번* 결정되며 runtime 변경 채널은 없다.
+- **Read-relaxation ↔ sandbox FILESYSTEM-CONTAINMENT 커플링 (confines-aware)**:
+  foreground plugin read-relaxation (`src/tools/executor.ts` executeOne) 은
+  `hostClassifiesRisk` ON **AND `sandboxFsContainedProvider()`
+  (= `isActiveSandboxFilesystemContained`) true** 일 때만 발화한다. relaxation 은
+  pre-exec ask (off-hostApi `node:fs` WRITE residual 을 gate 하는 것 포함) 를
+  제거하고 effect-boundary gate 에 의존하는데, 그 boundary 는 활성 샌드박스가
+  **filesystem 을 contain** (`confines.filesystem === true`) 할 때만 off-hostApi
+  mutation(direct node:fs / bare fetch / detached async frame)을 contain 한다.
+  따라서 단순 active 가 아니라 filesystem-contained 여야 한다 — Windows srt-win 은
+  NETWORK-ONLY (`confines.filesystem === false`) 라 active 여도 FS-write residual
+  을 contain 하지 못한다. filesystem-contained 아닌 호스트(degrade/off/network-only)
+  에서는 relaxation 이 미발화하고 known-safe pre-exec ask 가 유지된다. 그 결과
+  "relaxation 발효 ⇒ off-hostApi FS-write residual contained" 불변식이 전
+  플랫폼에서 성립 — relaxation 이 filesystem-contained 일 때만 발화하기 때문 →
+  `hostClassifiesRisk`-ON 이 전 플랫폼에서 안전. reviewer SOT
+  `sandboxRelaxesCategory` (filesystem-bearing category 는 `confines.filesystem
+  === true` 일 때만 relax) 와 동일 active-capability + 동일 truth 를 mirror 한다.
+  두 production 생성 지점(`boot.ts` pluginSurfaceExecutor +
+  `engine/conversation-loop.ts`)이 `isActiveSandboxFilesystemContained` 를
+  주입한다.
+- **Activation telemetry**: boot 의 gate 는 **boot 당 1건** 의 구조화 audit
+  이벤트를 발행한다 — `{ platform, onSignal(explicit-env|default-settings|off),
+  outcome(activate|degrade|abort|skip), reason }`. `AuditLogger.logSandboxGate()`
+  가 전용 채널 `~/.ave/audit/<date>.sandbox-gate.jsonl` 에 append (hand-rolled
+  file write 없이 AuditLogger 경유). Linux/Windows 기본값 flip 전 실세계
+  activation 성공/degrade 율 모니터링용. **Rollback**: Settings → 권한 'OS 도구
+  샌드박스' 토글(per-host opt-out) + `hostClassifiesRisk` 토글(relaxation off).
 - **Windows (srt-win)**: 동일 gate 에 합류한다 (`AVE_SANDBOX_WINDOWS` 별도
   opt-in 제거). srt-win.exe 는 **NETWORK-only** 샌드박스다 — WFP +
   restricted-token job 으로 egress 만 격리하고 **filesystem/process 격리는
