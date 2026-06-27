@@ -1759,9 +1759,17 @@ Layer 0–8 의 permission policy 는 *어떤 도구 호출을 허용/거부* �
   도메인에 도달할 수 있다. Ave 1st-party plugin 신뢰 모델 하에서 허용되며,
   true per-worker 격리는 per-process proxy 를 갖춘 future ASRT 가 필요하다.
 - **Gate**: `osToolSandbox` feature flag (Settings → 권한) 또는
-  `AVE_SANDBOX_ENABLED=1`. **DEFAULT OFF** — 명시적 opt-in 전까지 도구는
-  isolation=none 으로 실행된다. Gate 는 boot 에서 *정확히 한 번* 결정되며
-  runtime 변경 채널은 없다.
+  `AVE_SANDBOX_ENABLED=1`. **DEFAULT ON** (PR #1390; `hostClassifiesRisk` 도
+  default ON 으로 함께 flip). 활성 불가 시 동작은 on-signal 출처로 갈린다:
+  **EXPLICIT** (`AVE_SANDBOX_ENABLED=1`, 명시적 power-user/CI 강제) +
+  mac/linux deps-missing → boot **fail-closed abort** (no-fallback 보존);
+  **DEFAULT/settings-on** (env 없이 기본값/토글로 ON) → **graceful degrade**
+  (loud `log.warn` + `isAsrtSandboxActive()=false` + boot 계속, non-bricking).
+  Windows (srt-win 미설치) 는 explicit 이어도 항상 degrade (first-run brick
+  방지). 결정은 `src/boot/steps/sandbox-gate.ts` `decideSandboxGate(
+  skip|activate|degrade|abort)` 한 곳. host-classify↔sandbox interlock 경고는
+  실제 `sandboxActive` 상태에서 발화(degrade 경로 포함). Gate 는 boot 에서
+  *정확히 한 번* 결정되며 runtime 변경 채널은 없다.
 - **Windows (srt-win)**: 동일 gate 에 합류한다 (`AVE_SANDBOX_WINDOWS` 별도
   opt-in 제거). srt-win.exe 는 **NETWORK-only** 샌드박스다 — WFP +
   restricted-token job 으로 egress 만 격리하고 **filesystem/process 격리는
