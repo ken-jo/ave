@@ -596,6 +596,12 @@ const api = {
       protocol?: string;
       message?: string;
     }>,
+  openExternalPath: async (filePath: string) =>
+    ipcRenderer.invoke("ave:shell:open-path", filePath) as Promise<{
+      ok: boolean;
+      error?: string;
+      message?: string;
+    }>,
   // #FU259 — MCP marketplace catalog + install
   listMcpCatalog: async () => ipcRenderer.invoke("ave:mcp:catalog:list"),
   installMcpFromMarketplace: async (slug: string) =>
