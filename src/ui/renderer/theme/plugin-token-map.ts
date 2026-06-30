@@ -4,7 +4,6 @@ import type { AveTokenName } from "../../../shared/plugin-ui-tokens.js";
 // Derives the full set of --ave-* CSS custom properties from an active ThemeBundle.
 // Values are literal HSL strings so plugins can apply them without needing any of
 // the host's --p-* palette or var() chain.
-const _H = (h: number, s: number, l: number) => `hsl(${h}, ${s}%, ${l}%)`;
 // Tailwind alpha syntax: "H S% L% / A" or "H S% L% / A%". Capture alpha
 // optionally so bundle tokens that opt into translucent values still wrap to a
 // valid `hsl()` for plugin webviews (which cannot consume bare triples).
@@ -43,8 +42,8 @@ const _INVARIANT: Partial<Record<AveTokenName, string>> = {
   "--ave-space-2":         "0.5rem",
   "--ave-space-3":         "0.75rem",
   "--ave-space-4":         "1rem",
-  "--ave-motion-fast":     "150ms",
-  "--ave-motion-normal":   "200ms",
+  "--ave-motion-fast":     "120ms",
+  "--ave-motion-normal":   "180ms",
 };
 
 /**
@@ -101,7 +100,7 @@ export function bundleToPluginTokens(bundle: ThemeBundle): Record<AveTokenName, 
     "--ave-warning":         warning,
     "--ave-warning-fg":      tripleToHsl(t["warning-foreground"]),
     "--ave-success":         success,
-    "--ave-success-fg":      _H(210, 40, 98),  // invariant — no component surfaces success-fg yet
+    "--ave-success-fg":      tripleToHsl(t["success-foreground"]),
     "--ave-border":          tripleToHsl(t.border),
     "--ave-ring":            ring,
     "--ave-radius":          "0.6rem",
