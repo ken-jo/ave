@@ -204,7 +204,7 @@ describe("PluginAuthSection", () => {
   it("renders generic Korean error copy on login rejection (does not leak raw IPC message)", async () => {
     const api = {
       callPluginMethod: vi.fn(async () => {
-        throw new Error("Method 'lyramail_auth' is not UI-callable for plugin 'lyra-mail'");
+        throw new Error("Method 'lyramail_auth' is not declared as a UI action for plugin 'lyra-mail'");
       }),
       onPluginEvent: vi.fn(() => () => undefined),
     } as unknown as AveApi;
@@ -226,7 +226,7 @@ describe("PluginAuthSection", () => {
         expect(screen.getByText(/로그인에 실패했습니다/)).toBeInTheDocument();
       });
       // Raw IPC message must NOT appear in the rendered UI.
-      expect(screen.queryByText(/UI-callable/)).toBeNull();
+      expect(screen.queryByText(/UI action/)).toBeNull();
     } finally {
       consoleSpy.mockRestore();
     }

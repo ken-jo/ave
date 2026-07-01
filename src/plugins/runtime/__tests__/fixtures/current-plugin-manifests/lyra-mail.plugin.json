@@ -1,7 +1,7 @@
 {
   "id": "lyra-mail",
   "name": "Ave Lyra Mail",
-  "version": "0.3.36",
+  "version": "0.3.37",
   "icon": "Mail",
   "installPolicy": "admin",
   "publisher": "the organization's IT",
@@ -63,20 +63,6 @@
       "login.microsoftonline.com"
     ]
   },
-  "uiCallable": [
-    "lyramail_status",
-    "lyramail_auth",
-    "lyramail_signout",
-    "lyramail_list_environments",
-    "lyramail_set_environment",
-    "lyramail_calendar_today",
-    "lyramail_calendar_open_url",
-    "lyramail_calendar_open_viewer",
-    "lyramail_email_list",
-    "lyramail_email_open_url",
-    "lyramail_email_open_inbox",
-    "lyramail_email_compose_url"
-  ],
   "ui": [
     {
       "id": "outlook-control",
@@ -783,5 +769,19 @@
         "additionalProperties": false
       }
     }
+  },
+  "uiActions": {
+    "lyramail_status": {},
+    "lyramail_auth": {},
+    "lyramail_signout": {},
+    "lyramail_list_environments": {},
+    "lyramail_set_environment": {},
+    "lyramail_calendar_today": {},
+    "lyramail_calendar_open_url": {},
+    "lyramail_calendar_open_viewer": {},
+    "lyramail_email_list": {},
+    "lyramail_email_open_url": {},
+    "lyramail_email_open_inbox": {},
+    "lyramail_email_compose_url": {}
   }
 }

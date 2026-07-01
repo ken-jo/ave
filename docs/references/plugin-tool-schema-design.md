@@ -2,7 +2,7 @@
 
 **Status:** v4
 **Updated:** 2026-04-18
-**Architect 승인:** manifest signature + uiCallable + capability taxonomy + AJV 검증 플로우
+**Architect 승인:** manifest signature + uiActions + capability taxonomy + AJV 검증 플로우
 
 ---
 
@@ -12,7 +12,7 @@
 
 **핵심 원칙:**
 
-1. **Capability gate = HostApi + 선언적 capability** — HostApi 자체가 1차 게이트이며, `capabilities[]`/`uiCallable[]` 는 LYRA Mail · 이벤트 namespace · renderer IPC allowlist 등 HostApi 단독으로 표현 불가능한 2차 게이트를 보강한다.
+1. **Capability gate = HostApi + 선언적 capability** — HostApi 자체가 1차 게이트이며, `capabilities[]`/`uiActions` 는 LYRA Mail · 이벤트 namespace · renderer IPC allowlist 등 HostApi 단독으로 표현 불가능한 2차 게이트를 보강한다.
 2. **SDK schema first** — 모든 `tools[]` 항목은 SDK manifest schema 의 `toolSchemas[tool]` 로 `description`, `category`, `pathFields?`, `inputSchema` 를 선언한다. `category` 는 권한 정책 authority metadata 이며 LLM 추론 보조 필드가 아니다.
 3. **In-process + try/catch** — worker_threads 격리 없이 95% 장애를 커버. 런타임 복잡도를 낮게 유지.
 4. **플러그인 저자가 스키마 수기 작성** — zod 자동추출 금지. 번들 크기·버전 충돌 없음.
@@ -76,7 +76,7 @@ interface PluginManifest {
    * 파괴적 동작의 사용자 확인 UX 는 플러그인이 자체 UI 로 구현하며, 보안은
    * 코드 리뷰·마켓플레이스 심사·서명 검증으로 보장한다. §2.2 참조.
    */
-  uiCallable?: string[];
+  uiActions?: Record<string, { description?: string }>;
   /**
    * OS 네이티브 알림 자동 노출. `registerPluginNotifications()` 가 manifest 만
    * 읽어 onEvent 핸들러를 자동 배선한다.
@@ -158,7 +158,7 @@ interface PluginManifest {
 | `ui[]` | plugin-ui-host.tsx 마운트 | boot + UI 렌더 |
 | `eventSubscriptions[]` | 호스트 이벤트 라우팅 | boot |
 | `notificationEvents[]` | `registerPluginNotifications()` — OS 알림 자동 등록 | boot |
-| `uiCallable[]` | `PluginRuntime.callFromUi()` allowlist | renderer IPC 호출 |
+| `uiActions` | `PluginRuntime.callFromUi()` allowlist | renderer IPC 호출 |
 | `capabilities[]` | HostApi LYRA Mail 게이트 + `emitEvent` namespace 게이트 | 런타임 전반 |
 | `installPolicy` | Install-policy guard + signature gate policy | install + uninstall + load |
 | `dependencies` | Marketplace install **preflight gate**. `required:true` (default — string form / `required` 누락 object 포함) 미설치 시 install 거부 + `MissingPluginDependenciesError`; `required:false` 는 install 통과 + 컨슈머 책임으로 degrade. **Host 는 dep 을 auto-install 하지 않는다** (issue #92). | install |
@@ -181,7 +181,10 @@ interface PluginManifest {
     "meeting_transcript",
     "meeting_sessions"
   ],
-  "uiCallable": ["meeting_transcript", "meeting_sessions"],
+  "uiActions": {
+    "meeting_transcript": {},
+    "meeting_sessions": {}
+  },
   "capabilities": ["meeting-recorder"],
   "toolSchemas": {
     "meeting_start": {
@@ -276,27 +279,36 @@ interface PluginManifest {
 
 플러그인 런타임은 `.bin/` 쉘 shim 을 spawn 하지 않으므로 (in-process import 만), 위 제외는 손실 없음. 만약 플러그인이 위 경로 안의 파일에 의존한다면 — 예컨대 `dist/` 로 번들링하거나 manifest 가 명시적 자산 선언이 필요한지 다시 검토 필요.
 
-### 2.2 uiCallable 보안 경계
+### 2.2 uiActions 보안 경계
 
-Renderer UI 는 `ave:plugins:call` IPC 를 통해 allowlist 된 플러그인 tool 호출을 요청할 수 있다. 이 IPC 는 handler 직접 호출 경로가 아니며, `PluginRuntime.callFromUi()` 의 `uiCallable ⊂ tools[]` 확인 후 ToolRegistry → ToolExecutor → PermissionManager/ApprovalGate 단일 검증 경로로 위임된다. AI 가 개시한 도구 호출과 UI 가 개시한 도구 호출은 같은 권한 정책을 통과한다.
+Renderer UI 는 `ave:plugins:call` IPC 를 통해 allowlist 된 플러그인 runtime method 호출을 요청할 수 있다. 이 IPC 는 handler 직접 호출 경로가 아니며, `PluginRuntime.callFromUi()` 의 `manifest.uiActions` 확인 후 ToolExecutor 권한 경로로 위임된다. `tools[]` 는 LLM-facing surface, `uiActions` 는 renderer IPC surface 이며, UI 전용 메서드는 `uiActions` 에만 선언할 수 있다.
 
 **규칙:**
 
-1. **`uiCallable ⊂ tools[]`** — allowlist 에 들어간 이름은 반드시 `tools[]` 에 선언된 이름이어야 한다. 어긋나면 매니페스트 로드 거부.
-2. **권한 경로 통합** — `PluginRuntime.callFromUi(method, payload)` 는 매번 `manifest.uiCallable` 을 재확인한 뒤 host delegate 로 넘긴다. delegate 는 ToolExecutor 를 호출하므로 sensitive path, allowed directories, reviewer, hooks, audit 정책이 동일하게 적용된다.
-3. **도구 이름 제한 없음** — 어떤 접미사든 `uiCallable` 에 넣을 수 있다. 실제 위험 작업은 이름이 아니라 SDK manifest `category/pathFields` 와 host 권한 정책으로 평가한다.
+1. **surface 분리** — `tools[]` 는 LLM 카탈로그, `uiActions` 는 renderer IPC allowlist 이다. 같은 이름을 양쪽에 둘 수 있지만, auth/status/login/panel-internal 메서드는 `uiActions` 전용으로 둘 수 있다.
+2. **권한 경로 통합** — `PluginRuntime.callFromUi(method, payload)` 는 매번 `manifest.uiActions` 를 재확인한 뒤 host delegate 로 넘긴다. delegate 는 ToolExecutor 를 호출하므로 sensitive path, allowed directories, reviewer, hooks, audit 정책이 적용된다.
+3. **도구 이름 제한 없음** — 어떤 접미사든 `uiActions` 에 넣을 수 있다. 실제 위험 작업은 이름이 아니라 SDK manifest `category/pathFields` 와 host 권한 정책으로 평가한다.
 
 **예시:**
 
 ```jsonc
 // OK — read-only 메서드
-"uiCallable": ["meeting_transcript", "meeting_sessions"]
+"uiActions": {
+  "meeting_transcript": {},
+  "meeting_sessions": {}
+}
 
 // OK — 파괴적 동작도 등록 가능. 플러그인이 자체 UI 에서 확인 다이얼로그를 구현해야 함
-"uiCallable": ["lyramail_email_reply", "lyramail_calendar_delete", "index_remove_folder"]
+"uiActions": {
+  "lyramail_email_reply": {},
+  "lyramail_calendar_delete": {},
+  "index_remove_folder": {}
+}
 
-// REJECT — tools[] 에 없는 이름
-"uiCallable": ["meeting_unknown"]
+// OK — UI 전용 메서드. LLM에는 노출되지 않음
+"uiActions": {
+  "meeting_push_chunk": {}
+}
 ```
 
 ### 2.3 capabilities Taxonomy (Phase 5)
@@ -340,17 +352,21 @@ OAuth-flow 를 소유한 플러그인 (lyra-mail, lyra-mail 등) 이 호스트 S
 
 ```jsonc
 {
-  "uiCallable": ["lyramail_status", "lyramail_auth", "lyramail_signout"],
+  "uiActions": {
+    "lyramail_status": {},
+    "lyramail_auth": {},
+    "lyramail_signout": {}
+  },
   "auth": {
     "label": "Microsoft 계정",      // optional; 기본 manifest.name
-    "statusTool": "lyramail_status",  // 필수, ⊂ uiCallable[]
-    "loginTool": "lyramail_auth",     // 필수, ⊂ uiCallable[]
-    "logoutTool": "lyramail_signout"  // optional, ⊂ uiCallable[]
+    "statusTool": "lyramail_status",  // 필수, uiActions 안
+    "loginTool": "lyramail_auth",     // 필수, uiActions 안
+    "logoutTool": "lyramail_signout"  // optional, uiActions 안
   }
 }
 ```
 
-**Cross-field 강제** — `manifest-validation.ts` (§B-3 와 같은 hand-rolled 위치) 가 `auth.{statusTool,loginTool,logoutTool} ⊂ uiCallable[]` 를 load-time 에 검증. AJV 단독으로는 cross-array membership 표현 불가.
+**Cross-field 강제** — `manifest-validation.ts` (§B-3 와 같은 hand-rolled 위치) 가 `auth.{statusTool,loginTool,logoutTool} ∈ uiActions` 이고 `auth.*Tool ∉ tools[]` 임을 load-time 에 검증. AJV 단독으로는 cross-object membership 표현 불가.
 
 **StatusTool 반환 (recommended)**
 
@@ -371,8 +387,12 @@ interface PluginAuthStatusResult {
 
 ```jsonc
 {
-  "tools": ["lyramail_status", "lyramail_auth", "lyramail_signout", /* ... */],
-  "uiCallable": ["lyramail_status", "lyramail_auth", "lyramail_signout", /* ... */],
+  "tools": [/* non-auth LLM tools only */],
+  "uiActions": {
+    "lyramail_status": {},
+    "lyramail_auth": {},
+    "lyramail_signout": {}
+  },
   "emittedEvents": ["lyra-mail.auth.changed", /* ... */],
   "auth": {
     "label": "Microsoft 계정",
@@ -425,11 +445,14 @@ OAuth-flow 를 소유한 플러그인이 자기 `persist:plugin-auth:<pluginId>`
   "id": "lyra-mail",
   "capabilities": ["external-auth-consumer"],
   "tools": [
-    "lyramail_status", "lyramail_auth", "lyramail_signout",
     "lyramail_open_outlook_calendar"
     /* ... */
   ],
-  "uiCallable": ["lyramail_status", "lyramail_auth", "lyramail_signout"],
+  "uiActions": {
+    "lyramail_status": {},
+    "lyramail_auth": {},
+    "lyramail_signout": {}
+  },
   "emittedEvents": ["lyra-mail.auth.changed"],
   "auth": {
     "label": "Microsoft 계정",
@@ -467,7 +490,9 @@ plugin.json
 ┌──────────────────────────────────┐
 │ 3. Cross-field checks            │  runtime.ts readManifest()
 │    - tool name regex             │
-│    - uiCallable ⊂ tools          │
+│    - keywords[].skillId ∈ tools[] │
+│    - auth.*Tool ∈ uiActions       │
+│    - auth.*Tool ∉ tools[]         │
 │    - startupTimeoutMs > 0        │
 │    - notificationEvents shape    │  → 실패 시
 │                                  │     Invalid plugin manifest '<id>' at '<field>' (<path>): <reason>. Example: <example>
@@ -495,7 +520,7 @@ plugin.json
 
 ```
 [manifest:<unknown>] JSON parse error (Unexpected token ...). Example: {"id":"com.example.sample",...}
-[manifest:meeting] schema validation failed (/path/to/plugin.json): /uiCallable/0 must match pattern "^[a-zA-Z_][a-zA-Z0-9_]*$"
+[manifest:meeting] schema validation failed (/path/to/plugin.json): /uiActions/meeting.start must match pattern "^[a-zA-Z_][a-zA-Z0-9_]*$"
 Invalid tool name 'meeting.start' in plugin 'meeting' at 'tools[0]' (/path/to/plugin.json): tool names must match ^[a-zA-Z_][a-zA-Z0-9_]*$ (start with letter/underscore, then letters/digits/underscores). Example: "tools": ["meeting_start"] (not "meeting.start")
 [plugin-runtime] managed plugin 'ave-plugin-lyra-mail' rejected — signature invalid
 [plugin-runtime] managed plugin 'meeting' rejected — signature file missing
@@ -840,7 +865,7 @@ Ave 는 IPC/RPC 를 **시스템 레벨 전용**으로 확정한다. 플러그인
 플러그인은 **tool 레벨만** 사용한다:
 
 - **LLM → plugin tool**: `ToolRegistry` 경유. manifest `tools[]` 에 선언된 이름이 LLM 에 노출, 호출 시 `handlers[toolName]` 로 라우팅. IPC 채널 없음.
-- **Renderer UI → plugin tool**: 호스트가 제공하는 generic 핸들러 `ave:plugins:call(toolName, payload)` 단 하나 경유. `manifest.uiCallable` allowlist 로 구조적 gating (§2.2) — 이름 패턴 차단은 없으며, 확인 UX 는 플러그인이 자체 UI 로 구현한다. 플러그인이 채널을 직접 선언하지 않는다.
+- **Renderer UI → plugin method**: 호스트가 제공하는 generic 핸들러 `ave:plugins:call(toolName, payload)` 단 하나 경유. `manifest.uiActions` allowlist 로 gating (§2.2) — 이름 패턴 차단은 없으며, 확인 UX 는 플러그인이 자체 UI 로 구현한다. 플러그인이 채널을 직접 선언하지 않는다.
 - **Plugin → host service**: `PluginHostApi` 메서드 직접 호출 (in-process).
 - **Plugin → plugin**: broadcast 는 이벤트 버스(`hostApi.emitEvent` / `onEvent`) 를 사용한다. 특정 tool 호출은 caller manifest 의 `pluginAccess.tools[]` 허가가 있을 때만 `hostApi.callTool()` 로 요청하며, Host 는 ToolExecutor 권한 경로를 다시 통과시킨다. peer module import 나 handler 직접 호출은 불가.
 
@@ -857,7 +882,7 @@ Ave 는 IPC/RPC 를 **시스템 레벨 전용**으로 확정한다. 플러그인
 **주요 handler:** `meeting_start` / `meeting_push_chunk` / `meeting_stop` / `meeting_transcript` / `meeting_sessions`.
 
 - `capabilities: ["meeting-recorder"]` — `meeting.*` emit 게이트 통과.
-- `uiCallable: ["meeting_transcript", "meeting_sessions"]` — 렌더러에서 호출 가능한 조회용 메서드를 노출. 호출 자체는 host delegate 를 통해 ToolExecutor 권한 경로를 통과한다.
+- `uiActions: { "meeting_transcript": {}, "meeting_sessions": {} }` — 렌더러에서 호출 가능한 조회용 메서드를 노출. 호출 자체는 host delegate 를 통해 ToolExecutor 권한 경로를 통과한다.
 - `toolSchemas` 는 모든 tool 에 선언하며, `meeting_push_chunk` 는 PCM `number[]` 추론 보조와 `category` 권한 metadata 를 함께 제공한다.
 - `meeting_stop` 반환값이 크므로 LLM context 소비 주의 — 요약만 반환.
 
@@ -876,7 +901,7 @@ Ave 는 IPC/RPC 를 **시스템 레벨 전용**으로 확정한다. 플러그인
 
 - `capabilities: ["mail-source", "calendar-source", "lyra-mail-consumer"]`.
 - 인증은 플러그인 자체 MSAL + safeStorage 경로가 소유한다. Host 는 provider-specific token HostApi 를 제공하지 않는다.
-- 메일/캘린더 mutation tool 은 `toolSchemas` 에 `category: "write" | "network"` 를 명시하고, UI 호출이 필요하면 `uiCallable` 에 선언한다.
+- 메일/캘린더 mutation tool 은 `toolSchemas` 에 `category: "write" | "network"` 를 명시하고, UI 호출이 필요하면 `uiActions` 에 선언한다.
 
 ### 5.4 Agent Hub (`agent-hub`)
 
@@ -912,7 +937,7 @@ HostApi 에 새 메서드를 추가하려면:
 |------|------|------|
 | **worker_threads / process 격리** | ❌ 기각 | in-process + try/catch 로 95% 장애 커버. 격리 시 IPC 오버헤드 + 디버깅 복잡도 증가. |
 | **marketplace artifact 검증** | ✅ **승인** | 플러그인 저자가 sidecar 서명을 만들지 않고 marketplace가 artifact envelope을 서명합니다. 호스트는 설치 시 envelope을 검증하고 로드 시 install receipt 해시를 확인합니다. §2.1. |
-| **`permissions[]` 선언형 필드** | ⚠️ **부분 승인** | full permission 문자열 배열은 기각되었지만, 다음 3종의 선언형 게이트가 대체 도입됨: (1) `uiCallable[]` — renderer→plugin allowlist (구조적 `⊂ tools[]` 제약만 강제, 파괴적 도구의 확인 UX 는 플러그인이 책임), (2) `capabilities[]` — `lyra-mail-consumer` HostApi gate + event-emit namespace gate, (3) `PLUGIN_PRIVATE_NAMESPACES` — subscription deny-list. §2.2, §2.3. |
+| **`permissions[]` 선언형 필드** | ⚠️ **부분 승인** | full permission 문자열 배열은 기각되었지만, 다음 3종의 선언형 게이트가 대체 도입됨: (1) `uiActions` — renderer→plugin allowlist (`tools[]` 와 별도 surface, 파괴적 도구의 확인 UX 는 플러그인이 책임), (2) `capabilities[]` — `lyra-mail-consumer` HostApi gate + event-emit namespace gate, (3) `PLUGIN_PRIVATE_NAMESPACES` — subscription deny-list. §2.2, §2.3. |
 | **LLM invoke HostApi 추상화 (full surface)** | ❌ 기각 (callLlm 만 채택) | 단발 텍스트 생성 `callLlm()` 만 Phase 1에서 채택 (§4). streaming·tool_choice·thinking·multi-turn 등 vendor 편차 큰 surface 는 여전히 기각. |
 | **파일 watcher HostApi (`watchFiles`)** | ❌ 기각 | local-indexer 1개 플러그인만 필요. "3+ 플러그인 규칙" 미충족. |
 | **zod 자동 schema 추출** | ❌ 기각 | 번들 크기 증가, zod 버전 충돌. 수기 작성이 LLM 최적화 면에서도 우수. |
