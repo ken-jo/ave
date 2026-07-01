@@ -16,7 +16,7 @@
 4. [HostApi 계약](#hostapi-계약)
 5. [도구 명명 규칙](#도구-명명-규칙)
 6. [toolSchemas 작성 가이드](#toolschemas-작성-가이드)
-7. [uiCallable 보안 경계](#uicallable-보안-경계)
+7. [uiActions 보안 경계](#uiactions-보안-경계)
 8. [capabilities 체계](#capabilities-체계)
 9. [이벤트 구독 및 OS 알림](#이벤트-구독-및-os-알림)
 10. [서명 및 배포 (ed25519)](#서명-및-배포-ed25519)
@@ -81,7 +81,7 @@ interface PluginManifest {
     description: string;
     inputSchema: { type: "object"; properties: ...; required?: string[]; additionalProperties?: boolean };
   }>;
-  uiCallable?: string[];             // 렌더러 IPC에서 직접 호출 허용되는 tools[] 부분집합
+  uiActions?: Record<string, { description?: string }>; // 렌더러 IPC에서 직접 호출 가능한 UI action 맵
 
   // ── 이벤트 ──
   eventSubscriptions?: string[];     // 호스트 이벤트 버스에서 수집할 이벤트
@@ -97,7 +97,7 @@ interface PluginManifest {
 
 - 최상위 `additionalProperties: false` — 선언되지 않은 필드는 로드 거부.
 - `id` 패턴 `^[a-zA-Z][a-zA-Z0-9._-]*$`, 길이 3–128.
-- `tools[]`·`uiCallable[]` 항목 패턴 `^[a-zA-Z_][a-zA-Z0-9_]*$`, 길이 ≤64.
+- `tools[]` 항목과 `uiActions` key 패턴 `^[a-zA-Z_][a-zA-Z0-9_]*$`, 길이 ≤64.
 - `version` 은 anchored semver (prerelease/build 메타데이터 포함 가능).
 - `ui[]` 는 `kind` 에 따라 필수 필드가 달라짐 (embedded-module → `entry`+`exportName`, embedded-page → `page`, info-card → 최소 필드).
 - `toolSchemas[K].description` 은 최소 10자, `inputSchema.type` 은 `"object"` 상수.
@@ -117,7 +117,13 @@ interface PluginManifest {
   "tools": ["meeting_start", "meeting_push_chunk", "meeting_stop", "meeting_transcript", "meeting_sessions"],
   "capabilities": ["meeting-recorder"],
   "eventSubscriptions": ["meeting.summary.created", "meeting.ended"],
-  "uiCallable": ["meeting_start", "meeting_push_chunk", "meeting_stop", "meeting_transcript", "meeting_sessions"]
+  "uiActions": {
+    "meeting_start": {},
+    "meeting_push_chunk": {},
+    "meeting_stop": {},
+    "meeting_transcript": {},
+    "meeting_sessions": {}
+  }
 }
 ```
 
@@ -154,12 +160,12 @@ interface PluginManifest {
 #### toolSchemas (선택)
 
 - 각 도구의 설명 + JSON Schema draft-07 입력 스키마.
-- 키는 `tools[]` 에 선언된 이름과 일치해야 함 (현재 런타임은 이 교차검증을 하지 않음 — [열린 TODO](#미구현--열린-todo) 참고).
+- 키는 `tools[]` 또는 `uiActions` 에 선언된 이름과 일치해야 함. LLM 전용 도구는 `tools[]`, UI 전용 메서드는 `uiActions` 에만 둘 수 있습니다.
 
 #### keywords (선택)
 
 - 키워드 엔진 등록 항목.
-- `skillId` 는 `tools[]` 에 선언된 tool name 과 동일해야 함 (관례; 현재 강제 검증 없음 — [열린 TODO](#미구현--열린-todo) 참고).
+- `skillId` 는 `tools[]` 에 선언된 LLM tool name 과 동일해야 하며, UI 전용 `uiActions` 메서드를 가리킬 수 없습니다.
 
 #### capabilities (선택)
 
@@ -175,10 +181,10 @@ interface PluginManifest {
 
 - 사이드바 UI 확장. [UI 확장](#ui-확장) 섹션 참고.
 
-#### uiCallable (선택)
+#### uiActions (선택)
 
 - 렌더러가 `ave:plugins:call` IPC 로 직접 호출 허용되는 tool 이름 allowlist.
-- 자세히는 [uiCallable 보안 경계](#uicallable-보안-경계).
+- 자세히는 [uiActions 보안 경계](#uiactions-보안-경계).
 
 #### eventSubscriptions (선택)
 
@@ -493,26 +499,33 @@ Ave 플러그인에는 **세 개의 독립 네임스페이스**가 있습니다.
 
 ---
 
-## uiCallable 보안 경계
+## uiActions 보안 경계
 
-`manifest.uiCallable[]` 은 렌더러 UI 가 `ave:plugins:call` IPC 로 **직접** 호출할 수 있는 tool name 의 allowlist 입니다. 여기 없는 도구는 ConversationLoop 경로(permission / scope / expansion cap / ApprovalGate)를 반드시 거쳐야 합니다.
+`manifest.uiActions` 는 렌더러 UI 가 `ave:plugins:call` IPC 로 **직접** 호출할 수 있는 runtime method allowlist 입니다. 여기에 없는 메서드는 renderer IPC에서 거부되며, LLM이 호출해야 하는 기능은 `tools[]` 경로로만 노출해야 합니다.
 
 ### 강제 규칙
 
-1. **`uiCallable ⊂ tools`** — 목록에 없는 이름이 섞이면 매니페스트 로드 실패. 이 구조적 제약만 런타임에서 강제됩니다.
-2. **도구 이름 제한 없음** — 접미사(`_delete`, `_send` 등)로 `uiCallable` 등록을 막지 않습니다. 어떤 도구든 플러그인의 판단에 따라 렌더러에서 직접 호출되도록 노출할 수 있습니다.
-3. **파괴적 동작을 uiCallable로 노출하는 플러그인은 자체 UI에서 확인 다이얼로그를 구현해야 합니다** (예: "정말 삭제하시겠습니까?"). 호스트는 이를 강제하지 않으며, 코드 리뷰·마켓플레이스 심사 단계에서 검증합니다.
-4. AI(ConversationLoop)가 개시한 도구 호출은 별개로 `ApprovalGate` / `PermissionManager` 의 확인 UX 를 거칩니다 — uiCallable 정책과 무관하게 그대로 유지됩니다.
+1. **`tools[]` 와 `uiActions` 는 별도 surface** — `tools[]` 는 LLM 카탈로그, `uiActions` 는 renderer IPC allowlist 입니다. 같은 메서드를 양쪽에 둘 수도 있고, UI 전용 메서드는 `uiActions` 에만 둘 수 있습니다.
+2. **auth 메서드는 `uiActions` 전용** — `auth.statusTool`, `auth.loginTool`, `auth.logoutTool` 은 모두 `uiActions` 에 있어야 하며 `tools[]` 에 있으면 로드 거부됩니다.
+3. **도구 이름 제한 없음** — 접미사(`_delete`, `_send` 등)로 `uiActions` 등록을 막지 않습니다. 어떤 메서드든 플러그인의 판단에 따라 렌더러에서 호출되도록 노출할 수 있지만, auth status polling 을 제외한 UI-only action 은 host preload 가 확인한 active user activation 이 있어야 실행됩니다.
+4. **파괴적 동작을 uiActions로 노출하는 플러그인은 자체 UI에서 확인 다이얼로그를 구현해야 합니다** (예: "정말 삭제하시겠습니까?"). 호스트는 active user activation 과 allowlist/audit 경계만 강제하며, 도메인별 확인 문구와 상세 UX 는 코드 리뷰·마켓플레이스 심사 단계에서 검증합니다.
+5. AI(ConversationLoop)가 개시한 도구 호출은 별개로 `ApprovalGate` / `PermissionManager` 의 확인 UX 를 거칩니다 — uiActions 정책과 무관하게 그대로 유지됩니다.
 5. 실제 위험 작업(파일시스템 민감 경로, 샌드박스 탈출 등)은 호스트의 `sensitive-paths.ts` · 샌드박스 계층에서 차단합니다. 이름 패턴이 아닌 작업의 실체로 막습니다.
 
 ### 예: Meeting 플러그인
 
 ```json
-"tools":       ["meeting_start", "meeting_push_chunk", "meeting_stop", "meeting_transcript", "meeting_sessions"],
-"uiCallable":  ["meeting_start", "meeting_push_chunk", "meeting_stop", "meeting_transcript", "meeting_sessions"]
+"tools": ["meeting_start", "meeting_stop", "meeting_transcript", "meeting_sessions"],
+"uiActions": {
+  "meeting_start": {},
+  "meeting_push_chunk": {},
+  "meeting_stop": {},
+  "meeting_transcript": {},
+  "meeting_sessions": {}
+}
 ```
 
-`meeting_sessions` 는 LLM 전용으로 두고 UI 에서 빼도 됩니다 — 그 경우 렌더러는 ConversationLoop 을 거쳐야 호출 가능.
+`meeting_push_chunk` 처럼 패널 내부 전용 스트리밍 메서드는 `uiActions` 에만 둘 수 있습니다. 반대로 `meeting_sessions` 를 LLM 전용으로 두려면 `tools[]` 에만 남기고 `uiActions` 에서 빼면 됩니다.
 
 ---
 
@@ -606,7 +619,7 @@ OS 네이티브 알림으로 승격할 이벤트를 선언합니다.
 | 방향 | 방법 | 비고 |
 |------|------|------|
 | LLM → 플러그인 도구 | ToolRegistry 경유 (자동) | 플러그인 코드 불필요 |
-| Renderer UI → 플러그인 도구 | `ave:plugins:call(toolName, payload)` | `uiCallable` allowlist 강제 |
+| Renderer UI → 플러그인 메서드 | `ave:plugins:call(toolName, payload)` | `uiActions` allowlist 강제 |
 | 플러그인 → 호스트 | `PluginHostApi` 직접 호출 | `context.hostApi.*` |
 | 플러그인 → 플러그인 | `emitEvent` / `onEvent` | 직접 참조 금지 |
 
@@ -741,7 +754,7 @@ Meeting / Microsoft 365 (Outlook 메일+캘린더) / Local Indexer 의 실제 �
   - [ ] `description` 1줄 요약 (LLM 카탈로그 품질)
   - [ ] `tools[]` 언더스코어 패턴, `^[a-zA-Z_][a-zA-Z0-9_]*$`
   - [ ] 필요 시 `capabilities`, `lyra-mail-consumer` 등
-  - [ ] `uiCallable ⊂ tools` (파괴적 도구라도 등록 가능 — 플러그인 자체 확인 UX 필수)
+  - [ ] `tools[]` 는 LLM 노출 메서드만 포함, UI 전용/auth 메서드는 `uiActions` 전용
   - [ ] `startupTimeoutMs` (start 가 느릴 수 있다면)
   - [ ] `toolSchemas` description ≥ 10자
 - [ ] **hostPlugin.ts**

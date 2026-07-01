@@ -1,7 +1,7 @@
 {
   "id": "orion-api",
   "name": "Ave ORION",
-  "version": "0.17.23",
+  "version": "0.17.24",
   "publisher": "the organization's IT",
   "installPolicy": "admin",
   "description": "EP(오리온 익스텐션 (ORION)) SSO 세션을 이용해 corporate 사내 시설/회의실 예약, 빈 회의실 추천, internal search 기반 사내 정책/규정 Q&A, 그리고 근태(출퇴근/연차/원격근무)와 일일 주차 신청까지 단일 로그인으로 제공하는 오리온 익스텐션 플러그인. 호스트: portal.example.com (ORION), search.portal.example.com (internal search), attendance.portal.example.com (근태), parking.portal.example.com (주차).",
@@ -53,27 +53,6 @@
     "orion-api.auth.changed",
     "orion-api.ui.open-request",
     "orion-api.video-conference.reserved"
-  ],
-  "uiCallable": [
-    "acme_login",
-    "acme_status",
-    "acme_profile_info",
-    "acme_signout",
-    "acme_meeting_list",
-    "acme_meeting_availability",
-    "acme_meeting_suggest",
-    "acme_meeting_reserve",
-    "acme_parking_list",
-    "acme_attendance_request_types",
-    "acme_video_conference_reserve",
-    "acme_attendance_clock",
-    "acme_attendance_today",
-    "acme_attendance_remote_work_request",
-    "acme_parking_apply",
-    "acme_parking_vehicle_register",
-    "acme_internal-search_query",
-    "acme_approval_count",
-    "acme_approval_open"
   ],
   "ui": [
     {
@@ -1379,5 +1358,26 @@
       }
     }
   },
-  "startupTimeoutMs": 5000
+  "startupTimeoutMs": 5000,
+  "uiActions": {
+    "acme_login": {},
+    "acme_status": {},
+    "acme_profile_info": {},
+    "acme_signout": {},
+    "acme_meeting_list": {},
+    "acme_meeting_availability": {},
+    "acme_meeting_suggest": {},
+    "acme_meeting_reserve": {},
+    "acme_parking_list": {},
+    "acme_attendance_request_types": {},
+    "acme_video_conference_reserve": {},
+    "acme_attendance_clock": {},
+    "acme_attendance_today": {},
+    "acme_attendance_remote_work_request": {},
+    "acme_parking_apply": {},
+    "acme_parking_vehicle_register": {},
+    "acme_internal-search_query": {},
+    "acme_approval_count": {},
+    "acme_approval_open": {}
+  }
 }

@@ -2694,7 +2694,7 @@ wrapper(macOS Seatbelt / Linux bwrap)로 감싼다.
 
 ### 9.2 Plugin Manifest Spec
 
-현행 매니페스트 스키마는 `@ave/plugin-sdk/schemas/plugin-manifest.schema.json` (AJV strict, `additionalProperties: false`) 이 단일 진실 소스다. 호스트는 SDK 패키지의 스키마를 런타임에 resolve 하며 app-local schema extension, tool-name inference, compatibility grace 를 두지 않는다. 검증 플로우·에러 포맷·capability taxonomy·uiCallable 보안 경계 등 상세 규격은 `docs/references/plugin-tool-schema-design.md` (v4) 에 정의되어 있으며, 아래는 호스트-측 구조와 필드 관계 요약이다.
+현행 매니페스트 스키마는 `@ave/plugin-sdk/schemas/plugin-manifest.schema.json` (AJV strict, `additionalProperties: false`) 이 단일 진실 소스다. 호스트는 SDK 패키지의 스키마를 런타임에 resolve 하며 app-local schema extension, tool-name inference, compatibility grace 를 두지 않는다. 검증 플로우·에러 포맷·capability taxonomy·uiActions 보안 경계 등 상세 규격은 `docs/references/plugin-tool-schema-design.md` (v4) 에 정의되어 있으며, 아래는 호스트-측 구조와 필드 관계 요약이다.
 
 ```json
 {
@@ -2707,8 +2707,14 @@ wrapper(macOS Seatbelt / Linux bwrap)로 감싼다.
   "installPolicy": "user",
   "startupTimeoutMs": 8000,
 
-  "tools": ["meeting_start", "meeting_push_chunk", "meeting_stop", "meeting_transcript", "meeting_sessions"],
-  "uiCallable": ["meeting_transcript", "meeting_sessions"],
+  "tools": ["meeting_start", "meeting_stop", "meeting_transcript", "meeting_sessions"],
+  "uiActions": {
+    "meeting_start": {},
+    "meeting_push_chunk": {},
+    "meeting_stop": {},
+    "meeting_transcript": {},
+    "meeting_sessions": {}
+  },
   "capabilities": ["meeting-recorder"],
 
   "eventSubscriptions": ["calendar.event.started"],
@@ -2792,7 +2798,7 @@ wrapper(macOS Seatbelt / Linux bwrap)로 감싼다.
 | `name`, `version`, `entry`, `description` | string | 메타데이터. `description` ≤ 280자, `version` anchored semver. |
 | `tools` | **`string[]` (flat 이름 배열, snake_case 강제)** | LLM 에 노출되는 tool name. `^[a-zA-Z_][a-zA-Z0-9_]*$` — 도트·하이픈 금지. 호스트는 이 배열을 그대로 Tool Registry 에 등록한다 (런타임 변환 없음). |
 | `toolSchemas` | **`Record<string, { description, category, pathFields?, inputSchema, $schema? }>` (map form)** | LLM 파라미터 추론용 JSON Schema draft-07 + 권한 정책 authority metadata. `description` minLength 10, `category ∈ read/write/shell/network` 필수, `pathFields[]` 는 dotted selector 를 허용한다. `inputSchema.type` const `"object"` 필수. 런타임 payload 재검증은 수행하지 않는다. |
-| `uiCallable` | `string[]` (subset of `tools[]`) | Renderer `ave:plugins:call` IPC 허용 allowlist. 구조적 `⊂ tools[]` 제약을 먼저 강제한 뒤, 실제 호출은 ToolRegistry → ToolExecutor → PermissionManager/ApprovalGate 단일 경로로 위임된다. 플러그인은 별도 IPC 채널이나 직접 handler 호출 경로를 선언할 수 없다. |
+| `uiActions` | `Record<string, { description?: string }>` | Renderer `ave:plugins:call` IPC 허용 allowlist. `tools[]` 와 별도 surface이며 UI 전용 runtime method 를 포함할 수 있다. 호출 시 `PluginRuntime.callFromUi()` 가 매번 `manifest.uiActions` 를 재확인한다. `tools[]` 에도 있는 action 은 ToolExecutor 권한 경로를 타며, UI-only action 은 auth status polling 을 제외하고 preload 가 확인한 active user activation 이 있어야 handler 로 전달된다. 플러그인은 별도 IPC 채널이나 직접 handler 호출 경로를 선언할 수 없다. |
 | `capabilities` | **closed enum** (`src/plugins/capabilities.ts`) | `mail-source` / `calendar-source` / `meeting-recorder` / `knowledge-index` (emit namespace 게이트), `host:overlay` (HostApi `triggerConversation` 게이트) 는 enforced. `lyra-mail-consumer`, `background-watcher`, `worker-client` 는 advisory/self-identification label. |
 | `deployment` | `"managed" \| "user"` | managed 는 ed25519 서명 필수 (fail-closed); user 는 warn-on-missing. |
 | `startupTimeoutMs` | integer (1~60000) | `Promise.race` 기반 start() 하드 타임아웃. 초과 시 fail-soft drop. |
@@ -2813,7 +2819,7 @@ wrapper(macOS Seatbelt / Linux bwrap)로 감싼다.
 
 **마켓플레이스 검증:** 플러그인 repo는 sidecar signature를 만들지 않는다. Marketplace upload API가 zip/manifest/schema/version/policy/dependency/access를 검증하고 최종 artifact envelope에 서명한다. Host는 설치 시 envelope를 검증하고 install receipt를 저장한다.
 
-**검증 플로우:** marketplace envelope verification → install receipt file-hash verification → JSON.parse → AJV (`@ave/plugin-sdk/schemas/plugin-manifest.schema.json`) → cross-field (tool-name regex, `uiCallable ⊂ tools`, `startupTimeoutMs > 0`) → capability enforcement → entry import. 각 단계 실패 시 해당 플러그인 fail-soft drop. 에러 포맷 상세는 `docs/references/plugin-tool-schema-design.md` §2.5.
+**검증 플로우:** marketplace envelope verification → install receipt file-hash verification → JSON.parse → AJV (`@ave/plugin-sdk/schemas/plugin-manifest.schema.json`) → cross-field (tool-name regex, `keywords[].skillId ∈ tools[]`, `auth.*Tool ∈ uiActions`, auth tools not in `tools[]`, `startupTimeoutMs > 0`) → capability enforcement → entry import. 각 단계 실패 시 해당 플러그인 fail-soft drop. 에러 포맷 상세는 `docs/references/plugin-tool-schema-design.md` §2.5.
 
 규칙:
 - top-level `"type": "object"` 필수 (OpenAI / Claude / Gemini 공통 요구사항)
@@ -3050,9 +3056,9 @@ PR 3 에서 Microsoft Graph 인증이 호스트에서 플러그인으로 이전�
 {
   "auth": {
     "label": "Microsoft 계정",      // optional; 기본은 manifest.name
-    "statusTool": "lyramail_status",  // 필수, uiCallable[] 안
-    "loginTool": "lyramail_auth",     // 필수, uiCallable[] 안
-    "logoutTool": "lyramail_signout", // optional, uiCallable[] 안 (있으면)
+    "statusTool": "lyramail_status",  // 필수, uiActions 안
+    "loginTool": "lyramail_auth",     // 필수, uiActions 안
+    "logoutTool": "lyramail_signout", // optional, uiActions 안 (있으면)
     "partitionDomains": [             // optional — `openAuthPartitionViewer` 호출 시만 필수
       "outlook.office.com",
       "login.microsoftonline.com"
@@ -3061,7 +3067,7 @@ PR 3 에서 Microsoft Graph 인증이 호스트에서 플러그인으로 이전�
 }
 ```
 
-세 tool 이름은 **모두 `uiCallable[]` 의 부분집합**이어야 하며, `manifest-validation.ts` 의 hand-rolled cross-field validator 가 load-time 에 강제한다 (AJV 단독으로는 cross-array membership 표현 불가).
+세 tool 이름은 **모두 `uiActions` 에 선언되어야 하며 `tools[]` 에 있으면 안 된다**. `manifest-validation.ts` 의 hand-rolled cross-field validator 가 load-time 에 이를 강제한다 (AJV 단독으로는 cross-object membership 표현 불가).
 
 `partitionDomains[]` 는 `hostApi.openAuthPartitionViewer()` 의 dot-boundary suffix-match allow-list — 자세한 거부 패턴 / 3-layer defense / lyra-mail 예시는 [`plugin-tool-schema-design.md` §2.4.1](../references/plugin-tool-schema-design.md) 참조.
 
