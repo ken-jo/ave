@@ -103,6 +103,9 @@ export const CHANNELS = {
   },
   askUserQuestion: {
     respond: "ave:ask-user-question:respond",
+    // Request + timeout events (main → renderer).
+    request: "ave:ask-user-question:request",
+    timeout: "ave:ask-user-question:timeout",
   },
   plugins: {
     install: "ave:plugins:install",
@@ -125,9 +128,12 @@ export const CHANNELS = {
     installResult: "ave:plugins:install-result",
     uninstallResult: "ave:plugins:uninstall-result",
     enabledChanged: "ave:plugins:enabled-changed",
+    runtimeUpdated: "ave:plugins:runtime-updated",
   },
   bootstrap: {
     retry: "ave:bootstrap:retry",
+    // Lifecycle status event (main → renderer).
+    status: "ave:bootstrap:status",
   },
   runtime: {
     counts: "ave:runtime:counts",
@@ -187,6 +193,8 @@ export const CHANNELS = {
   },
   notification: {
     clicked: "ave:notification:clicked",
+    // In-app toast push (main → renderer).
+    toast: "ave:notification:toast",
   },
   settings: {
     get: "ave:settings:get",
@@ -211,6 +219,112 @@ export const CHANNELS = {
     summary: "ave:usage:summary",
     range: "ave:usage:range",
     exportCsv: "ave:usage:export-csv",
+  },
+  // ── preload-swept channel groups (C11: #1409 + #1411) ──────────────────────
+  // Added so the preload surfaces (public/internal) reference the contract SOT
+  // instead of inline `"ave:*"` literals. Byte-identical to the strings the
+  // preload previously inlined; registered-handler groups are cross-checked by
+  // the channel-inventory snapshot.
+  auth: {
+    loginMockup: "ave:auth:login-mockup",
+    progress: "ave:auth:progress",
+    logoutBroadcast: "ave:auth:logout-broadcast",
+    reactivateBroadcast: "ave:auth:reactivate-broadcast",
+    logoutReset: "ave:auth:logout-reset",
+    reactivateDemo: "ave:auth:reactivate-demo",
+  },
+  demo: {
+    status: "ave:demo:status",
+    activate: "ave:demo:activate",
+    activateEmbedded: "ave:demo:activate-embedded",
+    relaunchAfterActivation: "ave:demo:relaunch-after-activation",
+    clear: "ave:demo:clear",
+  },
+  tour: {
+    getState: "ave:tour:get-state",
+    markComplete: "ave:tour:mark-complete",
+    dismiss: "ave:tour:dismiss",
+    start: "ave:tour:start",
+  },
+  onboarding: {
+    contextSet: "ave:onboarding:context:set",
+  },
+  settingsWindow: {
+    open: "ave:settings-window:open",
+    saved: "ave:settings-window:saved",
+    tab: "ave:settings-window:tab",
+  },
+  prompts: {
+    listSummaries: "ave:prompts:list-summaries",
+    list: "ave:prompts:list",
+    save: "ave:prompts:save",
+    delete: "ave:prompts:delete",
+    updated: "ave:prompts:updated",
+  },
+  trigger: {
+    started: "ave:trigger:started",
+    completed: "ave:trigger:completed",
+    failed: "ave:trigger:failed",
+    expired: "ave:trigger:expired",
+    imported: "ave:trigger:imported",
+    dismiss: "ave:trigger:dismiss",
+    import: "ave:trigger:import",
+  },
+  update: {
+    state: "ave:update:state",
+    getState: "ave:update:get-state",
+    downloadNow: "ave:update:download-now",
+    installNow: "ave:update:install-now",
+    skipVersion: "ave:update:skip-version",
+  },
+  app: {
+    info: "ave:app:info",
+  },
+  approval: {
+    request: "ave:approval:request",
+  },
+  dlp: {
+    stats: "ave:dlp:stats",
+  },
+  audit: {
+    search: "ave:audit:search",
+    stats: "ave:audit:stats",
+  },
+  view: {
+    activate: "ave:view:activate",
+  },
+  sessionTodo: {
+    list: "ave:session-todo:list",
+    clear: "ave:session-todo:clear",
+    changed: "ave:session-todo:changed",
+  },
+  agentSpawn: {
+    event: "ave:agent-spawn:event",
+  },
+  skillLoad: {
+    event: "ave:skill-load:event",
+  },
+  window: {
+    openDetached: "ave:window:open-detached",
+    closeDetached: "ave:window:close-detached",
+    listDetached: "ave:window:list-detached",
+    closeAllDetached: "ave:window:close-all-detached",
+    loadSessionInMain: "ave:window:load-session-in-main",
+    loadSessionInMainResult: "ave:window:load-session-in-main-result",
+    resizeForMode: "ave:window:resize-for-mode",
+    openHtmlPreview: "ave:window:open-html-preview",
+    snapEdge: "ave:window:snap-edge",
+    detachedNavigate: "ave:detached:navigate",
+  },
+  dev: {
+    setPreflightOverride: "ave:dev:setPreflightOverride",
+    getPreflightStatus: "ave:dev:getPreflightStatus",
+  },
+  attach: {
+    openFile: "ave:attach:openFile",
+    readImage: "ave:attach:readImage",
+    saveClipboardImage: "ave:attach:saveClipboardImage",
+    openExternal: "ave:attach:openExternal",
   },
 } as const;
 
