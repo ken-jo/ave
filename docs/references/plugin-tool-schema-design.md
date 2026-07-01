@@ -281,12 +281,12 @@ interface PluginManifest {
 
 ### 2.2 uiActions 보안 경계
 
-Renderer UI 는 `ave:plugins:call` IPC 를 통해 allowlist 된 플러그인 runtime method 호출을 요청할 수 있다. 이 IPC 는 handler 직접 호출 경로가 아니며, `PluginRuntime.callFromUi()` 의 `manifest.uiActions` 확인 후 ToolExecutor 권한 경로로 위임된다. `tools[]` 는 LLM-facing surface, `uiActions` 는 renderer IPC surface 이며, UI 전용 메서드는 `uiActions` 에만 선언할 수 있다.
+Renderer UI 는 `ave:plugins:call` IPC 를 통해 allowlist 된 플러그인 runtime method 호출을 요청할 수 있다. 이 IPC 는 handler 직접 호출 경로가 아니며, `PluginRuntime.callFromUi()` 가 매번 `manifest.uiActions` 를 재확인한다. `tools[]` 는 LLM-facing surface, `uiActions` 는 renderer IPC surface 이며, UI 전용 메서드는 `uiActions` 에만 선언할 수 있다. `tools[]` 에도 있는 UI action 은 ToolExecutor 권한 경로를 통과하고, UI-only action 은 auth status polling 을 제외하고 preload 가 확인한 active user activation 이 있어야 handler 로 전달된다.
 
 **규칙:**
 
 1. **surface 분리** — `tools[]` 는 LLM 카탈로그, `uiActions` 는 renderer IPC allowlist 이다. 같은 이름을 양쪽에 둘 수 있지만, auth/status/login/panel-internal 메서드는 `uiActions` 전용으로 둘 수 있다.
-2. **권한 경로 통합** — `PluginRuntime.callFromUi(method, payload)` 는 매번 `manifest.uiActions` 를 재확인한 뒤 host delegate 로 넘긴다. delegate 는 ToolExecutor 를 호출하므로 sensitive path, allowed directories, reviewer, hooks, audit 정책이 적용된다.
+2. **권한 경로 분리** — `PluginRuntime.callFromUi(method, payload)` 는 매번 `manifest.uiActions` 를 재확인한 뒤 host delegate 로 넘긴다. 이름이 `tools[]` 에도 있으면 ToolExecutor 를 호출하므로 sensitive path, allowed directories, reviewer, hooks, audit 정책이 적용된다. `tools[]` 에 없는 UI-only action 은 auth status polling 을 제외하고 active user activation 이 있어야 실행되며, runtime 이 allowlist 재검증과 audit log 를 남긴다.
 3. **도구 이름 제한 없음** — 어떤 접미사든 `uiActions` 에 넣을 수 있다. 실제 위험 작업은 이름이 아니라 SDK manifest `category/pathFields` 와 host 권한 정책으로 평가한다.
 
 **예시:**
@@ -882,7 +882,7 @@ Ave 는 IPC/RPC 를 **시스템 레벨 전용**으로 확정한다. 플러그인
 **주요 handler:** `meeting_start` / `meeting_push_chunk` / `meeting_stop` / `meeting_transcript` / `meeting_sessions`.
 
 - `capabilities: ["meeting-recorder"]` — `meeting.*` emit 게이트 통과.
-- `uiActions: { "meeting_transcript": {}, "meeting_sessions": {} }` — 렌더러에서 호출 가능한 조회용 메서드를 노출. 호출 자체는 host delegate 를 통해 ToolExecutor 권한 경로를 통과한다.
+- `uiActions: { "meeting_transcript": {}, "meeting_sessions": {} }` — 렌더러에서 호출 가능한 조회용 메서드를 노출. 같은 이름이 `tools[]` 에도 있으면 host delegate 를 통해 ToolExecutor 권한 경로를 통과하고, UI-only 메서드는 active user activation gate 와 runtime allowlist/audit path 를 통과한다.
 - `toolSchemas` 는 모든 tool 에 선언하며, `meeting_push_chunk` 는 PCM `number[]` 추론 보조와 `category` 권한 metadata 를 함께 제공한다.
 - `meeting_stop` 반환값이 크므로 LLM context 소비 주의 — 요약만 반환.
 
