@@ -1,0 +1,413 @@
+/**
+ * #1409 IPC wire lock — Commit C0 safety snapshot.
+ *
+ * Records every channel `registerIpcHandlers` registers on `ipcMain`
+ * (`handle` / `handleOnce` / `on`) and snapshots the SORTED, UNIQUE list.
+ * This is the wire contract for the behavior-preserving IPC refactor that
+ * follows: a renamed / removed / added channel MUST change this snapshot.
+ *
+ * MUST pass against the current (unchanged) code.
+ *
+ * Determinism: the dev-flags gate is forced to unpackaged (`setIsPackaged(false)`)
+ * so the dev domain (`index.ts` gates it on `!getIsPackaged()`) and the mockup
+ * auth handler (`auth.ts` early-returns when `getIsPackaged() && !isDemoEnabled()`)
+ * are always registered — capturing the full wire independent of the host env.
+ */
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+
+// `vi.hoisted` guarantees `channels` exists before the hoisted `vi.mock`
+// factory runs, so the static `registerIpcHandlers` import can record into it.
+const { channels } = vi.hoisted(() => ({ channels: [] as string[] }));
+
+vi.mock("electron", () => {
+  const record = (channel: unknown): void => {
+    if (typeof channel === "string") channels.push(channel);
+  };
+  const ipcMain = {
+    handle: (channel: string) => record(channel),
+    handleOnce: (channel: string) => record(channel),
+    on: (channel: string) => record(channel),
+    removeHandler: () => {},
+    removeAllListeners: () => {},
+    off: () => {},
+    emit: () => {},
+  };
+  class BrowserWindow {
+    webContents = {
+      send: () => {},
+      on: () => {},
+      setWindowOpenHandler: () => {},
+      id: 1,
+    };
+    on() {}
+    loadURL() {}
+    show() {}
+    close() {}
+    setMenu() {}
+    isDestroyed() {
+      return false;
+    }
+    static getAllWindows() {
+      return [];
+    }
+    static fromWebContents() {
+      return null;
+    }
+    static getFocusedWindow() {
+      return null;
+    }
+  }
+  const electron = {
+    ipcMain,
+    BrowserWindow,
+    app: {
+      getPath: () => "/tmp/ave-test",
+      getAppPath: () => "/tmp/ave",
+      getName: () => "ave",
+      getVersion: () => "0.0.0-test",
+      getLocale: () => "en-US",
+      isPackaged: false,
+      on: () => {},
+      whenReady: () => Promise.resolve(),
+    },
+    dialog: {
+      showOpenDialog: async () => ({ canceled: true, filePaths: [] }),
+      showSaveDialog: async () => ({ canceled: true }),
+      showMessageBox: async () => ({ response: 0 }),
+    },
+    Menu: class Menu {
+      append() {}
+      popup() {}
+      static buildFromTemplate() {
+        return new Menu();
+      }
+      static setApplicationMenu() {}
+    },
+    MenuItem: class MenuItem {},
+    nativeImage: {
+      createFromPath: () => ({ isEmpty: () => true, resize: () => ({}) }),
+      createFromDataURL: () => ({ isEmpty: () => true }),
+    },
+    nativeTheme: { shouldUseDarkColors: false, on: () => {} },
+    shell: { openExternal: async () => {}, openPath: async () => "" },
+    webContents: { getAllWebContents: () => [], fromId: () => null },
+    clipboard: { readText: () => "", writeText: () => {} },
+    session: {
+      fromPartition: () => ({ setPermissionRequestHandler: () => {} }),
+      defaultSession: { setPermissionRequestHandler: () => {} },
+    },
+    contextBridge: { exposeInMainWorld: () => {} },
+    ipcRenderer: { invoke: async () => {}, on: () => {}, send: () => {}, removeListener: () => {} },
+  };
+  return { ...electron, default: electron };
+});
+
+import { registerIpcHandlers } from "../index.js";
+import { setIsPackaged, _resetForTest } from "../../boot/dev-flags.js";
+import type { AppServices } from "../../boot/types.js";
+
+// Every top-level service field of AppServices. The mock proxy enumerates
+// these so `{ ...services }` inside registerIpcHandlers carries a live nested
+// proxy for each — no registrar destructure resolves to `undefined`.
+const SERVICE_KEYS: (string | symbol)[] = [
+  "pythonRuntime",
+  "pythonPath",
+  "pluginRuntime",
+  "pluginMarketplace",
+  "settingsService",
+  "memoryManager",
+  "keywordEngine",
+  "routeEngine",
+  "toolRegistry",
+  "systemPromptBuilder",
+  "conversationLoop",
+  "routineEngine",
+  "mcpManager",
+  "mcpArtifactStore",
+  "agentArtifactStore",
+  "skillArtifactStore",
+  "idleScheduler",
+  "preferenceRefreshService",
+  "bashAstValidator",
+  "auditService",
+  "auditLogger",
+  "postTurnHookChain",
+  "approvalGate",
+  "rewireReviewerAgent",
+  "refreshMarketplaceFetcherConfig",
+  "refreshActiveLlmWildcard",
+  "refreshSandboxNetworkConfig",
+  "knowledgeAvailable",
+  "starredStore",
+  "feedbackStore",
+  "routinesStore",
+  "routinesScheduler",
+  "sessionTodoStore",
+  "workBoardStore",
+  "workBoardEngine",
+  "workBoardReport",
+  "askUserQuestionGate",
+  "skillStore",
+  "agentProfileStore",
+  "personaPromptStore",
+  "refreshPluginNotifications",
+  "pluginPaths",
+  "clearAuthPartitionService",
+  "listPluginAuthPartitionsService",
+  "forgetPluginAuthPartitionsService",
+  "registerPluginEventBridge",
+  "telemetry",
+  "pluginTelemetry",
+  "autoUpdaterStop",
+  "runPluginShutdownHandlers",
+  "shutdown",
+  "startRoutinesScheduler",
+  "startWorkBoardDueSoon",
+  "notificationService",
+  "scriptHookManager",
+];
+
+/**
+ * Recursive callable proxy. Any property access returns the same nested
+ * callable proxy (never `undefined`); any call returns the proxy too — so a
+ * registrar can traverse `deps.foo.bar.baz(...)` without real services.
+ * `getSessionId` is special-cased to a string because registerIpcHandlers
+ * eagerly calls `deps.conversationLoop.getSessionId()` at wiring time.
+ */
+function makeDeepProxy(): unknown {
+  const target = (): void => undefined;
+  const proxy: unknown = new Proxy(target, {
+    get(_t, prop) {
+      if (prop === "getSessionId") return () => "test-session-id";
+      if (prop === "then") return undefined; // never a thenable
+      if (prop === "toString" || prop === "valueOf") return () => "mock";
+      if (prop === Symbol.toPrimitive) return () => "mock";
+      if (prop === Symbol.iterator || prop === Symbol.asyncIterator) return undefined;
+      if (prop === Symbol.toStringTag) return undefined;
+      return proxy;
+    },
+    apply() {
+      return proxy;
+    },
+    ownKeys() {
+      return SERVICE_KEYS;
+    },
+    getOwnPropertyDescriptor() {
+      return { enumerable: true, configurable: true, writable: true, value: proxy };
+    },
+    has() {
+      return true;
+    },
+  });
+  return proxy;
+}
+
+beforeAll(() => {
+  channels.length = 0;
+  setIsPackaged(false);
+  const services = makeDeepProxy() as unknown as AppServices;
+  registerIpcHandlers(services, () => null);
+});
+
+afterAll(() => {
+  _resetForTest();
+});
+
+describe("IPC channel inventory (#1409 wire lock)", () => {
+  it("registers a stable, sizeable set of channels", () => {
+    const unique = [...new Set(channels)];
+    // Sanity bound — a wholesale regression (registrars not wired) trips this
+    // before the snapshot diff even matters.
+    expect(unique.length).toBeGreaterThan(50);
+  });
+
+  it("locks the sorted unique channel list", () => {
+    const sorted = [...new Set(channels)].sort();
+    expect(sorted).toMatchInlineSnapshot(`
+      [
+        "ave:agents:install",
+        "ave:agents:list",
+        "ave:agents:uninstall",
+        "ave:app:info",
+        "ave:approval:respond",
+        "ave:ask-user-question:respond",
+        "ave:attach:openExternal",
+        "ave:attach:openFile",
+        "ave:attach:readImage",
+        "ave:attach:saveClipboardImage",
+        "ave:audit:search",
+        "ave:audit:stats",
+        "ave:auth:login-mockup",
+        "ave:auth:logout-broadcast",
+        "ave:auth:reactivate-broadcast",
+        "ave:bootstrap:retry",
+        "ave:chat:abort",
+        "ave:chat:branch-from-checkpoint",
+        "ave:chat:compact",
+        "ave:chat:continue-last-user",
+        "ave:chat:edit-resend",
+        "ave:chat:enter-checkpoint-view",
+        "ave:chat:exit-checkpoint-view",
+        "ave:chat:export",
+        "ave:chat:fork",
+        "ave:chat:get-history",
+        "ave:chat:get-verbatim-tool-result",
+        "ave:chat:get-write-diff",
+        "ave:chat:guide",
+        "ave:chat:has-provider",
+        "ave:chat:main-active-state",
+        "ave:chat:new",
+        "ave:chat:retry-effort",
+        "ave:chat:send",
+        "ave:chat:session-history",
+        "ave:chat:session-resume",
+        "ave:chat:sessions",
+        "ave:demo:activate",
+        "ave:demo:activate-embedded",
+        "ave:demo:clear",
+        "ave:demo:relaunch-after-activation",
+        "ave:demo:status",
+        "ave:dev:getPreflightStatus",
+        "ave:dev:setPreflightOverride",
+        "ave:dlp:stats",
+        "ave:feedback:submit",
+        "ave:host:plugin-theme-notify",
+        "ave:llm:ping",
+        "ave:marketplace:ping",
+        "ave:mcp:catalog:list",
+        "ave:mcp:config:add",
+        "ave:mcp:config:get",
+        "ave:mcp:config:path",
+        "ave:mcp:config:remove",
+        "ave:mcp:config:set-api-key",
+        "ave:mcp:import:claude-desktop:apply",
+        "ave:mcp:import:claude-desktop:preview",
+        "ave:mcp:install-from-marketplace",
+        "ave:mcp:kill",
+        "ave:mcp:servers",
+        "ave:mcp:ui-resource",
+        "ave:memory:agents-md:get",
+        "ave:memory:agents-md:update",
+        "ave:memory:entries:delete",
+        "ave:memory:entries:list",
+        "ave:memory:entries:save",
+        "ave:memory:entries:search",
+        "ave:memory:index:get",
+        "ave:memory:index:sections:update",
+        "ave:memory:index:update-if-unchanged",
+        "ave:memory:sessions:list",
+        "ave:memory:sessions:search",
+        "ave:memory:user-prefs:get",
+        "ave:memory:user-prefs:refresh",
+        "ave:memory:user-prefs:update",
+        "ave:notification:clicked",
+        "ave:onboarding:context:set",
+        "ave:permission:add-rule",
+        "ave:permission:get-mode",
+        "ave:permission:list-rules",
+        "ave:permission:remove-rule",
+        "ave:permission:set-mode",
+        "ave:permissions:audit-show",
+        "ave:permissions:audit-verify",
+        "ave:permissions:deferred-list",
+        "ave:permissions:deferred-resolve",
+        "ave:permissions:dir-dispatch",
+        "ave:permissions:hook-trust-list",
+        "ave:permissions:reviewer-dispatch",
+        "ave:permissions:reviewer-provider-has-key",
+        "ave:permissions:sandbox-capability",
+        "ave:permissions:sandbox-windows-install",
+        "ave:permissions:sandbox-windows-status",
+        "ave:permissions:user-approval-list",
+        "ave:permissions:user-approval-record",
+        "ave:permissions:user-approval-revoke",
+        "ave:plugin:call-tool",
+        "ave:plugin:config:get",
+        "ave:plugin:config:set",
+        "ave:plugin:emit-event",
+        "ave:plugin:get-entry-url",
+        "ave:plugin:get-theme",
+        "ave:plugin:register-webview",
+        "ave:plugin:storage:get",
+        "ave:plugin:storage:set",
+        "ave:plugins:call",
+        "ave:plugins:cards",
+        "ave:plugins:config:get",
+        "ave:plugins:config:schema:get",
+        "ave:plugins:config:secret:list-keys",
+        "ave:plugins:config:secret:set",
+        "ave:plugins:config:set",
+        "ave:plugins:install",
+        "ave:plugins:install-local",
+        "ave:plugins:marketplace:list",
+        "ave:plugins:perf-stats",
+        "ave:plugins:set-enabled",
+        "ave:plugins:ui:list",
+        "ave:plugins:ui:read-module",
+        "ave:plugins:uninstall",
+        "ave:policy:get",
+        "ave:policy:set",
+        "ave:prompts:delete",
+        "ave:prompts:list",
+        "ave:prompts:list-summaries",
+        "ave:prompts:save",
+        "ave:routines:v2:ack-result",
+        "ave:routines:v2:add",
+        "ave:routines:v2:dismiss",
+        "ave:routines:v2:list",
+        "ave:routines:v2:list-sessions",
+        "ave:routines:v2:pending-results",
+        "ave:routines:v2:remove",
+        "ave:routines:v2:trigger-now",
+        "ave:runtime:counts",
+        "ave:runtime:env",
+        "ave:session-todo:clear",
+        "ave:session-todo:list",
+        "ave:settings:apply-host-map",
+        "ave:settings:delete-api-key",
+        "ave:settings:delete-web-api-key",
+        "ave:settings:get",
+        "ave:settings:has-api-key",
+        "ave:settings:has-web-api-key",
+        "ave:settings:marketplace:delete-api-key",
+        "ave:settings:marketplace:has-api-key",
+        "ave:settings:marketplace:set-api-key",
+        "ave:settings:set-api-key",
+        "ave:settings:set-web-api-key",
+        "ave:settings:update",
+        "ave:shell:open-external",
+        "ave:skills:install",
+        "ave:skills:list",
+        "ave:skills:uninstall",
+        "ave:starred:add",
+        "ave:starred:list",
+        "ave:starred:remove",
+        "ave:telemetry:consent-answer",
+        "ave:tour:dismiss",
+        "ave:tour:get-state",
+        "ave:tour:mark-complete",
+        "ave:tour:start",
+        "ave:ui:assistant-context-menu",
+        "ave:usage:export-csv",
+        "ave:usage:range",
+        "ave:usage:summary",
+        "ave:window:open-html-preview",
+        "ave:work-board:add",
+        "ave:work-board:complete",
+        "ave:work-board:generate-report",
+        "ave:work-board:get",
+        "ave:work-board:list",
+        "ave:work-board:remove",
+        "ave:work-board:reopen",
+        "ave:work-board:run",
+        "ave:work-board:run-transcript",
+        "ave:work-board:transition",
+        "ave:work-board:update",
+        "window:close",
+        "window:minimize",
+        "window:syncTitleBarTheme",
+        "window:toggleMaximize",
+      ]
+    `);
+  });
+});
