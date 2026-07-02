@@ -12,6 +12,7 @@ import { randomBytes } from "node:crypto";
 import * as os from "node:os";
 import * as path from "node:path";
 import { validateSender, auditUnauthorized } from "../gated.js";
+import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
 import { DENY_EXTENSIONS as DENY_LIST } from "../../shared/attachments-deny-list.js";
 
@@ -154,9 +155,9 @@ export interface SaveClipboardImageResult {
 export function registerAttachHandlers(deps: IpcDeps): void {
   const { auditLogger, getMainWindow } = deps;
 
-  ipcMain.handle("ave:attach:openFile", async (e): Promise<OpenFileResult> => {
+  ipcMain.handle(CHANNELS.attach.openFile, async (e): Promise<OpenFileResult> => {
     if (!validateSender(e)) {
-      auditUnauthorized(auditLogger, "ave:attach:openFile", e);
+      auditUnauthorized(auditLogger, CHANNELS.attach.openFile, e);
       return { canceled: true, files: [], rejected: [] };
     }
     const win = getMainWindow();
@@ -201,10 +202,10 @@ export function registerAttachHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle(
-    "ave:attach:readImage",
+    CHANNELS.attach.readImage,
     async (e, filePath: string): Promise<ReadImageResult> => {
       if (!validateSender(e)) {
-        auditUnauthorized(auditLogger, "ave:attach:readImage", e);
+        auditUnauthorized(auditLogger, CHANNELS.attach.readImage, e);
         return { ok: false, error: "unauthorized" };
       }
       try {
@@ -253,10 +254,10 @@ export function registerAttachHandlers(deps: IpcDeps): void {
   );
 
   ipcMain.handle(
-    "ave:attach:saveClipboardImage",
+    CHANNELS.attach.saveClipboardImage,
     async (e, input: SaveClipboardImageInput): Promise<SaveClipboardImageResult> => {
       if (!validateSender(e)) {
-        auditUnauthorized(auditLogger, "ave:attach:saveClipboardImage", e);
+        auditUnauthorized(auditLogger, CHANNELS.attach.saveClipboardImage, e);
         return { ok: false, error: "unauthorized" };
       }
       try {
@@ -320,10 +321,10 @@ export function registerAttachHandlers(deps: IpcDeps): void {
   );
 
   ipcMain.handle(
-    "ave:attach:openExternal",
+    CHANNELS.attach.openExternal,
     async (e, filePath: string): Promise<{ ok: boolean; error?: string }> => {
       if (!validateSender(e)) {
-        auditUnauthorized(auditLogger, "ave:attach:openExternal", e);
+        auditUnauthorized(auditLogger, CHANNELS.attach.openExternal, e);
         return { ok: false, error: "unauthorized" };
       }
       try {
