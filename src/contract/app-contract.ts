@@ -327,6 +327,14 @@ export const CHANNELS = {
     saveClipboardImage: "ave:attach:saveClipboardImage",
     openExternal: "ave:attach:openExternal",
   },
+  preview: {
+    readFile: "ave:preview:read-file",
+  },
+  workspace: {
+    pickRoot: "ave:workspace:pick-root",
+    listRoots: "ave:workspace:list-roots",
+    listDir: "ave:workspace:list-dir",
+  },
   // ── Interactive PTY terminal (#1444, workspace rail) ──────────────────────
   // ALL INTERNAL: deliberately absent from PUBLIC_CHANNELS / CHANNEL_GESTURE /
   // EXTERNAL_MUTATION_CHANNELS. A terminal spawns arbitrary user commands, so

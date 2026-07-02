@@ -1613,6 +1613,67 @@ export interface AveAttachApi {
   openExternal: (filePath: string) => Promise<{ ok: boolean; error?: string }>;
 }
 
+/**
+ * Preview file-read surface (§6.10). Reads a text file for in-panel preview,
+ * gated by the SAME traversal guard as the builtin `read_file` tool — never a
+ * broader read authority. `error` is a kebab-case code the renderer maps to a
+ * Korean message; `message` is English dev detail.
+ */
+export interface AvePreviewApi {
+  readFile: (path: string) => Promise<{
+    ok: boolean;
+    content?: string;
+    path?: string;
+    bytes?: number;
+    truncated?: boolean;
+    error?:
+      | "unauthorized"
+      | "path-not-allowed"
+      | "sensitive-path"
+      | "not-a-file"
+      | "binary-file"
+      | "too-large"
+      | "read-failed";
+    message?: string;
+  }>;
+}
+
+/**
+ * Workspace file-browser surface (§6.10). Project roots are persisted to
+ * `permissions.additionalDirectories` (the executor's Layer 1 allow-list SOT),
+ * so a browsable folder is exactly a readable folder.
+ */
+export interface AveWorkspaceApi {
+  listRoots: () => Promise<{
+    ok: boolean;
+    defaultRoot?: string;
+    roots?: Array<{ path: string; isDefault: boolean }>;
+    error?: string;
+  }>;
+  pickRoot: (opts?: { ackToken?: string }) => Promise<{
+    ok: boolean;
+    canceled?: boolean;
+    added?: string;
+    roots?: Array<{ path: string; isDefault: boolean }>;
+    warnings?: string[];
+    /** Adjacency warnings present + not persisted — renderer must confirm. */
+    requiresAcknowledgement?: boolean;
+    /** Picked path awaiting acknowledgement — display only. */
+    pendingPath?: string;
+    /** One-time token bound to the picked path — confirm by echoing it via `ackToken`. */
+    ackToken?: string;
+    error?: string;
+  }>;
+  listDir: (path: string) => Promise<{
+    ok: boolean;
+    path?: string;
+    entries?: Array<{ name: string; path: string; type: "file" | "directory" }>;
+    truncated?: boolean;
+    error?: "unauthorized" | "path-not-allowed" | "sensitive-path" | "not-a-dir" | "read-failed";
+    message?: string;
+  }>;
+}
+
 export interface AveUiApi {
   showAssistantContextMenu: (
     payload: AssistantContextMenuPayload,
@@ -1636,6 +1697,8 @@ declare global {
       pluginConfig: AvePluginConfigApi;
       ui: AveUiApi;
       attach: AveAttachApi;
+      preview: AvePreviewApi;
+      workspace: AveWorkspaceApi;
       env: {
         isDev: boolean;
         isE2E: boolean;
