@@ -105,9 +105,12 @@ export interface AveClient {
 /**
  * Wrap a {@link LocalApi} dispatcher as a typed {@link AveClient}. `origin`
  * defaults to `local-api` (the in-process SDK surface); the CLI constructs a
- * client with `cli`.
+ * client with `cli`. The parameter accepts any failure-code union
+ * (`LocalApi<string>`) so both the in-process dispatcher (narrow codes) and a
+ * transport client (widened codes) plug in without casts — the facade only
+ * ever reads `.error` as a string to build {@link AveClientError}.
  */
-export function createAveClient(api: LocalApi, origin: ExternalOrigin = "local-api"): AveClient {
+export function createAveClient(api: LocalApi<string>, origin: ExternalOrigin = "local-api"): AveClient {
   async function call(channel: string, args?: unknown): Promise<unknown> {
     const result = await api.dispatch({ channel, args, origin });
     if (!result.ok) throw new AveClientError(result.error, channel);
