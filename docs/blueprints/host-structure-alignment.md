@@ -11,9 +11,19 @@
 > plugins/runtime/index 2381→2060 (+7 collaborators) · boot/steps/plugin-runtime 2203→549 ·
 > App 2338→796 · ChatView 2190→700 · main 1987→392 · boot 1795→402.
 > All public contracts byte-identical; `contract/` + `api|cli|sdk/` added. Every discovered
-> issue was handled inline (no backlog). Follow-ups (explicitly deferred, documented below):
-> the localhost API server + `cli` process bin + authenticated non-renderer authz for
-> privileged mutation (§4 boundary map), and thinning App.tsx further toward <300.
+> issue was handled inline (no backlog).
+>
+> **Follow-up landed (#1436):** the loopback local API server — `api/http-server.ts`
+> (node:http, 127.0.0.1-only, per-boot Bearer secret with constant-time compare,
+> `POST /v1/dispatch` + `GET /v1/events` SSE + `GET /v1/health`),
+> `api/stream-broadcaster.ts` (chat-stream fan-out), opt-in lifecycle in
+> `src/main/local-api-server.ts` (Settings `system.localApiServer` / `AVE_LOCAL_API=1`,
+> default OFF; discovery file `~/.ave/local-api/server.json` via `openFeatureNamespace`;
+> closed in app-shutdown), and the runnable CLI (`cli/http-client.ts` +
+> `scripts/ave-cli.ts`, `bun run cli -- <command>`) over the same contract.
+> Remaining follow-ups (still deferred): authenticated non-renderer authz for
+> privileged/gesture-gated mutation, remote/multi-user exposure beyond loopback,
+> and thinning App.tsx further toward <300.
 
 ## 1. Why (both issues, one root problem)
 
