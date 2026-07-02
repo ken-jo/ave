@@ -312,6 +312,7 @@ export const CHANNELS = {
     loadSessionInMain: "ave:window:load-session-in-main",
     loadSessionInMainResult: "ave:window:load-session-in-main-result",
     resizeForMode: "ave:window:resize-for-mode",
+    resizeForSidePanel: "ave:window:resize-for-side-panel",
     openHtmlPreview: "ave:window:open-html-preview",
     snapEdge: "ave:window:snap-edge",
     detachedNavigate: "ave:detached:navigate",
