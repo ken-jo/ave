@@ -88,6 +88,35 @@ describe("AveClient — fail-closed error propagation", () => {
   });
 });
 
+// ── US-104: approval-mediated setPermissionMode ─────────────────────────────
+
+describe("AveClient — setPermissionMode (approval-mediated external mutation)", () => {
+  it("dispatches on PERMISSIONS.setMode with { mode } and the bound origin", async () => {
+    const { api, calls } = fakeApi(() => ({ ok: true, data: { ok: true, mode: "auto" } }));
+    const client = createAveClient(api, "cli");
+    await client.setPermissionMode("auto");
+    expect(calls).toEqual([{ channel: PERMISSIONS.setMode, args: { mode: "auto" }, origin: "cli" }]);
+  });
+
+  it("passes through the dispatcher's data on approval (ok)", async () => {
+    const { api } = fakeApi(() => ({ ok: true, data: { ok: true, mode: "plan" } }));
+    const client = createAveClient(api, "local-api");
+    await expect(client.setPermissionMode("plan")).resolves.toEqual({ ok: true, mode: "plan" });
+  });
+
+  it("throws AveClientError('external-mutation-denied') when the approver declines", async () => {
+    const { api } = fakeApi(() => ({ ok: false, error: "external-mutation-denied" }));
+    const client = createAveClient(api, "local-api");
+    await expect(client.setPermissionMode("auto")).rejects.toBeInstanceOf(AveClientError);
+    await client.setPermissionMode("auto").catch((err: unknown) => {
+      expect(err).toBeInstanceOf(AveClientError);
+      const e = err as AveClientError;
+      expect(e.code).toBe("external-mutation-denied");
+      expect(e.channel).toBe(PERMISSIONS.setMode);
+    });
+  });
+});
+
 describe("AveClient — integration over a real local-api (cli origin)", () => {
   const chatSendContext: ChatSendContext = {
     sink: () => {},
