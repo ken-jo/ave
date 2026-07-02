@@ -327,6 +327,22 @@ export const CHANNELS = {
     saveClipboardImage: "ave:attach:saveClipboardImage",
     openExternal: "ave:attach:openExternal",
   },
+  // ── Interactive PTY terminal (#1444, workspace rail) ──────────────────────
+  // ALL INTERNAL: deliberately absent from PUBLIC_CHANNELS / CHANNEL_GESTURE /
+  // EXTERNAL_MUTATION_CHANNELS. A terminal spawns arbitrary user commands, so
+  // it must be unreachable from any external origin (local-api / cli / plugin
+  // frame) — the fail-closed default (isPublicChannel === false) enforces that.
+  // Each invoke handler additionally gates on validateHostRendererSender so a
+  // plugin-ui-shell frame cannot reach them either. data/exit are main→renderer
+  // events sent via safe-send/sendToWindow.
+  terminal: {
+    spawn: "ave:terminal:spawn", // invoke renderer→main → { ok, tabId } | { ok:false, reason }
+    input: "ave:terminal:input", // invoke  (keystrokes → pty stdin)
+    resize: "ave:terminal:resize", // invoke  (cols/rows)
+    kill: "ave:terminal:kill", // invoke  (tab close / teardown)
+    data: "ave:terminal:data", // event   main→renderer (pty output chunk)
+    exit: "ave:terminal:exit", // event   main→renderer (pty exited)
+  },
 } as const;
 
 type ValuesOf<T> = T[keyof T];
