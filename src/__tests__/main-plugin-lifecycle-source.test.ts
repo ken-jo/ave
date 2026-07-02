@@ -7,9 +7,13 @@ async function readSource(relative: string): Promise<string> {
 
 describe("main process plugin lifecycle regression guards", () => {
   it("reports ave:// install success only after runtime activation succeeds", async () => {
-    const source = await readSource("../main.ts");
+    // C17: the ave:// deep-link install lifecycle moved from main.ts into
+    // src/main/ave-deep-link.ts. Same guarantee, new location — the section
+    // is now terminated by the `broadcastPluginLifecycleEvent` definition that
+    // immediately follows `handleAveUri` (previously `activateView`).
+    const source = await readSource("../main/ave-deep-link.ts");
     const lifecycleSection = source.match(
-      /let installProgressSlug = params\.slug[\s\S]*?\r?\n}\r?\n\r?\nfunction activateView/,
+      /let installProgressSlug = params\.slug[\s\S]*?\r?\n}\r?\n\r?\nfunction broadcastPluginLifecycleEvent/,
     )?.[0];
 
     expect(lifecycleSection, "deep-link install lifecycle section must be present").toBeTruthy();
@@ -48,7 +52,10 @@ describe("main process plugin lifecycle regression guards", () => {
   });
 
   it("replaces plugin event bridge subscriptions when the main window is recreated", async () => {
-    const mainSource = await readSource("../main.ts");
+    // C17: the deep-link window-recreation path (which re-registers the plugin
+    // event bridge for the freshly created main window) moved into
+    // src/main/ave-deep-link.ts. boot.ts still owns the bridge replacement.
+    const mainSource = await readSource("../main/ave-deep-link.ts");
     const bootSource = await readSource("../boot.ts");
 
     expect(mainSource).toContain("registerMainWindowPluginEventBridge(mainWindow)");
