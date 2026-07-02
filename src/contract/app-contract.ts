@@ -327,6 +327,14 @@ export const CHANNELS = {
     saveClipboardImage: "ave:attach:saveClipboardImage",
     openExternal: "ave:attach:openExternal",
   },
+  preview: {
+    readFile: "ave:preview:read-file",
+  },
+  workspace: {
+    pickRoot: "ave:workspace:pick-root",
+    listRoots: "ave:workspace:list-roots",
+    listDir: "ave:workspace:list-dir",
+  },
 } as const;
 
 type ValuesOf<T> = T[keyof T];
