@@ -86,6 +86,7 @@ describe("preload contextBridge world shape lock", () => {
         "__aveInitialTheme",
         "ave",
         "aveApi",
+        "aveDrop",
         "aveHost",
         "avePlatform",
         "aveWindow",
@@ -182,6 +183,7 @@ describe("preload contextBridge world shape lock", () => {
             "revokeByKey",
           ],
           "workspace": [
+            "dropPrepare",
             "listDir",
             "listRoots",
             "pickRoot",
@@ -461,6 +463,9 @@ describe("preload contextBridge world shape lock", () => {
             "resizeForMode",
             "resizeForSidePanel",
           ],
+        },
+        "aveDrop": {
+          "resolveDroppedPaths": "function",
         },
         "aveHost": {
           "takePluginMarketplaceApi": "function",
