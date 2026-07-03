@@ -336,7 +336,6 @@ export const CHANNELS = {
     listDir: "ave:workspace:list-dir",
     removeRoot: "ave:workspace:remove-root",
     reveal: "ave:workspace:reveal",
-    addRootByPath: "ave:workspace:add-root-by-path",
   },
   // ── Interactive PTY terminal (#1444, workspace rail) ──────────────────────
   // ALL INTERNAL: deliberately absent from PUBLIC_CHANNELS / CHANNEL_GESTURE /
