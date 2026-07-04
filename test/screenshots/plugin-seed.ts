@@ -174,12 +174,12 @@ export async function seedRealPlugins(
   if (disableReviewer) {
     const aveHomeSettingsPath = path.join(aveHomeForTest, 'settings.json');
     let aveHomeSettings: Record<string, unknown> = {};
-    if (fs.existsSync(aveHomeSettingsPath)) {
-      try {
-        aveHomeSettings = JSON.parse(fs.readFileSync(aveHomeSettingsPath, 'utf-8')) as Record<string, unknown>;
-      } catch {
-        aveHomeSettings = {};
-      }
+    try {
+      // Read directly and treat ENOENT like malformed JSON — avoids the
+      // exists-then-read TOCTOU race (CodeQL js/file-system-race).
+      aveHomeSettings = JSON.parse(fs.readFileSync(aveHomeSettingsPath, 'utf-8')) as Record<string, unknown>;
+    } catch {
+      aveHomeSettings = {};
     }
     const existingPerms =
       (aveHomeSettings.permissions as Record<string, unknown> | undefined) ?? {};
