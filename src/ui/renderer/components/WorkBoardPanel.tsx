@@ -1146,7 +1146,7 @@ function ReportsSection({ api, project }: { api: AveApi; project?: ProjectIdenti
         if (mountedRef.current) setGenerating(null);
       }
     },
-    [api],
+    [api, project],
   );
 
   return (
