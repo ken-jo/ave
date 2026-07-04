@@ -218,6 +218,7 @@ export const CHANNELS = {
   usage: {
     summary: "ave:usage:summary",
     range: "ave:usage:range",
+    dailySummary: "ave:usage:daily-summary",
     exportCsv: "ave:usage:export-csv",
   },
   // ── preload-swept channel groups (C11: #1409 + #1411) ──────────────────────
