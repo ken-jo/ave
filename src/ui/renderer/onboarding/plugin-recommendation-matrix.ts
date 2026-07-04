@@ -1,18 +1,17 @@
 /**
  * Memory Seed Onboarding (O-X2) — static keyword → plugin matrix.
  *
- * The MemorySeedDialog renders a "✨ 분석 결과" recommendation chip strip
+ * The MemorySeedDialog renders an analysis-result recommendation chip strip
  * driven by the user's one-line self-introduction. v1 is intentionally
  * static (zero LLM calls, zero IPC): a deterministic keyword sweep keeps
  * the first-boot path fast, offline-safe, and unit-testable.
  *
  * Matrix maintenance notes:
- *   - Korean stems are preferred (실제 입력 패턴) but a few English keywords
- *     are kept for bilingual users.
+ *   - English stems are listed first for the global default; Korean stems are
+ *     kept so Korean self-introductions still match.
  *   - Each plugin entry is matched at most once — duplicate hits collapse.
  *   - When no keyword matches we surface `chat-basics` so the chip strip is
- *     never empty (UX requirement: 추천 카드가 비어있으면 분석 결과 카드
- *     자체의 의미가 사라짐).
+ *     never empty.
  */
 
 import { t } from "../../../i18n/runtime.js";
@@ -20,7 +19,7 @@ import { t } from "../../../i18n/runtime.js";
 export interface PluginRecommendation {
   /** Stable identifier — matches plugin id where applicable, or `chat-basics` for the fallback. */
   pluginId: string;
-  /** Label shown in the chip body (emoji는 별도 필드). */
+  /** Label shown in the chip body; the emoji is stored separately. */
   label: string;
   /** Leading emoji in the chip. */
   emoji: string;
@@ -46,46 +45,46 @@ interface MatrixRow {
 
 /**
  * Order matters — earlier rows win priority when an intro hits multiple
- * categories so the chip strip stays narrative-aligned (회의 → 문서 →
- * 업무 → 에이전트).
+ * categories so the chip strip stays narrative-aligned: meetings, documents,
+ * work, then agents.
  */
 const MATRIX: MatrixRow[] = [
   {
     pluginId: "meeting",
     label: "meeting",
     emoji: "🎙️",
-    keywords: ["회의", "미팅", "녹음", "회의록", "stt", "meeting"],
+    keywords: ["meeting", "stt", "recording", "minutes", "회의", "미팅", "녹음", "회의록"],
     marketplaceSlug: "ave-plugin-meeting",
   },
   {
     pluginId: "local-indexer",
     label: "local-indexer",
     emoji: "🔍",
-    keywords: ["문서", "검색", "pdf", "파일", "인덱스", "indexer", "document"],
+    keywords: ["document", "search", "pdf", "file", "indexer", "index", "문서", "검색", "파일", "인덱스"],
     marketplaceSlug: "ave-plugin-local-indexer",
   },
   {
     // Manifest id is `vega-helper` (per plugin manifest); the canonical
     // marketplace slug is `ave-plugin-vega-helper`. Display label is
-    // the user-facing 업무 도우미 brand.
+    // the user-facing vega-helper brand.
     pluginId: "vega-helper",
     labelKey: "pluginRecommendationMatrix.vegaHelperLabel",
     emoji: "💼",
-    keywords: ["업무", "할일", "todo", "task", "proactive", "assistant", "일정"],
+    keywords: ["work", "todo", "task", "proactive", "assistant", "schedule", "업무", "할일", "일정"],
     marketplaceSlug: "ave-plugin-vega-helper",
   },
   {
     pluginId: "lyra-mail",
     labelKey: "pluginRecommendationMatrix.lyraMailLabel",
     emoji: "📅",
-    keywords: ["일정", "이메일", "메일", "캘린더", "calendar", "outlook", "email", "lyra mail", "lyramail"],
+    keywords: ["calendar", "outlook", "email", "mail", "lyra mail", "lyramail", "일정", "이메일", "메일", "캘린더"],
     marketplaceSlug: "ave-plugin-lyra-mail",
   },
   {
     pluginId: "agent-hub",
     label: "agent-hub",
     emoji: "🤖",
-    keywords: ["에이전트", "오케스트", "agent", "orchestr"],
+    keywords: ["agent", "orchestr", "에이전트", "오케스트"],
     marketplaceSlug: "ave-plugin-hydra",
   },
 ];
@@ -101,7 +100,7 @@ function getFallback(): PluginRecommendation {
 }
 
 /**
- * Infer recommended plugins from a free-form Korean (or mixed) self-intro.
+ * Infer recommended plugins from a free-form English, Korean, or mixed self-intro.
  * Empty/whitespace input → single fallback chip so the gradient card never
  * shows an empty list.
  */

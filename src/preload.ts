@@ -90,8 +90,8 @@ contextBridge.exposeInMainWorld("aveHost", buildAveHostWorld());
 contextBridge.exposeInMainWorld("avePlatform", buildAvePlatformWorld());
 contextBridge.exposeInMainWorld("aveWindow", buildAveWindowWorld());
 
-// ─── ave 네임스페이스 (B1: Approval Gate + Permission) ──
-// renderer에서 window.ave.approval / window.ave.permission으로 접근.
+
+
 // permission/approval/userApproval/policy/mcp are shared with aveApi (same
 // object refs); the remaining namespaces come from the internal surface.
 // ─── Drop-path resolution bridge (webUtils.getPathForFile) ────────────────
