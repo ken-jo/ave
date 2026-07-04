@@ -218,6 +218,7 @@ export const CHANNELS = {
   usage: {
     summary: "ave:usage:summary",
     range: "ave:usage:range",
+    dailySummary: "ave:usage:daily-summary",
     exportCsv: "ave:usage:export-csv",
   },
   // ── preload-swept channel groups (C11: #1409 + #1411) ──────────────────────
@@ -396,7 +397,7 @@ export type ChannelName = ValuesOf<{
  * classification, or a public channel's payload shape) changes in a way an
  * external SDK/CLI must react to. Read-first callers pin this.
  */
-export const CONTRACT_VERSION = "1.0.0";
+export const CONTRACT_VERSION = "1.2.0";
 
 /**
  * The versioned allowlist of channels an external surface (SDK / CLI / local
