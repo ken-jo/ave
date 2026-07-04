@@ -98,7 +98,7 @@ former_org/
 ├── ave-plugin-local-indexer/
 ├── ave-plugin-lyra-post/
 ├── ave-plugin-lyra-cal/
-├── 
+├──
 ├── ave-plugin-vega-helper/
 └── ave-plugin-hydra/
 ```
