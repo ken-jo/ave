@@ -65,6 +65,9 @@ export const CHANNELS = {
     continueLastUser: "ave:chat:continue-last-user",
     retryEffort: "ave:chat:retry-effort",
     export: "ave:chat:export",
+    // #1500 (E3): reverse of `export` — always creates a brand-new session,
+    // never overwrites. INTERNAL (mutating; not in PUBLIC_CHANNELS below).
+    import: "ave:chat:import",
     enterCheckpointView: "ave:chat:enter-checkpoint-view",
     exitCheckpointView: "ave:chat:exit-checkpoint-view",
     branchFromCheckpoint: "ave:chat:branch-from-checkpoint",
@@ -238,6 +241,7 @@ export const CHANNELS = {
     status: "ave:demo:status",
     activate: "ave:demo:activate",
     activateEmbedded: "ave:demo:activate-embedded",
+    activateOllama: "ave:demo:activate-ollama",
     relaunchAfterActivation: "ave:demo:relaunch-after-activation",
     clear: "ave:demo:clear",
   },
@@ -290,6 +294,21 @@ export const CHANNELS = {
   audit: {
     search: "ave:audit:search",
     stats: "ave:audit:stats",
+  },
+  // ── Diagnostics bundle + production log viewer + crash list (#1499 E2) ──────
+  // ALL INTERNAL: deliberately absent from PUBLIC_CHANNELS / CHANNEL_GESTURE /
+  // EXTERNAL_MUTATION_CHANNELS. A diagnostics bundle serializes redacted host
+  // state (settings whitelist, audit jsonl, logs, crash-dump metadata) to a
+  // user-chosen file — it must never be reachable from an external origin
+  // (local-api / cli / plugin frame). The fail-closed default
+  // (isPublicChannel === false) enforces that; each invoke additionally gates
+  // on validateSender so a plugin-ui-shell frame cannot reach them either.
+  diagnostics: {
+    export: "ave:diagnostics:export", // invoke renderer→main → { ok, path } | { ok:false, error }
+    crashList: "ave:diagnostics:crash-list", // invoke → crash-dump metadata list
+  },
+  logs: {
+    tail: "ave:logs:tail", // invoke (lines, level?) → redacted recent log lines
   },
   view: {
     activate: "ave:view:activate",
@@ -526,7 +545,12 @@ export const EXTERNAL_MUTATION_DENIED = "external-mutation-denied";
  * the C17 sweep replaces the inline literals at those sites with these consts.
  * `ave:window:open-html-preview` is intentionally NOT listed — it is
  * registered in-tree by the `window` IPC domain and is already classified
- * (internal: registered-but-not-public) by the channel inventory.
+ * (internal: registered-but-not-public) by the channel inventory. For the SAME
+ * reason the #1499 E2 diagnostics channels (`ave:diagnostics:export`,
+ * `ave:diagnostics:crash-list`, `ave:logs:tail`) are NOT listed here — they
+ * are registered in-tree by the `diagnostics` IPC domain and classified
+ * internal (registered-but-not-public) by the channel inventory; this map is
+ * ONLY for the out-of-tree host surfaces above.
  */
 export const INTERNAL_HOST_CHANNELS = {
   settingsWindow: [
