@@ -57,4 +57,7 @@ export const es: Record<SeedMessageKey, string> = {
   "startupTab.launchAtStartupHint": "Inicia Ave automáticamente tras iniciar sesión. (Solo app instalada.)",
   "startupTab.launchMinimizedLabel": "Iniciar oculto en la bandeja",
   "startupTab.launchMinimizedHint": "Al iniciar con el sistema, arranca minimizado en la bandeja sin abrir ventana.",
+  "startupTab.launchRegisterFailedTitle": "No se pudo aplicar el inicio al arrancar",
+  "startupTab.launchRegisterFailedBody":
+    "Ave no pudo registrarse para iniciarse al iniciar sesión en este sistema. Abre Configuración para volver a intentarlo.",
 };
