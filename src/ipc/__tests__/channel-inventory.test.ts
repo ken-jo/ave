@@ -232,6 +232,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:chat:sessions",
         "ave:demo:activate",
         "ave:demo:activate-embedded",
+        "ave:demo:activate-ollama",
         "ave:demo:clear",
         "ave:demo:relaunch-after-activation",
         "ave:demo:status",

@@ -241,6 +241,7 @@ export const CHANNELS = {
     status: "ave:demo:status",
     activate: "ave:demo:activate",
     activateEmbedded: "ave:demo:activate-embedded",
+    activateOllama: "ave:demo:activate-ollama",
     relaunchAfterActivation: "ave:demo:relaunch-after-activation",
     clear: "ave:demo:clear",
   },
