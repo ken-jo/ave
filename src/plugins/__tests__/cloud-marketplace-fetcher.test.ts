@@ -232,6 +232,7 @@ describe("CloudMarketplaceFetcher (public-network path)", () => {
             package_spec: "@ave/openrouter-provider@1.0.0",
             package_name: "@ave/openrouter-provider",
             plugin_type: "provider",
+            provider_id: "openrouter",
           },
           {
             id: "moonstone-theme",
@@ -240,6 +241,7 @@ describe("CloudMarketplaceFetcher (public-network path)", () => {
             package_spec: "@ave/moonstone-theme@1.0.0",
             package_name: "@ave/moonstone-theme",
             plugin_type: "theme",
+            theme_bundle_id: "moonstone",
           },
           {
             id: "ko-language-pack",
@@ -248,6 +250,7 @@ describe("CloudMarketplaceFetcher (public-network path)", () => {
             package_spec: "@ave/ko-language-pack@1.0.0",
             package_name: "@ave/ko-language-pack",
             plugin_type: "language-pack",
+            locale: "ko",
           },
         ],
       }),
@@ -262,6 +265,11 @@ describe("CloudMarketplaceFetcher (public-network path)", () => {
       "provider",
       "theme",
       "language-pack",
+    ]);
+    expect(plugins.map((plugin) => plugin.packageAsset)).toEqual([
+      { type: "provider", providerId: "openrouter" },
+      { type: "theme", bundleId: "moonstone" },
+      { type: "language-pack", locale: "ko" },
     ]);
   });
 
