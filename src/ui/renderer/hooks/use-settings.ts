@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { AveApi } from "../types.js";
 import {
   DEFAULT_LLM_VENDOR,
+  getLlmVendorSettings,
   isLLMVendor,
   type LLMVendor,
 } from "../../../shared/llm-vendor-defaults.js";
@@ -67,7 +68,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
       const s = await api.getSettings();
       if (!isMountedRef.current) return;
       const provider = narrowVendor(s.llm.provider);
-      const block = s.llm.vendors[provider];
+      const block = getLlmVendorSettings(s.llm.vendors, provider);
       setLlmVendor(provider);
       setLlmModel(block.model);
       setEnableThinkingChat(block.enableThinking);
@@ -83,7 +84,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
       .then((s) => {
         if (!isMountedRef.current) return;
         const provider = narrowVendor(s.llm.provider);
-        const block = s.llm.vendors[provider];
+        const block = getLlmVendorSettings(s.llm.vendors, provider);
         setLlmVendor(provider);
         setLlmModel(block.model);
         setEnableThinkingChat(block.enableThinking);
