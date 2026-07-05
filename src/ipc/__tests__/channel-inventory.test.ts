@@ -222,6 +222,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:chat:get-write-diff",
         "ave:chat:guide",
         "ave:chat:has-provider",
+        "ave:chat:import",
         "ave:chat:main-active-state",
         "ave:chat:new",
         "ave:chat:retry-effort",
