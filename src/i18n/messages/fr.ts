@@ -30,4 +30,35 @@ export const fr: Record<SeedMessageKey, string> = {
   "mainDialog.noPersonasAvailable": "Aucune persona disponible",
   "mainDialog.exportConversationTitle": "Exporter la conversation",
   "mainDialog.importConversationTitle": "Importer la conversation",
+
+  // ── E4 — Démarrage / raccourcis globaux ───────────────────────────
+  "settingsContent.tabStartup": "Démarrage",
+  "startupTab.title": "Démarrage et raccourcis",
+  "startupTab.description":
+    "Définissez un raccourci global pour afficher/masquer la fenêtre et choisissez si Ave démarre à la connexion.",
+  "startupTab.shortcutSectionTitle": "Raccourci global",
+  "startupTab.shortcutSectionDesc":
+    "Une combinaison de touches à l'échelle du système qui affiche ou masque la fenêtre Ave depuis n'importe où.",
+  "startupTab.shortcutEnabledLabel": "Activer le raccourci global",
+  "startupTab.shortcutEnabledHint": "Enregistrer le raccourci auprès du système d'exploitation.",
+  "startupTab.shortcutAcceleratorLabel": "Raccourci afficher/masquer la fenêtre",
+  "startupTab.shortcutRecord": "Enregistrer",
+  "startupTab.shortcutClear": "Effacer",
+  "startupTab.shortcutCapturing": "Appuyez sur une combinaison de touches…",
+  "startupTab.shortcutUnset": "Non défini",
+  "startupTab.shortcutEnabledNoAccelerator":
+    "Le raccourci est activé mais aucune combinaison n'est définie. Enregistrez-en une pour l'activer.",
+  "startupTab.shortcutRegisterFailedTitle": "Échec de l'enregistrement du raccourci",
+  "startupTab.shortcutRegisterFailedBody":
+    "{accelerator} est déjà utilisé par une autre application. Choisissez une autre combinaison.",
+  "startupTab.launchSectionTitle": "Lancer au démarrage",
+  "startupTab.launchSectionDesc":
+    "Détermine si Ave démarre automatiquement lorsque vous vous connectez à votre ordinateur.",
+  "startupTab.launchAtStartupLabel": "Lancer Ave à la connexion",
+  "startupTab.launchAtStartupHint": "Démarrer Ave automatiquement après votre connexion. (Application installée uniquement.)",
+  "startupTab.launchMinimizedLabel": "Démarrer masqué dans la barre d'état",
+  "startupTab.launchMinimizedHint": "Au lancement à la connexion, démarrer réduit dans la barre d'état sans ouvrir de fenêtre.",
+  "startupTab.launchRegisterFailedTitle": "Impossible d'appliquer le lancement au démarrage",
+  "startupTab.launchRegisterFailedBody":
+    "Ave n'a pas pu s'enregistrer pour se lancer à la connexion sur ce système. Ouvrez les paramètres pour réessayer.",
 };
