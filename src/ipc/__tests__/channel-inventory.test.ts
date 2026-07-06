@@ -342,6 +342,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:settings:get",
         "ave:settings:has-api-key",
         "ave:settings:has-web-api-key",
+        "ave:settings:list-llm-models",
         "ave:settings:marketplace:delete-api-key",
         "ave:settings:marketplace:has-api-key",
         "ave:settings:marketplace:set-api-key",
