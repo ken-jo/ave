@@ -8,7 +8,19 @@
     "#hooks/*": "./src/hooks/*.ts",
     "#lib/*": "./src/lib/*.ts"
   },
-  "description": "Test Electron host app for Ave plugins.",
+  "description": "Extensible Electron desktop agent workspace for Ave chat, plugin workflows, local indexing, meetings, LYRA Mail, and managed marketplace extensions.",
+  "keywords": [
+    "ave",
+    "electron",
+    "desktop-agent",
+    "ai-agent",
+    "plugin-runtime",
+    "marketplace",
+    "local-indexing",
+    "meetings",
+    "lyra-mail",
+    "vega-helper"
+  ],
   "homepage": "https://github.com/former_org/ave",
   "author": {
     "name": "Ken Jo",
