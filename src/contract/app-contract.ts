@@ -206,6 +206,8 @@ export const CHANNELS = {
     hasApiKey: "ave:settings:has-api-key",
     deleteApiKey: "ave:settings:delete-api-key",
     listLlmModels: "ave:settings:list-llm-models",
+    marketplaceInstallProviderPreset: "ave:settings:marketplace:install-provider-preset",
+    marketplaceUninstallProviderPreset: "ave:settings:marketplace:uninstall-provider-preset",
     marketplaceSetApiKey: "ave:settings:marketplace:set-api-key",
     marketplaceHasApiKey: "ave:settings:marketplace:has-api-key",
     marketplaceDeleteApiKey: "ave:settings:marketplace:delete-api-key",
