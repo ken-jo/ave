@@ -72,6 +72,7 @@ export const CHANNELS = {
     exitCheckpointView: "ave:chat:exit-checkpoint-view",
     branchFromCheckpoint: "ave:chat:branch-from-checkpoint",
     getVerbatimToolResult: "ave:chat:get-verbatim-tool-result",
+    getSubAgentTranscript: "ave:chat:get-sub-agent-transcript",
     getWriteDiff: "ave:chat:get-write-diff",
     // Streaming / event channels (main → renderer). Full event schema in ./events.ts.
     stream: "ave:chat:stream",
