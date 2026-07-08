@@ -1582,7 +1582,7 @@ plugin-specific app branch 를 두지 않는다.
 
 | Surface | Current posture | Future direction |
 | --- | --- | --- |
-| Plugin categories | SDK manifest schema 의 per-tool `category/pathFields` 가 plugin tool authority SOT 이다. Host 는 SDK schema 를 그대로 검증하고, category 가 없는 plugin tool 은 hard-fail 한다. `meta` 및 향후 host-only category 는 plugin contract 로 자동 확장되지 않는다. | 추가 plugin 도입 시 SDK schema category/pathFields 선언과 plugin sanity test 를 PR merge gate 로 유지 |
+| Plugin tool metadata | SDK manifest schema 의 per-tool `pathFields` 가 filesystem path 판정 metadata 의 SOT 이다. `category` 는 선택적 provider metadata 이며 effective category 는 host-side `inspectHostRisk`/executor policy 가 invocation 별로 산출한다. `meta` 및 향후 host-only category 는 plugin contract 로 자동 확장되지 않는다. | 추가 plugin 도입 시 SDK schema `pathFields` / `workerId` 선언과 plugin sanity test 를 PR merge gate 로 유지 |
 | Runtime modes | 사용자-facing 정책은 `default`(read 허용), `strict`(read 포함 전체 ask), `auto`(권한 리뷰어 기반 자동 검증 — 자동/헤드리스 + 대화형 채팅 양 lane), `allow`(하드 차단 밖 전체 허용) 4개다. | allow mode 는 Layer 0/1/deny/overlay-trigger guard 를 우회하지 않는 opt-in 으로 유지 |
 | Permission IPC | `PERMISSIONS` 가 main / preload / sender-guard test 의 단일 channel SOT. | 새 permission channel 은 반드시 `src/shared/ipc-channels.ts` 에 먼저 추가 |
 | Reviewer | `disabled/rule/llm/strict` 4-mode (issue #664 normalization). `disabled` 는 reviewer 레인 pass-through (LOW), `strict` 는 fail-closed (defer-all) — 둘 다 카테고리 매트릭스/허용 디렉토리는 그대로 적용. `llm` wiring 실패는 silent downgrade 없이 fail-fast. | cost/quality telemetry 로 model default 조정 가능, fallback 은 `deny|rule` 만 |
@@ -1745,11 +1745,12 @@ Permissions tab 은 `PERMISSIONS.hookTrustList` 를 통해 비차단 알림을 �
 
 #### 6.3.6 — Manifest integrity proxy
 
-SDK manifest schema 는 plugin `toolSchemas[].category/pathFields` 를
-정의한다. 따라서 host 는 SDK manifest authority 를 그대로 Tool Registry 에
-등록하고, app-local authority extension 이나 tool-name inference 없이
-SDK schema 를 SOT 로 사용한다. Host→plugin fs boundary 에서
-`ManifestIntegrityViolation` 이 발생하면 fail-closed 로 처리한다:
+SDK manifest schema 는 plugin `toolSchemas[].pathFields` 와 optional
+`toolSchemas[].category` / `toolSchemas[].workerId` metadata 를 정의한다.
+Host 는 `pathFields` 를 filesystem path 판정 SOT 로 사용하고, effective
+category 는 host-side `inspectHostRisk`/executor policy 에서 invocation 별로
+산출한다. Host→plugin fs boundary 에서 `ManifestIntegrityViolation` 이
+발생하면 fail-closed 로 처리한다:
 
 1. plugin id → process-wide `manifestIntegrityState.disabledPluginIds`.
 2. `AuditManifestViolation` audit entry 발행 (`pluginId`, `toolName`,
@@ -1758,10 +1759,11 @@ SDK schema 를 SOT 로 사용한다. Host→plugin fs boundary 에서
    prompt.
 4. Disabled plugin 의 후속 tool 호출 fail-deny.
 
-SDK schema/types 와 active plugin manifests 는 `category/pathFields` 를
-선언한다. read-declared plugin tool 은 이 manifest authority 로 등록하고,
-향후 sandboxed runtime 에서 fs proxy 를 더 강하게 적용한다.
-호환 shim 이나 boot-warn grace 를 두지 않는다.
+SDK schema/types 와 active plugin manifests 는 `pathFields` 를 선언한다.
+`category` 가 있으면 provider metadata 로만 취급하고, read/write 판정은
+host-observed risk/effect SOT 에서 계산한다. 향후 sandboxed runtime 에서
+fs proxy 를 더 강하게 적용한다. 호환 shim 이나 boot-warn grace 를 두지
+않는다.
 
 **Trade-off:** plugin 이 standard `node:fs` 직접 import 시 우회 가능
 — sandboxed plugin runtime (V8 isolated context) 도입 전까지는 partial
@@ -1908,17 +1910,17 @@ Layer 0–8 의 permission policy 는 *어떤 도구 호출을 허용/거부* �
 - **Read-relaxation ↔ plugin effect-boundary FILESYSTEM-CONTAINMENT 커플링
   (confines-aware)**: foreground plugin read-relaxation
   (`src/tools/executor.ts` executeOne) 은 `hostClassifiesRisk` ON **AND
-  `sandboxFsContainedProvider()` (= `isActiveSandboxFilesystemContainedForPluginEffects`)
+  `sandboxFsContainedProvider(tool)` (= `isActiveSandboxFilesystemContainedForPluginEffects(tool)`)
   true** 일 때만 발화한다. relaxation 은 pre-exec ask (off-hostApi `node:fs`
   WRITE residual 을 gate 하는 것 포함) 를 제거하고 effect-boundary gate 에
-  의존하므로, plugin worker substrate 가 그 residual 을 실제로
-  filesystem-contain 할 때만 허용된다. macOS/Linux plugin workers 는
-  ASRT-wrapped UDS path 를 쓰므로 relax 가능하다. Windows host-shell 은 ASRT
-  0.0.64 로 filesystem+network partial confinement 를 갖지만, ASRT 0.0.64 가
-  plugin worker 별 filesystem allow grant 를 지원하지 않으므로 Windows plugin
-  worker path 는 gate ON 에서 fail-closed 하고 plugin read-relaxation 에서도
-  Windows 를 명시적으로 제외한다. degraded/off/egress-only synthetic substrate/
-  Windows plugin worker 에서는 known-safe pre-exec ask 또는 fail-closed 가
+  의존하므로, 해당 `Tool.workerId` 가 host-owned `spawnWorker` 경로로
+  ASRT-wrapped 상태일 때만 허용된다. macOS/Linux plugin workers 는
+  ASRT-wrapped UDS path 를 쓰고, Windows plugin workers 는 UDS 대신 TCP
+  control channel 을 유지하되 ASRT 0.0.64 의 공개
+  `grantWindowsAcl`/`revokeWindowsAcl` primitive 를 worker 별 holder PID 로
+  적용한 뒤 srt-win wrapped command 로 실행한다. ordinary plugin
+  tools/degraded/off/egress-only synthetic substrate 에서는 known-safe
+  pre-exec ask 또는 fail-closed 가
   유지된다. reviewer SOT `sandboxRelaxesCategory` 는 host-shell ASRT capability
   기준이고, plugin read-relaxation provider 는 worker effect-boundary 현실을
   반영해 더 좁다.
@@ -2101,7 +2103,7 @@ graph TB
 
 **`decisionOverride` (meta 전용):** `always-allow-with-audit` (예: `ask_user_question` — 사용자에게 질문하는 도구 자체를 한번 더 승인 모달에 거는 중복 UX 차단) / `ask` (예: `agent_spawn` — `meta` 이지만 사용자 컨펌 필요).
 
-**Migration map:** v4 의 `dangerous` 단일 카테고리는 v5 에서 폐지됨. `bash` → `shell`, `agent_spawn` / `ask_user_question` → `meta`. Plugin `toolSchemas[*].category/pathFields` 는 SDK manifest schema 의 authority metadata 이며, host plugin tools 는 이 metadata 없이는 등록되지 않는다.
+**Migration map:** v4 의 `dangerous` 단일 카테고리는 v5 에서 폐지됨. `bash` → `shell`, `agent_spawn` / `ask_user_question` → `meta`. Plugin `toolSchemas[*].pathFields` 는 filesystem path 판정 metadata 의 SOT 이며, `toolSchemas[*].category` 는 선택적 provider metadata 다. Effective category 는 host-side `inspectHostRisk`/executor policy 가 invocation 별로 산출한다.
 
 **Tool Registry 동작:**
 
@@ -3026,7 +3028,7 @@ wrapper(macOS Seatbelt / Linux bwrap)로 감싼다.
 | `id` | string (`^[a-zA-Z][a-zA-Z0-9._-]*$`, 3~128자) | 플러그인 식별자. **flat form 권장** (번들 플러그인은 모두 flat); dot form 허용. |
 | `name`, `version`, `entry`, `description` | string | 메타데이터. `description` ≤ 280자, `version` anchored semver. |
 | `tools` | **`string[]` (flat 이름 배열, snake_case 강제)** | LLM 에 노출되는 tool name. `^[a-zA-Z_][a-zA-Z0-9_]*$` — 도트·하이픈 금지. 호스트는 이 배열을 그대로 Tool Registry 에 등록한다 (런타임 변환 없음). |
-| `toolSchemas` | **`Record<string, { description, category, pathFields?, inputSchema, $schema? }>` (map form)** | LLM 파라미터 추론용 JSON Schema draft-07 + 권한 정책 authority metadata. `description` minLength 10, `category ∈ read/write/shell/network` 필수, `pathFields[]` 는 dotted selector 를 허용한다. `inputSchema.type` const `"object"` 필수. 런타임 payload 재검증은 수행하지 않는다. |
+| `toolSchemas` | **`Record<string, { description, category?, pathFields?, workerId?, inputSchema, $schema? }>` (map form)** | LLM 파라미터 추론용 JSON Schema draft-07 + host policy metadata. `description` minLength 10, `category ∈ read/write/shell/network` 는 선택적 provider metadata 이며 effective category 는 host-side `inspectHostRisk`/executor policy 가 invocation 별로 산출한다. `pathFields[]` 는 filesystem path 판정 metadata 의 SOT 이고 dotted selector 를 허용한다. `workerId` 는 host-routed worker confinement 힌트이며 HostApi `spawnWorker` 경로로 검증된 worker 에만 효력이 있다. `inputSchema.type` 은 const `"object"` 를 요구한다. 런타임 payload 재검증은 수행하지 않는다. |
 | `uiActions` | `Record<string, { description?: string }>` | Renderer `ave:plugins:call` IPC 허용 allowlist. `tools[]` 와 별도 surface이며 UI 전용 runtime method 를 포함할 수 있다. 호출 시 `PluginRuntime.callFromUi()` 가 매번 `manifest.uiActions` 를 재확인한다. `tools[]` 에도 있는 action 은 ToolExecutor 권한 경로를 타며, UI-only action 은 auth status polling 을 제외하고 preload 가 확인한 active user activation 이 있어야 handler 로 전달된다. 플러그인은 별도 IPC 채널이나 직접 handler 호출 경로를 선언할 수 없다. |
 | `capabilities` | **closed enum** (`src/plugins/capabilities.ts`) | `mail-source` / `calendar-source` / `meeting-recorder` / `knowledge-index` (emit namespace 게이트), `host:overlay` (HostApi `triggerConversation` 게이트) 는 enforced. `lyra-mail-consumer`, `background-watcher`, `worker-client` 는 advisory/self-identification label. |
 | `deployment` | `"managed" \| "user"` | managed 는 ed25519 서명 필수 (fail-closed); user 는 warn-on-missing. |
