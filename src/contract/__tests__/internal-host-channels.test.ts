@@ -53,6 +53,9 @@ describe("#1409 out-of-tree host channels are classified INTERNAL", () => {
       "ave:window:resize-for-mode",
       "ave:window:snap-edge",
       "ave:detached:navigate",
+      // #885 b2 — MCP-app detach handlers, registered out-of-tree in window-manager.ts.
+      "ave:mcp:open-detached",
+      "ave:mcp:detached-payload",
     ]);
     expect(INTERNAL_HOST_CHANNELS.autoUpdater).toEqual([
       "ave:update:state",
