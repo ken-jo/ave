@@ -1677,10 +1677,11 @@ deferred queue 에 append 되어 사용자가 큐 버튼을 열 때 surface 된�
   routing 됨. Pre-#664 의 `disabled` semantic 과 동일하지만 honest name. 사용자가
   모든 headless plugin/MCP 변경을 직접 승인하고 싶은 hardened deployments 용.
 
-**Sandbox-write self-attestation (issue #664 P1):** plugin manifest 의
-`toolSchemas[*].writesToOwnSandbox?: boolean` 필드를 통해 plugin 이
-"내 sandbox 안에만 write 한다" 고 선언할 수 있다. runtime 은 path field
-값이 실제로 `~/.ave/plugins/<pluginId>/` 안에 있는지 검증한 뒤 LOW 로
+**Sandbox-write containment (issue #664 P1):** plugin 의 write 가 자기 sandbox
+안에만 있는지 판정하는 로직. **manifest self-attestation 필드
+`toolSchemas[*].writesToOwnSandbox?` 는 #885 Phase R 에서 제거**되었고, 이제
+host 가 worker effect-boundary(sandbox filesystem containment)로 판정한다.
+path field 값이 실제로 `~/.ave/plugins/<pluginId>/` 안에 있으면 LOW 로
 auto-resolve. 검증 실패 시 일반 write 규칙으로 폴백 (sound-by-construction).
 
 **선택 surface:** `/permission reviewer mode disabled|rule|llm|strict`,
@@ -1745,12 +1746,13 @@ Permissions tab 은 `PERMISSIONS.hookTrustList` 를 통해 비차단 알림을 �
 
 #### 6.3.6 — Manifest integrity proxy
 
-SDK manifest schema 는 plugin `toolSchemas[].pathFields` 와 optional
-`toolSchemas[].category` / `toolSchemas[].workerId` metadata 를 정의한다.
-Host 는 `pathFields` 를 filesystem path 판정 SOT 로 사용하고, effective
-category 는 host-side `inspectHostRisk`/executor policy 에서 invocation 별로
-산출한다. Host→plugin fs boundary 에서 `ManifestIntegrityViolation` 이
-발생하면 fail-closed 로 처리한다:
+Manifest 는 각 tool 의 `_meta["xyz.ave/pathFields"]` 로 filesystem path 판정
+metadata 를 선언한다 (per-tool category / workerId 는 manifest 필드가 아님 —
+#885 Phase R 에서 제거; host 가 파생/분류). Host 는 이 pathFields 를 filesystem
+path 판정 SOT 로 사용하고, effective category 는 host-side
+`inspectHostRisk`/executor policy 에서 invocation 별로 산출한다.
+Host→plugin fs boundary 에서 `ManifestIntegrityViolation` 이 발생하면
+fail-closed 로 처리한다:
 
 1. plugin id → process-wide `manifestIntegrityState.disabledPluginIds`.
 2. `AuditManifestViolation` audit entry 발행 (`pluginId`, `toolName`,
@@ -2103,7 +2105,7 @@ graph TB
 
 **`decisionOverride` (meta 전용):** `always-allow-with-audit` (예: `ask_user_question` — 사용자에게 질문하는 도구 자체를 한번 더 승인 모달에 거는 중복 UX 차단) / `ask` (예: `agent_spawn` — `meta` 이지만 사용자 컨펌 필요).
 
-**Migration map:** v4 의 `dangerous` 단일 카테고리는 v5 에서 폐지됨. `bash` → `shell`, `agent_spawn` / `ask_user_question` → `meta`. Plugin `toolSchemas[*].pathFields` 는 filesystem path 판정 metadata 의 SOT 이며, `toolSchemas[*].category` 는 선택적 provider metadata 다. Effective category 는 host-side `inspectHostRisk`/executor policy 가 invocation 별로 산출한다.
+**Migration map:** v4 의 `dangerous` 단일 카테고리는 v5 에서 폐지됨. `bash` → `shell`, `agent_spawn` / `ask_user_question` → `meta`. Plugin 의 filesystem path 판정 metadata SOT 는 tool 객체의 `_meta["xyz.ave/pathFields"]` 이다 (#885 Phase R). Per-tool category 는 manifest 필드가 아니며 effective category 는 host-side `inspectHostRisk`/executor policy 가 invocation 별로 산출한다.
 
 **Tool Registry 동작:**
 
@@ -2925,7 +2927,16 @@ wrapper(macOS Seatbelt / Linux bwrap)로 감싼다.
 
 ### 9.2 Plugin Manifest Spec
 
-현행 매니페스트 스키마는 `@ave/plugin-sdk/schemas/plugin-manifest.schema.json` (AJV strict, `additionalProperties: false`) 이 단일 진실 소스다. 호스트는 SDK 패키지의 스키마를 런타임에 resolve 하며 app-local schema extension, tool-name inference, compatibility grace 를 두지 않는다. 검증 플로우·에러 포맷·capability taxonomy·uiActions 보안 경계 등 상세 규격은 `docs/references/plugin-tool-schema-design.md` (v4) 에 정의되어 있으며, 아래는 호스트-측 구조와 필드 관계 요약이다.
+> **⚠️ 매니페스트 포맷 변경 (removed in #885 Phase R):** 아래 §9.2 전체 — manifest 예시,
+> `toolSchemas` / `uiActions` map, auth-contract 하위 절 — 는 **pre-v6 (legacy)** 포맷이다.
+> #885 Phase R 이후 tool 계약은 pure MCP `Tool[]` 하나로 통합됐다: 각 tool 은
+> `{ name, description, inputSchema, _meta? }` 객체이고, renderer 노출 여부는
+> `_meta.ui.visibility` (`["model"]` / `["app"]` / `["model","app"]`), path 판정은
+> `_meta["xyz.ave/pathFields"]`, per-tool category 는 manifest 필드가 아니라 host 분류다
+> (`toolSchemas` / `uiActions` / per-tool `category` 는 삭제). 현행 계약은
+> `docs/architecture/plugin-contract-v6-design.md` 참조. 아래는 historical 로 읽을 것.
+
+매니페스트 스키마 (아래 §9.2 예시는 pre-v6)는 `@ave/plugin-sdk/schemas/plugin-manifest.schema.json` (AJV strict, `additionalProperties: false`) 이 단일 진실 소스다. 호스트는 SDK 패키지의 스키마를 런타임에 resolve 하며 app-local schema extension, tool-name inference, compatibility grace 를 두지 않는다. 검증 플로우·에러 포맷·capability taxonomy·uiActions 보안 경계 등 상세 규격은 `docs/references/plugin-tool-schema-design.md` (v4) 에 정의되어 있으며, 아래는 호스트-측 구조와 필드 관계 요약이다.
 
 ```json
 {
@@ -3276,6 +3287,12 @@ PR 3 에서 Microsoft Graph 인증이 호스트에서 플러그인으로 이전�
 **HostApi 확장 원칙 ("3+ 플러그인 규칙"):** 새 메서드는 3개 이상의 플러그인이 동일 기능을 필요로 하거나, 보안·감사 제어가 필요한 경우에만 추가한다. 상세: `docs/references/plugin-tool-schema-design.md` §6
 
 **Plugin-Owned OAuth — Host UI Surface (PR #399 후속)**
+
+> **v6 note (removed in #885 Phase R):** 아래 auth 계약은 유효하되 표현이 바뀌었다 —
+> `statusTool`/`loginTool`/`logoutTool` 은 이제 `uiActions` map 이 아니라 visibility 가
+> **정확히 `["app"]`** 인 pure `Tool` 객체를 가리킨다 (app-only; model 노출 금지). load-time
+> validator 는 "auth tool 은 `tools[]` 밖 + `uiActions` 안" 대신 "auth tool 의
+> `_meta.ui.visibility === ["app"]`" 를 강제한다. 아래 `uiActions` 표기는 pre-v6 로 읽을 것.
 
 플러그인이 자체 OAuth 를 소유한다는 원칙은 유지하되, **인증 상태와 로그인 트리거는 호스트가 일관된 surface 로 노출**한다 — 사용자가 매번 플러그인 사이드바 패널까지 들어가지 않고 Settings → 플러그인 설정 목록에서 한눈에 미인증 여부를 보고, 거기서 로그인을 시작할 수 있게.
 
