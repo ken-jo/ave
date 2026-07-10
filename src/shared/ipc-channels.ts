@@ -127,7 +127,3 @@ export const UI = {
   assistantContextMenu: "ave:ui:assistant-context-menu",
   assistantContextAction: "ave:ui:assistant-context-action",
 } as const;
-
-export const SUGGESTED_REPLIES = {
-  updated: "ave:chat:suggested-replies-updated",
-} as const;
