@@ -1,7 +1,7 @@
 # Model Upgrade Verification — Claude / OpenAI / Gemini 모델 추가/교체 시 절차
 
 > 새 Claude / OpenAI / Gemini 모델을 정적 카탈로그 (`src/shared/pricing-data.ts`) 또는
-> 기본 모델 (`src/engine/llm/types.ts:LLM_DEFAULT_MODELS`) 에 추가/교체할 때 반드시
+> 기본 모델 (`src/shared/llm-vendor-defaults.ts:LLM_VENDOR_DEFAULTS`) 에 추가/교체할 때 반드시
 > 거쳐야 할 verification step. 정적 와이어링만 통과시키면 *코드는 베타 헤더를
 > 보내지만 API 는 무시* 같은 silent drift 가 가능하므로 empirical 라이브 검증을
 > 동반한다.
@@ -27,7 +27,7 @@ Ave 는 모델별 capability (context window, 베타 헤더, 기본 thinking 모
 
 - `src/shared/pricing-data.ts:DEFAULT_PRICING.<vendor>` 에 모델 항목 추가
 - 베타 헤더가 필요한 경우 `src/engine/llm/vercel/adapter.ts` 의 분기 (`contextWindow1MBeta` 등) 가 새 모델을 자동 catch 하는지 확인 — *벤더-스코프 분기지 모델-스코프 분기가 아니므로* 보통 추가 코드 불필요
-- `src/engine/llm/types.ts:LLM_DEFAULT_MODELS` 의 기본 모델을 교체하는 경우 동시 변경
+- `src/shared/llm-vendor-defaults.ts:LLM_VENDOR_DEFAULTS` 의 기본 모델(`.model`)을 교체하는 경우 동시 변경
 
 ### Step 2 — 라이브 호출 검증 (필수)
 
@@ -81,5 +81,5 @@ curl https://api.anthropic.com/v1/messages \
 
 - `src/shared/pricing-data.ts` — pricing + context window catalog
 - `src/engine/llm/vercel/adapter.ts:CONTEXT_1M_BETA` — Claude 1M beta header 상수
-- `src/engine/llm/types.ts:LLM_DEFAULT_MODELS` — 벤더별 기본 모델
+- `src/shared/llm-vendor-defaults.ts:LLM_VENDOR_DEFAULTS` — 벤더별 기본 모델
 - 본 문서 — verification 절차
