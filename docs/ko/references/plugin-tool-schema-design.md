@@ -1,8 +1,16 @@
 # Plugin Schema Design — Ave
 
-**Status:** v4
+**Status:** v6 반영 (tool 계약 #885 Phase R; 이전 v4 스키마 설계 배경 포함)
 **Updated:** 2026-04-18
-**Architect 승인:** manifest signature + uiActions + capability taxonomy + AJV 검증 플로우
+**Architect 승인:** manifest signature + tool visibility + capability taxonomy + AJV 검증 플로우
+
+> **tool 계약 = pure MCP `Tool[]` (#885 Phase R).** 각 tool 은
+> `{ name, description, inputSchema, _meta? }` 객체이고, renderer 노출은
+> `_meta.ui.visibility`, filesystem path 판정은 `_meta["xyz.ave/pathFields"]`,
+> per-tool category 는 manifest 필드가 아니라 host 가 invocation 별로 분류한다.
+> (pre-v6 의 `tools: string[]` + `toolSchemas` map + `uiActions` map + per-tool
+> `category` triple 은 이 하나로 통합·제거됐다 — legacy.) 설계 배경은
+> [`plugin-contract-v6-design.md`](../architecture/plugin-contract-v6-design.md).
 
 ---
 
@@ -12,8 +20,8 @@
 
 **핵심 원칙:**
 
-1. **Capability gate = HostApi + 선언적 capability** — HostApi 자체가 1차 게이트이며, `capabilities[]`/`uiActions` 는 LYRA Mail · 이벤트 namespace · renderer IPC allowlist 등 HostApi 단독으로 표현 불가능한 2차 게이트를 보강한다.
-2. **SDK schema first** — 모든 `tools[]` 항목은 SDK manifest schema 의 `toolSchemas[tool]` 로 `description`, `category`, `pathFields?`, `inputSchema` 를 선언한다. `category` 는 권한 정책 authority metadata 이며 LLM 추론 보조 필드가 아니다.
+1. **Capability gate = HostApi + 선언적 capability** — HostApi 자체가 1차 게이트이며, `capabilities[]` + 각 tool 의 `_meta.ui.visibility` (renderer 노출 allowlist) 는 LYRA Mail · 이벤트 namespace 등 HostApi 단독으로 표현 불가능한 2차 게이트를 보강한다.
+2. **SDK schema first** — 모든 `tools[]` 항목은 pure MCP `Tool` 객체로 `name`, `description`, `inputSchema`, `_meta?` 를 선언한다. path 판정은 `_meta["xyz.ave/pathFields"]` 가 SOT 이고, per-tool category 는 manifest 필드가 아니라 host 가 invocation 별로 분류한다 (플러그인이 자기 위험도를 스스로 매기지 않는다).
 3. **In-process + try/catch** — worker_threads 격리 없이 95% 장애를 커버. 런타임 복잡도를 낮게 유지.
 4. **플러그인 저자가 스키마 수기 작성** — zod 자동추출 금지. 번들 크기·버전 충돌 없음.
 5. **JSON Schema draft-07 + `type: "object"` 필수** — OpenAI/Claude/Gemini 모두 top-level object 요구.
@@ -40,43 +48,21 @@ interface PluginManifest {
   /** 플러그인 한 줄 설명 (최대 280자). 비활성 플러그인 카탈로그 · UI에 노출. */
   description?: string;
   /**
-   * LLM에 노출되는 tool name 목록. underscore 형식만 허용.
-   * `^[a-zA-Z_][a-zA-Z0-9_]*$` — 도트·하이픈 금지.
-   * runtime.ts가 이 배열 그대로 Tool Registry에 등록.
+   * LLM/renderer 에 노출되는 pure MCP Tool 객체 배열 (#885 Phase R — pre-v6 의
+   * `tools: string[]` + `toolSchemas` map + `uiActions` map triple 을 통합 — legacy).
+   * 각 tool 의 name 은 underscore 형식만 허용 (`^[a-zA-Z_][a-zA-Z0-9_]*$`).
+   * 스키마·visibility·pathFields 는 아래 `Tool` 객체에 인라인.
    */
-  tools: string[];
-  /**
-   * 메서드별 JSON Schema + 권한 authority metadata. runtime 은
-   * LLM system prompt 와 ToolRegistry registration 에 동일 데이터를 사용한다.
-   * `description` 필수 (minLength 10), `category` 필수,
-   * `inputSchema.type === "object"` 필수.
-   * `$schema` 필드는 선택 — draft-07 URI 권장.
-   */
-  toolSchemas: Record<string, {
-    description: string;                       // REQUIRED, minLength 10
-    category: "read" | "write" | "shell" | "network"; // REQUIRED
-    pathFields?: string[];                     // OPTIONAL dotted selectors
-    inputSchema: {
-      $schema?: string;                        // OPTIONAL ("http://json-schema.org/draft-07/schema#")
-      type: "object";                          // REQUIRED, const "object"
-      properties: Record<string, unknown>;
-      required?: string[];
-      additionalProperties?: boolean;
-    };
-  }>;
+  tools: Tool[];
   config?: Record<string, unknown>;
   ui?: PluginUiExtension[];
   keywords?: Array<{ keyword: string; skillId: string }>;
   /** 폐쇄형 enum — §2.3 Capabilities Taxonomy 참조. */
   capabilities?: string[];
   eventSubscriptions?: string[];
-  /**
-   * Renderer → plugin IPC (`ave:plugins:call`) 허용 메서드 allowlist.
-   * `tools[]` 의 부분집합이어야 한다. 도구 이름 접미사에 대한 제한은 없다 —
-   * 파괴적 동작의 사용자 확인 UX 는 플러그인이 자체 UI 로 구현하며, 보안은
-   * 코드 리뷰·마켓플레이스 심사·서명 검증으로 보장한다. §2.2 참조.
-   */
-  uiActions?: Record<string, { description?: string }>;
+  // (renderer → plugin IPC (`ave:plugins:call`) 노출은 각 tool 의
+  //  `_meta.ui.visibility` 로 선언한다 — `"app"` 을 포함한 tool 만 renderer-invokable.
+  //  pre-v6 의 uiActions map 은 제거됨. §2.2 참조.)
   /**
    * OS 네이티브 알림 자동 노출. `registerPluginNotifications()` 가 manifest 만
    * 읽어 onEvent 핸들러를 자동 배선한다.
@@ -116,6 +102,24 @@ interface PluginManifest {
    */
   startupTimeoutMs?: number;
 }
+
+// 각 tool 은 pure MCP Tool 객체 (#885 Phase R — tools/toolSchemas/uiActions triple 통합).
+interface Tool {
+  name: string;         // ^[a-zA-Z_][a-zA-Z0-9_]*$
+  description: string;  // REQUIRED, minLength 10
+  inputSchema: {
+    $schema?: string;   // OPTIONAL ("http://json-schema.org/draft-07/schema#")
+    type: "object";     // REQUIRED, const "object"
+    properties: Record<string, unknown>;
+    required?: string[];
+    additionalProperties?: boolean;
+  };
+  _meta?: {
+    ui?: { visibility: Array<"model" | "app"> };   // renderer 노출: model=LLM, app=renderer
+    "xyz.ave/pathFields"?: string[];              // filesystem path 판정 SOT (유일한 Ave 전용 키)
+  };
+  // per-tool category 는 manifest 필드가 아님 — host 가 invocation 별로 분류.
+}
 ```
 
 > `python` 필드는 **더 이상 지원되지 않는다** — AJV 스키마는 `additionalProperties: false` 이므로 매니페스트에 포함하면 로드 거부. Python 런타임은 `ave/src/main/python-runtime.ts` 호스트 쪽 bootstrap 로 제공되고 플러그인은 선언 없이 사용한다.
@@ -151,14 +155,13 @@ interface PluginManifest {
 | `icon` | plugin grid v3 popover (Lucide named-export 동적 lookup, 누락/매치 실패 시 `Plug` fallback). 옵션 필드 — 없으면 default 아이콘 | UI 렌더 |
 | `iconText` | plugin grid v3 popover — 짧은 텍스트 라벨 (1-4자, 예: `"ORION"`, `"MTG"`) 을 Lucide 아이콘 대신 아바타 안에 렌더. 둘 다 선언 시 `iconText` 우선. 적당한 Lucide 글리프가 없는 도메인-내부 식별자에 사용. 옵션 필드 | UI 렌더 |
 | `entry` | runtime.ts `require()` | boot |
-| `tools[]` | Tool Registry 등록 | boot |
-| `toolSchemas` | SDK manifest authority metadata + LLM system prompt tool schema | boot ToolRegistry 등록 + system prompt 빌드 |
+| `tools[]` (Tool 객체) | Tool Registry 등록 + LLM system prompt tool schema (`inputSchema`/`description`) | boot ToolRegistry 등록 + system prompt 빌드 |
 | `description` | 비활성 플러그인 카탈로그 (`listPluginCards`) | system prompt · UI |
 | `keywords[]` | KeywordEngine 등록 | boot |
 | `ui[]` | plugin-ui-host.tsx 마운트 | boot + UI 렌더 |
 | `eventSubscriptions[]` | 호스트 이벤트 라우팅 | boot |
 | `notificationEvents[]` | `registerPluginNotifications()` — OS 알림 자동 등록 | boot |
-| `uiActions` | `PluginRuntime.callFromUi()` allowlist | renderer IPC 호출 |
+| `tools[]._meta.ui.visibility` | `PluginRuntime.callFromUi()` app-visible allowlist | renderer IPC 호출 |
 | `capabilities[]` | HostApi LYRA Mail 게이트 + `emitEvent` namespace 게이트 | 런타임 전반 |
 | `installPolicy` | Install-policy guard + signature gate policy | install + uninstall + load |
 | `dependencies` | Marketplace install **preflight gate**. `required:true` (default — string form / `required` 누락 object 포함) 미설치 시 install 거부 + `MissingPluginDependenciesError`; `required:false` 는 install 통과 + 컨슈머 책임으로 degrade. **Host 는 dep 을 auto-install 하지 않는다** (issue #92). | install |
@@ -174,22 +177,11 @@ interface PluginManifest {
   "version": "0.3.2",
   "description": "회의 녹음·음성 전사(STT)·요약 생성 플러그인.",
   "entry": "dist/hostPlugin.js",
-  "tools": [
-    "meeting_start",
-    "meeting_push_chunk",
-    "meeting_stop",
-    "meeting_transcript",
-    "meeting_sessions"
-  ],
-  "uiActions": {
-    "meeting_transcript": {},
-    "meeting_sessions": {}
-  },
   "capabilities": ["meeting-recorder"],
-  "toolSchemas": {
-    "meeting_start": {
+  "tools": [
+    {
+      "name": "meeting_start",
       "description": "회의 녹음 세션을 시작한다. 이후 meeting_push_chunk 로 오디오를 push 하고 meeting_stop 으로 종료한다.",
-      "category": "write",
       "inputSchema": {
         "type": "object",
         "required": ["sessionId"],
@@ -203,11 +195,12 @@ interface PluginManifest {
             }
           }
         }
-      }
+      },
+      "_meta": { "ui": { "visibility": ["model"] } }
     },
-    "meeting_push_chunk": {
+    {
+      "name": "meeting_push_chunk",
       "description": "PCM16LE 오디오 청크를 세션에 추가. STT는 비동기 처리.",
-      "category": "write",
       "inputSchema": {
         "type": "object",
         "required": ["sessionId", "chunk"],
@@ -215,39 +208,36 @@ interface PluginManifest {
           "sessionId": { "type": "string" },
           "chunk": { "type": "object" }
         }
-      }
+      },
+      "_meta": { "ui": { "visibility": ["model"] } }
     },
-    "meeting_stop": {
+    {
+      "name": "meeting_stop",
       "description": "회의 녹음 세션을 종료하고 최종 전사 요약 생성을 요청한다.",
-      "category": "write",
       "inputSchema": {
         "type": "object",
         "required": ["sessionId"],
-        "properties": {
-          "sessionId": { "type": "string" }
-        }
-      }
+        "properties": { "sessionId": { "type": "string" } }
+      },
+      "_meta": { "ui": { "visibility": ["model"] } }
     },
-    "meeting_transcript": {
+    {
+      "name": "meeting_transcript",
       "description": "저장된 회의 세션의 전사 텍스트를 조회한다.",
-      "category": "read",
       "inputSchema": {
         "type": "object",
         "required": ["sessionId"],
-        "properties": {
-          "sessionId": { "type": "string" }
-        }
-      }
+        "properties": { "sessionId": { "type": "string" } }
+      },
+      "_meta": { "ui": { "visibility": ["model", "app"] } }
     },
-    "meeting_sessions": {
+    {
+      "name": "meeting_sessions",
       "description": "사용 가능한 회의 세션 목록을 조회한다.",
-      "category": "read",
-      "inputSchema": {
-        "type": "object",
-        "properties": {}
-      }
+      "inputSchema": { "type": "object", "properties": {} },
+      "_meta": { "ui": { "visibility": ["model", "app"] } }
     }
-  },
+  ],
   "keywords": [
     { "keyword": "회의록", "skillId": "meeting" },
     { "keyword": "녹음", "skillId": "meeting" }
@@ -279,36 +269,29 @@ interface PluginManifest {
 
 플러그인 런타임은 `.bin/` 쉘 shim 을 spawn 하지 않으므로 (in-process import 만), 위 제외는 손실 없음. 만약 플러그인이 위 경로 안의 파일에 의존한다면 — 예컨대 `dist/` 로 번들링하거나 manifest 가 명시적 자산 선언이 필요한지 다시 검토 필요.
 
-### 2.2 uiActions 보안 경계
+### 2.2 app-visibility 보안 경계
 
-Renderer UI 는 `ave:plugins:call` IPC 를 통해 allowlist 된 플러그인 runtime method 호출을 요청할 수 있다. 이 IPC 는 handler 직접 호출 경로가 아니며, `PluginRuntime.callFromUi()` 가 매번 `manifest.uiActions` 를 재확인한다. `tools[]` 는 LLM-facing surface, `uiActions` 는 renderer IPC surface 이며, UI 전용 메서드는 `uiActions` 에만 선언할 수 있다. `tools[]` 에도 있는 UI action 은 ToolExecutor 권한 경로를 통과하고, UI-only action 은 auth status polling 을 제외하고 preload 가 확인한 active user activation 이 있어야 handler 로 전달된다.
+Renderer UI 는 `ave:plugins:call` IPC 를 통해 app-visible 플러그인 tool 호출을 요청할 수 있다. 이 IPC 는 handler 직접 호출 경로가 아니며, `PluginRuntime.callFromUi()` 가 매번 tool 의 `_meta.ui.visibility` 를 재확인한다 — `"app"` 을 포함한 tool 만 renderer-invokable 이고 나머지는 거부된다. visibility 에 `"model"` 이 있으면 LLM-facing, `"app"` 이 있으면 renderer-facing 이며, 겸용 tool 은 ToolExecutor 권한 경로를 통과하고, app-only tool (`["app"]`) 은 auth status polling 을 제외하고 preload 가 확인한 active user activation 이 있어야 handler 로 전달된다. (pre-v6 의 `tools[]` + `uiActions` map 별도 surface 는 #885 Phase R 에서 이 하나의 visibility 배열로 통합됨.)
 
 **규칙:**
 
-1. **surface 분리** — `tools[]` 는 LLM 카탈로그, `uiActions` 는 renderer IPC allowlist 이다. 같은 이름을 양쪽에 둘 수 있지만, auth/status/login/panel-internal 메서드는 `uiActions` 전용으로 둘 수 있다.
-2. **권한 경로 분리** — `PluginRuntime.callFromUi(method, payload)` 는 매번 `manifest.uiActions` 를 재확인한 뒤 host delegate 로 넘긴다. 이름이 `tools[]` 에도 있으면 ToolExecutor 를 호출하므로 sensitive path, allowed directories, reviewer, hooks, audit 정책이 적용된다. `tools[]` 에 없는 UI-only action 은 auth status polling 을 제외하고 active user activation 이 있어야 실행되며, runtime 이 allowlist 재검증과 audit log 를 남긴다.
-3. **도구 이름 제한 없음** — 어떤 접미사든 `uiActions` 에 넣을 수 있다. 실제 위험 작업은 이름이 아니라 SDK manifest `category/pathFields` 와 host 권한 정책으로 평가한다.
+1. **하나의 tool, visibility 로 surface 결정** — `["model"]` = LLM 전용, `["app"]` = renderer 전용(app-only), `["model","app"]` = 겸용. auth/status/login/panel-internal 메서드는 `["app"]` 로 둔다.
+2. **권한 경로 분리** — `PluginRuntime.callFromUi(method, payload)` 는 매번 tool 의 visibility 를 재확인한 뒤 host delegate 로 넘긴다. visibility 에 `"model"` 이 있으면 ToolExecutor 를 호출하므로 sensitive path, allowed directories, reviewer, hooks, audit 정책이 적용된다. `["app"]` app-only tool 은 auth status polling 을 제외하고 active user activation 이 있어야 실행되며, runtime 이 visibility 재검증과 audit log 를 남긴다.
+3. **도구 이름 제한 없음** — 어떤 접미사든 `"app"` visibility 로 노출할 수 있다. 실제 위험 작업은 이름이 아니라 `_meta["xyz.ave/pathFields"]` 와 host-classified category 로 평가한다.
 
-**예시:**
+**예시 (`_meta.ui.visibility`):**
 
 ```jsonc
-// OK — read-only 메서드
-"uiActions": {
-  "meeting_transcript": {},
-  "meeting_sessions": {}
-}
+// OK — read-only 조회 메서드 (겸용)
+{ "name": "meeting_transcript", "_meta": { "ui": { "visibility": ["model", "app"] } } }
+{ "name": "meeting_sessions",   "_meta": { "ui": { "visibility": ["model", "app"] } } }
 
-// OK — 파괴적 동작도 등록 가능. 플러그인이 자체 UI 에서 확인 다이얼로그를 구현해야 함
-"uiActions": {
-  "lyramail_email_reply": {},
-  "lyramail_calendar_delete": {},
-  "index_remove_folder": {}
-}
+// OK — 파괴적 동작도 app-visible 로 노출 가능. 플러그인이 자체 UI 에서 확인 다이얼로그를 구현해야 함
+{ "name": "lyramail_email_reply",     "_meta": { "ui": { "visibility": ["model", "app"] } } }
+{ "name": "lyramail_calendar_delete", "_meta": { "ui": { "visibility": ["model", "app"] } } }
 
-// OK — UI 전용 메서드. LLM에는 노출되지 않음
-"uiActions": {
-  "meeting_push_chunk": {}
-}
+// OK — UI 전용 메서드 (app-only). LLM에는 노출되지 않음
+{ "name": "meeting_push_chunk", "_meta": { "ui": { "visibility": ["app"] } } }
 ```
 
 ### 2.3 capabilities Taxonomy (Phase 5)
@@ -353,21 +336,21 @@ OAuth-flow 를 소유한 플러그인 (lyra-mail, lyra-mail 등) 이 호스트 S
 
 ```jsonc
 {
-  "uiActions": {
-    "lyramail_status": {},
-    "lyramail_auth": {},
-    "lyramail_signout": {}
-  },
+  "tools": [
+    { "name": "lyramail_status",  "description": "인증 상태를 반환한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } } },
+    { "name": "lyramail_auth",    "description": "로그인 플로우를 시작한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } } },
+    { "name": "lyramail_signout", "description": "로그아웃한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } } }
+  ],
   "auth": {
     "label": "Microsoft 계정",      // optional; 기본 manifest.name
-    "statusTool": "lyramail_status",  // 필수, uiActions 안
-    "loginTool": "lyramail_auth",     // 필수, uiActions 안
-    "logoutTool": "lyramail_signout"  // optional, uiActions 안
+    "statusTool": "lyramail_status",  // 필수, visibility ["app"]
+    "loginTool": "lyramail_auth",     // 필수, visibility ["app"]
+    "logoutTool": "lyramail_signout"  // optional, visibility ["app"]
   }
 }
 ```
 
-**Cross-field 강제** — `manifest-validation.ts` (§B-3 와 같은 hand-rolled 위치) 가 `auth.{statusTool,loginTool,logoutTool} ∈ uiActions` 이고 `auth.*Tool ∉ tools[]` 임을 load-time 에 검증. AJV 단독으로는 cross-object membership 표현 불가.
+**Cross-field 강제** — `manifest-validation.ts` (§B-3 와 같은 hand-rolled 위치) 가 `auth.{statusTool,loginTool,logoutTool}` 이 가리키는 tool 의 `_meta.ui.visibility` 가 **정확히 `["app"]`** (app-only, model 노출 금지) 임을 load-time 에 검증. AJV 단독으로는 cross-object membership 표현 불가.
 
 **StatusTool 반환 (recommended)**
 
@@ -378,7 +361,7 @@ interface PluginAuthStatusResult {
 }
 ```
 
-호스트 defensive parse — 추가 필드는 무시. `outputSchema` 강제 검증은 별 PR 로 toolSchemas 전체 인프라 작업 후 도입.
+호스트 defensive parse — 추가 필드는 무시. `outputSchema` 강제 검증은 별 PR 로 tool outputSchema 인프라 작업 후 도입.
 
 **`<pluginId>.auth.changed` 이벤트** — 인증 전이 시 plugin 이 emit. `manifest.emittedEvents[]` 등록 필수. 호스트 `usePluginAuthStatuses` 훅이 받아 statusTool 재호출 → 뱃지 갱신. **폴링 안 함.** `ave-plugin-lyra-mail` / `ave-plugin-orion-classic` 가 PR 와 함께 emit 흐름 추가.
 
@@ -388,12 +371,12 @@ interface PluginAuthStatusResult {
 
 ```jsonc
 {
-  "tools": [/* non-auth LLM tools only */],
-  "uiActions": {
-    "lyramail_status": {},
-    "lyramail_auth": {},
-    "lyramail_signout": {}
-  },
+  "tools": [
+    /* non-auth LLM tools ... */
+    { "name": "lyramail_status",  "description": "인증 상태를 반환한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } } },
+    { "name": "lyramail_auth",    "description": "로그인 플로우를 시작한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } } },
+    { "name": "lyramail_signout", "description": "로그아웃한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } } }
+  ],
   "emittedEvents": ["lyra-mail.auth.changed", /* ... */],
   "auth": {
     "label": "Microsoft 계정",
@@ -446,14 +429,12 @@ OAuth-flow 를 소유한 플러그인이 자기 `persist:plugin-auth:<pluginId>`
   "id": "lyra-mail",
   "capabilities": ["external-auth-consumer"],
   "tools": [
-    "lyramail_open_outlook_calendar"
-    /* ... */
+    { "name": "lyramail_open_outlook_calendar", "description": "Outlook 캘린더 뷰어를 연다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["model", "app"] } } },
+    /* ... 기타 tool ... */
+    { "name": "lyramail_status",  "description": "인증 상태를 반환한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } } },
+    { "name": "lyramail_auth",    "description": "로그인 플로우를 시작한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } } },
+    { "name": "lyramail_signout", "description": "로그아웃한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } } }
   ],
-  "uiActions": {
-    "lyramail_status": {},
-    "lyramail_auth": {},
-    "lyramail_signout": {}
-  },
   "emittedEvents": ["lyra-mail.auth.changed"],
   "auth": {
     "label": "Microsoft 계정",
@@ -492,8 +473,8 @@ plugin.json
 │ 3. Cross-field checks            │  runtime.ts readManifest()
 │    - tool name regex             │
 │    - keywords[].skillId ∈ tools[] │
-│    - auth.*Tool ∈ uiActions       │
-│    - auth.*Tool ∉ tools[]         │
+│    - auth tool visibility==["app"]│
+│      (app-only; model 노출 금지)   │
 │    - startupTimeoutMs > 0        │
 │    - notificationEvents shape    │  → 실패 시
 │                                  │     Invalid plugin manifest '<id>' at '<field>' (<path>): <reason>. Example: <example>
@@ -521,7 +502,7 @@ plugin.json
 
 ```
 [manifest:<unknown>] JSON parse error (Unexpected token ...). Example: {"id":"com.example.sample",...}
-[manifest:meeting] schema validation failed (/path/to/plugin.json): /uiActions/meeting.start must match pattern "^[a-zA-Z_][a-zA-Z0-9_]*$"
+[manifest:meeting] schema validation failed (/path/to/plugin.json): /tools/0/name must match pattern "^[a-zA-Z_][a-zA-Z0-9_]*$"
 Invalid tool name 'meeting.start' in plugin 'meeting' at 'tools[0]' (/path/to/plugin.json): tool names must match ^[a-zA-Z_][a-zA-Z0-9_]*$ (start with letter/underscore, then letters/digits/underscores). Example: "tools": ["meeting_start"] (not "meeting.start")
 [plugin-runtime] managed plugin 'ave-plugin-lyra-mail' rejected — signature invalid
 [plugin-runtime] managed plugin 'meeting' rejected — signature file missing
@@ -648,40 +629,39 @@ import { Stack, Toggle } from "@ave/plugin-sdk/ui";
 
 ---
 
-## 3. toolSchemas 작성 가이드
+## 3. Tool inputSchema 작성 가이드
 
-`toolSchemas` 는 모든 `tools[]` 항목에 필수다. `category` 는 권한 정책의 static authority metadata 이고, `pathFields[]` 는 Layer 0/1/5 path 검사의 입력이다. top-level 은 반드시 `"type": "object"` — 모든 LLM vendor 공통 요구사항.
+각 tool 객체는 `inputSchema` (JSON Schema draft-07) 를 담는다. filesystem path 인자는 `_meta["xyz.ave/pathFields"]` (Layer 0/1/5 path 검사 입력) 로 선언하고, per-tool category 는 manifest 필드가 아니라 host 가 invocation 별로 분류한다. top-level 은 반드시 `"type": "object"` — 모든 LLM vendor 공통 요구사항. (pre-v6 의 `toolSchemas` map 은 #885 Phase R 에서 tool 객체로 인라인됨.)
 `description` 은 **필수** (`minLength: 10`) — 10자 미만이면 AJV 가 거부한다.
 
 ### 예시 1: meeting_push_chunk (바이너리 데이터 포함)
 
 ```json
 {
-  "meeting_push_chunk": {
-    "description": "PCM16LE 오디오 청크를 세션에 추가. STT는 비동기 처리.",
-    "category": "write",
-    "inputSchema": {
-      "type": "object",
-      "required": ["sessionId", "chunk"],
-      "properties": {
-        "sessionId": { "type": "string" },
-        "chunk": {
-          "type": "object",
-          "required": ["pcm16leMono", "sampleRate"],
-          "properties": {
-            "pcm16leMono": {
-              "type": "array",
-              "items": { "type": "integer" },
-              "description": "16-bit signed PCM 샘플 배열 (IPC 전달 시 number[])"
-            },
-            "sampleRate": { "type": "integer", "enum": [16000, 44100, 48000] },
-            "startSec": { "type": "number" },
-            "endSec": { "type": "number" }
-          }
+  "name": "meeting_push_chunk",
+  "description": "PCM16LE 오디오 청크를 세션에 추가. STT는 비동기 처리.",
+  "inputSchema": {
+    "type": "object",
+    "required": ["sessionId", "chunk"],
+    "properties": {
+      "sessionId": { "type": "string" },
+      "chunk": {
+        "type": "object",
+        "required": ["pcm16leMono", "sampleRate"],
+        "properties": {
+          "pcm16leMono": {
+            "type": "array",
+            "items": { "type": "integer" },
+            "description": "16-bit signed PCM 샘플 배열 (IPC 전달 시 number[])"
+          },
+          "sampleRate": { "type": "integer", "enum": [16000, 44100, 48000] },
+          "startSec": { "type": "number" },
+          "endSec": { "type": "number" }
         }
       }
     }
-  }
+  },
+  "_meta": { "ui": { "visibility": ["app"] } }
 }
 ```
 
@@ -691,27 +671,26 @@ import { Stack, Toggle } from "@ave/plugin-sdk/ui";
 
 ```json
 {
-  "lyramail_calendar_create": {
-    "description": "Microsoft Graph를 통해 캘린더 일정 생성. 참석자 이메일 배열을 지원한다.",
-    "category": "network",
-    "inputSchema": {
-      "type": "object",
-      "required": ["title", "start", "end"],
-      "properties": {
-        "title": { "type": "string", "maxLength": 255 },
-        "start": { "type": "string", "format": "date-time", "description": "ISO 8601" },
-        "end":   { "type": "string", "format": "date-time" },
-        "body": { "type": "string" },
-        "location": { "type": "string" },
-        "timeZone": { "type": "string", "description": "IANA 시간대. 예: Asia/Seoul" },
-        "attendees": {
-          "type": "array",
-          "items": { "type": "string", "format": "email" },
-          "description": "참석자 이메일 목록"
-        }
+  "name": "lyramail_calendar_create",
+  "description": "Microsoft Graph를 통해 캘린더 일정 생성. 참석자 이메일 배열을 지원한다.",
+  "inputSchema": {
+    "type": "object",
+    "required": ["title", "start", "end"],
+    "properties": {
+      "title": { "type": "string", "maxLength": 255 },
+      "start": { "type": "string", "format": "date-time", "description": "ISO 8601" },
+      "end":   { "type": "string", "format": "date-time" },
+      "body": { "type": "string" },
+      "location": { "type": "string" },
+      "timeZone": { "type": "string", "description": "IANA 시간대. 예: Asia/Seoul" },
+      "attendees": {
+        "type": "array",
+        "items": { "type": "string", "format": "email" },
+        "description": "참석자 이메일 목록"
       }
     }
-  }
+  },
+  "_meta": { "ui": { "visibility": ["model", "app"] } }
 }
 ```
 
@@ -719,20 +698,19 @@ import { Stack, Toggle } from "@ave/plugin-sdk/ui";
 
 ```json
 {
-  "lyramail_email_reply": {
-    "description": "지정 이메일에 답장. lyramail_email_list 또는 lyramail_email_read로 id를 먼저 획득해야 함.",
-    "category": "network",
-    "inputSchema": {
-      "type": "object",
-      "required": ["id", "body"],
-      "properties": {
-        "id": { "type": "string", "description": "lyramail_email_list 응답의 id 필드" },
-        "body": { "type": "string", "description": "답장 본문 (plain text 또는 HTML)" },
-        "subject": { "type": "string", "description": "선택. 생략 시 원본 제목 유지" },
-        "to": { "type": "string", "description": "선택. 생략 시 원본 발신자에게 답장" }
-      }
+  "name": "lyramail_email_reply",
+  "description": "지정 이메일에 답장. lyramail_email_list 또는 lyramail_email_read로 id를 먼저 획득해야 함.",
+  "inputSchema": {
+    "type": "object",
+    "required": ["id", "body"],
+    "properties": {
+      "id": { "type": "string", "description": "lyramail_email_list 응답의 id 필드" },
+      "body": { "type": "string", "description": "답장 본문 (plain text 또는 HTML)" },
+      "subject": { "type": "string", "description": "선택. 생략 시 원본 제목 유지" },
+      "to": { "type": "string", "description": "선택. 생략 시 원본 발신자에게 답장" }
     }
-  }
+  },
+  "_meta": { "ui": { "visibility": ["model", "app"] } }
 }
 ```
 
@@ -740,8 +718,7 @@ import { Stack, Toggle } from "@ave/plugin-sdk/ui";
 
 - [ ] top-level `"type": "object"` 선언
 - [ ] `description` 10자 이상 (AJV `minLength: 10`)
-- [ ] `category` 를 `read | write | shell | network` 중 하나로 선언
-- [ ] 파일 경로 인자가 있으면 `pathFields[]` 에 dotted selector 로 선언
+- [ ] 파일 경로 인자가 있으면 `_meta["xyz.ave/pathFields"]` 에 dotted selector 로 선언 (per-tool category 는 host 가 분류 — manifest 에 선언 안 함)
 - [ ] `required` 배열에 필수 파라미터 명시
 - [ ] `description`으로 LLM에 사전 조건 전달 (예: "먼저 X를 호출해야 함")
 - [ ] enum 값이 있으면 `enum` 키 사용 (LLM 환각 방지)
@@ -866,7 +843,7 @@ Ave 는 IPC/RPC 를 **시스템 레벨 전용**으로 확정한다. 플러그인
 플러그인은 **tool 레벨만** 사용한다:
 
 - **LLM → plugin tool**: `ToolRegistry` 경유. manifest `tools[]` 에 선언된 이름이 LLM 에 노출, 호출 시 `handlers[toolName]` 로 라우팅. IPC 채널 없음.
-- **Renderer UI → plugin method**: 호스트가 제공하는 generic 핸들러 `ave:plugins:call(toolName, payload)` 단 하나 경유. `manifest.uiActions` allowlist 로 gating (§2.2) — 이름 패턴 차단은 없으며, 확인 UX 는 플러그인이 자체 UI 로 구현한다. 플러그인이 채널을 직접 선언하지 않는다.
+- **Renderer UI → plugin method**: 호스트가 제공하는 generic 핸들러 `ave:plugins:call(toolName, payload)` 단 하나 경유. 각 tool 의 `_meta.ui.visibility` (app-visible) 로 gating (§2.2) — 이름 패턴 차단은 없으며, 확인 UX 는 플러그인이 자체 UI 로 구현한다. 플러그인이 채널을 직접 선언하지 않는다.
 - **Plugin → host service**: `PluginHostApi` 메서드 직접 호출 (in-process).
 - **Plugin → plugin**: broadcast 는 이벤트 버스(`hostApi.emitEvent` / `onEvent`) 를 사용한다. 특정 tool 호출은 caller manifest 의 `pluginAccess.tools[]` 허가가 있을 때만 `hostApi.callTool()` 로 요청하며, Host 는 ToolExecutor 권한 경로를 다시 통과시킨다. peer module import 나 handler 직접 호출은 불가.
 
@@ -883,8 +860,8 @@ Ave 는 IPC/RPC 를 **시스템 레벨 전용**으로 확정한다. 플러그인
 **주요 handler:** `meeting_start` / `meeting_push_chunk` / `meeting_stop` / `meeting_transcript` / `meeting_sessions`.
 
 - `capabilities: ["meeting-recorder"]` — `meeting.*` emit 게이트 통과.
-- `uiActions: { "meeting_transcript": {}, "meeting_sessions": {} }` — 렌더러에서 호출 가능한 조회용 메서드를 노출. 같은 이름이 `tools[]` 에도 있으면 host delegate 를 통해 ToolExecutor 권한 경로를 통과하고, UI-only 메서드는 active user activation gate 와 runtime allowlist/audit path 를 통과한다.
-- `toolSchemas` 는 모든 tool 에 선언하며, `meeting_push_chunk` 는 PCM `number[]` 추론 보조와 `category` 권한 metadata 를 함께 제공한다.
+- `meeting_transcript` / `meeting_sessions` 는 `_meta.ui.visibility: ["model","app"]` (겸용) 으로 렌더러에서도 호출 가능하다 — visibility 에 `"model"` 이 있어 host delegate 를 통해 ToolExecutor 권한 경로를 통과하고, app-only(`["app"]`) tool 은 active user activation gate 와 runtime visibility/audit path 를 통과한다.
+- 각 tool 은 `inputSchema` 를 담으며, `meeting_push_chunk` 는 PCM `number[]` 추론 보조를 제공한다 (effective category 는 host 가 분류).
 - `meeting_stop` 반환값이 크므로 LLM context 소비 주의 — 요약만 반환.
 
 ### 5.2 Local Indexer (`local-indexer`)
@@ -894,7 +871,7 @@ Ave 는 IPC/RPC 를 **시스템 레벨 전용**으로 확정한다. 플러그인
 - `capabilities: ["knowledge-index", "worker-client"]`.
 - Python subprocess (30s 폴링) 로 FileWatcher 대신 운영 — `index_scan` 은 멱등 설계.
 - `index_add_folder` 는 `/etc`, `/usr`, `~/.ssh` 등 위험 경로를 플러그인이 스스로 차단 — HostApi 레벨 제어 없음.
-- `toolSchemas` 필수: `index_add_folder` 는 `category` 와 path 인자를 `pathFields[]` 로 선언한다.
+- 각 tool `inputSchema` 필수: `index_add_folder` 는 path 인자를 `_meta["xyz.ave/pathFields"]` 로 선언한다 (effective category 는 host 가 분류).
 
 ### 5.3 LYRA Mail (`lyra-mail`)
 
@@ -902,7 +879,7 @@ Ave 는 IPC/RPC 를 **시스템 레벨 전용**으로 확정한다. 플러그인
 
 - `capabilities: ["mail-source", "calendar-source", "lyra-mail-consumer"]`.
 - 인증은 플러그인 자체 MSAL + safeStorage 경로가 소유한다. Host 는 provider-specific token HostApi 를 제공하지 않는다.
-- 메일/캘린더 mutation tool 은 `toolSchemas` 에 `category: "write" | "network"` 를 명시하고, UI 호출이 필요하면 `uiActions` 에 선언한다.
+- 메일/캘린더 mutation tool 의 effective category(`write`/`network`)는 host 가 invocation 별로 분류하고, UI 호출이 필요하면 `_meta.ui.visibility` 에 `"app"` 을 추가한다.
 
 ### 5.4 Agent Hub (`agent-hub`)
 
@@ -938,11 +915,11 @@ HostApi 에 새 메서드를 추가하려면:
 |------|------|------|
 | **worker_threads / process 격리** | ❌ 기각 | in-process + try/catch 로 95% 장애 커버. 격리 시 IPC 오버헤드 + 디버깅 복잡도 증가. |
 | **marketplace artifact 검증** | ✅ **승인** | 플러그인 저자가 sidecar 서명을 만들지 않고 marketplace가 artifact envelope을 서명합니다. 호스트는 설치 시 envelope을 검증하고 로드 시 install receipt 해시를 확인합니다. §2.1. |
-| **`permissions[]` 선언형 필드** | ⚠️ **부분 승인** | full permission 문자열 배열은 기각되었지만, 다음 3종의 선언형 게이트가 대체 도입됨: (1) `uiActions` — renderer→plugin allowlist (`tools[]` 와 별도 surface, 파괴적 도구의 확인 UX 는 플러그인이 책임), (2) `capabilities[]` — `lyra-mail-consumer` HostApi gate + event-emit namespace gate, (3) `PLUGIN_PRIVATE_NAMESPACES` — subscription deny-list. §2.2, §2.3. |
+| **`permissions[]` 선언형 필드** | ⚠️ **부분 승인** | full permission 문자열 배열은 기각되었지만, 다음 3종의 선언형 게이트가 대체 도입됨: (1) renderer→plugin allowlist (당시 `uiActions` map; #885 Phase R 이후 각 tool 의 `_meta.ui.visibility` — 파괴적 도구의 확인 UX 는 플러그인이 책임), (2) `capabilities[]` — `lyra-mail-consumer` HostApi gate + event-emit namespace gate, (3) `PLUGIN_PRIVATE_NAMESPACES` — subscription deny-list. §2.2, §2.3. |
 | **LLM invoke HostApi 추상화 (full surface)** | ❌ 기각 (callLlm 만 채택) | 단발 텍스트 생성 `callLlm()` 만 Phase 1에서 채택 (§4). streaming·tool_choice·thinking·multi-turn 등 vendor 편차 큰 surface 는 여전히 기각. |
 | **파일 watcher HostApi (`watchFiles`)** | ❌ 기각 | local-indexer 1개 플러그인만 필요. "3+ 플러그인 규칙" 미충족. |
 | **zod 자동 schema 추출** | ❌ 기각 | 번들 크기 증가, zod 버전 충돌. 수기 작성이 LLM 최적화 면에서도 우수. |
-| **`toolSchemas` output schema (Phase 1)** | ❌ 기각 | 응답은 LLM 이 string 으로 재소비 가능. Phase 2 에서 재검토. |
+| **tool `outputSchema` (Phase 1)** | ❌ 기각 | 응답은 LLM 이 string 으로 재소비 가능. Phase 2 에서 재검토. |
 | **Full capability grant system** | ❌ 기각 | 현행 capability taxonomy (§2.3) + HostApi boundary 로 충분. |
 | **Hot reload (Phase 1)** | ❌ 기각 | 개발 편의 기능. GA 블로커 아님. |
 | **`triggerConversation` HostApi + `host:overlay` capability** | ✅ **승인** | §6.1 예외 #2 — plugin-authored prompt 를 사용자 입력 없이 host overlay 에 staged 하므로 audit / source-aware permission / capability gate / per-plugin rate limit (60s/6) / dedupe / source-pattern + length cap / prompt-length cap 같은 통제가 필수. 단일 consumer 라도 host 에 둠 (plugin-side 재구현 시 통제 일관성 X). 런타임 권한은 `host:overlay` 단일 capability 가 부여한다. 안전 계약 / spec / gate 는 [`overlay-trigger.md`](./overlay-trigger.md). |
@@ -1043,20 +1020,20 @@ export const createPlugin: RuntimePluginFactory = async (context) => {
   "version": "1.0.0",
   "description": "입력을 대문자로 변환하는 샘플 플러그인.",
   "entry": "dist/index.js",
-  "tools": ["my_action"],
-  "toolSchemas": {
-    "my_action": {
+  "tools": [
+    {
+      "name": "my_action",
       "description": "입력 문자열을 대문자로 변환한다.",
-      "category": "read",
       "inputSchema": {
         "type": "object",
         "required": ["input"],
         "properties": {
           "input": { "type": "string" }
         }
-      }
+      },
+      "_meta": { "ui": { "visibility": ["model"] } }
     }
-  },
+  ],
   "installPolicy": "user"
 }
 ```
@@ -1068,7 +1045,7 @@ export const createPlugin: RuntimePluginFactory = async (context) => {
 - [ ] 필수 파라미터 누락 시 `throw new Error()` 로 명확한 에러 메시지
 - [ ] `dist/index.js` 가 `RuntimePluginFactory` 를 default export
 - [ ] `plugin.json` 의 `entry` 가 실제 빌드 산출물 경로
-- [ ] 모든 `tools[]` 항목에 SDK schema 기준 `toolSchemas` 추가 (`description` 10자 이상, `category`, 필요 시 `pathFields[]`)
+- [ ] 각 `tools[]` Tool 객체에 `description` (10자 이상), `inputSchema`, `_meta.ui.visibility`, 필요 시 `_meta["xyz.ave/pathFields"]`
 - [ ] marketplace publish/upload 경로로 artifact를 게시
 
 ### @ave/plugin-sdk (현행)

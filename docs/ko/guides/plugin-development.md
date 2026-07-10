@@ -1,6 +1,14 @@
 # Ave 플러그인 개발 가이드
 
-> **상태**: 최신 반영판 (2026-04-18)
+> **매니페스트 tool 계약 = pure MCP `Tool[]` (#885 Phase R).** `tools` 는 각 원소가
+> `{ name, description, inputSchema, _meta? }` 인 Tool 객체 배열이다. renderer 노출은
+> `_meta.ui.visibility` (`["model"]`/`["app"]`/`["model","app"]`), filesystem path 판정은
+> `_meta["xyz.ave/pathFields"]` 로 선언하며, per-tool category 는 manifest 필드가 아니라
+> host 가 invocation 별로 분류한다. (pre-v6 의 `tools: string[]` + `toolSchemas` map +
+> `uiActions` map triple 은 이 하나로 통합·제거됐다 — legacy.) 설계 배경은
+> [`plugin-contract-v6-design.md`](../architecture/plugin-contract-v6-design.md).
+
+> **상태**: v6 반영 (tool 계약 #885 Phase R)
 > **대상**: Ave 플러그인 개발자
 > **선행 읽음**: [아키텍처 문서 §9](../architecture/architecture.md#9-plugin-system--ui-extension) · [CLAUDE.md](../../../CLAUDE.md)
 >
@@ -15,8 +23,8 @@
 3. [호스트 플러그인 엔트리 (hostPlugin.ts)](#호스트-플러그인-엔트리-hostplugints)
 4. [HostApi 계약](#hostapi-계약)
 5. [도구 명명 규칙](#도구-명명-규칙)
-6. [toolSchemas 작성 가이드](#toolschemas-작성-가이드)
-7. [uiActions 보안 경계](#uiactions-보안-경계)
+6. [Tool 스키마 작성 가이드](#tool-스키마-작성-가이드)
+7. [app-visibility 보안 경계](#app-visibility-보안-경계)
 8. [capabilities 체계](#capabilities-체계)
 9. [이벤트 구독 및 OS 알림](#이벤트-구독-및-os-알림)
 10. [서명 및 배포 (ed25519)](#서명-및-배포-ed25519)
@@ -58,7 +66,7 @@ interface PluginManifest {
   name: string;            // 사람이 읽는 이름
   version: string;         // Semver "MAJOR.MINOR.PATCH[-prerelease][+build]"
   entry: string;           // hostPlugin.js 진입점 경로 (pluginRoot 기준)
-  tools: string[];         // LLM tool name 배열 (^[a-zA-Z_][a-zA-Z0-9_]*$)
+  tools: Tool[];           // pure MCP Tool 객체 배열 (아래 Tool 참고; #885 Phase R)
 
   // ── 문서/메타 ──
   description?: string;    // LLM 카탈로그·UI에 표시되는 1줄 요약 (≤280자)
@@ -77,11 +85,8 @@ interface PluginManifest {
   // ── UI / LLM 통합 ──
   ui?: PluginUiExtension[];                                      // 사이드바 UI 슬롯
   keywords?: Array<{ keyword: string; skillId: string }>;         // 키워드 엔진 등록
-  toolSchemas?: Record<string, {                                  // LLM function-calling 스키마
-    description: string;
-    inputSchema: { type: "object"; properties: ...; required?: string[]; additionalProperties?: boolean };
-  }>;
-  uiActions?: Record<string, { description?: string }>; // 렌더러 IPC에서 직접 호출 가능한 UI action 맵
+  // (각 tool 의 description·inputSchema·visibility·pathFields 는 tools[] 원소 Tool 객체에
+  //  인라인 — 아래 Tool 인터페이스. pre-v6 의 toolSchemas/uiActions map 은 제거됨.)
 
   // ── 이벤트 ──
   eventSubscriptions?: string[];     // 호스트 이벤트 버스에서 수집할 이벤트
@@ -91,16 +96,27 @@ interface PluginManifest {
     bodyField?: string;
   }>;
 }
+
+// 각 tool 은 pure MCP Tool 객체다 (#885 Phase R — tools/toolSchemas/uiActions triple 을 통합).
+interface Tool {
+  name: string;         // LLM tool name (^[a-zA-Z_][a-zA-Z0-9_]*$), 길이 ≤64
+  description: string;  // 최소 10자
+  inputSchema: { type: "object"; properties: ...; required?: string[]; additionalProperties?: boolean };
+  _meta?: {
+    ui?: { visibility: Array<"model" | "app"> };  // renderer 노출: model=LLM, app=renderer
+    "xyz.ave/pathFields"?: string[];             // filesystem path 판정 SOT (유일한 Ave 전용 키)
+  };
+}
 ```
 
 스키마 규칙(AJV 검증):
 
 - 최상위 `additionalProperties: false` — 선언되지 않은 필드는 로드 거부.
 - `id` 패턴 `^[a-zA-Z][a-zA-Z0-9._-]*$`, 길이 3–128.
-- `tools[]` 항목과 `uiActions` key 패턴 `^[a-zA-Z_][a-zA-Z0-9_]*$`, 길이 ≤64.
+- `tools[].name` 패턴 `^[a-zA-Z_][a-zA-Z0-9_]*$`, 길이 ≤64.
 - `version` 은 anchored semver (prerelease/build 메타데이터 포함 가능).
 - `ui[]` 는 `kind` 에 따라 필수 필드가 달라짐 (embedded-module → `entry`+`exportName`, embedded-page → `page`, info-card → 최소 필드).
-- `toolSchemas[K].description` 은 최소 10자, `inputSchema.type` 은 `"object"` 상수.
+- `tools[].description` 은 최소 10자, `tools[].inputSchema.type` 은 `"object"` 상수.
 
 ### 예제: Meeting 플러그인 (현재 설치된 plugin.json 발췌)
 
@@ -114,16 +130,15 @@ interface PluginManifest {
   "startupTimeoutMs": 5000,
   "entry": "../../../node_modules/@ave/plugin-meeting/dist/hostPlugin.js",
   "description": "회의 녹음·전사·요약 및 액션 아이템 추출",
-  "tools": ["meeting_start", "meeting_push_chunk", "meeting_stop", "meeting_transcript", "meeting_sessions"],
+  "tools": [
+    { "name": "meeting_start", "description": "회의 녹음 세션을 시작한다. sessionId 를 전달한다.", "inputSchema": { "type": "object", "properties": { "sessionId": { "type": "string" } }, "required": ["sessionId"] }, "_meta": { "ui": { "visibility": ["model", "app"] } } },
+    { "name": "meeting_push_chunk", "description": "PCM16 오디오 청크를 세션에 추가한다 (패널 전용).", "inputSchema": { "type": "object", "properties": { "sessionId": { "type": "string" }, "chunk": { "type": "array" } }, "required": ["sessionId", "chunk"] }, "_meta": { "ui": { "visibility": ["app"] } } },
+    { "name": "meeting_stop", "description": "녹음 세션을 종료하고 요약을 생성한다.", "inputSchema": { "type": "object", "properties": { "sessionId": { "type": "string" } }, "required": ["sessionId"] }, "_meta": { "ui": { "visibility": ["model", "app"] } } },
+    { "name": "meeting_transcript", "description": "세션의 전사 결과를 반환한다.", "inputSchema": { "type": "object", "properties": { "sessionId": { "type": "string" } }, "required": ["sessionId"] }, "_meta": { "ui": { "visibility": ["model", "app"] } } },
+    { "name": "meeting_sessions", "description": "저장된 회의 세션 목록을 반환한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["model", "app"] } } }
+  ],
   "capabilities": ["meeting-recorder"],
-  "eventSubscriptions": ["meeting.summary.created", "meeting.ended"],
-  "uiActions": {
-    "meeting_start": {},
-    "meeting_push_chunk": {},
-    "meeting_stop": {},
-    "meeting_transcript": {},
-    "meeting_sessions": {}
-  }
+  "eventSubscriptions": ["meeting.summary.created", "meeting.ended"]
 }
 ```
 
@@ -155,17 +170,17 @@ interface PluginManifest {
 #### description
 
 - LLM 의 "비활성 플러그인 카탈로그" 및 UI 카드에 노출되는 1줄 요약.
-- 미지정 시 `toolSchemas[].description` 들을 `/` 로 이어 fallback.
+- 미지정 시 `tools[].description` 들을 `/` 로 이어 fallback.
 
-#### toolSchemas (선택)
+#### tools[].description / inputSchema
 
-- 각 도구의 설명 + JSON Schema draft-07 입력 스키마.
-- 키는 `tools[]` 또는 `uiActions` 에 선언된 이름과 일치해야 함. LLM 전용 도구는 `tools[]`, UI 전용 메서드는 `uiActions` 에만 둘 수 있습니다.
+- 각 tool 객체가 `description` (설명) 과 `inputSchema` (JSON Schema draft-07 입력 스키마) 를 직접 담는다.
+- renderer 노출 여부는 `_meta.ui.visibility` 로 결정한다. LLM 전용 tool 은 `["model"]`, app 전용 메서드는 `["app"]`, 겸용은 `["model","app"]`. (pre-v6 의 `toolSchemas`/`uiActions` map 은 #885 Phase R 에서 제거.)
 
 #### keywords (선택)
 
 - 키워드 엔진 등록 항목.
-- `skillId` 는 `tools[]` 에 선언된 LLM tool name 과 동일해야 하며, UI 전용 `uiActions` 메서드를 가리킬 수 없습니다.
+- `skillId` 는 `tools[]` 에 선언된 LLM tool name 과 동일해야 하며, app-only tool (`_meta.ui.visibility === ["app"]`) 을 가리킬 수 없습니다.
 
 #### capabilities (선택)
 
@@ -181,10 +196,10 @@ interface PluginManifest {
 
 - 사이드바 UI 확장. [UI 확장](#ui-확장) 섹션 참고.
 
-#### uiActions (선택)
+#### _meta.ui.visibility (선택)
 
-- 렌더러가 `ave:plugins:call` IPC 로 직접 호출 허용되는 tool 이름 allowlist.
-- 자세히는 [uiActions 보안 경계](#uiactions-보안-경계).
+- 각 tool 이 어느 surface 에서 호출 가능한지 선언 (`"model"` = LLM, `"app"` = renderer). 렌더러가 `ave:plugins:call` IPC 로 호출할 수 있는 것은 `"app"` 을 포함한 tool (app-visible) 뿐이다.
+- 자세히는 [app-visibility 보안 경계](#app-visibility-보안-경계).
 
 #### eventSubscriptions (선택)
 
@@ -467,9 +482,9 @@ Ave 플러그인에는 **세 개의 독립 네임스페이스**가 있습니다.
 
 ---
 
-## toolSchemas 작성 가이드
+## Tool 스키마 작성 가이드
 
-`toolSchemas` 는 LLM function-calling 정확도를 높이는 JSON Schema (draft-07) 선언입니다.
+각 tool 객체의 `inputSchema` 는 LLM function-calling 정확도를 높이는 JSON Schema (draft-07) 선언입니다. (pre-v6 의 `toolSchemas` map 은 #885 Phase R 에서 각 tool 객체로 인라인됨.)
 
 규칙:
 1. `description` 은 **최소 10자** (AJV 로 강제).
@@ -480,8 +495,9 @@ Ave 플러그인에는 **세 개의 독립 네임스페이스**가 있습니다.
 
 ```json
 {
-  "toolSchemas": {
-    "meeting_start": {
+  "tools": [
+    {
+      "name": "meeting_start",
       "description": "새 회의 녹음 세션을 시작합니다. sessionId 를 반드시 전달해야 합니다.",
       "inputSchema": {
         "$schema": "http://json-schema.org/draft-07/schema#",
@@ -491,41 +507,39 @@ Ave 플러그인에는 **세 개의 독립 네임스페이스**가 있습니다.
         },
         "required": ["sessionId"],
         "additionalProperties": false
-      }
+      },
+      "_meta": { "ui": { "visibility": ["model", "app"] } }
     }
-  }
+  ]
 }
 ```
 
 ---
 
-## uiActions 보안 경계
+## app-visibility 보안 경계
 
-`manifest.uiActions` 는 렌더러 UI 가 `ave:plugins:call` IPC 로 **직접** 호출할 수 있는 runtime method allowlist 입니다. 여기에 없는 메서드는 renderer IPC에서 거부되며, LLM이 호출해야 하는 기능은 `tools[]` 경로로만 노출해야 합니다.
+각 tool 의 `_meta.ui.visibility` 가 렌더러 UI 가 `ave:plugins:call` IPC 로 **직접** 호출할 수 있는지를 결정합니다. `"app"` 을 포함한 tool (app-visible) 만 renderer 에서 호출 가능하고, 나머지는 거부됩니다. LLM 에 노출하려면 visibility 에 `"model"` 을 포함해야 합니다. (pre-v6 의 `tools: string[]` + `uiActions` map 별도 surface 는 #885 Phase R 에서 이 하나의 visibility 배열로 통합됨.)
 
 ### 강제 규칙
 
-1. **`tools[]` 와 `uiActions` 는 별도 surface** — `tools[]` 는 LLM 카탈로그, `uiActions` 는 renderer IPC allowlist 입니다. 같은 메서드를 양쪽에 둘 수도 있고, UI 전용 메서드는 `uiActions` 에만 둘 수 있습니다.
-2. **auth 메서드는 `uiActions` 전용** — `auth.statusTool`, `auth.loginTool`, `auth.logoutTool` 은 모두 `uiActions` 에 있어야 하며 `tools[]` 에 있으면 로드 거부됩니다.
-3. **도구 이름 제한 없음** — 접미사(`_delete`, `_send` 등)로 `uiActions` 등록을 막지 않습니다. 어떤 메서드든 플러그인의 판단에 따라 렌더러에서 호출되도록 노출할 수 있지만, auth status polling 을 제외한 UI-only action 은 host preload 가 확인한 active user activation 이 있어야 실행됩니다.
-4. **파괴적 동작을 uiActions로 노출하는 플러그인은 자체 UI에서 확인 다이얼로그를 구현해야 합니다** (예: "정말 삭제하시겠습니까?"). 호스트는 active user activation 과 allowlist/audit 경계만 강제하며, 도메인별 확인 문구와 상세 UX 는 코드 리뷰·마켓플레이스 심사 단계에서 검증합니다.
-5. AI(ConversationLoop)가 개시한 도구 호출은 별개로 `ApprovalGate` / `PermissionManager` 의 확인 UX 를 거칩니다 — uiActions 정책과 무관하게 그대로 유지됩니다.
-5. 실제 위험 작업(파일시스템 민감 경로, 샌드박스 탈출 등)은 호스트의 `sensitive-paths.ts` · 샌드박스 계층에서 차단합니다. 이름 패턴이 아닌 작업의 실체로 막습니다.
+1. **하나의 tool, visibility 배열로 surface 결정** — `["model"]` = LLM 전용, `["app"]` = renderer 전용(app-only), `["model","app"]` = 겸용. app-only tool 은 governed executor 를 우회하는 app-only dispatch 경로로만 호출된다.
+2. **auth 메서드는 app-only** — `auth.statusTool`, `auth.loginTool`, `auth.logoutTool` 이 가리키는 tool 은 visibility 가 **정확히 `["app"]`** 이어야 하며 (model 노출 금지), 아니면 로드 거부됩니다.
+3. **도구 이름 제한 없음** — 접미사(`_delete`, `_send` 등)로 app-visibility 를 막지 않습니다. 어떤 메서드든 플러그인의 판단에 따라 `"app"` visibility 로 노출할 수 있지만, auth status polling 을 제외한 app-only action 은 host preload 가 확인한 active user activation 이 있어야 실행됩니다.
+4. **파괴적 동작을 app-visible 로 노출하는 플러그인은 자체 UI에서 확인 다이얼로그를 구현해야 합니다** (예: "정말 삭제하시겠습니까?"). 호스트는 active user activation 과 visibility/audit 경계만 강제하며, 도메인별 확인 문구와 상세 UX 는 코드 리뷰·마켓플레이스 심사 단계에서 검증합니다.
+5. AI(ConversationLoop)가 개시한 도구 호출은 별개로 `ApprovalGate` / `PermissionManager` 의 확인 UX 를 거칩니다 — visibility 정책과 무관하게 그대로 유지됩니다.
+6. 실제 위험 작업(파일시스템 민감 경로, 샌드박스 탈출 등)은 호스트의 `sensitive-paths.ts` · 샌드박스 계층에서 차단합니다. 이름 패턴이 아닌 작업의 실체로 막습니다.
 
-### 예: Meeting 플러그인
+### 예: Meeting 플러그인 (visibility)
 
 ```json
-"tools": ["meeting_start", "meeting_stop", "meeting_transcript", "meeting_sessions"],
-"uiActions": {
-  "meeting_start": {},
-  "meeting_push_chunk": {},
-  "meeting_stop": {},
-  "meeting_transcript": {},
-  "meeting_sessions": {}
-}
+"tools": [
+  { "name": "meeting_start",      "description": "회의 녹음 세션을 시작한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["model", "app"] } } },
+  { "name": "meeting_push_chunk", "description": "오디오 청크를 push 한다 (패널 전용).", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } } },
+  { "name": "meeting_sessions",   "description": "세션 목록을 반환한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["model"] } } }
+]
 ```
 
-`meeting_push_chunk` 처럼 패널 내부 전용 스트리밍 메서드는 `uiActions` 에만 둘 수 있습니다. 반대로 `meeting_sessions` 를 LLM 전용으로 두려면 `tools[]` 에만 남기고 `uiActions` 에서 빼면 됩니다.
+`meeting_push_chunk` 처럼 패널 내부 전용 스트리밍 메서드는 `["app"]` (app-only) 로 둔다. 반대로 `meeting_sessions` 를 LLM 전용으로 두려면 `["model"]` 로 둔다.
 
 ---
 
@@ -619,7 +633,7 @@ OS 네이티브 알림으로 승격할 이벤트를 선언합니다.
 | 방향 | 방법 | 비고 |
 |------|------|------|
 | LLM → 플러그인 도구 | ToolRegistry 경유 (자동) | 플러그인 코드 불필요 |
-| Renderer UI → 플러그인 메서드 | `ave:plugins:call(toolName, payload)` | `uiActions` allowlist 강제 |
+| Renderer UI → 플러그인 메서드 | `ave:plugins:call(toolName, payload)` | `_meta.ui.visibility` app-visible 강제 |
 | 플러그인 → 호스트 | `PluginHostApi` 직접 호출 | `context.hostApi.*` |
 | 플러그인 → 플러그인 | `emitEvent` / `onEvent` | 직접 참조 금지 |
 
@@ -754,9 +768,9 @@ Meeting / Microsoft 365 (Outlook 메일+캘린더) / Local Indexer 의 실제 �
   - [ ] `description` 1줄 요약 (LLM 카탈로그 품질)
   - [ ] `tools[]` 언더스코어 패턴, `^[a-zA-Z_][a-zA-Z0-9_]*$`
   - [ ] 필요 시 `capabilities`, `lyra-mail-consumer` 등
-  - [ ] `tools[]` 는 LLM 노출 메서드만 포함, UI 전용/auth 메서드는 `uiActions` 전용
+  - [ ] 각 `tools[]` 항목에 `_meta.ui.visibility` 설정 (LLM 전용 `["model"]` / UI·auth 전용 `["app"]` / 겸용 `["model","app"]`)
   - [ ] `startupTimeoutMs` (start 가 느릴 수 있다면)
-  - [ ] `toolSchemas` description ≥ 10자
+  - [ ] 각 `tools[].description` ≥ 10자
 - [ ] **hostPlugin.ts**
   - [ ] `PluginRuntimeContext` 타입 사용
   - [ ] `onEvent` disposer 보관 or `onShutdown` 에서 정리
@@ -777,7 +791,7 @@ Meeting / Microsoft 365 (Outlook 메일+캘린더) / Local Indexer 의 실제 �
 아래 항목은 가이드·스키마·정책상 정의되어 있지만 **현재 런타임에서 강제되지 않는** 사항이거나 아직 도구/스크립트가 없는 사항입니다. 향후 스프린트에서 좁힐 대상.
 
 1. **`keywords[].skillId ∈ tools[]` 교차 검증** — AJV 및 `readManifest` 에서 강제되지 않음. 잘못된 skillId 가 키워드 엔진에 등록될 수 있음.
-2. **`toolSchemas` 키 ⊂ `tools[]` 교차 검증** — 현재는 불일치 시 조용히 무시.
+2. ~~`toolSchemas` 키 ⊂ `tools[]` 교차 검증~~ — #885 Phase R 에서 `toolSchemas` map 이 제거되어 무의미 (스키마가 tool 객체에 인라인). (legacy)
 3. **`notificationEvents.event ⊂ eventSubscriptions` 교차 검증** — 선언했지만 구독하지 않아 알림이 절대 뜨지 않는 상태 경고가 없음.
 4. **`capabilities` enum 화** — 현재 `lyra-mail-consumer` 만 런타임에서 강제. 나머지는 자유 문자열. 정책 게이트 확장 필요 (예: `worker-client` 선언 플러그인만 Python runtime 사용 허용).
 5. **`eventSubscriptions` 민감 이벤트 allowlist / 네임스페이스 정책** — 임의 플러그인이 `email.*`, `calendar.*` 같은 타 플러그인 네임스페이스를 구독할 수 있음.
