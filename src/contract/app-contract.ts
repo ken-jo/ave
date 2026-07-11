@@ -180,6 +180,15 @@ export const CHANNELS = {
     // itself is NOT authorized by the channel — it runs the same risk/consent gate as
     // any host tool call.
     callTool: "ave:mcp:call-tool",
+    // MCP Apps `onmessage` (`ui/message`) — the app asks for its text to enter the
+    // conversation, or (with `_meta["ave/notification"]`) the notification surface.
+    // The renderer binds the card's `serverId` AND its origin session id; the app
+    // supplies neither. INTERNAL, same posture as `callTool`: absent from
+    // PUBLIC_CHANNELS / EXTERNAL_MUTATION_CHANNELS / CHANNEL_GESTURE (fail-closed
+    // isPublicChannel). Registered in ipc/domains/plugins.ts and gated on
+    // validateHostRendererSender — it mutates conversation state (queues guidance /
+    // stages a user-gated card) and fires OS notifications.
+    uiMessage: "ave:mcp:ui-message",
     catalogList: "ave:mcp:catalog:list",
     installFromMarketplace: "ave:mcp:install-from-marketplace",
     importClaudeDesktopPreview: "ave:mcp:import:claude-desktop:preview",
