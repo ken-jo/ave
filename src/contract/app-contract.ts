@@ -171,6 +171,15 @@ export const CHANNELS = {
     configSetApiKey: "ave:mcp:config:set-api-key",
     configRemove: "ave:mcp:config:remove",
     uiResource: "ave:mcp:ui-resource",
+    // MCP Apps `oncalltool` — an app calls a tool on ITS OWN server (the renderer
+    // supplies the card's serverId; the app never names one). INTERNAL, same posture
+    // as the MCP-app channels below: absent from PUBLIC_CHANNELS /
+    // EXTERNAL_MUTATION_CHANNELS / CHANNEL_GESTURE, so no external origin can reach
+    // it (fail-closed isPublicChannel). Registered in ipc/domains/plugins.ts and
+    // gated on validateHostRendererSender (state-mutating: it runs a tool). The call
+    // itself is NOT authorized by the channel — it runs the same risk/consent gate as
+    // any host tool call.
+    callTool: "ave:mcp:call-tool",
     catalogList: "ave:mcp:catalog:list",
     installFromMarketplace: "ave:mcp:install-from-marketplace",
     importClaudeDesktopPreview: "ave:mcp:import:claude-desktop:preview",
