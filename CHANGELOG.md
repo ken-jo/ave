@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Plugin contract — `_meta` vendor namespace rename
+
+- **`_meta` key prefix `xyz.ave/*` → `ave/*`** — the reverse-DNS prefix didn't match the real domain (former-site.invalid); the sole Ave-proprietary `_meta` key is now `_meta["ave/pathFields"]`, a plain vendor prefix (same style as OpenAI's `openai/*` `_meta` keys). The host's forward (write) projection emits only the new key. The reverse (read) path is transitionally dual-read: it prefers `ave/*` and falls back to the legacy `xyz.ave/*` so already-published out-of-process plugins and the SDK keep working unmigrated.
+- **Follow-up required** — `@ave/plugin-sdk` and published plugin manifests still emit `xyz.ave/*` and need a separate migration; the legacy read-fallback (and the schema's `xyz.ave/pathFields` property) is removed once they've moved to `ave/*`.
+
 ## v0.5.1 — 2026-07-10
 
 Follow-up to the v0.5.0 Plugin Contract v6 release: the legacy manifest readers are removed (brought forward from the originally-planned `0.6.0`), a self-healing Plugin Doctor replaces the migration time-gate, and several LLM provider call paths are fixed. This is a patch release — the legacy-reader removal is dead-code excision, not a contract change; the v6 wire contract is unchanged from v0.5.0.
