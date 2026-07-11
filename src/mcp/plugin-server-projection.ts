@@ -20,7 +20,7 @@
  * self-claims Q4 removed (MCP "annotations untrusted", design §2.2).
  *
  * Key invariants:
- *  - `_meta` keys use the `xyz.ave/` prefix; per §8 any prefix whose second
+ *  - `_meta` keys use the `ave/` prefix; per §8 any prefix whose second
  *    label is `mcp`/`modelcontextprotocol` is RESERVED for MCP.
  *  - `inputSchema` dialect moves to JSON Schema 2020-12 (a relabel — Ave plugin
  *    tool schemas use a 2020-12 subset, no `$ref` network deref).
@@ -40,7 +40,7 @@ const JSON_SCHEMA_2020_12 = "https://json-schema.org/draft/2020-12/schema";
  * An MCP `Tool` projected from one normalized `Tool`. #885 v6 — `annotations` is
  * DROPPED (the host never projects plugin-authored ones) and `_meta` is narrowed
  * to exactly the standard visibility block + the single kept Ave-proprietary key
- * (`xyz.ave/pathFields`).
+ * (`ave/pathFields`).
  */
 export interface McpToolProjection {
   name: string;
@@ -57,7 +57,7 @@ export interface McpToolProjection {
   icons?: McpTool["icons"];
   _meta: {
     ui: { visibility: Array<"model" | "app"> };
-    "xyz.ave/pathFields"?: string[];
+    "ave/pathFields"?: string[];
   };
 }
 
@@ -82,8 +82,12 @@ export interface McpDiscoverProjection {
  */
 function toWireTool(tool: McpTool): McpToolProjection {
   const meta: McpToolProjection["_meta"] = { ui: { visibility: toolVisibility(tool) } };
-  const pathFields = tool._meta?.["xyz.ave/pathFields"];
-  if (pathFields !== undefined) meta["xyz.ave/pathFields"] = pathFields;
+  // Read the authored manifest key, preferring the new `ave/pathFields`;
+  // transitional: fall back to the legacy `xyz.ave/pathFields` until published
+  // plugin manifests are migrated (then remove the fallback). The WIRE always
+  // emits ONLY the new key below.
+  const pathFields = tool._meta?.["ave/pathFields"] ?? tool._meta?.["xyz.ave/pathFields"];
+  if (pathFields !== undefined) meta["ave/pathFields"] = pathFields;
   return {
     name: tool.name,
     ...(tool.title !== undefined ? { title: tool.title } : {}),

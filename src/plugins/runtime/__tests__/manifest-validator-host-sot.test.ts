@@ -211,7 +211,7 @@ describe("schema ↔ types ↔ parsePluginJson coherence (ph2)", () => {
         },
         _meta: {
           ui: { visibility: ["model", "app"] },
-          "xyz.ave/pathFields": ["path"],
+          "ave/pathFields": ["path"],
         },
       },
       {
@@ -293,7 +293,7 @@ describe("schema ↔ types ↔ parsePluginJson coherence (ph2)", () => {
 
       const search = parsed.tools.find((t) => t.name === "ff_search");
       expect(search?._meta?.ui?.visibility).toEqual(["model", "app"]);
-      expect(search?._meta?.["xyz.ave/pathFields"]).toEqual(["path"]);
+      expect(search?._meta?.["ave/pathFields"]).toEqual(["path"]);
 
       // Auth trio materialized as app-only (never model-visible).
       const status = parsed.tools.find((t) => t.name === "ff_status");
