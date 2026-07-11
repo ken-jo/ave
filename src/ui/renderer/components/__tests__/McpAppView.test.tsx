@@ -13,12 +13,14 @@ const readUiResource = vi.fn(async (serverId: string) => ({
   proxyUrl: `ave-mcp-app://${Buffer.from(serverId, "utf8").toString("hex")}/proxy.html?t=tok-${serverId}`,
   html: "<html><body>card</body></html>",
 }));
+const disposeUiSession = vi.fn();
 
 function stubAve() {
   disconnectHandler = null;
   vi.stubGlobal("ave", {
     mcp: {
       readUiResource,
+      disposeUiSession,
       onServerDisconnected: (handler: (serverId: string) => void) => {
         disconnectHandler = handler;
         return () => {
