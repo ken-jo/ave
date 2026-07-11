@@ -189,6 +189,15 @@ export const CHANNELS = {
     // validateHostRendererSender — it mutates conversation state (queues guidance /
     // stages a user-gated card) and fires OS notifications.
     uiMessage: "ave:mcp:ui-message",
+    // MCP Apps `ondownloadfile` (`ui/download-file`) — the app hands over INLINE bytes it
+    // already possessed and asks the host to save them. The host never fetches an
+    // app-supplied URI (a `resource_link` is rejected at parse time), so this channel
+    // grants no egress; the user's own save dialog is the authorization for the write.
+    // INTERNAL, same posture as `callTool` / `uiMessage`: absent from PUBLIC_CHANNELS /
+    // EXTERNAL_MUTATION_CHANNELS / CHANNEL_GESTURE (fail-closed isPublicChannel).
+    // Registered in ipc/domains/plugins.ts and gated on validateHostRendererSender —
+    // state-mutating (it writes a file the user picked).
+    uiDownloadFile: "ave:mcp:ui-download-file",
     catalogList: "ave:mcp:catalog:list",
     installFromMarketplace: "ave:mcp:install-from-marketplace",
     importClaudeDesktopPreview: "ave:mcp:import:claude-desktop:preview",
