@@ -393,7 +393,7 @@ export const scenarios: Record<string, ScenarioEntry> = {
 };
 
 /**
- * mp-* / ah-* / ep-* keys (marketplace, agent-hub SERVER dashboards, orion-api
+ * mp-* / ah-* / ep-* keys (marketplace, agent-hub SERVER dashboards,
  * internal portal) are WEB/server screens per the task's explicit scope —
  * they render in a browser against a separate Next.js app, not the Electron
  * host. Deliberately absent from `scenarios` (not even as skip entries) so
@@ -407,5 +407,5 @@ export const WEB_SERVER_KEYS_OUT_OF_SCOPE = [
   'orion-login', 'orion-attendance', 'orion-attendance-2', 'orion-attendance-3', 'orion-approval', 'orion-parking',
   'orion-meeting-room', 'orion-meeting-room-2', 'orion-meeting-room-3', 'orion-meeting-room-4', 'orion-meeting-room-5',
   'orion-video-call', 'orion-video-call-2', 'orion-video-call-3', 'orion-video-call-4',
-  'orion-internal-search', 'orion-internal-search-2',
+  'orion-portal', 'orion-portal-2',
 ] as const;

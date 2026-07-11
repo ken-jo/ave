@@ -237,7 +237,7 @@ BOTH shapes (a `oneOf` on `tools`: legacy `string[]` vs MCP `Tool[]`).
 ### 3.2 Removal gate (must be GREEN before Phase R)
 
 1. All 6 first-party plugins + template publish pure-form manifests (a3):
-   `for r in meeting lyra-mail vega-helper local-indexer orion-api git template; do node -e "process.exit(typeof require('../ave-plugin-'+process.argv[1]+'/plugin.json').tools[0]==='object'?0:1)" "$r" || echo "NOT MIGRATED: $r"; done`
+   `for r in meeting lyra-mail vega-helper local-indexer ep git template; do node -e "process.exit(typeof require('../ave-plugin-'+process.argv[1]+'/plugin.json').tools[0]==='object'?0:1)" "$r" || echo "NOT MIGRATED: $r"; done`
 2. Marketplace catalog re-published; installed-manifest scan on a test profile shows zero legacy shapes.
 3. `PluginMarketplaceItem.toolSchemas`/`.tools` consumers migrated (`types.ts:615,646`, SDK).
 
@@ -316,7 +316,7 @@ can never see a `Tool[]`).
 
 **Cross-repo sweep (must move in-session per CLAUDE.md §Cross-repo contract sync):**
 `ave` (host) · `ave-plugin-sdk` (v5.22.0 → **v6**) · 6 plugins (`meeting`, `lyra-mail`, `vega-helper`,
-`local-indexer`, `orion-api`, `git`) · `ave-plugin-template` · `agent-marketplace` (catalog
+`local-indexer`, `orion`, `git`) · `ave-plugin-template` · `agent-marketplace` (catalog
 `PluginMarketplaceItem.tools`/`.toolSchemas` mirror + publisher schema).
 
 ## 6. Open items (non-blocking)

@@ -445,8 +445,8 @@ describe("PluginConfigTab", () => {
   it("resolves Doctor install id from marketplace when a failed plugin has no install alias", async () => {
     const broken = {
       id: "orion-api",
-      name: "portal API",
-      description: "portal API plugin",
+      name: "Ave ORION",
+      description: "Ave ORION plugin",
       publisher: "Test fixture",
       sampleTools: [],
       capabilities: [],
@@ -462,10 +462,10 @@ describe("PluginConfigTab", () => {
       .mockResolvedValueOnce([repaired]);
     const listMarketplacePlugins = vi.fn(async () => [
       {
-        id: "ave-plugin-orion-api",
-        name: "portal API",
-        description: "portal API plugin",
-        packageSpec: "@ave/ave-plugin-orion-api",
+        id: "ave-plugin-orion",
+        name: "Ave ORION",
+        description: "Ave ORION plugin",
+        packageSpec: "@ave/ave-plugin-orion",
         installed: false,
         enabled: false,
         pluginType: "plugin" as const,
@@ -498,9 +498,9 @@ describe("PluginConfigTab", () => {
 
     await waitFor(() => {
       expect(listMarketplacePlugins).toHaveBeenCalledOnce();
-      expect(mockInstall).toHaveBeenCalledWith("ave-plugin-orion-api");
+      expect(mockInstall).toHaveBeenCalledWith("ave-plugin-orion");
       expect(cards).toHaveBeenCalledTimes(2);
-      expect(screen.getByText("portal API 복구 완료")).toBeInTheDocument();
+      expect(screen.getByText("Ave ORION 복구 완료")).toBeInTheDocument();
     });
   });
 

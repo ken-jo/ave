@@ -88,7 +88,7 @@ export function resolvePluginSourceRoot(repoRoot: string, probeSlug = 'ave-plugi
 
 /** Map a manifest id (e.g. "local-indexer") to its sibling repo slug. */
 function repoSlugForPlugin(id: string, sourceRoot: string): string | null {
-  // Most repos are `ave-plugin-<id>`; lyra-mail/orion-api follow the same rule.
+  // Most repos are `ave-plugin-<id>`; lyra-mail/ep follow the same rule.
   const candidates = [`ave-plugin-${id}`, id];
   for (const slug of candidates) {
     if (fs.existsSync(path.join(sourceRoot, slug, 'plugin.json'))) return slug;
