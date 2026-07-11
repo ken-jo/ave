@@ -20,6 +20,7 @@ const mcpAppChannels = [
   CHANNELS.mcp.openDetached,
   CHANNELS.mcp.detachedPayload,
   CHANNELS.mcp.serverDisconnected,
+  CHANNELS.mcp.disposeUiSession,
 ];
 
 describe("#885 MCP-app channels are internal (fail-closed)", () => {
@@ -27,6 +28,7 @@ describe("#885 MCP-app channels are internal (fail-closed)", () => {
     expect(CHANNELS.mcp.openDetached).toBe("ave:mcp:open-detached");
     expect(CHANNELS.mcp.detachedPayload).toBe("ave:mcp:detached-payload");
     expect(CHANNELS.mcp.serverDisconnected).toBe("ave:mcp:server-disconnected");
+    expect(CHANNELS.mcp.disposeUiSession).toBe("ave:mcp:dispose-ui-session");
   });
 
   it("no MCP-app channel leaks into PUBLIC_CHANNELS", () => {

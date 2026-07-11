@@ -185,6 +185,11 @@ export const CHANNELS = {
     openDetached: "ave:mcp:open-detached",
     detachedPayload: "ave:mcp:detached-payload",
     serverDisconnected: "ave:mcp:server-disconnected",
+    // Renderer → main on card unmount: dispose the sandbox-proxy session so its token
+    // is freed promptly instead of waiting for the global LRU to evict it. INTERNAL,
+    // same posture as the three above. Idempotent and harmless — worst case a stale
+    // token 404s a dead card's reload.
+    disposeUiSession: "ave:mcp:dispose-ui-session",
   },
   /** Plugin webview bridge (ave:plugin:*) — sandboxed plugin-frame origin. */
   pluginBridge: {
