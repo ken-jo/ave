@@ -74,7 +74,7 @@ why a high ceiling is still needed for future large surfaces:
 | `agent-hub` | 43 |
 | `lyra-mail` | 30 |
 | `meeting` | 29 |
-| `orion-api` | 29 |
+| `orion` | 29 |
 | `local-indexer` | 19 |
 
 ## Policy
