@@ -1746,7 +1746,7 @@ Permissions tab 은 `PERMISSIONS.hookTrustList` 를 통해 비차단 알림을 �
 
 #### 6.3.6 — Manifest integrity proxy
 
-Manifest 는 각 tool 의 `_meta["xyz.ave/pathFields"]` 로 filesystem path 판정
+Manifest 는 각 tool 의 `_meta["ave/pathFields"]` 로 filesystem path 판정
 metadata 를 선언한다 (per-tool category / workerId 는 manifest 필드가 아님 —
 #885 Phase R 에서 제거; host 가 파생/분류). Host 는 이 pathFields 를 filesystem
 path 판정 SOT 로 사용하고, effective category 는 host-side
@@ -2105,7 +2105,7 @@ graph TB
 
 **`decisionOverride` (meta 전용):** `always-allow-with-audit` (예: `ask_user_question` — 사용자에게 질문하는 도구 자체를 한번 더 승인 모달에 거는 중복 UX 차단) / `ask` (예: `agent_spawn` — `meta` 이지만 사용자 컨펌 필요).
 
-**Migration map:** v4 의 `dangerous` 단일 카테고리는 v5 에서 폐지됨. `bash` → `shell`, `agent_spawn` / `ask_user_question` → `meta`. Plugin 의 filesystem path 판정 metadata SOT 는 tool 객체의 `_meta["xyz.ave/pathFields"]` 이다 (#885 Phase R). Per-tool category 는 manifest 필드가 아니며 effective category 는 host-side `inspectHostRisk`/executor policy 가 invocation 별로 산출한다.
+**Migration map:** v4 의 `dangerous` 단일 카테고리는 v5 에서 폐지됨. `bash` → `shell`, `agent_spawn` / `ask_user_question` → `meta`. Plugin 의 filesystem path 판정 metadata SOT 는 tool 객체의 `_meta["ave/pathFields"]` 이다 (#885 Phase R). Per-tool category 는 manifest 필드가 아니며 effective category 는 host-side `inspectHostRisk`/executor policy 가 invocation 별로 산출한다.
 
 **Tool Registry 동작:**
 
@@ -2932,7 +2932,7 @@ wrapper(macOS Seatbelt / Linux bwrap)로 감싼다.
 > #885 Phase R 이후 tool 계약은 pure MCP `Tool[]` 하나로 통합됐다: 각 tool 은
 > `{ name, description, inputSchema, _meta? }` 객체이고, renderer 노출 여부는
 > `_meta.ui.visibility` (`["model"]` / `["app"]` / `["model","app"]`), path 판정은
-> `_meta["xyz.ave/pathFields"]`, per-tool category 는 manifest 필드가 아니라 host 분류다
+> `_meta["ave/pathFields"]`, per-tool category 는 manifest 필드가 아니라 host 분류다
 > (`toolSchemas` / `uiActions` / per-tool `category` 는 삭제). 현행 계약은
 > `docs/architecture/plugin-contract-v6-design.md` 참조. 아래는 historical 로 읽을 것.
 

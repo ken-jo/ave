@@ -6,7 +6,7 @@
 
 > **tool 계약 = pure MCP `Tool[]` (#885 Phase R).** 각 tool 은
 > `{ name, description, inputSchema, _meta? }` 객체이고, renderer 노출은
-> `_meta.ui.visibility`, filesystem path 판정은 `_meta["xyz.ave/pathFields"]`,
+> `_meta.ui.visibility`, filesystem path 판정은 `_meta["ave/pathFields"]`,
 > per-tool category 는 manifest 필드가 아니라 host 가 invocation 별로 분류한다.
 > (pre-v6 의 `tools: string[]` + `toolSchemas` map + `uiActions` map + per-tool
 > `category` triple 은 이 하나로 통합·제거됐다 — legacy.) 설계 배경은
@@ -21,7 +21,7 @@
 **핵심 원칙:**
 
 1. **Capability gate = HostApi + 선언적 capability** — HostApi 자체가 1차 게이트이며, `capabilities[]` + 각 tool 의 `_meta.ui.visibility` (renderer 노출 allowlist) 는 LYRA Mail · 이벤트 namespace 등 HostApi 단독으로 표현 불가능한 2차 게이트를 보강한다.
-2. **SDK schema first** — 모든 `tools[]` 항목은 pure MCP `Tool` 객체로 `name`, `description`, `inputSchema`, `_meta?` 를 선언한다. path 판정은 `_meta["xyz.ave/pathFields"]` 가 SOT 이고, per-tool category 는 manifest 필드가 아니라 host 가 invocation 별로 분류한다 (플러그인이 자기 위험도를 스스로 매기지 않는다).
+2. **SDK schema first** — 모든 `tools[]` 항목은 pure MCP `Tool` 객체로 `name`, `description`, `inputSchema`, `_meta?` 를 선언한다. path 판정은 `_meta["ave/pathFields"]` 가 SOT 이고, per-tool category 는 manifest 필드가 아니라 host 가 invocation 별로 분류한다 (플러그인이 자기 위험도를 스스로 매기지 않는다).
 3. **In-process + try/catch** — worker_threads 격리 없이 95% 장애를 커버. 런타임 복잡도를 낮게 유지.
 4. **플러그인 저자가 스키마 수기 작성** — zod 자동추출 금지. 번들 크기·버전 충돌 없음.
 5. **JSON Schema draft-07 + `type: "object"` 필수** — OpenAI/Claude/Gemini 모두 top-level object 요구.
@@ -116,7 +116,7 @@ interface Tool {
   };
   _meta?: {
     ui?: { visibility: Array<"model" | "app"> };   // renderer 노출: model=LLM, app=renderer
-    "xyz.ave/pathFields"?: string[];              // filesystem path 판정 SOT (유일한 Ave 전용 키)
+    "ave/pathFields"?: string[];              // filesystem path 판정 SOT (유일한 Ave 전용 키)
   };
   // per-tool category 는 manifest 필드가 아님 — host 가 invocation 별로 분류.
 }
@@ -277,7 +277,7 @@ Renderer UI 는 `ave:plugins:call` IPC 를 통해 app-visible 플러그인 tool 
 
 1. **하나의 tool, visibility 로 surface 결정** — `["model"]` = LLM 전용, `["app"]` = renderer 전용(app-only), `["model","app"]` = 겸용. auth/status/login/panel-internal 메서드는 `["app"]` 로 둔다.
 2. **권한 경로 분리** — `PluginRuntime.callFromUi(method, payload)` 는 매번 tool 의 visibility 를 재확인한 뒤 host delegate 로 넘긴다. visibility 에 `"model"` 이 있으면 ToolExecutor 를 호출하므로 sensitive path, allowed directories, reviewer, hooks, audit 정책이 적용된다. `["app"]` app-only tool 은 auth status polling 을 제외하고 active user activation 이 있어야 실행되며, runtime 이 visibility 재검증과 audit log 를 남긴다.
-3. **도구 이름 제한 없음** — 어떤 접미사든 `"app"` visibility 로 노출할 수 있다. 실제 위험 작업은 이름이 아니라 `_meta["xyz.ave/pathFields"]` 와 host-classified category 로 평가한다.
+3. **도구 이름 제한 없음** — 어떤 접미사든 `"app"` visibility 로 노출할 수 있다. 실제 위험 작업은 이름이 아니라 `_meta["ave/pathFields"]` 와 host-classified category 로 평가한다.
 
 **예시 (`_meta.ui.visibility`):**
 
@@ -631,7 +631,7 @@ import { Stack, Toggle } from "@ave/plugin-sdk/ui";
 
 ## 3. Tool inputSchema 작성 가이드
 
-각 tool 객체는 `inputSchema` (JSON Schema draft-07) 를 담는다. filesystem path 인자는 `_meta["xyz.ave/pathFields"]` (Layer 0/1/5 path 검사 입력) 로 선언하고, per-tool category 는 manifest 필드가 아니라 host 가 invocation 별로 분류한다. top-level 은 반드시 `"type": "object"` — 모든 LLM vendor 공통 요구사항. (pre-v6 의 `toolSchemas` map 은 #885 Phase R 에서 tool 객체로 인라인됨.)
+각 tool 객체는 `inputSchema` (JSON Schema draft-07) 를 담는다. filesystem path 인자는 `_meta["ave/pathFields"]` (Layer 0/1/5 path 검사 입력) 로 선언하고, per-tool category 는 manifest 필드가 아니라 host 가 invocation 별로 분류한다. top-level 은 반드시 `"type": "object"` — 모든 LLM vendor 공통 요구사항. (pre-v6 의 `toolSchemas` map 은 #885 Phase R 에서 tool 객체로 인라인됨.)
 `description` 은 **필수** (`minLength: 10`) — 10자 미만이면 AJV 가 거부한다.
 
 ### 예시 1: meeting_push_chunk (바이너리 데이터 포함)
@@ -718,7 +718,7 @@ import { Stack, Toggle } from "@ave/plugin-sdk/ui";
 
 - [ ] top-level `"type": "object"` 선언
 - [ ] `description` 10자 이상 (AJV `minLength: 10`)
-- [ ] 파일 경로 인자가 있으면 `_meta["xyz.ave/pathFields"]` 에 dotted selector 로 선언 (per-tool category 는 host 가 분류 — manifest 에 선언 안 함)
+- [ ] 파일 경로 인자가 있으면 `_meta["ave/pathFields"]` 에 dotted selector 로 선언 (per-tool category 는 host 가 분류 — manifest 에 선언 안 함)
 - [ ] `required` 배열에 필수 파라미터 명시
 - [ ] `description`으로 LLM에 사전 조건 전달 (예: "먼저 X를 호출해야 함")
 - [ ] enum 값이 있으면 `enum` 키 사용 (LLM 환각 방지)
@@ -871,7 +871,7 @@ Ave 는 IPC/RPC 를 **시스템 레벨 전용**으로 확정한다. 플러그인
 - `capabilities: ["knowledge-index", "worker-client"]`.
 - Python subprocess (30s 폴링) 로 FileWatcher 대신 운영 — `index_scan` 은 멱등 설계.
 - `index_add_folder` 는 `/etc`, `/usr`, `~/.ssh` 등 위험 경로를 플러그인이 스스로 차단 — HostApi 레벨 제어 없음.
-- 각 tool `inputSchema` 필수: `index_add_folder` 는 path 인자를 `_meta["xyz.ave/pathFields"]` 로 선언한다 (effective category 는 host 가 분류).
+- 각 tool `inputSchema` 필수: `index_add_folder` 는 path 인자를 `_meta["ave/pathFields"]` 로 선언한다 (effective category 는 host 가 분류).
 
 ### 5.3 LYRA Mail (`lyra-mail`)
 
@@ -1045,7 +1045,7 @@ export const createPlugin: RuntimePluginFactory = async (context) => {
 - [ ] 필수 파라미터 누락 시 `throw new Error()` 로 명확한 에러 메시지
 - [ ] `dist/index.js` 가 `RuntimePluginFactory` 를 default export
 - [ ] `plugin.json` 의 `entry` 가 실제 빌드 산출물 경로
-- [ ] 각 `tools[]` Tool 객체에 `description` (10자 이상), `inputSchema`, `_meta.ui.visibility`, 필요 시 `_meta["xyz.ave/pathFields"]`
+- [ ] 각 `tools[]` Tool 객체에 `description` (10자 이상), `inputSchema`, `_meta.ui.visibility`, 필요 시 `_meta["ave/pathFields"]`
 - [ ] marketplace publish/upload 경로로 artifact를 게시
 
 ### @ave/plugin-sdk (현행)

@@ -25,7 +25,7 @@ const BASE_MANIFEST: PluginManifest = {
       name: "meeting_export",
       description: "Export the transcript to a path",
       inputSchema: { type: "object", properties: { path: { type: "string" } } },
-      _meta: { ui: { visibility: ["model"] }, "xyz.ave/pathFields": ["path"] },
+      _meta: { ui: { visibility: ["model"] }, "ave/pathFields": ["path"] },
     },
     {
       // APP-ONLY — serves the plugin's CARD, hidden from the model. It IS projected
@@ -82,25 +82,48 @@ describe("plugin-server-projection — normalized Tool[] → MCP tools/list (#88
     const tools = manifestToolsToMcpTools(BASE_MANIFEST);
     const start = tools.find((t) => t.name === "meeting_start")!;
     const exp = tools.find((t) => t.name === "meeting_export")!;
-    expect((start._meta as Record<string, unknown>)["xyz.ave/pathFields"]).toBeUndefined();
-    expect(exp._meta["xyz.ave/pathFields"]).toEqual(["path"]);
+    expect((start._meta as Record<string, unknown>)["ave/pathFields"]).toBeUndefined();
+    expect(exp._meta["ave/pathFields"]).toEqual(["path"]);
     for (const t of tools) {
       const meta = t._meta as Record<string, unknown>;
       // removed fields never ride the wire
-      expect(meta["xyz.ave/category"]).toBeUndefined();
-      expect(meta["xyz.ave/version"]).toBeUndefined();
-      expect(meta["xyz.ave/writesToOwnSandbox"]).toBeUndefined();
-      expect(meta["xyz.ave/workerId"]).toBeUndefined();
-      expect(meta["xyz.ave/deprecatedSince"]).toBeUndefined();
-      expect(meta["xyz.ave/replacedBy"]).toBeUndefined();
+      expect(meta["ave/category"]).toBeUndefined();
+      expect(meta["ave/version"]).toBeUndefined();
+      expect(meta["ave/writesToOwnSandbox"]).toBeUndefined();
+      expect(meta["ave/workerId"]).toBeUndefined();
+      expect(meta["ave/deprecatedSince"]).toBeUndefined();
+      expect(meta["ave/replacedBy"]).toBeUndefined();
       // host never projects (untrusted) annotations
       expect((t as Record<string, unknown>).annotations).toBeUndefined();
-      // only `ui` + reverse-DNS xyz.ave/* keys; never a reserved mcp second label.
+      // only `ui` + vendor-prefixed ave/* keys; never a reserved mcp second label.
       for (const key of Object.keys(meta)) {
-        expect(key === "ui" || key.startsWith("xyz.ave/")).toBe(true);
+        expect(key === "ui" || key.startsWith("ave/")).toBe(true);
         expect(key).not.toMatch(/(^|\.)(mcp|modelcontextprotocol)\//);
       }
     }
+  });
+
+  it("transitional: reads a legacy xyz.ave/pathFields manifest but emits ONLY the new ave/pathFields on the wire", () => {
+    // A published manifest that has not yet migrated still declares the reverse-DNS
+    // key; the forward projection must read it, but the WIRE carries only the new key.
+    const legacyManifest: PluginManifest = {
+      id: "com.example.legacy",
+      name: "Legacy",
+      version: "1.0.0",
+      entry: "dist/index.js",
+      description: "legacy manifest",
+      tools: [
+        {
+          name: "legacy_export",
+          description: "Export to a path",
+          inputSchema: { type: "object", properties: { path: { type: "string" } } },
+          _meta: { ui: { visibility: ["model"] }, "xyz.ave/pathFields": ["path"] },
+        },
+      ],
+    };
+    const tool = manifestToolsToMcpTools(legacyManifest)[0];
+    expect(tool._meta["ave/pathFields"]).toEqual(["path"]);
+    expect((tool._meta as Record<string, unknown>)["xyz.ave/pathFields"]).toBeUndefined();
   });
 
 });
