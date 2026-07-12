@@ -37,7 +37,7 @@ describe("toolVisibility — explicit arrays are returned verbatim (pure reader,
 describe("toolVisibility — fail-closed defensive backstop (never app-only)", () => {
   const brokenCases: Array<[string, Tool]> = [
     ["_meta absent", { name: "t", inputSchema: { type: "object", properties: {} } }],
-    ["_meta.ui absent", tool({ "xyz.ave/pathFields": ["p"] })],
+    ["_meta.ui absent", tool({ "ave/pathFields": ["p"] })],
     ["visibility []", tool({ ui: { visibility: [] } })],
     ["visibility bogus", tool({ ui: { visibility: ["bogus" as "model"] } })],
   ];
