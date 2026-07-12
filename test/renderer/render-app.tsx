@@ -28,7 +28,7 @@ export type RenderAppReturn = {
   unmount: RenderResult["unmount"];
   api: MockAveApi;
   emitChatStream: (ev: unknown) => void;
-  emitAgentSpawnEvent: (event: unknown) => void;
+  emitAgentSpawnEvent: ReturnType<typeof makeMockAveApi>["emitAgentSpawnEvent"];
   emitOverlayShow: (item: unknown) => void;
   emitOverlayDismiss: (id: string) => void;
   emitRoutineFiredV2: (r: unknown) => void;
