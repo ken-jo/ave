@@ -195,9 +195,8 @@ export interface Tool {
   /**
    * Surface visibility + the one Ave-proprietary key. Recognized keys: the
    * standard `ui` visibility block, and the SOLE remaining Ave-proprietary key
-   * `ave/pathFields`. Any other key is rejected by the manifest schema.
-   * transitional: the legacy reverse-DNS `xyz.ave/pathFields` is still accepted
-   * until published plugin manifests + the SDK are migrated (then remove). @optional
+   * `ave/pathFields`. Any other key — including the removed legacy reverse-DNS
+   * `xyz.ave/pathFields` — is rejected by the manifest schema (fail-closed). @optional
    */
   _meta?: {
     /** SEP-1865 surface visibility. @optional */
@@ -209,8 +208,6 @@ export interface Tool {
      * never bypasses one. @optional
      */
     "ave/pathFields"?: string[];
-    /** transitional: legacy reverse-DNS alias of `ave/pathFields` (remove post-migration). @optional */
-    "xyz.ave/pathFields"?: string[];
   };
 }
 
