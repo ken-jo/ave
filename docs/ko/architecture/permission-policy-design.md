@@ -31,7 +31,7 @@ PR #626 (Routine v2) 의 production smoke test 에서 발견된 *headless routin
 
 | 원칙 | 적용 |
 |---|---|
-| **Fail-safe defaults** | Manifest 의 tool 은 pure MCP `Tool[]` 이다 (#885 Phase R). filesystem path 판정 SOT 는 tool 객체의 `_meta["xyz.ave/pathFields"]` 이며, per-tool category 는 manifest 필드가 아니라 host 가 invocation 별로 분류한다. host 는 plugin 의 `isReadOnly()` 는 신뢰하지 않는다. `fallbackOnError` enum: `deny | rule` 만 (allow-and-audit 폐지), 기본값은 `deny` |
+| **Fail-safe defaults** | Manifest 의 tool 은 pure MCP `Tool[]` 이다 (#885 Phase R). filesystem path 판정 SOT 는 tool 객체의 `_meta["ave/pathFields"]` 이며, per-tool category 는 manifest 필드가 아니라 host 가 invocation 별로 분류한다. host 는 plugin 의 `isReadOnly()` 는 신뢰하지 않는다. `fallbackOnError` enum: `deny | rule` 만 (allow-and-audit 폐지), 기본값은 `deny` |
 | **Defense in depth (eval pipeline + explicit deny reason)** | 평가는 numeric 순서 short-circuit. audit 는 실행 시점의 현재 deny 이유 1건을 `denyReasons[]` 에 기록하며, 가상 dry-run 결과를 섞지 않는다. |
 | **Trust origin classification** | 모든 입력에 4-tier origin 부여 (user-keyboard / plugin-emitted / llm-tool-arg / file-content). Slash + durable mutation 은 user-keyboard 만 |
 | **Atomic cutover through SDK SOT** | Backward-compat shim 금지 (CLAUDE.md No-Fallback). `category/pathFields` 는 SDK schema 에 먼저 추가하고 active plugin 을 맞춘 뒤 host hard-fail 로 전환한다. 앱 로컬 schema extension 이나 boot-warn grace 는 두지 않는다. |
@@ -48,7 +48,7 @@ PR #626 (Routine v2) 의 production smoke test 에서 발견된 *headless routin
 | Source | Registry 진입 | 실행 검증 |
 |--------|---------------|-----------|
 | Built-in/native | hand-written `Tool` / `createDynamicTool()` | `ToolExecutor.executeAll()` → Layer 0/1 path policy → `PermissionManager.checkDetailed(source, category, ...)` → reviewer/hooks/audit |
-| Plugin | Manifest `tools: Tool[]` → `plugin-tool-adapter.ts` | 위와 동일. path 판정은 tool 의 `_meta["xyz.ave/pathFields"]` 가 SOT 이고 effective category 는 host 가 invocation 별로 분류한다. plugin code 의 `isReadOnly()` 나 tool-name 추론으로 보정하지 않는다. |
+| Plugin | Manifest `tools: Tool[]` → `plugin-tool-adapter.ts` | 위와 동일. path 판정은 tool 의 `_meta["ave/pathFields"]` 가 SOT 이고 effective category 는 host 가 invocation 별로 분류한다. plugin code 의 `isReadOnly()` 나 tool-name 추론으로 보정하지 않는다. |
 | MCP | MCP `tools/list` → `mcp-tool-adapter.ts` (`source="mcp"`) | 위와 동일. MCP server governance 는 등록/연결 게이트일 뿐, 실행 위험도 평가는 별도 경로가 아니다. |
 
 `source` 는 risk matrix 와 audit 에 쓰이는 metadata 이며, source 별 우회 권한 경로를 만들지 않는다. plugin/MCP/native 모두 Layer 0/1/3/5/6 을 같은 순서로 통과해야 한다.
@@ -201,7 +201,7 @@ export function canonicalizePathForMatch(rawPath: string): string {
 - SSH keys outside `.ssh/`: `**/id_{rsa,ed25519,ecdsa}` (generic glob)
 - **Ave 자체:** `~/.ave/secrets/**`, `~/.ave/audit*`, `~/.ave/permissions/deferred-queue.jsonl`, `~/.ave/sessions/**`, `~/.config/ave/hooks/**`
 
-**`pathFields[]` declaration:** native host tools and plugin tools declare path-typed input fields through the `Tool` path-fields contract. `extractTargetFilePaths` scans declared fields only, not every string field. Plugin path fields come from the tool object's `_meta["xyz.ave/pathFields"]` (the sole Ave-proprietary manifest key, #885 Phase R), support dotted selectors, and are used by Layer 0/1 and the reviewer.
+**`pathFields[]` declaration:** native host tools and plugin tools declare path-typed input fields through the `Tool` path-fields contract. `extractTargetFilePaths` scans declared fields only, not every string field. Plugin path fields come from the tool object's `_meta["ave/pathFields"]` (the sole Ave-proprietary manifest key, #885 Phase R), support dotted selectors, and are used by Layer 0/1 and the reviewer.
 
 ### Layer 1 — Path policy (NEW, collapsed from Layer 1+10)
 
@@ -296,7 +296,7 @@ registerToolCategory({
 });
 ```
 
-**Manifest validation:** per-tool category 는 manifest 필드가 아니다 (#885 Phase R) — host 가 invocation 별로 effective category 를 분류한다. path 판정 SOT 는 tool 객체의 `_meta["xyz.ave/pathFields"]` 이며, host 는 app-local extension/name inference 없이 pure `Tool[]` manifest 를 등록한다.
+**Manifest validation:** per-tool category 는 manifest 필드가 아니다 (#885 Phase R) — host 가 invocation 별로 effective category 를 분류한다. path 판정 SOT 는 tool 객체의 `_meta["ave/pathFields"]` 이며, host 는 app-local extension/name inference 없이 pure `Tool[]` manifest 를 등록한다.
 
 **Trust boundary (review C2):** `source === "plugin"` 인 invocation 의 카테고리 결정 시 *static manifest category* 만 사용. plugin 의 `isReadOnly()` 호출 금지. `source === "builtin"` 만 input-aware (`isReadOnly(input)`).
 
@@ -320,7 +320,7 @@ Strict mode is mode-first: it asks for `read` as well, including headless read i
 
 ### §3.5 — Manifest integrity (NEW, critic C2)
 
-Plugin 이 선언한 path-field metadata 가 부정확할 때 *runtime sanity check* 가 catch 한다. path 판정 SOT 는 tool 객체의 `_meta["xyz.ave/pathFields"]` 이고 (per-tool category 는 host 가 분류 — manifest 필드 아님, #885 Phase R), host 는 이 metadata 를 Tool Registry authority 로 등록하되 거짓 선언은 검사를 늘릴 뿐 우회하지 못한다. app-local tool-name inference 나 plugin-id mapping extension 은 두지 않는다. `ManifestIntegrityViolation` 이 host→plugin fs boundary 에서 발생하면 plugin disable + audit/UI surface 를 fail-closed 로 수행한다.
+Plugin 이 선언한 path-field metadata 가 부정확할 때 *runtime sanity check* 가 catch 한다. path 판정 SOT 는 tool 객체의 `_meta["ave/pathFields"]` 이고 (per-tool category 는 host 가 분류 — manifest 필드 아님, #885 Phase R), host 는 이 metadata 를 Tool Registry authority 로 등록하되 거짓 선언은 검사를 늘릴 뿐 우회하지 못한다. app-local tool-name inference 나 plugin-id mapping extension 은 두지 않는다. `ManifestIntegrityViolation` 이 host→plugin fs boundary 에서 발생하면 plugin disable + audit/UI surface 를 fail-closed 로 수행한다.
 
 ```typescript
 class ManifestIntegrityProxy {
@@ -698,7 +698,7 @@ compat/fallback surface 는 제외하고, host/app/plugin contract 는 다음 �
 
 | 영역 | 현재 구현 | SOT / 파일 |
 |---|---|---|
-| Tool category contract | Host registry 는 `read/write/shell/network/meta`; per-tool category 는 manifest 필드가 아니라 host 가 invocation 별로 분류한다 (#885 Phase R). plugin path 판정은 tool 객체의 `_meta["xyz.ave/pathFields"]` 가 SOT 이며 app-local name inference 나 compatibility grace 는 없다. | `src/permissions/category-registry.ts`, `src/plugins/runtime/manifest-validation.ts` |
+| Tool category contract | Host registry 는 `read/write/shell/network/meta`; per-tool category 는 manifest 필드가 아니라 host 가 invocation 별로 분류한다 (#885 Phase R). plugin path 판정은 tool 객체의 `_meta["ave/pathFields"]` 가 SOT 이며 app-local name inference 나 compatibility grace 는 없다. | `src/permissions/category-registry.ts`, `src/plugins/runtime/manifest-validation.ts` |
 | Permission IPC | Permission IPC channel 은 `PERMISSIONS` 상수만 사용. main handler / preload bridge / sender-guard tests 가 같은 SOT 를 참조. | `src/shared/ipc-channels.ts`, `src/ipc/domains/permissions.ts`, `src/preload.ts` |
 | Slash origin gate | `/permission` dispatch 는 `user-keyboard` origin 만. plugin-emitted / LLM / file content 는 leading slash 를 모두 제거해 plain text 로 처리. | `src/shared/slash-sanitizer.ts`, `src/permissions/permission-slash.ts` |
 | Reviewer lane | Boot 시 `wireReviewerAgent()` 는 fail-fast. `mode=llm` 인데 provider/API key 가 없으면 silent downgrade 없이 boot 오류로 드러남. | `src/boot.ts`, `src/boot/steps/reviewer-wiring.ts` |
@@ -773,7 +773,7 @@ compat/fallback surface 는 제외하고, host/app/plugin contract 는 다음 �
 - Tests: slash injection regression, audit tamper detection, mode change durability
 
 ### Phase 6 — SDK-first plugin manifest authority cutover (cross-repo) ✅
-- (당시) SDK schema 는 `toolSchemas[*].category` 와 `toolSchemas[*].pathFields` 를 제공했다 — #885 Phase R 에서 pure `Tool[]` + `_meta["xyz.ave/pathFields"]` 로 대체됨 (legacy).
+- (당시) SDK schema 는 `toolSchemas[*].category` 와 `toolSchemas[*].pathFields` 를 제공했다 — #885 Phase R 에서 pure `Tool[]` + `_meta["ave/pathFields"]` 로 대체됨 (legacy).
 - Active plugin manifests 는 authority metadata 를 선언한다.
 - Each plugin PR includes: category/pathFields declaration + sanity test (manifest claim ↔ runtime fs proxy 결과 일치).
 - App host 는 SDK schema 를 그대로 사용한다. app-local category schema extension, boot-warn grace, compatibility alias 를 두지 않는다.

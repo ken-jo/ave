@@ -48,6 +48,10 @@ function handle(req) {
               // the host ignores it (a plugin can lie) and registers the
               // default-strict "write" baseline. Kept to prove the reverse
               // projection does NOT honor a wire-declared category.
+              // transitional: also intentionally uses the LEGACY reverse-DNS
+              // `xyz.ave/*` prefix — this fixture stands in for an out-of-process
+              // plugin that has not yet migrated to `ave/*`, proving the host
+              // still tolerates (and ignores) legacy `_meta` from a real subprocess.
               _meta: { "xyz.ave/category": "read", "xyz.ave/version": "1.0.0" },
             },
           ],

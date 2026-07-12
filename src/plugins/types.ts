@@ -190,10 +190,11 @@ export interface Tool {
   /** MCP icons (2025-11-25). @optional */
   icons?: Array<{ src: string; mimeType?: string; sizes?: string }>;
   /**
-   * Surface visibility + the one Ave-proprietary key. Exactly two keys are
-   * recognized: the standard `ui` visibility block, and the SOLE remaining
-   * Ave-proprietary key `xyz.ave/pathFields`. Any other key is rejected by the
-   * manifest schema. @optional
+   * Surface visibility + the one Ave-proprietary key. Recognized keys: the
+   * standard `ui` visibility block, and the SOLE remaining Ave-proprietary key
+   * `ave/pathFields`. Any other key is rejected by the manifest schema.
+   * transitional: the legacy reverse-DNS `xyz.ave/pathFields` is still accepted
+   * until published plugin manifests + the SDK are migrated (then remove). @optional
    */
   _meta?: {
     /** SEP-1865 surface visibility. @optional */
@@ -204,6 +205,8 @@ export interface Tool {
      * fields. Untrusted routing hint: a lying declaration only ADDS host checks,
      * never bypasses one. @optional
      */
+    "ave/pathFields"?: string[];
+    /** transitional: legacy reverse-DNS alias of `ave/pathFields` (remove post-migration). @optional */
     "xyz.ave/pathFields"?: string[];
   };
 }

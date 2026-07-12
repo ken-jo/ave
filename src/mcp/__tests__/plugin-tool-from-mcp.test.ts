@@ -1,6 +1,6 @@
 /**
  * #885 v6 — the loopback reverse projection (`mcpToolToPluginTool`). The forward
- * projection now emits ONLY `_meta.ui.visibility` + `xyz.ave/pathFields`
+ * projection now emits ONLY `_meta.ui.visibility` + `ave/pathFields`
  * (category / version / writesToOwnSandbox / workerId / deprecation are REMOVED
  * from the wire), so the reverse projection:
  *   - sources `pathFields` from `_meta`,
@@ -30,7 +30,7 @@ const MANIFEST: PluginManifest = {
       name: "files_read",
       description: "Read a file",
       inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
-      _meta: { ui: { visibility: ["model"] }, "xyz.ave/pathFields": ["path"] },
+      _meta: { ui: { visibility: ["model"] }, "ave/pathFields": ["path"] },
     },
     {
       name: "files_write",
@@ -40,7 +40,7 @@ const MANIFEST: PluginManifest = {
         properties: { path: { type: "string" }, body: { type: "string" } },
         required: ["path"],
       },
-      _meta: { ui: { visibility: ["model"] }, "xyz.ave/pathFields": ["path"] },
+      _meta: { ui: { visibility: ["model"] }, "ave/pathFields": ["path"] },
     },
     {
       name: "files_exec",
@@ -97,15 +97,15 @@ describe("mcpToolToPluginTool — v6 reverse projection from _meta", () => {
 
   it("#885 v6 — the wire `category` is fully ignored: absent, valid, or malformed all register write-equivalent", () => {
     // #885 dropped the per-tool category reader: the host ignores any wire
-    // `_meta["xyz.ave/category"]` (loopback sends none; an out-of-process
+    // `_meta["ave/category"]` (loopback sends none; an out-of-process
     // plugin's is not trusted), so the reverse projection pins every tool to the
     // write-equivalent baseline unconditionally. Security invariant preserved —
     // a wire "read" can NEVER silently downgrade a plugin tool; the host
     // `inspectHostRisk` classifier is the effective SOT.
     const wireMetas: Array<Record<string, unknown>> = [
       { ui: { visibility: ["model"] } }, // absent category
-      { "xyz.ave/category": "read" }, // a valid-looking wire "read" is ignored
-      { "xyz.ave/category": 42 }, // malformed
+      { "ave/category": "read" }, // a valid-looking wire "read" is ignored
+      { "ave/category": 42 }, // malformed
     ];
     for (const _meta of wireMetas) {
       const tool = mcpToolToPluginTool(
@@ -117,5 +117,37 @@ describe("mcpToolToPluginTool — v6 reverse projection from _meta", () => {
       expect(tool.category).not.toBe("read");
       expect(tool.isReadOnly({})).toBe(false);
     }
+  });
+
+  it("transitional: reads pathFields from the LEGACY xyz.ave/pathFields wire key (compat until SDK+plugins migrate)", () => {
+    // An out-of-process plugin / SDK that has not yet migrated still emits the
+    // reverse-DNS key on the wire; the reverse projection must still surface it.
+    const legacy = mcpToolToPluginTool(
+      PLUGIN_ID,
+      {
+        name: "legacy_read",
+        inputSchema: { type: "object", properties: { path: { type: "string" } } },
+        _meta: { ui: { visibility: ["model"] }, "xyz.ave/pathFields": ["path"] },
+      },
+      invoke,
+    );
+    expect(legacy.pathFields).toEqual(["path"]);
+  });
+
+  it("prefers the new ave/pathFields over the legacy key when both are present", () => {
+    const both = mcpToolToPluginTool(
+      PLUGIN_ID,
+      {
+        name: "both_read",
+        inputSchema: { type: "object", properties: {} },
+        _meta: {
+          ui: { visibility: ["model"] },
+          "ave/pathFields": ["new"],
+          "xyz.ave/pathFields": ["old"],
+        },
+      },
+      invoke,
+    );
+    expect(both.pathFields).toEqual(["new"]);
   });
 });
