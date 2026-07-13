@@ -18,6 +18,7 @@ import { violetLightBundle } from "../bundles/violet-light.js";
 import { violetDarkBundle } from "../bundles/violet-dark.js";
 import { highContrastBundle } from "../bundles/high-contrast.js";
 import type { ThemeBundle } from "../bundles/types.js";
+import { AVE_TOKEN_NAMES } from "../../../../shared/plugin-ui-tokens.js";
 
 function withTokens(base: ThemeBundle, overrides: Partial<ThemeBundle["tokens"]>): ThemeBundle {
   return { ...base, tokens: { ...base.tokens, ...overrides } };
@@ -49,11 +50,55 @@ describe("tripleToHsl — alpha channel support (issue #616)", () => {
 });
 
 describe("bundleToPluginTokens — derived value snapshot (architect fix #4)", () => {
+  it("emits every public token exactly once", () => {
+    const tokens = bundleToPluginTokens(tokyoNightBundle);
+
+    expect(Object.keys(tokens).sort()).toEqual([...AVE_TOKEN_NAMES].sort());
+    for (const name of AVE_TOKEN_NAMES) {
+      expect(tokens[name], name).toBeTruthy();
+    }
+  });
+
   it("keeps plugin motion tokens aligned to host motion timings", () => {
     const tokens = bundleToPluginTokens(tokyoNightBundle);
 
     expect(tokens["--ave-motion-fast"]).toBe("120ms");
     expect(tokens["--ave-motion-normal"]).toBe("180ms");
+    expect(tokens["--ave-motion-slow"]).toBe("240ms");
+    expect(tokens["--ave-motion-layout"]).toBe("300ms");
+    expect(tokens["--ave-motion-ease-standard"]).toBe("cubic-bezier(0.2, 0, 0, 1)");
+    expect(tokens["--ave-motion-ease-out"]).toBe("cubic-bezier(0.22, 1, 0.36, 1)");
+    expect(tokens["--ave-motion-ease-in-out"]).toBe("cubic-bezier(0.4, 0, 0.2, 1)");
+  });
+
+  it("exposes the host semantic typography rhythm", () => {
+    const tokens = bundleToPluginTokens(tokyoNightBundle);
+
+    expect(tokens["--ave-text-micro"]).toBe("0.75rem");
+    expect(tokens["--ave-leading-micro"]).toBe("1rem");
+    expect(tokens["--ave-tracking-micro"]).toBe("0.015em");
+    expect(tokens["--ave-text-caption"]).toBe("0.75rem");
+    expect(tokens["--ave-leading-caption"]).toBe("1.125rem");
+    expect(tokens["--ave-text-body-sm"]).toBe("0.875rem");
+    expect(tokens["--ave-leading-body-sm"]).toBe("1.25rem");
+    expect(tokens["--ave-text-body"]).toBe("1rem");
+    expect(tokens["--ave-leading-body"]).toBe("1.5rem");
+  });
+
+  it("aliases chat roles from the active bundle without a second color source", () => {
+    const tokens = bundleToPluginTokens(violetLightBundle);
+
+    expect(tokens["--ave-message-user-bg"]).toBe("hsl(271, 76%, 76%)");
+    expect(tokens["--ave-message-user-border"]).toBe(tokens["--ave-message-user-fg"]);
+    expect(tokens["--ave-message-user-muted"]).toBe(tokens["--ave-message-user-fg"]);
+    expect(tokens["--ave-message-user-action"]).toBe(tokens["--ave-message-user-fg"]);
+    expect(tokens["--ave-message-user-emphasis"]).toBe(tokens["--ave-message-user-fg"]);
+    expect(tokens["--ave-input-bar-fg"]).toBe(tokens["--ave-fg"]);
+    expect(tokens["--ave-input-bar-placeholder"]).toBe(
+      "hsla(0, 0%, 15%, 0.82)",
+    );
+    expect(tokens["--ave-input-bar-focus"]).toBe(tokens["--ave-ring"]);
+    expect(tokens["--ave-input-bar-action"]).toBe(tokens["--ave-fg"]);
   });
 
   it("derives --ave-success-fg from the active bundle", () => {
