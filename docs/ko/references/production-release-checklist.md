@@ -127,10 +127,15 @@ Hosted CI는 interactive UAC와 계정 간 desktop 경계를 입증할 수 없�
       수행합니다. Resolved path를 기록하고 원래 사용자의 모든 sentinel/profile이
       그대로이며 administrator profile의 Ave path는 없거나 byte 단위로
       변경되지 않았음을 입증합니다.
-- [ ] Genuine DELETE: 재설치 후 같은 원래 사용자 sentinel을 만들고 별도
-      administrator로 승인하여 genuine DELETE uninstall을 수행합니다. 원래
-      사용자의 모든 Ave sentinel/profile path가 제거되고 administrator
-      profile의 Ave path는 없거나 byte 단위로 변경되지 않았음을 입증합니다.
+- [ ] Genuine DELETE → guided reinstall: KEEP pass 뒤 fresh signed-candidate
+      install에서 같은 원래 사용자 sentinel을 만들고 별도 administrator로
+      승인하여 genuine DELETE uninstall을 수행합니다. 먼저 원래 사용자의 모든
+      Ave sentinel/profile path가 제거되었음을 입증합니다. 그 다음 시작
+      standard user에게 signed candidate 재설치를 명시적으로 안내하고, 그 원래
+      사용자로 first launch를 완료합니다. 두 계정 SID, candidate SHA, Windows
+      build, resolved path와 evidence URL을 기록하고, 실행 process owner와
+      재생성된 모든 app/userData path가 원래 사용자 소유이며 별도 administrator
+      profile은 없거나 byte 단위로 변경되지 않았음을 입증합니다.
 
 제품 전략이 명시적으로 바뀌기 전에는 NSIS path에 online web bootstrapper를
 추가하지 않습니다. 압축된 `uv` payload 같은 runtime asset은 release build
