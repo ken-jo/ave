@@ -11,9 +11,57 @@ const DERIVED_TOKENS = [
   "--ave-focus-shadow",
 ] as const;
 
-describe("AVE_TOKEN_NAMES — derived tinted-surface tokens", () => {
+const CHAT_SEMANTIC_TOKENS = [
+  "--ave-message-user-bg",
+  "--ave-message-user-fg",
+  "--ave-message-user-border",
+  "--ave-message-user-muted",
+  "--ave-message-user-action",
+  "--ave-message-user-emphasis",
+  "--ave-input-bar-bg",
+  "--ave-input-bar-fg",
+  "--ave-input-bar-placeholder",
+  "--ave-input-bar-border",
+  "--ave-input-bar-focus",
+  "--ave-input-bar-subtle",
+  "--ave-input-bar-action",
+] as const;
+
+const TYPOGRAPHY_AND_MOTION_TOKENS = [
+  "--ave-text-micro",
+  "--ave-text-caption",
+  "--ave-text-body-sm",
+  "--ave-text-body",
+  "--ave-leading-micro",
+  "--ave-leading-caption",
+  "--ave-leading-body-sm",
+  "--ave-leading-body",
+  "--ave-tracking-micro",
+  "--ave-tracking-caption",
+  "--ave-tracking-body-sm",
+  "--ave-tracking-body",
+  "--ave-motion-slow",
+  "--ave-motion-layout",
+  "--ave-motion-ease-standard",
+  "--ave-motion-ease-out",
+  "--ave-motion-ease-in-out",
+] as const;
+
+describe("AVE_TOKEN_NAMES — complete public token contract", () => {
   it("includes all 7 new derived tokens", () => {
     for (const token of DERIVED_TOKENS) {
+      expect(AVE_TOKEN_NAMES).toContain(token);
+    }
+  });
+
+  it("includes chat semantic aliases", () => {
+    for (const token of CHAT_SEMANTIC_TOKENS) {
+      expect(AVE_TOKEN_NAMES).toContain(token);
+    }
+  });
+
+  it("includes semantic typography and complete motion roles", () => {
+    for (const token of TYPOGRAPHY_AND_MOTION_TOKENS) {
       expect(AVE_TOKEN_NAMES).toContain(token);
     }
   });

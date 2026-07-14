@@ -10,6 +10,21 @@ import { AVE_SIDE_BROWSER_PARTITION } from "../../../../shared/side-browser.js";
 import { ChatSidePanel } from "../ChatSidePanel.js";
 import { useWorkspaceTabs } from "../../preview/workspace-tabs.js";
 import type { SubAgentSpawn } from "../../subagents/types.js";
+import type {
+  NativeContextMenuAction,
+  NativeContextMenuPayload,
+} from "../../../../shared/native-context-menu.js";
+
+let nativeContextActionHandler: ((action: NativeContextMenuAction) => void) | null = null;
+let previousWindowAve: unknown;
+const showNativeContextMenu = vi.fn(async (_payload: NativeContextMenuPayload) => ({
+  ok: true as const,
+}));
+function emitLastNativeContextCommand(command: NativeContextMenuAction["command"]) {
+  const payload = showNativeContextMenu.mock.calls.at(-1)?.[0];
+  if (!payload) throw new Error("native context menu was not requested");
+  nativeContextActionHandler?.({ requestId: payload.requestId, command });
+}
 
 function api(): AveApi {
   return {
@@ -97,10 +112,23 @@ function HarnessPanel({
 
 describe("ChatSidePanel", () => {
   beforeEach(() => {
+    showNativeContextMenu.mockClear();
+    nativeContextActionHandler = null;
+    previousWindowAve = (window as unknown as { ave?: unknown }).ave;
+    vi.spyOn(window, "getSelection").mockReturnValue(null);
     // File-browser tabs mount ProjectRootsBrowser (workspace.*) and
     // FilePreviewBody (preview.readFile); provide sane default stubs so the
     // panel renders without a real preload bridge.
-    vi.stubGlobal("ave", {
+    const ave = {
+      ui: {
+        showNativeContextMenu,
+        onNativeContextMenuAction: (handler: (action: NativeContextMenuAction) => void) => {
+          nativeContextActionHandler = handler;
+          return () => {
+            if (nativeContextActionHandler === handler) nativeContextActionHandler = null;
+          };
+        },
+      },
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
       preview: {
         readFile: vi.fn(async () => ({ ok: true, content: "# preview", path: "/tmp/x.md", truncated: false })),
@@ -113,14 +141,20 @@ describe("ChatSidePanel", () => {
         reveal: vi.fn(async () => ({ ok: true })),
         dropPrepare: vi.fn(async () => ({ ok: true, pendingPath: "/ws/dropped", ackToken: "tok" })),
       },
-    });
-    (window as unknown as { ave: unknown }).ave = (globalThis as unknown as { ave: unknown }).ave;
+    };
+    (window as unknown as { ave: unknown }).ave = ave;
     // Drop-path bridge (#1458): resolveDroppedPaths is preload-only; default stub
     // returns no path so tests that don't drop are unaffected.
     vi.stubGlobal("aveDrop", { resolveDroppedPaths: vi.fn(() => [] as string[]) });
     (window as unknown as { aveDrop: unknown }).aveDrop = (globalThis as unknown as { aveDrop: unknown }).aveDrop;
   });
   afterEach(() => {
+    if (previousWindowAve === undefined) {
+      delete (window as unknown as { ave?: unknown }).ave;
+    } else {
+      (window as unknown as { ave: unknown }).ave = previousWindowAve;
+    }
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
@@ -544,7 +578,9 @@ describe("ChatSidePanel", () => {
         { path: "/ws/proj", isDefault: false },
       ],
     }));
-    vi.stubGlobal("ave", {
+    const currentAve = (window as unknown as { ave?: Record<string, unknown> }).ave ?? {};
+    (window as unknown as { ave: unknown }).ave = {
+      ...currentAve,
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
       preview: { readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/a.md", truncated: false })) },
       workspace: {
@@ -552,8 +588,7 @@ describe("ChatSidePanel", () => {
         pickRoot,
         listDir: vi.fn(async () => ({ ok: true, path: "/ws", entries: [], truncated: false })),
       },
-    });
-    (window as unknown as { ave: unknown }).ave = (globalThis as unknown as { ave: unknown }).ave;
+    };
 
     renderPanel(
       <HarnessPanel api={api()} sessionId="session-1" targets={[]} files={[]} initialSelectedId={null} />,
@@ -847,7 +882,10 @@ describe("ChatSidePanel", () => {
     }));
     const writeText = vi.fn();
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText }, platform: "MacIntel" });
+    const currentAve =
+      (window as unknown as { ave?: Record<string, unknown> }).ave ?? {};
     vi.stubGlobal("ave", {
+      ...currentAve,
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
       preview: { readFile: vi.fn(async () => ({ ok: true, content: "# x", path: "/ws/readme.md", truncated: false })) },
       workspace: {
@@ -935,9 +973,17 @@ describe("ChatSidePanel", () => {
     );
     fireEvent.click(screen.getByTestId("chat-side-panel-launcher-file-browser"));
     const fileRow = await screen.findByText("readme.md");
-    fireEvent.contextMenu(fileRow);
-    const revealItem = await screen.findByTestId("chat-side-panel-fs-ctx-reveal");
-    fireEvent.click(revealItem);
+    fireEvent.contextMenu(fileRow.closest('[role="treeitem"]') ?? fileRow);
+    expect(showNativeContextMenu).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "workspace-entry",
+      commands: expect.arrayContaining([
+        "workspace.open",
+        "workspace.reveal",
+        "workspace.copy-path",
+        "workspace.copy-relative-path",
+      ]),
+    }));
+    emitLastNativeContextCommand("workspace.reveal");
     await waitFor(() => expect(reveal).toHaveBeenCalledWith("/ws/readme.md"));
   });
 
@@ -948,8 +994,8 @@ describe("ChatSidePanel", () => {
     );
     fireEvent.click(screen.getByTestId("chat-side-panel-launcher-file-browser"));
     const fileRow = await screen.findByText("readme.md");
-    fireEvent.contextMenu(fileRow);
-    fireEvent.click(await screen.findByTestId("chat-side-panel-fs-ctx-copy-path"));
+    fireEvent.contextMenu(fileRow.closest('[role="treeitem"]') ?? fileRow);
+    emitLastNativeContextCommand("workspace.copy-path");
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("/ws/readme.md"));
   });
 
@@ -1128,8 +1174,8 @@ describe("ChatSidePanel", () => {
     );
     fireEvent.click(screen.getByTestId("chat-side-panel-launcher-file-browser"));
     const fileRow = await screen.findByText("readme.md");
-    fireEvent.contextMenu(fileRow);
-    fireEvent.click(await screen.findByTestId("chat-side-panel-fs-ctx-reveal"));
+    fireEvent.contextMenu(fileRow.closest('[role="treeitem"]') ?? fileRow);
+    emitLastNativeContextCommand("workspace.reveal");
     await screen.findByTestId("chat-side-panel-op-error");
   });
 
