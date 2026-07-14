@@ -250,12 +250,14 @@ describe("ave:memory:index:get project options", () => {
     const deps = await setupHandlers(loop);
 
     await invoke("ave:memory:index:get");
-    await invoke("ave:memory:index:get", { projectRoot: process.cwd(), projectName: "workspace" });
+    await invoke("ave:memory:index:get", { projectRoot: process.cwd(), projectName: "spoofed-workspace-name" });
 
     expect(deps.memoryManager.getMemoryIndex).toHaveBeenNthCalledWith(1, {});
     expect(deps.memoryManager.getMemoryIndex).toHaveBeenNthCalledWith(2, {
       projectRoot: process.cwd(),
-      projectName: "workspace",
+      // Default-root identity is resolved centrally; callers cannot override
+      // its display label with a stale or spoofed renderer value.
+      projectName: "default",
       includeUnscoped: true,
     });
   });
