@@ -126,4 +126,6 @@ export const MARKETPLACE = {
 export const UI = {
   assistantContextMenu: "ave:ui:assistant-context-menu",
   assistantContextAction: "ave:ui:assistant-context-action",
+  nativeContextMenu: "ave:ui:native-context-menu",
+  nativeContextAction: "ave:ui:native-context-action",
 } as const;

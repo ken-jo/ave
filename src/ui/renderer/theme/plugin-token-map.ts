@@ -21,6 +21,12 @@ function tripleToHsl(triple: string): string {
   return `hsla(${m[1]}, ${m[2]}%, ${m[3]}%, ${m[4]})`;
 }
 
+function tripleToHslWithAlpha(triple: string, alpha: number): string {
+  const m = _HSL_RE.exec(triple.trim());
+  if (!m) return tripleToHsl(triple);
+  return `hsla(${m[1]}, ${m[2]}%, ${m[3]}%, ${alpha})`;
+}
+
 // Theme-invariant tokens — same across all bundles.
 //
 // These values reach plugin webviews via the primed token payload that
@@ -35,6 +41,18 @@ const _INVARIANT: Partial<Record<AveTokenName, string>> = {
   "--ave-text-sm":         "0.875rem",
   "--ave-text-base":       "1rem",
   "--ave-text-lg":         "1.125rem",
+  "--ave-text-micro":      "0.75rem",
+  "--ave-text-caption":    "0.75rem",
+  "--ave-text-body-sm":    "0.875rem",
+  "--ave-text-body":       "1rem",
+  "--ave-leading-micro":   "1rem",
+  "--ave-leading-caption": "1.125rem",
+  "--ave-leading-body-sm": "1.25rem",
+  "--ave-leading-body":    "1.5rem",
+  "--ave-tracking-micro":  "0.015em",
+  "--ave-tracking-caption":"0em",
+  "--ave-tracking-body-sm":"0em",
+  "--ave-tracking-body":   "0em",
   "--ave-weight-normal":   "400",
   "--ave-weight-medium":   "500",
   "--ave-weight-semibold": "600",
@@ -44,6 +62,11 @@ const _INVARIANT: Partial<Record<AveTokenName, string>> = {
   "--ave-space-4":         "1rem",
   "--ave-motion-fast":     "120ms",
   "--ave-motion-normal":   "180ms",
+  "--ave-motion-slow":     "240ms",
+  "--ave-motion-layout":   "300ms",
+  "--ave-motion-ease-standard": "cubic-bezier(0.2, 0, 0, 1)",
+  "--ave-motion-ease-out":      "cubic-bezier(0.22, 1, 0.36, 1)",
+  "--ave-motion-ease-in-out":   "cubic-bezier(0.4, 0, 0.2, 1)",
 };
 
 /**
@@ -76,6 +99,12 @@ export function bundleToPluginTokens(bundle: ThemeBundle): Record<AveTokenName, 
   const secondary = tripleToHsl(t.secondary);
   const fg        = tripleToHsl(t.foreground);
   const ring      = tripleToHsl(t.ring);
+  const userBg    = tripleToHsl(t["message-user-bg"]);
+  const userFg    = tripleToHsl(t["message-user-fg"]);
+  const inputBg   = tripleToHsl(t["input-bar-bg"]);
+  const inputPlaceholder = tripleToHslWithAlpha(t.foreground, 0.82);
+  const inputBorder = tripleToHsl(t["ui-line"]);
+  const inputSubtle = tripleToHsl(t.muted);
 
   // Mix percentages scale by shell mode and high-contrast requirement.
   // AA contrast on dark surfaces; HC bundle bumps mix to 24/40 for elevated contrast over body background.
@@ -103,6 +132,19 @@ export function bundleToPluginTokens(bundle: ThemeBundle): Record<AveTokenName, 
     "--ave-success-fg":      tripleToHsl(t["success-foreground"]),
     "--ave-border":          tripleToHsl(t.border),
     "--ave-ring":            ring,
+    "--ave-message-user-bg":       userBg,
+    "--ave-message-user-fg":       userFg,
+    "--ave-message-user-border":   userFg,
+    "--ave-message-user-muted":    userFg,
+    "--ave-message-user-action":   userFg,
+    "--ave-message-user-emphasis": userFg,
+    "--ave-input-bar-bg":          inputBg,
+    "--ave-input-bar-fg":          fg,
+    "--ave-input-bar-placeholder": inputPlaceholder,
+    "--ave-input-bar-border":      inputBorder,
+    "--ave-input-bar-focus":       ring,
+    "--ave-input-bar-subtle":      inputSubtle,
+    "--ave-input-bar-action":      fg,
     "--ave-radius":          "0.6rem",
     "--ave-radius-sm":       "0.25rem",
     // ── Derived tinted-surface tokens ────────────────────────────────────────
