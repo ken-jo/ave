@@ -116,6 +116,11 @@ Hosted CI는 interactive UAC와 계정 간 desktop 경계를 입증할 수 없�
       시작 standard user와 별도 administrator의 `whoami /user` SID를 모두
       기록합니다. 화면 녹화와 installer/ASRT log로 installer UAC는 정확히
       1회이고 내부 `srt-win` UAC는 0회임을 입증합니다.
+- [ ] Install-to-launch ownership: 별도 administrator가 elevation과 install을
+      승인한 뒤 실행된 Ave process owner와 모든 resolved app/userData path가
+      시작 standard user 소유임을 입증합니다. Administrator profile에 새 Ave
+      data가 생기지 않았음을 확인하고 두 계정 SID, process owner, resolved
+      path와 evidence URL을 기록합니다.
 - [ ] Genuine KEEP: 시작 사용자의 resolved `%USERPROFILE%\.ave`, Roaming
       `Ave`/`ave`, Local `Ave`/`ave` path에 고정 내용 sentinel을
       만들고 별도 administrator로 승인한 뒤 genuine `/KEEP_APP_DATA` uninstall을
