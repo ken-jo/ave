@@ -135,7 +135,7 @@ Hosted CI는 interactive UAC와 계정 간 desktop 경계를 입증할 수 없�
       사용자로 first launch를 완료합니다. 두 계정 SID, candidate SHA, Windows
       build, resolved path와 evidence URL을 기록하고, 실행 process owner와
       재생성된 모든 app/userData path가 원래 사용자 소유이며 별도 administrator
-      profile은 없거나 byte 단위로 변경되지 않았음을 입증합니다.
+      profile의 Ave path는 없거나 byte 단위로 변경되지 않았음을 입증합니다.
 
 제품 전략이 명시적으로 바뀌기 전에는 NSIS path에 online web bootstrapper를
 추가하지 않습니다. 압축된 `uv` payload 같은 runtime asset은 release build
