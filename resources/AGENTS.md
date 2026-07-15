@@ -65,7 +65,7 @@ feature 전용 상태는 `~/.ave/<feature>/` 아래에 두고 root에는 cross-c
 |---|---|
 | 런타임 계약 | `~/.ave/AGENTS.md` |
 | host 설정 | `~/.ave/settings.json` |
-| 감사 기록 | `~/.ave/audit/*.jsonl` (날짜별 audit와 권한·sandbox channel) |
+| 감사 기록 | current: `~/.ave/audit/*.jsonl`; legacy protected trail: `~/.ave/audit.log*` (새 기록 금지) |
 | 권한 상태 | `~/.ave/permissions.json` |
 | 암호화 비밀 | `~/.ave/secrets/` |
 | 채팅 세션 | `~/.ave/sessions/<sessionId>.jsonl` |

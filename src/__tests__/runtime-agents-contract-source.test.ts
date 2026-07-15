@@ -22,6 +22,7 @@ describe("packaged runtime AGENTS.md contract", () => {
     expect(runtimeContract).toContain("# Ave Runtime Assistant Contract");
     expect(runtimeContract).toContain("~/.ave/plugins/<pluginId>/data/");
     expect(runtimeContract).toContain("~/.ave/audit/*.jsonl");
+    expect(runtimeContract).toContain("~/.ave/audit.log*");
     expect(runtimeContract).toContain("^[a-zA-Z_][a-zA-Z0-9_]*$");
     expect(runtimeContract).toContain("TOOL_TIMEOUT_POLICY");
 
