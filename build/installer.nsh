@@ -330,6 +330,10 @@ FunctionEnd
   StrCpy $R1 "${PRODUCT_NAME}"
   StrCpy $R2 "${APP_ID}"
   StrCpy $R3 "$INSTDIR\${AVE_NSIS_PER_MACHINE_MARKER}"
+  ; Fail closed if the UAC outer-process call itself fails before the cleanup
+  ; function can overwrite its synchronized result registers.
+  StrCpy $R4 "1"
+  StrCpy $R5 "Ave notification cleanup did not run"
   ${if} ${UAC_IsInnerInstance}
     !insertmacro UAC_AsUser_Call Function un.aveCleanupCurrentUserNotificationArtifacts ${UAC_SYNCREGISTERS}
   ${else}
