@@ -38,6 +38,7 @@ import {
   rmSync,
   symlinkSync,
   unlinkSync,
+  constants as fsConstants,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -194,18 +195,24 @@ describe("seedAveHomeDocs — first boot", () => {
 });
 
 describe("seedAveHomeDocs — upgrade markers", () => {
-  it("replaces a byte-identical known packaged AGENTS.md predecessor in place", () => {
+  it("replaces a known packaged predecessor only with no-follow validation", () => {
     seedAveHomeDocs();
     writeRes("AGENTS.md", "AGENTS v2\n");
 
     const r = seedAveHomeDocs();
 
     expect(r.upgraded).toContain("AGENTS.md");
-    expect(readFileSync(join(home, "AGENTS.md"), "utf8")).toBe("AGENTS v2\n");
-    expect(existsSync(join(home, "AGENTS.md.new"))).toBe(false);
+    if (typeof fsConstants.O_NOFOLLOW === "number") {
+      expect(readFileSync(join(home, "AGENTS.md"), "utf8")).toBe("AGENTS v2\n");
+      expect(existsSync(join(home, "AGENTS.md.new"))).toBe(false);
+    } else {
+      expect(readFileSync(join(home, "AGENTS.md"), "utf8")).toBe("AGENTS v1\n");
+      expect(readFileSync(join(home, "AGENTS.md.new"), "utf8")).toBe("AGENTS v2\n");
+    }
   });
 
   it("preserves a concurrent edit detected before the atomic replacement commit", () => {
+    if (typeof fsConstants.O_NOFOLLOW !== "number") return;
     seedAveHomeDocs();
     writeRes("AGENTS.md", "AGENTS v2\n");
     const atomicReplace = atomicFile.replaceUtf8FileAtomicSyncIf;
@@ -226,6 +233,7 @@ describe("seedAveHomeDocs — upgrade markers", () => {
   });
 
   it("keeps the predecessor intact when atomic staging fails", () => {
+    if (typeof fsConstants.O_NOFOLLOW !== "number") return;
     seedAveHomeDocs();
     writeRes("AGENTS.md", "AGENTS v2\n");
     vi.spyOn(atomicFile, "replaceUtf8FileAtomicSyncIf").mockImplementationOnce(() => {
