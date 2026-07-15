@@ -1,146 +1,91 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  ensurePackagedWindowsAveProtocolClient,
-  isSameWindowsExecutablePath,
-  shouldDeferPackagedWindowsProtocolRegistration,
+  getPackagedWindowsProtocolMarkerState,
+  AVE_NSIS_PER_MACHINE_MARKER_FILENAME,
+  type LstatSync,
 } from "../ave-protocol-registration.js";
 
 const CURRENT_EXE = "C:\\Program Files\\Ave\\Ave.exe";
+const MARKER_PATH =
+  "C:\\Program Files\\Ave\\.ave-nsis-per-machine-v1";
 
-describe("packaged Windows ave protocol registration", () => {
-  it("defers only packaged Windows registration", () => {
-    expect(shouldDeferPackagedWindowsProtocolRegistration(true, "win32")).toBe(
-      true,
-    );
-    expect(shouldDeferPackagedWindowsProtocolRegistration(false, "win32")).toBe(
-      false,
-    );
-    expect(shouldDeferPackagedWindowsProtocolRegistration(true, "darwin")).toBe(
-      false,
-    );
-    expect(shouldDeferPackagedWindowsProtocolRegistration(true, "linux")).toBe(
-      false,
+function lstatStub(
+  implementation: (...args: Parameters<LstatSync>) => unknown,
+): LstatSync {
+  return vi.fn(implementation) as unknown as LstatSync;
+}
+
+describe("packaged Windows ave protocol marker", () => {
+  it("uses a fixed versioned marker filename", () => {
+    expect(AVE_NSIS_PER_MACHINE_MARKER_FILENAME).toBe(
+      ".ave-nsis-per-machine-v1",
     );
   });
 
-  it("compares normalized absolute Windows executable paths", () => {
-    expect(
-      isSameWindowsExecutablePath(
-        "c:/PROGRAM FILES/Ave/./Ave.exe",
-        CURRENT_EXE,
-      ),
-    ).toBe(true);
-    expect(
-      isSameWindowsExecutablePath(
-        "\\\\?\\C:\\Program Files\\Ave\\Ave.exe",
-        CURRENT_EXE,
-      ),
-    ).toBe(true);
-    expect(isSameWindowsExecutablePath("Ave.exe", CURRENT_EXE)).toBe(false);
-    expect(isSameWindowsExecutablePath(" " + CURRENT_EXE, CURRENT_EXE)).toBe(
-      false,
-    );
-    expect(isSameWindowsExecutablePath(null, CURRENT_EXE)).toBe(false);
-    expect(
-      isSameWindowsExecutablePath("\\\\server\\share\\Ave.exe", CURRENT_EXE),
-    ).toBe(false);
-    expect(
-      isSameWindowsExecutablePath(
-        "\\\\?\\UNC\\server\\share\\Ave.exe",
-        CURRENT_EXE,
-      ),
-    ).toBe(false);
-    expect(
-      isSameWindowsExecutablePath(
-        "\\\\.\\C:\\Program Files\\Ave\\Ave.exe",
-        CURRENT_EXE,
-      ),
-    ).toBe(false);
-  });
+  it("treats only an adjacent regular file as a per-machine marker", () => {
+    const inspectMarker = lstatStub(() => ({ isFile: () => true }));
 
-  it("does not create an HKCU registration when HKCR resolves to this executable", async () => {
-    const getApplicationInfoForProtocol = vi
-      .fn()
-      .mockResolvedValue({ path: "c:/PROGRAM FILES/Ave/Ave.exe" });
-    const setAsDefaultProtocolClient = vi.fn(() => true);
-
-    await expect(
-      ensurePackagedWindowsAveProtocolClient(
-        { getApplicationInfoForProtocol, setAsDefaultProtocolClient },
-        CURRENT_EXE,
-      ),
-    ).resolves.toBe(true);
-
-    expect(getApplicationInfoForProtocol).toHaveBeenCalledWith("ave://");
-    expect(setAsDefaultProtocolClient).not.toHaveBeenCalled();
+    expect(
+      getPackagedWindowsProtocolMarkerState(CURRENT_EXE, inspectMarker),
+    ).toBe("present");
+    expect(inspectMarker).toHaveBeenCalledWith(MARKER_PATH, {
+      throwIfNoEntry: false,
+    });
   });
 
   it.each([
-    ["missing path", {}],
-    ["malformed relative path", { path: "Ave.exe" }],
-    ["mismatched executable", { path: "C:\\Other\\Ave.exe" }],
-  ])("falls back to Electron for %s", async (_name, application) => {
-    const setAsDefaultProtocolClient = vi.fn(() => true);
+    ["missing marker", undefined],
+    ["directory marker", { isFile: () => false }],
+    ["non-file marker", { isFile: () => false }],
+  ])("treats %s as absent", (_name, result) => {
+    const inspectMarker = lstatStub(() => result);
 
-    await expect(
-      ensurePackagedWindowsAveProtocolClient(
-        {
-          getApplicationInfoForProtocol: vi.fn().mockResolvedValue(application),
-          setAsDefaultProtocolClient,
-        },
-        CURRENT_EXE,
-      ),
-    ).resolves.toBe(true);
-
-    expect(setAsDefaultProtocolClient).toHaveBeenCalledOnce();
-    expect(setAsDefaultProtocolClient).toHaveBeenCalledWith("ave");
+    expect(
+      getPackagedWindowsProtocolMarkerState(CURRENT_EXE, inspectMarker),
+    ).toBe("absent");
   });
 
-  it("falls back when the Windows association lookup rejects", async () => {
-    const setAsDefaultProtocolClient = vi.fn(() => true);
+  it("normalizes a local drive-root path before inspecting the marker", () => {
+    const inspectMarker = lstatStub(() => undefined);
 
-    await expect(
-      ensurePackagedWindowsAveProtocolClient(
-        {
-          getApplicationInfoForProtocol: vi
-            .fn()
-            .mockRejectedValue(new Error("missing")),
-          setAsDefaultProtocolClient,
-        },
-        CURRENT_EXE,
+    expect(
+      getPackagedWindowsProtocolMarkerState(
+        "c:/Program Files/Ave/./Ave.exe",
+        inspectMarker,
       ),
-    ).resolves.toBe(true);
-
-    expect(setAsDefaultProtocolClient).toHaveBeenCalledOnce();
+    ).toBe("absent");
+    expect(inspectMarker).toHaveBeenCalledWith(
+      "c:\\Program Files\\Ave\\.ave-nsis-per-machine-v1",
+      { throwIfNoEntry: false },
+    );
   });
 
-  it("soft-fails when Electron's setter throws", async () => {
-    const setAsDefaultProtocolClient = vi.fn(() => {
-      throw new Error("registry denied");
+  it("returns unknown when lstat fails unexpectedly", () => {
+    const inspectMarker = lstatStub(() => {
+      throw new Error("access denied");
     });
 
-    await expect(
-      ensurePackagedWindowsAveProtocolClient(
-        {
-          getApplicationInfoForProtocol: vi.fn().mockResolvedValue(null),
-          setAsDefaultProtocolClient,
-        },
-        CURRENT_EXE,
-      ),
-    ).resolves.toBe(false);
-
-    expect(setAsDefaultProtocolClient).toHaveBeenCalledOnce();
+    expect(
+      getPackagedWindowsProtocolMarkerState(CURRENT_EXE, inspectMarker),
+    ).toBe("unknown");
   });
 
-  it("propagates Electron's registration failure result", async () => {
-    await expect(
-      ensurePackagedWindowsAveProtocolClient(
-        {
-          getApplicationInfoForProtocol: vi.fn().mockResolvedValue(null),
-          setAsDefaultProtocolClient: vi.fn(() => false),
-        },
-        CURRENT_EXE,
-      ),
-    ).resolves.toBe(false);
+  it.each([
+    ["relative", "Ave.exe"],
+    ["drive-relative", "C:Ave.exe"],
+    ["whitespace", " " + CURRENT_EXE],
+    ["UNC", "\\\\server\\share\\Ave.exe"],
+    ["extended UNC", "\\\\?\\UNC\\server\\share\\Ave.exe"],
+    ["extended device", "\\\\?\\C:\\Program Files\\Ave\\Ave.exe"],
+    ["device", "\\\\.\\C:\\Program Files\\Ave\\Ave.exe"],
+    ["NUL", CURRENT_EXE + "\0suffix"],
+    ["non-string", null],
+  ])("never touches the filesystem for a %s path", (_name, executable) => {
+    const inspectMarker = lstatStub(() => ({ isFile: () => true }));
+
+    expect(
+      getPackagedWindowsProtocolMarkerState(executable, inspectMarker),
+    ).toBe("unknown");
+    expect(inspectMarker).not.toHaveBeenCalled();
   });
 });

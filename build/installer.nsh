@@ -44,6 +44,7 @@
 !define AVE_RRF_SUBKEY_WOW6432KEY 0x00020000
 !define AVE_RRF_NOEXPAND 0x10000000
 !define AVE_RRF_ZEROONFAILURE 0x20000000
+!define AVE_NSIS_PER_MACHINE_MARKER ".ave-nsis-per-machine-v1"
 
 ; _root is a predefined HKEY handle. _out becomes 1 only for exactly one
 ; terminating NUL stored as REG_SZ in electron-builder's selected view.
@@ -130,6 +131,9 @@
 !macro customInstall
   Push $0
   Push $R0
+  Push $R1
+  Push $R2
+  Push $R3
 
   !insertmacro resolveSrtWinPath $R0
   ${if} $R0 == ""
@@ -178,6 +182,18 @@
   ${endif}
 
   ave_srtwin_install_done:
+  ; This installer-only marker distinguishes a completed elevated NSIS install
+  ; from a ZIP/win-unpacked launch. Remove a stale marker first so every
+  ; subsequent failure is represented by its absence.
+  ClearErrors
+  Delete "$INSTDIR\${AVE_NSIS_PER_MACHINE_MARKER}"
+  IfFileExists "$INSTDIR\${AVE_NSIS_PER_MACHINE_MARKER}" 0 ave_machine_marker_absent
+    StrCpy $R3 "could not remove the stale per-machine install marker"
+    Goto ave_machine_install_contract_failed
+
+  ave_machine_marker_absent:
+  ; Keep the error flag sticky across the complete registry write set.
+  ClearErrors
   ; electron-builder 26.x does not consume build.protocols for NSIS. Own the
   ; packaged ave:// association explicitly in the all-users shell context.
   WriteRegStr SHELL_CONTEXT "Software\Classes\ave" "" "URL:ave"
@@ -188,6 +204,84 @@
   ; Mirror it into Apps & Features so smoke/enterprise inventory can discover
   ; and cross-check the machine install without guessing a Program Files path.
   WriteRegStr SHELL_CONTEXT "${UNINSTALL_REGISTRY_KEY}" "InstallLocation" "$INSTDIR"
+  ${If} ${Errors}
+    StrCpy $R3 "could not write the per-machine registry contract"
+    Goto ave_machine_install_contract_failed
+  ${EndIf}
+
+  ; Verify exact values and types before attesting completion with the marker.
+  StrCpy $R3 "per-machine registry readback did not match the install contract"
+  ClearErrors
+  ReadRegStr $R1 SHELL_CONTEXT "Software\Classes\ave" ""
+  ${If} ${Errors}
+    Goto ave_machine_install_contract_failed
+  ${EndIf}
+  StrCmpS $R1 "URL:ave" 0 ave_machine_install_contract_failed
+
+  !insertmacro aveIsExactEmptyUrlProtocolRegSz 0x80000002 $R1
+  StrCmp $R1 "1" 0 ave_machine_install_contract_failed
+
+  ClearErrors
+  ReadRegStr $R1 SHELL_CONTEXT "Software\Classes\ave\DefaultIcon" ""
+  ${If} ${Errors}
+    Goto ave_machine_install_contract_failed
+  ${EndIf}
+  StrCmpS $R1 '"$INSTDIR\${APP_EXECUTABLE_FILENAME}",0' 0 ave_machine_install_contract_failed
+
+  ClearErrors
+  ReadRegStr $R1 SHELL_CONTEXT "Software\Classes\ave\shell\open\command" ""
+  ${If} ${Errors}
+    Goto ave_machine_install_contract_failed
+  ${EndIf}
+  StrCmpS $R1 '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" "%1"' 0 ave_machine_install_contract_failed
+
+  ClearErrors
+  ReadRegStr $R1 SHELL_CONTEXT "${UNINSTALL_REGISTRY_KEY}" "InstallLocation"
+  ${If} ${Errors}
+    Goto ave_machine_install_contract_failed
+  ${EndIf}
+  StrCmpS $R1 "$INSTDIR" 0 ave_machine_install_contract_failed
+
+  ; Create a zero-byte regular file as the final successful install action.
+  ; No runtime code reads marker contents; existence and file type are the
+  ; complete contract.
+  StrCpy $R3 "could not create the per-machine install marker"
+  ClearErrors
+  FileOpen $R1 "$INSTDIR\${AVE_NSIS_PER_MACHINE_MARKER}" w
+  ${If} ${Errors}
+    Goto ave_machine_install_contract_failed
+  ${EndIf}
+  FileClose $R1
+
+  StrCpy $R2 "-1"
+  ClearErrors
+  FileOpen $R1 "$INSTDIR\${AVE_NSIS_PER_MACHINE_MARKER}" r
+  ${If} ${Errors}
+    Goto ave_machine_install_contract_failed
+  ${EndIf}
+  FileSeek $R1 0 END $R2
+  FileClose $R1
+  ${If} ${Errors}
+    Goto ave_machine_install_contract_failed
+  ${EndIf}
+  StrCmp $R2 "0" ave_machine_install_contract_verified
+
+  StrCpy $R3 "per-machine install marker is not a zero-byte regular file"
+  Goto ave_machine_install_contract_failed
+
+  ave_machine_install_contract_failed:
+  ClearErrors
+  Delete "$INSTDIR\${AVE_NSIS_PER_MACHINE_MARKER}"
+  IfFileExists "$INSTDIR\${AVE_NSIS_PER_MACHINE_MARKER}" 0 +3
+    SetErrorLevel 1
+    Abort "Ave install failed: $R3; the incomplete marker could not be removed"
+  SetErrorLevel 1
+  Abort "Ave install failed: $R3"
+
+  ave_machine_install_contract_verified:
+  Pop $R3
+  Pop $R2
+  Pop $R1
   Pop $R0
   Pop $0
 !macroend
