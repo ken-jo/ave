@@ -5,6 +5,7 @@
  * PR #1104's built-in agents/skills seed):
  *   - first-boot copy of packaged resources into ~/.ave/{AGENTS.md,agents,skills,prompts}
  *   - byte-identical re-run is a no-op (idempotent)
+ *   - a byte-identical known packaged AGENTS.md predecessor is replaced in place
  *   - a user-edited AGENTS.md / skill / prompt copy survives upgrade; the new
  *     packaged version lands as `<file>.new` rather than clobbering the user's edit
  *   - user-edited agent profiles are seed-only and do not create `agents/*.md.new`
@@ -32,11 +33,16 @@ import {
   readFileSync,
   existsSync,
   readdirSync,
+  lstatSync,
   statSync,
   rmSync,
+  symlinkSync,
+  unlinkSync,
+  constants as fsConstants,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
+import { createHash } from "node:crypto";
 import { app } from "electron";
 
 vi.mock("electron", () => ({ app: { isPackaged: false } }));
@@ -45,18 +51,34 @@ import {
   listAveHomeDocUpgradeMarkers,
   seedAveHomeDocs,
 } from "../seed-ave-home-docs.js";
+import * as atomicFile from "../../lib/atomic-file.js";
 
 let fixtures: string;
 let home: string;
 const prevAveHome = process.env.AVE_HOME;
 const prevResourceRoot = process.env.AVE_RESOURCE_ROOT;
-const originalResourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+const originalResourcesPathDescriptor = Object.getOwnPropertyDescriptor(
+  process,
+  "resourcesPath",
+);
+
+function setResourcesPath(value: string | undefined): void {
+  Object.defineProperty(process, "resourcesPath", {
+    value,
+    configurable: true,
+    writable: true,
+  });
+}
 
 /** Write a packaged resource fixture under <fixtures>/resources/<rel>. */
 function writeRes(rel: string, content: string): void {
   const p = join(fixtures, "resources", rel);
   mkdirSync(dirname(p), { recursive: true });
   writeFileSync(p, content);
+}
+
+function sha256(content: string): string {
+  return createHash("sha256").update(content).digest("hex");
 }
 
 beforeEach(() => {
@@ -66,12 +88,14 @@ beforeEach(() => {
   process.env.AVE_RESOURCE_ROOT = fixtures;
 
   writeRes("AGENTS.md", "AGENTS v1\n");
+  writeRes("AGENTS.md.replaceable-sha256", `${sha256("AGENTS v1\n")}\n`);
   writeRes(join("agents", "executor.md"), "executor v1\n");
   writeRes(join("skills", "report-writing.md"), "report v1\n");
   writeRes(join("prompts", "summarizer.md"), "summarizer v1\n");
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   rmSync(fixtures, { recursive: true, force: true });
   rmSync(home, { recursive: true, force: true });
   if (prevAveHome === undefined) delete process.env.AVE_HOME;
@@ -79,7 +103,11 @@ afterEach(() => {
   if (prevResourceRoot === undefined) delete process.env.AVE_RESOURCE_ROOT;
   else process.env.AVE_RESOURCE_ROOT = prevResourceRoot;
   (app as { isPackaged: boolean }).isPackaged = false;
-  (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath = originalResourcesPath;
+  if (originalResourcesPathDescriptor) {
+    Object.defineProperty(process, "resourcesPath", originalResourcesPathDescriptor);
+  } else {
+    delete (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+  }
 });
 
 describe("seedAveHomeDocs — first boot", () => {
@@ -146,7 +174,7 @@ describe("seedAveHomeDocs — first boot", () => {
     const resourcesPath = mkdtempSync(join(tmpdir(), "ave-packaged-resources-"));
     try {
       (app as { isPackaged: boolean }).isPackaged = true;
-      (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath = resourcesPath;
+      setResourcesPath(resourcesPath);
       writeFileSync(join(resourcesPath, "AGENTS.md"), "PACKAGED AGENTS\n");
       mkdirSync(join(resourcesPath, "agents"), { recursive: true });
       mkdirSync(join(resourcesPath, "skills"), { recursive: true });
@@ -167,6 +195,88 @@ describe("seedAveHomeDocs — first boot", () => {
 });
 
 describe("seedAveHomeDocs — upgrade markers", () => {
+  it("replaces a known packaged predecessor only with no-follow validation", () => {
+    seedAveHomeDocs();
+    writeRes("AGENTS.md", "AGENTS v2\n");
+
+    const r = seedAveHomeDocs();
+
+    expect(r.upgraded).toContain("AGENTS.md");
+    if (typeof fsConstants.O_NOFOLLOW === "number") {
+      expect(readFileSync(join(home, "AGENTS.md"), "utf8")).toBe("AGENTS v2\n");
+      expect(existsSync(join(home, "AGENTS.md.new"))).toBe(false);
+    } else {
+      expect(readFileSync(join(home, "AGENTS.md"), "utf8")).toBe("AGENTS v1\n");
+      expect(readFileSync(join(home, "AGENTS.md.new"), "utf8")).toBe("AGENTS v2\n");
+    }
+  });
+
+  it("preserves a concurrent edit detected before the atomic replacement commit", () => {
+    if (typeof fsConstants.O_NOFOLLOW !== "number") return;
+    seedAveHomeDocs();
+    writeRes("AGENTS.md", "AGENTS v2\n");
+    const atomicReplace = atomicFile.replaceUtf8FileAtomicSyncIf;
+    vi.spyOn(atomicFile, "replaceUtf8FileAtomicSyncIf").mockImplementationOnce(
+      (target, content, precondition, mode) => {
+        writeFileSync(target, "concurrent user edit\n");
+        return atomicReplace(target, content, precondition, mode);
+      },
+    );
+
+    const r = seedAveHomeDocs();
+
+    expect(r.upgraded).toContain("AGENTS.md");
+    expect(readFileSync(join(home, "AGENTS.md"), "utf8")).toBe(
+      "concurrent user edit\n",
+    );
+    expect(readFileSync(join(home, "AGENTS.md.new"), "utf8")).toBe("AGENTS v2\n");
+  });
+
+  it("keeps the predecessor intact when atomic staging fails", () => {
+    if (typeof fsConstants.O_NOFOLLOW !== "number") return;
+    seedAveHomeDocs();
+    writeRes("AGENTS.md", "AGENTS v2\n");
+    vi.spyOn(atomicFile, "replaceUtf8FileAtomicSyncIf").mockImplementationOnce(() => {
+      throw Object.assign(new Error("forced staging failure"), { code: "EIO" });
+    });
+
+    const r = seedAveHomeDocs();
+
+    expect(r.upgraded).toContain("AGENTS.md");
+    expect(readFileSync(join(home, "AGENTS.md"), "utf8")).toBe("AGENTS v1\n");
+    expect(readFileSync(join(home, "AGENTS.md.new"), "utf8")).toBe("AGENTS v2\n");
+  });
+
+  it("does not follow an AGENTS.md symlink during packaged replacement", () => {
+    if (process.platform === "win32") return;
+    seedAveHomeDocs();
+    const external = join(fixtures, "external-agents.md");
+    writeFileSync(external, "AGENTS v1\n");
+    unlinkSync(join(home, "AGENTS.md"));
+    symlinkSync(external, join(home, "AGENTS.md"));
+    writeRes("AGENTS.md", "AGENTS v2\n");
+
+    const r = seedAveHomeDocs();
+
+    expect(r.upgraded).toContain("AGENTS.md");
+    expect(lstatSync(join(home, "AGENTS.md")).isSymbolicLink()).toBe(true);
+    expect(readFileSync(external, "utf8")).toBe("AGENTS v1\n");
+    expect(readFileSync(join(home, "AGENTS.md.new"), "utf8")).toBe("AGENTS v2\n");
+  });
+
+  it("offers .new without replacing a non-regular AGENTS.md target", () => {
+    seedAveHomeDocs();
+    unlinkSync(join(home, "AGENTS.md"));
+    mkdirSync(join(home, "AGENTS.md"));
+    writeRes("AGENTS.md", "AGENTS v2\n");
+
+    const r = seedAveHomeDocs();
+
+    expect(r.upgraded).toContain("AGENTS.md");
+    expect(lstatSync(join(home, "AGENTS.md")).isDirectory()).toBe(true);
+    expect(readFileSync(join(home, "AGENTS.md.new"), "utf8")).toBe("AGENTS v2\n");
+  });
+
   it("preserves a user edit and writes the new packaged version to <file>.new", () => {
     seedAveHomeDocs();
     writeFileSync(join(home, "AGENTS.md"), "user edited\n");
