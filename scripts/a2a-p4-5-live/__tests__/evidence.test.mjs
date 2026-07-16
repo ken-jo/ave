@@ -58,6 +58,7 @@ import {
 } from "../packaged-live-contract.mjs";
 import { parseStrictJson } from "../strict-json.mjs";
 import { buildPackagedUiEnvironment } from "../ui-driver-environment.mjs";
+import { resolveCanonicalUiManifestPath } from "../ui-driver-input.mjs";
 import { writeExclusiveOutput } from "../../run-a2a-p4-5-packaged-live.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -67,6 +68,10 @@ const SHA_B = "b".repeat(64);
 const HEAD = "a".repeat(40);
 const HUB_HEAD = "b".repeat(40);
 const SERVER_HEAD = "c".repeat(40);
+
+function makeTempDirectory(prefix) {
+  return mkdtempSync(resolve(realpathSync(tmpdir()), prefix));
+}
 
 function descriptor(path, sha256 = SHA) {
   return { path, sha256 };
@@ -216,7 +221,7 @@ test("exact schema and placeholder checks fail closed", () => {
 });
 
 test("evidence descriptors reject escapes, empty files, symlinks, and digest mismatch", () => {
-  const directory = mkdtempSync(resolve(tmpdir(), "ave-evidence-"));
+  const directory = makeTempDirectory("ave-evidence-");
   const manifestPath = resolve(directory, "manifest.json");
   const artifactPath = resolve(directory, "artifact.bin");
   writeFileSync(manifestPath, "{}\n");
@@ -240,16 +245,20 @@ test("evidence descriptors reject escapes, empty files, symlinks, and digest mis
   );
   symlinkSync(artifactPath, resolve(directory, "link"));
   assert.throws(() => readEvidenceDescriptor(manifestPath, descriptor("link", sha256), "artifact"), /non-symlink|symlink path components/u);
-  const outside = mkdtempSync(resolve(tmpdir(), "ave-outside-"));
+  const outside = makeTempDirectory("ave-outside-");
   writeFileSync(resolve(outside, "escaped.bin"), "immutable bytes");
   symlinkSync(outside, resolve(directory, "linked-directory"), "dir");
   assert.throws(() => readEvidenceDescriptor(manifestPath, descriptor("linked-directory/escaped.bin", sha256), "artifact"), /symlink path components/u);
+  assert.throws(
+    () => readRegularFile(resolve(directory, "linked-directory/escaped.bin"), "direct linked artifact"),
+    /symlink path components|non-canonical aliases/u,
+  );
 });
 
 test("O_NOFOLLOW fallback rejects symlink path components explicitly", () => {
   // Resolve the fixture root first so macOS's /tmp -> /private/tmp alias is
   // not itself the path component under test.
-  const directory = realpathSync(mkdtempSync(resolve(tmpdir(), "ave-no-follow-fallback-")));
+  const directory = makeTempDirectory("ave-no-follow-fallback-");
   const artifactPath = resolve(directory, "artifact.bin");
   const linkPath = resolve(directory, "artifact-link.bin");
   writeFileSync(artifactPath, "immutable bytes");
@@ -269,7 +278,7 @@ test("packaged verifier keeps TShark's documented /t tab separator token", () =>
 });
 
 test("large evidence uses bounded streaming hashing/scanning and detects descriptor races", () => {
-  const directory = mkdtempSync(resolve(tmpdir(), "ave-streaming-"));
+  const directory = makeTempDirectory("ave-streaming-");
   const path = resolve(directory, "large.log");
   const marker = CANARIES[0];
   const prefix = Buffer.alloc((1024 * 1024) - 5, "x");
@@ -290,7 +299,7 @@ test("large evidence uses bounded streaming hashing/scanning and detects descrip
 });
 
 test("Ed25519 manifest verification pins the signer fingerprint and raw bytes", () => {
-  const directory = mkdtempSync(resolve(tmpdir(), "ave-signed-"));
+  const directory = makeTempDirectory("ave-signed-");
   const manifestPath = resolve(directory, "live-input.json");
   const keyPath = resolve(directory, "evidence.pub.pem");
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -661,9 +670,22 @@ test("packaged UI environment allowlists runtime state and excludes parent secre
   }
 });
 
+test("packaged UI manifest path is cwd-independent and canonical", () => {
+  const directory = makeTempDirectory("ave-ui-manifest-");
+  const manifestPath = resolve(directory, "manifest.json");
+  writeFileSync(manifestPath, "{}\n");
+  assert.equal(resolveCanonicalUiManifestPath("manifest.json", { cwd: directory }), manifestPath);
+  const linkPath = resolve(directory, "manifest-link.json");
+  symlinkSync(manifestPath, linkPath);
+  assert.throws(
+    () => resolveCanonicalUiManifestPath("manifest-link.json", { cwd: directory }),
+    /manifest path must be canonical/u,
+  );
+});
+
 test("packaged-live output rejects a symlinked ancestor before writing", () => {
-  const baseDirectory = mkdtempSync(resolve(tmpdir(), "ave-packaged-output-"));
-  const outsideDirectory = mkdtempSync(resolve(tmpdir(), "ave-packaged-output-outside-"));
+  const baseDirectory = makeTempDirectory("ave-packaged-output-");
+  const outsideDirectory = makeTempDirectory("ave-packaged-output-outside-");
   symlinkSync(outsideDirectory, resolve(baseDirectory, "artifacts"), "dir");
   assert.throws(
     () => writeExclusiveOutput({ verificationState: "passed" }, { baseDirectory }),
@@ -681,7 +703,7 @@ test("isolated evidence workflow is dispatch-only, immutable-action pinned, exac
     "dpkg-deb --field", "rpm -qp", "readelf --file-header", "actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4", "gh attestation verify",
     "write-installer-provenance.mjs", "codesign --display --verbose=4 \"$mount_point/Ave.app\"",
     "hdiutil attach -readonly -nobrowse -plist", "plutil -convert json -o - -", "system-entities",
-    "spctl --assess --type execute", "--source-digest \"$REQUESTED_HEAD\"",
+    "spctl --assess --type execute", "Verify Windows Authenticode signature validity", "--source-digest \"$REQUESTED_HEAD\"",
     "--signer-workflow former_org/ave/.github/workflows/a2a-p4-5-packaged-evidence.yml", "--deny-self-hosted-runners",
     "--predicate-type https://slsa.dev/provenance/v1", "Requested head must equal the immutable workflow source head",
     "AVE_MAC_SIGNER_CERT_SHA256", "AVE_WINDOWS_PUBLISHER_SUBJECT", "AVE_WINDOWS_SIGNER_THUMBPRINT", "env -u GH_TOKEN node",
