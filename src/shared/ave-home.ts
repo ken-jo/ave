@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 /**
  * Single source of truth for the Ave user-data root.
@@ -14,5 +14,5 @@ import { join } from "node:path";
  * `homedir()` directly, otherwise the env override leaks past one feature.
  */
 export function aveHome(): string {
-  return process.env.AVE_HOME ?? join(homedir(), ".ave");
+  return resolve(process.env.AVE_HOME ?? join(homedir(), ".ave"));
 }
