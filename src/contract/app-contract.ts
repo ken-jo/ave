@@ -141,6 +141,13 @@ export const CHANNELS = {
     counts: "ave:runtime:counts",
     env: "ave:runtime:env",
   },
+  remoteA2a: {
+    targets: "ave:a2a-remote:targets",
+    send: "ave:a2a-remote:send",
+    status: "ave:a2a-remote:status",
+    task: "ave:a2a-remote:task",
+    action: "ave:a2a-remote:action",
+  },
   marketplace: {
     ping: "ave:marketplace:ping",
   },
