@@ -129,7 +129,7 @@ export function parseHubVerificationOutput(output, expected) {
   return { databaseIdentitySha256: fingerprint, snapshotId, counts };
 }
 
-export function verifyHubDatabaseAbsent({ expected, databaseUrl = process.env.AVE_A2A_HUB_DATABASE_URL, run = runFixedProgram } = {}) {
+export function verifyHubDatabaseControlPlaneAndCanaryAbsence({ expected, databaseUrl = process.env.AVE_A2A_HUB_DATABASE_URL, run = runFixedProgram } = {}) {
   if (!databaseUrl) fail("AVE_A2A_HUB_DATABASE_URL is required for the live Hub database gate");
   let connection;
   try {
@@ -156,6 +156,7 @@ export function verifyHubDatabaseAbsent({ expected, databaseUrl = process.env.AV
   ], {
     label: "fixed attributable Hub control-plane and canary query",
     maxBuffer: 16 * 1024 * 1024,
+    timeoutMs: 30 * 60_000,
     env: {
       PGHOST: connection.hostname,
       PGPORT: connection.port || "5432",
