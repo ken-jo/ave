@@ -212,7 +212,9 @@ function findPackagedExecutable(target, releaseDir) {
     return pickBest(matches, [
       `linux-${process.arch}-unpacked${sep}Ave`,
       `linux-${process.arch}-unpacked${sep}ave`,
+      `linux-${process.arch}-unpacked${sep}ave`,
       `linux-unpacked${sep}Ave`,
+      `linux-unpacked${sep}ave`,
       `linux-unpacked${sep}ave`,
     ]);
   }

@@ -28,6 +28,8 @@ describe("installer smoke and packaging discipline", () => {
     expect(smokeScript).toContain("linux-unpacked");
     expect(smokeScript).toContain("/^linux-.+-unpacked$/u");
     expect(smokeScript).toContain("linux-${process.arch}-unpacked");
+    expect(smokeScript).toContain("`linux-${process.arch}-unpacked${sep}ave`,");
+    expect(smokeScript).toContain("`linux-unpacked${sep}ave`,");
     expect(smokeScript).toContain("win-unpacked");
     expect(smokeScript).toContain(".app");
     expect(smokeScript).toContain("AVE_HOME");
