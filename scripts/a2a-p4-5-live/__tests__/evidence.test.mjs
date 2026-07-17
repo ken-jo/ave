@@ -646,6 +646,13 @@ test("Linux packaged executable selection prefers exact native-architecture suff
     pickBestByExactSuffix(["/release/linux-arm64-unpacked/ave", "/release/linux-arm64-unpacked/Ave"], preferences),
     "/release/linux-arm64-unpacked/Ave",
   );
+  assert.equal(
+    pickBestByExactSuffix([
+      "/release/linux-x64-unpacked/resources/notlinux-arm64-unpacked/Ave",
+      "/release/linux-unpacked/Ave",
+    ], preferences),
+    "/release/linux-unpacked/Ave",
+  );
   assert.equal(pickBestByExactSuffix([], preferences), null);
 });
 
