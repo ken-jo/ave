@@ -15,6 +15,10 @@ import {
   prepareElectronLaunchArgs,
   prepareElectronLaunchEnv,
 } from "./lib/electron-launch-options.mjs";
+import {
+  linuxExecutablePreferenceSuffixes,
+  pickBestByExactSuffix,
+} from "./lib/packaged-executable-selection.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, "..");
@@ -209,14 +213,10 @@ function findPackagedExecutable(target, releaseDir) {
       executableNames.has(basename(file)) &&
       canExecute(file)
     );
-    return pickBest(matches, [
-      `linux-${process.arch}-unpacked${sep}Ave`,
-      `linux-${process.arch}-unpacked${sep}ave`,
-      `linux-${process.arch}-unpacked${sep}ave`,
-      `linux-unpacked${sep}Ave`,
-      `linux-unpacked${sep}ave`,
-      `linux-unpacked${sep}ave`,
-    ]);
+    return pickBestByExactSuffix(
+      matches,
+      linuxExecutablePreferenceSuffixes(process.arch, sep),
+    );
   }
 
   const matches = files.filter((file) =>
