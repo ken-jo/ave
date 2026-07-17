@@ -193,6 +193,11 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
     const sorted = [...new Set(channels)].sort();
     expect(sorted).toMatchInlineSnapshot(`
       [
+        "ave:a2a-remote:action",
+        "ave:a2a-remote:send",
+        "ave:a2a-remote:status",
+        "ave:a2a-remote:targets",
+        "ave:a2a-remote:task",
         "ave:agents:install",
         "ave:agents:list",
         "ave:agents:uninstall",
