@@ -18,6 +18,11 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import {
+  linuxExecutablePreferenceSuffixes,
+  pickBestByExactSuffix,
+} from "../../lib/packaged-executable-selection.mjs";
+
+import {
   assertExactKeys,
   assertArtifactStable,
   assertNoFollowFallbackPath,
@@ -587,6 +592,26 @@ test("attestation report binds exact subject, SLSA predicate, certificate source
   assert.equal(verified.workflowRunAttempt, "1");
 });
 
+test("attestation report accepts empty display metadata but still requires the verified embedded bundle", () => {
+  const withoutLocator = validAttestationReport();
+  withoutLocator[0].attestation.bundle_url = "";
+  withoutLocator[0].attestation.initiator = "";
+  assert.equal(verifyFixtureAttestation(withoutLocator).subjectSha256, SHA);
+
+  const emptyBundle = validAttestationReport();
+  emptyBundle[0].attestation.bundle_url = "";
+  emptyBundle[0].attestation.bundle = {};
+  assert.throws(() => verifyFixtureAttestation(emptyBundle), /empty bundle/u);
+
+  const unsafeLocator = validAttestationReport();
+  unsafeLocator[0].attestation.bundle_url = "http://api.github.com/attestations/1";
+  assert.throws(() => verifyFixtureAttestation(unsafeLocator), /credential-free HTTPS URL/u);
+
+  const unsafeInitiator = validAttestationReport();
+  unsafeInitiator[0].attestation.initiator = " github-actions";
+  assert.throws(() => verifyFixtureAttestation(unsafeInitiator), /expected trimmed string/u);
+});
+
 test("attestation report rejects missing, duplicate, and wrong-location bindings", () => {
   const missing = validAttestationReport();
   delete missing[0].verificationResult.signature.certificate.runInvocationURI;
@@ -604,6 +629,31 @@ test("attestation report rejects missing, duplicate, and wrong-location bindings
   const wrongSubject = validAttestationReport();
   wrongSubject[0].verificationResult.statement.subject[0].digest.sha256 = SHA_B;
   assert.throws(() => verifyFixtureAttestation(wrongSubject), /subject digest/u);
+});
+
+test("Linux packaged executable selection prefers exact native-architecture suffixes", () => {
+  const preferences = linuxExecutablePreferenceSuffixes("arm64", "/");
+  const mixed = [
+    "/release/linux-unpacked/ave",
+    "/release/linux-x64-unpacked/Ave",
+    "/release/linux-arm64-unpacked/ave",
+  ];
+  assert.equal(
+    pickBestByExactSuffix(mixed, preferences),
+    "/release/linux-arm64-unpacked/ave",
+  );
+  assert.equal(
+    pickBestByExactSuffix(["/release/linux-arm64-unpacked/ave", "/release/linux-arm64-unpacked/Ave"], preferences),
+    "/release/linux-arm64-unpacked/Ave",
+  );
+  assert.equal(
+    pickBestByExactSuffix([
+      "/release/linux-x64-unpacked/resources/notlinux-arm64-unpacked/Ave",
+      "/release/linux-unpacked/Ave",
+    ], preferences),
+    "/release/linux-unpacked/Ave",
+  );
+  assert.equal(pickBestByExactSuffix([], preferences), null);
 });
 
 test("independent attestation rerun keeps source-digest and scopes GH_TOKEN to gh only", () => {
@@ -700,7 +750,9 @@ test("packaged-live output rejects a symlinked ancestor before writing", () => {
 test("isolated evidence workflow is dispatch-only, immutable-action pinned, exact-head/lock pinned, publisher-verified, and independently attested", () => {
   const workflow = readFileSync(resolve(ROOT, ".github/workflows/a2a-p4-5-packaged-evidence.yml"), "utf8");
   for (const required of [
-    "head_sha:", "agent_hub_head_sha:", "contents: read", "id-token: write", "attestations: write",
+    "head_sha:", "agent_hub_head_sha:", "platform:", "select Linux ARM64 separately", "linux-arm64", "ubuntu-24.04-arm",
+    "runs-on: ubuntu-latest", "PLATFORM_PROFILE: ${{ inputs.platform }}", 'case "$PLATFORM_PROFILE" in',
+    "fromJSON(needs.plan.outputs.matrix)", "matrix.artifact_name", "contents: read", "id-token: write", "attestations: write",
     "git rev-parse HEAD", "git -C .evidence/agent-hub rev-parse HEAD", ".evidence/agent-hub/server/bun.lock", "AGENT_HUB_LOCK_DIGEST_SHA256",
     "readRegularFile", "Agent Hub server lock", "loadBytes:false",
     "repository: former_org/agent-hub", "codesign --verify --deep --strict", "spctl --assess", "Get-AuthenticodeSignature",
@@ -712,7 +764,7 @@ test("isolated evidence workflow is dispatch-only, immutable-action pinned, exac
     "--predicate-type https://slsa.dev/provenance/v1", "Requested head must equal the immutable workflow source head",
     "AVE_MAC_SIGNER_CERT_SHA256", "AVE_WINDOWS_PUBLISHER_SUBJECT", "AVE_WINDOWS_SIGNER_THUMBPRINT", "env -u GH_TOKEN node",
   ]) assert.ok(workflow.includes(required), `missing workflow invariant: ${required}`);
-  for (const forbidden of ["skip_code_sign", "--skip-code-sign", "graceful degradation", "inputs.ref", "\n  push:", "publish-release", "softprops/action-gh-release", "vars.AGENT_HUB_RELEASE_HEAD_SHA", "actions/checkout@v7", "actions/cache@v6", "actions/attest@v4", "actions/upload-artifact@v7", "oven-sh/setup-bun@v2", "awk -F '\\t'"]) {
+  for (const forbidden of ["skip_code_sign", "--skip-code-sign", "graceful degradation", "inputs.ref", 'case "${{ inputs.platform }}" in', "\n  push:", "publish-release", "softprops/action-gh-release", "vars.AGENT_HUB_RELEASE_HEAD_SHA", "actions/checkout@v7", "actions/cache@v6", "actions/attest@v4", "actions/upload-artifact@v7", "oven-sh/setup-bun@v2", "awk -F '\\t'"]) {
     assert.ok(!workflow.includes(forbidden), `forbidden workflow fallback: ${forbidden}`);
   }
   assert.ok(!workflow.includes("readFileSync(process.argv[1])"), "Hub lock digest must use descriptor-safe canonical file reading");
