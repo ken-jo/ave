@@ -262,7 +262,7 @@ describe("PluginArtifactStore — cacheVersionFromManifest", () => {
       expect(snapshot).toEqual({
         installSource: "admin",
         bundleRefs: ["vega-helper"],
-        approvedPluginAccess: { plugins: [{ pluginId: "vega-helper", tools: ["task_list"] }] },
+        approvedPluginAccess: { plugins: [{ pluginId: "vega-helper" }] },
       });
     } finally {
       rmSync(tmp, { recursive: true, force: true });

@@ -738,7 +738,7 @@ import { Stack, Toggle } from "@ave/plugin-sdk/ui";
 | `addTask(task)` | 액션 아이템 → Ave 태스크 자동 생성 (host `taskService` → `~/.ave/tasks/ave-tasks.db` SQLite). | UI 직접 조작 대체 |
 | `saveNote(title, content)` | `~/.ave/plugins/<id>/notes/`에 회의록·요약 저장 (플러그인 namespace 내부) | 대용량 바이너리 저장 |
 | `getSecret(key)` | 암호화된 API 키 조회 | 키를 메모리에 캐시 후 재사용 (매번 호출) |
-| `callTool(toolName, payload?)` | manifest `pluginAccess.tools[]` 로 허용한 다른 플러그인 tool 을 호출. Host 가 PluginRuntime access check 후 ToolExecutor 권한 경로로 위임 | peer plugin module import, handler 직접 호출, 권한 우회 |
+| (플러그인 간 직접 tool 호출 없음) | 다른 플러그인에게 작업을 요청하거나 결과를 받으려면 `emitEvent` / `onEvent` 이벤트 계약으로 모델링 | peer plugin module import, handler 직접 호출, 권한 우회 |
 <!-- PR 3c: getLyraMailToken / startLyraMailAuth / isLyraMailAuthenticated / getLyraMailAccount / onLyraMailAuthChange / withLyraMailRetry — host HostApi 에서 제거됨. lyra-mail 플러그인이 자체 MSAL 소유. architecture.md §9.4a "Plugin-Owned OAuth Authentication" 참조. -->
 | `callLlm(prompt, options?)` | 호스트 LLM 으로 단발 텍스트 생성 (플러그인 분류·요약) | 대화 히스토리·streaming·tool_use 필요 시 (플러그인이 직접 SDK 사용) |
 | `openAuthWindow(options)` ([external-auth-consumer] 필요) | 외부 포털 interactive 로그인 창을 띄우고 지정 도메인 쿠키 수집 (Selenium/webdriver 대체) | OAuth-style localhost callback이 되는 표준 플로우 (→ LYRA Mail 패턴 사용) |
@@ -845,7 +845,7 @@ Ave 는 IPC/RPC 를 **시스템 레벨 전용**으로 확정한다. 플러그인
 - **LLM → plugin tool**: `ToolRegistry` 경유. manifest `tools[]` 에 선언된 이름이 LLM 에 노출, 호출 시 `handlers[toolName]` 로 라우팅. IPC 채널 없음.
 - **Renderer UI → plugin method**: 호스트가 제공하는 generic 핸들러 `ave:plugins:call(toolName, payload)` 단 하나 경유. 각 tool 의 `_meta.ui.visibility` (app-visible) 로 gating (§2.2) — 이름 패턴 차단은 없으며, 확인 UX 는 플러그인이 자체 UI 로 구현한다. 플러그인이 채널을 직접 선언하지 않는다.
 - **Plugin → host service**: `PluginHostApi` 메서드 직접 호출 (in-process).
-- **Plugin → plugin**: broadcast 는 이벤트 버스(`hostApi.emitEvent` / `onEvent`) 를 사용한다. 특정 tool 호출은 caller manifest 의 `pluginAccess.tools[]` 허가가 있을 때만 `hostApi.callTool()` 로 요청하며, Host 는 ToolExecutor 권한 경로를 다시 통과시킨다. peer module import 나 handler 직접 호출은 불가.
+- **Plugin → plugin**: 이벤트 버스(`hostApi.emitEvent` / `onEvent`)만 사용한다. 요청/응답이 필요하면 이벤트 payload에 `requestId`를 넣고 응답 이벤트를 정의한다. 직접 tool 호출, peer module import, handler 직접 호출은 불가하다. 각 플러그인의 자체 UI/MCP tool 호출은 기존의 소유자 검증·권한 경로를 그대로 따른다.
 
 매니페스트에 IPC 바인딩 필드는 존재하지 않으며, 플러그인 번들에서도 Electron `ipcRenderer`/`ipcMain` 을 직접 사용하면 안 된다.
 
@@ -886,7 +886,7 @@ Ave 는 IPC/RPC 를 **시스템 레벨 전용**으로 확정한다. 플러그인
 **파일:** `ave-plugin-hydra/src/hostPlugin.ts`
 
 - `capabilities: ["host:overlay"]` — overlay staging 호출의 단일 런타임 게이트.
-- 다른 플러그인 tool 호출은 `pluginAccess.tools[]` 선언 + `hostApi.callTool()` 위임 경로만 사용한다.
+- 다른 플러그인에 대한 작업 요청과 결과 수신은 이벤트 요청/응답 계약으로 구현한다. 직접 tool 호출 권한은 제공하지 않는다.
 
 ---
 

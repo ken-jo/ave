@@ -491,8 +491,8 @@ describe("PluginRuntime.disable", () => {
     expect(manifest?.capabilities).toEqual(["worker-client"]);
   });
 
-  describe("PluginHostApi.callTool", () => {
-    it("callTool is injected into PluginHostApi via createHostApi", async () => {
+  describe("PluginHostApi cross-plugin isolation", () => {
+    it("does not synthesize a cross-plugin callTool surface", async () => {
       const pluginDir = join(installedDir, "calltool-plugin");
       await mkdir(pluginDir, { recursive: true });
       await writeFile(
@@ -511,7 +511,7 @@ describe("PluginRuntime.disable", () => {
       );
       await writeTestPluginRegistry({ registryPath }, [{ id: "calltool-plugin", manifestPath, enabled: true }]);
 
-      let injectedCallTool: ((toolName: string, payload?: unknown) => Promise<unknown>) | undefined;
+      let injectedHostApi: Record<string, unknown> | undefined;
 
       const guard = new PluginDeploymentGuard({ registryPath, pluginsRoot: installedDir });
       const runtime = new PluginRuntime({
@@ -526,24 +526,22 @@ describe("PluginRuntime.disable", () => {
             onEvent: () => () => {},
             saveMemory: async () => {},
             getSecret: () => null,
-            callTool: async <T = unknown>(toolName: string, payload?: unknown): Promise<T> =>
-              runtime.call(toolName, payload) as Promise<T>,
             callLlm: async () => { throw new Error("not available"); },
             logEvent: () => {},
             onShutdown: () => {},
           };
-          injectedCallTool = hostApi.callTool;
+          injectedHostApi = hostApi;
           return hostApi;
         },
       });
       await runtime.startAll();
 
-      // Verify the tool is loaded and callTool was injected
+      // The plugin's own tool remains loaded, but HostApi has no direct delegate.
       expect(runtime.listToolNames()).toContain("calltool_ping");
-      expect(injectedCallTool).toBeTypeOf("function");
+      expect(injectedHostApi).not.toHaveProperty("callTool");
     });
 
-    it("callTool delegates to pluginRuntime.call and returns Promise<T>", async () => {
+    it("PluginRuntime.call still returns Promise<T> for the plugin's own tool", async () => {
       const pluginDir = join(installedDir, "calltool-delegate");
       await mkdir(pluginDir, { recursive: true });
       await writeFile(
@@ -574,8 +572,6 @@ describe("PluginRuntime.disable", () => {
           onEvent: () => () => {},
           saveMemory: async () => {},
           getSecret: () => null,
-          callTool: async <T = unknown>(toolName: string, payload?: unknown): Promise<T> =>
-            runtime.call(toolName, payload) as Promise<T>,
           callLlm: async () => { throw new Error("not available"); },
           logEvent: () => {},
           onShutdown: () => {},
@@ -583,7 +579,7 @@ describe("PluginRuntime.disable", () => {
       });
       await runtime.startAll();
 
-      // callTool → pluginRuntime.call → returns Promise<T>
+      // The runtime's own invocation path still returns Promise<T>.
       const result = await runtime.call("calltool_echo", { msg: "hello" });
       expect(result).toEqual({ echoed: { msg: "hello" } });
 
@@ -594,7 +590,7 @@ describe("PluginRuntime.disable", () => {
     });
   });
 
-  it("enforces narrow cross-plugin tool/event access for orchestrator plugins", async () => {
+  it("enforces narrow cross-plugin event access for orchestrator plugins", async () => {
     const writePlugin = async (
       id: string,
       methodName: string,
@@ -636,11 +632,12 @@ describe("PluginRuntime.disable", () => {
       "vega-helper",
       "vega_helper_ping",
       {
+        emittedEvents: ["vega_helper.snapshot.requested"],
         pluginAccess: {
           plugins: [
-            { pluginId: "calendar", tools: ["calendar_today"] },
             { pluginId: "email", events: ["email.action.needed"] },
             { pluginId: "meeting", events: ["meeting.summary.created", "meeting.ended"] },
+            { pluginId: "lyra-mail", events: ["lyra-mail.snapshot.ready"] },
           ],
         },
       },
@@ -648,6 +645,14 @@ describe("PluginRuntime.disable", () => {
     const calendarManifestPath = await writePlugin("calendar", "calendar_today");
     const emailManifestPath = await writePlugin("email", "email_ping");
     const meetingManifestPath = await writePlugin("meeting", "meeting_ping");
+    const lyraMailManifestPath = await writePlugin("lyra-mail", "lyramail_ping", {
+      emittedEvents: ["lyra-mail.snapshot.ready"],
+      pluginAccess: {
+        plugins: [
+          { pluginId: "vega-helper", events: ["vega_helper.snapshot.requested"] },
+        ],
+      },
+    });
     await writeTestPluginRegistry({ registryPath }, [
       {
         id: "vega-helper",
@@ -655,24 +660,35 @@ describe("PluginRuntime.disable", () => {
         enabled: true,
         approvedPluginAccess: {
           plugins: [
-            { pluginId: "calendar", tools: ["calendar_today"] },
             { pluginId: "email", events: ["email.action.needed"] },
             { pluginId: "meeting", events: ["meeting.summary.created", "meeting.ended"] },
+            { pluginId: "lyra-mail", events: ["lyra-mail.snapshot.ready"] },
           ],
         },
       },
       { id: "calendar", manifestPath: calendarManifestPath, enabled: true },
       { id: "email", manifestPath: emailManifestPath, enabled: true },
       { id: "meeting", manifestPath: meetingManifestPath, enabled: true },
+      {
+        id: "lyra-mail",
+        manifestPath: lyraMailManifestPath,
+        enabled: true,
+        approvedPluginAccess: {
+          plugins: [
+            { pluginId: "vega-helper", events: ["vega_helper.snapshot.requested"] },
+          ],
+        },
+      },
     ]);
 
     const runtime = makeRuntime();
     await runtime.load();
 
-    expect(() => runtime.assertPluginToolAccess("vega-helper", "calendar_today")).not.toThrow();
     expect(() => runtime.assertPluginEventAccess("vega-helper", "email.action.needed")).not.toThrow();
     expect(() => runtime.assertPluginEventAccess("vega-helper", "meeting.summary.created")).not.toThrow();
-    expect(() => runtime.assertPluginToolAccess("calendar", "vega_helper_ping")).toThrow(/not allowed/i);
+    expect(() => runtime.assertPluginEventAccess("vega-helper", "lyra-mail.snapshot.ready")).not.toThrow();
+    expect(() => runtime.assertPluginEventAccess("lyra-mail", "vega_helper.snapshot.requested")).not.toThrow();
+    expect(() => runtime.assertPluginEventAccess("calendar", "vega_helper.snapshot.requested")).toThrow(/not allowed/i);
     expect(() => runtime.assertPluginEventAccess("calendar", "email.action.needed")).toThrow(/not allowed/i);
   });
 
@@ -725,7 +741,6 @@ describe("PluginRuntime.disable", () => {
         plugins: [
           {
             pluginId: "calendar",
-            tools: ["calendar_today"],
             events: grantedEvents,
           },
         ],
@@ -741,7 +756,6 @@ describe("PluginRuntime.disable", () => {
           plugins: [
             {
               pluginId: "calendar",
-              tools: ["calendar_today"],
               events: grantedEvents,
             },
           ],

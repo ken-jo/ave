@@ -22,30 +22,18 @@
     "plugins": [
       {
         "pluginId": "lyra-mail",
-        "tools": [
-          "lyramail_calendar_today",
-          "lyramail_calendar_list",
-          "lyramail_email_list"
-        ],
         "events": [
           "email.new",
           "calendar.event.upcoming",
           "calendar.event.starting",
           "calendar.event.conflict.detected",
           "calendar.event.added",
-          "lyra-mail.auth.changed"
+          "lyra-mail.auth.changed",
+          "lyra-mail.snapshot.ready"
         ]
       },
       {
         "pluginId": "meeting",
-        "tools": [
-          "meeting_session_detail",
-          "meeting_list_preps",
-          "meeting_bulk_upsert_preps",
-          "meeting_register_scheduled_meetings",
-          "meeting_open_prep",
-          "meeting_open_floating_window"
-        ],
         "events": [
           "meeting.summary.created",
           "meeting.ended"
@@ -223,6 +211,7 @@
     "calendar.event.conflict.detected",
     "work_board.work_item.due_soon",
     "lyra-mail.auth.changed",
+    "lyra-mail.snapshot.ready",
     "orion-api.video-conference.reserved"
   ],
   "emittedEvents": [
@@ -236,7 +225,11 @@
     "vega_helper.alert.video-conference-prep-register",
     "vega_helper.alert.calendar-conflict-prep",
     "vega_helper.alert.meeting-room-suggest",
-    "vega_helper.alert.webex-link-missing"
+    "vega_helper.alert.webex-link-missing",
+    "vega_helper.snapshot.requested",
+    "vega_helper.calendar.sync.requested",
+    "vega_helper.meeting.prep.requested",
+    "vega_helper.meeting.recording.requested"
   ],
   "notificationEvents": [
     {

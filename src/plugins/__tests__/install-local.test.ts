@@ -289,12 +289,12 @@ describe("PluginMarketplaceService.installLocal", () => {
   });
 
   it("mirrors manifest.pluginAccess into registry approvedPluginAccess (parity with marketplace install)", async () => {
-    // Without this, assertPluginEventAccess / assertPluginToolAccess find no
-    // grant for a dev-sideloaded plugin and any cross-plugin event subscribe
+    // Without this, assertPluginEventAccess finds no grant for a
+    // dev-sideloaded plugin and any cross-plugin event subscribe
     // (e.g. vega-helper listening to lyra-mail email.new) throws at startup.
     const accessSpec = {
       plugins: [
-        { pluginId: "lyra-mail", events: ["email.new", "calendar.event.upcoming"], tools: ["lyramail_calendar_today"] },
+        { pluginId: "lyra-mail", events: ["email.new", "calendar.event.upcoming"] },
       ],
     };
     await writeFile(
