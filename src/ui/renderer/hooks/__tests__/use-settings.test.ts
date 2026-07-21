@@ -7,7 +7,6 @@ import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 function makeSettings(): AppSettings {
   return {
     llm: {
-      authMode: "manual",
       provider: "openai",
       vendors: {
         openai: {

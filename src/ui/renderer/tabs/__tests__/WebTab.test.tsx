@@ -12,7 +12,7 @@ import type { AveApi } from "../../types.js";
 import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 
 const WEB_SETTINGS = {
-  llm: { authMode: "manual", provider: "openai", vendors: {}, streamSmoothing: "none", fallbackChain: [] },
+  llm: { provider: "openai", vendors: {}, streamSmoothing: "none", fallbackChain: [] },
   chat: { systemPrompt: "", autoCompact: true },
   webSearch: { provider: "none" },
   webView: { preferredFlow: "in-app" },
