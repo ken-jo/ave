@@ -303,30 +303,11 @@ export const CHANNELS = {
   // instead of inline `"ave:*"` literals. Byte-identical to the strings the
   // preload previously inlined; registered-handler groups are cross-checked by
   // the channel-inventory snapshot.
-  auth: {
-    loginMockup: "ave:auth:login-mockup",
-    progress: "ave:auth:progress",
-    logoutBroadcast: "ave:auth:logout-broadcast",
-    reactivateBroadcast: "ave:auth:reactivate-broadcast",
-    logoutReset: "ave:auth:logout-reset",
-    reactivateDemo: "ave:auth:reactivate-demo",
-  },
-  demo: {
-    status: "ave:demo:status",
-    activate: "ave:demo:activate",
-    activateEmbedded: "ave:demo:activate-embedded",
-    activateOllama: "ave:demo:activate-ollama",
-    relaunchAfterActivation: "ave:demo:relaunch-after-activation",
-    clear: "ave:demo:clear",
-  },
   tour: {
     getState: "ave:tour:get-state",
     markComplete: "ave:tour:mark-complete",
     dismiss: "ave:tour:dismiss",
     start: "ave:tour:start",
-  },
-  onboarding: {
-    contextSet: "ave:onboarding:context:set",
   },
   settingsWindow: {
     open: "ave:settings-window:open",

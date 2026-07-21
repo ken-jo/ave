@@ -100,7 +100,6 @@ describe("dev-flags tamper snapshot", () => {
     expect(isPackagedForbiddenEnvVar("AVE_PLUGINS_DIR")).toBe(true);
     expect(isPackagedForbiddenEnvVar("AVE_WHITELIST_OFFLINE")).toBe(true);
 
-    expect(isPackagedForbiddenEnvVar("AVE_DEMO_VENDOR")).toBe(false);
     expect(isPackagedForbiddenEnvVar("AVE_HOME")).toBe(false);
     expect(isPackagedForbiddenEnvVar("NODE_ENV")).toBe(false);
   });

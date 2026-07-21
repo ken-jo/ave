@@ -8,8 +8,6 @@
  *
  * Domain → channel prefix mapping:
  *   settings     ave:settings:*, ave:shell:*, ave:telemetry:consent-answer
- *   auth         ave:auth:* (#893 mockup login)
- *   demo         ave:demo:* (activation-code → .env.demo decrypt + persist)
  *   tour         ave:tour:*        — Tutorial-C SpotlightTour state + broadcast
  *   chat         ave:chat:*, ave:llm:*, ave:routines:*, ave:routine:*, ave:trigger:*,
  *                ave:memory:*, ave:starred:*, ave:feedback:*, ave:ask-user-question:*
@@ -28,8 +26,6 @@
 import { initDlpAudit } from "../audit/dlp-filter.js";
 import { getIsPackaged } from "../boot/dev-flags.js";
 import { registerSettingsHandlers } from "./domains/settings.js";
-import { registerAuthHandlers } from "./domains/auth.js";
-import { registerDemoHandlers } from "./domains/demo.js";
 import { registerTourHandlers } from "./domains/tour.js";
 import { registerChatHandlers } from "./domains/chat.js";
 import { registerSideChatHandlers } from "./domains/sidechat.js";
@@ -74,8 +70,6 @@ export function registerIpcHandlers(
   initDlpAudit(deps.auditLogger, deps.conversationLoop.getSessionId());
 
   registerSettingsHandlers(deps);
-  registerAuthHandlers(deps);
-  registerDemoHandlers(deps);
   registerTourHandlers(deps);
   registerChatHandlers(deps);
   registerSideChatHandlers(deps);

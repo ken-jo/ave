@@ -10,7 +10,7 @@
  *
  * Determinism: the dev-flags gate is forced to unpackaged (`setIsPackaged(false)`)
  * so the dev domain (`index.ts` gates it on `!getIsPackaged()`) and the mockup
- * auth handler (`auth.ts` early-returns when `getIsPackaged() && !isDemoEnabled()`)
+ * every application IPC handler
  * are always registered — capturing the full wire independent of the host env.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -210,9 +210,6 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:attach:saveClipboardImage",
         "ave:audit:search",
         "ave:audit:stats",
-        "ave:auth:login-mockup",
-        "ave:auth:logout-broadcast",
-        "ave:auth:reactivate-broadcast",
         "ave:bootstrap:retry",
         "ave:chat:abort",
         "ave:chat:branch-from-checkpoint",
@@ -237,12 +234,6 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:chat:session-history",
         "ave:chat:session-resume",
         "ave:chat:sessions",
-        "ave:demo:activate",
-        "ave:demo:activate-embedded",
-        "ave:demo:activate-ollama",
-        "ave:demo:clear",
-        "ave:demo:relaunch-after-activation",
-        "ave:demo:status",
         "ave:dev:getPreflightStatus",
         "ave:dev:setPreflightOverride",
         "ave:diagnostics:crash-list",
@@ -285,7 +276,6 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:memory:user-prefs:refresh",
         "ave:memory:user-prefs:update",
         "ave:notification:clicked",
-        "ave:onboarding:context:set",
         "ave:permission:add-rule",
         "ave:permission:get-mode",
         "ave:permission:list-rules",
