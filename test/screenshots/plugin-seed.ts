@@ -341,7 +341,7 @@ function buildSignedWhitelistEnv(
       },
     ],
   };
-  const whitelistPath = path.join(aveHomeForTest, 'screenshots-marketplace-whitelist.demo.json');
+  const whitelistPath = path.join(aveHomeForTest, 'screenshots-marketplace-whitelist.fixture.json');
   fs.writeFileSync(whitelistPath, body, 'utf-8');
   fs.writeFileSync(`${whitelistPath}.sig`, JSON.stringify(envelope), 'utf-8');
   return {
