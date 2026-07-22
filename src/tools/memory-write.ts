@@ -8,10 +8,17 @@ export const MEMORY_WRITE_MAX_CONTENT_CHARS = 8_000;
 /**
  * Reserved marker namespace used by the memory store for `kind` / project-scope
  * HTML-comment markers (`<!-- ave:kind=memory -->`, `<!-- ave:project-root:… -->`).
- * Persisted content is rejected if it contains this token so a crafted `content`
- * cannot smuggle a fake marker that would be parsed on re-read (scope spoofing).
+ * Persisted title/content is rejected if it contains this token so a crafted
+ * value cannot smuggle a fake marker that would be parsed on re-read (scope
+ * spoofing / memory poisoning).
+ *
+ * The pattern is whitespace-tolerant + case-insensitive on purpose: it MIRRORS
+ * the store's own parser (`/^<!--\s*ave:project-root:…/m`, `stripInternalMarkers`
+ * with `\s*`). A fixed single-space substring check (`"<!-- ave:"`) would miss
+ * `<!--ave:`, `<!--\tave:`, `<!--  Ave:` — all of which the parser still
+ * accepts — so the guard must match every spacing/casing variant the reader does.
  */
-export const MEMORY_WRITE_RESERVED_MARKER = "<!-- ave:";
+export const MEMORY_WRITE_RESERVED_MARKER_PATTERN = /<!--\s*ave:/i;
 
 /** Narrow slice of MemoryManager the tool needs — keeps the dep surface minimal. */
 export type MemoryWriteStore = Pick<MemoryManager, "saveMemory">;
@@ -88,12 +95,12 @@ export function createMemoryWriteTool(deps: MemoryWriteToolDeps): Tool {
         };
       }
       if (
-        title.includes(MEMORY_WRITE_RESERVED_MARKER) ||
-        content.includes(MEMORY_WRITE_RESERVED_MARKER)
+        MEMORY_WRITE_RESERVED_MARKER_PATTERN.test(title) ||
+        MEMORY_WRITE_RESERVED_MARKER_PATTERN.test(content)
       ) {
         return {
           output:
-            `memory_write: title/content must not contain the reserved "${MEMORY_WRITE_RESERVED_MARKER}" marker.`,
+            'memory_write: title/content must not contain the reserved "<!-- ave:" marker namespace.',
           isError: true,
         };
       }
