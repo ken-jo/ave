@@ -63,7 +63,12 @@ export function verifyPluginBundleE2EInputs({
 
   const epPackage = readJson(resolve(orionApiRoot, "package.json"));
   const expectedDependency = `github:former_org/ave-plugin-sdk#${refs.sdk}`;
-  const actualDependency = epPackage.dependencies?.["@ave/plugin-sdk"];
+  const runtimeDependency = epPackage.dependencies?.["@ave/plugin-sdk"];
+  const buildDependency = epPackage.devDependencies?.["@ave/plugin-sdk"];
+  if (runtimeDependency !== undefined && buildDependency !== undefined) {
+    fail("orion-api must declare @ave/plugin-sdk in exactly one dependency section");
+  }
+  const actualDependency = runtimeDependency ?? buildDependency;
   if (actualDependency !== expectedDependency) {
     fail(`orion-api must consume ${expectedDependency}; found ${String(actualDependency)}`);
   }

@@ -43,7 +43,7 @@ function fixture() {
   });
   const orionApiSha = makeRepo(orionApiRoot, {
     "package.json": `${JSON.stringify({
-      dependencies: {
+      devDependencies: {
         "@ave/plugin-sdk": `github:former_org/ave-plugin-sdk#${sdkSha}`,
       },
     })}\n`,
@@ -93,6 +93,17 @@ test("rejects an SDK ref that orion-api does not consume", () => {
   const packagePath = join(f.orionApiRoot, "package.json");
   writeFileSync(packagePath, '{"dependencies":{"@ave/plugin-sdk":"github:former_org/ave-plugin-sdk#main"}}\n');
   assert.throws(() => verifyPluginBundleE2EInputs(f), /orion-api must consume/);
+});
+
+test("rejects duplicate runtime and build-time SDK declarations", () => {
+  const f = fixture();
+  const packagePath = join(f.orionApiRoot, "package.json");
+  const dependency = `github:former_org/ave-plugin-sdk#${f.sdkSha}`;
+  writeFileSync(packagePath, `${JSON.stringify({
+    dependencies: { "@ave/plugin-sdk": dependency },
+    devDependencies: { "@ave/plugin-sdk": dependency },
+  })}\n`);
+  assert.throws(() => verifyPluginBundleE2EInputs(f), /exactly one dependency section/);
 });
 
 test("rejects cross-repository schema drift", () => {

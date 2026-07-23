@@ -208,6 +208,16 @@ vi.mock("../steps/plugin-runtime.js", () => ({
         pluginsRoot: "/tmp/ave-boot-test/plugins",
         cacheRoot: "/tmp/ave-boot-test/plugins/.cache",
       },
+      loopbackManager: {
+        prepareGeneration: vi.fn(),
+        prepareRemoval: vi.fn(),
+        publishGeneration: vi.fn(),
+        postPublishGeneration: vi.fn(),
+        discardGeneration: vi.fn(async () => {}),
+        retireGeneration: vi.fn(async () => {}),
+      },
+      setBundleLifecycleHandler: vi.fn(),
+      startPlugins: vi.fn(async () => {}),
     };
   }),
 }));
