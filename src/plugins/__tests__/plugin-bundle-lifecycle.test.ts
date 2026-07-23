@@ -140,7 +140,11 @@ describe("PluginBundleLifecycle", () => {
     });
     const durableCommit = vi.fn(async () => "committed");
 
-    await expect(lifecycle.deactivateWithCommit("orion-api", durableCommit)).resolves.toBe("committed");
+    const inactiveCommit = await lifecycle.deactivateWithCommit("orion-api", durableCommit);
+    expect(inactiveCommit).toMatchObject({
+      result: "committed",
+    });
+    await expect(inactiveCommit.retirement).resolves.toBeUndefined();
     expect(prepareRuntimeRemoval).not.toHaveBeenCalled();
     expect(loopbackManager.prepareRemoval).not.toHaveBeenCalled();
 
@@ -408,8 +412,12 @@ describe("PluginBundleLifecycle", () => {
     });
 
     await lifecycle.activate("orion-api");
-    await lifecycle.deactivate("orion-api");
-    await lifecycle.waitForRetirements();
+    const committed = await lifecycle.deactivateWithCommit(
+      "orion-api",
+      async () => "removed",
+    );
+    expect(committed.result).toBe("removed");
+    await committed.retirement;
 
     expect(retireRuntimeGeneration).toHaveBeenCalledTimes(2);
     const journal = JSON.parse(await readFile(join(cacheRoot, "plugin-retirement-journal.json"), "utf8"));
