@@ -1,0 +1,38 @@
+FROM oven/bun:1.3.14
+
+USER root
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      ca-certificates \
+      git \
+      zip \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 ave \
+    && useradd --create-home --uid 10001 --gid 10001 --shell /bin/bash ave \
+    && mkdir -p /workspace/ave-plugin-orion-api /out \
+    && chown -R 10001:10001 /workspace /out
+
+COPY --chown=10001:10001 ave-plugin-orion-api/ /workspace/ave-plugin-orion-api/
+
+ARG E2E_NONCE
+ARG HOST_SHA
+ARG MARKETPLACE_SHA
+ARG SDK_SHA
+ARG ORION_API_SHA
+LABEL org.ave.marketplace-e2e.nonce="${E2E_NONCE}" \
+      org.ave.marketplace-e2e.host-sha="${HOST_SHA}" \
+      org.ave.marketplace-e2e.marketplace-sha="${MARKETPLACE_SHA}" \
+      org.ave.marketplace-e2e.sdk-sha="${SDK_SHA}" \
+      org.ave.marketplace-e2e.orion-api-sha="${ORION_API_SHA}"
+
+USER 10001:10001
+ENV HOME=/home/ave
+WORKDIR /workspace/ave-plugin-orion-api
+RUN bun install --frozen-lockfile \
+    && bun run build \
+    && test -f dist/hostPlugin.js \
+    && test -f dist/ui/orion-control.js \
+    && zip -X -q -r "/out/ave-plugin-orion-${ORION_API_SHA}.zip" plugin.json dist skills \
+    && test -s "/out/ave-plugin-orion-${ORION_API_SHA}.zip"
+
+ENTRYPOINT ["/bin/true"]
