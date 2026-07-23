@@ -242,7 +242,7 @@ test("publish, approve, install, update, rollback, disable, re-enable, and unins
     const permissionAudit = () => ctx.page.evaluate(async () => {
       const api = globalThis as unknown as {
         aveApi: {
-          permissions: {
+          permission: {
             auditShow(last: number): Promise<{
               ok: boolean;
               entries: Array<Record<string, unknown>>;
@@ -250,7 +250,7 @@ test("publish, approve, install, update, rollback, disable, re-enable, and unins
           };
         };
       };
-      return api.aveApi.permissions.auditShow(250);
+      return api.aveApi.permission.auditShow(250);
     });
     const assertBundleVersion = async (version: string) => {
       const snapshot = await bundleSnapshot();
