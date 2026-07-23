@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import AdmZip from "adm-zip";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { tmpdir } from "node:os";
 
 import { isAbsolute, join, resolve } from "node:path";
 
@@ -79,7 +78,7 @@ describe("PluginMarketplaceService install()", () => {
     // Phase 2b-1: one test exercises the file:-spec dev branch.
     // Round-3: AVE_DEV=1 subsumes the deprecated AVE_ALLOW_LINKED_PLUGIN_ENTRY.
     process.env.AVE_DEV = "1";
-    testDir = await mkdtemp(join(tmpdir(), "ave-marketplace-install-"));
+    testDir = await mkdtemp(join(process.cwd(), ".ave-marketplace-install-"));
     appRoot = testDir;
     // Phase 2a: registry + installed plugins live under pluginsRoot
     // (testDir/plugins). The legacy `installed/` subdir is gone.
@@ -169,7 +168,12 @@ describe("PluginMarketplaceService install()", () => {
       installed: true,
     });
 
-    expect(downloadArtifact).toHaveBeenCalledWith("test-plugin", "1.2.3", undefined);
+    expect(downloadArtifact).toHaveBeenCalledWith(
+      "test-plugin",
+      "1.2.3",
+      undefined,
+      { signal: expect.any(AbortSignal) },
+    );
     expect(fetchSignatureEnvelope).toHaveBeenCalledWith("test-plugin", "1.2.3");
     expect(downloadVersion).not.toHaveBeenCalled();
     expect(npmInstallMock).not.toHaveBeenCalled();
