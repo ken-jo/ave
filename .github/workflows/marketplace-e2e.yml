@@ -199,6 +199,24 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
 
+      - name: Build and package exact ORION attendance bundle
+        working-directory: ave-plugin-orion-api
+        env:
+          ORION_API_BUNDLE_PATH: /tmp/ave-plugin-orion-${{ env.ORION_API_SHA }}.zip
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$ORION_API_SHA"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          bun install --frozen-lockfile
+          bun run build
+          test -f dist/hostPlugin.js
+          test -f dist/ui/orion-control.js
+          rm -f "$ORION_API_BUNDLE_PATH"
+          zip -X -q -r "$ORION_API_BUNDLE_PATH" plugin.json dist skills
+          test -s "$ORION_API_BUNDLE_PATH"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          sha256sum "$ORION_API_BUNDLE_PATH"
+
       - name: Install Electron display dependencies
         run: |
           sudo apt-get update
@@ -252,6 +270,19 @@ jobs:
         run: >-
           xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24"
           bunx playwright test test/e2e/ui/marketplace-live-lifecycle.spec.ts --workers=1
+
+      - name: Run exact ORION attendance read-write-readback lifecycle
+        working-directory: ave
+        env:
+          M4_E2E: "1"
+          MARKETPLACE_URL: http://127.0.0.1:8765
+          MARKETPLACE_PUBLISHER_KEY: ${{ env.PUBLISHER_KEY }}
+          MARKETPLACE_ADMIN_KEY: ${{ env.ADMIN_KEY }}
+          ORION_API_BUNDLE_PATH: /tmp/ave-plugin-orion-${{ env.ORION_API_SHA }}.zip
+          BUNDLE_E2E_EVIDENCE_PATH: /tmp/marketplace-live-lifecycle-evidence.json
+        run: >-
+          xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24"
+          bunx playwright test test/e2e/ui/orion-attendance-live.spec.ts --workers=1
 
       - name: Run loopback reverse-containment rehearsal
         working-directory: ave
