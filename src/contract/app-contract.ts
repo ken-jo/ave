@@ -125,6 +125,8 @@ export const CHANNELS = {
     configSecretListKeys: "ave:plugins:config:secret:list-keys",
     perfStats: "ave:plugins:perf-stats",
     call: "ave:plugins:call",
+    contributionTrustList: "ave:plugins:contribution-trust:list",
+    contributionTrustSet: "ave:plugins:contribution-trust:set",
     // Lifecycle event channels (main → renderer). Not registered via ipcMain.
     installProgress: "ave:plugins:install-progress",
     installResult: "ave:plugins:install-result",
@@ -256,6 +258,7 @@ export const CHANNELS = {
     getEntryUrl: "ave:plugin:get-entry-url",
     getTheme: "ave:plugin:get-theme",
     callTool: "ave:plugin:call-tool",
+    requestOperationGrant: "ave:plugin:request-operation-grant",
     configGet: "ave:plugin:config:get",
     configSet: "ave:plugin:config:set",
     storageGet: "ave:plugin:storage:get",
