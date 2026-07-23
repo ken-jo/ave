@@ -785,6 +785,11 @@ export type AveApi = {
     p?: unknown,
     options?: { userAction?: boolean; operationGrantToken?: string },
   ) => Promise<unknown>;
+  /** AVE_E2E-only generation/Skill/registry projection; production fails closed. */
+  e2ePluginBundleSnapshot: (
+    pluginId: string,
+    skillLocalId: string,
+  ) => Promise<unknown>;
   /**
    * Subscribe to plugin-emitted events forwarded by the host event bridge
    * (`boot/steps/ipc-bridge.ts` → `ave:plugin:event`). Plugin must declare
