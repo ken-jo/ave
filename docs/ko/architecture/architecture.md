@@ -567,7 +567,7 @@ Phase 1에서 §4.4 Layer A·B 명세를 production 수준으로 끌어올리는
 | **Idle-aware 인덱싱** | `ave/src/main/idle-scheduler.ts` 5-state 머신으로 유휴 시점에 우선순위 큐 처리 |
 | **Cloud 어댑터** | `ave/src/main/cloud-index-adapter.ts`는 Phase 1에서 mock 인터페이스만 제공 |
 | **검색 도구** | builtin tool 4종 — `knowledge_search`, `document_list`, `document_structure`, `document_page_content` |
-| **거버넌스 보강** | `ave/src/tools/executor.ts` Step 2.5 Bash AST pre-validator, `ave/src/main/audit-service.ts`, `ave/src/hooks/post-turn-hook-chain.ts` 연계 |
+| **거버넌스 보강** | `ave/src/tools/invocation-runner.ts` Step 2.5 Bash AST pre-validator, `ave/src/main/audit-service.ts`, `ave/src/hooks/post-turn-hook-chain.ts` 연계 |
 | **Out-of-Scope** | LightRAG knowledge graph, 로컬 임베딩, the LLM backend 기반 인덱싱, enterprise cloud index 실연결, PPTX / XLSX OCR은 후속 단계 |
 
 **Phase 1 완료 메트릭 (ave 기준):**
@@ -1229,7 +1229,13 @@ ave/src/
 │
 ├── tools/         # 1-file-per-tool
 │   ├── base.ts
-│   ├── executor.ts              # ToolExecutor facade + executeAll/executeOne orchestrator
+│   ├── executor.ts              # 안정적인 public barrel (ToolExecutor + executor contracts)
+│   ├── executor-contract.ts     # public invocation/result/callback contracts
+│   ├── executor-implementation.ts # constructor + batch/resume facade; 단일 invocation 위임
+│   ├── invocation-runner.ts     # preparation, path policy, ordered stage orchestration
+│   ├── invocation-authorization.ts # permission/reviewer/rationale stage
+│   ├── invocation-execution.ts  # rate-limit, execution, post-hook, DLP, terminal audit stage
+│   ├── invocation-services.ts   # stage가 공유하는 명시적 host service boundary
 │   ├── executor-ceiling.ts      # runWithCeiling AbortController helper (SOT)
 │   ├── pipeline/ # §4.5.6 pipeline units (C7/C8): path-extraction, approval-purpose,
 │   │            #  audit-entries, display-mask, rate-limiter,
@@ -1928,7 +1934,7 @@ Layer 0–8 의 permission policy 는 *어떤 도구 호출을 허용/거부* �
   *정확히 한 번* 결정되며 runtime 변경 채널은 없다.
 - **Read-relaxation ↔ plugin effect-boundary FILESYSTEM-CONTAINMENT 커플링
   (confines-aware)**: foreground plugin read-relaxation
-  (`src/tools/executor.ts` executeOne) 은 `hostClassifiesRisk` ON **AND
+  (`src/tools/invocation-authorization.ts`) 은 `hostClassifiesRisk` ON **AND
   `sandboxFsContainedProvider(tool)` (= `isActiveSandboxFilesystemContainedForPluginEffects(tool)`)
   true** 일 때만 발화한다. relaxation 은 pre-exec ask (off-hostApi `node:fs`
   WRITE residual 을 gate 하는 것 포함) 를 제거하고 effect-boundary gate 에
@@ -2171,7 +2177,7 @@ flowchart LR
 
 **Phase 1 구현: `BashAstValidator` (`ave/src/main/bash-ast-validator.ts`)**
 
-7개 차단 패턴과 `warn` / `deny` 모드를 분리해 `ave/src/tools/executor.ts` Step 2.5에서 실행한다.
+7개 차단 패턴과 `warn` / `deny` 모드를 분리해 `ave/src/tools/invocation-runner.ts` Step 2.5에서 실행한다.
 
 | Pattern ID | 정규식 패턴 | 차단 사유 |
 | --- | --- | --- |
