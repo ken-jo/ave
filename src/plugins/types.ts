@@ -9,10 +9,12 @@ export type InstallPolicy = "admin" | "user";
 /** Host-enforced minimum risk for one discriminated plugin operation. */
 export type GovernedRiskFloor = "read" | "write" | "network" | "shell";
 
-/** Host-only rule for one member of a plugin tool's operation union. */
-interface PluginToolOperationRule {
+/** Host-owned schema source consumed by the public SDK drift generator. */
+export interface PluginToolOperationRule {
   kind: "read" | "write";
   minimumRisk: GovernedRiskFloor;
+  /** Permit this operation from an app only when the parent Tool is app-visible. @optional */
+  appVisible?: boolean;
   requiresRead?: {
     tool: string;
     operations: string[];
@@ -20,10 +22,9 @@ interface PluginToolOperationRule {
   };
 }
 
-/** Host-only operation sidecar. It is never projected onto MCP wire tools. */
+/** Signed per-operation restrictions colocated on the owning MCP Tool. */
 export interface PluginToolOperationPolicy {
   discriminant: "operation";
-  appAllowed: string[];
   operations: Record<string, PluginToolOperationRule>;
 }
 
@@ -213,9 +214,9 @@ export interface Tool {
   /** MCP icons (2025-11-25). @optional */
   icons?: Array<{ src: string; mimeType?: string; sizes?: string }>;
   /**
-   * Surface visibility + the one Ave-proprietary key. Recognized keys: the
-   * standard `ui` visibility block, and the SOLE remaining Ave-proprietary key
-   * `ave/pathFields`. Any other key — including the removed legacy reverse-DNS
+   * Surface visibility + Ave restriction metadata. Recognized keys: the
+   * standard `ui` visibility block, `ave/pathFields`, and the signed
+   * `ave/operationPolicy`. Any other key — including the removed legacy reverse-DNS
    * `xyz.ave/pathFields` — is rejected by the manifest schema (fail-closed). @optional
    */
   _meta?: {
@@ -228,6 +229,8 @@ export interface Tool {
      * never bypasses one. @optional
      */
     "ave/pathFields"?: string[];
+    /** Operation-level risk/read constraints; restrictions only, never authority expansion. @optional */
+    "ave/operationPolicy"?: PluginToolOperationPolicy;
   };
 }
 
@@ -249,8 +252,6 @@ export interface PluginManifest {
   /** Pure MCP `Tool` objects (manifest == wire). Surface visibility lives in each
    *  tool's `_meta.ui.visibility`; there is no separate app-action map or schema map. */
   tools: Tool[];
-  /** Host-only operation policy sidecar keyed by declared tool name. Never projected onto MCP. */
-  operationGovernance?: Record<string, PluginToolOperationPolicy>;
 
   description: string;
   /** Declarative, inert first-run guidance rendered by the host. */
@@ -575,7 +576,8 @@ export interface VerifyResult {
  * schema (`schemas/plugin-manifest.schema.json`).
  */
 export interface RequiresSpec {
-  capabilities: string[];
+  /** Dependency capabilities required from installed plugins. @optional */
+  capabilities?: string[];
   /**
    * Minimum compatible Ave app version — a plain SemVer `MAJOR.MINOR.PATCH`
    * string (NOT a range; Obsidian-style). Absent = compatible with all

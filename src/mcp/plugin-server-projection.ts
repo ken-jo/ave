@@ -36,7 +36,11 @@
  *  - `manifest.capabilities[]` (advisory kebab-case dependency tags) are
  *    Ave-internal and are NOT projected into MCP `ServerCapabilities`.
  */
-import type { PluginManifest, Tool as McpTool } from "../plugins/types.js";
+import type {
+  PluginManifest,
+  PluginToolOperationPolicy,
+  Tool as McpTool,
+} from "../plugins/types.js";
 import { toolVisibility } from "../plugins/runtime/tool-visibility.js";
 
 /** The RC protocol revision Ave plugin-servers speak. */
@@ -48,8 +52,8 @@ const JSON_SCHEMA_2020_12 = "https://json-schema.org/draft/2020-12/schema";
 /**
  * An MCP `Tool` projected from one normalized `Tool`. #885 v6 — `annotations` is
  * DROPPED (the host never projects plugin-authored ones) and `_meta` is narrowed
- * to exactly the standard visibility block + the single kept Ave-proprietary key
- * (`ave/pathFields`).
+ * to exactly the standard visibility block + the signed Ave restriction keys
+ * (`ave/pathFields`, `ave/operationPolicy`).
  */
 export interface McpToolProjection {
   name: string;
@@ -67,6 +71,7 @@ export interface McpToolProjection {
   _meta: {
     ui: { visibility: Array<"model" | "app"> };
     "ave/pathFields"?: string[];
+    "ave/operationPolicy"?: PluginToolOperationPolicy;
   };
 }
 
@@ -100,6 +105,10 @@ function toWireTool(tool: McpTool): McpToolProjection {
   const pathFields = tool._meta?.["ave/pathFields"];
   if (pathFields !== undefined) {
     meta["ave/pathFields"] = pathFields;
+  }
+  const operationPolicy = tool._meta?.["ave/operationPolicy"];
+  if (operationPolicy !== undefined) {
+    meta["ave/operationPolicy"] = operationPolicy;
   }
   return {
     name: tool.name,

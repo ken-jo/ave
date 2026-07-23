@@ -613,7 +613,6 @@ export async function handleAveUri(url: string) {
         broadcastPluginLifecycleEvent("ave:plugins:install-progress", payload),
       emitPluginInstalled: (payload) => emitHostEvent("plugin.installed", payload),
       refreshPluginNotifications: activeServices.refreshPluginNotifications,
-      log,
     });
     const pluginId = result.pluginId;
     aveDevLog("[ave] handleAveUri: install succeeded", { slug: pluginId });

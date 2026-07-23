@@ -111,6 +111,7 @@ export const CHANNELS = {
   },
   plugins: {
     install: "ave:plugins:install",
+    rollback: "ave:plugins:rollback",
     uninstall: "ave:plugins:uninstall",
     setEnabled: "ave:plugins:set-enabled",
     installLocal: "ave:plugins:install-local",
