@@ -161,10 +161,67 @@ describe("handlePluginBundleE2eSnapshot", () => {
           },
         ]),
       },
+      scriptHookManager: {
+        hooksOfType: vi.fn(() => [
+          {
+            id: "plugin:orion-api:audit:matching",
+            event: "pre",
+            matcher: "orion_api_*",
+            command: ["node", "matching.mjs"],
+            source: "config",
+            timeoutMs: 5_000,
+            owner: {
+              pluginId: "orion-api",
+              pluginVersion: "2.0.0",
+              activationId: "runtime-g2",
+              generationId: "artifact-g2",
+              localId: "audit",
+              fingerprint: "c".repeat(64),
+            },
+          },
+          {
+            id: "plugin:orion-api:audit:not-matching",
+            event: "pre",
+            matcher: "other_*",
+            command: ["node", "not-matching.mjs"],
+            source: "config",
+            timeoutMs: 5_000,
+            owner: {
+              pluginId: "orion-api",
+              pluginVersion: "2.0.0",
+              activationId: "runtime-g2",
+              generationId: "artifact-g2",
+              localId: "audit",
+              fingerprint: "d".repeat(64),
+            },
+          },
+          {
+            id: "plugin:other-plugin:audit:matching",
+            event: "pre",
+            matcher: "orion_api_*",
+            command: ["node", "other-plugin.mjs"],
+            source: "config",
+            timeoutMs: 5_000,
+            owner: {
+              pluginId: "other-plugin",
+              pluginVersion: "1.0.0",
+              activationId: "runtime-other",
+              generationId: "artifact-other",
+              localId: "audit",
+              fingerprint: "e".repeat(64),
+            },
+          },
+        ]),
+      },
     } as unknown as IpcDeps;
 
     await expect(
-      handlePluginBundleE2eSnapshot(deps, "orion-api", "lifecycle"),
+      handlePluginBundleE2eSnapshot(
+        deps,
+        "orion-api",
+        "lifecycle",
+        "orion_api_read",
+      ),
     ).resolves.toEqual({
       ok: true,
       pluginId: "orion-api",
@@ -200,6 +257,38 @@ describe("handlePluginBundleE2eSnapshot", () => {
           generationId: "runtime-g2",
         },
       ],
+      hooks: {
+        probeToolName: "orion_api_read",
+        registered: [
+          {
+            id: "plugin:orion-api:audit:matching",
+            event: "pre",
+            matcher: "orion_api_*",
+            owner: {
+              pluginId: "orion-api",
+              pluginVersion: "2.0.0",
+              activationId: "runtime-g2",
+              generationId: "artifact-g2",
+              localId: "audit",
+              fingerprint: "c".repeat(64),
+            },
+          },
+          {
+            id: "plugin:orion-api:audit:not-matching",
+            event: "pre",
+            matcher: "other_*",
+            owner: {
+              pluginId: "orion-api",
+              pluginVersion: "2.0.0",
+              activationId: "runtime-g2",
+              generationId: "artifact-g2",
+              localId: "audit",
+              fingerprint: "d".repeat(64),
+            },
+          },
+        ],
+        matchingPreToolUse: ["plugin:orion-api:audit:matching"],
+      },
     });
     expect(deps.skillStore.loadPluginGeneration).toHaveBeenCalledWith(
       generation,
@@ -256,12 +345,16 @@ describe("handlePluginBundleE2eSnapshot", () => {
           },
         ]),
       },
+      scriptHookManager: {
+        hooksOfType: vi.fn(() => []),
+      },
     } as unknown as IpcDeps;
 
     const snapshot = await handlePluginBundleE2eSnapshot(
       deps,
       "orion-api",
       "lifecycle",
+      "orion_api_read",
     );
 
     expect(snapshot).toMatchObject({
@@ -273,18 +366,93 @@ describe("handlePluginBundleE2eSnapshot", () => {
     expect(release).toHaveBeenCalledOnce();
   });
 
+  it("reports orphaned Hook registry and matcher state without an active generation", async () => {
+    const deps = {
+      pluginBundleLifecycle: {
+        acquire: vi.fn(async () => {
+          throw new Error("plugin 'orion-api' has no active generation");
+        }),
+      },
+      skillStore: { loadPluginGeneration: vi.fn() },
+      toolRegistry: { listAll: vi.fn() },
+      scriptHookManager: {
+        hooksOfType: vi.fn(() => [{
+          id: "plugin:orion-api:audit:orphan",
+          event: "pre",
+          matcher: "orion_api_*",
+          command: ["node", "orphan.mjs"],
+          source: "config",
+          timeoutMs: 5_000,
+          owner: {
+            pluginId: "orion-api",
+            pluginVersion: "1.0.0",
+            activationId: "retired-runtime",
+            generationId: "retired-artifact",
+            localId: "audit",
+            fingerprint: "f".repeat(64),
+          },
+        }]),
+      },
+    } as unknown as IpcDeps;
+
+    await expect(handlePluginBundleE2eSnapshot(
+      deps,
+      "orion-api",
+      "lifecycle",
+      "orion_api_read",
+    )).resolves.toMatchObject({
+      ok: true,
+      active: null,
+      skill: null,
+      tools: [],
+      hooks: {
+        registered: [{ id: "plugin:orion-api:audit:orphan" }],
+        matchingPreToolUse: ["plugin:orion-api:audit:orphan"],
+      },
+    });
+    expect(deps.skillStore!.loadPluginGeneration).not.toHaveBeenCalled();
+    expect(deps.toolRegistry.listAll).not.toHaveBeenCalled();
+  });
+
   it("rejects traversal-shaped plugin ids before reading Host state", async () => {
     const deps = {
       pluginBundleLifecycle: { acquire: vi.fn() },
       skillStore: { loadPluginGeneration: vi.fn() },
       toolRegistry: { listAll: vi.fn() },
+      scriptHookManager: { hooksOfType: vi.fn() },
     } as unknown as IpcDeps;
 
     await expect(
-      handlePluginBundleE2eSnapshot(deps, "../orion-api", "lifecycle"),
+      handlePluginBundleE2eSnapshot(
+        deps,
+        "../orion-api",
+        "lifecycle",
+        "orion_api_read",
+      ),
     ).resolves.toEqual({ ok: false, error: "invalid-plugin-id" });
     expect(deps.pluginBundleLifecycle!.acquire).not.toHaveBeenCalled();
     expect(deps.skillStore!.loadPluginGeneration).not.toHaveBeenCalled();
     expect(deps.toolRegistry.listAll).not.toHaveBeenCalled();
+    expect(deps.scriptHookManager!.hooksOfType).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid Hook probe tool names before reading Host state", async () => {
+    const deps = {
+      pluginBundleLifecycle: { acquire: vi.fn() },
+      skillStore: { loadPluginGeneration: vi.fn() },
+      toolRegistry: { listAll: vi.fn() },
+      scriptHookManager: { hooksOfType: vi.fn() },
+    } as unknown as IpcDeps;
+
+    await expect(
+      handlePluginBundleE2eSnapshot(
+        deps,
+        "orion-api",
+        "lifecycle",
+        "orion-api.read",
+      ),
+    ).resolves.toEqual({ ok: false, error: "invalid-hook-probe-tool-name" });
+    expect(deps.pluginBundleLifecycle!.acquire).not.toHaveBeenCalled();
+    expect(deps.scriptHookManager!.hooksOfType).not.toHaveBeenCalled();
   });
 });
