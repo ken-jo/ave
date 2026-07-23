@@ -225,6 +225,12 @@ jobs:
         working-directory: ave
         run: bun run build
 
+      - name: Prove secure evidence file handling
+        working-directory: ave
+        env:
+          M4_E2E: "1"
+        run: bun run test:vitest -- run test/e2e/evidence-file.test.ts
+
       - name: Run live installer transport proof
         working-directory: ave
         env:
