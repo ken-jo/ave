@@ -98,4 +98,20 @@ describe("ToolRegistry MCP generation replacement", () => {
     prepared.publish();
     expect(registry.findByName("plugin_orion_read")?.pluginId).toBe("orion-api");
   });
+
+  it("publishes only prepared names and preserves unrelated registrations made while reserved", () => {
+    const registry = new ToolRegistry();
+    registry.register(pluginTool("plugin_orion_read", "orion-api"));
+    const prepared = registry.reservePluginReplacement(
+      "orion-api",
+      [pluginTool("plugin_orion_write", "orion-api")],
+    );
+
+    registry.register(pluginTool("other_read", "other-plugin"));
+    prepared.publish();
+
+    expect(registry.findByName("plugin_orion_read")).toBeUndefined();
+    expect(registry.findByName("plugin_orion_write")?.pluginId).toBe("orion-api");
+    expect(registry.findByName("other_read")?.pluginId).toBe("other-plugin");
+  });
 });
