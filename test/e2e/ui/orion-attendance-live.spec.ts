@@ -430,7 +430,7 @@ test("exact ORION attendance bundle reads, confirms one write, verifies readback
   const fake = await startFakeAttendanceProvider();
   let ctx: SeededElectronContext | null = null;
   try {
-    await publishPlugin(BASE_URL, PUBLISHER_KEY, ORION_PLUGIN_ID, bundle.version, bundle.bytes);
+    await publishPlugin(BASE_URL, ADMIN_KEY, ORION_PLUGIN_ID, bundle.version, bundle.bytes);
     const approval = await approvePendingPlugin(
       BASE_URL,
       ADMIN_KEY,
