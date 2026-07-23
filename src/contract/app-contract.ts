@@ -150,6 +150,8 @@ export const CHANNELS = {
   },
   marketplace: {
     ping: "ave:marketplace:ping",
+    /** Legacy main-to-renderer update notification; kept byte-identical on wire. */
+    updatesAvailable: "marketplace:updates-available",
   },
   agents: {
     list: "ave:agents:list",
@@ -290,6 +292,7 @@ export const CHANNELS = {
     openExternal: "ave:shell:open-external",
   },
   telemetry: {
+    consentPrompt: "ave:telemetry:consent-prompt",
     consentAnswer: "ave:telemetry:consent-answer",
   },
   usage: {
@@ -380,6 +383,12 @@ export const CHANNELS = {
     event: "ave:skill-load:event",
   },
   window: {
+    minimize: "window:minimize",
+    toggleMaximize: "window:toggleMaximize",
+    close: "window:close",
+    syncTitleBarTheme: "window:syncTitleBarTheme",
+    maximizedChanged: "window:maximizedChanged",
+    fullscreenChanged: "window:fullscreenChanged",
     openDetached: "ave:window:open-detached",
     closeDetached: "ave:window:close-detached",
     listDetached: "ave:window:list-detached",
