@@ -137,4 +137,52 @@ describe("PluginUninstallCleanupJournal", () => {
         .sort(),
     ).toEqual(["agent-hub", "orion-api"]);
   });
+
+  it("durably merges late auth partitions and reopens tracker cleanup", () => {
+    const { path } = fixture();
+    const journal = new PluginUninstallCleanupJournal(path);
+    journal.prepare({
+      pluginId: "orion-api",
+      installPluginId: "orion-api",
+      secretKeys: [],
+      authPartitions: ["persist:plugin-auth:orion-api"],
+      cleanupCache: false,
+    });
+    journal.completeAuthPartition("orion-api", "persist:plugin-auth:orion-api");
+    journal.completePhase("orion-api", "auth-tracker");
+
+    journal.mergeAuthPartitions("orion-api", [
+      "persist:plugin-auth:orion-api:late",
+    ]);
+    expect(new PluginUninstallCleanupJournal(path).find("orion-api")).toMatchObject({
+      authPartitions: [
+        "persist:plugin-auth:orion-api",
+        "persist:plugin-auth:orion-api:late",
+      ],
+      completedAuthPartitions: ["persist:plugin-auth:orion-api"],
+      completedPhases: [],
+    });
+    expect(() =>
+      journal.mergeAuthPartitions("orion-api", [
+        "persist:plugin-auth:other-plugin",
+      ])).toThrow(/invalid plugin uninstall auth partition plan/);
+  });
+
+  it("checkpoints registry removal and cache ownership in the durable record", () => {
+    const { path } = fixture();
+    const journal = new PluginUninstallCleanupJournal(path);
+    journal.prepare({
+      pluginId: "orion-api",
+      installPluginId: "orion-api",
+      secretKeys: [],
+      authPartitions: [],
+      cleanupCache: false,
+    });
+
+    journal.markRegistryRemovalCommitted("orion-api", { cleanupCache: true });
+    expect(new PluginUninstallCleanupJournal(path).find("orion-api")).toMatchObject({
+      registryRemovalCommitted: true,
+      cleanupCache: true,
+    });
+  });
 });
