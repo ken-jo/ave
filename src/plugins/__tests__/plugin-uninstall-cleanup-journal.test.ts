@@ -97,6 +97,35 @@ describe("PluginUninstallCleanupJournal", () => {
     );
   });
 
+  it("migrates a version-2 record with runtime retirement unproven", async () => {
+    const { path } = fixture();
+    await writeFile(
+      path,
+      JSON.stringify({
+        version: 2,
+        cleanups: [{
+          pluginId: "orion-api",
+          installPluginId: "orion-api",
+          secretKeys: [],
+          authPartitions: ["persist:plugin-auth:orion-api"],
+          cleanupCache: true,
+          registryRemovalCommitted: true,
+          recordedAt: new Date(0).toISOString(),
+          attempts: 0,
+          completedPhases: [],
+          completedAuthPartitions: [],
+        }],
+      }),
+    );
+
+    expect(
+      new PluginUninstallCleanupJournal(path).find("orion-api"),
+    ).toMatchObject({
+      registryRemovalCommitted: true,
+      runtimeRetirementComplete: false,
+    });
+  });
+
   it("stores cleanup keys and phases without secret values or raw failures", async () => {
     const { path } = fixture();
     const journal = new PluginUninstallCleanupJournal(path);
@@ -180,8 +209,10 @@ describe("PluginUninstallCleanupJournal", () => {
     });
 
     journal.markRegistryRemovalCommitted("orion-api", { cleanupCache: true });
+    journal.markRuntimeRetirementComplete("orion-api");
     expect(new PluginUninstallCleanupJournal(path).find("orion-api")).toMatchObject({
       registryRemovalCommitted: true,
+      runtimeRetirementComplete: true,
       cleanupCache: true,
     });
   });
