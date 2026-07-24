@@ -1,10 +1,17 @@
-# Ave Architecture Document v0.4.1 (Current)
+# Ave Architecture Document v0.4.1 (Historical Snapshot)
 
 > **Version**: 0.4.1 (base) · v5 덧붙이기 (2026-04-19) — Appendix D-v5 참조
 > **Date**: 2026-04-16 (base) · 2026-04-19 (v5 additive)
-> **Status**: Architecture Currentized Draft (대화 루프/도구 표시/자동 컴팩트 구현 기준 반영) · v5 = Marketplace 승인/카나리, Approval 강화, Telemetry, Contract CI, Trace Logger, File Lock, Tool Versioning 반영
+> **Status**: 보존용 역사 스냅샷. 현재 실행 계약이나 구현 지침이 아닙니다.
 > **Authors**: Ave Architecture Team
 > **Base Reference**: [구현 철학](../vision/philosophy.md) · Ave 내부 제품 요구사항 및 공개 표준 문서
+
+> [!WARNING]
+> 현재 계약의 기준은 [영문 아키텍처 문서](../../architecture/architecture.md),
+> Host의 `schemas/plugin-manifest.schema.json`, 그리고
+> `src/plugins/public-contract.ts`입니다. 이 스냅샷의 keyword dispatch,
+> `uiAction`/`uiActions`, 레거시 manifest, 개발 우회 플래그 설명은 폐기된
+> 역사 기록이며 구현하거나 호환 경로로 복원하면 안 됩니다.
 
 ---
 
@@ -19,7 +26,7 @@
 5. [Memory — 경량 기억 구조](#5-memory--경량-기억-구조)
    - 5.1 설계 원칙 · 5.2 Memory 파일 구조
 6. [Client Core Engines](#6-client-core-engines)
-   - 6.1 Keyword Detecting Engine · 6.2 Agent Route Engine · **6.3 Tool Permission Model** · **6.4 Tool Registry & Taxonomy** · **6.5 Command Safety** · **6.6 Observability & Audit** · **6.7 Theme & Design Tokens** · **6.8 Floating Question Panel** · **6.9 Settings Dialog Tab Layout** · **6.10 ChatSidePanel & Workspace Rail**
+   - 6.1 Input Classification & Tool Discovery · 6.2 Agent Route Engine · **6.3 Tool Permission Model** · **6.4 Tool Registry & Taxonomy** · **6.5 Command Safety** · **6.6 Observability & Audit** · **6.7 Theme & Design Tokens** · **6.8 Floating Question Panel** · **6.9 Settings Dialog Tab Layout** · **6.10 ChatSidePanel & Workspace Rail**
 7. [Overlay Trigger Surface](#7-overlay-trigger-surface)
 8. [Agent Approval System — 에이전트 요청 승인](#8-agent-approval-system--에이전트-요청-승인)
 9. [Plugin System & UI Extension](#9-plugin-system--ui-extension)
@@ -161,7 +168,7 @@ graph LR
     subgraph P1["🖥️ Ave Client"]
         direction TB
         P1A["Electron Shell"]
-        P1B["Core Engines<br/>(Keyword·Route·Index)"]
+        P1B["Core Engines<br/>(Input·Route·Index)"]
         P1C["Plugin Host"]
         P1D["Memory (File-based)"]
         P1E["Overlay Trigger Surface"]
@@ -234,7 +241,7 @@ graph TB
 
     subgraph "Layer 2 — 클라이언트 인텔리전스 Client Intelligence"
         direction LR
-        L2_KW["Keyword<br/>Detecting"]
+        L2_KW["Input<br/>Classification"]
         L2_ROUTE["Agent<br/>Route"]
         L2_IDX["Local<br/>Index"]
         L2_PLUGIN["Plugin<br/>Lifecycle"]
@@ -327,7 +334,7 @@ graph TB
     end
 
     subgraph "Rust Native Module via NAPI-RS"
-        KW_ENGINE["Keyword Detecting Engine"]
+        KW_ENGINE["Input Classifier"]
         ROUTE_ENGINE["Agent Route Engine"]
         IDX_ENGINE["Local Index Engine"]
         MEM_ENGINE["Memory Reader<br/>(AGENTS.md / MEMORY.md 로드)"]
@@ -419,8 +426,8 @@ sequenceDiagram
 
     PluginMgr->>PythonRT: 5a. host-managed plugin prepare on install/start
     PythonRT-->>PluginMgr: plugin-specific pythonExecutable
-    PluginMgr->>App: 5b. Register plugin UI slots + Skills + Tools + Keywords
-    App->>App: 6. Initialize Core Engines (KW · Route · Index · Memory)
+    PluginMgr->>App: 5b. Register plugin UI slots + Skills + Tools + Hooks + MCP servers
+    App->>App: 6. Initialize Core Engines (Input · Route · Tool · Index · Memory)
 
     App->>App: 7. Wire OverlayContext + host:overlay gate
 
@@ -746,13 +753,13 @@ flowchart TB
 
 #### 4.5.3 스트리밍 아키텍처
 
-사용자는 전체 응답 완료를 기다리지 않고 **keyword preflight → reasoning → tool group → reasoning → assistant** 순서를 스트림으로 확인한다. provider별 내부 transport는 다를 수 있지만, renderer가 받는 표준 이벤트는 `reasoning_delta`, `text_delta`, `tool_start`, `tool_end`, `assistant_round`, `done`이다.
+사용자는 전체 응답 완료를 기다리지 않고 **input classification → reasoning → tool group → reasoning → assistant** 순서를 스트림으로 확인한다. provider별 내부 transport는 다를 수 있지만, renderer가 받는 표준 이벤트는 `reasoning_delta`, `text_delta`, `tool_start`, `tool_end`, `assistant_round`, `done`이다.
 
 ```mermaid
 sequenceDiagram
     participant UI as Renderer
     participant IPC as IPC Bridge
-    participant KW as Keyword Engine
+    participant KW as Input Classifier
     participant ROUTE as Route Engine
     participant LOOP as ConversationLoop
     participant GOV as GovernancePolicy
@@ -798,7 +805,7 @@ sequenceDiagram
 
 | 항목 | 설명 |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| **초기 사전판단** | Keyword Detecting은 `runTurn()` 초입에서 수행되며, plugin keyword group도 함께 반영된다. |
+| **초기 사전판단** | `InputClassifier`는 Host 소유 slash command만 분류한다. 자연어 Tool 선택은 model-visible Tool과 `tool_search`가 담당한다. |
 | **First-class reasoning** | reasoning은 `text_delta`의 부가 플래그가 아니라 별도 이벤트다. 그래서 도구 묶음 사이에 중간 생각을 독립 카드로 배치할 수 있다. |
 | **Round boundary 보존** | `assistant_round` 이벤트로 tool 호출 전/후의 assistant 응답을 안정적으로 끊는다. |
 | **시각적 도구 병합** | renderer는 assistant 텍스트가 끼지 않은 인접 tool round만 한 묶음으로 합친다. query loop ID를 억지로 재사용하지 않는다. |
@@ -977,7 +984,7 @@ sequenceDiagram
 
 | Provider-neutral turn loop 단계 | Ave 대응 구현 | Ave 차별점 |
 | ------------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| User message creation | renderer input → `ipcMain.handle("ave:chat:send")` | Electron IPC + 조기 keyword preflight |
+| User message creation | renderer input → `ipcMain.handle("ave:chat:send")` | Electron IPC + Host command classification |
 | Append to conversation history | `ConversationHistory.append()` | + assistant `thought` 보존 |
 | Build system prompt | system prompt assembly | + AGENTS.md · MEMORY.md · 조직 컨텍스트 · tool schema · overlay trigger context |
 | Stream to active provider | `provider.streamTurn(...)` | provider 공통 인터페이스로 Claude/Gemini/OpenAI 수용 |
@@ -1268,7 +1275,7 @@ ave/src/
 │   └── audit-logger.ts, dlp-filter.ts
 │
 ├── core/          # 남은 cross-cutting
-│   ├── keyword-engine.ts, route-engine.ts,
+│   ├── input-classifier.ts, route-engine.ts,
 │   │   tool-registry.ts
 │   └── network-guard.ts
 │
@@ -1497,36 +1504,22 @@ artifact 와 save data 를 함께 보관한다 (호스트 root 에 끼어들지 
 
 ## 6. Client Core Engines
 
-### 6.1 Keyword Detecting Engine
+### 6.1 Input Classification & Tool Discovery
 
-사용자 입력에서 의도·키워드·엔티티를 감지하는 첫 번째 관문.
-**Conversation Loop 본문보다 먼저** 실행된다. 플러그인이 등록한
-deprecated keyword group은 model-visible Tool schema preload 용도이며
-bundled Skill registry와 별개다.
+`InputClassifier`는 Host가 소유한 slash command와 일반 입력만 구분한다.
+플러그인 Skill은 instruction bundle이며 keyword router가 아니다. 자연어
+Tool 선택은 model-visible Tool inventory와 bounded `tool_search`를 통해
+모델이 수행한다.
 
 ```mermaid
 flowchart LR
-    INPUT["Raw Input"] --> TOKENIZER["Tokenizer<br/>(형태소 분석)"]
-
-    TOKENIZER --> CMD_DETECT{"명령어 감지<br/>/command"}
-    TOKENIZER --> SKILL_DETECT{"Legacy Tool preload keyword<br/>(builtin + plugin registry)"}
-    TOKENIZER --> MENTION_DETECT{"멘션 감지<br/>@사람, @팀"}
-    TOKENIZER --> INTENT_DETECT{"의도 분류<br/>(질문/요청/지시)"}
-    TOKENIZER --> ENTITY_EXTRACT["엔티티 추출<br/>(파일명, 날짜, 금액)"]
-    SKILL_DETECT --> AMBIG{"후보가 하나인가?"}
-    AMBIG -->|"No"| LLM_RECO["the LLM backend Recommender<br/>(최적 후보 추천 / 애매하면 사용자 문의)"]
-    AMBIG -->|"Yes"| SKILL_RESOLVE["Plugin/Tool Scope Resolver"]
-
-    CMD_DETECT -->|"매칭"| CMD_EXEC["Command Executor"]
-    MENTION_DETECT -->|"매칭"| AGENT_RESOLVE["Agent Resolver<br/>(Agent Hub 라우팅)"]
-    INTENT_DETECT --> ROUTE_HINT["Route Hint"]
-    ENTITY_EXTRACT --> CTX["Context Package"]
-    LLM_RECO --> SKILL_RESOLVE
-
-    ROUTE_HINT --> ROUTE_ENGINE["Agent Route Engine"]
-    CTX --> ROUTE_ENGINE
-    SKILL_RESOLVE --> ROUTE_ENGINE
-    AGENT_RESOLVE --> ROUTE_ENGINE
+    INPUT["Raw Input"] --> CLASSIFY{"Host slash command?"}
+    CLASSIFY -->|"Yes"| CMD_EXEC["Command Executor"]
+    CLASSIFY -->|"No"| ROUTE_ENGINE["Agent Route Engine"]
+    SKILLS["Bundled manifest.skills<br/>instructions"] --> MODEL["Model"]
+    CATALOG["Active Tool catalog"] --> SEARCH["bounded tool_search"]
+    SEARCH --> MODEL
+    ROUTE_ENGINE --> MODEL
 ```
 
 **감지 우선순위:**
@@ -1534,9 +1527,8 @@ flowchart LR
 | 순위 | 유형          | 예시 입력               | 처리                              |
 | ---- | ------------- | ----------------------- | ------------------------------------------ |
 | 1    | 명시적 명령어 | `/meeting start`        | Command Executor 직접 실행        |
-| 2    | 에이전트 멘션 | "@이영희 이거 확인해줘" | ConversationLoop에서 Agent Hub Tool 사용   |
-| 3    | 의도 + 엔티티 | "출장 품의 작성해줘"    | Route Engine → the LLM backend + 관련 도구 |
-| 4    | 일반 대화     | "안녕하세요"            | the LLM backend 직접 세션                  |
+| 2    | 앱/플러그인 envelope | Host가 검증한 app/overlay 입력 | provenance를 보존해 ConversationLoop 진입 |
+| 3    | 일반 대화     | "출장 품의 작성해줘"    | 모델이 Skill 지침과 Tool catalog를 사용 |
 
 **확장 설계 노트**
 
@@ -2953,7 +2945,7 @@ graph TB
         DOWNLOAD["Download"]
         VALIDATE["Validate<br/>(서명·권한·정책 확인)"]
         INSTALL["Install<br/>(파일 배치·의존성 해결)"]
-        ACTIVATE["Activate<br/>(스킬·도구·UI·Hook·키워드 등록)"]
+        ACTIVATE["Activate<br/>(스킬·도구·Hook·MCP 활성화)"]
 
         DISCOVER --> DIFF --> DOWNLOAD --> VALIDATE --> INSTALL --> ACTIVATE
     end
@@ -2963,7 +2955,6 @@ graph TB
         TOOL_REG["Tool Registry<br/>(GlobalToolRegistry)"]
         UI_MOUNT["UI Slot Mount"]
         HOOK_REG["Hook Runner"]
-        KW_REG["Keyword Registry"]
         EVENT_REG["Event Emitter<br/>(Overlay Trigger Surface 연동)"]
     end
 
@@ -2971,7 +2962,6 @@ graph TB
     ACTIVATE --> TOOL_REG
     ACTIVATE --> UI_MOUNT
     ACTIVATE --> HOOK_REG
-    ACTIVATE --> KW_REG
     ACTIVATE --> EVENT_REG
 ```
 
@@ -3196,9 +3186,9 @@ boot 시 `PluginRuntime.startAll()`은 로드된 플러그인을 순차 `await`�
 
 **Lifecycle callback — `onDisable` / `onEnable` / `onActiveStateChange`:** `PluginRuntime`은 `PluginRuntimeOptions`로 host-provided lifecycle 콜백을 받는다.
 
-- `onDisable(pluginId)` — 플러그인의 tear-down 직후 발화한다. 호스트는 이 콜백으로 `keywordEngine.unregisterByPlugin` / `toolRegistry.unregisterByPlugin` / `conversationLoop.onPluginDisabled`를 호출해 transient host state를 정리한다. 발화 지점: `restartPlugin` stop phase, `restartAll` stop phase (per plugin), `disable`, `removePlugin`, `reloadPlugin` stop phase.
+- `onDisable(pluginId)` — 플러그인의 tear-down 직후 발화한다. 호스트는 이 콜백으로 `toolRegistry.unregisterByPlugin` / `conversationLoop.onPluginDisabled`를 호출해 transient host state를 정리한다. 발화 지점: `restartPlugin` stop phase, `restartAll` stop phase (per plugin), `disable`, `removePlugin`, `reloadPlugin` stop phase.
 - `onEnable(pluginId)` — 플러그인이 "loaded + started" 상태에 도달한 직후 발화한다(`onDisable`과 대칭). 호스트는 이 콜백으로 `syncPluginToolRegistryForPlugin(pluginRuntime, toolRegistry, pluginId)`를 호출해 `onDisable`이 비운 해당 플러그인의 ToolRegistry 항목만 다시 채운다. 발화 지점: `restartPlugin` start 성공, `restartAll` start 성공 (per plugin), `addPlugin` fresh-load branch의 `instantiateAndStartSinglePlugin` start 성공, `reloadPlugin` start 성공.
-- `onActiveStateChange(pluginId, enabled)` — 사용자 활성/비활성 토글에서만 발화하며 runtime unload가 아니다. 비활성화 시 호스트는 keyword와 ConversationLoop transient scope만 정리하고 ToolRegistry는 유지한다. 따라서 auth/config/UI 호출은 계속 runtime 도구를 실행할 수 있고, 모델 노출만 ConversationLoop tool scope에서 차단된다. 재활성화 시 manifest keyword만 필요 시 재등록한다.
+- `onActiveStateChange(pluginId, enabled)` — 사용자 활성/비활성 토글에서만 발화하며 runtime unload가 아니다. 비활성화 시 호스트는 ConversationLoop transient scope만 정리하고 ToolRegistry는 유지한다. 따라서 auth/config/UI 호출은 계속 runtime 도구를 실행할 수 있고, 모델 노출만 ConversationLoop tool scope에서 차단된다.
 
 이 lifecycle 계약은 "post-boot lifecycle event ⇒ ToolRegistry 자동 재동기화"를 보장한다. 따라서 `hostApi.config.set` wrapper / IPC `ave:plugins:config:set` / dev-reload watcher / managed-marketplace `restartAll` 등 모든 외부 caller는 별도의 `syncPluginToolRegistry` 호출이 필요 없다. 호출자 측에서 sync를 잊으면 `onDisable`이 ToolRegistry에서 도구를 지운 직후 그대로 비어 있는 상태가 되어 chat-surface가 `도구를 찾을 수 없습니다: <tool>` 에러를 노출하는 회귀(PR #760)가 발생하는데, `onEnable` 콜백이 이를 contract-level에서 닫는다.
 
@@ -3632,7 +3622,7 @@ graph TB
 }
 ```
 
-> `tools[]` 는 lower snake_case LLM tool name이며 (`lyramail_calendar_today`, `lyramail_email_start_watcher` 등), boot/runtime/keyword registration 경로에서도 동일한 이름이 그대로 전달된다. dotted form은 이벤트 이름에만 사용한다.
+> `tools[]` 는 lower snake_case LLM tool name이며 (`lyramail_calendar_today`, `lyramail_email_start_watcher` 등), boot/runtime registration 경로에서도 동일한 이름이 그대로 전달된다. dotted form은 이벤트 이름에만 사용한다.
 
 **Phase 3 계획 (미구현):** managed 매니페스트에 서명/게시 메타데이터를 추가한다. 구체적으로는 `publisherId`, `publishedAt` (ISO 8601), `signature` (base64 ECDSA-P256-SHA256), `signatureAlgorithm`, `minAppVersion`/`maxAppVersion`. 현재 스키마는 이 필드를 수용하지 않으며, runtime이 서명을 검증하지도 않는다.
 
@@ -4095,7 +4085,7 @@ flowchart TB
 
 ### 12.2 시나리오 → 컴포넌트 매핑 테이블
 
-| 시나리오       | KW Engine | Notes | Local Index | Server Index |   the LLM backend    | Agent Hub |    Plugin     | Overlay Trigger |   Agent Approval    |
+| 시나리오       | Input Classification | Notes | Local Index | Server Index |   the LLM backend    | Agent Hub |    Plugin     | Overlay Trigger |   Agent Approval    |
 | ------------ | :-------: | :---: | :---------: | :----------: | :-------------: | :-------: | :-----------: | :-------------: | :-------------------: |
 | 출장 품의      |    ✅     |  ✅   |   ✅ 양식   |   ✅ 규정    |   ✅ 초안   |     -     |   HR Plugin   |      -      |          -          |
 | SW 도입        |    ✅     |   -   |  ✅ 가이드  |  ✅ 가이드   |   ✅ 요약   | ✅ 담당자 |   IT Plugin   |      -      |          -          |
@@ -4116,7 +4106,7 @@ flowchart TB
     USER["👤 출장 품의 작성해줘<br/>다음주 화요일 도쿄"]
 
     subgraph "Layer 2 — Client Intelligence"
-        KW["① Keyword Engine<br/>출장 + 품의 감지"]
+        KW["① Input Classifier<br/>일반 입력 판별"]
         ROUTE["② Route Engine<br/>HR Plugin 매칭"]
         MEM["③ Memory Recall<br/>사용자 프로필·과거 출장"]
         IDX["④ Local + Server Index<br/>출장 규정·양식 검색"]
@@ -4514,8 +4504,8 @@ interface FeedbackEntry {
 | 일반 agent harness concern       | Ave 적용             | 차이점                           |
 | ------------------------------ | -------------------------------- | ------------------------------------------------------------------------ |
 | Turn runtime                     | Agent Loop            | + Memory Recall/Save 전후 추가   |
-| Slash command parsing            | KW Engine 명령어 감지 | + 한국어 형태소 분석 추가        |
-| Skill invocation resolution      | Skill Resolver        | + Plugin keyword registry 연동   |
+| Slash command parsing            | Input Classifier      | Host 소유 command만 분류          |
+| Skill invocation resolution      | Skill + Tool catalog  | bundled Skill 지침 + bounded tool_search |
 | Tool execution boundary          | Tool Executor         | + Governance policy check 추가   |
 | Pre/Post tool interceptors       | Hook Runner           | 내부 hook + signed script hook 후속 |
 | Global tool registry             | Tool Registry         | + Plugin 동적 등록·해제          |
