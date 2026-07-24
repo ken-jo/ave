@@ -1,6 +1,6 @@
 import { mkdtempSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -364,6 +364,12 @@ describe("PluginBundleLifecycle", () => {
     });
     await lifecycle.activate("orion-api");
     const active = lifecycle.getActive("orion-api");
+    const generationRoot = join(
+      valid.cacheRoot,
+      "orion-api",
+      "generations",
+    );
+    const generationsBefore = await readdir(generationRoot);
 
     await writeFile(join(valid.pluginRoot, "hooks", "policy.json"), "{", "utf8");
     const receiptPath = join(valid.cacheRoot, "orion-api", "install-receipt.json");
@@ -373,6 +379,7 @@ describe("PluginBundleLifecycle", () => {
     await expect(lifecycle.activate("orion-api")).rejects.toThrow(/not valid JSON/);
     expect(lifecycle.getActive("orion-api")?.generationId).toBe(active?.generationId);
     expect(skillStore.listCatalogSync()).toHaveLength(1);
+    expect(await readdir(generationRoot)).toEqual(generationsBefore);
   });
 
   it("journals retirement progress and retries only the failed cleanup phase", async () => {
