@@ -84,7 +84,8 @@ interface PluginManifest {
 
   // ── UI / LLM 통합 ──
   ui?: PluginUiExtension[];                                      // 사이드바 UI 슬롯
-  keywords?: Array<{ keyword: string; skillId: string }>;         // 키워드 엔진 등록
+  /** @deprecated legacy keyword→Tool schema preload; Skill discovery가 아님 */
+  keywords?: Array<{ keyword: string; skillId: string }>;
   // (각 tool 의 description·inputSchema·visibility·pathFields 는 tools[] 원소 Tool 객체에
   //  인라인 — 아래 Tool 인터페이스. pre-v6 의 toolSchemas/uiActions map 은 제거됨.)
 
@@ -179,8 +180,15 @@ interface Tool {
 
 #### keywords (선택)
 
-- 키워드 엔진 등록 항목.
-- `skillId` 는 `tools[]` 에 선언된 LLM tool name 과 동일해야 하며, app-only tool (`_meta.ui.visibility === ["app"]`) 을 가리킬 수 없습니다.
+- **Deprecated** keyword→Tool schema preload 항목이며 bundled Skill 발견
+  기능이 아닙니다. instruction bundle은 `manifest.skills`에 선언합니다.
+- `skillId` 는 `tools[]` 에 선언된 model-visible Tool name 과 정확히
+  동일해야 하며, app-only tool (`_meta.ui.visibility === ["app"]`) 을
+  가리킬 수 없습니다. 키워드 일치는 해당 Tool schema를 model-visible
+  turn scope에 추가할 뿐 Tool을 직접 호출하지 않습니다.
+- Owner: `ave` plugin runtime. 지원되는 모든 플러그인이 bundled
+  `manifest.skills`로 이관되고 active manifest에서 `keywords` 선언이
+  사라지면 제거합니다.
 
 #### capabilities (선택)
 
@@ -271,8 +279,8 @@ export default async function createPlugin(
   //    - hostApi.getSecret(...) 로 API 키 조회
   //    - pluginRoot / hostRoot 기반 파일 경로 설정
 
-  // 2. 키워드 등록 (매니페스트 keywords[] 선언이 있으면 자동 등록되지만,
-  //    런타임 조건에 따라 동적으로 추가도 가능)
+  // 2. Deprecated keyword→Tool schema preload.
+  //    신규 instruction discovery는 manifest.skills를 사용합니다.
   hostApi.registerKeywords([
     { keyword: "회의록", skillId: "meeting_start" },
   ]);
@@ -335,9 +343,14 @@ interface PluginHostApi {
 }
 ```
 
-### 1. registerKeywords()
+### 1. registerKeywords() (deprecated)
 
-키워드 엔진에 스킬 키워드를 등록합니다. 매니페스트 `keywords[]` 는 로드 시 자동으로 이 메서드를 호출합니다. 플러그인이 disable 될 때 자동으로 해제됩니다.
+키워드가 일치할 때 `skillId`와 이름이 같은 model-visible Tool schema를
+turn scope에 preload합니다. Tool을 직접 호출하지 않으며 bundled Skill
+발견 기능도 아닙니다. 신규 instruction bundle은 `manifest.skills`를
+사용합니다. Owner는 `ave` plugin runtime이며, 지원되는 모든
+플러그인이 이관되고 active manifest의 `keywords` 선언이 0이 되면
+`keywords`와 함께 제거합니다.
 
 ```typescript
 hostApi.registerKeywords([
@@ -476,7 +489,7 @@ Ave 플러그인에는 **세 개의 독립 네임스페이스**가 있습니다.
 | 플러그인 ID | `id` 필드 | ✅ | `meeting`, `com.example.meeting-recorder` |
 | LLM tool name | `tools[]`, `handlers` 키 | ❌ | `meeting_start` |
 | 이벤트 이름 | `emitEvent()` / `onEvent()` | ✅ | `meeting.summary.created` |
-| keywords.skillId | `keywords[].skillId` | ❌ (tool name 과 일치) | `meeting_start` |
+| deprecated keywords.skillId | `keywords[].skillId` | ❌ (model-visible Tool name 과 일치) | `meeting_start` |
 
 런타임은 tool name 변환을 하지 않습니다. `tools: ["meeting.start"]` 같은 매니페스트는 로드 시점에 즉시 거부됩니다.
 
@@ -792,7 +805,11 @@ Meeting / Microsoft 365 (Outlook 메일+캘린더) / Local Indexer 의 실제 �
 
 아래 항목은 가이드·스키마·정책상 정의되어 있지만 **현재 런타임에서 강제되지 않는** 사항이거나 아직 도구/스크립트가 없는 사항입니다. 향후 스프린트에서 좁힐 대상.
 
-1. **`keywords[].skillId ∈ tools[]` 교차 검증** — AJV 및 `readManifest` 에서 강제되지 않음. 잘못된 skillId 가 키워드 엔진에 등록될 수 있음.
+1. **Deprecated `keywords` 제거** — 현재 host cross-field validator가
+   `keywords[].skillId`를 model-visible `tools[]`에 한정합니다. 지원되는
+   모든 플러그인이 bundled `manifest.skills`로 이관되고 active
+   manifest의 `keywords` 선언이 0이 되면 필드와
+   `registerKeywords()`를 제거합니다. Owner: `ave` plugin runtime.
 2. ~~`toolSchemas` 키 ⊂ `tools[]` 교차 검증~~ — #885 Phase R 에서 `toolSchemas` map 이 제거되어 무의미 (스키마가 tool 객체에 인라인). (legacy)
 3. **`notificationEvents.event ⊂ eventSubscriptions` 교차 검증** — 선언했지만 구독하지 않아 알림이 절대 뜨지 않는 상태 경고가 없음.
 4. **`capabilities` enum 화** — 현재 `lyra-mail-consumer` 만 런타임에서 강제. 나머지는 자유 문자열. 정책 게이트 확장 필요 (예: `worker-client` 선언 플러그인만 Python runtime 사용 허용).

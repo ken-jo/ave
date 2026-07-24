@@ -111,6 +111,7 @@ export const CHANNELS = {
   },
   plugins: {
     install: "ave:plugins:install",
+    rollback: "ave:plugins:rollback",
     uninstall: "ave:plugins:uninstall",
     setEnabled: "ave:plugins:set-enabled",
     installLocal: "ave:plugins:install-local",
@@ -125,6 +126,10 @@ export const CHANNELS = {
     configSecretListKeys: "ave:plugins:config:secret:list-keys",
     perfStats: "ave:plugins:perf-stats",
     call: "ave:plugins:call",
+    contributionTrustList: "ave:plugins:contribution-trust:list",
+    contributionTrustSet: "ave:plugins:contribution-trust:set",
+    /** Trusted-renderer, AVE_E2E-only bundle generation observation. */
+    e2eBundleSnapshot: "ave:plugins:e2e:bundle-snapshot",
     // Lifecycle event channels (main → renderer). Not registered via ipcMain.
     installProgress: "ave:plugins:install-progress",
     installResult: "ave:plugins:install-result",
@@ -256,6 +261,7 @@ export const CHANNELS = {
     getEntryUrl: "ave:plugin:get-entry-url",
     getTheme: "ave:plugin:get-theme",
     callTool: "ave:plugin:call-tool",
+    requestOperationGrant: "ave:plugin:request-operation-grant",
     configGet: "ave:plugin:config:get",
     configSet: "ave:plugin:config:set",
     storageGet: "ave:plugin:storage:get",
