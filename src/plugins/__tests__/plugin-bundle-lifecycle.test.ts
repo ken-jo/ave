@@ -168,13 +168,25 @@ describe("PluginBundleLifecycle", () => {
     }));
     const publishBundledGeneration = vi.fn((prepared) => { prepared.published = true; });
     const disconnectBundledGeneration = vi.fn(async () => undefined);
+    const prepareRuntimeGeneration = vi.fn(() => ({
+      pluginId: manifest.id,
+      publish: vi.fn(),
+    }));
+    const prepareRuntimeRemoval = vi.fn(() => ({
+      pluginId: manifest.id,
+      publish: vi.fn(),
+    }));
+    let activationId = "test-activation-1";
     const lifecycle = makeLifecycle({
       pluginRuntime: {
         getPluginManifest: () => manifest,
         getPluginRoot: () => pluginRoot,
-        getRuntimeGenerationProjection: () => runtimeProjection(manifest, pluginRoot),
-        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
-        prepareRuntimeRemoval: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
+        getRuntimeGenerationProjection: () => ({
+          ...runtimeProjection(manifest, pluginRoot),
+          activationId,
+        }),
+        prepareRuntimeGeneration,
+        prepareRuntimeRemoval,
         postPublishRuntimeGeneration: vi.fn(),
         publishRuntimeGeneration: vi.fn(),
         unpublishRuntimeGeneration: vi.fn(),
@@ -194,6 +206,12 @@ describe("PluginBundleLifecycle", () => {
     });
 
     await lifecycle.activate("orion-api");
+    const initialGenerationId = lifecycle.getActive("orion-api")?.generationId;
+    expect(prepareRuntimeGeneration).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      undefined,
+    );
     expect(skillStore.listCatalogSync()).toEqual([expect.objectContaining({ name: "plugin:orion-api:attendance" })]);
     expect(hookManager.size()).toBe(0);
     expect(prepareBundledGeneration).toHaveBeenCalledWith(
@@ -203,11 +221,21 @@ describe("PluginBundleLifecycle", () => {
     );
     expect(publishBundledGeneration).toHaveBeenCalledTimes(1);
 
+    activationId = "test-activation-2";
+    await lifecycle.activate("orion-api");
+    expect(prepareRuntimeGeneration).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      initialGenerationId,
+    );
+    expect(prepareBundledGeneration).toHaveBeenCalledTimes(2);
+    expect(publishBundledGeneration).toHaveBeenCalledTimes(2);
+
     await lifecycle.approveHook("orion-api", "policy");
     expect(hookManager.size()).toBe(0); // descriptor intentionally contains no runnable entries
     await lifecycle.approveMcpServer("orion-api", "orion");
-    expect(prepareBundledGeneration).toHaveBeenCalledTimes(2);
-    expect(publishBundledGeneration).toHaveBeenCalledTimes(2);
+    expect(prepareBundledGeneration).toHaveBeenCalledTimes(3);
+    expect(publishBundledGeneration).toHaveBeenCalledTimes(3);
 
     const active = lifecycle.getActive("orion-api");
     expect(active).not.toHaveProperty("state");
@@ -219,8 +247,12 @@ describe("PluginBundleLifecycle", () => {
     expect(generationId).toMatch(/^[a-f0-9]{64}$/);
     await lifecycle.deactivate("orion-api");
     await lifecycle.waitForRetirements();
-    expect(prepareBundledGeneration).toHaveBeenCalledTimes(2);
-    expect(publishBundledGeneration).toHaveBeenCalledTimes(2);
+    expect(prepareRuntimeRemoval).toHaveBeenCalledWith(
+      "orion-api",
+      generationId,
+    );
+    expect(prepareBundledGeneration).toHaveBeenCalledTimes(3);
+    expect(publishBundledGeneration).toHaveBeenCalledTimes(3);
     expect(skillStore.listCatalogSync()).toEqual([]);
     expect(disconnectBundledGeneration).toHaveBeenCalledWith("orion-api", generationId);
   });
