@@ -84,8 +84,6 @@ interface PluginManifest {
 
   // ── UI / LLM 통합 ──
   ui?: PluginUiExtension[];                                      // 사이드바 UI 슬롯
-  /** @deprecated legacy keyword→Tool schema preload; Skill discovery가 아님 */
-  keywords?: Array<{ keyword: string; skillId: string }>;
   // (각 tool 의 description·inputSchema·visibility·pathFields 는 tools[] 원소 Tool 객체에
   //  인라인 — 아래 Tool 인터페이스. pre-v6 의 toolSchemas/uiActions map 은 제거됨.)
 
@@ -164,8 +162,8 @@ interface Tool {
 
 #### tools
 
-- LLM 에 노출되는 tool name 배열.
-- `^[a-zA-Z_][a-zA-Z0-9_]*$` 필수. **도트 · 하이픈 금지**. 런타임 변환 없음.
+- 유일한 callable surface인 pure MCP Tool 객체 배열.
+- 각 `name`은 `^[a-zA-Z_][a-zA-Z0-9_]*$` 필수. **도트 · 하이픈 금지**. 런타임 변환 없음.
 - 위반 시 로드 시점에 거부됨.
 
 #### description
@@ -177,18 +175,6 @@ interface Tool {
 
 - 각 tool 객체가 `description` (설명) 과 `inputSchema` (JSON Schema draft-07 입력 스키마) 를 직접 담는다.
 - renderer 노출 여부는 `_meta.ui.visibility` 로 결정한다. LLM 전용 tool 은 `["model"]`, app 전용 메서드는 `["app"]`, 겸용은 `["model","app"]`. (pre-v6 의 `toolSchemas`/`uiActions` map 은 #885 Phase R 에서 제거.)
-
-#### keywords (선택)
-
-- **Deprecated** keyword→Tool schema preload 항목이며 bundled Skill 발견
-  기능이 아닙니다. instruction bundle은 `manifest.skills`에 선언합니다.
-- `skillId` 는 `tools[]` 에 선언된 model-visible Tool name 과 정확히
-  동일해야 하며, app-only tool (`_meta.ui.visibility === ["app"]`) 을
-  가리킬 수 없습니다. 키워드 일치는 해당 Tool schema를 model-visible
-  turn scope에 추가할 뿐 Tool을 직접 호출하지 않습니다.
-- Owner: `ave` plugin runtime. 지원되는 모든 플러그인이 bundled
-  `manifest.skills`로 이관되고 active manifest에서 `keywords` 선언이
-  사라지면 제거합니다.
 
 #### capabilities (선택)
 
@@ -204,7 +190,7 @@ interface Tool {
 
 - 사이드바 UI 확장. [UI 확장](#ui-확장) 섹션 참고.
 
-#### _meta.ui.visibility (선택)
+#### \_meta.ui.visibility (선택)
 
 - 각 tool 이 어느 surface 에서 호출 가능한지 선언 (`"model"` = LLM, `"app"` = renderer). 렌더러가 `ave:plugins:call` IPC 로 호출할 수 있는 것은 `"app"` 을 포함한 tool (app-visible) 뿐이다.
 - 자세히는 [app-visibility 보안 경계](#app-visibility-보안-경계).
@@ -262,7 +248,8 @@ interface PluginRuntimeContext {
 }
 
 type RuntimePluginFactory =
-  (ctx: PluginRuntimeContext) => Promise<RuntimePlugin> | RuntimePlugin;
+  (ctx: PluginRuntimeContext,
+) => Promise<RuntimePlugin> | RuntimePlugin;
 ```
 
 ### 기본 구조
@@ -279,24 +266,18 @@ export default async function createPlugin(
   //    - hostApi.getSecret(...) 로 API 키 조회
   //    - pluginRoot / hostRoot 기반 파일 경로 설정
 
-  // 2. Deprecated keyword→Tool schema preload.
-  //    신규 instruction discovery는 manifest.skills를 사용합니다.
-  hostApi.registerKeywords([
-    { keyword: "회의록", skillId: "meeting_start" },
-  ]);
-
-  // 3. 이벤트 구독
+  // 2. 이벤트 구독
   const dispose = hostApi.onEvent("calendar.event.created", (data) => {
     log("calendar event observed", data);
   });
 
-  // 4. 종료 훅 (호스트가 before-quit 시 호출; handler 당 5초 cap)
+  // 3. 종료 훅 (호스트가 before-quit 시 호출; handler 당 5초 cap)
   hostApi.onShutdown(async () => {
     dispose();
     await flushPendingWrites();
   });
 
-  // 5. 핸들러 반환
+  // 4. 핸들러 반환
   return {
     start: async () => { /* 선택 */ },
     stop:  async () => { /* 선택 */ },
@@ -317,7 +298,6 @@ export default async function createPlugin(
 ```typescript
 interface PluginHostApi {
   // 기본 통합
-  registerKeywords(keywords: Array<{ keyword: string; skillId: string }>): void;
   emitEvent(eventType: string, data?: unknown): void;
   onEvent(eventType: string, handler: (data: unknown) => void): () => void; // 🔑 disposer 반환
   addTask(task: {
@@ -337,29 +317,15 @@ interface PluginHostApi {
   getLyraMailAccount(): string | null;                 // ← 문자열 또는 null
 
   // 확장 API
-  callLlm(prompt: string, options?: { maxTokens?: number; systemPrompt?: string }): Promise<string>;
-  logEvent(level: "info" | "warn" | "error", message: string, data?: unknown): void;
+  callLlm(prompt: string, options?: { maxTokens?: number; systemPrompt?: string },
+  ): Promise<string>;
+  logEvent(level: "info" | "warn" | "error", message: string, data?: unknown,
+  ): void;
   onShutdown(handler: () => void | Promise<void>): void;
 }
 ```
 
-### 1. registerKeywords() (deprecated)
-
-키워드가 일치할 때 `skillId`와 이름이 같은 model-visible Tool schema를
-turn scope에 preload합니다. Tool을 직접 호출하지 않으며 bundled Skill
-발견 기능도 아닙니다. 신규 instruction bundle은 `manifest.skills`를
-사용합니다. Owner는 `ave` plugin runtime이며, 지원되는 모든
-플러그인이 이관되고 active manifest의 `keywords` 선언이 0이 되면
-`keywords`와 함께 제거합니다.
-
-```typescript
-hostApi.registerKeywords([
-  { keyword: "회의록", skillId: "meeting_start" },
-  { keyword: "녹음",   skillId: "meeting_start" },
-]);
-```
-
-### 2. emitEvent()
+### emitEvent()
 
 플러그인이 이벤트를 발행합니다. 호스트 · 다른 플러그인 이 구독할 수 있습니다.
 
@@ -410,7 +376,7 @@ hostApi.saveNote(`기록-${id.slice(0,8)}`, `# ${title}\n\n${body}`);
 암호화된 시크릿(주로 API 키)을 조회합니다.
 
 | 키 | 설명 |
-|----|------|
+|---------------------- |---------------- |
 | `llm.apiKey.openai` | OpenAI API 키 |
 | `llm.apiKey.anthropic` | Anthropic API 키 |
 | `llm.apiKey.google` | Google API 키 |
@@ -485,11 +451,10 @@ hostApi.onShutdown(async () => {
 Ave 플러그인에는 **세 개의 독립 네임스페이스**가 있습니다.
 
 | 구분 | 대상 | 도트 허용? | 예시 |
-|------|------|-----------|------|
+|------------- |--------------------------- |---------- | ----------------------------------------- |
 | 플러그인 ID | `id` 필드 | ✅ | `meeting`, `com.example.meeting-recorder` |
 | LLM tool name | `tools[]`, `handlers` 키 | ❌ | `meeting_start` |
 | 이벤트 이름 | `emitEvent()` / `onEvent()` | ✅ | `meeting.summary.created` |
-| deprecated keywords.skillId | `keywords[].skillId` | ❌ (model-visible Tool name 과 일치) | `meeting_start` |
 
 런타임은 tool name 변환을 하지 않습니다. `tools: ["meeting.start"]` 같은 매니페스트는 로드 시점에 즉시 거부됩니다.
 
@@ -561,7 +526,7 @@ Ave 플러그인에는 **세 개의 독립 네임스페이스**가 있습니다.
 capability 는 호스트가 특정 pluginId 를 몰라도 통합 지점을 결정하도록 돕는 **선언 태그**입니다. 네이밍은 kebab-case.
 
 | capability | 의미 | 강제? | 예시 |
-|-----------|------|-------|------|
+|-------------------- |-------------------------------------------------- |--------------- |------------- |
 | `meeting-recorder` | 실시간 음성 캡처 + STT | advisory | meeting |
 | `mail-source` | 이메일 소스 연결 | advisory | lyra-mail |
 | `calendar-source` | 캘린더 소스 연결 | advisory | lyra-mail |
@@ -611,7 +576,7 @@ OS 네이티브 알림으로 승격할 이벤트를 선언합니다.
 ### installPolicy 정책
 
 | `installPolicy` | 게시/설치 정책 |
-|--------------|-----------|
+|---------------------- |----------------------------------------------------------------------------------------------- |
 | `"admin"` | marketplace admin review 후 공개. 호스트는 서명된 artifact envelope과 설치 영수증을 검증합니다. |
 | `"user"` (또는 미지정) | marketplace publish 경로로 게시. 호스트는 동일하게 envelope과 설치 영수증을 검증합니다. |
 
@@ -627,7 +592,7 @@ OS 네이티브 알림으로 승격할 이벤트를 선언합니다.
 ## 레이트 리밋 · 예산
 
 | 대상 | 한도 | 적용 지점 |
-|------|------|----------|
+|---------------------- |-------------------------------------------------------- |------------------------------------------------- |
 | `callLlm` — 플러그인별 | **20회 / 10분** (sliding window) | `src/boot/conversation.ts#createCallLlmForPlugin` |
 | `callLlm` maxTokens | **≤ 4096** (초과값은 clamp) | 동일 |
 | `startupTimeoutMs` | **1 ≤ n ≤ 60000 ms** (선언 시) / 기본 경고 임계치 5000ms | `src/plugins/runtime.ts#startAll` |
@@ -644,7 +609,7 @@ OS 네이티브 알림으로 승격할 이벤트를 선언합니다.
 플러그인 번들에서 `ipcRenderer` / `ipcMain` 을 **절대 import 하지 마세요**. 모든 통신은 정해진 경계를 통해 이루어집니다.
 
 | 방향 | 방법 | 비고 |
-|------|------|------|
+|----------------------------- |-------------------------------------- |-------------------------------------- |
 | LLM → 플러그인 도구 | ToolRegistry 경유 (자동) | 플러그인 코드 불필요 |
 | Renderer UI → 플러그인 메서드 | `ave:plugins:call(toolName, payload)` | `_meta.ui.visibility` app-visible 강제 |
 | 플러그인 → 호스트 | `PluginHostApi` 직접 호출 | `context.hostApi.*` |
@@ -709,7 +674,6 @@ import { vi } from "vitest";
 import type { PluginHostApi } from "@ave/plugin-types";
 
 const hostApi: PluginHostApi = {
-  registerKeywords: vi.fn(),
   emitEvent: vi.fn(),
   onEvent: vi.fn(() => () => {}),         // disposer 반환
   addTask: vi.fn(),
@@ -805,17 +769,11 @@ Meeting / Microsoft 365 (Outlook 메일+캘린더) / Local Indexer 의 실제 �
 
 아래 항목은 가이드·스키마·정책상 정의되어 있지만 **현재 런타임에서 강제되지 않는** 사항이거나 아직 도구/스크립트가 없는 사항입니다. 향후 스프린트에서 좁힐 대상.
 
-1. **Deprecated `keywords` 제거** — 현재 host cross-field validator가
-   `keywords[].skillId`를 model-visible `tools[]`에 한정합니다. 지원되는
-   모든 플러그인이 bundled `manifest.skills`로 이관되고 active
-   manifest의 `keywords` 선언이 0이 되면 필드와
-   `registerKeywords()`를 제거합니다. Owner: `ave` plugin runtime.
-2. ~~`toolSchemas` 키 ⊂ `tools[]` 교차 검증~~ — #885 Phase R 에서 `toolSchemas` map 이 제거되어 무의미 (스키마가 tool 객체에 인라인). (legacy)
-3. **`notificationEvents.event ⊂ eventSubscriptions` 교차 검증** — 선언했지만 구독하지 않아 알림이 절대 뜨지 않는 상태 경고가 없음.
-4. **`capabilities` enum 화** — 현재 `lyra-mail-consumer` 만 런타임에서 강제. 나머지는 자유 문자열. 정책 게이트 확장 필요 (예: `worker-client` 선언 플러그인만 Python runtime 사용 허용).
-5. **`eventSubscriptions` 민감 이벤트 allowlist / 네임스페이스 정책** — 임의 플러그인이 `email.*`, `calendar.*` 같은 타 플러그인 네임스페이스를 구독할 수 있음.
-6. **프로덕션 marketplace 공개키 회전** — `src/plugins/marketplace-keys.ts` 의 POC 키는 프로덕션 릴리스 전 실제 운영 키로 교체해야 함.
-7. **`ui[]` kind 별 필드 규약** 은 스키마가 담고 있지만, 실제 로더는 엄격한 fallback 처리(`entry ?? page`)를 하므로 일부 오탈자가 silent 하게 넘어갈 여지가 남음.
+1. **`notificationEvents.event ⊂ eventSubscriptions` 교차 검증** — 선언했지만 구독하지 않아 알림이 절대 뜨지 않는 상태 경고가 없음.
+2. **`capabilities` enum 화** — 현재 `lyra-mail-consumer` 만 런타임에서 강제. 나머지는 자유 문자열. 정책 게이트 확장 필요 (예: `worker-client` 선언 플러그인만 Python runtime 사용 허용).
+3. **`eventSubscriptions` 민감 이벤트 allowlist / 네임스페이스 정책** — 임의 플러그인이 `email.*`, `calendar.*` 같은 타 플러그인 네임스페이스를 구독할 수 있음.
+4. **프로덕션 marketplace 공개키 회전** — `src/plugins/marketplace-keys.ts` 의 POC 키는 프로덕션 릴리스 전 실제 운영 키로 교체해야 함.
+5. **`ui[]` kind 별 필드 규약** 은 스키마가 담고 있지만, 실제 로더는 엄격한 fallback 처리(`entry ?? page`)를 하므로 일부 오탈자가 silent 하게 넘어갈 여지가 남음.
 
 ---
 

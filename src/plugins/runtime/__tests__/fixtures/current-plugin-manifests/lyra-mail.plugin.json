@@ -961,43 +961,5 @@
       "titleField": "subject",
       "bodyField": "actionDescription"
     }
-  ],
-  "keywords": [
-    {
-      "keyword": "이메일",
-      "skillId": "lyramail_email_list"
-    },
-    {
-      "keyword": "메일",
-      "skillId": "lyramail_email_list"
-    },
-    {
-      "keyword": "email",
-      "skillId": "lyramail_email_list"
-    },
-    {
-      "keyword": "받은메일",
-      "skillId": "lyramail_email_list"
-    },
-    {
-      "keyword": "메일요약",
-      "skillId": "lyramail_email_analyze"
-    },
-    {
-      "keyword": "태스크생성",
-      "skillId": "lyramail_email_analyze"
-    },
-    {
-      "keyword": "이메일분류",
-      "skillId": "lyramail_email_analyze"
-    },
-    {
-      "keyword": "메일확인",
-      "skillId": "lyramail_email_list"
-    },
-    {
-      "keyword": "Outlook",
-      "skillId": "lyramail_email_list"
-    }
   ]
 }
