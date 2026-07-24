@@ -133,25 +133,24 @@ cd ave
 bun run start
 ```
 
-`bun run start` 가 unpackaged 빌드일 때 자동 세팅하는 env (`scripts/run-electron.mjs:26-46`):
+`bun run start`/`bun run dev`의 현재 런처 계약:
 
 | env | 효과 |
 |-----|------|
-| `AVE_DEV_SKIP_SIG=1` | 매니페스트 ed25519 서명 검증 skip — 로컬 빌드는 `plugin.json.sig` 없음 |
-| `AVE_ALLOW_LINKED_PLUGIN_ENTRY=1` | manifest 의 `entry` 필드가 `../node_modules/@ave/...` 같은 링크 항목 가리키는 것 허용 |
-| `AVE_ENABLE_DEV_CONSOLE=0` | DevTools 자동 열기 끄기 |
-| `AVE_DEV_NO_SANDBOX=1` (Windows) | Chromium sandbox off — enterprise PC GPU 크래시 회피 |
+| `AVE_DEV=1` | 개발자 도구와 개발 모드를 활성화. `bun run dev`가 자동 설정 |
+| `AVE_DEV_RELOAD=1` | 설치된 플러그인 payload의 변경 감시와 reload 활성화 |
+| `AVE_DEV_CONSOLE=0` | DevTools 자동 열기 끄기. `bun run start`의 기본값 |
+| `AVE_WIN_NO_SANDBOX=1` (Windows) | unpackaged corp/VDI 실행에서만 Chromium sandbox 우회. Windows safe launcher가 필요할 때 설정 |
 | GPU safe-flags (Windows) | `--disable-gpu --disable-software-rasterizer --disable-gpu-compositing --no-sandbox` 자동 추가 |
 | 콘솔 UTF-8 (Windows) | `chcp 65001`, `PYTHONIOENCODING=utf-8` 등 |
 
-> `bun run start` 는 **`AVE_DEV=1` 을 세팅하지 않습니다**. dev 게이트 전부를 켜고 싶으면 `bun run dev` (`run-electron-dev.mjs`) 를 쓰거나 직접 export. `AVE_DEV_RELOAD` (§5) 는 독립 — `AVE_DEV` 없이 단독으로도 동작합니다 (`dev-flags.ts:103-106`). DevTools 자동 열림은 `AVE_ENABLE_DEV_CONSOLE=1` 이 분리된 게이트. 마켓플레이스 서명 키는 앱 호스트의 `src/plugins/marketplace-keys.ts` 가 소유하며 SDK 는 타입/소스 계약만 제공합니다.
+> `bun run start` 는 **`AVE_DEV=1` 을 세팅하지 않습니다**. 개발자 설치 UI가 필요하면 `bun run dev` (`run-electron-dev.mjs`)를 사용하세요. `AVE_DEV_RELOAD` (§5)는 독립적으로 개발 모드를 엽니다. 어떤 dev 플래그도 marketplace envelope 검증, 설치 receipt 무결성, entry 경로 containment를 우회하지 않습니다. 마켓플레이스 trust root는 앱 호스트가 소유하며 SDK는 타입/소스 계약만 제공합니다.
 
 ### 3-6. 검증
 
 부팅 로그에서:
 
 - ✅ 정상 로드: `[ave] boot: plugins loaded: <tool-name-list>`에 플러그인의 Tool 이름이 포함됨 — `src/boot/steps/plugin-runtime.ts`
-- ✅ 서명 우회 경고: `[ave] boot: AVE_DEV_SKIP_SIG=1 — plugin signature verification disabled (dev-only)` — `src/boot/steps/plugin-runtime.ts:601`
 - ❌ 거부됨: `[plugin-runtime] ignoring untrusted registry manifest path for <id>: <path>` → §3-1 참고
 - ❌ 매니페스트 자체 invalid: `[plugin-runtime] <id> rejected — <reason>`
 - ❌ 매니페스트 schema 실패: `[manifest:<id>] schema validation failed (<jsonpath>): <message>`
@@ -164,11 +163,10 @@ packaged 빌드 (`app.isPackaged === true`) 는 보안 정책 상 사이드로�
 
 | 게이트 | 동작 |
 |--------|------|
-| 모든 `AVE_DEV*` env | `src/boot/dev-flags.ts:18-54` 에서 hard-gate — packaged 일 때 무조건 무시 |
-| `AVE_DEV_SKIP_SIG=1` | 위와 동일. **서명 없는 managed 플러그인은 거부됨** |
-| Trust-root 검사 | dev 와 동일하게 항상 적용 |
-| 서명 검증 (`PluginSignatureVerifier`) | `installPolicy: "admin"` 인 managed 플러그인은 `plugin.json.sig` 가 trusted publisher key set 매칭 필수 |
-| 사용자 플러그인 (`installPolicy: "user"`) 서명 누락 | 기본 차단. 설정의 **"서명되지 않은 사용자 플러그인 허용"** 토글로 user-by-user opt-in 가능 (`runtime.ts:331-348`, `settings.plugins.allowUnsignedUserPlugins`) |
+| 모든 `AVE_DEV*` env | packaged 빌드에서 무시하고 부팅 시 stale/tampered 플래그를 감사 로그에 기록 |
+| Marketplace envelope | Host 내장 publisher trust set으로 항상 검증하며 dev 우회 없음 |
+| 설치 payload | 설치 receipt와 payload digest를 항상 검증 |
+| Entry 경로 | `pluginsRoot/<id>/` containment를 항상 강제하며 linked entry 우회 없음 |
 
 Settings의 로컬 폴더 설치는 dev mode에서만 표시되며 packaged 빌드에는 설치 우회 경로가 없습니다. `~/.ave/plugins/registry.json` 직접 편집도 지원하지 않습니다.
 
@@ -306,7 +304,7 @@ bun run dev
 | 플러그인이 안 보임 | Settings → Plugin Config → 개발자 도구에서 빌드 폴더를 다시 설치하고 `bun run plugins:list`로 조회 |
 | 두 위치에서 플러그인 충돌 | `.ave-dev` 잔재를 삭제한 뒤 Settings에서 빌드 폴더를 다시 설치. registry는 직접 편집하지 않음 |
 | `installSource: "dev-link"` 이 registry 에 남아 있음 (구 `bun run dev:link` 잔재) | 부팅 시 `local-dev`로 rewrite되고 경고가 출력됨. receipt 검증을 통과하도록 Settings에서 빌드 폴더를 다시 설치 |
-| 서명 검증 실패 (dev) | `AVE_DEV=1 AVE_DEV_SKIP_SIG=1` (이미 `bun run dev` 기본값) |
+| 설치 무결성 검증 실패 (dev) | Settings → Plugin Config → 개발자 도구에서 현재 빌드 폴더를 다시 설치해 receipt를 재생성. 검증 우회 env는 없음 |
 | sideload 패널이 안 보임 | `AVE_DEV=1` 환경변수 적용 확인. packaged 빌드는 dev 패널 비활성 |
 
 ---
