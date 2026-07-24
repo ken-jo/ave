@@ -56,11 +56,6 @@ interface PluginManifest {
   tools: Tool[];
   config?: Record<string, unknown>;
   ui?: PluginUiExtension[];
-  /**
-   * @deprecated keyword→Tool schema preload only.
-   * Bundled Skill discovery uses manifest.skills.
-   */
-  keywords?: Array<{ keyword: string; skillId: string }>;
   /** 폐쇄형 enum — §2.3 Capabilities Taxonomy 참조. */
   capabilities?: string[];
   eventSubscriptions?: string[];
@@ -141,6 +136,7 @@ interface Tool {
 > branch push 는 publish 트리거 안 함 (`on.push.tags: ['v*.*.*']` 만 listen). dev 중 main 으로 머지해도 catalog 는 가만히 있음 — 의도된 release 시점에만 tag 로 트리거.
 >
 > **Format strictness — 4 곳에서 동일 regex** `^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`:
+>
 > 1. `ave-plugin-sdk/schemas/plugin-manifest.schema.json` — AJV 가 manifest 작성 시점에 거절
 > 2. `ave/src/plugins/runtime/manifest-validation.ts` — 호스트가 SDK schema 를 resolve 해 사이드로드 시점에 거절
 > 3. 각 plugin repo (6 개) + `ave-plugin-template` 의 `.github/workflows/publish.yml` — tag 푸시 시점에 거절
@@ -153,7 +149,7 @@ interface Tool {
 **각 필드의 런타임 소비처:**
 
 | 필드 | 소비처 | 타이밍 |
-|------|--------|--------|
+|----------------------------- |--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |------------------------------------------- |
 | `id` | PluginRegistry, HostApi cleanup | boot + 런타임 전반 |
 | `version` | 마켓플레이스 카탈로그 카드 + update-detector 비교 + install receipt + `assertInstalledManifestMatchesCatalog` (defense-in-depth host check) + Settings UI 카드 | install + 런타임 전반 |
 | `icon` | plugin grid v3 popover (Lucide named-export 동적 lookup, 누락/매치 실패 시 `Plug` fallback). 옵션 필드 — 없으면 default 아이콘 | UI 렌더 |
@@ -161,7 +157,6 @@ interface Tool {
 | `entry` | runtime.ts `require()` | boot |
 | `tools[]` (Tool 객체) | Tool Registry 등록 + LLM system prompt tool schema (`inputSchema`/`description`) | boot ToolRegistry 등록 + system prompt 빌드 |
 | `description` | 비활성 플러그인 카탈로그 (`listPluginCards`) | system prompt · UI |
-| deprecated `keywords[]` | 일치한 model-visible Tool schema preload (직접 호출/Skill discovery 아님) | boot |
 | `ui[]` | plugin-ui-host.tsx 마운트 | boot + UI 렌더 |
 | `eventSubscriptions[]` | 호스트 이벤트 라우팅 | boot |
 | `notificationEvents[]` | `registerPluginNotifications()` — OS 알림 자동 등록 | boot |
@@ -171,10 +166,6 @@ interface Tool {
 | `dependencies` | Marketplace install **preflight gate**. `required:true` (default — string form / `required` 누락 object 포함) 미설치 시 install 거부 + `MissingPluginDependenciesError`; `required:false` 는 install 통과 + 컨슈머 책임으로 degrade. **Host 는 dep 을 auto-install 하지 않는다** (issue #92). | install |
 | `pluginAccess` | Cross-plugin tool/event access gate + agent approval scope grant | runtime |
 | `publisher` | 감사 로그 · 마켓플레이스 카드 | install + 표시 |
-
-Deprecated `keywords`의 owner는 `ave` plugin runtime입니다. 지원되는
-모든 플러그인이 bundled `manifest.skills`로 이관되고 active manifest의
-`keywords` 선언이 0이 되면 `registerKeywords`와 함께 제거합니다.
 
 **plugin.json 권한 메타데이터 예시 (meeting 플러그인의 핵심 도구 발췌):**
 
@@ -246,10 +237,6 @@ Deprecated `keywords`의 owner는 `ave` plugin runtime입니다. 지원되는
       "_meta": { "ui": { "visibility": ["model", "app"] } }
     }
   ],
-  "keywords": [
-    { "keyword": "회의록", "skillId": "meeting_sessions" },
-    { "keyword": "녹음", "skillId": "meeting_sessions" }
-  ],
   "installPolicy": "user",
   "publisher": "example-publisher"
 }
@@ -262,7 +249,7 @@ Deprecated `keywords`의 owner는 `ave` plugin runtime입니다. 지원되는
 플러그인 repo는 `plugin.json` sidecar signature를 만들지 않는다. Marketplace upload API가 manifest/schema/policy/access를 검증하고 최종 artifact envelope를 서명한다. Host는 설치 시 envelope를 검증하고 install receipt를 저장하며, runtime load 전에 receipt의 file hash를 확인한다.
 
 | 상황 | 정책 |
-|------|------|
+|-------------------------------------- |--------------------------------------------------------------------- |
 | envelope 검증 성공 + receipt hash 일치 | 로드 후보. `plugin_integrity_verified` 감사 이벤트 기록. |
 | envelope 검증 실패 | 설치 거부. |
 | receipt 누락/불일치 | **드롭 (fail-closed)**. `plugin_integrity_rejected` 감사 이벤트 기록. |
@@ -307,7 +294,7 @@ Renderer UI 는 `ave:plugins:call` IPC 를 통해 app-visible 플러그인 tool 
 `capabilities[]` 는 **폐쇄형 enum** 이다 (`src/plugins/capabilities.ts` 의 `KNOWN_CAPABILITIES`). 등록되지 않은 문자열은 AJV+런타임에서 거부된다.
 
 | 값 | 강제/자문 | 역할 |
-|----|-----------|------|
+|------------------------ |-------------------- |------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `lyra-mail-consumer` | advisory (PR 3 이후) | Microsoft Graph 를 사용하는 플러그인의 자기-식별 라벨. PR 3 에서 host 측 MS HostApi 메서드가 모두 제거되어 강제할 게이트가 없으므로 advisory 로 강등. lyra-mail 플러그인이 자체 MSAL + safeStorage 로 직접 인증 처리 (architecture.md §9.4a "Plugin-Owned OAuth Authentication" 참조). |
 | `external-auth-consumer` | **enforced** | `openAuthWindow` 호출 필수. 실 Chromium 창을 띄워 외부 포털 세션 쿠키를 수집하는 민감 operation — 선언적 opt-in 없이는 거부. |
 | `mail-source` | **enforced** | `email.*` 이벤트 emit 게이트. 미선언 시 emit 이 드롭되고 warn. |
@@ -328,7 +315,7 @@ Renderer UI 는 `ave:plugins:call` IPC 를 통해 app-visible 플러그인 tool 
 **이벤트 emit 측 host-only 예약** (`HOST_ONLY_EMIT_NAMESPACES` in `src/plugins/capabilities.ts`):
 
 | Namespace | 발행자 | 비고 |
-|----------|-------|------|
+|----------|--------------------------------------- |-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `plugin.*` | host (`emitEvent` from `boot/types.ts`) | `plugin.installed` / `plugin.uninstalled` lifecycle. plugin 의 `hostApi.emitEvent` 와 plugin webview IPC bridge 양쪽 모두 거부. plugin lifecycle subscriber 는 `onPluginsChanged` self-event filter + `source` discriminator 로만 구독한다. 자세한 contract 는 architecture.md §9.4a. |
 | `host.*` | host main process | UI / 환경 상태 broadcast. plugin 측 emit 거부. plugin webview SDK 가 `bridge.onEvent("host.<axis>", h)` 로 구독. 현재 발행 이벤트: `host.theme.changed` (theme/chatTheme/codeTheme + computed `--ave-*` tokens) — register 시점에 preload 가 sticky-buffer 로 1회 replay 보장 (자세한 흐름은 architecture.md §6.7.1). 추후 `host.locale.changed`, `host.online.changed` 등 추가 가능. |
 
@@ -338,23 +325,26 @@ Renderer UI 는 `ave:plugins:call` IPC 를 통해 app-visible 플러그인 tool 
 
 ### 2.4 `auth` — Plugin-Owned OAuth 의 Host UI Surface
 
-OAuth-flow 를 소유한 플러그인 (lyra-mail, lyra-mail 등) 이 호스트 Settings UI 에 generic 미인증 / 인증됨 뱃지 + 로그인/로그아웃 버튼을 제공하기 위한 *선언적* 계약. 호스트는 OAuth 코드를 모르고, 단지 manifest 에 적힌 tool 이름을 dispatch + standardized 이벤트를 listen 한다. architecture.md §9.4a "Plugin-Owned OAuth — Host UI Surface" 와 짝.
+OAuth-flow 를 소유한 플러그인 (lyra-mail, lyra-mail 등) 이 호스트 Settings UI 에 generic 미인증 / 인증됨 뱃지 + 로그인/로그아웃 버튼을 제공하기 위한 _선언적_ 계약. 호스트는 OAuth 코드를 모르고, 단지 manifest 에 적힌 tool 이름을 dispatch + standardized 이벤트를 listen 한다. architecture.md §9.4a "Plugin-Owned OAuth — Host UI Surface" 와 짝.
 
 **Manifest 형**
 
 ```jsonc
 {
   "tools": [
-    { "name": "lyramail_status",  "description": "인증 상태를 반환한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } } },
-    { "name": "lyramail_auth",    "description": "로그인 플로우를 시작한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } } },
-    { "name": "lyramail_signout", "description": "로그아웃한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } } }
+    { "name": "lyramail_status",  "description": "인증 상태를 반환한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } },
+    },
+    { "name": "lyramail_auth",    "description": "로그인 플로우를 시작한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } },
+    },
+    { "name": "lyramail_signout", "description": "로그아웃한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } },
+    },
   ],
   "auth": {
     "label": "Microsoft 계정",      // optional; 기본 manifest.name
     "statusTool": "lyramail_status",  // 필수, visibility ["app"]
     "loginTool": "lyramail_auth",     // 필수, visibility ["app"]
-    "logoutTool": "lyramail_signout"  // optional, visibility ["app"]
-  }
+    "logoutTool": "lyramail_signout", // optional, visibility ["app"]
+  },
 }
 ```
 
@@ -381,23 +371,26 @@ interface PluginAuthStatusResult {
 {
   "tools": [
     /* non-auth LLM tools ... */
-    { "name": "lyramail_status",  "description": "인증 상태를 반환한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } } },
-    { "name": "lyramail_auth",    "description": "로그인 플로우를 시작한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } } },
-    { "name": "lyramail_signout", "description": "로그아웃한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } } }
+    { "name": "lyramail_status",  "description": "인증 상태를 반환한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } },
+    },
+    { "name": "lyramail_auth",    "description": "로그인 플로우를 시작한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } },
+    },
+    { "name": "lyramail_signout", "description": "로그아웃한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } },
+    },
   ],
-  "emittedEvents": ["lyra-mail.auth.changed", /* ... */],
+  "emittedEvents": ["lyra-mail.auth.changed" /* ... */],
   "auth": {
     "label": "Microsoft 계정",
     "statusTool": "lyramail_status",
     "loginTool": "lyramail_auth",
-    "logoutTool": "lyramail_signout"
-  }
+    "logoutTool": "lyramail_signout",
+  },
 }
 ```
 
 #### 2.4.1 `auth.partitionDomains` — 파티션 뷰어 allow-list (#649)
 
-OAuth-flow 를 소유한 플러그인이 자기 `persist:plugin-auth:<pluginId>` 파티션 안에서 외부 페이지(예: Outlook 캘린더 web UI)를 열기 위한 *hostname allow-list*. `hostApi.openAuthPartitionViewer({ url })` 호출이 이 리스트를 게이트로 사용한다 — URL 의 host 가 리스트에 매치되지 않으면 즉시 throw + audit.
+OAuth-flow 를 소유한 플러그인이 자기 `persist:plugin-auth:<pluginId>` 파티션 안에서 외부 페이지(예: Outlook 캘린더 web UI)를 열기 위한 _hostname allow-list_. `hostApi.openAuthPartitionViewer({ url })` 호출이 이 리스트를 게이트로 사용한다 — URL 의 host 가 리스트에 매치되지 않으면 즉시 throw + audit.
 
 **매칭 룰** — dot-boundary suffix-match. `outlook.office.com` 가 리스트에 있으면:
 - `outlook.office.com` ✅
@@ -408,7 +401,7 @@ OAuth-flow 를 소유한 플러그인이 자기 `persist:plugin-auth:<pluginId>`
 **거부 패턴** — SDK schema 와 호스트 `host-allow-list.ts` 가 보안적으로 중요한 패턴을 **둘 다** 거부한다 (hand-edited manifest 가 schema 를 우회해도 호스트가 한 번 더 잡음). 형식 오류성 패턴은 SDK schema 만 publish-time 에 거부한다 (호스트는 단순히 매칭 실패로 처리되어 dead entry 가 됨).
 
 | 패턴 | SDK schema | 호스트 | 거부 이유 |
-|---|---|---|---|
+|------------------------------------------------------------------------------ |------------- |----------------------- |------------------------------------------------------------------------ |
 | `*`, `*.office.com` | ✅ | ✅ | wildcard 는 모든 sub-domain 매치 → blanket consent surface |
 | `localhost`, `intranet` | ✅ | ✅ | single-label 은 동일 등록자 suffix 의 모든 site 와 blanket-match |
 | `com`, `co.kr`, `or.kr`, `go.kr`, `kr`, `net`, `org`, `io`, `ai`, `dev`, `app` | ✅ | ✅ | 공개 등록 suffix — 모든 등록자 site 와 blanket-match |
@@ -437,11 +430,15 @@ OAuth-flow 를 소유한 플러그인이 자기 `persist:plugin-auth:<pluginId>`
   "id": "lyra-mail",
   "capabilities": ["external-auth-consumer"],
   "tools": [
-    { "name": "lyramail_open_outlook_calendar", "description": "Outlook 캘린더 뷰어를 연다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["model", "app"] } } },
+    { "name": "lyramail_open_outlook_calendar", "description": "Outlook 캘린더 뷰어를 연다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["model", "app"] } },
+    },
     /* ... 기타 tool ... */
-    { "name": "lyramail_status",  "description": "인증 상태를 반환한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } } },
-    { "name": "lyramail_auth",    "description": "로그인 플로우를 시작한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } } },
-    { "name": "lyramail_signout", "description": "로그아웃한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } } }
+    { "name": "lyramail_status",  "description": "인증 상태를 반환한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } },
+    },
+    { "name": "lyramail_auth",    "description": "로그인 플로우를 시작한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } },
+    },
+    { "name": "lyramail_signout", "description": "로그아웃한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } },
+    },
   ],
   "emittedEvents": ["lyra-mail.auth.changed"],
   "auth": {
@@ -452,9 +449,9 @@ OAuth-flow 를 소유한 플러그인이 자기 `persist:plugin-auth:<pluginId>`
     "partitionDomains": [
       "outlook.office.com",
       "login.microsoftonline.com",
-      "office365.com"
-    ]
-  }
+      "office365.com",
+    ],
+  },
 }
 ```
 
@@ -471,7 +468,7 @@ plugin.json
    │
    ▼
 ┌──────────────────────────────────┐
-│ 2. AJV schema validation         │  @ave/plugin-sdk/schemas/plugin-manifest.schema.json
+│ 2. AJV schema validation         │  Host schemas/plugin-manifest.schema.json
 │    (strict, allErrors, formats)  │  → 실패 시
 │                                  │     [manifest:<pid>] schema validation failed: <errs>
 └──────────────────────────────────┘
@@ -480,8 +477,6 @@ plugin.json
 ┌──────────────────────────────────┐
 │ 3. Cross-field checks            │  runtime.ts readManifest()
 │    - tool name regex             │
-│    - deprecated keywords[].skillId │
-│      names a model-visible Tool    │
 │    - auth tool visibility==["app"]│
 │      (app-only; model 노출 금지)   │
 │    - startupTimeoutMs > 0        │
@@ -559,7 +554,9 @@ broadcast 시점에 같은 화이트리스트로 silently drop 하므로, 그 �
 // React 플러그인 — App 최상위
 import { useTheme } from "@ave/plugin-sdk/ui/hooks/useTheme";
 
-function App({ bridge, rootEl }: { bridge: PluginBridge; rootEl?: HTMLElement }) {
+function App({ bridge, rootEl,
+}: { bridge: PluginBridge; rootEl?: HTMLElement;
+}) {
   useTheme(bridge, {
     target: rootEl,                            // 옵션: scoped root 가 있을 때만
     onPayload: (e) => mapSidebarTokens(e),     // 옵션: custom 매핑
@@ -575,7 +572,8 @@ export function mount(host: PluginHost): PluginInstance {
     target: host.targetDocument ?? document,
   });
   // … plugin DOM build …
-  return { unmount: () => { dispose(); /* … */ } };
+  return { unmount: () => { dispose(); /* … */ },
+  };
 }
 ```
 
@@ -583,7 +581,8 @@ export function mount(host: PluginHost): PluginInstance {
 
 ```ts
 // scripts/check-ui-tokens.mjs
-import { validateTokenUsage, validateTokenDefinitions } from "@ave/plugin-sdk/ui/tokens/validate";
+import { validateTokenUsage, validateTokenDefinitions,
+} from "@ave/plugin-sdk/ui/tokens/validate";
 
 const css = readFileSync("src/ui/MyComponent.tsx", "utf8");
 const usage = validateTokenUsage(css);
@@ -593,7 +592,8 @@ if (!usage.ok) {
 }
 const defs = validateTokenDefinitions(css);
 if (!defs.ok) {
-  console.error("Plugins must not redefine --ave-* tokens:", defs.forbiddenRedefinitions);
+  console.error("Plugins must not redefine --ave-* tokens:", defs.forbiddenRedefinitions,
+  );
   process.exit(1);
 }
 ```
@@ -740,8 +740,7 @@ import { Stack, Toggle } from "@ave/plugin-sdk/ui";
 플러그인이 호스트에 접근하는 유일한 경로. `PluginHostApi` 인터페이스 (`src/plugins/types.ts`).
 
 | 메서드 | 언제 쓰나 | 언제 쓰지 말아야 하나 |
-|--------|-----------|----------------------|
-| `registerKeywords(keywords)` | boot 시 KeywordEngine에 트리거 등록 | 런타임 중 동적 추가 (boot 전용) |
+|--------------------------------- |-------------------------------------------------------------------------------------------------- |------------------------------------------------------- |
 | `emitEvent(name, payload)` | 다른 플러그인·호스트 이벤트 버스에 이벤트 발행 (capability gate) | 직접 플러그인 간 함수 호출 대체 |
 | `onEvent(name, handler)` | 다른 플러그인 이벤트 구독 (private namespace 차단) | 폴링 대체 (push 모델로 충분) |
 | `addTask(task)` | 액션 아이템 → Ave 태스크 자동 생성 (host `taskService` → `~/.ave/tasks/ave-tasks.db` SQLite). | UI 직접 조작 대체 |
@@ -763,7 +762,7 @@ import { Stack, Toggle } from "@ave/plugin-sdk/ui";
 // 플러그인이 선제성 제안 본문을 생성하는 예
 const suggestion = await hostApi.callLlm(
   `다음 이메일이 미팅 제안인지 판단하고, 제안이면 제목·일시를 한국어로 요약: ${emailBody}`,
-  { maxTokens: 300, systemPrompt: "당신은 캘린더 보조 비서입니다." }
+  { maxTokens: 300, systemPrompt: "당신은 캘린더 보조 비서입니다." },
 );
 ```
 
@@ -791,7 +790,8 @@ const cookies = await hostApi.openAuthWindow({
 
 // 반환된 쿠키로 직접 HTTP 요청
 const jar = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
-const res = await fetch("https://api.example.corp/api/...", { headers: { Cookie: jar } });
+const res = await fetch("https://api.example.corp/api/...", { headers: { Cookie: jar },
+});
 ```
 
 - Electron 내장 Chromium `BrowserWindow` + `session.cookies` API 사용 — **Selenium/webdriver 의존 제거**.
@@ -839,7 +839,7 @@ Ave 는 IPC/RPC 를 **시스템 레벨 전용**으로 확정한다. 플러그인
 ### 시스템 레벨 IPC (호스트가 사용)
 
 | 영역 | 채널/프로토콜 | 용도 |
-|------|---------------|------|
+|----------------- |-------------------------------------------------------------------------------------------------------------------------- |---------------------------- |
 | Host ↔ Renderer | Electron `ipcMain.handle()` (`ave:settings:*`, `ave:chat:*`, `ave:memory:*`, `ave:permissions:*`, `ave:plugins:call`) | UI ↔ 메인 프로세스 |
 | Marketplace | HTTPS REST (`/plugins/list`, `/plugins/download`) | 플러그인 카탈로그 + 다운로드 |
 | Governance Server | HTTPS REST | 정책·감사 업로드 |
@@ -921,7 +921,7 @@ HostApi 에 새 메서드를 추가하려면:
 ### 6.3 설계 결정 목록 (승인/기각)
 
 | 제안 | 결정 | 사유 |
-|------|------|------|
+|------------------------------------------------------------- |------------------------- |-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **worker_threads / process 격리** | ❌ 기각 | in-process + try/catch 로 95% 장애 커버. 격리 시 IPC 오버헤드 + 디버깅 복잡도 증가. |
 | **marketplace artifact 검증** | ✅ **승인** | 플러그인 저자가 sidecar 서명을 만들지 않고 marketplace가 artifact envelope을 서명합니다. 호스트는 설치 시 envelope을 검증하고 로드 시 install receipt 해시를 확인합니다. §2.1. |
 | **`permissions[]` 선언형 필드** | ⚠️ **부분 승인** | full permission 문자열 배열은 기각되었지만, 다음 3종의 선언형 게이트가 대체 도입됨: (1) renderer→plugin allowlist (당시 `uiActions` map; #885 Phase R 이후 각 tool 의 `_meta.ui.visibility` — 파괴적 도구의 확인 UX 는 플러그인이 책임), (2) `capabilities[]` — `lyra-mail-consumer` HostApi gate + event-emit namespace gate, (3) `PLUGIN_PRIVATE_NAMESPACES` — subscription deny-list. §2.2, §2.3. |
@@ -947,7 +947,7 @@ HostApi 에 새 메서드를 추가하려면:
 ### Deployment 모드
 
 | 항목 | `managed` | `user` |
-|------|-----------|--------|
+|--------- |------------------------------------------------------- |------------------------------------------------------- |
 | 설치 주체 | 회사 IT Admin / marketplace admin review | 사용자 marketplace publish |
 | 삭제 권한 | 회사만 (`PluginDeploymentGuard.canUninstall()` = false) | 사용자 자유 |
 | 업데이트 | 정책 push 시 강제 | 사용자 opt-in |
@@ -959,7 +959,7 @@ HostApi 에 새 메서드를 추가하려면:
 ### 현행 코드 참조
 
 | 역할 | 파일 |
-|------|------|
+|------------------------------------------------ |------------------------------------------------------------ |
 | `PluginManifest` 타입 | `src/plugins/types.ts` |
 | `PluginHostApi` 인터페이스 | `src/plugins/types.ts` |
 | 플러그인 런타임 (로딩·주입·AJV·설치 영수증 검증) | `src/plugins/runtime.ts` |
@@ -1003,9 +1003,6 @@ import type { RuntimePluginFactory } from "@ave/plugin-sdk";
 
 export const createPlugin: RuntimePluginFactory = async (context) => {
   const { hostApi, config, log } = context;
-
-  // Deprecated Tool-schema preload. 신규 instruction discovery는 manifest.skills.
-  hostApi.registerKeywords([{ keyword: "내키워드", skillId: "my_action" }]);
 
   return {
     start: async () => { log("플러그인 시작"); },
@@ -1066,7 +1063,7 @@ export const createPlugin: RuntimePluginFactory = async (context) => {
 // package.json
 {
   "dependencies": {
-    "@ave/plugin-sdk": "github:former_org/ave-plugin-sdk#v5.0.3"
-  }
+    "@ave/plugin-sdk": "github:former_org/ave-plugin-sdk#v5.0.3",
+  },
 }
 ```

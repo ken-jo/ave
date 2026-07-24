@@ -76,7 +76,7 @@ mindmap
 ```
 
 | 철학 원칙              | 아키텍처 구현체                                    | 철학이 구조가 되는 이유                                                      |
-| ---------------------- | -------------------------------------------------- | ---------------------------------------------------------------------------- |
+| ---------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | **설치형·로컬 기반**   | Client Core Engines + Local Index                  | J.A.R.V.I.S.처럼 내 PC에 상주. 선배 5명에게 물어보던 것을 로컬에서 즉시 검색 |
 | **기억 중심 개인화**   | Memory Files (AGENTS.md + MEMORY.md + memories/) + Overlay Trigger Surface | 사용자가 수락한 플러그인 제안을 main chat 의 정상 권한 경로로 가져온다. 기억이 쌓일수록 맞춤도 ↑      |
 | **에이전트 네트워크**  | Agent Hub (Message Board) + A2A                    | "이영희님 이거 확인해주세요" → 본인 부재 중에도 레플리카가 대응              |
@@ -295,7 +295,7 @@ graph TB
 ### Layer 역할 요약
 
 | Layer  | 이름                  | philosophy.md 대응 | 핵심 역할                                                                     |
-| ------ | --------------------- | ------------------ | ----------------------------------------------------------------------------- |
+| ------ | --------------------- | ------------------ | ----------------------------------------------------------------------------------- |
 | **L1** | 사용자·단말           | 사용자·단말 층     | Electron UI + Plugin Slots. 사용자가 보고 만지는 모든 것                      |
 | **L2** | 클라이언트 인텔리전스 | 사용자·단말 내부   | 로컬에서 돌아가는 지능. 키워드 감지, 에이전트 라우팅, 인덱싱, 기억, overlay trigger |
 | **L3** | 실행·추론             | 실행·추론 층       | **the LLM backend(LLM)** 세션 + agent harness 기반 Agent Loop + Tool 실행          |
@@ -375,7 +375,7 @@ graph TB
 **런타임 준비 경계:**
 
 | 단계 | 책임 | 비고 |
-| --- | --- | --- |
+| -------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
 | App packaging | OS별 packaged `uv` archive + license + host native asset 검증 | 누락은 build/package gate 에서 fail-closed |
 | App boot | runtime coordinator 인스턴스 주입 | `uv` materialize, Python install, dependency sync 를 기다리지 않는다 |
 | Plugin install/start | plugin manifest 의 host-managed Python 선언 확인 | `python.managedBy === "ave"` 또는 `requirementsLock` |
@@ -429,10 +429,11 @@ sequenceDiagram
 
 ### 4.3 Input Classification & Routing — 대화 루프 진입 전 단계
 
-이 섹션은 **사용자 입력을 어떤 실행 경로로 보낼지**를 다룬다. 현재
-플러그인 `keywords` 경로는 deprecated keyword→Tool schema preload이며
-bundled Skill discovery나 Tool 직접 호출 경로가 아니다. Bundled instruction
-discovery는 `manifest.skills`가 담당한다. 실제 턴 내부의 reasoning → tool
+이 섹션은 **사용자 입력을 어떤 실행 경로로 보낼지**를 다룬다.
+`InputClassifier`는 호스트 소유 slash command만 분류한다. 자연어 키워드는
+플러그인 scope를 활성화하거나 Tool schema를 preload하지 않는다. Bundled instruction
+discovery는 `manifest.skills`, Tool 발견은 호스트가 선택한
+plugin scope와 `tool_search`가 담당한다. 실제 턴 내부의 reasoning → tool
 → assistant 핑퐁은 **§4.5 Conversation Query Loop**를 단일 canonical
 경로로 삼는다.
 
@@ -440,38 +441,26 @@ discovery는 `manifest.skills`가 담당한다. 실제 턴 내부의 reasoning �
 flowchart TB
     INPUT["👤 사용자 입력"]
     MEMORY["Memory / Context Load<br/>(AGENTS.md + MEMORY.md + 로컬 컨텍스트)"]
-    DETECT["Keyword Detecting Engine<br/>(builtin + plugin keyword groups)"]
-    DISAMBIG{"명확한 매칭인가?"}
-    RECOMMEND["the LLM backend Keyword Recommender<br/>(최적 후보 추천 / 애매하면 사용자 문의)"]
-    ROUTE{"Route Resolver"}
+    CLASSIFY["InputClassifier<br/>(host slash command only)"]
+    ROUTE{"RouteEngine"}
 
     COMMAND["/command 직접 실행"]
-    SKILL["Deprecated keyword Tool-schema preload"]
-    AGENT["Agent Hub Message / A2A<br/>(메시지 보드 · 게시 · 직접 메시지)"]
     CHAT["ConversationLoop.runTurn()<br/>일반 대화 / 도구 루프"]
 
-    INPUT --> MEMORY --> DETECT --> DISAMBIG
-    DISAMBIG -->|"Yes"| ROUTE
-    DISAMBIG -->|"Ambiguous"| RECOMMEND --> ROUTE
+    INPUT --> MEMORY --> CLASSIFY --> ROUTE
     ROUTE -->|"명시적 명령"| COMMAND
-    ROUTE -->|"legacy keyword match"| SKILL
-    ROUTE -->|"@멘션 / 게시 / A2A"| AGENT
-    ROUTE -->|"일반 대화"| CHAT
+    ROUTE -->|"그 외 입력"| CHAT
 ```
 
 | 분류 결과 | 진입 지점 | 설명 |
-| --- | --- | --- |
+| ------------- | ---------------------------- | ------------------------------------------ |
 | **명령 실행** | Command executor | `/new`, `/compact`, `/load` 같은 즉시 명령 |
-| **Deprecated plugin keyword** | model-visible Tool scope | 일치한 Tool schema를 turn scope에 preload; 직접 호출/Skill discovery 아님 |
-| **에이전트 상호작용** | Agent Hub message board / A2A | 다른 에이전트에게 메시지·게시물·요청을 전달하는 경로. 백그라운드 자율 수행 서버를 뜻하지 않음 |
 | **일반 대화** | `ConversationLoop.runTurn()` | 본 문서의 상세 턴 사이클은 §4.5에 정의 |
 
 **설계 노트**
 
-- Deprecated `keywords`/`registerKeywords`는 plugin 활성화 시 legacy Tool
-  schema preload 항목을 등록한다. Bundled Skill은 `manifest.skills`에서
-  별도로 발견한다.
-- 동일 입력이 여러 그룹에 걸리면 the LLM backend가 가장 적합한 후보를 추천하고, 확신이 낮으면 사용자에게 확인을 요청한다.
+- Bundled Skill은 `manifest.skills`에서 발견되며 instruction만 기여한다.
+- 자연어 Tool 선택은 모델과 `tool_search` 경로가 담당한다.
 - Agent Hub는 paperclip의 board와 유사한 **비동기 메시지 보드**이며, 에이전트가 백그라운드에서 자율 실행되는 서버를 의미하지 않는다.
 
 ### 4.4 Local Index Engine — 로컬 검색 엔진 LLD
@@ -540,7 +529,7 @@ Layer B — 지능형 인덱싱 (local-indexer)
 > [PageIndex](https://github.com/ken-jo/PageIndex.git)는 전통적 벡터 임베딩 대신 **LLM 추론 기반 트리 검색**을 채택한 인덱싱 엔진이다. 문서를 목차(TOC) 트리로 구조화한 뒤, 에이전트가 트리를 탐색하며 관련 페이지를 추론으로 찾는다. 벡터 유사도가 놓치는 문맥적 관련성을 잡아낼 수 있어 장문 문서(규정집, 보고서 등)에 강점이 있다.
 
 | 구성 요소 | 기술 (Phase 1) | 설명 |
-|-----------|------|------|
+|------------------------- |------------------------------------------------------------------------------------ |--------------------------------------------------------------------------------------------------------------------------------- |
 | **File Watcher** | chokidar (FSEvents / inotify / ReadDirectoryChanges) | 파일 변경 실시간 감지 → FolderAutoIndexer → IdleScheduler P0 enqueue |
 | **Document Parser** | PDF: `pymupdf4llm` · DOCX/PPTX/XLSX/HTML: Microsoft `markitdown` · TXT/MD: 직접 읽기 | 포맷별 텍스트 추출 + 마크다운 변환. `kiwipiepy` 기반 한국어 형태소 토큰화 보강 |
 | **PageIndex 트리 인덱서** | `pageindex==0.2.8` | TOC 트리 구조화. `search()` 메서드가 없으므로 Ave가 `document_structure` / `document_page_content` 도구로 agentic 트리 탐색 수행 |
@@ -553,7 +542,7 @@ Layer B — 지능형 인덱싱 (local-indexer)
 **PageIndex 활용 시 고려사항 (Phase 1):**
 
 | 항목 | Phase 1 현황 | 대응 방안 |
-|------|------|-----------|
+|------------- |------------------------------------------------------------------------ |--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 지원 포맷 | PDF · DOCX · PPTX · XLSX · HTML · MD · TXT | `pymupdf4llm`(PDF) + `markitdown`(Office / HTML) + 직접 읽기(텍스트). PPTX / XLSX 이미지 OCR은 Phase 2 Vision |
 | LLM 의존성 | 임베딩은 OpenAI `text-embedding-3-small` 사용 | Phase 1은 OpenAI API key 필요. Phase 2는 BAAI / bge-m3 또는 the LLM backend 후속 경로 검토 |
 | 온라인 전제 | 인덱싱 시 임베딩 API 호출 필요 | Phase 1은 외부 임베딩 경로, Phase 2는 로컬 / enterprise 임베딩으로 오프라인화 목표 |
@@ -564,7 +553,7 @@ Layer B — 지능형 인덱싱 (local-indexer)
 Phase 1에서 §4.4 Layer A·B 명세를 production 수준으로 끌어올리는 구현이 완료되었다. 핵심 보강은 아래와 같다.
 
 | 항목 | Phase 1 변경 |
-| --- | --- |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Python 런타임 준비 경계** | 앱 installer 는 host-owned `uv` runtime asset 과 license 만 포함한다. `uv` materialize 와 Python interpreter/venv dependency sync 는 plugin manifest 의 host-managed Python 선언을 기준으로 plugin install/start 전 lazy 수행하며, venv 는 `~/.ave/runtime/python-envs/<os-arch-py-lockHash>/venv` 로 공유한다 |
 | **Layer A 파서** | PDF는 `pymupdf4llm`, DOCX / PPTX / XLSX / HTML은 Microsoft `markitdown` 단일 API 사용 |
 | **PageIndex 통합** | `pageindex==0.2.8`은 검색 메서드가 없으므로 Ave가 function calling으로 `document_structure` + `document_page_content`를 도구 노출해 agentic 탐색을 직접 구현 |
@@ -580,7 +569,7 @@ Phase 1에서 §4.4 Layer A·B 명세를 production 수준으로 끌어올리는
 **Phase 1 완료 메트릭 (ave 기준):**
 
 | 지표 | 결과 |
-| --- | --- |
+| ------------------ | -------------------------------- |
 | 신규 파일 | 25개 (TS 14 + Python 7 + 기타 4) |
 | 변경 파일 | 11개 |
 | TypeScript TSC | 0 errors |
@@ -608,7 +597,7 @@ Phase 1에서 §4.4 Layer A·B 명세를 production 수준으로 끌어올리는
 **검증 결과 (R4):**
 
 | 쿼리 | 기대 | 결과 |
-| --- | --- | --- |
+| ------------ | ---- | ---- |
 | `regulation` | hit | PASS |
 | `규정` | hit | PASS |
 | `규정집` | hit | PASS |
@@ -637,7 +626,7 @@ score(d) = Σ_r weight_r × (1 / (k + rank_r + 1))
 **Phase 1 가중치:**
 
 | Retriever | Weight | 비고 |
-| --- | --- | --- |
+| ------------------ | ------ | ----------------------------------------------------------------- |
 | BM25 (FTS5) | 0.5 | Python worker `/search/bm25` |
 | Vector (`lancedb`) | 0.5 | Python worker `/search/vector` |
 | Cloud (Mock) | 0.0 | Phase 2에서 실연결 시 `{bm25:0.35, vec:0.35, cloud:0.3}` 재정규화 |
@@ -660,7 +649,7 @@ RESUME_DELAY ──── 90s elapsed ──→ RUNNING
 **IDLE_SCAN 진입 조건 (모두 충족):**
 
 | 조건 | 값 |
-| --- | --- |
+| ---------------- | ----------------------- |
 | 시스템 유휴 시간 | ≥ 60초 |
 | CPU 5분 EMA | < 40% |
 | 마지막 대화 경과 | ≥ 30초 |
@@ -669,7 +658,7 @@ RESUME_DELAY ──── 90s elapsed ──→ RUNNING
 **우선순위 큐:**
 
 | Priority | 용도 | 처리 모드 |
-| --- | --- | --- |
+| -------- | --------------------- | --------- |
 | P0 | 방금 열린 파일 | real-time |
 | P1 | 최근 7일 접근 | real-time |
 | P2 | 중요 태그 / 변경 감지 | 기본 |
@@ -681,7 +670,7 @@ RESUME_DELAY ──── 90s elapsed ──→ RUNNING
 `pageindex==0.2.8`에 `search()` 메서드가 없으므로 Ave는 4개 builtin 도구를 노출해 LLM이 트리를 직접 탐색하도록 한다. 현재 구현 도구 정의는 `ave/src/tools/knowledge-search.ts`, depth cap enforcement는 `ave/src/engine/turn/knowledge-cap.ts`이며 `query-loop.ts`가 라운드별로 적용한다.
 
 | Tool | 동작 |
-| --- | --- |
+| ------------------------------------- | ------------------------------------------------------------ |
 | `knowledge_search(query, topK?)` | `HybridRetriever` 호출 → RRF top 결과 반환 |
 | `document_list()` | 인덱싱된 문서 목록 (`docId`, `docName`, `type`, `pageCount`) |
 | `document_structure(docId)` | PageIndex TOC 트리 (agentic 탐색용) |
@@ -713,7 +702,7 @@ RESUME_DELAY ──── 90s elapsed ──→ RUNNING
 flowchart TB
     USER["Renderer user input"]
     IPC["ipcMain.handle('ave:chat:send')"]
-    KEYWORD["KeywordEngine.classify()<br/>(builtin + plugin groups preflight)"]
+    CLASSIFY["InputClassifier.classify()<br/>(host slash command only)"]
     ROUTE["RouteEngine.route()"]
     LOOP["ConversationLoop.runTurn()"]
     HISTORY["ConversationHistory.append(user)"]
@@ -729,22 +718,22 @@ flowchart TB
     POST["PostTurnHookChain.run()"]
     SAVE["saveSession / audit / idle"]
 
-    USER --> IPC --> KEYWORD --> ROUTE --> LOOP --> HISTORY --> PROMPT --> PROVIDER --> REASON --> TOOL_CHECK
+    USER --> IPC --> CLASSIFY --> ROUTE --> LOOP --> HISTORY --> PROMPT --> PROVIDER --> REASON --> TOOL_CHECK
     TOOL_CHECK -->|"Yes"| POLICY_CHK -->|"허용"| PERM --> TOOL_EXEC --> TOOL_RESULT --> PROVIDER
     TOOL_CHECK -->|"No"| ROUND --> POST --> SAVE
     POLICY_CHK -->|"차단"| TOOL_RESULT
 ```
 
-> **문서 원칙**: 이 섹션은 `ConversationLoop`의 현재 구현을 기준으로 설명하되, 아직 미구현인 목표 설계(Keyword disambiguation, Governance sync, richer session history)도 함께 유지한다.
+> **문서 원칙**: 이 섹션은 `ConversationLoop`의 현재 구현을 기준으로 설명하되, 아직 미구현인 목표 설계(Governance sync, richer session history)도 함께 유지한다.
 > `GovernancePolicy`는 도구 호출이 생길 때마다 **루프 내부에서 반드시 통과하는 필수 게이트**이며, 바깥에서 한 번만 거르는 보조 체크가 아니다.
 
 #### 4.5.2 메시지 라이프사이클 — 한 턴의 상세 단계
 
 | 단계 | 함수 / 컴포넌트 | 설명 | 비고 |
-| --- | --- | --- | --- |
+| ------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **1. 요청 진입** | `window.ave.chat.send()` → `ipcMain.handle("ave:chat:send")` | renderer 입력을 main process로 전달 | 채팅 UI의 단일 진입점 |
-| **2. 조기 키워드 감지** | `KeywordEngine.classify()` | 대화 루프 본문 전에 명령/legacy Tool-schema preload/@멘션/일반 대화를 판단 | deprecated plugin keywords는 Tool schema scope만 추가; bundled Skill discovery는 `manifest.skills` |
-| **3. 실행 경로 결정** | `RouteEngine.route()` | `command` / `skill` / `agent-hub` / `llm` 중 하나로 경로 확정 | Agent Hub 경로는 메시지 보드/A2A 상호작용 경로 |
+| **2. 입력 분류** | `InputClassifier.classify()` | 대화 루프 본문 전에 호스트 slash command 여부를 판단 | imported plugin/MCP app envelope는 command로 해석하지 않음                                                                                                                                        |
+| **3. 실행 경로 결정** | `RouteEngine.route()` | `command` 또는 `llm` 경로로 확정 | 플러그인 keyword/skill route 없음                                                                                                                                                                 |
 | **4. 턴 오케스트레이션** | `ConversationLoop.runTurn()` | 한 턴 전체를 관리하고 provider/tool/post-turn 훅을 묶는다 | 턴 경계의 canonical 구현 |
 | **5. 히스토리 적재** | `ConversationHistory.append()` | user 메시지를 인메모리 히스토리에 추가 | assistant/tool_result도 동일 히스토리에 누적 |
 | **6. 프롬프트 조립** | system prompt assembly | AGENTS.md, memories/MEMORY.md, 설정, 도구 스키마, 환경 정보를 합쳐 provider 입력 생성 | 매 턴 재조립 |
@@ -808,7 +797,7 @@ sequenceDiagram
 **핵심 구현 포인트**
 
 | 항목 | 설명 |
-| --- | --- |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | **초기 사전판단** | Keyword Detecting은 `runTurn()` 초입에서 수행되며, plugin keyword group도 함께 반영된다. |
 | **First-class reasoning** | reasoning은 `text_delta`의 부가 플래그가 아니라 별도 이벤트다. 그래서 도구 묶음 사이에 중간 생각을 독립 카드로 배치할 수 있다. |
 | **Round boundary 보존** | `assistant_round` 이벤트로 tool 호출 전/후의 assistant 응답을 안정적으로 끊는다. |
@@ -819,11 +808,11 @@ sequenceDiagram
 
 #### 4.5.4 컨텍스트 관리 — Auto-Compact
 
-Ave 는 라이선스와 출처가 확인된 공개 OSS/공식 문서에서 관찰 가능한 컨텍스트 관리 패턴과 자체 요구사항을 합성한 compact pipeline 을 채택한다. 토큰 preflight 가 임계치를 넘으면 LLM 호출을 잠시 차단하고, *현재 세션 안에서* tool-result stubbing 과 LLM compact 를 실행해 실제 토큰을 줄인다.
+Ave 는 라이선스와 출처가 확인된 공개 OSS/공식 문서에서 관찰 가능한 컨텍스트 관리 패턴과 자체 요구사항을 합성한 compact pipeline 을 채택한다. 토큰 preflight 가 임계치를 넘으면 LLM 호출을 잠시 차단하고, _현재 세션 안에서_ tool-result stubbing 과 LLM compact 를 실행해 실제 토큰을 줄인다.
 
 **사용자 contract**: compact 는 어떤 input shape (단일 200K 메시지 / 다수 중간 메시지 누적 / 깊은 tool chain) 에서도 reduce 보장. 수동 메시지 삭제 없이 항상 성공해야 함.
 
-**Tool-Result Stubbing (preventive, marker-only)**: 매 post-turn 마다 실행. `markStaleToolResults()` 가 오래된 `tool_result` 메시지에 `meta.compactedAt` 단일 마커만 set — 메모리상의 content 는 *verbatim 보존* 된다. 마커가 있는 메시지는 `wire-serialize.ts:stubMarkedToolResults` 가 provider 호출 직전 + `saveSession` 직전에 stub 으로 변환. 최근 N개 (기본 8) raw 유지, 200자 미만 제외 (Ave noise-floor policy), `toolUseId` 참조 무결성 보존 (`src/engine/auto-compact.ts:114-124`).
+**Tool-Result Stubbing (preventive, marker-only)**: 매 post-turn 마다 실행. `markStaleToolResults()` 가 오래된 `tool_result` 메시지에 `meta.compactedAt` 단일 마커만 set — 메모리상의 content 는 _verbatim 보존_ 된다. 마커가 있는 메시지는 `wire-serialize.ts:stubMarkedToolResults` 가 provider 호출 직전 + `saveSession` 직전에 stub 으로 변환. 최근 N개 (기본 8) raw 유지, 200자 미만 제외 (Ave noise-floor policy), `toolUseId` 참조 무결성 보존 (`src/engine/auto-compact.ts:114-124`).
 
 **LLM Compact with Boundary (threshold-gated, 4-status pipeline)**: token preflight 가 `estimateMessagesTokens(history) ≥ getModelPreflightThreshold(vendor, model)` 을 hit 하면 LLM 호출 차단 + `compactWithBoundary()` (`src/engine/structured-compact.ts`) 동기 실행. 결과는 4 상태 중 하나 (`src/shared/compact-status.ts:CompressionStatus`):
 
@@ -881,7 +870,7 @@ flowchart LR
 ```
 
 | 항목 | Tool-result stubbing | LLM compact (4-status) |
-| --- | --- | --- |
+| ----------- | ---------------------------- | ------------------------------------------------------------------------------------------------ |
 | 트리거 | 매 post-turn (항상) | token preflight hit |
 | 함수 | `markStaleToolResults()` | `compactWithBoundary()` |
 | 결과 | wire/disk 토큰 절감 | 4 status (NOOP / CONTENT_TRUNCATED / SUMMARIZED / REDUCED_INSUFFICIENT_FORCED) |
@@ -906,7 +895,7 @@ flowchart LR
 ```
 
 | Hook | 목표 설계 | 현재 구현 단계 |
-| --- | --- | --- |
+| --------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | **Auto-Compact** | 사용률 40% 기본값 + 20% 단위 설정 기반 자동 압축 | `chat.autoCompact` + 80k token threshold. microcompact(항상) + full compact(임계치) 2-stage 구현 |
 | **saveSession** | 매 턴 세션 히스토리 저장 및 복구 포인트 생성 | `~/.ave/sessions/<id>.jsonl`에 저장 |
 | **Memory Extraction** | 대화/도구 결과에서 기억할 내용을 구조화 저장 | `"기억해"`류 요청을 memories/로 저장하고 MEMORY.md 인덱스 갱신 |
@@ -958,7 +947,7 @@ sequenceDiagram
 ```
 
 | 순서 | 단계 | 설명 |
-| --- | --- | --- |
+| ------- | ----------------------- | -------------------------------------------------- |
 | **1** | Lookup | `ToolRegistry.findByName()` + source/trust 계산 |
 | **2** | PreToolUse Hook | 외부 훅이 입력을 차단/수정할 수 있음 |
 | **2.5** | Bash AST Validator | bash 입력은 별도 AST 검증을 거침 |
@@ -975,7 +964,7 @@ sequenceDiagram
 #### 4.5.7 대화 세션 관리
 
 | 항목 | 목표 설계 | 현재 구현 단계 |
-| --- | --- | --- |
+| ---------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
 | **세션 생성** | 앱 실행 시 또는 `/new` 명령 시 새 세션 생성 | 구현됨 (세션 ID = UUID v4) |
 | **세션 히스토리 보관** | 타 채팅 앱처럼 최근 대화 목록·복구 가능해야 함 | `MemoryManager.saveSession()`이 JSONL 파일로 저장 |
 | **세션 조회** | 최근 세션 목록 + 제목/미리보기/검색까지 확장 | `listSessions()`와 IPC `ave:chat:sessions`가 최근 목록 제공 |
@@ -987,7 +976,7 @@ sequenceDiagram
 #### 4.5.8 대화 루프 구현 매핑
 
 | Provider-neutral turn loop 단계 | Ave 대응 구현 | Ave 차별점 |
-| --- | --- | --- |
+| ------------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | User message creation | renderer input → `ipcMain.handle("ave:chat:send")` | Electron IPC + 조기 keyword preflight |
 | Append to conversation history | `ConversationHistory.append()` | + assistant `thought` 보존 |
 | Build system prompt | system prompt assembly | + AGENTS.md · MEMORY.md · 조직 컨텍스트 · tool schema · overlay trigger context |
@@ -1044,7 +1033,7 @@ flowchart LR
 ```
 
 | # | 소스 | 갱신 주기 | 토큰 예상 | 설명 |
-| --- | --- | --- | --- | --- |
+| --- | --------------------------------- | -------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | ① | Role Definition | 부팅 시 (정적) | 1~2K | Ave 에이전트의 기본 역할·행동 원칙 정의 |
 | ② | AGENTS.md | 파일 변경 시 | 2~5K | 프로젝트·조직 레벨 컨텍스트 (사용자 편집 가능) |
 | ③ | Employee Profile | 부팅 시 | 0.5~1K | 사용자 이름·직급·부서·역할 |
@@ -1084,7 +1073,7 @@ flowchart TB
 **표현 규칙**
 
 | 레벨 | 표시 방식 | 클릭 시 |
-| --- | --- | --- |
+| ---------------- | ------------------------------------------ | ---------------------------------- |
 | **Reasoning** | 진행 중 생각/정리 카드를 별도 entry로 표시 | 도구 묶음 사이에도 독립적으로 남음 |
 | **Tool group** | 사용된 도구 개수와 상태를 요약한 접힘 카드 | 하위 tool item 목록을 펼침 |
 | **Tool item** | 도구명 + 실행 순서 + 성공/실패 | 입력/결과 상세를 각각 펼침 |
@@ -1105,7 +1094,7 @@ flowchart TB
 **레퍼런스 처리 방식**
 
 | 시스템 | 관찰된 처리 방식 | Ave 반영 |
-| --- | --- | --- |
+| --------------------------------- | ------------------------------------------------------- | -------------------------------------------- |
 | **Provider-neutral event stream** | tool_use / tool_result를 순서 있는 스트림 이벤트로 유지 | group card는 UI 표현 계층에서만 형성 |
 | **OpenHarness** | 실행 run 단위를 구조화해 추적 | Ave도 tool round를 `groupId` 단위로 추적 |
 | **Paperclip / PaperclipAI** | thinking, tool call, tool result, assistant를 분리 기록 | reasoning card와 assistant round를 분리 유지 |
@@ -1122,7 +1111,7 @@ sessionId 를 유지한다.
 `estimateMessagesTokens(history) ≥ getModelPreflightThreshold(vendor, model)` 이 hit 하면
 LLM 호출을 차단하고 `compactWithBoundary` 를 동기 실행한 뒤 같은 sessionId 그대로
 진행한다. Threshold 는 model context window 의 보수적 비율이며 semantic/time 휴리스틱이
-아니라 *토큰* 만 측정한다.
+아니라 _토큰_ 만 측정한다.
 
 **LLM Compact (boundary-marked)**: `compactWithBoundary` 는 rolling summary 를 생성해
 다음 턴의 system prompt 에 preamble 로 prepend 한다. 같은 sessionId 안에서
@@ -1133,11 +1122,11 @@ anchor 가 된다.
 **Same-Session Checkpoint Chain**: 한 sessionId 안에 여러 compact checkpoint 가 연속 append 된다.
 사용자는 두 가지 액션으로 시점 탐색이 가능하다. "📖 이 시점 보기" 는 같은 sessionId 의
 message slice 만 표시하는 readonly view-mode 에 진입하고, "↩ 여기부터 다시 시작" 은
-해당 compactNum 위치에서 *명시적으로* 새 세션을 fork 한다. 자동 fork 는 일어나지 않는다.
+해당 compactNum 위치에서 _명시적으로_ 새 세션을 fork 한다. 자동 fork 는 일어나지 않는다.
 
 **Renderer 표면**: LLM compact 가 완료되면 `compact_notice` IPC event 가 `trigger` + `summary` + `compactNum` 을 carry 한다. `kind: "checkpoint"` 구조화 ChatEntry 가 chat stream 에 삽입되고, `CheckpointDivider` 컴포넌트가 trigger 별 라벨/아이콘/색상 (`auto-compact` → 📌 자동 정리 / `--action-compact` blue, `manual` → ✋ 수동 정리 / `--muted-foreground` slate) 으로 horizontal divider 를 렌더링. `compactNum` 이 있을 때 두 액션 버튼 — "📖 이 시점 보기" (view-mode 진입, `--action-view` violet) + "↩ 여기부터 다시 시작" (해당 시점에서 새 세션 fork, `--action-branch` orange) — 을 함께 노출. `kind: "session_resume"` 은 fork 된 child session 의 첫 진입 시 prepend 되어 "이전 대화 이어서 시작 (요약 N자 적용)" 마커로 표시.
 
-**Prompt-injection fence**: rolling summary preamble 을 system prompt 에 주입할 때 `<prior-context-summary>` 블록을 *명령 해석 금지* fence 로 wrap (system-prompt-builder Section 8). 이전 컨텍스트의 사용자 입력이 요약을 거쳐 다음 턴 / fork 된 자식 세션의 system prompt 로 흘러들어가는 vector 차단.
+**Prompt-injection fence**: rolling summary preamble 을 system prompt 에 주입할 때 `<prior-context-summary>` 블록을 _명령 해석 금지_ fence 로 wrap (system-prompt-builder Section 8). 이전 컨텍스트의 사용자 입력이 요약을 거쳐 다음 턴 / fork 된 자식 세션의 system prompt 로 흘러들어가는 vector 차단.
 
 **세션 로드/복원 기준**: [`session-model-v2.md`](./session-model-v2.md) 가 canonical 이다.
 채팅 화면은 현재 세션만 렌더링한다. chronological session 자동 로드, upward-scroll preview,
@@ -1381,7 +1370,7 @@ gesture-gated surface, and any remote/multi-user exposure beyond loopback.
 #### 4.6.2 Module Boundary Rules
 
 | 디렉터리 | 허용되는 의존 | 금지 |
-| --- | --- | --- |
+| -------------- | --------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
 | `engine/` | `permissions/`, `hooks/`, `prompts/`, `tools/`, `audit/`, `memory/`, `mcp/`, `core/`, `plugins/`, `engine/llm/` | DOM, `renderer.tsx`, `components/` |
 | `tools/` | `permissions/`, `sandbox/`, `core/network-guard.ts`, `hooks/` | `engine/`, `renderer.tsx` |
 | `prompts/` | `memory/`, `data/` | `engine/`, `renderer.tsx` |
@@ -1543,20 +1532,17 @@ flowchart LR
 **감지 우선순위:**
 
 | 순위 | 유형          | 예시 입력               | 처리                              |
-| ---- | ------------- | ----------------------- | --------------------------------- |
+| ---- | ------------- | ----------------------- | ------------------------------------------ |
 | 1    | 명시적 명령어 | `/meeting start`        | Command Executor 직접 실행        |
-| 2    | deprecated plugin keyword | "회의록 작성해줘" | 플러그인 scope 활성화 + 일치 Tool schema preload |
-| 3    | 에이전트 멘션 | "@이영희 이거 확인해줘" | Agent Hub 메시지 라우팅           |
-| 4    | 의도 + 엔티티 | "출장 품의 작성해줘"    | Route Engine → the LLM backend + 관련 도구 |
-| 5    | 일반 대화     | "안녕하세요"            | the LLM backend 직접 세션                  |
+| 2    | 에이전트 멘션 | "@이영희 이거 확인해줘" | ConversationLoop에서 Agent Hub Tool 사용   |
+| 3    | 의도 + 엔티티 | "출장 품의 작성해줘"    | Route Engine → the LLM backend + 관련 도구 |
+| 4    | 일반 대화     | "안녕하세요"            | the LLM backend 직접 세션                  |
 
 **확장 설계 노트**
 
-- 플러그인은 deprecated manifest `keywords`/`registerKeywords` 경로로
-  **Tool schema preload group**을 등록한다. Bundled Skill discovery는
-  `manifest.skills`가 담당한다.
-- 동일 입력이 여러 legacy keyword group에 걸리면 the LLM backend가 가장 적합한 후보를 추천한다.
-- 추천 confidence가 낮으면 사용자가 명시적으로 선택하도록 묻는다.
+- 플러그인은 `manifest.skills`로 instruction bundle을 선언한다.
+- Tool은 host-selected plugin scope 안에서 eager exposure 또는 `tool_search`
+  discovery로 모델에 제공된다.
 
 ### 6.2 Agent Route Engine
 
@@ -1606,7 +1592,7 @@ flowchart TB
 > §8 Agent Approval System은 **에이전트 행위 승인** (자율 게시 / 외부
 > 송신 / 업무 일지 공개 범위) 을 다룬다. 본 §6.3 은 **개별 도구 호출
 > 권한** 을 다룬다. permission policy Layer 3 의 `network = ask + endpoint` 결정은
-> §8 ApprovalGate 의 입력으로 흐른다 — 두 섹션을 *중복 승인 단계* 로
+> §8 ApprovalGate 의 입력으로 흐른다 — 두 섹션을 _중복 승인 단계_ 로
 > 오해하지 말 것 (single-decision, single-prompt).
 
 #### 6.3.0 — Current implementation posture
@@ -1615,7 +1601,7 @@ Permission Policy 현재 구현은 **strict single path** 이다. 레거시 호�
 plugin-specific app branch 를 두지 않는다.
 
 | Surface | Current posture | Future direction |
-| --- | --- | --- |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | -------- |
 | Plugin tool metadata | SDK manifest schema 의 per-tool `pathFields` 가 filesystem path 판정 metadata 의 SOT 이다. `category` 는 선택적 provider metadata 이며 effective category 는 host-side `inspectHostRisk`/executor policy 가 invocation 별로 산출한다. `meta` 및 향후 host-only category 는 plugin contract 로 자동 확장되지 않는다. | 추가 plugin 도입 시 SDK schema `pathFields` / `workerId` 선언과 plugin sanity test 를 PR merge gate 로 유지 |
 | Runtime modes | 사용자-facing 정책은 `default`(read 허용), `strict`(read 포함 전체 ask), `auto`(권한 리뷰어 기반 자동 검증 — 자동/헤드리스 + 대화형 채팅 양 lane), `allow`(하드 차단 밖 전체 허용) 4개다. | allow mode 는 Layer 0/1/deny/overlay-trigger guard 를 우회하지 않는 opt-in 으로 유지 |
 | Permission IPC | `PERMISSIONS` 가 main / preload / sender-guard test 의 단일 channel SOT. | 새 permission channel 은 반드시 `src/shared/ipc-channels.ts` 에 먼저 추가 |
@@ -1656,7 +1642,7 @@ flowchart TB
 #### 6.3.2 — Layer reference
 
 | Layer | 책임 | Spec § | 주요 산출물 |
-| --- | --- | --- | --- |
+| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | ------------------------------------------------------ |
 | 0 | OS / 사용자 자격증명 / Ave 자체 보호 경로 deny-list. realpath 기반 frozen-canonical (TOCTOU 차단). | §3 Layer 0 | `src/permissions/sensitive-paths.ts` |
 | 1 | `additionalDirectories` allow-list + auto-suggest (leaf parent only, re-typed confirm, adjacency warning). | §3 Layer 1 | `src/permissions/allowed-directories.ts` |
 | 2 | Action 결정 (`allow / ask / deny`) + `denyReasons[]` 수집. `confirm` 은 `ask` 의 sub-variant — auto mode 도 silent skip 금지. | §3 Layer 2 | `PermissionCheckResult.denyReasons` |
@@ -1674,7 +1660,7 @@ flowchart TB
 hook stdin → Layer 7 audit → Layer 8 slash dispatcher.
 
 | Origin | 출처 | Slash dispatch | 비고 |
-| --- | --- | --- | --- |
+| ---------------- | ------------------------------------------------- | -------------- | --------------------------------------- |
 | `user-keyboard` | 사용자가 chat 입력에 직접 타이핑 | ✅ accepted | Layer 8 의 유일한 신뢰 origin |
 | `plugin-emitted` | `triggerConversation.pendingPrompt`, plugin event | ❌ rejected | leading `/` stripped 후 plain text 처리 |
 | `llm-tool-arg` | LLM 가 채운 tool input | ❌ rejected | 동상 |
@@ -1754,7 +1740,7 @@ default allowed dir 안에 hook 디렉토리 두지 않기 위해).
 gate.
 
 | Prefix | Fires when | Output |
-| --- | --- | --- |
+| ----------- | ---------------------------------- | ------------------------------------- |
 | `pre-*.sh` | 도구 실행 전 | `{action: "allow" \| "deny", reason}` |
 | `post-*.sh` | 도구 실행 후 (v1 observe-only) | same |
 | `perm-*.sh` | 승인 게이트가 사용자에게 묻기 직전 | same |
@@ -1764,7 +1750,7 @@ hook 정책 가능). DLP-redacted input — secrets / credentials / PII 가
 remote SIEM 으로 새지 않도록 `redactForLLM` 적용.
 
 **Deny-only v1:** `modify` action 은 hook-signing follow-up
-이후로 deferred. v1 의 `allow` 는 *additional approval signal* — Layer
+이후로 deferred. v1 의 `allow` 는 _additional approval signal_ — Layer
 0/1/2/3 deny 를 upgrade 하지 못함.
 
 **Fail-safe:** exit !=0 / malformed stdout JSON / >5s timeout → deny.
@@ -1838,7 +1824,7 @@ chain — line N 변조 시 line N+1 의 prevHash 가 mismatch (forensics
 저장. forensics 가 일자별 로 chain + seal 비교 → 변조 시점 좁힘.
 
 **Path protection:** `~/.ave/audit*` 자체가 Layer 0 sensitive
-(write 차단). compromised tool 이 *새 entry* 추가는 막지만 기존 log
+(write 차단). compromised tool 이 _새 entry_ 추가는 막지만 기존 log
 rewrite 불가능.
 
 **Tool-call channel:** executor hot path 는 tool allow/deny 결정을
@@ -1907,7 +1893,7 @@ broken file + line 표시). `/permission audit verify` 는 keychain 의
 
 #### 6.3.9 — OS 실행 샌드박스 (ASRT)
 
-Layer 0–8 의 permission policy 는 *어떤 도구 호출을 허용/거부* 하는지를
+Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ 하는지를
 결정하지만, 허용된 shell/도구 spawn 을 OS 수준에서 물리적으로 격리하지는
 않는다. OS 실행 샌드박스가 그 격리를 담당하며, 백엔드는
 **ASRT (`@anthropic-ai/sandbox-runtime`)** 이다 — 레거시 per-OS 러너 레지스트리
@@ -1923,19 +1909,19 @@ Layer 0–8 의 permission policy 는 *어떤 도구 호출을 허용/거부* �
   허용 디렉토리로 canonicalize 한 union (bare cwd 아님). read-jail 은
   `denyRead: [$HOME]` 후 cwd + write paths 만 re-allow 한다.
 - **Network floor (shared, deny-by-default)**: ASRT 의 loopback proxy network
-  floor 는 *모듈-레벨 SHARED config* 를 읽으므로, egress 는
+  floor 는 _모듈-레벨 SHARED config_ 를 읽으므로, egress 는
   boot 에서 `strictAllowlist: true` + 모든 로드된 plugin manifest 의
   `networkAccess.allowedDomains` UNION 을 SHARED config 로 설정해 강제한다
-  (loopback proxy 가 strict-union 바닥). 이는 *per-worker* 격리가 아니라
-  UNION allow-list 다 — sandboxed process 는 *임의의* 로드된 plugin 이 선언한
+  (loopback proxy 가 strict-union 바닥). 이는 _per-worker_ 격리가 아니라
+  UNION allow-list 다 — sandboxed process 는 _임의의_ 로드된 plugin 이 선언한
   도메인에 도달할 수 있다. Ave 1st-party plugin 신뢰 모델 하에서 허용되며,
   true per-worker 격리는 per-process proxy 를 갖춘 future ASRT 가 필요하다.
 - **Gate**: `osToolSandbox` feature flag (Settings → 권한) 또는
   `AVE_SANDBOX_ENABLED=1`. **STAGED default (macOS-first)** (PR #1390 의
   default-ON 을 단계화): `osToolSandbox` 기본값 = **`darwin` ON / `linux`+`win32`
   OFF(opt-in)** — live-verified-active 인 macOS 만 우선 ON, Linux/Windows 는
-  C/D-series 샌드박스 QA 가 green 될 때까지 Settings 토글로 opt-in. *Convergence
-  plan*: C/D QA 통과 시 `src/data/settings-store.ts` 의
+  C/D-series 샌드박스 QA 가 green 될 때까지 Settings 토글로 opt-in. _Convergence
+  plan_: C/D QA 통과 시 `src/data/settings-store.ts` 의
   `osToolSandbox: process.platform === "darwin"` 단일 표현식을 `true` 로 flip.
   `hostClassifiesRisk` 는 **전 플랫폼 default ON** — non-sandbox 플랫폼에서도
   안전한 이유는 read-relaxation 이 sandbox-active 와 커플링되어(아래) fallback
@@ -1948,7 +1934,7 @@ Layer 0–8 의 permission policy 는 *어떤 도구 호출을 허용/거부* �
   방지). 결정은 `src/boot/steps/sandbox-gate.ts` `decideSandboxGate(
   skip|activate|degrade|abort)` 한 곳. host-classify↔sandbox interlock 경고는
   실제 `sandboxActive` 상태에서 발화(degrade 경로 포함). Gate 는 boot 에서
-  *정확히 한 번* 결정되며 runtime 변경 채널은 없다.
+  _정확히 한 번_ 결정되며 runtime 변경 채널은 없다.
 - **Read-relaxation ↔ plugin effect-boundary FILESYSTEM-CONTAINMENT 커플링
   (confines-aware)**: foreground plugin read-relaxation
   (`src/tools/invocation-authorization.ts`) 은 `hostClassifiesRisk` ON **AND
@@ -1978,7 +1964,7 @@ Layer 0–8 의 permission policy 는 *어떤 도구 호출을 허용/거부* �
   로 filesystem rules 를 적용하고 WFP + loopback proxy 로 egress 를 제한하는
   **filesystem+network partial** 샌드박스다. process 격리는 제공하지 않는다.
   srt-win.exe 는 **번들** (asarUnpack vendor/**) 이라 **다운로드가 없다** —
-  활성화는 *오직* 명시적 consent 버튼이 호출하는 1회 self-elevating UAC 설치만
+  활성화는 _오직_ 명시적 consent 버튼이 호출하는 1회 self-elevating UAC 설치만
   트리거한다. Windows 계정 로그아웃은 요구하지 않는다.
   `checkAsrtDependencies()` 는 user/WFP readiness 전까지 errors 로 보고한다.
   **Windows 는 deps-missing 시 hard-throw 하지 않는다** — throw 는 설치 전
@@ -1986,7 +1972,7 @@ Layer 0–8 의 permission policy 는 *어떤 도구 호출을 허용/거부* �
   유지(호스트 셸 도구는 비격리 plain spawn)하고 "Windows sandbox requested but
   not installed — tools run with NO OS isolation until setup completes" loud
   신호를 남긴다. win32 가 ready 면 ASRT 를 정상 초기화하고 **fs+network
-  partial capability** (`confines = { filesystem:true, network:true,
+  partial capability\*\* (`confines = { filesystem:true, network:true,
   process:false }`) 를 발행한다.
 - **Windows 설치 consent UX**: Settings → 권한 의 "OS 도구 샌드박스"
   토글을 win32 에서 ON 으로 하면 `sandboxWindowsStatus` IPC (read-only —
@@ -1999,7 +1985,7 @@ Layer 0–8 의 permission policy 는 *어떤 도구 호출을 허용/거부* �
   (MUTATING, sender-frame-guarded + user-keyboard intent — peer mutating
   handler 인 `addRule` 와 동일 가드) 를 호출하고, 이것이 ASRT
   `installWindowsSandbox({ proxyPortRange: DEFAULT_WINDOWS_PROXY_PORT_RANGE })`
-  의 **단일 self-elevating UAC** 를 트리거하는 *유일한* privilege-escalation
+  의 **단일 self-elevating UAC** 를 트리거하는 _유일한_ privilege-escalation
   진입점이다. UAC 거부 → `{cancelled:true}` (throw 아님) → 토글 revert +
   "Install cancelled" 배너. 성공 → 앱 재시작/상태 재조회 안내.
   i18n: `permissionsTab.osSandboxWindows*`
@@ -2034,12 +2020,12 @@ Layer 0–8 의 permission policy 는 *어떤 도구 호출을 허용/거부* �
   (gate ON 시 `asrt`) 를 받고, 나머지는 강제 `kind: "none"` 을 받아
   `isWeakSandbox` 가 weak 으로 판정한다. 이로써 LLM reviewer 는 unsandboxed effect
   에 대해 MEDIUM/HIGH → LOW downgrade (auto-approve) 를 할 수 없다 — host 샌드박스
-  ON 이 비격리 plugin/MCP 도구의 승인 게이트를 *완화* 하던 역효과를 차단한다.
+  ON 이 비격리 plugin/MCP 도구의 승인 게이트를 _완화_ 하던 역효과를 차단한다.
   동일 resolver 가 verdict-cache scope 와 audit 에도 쓰여 substrate 간 verdict
   교차 재사용을 막는다.
 - **Asymmetric reviewer relaxation (fs+network relaxes, process 안 함)**: win32 의
   fs+network partial `confines` 가 reviewer 의 `sandboxRelaxesCategory` 를
-  *비대칭* 으로 작동시킨다 — `network` 및 filesystem-bearing
+  _비대칭_ 으로 작동시킨다 — `network` 및 filesystem-bearing
   `read`/`write`/`meta` 카테고리는 relax 하지만, `shell` 은 process 격리가
   없으므로 relax 안 한다. ToolApprovalDialog 의 보안-격리 라벨도 동일하게 정직
   하다 (PR2 finding b): 이전에는 confines-blind `isWeakSandbox` 가 win32 의
@@ -2120,7 +2106,7 @@ graph TB
 ```
 
 | 카테고리 | 빌트인 도구 | 설명 | Permission 기본값 |
-| --- | --- | --- | --- |
+| -------------------- | ---------------------------------------------- | ------------------------- | ------------------------------------------ |
 | **File Operations** | FileRead, FileWrite, FileSearch, FileGrep | 로컬 파일 CRUD + 검색 | FileRead: allow / FileWrite: ask |
 | **Search & Index** | TreeSearch, KeywordSearch, HybridSearch | PageIndex + FTS5 검색 | allow (읽기 전용) |
 | **Agent & Comm** | AgentMessage, AgentQuery, HubPost | Agent Hub 통신 | AgentQuery: allow / HubPost: ask (§8 승인) |
@@ -2134,7 +2120,7 @@ graph TB
 도구의 **policy axis** 는 5축으로 분리되며 `ToolCategoryRegistry` (Open-Closed pattern) 가 카테고리별 decision lane 을 제공한다. 자세한 의사결정 매트릭스는 `docs/architecture/permission-policy-design.md` §3 Layer 3 참조.
 
 | Category | 의미 | 의사결정 (default mode) | 헤들리스 (routine) | 비고 |
-| --- | --- | --- | --- | --- |
+| --------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------ | -------------------------------- | ------------------------------------------ |
 | `read` | 조회/검색 (자료를 변경하지 않음) | builtin: allow / plugin: scope-checked | allow | strict mode → ask |
 | `write` | 사용자 데이터 변경 | ask (auto → reviewer LOW allow + audit / MED-HIGH approval modal, allow → allow + audit) | reviewer agent unless allow mode | reviewer 미배치 시 fail-closed or user ask |
 | `shell` | 셸 명령 실행 (Bash 등) | ask + Bash AST 검증 (auto → reviewer LOW allow + AST + audit / MED-HIGH approval modal, allow → allow + AST) | reviewer unless allow mode | AST 검증은 executor-owned gate |
@@ -2150,7 +2136,7 @@ graph TB
 **Tool Registry 동작:**
 
 | 시점 | 동작 |
-| --- | --- |
+| ---------------------- | -------------------------------------------------------------------------------------------------------- |
 | **부팅 시** | `registerStandardCategories()` → 빌트인 도구 등록 → Plugin 도구 등록 → MCP 도구 등록 → Feature Flag 평가 |
 | **플러그인 설치/제거** | Registry 동적 업데이트 (Hot-reload) |
 | **매 턴** | L1 Registry Filter 적용 → the LLM backend에 전달할 도구 스키마 확정 |
@@ -2186,7 +2172,7 @@ flowchart LR
 ```
 
 | 위험 등급 | 패턴 예시 | 조치 |
-| --- | --- | --- |
+| ------------ | ------------------------------------------------- | ----------------------------------------------- |
 | **Critical** | `rm -rf /`, Fork bomb, `> /dev/sda`, `mkfs` | 즉시 차단 — 사용자 승인 불가 |
 | **High** | `sudo *`, `curl\|bash`, `chmod 777`, `chown root` | 차단 + 사유 표시. 사용자가 명시적으로 해제 가능 |
 | **Medium** | `rm -rf (상대경로)`, `kill -9`, pipe to `sh` | 사용자 승인 필요 (L3 Prompt) |
@@ -2197,9 +2183,9 @@ flowchart LR
 7개 차단 패턴과 `warn` / `deny` 모드를 분리해 `ave/src/tools/invocation-runner.ts` Step 2.5에서 실행한다.
 
 | Pattern ID | 정규식 패턴 | 차단 사유 |
-| --- | --- | --- |
+| ------------------ | ------------------------------------------ | ------------------------------------------- | ----------------------- |
 | `rm-rf-root` | `\brm\s+(-[rfRF]+\s+)+(\/\|~\|\$HOME\|\*)` | `rm -rf` 위험 경로 (`/`, `~`, `$HOME`, `*`) |
-| `curl-pipe-sh` | `\b(curl\|wget\|fetch)\b[^|]*\|\s*(sh\|bash\|zsh\|fish)` | 원격 스크립트 직접 실행 |
+| `curl-pipe-sh` | `\b(curl\|wget\|fetch)\b[^|]_\|\s_(sh\|bash\|zsh\|fish)` | 원격 스크립트 직접 실행 |
 | `sudo-escalation` | `\b(sudo\|su\|doas)\b` | 권한 상승 시도 |
 | `fork-bomb` | `:\(\)\s*\{\s*:\|:\s*&\s*\}\s*;\s*:` | fork bomb |
 | `eval-untrusted` | `\beval\s+\$?\{?[^}]*\}?` | `eval` 기반 위험 실행 |
@@ -2209,7 +2195,7 @@ flowchart LR
 **warn / deny 모드**
 
 | 모드 | 동작 | 설정 |
-| --- | --- | --- |
+| ------------- | ------------------------------------------------------------ | ------------------------------------------------ |
 | `deny` (기본) | 패턴 매칭 시 실행 차단, `ValidationResult.decision = "deny"` | `settings.governance.bashValidationMode: "deny"` |
 | `warn` | 패턴 매칭 시 경고만 남기고 실행은 허용 | `settings.governance.bashValidationMode: "warn"` |
 
@@ -2228,7 +2214,7 @@ Observability 컴포넌트 (PR #113–#116) 에서 추가된 4개의 운영 가�
 **진입**: Settings → 감사 탭 (`AuditTab.tsx`)
 
 | 기능 | 구현 |
-| --- | --- |
+| -------------- | ------------------------------------------------------------------------------------- |
 | 날짜 범위 필터 | `dateFrom` / `dateTo` ISO 문자열 → `AuditLogger.search()` |
 | 타입 필터 | `tool_call` / `permission_decision` / `bash_validation` / `compact` / `error` / `dlp` |
 | 텍스트 검색 | NDJSON 라인 스캔 — toolName · result · message 필드 포함 |
@@ -2246,7 +2232,7 @@ Observability 컴포넌트 (PR #113–#116) 에서 추가된 4개의 운영 가�
 인메모리 stats — 앱 재시작 시 초기화된다. 장기 추이가 필요한 경우 별도 영속화 설계 필요.
 
 | 컬럼 | 의미 |
-| --- | --- |
+| ------------ | -------------------------------------------------- |
 | startup (ms) | 플러그인 첫 로드 소요 시간 |
 | calls | 세션 내 도구 호출 총 횟수 |
 | errors | 호출 중 예외 발생 횟수 |
@@ -2265,7 +2251,7 @@ SVG 바 차트로 플러그인별 avg exec time 비교.
 **진입**: Settings → 사용량 탭 (`UsageDashboard.tsx` — 기존 컴포넌트 확장)
 
 | 기능 | 구현 |
-| --- | --- |
+| ---------------- | -------------------------------------------------------------------------- |
 | 날짜 범위 프리셋 | 7d / 30d / 90d / all / custom |
 | 세션 breakdown | Top-5 세션 비용 테이블 |
 | 월간 추정 | `computeMonthlyProjection(usedDays, totalCost)` — 당월 남은 일수 비례 외삽 |
@@ -2282,7 +2268,7 @@ SVG 바 차트로 플러그인별 avg exec time 비교.
 DLP 통계는 audit NDJSON에서 `type = "dlp"` 엔트리만 집계한다.
 
 | 필드 | 의미 |
-| --- | --- |
+| ------------- | ------------------------------------------------------- |
 | `totalHits` | N일 내 DLP 차단 총 건수 |
 | `byKind` | 패턴 종류별 히트 수 (예: `pii`, `secret`, `credential`) |
 | `byDay` | 일별 히트 수 — sparkline 렌더링용 |
@@ -2393,7 +2379,7 @@ ThemeProvider.tsx (renderer)
 
 **초기 상태 — pull-on-load (1차 메커니즘)**: plugin-ui-shell 이 plugin 모듈
 dynamic-import 직전에 `await window.avePlugin.getTheme()` 으로 호스트의 캐시된
-payload (`lastThemePayload`) 를 *명시적으로 요청*. 받은 토큰을
+payload (`lastThemePayload`) 를 _명시적으로 요청_. 받은 토큰을
 `documentElement` 의 inline `style` 에 즉시 적용 → 첫 React commit 부터 올바른
 색으로 paint.
 
@@ -2495,7 +2481,8 @@ custom 토큰 매핑 같은 use-case 를 흡수해, 같은 `host.theme.changed` 
 Token SoT 는 host 의 ThemeBundle (`src/ui/renderer/theme/bundles/`) 단일
 출처다. `bundleToPluginTokens(bundle)` 가 active bundle 에서 17 개
 `--ave-*` 토큰을 derive 하고, validated payload 가 `additionalArguments`
-+ `host.theme.changed` broadcast 두 경로로 plugin webview 에 도달한다.
+
+- `host.theme.changed` broadcast 두 경로로 plugin webview 에 도달한다.
 SDK 가 보조 fallback artifact 를 들고 있지 않으므로 lockstep 부담도
 사라진다.
 
@@ -2504,7 +2491,7 @@ SDK 가 보조 fallback artifact 를 들고 있지 않으므로 lockstep 부담�
 플러그인 webview 에 전파되는 디자인 토큰의 단일 출처.
 
 | Artifact | 위치 | 역할 | 갱신 방식 |
-|---|---|---|---|
+|------------------------------ |---------------------------------------------------- |-------------------------------------------------------------------------------------------------- |-------------------------------------------------- |
 | **SoT** ThemeBundle | `ave/src/ui/renderer/theme/bundles/*.ts` | `--ave-*` 토큰 값의 단일 출처. 디자인 팔레트가 바뀌면 **여기만** 수정 | 손-편집 |
 | Host `_INVARIANT` | `ave/src/ui/renderer/theme/plugin-token-map.ts` | 번들 무관 invariant 토큰 16 개 (radius/text/weight/space/motion) | 손-편집 |
 | `bundleToPluginTokens` | `ave/src/ui/renderer/theme/plugin-token-map.ts` | active bundle + `_INVARIANT` → 전체 `--ave-*` token map (invariant 16 + bundle-derived 20) derive | 함수 호출 (`ThemeProvider`, `getInitialThemeArgs`) |
@@ -2542,7 +2529,8 @@ SDK 에는 fallback artifact (JSON / CSS / TS const) 가 없으며, plugin 은
   `prefers-reduced-motion` 시 translate 제거.
 
 테스트는 `src/ui/renderer/components/__tests__/FloatingQuestionPanel.test.tsx`
-+ snapshot.
+
+- snapshot.
 
 ---
 
@@ -2554,7 +2542,7 @@ SDK 에는 fallback artifact (JSON / CSS / TS const) 가 없으며, plugin 은
 ### 현행 탭 구성 (2026-04-30 기준)
 
 | 탭 값 | 표시 이름 | 컴포넌트 | 주요 기능 |
-|-------|-----------|----------|-----------|
+|--------------- |------------- |--------------------- |------------------------------------------------------------------------------- |
 | `llm` | 지능 (LLM) | `LlmTab.tsx` | 벤더·API 키·모델 선택·Extended Thinking·**Model Fallback Chain** (PR #342 이관) |
 | `appearance` | 테마 | `AppearanceTab.tsx` | 테마 선택 (dark / light / high-contrast / system) |
 | `chat` | 채팅 | `ChatTab.tsx` | 자동 컴팩트 토글·**Stream Smoothing** (PR #342 이관) |
@@ -2574,7 +2562,7 @@ SDK 에는 fallback artifact (JSON / CSS / TS const) 가 없으며, plugin 은
 ### PR #342 재배치 요약
 
 | 항목 | 이전 위치 | 현재 위치 |
-|------|-----------|-----------|
+|--------------------------------------------------------------------- |------------------ |---------------------------------- |
 | Stream Smoothing | 고급 (Advanced) 탭 | **채팅** 탭 |
 | Model Fallback Chain | 고급 (Advanced) 탭 | **지능 (LLM)** 탭 |
 | temperature / seed / maxOutputTokens / responseFormat / stopSequences | 고급 (Advanced) 탭 | **삭제** (프론티어 모델 자동 처리) |
@@ -2585,7 +2573,7 @@ SDK 에는 fallback artifact (JSON / CSS / TS const) 가 없으며, plugin 은
 
 ## 6.10 ChatSidePanel & Workspace Rail — 목표 모델
 
-> **상태 표기:** 이 섹션은 ChatSidePanel(우측 워크스페이스 레일) 재설계의 **목표(TARGET) 아키텍처**를 정의한다. 레퍼런스 이슈 **#1415**(Hermes Desktop)가 요구한 *데이터 모델 우선* 설계 — preview-target 스토어 + 공통 open action — 을 정본으로 삼는다.
+> **상태 표기:** 이 섹션은 ChatSidePanel(우측 워크스페이스 레일) 재설계의 **목표(TARGET) 아키텍처**를 정의한다. 레퍼런스 이슈 **#1415**(Hermes Desktop)가 요구한 _데이터 모델 우선_ 설계 — preview-target 스토어 + 공통 open action — 을 정본으로 삼는다.
 >
 > 구현은 아래 "단계별 PR 플랜"에 따라 점진적으로 이루어진다. **PR-0**(이 섹션) + **PR-1**(state lift)이 기반(foundation)이며, PR-2~PR-6+ 가 나머지 목표를 실현한다. 각 subsection 은 별도 표기가 없으면 *목표 상태*를 기술한다. 현재 코드 상태와 다른 부분은 "현재 →目標" 로 명시한다.
 
@@ -2596,7 +2584,7 @@ SDK 에는 fallback artifact (JSON / CSS / TS const) 가 없으며, plugin 은
 ### 6.10.2 콘텐츠-주도 탭 모델 (content-driven tabs)
 
 - **No-default:** 워크스페이스는 빈 상태로 시작한다. 고정된 4개 기본 탭은 없다. 탭은 사용자 액션(런처) 또는 콘텐츠 라우팅(ActionPanel / 인덱서 결과)이 만든다.
-  - *현재 → 목표:* 현재는 `file-browser` / `preview` / `browser` / `terminal` 4개 탭이 `closeable:false` 로 마운트-하드코딩(PR-2 에서 빈 배열로 전환). PR-1 은 이 기본 탭 세트를 **그대로 유지**하되 소유 위치만 옮긴다(§6.10.7).
+  - _현재 → 목표:_ 현재는 `file-browser` / `preview` / `browser` / `terminal` 4개 탭이 `closeable:false` 로 마운트-하드코딩(PR-2 에서 빈 배열로 전환). PR-1 은 이 기본 탭 세트를 **그대로 유지**하되 소유 위치만 옮긴다(§6.10.7).
 - **All-closeable:** 모든 탭은 닫을 수 있다. never-empty 가드는 제거된다(빈 워크스페이스는 empty-state 런처가 채운다).
 - **Per-item:** 탭은 kind-그룹(현재 방식)이 아니라 개별 항목(파일/브라우저 URL/미리보기) 단위로 열린다. `WorkspaceTab` 이 자신이 표시하는 preview-target 을 직접 가리킨다.
 - **Ephemeral ↔ pinned:** 탭은 임시(ephemeral, 단일 클릭 → 미리보기 자리 교체) 또는 고정(pinned, 더블 클릭/명시 고정)될 수 있다. `openInEphemeral()` / `promoteToPinned()` 로 전이한다(PR-5).
@@ -2611,12 +2599,12 @@ SDK 에는 fallback artifact (JSON / CSS / TS const) 가 없으며, plugin 은
 
 탭에서 항목 카운트 배지를 제거한다. **활동 신호는 ActionPanel(도구 활동 패널)이 단일 소스**다. 워크스페이스 레일은 콘텐츠를 여는 곳이지 활동을 집계하는 곳이 아니다.
 
-- *현재 → 목표:* 현재는 탭 라벨 옆에 kind 별 카운트를 렌더(`counts` map + 배지). PR-2 에서 제거. PR-1 은 카운트를 **그대로 유지**.
+- _현재 → 목표:_ 현재는 탭 라벨 옆에 kind 별 카운트를 렌더(`counts` map + 배지). PR-2 에서 제거. PR-1 은 카운트를 **그대로 유지**.
 
 ### 6.10.5 ActionPanel 인앱 라우팅 + 우클릭 시스템앱
 
 - **인앱 라우팅(기본):** ActionPanel 항목 open 은 시스템 브라우저가 아니라 워크스페이스 레일 안으로 라우팅한다 — 웹 URL → browser 탭, 지원 파일 → preview 탭.
-  - *현재 → 목표:* 현재 `App.tsx` 의 `openActionPanelUrl` → `api.openExternalUrl` (시스템 브라우저)로 직결(`ActionPanel.tsx` 의 `onOpenExternalUrl`). PR-4 에서 인앱 open action 으로 재배선하며 `onOpenExternalUrl` → `onOpenItem` 으로 일반화.
+  - _현재 → 목표:_ 현재 `App.tsx` 의 `openActionPanelUrl` → `api.openExternalUrl` (시스템 브라우저)로 직결(`ActionPanel.tsx` 의 `onOpenExternalUrl`). PR-4 에서 인앱 open action 으로 재배선하며 `onOpenExternalUrl` → `onOpenItem` 으로 일반화.
 - **우클릭 → '시스템앱으로 열기':** 시스템 앱 열기는 우클릭 컨텍스트 메뉴에서만 명시적으로 제공한다.
 - **보안 계약(불변):** 로컬 경로 auto-open 금지(commit `c04f3b0f` — action panel local path opener 제거). URL 은 검증 후에만 라우팅한다(CodeQL 해소). 이 두 계약은 PR-4 이후에도 유지된다.
 
@@ -2643,7 +2631,7 @@ SDK 에는 fallback artifact (JSON / CSS / TS const) 가 없으며, plugin 은
 ### 6.10.9 단계별 PR 플랜
 
 | PR | 범위 | 상태 |
-|----|------|------|
+|------------ |------------------------------------------------------------------------------------------------------------------------------------------------------------- |------- |
 | **PR-0** | 이 아키텍처 SOT 섹션(§6.10) 신설 | 이 문서 |
 | **PR-1** | 탭 state(tabs/activeTabId/browserUrlByTab)를 로컬 `useState` → `useWorkspaceTabs` 스토어로 승격 (§6.10.7). 순수 리팩터, 행동 불변. 세션 전환 시 탭 유지 검증. | 기반 |
 | **PR-2** | 기본 탭 제거(빈 배열) + 전부 closeable + never-empty 가드 삭제 + 카운트 제거. (PR-3 와 순서 결합: empty-state 없으면 빈 화면.) | 후속 |
@@ -2752,7 +2740,7 @@ flowchart TB
 ```
 
 | 계약 | 값 |
-| --- | --- |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
 | Runtime capability | `host:overlay` only |
 | Source pattern | `^overlay:[a-z][a-z0-9-]*$` |
 | Plugin role | Overlay item staging 요청자. 직접 chat 시작 없음 |
@@ -2777,13 +2765,13 @@ flowchart TB
 
 ## 8. Agent Approval System — 에이전트 요청 승인
 
-> **§6.3 Permission Policy 와의 분리:** §6.3 은 *개별 도구 호출* 에 대한
+> **§6.3 Permission Policy 와의 분리:** §6.3 은 _개별 도구 호출_ 에 대한
 > Layer 0–9 평가 (sensitive paths, allowed dirs, category × source ×
-> mode, reviewer agent, hook chain) 를 다룬다. 본 §8 은 *에이전트
-> 행위 전체* 에 대한 사용자 승인 모델 (자율 게시 / 외부 송신 / 업무
+> mode, reviewer agent, hook chain) 를 다룬다. 본 §8 은 _에이전트
+> 행위 전체_ 에 대한 사용자 승인 모델 (자율 게시 / 외부 송신 / 업무
 > 일지 공개 범위) 을 다룬다. permission policy Layer 3 의 `network = ask + endpoint`
-> 결정은 §8 ApprovalGate 의 입력으로 흐르므로 두 섹션이 *중복 승인
-> 단계* 처럼 보일 수 있으나 실제로는 **single-decision /
+> 결정은 §8 ApprovalGate 의 입력으로 흐르므로 두 섹션이 _중복 승인
+> 단계_ 처럼 보일 수 있으나 실제로는 **single-decision /
 > single-prompt** — permission policy 가 결정하면 §8 ApprovalGate 가 그 결정을 그대로
 > render 한다 (별도 prompt 없음).
 
@@ -2803,14 +2791,14 @@ flowchart TB
 **업무 일지 공개 범위:**
 
 | 레벨 | 범위 | 열람 가능 에이전트 | 예시 |
-|------|------|-------------------|------|
+|----------------------- |------------ |----------------------- |---------------------- |
 | 🔒 **개인 보관** | 나만 | 없음 (내 에이전트만) | 개인 기록 성격의 일지 |
 | 👥 **팀 레벨** (기본값) | 소속 팀 | 같은 팀 에이전트 | 일상 업무 보고 |
 | 🏢 **상위 조직** | 실/본부 단위 | 상위 조직 소속 에이전트 | 크로스팀 프로젝트 공유 |
 | 🌐 **전체 공개** | 전사 | 모든 에이전트 | 전사 차원 인사이트·팁 |
 
 | 구분 | 품의 결재 | 에이전트 요청 승인 |
-|------|----------|-------------------|
+|---------- |------------------------------- |------------------------------------------------------------------------- |
 | **주체** | 사용자 본인 → 상위 결재자 | 에이전트 → 에이전트 소유자(사용자) |
 | **대상** | 예산·인사·구매 등 공식 프로세스 | **파일 전송** · **상호작용 허용** · **문서 공유** · **일지 공개 범위** 등 |
 | **시스템** | 전자결재 시스템 (기존 internal) | Ave Agent Approval (클라이언트 내장) |
@@ -2933,7 +2921,7 @@ graph TB
 반복되는 승인 패턴에 대해 사용자가 자동 승인 규칙을 설정할 수 있다. 이 규칙 자체도 사용자가 명시적으로 생성해야 한다.
 
 | 규칙 예시                                           | 설명                       |
-| --------------------------------------------------- | -------------------------- |
+| ----------------------------------------------- | ------------------------- |
 | "이영희 Agent의 파일 공유 요청은 자동 승인"         | 특정 에이전트에 대한 신뢰  |
 | "같은 팀 에이전트의 상호작용 요청은 자동 승인"      | 팀 내 협업 간소화          |
 | "기밀 등급 문서 관련 요청은 항상 수동 승인"         | 보안 정책 강제             |
@@ -2994,10 +2982,10 @@ Plugin 도구/워커 spawn 도 §6.3.9 의 OS 실행 샌드박스(ASRT) 경로�
 wrapper(macOS Seatbelt / Linux bwrap)로 감싼다.
 
 - **Network egress floor**: deny-by-default. egress 허용 도메인은 boot 에서
-  로드된 *모든* plugin manifest 의 `networkAccess.allowedDomains` UNION 으로
+  로드된 _모든_ plugin manifest 의 `networkAccess.allowedDomains` UNION 으로
   계산되어 ASRT SHARED config 에 `strictAllowlist: true` 와 함께 설정된다
   (loopback proxy strict-union 바닥). manifest 에 도메인을 선언하지 않은
-  plugin 의 sandboxed 자식은 네트워크 egress 가 없다. 단 이는 *per-worker*
+  plugin 의 sandboxed 자식은 네트워크 egress 가 없다. 단 이는 _per-worker_
   격리가 아니라 UNION 이므로, sandboxed 자식은 임의의 로드된 plugin 이 선언한
   도메인에 도달 가능하다 (Ave 1st-party 신뢰 모델 하에서 허용; per-worker
   격리는 future ASRT 필요).
@@ -3017,16 +3005,11 @@ wrapper(macOS Seatbelt / Linux bwrap)로 감싼다.
 
 ### 9.2 Plugin Manifest Spec
 
-> **⚠️ 매니페스트 포맷 변경 (removed in #885 Phase R):** 아래 §9.2 전체 — manifest 예시,
-> `toolSchemas` / `uiActions` map, auth-contract 하위 절 — 는 **pre-v6 (legacy)** 포맷이다.
-> #885 Phase R 이후 tool 계약은 pure MCP `Tool[]` 하나로 통합됐다: 각 tool 은
-> `{ name, description, inputSchema, _meta? }` 객체이고, renderer 노출 여부는
-> `_meta.ui.visibility` (`["model"]` / `["app"]` / `["model","app"]`), path 판정은
-> `_meta["ave/pathFields"]`, per-tool category 는 manifest 필드가 아니라 host 분류다
-> (`toolSchemas` / `uiActions` / per-tool `category` 는 삭제). 현행 계약은
-> `docs/architecture/plugin-contract-v6-design.md` 참조. 아래는 historical 로 읽을 것.
-
-매니페스트 스키마 (아래 §9.2 예시는 pre-v6)는 `@ave/plugin-sdk/schemas/plugin-manifest.schema.json` (AJV strict, `additionalProperties: false`) 이 단일 진실 소스다. 호스트는 SDK 패키지의 스키마를 런타임에 resolve 하며 app-local schema extension, tool-name inference, compatibility grace 를 두지 않는다. 검증 플로우·에러 포맷·capability taxonomy·uiActions 보안 경계 등 상세 규격은 `docs/references/plugin-tool-schema-design.md` (v4) 에 정의되어 있으며, 아래는 호스트-측 구조와 필드 관계 요약이다.
+매니페스트 스키마의 단일 진실 소스는 Host의
+`schemas/plugin-manifest.schema.json`이다. SDK는 이 파일과
+`src/plugins/public-contract.ts`를 생성 시점에 그대로 동기화하며 독자 계약을
+추가하지 않는다. Callable surface는 pure MCP `Tool[]` 하나뿐이고
+`toolSchemas`, `uiActions`, `keywords`는 스키마가 거부한다.
 
 ```json
 {
@@ -3039,81 +3022,68 @@ wrapper(macOS Seatbelt / Linux bwrap)로 감싼다.
   "installPolicy": "user",
   "startupTimeoutMs": 8000,
 
-  "tools": ["meeting_start", "meeting_stop", "meeting_transcript", "meeting_sessions"],
-  "uiActions": {
-    "meeting_start": {},
-    "meeting_push_chunk": {},
-    "meeting_stop": {},
-    "meeting_transcript": {},
-    "meeting_sessions": {}
-  },
-  "capabilities": ["meeting-recorder"],
+  "tools": [
+    {
+      "name": "meeting_read", "description": "회의 세션과 전사 상태를 읽는다.",
+  "inputSchema": {
+    "type": "object",
+    "required": ["operation"],
+    "properties": {
+          "operation": { "enum": ["sessions",
 
-  "eventSubscriptions": ["calendar.event.started"],
-  "notificationEvents": [
-    { "event": "meeting.summary.created", "titleField": "title", "bodyField": "summary" }
-  ],
-
-  "keywords": [
-    { "keyword": "회의록", "skillId": "meeting_start" },
-    { "keyword": "녹음",   "skillId": "meeting_start" }
-  ],
-
-  "toolSchemas": {
-    "meeting_start": {
-      "description": "회의 녹음 세션을 시작한다. 이후 meeting_push_chunk 로 오디오를 push 하고 meeting_stop 으로 종료한다.",
-      "category": "write",
-      "inputSchema": {
-        "type": "object",
-        "required": ["sessionId"],
-        "properties": {
-          "sessionId": { "type": "string" }
-        }
-      }
+  "transcript"] },
+  "sessionId": { "type": "string" }
+        }, "additionalProperties": false
+      }, "_meta": { "ui": { "visibility": ["model", "app"] } }
     },
-    "meeting_push_chunk": {
-      "description": "PCM16LE 오디오 청크를 세션에 추가. STT는 비동기 처리.",
-      "category": "write",
+    { "name": "meeting_write",   "description": "명시적으로 선택한 회의 녹음 작업을 수행한다.",
       "inputSchema": {
         "type": "object",
-        "required": ["sessionId", "chunk"],
+        "required": ["operation", "sessionId"],
         "properties": {
-          "sessionId": { "type": "string" },
-          "chunk": { "type": "object" }
+          "operation": { "enum": ["start", "stop"] },
+    "sessionId": {
+      "type": "string" }
+        },
+      "additionalProperties": false
+      },
+      "_meta": {
+        "ui": { "visibility": ["model", "app"] },
+        "ave/operationPolicy": {
+          "discriminant": "operation",
+          "operations": { "start": {
+      "kind": "write",
+      "minimumRisk": "write",
+      "appVisible": true
+            },
+            "stop": {
+              "kind": "write",
+        "minimumRisk": "write",
+              "appVisible": true
+            }
         }
-      }
-    },
-    "meeting_stop": {
-      "description": "회의 녹음 세션을 종료하고 최종 전사 요약 생성을 요청한다.",
-      "category": "write",
-      "inputSchema": {
-        "type": "object",
-        "required": ["sessionId"],
-        "properties": {
-          "sessionId": { "type": "string" }
-        }
-      }
-    },
-    "meeting_transcript": {
-      "description": "저장된 회의 세션의 전사 텍스트를 조회한다.",
-      "category": "read",
-      "inputSchema": {
-        "type": "object",
-        "required": ["sessionId"],
-        "properties": {
-          "sessionId": { "type": "string" }
-        }
-      }
-    },
-    "meeting_sessions": {
-      "description": "사용 가능한 회의 세션 목록을 조회한다.",
-      "category": "read",
-      "inputSchema": {
-        "type": "object",
-        "properties": {}
       }
     }
-  },
+    }
+  ],
+    "capabilities": ["meeting-recorder"],
+
+  "eventSubscriptions": ["calendar.event.started"],
+      "notificationEvents": [
+    {
+      "event": "meeting.summary.created",
+      "titleField": "title",
+        "bodyField": "summary"
+    }
+  ],
+        "skills": [{
+          "id": "attendance", "path": "skills/attendance" }],
+    "hooks": [{
+      "id": "audit",
+      "path": "hooks/audit.json" }],
+      "mcpServers": [{
+        "id": "meeting-local",
+        "path": "mcp/meeting-local.json" }],
 
   "ui": [
     { "id": "plugin-panel", "slot": "sidebar", "kind": "embedded-module",
@@ -3125,25 +3095,29 @@ wrapper(macOS Seatbelt / Linux bwrap)로 감싼다.
 **필드 요약:**
 
 | 필드 | 타입 | 역할 |
-|------|------|------|
+|----------------------------------------- |----------------------------------------------- |--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `id` | string (`^[a-zA-Z][a-zA-Z0-9._-]*$`, 3~128자) | 플러그인 식별자. **flat form 권장** (번들 플러그인은 모두 flat); dot form 허용. |
 | `name`, `version`, `entry`, `description` | string | 메타데이터. `description` ≤ 280자, `version` anchored semver. |
-| `tools` | **`string[]` (flat 이름 배열, snake_case 강제)** | LLM 에 노출되는 tool name. `^[a-zA-Z_][a-zA-Z0-9_]*$` — 도트·하이픈 금지. 호스트는 이 배열을 그대로 Tool Registry 에 등록한다 (런타임 변환 없음). |
-| `toolSchemas` | **`Record<string, { description, category?, pathFields?, workerId?, inputSchema, $schema? }>` (map form)** | LLM 파라미터 추론용 JSON Schema draft-07 + host policy metadata. `description` minLength 10, `category ∈ read/write/shell/network` 는 선택적 provider metadata 이며 effective category 는 host-side `inspectHostRisk`/executor policy 가 invocation 별로 산출한다. `pathFields[]` 는 filesystem path 판정 metadata 의 SOT 이고 dotted selector 를 허용한다. `workerId` 는 host-routed worker confinement 힌트이며 HostApi `spawnWorker` 경로로 검증된 worker 에만 효력이 있다. `inputSchema.type` 은 const `"object"` 를 요구한다. 런타임 payload 재검증은 수행하지 않는다. |
-| `uiActions` | `Record<string, { description?: string }>` | Renderer `ave:plugins:call` IPC 허용 allowlist. `tools[]` 와 별도 surface이며 UI 전용 runtime method 를 포함할 수 있다. 호출 시 `PluginRuntime.callFromUi()` 가 매번 `manifest.uiActions` 를 재확인한다. `tools[]` 에도 있는 action 은 ToolExecutor 권한 경로를 타며, UI-only action 은 auth status polling 을 제외하고 preload 가 확인한 active user activation 이 있어야 handler 로 전달된다. 플러그인은 별도 IPC 채널이나 직접 handler 호출 경로를 선언할 수 없다. |
+| `tools` | **pure MCP `Tool[]`** | 유일한 callable surface. 이름은 `^[a-zA-Z_][a-zA-Z0-9_]*$`; description/inputSchema/visibility/Host metadata를 각 객체가 직접 보유한다.                                                                                                                                                                                                                                           |
+| `tools[]._meta.ui.visibility`             | `Array<"model" \| "app">`                       | model/app 노출을 한 Tool 객체에서 선언한다. 별도 app-action map은 없다. |
+| `tools[]._meta["ave/pathFields"]` | `string[]` | 파일 경로 입력 필드를 Host의 allowed-directory 검사로 연결한다.                                                                                                                                                                                                                                                                                                                   |
+| `tools[]._meta["ave/operationPolicy"]` | `PluginToolOperationPolicy`                     | operation별 최소 risk와 read/write 제약을 선언한다. 권한 확장이 아니라 제한만 가능하다.                                                                                                                                                                                                                                                                                           |
+| `skills`, `hooks`, `mcpServers`           | `Array<{ id, path }>`                           | 서명된 artifact 안의 plugin-owned contribution. Host가 상대 경로와 namespace를 검증하고 원자적 lifecycle로 투영한다. |
 | `capabilities` | **closed enum** (`src/plugins/capabilities.ts`) | `mail-source` / `calendar-source` / `meeting-recorder` / `knowledge-index` (emit namespace 게이트), `host:overlay` (HostApi `triggerConversation` 게이트) 는 enforced. `lyra-mail-consumer`, `background-watcher`, `worker-client` 는 advisory/self-identification label. |
 | `deployment` | `"managed" \| "user"` | managed 는 ed25519 서명 필수 (fail-closed); user 는 warn-on-missing. |
 | `startupTimeoutMs` | integer (1~60000) | `Promise.race` 기반 start() 하드 타임아웃. 초과 시 fail-soft drop. |
 | `eventSubscriptions` | `string[]` | 호스트 이벤트 구독 대상. `memory.private.*` / `settings.apiKey.*` / `audit.*` / `dlp.*` (`PLUGIN_PRIVATE_NAMESPACES`) 는 **거부**. public namespace (`meeting` / `calendar` / `email` / `index`) 는 허용, 그 외는 warn. (2026-05-11: `task` 는 host owner 폐기로 retire. 플러그인-소유 namespace 는 host 가 의도적으로 알지 않으므로 신규 추가 안 함 — open-source-readiness 룰.) |
 | `notificationEvents` | `Array<{ event, titleField?, bodyField? }>` | `registerPluginNotifications()` 가 manifest 만 읽어 OS 알림 핸들러를 자동 배선. |
-| deprecated `keywords` | `Array<{ keyword, skillId }>` | boot 시 legacy KeywordEngine에 등록되어 일치한 model-visible Tool schema를 preload. Tool 직접 호출이나 bundled Skill discovery가 아니며, instruction bundle은 `manifest.skills` 사용. Owner: `ave` plugin runtime. 모든 지원 플러그인 이관 + active manifest 선언 0건이면 `registerKeywords`와 함께 제거. |
 | `ui` | `PluginUiExtension[]` | UI slot 마운트 명세. manifest slot key 는 현재 historical `"sidebar"` 값을 사용하지만, 렌더링 표면은 플러그인 뷰/분리 창 경로가 담당한다. |
 | `publisher` | string | 감사 로그·마켓플레이스 표시. |
-| `configSchema` | `PluginConfigSchema` (선택) | **§9.2 Track B** — VSCode-style 선언형 설정 스키마. JSON Schema draft-07 subset (`toolSchemas` 와 동일 dialect) 으로 `properties` map 을 선언하면 호스트가 `PluginConfigTab` 에 typed form (string / number / boolean / enum / string[] ) 을 자동 렌더링한다. 미선언 시 기존 raw key/value 편집기로 fallback (legacy plugin back-compat 보장). UI 라우팅 hint 는 `format: "secret"` 한 종류 — `setSecret` (Electron `safeStorage` 암호화) 로 라우팅되어 cleartext `settings.json` 에 저장되지 **않는다**. `customPanel` (entry/exportName) 은 escape hatch — schema 필드로 표현하기 어려운 expressive UI 를 plugin 이 자체 React 컴포넌트로 마운트할 수 있다 (UI Slot System §9.3 호환). 상세: `docs/references/plugin-tool-schema-design.md` (track B). |
+| `configSchema` | `PluginConfigSchema` (선택) | JSON Schema draft-07 subset으로 Host의 typed config form을 선언한다.                                                                                                                                                                                                                                                                                                              |
 
-> **Deprecated (Phase 1 스키마에서 제거됨):** `additionalProperties: false` 적용 (Phase 1 결정) 이후 아래 legacy 필드는 매니페스트에 포함하면 로드 거부된다: top-level `permissions[]` 문자열 배열 (host 미사용, Phase 1 제거), `eventPublishes[]` (`emittedEvents`로 교체), nested 객체 형태의 `tools[{ name, entry, description }]`, `skills[]`, 객체 형태의 `ui`, `hooks`, `events`, `dependencies`. `description` 은 Phase 1 이후 MUST 필드로 승격되었다. 이전 설계 초안은 git history (pre-Sprint-3-B) 에서만 확인 가능하다.
+> **제거된 계약:** `toolSchemas`, `uiActions`, `uiTool`, `uiAction`,
+> `keywords`, 문자열 `tools[]`, top-level `operationGovernance`와
+> `appAllowed`는 compatibility adapter 없이 schema 단계에서 거부된다.
 
 > **`dependencies[]` — declarative preflight metadata only (issue #92, 2026-05).** Host는 manifest 의 `dependencies[]` 에 선언된 다른 플러그인을 **절대 auto-install 하지 않는다**. 마켓플레이스 install 시:
+>
 > - `required: true` (default — `required` 누락 object 와 legacy string-form `"<id>"` 모두 `normalizeDependencies` 가 동일 의미로 정규화): 해당 plugin 이 installed registry 에 없으면 install 거부 + `MissingPluginDependenciesError`. 사용자가 직접 dep 을 먼저 설치해야 함.
 > - `required: false`: install 진행. **컨슈머 플러그인은 dep-absent 케이스를 runtime degrade** (detector idle / tool envelope `{status:'<dep>_unavailable'}` 등) 해야 한다 — host 는 강제하지 않는다.
 >
@@ -3151,7 +3125,7 @@ wrapper(macOS Seatbelt / Linux bwrap)로 감싼다.
 
 **마켓플레이스 검증:** 플러그인 repo는 sidecar signature를 만들지 않는다. Marketplace upload API가 zip/manifest/schema/version/policy/dependency/access를 검증하고 최종 artifact envelope에 서명한다. Host는 설치 시 envelope를 검증하고 install receipt를 저장한다.
 
-**검증 플로우:** marketplace envelope verification → install receipt file-hash verification → JSON.parse → Host-owned AJV schema → cross-field (tool-name regex, deprecated `keywords[].skillId`가 model-visible `tools[]` Tool name인지, auth Tool이 app-only인지, `startupTimeoutMs > 0`) → capability enforcement → entry import. 각 단계 실패 시 해당 플러그인 fail-soft drop. 에러 포맷 상세는 `docs/references/plugin-tool-schema-design.md` §2.5.
+**검증 플로우:** marketplace envelope verification → install receipt file-hash verification → JSON.parse → Host-owned AJV schema → cross-field (Tool name/visibility/auth/operation policy, contribution id/path, `startupTimeoutMs > 0`) → capability enforcement → entry import. 각 단계 실패 시 해당 플러그인 fail-soft drop.
 
 부트 preflight는 install receipt 검증을 manifest 파싱보다 먼저 수행한다. Receipt hash와 manifest 검증은 제한된 동시성으로 겹쳐 실행하되, 성공 결과와 실패 상태는 registry 순서대로 반영한다. 무결성 검증에 실패한 payload는 tool/event 소유권이나 dependency capability 계산에 들어가지 않으며, 통과한 manifest는 해당 부트에서 한 번만 파싱한다.
 
@@ -3162,14 +3136,16 @@ wrapper(macOS Seatbelt / Linux bwrap)로 감싼다.
 - 호스트는 이 스키마를 LLM system prompt의 tool schema로 삽입. 런타임 검증은 수행하지 않음.
 - 상세 작성 가이드: `docs/references/plugin-tool-schema-design.md` §3
 
-**`toolSchemas` 도입 경위 — LLM 파라미터 추론 관찰**
+**Tool `inputSchema`가 필요한 이유 — LLM 파라미터 추론 관찰**
 
 번들 플러그인 4개를 운영하면서 두 가지 패턴에서 LLM 파라미터 추론 실패가 반복 관찰되었다:
 
 1. **바이너리/배열 데이터** (`meeting_push_chunk.chunk.pcm16leMono`): LLM이 `number[]` 대신 base64 string을 시도.
 2. **nested required + 배열 항목** (`lyramail_calendar_create.attendees`): LLM이 `string[]` 대신 단일 문자열 전달.
 
-기존 generic schema(`{ payload: object }`)는 LLM에 파라미터 구조를 전달하지 않아 이 문제를 해결할 수 없었다. `toolSchemas`를 선택적 필드로 도입하면 기존 플러그인에 하위 호환성을 유지하면서 필요한 메서드만 점진적으로 명세를 추가할 수 있다.
+generic schema(`{ payload: object }`)는 LLM에 파라미터 구조를 전달하지
+못한다. 따라서 모든 manifest Tool 객체가 자신의 `inputSchema`를 직접
+보유하며, Host와 SDK는 별도 schema map이나 추론 fallback을 두지 않는다.
 
 ### 9.3 UI Slot System
 
@@ -3310,8 +3286,7 @@ stateDiagram-v2
 `PluginHostApi` 인터페이스 (`src/plugins/types.ts`). 플러그인이 호스트 서비스에 접근하는 유일한 경로이며, 이 인터페이스 자체가 capability gate 역할을 한다.
 
 | 메서드 | 설명 | 소비 플러그인 |
-|--------|------|--------------|
-| `registerKeywords(keywords)` | KeywordEngine에 트리거 키워드 등록 (boot 시 1회) | 전체 |
+|--------------------------------- |-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |--------------------------- |
 | `emitEvent(name, payload)` | 다른 플러그인·호스트 이벤트 버스에 이벤트 발행 | 전체 |
 | `onEvent(name, handler)` | 이벤트 구독 | 전체 |
 | ~~`addTask(task)`~~ | **(2026-05-05 Phase 4 제거)** host `TaskService` + SQLite 경로 삭제. task 소유권은 agent-hub 플러그인으로 완전 이전 (Phase 1–4). `agent_hub.notification.surfaced` 이벤트가 일반 알림 채널 역할, `meeting.summary.created.actionItems` 가 액션아이템 캐리어. | 제거됨 |
@@ -3338,7 +3313,7 @@ stateDiagram-v2
 
 **Plugin-Owned OAuth Authentication (PR 3 — 신 정책)**
 
-PR 3 에서 Microsoft Graph 인증이 호스트에서 플러그인으로 이전되었다. 이는 §9.4a 의 일반 정책 — *플러그인은 HostApi 만으로 호스트 자원 접근* — 에 대한 정당한 예외이며, 이후 다른 OAuth-기반 플러그인 (Slack / Notion / Google 등) 도 동일 패턴을 따른다.
+PR 3 에서 Microsoft Graph 인증이 호스트에서 플러그인으로 이전되었다. 이는 §9.4a 의 일반 정책 — _플러그인은 HostApi 만으로 호스트 자원 접근_ — 에 대한 정당한 예외이며, 이후 다른 OAuth-기반 플러그인 (Slack / Notion / Google 등) 도 동일 패턴을 따른다.
 
 **원칙**
 - OAuth 흐름이 필요한 플러그인은 자체적으로 다음을 소유할 수 있다:
@@ -3380,11 +3355,8 @@ PR 3 에서 Microsoft Graph 인증이 호스트에서 플러그인으로 이전�
 
 **Plugin-Owned OAuth — Host UI Surface (PR #399 후속)**
 
-> **v6 note (removed in #885 Phase R):** 아래 auth 계약은 유효하되 표현이 바뀌었다 —
-> `statusTool`/`loginTool`/`logoutTool` 은 이제 `uiActions` map 이 아니라 visibility 가
-> **정확히 `["app"]`** 인 pure `Tool` 객체를 가리킨다 (app-only; model 노출 금지). load-time
-> validator 는 "auth tool 은 `tools[]` 밖 + `uiActions` 안" 대신 "auth tool 의
-> `_meta.ui.visibility === ["app"]`" 를 강제한다. 아래 `uiActions` 표기는 pre-v6 로 읽을 것.
+> `statusTool`/`loginTool`/`logoutTool` 은 visibility가 정확히 `["app"]`인
+> pure `Tool` 객체를 가리킨다. 별도 app-action surface는 없다.
 
 플러그인이 자체 OAuth 를 소유한다는 원칙은 유지하되, **인증 상태와 로그인 트리거는 호스트가 일관된 surface 로 노출**한다 — 사용자가 매번 플러그인 사이드바 패널까지 들어가지 않고 Settings → 플러그인 설정 목록에서 한눈에 미인증 여부를 보고, 거기서 로그인을 시작할 수 있게.
 
@@ -3396,18 +3368,18 @@ PR 3 에서 Microsoft Graph 인증이 호스트에서 플러그인으로 이전�
 {
   "auth": {
     "label": "Microsoft 계정",      // optional; 기본은 manifest.name
-    "statusTool": "lyramail_status",  // 필수, uiActions 안
-    "loginTool": "lyramail_auth",     // 필수, uiActions 안
-    "logoutTool": "lyramail_signout", // optional, uiActions 안 (있으면)
+    "statusTool": "lyramail_status",  // 필수, app-only Tool
+    "loginTool": "lyramail_auth",     // 필수, app-only Tool
+    "logoutTool": "lyramail_signout", // optional, app-only Tool
     "partitionDomains": [             // optional — `openAuthPartitionViewer` 호출 시만 필수
       "outlook.office.com",
-      "login.microsoftonline.com"
-    ]
-  }
+      "login.microsoftonline.com",
+    ],
+  },
 }
 ```
 
-세 tool 이름은 **모두 `uiActions` 에 선언되어야 하며 `tools[]` 에 있으면 안 된다**. `manifest-validation.ts` 의 hand-rolled cross-field validator 가 load-time 에 이를 강제한다 (AJV 단독으로는 cross-object membership 표현 불가).
+세 이름은 모두 `tools[]`의 app-only Tool을 가리켜야 한다. `manifest-validation.ts` 의 cross-field validator가 load-time에 이를 강제한다.
 
 `partitionDomains[]` 는 `hostApi.openAuthPartitionViewer()` 의 dot-boundary suffix-match allow-list — 자세한 거부 패턴 / 3-layer defense / lyra-mail 예시는 [`plugin-tool-schema-design.md` §2.4.1](../references/plugin-tool-schema-design.md) 참조.
 
@@ -3420,7 +3392,8 @@ interface PluginAuthStatusResult {
 }
 ```
 
-호스트는 defensive parse — 추가 필드는 무시. `outputSchema` 강제 검증은 toolSchemas 전반의 별 작업으로 deferred.
+호스트는 defensive parse — 추가 필드는 무시. `outputSchema` 강제 검증은
+Tool 계약 전반의 별 작업으로 deferred.
 
 **Auth-changed 이벤트 계약**
 
@@ -3454,7 +3427,7 @@ hostApi.emitEvent(`${pluginId}.auth.changed`);  // 예: "lyra-mail.auth.changed"
 - auth 를 선언하지 않는 플러그인: manifest 변경 없음.
 
 **의도적으로 deferred 된 항목** — 별 PR 로 추적:
-- `auth.statusTool` 의 `outputSchema` 강제 검증 (toolSchemas 전체 outputSchema 인프라 큰 작업)
+- `auth.statusTool` 의 `outputSchema` 강제 검증 (Tool outputSchema 인프라 큰 작업)
 - `agent-hub` 의 connection-status 까지 흡수하는 generic `statusBadge` 일반화 (3+ consumer 룰 — 현재는 lyra-mail + lyra-mail 둘만 auth)
 - LayoutGrid 아이콘 자체에 미인증 점 뱃지 (Settings 외 발견성 강화)
 - `registry.json` 캐시 (현재 event-driven refresh 로 충분 — 풀고 싶은 flicker 문제 없음)
@@ -3468,7 +3441,7 @@ Ave는 IPC/RPC를 **시스템 레벨 전용**으로 확정한다. 플러그인�
 **시스템 레벨 IPC (호스트만 사용):**
 
 | 영역 | 채널/프로토콜 | 용도 |
-|------|---------------|------|
+|------------------------- |----------------------------------------------------------------- |-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Host ↔ Renderer | Electron `ipcMain.handle()` (`ave:settings:*`, `ave:chat:*` 등) | UI ↔ 메인 프로세스 상태 동기화 |
 | Marketplace / Governance | HTTPS REST | 플러그인 카탈로그·정책·감사 업로드 |
 | MCP | stdio/HTTP | 외부 MCP 서버 통신 |
@@ -3533,7 +3506,7 @@ graph TB
 **MCP 기능 세 축:**
 
 | Capability | 설명 | Ave 활용 |
-| --- | --- | --- |
+| ------------- | ------------------------------- | --------------------------------------------------------- |
 | **Tools** | 서버가 제공하는 도구 (함수) | the LLM backend가 호출 가능한 도구로 Tool Registry에 등록 |
 | **Resources** | 서버가 제공하는 데이터 소스 | 파일 목록, DB 스키마, API 응답 등을 컨텍스트로 활용 |
 | **Prompts** | 서버가 제공하는 프롬프트 템플릿 | 특정 작업에 최적화된 시스템 프롬프트 확장 |
@@ -3541,7 +3514,7 @@ graph TB
 **Transport 선택 기준:**
 
 | Transport | 프로토콜 | 적합 시나리오 | 비고 |
-| --- | --- | --- | --- |
+| ------------------------------------- | ------------------------------------------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **stdio** | subprocess stdin/stdout | 로컬 도구 (파일 시스템, git 등) | 가장 단순·안정적 |
 | **http (Streamable HTTP 2025-03-26)** | 단일 POST → `application/json` 또는 `text/event-stream` | 원격 MCP 서버 (internal API, SaaS) | 현행 권장 원격 transport. NetworkGuard(Tier A2) + `fetchPublicHttpResponse` 경유 — DNS rebinding/SSRF 방어, 매 요청·매 redirect hop DNS 재검증. `redirect: "manual"`, `allowPrivateNetworks` 옵트인은 거버넌스 admin 플래그(`globalRules.allowPrivateNetworks` 또는 승인 레벨) 동의 필수. |
 | **sse** | HTTP Server-Sent Events (legacy dual-endpoint) | — | **governance-only, legacy** — 런타임 client 미구현. 신규 서버는 `http` 로 이전. |
@@ -3631,7 +3604,7 @@ graph TB
 **핵심 구분**
 
 | 항목 | managed | user |
-| --- | --- | --- |
+| ----------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
 | **소스** | enterprise marketplace API (mTLS + SSO) | 사용자 직접 (URL, local file, enterprise store의 자율 항목) |
 | **설치 시점** | Ave boot 시 Managed Policy Sync에서 자동 | 사용자 명시 액션 |
 | **삭제 권한** | 회사만 (`PluginDeploymentGuard.canUninstall()` = false) | 사용자 자유 |
@@ -3807,7 +3780,7 @@ graph LR
 **각 단계별 의존 요소:**
 
 | 단계 | 핵심 기능 | 공개 비교 참고 |
-|------|---------|------------|
+|----------------------- |-------------------------------------------------------------- |------------------------------------------- |
 | **Work Board Pilot** | Read-only my/team work view + 호스트 Task 호환 | Warp 작업 추적, 기본 필드 정렬 |
 | **Message Board Pilot** | Direct 1:1 메시지 POC 완료, 팀 채널/수신 정책은 후속 | PaperclipAI 메시지 분류, 코드 컨텍스트 UX |
 | **Approval/Governance** | `approval_requests` verdict 상태 POC 완료, UI/정책 엔진은 후속 | PaperclipAI 워크플로우, Warp run transcript |
@@ -3842,7 +3815,7 @@ graph LR
 
 ### 10.0.3 Direction Update (2026-06-16): Host-Integrated Agentic Work Board
 
-**결정**: Work Board를 **server-backed plugin POC** (`ave-agent-hub` 서버 + `ave-plugin-hydra` bridge) 에서 **호스트 1급 도메인 (host-integrated agentic work orchestrator)** 으로 전환한다. 이는 아래 §10.1 Roadmap 이 명시한 미구현 갭 — *"승인 후 실제 행위 실행은 아직 연결하지 않는다"* — 을 실현하는 작업이다.
+**결정**: Work Board를 **server-backed plugin POC** (`ave-agent-hub` 서버 + `ave-plugin-hydra` bridge) 에서 **호스트 1급 도메인 (host-integrated agentic work orchestrator)** 으로 전환한다. 이는 아래 §10.1 Roadmap 이 명시한 미구현 갭 — _"승인 후 실제 행위 실행은 아직 연결하지 않는다"_ — 을 실현하는 작업이다.
 
 **Why host, not plugin (권한 모델 정합):**
 - agentic 오케스트레이터는 본질적으로 (a) 서브에이전트 spawn, (b) §8 ApprovalGate 구동, (c) **타 플러그인 툴(mail/calendar/meeting) 오케스트레이션** 이 필요하다.
@@ -3856,7 +3829,7 @@ graph LR
 4. **EXECUTE**: execute-mode 서브에이전트가 scoped ToolRegistry(타 플러그인 툴 포함)로 자율 실행. 실행 중 외부 쓰기(메일 발송 등)는 §8 게이트 재통과.
 5. 보드 상태: `진행 중` = 에이전트 라이브 작업(`runningStarted` 이벤트), `완료` = 산출물(노트/카드 첨부) + run transcript.
 
-**Agent Hub(A2A) 와의 구분:** §10 의 Agent Hub(A2A message board)는 *에이전트 간 비동기 메시징*(이영희 레플리카에게 전달)이고, Work Board(본 절)는 *사용자 자신의 작업을 자신의 서브에이전트가 자율 실행* 하는 축이다. 두 축은 §10 우산 아래 공존한다.
+**Agent Hub(A2A) 와의 구분:** §10 의 Agent Hub(A2A message board)는 _에이전트 간 비동기 메시징_(이영희 레플리카에게 전달)이고, Work Board(본 절)는 _사용자 자신의 작업을 자신의 서브에이전트가 자율 실행_ 하는 축이다. 두 축은 §10 우산 아래 공존한다.
 
 **Hermes 차용:** Skills = agent profile, Memory = `~/.ave/work-board/memories/{USER,MEMORY}.md` (업무 흐름 학습), Crons = RoutinesScheduler 연동 예약 실행, Self-improvement = run 결과로 skill/memory 보정.
 
@@ -3971,7 +3944,7 @@ sequenceDiagram
 **핵심**: 아래 보드 유형은 최종 Full Agent Hub 구조이다. 현재 구현은 **Direct 1:1 Personal Mailbox POC**, **Work Log Board의 개인/팀 읽기**, **ApprovalRequest verdict POC**까지만 제공한다. Team Channel, Project Board, Knowledge Board, Broadcast와 범위별 게시 정책은 후속 phase다.
 
 | 보드 유형            | 용도                       | 접근        | 게시/열람                    | 예시                |
-| -------------------- | -------------------------- | ----------- | ---------------------------- | ------------------- |
+| -------------------- | -------------------------- | ----------- | ---------------------------------------- | ------------------- |
 | **Personal Mailbox** | 1:1 에이전트 비동기 메시지 | 발신·수신자 | **승인 필요**                | "이 문서 검토해줘"  |
 | **Team Channel**     | 팀/부서 단위 에이전트 협업 | 팀 소속     | 일지 👥팀 게시 · 열람 자율 · 응답 승인 | "이번 주 이슈 정리" |
 | **Project Board**    | 프로젝트별 작업·위임·추적  | 프로젝트원  | 열람 자율 · 위임수락 승인    | "Sprint #12 태스크" |
@@ -4123,7 +4096,7 @@ flowchart TB
 ### 12.2 시나리오 → 컴포넌트 매핑 테이블
 
 | 시나리오       | KW Engine | Notes | Local Index | Server Index |   the LLM backend    | Agent Hub |    Plugin     | Overlay Trigger |   Agent Approval    |
-| -------------- | :-------: | :---: | :---------: | :----------: | :---------: | :-------: | :-----------: | :---------: | :-----------------: |
+| ------------ | :-------: | :---: | :---------: | :----------: | :-------------: | :-------: | :-----------: | :-------------: | :-------------------: |
 | 출장 품의      |    ✅     |  ✅   |   ✅ 양식   |   ✅ 규정    |   ✅ 초안   |     -     |   HR Plugin   |      -      |          -          |
 | SW 도입        |    ✅     |   -   |  ✅ 가이드  |  ✅ 가이드   |   ✅ 요약   | ✅ 담당자 |   IT Plugin   |      -      |          -          |
 | 팀 보고        |    ✅     |   -   |      -      |      -       |  ✅ 보고서  |  ✅ 팀원  |       -       |      -      | ✅ 데이터 수집 승인 |
@@ -4226,7 +4199,7 @@ flowchart LR
 Phase 1 감사 로깅은 두 컴포넌트가 병렬로 운용된다.
 
 | 컴포넌트 | 파일 | 방식 | 용도 |
-| --- | --- | --- | --- |
+| ---------------------- | ------------------------------------ | ---------------------------------------------- | --------------------------------- |
 | `AuditLogger` (sync) | `ave/src/audit/audit-logger.ts` | 동기 write — tool execution 경로에서 즉시 기록 | 도구 실행 / 정책 차단 즉시 감사 |
 | `AuditService` (async) | `ave/src/main/audit-service.ts` | 비동기 큐 → 주기 flush | 대용량 이벤트 수집, I/O 부담 분리 |
 
@@ -4341,7 +4314,7 @@ graph TB
 ### 14.3 Technology Stack
 
 | Layer          | Component        | Technology                  | 선정 이유                         |
-| -------------- | ---------------- | --------------------------- | --------------------------------- |
+| -------------- | --------------- | ---------------------------------------------------- | -------------------------------------------- |
 | **Client**     | App Shell        | Electron + React            | 크로스 플랫폼 + 웹 기반 UI 확장   |
 | **Client**     | Core Engines     | Rust (NAPI-RS)              | KW 감지·인덱싱 성능 + 메모리 안전 |
 | **Client**     | Local Store      | SQLite + FTS5               | 로컬 경량 DB + 전문 검색          |
@@ -4402,7 +4375,7 @@ flowchart TB
 **Feature Flag 활용 시나리오:**
 
 | 시나리오 | Flag 규칙 | 효과 |
-| --- | --- | --- |
+| ------------------------- | ----------------------------------------------- | --------------------------------------- |
 | **신규 도구 베타 테스트** | `tool.python_exec: enabled for 부서=AI연구소` | Python 실행 도구를 AI연구소만 먼저 사용 |
 | **플러그인 점진 롤아웃** | `plugin.erp_connector: 10% → 50% → 100%` | 비율 기반 점진 확대 |
 | **위험 기능 킬 스위치** | `feature.auto_email: enabled=false` | 문제 발생 시 즉시 전사 비활성화 |
@@ -4412,7 +4385,7 @@ flowchart TB
 **Flag 평가 흐름:**
 
 | 단계 | 시점 | 동작 |
-| --- | --- | --- |
+| --------------- | ------------------------------ | ----------------------------------------------------------- |
 | **1. Fetch** | 부팅 시 (비동기) | Flag Service에서 최신 규칙 다운로드. 실패 시 로컬 캐시 사용 |
 | **2. Evaluate** | 부팅 시 + 매 턴 (변경 감지 시) | 사용자 프로필(부서·역할·ID)을 기준으로 각 flag 평가 |
 | **3. Apply** | Tool Registry 빌드 시 | Feature-gated 도구는 flag가 true일 때만 Registry에 등록 |
@@ -4431,7 +4404,7 @@ flowchart TB
 **파일**: `src/plugins/publisher-keys.ts`
 
 | 항목 | 내용 |
-|------|------|
+|--------- |-------------------------------------------------------------------------------------------------- |
 | 키 형식 | Ed25519 원시 32바이트 (base64) |
 | 소스 | `MARKETPLACE_PUBLIC_KEYS` from `src/plugins/marketplace-keys.ts` |
 | 실패 정책 | Envelope 검증 실패 또는 install receipt hash mismatch 시 로드 거부 (fail-closed) |
@@ -4441,7 +4414,7 @@ flowchart TB
 // src/plugins/publisher-keys.ts (요약)
 import { MARKETPLACE_PUBLIC_KEYS } from "./marketplace-keys.js";
 
-export function getBundledPublicKeys(): Record<string, Buffer>  // raw ed25519 키
+export function getBundledPublicKeys(): Record<string, Buffer>; // raw ed25519 키
 ```
 
 **Install receipt schema (v2)**: `PluginInstallReceipt` (schemaVersion 2) 는 `installSource: "marketplace" | "local-dev"` 필드로 설치 경로를 구분한다. `local-dev` 영수증은 `isDevModeUnlocked()` 게이트가 false 인 환경(packaged 빌드 또는 AVE_DEV 미설정)에서 `verifyReceiptAndDevGuard` 가 로드를 거부한다. v1 영수증(PR #421 이전 설치분)은 `verifyInstallReceipt` 가 read-time 으로 v2 로 정규화하며, `signerKeyId` 가 `"dev:"` prefix 이면 `local-dev`, 아니면 `marketplace` 로 분류된다.
@@ -4469,7 +4442,7 @@ if settings.cors_origins:
 ```
 
 | 케이스 | 결과 |
-|--------|------|
+|----------------------------------------------- | ---- |
 | GET + 임의 Origin | 허용 |
 | POST + 허용된 Origin | 허용 |
 | POST + 미허용 Origin | 403 |
@@ -4485,7 +4458,7 @@ if settings.cors_origins:
 **구현 컴포넌트**:
 
 | 컴포넌트 | 역할 |
-|----------|------|
+|---------------------------- |-------------------------------------------------------------------------------------------------------------------- |
 | `AssistantCard.tsx` | 카드 푸터에 ThumbsUp/ThumbsDown 아이콘 버튼. 👍 클릭 시 filled 전환, 👎 클릭 시 최대 200자 이유 입력란 표시 |
 | `src/ipc-bridge.ts` | `ave:feedback:submit` IPC 채널 — sender 검증 후 AuditLogger에 `type="info"` 항목 기록, 👍 시 starredStore 자동 연동 |
 | `src/preload.ts` | `submitFeedback()` 브리지 메서드 |
@@ -4517,7 +4490,7 @@ interface FeedbackEntry {
 **보안 특성**:
 
 | 항목 | 내용 |
-|------|------|
+|----------- |------------------------------------------------------------------------- |
 | 경로 제한 | `resolve(path)` → `~/.ave/` 외부 경로 시 `Error` 발생 (path confinement) |
 | 심링크 방어 | 저장 디렉터리 `lstatSync` 확인 — 심링크이면 `Error` 발생 |
 | 파일 권한 | `appendFileSync(..., { mode: 0o600 })` — 소유자 읽기/쓰기 전용 |
@@ -4539,7 +4512,7 @@ interface FeedbackEntry {
 ### A. Agent Harness Design Map
 
 | 일반 agent harness concern       | Ave 적용             | 차이점                           |
-| -------------------------------- | --------------------- | -------------------------------- |
+| ------------------------------ | -------------------------------- | ------------------------------------------------------------------------ |
 | Turn runtime                     | Agent Loop            | + Memory Recall/Save 전후 추가   |
 | Slash command parsing            | KW Engine 명령어 감지 | + 한국어 형태소 분석 추가        |
 | Skill invocation resolution      | Skill Resolver        | + Plugin keyword registry 연동   |
@@ -4562,7 +4535,7 @@ interface FeedbackEntry {
 ### B. v3 → v4 (Final) 변경점
 
 | 항목                        | v3                                     | v4 (Final)                                                   |
-| --------------------------- | -------------------------------------- | ------------------------------------------------------------ |
+| ----------------------------- | -------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | **Local Index Engine**      | Data Flow(§13)에만 파이프라인 약술     | **§4.4 전용 LLD 섹션 신설** — 데이터 소스·파이프라인·스토리지·쿼리 인터페이스 상세 |
 | **Technology Stack**        | 13항목                                 | **19항목** — PageIndex, Query Cache, Memory Files, Doc Parser, Policy Engine, Encryption 추가 |
 | **Agent Hub 열람 구조**     | 승인 체계만 기술                       | **범위 지정 게시 + 수시 열람** 체계. 업무 일지 공개 범위 4단계 (개인/팀/상위조직/전체) |
@@ -4581,7 +4554,7 @@ interface FeedbackEntry {
 ### C. v1 → v2 → v3 → v4 전체 이력
 
 | 항목              | v1           | v2               | v3                   | v4 (Final)              |
-| ----------------- | ------------ | ---------------- | -------------------- | ----------------------- |
+| --------------- | ------------- | ------------------ | ------------------- | ------------------------------------------ |
 | 레이어            | 4-Layer      | 5-Layer          | 5-Layer              | 5-Layer (확정)          |
 | the LLM backend            | 모호         | 심장 명확화      | 유지                 | 유지                    |
 | Memory            | 없음         | 4계층 복잡 구조  | 파일 기반 경량화     | 파일 기반 (확정)        |
@@ -4612,7 +4585,7 @@ interface FeedbackEntry {
 v5 는 v4 Final 의 설계를 그대로 유지한 상태에서, **실구현 머지 결과**를 반영한 **덧붙이기 전용** 업데이트이다. 기존 서술은 삭제하지 않으며, 신규 사항은 `§X.Y (신규 v5)` 형태로 해당 장 하위에 추가한다.
 
 | 영역 | v4 (Final) | v5 덧붙이기 |
-| --- | --- | --- |
+| -------------------------------------- | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | §4.2 Boot Sequence | 8-step 부팅 | **§4.2.X (신규 v5)** `ensure-submodules` postinstall + dev 모드 플러그인 live-reload 워처 |
 | §4.5 Conversation Query Loop | 11-step 메시지 라이프사이클 | **§4.5.X (신규 v5)** `ConversationTracer` + `FileTracer` 11-step 계측 (K4) |
 | §4.5 Sub-Agent Harness (`agent_spawn`) | profile `model`/`mode` 는 informational | **§4.5.Z (신규 v5)** Agent Profile Model Resolution (복잡도 tier → 모델, parent fallback) + **§4.5.Z2 (신규 v5)** Mode + Skill Auto-Mapping (posture preamble + 추천 skill, 승인 게이트 보존) |
@@ -4661,7 +4634,7 @@ v4 §4.5 의 11-step 쿼리 루프(`onUserMessage → ... → onTurnComplete`)�
 
 `null` 반환 = "override 없음" → caller 가 `modelOverride` 를 설정하지 않아 `refreshProvider()` 가 벤더 블록의 설정 모델을 사용한다. **non-null 결과는 모두 활성 벤더가 서빙 가능한 모델임이 보장**된다(tier-resolved 또는 option-validated). 따라서 override 가 provider 에 `model_not_found` 를 먹여 hard-fail 시키지 않는다 — `fallback-chain.ts` 의 `isNonRetryable` 가 `model_not_found`/`invalid_model`/4xx 를 fallback 대상에서 제외하므로, 검증 없이 명시 ID 를 통과시키면 sub-agent 가 즉시 죽을 수 있다.
 
-**No Fallback Code 정합**: 부모-모델 fallback 은 *design-intent 안전 경로*(legacy alias 아님)이며, 발생 시 항상 `log.warn` 으로 audit 에 남긴다 — fallback 이 조용히 버그를 가리지 못하도록 강제. 비기술 사용자(총무/회계/인사/기획)가 프로필 `.md` 의 모델 ID 를 오타내도 sub-agent 가 opaque provider 에러로 죽지 않고 부모 모델로 degrade 한다.
+**No Fallback Code 정합**: 부모-모델 fallback 은 _design-intent 안전 경로_(legacy alias 아님)이며, 발생 시 항상 `log.warn` 으로 audit 에 남긴다 — fallback 이 조용히 버그를 가리지 못하도록 강제. 비기술 사용자(총무/회계/인사/기획)가 프로필 `.md` 의 모델 ID 를 오타내도 sub-agent 가 opaque provider 에러로 죽지 않고 부모 모델로 degrade 한다.
 
 **builtin profile model tier**: executor `mid` · researcher `mid` · planner `high` · explorer `low`.
 
@@ -4679,7 +4652,7 @@ v4 §4.5 의 11-step 쿼리 루프(`onUserMessage → ... → onTurnComplete`)�
 
 **Skill auto-mapping SECURITY MODEL (load-bearing)**
 
-Ave 는 **모든** skill 을 body-hash 승인 게이트(§9 skill-load + skill-approvals-store) 뒤에 둔다. mode 가 `autoSkills` 를 system prompt 에 *force-load* 하면 이 게이트를 **우회** — 보안 회귀. 따라서 `autoSkills` 는 **추천(RECOMMENDATION)이며 force-load 가 아니다**:
+Ave 는 **모든** skill 을 body-hash 승인 게이트(§9 skill-load + skill-approvals-store) 뒤에 둔다. mode 가 `autoSkills` 를 system prompt 에 _force-load_ 하면 이 게이트를 **우회** — 보안 회귀. 따라서 `autoSkills` 는 **추천(RECOMMENDATION)이며 force-load 가 아니다**:
 
 - `buildModePreamble(config)` 는 `<ave-agent-mode-skills>` 텍스트 블록만 emit 하여 "이 작업에 유용한 skill 목록 + `skill_load` 로 직접 로드하라(첫 로드 시 승인 모달)"을 LLM 에게 알린다.
 - SubAgentRunner 는 mode 로부터 child SkillOverlay 에 **아무것도 등록하지 않는다**. skill body 는 사용자가 `skill_load` 를 통해 승인한 뒤에만 주입된다 — 수동 요청 skill 과 정확히 동일.
@@ -4721,17 +4694,17 @@ interface ToolMeta {
 **Policy SOT**: `src/shared/tool-timeout-policy.ts` 의 `TOOL_TIMEOUT_POLICY` 객체. surface 별 의미:
 
 | Surface | 상수 | 값 | 의미 |
-|---|---|---|---|
+|--------------------------------- |------------------------ |--------- |----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Built-in shell Zod schema default | `shellDefaultMs` | `60_000` | model 이 `timeoutSeconds` 미명시 시 기본 (Zod schema 가 `/ 1000` 변환해 seconds 노출) |
 | Built-in shell Zod schema max | `shellMaxMs` | `120_000` | model 이 input 으로 줄 수 있는 상한 (Zod schema 가 `/ 1000` 변환) |
 | Executor 글로벌 ceiling | `globalCeilingMs` | `120_000` | `runWithCeiling` AbortController-linked last-resort cap. 플러그인 자신의 UI/MCP tool invocation도 executor를 거치므로 같은 ceiling으로 cover (별도 키 없음) |
 | Sub-agent ceiling | `subAgentCeilingMs` | `600_000` | `agent_spawn` 처럼 자체 sub-agent loop 를 가진 tool 의 ceiling. globalCeiling 보다 길어야 inner round chain 이 살아남는다 |
 | MCP request default | `mcpRequestDefaultMs` | `60_000` | per-server `connectionTimeoutMs` 미선언 시 |
-| MCP request max ceiling | `mcpRequestMaxMs` | `120_000` | server 선언 timeout 은 dispatch+ingestion 두 단 모두 이 값으로 clamp/reject. SSE streaming activity reset 도 *absolute wall-clock deadline* 으로 clamp 되어 server 가 chunk 흘리며 영원히 잡고 있을 수 없다 |
+| MCP request max ceiling | `mcpRequestMaxMs` | `120_000` | server 선언 timeout 은 dispatch+ingestion 두 단 모두 이 값으로 clamp/reject. SSE streaming activity reset 도 _absolute wall-clock deadline_ 으로 clamp 되어 server 가 chunk 흘리며 영원히 잡고 있을 수 없다 |
 | Plugin `instance.start()` default | `pluginStartupDefaultMs` | `10_000` | manifest `startupTimeoutMs` 미선언 시 host 강제 |
 | Plugin `instance.start()` max | `pluginStartupMaxMs` | `60_000` | manifest 가 선언한 큰 값도 이 cap 으로 clamp |
 | Network fetch default | `networkFetchDefaultMs` | `15_000` | `core/network-guard.ts` `fetchPublicHttpResponse` 의 per-hop timeout |
-| Approval gate user wait | `approvalGateUserWaitMs` | `300_000` | 사용자 입력 대기. *runtime hang 이 아니라 사용자가 느린* 케이스 — globalCeiling 의 cap 대상 아님 |
+| Approval gate user wait | `approvalGateUserWaitMs` | `300_000` | 사용자 입력 대기. _runtime hang 이 아니라 사용자가 느린_ 케이스 — globalCeiling 의 cap 대상 아님 |
 
 **LLM judging — 연장은 model 자율, 단 cap 안에서**: model 이 long-running (bun install, large build 등) 으로 판단하면 shell tool 의 `timeoutSeconds` 인자에 최대 `shellMaxMs / 1000 = 120` 까지 명시 가능 (SOT 는 ms, Zod schema 가 `/ 1000` 변환해 model 에 노출). cap 위는 어떤 경로로도 허용되지 않으며, 글로벌 ceiling 이 fail-safe 로 동시에 동작한다.
 
@@ -4807,7 +4780,7 @@ v4 §14 배포·거버넌스 체계는 유지된다. v5 는 개발 조직 운영
 ### E. Key Design Decisions
 
 | 결정                         | 이유                                         | 트레이드오프            |
-| ---------------------------- | -------------------------------------------- | ----------------------- |
+| -------------------------------- | --------------------------------------------------------------- | -------------------------------------------- |
 | Electron 기반 클라이언트     | 크로스 플랫폼 + 웹 기술 기반 UI 확장         | 메모리 사용량 ↑         |
 | Rust Native Module (NAPI-RS) | 키워드 감지/인덱싱의 성능 보장               | 개발 복잡도 ↑           |
 | PageIndex 트리 인덱싱        | LLM 추론 기반 검색 — 장문 문맥 파악 우수     | the LLM backend 상시 연동 (온라인 전제)            |
