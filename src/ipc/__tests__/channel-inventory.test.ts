@@ -245,6 +245,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:llm:ping",
         "ave:logs:tail",
         "ave:marketplace:ping",
+        "ave:mcp:attach-resource",
         "ave:mcp:call-tool",
         "ave:mcp:catalog:list",
         "ave:mcp:config:add",
