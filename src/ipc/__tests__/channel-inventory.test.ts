@@ -253,6 +253,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:mcp:config:remove",
         "ave:mcp:config:set-api-key",
         "ave:mcp:dispose-ui-session",
+        "ave:mcp:get-prompt",
         "ave:mcp:import:claude-desktop:apply",
         "ave:mcp:import:claude-desktop:preview",
         "ave:mcp:install-from-marketplace",
