@@ -3,6 +3,7 @@ import { t } from "../../../i18n/runtime.js";
 import {
   appendImportedTriggerEntry,
   appendUserEntry,
+  dropOptimisticUserEntry,
   applyToolEnd,
   applyToolStart,
   dropPermissionReviewEntries,
@@ -791,6 +792,10 @@ export function useChatState(api: AveApi) {
     setEntries((p) => appendUserEntry(p, content, injectHint));
   }, []);
 
+  const dropUserMessage = useCallback((content: string): void => {
+    setEntries((p) => dropOptimisticUserEntry(p, content));
+  }, []);
+
   const appendAssistantStatus = useCallback((content: string): void => {
     setEntries((p) => upsertStreamingAssistant(p, content));
   }, []);
@@ -900,6 +905,7 @@ export function useChatState(api: AveApi) {
     seedRoutineEntries,
     clearForNewChat,
     appendUserEntry: appendUserMessage,
+    dropUserEntry: dropUserMessage,
     appendAssistantStatus,
     appendSystemEntry,
     applyInitialSession,

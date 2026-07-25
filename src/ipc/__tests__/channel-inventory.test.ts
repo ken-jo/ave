@@ -259,6 +259,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:mcp:import:claude-desktop:preview",
         "ave:mcp:install-from-marketplace",
         "ave:mcp:kill",
+        "ave:mcp:list-resources",
         "ave:mcp:servers",
         "ave:mcp:ui-download-file",
         "ave:mcp:ui-message",
