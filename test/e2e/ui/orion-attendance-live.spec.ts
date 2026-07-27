@@ -686,9 +686,14 @@ test("exact ORION attendance bundle reads, confirms one write, verifies readback
       "Confirm the exact ORION attendance clock write against the loopback fixture.",
     );
     await expect.poll(
-      () => readGuestGrant(ctx!, guestId),
+      async () => {
+        const result = await readGuestGrant(ctx!, guestId);
+        return result.state === "rejected"
+          ? `rejected: ${result.error ?? "unknown error"}`
+          : result.state;
+      },
       { timeout: 10_000 },
-    ).toMatchObject({ state: "fulfilled" });
+    ).toBe("fulfilled");
     const grant = await readGuestGrant(ctx, guestId);
     if (grant.state !== "fulfilled") throw new Error("operation grant was not issued");
     expect(grant.value.operationGrantToken).toBeTruthy();
