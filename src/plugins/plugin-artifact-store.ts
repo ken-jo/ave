@@ -77,10 +77,13 @@ export function assertMarketplaceAppUpgradeNotRequired(
 ): void {
   const upgradeRequired = plugin.upgradeRequired;
   if (upgradeRequired) {
-    throw new IncompatibleAppVersionError(
-      upgradeRequired.minAppVersion,
-      getAveAppVersion(),
-    );
+    if (upgradeRequired.minAppVersion) {
+      throw new IncompatibleAppVersionError(
+        upgradeRequired.minAppVersion,
+        getAveAppVersion(),
+      );
+    }
+    throw new Error(upgradeRequired.message);
   }
 }
 const log = createLogger("plugin-artifact-store");

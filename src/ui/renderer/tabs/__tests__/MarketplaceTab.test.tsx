@@ -125,7 +125,7 @@ describe("MarketplaceTab", () => {
     expect(screen.queryByTestId("marketplace:action:regular-plugin")).toBeNull();
   });
 
-  it("shows an update-required display row and blocks its install action", async () => {
+  it("shows a generic update-required display row and blocks its install action", async () => {
     const installMarketplacePlugin = vi.fn();
     Object.defineProperty(window, "aveHost", {
       configurable: true,
@@ -143,8 +143,7 @@ describe("MarketplaceTab", () => {
       pluginType: "plugin",
       upgradeRequired: {
         code: "upgrade_required",
-        minAppVersion: "1.2.3",
-        message: "Ave 1.2.3+ is required to install this version. Update Ave and try again.",
+        message: "This package is unavailable in this version of Ave. Update Ave and try again.",
       },
     };
     const api = marketplaceTabApi({
@@ -155,7 +154,7 @@ describe("MarketplaceTab", () => {
     expect(await screen.findByTestId("marketplace:upgrade-required:future-plugin"))
       .toHaveTextContent("Update Ave");
     expect(await screen.findByTestId("marketplace:upgrade-required-message:future-plugin"))
-      .toHaveTextContent("Ave 1.2.3+ is required");
+      .toHaveTextContent("This package is unavailable in this version of Ave.");
     const action = await screen.findByTestId("marketplace:action:future-plugin");
     expect((action as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(action);
