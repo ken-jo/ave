@@ -221,6 +221,23 @@ describe("preload — plugin webview asset URLs", () => {
     expect(mockRemoveListener).toHaveBeenCalledWith("ave:settings:updated", listener);
   });
 
+  it.each([
+    ["codexSubscriptionStatus", "ave:settings:codex-subscription:status"],
+    ["codexSubscriptionStartBrowserLogin", "ave:settings:codex-subscription:start-browser-login"],
+    ["codexSubscriptionStartDeviceCodeLogin", "ave:settings:codex-subscription:start-device-code-login"],
+    ["codexSubscriptionCancelLogin", "ave:settings:codex-subscription:cancel-login"],
+    ["codexSubscriptionLogout", "ave:settings:codex-subscription:logout"],
+    ["codexSubscriptionListModels", "ave:settings:codex-subscription:list-models"],
+  ])("exposes %s through the internal Codex subscription bridge", async (apiKey, channel) => {
+    const api = await loadAveApi();
+    const action = api[apiKey];
+
+    expect(typeof action).toBe("function");
+    await (action as () => Promise<unknown>)();
+
+    expect(mockInvoke).toHaveBeenCalledWith(channel);
+  });
+
   it("does not trust renderer-minted chat userActivation flags", async () => {
     const api = await loadAveApi();
     const chatSend = api["chatSend"] as (
