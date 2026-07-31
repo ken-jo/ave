@@ -42,6 +42,7 @@ vi.mock("electron", () => ({
     getPath: vi.fn(() => "/tmp/ave-test"),
     isPackaged: false,
     prependOnceListener: vi.fn(),
+    once: vi.fn(),
   },
   BrowserWindow: Object.assign(vi.fn(), {
     getAllWindows: vi.fn(() => []),
