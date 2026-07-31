@@ -220,6 +220,25 @@ describe("preload — plugin webview asset URLs", () => {
     unsubscribe();
     expect(mockRemoveListener).toHaveBeenCalledWith("ave:settings:updated", listener);
   });
+  it("exposes only validated subscription runtime status invalidations through preload", async () => {
+    const api = await loadAveApi();
+    const handler = vi.fn();
+    const subscribe = api["onSubscriptionRuntimeStatusUpdated"] as (cb: (event: unknown) => void) => () => void;
+    const unsubscribe = subscribe(handler);
+
+    expect(mockOn).toHaveBeenCalledWith("ave:settings:subscription:status-updated", expect.any(Function));
+    const listener = mockOn.mock.calls.at(-1)?.[1] as (event: unknown, payload: unknown) => void;
+    const validEvent = { provider: "codex", revision: 7 };
+    listener({}, validEvent);
+    listener({}, { provider: "codex", revision: 8, verificationUrl: "https://example.test/secret" });
+    listener({}, { provider: "not-a-provider", revision: 9 });
+    listener({}, { provider: "codex", revision: 0 });
+    expect(handler).toHaveBeenCalledOnce();
+    expect(handler).toHaveBeenCalledWith(validEvent);
+
+    unsubscribe();
+    expect(mockRemoveListener).toHaveBeenCalledWith("ave:settings:subscription:status-updated", listener);
+  });
 
   it.each([
     ["codexSubscriptionStatus", "ave:settings:codex-subscription:status"],
@@ -236,6 +255,47 @@ describe("preload — plugin webview asset URLs", () => {
     await (action as () => Promise<unknown>)();
 
     expect(mockInvoke).toHaveBeenCalledWith(channel);
+  });
+
+  it.each([
+    ["acpSubscriptionStatus", "ave:settings:acp-subscription:status"],
+    ["acpSubscriptionChooseRuntime", "ave:settings:acp-subscription:choose-runtime"],
+    ["acpSubscriptionForgetRuntime", "ave:settings:acp-subscription:forget-runtime"],
+    ["acpSubscriptionVerify", "ave:settings:acp-subscription:verify"],
+    ["acpSubscriptionStartLogin", "ave:settings:acp-subscription:start-login"],
+    ["acpSubscriptionCancelLogin", "ave:settings:acp-subscription:cancel-login"],
+    ["acpSubscriptionLogout", "ave:settings:acp-subscription:logout"],
+    ["acpSubscriptionOpenLoginBrowser", "ave:settings:acp-subscription:open-login-browser"],
+  ])("exposes %s through the internal ACP subscription bridge", async (apiKey, channel) => {
+    const api = await loadAveApi();
+    const action = api[apiKey];
+
+    expect(typeof action).toBe("function");
+    await (action as (provider: string) => Promise<unknown>)("kimi-code");
+
+    expect(mockInvoke).toHaveBeenCalledWith(channel, "kimi-code");
+  });
+
+  it.each([
+    ["subscriptionRuntimeStatus", "ave:settings:subscription:status", ["codex"]],
+    ["subscriptionChooseRuntime", "ave:settings:subscription:choose-runtime", ["kimi-code"]],
+    ["subscriptionForgetRuntime", "ave:settings:subscription:forget-runtime", ["kimi-code"]],
+    ["subscriptionVerifyRuntime", "ave:settings:subscription:verify", ["codex"]],
+    ["subscriptionStartLogin", "ave:settings:subscription:start-login", ["codex", "browser"]],
+    ["subscriptionOpenLoginBrowser", "ave:settings:subscription:open-login-browser", ["kimi-code"]],
+    ["subscriptionCancelLogin", "ave:settings:subscription:cancel-login", ["codex"]],
+    ["subscriptionLogout", "ave:settings:subscription:logout", ["codex"]],
+    ["subscriptionListModels", "ave:settings:subscription:list-models", ["codex"]],
+    ["subscriptionUseForChat", "ave:settings:subscription:use-for-chat", ["codex", "gpt-5"]],
+    ["subscriptionUseApiForChat", "ave:settings:subscription:use-api-for-chat", []],
+  ])("exposes %s through the common subscription bridge", async (apiKey, channel, args) => {
+    const api = await loadAveApi();
+    const action = api[apiKey];
+
+    expect(typeof action).toBe("function");
+    await (action as (...values: unknown[]) => Promise<unknown>)(...args);
+
+    expect(mockInvoke).toHaveBeenCalledWith(channel, ...args);
   });
 
   it("does not trust renderer-minted chat userActivation flags", async () => {

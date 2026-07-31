@@ -106,6 +106,12 @@ vi.mock("electron", () => {
 import { registerIpcHandlers } from "../index.js";
 import { setIsPackaged, _resetForTest } from "../../boot/dev-flags.js";
 import type { AppServices } from "../../boot/types.js";
+import {
+  CHANNELS,
+  CHANNEL_GESTURE,
+  isPublicChannel,
+  PUBLIC_CHANNELS,
+} from "../../contract/app-contract.js";
 
 // Every top-level service field of AppServices. The mock proxy enumerates
 // these so `{ ...services }` inside registerIpcHandlers carries a live nested
@@ -189,6 +195,14 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
     // before the snapshot diff even matters.
     expect(unique.length).toBeGreaterThan(50);
   });
+  it("keeps subscription status invalidation internal and outbound-only", () => {
+    const event = CHANNELS.settings.subscriptionRuntimeStatusUpdated;
+    expect(event).toBe("ave:settings:subscription:status-updated");
+    expect(channels).not.toContain(event);
+    expect(PUBLIC_CHANNELS).not.toContain(event);
+    expect(isPublicChannel(event)).toBe(false);
+    expect(CHANNEL_GESTURE[event]).toBeUndefined();
+  });
 
   it("locks the sorted unique channel list", () => {
     const sorted = [...new Set(channels)].sort();
@@ -205,6 +219,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:app:info",
         "ave:approval:respond",
         "ave:ask-user-question:respond",
+        "ave:attach:discardClipboardImage",
         "ave:attach:openExternal",
         "ave:attach:openFile",
         "ave:attach:readImage",
@@ -349,6 +364,14 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:runtime:env",
         "ave:session-todo:clear",
         "ave:session-todo:list",
+        "ave:settings:acp-subscription:cancel-login",
+        "ave:settings:acp-subscription:choose-runtime",
+        "ave:settings:acp-subscription:forget-runtime",
+        "ave:settings:acp-subscription:logout",
+        "ave:settings:acp-subscription:open-login-browser",
+        "ave:settings:acp-subscription:start-login",
+        "ave:settings:acp-subscription:status",
+        "ave:settings:acp-subscription:verify",
         "ave:settings:apply-host-map",
         "ave:settings:codex-subscription:cancel-login",
         "ave:settings:codex-subscription:list-models",
@@ -369,6 +392,17 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:settings:marketplace:uninstall-provider-preset",
         "ave:settings:set-api-key",
         "ave:settings:set-web-api-key",
+        "ave:settings:subscription:cancel-login",
+        "ave:settings:subscription:choose-runtime",
+        "ave:settings:subscription:forget-runtime",
+        "ave:settings:subscription:list-models",
+        "ave:settings:subscription:logout",
+        "ave:settings:subscription:open-login-browser",
+        "ave:settings:subscription:start-login",
+        "ave:settings:subscription:status",
+        "ave:settings:subscription:use-api-for-chat",
+        "ave:settings:subscription:use-for-chat",
+        "ave:settings:subscription:verify",
         "ave:settings:update",
         "ave:shell:open-external",
         "ave:sidechat:abort",
