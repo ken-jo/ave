@@ -336,9 +336,13 @@ describe("ave:memory:entries:*", () => {
     const services = makeServices(pm);
     registerIpcHandlers(services, () => null);
 
-    await invoke("ave:memory:entries:delete", "my-memory.md");
+    await invokeWithEvent(
+      "ave:memory:entries:delete",
+      { senderFrame: { url: "file:///app/index.html" } },
+      "my-memory.md",
+    );
 
-    expect(services.memoryManager.deleteMemory).toHaveBeenCalledWith("my-memory.md");
+    expect(services.memoryManager.deleteMemory).toHaveBeenCalledWith("my-memory.md", {});
   });
 
   it("memory search rejects unauthorized frames", async () => {
@@ -375,6 +379,7 @@ describe("ave:memory:entries:*", () => {
     "ave:memory:agents-md:get",
     "ave:memory:user-prefs:get",
     "ave:memory:user-prefs:refresh",
+    "ave:memory:long-term:refresh",
   ])("%s rejects unauthorized frames", async (channel) => {
     await setupHandlers();
 
