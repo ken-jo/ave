@@ -41,7 +41,7 @@ function fixture() {
   const hostRoot = join(root, "ave");
   const sdkRoot = join(root, "ave-plugin-sdk");
   const marketplaceRoot = join(root, "agent-marketplace");
-  const orionApiRoot = join(root, "ave-plugin-orion-api");
+  const orionApiRoot = join(root, "ave-plugin-orion");
   const hostSha = makeRepo(hostRoot, { "schemas/plugin-manifest.schema.json": schema });
   const sdkSha = makeRepo(sdkRoot, { "schemas/plugin-manifest.schema.json": schema });
   const marketplaceSha = makeRepo(marketplaceRoot, {
@@ -55,7 +55,7 @@ function fixture() {
     })}\n`,
     "bun.lock": `"@ave/plugin-sdk": ["@ave/plugin-sdk@github:former_org/ave-plugin-sdk#${sdkSha.slice(0, 12)}"]\n`,
   });
-  return { hostRoot, sdkRoot, marketplaceRoot, orionApiRoot, hostSha, sdkSha, marketplaceSha, orionApiSha };
+  return { root, hostRoot, sdkRoot, marketplaceRoot, orionApiRoot, hostSha, sdkSha, marketplaceSha, orionApiSha };
 }
 
 test("rejects mutable or abbreviated workflow refs", () => {
@@ -122,6 +122,31 @@ test("CLI honors explicit checkout roots without appending repository names", ()
         ORION_API_SHA: f.orionApiSha,
         // The workflow itself writes consolidated evidence. This child test
         // proves stdout mode and must not inherit the parent's evidence sink.
+        BUNDLE_E2E_EVIDENCE_PATH: "",
+      },
+    },
+  );
+  assert.equal(JSON.parse(output).refs.orionApi, f.orionApiSha);
+});
+
+test("CLI defaults to the canonical ave-plugin-orion workspace directory", () => {
+  const f = fixture();
+  const output = execFileSync(
+    process.execPath,
+    [fileURLToPath(new URL("./plugin-bundle-e2e-inputs.mjs", import.meta.url))],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        BUNDLE_E2E_WORKSPACE: f.root,
+        HOST_ROOT: f.hostRoot,
+        SDK_ROOT: "",
+        MARKETPLACE_ROOT: "",
+        ORION_API_ROOT: "",
+        HOST_SHA: f.hostSha,
+        SDK_SHA: f.sdkSha,
+        MARKETPLACE_SHA: f.marketplaceSha,
+        ORION_API_SHA: f.orionApiSha,
         BUNDLE_E2E_EVIDENCE_PATH: "",
       },
     },

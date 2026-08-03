@@ -97,6 +97,23 @@ describe("Marketplace E2E hostile-candidate containment", () => {
     }
   });
 
+  it("uses the canonical ave-plugin-orion directory through every ORION stage", () => {
+    const staging = job("stage-inputs", "build-marketplace");
+    expect(staging).toContain("name: Checkout ave-plugin-orion");
+    expect(staging).toContain("path: candidates/ave-plugin-orion");
+    expect(staging).toContain(
+      '"candidates/ave-plugin-orion:$ORION_API_SHA:$ORION_API_SELECTOR_KIND"',
+    );
+    expect(staging).toContain("--ep-root candidates/ave-plugin-orion");
+
+    const epBuild = job("build-ep", "marketplace-e2e");
+    expect(epBuild).toContain("--destination candidate/ave-plugin-orion");
+    expect(epDockerfile).toContain(
+      "COPY --chown=10001:10001 ave-plugin-orion/ /workspace/ave-plugin-orion/",
+    );
+    expect(epDockerfile).toContain("WORKDIR /workspace/ave-plugin-orion");
+  });
+
   it("never transfers ORION source to the final runner", () => {
     const finalJob = job("marketplace-e2e");
     expect(finalJob).toContain("name: m4-ep-bundle");
@@ -332,7 +349,7 @@ describe("Marketplace E2E hostile-candidate containment", () => {
     }
     expect(hostDockerfile).toContain("COPY --chown=10001:10001 ave/");
     expect(epDockerfile).toContain(
-      "COPY --chown=10001:10001 ave-plugin-orion-api/",
+      "COPY --chown=10001:10001 ave-plugin-orion/",
     );
   });
 

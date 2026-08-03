@@ -127,7 +127,7 @@ function fromEnvironment() {
       : resolve(workspaceRoot, "agent-marketplace"),
     orionApiRoot: process.env.ORION_API_ROOT
       ? resolve(process.env.ORION_API_ROOT)
-      : resolve(workspaceRoot, "ave-plugin-orion-api"),
+      : resolve(workspaceRoot, "ave-plugin-orion"),
     hostSha: process.env.HOST_SHA,
     sdkSha: process.env.SDK_SHA,
     marketplaceSha: process.env.MARKETPLACE_SHA,

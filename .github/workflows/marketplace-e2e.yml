@@ -238,11 +238,11 @@ jobs:
           submodules: false
           persist-credentials: false
 
-      - name: Checkout ave-plugin-orion-api
+      - name: Checkout ave-plugin-orion
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: former_org/ave-plugin-orion
-          path: candidates/ave-plugin-orion-api
+          path: candidates/ave-plugin-orion
           ref: ${{ steps.resolve-candidate-refs.outputs.orion_api_sha }}
           token: ${{ secrets.M4_MARKETPLACE_CHECKOUT_TOKEN }}
           fetch-depth: 0
@@ -274,7 +274,7 @@ jobs:
             "candidates/ave:$HOST_SHA:$HOST_SELECTOR_KIND" \
             "candidates/agent-marketplace:$MARKETPLACE_SHA:$MARKETPLACE_SELECTOR_KIND" \
             "candidates/ave-plugin-sdk:$SDK_SHA:$SDK_SELECTOR_KIND" \
-            "candidates/ave-plugin-orion-api:$ORION_API_SHA:$ORION_API_SELECTOR_KIND"; do
+            "candidates/ave-plugin-orion:$ORION_API_SHA:$ORION_API_SELECTOR_KIND"; do
             repo="${spec%%:*}"
             remainder="${spec#*:}"
             expected="${remainder%%:*}"
@@ -308,7 +308,7 @@ jobs:
             --host-root candidates/ave \
             --marketplace-root candidates/agent-marketplace \
             --sdk-root candidates/ave-plugin-sdk \
-            --ep-root candidates/ave-plugin-orion-api \
+            --ep-root candidates/ave-plugin-orion \
             --output-dir staged
 
       - name: Bind downstream jobs to nonce and manifest digest
@@ -508,7 +508,7 @@ jobs:
             --manifest inputs/input-manifest.json \
             --source ep \
             --archive inputs/orion-source.tar \
-            --destination candidate/ave-plugin-orion-api
+            --destination candidate/ave-plugin-orion
 
       - name: Build ORION inside an unmounted container image
         env:
