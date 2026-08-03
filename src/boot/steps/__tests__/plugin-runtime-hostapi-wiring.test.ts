@@ -157,6 +157,9 @@ type CreateHostApi = (
     installSource?: "admin" | "user" | "local-dev";
     manifestSha256?: string;
   },
+  candidateApprovedPluginAccess?: {
+    plugins: Array<{ pluginId: string; events?: string[] }>;
+  } | null,
 ) => ConfigHostApi;
 
 async function initAndGetFactory(
@@ -499,6 +502,35 @@ describe("HostApi.config.set round-trip", () => {
 });
 
 describe("HostApi emitEvent/onEvent round-trip", () => {
+  it("authorizes candidate subscriptions against the candidate-scoped access grant", async () => {
+    const createHostApi = await initAndGetFactory(
+      makeSettingsService(new Map()),
+    );
+    const candidateGrant = {
+      plugins: [{
+        pluginId: "vega-helper",
+        events: ["vega_helper.snapshot.requested"],
+      }],
+    };
+    const api = createHostApi(
+      "lyra-mail",
+      { id: "lyra-mail", config: {}, capabilities: [] },
+      mkdtempSync("/tmp/ave-candidate-event-grant-"),
+      activeIncarnation(),
+      "lyra-mail",
+      { installSource: "admin", manifestSha256: "candidate-sha" },
+      candidateGrant,
+    );
+
+    api.onEvent("vega_helper.snapshot.requested", vi.fn());
+
+    expect(runtimeTestState.runtime.assertPluginEventAccess).toHaveBeenCalledWith(
+      "lyra-mail",
+      "vega_helper.snapshot.requested",
+      candidateGrant,
+    );
+  });
+
   it("uses the raw registry install identity for canonical alias HostApi provenance", async () => {
     const installAlias = "marketplace-install-alias";
     const pluginId = "plugin-canonical";

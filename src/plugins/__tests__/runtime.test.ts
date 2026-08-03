@@ -979,6 +979,25 @@ describe("PluginRuntime.disable", () => {
     expect(() =>
       runtime.assertPluginEventAccess("calendar", "email.action.needed"),
     ).toThrow(/not allowed/i);
+    expect(() =>
+      runtime.assertPluginEventAccess(
+        "calendar",
+        "vega_helper.snapshot.requested",
+        {
+          plugins: [{
+            pluginId: "vega-helper",
+            events: ["vega_helper.snapshot.requested"],
+          }],
+        },
+      ),
+    ).not.toThrow();
+    expect(() =>
+      runtime.assertPluginEventAccess(
+        "lyra-mail",
+        "vega_helper.snapshot.requested",
+        null,
+      ),
+    ).toThrow(/not allowed/i);
   });
 
   it("allows vega-helper to subscribe to granted calendar events (P4 detector grants)", async () => {
