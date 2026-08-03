@@ -49,7 +49,7 @@ describe("installer smoke and packaging discipline", () => {
       "ave",
       "agent-marketplace",
       "ave-plugin-sdk",
-      "ave-plugin-orion-api",
+      "ave-plugin-orion",
     ];
 
     for (const name of checkoutNames) {
