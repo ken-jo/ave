@@ -171,6 +171,23 @@ export const CHANNELS = {
     // Main → renderer only. Carries no data; consumers pull a fresh safe snapshot.
     changed: "ave:tailnet-sharing:changed",
   },
+  // Local-owner-only Telegram private-DM connection administration. These are
+  // INTERNAL for the same reasons as tailnetSharing, and additionally because
+  // Telegram is an external cloud recipient: connecting is an egress decision
+  // the local owner makes at the keyboard, never something a caller can drive.
+  telegramConnection: {
+    snapshot: "ave:telegram-connection:snapshot",
+    connect: "ave:telegram-connection:connect",
+    disconnect: "ave:telegram-connection:disconnect",
+    pause: "ave:telegram-connection:pause",
+    resume: "ave:telegram-connection:resume",
+    createPairingCode: "ave:telegram-connection:create-pairing-code",
+    revokePairing: "ave:telegram-connection:revoke-pairing",
+    approveCurrentConversation: "ave:telegram-connection:approve-current-conversation",
+    revokeApproval: "ave:telegram-connection:revoke-approval",
+    // Main → renderer only. Carries no data; consumers pull a fresh safe snapshot.
+    changed: "ave:telegram-connection:changed",
+  },
   marketplace: {
     ping: "ave:marketplace:ping",
     /** Legacy main-to-renderer update notification; kept byte-identical on wire. */
@@ -645,6 +662,17 @@ export const CHANNEL_GESTURE: Record<string, "required" | "none"> = {
   [CHANNELS.tailnetSharing.createCurrentConversationShare]: "required",
   [CHANNELS.tailnetSharing.revokeShare]: "required",
   [CHANNELS.tailnetSharing.revokePairing]: "required",
+  // Local-owner Telegram connection: same rule. Saving a bot token, starting
+  // the outbound connection, minting a pairing code, and sharing the open
+  // conversation are each an owner decision made at this keyboard.
+  [CHANNELS.telegramConnection.connect]: "required",
+  [CHANNELS.telegramConnection.disconnect]: "required",
+  [CHANNELS.telegramConnection.pause]: "required",
+  [CHANNELS.telegramConnection.resume]: "required",
+  [CHANNELS.telegramConnection.createPairingCode]: "required",
+  [CHANNELS.telegramConnection.revokePairing]: "required",
+  [CHANNELS.telegramConnection.approveCurrentConversation]: "required",
+  [CHANNELS.telegramConnection.revokeApproval]: "required",
 };
 
 // ─── Approval-mediated external mutation ─────────────────────────────────────
