@@ -115,8 +115,6 @@ export const PERMISSIONS = {
 
 export const SETTINGS = {
   updated: "ave:settings:updated",
-  /** Persist the manual host-resolver map then relaunch to apply it. */
-  applyHostMap: "ave:settings:apply-host-map",
 } as const;
 
 export const MARKETPLACE = {

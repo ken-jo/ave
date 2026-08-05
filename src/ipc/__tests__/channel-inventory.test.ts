@@ -381,7 +381,6 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:settings:acp-subscription:start-login",
         "ave:settings:acp-subscription:status",
         "ave:settings:acp-subscription:verify",
-        "ave:settings:apply-host-map",
         "ave:settings:codex-subscription:cancel-login",
         "ave:settings:codex-subscription:list-models",
         "ave:settings:codex-subscription:logout",
