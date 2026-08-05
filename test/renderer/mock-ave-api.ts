@@ -216,7 +216,6 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
       settingsUpdatedHandlers.forEach((handler) => handler(settings));
       return settings;
     }),
-    applyHostMap: vi.fn(async () => ({ ok: true })),
     onSettingsUpdated: vi.fn((handler: (settings: unknown) => void) => {
       settingsUpdatedHandlers.add(handler);
       return () => settingsUpdatedHandlers.delete(handler);
