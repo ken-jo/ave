@@ -35,7 +35,7 @@ jobs:
       orion_api_sha: ${{ steps.resolve-candidate-refs.outputs.orion_api_sha }}
     steps:
       - name: Checkout trusted workflow control
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: control
           ref: ${{ github.workflow_sha }}
@@ -209,7 +209,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Checkout ave
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: candidates/ave
           ref: ${{ steps.resolve-candidate-refs.outputs.host_sha }}
@@ -218,7 +218,7 @@ jobs:
           persist-credentials: false
 
       - name: Checkout agent-marketplace
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: former_org/agent-marketplace
           path: candidates/agent-marketplace
@@ -229,7 +229,7 @@ jobs:
           persist-credentials: false
 
       - name: Checkout ave-plugin-sdk
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: former_org/ave-plugin-sdk
           path: candidates/ave-plugin-sdk
@@ -239,7 +239,7 @@ jobs:
           persist-credentials: false
 
       - name: Checkout ave-plugin-orion
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: former_org/ave-plugin-orion
           path: candidates/ave-plugin-orion
@@ -372,7 +372,7 @@ jobs:
       ORION_API_SHA: ${{ needs.stage-inputs.outputs.orion_api_sha }}
     steps:
       - name: Checkout trusted workflow control
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: control
           ref: ${{ github.workflow_sha }}
@@ -471,7 +471,7 @@ jobs:
       ORION_API_SHA: ${{ needs.stage-inputs.outputs.orion_api_sha }}
     steps:
       - name: Checkout trusted workflow control
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: control
           ref: ${{ github.workflow_sha }}
@@ -575,7 +575,7 @@ jobs:
       HOST_CONTAINER: m4-host-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Checkout trusted workflow control
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: control
           ref: ${{ github.workflow_sha }}
