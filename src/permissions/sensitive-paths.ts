@@ -46,6 +46,85 @@ import { globMatch } from "../lib/glob-matcher.js";
 export const MAX_WALK_UP = 64;
 
 /**
+ * One entry in the Ave-home sensitive namespace — the single authority for
+ * "which `<aveHome>/…` paths are secret".
+ *
+ * TWO enforcement points consume this table and neither may restate it:
+ *   - the in-process host-tool guard, via the glob projection baked into
+ *     {@link SENSITIVE_PATH_PATTERNS} below (anchor-free `**` patterns, because
+ *     the host guard matches an already-canonicalized absolute path); and
+ *   - the OS sandbox read/write deny floor, via
+ *     `getDefaultSensitiveReadDenyPaths` in `src/permissions/asrt-sandbox.ts`
+ *     (literal absolute paths anchored on `aveHome()` at CALL time, because
+ *     bwrap/seatbelt cannot glob and `AVE_HOME` can move between calls).
+ *
+ * Those two shapes are why the table stores segments rather than strings: each
+ * side projects the same rows into the form its enforcement point can consume.
+ * Adding a row here denies the path on BOTH surfaces; there is no second list
+ * to mirror it into.
+ */
+export interface AveHomeSensitiveEntry {
+  /** Path segments below the Ave home root (`~/.ave` unless `AVE_HOME`). */
+  readonly segments: readonly string[];
+  /** `dir` denies the directory and everything under it; `file` one path. */
+  readonly kind: "dir" | "file";
+  /**
+   * Also deny `<name>.*` rotations. Host-glob only — a rotation glob has no
+   * literal form, so the sandbox floor covers the base file only.
+   */
+  readonly rotations?: true;
+  /** Why this is secret. Kept next to the row so neither side drifts alone. */
+  readonly why: string;
+}
+
+/**
+ * The Ave-home sensitive namespace. Order is the projection order for
+ * {@link SENSITIVE_PATH_PATTERNS}; both projections dedupe, so it carries no
+ * meaning beyond which pattern string a match reports.
+ */
+export const AVE_HOME_SENSITIVE_ENTRIES: readonly AveHomeSensitiveEntry[] = Object.freeze([
+  { segments: ["certs"], kind: "dir", why: "corporate CA bundle + extracted certs" },
+  { segments: ["secrets"], kind: "dir", why: "encrypted API keys, tokens" },
+  { segments: ["keys"], kind: "dir", why: "signing / encryption keys" },
+  { segments: ["ave-secrets.json"], kind: "file", why: "legacy consolidated secrets file" },
+  { segments: ["settings.json"], kind: "file", why: "app settings + permission configuration" },
+  { segments: ["permissions.json"], kind: "file", why: "legacy/current permission settings file" },
+  { segments: ["policy.json"], kind: "file", why: "policy SOT" },
+  {
+    segments: ["permissions"],
+    kind: "dir",
+    why: "reviewer cache, deferred queue, permission state",
+  },
+  { segments: ["audit"], kind: "dir", why: "audit log directory (self-tampering)" },
+  { segments: ["audit.log"], kind: "file", rotations: true, why: "audit log + rotated archives" },
+  { segments: ["sessions"], kind: "dir", why: "chat session JSONL" },
+  { segments: ["routine"], kind: "dir", why: "routine v2 session history" },
+  {
+    segments: ["plugins", "auth-partitions.json"],
+    kind: "file",
+    why: "plugin auth-partition state (OAuth partition mapping)",
+  },
+]);
+
+/**
+ * Host-tool glob projection of {@link AVE_HOME_SENSITIVE_ENTRIES}.
+ *
+ * Anchor-free (`**` prefix) because the host guard matches a canonicalized
+ * absolute path and `AVE_HOME` may point anywhere. A `dir` row needs only the
+ * `/**` form: `policyMatchPaths` also tries `<path>/`, so `**\/.ave/certs/**`
+ * already matches the bare directory.
+ */
+function aveHomeSensitiveGlobs(): readonly string[] {
+  const globs: string[] = [];
+  for (const entry of AVE_HOME_SENSITIVE_ENTRIES) {
+    const base = "**/.ave/" + entry.segments.join("/");
+    globs.push(entry.kind === "dir" ? base + "/**" : base);
+    if (entry.rotations) globs.push(base + ".*");
+  }
+  return globs;
+}
+
+/**
  * Patterns use minimatch-compatible glob syntax:
  *   double-star  — matches any path (including path separators)
  *   single-star  — matches any single path segment
@@ -89,22 +168,12 @@ export const SENSITIVE_PATH_PATTERNS: readonly string[] = Object.freeze([
   "**/id_ed25519.pub",
   "**/id_ecdsa",
   "**/id_ecdsa.pub",
-  // ── Ave-specific additions ─────────────────────────
-  "**/.ave/certs/**", // corporate CA bundle + extracted certs
-  "**/.ave/secrets/**", // API keys, tokens
-  "**/.ave/keys/**", // signing / encryption keys
-  "**/.ave/ave-secrets.json", // legacy consolidated secrets file
-  "**/ave-secrets.json", // shallow sibling form
-  // ── Permission policy P2.5 — Ave-internal sensitive paths ───────
-  "**/.ave/settings.json", // app settings and permission configuration
-  "**/.ave/permissions.json", // legacy/current permission settings file
-  "**/.ave/policy.json", // policy SOT
-  "**/.ave/permissions/**", // reviewer cache, deferred queue, permission state
-  "**/.ave/audit", // audit log directory (self-tampering)
-  "**/.ave/audit/**", // audit log files inside dir
-  "**/.ave/audit.log", // legacy audit log file
-  "**/.ave/audit.log.*", // rotated audit archives
-  "**/.ave/sessions/**", // chat session JSONL
+  // ── Ave-home sensitive namespace ───────────────────
+  // Projected from AVE_HOME_SENSITIVE_ENTRIES so the host guard and the OS
+  // sandbox deny floor cannot drift. Do NOT hand-add a `**/.ave/…` pattern
+  // here — add a row to the table instead.
+  ...aveHomeSensitiveGlobs(),
+  "**/ave-secrets.json", // shallow sibling form (not under the Ave home root)
   "**/.config/ave/hooks/**", // hook supply-chain protection
 ]);
 
