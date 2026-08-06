@@ -68,3 +68,4 @@ main.js
 /.artifact-store-*/
 /.ave-audit-test-*/
 /.ave-dlp-stats-*/
+smoke-live-model.status.txt
