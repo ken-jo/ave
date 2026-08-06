@@ -231,7 +231,7 @@ test("stage CLI binds clean exact checkouts and contract identity into separate 
   const hostRoot = join(root, "ave");
   const sdkRoot = join(root, "ave-plugin-sdk");
   const marketplaceRoot = join(root, "agent-marketplace");
-  const epRoot = join(root, "ave-plugin-orion-api");
+  const epRoot = join(root, "ave-plugin-orion");
   const hostSha = makeRepo(hostRoot, {
     "schemas/plugin-manifest.schema.json": schema,
   });

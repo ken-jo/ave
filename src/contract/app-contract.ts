@@ -42,8 +42,8 @@ export {
  *
  * NOTE: groups whose channels already had a SOT const in
  * `src/shared/ipc-channels.ts` (permissions, work-board, routines, ui,
- * marketplace announcements, overlay, suggested-replies, settings.updated /
- * settings.applyHostMap) are re-exported above rather than duplicated here.
+ * marketplace announcements, overlay, suggested-replies, settings.updated)
+ * are re-exported above rather than duplicated here.
  */
 export const CHANNELS = {
   chat: {
@@ -83,6 +83,9 @@ export const CHANNELS = {
     entriesList: "ave:memory:entries:list",
     entriesSave: "ave:memory:entries:save",
     entriesDelete: "ave:memory:entries:delete",
+    candidatesList: "ave:memory:candidates:list",
+    candidateActivate: "ave:memory:candidates:activate",
+    candidateDelete: "ave:memory:candidates:delete",
     entriesSearch: "ave:memory:entries:search",
     indexGet: "ave:memory:index:get",
     indexUpdateIfUnchanged: "ave:memory:index:update-if-unchanged",
@@ -94,6 +97,7 @@ export const CHANNELS = {
     userPrefsGet: "ave:memory:user-prefs:get",
     userPrefsUpdate: "ave:memory:user-prefs:update",
     userPrefsRefresh: "ave:memory:user-prefs:refresh",
+    longTermRefresh: "ave:memory:long-term:refresh",
   },
   starred: {
     list: "ave:starred:list",
@@ -152,6 +156,47 @@ export const CHANNELS = {
     status: "ave:a2a-remote:status",
     task: "ave:a2a-remote:task",
     action: "ave:a2a-remote:action",
+  },
+  // Local-owner-only Tailnet pairing/share administration. These are INTERNAL:
+  // never add them to PUBLIC_CHANNELS or EXTERNAL_MUTATION_CHANNELS. A pairing
+  // invite is not access, and every mutation requires a fresh local keyboard
+  // intent in addition to the host-renderer sender guard.
+  tailnetSharing: {
+    snapshot: "ave:tailnet-sharing:snapshot",
+    createInvitation: "ave:tailnet-sharing:create-invitation",
+    activatePairing: "ave:tailnet-sharing:activate-pairing",
+    createCurrentConversationShare: "ave:tailnet-sharing:create-current-conversation-share",
+    revokeShare: "ave:tailnet-sharing:revoke-share",
+    revokePairing: "ave:tailnet-sharing:revoke-pairing",
+    // Main → renderer only. Carries no data; consumers pull a fresh safe snapshot.
+    changed: "ave:tailnet-sharing:changed",
+  },
+  // Local-owner-only Telegram private-DM connection administration. These are
+  // INTERNAL for the same reasons as tailnetSharing, and additionally because
+  // Telegram is an external cloud recipient: connecting is an egress decision
+  // the local owner makes at the keyboard, never something a caller can drive.
+  telegramConnection: {
+    snapshot: "ave:telegram-connection:snapshot",
+    connect: "ave:telegram-connection:connect",
+    disconnect: "ave:telegram-connection:disconnect",
+    pause: "ave:telegram-connection:pause",
+    resume: "ave:telegram-connection:resume",
+    createPairingCode: "ave:telegram-connection:create-pairing-code",
+    revokePairing: "ave:telegram-connection:revoke-pairing",
+    approveCurrentConversation: "ave:telegram-connection:approve-current-conversation",
+    revokeApproval: "ave:telegram-connection:revoke-approval",
+    // Main → renderer only. Carries no data; consumers pull a fresh safe snapshot.
+    changed: "ave:telegram-connection:changed",
+  },
+  // Local-owner-only arming of the desk-armed away answerer. INTERNAL for the
+  // same reasons as the two above, and additionally because arming is the one
+  // gesture that lets an approval be answered while nobody is watching: it is a
+  // decision the owner makes at this keyboard, in advance, and nothing reachable
+  // from a message may create, extend, or widen it.
+  awayAuthority: {
+    status: "ave:away-authority:status",
+    arm: "ave:away-authority:arm",
+    disarm: "ave:away-authority:disarm",
   },
   marketplace: {
     ping: "ave:marketplace:ping",
@@ -331,6 +376,33 @@ export const CHANNELS = {
     hasApiKey: "ave:settings:has-api-key",
     deleteApiKey: "ave:settings:delete-api-key",
     listLlmModels: "ave:settings:list-llm-models",
+    codexSubscriptionStatus: "ave:settings:codex-subscription:status",
+    codexSubscriptionStartBrowserLogin: "ave:settings:codex-subscription:start-browser-login",
+    codexSubscriptionStartDeviceCodeLogin: "ave:settings:codex-subscription:start-device-code-login",
+    codexSubscriptionCancelLogin: "ave:settings:codex-subscription:cancel-login",
+    codexSubscriptionLogout: "ave:settings:codex-subscription:logout",
+    codexSubscriptionListModels: "ave:settings:codex-subscription:list-models",
+    subscriptionRuntimeStatus: "ave:settings:subscription:status",
+    // Main → host renderer safe status invalidation; never carries a status payload.
+    subscriptionRuntimeStatusUpdated: "ave:settings:subscription:status-updated",
+    subscriptionChooseRuntime: "ave:settings:subscription:choose-runtime",
+    subscriptionForgetRuntime: "ave:settings:subscription:forget-runtime",
+    subscriptionVerifyRuntime: "ave:settings:subscription:verify",
+    subscriptionStartLogin: "ave:settings:subscription:start-login",
+    subscriptionOpenLoginBrowser: "ave:settings:subscription:open-login-browser",
+    subscriptionCancelLogin: "ave:settings:subscription:cancel-login",
+    subscriptionLogout: "ave:settings:subscription:logout",
+    subscriptionListModels: "ave:settings:subscription:list-models",
+    subscriptionUseForChat: "ave:settings:subscription:use-for-chat",
+    subscriptionUseApiForChat: "ave:settings:subscription:use-api-for-chat",
+    acpSubscriptionStatus: "ave:settings:acp-subscription:status",
+    acpSubscriptionChooseRuntime: "ave:settings:acp-subscription:choose-runtime",
+    acpSubscriptionForgetRuntime: "ave:settings:acp-subscription:forget-runtime",
+    acpSubscriptionVerify: "ave:settings:acp-subscription:verify",
+    acpSubscriptionStartLogin: "ave:settings:acp-subscription:start-login",
+    acpSubscriptionOpenLoginBrowser: "ave:settings:acp-subscription:open-login-browser",
+    acpSubscriptionCancelLogin: "ave:settings:acp-subscription:cancel-login",
+    acpSubscriptionLogout: "ave:settings:acp-subscription:logout",
     marketplaceInstallProviderPreset: "ave:settings:marketplace:install-provider-preset",
     marketplaceUninstallProviderPreset: "ave:settings:marketplace:uninstall-provider-preset",
     marketplaceSetApiKey: "ave:settings:marketplace:set-api-key",
@@ -461,6 +533,7 @@ export const CHANNELS = {
     openFile: "ave:attach:openFile",
     readImage: "ave:attach:readImage",
     saveClipboardImage: "ave:attach:saveClipboardImage",
+    discardClipboardImage: "ave:attach:discardClipboardImage",
     openExternal: "ave:attach:openExternal",
   },
   preview: {
@@ -591,6 +664,31 @@ export const CHANNEL_GESTURE: Record<string, "required" | "none"> = {
   [PERMISSIONS.userApprovalRecord]: "required",
   [PERMISSIONS.userApprovalRevoke]: "required",
   [PERMISSIONS.sandboxWindowsInstall]: "required",
+  // Local-owner Tailnet sharing: all mutations are host-renderer-only and
+  // require a current keyboard intent. The snapshot and change hint carry no
+  // externally callable mutation capability, so they are deliberately omitted.
+  [CHANNELS.tailnetSharing.createInvitation]: "required",
+  [CHANNELS.tailnetSharing.activatePairing]: "required",
+  [CHANNELS.tailnetSharing.createCurrentConversationShare]: "required",
+  [CHANNELS.tailnetSharing.revokeShare]: "required",
+  [CHANNELS.tailnetSharing.revokePairing]: "required",
+  // Local-owner Telegram connection: same rule. Saving a bot token, starting
+  // the outbound connection, minting a pairing code, and sharing the open
+  // conversation are each an owner decision made at this keyboard.
+  [CHANNELS.telegramConnection.connect]: "required",
+  [CHANNELS.telegramConnection.disconnect]: "required",
+  [CHANNELS.telegramConnection.pause]: "required",
+  [CHANNELS.telegramConnection.resume]: "required",
+  [CHANNELS.telegramConnection.createPairingCode]: "required",
+  [CHANNELS.telegramConnection.revokePairing]: "required",
+  [CHANNELS.telegramConnection.approveCurrentConversation]: "required",
+  [CHANNELS.telegramConnection.revokeApproval]: "required",
+  // Away authority: arming is the gesture, so it needs the gesture. Disarming
+  // is listed too — not because withdrawing authority is dangerous, but because
+  // a caller that could disarm without a keyboard could disarm the owner's
+  // grant out from under them and time the gap.
+  [CHANNELS.awayAuthority.arm]: "required",
+  [CHANNELS.awayAuthority.disarm]: "required",
 };
 
 // ─── Approval-mediated external mutation ─────────────────────────────────────

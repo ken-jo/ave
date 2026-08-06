@@ -106,6 +106,12 @@ vi.mock("electron", () => {
 import { registerIpcHandlers } from "../index.js";
 import { setIsPackaged, _resetForTest } from "../../boot/dev-flags.js";
 import type { AppServices } from "../../boot/types.js";
+import {
+  CHANNELS,
+  CHANNEL_GESTURE,
+  isPublicChannel,
+  PUBLIC_CHANNELS,
+} from "../../contract/app-contract.js";
 
 // Every top-level service field of AppServices. The mock proxy enumerates
 // these so `{ ...services }` inside registerIpcHandlers carries a live nested
@@ -116,6 +122,8 @@ const SERVICE_KEYS: (string | symbol)[] = [
   "pluginRuntime",
   "pluginMarketplace",
   "settingsService",
+  "memoryConsolidationService",
+  "memoryMaintenanceCoordinator",
   "memoryManager",
   "inputClassifier",
   "routeEngine",
@@ -189,6 +197,14 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
     // before the snapshot diff even matters.
     expect(unique.length).toBeGreaterThan(50);
   });
+  it("keeps subscription status invalidation internal and outbound-only", () => {
+    const event = CHANNELS.settings.subscriptionRuntimeStatusUpdated;
+    expect(event).toBe("ave:settings:subscription:status-updated");
+    expect(channels).not.toContain(event);
+    expect(PUBLIC_CHANNELS).not.toContain(event);
+    expect(isPublicChannel(event)).toBe(false);
+    expect(CHANNEL_GESTURE[event]).toBeUndefined();
+  });
 
   it("locks the sorted unique channel list", () => {
     const sorted = [...new Set(channels)].sort();
@@ -205,12 +221,16 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:app:info",
         "ave:approval:respond",
         "ave:ask-user-question:respond",
+        "ave:attach:discardClipboardImage",
         "ave:attach:openExternal",
         "ave:attach:openFile",
         "ave:attach:readImage",
         "ave:attach:saveClipboardImage",
         "ave:audit:search",
         "ave:audit:stats",
+        "ave:away-authority:arm",
+        "ave:away-authority:disarm",
+        "ave:away-authority:status",
         "ave:bootstrap:retry",
         "ave:chat:abort",
         "ave:chat:branch-from-checkpoint",
@@ -269,6 +289,9 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:mcp:ui-resource",
         "ave:memory:agents-md:get",
         "ave:memory:agents-md:update",
+        "ave:memory:candidates:activate",
+        "ave:memory:candidates:delete",
+        "ave:memory:candidates:list",
         "ave:memory:entries:delete",
         "ave:memory:entries:list",
         "ave:memory:entries:save",
@@ -276,6 +299,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:memory:index:get",
         "ave:memory:index:sections:update",
         "ave:memory:index:update-if-unchanged",
+        "ave:memory:long-term:refresh",
         "ave:memory:sessions:list",
         "ave:memory:sessions:search",
         "ave:memory:user-prefs:get",
@@ -349,7 +373,20 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:runtime:env",
         "ave:session-todo:clear",
         "ave:session-todo:list",
-        "ave:settings:apply-host-map",
+        "ave:settings:acp-subscription:cancel-login",
+        "ave:settings:acp-subscription:choose-runtime",
+        "ave:settings:acp-subscription:forget-runtime",
+        "ave:settings:acp-subscription:logout",
+        "ave:settings:acp-subscription:open-login-browser",
+        "ave:settings:acp-subscription:start-login",
+        "ave:settings:acp-subscription:status",
+        "ave:settings:acp-subscription:verify",
+        "ave:settings:codex-subscription:cancel-login",
+        "ave:settings:codex-subscription:list-models",
+        "ave:settings:codex-subscription:logout",
+        "ave:settings:codex-subscription:start-browser-login",
+        "ave:settings:codex-subscription:start-device-code-login",
+        "ave:settings:codex-subscription:status",
         "ave:settings:delete-api-key",
         "ave:settings:delete-web-api-key",
         "ave:settings:get",
@@ -363,6 +400,17 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:settings:marketplace:uninstall-provider-preset",
         "ave:settings:set-api-key",
         "ave:settings:set-web-api-key",
+        "ave:settings:subscription:cancel-login",
+        "ave:settings:subscription:choose-runtime",
+        "ave:settings:subscription:forget-runtime",
+        "ave:settings:subscription:list-models",
+        "ave:settings:subscription:logout",
+        "ave:settings:subscription:open-login-browser",
+        "ave:settings:subscription:start-login",
+        "ave:settings:subscription:status",
+        "ave:settings:subscription:use-api-for-chat",
+        "ave:settings:subscription:use-for-chat",
+        "ave:settings:subscription:verify",
         "ave:settings:update",
         "ave:shell:open-external",
         "ave:sidechat:abort",
@@ -376,6 +424,21 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:starred:add",
         "ave:starred:list",
         "ave:starred:remove",
+        "ave:tailnet-sharing:activate-pairing",
+        "ave:tailnet-sharing:create-current-conversation-share",
+        "ave:tailnet-sharing:create-invitation",
+        "ave:tailnet-sharing:revoke-pairing",
+        "ave:tailnet-sharing:revoke-share",
+        "ave:tailnet-sharing:snapshot",
+        "ave:telegram-connection:approve-current-conversation",
+        "ave:telegram-connection:connect",
+        "ave:telegram-connection:create-pairing-code",
+        "ave:telegram-connection:disconnect",
+        "ave:telegram-connection:pause",
+        "ave:telegram-connection:resume",
+        "ave:telegram-connection:revoke-approval",
+        "ave:telegram-connection:revoke-pairing",
+        "ave:telegram-connection:snapshot",
         "ave:telemetry:consent-answer",
         "ave:terminal:input",
         "ave:terminal:kill",

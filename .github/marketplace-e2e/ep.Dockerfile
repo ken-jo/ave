@@ -9,10 +9,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 ave \
     && useradd --create-home --uid 10001 --gid 10001 --shell /bin/bash ave \
-    && mkdir -p /workspace/ave-plugin-orion-api /out \
+    && mkdir -p /workspace/ave-plugin-orion /out \
     && chown -R 10001:10001 /workspace /out
 
-COPY --chown=10001:10001 ave-plugin-orion-api/ /workspace/ave-plugin-orion-api/
+COPY --chown=10001:10001 ave-plugin-orion/ /workspace/ave-plugin-orion/
 
 ARG E2E_NONCE
 ARG HOST_SHA
@@ -27,7 +27,7 @@ LABEL org.ave.marketplace-e2e.nonce="${E2E_NONCE}" \
 
 USER 10001:10001
 ENV HOME=/home/ave
-WORKDIR /workspace/ave-plugin-orion-api
+WORKDIR /workspace/ave-plugin-orion
 RUN bun install --frozen-lockfile \
     && bun run build \
     && test -f dist/hostPlugin.js \

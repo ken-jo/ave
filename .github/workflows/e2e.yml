@@ -29,7 +29,7 @@ jobs:
       HOST_SHA: ${{ github.event.client_payload.host_ref || github.sha }}
     steps:
       - name: Checkout exact ave input
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: ave
           ref: ${{ env.HOST_SHA }}
@@ -37,7 +37,7 @@ jobs:
           persist-credentials: false
 
       - name: Checkout local-indexer input
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: former_org/ave-plugin-local-indexer
           path: ave-plugin-local-indexer
@@ -47,7 +47,7 @@ jobs:
           persist-credentials: false
 
       - name: Checkout meeting input
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: former_org/ave-plugin-meeting
           path: ave-plugin-meeting
@@ -57,7 +57,7 @@ jobs:
           persist-credentials: false
 
       - name: Checkout vega-helper input
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: former_org/ave-plugin-vega-helper
           path: ave-plugin-vega-helper
