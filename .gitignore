@@ -69,3 +69,4 @@ main.js
 /.ave-audit-test-*/
 /.ave-dlp-stats-*/
 smoke-live-model.status.txt
+smoke-live-app.status.txt
