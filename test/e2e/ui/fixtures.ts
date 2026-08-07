@@ -514,6 +514,19 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
        bootstrap dies). Resolved via the shared `aveHome()` helper. */
     const aveHomeForTest = path.join(userDataDir, "ave-state");
     fs.mkdirSync(aveHomeForTest, { recursive: true, mode: 0o700 });
+    // Permission mode for the profile. The default is `default`, under which a
+    // real model's first path-bearing tool call parks the turn on an approval
+    // card — nobody answers it headlessly, so a live spec that needs tools to
+    // actually RUN never gets past the first one. Export
+    // AVE_E2E_PERMISSION_MODE=allow to exercise the tool path end to end.
+    const permissionMode = process.env.AVE_E2E_PERMISSION_MODE?.trim();
+    if (permissionMode) {
+      fs.writeFileSync(
+        path.join(aveHomeForTest, "permissions.json"),
+        JSON.stringify({ mode: permissionMode }, null, 2) + "\n",
+        { encoding: "utf-8", mode: 0o600 },
+      );
+    }
     fs.writeFileSync(
       path.join(userDataDir, "ave-settings.json"),
       JSON.stringify(
