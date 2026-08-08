@@ -513,7 +513,6 @@ export const CHANNELS = {
     syncTitleBarTheme: "window:syncTitleBarTheme",
     maximizedChanged: "window:maximizedChanged",
     fullscreenChanged: "window:fullscreenChanged",
-    openDetached: "ave:window:open-detached",
     closeDetached: "ave:window:close-detached",
     listDetached: "ave:window:list-detached",
     closeAllDetached: "ave:window:close-all-detached",
@@ -767,7 +766,6 @@ export const INTERNAL_HOST_CHANNELS = {
     CHANNELS.settingsWindow.tab,
   ],
   detachedWindow: [
-    CHANNELS.window.openDetached,
     CHANNELS.window.closeDetached,
     CHANNELS.window.listDetached,
     CHANNELS.window.closeAllDetached,
