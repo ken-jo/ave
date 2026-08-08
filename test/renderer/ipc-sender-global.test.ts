@@ -86,6 +86,7 @@ const CHANNEL_MANIFEST: Record<string, "mutating" | "sensitive" | "public-read">
   [PERMISSIONS.hookTrustList]: "sensitive",
   // Approval
   "ave:approval:respond": "mutating",
+  "ave:permissions:approval-sentence-select": "mutating",
   // Policy
   "ave:policy:get": "public-read",
   "ave:policy:set": "mutating",
@@ -220,6 +221,7 @@ describe("ipc-bridge.ts — mutating/sensitive channels have a sender guard", ()
     "ave:permission:add-rule": "PERMISSIONS.addRule",
     "ave:permission:remove-rule": "PERMISSIONS.removeRule",
     "ave:approval:respond": "PERMISSIONS.approvalRespond",
+    "ave:permissions:approval-sentence-select": "PERMISSIONS.approvalSentenceSelect",
     "ave:policy:get": "PERMISSIONS.policyGet",
     "ave:policy:set": "PERMISSIONS.policySet",
     [PERMISSIONS.dirDispatch]: "PERMISSIONS.dirDispatch",
