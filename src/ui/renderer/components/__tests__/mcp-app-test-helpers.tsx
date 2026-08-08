@@ -1,5 +1,32 @@
 import type { ReactNode } from "react";
+import { vi } from "vitest";
 import { ThemeProvider, DEFAULT_BUNDLE_ID } from "../../theme/index.js";
+
+interface McpAveStubDependencies {
+  readUiResource: unknown;
+  disposeUiSession: unknown;
+  openDetached: unknown;
+  closeDetached: unknown;
+}
+
+export function stubMcpAve({
+  readUiResource,
+  disposeUiSession,
+  openDetached,
+  closeDetached,
+}: McpAveStubDependencies): void {
+  vi.stubGlobal("ave", {
+    mcp: {
+      readUiResource,
+      disposeUiSession,
+      openDetached,
+      closeDetached,
+      onServerDisconnected: () => () => undefined,
+      onDetachedClosed: () => () => undefined,
+    },
+  });
+  (window as unknown as { ave: unknown }).ave = (globalThis as unknown as { ave: unknown }).ave;
+}
 
 /**
  * Wraps a render in the real `ThemeProvider` — `McpAppView` (and the pip panel that
