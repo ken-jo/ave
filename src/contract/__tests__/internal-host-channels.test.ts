@@ -19,7 +19,7 @@ import {
 
 const allInternal = [
   ...INTERNAL_HOST_CHANNELS.settingsWindow,
-  ...INTERNAL_HOST_CHANNELS.detachedWindow,
+  ...INTERNAL_HOST_CHANNELS.windowManager,
   ...INTERNAL_HOST_CHANNELS.autoUpdater,
 ];
 
@@ -43,19 +43,8 @@ describe("#1409 out-of-tree host channels are classified INTERNAL", () => {
       "ave:settings-window:saved",
       "ave:settings-window:tab",
     ]);
-    expect(INTERNAL_HOST_CHANNELS.detachedWindow).toEqual([
-      "ave:window:close-detached",
-      "ave:window:list-detached",
-      "ave:window:close-all-detached",
-      "ave:window:load-session-in-main",
-      "ave:window:load-session-in-main-result",
+    expect(INTERNAL_HOST_CHANNELS.windowManager).toEqual([
       "ave:window:resize-for-mode",
-      "ave:window:snap-edge",
-      "ave:detached:navigate",
-      // #885 b2 — MCP-app detach handlers, registered out-of-tree in window-manager.ts.
-      "ave:mcp:open-detached",
-      "ave:mcp:detached-payload",
-      "ave:mcp:close-detached",
     ]);
     expect(INTERNAL_HOST_CHANNELS.autoUpdater).toEqual([
       "ave:update:state",
