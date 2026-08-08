@@ -44,7 +44,6 @@ describe("#1409 out-of-tree host channels are classified INTERNAL", () => {
       "ave:settings-window:tab",
     ]);
     expect(INTERNAL_HOST_CHANNELS.detachedWindow).toEqual([
-      "ave:window:open-detached",
       "ave:window:close-detached",
       "ave:window:list-detached",
       "ave:window:close-all-detached",
