@@ -128,7 +128,7 @@ an Electron `<webview>`.
 | `chat-plugin-panel` | The **real** `ave-plugin-vega-helper` detector-toggle panel (its own bundled UI in a webview), loaded via `plugins: ['vega-helper']`. |
 | `plugin-permission-grant` | The real "Approve Tool Execution" host modal fired by the meeting panel's mount-time `meeting_list_preps` read call (reviewer kept ON via `keepReviewer`). Cropped to `[data-testid="tool-approval-dialog"]`. |
 | `meeting-upcoming` | The **real** `ave-plugin-meeting` panel, default "예정 회의" (upcoming) tab, empty state (no seeded calendar events). |
-| `_smoke-settings-llm` (not a docs key — smoke-only) | Opens the native settings window via `window.aveApi.openSettingsWindow('llm')` and captures the whole settings window. |
+| `_smoke-settings-llm` (not a docs key — smoke-only) | Opens the inline settings panel on the model tab and captures the main app window. |
 
 **Current count: 4 real docs-site keys + 1 smoke-only settings capture pass
 end-to-end** (up from 1 + 1). The remaining plugin-UI keys are skipped for

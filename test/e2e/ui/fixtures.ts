@@ -640,10 +640,6 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
         AVE_DEV: "1",
         AVE_E2E: "1",
         AVE_HOME: aveHomeForTest,
-        // Consumed by detached-window-titlebar.spec.ts which spawns a second
-        // BrowserWindow via app.evaluate and needs the resolved main.js path
-        // for preload/indexHtml siblings.
-        AVE_MAIN_ENTRY: mainEntry,
         NODE_ENV: "test",
         ELECTRON_DISABLE_SECURITY_WARNINGS: "1",
       }),
