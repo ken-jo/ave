@@ -15,10 +15,11 @@
  *   - Invalid `scenarioId` payloads return `invalid-scenario-id`.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { invokeFileIpcHandler } from "./test-helpers.js";
+import { cleanupTmpDir } from "../../../testing/tmp-dir-teardown.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
@@ -57,13 +58,13 @@ beforeEach(() => {
   process.env.AVE_HOME = tempDir;
 });
 
-afterEach(() => {
+afterEach(async () => {
   if (prevAveHome === undefined) {
     delete process.env.AVE_HOME;
   } else {
     process.env.AVE_HOME = prevAveHome;
   }
-  rmSync(tempDir, { recursive: true, force: true });
+  await cleanupTmpDir(tempDir);
 });
 
 async function loadModule() {
