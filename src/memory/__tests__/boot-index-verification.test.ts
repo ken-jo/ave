@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { MemoryManager } from "../memory-manager.js";
+import { cleanupTmpDir } from "../../testing/tmp-dir-teardown.js";
 
 describe("MemoryManager boot index verification", () => {
   let aveDir: string;
@@ -12,7 +13,7 @@ describe("MemoryManager boot index verification", () => {
   });
 
   afterEach(async () => {
-    await rm(aveDir, { recursive: true, force: true });
+    await cleanupTmpDir(aveDir);
   });
 
   it("does not enumerate session JSONL files when the index is healthy and populated", async () => {
