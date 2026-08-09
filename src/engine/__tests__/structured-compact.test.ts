@@ -2,7 +2,7 @@
  * Structured Compact tests — recap reviewer interface + parser + freeze invariant.
  * `compactWithBoundary()` 는 `ConversationLoop.runPreflightGuard` 에서 호출됨.
  */
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it, expect } from "vitest";
@@ -18,6 +18,7 @@ import {
 } from "../structured-compact.js";
 import type { GenericMessage } from "../llm/types.js";
 import { markStaleToolResults } from "../auto-compact.js";
+import { cleanupTmpDir } from "../../testing/tmp-dir-teardown.js";
 
 let originalAveHome: string | undefined;
 let testAveHome: string | null = null;
@@ -28,9 +29,9 @@ beforeEach(() => {
   process.env.AVE_HOME = testAveHome;
 });
 
-afterEach(() => {
+afterEach(async () => {
   if (testAveHome) {
-    rmSync(testAveHome, { recursive: true, force: true });
+    await cleanupTmpDir(testAveHome);
   }
   testAveHome = null;
   if (originalAveHome === undefined) {
@@ -718,7 +719,7 @@ describe("compactWithBoundary — recap reviewer integration", () => {
     } finally {
       if (previousHome === undefined) delete process.env.AVE_HOME;
       else process.env.AVE_HOME = previousHome;
-      rmSync(tmpHome, { recursive: true, force: true });
+      await cleanupTmpDir(tmpHome);
     }
   });
 
