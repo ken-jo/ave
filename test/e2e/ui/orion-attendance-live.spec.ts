@@ -26,7 +26,7 @@ import {
   teardownSeededElectron,
   type SeededElectronContext,
 } from "./seeded-electron.js";
-import { closeSettingsWindow, openSettingsWindow } from "./settings-window.js";
+import { closeInlineSettings, openInlineSettings } from "./inline-settings.js";
 
 const E2E_ENABLED = process.env.M4_E2E === "1";
 const BASE_URL = (process.env.MARKETPLACE_URL ?? "http://127.0.0.1:8765").replace(/\/$/, "");
@@ -607,7 +607,7 @@ test("exact ORION attendance bundle reads, confirms one write, verifies readback
       },
     });
 
-    const marketplace = await openSettingsWindow(ctx.app, ctx.page, "marketplace");
+    const marketplace = await openInlineSettings(ctx.app, ctx.page, "marketplace");
     const installAction = marketplace.getByTestId(`marketplace:action:${ORION_PLUGIN_ID}`);
     await expect(installAction).toBeVisible();
     await installAction.click();
@@ -642,7 +642,7 @@ test("exact ORION attendance bundle reads, confirms one write, verifies readback
       version: bundle.version,
       runtimeLoaded: true,
     });
-    await closeSettingsWindow(ctx.app, marketplace);
+    await closeInlineSettings(ctx.app, marketplace);
 
     const pluginDataDir = join(ctx.aveHome, "plugins", ORION_PLUGIN_ID, "data");
     mkdirSync(pluginDataDir, { recursive: true, mode: 0o700 });
@@ -874,8 +874,8 @@ test("exact ORION attendance bundle reads, confirms one write, verifies readback
     expect(disabledCounts.plugins).toBe(installedCounts.plugins - 1);
     expect(disabledCounts.mcps).toBe(installedCounts.mcps);
 
-    const settingsWindow = await openSettingsWindow(ctx.app, ctx.page, "marketplace");
-    const packageAction = settingsWindow.getByTestId(`marketplace:action:${ORION_PLUGIN_ID}`);
+    const settingsPage = await openInlineSettings(ctx.app, ctx.page, "marketplace");
+    const packageAction = settingsPage.getByTestId(`marketplace:action:${ORION_PLUGIN_ID}`);
     await expect(packageAction).toBeVisible();
     const yank = await adminPost(`/api/v1/admin/plugins/${ORION_PLUGIN_ID}/yank`);
     expect(yank.status).toBe(200);

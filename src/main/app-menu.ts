@@ -22,8 +22,8 @@ function activateView(viewKey: string) {
 /**
  * Route a settings-open request to the INLINE settings panel. Settings no
  * longer detaches to its own BrowserWindow (settings-inline-overhaul), so every
- * main-process entry point — the app menu, the tray, `ave://` MCP-login deep
- * links, and the `ave:settings-window:open` IPC — funnels through here.
+ * main-process entry point — the app menu, the tray, and `ave://` MCP-login
+ * deep links — funnels through here.
  *
  * Surfaces the main window (creating/restoring it if missing so the entry point
  * never dead-ends), then sends `ave:view:activate` with the requested tab. The
