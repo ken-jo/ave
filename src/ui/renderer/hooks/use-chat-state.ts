@@ -339,7 +339,7 @@ export function useChatState(api: AveApi) {
           );
         });
       } else if (ev.type === "tool_end" && ev.name && ev.groupId && ev.toolUseId !== undefined) {
-        const { groupId, toolUseId, result, isError, uiPayload, durationMs, source, toolCategory, pluginId, mcpServerId, executionPlan } = ev;
+        const { groupId, toolUseId, result, isError, cancelled, uiPayload, durationMs, source, toolCategory, pluginId, mcpServerId, executionPlan } = ev;
         setEntries((p) => applyToolEnd(
           p,
           {
@@ -347,6 +347,7 @@ export function useChatState(api: AveApi) {
             toolUseId,
             result,
             isError,
+            ...(cancelled ? { cancelled: true } : {}),
             uiPayload,
             durationMs,
             ...(source ? { source } : {}),
