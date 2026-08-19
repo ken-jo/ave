@@ -2,7 +2,7 @@
  * Chat domain IPC handlers.
  * Covers: ave:chat:*, ave:memory:*, ave:starred:*, ave:feedback:submit,
  *         ave:ask-user-question:respond
- * Note: routine v2 channels (ave:routines:v2:*) are handled in misc.ts.
+ * Note: routine channels (ave:routines:*) are handled in routines.ts.
  *
  * C10 (#1409): the PUBLIC chat channels (send / sessions / get-history /
  * session-history) delegate to transport-agnostic pure handlers in

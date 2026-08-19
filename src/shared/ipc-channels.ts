@@ -19,21 +19,21 @@ export const OVERLAY_V1 = {
   dismiss: "ave:overlay:dismiss",
 } as const;
 
-export const ROUTINES_V2 = {
-  list: "ave:routines:v2:list",
-  add: "ave:routines:v2:add",
-  dismiss: "ave:routines:v2:dismiss",
-  remove: "ave:routines:v2:remove",
-  triggerNow: "ave:routines:v2:trigger-now",
-  fired: "ave:routines:v2:fired",
-  pendingResults: "ave:routines:v2:pending-results",
-  acknowledgeResult: "ave:routines:v2:ack-result",
-  listSessions: "ave:routines:v2:list-sessions",
+export const ROUTINES = {
+  list: "ave:routines:list",
+  add: "ave:routines:add",
+  dismiss: "ave:routines:dismiss",
+  remove: "ave:routines:remove",
+  triggerNow: "ave:routines:trigger-now",
+  fired: "ave:routines:fired",
+  pendingResults: "ave:routines:pending-results",
+  acknowledgeResult: "ave:routines:ack-result",
+  listSessions: "ave:routines:list-sessions",
   // Running indicator events (renderer reflects LLM session progress)
-  runningStarted: "ave:routines:v2:running-started",
-  runningFinished: "ave:routines:v2:running-finished",
+  runningStarted: "ave:routines:running-started",
+  runningFinished: "ave:routines:running-finished",
   // Emitted when an LLM session errors out so renderer can clear running state
-  failed: "ave:routines:v2:failed",
+  failed: "ave:routines:failed",
 } as const;
 
 export const WORK_BOARD = {
@@ -51,7 +51,7 @@ export const WORK_BOARD = {
   itemChanged: "ave:work-board:item-changed",
   // Renderer → main: kick off a plan→approve→execute run for one item.
   // Fire-and-forget; the renderer tracks completion via the run-progress
-  // events below (mirroring the ROUTINES_V2 running-* pattern).
+  // events below (mirroring the ROUTINES running-* pattern).
   run: "ave:work-board:run",
   // Main → renderer: per-phase liveness for an in-flight run (WorkBoardRunEvent).
   runProgress: "ave:work-board:run-progress",

@@ -9,7 +9,7 @@
  * Domain → channel prefix mapping:
  *   settings     ave:settings:*, ave:shell:*, ave:telemetry:consent-answer
  *   tour         ave:tour:*        — Tutorial-C SpotlightTour state + broadcast
- *   chat         ave:chat:*, ave:llm:*, ave:routines:*, ave:routine:*, ave:trigger:*,
+ *   chat         ave:chat:*, ave:llm:*, ave:trigger:*,
  *                ave:memory:*, ave:starred:*, ave:feedback:*, ave:ask-user-question:*
  *   plugins      ave:plugins:*, ave:bootstrap:*, ave:runtime:*, ave:marketplace:*,
  *                ave:mcp:*, ave:plugin:*, ave:file:*, ave:notification:clicked
@@ -18,7 +18,9 @@
  *   audit        ave:audit:*, ave:dlp:*
  *   permissions  ave:permission:*, ave:approval:*, ave:policy:*
  *   window       window:*
- *   misc         ave:routines:v2:*, ave:session-todo:*
+ *   routines     ave:routines:*
+ *   session-todo ave:session-todo:*
+ *   app          ave:app:*
  *   work-board   ave:work-board:* (board CRUD + lifecycle; run/report deferred)
  *   ui           ave:ui:*
  *   dev          ave:dev:*  (only registered when !app.isPackaged)
@@ -36,7 +38,9 @@ import { registerAuditHandlers } from "./domains/audit.js";
 import { registerDiagnosticsHandlers } from "./domains/diagnostics.js";
 import { registerPermissionsHandlers } from "./domains/permissions.js";
 import { registerWindowHandlers } from "./domains/window.js";
-import { registerMiscHandlers } from "./domains/misc.js";
+import { registerRoutineHandlers } from "./domains/routines.js";
+import { registerSessionTodoHandlers } from "./domains/session-todo.js";
+import { registerAppHandlers } from "./domains/app.js";
 import { registerWorkBoardHandlers } from "./domains/work-board.js";
 import { registerAttachHandlers } from "./domains/attach.js";
 import { registerPreviewHandlers } from "./domains/preview.js";
@@ -100,7 +104,9 @@ export function registerIpcHandlers(
   registerDiagnosticsHandlers(deps);
   registerPermissionsHandlers(deps);
   registerWindowHandlers(deps);
-  registerMiscHandlers(deps);
+  registerRoutineHandlers(deps);
+  registerSessionTodoHandlers(deps);
+  registerAppHandlers();
   registerWorkBoardHandlers(deps);
   registerAttachHandlers(deps);
   registerPreviewHandlers(deps);
