@@ -2136,6 +2136,8 @@ export interface AveWorkspaceApi {
     ok: boolean;
     defaultRoot?: string;
     roots?: Array<{ path: string; isDefault: boolean }>;
+    /** Part of the settings file could not be interpreted — the roots stand. */
+    settingsFault?: string;
     error?: string;
   }>;
   pickRoot: (opts?: { ackToken?: string }) => Promise<{
