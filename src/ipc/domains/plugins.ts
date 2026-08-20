@@ -1,7 +1,8 @@
 /**
  * Plugins domain IPC handlers.
- * Covers: ave:plugins:*, ave:bootstrap:*, ave:runtime:*, ave:marketplace:*,
- *         ave:mcp:*, ave:plugin:* (webview bridge), ave:file:*,
+ * Covers: ave:plugins:*, ave:plugin:* (webview bridge), ave:mcp:*,
+ *         ave:runtime:*, ave:agents:*, ave:skills:*, ave:bootstrap:retry,
+ *         ave:marketplace:ping, ave:host:plugin-theme-notify,
  *         ave:notification:clicked
  */
 import { dialog, ipcMain, webContents } from "electron";
