@@ -221,8 +221,8 @@ function hostContext(
 
 /** The child's own filesystem envelope, as the production factory derives it. */
 const CONFINEMENT = {
-  pluginRoot: "/plugins/vega-helper",
-  pluginDataDir: "/plugins/vega-helper/data",
+  read: ["/plugins/vega-helper", "/plugins/vega-helper/data"],
+  write: ["/plugins/vega-helper/data"],
 };
 
 describe("the dispatch table, assembled from the four group factories", () => {
