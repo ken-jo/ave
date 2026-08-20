@@ -63,7 +63,7 @@ export const CHANNELS = {
     continueLastUser: "ave:chat:continue-last-user",
     retryEffort: "ave:chat:retry-effort",
     export: "ave:chat:export",
-    // #1500 (E3): reverse of `export` — always creates a brand-new session,
+    // Reverse of `export` — always creates a brand-new session,
     // never overwrites. INTERNAL (mutating; not in PUBLIC_CHANNELS below).
     import: "ave:chat:import",
     enterCheckpointView: "ave:chat:enter-checkpoint-view",
