@@ -1,27 +1,50 @@
 /**
  * IPC registration orchestrator.
  *
- * Replaces the monolithic `src/ipc-bridge.ts::registerIpcHandlers` with
- * per-domain registrars. Each domain file owns its own slice of channels;
- * `ipc-bridge.ts` delegates here and re-exports the public API so external
- * callers don't need to update their imports.
+ * Handler registration is split per domain: each domain file owns its own
+ * slice of channels, and `ipc-bridge.ts` delegates here while re-exporting the
+ * public API, so an external caller imports from either without knowing which.
  *
- * Domain → channel prefix mapping:
- *   settings     ave:settings:*, ave:shell:*, ave:telemetry:consent-answer
- *   tour         ave:tour:*        — Tutorial-C SpotlightTour state + broadcast
- *   chat         ave:chat:*, ave:llm:*, ave:routines:*, ave:routine:*, ave:trigger:*,
- *                ave:memory:*, ave:starred:*, ave:feedback:*, ave:ask-user-question:*
- *   plugins      ave:plugins:*, ave:bootstrap:*, ave:runtime:*, ave:marketplace:*,
- *                ave:mcp:*, ave:plugin:*, ave:file:*, ave:notification:clicked
- *   prompts      ave:prompts:*
- *   usage        ave:usage:*
- *   audit        ave:audit:*, ave:dlp:*
- *   permissions  ave:permission:*, ave:approval:*, ave:policy:*
- *   window       window:*
- *   misc         ave:routines:v2:*, ave:session-todo:*
- *   work-board   ave:work-board:* (board CRUD + lifecycle; run/report deferred)
- *   ui           ave:ui:*
- *   dev          ave:dev:*  (only registered when !app.isPackaged)
+ * Domain → channel prefix mapping. One line per registrar called below, so a
+ * reader can answer "which file owns this channel" without opening all of them:
+ *   settings      ave:settings:*, ave:shell:open-external,
+ *                 ave:telemetry:consent-answer
+ *   tour          ave:tour:*        — SpotlightTour state + broadcast
+ *   chat          ave:chat:*, ave:llm:*, ave:memory:*, ave:starred:*,
+ *                 ave:feedback:*, ave:ask-user-question:*
+ *   sidechat      ave:sidechat:*
+ *   plugins       ave:plugins:*, ave:plugin:*, ave:mcp:*, ave:runtime:*,
+ *                 ave:agents:*, ave:skills:*, ave:bootstrap:retry,
+ *                 ave:marketplace:ping, ave:host:plugin-theme-notify,
+ *                 ave:notification:clicked
+ *   prompts       ave:prompts:*
+ *   usage         ave:usage:*
+ *   audit         ave:audit:*, ave:dlp:*
+ *   diagnostics   ave:diagnostics:*, ave:logs:tail
+ *   permissions   ave:permission:*, ave:permissions:*, ave:approval:respond,
+ *                 ave:policy:*
+ *   window        window:*, ave:window:open-html-preview
+ *   routines      ave:routines:*
+ *   session-todo  ave:session-todo:*
+ *   app           ave:app:*
+ *   work-board    ave:work-board:* (CRUD, lifecycle, run, run-transcript,
+ *                 generate-report)
+ *   attach        ave:attach:*
+ *   preview       ave:preview:read-file
+ *   workspace     ave:workspace:*
+ *   ui            ave:ui:*
+ *   terminal      ave:terminal:*
+ *   remote-a2a    ave:a2a-remote:*
+ *   tailnet-sharing     ave:tailnet-sharing:*
+ *   telegram-connection ave:telegram-connection:*
+ *   away-authority      ave:away-authority:*
+ *   dev           ave:dev:*  (registered only when `getIsPackaged()` is false)
+ *
+ * `ave:trigger:*` is absent on purpose. The constants exist in
+ * `contract/app-contract.ts` and the preload invokes `trigger.dismiss` and
+ * `trigger.import`, but no `ipcMain.handle` for any `ave:trigger:` channel
+ * exists in `src/` — those two invokes have no receiver. Recorded rather than
+ * fixed here: giving them one is a behaviour change, not a rename.
  */
 import { initDlpAudit } from "../audit/dlp-filter.js";
 import { getIsPackaged } from "../boot/dev-flags.js";
@@ -36,7 +59,9 @@ import { registerAuditHandlers } from "./domains/audit.js";
 import { registerDiagnosticsHandlers } from "./domains/diagnostics.js";
 import { registerPermissionsHandlers } from "./domains/permissions.js";
 import { registerWindowHandlers } from "./domains/window.js";
-import { registerMiscHandlers } from "./domains/misc.js";
+import { registerRoutineHandlers } from "./domains/routines.js";
+import { registerSessionTodoHandlers } from "./domains/session-todo.js";
+import { registerAppHandlers } from "./domains/app.js";
 import { registerWorkBoardHandlers } from "./domains/work-board.js";
 import { registerAttachHandlers } from "./domains/attach.js";
 import { registerPreviewHandlers } from "./domains/preview.js";
@@ -100,7 +125,9 @@ export function registerIpcHandlers(
   registerDiagnosticsHandlers(deps);
   registerPermissionsHandlers(deps);
   registerWindowHandlers(deps);
-  registerMiscHandlers(deps);
+  registerRoutineHandlers(deps);
+  registerSessionTodoHandlers(deps);
+  registerAppHandlers(deps);
   registerWorkBoardHandlers(deps);
   registerAttachHandlers(deps);
   registerPreviewHandlers(deps);

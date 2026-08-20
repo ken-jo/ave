@@ -1,5 +1,5 @@
 /**
- * Production-log retention SOT (#1499 E2 / cluster-review architect MAJOR).
+ * Production-log retention SOT.
  *
  * The retention window for `~/.ave/logs/` was previously duplicated as two
  * independent literals — `LOG_RETENTION_DAYS` in `log-file-sink.ts` and

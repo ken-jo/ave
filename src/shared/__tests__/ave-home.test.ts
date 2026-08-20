@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { ensureAveHomePrivate, aveHome } from "../ave-home.js";
-import { cleanupTmpDir } from "../../testing/tmp-dir-teardown.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 const originalAveHome = process.env.AVE_HOME;
 

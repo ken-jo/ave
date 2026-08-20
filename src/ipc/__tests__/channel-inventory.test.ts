@@ -177,7 +177,7 @@ const SERVICE_KEYS: (string | symbol)[] = [
   "scriptHookManager",
 ];
 
-import { makeDeepProxy } from "../../testing/deep-proxy.js";
+import { makeDeepProxy } from "../../__tests__/support/deep-proxy.js";
 
 beforeAll(() => {
   channels.length = 0;
@@ -362,14 +362,14 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:prompts:list",
         "ave:prompts:list-summaries",
         "ave:prompts:save",
-        "ave:routines:v2:ack-result",
-        "ave:routines:v2:add",
-        "ave:routines:v2:dismiss",
-        "ave:routines:v2:list",
-        "ave:routines:v2:list-sessions",
-        "ave:routines:v2:pending-results",
-        "ave:routines:v2:remove",
-        "ave:routines:v2:trigger-now",
+        "ave:routines:ack-result",
+        "ave:routines:add",
+        "ave:routines:dismiss",
+        "ave:routines:list",
+        "ave:routines:list-sessions",
+        "ave:routines:pending-results",
+        "ave:routines:remove",
+        "ave:routines:trigger-now",
         "ave:runtime:counts",
         "ave:runtime:env",
         "ave:session-todo:clear",
