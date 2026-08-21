@@ -65,6 +65,16 @@ export const en = {
   "startupTab.shortcutRegisterFailedTitle": "Shortcut registration failed",
   "startupTab.shortcutRegisterFailedBody":
     "{accelerator} is already in use by another app. Choose a different combination.",
+  "startupTab.renderingSectionTitle":
+    "Rendering",
+  "startupTab.renderingSectionDesc":
+    "Control whether Ave uses your graphics card to draw the interface.",
+  "startupTab.hardwareAccelerationLabel":
+    "Use hardware acceleration",
+  "startupTab.hardwareAccelerationHelp":
+    "Takes effect the next time Ave starts. Turn this off if the window goes blank, flickers, or the app crashes while drawing — some managed and virtual-desktop machines ship graphics drivers that cannot run it. It is off by default on Windows and Linux for that reason.",
+  "startupTab.hardwareAccelerationEnvForced":
+    "The environment variable {envVar} is currently turning this on, whatever is saved here.",
   "startupTab.launchSectionTitle": "Launch at startup",
   "startupTab.launchSectionDesc":
     "Control whether Ave starts automatically when you sign in to your computer.",
