@@ -100,7 +100,7 @@ const WHITELIST_SOURCE: SignedDocSource = {
 async function fetchWhitelist(
   opts: FetchSignedDocumentOptions = {},
 ): Promise<SignedDocumentFetchOutcome> {
-  return fetchSignedDocument(WHITELIST_SOURCE, opts, "ave/whitelist-fetcher");
+  return fetchSignedDocument(WHITELIST_SOURCE, opts, "ave/whitelist-registry");
 }
 
 /** Caller-facing decision shape — discriminated union for exhaustive narrowing. */

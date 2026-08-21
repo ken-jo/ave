@@ -112,7 +112,7 @@ const REVOCATION_SOURCE: SignedDocSource = {
 async function fetchRevocationDocument(
   opts: FetchSignedDocumentOptions = {},
 ): Promise<SignedDocumentFetchOutcome> {
-  return fetchSignedDocument(REVOCATION_SOURCE, opts, "ave/revocation-fetcher");
+  return fetchSignedDocument(REVOCATION_SOURCE, opts, "ave/revocation-registry");
 }
 
 /** Caller-facing decision shape — discriminated union for exhaustive narrowing. */
