@@ -364,6 +364,9 @@ export const CHANNELS = {
     update: "ave:settings:update",
     setApiKey: "ave:settings:set-api-key",
     hasApiKey: "ave:settings:has-api-key",
+    // Which settings the boot environment is currently forcing ON. A read of
+    // presence only — never the value of any variable.
+    envForcedSettings: "ave:settings:env-forced",
     deleteApiKey: "ave:settings:delete-api-key",
     listLlmModels: "ave:settings:list-llm-models",
     codexSubscriptionStatus: "ave:settings:codex-subscription:status",

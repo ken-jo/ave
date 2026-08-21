@@ -390,6 +390,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:settings:codex-subscription:status",
         "ave:settings:delete-api-key",
         "ave:settings:delete-web-api-key",
+        "ave:settings:env-forced",
         "ave:settings:get",
         "ave:settings:has-api-key",
         "ave:settings:has-web-api-key",
