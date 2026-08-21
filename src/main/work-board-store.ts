@@ -45,10 +45,7 @@ const log = createLogger("ave");
 export {
   MAX_ITEMS,
   type WorkItemStatusStored,
-  type WorkItemStatusResolved,
-  type WorkItemPriority,
   type WorkItemRunStatus,
-  type WorkItem,
   type WorkItemResolved,
   type WorkItemCreateInput,
   type WorkItemUpdateInput,
