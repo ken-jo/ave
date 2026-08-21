@@ -425,6 +425,8 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:starred:add",
         "ave:starred:list",
         "ave:starred:remove",
+        "ave:tailnet-observer:apply",
+        "ave:tailnet-observer:snapshot",
         "ave:tailnet-sharing:activate-pairing",
         "ave:tailnet-sharing:create-current-conversation-share",
         "ave:tailnet-sharing:create-invitation",
