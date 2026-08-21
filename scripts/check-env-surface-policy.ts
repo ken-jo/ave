@@ -1,0 +1,224 @@
+/**
+ * Env-surface policy gate.
+ *
+ * The rule this enforces: an environment variable that configures the app for
+ * the person using it must ALSO be reachable from Settings. A packaged app is
+ * launched by double-clicking it — there is no shell to export anything in —
+ * so a capability whose only switch is an env var is a capability that user
+ * does not have. Several already shipped that way before anyone noticed.
+ *
+ * The gate cannot decide which variables are user configuration and which are
+ * scaffolding, so it does not try. It requires every `AVE_*` variable the
+ * source actually READS to be classified here, in exactly one bucket, and it
+ * refuses to let the unfinished bucket grow. What it buys is that the next
+ * variable of this kind is a decision someone makes on purpose, in a diff, and
+ * not a surface that quietly never existed.
+ *
+ * Buckets:
+ *   development — meaningful only running from source, in tests, or in E2E.
+ *                 Packaged builds ignore or scrub these (see `dev-flags.ts`).
+ *   internal    — part of a host↔child protocol or the packaging layout. The
+ *                 app writes it; nobody configures it.
+ *   settings    — has a control the user can reach. Cross-checked below.
+ *   pending     — SHOULD have a control and does not yet. Shrink-only.
+ *
+ * Usage: node --import tsx scripts/check-env-surface-policy.ts
+ */
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { ENV_BACKED_SETTINGS } from "../src/shared/env-backed-settings.js";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const SRC = join(ROOT, "src");
+
+/** Only meaningful outside a packaged build. */
+const DEVELOPMENT: readonly string[] = [
+  "AVE_ADMISSION_OFFLINE",
+  "AVE_ASRT_TEST_HOME",
+  "AVE_DEBUG_STREAM",
+  "AVE_DEV",
+  "AVE_DEV_CONSOLE",
+  "AVE_DEV_PREFLIGHT_OVERRIDE",
+  "AVE_DEV_PROMPT_SOURCE_DUMP",
+  "AVE_E2E",
+  "AVE_E2E_WHITELIST_PUBLIC_KEY",
+  "AVE_LOG_FILE",
+  "AVE_PLUGINS_DIR",
+  "AVE_REQUIRE_SANDBOX_CASES",
+  "AVE_RESOURCE_ROOT",
+  "AVE_REVOCATION_OFFLINE",
+  "AVE_RUN_PROBES",
+  "AVE_SECRET_PROBE",
+  "AVE_TEST_NODE_EXEC_PATH",
+  "AVE_TRACE",
+  "AVE_WHITELIST_OFFLINE",
+  "AVE_WIN_NO_SANDBOX",
+];
+
+/** The app sets these for something it launched; they are not configuration. */
+const INTERNAL: readonly string[] = [
+  "AVE_HOOK_EVENT",
+  "AVE_HOOK_SESSION",
+  "AVE_SUBSCRIPTION_TOOL_BRIDGE_TOKEN",
+];
+
+/**
+ * Reachable from Settings today.
+ *
+ * The tailnet group is listed by name rather than through
+ * {@link ENV_BACKED_SETTINGS} because its control writes a host-owned file
+ * instead of the settings store — the capability it carries must stay
+ * unsettable by a renderer. Same surface obligation, different backing.
+ */
+const SETTINGS_BACKED: readonly string[] = [
+  ...ENV_BACKED_SETTINGS.map((entry) => entry.envVar),
+  "AVE_TAILNET_CONTROLLER",
+  "AVE_TAILNET_OBSERVER",
+  "AVE_TAILNET_OBSERVER_CAP",
+  "AVE_TAILNET_OBSERVER_PORT",
+  "AVE_TAILNET_PAIRED_SHARING",
+  "AVE_TAILNET_WEB",
+  "AVE_TAILNET_WEB_ORIGIN",
+];
+
+/**
+ * Configuration a user could need, with no way to reach it yet.
+ *
+ * Shrink-only: {@link PENDING_CEILING} must come DOWN as these get surfaces,
+ * and a new entry here fails the gate until the ceiling is deliberately
+ * raised in the same diff that adds it. "Pending" is not the answer for a new
+ * variable — building the control is.
+ */
+const PENDING: readonly string[] = [
+  "AVE_CORP_CA_CN",
+  "AVE_CORP_CA_DEBUG",
+  "AVE_HOME",
+  "AVE_KEEP_GPU",
+  "AVE_LOG_FORMAT",
+  "AVE_MARKETPLACE_UPDATE_CHECK",
+  "AVE_MARKETPLACE_USE_CACHE",
+  "AVE_PRICING_OVERRIDE",
+  "AVE_SENTRY_DSN",
+  "AVE_SHUTDOWN_CLEANUP_TIMEOUT_MS",
+  "AVE_SHUTDOWN_TIMEOUT_MS",
+  "AVE_SKIP_CORP_CA",
+  "AVE_SUBSCRIPTION_TOOL_BRIDGE_URL",
+  "AVE_TELEMETRY_ALLOWLIST",
+];
+
+const PENDING_CEILING = 14;
+
+/**
+ * `process.env.NAME`, `process.env["NAME"]`, and the same two through a passed
+ * `env` parameter — which is how most of the resolvers here take it, so a
+ * `process.env`-only scan would miss nearly every gate that matters.
+ *
+ * Deliberately NOT a bare `AVE_[A-Z_]+` scan: many such names are ordinary
+ * TypeScript constants (`AVE_TOKEN_NAMES`, `AVE_LOGO_PATH`), and a gate that
+ * demanded those be classified as configuration would be asking for nonsense.
+ */
+const READ_RE =
+  /(?:process\.)?env\s*(?:\.\s*(AVE_[A-Z0-9_]+)|\[\s*["'`](AVE_[A-Z0-9_]+)["'`]\s*\])/g;
+
+function scan(dir: string, found: Map<string, string>): void {
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name);
+    if (statSync(path).isDirectory()) {
+      scan(path, found);
+      continue;
+    }
+    if (!/\.(ts|tsx|mts|cts)$/.test(name)) continue;
+    const text = readFileSync(path, "utf-8");
+    for (const match of text.matchAll(READ_RE)) {
+      const variable = match[1] ?? match[2]!;
+      if (!found.has(variable)) {
+        found.set(variable, relative(ROOT, path).replaceAll("\\", "/"));
+      }
+    }
+  }
+}
+
+/** Every `AVE_*` variable the source reads, mapped to the first file reading it. */
+export function scanEnvReads(root: string = SRC): Map<string, string> {
+  const found = new Map<string, string>();
+  scan(root, found);
+  return found;
+}
+
+export const BUCKETS: ReadonlyArray<readonly [string, readonly string[]]> = [
+  ["development", DEVELOPMENT],
+  ["internal", INTERNAL],
+  ["settings", SETTINGS_BACKED],
+  ["pending", PENDING],
+];
+
+/**
+ * The whole policy, as a pure function of what was found and what was declared
+ * — so the gate's own failure modes can be exercised without a repository that
+ * violates them. A gate nobody has ever seen fail is a gate nobody knows works.
+ */
+export function evaluate(
+  found: ReadonlyMap<string, string>,
+  buckets: ReadonlyArray<readonly [string, readonly string[]]> = BUCKETS,
+  pending: readonly string[] = PENDING,
+  pendingCeiling: number = PENDING_CEILING,
+): readonly string[] {
+  const failures: string[] = [];
+
+  // Classified in more than one bucket: the two claims contradict each other,
+  // and whichever the reader believes is a coin flip.
+  const seen = new Map<string, string>();
+  for (const [bucket, names] of buckets) {
+    for (const name of names) {
+      const previous = seen.get(name);
+      if (previous !== undefined) {
+        failures.push(`${name}: classified as both "${previous}" and "${bucket}"`);
+      }
+      seen.set(name, bucket);
+    }
+  }
+
+  for (const [variable, where] of [...found].sort()) {
+    if (!seen.has(variable)) {
+      failures.push(
+        `${variable} (${where}): read by the source and classified nowhere. `
+        + `Add it to one bucket in scripts/check-env-surface-policy.ts — and if it `
+        + `configures the app for the person using it, build the control instead of `
+        + `listing it as pending.`,
+      );
+    }
+  }
+
+  for (const [bucket, names] of buckets) {
+    for (const name of names) {
+      if (!found.has(name)) {
+        failures.push(`${name}: listed under "${bucket}" but nothing reads it any more — drop the entry.`);
+      }
+    }
+  }
+
+  if (pending.length > pendingCeiling) {
+    failures.push(
+      `pending list grew to ${pending.length} (ceiling ${pendingCeiling}). The ceiling only moves down.`,
+    );
+  }
+
+  return failures;
+}
+
+/** Direct invocation runs the real scan; importing the module does not. */
+if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const found = scanEnvReads();
+  const failures = evaluate(found);
+  if (failures.length > 0) {
+    console.error(`[env-surface] ${failures.length} problem(s)`);
+    for (const failure of failures) console.error(`  ${failure}`);
+    process.exit(1);
+  }
+  console.log(
+    `[env-surface] OK — ${found.size} variable(s) read: `
+    + `${SETTINGS_BACKED.length} with a control, ${PENDING.length} pending (ceiling ${PENDING_CEILING}), `
+    + `${DEVELOPMENT.length} development, ${INTERNAL.length} internal`,
+  );
+}
