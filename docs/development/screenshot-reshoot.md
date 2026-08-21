@@ -294,7 +294,7 @@ merges.
 `orion-login`, `orion-attendance`, `orion-attendance-2`, `orion-attendance-3`, `orion-approval`,
 `orion-parking`, `orion-meeting-room`, `orion-meeting-room-2`, `orion-meeting-room-3`,
 `orion-meeting-room-4`, `orion-meeting-room-5`, `orion-video-call`, `orion-video-call-2`,
-`orion-video-call-3`, `orion-video-call-4`, `orion-internal-search`, `orion-internal-search-2` — all on
+`orion-video-call-3`, `orion-video-call-4`, `orion-assistant`, `orion-assistant-2` — all on
 `/docs/plugins/orion-api`.
 
 ## Order of work
