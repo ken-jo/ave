@@ -12,7 +12,7 @@ import { fireEvent, render, waitFor } from "@testing-library/react";
 import { App } from "../App.js";
 import { makeMockAveApi, makeMockAveNamespace } from "../../../../test/renderer/mock-ave-api.js";
 
-const DEFAULT_ROOT = "C:\\Users\\ikcha\\.ave\\workspace";
+const DEFAULT_ROOT = "C:\\Users\\example\\.ave\\workspace";
 const ADDED_ROOT = "C:\\work\\beta";
 const ROOTS_AFTER_ADD = [
   { path: DEFAULT_ROOT, isDefault: true },

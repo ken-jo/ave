@@ -4,8 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { AveApi } from "../../types.js";
 import { usePinnedProjects } from "../use-pinned-projects.js";
 
-const ROOT_A = "C:\\Users\\ikcha\\workspace\\former_org\\alpha";
-const ROOT_B = "C:\\Users\\ikcha\\workspace\\former_org\\beta";
+const ROOT_A = "C:\\Users\\example\\workspace\\former_org\\alpha";
+const ROOT_B = "C:\\Users\\example\\workspace\\former_org\\beta";
 
 function makeApi(seed?: string[]): { api: AveApi; update: ReturnType<typeof vi.fn> } {
   const update = vi.fn(async () => ({ ok: true }) as never);

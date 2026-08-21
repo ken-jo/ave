@@ -122,11 +122,11 @@ is not a function` / loose vs strict regex 분기 등 silent regression 이 누�
 - 작업 시작 시 sweep 명령 (search-first, code-second):
   ```bash
   grep -rn "<deprecated-symbol>" \
-    /Users/megankim/Documents/former_org/ave/src \
-    /Users/megankim/Documents/former_org/ave-plugin-sdk/{src,schemas} \
-    /Users/megankim/Documents/former_org/ave-plugin-*/{src,.github} \
-    /Users/megankim/Documents/former_org/ave-plugin-template \
-    /Users/megankim/Documents/former_org/agent-marketplace
+    /Users/example/Documents/former_org/ave/src \
+    /Users/example/Documents/former_org/ave-plugin-sdk/{src,schemas} \
+    /Users/example/Documents/former_org/ave-plugin-*/{src,.github} \
+    /Users/example/Documents/former_org/ave-plugin-template \
+    /Users/example/Documents/former_org/agent-marketplace
   ```
 - 발견된 모든 사용처에 대해 같은 세션 안에 PR 펼침. PR description 에
   "Companion PRs" 섹션으로 묶어 머지 순서 의존성 명시 (예: SDK → host → template).

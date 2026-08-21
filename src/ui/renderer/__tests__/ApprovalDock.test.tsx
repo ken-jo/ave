@@ -656,8 +656,8 @@ describe("ApprovalDock", () => {
           args: { command: "Get-ChildItem", cwd: "stale-from-args" },
           reviewerVerdict: { level: "medium", reason: "shell unclassified" },
           evaluationContext: makeEvaluationContext({
-            executionCwd: "C:\\Users\\ikcha\\workspace\\former_org\\ave",
-            allowedDirectories: ["C:\\Users\\ikcha\\workspace\\former_org\\ave"],
+            executionCwd: "C:\\Users\\example\\workspace\\former_org\\ave",
+            allowedDirectories: ["C:\\Users\\example\\workspace\\former_org\\ave"],
             targetFilePaths: [],
           }),
         })]}
@@ -669,7 +669,7 @@ describe("ApprovalDock", () => {
       expect(document.body.textContent).toContain("검증 환경 / 샌드박스 평가");
       expect(document.body.textContent).toContain("permission-evaluation-context/v1");
       expect(document.body.textContent).toContain("permission-reviewer-framework/v1");
-      expect(document.body.textContent).toContain("C:\\Users\\ikcha\\workspace\\former_org\\ave");
+      expect(document.body.textContent).toContain("C:\\Users\\example\\workspace\\former_org\\ave");
     });
   });
 
