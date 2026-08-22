@@ -9,7 +9,7 @@
  * gate is not reported as either.
  */
 import "../../../../../test/renderer/setup.js";
-import { MOCK_REVIEWER_PARENT_ADJUDICATION } from "../../../../../test/renderer/mock-ave-api.js";
+import { MOCK_REVIEWER_PARENT_ADJUDICATION, installMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -106,11 +106,7 @@ function installApi(boot: unknown, sandboxOn = true) {
     },
   };
   (globalThis as unknown as { window: typeof window }).window.ave = ave as never;
-  (globalThis as unknown as { window: { aveApi?: unknown } }).window.aveApi = {
-    onSettingsUpdated: vi.fn(() => () => undefined),
-    getSettings: vi.fn(async () => ({ features: { osToolSandbox: sandboxOn } })),
-    updateSettings: vi.fn(async () => ({})),
-  };
+  installMockAveApi({ settings: { features: { osToolSandbox: sandboxOn } } });
   return ave;
 }
 
