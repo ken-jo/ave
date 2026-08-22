@@ -98,7 +98,6 @@ const PENDING: readonly string[] = [
   "AVE_CORP_CA_CN",
   "AVE_CORP_CA_DEBUG",
   "AVE_HOME",
-  "AVE_KEEP_GPU",
   "AVE_LOG_FORMAT",
   "AVE_MARKETPLACE_UPDATE_CHECK",
   "AVE_MARKETPLACE_USE_CACHE",
@@ -111,7 +110,7 @@ const PENDING: readonly string[] = [
   "AVE_TELEMETRY_ALLOWLIST",
 ];
 
-const PENDING_CEILING = 14;
+const PENDING_CEILING = 13;
 
 /**
  * `process.env.NAME`, `process.env["NAME"]`, and the same two through a passed
