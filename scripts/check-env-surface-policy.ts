@@ -110,11 +110,10 @@ const PENDING: readonly string[] = [
   "AVE_HOME",
   "AVE_PRICING_OVERRIDE",
   "AVE_SENTRY_DSN",
-  "AVE_SHUTDOWN_CLEANUP_TIMEOUT_MS",
   "AVE_TELEMETRY_ALLOWLIST",
 ];
 
-const PENDING_CEILING = 5;
+const PENDING_CEILING = 4;
 
 /**
  * `process.env.NAME`, `process.env["NAME"]`, and the same two through a passed
