@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.ts";
-import { MOCK_REVIEWER_PARENT_ADJUDICATION } from "../../../../../test/renderer/mock-ave-api.js";
+import { MOCK_REVIEWER_PARENT_ADJUDICATION, installMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import { PermissionsTab } from "../PermissionsTab.js";
@@ -71,10 +71,7 @@ function installAveApi() {
       set: vi.fn(),
     },
   };
-  (window as unknown as { aveApi: unknown }).aveApi = {
-    getSettings: vi.fn(async () => ({ features: { osToolSandbox: false } })),
-    updateSettings: vi.fn(async () => ({})),
-  };
+  installMockAveApi({ settings: { features: { osToolSandbox: false } } });
   return permission;
 }
 

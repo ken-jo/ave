@@ -659,6 +659,21 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
   };
 }
 
+/**
+ * Build the double and put it where the renderer looks for it.
+ *
+ * Every settings-tab test needs the same two lines — make the api, assign it to
+ * `window.aveApi` — and each one had written its own `installApi`, which is
+ * how two of them ended up as the same function under the same name in two
+ * files. One implementation, so a component that starts calling a new method
+ * gets it everywhere at once instead of failing per test file.
+ */
+export function installMockAveApi(overrides: ApiOverrides = {}): MockAveApi {
+  const { api } = makeMockAveApi(overrides);
+  (globalThis as unknown as { window: { aveApi?: unknown } }).window.aveApi = api;
+  return api;
+}
+
 type AveNamespaceOverrides = {
   env?: Partial<{
     isDev: boolean;
