@@ -95,19 +95,16 @@ const SETTINGS_BACKED: readonly string[] = [
  * variable — building the control is.
  */
 const PENDING: readonly string[] = [
-  "AVE_CORP_CA_CN",
-  "AVE_CORP_CA_DEBUG",
   "AVE_HOME",
   "AVE_LOG_FORMAT",
   "AVE_PRICING_OVERRIDE",
   "AVE_SENTRY_DSN",
   "AVE_SHUTDOWN_CLEANUP_TIMEOUT_MS",
-  "AVE_SKIP_CORP_CA",
   "AVE_SUBSCRIPTION_TOOL_BRIDGE_URL",
   "AVE_TELEMETRY_ALLOWLIST",
 ];
 
-const PENDING_CEILING = 10;
+const PENDING_CEILING = 7;
 
 /**
  * `process.env.NAME`, `process.env["NAME"]`, and the same two through a passed

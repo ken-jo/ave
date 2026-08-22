@@ -63,6 +63,31 @@ describe("env-backed settings registry", () => {
       .toEqual(["marketplace.offlineCacheEnabled"]);
   });
 
+  it("reports the corporate CA switch forced only by the variable that skips it", () => {
+    // The variable's NAME is the negative: AVE_SKIP_CORP_CA=1 means "do not
+    // do this", so it forces the setting OFF. Reading it as an ON gate would
+    // invert what the notice tells the user.
+    expect(envForcedValueForSettingsPath("system.corpCaEnabled", { AVE_SKIP_CORP_CA: "1" }))
+      .toBe(false);
+    expect(envForcedValueForSettingsPath("system.corpCaEnabled", { AVE_SKIP_CORP_CA: "0" }))
+      .toBeUndefined();
+    expect(envForcedValueForSettingsPath("system.corpCaEnabled", {})).toBeUndefined();
+  });
+
+  it("carries the certificate name itself, not a boolean", () => {
+    // The only text entry in the registry. The value IS the forced setting,
+    // so the resolver reads the name from here rather than re-reading the
+    // variable and disagreeing about when it applies.
+    expect(envForcedValueForSettingsPath("system.corpCaCommonName", {
+      AVE_CORP_CA_CN: "  Acme Root CA  ",
+    })).toBe("Acme Root CA");
+    // Set to nothing is not a name to search for.
+    expect(envForcedValueForSettingsPath("system.corpCaCommonName", { AVE_CORP_CA_CN: "   " }))
+      .toBeUndefined();
+    expect(envForcedSettingsPaths({ AVE_CORP_CA_CN: "Acme Root CA", AVE_CORP_CA_DEBUG: "1" }))
+      .toEqual(["system.corpCaDebugLog", "system.corpCaCommonName"]);
+  });
+
   it("returns undefined for a path that is not in the registry", () => {
     expect(envForcedValueForSettingsPath("system.notARealGate", { AVE_LOCAL_API: "1" }))
       .toBeUndefined();
