@@ -411,6 +411,7 @@ export const CHANNELS = {
   telemetry: {
     consentPrompt: "ave:telemetry:consent-prompt",
     consentAnswer: "ave:telemetry:consent-answer",
+    allowedHosts: "ave:telemetry:allowed-hosts",
   },
   usage: {
     summary: "ave:usage:summary",
