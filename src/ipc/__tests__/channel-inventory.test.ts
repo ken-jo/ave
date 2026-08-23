@@ -330,6 +330,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:plugin:config:get",
         "ave:plugin:config:set",
         "ave:plugin:emit-event",
+        "ave:plugin:ensure-partition",
         "ave:plugin:get-entry-url",
         "ave:plugin:get-theme",
         "ave:plugin:register-webview",
