@@ -294,29 +294,32 @@ describe("the routing set names the isolated plugins and nothing else", () => {
       "vega-helper",
       "lyra-mail",
       "local-indexer",
+      "meeting",
     ]);
     expect(isOutOfProcessPlugin("vega-helper")).toBe(true);
     expect(isOutOfProcessPlugin("lyra-mail")).toBe(true);
     expect(isOutOfProcessPlugin("local-indexer")).toBe(true);
-    // The two first-party ids the SOT still names in prose as REFUSED, and the
-    // reason is the same for both and different in KIND from anything the
-    // three above had to fix: neither is missing a host API. Both ship code
-    // written to run where the boundary does not reach — `orion-api` compiles
-    // function bodies inside an authenticated page, `meeting` loads its own
-    // preload and renderer into a renderer outside the sandbox. Asserted by id
-    // so the prose and the set cannot drift apart: the prose is the only
-    // record of WHY, and a set that quietly gained one of them would leave
+    // `meeting` joined them: its last axis was a floating window it built
+    // itself out of `BrowserWindow`/`ipcMain`/`screen`/`session`, reached
+    // through a `require` whose specifier lived in a variable. It takes a slot
+    // in the host's dock now and resolves `electron` by no path at all.
+    expect(isOutOfProcessPlugin("meeting")).toBe(true);
+    // The ONE first-party id the SOT still names in prose as REFUSED, and its
+    // reason differs in KIND from anything the four above had to fix: it is
+    // not missing a host API. It ships code written to run where the boundary
+    // does not reach — function bodies compiled inside an authenticated page.
+    // Asserted by id so the prose and the set cannot drift apart: the prose is
+    // the only record of WHY, and a set that quietly gained it would leave
     // that record describing something untrue.
-    expect(isOutOfProcessPlugin("meeting")).toBe(false);
     expect(isOutOfProcessPlugin("orion-api")).toBe(false);
     expect(Object.isFrozen(OUT_OF_PROCESS_PLUGIN_IDS)).toBe(true);
   });
 
   it("reports the in-process loader as still needed while any plugin is in-process", () => {
-    expect(allPluginsAreOutOfProcess(["meeting"])).toBe(false);
-    expect(allPluginsAreOutOfProcess(["vega-helper", "meeting"])).toBe(false);
+    expect(allPluginsAreOutOfProcess(["orion-api"])).toBe(false);
+    expect(allPluginsAreOutOfProcess(["vega-helper", "orion-api"])).toBe(false);
     expect(allPluginsAreOutOfProcess(["vega-helper"])).toBe(true);
-    expect(allPluginsAreOutOfProcess(["vega-helper", "lyra-mail", "local-indexer"])).toBe(true);
+    expect(allPluginsAreOutOfProcess(["vega-helper", "lyra-mail", "local-indexer", "meeting"])).toBe(true);
     // An empty install list is not "all isolated" — it is no evidence either way.
     expect(allPluginsAreOutOfProcess([])).toBe(false);
   });
