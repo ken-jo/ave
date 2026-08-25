@@ -212,6 +212,7 @@ function hostContext(
     pluginRoot: "/plugins/vega-helper",
     hostRoot: "/app",
     pluginDataDir: "/plugins/vega-helper/data",
+    pluginSocketDir: "/plugins/vega-helper/sockets",
     config: { domains: ["portal.example.com"] },
     log: () => undefined,
     hostApi,
