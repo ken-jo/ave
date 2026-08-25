@@ -197,6 +197,8 @@ async function createServiceHarness(
       pluginRoot: PLUGIN_ROOT,
       hostRoot: "/app",
       pluginDataDir: PLUGIN_DATA_DIR,
+      userHome: "/Users/example",
+      aveHome: "/Users/example/.ave",
       installedPluginIds: [],
       generationId: GENERATION,
     },
