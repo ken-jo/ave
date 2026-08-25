@@ -290,28 +290,33 @@ describe("the routing set names the isolated plugins and nothing else", () => {
     // plugin were routed out-of-process without its own e2e evidence — and the
     // whole point of a per-plugin SOT is that each addition is a reviewed,
     // visible decision.
-    expect([...OUT_OF_PROCESS_PLUGIN_IDS]).toEqual(["vega-helper", "lyra-mail"]);
+    expect([...OUT_OF_PROCESS_PLUGIN_IDS]).toEqual([
+      "vega-helper",
+      "lyra-mail",
+      "local-indexer",
+    ]);
     expect(isOutOfProcessPlugin("vega-helper")).toBe(true);
     expect(isOutOfProcessPlugin("lyra-mail")).toBe(true);
-    // The three first-party ids the SOT still names in prose as REFUSED, each
-    // for a measured ambient dependency the boundary removes: `meeting` reaches
-    // the windowing system through `electron`, `orion-api` drives a browser it
-    // launches itself and spawns a shell for directory lookups,
-    // `local-indexer` operates its own egress leg. Asserted
-    // by id so the prose and the set cannot drift apart — the prose is the only
-    // record of WHY, and a set that quietly gained one of them would leave that
-    // record describing something untrue.
+    expect(isOutOfProcessPlugin("local-indexer")).toBe(true);
+    // The two first-party ids the SOT still names in prose as REFUSED, and the
+    // reason is the same for both and different in KIND from anything the
+    // three above had to fix: neither is missing a host API. Both ship code
+    // written to run where the boundary does not reach — `orion-api` compiles
+    // function bodies inside an authenticated page, `meeting` loads its own
+    // preload and renderer into a renderer outside the sandbox. Asserted by id
+    // so the prose and the set cannot drift apart: the prose is the only
+    // record of WHY, and a set that quietly gained one of them would leave
+    // that record describing something untrue.
     expect(isOutOfProcessPlugin("meeting")).toBe(false);
     expect(isOutOfProcessPlugin("orion-api")).toBe(false);
-    expect(isOutOfProcessPlugin("local-indexer")).toBe(false);
     expect(Object.isFrozen(OUT_OF_PROCESS_PLUGIN_IDS)).toBe(true);
   });
 
   it("reports the in-process loader as still needed while any plugin is in-process", () => {
-    expect(allPluginsAreOutOfProcess(["local-indexer"])).toBe(false);
-    expect(allPluginsAreOutOfProcess(["vega-helper", "local-indexer"])).toBe(false);
+    expect(allPluginsAreOutOfProcess(["meeting"])).toBe(false);
+    expect(allPluginsAreOutOfProcess(["vega-helper", "meeting"])).toBe(false);
     expect(allPluginsAreOutOfProcess(["vega-helper"])).toBe(true);
-    expect(allPluginsAreOutOfProcess(["vega-helper", "lyra-mail"])).toBe(true);
+    expect(allPluginsAreOutOfProcess(["vega-helper", "lyra-mail", "local-indexer"])).toBe(true);
     // An empty install list is not "all isolated" — it is no evidence either way.
     expect(allPluginsAreOutOfProcess([])).toBe(false);
   });
