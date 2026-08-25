@@ -357,6 +357,28 @@ export const CHANNELS = {
     // Fan-out to plugin webviews (main → plugin frame).
     event: "ave:plugin:event",
   },
+  /**
+   * Floating dock (ave:dock:*) — the host's always-on-top window.
+   *
+   * Main-to-dock unless the comment says otherwise. Separate from
+   * `pluginBridge` because these are the HOST's channels: the plugin cards
+   * inside the dock talk over `pluginBridge` exactly as sidebar cards do, and
+   * nothing here is reachable from a plugin frame.
+   */
+  dock: {
+    /** Replace the host's activity line. `null` clears it. */
+    activity: "ave:dock:activity",
+    /** Add a plugin card to a slot. */
+    mount: "ave:dock:mount",
+    /** Change one card's height. */
+    resize: "ave:dock:resize",
+    /** Remove a plugin card. */
+    unmount: "ave:dock:unmount",
+    /** Dock-to-main: the user pressed the dock's close control. */
+    requestClose: "ave:dock:request-close",
+    /** Dock-to-main: one slot's guest died. */
+    slotGone: "ave:dock:slot-gone",
+  },
   host: {
     pluginThemeNotify: "ave:host:plugin-theme-notify",
   },
