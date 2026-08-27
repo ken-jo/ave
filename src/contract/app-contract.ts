@@ -66,6 +66,10 @@ export const CHANNELS = {
     // Reverse of `export` — always creates a brand-new session,
     // never overwrites. INTERNAL (mutating; not in PUBLIC_CHANNELS below).
     import: "ave:chat:import",
+    // Row-level conversation edits. INTERNAL (mutating) — the renderer may set
+    // ONLY the three fields these name, never arbitrary session metadata.
+    sessionUpdate: "ave:chat:session-update",
+    sessionDelete: "ave:chat:session-delete",
     enterCheckpointView: "ave:chat:enter-checkpoint-view",
     exitCheckpointView: "ave:chat:exit-checkpoint-view",
     branchFromCheckpoint: "ave:chat:branch-from-checkpoint",
