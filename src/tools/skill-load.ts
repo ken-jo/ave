@@ -14,7 +14,7 @@
  *     (see {@link SkillOverlay}).
  *   - Every skill — including seeded built-ins under `~/.ave/skills/`,
  *     which are user-editable on disk — runs through {@link ApprovalGate}
- *     on first load. Approval is persisted in `~/.ave/skill-approvals.json`
+ *     on first load. Approval is persisted in `~/.ave/skills/approvals.json`
  *     and hash-bound to the current body so a post-approval body swap
  *     re-prompts (R2-CR-3 TOCTOU close).
  *   - Skill names are allowlisted to `[a-zA-Z0-9_-]+` and traversal-checked
