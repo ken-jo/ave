@@ -201,7 +201,7 @@ export interface AppServices {
   refreshSandboxNetworkConfig?: () => Promise<void>;
   /** Whether knowledge search tools were successfully registered. */
   knowledgeAvailable: boolean;
-  /** Starred messages persistence (~/.ave/starred.json) */
+  /** Starred messages persistence (~/.ave/sessions/starred.json) */
   starredStore?: StarredStore;
   /** Privacy hardening — feedback persistence separate from audit log (~/.ave/feedback.jsonl) */
   feedbackStore?: FeedbackStore;
