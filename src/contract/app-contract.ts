@@ -92,6 +92,8 @@ export const CHANNELS = {
     enterCheckpointView: "ave:chat:enter-checkpoint-view",
     exitCheckpointView: "ave:chat:exit-checkpoint-view",
     branchFromCheckpoint: "ave:chat:branch-from-checkpoint",
+    // A closed tile lets go of its conversation. INTERNAL (mutating).
+    groupRelease: "ave:chat:group-release",
     getVerbatimToolResult: "ave:chat:get-verbatim-tool-result",
     getSubAgentTranscript: "ave:chat:get-sub-agent-transcript",
     getWriteDiff: "ave:chat:get-write-diff",
