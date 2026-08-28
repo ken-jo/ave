@@ -67,6 +67,8 @@ const RAW_LOCAL_ATTACHMENTS: Attachment[] = [
 
 function setup(options?: {
   chatSend?: ReturnType<typeof vi.fn>;
+  sessionLoad?: ReturnType<typeof vi.fn>;
+  api?: Partial<AveApi>;
   attachments?: Attachment[];
   activeSubscriptionRuntime?: SubscriptionChatRuntimeSelection | null;
   subscriptionChatReady?: boolean | null;
@@ -117,7 +119,7 @@ function setup(options?: {
   const setErrorWithThought = vi.fn();
 
   const { api: mockApi, emitChatStream } = makeMockAveApi();
-  const api = { ...mockApi, chatSend, chatAbort } as unknown as AveApi;
+  const api = { ...mockApi, chatSend, chatAbort, ...options?.api } as unknown as AveApi;
   const deps = {
     api,
     t: (key: string) => key,
@@ -154,7 +156,7 @@ function setup(options?: {
     finishStreamingRequest: vi.fn(),
     setErrorWithThought,
     handleCompactCommand: options?.handleCompactCommand ?? vi.fn(),
-    sessionLoad: vi.fn(),
+    sessionLoad: options?.sessionLoad ?? vi.fn(),
     applyLoadedSession: vi.fn(),
     refreshSessionId: vi.fn(),
     refreshSessions: vi.fn(),
@@ -578,5 +580,27 @@ describe("handleAsk — a send while a turn is still running", () => {
     expect(markLastAssistantInterrupted).not.toHaveBeenCalled();
     expect(chatSend.mock.calls[0]?.[5]).toBeUndefined();
     expect(resetStreamAccumulators).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("handleAsk — /load", () => {
+  it("reports a session that could not be opened instead of finishing as if it had", async () => {
+    const sessionLoad = vi.fn(async () => false);
+    const chatSessions = vi.fn(async () => ({
+      current: "s-current",
+      sessions: [{ id: "s-held-by-another-tile", modifiedAt: "2026-08-28T00:00:00.000Z", title: "", sessionKind: "main" }],
+    }));
+    const { result, chatSend, setErrorWithThought } = setup({
+      sessionLoad,
+      api: { chatSessions } as unknown as Partial<AveApi>,
+    });
+
+    await act(async () => {
+      await result.current.handleAsk("/load s-held");
+    });
+
+    expect(sessionLoad).toHaveBeenCalledWith("s-held-by-another-tile", false, expect.any(Function));
+    expect(setErrorWithThought).toHaveBeenCalledWith("app.sessionLoadFailed");
+    expect(chatSend).not.toHaveBeenCalled();
   });
 });
