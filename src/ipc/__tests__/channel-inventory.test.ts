@@ -252,6 +252,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:chat:main-active-state",
         "ave:chat:new",
         "ave:chat:retry-effort",
+        "ave:chat:rewind-to",
         "ave:chat:send",
         "ave:chat:session-delete",
         "ave:chat:session-history",
