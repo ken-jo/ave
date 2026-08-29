@@ -25,7 +25,7 @@ import {
   resetLoadedThemeBundleCacheForTests,
   setThemeBundleLoaderOverrideForTests,
 } from "../theme/bundles/index.js";
-import { makeMockAveApi } from "../../../../test/renderer/mock-ave-api.js";
+import { makeMockAveApi, MOCK_DEFAULT_SETTINGS } from "../../../../test/renderer/mock-ave-api.js";
 
 afterEach(() => {
   document.documentElement.removeAttribute("data-theme-bundle");
@@ -126,9 +126,7 @@ describe("<ThemeProvider>", () => {
   it("hydrates bundleId from api.getSettings() on mount (v2 shape)", async () => {
     const { api } = makeMockAveApi({
       settings: {
-        llm: { provider: "openai", vendors: {}, streamSmoothing: "none", fallbackChain: [] },
-        chat: { systemPrompt: "", autoCompact: true },
-        webSearch: { provider: "none" },
+        ...MOCK_DEFAULT_SETTINGS,
         appearance: { schemaVersion: 2, bundleId: "midnight" },
       },
     });
@@ -186,9 +184,7 @@ describe("<ThemeProvider>", () => {
   it("applies settings:update broadcasts from another window without restart", async () => {
     const { api } = makeMockAveApi({
       settings: {
-        llm: { provider: "openai", vendors: {}, streamSmoothing: "none", fallbackChain: [] },
-        chat: { systemPrompt: "", autoCompact: true },
-        webSearch: { provider: "none" },
+        ...MOCK_DEFAULT_SETTINGS,
         appearance: { schemaVersion: 2, bundleId: "tokyo-night" },
       },
     });
@@ -215,9 +211,7 @@ describe("<ThemeProvider>", () => {
   it("persistence roundtrip: set midnight → simulated reload → still midnight", async () => {
     let stored: { schemaVersion: 2; bundleId: string } = { schemaVersion: 2, bundleId: "tokyo-night" };
     const settingsBacking = {
-      llm: { provider: "openai", vendors: {}, streamSmoothing: "none", fallbackChain: [] },
-      chat: { systemPrompt: "", autoCompact: true },
-      webSearch: { provider: "none" },
+      ...MOCK_DEFAULT_SETTINGS,
       appearance: stored,
     };
     const { api: api1 } = makeMockAveApi({ settings: settingsBacking });

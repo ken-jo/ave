@@ -9,16 +9,11 @@ import "../../../../../test/renderer/setup.js";
 import { describe, it, expect } from "vitest";
 import { fireEvent, render, waitFor } from "@testing-library/react";
 import { TelemetrySection } from "../TelemetrySection.js";
-import { installMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
+import { installMockAveApi, MOCK_DEFAULT_SETTINGS } from "../../../../../test/renderer/mock-ave-api.js";
 
 
 const BASE_SETTINGS = {
-  llm: { provider: "openai", vendors: {}, streamSmoothing: "none", fallbackChain: [] },
-  chat: { systemPrompt: "", autoCompact: true },
-  webSearch: { provider: "none" },
-  system: {},
-  shortcuts: { toggleWindow: null, enabled: false },
-  features: {},
+  ...MOCK_DEFAULT_SETTINGS,
   telemetry: { enabled: false, crashReportingEnabled: false },
 };
 
