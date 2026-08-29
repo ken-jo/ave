@@ -75,6 +75,7 @@ export const PERMISSIONS = {
   addRule: "ave:permission:add-rule",
   removeRule: "ave:permission:remove-rule",
   approvalRespond: "ave:approval:respond",
+  approvalPending: "ave:approval:pending",
   policyGet: "ave:policy:get",
   policySet: "ave:policy:set",
   dirDispatch: "ave:permissions:dir-dispatch",
