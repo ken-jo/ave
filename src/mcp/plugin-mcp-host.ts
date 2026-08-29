@@ -48,6 +48,7 @@ import {
 } from "./protocol-constants.js";
 
 import { getAveAppVersion } from "../shared/app-version.js";
+
 const CLIENT_INFO = { name: "ave", version: getAveAppVersion() } as const;
 /** First-party host advertises elicitation; sampling/roots are deprecated (§8 SEP-2577). */
 const CLIENT_CAPABILITIES = { elicitation: { form: {}, url: {} }, extensions: {} } as const;
