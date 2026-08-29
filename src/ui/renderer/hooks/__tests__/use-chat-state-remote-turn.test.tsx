@@ -12,13 +12,13 @@ import { describe, it, expect } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import { useChatState } from "../use-chat-state.js";
 import type { AveApi } from "../../types.js";
-import type { StreamEvent } from "../../../../lib/chat-stream-state.js";
+import type { ChatStreamEvent } from "../../../../lib/chat-stream-state.js";
 import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 
 function setup() {
   const { api, emitChatStream } = makeMockAveApi();
   const { result } = renderHook(() => useChatState(api as unknown as AveApi));
-  const dispatch = (ev: StreamEvent) => act(() => emitChatStream(ev));
+  const dispatch = (ev: ChatStreamEvent) => act(() => emitChatStream(ev));
   return { result, dispatch };
 }
 
