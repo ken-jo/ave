@@ -3,10 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 import { useSettingsOrchestration } from "../use-settings-orchestration.js";
 import type { AppSettings, AveApi } from "../../types.js";
 import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
+import { fakeAppSettings } from "../../../../../test/renderer/fake-app-settings.js";
 import { marketplaceProviderPresetSecretId } from "../../../../shared/marketplace-package-assets.js";
 
 function makeSettings(): AppSettings {
-  return {
+  return fakeAppSettings({
     llm: {
       provider: "openai",
       vendors: {
@@ -26,7 +27,7 @@ function makeSettings(): AppSettings {
       cloudBaseUrl: "",
       cloudAllowPrivateNetwork: false,
     },
-  };
+  });
 }
 
 function settingsOrchestrationApi(updateResult: Awaited<ReturnType<AveApi["updateSettings"]>>): AveApi {
@@ -396,7 +397,8 @@ describe("useSettingsOrchestration", () => {
   });
 
   it("defaults autonomous sub-agent wake off and persists an opt-in immediately", async () => {
-    const settings = makeSettings();
+    // No persisted `features` block at all: the renderer must read that as "off".
+    const { features: _hostDefaults, ...settings } = makeSettings();
     const updated: AppSettings = {
       ...settings,
       features: { subAgentAutonomousWake: true },
