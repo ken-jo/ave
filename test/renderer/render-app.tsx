@@ -26,6 +26,8 @@ type RenderAppOpts = Parameters<typeof makeMockAveApi>[0] & {
     enableDevConsole: boolean;
     debugStream: boolean;
   }>;
+  /** Approval requests the host is already parked on when the window mounts. */
+  pendingApprovals?: unknown[];
 };
 
 export type RenderAppReturn = {
@@ -48,7 +50,7 @@ export type RenderAppReturn = {
 };
 
 export async function renderApp(opts: RenderAppOpts = {}): Promise<RenderAppReturn> {
-  const { aveEnv, ...apiOpts } = opts;
+  const { aveEnv, pendingApprovals, ...apiOpts } = opts;
   const {
     api,
     emitChatStream,
@@ -63,7 +65,7 @@ export async function renderApp(opts: RenderAppOpts = {}): Promise<RenderAppRetu
     emitNotificationToast,
     emitNotificationClicked,
   } = makeMockAveApi(apiOpts);
-  const { ns, emitApproval } = makeMockAveNamespace({ env: aveEnv });
+  const { ns, emitApproval } = makeMockAveNamespace({ env: aveEnv, pendingApprovals });
 
   vi.stubGlobal("aveApi", api);
   vi.stubGlobal("ave", ns);
