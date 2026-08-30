@@ -37,6 +37,7 @@ export type RenderAppReturn = {
   api: MockAveApi;
   emitChatStream: (ev: unknown) => void;
   emitAgentSpawnEvent: ReturnType<typeof makeMockAveApi>["emitAgentSpawnEvent"];
+  emitSkillLoaded: ReturnType<typeof makeMockAveApi>["emitSkillLoaded"];
   emitOverlayShow: (item: unknown) => void;
   emitOverlayDismiss: (id: string) => void;
   emitRoutineFired: (r: unknown) => void;
@@ -57,6 +58,7 @@ export async function renderApp(opts: RenderAppOpts = {}): Promise<RenderAppRetu
     api,
     emitChatStream,
     emitAgentSpawnEvent,
+    emitSkillLoaded,
     emitOverlayShow,
     emitOverlayDismiss,
     emitRoutineFired,
@@ -84,6 +86,7 @@ export async function renderApp(opts: RenderAppOpts = {}): Promise<RenderAppRetu
     api,
     emitChatStream,
     emitAgentSpawnEvent,
+    emitSkillLoaded,
     emitOverlayShow,
     emitOverlayDismiss,
     emitRoutineFired,
