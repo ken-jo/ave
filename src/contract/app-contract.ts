@@ -517,6 +517,13 @@ export const CHANNELS = {
   },
   approval: {
     request: "ave:approval:request",
+    /**
+     * main→renderer: this request is no longer answerable, whatever settled
+     * it. The renderer reconciles its queue against it, so a card whose turn
+     * ended somewhere the renderer could not watch — the tile closed, a
+     * navigation let go of it — is taken down instead of outliving its ask.
+     */
+    settled: "ave:approval:settled",
   },
   dlp: {
     stats: "ave:dlp:stats",
