@@ -20,14 +20,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 
-import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { createTmpDirTracker } from "../../../__tests__/support/tmp-dir-teardown.js";
 
-const tmpDirs = new Set<string>();
-
-function trackTmpDir(dir: string): string {
-  tmpDirs.add(dir);
-  return dir;
-}
+const tmpDirs = createTmpDirTracker();
 
 const runtimeTestState = vi.hoisted(() => ({
   browserWindows: [] as Array<{ isDestroyed: () => boolean; webContents: { send: (channel: string, payload: unknown) => void };
@@ -271,12 +266,7 @@ beforeEach(() => {
   runtimeTestState.spawnWorker.mockReset();
 });
 
-afterEach(async () => {
-  for (const dir of tmpDirs) {
-    await cleanupTmpDir(dir);
-  }
-  tmpDirs.clear();
-});
+afterEach(() => tmpDirs.cleanup());
 
 describe("HostApi.config.get merged-read precedence", () => {
   it("fails clearly when immutable install provenance is omitted", async () => {
@@ -291,7 +281,7 @@ describe("HostApi.config.get merged-read precedence", () => {
     expect(() => invokeWithoutInstallId(
       "plugin-a",
       { id: "plugin-a", config: {} },
-      trackTmpDir(mkdtempSync("/tmp/ave-missing-provenance-")),
+      tmpDirs.track(mkdtempSync("/tmp/ave-missing-provenance-")),
       activeIncarnation(),
     )).toThrow(/HostApi install provenance missing: plugin-a/);
     expect(runtimeTestState.runtime.resolvePluginInstallId).not.toHaveBeenCalled();
@@ -309,7 +299,7 @@ describe("HostApi.config.get merged-read precedence", () => {
     const api = createHostApi(
       "plugin-a",
       { id: "plugin-a", config: { a: "m", shared: "m" } },
-      trackTmpDir(mkdtempSync("/tmp/ave-cfg-")),
+      tmpDirs.track(mkdtempSync("/tmp/ave-cfg-")),
       activeIncarnation(),
       "plugin-a",
     );
@@ -339,7 +329,7 @@ describe("HostApi.config.get merged-read precedence", () => {
           },
         },
       },
-      trackTmpDir(mkdtempSync("/tmp/ave-cfg-def-")),
+      tmpDirs.track(mkdtempSync("/tmp/ave-cfg-def-")),
       activeIncarnation(),
       "plugin-a",
     );
@@ -361,10 +351,10 @@ describe("HostApi.storage containment refusals reach the boot audit log", () => 
 
   it("routes a symlink escape through the shared plugin-runtime audit sink", async () => {
     const createHostApi = await initAndGetFactory(makeSettingsService(new Map()));
-    const dataDir = trackTmpDir(
+    const dataDir = tmpDirs.track(
       mkdtempSync(join(tmpdir(), "ave-storage-audit-boot-")),
     );
-    const outsideDir = trackTmpDir(
+    const outsideDir = tmpDirs.track(
       mkdtempSync(join(tmpdir(), "ave-storage-audit-boot-out-")),
     );
     writeFileSync(join(outsideDir, "secret.txt"), "shhh", "utf-8");
@@ -407,7 +397,7 @@ describe("HostApi.storage containment refusals reach the boot audit log", () => 
     const api = createHostApi(
       "plugin-a",
       { id: "plugin-a", config: {} },
-      trackTmpDir(mkdtempSync(join(tmpdir(), "ave-storage-audit-ok-"))),
+      tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-storage-audit-ok-"))),
       activeIncarnation(),
       "plugin-a",
     );
@@ -438,7 +428,7 @@ describe("HostApi.config.set round-trip", () => {
     return createHostApi(
       "plugin-a",
       activeManifest,
-      trackTmpDir(mkdtempSync("/tmp/ave-cfg-set-")),
+      tmpDirs.track(mkdtempSync("/tmp/ave-cfg-set-")),
       {
         registerDisposer: vi.fn(),
         trackOperation: <T>(operation: Promise<T>) => operation,
@@ -486,7 +476,7 @@ describe("HostApi.config.set round-trip", () => {
     const api = createHostApi(
       "plugin-a",
       activeManifest,
-      trackTmpDir(mkdtempSync("/tmp/ave-cfg-secret-")),
+      tmpDirs.track(mkdtempSync("/tmp/ave-cfg-secret-")),
       activeIncarnation(),
       "plugin-a",
     );
@@ -543,7 +533,7 @@ describe("HostApi.config.set round-trip", () => {
     const api = createHostApi(
       "plugin-a",
       activeManifest,
-      trackTmpDir(mkdtempSync("/tmp/ave-cfg-lifecycle-")),
+      tmpDirs.track(mkdtempSync("/tmp/ave-cfg-lifecycle-")),
       {
         registerDisposer: vi.fn(),
         trackOperation,
@@ -623,7 +613,7 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     const api = createHostApi(
       "lyra-mail",
       { id: "lyra-mail", config: {}, capabilities: [] },
-      trackTmpDir(mkdtempSync("/tmp/ave-candidate-event-grant-")),
+      tmpDirs.track(mkdtempSync("/tmp/ave-candidate-event-grant-")),
       activeIncarnation(),
       "lyra-mail",
       { installSource: "admin", manifestSha256: "candidate-sha" },
@@ -673,7 +663,7 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     const api = createHostApi(
       pluginId,
       manifest,
-      trackTmpDir(mkdtempSync("/tmp/ave-hostapi-alias-")),
+      tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-alias-")),
       activeIncarnation(),
       installAlias,
     );
@@ -702,7 +692,7 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     const api = createHostApi(
       pluginId,
       manifest,
-      trackTmpDir(mkdtempSync("/tmp/ave-hostapi-fresh-admin-")),
+      tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-fresh-admin-")),
       activeIncarnation(),
       "marketplace-fresh-admin",
       { installSource: "admin", manifestSha256 },
@@ -719,7 +709,7 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     const api = createHostApi(
       "plugin-a",
       { id: "plugin-a", config: {}, capabilities: [] },
-      trackTmpDir(mkdtempSync("/tmp/ave-evt-")),
+      tmpDirs.track(mkdtempSync("/tmp/ave-evt-")),
       activeIncarnation(),
       "plugin-a",
     );
@@ -761,7 +751,7 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     const api = createHostApi(
       "plugin-a",
       { id: "plugin-a", config: {} },
-      trackTmpDir(mkdtempSync("/tmp/ave-issued-capabilities-")),
+      tmpDirs.track(mkdtempSync("/tmp/ave-issued-capabilities-")),
       {
         registerDisposer: (dispose) => disposers.push(dispose),
         trackOperation: <T>(operation: Promise<T>) => operation,
@@ -832,7 +822,7 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
         capabilities: ["mail-source"],
         emittedEvents: ["plugin-a.updated"],
       },
-      trackTmpDir(mkdtempSync("/tmp/ave-emit-denied-")),
+      tmpDirs.track(mkdtempSync("/tmp/ave-emit-denied-")),
       activeIncarnation(),
       "plugin-a",
     );
@@ -872,7 +862,7 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     const api = createHostApi(
       "plugin-a",
       { id: "plugin-a", config: {}, emittedEvents: ["plugin-a.updated"] },
-      trackTmpDir(mkdtempSync("/tmp/ave-revoked-hostapi-")),
+      tmpDirs.track(mkdtempSync("/tmp/ave-revoked-hostapi-")),
       {
         registerDisposer: vi.fn(),
         trackOperation: <T>(operation: Promise<T>) => operation,
