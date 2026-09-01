@@ -35,6 +35,8 @@ export type RenderAppReturn = {
   rerender: RenderResult["rerender"];
   unmount: RenderResult["unmount"];
   api: MockAveApi;
+  /** Which groups' loops were released — see `makeMockAveApi`. */
+  releasedGroupIds: () => string[];
   emitChatStream: (ev: unknown) => void;
   emitAgentSpawnEvent: ReturnType<typeof makeMockAveApi>["emitAgentSpawnEvent"];
   emitSkillLoaded: ReturnType<typeof makeMockAveApi>["emitSkillLoaded"];
@@ -57,6 +59,7 @@ export async function renderApp(opts: RenderAppOpts = {}): Promise<RenderAppRetu
   const { aveEnv, pendingApprovals, ...apiOpts } = opts;
   const {
     api,
+    releasedGroupIds,
     emitChatStream,
     emitAgentSpawnEvent,
     emitSkillLoaded,
@@ -86,6 +89,7 @@ export async function renderApp(opts: RenderAppOpts = {}): Promise<RenderAppRetu
     rerender: result.rerender,
     unmount: result.unmount,
     api,
+    releasedGroupIds,
     emitChatStream,
     emitAgentSpawnEvent,
     emitSkillLoaded,
