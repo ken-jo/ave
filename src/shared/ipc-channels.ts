@@ -133,4 +133,6 @@ export const UI = {
   assistantContextAction: "ave:ui:assistant-context-action",
   nativeContextMenu: "ave:ui:native-context-menu",
   nativeContextAction: "ave:ui:native-context-action",
+  dynamicMenu: "ave:ui:dynamic-menu",
+  dynamicMenuAction: "ave:ui:dynamic-menu-action",
 } as const;
