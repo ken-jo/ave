@@ -551,10 +551,10 @@ export const CHANNELS = {
   view: {
     activate: "ave:view:activate",
   },
-  sessionTodo: {
-    list: "ave:session-todo:list",
-    clear: "ave:session-todo:clear",
-    changed: "ave:session-todo:changed",
+  sessionTasks: {
+    list: "ave:session-tasks:list",
+    clear: "ave:session-tasks:clear",
+    changed: "ave:session-tasks:changed",
   },
   agentSpawn: {
     event: "ave:agent-spawn:event",
