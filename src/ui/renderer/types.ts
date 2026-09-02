@@ -1912,10 +1912,17 @@ export interface AveUiApi {
   ) => () => void;
 }
 
+/** The preload platform bridge (`window.avePlatform`). */
+export type AvePlatformApi = {
+  isDarwin: boolean;
+};
+
 declare global {
   interface Window {
     aveApi: AveApi;
     aveHost: AveHostApi;
+    /** Absent outside Electron (jsdom, Storybook) — there is no native chrome to adapt to. */
+    avePlatform?: AvePlatformApi;
     aveDrop: AveDropApi;
     ave: {
       permission: AvePermissionApi;
