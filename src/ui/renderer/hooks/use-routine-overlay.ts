@@ -10,6 +10,7 @@ import {
   type ChatGroupSessionRegistry,
 } from "../components/chat-group-session-registry.js";
 import type { TranslateFn } from "../../../i18n/translate.js";
+import { errorMessage } from "../../../shared/error-message.js";
 
 type Api = ReturnType<typeof getApi>;
 
@@ -140,7 +141,7 @@ export function useRoutineOverlay({
         const pending = await api.listPendingRoutineResults();
         for (const result of pending) pushRoutineResult(result);
       } catch (err) {
-        console.warn("[ave] listPendingRoutineResults failed:", (err as Error).message);
+        console.warn("[ave] listPendingRoutineResults failed:", errorMessage(err));
       }
     })();
 
@@ -232,7 +233,7 @@ export function useRoutineOverlay({
   const handleRoutineAcknowledge = useCallback(
     (routineId: string, firedAt: string) => {
       void api.acknowledgeRoutineResult(routineId, firedAt).catch((err) => {
-        console.warn("[ave] acknowledgeRoutineResult failed:", (err as Error).message);
+        console.warn("[ave] acknowledgeRoutineResult failed:", errorMessage(err));
       });
     },
     [api],
