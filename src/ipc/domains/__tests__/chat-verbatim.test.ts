@@ -1332,7 +1332,7 @@ B${i}
       },
       {
         channel: "ave:chat:stream",
-        payload: expect.objectContaining({ type: "suggested_replies", replies: [], streamId: 1 }),
+        payload: expect.objectContaining({ type: "suggested_replies", reply: null, streamId: 1 }),
       },
       {
         channel: "ave:chat:stream",
