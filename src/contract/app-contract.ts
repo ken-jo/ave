@@ -574,6 +574,13 @@ export const CHANNELS = {
     clear: "ave:session-tasks:clear",
     changed: "ave:session-tasks:changed",
   },
+  sessionGoal: {
+    get: "ave:session-goal:get",
+    pause: "ave:session-goal:pause",
+    resume: "ave:session-goal:resume",
+    clear: "ave:session-goal:clear",
+    changed: "ave:session-goal:changed",
+  },
   agentSpawn: {
     event: "ave:agent-spawn:event",
   },
