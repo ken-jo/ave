@@ -22,10 +22,6 @@ const ALLOWED_FILE = pathResolve(SRC_ROOT, "shared/ave-home.ts");
 // Patterns that flag violations:
 // 1. Direct `(join|resolve|...)(homedir(), ".ave", ...)` form
 // 2. Template-literal `\`${homedir()}/.ave...\`` form
-// Plugin-side helpers that take a `home` parameter (e.g.
-// `getDefaultAuditDir(home)` in permission-audit-runner) are intentionally
-// NOT scanned here — they delegate the responsibility to the caller.
-// Their callers must already use aveHome().
 const VIOLATION_PATTERNS: RegExp[] = [
   // join(homedir(), ".ave", ...) / resolve / pathResolve / path.join / path.resolve
   /(?:join|resolve|pathResolve|path\.join|path\.resolve)\(\s*(?:os\.)?homedir\(\)\s*,\s*"\.ave"/,

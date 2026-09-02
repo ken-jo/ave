@@ -213,6 +213,23 @@ describe("logger format selection", () => {
     expect(logger.level).toBe("info");
   });
 
+  it("Electron + packaged + AVE_DEV=1 → still JSON: a packaged binary ignores the dev flag", async () => {
+    // The old local heuristic honoured AVE_DEV=1 here and chose pino-pretty;
+    // dev-flags' rule is that packaged builds ignore AVE_DEV*, and the logger
+    // now derives "packaged" from dev-flags.
+    const { transport, logger } = await importLogger(
+      {
+        NODE_ENV: "development",
+        AVE_LOG_FORMAT: undefined,
+        VITEST: undefined,
+        AVE_DEV: "1",
+      },
+      { electronVersion: "32.0.0", defaultApp: null },
+    );
+    expect(transport).toBeUndefined();
+    expect(logger.level).toBe("info");
+  });
+
   it("plain Node.js (no process.versions.electron) → isElectronRuntime=false → pino-pretty for dev", async () => {
     // Explicitly removes process.versions.electron (simulates plain Node / scripts).
     const { transport } = await importLogger(
