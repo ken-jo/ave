@@ -130,14 +130,14 @@ const GUARDRAIL: readonly string[] = [
  *
  * The tailnet group is listed by name rather than through
  * {@link ENV_BACKED_SETTINGS} because its control writes a host-owned file
- * instead of the settings store — the capability it carries must stay
- * unsettable by a renderer. Same surface obligation, different backing.
+ * instead of the settings store — the authorization boundary it carries must
+ * stay unsettable by a renderer. Same surface obligation, different backing.
  */
 const SETTINGS_BACKED: readonly string[] = [
   ...ENV_BACKED_SETTINGS.map((entry) => entry.envVar),
   "AVE_TAILNET_CONTROLLER",
   "AVE_TAILNET_OBSERVER",
-  "AVE_TAILNET_OBSERVER_CAP",
+  "AVE_TAILNET_OBSERVER_AUTHORIZATION",
   "AVE_TAILNET_OBSERVER_PORT",
   "AVE_TAILNET_PAIRED_SHARING",
   "AVE_TAILNET_WEB",
