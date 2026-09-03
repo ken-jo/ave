@@ -18,6 +18,7 @@
  *                 ave:marketplace:ping, ave:host:plugin-theme-notify,
  *                 ave:notification:clicked
  *   prompts       ave:prompts:*
+ *   home-docs     ave:home-docs:* — ~/.ave reference docs + upgrade markers
  *   usage         ave:usage:*
  *   audit         ave:audit:*, ave:dlp:*
  *   diagnostics   ave:diagnostics:*, ave:logs:tail
@@ -54,6 +55,7 @@ import { registerChatHandlers } from "./domains/chat.js";
 import { registerSideChatHandlers } from "./domains/sidechat.js";
 import { registerPluginsHandlers } from "./domains/plugins.js";
 import { registerPromptHandlers } from "./domains/prompts.js";
+import { registerHomeDocsHandlers } from "./domains/home-docs.js";
 import { registerUsageHandlers } from "./domains/usage.js";
 import { registerAuditHandlers } from "./domains/audit.js";
 import { registerDiagnosticsHandlers } from "./domains/diagnostics.js";
@@ -125,6 +127,7 @@ export function registerIpcHandlers(
   registerSideChatHandlers(deps);
   registerPluginsHandlers(deps);
   registerPromptHandlers(deps);
+  registerHomeDocsHandlers(deps);
   registerUsageHandlers(deps);
   registerAuditHandlers(deps);
   registerDiagnosticsHandlers(deps);
