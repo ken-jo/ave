@@ -507,6 +507,13 @@ export const CHANNELS = {
     dismiss: "ave:tour:dismiss",
     start: "ave:tour:start",
   },
+  // Plugin onboarding proposals. INTERNAL, same posture as `tour`: absent from
+  // PUBLIC_CHANNELS / EXTERNAL_MUTATION_CHANNELS / CHANNEL_GESTURE, so only the
+  // host renderer reaches them.
+  onboarding: {
+    listPending: "ave:onboarding:proposals:list-pending",
+    answer: "ave:onboarding:proposals:answer",
+  },
   prompts: {
     listSummaries: "ave:prompts:list-summaries",
     list: "ave:prompts:list",
