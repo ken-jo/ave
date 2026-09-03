@@ -144,6 +144,25 @@ export const CHANNELS = {
     userPrefsRefresh: "ave:memory:user-prefs:refresh",
     longTermRefresh: "ave:memory:long-term:refresh",
   },
+  /**
+   * The `~/.ave` reference docs as a surface rather than a boot log line.
+   *
+   * Separate from `memory` because the subject is the FILES and their pending
+   * packaged updates, not the context the prompt reads: skills and prompts get
+   * upgrade markers too, and folding them into a channel named for agent
+   * context would make which doc owns a marker a matter of naming.
+   */
+  homeDocs: {
+    upgradeMarkersList: "ave:home-docs:upgrade-markers:list",
+    markerRead: "ave:home-docs:marker:read",
+    packagedApply: "ave:home-docs:packaged:apply",
+    markerKeepMine: "ave:home-docs:marker:keep-mine",
+    customGet: "ave:home-docs:custom:get",
+    customUpdate: "ave:home-docs:custom:update",
+    mergeRun: "ave:home-docs:merge:run",
+    mergeApply: "ave:home-docs:merge:apply",
+    mergeDiscard: "ave:home-docs:merge:discard",
+  },
   starred: {
     list: "ave:starred:list",
     add: "ave:starred:add",
