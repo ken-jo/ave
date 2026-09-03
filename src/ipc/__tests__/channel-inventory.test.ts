@@ -232,6 +232,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:away-authority:disarm",
         "ave:away-authority:status",
         "ave:bootstrap:retry",
+        "ave:bootstrap:status:get",
         "ave:chat:abort",
         "ave:chat:branch-from-checkpoint",
         "ave:chat:compact",

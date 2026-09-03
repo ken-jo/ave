@@ -14,7 +14,7 @@
  *                 ave:feedback:*, ave:ask-user-question:*
  *   sidechat      ave:sidechat:*
  *   plugins       ave:plugins:*, ave:plugin:*, ave:mcp:*, ave:runtime:*,
- *                 ave:agents:*, ave:skills:*, ave:bootstrap:retry,
+ *                 ave:agents:*, ave:skills:*, ave:bootstrap:*,
  *                 ave:marketplace:ping, ave:host:plugin-theme-notify,
  *                 ave:notification:clicked
  *   prompts       ave:prompts:*
