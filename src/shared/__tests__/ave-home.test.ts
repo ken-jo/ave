@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { ensureAveHomePrivate, aveHome, win32SystemBinary } from "../ave-home.js";
-import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { useTempPaths } from "../../__tests__/test-helpers.js";
 
 const originalAveHome = process.env.AVE_HOME;
 
@@ -41,17 +41,7 @@ describe("win32SystemBinary", () => {
 });
 
 describe("ensureAveHomePrivate", () => {
-  const created: string[] = [];
-
-  function home(): string {
-    const dir = mkdtempSync(join(tmpdir(), "ave-home-privacy-"));
-    created.push(dir);
-    return join(dir, ".ave");
-  }
-
-  afterEach(async () => {
-    for (const dir of created.splice(0)) await cleanupTmpDir(dir);
-  });
+  const home = useTempPaths("ave-home-privacy-", ".ave");
 
   it("creates the home directory with owner-only POSIX permissions", () => {
     const dir = home();

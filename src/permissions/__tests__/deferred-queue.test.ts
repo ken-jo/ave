@@ -7,10 +7,7 @@ import { PermissionTestResources } from "./test-resources.js";
 
 const resources = new PermissionTestResources();
 
-function tmpQueuePath(): string {
-  const dir = resources.makeTmpDir("ave-deferred-queue-");
-  return join(dir, "deferred-queue.jsonl");
-}
+const tmpQueuePath = resources.tmpFilePaths("ave-deferred-queue-", "deferred-queue.jsonl");
 
 afterEach(async () => {
   await resources.cleanup();
