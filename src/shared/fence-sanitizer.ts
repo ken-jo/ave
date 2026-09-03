@@ -33,6 +33,7 @@ export type FenceTag =
   | "ave-memory-index"
   | "ave-user-memory"
   | "ave-preference-source"
+  | "ave-agents-merge-source"
   | "ave-memory-consolidation-source"
   | "ave-long-term-memory-overview"
   | "ave-parent-directive"
