@@ -26,7 +26,7 @@ import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 
 function setup() {
   const { api } = makeMockAveApi();
-  const chat = renderHook(() => useChatState(api as unknown as AveApi));
+  const chat = renderHook(() => useChatState(api as unknown as AveApi, () => {}));
   const replies = renderHook(() => useSuggestedReplies());
   act(() => {
     pushSuggestedReply("다음 작업 진행");
