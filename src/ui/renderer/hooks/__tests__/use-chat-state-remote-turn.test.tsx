@@ -17,7 +17,7 @@ import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 
 function setup() {
   const { api, emitChatStream } = makeMockAveApi();
-  const { result } = renderHook(() => useChatState(api as unknown as AveApi));
+  const { result } = renderHook(() => useChatState(api as unknown as AveApi, () => {}));
   const dispatch = (ev: ChatStreamEvent) => act(() => emitChatStream(ev));
   return { result, dispatch };
 }
