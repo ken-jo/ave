@@ -453,7 +453,6 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:settings:update",
         "ave:shell:open-external",
         "ave:sidechat:abort",
-        "ave:sidechat:list",
         "ave:sidechat:load",
         "ave:sidechat:new",
         "ave:sidechat:send",

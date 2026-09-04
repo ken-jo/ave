@@ -25,7 +25,6 @@ describe("sidechat channels are internal (fail-closed)", () => {
       send: "ave:sidechat:send",
       new: "ave:sidechat:new",
       load: "ave:sidechat:load",
-      list: "ave:sidechat:list",
       abort: "ave:sidechat:abort",
       stream: "ave:sidechat:stream",
       fallback: "ave:sidechat:fallback",

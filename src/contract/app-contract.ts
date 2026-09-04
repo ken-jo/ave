@@ -688,7 +688,6 @@ export const CHANNELS = {
     send: "ave:sidechat:send", // invoke renderer→main → TurnResult | { ok:false }
     new: "ave:sidechat:new", // invoke → { ok, sessionId }
     load: "ave:sidechat:load", // invoke (sessionId) → { ok, messages }
-    list: "ave:sidechat:list", // invoke → session list (side-chat store)
     abort: "ave:sidechat:abort", // invoke → { ok }
     stream: "ave:sidechat:stream", // event main→renderer ({ streamId, ...frame })
     fallback: "ave:sidechat:fallback", // event main→renderer (provider fallback)
