@@ -6,7 +6,7 @@ import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 import type { AveApi } from "../../types.js";
 
 const tile = (chatGroupId: string, sessionId: string, streaming: boolean): TileSession =>
-  ({ chatGroupId, sessionId, streaming, hidden: false, paneHidden: false, askQuestions: [] });
+  ({ chatGroupId, sessionId, streaming, hidden: false, paneHidden: false, askQuestions: [], childSessionIds: new Set<string>(), sideChat: null });
 
 describe("turnsEndedUnseen", () => {
   const looking = { focusedChatGroupId: "main", conversationVisible: true };
