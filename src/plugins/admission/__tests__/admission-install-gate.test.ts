@@ -133,6 +133,7 @@ const PLUGIN: PluginMarketplaceItem = {
 
 async function initRegistry(now = NOW): Promise<void> {
   await admissionRegistry.init({
+    networkFetch: fetch,
     userDataDir: freshDir("ave-admission-cache-"),
     online: true,
     now: () => now,
