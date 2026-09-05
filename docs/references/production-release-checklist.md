@@ -79,9 +79,10 @@ changing artifact compression or size.
 For all three platforms, use the **Build Installers** GitHub Actions workflow.
 It runs the same `scripts/build-installers.mjs` entrypoint on macOS, Linux,
 and Windows runners so native dependencies and installer tooling are resolved
-on the target OS instead of relying on cross-platform packaging. The publish
-job also attaches `Ave-latest-*` stable alias assets for the website download
-links; do not publish a release that only has versioned `Ave-X.Y.Z-*` assets.
+on the target OS instead of relying on cross-platform packaging. Assets are
+published under their version (`Ave-X.Y.Z-*`) only; there are no
+`Ave-latest-*` alias assets, and the website links to the release page rather
+than to any asset file, so no stable asset filename has to exist.
 
 ## Explicit Unsigned Public Release Exception
 
@@ -104,8 +105,7 @@ the following:
 - the tag pipeline uses the immutable event source, receives no signing
   credentials, and forces `--skip-code-sign`; and
 - all three platform builds complete;
-- the draft has all versioned assets, every `Ave-latest-*` alias, and update
-  metadata; and
+- the draft has all versioned assets and update metadata; and
 - the public release body prominently states that it is unsigned/not notarized,
   calls out Windows SmartScreen/Unknown publisher and macOS Gatekeeper, directs
   users to the official GitHub Release, and gives Linux checksum guidance.
