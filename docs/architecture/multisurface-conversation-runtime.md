@@ -466,6 +466,63 @@ Implementation anchors:
 - `src/main.ts`
 - `src/ipc/handlers/chat-stream.ts`
 
+## Telemetry
+
+A run can be made observable as OpenTelemetry spans so an outcome is
+attributable to the branch the loop took to reach it. It is off unless
+`AVE_TELEMETRY` names a sink, and off costs nothing: no provider is
+registered and the OTel SDK is never evaluated, because
+`src/engine/telemetry/tracing.ts` reaches it through dynamic import.
+
+```text
+AVE_TELEMETRY=off              (also: unset, empty)   no provider, no-op tracer
+AVE_TELEMETRY=otlp:<url>       http(s) OTLP/HTTP trace collector
+AVE_TELEMETRY=file:<path>      one JSON object per finished span, appended
+```
+
+A malformed spec is logged and leaves tracing off; it never stops the app.
+Spans are batched, and the flush runs on `before-quit`, which the `--exec`
+branch reaches because it ends with `app.quit()`.
+
+Three layers produce the trace:
+
+| Span or event | Produced by | Carries |
+| --- | --- | --- |
+| `invoke_agent` / `step` / `chat` | `@ai-sdk/otel`, registered globally | GenAI semantic conventions, model, usage |
+| `ave.turn` | `runTurn` | `ave.session_id`, `ave.turn_id`, `ave.input_origin`, `ave.turn.stop_reason`, `ave.turn.tool_count`, `ave.turn.duration_ms`, `gen_ai.usage.*`, `ave.usage.fresh_input_tokens`, `ave.decision.<kind>` counts |
+| `execute_tool <name>` | `runTurn`, child of the turn span | `gen_ai.tool.name`, `gen_ai.tool.call.id`, `ave.tool.group_id`, `ave.tool.source`, `ave.tool.category`, `ave.tool.plugin_id`, `ave.tool.is_error`, `ave.tool.result_chars`, `ave.tool.duration_ms` |
+| `ave.decision` event | `queryLoop`, on the turn span | `ave.decision.kind`, `ave.decision.branch`, `ave.decision.reason`, `ave.decision.data.*` |
+| `ave.compact.preflight` / `ave.compact.applied` events | `runTurn` | trigger source and token estimates |
+| `ave.guidance.staged` / `ave.provider.fallback` events | `runTurn` | disposition and character count / provider names |
+
+The AI SDK spans nest under `ave.turn` because registering the Node provider
+also installs the AsyncLocalStorage context manager.
+
+The decision kinds are `tool_batch`, `tool_schema.drop`, `length.continuation`,
+`tool_search`, `plugin.expansion`, `compact.micro` and `early_exit`. Each names
+a branch the loop chose on its own — a budget it hit, a recovery it took, an
+exit it made — and never a provider call.
+
+**Privacy rule.** No prompt text, tool input, or tool output ever enters a
+span. The session transcript already holds those and stays on the user's
+machine; a span is written to a file or posted to a collector that may not be
+theirs. `streamText` is called with `telemetry.recordInputs: false` and
+`telemetry.recordOutputs: false` for the same reason. What spans carry is
+shapes, counts and host-controlled identifiers.
+
+The same decisions leave the host by two more routes that do not need a
+tracing backend: `loop.decision` is a platform conversation event, so
+`--exec --exec-output=stream-json` writes one line per decision, and
+`TurnSummary.decisionCounts` carries the per-kind totals into the persisted
+transcript and the `usage.reported` event.
+
+Implementation anchors:
+
+- `src/engine/telemetry/tracing.ts`
+- `src/engine/turn/run-turn.ts`
+- `src/engine/turn/query-loop.ts`
+- `src/boot.ts`, `src/boot/steps/conversation-wiring.ts`, `src/boot/steps/post-boot.ts`
+
 ## Adapter rule
 
 A surface is an adapter, never a second conversation runtime. Electron, local
