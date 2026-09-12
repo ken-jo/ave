@@ -407,6 +407,7 @@ function buildSubscriptionConversationPayload(
   const text = [
     "You are serving one Ave model turn. Apply the system prompt and conversation in the JSON envelope below.",
     "Use only Ave-declared host tools. Never attempt native shell, filesystem, browser, permission, or account operations.",
+    "Host tools resolve relative paths and omitted optional cwd values from the active Ave project context. If you need its absolute path, ask the declared host shell tool for its current directory.",
     "When a host tool is requested, Ave executes it under its normal permission and audit policy, then starts the next model round with the tool result.",
     "<ave-request-json>",
     requestJson,
