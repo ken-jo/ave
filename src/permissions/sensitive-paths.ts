@@ -35,6 +35,7 @@
 import { realpathSync } from "node:fs";
 import { isAbsolute, resolve as pathResolve, relative as pathRelative } from "node:path";
 import { globMatch } from "../lib/glob-matcher.js";
+import { aveHome } from "../shared/ave-home.js";
 
 /**
  * Bounded walk-up depth used by {@link canonicalizePathForMatch} when the
@@ -93,8 +94,8 @@ export function getRuntimeSensitiveKeyPaths(): readonly string[] {
  * canonicalized absolute path with an anchor-free `**\/` prefix, so a
  * credential store dropped outside the user's home (a copied `.ssh` under
  * `/tmp`, a second `HOME` in a container mount) is still caught. The anchor
- * exists for the OS sandbox floor, which needs a LITERAL absolute path because
- * bwrap/seatbelt cannot glob.
+ * also identifies the literal runtime roots. Both enforcement points resolve
+ * `ave-home` rows at call time so a relocated profile retains its protection.
  */
 type SensitiveAnchor = "ave-home" | "home" | "root";
 
@@ -231,6 +232,7 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
     why: "audit log + rotated archives",
   },
   { anchor: "ave-home", segments: ["sessions"], kind: "dir", why: "chat session JSONL" },
+  { anchor: "ave-home", segments: ["host-runtime"], kind: "dir", why: "process ownership lock (replacement creates a second writer)" },
   { anchor: "ave-home", segments: ["routine"], kind: "dir", why: "routine session history" },
   {
     anchor: "ave-home",
@@ -245,9 +247,8 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
  *
  * Anchor-free (`**` prefix) for every anchor — see {@link SensitiveAnchor} for
  * why the host guard deliberately ignores the anchor. `ave-home` rows keep the
- * literal `.ave` segment in the glob because the glob cannot know where
- * `AVE_HOME` points; a relocated Ave home is still covered by the sandbox
- * floor, which resolves `aveHome()` per call.
+ * literal `.ave` segment to protect copied stores too. `isSensitivePath` also
+ * projects those rows onto the current `aveHome()`, matching the sandbox floor.
  *
  * A `dir` row needs only the `/**` form: `policyMatchPaths` also tries
  * `<path>/`, so `**\/.ssh/**` already matches the bare directory.
@@ -467,6 +468,21 @@ export function isSensitivePath(absPath: string): string | null {
     for (const pattern of SENSITIVE_PATH_PATTERNS) {
       if (globMatch(candidate, pattern)) {
         return pattern;
+      }
+    }
+  }
+  // A custom AVE_HOME need not contain a `.ave` segment. Use the same table
+  // as the OS deny floor, retaining literal comparisons for paths containing
+  // glob syntax and the frozen-canonical form of the caller's candidate.
+  const home = canonicalizePathForMatch(aveHome());
+  for (const entry of SENSITIVE_PATH_ENTRIES) {
+    if (entry.anchor !== "ave-home") continue;
+    const base = caseFoldForMatch(canonicalizePathForMatch(pathResolve(home, ...entry.segments)));
+    for (const candidate of candidates) {
+      if (candidate === base ||
+          (entry.kind === "dir" && candidate.startsWith(`${base}/`)) ||
+          (entry.rotations && candidate.startsWith(`${base}.`))) {
+        return `ave-home:${entry.segments.join("/")}`;
       }
     }
   }
