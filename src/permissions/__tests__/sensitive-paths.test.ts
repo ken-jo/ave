@@ -45,6 +45,7 @@ describe("SENSITIVE_PATH_PATTERNS", () => {
     expect(SENSITIVE_PATH_PATTERNS).toContain("**/.ave/certs/**");
     expect(SENSITIVE_PATH_PATTERNS).toContain("**/.ave/secrets/**");
     expect(SENSITIVE_PATH_PATTERNS).toContain("**/.ave/keys/**");
+    expect(SENSITIVE_PATH_PATTERNS).toContain("**/.ave/subscription-runtimes/**");
     expect(SENSITIVE_PATH_PATTERNS).toContain("**/.ave/ave-secrets.json");
     expect(SENSITIVE_PATH_PATTERNS).toContain("**/ave-secrets.json");
   });
@@ -141,6 +142,16 @@ describe("isSensitivePath — positive matches", () => {
       "**/.ave/secrets/**",
     );
   });
+
+  it.each(["", "registry.json", "codex-v3-home/auth.json", "provider-home/config.toml"])(
+    "protects subscription runtime state: %s",
+    (suffix) => {
+      expect(isSensitivePath(`/home/example/.ave/subscription-runtimes/${suffix}`)).toBe(
+        "**/.ave/subscription-runtimes/**",
+      );
+      expect(isSensitivePath(`/home/example/project/subscription-runtimes/${suffix}`)).toBeNull();
+    },
+  );
 
   it("matches Ave permission control-plane files", () => {
     expect(isSensitivePath("/Users/example/.ave/settings.json")).toBe("**/.ave/settings.json");
