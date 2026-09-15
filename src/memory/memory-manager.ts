@@ -19,6 +19,7 @@ import {
   AGENTS_DOC_NAME,
   aveHome,
 } from "../shared/ave-home.js";
+import { sessionStorePath } from "../shared/session-store-path.js";
 import { t } from "../i18n/index.js";
 import { projectRootEquals, projectRootKey } from "../shared/project-identity.js";
 import { parseWorkBoardOriginSessionId } from "../shared/work-board-types.js";
@@ -1393,7 +1394,7 @@ export class MemoryManager implements PromptMemorySource {
   constructor(options?: MemoryManagerOptions) {
     this.aveDir = resolve(options?.aveDir ?? aveHome());
     this.memoryDir = join(this.aveDir, "memories");
-    this.sessionsDir = join(this.aveDir, "sessions");
+    this.sessionsDir = sessionStorePath(this.aveDir);
     this.toolOutputArtifacts = new ToolOutputArtifactStore(this.sessionsDir);
     this.defaultWorkspaceRoot = normalizeMetadataString(
       options?.defaultWorkspaceRoot,
