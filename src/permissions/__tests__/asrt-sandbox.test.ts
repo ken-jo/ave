@@ -846,6 +846,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     // Ave host-domain sensitive namespaces, derived from the (overridden) aveHome.
     expect(paths).toContain(join(FAKE_AVE_HOME, "secrets"));
     expect(paths).toContain(join(FAKE_AVE_HOME, "sessions"));
+    expect(getDefaultSensitiveWriteDenyPaths()).toContain(join(FAKE_AVE_HOME, "sessions"));
     expect(paths).toContain(join(FAKE_AVE_HOME, "routine"));
     expect(paths).toContain(join(FAKE_AVE_HOME, "audit.log"));
     expect(paths).toContain(join(FAKE_AVE_HOME, "audit"));
