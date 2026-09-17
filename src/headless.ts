@@ -86,12 +86,19 @@ async function main(): Promise<number> {
   process.on("SIGTERM", onSignal);
   try {
     await Promise.race([(async () => {
-      host = await createNodeBootHost({
-        userDataPath: profile,
-        resourcePath: process.env.AVE_RESOURCES_DIR ?? join(projectRoot, "resources"),
-        keyFilePath: process.env.AVE_SECRET_KEY_FILE,
-        isPackaged: packaged,
-      });
+      const createHost = () => createNodeBootHost({
+          userDataPath: profile,
+          resourcePath: process.env.AVE_RESOURCES_DIR ?? join(projectRoot, "resources"),
+          keyFilePath: process.env.AVE_SECRET_KEY_FILE,
+          isPackaged: packaged,
+        });
+      const attestationPath = request && !("error" in request)
+        ? request.operatorAttestationPath
+        : undefined;
+      host = attestationPath !== undefined
+        ? await (await import("./main/operator-attestation-boot.js"))
+          .startAfterOperatorAttestation(attestationPath, createHost)
+        : await createHost();
       if (interrupted) throw new Error("host-bootstrap-interrupted");
       runtime = await createWindowlessHost(projectRoot, host);
     })(), bootstrapInterruption]);
