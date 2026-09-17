@@ -24,10 +24,12 @@ import {
   isE2eTestRuntime,
   isPackagedElectronProcess,
   isPackagedForbiddenEnvVar,
+  readDevelopmentEnvVar,
   setIsPackaged,
   shouldWarnPackagedFlagsIgnored,
   tamperedVarsAtBoot,
 } from "../dev-flags.js";
+import { PACKAGED_DEVELOPMENT_ENV_VARS } from "../../shared/development-env-policy.js";
 
 describe("dev-flags tamper snapshot", () => {
   beforeEach(() => {
@@ -92,6 +94,9 @@ describe("dev-flags tamper snapshot", () => {
   });
 
   it("defines the packaged dev/test env scrub predicate", () => {
+    for (const name of PACKAGED_DEVELOPMENT_ENV_VARS) {
+      expect(isPackagedForbiddenEnvVar(name), name).toBe(true);
+    }
     expect(isPackagedForbiddenEnvVar("AVE_DEV")).toBe(true);
     expect(isPackagedForbiddenEnvVar("AVE_DEV_CONSOLE")).toBe(true);
     expect(isPackagedForbiddenEnvVar("AVE_DEV_SOMETHING_NEW")).toBe(true);
@@ -101,9 +106,28 @@ describe("dev-flags tamper snapshot", () => {
     expect(isPackagedForbiddenEnvVar("AVE_WIN_NO_SANDBOX")).toBe(true);
     expect(isPackagedForbiddenEnvVar("AVE_PLUGINS_DIR")).toBe(true);
     expect(isPackagedForbiddenEnvVar("AVE_WHITELIST_OFFLINE")).toBe(true);
+    expect(isPackagedForbiddenEnvVar("AVE_ADMISSION_OFFLINE")).toBe(true);
+    expect(isPackagedForbiddenEnvVar("AVE_REVOCATION_OFFLINE")).toBe(true);
 
     expect(isPackagedForbiddenEnvVar("AVE_HOME")).toBe(false);
     expect(isPackagedForbiddenEnvVar("NODE_ENV")).toBe(false);
+  });
+
+  it("reads offline registry flags only for unpackaged execution", () => {
+    const env: NodeJS.ProcessEnv = {
+      AVE_WHITELIST_OFFLINE: "1",
+      AVE_REVOCATION_OFFLINE: "1",
+      AVE_ADMISSION_OFFLINE: "1",
+    };
+
+    for (const name of [
+      "AVE_WHITELIST_OFFLINE",
+      "AVE_REVOCATION_OFFLINE",
+      "AVE_ADMISSION_OFFLINE",
+    ] as const) {
+      expect(readDevelopmentEnvVar(name, env, false), name).toBe("1");
+      expect(readDevelopmentEnvVar(name, env, true), name).toBeUndefined();
+    }
   });
 
   it("keeps AVE_WIN_NO_SANDBOX Windows-only and packaged-gated", () => {
