@@ -14,6 +14,7 @@ const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const HEADLESS_RUNTIME_CONTRACTS = Object.freeze({
   workloadBrokerCorrelation: "ave-workload-correlation/v1",
   permissionAuditProof: "ave-permission-audit-proof/v1",
+  permissionAuditSelfTest: "ave-permission-audit-self-test/v1",
   launcherEnvironment: "ave-headless-launch-environment/v1",
 });
 export const HEADLESS_FORBIDDEN_INHERITED_ENV = Object.freeze([
