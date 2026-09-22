@@ -70,8 +70,10 @@ import {
   resolveChatNewProjectPayload,
   parseChatSendPayload,
 } from "../handlers/chat.js";
-import { getDefaultWorkspaceRoot } from "../../main/default-workspace-root.js";
-import { resolveAuthorizedWorkspaceProject } from "../../main/project-root-authorization.js";
+import {
+  defaultWorkspaceProject,
+  resolveAuthorizedWorkspaceProject,
+} from "../../main/project-root-authorization.js";
 import { createDlpSafeUuid } from "../../shared/dlp-safe-id.js";
 import { createConversationSurfaceRuntime } from "../../engine/conversation-surface-runtime.js";
 import { createSessionGoalRevival } from "../../main/session-goal-revival.js";
@@ -1209,7 +1211,9 @@ export function registerChatHandlers(deps: IpcDeps): void {
     const group = groupOf(chatGroupId);
     const conversationLoop = group.loop;
     const mutation = group.turns.trackSessionMutation(async () => {
-      const parsed = resolveChatNewProjectPayload(rawProject, getDefaultWorkspaceRoot());
+      // The resolver owns the default: under the exclusive workload-broker
+      // route that is the guest cwd, not the controller host's workspace.
+      const parsed = resolveChatNewProjectPayload(rawProject, defaultWorkspaceProject().projectRoot);
       const resolved = resolveAuthorizedWorkspaceProject(parsed.projectRoot, parsed.projectName);
       if (!resolved.authorized || !resolved.project) return PROJECT_NOT_ALLOWED;
       const { project } = resolved;

@@ -84,7 +84,6 @@ import { isAuthorizedWorkspaceProjectRoot } from "./main/project-root-authorizat
 import {
   initializeWorkloadBroker,
   isActiveWorkloadBrokerCwd,
-  isWorkloadBrokerActive,
 } from "./workload/runtime.js";
 import {
   getMainWindow,
@@ -241,9 +240,7 @@ async function main() {
         stdout: process.stdout,
         stderr: process.stderr,
         readStdin: readAllStdin,
-        isAuthorizedProjectRoot: (root) => isWorkloadBrokerActive()
-          ? isActiveWorkloadBrokerCwd(root)
-          : isAuthorizedWorkspaceProjectRoot(root),
+        isAuthorizedProjectRoot: isAuthorizedWorkspaceProjectRoot,
         waitForRelease: waitForExecRelease,
         flushTelemetry: services.flushTracing,
       },

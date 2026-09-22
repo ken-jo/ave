@@ -94,10 +94,12 @@ function sameSecretFileIdentity(
 
 /**
  * Read a whole regular file through a descriptor opened with `O_NOFOLLOW`
- * and prove the bytes came from ONE unchanged file: the path must not be a
- * symlink, the descriptor and the path must name the same inode before and
- * after the read, and size/mtime/ctime must not move in between. Returns
- * `null` only when the path is absent. `label` names the file in errors.
+ * and `O_NONBLOCK` on POSIX, then prove the bytes came from ONE unchanged
+ * file. The non-blocking open lets the type check reject FIFOs and other
+ * special files without waiting for a peer. The path must not be a symlink,
+ * the descriptor and the path must name the same inode before and after the
+ * read, and size/mtime/ctime must not move in between. Returns `null` only
+ * when the path is absent. `label` names the file in errors.
  *
  * This is the single copy of that check; the secret store and the rationale
  * invocation journal both read authority files through it.
@@ -109,7 +111,7 @@ export function readStableRegularFileUtf8(
   requirePrivateOwnerFile = false,
 ): string | null {
   const flags = constants.O_RDONLY |
-    (platform === "win32" ? 0 : constants.O_NOFOLLOW);
+    (platform === "win32" ? 0 : constants.O_NOFOLLOW | constants.O_NONBLOCK);
   let fd: number | undefined;
   try {
     try {

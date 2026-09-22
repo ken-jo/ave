@@ -28,7 +28,10 @@
 import { statSync } from "node:fs";
 import type { EventEmitter } from "node:events";
 import { basename, isAbsolute, resolve } from "node:path";
-import { authorizationRequiredStateForOutput } from "../shared/authorization-required.js";
+import {
+  authorizationRequiredStateForOutput,
+  issueUnattendedTurnAuthority,
+} from "../shared/authorization-required.js";
 import { errorMessage } from "../shared/error-message.js";
 import type { ApprovalGate } from "../permissions/approval-gate.js";
 import type { PermissionManager } from "../permissions/permission-manager.js";
@@ -117,10 +120,12 @@ export interface ExecDeps {
   readonly stderr: NodeJS.WritableStream;
   readonly readStdin: () => Promise<string>;
   /**
-   * Whether a directory is an authorized workspace project (the default
-   * workspace or one of `permissions.additionalDirectories`). The session
-   * layer silently re-roots an unauthorized project at the default workspace,
-   * which a headless run must refuse instead of quietly working elsewhere.
+   * Whether a directory is an authorized workspace project: the default
+   * workspace, one of `permissions.additionalDirectories`, or — while the
+   * exclusive workload-broker route is active — exactly the bound guest cwd.
+   * The session layer silently re-roots an unauthorized project at the default
+   * workspace, which a headless run must refuse instead of quietly working
+   * elsewhere; the run re-checks the root the session actually bound to.
    */
   readonly isAuthorizedProjectRoot: (projectRoot: string) => boolean;
   /** Required for --exec-keep-alive; the caller owns the session's release. */
@@ -493,6 +498,20 @@ async function runTurnRequest(deps: ExecDeps, request: ExecTurnRequest): Promise
       projectRoot: request.cwd,
       projectName: basename(request.cwd),
     });
+    // The pre-check above and the session's own authorizer must agree. If the
+    // session fell back to the default workspace, every later tool call would
+    // run somewhere the operator did not ask for, so stop before the turn.
+    // Dynamic for the same reason as the turn producer below: the resolver
+    // reaches the settings store and the logger, which would close a cycle
+    // through this module's `execModeRequested`.
+    const { sessionBoundProjectRootMatches } = await import("./project-root-authorization.js");
+    const boundProjectRoot = deps.conversationLoop.getSessionProjectRoot();
+    if (!sessionBoundProjectRootMatches(boundProjectRoot, request.cwd)) {
+      deps.stderr.write(
+        "exec: the session did not bind to the requested project root; refusing to run elsewhere\n",
+      );
+      return EXEC_FAILURE_EXIT_CODE;
+    }
     const { runStreamedTurn, STREAM_TURN_OPTIONS } =
       await import("../ipc/handlers/chat-stream.js");
     const sink = (event: PlatformConversationEvent) => {
@@ -502,6 +521,10 @@ async function runTurnRequest(deps: ExecDeps, request: ExecTurnRequest): Promise
     };
     const result = await runStreamedTurn(deps.conversationLoop, prompt, sink, {
       ...STREAM_TURN_OPTIONS,
+      // The owner started this turn from the command line with nobody to ask.
+      // The authority is minted per turn: a retained session's later turns
+      // arrive through remote surfaces and never inherit it.
+      unattendedAuthority: issueUnattendedTurnAuthority(),
       ...(request.maxRounds === undefined ? {} : { maxRounds: request.maxRounds }),
     });
     if (request.output === "json") {

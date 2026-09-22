@@ -49,6 +49,7 @@ import type { ExecutionMode } from "../../shared/permission-mode.js";
 import type {
   ApprovalSurface,
   AuthorizationRequiredState,
+  UnattendedTurnAuthority,
 } from "../../shared/authorization-required.js";
 
 // ─── Types ──────────────────────────────────────────
@@ -277,6 +278,11 @@ export interface RunTurnOptions {
   approvalReasonPrefix?: string;
   /** Host-owned remote-controller authority, never parsed from chat input. */
   remoteControllerAuthority?: RemoteControllerAuthority;
+  /**
+   * Host-issued unattended lane for a windowless one-shot turn. Never parsed
+   * from chat input; see {@link UnattendedTurnAuthority}.
+   */
+  unattendedAuthority?: UnattendedTurnAuthority;
   /** DLP-masked durable child messages joined to this turn after the prompt gate. */
   initialGuidance?: string;
   /**

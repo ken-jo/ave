@@ -24,7 +24,6 @@ import {
 import {
   initializeWorkloadBroker,
   isActiveWorkloadBrokerCwd,
-  isWorkloadBrokerActive,
 } from "./workload/runtime.js";
 
 function userDataPath(argv: readonly string[]): string {
@@ -137,9 +136,7 @@ async function main(): Promise<number> {
       stdout: process.stdout,
       stderr: process.stderr,
       readStdin: readAllStdin,
-      isAuthorizedProjectRoot: (root) => isWorkloadBrokerActive()
-        ? isActiveWorkloadBrokerCwd(root)
-        : isAuthorizedWorkspaceProjectRoot(root),
+      isAuthorizedProjectRoot: isAuthorizedWorkspaceProjectRoot,
       waitForRelease: () => interrupted ? Promise.resolve() : waitForExecRelease(),
       flushTelemetry: services.flushTracing,
     }, request);

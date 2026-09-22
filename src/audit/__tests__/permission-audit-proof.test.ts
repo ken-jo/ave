@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -146,6 +147,43 @@ describe("permission audit terminal proof", () => {
     await expect(createPermissionAuditProof(CHALLENGE)).rejects.toThrow();
     expect(readdirSync(secretsDir).sort()).toEqual(before);
   });
+
+  it.skipIf(process.platform === "win32")(
+    "rejects a FIFO audit authority without blocking the proof process",
+    async () => {
+      await createValidAudit();
+      const authorityPath = join(home, "secrets", "audit-hmac.key.safe-storage");
+      unlinkSync(authorityPath);
+      const created = spawnSync("mkfifo", [authorityPath], { encoding: "utf8" });
+      expect(created.status, created.stderr).toBe(0);
+      const moduleUrl = new URL("../permission-audit-proof.ts", import.meta.url).href;
+      const child = `
+        const [moduleUrl, challenge] = process.argv.slice(1);
+        const { createPermissionAuditProof } = await import(moduleUrl);
+        try {
+          await createPermissionAuditProof(challenge);
+          process.stderr.write("FIFO audit authority was accepted");
+          process.exit(2);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (!message.includes("secret authority path is not a stable regular file")) {
+            process.stderr.write(message);
+            process.exit(3);
+          }
+        }
+      `;
+      const result = spawnSync(process.execPath, [
+        "--import", "tsx", "--input-type=module", "-e", child, moduleUrl, CHALLENGE,
+      ], {
+        cwd: process.cwd(),
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+        encoding: "utf8",
+        timeout: 2_000,
+      });
+      expect(result.status, result.error?.message ?? result.stderr).toBe(0);
+    },
+    5_000,
+  );
 
   it("rejects unexpected permission-audit names and symlinked canonical files", async () => {
     const { path } = await createValidAudit();

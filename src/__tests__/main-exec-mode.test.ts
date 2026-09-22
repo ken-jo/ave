@@ -62,10 +62,13 @@ describe("main.ts — headless exec branch", () => {
     expect(anchor).toBeGreaterThan(capture);
   });
 
-  it("hands ordinary runs the workspace authorization and broker runs the exact guest cwd", () => {
+  it("hands every run the one workspace authorization resolver, which owns the broker cwd rule", () => {
+    // The resolver decides both the CLI pre-check and the session authorizer,
+    // so a broker-bound guest cwd cannot pass one and be re-rooted by the other.
     expect(mainSource).toMatch(
-      /isAuthorizedProjectRoot:\s*\(root\)\s*=>\s*isWorkloadBrokerActive\(\)\s*\?\s*isActiveWorkloadBrokerCwd\(root\)\s*:\s*isAuthorizedWorkspaceProjectRoot\(root\)/,
+      /isAuthorizedProjectRoot:\s*isAuthorizedWorkspaceProjectRoot,/,
     );
+    expect(mainSource).not.toContain("isWorkloadBrokerActive()");
     expect(mainSource).toContain("waitForRelease: waitForExecRelease,");
     expect(mainSource).toContain("flushTelemetry: services.flushTracing,");
   });
