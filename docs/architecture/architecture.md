@@ -72,10 +72,13 @@ construct the ordinary host service graph without a window or renderer; `--serve
 that host available through the authenticated Local API and any explicitly
 configured Tailnet surface. Desktop event bridges have no subscription when
 their surface is absent. Approval availability is a host capability separate
-from the routine `headless` tool-scope flag. A native `--exec` invocation that
-still needs explicit consent ends once with a host-issued
-`authorization-required` result instead of feeding a denial back to the model;
-UI-only HostApi calls fail before consuming proposal state. The
+from the routine `headless` tool-scope flag. A native `--exec` turn carries a
+host-issued unattended turn authority that selects the routine policy lane for
+that turn alone, so its asks settle as reviewer decisions or structured denials
+the model sees; a turn without that authority that still needs explicit consent
+ends once with a host-issued `authorization-required` result instead of feeding
+a denial back to the model; UI-only HostApi calls fail before consuming proposal
+state. The
 [native host guide](../guides/native-server.md) owns launcher, profile, key-file,
 and Linux artifact instructions.
 

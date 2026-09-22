@@ -433,8 +433,10 @@ ave --exec="<prompt>"              prompt inline; `--exec` or `--exec=-` reads s
                                     path resolves against it). Must be the
                                     default workspace or a directory listed in
                                     permissions.additionalDirectories of
-                                    ~/.ave/settings.json — the run refuses
-                                    (exit 64) rather than re-rooting elsewhere
+                                    ~/.ave/settings.json — or, with the
+                                    workload-broker flags, exactly the guest
+                                    cwd — the run refuses (exit 64) rather than
+                                    re-rooting elsewhere
      [--exec-approve=default|allow] permission mode for the run (default: default)
      [--exec-output=stream-json|json]  (default: stream-json)
      [--exec-max-rounds=<n>]        round budget for the turn
@@ -485,6 +487,12 @@ mode `0600` in an owner-owned mode `0700` directory. Before host services start,
 Ave pins and rechecks the capability directory and file identities across the
 bounded read, verifies expiry and workload identity, checks the socket, completes
 an exact handshake, and requires `--exec-cwd` to equal the capability's guest cwd.
+While the broker is bound, `src/main/project-root-authorization.ts` answers every
+"which project" question — the CLI pre-check, the session authorizer, and the
+project list — with that one guest cwd, matched byte-for-byte and never
+canonicalized against the controller host, where it need not exist. After session
+initialization the run re-checks the root the session actually bound to and exits
+`1` rather than continuing from the host default workspace.
 
 In this mode the host-native controller, encrypted provider secret, broker
 credential, receipts and controller logs remain outside `main`; `main` receives
@@ -508,13 +516,27 @@ the run produced; the code itself is applied by a `will-quit` handler through
 holds. A cleanup that hits its timeout exits hard with the same chosen code.
 
 An unattended run has nobody to ask. Bootstrap therefore marks its conversation
-loops with an unavailable approval surface. The native main loop keeps the
-ordinary main-chat tool, plugin, MCP, and egress scope intact; if one of its
-tools still needs explicit authorization after the normal policy and reviewer
-paths, the host appends its single paired error result and terminates the turn
-before another model round. Routine loops remain in their existing `headless`
-policy lane, including its fail-closed and deferred-review behavior; approval
-availability does not turn that scope flag into foreground authority.
+loops with an unavailable approval surface, and the native main loop keeps the
+ordinary main-chat tool, plugin, MCP, and egress scope intact. For each turn it
+runs, exec-mode mints a host-issued unattended turn authority
+(`UnattendedTurnAuthority` in `src/shared/authorization-required.ts`) and hands
+it to `runStreamedTurn`; `runTurn` refuses a lookalike the host did not mint, and
+the query loop projects the authority onto that turn's tool permission context as
+the unattended policy lane. An ask on that lane is settled by the routine
+contract — reviewer routing for mutating builtin calls, a deferred-queue hold for
+a path outside the granted set, a fail-closed denial for explicit host execution —
+as a structured tool error the model sees, and the turn continues. The authority
+is per turn and never parsed from chat input, so a retained session's later
+turns, which arrive through the Local API or a Tailnet surface, do not inherit
+it. Routine loops remain in their existing `headless` policy lane, including its
+fail-closed and deferred-review behavior; approval availability does not turn
+that scope flag into foreground authority.
+
+When a turn without that authority still needs explicit authorization after the
+normal policy and reviewer paths — an attached client's turn on a retained
+session, or a child agent boundary re-issued through `agent_spawn` — the host
+appends its single paired error result and terminates the turn before another
+model round.
 The terminal event carries only the tool identity, category, reason, and safe
 execution-plan projection; it carries no arguments, command, path, prompt, or
 reviewer prose. JSON output similarly omits the partial result and raw tool-call
@@ -535,10 +557,10 @@ event projection instead of serializing the owner stream.
 
 `--exec-approve=allow` still sets the permission manager's allow mode without
 removing any Layer 0 check. Allow mode does not cover the Layer-1
-allowed-directory request, so an unattended run stops with
-`authorization-required` for a path outside the already-granted set. A harness
-must pre-grant the directories its tasks work in through the workspace grant
-document rather than expecting allow mode to reach them. The pending-approval
+allowed-directory request, so a path outside the already-granted set is held in
+the deferred queue and denied for the turn. A harness must pre-grant the
+directories its tasks work in through the workspace grant document rather than
+expecting allow mode to reach them. The pending-approval
 observer remains a fail-closed backstop for approval producers outside the tool
 invocation path; it never widens a verdict. `--set-secret` writes through the app's own secret store so a
 container never has to produce the platform's ciphertext itself; the store's key

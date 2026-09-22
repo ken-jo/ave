@@ -1,10 +1,31 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+// The exclusive broker route is process state owned by the workload runtime;
+// the resolver only asks it two questions, so those are all the fixture answers.
+const broker = vi.hoisted(() => ({
+  active: false,
+  cwd: "/app",
+}));
+
+vi.mock("../../workload/runtime.js", () => ({
+  getActiveWorkloadBrokerProjection: () => broker.active
+    ? {
+        version: "brokered-workload-capability/v1",
+        workload: { cwd: broker.cwd },
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        allowedOperations: [],
+      }
+    : undefined,
+  isActiveWorkloadBrokerCwd: (cwd: string) => broker.active && cwd === broker.cwd,
+}));
+
 import { writePermissionSettings } from "../../permissions/permission-settings-store.js";
 import {
   defaultWorkspaceProject,
+  isAuthorizedWorkspaceProjectRoot,
   listAuthorizedWorkspaceProjects,
   resolveAuthorizedWorkspaceProject,
 } from "../project-root-authorization.js";
@@ -28,6 +49,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  broker.active = false;
   process.chdir(oldCwd);
   if (oldHome === undefined) delete process.env.AVE_HOME;
   else process.env.AVE_HOME = oldHome;
@@ -103,5 +125,60 @@ describe("project root authorization", () => {
     expect(resolution.project).not.toBeNull();
     if (!resolution.project) throw new Error("expected authorized project");
     expect(projectRootEquals(resolution.project.projectRoot, leftRoot)).toBe(true);
+  });
+});
+
+describe("project root authorization under the exclusive workload-broker route", () => {
+  it("authorizes exactly the bound guest cwd and nothing on the controller host", async () => {
+    const allowed = join(root, "allowed-project");
+    mkdirSync(allowed);
+    const allowedRoot = realpathSync(allowed);
+    await writePermissionSettings({ additionalDirectories: [allowedRoot] });
+    broker.active = true;
+
+    // Byte-for-byte: the guest path is never canonicalized against this host.
+    expect(isAuthorizedWorkspaceProjectRoot("/app")).toBe(true);
+    expect(isAuthorizedWorkspaceProjectRoot("/app/")).toBe(false);
+    expect(isAuthorizedWorkspaceProjectRoot(workspace)).toBe(false);
+    expect(isAuthorizedWorkspaceProjectRoot(allowedRoot)).toBe(false);
+
+    const brokered = { projectRoot: "/app", projectName: "app" };
+    expect(listAuthorizedWorkspaceProjects()).toEqual([brokered]);
+    expect(resolveAuthorizedWorkspaceProject("/app", "stale-label")).toEqual({
+      authorized: true,
+      project: brokered,
+    });
+    expect(resolveAuthorizedWorkspaceProject(undefined)).toEqual({
+      authorized: true,
+      project: brokered,
+    });
+    // The host default workspace is not a fallback while the broker is bound.
+    expect(resolveAuthorizedWorkspaceProject(workspace)).toEqual({
+      authorized: false,
+      project: null,
+    });
+    expect(resolveAuthorizedWorkspaceProject(allowedRoot)).toEqual({
+      authorized: false,
+      project: null,
+    });
+  });
+
+  it("resolves a symlink alias of the default workspace to the default project, not a fallback", () => {
+    const alias = join(root, "workspace-link");
+    symlinkSync(workspace, alias);
+    expect(isAuthorizedWorkspaceProjectRoot(alias)).toBe(true);
+    expect(resolveAuthorizedWorkspaceProject(alias)).toMatchObject({
+      authorized: true,
+      project: { projectRoot: workspace, isDefault: true },
+    });
+  });
+
+  it("leaves host workspace authorization unchanged when no broker is bound", () => {
+    expect(isAuthorizedWorkspaceProjectRoot(workspace)).toBe(true);
+    expect(isAuthorizedWorkspaceProjectRoot("/app")).toBe(false);
+    expect(resolveAuthorizedWorkspaceProject("/app")).toEqual({
+      authorized: false,
+      project: null,
+    });
   });
 });

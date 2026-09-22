@@ -85,3 +85,34 @@ export function authorizationRequiredStateForOutput(
     ? value as AuthorizationRequiredState
     : undefined;
 }
+
+/**
+ * Host-issued authority for one windowless turn that the local owner started
+ * from this process's own command line. It selects the unattended policy lane
+ * for that turn — reviewer-routed asks, deferred directory holds, and a
+ * fail-closed answer to explicit host execution — without changing the loop's
+ * tool, plugin, MCP, or egress scope, which stays owned by the routine-only
+ * `headless` loop flag. A turn that arrives through a remote surface never
+ * carries it, so an attached client cannot borrow the owner's unattended lane
+ * from a retained session. A structural lookalike from chat input, a plugin,
+ * an MCP server, a model, or a test double is not this authority.
+ */
+export interface UnattendedTurnAuthority {
+  readonly kind: "native-exec";
+}
+
+const issuedUnattendedTurnAuthorities = new WeakSet<object>();
+
+export function issueUnattendedTurnAuthority(): UnattendedTurnAuthority {
+  const authority: UnattendedTurnAuthority = Object.freeze({ kind: "native-exec" });
+  issuedUnattendedTurnAuthorities.add(authority);
+  return authority;
+}
+
+/** True only for an authority minted in this process. */
+export function isIssuedUnattendedTurnAuthority(
+  value: unknown,
+): value is UnattendedTurnAuthority {
+  return typeof value === "object" && value !== null
+    && issuedUnattendedTurnAuthorities.has(value);
+}

@@ -7,7 +7,7 @@
  * the events a benchmark reads on stdout are the events the host produced.
  */
 import { describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { EventEmitter } from "node:events";
@@ -33,6 +33,7 @@ import type { PermissionManager } from "../../permissions/permission-manager.js"
 import type { SettingsService } from "../../data/settings-store.js";
 import type { ConversationLoop, TurnResult } from "../../engine/conversation-loop.js";
 import {
+  isIssuedUnattendedTurnAuthority,
   issueAuthorizationRequiredControl,
   type AuthorizationRequiredState,
 } from "../../shared/authorization-required.js";
@@ -67,11 +68,25 @@ function makeDeps(overrides: {
   setSecret?: (key: string, value: string) => Promise<void>;
   stdin?: string;
   isAuthorizedProjectRoot?: (projectRoot: string) => boolean;
+  /** Simulates the session authorizer binding a root other than the requested one. */
+  boundProjectRoot?: string | null;
 } = {}) {
   const turnImpl = overrides.runTurn ?? (async () => overrides.turnResult ?? COMPLETED_TURN);
   const runTurn = vi.fn(async (..._args: unknown[]) => turnImpl());
-  const newConversation = vi.fn();
-  const conversationLoop = { runTurn, newConversation } as unknown as ConversationLoop;
+  // An honest loop binds the root it was asked for; the override stands in
+  // for the session layer silently re-rooting the run elsewhere.
+  let boundProjectRoot: string | null = null;
+  const newConversation = vi.fn(async (_kind: string, project?: { projectRoot?: string }) => {
+    boundProjectRoot = overrides.boundProjectRoot !== undefined
+      ? overrides.boundProjectRoot
+      : project?.projectRoot ?? null;
+  });
+  const getSessionProjectRoot = vi.fn(() => boundProjectRoot);
+  const conversationLoop = {
+    runTurn,
+    newConversation,
+    getSessionProjectRoot,
+  } as unknown as ConversationLoop;
 
   const setMode = vi.fn();
   const permissionManager = "permissionManager" in overrides
@@ -627,6 +642,56 @@ describe("runExecTurn — permission mode", () => {
 });
 
 describe("runExecTurn — headless approvals", () => {
+  it("hands the streamed turn a host-issued unattended authority", async () => {
+    const harness = makeDeps();
+    await runExecTurn(harness.deps, turnRequest());
+
+    const options = harness.runTurn.mock.calls[0]?.[3] as
+      | { unattendedAuthority?: unknown }
+      | undefined;
+    expect(isIssuedUnattendedTurnAuthority(options?.unattendedAuthority)).toBe(true);
+  });
+
+  it("mints a fresh authority per turn rather than sharing one across runs", async () => {
+    const first = makeDeps();
+    await runExecTurn(first.deps, turnRequest());
+    const second = makeDeps();
+    await runExecTurn(second.deps, turnRequest());
+
+    const firstAuthority = (first.runTurn.mock.calls[0]?.[3] as { unattendedAuthority?: unknown })
+      .unattendedAuthority;
+    const secondAuthority = (second.runTurn.mock.calls[0]?.[3] as { unattendedAuthority?: unknown })
+      .unattendedAuthority;
+    expect(firstAuthority).not.toBe(secondAuthority);
+  });
+
+  it("refuses to run when the session bound a different project root than requested", async () => {
+    const harness = makeDeps({ boundProjectRoot: join(tmpdir(), "ave-exec-elsewhere") });
+    expect(await runExecTurn(harness.deps, turnRequest())).toBe(1);
+    expect(harness.newConversation).toHaveBeenCalledTimes(1);
+    expect(harness.runTurn).not.toHaveBeenCalled();
+    expect(harness.stderr.text()).toContain("did not bind to the requested project root");
+  });
+
+  it("accepts a default-root alias that the session bound as the canonical default", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ave-exec-alias-"));
+    try {
+      const alias = join(root, "workspace-link");
+      symlinkSync(process.cwd(), alias);
+      const harness = makeDeps({ boundProjectRoot: process.cwd() });
+      expect(await runExecTurn(harness.deps, turnRequest({ cwd: alias }))).toBe(0);
+      expect(harness.runTurn).toHaveBeenCalledTimes(1);
+    } finally {
+      await cleanupTmpDir(root);
+    }
+  });
+
+  it("refuses to run when the session bound no project root at all", async () => {
+    const harness = makeDeps({ boundProjectRoot: null });
+    expect(await runExecTurn(harness.deps, turnRequest())).toBe(1);
+    expect(harness.runTurn).not.toHaveBeenCalled();
+  });
+
   it("uses the headless gate to deny requests and note them on stderr", async () => {
     const harness = makeDeps({
       runTurn: async () => {

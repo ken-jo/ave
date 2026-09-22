@@ -358,13 +358,22 @@ deferred queue and surface through a queue button or history view.
 
 Process-level approval availability is a separate host capability. Native
 `--exec` keeps the normal main-chat tool and egress scope rather than setting
-the routine `headless` flag. When its policy outcome still requires explicit
-authorization, the host emits a typed `authorization-required` terminal and
-does not let the model retry the denied action. Out-of-directory requests may
-still be recorded in the deferred queue, but the one-shot turn terminates with
-the same control outcome because it has no UI in which to settle that request.
-Routine loops keep their existing `headless` deny/defer/reviewer semantics even
-when the containing process also lacks an approval surface.
+the routine `headless` loop flag. Instead, exec-mode mints a host-issued
+unattended turn authority (`UnattendedTurnAuthority`) for each turn it runs,
+and the query loop projects that authority onto the turn's tool permission
+context as the unattended (`headless`) policy lane. The owner started the turn
+with nobody to ask, so an ask on that lane follows the routine contract:
+mutating builtin calls route to the reviewer (LOW allows; MEDIUM and HIGH deny
+with a structured tool error the model sees), an out-of-directory request is
+recorded in the deferred queue and denied for the turn, and explicit host
+execution fails closed. The authority is never parsed from chat input and is
+minted per turn, so a retained session's later turns, which arrive through
+remote surfaces, do not inherit it. A turn without that authority that still
+requires explicit authorization ends with the typed `authorization-required`
+terminal, which the model cannot retry; that remains the outcome for an
+attached client's turn and for a child agent boundary re-issued through
+`agent_spawn`. Routine loops keep their existing `headless` deny/defer/reviewer
+semantics even when the containing process also lacks an approval surface.
 
 Closing a deferred modal does not grant permission and does not delete the audit
 record. It leaves the item pending or closed according to the queue state.

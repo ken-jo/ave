@@ -1055,7 +1055,8 @@ describe("bootstrap() headless launch opens no discretionary service connection"
     expect(mainDeps["approvalSurface"]).toBe("unavailable");
     // Native --exec keeps the ordinary main-chat tool and egress scope. The
     // approval capability must never be inferred from the routine-only
-    // `headless` scope switch.
+    // `headless` scope switch; the unattended policy lane is a host-issued
+    // per-turn authority minted by exec-mode, not a loop flag.
     expect(mainDeps["headless"]).toBeUndefined();
     expect(mainDeps["allowedPluginIds"]).toBeUndefined();
     expect(mainDeps["toolRegistry"]).toBe(headlessServices.toolRegistry);

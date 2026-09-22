@@ -250,9 +250,13 @@ services until SIGINT or SIGTERM. It emits
 `{"kind":"exec.completed","exitCode":0}` before waiting and starts no further
 model turn. It does not turn the process into a server. Exit codes are `0` for
 completion, `1` for failure, `2` for requested input, `64` for invalid usage, and
-`75` when another host owns the profile. Exit `77` means the turn requires local
-authorization but this process has no approval surface. Shutdown failure can
-produce exit `1`.
+`75` when another host owns the profile. Exit `77` means a turn without the
+owner's unattended authority — an attached client's turn on a retained session,
+or a child agent boundary — requires local authorization that this process
+cannot present; the `--exec` turn itself settles its asks on the unattended
+policy lane as reviewer decisions or structured denials. A session that binds a
+project root other than the one requested exits `1` before the turn. Shutdown
+failure can produce exit `1`.
 
 `--serve` accepts only an optional `--user-data-dir=<directory>` alongside it;
 it cannot share a launch with `--exec` or `--set-secret`. It enables the
