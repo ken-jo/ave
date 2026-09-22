@@ -39,9 +39,11 @@ import { getDottedFieldValue } from "../../shared/dotted-field-value.js";
 import { extractShellCommands } from "../../shared/shell-command-fields.js";
 import {
   formatSandboxCapabilityForPrompt,
+  isDisposableSubstrateCapability,
   sandboxRelaxesCategory,
   type SandboxCapability,
 } from "../sandbox-capability.js";
+import { verifyAveScratchDir } from "../../shared/ave-scratch.js";
 import {
   canonicalizePathForMatch,
   caseFoldForMatch,
@@ -721,6 +723,12 @@ function isInsideAllowed(path: string, allowed: readonly string[]): boolean {
   return isPathAllowed(path, { directories: allowed });
 }
 
+/** The scratch root in the classifier's own path form, or nothing while it does not verify. */
+function verifiedScratchRoot(): string | undefined {
+  const scratch = verifyAveScratchDir();
+  return scratch.ok ? caseFoldForMatch(canonicalizePathForMatch(scratch.path)) : undefined;
+}
+
 /**
  * "Deep" = path is inside an allowed dir but ≥3 levels below the
  * matched root (heuristic for "more dangerous than a leaf write").
@@ -739,6 +747,37 @@ function isDeepInsideAllowed(path: string, allowed: readonly string[]): boolean 
 }
 
 const RULES: Array<(ctx: ToolInvocationContext) => RiskVerdict | null> = [
+  // ── disposable-guest rules ──────────────────────────────
+  //
+  // The executor routed this call to the workload broker's disposable Linux
+  // guest (the operator-attested container is same-process and never
+  // qualifies — see `DisposableSubstrate`): its filesystem and process tree
+  // are the guest's own and are discarded with it, and the broker refuses
+  // host paths before anything runs. Grading such a call with the host's
+  // allowed-dir geometry or the host's "no OS sandbox" floor describes a
+  // substrate the effects never touch, which is how an unattended routine
+  // ended up holding `uname -m` and a write to the guest's /tmp. A
+  // destructive verb still reads MEDIUM: disposable is not the same as
+  // intended, and the headless lane turns MEDIUM into a structured denial
+  // rather than a prompt. Network is the guest's own egress and is graded by
+  // the network rules below, unchanged.
+  (ctx) => {
+    if (!isDisposableSubstrateCapability(ctx.sandboxCapability)) return null;
+    if (ctx.category === "shell") {
+      const cmds = extractShellCommands(ctx.finalInput);
+      if (cmds.some((cmd) => DESTRUCTIVE_SHELL_RE.test(cmd))) {
+        return { level: "medium", reason: "shell destructive verb inside disposable guest" };
+      }
+      return { level: "low", reason: "shell confined to disposable guest" };
+    }
+    if (ctx.category === "write") {
+      return { level: "low", reason: "write confined to disposable guest" };
+    }
+    if (ctx.category === "read") {
+      return { level: "low", reason: "read confined to disposable guest" };
+    }
+    return null;
+  },
   // ── shell rules (3) ─────────────────────────────────────
   (ctx) => {
     if (ctx.category !== "shell") return null;
@@ -959,7 +998,18 @@ const RULES: Array<(ctx: ToolInvocationContext) => RiskVerdict | null> = [
   (ctx) => {
     if (ctx.category !== "write") return null;
     const paths = extractDeclaredPaths(ctx);
-    if (paths.some((p) => isDeepInsideAllowed(p, ctx.allowedDirectories))) {
+    // The application scratch directory is disposable to its full depth —
+    // that is the whole point of advertising it as somewhere to stage a
+    // build tree — so depth below it is not a signal. Anything else deep
+    // inside an allowed root keeps the heuristic.
+    const scratchRoot = verifiedScratchRoot();
+    if (
+      paths.some(
+        (p) =>
+          !(scratchRoot !== undefined && isInsideAllowed(p, [scratchRoot])) &&
+          isDeepInsideAllowed(p, ctx.allowedDirectories),
+      )
+    ) {
       return { level: "medium", reason: "write deep inside allowed" };
     }
     return null;

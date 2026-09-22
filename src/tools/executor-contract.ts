@@ -6,6 +6,7 @@ import type {
 } from "../shared/authorization-required.js";
 import type { McpUiPayload } from "../mcp/types.js";
 import type { HostShellExecutionPlanAuditProjection } from "../permissions/host-shell-execution-plan.js";
+import type { DisposableSubstrate } from "../permissions/sandbox-capability.js";
 import type { PluginOperationPrincipal } from "../permissions/plugin-operation-grant.js";
 import type { PermissionReviewEvent } from "../shared/permission-review-status.js";
 import type { ToolOutputCaptureFactory } from "../shared/tool-output-artifact.js";
@@ -104,6 +105,13 @@ export interface ToolPermissionContext {
   trustOrigin: ToolTrustOrigin;
   /** Immutable host-owned remote-controller authority; never a tool or wire field. */
   remoteControllerAuthority?: RemoteControllerAuthority;
+  /**
+   * Host-selected disposable guest this invocation executes in (set per
+   * invocation by the executor after route selection). The reviewer grades
+   * filesystem and process effects against that guest instead of the host
+   * process; never a tool or wire field.
+   */
+  disposableSubstrate?: DisposableSubstrate;
   /** Direct plugin panel/renderer user activation marker. */
   pluginPanelUserAction?: boolean;
   /** Host-derived app identity and optional opaque one-shot grant. Never copied into tool metadata. */

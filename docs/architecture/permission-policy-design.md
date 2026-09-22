@@ -235,6 +235,28 @@ normalized with POSIX semantics against the capability-bound guest cwd or HOME.
 Normal tool authorization, reviewer policy, audit, request bounds and deadlines
 remain mandatory. PowerShell has no broker backend and fails closed.
 
+The reviewer grades a routed invocation against the substrate its effects land
+on. When the executor selects `disposable-container` for a shell **through the
+workload broker**, or the brokered canonical route for a file tool, it records
+that host-derived `DisposableSubstrate` on the invocation's permission context
+(assigned on every invocation, so a value inherited on a caller's context never
+survives onto a host-routed call), and
+[sandbox-capability.ts](../../src/permissions/sandbox-capability.ts) resolves
+the reviewer capability to `disposable-container` (verified; filesystem and
+process confined, network not claimed) ahead of the host-shell plan, whose
+`none` describes a plain child that call never spawns. The rule classifier
+then grades guest-scoped effects as such: a non-destructive shell command,
+and a read or write of any guest path, is LOW; a destructive verb stays MEDIUM
+(a structured denial on the headless lane, an ask in the foreground); network
+verdicts are unchanged because egress is the guest's own policy. The
+operator-attested container never becomes a substrate: it is same-process, the
+shell is a plain child of the controller sharing its `~/.ave`, pid namespace
+and environment, so that route keeps the host-shell plan grading. Approval
+requests for a broker-routed shell carry the guest capability rather than the
+host plan of a child that never spawns. The verdict
+cache keys by the guest identity, so a host verdict never serves a guest call
+and vice versa. An unverified or partially confined guest earns no relaxation.
+
 The [Linux workload resource controller](linux-workload-resource-controller.md)
 is a separate unwired foundation. Its cgroup-v2 leaf limits and OOM evidence do
 not issue either disposable authority. The Docker broker independently binds
@@ -292,6 +314,31 @@ credential files. The actual environment remains owned by
 [shell-execution-environment.ts](../../src/shared/shell-execution-environment.ts)
 provides shared descriptions for the system prompt and approval UI; the prompt
 describes the default route, while the approval describes the final call's plan.
+
+## Default Allowed Roots
+
+Layer 1 seeds its allow-list from the project root, the application data root
+(`aveHome()`) and the application scratch directory, as
+[allowed-directories.ts](../../src/permissions/allowed-directories.ts)
+computes them. The scratch directory
+([ave-scratch.ts](../../src/shared/ave-scratch.ts)) is `ave-scratch-<uid>`
+under the platform temp root: boot creates it with `0o700`, and it is offered —
+to the model in the environment block of the system prompt as
+`scratchDirectory`, and to the allow-list — only while it still verifies as a
+real directory (not a symlink) that this account owns and no other account can
+read. The check is a per-call `lstat` at each offer, not a guarantee across the
+gap to the write itself. The name is keyed by uid and a digest of the
+application home, so an isolated `AVE_HOME` gets its own scratch directory. A
+directory another local account planted first under a shared `/tmp` fails the
+check and is reported at boot; the prompt then says no scratch directory is
+available, and nothing substitutes the temp root for it. The rule classifier
+does not treat depth below the verified scratch root as a signal, so a staged
+build tree there is graded like any other scratch write. The platform temp roots themselves are not a Layer 1 default; the
+conversation loop adds them to its per-turn base set
+([base-allowed-directories.ts](../../src/permissions/base-allowed-directories.ts)),
+where the world-writable `/tmp` tradeoff is stated. Layer 0 still hard-blocks
+sensitive leaves beneath any default root, and `permissions.additionalDirectories`
+extends the list rather than replacing it.
 
 ## Saved-Session Reads
 

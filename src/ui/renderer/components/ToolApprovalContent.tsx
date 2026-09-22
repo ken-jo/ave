@@ -1538,6 +1538,10 @@ function approvalSandboxSummary(request: ApprovalRequest): ReviewBasisRow | null
     value = t("toolApprovalDialog.sandboxFsOnly");
   } else if (cap.kind === "none" || cap.confidence === "assumed") {
     value = t("toolApprovalDialog.sandboxNone");
+  } else if (cap.kind === "disposable-container") {
+    // The broker guest: filesystem and process tree are the guest's own and
+    // are discarded with it; egress is the guest's policy, not "partial".
+    value = t("toolApprovalDialog.sandboxDisposableGuest");
   } else if (
     cap.confines &&
     !(cap.confines.filesystem && cap.confines.process && cap.confines.network)

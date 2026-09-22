@@ -195,4 +195,64 @@ describe("executor broker shell route", () => {
       }),
     }));
   });
+
+  it("grades a routine-lane guest request against the disposable substrate, not the host shell plan", async () => {
+    const registry = new ToolRegistry();
+    registry.register(new BashTool());
+    const permissionManager = new PermissionManager(join(root, "permissions.json"));
+    permissionManager.checkDetailed = () => ({
+      decision: "ask",
+      reason: "routine lane",
+      layer: 5,
+      reviewer: { route: "headless" },
+    });
+    permissionManager.hasReviewer = () => true;
+    const dispatched: unknown[] = [];
+    permissionManager.dispatchReviewer = vi.fn(async (_toolName, input) => {
+      dispatched.push(input);
+      return {
+        verdict: { level: "low", reason: "shell confined to disposable guest" },
+        outcome: "fresh",
+        cacheReason: "miss-not-found",
+      };
+    }) as typeof permissionManager.dispatchReviewer;
+    const auditLogger = {
+      log: vi.fn(),
+      isPermissionAuditChainReady: () => true,
+      assertPermissionAuditWritable: vi.fn(),
+      appendPermissionAuditEntry: vi.fn(),
+    };
+    const executor = new ToolExecutor(
+      registry, undefined, permissionManager, undefined, undefined, undefined, auditLogger as never,
+    );
+    broker.execute.mockResolvedValueOnce({
+      output: "x86_64",
+      isError: false,
+      status: "exited",
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      cancelled: false,
+      oomDelta: 0,
+      ownedResourcesZero: true,
+      receiptDigest: "5".repeat(64),
+    });
+
+    const [result] = await executor.executeAll(
+      [{ id: "tu-broker-guest-probe", name: "bash", input: { command: "uname -m", timeoutSeconds: 30 } }],
+      {
+        sessionId: "sess-broker-guest-probe",
+        executionCwd: root,
+        permissionContext: { trustOrigin: "llm-tool-arg", approvalSurface: "unavailable", headless: true },
+      },
+    );
+
+    expect(result).toMatchObject({ content: "x86_64" });
+    expect(dispatched).toHaveLength(1);
+    expect(result?.is_error).toBeUndefined();
+    expect(dispatched[0]).toMatchObject({
+      disposableSubstrate: { authority: "workload-broker", id: "1".repeat(64) },
+    });
+    expect(localSpawn).not.toHaveBeenCalled();
+  });
 });

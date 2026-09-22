@@ -317,6 +317,102 @@ describe("execution route shadow metadata", () => {
     }
   });
 
+  it("grades an operator-container guest against the host shell plan: same-process is not a disposable substrate", async () => {
+    __resetActiveSandboxCapabilityForTest();
+    setSandboxRequestedAtBoot(false);
+    activateDisposableCapability();
+    const workspace = mkdtempSync(join(tmpdir(), "ave-execution-route-operator-review-"));
+    try {
+      const { executor } = makeExecutor(workspace);
+      const permissions = (executor as unknown as { permissionManager: PermissionManager }).permissionManager;
+      permissions.checkDetailed = () => ({
+        decision: "ask",
+        reason: "routine lane",
+        layer: 5,
+        reviewer: { route: "headless" },
+      });
+      permissions.hasReviewer = () => true;
+      const dispatched: Array<Record<string, unknown>> = [];
+      permissions.dispatchReviewer = vi.fn(async (_toolName, input) => {
+        dispatched.push(input as Record<string, unknown>);
+        return {
+          verdict: { level: "medium", reason: "shell unclassified" },
+          outcome: "fresh",
+          cacheReason: "miss-not-found",
+        };
+      }) as typeof permissions.dispatchReviewer;
+
+      const [result] = await executor.executeAll(
+        [{ id: "tu-route-operator-review", name: "bash", input: { command: "printenv | head -3" } }],
+        {
+          sessionId: "sess-route-operator-review",
+          executionCwd: workspace,
+          permissionContext: {
+            trustOrigin: "llm-tool-arg",
+            approvalSurface: "unavailable",
+            headless: true,
+          },
+        },
+      );
+
+      expect(dispatched).toHaveLength(1);
+      expect(dispatched[0].disposableSubstrate).toBeUndefined();
+      expect(dispatched[0].hostShellExecutionPlan).toBeDefined();
+      expect(result?.is_error).toBe(true);
+    } finally {
+      await cleanupTmpDir(workspace);
+    }
+  });
+
+  it("strips a caller-supplied substrate on a host-routed call: no live guest means host grading", async () => {
+    __resetActiveSandboxCapabilityForTest();
+    setSandboxRequestedAtBoot(false);
+    // No operator container, no broker: the plain host shell route.
+    const workspace = mkdtempSync(join(tmpdir(), "ave-execution-route-host-inherited-"));
+    try {
+      const { executor } = makeExecutor(workspace);
+      const permissions = (executor as unknown as { permissionManager: PermissionManager }).permissionManager;
+      permissions.checkDetailed = () => ({
+        decision: "ask",
+        reason: "routine lane",
+        layer: 5,
+        reviewer: { route: "headless" },
+      });
+      permissions.hasReviewer = () => true;
+      const dispatched: Array<Record<string, unknown>> = [];
+      permissions.dispatchReviewer = vi.fn(async (_toolName, input) => {
+        dispatched.push(input as Record<string, unknown>);
+        return {
+          verdict: { level: "medium", reason: "shell unclassified" },
+          outcome: "fresh",
+          cacheReason: "miss-not-found",
+        };
+      }) as typeof permissions.dispatchReviewer;
+
+      const [result] = await executor.executeAll(
+        [{ id: "tu-route-host-inherited", name: "bash", input: { command: "uname -m" } }],
+        {
+          sessionId: "sess-route-host-inherited",
+          executionCwd: workspace,
+          permissionContext: {
+            trustOrigin: "llm-tool-arg",
+            approvalSurface: "unavailable",
+            headless: true,
+            // A value smuggled in on the caller's context must not survive.
+            disposableSubstrate: { authority: "workload-broker", id: "9".repeat(64) },
+          },
+        },
+      );
+
+      expect(dispatched).toHaveLength(1);
+      expect(dispatched[0].disposableSubstrate).toBeUndefined();
+      expect(dispatched[0].hostShellExecutionPlan).toBeDefined();
+      expect(result?.is_error).toBe(true);
+    } finally {
+      await cleanupTmpDir(workspace);
+    }
+  });
+
   it("keeps an explicit-host request inside the disposable guest without requiring a desktop", async () => {
     __resetActiveSandboxCapabilityForTest();
     setSandboxRequestedAtBoot(false);

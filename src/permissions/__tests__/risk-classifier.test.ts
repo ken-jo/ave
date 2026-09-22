@@ -22,7 +22,14 @@ import {
   type RiskVerdict,
 } from "../reviewer/risk-classifier.js";
 import { PERMISSION_REVIEWER_FRAMEWORK } from "../../shared/permission-reviewer-framework.js";
+import { disposableContainerCapability } from "../sandbox-capability.js";
 import { makeRiskClassifierContext as ctx } from "./test-helpers.js";
+import { verifyAveScratchDir } from "../../shared/ave-scratch.js";
+
+// The scratch directory is a boot-time artifact; absent unless a case says so.
+vi.mock("../../shared/ave-scratch.js", () => ({
+  verifyAveScratchDir: vi.fn(() => ({ ok: false, path: "", reason: "absent in test" })),
+}));
 
 
 describe("DisabledRiskClassifier", () => {
@@ -33,6 +40,88 @@ describe("DisabledRiskClassifier", () => {
     const v = c.classify(ctx({ category: "read" }));
     expect(v.level).toBe("low");
     expect(v.reason).toMatch(/disabled/);
+  });
+});
+
+describe("RuleBasedRiskClassifier — application scratch directory", () => {
+  const rb = new RuleBasedRiskClassifier();
+  const scratch = "/users/example/scratch";
+  const project = "/users/example/work";
+
+  it("does not read depth below the verified scratch root as a signal, while other deep writes stay MEDIUM", () => {
+    vi.mocked(verifyAveScratchDir).mockReturnValue({ ok: true, path: scratch });
+    try {
+      const deepScratch = rb.classify(ctx({
+        category: "write",
+        finalInput: { path: `${scratch}/repo/dist/bundle.js` },
+        allowedDirectories: [project, scratch],
+      }));
+      expect(deepScratch.level).toBe("low");
+      expect(deepScratch.reason).toBe("write at allowed-dir leaf");
+      const deepProject = rb.classify(ctx({
+        category: "write",
+        finalInput: { path: `${project}/repo/dist/bundle.js` },
+        allowedDirectories: [project, scratch],
+      }));
+      expect(deepProject.level).toBe("medium");
+      expect(deepProject.reason).toBe("write deep inside allowed");
+    } finally {
+      vi.mocked(verifyAveScratchDir).mockReturnValue({ ok: false, path: scratch, reason: "absent in test" });
+    }
+  });
+
+  it("keeps the depth heuristic for the same path once the scratch root no longer verifies", () => {
+    const v = rb.classify(ctx({
+      category: "write",
+      finalInput: { path: `${scratch}/repo/dist/bundle.js` },
+      allowedDirectories: [project, scratch],
+    }));
+    expect(v.level).toBe("medium");
+    expect(v.reason).toBe("write deep inside allowed");
+  });
+});
+
+describe("RuleBasedRiskClassifier — disposable guest substrate", () => {
+  const rb = new RuleBasedRiskClassifier();
+  const guest = disposableContainerCapability({ authority: "workload-broker", id: "1".repeat(64) });
+  const host = { kind: "none" as const, confidence: "verified" as const, platform: "linux" as const, reason: "none" };
+
+  it("shell probe inside the guest → LOW where the same command on the host is MEDIUM", () => {
+    const input = { command: "uname -m && cat /etc/os-release | head -3" };
+    expect(rb.classify(ctx({ category: "shell", finalInput: input, sandboxCapability: host })).level).toBe("medium");
+    const v = rb.classify(ctx({ category: "shell", finalInput: input, sandboxCapability: guest }));
+    expect(v.level).toBe("low");
+    expect(v.reason).toBe("shell confined to disposable guest");
+  });
+
+  it("destructive verb inside the guest stays MEDIUM (structured denial on the headless lane), not HIGH", () => {
+    const v = rb.classify(ctx({ category: "shell", finalInput: { command: "rm -rf /tmp/build" }, sandboxCapability: guest }));
+    expect(v.level).toBe("medium");
+    expect(v.reason).toBe("shell destructive verb inside disposable guest");
+  });
+
+  it("guest write and read outside the host allowed dirs → LOW", () => {
+    const write = rb.classify(ctx({ category: "write", finalInput: { path: "/var/www/site/index.html" }, sandboxCapability: guest }));
+    expect(write.level).toBe("low");
+    expect(write.reason).toBe("write confined to disposable guest");
+    const read = rb.classify(ctx({ category: "read", finalInput: { path: "/root/.cmdstan/x" }, sandboxCapability: guest }));
+    expect(read.level).toBe("low");
+    expect(rb.classify(ctx({ category: "write", finalInput: { path: "/var/www/site/index.html" }, sandboxCapability: host })).level).toBe("high");
+  });
+
+  it("network verdicts are unchanged by the guest (egress is the guest's own policy)", () => {
+    for (const url of ["https://api.openai.com/v1/x", "http://169.254.169.254/latest", "https://example.org/"]) {
+      const onHost = rb.classify(ctx({ category: "network", finalInput: { url }, sandboxCapability: host }));
+      const inGuest = rb.classify(ctx({ category: "network", finalInput: { url }, sandboxCapability: guest }));
+      expect(inGuest).toEqual(onHost);
+    }
+  });
+
+  it("an unverified or partially confined 'guest' gets no relaxation", () => {
+    const assumed = { ...guest, confidence: "assumed" as const };
+    expect(rb.classify(ctx({ category: "shell", finalInput: { command: "uname -m" }, sandboxCapability: assumed })).level).toBe("medium");
+    const noProcess = { ...guest, confines: { filesystem: true, process: false, network: false } };
+    expect(rb.classify(ctx({ category: "write", finalInput: { path: "/var/www/x" }, sandboxCapability: noProcess })).level).toBe("high");
   });
 });
 

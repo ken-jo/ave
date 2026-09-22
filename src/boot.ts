@@ -84,6 +84,7 @@ import { createLogger } from "./lib/logger.js";
 import { configureTracing, parseTelemetrySpec } from "./engine/telemetry/tracing.js";
 import { getAveAppVersion } from "./shared/app-version.js";
 import { ensureAveHomePrivate, aveHome } from "./shared/ave-home.js";
+import { ensureAveScratchDir } from "./shared/ave-scratch.js";
 import {
   listAveHomeDocUpgradeMarkers,
   seedAveHomeDocs,
@@ -235,6 +236,16 @@ export async function bootstrap(
     log.error(
       `boot: ${homePrivacy.home} could not be restricted to this account (${homePrivacy.reason}) — settings, audit log and secrets are protected only by whatever the parent directory grants`,
     );
+  }
+
+  // The application-owned scratch directory the agent may stage work in
+  // without an approval. It is offered to the model and to the Layer 1
+  // defaults only while it verifies as a `0o700` directory this account owns;
+  // a failure here means the agent simply has no default scratch space, which
+  // is reported rather than replaced by the shared temp root.
+  const scratch = ensureAveScratchDir();
+  if (!scratch.ok) {
+    log.error(`boot: scratch directory ${scratch.path} is not usable (${scratch.reason}) — no default scratch space will be offered`);
   }
 
   // Seed user-facing docs into `~/.ave/` before any other component reads

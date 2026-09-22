@@ -62,6 +62,7 @@ import { currentToolExecutionCwd } from "./execution-context.js";
 import {
   getHostShellExecutionPlan,
   resolveReviewerSandboxCapability,
+  type DisposableSubstrate,
 } from "../permissions/sandbox-capability.js";
 import {
   getHostShellExecutionPlanAuditProjection,
@@ -1169,9 +1170,24 @@ export async function runToolInvocation(
         });
       }
     }
+    // The substrate the effects land on, as the executor selected it above:
+    // a broker-backed disposable-container shell route, or the brokered
+    // canonical file route. Host-derived here and only here, and assigned
+    // unconditionally so a value inherited on the caller's context can never
+    // grade a host-routed call as a guest. The operator-attested container is
+    // deliberately not a substrate (see `DisposableSubstrate`).
+    const disposableSubstrate: DisposableSubstrate | undefined =
+      executionRoutePlan?.route === "disposable-container" &&
+      executionRoutePlan.disposableCapability !== null &&
+      executionRoutePlan.disposableCapability.kind === "workload-broker"
+        ? { authority: "workload-broker", id: executionRoutePlan.disposableCapability.id }
+        : brokeredFileRouteSelected && brokeredFileCapability !== undefined
+          ? { authority: "workload-broker", id: brokeredFileCapability.workload.id }
+          : undefined;
     const invocationPermissionContext: ToolPermissionContext = {
       ...permissionContext,
       ...(approvalCacheKey ? { approvalCacheKey } : {}),
+      disposableSubstrate,
     };
     const approvalPurpose = buildApprovalPurposeSuggestion(finalInput, invocationPermissionContext);
     const auditInput = auditSafeToolInput(
@@ -1372,7 +1388,10 @@ export async function runToolInvocation(
               ...(deferred.deferredId
                 ? { deferredRequestId: deferred.deferredId }
                 : {}),
-              ...(hostShellExecutionPlanAudit
+              // Same rule as the sibling controls: a guest-routed shell does
+              // not carry the host plan of a child that never spawns.
+              ...(hostShellExecutionPlanAudit &&
+                  invocationPermissionContext.disposableSubstrate === undefined
                 ? { executionPlan: hostShellExecutionPlanAudit }
                 : {}),
             }),
@@ -1418,8 +1437,11 @@ export async function runToolInvocation(
           mode: currentApprovalMode(services.permissionManager),
           sensitivePathPattern: requestSensitivePathPattern,
           // Canonical host shells carry the sealed renderer-safe projection;
-          // every other execution route retains the existing capability display.
-          ...(hostShellExecutionPlanAudit === undefined
+          // every other execution route — including a shell the executor
+          // routed to the broker guest, whose host plan describes a child
+          // that never spawns — carries the capability the reviewer graded.
+          ...(hostShellExecutionPlanAudit === undefined ||
+              invocationPermissionContext.disposableSubstrate !== undefined
             ? {
                 sandboxCapability: resolveReviewerSandboxCapability(
                   source,
@@ -1427,6 +1449,8 @@ export async function runToolInvocation(
                   tool.mcpServerId,
                   tool.workerId,
                   tool.pluginId,
+                  undefined,
+                  invocationPermissionContext.disposableSubstrate,
                 ),
               }
             : { executionPlan: hostShellExecutionPlanAudit }),
