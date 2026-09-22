@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -10,6 +10,8 @@ import { normalizeElectronNodeRuntime } from "../../scripts/normalize-electron-n
 import {
   applyElectronVitestResult,
   createElectronVitestInvocation,
+  ensureGeneratedAssets,
+  missingGeneratedAssets,
   resolveElectronVitestRuntime,
   runVitestUnderElectron,
 } from "../../scripts/run-vitest-under-electron.mjs";
@@ -138,6 +140,101 @@ describe("Electron Node-mode Vitest runner", () => {
         vitestPath: "vitest",
       }),
     ).toThrow("[electron-vitest-runtime-invalid]");
+  });
+
+  it("runs the branding generator once for a worktree that lacks its outputs, and never for a complete one", () => {
+    const root = mkdtempSync(join(tmpdir(), "ave-vitest-assets-"));
+    try {
+      const manifest = join("build", "generated-assets.json");
+      const write = (relative: string) => {
+        mkdirSync(join(root, relative, ".."), { recursive: true });
+        writeFileSync(join(root, relative), "x");
+      };
+      // A fresh worktree: no manifest at all. The generator is the one that
+      // knows the full list, so it must run and its manifest is then trusted.
+      expect(missingGeneratedAssets({ cwd: root })).toEqual([manifest]);
+      const runSync = vi.fn(() => {
+        write("build/icon.png");
+        write("build/tray-icon.png");
+        mkdirSync(join(root, "build"), { recursive: true });
+        writeFileSync(join(root, manifest), JSON.stringify(["build/icon.png", "build/tray-icon.png"]));
+        return { status: 0, error: undefined };
+      });
+      const log = vi.fn();
+      expect(ensureGeneratedAssets({
+        cwd: root,
+        generatorPath: "/generator.cjs",
+        nodeExecPath: "/node",
+        runSync,
+        log,
+      })).toEqual({ generated: true, missing: [manifest] });
+      expect(runSync).toHaveBeenCalledWith(
+        "/node",
+        ["/generator.cjs"],
+        expect.objectContaining({ cwd: root, shell: false, stdio: "inherit" }),
+      );
+      expect(log).toHaveBeenCalledTimes(1);
+
+      // Complete tree: nothing to do, and the generator is not touched.
+      expect(ensureGeneratedAssets({ cwd: root, runSync, log })).toEqual({
+        generated: false,
+        missing: [],
+      });
+      expect(runSync).toHaveBeenCalledTimes(1);
+
+      // One listed output gone (e.g. a partial clean): only that one is
+      // reported, and the generator runs again.
+      rmSync(join(root, "build/tray-icon.png"));
+      expect(missingGeneratedAssets({ cwd: root })).toEqual(["build/tray-icon.png"]);
+      ensureGeneratedAssets({ cwd: root, runSync, log });
+      expect(runSync).toHaveBeenCalledTimes(2);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed with a stable code when the generator fails or leaves outputs missing", () => {
+    const root = mkdtempSync(join(tmpdir(), "ave-vitest-assets-"));
+    try {
+      expect(() => ensureGeneratedAssets({
+        cwd: root,
+        runSync: () => ({ status: 3, error: undefined }),
+        log: () => {},
+      })).toThrow("[electron-vitest-assets-unavailable] generator exited 3");
+      expect(() => ensureGeneratedAssets({
+        cwd: root,
+        runSync: () => ({ status: null, error: new Error("ENOENT node") }),
+        log: () => {},
+      })).toThrow("[electron-vitest-assets-unavailable] ENOENT node");
+      // A "successful" generator that did not actually produce the manifest is
+      // still an absence, not a pass.
+      expect(() => ensureGeneratedAssets({
+        cwd: root,
+        runSync: () => ({ status: 0, error: undefined }),
+        log: () => {},
+      })).toThrow("[electron-vitest-assets-unavailable] generator left assets missing");
+      // A corrupt manifest counts as missing rather than as "nothing listed".
+      mkdirSync(join(root, "build"), { recursive: true });
+      writeFileSync(join(root, "build", "generated-assets.json"), "{not json");
+      expect(missingGeneratedAssets({ cwd: root })).toEqual([join("build", "generated-assets.json")]);
+      writeFileSync(join(root, "build", "generated-assets.json"), JSON.stringify({ paths: [] }));
+      expect(missingGeneratedAssets({ cwd: root })).toEqual([join("build", "generated-assets.json")]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fills missing assets before the CLI entrypoint launches Vitest", () => {
+    const runnerSource = readFileSync(
+      new URL("../../scripts/run-vitest-under-electron.mjs", import.meta.url),
+      "utf8",
+    );
+    const mainBlock = runnerSource.indexOf("if (isMainModule()) {");
+    expect(mainBlock).toBeGreaterThanOrEqual(0);
+    const ensureCall = runnerSource.indexOf("ensureGeneratedAssets();", mainBlock);
+    const launch = runnerSource.indexOf("runVitestUnderElectron(process.argv.slice(2))", mainBlock);
+    expect(ensureCall).toBeGreaterThan(mainBlock);
+    expect(launch).toBeGreaterThan(ensureCall);
   });
 
   it("rejects partially injected runtime paths instead of ignoring them", async () => {
