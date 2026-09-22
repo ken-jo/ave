@@ -13,6 +13,7 @@ import {
 import {
   getActiveWorkloadBrokerProjection,
   isActiveWorkloadBrokerCwd,
+  isWorkloadBrokerActive,
 } from "../workload/runtime.js";
 
 export interface AuthorizedProjectResolution {
@@ -28,7 +29,30 @@ export interface AuthorizedProjectResolution {
  */
 export const DEFAULT_PROJECT_NAME = "default";
 
+/**
+ * The one project a broker-bound run may work in. While the exclusive
+ * workload-broker route is active the guest cwd is the whole authorized set: it
+ * is matched byte-for-byte, never canonicalized against the controller host's
+ * filesystem (where it need not exist), and the host default workspace is not
+ * a fallback — not even as the loop's "default project" that session
+ * initialization and execution-cwd lookups fall back to. Every caller that
+ * decides "which project" goes through this module, so the CLI pre-check, the
+ * session authorizer, the project list, and the fallback cannot disagree.
+ */
+function activeBrokeredWorkloadProject(): ProjectIdentity | null {
+  if (!isWorkloadBrokerActive()) return null;
+  const projection = getActiveWorkloadBrokerProjection();
+  if (projection === undefined) return null;
+  const projectRoot = projection.workload.cwd;
+  return {
+    projectRoot,
+    projectName: projectBasename(projectRoot) || DEFAULT_PROJECT_NAME,
+  };
+}
+
 export function defaultWorkspaceProject(defaultWorkspaceRoot = getDefaultWorkspaceRoot()): ProjectIdentity {
+  const brokered = activeBrokeredWorkloadProject();
+  if (brokered !== null) return brokered;
   return {
     projectRoot: defaultWorkspaceRoot,
     projectName: DEFAULT_PROJECT_NAME,
@@ -37,21 +61,20 @@ export function defaultWorkspaceProject(defaultWorkspaceRoot = getDefaultWorkspa
 }
 
 /**
- * The one project a broker-bound run may work in. While the exclusive
- * workload-broker route is active the guest cwd is the whole authorized set: it
- * is matched byte-for-byte, never canonicalized against the controller host's
- * filesystem (where it need not exist), and the host default workspace is not
- * a fallback. Every caller that decides "which project" goes through this
- * module, so the CLI pre-check and the session authorizer cannot disagree.
+ * Whether the root a session actually bound matches the root that was
+ * requested. Byte-for-byte for a brokered guest cwd; a symlink or case alias
+ * of the default workspace binds the canonical default root, which is the
+ * directory the caller named.
  */
-function activeBrokeredWorkloadProject(): ProjectIdentity | null {
-  const projection = getActiveWorkloadBrokerProjection();
-  if (projection === undefined) return null;
-  const projectRoot = projection.workload.cwd;
-  return {
-    projectRoot,
-    projectName: projectBasename(projectRoot) || DEFAULT_PROJECT_NAME,
-  };
+export function sessionBoundProjectRootMatches(
+  boundRoot: string | null,
+  requestedRoot: string,
+): boolean {
+  if (boundRoot === null) return false;
+  if (projectRootEquals(boundRoot, requestedRoot)) return true;
+  return !isWorkloadBrokerActive()
+    && isDefaultWorkspaceRoot(requestedRoot)
+    && isDefaultWorkspaceRoot(boundRoot);
 }
 
 export function listAuthorizedWorkspaceProjects(defaultWorkspaceRoot = getDefaultWorkspaceRoot()): ProjectIdentity[] {
@@ -71,9 +94,7 @@ export function listAuthorizedWorkspaceProjects(defaultWorkspaceRoot = getDefaul
 }
 
 export function isAuthorizedWorkspaceProjectRoot(projectRoot: string): boolean {
-  if (getActiveWorkloadBrokerProjection() !== undefined) {
-    return isActiveWorkloadBrokerCwd(projectRoot);
-  }
+  if (isWorkloadBrokerActive()) return isActiveWorkloadBrokerCwd(projectRoot);
   if (isDefaultWorkspaceRoot(projectRoot)) return true;
   return listAuthorizedWorkspaceProjects().some((project) => projectRootEquals(project.projectRoot, projectRoot));
 }

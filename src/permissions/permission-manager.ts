@@ -241,6 +241,12 @@ export interface PermissionCheckContext {
    */
   headless?: boolean;
   /**
+   * The headless turn is the local owner's own command-line gesture (native
+   * `--exec`), not a background routine. Layers 3 and 5 — the owner's allow
+   * rules and "Allow always" grants — apply before the reviewer lane does.
+   */
+  ownerUnattended?: boolean;
+  /**
    * Permission policy #634 — full approval-cache identity for authority-sensitive tools.
    * When present, user allow rules / allow-always entries match this key
    * instead of the bare tool name so a benign prior approval cannot silently
@@ -1398,7 +1404,7 @@ export class PermissionManager {
       };
     }
 
-    if (context.headless === true && isMutating) {
+    if (context.headless === true && isMutating && context.ownerUnattended !== true) {
       return this.categoryBasedDecision(trust, resolvedCategory, context);
     }
 

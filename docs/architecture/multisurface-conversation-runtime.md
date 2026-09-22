@@ -488,9 +488,10 @@ Ave pins and rechecks the capability directory and file identities across the
 bounded read, verifies expiry and workload identity, checks the socket, completes
 an exact handshake, and requires `--exec-cwd` to equal the capability's guest cwd.
 While the broker is bound, `src/main/project-root-authorization.ts` answers every
-"which project" question — the CLI pre-check, the session authorizer, and the
-project list — with that one guest cwd, matched byte-for-byte and never
-canonicalized against the controller host, where it need not exist. After session
+"which project" question — the CLI pre-check, the session authorizer, the
+project list, and the loop's fallback default project — with that one guest cwd,
+matched byte-for-byte and never canonicalized against the controller host, where
+it need not exist. After session
 initialization the run re-checks the root the session actually bound to and exits
 `1` rather than continuing from the host default workspace.
 
@@ -525,10 +526,12 @@ the query loop projects the authority onto that turn's tool permission context a
 the unattended policy lane. An ask on that lane is settled by the routine
 contract — reviewer routing for mutating builtin calls, a deferred-queue hold for
 a path outside the granted set, a fail-closed denial for explicit host execution —
-as a structured tool error the model sees, and the turn continues. The authority
-is per turn and never parsed from chat input, so a retained session's later
-turns, which arrive through the Local API or a Tailnet surface, do not inherit
-it. Routine loops remain in their existing `headless` policy lane, including its
+as a structured tool error the model sees, and the turn continues; the owner's
+own allow rules and "Allow always" grants still apply first, because the turn
+is their gesture rather than a background routine's. The authority is per turn,
+spent by the turn that carries it, and never parsed from chat input, so a
+retained session's later turns, which arrive through the Local API or a Tailnet
+surface, can neither inherit nor replay it. Routine loops remain in their existing `headless` policy lane, including its
 fail-closed and deferred-review behavior; approval availability does not turn
 that scope flag into foreground authority.
 

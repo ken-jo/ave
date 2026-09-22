@@ -116,3 +116,15 @@ export function isIssuedUnattendedTurnAuthority(
   return typeof value === "object" && value !== null
     && issuedUnattendedTurnAuthorities.has(value);
 }
+
+/**
+ * Spend the authority on exactly one turn. A second use — a replayed options
+ * object on a retained session, a steering re-run, a test double — is refused
+ * the same way a lookalike is, so "later turns do not inherit it" holds even
+ * when the caller keeps a reference.
+ */
+export function consumeUnattendedTurnAuthority(value: unknown): boolean {
+  if (!isIssuedUnattendedTurnAuthority(value)) return false;
+  issuedUnattendedTurnAuthorities.delete(value);
+  return true;
+}

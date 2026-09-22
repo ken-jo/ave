@@ -11,6 +11,7 @@ const broker = vi.hoisted(() => ({
 }));
 
 vi.mock("../../workload/runtime.js", () => ({
+  isWorkloadBrokerActive: () => broker.active,
   getActiveWorkloadBrokerProjection: () => broker.active
     ? {
         version: "brokered-workload-capability/v1",
@@ -28,6 +29,7 @@ import {
   isAuthorizedWorkspaceProjectRoot,
   listAuthorizedWorkspaceProjects,
   resolveAuthorizedWorkspaceProject,
+  sessionBoundProjectRootMatches,
 } from "../project-root-authorization.js";
 import { projectRootEquals } from "../../shared/project-identity.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -161,6 +163,22 @@ describe("project root authorization under the exclusive workload-broker route",
       authorized: false,
       project: null,
     });
+    // The loop's fallback project is the guest cwd too, so an unauthorized
+    // or absent selection can never re-root a brokered session at the host.
+    expect(defaultWorkspaceProject()).toEqual(brokered);
+    expect(sessionBoundProjectRootMatches("/app", "/app")).toBe(true);
+    expect(sessionBoundProjectRootMatches(workspace, "/app")).toBe(false);
+    expect(sessionBoundProjectRootMatches(null, "/app")).toBe(false);
+  });
+
+  it("matches a bound root byte-for-byte or as a default-workspace alias on the host", () => {
+    const alias = join(root, "workspace-alias");
+    symlinkSync(workspace, alias);
+    expect(sessionBoundProjectRootMatches(workspace, workspace)).toBe(true);
+    expect(sessionBoundProjectRootMatches(`${workspace}/`, workspace)).toBe(true);
+    expect(sessionBoundProjectRootMatches(workspace, alias)).toBe(true);
+    expect(sessionBoundProjectRootMatches(join(root, "elsewhere"), workspace)).toBe(false);
+    expect(sessionBoundProjectRootMatches(null, workspace)).toBe(false);
   });
 
   it("resolves a symlink alias of the default workspace to the default project, not a fallback", () => {

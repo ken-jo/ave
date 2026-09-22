@@ -85,6 +85,12 @@ export interface ToolExecutorCallbacks {
 
 export interface ToolPermissionContext {
   headless?: boolean;
+  /**
+   * The local owner started this unattended turn (native `--exec`). Asks still
+   * route to the reviewer as on the headless lane, but the owner's explicit
+   * allow rules and durable grants apply first: the gesture is their own.
+   */
+  ownerUnattended?: boolean;
   /** Host-owned UI capability, independent of routine/headless tool scope. */
   approvalSurface?: ApprovalSurface;
   allowedPluginIds?: ReadonlySet<string>;

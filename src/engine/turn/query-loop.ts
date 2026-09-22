@@ -1836,10 +1836,13 @@ export async function queryLoop(
           permissionContext: {
             // A host-issued unattended authority puts this ONE turn on the
             // routine policy lane (reviewer-routed asks, deferred directory
-            // holds, fail-closed explicit host execution). The loop's own
+            // holds, fail-closed explicit host execution) while the owner's
+            // allow rules and durable grants keep applying. The loop's own
             // `headless` flag stays untouched, so the turn keeps its ordinary
             // tool, plugin, MCP, and egress scope.
-            headless: bounds.unattendedAuthority !== undefined ? true : self.deps.headless,
+            ...(bounds.unattendedAuthority !== undefined
+              ? { headless: true, ownerUnattended: true }
+              : { headless: self.deps.headless }),
             approvalSurface: self.deps.approvalSurface,
             allowedPluginIds: new Set(scope.activePluginIds),
             additionalDirectories: self.getTurnAdditionalDirectories(),

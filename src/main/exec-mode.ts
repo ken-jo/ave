@@ -33,8 +33,6 @@ import {
   issueUnattendedTurnAuthority,
 } from "../shared/authorization-required.js";
 import { errorMessage } from "../shared/error-message.js";
-import { projectRootEquals } from "../shared/project-identity.js";
-import { isDefaultWorkspaceRoot } from "./default-workspace-root.js";
 import type { ApprovalGate } from "../permissions/approval-gate.js";
 import type { PermissionManager } from "../permissions/permission-manager.js";
 import type { SettingsService } from "../data/settings-store.js";
@@ -502,15 +500,13 @@ async function runTurnRequest(deps: ExecDeps, request: ExecTurnRequest): Promise
     });
     // The pre-check above and the session's own authorizer must agree. If the
     // session fell back to the default workspace, every later tool call would
-    // run somewhere the operator did not ask for, so stop before the turn. A
-    // default-root alias (symlink, case) binds the canonical default root,
-    // which is the directory the operator named.
+    // run somewhere the operator did not ask for, so stop before the turn.
+    // Dynamic for the same reason as the turn producer below: the resolver
+    // reaches the settings store and the logger, which would close a cycle
+    // through this module's `execModeRequested`.
+    const { sessionBoundProjectRootMatches } = await import("./project-root-authorization.js");
     const boundProjectRoot = deps.conversationLoop.getSessionProjectRoot();
-    const boundAsRequested = boundProjectRoot !== null && (
-      projectRootEquals(boundProjectRoot, request.cwd)
-      || (isDefaultWorkspaceRoot(request.cwd) && isDefaultWorkspaceRoot(boundProjectRoot))
-    );
-    if (!boundAsRequested) {
+    if (!sessionBoundProjectRootMatches(boundProjectRoot, request.cwd)) {
       deps.stderr.write(
         "exec: the session did not bind to the requested project root; refusing to run elsewhere\n",
       );

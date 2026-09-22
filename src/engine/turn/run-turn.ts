@@ -37,7 +37,7 @@ import { markStaleToolResults } from "../auto-compact.js";
 import { normalizeAiSdkUsageForCost } from "../llm/pricing.js";
 import { stripLeadingSlash } from "../../shared/slash-sanitizer.js";
 import { isUserKeyboardOrigin } from "../../shared/chat-origin.js";
-import { isIssuedUnattendedTurnAuthority } from "../../shared/authorization-required.js";
+import { consumeUnattendedTurnAuthority } from "../../shared/authorization-required.js";
 import { countResourceAttachmentFences } from "../../shared/mcp-resource-bounds.js";
 import {
   parseStagedEnvelopePayload,
@@ -177,13 +177,14 @@ async function runTurnInSpan(
     }
     const inputOrigin: ChatInputOrigin = options.inputOrigin;
     const isRemoteControllerTurn = options.remoteControllerAuthority !== undefined;
-    // Fail closed on a lookalike: only the host mints the unattended lane, and a
-    // value that reached this boundary any other way is a contract violation.
+    // Fail closed on a lookalike or a replay: only the host mints the
+    // unattended lane, it is spent on this one turn, and a value that reached
+    // this boundary any other way is a contract violation.
     if (
       options.unattendedAuthority !== undefined
-      && !isIssuedUnattendedTurnAuthority(options.unattendedAuthority)
+      && !consumeUnattendedTurnAuthority(options.unattendedAuthority)
     ) {
-      throw new Error("ConversationLoop.runTurn received an unattended authority this host did not issue");
+      throw new Error("ConversationLoop.runTurn received an unattended authority this host did not issue for this turn");
     }
     const turnInput = isUserKeyboardOrigin(inputOrigin) ? input : stripLeadingSlash(input);
     const attachmentParts = options.attachments ?? [];

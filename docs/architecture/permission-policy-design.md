@@ -361,14 +361,17 @@ Process-level approval availability is a separate host capability. Native
 the routine `headless` loop flag. Instead, exec-mode mints a host-issued
 unattended turn authority (`UnattendedTurnAuthority`) for each turn it runs,
 and the query loop projects that authority onto the turn's tool permission
-context as the unattended (`headless`) policy lane. The owner started the turn
-with nobody to ask, so an ask on that lane follows the routine contract:
-mutating builtin calls route to the reviewer (LOW allows; MEDIUM and HIGH deny
-with a structured tool error the model sees), an out-of-directory request is
-recorded in the deferred queue and denied for the turn, and explicit host
-execution fails closed. The authority is never parsed from chat input and is
-minted per turn, so a retained session's later turns, which arrive through
-remote surfaces, do not inherit it. A turn without that authority that still
+context as the unattended (`headless`) policy lane marked `ownerUnattended`.
+The owner started the turn with nobody to ask, so an ask on that lane follows
+the routine contract: mutating builtin calls route to the reviewer (LOW allows;
+MEDIUM and HIGH deny with a structured tool error the model sees), an
+out-of-directory request is recorded in the deferred queue and denied for the
+turn, and explicit host execution fails closed. Unlike a background routine,
+the turn is the owner's own gesture, so their allow rules (layer 3) and "Allow
+always" grants (layer 5) still apply before the reviewer lane does. The
+authority is never parsed from chat input, is minted per turn, and is spent by
+the turn that carries it, so a retained session's later turns, which arrive
+through remote surfaces, cannot inherit or replay it. A turn without that authority that still
 requires explicit authorization ends with the typed `authorization-required`
 terminal, which the model cannot retry; that remains the outcome for an
 attached client's turn and for a child agent boundary re-issued through

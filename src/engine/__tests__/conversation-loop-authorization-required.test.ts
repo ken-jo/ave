@@ -201,7 +201,7 @@ describe("ConversationLoop authorization-required terminal", () => {
     expect(String(denial?.content)).toContain("headless");
   });
 
-  it("refuses an unattended authority this host did not issue", async () => {
+  it("refuses an unattended authority this host did not issue, and a replay of one it did", async () => {
     const registry = new ToolRegistry();
     temporaryDirectory = mkdtempSync(join(tmpdir(), "ave-loop-auth-"));
     const loop = new ConversationLoop({
@@ -231,6 +231,24 @@ describe("ConversationLoop authorization-required terminal", () => {
         unattendedAuthority: { kind: "native-exec" } as never,
       },
     )).rejects.toThrow(/unattended authority this host did not issue/);
+
+    // A genuine authority is spent by its first turn; the retained loop's
+    // later turns cannot reuse the same object.
+    const provider: LLMProvider = {
+      vendor: "openai",
+      async *streamTurn(): AsyncIterable<StreamEvent> {
+        yield { type: "text_delta", text: "ok" };
+        yield { type: "message_complete", stopReason: "end_turn" };
+      },
+    };
+    (loop as unknown as { provider: LLMProvider | null }).provider = provider;
+    const authority = issueUnattendedTurnAuthority();
+    const options = { inputOrigin: "user-keyboard" as const, unattendedAuthority: authority };
+    await expect(loop.runTurn("first", {}, undefined, options)).resolves.toMatchObject({
+      stopReason: "end_turn",
+    });
+    await expect(loop.runTurn("second", {}, undefined, options))
+      .rejects.toThrow(/did not issue for this turn/);
   });
 
   it("does not accept an unissued tool-result lookalike as host control", async () => {
