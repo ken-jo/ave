@@ -1,4 +1,5 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import process from "node:process";
@@ -9,9 +10,81 @@ const FORWARDED_SIGNALS = Object.freeze(["SIGINT", "SIGTERM"]);
 const DEFAULT_NORMALIZER_PATH = fileURLToPath(
   new URL("./normalize-electron-node-runtime.mjs", import.meta.url),
 );
+const DEFAULT_GENERATOR_PATH = fileURLToPath(
+  new URL("./generate-ave-icons.cjs", import.meta.url),
+);
+/** Written last by the generator, so its presence means a run completed. */
+const GENERATED_ASSETS_MANIFEST = join("build", "generated-assets.json");
 
 function errorText(error) {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Generated branding assets that the suite reads but the tree does not hold.
+ *
+ * `src/main/__tests__/{app-icon-assets,desktop-packaging,tray-icon}.test.ts`
+ * read the outputs of `generate-ave-icons.cjs`. Most of those are ignored by
+ * git (#1974), so a fresh worktree has none of them, and only `bun run test`
+ * (through `test:prepare`) used to create them: a direct
+ * `test:vitest -- run …` then failed on assets rather than on code. The
+ * manifest is the generator's own list of what it writes, so it is the
+ * authority on what "complete" means here.
+ */
+export function missingGeneratedAssets({
+  cwd = process.cwd(),
+  manifestPath = GENERATED_ASSETS_MANIFEST,
+} = {}) {
+  const manifest = join(cwd, manifestPath);
+  if (!existsSync(manifest)) return [manifestPath];
+  let listed;
+  try {
+    listed = JSON.parse(readFileSync(manifest, "utf8"));
+  } catch {
+    return [manifestPath];
+  }
+  if (!Array.isArray(listed) || listed.some((entry) => typeof entry !== "string")) {
+    return [manifestPath];
+  }
+  return listed.filter((entry) => !existsSync(join(cwd, entry)));
+}
+
+/**
+ * Fill an ABSENCE of generated assets before the suite starts (≈0.7 s, once
+ * per fresh worktree). Present files are trusted as they are: `test:prepare`
+ * and `bun run build` remain the regeneration authority, and
+ * `check-generated-assets.mjs` still guards the tracked ones for drift.
+ */
+export function ensureGeneratedAssets({
+  cwd = process.cwd(),
+  manifestPath = GENERATED_ASSETS_MANIFEST,
+  generatorPath = DEFAULT_GENERATOR_PATH,
+  nodeExecPath = process.execPath,
+  runSync = spawnSync,
+  log = (line) => console.error(line),
+} = {}) {
+  const missing = missingGeneratedAssets({ cwd, manifestPath });
+  if (missing.length === 0) return { generated: false, missing };
+  log(`[electron-vitest-assets] generating branding assets; missing: ${missing.join(", ")}`);
+  const result = runSync(nodeExecPath, [generatorPath], {
+    cwd,
+    shell: false,
+    stdio: "inherit",
+    windowsHide: true,
+  });
+  if (result.error || result.status !== 0) {
+    const reason = result.error ? errorText(result.error) : `generator exited ${result.status}`;
+    throw new Error(`[electron-vitest-assets-unavailable] ${reason}`, {
+      cause: result.error,
+    });
+  }
+  const stillMissing = missingGeneratedAssets({ cwd, manifestPath });
+  if (stillMissing.length > 0) {
+    throw new Error(
+      `[electron-vitest-assets-unavailable] generator left assets missing: ${stillMissing.join(", ")}`,
+    );
+  }
+  return { generated: true, missing };
 }
 
 export function electronNodeNormalizerArgument(normalizerPath = DEFAULT_NORMALIZER_PATH) {
@@ -194,6 +267,7 @@ function isMainModule() {
 
 if (isMainModule()) {
   try {
+    ensureGeneratedAssets();
     const result = await runVitestUnderElectron(process.argv.slice(2));
     applyElectronVitestResult(result);
   } catch (error) {
