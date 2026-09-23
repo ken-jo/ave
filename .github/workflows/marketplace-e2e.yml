@@ -812,9 +812,9 @@ jobs:
                 test/e2e/marketplace-e2e-fixture.test.ts \
                 test/e2e/marketplace-e2e.test.ts
               xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" \
-                bunx playwright test test/e2e/ui/marketplace-live-lifecycle.spec.ts --workers=1
+                bunx playwright test --config config/playwright.config.ts test/e2e/ui/marketplace-live-lifecycle.spec.ts --workers=1
               xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" \
-                bunx playwright test test/e2e/ui/orion-attendance-live.spec.ts --workers=1
+                bunx playwright test --config config/playwright.config.ts test/e2e/ui/orion-attendance-live.spec.ts --workers=1
               bun run test:vitest -- run --reporter=verbose \
                 test/e2e/marketplace-containment-rehearsal.test.ts
             '

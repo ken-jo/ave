@@ -111,4 +111,4 @@ By participating, you agree to abide by the
 ## License
 
 By contributing, you agree your contributions will be licensed under the
-project's [MIT License](./LICENSE).
+project's [MIT License](../LICENSE).

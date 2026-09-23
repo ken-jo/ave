@@ -52,7 +52,7 @@
     }
   },
   "vitest": {
-    "config": "vitest.analysis.config.ts"
+    "config": "config/vitest.analysis.config.ts"
   },
   "ignoreDependencies": [
     // Invoked as a BINARY from an argv array the pre-push hook builds at runtime

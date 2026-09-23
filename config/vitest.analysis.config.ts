@@ -1,9 +1,9 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
-import { electronNodeNormalizerArgument } from "./scripts/run-vitest-under-electron.mjs";
+import { electronNodeNormalizerArgument } from "../scripts/run-vitest-under-electron.mjs";
 
-const ROOT = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const rootPath = (p: string) => path.resolve(ROOT, p);
 
 const testFileGlob = "**/*.{test,spec}.{ts,tsx}";
@@ -39,8 +39,11 @@ const rendererTestGlobs = [
  * node environment.
  */
 export default defineConfig({
+  // This file lives under config/; anchor every path at the repository root
+  // so the config behaves the same from any working directory.
+  root: ROOT,
   test: {
-    globalSetup: ["./vitest.globalSetup.ts"],
+    globalSetup: [rootPath("config/vitest.globalSetup.ts")],
     // Boot integration fixtures assert calls recorded by their beforeAll setup.
     // Individual suites own mock cleanup between cases.
     clearMocks: false,
@@ -102,7 +105,7 @@ export default defineConfig({
           // pins the runtime locale to Korean for node tests so the existing
           // Korean assertions stay valid. Tests that specifically exercise the
           // i18n default (English) set the locale explicitly themselves.
-          setupFiles: ["./src/i18n/testing/vitest-ambient-intl.ts"],
+          setupFiles: [rootPath("src/i18n/testing/vitest-ambient-intl.ts")],
           include: [
             `src/**/__tests__/${testFileGlob}`,
             `test/${testFileGlob}`,
@@ -123,7 +126,7 @@ export default defineConfig({
           // t() with English as the default; this setup pins the runtime
           // locale to Korean for renderer tests so the existing Korean
           // assertions stay valid (and also verify the Korean catalog wiring).
-          setupFiles: ["./src/i18n/testing/vitest-ambient-intl.ts"],
+          setupFiles: [rootPath("src/i18n/testing/vitest-ambient-intl.ts")],
           include: rendererTestGlobs,
           exclude: baseExclude,
         },

@@ -78,7 +78,7 @@ surface is considered a regression.
 The host gives the panel the full width of the main pane and does not cap it,
 so the plugin owns its own measure. The rules — cap with `max-width` and never
 a fixed `width`, the 448px floor, the width tiers, and wide content scrolling
-inside its own container — live in [`DESIGN.md`](../../DESIGN.md) under
+inside its own container — live in [`DESIGN.md`](../DESIGN.md) under
 *Plugin surfaces* and *Responsive behavior*. That document is the source of
 truth; this guide does not restate the numbers.
 

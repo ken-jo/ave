@@ -198,7 +198,7 @@ jobs:
 
       - name: Run Playwright E2E
         working-directory: sources/ave
-        run: xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" bunx playwright test
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" bunx playwright test --config config/playwright.config.ts
 
       - name: Upload Playwright report
         if: always()

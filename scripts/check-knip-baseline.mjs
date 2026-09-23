@@ -17,8 +17,8 @@ const DEFAULT_ROOT = dirname(fileURLToPath(new URL("../package.json", import.met
 function parseOptions(argv) {
   const options = {
     root: DEFAULT_ROOT,
-    config: "knip.jsonc",
-    baseline: "knip-baseline.json",
+    config: "config/knip.jsonc",
+    baseline: "config/knip-baseline.json",
     knipBinary: join(DEFAULT_ROOT, "node_modules", "knip", "bin", "knip.js"),
     updateBaseline: false,
   };

@@ -8,7 +8,9 @@ import { defineConfig } from '@playwright/test';
  * `npx playwright test` to run these.
  */
 export default defineConfig({
-  testDir: './test/e2e',
+  testDir: '../test/e2e',
+  // Keep artifacts at the repo root now that this file lives under config/.
+  outputDir: '../test-results',
   testIgnore: ['**/marketplace-e2e.test.ts'],
   testMatch: /.*\.spec\.ts$/,
   timeout: 60_000,

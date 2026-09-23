@@ -1,11 +1,12 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildManifestValidator } from "./src/plugins/runtime/manifest-validation.js";
+import { buildManifestValidator } from "../src/plugins/runtime/manifest-validation.js";
 
-const HERE = dirname(fileURLToPath(import.meta.url));
+// Repository root: this file lives under config/.
+const HERE = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /**
  * Validates all JSON test-fixture files matching the manifest glob pattern

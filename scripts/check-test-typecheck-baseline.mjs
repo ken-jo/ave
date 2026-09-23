@@ -2,8 +2,7 @@
  * Typecheck gate for the files `tsconfig.json` leaves out.
  *
  * The root config excludes `src/**\/__tests__/**`, `src/**\/__probes__/**`, the preload
- * tree and `renderer.tsx`; `tsconfig.build.json` re-declares the same exclusions rather
- * than relaxing them, and `typecheck` is the only script that runs `tsc`. So no
+ * tree and `renderer.tsx`, and `typecheck` is the only script that runs `tsc`. So no
  * configuration in this repo typechecked a test file: one could reference an unimported
  * symbol, pass `bun run typecheck`, and reach CI green — failing only if a test happened
  * to execute that line.
@@ -81,7 +80,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const PROJECT = resolve(ROOT, "tsconfig.tests.json");
-const BASELINE = resolve(ROOT, "test-typecheck-baseline.json");
+const BASELINE = resolve(ROOT, "config/test-typecheck-baseline.json");
 export const SCHEMA_VERSION = 1;
 
 const SOURCE_FILE_RE = /\.[cm]?tsx?$/;

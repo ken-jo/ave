@@ -192,7 +192,7 @@ if (import.meta.url === invokedPath) {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   process.exitCode = runSotShapesGate({
     root,
-    baselinePath: resolve(root, "sot-shapes-baseline.json"),
+    baselinePath: resolve(root, "config/sot-shapes-baseline.json"),
     updateBaseline: process.argv.includes("--update-baseline"),
     stdout: console.log,
     stderr: console.error,
