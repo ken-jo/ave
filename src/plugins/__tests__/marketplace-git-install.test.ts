@@ -7,7 +7,7 @@
 import AdmZip from "adm-zip";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -15,8 +15,10 @@ import { _resetForTest, setIsPackaged } from "../../boot/dev-flags.js";
 import type { PluginAuthority } from "../../marketplace/catalog/types.js";
 import type { PluginInstallPlan, StagedPluginArtifact } from "../../marketplace/resolve/plugin-ladder.js";
 import type { MarketplaceFetcher } from "../marketplace-fetcher.js";
+import { preparePendingPluginUpdate, recoverPendingPluginUpdates } from "../marketplace-update-recovery.js";
+import type { PluginPaths } from "../plugin-paths.js";
 import { installReceiptPath, verifyInstallReceipt } from "../plugin-install-receipt.js";
-import { readPluginRegistry } from "../registry.js";
+import { readPluginRegistry, updatePluginRegistry } from "../registry.js";
 import { MissingDependenciesError, MissingPluginDependenciesError } from "../types.js";
 import {
   activateAndCommitPreparedPluginForTest,
@@ -85,6 +87,7 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
   let cacheRoot: string;
   let registryPath: string;
   let service: TestPluginMarketplaceService;
+  let paths: PluginPaths;
   let priorEnv: string | undefined;
 
   beforeEach(async () => {
@@ -98,7 +101,8 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
     await mkdir(pluginsDir, { recursive: true });
     await writeFile(registryPath, JSON.stringify({ version: 1, plugins: [] }), "utf-8");
     const fetcher = { listPlugins: async () => [], getPluginDetail: async () => null, listAnnouncements: async () => [] } as unknown as MarketplaceFetcher;
-    service = new TestPluginMarketplaceService(makeTestPluginPaths({ rootDir: testDir, cacheRoot }), fetcher);
+    paths = makeTestPluginPaths({ rootDir: testDir, cacheRoot });
+    service = new TestPluginMarketplaceService(paths, fetcher);
   });
 
   afterEach(async () => {
@@ -201,6 +205,72 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
     expect(switched.action).toEqual({ action: "switch", fromSource: "acme", from: "1.0.0" });
     expect(await entry()).toMatchObject({ origin: { sourceId: "ave", sourceOrigin: "official" } });
     expect(await readPluginDataFixture(join(pluginsDir, "alpha"))).toEqual(PLUGIN_DATA_FIXTURE);
+  });
+
+  it("refuses to replace an admin-installed plugin unless a required install does it, which keeps it admin-installed", async () => {
+    await install(plan("1.0.0", { sourceId: "ave", sourceOrigin: "official" }));
+    await updatePluginRegistry(registryPath, (registry) => {
+      registry.plugins[0]!.installSource = "admin";
+      delete registry.plugins[0]!.origin;
+    });
+    const custom = plan("1.1.0");
+    await expect(service.installGitPlugin(custom, {
+      stage: async () => staged(custom),
+      activatePreparedArtifact: activateAndCommitPreparedPluginForTest,
+      switchSource: true,
+    })).rejects.toThrow("refusing to replace admin-installed plugin: alpha");
+    expect(await entry()).toMatchObject({ installSource: "admin" });
+    expect((await entry())?.origin).toBeUndefined();
+
+    const required = plan("1.1.0", { sourceId: "ave", sourceOrigin: "official" });
+    await service.installGitPlugin(required, {
+      stage: async () => staged(required),
+      activatePreparedArtifact: activateAndCommitPreparedPluginForTest,
+      switchSource: true,
+      required: true,
+    });
+    expect(await entry()).toMatchObject({ installSource: "admin", origin: { sourceId: "ave", version: "1.1.0" } });
+  });
+
+  it("replaces an install without a source binding only as a switch", async () => {
+    await install(plan("1.0.0"));
+    await seedPluginDataFixture(join(pluginsDir, "alpha"));
+    // A catalog install from before this design: no origin.
+    await updatePluginRegistry(registryPath, (registry) => {
+      delete registry.plugins[0]!.origin;
+    });
+    await expect(install(plan("1.1.0"))).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT", message: expect.stringContaining("without a source") });
+    const switched = await service.installGitPlugin(plan("1.1.0"), {
+      stage: async (p) => staged(p),
+      activatePreparedArtifact: activateAndCommitPreparedPluginForTest,
+      switchSource: true,
+    });
+    expect(switched.action).toEqual({ action: "switch", fromSource: null, from: "1.0.0" });
+    expect(await entry()).toMatchObject({ origin: { sourceId: "acme", version: "1.1.0" } });
+    expect(await readPluginDataFixture(join(pluginsDir, "alpha"))).toEqual(PLUGIN_DATA_FIXTURE);
+  });
+
+  it("restores a git install's v4 receipt and origin after a post-promotion crash", async () => {
+    await install(plan("1.0.0"));
+    const before = (await entry())!;
+    const receiptBefore = await readFile(installReceiptPath(cacheRoot, "alpha"), "utf8");
+    // The crash hits after the 1.1.0 tree was promoted, before its commit.
+    const backupDir = join(pluginsDir, ".alpha.old-00000000-0000-4000-8000-000000000001");
+    await preparePendingPluginUpdate(paths, before, { kind: "marketplace", recoveryBackupDir: backupDir, recoveryBackupMode: "rename" });
+    await rename(join(pluginsDir, "alpha"), backupDir);
+    await mkdir(join(pluginsDir, "alpha"), { recursive: true });
+    await writeFile(join(pluginsDir, "alpha", "plugin.json"), JSON.stringify(pluginDocument("1.1.0")));
+    await writeFile(installReceiptPath(cacheRoot, "alpha"), JSON.stringify({ pluginId: "alpha", version: "1.1.0" }));
+
+    expect(await recoverPendingPluginUpdates(paths)).toEqual({ recovered: ["alpha"], unresolved: [] });
+    expect(await readFile(installReceiptPath(cacheRoot, "alpha"), "utf8")).toBe(receiptBefore);
+    const restored = (await entry())!;
+    expect(restored.pendingUpdate).toBeUndefined();
+    expect(restored.origin).toEqual(before.origin);
+    expect(await verifyInstallReceipt(cacheRoot, "alpha", join(pluginsDir, "alpha"))).toMatchObject({
+      ok: true,
+      receipt: { schemaVersion: 4, installSource: "git", version: "1.0.0" },
+    });
   });
 
   it("reports the replacement direction within the bound source", async () => {

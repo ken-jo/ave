@@ -57,6 +57,7 @@ import {
 } from "./plugin-install-receipt.js";
 import { assertGitInstallManifest } from "../marketplace/resolve/manifest-rules.js";
 import { classifyInstall, type InstallAction } from "../marketplace/resolve/identity.js";
+import { MarketplaceError } from "../marketplace/errors.js";
 import type { PluginInstallPlan, StagedPluginArtifact } from "../marketplace/resolve/plugin-ladder.js";
 import { canonicalJSON } from "./whitelist/canonical-json.js";
 import {
@@ -330,6 +331,20 @@ function serializeNetworkAccessAcknowledgement(
   acknowledgement: NetworkAccessAcknowledgement | undefined,
 ): string {
   return JSON.stringify(buildNetworkAccessAcknowledgement(acknowledgement) ?? null);
+}
+
+/**
+ * The signed catalog is not a git source (design §15.1): replacing a plugin
+ * bound to one would switch its source without PACKAGE_ID_CONFLICT. The user
+ * updates or rolls back through the bound source, or uninstalls first.
+ */
+function assertCatalogMayReplace(entry: PluginRegistryEntry | null | undefined, pluginId: string): void {
+  if (entry?.origin) {
+    throw new MarketplaceError(
+      "PACKAGE_ID_CONFLICT",
+      `${pluginId} is installed from source ${entry.origin.sourceId}; the catalog does not replace it`,
+    );
+  }
 }
 
 function resolveRollbackInstallSource(
@@ -1054,6 +1069,8 @@ export class PluginMarketplaceService {
     }
 
     const existingEntry = await this.getRawRegistryEntry(canonicalPluginId);
+    // A managed (it-admin) install is the policy's decision and may replace it.
+    if (actor !== "it-admin") assertCatalogMayReplace(existingEntry, canonicalPluginId);
     if (existingEntry) {
       // Same-version installs are idempotent only when the install receipt is
       // valid and the installed artifact hash still matches the catalog.
@@ -1685,6 +1702,7 @@ export class PluginMarketplaceService {
       }
 
       const existingEntry = await this.getRawRegistryEntry(plugin.id);
+      assertCatalogMayReplace(existingEntry, plugin.id);
       await this.snapshotCurrentInstall(pluginId);
 
       let pendingEntry: PluginRegistryEntry | null = null;
@@ -1742,6 +1760,8 @@ export class PluginMarketplaceService {
       "marketplace rollback",
     );
     return this.withPluginLock(pluginId, async () => {
+      // Rollback fetches from the catalog; a git install's earlier versions are its source's.
+      assertCatalogMayReplace(await this.getRawRegistryEntry(pluginId), pluginId);
       const currentVersion = await this.getInstalledVersion(pluginId);
       const priorVersion = await this.artifactStore.findRollbackTarget(
         pluginId,
@@ -2343,6 +2363,12 @@ export class PluginMarketplaceService {
       activatePreparedArtifact: PreparedMarketplacePluginActivation;
       /** Replace an install bound to another source (or to none); the plugin's data is kept. */
       switchSource?: boolean;
+      /**
+       * A policy `requiredInstalls` entry is installing it (design §10.2).
+       * Only such an install may replace an admin-installed plugin, and the
+       * entry stays admin-installed.
+       */
+      required?: boolean;
       signal?: AbortSignal;
     },
   ): Promise<{ pluginId: string; installed: true; version: string; action: InstallAction; staged: StagedPluginArtifact }> {
@@ -2359,6 +2385,10 @@ export class PluginMarketplaceService {
         }
       }
       const current = await this.getRawRegistryEntry(pluginId);
+      if (current?.installSource === "admin" && options.required !== true) {
+        throw new Error(`[installGitPlugin] refusing to replace admin-installed plugin: ${pluginId}`);
+      }
+      const registryInstallSource = current?.installSource === "admin" ? "admin" : "user";
       const action = classifyInstall(
         plan,
         current
@@ -2394,7 +2424,7 @@ export class PluginMarketplaceService {
         prepareReceipt: (pluginRoot, files) => this.prepareGitInstallReceipt(pluginId, pluginRoot, staged, files),
         approvedPluginAccess: plan.authority.pluginAccess as PluginAccessSpec | undefined,
         activatePreparedArtifact,
-        registryInstallSource: "user",
+        registryInstallSource,
         signal: options.signal,
         beforePromote: async (recoveryBackupDir) => {
           // The replacement journal is the same as a catalog install's: the
@@ -2403,7 +2433,7 @@ export class PluginMarketplaceService {
         },
         commit: async (manifestPath, manifestAbsPath) => {
           const manifestSha256 = await this.readManifestSha256(manifestAbsPath);
-          await this.commitGitRegistryEntry(staged, manifestPath, manifestSha256, existingEntry);
+          await this.commitGitRegistryEntry(staged, manifestPath, manifestSha256, existingEntry, registryInstallSource);
         },
       }).catch((err) => this.restoreMarketplaceRegistryEntryAfterFailure(pendingEntry, existingEntry, err));
       const manifestAbsPath = isAbsolute(installOutcome.manifestPath)
@@ -2474,6 +2504,7 @@ export class PluginMarketplaceService {
     manifestPath: string,
     manifestSha256: string,
     previousEntry: PluginRegistryEntry | null,
+    installSource: "user" | "admin",
   ): Promise<void> {
     const { plan } = staged;
     const origin: NonNullable<PluginRegistryEntry["origin"]> = {
@@ -2494,7 +2525,7 @@ export class PluginMarketplaceService {
         existing.manifestPath = manifestPath;
         existing.manifestSha256 = manifestSha256;
         existing.enabled = true;
-        existing.installSource = "user";
+        existing.installSource = installSource;
         existing.bundleRefs = this.mergeBundleRefs(existing.bundleRefs, null, plan.name);
         existing.approvedPluginAccess = approvedPluginAccess;
         existing.origin = origin;
@@ -2506,7 +2537,7 @@ export class PluginMarketplaceService {
           manifestPath,
           manifestSha256,
           enabled: true,
-          installSource: "user",
+          installSource,
           bundleRefs: this.mergeBundleRefs(previousEntry?.bundleRefs ?? [], null, plan.name),
           approvedPluginAccess,
           origin,
@@ -2705,7 +2736,8 @@ export class PluginMarketplaceService {
         existing.installSource = actor === "it-admin" ? "admin" : "user";
         existing.bundleRefs = this.mergeBundleRefs(existing.bundleRefs, null, plugin.id);
         existing.approvedPluginAccess = plugin.pluginAccess;
-        // The catalog artifact replaces whatever a git install put here.
+        // Only a managed (it-admin) install reaches here over a git install
+        // (assertCatalogMayReplace); the policy replaces the binding.
         existing.origin = undefined;
         existing.pendingUpdate = undefined;
         existing.pendingCleanup = pendingCleanup;
