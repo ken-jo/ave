@@ -17,41 +17,9 @@ import {
   isDefaultVisibleThemeBundleId,
   isMarketplaceEligibleThemeBundleId,
 } from "../../../../../shared/theme-bundles.js";
-import type { BundleTokens } from "../types.js";
+import { THEME_TOKEN_NAMES } from "../../../../../shared/theme-tokens.js";
 
-/** All keys required in a BundleTokens object. */
-const REQUIRED_TOKEN_KEYS: ReadonlyArray<keyof BundleTokens> = [
-  /* Tier B — semantic shell */
-  "background", "foreground",
-  "card", "card-foreground",
-  "popover", "popover-foreground",
-  "primary", "primary-foreground",
-  "secondary", "secondary-foreground",
-  "muted", "muted-foreground",
-  "accent", "accent-foreground",
-  "destructive", "destructive-foreground",
-  "warning", "warning-foreground",
-  "success", "success-foreground",
-  "border", "input", "ring", "ui-line",
-  "message-user-bg", "message-user-fg",
-  "input-bar-bg",
-  /* Tier B' — status / state */
-  "info", "info-foreground",
-  "emphasis", "emphasis-foreground",
-  /* Tier B'' — surface overlay + interaction */
-  "overlay", "hover-overlay",
-  "focus-ring", "link-fg",
-  /* Tier B''' — peripheral system */
-  "selection-bg", "selection-fg",
-  "scrollbar-thumb", "scrollbar-track",
-  "kbd-bg", "kbd-border",
-  /* Tier C — code surface */
-  "code-bg", "code-fg", "code-border",
-  /* Tier D — chart palette */
-  "chart-1", "chart-2", "chart-3", "chart-4", "chart-5",
-  /* Action tokens */
-  "action-view", "action-branch", "action-compact",
-];
+const REQUIRED_TOKEN_KEYS = THEME_TOKEN_NAMES;
 
 /** Basic HSL-value or raw triple pattern: "H S% L%" or "H S% L% / A%" */
 const HSL_TRIPLE_RE = /^\d+(?:\.\d+)?\s+\d+(?:\.\d+)?%\s+\d+(?:\.\d+)?%/;

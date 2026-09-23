@@ -15,73 +15,10 @@
  *   - Action  : checkpoint action tokens (--action-view/-branch/-compact)
  */
 import type { BundleId } from "../../../../shared/theme-bundles.js";
+import type { ThemeTokens } from "../../../../shared/theme-tokens.js";
 
-export interface BundleTokens {
-  /* ── Tier B: semantic shell tokens ─────────────────────────── */
-  background: string;
-  foreground: string;
-  card: string;
-  "card-foreground": string;
-  popover: string;
-  "popover-foreground": string;
-  primary: string;
-  "primary-foreground": string;
-  secondary: string;
-  "secondary-foreground": string;
-  muted: string;
-  "muted-foreground": string;
-  accent: string;
-  "accent-foreground": string;
-  destructive: string;
-  "destructive-foreground": string;
-  warning: string;
-  "warning-foreground": string;
-  success: string;
-  "success-foreground": string;
-  /* ── Tier B': status / state ──────────────────────────────── */
-  info: string;
-  "info-foreground": string;
-  emphasis: string;            /* star / pin / highlight (yellow/gold per theme) */
-  "emphasis-foreground": string;
-  border: string;
-  input: string;
-  ring: string;
-  "ui-line": string;
-  "message-user-bg": string;
-  "message-user-fg": string;
-  "input-bar-bg": string;
-
-  /* ── Tier B'': surface overlay + interaction ───────────────── */
-  overlay: string;             /* modal backdrop dimmer, opacity applied per call */
-  "hover-overlay": string;     /* inline hover dimmer (white on dark / black on light) */
-  "focus-ring": string;        /* keyboard focus outline */
-  "link-fg": string;           /* hyperlink color (may equal primary or differ) */
-
-  /* ── Tier B''': peripheral system tokens ───────────────────── */
-  "selection-bg": string;
-  "selection-fg": string;
-  "scrollbar-thumb": string;
-  "scrollbar-track": string;
-  "kbd-bg": string;
-  "kbd-border": string;
-
-  /* ── Tier C: code-surface tokens ────────────────────────────── */
-  "code-bg": string;
-  "code-fg": string;
-  "code-border": string;
-
-  /* ── Tier D: chart palette ──────────────────────────────────── */
-  "chart-1": string;
-  "chart-2": string;
-  "chart-3": string;
-  "chart-4": string;
-  "chart-5": string;
-
-  /* ── Action tokens ─────────────────────────────────────────── */
-  "action-view": string;
-  "action-branch": string;
-  "action-compact": string;
-}
+/** The token set every bundle defines in full; the names and value form live in `shared/theme-tokens.ts`. */
+export type BundleTokens = ThemeTokens;
 
 export interface ThemeBundle {
   /** Unique stable identifier written to `data-theme-bundle`. */
