@@ -144,11 +144,17 @@ export function wireUpdateCheck(input: UpdateCheckInput): void {
 export interface AnnouncementCheckInput {
   getMainWindow: () => BrowserWindow | null;
   settingsService: SettingsService;
-  marketplaceFetcher: MarketplaceFetcher;
+  /** The service endpoint's active announcements (design §11). */
+  listAnnouncements: () => Promise<MarketplaceAnnouncement[]>;
+  /** Poll interval; the design's 6 hours unless a test passes another. */
+  intervalMs?: number;
 }
 
+/** Announcements are fetched after boot and every 6 hours (design §11). */
+const ANNOUNCEMENT_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
 /**
- * Marketplace announcement polling. Fetches the server's active announcement
+ * Announcement polling. Fetches the service endpoint's active announcement
  * set, drops the ids the user has already dismissed (persisted in
  * `settings.marketplace.dismissedAnnouncementIds`), and pushes the remainder
  * to the renderer via `MARKETPLACE.announcements`. Runs once after the real
@@ -160,8 +166,7 @@ export interface AnnouncementCheckInput {
  * the current payload at least once.
  */
 export function wireAnnouncementCheck(input: AnnouncementCheckInput): void {
-  const { getMainWindow, settingsService, marketplaceFetcher } = input;
-  const DEFAULT_ANNOUNCEMENT_INTERVAL_MS = 10 * 60 * 1000; // default 10m
+  const { getMainWindow, settingsService, listAnnouncements } = input;
   const marketplaceSettings = settingsService.get("marketplace");
   const announcementCheckEnabled = resolveUpdateCheckEnabled(
     marketplaceSettings?.updateCheckEnabled,
@@ -225,7 +230,7 @@ export function wireAnnouncementCheck(input: AnnouncementCheckInput): void {
 
   const runAnnouncementCheck = async () => {
     try {
-      const announcements = await marketplaceFetcher.listAnnouncements();
+      const announcements = await listAnnouncements();
       const dismissedIds = normalizeDismissedAnnouncementIds(
         settingsService.get("marketplace")?.dismissedAnnouncementIds,
       );
@@ -278,9 +283,7 @@ export function wireAnnouncementCheck(input: AnnouncementCheckInput): void {
 
   runAfterRendererLoad();
 
-  const intervalMs =
-    settingsService.get("marketplace")?.updateCheckIntervalMs ??
-    DEFAULT_ANNOUNCEMENT_INTERVAL_MS;
+  const intervalMs = input.intervalMs ?? ANNOUNCEMENT_INTERVAL_MS;
   let announcementTimer: ReturnType<typeof setInterval> | undefined;
   if (intervalMs > 0) {
     announcementTimer = setInterval(() => void runAnnouncementCheck(), intervalMs);
