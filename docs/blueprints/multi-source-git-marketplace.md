@@ -115,6 +115,19 @@ after uninstall the theme, language and font rendered their defaults. P3
 exposes installed content through two read-only channels; install and
 uninstall IPC come with 6.1, which runs the activation P3 provides.
 
+The P3 security and correctness reviews added the rules now in design §5.5:
+- language packages translate the interface only (no `be_*` keys), keep the
+  English placeholders, and may replace a compiled locale only under its
+  exact tag from an official or managed source;
+- installed fonts are declared under a package alias;
+- `ave-content:` admits only the app's own opaque origin;
+- one package per locale or font family;
+- activation never throws after its settings write lands;
+- vendor provider packages unlock a built-in vendor.
+
+The rerun exit check applied the Harbor theme, French and the aliased Harbor
+Serif face after a cold boot.
+
 ## 6. Phase 4 — UI and direct install
 
 | PR | Content |

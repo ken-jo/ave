@@ -454,39 +454,77 @@ so `contentSha256` is the tree digest (§6.4) of the installed files. The
 ledger feeds snapshot retention (§2.3) like the plugin registry does.
 
 - **Install and load.** An install writes the files, then the ledger, then
-  activates; a failed activation puts the previous install back. At boot
-  every package's files and digest are read again, and a package that no
-  longer matches is listed as broken instead of applied. Uninstall refuses a
-  `requiredInstalls` package (`PACKAGE_REQUIRED_BY_POLICY`).
+  activates; a failed activation puts the previous install back. A rollback
+  step that fails is logged and never replaces the install's own error. At
+  boot every package's files and digest are read again, and a package that
+  no longer matches is listed as broken instead of applied. Loading waits
+  for any install in progress. Uninstall refuses a `requiredInstalls`
+  package (`PACKAGE_REQUIRED_BY_POLICY`). Two paths in one package may not
+  differ only in case.
+- **Activation and settings.** A settings write that fails undoes the
+  install. Once the write has landed, a failed refresh or broadcast is
+  logged, not thrown, so settings never describe a package the ledger
+  dropped. A first install may not take a provider, vendor or connection id
+  the settings already hold from another install path
+  (`PACKAGE_ID_CONFLICT`).
 - **Theme** — `theme.json` is `{ name, description, shell: "light" |
   "dark", highContrast, tokens, surfaces, preview? }`. `tokens` holds every
   one of the compiled bundles' token names as `"H S% L%"`, `surfaces` the
   surface ladder (`surface-sunken` … `border-strong`). An installed theme is
   held to the same token contract and WCAG contrast rules as the compiled
-  bundles (one table, `shared/theme-tokens.ts`); a built-in theme id is
-  refused. It applies as inline custom properties with its shell's shadow
-  stack and `color-scheme`.
+  bundles (one table, `shared/theme-tokens.ts`). Every compiled bundle id is
+  refused, including the ones the marketplace delivers. `preview` must be a
+  PNG, JPEG or WebP image by its bytes, at most 2048 px a side. Names and
+  descriptions refuse bidirectional overrides and invisible characters. It
+  applies as inline custom properties with its shell's shadow stack and
+  `color-scheme`.
 - **Language** — the locale set is open: any well-formed BCP 47 tag. `en`
   and `ko` stay compiled in; an installed language registers its locale
   with its native and English names, and its messages are layered over
-  English, so a key it does not translate reads in English. `messages.json`
-  may only use English catalog keys; missing keys are listed, not refused.
-  One package per locale. The main process uses installed locales too
-  (dialogs, menus, notifications), and `<html lang>` follows the active
-  locale.
+  English, so a key it does not translate reads in English.
+  - A package translates the interface only. `messages.json` may use
+    English catalog keys outside the model-facing `be_*` namespace (system
+    prompt, tool and reviewer text), which always comes from the compiled
+    catalogs. Missing keys are listed, not refused.
+  - A translation keeps the English placeholder set, and refuses
+    bidirectional overrides and invisible characters: an approval prompt
+    must ask about what it says.
+  - English (`en`, `en-*`) is never installable. A compiled locale is
+    installable only under its exact tag (`ko`, not `ko-KR`) and only from
+    an official or managed source; it lays its keys over the compiled
+    catalog, so removing it keeps that language selected.
+  - One package per locale: a second is refused at install
+    (`PACKAGE_ID_CONFLICT`).
+  - The main process uses installed locales too (dialogs, menus,
+    notifications), `<html lang>` follows the active locale, and an
+    announcement label falls back to English for a locale it does not carry.
 - **Font** — `font.json` is `{ family, license, faces: [{ file, weight,
   style }] }`, with a `LICENSE` file required; a face's format comes from
-  its extension and its bytes must match it. One package per family. The
-  renderer declares `@font-face` rules with `ave-content:` URLs only.
+  its extension and its bytes must match it, and a weight range is
+  ordered. The renderer declares the faces under `ave-font-<package name>`
+  with `ave-content:` URLs only; `family` is the picker's label. A package
+  therefore cannot shadow a system font or another package's family. One
+  package per family: a second is refused at install.
 - **Provider and messaging connection** go through today's normalizers,
   with no field dropped or rewritten, and take effect through the settings
-  paths today's asset install uses.
+  paths today's asset install uses. A provider package whose `providerId`
+  is a marketplace-eligible built-in vendor is `{ providerId,
+  defaultModel?, baseUrl? }`: it unlocks that vendor
+  (`marketplace.installedProviderIds`) and may set its default model. Only
+  an official or managed source may set its `baseUrl`, which must be
+  https, because the vendor's key goes wherever it points.
 - **Selection stays the user's.** Installing does not select a theme,
   language or font. Removing the selected one puts that setting back to its
   default; a selected id that is not installed renders the default.
 - **Asset scheme.** `ave-content://<kind>/<name>/<path>` answers only the
   files the loaded store lists (font faces, theme previews), with `nosniff`;
   anything else is 404. The CSP admits it for `img-src` and `font-src` only.
+  The answer admits only the opaque origin of the app's `file:` windows
+  (`Access-Control-Allow-Origin: null`), and a request with an http(s)
+  origin or referrer is refused, so a web page cannot probe which packages
+  are installed. Another opaque-origin frame in the default session could
+  still read an applied font or preview, which are public files of a public
+  package.
   Its handler is registered with the IPC handlers, before the main window
   loads, because a frame binds its custom-scheme loaders when it commits.
 - **Loading.** The store loads on the renderer's first request at boot (or
@@ -494,6 +532,14 @@ ledger feeds snapshot retention (§2.3) like the plugin registry does.
   never asks reads nothing under `packages/`.
 - Install and uninstall IPC arrive with the install surface (§13); until
   then two read-only channels expose installed content.
+- **Coexistence until 6.2.** The legacy marketplace settings
+  (`installedThemeBundleIds`, `installedLanguagePacks`, the asset-install
+  vendor and preset path) keep working next to the ledger until blueprint
+  6.2 migrates them (§16.2); the id-conflict rule above keeps the two from
+  claiming the same id.
+- **Snapshot retention.** `contentLedgerOrigins` is the ledger's
+  `retainedCommits` source; the syncer is wired to it together with the
+  install IPC in blueprint 6.1.
 
 ## 6. Resolution
 
