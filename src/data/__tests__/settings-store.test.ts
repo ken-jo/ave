@@ -622,6 +622,83 @@ describe("SettingsService marketplace defaults", () => {
     expect(service.getSecret(key)).toBe("fr-secret");
   });
 
+  it("never pairs a key with an address it was not entered for when overlapping moves fail", async () => {
+    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(true);
+    mockedElectron.safeStorage.encryptString.mockImplementation(
+      (value: string) => Buffer.from(`sealed:${value}`),
+    );
+    mockedElectron.safeStorage.decryptString.mockImplementation(
+      (value: Buffer) => value.toString("utf-8").slice(7),
+    );
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const preset = {
+      providerId: "future-router",
+      label: "Future Router",
+      baseUrl: "https://future.example/v1",
+      defaultModel: "future/free",
+      modelOptions: ["future/free"],
+      requiresApiKey: true,
+    };
+    const key = marketplaceProviderPresetSecretKey("future-router");
+    await service.installMarketplaceProviderPreset(preset);
+    await service.setSecret(key, "entered-for-future");
+    const secrets = (service as unknown as { secretStore: { deleteMany(keys: string[]): Promise<number> } }).secretStore;
+    const deleteMany = vi.spyOn(secrets, "deleteMany")
+      // The first move's deletion fails last, so the second move rolls back first.
+      .mockImplementationOnce(() => new Promise((_, reject) => setTimeout(() => reject(new Error("keychain locked")), 30)))
+      .mockImplementationOnce(() => Promise.reject(new Error("keychain locked")));
+
+    const first = service.installMarketplaceProviderPreset({ ...preset, baseUrl: "https://second.example/v1" });
+    const second = service.installMarketplaceProviderPreset({ ...preset, baseUrl: "https://third.example/v1" });
+    await expect(second).rejects.toThrow("keychain locked");
+    await expect(first).rejects.toThrow("keychain locked");
+
+    // Neither the second address (never the key's) nor any other is paired
+    // with the key: it is withheld wherever the preset points.
+    expect(service.getSecret(key)).toBeNull();
+    expect(service.get("marketplace").installedProviderPresets[0]?.baseUrl).not.toBe("https://second.example/v1");
+    deleteMany.mockRestore();
+    await service.setPluginConfig("sample", { mode: "fast" });
+    await vi.waitFor(() => {
+      const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+      expect(reloaded.getSecret(key)).toBeNull();
+    });
+  });
+
+  it("keeps a preset edit that landed during a failed key deletion, and withholds the key", async () => {
+    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(true);
+    mockedElectron.safeStorage.encryptString.mockImplementation(
+      (value: string) => Buffer.from(`sealed:${value}`),
+    );
+    mockedElectron.safeStorage.decryptString.mockImplementation(
+      (value: Buffer) => value.toString("utf-8").slice(7),
+    );
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const preset = {
+      providerId: "future-router",
+      label: "Future Router",
+      baseUrl: "https://future.example/v1",
+      defaultModel: "future/free",
+      modelOptions: ["future/free"],
+      requiresApiKey: true,
+    };
+    const key = marketplaceProviderPresetSecretKey("future-router");
+    await service.installMarketplaceProviderPreset(preset);
+    await service.setSecret(key, "entered-for-future");
+    const moved = { ...preset, baseUrl: "https://elsewhere.example/v1" };
+    const secrets = (service as unknown as { secretStore: { deleteMany(keys: string[]): Promise<number> } }).secretStore;
+    vi.spyOn(secrets, "deleteMany").mockImplementationOnce(async () => {
+      // A label edit of the moved preset lands, and reports success, meanwhile.
+      await service.installMarketplaceProviderPreset({ ...moved, label: "Elsewhere Router" });
+      throw new Error("keychain locked");
+    });
+
+    await expect(service.installMarketplaceProviderPreset(moved)).rejects.toThrow("keychain locked");
+
+    expect(service.get("marketplace").installedProviderPresets).toEqual([{ ...moved, label: "Elsewhere Router" }]);
+    expect(service.getSecret(key)).toBeNull();
+  });
+
   it("leaves an active custom provider preset installed when preset-secret deletion fails", async () => {
     mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(true);
     mockedElectron.safeStorage.encryptString.mockImplementation(

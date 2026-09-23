@@ -975,6 +975,8 @@ export class SettingsService {
    * not handed out until that save lands; if it fails they are withheld.
    */
   private readonly restoringSecretKeys = new Set<string>();
+  /** Provider-preset keys with an invalidation in flight (saved or not, deletion unsettled), counted. */
+  private readonly invalidatingSecretKeys = new Map<string, number>();
 
   constructor(options: SettingsServiceOptions) {
     const dir = resolve(options.userDataPath);
@@ -1374,13 +1376,7 @@ export class SettingsService {
         ...normalizeFeatureFlags(partial.features),
       };
     }
-    const appliedSettings = this.getAll();
-    await this.commit();
-    await this.deleteMarketplaceProviderPresetSecretsAtomically(
-      previousSettings,
-      appliedSettings,
-      providerPresetSecretInvalidationIds,
-    );
+    await this.commitPresetKeyInvalidation(previousSettings, providerPresetSecretInvalidationIds);
     return this.getAll();
   }
 
@@ -1428,14 +1424,41 @@ export class SettingsService {
       { inferInstalledFromCustom: false },
     );
     this.settings.llm = prunedLlm.llm;
-    const appliedSettings = this.getAll();
-    await this.commit();
-    await this.deleteMarketplaceProviderPresetSecretsAtomically(
-      previousSettings,
-      appliedSettings,
-      providerPresetSecretInvalidationIds,
-    );
+    await this.commitPresetKeyInvalidation(previousSettings, providerPresetSecretInvalidationIds);
     return this.getAll();
+  }
+
+  /**
+   * Save the change just made in memory, then delete the preset keys it
+   * invalidated (`providerIds`: presets that moved or went). Called right
+   * after the change, so its part before the first await — the applied
+   * snapshot and the in-flight count — sees memory holding this change.
+   */
+  private async commitPresetKeyInvalidation(
+    previousSettings: AppSettings,
+    providerIds: readonly string[],
+  ): Promise<void> {
+    if (providerIds.length === 0) {
+      await this.commit();
+      return;
+    }
+    const appliedSettings = this.getAll();
+    const keys = providerIds.map(marketplaceProviderPresetSecretKey);
+    for (const key of keys) this.invalidatingSecretKeys.set(key, (this.invalidatingSecretKeys.get(key) ?? 0) + 1);
+    try {
+      await this.commit();
+      await this.deleteMarketplaceProviderPresetSecretsAtomically(
+        previousSettings,
+        appliedSettings,
+        providerIds,
+      );
+    } finally {
+      for (const key of keys) {
+        const left = (this.invalidatingSecretKeys.get(key) ?? 1) - 1;
+        if (left > 0) this.invalidatingSecretKeys.set(key, left);
+        else this.invalidatingSecretKeys.delete(key);
+      }
+    }
   }
 
   private async deleteMarketplaceProviderPresetSecretsAtomically(
@@ -1454,14 +1477,28 @@ export class SettingsService {
       // When other writes landed meanwhile, they already reported success:
       // put back only the presets whose keys stayed, so each key is again
       // next to the address it was entered for.
-      // Until the old addresses are back on disk the keys stay withheld, so
-      // nothing that runs when a failed rollback puts memory back on the new
-      // addresses can pair them.
-      const keys = providerIds.map(marketplaceProviderPresetSecretKey);
+      // An old address goes back only when it is the key's: no other
+      // invalidation of the key is in flight — one applied before this call
+      // would have made that address unconfirmed, one after would be
+      // undone — and the preset still holds what this call set. An earlier
+      // overlapping one that already failed withheld the key itself. Any
+      // other key is withheld and deleted later.
+      const presetIn = (settings: AppSettings, providerId: string) =>
+        settings.marketplace.installedProviderPresets.find((preset) => preset.providerId === providerId);
+      const restorable = providerIds.filter((providerId) =>
+        this.invalidatingSecretKeys.get(marketplaceProviderPresetSecretKey(providerId)) === 1
+        && isDeepStrictEqual(presetIn(this.settings, providerId), presetIn(appliedSettings, providerId)));
+      for (const providerId of providerIds) {
+        if (!restorable.includes(providerId)) this.withheldSecretKeys.add(marketplaceProviderPresetSecretKey(providerId));
+      }
+      // Until the old addresses are back on disk their keys are held back,
+      // so nothing that runs when a failed rollback puts memory back on the
+      // new addresses can pair them.
+      const keys = restorable.map(marketplaceProviderPresetSecretKey);
       for (const key of keys) this.restoringSecretKeys.add(key);
-      this.settings = isDeepStrictEqual(this.settings, appliedSettings)
+      this.settings = restorable.length === providerIds.length && isDeepStrictEqual(this.settings, appliedSettings)
         ? previousSettings
-        : withProviderPresetsFrom(this.settings, previousSettings, providerIds);
+        : withProviderPresetsFrom(this.settings, previousSettings, restorable);
       await this.commit().then(
         () => {
           for (const key of keys) this.restoringSecretKeys.delete(key);
