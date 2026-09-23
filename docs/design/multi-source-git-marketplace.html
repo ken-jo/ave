@@ -770,14 +770,14 @@
             </div>
             <div id="git-old" hidden class="callout warn"><svg class="i"><use href="#i-alert"/></svg><div><strong>System git 2.34.1 is too old — using managed git.</strong> The marketplace needs git 2.38.1 or newer. Auto mode installs a private copy; your system git is not changed.</div></div>
             <div id="git-failed" hidden class="callout warn"><svg class="i"><use href="#i-alert"/></svg><div><strong>Git could not be installed.</strong> GIT_RUNTIME_INSTALL_FAILED · smoke test: <span class="mono">git --version</span> exited 126. The previous state was kept. <button class="btn" type="button" data-git="progress">Retry</button></div></div>
-            <div id="git-missing" class="callout warn"><svg class="i"><use href="#i-alert"/></svg><div><strong>Git was not found on this computer.</strong> Marketplaces are git repositories, so the app needs git to read them. Install a private copy for Ave (≈ 40 MB, verified before use). It does not change your system.</div></div>
+            <div id="git-missing" class="callout warn"><svg class="i"><use href="#i-alert"/></svg><div><strong>Git was not found on this computer.</strong> Marketplaces are git repositories, so the app needs git to read them. Install a private copy for Ave (≈ 62 MB, verified before use). It does not change your system.</div></div>
             <div id="git-progress" hidden style="display:grid; gap:6px">
               <div class="phases"><span class="done">✓ checking</span><span class="done">✓ downloading 38.9 MB</span><span class="done">✓ verifying</span><span class="done">✓ extracting</span><span class="now">● smoke-testing</span></div>
               <div class="bar"><i style="width:92%"></i></div>
               <p class="ver">git 2.53.0 · sha256 pinned in this app release</p>
             </div>
             <div id="git-ready" hidden class="callout info"><svg class="i"><use href="#i-check"/></svg><div><strong>Managed git 2.53.0 is ready.</strong> Stored in the Ave runtime folder. System git is used instead whenever it is 2.38.1 or newer.</div></div>
-            <div class="row"><span class="spacer"></span><button class="btn primary" type="button" id="git-install" data-git="progress">Install Git (≈ 40 MB)</button></div>
+            <div class="row"><span class="spacer"></span><button class="btn primary" type="button" id="git-install" data-git="progress">Install Git (≈ 62 MB)</button></div>
           </div>
           <div class="panel-card">
             <div class="row"><strong>Check for updates at startup</strong><span class="spacer"></span><span class="switch" aria-label="On"></span></div>

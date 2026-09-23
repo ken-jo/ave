@@ -88,6 +88,15 @@ interface SourceState {       // marketplaces/<id>/state.json, every origin
 - `snapshots/` keeps the current pin, the previous pin, and every commit that
   an installed package's `origin.commit` still references; older files are
   pruned after each successful sync.
+- A `sources.json` entry that no longer passes the id and URL checks — a
+  reserved id, an id a managed source now uses, a URL not in normalized form —
+  stays in the file untouched but is not served; the Sources view lists it as
+  a diagnostic. A `sources.json` that cannot be read serves the official and
+  managed sources only and refuses writes until it is repaired, so nothing the
+  user added is overwritten.
+- A `state.json` that cannot be read fails that source's sync with the file
+  named. It is never treated as a fresh, unpinned source: a first sync accepts
+  any history.
 
 ### 2.2 Snapshot
 
@@ -106,7 +115,9 @@ interface SourceSnapshot {
 A package that fails validation is dropped from the snapshot with a
 diagnostic; the rest of the source stays usable. An invalid `marketplace.json`
 (unparseable, wrong `schemaVersion`, duplicate keys) rejects the whole
-candidate commit and keeps the previous pin.
+candidate commit and keeps the previous pin. So does an invalid
+`policy/revocations.json`: accepting the rest of that commit would silently
+drop a revocation. Both files are read under the size limits of §5.4.
 
 ### 2.3 Registry origin
 
@@ -161,7 +172,9 @@ package (§4.2).
 If the root has no `marketplace.json`, the client scans these directories at
 the pinned commit, one level deep, for `ave-package.json`:
 `plugins/ mcp/ skills/ agents/ themes/ fonts/ languages/ providers/ messaging/`.
-The marketplace name defaults to the source id. A repository with neither an
+A descriptor must declare the kind of the directory it sits
+in (`plugins/` → `plugin`, …); one that does not is dropped with a
+diagnostic. The marketplace name defaults to the source id. A repository with neither an
 index nor any descriptor in those directories is not a marketplace; the add
 dialog offers the direct-install flow instead.
 
@@ -207,8 +220,10 @@ interface IndexVersion {
 
 ### 4.2 Rules
 
-- `(kind, name)` is unique; `(kind, name, version)` maps to exactly one
-  commit. CI rejects re-publishing an existing version at a new commit.
+- `(kind, name)` is unique and `path` is unique; when two entries claim the
+  same pair or the same path, every claimant is dropped with a diagnostic,
+  because the client cannot tell which one the author meant.
+  `(kind, name, version)` maps to exactly one commit. CI rejects re-publishing an existing version at a new commit.
 - Versions strictly increase per package (the existing plugin rule, now for
   every kind). `latest` never names a yanked version.
 - When `versions` is absent, the client reads `ave-package.json` at `path`
@@ -252,6 +267,8 @@ interface PackageDescriptor {
   vocabulary is introduced.
 - Source ids: `ave`, `official`, `ave-official` and every `ave-*` id are
   reserved. The check re-runs on every load.
+- A descriptor's `icon` is relative to its package directory; the snapshot
+  stores it repository-relative, like the index's `icon`.
 
 ### 5.2 Payload by kind
 
@@ -272,32 +289,37 @@ interface PackageDescriptor {
 // The catalog reads it without downloading bytes; install compares it with
 // the staged plugin.json (§6.2). It is the trusted "expected" side that
 // today's catalog row provides to assertInstalledManifestMatchesCatalog.
+// Every field is the manifest's own subschema: the index and descriptor
+// schemas reference plugin.schema.json instead of restating it.
 interface PluginAuthority {
   capabilities: string[];
   networkAccess?: unknown;          // same shape as the manifest field
   hostSecrets?: { read: string[] };
   pluginAccess?: unknown;
   auth?: unknown;
-  requires?: { capabilities?: string[]; minAppVersion: string };
-  dependencies?: Array<string | { id: string; version?: string }>;
+  requires: { capabilities?: string[]; minAppVersion: string };   // required (§5.3)
+  dependencies?: unknown[];         // same shape as the manifest field
 }
 
 interface PluginArtifactPins {
   release?: {
-    repo: string;       // "owner/name" on the same host as the source; required in marketplace repositories
+    repo?: string;      // "owner/name" on the same host as the source; required in marketplace repositories unless url is set
     tag?: string;       // default "v{version}"
     asset?: string;     // default "{name}-{version}.zip"
-    url?: string;       // explicit URL for non-GitHub release hosts (then repo/tag/asset are ignored)
+    url?: string;       // explicit https URL for non-GitHub release hosts; exclusive with repo, tag and asset
     sha256: string;     // required: the rung is used only with a pin stored in git
   };
   archive?: { url: string; sha256: string };
   tree?: string;        // repo-relative directory holding plugin.json + dist/; default = package path
 }
 
+// The host's MCP runtime spec (src/plugins/mcp-runtime-spec.ts) without the
+// fields a package may not decide for itself (private-network access, OAuth
+// client metadata).
 type McpServerSpec =
   | { transport: "stdio"; command: "npx" | "uvx" | "docker" | string; args?: string[];
-      env?: Record<string, string>; userConfig?: UserConfigField[] }
-  | { transport: "http"; url: string; headers?: HeaderField[] };
+      env?: Record<string, string>; auth?: "none" | "api-key" | "sso"; apiKeyEnv?: string }
+  | { transport: "http"; url: string; auth?: "none" | "api-key" | "sso" | "oauth"; apiKeyHeader?: string };
 ```
 
 - `release.repo` may be omitted only for a **direct** source, where it
@@ -305,6 +327,8 @@ type McpServerSpec =
 - A `stdio` command that is not `npx`, `uvx` or `docker` must be a path
   relative to the package directory (`server/…`); absolute paths and `..` are
   rejected.
+- `env` names, `apiKeyEnv` and `apiKeyHeader` may not use a name the host
+  reserves (`src/mcp/safe-names.ts`).
 
 ### 5.3 Plugin manifest changes
 
@@ -342,6 +366,11 @@ their tests in one change (blueprint phase 6):
 | language | 4 MB | 2 | `.json` |
 | provider, messaging-connection | 64 KB | 1 | `.json` |
 | plugin (any rung) | existing `marketplace-artifact-limits.ts` | | |
+
+The marketplace files themselves are capped too: `marketplace.json` 16 MB,
+`ave-package.json` 256 KB, `policy/revocations.json` 1 MB. A larger
+descriptor drops its package with a diagnostic; a larger index or revocations
+file rejects the commit.
 
 SVG is excluded from content kinds: it is an active document when rendered
 inline. Links, devices and paths that escape the package directory are
@@ -439,7 +468,9 @@ string:
   and fragment.
 
 Policy allow/block matching (§12), reserved-name checks, token lookup and
-duplicate detection all use the normalized form.
+duplicate detection all use the normalized form. Repository identity in those
+comparisons is the host plus the path compared without case, on any scheme and
+port (§12).
 
 ### 7.2 Add (preview → confirm)
 
@@ -492,6 +523,12 @@ emit marketplace:catalog-changed
 - For the official source the client tries the primary URL and then each
   mirror; any of them may supply the candidate, and the history rule applies
   unchanged.
+- A pin whose commit is missing from the local repository (the repository
+  directory was lost) counts as rewritten history: without the object the
+  ancestry cannot be proven, and a first sync would accept any history.
+- The update review accepts exactly the commit it showed
+  (`ave:marketplace:sources:accept-rewrite` carries it); a sync that saw a
+  different candidate in between expires the review (`PLAN_EXPIRED`).
 
 ### 7.4 Network targets and policy
 
@@ -579,35 +616,57 @@ CLT as "no system git" instead of triggering the dialog.
 
 ```ts
 // src/marketplace/git/managed-git-pins.ts — updated deliberately, reviewed like a dependency bump
+const RELEASE = "https://github.com/desktop/dugite-native/releases/download/v2.53.0-4/dugite-native-v2.53.0-4098283";
 const MANAGED_GIT = {
   version: "2.53.0",
   assets: {
-    "darwin-arm64": { url: "https://github.com/desktop/dugite-native/releases/download/…-macOS-arm64.tar.gz", sha256: "…" },
-    "darwin-x64":   { url: "…-macOS-x64.tar.gz",  sha256: "…" },
-    "linux-x64":    { url: "…-ubuntu-x64.tar.gz", sha256: "…" },
-    "linux-arm64":  { url: "…-ubuntu-arm64.tar.gz", sha256: "…" },
-    "win32-x64":    { url: "https://github.com/git-for-windows/git/releases/download/…/MinGit-…-64-bit.zip", sha256: "…" },
-    "win32-arm64":  { url: "…/MinGit-…-arm64.zip", sha256: "…" },
+    "darwin-arm64": { url: `${RELEASE}-macOS-arm64.tar.gz`,    sha256: "f9dc6463…", size: 62348987 },
+    "darwin-x64":   { url: `${RELEASE}-macOS-x64.tar.gz`,      sha256: "ae668671…", size: 66136060 },
+    "linux-x64":    { url: `${RELEASE}-ubuntu-x64.tar.gz`,     sha256: "cca76aa3…", size: 65269219 },
+    "linux-arm64":  { url: `${RELEASE}-ubuntu-arm64.tar.gz`,   sha256: "a161f45a…", size: 23223345 },
+    "win32-x64":    { url: `${RELEASE}-windows-x64.tar.gz`,    sha256: "7b76bc5c…", size: 47119821 },
+    "win32-arm64":  { url: `${RELEASE}-windows-arm64.tar.gz`,  sha256: "1abbeb3a…", size: 45084825 },
   },
-} as const;
+};
 ```
+
+One source for every platform: desktop/dugite-native, the git build GitHub
+Desktop ships. Its Windows archives are MinGit (Git for Windows) repacked as
+tar.gz, so one extractor serves every platform. Each `sha256` is read from the
+release's own `<asset>.sha256` file and matched against the digest GitHub
+reports for the asset; `size` is exact, so a longer body is cut off and a
+shorter one fails the hash.
 
 Phases reported to the UI: `checking → downloading(bytes) → verifying →
 extracting → smoke-testing → ready | failed(code)`. Download goes through the
-PAC-aware fetcher and the §7.4 gate. Extraction goes to a temp directory and
-is renamed into place. A failed or partial install never replaces a working
-one.
+PAC-aware single-hop transport and the §7.4 gate (GitHub answers with a
+redirect to its asset host, which the gate checks again). Extraction goes to
+a staging directory next to the target and accepts only regular files,
+directories and symlinks that name a sibling (`git-fetch -> git`). The smoke
+test runs the staged copy: `--version` equals the pin, `hash-object --stdin`
+agrees with git's object format, and the https transport helper exists. Only
+then is a ready marker written and the directory renamed into place. A failed
+or partial install never replaces a working one; a forced reinstall moves the
+working copy aside and restores it if the final rename fails. Every download,
+verify, extract or smoke-test failure is `GIT_RUNTIME_INSTALL_FAILED`, except
+a policy block, which stays `SOURCE_POLICY_BLOCKED`.
 
 Managed-mode environment, set on every call:
 
-- `PATH` prefixed with the managed `bin`; `GIT_EXEC_PATH` = the managed
-  `libexec/git-core`; `GIT_TEMPLATE_DIR` = an empty Ave-owned directory.
-- CA roots: `GIT_SSL_CAINFO` = an Ave-built bundle made of the copy's shipped
-  roots plus the corporate roots that `src/main/corp-ca-extract.ts` already
-  extracts from the OS store. On Windows, `http.sslBackend=schannel` is set
-  instead, so the OS store is used directly. Which store the macOS and Linux
-  copies consult by default is verified in blueprint phase 1 before this is
-  finalized.
+- macOS and Linux run `bin/git` with `GIT_EXEC_PATH` = `libexec/git-core`;
+  Windows runs `cmd/git.exe` with `GIT_EXEC_PATH` = `mingw64/libexec/git-core`
+  and `PATH` prefixed with `mingw64/bin` and `usr/bin` (which holds
+  `ssh.exe`). `GIT_TEMPLATE_DIR` = an empty Ave-owned directory everywhere.
+- CA roots, as measured on the pinned build (2026-09-23):
+  - macOS: `git-remote-http` links the system libcurl (SecureTransport), so
+    the keychain is used as is, including a corporate root in the System
+    keychain. No CA file is set; one would narrow the trust.
+  - Linux: the copy ships `ssl/cacert.pem` and reads no OS store.
+    `GIT_SSL_CAINFO` = an Ave-built bundle of those roots plus the corporate
+    roots `src/main/corp-ca-extract.ts` finds.
+  - Windows: `-c http.sslBackend=schannel`, the Windows certificate store. The
+    copy's own system config says the same, but `GIT_CONFIG_NOSYSTEM=1` keeps
+    that file unread, so the setting is passed on every call.
 
 ### 9.3 Invocation contract
 
@@ -833,6 +892,18 @@ interface RevocationsFile {
 }
 ```
 
+`versions` is a range in this grammar:
+
+```
+range       := alternative ("||" alternative)*
+alternative := "*" | comparator (" " comparator)*
+comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
+```
+
+Comparators in one alternative must all hold; any alternative may match;
+precedence is the host's `compareSemver`, so a pre-release sorts below its
+release. A range that does not parse makes the file invalid (§2.2).
+
 A revoked installed version is disabled (or uninstalled) at boot through the
 existing `revocationRegistry` interface, which is fed from snapshots instead
 of the signed feed, and the user is told why.
@@ -902,14 +973,28 @@ files is a device-management action).
   "allowDisablingOfficial": false,
   "additional": [{ "id": "corp", "url": "https://git.corp.example/ave/marketplace.git" }],
   "defaultInstalls": [{ "kind": "plugin", "name": "wiki-search", "source": "corp" }],
-  "requiredInstalls": [{ "kind": "plugin", "name": "orion", "source": "corp" }]
+  "requiredInstalls": [{ "kind": "plugin", "name": "orion-api", "source": "corp" }]
 },
 "service": { "baseUrl": "https://ave.corp.example" }
 ```
 
-- Patterns match the normalized URL (§7.1): `host:<host>` matches the host on
-  any scheme; a URL pattern matches scheme, host and path with a trailing `*`
-  wildcard. `block` wins over `allow`.
+- Patterns match repository identity (§7.1): the host plus the path compared
+  without case, on any scheme and port. `https://github.com/acme/tools`,
+  `git@github.com:acme/tools` and `https://github.com/ACME/Tools` are one
+  repository on every hosting service Ave targets, so no respelling sidesteps
+  a rule. `host:<host>` matches the host; a URL pattern matches that
+  repository; a URL ending in `*` matches every repository whose path starts
+  with the text before it. A `*` anywhere else is rejected. `block` wins over
+  `allow`.
+- Policy-listed hosts — those named by `allowHttpHosts`, by an `allow`
+  pattern, or by an `additional` source — may resolve to private (RFC 1918,
+  ULA) and CGNAT addresses (§7.4). Link-local and metadata addresses stay
+  refused even for them.
+- The section is read exactly. An unknown key, a duplicate key, a pattern that
+  does not parse, an `additional` source that the policy's own lists block, or
+  an install entry naming a source that is neither official nor `additional`
+  makes the whole section invalid; every non-official source is then
+  `SOURCE_POLICY_BLOCKED` until the file is fixed. A typo must not fail open.
 - `additional` sources are pre-registered with origin `managed`: the user
   cannot remove or hide them and their history rule is the official one.
 - `defaultInstalls` and `requiredInstalls` follow §10.2 and may name official
@@ -945,7 +1030,8 @@ Events: `marketplace:sync-progress`, `marketplace:catalog-changed`,
 `git-runtime:progress`.
 
 All channels are host-renderer only (`validateHostRendererSender`) and
-audited as today. `planId` and `previewId` are single use and expire after 10
+audited as today. `ave:git:runtime:install` also requires a live keyboard
+gesture: it downloads a binary the marketplace then runs. `planId` and `previewId` are single use and expire after 10
 minutes (`PLAN_EXPIRED`). Disposition of today's channels is in §16.2.
 
 ## 14. Error codes
@@ -1050,8 +1136,9 @@ banner that requires an explicit checkbox.
 A card in Settings → Marketplace → Maintenance and the blocking step inside
 the Add dialog: detected state (`System git 2.50.1`, `Managed git 2.53.0`,
 `Not found`, `System git 2.34.1 is too old — using managed git`), mode selector
-(Auto / System / Managed), **Install Git (≈40 MB)** with the phase progress of
-§9.2 including `smoke-testing`, and a `failed` state with the error and Retry.
+(Auto / System / Managed), **Install Git (<size>)** — the pinned archive's
+size for this platform, 23–66 MB — with the phase progress of §9.2 including
+`smoke-testing`, and a `failed` state with the error and Retry.
 
 ### 15.8 Announcements
 

@@ -88,6 +88,14 @@ interface SourceState {       // marketplaces/<id>/state.json, every origin
   둡니다. 위 파일 어디에도 시크릿은 없습니다.
 - `snapshots/`에는 현재 핀, 직전 핀, 그리고 설치된 패키지의 `origin.commit`이
   아직 가리키는 커밋만 남기고, 나머지는 동기화가 성공할 때마다 정리합니다.
+- id·URL 검사를 더는 통과하지 못하는 `sources.json` 항목(예약 id, 관리 소스가
+  이제 쓰는 id, 정규형이 아닌 URL)은 파일에 그대로 두되 제공하지 않고, Sources
+  화면에 진단으로 보여 줍니다. `sources.json`을 읽을 수 없으면 공식·관리 소스만
+  제공하고, 복구될 때까지 쓰기를 거부해 사용자가 추가한 항목을 덮어쓰지
+  않습니다.
+- `state.json`을 읽을 수 없으면 그 소스의 동기화는 파일 이름을 밝히며
+  실패합니다. 핀이 없는 새 소스로 취급하지 않습니다. 첫 동기화는 어떤 이력도
+  받아들이기 때문입니다.
 
 ### 2.2 스냅숏
 
@@ -106,6 +114,9 @@ interface SourceSnapshot {
 검증에 실패한 패키지는 진단 메시지와 함께 스냅숏에서 빠지고, 소스의 나머지는
 그대로 쓸 수 있습니다. `marketplace.json` 자체가 잘못되면(파싱 불가,
 `schemaVersion` 불일치, 중복 키) 후보 커밋 전체를 거부하고 이전 핀을 유지합니다.
+`policy/revocations.json`이 잘못된 경우도 같습니다. 그 커밋의 나머지를 받아들이면
+폐기 항목이 소리 없이 빠지기 때문입니다. 두 파일 모두 §5.4의 크기 한도 안에서
+읽습니다.
 
 ### 2.3 레지스트리 출처
 
@@ -159,7 +170,9 @@ policy/revocations.json          # revocations of this repository's own packages
 루트에 `marketplace.json`이 없으면 클라이언트는 핀 커밋에서 다음 디렉터리를
 한 단계 깊이로 훑어 `ave-package.json`을 찾습니다:
 `plugins/ mcp/ skills/ agents/ themes/ fonts/ languages/ providers/ messaging/`.
-마켓플레이스 이름은 소스 id가 기본값입니다. 인덱스도 없고 이 디렉터리들에
+디스크립터는 자신이 놓인 디렉터리의 종류를 선언해야 하며(`plugins/` →
+`plugin`, …), 그렇지 않으면 진단과 함께 빠집니다. 마켓플레이스 이름은 소스 id가
+기본값입니다. 인덱스도 없고 이 디렉터리들에
 디스크립터도 없으면 마켓플레이스가 아니며, 추가 대화상자는 직접 설치 흐름을
 대신 제안합니다.
 
@@ -205,7 +218,9 @@ interface IndexVersion {
 
 ### 4.2 규칙
 
-- `(kind, name)`은 유일하고, `(kind, name, version)`은 정확히 한 커밋에
+- `(kind, name)`과 `path`는 각각 유일합니다. 두 항목이 같은 쌍이나 같은 경로를
+  주장하면 모두 진단과 함께 빠집니다. 작성자가 어느 쪽을 뜻했는지 클라이언트가
+  알 수 없기 때문입니다. `(kind, name, version)`은 정확히 한 커밋에
   대응합니다. 기존 버전을 새 커밋으로 다시 게시하면 CI가 거부합니다.
 - 버전은 패키지마다 엄격히 증가합니다(기존 플러그인 규칙을 모든 종류로 확대).
   `latest`는 회수(yank)된 버전을 가리키지 않습니다.
@@ -248,6 +263,8 @@ interface PackageDescriptor {
   없으면 닫힌 쪽으로 실패합니다. 두 번째 호환성 어휘는 만들지 않습니다.
 - 소스 id `ave`, `official`, `ave-official`과 모든 `ave-*` id는 예약되어
   있습니다. 이 검사는 로드할 때마다 다시 합니다.
+- 디스크립터의 `icon`은 패키지 디렉터리 기준 경로이고, 스냅숏에는 인덱스의
+  `icon`처럼 저장소 기준 경로로 저장합니다.
 
 ### 5.2 종류별 페이로드
 
@@ -268,38 +285,45 @@ interface PackageDescriptor {
 // The catalog reads it without downloading bytes; install compares it with
 // the staged plugin.json (§6.2). It is the trusted "expected" side that
 // today's catalog row provides to assertInstalledManifestMatchesCatalog.
+// Every field is the manifest's own subschema: the index and descriptor
+// schemas reference plugin.schema.json instead of restating it.
 interface PluginAuthority {
   capabilities: string[];
   networkAccess?: unknown;          // same shape as the manifest field
   hostSecrets?: { read: string[] };
   pluginAccess?: unknown;
   auth?: unknown;
-  requires?: { capabilities?: string[]; minAppVersion: string };
-  dependencies?: Array<string | { id: string; version?: string }>;
+  requires: { capabilities?: string[]; minAppVersion: string };   // required (§5.3)
+  dependencies?: unknown[];         // same shape as the manifest field
 }
 
 interface PluginArtifactPins {
   release?: {
-    repo: string;       // "owner/name" on the same host as the source; required in marketplace repositories
+    repo?: string;      // "owner/name" on the same host as the source; required in marketplace repositories unless url is set
     tag?: string;       // default "v{version}"
     asset?: string;     // default "{name}-{version}.zip"
-    url?: string;       // explicit URL for non-GitHub release hosts (then repo/tag/asset are ignored)
+    url?: string;       // explicit https URL for non-GitHub release hosts; exclusive with repo, tag and asset
     sha256: string;     // required: the rung is used only with a pin stored in git
   };
   archive?: { url: string; sha256: string };
   tree?: string;        // repo-relative directory holding plugin.json + dist/; default = package path
 }
 
+// The host's MCP runtime spec (src/plugins/mcp-runtime-spec.ts) without the
+// fields a package may not decide for itself (private-network access, OAuth
+// client metadata).
 type McpServerSpec =
   | { transport: "stdio"; command: "npx" | "uvx" | "docker" | string; args?: string[];
-      env?: Record<string, string>; userConfig?: UserConfigField[] }
-  | { transport: "http"; url: string; headers?: HeaderField[] };
+      env?: Record<string, string>; auth?: "none" | "api-key" | "sso"; apiKeyEnv?: string }
+  | { transport: "http"; url: string; auth?: "none" | "api-key" | "sso" | "oauth"; apiKeyHeader?: string };
 ```
 
 - `release.repo`는 **direct** 소스에서만 생략할 수 있고, 그때는 소스 저장소 자신이
   기본값입니다.
 - `npx`, `uvx`, `docker`가 아닌 `stdio` 명령은 패키지 디렉터리 기준 상대
   경로(`server/…`)여야 합니다. 절대 경로와 `..`는 거부합니다.
+- `env` 이름, `apiKeyEnv`, `apiKeyHeader`에는 호스트가 예약한 이름
+  (`src/mcp/safe-names.ts`)을 쓸 수 없습니다.
 
 ### 5.3 플러그인 매니페스트 변경
 
@@ -336,6 +360,11 @@ git 소스에서 설치하는 플러그인은:
 | language | 4 MB | 2 | `.json` |
 | provider, messaging-connection | 64 KB | 1 | `.json` |
 | plugin(모든 단계) | 기존 `marketplace-artifact-limits.ts` | | |
+
+마켓플레이스 파일 자체에도 한도가 있습니다. `marketplace.json` 16 MB,
+`ave-package.json` 256 KB, `policy/revocations.json` 1 MB입니다. 더 큰
+디스크립터는 그 패키지를 진단과 함께 빼고, 더 큰 인덱스나 폐기 파일은 커밋을
+거부합니다.
 
 SVG는 인라인으로 렌더링하면 능동 문서가 되므로 콘텐츠 종류에서 제외합니다.
 링크, 장치 파일, 패키지 디렉터리 밖으로 나가는 경로는 거부합니다
@@ -426,7 +455,8 @@ tree 단계의 `artifactSha256`은 모든 파일에 대해
 - 거부: `file:`, `ext::`, 그 밖의 스킴, URL 안의 자격 증명, 쿼리, 프래그먼트.
 
 정책 allow/block 매칭(§12), 예약 이름 검사, 토큰 조회, 중복 감지는 모두 정규화된
-형태를 씁니다.
+형태를 씁니다. 이 비교에서 저장소의 동일성은 호스트와 대소문자를 무시한 경로이며,
+스킴과 포트는 따지지 않습니다(§12).
 
 ### 7.2 추가 (미리보기 → 확정)
 
@@ -474,6 +504,12 @@ emit marketplace:catalog-changed
   검사가 실패하는 일은 없습니다.
 - 공식 소스는 기본 URL을 먼저, 그다음 각 미러를 시도합니다. 어느 쪽이 후보를
   주든 이력 규칙은 그대로 적용됩니다.
+- 핀 커밋이 로컬 저장소에 없으면(저장소 디렉터리가 사라진 경우) 이력이 재작성된
+  것으로 봅니다. 객체가 없으면 조상 관계를 증명할 수 없고, 첫 동기화는 어떤
+  이력도 받아들이기 때문입니다.
+- 업데이트 검토는 보여 준 커밋만 정확히 수락합니다
+  (`ave:marketplace:sources:accept-rewrite`가 그 커밋을 싣습니다). 그 사이
+  동기화가 다른 후보를 보았다면 검토는 만료됩니다(`PLAN_EXPIRED`).
 
 ### 7.4 네트워크 대상과 정책
 
@@ -557,32 +593,56 @@ macOS에서 Command Line Tools 없는 `/usr/bin/git`은 설치 대화상자를 �
 
 ```ts
 // src/marketplace/git/managed-git-pins.ts — updated deliberately, reviewed like a dependency bump
+const RELEASE = "https://github.com/desktop/dugite-native/releases/download/v2.53.0-4/dugite-native-v2.53.0-4098283";
 const MANAGED_GIT = {
   version: "2.53.0",
   assets: {
-    "darwin-arm64": { url: "https://github.com/desktop/dugite-native/releases/download/…-macOS-arm64.tar.gz", sha256: "…" },
-    "darwin-x64":   { url: "…-macOS-x64.tar.gz",  sha256: "…" },
-    "linux-x64":    { url: "…-ubuntu-x64.tar.gz", sha256: "…" },
-    "linux-arm64":  { url: "…-ubuntu-arm64.tar.gz", sha256: "…" },
-    "win32-x64":    { url: "https://github.com/git-for-windows/git/releases/download/…/MinGit-…-64-bit.zip", sha256: "…" },
-    "win32-arm64":  { url: "…/MinGit-…-arm64.zip", sha256: "…" },
+    "darwin-arm64": { url: `${RELEASE}-macOS-arm64.tar.gz`,    sha256: "f9dc6463…", size: 62348987 },
+    "darwin-x64":   { url: `${RELEASE}-macOS-x64.tar.gz`,      sha256: "ae668671…", size: 66136060 },
+    "linux-x64":    { url: `${RELEASE}-ubuntu-x64.tar.gz`,     sha256: "cca76aa3…", size: 65269219 },
+    "linux-arm64":  { url: `${RELEASE}-ubuntu-arm64.tar.gz`,   sha256: "a161f45a…", size: 23223345 },
+    "win32-x64":    { url: `${RELEASE}-windows-x64.tar.gz`,    sha256: "7b76bc5c…", size: 47119821 },
+    "win32-arm64":  { url: `${RELEASE}-windows-arm64.tar.gz`,  sha256: "1abbeb3a…", size: 45084825 },
   },
-} as const;
+};
 ```
 
+모든 플랫폼에 하나의 출처를 씁니다. GitHub Desktop이 싣는 git 빌드인
+desktop/dugite-native입니다. 이 빌드의 Windows 아카이브는 MinGit(Git for
+Windows)을 tar.gz로 다시 묶은 것이므로 추출기 하나로 모든 플랫폼을 처리합니다.
+각 `sha256`은 릴리스에 함께 올라온 `<asset>.sha256` 파일에서 읽고 GitHub가
+보고하는 자산 digest와 대조했습니다. `size`는 정확한 값이라 더 긴 본문은 잘리고
+더 짧은 본문은 해시에서 실패합니다.
+
 UI에 보고하는 단계: `checking → downloading(bytes) → verifying → extracting →
-smoke-testing → ready | failed(code)`. 다운로드는 PAC를 인식하는 fetcher와 §7.4
-게이트를 거칩니다. 압축은 임시 디렉터리에 풀고 이름을 바꿔 제자리에 둡니다.
-실패하거나 중간에 끊긴 설치는 동작 중인 사본을 절대 대체하지 않습니다.
+smoke-testing → ready | failed(code)`. 다운로드는 PAC를 인식하는 단일 홉 전송과
+§7.4 게이트를 거칩니다(GitHub는 자산 호스트로 리다이렉트하고, 게이트가 그 홉을
+다시 검사합니다). 압축은 대상 옆 스테이징 디렉터리에 풀며, 일반 파일, 디렉터리,
+형제를 가리키는 심볼릭 링크(`git-fetch -> git`)만 받아들입니다. 스모크 테스트는
+스테이징된 사본을 실행해 `--version`이 핀과 같고, `hash-object --stdin`이 git
+객체 형식과 일치하고, https 전송 헬퍼가 있는지 확인합니다. 그다음에야 준비
+표시를 쓰고 디렉터리 이름을 바꿔 제자리에 둡니다. 실패하거나 중간에 끊긴 설치는
+동작 중인 사본을 절대 대체하지 않습니다. 강제 재설치는 동작 중인 사본을 옆으로
+옮겨 두었다가 마지막 이름 바꾸기가 실패하면 되돌립니다. 다운로드·검증·추출·
+스모크 테스트 실패는 모두 `GIT_RUNTIME_INSTALL_FAILED`이고, 정책 차단만
+`SOURCE_POLICY_BLOCKED`로 남습니다.
 
 관리형 모드에서 매 호출에 설정하는 환경:
 
-- `PATH` 앞에 관리형 `bin`, `GIT_EXEC_PATH` = 관리형 `libexec/git-core`,
-  `GIT_TEMPLATE_DIR` = Ave 소유의 빈 디렉터리.
-- CA 루트: `GIT_SSL_CAINFO` = 사본에 동봉된 루트와 `src/main/corp-ca-extract.ts`가
-  이미 OS 저장소에서 추출하는 사내 루트를 합쳐 Ave가 만든 번들. Windows에서는
-  대신 `http.sslBackend=schannel`을 설정해 OS 저장소를 직접 씁니다. macOS·Linux
-  사본이 기본으로 어느 저장소를 보는지는 청사진 1단계에서 확인한 뒤 확정합니다.
+- macOS·Linux는 `bin/git`을 `GIT_EXEC_PATH` = `libexec/git-core`로 실행합니다.
+  Windows는 `cmd/git.exe`를 `GIT_EXEC_PATH` = `mingw64/libexec/git-core`로
+  실행하고, `PATH` 앞에 `mingw64/bin`과 `usr/bin`(`ssh.exe`가 있는 곳)을
+  붙입니다. `GIT_TEMPLATE_DIR`은 어디서나 Ave 소유의 빈 디렉터리입니다.
+- CA 루트(핀 고정 빌드에서 측정, 2026-09-23):
+  - macOS: `git-remote-http`가 시스템 libcurl(SecureTransport)에 링크되어
+    키체인을 그대로 씁니다. System 키체인의 사내 루트도 포함됩니다. CA 파일은
+    설정하지 않습니다. 설정하면 신뢰 범위가 좁아집니다.
+  - Linux: 사본이 `ssl/cacert.pem`을 싣고 OS 저장소는 읽지 않습니다.
+    `GIT_SSL_CAINFO` = 그 루트와 `src/main/corp-ca-extract.ts`가 찾은 사내
+    루트를 합쳐 Ave가 만든 번들.
+  - Windows: `-c http.sslBackend=schannel`, 즉 Windows 인증서 저장소. 사본의
+    system config도 같은 값을 두지만 `GIT_CONFIG_NOSYSTEM=1` 때문에 읽히지
+    않으므로, 매 호출에 이 설정을 넘깁니다.
 
 ### 9.3 호출 계약
 
@@ -787,6 +847,18 @@ interface RevocationsFile {
 }
 ```
 
+`versions`는 다음 문법의 범위입니다.
+
+```
+range       := alternative ("||" alternative)*
+alternative := "*" | comparator (" " comparator)*
+comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
+```
+
+한 alternative 안의 비교식은 모두 성립해야 하고, alternative 중 하나만 맞으면
+됩니다. 순서는 호스트의 `compareSemver`를 따르므로 pre-release는 그 릴리스보다
+앞에 옵니다. 파싱할 수 없는 범위는 파일 전체를 무효로 만듭니다(§2.2).
+
 폐기된 설치 버전은 부팅 때 기존 `revocationRegistry` 인터페이스(서명 피드 대신
 스냅숏에서 공급)를 통해 비활성화(또는 제거)되고, 사용자에게 사유를 알립니다.
 
@@ -849,14 +921,26 @@ interface RevocationsFile {
   "allowDisablingOfficial": false,
   "additional": [{ "id": "corp", "url": "https://git.corp.example/ave/marketplace.git" }],
   "defaultInstalls": [{ "kind": "plugin", "name": "wiki-search", "source": "corp" }],
-  "requiredInstalls": [{ "kind": "plugin", "name": "orion", "source": "corp" }]
+  "requiredInstalls": [{ "kind": "plugin", "name": "orion-api", "source": "corp" }]
 },
 "service": { "baseUrl": "https://ave.corp.example" }
 ```
 
-- 패턴은 정규화된 URL(§7.1)과 비교합니다. `host:<host>`는 스킴과 관계없이 호스트를
-  맞추고, URL 패턴은 끝의 `*` 와일드카드와 함께 스킴·호스트·경로를 맞춥니다.
-  `block`이 `allow`보다 우선합니다.
+- 패턴은 저장소 동일성(§7.1)과 비교합니다. 호스트와 대소문자를 무시한 경로이며
+  스킴과 포트는 따지지 않습니다. `https://github.com/acme/tools`,
+  `git@github.com:acme/tools`, `https://github.com/ACME/Tools`는 Ave가 다루는
+  모든 호스팅 서비스에서 같은 저장소이므로, 표기를 바꿔 규칙을 피할 수 없습니다.
+  `host:<host>`는 그 호스트를, URL 패턴은 그 저장소를, `*`로 끝나는 URL은 `*`
+  앞 텍스트로 경로가 시작하는 모든 저장소를 맞춥니다. 그 밖의 위치에 있는 `*`는
+  거부합니다. `block`이 `allow`보다 우선합니다.
+- 정책이 이름을 댄 호스트(`allowHttpHosts`, `allow` 패턴, `additional` 소스에
+  나오는 호스트)는 사설(RFC 1918, ULA)·CGNAT 주소로 해석되어도 됩니다(§7.4).
+  link-local과 메타데이터 주소는 이들에게도 계속 거부합니다.
+- 이 섹션은 적힌 그대로만 읽습니다. 알 수 없는 키, 중복 키, 파싱되지 않는 패턴,
+  정책 자신의 목록이 막는 `additional` 소스, 공식도 `additional`도 아닌 소스를
+  지정한 설치 항목이 하나라도 있으면 섹션 전체가 무효이고, 파일을 고칠 때까지
+  공식 외 모든 소스가 `SOURCE_POLICY_BLOCKED`입니다. 오타가 열린 쪽으로 실패해서는
+  안 됩니다.
 - `additional` 소스는 `managed` 출처로 미리 등록됩니다. 사용자는 제거하거나 숨길
   수 없고, 이력 규칙은 공식 소스와 같습니다.
 - `defaultInstalls`와 `requiredInstalls`는 §10.2를 따르며 공식·관리 소스만 지정할
@@ -891,7 +975,8 @@ interface RevocationsFile {
 설치), `git-runtime:progress`.
 
 모든 채널은 호스트 렌더러 전용(`validateHostRendererSender`)이고 지금처럼 감사
-로그를 남깁니다. `planId`와 `previewId`는 1회용이고 10분 뒤 만료됩니다
+로그를 남깁니다. `ave:git:runtime:install`은 여기에 더해 실시간 키보드 제스처를
+요구합니다. 마켓플레이스가 실행할 바이너리를 내려받기 때문입니다. `planId`와 `previewId`는 1회용이고 10분 뒤 만료됩니다
 (`PLAN_EXPIRED`). 현재 채널의 처리는 §16.2에 있습니다.
 
 ## 14. 오류 코드
@@ -988,8 +1073,9 @@ interface RevocationsFile {
 설정 → 마켓플레이스 → 유지 관리의 카드이자 추가 대화상자 안의 차단 단계: 감지
 상태(`System git 2.50.1`, `Managed git 2.53.0`, `Not found`,
 `System git 2.34.1 is too old — using managed git`), 모드 선택(Auto / System /
-Managed), `smoke-testing`을 포함한 §9.2 단계 진행이 붙은 **Install Git (≈40 MB)**,
-오류와 Retry가 있는 `failed` 상태.
+Managed), `smoke-testing`을 포함한 §9.2 단계 진행이 붙은
+**Install Git (<크기>)**(이 플랫폼용 핀 고정 아카이브 크기, 23–66 MB), 오류와
+Retry가 있는 `failed` 상태.
 
 ### 15.8 공지
 
