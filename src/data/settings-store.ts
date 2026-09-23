@@ -977,6 +977,11 @@ export class SettingsService {
   private readonly restoringSecretKeys = new Set<string>();
   /** Provider-preset keys with an invalidation in flight (saved or not, deletion unsettled), counted. */
   private readonly invalidatingSecretKeys = new Map<string, number>();
+  /**
+   * Keys entered again while an invalidation of them was in flight, with the
+   * preset they were entered next to: that is their address now.
+   */
+  private readonly reenteredSecretKeys = new Map<string, MarketplaceInstalledProviderPreset | undefined>();
 
   constructor(options: SettingsServiceOptions) {
     const dir = resolve(options.userDataPath);
@@ -1455,8 +1460,12 @@ export class SettingsService {
     } finally {
       for (const key of keys) {
         const left = (this.invalidatingSecretKeys.get(key) ?? 1) - 1;
-        if (left > 0) this.invalidatingSecretKeys.set(key, left);
-        else this.invalidatingSecretKeys.delete(key);
+        if (left > 0) {
+          this.invalidatingSecretKeys.set(key, left);
+        } else {
+          this.invalidatingSecretKeys.delete(key);
+          this.reenteredSecretKeys.delete(key);
+        }
       }
     }
   }
@@ -1485,11 +1494,23 @@ export class SettingsService {
       // other key is withheld and deleted later.
       const presetIn = (settings: AppSettings, providerId: string) =>
         settings.marketplace.installedProviderPresets.find((preset) => preset.providerId === providerId);
+      // A key entered again meanwhile belongs to the preset it was entered
+      // next to: it is never moved back, and stays usable while the preset
+      // is still that one.
       const restorable = providerIds.filter((providerId) =>
-        this.invalidatingSecretKeys.get(marketplaceProviderPresetSecretKey(providerId)) === 1
+        !this.reenteredSecretKeys.has(marketplaceProviderPresetSecretKey(providerId))
+        && this.invalidatingSecretKeys.get(marketplaceProviderPresetSecretKey(providerId)) === 1
         && isDeepStrictEqual(presetIn(this.settings, providerId), presetIn(appliedSettings, providerId)));
       for (const providerId of providerIds) {
-        if (!restorable.includes(providerId)) this.withheldSecretKeys.add(marketplaceProviderPresetSecretKey(providerId));
+        if (restorable.includes(providerId)) continue;
+        const key = marketplaceProviderPresetSecretKey(providerId);
+        if (
+          this.reenteredSecretKeys.has(key)
+          && isDeepStrictEqual(this.reenteredSecretKeys.get(key), presetIn(this.settings, providerId))
+        ) {
+          continue;
+        }
+        this.withheldSecretKeys.add(key);
       }
       // Until the old addresses are back on disk their keys are held back,
       // so nothing that runs when a failed rollback puts memory back on the
@@ -1560,8 +1581,17 @@ export class SettingsService {
 
   /** Encrypt and store a secret value such as an API key. */
   async setSecret(key: string, value: string): Promise<void> {
+    // Entered for the preset shown now, while an invalidation may be moving it.
+    const enteredFor = this.invalidatingSecretKeys.has(key)
+      ? this.settings.marketplace.installedProviderPresets.find(
+          (preset) => marketplaceProviderPresetSecretKey(preset.providerId) === key,
+        )
+      : null;
     await this.secretStore.set(key, value);
     this.withheldSecretKeys.delete(key);
+    if (enteredFor !== null && this.invalidatingSecretKeys.has(key)) {
+      this.reenteredSecretKeys.set(key, structuredClone(enteredFor));
+    }
   }
 
   /** Decrypt and return a stored secret value. */

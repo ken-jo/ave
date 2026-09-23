@@ -699,6 +699,40 @@ describe("SettingsService marketplace defaults", () => {
     expect(service.getSecret(key)).toBeNull();
   });
 
+  it("keeps a key entered for the new address while the old key's deletion fails", async () => {
+    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(true);
+    mockedElectron.safeStorage.encryptString.mockImplementation(
+      (value: string) => Buffer.from(`sealed:${value}`),
+    );
+    mockedElectron.safeStorage.decryptString.mockImplementation(
+      (value: Buffer) => value.toString("utf-8").slice(7),
+    );
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const preset = {
+      providerId: "future-router",
+      label: "Future Router",
+      baseUrl: "https://future.example/v1",
+      defaultModel: "future/free",
+      modelOptions: ["future/free"],
+      requiresApiKey: true,
+    };
+    const key = marketplaceProviderPresetSecretKey("future-router");
+    await service.installMarketplaceProviderPreset(preset);
+    await service.setSecret(key, "entered-for-future");
+    const moved = { ...preset, baseUrl: "https://elsewhere.example/v1" };
+    const secrets = (service as unknown as { secretStore: { deleteMany(keys: string[]): Promise<number> } }).secretStore;
+    vi.spyOn(secrets, "deleteMany").mockImplementationOnce(async () => {
+      // The user enters a key for the new address before the deletion fails.
+      await service.setSecret(key, "entered-for-elsewhere");
+      throw new Error("keychain locked");
+    });
+
+    await expect(service.installMarketplaceProviderPreset(moved)).rejects.toThrow("keychain locked");
+
+    expect(service.get("marketplace").installedProviderPresets).toEqual([moved]);
+    expect(service.getSecret(key)).toBe("entered-for-elsewhere");
+  });
+
   it("leaves an active custom provider preset installed when preset-secret deletion fails", async () => {
     mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(true);
     mockedElectron.safeStorage.encryptString.mockImplementation(
