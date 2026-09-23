@@ -297,7 +297,7 @@ interface PackageDescriptor {
 | `theme` | `{ entry: "theme.json" }` | `theme.json`, 미리보기 이미지(선택) |
 | `font` | `{ entry: "font.json" }` | `font.json`, `files/*.woff2\|woff\|ttf\|otf`, `LICENSE` |
 | `language` | `{ locale: string; entry: "language.json"; messages: "messages.json" }` | 그 두 JSON 파일 |
-| `provider` | `{ entry: "provider.json" }` | `provider.json`(현재 `MarketplaceProviderPackageAsset`에서 `type` 제외) |
+| `provider` | `{ entry: "provider.json" }` | `provider.json`: 프리셋(현재 `MarketplaceProviderPackageAsset`에서 `type` 제외), 또는 마켓플레이스 대상 내장 벤더의 `{ providerId, defaultModel?, baseUrl? }`(§5.5) |
 | `messaging-connection` | `{ entry: "connection.json" }` | `connection.json`(현재 메시징 자산에서 `type` 제외) |
 
 ```ts
@@ -470,9 +470,11 @@ version, contentSha256, installedAt }`입니다. 콘텐츠에는 단계가 없�
   이름·영어 이름과 함께 등록합니다. 메시지는 영어 위에 겹치므로 번역하지 않은
   키는 영어로 보입니다.
   - 패키지는 인터페이스만 번역합니다. `messages.json`은 영어 카탈로그 키 중
-    모델이 읽는 `be_*` 네임스페이스(시스템 프롬프트, 도구·리뷰어 문구) 밖의
-    키만 쓸 수 있고, 그 네임스페이스는 늘 컴파일된 카탈로그에서 옵니다. 빠진
-    키는 거부하지 않고 목록으로 남깁니다.
+    모델이 읽는 집합 밖의 키만 쓸 수 있고, 그 집합은 늘 컴파일된 카탈로그에서
+    옵니다. 집합에는 `be_*` 네임스페이스(시스템 프롬프트, 도구·리뷰어 문구),
+    시스템 프롬프트가 설명하는 셸 실행 환경, 화면이 사용자 메시지로 보내는
+    문구가 들어갑니다(`i18n/model-facing.ts`, 모델로 가는 키가 집합 밖에 있으면
+    정적 테스트가 실패). 빠진 키는 거부하지 않고 목록으로 남깁니다.
   - 번역은 영어의 자리표시자 집합을 그대로 지켜야 하고, 양방향 재정의 문자와
     보이지 않는 문자를 쓸 수 없습니다. 승인 프롬프트는 적힌 그대로를 물어야
     합니다.
@@ -490,25 +492,28 @@ version, contentSha256, installedAt }`입니다. 콘텐츠에는 단계가 없�
   렌더러는 페이스를 `ave-font-<패키지 이름>`으로, `ave-content:` URL로만
   선언하고, `family`는 선택기의 레이블입니다. 따라서 패키지가 시스템 폰트나
   다른 패키지의 패밀리를 가릴 수 없습니다. 패밀리당 패키지는 하나이고, 두
-  번째는 설치 때 거부합니다.
+  번째는 설치 때 거부합니다. 폰트 패밀리 설정은 가장 긴 설치 스택이 들어가도록
+  256자까지 받습니다.
 - **프로바이더와 메시징 연결**은 지금의 정규화 함수를 거치되 어떤 필드도
   빼거나 고치지 않고, 지금의 자산 설치가 쓰는 설정 경로로 적용됩니다.
   `providerId`가 마켓플레이스 대상 내장 벤더인 프로바이더 패키지는
   `{ providerId, defaultModel?, baseUrl? }`이고, 그 벤더를 잠금 해제하며
   (`marketplace.installedProviderIds`) 기본 모델을 정할 수 있습니다. 벤더의
   키는 `baseUrl`이 가리키는 곳으로 가므로, `baseUrl`은 공식 또는 관리 소스만
-  https로 정할 수 있습니다.
+  https로 정할 수 있고, 바꾸면 프리셋의 base URL이 바뀔 때처럼 이전 주소에
+  저장된 키를 지웁니다.
 - **선택은 사용자의 몫입니다.** 설치해도 테마·언어·폰트를 선택하지 않습니다.
   선택된 것을 제거하면 그 설정은 기본값으로 돌아가고, 설치되지 않은 id가
   선택되어 있으면 기본값으로 그립니다.
-- **자산 스킴.** `ave-content://<kind>/<name>/<path>`는 로드된 저장소가
+- **자산 스킴.** `ave-content://<token>/<kind>/<name>/<path>`는 로드된 저장소가
   나열한 파일(폰트 페이스, 테마 미리보기)에만 `nosniff`로 답하고, 나머지는
-  404입니다. CSP는 `img-src`와 `font-src`에만 이 스킴을 허용합니다. 응답은
-  앱의 `file:` 창이 가진 불투명 origin만 허용하고
-  (`Access-Control-Allow-Origin: null`), http(s) origin이나 referrer가 붙은
-  요청은 거부하므로 웹 페이지가 어떤 패키지가 설치됐는지 알아낼 수 없습니다.
-  기본 세션의 다른 불투명 origin 프레임은 적용된 폰트나 미리보기를 읽을 수
-  있지만, 이는 공개 패키지의 공개 파일입니다. 프레임은
+  404입니다. CSP는 `img-src`와 `font-src`에만 이 스킴을 허용합니다. 앱이 여는
+  웹 페이지도 기본 세션을 함께 쓰고 origin·referrer 없는 요청을 보낼 수 있으므로,
+  모든 URL의 호스트는 실행할 때 뽑은 무작위 토큰이고 이 토큰은 앱의 렌더러만
+  받습니다. 토큰이 없는 URL은 404이므로 웹 페이지는 설치된 파일을 가리키거나
+  확인하거나 읽을 수 없습니다. 응답은 앱의 `file:` 창이 가진 불투명 origin만
+  허용하고(`Access-Control-Allow-Origin: null`), http(s) origin이나 referrer가
+  붙은 요청은 거부합니다. 프레임은
   커밋될 때 사용자 정의 스킴 로더를 묶으므로, 핸들러는 메인 창이 로드되기 전에
   IPC 핸들러와 함께 등록합니다.
 - **로드 시점.** 저장소는 IPC를 등록할 때가 아니라 부팅 중 렌더러의 첫 요청

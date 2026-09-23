@@ -304,7 +304,7 @@ interface PackageDescriptor {
 | `theme` | `{ entry: "theme.json" }` | `theme.json`, optional preview image |
 | `font` | `{ entry: "font.json" }` | `font.json`, `files/*.woff2\|woff\|ttf\|otf`, `LICENSE` |
 | `language` | `{ locale: string; entry: "language.json"; messages: "messages.json" }` | those two JSON files |
-| `provider` | `{ entry: "provider.json" }` | `provider.json` (today's `MarketplaceProviderPackageAsset` minus `type`) |
+| `provider` | `{ entry: "provider.json" }` | `provider.json`: a preset (today's `MarketplaceProviderPackageAsset` minus `type`), or for a marketplace-eligible built-in vendor `{ providerId, defaultModel?, baseUrl? }` (§5.5) |
 | `messaging-connection` | `{ entry: "connection.json" }` | `connection.json` (today's messaging asset minus `type`) |
 
 ```ts
@@ -485,9 +485,12 @@ ledger feeds snapshot retention (§2.3) like the plugin registry does.
   with its native and English names, and its messages are layered over
   English, so a key it does not translate reads in English.
   - A package translates the interface only. `messages.json` may use
-    English catalog keys outside the model-facing `be_*` namespace (system
-    prompt, tool and reviewer text), which always comes from the compiled
-    catalogs. Missing keys are listed, not refused.
+    English catalog keys outside the model-facing set, which always comes
+    from the compiled catalogs: the `be_*` namespace (system prompt, tool and
+    reviewer text), the shell execution environment the system prompt
+    describes, and a message a surface sends as the user's own
+    (`i18n/model-facing.ts`; a static test fails when a key reaches the
+    model from outside it). Missing keys are listed, not refused.
   - A translation keeps the English placeholder set, and refuses
     bidirectional overrides and invisible characters: an approval prompt
     must ask about what it says.
@@ -506,7 +509,8 @@ ledger feeds snapshot retention (§2.3) like the plugin registry does.
   ordered. The renderer declares the faces under `ave-font-<package name>`
   with `ave-content:` URLs only; `family` is the picker's label. A package
   therefore cannot shadow a system font or another package's family. One
-  package per family: a second is refused at install.
+  package per family: a second is refused at install. The font-family
+  setting holds up to 256 characters, room for the longest installed stack.
 - **Provider and messaging connection** go through today's normalizers,
   with no field dropped or rewritten, and take effect through the settings
   paths today's asset install uses. A provider package whose `providerId`
@@ -514,19 +518,21 @@ ledger feeds snapshot retention (§2.3) like the plugin registry does.
   defaultModel?, baseUrl? }`: it unlocks that vendor
   (`marketplace.installedProviderIds`) and may set its default model. Only
   an official or managed source may set its `baseUrl`, which must be
-  https, because the vendor's key goes wherever it points.
+  https, because the vendor's key goes wherever it points; moving it drops
+  the key saved for the old address, as a preset's base URL change does.
 - **Selection stays the user's.** Installing does not select a theme,
   language or font. Removing the selected one puts that setting back to its
   default; a selected id that is not installed renders the default.
-- **Asset scheme.** `ave-content://<kind>/<name>/<path>` answers only the
+- **Asset scheme.** `ave-content://<token>/<kind>/<name>/<path>` answers only the
   files the loaded store lists (font faces, theme previews), with `nosniff`;
   anything else is 404. The CSP admits it for `img-src` and `font-src` only.
-  The answer admits only the opaque origin of the app's `file:` windows
-  (`Access-Control-Allow-Origin: null`), and a request with an http(s)
-  origin or referrer is refused, so a web page cannot probe which packages
-  are installed. Another opaque-origin frame in the default session could
-  still read an applied font or preview, which are public files of a public
-  package.
+  Web pages the app opens share the default session and can send requests
+  with no origin or referrer, so the host of every URL is a random token
+  drawn at launch that only the app's renderer receives; a URL without it
+  is 404, and a page cannot name, probe or read an installed file. The
+  answer also admits only the opaque origin of the app's `file:` windows
+  (`Access-Control-Allow-Origin: null`) and refuses an http(s) origin or
+  referrer.
   Its handler is registered with the IPC handlers, before the main window
   loads, because a frame binds its custom-scheme loaders when it commits.
 - **Loading.** The store loads on the renderer's first request at boot (or
