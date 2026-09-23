@@ -32,6 +32,7 @@ import { canonicalZipEntryPathIdentity, sanitizeZipEntryPath } from "../../plugi
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
 import type { GitRuntimeProgress } from "../../shared/git-runtime.js";
 import { MarketplaceError, isMarketplaceError } from "../errors.js";
+import { stallGuarded } from "../net/stall-guard.js";
 import type { ManagedGitInstall } from "./detect.js";
 import { parseGitVersion } from "./git-version.js";
 import { MANAGED_GIT, type ManagedGitPins } from "./managed-git-pins.js";
@@ -152,30 +153,6 @@ function installFailed(message: string, cause?: unknown): MarketplaceError {
   return new MarketplaceError("GIT_RUNTIME_INSTALL_FAILED", message, cause === undefined ? undefined : { cause });
 }
 
-/** The body's chunks; a gap longer than `stallMs` fails the download instead of hanging it. */
-async function* stallGuarded(body: ReadableStream<Uint8Array>, stallMs: number): AsyncGenerator<Uint8Array> {
-  const reader = body.getReader();
-  try {
-    for (;;) {
-      let timer: NodeJS.Timeout | undefined;
-      const stalled = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(installFailed(`download stalled: no data for ${stallMs} ms`)), stallMs);
-      });
-      let next: ReadableStreamReadResult<Uint8Array>;
-      try {
-        next = await Promise.race([reader.read(), stalled]);
-      } finally {
-        clearTimeout(timer);
-      }
-      if (next.done) return;
-      yield next.value;
-    }
-  } finally {
-    // Releases the connection of a stalled or oversized body; a cancel error changes nothing.
-    await reader.cancel().catch(() => undefined);
-  }
-}
-
 /** Stream the body to `file` while hashing; never more than `size` bytes. */
 async function downloadTo(
   response: Response,
@@ -190,7 +167,7 @@ async function downloadTo(
   let bytes = 0;
   try {
     await pipeline(
-      stallGuarded(response.body, stallMs),
+      stallGuarded(response.body, stallMs, () => installFailed(`download stalled: no data for ${stallMs} ms`)),
       async function* (source: AsyncIterable<Uint8Array>) {
         for await (const chunk of source) {
           bytes += chunk.length;

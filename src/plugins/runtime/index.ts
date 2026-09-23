@@ -1445,7 +1445,7 @@ export type PluginIntegrityCheckResult =
   | {
       ok: true;
       verified?: {
-        installSource: "marketplace" | "local-dev";
+        installSource: "marketplace" | "local-dev" | "git";
         signerKeyId: string | null;
         artifactSha256: string | null;
       };

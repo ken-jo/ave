@@ -169,9 +169,18 @@ describe("BareRepo", () => {
   it("refuses paths that would reach git as options or escape", async () => {
     const bare = await BareRepo.init(t.runner, localRepoDir());
     await bare.fetchRef(remote, undefined, "pin");
-    for (const path of ["", "../x", "/abs", "plugins/", "a:b", "plugins/*"]) {
+    for (const path of ["../x", "/abs", "plugins/", "a:b", "plugins/*"]) {
       await expect(bare.exportPath(remote, second, path, scratch, LIMITS)).rejects.toThrow("invalid repository path");
     }
+  });
+
+  it("exports the whole tree for the root path of a direct source", async () => {
+    const bare = await BareRepo.init(t.runner, localRepoDir());
+    await bare.fetchRef(remote, undefined, "pin");
+    const dest = mkdtempSync(join(scratch, "export-"));
+    const files = await bare.exportPath(remote, second, "", dest, LIMITS);
+    expect(files.map((file) => file.path)).toEqual(hostGit(["ls-tree", "-r", "--name-only", second], repo.bare).split("\n").sort());
+    expect(readFileSync(join(dest, "plugins/alpha/dist/index.js"), "utf8")).toBe("export const v = 2;\n");
   });
 
   describe("tree entries a package may not contain", () => {
