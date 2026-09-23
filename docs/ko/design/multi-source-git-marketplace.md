@@ -33,6 +33,8 @@
   installation-id                     # random UUID, local only (rollout bucketing)
   marketplaces/
     sources.json                      # custom and direct sources (§2.1)
+    service.json                      # the service move accepted for this build constant (§11)
+    service.staging.json              # the same, for a development staging base (§11)
     <sourceId>/
       repo.git/                       # bare partial clone (blob:none)
       snapshots/<commit>.json         # validated snapshots (§2.2)
@@ -1130,20 +1132,31 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
   읽지 않습니다.
 - **도메인 변경.** `movedTo`는 현재 base에서 https로 받은 경우에만, 그리고 새
   base의 서비스 문서가 `movedFrom`에 현재 base를 적어 확인해 준 뒤에만
-  받아들입니다. 받아들인 이전은 그때의 빌드 상수와 함께 저장되며, 앱 업데이트가
-  다른 상수를 싣고 오면 버립니다(`~/.ave/marketplaces/service.json`). 빌드
-  상수당 최대 한 번만 따르고, 정책 base는 이전을 따르지 않습니다.
+  받아들입니다. 공유 네트워크 게이트(§7.4)가 서비스 base를 다루기 전까지 대상은
+  IP 리터럴이나 단일 레이블 호스트가 아닌 공개 DNS 이름이어야 합니다. 받아들인
+  이전은 그때의 빌드 상수와 함께 저장되며(`~/.ave/marketplaces/service.json`,
+  스테이징 base는 `service.staging.json`을 따로 써서 소스 실행이 운영 이전을
+  지우지 않음), 앱 업데이트가 다른 상수를 싣고 오면 버립니다. 파일로 읽을 수
+  없는 기록은 믿지 않고 무시합니다. 빌드 상수당 최대 한 번만 따르고, 정책 base는
+  이전을 따르지 않습니다.
 - `announcements`와 `telemetry`는 서비스 오리진의 경로여야 합니다. 요청은
   리디렉션을 따르지 않고(3xx는 실패), 문서는 64 KB, 공지는 1 MB로 제한합니다.
   문서의 모르는 키는 무시하고, 호환되지 않는 변경은 `schemaVersion`으로
   구분합니다.
+- **유지되는 것.** 새로 고침이 실패하면 텔레메트리 엔드포인트는 남지 않고,
+  마지막 공지는 그 공지를 준 base가 여전히 유효한 base일 때만 유지합니다.
+  따라서 세션 도중 정책이 잘못되거나 닿을 수 없는 base를 가리키게 되어도 이전
+  base는 부팅 때와 마찬가지로 멈춥니다.
 - 텔레메트리는 자격 증명 없이 `telemetry` 엔드포인트로 보내며, 문서가
-  엔드포인트를 적지 않은 동안에는 동작하지 않습니다.
+  엔드포인트를 적지 않은 동안에는 동작하지 않습니다. 텔레메트리를 위한 문서
+  읽기는 사용자가 동의한 뒤 첫 이벤트나 전송 때 합니다(실패하면 최대 10분마다
+  다시). 문서가 유효해질 때까지 이벤트는 최대 500개까지 보관하고, 문서가
+  엔드포인트를 적지 않으면 버립니다.
 - 공지는 `MarketplaceAnnouncement` 계약(수준, `startsAt`/`endsAt`, 최대 세 개의
   탐색 전용 액션, 앱 버전 필터 액션)과 닫은 id 동작을 유지합니다. 활성 로케일이
-  공지에 없는 설치 언어이면 액션 라벨은 `en` 라벨로 대체합니다. 부팅 직후와
-  6시간마다 가져오고, 가져오기에 실패하면 그 세션에서 마지막으로 읽은 목록을
-  유지합니다.
+  공지에 없는 설치 언어이면 액션 라벨은 `en` 라벨로 대체합니다. 업데이트 확인
+  스위치가 켜져 있는 동안 부팅 직후와 6시간마다 가져오고, 가져오기에 실패하면
+  아직 유효한 base에서 마지막으로 읽은 목록을 유지합니다.
 - 정적 파일은 ave `web/` 사이트(`web/public/.well-known/`,
   `web/public/announcements/`)에 두고, `web/**` 변경이 머지되면 사이트 배포
   워크플로가 배포합니다. Pages `_headers` 규칙이 두 파일을 JSON으로, 5분

@@ -30,6 +30,8 @@
   installation-id                     # random UUID, local only (rollout bucketing)
   marketplaces/
     sources.json                      # custom and direct sources (§2.1)
+    service.json                      # the service move accepted for this build constant (§11)
+    service.staging.json              # the same, for a development staging base (§11)
     <sourceId>/
       repo.git/                       # bare partial clone (blob:none)
       snapshots/<commit>.json         # validated snapshots (§2.2)
@@ -1203,22 +1205,37 @@ files is a device-management action).
   packaged build never reads it.
 - **Domain change.** A `movedTo` is accepted only over https from the current
   base, and only after the new base's own service document names the current
-  base in `movedFrom`. The accepted move is stored together with the build
-  constant it was made under (`~/.ave/marketplaces/service.json`) and is
-  discarded when an app update ships a different constant. At most one move
-  is followed per build constant, and a policy base never follows one.
+  base in `movedFrom`. The target must be a public DNS name — not an IP
+  literal or a single-label host — until the shared network gate (§7.4)
+  covers the service base. The accepted move is stored together with the
+  build constant it was made under (`~/.ave/marketplaces/service.json`; a
+  staging base keeps `service.staging.json`, so a source run never drops a
+  production move) and is discarded when an app update ships a different
+  constant. A record that cannot be read as a file is ignored, never
+  trusted. At most one move is followed per build constant, and a policy
+  base never follows one.
 - `announcements` and `telemetry` must be paths on the service origin.
   Requests do not follow redirects (a 3xx is a failure) and are capped at
   64 KB for the document and 1 MB for announcements. Unknown document keys
   are ignored; `schemaVersion` gates a breaking change.
+- **What stays in force.** A failed refresh leaves no telemetry endpoint,
+  and the last announcements are kept only while the base they came from is
+  still the base in force. A policy that turns invalid, or names a base the
+  app cannot reach, therefore stops the previous base during the session
+  too, not only at boot.
 - Telemetry posts to the `telemetry` endpoint with no credential and is
-  inactive while the document names none.
+  inactive while the document names none. The document is read for
+  telemetry only once the user has opted in, at the first event or flush
+  (again after a failure, at most every 10 minutes); events are held, up
+  to 500, until a document is in force, and dropped if it names no
+  endpoint.
 - Announcements keep the `MarketplaceAnnouncement` contract (levels,
   `startsAt`/`endsAt`, up to three navigation-only actions, app-version
   filtered actions) and the dismissed-ids behavior. Action labels fall back to
   the `en` label when the active locale is an installed language that the
-  announcement does not carry. They are fetched after boot and every 6 hours;
-  a failed fetch keeps the list last read in the session.
+  announcement does not carry. They are fetched after boot and every 6 hours
+  while the update-check switch is on; a failed fetch keeps the list last
+  read from the base still in force.
 - The static files live in the ave `web/` site
   (`web/public/.well-known/` and `web/public/announcements/`), deployed by the
   site's deploy workflow when a `web/**` change merges; a Pages `_headers`
