@@ -20,6 +20,26 @@ export * from "./public-contract.js";
 
 export type PluginRegistryEntryInstallSource = "admin" | "user" | "local-dev";
 
+/**
+ * Where a git install came from (design §2.3). `commit` is the snapshot
+ * commit the plan was bound to, so the source keeps that snapshot while the
+ * install references it. Only a git install writes this; every other install
+ * path removes it, because it would otherwise describe bytes it did not
+ * install.
+ */
+export interface PluginRegistryEntryOrigin {
+  sourceId: string;
+  sourceOrigin: "official" | "managed" | "custom" | "direct";
+  commit: string;
+  packagePath: string;
+  version: string;
+  /** `legacy`: bound by the §16.3 migration, no digest yet. */
+  rung: "release" | "archive" | "tree" | "legacy";
+  /** Zip sha256 (release, archive), tree digest (tree), null for legacy. */
+  artifactSha256: string | null;
+  installedAt: string;
+}
+
 export interface PluginRegistryEntry {
   id: string;
   manifestPath: string;
@@ -33,6 +53,7 @@ export interface PluginRegistryEntry {
   bundleRefs?: string[];
   approvedPluginAccess?: PluginAccessSpec;
   installSource?: PluginRegistryEntryInstallSource;
+  origin?: PluginRegistryEntryOrigin;
   /** Durable replacement marker; runtime discovery skips marked rows. */
   pendingUpdate?: {
     kind: "marketplace" | "local-dev";
