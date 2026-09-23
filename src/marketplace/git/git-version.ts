@@ -13,7 +13,7 @@ export interface GitVersion {
   text: string;
 }
 
-export const MIN_GIT_VERSION: Readonly<GitVersion> = Object.freeze({
+const MIN_GIT_VERSION: Readonly<GitVersion> = Object.freeze({
   major: 2,
   minor: 38,
   patch: 1,
@@ -31,7 +31,7 @@ export function parseGitVersion(output: string): GitVersion | null {
   };
 }
 
-export function compareGitVersion(a: GitVersion, b: GitVersion): number {
+function compareGitVersion(a: GitVersion, b: GitVersion): number {
   return a.major - b.major || a.minor - b.minor || a.patch - b.patch;
 }
 

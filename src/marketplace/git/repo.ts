@@ -42,7 +42,7 @@ export interface ExportedFile {
   executable: boolean;
 }
 
-export function assertCommitId(value: string, what: string): void {
+function assertCommitId(value: string, what: string): void {
   if (!OID.test(value)) throw new Error(`${what} is not a 40-hex commit id: ${value}`);
 }
 

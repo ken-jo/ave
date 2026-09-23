@@ -30,7 +30,7 @@ export interface GitExecutable {
   managedRoot?: string;
 }
 
-export interface TooOldGit {
+interface TooOldGit {
   path: string;
   version: string;
 }

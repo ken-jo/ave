@@ -11,7 +11,7 @@
  */
 import { compareSemver } from "../../shared/semver-compare.js";
 
-export const SEMVER_RE =
+const SEMVER_RE =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/u;
 
 type Operator = ">=" | ">" | "<=" | "<" | "=";
@@ -23,7 +23,7 @@ interface Comparator {
 
 export type VersionRange = ReadonlyArray<ReadonlyArray<Comparator>>;
 
-export function isSemver(value: string): boolean {
+function isSemver(value: string): boolean {
   return value.length <= 128 && SEMVER_RE.test(value);
 }
 

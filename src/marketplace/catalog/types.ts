@@ -21,9 +21,9 @@ export const PACKAGE_KINDS = [
 
 export type PackageKind = (typeof PACKAGE_KINDS)[number];
 
-export type Platform = "darwin" | "win32" | "linux";
+type Platform = "darwin" | "win32" | "linux";
 
-export interface MarketplaceOwner {
+interface MarketplaceOwner {
   name: string;
   url?: string;
 }
@@ -50,7 +50,7 @@ export interface IndexPackage {
   versions?: IndexVersion[];
 }
 
-export interface IndexVersion {
+interface IndexVersion {
   version: string;
   commit: string;
   minAppVersion: string;
@@ -105,7 +105,7 @@ export interface PackageDescriptor {
   payload: Record<string, unknown>;
 }
 
-export interface Revocation {
+interface Revocation {
   kind: PackageKind;
   name: string;
   /** Semver range the revocation covers. */

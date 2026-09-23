@@ -13,7 +13,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-export interface SeenRequest {
+interface SeenRequest {
   method: string;
   path: string;
   authorization: string | undefined;
@@ -42,7 +42,7 @@ function hostGitEnv(): NodeJS.ProcessEnv {
 }
 
 /** Run the host git for fixture setup (outside the marketplace contract). */
-export function hostGit(args: string[], cwd?: string): string {
+function hostGit(args: string[], cwd?: string): string {
   return execFileSync("git", args, { cwd, env: hostGitEnv(), encoding: "utf8" }).trim();
 }
 
