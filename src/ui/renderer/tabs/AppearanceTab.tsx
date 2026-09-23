@@ -28,6 +28,7 @@ import { useNotifySaved } from "../context/SavedToastContext.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
 import {
   LOCALE_INFO,
+  localeInfo,
   recommendedMarketplaceLocaleForSystem,
   visibleLocalesFor,
 } from "../../../i18n/index.js";
@@ -464,7 +465,7 @@ function LanguageSection({
                   : "border-border text-muted-foreground hover:bg-muted"
               }`}
             >
-              <span>{LOCALE_INFO[code].nativeName}</span>
+              <span>{localeInfo(code)?.nativeName ?? code}</span>
               {installedLocaleIdSet.has(code) && (
                 <span
                   className="ml-2 inline-flex h-5 items-center rounded-full bg-secondary px-1.5 text-[10px] font-medium text-secondary-foreground"

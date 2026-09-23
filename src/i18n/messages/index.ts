@@ -9,11 +9,15 @@
  * Generated entries override seed entries on key collision (the surface-
  * specific text wins), though namespacing keeps collisions out of practice.
  * `mergeLocale` below is the only place that order is written.
+ *
+ * An installed language package (blueprint 3.3) supplies its catalog through
+ * the loader its process registers ({@link setInstalledCatalogLoader}); it
+ * takes the place of a compiled catalog for the same locale, and the English
+ * catalog still answers every key it does not translate.
  */
-import type { Locale } from "../locale.js";
 import { en } from "./en.js";
 import { generatedEn } from "./generated/index.js";
-import { DEFAULT_LOCALE, SUPPORTED_LOCALES } from "../locale.js";
+import { DEFAULT_LOCALE, SUPPORTED_LOCALES, isInstalledLocale, type Locale } from "../locale.js";
 
 /**
  * The one place the seed/generated precedence is written down: generated
@@ -39,6 +43,13 @@ export type MessageRegistry = Partial<Record<Locale, Messages>> & {
   en: Messages;
 };
 
+/** Reads an installed language package's catalog, in whichever process registered it. */
+export type InstalledCatalogLoader = (locale: Locale) => Promise<Messages>;
+
+let installedCatalogLoader: InstalledCatalogLoader | null = null;
+/** Locales whose loaded catalog came from an installed package. */
+const loadedFromInstalled = new Set<Locale>();
+
 /**
  * Loaded catalogs, keyed by locale. Only English is eager: the global default
  * UI language and fallback catalog must be synchronous. Every other locale is
@@ -48,7 +59,7 @@ export const messages: MessageRegistry = {
   en: englishFallbackMessages,
 };
 
-type LazyLocale = Exclude<Locale, "en">;
+type LazyLocale = Exclude<(typeof SUPPORTED_LOCALES)[number], "en">;
 
 const lazyLocales: readonly LazyLocale[] = SUPPORTED_LOCALES.filter(
   (locale): locale is LazyLocale => locale !== DEFAULT_LOCALE,
@@ -75,9 +86,12 @@ export async function loadLocaleMessages(locale: Locale): Promise<Messages> {
   if (existing) return existing;
   const pending = pendingLoads.get(locale);
   if (pending) return pending;
-  const loader = localeLoaders[locale as LazyLocale];
+  const installed = isInstalledLocale(locale) && installedCatalogLoader !== null;
+  const loader = installed ? () => installedCatalogLoader!(locale) : localeLoaders[locale as LazyLocale];
+  if (!loader) throw new Error(`no catalog for locale ${locale}`);
   const next = loader().then((catalog) => {
     messages[locale] = catalog;
+    if (installed) loadedFromInstalled.add(locale);
     pendingLoads.delete(locale);
     return catalog;
   }, (err) => {
@@ -86,6 +100,23 @@ export async function loadLocaleMessages(locale: Locale): Promise<Messages> {
   });
   pendingLoads.set(locale, next);
   return next;
+}
+
+/**
+ * Register how installed language catalogs are read (after the installed
+ * locales themselves). A catalog loaded from a package, or cached for a
+ * locale a package now provides, is forgotten: that package may be gone or
+ * replaced. Compiled catalogs no package overrides stay loaded.
+ */
+export function setInstalledCatalogLoader(loader: InstalledCatalogLoader | null): void {
+  installedCatalogLoader = loader;
+  for (const locale of Object.keys(messages)) {
+    if (locale !== DEFAULT_LOCALE && (loadedFromInstalled.has(locale) || isInstalledLocale(locale))) {
+      delete messages[locale];
+      pendingLoads.delete(locale);
+    }
+  }
+  loadedFromInstalled.clear();
 }
 
 export async function tryLoadLocaleMessages(locale: Locale): Promise<boolean> {
@@ -100,6 +131,7 @@ export async function tryLoadLocaleMessages(locale: Locale): Promise<boolean> {
   }
 }
 
+/** Every built-in catalog (tests and the catalog parity checks). */
 export async function loadAllLocaleMessages(): Promise<Record<Locale, Messages>> {
   await Promise.all(SUPPORTED_LOCALES.map((locale) => loadLocaleMessages(locale)));
   return messages as Record<Locale, Messages>;
