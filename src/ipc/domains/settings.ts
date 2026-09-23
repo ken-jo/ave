@@ -620,30 +620,12 @@ export function registerSettingsHandlers(deps: IpcDeps): void {
       && left.provider === right.provider
       && left.model === right.model;
   };
-  const rollbackActiveChatRuntime = async (
-    previousActiveChatRuntime: LLMSettings["activeChatRuntime"],
-    failedActiveChatRuntime: LLMSettings["activeChatRuntime"],
-    transitionRevision: number,
-  ): Promise<boolean> => {
-    // Only the request that still owns the active selection may undo it. This
-    // preserves unrelated LLM updates and a newer multi-window selection.
-    if (transitionRevision !== activeChatRuntimeTransitionRevision) return false;
-    const current = settingsService.get("llm").activeChatRuntime;
-    // A failed save has already put memory back on the saved settings
-    // (SettingsService never runs on settings that are not on disk): the
-    // previous runtime is in force again without a write, but the bindings
-    // made for the failed one must still be undone.
-    const restoredBySave = !sameActiveChatRuntime(current, failedActiveChatRuntime)
-      && sameActiveChatRuntime(current, previousActiveChatRuntime);
-    if (!restoredBySave && !sameActiveChatRuntime(current, failedActiveChatRuntime)) {
-      return false;
-    }
-    const persistRestoration = restoredBySave
-      ? Promise.resolve()
-      : settingsService.patch({ llm: { activeChatRuntime: previousActiveChatRuntime } });
-    // SettingsService mutates memory before its first await. Restore every
-    // executable binding in that same synchronous turn; waiting for disk here
-    // would leave the failed API/subscription provider reachable meanwhile.
+  /**
+   * Bind every execution consumer to the runtime in memory. Each step runs
+   * even when an earlier one fails: a restored selection stays authoritative,
+   * and a reviewer that cannot be rewired stays on its fail-closed path.
+   */
+  const bindExecutionToSettings = (): void => {
     try {
       refreshChatRuntimeProviders(deps);
     } catch {
@@ -652,26 +634,55 @@ export function registerSettingsHandlers(deps: IpcDeps): void {
     try {
       deps.rewireReviewerAgent?.();
     } catch {
-      // The restored selection remains authoritative; preserve the original
-      // selection error instead of masking it with a best-effort rewire error.
+      // Preserve the original selection error instead of masking it with a
+      // best-effort rewire error.
     }
     try {
       deps.refreshActiveLlmWildcard?.();
     } catch {
       // See reviewer rewire above.
     }
+  };
+  const rollbackActiveChatRuntime = async (
+    previousActiveChatRuntime: LLMSettings["activeChatRuntime"],
+    failedActiveChatRuntime: LLMSettings["activeChatRuntime"],
+    transitionRevision: number,
+  ): Promise<boolean> => {
+    // Only the request that still owns the active selection may undo it; a
+    // newer selection binds execution itself.
+    if (transitionRevision !== activeChatRuntimeTransitionRevision) return false;
+    // Memory is authoritative. A failed save has already put it back on the
+    // saved settings (SettingsService never runs on settings that are not on
+    // disk), which may be older than `previousActiveChatRuntime` when that
+    // one was unsaved too. When memory no longer holds the failed runtime,
+    // only the bindings made for it must go, with no write — so an unrelated
+    // LLM update is preserved too.
+    const current = settingsService.get("llm").activeChatRuntime;
+    const restoredBySave = !sameActiveChatRuntime(current, failedActiveChatRuntime);
+    const restoredRuntime = restoredBySave ? current : previousActiveChatRuntime;
+    const persistRestoration = restoredBySave
+      ? Promise.resolve()
+      : settingsService.patch({ llm: { activeChatRuntime: previousActiveChatRuntime } });
+    // SettingsService mutates memory before its first await. Restore every
+    // executable binding in that same synchronous turn; waiting for disk here
+    // would leave the failed API/subscription provider reachable meanwhile.
+    bindExecutionToSettings();
+    const ownsRestoration = (): boolean => (
+      transitionRevision === activeChatRuntimeTransitionRevision
+      && sameActiveChatRuntime(settingsService.get("llm").activeChatRuntime, restoredRuntime)
+    );
     try {
       await persistRestoration;
     } catch {
+      // The restoring save failed as well, so memory is back on the settings
+      // on disk. Bind execution to them rather than to the runtime that could
+      // not be saved.
+      if (transitionRevision === activeChatRuntimeTransitionRevision) {
+        bindExecutionToSettings();
+        await broadcastSettingsSnapshot(deps, () => transitionRevision === activeChatRuntimeTransitionRevision);
+      }
       return false;
     }
-    const ownsRestoration = (): boolean => (
-      transitionRevision === activeChatRuntimeTransitionRevision
-      && sameActiveChatRuntime(
-        settingsService.get("llm").activeChatRuntime,
-        previousActiveChatRuntime,
-      )
-    );
     if (!ownsRestoration()) return false;
 
     await broadcastSettingsSnapshot(deps, ownsRestoration);
@@ -914,23 +925,23 @@ export function registerSettingsHandlers(deps: IpcDeps): void {
         // reviewer construction ran. Restore the full predecessor only when
         // this request's captured snapshot is still current; otherwise a full
         // replacement would discard the newer window's LLM settings.
+        let rollbackMessage: string | null = null;
         if (sameLlmSettings(settingsService.get("llm"), newLlm)) {
           try {
             await settingsService.replaceLlm(prevLlm);
           } catch (rollbackErr) {
-            const rollbackMessage = errorMessage(rollbackErr);
-            return {
-              ok: false,
-              error: "reviewer-rewire-failed",
-              message: `${message}; rollback failed: ${rollbackMessage}`,
-            };
+            // The restoring save failed, so memory is back on the new LLM
+            // settings, which are on disk. The refreshes below bind to them.
+            rollbackMessage = errorMessage(rollbackErr);
           }
-          try {
-            deps.rewireReviewerAgent?.();
-          } catch {
-            // The active LLM settings have been rolled back. Keep the IPC error
-            // focused on the original failing rewire; a second failure leaves the
-            // app on the same fail-closed reviewer path it had before the patch.
+          if (rollbackMessage === null) {
+            try {
+              deps.rewireReviewerAgent?.();
+            } catch {
+              // The active LLM settings have been rolled back. Keep the IPC error
+              // focused on the original failing rewire; a second failure leaves the
+              // app on the same fail-closed reviewer path it had before the patch.
+            }
           }
         }
         if (prevAllowPrivate !== newAllowPrivate) {
@@ -938,13 +949,25 @@ export function registerSettingsHandlers(deps: IpcDeps): void {
         }
         refreshChatRuntimeProviders(deps);
         deps.refreshActiveLlmWildcard?.();
+        if (
+          vendorBaseUrlSignature(
+            settingsService.get("llm"),
+            settingsService.get("marketplace").installedProviderPresets,
+          ) !== prevVendorBaseUrlSig
+        ) {
+          void deps.refreshSandboxNetworkConfig?.();
+        }
         // The shortcuts/system fields were already persisted
         // by `patch`; reconcile the OS state to disk even though the reviewer
         // rewire failed, so a combined patch doesn't leave the accelerator /
         // login item out of sync with what the user just saved.
         reconcileShortcutStartupIfChanged();
         await broadcastSettingsSnapshot(deps);
-        return { ok: false, error: "reviewer-rewire-failed", message };
+        return {
+          ok: false,
+          error: "reviewer-rewire-failed",
+          message: rollbackMessage === null ? message : `${message}; rollback failed: ${rollbackMessage}`,
+        };
       }
     }
     if (prevAllowPrivate !== newAllowPrivate) {
