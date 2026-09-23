@@ -1232,7 +1232,9 @@ files is a device-management action).
 - Telemetry posts to the `telemetry` endpoint with no credential and is
   inactive while the document names none. The document is read for
   telemetry only once the user has opted in, at the first event or flush
-  (again after a failure, at most every 10 minutes); events are held, up
+  (again after a failure, at most every 10 minutes, and once the document
+  in force is 6 hours old, so a policy change reaches telemetry even with
+  announcements switched off); events are held, up
   to 500, until a document is in force, and dropped if it names no
   endpoint.
 - Announcements keep the `MarketplaceAnnouncement` contract (levels,
