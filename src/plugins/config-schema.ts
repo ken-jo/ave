@@ -26,6 +26,8 @@ export interface AjvCtor {
   new (opts?: unknown): {
     compile: (schema: unknown) => ValidateFunction;
     addFormat: (name: string, def: unknown) => void;
+    addSchema: (schema: unknown) => unknown;
+    getSchema: (ref: string) => ValidateFunction | undefined;
   };
 }
 
