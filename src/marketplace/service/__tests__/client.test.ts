@@ -366,6 +366,21 @@ describe("ServiceClient", () => {
     await expect(service.announcements()).rejects.toThrow("HTTP 404");
   });
 
+  it("keeps the build base's announcements when a move cannot be recorded and the next list read fails", async () => {
+    mkdirSync(statePath, { recursive: true });
+    const routes: Record<string, unknown> = {
+      [`${OLD}/.well-known/former-service.json`]: doc(),
+      [`${OLD}/announcements/v1.json`]: [announcement(8)],
+    };
+    const { service } = client(routes);
+    await service.announcements();
+    routes[`${OLD}/.well-known/former-service.json`] = doc({ movedTo: NEW });
+    routes[`${NEW}/.well-known/former-service.json`] = doc({ movedFrom: OLD });
+    delete routes[`${OLD}/announcements/v1.json`];
+    await expect(service.announcements()).resolves.toMatchObject([{ id: 8 }]);
+    await expect(service.refresh()).resolves.toMatchObject({ base: OLD, source: "build" });
+  });
+
   it("refuses a response whose declared length is over the cap before reading it", async () => {
     const response = new Response(JSON.stringify(doc()), { status: 200, headers: { "content-length": String(65 * 1024) } });
     const cancel = vi.spyOn(response.body!, "getReader");

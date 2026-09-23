@@ -318,8 +318,9 @@ export class ServiceClient {
       try {
         const target = await this.fetchDocument(document.movedTo);
         if (target.movedFrom === buildBase) {
-          this.attemptBase = document.movedTo;
           await this.writeMove({ version: 1, buildBase, movedTo: document.movedTo, acceptedAt: (this.options.now?.() ?? new Date()).toISOString() });
+          // Only a move that is recorded changes the base; a failed write stays on the build base.
+          this.attemptBase = document.movedTo;
           log.info({ from: buildBase, to: document.movedTo }, "service base moved");
           return { base: document.movedTo, source: "moved", document: target };
         }
