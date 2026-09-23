@@ -1,7 +1,7 @@
 import { closeSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { SettingsService, settingsFilePath } from "../settings-store.js";
@@ -66,5 +66,28 @@ describe("settings persistence", () => {
     };
     await expect(service.installMarketplaceProviderPreset(preset)).rejects.toThrow();
     expect(service.get("marketplace").installedProviderPresets).toEqual([]);
+  });
+
+  it("takes writes one at a time, so a failed write undoes only its own change", async () => {
+    const save = vi.spyOn(service as unknown as { saveSettings(): Promise<void> }, "saveSettings");
+    // The first save waits, as on a held file lock, then fails.
+    save.mockImplementationOnce(() => new Promise((_, reject) => setTimeout(() => reject(new Error("disk full")), 20)));
+
+    const failing = service.patch({ system: { ...service.get("system"), hardwareAcceleration: true } });
+    const next = service.setPluginConfig("sample", { mode: "fast" });
+
+    await expect(failing).rejects.toThrow("disk full");
+    await expect(next).resolves.toEqual({ mode: "fast" });
+    expect(service.get("system").hardwareAcceleration).toBe(false);
+    expect(service.getPluginConfig("sample")).toEqual({ mode: "fast" });
+    const saved = JSON.parse(readFileSync(settingsFilePath(root), "utf8"));
+    expect(saved.system.hardwareAcceleration).toBe(false);
+    expect(saved.pluginConfigs.sample).toEqual({ mode: "fast" });
+  });
+
+  it("changes memory when the call is made while no write is in flight", async () => {
+    const write = service.patch({ system: { ...service.get("system"), hardwareAcceleration: true } });
+    expect(service.get("system").hardwareAcceleration).toBe(true);
+    await write;
   });
 });

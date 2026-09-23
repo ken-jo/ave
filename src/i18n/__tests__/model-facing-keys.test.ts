@@ -72,9 +72,17 @@ describe("model-facing catalog keys", () => {
     expect(outside).toEqual([]);
   });
 
-  it("lists only files that still exist", () => {
+  it("lists only files that still exist, and only namespaces each still uses", () => {
     const present = new Set(sourceFiles(".").map(posix));
     expect([...INTERFACE_KEYS.keys()].filter((path) => !present.has(path))).toEqual([]);
+    const unused: string[] = [];
+    for (const [path, prefixes] of INTERFACE_KEYS) {
+      const keys = [...readFileSync(join(SRC, path), "utf8").matchAll(KEY_LITERAL)].map(([, key]) => key!);
+      for (const prefix of prefixes) {
+        if (!keys.some((key) => key.startsWith(prefix))) unused.push(`${path}: ${prefix}`);
+      }
+    }
+    expect(unused).toEqual([]);
   });
 
   it("covers every key a surface sends to the model as the user's message", () => {

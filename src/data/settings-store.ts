@@ -925,6 +925,8 @@ export class SettingsService {
   private readonly secretsPath: string;
   private readonly secretStore: SecretDocumentStore;
   private settings: AppSettings;
+  /** The settings write in flight, if any (see `write`). */
+  private writing: Promise<void> | null = null;
 
   constructor(options: SettingsServiceOptions) {
     const dir = resolve(options.userDataPath);
@@ -941,7 +943,7 @@ export class SettingsService {
     // Migration write-back (appearance v2, one-time markers): persist so the
     // next load is clean.
     if (needsWriteBack) {
-      void this.saveSettings().catch(() => { /* best-effort — next load re-migrates */ });
+      void this.write(() => this.saveSettings()).catch(() => { /* best-effort — next load re-migrates */ });
     }
   }
 
@@ -961,11 +963,14 @@ export class SettingsService {
   }
 
   async set<K extends keyof AppSettings>(key: K, value: AppSettings[K]): Promise<void> {
-    this.settings[key] = value;
-    await this.saveSettings();
+    await this.write(async () => {
+      const previousSettings = this.getAll();
+      this.settings[key] = value;
+      await this.saveOrRestore(previousSettings);
+    });
   }
 
-  async patch(
+  patch(
     partial: Partial<Omit<
       AppSettings,
       "llm" | "chat" | "marketplace" | "shortcuts" | "telemetry" | "appliedMigrations"
@@ -980,6 +985,10 @@ export class SettingsService {
       telemetry?: Partial<TelemetrySettings>;
     },
   ): Promise<AppSettings> {
+    return this.write(() => this.applyPatch(partial));
+  }
+
+  private async applyPatch(partial: Parameters<SettingsService["patch"]>[0]): Promise<AppSettings> {
     const chatPatch = partial.chat;
     if (
       chatPatch
@@ -1338,21 +1347,19 @@ export class SettingsService {
     if (!normalized) {
       throw new Error("Invalid marketplace provider preset.");
     }
-    const current = this.settings.marketplace.installedProviderPresets;
-    return this.replaceMarketplaceProviderPresets([
-      ...current.filter((item) => item.providerId !== normalized.providerId),
+    return this.write(() => this.replaceMarketplaceProviderPresets([
+      ...this.settings.marketplace.installedProviderPresets.filter((item) => item.providerId !== normalized.providerId),
       normalized,
-    ]);
+    ]));
   }
 
   async uninstallMarketplaceProviderPreset(providerId: string): Promise<AppSettings> {
     if (!isMarketplaceProviderPresetId(providerId)) {
       throw new Error("Invalid marketplace provider preset id.");
     }
-    const current = this.settings.marketplace.installedProviderPresets;
-    return this.replaceMarketplaceProviderPresets(
-      current.filter((item) => item.providerId !== providerId),
-    );
+    return this.write(() => this.replaceMarketplaceProviderPresets(
+      this.settings.marketplace.installedProviderPresets.filter((item) => item.providerId !== providerId),
+    ));
   }
 
   private async replaceMarketplaceProviderPresets(
@@ -1412,13 +1419,16 @@ export class SettingsService {
   }
 
   async replaceLlm(llm: LLMSettings): Promise<AppSettings> {
-    const replacement = structuredClone(llm);
-    this.settings.llm = {
-      ...replacement,
-      activeChatRuntime: normalizeActiveChatRuntime(replacement.activeChatRuntime),
-    };
-    await this.saveSettings();
-    return this.getAll();
+    return this.write(async () => {
+      const previousSettings = this.getAll();
+      const replacement = structuredClone(llm);
+      this.settings.llm = {
+        ...replacement,
+        activeChatRuntime: normalizeActiveChatRuntime(replacement.activeChatRuntime),
+      };
+      await this.saveOrRestore(previousSettings);
+      return this.getAll();
+    });
   }
 
   getPluginConfig(pluginId: string): PluginConfigRecord {
@@ -1429,21 +1439,27 @@ export class SettingsService {
   async setPluginConfig(pluginId: string, config: unknown): Promise<PluginConfigRecord> {
     const safePluginId = sanitizePluginConfigPluginId(pluginId);
     const sanitizedConfig = sanitizePluginConfig(config);
-    this.settings.pluginConfigs = {
-      ...this.settings.pluginConfigs,
-      [safePluginId]: sanitizedConfig,
-    };
-    await this.saveSettings();
-    return structuredClone(sanitizedConfig);
+    return this.write(async () => {
+      const previousSettings = this.getAll();
+      this.settings.pluginConfigs = {
+        ...this.settings.pluginConfigs,
+        [safePluginId]: sanitizedConfig,
+      };
+      await this.saveOrRestore(previousSettings);
+      return structuredClone(sanitizedConfig);
+    });
   }
 
   async deletePluginConfig(pluginId: string): Promise<void> {
     const safePluginId = sanitizePluginConfigPluginId(pluginId);
-    if (!(safePluginId in this.settings.pluginConfigs)) return;
-    const next = { ...this.settings.pluginConfigs };
-    delete next[safePluginId];
-    this.settings.pluginConfigs = next;
-    await this.saveSettings();
+    await this.write(async () => {
+      if (!(safePluginId in this.settings.pluginConfigs)) return;
+      const previousSettings = this.getAll();
+      const next = { ...this.settings.pluginConfigs };
+      delete next[safePluginId];
+      this.settings.pluginConfigs = next;
+      await this.saveOrRestore(previousSettings);
+    });
   }
 
   /** Encrypt and store a secret value such as an API key. */
@@ -1650,6 +1666,24 @@ export class SettingsService {
       defaults.appliedMigrations = [...KNOWN_MIGRATIONS];
       return { settings: defaults, writeBack: false };
     }
+  }
+
+  /**
+   * Run one settings write — change memory, save, restore memory if the save
+   * fails — after the write in flight settles. Saving waits on the file lock;
+   * a write that changed memory meanwhile would take the other's unsaved
+   * change into its restore point, and be undone by the other's failure. With
+   * nothing in flight the change starts at once, so memory changes when the
+   * call is made, as before.
+   */
+  private write<T>(change: () => Promise<T>): Promise<T> {
+    const run = this.writing ? this.writing.then(change) : change();
+    const settled = run.then(() => undefined, () => undefined);
+    this.writing = settled;
+    void settled.then(() => {
+      if (this.writing === settled) this.writing = null;
+    });
+    return run;
   }
 
   /**
