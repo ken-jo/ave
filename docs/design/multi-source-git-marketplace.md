@@ -328,9 +328,9 @@ interface PluginArtifactPins {
     tag?: string;       // default "v{version}"
     asset?: string;     // default "{name}-{version}.zip"
     url?: string;       // explicit https URL for non-GitHub release hosts; exclusive with repo, tag and asset
-    sha256: string;     // required: the rung is used only with a pin stored in git
+    sha256?: string;    // the pin stored in git; without it the rung is skipped (ARTIFACT_NOT_PINNED)
   };
-  archive?: { url: string; sha256: string };
+  archive?: { url: string; sha256?: string };
   tree?: string;        // repo-relative directory holding plugin.json + dist/; default = package path
 }
 
@@ -354,8 +354,8 @@ type McpServerSpec =
   choose where code comes from or how it is trusted: `npm_config_*`,
   `PNPM_*`, `YARN_*`, `BUN_*`, `COREPACK_*`, `UV_*`, `PIP_*`, `DOCKER_*`,
   `NODE_*`, `PYTHON*` (except `PYTHONUNBUFFERED`, `PYTHONIOENCODING`,
-  `PYTHONUTF8`), the `*_PROXY` variables and the CA bundle variables, in any
-  case.
+  `PYTHONUTF8`), the dynamic loader's `DYLD_*` and `LD_*`, `XDG_CONFIG_HOME`,
+  the `*_PROXY` variables and the CA bundle variables, in any case.
 - The launched MCP code is fixed by the commit. Both the descriptor's own
   spec and a spec built from `server.json` must follow this grammar, so no
   option can pick another registry or index, add a package, or widen the
@@ -444,6 +444,57 @@ rejected (reusing `sideload-filter.ts` and `zip-entry-path.ts`). Images and
 fonts reach the renderer only through a host asset scheme, never by file
 path.
 
+### 5.5 Installed content in the app
+
+Content packages install under `packages/<kind>/<name>/<version>/` and are
+recorded in `packages/ledger.json`. A ledger entry is `{ kind, name,
+version, origin }`, and its origin is `{ sourceId, sourceOrigin, commit,
+packagePath, version, contentSha256, installedAt }`: content has no rungs,
+so `contentSha256` is the tree digest (§6.4) of the installed files. The
+ledger feeds snapshot retention (§2.3) like the plugin registry does.
+
+- **Install and load.** An install writes the files, then the ledger, then
+  activates; a failed activation puts the previous install back. At boot
+  every package's files and digest are read again, and a package that no
+  longer matches is listed as broken instead of applied. Uninstall refuses a
+  `requiredInstalls` package (`PACKAGE_REQUIRED_BY_POLICY`).
+- **Theme** — `theme.json` is `{ name, description, shell: "light" |
+  "dark", highContrast, tokens, surfaces, preview? }`. `tokens` holds every
+  one of the compiled bundles' token names as `"H S% L%"`, `surfaces` the
+  surface ladder (`surface-sunken` … `border-strong`). An installed theme is
+  held to the same token contract and WCAG contrast rules as the compiled
+  bundles (one table, `shared/theme-tokens.ts`); a built-in theme id is
+  refused. It applies as inline custom properties with its shell's shadow
+  stack and `color-scheme`.
+- **Language** — the locale set is open: any well-formed BCP 47 tag. `en`
+  and `ko` stay compiled in; an installed language registers its locale
+  with its native and English names, and its messages are layered over
+  English, so a key it does not translate reads in English. `messages.json`
+  may only use English catalog keys; missing keys are listed, not refused.
+  One package per locale. The main process uses installed locales too
+  (dialogs, menus, notifications), and `<html lang>` follows the active
+  locale.
+- **Font** — `font.json` is `{ family, license, faces: [{ file, weight,
+  style }] }`, with a `LICENSE` file required; a face's format comes from
+  its extension and its bytes must match it. One package per family. The
+  renderer declares `@font-face` rules with `ave-content:` URLs only.
+- **Provider and messaging connection** go through today's normalizers,
+  with no field dropped or rewritten, and take effect through the settings
+  paths today's asset install uses.
+- **Selection stays the user's.** Installing does not select a theme,
+  language or font. Removing the selected one puts that setting back to its
+  default; a selected id that is not installed renders the default.
+- **Asset scheme.** `ave-content://<kind>/<name>/<path>` answers only the
+  files the loaded store lists (font faces, theme previews), with `nosniff`;
+  anything else is 404. The CSP admits it for `img-src` and `font-src` only.
+  Its handler is registered with the IPC handlers, before the main window
+  loads, because a frame binds its custom-scheme loaders when it commits.
+- **Loading.** The store loads on the renderer's first request at boot (or
+  the first asset request), not while IPC is registered, so a process that
+  never asks reads nothing under `packages/`.
+- Install and uninstall IPC arrive with the install surface (§13); until
+  then two read-only channels expose installed content.
+
 ## 6. Resolution
 
 ### 6.1 Choosing a version
@@ -511,7 +562,8 @@ stop with NO_INSTALLABLE_ARTIFACT(rungs[])
   `ave-package.json` is not installed. The layout and the file count are
   checked from the tree before any blob is downloaded, so a direct source at
   a repository root cannot make the client fetch the whole repository before
-  refusing it. The exported files are packed into a zip, so every rung goes
+  refusing it. The byte total is known only once the blobs arrive, so, as
+  in §5.4, the fetch timeout bounds the transfer. The exported files are packed into a zip, so every rung goes
   through the same zip preflight and install pipeline.
 - `release.sha256` and `archive.sha256` are optional in the schema: a
   declared rung without a pin is skipped as `ARTIFACT_NOT_PINNED`, and the
@@ -971,7 +1023,10 @@ For each entry:
   (plugin data kept) and records it in the boot notice; the policy wins over
   the user's source choice. Only such a required install may replace a
   plugin installed by an administrator (`installSource: "admin"`), and the
-  entry stays admin-installed; any other git install over one is refused. A `defaultInstalls` entry in the same situation is
+  entry stays admin-installed; any other git install over one is refused
+  with `PACKAGE_ID_CONFLICT`. The install reads this from the managed policy
+  it is given (the plugin's `requiredInstalls` entry, from the plan's
+  source); a caller cannot claim it. A `defaultInstalls` entry in the same situation is
   recorded as `skipped`, because the user's install already satisfies it.
 - A required update applies without the update review of §15.6: the policy
   file stands for the consent. A compromised managed source can therefore
@@ -1175,6 +1230,8 @@ files is a device-management action).
 | `ave:marketplace:uninstall` | `PackageKey` | `UninstallResult` |
 | `ave:marketplace:direct:preview` | `{ input; subdir?; ref? } \| { serverJson: string } \| { mcpConfig: string }` | `DirectPackagePreview` |
 | `ave:marketplace:announcements` | — | `MarketplaceAnnouncement[]` |
+| `ave:marketplace:content:installed` | — | `{ ok: true; content: InstalledContent } \| { ok: false; error: "installed-content-unavailable" }` (themes, languages, fonts, broken packages; §5.5) |
+| `ave:marketplace:content:language-messages` | `locale` | `{ ok: true; messages } \| { ok: false; error: "installed-content-unavailable" \| "language-not-installed" }` |
 | `ave:git:runtime:status` | — | `GitRuntimeStatus` |
 | `ave:git:runtime:install` | — | `GitRuntimeStatus` (progress via event) |
 

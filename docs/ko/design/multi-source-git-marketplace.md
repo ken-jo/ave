@@ -321,9 +321,9 @@ interface PluginArtifactPins {
     tag?: string;       // default "v{version}"
     asset?: string;     // default "{name}-{version}.zip"
     url?: string;       // explicit https URL for non-GitHub release hosts; exclusive with repo, tag and asset
-    sha256: string;     // required: the rung is used only with a pin stored in git
+    sha256?: string;    // the pin stored in git; without it the rung is skipped (ARTIFACT_NOT_PINNED)
   };
-  archive?: { url: string; sha256: string };
+  archive?: { url: string; sha256?: string };
   tree?: string;        // repo-relative directory holding plugin.json + dist/; default = package path
 }
 
@@ -346,7 +346,8 @@ type McpServerSpec =
   신뢰할지 정하는 변수도 쓸 수 없습니다. 대소문자와 상관없이 `npm_config_*`,
   `PNPM_*`, `YARN_*`, `BUN_*`, `COREPACK_*`, `UV_*`, `PIP_*`, `DOCKER_*`,
   `NODE_*`, `PYTHON*`(`PYTHONUNBUFFERED`, `PYTHONIOENCODING`, `PYTHONUTF8`는
-  허용), `*_PROXY` 변수, CA 번들 변수가 여기에 해당합니다.
+  허용), 동적 로더의 `DYLD_*`와 `LD_*`, `XDG_CONFIG_HOME`, `*_PROXY` 변수,
+  CA 번들 변수가 여기에 해당합니다.
 - 실행되는 MCP 코드는 커밋이 고정합니다. 디스크립터가 직접 쓴 스펙과
   `server.json`에서 만든 스펙 모두 아래 문법을 따라야 하므로, 어떤 옵션도 다른
   레지스트리나 인덱스를 고르거나, 패키지를 더하거나, 컨테이너 권한을 넓힐 수
@@ -430,6 +431,54 @@ SVG는 인라인으로 렌더링하면 능동 문서가 되므로 콘텐츠 종�
 (`sideload-filter.ts`, `zip-entry-path.ts` 재사용). 이미지와 폰트는 파일 경로가
 아니라 호스트 자산 스킴으로만 렌더러에 전달합니다.
 
+### 5.5 앱에서의 설치된 콘텐츠
+
+콘텐츠 패키지는 `packages/<kind>/<name>/<version>/`에 설치하고
+`packages/ledger.json`에 기록합니다. 원장 항목은 `{ kind, name, version,
+origin }`이고, origin은 `{ sourceId, sourceOrigin, commit, packagePath,
+version, contentSha256, installedAt }`입니다. 콘텐츠에는 단계가 없으므로
+`contentSha256`은 설치된 파일의 트리 다이제스트(§6.4)입니다. 원장은 플러그인
+레지스트리처럼 스냅샷 보존(§2.3)에 쓰입니다.
+
+- **설치와 로드.** 설치는 파일, 원장, 활성화 순서로 진행하고, 활성화가
+  실패하면 이전 설치를 되돌립니다. 부팅할 때마다 모든 패키지의 파일과
+  다이제스트를 다시 읽고, 더는 맞지 않는 패키지는 적용하지 않고 깨진 것으로
+  표시합니다. `requiredInstalls` 패키지는 제거할 수 없습니다
+  (`PACKAGE_REQUIRED_BY_POLICY`).
+- **테마** — `theme.json`은 `{ name, description, shell: "light" | "dark",
+  highContrast, tokens, surfaces, preview? }`입니다. `tokens`는 컴파일된
+  번들의 토큰 이름을 모두 `"H S% L%"` 형식으로, `surfaces`는 서피스 단계
+  (`surface-sunken` … `border-strong`)를 담습니다. 설치된 테마도 컴파일된
+  번들과 같은 토큰 계약과 WCAG 대비 규칙을 지켜야 하고(표는
+  `shared/theme-tokens.ts` 하나), 내장 테마 id는 거부합니다. 적용은 인라인
+  사용자 정의 속성과 해당 shell의 그림자 스택, `color-scheme`으로 합니다.
+- **언어** — 로캘 집합은 열려 있어서 올바른 BCP 47 태그라면 무엇이든 됩니다.
+  `en`과 `ko`는 계속 컴파일되어 들어가고, 설치된 언어는 자기 로캘을 고유
+  이름·영어 이름과 함께 등록합니다. 메시지는 영어 위에 겹치므로 번역하지 않은
+  키는 영어로 보입니다. `messages.json`은 영어 카탈로그 키만 쓸 수 있고,
+  빠진 키는 거부하지 않고 목록으로 남깁니다. 로캘당 패키지는 하나입니다. 메인
+  프로세스(대화상자, 메뉴, 알림)도 설치된 로캘을 쓰고, `<html lang>`은 활성
+  로캘을 따릅니다.
+- **폰트** — `font.json`은 `{ family, license, faces: [{ file, weight,
+  style }] }`이고 `LICENSE` 파일이 있어야 합니다. 페이스의 형식은 확장자로
+  정하고, 바이트가 그 형식과 맞아야 합니다. 패밀리당 패키지는 하나입니다.
+  렌더러는 `ave-content:` URL로만 `@font-face` 규칙을 선언합니다.
+- **프로바이더와 메시징 연결**은 지금의 정규화 함수를 거치되 어떤 필드도
+  빼거나 고치지 않고, 지금의 자산 설치가 쓰는 설정 경로로 적용됩니다.
+- **선택은 사용자의 몫입니다.** 설치해도 테마·언어·폰트를 선택하지 않습니다.
+  선택된 것을 제거하면 그 설정은 기본값으로 돌아가고, 설치되지 않은 id가
+  선택되어 있으면 기본값으로 그립니다.
+- **자산 스킴.** `ave-content://<kind>/<name>/<path>`는 로드된 저장소가
+  나열한 파일(폰트 페이스, 테마 미리보기)에만 `nosniff`로 답하고, 나머지는
+  404입니다. CSP는 `img-src`와 `font-src`에만 이 스킴을 허용합니다. 프레임은
+  커밋될 때 사용자 정의 스킴 로더를 묶으므로, 핸들러는 메인 창이 로드되기 전에
+  IPC 핸들러와 함께 등록합니다.
+- **로드 시점.** 저장소는 IPC를 등록할 때가 아니라 부팅 중 렌더러의 첫 요청
+  (또는 첫 자산 요청) 때 로드합니다. 묻지 않는 프로세스는 `packages/` 아래를
+  읽지 않습니다.
+- 설치·제거 IPC는 설치 화면(§13)과 함께 들어옵니다. 그 전까지는 읽기 전용 채널
+  두 개가 설치된 콘텐츠를 보여 줍니다.
+
 ## 6. 해석(Resolution)
 
 ### 6.1 버전 고르기
@@ -492,7 +541,9 @@ stop with NO_INSTALLABLE_ARTIFACT(rungs[])
   선언됩니다. `plugin.json`, `dist/**`, `assets/**`만 설치하고, 그 밖의 최상위
   항목이 있으면 그 단계가 실패하며, `ave-package.json`은 설치하지 않습니다.
   구성과 파일 수는 blob을 받기 전에 트리만 보고 확인하므로, 저장소 루트에 있는
-  direct 소스라도 거부되기 전에 저장소 전체를 받게 만들 수 없습니다. 내보낸
+  direct 소스라도 거부되기 전에 저장소 전체를 받게 만들 수 없습니다. 바이트
+  합계는 blob이 도착해야 알 수 있으므로, §5.4처럼 fetch 제한 시간이 전송을
+  묶습니다. 내보낸
   파일은 zip으로 묶으므로 모든 단계가 같은 zip 사전 점검과 설치 파이프라인을
   거칩니다.
 - 스키마에서 `release.sha256`과 `archive.sha256`은 선택 항목입니다. 핀 없이
@@ -913,7 +964,10 @@ export const DEFAULT_INSTALLS: readonly PackageKey[] = [
   단계가 §15.1의 소스 전환(플러그인 데이터 유지)을 수행하고 부팅 알림에 적습니다.
   사용자의 소스 선택보다 정책이 우선합니다. 관리자가 설치한 플러그인
   (`installSource: "admin"`)을 바꿀 수 있는 것도 이런 필수 설치뿐이며, 항목은
-  계속 관리자 설치로 남습니다. 그 밖의 git 설치로 덮어쓰려 하면 거부합니다.
+  계속 관리자 설치로 남습니다. 그 밖의 git 설치로 덮어쓰려 하면
+  `PACKAGE_ID_CONFLICT`로 거부합니다. 설치 과정은 이 판단을 전달받은 관리
+  정책(해당 플러그인의 `requiredInstalls` 항목과 계획의 소스)에서 직접 읽으며,
+  호출자가 주장할 수 없습니다.
   같은 상황의 `defaultInstalls` 항목은
   사용자의 설치가 이미 목적을 채우므로 `skipped`로 기록합니다.
 - 필수 업데이트는 §15.6의 업데이트 검토 없이 적용됩니다. 정책 파일이 동의를
@@ -1103,6 +1157,8 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
 | `ave:marketplace:uninstall` | `PackageKey` | `UninstallResult` |
 | `ave:marketplace:direct:preview` | `{ input; subdir?; ref? } \| { serverJson: string } \| { mcpConfig: string }` | `DirectPackagePreview` |
 | `ave:marketplace:announcements` | — | `MarketplaceAnnouncement[]` |
+| `ave:marketplace:content:installed` | — | `{ ok: true; content: InstalledContent } \| { ok: false; error: "installed-content-unavailable" }` (themes, languages, fonts, broken packages; §5.5) |
+| `ave:marketplace:content:language-messages` | `locale` | `{ ok: true; messages } \| { ok: false; error: "installed-content-unavailable" \| "language-not-installed" }` |
 | `ave:git:runtime:status` | — | `GitRuntimeStatus` |
 | `ave:git:runtime:install` | — | `GitRuntimeStatus`(진행은 이벤트로) |
 

@@ -106,6 +106,15 @@ phase 6 removes the old entry.
 **Exit:** every official content package from P0 installs, activates and
 uninstalls in a dev build; the settings pickers list installed items.
 
+P3 as built (design §5.5): the official index does not carry content
+packages yet, so the exit ran with a theme, a language and a font served from
+a local git fixture through the real sync → aggregate → plan → stage → store
+path into an isolated `AVE_HOME`. Each applied after a cold boot (the
+installed font loaded through `ave-content:`), the pickers listed them, and
+after uninstall the theme, language and font rendered their defaults. P3
+exposes installed content through two read-only channels; install and
+uninstall IPC come with 6.1, which runs the activation P3 provides.
+
 ## 6. Phase 4 — UI and direct install
 
 | PR | Content |
