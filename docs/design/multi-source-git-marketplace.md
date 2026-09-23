@@ -626,18 +626,26 @@ Environment (both modes):
 
 Config flags: `-c protocol.file.allow=never -c submodule.recurse=false
 -c core.fsmonitor=false -c core.hooksPath=<empty dir> -c http.followRedirects=false
--c http.proxy=<PAC> -c filter.lfs.smudge= -c filter.lfs.process= -c filter.lfs.required=false`.
+-c http.proxy=<PAC> -c filter.lfs.smudge= -c filter.lfs.process= -c filter.lfs.required=false
+-c gc.auto=0 -c maintenance.auto=false` (automatic gc could prune a commit that
+an install still references once the pin has moved on).
 
 **Global configuration.** The user's global git config is not read. Ave
 generates the file named by `GIT_CONFIG_GLOBAL` and copies into it only
 `credential.helper` and `credential.<url>.*` entries (so OS credential
-helpers keep working), `http.sslCAInfo` and `http.sslBackend`. Everything
+helpers keep working), `http.sslCAInfo` and `http.sslBackend`, read from the
+system and global levels in that order (Apple's and Homebrew's git configure
+the keychain helper at the system level, which `GIT_CONFIG_NOSYSTEM=1` would
+otherwise drop). Everything
 else — `url.*.insteadOf`, `http.extraHeader`, `http.sslVerify`,
 `core.sshCommand`, aliases, hooks — is dropped. A stored OS credential for a
 host is therefore available to every source on that host; the add dialog says
 so when a credential helper is configured.
 
-**Askpass protocol.** The helper is a small executable shipped with the app.
+**Askpass protocol.** The helper is a small script that the main process
+writes, with a launcher, into a fresh `0700` directory at start-up; the
+launcher runs it with the app binary in Node mode (`ELECTRON_RUN_AS_NODE`),
+so nothing extra ships with the app.
 For each `runGit` call the main process creates a single-use ticket bound to
 `(normalized host, sourceId)` and passes `AVE_ASKPASS_TICKET` and
 `AVE_ASKPASS_ENDPOINT` (a local socket in a `0700` directory) in the child
@@ -653,15 +661,20 @@ exits.
 - `fetch --filter=blob:none --no-tags <remote> <ref>`
 - `rev-parse`, `merge-base --is-ancestor`, `cat-file`, `ls-tree`
 - **Export of a path at a commit:**
-  `rev-list --objects --missing=print <commit> -- <path>` lists the blobs not
-  yet present; they are fetched in one request
+  `rev-list --objects --missing=print --no-walk --sparse <commit> -- <path>`
+  lists the blobs not yet present (`--no-walk` keeps historical versions out;
+  `--sparse` keeps the commit when it did not change the path); they are
+  fetched in one request
   (`fetch --filter=blob:none --no-tags <remote> <oid>…`, the request that
   partial-clone lazy fetching issues; it needs a server that allows filters
   and fetching by object id, which hosted services do. A self-hosted ssh or
   `git daemon` server that ignores the filter sends full blobs instead, which
-  is slower but correct); then
-  `archive --format=tar <commit> -- <path>` writes the tree into a staging
-  directory. No worktree and no sparse-checkout is created.
+  is slower but correct); the listing is repeated to prove nothing is still
+  missing; then `archive --format=tar --prefix=<path>/ <commit>:<path>` writes
+  the tree into a staging directory (the `<commit> -- <path>` form also reads
+  blobs outside the path). No worktree and no sparse-checkout is created.
+  Only regular files and directories are accepted; a symlink or submodule
+  entry in the tree stops the export.
 
 Timeouts: `ls-remote` 20 s, `fetch` 120 s (configurable), export 60 s. Output
 limits and abort signals follow the existing process helpers.

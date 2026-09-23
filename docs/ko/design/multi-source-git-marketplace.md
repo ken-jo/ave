@@ -601,17 +601,24 @@ smoke-testing → ready | failed(code)`. 다운로드는 PAC를 인식하는 fet
 
 설정 플래그: `-c protocol.file.allow=never -c submodule.recurse=false
 -c core.fsmonitor=false -c core.hooksPath=<빈 디렉터리> -c http.followRedirects=false
--c http.proxy=<PAC> -c filter.lfs.smudge= -c filter.lfs.process= -c filter.lfs.required=false`.
+-c http.proxy=<PAC> -c filter.lfs.smudge= -c filter.lfs.process= -c filter.lfs.required=false
+-c gc.auto=0 -c maintenance.auto=false`(고정값이 옮겨간 뒤 자동 gc가 설치본이 아직
+참조하는 커밋을 지울 수 있기 때문).
 
 **전역 설정.** 사용자의 전역 git 설정은 읽지 않습니다. Ave가
 `GIT_CONFIG_GLOBAL`이 가리키는 파일을 만들고, 거기에 `credential.helper`와
 `credential.<url>.*` 항목(OS 자격 증명 헬퍼가 계속 동작하도록),
-`http.sslCAInfo`, `http.sslBackend`만 복사합니다. 나머지(`url.*.insteadOf`,
+`http.sslCAInfo`, `http.sslBackend`만 system, global 수준 순서로 읽어 복사합니다
+(Apple과 Homebrew의 git은 키체인 헬퍼를 system 수준에 두므로,
+`GIT_CONFIG_NOSYSTEM=1`만으로는 그 헬퍼가 빠집니다). 나머지(`url.*.insteadOf`,
 `http.extraHeader`, `http.sslVerify`, `core.sshCommand`, 별칭, 훅)는 버립니다.
 따라서 OS에 저장된 한 호스트의 자격 증명은 그 호스트의 모든 소스에서 쓸 수 있고,
 자격 증명 헬퍼가 설정되어 있으면 추가 대화상자가 이를 알려 줍니다.
 
-**Askpass 프로토콜.** 헬퍼는 앱에 동봉된 작은 실행 파일입니다. 메인 프로세스는
+**Askpass 프로토콜.** 헬퍼는 메인 프로세스가 시작할 때 새 `0700` 디렉터리에
+실행기와 함께 써 두는 작은 스크립트입니다. 실행기는 앱 바이너리를 Node 모드
+(`ELECTRON_RUN_AS_NODE`)로 띄워 이 스크립트를 돌리므로, 앱에 따로 동봉할 것은
+없습니다. 메인 프로세스는
 `runGit` 호출마다 `(정규화된 호스트, sourceId)`에 묶인 1회용 티켓을 만들고,
 자식 환경에 `AVE_ASKPASS_TICKET`과 `AVE_ASKPASS_ENDPOINT`(`0700` 디렉터리 안의
 로컬 소켓)를 넘깁니다. 헬퍼가 티켓과 git의 프롬프트 문구를 보내면, 메인
@@ -625,13 +632,17 @@ smoke-testing → ready | failed(code)`. 다운로드는 PAC를 인식하는 fet
 - `fetch --filter=blob:none --no-tags <remote> <ref>`
 - `rev-parse`, `merge-base --is-ancestor`, `cat-file`, `ls-tree`
 - **커밋의 한 경로 내보내기:**
-  `rev-list --objects --missing=print <commit> -- <path>`로 아직 없는 blob을
-  나열하고, 한 번의 요청으로 가져온 뒤
+  `rev-list --objects --missing=print --no-walk --sparse <commit> -- <path>`로
+  아직 없는 blob을 나열하고(`--no-walk`는 과거 버전을 빼고, `--sparse`는 그
+  커밋이 경로를 바꾸지 않았어도 커밋을 남깁니다), 한 번의 요청으로 가져온 뒤
   (`fetch --filter=blob:none --no-tags <remote> <oid>…`, 부분 클론의 지연 가져오기가
   보내는 것과 같은 요청. 필터와 객체 id 로 가져오기를 허용하는 서버가 필요하며
   호스팅 서비스는 허용합니다. 필터를 무시하는 자체 ssh나 `git daemon` 서버는 전체
-  blob을 보내므로 느리지만 결과는 같습니다), `archive --format=tar <commit> -- <path>`로 트리를
-  스테이징 디렉터리에 씁니다. 워크트리도 sparse-checkout도 만들지 않습니다.
+  blob을 보내므로 느리지만 결과는 같습니다), 목록을 다시 떠서 빠진 것이 없음을
+  확인하고, `archive --format=tar --prefix=<path>/ <commit>:<path>`로 트리를
+  스테이징 디렉터리에 씁니다(`<commit> -- <path>` 형태는 경로 밖 blob도 읽습니다).
+  워크트리도 sparse-checkout도 만들지 않습니다. 일반 파일과 디렉터리만 받고,
+  트리에 symlink나 서브모듈 항목이 있으면 내보내기를 멈춥니다.
 
 타임아웃: `ls-remote` 20초, `fetch` 120초(설정 가능), 내보내기 60초. 출력 한도와
 중단 신호는 기존 프로세스 헬퍼를 따릅니다.
