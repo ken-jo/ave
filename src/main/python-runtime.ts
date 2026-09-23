@@ -23,6 +23,7 @@ import { readPluginRegistry, resolveManifestPathsFromRegistry } from "../plugins
 import type { PluginManifest } from "../plugins/types.js";
 import { resolveUvTarget, type UvTarget } from "../../scripts/uv-targets.mjs";
 import { aveHome } from "../shared/ave-home.js";
+import { proxyUrlFromPacEntry } from "../shared/pac-proxy.js";
 import {
   assertManagedChildProcessAdmissionOpen,
   trackManagedChildProcess,
@@ -155,18 +156,6 @@ const UV_EGRESS_PROBE_URLS = [
   "https://github.com/astral-sh/python-build-standalone/releases/",
   "https://astral.sh/",
 ] as const;
-
-/** `PROXY host:port` and friends, as the scheme a subprocess env expects. */
-function proxyUrlFromPacEntry(entry: string): string | null {
-  const [kind, endpoint] = entry.trim().split(/\s+/, 2);
-  if (!endpoint) return null;
-  switch (kind?.toUpperCase()) {
-    case "PROXY": return `http://${endpoint}`;
-    case "HTTPS": return `https://${endpoint}`;
-    case "SOCKS5": return `socks5://${endpoint}`;
-    default: return null;
-  }
-}
 
 /**
  * The proxy environment for the uv subprocess, derived from what the OS says.
