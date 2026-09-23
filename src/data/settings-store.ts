@@ -982,6 +982,8 @@ export class SettingsService {
    * preset they were entered next to: that is their address now.
    */
   private readonly reenteredSecretKeys = new Map<string, MarketplaceInstalledProviderPreset | undefined>();
+  /** Re-entered keys whose new value is written: the only ones read while their invalidation runs. */
+  private readonly writtenReentries = new Set<string>();
 
   constructor(options: SettingsServiceOptions) {
     const dir = resolve(options.userDataPath);
@@ -1465,6 +1467,7 @@ export class SettingsService {
         } else {
           this.invalidatingSecretKeys.delete(key);
           this.reenteredSecretKeys.delete(key);
+          this.writtenReentries.delete(key);
         }
       }
     }
@@ -1607,6 +1610,7 @@ export class SettingsService {
         (preset) => marketplaceProviderPresetSecretKey(preset.providerId) === key,
       );
       this.reenteredSecretKeys.set(key, structuredClone(enteredFor));
+      this.writtenReentries.delete(key);
     }
     try {
       await this.secretStore.set(key, value);
@@ -1621,11 +1625,12 @@ export class SettingsService {
       throw err;
     }
     this.withheldSecretKeys.delete(key);
+    if (this.reenteredSecretKeys.has(key)) this.writtenReentries.add(key);
   }
 
   /** Decrypt and return a stored secret value. */
   getSecret(key: string): string | null {
-    if (this.withheldSecretKeys.has(key) || this.restoringSecretKeys.has(key)) return null;
+    if (!this.secretReadable(key)) return null;
     try {
       return this.secretStore.get(key);
     } catch (err) {
@@ -1636,13 +1641,29 @@ export class SettingsService {
 
   /** Security-sensitive consumers that must reject legacy `plain:` secret entries. */
   getEncryptedSecret(key: string): string | null {
-    if (this.withheldSecretKeys.has(key) || this.restoringSecretKeys.has(key)) return null;
+    if (!this.secretReadable(key)) return null;
     return this.secretStore.getEncrypted(key);
   }
 
   async deleteSecret(key: string): Promise<void> {
     await this.secretStore.delete(key);
     this.withheldSecretKeys.delete(key);
+  }
+
+  /**
+   * Whether a stored key may be handed out. A preset key being invalidated
+   * may be the old address's; only a value entered again, written, and next
+   * to the preset it was entered for is read until the invalidation settles.
+   */
+  private secretReadable(key: string): boolean {
+    if (this.withheldSecretKeys.has(key) || this.restoringSecretKeys.has(key)) return false;
+    if (!this.invalidatingSecretKeys.has(key)) return true;
+    return this.writtenReentries.has(key) && isDeepStrictEqual(
+      this.reenteredSecretKeys.get(key),
+      this.settings.marketplace.installedProviderPresets.find(
+        (preset) => marketplaceProviderPresetSecretKey(preset.providerId) === key,
+      ),
+    );
   }
 
   /**
