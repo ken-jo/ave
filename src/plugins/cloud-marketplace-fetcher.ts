@@ -196,7 +196,6 @@ interface ServerCatalogRow {
   manifest?: unknown;
 }
 
-/** Loose shape for an announcement row returned by the server. */
 export class CloudMarketplaceFetcher implements MarketplaceFetcher, MarketplaceHttp, MarketplaceArtifactLimitProvider {
   private readonly artifactLimits: Readonly<MarketplaceArtifactLimits>;
   private readonly artifactReadTimeoutMs: number;

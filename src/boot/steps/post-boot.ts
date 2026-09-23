@@ -49,8 +49,11 @@ export interface ReleasePrepInput {
   networkFetch: typeof fetch;
   /** Boot-configured tracing; its batched spans are flushed on quit. */
   tracing: TracingHandle;
-  /** The service endpoint: telemetry posts to the endpoint its document names (design §11). */
-  serviceClient: Pick<ServiceClient, "refresh" | "telemetryEndpoint">;
+  /**
+   * The service endpoint: telemetry posts to the endpoint its document names
+   * (design §11). The document is read for telemetry only once the user opted in.
+   */
+  serviceClient: Pick<ServiceClient, "ensureResolved" | "telemetryEndpoint">;
   /**
    * Whether this launch may open the connections in here that nothing forces
    * it to open: the release check, the two telemetry uploaders, and crash
@@ -161,7 +164,8 @@ const ANNOUNCEMENT_INTERVAL_MS = 6 * 60 * 60 * 1000;
  * set, drops the ids the user has already dismissed (persisted in
  * `settings.marketplace.dismissedAnnouncementIds`), and pushes the remainder
  * to the renderer via `MARKETPLACE.announcements`. Runs once after the real
- * renderer load and on the same interval as the plugin update-check.
+ * renderer load and then every {@link ANNOUNCEMENT_INTERVAL_MS}, while the
+ * update-check switch is on.
  *
  * The dedup key folds in the target webContents, full visible payload, and
  * dismissed id set so a dismiss clears the banner, server-side corrections to

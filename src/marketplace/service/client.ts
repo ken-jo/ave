@@ -10,11 +10,17 @@
  * stored with the constant it was made under and dropped when an update ships
  * another constant. An invalid policy section fails closed — the service is
  * then unavailable rather than silently falling back to the public base.
+ *
+ * What the client holds follows the last refresh: a failed refresh leaves no
+ * telemetry endpoint, and the last announcements are kept only while the base
+ * they came from is still the base in force, so a policy that changes during
+ * a session never leaves the previous base in use.
  */
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import { isMissingPathError, PRIVATE_DIR_MODE, writeUtf8FileAtomicSync } from "../../lib/atomic-file.js";
 import { createLogger } from "../../lib/logger.js";
+import { parseStrictJson } from "../../shared/strict-json.js";
 import { parseMarketplaceAnnouncementRows, type MarketplaceAnnouncement } from "../../shared/marketplace-announcements.js";
 
 const log = createLogger("service-endpoint");
@@ -26,7 +32,10 @@ const DOCUMENT_PATH = "/.well-known/former-service.json";
 const MAX_DOCUMENT_BYTES = 64 * 1024;
 const MAX_ANNOUNCEMENTS_BYTES = 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 15_000;
+/** How soon {@link ServiceClient.ensureResolved} tries again after a failed refresh. */
+const RETRY_AFTER_MS = 10 * 60 * 1000;
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
+const POLICY_LIMITS = { maxBytes: 1024 * 1024, maxDepth: 64, maxNodes: 200_000, maxObjectMembers: 10_000, maxArrayItems: 50_000 };
 
 class ServiceEndpointError extends Error {
   override readonly name = "ServiceEndpointError";
@@ -56,7 +65,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** An https origin (no path, query, fragment or credentials), as `scheme://host[:port]`. */
+/**
+ * An https origin written exactly as `scheme://host[:port]` (a trailing `/` is
+ * allowed): no path, query, fragment, credentials or spelling the URL parser
+ * would have to repair.
+ */
 export function normalizeServiceBase(value: string, options: OriginOptions = {}): string {
   let url: URL;
   try {
@@ -67,10 +80,25 @@ export function normalizeServiceBase(value: string, options: OriginOptions = {})
   const https = url.protocol === "https:";
   const loopbackHttp = url.protocol === "http:" && options.allowLoopbackHttp === true && LOOPBACK_HOSTS.has(url.hostname);
   if (!https && !loopbackHttp) throw new ServiceEndpointError(`service base must be https: ${value}`);
-  if (url.username || url.password || url.search || url.hash || url.pathname !== "/") {
+  if (value !== url.origin && value !== `${url.origin}/`) {
     throw new ServiceEndpointError(`service base must be an origin: ${value}`);
   }
   return url.origin;
+}
+
+const IPV4 = /^\d{1,3}(?:\.\d{1,3}){3}$/u;
+
+/**
+ * A move target is a public DNS name: not an IP literal and not a single-label
+ * host, so a document on a compromised base cannot point the app at a private
+ * address. (Loopback stays allowed for a local staging base.)
+ */
+function assertPublicHost(origin: string, options: OriginOptions): void {
+  const host = new URL(origin).hostname;
+  if (options.allowLoopbackHttp === true && LOOPBACK_HOSTS.has(host)) return;
+  if (IPV4.test(host) || host.startsWith("[") || !host.includes(".") || host.endsWith(".")) {
+    throw new ServiceEndpointError(`service move target must be a public host name: ${origin}`);
+  }
 }
 
 /**
@@ -95,7 +123,9 @@ export function parseServiceDocument(value: unknown, base: string, options: Orig
     const raw = value[key];
     if (raw === undefined || raw === null) return null;
     if (typeof raw !== "string") throw new ServiceEndpointError(`${base}${DOCUMENT_PATH}: ${key} must be a URL`);
-    return normalizeServiceBase(raw, options);
+    const normalized = normalizeServiceBase(raw, options);
+    if (key === "movedTo") assertPublicHost(normalized, options);
+    return normalized;
   };
   return { announcements: path("announcements"), telemetry: path("telemetry"), movedTo: origin("movedTo"), movedFrom: origin("movedFrom") };
 }
@@ -106,16 +136,17 @@ export function parseServiceDocument(value: unknown, base: string, options: Orig
  * `{ baseUrl: <https origin> }` throws, so a typo does not fail open.
  */
 export async function readPolicyServiceBase(policyPath: string): Promise<string | null> {
-  let text: string;
+  let bytes: Buffer;
   try {
-    text = await readFile(policyPath, "utf8");
+    bytes = await readFile(policyPath);
   } catch (error) {
     if (isMissingPathError(error)) return null;
     throw error;
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(text);
+    // Strict: a duplicated `baseUrl` must not resolve to whichever came last.
+    parsed = parseStrictJson(bytes, POLICY_LIMITS);
   } catch (error) {
     throw new ServiceEndpointError(`${policyPath}: ${(error as Error).message}`);
   }
@@ -166,63 +197,113 @@ export interface ServiceClientOptions {
   buildBase: string;
   /** The managed policy's base; throws when the policy section is invalid. */
   policyBase: () => Promise<string | null>;
-  /** Where the accepted move is stored. */
+  /** Where the accepted move is stored. A development override keeps its own file, so it never drops a production move. */
   statePath: string;
   /** Gates announcement actions by `minAppVersion`. */
   appVersion: string;
   allowLoopbackHttp?: boolean;
   now?: () => Date;
+  /** Per-request timeout; tests shorten it. */
+  timeoutMs?: number;
 }
 
 export class ServiceClient {
   private resolved: ResolvedService | null = null;
-  private lastAnnouncements: MarketplaceAnnouncement[] | null = null;
+  /** The base the current refresh is reading, known before its document arrives. */
+  private attemptBase: string | null = null;
+  private lastAnnouncements: { base: string; list: MarketplaceAnnouncement[] } | null = null;
+  private inFlight: Promise<ResolvedService> | null = null;
+  private lastFailureAt: number | null = null;
 
   constructor(private readonly options: ServiceClientOptions) {}
 
-  /** The telemetry endpoint of the last document read; undefined before one is read or while it names none. */
-  telemetryEndpoint(): string | undefined {
-    return this.resolved?.document.telemetry ?? undefined;
+  /**
+   * The telemetry endpoint of the document in force: a URL, null while the
+   * document names none, or undefined when no document is in force (none read
+   * yet, or the last refresh failed).
+   */
+  telemetryEndpoint(): string | null | undefined {
+    if (!this.resolved) return undefined;
+    return this.resolved.document.telemetry;
+  }
+
+  /**
+   * Start a refresh when no document is in force, none is running and the
+   * last failure is older than the retry interval. For callers that need the
+   * document only once the user has allowed what it is for.
+   */
+  ensureResolved(): void {
+    if (this.resolved || this.inFlight) return;
+    const now = (this.options.now?.() ?? new Date()).getTime();
+    if (this.lastFailureAt !== null && now - this.lastFailureAt < RETRY_AFTER_MS) return;
+    void this.refresh().catch((error: unknown) => {
+      log.warn({ err: (error as Error).message }, "service document unavailable");
+    });
   }
 
   /** Resolve the base and read its document, following at most one confirmed move from the build constant. */
   async refresh(): Promise<ResolvedService> {
-    this.resolved = await this.resolve();
-    return this.resolved;
+    if (this.inFlight) return this.inFlight;
+    this.inFlight = (async () => {
+      try {
+        const resolved = await this.resolve();
+        this.resolved = resolved;
+        this.lastFailureAt = null;
+        return resolved;
+      } catch (error) {
+        // Nothing from an earlier base stays in force.
+        this.resolved = null;
+        this.lastFailureAt = (this.options.now?.() ?? new Date()).getTime();
+        throw error;
+      } finally {
+        this.inFlight = null;
+      }
+    })();
+    return this.inFlight;
   }
 
   /**
    * The active announcements. A failed read returns the last list read in
-   * this session, so a transient outage does not clear the banner; with
-   * nothing read yet it throws.
+   * this session only when it came from the base still in force, so a
+   * transient outage does not clear the banner; otherwise it throws.
    */
   async announcements(): Promise<MarketplaceAnnouncement[]> {
     try {
-      const { document } = await this.refresh();
-      const announcements = document.announcements
+      const { base, document } = await this.refresh();
+      const list = document.announcements
         ? parseMarketplaceAnnouncementRows(await this.getJson(document.announcements, MAX_ANNOUNCEMENTS_BYTES), this.options.appVersion)
         : [];
-      this.lastAnnouncements = announcements;
-      return announcements;
+      this.lastAnnouncements = { base, list };
+      return list;
     } catch (error) {
-      if (this.lastAnnouncements === null) throw error;
-      log.warn({ err: (error as Error).message }, "announcements unavailable; keeping the last list read");
-      return this.lastAnnouncements;
+      const last = this.lastAnnouncements;
+      if (last === null || last.base !== this.attemptBase) {
+        this.lastAnnouncements = null;
+        throw error;
+      }
+      log.warn({ err: (error as Error).message }, "announcements unavailable; keeping the last list read from this base");
+      return last.list;
     }
   }
 
   private async resolve(): Promise<ResolvedService> {
+    this.attemptBase = null;
     const policyBase = await this.options.policyBase();
-    if (policyBase) return { base: policyBase, source: "policy", document: await this.fetchDocument(policyBase) };
+    if (policyBase) {
+      this.attemptBase = policyBase;
+      return { base: policyBase, source: "policy", document: await this.fetchDocument(policyBase) };
+    }
 
     const buildBase = normalizeServiceBase(this.options.buildBase, this.originOptions());
     const move = await this.readMove();
-    if (move !== null && move !== "unreadable" && move.buildBase === buildBase) {
+    if (move !== null && move !== "invalid" && move.buildBase === buildBase) {
       // One move per build constant: the moved base's own movedTo is not followed.
+      this.attemptBase = move.movedTo;
       return { base: move.movedTo, source: "moved", document: await this.fetchDocument(move.movedTo) };
     }
-    // A move made under another build constant, or a record that cannot be read, is dropped.
-    if (move !== null) await rm(this.options.statePath, { force: true });
+    // A move made under another build constant, or a record with the wrong shape, is dropped.
+    if (move !== null) await this.dropMove();
+    this.attemptBase = buildBase;
 
     const document = await this.fetchDocument(buildBase);
     if (document.movedTo && document.movedTo !== buildBase) {
@@ -252,7 +333,7 @@ export class ServiceClient {
   private async getJson(url: string, maxBytes: number): Promise<unknown> {
     const response = await this.options.fetchImpl(url, {
       headers: { accept: "application/json" },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(this.options.timeoutMs ?? REQUEST_TIMEOUT_MS),
     });
     if (response.status !== 200) {
       await response.body?.cancel();
@@ -261,13 +342,20 @@ export class ServiceClient {
     return readCappedJson(response, url, maxBytes);
   }
 
-  private async readMove(): Promise<MoveRecord | "unreadable" | null> {
+  /**
+   * The accepted move: null when there is none or the file cannot be read (it
+   * is then ignored, never trusted and never allowed to stop the service);
+   * "invalid" when it reads but does not hold a move record, which is dropped.
+   */
+  private async readMove(): Promise<MoveRecord | "invalid" | null> {
     let text: string;
     try {
       text = await readFile(this.options.statePath, "utf8");
     } catch (error) {
-      if (isMissingPathError(error)) return null;
-      throw error;
+      if (!isMissingPathError(error)) {
+        log.warn({ path: this.options.statePath, err: (error as Error).message }, "service move record cannot be read; ignored");
+      }
+      return null;
     }
     try {
       const parsed = JSON.parse(text) as unknown;
@@ -281,10 +369,18 @@ export class ServiceClient {
       }
     } catch (error) {
       log.warn({ path: this.options.statePath, err: (error as Error).message }, "service move record unreadable; dropped");
-      return "unreadable";
+      return "invalid";
     }
     log.warn({ path: this.options.statePath }, "service move record has the wrong shape; dropped");
-    return "unreadable";
+    return "invalid";
+  }
+
+  private async dropMove(): Promise<void> {
+    try {
+      await rm(this.options.statePath, { force: true });
+    } catch (error) {
+      log.warn({ path: this.options.statePath, err: (error as Error).message }, "service move record could not be removed");
+    }
   }
 
   private async writeMove(record: MoveRecord): Promise<void> {

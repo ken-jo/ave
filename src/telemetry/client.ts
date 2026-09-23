@@ -129,9 +129,11 @@ export interface PluginTelemetryClientDeps {
   settings: () => TelemetrySettings;
   /**
    * The telemetry endpoint of the service document (an absolute URL on the
-   * service origin). If absent the client is a no-op even when enabled.
+   * service origin); null when the document names none, which makes the
+   * client a no-op even when enabled; undefined while no document is in force
+   * yet, when events are held (up to {@link MAX_HELD_EVENTS}) until it is.
    */
-  endpoint: () => string | undefined;
+  endpoint: () => string | null | undefined;
   /**
    * Absolute path where device_uuid is stored: `~/.ave/telemetry/device-uuid`,
    * the telemetry feature namespace `post-boot.ts` opens. The path is resolved
@@ -151,6 +153,8 @@ export interface PluginTelemetryClientDeps {
 }
 
 const DEFAULT_FLUSH_MS = 5 * 60 * 1000;
+/** Events kept while the endpoint is not known yet; the oldest go first. */
+const MAX_HELD_EVENTS = 500;
 
 export class PluginTelemetryClient {
   private readonly queue: PluginTelemetryEvent[] = [];
@@ -178,22 +182,29 @@ export class PluginTelemetryClient {
    *   3. The service document names a telemetry endpoint
    */
   isActive(): boolean {
-    const s = this.deps.settings();
-    if (!s.telemetryPromptAnswered) return false;
-    if (s.enabled !== true) return false;
-    const endpoint = this.deps.endpoint();
+    const endpoint = this.consentedEndpoint();
     return typeof endpoint === "string" && endpoint.length > 0;
   }
 
+  /** The endpoint once the user opted in; null without consent. */
+  private consentedEndpoint(): string | null | undefined {
+    const s = this.deps.settings();
+    if (!s.telemetryPromptAnswered) return null;
+    if (s.enabled !== true) return null;
+    return this.deps.endpoint();
+  }
+
   /**
-   * Enqueue a plugin lifecycle event. No-op if telemetry is not active.
-   * PII scrubber is applied to slug and version before queuing.
+   * Enqueue a plugin lifecycle event. No-op without consent or when the
+   * service document names no endpoint; held while the document is not in
+   * force yet. PII scrubber is applied to slug and version before queuing.
    */
   track(
     name: PluginTelemetryEventName,
     opts: { slug: string; version: string; errorClass?: string },
   ): void {
-    if (!this.isActive()) return;
+    const endpoint = this.consentedEndpoint();
+    if (endpoint === null || endpoint === "") return;
     const event: PluginTelemetryEvent = {
       v: 1,
       name,
@@ -207,6 +218,7 @@ export class PluginTelemetryClient {
       event.errorClass = scrubPii(opts.errorClass);
     }
     this.queue.push(event);
+    if (this.queue.length > MAX_HELD_EVENTS) this.queue.splice(0, this.queue.length - MAX_HELD_EVENTS);
   }
 
   start(): void {
@@ -232,8 +244,13 @@ export class PluginTelemetryClient {
   }
 
   private async flushOnce(): Promise<void> {
-    if (!this.isActive() || this.queue.length === 0) return;
-    const endpoint = this.deps.endpoint()!;
+    const endpoint = this.consentedEndpoint();
+    // Consent withdrawn, or the document names no endpoint: held events are not sent.
+    if (endpoint === null || endpoint === "") {
+      this.queue.length = 0;
+      return;
+    }
+    if (endpoint === undefined || this.queue.length === 0) return;
     const batch = this.queue.slice(0);
     const batchLen = batch.length;
     try {

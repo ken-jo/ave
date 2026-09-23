@@ -29,7 +29,7 @@ let telemetryTmpDir: string;
 function makeDeps(overrides: {
   enabled?: boolean;
   promptAnswered?: boolean;
-  endpoint?: string | undefined;
+  endpoint?: string | null | undefined;
   fetchImpl: typeof fetch;
   flushIntervalMs?: number;
 }) {
@@ -153,12 +153,48 @@ describe("PluginTelemetryClient", () => {
 
   it("is inactive while the service document names no telemetry endpoint", async () => {
     const fetch = okFetch();
-    const client = new PluginTelemetryClient(makeDeps({ fetchImpl: fetch, endpoint: undefined }));
+    const client = new PluginTelemetryClient(makeDeps({ fetchImpl: fetch, endpoint: null }));
     expect(client.isActive()).toBe(false);
     client.track("plugin_install", { slug: "com.example.foo", version: "1.0.0" });
     await client.flush();
     expect(fetch).not.toHaveBeenCalled();
     expect(client.queueLength).toBe(0);
+  });
+
+  it("holds events while no service document is in force, sends them once one names an endpoint, and drops them if it names none", async () => {
+    const fetch = okFetch();
+    let endpoint: string | null | undefined;
+    const client = new PluginTelemetryClient({ ...makeDeps({ fetchImpl: fetch }), endpoint: () => endpoint });
+    client.track("plugin_install", { slug: "com.example.foo", version: "1.0.0" });
+    await client.flush();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(client.queueLength).toBe(1);
+
+    endpoint = "https://former-site.invalid/telemetry/events";
+    await client.flush();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(client.queueLength).toBe(0);
+
+    endpoint = undefined;
+    client.track("plugin_update", { slug: "com.example.foo", version: "1.0.1" });
+    endpoint = null;
+    await client.flush();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(client.queueLength).toBe(0);
+  });
+
+  it("holds at most 500 events, dropping the oldest", () => {
+    const client = new PluginTelemetryClient(makeDeps({ fetchImpl: okFetch(), endpoint: undefined }));
+    for (let i = 0; i < 520; i += 1) client.track("plugin_install", { slug: `com.example.p${i}`, version: "1.0.0" });
+    expect(client.queueLength).toBe(500);
+  });
+
+  it("never asks for the endpoint without consent", () => {
+    const endpoint = vi.fn(() => "https://former-site.invalid/telemetry/events");
+    const client = new PluginTelemetryClient({ ...makeDeps({ fetchImpl: okFetch(), enabled: false }), endpoint });
+    client.track("plugin_install", { slug: "com.example.foo", version: "1.0.0" });
+    expect(client.isActive()).toBe(false);
+    expect(endpoint).not.toHaveBeenCalled();
   });
 
   // 6b. Concurrent flush calls coalesce — only one POST per batch.

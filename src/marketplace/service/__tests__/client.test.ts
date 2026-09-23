@@ -30,12 +30,13 @@ const announcement = (id: number) => ({
   actions: [{ label: { en: "Open", ko: "열기" }, target: { kind: "url", url: "https://former-site.invalid/news" } }],
 });
 
-/** A fetch over a URL → JSON map; a missing URL answers 404, a number answers that status. */
+/** A fetch over a URL → JSON map; a missing URL answers 404, a number answers that status, a Response is returned as is. */
 function fakeFetch(routes: Record<string, unknown>) {
   return vi.fn(async (input: string | URL | Request) => {
     const url = String(input);
     const route = routes[url];
     if (route === undefined) return new Response("missing", { status: 404 });
+    if (route instanceof Response) return route;
     if (typeof route === "number") return new Response("", { status: route, headers: { location: "https://evil.example/" } });
     return new Response(JSON.stringify(route), { status: 200, headers: { "content-type": "application/json" } });
   });
@@ -51,6 +52,13 @@ describe("normalizeServiceBase", () => {
     expect(normalizeServiceBase("http://127.0.0.1:8123", { allowLoopbackHttp: true })).toBe("http://127.0.0.1:8123");
     expect(() => normalizeServiceBase("http://10.0.0.1", { allowLoopbackHttp: true })).toThrow(/https/u);
   });
+
+  it.each(["https:former-site.invalid", " https://former-site.invalid", "https://former-site.invalid ", "https://:@former-site.invalid", "https://former-site.invalid?", "https://former-site.invalid#", "https://former-site.invalid/%2e", "https://AVEAI.xyz"])(
+    "refuses %j, a spelling the URL parser would repair",
+    (value) => {
+      expect(() => normalizeServiceBase(value)).toThrow(/origin/u);
+    },
+  );
 });
 
 describe("parseServiceDocument", () => {
@@ -70,6 +78,13 @@ describe("parseServiceDocument", () => {
     ["another schema version", { ...doc(), schemaVersion: 2 }],
     ["a plain-http move", doc({ movedTo: "http://ave.example" })],
     ["a move with a path", doc({ movedTo: "https://ave.example/x" })],
+    // The URL parser strips tabs and newlines, so these become `//evil.example`: only the origin check catches them.
+    ["a path with a tab", doc({ announcements: "/\t/evil.example/a.json" })],
+    ["a path with a newline", doc({ telemetry: "/\n/evil.example/t" })],
+    ["a path with CRLF", doc({ announcements: "/\r\n//evil.example" })],
+    ["a move to an IPv4 address", doc({ movedTo: "https://10.0.0.8" })],
+    ["a move to an IPv6 address", doc({ movedTo: "https://[fd00::1]" })],
+    ["a move to a single-label host", doc({ movedTo: "https://intranet" })],
   ])("refuses %s", (_label, value) => {
     expect(() => parseServiceDocument(value, OLD)).toThrow();
   });
@@ -100,6 +115,7 @@ describe("readPolicyServiceBase", () => {
     ["plain http", { service: { baseUrl: "http://ave.corp.example" } }],
     ["a missing baseUrl", { service: {} }],
     ["invalid JSON", "{"],
+    ["a duplicated baseUrl", '{"service":{"baseUrl":"https://ave.corp.example","baseUrl":"https://former-site.invalid"}}'],
   ])("throws on %s, so a typo does not fall back to the public base", async (_label, value) => {
     await expect(readPolicyServiceBase(policy(value))).rejects.toThrow();
   });
@@ -242,6 +258,124 @@ describe("ServiceClient", () => {
 
     const fresh = client({});
     await expect(fresh.service.announcements()).rejects.toThrow("HTTP 404");
+  });
+
+  it("keeps the last announcements through a document outage on the same base", async () => {
+    const routes: Record<string, unknown> = {
+      [`${OLD}/.well-known/former-service.json`]: doc(),
+      [`${OLD}/announcements/v1.json`]: [announcement(4)],
+    };
+    const { service } = client(routes);
+    await service.announcements();
+    delete routes[`${OLD}/.well-known/former-service.json`];
+    await expect(service.announcements()).resolves.toMatchObject([{ id: 4 }]);
+  });
+
+  it("leaves nothing from the old base in force when the policy turns invalid during the session", async () => {
+    let policy: () => Promise<string | null> = async () => null;
+    const { service } = client(
+      {
+        [`${OLD}/.well-known/former-service.json`]: doc({ telemetry: "/telemetry/events" }),
+        [`${OLD}/announcements/v1.json`]: [announcement(5)],
+      },
+      { policyBase: () => policy() },
+    );
+    await service.announcements();
+    expect(service.telemetryEndpoint()).toBe(`${OLD}/telemetry/events`);
+
+    policy = async () => {
+      throw new Error("policy service section is invalid");
+    };
+    await expect(service.refresh()).rejects.toThrow("policy service section is invalid");
+    expect(service.telemetryEndpoint()).toBeUndefined();
+    await expect(service.announcements()).rejects.toThrow("policy service section is invalid");
+  });
+
+  it("stops using the public base when the policy names a base it cannot reach", async () => {
+    const corp = "https://ave.corp.example";
+    let policy: string | null = null;
+    const { service } = client(
+      {
+        [`${OLD}/.well-known/former-service.json`]: doc({ telemetry: "/telemetry/events" }),
+        [`${OLD}/announcements/v1.json`]: [announcement(6)],
+      },
+      { policyBase: async () => policy },
+    );
+    await service.announcements();
+    policy = corp;
+    await expect(service.announcements()).rejects.toThrow("HTTP 404");
+    expect(service.telemetryEndpoint()).toBeUndefined();
+  });
+
+  it("distinguishes an endpoint not known yet from one the document does not name", async () => {
+    const { service } = client({ [`${OLD}/.well-known/former-service.json`]: doc() });
+    expect(service.telemetryEndpoint()).toBeUndefined();
+    await service.refresh();
+    expect(service.telemetryEndpoint()).toBeNull();
+  });
+
+  it("ensureResolved reads the document once, and after a failure waits the retry interval", async () => {
+    let now = new Date("2026-09-23T00:00:00.000Z");
+    const routes: Record<string, unknown> = {};
+    const { service, fetchImpl } = client(routes, { now: () => now });
+    service.ensureResolved();
+    service.ensureResolved();
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setImmediate(resolve));
+    service.ensureResolved();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    routes[`${OLD}/.well-known/former-service.json`] = doc({ telemetry: "/telemetry/events" });
+    now = new Date("2026-09-23T00:10:01.000Z");
+    service.ensureResolved();
+    await vi.waitFor(() => expect(service.telemetryEndpoint()).toBe(`${OLD}/telemetry/events`));
+    service.ensureResolved();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses a response whose declared length is over the cap before reading it", async () => {
+    const response = new Response(JSON.stringify(doc()), { status: 200, headers: { "content-length": String(65 * 1024) } });
+    const cancel = vi.spyOn(response.body!, "getReader");
+    const { service } = client({ [`${OLD}/.well-known/former-service.json`]: response });
+    await expect(service.refresh()).rejects.toThrow(/larger than 65536 bytes/u);
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  it("refuses an announcements list over 1 MB", async () => {
+    const { service } = client({
+      [`${OLD}/.well-known/former-service.json`]: doc(),
+      [`${OLD}/announcements/v1.json`]: { announcements: [], padding: "x".repeat(1024 * 1024) },
+    });
+    await expect(service.announcements()).rejects.toThrow(/larger than 1048576 bytes/u);
+  });
+
+  it("gives up on a request after its timeout", async () => {
+    const fetchImpl = vi.fn((_url: string | URL | Request, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal!.reason))));
+    const service = new ServiceClient({ fetchImpl: fetchImpl as unknown as typeof fetch, buildBase: OLD, policyBase: async () => null, statePath, appVersion: "0.10.0", timeoutMs: 20 });
+    await expect(service.refresh()).rejects.toThrow(/timeout|aborted/iu);
+  });
+
+  it("stays when the move target cannot be read, and ignores a move to itself", async () => {
+    await expect(client({ [`${OLD}/.well-known/former-service.json`]: doc({ movedTo: NEW }) }).service.refresh()).resolves.toMatchObject({ base: OLD, source: "build" });
+    await expect(client({ [`${OLD}/.well-known/former-service.json`]: doc({ movedTo: OLD }) }).service.refresh()).resolves.toMatchObject({ base: OLD, source: "build" });
+    expect(existsSync(statePath)).toBe(false);
+  });
+
+  it("fails when an accepted move's base cannot be read, without falling back", async () => {
+    await client({
+      [`${OLD}/.well-known/former-service.json`]: doc({ movedTo: NEW }),
+      [`${NEW}/.well-known/former-service.json`]: doc({ movedFrom: OLD }),
+    }).service.refresh();
+    const { service, fetchImpl } = client({ [`${OLD}/.well-known/former-service.json`]: doc() });
+    await expect(service.refresh()).rejects.toThrow("HTTP 404");
+    expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([`${NEW}/.well-known/former-service.json`]);
+  });
+
+  it("ignores a move record it cannot read as a file, and keeps the service available", async () => {
+    mkdirSync(statePath, { recursive: true });
+    await expect(client({ [`${OLD}/.well-known/former-service.json`]: doc() }).service.refresh()).resolves.toMatchObject({ base: OLD, source: "build" });
+    expect(existsSync(statePath)).toBe(true);
   });
 
   it("answers no announcements when the document names none", async () => {
