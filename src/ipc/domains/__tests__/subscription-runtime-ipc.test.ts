@@ -418,6 +418,47 @@ describe("common subscription runtime IPC", () => {
     expect(bound.at(-1)).toEqual({ kind: "api" });
   });
 
+  it("announces the subscription restored when overlapping switches fail to save", async () => {
+    const saved = { kind: "subscription", provider: "kimi-code" } as const;
+    const state = makeStatefulSelectionDeps({
+      provider: "openai",
+      vendors: { openai: { model: "gpt-5", baseUrl: null } },
+      activeChatRuntime: saved,
+    });
+    const saves = [deferred<boolean>(), deferred<boolean>()];
+    const patch = vi.fn((value: unknown) => {
+      const snapshot = state.applyLlmPatch(value);
+      return saves[patch.mock.calls.length - 1]!.promise.then((landed) => {
+        if (!landed) throw new Error("disk full");
+        return snapshot;
+      });
+    });
+    const send = vi.fn();
+    const deps = { ...state.deps };
+    deps.settingsService.patch = patch;
+    deps.getAppWindows = vi.fn(() => [{
+      isDestroyed: vi.fn(() => false),
+      webContents: { isDestroyed: vi.fn(() => false), send },
+    }]);
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+
+    const first = invoke("ave:settings:subscription:use-for-chat", "codex", "gpt-5");
+    await vi.waitFor(() => expect(state.currentLlm().activeChatRuntime).toMatchObject({ provider: "codex" }));
+    const second = invoke("ave:settings:subscription:use-api-for-chat");
+    await vi.waitFor(() => expect(state.currentLlm().activeChatRuntime).toEqual({ kind: "api" }));
+    state.applyLlmPatch({ llm: { activeChatRuntime: saved } });
+    saves[0]!.resolve(false);
+    saves[1]!.resolve(false);
+    await Promise.allSettled([first, second]);
+
+    expect(state.currentLlm().activeChatRuntime).toEqual(saved);
+    const announced = send.mock.calls
+      .filter(([channel]) => channel === "ave:settings:subscription:status-updated")
+      .map(([, event]) => (event as { provider: string }).provider);
+    expect(announced).toContain("kimi-code");
+  });
+
   it("binds execution to the saved runtime when the restoring save fails too", async () => {
     const state = makeStatefulSelectionDeps({
       provider: "openai",

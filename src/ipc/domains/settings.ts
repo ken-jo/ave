@@ -647,10 +647,10 @@ export function registerSettingsHandlers(deps: IpcDeps): void {
     previousActiveChatRuntime: LLMSettings["activeChatRuntime"],
     failedActiveChatRuntime: LLMSettings["activeChatRuntime"],
     transitionRevision: number,
-  ): Promise<boolean> => {
+  ): Promise<{ runtime: LLMSettings["activeChatRuntime"] } | null> => {
     // Only the request that still owns the active selection may undo it; a
     // newer selection binds execution itself.
-    if (transitionRevision !== activeChatRuntimeTransitionRevision) return false;
+    if (transitionRevision !== activeChatRuntimeTransitionRevision) return null;
     // Memory is authoritative. A failed save has already put it back on the
     // saved settings (SettingsService never runs on settings that are not on
     // disk), which may be older than `previousActiveChatRuntime` when that
@@ -681,12 +681,12 @@ export function registerSettingsHandlers(deps: IpcDeps): void {
         bindExecutionToSettings();
         await broadcastSettingsSnapshot(deps, () => transitionRevision === activeChatRuntimeTransitionRevision);
       }
-      return false;
+      return null;
     }
-    if (!ownsRestoration()) return false;
+    if (!ownsRestoration()) return null;
 
     await broadcastSettingsSnapshot(deps, ownsRestoration);
-    return ownsRestoration();
+    return ownsRestoration() ? { runtime: restoredRuntime } : null;
   };
   const setActiveChatRuntime = async (
     activeChatRuntime: LLMSettings["activeChatRuntime"],
@@ -726,7 +726,7 @@ export function registerSettingsHandlers(deps: IpcDeps): void {
       // before issuing the guarded restoration. This prevents an older write
       // from racing the rollback on disk.
       await persistSelection.catch(() => undefined);
-      let restored = false;
+      let restored: { runtime: LLMSettings["activeChatRuntime"] } | null = null;
       try {
         restored = await rollbackActiveChatRuntime(
           previousLlm.activeChatRuntime,
@@ -737,8 +737,12 @@ export function registerSettingsHandlers(deps: IpcDeps): void {
         // The renderer must never be told that the new runtime became active
         // when its exact persisted predecessor could not be restored.
       }
-      if (restored && previousSubscriptionProvider) {
-        publishSubscriptionRuntimeStatusUpdated(previousSubscriptionProvider);
+      // The runtime restored may be older than this switch's predecessor when
+      // that one failed to save too. The subscription mutation announces the
+      // provider that failed; announce the one restored.
+      const restoredProvider = restored?.runtime?.kind === "subscription" ? restored.runtime.provider : null;
+      if (restoredProvider && restoredProvider !== nextSubscriptionProvider) {
+        publishSubscriptionRuntimeStatusUpdated(restoredProvider);
       }
       throw new SubscriptionRuntimeServiceError("subscription-operation-failed");
     }
