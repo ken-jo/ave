@@ -47,6 +47,7 @@ function plan(version = "1.0.0", patch: Partial<PluginInstallPlan> = {}): Plugin
     snapshotCommit: SNAPSHOT,
     versionCommit: VERSION_COMMIT,
     packagePath: "plugins/alpha",
+    kind: "plugin",
     name: "alpha",
     version,
     minAppVersion: "0.12.0",

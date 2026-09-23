@@ -333,7 +333,8 @@ describe.skipIf(process.platform === "win32")("plugin artifact ladder (design §
     );
     const { gate, syncer } = await open(name);
     const error = await ladder(syncer, gate, planPluginInstall(await row(syncer))).catch((caught: unknown) => caught);
-    expect(error).toMatchObject({ code: "MANIFEST_MISMATCH", rungs: [] });
+    expect(error).toMatchObject({ code: "MANIFEST_MISMATCH" });
+    expect(error).not.toBeInstanceOf(LadderError);
     expect((error as Error).message).toContain("the index copy differs from plugins/alpha/ave-package.json in authority");
   });
 

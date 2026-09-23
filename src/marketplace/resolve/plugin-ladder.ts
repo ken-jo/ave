@@ -27,27 +27,15 @@ import { canonicalStringify } from "../../shared/canonical-json.js";
 import type { CatalogRow } from "../catalog/aggregate.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
 import type { IndexVersion, PluginArtifactPins, PluginAuthority } from "../catalog/types.js";
-import { validateDescriptorText } from "../catalog/validate.js";
 import { MarketplaceError, isMarketplaceError, type MarketplaceErrorCode } from "../errors.js";
-import type { BareRepo } from "../git/repo.js";
-import type { GitRemote } from "../git/run-git.js";
 import type { NetworkGate } from "../net/network-gate.js";
 import type { NormalizedSourceUrl } from "../net/source-url.js";
-import type { SourceOrigin } from "../sources/registry.js";
+import { candidateVersion, DESCRIPTOR_NAME, planPackage, readDescriptorAtVersion, repoPath, type PackagePlan, type RepositoryAccess } from "./descriptor.js";
 import { downloadBounded } from "./download.js";
 import { assertGitInstallManifest } from "./manifest-rules.js";
 
-export interface PluginInstallPlan {
-  sourceId: string;
-  sourceOrigin: SourceOrigin;
-  snapshotCommit: string;
-  versionCommit: string;
-  /** Package directory in the repository; "" is the root of a direct source. */
-  packagePath: string;
-  name: string;
-  version: string;
-  minAppVersion: string;
-  platforms?: IndexVersion["platforms"];
+export interface PluginInstallPlan extends PackagePlan {
+  kind: "plugin";
   authority: PluginAuthority;
   artifact: PluginArtifactPins;
 }
@@ -68,13 +56,9 @@ export interface ZipInspector {
   readRequiredRootTextFiles(slug: string, zipBuffer: Buffer, requests: readonly RequiredMarketplaceRootTextFile[]): Readonly<Record<string, string>>;
 }
 
-export interface LadderDeps {
-  repo: BareRepo;
-  /** Remote for blobs the partial clone does not hold yet (descriptor, tree). */
-  remote: GitRemote;
+export interface LadderDeps extends RepositoryAccess {
   /** The source URL: release assets without `url` live on its host. */
   sourceUrl: NormalizedSourceUrl;
-  direct: boolean;
   gate: NetworkGate;
   fetchImpl: typeof fetch;
   /** The stored token for the source host when the source uses token auth; GitHub release assets then go through the REST API. */
@@ -83,7 +67,6 @@ export interface LadderDeps {
   limits: Readonly<MarketplaceArtifactLimits>;
   /** Scratch directory for the tree export; removed before the ladder returns. */
   workRoot: string;
-  signal?: AbortSignal;
 }
 
 /** Ladder failure that carries every rung outcome so far (for the plan view and diagnostics). */
@@ -99,8 +82,6 @@ export class LadderError extends MarketplaceError {
   }
 }
 
-const DESCRIPTOR_NAME = "ave-package.json";
-const DESCRIPTOR_LIMIT = 256 * 1024;
 const MANIFEST_LIMIT = 1024 * 1024;
 const RELEASE_METADATA_LIMIT = 1024 * 1024;
 const RELEASE_REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
@@ -111,37 +92,15 @@ const TREE_TOP_LEVEL_DIRS = new Set(["dist", "assets"]);
 /** A plan for the row's candidate version (design §6.1). */
 export function planPluginInstall(row: CatalogRow): PluginInstallPlan {
   if (row.kind !== "plugin") throw new Error(`${row.kind} ${row.name} is not a plugin`);
-  if (row.choice.state === "upgrade_required") {
-    throw new MarketplaceError("PACKAGE_INCOMPATIBLE", `${row.name} needs Ave ${row.choice.minAppVersion} or newer`);
-  }
-  if (row.choice.state !== "candidate") {
-    throw new MarketplaceError("PACKAGE_INCOMPATIBLE", `no version of ${row.name} from ${row.sourceId} is offered to this installation`);
-  }
-  return planForVersion(row, row.choice.version);
+  return planForVersion(row, candidateVersion(row));
 }
 
 /** A plan for one listed version of the row. */
 export function planForVersion(row: CatalogRow, version: IndexVersion): PluginInstallPlan {
-  if (!row.package.versions.includes(version)) throw new Error(`${row.name}@${version.version} is not a version of this row`);
+  if (row.kind !== "plugin") throw new Error(`${row.kind} ${row.name} is not a plugin`);
   // Snapshot validation requires both for every plugin version.
   if (!version.authority || !version.artifact) throw new Error(`${row.name}@${version.version} has no authority or artifact`);
-  return {
-    sourceId: row.sourceId,
-    sourceOrigin: row.sourceOrigin,
-    snapshotCommit: row.snapshotCommit,
-    versionCommit: version.commit,
-    packagePath: row.package.path,
-    name: row.name,
-    version: version.version,
-    minAppVersion: version.minAppVersion,
-    ...(version.platforms ? { platforms: version.platforms } : {}),
-    authority: version.authority,
-    artifact: version.artifact,
-  };
-}
-
-function repoPath(dir: string, file: string): string {
-  return dir === "" ? file : `${dir}/${file}`;
+  return { ...planPackage(row, version), kind: "plugin", authority: version.authority, artifact: version.artifact };
 }
 
 function sha256(bytes: Buffer): string {
@@ -170,25 +129,16 @@ function same(a: unknown, b: unknown): boolean {
  * that commit is what the plan is bound to, and the index is only a copy.
  */
 async function assertDescriptorAtVersion(plan: PluginInstallPlan, deps: LadderDeps): Promise<void> {
-  const path = repoPath(plan.packagePath, DESCRIPTOR_NAME);
-  await deps.repo.ensureBlobs(deps.remote, plan.versionCommit, [path], deps.signal);
-  const bytes = await deps.repo.readFile(plan.versionCommit, path, DESCRIPTOR_LIMIT);
-  const fail = (why: string) => new LadderError("MANIFEST_MISMATCH", `${plan.name}@${plan.version} at ${plan.versionCommit}: ${why}`, []);
-  if (!bytes) throw fail(`${path} is missing`);
-  const checked = validateDescriptorText(bytes.toString("utf8"), { direct: deps.direct });
-  if (!checked.ok) throw fail(`${path} is invalid: ${checked.error}`);
-  const descriptor = checked.value;
+  const descriptor = await readDescriptorAtVersion(plan, deps);
   const payload = descriptor.payload as { authority?: unknown; artifact?: unknown };
-  const differs = [
-    descriptor.kind !== "plugin" && "kind",
-    descriptor.name !== plan.name && "name",
-    descriptor.version !== plan.version && "version",
-    descriptor.minAppVersion !== plan.minAppVersion && "minAppVersion",
-    !same(descriptor.platforms, plan.platforms) && "platforms",
-    !same(payload.authority, plan.authority) && "authority",
-    !same(payload.artifact, plan.artifact) && "artifact",
-  ].filter((field): field is string => typeof field === "string");
-  if (differs.length > 0) throw fail(`the index copy differs from ${path} in ${differs.join(", ")}`);
+  const differs = [!same(payload.authority, plan.authority) && "authority", !same(payload.artifact, plan.artifact) && "artifact"]
+    .filter((field): field is string => typeof field === "string");
+  if (differs.length > 0) {
+    throw new MarketplaceError(
+      "MANIFEST_MISMATCH",
+      `plugin ${plan.name}@${plan.version} at ${plan.versionCommit}: the index copy differs from ${repoPath(plan.packagePath, DESCRIPTOR_NAME)} in ${differs.join(", ")}`,
+    );
+  }
 }
 
 /** Read and check plugin.json from a zip that passed the preflight. */
