@@ -34,7 +34,7 @@ import {
 } from "./official.js";
 import { EMPTY_MARKETPLACE_POLICY, type MarketplacePolicy, type PolicyLoad } from "./policy.js";
 
-type SourceOrigin = "official" | "managed" | "custom" | "direct";
+export type SourceOrigin = "official" | "managed" | "custom" | "direct";
 
 interface SourceEntry {
   id: string;
