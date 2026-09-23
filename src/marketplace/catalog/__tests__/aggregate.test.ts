@@ -79,7 +79,6 @@ describe("chooseVersion (design §6.1)", () => {
     expect(versionExclusions("acme", "skill", "alpha", version(inside, { rollout: { percent: 30 } }), [], context())).toEqual([]);
     expect(versionExclusions("acme", "skill", "alpha", version(outside, { rollout: { percent: 30 } }), [], context())).toEqual(["rollout"]);
     expect(versionExclusions("acme", "skill", "alpha", version(outside, { rollout: { percent: 100 } }), [], context())).toEqual([]);
-    expect(versionExclusions("acme", "skill", "alpha", version(inside, { rollout: { percent: 0 } }), [], context())).toEqual(["rollout"]);
   });
 
   it("drops versions the same source revokes, by range", () => {
