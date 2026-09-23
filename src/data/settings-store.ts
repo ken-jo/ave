@@ -1476,7 +1476,7 @@ export class SettingsService {
     providerIds: readonly string[],
   ): Promise<void> {
     try {
-      await this.deleteMarketplaceProviderPresetSecrets(providerIds);
+      await this.deleteMarketplaceProviderPresetSecrets(providerIds, appliedSettings);
     } catch (err) {
       // SecretDocumentStore.deleteMany is one locked atomic mutation: a
       // rejected call leaves the previous secret document intact, so only
@@ -1498,14 +1498,14 @@ export class SettingsService {
       // next to: it is never moved back, and stays usable while the preset
       // is still that one.
       const restorable = providerIds.filter((providerId) =>
-        !this.reenteredSecretKeys.has(marketplaceProviderPresetSecretKey(providerId))
+        !this.enteredForApplied(providerId, appliedSettings)
         && this.invalidatingSecretKeys.get(marketplaceProviderPresetSecretKey(providerId)) === 1
         && isDeepStrictEqual(presetIn(this.settings, providerId), presetIn(appliedSettings, providerId)));
       for (const providerId of providerIds) {
         if (restorable.includes(providerId)) continue;
         const key = marketplaceProviderPresetSecretKey(providerId);
         if (
-          this.reenteredSecretKeys.has(key)
+          this.enteredForApplied(providerId, appliedSettings)
           && isDeepStrictEqual(this.reenteredSecretKeys.get(key), presetIn(this.settings, providerId))
         ) {
           continue;
@@ -1539,11 +1539,24 @@ export class SettingsService {
     }
   }
 
-  private async deleteMarketplaceProviderPresetSecrets(providerIds: readonly string[]): Promise<void> {
-    // A key entered again meanwhile is for the preset as it is now.
+  /** Whether the key was entered again next to the preset this change applied. */
+  private enteredForApplied(providerId: string, appliedSettings: AppSettings): boolean {
+    const key = marketplaceProviderPresetSecretKey(providerId);
+    return this.reenteredSecretKeys.has(key) && isDeepStrictEqual(
+      this.reenteredSecretKeys.get(key),
+      appliedSettings.marketplace.installedProviderPresets.find((preset) => preset.providerId === providerId),
+    );
+  }
+
+  private async deleteMarketplaceProviderPresetSecrets(
+    providerIds: readonly string[],
+    appliedSettings: AppSettings,
+  ): Promise<void> {
+    // A key entered again next to the preset this change applied is that
+    // preset's; one entered next to another preset is not spared.
     const keys = providerIds
-      .map(marketplaceProviderPresetSecretKey)
-      .filter((key) => !this.reenteredSecretKeys.has(key));
+      .filter((providerId) => !this.enteredForApplied(providerId, appliedSettings))
+      .map(marketplaceProviderPresetSecretKey);
     if (keys.length === 0) return;
     await this.secretStore.deleteMany(keys);
   }
@@ -1589,8 +1602,6 @@ export class SettingsService {
     // it: recorded at once, so a rollback or deletion running while the key
     // is written already leaves it with that preset.
     const invalidating = this.invalidatingSecretKeys.has(key);
-    const hadEntry = this.reenteredSecretKeys.has(key);
-    const earlierEntry = this.reenteredSecretKeys.get(key);
     if (invalidating) {
       const enteredFor = this.settings.marketplace.installedProviderPresets.find(
         (preset) => marketplaceProviderPresetSecretKey(preset.providerId) === key,
@@ -1601,13 +1612,11 @@ export class SettingsService {
       await this.secretStore.set(key, value);
     } catch (err) {
       if (invalidating) {
-        if (hadEntry) {
-          this.reenteredSecretKeys.set(key, earlierEntry);
-        } else {
-          // The invalidation may have skipped the old key for this entry.
-          this.reenteredSecretKeys.delete(key);
-          this.withheldSecretKeys.add(key);
-        }
+        // The invalidation may have kept its preset, or skipped the old key,
+        // for this entry: whatever the store holds now is not known to be
+        // that preset's, so it is withheld until entered again.
+        this.reenteredSecretKeys.delete(key);
+        this.withheldSecretKeys.add(key);
       }
       throw err;
     }
