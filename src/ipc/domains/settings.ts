@@ -627,15 +627,20 @@ export function registerSettingsHandlers(deps: IpcDeps): void {
   ): Promise<boolean> => {
     // Only the request that still owns the active selection may undo it. This
     // preserves unrelated LLM updates and a newer multi-window selection.
-    if (
-      transitionRevision !== activeChatRuntimeTransitionRevision
-      || !sameActiveChatRuntime(settingsService.get("llm").activeChatRuntime, failedActiveChatRuntime)
-    ) {
+    if (transitionRevision !== activeChatRuntimeTransitionRevision) return false;
+    const current = settingsService.get("llm").activeChatRuntime;
+    // A failed save has already put memory back on the saved settings
+    // (SettingsService never runs on settings that are not on disk): the
+    // previous runtime is in force again without a write, but the bindings
+    // made for the failed one must still be undone.
+    const restoredBySave = !sameActiveChatRuntime(current, failedActiveChatRuntime)
+      && sameActiveChatRuntime(current, previousActiveChatRuntime);
+    if (!restoredBySave && !sameActiveChatRuntime(current, failedActiveChatRuntime)) {
       return false;
     }
-    const persistRestoration = settingsService.patch({
-      llm: { activeChatRuntime: previousActiveChatRuntime },
-    });
+    const persistRestoration = restoredBySave
+      ? Promise.resolve()
+      : settingsService.patch({ llm: { activeChatRuntime: previousActiveChatRuntime } });
     // SettingsService mutates memory before its first await. Restore every
     // executable binding in that same synchronous turn; waiting for disk here
     // would leave the failed API/subscription provider reachable meanwhile.

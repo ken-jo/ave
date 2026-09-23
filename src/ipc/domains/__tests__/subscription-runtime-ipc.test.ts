@@ -343,6 +343,40 @@ describe("common subscription runtime IPC", () => {
     });
   });
 
+  it("rebinds execution to the previous runtime when the failed save already restored it", async () => {
+    const state = makeStatefulSelectionDeps({
+      provider: "openai",
+      vendors: { openai: { model: "gpt-5", baseUrl: null } },
+      activeChatRuntime: { kind: "api" },
+    });
+    // As SettingsService does: the change applies at once, and a failed save
+    // puts memory back on the saved settings before rejecting.
+    const patch = vi.fn((value: unknown) => {
+      state.applyLlmPatch(value);
+      return Promise.resolve().then(() => {
+        state.applyLlmPatch({ llm: { activeChatRuntime: { kind: "api" } } });
+        throw new Error("disk full");
+      });
+    });
+    const deps = { ...state.deps };
+    deps.settingsService.patch = patch;
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+
+    await expect(invoke("ave:settings:subscription:use-for-chat", "codex", "gpt-5")).resolves.toMatchObject({
+      ok: false,
+      error: "subscription-operation-failed",
+    });
+    expect(state.currentLlm().activeChatRuntime).toEqual({ kind: "api" });
+    // Bound once for the failed runtime, then again for the restored one —
+    // without a second write.
+    expect(patch).toHaveBeenCalledOnce();
+    expect(deps.conversationLoop.refreshProvider).toHaveBeenCalledTimes(2);
+    expect(deps.sideChatConversationLoop.refreshProvider).toHaveBeenCalledTimes(2);
+    expect(deps.rewireReviewerAgent).toHaveBeenCalledTimes(2);
+    expect(deps.refreshActiveLlmWildcard).toHaveBeenCalledTimes(2);
+  });
+
   it("supports ACP subscriptions through the same verification-and-selection path", async () => {
     const deps = makeDeps();
     const { registerSettingsHandlers } = await import("../settings.js");
