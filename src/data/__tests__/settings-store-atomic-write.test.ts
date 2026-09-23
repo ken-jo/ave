@@ -1,4 +1,4 @@
-import { closeSync, lstatSync, mkdtempSync, openSync, readFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -45,5 +45,26 @@ describe("settings persistence", () => {
     expect(readFileSync(outside, "utf8")).toBe(original);
     expect(lstatSync(path).isSymbolicLink()).toBe(false);
     expect(JSON.parse(readFileSync(path, "utf8")).system.hardwareAcceleration).toBe(true);
+  });
+
+  it.skipIf(process.platform === "win32")("keeps memory on the saved settings when a write fails", async () => {
+    // A directory where the settings file goes: every write fails.
+    const path = settingsFilePath(root);
+    unlinkSync(path);
+    mkdirSync(path);
+
+    await expect(service.patch({ system: { ...service.get("system"), hardwareAcceleration: true } })).rejects.toThrow();
+    expect(service.get("system").hardwareAcceleration).toBe(false);
+
+    const preset = {
+      providerId: "harbor-llm",
+      label: "Harbor LLM",
+      baseUrl: "https://api.harbor.example/v1",
+      defaultModel: "harbor-1",
+      modelOptions: ["harbor-1"],
+      requiresApiKey: true,
+    };
+    await expect(service.installMarketplaceProviderPreset(preset)).rejects.toThrow();
+    expect(service.get("marketplace").installedProviderPresets).toEqual([]);
   });
 });

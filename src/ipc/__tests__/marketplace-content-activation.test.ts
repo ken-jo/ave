@@ -169,15 +169,18 @@ describe("createContentActivation", () => {
     expect(settingsService.get("marketplace").installedProviderIds).not.toContain("azure-foundry");
   });
 
-  it("puts the vendor key back when the write that moves the base URL fails", async () => {
+  it("puts the vendor key back, next to the old address, when saving the move fails", async () => {
     const activation = createContentActivation(deps);
     await settingsService.setSecret("llm.apiKey.azure-foundry", "sk-user");
-    const patch = vi.spyOn(settingsService, "patch").mockRejectedValueOnce(new Error("disk full"));
+    const before = settingsService.get("llm").vendors["azure-foundry"]?.baseUrl;
+    // The real patch runs and changes memory; only the file write fails.
+    const save = vi.spyOn(settingsService as unknown as { saveSettings(): Promise<void> }, "saveSettings").mockRejectedValueOnce(new Error("disk full"));
     await expect(
       activation.activate({ kind: "provider", vendor: { providerId: "azure-foundry", baseUrl: "https://gateway.corp.example/foundry" } }, entry("provider", "azure-foundry"), null),
     ).rejects.toThrow("disk full");
-    patch.mockRestore();
+    save.mockRestore();
     expect(settingsService.getSecret("llm.apiKey.azure-foundry")).toBe("sk-user");
+    expect(settingsService.get("llm").vendors["azure-foundry"]?.baseUrl).toBe(before);
     expect(settingsService.get("marketplace").installedProviderIds).not.toContain("azure-foundry");
   });
 

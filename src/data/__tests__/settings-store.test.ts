@@ -2459,8 +2459,8 @@ describe("SettingsService appearance.font — Track A user-configurable font", (
     expect(s.get("appearance").font?.family).toBeUndefined();
   });
 
-  it("rejects a stack longer than 200 chars and drops the field", () => {
-    writeAppearance({ family: "A".repeat(201) });
+  it("rejects a stack longer than 256 chars and drops the field", () => {
+    writeAppearance({ family: "A".repeat(257) });
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(s.get("appearance").font?.family).toBeUndefined();
   });

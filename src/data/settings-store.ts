@@ -1323,7 +1323,7 @@ export class SettingsService {
         ...normalizeFeatureFlags(partial.features),
       };
     }
-    await this.saveSettings();
+    await this.saveOrRestore(previousSettings);
     await this.deleteMarketplaceProviderPresetSecretsAtomically(
       previousSettings,
       providerPresetSecretInvalidationIds,
@@ -1375,7 +1375,7 @@ export class SettingsService {
       { inferInstalledFromCustom: false },
     );
     this.settings.llm = prunedLlm.llm;
-    await this.saveSettings();
+    await this.saveOrRestore(previousSettings);
     await this.deleteMarketplaceProviderPresetSecretsAtomically(
       previousSettings,
       providerPresetSecretInvalidationIds,
@@ -1649,6 +1649,21 @@ export class SettingsService {
       const defaults = structuredClone(DEFAULT_SETTINGS);
       defaults.appliedMigrations = [...KNOWN_MIGRATIONS];
       return { settings: defaults, writeBack: false };
+    }
+  }
+
+  /**
+   * Write the settings changed in memory since `previous`; when the write
+   * fails, memory goes back to `previous`. The process never runs on settings
+   * that are not on disk — an endpoint change that failed to save must not
+   * be in force until the next restart.
+   */
+  private async saveOrRestore(previous: AppSettings): Promise<void> {
+    try {
+      await this.saveSettings();
+    } catch (err) {
+      this.settings = previous;
+      throw err;
     }
   }
 

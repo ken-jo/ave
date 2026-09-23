@@ -204,6 +204,7 @@ export const en = {
   // Installed content packages (themes, languages, fonts)
   "formatIpcError.installedContentUnavailable": "Installed themes, languages and fonts could not be loaded.",
   "formatIpcError.languageNotInstalled": "That language is not installed.",
+  "formatIpcError.providerPresetRefreshFailed": "The provider change was saved but could not be applied yet. Restart the app to apply it.",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "formatIpcError.invalidPath": "경로가 올바르지 않습니다.",
@@ -410,4 +411,5 @@ export const ko: Record<keyof typeof en, string> = {
   // 설치한 콘텐츠 패키지(테마, 언어, 글꼴)
   "formatIpcError.installedContentUnavailable": "설치한 테마, 언어, 글꼴을 불러오지 못했습니다.",
   "formatIpcError.languageNotInstalled": "설치되지 않은 언어입니다.",
+  "formatIpcError.providerPresetRefreshFailed": "프로바이더 변경은 저장했지만 아직 적용하지 못했습니다. 앱을 다시 시작하면 적용됩니다.",
 };

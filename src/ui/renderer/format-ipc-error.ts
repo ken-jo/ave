@@ -232,6 +232,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "webview-not-live": "formatIpcError.notRegistered",
   "installed-content-unavailable": "formatIpcError.installedContentUnavailable",
   "language-not-installed": "formatIpcError.languageNotInstalled",
+  "invalid-locale": "formatIpcError.invalidInput",
   "invalid-bundle-id": "formatIpcError.invalidBundleId",
   "invalid-entry-url": "formatIpcError.invalidEntryUrl",
   "entry-url-outside-install-root": "formatIpcError.entryUrlOutsideInstallRoot",
@@ -302,6 +303,8 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "provider-not-installed": "formatIpcError.providerNotInstalled",
   "unknown-provider": "formatIpcError.unknownProvider",
   "reviewer-rewire-failed": "formatIpcError.reviewerRewireFailed",
+  // The preset change is saved; the provider refresh that applies it failed.
+  "provider-preset-refresh-failed": "formatIpcError.providerPresetRefreshFailed",
   // ── Tutorial-C — tour:{start,mark-complete,dismiss} validation ──
   "invalid-scenario-id": "formatIpcError.invalidScenarioId",
   "write-failed": "formatIpcError.writeFailed",
