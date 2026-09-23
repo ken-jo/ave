@@ -45,6 +45,8 @@ function sameField(record: Record<string, unknown>, expected: PluginAuthority, f
   return !has || canonicalStringify(record[field]) === canonicalStringify(expected[field]);
 }
 
+const COMPAT_UNDECLARED = "requires.minAppVersion is required for a git install";
+
 /** Every rule the staged document breaks; empty = it matches the descriptor. */
 export function gitInstallManifestMismatches(document: unknown, expected: ExpectedPlugin): string[] {
   if (!isRecord(document)) return ["plugin.json is not a JSON object"];
@@ -62,7 +64,7 @@ export function gitInstallManifestMismatches(document: unknown, expected: Expect
   const requires = ave.requires;
   const minAppVersion = isRecord(requires) ? requires.minAppVersion : undefined;
   if (typeof minAppVersion !== "string") {
-    problems.push("requires.minAppVersion is required for a git install");
+    problems.push(COMPAT_UNDECLARED);
   } else if (minAppVersion !== expected.minAppVersion) {
     problems.push(`requires.minAppVersion is "${minAppVersion}", the descriptor says "${expected.minAppVersion}"`);
   }
@@ -72,9 +74,16 @@ export function gitInstallManifestMismatches(document: unknown, expected: Expect
   return problems;
 }
 
-/** Throw `MANIFEST_MISMATCH` naming every broken rule. */
+/**
+ * Throw naming every broken rule: `PACKAGE_COMPAT_UNDECLARED` when the
+ * manifest does not declare `requires.minAppVersion` (design §14), else
+ * `MANIFEST_MISMATCH`.
+ */
 export function assertGitInstallManifest(document: unknown, expected: ExpectedPlugin): void {
   const problems = gitInstallManifestMismatches(document, expected);
+  if (problems.includes(COMPAT_UNDECLARED)) {
+    throw new MarketplaceError("PACKAGE_COMPAT_UNDECLARED", `plugin ${expected.name}@${expected.version}: ${problems.join("; ")}`);
+  }
   if (problems.length > 0) {
     throw new MarketplaceError("MANIFEST_MISMATCH", `plugin ${expected.name}@${expected.version}: ${problems.join("; ")}`);
   }

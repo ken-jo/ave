@@ -85,7 +85,7 @@ describe("chooseVersion (design §6.1)", () => {
     const versions = [version("1.3.0"), version("1.2.0"), version("1.1.0")];
     const revocations = [revocation(">=1.2.0 <1.4.0"), revocation("*", { name: "beta" })];
     expect(chooseVersion("acme", pkg(versions), revocations, context())).toMatchObject({ version: { version: "1.1.0" } });
-    expect(chooseVersion("acme", pkg(versions), [revocation("*")], context())).toEqual({ state: "unavailable" });
+    expect(chooseVersion("acme", pkg(versions), [revocation("*")], context())).toEqual({ state: "unavailable", reason: "revoked" });
     // A revocation of another kind with the same name does not apply.
     expect(chooseVersion("acme", pkg(versions), [revocation("*", { kind: "theme" })], context())).toMatchObject({ version: { version: "1.3.0" } });
   });
@@ -105,7 +105,18 @@ describe("chooseVersion (design §6.1)", () => {
     const tooNewPrerelease = version("4.0.0-beta.1", { minAppVersion: "0.20.0" });
     expect(chooseVersion("acme", pkg([tooNewAndYanked, tooNewPrerelease, version("1.0.0", { yanked: { reason: "x", at: AT } })]), [], context())).toEqual({
       state: "unavailable",
+      reason: "withheld",
     });
+  });
+
+  it("says why nothing is offered: revoked, yanked, pending a rollout or release, or withheld (design §14)", () => {
+    const yanked = { yanked: { reason: "x", at: AT } };
+    expect(chooseVersion("acme", pkg([version("1.1.0", yanked), version("1.0.0")]), [revocation("1.0.0")], context())).toEqual({ state: "unavailable", reason: "yanked" });
+    expect(chooseVersion("acme", pkg([version("2.0.0-rc.1"), version("1.0.0", yanked)]), [], context())).toEqual({ state: "unavailable", reason: "pending" });
+    const outside = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"].find((digit) => rolloutBucket(INSTALLATION, "acme", "skill", "alpha", `1.0.${digit}`) >= 1)!;
+    expect(chooseVersion("acme", pkg([version(`1.0.${outside}`, { rollout: { percent: 1 } })]), [], context())).toEqual({ state: "unavailable", reason: "pending" });
+    const otherPlatform = process.platform === "win32" ? "linux" : "win32";
+    expect(chooseVersion("acme", pkg([version("1.0.0", { platforms: [otherPlatform] })]), [], context())).toEqual({ state: "unavailable", reason: "withheld" });
   });
 
   it("fails closed on an app version it cannot read", () => {

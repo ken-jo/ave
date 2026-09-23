@@ -55,6 +55,15 @@ describe("git-install manifest rules (design §5.3)", () => {
     ]);
   });
 
+  it("throws PACKAGE_COMPAT_UNDECLARED for a missing requires.minAppVersion, MANIFEST_MISMATCH otherwise (design §14)", () => {
+    expect(() => assertGitInstallManifest(manifest({ requires: { capabilities: ["llm.chat"] } }), expected())).toThrow(
+      expect.objectContaining({ code: "PACKAGE_COMPAT_UNDECLARED" }),
+    );
+    expect(() => assertGitInstallManifest(manifest({ requires: { capabilities: ["llm.chat"], minAppVersion: "0.11.0" } }), expected())).toThrow(
+      expect.objectContaining({ code: "MANIFEST_MISMATCH" }),
+    );
+  });
+
   it("checks name and version, and rejects installPolicy by name", () => {
     const wrong = { ...manifest({ installPolicy: "admin" }), name: "beta", version: "1.2.1" };
     expect(gitInstallManifestMismatches(wrong, expected())).toEqual([

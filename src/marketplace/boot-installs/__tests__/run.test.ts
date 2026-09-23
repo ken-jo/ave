@@ -10,7 +10,7 @@ import { EMPTY_MARKETPLACE_POLICY, type MarketplacePolicy, type PackageKey } fro
 import type { SourceOrigin } from "../../sources/registry.js";
 import { AppliedDefaults } from "../applied.js";
 import { DEFAULT_INSTALLS } from "../default-installs.js";
-import { requiredByPolicy, runBootInstalls, type BootInstallInput } from "../run.js";
+import { assertNotRequiredByPolicy, requiredByPolicy, runBootInstalls, type BootInstallInput } from "../run.js";
 
 const AT = new Date("2026-09-23T00:00:00.000Z");
 
@@ -159,6 +159,23 @@ describe("runBootInstalls (design §10.2)", () => {
     expect(requiredByPolicy(policy, "plugin", "wiki")).toEqual(key("wiki", "corp"));
     expect(requiredByPolicy(policy, "plugin", "meeting")).toBeUndefined();
     expect(requiredByPolicy(policy, "skill", "wiki")).toBeUndefined();
+    expect(() => assertNotRequiredByPolicy(policy, "plugin", "wiki", "uninstall")).toThrow(
+      expect.objectContaining({ code: "PACKAGE_REQUIRED_BY_POLICY", message: "plugin wiki is required by policy (source corp); it cannot be uninstalled" }),
+    );
+    expect(() => assertNotRequiredByPolicy(policy, "plugin", "wiki", "disable")).toThrow(/cannot be disabled/u);
+    expect(() => assertNotRequiredByPolicy(policy, "plugin", "meeting", "uninstall")).not.toThrow();
+  });
+
+  it("leaves a default held back by a rollout or as a pre-release unrecorded, to try again next boot", async () => {
+    const report = await boot({ rows: [row("ave", "meeting", { state: "unavailable", reason: "pending" }), row("ave", "local-indexer", { state: "unavailable", reason: "withheld" })] });
+    expect(report.skipped).toEqual([
+      { key: key("meeting"), reason: "not offered to this installation yet (rollout or pre-release)" },
+      { key: key("local-indexer"), reason: "no version is offered to this installation" },
+    ]);
+    const applied = await AppliedDefaults.open(file);
+    expect(applied.has(key("meeting"))).toBe(false);
+    expect(applied.get(key("local-indexer"))).toMatchObject({ result: "skipped" });
+    expect((await boot()).installed).toEqual([key("meeting")]);
   });
 
   it("refuses to run over an applied file it cannot read", async () => {

@@ -274,11 +274,16 @@ export class SourceSyncer {
   /**
    * Run `fn` with the source's repository and a gated remote for its primary
    * URL, under the source lock: an install reads at the commits its plan was
-   * bound to, and no sync or removal of the source runs meanwhile.
+   * bound to, and no sync or removal of the source runs meanwhile. A hidden
+   * source syncs for the packages bound to it, but installs and updates from
+   * it are refused with SOURCE_DISABLED until it is shown again (§14).
    */
   withRepository<T>(id: string, fn: (context: { source: ResolvedSource; repo: BareRepo; remote: GitRemote }) => Promise<T>): Promise<T> {
     return this.withSourceLock(id, async () => {
       const source = this.source(id);
+      if (!this.options.registry.isEnabled(source, await this.options.registry.readState(id))) {
+        throw new MarketplaceError("SOURCE_DISABLED", `source ${id} is hidden; show it again to install or update from it`);
+      }
       const dir = join(this.sourceDir(id), "repo.git");
       if (!existsSync(join(dir, "HEAD"))) throw new Error(`source ${id} has not been synced`);
       return fn({ source, repo: new BareRepo(this.options.runner, dir), remote: await this.remoteFor(source) });

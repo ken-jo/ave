@@ -24,11 +24,23 @@ export interface VersionChoiceContext {
 /** Why a version is not offered, in the order of §6.1. */
 export type VersionExclusion = "min_app_version" | "yanked" | "platform" | "prerelease" | "rollout" | "revoked";
 
+/**
+ * Why nothing is offered, when no version is held back by the app version
+ * alone (design §14):
+ *
+ *   revoked   every version is revoked by its source (PACKAGE_REVOKED)
+ *   yanked    every version is yanked or revoked, some yanked (PACKAGE_YANKED)
+ *   pending   some version is held back only by its rollout or by being a
+ *             pre-release: that can change without the app changing
+ *   withheld  anything else: platform, or several reasons at once
+ */
+type UnavailableReason = "revoked" | "yanked" | "pending" | "withheld";
+
 export type VersionChoice =
   | { state: "candidate"; version: IndexVersion }
   /** Nothing is offered, and some version is held back only by the app version. */
   | { state: "upgrade_required"; minAppVersion: string }
-  | { state: "unavailable" };
+  | { state: "unavailable"; reason: UnavailableReason };
 
 export interface CatalogRow {
   sourceId: string;
@@ -99,6 +111,9 @@ export function chooseVersion(
 ): VersionChoice {
   let candidate: IndexVersion | undefined;
   let needsUpgrade: IndexVersion | undefined;
+  let allRevoked = true;
+  let allYankedOrRevoked = true;
+  let pending = false;
   for (const version of pkg.versions) {
     const reasons = versionExclusions(sourceId, pkg.kind, pkg.name, version, revocations, context);
     if (reasons.length === 0) {
@@ -106,10 +121,14 @@ export function chooseVersion(
     } else if (reasons.length === 1 && reasons[0] === "min_app_version") {
       if (!needsUpgrade || compareSemver(version.version, needsUpgrade.version) > 0) needsUpgrade = version;
     }
+    if (!reasons.includes("revoked")) allRevoked = false;
+    if (!reasons.includes("revoked") && !reasons.includes("yanked")) allYankedOrRevoked = false;
+    if (reasons.length > 0 && reasons.every((reason) => reason === "rollout" || reason === "prerelease")) pending = true;
   }
   if (candidate) return { state: "candidate", version: candidate };
   if (needsUpgrade) return { state: "upgrade_required", minAppVersion: needsUpgrade.minAppVersion };
-  return { state: "unavailable" };
+  const reason: UnavailableReason = allRevoked ? "revoked" : allYankedOrRevoked ? "yanked" : pending ? "pending" : "withheld";
+  return { state: "unavailable", reason };
 }
 
 /** Rows for every package of every snapshot, sorted by kind, name, then source id. */

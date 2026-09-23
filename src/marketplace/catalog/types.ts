@@ -82,9 +82,10 @@ export interface PluginArtifactPins {
     tag?: string;
     asset?: string;
     url?: string;
-    sha256: string;
+    /** Without a pin the rung is skipped (ARTIFACT_NOT_PINNED, design §6.2). */
+    sha256?: string;
   };
-  archive?: { url: string; sha256: string };
+  archive?: { url: string; sha256?: string };
   tree?: string;
 }
 

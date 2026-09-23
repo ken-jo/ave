@@ -11,13 +11,15 @@
  * are installed once. A key is recorded when it is installed, found already
  * installed, or its package is missing or incompatible (skipped); a recorded
  * key is never tried again. A key whose source has no snapshot yet (the
- * first boot offline) or whose install failed stays unrecorded and is tried
- * at the next boot.
+ * first boot offline), whose versions are only held back by a rollout or as
+ * pre-releases, or whose install failed stays unrecorded and is tried at the
+ * next boot.
  *
  * Installing is the caller's: `install` runs the normal plan (ladder,
  * verification, receipt). Nothing here decides consent or reads the network.
  */
 import { errorMessage } from "../../shared/error-message.js";
+import { MarketplaceError } from "../errors.js";
 import type { CatalogRow } from "../catalog/aggregate.js";
 import type { PackageKind } from "../catalog/types.js";
 import { updateFor, type InstalledPackage } from "../resolve/identity.js";
@@ -55,6 +57,14 @@ const LISTABLE_ORIGINS = new Set<SourceOrigin>(["official", "managed"]);
 /** The requiredInstalls entry that locks `(kind, name)`, if any (PACKAGE_REQUIRED_BY_POLICY). */
 export function requiredByPolicy(policy: MarketplacePolicy, kind: PackageKind, name: string): PackageKey | undefined {
   return policy.requiredInstalls.find((key) => key.kind === kind && key.name === name);
+}
+
+/** Refuse to uninstall or disable a package a `requiredInstalls` entry locks (design §10.2). */
+export function assertNotRequiredByPolicy(policy: MarketplacePolicy, kind: PackageKind, name: string, action: "uninstall" | "disable"): void {
+  const key = requiredByPolicy(policy, kind, name);
+  if (key) {
+    throw new MarketplaceError("PACKAGE_REQUIRED_BY_POLICY", `${kind} ${name} is required by policy (source ${key.source}); it cannot ${action === "uninstall" ? "be uninstalled" : "be disabled"}`);
+  }
 }
 
 function rowFor(rows: readonly CatalogRow[], key: PackageKey): CatalogRow | undefined {
@@ -125,6 +135,11 @@ async function byDefault(key: PackageKey, input: BootInstallInput, report: BootI
   }
   const row = rowFor(input.rows, key);
   if (!row) return skip(`${key.source} does not list ${key.kind} ${key.name}`);
+  if (row.choice.state === "unavailable" && row.choice.reason === "pending") {
+    // A rollout or a pre-release holds it back for now: not a permanent skip (§10.2).
+    report.skipped.push({ key, reason: "not offered to this installation yet (rollout or pre-release)" });
+    return;
+  }
   if (row.choice.state !== "candidate") {
     return skip(row.choice.state === "upgrade_required" ? `needs Ave ${row.choice.minAppVersion}` : "no version is offered to this installation");
   }

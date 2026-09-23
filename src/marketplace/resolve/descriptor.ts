@@ -40,15 +40,27 @@ export interface RepositoryAccess {
 export const DESCRIPTOR_NAME = "ave-package.json";
 const DESCRIPTOR_LIMIT = 256 * 1024;
 
-/** The row's candidate version (design §6.1); anything else is PACKAGE_INCOMPATIBLE. */
+/**
+ * The row's candidate version (design §6.1). Without one: PACKAGE_REVOKED or
+ * PACKAGE_YANKED when that is why every version is dropped, else
+ * PACKAGE_INCOMPATIBLE (design §14).
+ */
 export function candidateVersion(row: CatalogRow): IndexVersion {
-  if (row.choice.state === "upgrade_required") {
-    throw new MarketplaceError("PACKAGE_INCOMPATIBLE", `${row.name} needs Ave ${row.choice.minAppVersion} or newer`);
+  const { choice } = row;
+  if (choice.state === "candidate") return choice.version;
+  if (choice.state === "upgrade_required") {
+    throw new MarketplaceError("PACKAGE_INCOMPATIBLE", `${row.name} needs Ave ${choice.minAppVersion} or newer`);
   }
-  if (row.choice.state !== "candidate") {
-    throw new MarketplaceError("PACKAGE_INCOMPATIBLE", `no version of ${row.name} from ${row.sourceId} is offered to this installation`);
+  switch (choice.reason) {
+    case "revoked":
+      throw new MarketplaceError("PACKAGE_REVOKED", `every version of ${row.name} is revoked by ${row.sourceId}`);
+    case "yanked":
+      throw new MarketplaceError("PACKAGE_YANKED", `every version of ${row.name} from ${row.sourceId} is yanked or revoked`);
+    case "pending":
+      throw new MarketplaceError("PACKAGE_INCOMPATIBLE", `no version of ${row.name} from ${row.sourceId} is offered to this installation yet (rollout or pre-release)`);
+    case "withheld":
+      throw new MarketplaceError("PACKAGE_INCOMPATIBLE", `no version of ${row.name} from ${row.sourceId} is offered to this installation`);
   }
-  return row.choice.version;
 }
 
 /** The plan fields every kind shares, for one listed version of the row. */

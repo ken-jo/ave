@@ -153,9 +153,18 @@ describe("BareRepo", () => {
     expect(readFileSync(join(dest2, "dist/index.js"), "utf8")).toBe("export const v = 2;\n");
   });
 
-  it("enforces file-count and byte limits", async () => {
+  it("enforces file-count and byte limits, refusing too many files before any blob is fetched", async () => {
     const bare = await BareRepo.init(t.runner, localRepoDir());
     await bare.fetchRef(remote, undefined, "pin");
+    const missing = missingBlobs(bare.dir, second, ".").length;
+    const before = server.seen.length;
+    await expectCode(
+      bare.exportPath(remote, second, "", mkdtempSync(join(scratch, "export-")), { maxFiles: 1, maxBytes: 1024 * 1024 }),
+      "CONTENT_RULE_VIOLATION",
+    );
+    expect(server.seen.length).toBe(before);
+    expect(missing).toBeGreaterThan(0);
+    expect(missingBlobs(bare.dir, second, ".")).toHaveLength(missing);
     await expectCode(
       bare.exportPath(remote, second, "plugins/alpha", mkdtempSync(join(scratch, "export-")), { maxFiles: 1, maxBytes: 1024 }),
       "CONTENT_RULE_VIOLATION",

@@ -19,9 +19,10 @@ import { policyLoad } from "../../__tests__/fixtures/policy.js";
 import { aggregateCatalog, type CatalogRow } from "../../catalog/aggregate.js";
 import type { PluginAuthority } from "../../catalog/types.js";
 import { NetworkGate } from "../../net/network-gate.js";
-import { normalizeSourceUrl } from "../../net/source-url.js";
+import { normalizeSourceUrl, parseSourcePattern } from "../../net/source-url.js";
 import { SourceRegistry } from "../../sources/registry.js";
 import { SourceSyncer } from "../../sources/sync.js";
+import { candidateVersion } from "../descriptor.js";
 import { LadderError, planPluginInstall, runPluginLadder, treeDigest, type LadderDeps, type PluginInstallPlan } from "../plugin-ladder.js";
 
 const AT = "2026-09-23T00:00:00.000Z";
@@ -261,6 +262,38 @@ describe.skipIf(process.platform === "win32")("plugin artifact ladder (design §
     server.file(releasePath, null);
   });
 
+  it("stops with PACKAGE_COMPAT_UNDECLARED when the staged plugin.json does not declare requires.minAppVersion", async () => {
+    const { repo, name } = fixture();
+    // The schema cannot express the broken manifest this test stages.
+    const undeclared = pluginZip("alpha", "1.0.0", authority({ requires: {} as unknown as PluginAuthority["requires"] }));
+    server.file(releasePath, undeclared);
+    market(repo, { release: { repo: "acme/alpha", sha256: sha(undeclared) } });
+    const { gate, syncer } = await open(name);
+    const error = await ladder(syncer, gate, planPluginInstall(await row(syncer))).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      code: "PACKAGE_COMPAT_UNDECLARED",
+      rungs: [{ rung: "release", outcome: "failed", code: "PACKAGE_COMPAT_UNDECLARED", message: "plugin.json does not declare requires.minAppVersion" }],
+    });
+    server.file(releasePath, null);
+  });
+
+  it("skips a release or archive without a pin as ARTIFACT_NOT_PINNED and moves on", async () => {
+    const { repo, name } = fixture();
+    server.file(releasePath, pluginZip("alpha", "1.0.0"));
+    market(repo, { release: { repo: "acme/alpha" }, archive: { url: "https://dl.example.com/alpha.zip" }, tree: "plugins/alpha" }, {
+      "plugins/alpha/plugin.json": pluginJson("alpha", "1.0.0"),
+      "plugins/alpha/dist/index.js": ENTRY_JS,
+    });
+    const { gate, syncer } = await open(name);
+    const staged = await ladder(syncer, gate, planPluginInstall(await row(syncer)));
+    expect(staged.rungs).toEqual([
+      { rung: "release", outcome: "skipped", reason: "ARTIFACT_NOT_PINNED" },
+      { rung: "archive", outcome: "skipped", reason: "ARTIFACT_NOT_PINNED" },
+      { rung: "tree", outcome: "used" },
+    ]);
+    server.file(releasePath, null);
+  });
+
   it("reports NO_INSTALLABLE_ARTIFACT with every rung when none yields an artifact", async () => {
     const { repo, name } = fixture();
     market(repo, { release: { repo: "acme/alpha", sha256: "0".repeat(64) }, tree: "plugins/alpha/build" }, {
@@ -371,7 +404,11 @@ describe.skipIf(process.platform === "win32")("plugin artifact ladder (design §
   it("fetches a GitHub release asset through the REST API with the source token", async () => {
     const zip = pluginZip("alpha", "1.0.0");
     const seen: Array<{ url: string; headers: Record<string, string> | undefined }> = [];
+    const checked: string[] = [];
     const fakeGate = {
+      checkDownloadPolicy: async (url: string) => {
+        checked.push(url);
+      },
       fetch: async (url: string, init: { headers?: Record<string, string> }) => {
         seen.push({ url, headers: init.headers });
         if (url.endsWith("/releases/tags/v1.0.0")) {
@@ -404,6 +441,83 @@ describe.skipIf(process.platform === "win32")("plugin artifact ladder (design §
       ["https://api.github.com/repos/acme/alpha/releases/tags/v1.0.0", "application/vnd.github+json", "Bearer ghp_test"],
       ["https://api.github.com/repos/acme/alpha/releases/assets/42", "application/octet-stream", "Bearer ghp_test"],
     ]);
+    // Security review P2: the api.github.com request is governed by the repository's rules.
+    expect(checked).toEqual(["https://github.com/acme/alpha/releases/download/v1.0.0/alpha-1.0.0.zip"]);
     void gate;
+  });
+
+  it("holds a token-fetched release asset to the policy for its github.com repository", async () => {
+    const gate = new NetworkGate({ policy: policyLoad({ block: [parseSourcePattern("https://github.com/evil/*")] }), allowLoopback: false });
+    await expect(gate.checkDownloadPolicy("https://github.com/evil/x/releases/download/v1.0.0/a.zip", { official: false }))
+      .rejects.toMatchObject({ code: "SOURCE_POLICY_BLOCKED" });
+    await expect(gate.checkDownloadPolicy("https://github.com/acme/x/releases/download/v1.0.0/a.zip", { official: false })).resolves.toBeUndefined();
+  });
+
+  it("builds an ssh source's release URL over https on the default port, and refuses . and .. repository segments", async () => {
+    const zip = pluginZip("alpha", "1.0.0");
+    const seen: string[] = [];
+    const fakeGate = {
+      fetch: async (url: string) => {
+        seen.push(url);
+        return url.endsWith("/alpha-1.0.0.zip") ? new Response(new Uint8Array(zip)) : new Response("", { status: 404 });
+      },
+    } as unknown as NetworkGate;
+    const planFor = async (releaseRepo: string) => {
+      const { repo, name } = fixture();
+      market(repo, { release: { repo: releaseRepo, sha256: sha(zip) } });
+      const { syncer } = await open(name);
+      return { syncer, plan: planPluginInstall(await row(syncer)) };
+    };
+    const run = ({ syncer, plan: forPlan }: { syncer: SourceSyncer; plan: PluginInstallPlan }) => syncer.withRepository("acme", ({ repo: bare, remote }) =>
+      runPluginLadder(forPlan, {
+        repo: bare,
+        remote,
+        sourceUrl: normalizeSourceUrl("ssh://git@git.acme.example:2222/acme/market.git"),
+        direct: false,
+        gate: fakeGate,
+        fetchImpl: fetch,
+        sourceToken: null,
+        zip: store(),
+        limits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,
+        workRoot,
+      }),
+    );
+    const staged = await run(await planFor("acme/alpha"));
+    expect(staged.rungs).toEqual([{ rung: "release", outcome: "used" }]);
+    expect(seen).toEqual(["https://git.acme.example/acme/alpha/releases/download/v1.0.0/alpha-1.0.0.zip"]);
+
+    // The schema already refuses a leading "." segment; the ladder refuses the rest.
+    for (const bad of ["acme/..", "acme/."]) {
+      const error = await run(await planFor(bad)).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(LadderError);
+      expect((error as LadderError).rungs[0]).toMatchObject({ rung: "release", outcome: "failed", code: "SOURCE_INDEX_INVALID" });
+    }
+    expect(seen).toHaveLength(1);
+  });
+});
+
+describe("candidateVersion (design §14)", () => {
+  const row = (choice: CatalogRow["choice"]) => ({ sourceId: "acme", name: "alpha", choice }) as CatalogRow;
+
+  it.each([
+    [{ state: "upgrade_required", minAppVersion: "9.0.0" }, "PACKAGE_INCOMPATIBLE"],
+    [{ state: "unavailable", reason: "revoked" }, "PACKAGE_REVOKED"],
+    [{ state: "unavailable", reason: "yanked" }, "PACKAGE_YANKED"],
+    [{ state: "unavailable", reason: "pending" }, "PACKAGE_INCOMPATIBLE"],
+    [{ state: "unavailable", reason: "withheld" }, "PACKAGE_INCOMPATIBLE"],
+  ] as Array<[CatalogRow["choice"], string]>)("refuses %j with %s", (choice, code) => {
+    expect(() => candidateVersion(row(choice))).toThrow(expect.objectContaining({ code }));
+  });
+});
+
+describe("treeDigest (design §6.4)", () => {
+  it("hashes mode, file digest and path per line, sorted by path bytes", () => {
+    const run = Buffer.from("#!/bin/sh\n");
+    const json = Buffer.from("{}");
+    const expected = createHash("sha256")
+      .update(`100755 ${sha(run)} dist/run.sh\n100644 ${sha(json)} plugin.json\n`)
+      .digest("hex");
+    expect(treeDigest([{ path: "plugin.json", data: json, executable: false }, { path: "dist/run.sh", data: run, executable: true }])).toBe(expected);
+    expect(treeDigest([{ path: "plugin.json", data: json, executable: false }, { path: "dist/run.sh", data: run, executable: false }])).not.toBe(expected);
   });
 });

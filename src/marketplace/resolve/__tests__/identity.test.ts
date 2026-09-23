@@ -72,6 +72,6 @@ describe("updateFor (update binding)", () => {
     const blocked = row("acme", { state: "upgrade_required", minAppVersion: "0.20.0" }, [version("2.0.0", "0.20.0")]);
     expect(updateFor({ ...installed(), version: "1.1.0" }, [blocked], sources)).toEqual({ state: "upgrade_required", minAppVersion: "0.20.0" });
     expect(updateFor({ ...installed(), version: "2.0.0" }, [blocked], sources)).toEqual({ state: "current" });
-    expect(updateFor({ ...installed(), version: "1.1.0" }, [row("acme", { state: "unavailable" })], sources)).toEqual({ state: "current" });
+    expect(updateFor({ ...installed(), version: "1.1.0" }, [row("acme", { state: "unavailable", reason: "withheld" })], sources)).toEqual({ state: "current" });
   });
 });

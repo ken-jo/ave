@@ -84,7 +84,8 @@ export class LadderError extends MarketplaceError {
 
 const MANIFEST_LIMIT = 1024 * 1024;
 const RELEASE_METADATA_LIMIT = 1024 * 1024;
-const RELEASE_REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
+/** `owner/name`; neither segment may be `.` or `..`. */
+const RELEASE_REPO = /^(?!\.\.?\/)[A-Za-z0-9_.-]+\/(?!\.\.?$)[A-Za-z0-9_.-]+$/u;
 /** Top-level entries a tree-rung directory may hold (design §5.2); the descriptor is not installed. */
 const TREE_TOP_LEVEL_FILES = new Set(["plugin.json", DESCRIPTOR_NAME]);
 const TREE_TOP_LEVEL_DIRS = new Set(["dist", "assets"]);
@@ -142,7 +143,9 @@ async function assertDescriptorAtVersion(plan: PluginInstallPlan, deps: LadderDe
 }
 
 /** Read and check plugin.json from a zip that passed the preflight. */
-function stagedManifest(plan: PluginInstallPlan, zipBuffer: Buffer, deps: LadderDeps, rungs: RungOutcome[]): unknown {
+function stagedManifest(plan: PluginInstallPlan, zipBuffer: Buffer, deps: LadderDeps, rungs: readonly RungOutcome[], rung: ArtifactRung): unknown {
+  const stop = (code: MarketplaceErrorCode, message: string, cause: unknown) =>
+    new LadderError(code, message, [...rungs, { rung, outcome: "failed", code, message: code === "PACKAGE_COMPAT_UNDECLARED" ? "plugin.json does not declare requires.minAppVersion" : "plugin.json differs from the descriptor" }], { cause });
   let text: string;
   try {
     text = deps.zip.readRequiredRootTextFiles(plan.name, zipBuffer, [{ filename: "plugin.json", maxBytes: MANIFEST_LIMIT, packageLabel: "plugin" }])["plugin.json"]!;
@@ -153,12 +156,13 @@ function stagedManifest(plan: PluginInstallPlan, zipBuffer: Buffer, deps: Ladder
   try {
     document = parseStrictJson(text);
   } catch (error) {
-    throw new LadderError("MANIFEST_MISMATCH", `${plan.name}@${plan.version}: plugin.json does not parse: ${(error as Error).message}`, rungs, { cause: error });
+    throw stop("MANIFEST_MISMATCH", `${plan.name}@${plan.version}: plugin.json does not parse: ${(error as Error).message}`, error);
   }
   try {
     assertGitInstallManifest(document, { name: plan.name, version: plan.version, minAppVersion: plan.minAppVersion, authority: plan.authority });
   } catch (error) {
-    throw new LadderError("MANIFEST_MISMATCH", (error as Error).message, rungs, { cause: error });
+    // PACKAGE_COMPAT_UNDECLARED or MANIFEST_MISMATCH; either stops the ladder.
+    throw stop(isMarketplaceError(error) ? error.code : "MANIFEST_MISMATCH", (error as Error).message, error);
   }
   return document;
 }
@@ -204,6 +208,11 @@ function verifyPinned(zipBuffer: Buffer, pin: string, what: string): RungBytes {
  * the gate drops `Authorization` on that cross-origin hop.
  */
 async function githubReleaseAsset(repo: string, tag: string, asset: string, token: string, plan: PluginInstallPlan, deps: LadderDeps): Promise<Buffer> {
+  // The request goes to api.github.com; the repository's own rules still apply.
+  await deps.gate.checkDownloadPolicy(
+    `https://github.com/${repo}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(asset)}`,
+    { official: plan.sourceOrigin === "official" },
+  );
   const auth = { authorization: `Bearer ${token}`, "x-github-api-version": "2022-11-28" };
   const releaseUrl = `https://api.github.com/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`;
   const metadata = await downloadBounded(releaseUrl, {
@@ -226,10 +235,20 @@ async function githubReleaseAsset(repo: string, tag: string, asset: string, toke
   return downloadBounded(`https://api.github.com/repos/${repo}/releases/assets/${found.id}`, downloadOptions(deps, plan, { ...auth, accept: "application/octet-stream" }));
 }
 
-async function releaseRung(plan: PluginInstallPlan, deps: LadderDeps): Promise<RungBytes> {
+/**
+ * The web origin release assets are served from. An http(s) source serves
+ * them from its own origin; an ssh source's host serves them over https on
+ * the default port (its ssh port says nothing about the web server).
+ */
+function releaseOrigin(url: NormalizedSourceUrl): string {
+  if (url.scheme === "ssh") return `https://${url.host}`;
+  return `${url.scheme}://${url.port === null ? url.host : `${url.host}:${url.port}`}`;
+}
+
+async function releaseRung(plan: PluginInstallPlan, deps: LadderDeps, pin: string): Promise<RungBytes> {
   const release = plan.artifact.release!;
   if (release.url) {
-    return verifyPinned(await downloadBounded(release.url, downloadOptions(deps, plan)), release.sha256, "the release asset");
+    return verifyPinned(await downloadBounded(release.url, downloadOptions(deps, plan)), pin, "the release asset");
   }
   // Validation allows an absent repo only for a direct source: the source repository itself.
   const repo = release.repo ?? deps.sourceUrl.path.replace(/^\//u, "").replace(/\.git$/u, "");
@@ -238,16 +257,13 @@ async function releaseRung(plan: PluginInstallPlan, deps: LadderDeps): Promise<R
   const asset = release.asset ?? `${plan.name}-${plan.version}.zip`;
   const bytes = deps.sourceUrl.host === "github.com" && deps.sourceToken
     ? await githubReleaseAsset(repo, tag, asset, deps.sourceToken, plan, deps)
-    : await downloadBounded(
-      `${deps.sourceUrl.scheme}://${deps.sourceUrl.port === null ? deps.sourceUrl.host : `${deps.sourceUrl.host}:${deps.sourceUrl.port}`}/${repo}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(asset)}`,
-      downloadOptions(deps, plan),
-    );
-  return verifyPinned(bytes, release.sha256, "the release asset");
+    : await downloadBounded(`${releaseOrigin(deps.sourceUrl)}/${repo}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(asset)}`, downloadOptions(deps, plan));
+  return verifyPinned(bytes, pin, "the release asset");
 }
 
-async function archiveRung(plan: PluginInstallPlan, deps: LadderDeps): Promise<RungBytes> {
+async function archiveRung(plan: PluginInstallPlan, deps: LadderDeps, pin: string): Promise<RungBytes> {
   const archive = plan.artifact.archive!;
-  return verifyPinned(await downloadBounded(archive.url, downloadOptions(deps, plan)), archive.sha256, "the archive");
+  return verifyPinned(await downloadBounded(archive.url, downloadOptions(deps, plan)), pin, "the archive");
 }
 
 function treePath(plan: PluginInstallPlan): string {
@@ -262,7 +278,21 @@ async function treeDeclared(plan: PluginInstallPlan, deps: LadderDeps): Promise<
   return entries.some((entry) => entry.path === manifest && entry.type === "blob");
 }
 
+function treeLayoutProblem(path: string): string | null {
+  const [top, ...rest] = path.split("/");
+  const allowed = rest.length === 0 ? TREE_TOP_LEVEL_FILES.has(top!) : TREE_TOP_LEVEL_DIRS.has(top!);
+  return allowed ? null : `the tree may hold plugin.json, dist/ and assets/ only: ${path}`;
+}
+
 async function treeRung(plan: PluginInstallPlan, deps: LadderDeps): Promise<RungBytes> {
+  // The layout is known from the tree alone: refuse it before any blob is
+  // downloaded (a direct source at the repository root exports every file).
+  const root = treePath(plan);
+  for (const entry of await deps.repo.lsTree(plan.versionCommit, root === "" ? null : root, true)) {
+    if (entry.type !== "blob") continue;
+    const problem = treeLayoutProblem(root === "" ? entry.path : entry.path.slice(root.length + 1));
+    if (problem) throw new VerificationFailure("CONTENT_RULE_VIOLATION", problem);
+  }
   const dest = await mkdtemp(join(deps.workRoot, "tree-"));
   try {
     const exported = await deps.repo.exportPath(
@@ -275,10 +305,8 @@ async function treeRung(plan: PluginInstallPlan, deps: LadderDeps): Promise<Rung
     );
     const files: Array<{ path: string; data: Buffer; executable: boolean }> = [];
     for (const file of exported) {
-      const [top, ...rest] = file.path.split("/");
-      if (rest.length === 0 ? !TREE_TOP_LEVEL_FILES.has(top!) : !TREE_TOP_LEVEL_DIRS.has(top!)) {
-        throw new VerificationFailure("CONTENT_RULE_VIOLATION", `the tree may hold plugin.json, dist/ and assets/ only: ${file.path}`);
-      }
+      const problem = treeLayoutProblem(file.path);
+      if (problem) throw new VerificationFailure("CONTENT_RULE_VIOLATION", problem);
       if (file.path === DESCRIPTOR_NAME) continue;
       files.push({ path: file.path, data: await readFile(join(dest, ...file.path.split("/"))), executable: file.executable });
     }
@@ -302,6 +330,7 @@ export async function runPluginLadder(plan: PluginInstallPlan, deps: LadderDeps)
   const rungs: RungOutcome[] = [];
   for (const rung of ARTIFACT_RUNGS) {
     deps.signal?.throwIfAborted();
+    let pinned: string | undefined;
     if (rung === "release" || rung === "archive") {
       const pin = plan.artifact[rung];
       if (!pin) {
@@ -312,6 +341,7 @@ export async function runPluginLadder(plan: PluginInstallPlan, deps: LadderDeps)
         rungs.push({ rung, outcome: "skipped", reason: "ARTIFACT_NOT_PINNED" });
         continue;
       }
+      pinned = pin.sha256;
     } else {
       let declared: boolean;
       try {
@@ -328,7 +358,7 @@ export async function runPluginLadder(plan: PluginInstallPlan, deps: LadderDeps)
     }
     let bytes: RungBytes;
     try {
-      bytes = rung === "release" ? await releaseRung(plan, deps) : rung === "archive" ? await archiveRung(plan, deps) : await treeRung(plan, deps);
+      bytes = pinned === undefined ? await treeRung(plan, deps) : rung === "release" ? await releaseRung(plan, deps, pinned) : await archiveRung(plan, deps, pinned);
     } catch (error) {
       deps.signal?.throwIfAborted();
       rungs.push({ rung, outcome: "failed", code: failureCode(error), message: (error as Error).message });
@@ -336,7 +366,7 @@ export async function runPluginLadder(plan: PluginInstallPlan, deps: LadderDeps)
     }
     let manifestDocument: unknown;
     try {
-      manifestDocument = stagedManifest(plan, bytes.zipBuffer, deps, [...rungs, { rung, outcome: "failed", code: "MANIFEST_MISMATCH", message: "plugin.json differs from the descriptor" }]);
+      manifestDocument = stagedManifest(plan, bytes.zipBuffer, deps, rungs, rung);
     } catch (error) {
       if (!(error instanceof VerificationFailure)) throw error;
       rungs.push({ rung, outcome: "failed", code: error.code, message: error.message });

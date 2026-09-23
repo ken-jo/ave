@@ -239,6 +239,7 @@ export class BareRepo {
     // symlink a link entry; the tree says what each entry really is, and it is
     // present without blobs, so check it before fetching anything.
     const root = path === "";
+    let fileCount = 0;
     for (const entry of await this.lsTree(commit, root ? null : path, true)) {
       if (entry.type === "commit") {
         throw new MarketplaceError("CONTENT_RULE_VIOLATION", `submodules are not allowed: ${entry.path}`);
@@ -246,6 +247,12 @@ export class BareRepo {
       if (entry.type === "blob" && entry.mode !== "100644" && entry.mode !== "100755") {
         throw new MarketplaceError("CONTENT_RULE_VIOLATION", `only regular files are allowed (mode ${entry.mode}): ${entry.path}`);
       }
+      if (entry.type === "blob") fileCount += 1;
+    }
+    // Refuse an oversized tree before its blobs are downloaded; the byte limit
+    // needs the blobs and is checked while the archive streams.
+    if (fileCount > limits.maxFiles) {
+      throw new MarketplaceError("CONTENT_RULE_VIOLATION", `more than ${limits.maxFiles} files: ${path || "the repository root"}`);
     }
     await this.ensureBlobs(remote, commit, root ? [] : [path], signal);
     // The prefix only tells archive entries from anything else in the stream.

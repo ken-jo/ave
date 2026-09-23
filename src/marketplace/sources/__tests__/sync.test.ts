@@ -229,6 +229,18 @@ describe.skipIf(process.platform === "win32")("SourceSyncer", () => {
     expect(existsSync(join(root, "acme"))).toBe(false);
   });
 
+  it("still syncs a hidden source, but refuses installs and updates from it with SOURCE_DISABLED", async () => {
+    const { repo, name } = fixture();
+    repo.commit({ "marketplace.json": index("acme", []) }, "first");
+    const { registry, syncer } = await setup();
+    await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
+    await registry.setEnabled("acme", false);
+    expect((await syncer.sync("acme")).status).toBe("ok");
+    await expect(syncer.withRepository("acme", async () => "read")).rejects.toMatchObject({ code: "SOURCE_DISABLED" });
+    await registry.setEnabled("acme", true);
+    await expect(syncer.withRepository("acme", async () => "read")).resolves.toBe("read");
+  });
+
   it("reports no change when the ref has not moved, and rebuilds a lost snapshot at the same pin", async () => {
     const { repo, name } = fixture();
     const commit = repo.commit({ "marketplace.json": index("acme", []) }, "empty");

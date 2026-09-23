@@ -398,9 +398,6 @@
         "release": {
           "type": "object",
           "additionalProperties": false,
-          "required": [
-            "sha256"
-          ],
           "properties": {
             "repo": {
               "type": "string",
@@ -431,8 +428,7 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "url",
-            "sha256"
+            "url"
           ],
           "properties": {
             "url": {
