@@ -213,7 +213,9 @@ export class SourceSyncer {
    */
   sync(id: string, signal?: AbortSignal): Promise<SyncResult> {
     let joined = this.inflight.get(id);
-    if (!joined) {
+    // A run every caller abandoned is only winding down; a new caller starts
+    // its own, queued behind it on the source lock.
+    if (!joined || joined.controller.signal.aborted) {
       const controller = new AbortController();
       const promise = this.withSourceLock(id, () => this.run(id, controller.signal)).finally(() => {
         if (this.inflight.get(id) === entry) this.inflight.delete(id);

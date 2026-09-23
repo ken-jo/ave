@@ -476,7 +476,10 @@ describe.skipIf(process.platform === "win32")("SourceSyncer", () => {
     const c = new AbortController();
     const lone = syncer.sync("acme", c.signal);
     c.abort(new Error("the only caller gave up"));
+    // A caller arriving while the abandoned run winds down gets a run of its own.
+    const late = syncer.sync("acme");
     await expect(lone).rejects.toThrow("the only caller gave up");
+    expect(await late).toEqual({ status: "ok", pinnedCommit: commit, changed: false });
   });
 
   it("syncs a hidden source while an installed package is bound to it", async () => {
