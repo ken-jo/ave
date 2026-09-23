@@ -8,8 +8,9 @@ import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { TelemetrySettings } from "../../../data/settings-store.js";
 import { AVE_SERVICE_BASE_URL } from "../../../marketplace/service/client.js";
-import { createServiceClient } from "../service-endpoint.js";
+import { consentedTelemetryEndpoint, createServiceClient } from "../service-endpoint.js";
 
 const STAGING = "http://127.0.0.1:8791";
 const MOVED = "https://ave-staging.example";
@@ -54,5 +55,38 @@ describe("createServiceClient", () => {
     const service = createServiceClient(fetchOver({ [`${AVE_SERVICE_BASE_URL}/.well-known/former-service.json`]: doc({ movedTo: STAGING }) }), undefined);
     // A document naming a loopback move target is invalid outside staging.
     await expect(service.refresh()).rejects.toThrow(/https/u);
+  });
+});
+
+describe("consentedTelemetryEndpoint", () => {
+  const service = () => ({ ensureResolved: vi.fn(), telemetryEndpoint: vi.fn(() => "https://former-site.invalid/telemetry/events") });
+
+  it("never touches the service without consent", () => {
+    for (const settings of [{ enabled: false }, { enabled: true, telemetryPromptAnswered: false }, { enabled: false, telemetryPromptAnswered: true }] as TelemetrySettings[]) {
+      const client = service();
+      const endpoint = consentedTelemetryEndpoint(() => settings, client);
+      expect(endpoint()).toBeNull();
+      expect(client.ensureResolved).not.toHaveBeenCalled();
+      expect(client.telemetryEndpoint).not.toHaveBeenCalled();
+    }
+  });
+
+  it("reads the document at once for a user who already opted in, and on each ask after", () => {
+    const client = service();
+    const endpoint = consentedTelemetryEndpoint(() => ({ enabled: true, telemetryPromptAnswered: true }), client);
+    expect(client.ensureResolved).toHaveBeenCalledTimes(1);
+    expect(endpoint()).toBe("https://former-site.invalid/telemetry/events");
+    expect(client.ensureResolved).toHaveBeenCalledTimes(2);
+  });
+
+  it("starts reading once the user opts in during the session", () => {
+    const client = service();
+    const settings: TelemetrySettings = { enabled: false, telemetryPromptAnswered: false };
+    const endpoint = consentedTelemetryEndpoint(() => settings, client);
+    expect(client.ensureResolved).not.toHaveBeenCalled();
+    settings.enabled = true;
+    settings.telemetryPromptAnswered = true;
+    expect(endpoint()).toBe("https://former-site.invalid/telemetry/events");
+    expect(client.ensureResolved).toHaveBeenCalledTimes(1);
   });
 });

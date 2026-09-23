@@ -333,6 +333,39 @@ describe("ServiceClient", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  it("ensureResolved reads the document again once it is older than six hours", async () => {
+    let now = new Date("2026-09-23T00:00:00.000Z");
+    const routes: Record<string, unknown> = { [`${OLD}/.well-known/former-service.json`]: doc({ telemetry: "/telemetry/events" }) };
+    let policy: () => Promise<string | null> = async () => null;
+    const { service, fetchImpl } = client(routes, { now: () => now, policyBase: () => policy() });
+    service.ensureResolved();
+    await vi.waitFor(() => expect(service.telemetryEndpoint()).toBe(`${OLD}/telemetry/events`));
+
+    // A policy that turns invalid mid-session reaches telemetry at the next revalidation, not only at restart.
+    policy = async () => {
+      throw new Error("policy service section is invalid");
+    };
+    now = new Date("2026-09-23T05:59:00.000Z");
+    service.ensureResolved();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(service.telemetryEndpoint()).toBe(`${OLD}/telemetry/events`);
+    now = new Date("2026-09-23T06:00:01.000Z");
+    service.ensureResolved();
+    await vi.waitFor(() => expect(service.telemetryEndpoint()).toBeUndefined());
+  });
+
+  it("does not keep the old base's announcements when a move accepted in the same refresh fails to list the new base's", async () => {
+    const routes: Record<string, unknown> = {
+      [`${OLD}/.well-known/former-service.json`]: doc(),
+      [`${OLD}/announcements/v1.json`]: [announcement(7)],
+    };
+    const { service } = client(routes);
+    await service.announcements();
+    routes[`${OLD}/.well-known/former-service.json`] = doc({ movedTo: NEW });
+    routes[`${NEW}/.well-known/former-service.json`] = doc({ movedFrom: OLD });
+    await expect(service.announcements()).rejects.toThrow("HTTP 404");
+  });
+
   it("refuses a response whose declared length is over the cap before reading it", async () => {
     const response = new Response(JSON.stringify(doc()), { status: 200, headers: { "content-length": String(65 * 1024) } });
     const cancel = vi.spyOn(response.body!, "getReader");

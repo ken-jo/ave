@@ -34,6 +34,8 @@ const MAX_ANNOUNCEMENTS_BYTES = 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 15_000;
 /** How soon {@link ServiceClient.ensureResolved} tries again after a failed refresh. */
 const RETRY_AFTER_MS = 10 * 60 * 1000;
+/** How long {@link ServiceClient.ensureResolved} trusts a document before reading it again: the announcement interval. */
+const REVALIDATE_AFTER_MS = 6 * 60 * 60 * 1000;
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 const POLICY_LIMITS = { maxBytes: 1024 * 1024, maxDepth: 64, maxNodes: 200_000, maxObjectMembers: 10_000, maxArrayItems: 50_000 };
 
@@ -214,6 +216,7 @@ export class ServiceClient {
   private lastAnnouncements: { base: string; list: MarketplaceAnnouncement[] } | null = null;
   private inFlight: Promise<ResolvedService> | null = null;
   private lastFailureAt: number | null = null;
+  private resolvedAt: number | null = null;
 
   constructor(private readonly options: ServiceClientOptions) {}
 
@@ -228,14 +231,18 @@ export class ServiceClient {
   }
 
   /**
-   * Start a refresh when no document is in force, none is running and the
-   * last failure is older than the retry interval. For callers that need the
-   * document only once the user has allowed what it is for.
+   * Start a refresh when none is running and either no document is in force
+   * (and the last failure is older than the retry interval) or the one in
+   * force is older than the announcement interval, so a policy change during
+   * the session reaches telemetry even with announcements switched off. For
+   * callers that need the document only once the user has allowed what it is
+   * for.
    */
   ensureResolved(): void {
-    if (this.resolved || this.inFlight) return;
+    if (this.inFlight) return;
     const now = (this.options.now?.() ?? new Date()).getTime();
-    if (this.lastFailureAt !== null && now - this.lastFailureAt < RETRY_AFTER_MS) return;
+    if (this.resolved && this.resolvedAt !== null && now - this.resolvedAt < REVALIDATE_AFTER_MS) return;
+    if (!this.resolved && this.lastFailureAt !== null && now - this.lastFailureAt < RETRY_AFTER_MS) return;
     void this.refresh().catch((error: unknown) => {
       log.warn({ err: (error as Error).message }, "service document unavailable");
     });
@@ -248,6 +255,7 @@ export class ServiceClient {
       try {
         const resolved = await this.resolve();
         this.resolved = resolved;
+        this.resolvedAt = (this.options.now?.() ?? new Date()).getTime();
         this.lastFailureAt = null;
         return resolved;
       } catch (error) {
@@ -310,6 +318,7 @@ export class ServiceClient {
       try {
         const target = await this.fetchDocument(document.movedTo);
         if (target.movedFrom === buildBase) {
+          this.attemptBase = document.movedTo;
           await this.writeMove({ version: 1, buildBase, movedTo: document.movedTo, acceptedAt: (this.options.now?.() ?? new Date()).toISOString() });
           log.info({ from: buildBase, to: document.movedTo }, "service base moved");
           return { base: document.movedTo, source: "moved", document: target };

@@ -11,6 +11,7 @@ import { createAutoUpdater } from "../../main/auto-updater.js";
 import { startCrashReporter } from "../../main/crash-reporter.js";
 import { TelemetryService } from "../../main/telemetry.js";
 import { PluginTelemetryClient, relocateDeviceUuid } from "../../telemetry/client.js";
+import { consentedTelemetryEndpoint } from "./service-endpoint.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { registerShutdownHook } from "../../main/app-shutdown.js";
 import { onEvent } from "../types.js";
@@ -68,27 +69,16 @@ export function prepareDesktopRelease(input: ReleasePrepInput): ReleasePrepOutpu
     // keeps its identity.
     const deviceUuidPath = resolve(openFeatureNamespace("telemetry").dir, "device-uuid");
     relocateDeviceUuid(resolve(app.getPath("userData"), ".ave", "device-uuid"), deviceUuidPath);
-    // The endpoint comes from the service document, which is read only for a
-    // user who opted in (announcements have their own switch): the client asks
-    // for the endpoint on every track and flush, and that is what reads the
-    // document — again after a failure, at most every 10 minutes.
-    const telemetryAllowed = () => {
-      const current = settingsService.get("telemetry");
-      return current.telemetryPromptAnswered === true && current.enabled === true;
-    };
+    // The endpoint comes from the service document, read only for a user who
+    // opted in (announcements have their own switch).
     const ptClient = new PluginTelemetryClient({
       settings: () => settingsService.get("telemetry"),
-      endpoint: () => {
-        if (!telemetryAllowed()) return null;
-        input.serviceClient.ensureResolved();
-        return input.serviceClient.telemetryEndpoint();
-      },
+      endpoint: consentedTelemetryEndpoint(() => settingsService.get("telemetry"), input.serviceClient),
       deviceUuidPath,
       fetchImpl: networkFetch,
     });
     pluginTelemetry = ptClient;
     ptClient.start();
-    if (telemetryAllowed()) input.serviceClient.ensureResolved();
 
     onEvent("plugin.installed", (data) => {
       const d = data as { pluginId?: string; version?: string } | undefined;
