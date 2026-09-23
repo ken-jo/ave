@@ -55,7 +55,7 @@ describe.skipIf(process.platform === "win32")("managed git install", () => {
   let runtimeRoot: string;
   let server: Server;
   let origin: string;
-  const bodies = new Map<string, { bytes: Buffer; mode: "full" | "truncate" | "extra" }>();
+  const bodies = new Map<string, { bytes: Buffer; mode: "full" | "truncate" | "extra" | "stall" }>();
   const gate = new NetworkGate({ policy: { ok: true, policy: EMPTY_MARKETPLACE_POLICY }, allowLoopback: true });
   const download = (url: string, signal?: AbortSignal) => gate.fetch(url, { fetchImpl: fetch, official: true, ...(signal ? { signal } : {}) });
 
@@ -64,6 +64,11 @@ describe.skipIf(process.platform === "win32")("managed git install", () => {
       const body = bodies.get(req.url ?? "");
       if (!body) {
         res.writeHead(404).end();
+        return;
+      }
+      if (body.mode === "stall") {
+        res.writeHead(200, { "content-length": String(body.bytes.length) });
+        res.write(body.bytes.subarray(0, Math.floor(body.bytes.length / 2)));
         return;
       }
       if (body.mode === "truncate") {
@@ -80,6 +85,7 @@ describe.skipIf(process.platform === "win32")("managed git install", () => {
   });
 
   afterAll(async () => {
+    server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 
@@ -93,12 +99,12 @@ describe.skipIf(process.platform === "win32")("managed git install", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  function serve(path: string, bytes: Buffer, mode: "full" | "truncate" | "extra" = "full"): ManagedGitPins {
+  function serve(path: string, bytes: Buffer, mode: "full" | "truncate" | "extra" | "stall" = "full"): ManagedGitPins {
     bodies.set(path, { bytes, mode });
     return { version: VERSION, assets: { [KEY]: { url: `${origin}${path}`, sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.length } } };
   }
 
-  async function install(pins: ManagedGitPins, extra: { force?: boolean } = {}) {
+  async function install(pins: ManagedGitPins, extra: { force?: boolean; downloadStallMs?: number } = {}) {
     const progress: GitRuntimeProgress[] = [];
     try {
       const installed = await installManagedGit({ runtimeRoot, download, pins, onProgress: (item) => progress.push(item), ...extra });
@@ -176,6 +182,13 @@ describe.skipIf(process.platform === "win32")("managed git install", () => {
     expect(error?.code).toBe("GIT_RUNTIME_INSTALL_FAILED");
     expect(error?.message).toContain(message);
     expect(existsSync(join(runtimeRoot, VERSION))).toBe(false);
+    expect(leftovers()).toEqual([]);
+  });
+
+  it("fails a download whose body stops arriving instead of waiting for it", async () => {
+    const bytes = await buildArchive(dir, "good", standardLayout());
+    const { error } = await install(serve("/stall.tar.gz", bytes, "stall"), { downloadStallMs: 200 });
+    expect(error).toMatchObject({ code: "GIT_RUNTIME_INSTALL_FAILED", message: expect.stringContaining("stalled") });
     expect(leftovers()).toEqual([]);
   });
 

@@ -35,7 +35,7 @@ export interface SourceSyncOptions {
   root: string;
   now?: () => Date;
   /** Commits that installed packages from this source still reference (`origin.commit`); never pruned. */
-  retainedCommits?: (sourceId: string) => Promise<ReadonlySet<string>>;
+  retainedCommits: (sourceId: string) => Promise<ReadonlySet<string>>;
   /** Called after a source's pin moved. */
   onCatalogChanged?: (sourceId: string) => void;
 }
@@ -52,9 +52,16 @@ export function shouldSyncSource(registry: SourceRegistry, source: ResolvedSourc
   return registry.isEnabled(source, state) || hasInstalledPackages;
 }
 
+interface JoinedSync {
+  promise: Promise<SyncResult>;
+  controller: AbortController;
+  /** Callers still waiting for this run. */
+  waiting: number;
+}
+
 export class SourceSyncer {
   private readonly locks = new Map<string, Promise<unknown>>();
-  private readonly inflight = new Map<string, Promise<SyncResult>>();
+  private readonly inflight = new Map<string, JoinedSync>();
 
   constructor(private readonly options: SourceSyncOptions) {}
 
@@ -96,7 +103,9 @@ export class SourceSyncer {
 
   private async remoteFor(source: ResolvedSource, url = source.url): Promise<GitRemote> {
     const { allowHttp } = await this.options.gate.checkRemote(url, { official: source.origin === "official" });
-    return { url, sourceId: source.id, allowHttp };
+    // A mirror on another host never gets the primary host's token.
+    const useToken = source.auth.kind === "token" && source.auth.host === url.host;
+    return { url, sourceId: source.id, allowHttp, useToken };
   }
 
   /** Primary URL, then each mirror; the first to answer supplies the candidate. */
@@ -145,7 +154,7 @@ export class SourceSyncer {
 
   /** Keep the pin, the previous pin and every commit an installed package still references. */
   private async prune(id: string, pin: string, previousPin: string | null): Promise<void> {
-    const keep = new Set([pin, ...(previousPin ? [previousPin] : []), ...((await this.options.retainedCommits?.(id)) ?? [])]);
+    const keep = new Set([pin, ...(previousPin ? [previousPin] : []), ...(await this.options.retainedCommits(id))]);
     const dir = join(this.sourceDir(id), "snapshots");
     for (const name of await readdir(dir)) {
       if (SNAPSHOT_FILE.test(name) && !keep.has(name.slice(0, 40))) await rm(join(dir, name), { force: true });
@@ -154,7 +163,9 @@ export class SourceSyncer {
 
   private async run(id: string, signal?: AbortSignal): Promise<SyncResult> {
     const source = this.source(id);
-    const state = await this.options.registry.readState(id);
+    // Written before the repository exists, so a state file that goes missing
+    // later is noticed instead of read as a fresh, unpinned source.
+    const state = await this.options.registry.updateState(id, (current) => current);
     const pin = state.pinnedCommit;
     const repo = await this.openRepo(id);
 
@@ -195,13 +206,40 @@ export class SourceSyncer {
     return this.publish(repo, remote, source, candidate, pin, signal);
   }
 
-  /** Sync one source; a second call while one runs joins it. */
+  /**
+   * Sync one source; a second call while one runs joins it. The shared run
+   * stops only when every caller that joined it has aborted: a caller without
+   * a signal keeps it going.
+   */
   sync(id: string, signal?: AbortSignal): Promise<SyncResult> {
-    const running = this.inflight.get(id);
-    if (running) return running;
-    const started = this.withSourceLock(id, () => this.run(id, signal)).finally(() => this.inflight.delete(id));
-    this.inflight.set(id, started);
-    return started;
+    let joined = this.inflight.get(id);
+    if (!joined) {
+      const controller = new AbortController();
+      const promise = this.withSourceLock(id, () => this.run(id, controller.signal)).finally(() => {
+        if (this.inflight.get(id) === entry) this.inflight.delete(id);
+      });
+      const entry: JoinedSync = { promise, controller, waiting: 0 };
+      this.inflight.set(id, entry);
+      joined = entry;
+    }
+    const entry = joined;
+    entry.waiting += 1;
+    if (signal) {
+      const leave = () => {
+        entry.waiting -= 1;
+        if (entry.waiting === 0) entry.controller.abort(signal.reason);
+      };
+      if (signal.aborted) {
+        leave();
+      } else {
+        signal.addEventListener("abort", leave, { once: true });
+        void entry.promise.then(
+          () => signal.removeEventListener("abort", leave),
+          () => signal.removeEventListener("abort", leave),
+        );
+      }
+    }
+    return entry.promise;
   }
 
   /**
@@ -229,6 +267,11 @@ export class SourceSyncer {
       }
       return this.publish(repo, remote, source, candidate, state.pinnedCommit, signal);
     });
+  }
+
+  /** Remove a custom or direct source once any running sync or accept of it has finished. */
+  removeSource(id: string): Promise<void> {
+    return this.withSourceLock(id, () => this.options.registry.remove(id));
   }
 
   /** The snapshot at the pin, or null before the first successful sync. Served offline as is (§7.5). */

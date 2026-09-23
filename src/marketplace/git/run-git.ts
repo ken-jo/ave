@@ -7,11 +7,14 @@
  *     `GIT_TERMINAL_PROMPT=0`, `GIT_CONFIG_NOSYSTEM=1`, the generated
  *     `GIT_CONFIG_GLOBAL`, `LC_ALL=C`, the askpass helper, ssh in batch mode,
  *     `GIT_ALLOW_PROTOCOL` (`https:ssh`, plus `http` only for policy-listed
- *     hosts) and `GIT_LFS_SKIP_SMUDGE=1`;
+ *     hosts; none for a call without a remote), `GIT_LFS_SKIP_SMUDGE=1` and `GIT_NO_LAZY_FETCH=1` (a missing
+ *     object is an error, never a fetch the gate did not see), and `GIT_DIR`
+ *     for a call on a repository (discovery stopped otherwise);
  *   - `-c` flags that turn off the file protocol, submodules, fsmonitor,
  *     hooks, redirects, LFS filters and automatic gc/maintenance (a pruned
- *     commit that an install still references could not be read again), and
- *     set the proxy the OS resolves for the remote;
+ *     commit that an install still references could not be read again), set
+ *     the proxy the OS resolves for the remote, and clear the user's credential
+ *     helpers on a call that answers with a stored token;
  *   - a timeout, an abort signal and an output cap per call.
  *
  * A failure of a call that talks to a remote is classified into a
@@ -19,7 +22,7 @@
  * failure is a {@link GitCommandError} for the caller to interpret.
  */
 import { spawn } from "node:child_process";
-import { delimiter } from "node:path";
+import { delimiter, dirname } from "node:path";
 import { proxyUrlFromPacEntry } from "../../shared/pac-proxy.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
 import { terminateChildProcess } from "../../tools/terminate-child-process.js";
@@ -54,10 +57,22 @@ export interface GitRemote {
   sourceId: string;
   /** Plain http is allowed for this host by `marketplaces.allowHttpHosts`. */
   allowHttp: boolean;
+  /**
+   * The source declares token auth for this host. When a token is stored for
+   * it, askpass answers with that token and the user's credential helpers are
+   * switched off for the call, so git neither asks them first nor stores the
+   * token in them. Without a stored token the helpers answer as usual.
+   */
+  useToken: boolean;
 }
 
 export interface RunGitOptions {
-  cwd?: string;
+  /**
+   * The repository the call works on, passed as `GIT_DIR` so git never
+   * discovers another one by walking up from a directory. Without it the call
+   * runs in the empty directory with discovery stopped there.
+   */
+  gitDir?: string;
   /** Set for calls that contact a remote; enables askpass, proxy and error classification. */
   remote?: GitRemote;
   timeoutMs: number;
@@ -126,6 +141,11 @@ export class GitRunner {
   }
 
   /** The `-c` flags every call carries, before the subcommand. */
+  /** The call answers with the stored token (see {@link GitRemote.useToken}). */
+  private offersToken(remote: GitRemote | undefined): remote is GitRemote {
+    return remote !== undefined && remote.useToken && this.options.askpass.hasToken(remote.url.host);
+  }
+
   async configArgs(remote: GitRemote | undefined): Promise<string[]> {
     const proxy = await this.proxyFor(remote);
     return [
@@ -140,6 +160,8 @@ export class GitRunner {
       "-c", "filter.lfs.required=false",
       "-c", "gc.auto=0",
       "-c", "maintenance.auto=false",
+      // Read last, an empty value clears every helper configured before it.
+      ...(this.offersToken(remote) ? ["-c", "credential.helper="] : []),
       ...Object.entries(this.options.managedConfig ?? {}).flatMap(([key, value]) => ["-c", `${key}=${value}`]),
     ];
   }
@@ -154,8 +176,11 @@ export class GitRunner {
       GIT_ASKPASS: this.options.askpass.launcherPath,
       SSH_ASKPASS_REQUIRE: "never",
       GIT_SSH_COMMAND: "ssh -o BatchMode=yes",
-      GIT_ALLOW_PROTOCOL: remote?.allowHttp ? "https:ssh:http" : "https:ssh",
+      // A call without a remote needs no transport; `none` names none, so even
+      // a git that ignored GIT_NO_LAZY_FETCH could not fetch on its own.
+      GIT_ALLOW_PROTOCOL: !remote ? "none" : remote.allowHttp ? "https:ssh:http" : "https:ssh",
       GIT_LFS_SKIP_SMUDGE: "1",
+      GIT_NO_LAZY_FETCH: "1",
       GIT_TEMPLATE_DIR: this.options.emptyDir,
     });
     if (process.env.SSH_AUTH_SOCK) env.SSH_AUTH_SOCK = process.env.SSH_AUTH_SOCK;
@@ -168,16 +193,29 @@ export class GitRunner {
   private async proxyFor(remote: GitRemote | undefined): Promise<string> {
     if (!remote || remote.url.scheme === "ssh" || !this.options.resolveProxy) return "";
     const pac = await this.options.resolveProxy(remote.url.url);
-    return proxyUrlFromPacEntry(pac.split(";")[0] ?? "") ?? "";
+    const entry = (pac.split(";")[0] ?? "").trim();
+    const [kind, endpoint] = entry.split(/\s+/u, 2);
+    if (!kind || kind.toUpperCase() === "DIRECT") return "";
+    // PAC's `SOCKS` is SOCKS4, which git's transport (curl) speaks; the shared
+    // mapping leaves it out for subprocesses that do not.
+    const kindUpper = kind.toUpperCase();
+    const proxy = (kindUpper === "SOCKS" || kindUpper === "SOCKS4") && endpoint ? `socks4://${endpoint}` : proxyUrlFromPacEntry(entry);
+    // Going direct would send the traffic where the configuration did not choose.
+    if (!proxy) throw new MarketplaceError("SOURCE_UNREACHABLE", `the system proxy for ${remote.url.host} (${entry}) is not one git can use`);
+    return proxy;
   }
 
   async run(args: readonly string[], options: RunGitOptions): Promise<GitResult> {
     if (options.signal?.aborted) throw options.signal.reason ?? new Error("aborted");
     const remote = options.remote;
-    const ticket = remote ? this.options.askpass.issueTicket({ host: remote.url.host, sourceId: remote.sourceId }) : null;
+    const ticket = this.offersToken(remote) ? this.options.askpass.issueTicket({ host: remote.url.host, sourceId: remote.sourceId }) : null;
     try {
       const argv = [...(await this.configArgs(remote)), ...args];
-      const env = { ...this.environment(remote), ...(ticket?.env ?? {}) };
+      const env = {
+        ...this.environment(remote),
+        ...(options.gitDir ? { GIT_DIR: options.gitDir } : { GIT_CEILING_DIRECTORIES: dirname(this.options.emptyDir) }),
+        ...(ticket?.env ?? {}),
+      };
       return await this.spawnGit(args[0] ?? "git", argv, env, options, () => ticket?.credentialOffered() ?? false);
     } finally {
       ticket?.revoke();
@@ -193,7 +231,7 @@ export class GitRunner {
   ): Promise<GitResult> {
     return new Promise<GitResult>((resolve, reject) => {
       const child = spawn(this.options.git.path, argv, {
-        cwd: options.cwd,
+        cwd: options.gitDir ?? this.options.emptyDir,
         env,
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,

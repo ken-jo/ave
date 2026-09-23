@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -14,8 +14,8 @@ import {
 import { createTestGitRunner, type TestGitRunner } from "../../__tests__/fixtures/git-runner.js";
 import { classifyRemoteFailure, GIT_TIMEOUTS_MS, type GitRemote } from "../run-git.js";
 
-function remote(url: string, allowHttp = true): GitRemote {
-  return { url: normalizeSourceUrl(url), sourceId: "fixture", allowHttp };
+function remote(url: string, allowHttp = true, useToken = true): GitRemote {
+  return { url: normalizeSourceUrl(url), sourceId: "fixture", allowHttp, useToken };
 }
 
 async function expectCode(promise: Promise<unknown>, code: string): Promise<MarketplaceError> {
@@ -32,7 +32,7 @@ async function expectCode(promise: Promise<unknown>, code: string): Promise<Mark
 describe("GitRunner invocation contract", () => {
   let t: TestGitRunner;
   beforeAll(async () => {
-    t = await createTestGitRunner({ resolveProxy: async () => "PROXY proxy.corp.example:3128; DIRECT" });
+    t = await createTestGitRunner({ resolveProxy: async () => "PROXY proxy.corp.example:3128; DIRECT", tokens: { "github.com": "stored-token" } });
   });
   afterAll(async () => t.cleanup());
 
@@ -49,12 +49,14 @@ describe("GitRunner invocation contract", () => {
         GIT_SSH_COMMAND: "ssh -o BatchMode=yes",
         GIT_ALLOW_PROTOCOL: "https:ssh",
         GIT_LFS_SKIP_SMUDGE: "1",
+        GIT_NO_LAZY_FETCH: "1",
         GIT_ASKPASS: t.broker.launcherPath,
       });
       expect(env.GIT_CONFIG_GLOBAL).toBe(join(t.dir, "gitconfig"));
       expect(env.AVE_TEST_LEAK_CANARY).toBeUndefined();
       expect(env.GIT_DIR).toBeUndefined();
       expect(t.runner.environment(remote("http://git.corp.example/a/b", true)).GIT_ALLOW_PROTOCOL).toBe("https:ssh:http");
+      expect(t.runner.environment(undefined).GIT_ALLOW_PROTOCOL).toBe("none");
     } finally {
       delete process.env.AVE_TEST_LEAK_CANARY;
       delete process.env.GIT_DIR;
@@ -77,9 +79,37 @@ describe("GitRunner invocation contract", () => {
       "filter.lfs.required=false",
       "gc.auto=0",
       "maintenance.auto=false",
+      "credential.helper=",
     ]);
+    // No reset without a stored token for the host (an OS helper answers), or for a source without token auth.
+    expect(await t.runner.configArgs(remote("https://gitlab.com/acme/tools"))).not.toContain("credential.helper=");
+    expect(await t.runner.configArgs(remote("https://github.com/acme/tools", false, false))).not.toContain("credential.helper=");
     expect(await t.runner.configArgs(remote("git@github.com:acme/tools"))).toContain("http.proxy=");
     expect(await t.runner.configArgs(undefined)).toContain("http.proxy=");
+  });
+});
+
+describe("GitRunner proxy from PAC", () => {
+  it.each([
+    ["SOCKS socks.corp.example:1080", "http.proxy=socks4://socks.corp.example:1080"],
+    ["SOCKS5 socks.corp.example:1080; DIRECT", "http.proxy=socks5://socks.corp.example:1080"],
+    ["DIRECT", "http.proxy="],
+  ])("maps %j", async (pac, flag) => {
+    const t = await createTestGitRunner({ resolveProxy: async () => pac });
+    try {
+      expect(await t.runner.configArgs(remote("https://github.com/acme/tools"))).toContain(flag);
+    } finally {
+      await t.cleanup();
+    }
+  });
+
+  it("refuses a proxy git cannot use instead of going direct", async () => {
+    const t = await createTestGitRunner({ resolveProxy: async () => "QUIC quic.corp.example:443" });
+    try {
+      await expectCode(t.runner.configArgs(remote("https://github.com/acme/tools")), "SOURCE_UNREACHABLE");
+    } finally {
+      await t.cleanup();
+    }
   });
 });
 
@@ -242,6 +272,39 @@ describe("GitRunner authentication through the askpass broker", () => {
       } finally {
         await t.cleanup();
       }
+    }
+  });
+
+  it("keeps the token out of the user's credential helpers", async () => {
+    const t = await createTestGitRunner({ tokens: { "127.0.0.1": "s3cret-token" } });
+    const store = join(t.dir, "stored-credentials");
+    writeFileSync(join(t.dir, "gitconfig"), `[credential]\n\thelper = store --file=${store}\n`);
+    try {
+      await t.runner.run(["ls-remote", server.url("private-tools")], {
+        remote: remote(server.url("private-tools")),
+        timeoutMs: GIT_TIMEOUTS_MS.lsRemote,
+      });
+      // Without the reset, git's `credential approve` hands the askpass answer to every helper.
+      expect(existsSync(store) ? readFileSync(store, "utf8") : "").toBe("");
+    } finally {
+      await t.cleanup();
+    }
+  });
+
+  it("offers no token to a source that does not declare token auth", async () => {
+    const t = await createTestGitRunner({ tokens: { "127.0.0.1": "s3cret-token" } });
+    server.seen.length = 0;
+    try {
+      await expectCode(
+        t.runner.run(["ls-remote", server.url("private-tools")], {
+          remote: remote(server.url("private-tools"), true, false),
+          timeoutMs: GIT_TIMEOUTS_MS.lsRemote,
+        }),
+        "SOURCE_AUTH_REQUIRED",
+      );
+      expect(server.seen.every((request) => request.authorization === undefined)).toBe(true);
+    } finally {
+      await t.cleanup();
     }
   });
 

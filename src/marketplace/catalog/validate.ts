@@ -112,7 +112,13 @@ function mcpRules(payload: Record<string, unknown>): string | null {
     const command = server.command as string;
     if (!["npx", "uvx", "docker"].includes(command)) {
       const segments = command.split("/");
-      if (segments[0] !== "server" || segments.length < 2 || segments.some((s) => s === "" || s === "." || s === "..")) {
+      // `\` and `:` would be separators or a drive on Windows, where the split above cannot see them.
+      if (
+        /[\\:\u0000-\u001f\u007f]/u.test(command)
+        || segments[0] !== "server"
+        || segments.length < 2
+        || segments.some((s) => s === "" || s === "." || s === "..")
+      ) {
         return "a stdio command other than npx, uvx or docker must be a path under server/ in the package";
       }
     }
@@ -180,9 +186,17 @@ export function validateIndexText(text: string, context: IndexContext): Validati
 
   const diagnostics: CatalogDiagnostic[] = [];
   const candidates: IndexPackage[] = [];
+  // Claims are counted over every entry, valid or not: a broken second entry
+  // for a name still means the author listed it twice, and the client cannot
+  // tell which one was meant.
+  const byName = new Map<string, number>();
+  const byPath = new Map<string, number>();
+  const claim = (counts: Map<string, number>, key: string) => counts.set(key, (counts.get(key) ?? 0) + 1);
   root.packages.forEach((raw, position) => {
     const entry = raw as Partial<IndexPackage>;
     const subject = typeof entry.kind === "string" && typeof entry.name === "string" ? `${entry.kind}/${entry.name}` : `packages[${position}]`;
+    if (typeof entry.kind === "string" && typeof entry.name === "string") claim(byName, `${entry.kind}/${entry.name}`);
+    if (typeof entry.path === "string") claim(byPath, entry.path);
     if (!indexPackage(raw)) {
       diagnostics.push({ subject, message: describeErrors(indexPackage.errors) });
       return;
@@ -196,13 +210,6 @@ export function validateIndexText(text: string, context: IndexContext): Validati
   });
 
   // (kind, name) and path must each name one package; an ambiguous pair drops every claimant.
-  const count = (key: (entry: IndexPackage) => string) => {
-    const counts = new Map<string, number>();
-    for (const entry of candidates) counts.set(key(entry), (counts.get(key(entry)) ?? 0) + 1);
-    return counts;
-  };
-  const byName = count((entry) => `${entry.kind}/${entry.name}`);
-  const byPath = count((entry) => entry.path);
   const packages = candidates.filter((entry) => {
     const subject = `${entry.kind}/${entry.name}`;
     if ((byName.get(subject) ?? 0) > 1) {

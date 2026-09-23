@@ -158,6 +158,11 @@ export class AskpassBroker {
     }
   }
 
+  /** Whether a token is stored for `host`, so a ticket would have something to answer with. */
+  hasToken(host: string): boolean {
+    return this.getToken(host) !== null;
+  }
+
   issueTicket(binding: { host: string; sourceId: string }): AskpassTicket {
     if (this.closed) throw new Error("askpass broker is closed");
     const id = randomBytes(32).toString("base64url");

@@ -141,21 +141,56 @@ export interface ManagedGitInstallOptions {
   force?: boolean;
   onProgress?: (progress: GitRuntimeProgress) => void;
   signal?: AbortSignal;
+  /** Fail when the body sends nothing for this long (tests shorten it). */
+  downloadStallMs?: number;
 }
+
+/** The transport's timeout ends at the headers; a body that stops is caught here. */
+const DOWNLOAD_STALL_MS = 60_000;
 
 function installFailed(message: string, cause?: unknown): MarketplaceError {
   return new MarketplaceError("GIT_RUNTIME_INSTALL_FAILED", message, cause === undefined ? undefined : { cause });
 }
 
+/** The body's chunks; a gap longer than `stallMs` fails the download instead of hanging it. */
+async function* stallGuarded(body: ReadableStream<Uint8Array>, stallMs: number): AsyncGenerator<Uint8Array> {
+  const reader = body.getReader();
+  try {
+    for (;;) {
+      let timer: NodeJS.Timeout | undefined;
+      const stalled = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(installFailed(`download stalled: no data for ${stallMs} ms`)), stallMs);
+      });
+      let next: ReadableStreamReadResult<Uint8Array>;
+      try {
+        next = await Promise.race([reader.read(), stalled]);
+      } finally {
+        clearTimeout(timer);
+      }
+      if (next.done) return;
+      yield next.value;
+    }
+  } finally {
+    // Releases the connection of a stalled or oversized body; a cancel error changes nothing.
+    await reader.cancel().catch(() => undefined);
+  }
+}
+
 /** Stream the body to `file` while hashing; never more than `size` bytes. */
-async function downloadTo(response: Response, file: string, size: number, onBytes: (bytes: number) => void): Promise<string> {
+async function downloadTo(
+  response: Response,
+  file: string,
+  size: number,
+  stallMs: number,
+  onBytes: (bytes: number) => void,
+): Promise<string> {
   if (!response.ok || !response.body) throw installFailed(`download failed with HTTP ${response.status}`);
   const hash = createHash("sha256");
   const out = createWriteStream(file, { mode: 0o600 });
   let bytes = 0;
   try {
     await pipeline(
-      response.body as unknown as NodeJS.ReadableStream,
+      stallGuarded(response.body, stallMs),
       async function* (source: AsyncIterable<Uint8Array>) {
         for await (const chunk of source) {
           bytes += chunk.length;
@@ -316,7 +351,9 @@ async function runInstall(options: ManagedGitInstallOptions): Promise<ManagedGit
       if (isMarketplaceError(error) && error.code === "SOURCE_POLICY_BLOCKED") throw error;
       throw installFailed(`download failed: ${(error as Error).message}`, error);
     }
-    const digest = await downloadTo(response, archive, asset.size, (bytes) => report({ phase: "downloading", bytes, total: asset.size }));
+    const digest = await downloadTo(response, archive, asset.size, options.downloadStallMs ?? DOWNLOAD_STALL_MS, (bytes) =>
+      report({ phase: "downloading", bytes, total: asset.size }),
+    );
 
     report({ phase: "verifying" });
     if (digest !== asset.sha256) throw installFailed(`sha256 ${digest} does not match the pinned ${asset.sha256}`);

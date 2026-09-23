@@ -15,7 +15,7 @@
  * index or revocations file rejects the whole commit, so the caller keeps its
  * previous pin.
  */
-import type { BareRepo } from "../git/repo.js";
+import { assertRepoPath, type BareRepo } from "../git/repo.js";
 import type { GitRemote } from "../git/run-git.js";
 import type {
   IndexVersion,
@@ -27,7 +27,7 @@ import type {
   Revocation,
 } from "../catalog/types.js";
 import { validateDescriptorText, validateIndexText, validateRevocationsText, type CatalogDiagnostic } from "../catalog/validate.js";
-import { MarketplaceError, isMarketplaceError, type MarketplaceErrorCode } from "../errors.js";
+import { isMarketplaceError, type MarketplaceErrorCode } from "../errors.js";
 import type { ResolvedSource } from "./registry.js";
 
 export interface CatalogPackage {
@@ -233,7 +233,15 @@ export class SnapshotBuilder {
       for (const entry of await this.repo.lsTree(this.commit, dir, true)) {
         const segments = entry.path.split("/");
         if (segments.length === 3 && segments[2] === DESCRIPTOR_NAME && entry.type === "blob") {
-          wanted.push({ path: `${dir}/${segments[1]}`, kind, subject: `${dir}/${segments[1]}` });
+          const path = `${dir}/${segments[1]}`;
+          try {
+            assertRepoPath(path);
+          } catch (error) {
+            // One unusable directory name drops that package, not the source.
+            diagnostics.push({ subject: path, message: (error as Error).message });
+            continue;
+          }
+          wanted.push({ path, kind, subject: path });
         }
       }
     }
@@ -312,8 +320,10 @@ export class SnapshotBuilder {
       };
     } catch (error) {
       if (error instanceof Rejection) return { ok: false, code: error.code, message: error.message };
-      if (error instanceof MarketplaceError && error.code === "CONTENT_RULE_VIOLATION") {
-        return { ok: false, code: "SOURCE_INDEX_INVALID", message: error.message };
+      if (isMarketplaceError(error)) {
+        // A blob fetch can still fail on the network, auth or a timeout; that
+        // is the sync's result, not an exception past it.
+        return { ok: false, code: error.code === "CONTENT_RULE_VIOLATION" ? "SOURCE_INDEX_INVALID" : error.code, message: error.message };
       }
       throw error;
     }

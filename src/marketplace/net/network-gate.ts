@@ -27,7 +27,7 @@ import {
 } from "../../core/network-guard.js";
 import { MarketplaceError } from "../errors.js";
 import { isBlockedByPolicy, type MarketplacePolicy, type PolicyLoad } from "../sources/policy.js";
-import { normalizeSourceHost, type NormalizedSourceUrl } from "./source-url.js";
+import { normalizeDownloadPath, normalizeSourceHost, type NormalizedSourceUrl, type PatternTarget } from "./source-url.js";
 
 export interface NetworkGateOptions {
   policy: PolicyLoad;
@@ -60,7 +60,7 @@ function hostListedBy(policy: MarketplacePolicy): Set<string> {
   return hosts;
 }
 
-/** The policy view of a download URL: same host rules, path without a trailing `/`, query ignored. */
+/** The policy view of a download URL: same host and path rules as a source URL, query ignored. */
 export function downloadUrlForPolicy(url: URL): NormalizedSourceUrl {
   const scheme = url.protocol === "https:" ? "https" : url.protocol === "http:" ? "http" : null;
   if (!scheme || url.username || url.password) {
@@ -68,7 +68,7 @@ export function downloadUrlForPolicy(url: URL): NormalizedSourceUrl {
   }
   const host = normalizeSourceHost(url.href, url.hostname);
   const port = url.port === "" ? null : Number(url.port);
-  const path = url.pathname.replace(/\/+$/u, "");
+  const path = normalizeDownloadPath(url.href, url.pathname);
   const authority = port === null ? host : `${host}:${port}`;
   return { scheme, user: null, host, port, path, url: `${scheme}://${authority}${path}` };
 }
@@ -89,12 +89,12 @@ export class NetworkGate {
   }
 
   /** Steps 2–3 for one normalized target. Returns whether plain http is permitted for it. */
-  private async checkPolicyAndScheme(url: NormalizedSourceUrl, subject: GateSubject): Promise<{ allowHttp: boolean }> {
+  private async checkPolicyAndScheme(url: NormalizedSourceUrl, subject: GateSubject, target: PatternTarget): Promise<{ allowHttp: boolean }> {
     if (!this.policy) {
       if (!subject.official) {
         throw new MarketplaceError("SOURCE_POLICY_BLOCKED", `the managed marketplace policy is invalid: ${this.policyError}`);
       }
-    } else if (isBlockedByPolicy(this.policy, url)) {
+    } else if (isBlockedByPolicy(this.policy, url, target)) {
       throw new MarketplaceError("SOURCE_POLICY_BLOCKED", `blocked by managed policy: ${url.url}`);
     }
     if (url.scheme !== "http") return { allowHttp: false };
@@ -114,7 +114,7 @@ export class NetworkGate {
 
   /** Pre-flight for a git remote. Resolves to the `allowHttp` flag run-git needs. */
   async checkRemote(url: NormalizedSourceUrl, subject: GateSubject): Promise<{ allowHttp: boolean }> {
-    const verdict = await this.checkPolicyAndScheme(url, subject);
+    const verdict = await this.checkPolicyAndScheme(url, subject, "repository");
     const port = url.port === null ? "" : `:${url.port}`;
     try {
       // Any http(s) spelling of the host works: only its addresses are checked.
@@ -135,11 +135,11 @@ export class NetworkGate {
     }
     const { fetchImpl, official, method = "GET", headers = {}, signal, timeoutMs, maxRedirects } = init;
     // Policy first, so a blocked host is reported as blocked, not as a DNS failure.
-    await this.checkPolicyAndScheme(downloadUrlForPolicy(start), { official });
+    await this.checkPolicyAndScheme(downloadUrlForPolicy(start), { official }, "download");
     const origin = start.origin;
     const gatedFetch: typeof fetch = async (input, hopInit) => {
       const hop = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
-      await this.checkPolicyAndScheme(downloadUrlForPolicy(hop), { official });
+      await this.checkPolicyAndScheme(downloadUrlForPolicy(hop), { official }, "download");
       const hopHeaders = new Headers(hopInit?.headers);
       if (hop.origin !== origin) {
         for (const name of CROSS_ORIGIN_STRIPPED_HEADERS) hopHeaders.delete(name);

@@ -1,7 +1,8 @@
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { execFile, execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MarketplaceError } from "../../errors.js";
 import { normalizeSourceUrl } from "../../net/source-url.js";
@@ -16,6 +17,7 @@ import { createTestGitRunner, type TestGitRunner } from "../../__tests__/fixture
 import { BareRepo } from "../repo.js";
 import type { GitRemote } from "../run-git.js";
 
+const execFileAsync = promisify(execFile);
 const LIMITS = { maxFiles: 100, maxBytes: 1024 * 1024 };
 
 async function expectCode(promise: Promise<unknown>, code: string): Promise<void> {
@@ -64,7 +66,7 @@ describe("BareRepo", () => {
     second = repo.commit({ "plugins/alpha/dist/index.js": "export const v = 2;\n" }, "second");
     server = await startGitHttpServer({ root });
     t = await createTestGitRunner();
-    remote = { url: normalizeSourceUrl(server.url("market")), sourceId: "fixture", allowHttp: true };
+    remote = { url: normalizeSourceUrl(server.url("market")), sourceId: "fixture", allowHttp: true, useToken: false };
   });
   afterAll(async () => {
     await t.cleanup();
@@ -101,6 +103,36 @@ describe("BareRepo", () => {
     await bare.ensureBlobs(remote, second, ["marketplace.json"]);
     expect((await bare.readFile(second, "marketplace.json", 1024))?.toString()).toBe("{\"v\":1}\n");
     expect(await bare.readFile(second, "absent.json", 1024)).toBeNull();
+    expect(missingBlobs(bare.dir, second, "skills")).toHaveLength(1);
+  });
+
+  it("works on its own directory only, never on a repository above a broken one", async () => {
+    const outer = join(scratch, "outer");
+    execFileSync("git", ["init", "--quiet", outer]);
+    const broken = join(outer, "sources", "acme", "repo.git");
+    mkdirSync(broken, { recursive: true });
+    writeFileSync(join(broken, "HEAD"), "ref: refs/heads/main\n");
+    const bare = new BareRepo(t.runner, broken);
+    await expect(bare.fetchRef(remote, undefined, "candidate")).rejects.toThrow();
+    expect(execFileSync("git", ["for-each-ref", "refs/ave"], { cwd: outer, encoding: "utf8" })).toBe("");
+  });
+
+  it("never fetches a missing object on its own", async () => {
+    const bare = await BareRepo.init(t.runner, localRepoDir());
+    await bare.fetchRef(remote, undefined, "pin");
+    const [blob] = missingBlobs(bare.dir, second, "skills/beta/SKILL.md");
+    // The contract environment of a call that may reach this remote: the lazy
+    // fetch a partial clone would start on a missing object is not blocked by
+    // the protocol allow-list here, only by GIT_NO_LAZY_FETCH.
+    const env = t.runner.environment(remote);
+    const before = server.seen.length;
+    // Async: the fixture server answers from this process.
+    await expect(execFileAsync(t.git.path, ["cat-file", "-s", blob!.slice(1)], { cwd: bare.dir, env })).rejects.toThrow();
+    expect(server.seen.length).toBe(before);
+    // A local call also allows no transport, which stops the fetch on its own.
+    const { GIT_NO_LAZY_FETCH: _unused, ...local } = t.runner.environment(undefined);
+    await expect(execFileAsync(t.git.path, ["cat-file", "-s", blob!.slice(1)], { cwd: bare.dir, env: local })).rejects.toThrow();
+    expect(server.seen.length).toBe(before);
     expect(missingBlobs(bare.dir, second, "skills")).toHaveLength(1);
   });
 
@@ -181,7 +213,7 @@ describe("BareRepo", () => {
         [{ path: "plugins/evil/data/state.json", mode: "100644", content: "{}" }],
         "runtime dir",
       );
-      hostileRemote = { url: normalizeSourceUrl(server.url("hostile")), sourceId: "hostile", allowHttp: true };
+      hostileRemote = { url: normalizeSourceUrl(server.url("hostile")), sourceId: "hostile", allowHttp: true, useToken: false };
       bare = await BareRepo.init(t.runner, localRepoDir());
       await bare.fetchRef(hostileRemote, undefined, "pin");
     });

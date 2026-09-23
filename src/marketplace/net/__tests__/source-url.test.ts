@@ -81,6 +81,11 @@ describe("normalizeSourceUrl", () => {
     "C:\\repos\\tools",
     "/abs/path",
     "acme",
+    "ssh://-oProxyCommand=x/acme/tools",
+    "https://-evil.example/acme/tools",
+    "https://git$(id).example/acme/tools",
+    "-oProxyCommand=x@github.com:acme/tools",
+    "ssh://-l@github.com/acme/tools",
   ])("rejects %j", (input) => {
     rejected(input);
   });
@@ -128,6 +133,9 @@ describe("source patterns", () => {
     expect(matchesSourcePattern(url("ACME/Tools"), pattern)).toBe(true);
     expect(matchesSourcePattern(url("git@github.com:acme/tools.git"), pattern)).toBe(true);
     expect(matchesSourcePattern(url("acme/tools-2"), pattern)).toBe(false);
+    // A nested repository (GitLab subgroups) is another repository; only a download lives beneath one.
+    expect(matchesSourcePattern(url("https://github.com/acme/tools/sub"), pattern)).toBe(false);
+    expect(matchesSourcePattern(url("https://github.com/acme/tools/sub"), pattern, "download")).toBe(true);
   });
 
   it("a trailing * after a slash stays inside that path", () => {
@@ -153,7 +161,7 @@ describe("source patterns", () => {
     expect(matchesSourcePattern(url("https://git.corp.example/x/y"), pattern)).toBe(true);
   });
 
-  it.each(["https://github.com/*/tools*", "https://github.com/*/tools", "file:///x*", "host:", "host:a/b"])("rejects pattern %j", (text) => {
+  it.each(["https://github.com/*/tools*", "https://github.com/*/tools", "file:///x*", "host:", "host:a/b", "host:git.corp.example:8080", "host:-x.example"])("rejects pattern %j", (text) => {
     expect(() => parseSourcePattern(text)).toThrow(MarketplaceError);
   });
 });

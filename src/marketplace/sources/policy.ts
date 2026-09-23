@@ -22,6 +22,7 @@ import {
   parseSourcePattern,
   sameSourceRepository,
   type NormalizedSourceUrl,
+  type PatternTarget,
   type SourcePattern,
 } from "../net/source-url.js";
 import {
@@ -144,7 +145,10 @@ function auth(value: unknown, path: string, url: NormalizedSourceUrl): SourceAut
     record(entry, path, new Set(["kind", "host"]));
     if (url.scheme === "ssh") fail(path, "token auth needs an http(s) URL");
     if (typeof entry.host !== "string") fail(`${path}.host`, "must be a string");
-    return { kind: "token", host: parsed(`${path}.host`, () => normalizeSourceHost(entry.host as string, entry.host as string)) };
+    const host = parsed(`${path}.host`, () => normalizeSourceHost(entry.host as string, entry.host as string));
+    // The token is only ever offered to the source's own host (§12).
+    if (host !== url.host) fail(`${path}.host`, `must be the source's host ${url.host}`);
+    return { kind: "token", host };
   }
   return fail(`${path}.kind`, "must be none, token or ssh");
 }
@@ -169,22 +173,27 @@ function packageKeys(value: unknown, path: string, sourceIds: ReadonlySet<string
   });
 }
 
-export function isBlockedByPolicy(policy: MarketplacePolicy, url: NormalizedSourceUrl): boolean {
-  if (policy.block.some((pattern) => matchesSourcePattern(url, pattern))) return true;
-  return policy.allow !== null && !policy.allow.some((pattern) => matchesSourcePattern(url, pattern));
+export function isBlockedByPolicy(policy: MarketplacePolicy, url: NormalizedSourceUrl, target: PatternTarget = "repository"): boolean {
+  if (policy.block.some((pattern) => matchesSourcePattern(url, pattern, target))) return true;
+  return policy.allow !== null && !policy.allow.some((pattern) => matchesSourcePattern(url, pattern, target));
+}
+
+/** An absent key is the empty list; `null` is a typo, not "nothing". */
+function orEmpty(value: unknown): unknown {
+  return value === undefined ? [] : value;
 }
 
 /** Parse the `marketplaces` value (not the whole file); throws on anything it cannot read exactly. */
 function parseSection(value: unknown): MarketplacePolicy {
   const section = record(value, "", SECTION_KEYS);
   const allowHttpHosts = new Set(
-    stringList(section.allowHttpHosts ?? [], ".allowHttpHosts").map((host, index) =>
+    stringList(orEmpty(section.allowHttpHosts), ".allowHttpHosts").map((host, index) =>
       parsed(`.allowHttpHosts[${index}]`, () => normalizeSourceHost(host, host)),
     ),
   );
   const policy: MarketplacePolicy = {
     allow: section.allow === undefined ? null : patterns(section.allow, ".allow"),
-    block: patterns(section.block ?? [], ".block"),
+    block: patterns(orEmpty(section.block), ".block"),
     allowHttpHosts,
     allowDirectInstall: bool(section.allowDirectInstall, ".allowDirectInstall", true),
     allowDisablingOfficial: bool(section.allowDisablingOfficial, ".allowDisablingOfficial", false),
@@ -225,9 +234,9 @@ function parseSection(value: unknown): MarketplacePolicy {
   }
 
   const sourceIds = new Set([OFFICIAL_MARKETPLACE.id, ...additional.map((spec) => spec.id)]);
-  const required = packageKeys(section.requiredInstalls ?? [], ".requiredInstalls", sourceIds);
+  const required = packageKeys(orEmpty(section.requiredInstalls), ".requiredInstalls", sourceIds);
   const requiredKeys = new Set(required.map((key) => `${key.kind}/${key.name}@${key.source}`));
-  const defaults = packageKeys(section.defaultInstalls ?? [], ".defaultInstalls", sourceIds).filter(
+  const defaults = packageKeys(orEmpty(section.defaultInstalls), ".defaultInstalls", sourceIds).filter(
     (key) => !requiredKeys.has(`${key.kind}/${key.name}@${key.source}`),
   );
   return { ...policy, additional, defaultInstalls: defaults, requiredInstalls: required };

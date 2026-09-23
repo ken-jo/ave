@@ -174,6 +174,59 @@ describe.skipIf(process.platform === "win32")("SourceSyncer", () => {
 
     expect(snapshotFiles("acme")).toEqual([`${first}.json`, `${second}.json`, `${third}.json`].sort());
     expect((await syncer.readSnapshot("acme"))!.packages[0]!.latest).toBe("2.0.0");
+
+    // One more move: the old previous pin goes, the retained first commit stays.
+    const fourth = repo.commit(files("2.1.0"), "v2.1");
+    await syncer.sync("acme");
+    expect(snapshotFiles("acme")).toEqual([`${first}.json`, `${third}.json`, `${fourth}.json`].sort());
+  });
+
+  it("re-proves ancestry from a fresh fetch when the local repository is lost", async () => {
+    const { repo, name } = fixture();
+    const base = repo.commit({ "marketplace.json": index("acme", []) }, "base");
+    repo.commit({ "README.md": "v2\n" }, "second");
+    const { registry, syncer } = await setup();
+    await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
+    await syncer.sync("acme");
+
+    // The full-history fetch brings the pinned commit back when the candidate descends from it.
+    rmSync(join(root, "acme", "repo.git"), { recursive: true, force: true });
+    const moved = repo.commit({ "README.md": "v3\n" }, "third");
+    expect(await syncer.sync("acme")).toEqual({ status: "ok", pinnedCommit: moved, changed: true });
+
+    // When it does not, the pinned object stays missing and the move is held for review.
+    rmSync(join(root, "acme", "repo.git"), { recursive: true, force: true });
+    const rewritten = rewrite(repo, base, { "README.md": "other\n" });
+    expectFailed(await syncer.sync("acme"), "SOURCE_HISTORY_REWRITTEN");
+    expect(await registry.readState("acme")).toMatchObject({ pinnedCommit: moved, pendingRewrite: { candidate: rewritten } });
+  });
+
+  it("refuses to treat a source with synced data but no state file as fresh", async () => {
+    const { repo, name } = fixture();
+    repo.commit({ "marketplace.json": index("acme", []) }, "first");
+    const { registry, syncer } = await setup();
+    await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
+    await syncer.sync("acme");
+    rmSync(join(root, "acme", "state.json"));
+    await expect(syncer.sync("acme")).rejects.toThrow("state.json is missing");
+  });
+
+  it("lets a running sync finish before its source is removed", async () => {
+    const { repo, name } = fixture();
+    repo.commit({ "marketplace.json": index("acme", []) }, "first");
+    const { registry, syncer } = await setup();
+    await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
+    const order: string[] = [];
+    const syncing = syncer.sync("acme").then((result) => {
+      order.push("sync");
+      return result;
+    });
+    const removing = syncer.removeSource("acme").then(() => order.push("remove"));
+    const [result] = await Promise.all([syncing, removing]);
+    expect(result.status).toBe("ok");
+    expect(order).toEqual(["sync", "remove"]);
+    expect(registry.get("acme")).toBeUndefined();
+    expect(existsSync(join(root, "acme"))).toBe(false);
   });
 
   it("reports no change when the ref has not moved, and rebuilds a lost snapshot at the same pin", async () => {
@@ -227,10 +280,17 @@ describe.skipIf(process.platform === "win32")("SourceSyncer", () => {
     await expect(syncer.acceptRewrite("acme", OTHER_COMMIT)).rejects.toSatisfy(
       (error: unknown) => error instanceof MarketplaceError && error.code === "PLAN_EXPIRED",
     );
-    expect(await syncer.acceptRewrite("acme", rewritten)).toEqual({ status: "ok", pinnedCommit: rewritten, changed: true });
+
+    // A sync that sees another rewrite in between expires the reviewed one.
+    const rewrittenAgain = rewrite(repo, base, { "README.md": "again\n" });
+    expectFailed(await syncer.sync("acme"), "SOURCE_HISTORY_REWRITTEN");
+    await expect(syncer.acceptRewrite("acme", rewritten)).rejects.toSatisfy(
+      (error: unknown) => error instanceof MarketplaceError && error.code === "PLAN_EXPIRED",
+    );
+    expect(await syncer.acceptRewrite("acme", rewrittenAgain)).toEqual({ status: "ok", pinnedCommit: rewrittenAgain, changed: true });
     const state = await registry.readState("acme");
     expect(state.pendingRewrite).toBeUndefined();
-    expect(state.pinnedCommit).toBe(rewritten);
+    expect(state.pinnedCommit).toBe(rewrittenAgain);
     expect(changed).toEqual(["acme", "acme"]);
   });
 
@@ -272,7 +332,8 @@ describe.skipIf(process.platform === "win32")("SourceSyncer", () => {
 
   it("takes the candidate from a mirror when the primary is unreachable, under the same history rule", async () => {
     const { repo, name } = fixture();
-    const commit = repo.commit({ "marketplace.json": index("ave", []) }, "official");
+    const base = repo.commit({ "marketplace.json": index("ave", []) }, "base");
+    const commit = repo.commit({ "README.md": "v2\n" }, "official");
     const official: OfficialMarketplace = { id: "ave", url: server.url("no-such-repo"), mirrors: [server.url(name)], auth: { kind: "none" } };
     const { registry, syncer } = await setup({ official });
     expect(await syncer.sync("ave")).toEqual({ status: "ok", pinnedCommit: commit, changed: true });
@@ -283,6 +344,32 @@ describe.skipIf(process.platform === "win32")("SourceSyncer", () => {
     expect((await registry.readState("ave")).pinnedCommit).toBe(commit);
     // Offline: the last good snapshot is still served.
     expect((await offline.readSnapshot("ave"))!.commit).toBe(commit);
+
+    // A candidate from the mirror meets the same history rule as one from the primary.
+    rewrite(repo, base, { "README.md": "forked\n" });
+    expectFailed(await syncer.sync("ave"), "SOURCE_HISTORY_REWRITTEN");
+    expect((await registry.readState("ave")).pinnedCommit).toBe(commit);
+  });
+
+  it("reports a host that goes down while an accepted rewrite fetches its files as the sync's result", async () => {
+    const { repo, name } = fixture();
+    const base = repo.commit({ "marketplace.json": index("acme", []) }, "base");
+    const pinned = repo.commit({ "README.md": "v2\n" }, "second");
+    const second = await startGitHttpServer({ root: serverRoot });
+    const { registry, syncer } = await setup();
+    await registry.add({ id: "acme", origin: "custom", url: second.url(name), auth: { kind: "none" } });
+    await syncer.sync("acme");
+    const rewritten = rewrite(repo, base, { "marketplace.json": index("acme", [{ kind: "skill", name: "alpha", path: "skills/alpha" }]) });
+    expectFailed(await syncer.sync("acme"), "SOURCE_HISTORY_REWRITTEN");
+    await second.close();
+
+    // The candidate's commits are local; its blobs are not.
+    expectFailed(await syncer.acceptRewrite("acme", rewritten), "SOURCE_UNREACHABLE");
+    expect(await registry.readState("acme")).toMatchObject({
+      pinnedCommit: pinned,
+      pendingRewrite: { candidate: rewritten },
+      lastSync: { result: "SOURCE_UNREACHABLE", candidate: rewritten },
+    });
   });
 
   it("serves the last snapshot while the host is down", async () => {
@@ -322,6 +409,7 @@ describe.skipIf(process.platform === "win32")("SourceSyncer", () => {
         "skills/deep/nested/ave-package.json": skill("nested"),
         "skills/one/ave-package.json": skill("twin"),
         "skills/two/ave-package.json": skill("twin"),
+        "skills/odd:name/ave-package.json": skill("odd"),
       },
       "layout",
     );
@@ -332,6 +420,7 @@ describe.skipIf(process.platform === "win32")("SourceSyncer", () => {
     expect(snapshot.marketplace).toEqual({ name: "acme", displayName: "Acme tools" });
     expect(snapshot.packages.map((entry) => `${entry.path}:${entry.name}`)).toEqual(["skills/alpha:alpha"]);
     expect(snapshot.diagnostics.map((item) => item.message)).toEqual([
+      'invalid repository path: "skills/odd:name"',
       "declares kind skill inside plugins/",
       "more than one package declares this kind and name",
       "more than one package declares this kind and name",
@@ -369,6 +458,25 @@ describe.skipIf(process.platform === "win32")("SourceSyncer", () => {
     const [a, b] = await Promise.all([syncer.sync("acme"), syncer.sync("acme")]);
     expect(a).toBe(b);
     expect(changed).toEqual(["acme"]);
+  });
+
+  it("keeps a joined sync running when one caller aborts, and stops it when every caller has", async () => {
+    const { repo, name } = fixture();
+    const commit = repo.commit({ "marketplace.json": index("acme", []) }, "first");
+    const { registry, syncer } = await setup();
+    await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
+    const a = new AbortController();
+    const b = new AbortController();
+    const first = syncer.sync("acme", a.signal);
+    const second = syncer.sync("acme", b.signal);
+    a.abort(new Error("first caller gave up"));
+    expect(await second).toEqual({ status: "ok", pinnedCommit: commit, changed: true });
+    expect(await first).toBe(await second);
+
+    const c = new AbortController();
+    const lone = syncer.sync("acme", c.signal);
+    c.abort(new Error("the only caller gave up"));
+    await expect(lone).rejects.toThrow("the only caller gave up");
   });
 
   it("syncs a hidden source while an installed package is bound to it", async () => {

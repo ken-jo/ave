@@ -106,6 +106,10 @@ describe("loadMarketplacePolicy", () => {
     ["an unsafe ref", { additional: [{ id: "corp", url: "https://git.corp.example/a", ref: "main..evil" }] }, "is not a branch or tag name"],
     ["an install naming a custom source", { defaultInstalls: [{ kind: "plugin", name: "wiki", source: "someone" }] }, "must name the official source or an additional source"],
     ["an install with an unknown kind", { requiredInstalls: [{ kind: "widget", name: "wiki", source: "ave" }] }, "is not a package kind"],
+    ["null for a list (a typo must not mean \"nothing\")", { block: null }, "marketplaces.block: must be an array of strings"],
+    ["null for required installs", { requiredInstalls: null }, "marketplaces.requiredInstalls: must be an array"],
+    ["a port on an allowHttpHosts entry", { allowHttpHosts: ["git.corp.example:8080"] }, "a host takes no port"],
+    ["a token host other than the source's", { additional: [{ id: "corp", url: "https://git.corp.example/a", auth: { kind: "token", host: "github.com" } }] }, "must be the source's host git.corp.example"],
     ["an install listed twice", { requiredInstalls: [{ kind: "plugin", name: "wiki", source: "ave" }, { kind: "plugin", name: "wiki", source: "ave" }] }, "is listed twice"],
   ])("fails closed on %s", async (_label, section, message) => {
     expect(await rejected(section)).toContain(message);

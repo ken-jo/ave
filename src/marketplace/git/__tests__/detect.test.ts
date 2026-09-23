@@ -13,7 +13,7 @@ import { parseGitVersion } from "../git-version.js";
 
 describe("parseGitVersion", () => {
   it.each([
-    ["git version 2.38.1", "2.38.1", [2, 38, 1]],
+    ["git version 2.45.1", "2.45.1", [2, 45, 1]],
     ["git version 2.39.5 (Apple Git-154)", "2.39.5 (Apple Git-154)", [2, 39, 5]],
     ["git version 2.45.1.windows.1\n", "2.45.1.windows.1", [2, 45, 1]],
     ["git version 3.0", "3.0", [3, 0, 0]],
@@ -63,7 +63,7 @@ describe("detectGitRuntime", () => {
   it("auto picks the first usable system git and remembers an older one it skipped", async () => {
     const detection = await detectGitRuntime(
       "auto",
-      fakeDeps({ versions: { "/a/git": "git version 2.30.0", "/b/git": "git version 2.44.0" } }),
+      fakeDeps({ versions: { "/a/git": "git version 2.30.0", "/b/git": "git version 2.50.1" } }),
     );
     expect(detection).toMatchObject({
       state: "ready",
@@ -75,12 +75,12 @@ describe("detectGitRuntime", () => {
   it("auto falls back to the managed copy when the system git is too old", async () => {
     const detection = await detectGitRuntime(
       "auto",
-      fakeDeps({ versions: { "/a/git": "git version 2.38.0" }, findManagedGit: async () => MANAGED }),
+      fakeDeps({ versions: { "/a/git": "git version 2.45.0" }, findManagedGit: async () => MANAGED }),
     );
     expect(detection).toMatchObject({
       state: "ready",
       git: { kind: "managed", path: MANAGED.path, managedRoot: MANAGED.root },
-      systemTooOld: { path: "/a/git", version: "2.38.0" },
+      systemTooOld: { path: "/a/git", version: "2.45.0" },
     });
   });
 
@@ -91,9 +91,9 @@ describe("detectGitRuntime", () => {
   it("system mode reports too-old instead of falling back", async () => {
     const detection = await detectGitRuntime(
       "system",
-      fakeDeps({ versions: { "/a/git": "git version 2.38.0" }, findManagedGit: async () => MANAGED }),
+      fakeDeps({ versions: { "/a/git": "git version 2.45.0" }, findManagedGit: async () => MANAGED }),
     );
-    expect(detection).toEqual({ state: "too-old", systemTooOld: { path: "/a/git", version: "2.38.0" } });
+    expect(detection).toEqual({ state: "too-old", systemTooOld: { path: "/a/git", version: "2.45.0" } });
   });
 
   it("managed mode ignores the system git", async () => {
@@ -139,9 +139,9 @@ describe("detectGitRuntime with real executables", () => {
   });
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-  it.skipIf(process.platform === "win32")("refuses 2.38.0 and accepts 2.38.1", async () => {
-    const old = fakeGit("old", "2.38.0");
-    const ok = fakeGit("ok", "2.38.1");
+  it.skipIf(process.platform === "win32")("refuses 2.45.0 and accepts 2.45.1", async () => {
+    const old = fakeGit("old", "2.45.0");
+    const ok = fakeGit("ok", "2.45.1");
     const inDir = (path: string) => path.startsWith(dir);
     const real = nodeGitDetectionDeps(async () => null);
     const deps: GitDetectionDeps = {
@@ -151,11 +151,11 @@ describe("detectGitRuntime with real executables", () => {
     };
     expect(await detectGitRuntime("system", { ...deps, searchPath: old })).toEqual({
       state: "too-old",
-      systemTooOld: { path: join(old, "git"), version: "2.38.0" },
+      systemTooOld: { path: join(old, "git"), version: "2.45.0" },
     });
     expect(await detectGitRuntime("system", { ...deps, searchPath: `${old}:${ok}` })).toMatchObject({
       state: "ready",
-      git: { kind: "system", path: join(ok, "git"), version: { text: "2.38.1" } },
+      git: { kind: "system", path: join(ok, "git"), version: { text: "2.45.1" } },
     });
   });
 });

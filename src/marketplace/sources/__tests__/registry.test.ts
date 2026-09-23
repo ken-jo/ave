@@ -92,7 +92,7 @@ describe("SourceRegistry.add", () => {
     ["official", "SOURCE_NAME_RESERVED"],
     ["ave-official", "SOURCE_NAME_RESERVED"],
     ["ave-tools", "SOURCE_NAME_RESERVED"],
-    ["Acme", "SOURCE_NAME_RESERVED"],
+    ["Acme", "SOURCE_ID_INVALID"],
     ["corp", "SOURCE_ID_TAKEN"],
   ])("refuses the id %s with %s", async (id, expected) => {
     const registry = await open(CORP_POLICY);
@@ -170,6 +170,8 @@ describe("SourceRegistry load checks", () => {
     ["a missing addedAt", { ...valid, addedAt: undefined }, "addedAt must be an ISO-8601 time"],
     ["a subdir on a custom source", { ...valid, subdir: "a" }, "subdir is for direct sources only"],
     ["an id used twice", valid, "acme is already used by a custom source"],
+    ["a token host that is not a host name", { ...valid, auth: { kind: "token", host: "bad host" } }, "auth.host:"],
+    ["a token host other than the source's", { ...valid, auth: { kind: "token", host: "gitlab.com" } }, "auth.host must be the source's host github.com"],
   ])("skips an entry with %s", async (_label, entry, message) => {
     writeSources(entry === valid ? [valid, valid] : [entry]);
     const registry = await open();
@@ -203,6 +205,21 @@ describe("SourceRegistry.remove", () => {
     expect(await code(registry.remove("ave"))).toContain("cannot be removed");
     expect(await code(registry.remove("corp"))).toContain("cannot be removed");
     expect(await code(registry.remove("nobody"))).toContain("no source named nobody");
+  });
+
+  it("keeps an unserved entry with the same id, and never lets a new source take that id", async () => {
+    const stale = { id: "acme", origin: "custom", url: "https://GitHub.com/acme/old.git", auth: { kind: "none" }, addedAt: NOW.toISOString() };
+    writeSources([stale]);
+    const registry = await open();
+    expect(registry.get("acme")).toBeUndefined();
+    expect(await code(registry.add(custom()))).toBe("SOURCE_ID_TAKEN");
+
+    // Two entries share an id: removing the served one leaves the other as written.
+    const served = { ...stale, url: "https://github.com/acme/market" };
+    writeSources([served, stale]);
+    const reopened = await open();
+    await reopened.remove("acme");
+    expect(JSON.parse(readFileSync(join(root, "sources.json"), "utf8")).sources).toEqual([stale]);
   });
 });
 

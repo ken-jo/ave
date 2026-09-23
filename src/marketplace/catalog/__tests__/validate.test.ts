@@ -172,6 +172,8 @@ describe("validateDescriptorText", () => {
       ["an absolute command", { command: "/bin/sh" }],
       ["a command outside server/", { command: "tools/run" }],
       ["a traversing command", { command: "server/../../bin/sh" }],
+      ["a command traversing with backslashes", { command: "server/..\\..\\Windows\\System32\\cmd.exe" }],
+      ["a command with a drive", { command: "server/C:\\Windows\\cmd.exe" }],
       ["a reserved env name", { command: "npx", env: { PATH: "/tmp" } }],
       ["a reserved apiKeyEnv", { command: "npx", apiKeyEnv: "NODE_OPTIONS" }],
       ["private-network access", { command: "npx", allowPrivateNetworks: true }],
@@ -275,6 +277,19 @@ describe("validateIndexText", () => {
     );
     expect(result.ok && result.value.index.packages.map((entry) => `${entry.kind}/${entry.name}`)).toEqual(["agent/twin"]);
     expect(result.ok && result.value.diagnostics).toHaveLength(4);
+  });
+
+  it("counts an invalid entry as a claimant too", () => {
+    const result = validateIndexText(
+      index([
+        { kind: "skill", name: "alpha", path: "skills/alpha" },
+        { kind: "skill", name: "alpha", path: "skills/alpha-2", unknown: true },
+        { kind: "agent", name: "beta", path: "agents/beta" },
+        { kind: "agent", name: "gamma", path: "agents/beta", unknown: true },
+      ]),
+      context,
+    );
+    expect(result.ok && result.value.index.packages).toEqual([]);
   });
 });
 

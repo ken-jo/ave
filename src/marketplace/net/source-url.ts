@@ -39,7 +39,10 @@ const DEFAULT_PORT: Record<SourceUrlScheme, number> = { https: 443, http: 80, ss
 const GITHUB_SHORTHAND = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]+$/u;
 const SCP_FORM = /^([A-Za-z0-9._~-]+)@(\[[0-9A-Fa-f:.]+\]|[^:/@[\]]+):(.+)$/u;
 const SCHEME_FORM = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/(.*)$/su;
-const SSH_USER = /^[A-Za-z0-9._~-]+$/u;
+/** Never starts with `-`, so ssh cannot read it as an option. */
+const SSH_USER = /^[A-Za-z0-9._~][A-Za-z0-9._~-]*$/u;
+/** DNS labels after IDNA (plus `_`, which some internal zones use); none starts or ends with `-`. */
+const HOST_NAME = /^(?!-)[a-z0-9_-]+(?<!-)(?:\.(?!-)[a-z0-9_-]+(?<!-))*$/u;
 const UNRESERVED = /[A-Za-z0-9\-._~]/u;
 /** RFC 3986 pchar minus `%`, which is handled separately. */
 const PCHAR = /[A-Za-z0-9\-._~!$&'()*+,;=:@]/u;
@@ -51,10 +54,14 @@ function reject(input: string, reason: string): never {
 /**
  * Canonical host: WHATWG parsing gives IDNA to ASCII, lowercase, and one
  * spelling for IPv4 variants (`0x7f.1` → `127.0.0.1`) and IPv6 literals.
- * One trailing dot is removed so `github.com.` equals `github.com`.
+ * One trailing dot is removed so `github.com.` equals `github.com`. A port is
+ * never part of a host: in a host-only field (`host:` patterns,
+ * `allowHttpHosts`, `auth.host`) it would otherwise be dropped silently and
+ * widen the rule to every port.
  */
 export function normalizeSourceHost(input: string, raw: string): string {
   if (!raw || raw.includes("%") || /[\s\\/?#@]/u.test(raw)) reject(input, "invalid host");
+  if (!raw.startsWith("[") && raw.includes(":")) reject(input, "a host takes no port");
   let host: string;
   try {
     host = new URL(`http://${raw}/`).hostname;
@@ -62,7 +69,7 @@ export function normalizeSourceHost(input: string, raw: string): string {
     reject(input, "invalid host");
   }
   if (host.endsWith(".")) host = host.slice(0, -1);
-  if (!host || host.endsWith(".")) reject(input, "invalid host");
+  if (!host || (!host.startsWith("[") && !HOST_NAME.test(host))) reject(input, "invalid host");
   return host;
 }
 
@@ -119,6 +126,7 @@ function parseParts(input: string, trimmed: string): ParsedParts {
   const scp = !trimmed.includes("://") ? SCP_FORM.exec(trimmed) : null;
   if (scp) {
     const [, user, rawHost, path] = scp;
+    if (!SSH_USER.test(user!)) reject(input, "invalid ssh user");
     return {
       scheme: "ssh",
       user: user!,
@@ -171,6 +179,15 @@ function render(parts: Omit<NormalizedSourceUrl, "url">): string {
   const user = parts.user ? `${parts.user}@` : "";
   const port = parts.port === null ? "" : `:${parts.port}`;
   return `${parts.scheme}://${user}${parts.host}${port}${parts.path}`;
+}
+
+/**
+ * A download URL's path in the form patterns compare: canonical
+ * percent-encoding (`%65vil` is `evil`), no trailing `/`, and no empty, `.`
+ * or `..` segment, which a server may collapse into another path.
+ */
+export function normalizeDownloadPath(input: string, rawPath: string): string {
+  return `/${normalizePathSegments(input, rawPath, false).join("/")}`;
 }
 
 export function normalizeSourceUrl(input: string): NormalizedSourceUrl {
@@ -242,12 +259,21 @@ export function parseSourcePattern(text: string): SourcePattern {
   return { kind: "prefix", host: parts.host, pathPrefix: pathPrefix.toLowerCase(), text };
 }
 
-export function matchesSourcePattern(url: NormalizedSourceUrl, pattern: SourcePattern): boolean {
+/**
+ * What a URL names: a repository (a source's remote) or a file served from
+ * under one (a release asset or archive download). For a download an exact
+ * repository pattern covers every path beneath the repository, so a rule
+ * written for `…/acme/tools` also governs `…/acme/tools/releases/download/…`.
+ */
+export type PatternTarget = "repository" | "download";
+
+export function matchesSourcePattern(url: NormalizedSourceUrl, pattern: SourcePattern, target: PatternTarget = "repository"): boolean {
   switch (pattern.kind) {
     case "host":
       return url.host === pattern.host;
     case "exact":
-      return sameSourceRepository(url, pattern.url);
+      return sameSourceRepository(url, pattern.url)
+        || (target === "download" && url.host === pattern.url.host && repositoryPath(url).startsWith(`${repositoryPath(pattern.url)}/`));
     case "prefix":
       return url.host === pattern.host && `${repositoryPath(url)}/`.startsWith(pattern.pathPrefix);
   }

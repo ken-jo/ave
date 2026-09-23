@@ -14,6 +14,7 @@
  * refuses writes until it is repaired, so nothing the user added is
  * overwritten.
  */
+import { existsSync } from "node:fs";
 import { rm, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { isMissingPathError } from "../../lib/atomic-file.js";
@@ -116,8 +117,14 @@ function checkAuth(value: unknown, url: NormalizedSourceUrl): SourceAuth {
   knownKeys(value, new Set(["kind", "host"]), "auth");
   shape(url.scheme !== "ssh", "token auth needs an http(s) URL");
   shape(typeof value.host === "string", "auth.host must be a string");
-  const host = normalizeSourceHost(value.host, value.host);
+  let host: string;
+  try {
+    host = normalizeSourceHost(value.host, value.host);
+  } catch (error) {
+    throw new RegistryShapeError(`auth.host: ${isMarketplaceError(error) ? error.message : String(error)}`);
+  }
   shape(host === value.host, "auth.host must be normalized");
+  shape(host === url.host, `auth.host must be the source's host ${url.host}`);
   return { kind: "token", host };
 }
 
@@ -196,6 +203,8 @@ export interface SourceRegistryOptions {
 export class SourceRegistry {
   private rawEntries: unknown[] = [];
   private stored: ResolvedSource[] = [];
+  /** The raw entry each served source came from, so a removal touches only that entry. */
+  private storedRaw = new Map<string, unknown>();
   private fileError: string | null = null;
   private loadDiagnostics: RegistryDiagnostic[] = [];
   private queue: Promise<unknown> = Promise.resolve();
@@ -274,6 +283,7 @@ export class SourceRegistry {
     const diagnostics: RegistryDiagnostic[] = [];
     const taken = new Map(this.builtIn.map((source) => [source.id, source.origin] as const));
     const stored: ResolvedSource[] = [];
+    const storedRaw = new Map<string, unknown>();
     for (const [position, raw] of this.rawEntries.entries()) {
       const subject = isRecord(raw) && typeof raw.id === "string" ? raw.id : `sources[${position}]`;
       let checked: ReturnType<typeof checkEntry>;
@@ -295,6 +305,7 @@ export class SourceRegistry {
         continue;
       }
       taken.set(entry.id, entry.origin);
+      storedRaw.set(entry.id, raw);
       stored.push({
         id: entry.id,
         origin: entry.origin,
@@ -307,6 +318,7 @@ export class SourceRegistry {
       });
     }
     this.stored = stored;
+    this.storedRaw = storedRaw;
     this.loadDiagnostics = this.fileError ? [{ subject: "sources.json", message: this.fileError }, ...diagnostics] : diagnostics;
   }
 
@@ -326,12 +338,14 @@ export class SourceRegistry {
   /** The id and URL checks of §7.2 step 6, without writing anything. */
   checkNew(source: NewSource): NormalizedSourceUrl {
     if (!SOURCE_ID_RE.test(source.id)) {
-      throw new MarketplaceError("SOURCE_NAME_RESERVED", `${source.id} is not a valid source id`);
+      throw new MarketplaceError("SOURCE_ID_INVALID", `${source.id} is not a valid source id (2-63 lowercase letters, digits or -)`);
     }
     if (isReservedSourceId(source.id)) {
       throw new MarketplaceError("SOURCE_NAME_RESERVED", `${source.id} is a reserved source id`);
     }
-    if (this.list().some((existing) => existing.id === source.id)) {
+    // An entry that is not served still owns its id: it stays in the file untouched (§2.1).
+    const unserved = this.rawEntries.some((raw) => isRecord(raw) && raw.id === source.id);
+    if (unserved || this.list().some((existing) => existing.id === source.id)) {
       throw new MarketplaceError("SOURCE_ID_TAKEN", `a source named ${source.id} already exists`);
     }
     const url = normalizeSourceUrl(source.url);
@@ -382,7 +396,11 @@ export class SourceRegistry {
     });
   }
 
-  /** Custom and direct only (§7.6). Installed packages stay; their origin keeps the source id. */
+  /**
+   * Custom and direct only (§7.6). Installed packages stay; their origin keeps
+   * the source id. Callers go through `SourceSyncer.removeSource`, which lets a
+   * running sync of the source finish first.
+   */
   async remove(id: string): Promise<void> {
     return this.exclusive(async () => {
       const source = this.get(id);
@@ -391,7 +409,8 @@ export class SourceRegistry {
         throw new Error(`the ${source.origin} source ${id} cannot be removed`);
       }
       this.assertWritable();
-      const remaining = this.rawEntries.filter((raw) => !(isRecord(raw) && raw.id === id));
+      const entry = this.storedRaw.get(id);
+      const remaining = this.rawEntries.filter((raw) => raw !== entry);
       await this.writeSources(remaining);
       await rm(join(this.options.root, id), { recursive: true, force: true });
     });
@@ -402,7 +421,14 @@ export class SourceRegistry {
     try {
       text = await readFile(this.statePath(id), "utf8");
     } catch (error) {
-      if (isMissingPathError(error)) return { ...FRESH_STATE };
+      if (isMissingPathError(error)) {
+        // Synced data without a state lost its pin; a fresh state would accept any history (§2.1).
+        const dir = join(this.options.root, id);
+        if (existsSync(join(dir, "repo.git")) || existsSync(join(dir, "snapshots"))) {
+          throw new Error(`${this.statePath(id)} is missing while ${dir} holds synced data; remove the directory to start the source over`, { cause: error });
+        }
+        return { ...FRESH_STATE };
+      }
       throw error;
     }
     try {

@@ -96,14 +96,14 @@ export class BareRepo {
     const target = `refs/ave/${localRef}`;
     await this.runner.run(
       ["fetch", "--filter=blob:none", "--no-tags", "--quiet", "--", remote.url.url, `+${source}:${target}`],
-      { cwd: this.dir, remote, timeoutMs: GIT_TIMEOUTS_MS.fetch, ...(signal ? { signal } : {}) },
+      { gitDir: this.dir, remote, timeoutMs: GIT_TIMEOUTS_MS.fetch, ...(signal ? { signal } : {}) },
     );
     return this.resolve(target);
   }
 
   async resolve(rev: string): Promise<string> {
     const result = await this.runner.run(["rev-parse", "--verify", "--end-of-options", `${rev}^{commit}`], {
-      cwd: this.dir,
+      gitDir: this.dir,
       timeoutMs: GIT_TIMEOUTS_MS.local,
     });
     const oid = result.stdout.toString("utf8").trim();
@@ -115,7 +115,7 @@ export class BareRepo {
   async hasCommit(commit: string): Promise<boolean> {
     assertCommitId(commit, "commit");
     try {
-      const result = await this.runner.run(["cat-file", "-t", commit], { cwd: this.dir, timeoutMs: GIT_TIMEOUTS_MS.local });
+      const result = await this.runner.run(["cat-file", "-t", commit], { gitDir: this.dir, timeoutMs: GIT_TIMEOUTS_MS.local });
       return result.stdout.toString("utf8").trim() === "commit";
     } catch (error) {
       if (error instanceof GitCommandError) return false;
@@ -126,7 +126,7 @@ export class BareRepo {
   /** Committer time of `commit`, ISO-8601. */
   async commitTime(commit: string): Promise<string> {
     assertCommitId(commit, "commit");
-    const result = await this.runner.run(["show", "-s", "--format=%cI", commit], { cwd: this.dir, timeoutMs: GIT_TIMEOUTS_MS.local });
+    const result = await this.runner.run(["show", "-s", "--format=%cI", commit], { gitDir: this.dir, timeoutMs: GIT_TIMEOUTS_MS.local });
     return new Date(result.stdout.toString("utf8").trim()).toISOString();
   }
 
@@ -135,7 +135,7 @@ export class BareRepo {
     assertCommitId(descendant, "descendant");
     try {
       await this.runner.run(["merge-base", "--is-ancestor", ancestor, descendant], {
-        cwd: this.dir,
+        gitDir: this.dir,
         timeoutMs: GIT_TIMEOUTS_MS.local,
       });
       return true;
@@ -150,7 +150,7 @@ export class BareRepo {
     assertCommitId(commit, "commit");
     if (path !== null) assertRepoPath(path);
     const args = ["ls-tree", "-z", "--full-tree", ...(recursive ? ["-r"] : []), commit, ...(path !== null ? ["--", path] : [])];
-    const result = await this.runner.run(args, { cwd: this.dir, timeoutMs: GIT_TIMEOUTS_MS.local });
+    const result = await this.runner.run(args, { gitDir: this.dir, timeoutMs: GIT_TIMEOUTS_MS.local });
     const entries: TreeEntry[] = [];
     for (const record of result.stdout.toString("utf8").split("\0")) {
       if (!record) continue;
@@ -179,7 +179,7 @@ export class BareRepo {
     for (let index = 0; index < missing.length; index += MAX_OIDS_PER_FETCH) {
       await this.runner.run(
         ["fetch", "--filter=blob:none", "--no-tags", "--quiet", "--", remote.url.url, ...missing.slice(index, index + MAX_OIDS_PER_FETCH)],
-        { cwd: this.dir, remote, timeoutMs: GIT_TIMEOUTS_MS.fetch, ...(signal ? { signal } : {}) },
+        { gitDir: this.dir, remote, timeoutMs: GIT_TIMEOUTS_MS.fetch, ...(signal ? { signal } : {}) },
       );
     }
     if (missing.length > 0 && (await this.missingObjects(commit, paths)).length > 0) {
@@ -190,7 +190,7 @@ export class BareRepo {
   private async missingObjects(commit: string, paths: readonly string[]): Promise<string[]> {
     const result = await this.runner.run(
       ["rev-list", "--objects", "--missing=print", "--no-walk", "--sparse", commit, "--", ...paths],
-      { cwd: this.dir, timeoutMs: GIT_TIMEOUTS_MS.local },
+      { gitDir: this.dir, timeoutMs: GIT_TIMEOUTS_MS.local },
     );
     return result.stdout
       .toString("utf8")
@@ -207,12 +207,12 @@ export class BareRepo {
     if (entry.type !== "blob" || (entry.mode !== "100644" && entry.mode !== "100755")) {
       throw new MarketplaceError("CONTENT_RULE_VIOLATION", `${path} is not a regular file at ${commit}`);
     }
-    const size = await this.runner.run(["cat-file", "-s", entry.oid], { cwd: this.dir, timeoutMs: GIT_TIMEOUTS_MS.local });
+    const size = await this.runner.run(["cat-file", "-s", entry.oid], { gitDir: this.dir, timeoutMs: GIT_TIMEOUTS_MS.local });
     if (Number(size.stdout.toString("utf8").trim()) > maxBytes) {
       throw new MarketplaceError("CONTENT_RULE_VIOLATION", `${path} is larger than ${maxBytes} bytes at ${commit}`);
     }
     const result = await this.runner.run(["cat-file", "blob", entry.oid], {
-      cwd: this.dir,
+      gitDir: this.dir,
       timeoutMs: GIT_TIMEOUTS_MS.local,
       maxStdoutBytes: maxBytes,
     });
@@ -291,7 +291,7 @@ export class BareRepo {
     // The tree-ish form reads only this subtree; `archive <commit> -- <path>`
     // also reads blobs outside the path, which a partial clone does not have.
     await this.runner.run(["archive", "--format=tar", `--prefix=${prefix}`, `${commit}:${path}`], {
-      cwd: this.dir,
+      gitDir: this.dir,
       timeoutMs: GIT_TIMEOUTS_MS.export,
       ...(signal ? { signal } : {}),
       onStdout: (chunk) => {

@@ -1,9 +1,12 @@
 /**
  * `git --version` parsing and the minimum usable version (design §9.1).
  *
- * 2.38.1 is the first release where partial clone with `blob:none`,
- * `rev-list --missing=print`, protocol v2 and `protocol.file.allow` all
- * behave the way the invocation contract (§9.3) relies on.
+ * 2.45.1 is the first release that honors `GIT_NO_LAZY_FETCH`: without it a
+ * local read of a missing object in a partial clone fetches from the promisor
+ * remote on its own, outside the network gate. It is also the release that
+ * fixed CVE-2024-32002/32004/32465. Partial clone with `blob:none`,
+ * `rev-list --missing=print`, protocol v2 and `protocol.file.allow` behave
+ * the way the invocation contract (§9.3) relies on well before that.
  */
 export interface GitVersion {
   major: number;
@@ -15,9 +18,9 @@ export interface GitVersion {
 
 const MIN_GIT_VERSION: Readonly<GitVersion> = Object.freeze({
   major: 2,
-  minor: 38,
+  minor: 45,
   patch: 1,
-  text: "2.38.1",
+  text: "2.45.1",
 });
 
 export function parseGitVersion(output: string): GitVersion | null {

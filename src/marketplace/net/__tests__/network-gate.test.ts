@@ -158,6 +158,23 @@ describe("NetworkGate.fetch", () => {
   });
 });
 
+describe("NetworkGate.fetch policy on download paths", () => {
+  it("sees through percent-encoding and covers paths beneath an exact repository", async () => {
+    const { fetchImpl, calls } = fakeTransport({});
+    const block = policy({ block: [parseSourcePattern("https://1.1.1.1/evil/*"), parseSourcePattern("https://1.1.1.1/acme/secret")] });
+    expect(await code(gate(block).fetch("https://1.1.1.1/%65vil/r/releases/download/v1/x.tgz", { fetchImpl, official: false }))).toBe("SOURCE_POLICY_BLOCKED");
+    expect(await code(gate(block).fetch("https://1.1.1.1/acme/secret/releases/download/v1/x.tgz", { fetchImpl, official: false }))).toBe("SOURCE_POLICY_BLOCKED");
+    expect(await code(gate(block).fetch("https://1.1.1.1//evil/r", { fetchImpl, official: false }))).toBe("SOURCE_URL_REJECTED");
+    expect(calls).toHaveLength(0);
+
+    // The same exact pattern in an allow list lets that repository's downloads through.
+    const allow = policy({ allow: [parseSourcePattern("https://1.1.1.1/acme/tools")] });
+    const served = fakeTransport({ "https://1.1.1.1/acme/tools/releases/download/v1/x.tgz": ok });
+    expect((await gate(allow).fetch("https://1.1.1.1/acme/tools/releases/download/v1/x.tgz", { fetchImpl: served.fetchImpl, official: false })).status).toBe(200);
+    expect(await code(gate(allow).fetch("https://1.1.1.1/acme/tools-2/x.tgz", { fetchImpl: served.fetchImpl, official: false }))).toBe("SOURCE_POLICY_BLOCKED");
+  });
+});
+
 describe("downloadUrlForPolicy", () => {
   it("normalizes the host, drops the query and a trailing slash, and keeps the port", () => {
     expect(downloadUrlForPolicy(new URL("https://GitHub.COM./acme/market/releases/?x=1#f"))).toMatchObject({
