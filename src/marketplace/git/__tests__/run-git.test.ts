@@ -37,7 +37,7 @@ describe("GitRunner invocation contract", () => {
   afterAll(async () => t.cleanup());
 
   it("builds the environment from scratch", () => {
-    process.env.AVE_TEST_LEAK_CANARY = "secret";
+    process.env.MARKETPLACE_TEST_LEAK_CANARY = "secret";
     process.env.GIT_DIR = "/tmp/elsewhere";
     try {
       const env = t.runner.environment(remote("https://github.com/acme/tools", false));
@@ -53,12 +53,12 @@ describe("GitRunner invocation contract", () => {
         GIT_ASKPASS: t.broker.launcherPath,
       });
       expect(env.GIT_CONFIG_GLOBAL).toBe(join(t.dir, "gitconfig"));
-      expect(env.AVE_TEST_LEAK_CANARY).toBeUndefined();
+      expect(env.MARKETPLACE_TEST_LEAK_CANARY).toBeUndefined();
       expect(env.GIT_DIR).toBeUndefined();
       expect(t.runner.environment(remote("http://git.corp.example/a/b", true)).GIT_ALLOW_PROTOCOL).toBe("https:ssh:http");
       expect(t.runner.environment(undefined).GIT_ALLOW_PROTOCOL).toBe("none");
     } finally {
-      delete process.env.AVE_TEST_LEAK_CANARY;
+      delete process.env.MARKETPLACE_TEST_LEAK_CANARY;
       delete process.env.GIT_DIR;
     }
   });

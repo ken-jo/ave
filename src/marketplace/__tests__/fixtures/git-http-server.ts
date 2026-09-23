@@ -41,8 +41,12 @@ function hostGitEnv(): NodeJS.ProcessEnv {
   return { PATH: process.env.PATH, HOME: process.env.HOME, LC_ALL: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
 }
 
-/** Run the host git for fixture setup (outside the marketplace contract). */
-function hostGit(args: string[], cwd?: string): string {
+/**
+ * Run the host git for fixture setup and inspection (outside the marketplace
+ * contract), with an environment of its own: a git hook runs tests with
+ * `GIT_DIR` set, which would otherwise point every call at the app's checkout.
+ */
+export function hostGit(args: string[], cwd?: string): string {
   return execFileSync("git", args, { cwd, env: hostGitEnv(), encoding: "utf8" }).trim();
 }
 

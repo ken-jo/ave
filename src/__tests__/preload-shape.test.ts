@@ -312,6 +312,11 @@ describe("preload contextBridge world shape lock", () => {
           "getUsageSummary": "function",
           "getWorkBoardItem": "function",
           "getWorkBoardRunTranscript": "function",
+          "gitRuntime": [
+            "install",
+            "onProgress",
+            "status",
+          ],
           "hasApiKey": "function",
           "hasMarketplaceApiKey": "function",
           "hasWebApiKey": "function",

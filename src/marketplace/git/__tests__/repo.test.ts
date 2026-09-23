@@ -10,6 +10,7 @@ import {
   createFixtureRepo,
   type FixtureRepo,
   type GitHttpServer,
+  hostGit,
   removeFixtureRepo,
   startGitHttpServer,
 } from "../../__tests__/fixtures/git-http-server.js";
@@ -41,10 +42,7 @@ describe("BareRepo", () => {
   }
 
   function missingBlobs(dir: string, commit: string, path: string): string[] {
-    return execFileSync("git", ["rev-list", "--objects", "--missing=print", "--no-walk", "--sparse", commit, "--", path], {
-      cwd: dir,
-      encoding: "utf8",
-    })
+    return hostGit(["rev-list", "--objects", "--missing=print", "--no-walk", "--sparse", commit, "--", path], dir)
       .split("\n")
       .filter((line) => line.startsWith("?"));
   }
@@ -108,13 +106,13 @@ describe("BareRepo", () => {
 
   it("works on its own directory only, never on a repository above a broken one", async () => {
     const outer = join(scratch, "outer");
-    execFileSync("git", ["init", "--quiet", outer]);
+    hostGit(["init", "--quiet", outer]);
     const broken = join(outer, "sources", "acme", "repo.git");
     mkdirSync(broken, { recursive: true });
     writeFileSync(join(broken, "HEAD"), "ref: refs/heads/main\n");
     const bare = new BareRepo(t.runner, broken);
     await expect(bare.fetchRef(remote, undefined, "candidate")).rejects.toThrow();
-    expect(execFileSync("git", ["for-each-ref", "refs/ave"], { cwd: outer, encoding: "utf8" })).toBe("");
+    expect(hostGit(["for-each-ref", "refs/ave"], outer)).toBe("");
   });
 
   it("never fetches a missing object on its own", async () => {
