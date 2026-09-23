@@ -561,7 +561,9 @@ for rung in [release, archive, tree]:
   if rung not declared                               -> skip(rung, NOT_DECLARED)
   if rung in {release, archive} and no sha256 pin    -> skip(rung, ARTIFACT_NOT_PINNED)
   fetch rung                                          // every URL passes §7.4 first
-    release: https GET (token only to the origin host; auth headers stripped on cross-host redirects)
+    release: https GET (token only to the origin host; auth headers stripped on cross-host redirects;
+             a private asset is fetched with the token only through the GitHub REST asset API
+             on github.com; elsewhere the rung runs without it and a private asset falls to the next rung)
     archive: https GET (same rule)
     tree:    export `tree` at versionCommit (§9.3)
   on transport error                                 -> fail(rung, SOURCE_UNREACHABLE / …) and continue
@@ -857,6 +859,8 @@ smoke-testing → ready | failed(code)`. 다운로드는 PAC를 인식하는 단
 ### 9.3 호출 계약
 
 모든 호출은 함수 하나, `runGit(args, { cwd, sourceId })`를 지납니다.
+예외는 런타임을 고르기 전에 도는 버전 확인(`git --version`, §9.1) 하나로,
+저장소도 네트워크도 쓰지 않고 같은 축소 환경에서 실행합니다.
 
 환경(두 모드 공통):
 

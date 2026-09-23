@@ -585,7 +585,9 @@ for rung in [release, archive, tree]:
   if rung not declared                               -> skip(rung, NOT_DECLARED)
   if rung in {release, archive} and no sha256 pin    -> skip(rung, ARTIFACT_NOT_PINNED)
   fetch rung                                          // every URL passes §7.4 first
-    release: https GET (token only to the origin host; auth headers stripped on cross-host redirects)
+    release: https GET (token only to the origin host; auth headers stripped on cross-host redirects;
+             a private asset is fetched with the token only through the GitHub REST asset API
+             on github.com; elsewhere the rung runs without it and a private asset falls to the next rung)
     archive: https GET (same rule)
     tree:    export `tree` at versionCommit (§9.3)
   on transport error                                 -> fail(rung, SOURCE_UNREACHABLE / …) and continue
@@ -902,6 +904,9 @@ Managed-mode environment, set on every call:
 ### 9.3 Invocation contract
 
 Every call goes through one function, `runGit(args, { cwd, sourceId })`.
+The one exception is the version probe (`git --version`, §9.1), which runs
+before a runtime is chosen: no repository, no network, and the same reduced
+environment.
 
 Environment (both modes):
 
