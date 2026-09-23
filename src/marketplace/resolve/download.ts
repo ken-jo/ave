@@ -11,7 +11,7 @@ import { MarketplaceError, isMarketplaceError } from "../errors.js";
 import type { NetworkGate } from "../net/network-gate.js";
 import { stallGuarded } from "../net/stall-guard.js";
 
-export const DOWNLOAD_STALL_MS = 60_000;
+const DOWNLOAD_STALL_MS = 60_000;
 
 export interface DownloadOptions {
   gate: NetworkGate;
@@ -32,7 +32,7 @@ function statusError(url: string, status: number): MarketplaceError {
 }
 
 /** The gated response for `url`; a non-2xx status becomes the matching error code. */
-export async function gatedGet(url: string, options: Omit<DownloadOptions, "maxBytes" | "stallMs">): Promise<Response> {
+async function gatedGet(url: string, options: Omit<DownloadOptions, "maxBytes" | "stallMs">): Promise<Response> {
   const response = await options.gate.fetch(url, {
     fetchImpl: options.fetchImpl,
     official: options.official,

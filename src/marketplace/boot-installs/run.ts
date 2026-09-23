@@ -17,6 +17,7 @@
  * Installing is the caller's: `install` runs the normal plan (ladder,
  * verification, receipt). Nothing here decides consent or reads the network.
  */
+import { errorMessage } from "../../shared/error-message.js";
 import type { CatalogRow } from "../catalog/aggregate.js";
 import type { PackageKind } from "../catalog/types.js";
 import { updateFor, type InstalledPackage } from "../resolve/identity.js";
@@ -60,10 +61,6 @@ function rowFor(rows: readonly CatalogRow[], key: PackageKey): CatalogRow | unde
   return rows.find((row) => row.sourceId === key.source && row.kind === key.kind && row.name === key.name);
 }
 
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 async function required(key: PackageKey, input: BootInstallInput, report: BootInstallReport): Promise<void> {
   const origin = input.synced.get(key.source);
   if (!origin) {
@@ -105,7 +102,7 @@ async function required(key: PackageKey, input: BootInstallInput, report: BootIn
     await input.install(row, { switchSource: outcome === "switched", required: true });
     report[outcome].push(key);
   } catch (error) {
-    report.failed.push({ key, message: message(error) });
+    report.failed.push({ key, message: errorMessage(error) });
   }
 }
 
@@ -134,7 +131,7 @@ async function byDefault(key: PackageKey, input: BootInstallInput, report: BootI
   try {
     await input.install(row, { switchSource: false, required: false });
   } catch (error) {
-    report.failed.push({ key, message: message(error) });
+    report.failed.push({ key, message: errorMessage(error) });
     return;
   }
   await input.applied.record(key, "installed", input.now());

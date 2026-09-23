@@ -37,7 +37,7 @@ export const HOST_SECRET_GRANTS: readonly HostSecretGrant[] = Object.freeze([
   Object.freeze({ plugin: "local-indexer", keys: LLM_API_KEYS }),
 ]);
 
-export const OFFICIAL_SOURCE_ID = "ave";
+const OFFICIAL_SOURCE_ID = "ave";
 
 export interface HostSecretGrantInput {
   pluginId: string;
@@ -69,7 +69,7 @@ export type HostSecretGrantVerdict =
         | "vendor-mismatch";
     };
 
-export function hostSecretGrantFor(pluginId: string, key: string): boolean {
+function hostSecretGrantFor(pluginId: string, key: string): boolean {
   return HOST_SECRET_GRANTS.some((grant) => grant.plugin === pluginId && grant.keys.includes(key));
 }
 

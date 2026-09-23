@@ -52,7 +52,7 @@ export interface StagedPluginArtifact {
 }
 
 /** The part of the artifact store the ladder uses: the zip preflight and a bounded root read. */
-export interface ZipInspector {
+interface ZipInspector {
   readRequiredRootTextFiles(slug: string, zipBuffer: Buffer, requests: readonly RequiredMarketplaceRootTextFile[]): Readonly<Record<string, string>>;
 }
 
@@ -96,7 +96,7 @@ export function planPluginInstall(row: CatalogRow): PluginInstallPlan {
 }
 
 /** A plan for one listed version of the row. */
-export function planForVersion(row: CatalogRow, version: IndexVersion): PluginInstallPlan {
+function planForVersion(row: CatalogRow, version: IndexVersion): PluginInstallPlan {
   if (row.kind !== "plugin") throw new Error(`${row.kind} ${row.name} is not a plugin`);
   // Snapshot validation requires both for every plugin version.
   if (!version.authority || !version.artifact) throw new Error(`${row.name}@${version.version} has no authority or artifact`);

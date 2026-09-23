@@ -584,11 +584,6 @@
     },
     {
       "type": "exports",
-      "file": "src/plugins/marketplace-artifact-limits.ts",
-      "name": "DEFAULT_MARKETPLACE_ARTIFACT_LIMITS"
-    },
-    {
-      "type": "exports",
       "file": "src/plugins/marketplace-installer.ts",
       "name": "encodeMarketplaceVersionForFilename"
     },
