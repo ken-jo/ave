@@ -970,6 +970,11 @@ export class SettingsService {
    * lands again.
    */
   private readonly withheldSecretKeys = new Set<string>();
+  /**
+   * Provider-preset keys whose old address is being saved back. They are
+   * not handed out until that save lands; if it fails they are withheld.
+   */
+  private readonly restoringSecretKeys = new Set<string>();
 
   constructor(options: SettingsServiceOptions) {
     const dir = resolve(options.userDataPath);
@@ -1449,18 +1454,29 @@ export class SettingsService {
       // When other writes landed meanwhile, they already reported success:
       // put back only the presets whose keys stayed, so each key is again
       // next to the address it was entered for.
+      // Until the old addresses are back on disk the keys stay withheld, so
+      // nothing that runs when a failed rollback puts memory back on the new
+      // addresses can pair them.
+      const keys = providerIds.map(marketplaceProviderPresetSecretKey);
+      for (const key of keys) this.restoringSecretKeys.add(key);
       this.settings = isDeepStrictEqual(this.settings, appliedSettings)
         ? previousSettings
         : withProviderPresetsFrom(this.settings, previousSettings, providerIds);
-      await this.commit().catch((rollbackErr: Error) => {
-        log.warn(
-          "settings rollback after provider preset secret deletion failure failed: %s",
-          rollbackErr.message,
-        );
-        for (const providerId of providerIds) {
-          this.withheldSecretKeys.add(marketplaceProviderPresetSecretKey(providerId));
-        }
-      });
+      await this.commit().then(
+        () => {
+          for (const key of keys) this.restoringSecretKeys.delete(key);
+        },
+        (rollbackErr: Error) => {
+          log.warn(
+            "settings rollback after provider preset secret deletion failure failed: %s",
+            rollbackErr.message,
+          );
+          for (const key of keys) {
+            this.restoringSecretKeys.delete(key);
+            this.withheldSecretKeys.add(key);
+          }
+        },
+      );
       throw err;
     }
   }
@@ -1513,7 +1529,7 @@ export class SettingsService {
 
   /** Decrypt and return a stored secret value. */
   getSecret(key: string): string | null {
-    if (this.withheldSecretKeys.has(key)) return null;
+    if (this.withheldSecretKeys.has(key) || this.restoringSecretKeys.has(key)) return null;
     try {
       return this.secretStore.get(key);
     } catch (err) {
@@ -1524,7 +1540,7 @@ export class SettingsService {
 
   /** Security-sensitive consumers that must reject legacy `plain:` secret entries. */
   getEncryptedSecret(key: string): string | null {
-    if (this.withheldSecretKeys.has(key)) return null;
+    if (this.withheldSecretKeys.has(key) || this.restoringSecretKeys.has(key)) return null;
     return this.secretStore.getEncrypted(key);
   }
 
