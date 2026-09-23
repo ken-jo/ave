@@ -12,16 +12,22 @@
  *   oci    → docker run -i --rm [runtimeArguments] <identifier>[:<version>] [packageArguments]
  *   remote → streamable-http only
  *
- * Refused: sse, other registries or a non-default registry base URL, a
- * package whose transport is not stdio, `{variable}` templates, a required
+ * Refused: sse, other registries or a non-default registry base URL (for
+ * oci also an identifier that names a registry host other than docker.io),
+ * a package whose transport is not stdio, `{variable}` templates, a required
  * argument or variable without a value, and more than one secret (the host
  * stores exactly one per server: `apiKeyEnv` or `apiKeyHeader`).
  *
  * The executed code is bound to the plan like a plugin's: npx and uvx
  * packages carry an exact version, and a docker image a tag other than
- * `latest` or a digest. A
- * package-local stdio command (`server/…`) runs from files exported at the
- * version's commit.
+ * `latest` or a digest. Both spec sources pass the same launcher grammar
+ * (`assertMcpRuntimePinned`): only the options listed there may come before
+ * the package or image, so no option can pick another registry, add a
+ * package, or widen the container; and no environment variable may steer a
+ * launcher's registry, index, proxy, certificates or daemon. A descriptor's
+ * own docker image may name any registry host, since the spec the approval
+ * step shows is the full image reference. A package-local stdio command
+ * (`server/…`) runs from files exported at the version's commit.
  */
 import AdmZip from "adm-zip";
 import type { MarketplaceArtifactLimits } from "../../plugins/marketplace-artifact-limits.js";
@@ -61,7 +67,24 @@ const SERVER_JSON_LIMIT = 256 * 1024;
 const LAUNCHERS = new Set(["npx", "uvx", "docker"]);
 const TEMPLATE = /\{[^{}]+\}/u;
 const EXACT_SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u;
+/** A PEP 440 version with no wildcard or range. */
 const EXACT_PYPI_VERSION = /^[0-9][0-9A-Za-z.!+_-]*$/u;
+/** `[@scope/]name@<exact semver>`: an npm registry name, never a URL, path or git spec. */
+const NPX_TARGET = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*@\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u;
+/** `name[extras]==<exact version>`. */
+const UVX_TARGET = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?(?:\[[A-Za-z0-9._,-]+\])?==[0-9][0-9A-Za-z.!+_-]*$/u;
+const UVX_COMMAND = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
+/** `[host/]path` then `:tag` (not `latest`) or `@sha256:<digest>`. */
+const DOCKER_IMAGE = /^[a-z0-9][a-z0-9._-]*(?::\d+)?(?:\/[a-z0-9][a-z0-9._-]*)*(?::(?!latest$)[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})$/u;
+/** Docker Hub, the oci entry of DEFAULT_REGISTRIES, under every name docker gives it. */
+const DOCKER_HUB_HOSTS = new Set(["docker.io", "index.docker.io", "registry-1.docker.io"]);
+/**
+ * Environment a launcher reads to choose where code comes from or how it is
+ * trusted: npm/pnpm/yarn/bun/corepack config, uv and pip indexes, docker's
+ * daemon and credentials, node and python startup (python's output-encoding
+ * switches stay allowed), proxies and CA bundles. Matched case-insensitively (npm reads `npm_config_*` in any case).
+ */
+const LAUNCHER_ENV = /^(?:NPM_CONFIG_|PNPM_|YARN_|BUN_|COREPACK_|UV_|PIP_|DOCKER_|NODE_|PYTHON(?!UNBUFFERED$|IOENCODING$|UTF8$)|(?:HTTPS?|ALL|NO|FTP)_PROXY$|SSL_CERT_|REQUESTS_CA_BUNDLE$|CURL_CA_BUNDLE$)/iu;
 const DEFAULT_REGISTRIES: Record<string, string> = {
   npm: "https://registry.npmjs.org",
   pypi: "https://pypi.org",
@@ -143,7 +166,8 @@ function keyValues(list: unknown, what: string, nameOk: (name: string) => boolea
   return out;
 }
 
-const envNameOk = (name: string) => name.length <= MAX_NAME_LEN && ENV_NAME_RE.test(name) && !RESERVED_ENV_NAMES.has(name.toUpperCase());
+const envNameOk = (name: string) =>
+  name.length <= MAX_NAME_LEN && ENV_NAME_RE.test(name) && !RESERVED_ENV_NAMES.has(name.toUpperCase()) && !LAUNCHER_ENV.test(name);
 const headerNameOk = (name: string) => name.length <= MAX_NAME_LEN && HTTP_HEADER_NAME_RE.test(name) && !RESERVED_HEADERS.has(name.toLowerCase());
 
 function packageRuntime(pkg: Record<string, unknown>): McpRuntimeSpec {
@@ -161,6 +185,10 @@ function packageRuntime(pkg: Record<string, unknown>): McpRuntimeSpec {
   if (!identifier || /\s/u.test(identifier)) throw refuse("server.json package has no usable identifier");
   const version = stringOrUndefined(pkg.version, "version");
   const runtimeArgs = argumentsOf(pkg.runtimeArguments, "runtimeArguments");
+  if (registryType !== "oci" && runtimeArgs.length > 0) {
+    // npx and uvx options choose registries, indexes and extra packages.
+    throw refuse(`server.json ${registryType} package ${identifier} declares runtimeArguments, which Ave does not pass to ${registryType === "npm" ? "npx" : "uvx"}`);
+  }
   const packageArgs = argumentsOf(pkg.packageArguments, "packageArguments");
   const { env, secret } = keyValues(pkg.environmentVariables, "environment variable", envNameOk);
   let command: string;
@@ -177,6 +205,8 @@ function packageRuntime(pkg: Record<string, unknown>): McpRuntimeSpec {
     const tagged = /[:@][^/]+$/u.test(identifier);
     const image = tagged ? identifier : `${identifier}:${version ?? ""}`;
     if ((!tagged && !version) || image.endsWith(":latest")) throw refuse(`oci image ${identifier} needs a fixed tag or a digest`);
+    const host = imageRegistryHost(image);
+    if (host !== null && !DOCKER_HUB_HOSTS.has(host)) throw refuse(`server.json oci image ${identifier} is not on the default oci registry`);
     command = "docker";
     args = ["run", "-i", "--rm", ...runtimeArgs, image, ...packageArgs];
   }
@@ -186,7 +216,20 @@ function packageRuntime(pkg: Record<string, unknown>): McpRuntimeSpec {
     spec.auth = "api-key";
     spec.apiKeyEnv = secret;
   }
+  assertMcpRuntimePinned(identifier, spec);
+  if (command === "docker" && dockerImageOf(identifier, args) !== args[3 + runtimeArgs.length]) {
+    // A runtime argument must not become the image the declared one is passed to.
+    throw refuse(`server.json oci package ${identifier}: runtimeArguments must be docker options, not an image`);
+  }
   return spec;
+}
+
+/** The registry host an image reference names, or null for Docker Hub's short form (`user/app`, `app`). */
+function imageRegistryHost(image: string): string | null {
+  const slash = image.indexOf("/");
+  if (slash < 0) return null;
+  const first = image.slice(0, slash);
+  return first.includes(".") || first.includes(":") || first === "localhost" ? first.toLowerCase() : null;
 }
 
 function remoteRuntime(remote: Record<string, unknown>): McpRuntimeSpec {
@@ -241,37 +284,76 @@ function runtimeFromDescriptor(server: Record<string, unknown>): McpRuntimeSpec 
   return spec;
 }
 
-function packageSpecAfter(args: readonly string[], skip: ReadonlySet<string>): string | undefined {
-  return args.find((arg) => !arg.startsWith("-") && !skip.has(arg));
+/** Options docker may take between `run` and the image; each keeps the container's default isolation or narrows it. */
+function dockerOptionLength(args: readonly string[], index: number): number {
+  const arg = args[index]!;
+  if (["-i", "--interactive", "--rm", "--init", "-t", "--tty"].includes(arg)) return 1;
+  const env = /^(?:-e|--env)(?:=(.*))?$/su.exec(arg);
+  if (env) {
+    const value = env[1] ?? args[index + 1];
+    const name = value?.split("=", 1)[0];
+    return name !== undefined && envNameOk(name) ? (env[1] === undefined ? 2 : 1) : 0;
+  }
+  const network = /^--network(?:=(.*))?$/su.exec(arg);
+  if (network) {
+    const value = network[1] ?? args[index + 1];
+    return value === "none" || value === "bridge" ? (network[1] === undefined ? 2 : 1) : 0;
+  }
+  return 0;
 }
 
 /**
  * The launched code must be fixed by the commit, not by whatever a registry
- * serves later. For a descriptor's own spec the package (npx, uvx) or image
- * (docker) is the first argument that is not an option, so options before it
- * use the `--name=value` form. A `server.json` spec is pinned as it is built.
+ * serves later, and no option may change where it comes from:
+ *
+ *   npx    [-y | --yes]… <package>@<exact version> [args…]
+ *   uvx    <package>==<exact version> [args…]
+ *          --from <package>==<exact version> <command> [args…]
+ *   docker run [-i -t --rm --init, -e NAME[=value], --network none|bridge]… <image>:<tag>|@sha256:… [args…]
+ *
+ * Everything after the package or image belongs to the server. The
+ * environment may not name a launcher's registry, index, proxy, CA or
+ * daemon variables, nor the api-key variable.
  */
 export function assertMcpRuntimePinned(name: string, spec: McpRuntimeSpec): void {
-  if (spec.transport !== "stdio" || !LAUNCHERS.has(spec.command)) return;
+  if (spec.transport !== "stdio") return;
+  const envNames = [...Object.keys(spec.env ?? {}), ...(spec.apiKeyEnv ? [spec.apiKeyEnv] : [])];
+  const badEnv = envNames.find((env) => !envNameOk(env));
+  if (badEnv !== undefined) throw refuse(`MCP server ${name}: environment variable ${badEnv} is not allowed`);
+  if (!LAUNCHERS.has(spec.command)) return;
   const args = spec.args ?? [];
   if (spec.command === "npx") {
-    const target = packageSpecAfter(args, new Set());
-    if (!target || !/^(?:@[^@/\s]+\/)?[^@/\s]+@\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?$/u.test(target)) {
-      throw refuse(`MCP server ${name}: npx must run <package>@<exact version>`);
+    let index = 0;
+    while (args[index] === "-y" || args[index] === "--yes") index += 1;
+    const target = args[index];
+    if (!target || !NPX_TARGET.test(target)) {
+      throw refuse(`MCP server ${name}: npx must run <package>@<exact version>, with only -y before it`);
     }
   } else if (spec.command === "uvx") {
-    const from = args.indexOf("--from");
-    const target = from >= 0 ? args[from + 1] : packageSpecAfter(args, new Set());
-    if (!target || !/^[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[A-Za-z0-9._,-]+\])?===?[A-Za-z0-9][A-Za-z0-9.!+_*~-]*$/u.test(target)) {
-      throw refuse(`MCP server ${name}: uvx must run <package>==<exact version>`);
+    const from = /^--from(?:=(.*))?$/su.exec(args[0] ?? "");
+    const target = from ? (from[1] ?? args[1]) : args[0];
+    const command = from ? args[from[1] === undefined ? 2 : 1] : undefined;
+    if (!target || !UVX_TARGET.test(target) || (from && (!command || !UVX_COMMAND.test(command)))) {
+      throw refuse(`MCP server ${name}: uvx must run <package>==<exact version>, with only --from before it`);
     }
   } else {
-    const run = args.indexOf("run");
-    const image = run >= 0 ? args.slice(run + 1).find((arg) => !arg.startsWith("-")) : undefined;
-    if (!image || !(/@sha256:[0-9a-f]{64}$/u.test(image) || (/:[^/:@]+$/u.test(image) && !image.endsWith(":latest")))) {
-      throw refuse(`MCP server ${name}: docker must run an image with a fixed tag or a digest`);
-    }
+    dockerImageOf(name, args);
   }
+}
+
+/** The image `docker run` starts under the grammar above; refuses anything else. */
+function dockerImageOf(name: string, args: readonly string[]): string {
+  let index = args[0] === "run" ? 1 : -1;
+  while (index > 0 && index < args.length && args[index]!.startsWith("-")) {
+    const length = dockerOptionLength(args, index);
+    if (length === 0) throw refuse(`MCP server ${name}: docker must run an image with a fixed tag or a digest, and option ${args[index]} is not allowed`);
+    index += length;
+  }
+  const image = index > 0 ? args[index] : undefined;
+  if (!image || !DOCKER_IMAGE.test(image)) {
+    throw refuse(`MCP server ${name}: docker must run an image with a fixed tag or a digest`);
+  }
+  return image;
 }
 
 function usesToken(spec: McpRuntimeSpec, token: string): boolean {
@@ -326,7 +408,7 @@ export async function resolveMcpPackage(plan: McpInstallPlan, deps: McpResolveDe
     from = "server.json";
   }
   if (usesToken(runtime, "$PYTHON")) throw refuse(`MCP server ${plan.name} uses $PYTHON; Ave provides no Python runtime (use uvx)`);
-  if (from === "descriptor") assertMcpRuntimePinned(plan.name, runtime);
+  assertMcpRuntimePinned(plan.name, runtime);
   let packageFiles: ResolvedMcpServer["packageFiles"] = null;
   if (runtime.transport === "stdio" && !LAUNCHERS.has(runtime.command)) {
     // Validation allows only `server/…` here (design §5.2); it runs from the exported files.

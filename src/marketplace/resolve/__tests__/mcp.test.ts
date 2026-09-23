@@ -36,7 +36,6 @@ describe("server.json mapping (design §5.2)", () => {
         {
           packages: [
             npmPackage({
-              runtimeArguments: [{ type: "named", name: "--node-options", value: "--max-old-space-size=512" }],
               packageArguments: [
                 { type: "positional", value: "serve" },
                 { type: "named", name: "--port", default: "8080" },
@@ -55,7 +54,7 @@ describe("server.json mapping (design §5.2)", () => {
     ).toEqual({
       transport: "stdio",
       command: "npx",
-      args: ["--node-options", "--max-old-space-size=512", "-y", "@acme/mcp-notes@1.4.2", "serve", "--port", "8080"],
+      args: ["-y", "@acme/mcp-notes@1.4.2", "serve", "--port", "8080"],
       env: { NOTES_MODE: "ro" },
       auth: "api-key",
       apiKeyEnv: "NOTES_TOKEN",
@@ -70,12 +69,12 @@ describe("server.json mapping (design §5.2)", () => {
     });
     expect(
       runtimeFromServerJson(
-        { packages: [{ registryType: "oci", identifier: "ghcr.io/acme/notes", version: "2.0.0", transport: { type: "stdio" }, runtimeArguments: [{ type: "named", name: "--network", value: "none" }] }] },
+        { packages: [{ registryType: "oci", identifier: "docker.io/acme/notes", version: "2.0.0", transport: { type: "stdio" }, runtimeArguments: [{ type: "named", name: "--network", value: "none" }] }] },
         undefined,
       ),
-    ).toEqual({ transport: "stdio", command: "docker", args: ["run", "-i", "--rm", "--network", "none", "ghcr.io/acme/notes:2.0.0"] });
-    expect(runtimeFromServerJson({ packages: [{ registryType: "oci", identifier: `ghcr.io/acme/notes@sha256:${"a".repeat(64)}`, transport: { type: "stdio" } }] }, undefined)).toMatchObject({
-      args: ["run", "-i", "--rm", `ghcr.io/acme/notes@sha256:${"a".repeat(64)}`],
+    ).toEqual({ transport: "stdio", command: "docker", args: ["run", "-i", "--rm", "--network", "none", "docker.io/acme/notes:2.0.0"] });
+    expect(runtimeFromServerJson({ packages: [{ registryType: "oci", identifier: `acme/notes@sha256:${"a".repeat(64)}`, transport: { type: "stdio" } }] }, undefined)).toMatchObject({
+      args: ["run", "-i", "--rm", `acme/notes@sha256:${"a".repeat(64)}`],
     });
   });
 
@@ -110,6 +109,18 @@ describe("server.json mapping (design §5.2)", () => {
     ["a required variable without value", { packages: [npmPackage({ environmentVariables: [{ name: "DB_URL", isRequired: true }] })] }, undefined, "required"],
     ["two secrets", { packages: [npmPackage({ environmentVariables: [{ name: "A_KEY", isSecret: true }, { name: "B_KEY", isSecret: true }] })] }, undefined, "more than one secret"],
     ["a reserved variable", { packages: [npmPackage({ environmentVariables: [{ name: "PATH", value: "/tmp" }] })] }, undefined, "not allowed"],
+    // Security review P2: every way the spec could run code the commit does not fix.
+    ["npx runtime arguments", { packages: [npmPackage({ runtimeArguments: [{ type: "named", name: "--registry", value: "https://evil.example" }] })] }, undefined, "runtimeArguments"],
+    ["uvx runtime arguments", { packages: [{ registryType: "pypi", identifier: "good", version: "1.0.0", transport: { type: "stdio" }, runtimeArguments: [{ type: "positional", value: "evilpkg" }] }] }, undefined, "runtimeArguments"],
+    ["an npm registry variable", { packages: [npmPackage({ environmentVariables: [{ name: "npm_config_registry", value: "https://evil.example" }] })] }, undefined, "not allowed"],
+    ["a uv index variable", { packages: [{ registryType: "pypi", identifier: "good", version: "1.0.0", transport: { type: "stdio" }, environmentVariables: [{ name: "UV_INDEX_URL", value: "https://evil.example" }] }] }, undefined, "not allowed"],
+    ["a docker daemon variable", { packages: [{ registryType: "oci", identifier: "acme/notes:1.0.0", transport: { type: "stdio" }, environmentVariables: [{ name: "DOCKER_HOST", value: "tcp://evil:2375" }] }] }, undefined, "not allowed"],
+    ["a proxy variable", { packages: [npmPackage({ environmentVariables: [{ name: "HTTPS_PROXY", value: "http://evil:8080" }] })] }, undefined, "not allowed"],
+    ["an npm tarball URL", { packages: [npmPackage({ identifier: "https://evil.example/x.tgz#" })] }, undefined, "exact version"],
+    ["a mounted host", { packages: [{ registryType: "oci", identifier: "acme/notes:1.0.0", transport: { type: "stdio" }, runtimeArguments: [{ type: "named", name: "-v", value: "/:/host" }] }] }, undefined, "option -v is not allowed"],
+    ["an image before the pinned one", { packages: [{ registryType: "oci", identifier: "acme/notes:1.0.0", transport: { type: "stdio" }, runtimeArguments: [{ type: "positional", value: "evil/img:main" }] }] }, undefined, "must be docker options, not an image"],
+    ["an image hidden as an option value", { packages: [{ registryType: "oci", identifier: "acme/notes:1.0.0", transport: { type: "stdio" }, runtimeArguments: [{ type: "named", name: "--rm", value: "evil/img:main" }] }] }, undefined, "must be docker options, not an image"],
+    ["another oci registry host", { packages: [{ registryType: "oci", identifier: "evil.example/img:main", transport: { type: "stdio" } }] }, undefined, "not on the default oci registry"],
     ["both selectors", { packages: [npmPackage()], remotes: [] }, { package: 0, remote: 0 }, "both"],
     ["a missing selection", { packages: [npmPackage()] }, { package: 3 }, "no package 3"],
     ["nothing to run", {}, undefined, "no package and no remote"],
@@ -130,10 +141,33 @@ describe("assertMcpRuntimePinned", () => {
     [{ command: "docker", args: ["run", "-i", "ghcr.io/acme/notes"] }, false],
     [{ command: "docker", args: ["run", "-i", "ghcr.io/acme/notes:latest"] }, false],
     [{ command: "server/run.sh", args: [] }, true],
+    [{ command: "npx", args: ["--registry=https://evil.example", "-y", "good@1.0.0"] }, false],
+    [{ command: "npx", args: ["--package=evil", "-y", "good@1.0.0"] }, false],
+    [{ command: "npx", args: ["-y", "good@1.0.0", "--registry", "x"] }, true],
+    [{ command: "uvx", args: ["--index-url=https://evil/simple", "good==1.0.0"] }, false],
+    [{ command: "uvx", args: ["--with=evil", "good==1.0.0"] }, false],
+    [{ command: "uvx", args: ["pkg==1.*"] }, false],
+    [{ command: "uvx", args: ["--from=notes==1.0.0", "notes-server"] }, true],
+    [{ command: "uvx", args: ["--from", "notes==1.0.0"] }, false],
+    [{ command: "docker", args: ["run", "-i", "--rm", "-v", "/:/host", "evil/img:main", "good/img:1.0.0"] }, false],
+    [{ command: "docker", args: ["run", "-i", "--privileged", "good/img:1.0.0"] }, false],
+    [{ command: "docker", args: ["run", "-i", "--network", "host", "good/img:1.0.0"] }, false],
+    [{ command: "docker", args: ["run", "-i", "-e", "API_KEY", "--env=MODE=ro", "good/img:1.0.0"] }, true],
+    [{ command: "docker", args: ["-H", "tcp://evil", "run", "good/img:1.0.0"] }, false],
   ])("%j pinned: %s", (spec, pinned) => {
     const check = () => assertMcpRuntimePinned("notes", { transport: "stdio", ...spec });
     if (pinned) expect(check).not.toThrow();
     else expect(check).toThrow(/must run/u);
+  });
+
+  it("refuses environment that steers a launcher, and allows python's output switches", () => {
+    const run = (env: Record<string, string>, apiKeyEnv?: string) => () =>
+      assertMcpRuntimePinned("notes", { transport: "stdio", command: "npx", args: ["-y", "good@1.0.0"], env, ...(apiKeyEnv ? { apiKeyEnv } : {}) });
+    expect(run({ npm_config_registry: "https://evil.example" })).toThrow("environment variable npm_config_registry is not allowed");
+    expect(run({ PIP_INDEX_URL: "x" })).toThrow(/not allowed/u);
+    expect(run({ NODE_EXTRA_CA_CERTS: "/tmp/ca.pem" })).toThrow(/not allowed/u);
+    expect(run({}, "UV_INDEX_URL")).toThrow(/UV_INDEX_URL is not allowed/u);
+    expect(run({ PYTHONUNBUFFERED: "1", NOTES_MODE: "ro" })).not.toThrow();
   });
 });
 
