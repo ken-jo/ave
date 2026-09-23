@@ -6,7 +6,7 @@ import { CONTENT_ASSET_CUSTOM_SCHEME, parseContentAssetUrl, respondToContentAsse
 
 /** A request from the app's own window: a `file:` page, whose origin is opaque. */
 const APP = { origin: "null", referrer: "" };
-const TOKEN = "0123456789abcdef0123456789abcdef";
+const TOKEN = "t0123456789abcdef0123456789abcdef";
 const base = `ave-content://${TOKEN}`;
 
 describe("ave-content asset scheme (design §5.4)", () => {
@@ -66,7 +66,10 @@ describe("ave-content asset scheme (design §5.4)", () => {
     // A web page that strips its origin and referrer still cannot name a file.
     const stripped = { origin: null, referrer: "" };
     expect((await respondToContentAsset("ave-content://theme/harbor/preview.png", TOKEN, resolve, stripped)).status).toBe(404);
-    expect((await respondToContentAsset(`ave-content://${"f".repeat(32)}/theme/harbor/preview.png`, TOKEN, resolve, stripped)).status).toBe(404);
+    expect((await respondToContentAsset(`ave-content://t${"f".repeat(32)}/theme/harbor/preview.png`, TOKEN, resolve, stripped)).status).toBe(404);
     expect((await respondToContentAsset(`${base}/theme/harbor/preview.png`, TOKEN, resolve, stripped)).status).toBe(200);
+    // A token of digits only still parses as a host name, not an IPv4 address.
+    const digits = `t${"1".repeat(32)}`;
+    expect(parseContentAssetUrl(`ave-content://${digits}/theme/harbor/preview.png`)).toMatchObject({ token: digits });
   });
 });

@@ -372,7 +372,7 @@ function FontFamilyCustomInput({
         type="text"
         value={raw}
         placeholder={t("appearanceTab.fontFamilyCustomPlaceholder")}
-        maxLength={200}
+        maxLength={256}
         onChange={(e) => setRaw(e.target.value)}
         onBlur={() => {
           // Escape sets this flag and then calls blur(); skip the cascaded

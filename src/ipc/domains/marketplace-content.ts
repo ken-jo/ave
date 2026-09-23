@@ -64,6 +64,27 @@ export function createContentActivation(deps: IpcDeps): ContentActivation {
       log.warn({ err: errorMessage(error) }, `${what}: settings saved, broadcast failed`);
     }
   };
+  /**
+   * Run a settings write with the vendor's saved key set aside: the key is
+   * removed before the write, so it never sits next to an address it was not
+   * entered for, and put back if the write fails, so a failed install costs
+   * the user nothing.
+   */
+  const withoutVendorKey = async <T>(vendorId: string, write: () => Promise<T>): Promise<T> => {
+    const secretKey = `llm.apiKey.${vendorId}`;
+    const saved = settings.getSecret(secretKey);
+    if (saved !== null) await settings.deleteSecret(secretKey);
+    try {
+      return await write();
+    } catch (error) {
+      if (saved !== null) {
+        await settings.setSecret(secretKey, saved).catch((restoreError: unknown) => {
+          log.error({ err: errorMessage(restoreError) }, `could not restore the ${vendorId} key after a failed settings write`);
+        });
+      }
+      throw error;
+    }
+  };
   const connectionsWithout = (connectionId: string) =>
     settings.get("marketplace").installedMessagingConnections.filter((entry) => entry.connectionId !== connectionId);
   /** A first install may not take an id the settings already hold from another path (design §15.1). */
@@ -86,17 +107,15 @@ export function createContentActivation(deps: IpcDeps): ContentActivation {
         const { providerId, defaultModel, baseUrl } = content.vendor;
         const installed = settings.get("marketplace").installedProviderIds;
         const vendor = { ...(defaultModel ? { model: defaultModel } : {}), ...(baseUrl ? { baseUrl } : {}) };
-        // A key the user saved for the vendor was entered for the address it had then: moving the
-        // address drops the key, as a preset whose base URL changes does, so it never reaches the new host.
-        if (baseUrl !== undefined && settings.get("llm").vendors[providerId]?.baseUrl !== baseUrl) {
-          await settings.deleteSecret(`llm.apiKey.${providerId}`);
-        }
-        const { finishError } = await mutateMarketplaceProviderPresets(deps, () =>
+        const write = () =>
           settings.patch({
             marketplace: { installedProviderIds: installed.includes(providerId) ? installed : [...installed, providerId] },
             ...(Object.keys(vendor).length > 0 ? { llm: { vendors: { [providerId]: vendor } } } : {}),
-          }),
-        );
+          });
+        // A key the user saved for the vendor was entered for the address it had then: moving the
+        // address drops the key, as a preset whose base URL changes does, so it never reaches the new host.
+        const moves = baseUrl !== undefined && settings.get("llm").vendors[providerId]?.baseUrl !== baseUrl;
+        const { finishError } = await mutateMarketplaceProviderPresets(deps, () => (moves ? withoutVendorKey(providerId, write) : write()));
         await afterPersist(`activating ${entry.name}`, finishError);
       } else if (content.kind === "provider") {
         const { finishError } = await mutateMarketplaceProviderPresets(deps, () => settings.installMarketplaceProviderPreset(content.preset));
@@ -111,10 +130,14 @@ export function createContentActivation(deps: IpcDeps): ContentActivation {
       const appearance = settings.get("appearance");
       const what = `deactivating ${entry.name}`;
       if (entry.kind === "provider") {
-        // The provider id is the package name; a vendor package unlocked a built-in vendor.
+        // The provider id is the package name; a vendor package unlocked a built-in vendor. Its key
+        // goes with it: it may have been entered for the address the package set, and must not reach
+        // the vendor's own host if the vendor is turned on again another way.
         const { finishError } = await mutateMarketplaceProviderPresets(deps, () =>
           isMarketplaceEligibleLLMVendor(entry.name)
-            ? settings.patch({ marketplace: { installedProviderIds: settings.get("marketplace").installedProviderIds.filter((id) => id !== entry.name) } })
+            ? withoutVendorKey(entry.name, () =>
+                settings.patch({ marketplace: { installedProviderIds: settings.get("marketplace").installedProviderIds.filter((id) => id !== entry.name) } }),
+              )
             : settings.uninstallMarketplaceProviderPreset(entry.name),
         );
         await afterPersist(what, finishError);
@@ -177,7 +200,7 @@ export async function loadInstalledContent(deps: IpcDeps, assetToken: string, ro
 export function registerMarketplaceContentHandlers(
   deps: IpcDeps,
   // Drawn once per launch: the host of every `ave-content:` URL (see content-asset-protocol.ts).
-  assetToken: string = randomBytes(16).toString("hex"),
+  assetToken: string = `t${randomBytes(16).toString("hex")}`,
   load: () => Promise<InstalledContentPort> = () => loadInstalledContent(deps, assetToken),
 ): void {
   let ready: Promise<InstalledContentPort | null> | null = null;

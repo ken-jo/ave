@@ -106,7 +106,7 @@ export function installContentAssetProtocolHandler(
   token: string,
   resolve: ContentAssetResolver,
 ): void {
-  if (!CONTENT_ASSET_TOKEN.test(token)) throw new Error("the content asset token must be 32 hex characters");
+  if (!CONTENT_ASSET_TOKEN.test(token)) throw new Error("the content asset token must be t and 32 hex characters");
   protocolApi.handle(CONTENT_ASSET_SCHEME, (request) =>
     respondToContentAsset(request.url, token, resolve, { origin: request.headers.get("origin"), referrer: request.referrer }),
   );

@@ -38,7 +38,7 @@ import { treeDigest } from "../../marketplace/resolve/plugin-ladder.js";
 import { setInstalledThemeIds } from "../../shared/plugin-theme-cache.js";
 import { loadInstalledContent, registerMarketplaceContentHandlers } from "../domains/marketplace-content.js";
 
-const TOKEN = "0123456789abcdef0123456789abcdef";
+const TOKEN = "t0123456789abcdef0123456789abcdef";
 const content = { themes: [], languages: [], fonts: [], broken: [] };
 const port = {
   installed: () => content,
@@ -87,7 +87,7 @@ describe("registerMarketplaceContentHandlers", () => {
     // Without the launch token the request never reaches the store.
     servedFile.mockClear();
     expect((await schemeHandler()(assetRequest("ave-content://font/harbor-serif/files/a.woff2"))).status).toBe(404);
-    expect((await schemeHandler()(assetRequest(`ave-content://${"f".repeat(32)}/font/harbor-serif/files/a.woff2`))).status).toBe(404);
+    expect((await schemeHandler()(assetRequest(`ave-content://t${"f".repeat(32)}/font/harbor-serif/files/a.woff2`))).status).toBe(404);
     expect(servedFile).not.toHaveBeenCalled();
     await electron.handlers.get(CHANNELS.marketplaceContent.installed)!({});
     expect(load).toHaveBeenCalledTimes(1);

@@ -149,6 +149,23 @@ describe("createContentActivation", () => {
     await settingsService.setSecret("llm.apiKey.azure-foundry", "sk-corp");
     await activation.activate({ kind: "provider", vendor: moved }, entry("provider", "azure-foundry"), entry("provider", "azure-foundry"));
     expect(settingsService.getSecret("llm.apiKey.azure-foundry")).toBe("sk-corp");
+
+    // Removing the package locks the vendor and drops the key entered for the package's address.
+    await activation.deactivate(entry("provider", "azure-foundry"), null);
+    expect(settingsService.getSecret("llm.apiKey.azure-foundry")).toBeNull();
+    expect(settingsService.get("marketplace").installedProviderIds).not.toContain("azure-foundry");
+  });
+
+  it("puts the vendor key back when the write that moves the base URL fails", async () => {
+    const activation = createContentActivation(deps);
+    await settingsService.setSecret("llm.apiKey.azure-foundry", "sk-user");
+    const patch = vi.spyOn(settingsService, "patch").mockRejectedValueOnce(new Error("disk full"));
+    await expect(
+      activation.activate({ kind: "provider", vendor: { providerId: "azure-foundry", baseUrl: "https://gateway.corp.example/foundry" } }, entry("provider", "azure-foundry"), null),
+    ).rejects.toThrow("disk full");
+    patch.mockRestore();
+    expect(settingsService.getSecret("llm.apiKey.azure-foundry")).toBe("sk-user");
+    expect(settingsService.get("marketplace").installedProviderIds).not.toContain("azure-foundry");
   });
 
   it("refuses a first install whose id the settings already hold from another path", async () => {

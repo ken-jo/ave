@@ -16,8 +16,11 @@ import type { ThemeSurfaces, ThemeTokens } from "./theme-tokens.js";
 
 export const CONTENT_ASSET_SCHEME = "ave-content";
 
-/** The launch token's form: 32 lowercase hex characters. */
-export const CONTENT_ASSET_TOKEN = /^[0-9a-f]{32}$/u;
+/**
+ * The launch token's form: `t` and 32 lowercase hex characters. The letter
+ * keeps a token that happens to be all digits from reading as an IPv4 host.
+ */
+export const CONTENT_ASSET_TOKEN = /^t[0-9a-f]{32}$/u;
 
 /** `ave-content://<token>/<kind>/<name>/<package-relative path>` for a file of an installed package. */
 export function contentAssetUrl(token: string, kind: "theme" | "font", name: string, path: string): string {

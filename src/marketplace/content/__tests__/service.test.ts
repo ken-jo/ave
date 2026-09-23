@@ -5,7 +5,7 @@ import type { LedgerEntry } from "../ledger.js";
 import { InstalledContentService } from "../service.js";
 import type { BrokenContent, ContentStore, LoadedContent } from "../store.js";
 
-const TOKEN = "0123456789abcdef0123456789abcdef";
+const TOKEN = "t0123456789abcdef0123456789abcdef";
 const SURFACES = { "surface-sunken": "0 0% 97%", surface: "0 0% 100%", "surface-raised": "0 0% 100%", "surface-overlay": "0 0% 100%", "border-subtle": "0 0% 94%", "border-strong": "0 0% 84%" };
 
 function entry(kind: LedgerEntry["kind"], name: string): LedgerEntry {
