@@ -498,9 +498,11 @@ port (§12).
    the temporary repo is deleted on expiry or cancel), the resolved commit,
    marketplace name and owner, package counts per kind, how many packages
    execute code (plugins + MCP), and validation diagnostics.
-6. **Confirm** writes the entry, moves the temporary repo into place and
-   publishes the snapshot. The id defaults to the index `name`; a reserved or
-   taken id (`SOURCE_ID_TAKEN`) makes the dialog ask for another.
+6. **Confirm** writes the entry, writes the source's `state.json`, then moves
+   the temporary repo into place and publishes the snapshot (a `repo.git`
+   without a state is read as lost state, §2.1). The id defaults to the index
+   `name`; a reserved or taken id (`SOURCE_ID_TAKEN`) makes the dialog ask for
+   another, and a malformed one is `SOURCE_ID_INVALID`.
 
 ### 7.3 Sync
 
