@@ -1149,21 +1149,34 @@ files is a device-management action).
 - `serviceBase` resolution: managed policy `service.baseUrl` → the move
   recorded for the current build constant (below) → build constant
   `AVE_SERVICE_BASE_URL` (default `https://former-site.invalid`). There is no user
-  setting.
+  setting. A base is an https origin. The policy section is read exactly
+  (`{ "baseUrl": … }`); an invalid one makes the service unavailable — no
+  announcements, no telemetry — rather than falling back to the public base.
+  An unpackaged build may name a staging base in the development variable
+  `AVE_SERVICE_BASE_URL`, which may be plain http on a loopback host; a
+  packaged build never reads it.
 - **Domain change.** A `movedTo` is accepted only over https from the current
   base, and only after the new base's own service document names the current
   base in `movedFrom`. The accepted move is stored together with the build
-  constant it was made under and is discarded when an app update ships a
-  different constant. At most one move is followed per build constant.
+  constant it was made under (`~/.ave/marketplaces/service.json`) and is
+  discarded when an app update ships a different constant. At most one move
+  is followed per build constant, and a policy base never follows one.
 - `announcements` and `telemetry` must be paths on the service origin.
+  Requests do not follow redirects (a 3xx is a failure) and are capped at
+  64 KB for the document and 1 MB for announcements. Unknown document keys
+  are ignored; `schemaVersion` gates a breaking change.
+- Telemetry posts to the `telemetry` endpoint with no credential and is
+  inactive while the document names none.
 - Announcements keep the `MarketplaceAnnouncement` contract (levels,
   `startsAt`/`endsAt`, up to three navigation-only actions, app-version
   filtered actions) and the dismissed-ids behavior. Action labels fall back to
   the `en` label when the active locale is an installed language that the
-  announcement does not carry. They are fetched after boot and every 6 hours.
+  announcement does not carry. They are fetched after boot and every 6 hours;
+  a failed fetch keeps the list last read in the session.
 - The static files live in the ave `web/` site
-  (`web/public/.well-known/` and `web/public/announcements/`), deployed through
-  its existing manual production gate.
+  (`web/public/.well-known/` and `web/public/announcements/`), deployed by the
+  site's deploy workflow when a `web/**` change merges; a Pages `_headers`
+  rule serves them as JSON with a five-minute cache.
 
 ## 12. Managed policy additions
 

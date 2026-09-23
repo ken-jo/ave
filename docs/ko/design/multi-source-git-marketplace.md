@@ -1080,18 +1080,32 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
 
 - `serviceBase` 결정 순서: 관리 정책 `service.baseUrl` → 현재 빌드 상수에 대해
   기록된 이전(아래) → 빌드 상수 `AVE_SERVICE_BASE_URL`(기본
-  `https://former-site.invalid`). 사용자 설정은 없습니다.
+  `https://former-site.invalid`). 사용자 설정은 없습니다. base는 https 오리진입니다.
+  정책 섹션은 정확히(`{ "baseUrl": … }`) 읽고, 잘못되면 공개 base로 물러나지
+  않고 서비스를 쓸 수 없는 상태(공지 없음, 텔레메트리 없음)가 됩니다. 패키징되지
+  않은 빌드는 개발용 변수 `AVE_SERVICE_BASE_URL`로 스테이징 base를 지정할 수
+  있고, 이때는 루프백 호스트의 평문 http도 됩니다. 패키징된 빌드는 이 변수를
+  읽지 않습니다.
 - **도메인 변경.** `movedTo`는 현재 base에서 https로 받은 경우에만, 그리고 새
   base의 서비스 문서가 `movedFrom`에 현재 base를 적어 확인해 준 뒤에만
   받아들입니다. 받아들인 이전은 그때의 빌드 상수와 함께 저장되며, 앱 업데이트가
-  다른 상수를 싣고 오면 버립니다. 빌드 상수당 최대 한 번만 따릅니다.
-- `announcements`와 `telemetry`는 서비스 오리진의 경로여야 합니다.
+  다른 상수를 싣고 오면 버립니다(`~/.ave/marketplaces/service.json`). 빌드
+  상수당 최대 한 번만 따르고, 정책 base는 이전을 따르지 않습니다.
+- `announcements`와 `telemetry`는 서비스 오리진의 경로여야 합니다. 요청은
+  리디렉션을 따르지 않고(3xx는 실패), 문서는 64 KB, 공지는 1 MB로 제한합니다.
+  문서의 모르는 키는 무시하고, 호환되지 않는 변경은 `schemaVersion`으로
+  구분합니다.
+- 텔레메트리는 자격 증명 없이 `telemetry` 엔드포인트로 보내며, 문서가
+  엔드포인트를 적지 않은 동안에는 동작하지 않습니다.
 - 공지는 `MarketplaceAnnouncement` 계약(수준, `startsAt`/`endsAt`, 최대 세 개의
   탐색 전용 액션, 앱 버전 필터 액션)과 닫은 id 동작을 유지합니다. 활성 로케일이
   공지에 없는 설치 언어이면 액션 라벨은 `en` 라벨로 대체합니다. 부팅 직후와
-  6시간마다 가져옵니다.
+  6시간마다 가져오고, 가져오기에 실패하면 그 세션에서 마지막으로 읽은 목록을
+  유지합니다.
 - 정적 파일은 ave `web/` 사이트(`web/public/.well-known/`,
-  `web/public/announcements/`)에 두고, 기존 수동 프로덕션 게이트로 배포합니다.
+  `web/public/announcements/`)에 두고, `web/**` 변경이 머지되면 사이트 배포
+  워크플로가 배포합니다. Pages `_headers` 규칙이 두 파일을 JSON으로, 5분
+  캐시로 제공합니다.
 
 ## 12. 관리 정책 추가 항목
 
