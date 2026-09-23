@@ -963,6 +963,13 @@ export class SettingsService {
   /** Writes whose change is in memory but not yet on disk (see `commit`). */
   private unsaved: Array<{ resolve: () => void; reject: (err: unknown) => void }> = [];
   private saving = false;
+  /**
+   * Provider-preset keys left next to an address they were not entered for:
+   * their deletion failed and so did the save that put their old address
+   * back. This process never hands them out, and deletes them once a save
+   * lands again.
+   */
+  private readonly withheldSecretKeys = new Set<string>();
 
   constructor(options: SettingsServiceOptions) {
     const dir = resolve(options.userDataPath);
@@ -1450,6 +1457,9 @@ export class SettingsService {
           "settings rollback after provider preset secret deletion failure failed: %s",
           rollbackErr.message,
         );
+        for (const providerId of providerIds) {
+          this.withheldSecretKeys.add(marketplaceProviderPresetSecretKey(providerId));
+        }
       });
       throw err;
     }
@@ -1498,10 +1508,12 @@ export class SettingsService {
   /** Encrypt and store a secret value such as an API key. */
   async setSecret(key: string, value: string): Promise<void> {
     await this.secretStore.set(key, value);
+    this.withheldSecretKeys.delete(key);
   }
 
   /** Decrypt and return a stored secret value. */
   getSecret(key: string): string | null {
+    if (this.withheldSecretKeys.has(key)) return null;
     try {
       return this.secretStore.get(key);
     } catch (err) {
@@ -1512,11 +1524,27 @@ export class SettingsService {
 
   /** Security-sensitive consumers that must reject legacy `plain:` secret entries. */
   getEncryptedSecret(key: string): string | null {
+    if (this.withheldSecretKeys.has(key)) return null;
     return this.secretStore.getEncrypted(key);
   }
 
   async deleteSecret(key: string): Promise<void> {
     await this.secretStore.delete(key);
+    this.withheldSecretKeys.delete(key);
+  }
+
+  /**
+   * Delete the withheld keys (see `withheldSecretKeys`). A key entered again
+   * while this runs may go too, which fails closed: it is asked for again.
+   */
+  private async deleteWithheldSecrets(): Promise<void> {
+    const keys = [...this.withheldSecretKeys];
+    try {
+      await this.secretStore.deleteMany(keys);
+      for (const key of keys) this.withheldSecretKeys.delete(key);
+    } catch (err) {
+      log.warn("withheld provider preset key deletion failed: %s", (err as Error).message);
+    }
   }
 
   /**
@@ -1729,6 +1757,7 @@ export class SettingsService {
         try {
           await this.saveSettings(snapshot);
           this.saved = snapshot;
+          if (this.withheldSecretKeys.size > 0) void this.deleteWithheldSecrets();
           for (const write of batch) write.resolve();
         } catch (err) {
           this.settings = structuredClone(this.saved);

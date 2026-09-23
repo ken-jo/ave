@@ -520,6 +520,59 @@ describe("SettingsService marketplace defaults", () => {
     expect(reloaded.getPluginConfig("sample")).toEqual({ mode: "fast" });
   });
 
+  it("withholds a preset key left next to a new address when its deletion and the rollback both fail", async () => {
+    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(true);
+    mockedElectron.safeStorage.encryptString.mockImplementation(
+      (value: string) => Buffer.from(`sealed:${value}`),
+    );
+    mockedElectron.safeStorage.decryptString.mockImplementation(
+      (value: Buffer) => value.toString("utf-8").slice(7),
+    );
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const preset = {
+      providerId: "future-router",
+      label: "Future Router",
+      baseUrl: "https://future.example/v1",
+      defaultModel: "future/free",
+      modelOptions: ["future/free"],
+      requiresApiKey: true,
+    };
+    const key = marketplaceProviderPresetSecretKey("future-router");
+    await service.installMarketplaceProviderPreset(preset);
+    await service.setSecret(key, "fr-secret");
+    type Internals = {
+      saveSettings(settings: unknown): Promise<void>;
+      secretStore: { deleteMany(keys: string[]): Promise<number> };
+    };
+    const internals = service as unknown as Internals;
+    const realSave = (settings: unknown) => (SettingsService.prototype as unknown as Internals).saveSettings.call(service, settings);
+    vi.spyOn(internals, "saveSettings")
+      .mockImplementationOnce(realSave)
+      .mockImplementationOnce(() => Promise.reject(new Error("disk full")));
+    const deleteMany = vi.spyOn(internals.secretStore, "deleteMany")
+      .mockImplementationOnce(() => Promise.reject(new Error("keychain locked")));
+
+    await expect(service.installMarketplaceProviderPreset({
+      ...preset,
+      baseUrl: "https://elsewhere.example/v1",
+    })).rejects.toThrow("keychain locked");
+
+    // The new address is what is saved; its old key is not handed out.
+    expect(service.get("marketplace").installedProviderPresets[0]?.baseUrl).toBe("https://elsewhere.example/v1");
+    expect(service.getSecret(key)).toBeNull();
+    expect(service.getEncryptedSecret(key)).toBeNull();
+
+    // The next save that lands deletes it.
+    await service.setPluginConfig("sample", { mode: "fast" });
+    await vi.waitFor(() => expect(deleteMany).toHaveBeenLastCalledWith([key]));
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await vi.waitFor(() => expect(reloaded.getSecret(key)).toBeNull());
+
+    // A key entered for the new address is handed out again.
+    await service.setSecret(key, "fr-new-secret");
+    expect(service.getSecret(key)).toBe("fr-new-secret");
+  });
+
   it("leaves an active custom provider preset installed when preset-secret deletion fails", async () => {
     mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(true);
     mockedElectron.safeStorage.encryptString.mockImplementation(
