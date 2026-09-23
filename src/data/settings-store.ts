@@ -925,8 +925,11 @@ export class SettingsService {
   private readonly secretsPath: string;
   private readonly secretStore: SecretDocumentStore;
   private settings: AppSettings;
-  /** The settings write in flight, if any (see `write`). */
-  private writing: Promise<void> | null = null;
+  /** The settings last written to disk (or loaded): what memory returns to when a save fails. */
+  private saved: AppSettings;
+  /** Writes whose change is in memory but not yet on disk (see `commit`). */
+  private unsaved: Array<{ resolve: () => void; reject: (err: unknown) => void }> = [];
+  private saving = false;
 
   constructor(options: SettingsServiceOptions) {
     const dir = resolve(options.userDataPath);
@@ -940,10 +943,11 @@ export class SettingsService {
     });
     const { settings: loaded, writeBack: needsWriteBack } = this.loadSettings();
     this.settings = loaded;
+    this.saved = structuredClone(loaded);
     // Migration write-back (appearance v2, one-time markers): persist so the
     // next load is clean.
     if (needsWriteBack) {
-      void this.write(() => this.saveSettings()).catch(() => { /* best-effort — next load re-migrates */ });
+      void this.commit().catch(() => { /* best-effort — next load re-migrates */ });
     }
   }
 
@@ -963,14 +967,11 @@ export class SettingsService {
   }
 
   async set<K extends keyof AppSettings>(key: K, value: AppSettings[K]): Promise<void> {
-    await this.write(async () => {
-      const previousSettings = this.getAll();
-      this.settings[key] = value;
-      await this.saveOrRestore(previousSettings);
-    });
+    this.settings[key] = value;
+    await this.commit();
   }
 
-  patch(
+  async patch(
     partial: Partial<Omit<
       AppSettings,
       "llm" | "chat" | "marketplace" | "shortcuts" | "telemetry" | "appliedMigrations"
@@ -985,10 +986,6 @@ export class SettingsService {
       telemetry?: Partial<TelemetrySettings>;
     },
   ): Promise<AppSettings> {
-    return this.write(() => this.applyPatch(partial));
-  }
-
-  private async applyPatch(partial: Parameters<SettingsService["patch"]>[0]): Promise<AppSettings> {
     const chatPatch = partial.chat;
     if (
       chatPatch
@@ -1332,7 +1329,7 @@ export class SettingsService {
         ...normalizeFeatureFlags(partial.features),
       };
     }
-    await this.saveOrRestore(previousSettings);
+    await this.commit();
     await this.deleteMarketplaceProviderPresetSecretsAtomically(
       previousSettings,
       providerPresetSecretInvalidationIds,
@@ -1347,19 +1344,21 @@ export class SettingsService {
     if (!normalized) {
       throw new Error("Invalid marketplace provider preset.");
     }
-    return this.write(() => this.replaceMarketplaceProviderPresets([
-      ...this.settings.marketplace.installedProviderPresets.filter((item) => item.providerId !== normalized.providerId),
+    const current = this.settings.marketplace.installedProviderPresets;
+    return this.replaceMarketplaceProviderPresets([
+      ...current.filter((item) => item.providerId !== normalized.providerId),
       normalized,
-    ]));
+    ]);
   }
 
   async uninstallMarketplaceProviderPreset(providerId: string): Promise<AppSettings> {
     if (!isMarketplaceProviderPresetId(providerId)) {
       throw new Error("Invalid marketplace provider preset id.");
     }
-    return this.write(() => this.replaceMarketplaceProviderPresets(
-      this.settings.marketplace.installedProviderPresets.filter((item) => item.providerId !== providerId),
-    ));
+    const current = this.settings.marketplace.installedProviderPresets;
+    return this.replaceMarketplaceProviderPresets(
+      current.filter((item) => item.providerId !== providerId),
+    );
   }
 
   private async replaceMarketplaceProviderPresets(
@@ -1382,7 +1381,7 @@ export class SettingsService {
       { inferInstalledFromCustom: false },
     );
     this.settings.llm = prunedLlm.llm;
-    await this.saveOrRestore(previousSettings);
+    await this.commit();
     await this.deleteMarketplaceProviderPresetSecretsAtomically(
       previousSettings,
       providerPresetSecretInvalidationIds,
@@ -1403,7 +1402,7 @@ export class SettingsService {
       // be rolled back. Avoid reading individual secrets here; encrypted
       // reads correctly fail closed when host encryption is unavailable.
       this.settings = previousSettings;
-      await this.saveSettings().catch((rollbackErr: Error) => {
+      await this.commit().catch((rollbackErr: Error) => {
         log.warn(
           "settings rollback after provider preset secret deletion failure failed: %s",
           rollbackErr.message,
@@ -1419,16 +1418,13 @@ export class SettingsService {
   }
 
   async replaceLlm(llm: LLMSettings): Promise<AppSettings> {
-    return this.write(async () => {
-      const previousSettings = this.getAll();
-      const replacement = structuredClone(llm);
-      this.settings.llm = {
-        ...replacement,
-        activeChatRuntime: normalizeActiveChatRuntime(replacement.activeChatRuntime),
-      };
-      await this.saveOrRestore(previousSettings);
-      return this.getAll();
-    });
+    const replacement = structuredClone(llm);
+    this.settings.llm = {
+      ...replacement,
+      activeChatRuntime: normalizeActiveChatRuntime(replacement.activeChatRuntime),
+    };
+    await this.commit();
+    return this.getAll();
   }
 
   getPluginConfig(pluginId: string): PluginConfigRecord {
@@ -1439,27 +1435,21 @@ export class SettingsService {
   async setPluginConfig(pluginId: string, config: unknown): Promise<PluginConfigRecord> {
     const safePluginId = sanitizePluginConfigPluginId(pluginId);
     const sanitizedConfig = sanitizePluginConfig(config);
-    return this.write(async () => {
-      const previousSettings = this.getAll();
-      this.settings.pluginConfigs = {
-        ...this.settings.pluginConfigs,
-        [safePluginId]: sanitizedConfig,
-      };
-      await this.saveOrRestore(previousSettings);
-      return structuredClone(sanitizedConfig);
-    });
+    this.settings.pluginConfigs = {
+      ...this.settings.pluginConfigs,
+      [safePluginId]: sanitizedConfig,
+    };
+    await this.commit();
+    return structuredClone(sanitizedConfig);
   }
 
   async deletePluginConfig(pluginId: string): Promise<void> {
     const safePluginId = sanitizePluginConfigPluginId(pluginId);
-    await this.write(async () => {
-      if (!(safePluginId in this.settings.pluginConfigs)) return;
-      const previousSettings = this.getAll();
-      const next = { ...this.settings.pluginConfigs };
-      delete next[safePluginId];
-      this.settings.pluginConfigs = next;
-      await this.saveOrRestore(previousSettings);
-    });
+    if (!(safePluginId in this.settings.pluginConfigs)) return;
+    const next = { ...this.settings.pluginConfigs };
+    delete next[safePluginId];
+    this.settings.pluginConfigs = next;
+    await this.commit();
   }
 
   /** Encrypt and store a secret value such as an API key. */
@@ -1669,41 +1659,47 @@ export class SettingsService {
   }
 
   /**
-   * Run one settings write — change memory, save, restore memory if the save
-   * fails — after the write in flight settles. Saving waits on the file lock;
-   * a write that changed memory meanwhile would take the other's unsaved
-   * change into its restore point, and be undone by the other's failure. With
-   * nothing in flight the change starts at once, so memory changes when the
-   * call is made, as before.
+   * Save the change the caller just made in memory. A change applies to
+   * memory when the call is made, so a read and the write built from it stay
+   * atomic. Saves run one at a time, each writing memory as it is when the
+   * save starts; changes made while one waits on the file lock go in the
+   * next. When a save fails, memory returns to what is on disk and every
+   * write not on disk fails with it — the failed save's and the ones made on
+   * top of it — so the process never runs on settings that are not on disk,
+   * and no write reports success for a change that is gone.
    */
-  private write<T>(change: () => Promise<T>): Promise<T> {
-    const run = this.writing ? this.writing.then(change) : change();
-    const settled = run.then(() => undefined, () => undefined);
-    this.writing = settled;
-    void settled.then(() => {
-      if (this.writing === settled) this.writing = null;
+  private commit(): Promise<void> {
+    const done = new Promise<void>((resolve, reject) => {
+      this.unsaved.push({ resolve, reject });
     });
-    return run;
+    void this.drain();
+    return done;
   }
 
-  /**
-   * Write the settings changed in memory since `previous`; when the write
-   * fails, memory goes back to `previous`. The process never runs on settings
-   * that are not on disk — an endpoint change that failed to save must not
-   * be in force until the next restart.
-   */
-  private async saveOrRestore(previous: AppSettings): Promise<void> {
+  private async drain(): Promise<void> {
+    if (this.saving) return;
+    this.saving = true;
     try {
-      await this.saveSettings();
-    } catch (err) {
-      this.settings = previous;
-      throw err;
+      while (this.unsaved.length > 0) {
+        const batch = this.unsaved.splice(0);
+        const snapshot = this.getAll();
+        try {
+          await this.saveSettings(snapshot);
+          this.saved = snapshot;
+          for (const write of batch) write.resolve();
+        } catch (err) {
+          this.settings = structuredClone(this.saved);
+          for (const write of [...batch, ...this.unsaved.splice(0)]) write.reject(err);
+        }
+      }
+    } finally {
+      this.saving = false;
     }
   }
 
-  private async saveSettings(): Promise<void> {
+  private async saveSettings(settings: AppSettings): Promise<void> {
     await withFileLock(this.settingsPath, async () => {
-      writeUtf8FileAtomicSync(this.settingsPath, JSON.stringify(this.settings, null, 2));
+      writeUtf8FileAtomicSync(this.settingsPath, JSON.stringify(settings, null, 2));
     });
   }
 

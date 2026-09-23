@@ -68,26 +68,40 @@ describe("settings persistence", () => {
     expect(service.get("marketplace").installedProviderPresets).toEqual([]);
   });
 
-  it("takes writes one at a time, so a failed write undoes only its own change", async () => {
-    const save = vi.spyOn(service as unknown as { saveSettings(): Promise<void> }, "saveSettings");
+  it("fails every write not yet on disk when a save fails, and keeps memory on disk", async () => {
+    const save = vi.spyOn(service as unknown as { saveSettings(settings: unknown): Promise<void> }, "saveSettings");
     // The first save waits, as on a held file lock, then fails.
     save.mockImplementationOnce(() => new Promise((_, reject) => setTimeout(() => reject(new Error("disk full")), 20)));
 
     const failing = service.patch({ system: { ...service.get("system"), hardwareAcceleration: true } });
-    const next = service.setPluginConfig("sample", { mode: "fast" });
+    // Made on top of the failing change, while its save waits.
+    const onTop = service.setPluginConfig("sample", { mode: "fast" });
 
     await expect(failing).rejects.toThrow("disk full");
-    await expect(next).resolves.toEqual({ mode: "fast" });
+    await expect(onTop).rejects.toThrow("disk full");
     expect(service.get("system").hardwareAcceleration).toBe(false);
-    expect(service.getPluginConfig("sample")).toEqual({ mode: "fast" });
+    expect(service.getPluginConfig("sample")).toEqual({});
+
+    await service.setPluginConfig("sample", { mode: "slow" });
     const saved = JSON.parse(readFileSync(settingsFilePath(root), "utf8"));
     expect(saved.system.hardwareAcceleration).toBe(false);
-    expect(saved.pluginConfigs.sample).toEqual({ mode: "fast" });
+    expect(saved.pluginConfigs.sample).toEqual({ mode: "slow" });
   });
 
-  it("changes memory when the call is made while no write is in flight", async () => {
-    const write = service.patch({ system: { ...service.get("system"), hardwareAcceleration: true } });
-    expect(service.get("system").hardwareAcceleration).toBe(true);
-    await write;
+  it("applies a write when it is made, so a read and the write built from it stay atomic while a save waits", async () => {
+    const save = vi.spyOn(service as unknown as { saveSettings(settings: unknown): Promise<void> }, "saveSettings");
+    const real = (settings: unknown) => (SettingsService.prototype as unknown as { saveSettings(settings: unknown): Promise<void> }).saveSettings.call(service, settings);
+    save.mockImplementationOnce((settings) => new Promise((resolve, reject) => setTimeout(() => real(settings).then(resolve, reject), 20)));
+
+    const first = service.patch({ system: { ...service.get("system"), hardwareAcceleration: true } });
+    const queued = service.setPluginConfig("sample", { mode: "fast" });
+    expect(service.getPluginConfig("sample")).toEqual({ mode: "fast" });
+    // Built from a read: must keep the queued change.
+    const built = service.set("pluginConfigs", { ...service.get("pluginConfigs"), other: { mode: "slow" } });
+
+    await Promise.all([first, queued, built]);
+    const saved = JSON.parse(readFileSync(settingsFilePath(root), "utf8"));
+    expect(saved.system.hardwareAcceleration).toBe(true);
+    expect(saved.pluginConfigs).toMatchObject({ sample: { mode: "fast" }, other: { mode: "slow" } });
   });
 });
