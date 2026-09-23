@@ -3,9 +3,10 @@
  * turned into what the renderer's pickers list, the language catalogs, and
  * the files the `ave-content:` scheme may serve.
  *
- * Two packages may not claim the same locale or font family: the first in
- * ledger order is applied and the second is listed as broken, so which one
- * wins never depends on load timing.
+ * Two packages may not claim the same locale or font family. Installing a
+ * second one is refused; should a ledger hold two anyway, the first in ledger
+ * order is applied and the second is listed as broken, so which one wins
+ * never depends on load timing.
  */
 import { join } from "node:path";
 import {
@@ -96,7 +97,7 @@ export class InstalledContentService {
         fonts.push({
           name: entry.name,
           family: content.family,
-          stack: installedFontStack(content.family),
+          stack: installedFontStack(entry.name),
           faces: content.faces.map((face) => ({ url: contentAssetUrl("font", entry.name, face.file), format: face.format, weight: face.weight, style: face.style })),
           ...from(item),
         });

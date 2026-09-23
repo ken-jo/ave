@@ -1141,10 +1141,10 @@ export class SettingsService {
       // is the single source of truth for both.
       acceptField(nextAppearance, "bundleId", bundleIdPatch, isThemeId, "appearance", PATCHED_FIELD);
       acceptField(nextAppearance, "followSystem", followSystemPatch, isBooleanValue, "appearance", PATCHED_FIELD);
-      // Validate the language patch — coerce to a supported locale so a
-      // malformed renderer/IPC payload can never persist an unknown language
-      // (mirrors the font validation below; No-Fallback-Code: validate at the
-      // trust boundary instead of dropping on next load).
+      // Validate the language patch at the trust boundary (mirrors the font
+      // validation below): a malformed renderer/IPC payload becomes English. A
+      // well-formed tag no package provides yet is kept, because the content
+      // ledger is read after settings (see normalizeLocaleSetting).
       if ("language" in appearanceRest) {
         nextAppearance.language = normalizeLocaleSetting((appearanceRest as { language?: unknown }).language);
       }

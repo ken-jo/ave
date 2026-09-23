@@ -17,6 +17,7 @@ import { randomUUID } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { renameDirectory } from "../../lib/transient-fs-lock-retry.js";
+import { createLogger } from "../../lib/logger.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { assertNotRequiredByPolicy } from "../boot-installs/run.js";
 import type { PackageDescriptor } from "../catalog/types.js";
@@ -28,6 +29,8 @@ import type { MarketplacePolicy } from "../sources/policy.js";
 import { isDataContentKind, parseContent, type ContentFile, type DataContentKind, type ParsedContent } from "./kinds.js";
 import { ContentLedger, type LedgerEntry } from "./ledger.js";
 import { CONTENT_RULES, DESCRIPTOR_ALLOWANCE_BYTES, contentFileProblem, isContentKind, type ContentKind } from "./rules.js";
+
+const log = createLogger("marketplace-content-store");
 
 interface DataContentPlan extends PackagePlan {
   kind: DataContentKind;
@@ -44,7 +47,8 @@ export interface StagedContent {
 export interface StageOptions {
   /** Scratch directory for the export; removed before returning. */
   workRoot: string;
-  englishKeys: ReadonlySet<string>;
+  /** The English catalog a language package is checked against. */
+  english: Readonly<Record<string, string>>;
 }
 
 function asDataPlan(plan: PackagePlan): DataContentPlan {
@@ -96,7 +100,12 @@ export async function stageContentPackage(plan: PackagePlan, access: RepositoryA
       files.push({ path: file.path, data: await readFile(join(dest, ...file.path.split("/"))) });
     }
     checkFiles(dataPlan.kind, files);
-    const content = parseContent(dataPlan.kind, files, { name: dataPlan.name, payload: descriptor.payload, englishKeys: options.englishKeys });
+    const content = parseContent(dataPlan.kind, files, {
+      name: dataPlan.name,
+      payload: descriptor.payload,
+      english: options.english,
+      sourceOrigin: dataPlan.sourceOrigin,
+    });
     return { plan: dataPlan, files, contentSha256: digestOf(files), content };
   } finally {
     await rm(dest, { recursive: true, force: true });
@@ -110,8 +119,11 @@ export async function stageContentPackage(plan: PackagePlan, access: RepositoryA
  * language or font returns its setting to the default.
  */
 export interface ContentActivation {
-  /** After the ledger records the package; a throw undoes the install. */
-  activate(content: ParsedContent, entry: LedgerEntry): Promise<void>;
+  /**
+   * After the ledger records the package; a throw undoes the install.
+   * `previous` is the entry it replaces, null for a first install.
+   */
+  activate(content: ParsedContent, entry: LedgerEntry, previous: LedgerEntry | null): Promise<void>;
   /** Before the ledger drops the package; a throw leaves it installed. `content` is null when its files no longer parse. */
   deactivate(entry: LedgerEntry, content: ParsedContent | null): Promise<void>;
 }
@@ -119,7 +131,8 @@ export interface ContentActivation {
 export interface ContentStoreOptions {
   /** `~/.ave/packages`. */
   root: string;
-  englishKeys: ReadonlySet<string>;
+  /** The English catalog a language package is checked against. */
+  english: Readonly<Record<string, string>>;
   activation: ContentActivation;
   now?: () => Date;
 }
@@ -137,6 +150,31 @@ export interface BrokenContent {
 }
 
 const SAFE_VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]*$/u;
+
+/** What only one installed package may provide at a time: a locale, or a font family name. */
+function claimOf(content: ParsedContent): string | null {
+  if (content.kind === "language") return `the ${content.locale} language`;
+  if (content.kind === "font") return `the ${content.family} font family`;
+  return null;
+}
+
+/**
+ * Run each undo step of a failed install. A step that fails is logged and the
+ * rest still run, so the caller rethrows the install's own error; the return
+ * says whether every step held.
+ */
+async function undo(steps: ReadonlyArray<readonly [string, () => Promise<unknown>]>): Promise<boolean> {
+  let held = true;
+  for (const [what, step] of steps) {
+    try {
+      await step();
+    } catch (error) {
+      held = false;
+      log.error({ err: errorMessage(error) }, `content install rollback could not ${what}`);
+    }
+  }
+  return held;
+}
 
 async function readInstalledFiles(dir: string): Promise<ContentFile[]> {
   const files: ContentFile[] = [];
@@ -193,8 +231,9 @@ export class ContentStore {
   async install(staged: StagedContent, options: { switchSource?: boolean } = {}): Promise<{ action: InstallAction; entry: LedgerEntry }> {
     return this.serialize(async () => {
       const { plan } = staged;
-      const previous = this.ledger.get(plan.kind, plan.name);
+      const previous = this.ledger.get(plan.kind, plan.name) ?? null;
       const action = classifyInstall(plan, this.installed(plan.kind, plan.name), options);
+      await this.assertClaimFree(staged);
       const entry: LedgerEntry = {
         kind: plan.kind,
         name: plan.name,
@@ -214,6 +253,8 @@ export class ContentStore {
       const files = join(scratch, "files");
       const displaced = join(scratch, "displaced");
       let displacedDir = false;
+      // The previous version's files stay in the scratch directory until they are back in place.
+      let keepScratch = false;
       try {
         for (const file of staged.files) {
           const target = join(files, ...file.path.split("/"));
@@ -229,17 +270,16 @@ export class ContentStore {
         await renameDirectory(files, dir);
         try {
           await this.ledger.put(entry);
-          try {
-            await this.options.activation.activate(staged.content, entry);
-          } catch (error) {
-            if (previous) await this.ledger.put(previous);
-            else await this.ledger.remove(entry.kind, entry.name);
-            throw error;
-          }
+          await this.options.activation.activate(staged.content, entry, previous);
         } catch (error) {
-          await rm(dir, { recursive: true, force: true });
-          if (displacedDir) await renameDirectory(displaced, dir);
-          displacedDir = false;
+          await undo([
+            ["restore the ledger entry", () => (previous ? this.ledger.put(previous) : this.ledger.remove(entry.kind, entry.name))],
+            ["remove the new files", () => rm(dir, { recursive: true, force: true })],
+          ]);
+          if (displacedDir && !(await undo([["restore the previous files", () => renameDirectory(displaced, dir)]]))) {
+            keepScratch = true;
+            log.error({ kept: displaced }, "content install rollback kept the previous files in its scratch directory");
+          }
           throw error;
         }
         if (previous && previous.version !== entry.version) {
@@ -247,9 +287,26 @@ export class ContentStore {
         }
         return { action, entry };
       } finally {
-        await rm(scratch, { recursive: true, force: true });
+        if (!keepScratch) await rm(scratch, { recursive: true, force: true });
       }
     });
+  }
+
+  /**
+   * A second package may not provide a locale or font family another
+   * installed package provides (PACKAGE_ID_CONFLICT): removing either would
+   * otherwise take the other's selection with it.
+   */
+  private async assertClaimFree(staged: StagedContent): Promise<void> {
+    const claim = claimOf(staged.content);
+    if (!claim) return;
+    for (const other of this.ledger.list()) {
+      if (other.kind !== staged.plan.kind || other.name === staged.plan.name) continue;
+      const loaded = await this.loadOne(other);
+      if ("content" in loaded && claimOf(loaded.content) === claim) {
+        throw new MarketplaceError("PACKAGE_ID_CONFLICT", `${other.name} already provides ${claim}`);
+      }
+    }
   }
 
   /**
@@ -272,14 +329,17 @@ export class ContentStore {
 
   /** Every installed data package, re-read from disk; a package that no longer holds is listed as broken. */
   async load(): Promise<{ loaded: LoadedContent[]; broken: BrokenContent[] }> {
-    const loaded: LoadedContent[] = [];
-    const broken: BrokenContent[] = [];
-    for (const entry of this.ledger.list()) {
-      const result = await this.loadOne(entry);
-      if ("content" in result) loaded.push(result);
-      else broken.push(result);
-    }
-    return { loaded, broken };
+    // Queued behind installs, so a load never reads a package directory mid-rename.
+    return this.serialize(async () => {
+      const loaded: LoadedContent[] = [];
+      const broken: BrokenContent[] = [];
+      for (const entry of this.ledger.list()) {
+        const result = await this.loadOne(entry);
+        if ("content" in result) loaded.push(result);
+        else broken.push(result);
+      }
+      return { loaded, broken };
+    });
   }
 
   private async loadOne(entry: LedgerEntry): Promise<LoadedContent | BrokenContent> {
@@ -290,7 +350,12 @@ export class ContentStore {
       checkFiles(entry.kind, files);
       if (digestOf(files) !== entry.origin.contentSha256) throw new Error("the installed files changed after install");
       // The descriptor is not installed; the digest ties these bytes to the ones checked against it at install.
-      const content = parseContent(entry.kind, files, { name: entry.name, payload: null, englishKeys: this.options.englishKeys });
+      const content = parseContent(entry.kind, files, {
+        name: entry.name,
+        payload: null,
+        english: this.options.english,
+        sourceOrigin: entry.origin.sourceOrigin,
+      });
       return { entry, content, dir };
     } catch (error) {
       return { entry, problem: errorMessage(error) };

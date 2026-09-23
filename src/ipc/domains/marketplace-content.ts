@@ -13,16 +13,18 @@
 import { ipcMain, protocol } from "electron";
 import { join } from "node:path";
 import { CHANNELS } from "../../contract/app-contract.js";
-import { DEFAULT_LOCALE, registerInstalledLocales, setInstalledCatalogLoader } from "../../i18n/index.js";
+import { DEFAULT_LOCALE, SUPPORTED_LOCALES, registerInstalledLocales, setInstalledCatalogLoader } from "../../i18n/index.js";
 import { messages } from "../../i18n/messages/index.js";
 import { createLogger } from "../../lib/logger.js";
 import { InstalledContentService } from "../../marketplace/content/service.js";
 import { ContentStore, type ContentActivation } from "../../marketplace/content/store.js";
 import type { ParsedContent } from "../../marketplace/content/kinds.js";
 import type { LedgerEntry } from "../../marketplace/content/ledger.js";
+import { MarketplaceError } from "../../marketplace/errors.js";
 import { installContentAssetProtocolHandler } from "../../main/content-asset-protocol.js";
 import { applyBootLocale } from "../../boot/services.js";
 import { installedFontStack, type InstalledContentResult } from "../../shared/installed-content.js";
+import { isMarketplaceEligibleLLMVendor } from "../../shared/llm-vendor-defaults.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { setInstalledThemeIds } from "../../shared/plugin-theme-cache.js";
 import { DEFAULT_BUNDLE_ID } from "../../shared/theme-bundles.js";
@@ -43,43 +45,92 @@ function contentPackagesRoot(home: string = aveHome()): string {
  * same preset path the settings IPC uses and messaging connections through
  * the same settings field (blueprint 3.5); removing a theme, language or font
  * that is selected puts its setting back to the default.
+ *
+ * A settings write that fails throws, so the store undoes the install (or
+ * keeps the package on uninstall). Once the write has landed, what follows —
+ * the reviewer rewire, the provider refresh, the broadcast — is logged when it
+ * fails, never thrown: settings already changed, and undoing the ledger would
+ * leave them describing a package that is not installed.
  */
 export function createContentActivation(deps: IpcDeps): ContentActivation {
   const settings = deps.settingsService;
-  const throwOnFinishError = ({ finishError }: { finishError: { message: string } | null }) => {
-    if (finishError) throw new Error(finishError.message);
+  const afterPersist = async (what: string, finishError: { message: string } | null, broadcast = false) => {
+    if (finishError) log.warn({ err: finishError.message }, `${what}: settings saved, refresh failed`);
+    if (!broadcast) return;
+    try {
+      await broadcastSettingsSnapshot(deps);
+    } catch (error) {
+      log.warn({ err: errorMessage(error) }, `${what}: settings saved, broadcast failed`);
+    }
   };
   const connectionsWithout = (connectionId: string) =>
     settings.get("marketplace").installedMessagingConnections.filter((entry) => entry.connectionId !== connectionId);
+  /** A first install may not take an id the settings already hold from another path (design §15.1). */
+  const assertUnclaimed = (content: ParsedContent) => {
+    const marketplace = settings.get("marketplace");
+    const held =
+      content.kind === "provider"
+        ? "vendor" in content
+          ? marketplace.installedProviderIds.includes(content.vendor.providerId)
+          : marketplace.installedProviderPresets.some((preset) => preset.providerId === content.preset.providerId)
+        : content.kind === "messaging-connection" &&
+          marketplace.installedMessagingConnections.some((entry) => entry.connectionId === content.connection.connectionId);
+    if (held) throw new MarketplaceError("PACKAGE_ID_CONFLICT", "settings already hold this id from another install; remove it there first");
+  };
 
   return {
-    async activate(content: ParsedContent) {
-      if (content.kind === "provider") {
-        throwOnFinishError(await mutateMarketplaceProviderPresets(deps, () => settings.installMarketplaceProviderPreset(content.preset)));
+    async activate(content: ParsedContent, entry: LedgerEntry, previous: LedgerEntry | null) {
+      if (!previous) assertUnclaimed(content);
+      if (content.kind === "provider" && "vendor" in content) {
+        const { providerId, defaultModel, baseUrl } = content.vendor;
+        const installed = settings.get("marketplace").installedProviderIds;
+        const vendor = { ...(defaultModel ? { model: defaultModel } : {}), ...(baseUrl ? { baseUrl } : {}) };
+        const { finishError } = await mutateMarketplaceProviderPresets(deps, () =>
+          settings.patch({
+            marketplace: { installedProviderIds: installed.includes(providerId) ? installed : [...installed, providerId] },
+            ...(Object.keys(vendor).length > 0 ? { llm: { vendors: { [providerId]: vendor } } } : {}),
+          }),
+        );
+        await afterPersist(`activating ${entry.name}`, finishError);
+      } else if (content.kind === "provider") {
+        const { finishError } = await mutateMarketplaceProviderPresets(deps, () => settings.installMarketplaceProviderPreset(content.preset));
+        await afterPersist(`activating ${entry.name}`, finishError);
       } else if (content.kind === "messaging-connection") {
         await settings.patch({ marketplace: { installedMessagingConnections: [...connectionsWithout(content.connection.connectionId), content.connection] } });
-        await broadcastSettingsSnapshot(deps);
+        await afterPersist(`activating ${entry.name}`, null, true);
       }
       // Themes, languages and fonts are read from the loaded store; selecting one is the user's.
     },
     async deactivate(entry: LedgerEntry, content: ParsedContent | null) {
       const appearance = settings.get("appearance");
+      const what = `deactivating ${entry.name}`;
       if (entry.kind === "provider") {
-        throwOnFinishError(await mutateMarketplaceProviderPresets(deps, () => settings.uninstallMarketplaceProviderPreset(entry.name)));
+        // The provider id is the package name; a vendor package unlocked a built-in vendor.
+        const { finishError } = await mutateMarketplaceProviderPresets(deps, () =>
+          isMarketplaceEligibleLLMVendor(entry.name)
+            ? settings.patch({ marketplace: { installedProviderIds: settings.get("marketplace").installedProviderIds.filter((id) => id !== entry.name) } })
+            : settings.uninstallMarketplaceProviderPreset(entry.name),
+        );
+        await afterPersist(what, finishError);
         return;
       }
       if (entry.kind === "messaging-connection") {
         await settings.patch({ marketplace: { installedMessagingConnections: connectionsWithout(entry.name) } });
       } else if (entry.kind === "theme" && appearance.bundleId === entry.name) {
         await settings.patch({ appearance: { ...appearance, bundleId: DEFAULT_BUNDLE_ID } });
-      } else if (content?.kind === "language" && appearance.language === content.locale) {
+      } else if (
+        content?.kind === "language" &&
+        appearance.language === content.locale &&
+        !(SUPPORTED_LOCALES as readonly string[]).includes(content.locale)
+      ) {
+        // A compiled locale's package only overlays it: the compiled catalog still renders it.
         await settings.patch({ appearance: { ...appearance, language: DEFAULT_LOCALE } });
-      } else if (content?.kind === "font" && appearance.font?.family === installedFontStack(content.family)) {
+      } else if (entry.kind === "font" && appearance.font?.family === installedFontStack(entry.name)) {
         await settings.patch({ appearance: { ...appearance, font: { ...appearance.font, family: "system" } } });
       } else {
         return;
       }
-      await broadcastSettingsSnapshot(deps);
+      await afterPersist(what, null, true);
     },
   };
 }
@@ -91,10 +142,10 @@ type InstalledContentPort = Pick<InstalledContentService, "installed" | "languag
  * cannot be read leaves every installed package unapplied (and logged)
  * rather than stopping the app.
  */
-async function loadInstalledContent(deps: IpcDeps): Promise<InstalledContentPort> {
+export async function loadInstalledContent(deps: IpcDeps, root: string = contentPackagesRoot()): Promise<InstalledContentPort> {
   const store = await ContentStore.open({
-    root: contentPackagesRoot(),
-    englishKeys: new Set(Object.keys(messages.en)),
+    root,
+    english: messages.en,
     activation: createContentActivation(deps),
   });
   const service = new InstalledContentService(store);
@@ -144,8 +195,9 @@ export function registerMarketplaceContentHandlers(
       auditUnauthorized(deps.auditLogger, CHANNELS.marketplaceContent.languageMessages, event);
       return UNAUTHORIZED_FRAME;
     }
+    if (typeof locale !== "string") return { ok: false, error: "invalid-locale" };
     const service = await loaded();
-    if (!service || typeof locale !== "string") return { ok: false, error: "installed-content-unavailable" };
+    if (!service) return { ok: false, error: "installed-content-unavailable" };
     try {
       return { ok: true, messages: service.languageMessages(locale) };
     } catch (error) {

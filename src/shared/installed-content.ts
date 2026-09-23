@@ -60,6 +60,7 @@ interface InstalledFontFace {
 export interface InstalledFontView extends InstalledFrom {
   /** The package name. */
   name: string;
+  /** The family name the package declares; a label only (see {@link fontAlias}). */
   family: string;
   /** The `appearance.font.family` value that selects this font. */
   stack: string;
@@ -80,9 +81,19 @@ export interface InstalledContentView {
   broken: BrokenContentView[];
 }
 
-/** The font stack an installed family is selected with: the family first, the host stack after it. */
-export function installedFontStack(family: string): string {
-  return `"${family}", ${HOST_FONT_STACK}`;
+/**
+ * The CSS family an installed font package's faces are declared under. It is
+ * derived from the package name, not the family the package declares, so a
+ * package cannot shadow a system font or another package's family, and two
+ * packages never share a selection.
+ */
+export function fontAlias(packageName: string): string {
+  return `ave-font-${packageName}`;
+}
+
+/** The font stack an installed font package is selected with: its alias first, the host stack after it. */
+export function installedFontStack(packageName: string): string {
+  return `"${fontAlias(packageName)}", ${HOST_FONT_STACK}`;
 }
 
 export type InstalledContentResult =

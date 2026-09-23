@@ -14,6 +14,7 @@ import { useSyncExternalStore } from "react";
 import { registerInstalledLocales, setInstalledCatalogLoader } from "../../i18n/index.js";
 import {
   CONTENT_ASSET_SCHEME,
+  fontAlias,
   type InstalledContentApi,
   type InstalledContentView,
   type InstalledFontView,
@@ -40,7 +41,7 @@ export function fontFaceCss(fonts: readonly InstalledFontView[]): string {
     for (const face of font.faces) {
       if (!face.url.startsWith(`${CONTENT_ASSET_SCHEME}://font/`)) continue;
       rules.push(
-        `@font-face { font-family: ${cssString(font.family)}; src: url(${cssString(face.url)}) format(${cssString(face.format)}); ` +
+        `@font-face { font-family: ${cssString(fontAlias(font.name))}; src: url(${cssString(face.url)}) format(${cssString(face.format)}); ` +
         `font-weight: ${face.weight}; font-style: ${face.style}; font-display: swap; }`,
       );
     }

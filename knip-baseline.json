@@ -334,11 +334,6 @@
     },
     {
       "type": "exports",
-      "file": "src/i18n/index.ts",
-      "name": "SUPPORTED_LOCALES"
-    },
-    {
-      "type": "exports",
       "file": "src/i18n/runtime.ts",
       "name": "onLocaleChange"
     },

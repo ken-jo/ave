@@ -5,7 +5,11 @@
  * or an asset request first asks, the load runs once, and a failed load
  * answers "unavailable" (IPC) or 404 (assets) instead of throwing.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync } from "node:fs";
+import { rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const electron = vi.hoisted(() => ({
   handlers: new Map<string, (event: unknown, ...args: unknown[]) => unknown>(),
@@ -25,7 +29,14 @@ vi.mock("../gated.js", () => ({
 
 import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
-import { registerMarketplaceContentHandlers } from "../domains/marketplace-content.js";
+import { getLocale, isInstalledLocale, registerInstalledLocales, setInstalledCatalogLoader, setLocale, translate } from "../../i18n/index.js";
+import { loadLocaleMessages, messages as catalogs } from "../../i18n/messages/index.js";
+import type { ParsedContent } from "../../marketplace/content/kinds.js";
+import { ContentStore, type StagedContent } from "../../marketplace/content/store.js";
+import type { PackagePlan } from "../../marketplace/resolve/descriptor.js";
+import { treeDigest } from "../../marketplace/resolve/plugin-ladder.js";
+import { setInstalledThemeIds } from "../../shared/plugin-theme-cache.js";
+import { loadInstalledContent, registerMarketplaceContentHandlers } from "../domains/marketplace-content.js";
 
 const content = { themes: [], languages: [], fonts: [], broken: [] };
 const port = {
@@ -37,7 +48,8 @@ const port = {
   servedFile: () => null,
 };
 
-type SchemeHandler = (request: { url: string }) => Promise<Response>;
+type SchemeHandler = (request: { url: string; headers: Headers; referrer: string }) => Promise<Response>;
+const assetRequest = (url: string) => ({ url, headers: new Headers({ origin: "null" }), referrer: "" });
 const schemeHandler = (): SchemeHandler => {
   expect(electron.protocolHandle).toHaveBeenCalledWith("ave-content", expect.any(Function));
   return electron.protocolHandle.mock.calls[0]![1] as SchemeHandler;
@@ -60,6 +72,7 @@ describe("registerMarketplaceContentHandlers", () => {
     await expect(installed({})).resolves.toEqual({ ok: true, content });
     await expect(languageMessages({}, "fr")).resolves.toEqual({ ok: true, messages: { "app.title": "Ave" } });
     await expect(languageMessages({}, "de")).resolves.toMatchObject({ ok: false, error: "language-not-installed" });
+    await expect(languageMessages({}, 42)).resolves.toEqual({ ok: false, error: "invalid-locale" });
     expect(load).toHaveBeenCalledTimes(1);
   });
 
@@ -67,7 +80,7 @@ describe("registerMarketplaceContentHandlers", () => {
     const servedFile = vi.fn(() => null);
     const load = vi.fn(async () => ({ ...port, servedFile }));
     registerMarketplaceContentHandlers({} as IpcDeps, load);
-    const response = await schemeHandler()({ url: "ave-content://font/harbor-serif/files/a.woff2" });
+    const response = await schemeHandler()(assetRequest("ave-content://font/harbor-serif/files/a.woff2"));
     expect(response.status).toBe(404);
     expect(servedFile).toHaveBeenCalledWith("font", "harbor-serif", "files/a.woff2");
     await electron.handlers.get(CHANNELS.marketplaceContent.installed)!({});
@@ -80,6 +93,51 @@ describe("registerMarketplaceContentHandlers", () => {
     });
     await expect(electron.handlers.get(CHANNELS.marketplaceContent.installed)!({})).resolves.toEqual({ ok: false, error: "installed-content-unavailable" });
     await expect(electron.handlers.get(CHANNELS.marketplaceContent.languageMessages)!({}, "fr")).resolves.toEqual({ ok: false, error: "installed-content-unavailable" });
-    expect((await schemeHandler()({ url: "ave-content://font/harbor-serif/files/a.woff2" })).status).toBe(404);
+    expect((await schemeHandler()(assetRequest("ave-content://font/harbor-serif/files/a.woff2"))).status).toBe(404);
+  });
+});
+
+describe("loadInstalledContent", () => {
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "ave-installed-content-"));
+  });
+  afterEach(async () => {
+    registerInstalledLocales([]);
+    setInstalledCatalogLoader(null);
+    setInstalledThemeIds([]);
+    setLocale("en");
+    await rm(root, { recursive: true, force: true });
+  });
+
+  /** Install `content` from `files` the way the install path does, without a git source. */
+  async function install(kind: "language", name: string, files: Record<string, unknown>, content: ParsedContent) {
+    const list = Object.entries(files).map(([path, value]) => ({ path, data: Buffer.from(JSON.stringify(value)) }));
+    const plan = { sourceId: "acme", sourceOrigin: "custom", snapshotCommit: "a".repeat(40), versionCommit: "a".repeat(40), packagePath: `${kind}s/${name}`, kind, name, version: "1.0.0", minAppVersion: "0.12.0" } as PackagePlan;
+    const staged = { plan, files: list, contentSha256: treeDigest(list.map((file) => ({ ...file, executable: false }))), content } as StagedContent;
+    const store = await ContentStore.open({ root, english: {}, activation: { activate: async () => {}, deactivate: async () => {} } });
+    await store.install(staged);
+  }
+
+  it("applies what the store holds to this process: locales, their catalogs, theme ids and the selected language", async () => {
+    const language = { locale: "fr", nativeName: "Français", englishName: "French" };
+    // A real interface key: the loader checks the package against the compiled English catalog.
+    const key = Object.keys(catalogs.en).find((candidate) => !candidate.startsWith("be_") && !catalogs.en[candidate]!.includes("{"))!;
+    const messages = { [key]: "Envoyer" };
+    await install("language", "french", { "language.json": language, "messages.json": messages }, { kind: "language", ...language, messages, missingKeys: [] });
+    const settingsService = { get: () => ({ language: "fr" }) };
+
+    const service = await loadInstalledContent({ settingsService } as unknown as IpcDeps, root);
+    expect(service.installed().languages.map((item) => item.locale)).toEqual(["fr"]);
+    expect(isInstalledLocale("fr")).toBe(true);
+    expect(await loadLocaleMessages("fr")).toMatchObject(messages);
+    expect(getLocale()).toBe("fr");
+    expect(translate("fr", key)).toBe("Envoyer");
+  });
+
+  it("lists nothing and applies nothing for an empty store", async () => {
+    const service = await loadInstalledContent({ settingsService: { get: () => ({ language: "en" }) } } as unknown as IpcDeps, root);
+    expect(service.installed()).toEqual({ themes: [], languages: [], fonts: [], broken: [] });
+    expect(isInstalledLocale("fr")).toBe(false);
   });
 });

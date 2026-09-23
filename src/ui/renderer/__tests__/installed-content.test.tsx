@@ -133,7 +133,7 @@ describe("installed fonts (blueprint 3.4)", () => {
       {
         name: "harbor-sans",
         family: "Harbor Sans",
-        stack: "\"Harbor Sans\", system-ui",
+        stack: "\"ave-font-harbor-sans\", system-ui",
         faces: [
           { url: "ave-content://font/harbor-sans/files/HarborSans.woff2", format: "woff2", weight: "100 900", style: "normal" },
           { url: "https://evil.example/x.woff2", format: "woff2", weight: "400", style: "normal" },
@@ -143,7 +143,7 @@ describe("installed fonts (blueprint 3.4)", () => {
       },
     ]);
     expect(css).toBe(
-      '@font-face { font-family: "Harbor Sans"; src: url("ave-content://font/harbor-sans/files/HarborSans.woff2") format("woff2"); font-weight: 100 900; font-style: normal; font-display: swap; }',
+      '@font-face { font-family: "ave-font-harbor-sans"; src: url("ave-content://font/harbor-sans/files/HarborSans.woff2") format("woff2"); font-weight: 100 900; font-style: normal; font-display: swap; }',
     );
   });
 });
@@ -154,7 +154,7 @@ describe("appearance pickers list installed items (P3 exit)", () => {
     api.installedContent = bridge(view({
       themes: [harbor],
       languages: [{ name: "french", locale: "fr", nativeName: "Français", englishName: "French", missingKeys: [], sourceId: "acme", version: "1.0.0" }],
-      fonts: [{ name: "harbor-sans", family: "Harbor Sans", stack: "\"Harbor Sans\", system-ui", faces: [], sourceId: "acme", version: "1.0.0" }],
+      fonts: [{ name: "harbor-sans", family: "Harbor Sans", stack: "\"ave-font-harbor-sans\", system-ui", faces: [], sourceId: "acme", version: "1.0.0" }],
     })) as never;
     (window as unknown as { aveApi: unknown }).aveApi = api;
     const { getByRole, getByTestId, getByText } = render(

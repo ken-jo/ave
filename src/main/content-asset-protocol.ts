@@ -4,6 +4,14 @@
  * preview image and the faces of an installed font. Nothing is served by
  * file path, and only files the installed-content service lists as applied
  * answer; everything else is 404.
+ *
+ * The app's windows load from `file:`, an opaque origin: their font requests
+ * carry `Origin: null`, and that is the only origin the answer admits. A
+ * request from a web page — an http(s) origin or referrer — is refused, so a
+ * page the app shows cannot learn which content packages are installed. What
+ * remains: any other opaque-origin frame in the default session (a `data:` or
+ * sandboxed document) could still read an applied font or preview, which are
+ * public files of a public package.
  */
 import { readFile } from "node:fs/promises";
 import { CONTENT_ASSET_SCHEME } from "../shared/installed-content.js";
@@ -51,11 +59,23 @@ export function parseContentAssetUrl(requestUrl: string): ContentAssetRequest | 
 
 type ContentAssetResolver = (kind: string, name: string, path: string) => ServedContentFile | null | Promise<ServedContentFile | null>;
 
+/** Who asked: the request's `Origin` header (null without one) and its referrer. */
+export interface ContentAssetRequester {
+  origin: string | null;
+  referrer: string;
+}
+
+const WEB = /^https?:/iu;
+
 /** Answer a `ave-content:` request from the files `resolve` lists. */
 export async function respondToContentAsset(
   requestUrl: string,
   resolve: ContentAssetResolver,
+  requester: ContentAssetRequester,
 ): Promise<Response> {
+  if ((requester.origin !== null && WEB.test(requester.origin)) || WEB.test(requester.referrer)) {
+    return new Response("forbidden", { status: 403 });
+  }
   const parsed = parseContentAssetUrl(requestUrl);
   const file = parsed ? await resolve(parsed.kind, parsed.name, parsed.path) : null;
   if (!file) return new Response("not found", { status: 404 });
@@ -70,7 +90,7 @@ export async function respondToContentAsset(
     headers: {
       "content-type": file.contentType,
       "x-content-type-options": "nosniff",
-      "access-control-allow-origin": "*",
+      "access-control-allow-origin": "null",
       "cache-control": "no-cache",
     },
   });
@@ -81,5 +101,7 @@ export function installContentAssetProtocolHandler(
   protocolApi: Pick<Electron.Protocol, "handle">,
   resolve: ContentAssetResolver,
 ): void {
-  protocolApi.handle(CONTENT_ASSET_SCHEME, (request) => respondToContentAsset(request.url, resolve));
+  protocolApi.handle(CONTENT_ASSET_SCHEME, (request) =>
+    respondToContentAsset(request.url, resolve, { origin: request.headers.get("origin"), referrer: request.referrer }),
+  );
 }

@@ -11,9 +11,10 @@
  * `mergeLocale` below is the only place that order is written.
  *
  * An installed language package (blueprint 3.3) supplies its catalog through
- * the loader its process registers ({@link setInstalledCatalogLoader}); it
- * takes the place of a compiled catalog for the same locale, and the English
- * catalog still answers every key it does not translate.
+ * the loader its process registers ({@link setInstalledCatalogLoader}). For a
+ * new locale the English catalog answers every key it does not translate; a
+ * package for a compiled locale lays its interface keys over that locale's
+ * compiled catalog, which keeps the model-facing keys.
  */
 import { en } from "./en.js";
 import { generatedEn } from "./generated/index.js";
@@ -87,7 +88,17 @@ export async function loadLocaleMessages(locale: Locale): Promise<Messages> {
   const pending = pendingLoads.get(locale);
   if (pending) return pending;
   const installed = isInstalledLocale(locale) && installedCatalogLoader !== null;
-  const loader = installed ? () => installedCatalogLoader!(locale) : localeLoaders[locale as LazyLocale];
+  const compiled = Object.hasOwn(localeLoaders, locale) ? localeLoaders[locale as LazyLocale] : undefined;
+  // A package for a compiled locale translates the interface over the compiled
+  // catalog; model-facing keys, which no package may carry, stay compiled.
+  const loader = installed
+    ? compiled
+      ? async () => {
+          const [base, overlay] = await Promise.all([compiled(), installedCatalogLoader!(locale)]);
+          return { ...base, ...overlay };
+        }
+      : () => installedCatalogLoader!(locale)
+    : compiled;
   if (!loader) throw new Error(`no catalog for locale ${locale}`);
   const next = loader().then((catalog) => {
     messages[locale] = catalog;

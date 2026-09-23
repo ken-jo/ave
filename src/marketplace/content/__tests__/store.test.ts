@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { moonstoneBundle } from "../../../ui/renderer/theme/bundles/moonstone.js";
 import {
   createFixtureRepo,
@@ -19,18 +19,23 @@ import { EMPTY_MARKETPLACE_POLICY } from "../../sources/policy.js";
 import { SourceRegistry } from "../../sources/registry.js";
 import { SourceSyncer } from "../../sources/sync.js";
 import type { ParsedContent } from "../kinds.js";
-import { contentLedgerOrigins, type LedgerEntry } from "../ledger.js";
+import { ContentLedger, contentLedgerOrigins, type LedgerEntry } from "../ledger.js";
 import { ContentStore, stageContentPackage, type ContentActivation } from "../store.js";
 
 const AT = "2026-09-23T00:00:00.000Z";
 const INSTALLATION = "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b";
-const ENGLISH = new Set(["app.title", "chat.send"]);
+const ENGLISH = { "app.title": "Ave", "chat.send": "Send" };
 
 const text = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
 const descriptor = (kind: string, name: string, version: string, payload: Record<string, unknown>) =>
   text({ schemaVersion: 1, kind, name, version, minAppVersion: "0.12.0", payload });
 const SURFACES = { "surface-sunken": "228 30% 97%", surface: "0 0% 100%", "surface-raised": "0 0% 100%", "surface-overlay": "0 0% 100%", "border-subtle": "228 24% 94%", "border-strong": "228 18% 84%" };
 const theme = (name: string) => text({ name, description: `${name} theme.`, shell: "light", highContrast: false, tokens: moonstoneBundle.tokens, surfaces: SURFACES });
+const language = (name: string, locale: string) => ({
+  [`languages/${name}/ave-package.json`]: descriptor("language", name, "1.0.0", { locale, entry: "language.json", messages: "messages.json" }),
+  [`languages/${name}/language.json`]: text({ locale, nativeName: "Français", englishName: "French" }),
+  [`languages/${name}/messages.json`]: text({ "chat.send": "Envoyer" }),
+});
 
 describe.skipIf(process.platform === "win32")("content package store (blueprint 3.1)", () => {
   let serverRoot: string;
@@ -39,13 +44,13 @@ describe.skipIf(process.platform === "win32")("content package store (blueprint 
   let root: string;
   let repos: FixtureRepo[] = [];
   let counter = 0;
-  let activated: Array<{ op: "activate" | "deactivate"; key: string; content: ParsedContent | null }>;
+  let activated: Array<{ op: "activate" | "deactivate"; key: string; content: ParsedContent | null; previous?: string | null }>;
   let failActivation: boolean;
 
   const activation: ContentActivation = {
-    async activate(content, entry) {
+    async activate(content, entry, previous) {
       if (failActivation) throw new Error("settings write failed");
-      activated.push({ op: "activate", key: `${entry.kind}:${entry.name}@${entry.version}`, content });
+      activated.push({ op: "activate", key: `${entry.kind}:${entry.name}@${entry.version}`, content, previous: previous ? previous.version : null });
     },
     async deactivate(entry, content) {
       activated.push({ op: "deactivate", key: `${entry.kind}:${entry.name}@${entry.version}`, content });
@@ -107,10 +112,10 @@ describe.skipIf(process.platform === "win32")("content package store (blueprint 
   async function stage(syncer: SourceSyncer, row: CatalogRow, sourceId = "acme") {
     const plan = planPackage(row, candidateVersion(row));
     return syncer.withRepository(sourceId, ({ repo, remote }) =>
-      stageContentPackage(plan, { repo, remote, direct: false }, { workRoot: join(root, "work"), englishKeys: ENGLISH }));
+      stageContentPackage(plan, { repo, remote, direct: false }, { workRoot: join(root, "work"), english: ENGLISH }));
   }
 
-  const openStore = () => ContentStore.open({ root: join(root, "packages"), englishKeys: ENGLISH, activation, now: () => new Date(AT) });
+  const openStore = () => ContentStore.open({ root: join(root, "packages"), english: ENGLISH, activation, now: () => new Date(AT) });
 
   it("installs a theme, records its origin, reloads it from disk and uninstalls it", async () => {
     const { name, first } = market([{ kind: "theme", name: "harbor", path: "themes/harbor" }], {
@@ -165,6 +170,8 @@ describe.skipIf(process.platform === "win32")("content package store (blueprint 
     });
     const { action } = await store.install(await stage(syncer, (await rows(syncer))[0]!));
     expect(action).toEqual({ action: "replace", direction: "upgrade", from: "1.0.0" });
+    // Activation is told what the install replaces.
+    expect(activated.map((call) => call.previous)).toEqual([null, "1.0.0"]);
     expect(existsSync(join(root, "packages", "theme", "harbor", "1.0.0"))).toBe(false);
     expect((await store.load()).loaded[0]!.content).toMatchObject({ name: "Harbor Two" });
   });
@@ -183,6 +190,82 @@ describe.skipIf(process.platform === "win32")("content package store (blueprint 
     expect(store.list()).toEqual([first.entry]);
     expect(existsSync(join(root, "packages", "theme", "harbor", "1.1.0"))).toBe(false);
     expect((await (await openStore()).load()).loaded.map((item) => item.entry)).toEqual([first.entry]);
+  });
+
+  it("leaves nothing behind when a first install's activation fails", async () => {
+    const { name } = market([{ kind: "theme", name: "harbor", path: "themes/harbor" }], {
+      "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }),
+      "themes/harbor/theme.json": theme("Harbor"),
+    });
+    const syncer = await open(name);
+    const store = await openStore();
+    failActivation = true;
+    await expect(store.install(await stage(syncer, (await rows(syncer))[0]!))).rejects.toThrow("settings write failed");
+    expect(store.list()).toEqual([]);
+    expect(existsSync(join(root, "packages", "theme", "harbor", "1.0.0"))).toBe(false);
+    expect(JSON.parse(readFileSync(join(root, "packages", "ledger.json"), "utf8"))).toEqual({ version: 1, packages: [] });
+  });
+
+  it("puts the live directory back when reinstalling the same version fails to activate", async () => {
+    const { name } = market([{ kind: "theme", name: "harbor", path: "themes/harbor" }], {
+      "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }),
+      "themes/harbor/theme.json": theme("Harbor"),
+    });
+    const syncer = await open(name);
+    const store = await openStore();
+    const first = await store.install(await stage(syncer, (await rows(syncer))[0]!));
+    failActivation = true;
+    await expect(store.install(await stage(syncer, (await rows(syncer))[0]!))).rejects.toThrow("settings write failed");
+    expect(store.list()).toEqual([first.entry]);
+    const { loaded, broken } = await (await openStore()).load();
+    expect(broken).toEqual([]);
+    expect(loaded.map((item) => item.entry)).toEqual([first.entry]);
+    expect(readdirSync(join(root, "packages", ".staging"))).toEqual([]);
+  });
+
+  it("rethrows the activation error when the rollback's own ledger write fails too", async () => {
+    const { name, commit } = market([{ kind: "theme", name: "harbor", path: "themes/harbor" }], {
+      "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }),
+      "themes/harbor/theme.json": theme("Harbor"),
+    });
+    const syncer = await open(name);
+    const store = await openStore();
+    await store.install(await stage(syncer, (await rows(syncer))[0]!));
+    commit({ "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.1.0", { entry: "theme.json" }) });
+    const staged = await stage(syncer, (await rows(syncer))[0]!);
+    // The first put records the new entry; the rollback's put of the previous one fails.
+    const put = ContentLedger.prototype.put;
+    let calls = 0;
+    vi.spyOn(ContentLedger.prototype, "put").mockImplementation(function (this: ContentLedger, entry: LedgerEntry) {
+      calls += 1;
+      return calls === 2 ? Promise.reject(new Error("disk full")) : put.call(this, entry);
+    });
+    failActivation = true;
+    try {
+      await expect(store.install(staged)).rejects.toThrow("settings write failed");
+    } finally {
+      vi.restoreAllMocks();
+    }
+    expect(calls).toBe(2);
+    // The new version's files are still removed.
+    expect(existsSync(join(root, "packages", "theme", "harbor", "1.1.0"))).toBe(false);
+  });
+
+  it("refuses a second package for a locale another installed package provides", async () => {
+    const { name } = market(
+      [
+        { kind: "language", name: "french", path: "languages/french" },
+        { kind: "language", name: "francais", path: "languages/francais" },
+      ],
+      { ...language("french", "fr"), ...language("francais", "fr") },
+    );
+    const syncer = await open(name);
+    const found = await rows(syncer);
+    const store = await openStore();
+    await store.install(await stage(syncer, found.find((row) => row.name === "french")!));
+    await expect(store.install(await stage(syncer, found.find((row) => row.name === "francais")!)))
+      .rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT", message: "french already provides the fr language" });
+    expect(store.list().map((entry) => entry.name)).toEqual(["french"]);
   });
 
   it("refuses the same name from another source unless the install switches source", async () => {
@@ -257,5 +340,31 @@ describe.skipIf(process.platform === "win32")("content package store (blueprint 
     await expect(openStore()).rejects.toThrow("packages[0].kind is not a content kind");
     writeFileSync(join(packages, "ledger.json"), "not json");
     await expect(openStore()).rejects.toThrow();
+  });
+
+  describe("ledger strictness", () => {
+    const origin = (patch: Record<string, unknown> = {}) => ({
+      sourceId: "acme",
+      sourceOrigin: "custom",
+      commit: "a".repeat(40),
+      packagePath: "themes/harbor",
+      version: "1.0.0",
+      contentSha256: "b".repeat(64),
+      installedAt: AT,
+      ...patch,
+    });
+    const entry = (patch: Record<string, unknown> = {}) => ({ kind: "theme", name: "harbor", version: "1.0.0", origin: origin(), ...patch });
+
+    it.each([
+      ["the same package twice", [entry(), entry()], "theme:harbor is recorded twice"],
+      ["an origin version other than the entry's", [entry({ origin: origin({ version: "1.1.0" }) })], "packages[0].origin is malformed"],
+      ["an unknown entry field", [entry({ pinned: true })], "packages[0] has an unknown field"],
+      ["an unknown origin field", [entry({ origin: origin({ signer: "x" }) })], "packages[0].origin has an unknown field"],
+    ])("refuses %s", async (_label, packages, message) => {
+      const dir = join(root, "packages");
+      mkdirSync(dir);
+      writeFileSync(join(dir, "ledger.json"), text({ version: 1, packages }));
+      await expect(openStore()).rejects.toThrow(message);
+    });
   });
 });
