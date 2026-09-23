@@ -733,6 +733,82 @@ describe("SettingsService marketplace defaults", () => {
     expect(service.getSecret(key)).toBe("entered-for-elsewhere");
   });
 
+  it("keeps a key whose entry is still being written when the old key's deletion fails", async () => {
+    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(true);
+    mockedElectron.safeStorage.encryptString.mockImplementation(
+      (value: string) => Buffer.from(`sealed:${value}`),
+    );
+    mockedElectron.safeStorage.decryptString.mockImplementation(
+      (value: Buffer) => value.toString("utf-8").slice(7),
+    );
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const preset = {
+      providerId: "future-router",
+      label: "Future Router",
+      baseUrl: "https://future.example/v1",
+      defaultModel: "future/free",
+      modelOptions: ["future/free"],
+      requiresApiKey: true,
+    };
+    const key = marketplaceProviderPresetSecretKey("future-router");
+    await service.installMarketplaceProviderPreset(preset);
+    await service.setSecret(key, "entered-for-future");
+    const moved = { ...preset, baseUrl: "https://elsewhere.example/v1" };
+    const secrets = (service as unknown as {
+      secretStore: { set(key: string, value: string): Promise<void>; deleteMany(keys: string[]): Promise<number> };
+    }).secretStore;
+    const realSet = secrets.set.bind(secrets);
+    vi.spyOn(secrets, "set").mockImplementationOnce((k, v) => new Promise((resolve, reject) => {
+      setTimeout(() => realSet(k, v).then(resolve, reject), 20);
+    }));
+    let entry: Promise<void> | undefined;
+    vi.spyOn(secrets, "deleteMany").mockImplementationOnce(async () => {
+      // The user starts entering a key for the new address; the deletion
+      // fails before that write lands.
+      entry = service.setSecret(key, "entered-for-elsewhere");
+      throw new Error("keychain locked");
+    });
+
+    await expect(service.installMarketplaceProviderPreset(moved)).rejects.toThrow("keychain locked");
+    await entry;
+
+    expect(service.get("marketplace").installedProviderPresets).toEqual([moved]);
+    expect(service.getSecret(key)).toBe("entered-for-elsewhere");
+  });
+
+  it("does not delete a key entered for the new address before the move's deletion runs", async () => {
+    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(true);
+    mockedElectron.safeStorage.encryptString.mockImplementation(
+      (value: string) => Buffer.from(`sealed:${value}`),
+    );
+    mockedElectron.safeStorage.decryptString.mockImplementation(
+      (value: Buffer) => value.toString("utf-8").slice(7),
+    );
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const preset = {
+      providerId: "future-router",
+      label: "Future Router",
+      baseUrl: "https://future.example/v1",
+      defaultModel: "future/free",
+      modelOptions: ["future/free"],
+      requiresApiKey: true,
+    };
+    const key = marketplaceProviderPresetSecretKey("future-router");
+    await service.installMarketplaceProviderPreset(preset);
+    await service.setSecret(key, "entered-for-future");
+    type Internals = { saveSettings(settings: unknown): Promise<void> };
+    const realSave = (settings: unknown) => (SettingsService.prototype as unknown as Internals).saveSettings.call(service, settings);
+    vi.spyOn(service as unknown as Internals, "saveSettings").mockImplementationOnce(async (settings) => {
+      // The key for the new address is entered while the move is saved.
+      await service.setSecret(key, "entered-for-elsewhere");
+      await realSave(settings);
+    });
+
+    await service.installMarketplaceProviderPreset({ ...preset, baseUrl: "https://elsewhere.example/v1" });
+
+    expect(service.getSecret(key)).toBe("entered-for-elsewhere");
+  });
+
   it("leaves an active custom provider preset installed when preset-secret deletion fails", async () => {
     mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(true);
     mockedElectron.safeStorage.encryptString.mockImplementation(

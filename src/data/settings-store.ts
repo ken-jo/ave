@@ -1540,8 +1540,12 @@ export class SettingsService {
   }
 
   private async deleteMarketplaceProviderPresetSecrets(providerIds: readonly string[]): Promise<void> {
-    if (providerIds.length === 0) return;
-    await this.secretStore.deleteMany(providerIds.map(marketplaceProviderPresetSecretKey));
+    // A key entered again meanwhile is for the preset as it is now.
+    const keys = providerIds
+      .map(marketplaceProviderPresetSecretKey)
+      .filter((key) => !this.reenteredSecretKeys.has(key));
+    if (keys.length === 0) return;
+    await this.secretStore.deleteMany(keys);
   }
 
   async replaceLlm(llm: LLMSettings): Promise<AppSettings> {
@@ -1581,17 +1585,33 @@ export class SettingsService {
 
   /** Encrypt and store a secret value such as an API key. */
   async setSecret(key: string, value: string): Promise<void> {
-    // Entered for the preset shown now, while an invalidation may be moving it.
-    const enteredFor = this.invalidatingSecretKeys.has(key)
-      ? this.settings.marketplace.installedProviderPresets.find(
-          (preset) => marketplaceProviderPresetSecretKey(preset.providerId) === key,
-        )
-      : null;
-    await this.secretStore.set(key, value);
-    this.withheldSecretKeys.delete(key);
-    if (enteredFor !== null && this.invalidatingSecretKeys.has(key)) {
+    // Entered for the preset shown now, while an invalidation may be moving
+    // it: recorded at once, so a rollback or deletion running while the key
+    // is written already leaves it with that preset.
+    const invalidating = this.invalidatingSecretKeys.has(key);
+    const hadEntry = this.reenteredSecretKeys.has(key);
+    const earlierEntry = this.reenteredSecretKeys.get(key);
+    if (invalidating) {
+      const enteredFor = this.settings.marketplace.installedProviderPresets.find(
+        (preset) => marketplaceProviderPresetSecretKey(preset.providerId) === key,
+      );
       this.reenteredSecretKeys.set(key, structuredClone(enteredFor));
     }
+    try {
+      await this.secretStore.set(key, value);
+    } catch (err) {
+      if (invalidating) {
+        if (hadEntry) {
+          this.reenteredSecretKeys.set(key, earlierEntry);
+        } else {
+          // The invalidation may have skipped the old key for this entry.
+          this.reenteredSecretKeys.delete(key);
+          this.withheldSecretKeys.add(key);
+        }
+      }
+      throw err;
+    }
+    this.withheldSecretKeys.delete(key);
   }
 
   /** Decrypt and return a stored secret value. */
