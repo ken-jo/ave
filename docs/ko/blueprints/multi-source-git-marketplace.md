@@ -67,7 +67,7 @@ P6뿐입니다.
 
 | PR | 내용 | 테스트 |
 |---|---|---|
-| 1.1 | `git/detect.ts`, `git/run-git.ts`(설계서 §9.1, §9.3): 최소 2.38.1, macOS Command Line Tools shim 검사, 생성한 `GIT_CONFIG_GLOBAL`, 호스트에 묶인 1회용 티켓을 쓰는 askpass 헬퍼, `http.followRedirects=false`, `rev-list --missing=print` + 일괄 fetch + `git archive`로 내보내기 | 버전 게이트용 가짜 git 바이너리(2.38.0 거부, 2.38.1 허용), 호출마다 환경/플래그 계약 전체 확인, 허용된 키만 전역 설정에 복사, 티켓이 가리키지 않는 호스트에 askpass 거부, 프로토콜 거부 |
+| 1.1 | `git/detect.ts`, `git/run-git.ts`(설계서 §9.1, §9.3): 최소 2.45.1, macOS Command Line Tools shim 검사, 생성한 `GIT_CONFIG_GLOBAL`, 호스트에 묶인 1회용 티켓을 쓰는 askpass 헬퍼, `http.followRedirects=false`, `rev-list --missing=print` + 일괄 fetch + `git archive`로 내보내기 | 버전 게이트용 가짜 git 바이너리(2.45.0 거부, 2.45.1 허용), 호출마다 환경/플래그 계약 전체 확인, 허용된 키만 전역 설정에 복사, 티켓이 가리키지 않는 호스트에 askpass 거부, 프로토콜 거부 |
 | 1.2 | `git/managed-git.ts` + `managed-git-pins.ts`(설계서 §9.2): 네트워크 게이트를 거친 PAC 인식 다운로드, sha256, 임시 압축 해제, 이름 바꾸기, 스모크 테스트, `GIT_EXEC_PATH`, `GIT_TEMPLATE_DIR`, `corp-ca-extract.ts`에서 만든 CA 번들(Windows는 `schannel`), `ave:git:runtime:*` IPC | 로컬 픽스처 서버, 잘못된 해시, 잘린 다운로드, 중단된 압축 해제는 이전 사본 유지 |
 | 1.3 | `schemas/marketplace/index.schema.json`, `package.schema.json` + 종류별로 손으로 쓴 fail-closed 검증기(설계서 §4, §5) | 종류별 픽스처 행렬: 정상, 규칙별 위반, 알 수 없는 키 |
 | 1.4 | `net/source-url.ts`(`normalizeSourceUrl`)와 공용 네트워크 게이트(설계서 §7.1, §7.4), `cloud-marketplace-fetcher.ts`의 사설망 가드를 넘겨받음. `sources/registry.ts`(`sources.json`, `state.json`, 예약 이름, 정책 allow/block/http 호스트, 공식 상수, 관리 `additional` 소스) | 정규화 동치, 로드할 때마다 예약 이름 재검사, block이 allow보다 우선, 사설 대상 거부, 차단된 호스트로의 리다이렉트 거부 |

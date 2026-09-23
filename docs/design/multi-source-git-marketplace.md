@@ -91,12 +91,16 @@ interface SourceState {       // marketplaces/<id>/state.json, every origin
 - A `sources.json` entry that no longer passes the id and URL checks — a
   reserved id, an id a managed source now uses, a URL not in normalized form —
   stays in the file untouched but is not served; the Sources view lists it as
-  a diagnostic. A `sources.json` that cannot be read serves the official and
+  a diagnostic. It still holds its id: adding a source under that id is
+  refused, and removing a served source with the same id removes only the
+  served entry. A `sources.json` that cannot be read serves the official and
   managed sources only and refuses writes until it is repaired, so nothing the
   user added is overwritten.
 - A `state.json` that cannot be read fails that source's sync with the file
   named. It is never treated as a fresh, unpinned source: a first sync accepts
-  any history.
+  any history. A missing `state.json` next to a `repo.git` or `snapshots/` is
+  the same failure; a sync writes the state before it creates the repository,
+  so only a lost file looks like that.
 
 ### 2.2 Snapshot
 
@@ -222,7 +226,8 @@ interface IndexVersion {
 
 - `(kind, name)` is unique and `path` is unique; when two entries claim the
   same pair or the same path, every claimant is dropped with a diagnostic,
-  because the client cannot tell which one the author meant.
+  because the client cannot tell which one the author meant. An entry that
+  fails validation still counts as a claimant.
   `(kind, name, version)` maps to exactly one commit. CI rejects re-publishing an existing version at a new commit.
 - Versions strictly increase per package (the existing plugin rule, now for
   every kind). `latest` never names a yanked version.
@@ -325,8 +330,9 @@ type McpServerSpec =
 - `release.repo` may be omitted only for a **direct** source, where it
   defaults to the source repository itself.
 - A `stdio` command that is not `npx`, `uvx` or `docker` must be a path
-  relative to the package directory (`server/…`); absolute paths and `..` are
-  rejected.
+  relative to the package directory (`server/…`); absolute paths, `..`, `\`,
+  `:` and control characters are rejected, so no platform reads it as another
+  separator or a drive.
 - `env` names, `apiKeyEnv` and `apiKeyHeader` may not use a name the host
   reserves (`src/mcp/safe-names.ts`).
 
@@ -370,7 +376,9 @@ their tests in one change (blueprint phase 6):
 The marketplace files themselves are capped too: `marketplace.json` 16 MB,
 `ave-package.json` 256 KB, `policy/revocations.json` 1 MB. A larger
 descriptor drops its package with a diagnostic; a larger index or revocations
-file rejects the commit.
+file rejects the commit. Git cannot learn a blob's size before transferring
+it, so the limits are checked once the object is local; the transfer itself
+is bounded by the fetch timeout (§9.3).
 
 SVG is excluded from content kinds: it is an active document when rendered
 inline. Links, devices and paths that escape the package directory are
@@ -523,9 +531,12 @@ emit marketplace:catalog-changed
 - For the official source the client tries the primary URL and then each
   mirror; any of them may supply the candidate, and the history rule applies
   unchanged.
-- A pin whose commit is missing from the local repository (the repository
-  directory was lost) counts as rewritten history: without the object the
-  ancestry cannot be proven, and a first sync would accept any history.
+- A pin whose commit is still missing after the full-history fetch (the
+  repository directory was lost and the remote no longer has the commit)
+  counts as rewritten history: without the object the ancestry cannot be
+  proven, and a first sync would accept any history. When the candidate
+  descends from the pin, the fetch brings the pin back and ancestry is proven
+  as usual.
 - The update review accepts exactly the commit it showed
   (`ave:marketplace:sources:accept-rewrite` carries it); a sync that saw a
   different candidate in between expires the review (`PLAN_EXPIRED`).
@@ -535,13 +546,18 @@ emit marketplace:catalog-changed
 Every network target the marketplace touches — git remotes, release and
 archive URLs, and the service endpoint — goes through one gate:
 
-1. normalize (§7.1; for `https` downloads, the same host/port/path rules);
+1. normalize (§7.1; for `https` downloads, the same host/port/path rules:
+   canonical percent-encoding, and an empty, `.` or `..` segment is refused);
 2. apply managed policy `marketplaces.block`, then `marketplaces.allow` (when
-   present);
+   present). For a download, an exact repository pattern also covers every
+   path beneath the repository (`…/acme/tools/releases/download/…`); for a
+   git remote it names that repository only, since a nested path is another
+   repository on hosts with subgroups;
 3. apply the private-network guard now in `cloud-marketplace-fetcher.ts`
    (moved to a shared module when that file is deleted): loopback,
    link-local, private and metadata addresses are refused unless the host is
-   policy-listed or a dev build allows loopback;
+   policy-listed or a dev build allows loopback. A NAT64 address
+   (`64:ff9b::/96`) is judged by the IPv4 address it embeds;
 4. git never follows redirects (`http.followRedirects=false`); HTTPS
    downloads follow a redirect only after re-running this gate on the new
    URL, and never forward auth headers to a different host.
@@ -560,7 +576,8 @@ different source.
 Removing a source keeps the packages installed from it. They show "source
 removed — no updates", and the Installed view offers uninstall. Re-adding the
 same normalized URL re-binds them. Official and managed sources cannot be
-removed.
+removed. A removal waits for a running sync or accept of that source to
+finish, so no write of the old source lands after its directory is gone.
 
 ## 8. Direct install (no marketplace manifest)
 
@@ -595,17 +612,20 @@ versions), after the same update review as marketplace packages.
 
 ### 9.1 Detection and minimum version
 
-The minimum usable git is **2.38.1**: partial clone with `blob:none`,
-`rev-list --missing=print`, protocol v2 and the `protocol.file.allow` setting
-all behave as §9.3 relies on from that release.
+The minimum usable git is **2.45.1**, the first release that honors
+`GIT_NO_LAZY_FETCH` (§9.3): without it, a local read of a missing object in a
+partial clone fetches from the remote on its own, outside the network gate.
+It is also the release that fixed CVE-2024-32002/32004/32465. Partial clone
+with `blob:none`, `rev-list --missing=print`, protocol v2 and
+`protocol.file.allow` behave as §9.3 relies on well before that.
 
 ```
 mode = settings.marketplace.git.mode   // "auto" | "system" | "managed"
 system: first `git` on PATH (plus /usr/bin/git, /opt/homebrew/bin/git,
-        C:\Program Files\Git\cmd\git.exe); require `git --version` >= 2.38.1
+        C:\Program Files\Git\cmd\git.exe); require `git --version` >= 2.45.1
 managed: ~/.ave/runtime/git/<pinnedVersion>/ present and smoke-tested
 auto: system if usable, else managed if present, else state "missing"
-      (a system git older than 2.38.1 is reported as too old and auto uses managed)
+      (a system git older than 2.45.1 is reported as too old and auto uses managed)
 ```
 
 On macOS, `/usr/bin/git` without the Command Line Tools is a shim that opens an
@@ -649,7 +669,11 @@ then is a ready marker written and the directory renamed into place. A failed
 or partial install never replaces a working one; a forced reinstall moves the
 working copy aside and restores it if the final rename fails. Every download,
 verify, extract or smoke-test failure is `GIT_RUNTIME_INSTALL_FAILED`, except
-a policy block, which stays `SOURCE_POLICY_BLOCKED`.
+a policy block, which stays `SOURCE_POLICY_BLOCKED`. A body that sends nothing
+for 60 s fails the install instead of holding it open. The download is gated
+like the official source: `block` and `allow` apply, and an invalid policy
+does not stop it, because the official source needs git and the archive is
+pinned by hash.
 
 Managed-mode environment, set on every call:
 
@@ -680,14 +704,26 @@ Environment (both modes):
   `GIT_SSH_COMMAND="ssh -o BatchMode=yes"` (an unknown host key fails fast
   with `SOURCE_SSH_HOST_UNKNOWN` instead of waiting for a prompt).
 - `GIT_ALLOW_PROTOCOL=https:ssh`, plus `http` only when the source's host is
-  in `marketplaces.allowHttpHosts`.
+  in `marketplaces.allowHttpHosts`; `none` for a call that has no remote.
 - `GIT_LFS_SKIP_SMUDGE=1`.
+- `GIT_NO_LAZY_FETCH=1`: a missing object is an error, never a fetch the gate
+  did not see. Blobs are fetched only by the explicit, gated `ensureBlobs`
+  step.
+- `GIT_DIR=<source repo.git>` for every call on a repository, so git never
+  discovers another repository by walking up from a broken one; other calls
+  run in the empty directory with `GIT_CEILING_DIRECTORIES` stopping
+  discovery there.
 
 Config flags: `-c protocol.file.allow=never -c submodule.recurse=false
 -c core.fsmonitor=false -c core.hooksPath=<empty dir> -c http.followRedirects=false
 -c http.proxy=<PAC> -c filter.lfs.smudge= -c filter.lfs.process= -c filter.lfs.required=false
 -c gc.auto=0 -c maintenance.auto=false` (automatic gc could prune a commit that
-an install still references once the pin has moved on).
+an install still references once the pin has moved on), plus
+`-c credential.helper=` on a call that answers with a stored token (below).
+`<PAC>` is the first entry Chromium resolves for the remote: `PROXY`,
+`HTTPS`, `SOCKS5`, and `SOCKS`/`SOCKS4` as `socks4://`; `DIRECT` is empty. Any
+other kind fails the call with `SOURCE_UNREACHABLE` rather than going direct
+where the configuration chose a proxy.
 
 **Global configuration.** The user's global git config is not read. Ave
 generates the file named by `GIT_CONFIG_GLOBAL` and copies into it only
@@ -705,7 +741,13 @@ so when a credential helper is configured.
 writes, with a launcher, into a fresh `0700` directory at start-up; the
 launcher runs it with the app binary in Node mode (`ELECTRON_RUN_AS_NODE`),
 so nothing extra ships with the app.
-For each `runGit` call the main process creates a single-use ticket bound to
+A call gets a ticket only when its source declares token auth and a token is
+stored for the remote's host; a mirror on another host never gets the
+primary host's token. That call also carries `-c credential.helper=`, which,
+read last, switches the copied helpers off: git neither asks them first nor
+hands the token to them when it approves a credential. Without a stored
+token the helpers answer as usual.
+For each such call the main process creates a single-use ticket bound to
 `(normalized host, sourceId)` and passes `AVE_ASKPASS_TICKET` and
 `AVE_ASKPASS_ENDPOINT` (a local socket in a `0700` directory) in the child
 environment. The helper sends the ticket and git's prompt text; the main
@@ -981,8 +1023,12 @@ files is a device-management action).
 - Patterns match repository identity (§7.1): the host plus the path compared
   without case, on any scheme and port. `https://github.com/acme/tools`,
   `git@github.com:acme/tools` and `https://github.com/ACME/Tools` are one
-  repository on every hosting service Ave targets, so no respelling sidesteps
-  a rule. `host:<host>` matches the host; a URL pattern matches that
+  repository on every hosting service Ave targets, so no respelling of a
+  host's URL sidesteps a rule. A rule cannot know every other name that
+  reaches the same repository — `ssh://git@ssh.github.com:443/…`,
+  `altssh.gitlab.com`, a DNS alias, an `~/.ssh/config` `HostName` — so
+  enforcement that must hold uses `allow`, which such a name fails.
+  `host:<host>` matches the host; a URL pattern matches that
   repository; a URL ending in `*` matches every repository whose path starts
   with the text before it. A `*` anywhere else is rejected. `block` wins over
   `allow`.
@@ -990,8 +1036,10 @@ files is a device-management action).
   pattern, or by an `additional` source — may resolve to private (RFC 1918,
   ULA) and CGNAT addresses (§7.4). Link-local and metadata addresses stay
   refused even for them.
-- The section is read exactly. An unknown key, a duplicate key, a pattern that
-  does not parse, an `additional` source that the policy's own lists block, or
+- Host fields (`host:` patterns, `allowHttpHosts`, `auth.host`) take no port;
+  a token's `auth.host` must be the source's own host.
+- The section is read exactly. An unknown key, a duplicate key, `null` where a
+  list belongs, a pattern that does not parse, an `additional` source that the policy's own lists block, or
   an install entry naming a source that is neither official nor `additional`
   makes the whole section invalid; every non-official source is then
   `SOURCE_POLICY_BLOCKED` until the file is fixed. A typo must not fail open.
@@ -1039,11 +1087,12 @@ minutes (`PLAN_EXPIRED`). Disposition of today's channels is in §16.2.
 | Code | When | User message (en key) |
 |---|---|---|
 | `GIT_RUNTIME_MISSING` | no usable git | `marketplace.error.gitMissing` |
-| `GIT_RUNTIME_TOO_OLD` | system git older than 2.38.1 in `system` mode | `marketplace.error.gitTooOld` |
+| `GIT_RUNTIME_TOO_OLD` | system git older than 2.45.1 in `system` mode | `marketplace.error.gitTooOld` |
 | `GIT_RUNTIME_INSTALL_FAILED` | managed download/verify/extract/smoke test failed | `marketplace.error.gitInstallFailed` |
 | `SOURCE_URL_REJECTED` | scheme, credentials in URL, private-network target | `marketplace.error.urlRejected` |
 | `SOURCE_POLICY_BLOCKED` | managed policy allow/block | `marketplace.error.policyBlocked` |
 | `SOURCE_NAME_RESERVED` | reserved id | `marketplace.error.nameReserved` |
+| `SOURCE_ID_INVALID` | id is not 2–63 lowercase letters, digits or `-` | `marketplace.error.idInvalid` |
 | `SOURCE_ID_TAKEN` | id already used | `marketplace.error.idTaken` |
 | `SOURCE_AUTH_REQUIRED` | 401/403, ssh denied | `marketplace.error.authRequired` |
 | `SOURCE_SSH_HOST_UNKNOWN` | host key not in known_hosts | `marketplace.error.sshHostUnknown` |
@@ -1245,7 +1294,7 @@ On first boot of the new version:
 | Schemas | fixture sets for every kind: valid, each invalid rule, unknown keys; a manifest with `installPolicy` is rejected by name at install and in the index CI; an installed legacy manifest with it loads with one warning |
 | Version choice | table tests for `minAppVersion`, yank, platform, pre-release opt-in, rollout buckets, per-source revocations |
 | Ladder | each rung used/skipped/failed combination, mismatch of each authority field stops the ladder, plan binds commits, receipts carry rung outcomes |
-| Git runtime | fake `git` binaries for version gates (2.38.0 refused, 2.38.1 accepted); env/flag/global-config contract; askpass ticket host binding; managed install with a local fixture server and wrong-hash rejection |
+| Git runtime | fake `git` binaries for version gates (2.45.0 refused, 2.45.1 accepted); env/flag/global-config contract; askpass ticket host binding; managed install with a local fixture server and wrong-hash rejection |
 | Sync | local bare repos: fast-forward with the pin far behind the tip, rewrite (official and managed refuse, custom review), invalid index keeps pin, mirror fallback, a hidden source with installed packages still syncs |
 | Network gate | normalization equivalences (scp/ssh/https, case, `.git`), block beats allow, private-network refusal, redirect to a blocked host refused, no auth header across hosts |
 | No privileges | a custom package with the same name as a granted plugin gets no grant; a grant fails for a different artifact hash, for a tree-rung install and for a swapped manifest; a legacy entry keeps the grant only with a matching receipt hash; a source's revocation ignores other sources' packages; no package can block its own uninstall; a manifest carrying `installPolicy` is rejected at install |

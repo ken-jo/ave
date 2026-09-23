@@ -97,7 +97,7 @@ talks to an Ave-operated API to list, resolve or install a package.
 
 | Component | Responsibility | Replaces / reuses |
 |---|---|---|
-| **Git runtime** (`src/marketplace/git/`) | Locate a usable `git` (system ≥ 2.38.1, or an app-managed copy), provision the managed copy with a pinned sha256, run git with a hardened environment (protocol allow-list, no prompts, generated global config, no redirects, proxy from PAC). | Pattern of `PythonRuntimeBootstrapper` (`src/main/python-runtime.ts`). |
+| **Git runtime** (`src/marketplace/git/`) | Locate a usable `git` (system ≥ 2.45.1, or an app-managed copy), provision the managed copy with a pinned sha256, run git with a hardened environment (protocol allow-list, no prompts, generated global config, no redirects, proxy from PAC). | Pattern of `PythonRuntimeBootstrapper` (`src/main/python-runtime.ts`). |
 | **Source registry** | Persist registered sources (`~/.ave/marketplaces/sources.json`): id, URL, ref, auth kind, origin (official / managed / custom / direct), with pin and enabled state per source. Normalize URLs and enforce reserved names and managed policy. | Replaces `MarketplaceSettings.cloudBaseUrl`. |
 | **Source sync** | Per source: fetch, choose the candidate commit, apply the history rule (§9.2), parse and validate the index at that commit, move the pin atomically, publish an immutable catalog snapshot. | Replaces the HTTP catalog fetch and `offline-cache.ts`'s role. |
 | **Aggregated catalog** | Union of every enabled source's snapshot. Rows are keyed by `(source, kind, name)`; nothing is merged across sources. Computes compatibility (`minAppVersion`), yank, platform, rollout eligibility and installed/update state. | Replaces `MarketplaceFetcher.listPlugins/getPluginDetail`. |
@@ -208,7 +208,7 @@ Rules:
 
 ## 8. Git runtime (D7)
 
-- **Mode** `auto` (default): use the system `git` if it is ≥ 2.38.1; otherwise
+- **Mode** `auto` (default): use the system `git` if it is ≥ 2.45.1; otherwise
   offer to install the managed copy. `system` and `managed` force one side. On
   macOS a missing Command Line Tools install counts as "no system git" instead
   of triggering Apple's installer dialog.

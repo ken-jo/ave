@@ -99,7 +99,7 @@ flowchart LR
 
 | 구성 요소 | 책임 | 대체하거나 재사용하는 것 |
 |---|---|---|
-| **Git 런타임** (`src/marketplace/git/`) | 쓸 수 있는 `git`을 찾습니다(시스템 2.38.1 이상, 또는 앱 관리형 사본). 관리형 사본은 고정된 sha256으로 검증해 설치합니다. git은 강화된 환경(프로토콜 허용 목록, 프롬프트 없음, 생성한 전역 설정, 리다이렉트 금지, PAC 프록시)에서 실행합니다. | `PythonRuntimeBootstrapper`(`src/main/python-runtime.ts`) 패턴 |
+| **Git 런타임** (`src/marketplace/git/`) | 쓸 수 있는 `git`을 찾습니다(시스템 2.45.1 이상, 또는 앱 관리형 사본). 관리형 사본은 고정된 sha256으로 검증해 설치합니다. git은 강화된 환경(프로토콜 허용 목록, 프롬프트 없음, 생성한 전역 설정, 리다이렉트 금지, PAC 프록시)에서 실행합니다. | `PythonRuntimeBootstrapper`(`src/main/python-runtime.ts`) 패턴 |
 | **소스 레지스트리** | 등록한 소스를 `~/.ave/marketplaces/sources.json`에 보관합니다(id, URL, ref, 인증 방식, origin: official / managed / custom / direct). 고정 커밋과 활성 여부는 소스마다 따로 둡니다. URL을 정규화하고 예약 이름과 관리 정책을 적용합니다. | `MarketplaceSettings.cloudBaseUrl` 대체 |
 | **소스 동기화** | 소스마다 fetch하고 후보 커밋을 고르고 히스토리 규칙(§9.2)을 적용합니다. 그 커밋의 인덱스를 파싱·검증한 뒤 고정 커밋을 원자적으로 옮기고, 불변 카탈로그 스냅숏을 게시합니다. | HTTP 카탈로그 조회와 `offline-cache.ts`의 역할 대체 |
 | **통합 카탈로그** | 활성 소스 스냅숏의 합집합입니다. 행의 키는 `(source, kind, name)`이고 소스 사이에서는 아무것도 병합하지 않습니다. 호환성(`minAppVersion`), yank, 플랫폼, 롤아웃 대상 여부, 설치/업데이트 상태를 계산합니다. | `MarketplaceFetcher.listPlugins/getPluginDetail` 대체 |
@@ -209,7 +209,7 @@ flowchart TD
 
 ## 8. Git 런타임 (D7)
 
-- **모드** `auto`(기본): 시스템 `git`이 2.38.1 이상이면 그것을 쓰고, 아니면 관리형
+- **모드** `auto`(기본): 시스템 `git`이 2.45.1 이상이면 그것을 쓰고, 아니면 관리형
   사본 설치를 제안합니다. `system`과 `managed`는 한쪽을 강제합니다. macOS에서
   Command Line Tools가 없으면 Apple 설치 대화상자를 띄우지 않고 "시스템 git
   없음"으로 취급합니다.

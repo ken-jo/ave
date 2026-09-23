@@ -90,12 +90,16 @@ interface SourceState {       // marketplaces/<id>/state.json, every origin
   아직 가리키는 커밋만 남기고, 나머지는 동기화가 성공할 때마다 정리합니다.
 - id·URL 검사를 더는 통과하지 못하는 `sources.json` 항목(예약 id, 관리 소스가
   이제 쓰는 id, 정규형이 아닌 URL)은 파일에 그대로 두되 제공하지 않고, Sources
-  화면에 진단으로 보여 줍니다. `sources.json`을 읽을 수 없으면 공식·관리 소스만
+  화면에 진단으로 보여 줍니다. 그런 항목도 id는 계속 차지합니다. 그 id로
+  소스를 새로 추가할 수 없고, 같은 id의 제공 중인 소스를 제거하면 제공 중인
+  항목만 지웁니다. `sources.json`을 읽을 수 없으면 공식·관리 소스만
   제공하고, 복구될 때까지 쓰기를 거부해 사용자가 추가한 항목을 덮어쓰지
   않습니다.
 - `state.json`을 읽을 수 없으면 그 소스의 동기화는 파일 이름을 밝히며
   실패합니다. 핀이 없는 새 소스로 취급하지 않습니다. 첫 동기화는 어떤 이력도
-  받아들이기 때문입니다.
+  받아들이기 때문입니다. `repo.git`이나 `snapshots/`가 있는데 `state.json`이
+  없는 것도 같은 실패입니다. 동기화는 저장소를 만들기 전에 상태를 먼저 쓰므로,
+  그런 모습은 파일을 잃었을 때만 생깁니다.
 
 ### 2.2 스냅숏
 
@@ -220,7 +224,8 @@ interface IndexVersion {
 
 - `(kind, name)`과 `path`는 각각 유일합니다. 두 항목이 같은 쌍이나 같은 경로를
   주장하면 모두 진단과 함께 빠집니다. 작성자가 어느 쪽을 뜻했는지 클라이언트가
-  알 수 없기 때문입니다. `(kind, name, version)`은 정확히 한 커밋에
+  알 수 없기 때문입니다. 검증에 실패한 항목도 주장한 것으로 셉니다.
+  `(kind, name, version)`은 정확히 한 커밋에
   대응합니다. 기존 버전을 새 커밋으로 다시 게시하면 CI가 거부합니다.
 - 버전은 패키지마다 엄격히 증가합니다(기존 플러그인 규칙을 모든 종류로 확대).
   `latest`는 회수(yank)된 버전을 가리키지 않습니다.
@@ -321,7 +326,8 @@ type McpServerSpec =
 - `release.repo`는 **direct** 소스에서만 생략할 수 있고, 그때는 소스 저장소 자신이
   기본값입니다.
 - `npx`, `uvx`, `docker`가 아닌 `stdio` 명령은 패키지 디렉터리 기준 상대
-  경로(`server/…`)여야 합니다. 절대 경로와 `..`는 거부합니다.
+  경로(`server/…`)여야 합니다. 절대 경로, `..`, `\`, `:`, 제어 문자는 거부해
+  어느 플랫폼에서도 다른 구분자나 드라이브로 읽히지 않게 합니다.
 - `env` 이름, `apiKeyEnv`, `apiKeyHeader`에는 호스트가 예약한 이름
   (`src/mcp/safe-names.ts`)을 쓸 수 없습니다.
 
@@ -364,7 +370,8 @@ git 소스에서 설치하는 플러그인은:
 마켓플레이스 파일 자체에도 한도가 있습니다. `marketplace.json` 16 MB,
 `ave-package.json` 256 KB, `policy/revocations.json` 1 MB입니다. 더 큰
 디스크립터는 그 패키지를 진단과 함께 빼고, 더 큰 인덱스나 폐기 파일은 커밋을
-거부합니다.
+거부합니다. git은 blob을 받기 전에는 크기를 알 수 없으므로 한도는 객체가 로컬에
+온 뒤 검사하고, 전송 자체는 fetch 제한 시간(§9.3)이 묶습니다.
 
 SVG는 인라인으로 렌더링하면 능동 문서가 되므로 콘텐츠 종류에서 제외합니다.
 링크, 장치 파일, 패키지 디렉터리 밖으로 나가는 경로는 거부합니다
@@ -504,9 +511,10 @@ emit marketplace:catalog-changed
   검사가 실패하는 일은 없습니다.
 - 공식 소스는 기본 URL을 먼저, 그다음 각 미러를 시도합니다. 어느 쪽이 후보를
   주든 이력 규칙은 그대로 적용됩니다.
-- 핀 커밋이 로컬 저장소에 없으면(저장소 디렉터리가 사라진 경우) 이력이 재작성된
-  것으로 봅니다. 객체가 없으면 조상 관계를 증명할 수 없고, 첫 동기화는 어떤
-  이력도 받아들이기 때문입니다.
+- 전체 이력을 가져온 뒤에도 핀 커밋이 로컬 저장소에 없으면(저장소 디렉터리가
+  사라졌고 원격에도 그 커밋이 없는 경우) 이력이 재작성된 것으로 봅니다. 객체가
+  없으면 조상 관계를 증명할 수 없고, 첫 동기화는 어떤 이력도 받아들이기
+  때문입니다. 후보가 핀의 후손이면 가져오기가 핀을 되살려 평소처럼 증명합니다.
 - 업데이트 검토는 보여 준 커밋만 정확히 수락합니다
   (`ave:marketplace:sources:accept-rewrite`가 그 커밋을 싣습니다). 그 사이
   동기화가 다른 후보를 보았다면 검토는 만료됩니다(`PLAN_EXPIRED`).
@@ -516,11 +524,17 @@ emit marketplace:catalog-changed
 마켓플레이스가 닿는 모든 네트워크 대상(git 원격, release·archive URL, 서비스
 엔드포인트)은 하나의 게이트를 지납니다.
 
-1. 정규화(§7.1, `https` 다운로드도 같은 호스트/포트/경로 규칙);
-2. 관리 정책 `marketplaces.block`, 그다음 `marketplaces.allow`(있을 때) 적용;
+1. 정규화(§7.1, `https` 다운로드도 같은 호스트/포트/경로 규칙: 퍼센트 인코딩은
+   정규형으로 바꾸고, 빈 세그먼트·`.`·`..`는 거부);
+2. 관리 정책 `marketplaces.block`, 그다음 `marketplaces.allow`(있을 때) 적용.
+   다운로드에서는 정확한 저장소 패턴이 그 저장소 아래의 모든 경로
+   (`…/acme/tools/releases/download/…`)도 덮습니다. git 원격에서는 그 저장소만
+   가리킵니다. 하위 그룹이 있는 호스트에서는 중첩 경로가 다른 저장소이기
+   때문입니다;
 3. 지금 `cloud-marketplace-fetcher.ts`에 있는 사설망 가드 적용(그 파일을 지울 때
    공용 모듈로 이동): 루프백, 링크 로컬, 사설, 메타데이터 주소는 정책에 등록된
-   호스트이거나 개발 빌드가 루프백을 허용할 때가 아니면 거부;
+   호스트이거나 개발 빌드가 루프백을 허용할 때가 아니면 거부. NAT64 주소
+   (`64:ff9b::/96`)는 안에 담긴 IPv4 주소로 판단;
 4. git은 리다이렉트를 따라가지 않습니다(`http.followRedirects=false`). HTTPS
    다운로드는 새 URL에 이 게이트를 다시 적용한 뒤에만 리다이렉트를 따르고,
    다른 호스트로 인증 헤더를 넘기지 않습니다.
@@ -537,7 +551,9 @@ URL을 가져오게 만들지 못합니다.
 
 소스를 제거해도 그 소스에서 설치한 패키지는 남습니다. "소스 제거됨 — 업데이트
 없음"으로 표시되고, 설치됨 화면에서 제거할 수 있습니다. 같은 정규화 URL을 다시
-추가하면 다시 묶입니다. 공식·관리 소스는 제거할 수 없습니다.
+추가하면 다시 묶입니다. 공식·관리 소스는 제거할 수 없습니다. 제거는 그 소스의
+동기화나 수락이 진행 중이면 끝나기를 기다리므로, 디렉터리가 사라진 뒤에 옛
+소스의 쓰기가 남지 않습니다.
 
 ## 8. 직접 설치 (마켓플레이스 매니페스트 없음)
 
@@ -572,17 +588,20 @@ URL을 가져오게 만들지 못합니다.
 
 ### 9.1 감지와 최소 버전
 
-쓸 수 있는 최소 git은 **2.38.1**입니다. `blob:none` 부분 클론,
-`rev-list --missing=print`, 프로토콜 v2, `protocol.file.allow` 설정이 모두 §9.3이
-기대하는 대로 동작하는 것이 이 릴리스부터입니다.
+쓸 수 있는 최소 git은 **2.45.1**입니다. `GIT_NO_LAZY_FETCH`(§9.3)를 처음
+지키는 릴리스로, 이것이 없으면 부분 클론에서 없는 객체를 로컬로 읽을 때 git이
+네트워크 게이트를 거치지 않고 스스로 원격에서 가져옵니다.
+CVE-2024-32002/32004/32465를 고친 릴리스이기도 합니다. `blob:none` 부분 클론,
+`rev-list --missing=print`, 프로토콜 v2, `protocol.file.allow`는 그보다 훨씬
+전부터 §9.3이 기대하는 대로 동작합니다.
 
 ```
 mode = settings.marketplace.git.mode   // "auto" | "system" | "managed"
 system: first `git` on PATH (plus /usr/bin/git, /opt/homebrew/bin/git,
-        C:\Program Files\Git\cmd\git.exe); require `git --version` >= 2.38.1
+        C:\Program Files\Git\cmd\git.exe); require `git --version` >= 2.45.1
 managed: ~/.ave/runtime/git/<pinnedVersion>/ present and smoke-tested
 auto: system if usable, else managed if present, else state "missing"
-      (a system git older than 2.38.1 is reported as too old and auto uses managed)
+      (a system git older than 2.45.1 is reported as too old and auto uses managed)
 ```
 
 macOS에서 Command Line Tools 없는 `/usr/bin/git`은 설치 대화상자를 여는 shim입니다.
@@ -625,7 +644,10 @@ smoke-testing → ready | failed(code)`. 다운로드는 PAC를 인식하는 단
 동작 중인 사본을 절대 대체하지 않습니다. 강제 재설치는 동작 중인 사본을 옆으로
 옮겨 두었다가 마지막 이름 바꾸기가 실패하면 되돌립니다. 다운로드·검증·추출·
 스모크 테스트 실패는 모두 `GIT_RUNTIME_INSTALL_FAILED`이고, 정책 차단만
-`SOURCE_POLICY_BLOCKED`로 남습니다.
+`SOURCE_POLICY_BLOCKED`로 남습니다. 본문이 60초 동안 아무것도 보내지 않으면
+설치를 붙잡아 두지 않고 실패시킵니다. 다운로드는 공식 소스처럼 게이트를
+거칩니다. `block`과 `allow`는 적용되고, 정책이 무효여도 막히지 않습니다. 공식
+소스에 git이 필요하고 아카이브는 해시로 고정되어 있기 때문입니다.
 
 관리형 모드에서 매 호출에 설정하는 환경:
 
@@ -656,14 +678,24 @@ smoke-testing → ready | failed(code)`. 다운로드는 PAC를 인식하는 단
   `GIT_SSH_COMMAND="ssh -o BatchMode=yes"`(모르는 호스트 키는 프롬프트를
   기다리지 않고 `SOURCE_SSH_HOST_UNKNOWN`으로 바로 실패).
 - `GIT_ALLOW_PROTOCOL=https:ssh`, 소스 호스트가 `marketplaces.allowHttpHosts`에
-  있을 때만 `http` 추가.
+  있을 때만 `http` 추가. 원격이 없는 호출은 `none`.
 - `GIT_LFS_SKIP_SMUDGE=1`.
+- `GIT_NO_LAZY_FETCH=1`: 없는 객체는 오류일 뿐, 게이트가 보지 못한 가져오기가
+  되지 않습니다. blob은 게이트를 거치는 명시적 `ensureBlobs` 단계에서만
+  가져옵니다.
+- 저장소를 다루는 호출에는 `GIT_DIR=<소스 repo.git>`을 넘겨, git이 망가진
+  저장소에서 위로 올라가며 다른 저장소를 찾지 않게 합니다. 그 밖의 호출은 빈
+  디렉터리에서 돌고 `GIT_CEILING_DIRECTORIES`가 거기서 탐색을 멈춥니다.
 
 설정 플래그: `-c protocol.file.allow=never -c submodule.recurse=false
 -c core.fsmonitor=false -c core.hooksPath=<빈 디렉터리> -c http.followRedirects=false
 -c http.proxy=<PAC> -c filter.lfs.smudge= -c filter.lfs.process= -c filter.lfs.required=false
 -c gc.auto=0 -c maintenance.auto=false`(고정값이 옮겨간 뒤 자동 gc가 설치본이 아직
-참조하는 커밋을 지울 수 있기 때문).
+참조하는 커밋을 지울 수 있기 때문), 그리고 저장된 토큰으로 답하는 호출에는
+`-c credential.helper=`(아래). `<PAC>`는 Chromium이 그 원격에 대해 해석한 첫
+항목입니다. `PROXY`, `HTTPS`, `SOCKS5`, 그리고 `SOCKS`/`SOCKS4`는 `socks4://`로,
+`DIRECT`는 빈 값으로 씁니다. 그 밖의 종류는 설정이 프록시를 고른 곳으로 직접
+나가지 않도록 호출을 `SOURCE_UNREACHABLE`로 실패시킵니다.
 
 **전역 설정.** 사용자의 전역 git 설정은 읽지 않습니다. Ave가
 `GIT_CONFIG_GLOBAL`이 가리키는 파일을 만들고, 거기에 `credential.helper`와
@@ -678,8 +710,12 @@ smoke-testing → ready | failed(code)`. 다운로드는 PAC를 인식하는 단
 **Askpass 프로토콜.** 헬퍼는 메인 프로세스가 시작할 때 새 `0700` 디렉터리에
 실행기와 함께 써 두는 작은 스크립트입니다. 실행기는 앱 바이너리를 Node 모드
 (`ELECTRON_RUN_AS_NODE`)로 띄워 이 스크립트를 돌리므로, 앱에 따로 동봉할 것은
-없습니다. 메인 프로세스는
-`runGit` 호출마다 `(정규화된 호스트, sourceId)`에 묶인 1회용 티켓을 만들고,
+없습니다. 티켓은 소스가 토큰 인증을 선언했고 원격 호스트에 저장된 토큰이 있을
+때만 만듭니다. 다른 호스트의 미러는 주 호스트의 토큰을 받지 않습니다. 그런
+호출에는 `-c credential.helper=`도 붙습니다. 마지막에 읽히므로 복사해 온 헬퍼를
+모두 끄고, git이 헬퍼에 먼저 묻거나 자격 증명을 승인하며 토큰을 헬퍼에 넘기는
+일이 없습니다. 저장된 토큰이 없으면 헬퍼가 평소대로 답합니다. 메인 프로세스는
+그런 호출마다 `(정규화된 호스트, sourceId)`에 묶인 1회용 티켓을 만들고,
 자식 환경에 `AVE_ASKPASS_TICKET`과 `AVE_ASKPASS_ENDPOINT`(`0700` 디렉터리 안의
 로컬 소켓)를 넘깁니다. 헬퍼가 티켓과 git의 프롬프트 문구를 보내면, 메인
 프로세스는 프롬프트가 티켓의 호스트를 가리킬 때만 저장된 토큰으로 답하고, 아니면
@@ -929,14 +965,21 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
 - 패턴은 저장소 동일성(§7.1)과 비교합니다. 호스트와 대소문자를 무시한 경로이며
   스킴과 포트는 따지지 않습니다. `https://github.com/acme/tools`,
   `git@github.com:acme/tools`, `https://github.com/ACME/Tools`는 Ave가 다루는
-  모든 호스팅 서비스에서 같은 저장소이므로, 표기를 바꿔 규칙을 피할 수 없습니다.
+  모든 호스팅 서비스에서 같은 저장소이므로, 호스트 URL의 표기를 바꿔 규칙을 피할
+  수 없습니다. 같은 저장소에 닿는 다른 이름(`ssh://git@ssh.github.com:443/…`,
+  `altssh.gitlab.com`, DNS 별칭, `~/.ssh/config`의 `HostName`)까지 규칙이 다 알
+  수는 없으므로, 꼭 지켜야 하는 통제는 그런 이름이 통과하지 못하는 `allow`로
+  겁니다.
   `host:<host>`는 그 호스트를, URL 패턴은 그 저장소를, `*`로 끝나는 URL은 `*`
   앞 텍스트로 경로가 시작하는 모든 저장소를 맞춥니다. 그 밖의 위치에 있는 `*`는
   거부합니다. `block`이 `allow`보다 우선합니다.
 - 정책이 이름을 댄 호스트(`allowHttpHosts`, `allow` 패턴, `additional` 소스에
   나오는 호스트)는 사설(RFC 1918, ULA)·CGNAT 주소로 해석되어도 됩니다(§7.4).
   link-local과 메타데이터 주소는 이들에게도 계속 거부합니다.
-- 이 섹션은 적힌 그대로만 읽습니다. 알 수 없는 키, 중복 키, 파싱되지 않는 패턴,
+- 호스트 필드(`host:` 패턴, `allowHttpHosts`, `auth.host`)에는 포트를 쓰지
+  않습니다. 토큰의 `auth.host`는 소스 자신의 호스트여야 합니다.
+- 이 섹션은 적힌 그대로만 읽습니다. 알 수 없는 키, 중복 키, 목록 자리의 `null`,
+  파싱되지 않는 패턴,
   정책 자신의 목록이 막는 `additional` 소스, 공식도 `additional`도 아닌 소스를
   지정한 설치 항목이 하나라도 있으면 섹션 전체가 무효이고, 파일을 고칠 때까지
   공식 외 모든 소스가 `SOURCE_POLICY_BLOCKED`입니다. 오타가 열린 쪽으로 실패해서는
@@ -984,11 +1027,12 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
 | 코드 | 언제 | 사용자 메시지(en 키) |
 |---|---|---|
 | `GIT_RUNTIME_MISSING` | 쓸 수 있는 git 없음 | `marketplace.error.gitMissing` |
-| `GIT_RUNTIME_TOO_OLD` | `system` 모드에서 시스템 git이 2.38.1 미만 | `marketplace.error.gitTooOld` |
+| `GIT_RUNTIME_TOO_OLD` | `system` 모드에서 시스템 git이 2.45.1 미만 | `marketplace.error.gitTooOld` |
 | `GIT_RUNTIME_INSTALL_FAILED` | 관리형 다운로드/검증/압축 해제/스모크 테스트 실패 | `marketplace.error.gitInstallFailed` |
 | `SOURCE_URL_REJECTED` | 스킴, URL 안의 자격 증명, 사설망 대상 | `marketplace.error.urlRejected` |
 | `SOURCE_POLICY_BLOCKED` | 관리 정책 allow/block | `marketplace.error.policyBlocked` |
 | `SOURCE_NAME_RESERVED` | 예약된 id | `marketplace.error.nameReserved` |
+| `SOURCE_ID_INVALID` | id가 2–63자의 소문자·숫자·`-`가 아님 | `marketplace.error.idInvalid` |
 | `SOURCE_ID_TAKEN` | 이미 쓰는 id | `marketplace.error.idTaken` |
 | `SOURCE_AUTH_REQUIRED` | 401/403, ssh 거부 | `marketplace.error.authRequired` |
 | `SOURCE_SSH_HOST_UNKNOWN` | known_hosts에 없는 호스트 키 | `marketplace.error.sshHostUnknown` |
@@ -1178,7 +1222,7 @@ Retry가 있는 `failed` 상태.
 | 스키마 | 모든 종류의 픽스처 세트: 정상, 규칙별 위반, 알 수 없는 키. `installPolicy`가 있는 매니페스트는 설치와 인덱스 CI에서 필드 이름과 함께 거부, 필드가 있는 legacy 설치본은 경고 한 번과 함께 로드 |
 | 버전 선택 | `minAppVersion`, 회수, 플랫폼, 프리릴리스 옵트인, 롤아웃 버킷, 소스별 폐기 표 테스트 |
 | 사다리 | 단계별 사용/건너뜀/실패 조합, authority 필드 하나라도 불일치하면 사다리 중단, 계획이 커밋에 묶임, 영수증에 단계 결과 기록 |
-| Git 런타임 | 버전 게이트용 가짜 `git` 바이너리(2.38.0 거부, 2.38.1 허용), 환경/플래그/전역 설정 계약, askpass 티켓의 호스트 바인딩, 로컬 픽스처 서버를 쓴 관리형 설치와 잘못된 해시 거부 |
+| Git 런타임 | 버전 게이트용 가짜 `git` 바이너리(2.45.0 거부, 2.45.1 허용), 환경/플래그/전역 설정 계약, askpass 티켓의 호스트 바인딩, 로컬 픽스처 서버를 쓴 관리형 설치와 잘못된 해시 거부 |
 | 동기화 | 로컬 bare 저장소: 핀이 팁보다 한참 뒤인 fast-forward, 재작성(공식·관리는 거부, 커스텀은 검토), 잘못된 인덱스는 핀 유지, 미러 대체, 설치 패키지가 있는 숨긴 소스도 동기화 |
 | 네트워크 게이트 | 정규화 동치(scp/ssh/https, 대소문자, `.git`), block이 allow보다 우선, 사설망 거부, 차단된 호스트로의 리다이렉트 거부, 호스트 간 인증 헤더 없음 |
 | 특권 없음 | grant 대상과 같은 이름의 커스텀 패키지는 grant 없음, 다른 아티팩트 해시·tree 단계 설치·바뀐 매니페스트면 grant 실패, legacy 항목은 영수증 해시가 맞을 때만 grant 유지, 한 소스의 폐기는 다른 소스 패키지를 무시, 어떤 패키지도 자기 제거를 막지 못함, `installPolicy`가 있는 매니페스트는 설치에서 거부 |
