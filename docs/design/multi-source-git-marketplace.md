@@ -42,6 +42,10 @@
   runtime/git/<version>/              # managed git copy (§9)
 ```
 
+`installation-id` carries no authority. A file that is not a UUID is replaced
+with a new one, and the installation falls into fresh rollout buckets exactly
+as a new installation would.
+
 ### 2.1 Source records
 
 ```ts
@@ -143,6 +147,18 @@ origin?: {
 `installSource` becomes `user | local-dev`; the `admin` value is removed with
 the managed-install mechanism (§10.1, §16.3). Content packages record the same
 origin in `packages/ledger.json`.
+
+- `commit` is the snapshot commit the install plan was bound to, so the
+  snapshot pruning of §2.1 keeps it.
+- Only a git install writes `origin`. Every other path that replaces the
+  files — a catalog install while it still exists, a local build, a
+  rollback — removes it, because it would otherwise claim a provenance for
+  bytes it did not install.
+- A git install writes install receipt schema v4: `installSource: "git"`, no
+  signer and no admission, `artifactSha256` as above, and a `git` record with
+  the source, the snapshot and version commits, the package path, the used
+  rung and every rung outcome in ladder order. Signed and local installs keep
+  writing v3 unchanged.
 
 ## 3. Marketplace repository layout
 
@@ -335,6 +351,29 @@ type McpServerSpec =
   separator or a drive.
 - `env` names, `apiKeyEnv` and `apiKeyHeader` may not use a name the host
   reserves (`src/mcp/safe-names.ts`).
+- The launched MCP code is fixed by the commit: an `npx` package is
+  `<package>@<exact version>`, a `uvx` package `<package>==<exact version>`,
+  and a docker image carries a tag other than `latest` or a `@sha256:`
+  digest. In a descriptor's own spec the package or image is the first
+  argument that is not an option, so options before it use the
+  `--name=value` form.
+- `server.json` (schema 2025-12-11) maps to the spec as follows: npm →
+  `npx [runtimeArguments] -y <identifier>@<version> [packageArguments]`;
+  pypi → `uvx [runtimeArguments] <identifier>==<version> [packageArguments]`;
+  oci → `docker run -i --rm [runtimeArguments] <identifier>[:<version>]
+  [packageArguments]`; a `streamable-http` remote → `http`. Arguments and
+  variables take `value`, else `default`; a named argument becomes
+  `name value`. One `isSecret` variable or header becomes `apiKeyEnv` or
+  `apiKeyHeader` with `auth: "api-key"`. Refused: `sse`, other registries or
+  a non-default `registryBaseUrl`, a package whose transport is not stdio,
+  `{variable}` templates and `variables`, a required input without a value,
+  remote headers with fixed values, and more than one secret. `select` picks
+  one package or one remote; without it the first package is used, else the
+  first remote.
+- A package-local command runs from the package's `server/` directory
+  exported at the version's commit, which must contain the command; the MCP
+  artifact store installs those files and `$PLUGIN_DIR` points at them.
+  `$PLUGIN_DIR` without package files, and `$PYTHON`, are refused.
 
 ### 5.3 Plugin manifest changes
 
@@ -439,6 +478,27 @@ stop with NO_INSTALLABLE_ARTIFACT(rungs[])
 - Dependency preflight (`dependency-resolver.ts`, `requires.capabilities`)
   runs on the descriptor's authority before any download, as it runs on the
   catalog row today.
+- Before any rung, the descriptor at the version's commit must say what the
+  index copy says (kind, name, version, `minAppVersion`, `platforms`,
+  `authority`, `artifact`); a difference is `MANIFEST_MISMATCH`. Every kind
+  other than plugin reads its payload from that descriptor.
+- The tree rung is declared by `artifact.tree`, or by a `plugin.json` in the
+  package directory (its default). It installs `plugin.json`, `dist/**` and
+  `assets/**`; any other top-level entry fails the rung, and
+  `ave-package.json` is not installed. The exported files are packed into a
+  zip, so every rung goes through the same zip preflight and install
+  pipeline.
+- A release without `url` is fetched from
+  `https://<source host>/<repo>/releases/download/<tag>/<asset>` (the
+  source's own scheme for a policy-listed http host). When the source uses
+  token auth on `github.com` and a token is stored, the asset comes through
+  the GitHub REST API instead — `api.github.com/repos/<repo>/releases/tags/<tag>`
+  for the asset id, then `…/releases/assets/<id>` with
+  `Accept: application/octet-stream` — because that is what serves a private
+  repository; the storage host it redirects to never receives the token
+  (§7.4). A policy allow list must admit `api.github.com` for this path.
+- Release and archive downloads are bounded by the artifact limits and fail
+  after 60 s without data.
 
 ### 6.3 Official release flow
 
@@ -456,7 +516,8 @@ stop with NO_INSTALLABLE_ARTIFACT(rungs[])
 ### 6.4 Tree digest
 
 For the tree rung, `artifactSha256` is `sha256` over the lines
-`"<mode> <sha256(file)> <path>\n"` for every file, sorted by path bytes, with
+`"<mode> <sha256(file)> <path>\n"` for every installed file (the descriptor
+is not installed), sorted by path bytes, with
 `mode` ∈ {`100644`, `100755`}. It is recorded in the receipt and lets a later
 reinstall of the same version prove it got the same bytes.
 
@@ -849,6 +910,10 @@ name packages from the official or a managed source.
   final unless the user installs it again.
 - A key whose package is missing or incompatible is recorded as `skipped` and
   retried only when the list entry changes.
+- A key whose source has no snapshot yet (a first boot offline) or whose
+  install failed is not recorded and is tried again at the next boot. A
+  `default-installs.json` that cannot be read stops the default installs:
+  reading it as empty would reinstall what the user removed.
 
 **Required installs** come only from the system policy file's
 `marketplaces.requiredInstalls` (§12). The file is owned by the machine's
@@ -897,8 +962,9 @@ export const HOST_SECRET_GRANTS: readonly HostSecretGrant[] = [
 A grant applies only when all of these hold:
 
 1. the registry entry's `origin.sourceOrigin` is `official`;
-2. the installed artifact's sha256 equals the sha256 the official snapshot
-   pins for that version (the exact artifact Ave published). The value is
+2. the installed artifact's sha256 equals a sha256 the official snapshot
+   pins for that version — its release or archive pin (the exact artifact
+   Ave published). The value is
    read from `origin.artifactSha256`, or, for a `legacy` entry, from the
    existing install receipt's `artifactSha256`; a tree-rung install never
    qualifies;

@@ -83,7 +83,7 @@ P6뿐입니다.
 | PR | 내용 | 테스트 |
 |---|---|---|
 | 2.1 | `catalog/aggregate.ts`: `(source, kind, name)` 키의 행, `installation-id` 롤아웃 버킷을 쓰는 버전 선택(설계서 §6.1), `canaryOptIn` 뒤의 프리릴리스, 소스별 폐기 | `minAppVersion`, 회수, 플랫폼, 프리릴리스, 롤아웃, 폐기, `upgrade_required` 최소 버전 표 테스트 |
-| 2.2 | git 설치 매니페스트 규칙(설계서 §5.3): `requires.minAppVersion` 필수이고 descriptor와 같음, authority 필드 전부 descriptor와 같음. 스키마 사본과 drift 테스트는 같은 기간에 머지하는 짝 SDK PR로 | 스키마 테스트, 플러그인 픽스처 갱신 |
+| 2.2 | git 설치 매니페스트 규칙(설계서 §5.3): `requires.minAppVersion` 필수이고 descriptor와 같음, authority 필드 전부 descriptor와 같음. 이 규칙은 스키마가 아니라 설치 계획의 것이므로(설계서 §5.3은 로컬 개발용으로 `requires.minAppVersion`을 선택으로 둠) 스키마 사본이나 SDK PR은 바뀌지 않음 | 규칙 테스트: 필드별, 존재 여부, `installPolicy` 이름 지정 거부 |
 | 2.3 | 스테이징된 아티팩트를 만드는 `resolve/plugin-ladder.ts`(설계서 §6.2), 스냅숏·버전 커밋에 묶인 계획, 트리 다이제스트(§6.4), descriptor authority로 의존성 사전 점검 | 단계별 사용/건너뜀/실패, authority 필드 하나라도 불일치하면 사다리 중단, 계획과 실행 사이 동기화가 결과를 바꾸지 않음, 계획과 영수증에 단계 결과 |
 | 2.4 | 이미 검증된 스테이징 아티팩트를 받는 설치 파이프라인 진입점: 스테이징 → 영수증 → 레지스트리 → generation 재사용, 레지스트리 항목의 `origin`, 이 경로에는 봉투 검증 없음 | 기존 파이프라인 스위트 변경 없이 통과, 새 origin 단언, 복구 저널 실행 |
 | 2.5 | `resolve/mcp.ts`: descriptor나 `server.json` → generation 범위 MCP descriptor → 기존 승인 | npm/pypi/oci/remote 대응, 상대 `stdio` 명령 격리 |

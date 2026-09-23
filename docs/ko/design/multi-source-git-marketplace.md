@@ -45,6 +45,9 @@
   runtime/git/<version>/              # managed git copy (§9)
 ```
 
+`installation-id`에는 아무 권한도 없습니다. UUID가 아닌 파일은 새 값으로
+바꾸며, 그 설치는 새로 설치한 것과 똑같이 새로운 롤아웃 버킷에 들어갑니다.
+
 ### 2.1 소스 기록
 
 ```ts
@@ -142,6 +145,16 @@ origin?: {
 `installSource`는 `user | local-dev`가 됩니다. `admin` 값은 관리 설치 메커니즘과
 함께 제거됩니다(§10.1, §16.3). 콘텐츠 패키지도 같은 출처 정보를
 `packages/ledger.json`에 기록합니다.
+
+- `commit`은 설치 계획이 묶인 스냅숏 커밋입니다. 그래서 §2.1의 스냅숏 정리가
+  그 커밋을 남깁니다.
+- `origin`은 git 설치만 씁니다. 파일을 바꾸는 다른 모든 경로(남아 있는 동안의
+  카탈로그 설치, 로컬 빌드, 롤백)는 이를 지웁니다. 남겨 두면 자기가 설치하지
+  않은 바이트의 출처를 주장하게 되기 때문입니다.
+- git 설치는 설치 영수증 스키마 v4를 씁니다. `installSource: "git"`, 서명자와
+  허가(admission) 없음, 위와 같은 `artifactSha256`, 그리고 소스·스냅숏 커밋·버전
+  커밋·패키지 경로·사용한 단계·사다리 순서의 모든 단계 결과를 담은 `git`
+  기록입니다. 서명 설치와 로컬 설치는 v3를 그대로 씁니다.
 
 ## 3. 마켓플레이스 저장소 레이아웃
 
@@ -330,6 +343,26 @@ type McpServerSpec =
   어느 플랫폼에서도 다른 구분자나 드라이브로 읽히지 않게 합니다.
 - `env` 이름, `apiKeyEnv`, `apiKeyHeader`에는 호스트가 예약한 이름
   (`src/mcp/safe-names.ts`)을 쓸 수 없습니다.
+- 실행되는 MCP 코드는 커밋이 고정합니다. `npx` 패키지는
+  `<package>@<정확한 버전>`, `uvx` 패키지는 `<package>==<정확한 버전>`, docker
+  이미지는 `latest`가 아닌 태그나 `@sha256:` 다이제스트를 가져야 합니다.
+  디스크립터가 직접 쓴 스펙에서는 옵션이 아닌 첫 인자가 패키지나 이미지이므로,
+  그 앞의 옵션은 `--name=value` 형태로 씁니다.
+- `server.json`(스키마 2025-12-11)은 다음과 같이 스펙으로 옮깁니다. npm →
+  `npx [runtimeArguments] -y <identifier>@<version> [packageArguments]`,
+  pypi → `uvx [runtimeArguments] <identifier>==<version> [packageArguments]`,
+  oci → `docker run -i --rm [runtimeArguments] <identifier>[:<version>]
+  [packageArguments]`, `streamable-http` 원격 → `http`. 인자와 변수는 `value`,
+  없으면 `default`를 쓰고, 이름 있는 인자는 `name value`가 됩니다. `isSecret`
+  변수나 헤더 하나는 `auth: "api-key"`와 함께 `apiKeyEnv`나 `apiKeyHeader`가
+  됩니다. 거부: `sse`, 다른 레지스트리나 기본값이 아닌 `registryBaseUrl`, stdio가
+  아닌 전송을 쓰는 패키지, `{variable}` 템플릿과 `variables`, 값이 없는 필수
+  입력, 고정 값을 가진 원격 헤더, 둘 이상의 비밀. `select`는 패키지 하나나 원격
+  하나를 고르며, 없으면 첫 패키지, 그것도 없으면 첫 원격을 씁니다.
+- 패키지 로컬 명령은 버전 커밋에서 내보낸 패키지의 `server/` 디렉터리에서
+  실행하며, 그 디렉터리에 명령 파일이 있어야 합니다. MCP 아티팩트 저장소가 그
+  파일을 설치하고 `$PLUGIN_DIR`이 그곳을 가리킵니다. 패키지 파일 없는
+  `$PLUGIN_DIR`과 `$PYTHON`은 거부합니다.
 
 ### 5.3 플러그인 매니페스트 변경
 
@@ -428,6 +461,26 @@ stop with NO_INSTALLABLE_ARTIFACT(rungs[])
   계획의 일부이고 영수증(receipt)에도 기록됩니다.
 - 의존성 사전 점검(`dependency-resolver.ts`, `requires.capabilities`)은 지금
   카탈로그 행에서 하듯, 다운로드 전에 디스크립터의 authority로 실행합니다.
+- 어느 단계보다 먼저, 버전 커밋의 디스크립터가 인덱스 사본과 같은 내용(kind,
+  name, version, `minAppVersion`, `platforms`, `authority`, `artifact`)이어야
+  합니다. 다르면 `MANIFEST_MISMATCH`입니다. 플러그인이 아닌 종류는 모두 그
+  디스크립터에서 페이로드를 읽습니다.
+- tree 단계는 `artifact.tree`로, 또는 패키지 디렉터리의 `plugin.json`(기본값)으로
+  선언됩니다. `plugin.json`, `dist/**`, `assets/**`만 설치하고, 그 밖의 최상위
+  항목이 있으면 그 단계가 실패하며, `ave-package.json`은 설치하지 않습니다.
+  내보낸 파일은 zip으로 묶으므로 모든 단계가 같은 zip 사전 점검과 설치
+  파이프라인을 거칩니다.
+- `url`이 없는 release는
+  `https://<소스 호스트>/<repo>/releases/download/<tag>/<asset>`에서 받습니다
+  (정책이 허용한 http 호스트면 소스의 스킴). 소스가 `github.com`에서 토큰 인증을
+  쓰고 토큰이 저장되어 있으면 GitHub REST API로 받습니다.
+  `api.github.com/repos/<repo>/releases/tags/<tag>`에서 자산 id를 얻고
+  `…/releases/assets/<id>`를 `Accept: application/octet-stream`으로 요청합니다.
+  비공개 저장소를 내주는 경로가 이것이기 때문이며, 응답이 리디렉트하는 저장소
+  호스트에는 토큰이 가지 않습니다(§7.4). 이 경로에는 정책 허용 목록이
+  `api.github.com`을 허용해야 합니다.
+- release와 archive 다운로드는 아티팩트 한도를 넘을 수 없고, 60초 동안 데이터가
+  없으면 실패합니다.
 
 ### 6.3 공식 릴리스 흐름
 
@@ -442,7 +495,7 @@ stop with NO_INSTALLABLE_ARTIFACT(rungs[])
 
 ### 6.4 트리 다이제스트
 
-tree 단계의 `artifactSha256`은 모든 파일에 대해
+tree 단계의 `artifactSha256`은 설치하는 모든 파일(디스크립터는 설치하지 않음)에 대해
 `"<mode> <sha256(file)> <path>\n"` 줄을 경로 바이트 순으로 정렬해 이은 것의
 `sha256`입니다(`mode` ∈ {`100644`, `100755`}). 영수증에 기록되며, 같은 버전을
 나중에 다시 설치했을 때 같은 바이트를 받았음을 증명합니다.
@@ -807,6 +860,9 @@ export const DEFAULT_INSTALLS: readonly PackageKey[] = [
   설치하지 않는 한 그대로입니다.
 - 패키지가 없거나 호환되지 않는 키는 `skipped`로 기록하고, 목록 항목이 바뀔
   때만 다시 시도합니다.
+- 소스에 아직 스냅숏이 없거나(오프라인 첫 부팅) 설치가 실패한 키는 기록하지 않고
+  다음 부팅에서 다시 시도합니다. 읽을 수 없는 `default-installs.json`은 기본
+  설치를 멈춥니다. 빈 목록으로 읽으면 사용자가 지운 것을 다시 설치하게 됩니다.
 
 **필수 설치(required install)**는 시스템 정책 파일의
 `marketplaces.requiredInstalls`(§12)에서만 옵니다. 이 파일은 기기 관리자(root나
@@ -851,8 +907,8 @@ export const HOST_SECRET_GRANTS: readonly HostSecretGrant[] = [
 grant는 다음이 모두 참일 때만 적용됩니다.
 
 1. 레지스트리 항목의 `origin.sourceOrigin`이 `official`;
-2. 설치된 아티팩트의 sha256이 공식 스냅숏이 그 버전에 핀한 sha256(Ave가 게시한
-   바로 그 아티팩트)과 같음. 값은 `origin.artifactSha256`에서, `legacy` 항목이면
+2. 설치된 아티팩트의 sha256이 공식 스냅숏이 그 버전에 핀한 sha256, 곧 release나
+   archive 핀(Ave가 게시한 바로 그 아티팩트) 중 하나와 같음. 값은 `origin.artifactSha256`에서, `legacy` 항목이면
    기존 설치 영수증의 `artifactSha256`에서 읽습니다. tree 단계 설치는 절대
    해당하지 않습니다;
 3. 실행 중인 매니페스트의 정규화 SHA-256이 설치 때 기록한 `manifestSha256`과
