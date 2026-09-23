@@ -50,7 +50,7 @@ P6뿐입니다.
 | 0.2 | 검증 워크플로: descriptor·인덱스 스키마(ave `schemas/marketplace/`에서 가져오고 drift 테스트), 콘텐츠 한도, 이름 규칙, 시크릿 스캔, `minAppVersion` 존재, 플러그인 `authority`가 릴리스된 `plugin.json`과 같음, 버전 엄격 증가, `(kind,name,version)` → 커밋 하나, `latest`는 회수되지 않은 버전 |
 | 0.3 | 인덱스 생성기 + "커밋된 인덱스 = 다시 만든 인덱스" 검사 |
 | 0.4 | release-pin 워크플로(설계서 §6.3): 자산 다운로드, 해시, 압축 해제, `plugin.json`을 descriptor와 대조, 핀 PR 열기 |
-| 0.5 | **각 공식 플러그인 저장소**에 릴리스 워크플로 PR 하나씩: `vX.Y.Z` 태그에서 `{name}-{X.Y.Z}.zip`을 빌드해 그 저장소의 릴리스 자산으로 올림, `plugin.json`에 `requires.minAppVersion` 설정 |
+| 0.5 | **각 공식 플러그인 저장소**에 릴리스 워크플로 PR 하나씩: `vX.Y.Z` 태그에서 `{name}-{X.Y.Z}.zip`을 빌드해 그 저장소의 릴리스 자산으로 올림, `plugin.json`에 `requires.minAppVersion` 설정, `installPolicy` 제거(설계서 §5.3) |
 | 0.6 | 한 번만 실행하는 콘텐츠 변환 스크립트: 현재 시드 세트의 모든 에이전트, 스킬, MCP 패키지, 기본이 아닌 테마 번들을 `theme.json`으로, 한국어 카탈로그를 언어 패키지로, 공급자 프리셋, 메시징 연결 |
 | 0.7 | 현재 게시된 모든 플러그인의 descriptor를 0.5의 릴리스 자산에 핀. `HOST_SECRET_GRANTS`에 있는 플러그인(지금은 `meeting`, `local-indexer`)은 `versions[]`에 현장에 아직 설치된 이전 버전도 모두 나열: 각 버전마다 현재 서버가 제공하는 zip을 그대로 그 버전의 릴리스 자산으로 올리고 그 sha256으로 핀해서, 이관된 설치본이 grant를 유지하게 함(설계서 §16.3) |
 | 0.8 | 현재 유효한 공식 패키지 폐기를 담은 `policy/revocations.json` |
@@ -142,14 +142,15 @@ P2–P5가 끝난 뒤 함께 머지하는 PR 묶음입니다. 설계서의 처�
 |---|---|
 | 6.1 | 부팅과 IPC가 새 스택을 사용, 설정 → 마켓플레이스가 새 UI를 렌더링, 설정 이관으로 `backend`, `cloudBaseUrl`, `cloudAllowPrivateNetwork` 제거, `marketplace.apiKey` 시크릿과 그 IPC 삭제, 옛 IPC 채널과 `ave://install`/`ave://uninstall`의 slug 형식 교체(설계서 §16.2) |
 | 6.2 | 기존 설치본의 첫 부팅 이관(설계서 §16.3): 레지스트리 항목을 `legacy`로 `ave`에 묶음, 영수증 해시로 grant 연속성, `installSource: "admin"` → `user`로 바꾸고 적용된 기본 설치로 기록, 맞지 않는 항목은 잠금 해제하고 부팅 알림, 공급자 프리셋과 테마·언어 활성화를 원장 항목으로 |
-| 6.3 | 특권 패키지 제거(설계서 §10.1): `installPolicy`와 `publisher`를 매니페스트 스키마, `manifest-validation.ts`, 렌더러 타입, 그리고 같은 기간에 머지하는 짝 SDK PR로 SDK 스키마에서 제거. 관리 부팅 설치, 관리 업데이트 종류, 액터 승격, 목록 제외 시 제거 삭제. deployment guard의 admin 분기는 제거·비활성화의 `requiredInstalls` 검사로 대체. secret-gate admin 우회와 그 감사 경로 삭제, tier 3은 `HOST_SECRET_GRANTS`를 읽음 |
+| 6.3 | 특권 패키지 제거(설계서 §10.1): `installPolicy`와 `publisher`를 매니페스트 스키마, `manifest-validation.ts`, 렌더러 타입, 그리고 같은 기간에 머지하는 짝 SDK PR로 SDK 스키마에서 제거. 런타임 로더는 설치된 legacy 매니페스트의 이 필드를 경고 한 번과 함께 무시(설계서 §5.3). 관리 부팅 설치, 관리 업데이트 종류, 액터 승격, 목록 제외 시 제거 삭제. deployment guard의 admin 분기는 제거·비활성화의 `requiredInstalls` 검사로 대체. secret-gate admin 우회와 그 감사 경로 삭제, tier 3은 `HOST_SECRET_GRANTS`를 읽음 |
 | 6.4 | 설계서 §16.2에 따라 서버 스택 삭제: `cloud-marketplace-fetcher.ts`, local/disabled fetcher, `marketplace-installer.ts`의 서버 다운로드와 `.sig` 처리, `envelope-verifier.ts`, `marketplace-keys.ts`, `publisher-keys.ts`, `signed-doc-fetcher.ts`, `signed-doc-cache.ts`, `admission/`, `whitelist/`와 `revocation/` 전송과 그 부팅 단계, `mcp-marketplace-install.ts`, `offline-cache.ts`. `canonical-json.ts`와 `secret-gate.ts`는 `src/plugins/secret-access/`로 이동, `revocationRegistry`는 스냅숏에서 공급, `plugin-artifact-store.ts`와 `mcp-setup.ts`에서 공개 키 매개변수 제거, 웹 스토어 버튼, 관리·서명 동작을 검증하던 테스트 재작성 |
 | 6.5 | `.github/workflows/marketplace-e2e.yml`을 로컬 git 픽스처를 쓰는 저장소 내 E2E(설계서 §17)로 교체. CI가 마켓플레이스 E2E 커버리지를 잃지 않도록 같은 묶음에서 |
 | 6.6 | 문서: `docs/architecture/architecture.md`의 Plugin Runtime 절, 플러그인 개발·게시 가이드(영문과 한국어, `installPolicy: "admin"` 예시 포함), `docs/ko/references/plugin-tool-schema-design.md`, `resources/AGENTS.md`, `web/app/docs/servers/marketplace/*`(서버 페이지 제거, 패키지 작성자 페이지 추가). 이 계획의 상태 갱신 |
 
 **종료 조건:** 전체 `test:vitest`, typecheck, lint, knip 기준선, import cycle,
-패키징 앱 스모크, 어떤 소스 파일도 `installPolicy`, `installSource: "admin"`,
-제거한 모듈을 참조하지 않음. 이전 릴리스에서 올린 프로필(설치된 플러그인 — 이전
+패키징 앱 스모크, 설치 시 거부와 로더의 legacy 경고 외에는 어떤 소스 파일도
+`installPolicy`를 참조하지 않고, `installSource: "admin"`이나 제거한 모듈도
+참조하지 않음. 이전 릴리스에서 올린 프로필(설치된 플러그인 — 이전
 admin 설치와 grant 대상 플러그인 포함 —, 커스텀 테마, 한국어)이 `ave`에 묶이고,
 grant 대상 플러그인이 여전히 LLM 키를 읽고, 아무것도 다시 설치되지 않음을 업그레이드
 테스트로 확인.

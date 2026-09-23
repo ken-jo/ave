@@ -309,8 +309,15 @@ Removed from the manifest schema, the SDK copy, `manifest-validation.ts` and
 their tests in one change (blueprint phase 6):
 
 - `extensions["ai.agent-connector.ave"].installPolicy` — there are no managed packages
-  (§10.1). A manifest that still carries the field is rejected with a message
-  naming the field, not silently ignored.
+  (§10.1). The install plan (staging and the index CI) rejects a manifest that
+  still carries the field, with a message naming it. The runtime loader does
+  not: every official plugin installed today carries the field, so an
+  installed manifest that has it loads as before, the field is ignored and one
+  warning per plugin is logged, until the next update replaces the manifest
+  (§16.3). The official plugin repositories drop the field in their first
+  release under this design (blueprint phase 0.5); a field-pin version
+  (§16.3) keeps it, because it serves existing installs only, and an install
+  that resolves to such a version fails with the same named rejection.
 - `extensions["ai.agent-connector.ave"].publisher` — under D4 there is no verified
   publishing identity for it to name.
 
@@ -449,7 +456,11 @@ duplicate detection all use the normalized form.
 ### 7.3 Sync
 
 Triggered after boot (non-blocking), every `marketplace.updateCheckIntervalMs`
-(default 6 hours) while running, and manually. A source syncs while it is
+while running, and manually. The setting keeps its key and its `0` = no
+periodic sync meaning, but a tick now fetches every source, so the code
+default changes from today's 10 minutes to 6 hours and a stored value below
+15 minutes is raised to 15 minutes when read. The setting is optional and
+unset by default, so no stored value needs migrating. A source syncs while it is
 enabled **or** while any installed package is bound to it, so revocations and
 update notices keep reaching installed packages from a hidden source.
 
@@ -635,7 +646,10 @@ exits.
   `rev-list --objects --missing=print <commit> -- <path>` lists the blobs not
   yet present; they are fetched in one request
   (`fetch --filter=blob:none --no-tags <remote> <oid>…`, the request that
-  partial-clone lazy fetching issues); then
+  partial-clone lazy fetching issues; it needs a server that allows filters
+  and fetching by object id, which hosted services do. A self-hosted ssh or
+  `git daemon` server that ignores the filter sends full blobs instead, which
+  is slower but correct); then
   `archive --format=tar <commit> -- <path>` writes the tree into a staging
   directory. No worktree and no sparse-checkout is created.
 
@@ -721,8 +735,19 @@ For each entry:
   "required by your organization".
 - The user cannot uninstall or disable it: `deployment-guard.ts` keeps its
   actor model, but the only reason that denies a user action becomes "listed
-  in `requiredInstalls`" (`PACKAGE_REQUIRED_BY_POLICY`), checked by both
-  `assertUninstallAllowed` and `assertDisableAllowed`.
+  in `requiredInstalls`" (`PACKAGE_REQUIRED_BY_POLICY`), returned by
+  `PluginDeploymentGuard.canUninstall` and `canDisable`, and therefore by the
+  free function `assertDisableAllowed`, which calls `canDisable`.
+- If the listed package is installed from another source
+  (`PACKAGE_ID_CONFLICT`), the boot step performs the source switch of §15.1
+  (plugin data kept) and records it in the boot notice; the policy wins over
+  the user's source choice. A `defaultInstalls` entry in the same situation is
+  recorded as `skipped`, because the user's install already satisfies it.
+- A required update applies without the update review of §15.6: the policy
+  file stands for the consent. A compromised managed source can therefore
+  ship code to every machine that requires one of its packages without a
+  prompt; the organization owns that source and its branch protection
+  (architecture proposal §9.1).
 - An entry may name the official source or a managed source only.
 - Removing the entry from the policy file ends the requirement; the package
   stays installed and becomes an ordinary user install.
@@ -1079,7 +1104,8 @@ On first boot of the new version:
 - Registry entries whose id exists in the official snapshot are bound to
   `ave` with `rung: "legacy"` and `artifactSha256: null`; the next update
   installs through the ladder and fills the origin. Nothing is reinstalled by
-  the migration, and it works offline.
+  the migration, and it works offline. Their installed manifests still carry
+  `installPolicy`; the loader ignores it with one warning (§5.3).
 - Grant continuity: a `legacy` entry keeps its host-secret grant when its
   install receipt's `artifactSha256` equals the official index's
   `artifact.release.sha256` for the installed version (§10.3 condition 2).
@@ -1106,13 +1132,13 @@ On first boot of the new version:
 
 | Layer | What proves it |
 |---|---|
-| Schemas | fixture sets for every kind: valid, each invalid rule, unknown keys; a manifest with `installPolicy` is rejected by name |
+| Schemas | fixture sets for every kind: valid, each invalid rule, unknown keys; a manifest with `installPolicy` is rejected by name at install and in the index CI; an installed legacy manifest with it loads with one warning |
 | Version choice | table tests for `minAppVersion`, yank, platform, pre-release opt-in, rollout buckets, per-source revocations |
 | Ladder | each rung used/skipped/failed combination, mismatch of each authority field stops the ladder, plan binds commits, receipts carry rung outcomes |
 | Git runtime | fake `git` binaries for version gates (2.38.0 refused, 2.38.1 accepted); env/flag/global-config contract; askpass ticket host binding; managed install with a local fixture server and wrong-hash rejection |
 | Sync | local bare repos: fast-forward with the pin far behind the tip, rewrite (official and managed refuse, custom review), invalid index keeps pin, mirror fallback, a hidden source with installed packages still syncs |
 | Network gate | normalization equivalences (scp/ssh/https, case, `.git`), block beats allow, private-network refusal, redirect to a blocked host refused, no auth header across hosts |
-| No privileges | a custom package with the same name as a granted plugin gets no grant; a grant fails for a different artifact hash, for a tree-rung install and for a swapped manifest; a legacy entry keeps the grant only with a matching receipt hash; a source's revocation ignores other sources' packages; no package can block its own uninstall; a manifest carrying `installPolicy` is rejected |
+| No privileges | a custom package with the same name as a granted plugin gets no grant; a grant fails for a different artifact hash, for a tree-rung install and for a swapped manifest; a legacy entry keeps the grant only with a matching receipt hash; a source's revocation ignores other sources' packages; no package can block its own uninstall; a manifest carrying `installPolicy` is rejected at install |
 | Default and required installs | default: installed once through the ladder, never reinstalled after uninstall; required: reinstalled and updated at boot, uninstall and disable denied with `PACKAGE_REQUIRED_BY_POLICY`, becomes a user install when the entry is removed; both lists limited to official/managed sources; migration marks former admin installs as applied and unlocks unmatched entries |
 | Identity | reserved names, same `(kind, name)` across sources, `PACKAGE_ID_CONFLICT`, update binding, source switch keeps plugin data |
 | Direct install | each detection branch; `server.json` mapping for npm/pypi/oci/remote |

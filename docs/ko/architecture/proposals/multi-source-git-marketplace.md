@@ -104,7 +104,7 @@ flowchart LR
 | **소스 동기화** | 소스마다 fetch하고 후보 커밋을 고르고 히스토리 규칙(§9.2)을 적용합니다. 그 커밋의 인덱스를 파싱·검증한 뒤 고정 커밋을 원자적으로 옮기고, 불변 카탈로그 스냅숏을 게시합니다. | HTTP 카탈로그 조회와 `offline-cache.ts`의 역할 대체 |
 | **통합 카탈로그** | 활성 소스 스냅숏의 합집합입니다. 행의 키는 `(source, kind, name)`이고 소스 사이에서는 아무것도 병합하지 않습니다. 호환성(`minAppVersion`), yank, 플랫폼, 롤아웃 대상 여부, 설치/업데이트 상태를 계산합니다. | `MarketplaceFetcher.listPlugins/getPluginDetail` 대체 |
 | **설치 해석기** | `(source, kind, name, version)` 하나에 대해 **설치 계획**을 만듭니다. 플러그인은 artifact 사다리, MCP는 실행 명세, 콘텐츠 종류는 파일 목록을 계획에 담고, 사용자가 해야 할 동의도 함께 담습니다. | 신규. 기존 파이프라인에 넘깁니다. |
-| **설치 파이프라인** | staging, receipt, 레지스트리 커밋, generation 게시, 복구 저널 | `marketplace.ts` / `plugin-artifact-store.ts` / `plugin-generation-coordinator.ts`를 **그대로 재사용**하고 봉투 검증만 뺍니다. |
+| **설치 파이프라인** | staging, receipt, 레지스트리 커밋, generation 게시, 복구 저널 | `marketplace.ts` / `plugin-artifact-store.ts` / `plugin-generation-coordinator.ts`를 **재사용**하되 설계서 §16.2의 변경(봉투 검증과 공개키 파라미터 제거, 폐기 목록을 소스에서 공급)을 적용합니다. |
 | **콘텐츠 패키지 저장소** | 테마, 폰트, 언어, 스킬, 에이전트, 프로바이더, 메시징 연결을 `~/.ave/packages/<kind>/<name>/<version>/`에 데이터로 설치하고 담당 하위 시스템에 등록합니다. | "숨겨 둔 내장 항목을 활성화하는" 에셋 모델 대체 |
 | **직접 설치 어댑터** | git URL, 붙여 넣은 `server.json`, MCP 설정을 검사해 패키지 descriptor를 합성합니다. | MCP 탭 입력 양식과 `claude-desktop-import.ts` 확장 |
 | **폐기** | 각 소스 자신의 `policy/revocations.json`. 그 소스에서 설치한 패키지에만 적용합니다. | 서명된 revocation 피드 대체. `revocationRegistry`는 유지 |
@@ -243,6 +243,7 @@ flowchart TD
 | 사용자 소스가 배너를 띄우는 경우 | 공지는 서비스 엔드포인트만 내보냅니다. 소스는 공지를 낼 수 없습니다. |
 | 소스 사이의 dependency confusion | 설치한 패키지는 자신의 소스에 묶입니다(§5). |
 | 사용자 소스의 악성 코드 | 소스를 추가할 때 명시적 동의, 설치할 때마다 권한 검토(기존 capability, 네트워크, plugin-access 검토), 업데이트할 때 capability 차이 검토, 관리 정책(§9.3) |
+| 탈취된 관리 소스가 필수 패키지를 밀어 넣는 경우 | 정책 `requiredInstalls` 항목은 정책 파일이 동의를 대신하므로 업데이트 검토 없이 부팅 때 업데이트됩니다. 그 소스는 조직이 소유하며, 조직이 배포하는 다른 코드와 똑같이 branch protection과 리뷰를 적용합니다. 필수로 지정되지 않은 모든 패키지에는 사용자 검토가 그대로 적용됩니다. |
 | 공식 레포 탈취 | 공식 레포의 branch protection(필수 리뷰)과 CODEOWNERS, 단조 히스토리 규칙, 자기 패키지에 대한 자기 `policy/revocations.json`. 공식 레포는 사용자나 정책 없이 무엇도 설치하지 못하고, 무엇도 잠그지 못하며, 앱의 표를 넘어 호스트 시크릿을 주지 못합니다(§9.4). |
 
 의도적으로 **없앤 것**: artifact 서명, `prod-v1` 신뢰 앵커, 서명된
