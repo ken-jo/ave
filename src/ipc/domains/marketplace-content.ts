@@ -111,9 +111,11 @@ async function loadInstalledContent(deps: IpcDeps): Promise<InstalledContentPort
 /**
  * The store loads on the first request, which the renderer makes while it
  * boots (theme and language hydration): a process that never asks, such as
- * a test that registers every handler, reads nothing under `~/.ave/packages`
- * and installs no scheme handler. The `ave-content:` handler is in place
- * before the first answer lists a font, so no font URL is ever unserved.
+ * a test that registers every handler, reads nothing under `~/.ave/packages`.
+ * The `ave-content:` handler is registered here, before any window loads,
+ * because a frame binds its custom-scheme loaders when it commits: a handler
+ * added after the page loaded answers `ERR_UNKNOWN_URL_SCHEME` to that page.
+ * An asset request waits for the same load.
  */
 export function registerMarketplaceContentHandlers(
   deps: IpcDeps,
@@ -121,15 +123,11 @@ export function registerMarketplaceContentHandlers(
 ): void {
   let ready: Promise<InstalledContentPort | null> | null = null;
   const loaded = () =>
-    (ready ??= load()
-      .then((service) => {
-        installContentAssetProtocolHandler(protocol, (kind, name, path) => service.servedFile(kind, name, path));
-        return service;
-      })
-      .catch((error: unknown) => {
-        log.error({ err: errorMessage(error) }, "installed content could not be loaded");
-        return null;
-      }));
+    (ready ??= load().catch((error: unknown) => {
+      log.error({ err: errorMessage(error) }, "installed content could not be loaded");
+      return null;
+    }));
+  installContentAssetProtocolHandler(protocol, async (kind, name, path) => (await loaded())?.servedFile(kind, name, path) ?? null);
 
   ipcMain.handle(CHANNELS.marketplaceContent.installed, async (event): Promise<InstalledContentResult | typeof UNAUTHORIZED_FRAME> => {
     if (!validateHostRendererSender(event)) {

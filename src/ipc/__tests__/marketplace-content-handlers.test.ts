@@ -1,7 +1,9 @@
 /**
- * The installed-content IPC (blueprint P3): nothing is loaded and no scheme
- * handler is installed until the renderer first asks, the load runs once,
- * and a failed load answers "unavailable" instead of throwing.
+ * The installed-content IPC (blueprint P3): the `ave-content:` handler is
+ * registered with the IPC handlers, before any window loads (a frame binds
+ * its scheme loaders when it commits); nothing is loaded until the renderer
+ * or an asset request first asks, the load runs once, and a failed load
+ * answers "unavailable" (IPC) or 404 (assets) instead of throwing.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -35,24 +37,40 @@ const port = {
   servedFile: () => null,
 };
 
+type SchemeHandler = (request: { url: string }) => Promise<Response>;
+const schemeHandler = (): SchemeHandler => {
+  expect(electron.protocolHandle).toHaveBeenCalledWith("ave-content", expect.any(Function));
+  return electron.protocolHandle.mock.calls[0]![1] as SchemeHandler;
+};
+
 describe("registerMarketplaceContentHandlers", () => {
   beforeEach(() => {
     electron.handlers.clear();
     electron.protocolHandle.mockClear();
   });
 
-  it("loads once, on the first request, and installs the scheme handler before answering", async () => {
+  it("registers the scheme handler up front and loads once, on the first request", async () => {
     const load = vi.fn(async () => port);
     registerMarketplaceContentHandlers({} as IpcDeps, load);
+    schemeHandler();
     expect(load).not.toHaveBeenCalled();
-    expect(electron.protocolHandle).not.toHaveBeenCalled();
 
     const installed = electron.handlers.get(CHANNELS.marketplaceContent.installed)!;
     const languageMessages = electron.handlers.get(CHANNELS.marketplaceContent.languageMessages)!;
     await expect(installed({})).resolves.toEqual({ ok: true, content });
-    expect(electron.protocolHandle).toHaveBeenCalledWith("ave-content", expect.any(Function));
     await expect(languageMessages({}, "fr")).resolves.toEqual({ ok: true, messages: { "app.title": "Ave" } });
     await expect(languageMessages({}, "de")).resolves.toMatchObject({ ok: false, error: "language-not-installed" });
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it("serves an asset request through the same load, even before the renderer asks", async () => {
+    const servedFile = vi.fn(() => null);
+    const load = vi.fn(async () => ({ ...port, servedFile }));
+    registerMarketplaceContentHandlers({} as IpcDeps, load);
+    const response = await schemeHandler()({ url: "ave-content://font/harbor-serif/files/a.woff2" });
+    expect(response.status).toBe(404);
+    expect(servedFile).toHaveBeenCalledWith("font", "harbor-serif", "files/a.woff2");
+    await electron.handlers.get(CHANNELS.marketplaceContent.installed)!({});
     expect(load).toHaveBeenCalledTimes(1);
   });
 
@@ -62,6 +80,6 @@ describe("registerMarketplaceContentHandlers", () => {
     });
     await expect(electron.handlers.get(CHANNELS.marketplaceContent.installed)!({})).resolves.toEqual({ ok: false, error: "installed-content-unavailable" });
     await expect(electron.handlers.get(CHANNELS.marketplaceContent.languageMessages)!({}, "fr")).resolves.toEqual({ ok: false, error: "installed-content-unavailable" });
-    expect(electron.protocolHandle).not.toHaveBeenCalled();
+    expect((await schemeHandler()({ url: "ave-content://font/harbor-serif/files/a.woff2" })).status).toBe(404);
   });
 });

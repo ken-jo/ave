@@ -60,6 +60,7 @@ vi.mock("electron", () => {
   }
   const electron = {
     ipcMain,
+    protocol: { handle: () => {} },
     BrowserWindow,
     app: {
       getPath: () => "/tmp/ave-test",

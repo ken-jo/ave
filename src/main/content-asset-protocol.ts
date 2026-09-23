@@ -49,13 +49,15 @@ export function parseContentAssetUrl(requestUrl: string): ContentAssetRequest | 
   return { kind: url.hostname, name: name!, path: rest.join("/") };
 }
 
+type ContentAssetResolver = (kind: string, name: string, path: string) => ServedContentFile | null | Promise<ServedContentFile | null>;
+
 /** Answer a `ave-content:` request from the files `resolve` lists. */
 export async function respondToContentAsset(
   requestUrl: string,
-  resolve: (kind: string, name: string, path: string) => ServedContentFile | null,
+  resolve: ContentAssetResolver,
 ): Promise<Response> {
   const parsed = parseContentAssetUrl(requestUrl);
-  const file = parsed ? resolve(parsed.kind, parsed.name, parsed.path) : null;
+  const file = parsed ? await resolve(parsed.kind, parsed.name, parsed.path) : null;
   if (!file) return new Response("not found", { status: 404 });
   let bytes: Buffer;
   try {
@@ -77,7 +79,7 @@ export async function respondToContentAsset(
 /** Serve `ave-content:` on the default session (the app's own windows). */
 export function installContentAssetProtocolHandler(
   protocolApi: Pick<Electron.Protocol, "handle">,
-  resolve: (kind: string, name: string, path: string) => ServedContentFile | null,
+  resolve: ContentAssetResolver,
 ): void {
   protocolApi.handle(CONTENT_ASSET_SCHEME, (request) => respondToContentAsset(request.url, resolve));
 }

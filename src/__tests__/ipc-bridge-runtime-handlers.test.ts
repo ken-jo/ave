@@ -23,6 +23,7 @@ import { unusedNetworkFetch } from "./support/network-fetch-stubs.js";
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
 vi.mock("electron", () => ({
+  protocol: { handle: vi.fn() },
   ipcMain: {
     handle: vi.fn((channel: string, fn: (...args: unknown[]) => unknown) => {
       handlers.set(channel, fn);
