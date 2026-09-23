@@ -519,7 +519,10 @@ ledger feeds snapshot retention (§2.3) like the plugin registry does.
   (`marketplace.installedProviderIds`) and may set its default model. Only
   an official or managed source may set its `baseUrl`, which must be
   https, because the vendor's key goes wherever it points; moving it drops
-  the key saved for the old address, as a preset's base URL change does.
+  the key saved for the old address, as a preset's base URL change does
+  (the key comes back if the settings write fails). Uninstalling the
+  package locks the vendor again and drops its key, which may have been
+  entered for the package's address.
 - **Selection stays the user's.** Installing does not select a theme,
   language or font. Removing the selected one puts that setting back to its
   default; a selected id that is not installed renders the default.
