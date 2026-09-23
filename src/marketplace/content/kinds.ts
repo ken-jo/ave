@@ -18,6 +18,7 @@ import {
   type MarketplaceInstalledProviderPreset,
 } from "../../shared/marketplace-package-assets.js";
 import { SUPPORTED_LOCALES } from "../../i18n/locale.js";
+import { isModelFacingKey } from "../../i18n/model-facing.js";
 import type { FontFormat } from "../../shared/installed-content.js";
 import { isMarketplaceEligibleLLMVendor, type MarketplaceEligibleLLMVendor } from "../../shared/llm-vendor-defaults.js";
 import { isBundleId } from "../../shared/theme-bundles.js";
@@ -138,7 +139,7 @@ function closed(record: Record<string, unknown>, path: string, keys: readonly st
  * the app (a theme's name, a language's names, a translated approval prompt)
  * could otherwise read differently from what it says.
  */
-const HIDDEN_FORMATTING = /[\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/u;
+const HIDDEN_FORMATTING = /[\u00ad\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2069\ufeff\u{e0000}-\u{e007f}]/u;
 
 function text(record: Record<string, unknown>, path: string, key: string, max: number): string {
   const value = record[key];
@@ -219,22 +220,18 @@ function theme(files: Map<string, Buffer>, context: ContentContext): ThemeConten
 }
 
 const MESSAGE_MAX = 4000;
-/**
- * The main-process namespace: system prompt sections, tool descriptions and
- * results, reviewer instructions — text the model reads. A language package
- * translates the interface only; model-facing text always comes from the
- * compiled catalogs.
- */
-const MODEL_FACING_KEY_PREFIX = "be_";
 const PLACEHOLDER = /\{([a-zA-Z0-9_]+)\}/gu;
 
 function placeholders(value: string): string {
   return [...new Set([...value.matchAll(PLACEHOLDER)].map((match) => match[1]!))].sort().join(",");
 }
 
-/** The keys a language package may translate: every English key outside the model-facing namespace. */
+/**
+ * The keys a language package may translate: every English key the model does
+ * not read. Model-facing text always comes from the compiled catalogs.
+ */
 export function translatableKeys(english: Readonly<Record<string, string>>): string[] {
-  return Object.keys(english).filter((key) => !key.startsWith(MODEL_FACING_KEY_PREFIX));
+  return Object.keys(english).filter((key) => !isModelFacingKey(key));
 }
 /** The descriptor schema's `languagePayload.locale` pattern. */
 const LOCALE_TAG = /^[a-z]{2,3}(?:-[A-Z][a-z]{3})?(?:-(?:[A-Z]{2}|[0-9]{3}))?$/u;
@@ -262,7 +259,7 @@ function language(files: Map<string, Buffer>, context: ContentContext): Language
   const messages: Record<string, string> = {};
   for (const [key, value] of Object.entries(catalog)) {
     const english = Object.hasOwn(context.english, key) ? context.english[key] : undefined;
-    if (english === undefined || key.startsWith(MODEL_FACING_KEY_PREFIX)) {
+    if (english === undefined || isModelFacingKey(key)) {
       unknown.push(key);
       continue;
     }

@@ -5,6 +5,7 @@ import type { LedgerEntry } from "../ledger.js";
 import { InstalledContentService } from "../service.js";
 import type { BrokenContent, ContentStore, LoadedContent } from "../store.js";
 
+const TOKEN = "0123456789abcdef0123456789abcdef";
 const SURFACES = { "surface-sunken": "0 0% 97%", surface: "0 0% 100%", "surface-raised": "0 0% 100%", "surface-overlay": "0 0% 100%", "border-subtle": "0 0% 94%", "border-strong": "0 0% 84%" };
 
 function entry(kind: LedgerEntry["kind"], name: string): LedgerEntry {
@@ -19,7 +20,7 @@ function entry(kind: LedgerEntry["kind"], name: string): LedgerEntry {
 const loaded = (kind: LedgerEntry["kind"], name: string, content: ParsedContent): LoadedContent => ({ entry: entry(kind, name), content, dir: `/pkgs/${kind}/${name}/1.0.0` });
 
 function service(items: LoadedContent[], broken: BrokenContent[] = []) {
-  return new InstalledContentService({ load: async () => ({ loaded: items, broken }) } as unknown as ContentStore);
+  return new InstalledContentService({ load: async () => ({ loaded: items, broken }) } as unknown as ContentStore, TOKEN);
 }
 
 describe("InstalledContentService", () => {
@@ -31,9 +32,9 @@ describe("InstalledContentService", () => {
       loaded("provider", "harbor-llm", { kind: "provider", preset: { providerId: "harbor-llm", label: "H", baseUrl: "https://h.example/v1", defaultModel: "m", modelOptions: ["m"], requiresApiKey: true } }),
     ], [{ entry: entry("theme", "tampered"), problem: "the installed files changed after install" }]);
     const view = await svc.reload();
-    expect(view.themes).toEqual([expect.objectContaining({ id: "harbor", previewUrl: "ave-content://theme/harbor/preview.webp", sourceId: "acme", version: "1.0.0" })]);
+    expect(view.themes).toEqual([expect.objectContaining({ id: "harbor", previewUrl: `ave-content://${TOKEN}/theme/harbor/preview.webp`, sourceId: "acme", version: "1.0.0" })]);
     expect(view.languages).toEqual([{ name: "french", locale: "fr", nativeName: "Français", englishName: "French", missingKeys: ["app.quit"], sourceId: "acme", version: "1.0.0" }]);
-    expect(view.fonts[0]).toMatchObject({ family: "Harbor Sans", faces: [{ url: "ave-content://font/harbor-sans/files/Harbor%20Sans.woff2", format: "woff2" }] });
+    expect(view.fonts[0]).toMatchObject({ family: "Harbor Sans", faces: [{ url: `ave-content://${TOKEN}/font/harbor-sans/files/Harbor%20Sans.woff2`, format: "woff2" }] });
     // Faces are declared under the package alias; the family is the picker's label.
     expect(view.fonts[0]).toMatchObject({ family: "Harbor Sans" });
     expect(view.fonts[0]!.stack.startsWith('"ave-font-harbor-sans", ')).toBe(true);

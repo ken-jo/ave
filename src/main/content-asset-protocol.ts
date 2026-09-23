@@ -1,20 +1,22 @@
 /**
- * `ave-content://<kind>/<name>/<path>` — the host asset scheme installed
- * content packages reach the renderer through (design §5.4): a theme's
- * preview image and the faces of an installed font. Nothing is served by
- * file path, and only files the installed-content service lists as applied
+ * `ave-content://<token>/<kind>/<name>/<path>` — the host asset scheme
+ * installed content packages reach the renderer through (design §5.4): a
+ * theme's preview image and the faces of an installed font. Nothing is served
+ * by file path, and only files the installed-content service lists as applied
  * answer; everything else is 404.
  *
- * The app's windows load from `file:`, an opaque origin: their font requests
- * carry `Origin: null`, and that is the only origin the answer admits. A
- * request from a web page — an http(s) origin or referrer — is refused, so a
- * page the app shows cannot learn which content packages are installed. What
- * remains: any other opaque-origin frame in the default session (a `data:` or
- * sandboxed document) could still read an applied font or preview, which are
- * public files of a public package.
+ * Web pages the app opens share the default session this scheme is handled
+ * in, and a page can send a request with no Origin and no referrer (an
+ * `<img referrerpolicy=no-referrer>`, a fetch from a sandboxed `srcdoc`
+ * frame). So the host of every URL is a random token drawn at launch, which
+ * only the app's renderer receives (in the installed-content view): a request
+ * without it is 404, and a page cannot name, probe or read an installed file.
+ * On top of that, the answer admits only the opaque origin of the app's
+ * `file:` windows (`Access-Control-Allow-Origin: null`), and a request with an
+ * http(s) origin or referrer is refused outright.
  */
 import { readFile } from "node:fs/promises";
-import { CONTENT_ASSET_SCHEME } from "../shared/installed-content.js";
+import { CONTENT_ASSET_SCHEME, CONTENT_ASSET_TOKEN } from "../shared/installed-content.js";
 import type { ServedContentFile } from "../marketplace/content/service.js";
 
 /** Registered with the other privileged schemes in one call before `app.ready` (see `early-boot-env.ts`). */
@@ -30,6 +32,7 @@ export const CONTENT_ASSET_CUSTOM_SCHEME: Electron.CustomScheme = Object.freeze(
 });
 
 export interface ContentAssetRequest {
+  token: string;
   kind: string;
   name: string;
   path: string;
@@ -45,7 +48,7 @@ export function parseContentAssetUrl(requestUrl: string): ContentAssetRequest | 
   }
   if (url.protocol !== `${CONTENT_ASSET_SCHEME}:` || url.search || url.hash) return null;
   const segments = url.pathname.replace(/^\/+/u, "").split("/");
-  if (segments.length < 2) return null;
+  if (segments.length < 3) return null;
   let decoded: string[];
   try {
     decoded = segments.map((segment) => decodeURIComponent(segment));
@@ -53,8 +56,8 @@ export function parseContentAssetUrl(requestUrl: string): ContentAssetRequest | 
     return null;
   }
   if (decoded.some((segment) => segment === "" || segment === "." || segment === ".." || /[\\/\0]/u.test(segment))) return null;
-  const [name, ...rest] = decoded;
-  return { kind: url.hostname, name: name!, path: rest.join("/") };
+  const [kind, name, ...rest] = decoded;
+  return { token: url.hostname, kind: kind!, name: name!, path: rest.join("/") };
 }
 
 type ContentAssetResolver = (kind: string, name: string, path: string) => ServedContentFile | null | Promise<ServedContentFile | null>;
@@ -70,6 +73,7 @@ const WEB = /^https?:/iu;
 /** Answer a `ave-content:` request from the files `resolve` lists. */
 export async function respondToContentAsset(
   requestUrl: string,
+  token: string,
   resolve: ContentAssetResolver,
   requester: ContentAssetRequester,
 ): Promise<Response> {
@@ -77,7 +81,7 @@ export async function respondToContentAsset(
     return new Response("forbidden", { status: 403 });
   }
   const parsed = parseContentAssetUrl(requestUrl);
-  const file = parsed ? await resolve(parsed.kind, parsed.name, parsed.path) : null;
+  const file = parsed && parsed.token === token ? await resolve(parsed.kind, parsed.name, parsed.path) : null;
   if (!file) return new Response("not found", { status: 404 });
   let bytes: Buffer;
   try {
@@ -96,12 +100,14 @@ export async function respondToContentAsset(
   });
 }
 
-/** Serve `ave-content:` on the default session (the app's own windows). */
+/** Serve `ave-content:` on the default session, answering only URLs that carry `token`. */
 export function installContentAssetProtocolHandler(
   protocolApi: Pick<Electron.Protocol, "handle">,
+  token: string,
   resolve: ContentAssetResolver,
 ): void {
+  if (!CONTENT_ASSET_TOKEN.test(token)) throw new Error("the content asset token must be 32 hex characters");
   protocolApi.handle(CONTENT_ASSET_SCHEME, (request) =>
-    respondToContentAsset(request.url, resolve, { origin: request.headers.get("origin"), referrer: request.referrer }),
+    respondToContentAsset(request.url, token, resolve, { origin: request.headers.get("origin"), referrer: request.referrer }),
   );
 }

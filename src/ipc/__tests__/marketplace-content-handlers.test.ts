@@ -38,6 +38,7 @@ import { treeDigest } from "../../marketplace/resolve/plugin-ladder.js";
 import { setInstalledThemeIds } from "../../shared/plugin-theme-cache.js";
 import { loadInstalledContent, registerMarketplaceContentHandlers } from "../domains/marketplace-content.js";
 
+const TOKEN = "0123456789abcdef0123456789abcdef";
 const content = { themes: [], languages: [], fonts: [], broken: [] };
 const port = {
   installed: () => content,
@@ -63,7 +64,7 @@ describe("registerMarketplaceContentHandlers", () => {
 
   it("registers the scheme handler up front and loads once, on the first request", async () => {
     const load = vi.fn(async () => port);
-    registerMarketplaceContentHandlers({} as IpcDeps, load);
+    registerMarketplaceContentHandlers({} as IpcDeps, TOKEN, load);
     schemeHandler();
     expect(load).not.toHaveBeenCalled();
 
@@ -79,21 +80,26 @@ describe("registerMarketplaceContentHandlers", () => {
   it("serves an asset request through the same load, even before the renderer asks", async () => {
     const servedFile = vi.fn(() => null);
     const load = vi.fn(async () => ({ ...port, servedFile }));
-    registerMarketplaceContentHandlers({} as IpcDeps, load);
-    const response = await schemeHandler()(assetRequest("ave-content://font/harbor-serif/files/a.woff2"));
+    registerMarketplaceContentHandlers({} as IpcDeps, TOKEN, load);
+    const response = await schemeHandler()(assetRequest(`ave-content://${TOKEN}/font/harbor-serif/files/a.woff2`));
     expect(response.status).toBe(404);
     expect(servedFile).toHaveBeenCalledWith("font", "harbor-serif", "files/a.woff2");
+    // Without the launch token the request never reaches the store.
+    servedFile.mockClear();
+    expect((await schemeHandler()(assetRequest("ave-content://font/harbor-serif/files/a.woff2"))).status).toBe(404);
+    expect((await schemeHandler()(assetRequest(`ave-content://${"f".repeat(32)}/font/harbor-serif/files/a.woff2`))).status).toBe(404);
+    expect(servedFile).not.toHaveBeenCalled();
     await electron.handlers.get(CHANNELS.marketplaceContent.installed)!({});
     expect(load).toHaveBeenCalledTimes(1);
   });
 
   it("answers unavailable when the store cannot be loaded", async () => {
-    registerMarketplaceContentHandlers({} as IpcDeps, async () => {
+    registerMarketplaceContentHandlers({} as IpcDeps, TOKEN, async () => {
       throw new Error("ledger unreadable");
     });
     await expect(electron.handlers.get(CHANNELS.marketplaceContent.installed)!({})).resolves.toEqual({ ok: false, error: "installed-content-unavailable" });
     await expect(electron.handlers.get(CHANNELS.marketplaceContent.languageMessages)!({}, "fr")).resolves.toEqual({ ok: false, error: "installed-content-unavailable" });
-    expect((await schemeHandler()(assetRequest("ave-content://font/harbor-serif/files/a.woff2"))).status).toBe(404);
+    expect((await schemeHandler()(assetRequest(`ave-content://${TOKEN}/font/harbor-serif/files/a.woff2`))).status).toBe(404);
   });
 });
 
@@ -127,7 +133,7 @@ describe("loadInstalledContent", () => {
     await install("language", "french", { "language.json": language, "messages.json": messages }, { kind: "language", ...language, messages, missingKeys: [] });
     const settingsService = { get: () => ({ language: "fr" }) };
 
-    const service = await loadInstalledContent({ settingsService } as unknown as IpcDeps, root);
+    const service = await loadInstalledContent({ settingsService } as unknown as IpcDeps, TOKEN, root);
     expect(service.installed().languages.map((item) => item.locale)).toEqual(["fr"]);
     expect(isInstalledLocale("fr")).toBe(true);
     expect(await loadLocaleMessages("fr")).toMatchObject(messages);
@@ -136,7 +142,7 @@ describe("loadInstalledContent", () => {
   });
 
   it("lists nothing and applies nothing for an empty store", async () => {
-    const service = await loadInstalledContent({ settingsService: { get: () => ({ language: "en" }) } } as unknown as IpcDeps, root);
+    const service = await loadInstalledContent({ settingsService: { get: () => ({ language: "en" }) } } as unknown as IpcDeps, TOKEN, root);
     expect(service.installed()).toEqual({ themes: [], languages: [], fonts: [], broken: [] });
     expect(isInstalledLocale("fr")).toBe(false);
   });

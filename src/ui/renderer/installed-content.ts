@@ -13,8 +13,8 @@
 import { useSyncExternalStore } from "react";
 import { registerInstalledLocales, setInstalledCatalogLoader } from "../../i18n/index.js";
 import {
-  CONTENT_ASSET_SCHEME,
   fontAlias,
+  isContentAssetUrl,
   type InstalledContentApi,
   type InstalledContentView,
   type InstalledFontView,
@@ -39,7 +39,7 @@ export function fontFaceCss(fonts: readonly InstalledFontView[]): string {
   const rules: string[] = [];
   for (const font of fonts) {
     for (const face of font.faces) {
-      if (!face.url.startsWith(`${CONTENT_ASSET_SCHEME}://font/`)) continue;
+      if (!isContentAssetUrl(face.url, "font")) continue;
       rules.push(
         `@font-face { font-family: ${cssString(fontAlias(font.name))}; src: url(${cssString(face.url)}) format(${cssString(face.format)}); ` +
         `font-weight: ${face.weight}; font-style: ${face.style}; font-display: swap; }`,

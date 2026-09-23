@@ -135,7 +135,7 @@ describe("installed fonts (blueprint 3.4)", () => {
         family: "Harbor Sans",
         stack: "\"ave-font-harbor-sans\", system-ui",
         faces: [
-          { url: "ave-content://font/harbor-sans/files/HarborSans.woff2", format: "woff2", weight: "100 900", style: "normal" },
+          { url: "ave-content://0123456789abcdef0123456789abcdef/font/harbor-sans/files/HarborSans.woff2", format: "woff2", weight: "100 900", style: "normal" },
           { url: "https://evil.example/x.woff2", format: "woff2", weight: "400", style: "normal" },
         ],
         sourceId: "acme",
@@ -143,7 +143,7 @@ describe("installed fonts (blueprint 3.4)", () => {
       },
     ]);
     expect(css).toBe(
-      '@font-face { font-family: "ave-font-harbor-sans"; src: url("ave-content://font/harbor-sans/files/HarborSans.woff2") format("woff2"); font-weight: 100 900; font-style: normal; font-display: swap; }',
+      '@font-face { font-family: "ave-font-harbor-sans"; src: url("ave-content://0123456789abcdef0123456789abcdef/font/harbor-sans/files/HarborSans.woff2") format("woff2"); font-weight: 100 900; font-style: normal; font-display: swap; }',
     );
   });
 });

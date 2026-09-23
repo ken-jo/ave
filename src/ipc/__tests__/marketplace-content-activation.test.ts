@@ -136,6 +136,21 @@ describe("createContentActivation", () => {
     expect(settingsService.get("marketplace").installedProviderIds).not.toContain("azure-foundry");
   });
 
+  it("drops a saved vendor key when the package moves the vendor's base URL, and keeps it otherwise", async () => {
+    const activation = createContentActivation(deps);
+    await settingsService.setSecret("llm.apiKey.azure-foundry", "sk-user");
+    await activation.activate({ kind: "provider", vendor: { providerId: "azure-foundry", defaultModel: "gpt-5" } }, entry("provider", "azure-foundry"), null);
+    expect(settingsService.getSecret("llm.apiKey.azure-foundry")).toBe("sk-user");
+
+    const moved = { providerId: "azure-foundry" as const, baseUrl: "https://gateway.corp.example/foundry" };
+    await activation.activate({ kind: "provider", vendor: moved }, entry("provider", "azure-foundry"), entry("provider", "azure-foundry"));
+    expect(settingsService.getSecret("llm.apiKey.azure-foundry")).toBeNull();
+
+    await settingsService.setSecret("llm.apiKey.azure-foundry", "sk-corp");
+    await activation.activate({ kind: "provider", vendor: moved }, entry("provider", "azure-foundry"), entry("provider", "azure-foundry"));
+    expect(settingsService.getSecret("llm.apiKey.azure-foundry")).toBe("sk-corp");
+  });
+
   it("refuses a first install whose id the settings already hold from another path", async () => {
     const activation = createContentActivation(deps);
     await settingsService.installMarketplaceProviderPreset(preset);
@@ -148,6 +163,17 @@ describe("createContentActivation", () => {
     await expect(activation.activate({ kind: "messaging-connection", connection }, entry("messaging-connection", "harbor-chat"), null)).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
     await settingsService.patch({ marketplace: { installedProviderIds: ["azure-foundry"] } });
     await expect(activation.activate({ kind: "provider", vendor: { providerId: "azure-foundry" } }, entry("provider", "azure-foundry"), null)).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
+  });
+
+  it("keeps a provider installed when the provider refresh after the settings write throws", async () => {
+    const activation = createContentActivation(deps);
+    vi.mocked(deps.conversationLoop.refreshProvider).mockImplementation(() => {
+      throw new Error("refresh boom");
+    });
+    await expect(activation.activate({ kind: "provider", preset }, entry("provider", "harbor-llm"), null)).resolves.toBeUndefined();
+    expect(settingsService.get("marketplace").installedProviderPresets).toEqual([preset]);
+    await expect(activation.deactivate(entry("provider", "harbor-llm"), null)).resolves.toBeUndefined();
+    expect(settingsService.get("marketplace").installedProviderPresets).toEqual([]);
   });
 
   it("throws when the settings write fails, and only logs a failed broadcast after it landed", async () => {

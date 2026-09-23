@@ -34,7 +34,11 @@ export class InstalledContentService {
   /** `<kind>/<name>/<path>` → the file and its type, for the asset scheme. */
   private served = new Map<string, ServedContentFile>();
 
-  constructor(private readonly store: ContentStore) {}
+  /** `assetToken` is the launch token asset URLs carry (see `contentAssetUrl`). */
+  constructor(
+    private readonly store: ContentStore,
+    private readonly assetToken: string,
+  ) {}
 
   /** Re-read the store and rebuild everything derived from it. */
   async reload(): Promise<InstalledContentView> {
@@ -56,7 +60,7 @@ export class InstalledContentService {
           const type = IMAGE_TYPES[content.preview.slice(content.preview.lastIndexOf(".")).toLowerCase()];
           if (type) {
             served.set(`theme/${entry.name}/${content.preview}`, { path: join(dir, ...content.preview.split("/")), contentType: type });
-            previewUrl = contentAssetUrl("theme", entry.name, content.preview);
+            previewUrl = contentAssetUrl(this.assetToken, "theme", entry.name, content.preview);
           }
         }
         themes.push({
@@ -98,7 +102,7 @@ export class InstalledContentService {
           name: entry.name,
           family: content.family,
           stack: installedFontStack(entry.name),
-          faces: content.faces.map((face) => ({ url: contentAssetUrl("font", entry.name, face.file), format: face.format, weight: face.weight, style: face.style })),
+          faces: content.faces.map((face) => ({ url: contentAssetUrl(this.assetToken, "font", entry.name, face.file), format: face.format, weight: face.weight, style: face.style })),
           ...from(item),
         });
       }

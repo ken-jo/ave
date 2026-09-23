@@ -11,6 +11,7 @@
  * (blueprint 6.1); the activation below is what those calls run.
  */
 import { ipcMain, protocol } from "electron";
+import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { DEFAULT_LOCALE, SUPPORTED_LOCALES, registerInstalledLocales, setInstalledCatalogLoader } from "../../i18n/index.js";
@@ -85,6 +86,11 @@ export function createContentActivation(deps: IpcDeps): ContentActivation {
         const { providerId, defaultModel, baseUrl } = content.vendor;
         const installed = settings.get("marketplace").installedProviderIds;
         const vendor = { ...(defaultModel ? { model: defaultModel } : {}), ...(baseUrl ? { baseUrl } : {}) };
+        // A key the user saved for the vendor was entered for the address it had then: moving the
+        // address drops the key, as a preset whose base URL changes does, so it never reaches the new host.
+        if (baseUrl !== undefined && settings.get("llm").vendors[providerId]?.baseUrl !== baseUrl) {
+          await settings.deleteSecret(`llm.apiKey.${providerId}`);
+        }
         const { finishError } = await mutateMarketplaceProviderPresets(deps, () =>
           settings.patch({
             marketplace: { installedProviderIds: installed.includes(providerId) ? installed : [...installed, providerId] },
@@ -142,13 +148,13 @@ type InstalledContentPort = Pick<InstalledContentService, "installed" | "languag
  * cannot be read leaves every installed package unapplied (and logged)
  * rather than stopping the app.
  */
-export async function loadInstalledContent(deps: IpcDeps, root: string = contentPackagesRoot()): Promise<InstalledContentPort> {
+export async function loadInstalledContent(deps: IpcDeps, assetToken: string, root: string = contentPackagesRoot()): Promise<InstalledContentPort> {
   const store = await ContentStore.open({
     root,
     english: messages.en,
     activation: createContentActivation(deps),
   });
-  const service = new InstalledContentService(store);
+  const service = new InstalledContentService(store, assetToken);
   const view = await service.reload();
   for (const broken of view.broken) log.warn(broken, "installed content package not applied");
   registerInstalledLocales(view.languages);
@@ -170,7 +176,9 @@ export async function loadInstalledContent(deps: IpcDeps, root: string = content
  */
 export function registerMarketplaceContentHandlers(
   deps: IpcDeps,
-  load: () => Promise<InstalledContentPort> = () => loadInstalledContent(deps),
+  // Drawn once per launch: the host of every `ave-content:` URL (see content-asset-protocol.ts).
+  assetToken: string = randomBytes(16).toString("hex"),
+  load: () => Promise<InstalledContentPort> = () => loadInstalledContent(deps, assetToken),
 ): void {
   let ready: Promise<InstalledContentPort | null> | null = null;
   const loaded = () =>
@@ -178,7 +186,7 @@ export function registerMarketplaceContentHandlers(
       log.error({ err: errorMessage(error) }, "installed content could not be loaded");
       return null;
     }));
-  installContentAssetProtocolHandler(protocol, async (kind, name, path) => (await loaded())?.servedFile(kind, name, path) ?? null);
+  installContentAssetProtocolHandler(protocol, assetToken, async (kind, name, path) => (await loaded())?.servedFile(kind, name, path) ?? null);
 
   ipcMain.handle(CHANNELS.marketplaceContent.installed, async (event): Promise<InstalledContentResult | typeof UNAUTHORIZED_FRAME> => {
     if (!validateHostRendererSender(event)) {

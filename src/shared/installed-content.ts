@@ -5,7 +5,9 @@
  * today.
  *
  * Images and fonts are served through the `ave-content:` host scheme
- * (design §5.4), never by file path.
+ * (design §5.4), never by file path. Every asset URL carries a random token
+ * the main process draws at launch as its host, so only a page the app gave
+ * the URL to can name an installed file.
  *
  * No process-specific imports: main, preload and renderer load it.
  */
@@ -14,9 +16,20 @@ import type { ThemeSurfaces, ThemeTokens } from "./theme-tokens.js";
 
 export const CONTENT_ASSET_SCHEME = "ave-content";
 
-/** `ave-content://<kind>/<name>/<package-relative path>` for a file of an installed package. */
-export function contentAssetUrl(kind: "theme" | "font", name: string, path: string): string {
-  return `${CONTENT_ASSET_SCHEME}://${kind}/${name}/${path.split("/").map(encodeURIComponent).join("/")}`;
+/** The launch token's form: 32 lowercase hex characters. */
+export const CONTENT_ASSET_TOKEN = /^[0-9a-f]{32}$/u;
+
+/** `ave-content://<token>/<kind>/<name>/<package-relative path>` for a file of an installed package. */
+export function contentAssetUrl(token: string, kind: "theme" | "font", name: string, path: string): string {
+  return `${CONTENT_ASSET_SCHEME}://${token}/${kind}/${name}/${path.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+/** Whether `url` is an asset URL of `kind` in the form {@link contentAssetUrl} writes. */
+export function isContentAssetUrl(url: string, kind: "theme" | "font"): boolean {
+  const prefix = `${CONTENT_ASSET_SCHEME}://`;
+  if (!url.startsWith(prefix)) return false;
+  const [token, urlKind] = url.slice(prefix.length).split("/");
+  return token !== undefined && CONTENT_ASSET_TOKEN.test(token) && urlKind === kind;
 }
 
 interface InstalledFrom {

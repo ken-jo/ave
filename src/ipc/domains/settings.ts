@@ -360,7 +360,8 @@ function refreshChatRuntimeProviders(
 /**
  * Install or remove marketplace provider presets and run every follow-up a
  * preset change needs (reviewer rewire, chat providers, wildcard, sandbox
- * endpoints, the settings broadcast). The settings IPC and the content store's
+ * endpoints, the settings broadcast), reporting a follow-up that fails as
+ * `finishError` once `mutate` has saved. The settings IPC and the content store's
  * provider activation (blueprint 3.5) both go through here, so a preset
  * installed from a git package behaves exactly like one installed today.
  */
@@ -371,7 +372,14 @@ export async function mutateMarketplaceProviderPresets(
   const prevLlm = deps.settingsService.get("llm");
   const prevPresets = deps.settingsService.get("marketplace").installedProviderPresets;
   const result = await mutate();
-  const finishError = await finishProviderPresetMarketplaceMutation(deps, prevLlm, prevPresets);
+  // The settings are saved: whatever fails from here is reported, never
+  // thrown, so no caller undoes a write that already landed.
+  let finishError: { ok: false; error: string; message: string } | null;
+  try {
+    finishError = await finishProviderPresetMarketplaceMutation(deps, prevLlm, prevPresets);
+  } catch (err) {
+    finishError = { ok: false, error: "provider-preset-refresh-failed", message: errorMessage(err) };
+  }
   return { result, finishError };
 }
 
