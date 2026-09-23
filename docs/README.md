@@ -20,5 +20,5 @@ The Korean documentation snapshot is preserved under [docs/ko](./ko/README.md). 
 ## Language Policy
 
 - English is the default documentation language for app behavior, architecture, and contributor workflows.
-- Korean source material is retained, not deleted, under the mirrored `docs/ko` path.
+- Korean source material stays under the mirrored `docs/ko` path while its topic is live. Closed-out phase reports and mockups for removed features are deleted, not archived; git history keeps them.
 - New docs should start in English and may add a Korean mirror when Korean-specific context is useful.

@@ -2,7 +2,7 @@
 
 > **상태**: Phase 2-final + git-based bootstrap 반영 (2026-04-27)
 > **대상**: enterprise prod 마켓플레이스에 플러그인 / MCP 서버를 게시하는 퍼블리셔
-> **선행 읽음**: [현재 English Plugin Development Guide](../../guides/plugin-development.md), [Phase 2 마켓플레이스 디자인](../blueprints/phase2-proper-marketplace-design.md)
+> **선행 읽음**: [현재 English Plugin Development Guide](../../guides/plugin-development.md)
 > **로컬 dev 루프**: 이 문서는 prod 흐름입니다. dev 환경에서 동일 흐름을 검증하려면 [`local-marketplace-testing.md`](./local-marketplace-testing.md). 마켓플레이스 우회 시나리오는 [`local-plugin-development.md`](./local-plugin-development.md).
 
 ---
@@ -503,6 +503,5 @@ bun run start
 - [`local-plugin-development.md`](./local-plugin-development.md) — 마켓플레이스 우회 시나리오 (제한적)
 - [`local-marketplace-testing.md`](./local-marketplace-testing.md) — **권장 dev 루프** (이 문서의 dev 버전)
 - [`plugin-development.md`](./plugin-development.md) — 매니페스트 + HostApi + 빌드/테스트 깊은 레퍼런스
-- [Phase 2 마켓플레이스 디자인](../blueprints/phase2-proper-marketplace-design.md) — 서버 측 단일 경로 / 단일 트러스트 루트 결정 기록
 - `agent-marketplace/server/README.md` — 서명 키 ID 회전, POC 키 정책
 - `agent-marketplace/cli/src/index.ts` — CLI 서브커맨드 SoT

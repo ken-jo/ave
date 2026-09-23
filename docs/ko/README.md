@@ -65,7 +65,6 @@ docs/
 │   └── windows-setup.md                   # Windows 개발 환경
 ├── protocols/                             # 프로토콜 정의
 ├── research/                              # 조사 메모
-├── mockups/                               # 화면 목업
 ├── blueprints/                            # 구현 계획·조사·단계별 closure report
 └── ko/                                    # 한국어 미러 (현재 파일이 있는 곳)
 ```

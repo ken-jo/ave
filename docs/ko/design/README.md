@@ -14,7 +14,6 @@ step and no dependency on the app.
 | [`composer-attachments.html`](./composer-attachments.html) | Multimodal composer — image/file drag-drop, clipboard paste, marker tokens (`[Image #N]`, `[File #N]`, `[Pasted text #N +M lines]`), `composeOutgoing()` contract. | PR #440 |
 | [`ask-user-question-card.html`](./ask-user-question-card.html) | `ask_user_question` LLM tool non-modal composer dock card — single-question form / 2–4 paginated multi-question / urgent variant / confirm-review step / `dismissed:true` fallback. Recommend + 대안 badges, choice-only answers. | PR #334 initial surface → composer dock `QuestionOverlay` + `AskUserQuestionCard` (current production) |
 | [`permission-reviewer-status-prefill.html`](./permission-reviewer-status-prefill.html) | Permission reviewer latency + HIGH approval purpose prefill — chat status card states for 검토중/승인 필요/자동 진행/목적 부족 and approval surface copy for automatic vs required purpose text. | Design review / not shipped |
-| [`agent-hub-work-board-v1.html`](./agent-hub-work-board-v1.html) | Agent Hub Plugin UI detached-window storyboard — scenario states from plugin entry/login waiting/callback sync to My Work, Team Board, and exception/empty states. | Design review / not shipped |
 | [`settings-controls-shadcn.html`](./settings-controls-shadcn.html) | Settings control primitive baseline — shadcn registry-backed Select, Checkbox, Switch, RadioGroup, Slider, NativeSelect, Field/Label visual contract. | PR #708 |
 
 ## When to update vs add a new file
@@ -24,5 +23,7 @@ step and no dependency on the app.
 - **Add a new versioned file** (`*-v4.html`, `*-v5.html`) when the design
   pivots — keeping the old file lets future readers see why we moved.
 
-Do not delete an old version once the corresponding feature shipped. The
-mockup is the design record.
+Keep the mockup of a shipped feature: it is the design record. A mockup whose
+feature was removed from the product, or a comparison sheet nothing references,
+is deleted rather than archived (Agent Hub boards, the evidence-rail and
+tray-icon sheets and the question-overlay mockup went this way on 2026-09-23).

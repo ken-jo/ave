@@ -10,7 +10,7 @@
 > per-tool category 는 manifest 필드가 아니라 host 가 invocation 별로 분류한다.
 > (pre-v6 의 `tools: string[]` + `toolSchemas` map + `uiActions` map + per-tool
 > `category` triple 은 이 하나로 통합·제거됐다 — legacy.) 설계 배경은
-> [`plugin-contract-v6-design.md`](../architecture/plugin-contract-v6-design.md).
+> [`plugin-contract-v6-design.md`](../../architecture/plugin-contract-v6-design.md).
 
 ---
 
