@@ -156,6 +156,19 @@ describe("createContentActivation", () => {
     expect(settingsService.get("marketplace").installedProviderIds).not.toContain("azure-foundry");
   });
 
+  it("removes a vendor package whose saved key can no longer be decrypted", async () => {
+    const activation = createContentActivation(deps);
+    await activation.activate({ kind: "provider", vendor: { providerId: "azure-foundry" } }, entry("provider", "azure-foundry"), null);
+    await settingsService.setSecret("llm.apiKey.azure-foundry", "sk-user");
+    const read = vi.spyOn(settingsService, "getSecret").mockImplementation(() => {
+      throw new Error("keychain changed");
+    });
+    await expect(activation.deactivate(entry("provider", "azure-foundry"), null)).resolves.toBeUndefined();
+    read.mockRestore();
+    expect(settingsService.getSecret("llm.apiKey.azure-foundry")).toBeNull();
+    expect(settingsService.get("marketplace").installedProviderIds).not.toContain("azure-foundry");
+  });
+
   it("puts the vendor key back when the write that moves the base URL fails", async () => {
     const activation = createContentActivation(deps);
     await settingsService.setSecret("llm.apiKey.azure-foundry", "sk-user");

@@ -72,8 +72,16 @@ export function createContentActivation(deps: IpcDeps): ContentActivation {
    */
   const withoutVendorKey = async <T>(vendorId: string, write: () => Promise<T>): Promise<T> => {
     const secretKey = `llm.apiKey.${vendorId}`;
-    const saved = settings.getSecret(secretKey);
-    if (saved !== null) await settings.deleteSecret(secretKey);
+    let saved: string | null = null;
+    let present = true;
+    try {
+      saved = settings.getSecret(secretKey);
+      present = saved !== null;
+    } catch (error) {
+      // A key that cannot be decrypted is unusable anyway: remove it, with nothing to put back.
+      log.warn({ err: errorMessage(error) }, `the saved ${vendorId} key cannot be read; removing it`);
+    }
+    if (present) await settings.deleteSecret(secretKey);
     try {
       return await write();
     } catch (error) {
