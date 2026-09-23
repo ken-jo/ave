@@ -70,9 +70,19 @@ interface SourceState {       // marketplaces/<id>/state.json, every origin
 ```
 
 - The official source comes from the build constant `OFFICIAL_MARKETPLACE`
-  (`id: "ave"`, primary URL, optional mirror URLs). Managed sources come from
-  the system policy file (§12). Neither is stored in `sources.json`; both keep
-  their state in `state.json`.
+  (`id: "ave"`, primary URL, optional mirror URLs, `auth`). Managed sources
+  come from the system policy file (§12). Neither is stored in `sources.json`;
+  both keep their state in `state.json`.
+- While the design is built, the official repository is private
+  (`https://github.com/ken-jo/ave-marketplace-index`, decided 2026-09-23
+  because the `former_org` organization cannot host a new public repository
+  or run CI). The constant therefore carries
+  `auth: { kind: "token", host: "github.com" }` and the Sources view offers
+  Set token on the official row; an OS credential helper answers as well
+  (§9.3). Before the first public release built on this design, the
+  repository becomes publicly readable or moves, and that release's constant
+  carries the public URL with `auth: { kind: "none" }`. No released build
+  carries the private URL, so no `movedTo`-style migration is needed.
 - Tokens live in the existing encrypted secret store under
   `marketplace.gitToken.<normalized host>`; no file above holds a secret.
 - `snapshots/` keeps the current pin, the previous pin, and every commit that

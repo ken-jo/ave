@@ -73,8 +73,17 @@ interface SourceState {       // marketplaces/<id>/state.json, every origin
 ```
 
 - 공식 소스는 빌드 상수 `OFFICIAL_MARKETPLACE`(`id: "ave"`, 기본 URL, 선택적
-  미러 URL)에서 옵니다. 관리(managed) 소스는 시스템 정책 파일(§12)에서 옵니다.
-  둘 다 `sources.json`에 저장하지 않고, 상태만 `state.json`에 둡니다.
+  미러 URL, `auth`)에서 옵니다. 관리(managed) 소스는 시스템 정책 파일(§12)에서
+  옵니다. 둘 다 `sources.json`에 저장하지 않고, 상태만 `state.json`에 둡니다.
+- 이 설계를 구현하는 동안 공식 저장소는 프라이빗입니다
+  (`https://github.com/ken-jo/ave-marketplace-index`, 2026-09-23 결정.
+  `former_org` 조직에서는 새 공개 저장소를 만들거나 CI를 돌릴 수 없기
+  때문입니다). 그래서 상수는 `auth: { kind: "token", host: "github.com" }`을
+  갖고, Sources 화면은 공식 행에도 Set token을 제공합니다. OS 자격 증명 헬퍼도
+  응답할 수 있습니다(§9.3). 이 설계로 만든 첫 공개 릴리스 전에 저장소를 공개로
+  바꾸거나 옮기고, 그 릴리스의 상수는 공개 URL과 `auth: { kind: "none" }`을
+  갖습니다. 프라이빗 URL을 담은 빌드는 배포되지 않으므로 `movedTo` 같은 이전
+  절차는 필요 없습니다.
 - 토큰은 기존 암호화 시크릿 저장소의 `marketplace.gitToken.<정규화된 호스트>`에
   둡니다. 위 파일 어디에도 시크릿은 없습니다.
 - `snapshots/`에는 현재 핀, 직전 핀, 그리고 설치된 패키지의 `origin.commit`이

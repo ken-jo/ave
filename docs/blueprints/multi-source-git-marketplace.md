@@ -16,7 +16,7 @@ no compatibility shim outlives the switch.
 
 | Input | Owner | Needed by |
 |---|---|---|
-| Location of the official marketplace repository (and optional mirrors) | Repository migration plan | Phase 1 constant `OFFICIAL_MARKETPLACE`, phase 0 |
+| Location of the official marketplace repository (and optional mirrors) | Decided 2026-09-23: `ken-jo/ave-marketplace-index`, private while the design is built, public (or moved) before phase 7 (design §2.1) | Phase 1 constant `OFFICIAL_MARKETPLACE`, phase 0 |
 | Working CI on the hosting account that builds plugin release assets | Repository migration plan | Phase 0 release pins |
 | Service domain default (`https://former-site.invalid` unless changed) | Owner | Phase 5 |
 | Organizations that rely on today's managed installs (the internal `orion` plugin) have an internal marketplace and a policy file with `requiredInstalls` ready | Each organization | Phase 7 step 1 |
