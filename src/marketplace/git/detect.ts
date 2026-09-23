@@ -16,10 +16,10 @@ import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { access } from "node:fs/promises";
 import { delimiter, join } from "node:path";
+import type { GitRuntimeMode } from "../../shared/git-runtime-mode.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
 import { type GitVersion, meetsMinimumGitVersion, parseGitVersion } from "./git-version.js";
 
-export type GitRuntimeMode = "auto" | "system" | "managed";
 
 export interface GitExecutable {
   kind: "system" | "managed";

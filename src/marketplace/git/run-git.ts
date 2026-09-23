@@ -83,6 +83,8 @@ export interface GitRunnerOptions {
   managedEnv?: Record<string, string>;
   /** Managed copies: prepended to PATH so git finds its own helpers first. */
   managedPathPrefix?: string;
+  /** Managed copies: settings the copy's own system config would carry (it is not read, §9.3). */
+  managedConfig?: Readonly<Record<string, string>>;
   /** Chromium's PAC resolution for a URL (`session.resolveProxy`). */
   resolveProxy?: (url: string) => Promise<string>;
 }
@@ -138,6 +140,7 @@ export class GitRunner {
       "-c", "filter.lfs.required=false",
       "-c", "gc.auto=0",
       "-c", "maintenance.auto=false",
+      ...Object.entries(this.options.managedConfig ?? {}).flatMap(([key, value]) => ["-c", `${key}=${value}`]),
     ];
   }
 

@@ -20,6 +20,7 @@
  *   prompts       ave:prompts:*
  *   home-docs     ave:home-docs:* — ~/.ave reference docs + upgrade markers
  *   usage         ave:usage:*
+ *   git-runtime   ave:git:runtime:* — git marketplace runtime status + managed install
  *   audit         ave:audit:*, ave:dlp:*
  *   diagnostics   ave:diagnostics:*, ave:logs:tail
  *   permissions   ave:permission:*, ave:permissions:*, ave:approval:respond,
@@ -57,6 +58,7 @@ import { registerPluginsHandlers } from "./domains/plugins.js";
 import { registerPromptHandlers } from "./domains/prompts.js";
 import { registerHomeDocsHandlers } from "./domains/home-docs.js";
 import { registerUsageHandlers } from "./domains/usage.js";
+import { registerGitRuntimeHandlers } from "./domains/git-runtime.js";
 import { registerAuditHandlers } from "./domains/audit.js";
 import { registerDiagnosticsHandlers } from "./domains/diagnostics.js";
 import { registerPermissionsHandlers } from "./domains/permissions.js";
@@ -129,6 +131,7 @@ export function registerIpcHandlers(
   registerPromptHandlers(deps);
   registerHomeDocsHandlers(deps);
   registerUsageHandlers(deps);
+  registerGitRuntimeHandlers(deps);
   registerAuditHandlers(deps);
   registerDiagnosticsHandlers(deps);
   registerPermissionsHandlers(deps);

@@ -15,7 +15,8 @@ import { MarketplaceError } from "../../errors.js";
 import { NetworkGate } from "../../net/network-gate.js";
 import { normalizeSourceUrl, parseSourcePattern } from "../../net/source-url.js";
 import type { OfficialMarketplace } from "../official.js";
-import { EMPTY_MARKETPLACE_POLICY, type MarketplacePolicy, type PolicyLoad } from "../policy.js";
+import { policyLoad as policyWith } from "../../__tests__/fixtures/policy.js";
+import type { PolicyLoad } from "../policy.js";
 import { SourceRegistry } from "../registry.js";
 import { SourceSyncer, shouldSyncSource, type SyncResult } from "../sync.js";
 
@@ -91,10 +92,6 @@ describe.skipIf(process.platform === "win32")("SourceSyncer", () => {
     const repo = createFixtureRepo(serverRoot, name);
     repos.push(repo);
     return { repo, name };
-  }
-
-  function policyWith(overrides: Partial<MarketplacePolicy>): PolicyLoad {
-    return { ok: true, policy: { ...EMPTY_MARKETPLACE_POLICY, ...overrides } };
   }
 
   async function setup(options: { policy?: PolicyLoad; official?: OfficialMarketplace; retained?: string[] } = {}) {

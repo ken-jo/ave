@@ -1,17 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { MarketplaceError } from "../../errors.js";
-import { EMPTY_MARKETPLACE_POLICY, type MarketplacePolicy, type PolicyLoad } from "../../sources/policy.js";
+import { policyLoad as policy } from "../../__tests__/fixtures/policy.js";
+import type { PolicyLoad } from "../../sources/policy.js";
 import { NetworkGate, downloadUrlForPolicy } from "../network-gate.js";
 import { normalizeSourceUrl, parseSourcePattern } from "../source-url.js";
 
 const OFFICIAL = { official: true };
 const OTHER = { official: false };
 
-function policy(overrides: Partial<MarketplacePolicy>): PolicyLoad {
-  return { ok: true, policy: { ...EMPTY_MARKETPLACE_POLICY, ...overrides } };
-}
-
-function gate(load: PolicyLoad = { ok: true, policy: EMPTY_MARKETPLACE_POLICY }, allowLoopback = false): NetworkGate {
+function gate(load: PolicyLoad = policy(), allowLoopback = false): NetworkGate {
   return new NetworkGate({ policy: load, allowLoopback });
 }
 

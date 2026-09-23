@@ -39,6 +39,7 @@ import {
   isMarketplaceEligibleLocale,
   normalizeLocale,
 } from "../i18n/index.js";
+import { isGitRuntimeMode } from "../shared/git-runtime-mode.js";
 import { normalizeAppMode } from "../shared/initial-app-mode.js";
 import { isProcessingDisplayLevel } from "../shared/processing-display-level.js";
 import { isSidebarTab } from "../shared/sidebar-tab.js";
@@ -826,6 +827,9 @@ export function normalizeMarketplace(input: unknown): MarketplaceSettings {
   merged.cloudAllowPrivateNetwork = typeof raw.cloudAllowPrivateNetwork === "boolean"
     ? raw.cloudAllowPrivateNetwork
     : DEFAULT_SETTINGS.marketplace.cloudAllowPrivateNetwork;
+  const gitMode = raw.git && typeof raw.git === "object" ? (raw.git as { mode?: unknown }).mode : undefined;
+  if (isGitRuntimeMode(gitMode)) merged.git = { mode: gitMode };
+  else delete merged.git;
   merged.installedProviderIds = uniqueValidList(
     raw.installedProviderIds,
     isMarketplaceEligibleLLMVendor,

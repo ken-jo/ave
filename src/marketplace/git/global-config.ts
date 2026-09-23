@@ -15,7 +15,8 @@
  *   credential.helper, credential.<url>.<key>, http.sslcainfo, http.sslbackend
  */
 import { execFile } from "node:child_process";
-import { rename, rm, writeFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
+import { writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
 
 export interface GitConfigEntry {
@@ -93,9 +94,8 @@ export async function writeGeneratedGlobalConfig(
       const result = await runConfig(gitPath, ["config", "--file", staging, "--add", entry.key, entry.value], env);
       if (!result.ok) throw new Error(`git config --file could not store ${entry.key}`);
     }
-    await rename(staging, outputPath);
-  } catch (error) {
+    await writeFileAtomicAtPath(outputPath, await readFile(staging));
+  } finally {
     await rm(staging, { force: true });
-    throw error;
   }
 }

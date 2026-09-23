@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MarketplaceError } from "../../errors.js";
 import { normalizeSourceUrl } from "../../net/source-url.js";
 import { OFFICIAL_MARKETPLACE } from "../official.js";
-import { EMPTY_MARKETPLACE_POLICY, type MarketplacePolicy, type PolicyLoad } from "../policy.js";
+import { policyLoad as policy } from "../../__tests__/fixtures/policy.js";
+import type { PolicyLoad } from "../policy.js";
 import { SourceRegistry, type NewSource } from "../registry.js";
 
 let root: string;
@@ -19,10 +20,6 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
-
-function policy(overrides: Partial<MarketplacePolicy> = {}): PolicyLoad {
-  return { ok: true, policy: { ...EMPTY_MARKETPLACE_POLICY, ...overrides } };
-}
 
 const CORP_POLICY = policy({
   additional: [{ id: "corp", url: normalizeSourceUrl("https://git.corp.example/ave/market"), auth: { kind: "none" }, label: "Corp" }],
