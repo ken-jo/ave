@@ -2,7 +2,7 @@
  * Early boot environment setup — the top-level side effects that MUST run at
  * module load, before `app.whenReady()`:
  *   - workspace cwd anchoring
- *   - plugin-asset custom protocol scheme registration
+ *   - privileged custom protocol scheme registration (plugin assets, MCP apps, installed content)
  *   - WSL / GPU command-line switches
  *   - app name + AppUserModelId
  *   - packaged env scrub
@@ -14,8 +14,9 @@
 import { app, protocol } from "electron";
 import { createLogger } from "../lib/logger.js";
 import { ensureWorkspaceCwd } from "./ensure-workspace-cwd.js";
-import { registerPluginAssetProtocolScheme } from "./plugin-asset-protocol.js";
-import { registerMcpAppProtocolScheme } from "./mcp-app-protocol.js";
+import { PLUGIN_ASSET_CUSTOM_SCHEME } from "./plugin-asset-protocol.js";
+import { MCP_APP_CUSTOM_SCHEME } from "./mcp-app-protocol.js";
+import { CONTENT_ASSET_CUSTOM_SCHEME } from "./content-asset-protocol.js";
 import { scrubPackagedProcessEnv } from "./packaged-env-scrub.js";
 import { resolveAppIconPath } from "./app-icon.js";
 import {
@@ -38,10 +39,10 @@ export function runEarlyBootEnv(): void {
   const workspaceCwd = ensureWorkspaceCwd();
   log.info({ workspaceCwd }, "main: cwd anchored to ~/.ave/workspace");
 
-  registerPluginAssetProtocolScheme(protocol);
-  // Must also happen before `app.ready` — the MCP-app sandbox-proxy document is
-  // served from this scheme and needs `standard: true` for a real origin.
-  registerMcpAppProtocolScheme(protocol);
+  // Electron takes the privileged schemes in a single call before `app.ready`.
+  // The MCP-app sandbox-proxy document needs `standard: true` for a real
+  // origin; installed fonts and theme previews load from `ave-content:`.
+  protocol.registerSchemesAsPrivileged([PLUGIN_ASSET_CUSTOM_SCHEME, MCP_APP_CUSTOM_SCHEME, CONTENT_ASSET_CUSTOM_SCHEME]);
 
 
   if (process.platform === "linux" && process.env.WSL_DISTRO_NAME) {

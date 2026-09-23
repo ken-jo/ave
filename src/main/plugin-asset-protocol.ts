@@ -10,21 +10,16 @@ const PLUGIN_ASSET_HOST = "asset";
 const rootsByPartition = new Map<string, PartitionAssetRoot>();
 const handledPartitions = new Set<string>();
 
-export function registerPluginAssetProtocolScheme(
-  protocolApi: Pick<Electron.Protocol, "registerSchemesAsPrivileged">,
-): void {
-  protocolApi.registerSchemesAsPrivileged([
-    {
-      scheme: PLUGIN_ASSET_SCHEME,
-      privileges: {
-        standard: true,
-        secure: true,
-        supportFetchAPI: true,
-        corsEnabled: true,
-      },
-    },
-  ]);
-}
+/** Registered with the other privileged schemes in one call before `app.ready` (see `early-boot-env.ts`). */
+export const PLUGIN_ASSET_CUSTOM_SCHEME: Electron.CustomScheme = Object.freeze({
+  scheme: PLUGIN_ASSET_SCHEME,
+  privileges: Object.freeze({
+    standard: true,
+    secure: true,
+    supportFetchAPI: true,
+    corsEnabled: true,
+  }),
+});
 
 export function pluginAssetUrlFromRealPath(realRoot: string, realAsset: string): string {
   const relativePath = path.relative(realRoot, realAsset);

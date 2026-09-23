@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import {
   PLUGIN_ASSET_SCHEME,
   pluginAssetUrlFromRealPath,
-  registerPluginAssetProtocolScheme,
+  PLUGIN_ASSET_CUSTOM_SCHEME,
   resolvePluginAssetRequest,
 } from "../plugin-asset-protocol.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -31,22 +31,16 @@ afterEach(async () => {
 });
 
 describe("plugin asset protocol", () => {
-  it("registers ave-plugin as a standard secure scheme", () => {
-    const mockProtocol = { registerSchemesAsPrivileged: vi.fn() };
-
-    registerPluginAssetProtocolScheme(mockProtocol);
-
-    expect(mockProtocol.registerSchemesAsPrivileged).toHaveBeenCalledWith([
-      {
-        scheme: PLUGIN_ASSET_SCHEME,
-        privileges: {
-          standard: true,
-          secure: true,
-          supportFetchAPI: true,
-          corsEnabled: true,
-        },
+  it("declares ave-plugin as a standard secure scheme", () => {
+    expect(PLUGIN_ASSET_CUSTOM_SCHEME).toEqual({
+      scheme: PLUGIN_ASSET_SCHEME,
+      privileges: {
+        standard: true,
+        secure: true,
+        supportFetchAPI: true,
+        corsEnabled: true,
       },
-    ]);
+    });
   });
 
   it("builds stable ave-plugin URLs from real contained paths", () => {

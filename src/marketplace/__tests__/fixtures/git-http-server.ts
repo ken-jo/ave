@@ -57,7 +57,7 @@ export interface FixtureRepo {
   bare: string;
   /** Working clone used to author commits. */
   work: string;
-  commit(files: Record<string, string>, message: string): string;
+  commit(files: Record<string, string | Buffer>, message: string): string;
   /**
    * Commit an exact tree built with plumbing, for entries a checkout cannot
    * hold (case-only duplicates on macOS, symlinks, gitlinks). Replaces the
