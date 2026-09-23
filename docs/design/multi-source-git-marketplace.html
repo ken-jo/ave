@@ -198,6 +198,16 @@
   .state.update { background: var(--info-soft); color: var(--info); }
   .state.blocked { background: var(--warning-soft); color: var(--warning); }
   .state.yanked { background: var(--danger-soft); color: var(--danger); }
+  .state.required { background: var(--warning-soft); color: var(--warning); }
+  .state.removed { background: var(--canvas); color: var(--muted-fg); border: 1px dashed var(--border-strong); }
+  .menu-wrap { position: relative; display: inline-block; }
+  .menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 5; min-width: 200px; display: grid; padding: 4px;
+    background: var(--bg); border: 1px solid var(--border-strong); border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.14); }
+  .menu button { text-align: left; background: none; border: 0; padding: 7px 10px; border-radius: 6px; font: inherit; font-size: 12px; color: var(--fg); cursor: pointer; }
+  .menu button:hover, .menu button:focus-visible { background: var(--canvas); }
+  .menu button.danger { color: var(--danger); }
+  .boot-list { display: grid; gap: 4px; margin-top: 6px; }
+  .boot-list div { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; }
 
   /* Banner */
   .banner {
@@ -332,14 +342,14 @@
   <div class="window">
     <aside class="nav" aria-label="Settings">
       <span class="label">Settings</span>
-      <a href="#browse">General</a>
-      <a href="#browse">Appearance</a>
-      <a href="#browse">Models</a>
-      <a href="#browse" aria-current="page"><svg class="i"><use href="#i-store"/></svg>Marketplace</a>
-      <a href="#browse">MCP</a>
-      <a href="#browse">Plugins</a>
-      <a href="#browse">Permissions</a>
-      <a href="#browse">Privacy</a>
+      <a href="#browse" data-go="browse">General</a>
+      <a href="#browse" data-go="browse">Appearance</a>
+      <a href="#browse" data-go="browse">Models</a>
+      <a href="#browse" data-go="browse" aria-current="page"><svg class="i"><use href="#i-store"/></svg>Marketplace</a>
+      <a href="#browse" data-go="browse">MCP</a>
+      <a href="#browse" data-go="browse">Plugins</a>
+      <a href="#browse" data-go="browse">Permissions</a>
+      <a href="#browse" data-go="browse">Privacy</a>
     </aside>
 
     <div class="content">
@@ -358,6 +368,22 @@
             </div>
           </div>
 
+          <div class="banner" role="status">
+            <svg class="i" style="color:var(--info)"><use href="#i-check"/></svg>
+            <div>
+              <strong>Set up at first start</strong>
+              <div class="boot-list">
+                <div><span class="ver">Installed for you</span> Meeting 0.9.0 <button class="btn ghost" type="button">Uninstall</button></div>
+                <div><span class="ver">Installed for you</span> Local Indexer 0.4.10 <button class="btn ghost" type="button">Uninstall</button></div>
+                <div><span class="ver">Required by your organization</span> <svg class="i" style="color:var(--faint-fg)"><use href="#i-lock"/></svg> ORION 3.2.0 from corp</div>
+                <div><span class="ver">No longer managed by Ave</span> Legacy Uploader — your organization can keep it up to date by registering its marketplace.</div>
+              </div>
+            </div>
+            <div class="actions">
+              <button class="btn ghost" type="button" aria-label="Dismiss"><svg class="i"><use href="#i-close"/></svg></button>
+            </div>
+          </div>
+
           <div class="page-head">
             <div>
               <h2>Marketplace</h2>
@@ -365,7 +391,14 @@
             </div>
             <div class="row">
               <button class="btn" type="button" data-go="sources"><svg class="i"><use href="#i-git"/></svg>Sources</button>
-              <button class="btn primary" type="button" data-go="add"><svg class="i"><use href="#i-plus"/></svg>Add</button>
+              <span class="menu-wrap">
+                <button class="btn primary" type="button" id="add-menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="add-menu"><svg class="i"><use href="#i-plus"/></svg>Add</button>
+                <span class="menu" id="add-menu" role="menu" hidden>
+                  <button type="button" role="menuitem" data-go="add">Add marketplace…</button>
+                  <button type="button" role="menuitem" data-go="direct" data-dtab-go="git">Install from Git URL…</button>
+                  <button type="button" role="menuitem" data-go="direct" data-dtab-go="mcp">Add MCP server…</button>
+                </span>
+              </span>
             </div>
           </div>
 
@@ -420,7 +453,7 @@
                 <div class="rung run">
                   <span class="dot">1</span>
                   <div>Release asset <span class="mono">meeting-0.9.0.zip</span>
-                    <small>Downloading 0.7 of 1.1 MB · sha256 pinned in git at <span class="mono">4f1c2a9</span></small>
+                    <small>Downloading 0.7 of 1.1 MB · sha256 pinned in git at <span class="mono" title="4f1c2a9e0b7d3c5a8f6e2d1b9c4a7e3f5d8b2c6a">4f1c2a9</span></small>
                     <div class="bar" style="margin-top:6px"><i></i></div>
                   </div>
                   <span class="ver">using</span>
@@ -457,21 +490,25 @@
                 <dt>Source</dt><dd>Ave Official</dd>
                 <dt>Repository</dt><dd class="mono">official marketplace repository</dd>
                 <dt>Path</dt><dd class="mono">plugins/meeting</dd>
-                <dt>Commit</dt><dd class="mono">4f1c2a9 <button class="btn ghost" type="button" aria-label="Copy full commit" style="padding:0 4px"><svg class="i"><use href="#i-copy"/></svg></button></dd>
+                <dt>Commit</dt><dd class="mono"><span title="4f1c2a9e0b7d3c5a8f6e2d1b9c4a7e3f5d8b2c6a">4f1c2a9</span> <button class="btn ghost" type="button" aria-label="Copy full commit" style="padding:0 4px"><svg class="i"><use href="#i-copy"/></svg></button></dd>
                 <dt>Published</dt><dd>2026-09-21</dd>
               </dl>
             </section>
             <section>
               <h4>Compatibility</h4>
-              <p><span class="mono">&gt;=0.10.0 &lt;0.12.0</span> · <span class="ok status">Works with Ave 0.10.0</span></p>
+              <p>Needs Ave <span class="mono">0.10.0</span> or newer · <span class="ok status">Works with this Ave</span></p>
             </section>
             <section>
               <h4>Permissions</h4>
               <ul class="plain">
                 <li>Network: speech-to-text provider host</li>
-                <li>Reads the host LLM key (host-managed)</li>
+                <li>Reads the active provider’s LLM key — allowed by this Ave release for the official Meeting build only</li>
                 <li>Adds 1 skill and a meeting control panel</li>
               </ul>
+            </section>
+            <section>
+              <h4>Source badge</h4>
+              <p class="ver">Ave Official marks where this package comes from. It is reviewed, installed and updated like any other package; the badge adds no permissions.</p>
             </section>
             <section>
               <h4>Delivery</h4>
@@ -483,7 +520,7 @@
                 <div><span class="mono">0.9.0</span><span>Latest · rollout 100%</span><span class="ok">compatible</span></div>
                 <div><span class="mono">0.8.4</span><span>Installed</span><span class="ok">compatible</span></div>
                 <div><span class="mono">0.8.3</span><span>Yanked: transcript upload bug</span><span class="err">yanked</span></div>
-                <div><span class="mono">1.0.0-rc.1</span><span>Needs Ave &gt;=0.12.0</span><span class="warn">requires update</span></div>
+                <div><span class="mono">1.0.0-rc.1</span><span>Pre-release · needs Ave 0.12.0</span><span class="warn">requires update</span></div>
               </div>
             </section>
           </aside>
@@ -509,31 +546,44 @@
               <tbody>
                 <tr>
                   <td><span class="badge official"><svg class="i"><use href="#i-shield"/></svg>Ave Official</span><span class="sub mono">official repository · 1 mirror</span></td>
-                  <td><span class="mono">4f1c2a9</span><span class="sub">4 min ago</span></td>
+                  <td><span class="mono" title="4f1c2a9e0b7d3c5a8f6e2d1b9c4a7e3f5d8b2c6a">4f1c2a9</span><span class="sub">4 min ago</span></td>
                   <td class="mono">381</td>
                   <td><span class="status ok">Up to date</span></td>
-                  <td><span class="switch locked" title="Managed by policy" aria-label="Enabled, locked"></span></td>
-                  <td><button class="btn ghost" type="button" aria-label="More"><svg class="i"><use href="#i-more"/></svg></button></td>
+                  <td><span class="switch locked" title="The official source can be hidden only when policy allows it" aria-label="Enabled, locked"></span></td>
+                  <td><span class="menu-wrap"><button class="btn ghost" type="button" aria-label="More for Ave Official" aria-haspopup="menu" aria-expanded="false" data-menu="m-official"><svg class="i"><use href="#i-more"/></svg></button>
+                    <span class="menu" id="m-official" role="menu" hidden><button type="button" role="menuitem">Refresh</button><button type="button" role="menuitem">Copy commit</button></span></span></td>
                 </tr>
                 <tr>
                   <td><strong>team-tools</strong><span class="sub mono">https://github.com/acme/ave-team-tools.git</span></td>
-                  <td><span class="mono">81d0e44</span><span class="sub">4 min ago</span></td>
+                  <td><span class="mono" title="81d0e44b6a2f9c3e7d1b5a8c4f0e2d6b9a3c7e15">81d0e44</span><span class="sub">4 min ago</span></td>
                   <td class="mono">19</td>
                   <td><span class="status warn">History rewritten — review</span></td>
                   <td><span class="switch" aria-label="Enabled"></span></td>
-                  <td><button class="btn" type="button" data-go="update">Review</button></td>
+                  <td><div class="row" style="flex-wrap:nowrap"><button class="btn" type="button" data-go="update">Review</button>
+                    <span class="menu-wrap"><button class="btn ghost" type="button" aria-label="More for team-tools" aria-haspopup="menu" aria-expanded="false" data-menu="m-team"><svg class="i"><use href="#i-more"/></svg></button>
+                    <span class="menu" id="m-team" role="menu" hidden><button type="button" role="menuitem">Refresh</button><button type="button" role="menuitem">Set token…</button><button type="button" role="menuitem" class="danger">Remove source…</button></span></span></div></td>
                 </tr>
                 <tr>
                   <td><span class="badge internal"><svg class="i"><use href="#i-building"/></svg>corp</span> <svg class="i" style="color:var(--faint-fg)"><use href="#i-lock"/></svg><span class="sub mono">http://git.corp.example/ave/marketplace.git · policy</span></td>
-                  <td><span class="mono">c77e310</span><span class="sub">yesterday</span></td>
+                  <td><span class="mono" title="c77e3104d9b2a6f8e1c5d3b7a9f2e4c6d8b0a1f3">c77e310</span><span class="sub">yesterday</span></td>
                   <td class="mono">12</td>
                   <td><span class="status warn">Unreachable — showing cached</span></td>
-                  <td><span class="switch locked" aria-label="Enabled, locked by policy"></span></td>
-                  <td><button class="btn ghost" type="button" aria-label="More"><svg class="i"><use href="#i-more"/></svg></button></td>
+                  <td><span class="switch locked" title="Registered by your organization's policy" aria-label="Enabled, locked by policy"></span></td>
+                  <td><span class="menu-wrap"><button class="btn ghost" type="button" aria-label="More for corp" aria-haspopup="menu" aria-expanded="false" data-menu="m-corp"><svg class="i"><use href="#i-more"/></svg></button>
+                    <span class="menu" id="m-corp" role="menu" hidden><button type="button" role="menuitem">Refresh</button><button type="button" role="menuitem">Set token…</button></span></span></td>
+                </tr>
+                <tr>
+                  <td><strong>design-kit</strong><span class="sub mono">https://github.com/acme/design-kit.git</span></td>
+                  <td><span class="mono" title="2d9e51a7c3b8f0e6d4a2c9b1e7f5a3d8c6b0e4f2">2d9e51a</span><span class="sub">syncing…</span></td>
+                  <td class="mono">24</td>
+                  <td><span class="status" style="color:var(--info)">Syncing</span></td>
+                  <td><span class="switch" aria-label="Enabled"></span></td>
+                  <td><span class="menu-wrap"><button class="btn ghost" type="button" aria-label="More for design-kit" aria-haspopup="menu" aria-expanded="false" data-menu="m-design"><svg class="i"><use href="#i-more"/></svg></button>
+                    <span class="menu" id="m-design" role="menu" hidden><button type="button" role="menuitem">Refresh</button><button type="button" role="menuitem">Set token…</button><button type="button" role="menuitem" class="danger">Remove source…</button></span></span></td>
                 </tr>
                 <tr>
                   <td><strong>korean-skills</strong> <span class="badge">direct</span><span class="sub mono">https://git.example.org/someone/korean-skills.git · skills/proofread</span></td>
-                  <td><span class="mono">0a93b1f</span><span class="sub">2 days ago</span></td>
+                  <td><span class="mono" title="0a93b1f2c4e8d6a0b5c7e9f1a3d5b7c9e2f4a6d8">0a93b1f</span><span class="sub">2 days ago</span></td>
                   <td class="mono">1</td>
                   <td><span class="status err">Auth required</span></td>
                   <td><span class="switch off" aria-label="Disabled"></span></td>
@@ -542,7 +592,7 @@
               </tbody>
             </table>
           </div>
-          <p class="note">The official row cannot be removed; its switch is locked unless policy allows disabling it. Policy-listed sources (corp) show a lock. Plain http is accepted only for hosts the policy names.</p>
+          <p class="note">Official and policy-registered (corp) rows have no Remove. The official switch is locked unless policy allows hiding it. Plain http is accepted only for hosts the policy names. Removing a custom source keeps its installed packages; they show “Source removed”.</p>
         </div>
       </section>
 
@@ -715,14 +765,19 @@
                 <button type="button" aria-pressed="true">Auto</button><button type="button" aria-pressed="false">System</button><button type="button" aria-pressed="false">Managed</button>
               </div>
             </div>
+            <div class="seg" role="group" aria-label="Demo state">
+              <button type="button" data-git="missing" aria-pressed="true">Not found</button><button type="button" data-git="old" aria-pressed="false">Too old</button><button type="button" data-git="progress" aria-pressed="false">Installing</button><button type="button" data-git="failed" aria-pressed="false">Failed</button><button type="button" data-git="ready" aria-pressed="false">Ready</button>
+            </div>
+            <div id="git-old" hidden class="callout warn"><svg class="i"><use href="#i-alert"/></svg><div><strong>System git 2.34.1 is too old — using managed git.</strong> The marketplace needs git 2.38.1 or newer. Auto mode installs a private copy; your system git is not changed.</div></div>
+            <div id="git-failed" hidden class="callout warn"><svg class="i"><use href="#i-alert"/></svg><div><strong>Git could not be installed.</strong> GIT_RUNTIME_INSTALL_FAILED · smoke test: <span class="mono">git --version</span> exited 126. The previous state was kept. <button class="btn" type="button" data-git="progress">Retry</button></div></div>
             <div id="git-missing" class="callout warn"><svg class="i"><use href="#i-alert"/></svg><div><strong>Git was not found on this computer.</strong> Marketplaces are git repositories, so the app needs git to read them. Install a private copy for Ave (≈ 40 MB, verified before use). It does not change your system.</div></div>
             <div id="git-progress" hidden style="display:grid; gap:6px">
-              <div class="phases"><span class="done">✓ checking</span><span class="done">✓ downloading 38.9 MB</span><span class="now">● verifying</span><span>extracting</span><span>testing</span></div>
-              <div class="bar"><i style="width:78%"></i></div>
+              <div class="phases"><span class="done">✓ checking</span><span class="done">✓ downloading 38.9 MB</span><span class="done">✓ verifying</span><span class="done">✓ extracting</span><span class="now">● smoke-testing</span></div>
+              <div class="bar"><i style="width:92%"></i></div>
               <p class="ver">git 2.53.0 · sha256 pinned in this app release</p>
             </div>
-            <div id="git-ready" hidden class="callout info"><svg class="i"><use href="#i-check"/></svg><div><strong>Managed git 2.53.0 is ready.</strong> Stored in the Ave runtime folder. System git is used instead whenever it is 2.27 or newer.</div></div>
-            <div class="row"><span class="spacer"></span><button class="btn primary" type="button" id="git-install">Install Git</button></div>
+            <div id="git-ready" hidden class="callout info"><svg class="i"><use href="#i-check"/></svg><div><strong>Managed git 2.53.0 is ready.</strong> Stored in the Ave runtime folder. System git is used instead whenever it is 2.38.1 or newer.</div></div>
+            <div class="row"><span class="spacer"></span><button class="btn primary" type="button" id="git-install" data-git="progress">Install Git (≈ 40 MB)</button></div>
           </div>
           <div class="panel-card">
             <div class="row"><strong>Check for updates at startup</strong><span class="spacer"></span><span class="switch" aria-label="On"></span></div>
@@ -747,7 +802,9 @@
     { g: "日", n: "日本語", k: "language", d: "Japanese interface language. 98% of messages translated.", s: "official", v: "0.10.0", st: ["install", "Install"] },
     { g: "Ad", n: "API Designer", k: "skill", d: "Design REST or GraphQL APIs, versioning, pagination and error formats.", s: "official", v: "1.1.0", st: ["installed", "Installed"] },
     { g: "Rf", n: "Release Captain", k: "agent", d: "Coordinates release checklists across repositories.", s: "team-tools", v: "0.3.0", st: ["blocked", "Requires Ave 0.12"] },
-    { g: "Ba", n: "Browser Automation", k: "mcp", d: "Headless browser server. Withdrawn by its publisher.", s: "official", v: "0.6.2", st: ["yanked", "Yanked"] }
+    { g: "Ba", n: "Browser Automation", k: "mcp", d: "Headless browser server. Withdrawn by its publisher.", s: "official", v: "0.6.2", st: ["yanked", "Yanked"] },
+    { g: "ORION", n: "ORION", k: "plugin", d: "Orion extension approvals and schedules. Kept installed by your organization.", s: "corp", v: "3.2.0", st: ["required", "Required by your organization"] },
+    { g: "Dg", n: "Diagram Kit", k: "skill", d: "Draw sequence and flow diagrams from a description.", s: "old-team", v: "1.0.4", st: ["removed", "Source removed"] }
   ];
   const badge = (s) => s === "official"
     ? '<span class="badge official"><svg class="i"><use href="#i-shield"/></svg>Ave Official</span>'
@@ -763,13 +820,13 @@
   ).join("");
 
   const notes = {
-    browse: "One catalog from every enabled source. The same name from two sources is two cards, each with its own badge; nothing is merged. The banner comes from the service endpoint, not from a source.",
+    browse: "One catalog from every enabled source. The same name from two sources is two cards, each with its own badge; nothing is merged. The Ave Official badge marks the source and grants nothing else. The first banner comes from the service endpoint; the second lists what the app installed at first start (default installs can be uninstalled; organization-required ones are locked by the policy file).",
     detail: "The install plan walks the ladder: release asset → archive → built tree. Downloaded rungs are trusted only through a sha256 stored in git. The lower card shows a failure with every rung's reason.",
-    sources: "Registered sources, their pinned commits and sync state. Offline or unreachable sources keep serving their last good snapshot.",
+    sources: "Registered sources, their pinned commits (hover for the full SHA) and sync state. Offline or unreachable sources keep serving their last good snapshot. Open a ⋯ menu to see the per-source actions.",
     add: "Step 1 takes an address; step 2 previews the marketplace at a resolved commit before anything is saved. Press the primary button to switch steps.",
     direct: "Install a single package with no marketplace manifest: a git folder, an MCP command, a pasted server.json, or an existing client configuration.",
     update: "Updates that add permissions, or that come from rewritten history, need an explicit decision. The Update button unlocks after the checkbox.",
-    git: "Detected git state and the managed install. Press Install Git to step through the phases."
+    git: "Detected git state and the managed install. Use the demo state buttons to see each state."
   };
   const views = document.querySelectorAll("[data-view]");
   const tabs = document.querySelectorAll(".switcher button");
@@ -779,10 +836,36 @@
     document.getElementById("screen-note").textContent = notes[name];
   }
   tabs.forEach((t) => t.addEventListener("click", () => show(t.dataset.screen)));
+  function closeMenus(except) {
+    document.querySelectorAll(".menu").forEach((m) => { if (m !== except) m.hidden = true; });
+    document.querySelectorAll("[aria-haspopup='menu']").forEach((b) => {
+      const id = b.getAttribute("aria-controls") || b.dataset.menu;
+      if (!except || id !== except.id) b.setAttribute("aria-expanded", "false");
+    });
+  }
   document.addEventListener("click", (e) => {
+    const opener = e.target.closest("[aria-haspopup='menu']");
+    if (opener) {
+      const menu = document.getElementById(opener.getAttribute("aria-controls") || opener.dataset.menu);
+      const open = menu.hidden;
+      closeMenus(open ? menu : null);
+      menu.hidden = !open;
+      opener.setAttribute("aria-expanded", String(open));
+      return;
+    }
+    if (!e.target.closest(".menu")) closeMenus(null);
     const go = e.target.closest("[data-go]");
-    if (go) { show(go.dataset.go); }
+    if (go) {
+      if (go.tagName === "A") e.preventDefault();
+      closeMenus(null);
+      show(go.dataset.go);
+      if (go.dataset.dtabGo) {
+        const t = document.querySelector('[data-dtab="' + go.dataset.dtabGo + '"]');
+        if (t) t.click();
+      }
+    }
   });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMenus(null); });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && e.target.matches(".card")) show("detail");
   });
@@ -812,15 +895,14 @@
   const accept = document.getElementById("accept-rewrite");
   accept.addEventListener("change", () => { document.getElementById("apply-update").disabled = !accept.checked; });
 
-  const gitBtn = document.getElementById("git-install");
-  gitBtn.addEventListener("click", () => {
-    const missing = document.getElementById("git-missing");
-    const progress = document.getElementById("git-progress");
-    const ready = document.getElementById("git-ready");
-    if (!missing.hidden) { missing.hidden = true; progress.hidden = false; gitBtn.textContent = "Finish (demo)"; }
-    else if (!progress.hidden) { progress.hidden = true; ready.hidden = false; gitBtn.textContent = "Reset (demo)"; }
-    else { ready.hidden = true; missing.hidden = false; gitBtn.textContent = "Install Git"; }
-  });
+  const gitStates = ["missing", "old", "progress", "failed", "ready"];
+  function gitState(name) {
+    gitStates.forEach((n) => { document.getElementById("git-" + n).hidden = n !== name; });
+    document.querySelectorAll(".seg [data-git]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.git === name)));
+    document.getElementById("git-install").hidden = !(name === "missing" || name === "old");
+  }
+  document.querySelectorAll("[data-git]").forEach((b) => b.addEventListener("click", () => gitState(b.dataset.git)));
+  gitState("missing");
 
   const initial = (location.hash || "").replace("#", "");
   show(notes[initial] ? initial : "browse");

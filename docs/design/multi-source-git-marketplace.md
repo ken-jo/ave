@@ -14,13 +14,13 @@
 
 | Term | Meaning |
 |---|---|
-| **Source** | A registered git repository the app reads packages from. Kinds: `official`, `custom`, `direct`. |
+| **Source** | A registered git repository the app reads packages from. Origins: `official` (hard-coded in the app), `managed` (registered by the system policy file), `custom` (added by the user), `direct` (one package, no marketplace). |
 | **Marketplace repository** | A source whose root has `marketplace.json`, or that follows the conventional layout (§3.3). |
 | **Package** | One installable unit: `plugin`, `mcp`, `skill`, `agent`, `theme`, `font`, `language`, `provider`, `messaging-connection`. |
-| **Descriptor** | `ave-package.json` in a package directory: kind, name, version, compatibility, payload. |
+| **Descriptor** | `ave-package.json` in a package directory: kind, name, version, minimum app version, declared authority, payload. |
 | **Pin** | The commit SHA a source is currently read at. |
 | **Snapshot** | The parsed, validated catalog of one source at one pin. Immutable. |
-| **Install plan** | What the resolver will do for one package version: artifact rungs, files, launcher, and required consent. |
+| **Install plan** | What the resolver will do for one package version, bound to one snapshot commit: artifact rungs, files, launcher, required consent. |
 | **Rung** | One step of the plugin artifact ladder: `release`, `archive`, `tree`. |
 
 ## 2. Client state on disk
@@ -29,47 +29,55 @@
 ~/.ave/
   installation-id                     # random UUID, local only (rollout bucketing)
   marketplaces/
-    sources.json                      # source registry (§2.1)
+    sources.json                      # custom and direct sources (§2.1)
     <sourceId>/
-      repo.git/                       # bare partial clone
-      snapshots/<commit>.json         # validated snapshot (§2.2)
-      sync.json                       # last sync outcome
+      repo.git/                       # bare partial clone (blob:none)
+      snapshots/<commit>.json         # validated snapshots (§2.2)
+      state.json                      # pin, enabled, last sync outcome (§2.1)
   packages/
     <kind>/<name>/<version>/          # installed content packages
     ledger.json                       # installed content packages + origin
+    default-installs.json             # default-install keys already applied on this machine (§10.2)
   plugins/                            # unchanged plugin install root
   runtime/git/<version>/              # managed git copy (§9)
 ```
 
-### 2.1 `sources.json`
+### 2.1 Source records
 
 ```ts
 interface SourcesFile {
   version: 1;
-  sources: SourceEntry[];
+  sources: SourceEntry[];             // custom and direct only
 }
 
 interface SourceEntry {
-  id: string;                 // ^[a-z0-9][a-z0-9-]{1,62}$, reserved names rejected
-  origin: "official" | "custom" | "direct";
-  url: string;                // https://…, ssh://…, git@host:path; http:// only for policy-listed hosts (§12)
+  id: string;                 // ^[a-z0-9][a-z0-9-]{1,62}$, reserved names rejected (§5.1)
+  origin: "custom" | "direct";
+  url: string;                // stored in normalized form (§7.1); http only for policy-listed hosts
   ref?: string;               // branch or tag; default = remote HEAD
   subdir?: string;            // direct sources only: package path inside the repo
-  pinnedCommit: string | null;   // 40-hex; null until the first successful sync
-  enabled: boolean;
   auth: { kind: "none" } | { kind: "token"; host: string } | { kind: "ssh" };
   addedAt: string;            // ISO-8601
   label?: string;             // user-visible override of displayName
-  acceptedRewriteAt?: string; // custom/direct: last explicit history-rewrite acceptance
+}
+
+interface SourceState {       // marketplaces/<id>/state.json, every origin
+  pinnedCommit: string | null;   // 40-hex; null until the first successful sync
+  enabled: boolean;              // browsing and installing only (§7.3)
+  lastSync?: { at: string; result: "ok" | ErrorCode; candidate?: string };
+  pendingRewrite?: { candidate: string; seenAt: string };   // custom/direct awaiting review
 }
 ```
 
-- The official entries are not stored here. They come from the build constant
-  `OFFICIAL_MARKETPLACE` (`id: "ave"`, primary URL, optional mirror URLs) and
-  their pin is stored in `marketplaces/ave/sync.json`. The user can disable
-  the official source only when managed policy allows it.
-- Tokens are stored in the existing encrypted secret store under
-  `marketplace.gitToken.<host>`; `sources.json` never holds a secret.
+- The official source comes from the build constant `OFFICIAL_MARKETPLACE`
+  (`id: "ave"`, primary URL, optional mirror URLs). Managed sources come from
+  the system policy file (§12). Neither is stored in `sources.json`; both keep
+  their state in `state.json`.
+- Tokens live in the existing encrypted secret store under
+  `marketplace.gitToken.<normalized host>`; no file above holds a secret.
+- `snapshots/` keeps the current pin, the previous pin, and every commit that
+  an installed package's `origin.commit` still references; older files are
+  pruned after each successful sync.
 
 ### 2.2 Snapshot
 
@@ -80,7 +88,7 @@ interface SourceSnapshot {
   fetchedAt: string;
   marketplace: { name: string; displayName: string; description?: string; owner?: { name: string; url?: string } };
   packages: CatalogPackage[];          // §4, after validation and normalization
-  policy?: { revocations: Revocation[]; grants: Grant[] }; // official only (§10)
+  revocations: Revocation[];           // this source's own policy/revocations.json (§10.4)
   diagnostics: SnapshotDiagnostic[];   // per-package rejections, shown in the Sources view
 }
 ```
@@ -97,17 +105,18 @@ candidate commit and keeps the previous pin.
 ```ts
 origin?: {
   sourceId: string;
-  sourceOrigin: "official" | "custom" | "direct";
+  sourceOrigin: "official" | "managed" | "custom" | "direct";
   commit: string;
   packagePath: string;
   version: string;
-  rung: "release" | "archive" | "tree";
-  artifactSha256: string;      // sha256 of the zip (release/archive) or tree digest (tree, §6.4)
+  rung: "release" | "archive" | "tree" | "legacy";   // "legacy": bound by the §16.3 migration, no digest yet
+  artifactSha256: string | null;   // zip sha256 (release/archive), tree digest (§6.4), null for legacy
   installedAt: string;
 };
 ```
 
-`installSource` keeps its existing values. Content packages record the same
+`installSource` becomes `user | local-dev`; the `admin` value is removed with
+the managed-install mechanism (§10.1, §16.3). Content packages record the same
 origin in `packages/ledger.json`.
 
 ## 3. Marketplace repository layout
@@ -116,7 +125,7 @@ origin in `packages/ledger.json`.
 
 ```
 marketplace.json                 # index (generated by CI, committed)
-plugins/<name>/ave-package.json # + optional built tree (plugin.json, dist/)
+plugins/<name>/ave-package.json # release/archive pins; optional built tree (plugin.json, dist/)
 mcp/<name>/ave-package.json     # + optional server.json
 skills/<name>/                   # ave-package.json, SKILL.md, resources
 agents/<name>/                   # ave-package.json, AGENTS.md
@@ -125,16 +134,17 @@ fonts/<name>/                    # ave-package.json, font.json, files/
 languages/<locale>/              # ave-package.json, language.json, messages.json
 providers/<name>/                # ave-package.json, provider.json
 messaging/<name>/                # ave-package.json, connection.json
-policy/revocations.json
-policy/grants.json
+policy/revocations.json          # revocations of this repository's own packages
 .github/CODEOWNERS
 .github/workflows/               # validate, index, release-pin
 ```
 
 ### 3.2 Custom marketplace
 
-Same layout; `policy/` is ignored for custom sources. `marketplace.json` may
-be hand-written and may list only `path` for each package (§4.2).
+Same layout, including the optional `policy/revocations.json`, which only ever
+applies to packages installed from that same source (§10.4).
+`marketplace.json` may be hand-written and may list only `path` for each
+package (§4.2).
 
 ### 3.3 Conventional layout without `marketplace.json`
 
@@ -153,7 +163,7 @@ dialog offers the direct-install flow instead.
 interface MarketplaceIndex {
   $schema?: string;
   schemaVersion: 1;
-  name: string;                     // must equal the source id for official; informative for custom
+  name: string;                     // must equal the source id for official; informative otherwise
   displayName: string;
   description?: string;
   owner?: { name: string; url?: string };
@@ -163,19 +173,21 @@ interface MarketplaceIndex {
 interface IndexPackage {
   kind: PackageKind;
   name: string;                     // unique per kind within this index
-  path: string;                     // repo-relative, "./"-free, no "..", "/" separators
+  path: string;                     // repo-relative, no "./" prefix, no "..", "/" separators
   displayName?: string;
   description?: string;
   keywords?: string[];
-  icon?: string;                    // repo-relative image path
-  latest?: string;                  // semver; must be in versions[] when present
+  icon?: string;                    // repo-relative .png/.jpg/.webp, ≤ 256 KB, served from the git tree only
+  latest?: string;                  // semver; must be in versions[] and not yanked
   versions?: IndexVersion[];        // newest first; absent = read the descriptor at the pin
 }
 
 interface IndexVersion {
   version: string;                  // semver 2.0.0
   commit: string;                   // 40-hex; the commit whose descriptor declares this version
-  engines: { ave: string };        // copy of the descriptor's range
+  minAppVersion: string;            // copy of the descriptor's value
+  platforms?: Array<"darwin" | "win32" | "linux">;   // copy of the descriptor's value
+  authority?: PluginAuthority;      // plugin kind: copy of the descriptor's authority (§5.2)
   artifact?: PluginArtifactPins;    // plugin kind only (§5.2)
   rollout?: { percent: number };    // 1..100; absent = 100
   yanked?: { reason: string; at: string };
@@ -187,22 +199,22 @@ interface IndexVersion {
 
 - `(kind, name)` is unique; `(kind, name, version)` maps to exactly one
   commit. CI rejects re-publishing an existing version at a new commit.
-- Versions strictly increase per package (existing plugin rule, now for all
-  kinds).
-- When `versions` is absent, the client reads `ave-package.json` at
-  `path` at the pinned commit and treats it as the single available version.
+- Versions strictly increase per package (the existing plugin rule, now for
+  every kind). `latest` never names a yanked version.
+- When `versions` is absent, the client reads `ave-package.json` at `path`
+  at the pinned commit and treats it as the single available version.
 - Unknown root keys are rejected in `schemaVersion: 1`.
 
 ### 4.3 Official index generation
 
 CI regenerates `marketplace.json` from the previous index plus the descriptors
-at the merge commit and fails the PR if the committed file differs. A merge
-to `main` is the publish (D8). The release-pin workflow (§6.3) is the only
+at the merge commit and fails the PR if the committed file differs. A merge to
+`main` is the publish (D8). The release-pin workflow (§6.3) is the only
 automation that edits artifact pins.
 
 ## 5. Package descriptor `ave-package.json`
 
-### 5.1 Common fields
+### 5.1 Common fields and naming
 
 ```ts
 interface PackageDescriptor {
@@ -211,7 +223,7 @@ interface PackageDescriptor {
   kind: PackageKind;
   name: string;                     // plugin: equals plugin.json `name`
   version: string;                  // required, semver
-  engines: { ave: string };        // required, semver range over the app version
+  minAppVersion: string;            // required, plain MAJOR.MINOR.PATCH
   displayName?: string;
   description?: string;
   author?: { name: string; url?: string; email?: string };
@@ -223,17 +235,21 @@ interface PackageDescriptor {
 }
 ```
 
-`engines.ave` is evaluated against the running app's `X.Y.Z`. Pre-release app
-builds match a range only if the range itself names a pre-release of the same
-`X.Y.Z`; a plain range such as `>=0.11.0` never admits `0.12.0-beta.1`.
+- Compatibility uses the host's existing `minAppVersion` contract and its
+  comparison, `appVersionSatisfiesMin` (`src/shared/semver-compare.ts`): a
+  package installs and runs when `appVersion >= minAppVersion`, and the check
+  fails closed when either value is unparseable. No second compatibility
+  vocabulary is introduced.
+- Source ids: `ave`, `official`, `ave-official` and every `ave-*` id are
+  reserved. The check re-runs on every load.
 
 ### 5.2 Payload by kind
 
 | Kind | Payload | Files the package directory may contain |
 |---|---|---|
-| `plugin` | `{ artifact: PluginArtifactPins }` | `ave-package.json`; for the tree rung also `plugin.json`, `dist/**`, `assets/**` |
+| `plugin` | `{ authority: PluginAuthority; artifact: PluginArtifactPins }` | `ave-package.json`; for the tree rung also `plugin.json`, `dist/**`, `assets/**` |
 | `mcp` | `{ server: McpServerSpec } \| { serverJson: "server.json", select?: { package?: number; remote?: number } }` | `ave-package.json`, `server.json`, optional `server/**` for a package-local stdio command |
-| `skill` | `{ entry: "SKILL.md" }` | `SKILL.md`, `references/**`, `assets/**` (text and images only) |
+| `skill` | `{ entry: "SKILL.md" }` | `SKILL.md`, `references/**`, `assets/**` |
 | `agent` | `{ entry: "AGENTS.md" }` | `AGENTS.md` |
 | `theme` | `{ entry: "theme.json" }` | `theme.json`, optional preview image |
 | `font` | `{ entry: "font.json" }` | `font.json`, `files/*.woff2\|woff\|ttf\|otf`, `LICENSE` |
@@ -242,13 +258,27 @@ builds match a range only if the range itself names a pre-release of the same
 | `messaging-connection` | `{ entry: "connection.json" }` | `connection.json` (today's messaging asset minus `type`) |
 
 ```ts
+// Copied verbatim from the plugin's plugin.json (extensions["ai.agent-connector.ave"]).
+// The catalog reads it without downloading bytes; install compares it with
+// the staged plugin.json (§6.2). It is the trusted "expected" side that
+// today's catalog row provides to assertInstalledManifestMatchesCatalog.
+interface PluginAuthority {
+  capabilities: string[];
+  networkAccess?: unknown;          // same shape as the manifest field
+  hostSecrets?: { read: string[] };
+  pluginAccess?: unknown;
+  auth?: unknown;
+  requires?: { capabilities?: string[]; minAppVersion: string };
+  dependencies?: Array<string | { id: string; version?: string }>;
+}
+
 interface PluginArtifactPins {
   release?: {
-    repo?: string;      // "owner/name" on the same host; default = the source repo
-    tag?: string;       // default "v{version}" (single-package repo) or "{name}-v{version}" (monorepo)
+    repo: string;       // "owner/name" on the same host as the source; required in marketplace repositories
+    tag?: string;       // default "v{version}"
     asset?: string;     // default "{name}-{version}.zip"
-    url?: string;       // explicit URL for non-GitHub release hosts
-    sha256?: string;    // required for the rung to be used (§6.2)
+    url?: string;       // explicit URL for non-GitHub release hosts (then repo/tag/asset are ignored)
+    sha256: string;     // required: the rung is used only with a pin stored in git
   };
   archive?: { url: string; sha256: string };
   tree?: string;        // repo-relative directory holding plugin.json + dist/; default = package path
@@ -260,38 +290,47 @@ type McpServerSpec =
   | { transport: "http"; url: string; headers?: HeaderField[] };
 ```
 
-A `stdio` command that is not `npx`, `uvx` or `docker` must be a path relative
-to the package directory (`server/…`); absolute paths and `..` are rejected.
+- `release.repo` may be omitted only for a **direct** source, where it
+  defaults to the source repository itself.
+- A `stdio` command that is not `npx`, `uvx` or `docker` must be a path
+  relative to the package directory (`server/…`); absolute paths and `..` are
+  rejected.
 
-### 5.3 Plugin manifest addition
+### 5.3 Plugin manifest changes
 
-The host plugin schema (`schemas/plugin-manifest.schema.json`) gains
-`extensions["ai.agent-connector.ave"].engines`:
+For a plugin installed from any git source:
 
-```jsonc
-"engines": { "ave": ">=0.11.0 <0.13.0" }
-```
+- `extensions["ai.agent-connector.ave"].requires.minAppVersion` is **required** (the
+  schema keeps it optional for local development installs) and must equal the
+  descriptor's `minAppVersion`.
+- Every field of `PluginAuthority` must equal the staged `plugin.json`.
 
-It is required for any plugin installed from a git source and must equal the
-descriptor's `engines`. The descriptor is what the catalog reads without
-downloading bytes; `plugin.json` is what travels with the bytes. The install
-check compares them the same way `assertInstalledManifestMatchesCatalog`
-compares capabilities today.
+Removed from the manifest schema, the SDK copy, `manifest-validation.ts` and
+their tests in one change (blueprint phase 6):
+
+- `extensions["ai.agent-connector.ave"].installPolicy` — there are no managed packages
+  (§10.1). A manifest that still carries the field is rejected with a message
+  naming the field, not silently ignored.
+- `extensions["ai.agent-connector.ave"].publisher` — under D4 there is no verified
+  publishing identity for it to name.
 
 ### 5.4 Content validation limits
 
 | Kind | Max total | Max files | Allowed extensions |
 |---|---|---|---|
-| skill | 2 MB | 64 | `.md .txt .json .yaml .yml .png .jpg .svg` |
+| skill | 2 MB | 64 | `.md .txt .json .yaml .yml .png .jpg .webp` |
 | agent | 256 KB | 1 | `.md` |
-| theme | 256 KB | 4 | `.json .png .jpg` |
+| theme | 256 KB | 4 | `.json .png .jpg .webp` |
 | font | 20 MB | 32 | `.json .woff2 .woff .ttf .otf` + `LICENSE` |
 | language | 4 MB | 2 | `.json` |
 | provider, messaging-connection | 64 KB | 1 | `.json` |
 | plugin (any rung) | existing `marketplace-artifact-limits.ts` | | |
 
-Links, devices and paths that escape the package directory are rejected
-(reusing `sideload-filter.ts` and `zip-entry-path.ts`).
+SVG is excluded from content kinds: it is an active document when rendered
+inline. Links, devices and paths that escape the package directory are
+rejected (reusing `sideload-filter.ts` and `zip-entry-path.ts`). Images and
+fonts reach the renderer only through a host asset scheme, never by file
+path.
 
 ## 6. Resolution
 
@@ -299,122 +338,171 @@ Links, devices and paths that escape the package directory are rejected
 
 For a package row in one source snapshot:
 
-1. Drop versions whose `engines.ave` does not include the app version.
-2. Drop yanked versions (still shown in history).
+1. Drop versions for which `appVersionSatisfiesMin(appVersion, minAppVersion)`
+   is false.
+2. Drop yanked versions (still shown in history; an installed yanked version
+   keeps running and shows "yanked" with the reason).
 3. Drop versions whose `platforms` excludes the current OS.
-4. Drop versions whose rollout excludes this installation:
+4. Drop pre-release versions unless `marketplace.canaryOptIn` is on.
+5. Drop versions whose rollout excludes this installation:
    `bucket = uint32(sha256("${installationId}:${sourceId}:${kind}:${name}:${version}")[0..4]) % 100`;
    eligible when `bucket < percent`.
-5. Drop versions revoked by the official policy (official source only).
-6. The highest remaining version is the **candidate**. If none remain but some
-   were dropped only by `engines`, the row shows `upgrade_required` with the
-   lowest app version that would satisfy the newest version's range.
+6. Drop versions the same source revokes (§10.4).
+7. The highest remaining version is the **candidate**. If none remain but
+   some were dropped only by step 1, the row shows `upgrade_required` with the
+   newest version's `minAppVersion`.
 
 ### 6.2 Plugin artifact ladder
 
 ```
+plan = { snapshotCommit, versionCommit, rungs: [] }        // fixed at plan time
 for rung in [release, archive, tree]:
-  if rung not declared (and not conventional)      -> skip(rung, NOT_DECLARED)
-  if rung in {release, archive} and no sha256 pin  -> skip(rung, ARTIFACT_NOT_PINNED)
-  fetch rung
-    release: https GET, follow redirects to the release host's CDN
-    archive: https GET
-    tree:    sparse checkout of `tree` at the version's commit
-  on transport error                               -> fail(rung, SOURCE_UNREACHABLE / …) and continue
+  if rung not declared                               -> skip(rung, NOT_DECLARED)
+  if rung in {release, archive} and no sha256 pin    -> skip(rung, ARTIFACT_NOT_PINNED)
+  fetch rung                                          // every URL passes §7.4 first
+    release: https GET (token only to the origin host; auth headers stripped on cross-host redirects)
+    archive: https GET (same rule)
+    tree:    export `tree` at versionCommit (§9.3)
+  on transport error                                 -> fail(rung, SOURCE_UNREACHABLE / …) and continue
   verify
     release/archive: sha256(zip) == pin, zip limits, entry paths
     tree:            file rules, no links, digest computed (§6.4)
-  on verification error                            -> fail(rung, ARTIFACT_DIGEST_MISMATCH / …) and continue
-  stage -> check plugin.json name/version/engines/capabilities against the descriptor
-  on mismatch                                      -> stop with MANIFEST_MISMATCH (do not try lower rungs)
+  on verification error                              -> fail(rung, ARTIFACT_DIGEST_MISMATCH / …) and continue
+  stage, then compare plugin.json with the descriptor:
+    name, version, requires.minAppVersion, every PluginAuthority field
+  on mismatch                                        -> stop with MANIFEST_MISMATCH (do not try lower rungs)
   return staged artifact
 stop with NO_INSTALLABLE_ARTIFACT(rungs[])
 ```
 
-- "Conventional" means the release rung is also attempted for GitHub sources
-  when the descriptor has `artifact.release.sha256` but no `tag`/`asset`: the
-  defaults in §5.2 are used.
+- The plan records `snapshotCommit` and the version's commit. Execution uses
+  only those, so a sync that moves the pin between plan and execute cannot
+  change what is installed.
 - A manifest mismatch stops the ladder: the package is inconsistent, and
   trying another rung would hide that.
-- Every rung outcome (`used`, `skipped: reason`, `failed: code`) is part of the
-  install plan shown to the user and is written to the receipt.
+- Every rung outcome (`used`, `skipped: reason`, `failed: code`) is part of
+  the plan shown to the user and is written to the receipt.
+- Dependency preflight (`dependency-resolver.ts`, `requires.capabilities`)
+  runs on the descriptor's authority before any download, as it runs on the
+  catalog row today.
 
 ### 6.3 Official release flow
 
-1. The plugin's own repository tags `vX.Y.Z` and its CI builds
-   `{name}-{X.Y.Z}.zip` and uploads it as a release asset.
+1. The plugin's own repository tags `vX.Y.Z`; its release workflow builds
+   `{name}-{X.Y.Z}.zip` and uploads it as a release asset of **that**
+   repository.
 2. The official marketplace's `release-pin` workflow (or a human) opens a PR
-   that sets `plugins/<name>/ave-package.json` `version`, `engines` and
-   `artifact.release.sha256`, computed from the downloaded asset.
+   that sets `plugins/<name>/ave-package.json` `version`, `minAppVersion`,
+   `authority` and `artifact.release` (`repo`, `sha256`), computed from the
+   downloaded asset.
 3. CI verifies the asset hash, unpacks it, checks `plugin.json` against the
    descriptor, and regenerates the index.
 4. Merge = publish.
 
 ### 6.4 Tree digest
 
-For the tree rung, `artifactSha256` is
-`sha256` over the lines `"<mode> <sha256(file)> <path>\n"` for every file,
-sorted by path bytes, with `mode` ∈ {`100644`, `100755`}. It is recorded in the
-receipt and lets a later reinstall of the same version prove it got the same
-bytes.
+For the tree rung, `artifactSha256` is `sha256` over the lines
+`"<mode> <sha256(file)> <path>\n"` for every file, sorted by path bytes, with
+`mode` ∈ {`100644`, `100755`}. It is recorded in the receipt and lets a later
+reinstall of the same version prove it got the same bytes.
 
 ## 7. Source lifecycle
 
-### 7.1 Add (preview → confirm)
+### 7.1 URL normalization
 
-1. **Parse** the input: `https://…`, `ssh://…`, `git@host:path`,
-   `owner/repo` (expanded to `https://github.com/owner/repo.git`). Reject
-   `file:`, `ext::`, credentials in the URL, and hosts blocked by policy.
-   Plain `http://` is accepted only for a host listed in the managed policy's
-   `marketplaces.allowHttpHosts` (internal git servers that have no TLS);
-   dev/test builds may also allow loopback, as `cloudAllowPrivateNetwork`
-   does today.
-2. **Probe** with `git ls-remote` (token or SSH if configured). Auth failure
-   returns `SOURCE_AUTH_REQUIRED` and the dialog asks for a token.
-3. **Fetch** the ref into a temporary bare repo, sparse-read the root.
+One function, `normalizeSourceUrl(input)`, produces
+`{ scheme: "https" | "ssh" | "http", host, port, path }` and the stored
+string:
+
+- `owner/repo` → `https://github.com/owner/repo`.
+- scp form `user@host:path` → `ssh://user@host/path`.
+- host: lowercase, IDNA to ASCII, default port removed.
+- path: percent-encoding normalized, trailing `/` and `.git` removed.
+- rejected: `file:`, `ext::`, any other scheme, credentials in the URL, query
+  and fragment.
+
+Policy allow/block matching (§12), reserved-name checks, token lookup and
+duplicate detection all use the normalized form.
+
+### 7.2 Add (preview → confirm)
+
+1. **Normalize** the input (§7.1) and apply the network gate (§7.4). Plain
+   `http://` is accepted only for a host listed in
+   `marketplaces.allowHttpHosts`; dev/test builds may also allow loopback, as
+   `cloudAllowPrivateNetwork` does today.
+2. **Probe** with `git ls-remote`. Auth failure returns `SOURCE_AUTH_REQUIRED`
+   and the dialog asks for a token; an unknown SSH host key returns
+   `SOURCE_SSH_HOST_UNKNOWN`; a missing ref returns `SOURCE_REF_NOT_FOUND`.
+3. **Fetch** the ref into a temporary bare repo and read the root.
 4. **Classify**: marketplace (index or conventional layout) → preview; single
-   package (descriptor, `plugin.json`, `SKILL.md`, `server.json` at the root
-   or the given subdir) → offer direct install; otherwise
+   package (descriptor, `plugin.json`, `SKILL.md`, `AGENTS.md`, `server.json`
+   at the root or the given subdir) → direct-install preview; otherwise
    `SOURCE_NOT_A_MARKETPLACE`.
-5. **Preview** returns: resolved commit, marketplace name and owner, package
-   counts per kind, how many packages execute code (plugins + MCP), and
-   validation diagnostics.
+5. **Preview** returns a `previewId` (single use, expires after 10 minutes;
+   the temporary repo is deleted on expiry or cancel), the resolved commit,
+   marketplace name and owner, package counts per kind, how many packages
+   execute code (plugins + MCP), and validation diagnostics.
 6. **Confirm** writes the entry, moves the temporary repo into place and
-   publishes the snapshot. The id defaults to the index `name`, or is asked for
-   if that is reserved or already taken.
+   publishes the snapshot. The id defaults to the index `name`; a reserved or
+   taken id (`SOURCE_ID_TAKEN`) makes the dialog ask for another.
 
-### 7.2 Sync
+### 7.3 Sync
 
-Triggered after boot (non-blocking), every 6 hours while running, and manually.
+Triggered after boot (non-blocking), every `marketplace.updateCheckIntervalMs`
+(default 6 hours) while running, and manually. A source syncs while it is
+enabled **or** while any installed package is bound to it, so revocations and
+update notices keep reaching installed packages from a hidden source.
 
 ```
-fetch ref (partial, no tags except the ref)
+fetch ref with --filter=blob:none (full commit history, no --depth, no tags except the ref)
 candidate = resolved commit
 if candidate == pin: done
 if not is_ancestor(pin, candidate):
-  official -> keep pin, SOURCE_HISTORY_REWRITTEN
-  custom   -> keep pin, mark "history rewritten — review" until the user accepts
+  official, managed -> keep pin, SOURCE_HISTORY_REWRITTEN
+  custom, direct    -> keep pin, set pendingRewrite; the user may accept it in the update review
 parse + validate index at candidate
   invalid -> keep pin, SOURCE_INDEX_INVALID
 write snapshots/<candidate>.json, then atomically set pin = candidate
 emit marketplace:catalog-changed
 ```
 
-For the official source, the client tries the primary URL and then each
-mirror; any of them may supply the candidate, and the history rule applies
-unchanged.
+- Commits and trees are small without blobs, so the full history is fetched
+  and the ancestry check never fails for lack of objects.
+- For the official source the client tries the primary URL and then each
+  mirror; any of them may supply the candidate, and the history rule applies
+  unchanged.
 
-### 7.3 Offline
+### 7.4 Network targets and policy
+
+Every network target the marketplace touches — git remotes, release and
+archive URLs, and the service endpoint — goes through one gate:
+
+1. normalize (§7.1; for `https` downloads, the same host/port/path rules);
+2. apply managed policy `marketplaces.block`, then `marketplaces.allow` (when
+   present);
+3. apply the private-network guard now in `cloud-marketplace-fetcher.ts`
+   (moved to a shared module when that file is deleted): loopback,
+   link-local, private and metadata addresses are refused unless the host is
+   policy-listed or a dev build allows loopback;
+4. git never follows redirects (`http.followRedirects=false`); HTTPS
+   downloads follow a redirect only after re-running this gate on the new
+   URL, and never forward auth headers to a different host.
+
+Icons and images are read from the git tree only; no package field makes the
+app fetch an arbitrary image URL.
+
+### 7.5 Offline
 
 The last good snapshot is served. Installing a package whose bytes are not
 already fetched fails with `SOURCE_UNREACHABLE`; nothing falls back to a
 different source.
 
-### 7.4 Remove
+### 7.6 Remove
 
-Removing a source keeps the packages installed from it. They show
-"source removed — no updates", and the Installed view offers uninstall.
-Re-adding the same URL re-binds them.
+Removing a source keeps the packages installed from it. They show "source
+removed — no updates", and the Installed view offers uninstall. Re-adding the
+same normalized URL re-binds them. Official and managed sources cannot be
+removed.
 
 ## 8. Direct install (no marketplace manifest)
 
@@ -430,14 +518,16 @@ Re-adding the same URL re-binds them.
 ### 8.2 Synthesized descriptor
 
 - `ave-package.json` present → used as is.
-- `plugin.json` → `kind: "plugin"`, `name`/`version` from it, `engines` from
-  `extensions["ai.agent-connector.ave"].engines` (required; missing →
-  `PACKAGE_COMPAT_UNDECLARED`). Artifact: release rung only if the repository
-  at the pinned commit also holds a descriptor with `artifact.release.sha256`;
-  otherwise the tree rung.
+- `plugin.json` → `kind: "plugin"`; `name`, `version`, `authority` and
+  `minAppVersion` come from it (`requires.minAppVersion` missing →
+  `PACKAGE_COMPAT_UNDECLARED`). Artifact: the tree rung, unless the resolved
+  commit also holds an `ave-package.json` with `artifact.release.sha256`. The
+  usual flow is: tag, publish the release asset, then commit the pinned
+  descriptor; the user's ref must include that later commit.
 - `SKILL.md` / `AGENTS.md` → `version` from front matter if present, else
-  `0.0.0+g<commit12>`; `engines` defaults to `*` for these non-executing kinds.
-- `server.json` → `version` from the file.
+  `0.0.0+g<commit12>`; `minAppVersion` defaults to `0.0.0` for these
+  non-executing kinds.
+- `server.json` → `version` from the file; `minAppVersion` `0.0.0`.
 
 A direct package updates when its ref moves to a descendant commit that
 declares a higher version (or any new commit for synthesized `0.0.0+g…`
@@ -445,14 +535,19 @@ versions), after the same update review as marketplace packages.
 
 ## 9. Git runtime
 
-### 9.1 Detection
+### 9.1 Detection and minimum version
+
+The minimum usable git is **2.38.1**: partial clone with `blob:none`,
+`rev-list --missing=print`, protocol v2 and the `protocol.file.allow` setting
+all behave as §9.3 relies on from that release.
 
 ```
 mode = settings.marketplace.git.mode   // "auto" | "system" | "managed"
 system: first `git` on PATH (plus /usr/bin/git, /opt/homebrew/bin/git,
-        C:\Program Files\Git\cmd\git.exe); require `git --version` >= 2.27
+        C:\Program Files\Git\cmd\git.exe); require `git --version` >= 2.38.1
 managed: ~/.ave/runtime/git/<pinnedVersion>/ present and smoke-tested
 auto: system if usable, else managed if present, else state "missing"
+      (a system git older than 2.38.1 is reported as too old and auto uses managed)
 ```
 
 On macOS, `/usr/bin/git` without the Command Line Tools is a shim that opens an
@@ -478,46 +573,242 @@ const MANAGED_GIT = {
 
 Phases reported to the UI: `checking → downloading(bytes) → verifying →
 extracting → smoke-testing → ready | failed(code)`. Download goes through the
-PAC-aware fetcher. Extraction goes to a temp directory and is renamed into
-place. A failed or partial install never replaces a working one.
+PAC-aware fetcher and the §7.4 gate. Extraction goes to a temp directory and
+is renamed into place. A failed or partial install never replaces a working
+one.
+
+Managed-mode environment, set on every call:
+
+- `PATH` prefixed with the managed `bin`; `GIT_EXEC_PATH` = the managed
+  `libexec/git-core`; `GIT_TEMPLATE_DIR` = an empty Ave-owned directory.
+- CA roots: `GIT_SSL_CAINFO` = an Ave-built bundle made of the copy's shipped
+  roots plus the corporate roots that `src/main/corp-ca-extract.ts` already
+  extracts from the OS store. On Windows, `http.sslBackend=schannel` is set
+  instead, so the OS store is used directly. Which store the macOS and Linux
+  copies consult by default is verified in blueprint phase 1 before this is
+  finalized.
 
 ### 9.3 Invocation contract
 
-Every call goes through one function, `runGit(args, { cwd, sourceId })`:
+Every call goes through one function, `runGit(args, { cwd, sourceId })`.
 
-- env: `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=<host helper>`,
-  `SSH_ASKPASS_REQUIRE=never`, `GIT_ALLOW_PROTOCOL=https:ssh` (plus `http`
-  only when the source's host is in `marketplaces.allowHttpHosts`),
-  `LC_ALL=C`; managed mode adds `GIT_CONFIG_NOSYSTEM=1`.
-- config flags: `-c protocol.file.allow=never -c submodule.recurse=false
-  -c core.fsmonitor=false -c core.hooksPath=<empty dir> -c http.proxy=<PAC>`.
-- timeouts: `ls-remote` 20 s, `fetch` 120 s (configurable), `sparse-checkout` 60 s.
-- output limits and abort signals follow the existing process helpers.
-- Commands used: `ls-remote`, `init --bare`, `fetch --filter=blob:none --depth=<n>`,
-  `rev-parse`, `merge-base --is-ancestor`, `cat-file`, `ls-tree`,
-  `worktree add --no-checkout` + `sparse-checkout set --no-cone <paths>` +
-  `checkout`, `archive` (tree export). Nothing else.
+Environment (both modes):
 
-## 10. Official policy files
+- `GIT_TERMINAL_PROMPT=0`, `GIT_CONFIG_NOSYSTEM=1`,
+  `GIT_CONFIG_GLOBAL=<Ave-generated file>` (below), `LC_ALL=C`.
+- `GIT_ASKPASS=<Ave askpass helper>`, `SSH_ASKPASS_REQUIRE=never`,
+  `GIT_SSH_COMMAND="ssh -o BatchMode=yes"` (an unknown host key fails fast
+  with `SOURCE_SSH_HOST_UNKNOWN` instead of waiting for a prompt).
+- `GIT_ALLOW_PROTOCOL=https:ssh`, plus `http` only when the source's host is
+  in `marketplaces.allowHttpHosts`.
+- `GIT_LFS_SKIP_SMUDGE=1`.
+
+Config flags: `-c protocol.file.allow=never -c submodule.recurse=false
+-c core.fsmonitor=false -c core.hooksPath=<empty dir> -c http.followRedirects=false
+-c http.proxy=<PAC> -c filter.lfs.smudge= -c filter.lfs.process= -c filter.lfs.required=false`.
+
+**Global configuration.** The user's global git config is not read. Ave
+generates the file named by `GIT_CONFIG_GLOBAL` and copies into it only
+`credential.helper` and `credential.<url>.*` entries (so OS credential
+helpers keep working), `http.sslCAInfo` and `http.sslBackend`. Everything
+else — `url.*.insteadOf`, `http.extraHeader`, `http.sslVerify`,
+`core.sshCommand`, aliases, hooks — is dropped. A stored OS credential for a
+host is therefore available to every source on that host; the add dialog says
+so when a credential helper is configured.
+
+**Askpass protocol.** The helper is a small executable shipped with the app.
+For each `runGit` call the main process creates a single-use ticket bound to
+`(normalized host, sourceId)` and passes `AVE_ASKPASS_TICKET` and
+`AVE_ASKPASS_ENDPOINT` (a local socket in a `0700` directory) in the child
+environment. The helper sends the ticket and git's prompt text; the main
+process answers with the stored token only if the prompt names the ticket's
+host, and with an empty answer otherwise. Tickets expire when the git process
+exits.
+
+**Commands used** (nothing else):
+
+- `ls-remote`
+- `init --bare`
+- `fetch --filter=blob:none --no-tags <remote> <ref>`
+- `rev-parse`, `merge-base --is-ancestor`, `cat-file`, `ls-tree`
+- **Export of a path at a commit:**
+  `rev-list --objects --missing=print <commit> -- <path>` lists the blobs not
+  yet present; they are fetched in one request
+  (`fetch --filter=blob:none --no-tags <remote> <oid>…`, the request that
+  partial-clone lazy fetching issues); then
+  `archive --format=tar <commit> -- <path>` writes the tree into a staging
+  directory. No worktree and no sparse-checkout is created.
+
+Timeouts: `ls-remote` 20 s, `fetch` 120 s (configurable), export 60 s. Output
+limits and abort signals follow the existing process helpers.
+
+## 10. No privileged packages
+
+The official source is hard-coded in the app and carries the **Ave
+Official** badge. The badge is the only thing it grants: packages from the
+official source are resolved, verified and consented to exactly like packages
+from any other source. Decisions that used to arrive with the catalog now
+live in the app's own source code or in the machine's system policy file,
+where a git repository cannot reach them.
+
+### 10.1 Removed: managed packages
+
+Today a catalog row with `installPolicy: "admin"` is installed at boot without
+user action (`ensureManagedInstalled`), cannot be uninstalled by the user
+(`deployment-guard.ts`), skips the grant tier of the secret gate
+(`secret-gate.ts` admin bypass), escalates user update clicks to the managed
+actor, and is removed when delisted. All of this is removed:
+
+- `installPolicy` leaves the manifest schema (§5.3); `installSource: "admin"`
+  leaves the registry (§16.3).
+- No package can lock itself against uninstall. Only the machine's system
+  policy file can require a package (§10.2). No package reaches host secrets
+  except through the manifest allowlist, the app's grant table (§10.3) and the
+  active-vendor check.
+
+Removal points (verified in the current tree): `src/boot/managed-marketplace.ts`;
+the managed branches of `src/plugins/marketplace.ts` (boot install and update,
+delisted removal, user→it-admin actor escalation); `update-condition.ts`
+(`eligible_managed_install`, `eligible_managed_boot_update`, the
+`normalizeInstallPolicy` check); `runtime/index.ts` `isManaged`;
+`runtime/manifest-validation.ts` `normalizeInstallPolicy`; the
+`installPolicy` fields in `src/ui/renderer/types.ts`; the `installSource`
+bridge and `admin-bypass` audit path in
+`src/boot/steps/plugin-runtime/host-api-factory.ts`; the admin branch of
+`deployment-guard.ts`; the tier-3 bypass in `secret-gate.ts`; the
+`installPolicy` property in `schemas/sdk/skill-package.schema.json` and its
+SDK copy (same change in both repositories). Tests that assert managed
+behavior are rewritten, not deleted, to assert §10.2:
+`marketplace-managed-bootstrap`, `marketplace-install-actor-escalation`,
+`deployment-guard`, `registry-migration`, `secret-gate`.
+
+### 10.2 Default and required installs
+
+Which packages a fresh installation starts with is decided by lists outside
+any repository. There are two kinds.
+
+**Default installs** are installed once and then belong to the user. They
+come from the app:
 
 ```ts
-// policy/revocations.json
+// src/marketplace/default-installs.ts — changed only by an app release
+export const DEFAULT_INSTALLS: readonly PackageKey[] = [
+  { kind: "plugin", name: "meeting", source: "ave" },
+  { kind: "plugin", name: "local-indexer", source: "ave" },
+];
+```
+
+and the system policy file's `marketplaces.defaultInstalls` (§12), which may
+name packages from the official or a managed source.
+
+- At boot, each listed key that is not yet recorded in
+  `packages/default-installs.json` is installed through the normal plan
+  (ladder, verification, receipt), then recorded. The user sees one notice
+  listing what was installed, with Uninstall next to each item.
+- A recorded key is never installed again: uninstalling a default package is
+  final unless the user installs it again.
+- A key whose package is missing or incompatible is recorded as `skipped` and
+  retried only when the list entry changes.
+
+**Required installs** come only from the system policy file's
+`marketplaces.requiredInstalls` (§12). The file is owned by the machine's
+administrator (root or device management), which no git repository can write.
+For each entry:
+
+- It is installed at boot if absent and updated at boot to the source's
+  candidate version (§6.1), through the normal plan. Permission consent for a
+  required package is given by the policy, and the review sheet shows it as
+  "required by your organization".
+- The user cannot uninstall or disable it: `deployment-guard.ts` keeps its
+  actor model, but the only reason that denies a user action becomes "listed
+  in `requiredInstalls`" (`PACKAGE_REQUIRED_BY_POLICY`), checked by both
+  `assertUninstallAllowed` and `assertDisableAllowed`.
+- An entry may name the official source or a managed source only.
+- Removing the entry from the policy file ends the requirement; the package
+  stays installed and becomes an ordinary user install.
+
+Being default or required gives a package no host-secret grant; grants
+follow §10.3 only.
+
+### 10.3 Host-secret grants
+
+The signed whitelist grants (today: `meeting` and `local-indexer` may read
+`llm.apiKey.*` for the active vendor) move into the app:
+
+```ts
+// src/plugins/secret-access/grants.ts — changed only by an app release
+export const HOST_SECRET_GRANTS: readonly HostSecretGrant[] = [
+  { plugin: "meeting", keys: ["llm.apiKey.openai", "llm.apiKey.claude", "llm.apiKey.gemini", "llm.apiKey.azure-foundry", "llm.apiKey.vertex-ai"] },
+  { plugin: "local-indexer", keys: [/* same set */] },
+];
+```
+
+A grant applies only when all of these hold:
+
+1. the registry entry's `origin.sourceOrigin` is `official`;
+2. the installed artifact's sha256 equals the sha256 the official snapshot
+   pins for that version (the exact artifact Ave published). The value is
+   read from `origin.artifactSha256`, or, for a `legacy` entry, from the
+   existing install receipt's `artifactSha256`; a tree-rung install never
+   qualifies;
+3. the running manifest's canonical SHA-256 equals `manifestSha256` recorded
+   at install (today's tier-3 pin, kept);
+4. the key is in the manifest's `hostSecrets.read` (tier 2) and names the
+   active vendor (tier 4), unchanged.
+
+`canonical-json.ts` and `secret-gate.ts` stay and move to
+`src/plugins/secret-access/`; the tier-3 lookup reads the table above instead
+of `whitelistRegistry`.
+
+- Condition 2 is ultimately defined by whoever can merge to the official
+  repository's `main`: under D4 a merge that pins a different artifact for a
+  granted plugin name grants that artifact. The grant table limits the blast
+  radius to the listed plugin names and keys, and the proposal's threat table
+  states this.
+- A user who uninstalls a granted default package and installs it again from
+  the official source gets the grant back when conditions 1–4 hold. This is
+  intended.
+- Adding a plugin or a key to the table requires an app release.
+
+### 10.4 Revocation
+
+Every source may publish `policy/revocations.json`. It applies **only** to
+installs whose `origin.sourceId` is that source, so no repository can
+disable another repository's packages. The official source has no wider
+power.
+
+```ts
 interface RevocationsFile {
   schemaVersion: 1;
   revocations: Array<{ kind: PackageKind; name: string; versions: string; // semver range
                         reason: string; at: string; action: "disable" | "uninstall" }>;
 }
-
-// policy/grants.json — replaces the signed whitelist's secret-gate grants
-interface GrantsFile {
-  schemaVersion: 1;
-  grants: Array<{ plugin: string; versions: string; hostSecrets: string[]; reason: string }>;
-}
 ```
 
-They are read from the official snapshot only. A revoked installed version is
-disabled at boot (existing revocation behavior) and the user is told why.
-Custom sources cannot revoke or grant anything.
+A revoked installed version is disabled (or uninstalled) at boot through the
+existing `revocationRegistry` interface, which is fed from snapshots instead
+of the signed feed, and the user is told why.
+
+There is deliberately no cross-source kill switch: neither the official
+source nor the service endpoint can disable a package another source
+published. A harmful package from a custom source is handled by the user
+(uninstall, remove the source) or by device management
+(`marketplaces.block` stops adding and syncing the source; removing installed
+files is a device-management action).
+
+### 10.5 What the official source still differs in
+
+| Aspect | Official | Managed | Custom / direct |
+|---|---|---|---|
+| Badge | Ave Official | organization label | source id |
+| Can the user remove it | no | no | yes |
+| Can the user hide it | only if policy allows | no | yes |
+| Rewritten history | refused | refused | user review |
+| Default installs may name it | app list and policy list | policy list | no |
+| Required installs may name it | policy list | policy list | no |
+| Uninstall/disable lock | only via policy `requiredInstalls` | only via policy `requiredInstalls` | never |
+| Host-secret grants apply | yes (§10.3) | no | no |
+| Can revoke packages of other sources | no | no | no |
 
 ## 11. Service endpoint
 
@@ -525,25 +816,31 @@ Custom sources cannot revoke or grant anything.
 // GET {serviceBase}/.well-known/former-service.json
 {
   "schemaVersion": 1,
-  "announcements": "/announcements/v1.json",   // path or absolute https URL on the same site
-  "telemetry": null,                            // or "/telemetry/events" when an ingestion service exists
-  "movedTo": null                               // or "https://new-domain.example" for a domain change
+  "announcements": "/announcements/v1.json",   // path on the same origin
+  "telemetry": null,                            // or "/telemetry/events" (same origin) when an ingestion service exists
+  "movedTo": null,                              // or "https://new-domain.example" for a domain change
+  "movedFrom": null                             // on the new domain: the previous base, confirming the move
 }
 ```
 
-- `serviceBase` resolution: managed policy `service.baseUrl` → build constant
+- `serviceBase` resolution: managed policy `service.baseUrl` → the move
+  recorded for the current build constant (below) → build constant
   `AVE_SERVICE_BASE_URL` (default `https://former-site.invalid`). There is no user
   setting.
-- `movedTo` is honored when it comes from the current base over https; the new
-  base is persisted in app state and used from then on. A later `movedTo`
-  follows the same rule. Policy overrides always win.
+- **Domain change.** A `movedTo` is accepted only over https from the current
+  base, and only after the new base's own service document names the current
+  base in `movedFrom`. The accepted move is stored together with the build
+  constant it was made under and is discarded when an app update ships a
+  different constant. At most one move is followed per build constant.
+- `announcements` and `telemetry` must be paths on the service origin.
 - Announcements keep the `MarketplaceAnnouncement` contract (levels,
   `startsAt`/`endsAt`, up to three navigation-only actions, app-version
-  filtered actions) and the dismissed-ids behavior. They are fetched after boot
-  and every 6 hours.
-- The static files live in the ave `web/` site (`web/public/.well-known/`
-  and `web/public/announcements/`), deployed through its existing manual
-  production gate.
+  filtered actions) and the dismissed-ids behavior. Action labels fall back to
+  the `en` label when the active locale is an installed language that the
+  announcement does not carry. They are fetched after boot and every 6 hours.
+- The static files live in the ave `web/` site
+  (`web/public/.well-known/` and `web/public/announcements/`), deployed through
+  its existing manual production gate.
 
 ## 12. Managed policy additions
 
@@ -551,17 +848,24 @@ Custom sources cannot revoke or grant anything.
 // policy.json (system scope)
 "marketplaces": {
   "allow": ["https://github.com/acme/*", "host:git.corp.example"],  // absent = no restriction
-  "block": ["host:gitlab.com"],
-  "allowHttpHosts": ["git.corp.example"],                              // plain-http git hosts; default none
+  "block": ["host:git.example.org"],
+  "allowHttpHosts": ["git.corp.example"],                           // plain-http git hosts; default none
   "allowDirectInstall": true,
   "allowDisablingOfficial": false,
-  "additional": [{ "id": "corp", "url": "https://git.corp.example/ave/marketplace.git" }]
+  "additional": [{ "id": "corp", "url": "https://git.corp.example/ave/marketplace.git" }],
+  "defaultInstalls": [{ "kind": "plugin", "name": "wiki-search", "source": "corp" }],
+  "requiredInstalls": [{ "kind": "plugin", "name": "orion", "source": "corp" }]
 },
 "service": { "baseUrl": "https://ave.corp.example" }
 ```
 
-`additional` sources are pre-registered, cannot be removed by the user, and
-count as `custom` for trust purposes.
+- Patterns match the normalized URL (§7.1): `host:<host>` matches the host on
+  any scheme; a URL pattern matches scheme, host and path with a trailing `*`
+  wildcard. `block` wins over `allow`.
+- `additional` sources are pre-registered with origin `managed`: the user
+  cannot remove or hide them and their history rule is the official one.
+- `defaultInstalls` and `requiredInstalls` follow §10.2 and may name official
+  and managed sources only. A key in both lists is treated as required.
 
 ## 13. IPC contract
 
@@ -576,41 +880,51 @@ count as `custom` for trust purposes.
 | `ave:marketplace:sources:accept-rewrite` | `{ id; commit }` | `SourceView` |
 | `ave:marketplace:sources:set-token` / `delete-token` | `{ host; token? }` | `{ ok: true }` |
 | `ave:marketplace:catalog:list` | `{ kind?; sourceId?; query?; installedOnly? }` | `CatalogRow[]` |
-| `ave:marketplace:package:detail` | `PackageKey` | `PackageDetail` (versions, compatibility, provenance, rung preview) |
-| `ave:marketplace:install:plan` | `PackageKey & { version? }` | `InstallPlan` |
+| `ave:marketplace:package:detail` | `PackageKey` | `PackageDetail` (versions, compatibility, provenance, authority, rung preview) |
+| `ave:marketplace:install:plan` | `PackageKey & { version? }` | `InstallPlan` (includes `snapshotCommit`, `versionCommit`) |
 | `ave:marketplace:install:execute` | `{ planId }` | `InstallResult` |
-| `ave:marketplace:update:plan` | `PackageKey` | `UpdatePlan` (commit range, capability delta) |
+| `ave:marketplace:update:plan` | `PackageKey` | `UpdatePlan` (commit range, authority delta, pending rewrite) |
 | `ave:marketplace:uninstall` | `PackageKey` | `UninstallResult` |
 | `ave:marketplace:direct:preview` | `{ input; subdir?; ref? } \| { serverJson: string } \| { mcpConfig: string }` | `DirectPackagePreview` |
+| `ave:marketplace:announcements` | — | `MarketplaceAnnouncement[]` |
 | `ave:git:runtime:status` | — | `GitRuntimeStatus` |
 | `ave:git:runtime:install` | — | `GitRuntimeStatus` (progress via event) |
 
 Events: `marketplace:sync-progress`, `marketplace:catalog-changed`,
 `marketplace:install-progress` (`{ planId, rung, phase, bytes? }`),
+`marketplace:updates-available` (kept), `marketplace:boot-installs-applied`
+(default and required installs),
 `git-runtime:progress`.
 
-All channels are host-renderer only (`validateHostRendererSender`), audited as
-today, and `plan` ids are single-use and expire after 10 minutes. The existing
-`ave:plugins:install-local` dev path is unchanged.
+All channels are host-renderer only (`validateHostRendererSender`) and
+audited as today. `planId` and `previewId` are single use and expire after 10
+minutes (`PLAN_EXPIRED`). Disposition of today's channels is in §16.2.
 
 ## 14. Error codes
 
 | Code | When | User message (en key) |
 |---|---|---|
 | `GIT_RUNTIME_MISSING` | no usable git | `marketplace.error.gitMissing` |
-| `GIT_RUNTIME_INSTALL_FAILED` | managed download/verify/extract failed | `marketplace.error.gitInstallFailed` |
-| `SOURCE_URL_REJECTED` | scheme, credentials in URL, or policy | `marketplace.error.urlRejected` |
+| `GIT_RUNTIME_TOO_OLD` | system git older than 2.38.1 in `system` mode | `marketplace.error.gitTooOld` |
+| `GIT_RUNTIME_INSTALL_FAILED` | managed download/verify/extract/smoke test failed | `marketplace.error.gitInstallFailed` |
+| `SOURCE_URL_REJECTED` | scheme, credentials in URL, private-network target | `marketplace.error.urlRejected` |
+| `SOURCE_POLICY_BLOCKED` | managed policy allow/block | `marketplace.error.policyBlocked` |
 | `SOURCE_NAME_RESERVED` | reserved id | `marketplace.error.nameReserved` |
+| `SOURCE_ID_TAKEN` | id already used | `marketplace.error.idTaken` |
 | `SOURCE_AUTH_REQUIRED` | 401/403, ssh denied | `marketplace.error.authRequired` |
+| `SOURCE_SSH_HOST_UNKNOWN` | host key not in known_hosts | `marketplace.error.sshHostUnknown` |
+| `SOURCE_REF_NOT_FOUND` | branch or tag missing | `marketplace.error.refNotFound` |
 | `SOURCE_UNREACHABLE` | network, DNS, timeout | `marketplace.error.unreachable` |
 | `SOURCE_NOT_A_MARKETPLACE` | nothing recognizable | `marketplace.error.notMarketplace` |
 | `SOURCE_INDEX_INVALID` | index failed validation | `marketplace.error.indexInvalid` |
 | `SOURCE_HISTORY_REWRITTEN` | non-descendant candidate | `marketplace.error.historyRewritten` |
-| `SOURCE_POLICY_BLOCKED` | managed policy | `marketplace.error.policyBlocked` |
-| `PACKAGE_INCOMPATIBLE` | engines excludes app | `marketplace.error.incompatible` |
-| `PACKAGE_COMPAT_UNDECLARED` | plugin without engines | `marketplace.error.compatUndeclared` |
+| `SOURCE_DISABLED` | install or update requested from a hidden source | `marketplace.error.sourceDisabled` |
+| `PLAN_EXPIRED` | plan/preview id expired or reused | `marketplace.error.planExpired` |
+| `PACKAGE_INCOMPATIBLE` | `minAppVersion` above the app version | `marketplace.error.incompatible` |
+| `PACKAGE_COMPAT_UNDECLARED` | git-installed plugin without `requires.minAppVersion` | `marketplace.error.compatUndeclared` |
 | `PACKAGE_YANKED` / `PACKAGE_REVOKED` | install of a yanked/revoked version | `marketplace.error.yanked` / `.revoked` |
-| `PLUGIN_ID_CONFLICT` | same plugin id installed from another source | `marketplace.error.idConflict` |
+| `PACKAGE_ID_CONFLICT` | same `(kind, name)` installed from another source | `marketplace.error.idConflict` |
+| `PACKAGE_REQUIRED_BY_POLICY` | uninstall or disable of a `requiredInstalls` package | `marketplace.error.requiredByPolicy` |
 | `ARTIFACT_NOT_PINNED` | rung skipped: no sha256 in git | (rung detail) |
 | `ARTIFACT_DIGEST_MISMATCH` | sha256 differs | (rung detail) |
 | `MANIFEST_MISMATCH` | plugin.json vs descriptor | `marketplace.error.manifestMismatch` |
@@ -624,24 +938,33 @@ store (the web store is gone).
 
 ### 15.1 Browse
 
-- Header: search field, **Sources** menu (checkbox per enabled source, "All
-  sources"), **Add** menu (Add marketplace…, Install from Git URL…, Add MCP
-  server…).
+- Header: search field, **Sources** button, **Add** menu (Add marketplace…,
+  Install from Git URL…, Add MCP server…), source filter chips (All sources +
+  one per enabled source).
 - Kind tabs: Plugins, MCP, Skills, Agents, Themes, Fonts, Languages,
   Providers, Messaging — each with a count.
 - Card: icon, display name, one-line description, **source badge**
-  (`Ave Official` with a check glyph; custom sources show their id; internal
-  hosts show a building glyph), version, state chip: `Install`, `Installed`,
-  `Update 1.4.2`, `Requires Ave 0.12`, `Yanked`, `Source removed`.
+  (`Ave Official` with a shield glyph; managed sources with a building glyph
+  and their label; custom sources their id), version, state chip: `Install`,
+  `Installed`, `Update 1.4.2`, `Requires Ave 0.12`, `Yanked`,
+  `Installed from <other source>`, `Source removed`, `Required by your
+  organization` (no Uninstall or Disable control; the tooltip names the
+  policy file).
 - Same name in two sources: two cards, each with its own badge. No merged row.
+  Installing the second one is a source switch (`PACKAGE_ID_CONFLICT` explains
+  it and offers the switch).
+- The boot-install notice (§10.2) appears once as a banner listing what was
+  installed or updated, split into "Installed for you" (default, with
+  Uninstall) and "Required by your organization".
 
 ### 15.2 Package detail (sheet)
 
 Sections: overview; **Provenance** (source, repository, path, commit short SHA
-with copy, published date); **Compatibility** (range and verdict);
-**Permissions** (existing review summary for plugins/MCP); **Delivery** (the
-rung list with the rung that will be used); **Versions** (history with yanked
-and incompatible markers). Primary action follows the state chip.
+with the full SHA in a tooltip and a copy button, published date);
+**Compatibility** (`minAppVersion` and verdict); **Permissions** (from the
+descriptor's authority, before any download); **Delivery** (the rung list with
+the rung that will be used); **Versions** (history with yanked and
+incompatible markers).
 
 ### 15.3 Install progress
 
@@ -651,33 +974,36 @@ failure shows every rung's reason and a copyable diagnostic.
 
 ### 15.4 Sources
 
-Table: source (label, URL, origin badge), pinned commit (short SHA, relative
-time of last sync), package count, status (`Up to date`, `Syncing`,
-`Unreachable — showing cached`, `Auth required`, `History rewritten — review`),
-enabled switch, overflow (Refresh, Set token, Remove). The official row has no
-Remove and its switch is disabled unless policy allows. Policy-managed rows
-show a lock.
+Table: source (label, URL, origin badge), pinned commit (short SHA with
+tooltip, relative time of last sync), package count, status (`Up to date`,
+`Syncing`, `Unreachable — showing cached`, `Auth required`,
+`History rewritten — review`), enabled switch, overflow (Refresh, Set token,
+Remove). Official and managed rows have no Remove; the official switch is
+locked unless policy allows; managed rows show a lock.
 
 ### 15.5 Add marketplace dialog
 
 Step 1: URL field (accepts `owner/repo`), optional ref, auth radio
 (None / Token / SSH). Step 2 (preview): marketplace name, owner, commit, counts
-per kind, "N packages can run code on this computer" warning, diagnostics,
-id field. Confirm button: **Add marketplace**. If the input is a single
-package, step 2 switches to the direct-install preview.
+per kind, "N packages can run code on this computer" warning, a note when an
+OS credential helper will answer for this host, diagnostics, id field. Confirm
+button: **Add marketplace**. If the input is a single package, step 2 switches
+to the direct-install preview. If git is missing, a blocking step (§15.7)
+comes first.
 
 ### 15.6 Update review
 
-Commit range, version change, capability/network/secret delta highlighted,
-and for custom sources a "history rewritten" banner that requires an explicit
-checkbox.
+Commit range, version change, authority delta (capabilities, network,
+secrets, tools) highlighted, and for custom sources a "history rewritten"
+banner that requires an explicit checkbox.
 
 ### 15.7 Git runtime
 
-A card in Settings → Marketplace → Maintenance and a blocking step inside the
-Add dialog when git is missing: detected state (`System git 2.50.1`,
-`Managed git 2.53.0`, `Not found`), mode selector (Auto / System / Managed),
-**Install Git (≈40 MB)** with the phase progress from §9.2.
+A card in Settings → Marketplace → Maintenance and the blocking step inside
+the Add dialog: detected state (`System git 2.50.1`, `Managed git 2.53.0`,
+`Not found`, `System git 2.34.1 is too old — using managed git`), mode selector
+(Auto / System / Managed), **Install Git (≈40 MB)** with the phase progress of
+§9.2 including `smoke-testing`, and a `failed` state with the error and Retry.
 
 ### 15.8 Announcements
 
@@ -690,40 +1016,105 @@ label (not color alone); SHAs use monospace with a tooltip of the full value;
 state chips use the existing token colors. New copy is added to the i18n
 catalogs through the generator; no raw keys.
 
-## 16. Migration mapping
+## 16. Migration and disposition
 
-| Today (server/app) | After |
+### 16.1 Server features
+
+| Today (server) | After |
 |---|---|
 | `GET /api/v1/catalog`, `/plugins/{slug}` | source snapshots |
 | `…/download`, `…/download.sig` + `prod-v1` | ladder rungs + sha256 pins in git |
 | `POST /plugins/{slug}/versions` + approval queue | PR + merge (D8) |
-| yank / unyank / rollback | `versions[].yanked`, `policy/revocations.json`, new version |
-| canary rollout percentage | `versions[].rollout.percent` + local bucket |
-| `min_app_version` column | `engines.ave` in descriptor and plugin manifest |
-| internal visibility (CIDR) | internal custom marketplace |
+| yank / unyank / rollback | `versions[].yanked`, `policy/revocations.json`, a new version |
+| canary rollout percentage, `channel: "canary"` | `versions[].rollout.percent` + local bucket; pre-release versions behind `canaryOptIn` |
+| `min_app_version` column | `minAppVersion` in the descriptor and `requires.minAppVersion` in the plugin manifest |
+| managed (`installPolicy: "admin"`) catalog rows | `DEFAULT_INSTALLS` in the app, policy `defaultInstalls` and policy `requiredInstalls` (§10.2) |
+| internal visibility (CIDR) | an internal managed or custom marketplace |
 | organization-allowed flag | managed policy `marketplaces.allow` |
 | announcements | service endpoint |
 | telemetry `/telemetry/events`, `register-device` | service document `telemetry` (null until a collector exists) |
-| DLP hit reporting, API keys, `/me` | removed with the server |
-| signed whitelist / admission / revocation feeds | `policy/grants.json`, `policy/revocations.json` |
-| hidden built-in themes (`MARKETPLACE_ELIGIBLE_THEME_BUNDLE_IDS`) and locales | theme and language packages as data; `moonstone`, `gallery`, `en` stay built in |
+| DLP hit reporting, API keys, `/me`, publisher routes | removed with the server |
+| signed whitelist grants | `HOST_SECRET_GRANTS` in the app (§10.3) |
+| signed admission / revocation feeds | §6 resolution; per-source `policy/revocations.json` |
 
-Existing installs: on first boot of the new version, registry entries whose
-`installSource` is `user` or `admin` and whose id exists in the official
-snapshot are bound to `ave` (origin filled from the snapshot's matching
-version, `rung: "legacy"` until the next update). Installed provider presets,
-theme and language activations are converted to ledger entries.
+### 16.2 App code and settings
+
+| Item | Disposition |
+|---|---|
+| `cloud-marketplace-fetcher.ts` | delete; its private-network guard moves to the shared §7.4 gate |
+| `LocalCatalogMarketplaceFetcher`, `DisabledMarketplaceFetcher` (`marketplace.ts`) | delete; dev builds use a local directory registered as a direct source under the dev flag |
+| `marketplace-fetcher.ts` interface | replaced by the aggregated catalog view |
+| `marketplace-installer.ts` | server download and `.sig` handling deleted; zip limit and entry checks kept for the release/archive rungs |
+| `envelope-verifier.ts`, `marketplace-keys.ts`, `publisher-keys.ts`, `signed-doc-fetcher.ts`, `signed-doc-cache.ts` | delete; `plugin-artifact-store.ts` and `mcp-setup.ts` stop taking public keys |
+| `admission/` | delete (install admission is the §6 resolution) |
+| `whitelist/` | transport and registry deleted; `canonical-json.ts` and `secret-gate.ts` move to `src/plugins/secret-access/` with the grant table |
+| `revocation/` | transport deleted; `revocationRegistry` fed from snapshots |
+| `src/boot/steps/{admission,whitelist,revocation}-bootstrap.ts` | replaced by one step that feeds revocations from snapshots |
+| `src/boot/managed-marketplace.ts`, `ensureManagedInstalled`, the managed actor escalation, delisted-admin removal | replaced by the boot-install step (§10.2) |
+| `update-condition.ts` managed kinds, `runtime/index.ts` `isManaged`, renderer `installPolicy` types | removed; required installs use their own boot step |
+| `deployment-guard.ts` admin branch | replaced by the `requiredInstalls` check in uninstall and disable |
+| `secret-gate.ts` admin bypass, host-api-factory `admin-bypass` audit path, `normalizeInstallPolicy` | deleted |
+| `mcp-marketplace-install.ts` (`readRuntimeFromVerifiedZip`) | replaced by `resolve/mcp.ts` |
+| `offline-cache.ts` | replaced by snapshots and retained artifacts; `offlineCacheEnabled` means "keep downloaded artifacts" |
+| `update-detector.ts`, `update-condition.ts` | kept, rewired to snapshots |
+| `dependency-resolver.ts` | kept; runs on the descriptor's authority (§6.2) |
+| settings `backend`, `cloudBaseUrl`, `cloudAllowPrivateNetwork` | removed by a settings migration |
+| settings `updateCheckEnabled`, `updateCheckIntervalMs`, `canaryOptIn`, `skippedPluginUpdates`, `dismissedAnnouncementIds` | kept with the meanings above |
+| settings `installedThemeBundleIds`, `installedLanguagePacks`, `installedProviderPresets`, `installedProviderIds` | converted to ledger entries |
+| secret `marketplace.apiKey` and its IPC (`ipc/domains/settings.ts`) | deleted; telemetry no longer reads it |
+| IPC `ave:plugins:marketplace:list`, `ave:plugins:install`, `ave:plugins:rollback` | replaced by `catalog:list` and `install:plan/execute`; rollback = installing a listed older version |
+| IPC `ave:marketplace:ping` | replaced by `sources:refresh` results |
+| IPC `ave:mcp:catalog:list`, `ave:mcp:install-from-marketplace`, `ave:agents:install`, `ave:skills:install` | replaced by `catalog:list` filtered by kind and `install:*` |
+| IPC `ave:plugins:install-local`, MCP form, desktop config import | kept |
+| deep links `ave://install/<type>/<slug>`, `ave://uninstall/<type>/<slug>` | become `ave://install/<kind>/<name>@<source>` and `ave://uninstall/<kind>/<name>@<source>`; both open confirming UI |
+| `.github/workflows/marketplace-e2e.yml` | replaced in the same change as the switch by an in-repo E2E against a local git fixture |
+| `resources/AGENTS.md` ("marketplace API" as the source of latest versions) | points at the installed sources' snapshots |
+| `web/app/docs/servers/marketplace/*` | server admin/publisher pages removed; replaced by a package-author page for git marketplaces |
+| `docs/architecture/architecture.md`, plugin development and publishing guides, `docs/ko/references/plugin-tool-schema-design.md`, the `installPolicy: "admin"` examples in `docs/ko/architecture/architecture.md` and `docs/ko/guides/plugin-development.md` | rewritten for the new model |
+
+### 16.3 Existing installs
+
+On first boot of the new version:
+
+- Registry entries whose id exists in the official snapshot are bound to
+  `ave` with `rung: "legacy"` and `artifactSha256: null`; the next update
+  installs through the ladder and fills the origin. Nothing is reinstalled by
+  the migration, and it works offline.
+- Grant continuity: a `legacy` entry keeps its host-secret grant when its
+  install receipt's `artifactSha256` equals the official index's
+  `artifact.release.sha256` for the installed version (§10.3 condition 2).
+  The official index therefore carries `versions[]` entries for every version
+  of a granted plugin that is still installed in the field; for each, the zip
+  the current server serves is uploaded unchanged as that version's release
+  asset and pinned by its sha256 (blueprint phase 0). An entry with no
+  matching pin loses the grant until it updates, and the boot notice says
+  which plugin lost which key.
+- `installSource: "admin"` becomes `user`; the keys of those packages are
+  written to `packages/default-installs.json` as already applied, so nothing
+  is reinstalled or removed.
+- Entries that match no official package — today the internal `orion` plugin —
+  keep running as "source unknown — no updates", receive no grants, and are
+  no longer locked. They stay that way until the organization registers its
+  internal marketplace (`additional`) and lists them in `requiredInstalls`;
+  the next boot then binds them to that source. The boot notice names these
+  entries once: "<name> is no longer managed by Ave. Your organization can
+  keep it up to date by registering its marketplace."
+- Installed provider presets and theme/language activations become ledger
+  entries.
 
 ## 17. Test plan
 
 | Layer | What proves it |
 |---|---|
-| Schemas | fixture sets for every kind: valid, each invalid rule, unknown keys |
-| Version choice | table tests for engines, yank, platform, rollout buckets, revocations |
-| Ladder | each rung used/skipped/failed combination, mismatch stops the ladder, receipts carry rung outcomes |
-| Git runtime | fake `git` binaries for version gates; env/flag contract; managed install with a local fixture server and wrong-hash rejection |
-| Sync | local bare repos: fast-forward, rewrite (official refuse, custom review), invalid index keeps pin, mirror fallback |
-| Identity | reserved names, cross-source same name, `PLUGIN_ID_CONFLICT`, update binding |
+| Schemas | fixture sets for every kind: valid, each invalid rule, unknown keys; a manifest with `installPolicy` is rejected by name |
+| Version choice | table tests for `minAppVersion`, yank, platform, pre-release opt-in, rollout buckets, per-source revocations |
+| Ladder | each rung used/skipped/failed combination, mismatch of each authority field stops the ladder, plan binds commits, receipts carry rung outcomes |
+| Git runtime | fake `git` binaries for version gates (2.38.0 refused, 2.38.1 accepted); env/flag/global-config contract; askpass ticket host binding; managed install with a local fixture server and wrong-hash rejection |
+| Sync | local bare repos: fast-forward with the pin far behind the tip, rewrite (official and managed refuse, custom review), invalid index keeps pin, mirror fallback, a hidden source with installed packages still syncs |
+| Network gate | normalization equivalences (scp/ssh/https, case, `.git`), block beats allow, private-network refusal, redirect to a blocked host refused, no auth header across hosts |
+| No privileges | a custom package with the same name as a granted plugin gets no grant; a grant fails for a different artifact hash, for a tree-rung install and for a swapped manifest; a legacy entry keeps the grant only with a matching receipt hash; a source's revocation ignores other sources' packages; no package can block its own uninstall; a manifest carrying `installPolicy` is rejected |
+| Default and required installs | default: installed once through the ladder, never reinstalled after uninstall; required: reinstalled and updated at boot, uninstall and disable denied with `PACKAGE_REQUIRED_BY_POLICY`, becomes a user install when the entry is removed; both lists limited to official/managed sources; migration marks former admin installs as applied and unlocks unmatched entries |
+| Identity | reserved names, same `(kind, name)` across sources, `PACKAGE_ID_CONFLICT`, update binding, source switch keeps plugin data |
 | Direct install | each detection branch; `server.json` mapping for npm/pypi/oci/remote |
-| Service | `former-service.json` parsing, `movedTo`, policy override, announcements parity with today |
-| E2E | packaged app adds a local-HTTP git marketplace, installs one package of each kind, updates, removes the source |
+| Service | `former-service.json` parsing, `movedTo` with and without `movedFrom`, reset on build-constant change, policy override, announcements parity, label fallback |
+| E2E | packaged dev build (loopback allowed by the dev flag) adds a local-HTTP git marketplace, installs one package of each kind, updates, removes the source |

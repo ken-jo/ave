@@ -10,69 +10,75 @@
 > 목업: [../../design/multi-source-git-marketplace.html](../../design/multi-source-git-marketplace.html)
 >
 > 이 문서는 계약을 다룹니다. 파일 형식, 알고리즘, IPC, 오류 코드, UI 상태가
-> 대상입니다. 코드가 들어가면 코드와 테스트가 기준이 되고, 이 문서는 같은
-> 변경에서 함께 갱신합니다.
+> 여기에 있습니다. 코드가 들어오면 코드와 테스트가 기준이 되고, 이 문서는 같은
+> 변경에서 갱신합니다.
 
 ## 1. 용어
 
 | 용어 | 뜻 |
 |---|---|
-| **소스(Source)** | 앱이 패키지를 읽어 오는, 등록된 git 저장소. 종류는 `official`, `custom`, `direct`입니다. |
-| **마켓플레이스 저장소** | 루트에 `marketplace.json`이 있거나, 관례 레이아웃(§3.3)을 따르는 소스 |
-| **패키지** | 설치 단위 하나: `plugin`, `mcp`, `skill`, `agent`, `theme`, `font`, `language`, `provider`, `messaging-connection` |
-| **Descriptor** | 패키지 디렉터리의 `ave-package.json`. 종류, 이름, 버전, 호환 범위, payload를 담습니다. |
-| **고정 커밋(Pin)** | 소스를 현재 읽고 있는 커밋 SHA |
-| **스냅숏(Snapshot)** | 한 소스를 한 고정 커밋에서 파싱·검증한 카탈로그. 불변입니다. |
-| **설치 계획(Install plan)** | 패키지 버전 하나에 대해 해석기가 할 일: artifact 단계, 파일, 실행 명세, 필요한 동의 |
-| **단계(Rung)** | 플러그인 artifact 사다리의 한 단계: `release`, `archive`, `tree` |
+| **소스(Source)** | 앱이 패키지를 읽어 오는 등록된 git 저장소. 출처(origin)는 `official`(앱에 하드코딩), `managed`(시스템 정책 파일이 등록), `custom`(사용자가 추가), `direct`(마켓플레이스 없이 패키지 하나). |
+| **마켓플레이스 저장소** | 루트에 `marketplace.json`이 있거나 관례 레이아웃(§3.3)을 따르는 소스. |
+| **패키지** | 설치 단위 하나: `plugin`, `mcp`, `skill`, `agent`, `theme`, `font`, `language`, `provider`, `messaging-connection`. |
+| **디스크립터** | 패키지 디렉터리의 `ave-package.json`: 종류, 이름, 버전, 최소 앱 버전, 선언된 권한(authority), 페이로드. |
+| **핀(Pin)** | 소스를 현재 읽고 있는 커밋 SHA. |
+| **스냅숏** | 한 소스의 한 핀에서 파싱·검증한 카탈로그. 불변. |
+| **설치 계획** | 한 패키지 버전에 대해 리졸버가 할 일. 스냅숏 커밋 하나에 묶임: 아티팩트 단계, 파일, 런처, 필요한 동의. |
+| **단계(Rung)** | 플러그인 아티팩트 사다리의 한 단계: `release`, `archive`, `tree`. |
 
-## 2. 클라이언트의 디스크 상태
+## 2. 클라이언트 디스크 상태
 
 ```
 ~/.ave/
   installation-id                     # random UUID, local only (rollout bucketing)
   marketplaces/
-    sources.json                      # source registry (§2.1)
+    sources.json                      # custom and direct sources (§2.1)
     <sourceId>/
-      repo.git/                       # bare partial clone
-      snapshots/<commit>.json         # validated snapshot (§2.2)
-      sync.json                       # last sync outcome
+      repo.git/                       # bare partial clone (blob:none)
+      snapshots/<commit>.json         # validated snapshots (§2.2)
+      state.json                      # pin, enabled, last sync outcome (§2.1)
   packages/
     <kind>/<name>/<version>/          # installed content packages
     ledger.json                       # installed content packages + origin
+    default-installs.json             # default-install keys already applied on this machine (§10.2)
   plugins/                            # unchanged plugin install root
   runtime/git/<version>/              # managed git copy (§9)
 ```
 
-### 2.1 `sources.json`
+### 2.1 소스 기록
 
 ```ts
 interface SourcesFile {
   version: 1;
-  sources: SourceEntry[];
+  sources: SourceEntry[];             // custom and direct only
 }
 
 interface SourceEntry {
-  id: string;                 // ^[a-z0-9][a-z0-9-]{1,62}$, reserved names rejected
-  origin: "official" | "custom" | "direct";
-  url: string;                // https://…, ssh://…, git@host:path; http:// only for policy-listed hosts (§12)
+  id: string;                 // ^[a-z0-9][a-z0-9-]{1,62}$, reserved names rejected (§5.1)
+  origin: "custom" | "direct";
+  url: string;                // stored in normalized form (§7.1); http only for policy-listed hosts
   ref?: string;               // branch or tag; default = remote HEAD
   subdir?: string;            // direct sources only: package path inside the repo
-  pinnedCommit: string | null;   // 40-hex; null until the first successful sync
-  enabled: boolean;
   auth: { kind: "none" } | { kind: "token"; host: string } | { kind: "ssh" };
   addedAt: string;            // ISO-8601
   label?: string;             // user-visible override of displayName
-  acceptedRewriteAt?: string; // custom/direct: last explicit history-rewrite acceptance
+}
+
+interface SourceState {       // marketplaces/<id>/state.json, every origin
+  pinnedCommit: string | null;   // 40-hex; null until the first successful sync
+  enabled: boolean;              // browsing and installing only (§7.3)
+  lastSync?: { at: string; result: "ok" | ErrorCode; candidate?: string };
+  pendingRewrite?: { candidate: string; seenAt: string };   // custom/direct awaiting review
 }
 ```
 
-- 공식 소스 항목은 이 파일에 저장하지 않습니다. 빌드 상수
-  `OFFICIAL_MARKETPLACE`(`id: "ave"`, 기본 URL, 선택적 미러 URL)에서 오고, 고정
-  커밋은 `marketplaces/ave/sync.json`에 저장합니다. 사용자는 관리 정책이 허용할
-  때만 공식 소스를 끌 수 있습니다.
-- 토큰은 기존 암호화 비밀 저장소의 `marketplace.gitToken.<host>`에 저장합니다.
-  `sources.json`에는 비밀 값을 넣지 않습니다.
+- 공식 소스는 빌드 상수 `OFFICIAL_MARKETPLACE`(`id: "ave"`, 기본 URL, 선택적
+  미러 URL)에서 옵니다. 관리(managed) 소스는 시스템 정책 파일(§12)에서 옵니다.
+  둘 다 `sources.json`에 저장하지 않고, 상태만 `state.json`에 둡니다.
+- 토큰은 기존 암호화 시크릿 저장소의 `marketplace.gitToken.<정규화된 호스트>`에
+  둡니다. 위 파일 어디에도 시크릿은 없습니다.
+- `snapshots/`에는 현재 핀, 직전 핀, 그리고 설치된 패키지의 `origin.commit`이
+  아직 가리키는 커밋만 남기고, 나머지는 동기화가 성공할 때마다 정리합니다.
 
 ### 2.2 스냅숏
 
@@ -83,33 +89,34 @@ interface SourceSnapshot {
   fetchedAt: string;
   marketplace: { name: string; displayName: string; description?: string; owner?: { name: string; url?: string } };
   packages: CatalogPackage[];          // §4, after validation and normalization
-  policy?: { revocations: Revocation[]; grants: Grant[] }; // official only (§10)
+  revocations: Revocation[];           // this source's own policy/revocations.json (§10.4)
   diagnostics: SnapshotDiagnostic[];   // per-package rejections, shown in the Sources view
 }
 ```
 
-검증에 실패한 패키지는 진단 정보와 함께 스냅숏에서 빠지고, 소스의 나머지는
-계속 쓸 수 있습니다. `marketplace.json` 자체가 잘못되면(파싱 불가, 다른
-`schemaVersion`, 중복 키) 후보 커밋 전체를 거부하고 이전 고정 커밋을 유지합니다.
+검증에 실패한 패키지는 진단 메시지와 함께 스냅숏에서 빠지고, 소스의 나머지는
+그대로 쓸 수 있습니다. `marketplace.json` 자체가 잘못되면(파싱 불가,
+`schemaVersion` 불일치, 중복 키) 후보 커밋 전체를 거부하고 이전 핀을 유지합니다.
 
-### 2.3 레지스트리 origin
+### 2.3 레지스트리 출처
 
-`PluginRegistryEntry`에 다음 필드가 추가됩니다.
+`PluginRegistryEntry`에 다음이 추가됩니다.
 
 ```ts
 origin?: {
   sourceId: string;
-  sourceOrigin: "official" | "custom" | "direct";
+  sourceOrigin: "official" | "managed" | "custom" | "direct";
   commit: string;
   packagePath: string;
   version: string;
-  rung: "release" | "archive" | "tree";
-  artifactSha256: string;      // sha256 of the zip (release/archive) or tree digest (tree, §6.4)
+  rung: "release" | "archive" | "tree" | "legacy";   // "legacy": bound by the §16.3 migration, no digest yet
+  artifactSha256: string | null;   // zip sha256 (release/archive), tree digest (§6.4), null for legacy
   installedAt: string;
 };
 ```
 
-`installSource`는 기존 값을 유지합니다. 콘텐츠 패키지는 같은 origin을
+`installSource`는 `user | local-dev`가 됩니다. `admin` 값은 관리 설치 메커니즘과
+함께 제거됩니다(§10.1, §16.3). 콘텐츠 패키지도 같은 출처 정보를
 `packages/ledger.json`에 기록합니다.
 
 ## 3. 마켓플레이스 저장소 레이아웃
@@ -118,7 +125,7 @@ origin?: {
 
 ```
 marketplace.json                 # index (generated by CI, committed)
-plugins/<name>/ave-package.json # + optional built tree (plugin.json, dist/)
+plugins/<name>/ave-package.json # release/archive pins; optional built tree (plugin.json, dist/)
 mcp/<name>/ave-package.json     # + optional server.json
 skills/<name>/                   # ave-package.json, SKILL.md, resources
 agents/<name>/                   # ave-package.json, AGENTS.md
@@ -127,25 +134,25 @@ fonts/<name>/                    # ave-package.json, font.json, files/
 languages/<locale>/              # ave-package.json, language.json, messages.json
 providers/<name>/                # ave-package.json, provider.json
 messaging/<name>/                # ave-package.json, connection.json
-policy/revocations.json
-policy/grants.json
+policy/revocations.json          # revocations of this repository's own packages
 .github/CODEOWNERS
 .github/workflows/               # validate, index, release-pin
 ```
 
 ### 3.2 커스텀 마켓플레이스
 
-레이아웃은 같습니다. 커스텀 소스의 `policy/`는 무시합니다. `marketplace.json`은
-직접 작성해도 되고, 패키지마다 `path`만 적어도 됩니다(§4.2).
+레이아웃은 같고, 선택적인 `policy/revocations.json`도 둘 수 있습니다. 이 파일은
+언제나 그 소스에서 설치한 패키지에만 적용됩니다(§10.4). `marketplace.json`은
+손으로 써도 되고, 패키지마다 `path`만 적어도 됩니다(§4.2).
 
-### 3.3 `marketplace.json`이 없는 관례 레이아웃
+### 3.3 `marketplace.json` 없는 관례 레이아웃
 
-루트에 `marketplace.json`이 없으면, 클라이언트는 고정 커밋에서 다음 디렉터리를
+루트에 `marketplace.json`이 없으면 클라이언트는 핀 커밋에서 다음 디렉터리를
 한 단계 깊이로 훑어 `ave-package.json`을 찾습니다:
 `plugins/ mcp/ skills/ agents/ themes/ fonts/ languages/ providers/ messaging/`.
-마켓플레이스 이름은 소스 id를 기본값으로 씁니다. 인덱스도 없고 이 디렉터리들에
-descriptor도 없는 저장소는 마켓플레이스가 아니며, 추가 대화 상자는 직접 설치
-흐름을 대신 제안합니다.
+마켓플레이스 이름은 소스 id가 기본값입니다. 인덱스도 없고 이 디렉터리들에
+디스크립터도 없으면 마켓플레이스가 아니며, 추가 대화상자는 직접 설치 흐름을
+대신 제안합니다.
 
 ## 4. `marketplace.json` (인덱스)
 
@@ -155,7 +162,7 @@ descriptor도 없는 저장소는 마켓플레이스가 아니며, 추가 대화
 interface MarketplaceIndex {
   $schema?: string;
   schemaVersion: 1;
-  name: string;                     // must equal the source id for official; informative for custom
+  name: string;                     // must equal the source id for official; informative otherwise
   displayName: string;
   description?: string;
   owner?: { name: string; url?: string };
@@ -165,19 +172,21 @@ interface MarketplaceIndex {
 interface IndexPackage {
   kind: PackageKind;
   name: string;                     // unique per kind within this index
-  path: string;                     // repo-relative, "./"-free, no "..", "/" separators
+  path: string;                     // repo-relative, no "./" prefix, no "..", "/" separators
   displayName?: string;
   description?: string;
   keywords?: string[];
-  icon?: string;                    // repo-relative image path
-  latest?: string;                  // semver; must be in versions[] when present
+  icon?: string;                    // repo-relative .png/.jpg/.webp, ≤ 256 KB, served from the git tree only
+  latest?: string;                  // semver; must be in versions[] and not yanked
   versions?: IndexVersion[];        // newest first; absent = read the descriptor at the pin
 }
 
 interface IndexVersion {
   version: string;                  // semver 2.0.0
   commit: string;                   // 40-hex; the commit whose descriptor declares this version
-  engines: { ave: string };        // copy of the descriptor's range
+  minAppVersion: string;            // copy of the descriptor's value
+  platforms?: Array<"darwin" | "win32" | "linux">;   // copy of the descriptor's value
+  authority?: PluginAuthority;      // plugin kind: copy of the descriptor's authority (§5.2)
   artifact?: PluginArtifactPins;    // plugin kind only (§5.2)
   rollout?: { percent: number };    // 1..100; absent = 100
   yanked?: { reason: string; at: string };
@@ -187,24 +196,23 @@ interface IndexVersion {
 
 ### 4.2 규칙
 
-- `(kind, name)`은 유일합니다. `(kind, name, version)`은 정확히 한 커밋에
-  대응합니다. 이미 있는 버전을 새 커밋으로 다시 게시하면 CI가 거부합니다.
-- 버전은 패키지마다 엄격하게 증가합니다(기존 플러그인 규칙을 모든 종류로
-  넓힙니다).
-- `versions`가 없으면 클라이언트는 고정 커밋의 `path`에 있는
-  `ave-package.json`을 읽어 유일한 버전으로 취급합니다.
+- `(kind, name)`은 유일하고, `(kind, name, version)`은 정확히 한 커밋에
+  대응합니다. 기존 버전을 새 커밋으로 다시 게시하면 CI가 거부합니다.
+- 버전은 패키지마다 엄격히 증가합니다(기존 플러그인 규칙을 모든 종류로 확대).
+  `latest`는 회수(yank)된 버전을 가리키지 않습니다.
+- `versions`가 없으면 클라이언트는 핀 커밋의 `path`에서 `ave-package.json`을
+  읽고 그것을 유일한 버전으로 취급합니다.
 - `schemaVersion: 1`에서는 알 수 없는 루트 키를 거부합니다.
 
 ### 4.3 공식 인덱스 생성
 
-CI는 이전 인덱스와 머지 커밋의 descriptor들로 `marketplace.json`을 다시
-생성하고, 커밋된 파일과 다르면 PR을 실패시킵니다. `main`에 머지하는 것이 곧
-게시입니다(D8). artifact 고정값을 수정하는 자동화는 release-pin 워크플로(§6.3)
-하나뿐입니다.
+CI가 직전 인덱스와 머지 커밋의 디스크립터로 `marketplace.json`을 다시 만들고,
+커밋된 파일과 다르면 PR을 실패시킵니다. `main`에 머지하는 것이 곧 게시입니다(D8).
+아티팩트 핀을 수정하는 자동화는 release-pin 워크플로(§6.3) 하나뿐입니다.
 
-## 5. 패키지 descriptor `ave-package.json`
+## 5. 패키지 디스크립터 `ave-package.json`
 
-### 5.1 공통 필드
+### 5.1 공통 필드와 이름 규칙
 
 ```ts
 interface PackageDescriptor {
@@ -213,7 +221,7 @@ interface PackageDescriptor {
   kind: PackageKind;
   name: string;                     // plugin: equals plugin.json `name`
   version: string;                  // required, semver
-  engines: { ave: string };        // required, semver range over the app version
+  minAppVersion: string;            // required, plain MAJOR.MINOR.PATCH
   displayName?: string;
   description?: string;
   author?: { name: string; url?: string; email?: string };
@@ -225,32 +233,49 @@ interface PackageDescriptor {
 }
 ```
 
-`engines.ave`는 실행 중인 앱의 `X.Y.Z`로 평가합니다. 프리릴리스 앱 빌드는
-범위 자체가 같은 `X.Y.Z`의 프리릴리스를 명시할 때만 일치합니다. 예를 들어
-`>=0.11.0` 같은 일반 범위는 `0.12.0-beta.1`을 받아들이지 않습니다.
+- 호환성은 호스트에 이미 있는 `minAppVersion` 계약과 그 비교 함수
+  `appVersionSatisfiesMin`(`src/shared/semver-compare.ts`)을 씁니다.
+  `appVersion >= minAppVersion`이면 설치·실행하고, 어느 한쪽 값이라도 파싱할 수
+  없으면 닫힌 쪽으로 실패합니다. 두 번째 호환성 어휘는 만들지 않습니다.
+- 소스 id `ave`, `official`, `ave-official`과 모든 `ave-*` id는 예약되어
+  있습니다. 이 검사는 로드할 때마다 다시 합니다.
 
-### 5.2 종류별 payload
+### 5.2 종류별 페이로드
 
-| 종류 | Payload | 패키지 디렉터리에 둘 수 있는 파일 |
+| 종류 | 페이로드 | 패키지 디렉터리에 둘 수 있는 파일 |
 |---|---|---|
-| `plugin` | `{ artifact: PluginArtifactPins }` | `ave-package.json`. tree 단계를 쓰면 `plugin.json`, `dist/**`, `assets/**`도 |
+| `plugin` | `{ authority: PluginAuthority; artifact: PluginArtifactPins }` | `ave-package.json`; tree 단계면 `plugin.json`, `dist/**`, `assets/**`도 |
 | `mcp` | `{ server: McpServerSpec } \| { serverJson: "server.json", select?: { package?: number; remote?: number } }` | `ave-package.json`, `server.json`, 패키지 로컬 stdio 명령용 `server/**`(선택) |
-| `skill` | `{ entry: "SKILL.md" }` | `SKILL.md`, `references/**`, `assets/**`(텍스트와 이미지만) |
+| `skill` | `{ entry: "SKILL.md" }` | `SKILL.md`, `references/**`, `assets/**` |
 | `agent` | `{ entry: "AGENTS.md" }` | `AGENTS.md` |
 | `theme` | `{ entry: "theme.json" }` | `theme.json`, 미리보기 이미지(선택) |
 | `font` | `{ entry: "font.json" }` | `font.json`, `files/*.woff2\|woff\|ttf\|otf`, `LICENSE` |
-| `language` | `{ locale: string; entry: "language.json"; messages: "messages.json" }` | 두 JSON 파일 |
-| `provider` | `{ entry: "provider.json" }` | `provider.json`(현재의 `MarketplaceProviderPackageAsset`에서 `type`을 뺀 형태) |
-| `messaging-connection` | `{ entry: "connection.json" }` | `connection.json`(현재의 메시징 에셋에서 `type`을 뺀 형태) |
+| `language` | `{ locale: string; entry: "language.json"; messages: "messages.json" }` | 그 두 JSON 파일 |
+| `provider` | `{ entry: "provider.json" }` | `provider.json`(현재 `MarketplaceProviderPackageAsset`에서 `type` 제외) |
+| `messaging-connection` | `{ entry: "connection.json" }` | `connection.json`(현재 메시징 자산에서 `type` 제외) |
 
 ```ts
+// Copied verbatim from the plugin's plugin.json (extensions["ai.agent-connector.ave"]).
+// The catalog reads it without downloading bytes; install compares it with
+// the staged plugin.json (§6.2). It is the trusted "expected" side that
+// today's catalog row provides to assertInstalledManifestMatchesCatalog.
+interface PluginAuthority {
+  capabilities: string[];
+  networkAccess?: unknown;          // same shape as the manifest field
+  hostSecrets?: { read: string[] };
+  pluginAccess?: unknown;
+  auth?: unknown;
+  requires?: { capabilities?: string[]; minAppVersion: string };
+  dependencies?: Array<string | { id: string; version?: string }>;
+}
+
 interface PluginArtifactPins {
   release?: {
-    repo?: string;      // "owner/name" on the same host; default = the source repo
-    tag?: string;       // default "v{version}" (single-package repo) or "{name}-v{version}" (monorepo)
+    repo: string;       // "owner/name" on the same host as the source; required in marketplace repositories
+    tag?: string;       // default "v{version}"
     asset?: string;     // default "{name}-{version}.zip"
-    url?: string;       // explicit URL for non-GitHub release hosts
-    sha256?: string;    // required for the rung to be used (§6.2)
+    url?: string;       // explicit URL for non-GitHub release hosts (then repo/tag/asset are ignored)
+    sha256: string;     // required: the rung is used only with a pin stored in git
   };
   archive?: { url: string; sha256: string };
   tree?: string;        // repo-relative directory holding plugin.json + dist/; default = package path
@@ -262,156 +287,203 @@ type McpServerSpec =
   | { transport: "http"; url: string; headers?: HeaderField[] };
 ```
 
-`npx`, `uvx`, `docker`가 아닌 `stdio` 명령은 패키지 디렉터리 기준 상대 경로
-(`server/…`)여야 합니다. 절대 경로와 `..`은 거부합니다.
+- `release.repo`는 **direct** 소스에서만 생략할 수 있고, 그때는 소스 저장소 자신이
+  기본값입니다.
+- `npx`, `uvx`, `docker`가 아닌 `stdio` 명령은 패키지 디렉터리 기준 상대
+  경로(`server/…`)여야 합니다. 절대 경로와 `..`는 거부합니다.
 
-### 5.3 플러그인 매니페스트 추가 필드
+### 5.3 플러그인 매니페스트 변경
 
-호스트 플러그인 스키마(`schemas/plugin-manifest.schema.json`)에
-`extensions["ai.agent-connector.ave"].engines`를 추가합니다.
+git 소스에서 설치하는 플러그인은:
 
-```jsonc
-"engines": { "ave": ">=0.11.0 <0.13.0" }
-```
+- `extensions["ai.agent-connector.ave"].requires.minAppVersion`이 **필수**이고(로컬 개발
+  설치에서는 스키마상 선택으로 남김), 디스크립터의 `minAppVersion`과 같아야
+  합니다.
+- `PluginAuthority`의 모든 필드가 스테이징된 `plugin.json`과 같아야 합니다.
 
-git 소스에서 설치하는 플러그인은 이 필드가 필수이고, 값이 descriptor의
-`engines`와 같아야 합니다. descriptor는 카탈로그가 바이트를 받지 않고 읽는
-정보이고, `plugin.json`은 바이트와 함께 이동하는 정보입니다. 설치 검사는 지금
-`assertInstalledManifestMatchesCatalog`가 capability를 비교하는 방식으로 두
-값을 비교합니다.
+매니페스트 스키마, SDK 사본, `manifest-validation.ts`와 그 테스트에서 한 번의
+변경으로 제거합니다(청사진 6단계):
+
+- `extensions["ai.agent-connector.ave"].installPolicy` — 관리 패키지가 더는 없습니다(§10.1).
+  이 필드가 남아 있는 매니페스트는 조용히 무시하지 않고, 필드 이름을 밝힌
+  메시지와 함께 거부합니다.
+- `extensions["ai.agent-connector.ave"].publisher` — D4에서는 이 필드가 가리킬 검증된 게시자
+  신원이 없습니다.
 
 ### 5.4 콘텐츠 검증 한도
 
-| 종류 | 최대 총량 | 최대 파일 수 | 허용 확장자 |
+| 종류 | 최대 합계 | 최대 파일 수 | 허용 확장자 |
 |---|---|---|---|
-| skill | 2 MB | 64 | `.md .txt .json .yaml .yml .png .jpg .svg` |
+| skill | 2 MB | 64 | `.md .txt .json .yaml .yml .png .jpg .webp` |
 | agent | 256 KB | 1 | `.md` |
-| theme | 256 KB | 4 | `.json .png .jpg` |
+| theme | 256 KB | 4 | `.json .png .jpg .webp` |
 | font | 20 MB | 32 | `.json .woff2 .woff .ttf .otf` + `LICENSE` |
 | language | 4 MB | 2 | `.json` |
 | provider, messaging-connection | 64 KB | 1 | `.json` |
 | plugin(모든 단계) | 기존 `marketplace-artifact-limits.ts` | | |
 
+SVG는 인라인으로 렌더링하면 능동 문서가 되므로 콘텐츠 종류에서 제외합니다.
 링크, 장치 파일, 패키지 디렉터리 밖으로 나가는 경로는 거부합니다
-(`sideload-filter.ts`와 `zip-entry-path.ts` 재사용).
+(`sideload-filter.ts`, `zip-entry-path.ts` 재사용). 이미지와 폰트는 파일 경로가
+아니라 호스트 자산 스킴으로만 렌더러에 전달합니다.
 
-## 6. 해석
+## 6. 해석(Resolution)
 
 ### 6.1 버전 고르기
 
 한 소스 스냅숏의 패키지 행에 대해:
 
-1. `engines.ave`가 앱 버전을 포함하지 않는 버전을 뺍니다.
-2. yank된 버전을 뺍니다(이력에는 계속 보입니다).
-3. `platforms`에 현재 OS가 없는 버전을 뺍니다.
-4. 롤아웃 대상이 아닌 버전을 뺍니다:
-   `bucket = uint32(sha256("${installationId}:${sourceId}:${kind}:${name}:${version}")[0..4]) % 100`.
-   `bucket < percent`이면 대상입니다.
-5. 공식 정책이 revoke한 버전을 뺍니다(공식 소스만).
-6. 남은 것 중 가장 높은 버전이 **후보**입니다. 남은 버전이 없고 `engines` 때문에
-   빠진 버전만 있으면, 가장 새 버전의 범위를 만족하는 가장 낮은 앱 버전과 함께
-   행을 `upgrade_required`로 표시합니다.
+1. `appVersionSatisfiesMin(appVersion, minAppVersion)`이 거짓인 버전을 뺍니다.
+2. 회수된 버전을 뺍니다(이력에는 보이고, 이미 설치된 회수 버전은 계속 실행되며
+   사유와 함께 "yanked"로 표시).
+3. `platforms`가 현재 OS를 제외하는 버전을 뺍니다.
+4. `marketplace.canaryOptIn`이 꺼져 있으면 프리릴리스 버전을 뺍니다.
+5. 롤아웃이 이 설치본을 제외하는 버전을 뺍니다:
+   `bucket = uint32(sha256("${installationId}:${sourceId}:${kind}:${name}:${version}")[0..4]) % 100`,
+   `bucket < percent`일 때 대상.
+6. 같은 소스가 폐기(revoke)한 버전을 뺍니다(§10.4).
+7. 남은 것 중 가장 높은 버전이 **후보**입니다. 남은 게 없는데 1단계 때문에만
+   빠진 버전이 있으면, 행은 가장 최신 버전의 `minAppVersion`과 함께
+   `upgrade_required`로 표시합니다.
 
-### 6.2 플러그인 artifact 사다리
+### 6.2 플러그인 아티팩트 사다리
 
 ```
+plan = { snapshotCommit, versionCommit, rungs: [] }        // fixed at plan time
 for rung in [release, archive, tree]:
-  if rung not declared (and not conventional)      -> skip(rung, NOT_DECLARED)
-  if rung in {release, archive} and no sha256 pin  -> skip(rung, ARTIFACT_NOT_PINNED)
-  fetch rung
-    release: https GET, follow redirects to the release host's CDN
-    archive: https GET
-    tree:    sparse checkout of `tree` at the version's commit
-  on transport error                               -> fail(rung, SOURCE_UNREACHABLE / …) and continue
+  if rung not declared                               -> skip(rung, NOT_DECLARED)
+  if rung in {release, archive} and no sha256 pin    -> skip(rung, ARTIFACT_NOT_PINNED)
+  fetch rung                                          // every URL passes §7.4 first
+    release: https GET (token only to the origin host; auth headers stripped on cross-host redirects)
+    archive: https GET (same rule)
+    tree:    export `tree` at versionCommit (§9.3)
+  on transport error                                 -> fail(rung, SOURCE_UNREACHABLE / …) and continue
   verify
     release/archive: sha256(zip) == pin, zip limits, entry paths
     tree:            file rules, no links, digest computed (§6.4)
-  on verification error                            -> fail(rung, ARTIFACT_DIGEST_MISMATCH / …) and continue
-  stage -> check plugin.json name/version/engines/capabilities against the descriptor
-  on mismatch                                      -> stop with MANIFEST_MISMATCH (do not try lower rungs)
+  on verification error                              -> fail(rung, ARTIFACT_DIGEST_MISMATCH / …) and continue
+  stage, then compare plugin.json with the descriptor:
+    name, version, requires.minAppVersion, every PluginAuthority field
+  on mismatch                                        -> stop with MANIFEST_MISMATCH (do not try lower rungs)
   return staged artifact
 stop with NO_INSTALLABLE_ARTIFACT(rungs[])
 ```
 
-- "관례"란, descriptor에 `artifact.release.sha256`은 있고 `tag`/`asset`이
-  없을 때도 GitHub 소스라면 release 단계를 시도한다는 뜻입니다. 이때 §5.2의
-  기본값을 씁니다.
-- 매니페스트 불일치는 사다리를 멈춥니다. 패키지 자체가 일관되지 않은 것이므로,
-  다른 단계를 시도하면 그 사실이 가려집니다.
-- 단계별 결과(`used`, `skipped: 사유`, `failed: 코드`)는 사용자에게 보여 주는
-  설치 계획에 들어가고 receipt에도 기록됩니다.
+- 계획은 `snapshotCommit`과 해당 버전의 커밋을 기록하고, 실행은 그 둘만
+  씁니다. 계획과 실행 사이에 동기화가 핀을 옮겨도 설치 결과는 바뀌지 않습니다.
+- 매니페스트 불일치는 사다리를 멈춥니다. 패키지 자체가 모순인데 다른 단계를
+  시도하면 그 사실을 가리게 됩니다.
+- 모든 단계의 결과(`used`, `skipped: 사유`, `failed: 코드`)는 사용자에게 보이는
+  계획의 일부이고 영수증(receipt)에도 기록됩니다.
+- 의존성 사전 점검(`dependency-resolver.ts`, `requires.capabilities`)은 지금
+  카탈로그 행에서 하듯, 다운로드 전에 디스크립터의 authority로 실행합니다.
 
 ### 6.3 공식 릴리스 흐름
 
-1. 플러그인 자체 저장소가 `vX.Y.Z` 태그를 만들고, CI가 `{name}-{X.Y.Z}.zip`을
-   빌드해 release 에셋으로 올립니다.
-2. 공식 마켓플레이스의 `release-pin` 워크플로(또는 사람)가
-   `plugins/<name>/ave-package.json`의 `version`, `engines`,
-   `artifact.release.sha256`을 받은 에셋에서 계산해 설정하는 PR을 엽니다.
-3. CI가 에셋 해시를 검증하고, 압축을 풀어 `plugin.json`을 descriptor와 비교하고,
-   인덱스를 다시 생성합니다.
-4. 머지가 곧 게시입니다.
+1. 플러그인 자체 저장소가 `vX.Y.Z` 태그를 달면, 그 저장소의 릴리스 워크플로가
+   `{name}-{X.Y.Z}.zip`을 빌드해 **그 저장소**의 릴리스 자산으로 올립니다.
+2. 공식 마켓플레이스의 `release-pin` 워크플로(또는 사람)가 내려받은 자산으로
+   계산한 `plugins/<name>/ave-package.json`의 `version`, `minAppVersion`,
+   `authority`, `artifact.release`(`repo`, `sha256`)를 설정하는 PR을 엽니다.
+3. CI가 자산 해시를 검증하고, 풀어서 `plugin.json`을 디스크립터와 대조하고,
+   인덱스를 다시 만듭니다.
+4. 머지 = 게시.
 
-### 6.4 트리 digest
+### 6.4 트리 다이제스트
 
-tree 단계의 `artifactSha256`은 모든 파일에 대해 `"<mode> <sha256(file)> <path>\n"`
-줄을 경로 바이트 순으로 정렬해 이어 붙인 값의 `sha256`입니다. `mode`는
-`100644` 또는 `100755`입니다. 이 값은 receipt에 기록되어, 나중에 같은 버전을
-다시 설치할 때 같은 바이트를 받았는지 증명합니다.
+tree 단계의 `artifactSha256`은 모든 파일에 대해
+`"<mode> <sha256(file)> <path>\n"` 줄을 경로 바이트 순으로 정렬해 이은 것의
+`sha256`입니다(`mode` ∈ {`100644`, `100755`}). 영수증에 기록되며, 같은 버전을
+나중에 다시 설치했을 때 같은 바이트를 받았음을 증명합니다.
 
-## 7. 소스 수명 주기
+## 7. 소스 수명주기
 
-### 7.1 추가 (미리보기 → 확인)
+### 7.1 URL 정규화
 
-1. 입력을 **파싱**합니다: `https://…`, `ssh://…`, `git@host:path`,
-   `owner/repo`(`https://github.com/owner/repo.git`로 확장). `file:`, `ext::`,
-   URL 안의 자격 증명, 정책이 차단한 호스트는 거부합니다. 평문 `http://`는 관리
-   정책의 `marketplaces.allowHttpHosts`에 적힌 호스트(TLS가 없는 사내 git
-   서버)에만 허용합니다. 개발·테스트 빌드는 지금의 `cloudAllowPrivateNetwork`처럼
-   루프백도 허용할 수 있습니다.
-2. `git ls-remote`로 **탐색**합니다(설정되어 있으면 토큰이나 SSH 사용). 인증에
-   실패하면 `SOURCE_AUTH_REQUIRED`를 돌려주고 대화 상자가 토큰을 요청합니다.
-3. ref를 임시 bare 저장소로 **가져오고** 루트를 sparse로 읽습니다.
-4. **분류**합니다. 마켓플레이스(인덱스 또는 관례 레이아웃)면 미리보기로 갑니다.
-   루트나 지정한 하위 경로에 descriptor, `plugin.json`, `SKILL.md`,
-   `server.json`이 있는 단일 패키지면 직접 설치를 제안합니다. 둘 다 아니면
-   `SOURCE_NOT_A_MARKETPLACE`입니다.
-5. **미리보기**는 해석된 커밋, 마켓플레이스 이름과 소유자, 종류별 패키지 수,
-   코드를 실행하는 패키지 수(플러그인 + MCP), 검증 진단을 돌려줍니다.
-6. **확인**하면 항목을 기록하고, 임시 저장소를 제자리로 옮기고, 스냅숏을
-   게시합니다. id는 인덱스의 `name`을 기본값으로 쓰고, 그 이름이 예약되었거나
-   이미 쓰이고 있으면 사용자에게 묻습니다.
+함수 하나, `normalizeSourceUrl(input)`이
+`{ scheme: "https" | "ssh" | "http", host, port, path }`와 저장용 문자열을
+만듭니다.
 
-### 7.2 동기화
+- `owner/repo` → `https://github.com/owner/repo`.
+- scp 형식 `user@host:path` → `ssh://user@host/path`.
+- 호스트: 소문자, IDNA를 ASCII로, 기본 포트 제거.
+- 경로: 퍼센트 인코딩 정규화, 끝의 `/`와 `.git` 제거.
+- 거부: `file:`, `ext::`, 그 밖의 스킴, URL 안의 자격 증명, 쿼리, 프래그먼트.
 
-부팅 후(비차단), 실행 중 6시간마다, 그리고 수동으로 실행합니다.
+정책 allow/block 매칭(§12), 예약 이름 검사, 토큰 조회, 중복 감지는 모두 정규화된
+형태를 씁니다.
+
+### 7.2 추가 (미리보기 → 확정)
+
+1. 입력을 **정규화**하고(§7.1) 네트워크 게이트(§7.4)를 적용합니다. 평문
+   `http://`는 `marketplaces.allowHttpHosts`에 있는 호스트만 받습니다. 개발·테스트
+   빌드는 지금의 `cloudAllowPrivateNetwork`처럼 루프백도 허용할 수 있습니다.
+2. `git ls-remote`로 **탐색**합니다. 인증 실패는 `SOURCE_AUTH_REQUIRED`이고
+   대화상자가 토큰을 묻습니다. 모르는 SSH 호스트 키는 `SOURCE_SSH_HOST_UNKNOWN`,
+   없는 ref는 `SOURCE_REF_NOT_FOUND`입니다.
+3. ref를 임시 bare 저장소로 **가져와** 루트를 읽습니다.
+4. **분류**: 마켓플레이스(인덱스 또는 관례 레이아웃) → 미리보기, 단일 패키지(루트나
+   지정한 하위 경로의 디스크립터, `plugin.json`, `SKILL.md`, `AGENTS.md`,
+   `server.json`) → 직접 설치 미리보기, 그 밖에는 `SOURCE_NOT_A_MARKETPLACE`.
+5. **미리보기**는 `previewId`(1회용, 10분 뒤 만료, 만료나 취소 시 임시 저장소
+   삭제), 해석된 커밋, 마켓플레이스 이름과 소유자, 종류별 패키지 수, 코드를
+   실행하는 패키지 수(플러그인 + MCP), 검증 진단을 돌려줍니다.
+6. **확정**하면 항목을 쓰고, 임시 저장소를 제자리로 옮기고, 스냅숏을 게시합니다.
+   id 기본값은 인덱스 `name`이고, 예약되었거나 이미 쓰는 id(`SOURCE_ID_TAKEN`)면
+   다른 id를 묻습니다.
+
+### 7.3 동기화
+
+부팅 직후(비차단), 실행 중 `marketplace.updateCheckIntervalMs`(기본 6시간)마다,
+그리고 수동으로 실행합니다. 소스는 켜져 있을 때 **또는** 그 소스에 묶인 설치
+패키지가 하나라도 있을 때 동기화하므로, 숨긴 소스에서 설치한 패키지에도 폐기와
+업데이트 알림이 계속 도착합니다.
 
 ```
-fetch ref (partial, no tags except the ref)
+fetch ref with --filter=blob:none (full commit history, no --depth, no tags except the ref)
 candidate = resolved commit
 if candidate == pin: done
 if not is_ancestor(pin, candidate):
-  official -> keep pin, SOURCE_HISTORY_REWRITTEN
-  custom   -> keep pin, mark "history rewritten — review" until the user accepts
+  official, managed -> keep pin, SOURCE_HISTORY_REWRITTEN
+  custom, direct    -> keep pin, set pendingRewrite; the user may accept it in the update review
 parse + validate index at candidate
   invalid -> keep pin, SOURCE_INDEX_INVALID
 write snapshots/<candidate>.json, then atomically set pin = candidate
 emit marketplace:catalog-changed
 ```
 
-공식 소스는 기본 URL을 먼저 시도하고, 이어서 미러를 차례로 시도합니다. 어느
-쪽이든 후보를 제공할 수 있고 히스토리 규칙은 똑같이 적용됩니다.
+- blob 없는 커밋과 트리는 작으므로 전체 이력을 가져오고, 객체가 없어서 조상
+  검사가 실패하는 일은 없습니다.
+- 공식 소스는 기본 URL을 먼저, 그다음 각 미러를 시도합니다. 어느 쪽이 후보를
+  주든 이력 규칙은 그대로 적용됩니다.
 
-### 7.3 오프라인
+### 7.4 네트워크 대상과 정책
 
-마지막으로 정상이던 스냅숏을 보여 줍니다. 아직 바이트를 받지 않은 패키지를
-설치하려 하면 `SOURCE_UNREACHABLE`로 실패하고, 다른 소스로 넘어가지 않습니다.
+마켓플레이스가 닿는 모든 네트워크 대상(git 원격, release·archive URL, 서비스
+엔드포인트)은 하나의 게이트를 지납니다.
 
-### 7.4 제거
+1. 정규화(§7.1, `https` 다운로드도 같은 호스트/포트/경로 규칙);
+2. 관리 정책 `marketplaces.block`, 그다음 `marketplaces.allow`(있을 때) 적용;
+3. 지금 `cloud-marketplace-fetcher.ts`에 있는 사설망 가드 적용(그 파일을 지울 때
+   공용 모듈로 이동): 루프백, 링크 로컬, 사설, 메타데이터 주소는 정책에 등록된
+   호스트이거나 개발 빌드가 루프백을 허용할 때가 아니면 거부;
+4. git은 리다이렉트를 따라가지 않습니다(`http.followRedirects=false`). HTTPS
+   다운로드는 새 URL에 이 게이트를 다시 적용한 뒤에만 리다이렉트를 따르고,
+   다른 호스트로 인증 헤더를 넘기지 않습니다.
 
-소스를 제거해도 그 소스에서 설치한 패키지는 남습니다. 그 패키지들은 "소스
-제거됨 — 업데이트 없음"으로 표시되고, 설치됨 보기에서 제거를 제안합니다. 같은
-URL을 다시 추가하면 다시 연결됩니다.
+아이콘과 이미지는 git 트리에서만 읽습니다. 어떤 패키지 필드도 앱이 임의의 이미지
+URL을 가져오게 만들지 못합니다.
+
+### 7.5 오프라인
+
+마지막 정상 스냅숏을 보여 줍니다. 아직 바이트를 받지 않은 패키지를 설치하면
+`SOURCE_UNREACHABLE`로 실패하며, 다른 소스로 대신 가져오지 않습니다.
+
+### 7.6 제거
+
+소스를 제거해도 그 소스에서 설치한 패키지는 남습니다. "소스 제거됨 — 업데이트
+없음"으로 표시되고, 설치됨 화면에서 제거할 수 있습니다. 같은 정규화 URL을 다시
+추가하면 다시 묶입니다. 공식·관리 소스는 제거할 수 없습니다.
 
 ## 8. 직접 설치 (마켓플레이스 매니페스트 없음)
 
@@ -419,43 +491,49 @@ URL을 다시 추가하면 다시 연결됩니다.
 
 | 입력 | 감지 | 결과 |
 |---|---|---|
-| Git URL(+ 하위 경로, ref 선택) | 경로에서 처음 일치하는 것: `ave-package.json` → `plugin.json`(Agent Plugins) → `SKILL.md` → `AGENTS.md` → `server.json` | 그 패키지에 대한 `direct` 소스 항목 |
-| MCP: 명령 / URL 입력 양식 | 기존 MCP 탭 양식 | MCP 서버 항목(경로 변경 없음) |
-| MCP: `server.json` 붙여 넣기 | MCP Registry 스키마 | MCP 서버 항목. npm/PyPI/OCI 패키지는 `npx`/`uvx`/`docker`로, `remotes`는 `http`로 대응 |
-| MCP: 클라이언트 설정 붙여 넣기 | `mcpServers` 객체(데스크톱 클라이언트 설정이나 프로젝트 `.mcp.json`) | `claude-desktop-import.ts`의 미리보기/적용 재사용 |
+| Git URL(+ 선택적 하위 경로, ref) | 경로에서 처음 맞는 것: `ave-package.json` → `plugin.json`(Agent Plugins) → `SKILL.md` → `AGENTS.md` → `server.json` | 그 패키지에 대한 `direct` 소스 항목 |
+| MCP: 명령 / URL 폼 | 기존 MCP 탭 폼 | MCP 서버 항목(경로 변경 없음) |
+| MCP: `server.json` 붙여넣기 | MCP Registry 스키마 | MCP 서버 항목. npm/PyPI/OCI 패키지는 `npx`/`uvx`/`docker`로, `remotes`는 `http`로 대응 |
+| MCP: 클라이언트 설정 붙여넣기 | `mcpServers` 객체(데스크톱 클라이언트 설정이나 프로젝트 `.mcp.json`) | `claude-desktop-import.ts` 미리보기/적용 재사용 |
 
-### 8.2 합성 descriptor
+### 8.2 합성 디스크립터
 
 - `ave-package.json`이 있으면 그대로 씁니다.
-- `plugin.json`이면 `kind: "plugin"`입니다. `name`/`version`은 그 파일에서,
-  `engines`는 `extensions["ai.agent-connector.ave"].engines`에서 가져옵니다(필수. 없으면
-  `PACKAGE_COMPAT_UNDECLARED`). artifact는, 고정 커밋의 저장소에
-  `artifact.release.sha256`을 가진 descriptor가 함께 있을 때만 release 단계를
-  쓰고, 아니면 tree 단계를 씁니다.
-- `SKILL.md` / `AGENTS.md`이면 front matter에 버전이 있으면 그것을, 없으면
-  `0.0.0+g<commit12>`를 씁니다. 코드를 실행하지 않는 종류이므로 `engines`는
-  `*`를 기본값으로 씁니다.
-- `server.json`이면 파일의 `version`을 씁니다.
+- `plugin.json` → `kind: "plugin"`. `name`, `version`, `authority`,
+  `minAppVersion`을 거기서 가져옵니다(`requires.minAppVersion`이 없으면
+  `PACKAGE_COMPAT_UNDECLARED`). 아티팩트는 tree 단계인데, 해석된 커밋에
+  `artifact.release.sha256`이 있는 `ave-package.json`도 있으면 그걸 씁니다.
+  보통 순서는 태그 → 릴리스 자산 게시 → 핀을 담은 디스크립터 커밋이고, 사용자의
+  ref는 그 나중 커밋을 포함해야 합니다.
+- `SKILL.md` / `AGENTS.md` → front matter에 `version`이 있으면 그것, 없으면
+  `0.0.0+g<commit12>`. 코드를 실행하지 않는 종류이므로 `minAppVersion` 기본값은
+  `0.0.0`.
+- `server.json` → 파일의 `version`, `minAppVersion`은 `0.0.0`.
 
-직접 설치 패키지는 ref가 후손 커밋으로 움직이고 그 커밋이 더 높은 버전을
-선언할 때 업데이트됩니다(합성된 `0.0.0+g…` 버전은 새 커밋이면 모두 업데이트).
-마켓플레이스 패키지와 같은 업데이트 검토를 거칩니다.
+직접 설치 패키지는 ref가 더 높은 버전을 선언한 후손 커밋으로 움직이면(합성
+`0.0.0+g…` 버전이면 새 커밋마다) 마켓플레이스 패키지와 같은 업데이트 검토를 거쳐
+업데이트됩니다.
 
 ## 9. Git 런타임
 
-### 9.1 감지
+### 9.1 감지와 최소 버전
+
+쓸 수 있는 최소 git은 **2.38.1**입니다. `blob:none` 부분 클론,
+`rev-list --missing=print`, 프로토콜 v2, `protocol.file.allow` 설정이 모두 §9.3이
+기대하는 대로 동작하는 것이 이 릴리스부터입니다.
 
 ```
 mode = settings.marketplace.git.mode   // "auto" | "system" | "managed"
 system: first `git` on PATH (plus /usr/bin/git, /opt/homebrew/bin/git,
-        C:\Program Files\Git\cmd\git.exe); require `git --version` >= 2.27
+        C:\Program Files\Git\cmd\git.exe); require `git --version` >= 2.38.1
 managed: ~/.ave/runtime/git/<pinnedVersion>/ present and smoke-tested
 auto: system if usable, else managed if present, else state "missing"
+      (a system git older than 2.38.1 is reported as too old and auto uses managed)
 ```
 
-macOS에서 Command Line Tools 없이 존재하는 `/usr/bin/git`은 설치 대화 상자를
-띄우는 shim입니다. 그래서 감지는 `xcode-select -p`를 먼저 실행하고, CLT가 없으면
-대화 상자를 띄우지 않고 "시스템 git 없음"으로 처리합니다.
+macOS에서 Command Line Tools 없는 `/usr/bin/git`은 설치 대화상자를 여는 shim입니다.
+감지 단계는 먼저 `xcode-select -p`를 실행하고, CLT가 없으면 대화상자를 띄우지 않고
+"시스템 git 없음"으로 취급합니다.
 
 ### 9.2 관리형 설치
 
@@ -474,48 +552,222 @@ const MANAGED_GIT = {
 } as const;
 ```
 
-UI에 보고하는 단계는 `checking → downloading(bytes) → verifying → extracting →
-smoke-testing → ready | failed(code)`입니다. 다운로드는 PAC를 반영하는
-fetcher로 받습니다. 압축은 임시 디렉터리에 풀고 이름을 바꿔 제자리에 둡니다.
-실패하거나 중간에 멈춘 설치는 동작하던 기존 사본을 절대 대체하지 않습니다.
+UI에 보고하는 단계: `checking → downloading(bytes) → verifying → extracting →
+smoke-testing → ready | failed(code)`. 다운로드는 PAC를 인식하는 fetcher와 §7.4
+게이트를 거칩니다. 압축은 임시 디렉터리에 풀고 이름을 바꿔 제자리에 둡니다.
+실패하거나 중간에 끊긴 설치는 동작 중인 사본을 절대 대체하지 않습니다.
 
-### 9.3 실행 계약
+관리형 모드에서 매 호출에 설정하는 환경:
 
-모든 호출은 함수 하나 `runGit(args, { cwd, sourceId })`를 거칩니다.
+- `PATH` 앞에 관리형 `bin`, `GIT_EXEC_PATH` = 관리형 `libexec/git-core`,
+  `GIT_TEMPLATE_DIR` = Ave 소유의 빈 디렉터리.
+- CA 루트: `GIT_SSL_CAINFO` = 사본에 동봉된 루트와 `src/main/corp-ca-extract.ts`가
+  이미 OS 저장소에서 추출하는 사내 루트를 합쳐 Ave가 만든 번들. Windows에서는
+  대신 `http.sslBackend=schannel`을 설정해 OS 저장소를 직접 씁니다. macOS·Linux
+  사본이 기본으로 어느 저장소를 보는지는 청사진 1단계에서 확인한 뒤 확정합니다.
 
-- 환경변수: `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=<호스트 헬퍼>`,
-  `SSH_ASKPASS_REQUIRE=never`, `GIT_ALLOW_PROTOCOL=https:ssh`(소스 호스트가
-  `marketplaces.allowHttpHosts`에 있을 때만 `http` 추가), `LC_ALL=C`.
-  관리형 모드는 `GIT_CONFIG_NOSYSTEM=1`을 더합니다.
-- 설정 플래그: `-c protocol.file.allow=never -c submodule.recurse=false
-  -c core.fsmonitor=false -c core.hooksPath=<빈 디렉터리> -c http.proxy=<PAC>`.
-- 시간 제한: `ls-remote` 20초, `fetch` 120초(설정 가능), `sparse-checkout` 60초.
-- 출력 한도와 중단 신호는 기존 프로세스 헬퍼를 따릅니다.
-- 사용하는 명령: `ls-remote`, `init --bare`, `fetch --filter=blob:none --depth=<n>`,
-  `rev-parse`, `merge-base --is-ancestor`, `cat-file`, `ls-tree`,
-  `worktree add --no-checkout` + `sparse-checkout set --no-cone <paths>` +
-  `checkout`, `archive`(트리 내보내기). 이 밖의 명령은 쓰지 않습니다.
+### 9.3 호출 계약
 
-## 10. 공식 정책 파일
+모든 호출은 함수 하나, `runGit(args, { cwd, sourceId })`를 지납니다.
+
+환경(두 모드 공통):
+
+- `GIT_TERMINAL_PROMPT=0`, `GIT_CONFIG_NOSYSTEM=1`,
+  `GIT_CONFIG_GLOBAL=<Ave가 만든 파일>`(아래), `LC_ALL=C`.
+- `GIT_ASKPASS=<Ave askpass 헬퍼>`, `SSH_ASKPASS_REQUIRE=never`,
+  `GIT_SSH_COMMAND="ssh -o BatchMode=yes"`(모르는 호스트 키는 프롬프트를
+  기다리지 않고 `SOURCE_SSH_HOST_UNKNOWN`으로 바로 실패).
+- `GIT_ALLOW_PROTOCOL=https:ssh`, 소스 호스트가 `marketplaces.allowHttpHosts`에
+  있을 때만 `http` 추가.
+- `GIT_LFS_SKIP_SMUDGE=1`.
+
+설정 플래그: `-c protocol.file.allow=never -c submodule.recurse=false
+-c core.fsmonitor=false -c core.hooksPath=<빈 디렉터리> -c http.followRedirects=false
+-c http.proxy=<PAC> -c filter.lfs.smudge= -c filter.lfs.process= -c filter.lfs.required=false`.
+
+**전역 설정.** 사용자의 전역 git 설정은 읽지 않습니다. Ave가
+`GIT_CONFIG_GLOBAL`이 가리키는 파일을 만들고, 거기에 `credential.helper`와
+`credential.<url>.*` 항목(OS 자격 증명 헬퍼가 계속 동작하도록),
+`http.sslCAInfo`, `http.sslBackend`만 복사합니다. 나머지(`url.*.insteadOf`,
+`http.extraHeader`, `http.sslVerify`, `core.sshCommand`, 별칭, 훅)는 버립니다.
+따라서 OS에 저장된 한 호스트의 자격 증명은 그 호스트의 모든 소스에서 쓸 수 있고,
+자격 증명 헬퍼가 설정되어 있으면 추가 대화상자가 이를 알려 줍니다.
+
+**Askpass 프로토콜.** 헬퍼는 앱에 동봉된 작은 실행 파일입니다. 메인 프로세스는
+`runGit` 호출마다 `(정규화된 호스트, sourceId)`에 묶인 1회용 티켓을 만들고,
+자식 환경에 `AVE_ASKPASS_TICKET`과 `AVE_ASKPASS_ENDPOINT`(`0700` 디렉터리 안의
+로컬 소켓)를 넘깁니다. 헬퍼가 티켓과 git의 프롬프트 문구를 보내면, 메인
+프로세스는 프롬프트가 티켓의 호스트를 가리킬 때만 저장된 토큰으로 답하고, 아니면
+빈 답을 돌려줍니다. 티켓은 git 프로세스가 끝나면 만료됩니다.
+
+**쓰는 명령**(이 외에는 없음):
+
+- `ls-remote`
+- `init --bare`
+- `fetch --filter=blob:none --no-tags <remote> <ref>`
+- `rev-parse`, `merge-base --is-ancestor`, `cat-file`, `ls-tree`
+- **커밋의 한 경로 내보내기:**
+  `rev-list --objects --missing=print <commit> -- <path>`로 아직 없는 blob을
+  나열하고, 한 번의 요청으로 가져온 뒤
+  (`fetch --filter=blob:none --no-tags <remote> <oid>…`, 부분 클론의 지연 가져오기가
+  보내는 것과 같은 요청), `archive --format=tar <commit> -- <path>`로 트리를
+  스테이징 디렉터리에 씁니다. 워크트리도 sparse-checkout도 만들지 않습니다.
+
+타임아웃: `ls-remote` 20초, `fetch` 120초(설정 가능), 내보내기 60초. 출력 한도와
+중단 신호는 기존 프로세스 헬퍼를 따릅니다.
+
+## 10. 특권 패키지 없음
+
+공식 소스는 앱에 하드코딩되고 **Ave Official** 배지를 답니다. 배지가 주는 것은
+그것뿐입니다. 공식 소스의 패키지도 다른 소스의 패키지와 똑같이 해석하고, 검증하고,
+동의를 받습니다. 예전에 카탈로그와 함께 오던 결정은 이제 앱 자체의 소스 코드나
+기기의 시스템 정책 파일, 즉 git 저장소가 닿을 수 없는 곳에 있습니다.
+
+### 10.1 제거: 관리 패키지
+
+지금은 `installPolicy: "admin"`인 카탈로그 행이 사용자 조작 없이 부팅 때
+설치되고(`ensureManagedInstalled`), 사용자가 제거할 수 없고(`deployment-guard.ts`),
+시크릿 게이트의 grant 단계를 건너뛰고(`secret-gate.ts` admin bypass), 사용자의
+업데이트 클릭을 관리 액터로 승격하고, 목록에서 내려가면 제거됩니다. 이 전부를
+제거합니다.
+
+- `installPolicy`는 매니페스트 스키마에서(§5.3), `installSource: "admin"`은
+  레지스트리에서(§16.3) 빠집니다.
+- 어떤 패키지도 스스로 제거를 막을 수 없습니다. 패키지를 필수로 지정할 수 있는
+  것은 기기의 시스템 정책 파일뿐입니다(§10.2). 어떤 패키지도 매니페스트
+  허용 목록, 앱의 grant 표(§10.3), 활성 공급자 검사를 거치지 않고는 호스트
+  시크릿에 닿지 못합니다.
+
+제거 지점(현재 트리에서 확인): `src/boot/managed-marketplace.ts`,
+`src/plugins/marketplace.ts`의 관리 분기(부팅 설치·업데이트, 목록 제외 시 제거,
+user→it-admin 액터 승격), `update-condition.ts`(`eligible_managed_install`,
+`eligible_managed_boot_update`, `normalizeInstallPolicy` 검사),
+`runtime/index.ts`의 `isManaged`, `runtime/manifest-validation.ts`의
+`normalizeInstallPolicy`, `src/ui/renderer/types.ts`의 `installPolicy` 필드,
+`src/boot/steps/plugin-runtime/host-api-factory.ts`의 `installSource` 연결과
+`admin-bypass` 감사 경로, `deployment-guard.ts`의 admin 분기, `secret-gate.ts`의
+tier-3 우회, `schemas/sdk/skill-package.schema.json`의 `installPolicy` 속성과 그
+SDK 사본(두 저장소에서 같은 변경). 관리 동작을 검증하던 테스트는 지우지 않고
+§10.2를 검증하도록 다시 씁니다: `marketplace-managed-bootstrap`,
+`marketplace-install-actor-escalation`, `deployment-guard`, `registry-migration`,
+`secret-gate`.
+
+### 10.2 기본 설치와 필수 설치
+
+새 설치본이 무엇을 갖고 시작할지는 어떤 저장소에도 없는 목록이 정합니다. 두 가지가
+있습니다.
+
+**기본 설치(default install)**는 한 번 설치된 뒤 사용자의 것이 됩니다. 앱에서
+옵니다.
 
 ```ts
-// policy/revocations.json
+// src/marketplace/default-installs.ts — changed only by an app release
+export const DEFAULT_INSTALLS: readonly PackageKey[] = [
+  { kind: "plugin", name: "meeting", source: "ave" },
+  { kind: "plugin", name: "local-indexer", source: "ave" },
+];
+```
+
+그리고 시스템 정책 파일의 `marketplaces.defaultInstalls`(§12)에서도 옵니다. 정책
+목록은 공식 또는 관리 소스의 패키지를 지정할 수 있습니다.
+
+- 부팅 때 `packages/default-installs.json`에 아직 기록되지 않은 키를 일반
+  계획(사다리, 검증, 영수증)으로 설치하고 기록합니다. 사용자는 설치된 항목을
+  나열하고 항목마다 제거 버튼이 있는 알림을 한 번 봅니다.
+- 기록된 키는 다시 설치하지 않습니다. 기본 패키지를 제거하면 사용자가 다시
+  설치하지 않는 한 그대로입니다.
+- 패키지가 없거나 호환되지 않는 키는 `skipped`로 기록하고, 목록 항목이 바뀔
+  때만 다시 시도합니다.
+
+**필수 설치(required install)**는 시스템 정책 파일의
+`marketplaces.requiredInstalls`(§12)에서만 옵니다. 이 파일은 기기 관리자(root나
+기기 관리 도구)가 소유하며, 어떤 git 저장소도 쓸 수 없습니다. 항목마다:
+
+- 없으면 부팅 때 설치하고, 부팅 때 소스의 후보 버전(§6.1)으로 일반 계획을 통해
+  업데이트합니다. 필수 패키지의 권한 동의는 정책이 대신하며, 검토 화면에는
+  "조직에서 필수로 지정"으로 표시합니다.
+- 사용자는 제거하거나 비활성화할 수 없습니다. `deployment-guard.ts`는 액터
+  모델을 유지하되, 사용자 조작을 거부하는 유일한 사유가 "`requiredInstalls`에
+  있음"(`PACKAGE_REQUIRED_BY_POLICY`)이 되고, `assertUninstallAllowed`와
+  `assertDisableAllowed`가 모두 이를 검사합니다.
+- 항목은 공식 또는 관리 소스만 지정할 수 있습니다.
+- 정책 파일에서 항목을 빼면 필수 지정이 끝납니다. 패키지는 설치된 채 남고 일반
+  사용자 설치가 됩니다.
+
+기본이나 필수로 지정되었다고 해서 호스트 시크릿 grant가 생기지는 않습니다.
+grant는 §10.3만 따릅니다.
+
+### 10.3 호스트 시크릿 grant
+
+서명된 화이트리스트 grant(지금: `meeting`과 `local-indexer`가 활성 공급자의
+`llm.apiKey.*`를 읽을 수 있음)를 앱 안으로 옮깁니다.
+
+```ts
+// src/plugins/secret-access/grants.ts — changed only by an app release
+export const HOST_SECRET_GRANTS: readonly HostSecretGrant[] = [
+  { plugin: "meeting", keys: ["llm.apiKey.openai", "llm.apiKey.claude", "llm.apiKey.gemini", "llm.apiKey.azure-foundry", "llm.apiKey.vertex-ai"] },
+  { plugin: "local-indexer", keys: [/* same set */] },
+];
+```
+
+grant는 다음이 모두 참일 때만 적용됩니다.
+
+1. 레지스트리 항목의 `origin.sourceOrigin`이 `official`;
+2. 설치된 아티팩트의 sha256이 공식 스냅숏이 그 버전에 핀한 sha256(Ave가 게시한
+   바로 그 아티팩트)과 같음. 값은 `origin.artifactSha256`에서, `legacy` 항목이면
+   기존 설치 영수증의 `artifactSha256`에서 읽습니다. tree 단계 설치는 절대
+   해당하지 않습니다;
+3. 실행 중인 매니페스트의 정규화 SHA-256이 설치 때 기록한 `manifestSha256`과
+   같음(지금의 tier-3 핀, 유지);
+4. 키가 매니페스트의 `hostSecrets.read`에 있고(tier 2) 활성 공급자를
+   가리킴(tier 4) — 변경 없음.
+
+`canonical-json.ts`와 `secret-gate.ts`는 남고 `src/plugins/secret-access/`로
+옮깁니다. tier-3 조회는 `whitelistRegistry` 대신 위 표를 읽습니다.
+
+- 조건 2는 결국 공식 저장소 `main`에 머지할 수 있는 사람이 정합니다. D4에서는
+  grant 대상 플러그인 이름에 다른 아티팩트를 핀하는 머지가 그 아티팩트에 grant를
+  줍니다. grant 표는 피해 범위를 나열된 플러그인 이름과 키로 한정하며, 제안서의
+  위협 표에 이를 적어 둡니다.
+- grant 대상 기본 패키지를 제거했다가 공식 소스에서 다시 설치하면, 조건 1–4가
+  맞을 때 grant가 돌아옵니다. 의도된 동작입니다.
+- 표에 플러그인이나 키를 추가하려면 앱 릴리스가 필요합니다.
+
+### 10.4 폐기(Revocation)
+
+모든 소스는 `policy/revocations.json`을 게시할 수 있습니다. 이 파일은
+`origin.sourceId`가 그 소스인 설치본에**만** 적용되므로, 어떤 저장소도 다른
+저장소의 패키지를 끌 수 없습니다. 공식 소스도 더 넓은 권한이 없습니다.
+
+```ts
 interface RevocationsFile {
   schemaVersion: 1;
   revocations: Array<{ kind: PackageKind; name: string; versions: string; // semver range
                         reason: string; at: string; action: "disable" | "uninstall" }>;
 }
-
-// policy/grants.json — replaces the signed whitelist's secret-gate grants
-interface GrantsFile {
-  schemaVersion: 1;
-  grants: Array<{ plugin: string; versions: string; hostSecrets: string[]; reason: string }>;
-}
 ```
 
-이 파일들은 공식 스냅숏에서만 읽습니다. revoke된 버전이 설치되어 있으면 부팅
-시 비활성화하고(기존 revocation 동작) 이유를 사용자에게 알립니다. 커스텀
-소스는 아무것도 revoke하거나 grant할 수 없습니다.
+폐기된 설치 버전은 부팅 때 기존 `revocationRegistry` 인터페이스(서명 피드 대신
+스냅숏에서 공급)를 통해 비활성화(또는 제거)되고, 사용자에게 사유를 알립니다.
+
+소스를 가로지르는 긴급 차단(kill switch)은 의도적으로 두지 않습니다. 공식 소스도
+서비스 엔드포인트도 다른 소스가 게시한 패키지를 끌 수 없습니다. 커스텀 소스의
+해로운 패키지는 사용자가(제거, 소스 제거) 또는 기기 관리가(`marketplaces.block`은
+소스의 추가와 동기화를 막음, 설치된 파일 제거는 기기 관리 작업) 처리합니다.
+
+### 10.5 공식 소스가 여전히 다른 점
+
+| 항목 | 공식 | 관리 | 커스텀 / 직접 |
+|---|---|---|---|
+| 배지 | Ave Official | 조직 라벨 | 소스 id |
+| 사용자가 제거 가능 | 아니오 | 아니오 | 예 |
+| 사용자가 숨기기 가능 | 정책이 허용할 때만 | 아니오 | 예 |
+| 다시 쓴 이력 | 거부 | 거부 | 사용자 검토 |
+| 기본 설치가 지정 가능 | 앱 목록과 정책 목록 | 정책 목록 | 아니오 |
+| 필수 설치가 지정 가능 | 정책 목록 | 정책 목록 | 아니오 |
+| 제거·비활성화 잠금 | 정책 `requiredInstalls`로만 | 정책 `requiredInstalls`로만 | 없음 |
+| 호스트 시크릿 grant 적용 | 예(§10.3) | 아니오 | 아니오 |
+| 다른 소스의 패키지 폐기 | 불가 | 불가 | 불가 |
 
 ## 11. 서비스 엔드포인트
 
@@ -523,21 +775,26 @@ interface GrantsFile {
 // GET {serviceBase}/.well-known/former-service.json
 {
   "schemaVersion": 1,
-  "announcements": "/announcements/v1.json",   // path or absolute https URL on the same site
-  "telemetry": null,                            // or "/telemetry/events" when an ingestion service exists
-  "movedTo": null                               // or "https://new-domain.example" for a domain change
+  "announcements": "/announcements/v1.json",   // path on the same origin
+  "telemetry": null,                            // or "/telemetry/events" (same origin) when an ingestion service exists
+  "movedTo": null,                              // or "https://new-domain.example" for a domain change
+  "movedFrom": null                             // on the new domain: the previous base, confirming the move
 }
 ```
 
-- `serviceBase` 결정 순서: 관리 정책 `service.baseUrl` → 빌드 상수
-  `AVE_SERVICE_BASE_URL`(기본 `https://former-site.invalid`). 사용자 설정은 없습니다.
-- `movedTo`는 현재 기준 주소에서 https로 받은 경우에만 따릅니다. 새 주소는 앱
-  상태에 저장되어 이후 계속 쓰입니다. 이후의 `movedTo`도 같은 규칙을 따릅니다.
-  정책 값이 언제나 우선합니다.
-- 공지는 `MarketplaceAnnouncement` 계약(등급, `startsAt`/`endsAt`, 이동 전용
-  action 최대 3개, 앱 버전으로 거르는 action)과 닫은 공지 id 동작을 유지합니다.
-  부팅 후와 6시간마다 가져옵니다.
-- 정적 파일은 ave의 `web/` 사이트(`web/public/.well-known/`,
+- `serviceBase` 결정 순서: 관리 정책 `service.baseUrl` → 현재 빌드 상수에 대해
+  기록된 이전(아래) → 빌드 상수 `AVE_SERVICE_BASE_URL`(기본
+  `https://former-site.invalid`). 사용자 설정은 없습니다.
+- **도메인 변경.** `movedTo`는 현재 base에서 https로 받은 경우에만, 그리고 새
+  base의 서비스 문서가 `movedFrom`에 현재 base를 적어 확인해 준 뒤에만
+  받아들입니다. 받아들인 이전은 그때의 빌드 상수와 함께 저장되며, 앱 업데이트가
+  다른 상수를 싣고 오면 버립니다. 빌드 상수당 최대 한 번만 따릅니다.
+- `announcements`와 `telemetry`는 서비스 오리진의 경로여야 합니다.
+- 공지는 `MarketplaceAnnouncement` 계약(수준, `startsAt`/`endsAt`, 최대 세 개의
+  탐색 전용 액션, 앱 버전 필터 액션)과 닫은 id 동작을 유지합니다. 활성 로케일이
+  공지에 없는 설치 언어이면 액션 라벨은 `en` 라벨로 대체합니다. 부팅 직후와
+  6시간마다 가져옵니다.
+- 정적 파일은 ave `web/` 사이트(`web/public/.well-known/`,
   `web/public/announcements/`)에 두고, 기존 수동 프로덕션 게이트로 배포합니다.
 
 ## 12. 관리 정책 추가 항목
@@ -546,17 +803,24 @@ interface GrantsFile {
 // policy.json (system scope)
 "marketplaces": {
   "allow": ["https://github.com/acme/*", "host:git.corp.example"],  // absent = no restriction
-  "block": ["host:gitlab.com"],
-  "allowHttpHosts": ["git.corp.example"],                              // plain-http git hosts; default none
+  "block": ["host:git.example.org"],
+  "allowHttpHosts": ["git.corp.example"],                           // plain-http git hosts; default none
   "allowDirectInstall": true,
   "allowDisablingOfficial": false,
-  "additional": [{ "id": "corp", "url": "https://git.corp.example/ave/marketplace.git" }]
+  "additional": [{ "id": "corp", "url": "https://git.corp.example/ave/marketplace.git" }],
+  "defaultInstalls": [{ "kind": "plugin", "name": "wiki-search", "source": "corp" }],
+  "requiredInstalls": [{ "kind": "plugin", "name": "orion", "source": "corp" }]
 },
 "service": { "baseUrl": "https://ave.corp.example" }
 ```
 
-`additional` 소스는 미리 등록되고 사용자가 제거할 수 없으며, 신뢰 측면에서는
-`custom`으로 취급합니다.
+- 패턴은 정규화된 URL(§7.1)과 비교합니다. `host:<host>`는 스킴과 관계없이 호스트를
+  맞추고, URL 패턴은 끝의 `*` 와일드카드와 함께 스킴·호스트·경로를 맞춥니다.
+  `block`이 `allow`보다 우선합니다.
+- `additional` 소스는 `managed` 출처로 미리 등록됩니다. 사용자는 제거하거나 숨길
+  수 없고, 이력 규칙은 공식 소스와 같습니다.
+- `defaultInstalls`와 `requiredInstalls`는 §10.2를 따르며 공식·관리 소스만 지정할
+  수 있습니다. 두 목록에 모두 있는 키는 필수로 취급합니다.
 
 ## 13. IPC 계약
 
@@ -571,150 +835,227 @@ interface GrantsFile {
 | `ave:marketplace:sources:accept-rewrite` | `{ id; commit }` | `SourceView` |
 | `ave:marketplace:sources:set-token` / `delete-token` | `{ host; token? }` | `{ ok: true }` |
 | `ave:marketplace:catalog:list` | `{ kind?; sourceId?; query?; installedOnly? }` | `CatalogRow[]` |
-| `ave:marketplace:package:detail` | `PackageKey` | `PackageDetail`(버전, 호환성, 출처, 단계 미리보기) |
-| `ave:marketplace:install:plan` | `PackageKey & { version? }` | `InstallPlan` |
+| `ave:marketplace:package:detail` | `PackageKey` | `PackageDetail`(버전, 호환성, 출처, authority, 단계 미리보기) |
+| `ave:marketplace:install:plan` | `PackageKey & { version? }` | `InstallPlan`(`snapshotCommit`, `versionCommit` 포함) |
 | `ave:marketplace:install:execute` | `{ planId }` | `InstallResult` |
-| `ave:marketplace:update:plan` | `PackageKey` | `UpdatePlan`(커밋 범위, capability 차이) |
+| `ave:marketplace:update:plan` | `PackageKey` | `UpdatePlan`(커밋 범위, authority 변화, 대기 중인 이력 재작성) |
 | `ave:marketplace:uninstall` | `PackageKey` | `UninstallResult` |
 | `ave:marketplace:direct:preview` | `{ input; subdir?; ref? } \| { serverJson: string } \| { mcpConfig: string }` | `DirectPackagePreview` |
+| `ave:marketplace:announcements` | — | `MarketplaceAnnouncement[]` |
 | `ave:git:runtime:status` | — | `GitRuntimeStatus` |
-| `ave:git:runtime:install` | — | `GitRuntimeStatus`(진행 상황은 이벤트로) |
+| `ave:git:runtime:install` | — | `GitRuntimeStatus`(진행은 이벤트로) |
 
 이벤트: `marketplace:sync-progress`, `marketplace:catalog-changed`,
 `marketplace:install-progress`(`{ planId, rung, phase, bytes? }`),
-`git-runtime:progress`.
+`marketplace:updates-available`(유지), `marketplace:boot-installs-applied`(기본·필수
+설치), `git-runtime:progress`.
 
-모든 채널은 호스트 렌더러 전용(`validateHostRendererSender`)이고 지금처럼
-감사 로그를 남깁니다. `plan` id는 한 번만 쓸 수 있고 10분 뒤 만료됩니다. 기존
-`ave:plugins:install-local` 개발 경로는 바뀌지 않습니다.
+모든 채널은 호스트 렌더러 전용(`validateHostRendererSender`)이고 지금처럼 감사
+로그를 남깁니다. `planId`와 `previewId`는 1회용이고 10분 뒤 만료됩니다
+(`PLAN_EXPIRED`). 현재 채널의 처리는 §16.2에 있습니다.
 
 ## 14. 오류 코드
 
-| 코드 | 발생 조건 | 사용자 메시지(영문 키) |
+| 코드 | 언제 | 사용자 메시지(en 키) |
 |---|---|---|
 | `GIT_RUNTIME_MISSING` | 쓸 수 있는 git 없음 | `marketplace.error.gitMissing` |
-| `GIT_RUNTIME_INSTALL_FAILED` | 관리형 다운로드/검증/압축 해제 실패 | `marketplace.error.gitInstallFailed` |
-| `SOURCE_URL_REJECTED` | 스킴, URL 안의 자격 증명, 정책 | `marketplace.error.urlRejected` |
-| `SOURCE_NAME_RESERVED` | 예약 id | `marketplace.error.nameReserved` |
+| `GIT_RUNTIME_TOO_OLD` | `system` 모드에서 시스템 git이 2.38.1 미만 | `marketplace.error.gitTooOld` |
+| `GIT_RUNTIME_INSTALL_FAILED` | 관리형 다운로드/검증/압축 해제/스모크 테스트 실패 | `marketplace.error.gitInstallFailed` |
+| `SOURCE_URL_REJECTED` | 스킴, URL 안의 자격 증명, 사설망 대상 | `marketplace.error.urlRejected` |
+| `SOURCE_POLICY_BLOCKED` | 관리 정책 allow/block | `marketplace.error.policyBlocked` |
+| `SOURCE_NAME_RESERVED` | 예약된 id | `marketplace.error.nameReserved` |
+| `SOURCE_ID_TAKEN` | 이미 쓰는 id | `marketplace.error.idTaken` |
 | `SOURCE_AUTH_REQUIRED` | 401/403, ssh 거부 | `marketplace.error.authRequired` |
-| `SOURCE_UNREACHABLE` | 네트워크, DNS, 시간 초과 | `marketplace.error.unreachable` |
+| `SOURCE_SSH_HOST_UNKNOWN` | known_hosts에 없는 호스트 키 | `marketplace.error.sshHostUnknown` |
+| `SOURCE_REF_NOT_FOUND` | 브랜치나 태그 없음 | `marketplace.error.refNotFound` |
+| `SOURCE_UNREACHABLE` | 네트워크, DNS, 타임아웃 | `marketplace.error.unreachable` |
 | `SOURCE_NOT_A_MARKETPLACE` | 인식할 수 있는 것이 없음 | `marketplace.error.notMarketplace` |
 | `SOURCE_INDEX_INVALID` | 인덱스 검증 실패 | `marketplace.error.indexInvalid` |
 | `SOURCE_HISTORY_REWRITTEN` | 후손이 아닌 후보 | `marketplace.error.historyRewritten` |
-| `SOURCE_POLICY_BLOCKED` | 관리 정책 | `marketplace.error.policyBlocked` |
-| `PACKAGE_INCOMPATIBLE` | engines가 앱 버전을 제외 | `marketplace.error.incompatible` |
-| `PACKAGE_COMPAT_UNDECLARED` | engines 없는 플러그인 | `marketplace.error.compatUndeclared` |
-| `PACKAGE_YANKED` / `PACKAGE_REVOKED` | yank/revoke된 버전 설치 | `marketplace.error.yanked` / `.revoked` |
-| `PLUGIN_ID_CONFLICT` | 같은 플러그인 id가 다른 소스에서 설치됨 | `marketplace.error.idConflict` |
-| `ARTIFACT_NOT_PINNED` | git에 sha256이 없어 단계 건너뜀 | (단계 상세) |
+| `SOURCE_DISABLED` | 숨긴 소스에서 설치·업데이트 요청 | `marketplace.error.sourceDisabled` |
+| `PLAN_EXPIRED` | 만료되었거나 재사용된 계획/미리보기 id | `marketplace.error.planExpired` |
+| `PACKAGE_INCOMPATIBLE` | `minAppVersion`이 앱 버전보다 높음 | `marketplace.error.incompatible` |
+| `PACKAGE_COMPAT_UNDECLARED` | `requires.minAppVersion` 없는 git 설치 플러그인 | `marketplace.error.compatUndeclared` |
+| `PACKAGE_YANKED` / `PACKAGE_REVOKED` | 회수/폐기된 버전 설치 | `marketplace.error.yanked` / `.revoked` |
+| `PACKAGE_ID_CONFLICT` | 같은 `(kind, name)`이 다른 소스에서 설치됨 | `marketplace.error.idConflict` |
+| `PACKAGE_REQUIRED_BY_POLICY` | `requiredInstalls` 패키지의 제거·비활성화 | `marketplace.error.requiredByPolicy` |
+| `ARTIFACT_NOT_PINNED` | 단계 건너뜀: git에 sha256 없음 | (단계 상세) |
 | `ARTIFACT_DIGEST_MISMATCH` | sha256 불일치 | (단계 상세) |
-| `MANIFEST_MISMATCH` | plugin.json과 descriptor 불일치 | `marketplace.error.manifestMismatch` |
-| `NO_INSTALLABLE_ARTIFACT` | 모든 단계가 건너뜀 또는 실패 | `marketplace.error.noArtifact` |
+| `MANIFEST_MISMATCH` | plugin.json과 디스크립터 불일치 | `marketplace.error.manifestMismatch` |
+| `NO_INSTALLABLE_ARTIFACT` | 모든 단계가 건너뛰어졌거나 실패 | `marketplace.error.noArtifact` |
 | `CONTENT_RULE_VIOLATION` | 콘텐츠 종류 파일 규칙 위반 | `marketplace.error.contentRule` |
 
 ## 15. UI 명세
 
-목업은 아래 상태를 모두 보여 줍니다. 설정 → 마켓플레이스가 앱 안의 스토어가
-됩니다(웹 스토어는 없어집니다).
+목업은 아래 모든 상태를 보여 줍니다. 설정 → 마켓플레이스가 앱 안의 스토어가
+됩니다(웹 스토어는 없어짐).
 
 ### 15.1 둘러보기
 
-- 머리글: 검색 필드, **Sources** 메뉴(활성 소스별 체크박스, "All sources"),
-  **Add** 메뉴(Add marketplace…, Install from Git URL…, Add MCP server…).
+- 헤더: 검색창, **Sources** 버튼, **Add** 메뉴(Add marketplace…, Install from
+  Git URL…, Add MCP server…), 소스 필터 칩(All sources + 켜진 소스마다 하나).
 - 종류 탭: Plugins, MCP, Skills, Agents, Themes, Fonts, Languages, Providers,
-  Messaging. 탭마다 개수를 표시합니다.
-- 카드: 아이콘, 표시 이름, 한 줄 설명, **소스 배지**(`Ave Official`은 체크 기호,
-  커스텀 소스는 id, 사내 호스트는 건물 기호), 버전, 상태 칩: `Install`,
-  `Installed`, `Update 1.4.2`, `Requires Ave 0.12`, `Yanked`, `Source removed`.
-- 두 소스에 같은 이름이 있으면 카드 두 개가 각자의 배지를 달고 나옵니다. 행을
-  합치지 않습니다.
+  Messaging — 각각 개수 표시.
+- 카드: 아이콘, 표시 이름, 한 줄 설명, **소스 배지**(`Ave Official`은 방패
+  글리프, 관리 소스는 건물 글리프와 라벨, 커스텀 소스는 id), 버전, 상태 칩:
+  `Install`, `Installed`, `Update 1.4.2`, `Requires Ave 0.12`, `Yanked`,
+  `Installed from <다른 소스>`, `Source removed`, `Required by your organization`
+  (제거·비활성화 컨트롤 없음, 툴팁이 정책 파일을 알려 줌).
+- 두 소스에 같은 이름: 배지가 각각 붙은 카드 두 장. 행을 합치지 않습니다. 두 번째
+  것을 설치하면 소스 전환이 됩니다(`PACKAGE_ID_CONFLICT`가 설명하고 전환을 제안).
+- 부팅 설치 알림(§10.2)은 설치·업데이트한 항목을 나열하는 배너로 한 번
+  나타나며, "Installed for you"(기본 설치, 제거 버튼 있음)와 "Required by your
+  organization"으로 나뉩니다.
 
 ### 15.2 패키지 상세(시트)
 
-섹션: 개요, **출처**(소스, 저장소, 경로, 복사 가능한 짧은 커밋 SHA, 게시일),
-**호환성**(범위와 판정), **권한**(플러그인/MCP의 기존 검토 요약), **배포**(단계
-목록과 사용할 단계), **버전**(yank와 비호환 표시가 있는 이력). 기본 동작은 상태
-칩을 따릅니다.
+섹션: 개요, **출처**(소스, 저장소, 경로, 짧은 커밋 SHA — 툴팁에 전체 SHA와 복사
+버튼, 게시일), **호환성**(`minAppVersion`과 판정), **권한**(다운로드 전에
+디스크립터의 authority에서), **전달**(단계 목록과 쓰일 단계), **버전**(회수·비호환
+표시가 있는 이력).
 
 ### 15.3 설치 진행
 
-시트 안에 표시합니다. `skipped`/`failed`/`using` 상태의 단계 행과 다운로드
-진행 막대가 나오고, 이어서 기존 권한 검토 단계, 마지막으로 결과가 나옵니다.
-실패하면 모든 단계의 사유와 복사 가능한 진단을 보여 줍니다.
+시트 안에서: `skipped`/`failed`/`using` 단계 행과 다운로드 진행 막대, 그다음 기존
+권한 검토 단계, 그다음 결과. 실패하면 모든 단계의 사유와 복사할 수 있는 진단을
+보여 줍니다.
 
 ### 15.4 소스
 
-표: 소스(이름, URL, origin 배지), 고정 커밋(짧은 SHA, 마지막 동기화 상대 시간),
-패키지 수, 상태(`Up to date`, `Syncing`, `Unreachable — showing cached`,
-`Auth required`, `History rewritten — review`), 활성 스위치, 더보기(Refresh,
-Set token, Remove). 공식 행에는 Remove가 없고, 정책이 허용하지 않으면 스위치가
-잠깁니다. 정책으로 관리되는 행에는 자물쇠를 표시합니다.
+표: 소스(라벨, URL, 출처 배지), 핀 커밋(툴팁이 있는 짧은 SHA, 마지막 동기화
+상대 시각), 패키지 수, 상태(`Up to date`, `Syncing`,
+`Unreachable — showing cached`, `Auth required`, `History rewritten — review`),
+켜기 스위치, 더보기 메뉴(Refresh, Set token, Remove). 공식·관리 행에는 Remove가
+없고, 공식 스위치는 정책이 허용하지 않으면 잠겨 있고, 관리 행에는 자물쇠가
+표시됩니다.
 
-### 15.5 마켓플레이스 추가 대화 상자
+### 15.5 마켓플레이스 추가 대화상자
 
-1단계: URL 필드(`owner/repo` 허용), ref(선택), 인증 선택(None / Token / SSH).
-2단계(미리보기): 마켓플레이스 이름, 소유자, 커밋, 종류별 개수, "N개 패키지가
-이 컴퓨터에서 코드를 실행할 수 있습니다" 경고, 진단, id 필드. 확인 버튼은
-**Add marketplace**입니다. 입력이 단일 패키지면 2단계가 직접 설치 미리보기로
-바뀝니다.
+1단계: URL 입력(`owner/repo` 허용), 선택적 ref, 인증 라디오(None / Token / SSH).
+2단계(미리보기): 마켓플레이스 이름, 소유자, 커밋, 종류별 개수, "N개 패키지가 이
+컴퓨터에서 코드를 실행할 수 있음" 경고, 이 호스트에 OS 자격 증명 헬퍼가 응답할
+때의 안내, 진단, id 입력. 확정 버튼: **Add marketplace**. 입력이 단일 패키지면
+2단계가 직접 설치 미리보기로 바뀝니다. git이 없으면 차단 단계(§15.7)가 먼저
+나옵니다.
 
 ### 15.6 업데이트 검토
 
-커밋 범위, 버전 변화, capability/네트워크/비밀 값 차이를 강조해 보여 줍니다.
-커스텀 소스의 히스토리가 재작성되었으면 명시적 체크박스를 요구하는 배너를
-띄웁니다.
+커밋 범위, 버전 변화, 강조된 authority 변화(권한, 네트워크, 시크릿, 도구), 그리고
+커스텀 소스라면 명시적인 체크박스가 필요한 "history rewritten" 배너.
 
 ### 15.7 Git 런타임
 
-설정 → 마켓플레이스 → 유지 관리의 카드, 그리고 git이 없을 때 추가 대화 상자
-안에 나오는 차단 단계입니다. 감지 상태(`System git 2.50.1`,
-`Managed git 2.53.0`, `Not found`), 모드 선택(Auto / System / Managed),
-§9.2의 단계별 진행을 보여 주는 **Install Git (≈40 MB)** 버튼으로 구성합니다.
+설정 → 마켓플레이스 → 유지 관리의 카드이자 추가 대화상자 안의 차단 단계: 감지
+상태(`System git 2.50.1`, `Managed git 2.53.0`, `Not found`,
+`System git 2.34.1 is too old — using managed git`), 모드 선택(Auto / System /
+Managed), `smoke-testing`을 포함한 §9.2 단계 진행이 붙은 **Install Git (≈40 MB)**,
+오류와 Retry가 있는 `failed` 상태.
 
 ### 15.8 공지
 
-배너 컴포넌트는 그대로이고, 가져오는 출처만 바뀝니다.
+배너 컴포넌트는 그대로이고, 가져오는 오리진만 다릅니다.
 
 ### 15.9 접근성과 문구
 
-모든 대화 상자는 포커스를 가두고 단계에 레이블을 붙입니다. 소스 배지는 색만이
-아니라 텍스트 레이블을 함께 씁니다. SHA는 고정폭 글꼴로 표시하고 툴팁에 전체
-값을 담습니다. 상태 칩은 기존 토큰 색을 씁니다. 새 문구는 생성기를 거쳐 i18n
-카탈로그에 추가하고, 원시 키를 노출하지 않습니다.
+모든 대화상자는 라벨이 붙은 단계와 함께 포커스를 가둡니다. 소스 배지는 색만이
+아니라 텍스트 라벨을 가집니다. SHA는 고정폭 글꼴과 전체 값 툴팁을 씁니다. 상태
+칩은 기존 토큰 색을 씁니다. 새 문구는 생성기를 통해 i18n 카탈로그에 추가하며,
+원시 키를 노출하지 않습니다.
 
-## 16. 이전 대응표
+## 16. 이관과 처분
 
-| 현재(서버/앱) | 이후 |
+### 16.1 서버 기능
+
+| 지금(서버) | 이후 |
 |---|---|
 | `GET /api/v1/catalog`, `/plugins/{slug}` | 소스 스냅숏 |
-| `…/download`, `…/download.sig` + `prod-v1` | 사다리 단계 + git 안의 sha256 고정값 |
-| `POST /plugins/{slug}/versions` + 승인 대기열 | PR + 머지(D8) |
+| `…/download`, `…/download.sig` + `prod-v1` | 사다리 단계 + git 안의 sha256 핀 |
+| `POST /plugins/{slug}/versions` + 승인 큐 | PR + 머지(D8) |
 | yank / unyank / rollback | `versions[].yanked`, `policy/revocations.json`, 새 버전 |
-| canary 롤아웃 비율 | `versions[].rollout.percent` + 로컬 버킷 |
-| `min_app_version` 컬럼 | descriptor와 플러그인 매니페스트의 `engines.ave` |
-| 사내망 공개 범위(CIDR) | 사내 커스텀 마켓플레이스 |
-| organization-allowed 플래그 | 관리 정책 `marketplaces.allow` |
+| 카나리 롤아웃 비율, `channel: "canary"` | `versions[].rollout.percent` + 로컬 버킷, 프리릴리스는 `canaryOptIn` 뒤 |
+| `min_app_version` 열 | 디스크립터의 `minAppVersion`과 플러그인 매니페스트의 `requires.minAppVersion` |
+| 관리(`installPolicy: "admin"`) 카탈로그 행 | 앱의 `DEFAULT_INSTALLS`, 정책 `defaultInstalls`, 정책 `requiredInstalls`(§10.2) |
+| 사내 공개 범위(CIDR) | 사내 관리 또는 커스텀 마켓플레이스 |
+| 조직 허용 플래그 | 관리 정책 `marketplaces.allow` |
 | 공지 | 서비스 엔드포인트 |
 | 텔레메트리 `/telemetry/events`, `register-device` | 서비스 문서의 `telemetry`(수집기가 생길 때까지 null) |
-| DLP 적중 보고, API 키, `/me` | 서버와 함께 제거 |
-| 서명된 whitelist / admission / revocation 피드 | `policy/grants.json`, `policy/revocations.json` |
-| 숨겨 둔 내장 테마(`MARKETPLACE_ELIGIBLE_THEME_BUNDLE_IDS`)와 로케일 | 데이터 형태의 테마·언어 패키지. `moonstone`, `gallery`, `en`은 내장으로 유지 |
+| DLP 적중 보고, API 키, `/me`, 게시자 라우트 | 서버와 함께 제거 |
+| 서명된 화이트리스트 grant | 앱의 `HOST_SECRET_GRANTS`(§10.3) |
+| 서명된 admission / revocation 피드 | §6 해석, 소스별 `policy/revocations.json` |
 
-기존 설치: 새 버전을 처음 부팅할 때, `installSource`가 `user`나 `admin`이고 id가
-공식 스냅숏에 있는 레지스트리 항목을 `ave`에 연결합니다. origin은 스냅숏의 일치
-버전으로 채우고, 다음 업데이트 전까지 `rung: "legacy"`로 둡니다. 설치된
-프로바이더 프리셋과 테마·언어 활성화는 ledger 항목으로 변환합니다.
+### 16.2 앱 코드와 설정
+
+| 항목 | 처분 |
+|---|---|
+| `cloud-marketplace-fetcher.ts` | 삭제. 사설망 가드는 공용 §7.4 게이트로 이동 |
+| `LocalCatalogMarketplaceFetcher`, `DisabledMarketplaceFetcher`(`marketplace.ts`) | 삭제. 개발 빌드는 개발 플래그 아래 로컬 디렉터리를 direct 소스로 등록 |
+| `marketplace-fetcher.ts` 인터페이스 | 통합 카탈로그 뷰로 대체 |
+| `marketplace-installer.ts` | 서버 다운로드와 `.sig` 처리 삭제. zip 한도와 엔트리 검사는 release/archive 단계용으로 유지 |
+| `envelope-verifier.ts`, `marketplace-keys.ts`, `publisher-keys.ts`, `signed-doc-fetcher.ts`, `signed-doc-cache.ts` | 삭제. `plugin-artifact-store.ts`와 `mcp-setup.ts`는 공개 키를 받지 않음 |
+| `admission/` | 삭제(설치 승인은 §6 해석) |
+| `whitelist/` | 전송과 레지스트리 삭제. `canonical-json.ts`와 `secret-gate.ts`는 grant 표와 함께 `src/plugins/secret-access/`로 이동 |
+| `revocation/` | 전송 삭제. `revocationRegistry`는 스냅숏에서 공급 |
+| `src/boot/steps/{admission,whitelist,revocation}-bootstrap.ts` | 스냅숏에서 폐기를 공급하는 단계 하나로 대체 |
+| `src/boot/managed-marketplace.ts`, `ensureManagedInstalled`, 관리 액터 승격, 목록 제외 admin 제거 | 부팅 설치 단계(§10.2)로 대체 |
+| `update-condition.ts` 관리 종류, `runtime/index.ts` `isManaged`, 렌더러 `installPolicy` 타입 | 제거. 필수 설치는 자체 부팅 단계 사용 |
+| `deployment-guard.ts` admin 분기 | 제거·비활성화의 `requiredInstalls` 검사로 대체 |
+| `secret-gate.ts` admin 우회, host-api-factory `admin-bypass` 감사 경로, `normalizeInstallPolicy` | 삭제 |
+| `mcp-marketplace-install.ts`(`readRuntimeFromVerifiedZip`) | `resolve/mcp.ts`로 대체 |
+| `offline-cache.ts` | 스냅숏과 보존 아티팩트로 대체. `offlineCacheEnabled`는 "내려받은 아티팩트 보관"을 뜻함 |
+| `update-detector.ts`, `update-condition.ts` | 유지, 스냅숏에 다시 연결 |
+| `dependency-resolver.ts` | 유지. 디스크립터의 authority로 실행(§6.2) |
+| 설정 `backend`, `cloudBaseUrl`, `cloudAllowPrivateNetwork` | 설정 이관으로 제거 |
+| 설정 `updateCheckEnabled`, `updateCheckIntervalMs`, `canaryOptIn`, `skippedPluginUpdates`, `dismissedAnnouncementIds` | 위 의미로 유지 |
+| 설정 `installedThemeBundleIds`, `installedLanguagePacks`, `installedProviderPresets`, `installedProviderIds` | 원장(ledger) 항목으로 변환 |
+| 시크릿 `marketplace.apiKey`와 그 IPC(`ipc/domains/settings.ts`) | 삭제. 텔레메트리도 더는 읽지 않음 |
+| IPC `ave:plugins:marketplace:list`, `ave:plugins:install`, `ave:plugins:rollback` | `catalog:list`와 `install:plan/execute`로 대체. 롤백 = 목록의 이전 버전 설치 |
+| IPC `ave:marketplace:ping` | `sources:refresh` 결과로 대체 |
+| IPC `ave:mcp:catalog:list`, `ave:mcp:install-from-marketplace`, `ave:agents:install`, `ave:skills:install` | 종류로 거른 `catalog:list`와 `install:*`로 대체 |
+| IPC `ave:plugins:install-local`, MCP 폼, 데스크톱 설정 가져오기 | 유지 |
+| 딥링크 `ave://install/<type>/<slug>`, `ave://uninstall/<type>/<slug>` | `ave://install/<kind>/<name>@<source>`, `ave://uninstall/<kind>/<name>@<source>`로 변경. 둘 다 확인 UI를 엶 |
+| `.github/workflows/marketplace-e2e.yml` | 전환과 같은 변경에서 로컬 git 픽스처를 쓰는 저장소 내 E2E로 대체 |
+| `resources/AGENTS.md`(최신 버전 출처로서의 "marketplace API") | 설치된 소스의 스냅숏을 가리키도록 변경 |
+| `web/app/docs/servers/marketplace/*` | 서버 관리자·게시자 페이지 제거, git 마켓플레이스용 패키지 작성자 페이지로 대체 |
+| `docs/architecture/architecture.md`, 플러그인 개발·게시 가이드, `docs/ko/references/plugin-tool-schema-design.md`, `docs/ko/architecture/architecture.md`와 `docs/ko/guides/plugin-development.md`의 `installPolicy: "admin"` 예시 | 새 모델에 맞게 다시 씀 |
+
+### 16.3 기존 설치본
+
+새 버전의 첫 부팅 때:
+
+- id가 공식 스냅숏에 있는 레지스트리 항목은 `rung: "legacy"`,
+  `artifactSha256: null`로 `ave`에 묶입니다. 다음 업데이트가 사다리로 설치하면서
+  출처를 채웁니다. 이관은 아무것도 다시 설치하지 않으며 오프라인에서도 동작합니다.
+- grant 연속성: `legacy` 항목은 설치 영수증의 `artifactSha256`이 설치된 버전에
+  대한 공식 인덱스의 `artifact.release.sha256`과 같으면 호스트 시크릿 grant를
+  유지합니다(§10.3 조건 2). 그래서 공식 인덱스는 현장에 아직 설치되어 있는 grant
+  대상 플러그인의 모든 버전에 대해 `versions[]` 항목을 가지며, 각 버전마다 현재
+  서버가 제공하는 zip을 그대로 그 버전의 릴리스 자산으로 올리고 그 sha256으로
+  핀합니다(청사진 0단계). 맞는 핀이 없는 항목은 업데이트할 때까지 grant를 잃고,
+  부팅 알림이 어느 플러그인이 어느 키를 잃었는지 알려 줍니다.
+- `installSource: "admin"`은 `user`가 되고, 그 패키지들의 키는
+  `packages/default-installs.json`에 이미 적용된 것으로 기록되므로 다시 설치하거나
+  제거하지 않습니다.
+- 어떤 공식 패키지와도 맞지 않는 항목(지금은 사내 `orion` 플러그인)은 "출처 모름 —
+  업데이트 없음"으로 계속 실행되고, grant를 받지 않으며, 더는 잠기지 않습니다.
+  조직이 사내 마켓플레이스를 등록하고(`additional`) `requiredInstalls`에 올릴
+  때까지 그렇게 남고, 그다음 부팅에서 그 소스에 묶입니다. 부팅 알림은 이 항목들을
+  한 번 알립니다: "<name> is no longer managed by Ave. Your organization can
+  keep it up to date by registering its marketplace."
+- 설치된 공급자 프리셋과 테마·언어 활성화는 원장 항목이 됩니다.
 
 ## 17. 테스트 계획
 
-| 계층 | 증명하는 것 |
+| 계층 | 무엇으로 증명하는가 |
 |---|---|
-| 스키마 | 종류별 fixture 묶음: 정상, 규칙별 위반, 알 수 없는 키 |
-| 버전 선택 | engines, yank, 플랫폼, 롤아웃 버킷, revocation 표 테스트 |
-| 사다리 | 단계별 사용/건너뜀/실패 조합, 불일치 시 사다리 중단, receipt에 단계 결과 기록 |
-| Git 런타임 | 버전 게이트용 가짜 `git` 바이너리, 환경변수/플래그 계약, 로컬 fixture 서버를 쓴 관리형 설치와 잘못된 해시 거부 |
-| 동기화 | 로컬 bare 저장소: fast-forward, 재작성(공식 거부, 커스텀 검토), 잘못된 인덱스는 고정 커밋 유지, 미러 대체 |
-| 식별 | 예약 이름, 소스 간 같은 이름, `PLUGIN_ID_CONFLICT`, 업데이트 바인딩 |
+| 스키마 | 모든 종류의 픽스처 세트: 정상, 규칙별 위반, 알 수 없는 키. `installPolicy`가 있는 매니페스트는 필드 이름과 함께 거부 |
+| 버전 선택 | `minAppVersion`, 회수, 플랫폼, 프리릴리스 옵트인, 롤아웃 버킷, 소스별 폐기 표 테스트 |
+| 사다리 | 단계별 사용/건너뜀/실패 조합, authority 필드 하나라도 불일치하면 사다리 중단, 계획이 커밋에 묶임, 영수증에 단계 결과 기록 |
+| Git 런타임 | 버전 게이트용 가짜 `git` 바이너리(2.38.0 거부, 2.38.1 허용), 환경/플래그/전역 설정 계약, askpass 티켓의 호스트 바인딩, 로컬 픽스처 서버를 쓴 관리형 설치와 잘못된 해시 거부 |
+| 동기화 | 로컬 bare 저장소: 핀이 팁보다 한참 뒤인 fast-forward, 재작성(공식·관리는 거부, 커스텀은 검토), 잘못된 인덱스는 핀 유지, 미러 대체, 설치 패키지가 있는 숨긴 소스도 동기화 |
+| 네트워크 게이트 | 정규화 동치(scp/ssh/https, 대소문자, `.git`), block이 allow보다 우선, 사설망 거부, 차단된 호스트로의 리다이렉트 거부, 호스트 간 인증 헤더 없음 |
+| 특권 없음 | grant 대상과 같은 이름의 커스텀 패키지는 grant 없음, 다른 아티팩트 해시·tree 단계 설치·바뀐 매니페스트면 grant 실패, legacy 항목은 영수증 해시가 맞을 때만 grant 유지, 한 소스의 폐기는 다른 소스 패키지를 무시, 어떤 패키지도 자기 제거를 막지 못함, `installPolicy`가 있는 매니페스트 거부 |
+| 기본·필수 설치 | 기본: 사다리로 한 번 설치, 제거 후 재설치 없음. 필수: 부팅 때 재설치·업데이트, 제거·비활성화는 `PACKAGE_REQUIRED_BY_POLICY`로 거부, 항목을 빼면 사용자 설치가 됨. 두 목록 모두 공식·관리 소스로 제한. 이관은 이전 admin 설치를 적용됨으로 기록하고 맞지 않는 항목의 잠금을 해제 |
+| 식별 | 예약 이름, 소스 간 같은 `(kind, name)`, `PACKAGE_ID_CONFLICT`, 업데이트 바인딩, 소스 전환 시 플러그인 데이터 유지 |
 | 직접 설치 | 감지 분기별, npm/pypi/oci/remote에 대한 `server.json` 대응 |
-| 서비스 | `former-service.json` 파싱, `movedTo`, 정책 덮어쓰기, 현재 공지와의 동등성 |
-| E2E | 패키징된 앱이 로컬 HTTP git 마켓플레이스를 추가하고, 종류별로 패키지 하나씩 설치·업데이트한 뒤 소스를 제거 |
+| 서비스 | `former-service.json` 파싱, `movedFrom` 있을 때와 없을 때의 `movedTo`, 빌드 상수 변경 시 초기화, 정책 우선, 공지 동등성, 라벨 대체 |
+| E2E | 패키징된 개발 빌드(개발 플래그로 루프백 허용)에서 로컬 HTTP git 마켓플레이스를 추가하고, 종류별로 하나씩 설치하고, 업데이트하고, 소스를 제거 |
