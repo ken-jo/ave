@@ -186,6 +186,29 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
     expect(await readPluginDataFixture(join(pluginsDir, "alpha"))).toEqual(PLUGIN_DATA_FIXTURE);
   });
 
+  it("refuses the same name from another source unless switching, and a switch keeps the plugin data", async () => {
+    await install(plan("1.0.0"));
+    await seedPluginDataFixture(join(pluginsDir, "alpha"));
+    const official = plan("1.0.0", { sourceId: "ave", sourceOrigin: "official" });
+    await expect(install(official)).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
+    expect(await entry()).toMatchObject({ origin: { sourceId: "acme" } });
+
+    const switched = await service.installGitPlugin(official, {
+      stage: async () => staged(official),
+      activatePreparedArtifact: activateAndCommitPreparedPluginForTest,
+      switchSource: true,
+    });
+    expect(switched.action).toEqual({ action: "switch", fromSource: "acme", from: "1.0.0" });
+    expect(await entry()).toMatchObject({ origin: { sourceId: "ave", sourceOrigin: "official" } });
+    expect(await readPluginDataFixture(join(pluginsDir, "alpha"))).toEqual(PLUGIN_DATA_FIXTURE);
+  });
+
+  it("reports the replacement direction within the bound source", async () => {
+    await expect(install(plan("1.0.0"))).resolves.toMatchObject({ action: { action: "install" } });
+    await expect(install(plan("1.1.0"))).resolves.toMatchObject({ action: { action: "replace", direction: "upgrade", from: "1.0.0" } });
+    await expect(install(plan("1.0.0"))).resolves.toMatchObject({ action: { action: "replace", direction: "downgrade", from: "1.1.0" } });
+  });
+
   it("restores the previous install, receipt and origin when activation fails", async () => {
     await install(plan("1.0.0"));
     const before = await entry();

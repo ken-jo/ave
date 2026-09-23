@@ -56,6 +56,7 @@ import {
   verifyInstallReceipt,
 } from "./plugin-install-receipt.js";
 import { assertGitInstallManifest } from "../marketplace/resolve/manifest-rules.js";
+import { classifyInstall, type InstallAction } from "../marketplace/resolve/identity.js";
 import type { PluginInstallPlan, StagedPluginArtifact } from "../marketplace/resolve/plugin-ladder.js";
 import { canonicalJSON } from "./whitelist/canonical-json.js";
 import {
@@ -2340,9 +2341,11 @@ export class PluginMarketplaceService {
     options: {
       stage: (plan: PluginInstallPlan) => Promise<StagedPluginArtifact>;
       activatePreparedArtifact: PreparedMarketplacePluginActivation;
+      /** Replace an install bound to another source (or to none); the plugin's data is kept. */
+      switchSource?: boolean;
       signal?: AbortSignal;
     },
-  ): Promise<{ pluginId: string; installed: true; version: string; staged: StagedPluginArtifact }> {
+  ): Promise<{ pluginId: string; installed: true; version: string; action: InstallAction; staged: StagedPluginArtifact }> {
     const activatePreparedArtifact = requirePreparedMarketplacePluginActivation(
       options?.activatePreparedArtifact,
       "git plugin install",
@@ -2355,13 +2358,26 @@ export class PluginMarketplaceService {
           throw new Error(guardResult.reason ?? `Plugin install denied: ${pluginId}`);
         }
       }
+      const current = await this.getRawRegistryEntry(pluginId);
+      const action = classifyInstall(
+        plan,
+        current
+          ? {
+              kind: "plugin",
+              name: pluginId,
+              version: current.origin?.version ?? (await this.getInstalledVersion(pluginId)),
+              sourceId: current.origin?.sourceId ?? null,
+            }
+          : null,
+        { switchSource: options.switchSource === true },
+      );
       await this.preflightGitDependencies(plan);
       const staged = await options.stage(plan);
       if (staged.plan !== plan) {
         throw new Error(`git plugin install of ${pluginId}: the staged artifact belongs to another plan`);
       }
 
-      const existingEntry = await this.getRawRegistryEntry(pluginId);
+      const existingEntry = current;
       await this.snapshotCurrentInstall(pluginId);
       let pendingEntry: PluginRegistryEntry | null = null;
       const installOutcome = await this.installZipTransaction(pluginId, staged.zipBuffer, {
@@ -2408,7 +2424,7 @@ export class PluginMarketplaceService {
           log.warn({ pluginId, err: error }, "post-retirement backup cleanup degraded");
         });
       }
-      return { pluginId, installed: true, version: plan.version, staged };
+      return { pluginId, installed: true, version: plan.version, action, staged };
     });
   }
 
