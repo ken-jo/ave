@@ -169,6 +169,8 @@ describe("IPC domain runtime named-export lock", () => {
           "registerSessionTasksHandlers",
         ],
         "settings": [
+          "broadcastSettingsSnapshot",
+          "mutateMarketplaceProviderPresets",
           "registerSettingsHandlers",
         ],
         "tour": [

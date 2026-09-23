@@ -26,8 +26,8 @@ import {
 } from "../shared/llm-vendor-defaults.js";
 import {
   DEFAULT_BUNDLE_ID,
-  isBundleId,
   isMarketplaceEligibleThemeBundleId,
+  isThemeId,
 } from "../shared/theme-bundles.js";
 import {
   FONT_SIZE_SCALE_VALUES,
@@ -37,7 +37,7 @@ import {
 } from "../shared/appearance-font.js";
 import {
   isMarketplaceEligibleLocale,
-  normalizeLocale,
+  normalizeLocaleSetting,
 } from "../i18n/index.js";
 import { isGitRuntimeMode } from "../shared/git-runtime-mode.js";
 import { normalizeAppMode } from "../shared/initial-app-mode.js";
@@ -937,19 +937,20 @@ export function normalizeAppearance(input: unknown): AppearanceSettings {
 
   // v2 path — schemaVersion:2 present.
   if (obj.schemaVersion === 2) {
-    // Retired bundle IDs from earlier internal builds are not migrated:
-    // the open-source release has no install base that would carry them
-    // forward. Unknown bundleIds fall through to DEFAULT_BUNDLE_ID via
-    // `isBundleId` — the same predicate the patch path in settings-store uses,
-    // so the two write paths cannot accept different value sets.
-    const bundleId = isBundleId(obj.bundleId) ? obj.bundleId : DEFAULT_BUNDLE_ID;
+    // A compiled-in bundle id or an installed theme's package name (design
+    // §5.2): whether that theme is still installed is decided where it is
+    // applied, since the content ledger is read after settings. Anything else
+    // falls through to DEFAULT_BUNDLE_ID via `isThemeId` — the same predicate
+    // the patch path in settings-store uses, so the two write paths cannot
+    // accept different value sets.
+    const bundleId = isThemeId(obj.bundleId) ? obj.bundleId : DEFAULT_BUNDLE_ID;
     const followSystem = typeof obj.followSystem === "boolean" ? obj.followSystem : undefined;
     const result: AppearanceSettings = {
       schemaVersion: 2,
       bundleId,
       // Coerce any stored/legacy value to a supported locale; missing →
       // English default for the global build.
-      language: normalizeLocale(obj.language),
+      language: normalizeLocaleSetting(obj.language),
     };
     if (followSystem !== undefined) result.followSystem = followSystem;
     const font = normalizeAppearanceFont(obj.font);
@@ -967,7 +968,7 @@ export function normalizeAppearance(input: unknown): AppearanceSettings {
       codeTheme: (typeof obj.codeTheme === "string" ? obj.codeTheme : "auto") as CodeThemePreference,
     };
     // Preserve any stored language across the v1→v2 migration; default English.
-    return { ...migrateAppearanceV1ToV2(legacy), language: normalizeLocale(obj.language) };
+    return { ...migrateAppearanceV1ToV2(legacy), language: normalizeLocaleSetting(obj.language) };
   }
 
   return { ...DEFAULT_SETTINGS.appearance };

@@ -14,15 +14,15 @@
  *   - Tier D  : chart palette (--chart-1..--chart-5) for SVG visualizations
  *   - Action  : checkpoint action tokens (--action-view/-branch/-compact)
  */
-import type { BundleId } from "../../../../shared/theme-bundles.js";
-import type { ThemeTokens } from "../../../../shared/theme-tokens.js";
+import type { ThemeSurfaces, ThemeTokens } from "../../../../shared/theme-tokens.js";
 
-/** The token set every bundle defines in full; the names and value form live in `shared/theme-tokens.ts`. */
-export type BundleTokens = ThemeTokens;
 
 export interface ThemeBundle {
-  /** Unique stable identifier written to `data-theme-bundle`. */
-  id: BundleId;
+  /**
+   * Unique stable identifier written to `data-theme-bundle`: a compiled-in
+   * `BundleId`, or an installed theme package's name.
+   */
+  id: string;
   /** Display name shown in the AppearanceTab card. */
   name: string;
   /** Short description used as accessible tooltip / subtitle. */
@@ -31,6 +31,12 @@ export interface ThemeBundle {
   shell: "light" | "dark";
   /** When true this bundle is always displayed; never auto-suggested. */
   highContrast: boolean;
-  /** Complete semantic token payload for this bundle. */
-  tokens: BundleTokens;
+  /** Complete semantic token payload for this bundle (names and value form: `shared/theme-tokens.ts`). */
+  tokens: ThemeTokens;
+  /**
+   * An installed theme's depth ladder. Present only on installed themes: a
+   * compiled bundle's surfaces live in its `styles.css` block, and an
+   * installed one is applied as inline custom properties instead.
+   */
+  surfaces?: ThemeSurfaces;
 }

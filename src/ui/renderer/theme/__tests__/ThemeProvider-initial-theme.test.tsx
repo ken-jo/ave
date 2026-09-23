@@ -61,9 +61,9 @@ describe("ThemeProvider — initial theme (race-window-zero)", () => {
     expect(getByTestId("bundle").textContent).toBe(DEFAULT_BUNDLE_ID);
   });
 
-  it("ignores invalid bundleId in the global and falls back to DEFAULT_BUNDLE_ID", () => {
+  it("ignores a malformed bundleId in the global and falls back to DEFAULT_BUNDLE_ID", () => {
     (window as { __aveInitialTheme: unknown }).__aveInitialTheme = {
-      bundleId: "totally-not-a-bundle",
+      bundleId: "Totally Not A Bundle",
       shell: "dark",
       tokens: {},
     };

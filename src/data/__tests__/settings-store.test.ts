@@ -2102,14 +2102,26 @@ describe("SettingsService appearance v2 — fresh install defaults", () => {
     expect(reloaded.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "violet-light", followSystem: true });
   });
 
-  it("unknown bundleId coerces to DEFAULT_BUNDLE_ID", () => {
+  it("malformed bundleId coerces to DEFAULT_BUNDLE_ID", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ appearance: { schemaVersion: 2, language: "en", bundleId: "nonexistent-bundle" } }),
+      JSON.stringify({ appearance: { schemaVersion: 2, language: "en", bundleId: "Not A Bundle!" } }),
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(service.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: DEFAULT_BUNDLE_ID });
+  });
+
+  // The content ledger is read after settings: an installed theme or language
+  // the user selected must survive the settings load (blueprint 3.2, 3.3).
+  it("keeps a well-formed installed theme id and language tag it cannot resolve yet", () => {
+    writeFileSync(
+      join(userDataPath, "ave-settings.json"),
+      JSON.stringify({ appearance: { schemaVersion: 2, language: "fr", bundleId: "harbor-night" } }),
+      "utf-8",
+    );
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("appearance")).toMatchObject({ language: "fr", bundleId: "harbor-night" });
   });
 
   // ─── patch-path validation (the load path has always validated these) ───
@@ -2118,11 +2130,11 @@ describe("SettingsService appearance v2 — fresh install defaults", () => {
   // there; `bundleId`, `schemaVersion` and `followSystem` used to ride the plain
   // outer spread straight onto disk.
 
-  it("ignores an unknown bundleId patch and keeps the stored theme", async () => {
+  it("ignores a malformed bundleId patch and keeps the stored theme", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await service.patch({ appearance: { schemaVersion: 2, bundleId: "midnight" } });
 
-    await service.patch({ appearance: { schemaVersion: 2, bundleId: "nonexistent-bundle" } });
+    await service.patch({ appearance: { schemaVersion: 2, bundleId: "../nonexistent bundle" } });
 
     expect(service.get("appearance").bundleId).toBe("midnight");
     const onDisk = JSON.parse(readFileSync(join(userDataPath, "ave-settings.json"), "utf-8")) as {

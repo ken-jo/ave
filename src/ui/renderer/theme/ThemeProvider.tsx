@@ -5,9 +5,10 @@ import {
   BUNDLES,
   DEFAULT_BUNDLE_ID,
   findBundle,
-  isBundleId,
   loadThemeBundle,
 } from "./bundles/index.js";
+import { isThemeId } from "../../../shared/theme-bundles.js";
+import { ensureInstalledContent } from "../installed-content.js";
 import type { ThemeBundle } from "./bundles/index.js";
 import { applyBundleToDocument, resolveSystemPair } from "./resolve-theme.js";
 import { bundleToPluginTokens } from "./plugin-token-map.js";
@@ -42,7 +43,7 @@ function readGlobalInitialBundleId(): UnvalidatedBundleId | undefined {
   if (!initial || typeof initial !== "object") return undefined;
   const id = initial.bundleId;
   if (typeof id !== "string") return undefined;
-  return isBundleId(id) ? (id as UnvalidatedBundleId) : undefined;
+  return isThemeId(id) ? (id as UnvalidatedBundleId) : undefined;
 }
 
 /**
@@ -56,7 +57,7 @@ function resolveAppearanceSettings(settings: AppSettings): { bundleId: Unvalidat
     ? appearance.bundleId
     : DEFAULT_BUNDLE_ID;
   return {
-    bundleId: isBundleId(rawId) ? rawId : DEFAULT_BUNDLE_ID,
+    bundleId: isThemeId(rawId) ? rawId : DEFAULT_BUNDLE_ID,
     followSystem: appearance?.followSystem === true,
   };
 }
@@ -184,7 +185,10 @@ export function ThemeProvider({
     let cancelled = false;
     const cached = findBundle(effectiveBundleId);
     if (cached) setActiveBundle(cached);
-    void loadThemeBundle(effectiveBundleId)
+    // An installed theme is known only once the installed content has loaded;
+    // resolve after it so a selected installed theme is not replaced by the default.
+    void ensureInstalledContent(api)
+      .then(() => loadThemeBundle(effectiveBundleId))
       .then((bundle) => {
         if (cancelled) return;
         if (!bundle) {
@@ -203,7 +207,7 @@ export function ThemeProvider({
     return () => {
       cancelled = true;
     };
-  }, [effectiveBundleId, resolveBundle]);
+  }, [api, effectiveBundleId, resolveBundle]);
 
   // Apply bundle to DOM on every active bundle change.
   useEffect(() => {
@@ -257,7 +261,7 @@ export function ThemeProvider({
   const setBundle = useCallback(
     (id: UnvalidatedBundleId) => {
       userTouchedRef.current = true;
-      const safeId = isBundleId(id) ? id : DEFAULT_BUNDLE_ID;
+      const safeId = isThemeId(id) ? id : DEFAULT_BUNDLE_ID;
       setBundleIdState(safeId);
       /* When the user explicitly picks one of the violet pair while followSystem
        * is on, the pick would otherwise be silently overridden by the OS

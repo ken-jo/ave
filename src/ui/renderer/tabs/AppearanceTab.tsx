@@ -28,10 +28,12 @@ import { useNotifySaved } from "../context/SavedToastContext.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
 import {
   LOCALE_INFO,
+  isInstalledLocale,
   localeInfo,
   recommendedMarketplaceLocaleForSystem,
   visibleLocalesFor,
 } from "../../../i18n/index.js";
+import { useInstalledContent } from "../installed-content.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { FONT_SIZE_SCALE_DEFAULT, type FontSizeScale } from "../../../shared/appearance-font.js";
 
@@ -195,9 +197,9 @@ const FONT_FAMILY_PRESETS: ReadonlyArray<FontFamilyPreset> = [
   },
 ];
 
-function presetForStack(stack: string | undefined): string {
+function presetForStack(stack: string | undefined, options: ReadonlyArray<{ value: string; stack: string }>): string {
   if (!stack || stack === "system") return "system";
-  const hit = FONT_FAMILY_PRESETS.find((p) => p.stack === stack);
+  const hit = options.find((p) => p.stack === stack);
   return hit ? hit.value : "custom";
 }
 
@@ -416,8 +418,10 @@ function LanguageSection({
 }) {
   const { locale, setLocale, t } = useTranslation();
   const notifySaved = useNotifySaved();
+  // Re-render when installed languages load; the registry itself is module state.
+  useInstalledContent();
   const visibleLocales = visibleLocalesFor([locale, ...installedLocaleIds]);
-  const installedLocaleIdSet = new Set(installedLocaleIds);
+  const installedLocaleIdSet = new Set([...installedLocaleIds, ...visibleLocales.filter(isInstalledLocale)]);
   const systemLocale = typeof navigator === "undefined" ? undefined : navigator.language;
   const recommendedLocale = recommendedMarketplaceLocaleForSystem(systemLocale, [
     locale,
@@ -539,12 +543,20 @@ export function AppearanceTab({ onOpenMarketplace }: { onOpenMarketplace?: (filt
       cancelled = true;
     };
   }, [themeBundleIdsToLoadKey]);
+  const installedContent = useInstalledContent();
   const visibleBundles = visibleBundlesFor([
     bundleId,
     ...marketplaceAssets.themeBundleIds,
   ], loadedMarketplaceThemeBundles);
-  const marketplaceThemeBundleIdSet = new Set(marketplaceAssets.themeBundleIds);
-  const activePreset = presetForStack(family);
+  const marketplaceThemeBundleIdSet = new Set([
+    ...marketplaceAssets.themeBundleIds,
+    ...installedContent.themes.map((theme) => theme.id),
+  ]);
+  const fontOptions: ReadonlyArray<{ value: string; text: string; stack: string }> = [
+    ...FONT_FAMILY_PRESETS.map((preset) => ({ value: preset.value, text: t(preset.label), stack: preset.stack })),
+    ...installedContent.fonts.map((font) => ({ value: `installed-${font.name}`, text: font.family, stack: font.stack })),
+  ];
+  const activePreset = presetForStack(family, fontOptions);
   const customStack = activePreset === "custom" ? family : "";
 
   return (
@@ -643,7 +655,7 @@ export function AppearanceTab({ onOpenMarketplace }: { onOpenMarketplace?: (filt
             data-testid="font-family-presets"
             className="flex flex-wrap gap-2"
           >
-            {FONT_FAMILY_PRESETS.map((opt) => {
+            {fontOptions.map((opt) => {
               const checked = activePreset === opt.value;
               return (
                 <button
@@ -659,7 +671,7 @@ export function AppearanceTab({ onOpenMarketplace }: { onOpenMarketplace?: (filt
                       : "border-border text-muted-foreground hover:bg-muted/(--opacity-half) hover:text-foreground"
                   }`}
                 >
-                  {t(opt.label)}
+                  {opt.text}
                 </button>
               );
             })}

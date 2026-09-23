@@ -300,6 +300,12 @@ export const CHANNELS = {
     install: "ave:git:runtime:install",
     progress: "git-runtime:progress", // event main→renderer (GitRuntimeProgress)
   },
+  // Installed content packages of the git marketplace (blueprint P3): what the
+  // settings pickers list and the catalogs of installed languages. Host-renderer only.
+  marketplaceContent: {
+    installed: "ave:marketplace:content:installed",
+    languageMessages: "ave:marketplace:content:language-messages",
+  },
   agents: {
     list: "ave:agents:list",
     install: "ave:agents:install",

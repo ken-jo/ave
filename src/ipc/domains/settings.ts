@@ -231,7 +231,7 @@ function rendererSettingsSnapshot(snapshot: AppSettings): RendererSettingsSnapsh
 
 /** Shared by every handler that mutates settings and must re-broadcast the
  *  projected snapshot to all windows. */
-async function broadcastSettingsSnapshot(
+export async function broadcastSettingsSnapshot(
   deps: IpcDeps,
   shouldBroadcast: () => boolean = () => true,
 ): Promise<void> {
@@ -357,6 +357,24 @@ function refreshChatRuntimeProviders(
   }
   if (failed) throw firstError;
 }
+/**
+ * Install or remove marketplace provider presets and run every follow-up a
+ * preset change needs (reviewer rewire, chat providers, wildcard, sandbox
+ * endpoints, the settings broadcast). The settings IPC and the content store's
+ * provider activation (blueprint 3.5) both go through here, so a preset
+ * installed from a git package behaves exactly like one installed today.
+ */
+export async function mutateMarketplaceProviderPresets(
+  deps: IpcDeps,
+  mutate: () => Promise<AppSettings>,
+): Promise<{ result: AppSettings; finishError: { ok: false; error: string; message: string } | null }> {
+  const prevLlm = deps.settingsService.get("llm");
+  const prevPresets = deps.settingsService.get("marketplace").installedProviderPresets;
+  const result = await mutate();
+  const finishError = await finishProviderPresetMarketplaceMutation(deps, prevLlm, prevPresets);
+  return { result, finishError };
+}
+
 async function finishProviderPresetMarketplaceMutation(
   deps: IpcDeps,
   prevLlm: LLMSettings,
@@ -947,15 +965,9 @@ export function registerSettingsHandlers(deps: IpcDeps): void {
       auditUnauthorized(auditLogger, CHANNELS.settings.marketplaceInstallProviderPreset, e);
       return UNAUTHORIZED_FRAME;
     }
-    const prevLlm = settingsService.get("llm");
-    const prevPresets = settingsService.get("marketplace").installedProviderPresets;
     try {
-      const result = await settingsService.installMarketplaceProviderPreset(
-        preset as MarketplaceInstalledProviderPreset,
-      );
-      const finishError = await finishProviderPresetMarketplaceMutation(
-        deps, prevLlm, prevPresets,
-      );
+      const { result, finishError } = await mutateMarketplaceProviderPresets(deps, () =>
+        settingsService.installMarketplaceProviderPreset(preset as MarketplaceInstalledProviderPreset));
       return finishError ?? result;
     } catch (err) {
       return {
@@ -978,13 +990,9 @@ export function registerSettingsHandlers(deps: IpcDeps): void {
         message: "Provider preset id must be a string.",
       };
     }
-    const prevLlm = settingsService.get("llm");
-    const prevPresets = settingsService.get("marketplace").installedProviderPresets;
     try {
-      const result = await settingsService.uninstallMarketplaceProviderPreset(providerId);
-      const finishError = await finishProviderPresetMarketplaceMutation(
-        deps, prevLlm, prevPresets,
-      );
+      const { result, finishError } = await mutateMarketplaceProviderPresets(deps, () =>
+        settingsService.uninstallMarketplaceProviderPreset(providerId));
       return finishError ?? result;
     } catch (err) {
       return {

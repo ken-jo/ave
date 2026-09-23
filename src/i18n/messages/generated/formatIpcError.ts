@@ -200,6 +200,10 @@ export const en = {
   "formatIpcError.allowSelectionFailed": "That sentence couldn't be resolved. Pick one of the buttons on the approval card.",
   "formatIpcError.unknownError": "Unknown error",
   "formatIpcError.errorSuffix": " has occurred.",
+
+  // Installed content packages (themes, languages, fonts)
+  "formatIpcError.installedContentUnavailable": "Installed themes, languages and fonts could not be loaded.",
+  "formatIpcError.languageNotInstalled": "That language is not installed.",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "formatIpcError.invalidPath": "경로가 올바르지 않습니다.",
@@ -402,4 +406,8 @@ export const ko: Record<keyof typeof en, string> = {
   "formatIpcError.allowSelectionFailed": "그 문장을 해석하지 못했습니다. 승인 카드의 버튼 중 하나를 눌러 주세요.",
   "formatIpcError.unknownError": "알 수 없는 오류",
   "formatIpcError.errorSuffix": "가 발생했습니다.",
+
+  // 설치한 콘텐츠 패키지(테마, 언어, 글꼴)
+  "formatIpcError.installedContentUnavailable": "설치한 테마, 언어, 글꼴을 불러오지 못했습니다.",
+  "formatIpcError.languageNotInstalled": "설치되지 않은 언어입니다.",
 };

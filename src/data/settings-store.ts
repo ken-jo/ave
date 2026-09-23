@@ -28,7 +28,7 @@ import {
   type MarketplaceEligibleLLMVendor,
 } from "../shared/llm-vendor-defaults.js";
 import type { GitRuntimeMode } from "../shared/git-runtime-mode.js";
-import { isBundleId, type BundleId } from "../shared/theme-bundles.js";
+import { isThemeId, type BundleId } from "../shared/theme-bundles.js";
 import {
   FONT_SIZE_SCALE_VALUES,
   type FontSizeScale,
@@ -36,7 +36,7 @@ import {
   isValidFontFamilyOverride,
 } from "../shared/appearance-font.js";
 import {
-  normalizeLocale,
+  normalizeLocaleSetting,
   type Locale,
 } from "../i18n/index.js";
 import { normalizeAppMode, type InitialAppMode } from "../shared/initial-app-mode.js";
@@ -1137,16 +1137,16 @@ export class SettingsService {
         );
       }
       nextAppearance.schemaVersion = 2;
-      // Same value set as the load path — `isBundleId` in shared/theme-bundles
+      // Same value set as the load path — `isThemeId` in shared/theme-bundles
       // is the single source of truth for both.
-      acceptField(nextAppearance, "bundleId", bundleIdPatch, isBundleId, "appearance", PATCHED_FIELD);
+      acceptField(nextAppearance, "bundleId", bundleIdPatch, isThemeId, "appearance", PATCHED_FIELD);
       acceptField(nextAppearance, "followSystem", followSystemPatch, isBooleanValue, "appearance", PATCHED_FIELD);
       // Validate the language patch — coerce to a supported locale so a
       // malformed renderer/IPC payload can never persist an unknown language
       // (mirrors the font validation below; No-Fallback-Code: validate at the
       // trust boundary instead of dropping on next load).
       if ("language" in appearanceRest) {
-        nextAppearance.language = normalizeLocale((appearanceRest as { language?: unknown }).language);
+        nextAppearance.language = normalizeLocaleSetting((appearanceRest as { language?: unknown }).language);
       }
       // Accept `font: undefined`, missing field, or `font: null` — all three
       // mean "no font subfield patch in this call". Guard against `null` so

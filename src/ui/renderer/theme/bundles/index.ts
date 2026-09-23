@@ -8,7 +8,6 @@
 import { t } from "../../../../i18n/runtime.js";
 import type { ThemeBundle } from "./types.js";
 import type {
-  BundleId,
   MarketplaceEligibleThemeBundleId,
 } from "../../../../shared/theme-bundles.js";
 import { moonstoneBundle } from "./moonstone.js";
@@ -20,14 +19,13 @@ import {
   isBundleId,
 } from "../../../../shared/theme-bundles.js";
 
-export type { ThemeBundle, BundleTokens } from "./types.js";
-export type ThemeBundleManifest = Omit<ThemeBundle, "tokens">;
+export type { ThemeBundle } from "./types.js";
+export type ThemeBundleManifest = Omit<ThemeBundle, "tokens" | "id"> & { id: MarketplaceEligibleThemeBundleId };
 
 export {
   BUNDLE_IDS,
   DEFAULT_VISIBLE_THEME_BUNDLE_IDS,
   MARKETPLACE_ELIGIBLE_THEME_BUNDLE_IDS,
-  isBundleId,
 } from "../../../../shared/theme-bundles.js";
 
 const DEFAULT_BUNDLE_BY_ID = Object.freeze({
@@ -150,9 +148,21 @@ export const MARKETPLACE_THEME_BUNDLES = MARKETPLACE_ELIGIBLE_THEME_BUNDLE_IDS.m
   (id) => MARKETPLACE_THEME_BUNDLE_MANIFESTS[id],
 );
 
-const loadedBundleCache = new Map<BundleId, ThemeBundle>(
+const loadedBundleCache = new Map<string, ThemeBundle>(
   DEFAULT_VISIBLE_BUNDLES.map((bundle) => [bundle.id, bundle]),
 );
+
+/**
+ * Installed theme packages (blueprint 3.2), keyed by package name. An
+ * installed theme takes the place of a compiled marketplace-eligible bundle
+ * with the same id; the installer refuses the default-visible ids.
+ */
+let installedBundles = new Map<string, ThemeBundle>();
+
+/** Replace the installed themes this renderer knows. */
+export function setInstalledThemeBundles(bundles: readonly ThemeBundle[]): void {
+  installedBundles = new Map(bundles.map((bundle) => [bundle.id, bundle]));
+}
 
 type MarketplaceThemeBundleLoader = () => Promise<ThemeBundle>;
 
@@ -179,10 +189,12 @@ const themeBundleLoaderOverridesForTests =
 export const DEFAULT_BUNDLE_ID = _SHARED_DEFAULT_BUNDLE_ID;
 
 export function findBundle(id: string): ThemeBundle | undefined {
-  return isBundleId(id) ? loadedBundleCache.get(id) : undefined;
+  return installedBundles.get(id) ?? (isBundleId(id) ? loadedBundleCache.get(id) : undefined);
 }
 
 export async function loadThemeBundle(id: string): Promise<ThemeBundle | undefined> {
+  const installed = installedBundles.get(id);
+  if (installed) return installed;
   if (!isBundleId(id)) return undefined;
   const cached = loadedBundleCache.get(id);
   if (cached) return cached;
@@ -213,7 +225,7 @@ export function visibleBundlesFor(
   currentBundleIds: readonly string[] = [],
   loadedBundles: readonly ThemeBundle[] = [],
 ): ThemeBundle[] {
-  const visible: ThemeBundle[] = [...DEFAULT_VISIBLE_BUNDLES];
+  const visible: ThemeBundle[] = [...DEFAULT_VISIBLE_BUNDLES, ...installedBundles.values()];
   for (const bundle of loadedBundles) {
     if (visible.some((candidate) => candidate.id === bundle.id)) continue;
     visible.push(bundle);
@@ -234,6 +246,7 @@ export function resetLoadedThemeBundleCacheForTests(): void {
     loadedBundleCache.set(bundle.id, bundle);
   }
   themeBundleLoaderOverridesForTests.clear();
+  installedBundles = new Map();
 }
 
 /** @internal test-only loader override for lazy chunk failure coverage. */
