@@ -342,23 +342,42 @@ type McpServerSpec =
   경로(`server/…`)여야 합니다. 절대 경로, `..`, `\`, `:`, 제어 문자는 거부해
   어느 플랫폼에서도 다른 구분자나 드라이브로 읽히지 않게 합니다.
 - `env` 이름, `apiKeyEnv`, `apiKeyHeader`에는 호스트가 예약한 이름
-  (`src/mcp/safe-names.ts`)을 쓸 수 없습니다.
-- 실행되는 MCP 코드는 커밋이 고정합니다. `npx` 패키지는
-  `<package>@<정확한 버전>`, `uvx` 패키지는 `<package>==<정확한 버전>`, docker
-  이미지는 `latest`가 아닌 태그나 `@sha256:` 다이제스트를 가져야 합니다.
-  디스크립터가 직접 쓴 스펙에서는 옵션이 아닌 첫 인자가 패키지나 이미지이므로,
-  그 앞의 옵션은 `--name=value` 형태로 씁니다.
+  (`src/mcp/safe-names.ts`)을 쓸 수 없고, 런처가 코드를 어디서 받을지나 무엇을
+  신뢰할지 정하는 변수도 쓸 수 없습니다. 대소문자와 상관없이 `npm_config_*`,
+  `PNPM_*`, `YARN_*`, `BUN_*`, `COREPACK_*`, `UV_*`, `PIP_*`, `DOCKER_*`,
+  `NODE_*`, `PYTHON*`(`PYTHONUNBUFFERED`, `PYTHONIOENCODING`, `PYTHONUTF8`는
+  허용), `*_PROXY` 변수, CA 번들 변수가 여기에 해당합니다.
+- 실행되는 MCP 코드는 커밋이 고정합니다. 디스크립터가 직접 쓴 스펙과
+  `server.json`에서 만든 스펙 모두 아래 문법을 따라야 하므로, 어떤 옵션도 다른
+  레지스트리나 인덱스를 고르거나, 패키지를 더하거나, 컨테이너 권한을 넓힐 수
+  없습니다.
+
+  ```
+  npx    [-y | --yes]… <package>@<정확한 버전> [서버 인자…]
+  uvx    <package>[extras]==<정확한 버전> [서버 인자…]
+  uvx    --from <package>[extras]==<정확한 버전> <command> [서버 인자…]
+  docker run [-i | -t | --rm | --init | -e NAME[=value] | --network none|bridge]… <image> [서버 인자…]
+  ```
+
+  npm 패키지는 레지스트리 이름이어야 하고 URL·경로·git 스펙은 안 됩니다. PyPI
+  버전에는 와일드카드가 없어야 하고, docker 이미지는 `latest`가 아닌 태그나
+  `@sha256:` 다이제스트를 가져야 합니다. 패키지나 이미지 뒤의 인자는 모두 서버의
+  것입니다. 디스크립터가 직접 쓴 docker 이미지는 어느 레지스트리든 될 수 있는데,
+  승인 단계가 이미지 참조 전체를 보여 주기 때문입니다.
 - `server.json`(스키마 2025-12-11)은 다음과 같이 스펙으로 옮깁니다. npm →
-  `npx [runtimeArguments] -y <identifier>@<version> [packageArguments]`,
-  pypi → `uvx [runtimeArguments] <identifier>==<version> [packageArguments]`,
-  oci → `docker run -i --rm [runtimeArguments] <identifier>[:<version>]
+  `npx -y <identifier>@<version> [packageArguments]`, pypi →
+  `uvx <identifier>==<version> [packageArguments]`, oci →
+  `docker run -i --rm [runtimeArguments] <identifier>[:<version>]
   [packageArguments]`, `streamable-http` 원격 → `http`. 인자와 변수는 `value`,
   없으면 `default`를 쓰고, 이름 있는 인자는 `name value`가 됩니다. `isSecret`
   변수나 헤더 하나는 `auth: "api-key"`와 함께 `apiKeyEnv`나 `apiKeyHeader`가
-  됩니다. 거부: `sse`, 다른 레지스트리나 기본값이 아닌 `registryBaseUrl`, stdio가
-  아닌 전송을 쓰는 패키지, `{variable}` 템플릿과 `variables`, 값이 없는 필수
-  입력, 고정 값을 가진 원격 헤더, 둘 이상의 비밀. `select`는 패키지 하나나 원격
-  하나를 고르며, 없으면 첫 패키지, 그것도 없으면 첫 원격을 씁니다.
+  됩니다. 거부: `sse`, 다른 레지스트리나 기본값이 아닌 `registryBaseUrl`, Docker
+  Hub가 아닌 레지스트리 호스트를 쓰는 oci identifier, npm·pypi의
+  `runtimeArguments`(npx와 uvx 옵션은 레지스트리와 추가 패키지를 고름), 위 docker
+  문법을 벗어나거나 다른 이미지를 앞세우는 oci `runtimeArguments`, stdio가 아닌
+  전송을 쓰는 패키지, `{variable}` 템플릿과 `variables`, 값이 없는 필수 입력, 고정
+  값을 가진 원격 헤더, 둘 이상의 비밀. `select`는 패키지 하나나 원격 하나를
+  고르며, 없으면 첫 패키지, 그것도 없으면 첫 원격을 씁니다.
 - 패키지 로컬 명령은 버전 커밋에서 내보낸 패키지의 `server/` 디렉터리에서
   실행하며, 그 디렉터리에 명령 파일이 있어야 합니다. MCP 아티팩트 저장소가 그
   파일을 설치하고 `$PLUGIN_DIR`이 그곳을 가리킵니다. 패키지 파일 없는
@@ -428,7 +447,11 @@ SVG는 인라인으로 렌더링하면 능동 문서가 되므로 콘텐츠 종�
 6. 같은 소스가 폐기(revoke)한 버전을 뺍니다(§10.4).
 7. 남은 것 중 가장 높은 버전이 **후보**입니다. 남은 게 없는데 1단계 때문에만
    빠진 버전이 있으면, 행은 가장 최신 버전의 `minAppVersion`과 함께
-   `upgrade_required`로 표시합니다.
+   `upgrade_required`로 표시합니다. 그 밖의 경우 행은 이유와 함께
+   `unavailable`입니다. 모든 버전이 폐기되면 `revoked`, 모든 버전이 yank되거나
+   폐기되면 `yanked`, 어떤 버전이 롤아웃이나 프리릴리스라는 이유만으로 빠지면
+   `pending`, 나머지는 `withheld`입니다. 이 행을 설치하면 `PACKAGE_REVOKED`,
+   `PACKAGE_YANKED`, `PACKAGE_INCOMPATIBLE` 중 하나로 실패합니다(§14).
 
 ### 6.2 플러그인 아티팩트 사다리
 
@@ -468,16 +491,24 @@ stop with NO_INSTALLABLE_ARTIFACT(rungs[])
 - tree 단계는 `artifact.tree`로, 또는 패키지 디렉터리의 `plugin.json`(기본값)으로
   선언됩니다. `plugin.json`, `dist/**`, `assets/**`만 설치하고, 그 밖의 최상위
   항목이 있으면 그 단계가 실패하며, `ave-package.json`은 설치하지 않습니다.
-  내보낸 파일은 zip으로 묶으므로 모든 단계가 같은 zip 사전 점검과 설치
-  파이프라인을 거칩니다.
-- `url`이 없는 release는
-  `https://<소스 호스트>/<repo>/releases/download/<tag>/<asset>`에서 받습니다
-  (정책이 허용한 http 호스트면 소스의 스킴). 소스가 `github.com`에서 토큰 인증을
-  쓰고 토큰이 저장되어 있으면 GitHub REST API로 받습니다.
+  구성과 파일 수는 blob을 받기 전에 트리만 보고 확인하므로, 저장소 루트에 있는
+  direct 소스라도 거부되기 전에 저장소 전체를 받게 만들 수 없습니다. 내보낸
+  파일은 zip으로 묶으므로 모든 단계가 같은 zip 사전 점검과 설치 파이프라인을
+  거칩니다.
+- 스키마에서 `release.sha256`과 `archive.sha256`은 선택 항목입니다. 핀 없이
+  선언된 단계는 `ARTIFACT_NOT_PINNED`로 건너뛰고 다음 단계로 갑니다.
+- `url`이 없는 release는 `<origin>/<repo>/releases/download/<tag>/<asset>`에서
+  받습니다. origin은 https 소스(또는 정책이 허용한 http 호스트)면 소스의
+  origin이고, ssh 소스면 기본 포트의 `https://<host>`입니다. ssh 포트는 웹
+  서버에 대해 아무것도 알려 주지 않기 때문입니다. `repo`는 `owner/name`이며 어느
+  부분도 `.`이나 `..`일 수 없습니다. 소스가 `github.com`에서 토큰 인증을 쓰고
+  토큰이 저장되어 있으면 GitHub REST API로 받습니다.
   `api.github.com/repos/<repo>/releases/tags/<tag>`에서 자산 id를 얻고
   `…/releases/assets/<id>`를 `Accept: application/octet-stream`으로 요청합니다.
   비공개 저장소를 내주는 경로가 이것이기 때문이며, 응답이 리디렉트하는 저장소
-  호스트에는 토큰이 가지 않습니다(§7.4). 이 경로에는 정책 허용 목록이
+  호스트에는 토큰이 가지 않습니다(§7.4). 요청 전에
+  `https://github.com/<repo>/releases/download/…`에 정책을 적용하므로 저장소
+  차단 규칙이 이 경로에도 걸립니다. 이 경로에는 정책 허용 목록이
   `api.github.com`을 허용해야 합니다.
 - release와 archive 다운로드는 아티팩트 한도를 넘을 수 없고, 60초 동안 데이터가
   없으면 실패합니다.
@@ -860,8 +891,10 @@ export const DEFAULT_INSTALLS: readonly PackageKey[] = [
   설치하지 않는 한 그대로입니다.
 - 패키지가 없거나 호환되지 않는 키는 `skipped`로 기록하고, 목록 항목이 바뀔
   때만 다시 시도합니다.
-- 소스에 아직 스냅숏이 없거나(오프라인 첫 부팅) 설치가 실패한 키는 기록하지 않고
-  다음 부팅에서 다시 시도합니다. 읽을 수 없는 `default-installs.json`은 기본
+- 소스에 아직 스냅숏이 없거나(오프라인 첫 부팅), 버전이 롤아웃이나
+  프리릴리스라는 이유만으로 빠져 있거나(행이 이유 `pending`으로 `unavailable`이며,
+  앱이 바뀌지 않아도 달라질 수 있음), 설치가 실패한 키는 기록하지 않고 다음
+  부팅에서 다시 시도합니다. 읽을 수 없는 `default-installs.json`은 기본
   설치를 멈춥니다. 빈 목록으로 읽으면 사용자가 지운 것을 다시 설치하게 됩니다.
 
 **필수 설치(required install)**는 시스템 정책 파일의
@@ -878,7 +911,10 @@ export const DEFAULT_INSTALLS: readonly PackageKey[] = [
   `canDisable`을 호출하는 자유 함수 `assertDisableAllowed`도 돌려줍니다.
 - 지정된 패키지가 다른 소스에서 설치되어 있으면(`PACKAGE_ID_CONFLICT`) 부팅
   단계가 §15.1의 소스 전환(플러그인 데이터 유지)을 수행하고 부팅 알림에 적습니다.
-  사용자의 소스 선택보다 정책이 우선합니다. 같은 상황의 `defaultInstalls` 항목은
+  사용자의 소스 선택보다 정책이 우선합니다. 관리자가 설치한 플러그인
+  (`installSource: "admin"`)을 바꿀 수 있는 것도 이런 필수 설치뿐이며, 항목은
+  계속 관리자 설치로 남습니다. 그 밖의 git 설치로 덮어쓰려 하면 거부합니다.
+  같은 상황의 `defaultInstalls` 항목은
   사용자의 설치가 이미 목적을 채우므로 `skipped`로 기록합니다.
 - 필수 업데이트는 §15.6의 업데이트 검토 없이 적용됩니다. 정책 파일이 동의를
   대신하기 때문입니다. 따라서 침해된 관리 소스는 자기 패키지를 필수로 지정한 모든
@@ -1099,12 +1135,12 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
 | `SOURCE_NOT_A_MARKETPLACE` | 인식할 수 있는 것이 없음 | `marketplace.error.notMarketplace` |
 | `SOURCE_INDEX_INVALID` | 인덱스 검증 실패 | `marketplace.error.indexInvalid` |
 | `SOURCE_HISTORY_REWRITTEN` | 후손이 아닌 후보 | `marketplace.error.historyRewritten` |
-| `SOURCE_DISABLED` | 숨긴 소스에서 설치·업데이트 요청 | `marketplace.error.sourceDisabled` |
+| `SOURCE_DISABLED` | 숨긴 소스에서 설치·업데이트 요청(그 소스에 묶인 패키지를 위해 동기화는 계속함, §7.3) | `marketplace.error.sourceDisabled` |
 | `PLAN_EXPIRED` | 만료되었거나 재사용된 계획/미리보기 id | `marketplace.error.planExpired` |
-| `PACKAGE_INCOMPATIBLE` | `minAppVersion`이 앱 버전보다 높음 | `marketplace.error.incompatible` |
+| `PACKAGE_INCOMPATIBLE` | 이 설치에 제공되는 버전이 없음: `minAppVersion`이 앱 버전보다 높음, 다른 플랫폼, canary 없이 프리릴리스, 이 설치를 제외하는 롤아웃 | `marketplace.error.incompatible` |
 | `PACKAGE_COMPAT_UNDECLARED` | `requires.minAppVersion` 없는 git 설치 플러그인 | `marketplace.error.compatUndeclared` |
-| `PACKAGE_YANKED` / `PACKAGE_REVOKED` | 회수/폐기된 버전 설치 | `marketplace.error.yanked` / `.revoked` |
-| `PACKAGE_ID_CONFLICT` | 같은 `(kind, name)`이 다른 소스에서 설치됨 | `marketplace.error.idConflict` |
+| `PACKAGE_YANKED` / `PACKAGE_REVOKED` | 모든 버전이 회수되거나 폐기됨(모두 폐기면 revoked) | `marketplace.error.yanked` / `.revoked` |
+| `PACKAGE_ID_CONFLICT` | 같은 `(kind, name)`이 다른 소스에서, 또는 소스 없이 설치됨. git에 묶인 플러그인 위로 서명 카탈로그의 설치·업데이트·롤백을 할 때도 | `marketplace.error.idConflict` |
 | `PACKAGE_REQUIRED_BY_POLICY` | `requiredInstalls` 패키지의 제거·비활성화 | `marketplace.error.requiredByPolicy` |
 | `ARTIFACT_NOT_PINNED` | 단계 건너뜀: git에 sha256 없음 | (단계 상세) |
 | `ARTIFACT_DIGEST_MISMATCH` | sha256 불일치 | (단계 상세) |
@@ -1130,6 +1166,11 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
   (제거·비활성화 컨트롤 없음, 툴팁이 정책 파일을 알려 줌).
 - 두 소스에 같은 이름: 배지가 각각 붙은 카드 두 장. 행을 합치지 않습니다. 두 번째
   것을 설치하면 소스 전환이 됩니다(`PACKAGE_ID_CONFLICT`가 설명하고 전환을 제안).
+  전환은 플러그인의 데이터 디렉터리를 유지하므로, 동의 문구는 새 소스의 코드가
+  설치된 플러그인이 저장한 데이터를 받는다고 알려야 합니다. 6단계에서 서명
+  카탈로그를 없앨 때까지 카탈로그는 git에 묶인 플러그인을 바꾸지
+  않습니다(설치·업데이트·롤백 모두). 사용자는 묶인 소스로 업데이트·롤백하거나
+  먼저 제거합니다.
 - 부팅 설치 알림(§10.2)은 설치·업데이트한 항목을 나열하는 배너로 한 번
   나타나며, "Installed for you"(기본 설치, 제거 버튼 있음)와 "Required by your
   organization"으로 나뉩니다.

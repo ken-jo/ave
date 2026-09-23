@@ -350,26 +350,45 @@ type McpServerSpec =
   `:` and control characters are rejected, so no platform reads it as another
   separator or a drive.
 - `env` names, `apiKeyEnv` and `apiKeyHeader` may not use a name the host
-  reserves (`src/mcp/safe-names.ts`).
-- The launched MCP code is fixed by the commit: an `npx` package is
-  `<package>@<exact version>`, a `uvx` package `<package>==<exact version>`,
-  and a docker image carries a tag other than `latest` or a `@sha256:`
-  digest. In a descriptor's own spec the package or image is the first
-  argument that is not an option, so options before it use the
-  `--name=value` form.
+  reserves (`src/mcp/safe-names.ts`), nor a variable a launcher reads to
+  choose where code comes from or how it is trusted: `npm_config_*`,
+  `PNPM_*`, `YARN_*`, `BUN_*`, `COREPACK_*`, `UV_*`, `PIP_*`, `DOCKER_*`,
+  `NODE_*`, `PYTHON*` (except `PYTHONUNBUFFERED`, `PYTHONIOENCODING`,
+  `PYTHONUTF8`), the `*_PROXY` variables and the CA bundle variables, in any
+  case.
+- The launched MCP code is fixed by the commit. Both the descriptor's own
+  spec and a spec built from `server.json` must follow this grammar, so no
+  option can pick another registry or index, add a package, or widen the
+  container:
+
+  ```
+  npx    [-y | --yes]… <package>@<exact version> [server args…]
+  uvx    <package>[extras]==<exact version> [server args…]
+  uvx    --from <package>[extras]==<exact version> <command> [server args…]
+  docker run [-i | -t | --rm | --init | -e NAME[=value] | --network none|bridge]… <image> [server args…]
+  ```
+
+  An npm package is a registry name (never a URL, path or git spec); a PyPI
+  version has no wildcard; a docker image carries a tag other than `latest`
+  or a `@sha256:` digest. Everything after the package or image belongs to
+  the server. A descriptor's own docker image may name any registry, since
+  the approval step shows the full image reference.
 - `server.json` (schema 2025-12-11) maps to the spec as follows: npm →
-  `npx [runtimeArguments] -y <identifier>@<version> [packageArguments]`;
-  pypi → `uvx [runtimeArguments] <identifier>==<version> [packageArguments]`;
-  oci → `docker run -i --rm [runtimeArguments] <identifier>[:<version>]
+  `npx -y <identifier>@<version> [packageArguments]`; pypi →
+  `uvx <identifier>==<version> [packageArguments]`; oci →
+  `docker run -i --rm [runtimeArguments] <identifier>[:<version>]
   [packageArguments]`; a `streamable-http` remote → `http`. Arguments and
   variables take `value`, else `default`; a named argument becomes
   `name value`. One `isSecret` variable or header becomes `apiKeyEnv` or
   `apiKeyHeader` with `auth: "api-key"`. Refused: `sse`, other registries or
-  a non-default `registryBaseUrl`, a package whose transport is not stdio,
-  `{variable}` templates and `variables`, a required input without a value,
-  remote headers with fixed values, and more than one secret. `select` picks
-  one package or one remote; without it the first package is used, else the
-  first remote.
+  a non-default `registryBaseUrl`, an oci identifier on a registry host other
+  than Docker Hub, `runtimeArguments` for npm and pypi (npx and uvx options
+  choose registries and extra packages), oci `runtimeArguments` outside the
+  docker grammar above or that would put another image first, a package
+  whose transport is not stdio, `{variable}` templates and `variables`, a
+  required input without a value, remote headers with fixed values, and more
+  than one secret. `select` picks one package or one remote; without it the
+  first package is used, else the first remote.
 - A package-local command runs from the package's `server/` directory
   exported at the version's commit, which must contain the command; the MCP
   artifact store installs those files and `$PLUGIN_DIR` points at them.
@@ -443,7 +462,11 @@ For a package row in one source snapshot:
 6. Drop versions the same source revokes (§10.4).
 7. The highest remaining version is the **candidate**. If none remain but
    some were dropped only by step 1, the row shows `upgrade_required` with the
-   newest version's `minAppVersion`.
+   newest version's `minAppVersion`. Otherwise the row is `unavailable` with a
+   reason: `revoked` (every version revoked), `yanked` (every version yanked
+   or revoked), `pending` (some version is held back only by its rollout or as
+   a pre-release) or `withheld` (anything else). An install of the row fails
+   with `PACKAGE_REVOKED`, `PACKAGE_YANKED` or `PACKAGE_INCOMPATIBLE` (§14).
 
 ### 6.2 Plugin artifact ladder
 
@@ -485,18 +508,29 @@ stop with NO_INSTALLABLE_ARTIFACT(rungs[])
 - The tree rung is declared by `artifact.tree`, or by a `plugin.json` in the
   package directory (its default). It installs `plugin.json`, `dist/**` and
   `assets/**`; any other top-level entry fails the rung, and
-  `ave-package.json` is not installed. The exported files are packed into a
-  zip, so every rung goes through the same zip preflight and install
-  pipeline.
+  `ave-package.json` is not installed. The layout and the file count are
+  checked from the tree before any blob is downloaded, so a direct source at
+  a repository root cannot make the client fetch the whole repository before
+  refusing it. The exported files are packed into a zip, so every rung goes
+  through the same zip preflight and install pipeline.
+- `release.sha256` and `archive.sha256` are optional in the schema: a
+  declared rung without a pin is skipped as `ARTIFACT_NOT_PINNED`, and the
+  ladder moves on.
 - A release without `url` is fetched from
-  `https://<source host>/<repo>/releases/download/<tag>/<asset>` (the
-  source's own scheme for a policy-listed http host). When the source uses
-  token auth on `github.com` and a token is stored, the asset comes through
-  the GitHub REST API instead — `api.github.com/repos/<repo>/releases/tags/<tag>`
-  for the asset id, then `…/releases/assets/<id>` with
+  `<origin>/<repo>/releases/download/<tag>/<asset>`. The origin is the
+  source's own for an https source (or a policy-listed http host), and
+  `https://<host>` on the default port for an ssh source, whose ssh port
+  says nothing about the web server. `repo` is `owner/name`, and neither
+  segment may be `.` or `..`. When the source uses token auth on
+  `github.com` and a token is stored, the asset comes through the GitHub
+  REST API instead — `api.github.com/repos/<repo>/releases/tags/<tag>` for
+  the asset id, then `…/releases/assets/<id>` with
   `Accept: application/octet-stream` — because that is what serves a private
   repository; the storage host it redirects to never receives the token
-  (§7.4). A policy allow list must admit `api.github.com` for this path.
+  (§7.4). Before that request the policy is checked against
+  `https://github.com/<repo>/releases/download/…`, so a repository block
+  rule applies to this path too. A policy allow list must admit
+  `api.github.com` for it.
 - Release and archive downloads are bounded by the artifact limits and fail
   after 60 s without data.
 
@@ -910,8 +944,11 @@ name packages from the official or a managed source.
   final unless the user installs it again.
 - A key whose package is missing or incompatible is recorded as `skipped` and
   retried only when the list entry changes.
-- A key whose source has no snapshot yet (a first boot offline) or whose
-  install failed is not recorded and is tried again at the next boot. A
+- A key whose source has no snapshot yet (a first boot offline), whose
+  versions are only held back by their rollout or as pre-releases (the row is
+  `unavailable` with reason `pending`, which can change without the app
+  changing), or whose install failed is not recorded and is tried again at
+  the next boot. A
   `default-installs.json` that cannot be read stops the default installs:
   reading it as empty would reinstall what the user removed.
 
@@ -932,7 +969,9 @@ For each entry:
 - If the listed package is installed from another source
   (`PACKAGE_ID_CONFLICT`), the boot step performs the source switch of §15.1
   (plugin data kept) and records it in the boot notice; the policy wins over
-  the user's source choice. A `defaultInstalls` entry in the same situation is
+  the user's source choice. Only such a required install may replace a
+  plugin installed by an administrator (`installSource: "admin"`), and the
+  entry stays admin-installed; any other git install over one is refused. A `defaultInstalls` entry in the same situation is
   recorded as `skipped`, because the user's install already satisfies it.
 - A required update applies without the update review of §15.6: the policy
   file stands for the consent. A compromised managed source can therefore
@@ -1169,12 +1208,12 @@ minutes (`PLAN_EXPIRED`). Disposition of today's channels is in §16.2.
 | `SOURCE_NOT_A_MARKETPLACE` | nothing recognizable | `marketplace.error.notMarketplace` |
 | `SOURCE_INDEX_INVALID` | index failed validation | `marketplace.error.indexInvalid` |
 | `SOURCE_HISTORY_REWRITTEN` | non-descendant candidate | `marketplace.error.historyRewritten` |
-| `SOURCE_DISABLED` | install or update requested from a hidden source | `marketplace.error.sourceDisabled` |
+| `SOURCE_DISABLED` | install or update requested from a hidden source (it still syncs for packages bound to it, §7.3) | `marketplace.error.sourceDisabled` |
 | `PLAN_EXPIRED` | plan/preview id expired or reused | `marketplace.error.planExpired` |
-| `PACKAGE_INCOMPATIBLE` | `minAppVersion` above the app version | `marketplace.error.incompatible` |
+| `PACKAGE_INCOMPATIBLE` | no version is offered to this installation: `minAppVersion` above the app version, another platform, a pre-release without canary, or a rollout that excludes it | `marketplace.error.incompatible` |
 | `PACKAGE_COMPAT_UNDECLARED` | git-installed plugin without `requires.minAppVersion` | `marketplace.error.compatUndeclared` |
-| `PACKAGE_YANKED` / `PACKAGE_REVOKED` | install of a yanked/revoked version | `marketplace.error.yanked` / `.revoked` |
-| `PACKAGE_ID_CONFLICT` | same `(kind, name)` installed from another source | `marketplace.error.idConflict` |
+| `PACKAGE_YANKED` / `PACKAGE_REVOKED` | every version is yanked or revoked (revoked when all are revoked) | `marketplace.error.yanked` / `.revoked` |
+| `PACKAGE_ID_CONFLICT` | same `(kind, name)` installed from another source, or from no source; also a signed-catalog install, update or rollback over a git-bound plugin | `marketplace.error.idConflict` |
 | `PACKAGE_REQUIRED_BY_POLICY` | uninstall or disable of a `requiredInstalls` package | `marketplace.error.requiredByPolicy` |
 | `ARTIFACT_NOT_PINNED` | rung skipped: no sha256 in git | (rung detail) |
 | `ARTIFACT_DIGEST_MISMATCH` | sha256 differs | (rung detail) |
@@ -1203,7 +1242,12 @@ store (the web store is gone).
   policy file).
 - Same name in two sources: two cards, each with its own badge. No merged row.
   Installing the second one is a source switch (`PACKAGE_ID_CONFLICT` explains
-  it and offers the switch).
+  it and offers the switch). The switch keeps the plugin's data directory, so
+  the consent text says that the new source's code receives the data the
+  installed plugin stored. Until phase 6 removes the signed catalog, the
+  catalog never replaces a git-bound plugin (install, update or rollback):
+  the user updates or rolls back through the bound source, or uninstalls
+  first.
 - The boot-install notice (§10.2) appears once as a banner listing what was
   installed or updated, split into "Installed for you" (default, with
   Uninstall) and "Required by your organization".
