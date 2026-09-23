@@ -196,6 +196,56 @@ describe("PluginMarketplaceService install → update → rollback", () => {
     expect(JSON.parse(await readFile(join(pluginDir, "plugin.json"), "utf-8")).version).toBe("1.1.0");
   });
 
+  describe("install() of a newer catalog version over a git-bound install (design §15.1)", () => {
+    const bindToGit = () =>
+      updatePluginRegistry(registryPath, (registry) => {
+        registry.plugins[0]!.origin = {
+          sourceId: "acme",
+          sourceOrigin: "custom",
+          commit: "a".repeat(40),
+          packagePath: "plugins/example-sample",
+          version: "1.0.0",
+          rung: "tree",
+          artifactSha256: "b".repeat(64),
+          installedAt: "2026-09-23T00:00:00.000Z",
+        };
+      });
+
+    it("refuses a user install with PACKAGE_ID_CONFLICT and changes nothing", async () => {
+      const fetcher = new StubFetcher();
+      const svc = makeService(fetcher);
+      await svc.installPlugin("example-sample", "1.0.0", preparedActivationOptionsForTest);
+      await bindToGit();
+      fetcher.item = { ...SAMPLE_ITEM, version: "1.1.0" };
+      const before = await readFile(registryPath, "utf-8");
+      await expect(svc.install("example-sample", undefined, preparedActivationOptionsForTest)).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
+      expect(await readFile(registryPath, "utf-8")).toBe(before);
+      expect(JSON.parse(await readFile(join(pluginDir, "plugin.json"), "utf-8")).version).toBe("1.0.0");
+    });
+
+    it("lets the managed boot update (it-admin) replace the binding, because the policy decides it", async () => {
+      const fetcher = new StubFetcher();
+      const svc = makeService(fetcher);
+      await svc.installPlugin("example-sample", "1.0.0", preparedActivationOptionsForTest);
+      await bindToGit();
+      await updatePluginRegistry(registryPath, (registry) => {
+        registry.plugins[0]!.installSource = "admin";
+      });
+      fetcher.item = { ...SAMPLE_ITEM, version: "1.1.0", installPolicy: "admin" };
+      // installArtifact is stubbed in this file, so there is no receipt to verify.
+      vi.spyOn(svc as unknown as { getInstallReceiptValidation: () => Promise<{ ok: true }> }, "getInstallReceiptValidation").mockResolvedValue({ ok: true });
+      const result = await svc.ensureManagedInstalled({
+        mode: "pre-start-sync",
+        ensurePluginStateReadyForInstall: async () => {},
+        removeDelistedAdminInstall: async (_removal, commitRegistryRemoval) => { await commitRegistryRemoval(); },
+      });
+      expect(result).toMatchObject({ failed: [], updated: ["example-sample"] });
+      expect(JSON.parse(await readFile(join(pluginDir, "plugin.json"), "utf-8")).version).toBe("1.1.0");
+      const entry = JSON.parse(await readFile(registryPath, "utf-8")).plugins[0];
+      expect(entry.origin).toBeUndefined();
+    });
+  });
+
   it("installPlugin migrates a legacy `_devLinked: true` entry to local-dev then re-stamps to user on install", async () => {
     // Pre-populate registry with the legacy `_devLinked: true` shape that
     // the now-removed dev:link script wrote. readPluginRegistry migrates

@@ -160,13 +160,17 @@ describe("assertMcpRuntimePinned", () => {
     else expect(check).toThrow(/must run/u);
   });
 
-  it("refuses environment that steers a launcher, and allows python's output switches", () => {
+  it("refuses environment that steers a launcher or the loader, and allows python's output switches", () => {
     const run = (env: Record<string, string>, apiKeyEnv?: string) => () =>
       assertMcpRuntimePinned("notes", { transport: "stdio", command: "npx", args: ["-y", "good@1.0.0"], env, ...(apiKeyEnv ? { apiKeyEnv } : {}) });
     expect(run({ npm_config_registry: "https://evil.example" })).toThrow("environment variable npm_config_registry is not allowed");
     expect(run({ PIP_INDEX_URL: "x" })).toThrow(/not allowed/u);
     expect(run({ NODE_EXTRA_CA_CERTS: "/tmp/ca.pem" })).toThrow(/not allowed/u);
     expect(run({}, "UV_INDEX_URL")).toThrow(/UV_INDEX_URL is not allowed/u);
+    expect(run({ NODE_OPTIONS: "--require /tmp/x.js" })).toThrow(/not allowed/u);
+    expect(run({ DYLD_INSERT_LIBRARIES: "/tmp/x.dylib" })).toThrow(/not allowed/u);
+    expect(run({ LD_PRELOAD: "/tmp/x.so" })).toThrow(/not allowed/u);
+    expect(run({ XDG_CONFIG_HOME: "/tmp/cfg" })).toThrow(/not allowed/u);
     expect(run({ PYTHONUNBUFFERED: "1", NOTES_MODE: "ro" })).not.toThrow();
   });
 });

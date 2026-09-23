@@ -82,9 +82,11 @@ const DOCKER_HUB_HOSTS = new Set(["docker.io", "index.docker.io", "registry-1.do
  * Environment a launcher reads to choose where code comes from or how it is
  * trusted: npm/pnpm/yarn/bun/corepack config, uv and pip indexes, docker's
  * daemon and credentials, node and python startup (python's output-encoding
- * switches stay allowed), proxies and CA bundles. Matched case-insensitively (npm reads `npm_config_*` in any case).
+ * switches stay allowed), the dynamic loader, the XDG config
+ * home the launchers read their config from, proxies and CA bundles.
+ * Matched case-insensitively (npm reads `npm_config_*` in any case).
  */
-const LAUNCHER_ENV = /^(?:NPM_CONFIG_|PNPM_|YARN_|BUN_|COREPACK_|UV_|PIP_|DOCKER_|NODE_|PYTHON(?!UNBUFFERED$|IOENCODING$|UTF8$)|(?:HTTPS?|ALL|NO|FTP)_PROXY$|SSL_CERT_|REQUESTS_CA_BUNDLE$|CURL_CA_BUNDLE$)/iu;
+const LAUNCHER_ENV = /^(?:NPM_CONFIG_|PNPM_|YARN_|BUN_|COREPACK_|UV_|PIP_|DOCKER_|NODE_|PYTHON(?!UNBUFFERED$|IOENCODING$|UTF8$)|DYLD_|LD_|XDG_CONFIG_HOME$|(?:HTTPS?|ALL|NO|FTP)_PROXY$|SSL_CERT_|REQUESTS_CA_BUNDLE$|CURL_CA_BUNDLE$)/iu;
 const DEFAULT_REGISTRIES: Record<string, string> = {
   npm: "https://registry.npmjs.org",
   pypi: "https://pypi.org",

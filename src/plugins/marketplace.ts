@@ -57,6 +57,8 @@ import {
 } from "./plugin-install-receipt.js";
 import { assertGitInstallManifest } from "../marketplace/resolve/manifest-rules.js";
 import { classifyInstall, type InstallAction } from "../marketplace/resolve/identity.js";
+import { requiredByPolicy } from "../marketplace/boot-installs/run.js";
+import type { MarketplacePolicy } from "../marketplace/sources/policy.js";
 import { MarketplaceError } from "../marketplace/errors.js";
 import type { PluginInstallPlan, StagedPluginArtifact } from "../marketplace/resolve/plugin-ladder.js";
 import { canonicalJSON } from "./whitelist/canonical-json.js";
@@ -2364,11 +2366,12 @@ export class PluginMarketplaceService {
       /** Replace an install bound to another source (or to none); the plugin's data is kept. */
       switchSource?: boolean;
       /**
-       * A policy `requiredInstalls` entry is installing it (design §10.2).
-       * Only such an install may replace an admin-installed plugin, and the
-       * entry stays admin-installed.
+       * The managed policy. Only an install its `requiredInstalls` names,
+       * from that source (design §10.2), may replace an admin-installed
+       * plugin, and the entry stays admin-installed. The caller does not
+       * claim this; it is read from the policy here.
        */
-      required?: boolean;
+      policy: MarketplacePolicy;
       signal?: AbortSignal;
     },
   ): Promise<{ pluginId: string; installed: true; version: string; action: InstallAction; staged: StagedPluginArtifact }> {
@@ -2385,8 +2388,8 @@ export class PluginMarketplaceService {
         }
       }
       const current = await this.getRawRegistryEntry(pluginId);
-      if (current?.installSource === "admin" && options.required !== true) {
-        throw new Error(`[installGitPlugin] refusing to replace admin-installed plugin: ${pluginId}`);
+      if (current?.installSource === "admin" && requiredByPolicy(options.policy, "plugin", pluginId)?.source !== plan.sourceId) {
+        throw new MarketplaceError("PACKAGE_ID_CONFLICT", `refusing to replace admin-installed plugin ${pluginId}: only the policy's required install from its source may`);
       }
       const registryInstallSource = current?.installSource === "admin" ? "admin" : "user";
       const action = classifyInstall(
