@@ -329,3 +329,16 @@ export class SnapshotBuilder {
     }
   }
 }
+
+/**
+ * Every artifact sha256 the snapshot pins for plugin `name@version` (release
+ * and archive): the bytes that source published as that version. The
+ * host-secret grant compares an install against the official snapshot's
+ * pins (design §10.3 condition 2).
+ */
+export function pinnedArtifactSha256s(snapshot: SourceSnapshot, name: string, version: string): string[] {
+  const pkg = snapshot.packages.find((item) => item.kind === "plugin" && item.name === name);
+  const listed = pkg?.versions.find((item) => item.version === version);
+  const pins = [listed?.artifact?.release?.sha256, listed?.artifact?.archive?.sha256];
+  return pins.filter((pin): pin is string => typeof pin === "string").map((pin) => pin.toLowerCase());
+}
