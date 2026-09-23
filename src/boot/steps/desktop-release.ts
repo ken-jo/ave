@@ -70,13 +70,17 @@ export function prepareDesktopRelease(input: ReleasePrepInput): ReleasePrepOutpu
     relocateDeviceUuid(resolve(app.getPath("userData"), ".ave", "device-uuid"), deviceUuidPath);
     const ptClient = new PluginTelemetryClient({
       settings: () => settingsService.get("telemetry"),
-      marketplaceBaseUrl: () => settingsService.get("marketplace").cloudBaseUrl,
-      installToken: () => settingsService.getSecret("marketplace.apiKey"),
+      endpoint: () => input.serviceClient.telemetryEndpoint(),
       deviceUuidPath,
       fetchImpl: networkFetch,
     });
     pluginTelemetry = ptClient;
     ptClient.start();
+    // The endpoint comes from the service document; read it once now, and the
+    // announcement poll keeps it current.
+    void input.serviceClient.refresh().catch((error: unknown) => {
+      log.warn("boot: service document unavailable: %s", (error as Error).message);
+    });
 
     onEvent("plugin.installed", (data) => {
       const d = data as { pluginId?: string; version?: string } | undefined;

@@ -7,21 +7,15 @@
  *     AND enabled=true).
  *   - No PII. Payload contains only: event type, plugin slug, plugin version,
  *     error class name (for plugin_error), device_uuid (random, locally generated).
- *   - The GitHub App install token (used to authenticate to the marketplace)
- *     travels ONLY in the Authorization header — NEVER in the event body.
- *     Keeping secrets out of the JSON payload prevents accidental persistence
- *     if the backend logs request bodies, and narrows the blast radius if a
- *     batch is ever mirrored to an analytics sink.
+ *   - No credential: the request carries no Authorization header and no
+ *     marketplace key (design §11).
  *   - PII scrubber strips absolute paths and email addresses from any string
  *     field before it leaves the process.
- *   - Transport: POST /telemetry/events to marketplace backend, batched.
- *   - SSRF defense: endpoint host is validated against an allowlist derived
- *     from the configured marketplace base URL before any network call.
+ *   - Transport: POST to the `telemetry` endpoint the service document names
+ *     (design §11), batched. The document parser keeps it on the service
+ *     origin; with no endpoint named the client is inactive.
  *   - Concurrency: flush() is serialized by an in-flight guard so overlapping
  *     timer ticks + explicit flush() calls can't duplicate-submit a batch.
- *
- * Authorization header reuses the GitHub App token already stored as a
- *     secret under "marketplace.apiKey". No new auth mechanism introduced.
  */
 import { randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
@@ -134,15 +128,10 @@ export interface PluginTelemetryClientDeps {
    */
   settings: () => TelemetrySettings;
   /**
-   * Marketplace base URL for POST /telemetry/events.
-   * If absent the client is a no-op even when enabled.
+   * The telemetry endpoint of the service document (an absolute URL on the
+   * service origin). If absent the client is a no-op even when enabled.
    */
-  marketplaceBaseUrl: () => string | undefined;
-  /**
-   * GitHub App install token accessor (secret "marketplace.apiKey").
-   * Absent when the user has not configured marketplace auth.
-   */
-  installToken: () => string | null | undefined;
+  endpoint: () => string | undefined;
   /**
    * Absolute path where device_uuid is stored: `~/.ave/telemetry/device-uuid`,
    * the telemetry feature namespace `post-boot.ts` opens. The path is resolved
@@ -186,14 +175,14 @@ export class PluginTelemetryClient {
    * Returns true only when:
    *   1. User has answered the first-boot prompt (telemetryPromptAnswered === true)
    *   2. User opted in (enabled === true)
-   *   3. A marketplace base URL is configured
+   *   3. The service document names a telemetry endpoint
    */
   isActive(): boolean {
     const s = this.deps.settings();
     if (!s.telemetryPromptAnswered) return false;
     if (s.enabled !== true) return false;
-    const base = this.deps.marketplaceBaseUrl();
-    return typeof base === "string" && base.length > 0;
+    const endpoint = this.deps.endpoint();
+    return typeof endpoint === "string" && endpoint.length > 0;
   }
 
   /**
@@ -217,9 +206,6 @@ export class PluginTelemetryClient {
       // Only class name — never the message (may contain PII).
       event.errorClass = scrubPii(opts.errorClass);
     }
-    // The install token is intentionally NOT attached to the event body;
-    // it is sent only in the Authorization header by flush(). Keeping
-    // bearer tokens out of the JSON payload narrows the leak surface.
     this.queue.push(event);
   }
 
@@ -247,25 +233,13 @@ export class PluginTelemetryClient {
 
   private async flushOnce(): Promise<void> {
     if (!this.isActive() || this.queue.length === 0) return;
-    const base = this.deps.marketplaceBaseUrl()!.replace(/\/$/, "");
-    const endpoint = `${base}/telemetry/events`;
-    // SSRF defense: telemetry may only POST to the same origin as the
-    // configured marketplace base URL. A malformed/attacker-controlled base
-    // URL (e.g. injected via settings manipulation) must not be able to
-    // redirect telemetry to arbitrary internal hosts.
-    if (!this.endpointMatchesBase(endpoint, base)) {
-      log.warn("endpoint failed allowlist check; dropping flush");
-      return;
-    }
+    const endpoint = this.deps.endpoint()!;
     const batch = this.queue.slice(0);
     const batchLen = batch.length;
-    const token = this.deps.installToken();
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (token) headers["Authorization"] = `Bearer ${token}`;
     try {
       const res = await this.fetchImpl(endpoint, {
         method: "POST",
-        headers,
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ events: batch }),
       });
       if (!res.ok) {
@@ -275,23 +249,6 @@ export class PluginTelemetryClient {
       this.queue.splice(0, batchLen);
     } catch (err) {
       log.warn("flush failed (re-queued): %s", (err as Error).message);
-    }
-  }
-
-  /**
-   * Returns true when `endpoint` shares protocol + host + port with `base`.
-   * Defense against SSRF via a tampered/misconfigured marketplace URL.
-   */
-  private endpointMatchesBase(endpoint: string, base: string): boolean {
-    try {
-      const ep = new URL(endpoint);
-      const bp = new URL(base);
-      if (ep.protocol !== "https:" && ep.protocol !== "http:") return false;
-      if (ep.protocol !== bp.protocol) return false;
-      if (ep.host !== bp.host) return false;
-      return true;
-    } catch {
-      return false;
     }
   }
 

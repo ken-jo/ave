@@ -31,6 +31,7 @@ import { createUpdateCheckRunner } from "./update-check-runner.js";
 import { registerShutdownHook } from "../../main/app-shutdown.js";
 import { sendToWindow } from "../../ipc/safe-send.js";
 import { createLogger } from "../../lib/logger.js";
+import type { ServiceClient } from "../../marketplace/service/client.js";
 import type { TracingHandle } from "../../engine/telemetry/tracing.js";
 const log = createLogger("ave");
 
@@ -48,6 +49,8 @@ export interface ReleasePrepInput {
   networkFetch: typeof fetch;
   /** Boot-configured tracing; its batched spans are flushed on quit. */
   tracing: TracingHandle;
+  /** The service endpoint: telemetry posts to the endpoint its document names (design §11). */
+  serviceClient: Pick<ServiceClient, "refresh" | "telemetryEndpoint">;
   /**
    * Whether this launch may open the connections in here that nothing forces
    * it to open: the release check, the two telemetry uploaders, and crash

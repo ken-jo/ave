@@ -7,7 +7,7 @@
  *   3. Batching: multiple track() calls flush together in a single POST.
  *   4. Batch interval: flush() is called at the configured interval.
  *   5. PII scrubber: paths and emails are stripped before emission.
- *   6. Flush sends correct payload with device_uuid + install_token.
+ *   6. Flush posts the payload with device_uuid to the service endpoint, with no credential.
  *   7. Flush skips when queue empty.
  *   8. Flush re-queues on non-ok HTTP response.
  *
@@ -29,8 +29,7 @@ let telemetryTmpDir: string;
 function makeDeps(overrides: {
   enabled?: boolean;
   promptAnswered?: boolean;
-  marketplaceBaseUrl?: string;
-  installToken?: string | null;
+  endpoint?: string | undefined;
   fetchImpl: typeof fetch;
   flushIntervalMs?: number;
 }) {
@@ -40,8 +39,7 @@ function makeDeps(overrides: {
   };
   return {
     settings: () => settings,
-    marketplaceBaseUrl: () => overrides.marketplaceBaseUrl ?? "https://marketplace.ave.local",
-    installToken: () => overrides.installToken ?? null,
+    endpoint: () => ("endpoint" in overrides ? overrides.endpoint : "https://former-site.invalid/telemetry/events"),
     deviceUuidPath: join(telemetryTmpDir, "device-uuid"),
     fetchImpl: overrides.fetchImpl,
     flushIntervalMs: overrides.flushIntervalMs ?? 99_999
@@ -135,29 +133,32 @@ describe("PluginTelemetryClient", () => {
     expect(scrubPii("1.2.3")).toBe("1.2.3");
   });
 
-  // 6. Flush sends correct payload fields — install_token travels in the
-  //    Authorization header ONLY, never in the event body (S12 FU1).
-  it("flush sends install_token via Authorization header, never in body", async () => {
+  // 6. Flush posts to the service document's endpoint with no credential (design §11).
+  it("flush posts to the service endpoint with no credential", async () => {
     const fetch = okFetch();
-    const client = new PluginTelemetryClient(
-      makeDeps({ fetchImpl: fetch, installToken: "ghp_test_token_abc" }),
-    );
+    const client = new PluginTelemetryClient(makeDeps({ fetchImpl: fetch }));
     client.track("plugin_install", { slug: "com.example.foo", version: "1.0.0" });
     await client.flush();
     const [url, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
-    expect(url).toContain("/telemetry/events");
+    expect(url).toBe("https://former-site.invalid/telemetry/events");
     const body = JSON.parse(init.body as string) as { events: Array<Record<string, unknown>> };
     const ev = body.events[0];
     expect(ev.v).toBe(1);
     expect(ev.name).toBe("plugin_install");
     expect(typeof ev.device_uuid).toBe("string");
     expect(ev.device_uuid).toHaveLength(36); // UUID format
-    // Install token MUST NOT appear anywhere in the serialized body.
     expect(ev.install_token).toBeUndefined();
-    expect(init.body as string).not.toContain("ghp_test_token_abc");
-    // Authorization header set
-    const headers = init.headers as Record<string, string>;
-    expect(headers["Authorization"]).toBe("Bearer ghp_test_token_abc");
+    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+  });
+
+  it("is inactive while the service document names no telemetry endpoint", async () => {
+    const fetch = okFetch();
+    const client = new PluginTelemetryClient(makeDeps({ fetchImpl: fetch, endpoint: undefined }));
+    expect(client.isActive()).toBe(false);
+    client.track("plugin_install", { slug: "com.example.foo", version: "1.0.0" });
+    await client.flush();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(client.queueLength).toBe(0);
   });
 
   // 6b. Concurrent flush calls coalesce — only one POST per batch.

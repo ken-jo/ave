@@ -953,6 +953,7 @@ export async function bootstrap(
     bootAuditLogger: ctx.bootAuditLogger,
     networkFetch: ctx.singleHopNetworkFetch,
     tracing: ctx.tracing,
+    serviceClient,
     discretionaryEgress: !headless,
   }, host);
   // Both pollers exist to push a banner at a renderer: the update check reads
