@@ -85,7 +85,7 @@ describe("normalizeSourceUrl", () => {
     rejected(input);
   });
 
-  it("treats the ssh user as connection detail, not repository identity", () => {
+  it("treats scheme, port, ssh user and path case as connection detail, not repository identity", () => {
     expect(
       sameSourceRepository(
         normalizeSourceUrl("ssh://git@git.example/acme/tools"),
@@ -95,9 +95,19 @@ describe("normalizeSourceUrl", () => {
     expect(
       sameSourceRepository(
         normalizeSourceUrl("ssh://git@git.example/acme/tools"),
-        normalizeSourceUrl("https://git.example/acme/tools"),
+        normalizeSourceUrl("https://git.example:8443/ACME/Tools"),
       ),
+    ).toBe(true);
+    expect(
+      sameSourceRepository(normalizeSourceUrl("https://git.example/acme/tools"), normalizeSourceUrl("https://git.example/acme/tools-2")),
     ).toBe(false);
+    expect(
+      sameSourceRepository(normalizeSourceUrl("https://git.example/acme/tools"), normalizeSourceUrl("https://other.example/acme/tools")),
+    ).toBe(false);
+  });
+
+  it("keeps the path's case in the stored URL, which git fetches from", () => {
+    expect(normalizeSourceUrl("https://github.com/Acme/Tools.git").url).toBe("https://github.com/Acme/Tools");
   });
 });
 
@@ -112,9 +122,11 @@ describe("source patterns", () => {
     expect(matchesSourcePattern(url("https://other.example/a/b"), pattern)).toBe(false);
   });
 
-  it("exact patterns compare the normalized repository", () => {
+  it("exact patterns compare the repository on any scheme and in any case", () => {
     const pattern = parseSourcePattern("https://GitHub.com/acme/tools.git");
     expect(matchesSourcePattern(url("acme/tools"), pattern)).toBe(true);
+    expect(matchesSourcePattern(url("ACME/Tools"), pattern)).toBe(true);
+    expect(matchesSourcePattern(url("git@github.com:acme/tools.git"), pattern)).toBe(true);
     expect(matchesSourcePattern(url("acme/tools-2"), pattern)).toBe(false);
   });
 
@@ -123,12 +135,15 @@ describe("source patterns", () => {
     expect(matchesSourcePattern(url("acme/tools"), pattern)).toBe(true);
     expect(matchesSourcePattern(url("https://github.com/acme/tools/sub"), pattern)).toBe(true);
     expect(matchesSourcePattern(url("acme-corp/tools"), pattern)).toBe(false);
-    expect(matchesSourcePattern(url("git@github.com:acme/tools"), pattern)).toBe(false);
-    expect(matchesSourcePattern(url("https://github.com:8443/acme/tools"), pattern)).toBe(false);
+    // Neither scheme, port nor case may sidestep a pattern.
+    expect(matchesSourcePattern(url("git@github.com:acme/tools"), pattern)).toBe(true);
+    expect(matchesSourcePattern(url("https://github.com:8443/acme/tools"), pattern)).toBe(true);
+    expect(matchesSourcePattern(url("Acme/tools"), pattern)).toBe(true);
+    expect(matchesSourcePattern(url("https://gitlab.com/acme/tools"), pattern)).toBe(false);
   });
 
   it("a trailing * without a slash is a plain prefix", () => {
-    const pattern = parseSourcePattern("https://github.com/acme*");
+    const pattern = parseSourcePattern("https://github.com/Acme*");
     expect(matchesSourcePattern(url("acme-corp/tools"), pattern)).toBe(true);
     expect(matchesSourcePattern(url("other/tools"), pattern)).toBe(false);
   });
@@ -138,7 +153,7 @@ describe("source patterns", () => {
     expect(matchesSourcePattern(url("https://git.corp.example/x/y"), pattern)).toBe(true);
   });
 
-  it.each(["https://github.com/*/tools*", "file:///x*", "host:", "host:a/b"])("rejects pattern %j", (text) => {
+  it.each(["https://github.com/*/tools*", "https://github.com/*/tools", "file:///x*", "host:", "host:a/b"])("rejects pattern %j", (text) => {
     expect(() => parseSourcePattern(text)).toThrow(MarketplaceError);
   });
 });

@@ -19,7 +19,7 @@
  */
 import { MarketplaceError } from "../errors.js";
 
-export type SourceUrlScheme = "https" | "http" | "ssh";
+type SourceUrlScheme = "https" | "http" | "ssh";
 
 export interface NormalizedSourceUrl {
   scheme: SourceUrlScheme;
@@ -184,35 +184,50 @@ export function normalizeSourceUrl(input: string): NormalizedSourceUrl {
 }
 
 /**
- * Same repository? Compares scheme, host, port and path; the ssh user name
- * is how one connects, not which repository it is.
+ * Repository identity: host and path, the path compared without case.
+ *
+ * Scheme, port and ssh user are how one connects, not which repository it
+ * is: `https://github.com/acme/tools` and `git@github.com:acme/tools` are one
+ * repository. Hosting services resolve owner and repository names without
+ * case, so `ACME/Tools` is that repository too. Both rules exist so that a
+ * block rule cannot be sidestepped by changing scheme or case; the price is
+ * that two repositories differing only in case on a case-sensitive server
+ * count as one, which only ever refuses more.
  */
+function repositoryPath(url: NormalizedSourceUrl): string {
+  return url.path.toLowerCase();
+}
+
 export function sameSourceRepository(a: NormalizedSourceUrl, b: NormalizedSourceUrl): boolean {
-  return a.scheme === b.scheme && a.host === b.host && a.port === b.port && a.path === b.path;
+  return a.host === b.host && repositoryPath(a) === repositoryPath(b);
 }
 
 /**
  * A managed-policy pattern (design §12), parsed once when the policy loads.
  *
  *   - `host:<host>` matches the host on any scheme and port.
- *   - a URL matches scheme, host, port and path exactly;
- *   - a URL ending in `*` matches scheme, host and port exactly and any path
- *     that starts with the text before the `*`.
+ *   - a URL matches the same repository ({@link sameSourceRepository}: host
+ *     and path without case, any scheme and port);
+ *   - a URL ending in `*` matches the host and any path that starts with the
+ *     text before the `*`, without case, on any scheme and port.
+ * The pattern's own scheme and port only have to be valid.
  */
 export type SourcePattern =
   | { kind: "host"; host: string; text: string }
   | { kind: "exact"; url: NormalizedSourceUrl; text: string }
-  | { kind: "prefix"; scheme: SourceUrlScheme; host: string; port: number | null; pathPrefix: string; text: string };
+  | { kind: "prefix"; host: string; pathPrefix: string; text: string };
 
 export function parseSourcePattern(text: string): SourcePattern {
   if (text.startsWith("host:")) {
     return { kind: "host", host: normalizeSourceHost(text, text.slice("host:".length)), text };
   }
+  // A `*` anywhere but the end would otherwise pass as a literal path
+  // character, and a block rule the admin meant as a wildcard would match nothing.
+  if (text.slice(0, -1).includes("*")) reject(text, "only a trailing * is allowed");
   if (!text.endsWith("*")) {
     return { kind: "exact", url: normalizeSourceUrl(text), text };
   }
   const prefix = text.slice(0, -1);
-  if (prefix.includes("*")) reject(text, "only a trailing * is allowed");
   const parts = parseParts(text, prefix);
   const raw = parts.rawPath.startsWith("/") ? parts.rawPath : `/${parts.rawPath}`;
   // Keep a trailing "/" so `…/acme/*` does not also match `…/acme-corp/x`.
@@ -224,7 +239,7 @@ export function parseSourcePattern(text: string): SourcePattern {
   }
   const joined = segments.length > 0 ? `/${segments.join("/")}` : "";
   const pathPrefix = trailingSlash || segments.length === 0 ? `${joined}/` : joined;
-  return { kind: "prefix", scheme: parts.scheme, host: parts.host, port: parts.port, pathPrefix, text };
+  return { kind: "prefix", host: parts.host, pathPrefix: pathPrefix.toLowerCase(), text };
 }
 
 export function matchesSourcePattern(url: NormalizedSourceUrl, pattern: SourcePattern): boolean {
@@ -234,11 +249,6 @@ export function matchesSourcePattern(url: NormalizedSourceUrl, pattern: SourcePa
     case "exact":
       return sameSourceRepository(url, pattern.url);
     case "prefix":
-      return (
-        url.scheme === pattern.scheme
-        && url.host === pattern.host
-        && url.port === pattern.port
-        && `${url.path}/`.startsWith(pattern.pathPrefix)
-      );
+      return url.host === pattern.host && `${repositoryPath(url)}/`.startsWith(pattern.pathPrefix);
   }
 }
