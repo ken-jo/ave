@@ -481,6 +481,45 @@ describe("SettingsService marketplace defaults", () => {
       .toBeNull();
   });
 
+  it("keeps a write that landed during a failed preset-secret deletion, and puts back only the preset", async () => {
+    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(true);
+    mockedElectron.safeStorage.encryptString.mockImplementation(
+      (value: string) => Buffer.from(`sealed:${value}`),
+    );
+    mockedElectron.safeStorage.decryptString.mockImplementation(
+      (value: Buffer) => value.toString("utf-8").slice(7),
+    );
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const preset = {
+      providerId: "future-router",
+      label: "Future Router",
+      baseUrl: "https://future.example/v1",
+      defaultModel: "future/free",
+      modelOptions: ["future/free"],
+      requiresApiKey: true,
+    };
+    await service.installMarketplaceProviderPreset(preset);
+    await service.setSecret(marketplaceProviderPresetSecretKey("future-router"), "fr-secret");
+    const secrets = (service as unknown as { secretStore: { deleteMany(keys: string[]): Promise<number> } }).secretStore;
+    vi.spyOn(secrets, "deleteMany").mockImplementationOnce(async () => {
+      // Another write lands, and reports success, while the deletion runs.
+      await service.setPluginConfig("sample", { mode: "fast" });
+      throw new Error("keychain locked");
+    });
+
+    await expect(service.installMarketplaceProviderPreset({
+      ...preset,
+      baseUrl: "https://elsewhere.example/v1",
+    })).rejects.toThrow("keychain locked");
+
+    expect(service.get("marketplace").installedProviderPresets).toEqual([preset]);
+    expect(service.getSecret(marketplaceProviderPresetSecretKey("future-router"))).toBe("fr-secret");
+    expect(service.getPluginConfig("sample")).toEqual({ mode: "fast" });
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(reloaded.get("marketplace").installedProviderPresets).toEqual([preset]);
+    expect(reloaded.getPluginConfig("sample")).toEqual({ mode: "fast" });
+  });
+
   it("leaves an active custom provider preset installed when preset-secret deletion fails", async () => {
     mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(true);
     mockedElectron.safeStorage.encryptString.mockImplementation(

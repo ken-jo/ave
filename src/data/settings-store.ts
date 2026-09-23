@@ -4,6 +4,7 @@ import {
 } from "../shared/corp-ca-common-name.js";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { withFileLock } from "../lib/with-file-lock.js";
 import { writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 import {
@@ -920,6 +921,38 @@ export interface SettingsServiceOptions {
 }
 
 
+/**
+ * `current` with the listed provider presets as they were in `previous`: an
+ * entry that changed goes back, a removed one returns, one added since goes.
+ */
+function withProviderPresetsFrom(
+  current: AppSettings,
+  previous: AppSettings,
+  providerIds: readonly string[],
+): AppSettings {
+  const listed = new Set(providerIds);
+  const before = new Map(
+    previous.marketplace.installedProviderPresets
+      .filter((preset) => listed.has(preset.providerId))
+      .map((preset) => [preset.providerId, preset]),
+  );
+  const presets: MarketplaceInstalledProviderPreset[] = [];
+  for (const preset of current.marketplace.installedProviderPresets) {
+    if (!listed.has(preset.providerId)) {
+      presets.push(preset);
+      continue;
+    }
+    const restored = before.get(preset.providerId);
+    if (restored) presets.push(restored);
+    before.delete(preset.providerId);
+  }
+  presets.push(...before.values());
+  return {
+    ...current,
+    marketplace: normalizeMarketplace({ ...current.marketplace, installedProviderPresets: presets }),
+  };
+}
+
 export class SettingsService {
   private readonly settingsPath: string;
   private readonly secretsPath: string;
@@ -1329,9 +1362,11 @@ export class SettingsService {
         ...normalizeFeatureFlags(partial.features),
       };
     }
+    const appliedSettings = this.getAll();
     await this.commit();
     await this.deleteMarketplaceProviderPresetSecretsAtomically(
       previousSettings,
+      appliedSettings,
       providerPresetSecretInvalidationIds,
     );
     return this.getAll();
@@ -1381,9 +1416,11 @@ export class SettingsService {
       { inferInstalledFromCustom: false },
     );
     this.settings.llm = prunedLlm.llm;
+    const appliedSettings = this.getAll();
     await this.commit();
     await this.deleteMarketplaceProviderPresetSecretsAtomically(
       previousSettings,
+      appliedSettings,
       providerPresetSecretInvalidationIds,
     );
     return this.getAll();
@@ -1391,6 +1428,7 @@ export class SettingsService {
 
   private async deleteMarketplaceProviderPresetSecretsAtomically(
     previousSettings: AppSettings,
+    appliedSettings: AppSettings,
     providerIds: readonly string[],
   ): Promise<void> {
     try {
@@ -1401,7 +1439,12 @@ export class SettingsService {
       // the settings write performed immediately before this call needs to
       // be rolled back. Avoid reading individual secrets here; encrypted
       // reads correctly fail closed when host encryption is unavailable.
-      this.settings = previousSettings;
+      // When other writes landed meanwhile, they already reported success:
+      // put back only the presets whose keys stayed, so each key is again
+      // next to the address it was entered for.
+      this.settings = isDeepStrictEqual(this.settings, appliedSettings)
+        ? previousSettings
+        : withProviderPresetsFrom(this.settings, previousSettings, providerIds);
       await this.commit().catch((rollbackErr: Error) => {
         log.warn(
           "settings rollback after provider preset secret deletion failure failed: %s",
