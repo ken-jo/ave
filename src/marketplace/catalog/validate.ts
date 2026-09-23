@@ -30,7 +30,7 @@ import type {
 } from "./types.js";
 import { parseVersionRange } from "./version-range.js";
 
-interface CatalogDiagnostic {
+export interface CatalogDiagnostic {
   /** `kind/name` when known, else the entry's position. */
   subject: string;
   message: string;

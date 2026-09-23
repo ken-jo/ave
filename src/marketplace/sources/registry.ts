@@ -28,6 +28,7 @@ import {
   isReservedSourceId,
   isSourceLabel,
   isSourceRef,
+  type OfficialMarketplace,
   type SourceAuth,
 } from "./official.js";
 import { EMPTY_MARKETPLACE_POLICY, type MarketplacePolicy, type PolicyLoad } from "./policy.js";
@@ -187,6 +188,8 @@ export interface SourceRegistryOptions {
   /** `~/.ave/marketplaces`. */
   root: string;
   policy: PolicyLoad;
+  /** The build constant; tests substitute a fixture repository. */
+  official?: OfficialMarketplace;
   now?: () => Date;
 }
 
@@ -201,12 +204,13 @@ export class SourceRegistry {
 
   private constructor(private readonly options: SourceRegistryOptions) {
     this.policy = options.policy.ok ? options.policy.policy : EMPTY_MARKETPLACE_POLICY;
+    const constant = options.official ?? OFFICIAL_MARKETPLACE;
     const official: ResolvedSource = {
-      id: OFFICIAL_MARKETPLACE.id,
+      id: constant.id,
       origin: "official",
-      url: normalizeSourceUrl(OFFICIAL_MARKETPLACE.url),
-      mirrors: OFFICIAL_MARKETPLACE.mirrors.map((mirror) => normalizeSourceUrl(mirror)),
-      auth: OFFICIAL_MARKETPLACE.auth,
+      url: normalizeSourceUrl(constant.url),
+      mirrors: constant.mirrors.map((mirror) => normalizeSourceUrl(mirror)),
+      auth: constant.auth,
     };
     // An unreadable policy yields no managed sources; the gate blocks every non-official target then.
     const managed = this.policy.additional.map((spec): ResolvedSource => ({

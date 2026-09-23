@@ -50,7 +50,7 @@ export interface IndexPackage {
   versions?: IndexVersion[];
 }
 
-interface IndexVersion {
+export interface IndexVersion {
   version: string;
   commit: string;
   minAppVersion: string;
@@ -105,7 +105,7 @@ export interface PackageDescriptor {
   payload: Record<string, unknown>;
 }
 
-interface Revocation {
+export interface Revocation {
   kind: PackageKind;
   name: string;
   /** Semver range the revocation covers. */

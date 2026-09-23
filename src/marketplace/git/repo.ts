@@ -111,6 +111,25 @@ export class BareRepo {
     return oid;
   }
 
+  /** Is `commit` a commit object in this repository? */
+  async hasCommit(commit: string): Promise<boolean> {
+    assertCommitId(commit, "commit");
+    try {
+      const result = await this.runner.run(["cat-file", "-t", commit], { cwd: this.dir, timeoutMs: GIT_TIMEOUTS_MS.local });
+      return result.stdout.toString("utf8").trim() === "commit";
+    } catch (error) {
+      if (error instanceof GitCommandError) return false;
+      throw error;
+    }
+  }
+
+  /** Committer time of `commit`, ISO-8601. */
+  async commitTime(commit: string): Promise<string> {
+    assertCommitId(commit, "commit");
+    const result = await this.runner.run(["show", "-s", "--format=%cI", commit], { cwd: this.dir, timeoutMs: GIT_TIMEOUTS_MS.local });
+    return new Date(result.stdout.toString("utf8").trim()).toISOString();
+  }
+
   async isAncestor(ancestor: string, descendant: string): Promise<boolean> {
     assertCommitId(ancestor, "ancestor");
     assertCommitId(descendant, "descendant");
@@ -187,6 +206,10 @@ export class BareRepo {
     if (!entry || entry.path !== path) return null;
     if (entry.type !== "blob" || (entry.mode !== "100644" && entry.mode !== "100755")) {
       throw new MarketplaceError("CONTENT_RULE_VIOLATION", `${path} is not a regular file at ${commit}`);
+    }
+    const size = await this.runner.run(["cat-file", "-s", entry.oid], { cwd: this.dir, timeoutMs: GIT_TIMEOUTS_MS.local });
+    if (Number(size.stdout.toString("utf8").trim()) > maxBytes) {
+      throw new MarketplaceError("CONTENT_RULE_VIOLATION", `${path} is larger than ${maxBytes} bytes at ${commit}`);
     }
     const result = await this.runner.run(["cat-file", "blob", entry.oid], {
       cwd: this.dir,
