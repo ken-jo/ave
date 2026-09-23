@@ -185,5 +185,7 @@ describe("downloadUrlForPolicy", () => {
       url: "https://github.com/acme/market/releases",
     });
     expect(downloadUrlForPolicy(new URL("http://git.corp.example:8080/a")).url).toBe("http://git.corp.example:8080/a");
+    // A service endpoint at the root is a path like any other.
+    expect(downloadUrlForPolicy(new URL("https://ave.corp.example/?x=1")).path).toBe("/");
   });
 });

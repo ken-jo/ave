@@ -184,9 +184,11 @@ function render(parts: Omit<NormalizedSourceUrl, "url">): string {
 /**
  * A download URL's path in the form patterns compare: canonical
  * percent-encoding (`%65vil` is `evil`), no trailing `/`, and no empty, `.`
- * or `..` segment, which a server may collapse into another path.
+ * or `..` segment, which a server may collapse into another path. The root
+ * (a service endpoint at `/`) stays `/`.
  */
 export function normalizeDownloadPath(input: string, rawPath: string): string {
+  if (rawPath === "" || rawPath === "/") return "/";
   return `/${normalizePathSegments(input, rawPath, false).join("/")}`;
 }
 
