@@ -59,7 +59,18 @@ describe("content file rules (design §5.4)", () => {
     expect(contentFileProblem("language", "extra.json")).toMatch(/only/u);
     expect(contentFileProblem("provider", "provider.json")).toBeNull();
     expect(contentFileProblem("skill", "references/guide.md")).toBeNull();
-    expect(contentFileProblem("skill", "references/run.sh")).toMatch(/allows/u);
+    expect(contentFileProblem("skill", "references/run.sh")).toMatch(/allows .* files there/u);
+    // The Agent Skills layout: code in scripts/, templates in assets/, a license beside SKILL.md.
+    expect(contentFileProblem("skill", "scripts/run.sh")).toBeNull();
+    expect(contentFileProblem("skill", "scripts/search.py")).toBeNull();
+    expect(contentFileProblem("skill", "scripts/upstream.pin")).toBeNull();
+    expect(contentFileProblem("skill", "scripts/tool.exe")).toMatch(/allows .* files there/u);
+    expect(contentFileProblem("skill", "assets/templates/form.hwp")).toBeNull();
+    expect(contentFileProblem("skill", "assets/run.py")).toMatch(/allows .* files there/u);
+    expect(contentFileProblem("skill", "LICENSE")).toBeNull();
+    expect(contentFileProblem("skill", "NOTICE")).toBeNull();
+    expect(contentFileProblem("skill", "templates/form.hwp")).toMatch(/only/u);
+    expect(contentFileProblem("agent", "NOTICE")).toMatch(/AGENTS\.md only/u);
     expect(contentFileProblem("agent", "AGENTS.md")).toBeNull();
   });
 

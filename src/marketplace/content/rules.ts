@@ -21,6 +21,8 @@ interface ContentRule {
   maxBytes: number;
   maxFiles: number;
   extensions: readonly string[];
+  /** The extensions a path allows when they depend on where it sits; `extensions` otherwise. */
+  extensionsAt?(path: string): readonly string[];
   /** Whether `path` (package-relative, `/`-separated) belongs in this kind's layout. */
   layout(path: string): boolean;
   /** The layout, for a refusal message. */
@@ -31,14 +33,26 @@ const KB = 1024;
 const MB = 1024 * KB;
 const IMAGE = [".png", ".jpg", ".webp"] as const;
 const FONT_FILE = /^files\/[^/]+\.(?:woff2|woff|ttf|otf)$/u;
+/** Files named without an extension: a package's license and attribution. */
+const EXTENSIONLESS = new Set(["LICENSE", "NOTICE"]);
+const SKILL_TEXT = [".md", ".txt", ".json", ".yaml", ".yml"] as const;
+/**
+ * The Agent Skills layout (agentskills.io): executable code in `scripts/`,
+ * documentation in `references/`, templates and resources in `assets/`. A
+ * script runs only through the shell tool, under its approval.
+ */
+const SKILL_SCRIPTS = [".py", ".js", ".mjs", ".cjs", ".sh", ".pin", ...SKILL_TEXT] as const;
+const SKILL_ASSETS = [...SKILL_TEXT, ...IMAGE, ".csv", ".tsv", ".pdf", ".hwp", ".hwpx", ".docx", ".xlsx", ".pptx"] as const;
 
 export const CONTENT_RULES: Readonly<Record<ContentKind, ContentRule>> = Object.freeze({
   skill: {
     maxBytes: 2 * MB,
     maxFiles: 64,
-    extensions: [".md", ".txt", ".json", ".yaml", ".yml", ...IMAGE],
-    layout: (path) => path === "SKILL.md" || path.startsWith("references/") || path.startsWith("assets/"),
-    describe: "SKILL.md, references/ and assets/",
+    extensions: [...SKILL_TEXT, ...IMAGE],
+    extensionsAt: (path) => (path.startsWith("scripts/") ? SKILL_SCRIPTS : path.startsWith("assets/") ? SKILL_ASSETS : [...SKILL_TEXT, ...IMAGE]),
+    layout: (path) =>
+      path === "SKILL.md" || EXTENSIONLESS.has(path) || path.startsWith("scripts/") || path.startsWith("references/") || path.startsWith("assets/"),
+    describe: "SKILL.md, LICENSE, NOTICE, scripts/, references/ and assets/",
   },
   agent: {
     maxBytes: 256 * KB,
@@ -93,9 +107,9 @@ export function contentFileProblem(kind: ContentKind, path: string): string | nu
   const lower = path.toLowerCase();
   if (lower.endsWith(".svg") || lower.endsWith(".svgz")) return `SVG is not allowed: ${path}`;
   if (!rule.layout(path)) return `a ${kind} package holds ${rule.describe} only: ${path}`;
-  // LICENSE is the one file named without an extension (font packages).
-  if (path !== "LICENSE" && !rule.extensions.some((ext) => lower.endsWith(ext))) {
-    return `${path}: a ${kind} package allows ${rule.extensions.join(" ")} files`;
+  const extensions = rule.extensionsAt?.(path) ?? rule.extensions;
+  if (!EXTENSIONLESS.has(path) && !extensions.some((ext) => lower.endsWith(ext))) {
+    return `${path}: a ${kind} package allows ${extensions.join(" ")} files there`;
   }
   return null;
 }
