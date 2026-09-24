@@ -12,15 +12,16 @@ import { Input } from "../../../../components/ui/input.js";
 import { Switch } from "../../../../components/ui/switch.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import { cn } from "../../../../lib/utils.js";
-import type {
-  BootInstallNoticeView,
-  CatalogEntryView,
-  CatalogView,
-  GitMarketplaceErrorCode,
-  PackageKeyView,
-  PackageKind,
-  SourcePreviewView,
-  SourceView,
+import {
+  bootInstallNoticeIsEmpty,
+  type BootInstallNoticeView,
+  type CatalogEntryView,
+  type CatalogView,
+  type GitMarketplaceErrorCode,
+  type PackageKeyView,
+  type PackageKind,
+  type SourcePreviewView,
+  type SourceView,
 } from "../../../../shared/git-marketplace.js";
 import { EnvForcedNotice, useEnvForcedSettings } from "../../components/EnvForcedNotice.js";
 import { SettingsPageHeader, SettingsSection } from "../../components/PageShell.js";
@@ -242,7 +243,8 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }
     setNotice((current) => {
       if (!current) return current;
       const forYou = current.forYou.filter((item) => !(item.sourceId === key.sourceId && item.kind === key.kind && item.name === key.name));
-      return forYou.length + current.required.length > 0 ? { ...current, forYou } : null;
+      const next = { ...current, forYou };
+      return bootInstallNoticeIsEmpty(next) ? null : next;
     });
     void loadCatalog();
   };
@@ -347,6 +349,20 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }
                   ))}
                 </ul>
               </div>
+            )}
+            {notice.unmanaged.length > 0 && (
+              <ul className="space-y-0.5" data-testid="git-marketplace:boot-notice:unmanaged">
+                {notice.unmanaged.map((name) => (
+                  <li key={name}>{t("gitMarketplace.boot.unmanaged", { name })}</li>
+                ))}
+              </ul>
+            )}
+            {notice.lostGrants.length > 0 && (
+              <ul className="space-y-0.5" data-testid="git-marketplace:boot-notice:lost-grants">
+                {notice.lostGrants.map((item) => (
+                  <li key={item.plugin}>{t("gitMarketplace.boot.lostGrant", { name: item.plugin, keys: item.keys.join(", ") })}</li>
+                ))}
+              </ul>
             )}
           </div>
         )}

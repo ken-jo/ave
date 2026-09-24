@@ -348,12 +348,21 @@ export interface PackageUpdateView {
   to: string;
 }
 
-/** What the boot-install step installed or moved (design §10.2), shown once until dismissed. */
+/** What the boot pass installed, moved or migrated (design §10.2, §16.3), shown once until dismissed. */
 export interface BootInstallNoticeView {
   /** Default installs: they belong to the user now, each offered with Uninstall. */
   forYou: PackageKeyView[];
   /** `requiredInstalls` entries installed, updated or switched to their listed source. */
   required: PackageKeyView[];
+  /** Plugins an administrator installed that no source lists: no longer locked, no updates. */
+  unmanaged: string[];
+  /** Plugins that no longer read these host secrets until they update (§10.3). */
+  lostGrants: Array<{ plugin: string; keys: string[] }>;
+}
+
+/** Nothing left to show: every list is empty. */
+export function bootInstallNoticeIsEmpty(notice: BootInstallNoticeView): boolean {
+  return notice.forYou.length + notice.required.length + notice.unmanaged.length + notice.lostGrants.length === 0;
 }
 
 export type GitMarketplaceErrorCode = MarketplaceErrorCode | "invalid-request" | "unauthorized-frame" | "unavailable";

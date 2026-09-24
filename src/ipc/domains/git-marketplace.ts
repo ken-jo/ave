@@ -42,6 +42,7 @@ import { loadInstallationId } from "../../marketplace/catalog/installation-id.js
 import { contentLedgerOrigins } from "../../marketplace/content/ledger.js";
 import { MarketplaceError } from "../../marketplace/errors.js";
 import { MarketplaceGit } from "../../marketplace/git/marketplace-git.js";
+import { migrateLegacyPlugins } from "../../marketplace/migration/legacy-plugins.js";
 import { createArtifactCache, resolveKeepArtifacts } from "../../marketplace/resolve/artifact-cache.js";
 import { gitRuntimeRoot } from "../../marketplace/git/runtime-service.js";
 import { NetworkGate } from "../../marketplace/net/network-gate.js";
@@ -188,6 +189,7 @@ async function createGitMarketplaceService(
   onCatalogChanged: () => void,
 ): Promise<{ service: MarketplaceService; close: () => Promise<void> }> {
   if (!deps.pluginPaths) throw new Error("plugin paths are not wired");
+  const pluginPaths = deps.pluginPaths;
   const root = join(home, "marketplaces");
   const workRoot = join(root, ".work");
   // Previews and scratch exports live only as long as the process that made them.
@@ -246,7 +248,7 @@ async function createGitMarketplaceService(
     runner: git.commands,
     root,
     retainedCommits: retainedCommitsFrom([
-      pluginRegistryOrigins(deps.pluginPaths.registryPath),
+      pluginRegistryOrigins(pluginPaths.registryPath),
       contentLedgerOrigins(join(packagesRoot, "ledger.json")),
       mcpInstallOrigins(mcpRecordsPath),
     ]),
@@ -286,6 +288,17 @@ async function createGitMarketplaceService(
     onSyncProgress: (progress: SyncProgressView) => broadcast(CHANNELS.gitMarketplace.syncProgress, progress),
     onCatalogChanged: catalogChanged,
     onInstallProgress: (progress: InstallProgressView) => broadcast(CHANNELS.gitMarketplace.installProgress, progress),
+    legacyMigration: {
+      markerPath: join(packagesRoot, "legacy-migration.json"),
+      plugins: (officialPlugin, applied) =>
+        migrateLegacyPlugins({
+          paths: pluginPaths,
+          officialPlugin,
+          applied,
+          now: () => new Date(),
+          log: { warn: (message) => log.warn(message) },
+        }),
+    },
   });
   return {
     service,

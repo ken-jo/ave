@@ -57,8 +57,10 @@ import { assertMcpRuntimePinned, resolveMcpPackage, runtimeFromServerJson, type 
 import { planPluginVersion, runPluginLadder, type LadderDeps, type PluginInstallPlan } from "../resolve/plugin-ladder.js";
 import type { AppliedDefaults } from "../boot-installs/applied.js";
 import { assertNotRequiredByPolicy, bootInstallNoticeFrom, requiredByPolicy, runBootInstalls, type BootInstallReport } from "../boot-installs/run.js";
+import type { LegacyPluginReport, OfficialPlugin } from "../migration/legacy-plugins.js";
+import { runLegacyMigration } from "../migration/run.js";
 import { readDirectPackage } from "../sources/direct-package.js";
-import { isReservedSourceId, SOURCE_ID_RE, type SourceAuth } from "../sources/official.js";
+import { isReservedSourceId, OFFICIAL_MARKETPLACE, SOURCE_ID_RE, type SourceAuth } from "../sources/official.js";
 import type { MarketplacePolicy, PackageKey } from "../sources/policy.js";
 import type { ResolvedSource, SourceOrigin, SourceRegistry, SourceState } from "../sources/registry.js";
 import { SnapshotBuilder, type SourceSnapshot } from "../sources/snapshot.js";
@@ -120,6 +122,11 @@ export interface MarketplaceServiceOptions {
   onSyncProgress?: (progress: SyncProgressView) => void;
   onCatalogChanged?: () => void;
   onInstallProgress?: (progress: InstallProgressView) => void;
+  /** The first-boot migration of existing installs (design §16.3), run before the boot installs. */
+  legacyMigration: {
+    markerPath: string;
+    plugins(officialPlugin: (name: string) => OfficialPlugin | null, applied: AppliedDefaults): Promise<LegacyPluginReport>;
+  };
   now?: () => Date;
 }
 
@@ -851,6 +858,13 @@ export class MarketplaceService {
    * boot publishes (null when nothing changed).
    */
   async applyBootInstalls(defaults: readonly PackageKey[], applied: AppliedDefaults): Promise<{ report: BootInstallReport; notice: BootInstallNoticeView | null }> {
+    // First: a former admin install it binds is recorded as applied, so the defaults below leave it be.
+    const legacy = await runLegacyMigration({
+      markerPath: this.options.legacyMigration.markerPath,
+      officialSnapshot: await this.options.syncer.readSnapshot(OFFICIAL_MARKETPLACE.id),
+      plugins: (officialPlugin) => this.options.legacyMigration.plugins(officialPlugin, applied),
+      now: () => this.now(),
+    });
     const { rows, snapshots, shown } = await this.rows();
     const synced = new Map<string, SourceOrigin>(shown.filter((source) => snapshots.has(source.id)).map((source) => [source.id, source.origin]));
     const report = await runBootInstalls({
@@ -866,7 +880,7 @@ export class MarketplaceService {
       applied,
       now: () => this.now(),
     });
-    return { report, notice: bootInstallNoticeFrom(report, this.options.policy) };
+    return { report, notice: bootInstallNoticeFrom(report, this.options.policy, legacy) };
   }
 
   /** Drop every preview clone and plan (shutdown). */

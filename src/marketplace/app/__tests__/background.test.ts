@@ -74,7 +74,7 @@ describe("syncIntervalMs", () => {
 
 describe("startMarketplaceBackground", () => {
   it("syncs, applies the boot installs, publishes the notice and status, then the updates", async () => {
-    const notice = { forYou: [{ sourceId: "ave", kind: "plugin" as const, name: "meeting" }], required: [] };
+    const notice = { forYou: [{ sourceId: "ave", kind: "plugin" as const, name: "meeting" }], required: [], unmanaged: [], lostGrants: [] };
     const report: BootInstallReport = {
       ...EMPTY_REPORT,
       installed: [{ kind: "plugin", name: "meeting", source: "ave" }],

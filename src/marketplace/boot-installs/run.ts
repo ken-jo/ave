@@ -19,10 +19,11 @@
  * verification, receipt). Nothing here decides consent or reads the network.
  */
 import { errorMessage } from "../../shared/error-message.js";
-import type { BootInstallNoticeView, PackageKeyView } from "../../shared/git-marketplace.js";
+import { bootInstallNoticeIsEmpty, type BootInstallNoticeView, type PackageKeyView } from "../../shared/git-marketplace.js";
 import { MarketplaceError } from "../errors.js";
 import type { CatalogRow } from "../catalog/aggregate.js";
 import type { PackageKind } from "../catalog/types.js";
+import type { LegacyPluginReport } from "../migration/legacy-plugins.js";
 import { updateFor, type InstalledPackage } from "../resolve/identity.js";
 import type { MarketplacePolicy, PackageKey } from "../sources/policy.js";
 import type { SourceOrigin } from "../sources/registry.js";
@@ -60,12 +61,19 @@ const LISTABLE_ORIGINS = new Set<SourceOrigin>(["official", "managed"]);
  * installs, which are the user's now, apart from what the policy requires and
  * moved; null when the boot changed nothing.
  */
-export function bootInstallNoticeFrom(report: BootInstallReport, policy: MarketplacePolicy): BootInstallNoticeView | null {
+export function bootInstallNoticeFrom(
+  report: BootInstallReport,
+  policy: MarketplacePolicy,
+  legacy: Pick<LegacyPluginReport, "unmanaged" | "lostGrants"> | null,
+): BootInstallNoticeView | null {
   const view = (key: PackageKey): PackageKeyView => ({ sourceId: key.source, kind: key.kind, name: key.name });
   const required = (key: PackageKey) => requiredByPolicy(policy, key.kind, key.name) !== undefined;
   const forYou = report.installed.filter((key) => !required(key)).map(view);
   const requiredKeys = [...report.installed.filter(required), ...report.updated, ...report.switched].map(view);
-  return forYou.length + requiredKeys.length > 0 ? { forYou, required: requiredKeys } : null;
+  const unmanaged = [...(legacy?.unmanaged ?? [])];
+  const lostGrants = (legacy?.lostGrants ?? []).map((item) => ({ plugin: item.plugin, keys: [...item.keys] }));
+  const notice = { forYou, required: requiredKeys, unmanaged, lostGrants };
+  return bootInstallNoticeIsEmpty(notice) ? null : notice;
 }
 
 /** The requiredInstalls entry that locks `(kind, name)`, if any (PACKAGE_REQUIRED_BY_POLICY). */

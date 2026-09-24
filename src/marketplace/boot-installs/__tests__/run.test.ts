@@ -191,14 +191,16 @@ describe("bootInstallNoticeFrom (design §15.1)", () => {
   const empty = { installed: [], updated: [], switched: [], skipped: [], failed: [] };
 
   it("is null when the boot installed, updated and moved nothing", () => {
-    expect(bootInstallNoticeFrom({ ...empty, skipped: [{ key: key("a"), reason: "r" }], failed: [{ key: key("b"), message: "m" }] }, EMPTY_MARKETPLACE_POLICY)).toBeNull();
+    expect(bootInstallNoticeFrom({ ...empty, skipped: [{ key: key("a"), reason: "r" }], failed: [{ key: key("b"), message: "m" }] }, EMPTY_MARKETPLACE_POLICY, null)).toBeNull();
+    expect(bootInstallNoticeFrom(empty, EMPTY_MARKETPLACE_POLICY, { unmanaged: [], lostGrants: [] })).toBeNull();
   });
 
-  it("offers the default installs to the user and lists what the policy required, updated or moved", () => {
+  it("offers the default installs to the user, lists what the policy required, updated or moved, and what the migration unlocked", () => {
     const policy: MarketplacePolicy = { ...EMPTY_MARKETPLACE_POLICY, requiredInstalls: [key("vpn", "corp")] };
     const notice = bootInstallNoticeFrom(
       { ...empty, installed: [key("meeting"), key("vpn", "corp"), key("tokyo-night", "ave", "theme")], updated: [key("audit", "corp")], switched: [key("mail", "corp")] },
       policy,
+      { unmanaged: ["orion"], lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai"] }] },
     );
     expect(notice).toEqual({
       forYou: [
@@ -210,6 +212,8 @@ describe("bootInstallNoticeFrom (design §15.1)", () => {
         { sourceId: "corp", kind: "plugin", name: "audit" },
         { sourceId: "corp", kind: "plugin", name: "mail" },
       ],
+      unmanaged: ["orion"],
+      lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai"] }],
     });
   });
 });

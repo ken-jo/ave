@@ -19,7 +19,8 @@ import { policyLoad } from "../../__tests__/fixtures/policy.js";
 import { ContentStore } from "../../content/store.js";
 import { NetworkGate } from "../../net/network-gate.js";
 import { NO_ARTIFACT_CACHE } from "../../resolve/artifact-cache.js";
-import { OFFICIAL_MARKETPLACE } from "../../sources/official.js";
+import type { LegacyPluginReport, OfficialPlugin } from "../../migration/legacy-plugins.js";
+import { OFFICIAL_MARKETPLACE, type OfficialMarketplace } from "../../sources/official.js";
 import { EMPTY_MARKETPLACE_POLICY, type PolicyLoad } from "../../sources/policy.js";
 import { AppliedDefaults } from "../../boot-installs/applied.js";
 import { normalizeSourceUrl } from "../../net/source-url.js";
@@ -64,6 +65,8 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
   let service: MarketplaceService;
   let store: ContentStore;
   let catalogChanged: number;
+  let legacyRuns: Array<(name: string) => OfficialPlugin | null>;
+  let legacyReport: LegacyPluginReport;
 
   beforeAll(async () => {
     serverRoot = mkdtempSync(join(tmpdir(), "ave-service-served-"));
@@ -81,15 +84,17 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
     root = mkdtempSync(join(tmpdir(), "ave-service-root-"));
     now = AT;
     catalogChanged = 0;
+    legacyRuns = [];
+    legacyReport = { bound: [], unmanaged: [], lostGrants: [], failed: [] };
     await build();
   });
 
-  /** The service over `root`, under `policy`; a test that needs a managed source builds again. */
-  async function build(policy: PolicyLoad = policyLoad({})) {
+  /** The service over `root`, under `policy`; a test that needs a managed or a local official source builds again. */
+  async function build(policy: PolicyLoad = policyLoad({}), official?: OfficialMarketplace) {
     manager = new FakeManager();
     const gate = new NetworkGate({ policy, allowLoopback: true });
     const marketplaces = join(root, "marketplaces");
-    const registry = await SourceRegistry.open({ root: marketplaces, policy, now: () => now });
+    const registry = await SourceRegistry.open({ root: marketplaces, policy, now: () => now, ...(official ? { official } : {}) });
     const syncer = new SourceSyncer({ registry, gate, runner: git.runner, root: marketplaces, now: () => now, retainedCommits: async () => new Set() });
     store = await ContentStore.open({ root: join(root, "packages"), english: {}, activation: { activate: async () => {}, deactivate: async () => {} }, now: () => now });
     const artifacts = new PluginArtifactStore({
@@ -144,6 +149,13 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
         catalogChanged += 1;
       },
       now: () => now,
+      legacyMigration: {
+        markerPath: join(root, "packages", "legacy-migration.json"),
+        plugins: async (officialPlugin) => {
+          legacyRuns.push(officialPlugin);
+          return legacyReport;
+        },
+      },
     });
   }
 
@@ -155,7 +167,8 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
   });
 
   /** A served marketplace listing a skill and an MCP server. */
-  function market(skillVersion = "1.0.0") {
+  /** A marketplace listing a skill and an MCP server; `indexName` is `ave` when it stands in for the official source. */
+  function market(skillVersion = "1.0.0", indexName = "acme-tools") {
     counter += 1;
     const name = `market-${counter}`;
     const repo = createFixtureRepo(serverRoot, name);
@@ -165,7 +178,7 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
         {
           "marketplace.json": text({
             schemaVersion: 1,
-            name: "acme-tools",
+            name: indexName,
             displayName: "Acme Tools",
             packages: [
               { kind: "skill", name: "review", path: "skills/review" },
@@ -279,7 +292,9 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
     const first = await service.applyBootInstalls(defaults, applied);
     expect(first.report.installed).toEqual([defaults[0]]);
     expect(first.report.skipped).toEqual([{ key: defaults[1], reason: "corp does not list skill missing" }]);
-    expect(first.notice).toEqual({ forYou: [{ sourceId: "corp", kind: "skill", name: "review" }], required: [] });
+    expect(first.notice).toEqual({ forYou: [{ sourceId: "corp", kind: "skill", name: "review" }], required: [], unmanaged: [], lostGrants: [] });
+    // No official snapshot yet: the migration waits for one.
+    expect(legacyRuns).toEqual([]);
     expect(store.list().map((entry) => `${entry.kind}:${entry.name}@${entry.origin.sourceId}`)).toEqual(["skill:review@corp"]);
 
     // Uninstalling a default is final: the next boot installs nothing.
@@ -288,6 +303,44 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
     expect(second.report).toEqual({ installed: [], updated: [], switched: [], skipped: [], failed: [] });
     expect(second.notice).toBeNull();
     expect(store.list()).toEqual([]);
+  });
+
+  it("migrates existing installs once the official snapshot exists, once, and names what it unlocked", async () => {
+    const { url } = market("1.0.0", "ave");
+    service.close();
+    await build(policyLoad({}), { id: "ave", url, mirrors: [], auth: { kind: "none" } });
+    const applied = await AppliedDefaults.open(join(root, "packages", "default-installs.json"));
+    legacyReport = { bound: ["meeting"], unmanaged: ["orion"], lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai"] }], failed: [] };
+
+    const before = await service.applyBootInstalls([], applied);
+    expect(legacyRuns).toEqual([]);
+    expect(before.notice).toBeNull();
+
+    await service.refresh();
+    const first = await service.applyBootInstalls([], applied);
+    expect(legacyRuns).toHaveLength(1);
+    // The lookup reads the official snapshot: this fixture lists skills, not plugins.
+    expect(legacyRuns[0]!("review")).toBeNull();
+    expect(first.notice).toEqual({ forYou: [], required: [], unmanaged: ["orion"], lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai"] }] });
+
+    const second = await service.applyBootInstalls([], applied);
+    expect(legacyRuns).toHaveLength(1);
+    expect(second.notice).toBeNull();
+  });
+
+  it("runs the migration again on the next boot while an entry could not be read", async () => {
+    const { url } = market("1.0.0", "ave");
+    service.close();
+    await build(policyLoad({}), { id: "ave", url, mirrors: [], auth: { kind: "none" } });
+    await service.refresh();
+    const applied = await AppliedDefaults.open(join(root, "packages", "default-installs.json"));
+    legacyReport = { bound: [], unmanaged: [], lostGrants: [], failed: [{ plugin: "meeting", message: "plugin.json unreadable" }] };
+
+    await service.applyBootInstalls([], applied);
+    legacyReport = { bound: ["meeting"], unmanaged: [], lostGrants: [], failed: [] };
+    await service.applyBootInstalls([], applied);
+    await service.applyBootInstalls([], applied);
+    expect(legacyRuns).toHaveLength(2);
   });
 
   it("expires a plan after ten minutes", async () => {

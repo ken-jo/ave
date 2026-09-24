@@ -251,8 +251,10 @@ export const en = {
   "gitMarketplace.git.phaseSmokeTesting": "smoke-testing",
   "gitMarketplace.git.unavailable": "The git status is not available right now.",
 
-  "gitMarketplace.boot.title": "Installed when Ave started",
+  "gitMarketplace.boot.title": "Changed when Ave started",
   "gitMarketplace.boot.forYou": "Installed for you — yours to keep or remove",
+  "gitMarketplace.boot.unmanaged": "{name} is no longer managed by Ave. Your organization can keep it up to date by registering its marketplace.",
+  "gitMarketplace.boot.lostGrant": "{name} no longer reads {keys} until it updates: the installed copy is not the one the official marketplace published.",
   "gitMarketplace.boot.dismiss": "Dismiss",
 
   "gitMarketplace.maintenance.title": "Maintenance",
@@ -523,8 +525,10 @@ export const ko: Record<keyof typeof en, string> = {
   "gitMarketplace.git.phaseSmokeTesting": "실행 확인",
   "gitMarketplace.git.unavailable": "지금은 git 상태를 확인할 수 없습니다.",
 
-  "gitMarketplace.boot.title": "Ave 시작 시 설치됨",
+  "gitMarketplace.boot.title": "Ave 시작 시 변경됨",
   "gitMarketplace.boot.forYou": "기본으로 설치됨 — 유지하거나 제거할 수 있습니다",
+  "gitMarketplace.boot.unmanaged": "{name}은(는) 더 이상 Ave가 관리하지 않습니다. 조직이 자체 마켓플레이스를 등록하면 계속 업데이트할 수 있습니다.",
+  "gitMarketplace.boot.lostGrant": "{name}은(는) 업데이트하기 전까지 {keys}을(를) 읽지 않습니다. 설치된 사본이 공식 마켓플레이스가 게시한 것과 다릅니다.",
   "gitMarketplace.boot.dismiss": "닫기",
 
   "gitMarketplace.maintenance.title": "유지 관리",

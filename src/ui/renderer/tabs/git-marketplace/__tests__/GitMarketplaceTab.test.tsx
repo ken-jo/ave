@@ -333,6 +333,8 @@ describe("GitMarketplaceTab boot-install notice (design §15.1)", () => {
       { sourceId: "ave-official", kind: "theme" as const, name: "tokyo-night" },
     ],
     required: [{ sourceId: "corp", kind: "plugin" as const, name: "vpn" }],
+    unmanaged: [],
+    lostGrants: [],
   };
 
   it("lists what the boot installed, uninstalls a default install keeping MCP data, and dismisses", async () => {
@@ -352,6 +354,26 @@ describe("GitMarketplaceTab boot-install notice (design §15.1)", () => {
     fireEvent.click(within(banner).getByTestId("git-marketplace:boot-notice:dismiss"));
     await waitFor(() => expect(screen.queryByTestId("git-marketplace:boot-notice")).toBeNull());
     expect(fake.market.dismissBootInstallNotice).toHaveBeenCalledTimes(1);
+  });
+
+  it("names what the first-boot migration unlocked and which grants it did not keep, and stays until the last default is removed", async () => {
+    const migrated = {
+      forYou: [{ sourceId: "ave", kind: "theme" as const, name: "nord" }],
+      required: [],
+      unmanaged: ["orion"],
+      lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai", "llm.apiKey.claude"] }],
+    };
+    const fake = fakeMarketplace({ sources: [official], bootNotice: migrated });
+    renderTab(fake);
+
+    const banner = await screen.findByTestId("git-marketplace:boot-notice");
+    expect(within(banner).getByTestId("git-marketplace:boot-notice:unmanaged")).toHaveTextContent("ep은(는) 더 이상 Ave가 관리하지 않습니다");
+    expect(within(banner).getByTestId("git-marketplace:boot-notice:lost-grants")).toHaveTextContent("meeting은(는) 업데이트하기 전까지 llm.apiKey.openai, llm.apiKey.claude");
+
+    // The unlocked and lost-grant lines are still news after the default is removed.
+    fireEvent.click(within(banner).getByTestId("git-marketplace:boot-notice:uninstall:theme:nord"));
+    await waitFor(() => expect(within(banner).queryByTestId("git-marketplace:boot-notice:uninstall:theme:nord")).toBeNull());
+    expect(screen.getByTestId("git-marketplace:boot-notice")).toBeInTheDocument();
   });
 
   it("shows a notice the boot step publishes after the tab opened", async () => {

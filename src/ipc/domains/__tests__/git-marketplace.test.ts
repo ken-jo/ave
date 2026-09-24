@@ -51,7 +51,7 @@ async function setup(overrides: Record<string, unknown> = {}) {
     updates: vi.fn(async () => []),
     applyBootInstalls: vi.fn(async () => ({
       report: { installed: [{ kind: "plugin", name: "meeting", source: "ave" }], updated: [], switched: [], skipped: [], failed: [] },
-      notice: { forYou: [{ sourceId: "ave", kind: "plugin", name: "meeting" }], required: [] },
+      notice: { forYou: [{ sourceId: "ave", kind: "plugin", name: "meeting" }], required: [], unmanaged: [], lostGrants: [] },
     })),
     ...overrides,
   };
@@ -99,13 +99,13 @@ describe("git marketplace IPC boundary", () => {
     });
     await expect(invokeFileIpcHandler(handlers, channels.deepLinkTake)).resolves.toEqual({ ok: true, value: null });
 
-    const notice = { forYou: [{ sourceId: "ave", kind: "plugin" as const, name: "meeting" }], required: [] };
+    const notice = { forYou: [{ sourceId: "ave", kind: "plugin" as const, name: "meeting" }], required: [], unmanaged: [], lostGrants: [] };
     state.setBootInstallNotice(notice);
     await expect(invokeFileIpcHandler(handlers, channels.bootInstallsNotice)).resolves.toEqual({ ok: true, value: notice });
     await expect(invokeFileIpcHandler(handlers, channels.bootInstallsNotice)).resolves.toEqual({ ok: true, value: notice });
     await expect(invokeFileIpcHandler(handlers, channels.bootInstallsDismiss)).resolves.toEqual({ ok: true, value: null });
     await expect(invokeFileIpcHandler(handlers, channels.bootInstallsNotice)).resolves.toEqual({ ok: true, value: null });
-    state.setBootInstallNotice({ forYou: [], required: [] });
+    state.setBootInstallNotice({ forYou: [], required: [], unmanaged: [], lostGrants: [] });
     await expect(invokeFileIpcHandler(handlers, channels.bootInstallsNotice)).resolves.toEqual({ ok: true, value: null });
 
     state.setPendingGitMarketplaceLink({ action: "add", url: "acme/tools" });
@@ -131,7 +131,7 @@ describe("git marketplace IPC boundary", () => {
     await vi.waitFor(() => expect(latestBootstrapStatus()).toEqual({ phase: "complete", installed: ["meeting"], failed: [] }));
     expect(service.refresh).toHaveBeenCalledTimes(1);
     expect(service.applyBootInstalls).toHaveBeenCalledTimes(1);
-    expect(state.getBootInstallNotice()).toEqual({ forYou: [{ sourceId: "ave", kind: "plugin", name: "meeting" }], required: [] });
+    expect(state.getBootInstallNotice()).toEqual({ forYou: [{ sourceId: "ave", kind: "plugin", name: "meeting" }], required: [], unmanaged: [], lostGrants: [] });
 
     await expect(invokeFileIpcHandler(handlers, CHANNELS.bootstrap.retry)).resolves.toEqual({ ok: true });
     expect(service.applyBootInstalls).toHaveBeenCalledTimes(2);
