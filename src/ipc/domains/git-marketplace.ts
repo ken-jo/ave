@@ -24,7 +24,7 @@ import { app, ipcMain, session, type IpcMainInvokeEvent } from "electron";
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { notifyBootstrapStatus } from "../../boot/bootstrap-status.js";
-import { isE2eTestRuntime } from "../../boot/dev-flags.js";
+import { isDevModeUnlocked, isE2eTestRuntime } from "../../boot/dev-flags.js";
 import { emitEvent as emitHostEvent } from "../../boot/types.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { messages } from "../../i18n/messages/index.js";
@@ -235,7 +235,9 @@ async function createGitMarketplaceService(
   const policyLoad = await loadMarketplacePolicy();
   if (!policyLoad.ok) log.warn({ err: policyLoad.error }, "marketplace policy unreadable; only the official source is reachable");
   const policy = policyLoad.ok ? policyLoad.policy : EMPTY_MARKETPLACE_POLICY;
-  const gate = new NetworkGate({ policy: policyLoad, allowLoopback: false });
+  // A marketplace on this machine (an author's own checkout served over HTTP,
+  // the E2E fixture) is reachable only in an unpackaged build with AVE_DEV=1.
+  const gate = new NetworkGate({ policy: policyLoad, allowLoopback: isDevModeUnlocked() });
   const tokens = settingsTokenStore(deps);
   // A token typed into the add dialog answers only that preview's prompts (design §9.3).
   const previewTokens = new Map<string, string>();
