@@ -40,7 +40,7 @@ const PACKAGE_NAME = /^(?!.*--)[a-z][a-z0-9-]*[a-z0-9]$/u;
 const DESCRIPTION_MAX = 1000;
 const LABEL_MAX = 100;
 
-export interface DirectPackage {
+interface DirectPackage {
   descriptor: PackageDescriptor;
   detectedFrom: DirectDetectedFile;
   versionSynthesized: boolean;

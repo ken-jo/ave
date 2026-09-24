@@ -6,7 +6,7 @@
  * objects) and merges the English default catalog here. Non-English generated
  * catalogs are language-pack chunks under `../generated-locales/`.
  *
- * Fragments: 188
+ * Fragments: 189
  */
 import { en as en_app } from "./app.js";
 import { en as en_appearanceTab } from "./appearanceTab.js";
@@ -107,6 +107,7 @@ import { en as en_fileEditDiff } from "./fileEditDiff.js";
 import { en as en_forest } from "./forest.js";
 import { en as en_formatIpcError } from "./formatIpcError.js";
 import { en as en_generalTab } from "./generalTab.js";
+import { en as en_gitMarketplace } from "./gitMarketplace.js";
 import { en as en_gruvboxDarkHard } from "./gruvboxDarkHard.js";
 import { en as en_highContrast } from "./highContrast.js";
 import { en as en_history } from "./history.js";
@@ -297,6 +298,7 @@ export const generatedEn: Record<string, string> = {
   ...en_forest,
   ...en_formatIpcError,
   ...en_generalTab,
+  ...en_gitMarketplace,
   ...en_gruvboxDarkHard,
   ...en_highContrast,
   ...en_history,

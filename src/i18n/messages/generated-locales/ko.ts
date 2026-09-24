@@ -98,6 +98,7 @@ import { ko as ko_fileEditDiff } from "../generated/fileEditDiff.js";
 import { ko as ko_forest } from "../generated/forest.js";
 import { ko as ko_formatIpcError } from "../generated/formatIpcError.js";
 import { ko as ko_generalTab } from "../generated/generalTab.js";
+import { ko as ko_gitMarketplace } from "../generated/gitMarketplace.js";
 import { ko as ko_gruvboxDarkHard } from "../generated/gruvboxDarkHard.js";
 import { ko as ko_highContrast } from "../generated/highContrast.js";
 import { ko as ko_history } from "../generated/history.js";
@@ -288,6 +289,7 @@ export const koMessages: Record<string, string> = {
   ...ko_forest,
   ...ko_formatIpcError,
   ...ko_generalTab,
+  ...ko_gitMarketplace,
   ...ko_gruvboxDarkHard,
   ...ko_highContrast,
   ...ko_history,

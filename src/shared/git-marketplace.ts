@@ -11,8 +11,7 @@ import { PACKAGE_KINDS, type PackageKind } from "../marketplace/catalog/types.js
 import { MARKETPLACE_ERROR_CODES, type MarketplaceErrorCode } from "../marketplace/errors.js";
 import type { DirectDetectedFile } from "../marketplace/sources/direct-package.js";
 
-export { PACKAGE_KINDS, MARKETPLACE_ERROR_CODES };
-export type { DirectDetectedFile, PackageKind, MarketplaceErrorCode };
+export type { PackageKind };
 
 export type SourceOriginKind = "official" | "managed" | "custom" | "direct";
 
@@ -99,7 +98,7 @@ export interface MarketplacePreviewView {
 }
 
 
-export interface DirectPackagePreviewView {
+interface DirectPackagePreviewView {
   type: "package";
   previewId: string;
   expiresAt: string;
@@ -201,7 +200,7 @@ export interface AuthorityView {
   dependencies: string[];
 }
 
-export type RungKindView = "release" | "archive" | "tree";
+type RungKindView = "release" | "archive" | "tree";
 
 export interface RungView {
   rung: RungKindView;
@@ -280,7 +279,7 @@ export interface UpdatePlanView extends InstallPlanView {
   needsConfirmation: boolean;
 }
 
-export type InstallPhaseView = "resolving" | "downloading" | "verifying" | "installing" | "activating";
+type InstallPhaseView = "resolving" | "downloading" | "verifying" | "installing" | "activating";
 
 export interface InstallProgressView {
   planId: string;

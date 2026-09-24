@@ -7,7 +7,7 @@
 import { randomBytes } from "node:crypto";
 import { MarketplaceError } from "../errors.js";
 
-export const TICKET_TTL_MS = 10 * 60 * 1000;
+const TICKET_TTL_MS = 10 * 60 * 1000;
 
 interface Held<T> {
   value: T;

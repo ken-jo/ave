@@ -37,6 +37,7 @@ import { WebTab } from "./tabs/WebTab.js";
 import { McpTab } from "./tabs/McpTab.js";
 import { PluginConfigTab } from "./tabs/PluginConfigTab.js";
 import { MarketplaceTab } from "./tabs/MarketplaceTab.js";
+import { GitMarketplaceTab } from "./tabs/git-marketplace/GitMarketplaceTab.js";
 import { AboutTab, useAppInfo } from "./tabs/AboutTab.js";
 import { StartupTab } from "./tabs/StartupTab.js";
 import { useSettingsOrchestration } from "./hooks/use-settings-orchestration.js";
@@ -694,6 +695,13 @@ export function SettingsContent({
           <TabsContent value="mcp" className={tabContentCls}><McpTab /></TabsContent>
           <TabsContent value="plugin-config" className={tabContentCls}><PluginConfigTab api={api} /></TabsContent>
           <TabsContent value="marketplace" className={tabContentCls}>
+            {window.ave?.env?.gitMarketplace === true ? (
+              <GitMarketplaceTab
+                api={api}
+                initialKind={marketplaceFilter === "all" ? null : marketplaceFilter === "language-pack" ? "language" : marketplaceFilter}
+                onOpenMcpSettings={() => handleTabValueChange("mcp")}
+              />
+            ) : (
             <MarketplaceTab
               api={api}
               baseUrl={s.marketplaceBaseUrl}
@@ -708,6 +716,7 @@ export function SettingsContent({
               onSaved={onSaved}
               onImmediateChange={marketplaceSave.schedule}
             />
+            )}
             {/* No bottom TabSaveBar — URL + API key each own an inline
                 Save; private-network toggle is immediate-apply. */}
           </TabsContent>

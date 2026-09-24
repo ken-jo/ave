@@ -86,7 +86,7 @@ export type GitMarketplacePort = Pick<
 >;
 
 /** The settings secret each host's token is stored under (design §2.1). */
-export function gitTokenSecretKey(host: string): string {
+function gitTokenSecretKey(host: string): string {
   return `marketplace.gitToken.${host}`;
 }
 
@@ -166,7 +166,7 @@ function contentInstaller(content: () => Promise<InstalledContentRuntime | null>
 }
 
 /** Build the marketplace over `~/.ave`. Nothing touches the network until a request does. */
-export async function createGitMarketplaceService(
+async function createGitMarketplaceService(
   deps: IpcDeps,
   content: () => Promise<InstalledContentRuntime | null>,
   home: string = aveHome(),

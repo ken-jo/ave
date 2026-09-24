@@ -59,7 +59,7 @@ describe("GitRuntimeService.status", () => {
       state: "ready",
       active: { kind: "system", version: "2.50.1", path: "/usr/bin/git" },
       systemTooOld: null,
-      managed: { version: "2.53.0", installed: false, available: true },
+      managed: { version: "2.53.0", installed: false, available: true, size: 1 },
       lastInstallError: null,
     });
   });

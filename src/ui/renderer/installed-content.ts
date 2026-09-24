@@ -19,6 +19,7 @@ import {
   type InstalledContentView,
   type InstalledFontView,
 } from "../../shared/installed-content.js";
+import type { GitMarketplaceApi } from "../../shared/git-marketplace.js";
 import { setInstalledThemeBundles, type ThemeBundle } from "./theme/bundles/index.js";
 
 const EMPTY: InstalledContentView = Object.freeze({ themes: [], languages: [], fonts: [], broken: [] }) as unknown as InstalledContentView;
@@ -26,6 +27,7 @@ const FONT_STYLE_ID = "ave-installed-fonts";
 
 let current: InstalledContentView = EMPTY;
 let pending: Promise<void> | null = null;
+let offCatalogChanged: (() => void) | null = null;
 const listeners = new Set<() => void>();
 
 function themeBundle(view: InstalledContentView["themes"][number]): ThemeBundle {
@@ -79,15 +81,20 @@ export function applyInstalledContent(view: InstalledContentView, api: Installed
  * same promise; a bridge that is absent or answers with an error leaves
  * nothing installed, and the built-in themes and languages still apply.
  */
-export function ensureInstalledContent(api: { installedContent?: InstalledContentApi } | null | undefined): Promise<void> {
+export function ensureInstalledContent(
+  api: { installedContent?: InstalledContentApi; gitMarketplace?: Pick<GitMarketplaceApi, "onCatalogChanged"> } | null | undefined,
+): Promise<void> {
   if (pending) return pending;
   const bridge = api?.installedContent;
   if (!bridge) return Promise.resolve();
-  const loading = bridge.installed().then((result) => {
-    if (result.ok) applyInstalledContent(result.content, bridge);
-  });
-  pending = loading;
-  return loading;
+  const read = () =>
+    bridge.installed().then((result) => {
+      if (result.ok) applyInstalledContent(result.content, bridge);
+    });
+  pending = read();
+  // A package installed or removed in the marketplace changes what this window lists.
+  offCatalogChanged = api?.gitMarketplace?.onCatalogChanged(() => void read()) ?? null;
+  return pending;
 }
 
 export function useInstalledContent(): InstalledContentView {
@@ -105,6 +112,8 @@ export function useInstalledContent(): InstalledContentView {
 export function resetInstalledContentForTests(): void {
   current = EMPTY;
   pending = null;
+  offCatalogChanged?.();
+  offCatalogChanged = null;
   setInstalledThemeBundles([]);
   registerInstalledLocales([]);
   setInstalledCatalogLoader(null);

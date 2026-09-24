@@ -45,6 +45,7 @@ export class GitRuntimeService {
     const mode = this.options.mode();
     const detection = await detectGitRuntime(mode, (this.options.detectionDeps ?? nodeGitDetectionDeps)(findManaged));
     const managed = await findManaged();
+    const asset: { size: number } | undefined = this.pins.assets[`${this.platform}-${this.options.arch ?? process.arch}`];
     return {
       mode,
       state: detection.state,
@@ -55,7 +56,8 @@ export class GitRuntimeService {
       managed: {
         version: this.pins.version,
         installed: managed !== null,
-        available: `${this.platform}-${this.options.arch ?? process.arch}` in this.pins.assets,
+        available: asset !== undefined,
+        size: asset?.size ?? null,
       },
       lastInstallError: this.lastInstallError,
     };
