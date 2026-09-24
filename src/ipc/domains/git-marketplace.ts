@@ -45,7 +45,7 @@ import { MarketplaceError } from "../../marketplace/errors.js";
 import { MarketplaceGit } from "../../marketplace/git/marketplace-git.js";
 import { migrateLegacyContent } from "../../marketplace/migration/legacy-content.js";
 import { migrateLegacyPlugins } from "../../marketplace/migration/legacy-plugins.js";
-import { createArtifactCache, resolveKeepArtifacts } from "../../marketplace/resolve/artifact-cache.js";
+import { clearKeptArtifacts, createArtifactCache, resolveKeepArtifacts } from "../../marketplace/resolve/artifact-cache.js";
 import { gitRuntimeRoot } from "../../marketplace/git/runtime-service.js";
 import { NetworkGate } from "../../marketplace/net/network-gate.js";
 import { EMPTY_MARKETPLACE_POLICY, loadMarketplacePolicy, type MarketplacePolicy } from "../../marketplace/sources/policy.js";
@@ -183,6 +183,17 @@ function contentInstaller(content: () => Promise<InstalledContentRuntime | null>
   };
 }
 
+/** Kept plugin zips (design §7.5): `~/.ave/packages/artifacts`. */
+function keptArtifactsDir(home: string): string {
+  return join(home, "packages", "artifacts");
+}
+
+/** Keeping is off: the kept zips go now, not at the next install. */
+function dropKeptArtifactsIfOff(deps: IpcDeps, home: string): void {
+  if (resolveKeepArtifacts(deps.settingsService.get("marketplace").offlineCacheEnabled)) return;
+  void clearKeptArtifacts(keptArtifactsDir(home)).catch((error: unknown) => log.warn({ err: errorMessage(error) }, "kept artifacts could not be removed"));
+}
+
 /** Build the marketplace over `~/.ave`. Nothing touches the network until a request does. */
 async function createGitMarketplaceService(
   deps: IpcDeps,
@@ -198,6 +209,8 @@ async function createGitMarketplaceService(
   await rm(join(root, ".previews"), { recursive: true, force: true });
   await rm(workRoot, { recursive: true, force: true });
   await mkdir(workRoot, { recursive: true });
+  // Keeping may have been turned off while the app was not running (or by the environment).
+  dropKeptArtifactsIfOff(deps, home);
   const policyLoad = await loadMarketplacePolicy();
   if (!policyLoad.ok) log.warn({ err: policyLoad.error }, "marketplace policy unreadable; only the official source is reachable");
   const policy = policyLoad.ok ? policyLoad.policy : EMPTY_MARKETPLACE_POLICY;
@@ -279,7 +292,7 @@ async function createGitMarketplaceService(
       zip: artifacts,
       limits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,
       artifacts: createArtifactCache({
-        dir: join(packagesRoot, "artifacts"),
+        dir: keptArtifactsDir(home),
         enabled: () => resolveKeepArtifacts(deps.settingsService.get("marketplace").offlineCacheEnabled),
         maxFileBytes: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS.maxCompressedBytes,
         log,
@@ -544,7 +557,10 @@ export function registerGitMarketplaceHandlers(
   });
 
   return {
-    settingsChanged: () => void background?.recheck(),
+    settingsChanged: () => {
+      void background?.settingsChanged();
+      dropKeptArtifactsIfOff(deps, home);
+    },
     startBackground: () => {
       if (background) return;
       if (isE2eTestRuntime()) {

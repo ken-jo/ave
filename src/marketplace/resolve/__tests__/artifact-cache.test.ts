@@ -7,7 +7,7 @@ import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createArtifactCache, resolveKeepArtifacts } from "../artifact-cache.js";
+import { clearKeptArtifacts, createArtifactCache, resolveKeepArtifacts } from "../artifact-cache.js";
 import { sha256Hex as sha } from "../../__tests__/fixtures/package-files.js";
 
 describe("createArtifactCache", () => {
@@ -68,9 +68,20 @@ describe("createArtifactCache", () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("no longer matches its digest"));
   });
 
-  it("refuses to keep bytes under another digest, and a key that is not a sha256", async () => {
+  it("refuses to keep bytes under another digest or a key that is not a sha256, and misses on reading one", async () => {
     await expect(cache().keep(sha(Buffer.from("a")), Buffer.from("b"))).rejects.toThrow(/another digest/);
-    await expect(cache().read("../../etc/passwd")).rejects.toThrow(/not a sha256/);
+    await expect(cache().keep("../../etc/passwd", Buffer.from("a"))).rejects.toThrow(/another digest|not a sha256/);
+    // A miss, as with keeping off, so the downloading rung reports the bad pin the same way.
+    await expect(cache().read("../../etc/passwd")).resolves.toBeNull();
+  });
+
+  it("clears every kept zip", async () => {
+    const zip = Buffer.alloc(40, 7);
+    await cache().keep(sha(zip), zip);
+    expect(await cache().read(sha(zip))).toEqual(zip);
+    await clearKeptArtifacts(dir);
+    expect(await cache().read(sha(zip))).toBeNull();
+    await expect(clearKeptArtifacts(dir)).resolves.toBeUndefined();
   });
 
   it("evicts the least recently used zips past the cap, counting a read as a use", async () => {

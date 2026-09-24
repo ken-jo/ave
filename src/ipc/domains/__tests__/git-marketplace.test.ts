@@ -8,7 +8,7 @@ import { CHANNELS, isPublicChannel } from "../../../contract/app-contract.js";
 import { MarketplaceError } from "../../../marketplace/errors.js";
 import { parseGitMarketplaceResult } from "../../../shared/git-marketplace.js";
 import { invokeAppIpcHandlerFromFrame, invokeFileIpcHandler } from "./test-helpers.js";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { latestBootstrapStatus } from "../../../boot/bootstrap-status.js";
@@ -59,7 +59,8 @@ async function setup(overrides: Record<string, unknown> = {}) {
   const { registerGitMarketplaceHandlers } = await import("../git-marketplace.js");
   const onBuilt = vi.fn(async () => {});
   const home = mkdtempSync(join(tmpdir(), "ave-git-marketplace-ipc-"));
-  const settings = { get: () => ({ updateCheckIntervalMs: 0 }) };
+  const marketplace: Record<string, unknown> = { updateCheckIntervalMs: 0 };
+  const settings = { get: () => marketplace };
   const registration = registerGitMarketplaceHandlers(
     { auditLogger: { log: vi.fn() }, getMainWindow: () => null, settingsService: settings } as never,
     async () => null,
@@ -67,7 +68,7 @@ async function setup(overrides: Record<string, unknown> = {}) {
     onBuilt,
     home,
   );
-  return { service, create, onBuilt, registration, home };
+  return { service, create, onBuilt, registration, home, marketplace };
 }
 
 beforeEach(() => {
@@ -75,6 +76,29 @@ beforeEach(() => {
 });
 
 describe("git marketplace IPC boundary", () => {
+  it("removes the kept artifacts when keeping is turned off, and only then", async () => {
+    // The environment decides over the setting when set; this case is about the setting.
+    const saved = process.env.AVE_MARKETPLACE_USE_CACHE;
+    delete process.env.AVE_MARKETPLACE_USE_CACHE;
+    try {
+      const { registration, home, marketplace } = await setup();
+      const kept = join(home, "packages", "artifacts");
+      mkdirSync(kept, { recursive: true });
+      writeFileSync(join(kept, `${"a".repeat(64)}.zip`), "zip");
+
+      registration.settingsChanged();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(existsSync(kept)).toBe(true);
+
+      marketplace.offlineCacheEnabled = false;
+      registration.settingsChanged();
+      await vi.waitFor(() => expect(existsSync(kept)).toBe(false));
+    } finally {
+      if (saved === undefined) delete process.env.AVE_MARKETPLACE_USE_CACHE;
+      else process.env.AVE_MARKETPLACE_USE_CACHE = saved;
+    }
+  });
+
   it("registers every request channel, keeps them internal, and builds the service once", async () => {
     const { create, onBuilt } = await setup();
     const requests = Object.entries(channels).filter(([, channel]) => channel.startsWith("ave:")).map(([, channel]) => channel);

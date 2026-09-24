@@ -85,7 +85,9 @@ export function createArtifactCache(options: ArtifactCacheOptions): ArtifactCach
 
   return {
     async read(sha256) {
-      if (!options.enabled()) return null;
+      // A key that is not a digest is a miss, as with keeping off: the rung
+      // that downloads reports the bad pin the same way either way.
+      if (!options.enabled() || !SHA256.test(sha256.toLowerCase())) return null;
       const path = pathOf(sha256);
       try {
         const info = await stat(path);
@@ -123,6 +125,11 @@ export function createArtifactCache(options: ArtifactCacheOptions): ArtifactCach
       }
     },
   };
+}
+
+/** Remove every kept zip: keeping was turned off, so they go now rather than at the next install. */
+export async function clearKeptArtifacts(dir: string): Promise<void> {
+  await rm(dir, { recursive: true, force: true });
 }
 
 /** Keeping off: every read misses and nothing is written. */

@@ -39,7 +39,7 @@ export interface MarketplaceBackgroundInput {
   service(): Promise<BackgroundService>;
   appliedDefaults(): Promise<AppliedDefaults>;
   defaults: readonly PackageKey[];
-  /** Read at each use, so a changed setting applies from the next tick. */
+  /** Read at each check; the interval is read again on `settingsChanged`. */
   settings(): { updateNotices: boolean; updateCheckIntervalMs?: number; skippedPluginUpdates?: unknown };
   publishStatus(status: AppBootstrapStatus): void;
   publishNotice(notice: BootInstallNoticeView): void;
@@ -56,6 +56,12 @@ export interface MarketplaceBackground {
   retryBootInstalls(): Promise<void>;
   /** Recompute the updates without syncing: an install, uninstall or sync changed what is installed or offered. */
   recheck(): Promise<void>;
+  /**
+   * `marketplace` settings were written: the tick moves to a changed
+   * interval, and the updates are recomputed under the new notice and skip
+   * settings (after any check in flight).
+   */
+  settingsChanged(): Promise<void>;
   stop(): void;
 }
 
@@ -140,9 +146,19 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
 
   const setTimer = input.setInterval ?? ((run, ms) => setInterval(run, ms));
   const clearTimer = input.clearInterval ?? ((timer) => clearInterval(timer as ReturnType<typeof setInterval>));
-  const interval = syncIntervalMs(input.settings().updateCheckIntervalMs);
-  const timer = interval > 0 ? setTimer(() => void checkUpdates(true), interval) : null;
-  timer?.unref?.();
+  let interval = 0;
+  let timer: { unref?(): void } | null = null;
+  let stopped = false;
+  // (Re)schedule the tick for the stored interval; an unchanged interval keeps the running timer.
+  const schedule = () => {
+    const next = syncIntervalMs(input.settings().updateCheckIntervalMs);
+    if (stopped || next === interval) return;
+    if (timer) clearTimer(timer);
+    interval = next;
+    timer = next > 0 ? setTimer(() => void checkUpdates(true), next) : null;
+    timer?.unref?.();
+  };
+  schedule();
 
   return {
     started,
@@ -151,8 +167,14 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
       await checkUpdates(false);
     },
     recheck: () => checkUpdates(false),
+    settingsChanged: () => {
+      schedule();
+      return checkUpdates(false);
+    },
     stop: () => {
+      stopped = true;
       if (timer) clearTimer(timer);
+      timer = null;
     },
   };
 }

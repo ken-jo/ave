@@ -193,6 +193,30 @@ describe("startMarketplaceBackground", () => {
     expect(idle.input.setInterval).not.toHaveBeenCalled();
   });
 
+  it("moves the tick to a changed interval, and keeps it when the interval did not change", async () => {
+    const { input, settings } = harness({ settings: { updateNotices: true, updateCheckIntervalMs: 60 * 60 * 1000 } });
+    const background = startMarketplaceBackground(input);
+    await background.started;
+
+    await background.settingsChanged();
+    expect(input.setInterval).toHaveBeenCalledTimes(1);
+
+    settings.current = { updateNotices: true, updateCheckIntervalMs: 2 * 60 * 60 * 1000 };
+    await background.settingsChanged();
+    expect(input.clearInterval).toHaveBeenCalledTimes(1);
+    expect(input.setInterval).toHaveBeenLastCalledWith(expect.any(Function), 2 * 60 * 60 * 1000);
+
+    settings.current = { updateNotices: true, updateCheckIntervalMs: 0 };
+    await background.settingsChanged();
+    expect(input.clearInterval).toHaveBeenCalledTimes(2);
+    expect(input.setInterval).toHaveBeenCalledTimes(2);
+
+    background.stop();
+    settings.current = { updateNotices: true, updateCheckIntervalMs: 60 * 60 * 1000 };
+    await background.settingsChanged();
+    expect(input.setInterval).toHaveBeenCalledTimes(2);
+  });
+
   it("runs a check asked for during another after it, so it reads what an install left", async () => {
     let release: () => void = () => {};
     const gate = new Promise<void>((resolve) => {
