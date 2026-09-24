@@ -305,6 +305,8 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "reviewer-rewire-failed": "formatIpcError.reviewerRewireFailed",
   // The preset change is saved; the provider refresh that applies it failed.
   "provider-preset-refresh-failed": "formatIpcError.providerPresetRefreshFailed",
+  // A legacy theme install of an id an installed theme package holds (design §5.5).
+  "theme-id-held-by-package": "formatIpcError.themeIdHeldByPackage",
   // ── Tutorial-C — tour:{start,mark-complete,dismiss} validation ──
   "invalid-scenario-id": "formatIpcError.invalidScenarioId",
   "write-failed": "formatIpcError.writeFailed",
