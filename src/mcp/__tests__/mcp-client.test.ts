@@ -8,8 +8,8 @@
  *      and `allowPrivateNetworks` is not set.
  *   4. SSE streaming path: a multi-chunk `text/event-stream` body is
  *      reassembled into one JSON-RPC response.
- *   5. stdio transport regression: existing Content-Length framed
- *      handshake still succeeds.
+ *   5. stdio transport: newline-delimited JSON-RPC (MCP stdio transport)
+ *      handshake, and a response split across chunks.
  *
  * No live network / process I/O — `fetch`, `dns.lookup`, and
  * `child_process.spawn` are stubbed.
@@ -770,7 +770,7 @@ describe("HttpTransport — SSE streaming", () => {
 // ─── 5. stdio regression ────────────────────────────────────
 
 describe("StdioTransport — regression", () => {
-  it("connects via subprocess with Content-Length framed JSON-RPC", async () => {
+  it("connects via subprocess with newline-delimited JSON-RPC", async () => {
     const fake = new FakeChildProcess();
     fake.responses = {
       "server/discover": () => RC_DISCOVER_RESULT,
@@ -824,6 +824,47 @@ describe("StdioTransport — regression", () => {
 
     await client.disconnect();
     expect(client.getState().status).toBe("disconnected");
+  });
+
+  it("writes one JSON line per message and reads a line split across chunks, mid-character", async () => {
+    const fake = new FakeChildProcess();
+    fake.responses = { "server/discover": () => RC_DISCOVER_RESULT };
+    const sent: string[] = [];
+    const write = fake.stdin.write;
+    fake.stdin.write = (chunk: string) => {
+      sent.push(chunk);
+      return write(chunk);
+    };
+    spawnMock.mockReturnValueOnce(fake);
+    const client = new McpClient(
+      { id: "fs", transport: "stdio", command: "ave-mcp-fs" },
+      governanceWithPolicy(buildPolicy([stdioApproval("fs", "ave-mcp-fs")])),
+      new ToolRegistry(),
+      stubbedGlobalNetworkFetch,
+    );
+
+    const connecting = client.connect();
+    await vi.waitFor(() => expect(sent.some((line) => line.includes('"tools/list"'))).toBe(true));
+    // Spec: every message is a single line ending in a newline, with no header.
+    for (const line of sent) {
+      expect(line.endsWith("\n")).toBe(true);
+      expect(line.slice(0, -1)).not.toContain("\n");
+      expect(line).not.toMatch(/^Content-Length/u);
+    }
+    const toolsList = JSON.parse(sent.find((line) => line.includes('"tools/list"'))!) as { id: number };
+    const bytes = Buffer.from(`\r\n${JSON.stringify({
+      jsonrpc: "2.0",
+      id: toolsList.id,
+      result: { tools: [{ name: "read", description: "파일 읽기", inputSchema: { type: "object", properties: {} } }] },
+    })}\r\n`);
+    // Cut inside the first byte sequence of "파" (3 bytes in UTF-8).
+    const cut = bytes.indexOf(Buffer.from("파")) + 1;
+    fake.stdout.write(bytes.subarray(0, cut));
+    fake.stdout.write(bytes.subarray(cut));
+
+    await connecting;
+    expect(client.getState().registeredTools).toEqual(["mcp_fs_read"]);
+    await client.disconnect();
   });
 
   it("injects apiKey into the configured stdio environment variable", async () => {
@@ -968,8 +1009,7 @@ describe("StdioTransport — regression", () => {
       await Promise.resolve();
       const reply = (id: number, result: unknown): void => {
         const payload = JSON.stringify({ jsonrpc: "2.0", id, result });
-        const frame = `Content-Length: ${Buffer.byteLength(payload)}\r\n\r\n${payload}`;
-        fake.stdout.write(frame);
+        fake.stdout.write(`${payload}\n`);
       };
       // initialize → id 1, tools/list → id 2
       reply(1, {
@@ -1034,7 +1074,7 @@ describe("StdioTransport — regression", () => {
       await Promise.resolve();
       const reply = (id: number, result: unknown): void => {
         const payload = JSON.stringify({ jsonrpc: "2.0", id, result });
-        fake.stdout.write(`Content-Length: ${Buffer.byteLength(payload)}\r\n\r\n${payload}`);
+        fake.stdout.write(`${payload}\n`);
       };
       reply(1, {
         protocolVersion: "2024-11-05",
