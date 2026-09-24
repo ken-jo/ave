@@ -1557,10 +1557,10 @@ store (the web store is gone).
   Installing the second one is a source switch (`PACKAGE_ID_CONFLICT` explains
   it and offers the switch). The switch keeps the plugin's data directory, so
   the consent text says that the new source's code receives the data the
-  installed plugin stored. Until the switch removes the signed catalog, the
-  catalog never replaces a git-bound plugin (install, update or rollback):
-  the user updates or rolls back through the bound source, or uninstalls
-  first.
+  installed plugin stored. Before the app moved to the git marketplace, the
+  signed catalog never replaced a git-bound plugin (install, update or
+  rollback): the user updated or rolled back through the bound source, or
+  uninstalled first.
 - The boot-install notice (§10.2) appears once as a banner listing what was
   installed or updated, split into "Installed for you" (default, with
   Uninstall) and "Required by your organization".
