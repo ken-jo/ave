@@ -191,8 +191,8 @@ describe("bootInstallNoticeFrom (design §15.1)", () => {
   const empty = { installed: [], updated: [], switched: [], skipped: [], failed: [] };
 
   it("is null when the boot installed, updated and moved nothing", () => {
-    expect(bootInstallNoticeFrom({ ...empty, skipped: [{ key: key("a"), reason: "r" }], failed: [{ key: key("b"), message: "m" }] }, EMPTY_MARKETPLACE_POLICY, null)).toBeNull();
-    expect(bootInstallNoticeFrom(empty, EMPTY_MARKETPLACE_POLICY, { unmanaged: [], lostGrants: [] })).toBeNull();
+    expect(bootInstallNoticeFrom({ ...empty, skipped: [{ key: key("a"), reason: "r" }], failed: [{ key: key("b"), message: "m" }] }, EMPTY_MARKETPLACE_POLICY, null, [])).toBeNull();
+    expect(bootInstallNoticeFrom(empty, EMPTY_MARKETPLACE_POLICY, { unmanaged: [], lostGrants: [] }, [])).toBeNull();
   });
 
   it("offers the default installs to the user, lists what the policy required, updated or moved, and what the migration unlocked", () => {
@@ -201,6 +201,7 @@ describe("bootInstallNoticeFrom (design §15.1)", () => {
       { ...empty, installed: [key("meeting"), key("vpn", "corp"), key("tokyo-night", "ave", "theme")], updated: [key("audit", "corp")], switched: [key("mail", "corp")] },
       policy,
       { unmanaged: ["orion"], lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai"] }] },
+      [],
     );
     expect(notice).toEqual({
       forYou: [
@@ -214,6 +215,12 @@ describe("bootInstallNoticeFrom (design §15.1)", () => {
       ],
       unmanaged: ["orion"],
       lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai"] }],
+      revoked: [],
     });
+  });
+
+  it("reports a revocation the boot pass acted on even when nothing else moved (§10.4)", () => {
+    const revoked = [{ key: { sourceId: "acme", kind: "mcp" as const, name: "scraper" }, version: "1.2.0", reason: "exfiltrates cookies", outcome: "uninstalled" as const }];
+    expect(bootInstallNoticeFrom(empty, EMPTY_MARKETPLACE_POLICY, null, revoked)).toEqual({ forYou: [], required: [], unmanaged: [], lostGrants: [], revoked });
   });
 });

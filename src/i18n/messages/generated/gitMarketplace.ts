@@ -255,6 +255,9 @@ export const en = {
   "gitMarketplace.boot.forYou": "Installed for you — yours to keep or remove",
   "gitMarketplace.boot.unmanaged": "{name} is no longer managed by Ave. Your organization can keep it up to date by registering its marketplace.",
   "gitMarketplace.boot.lostGrant": "{name} no longer reads {keys} until it updates: the installed copy is not the one the official marketplace published.",
+  "gitMarketplace.boot.revoked.uninstalled": "{source} revoked {name} {version}, so it was removed: {reason}",
+  "gitMarketplace.boot.revoked.required": "{source} revoked {name} {version}, but your organization requires it, so it stays installed: {reason}",
+  "gitMarketplace.boot.revoked.failed": "{source} revoked {name} {version}, but removing it failed ({message}): {reason}",
   "gitMarketplace.boot.dismiss": "Dismiss",
 
   "gitMarketplace.maintenance.title": "Maintenance",
@@ -529,6 +532,9 @@ export const ko: Record<keyof typeof en, string> = {
   "gitMarketplace.boot.forYou": "기본으로 설치됨 — 유지하거나 제거할 수 있습니다",
   "gitMarketplace.boot.unmanaged": "{name}은(는) 더 이상 Ave가 관리하지 않습니다. 조직이 자체 마켓플레이스를 등록하면 계속 업데이트할 수 있습니다.",
   "gitMarketplace.boot.lostGrant": "{name}은(는) 업데이트하기 전까지 {keys}을(를) 읽지 않습니다. 설치된 사본이 공식 마켓플레이스가 게시한 것과 다릅니다.",
+  "gitMarketplace.boot.revoked.uninstalled": "{source}이(가) {name} {version}을(를) 철회해 제거했습니다: {reason}",
+  "gitMarketplace.boot.revoked.required": "{source}이(가) {name} {version}을(를) 철회했지만 조직이 요구하는 패키지라 설치된 채로 둡니다: {reason}",
+  "gitMarketplace.boot.revoked.failed": "{source}이(가) {name} {version}을(를) 철회했지만 제거하지 못했습니다({message}): {reason}",
   "gitMarketplace.boot.dismiss": "닫기",
 
   "gitMarketplace.maintenance.title": "유지 관리",

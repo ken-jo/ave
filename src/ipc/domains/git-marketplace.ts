@@ -33,6 +33,7 @@ import { getBootInstallNotice, setBootInstallNotice, takePendingGitMarketplaceLi
 import { ensureCorporateCa } from "../../main/corp-ca-runtime.js";
 import { readPersistedCorpCaConfigSync } from "../../main/persisted-corp-ca.js";
 import { startMarketplaceBackground, type MarketplaceBackground } from "../../marketplace/app/background.js";
+import { revocationRegistry } from "../../plugins/revocation/revocation-registry.js";
 import { McpInstaller, mcpInstallOrigins } from "../../marketplace/app/mcp-installer.js";
 import type { ContentInstallerPort, InstallerPorts, PluginInstallerPort, TokenStore } from "../../marketplace/app/ports.js";
 import { MarketplaceService } from "../../marketplace/app/service.js";
@@ -300,6 +301,15 @@ async function createGitMarketplaceService(
           log: { warn: (message) => log.warn(message) },
         }),
       content: (ports) => migrateLegacyContent({ ...ports, ...legacyContentSettings(deps), log: { warn: (message) => log.warn(message) } }),
+    },
+    revocations: {
+      apply: async (feed) => {
+        for (const item of feed.unreadable) log.error({ sourceId: item.sourceId, err: item.message }, "revocations: a source snapshot could not be read; its revocations wait for the next sync");
+        if (!revocationRegistry.replace(feed.rules)) return;
+        // Installed content applies the gate when it reloads; plugins meet it at their next load.
+        await (await content())?.reload();
+        catalogChanged();
+      },
     },
   });
   return {

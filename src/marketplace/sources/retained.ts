@@ -3,16 +3,21 @@
  * one an installed package still references by its `origin.commit` (the
  * snapshot commit its install plan was bound to). Each reader lists the
  * origins of one kind of install; `retainedCommitsFrom` turns them into the
- * syncer's `retainedCommits` option.
+ * syncer's `retainedCommits` option. The revocation feed reads the same
+ * origins to find each installed package's bound source (§10.4).
  */
 import { readPluginRegistry } from "../../plugins/registry.js";
+import type { PackageKind } from "../catalog/types.js";
 
-interface RetainedOrigin {
+/** An installed package bound to a source, and the snapshot commit its install used. */
+export interface InstalledOrigin {
+  kind: PackageKind;
+  name: string;
   sourceId: string;
   commit: string;
 }
 
-export type OriginReader = () => Promise<readonly RetainedOrigin[]>;
+export type OriginReader = () => Promise<readonly InstalledOrigin[]>;
 
 export function retainedCommitsFrom(readers: readonly OriginReader[]): (sourceId: string) => Promise<ReadonlySet<string>> {
   return async (sourceId) => {
@@ -30,6 +35,6 @@ export function retainedCommitsFrom(readers: readonly OriginReader[]): (sourceId
 export function pluginRegistryOrigins(registryPath: string): OriginReader {
   return async () => {
     const registry = await readPluginRegistry(registryPath);
-    return registry.plugins.flatMap((entry) => (entry.origin ? [{ sourceId: entry.origin.sourceId, commit: entry.origin.commit }] : []));
+    return registry.plugins.flatMap((entry) => (entry.origin ? [{ kind: "plugin" as const, name: entry.id, sourceId: entry.origin.sourceId, commit: entry.origin.commit }] : []));
   };
 }

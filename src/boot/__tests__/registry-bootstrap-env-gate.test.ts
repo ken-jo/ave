@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const registryMocks = vi.hoisted(() => ({
   whitelistInit: vi.fn(async () => undefined),
   whitelistSetPublicKeys: vi.fn(),
-  revocationInit: vi.fn(async () => undefined),
   admissionInit: vi.fn(async () => undefined),
 }));
 
@@ -15,22 +14,16 @@ vi.mock("../../plugins/whitelist/whitelist-registry.js", () => ({
   },
 }));
 
-vi.mock("../../plugins/revocation/revocation-registry.js", () => ({
-  revocationRegistry: { init: registryMocks.revocationInit },
-}));
-
 vi.mock("../../plugins/admission/admission-registry.js", () => ({
   admissionRegistry: { init: registryMocks.admissionInit },
 }));
 
 import { _resetForTest } from "../dev-flags.js";
 import { wireAdmissionRegistry } from "../steps/admission-bootstrap.js";
-import { wireRevocationRegistry } from "../steps/revocation-bootstrap.js";
 import { wireWhitelistRegistry } from "../steps/whitelist-bootstrap.js";
 
 const OFFLINE_NAMES = [
   "AVE_WHITELIST_OFFLINE",
-  "AVE_REVOCATION_OFFLINE",
   "AVE_ADMISSION_OFFLINE",
 ] as const;
 
@@ -44,7 +37,6 @@ async function wireAll(packaged: boolean): Promise<void> {
     packaged,
   };
   await wireWhitelistRegistry(common);
-  await wireRevocationRegistry(common);
   await wireAdmissionRegistry(common);
 }
 
@@ -53,7 +45,6 @@ describe("registry bootstrap development env gate", () => {
     _resetForTest();
     registryMocks.whitelistInit.mockClear();
     registryMocks.whitelistSetPublicKeys.mockClear();
-    registryMocks.revocationInit.mockClear();
     registryMocks.admissionInit.mockClear();
     for (const name of OFFLINE_NAMES) {
       savedValues.set(name, process.env[name]);
@@ -71,11 +62,10 @@ describe("registry bootstrap development env gate", () => {
     savedValues.clear();
   });
 
-  it("ignores all three offline flags in packaged mode even without an env scrub", async () => {
+  it("ignores both offline flags in packaged mode even without an env scrub", async () => {
     await wireAll(true);
 
     expect(registryMocks.whitelistInit).toHaveBeenCalledWith(expect.objectContaining({ online: true }));
-    expect(registryMocks.revocationInit).toHaveBeenCalledWith(expect.objectContaining({ online: true }));
     expect(registryMocks.admissionInit).toHaveBeenCalledWith(expect.objectContaining({ online: true }));
   });
 
@@ -83,7 +73,6 @@ describe("registry bootstrap development env gate", () => {
     await wireAll(false);
 
     expect(registryMocks.whitelistInit).toHaveBeenCalledWith(expect.objectContaining({ online: false }));
-    expect(registryMocks.revocationInit).toHaveBeenCalledWith(expect.objectContaining({ online: false }));
     expect(registryMocks.admissionInit).toHaveBeenCalledWith(expect.objectContaining({ online: false }));
   });
 

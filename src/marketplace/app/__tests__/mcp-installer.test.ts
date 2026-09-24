@@ -127,7 +127,7 @@ describe("McpInstaller", () => {
     expect(manager.configs.get("notes")).toMatchObject({ command: script, args: ["--data", join(home, "mcp-data", "notes")] });
     expect((await stat(join(home, "mcp-data", "notes"))).isDirectory()).toBe(true);
     expect(await installer.list()).toEqual([{ kind: "mcp", name: "notes", version: "1.0.0", sourceId: "acme", originCommit: SNAPSHOT }]);
-    expect(await mcpInstallOrigins(recordsPath())()).toEqual([{ sourceId: "acme", commit: SNAPSHOT }]);
+    expect(await mcpInstallOrigins(recordsPath())()).toEqual([{ kind: "mcp", name: "notes", sourceId: "acme", commit: SNAPSHOT }]);
   });
 
   it("refuses to mark executable a zip entry that extraction did not write as named, and registers nothing", async () => {

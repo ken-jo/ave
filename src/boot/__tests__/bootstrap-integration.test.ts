@@ -287,8 +287,8 @@ vi.mock("../steps/whitelist-bootstrap.js", () => ({
 }));
 
 vi.mock("../steps/revocation-bootstrap.js", () => ({
-  wireRevocationRegistry: vi.fn(async (input: { online?: boolean }) => {
-    h.captured["revocationOnline"] = input.online;
+  feedRevocationsFromSnapshots: vi.fn(async (input: { home: string; pluginRegistryPath: string }) => {
+    h.captured["revocationFeed"] = { home: input.home, pluginRegistryPath: input.pluginRegistryPath };
     h.rec("revocation");
   }),
 }));
@@ -766,6 +766,8 @@ describe("bootstrap() integration lock", () => {
     assertBefore("permissionManager", "initPluginRuntime");
     assertBefore("routinesStore", "initPluginRuntime");
     assertBefore("whitelist", "initPluginRuntime");
+    // Revocations reach the load gate before any plugin can load.
+    assertBefore("revocation", "initPluginRuntime");
     // The plugin runtime exists before the ConversationLoop is composed (the
     // loop captures pluginRuntime among its deps).
     assertBefore("initPluginRuntime", "conversationLoop");
@@ -886,7 +888,6 @@ describe("bootstrap() integration lock", () => {
     // Every registry resolves `online` from its own default, so boot passes
     // nothing and each step keeps deciding.
     expect(h.captured["whitelistOnline"]).toBeUndefined();
-    expect(h.captured["revocationOnline"]).toBeUndefined();
     expect(h.captured["admissionOnline"]).toBeUndefined();
     expect(h.captured["discretionaryEgress"]).toBe(true);
     expect(vi.mocked(wireAnnouncementCheck)).toHaveBeenCalled();
@@ -904,9 +905,9 @@ describe("bootstrap() integration lock", () => {
  * the release check, the telemetry uploaders nor the announcement poll are
  * started. (The git marketplace's sync starts with the window, in main.ts, so
  * a headless boot never reaches it.) It also proves the two
- * halves of the boundary that are NOT discretionary: the whitelist and
- * revocation documents are still refreshed, because one fails closed and the
- * other fails open, and plugins on disk still load. The interactive boot above
+ * halves of the boundary that are NOT discretionary: the whitelist document
+ * is still refreshed, because it fails closed, revocations are still fed from
+ * the local snapshots, and plugins on disk still load. The interactive boot above
  * is the control; both run against the same mocked seams.
  */
 describe("bootstrap() headless launch opens no discretionary service connection", () => {
@@ -938,12 +939,12 @@ describe("bootstrap() headless launch opens no discretionary service connection"
 
   it("skips the admission warm-up but still refreshes the plugin trust chain", () => {
     // Admission is consulted at install and re-checked there, so warming it at
-    // boot is only latency. The whitelist fails closed and the revocation list
-    // fails open, so skipping either would take a control with it — both keep
-    // resolving `online` from their own default.
+    // boot is only latency. The whitelist fails closed, so skipping it would
+    // take a control with it; revocations read only local snapshots.
     expect(h.captured["admissionOnline"]).toBe(false);
     expect(h.captured["whitelistOnline"]).toBeUndefined();
-    expect(h.captured["revocationOnline"]).toBeUndefined();
+    expect(h.order).toContain("revocation");
+    expect(h.captured["revocationFeed"]).toEqual({ home: expect.any(String), pluginRegistryPath: expect.stringMatching(/registry\.json$/u) });
   });
 
   it("starts neither the release check nor the telemetry uploaders", () => {

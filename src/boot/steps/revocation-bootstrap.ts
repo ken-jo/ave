@@ -1,72 +1,64 @@
 /**
- * Boot step: load + activate the plugin revocation registry.
- *
- * Mirrors `whitelist-bootstrap.ts` structurally. Must run BEFORE plugins are
- * loaded (`startPlugins()`/`pluginRuntime.startAll()`) so the LOAD-boundary
- * gate (`markRevoked` in `plugins/runtime/index.ts`) observes a
- * populated registry on the very first boot pass — same ordering
- * requirement as the whitelist, for the same reason.
- *
- * Unlike the whitelist bootstrap, there is no "no-cache-and-offline" toast:
- * that state is a HARD DENY for the whitelist (secret access), but for the
- * revocation registry it is the deliberate fail-open default (nothing is
- * blocked) — not a condition the user needs to be warned about.
+ * Boot step: feed the revocation registry from the marketplace snapshots on
+ * disk (design §10.4), before plugins load and before the renderer asks for
+ * installed content, so both load gates see the last synced revocations on
+ * the first boot pass. Nothing here touches the network; the marketplace
+ * feeds the registry again after each sync.
  */
-import { revocationRegistry } from "../../plugins/revocation/revocation-registry.js";
+import { join } from "node:path";
 import type { AuditLogger } from "../../audit/audit-logger.js";
-import { readDevelopmentEnvVar } from "../dev-flags.js";
+import { createLogger } from "../../lib/logger.js";
+import { mcpInstallOrigins } from "../../marketplace/app/mcp-installer.js";
+import { revocationFeed } from "../../marketplace/app/revocations.js";
+import { contentLedgerOrigins } from "../../marketplace/content/ledger.js";
+import { pluginRegistryOrigins, type InstalledOrigin, type OriginReader } from "../../marketplace/sources/retained.js";
+import { readPinnedSnapshot } from "../../marketplace/sources/sync.js";
+import { revocationRegistry } from "../../plugins/revocation/revocation-registry.js";
+import { errorMessage } from "../../shared/error-message.js";
+
+const log = createLogger("revocation-bootstrap");
 
 export interface RevocationBootstrapInput {
-  userDataPath: string;
+  /** `~/.ave`. */
+  home: string;
+  /** The plugin registry, whose entries carry each git install's origin. */
+  pluginRegistryPath: string;
   bootAuditLogger: AuditLogger;
-  /** Authoritative host packaging state; never derived from process.env. */
-  packaged: boolean;
-  /** Transport for the document GETs — Chromium's stack, from `ctx.singleHopNetworkFetch`. */
-  networkFetch: typeof fetch;
-  /** Online toggle — disabled in tests or user-selected offline mode. */
-  online?: boolean;
-  /** App-shutdown AbortSignal, aborts an in-flight fetch on quit. */
-  appShutdownSignal?: AbortSignal;
 }
 
-function isOnlineByDefault(packaged: boolean): boolean {
-  // Source/E2E runs may opt out of the public CDN. Packaged builds ignore the
-  // development-only flag even if early environment scrubbing is bypassed.
-  if (readDevelopmentEnvVar("AVE_REVOCATION_OFFLINE", process.env, packaged) === "1") return false;
-  return true;
+function audit(logger: AuditLogger, line: string): void {
+  try {
+    logger.log({ timestamp: new Date().toISOString(), sessionId: "boot", type: "info", input: line });
+  } catch {
+    /* audit must not break boot */
+  }
 }
 
 /**
- * Load + activate the revocation registry. Resolves once init completes —
- * never throws (every fail path is recorded as a status, and the default on
- * any fail path is fail-open — see `revocation-registry.ts`).
+ * Resolves on every path. An install list or snapshot that cannot be read is
+ * logged as an error and leaves the packages it covers without revocations
+ * until the marketplace feeds the registry again; it never stops boot.
  */
-export async function wireRevocationRegistry(input: RevocationBootstrapInput): Promise<void> {
-  const { bootAuditLogger } = input;
-  const online = input.online ?? isOnlineByDefault(input.packaged);
-  const userDataDir = input.userDataPath;
-
-  await revocationRegistry.init({
-    userDataDir,
-    online,
-    networkFetch: input.networkFetch,
-    ...(input.appShutdownSignal ? { signal: input.appShutdownSignal } : {}),
-    audit: (line: string) => {
-      try {
-        bootAuditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: "boot",
-          type: "info",
-          input: line,
-        });
-      } catch {
-        /* audit must not break boot */
-      }
-    },
-    telemetry: () => {
-      /* Revocation events piggyback on the audit line above; no separate
-         counter map exists yet for this registry (unlike the whitelist's
-         host-secret counters, which this domain has no natural home in). */
-    },
-  });
+export async function feedRevocationsFromSnapshots(input: RevocationBootstrapInput): Promise<void> {
+  const packagesRoot = join(input.home, "packages");
+  const readers: Array<[string, OriginReader]> = [
+    ["plugins", pluginRegistryOrigins(input.pluginRegistryPath)],
+    ["content", contentLedgerOrigins(join(packagesRoot, "ledger.json"))],
+    ["mcp", mcpInstallOrigins(join(packagesRoot, "mcp-installs.json"))],
+  ];
+  const installed: InstalledOrigin[] = [];
+  for (const [what, read] of readers) {
+    try {
+      installed.push(...(await read()));
+    } catch (error) {
+      log.error({ err: errorMessage(error) }, `revocations: the installed ${what} could not be read; their revocations wait for the next marketplace sync`);
+    }
+  }
+  const root = join(input.home, "marketplaces");
+  const feed = await revocationFeed(installed, async (sourceId) => (await readPinnedSnapshot(root, sourceId))?.revocations ?? []);
+  for (const item of feed.unreadable) {
+    log.error({ sourceId: item.sourceId, err: item.message }, "revocations: a source snapshot could not be read; its revocations wait for the next sync");
+  }
+  revocationRegistry.replace(feed.rules);
+  audit(input.bootAuditLogger, `revocations_loaded rules=${feed.rules.length} unreadable=${feed.unreadable.length}`);
 }

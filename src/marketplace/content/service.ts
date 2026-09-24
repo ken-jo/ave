@@ -18,6 +18,7 @@ import {
   type InstalledLanguageView,
   type InstalledThemeView,
 } from "../../shared/installed-content.js";
+import type { ContentKind } from "./rules.js";
 import type { ContentStore, LoadedContent } from "./store.js";
 
 const IMAGE_TYPES: Readonly<Record<string, string>> = { ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp" };
@@ -42,10 +43,15 @@ export class InstalledContentService {
   private served = new Map<string, ServedContentFile>();
   private instructions: InstalledInstruction[] = [];
 
-  /** `assetToken` is the launch token asset URLs carry (see `contentAssetUrl`). */
+  /**
+   * `assetToken` is the launch token asset URLs carry (see `contentAssetUrl`).
+   * `revoked` answers why the bound source revoked an installed version, or
+   * null (design §10.4): such a package is listed as broken and not applied.
+   */
   constructor(
     private readonly store: ContentStore,
     private readonly assetToken: string,
+    private readonly revoked: (kind: ContentKind, name: string, version: string) => string | null,
   ) {}
 
   /** Re-read the store and rebuild everything derived from it. */
@@ -63,6 +69,11 @@ export class InstalledContentService {
 
     for (const item of loaded) {
       const { content, entry, dir } = item;
+      const revocation = this.revoked(entry.kind, entry.name, entry.version);
+      if (revocation !== null) {
+        refuse(item, revocation);
+        continue;
+      }
       if (content.kind === "theme") {
         let previewUrl: string | undefined;
         if (content.preview) {

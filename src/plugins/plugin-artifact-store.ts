@@ -77,8 +77,7 @@ import {
 import { withMarketplaceArtifactResourceSlot } from "./marketplace-artifact-resource-gate.js";
 import { getAveAppVersion } from "../shared/app-version.js";
 import { assertPluginCandidateAppCompatible } from "./update-condition.js";
-import { PluginNotAdmittedError, PluginRevokedError } from "../shared/plugin-install-result.js";
-import { revocationRegistry } from "./revocation/revocation-registry.js";
+import { PluginNotAdmittedError } from "../shared/plugin-install-result.js";
 import {
   admissionRegistry,
   ADMISSION_ENFORCEMENT,
@@ -98,27 +97,6 @@ export function assertMarketplaceAppUpgradeNotRequired(
   assertPluginCandidateAppCompatible(plugin, getAveAppVersion());
 }
 
-/**
- * Shared last-line defense: refuse to install a `slug@version` the
- * marketplace revocation registry blocks (explicit blocklist) or that falls
- * below the plugin's pinned minimum version. The install-time twin of the
- * `markRevoked` LOAD-boundary gate (`plugins/runtime/index.ts`) — a
- * version that would be rejected on the next boot must never be installed
- * in the first place.
- *
- * A catalog item with no `version` (should not happen for a real catalog
- * entry) is a no-op here rather than a throw — there is nothing to
- * evaluate, and the LOAD-boundary gate is the backstop regardless.
- */
-export function assertMarketplaceNotRevoked(
-  plugin: Pick<PluginMarketplaceItem, "id" | "version">,
-): void {
-  if (!plugin.version) return;
-  const decision = revocationRegistry.evaluate(plugin.id, plugin.version);
-  if (decision.kind === "block") {
-    throw new PluginRevokedError(plugin.id, plugin.version, decision.reason);
-  }
-}
 const log = createLogger("plugin-artifact-store");
 
 /**

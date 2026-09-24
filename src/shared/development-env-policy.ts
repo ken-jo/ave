@@ -32,7 +32,8 @@ export const DEVELOPMENT_ENV_POLICY = [
   { name: "AVE_PLUGINS_DIR", lifecycle: "tombstone", packaged: "scrub" },
   { name: "AVE_REQUIRE_SANDBOX_CASES", lifecycle: "active", packaged: "scrub" },
   { name: "AVE_RESOURCE_ROOT", lifecycle: "active", packaged: "scrub" },
-  { name: "AVE_REVOCATION_OFFLINE", lifecycle: "active", packaged: "scrub" },
+  // Kept the signed revocation feed offline; revocations now come from local snapshots.
+  { name: "AVE_REVOCATION_OFFLINE", lifecycle: "tombstone", packaged: "scrub" },
   { name: "AVE_RUN_PROBES", lifecycle: "active", packaged: "scrub" },
   { name: "AVE_SECRET_PROBE", lifecycle: "active", packaged: "scrub" },
   // A staging service base for source runs (design §11); packaged builds use the build constant or policy.

@@ -33,6 +33,7 @@ import type {
   PackageUpdateView,
   SourceAddRequest,
   SourcePreviewRequest,
+  RevokedPackageView,
   SourcePreviewView,
   SourceView,
   SyncProgressView,
@@ -41,7 +42,7 @@ import type {
   UpdatePlanView,
 } from "../../shared/git-marketplace.js";
 import type { McpRuntimeSpec } from "../../plugins/types.js";
-import { aggregateCatalog, versionExclusions, type CatalogRow, type VersionChoiceContext } from "../catalog/aggregate.js";
+import { aggregateCatalog, findRevocation, versionExclusions, type CatalogRow, type VersionChoiceContext } from "../catalog/aggregate.js";
 import { PACKAGE_KINDS, type IndexVersion, type PackageKind, type PluginAuthority } from "../catalog/types.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
 import { stageContentPackage } from "../content/store.js";
@@ -66,6 +67,7 @@ import type { MarketplacePolicy, PackageKey } from "../sources/policy.js";
 import type { ResolvedSource, SourceOrigin, SourceRegistry, SourceState } from "../sources/registry.js";
 import { SnapshotBuilder, type SourceSnapshot } from "../sources/snapshot.js";
 import { shouldSyncSource, type SourceSyncer } from "../sources/sync.js";
+import { revocationFeed, type BoundInstall, type RevocationFeed } from "./revocations.js";
 import { Tickets } from "./tickets.js";
 import type { InstallerPorts, InstalledRecord, TokenStore } from "./ports.js";
 import {
@@ -88,6 +90,22 @@ type HeldPlan =
   | { kind: "content"; plan: ContentPlan; switchSource: boolean; adopt: boolean }
   | { kind: "mcp"; resolved: ResolvedMcpServer; switchSource: boolean }
   | { kind: "mcp-unbound"; name: string; runtime: McpRuntimeSpec };
+
+/** The package a held plan installs and the source it binds it to (none for a direct MCP server). */
+function heldTarget(held: HeldPlan): PendingBinding {
+  switch (held.kind) {
+    case "plugin":
+      return { kind: "plugin", name: held.plan.name, sourceId: held.plan.sourceId };
+    case "content":
+      return { kind: held.plan.kind, name: held.plan.name, sourceId: held.plan.sourceId };
+    case "mcp":
+      return { kind: "mcp", name: held.resolved.plan.name, sourceId: held.resolved.plan.sourceId };
+    case "mcp-unbound":
+      return { kind: "mcp", name: held.name, sourceId: null };
+  }
+}
+
+type PendingBinding = Omit<BoundInstall, "sourceId"> & { sourceId: string | null };
 
 interface HeldPreview {
   sourceId: string;
@@ -133,8 +151,22 @@ export interface MarketplaceServiceOptions {
       adopt(kind: LegacyContentKind, name: string): Promise<void>;
     }): Promise<LegacyContentReport>;
   };
+  /**
+   * Where the revocation feed lands (§10.4): the registry the plugin and
+   * content load gates read. Handed every rule and the sources whose snapshot
+   * could not be read.
+   */
+  revocations: { apply(feed: RevocationFeed): Promise<void> };
   now?: () => Date;
 }
+
+/**
+ * Kinds the host loads through a revocation gate: a `disable` revocation
+ * keeps them installed and unloaded. The others take effect through their
+ * configuration (an MCP server's config, provider and messaging settings),
+ * so the boot pass removes them for `disable` too.
+ */
+const GATED_KINDS: ReadonlySet<PackageKind> = new Set(["plugin", "skill", "agent", "theme", "font", "language"]);
 
 const PREVIEW_ID_PREFIX = "preview-";
 
@@ -285,6 +317,8 @@ export class MarketplaceService {
     }
     // Every source finishes; a failure outside a sync result (a bug, an unreadable file) is reported after.
     const settled = await Promise.allSettled(ids.map((sourceId) => this.syncOne(sourceId)));
+    // A moved pin may carry new revocations; the gates read them before anything else happens.
+    await this.feedRevocations();
     const failed = settled.find((item): item is PromiseRejectedResult => item.status === "rejected");
     if (failed) throw failed.reason;
     return this.listSources();
@@ -730,6 +764,16 @@ export class MarketplaceService {
 
   async executeInstall(planId: string): Promise<InstallResultView> {
     const held = this.plans.take(planId);
+    // The gates must judge the new install by the source it is about to be bound to, not the one it leaves.
+    await this.feedRevocations(heldTarget(held));
+    try {
+      return await this.runInstall(planId, held);
+    } finally {
+      await this.feedRevocations();
+    }
+  }
+
+  private async runInstall(planId: string, held: HeldPlan): Promise<InstallResultView> {
     this.progress(planId, "resolving");
     let result: InstallResultView;
     if (held.kind === "plugin") {
@@ -804,6 +848,7 @@ export class MarketplaceService {
     if (request.kind === "plugin") await this.options.installers.plugin.uninstall(request.name);
     else if (request.kind === "mcp") ({ keptDataDir } = await this.options.installers.mcp.uninstall(request.name, { removeData: request.removeData === true }));
     else await this.options.installers.content.uninstall(request.kind, request.name);
+    await this.feedRevocations();
     this.options.onCatalogChanged?.();
     return { key: { sourceId: request.sourceId, kind: request.kind, name: request.name }, keptDataDir };
   }
@@ -885,6 +930,7 @@ export class MarketplaceService {
         }),
       now: () => this.now(),
     });
+    const revoked = await this.applyRevocations();
     const { rows, snapshots, shown } = await this.rows();
     const synced = new Map<string, SourceOrigin>(shown.filter((source) => snapshots.has(source.id)).map((source) => [source.id, source.origin]));
     const report = await runBootInstalls({
@@ -900,7 +946,55 @@ export class MarketplaceService {
       applied,
       now: () => this.now(),
     });
-    return { report, notice: bootInstallNoticeFrom(report, this.options.policy, legacy?.plugins ?? null) };
+    return { report, notice: bootInstallNoticeFrom(report, this.options.policy, legacy?.plugins ?? null, revoked) };
+  }
+
+  /**
+   * Feed the load gates each installed package's own source's revocations
+   * (§10.4) and return the installed versions they cover. `pending` binds one
+   * package to the source an install is about to move it to.
+   */
+  private async feedRevocations(pending?: PendingBinding): Promise<Array<{ record: InstalledRecord & { sourceId: string }; revocation: RevocationFeed["rules"][number] }>> {
+    const installed = await this.installedAll();
+    const bound: BoundInstall[] = installed.flatMap((item) =>
+      item.sourceId !== null && !(pending && item.kind === pending.kind && item.name === pending.name) ? [{ kind: item.kind, name: item.name, sourceId: item.sourceId }] : [],
+    );
+    if (pending?.sourceId) bound.push({ kind: pending.kind, name: pending.name, sourceId: pending.sourceId });
+    const feed = await revocationFeed(bound, async (sourceId) => (await this.options.syncer.readSnapshot(sourceId))?.revocations ?? []);
+    await this.options.revocations.apply(feed);
+    const revoked: Array<{ record: InstalledRecord & { sourceId: string }; revocation: RevocationFeed["rules"][number] }> = [];
+    for (const record of installed) {
+      if (record.sourceId === null || record.version === null) continue;
+      const sourceId = record.sourceId;
+      const revocation = findRevocation(record.kind, record.name, record.version, feed.rules.filter((rule) => rule.sourceId === sourceId));
+      if (revocation) revoked.push({ record: { ...record, sourceId }, revocation });
+    }
+    return revoked;
+  }
+
+  /**
+   * The boot pass's part of §10.4: feed the gates, then remove what a gate
+   * cannot hold — every `uninstall` revocation, and a `disable` one for a kind
+   * outside {@link GATED_KINDS}. A package a `requiredInstalls` entry locks
+   * stays (gated where its kind has a gate) and is reported.
+   */
+  private async applyRevocations(): Promise<RevokedPackageView[]> {
+    const report: RevokedPackageView[] = [];
+    for (const { record, revocation } of await this.feedRevocations()) {
+      if (revocation.action === "disable" && GATED_KINDS.has(record.kind)) continue;
+      const item = { key: { sourceId: record.sourceId, kind: record.kind, name: record.name }, version: record.version!, reason: revocation.reason };
+      if (requiredByPolicy(this.options.policy, record.kind, record.name)) {
+        report.push({ ...item, outcome: "required" });
+        continue;
+      }
+      try {
+        await this.uninstall({ sourceId: record.sourceId, kind: record.kind, name: record.name });
+        report.push({ ...item, outcome: "uninstalled" });
+      } catch (error) {
+        report.push({ ...item, outcome: "failed", message: errorMessage(error) });
+      }
+    }
+    return report;
   }
 
   /** Drop every preview clone and plan (shutdown). */

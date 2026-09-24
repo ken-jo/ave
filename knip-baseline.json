@@ -2014,26 +2014,6 @@
     },
     {
       "type": "types",
-      "file": "src/plugins/revocation/revocation-registry.ts",
-      "name": "RevocationInitOptions"
-    },
-    {
-      "type": "types",
-      "file": "src/plugins/revocation/revocation-registry.ts",
-      "name": "RevocationSource"
-    },
-    {
-      "type": "types",
-      "file": "src/plugins/revocation/revocation-registry.ts",
-      "name": "RevocationStatus"
-    },
-    {
-      "type": "types",
-      "file": "src/plugins/revocation/revocation-schema.ts",
-      "name": "RevocationBlockedEntry"
-    },
-    {
-      "type": "types",
       "file": "src/plugins/runtime.ts",
       "name": "ManifestLoadPlan"
     },

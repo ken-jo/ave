@@ -92,7 +92,7 @@ export function versionExclusions(
 }
 
 /** The source's own revocation covering this version, if any (§10.4). */
-function findRevocation(kind: PackageKind, name: string, version: string, revocations: readonly Revocation[]): Revocation | undefined {
+export function findRevocation<T extends Revocation>(kind: PackageKind, name: string, version: string, revocations: readonly T[]): T | undefined {
   // Ranges were parsed when the snapshot was validated; a failure here is a
   // snapshot that bypassed validation, which must not read as "not revoked".
   return revocations.find((entry) => entry.kind === kind && entry.name === name && rangeIncludes(parseVersionRange(entry.versions), version));

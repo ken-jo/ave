@@ -8,6 +8,8 @@
  *     (reinstall-fixable) plus the underlying field detail, and
  *   - a too-new `requires.minAppVersion` → `incompatible-app-version`
  *     (NOT reinstall-fixable — a reinstall re-fetches the same too-new package).
+ *   - a version its bound source revoked → `plugin-revoked` with that source's
+ *     reason (design §10.4); other plugins still load.
  */
 import { afterEach, describe, expect, it } from "vitest";
 import { rm } from "node:fs/promises";
@@ -19,11 +21,13 @@ import {
   writeTestPluginRegistry,
   type TestPluginRuntimeFixture,
 } from "./test-helpers.js";
+import { revocationRegistry } from "../revocation/revocation-registry.js";
 
 describe("PluginRuntime Doctor load-failure classification", () => {
   let fixture: TestPluginRuntimeFixture;
 
   afterEach(async () => {
+    revocationRegistry.resetForTesting();
     if (fixture) await rm(fixture.rootDir, { recursive: true, force: true });
   });
 
@@ -105,5 +109,35 @@ describe("PluginRuntime Doctor load-failure classification", () => {
     const card = runtime.listPluginCards().find((candidate) => candidate.id === "p-appver");
     expect(card?.loadStatus).toBe("failed");
     expect(card?.installFailureKind).toBe("incompatible-app-version");
+  });
+
+  it("refuses to load a version its bound source revoked, with the source's reason, and loads the rest", async () => {
+    fixture = await makeTestPluginRuntimeFixture();
+    const revoked = await writeTestPlugin(fixture, {
+      id: "p-revoked",
+      tools: ["p_revoked_ping"],
+      entrySource: makeTestPluginEntrySource({ p_revoked_ping: JSON.stringify("hi") }),
+    });
+    const kept = await writeTestPlugin(fixture, {
+      id: "p-kept",
+      tools: ["p_kept_ping"],
+      entrySource: makeTestPluginEntrySource({ p_kept_ping: JSON.stringify("hi") }),
+    });
+    await writeTestPluginRegistry(fixture, [
+      { id: "p-revoked", manifestPath: revoked.manifestPath, enabled: true },
+      { id: "p-kept", manifestPath: kept.manifestPath, enabled: true },
+    ]);
+    revocationRegistry.replace([
+      { kind: "plugin", name: "p-revoked", versions: "*", reason: "leaks tokens", at: "2026-09-24T00:00:00Z", action: "disable", sourceId: "acme" },
+    ]);
+
+    const runtime = makeTestPluginRuntime(fixture);
+    await runtime.startAll();
+
+    const card = runtime.listPluginCards().find((candidate) => candidate.id === "p-revoked");
+    expect(card?.loadStatus).toBe("failed");
+    expect(card?.installFailureKind).toBe("plugin-revoked");
+    expect(card?.installFailureMessage).toBe("revoked by acme: leaks tokens");
+    expect(runtime.listPluginCards().find((candidate) => candidate.id === "p-kept")?.loadStatus).not.toBe("failed");
   });
 });

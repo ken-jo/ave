@@ -20,6 +20,7 @@ import {
   type GitMarketplaceErrorCode,
   type PackageKeyView,
   type PackageKind,
+  type RevokedPackageView,
   type SourcePreviewView,
   type SourceView,
 } from "../../../../shared/git-marketplace.js";
@@ -35,6 +36,12 @@ import { SourcesView } from "./SourcesView.js";
 import { onUpdateReview, takeUpdateReview } from "./update-review-request.js";
 
 type View = "browse" | "sources" | "direct";
+
+const REVOKED_NOTICE_KEYS = {
+  uninstalled: "gitMarketplace.boot.revoked.uninstalled",
+  required: "gitMarketplace.boot.revoked.required",
+  failed: "gitMarketplace.boot.revoked.failed",
+} as const satisfies Record<RevokedPackageView["outcome"], string>;
 
 export interface GitMarketplaceTabProps {
   api: AveApi;
@@ -361,6 +368,21 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }
               <ul className="space-y-0.5" data-testid="git-marketplace:boot-notice:lost-grants">
                 {notice.lostGrants.map((item) => (
                   <li key={item.plugin}>{t("gitMarketplace.boot.lostGrant", { name: item.plugin, keys: item.keys.join(", ") })}</li>
+                ))}
+              </ul>
+            )}
+            {notice.revoked.length > 0 && (
+              <ul className="space-y-0.5" data-testid="git-marketplace:boot-notice:revoked">
+                {notice.revoked.map((item) => (
+                  <li key={`${item.key.sourceId}:${item.key.kind}:${item.key.name}`}>
+                    {t(REVOKED_NOTICE_KEYS[item.outcome], {
+                      source: item.key.sourceId,
+                      name: item.key.name,
+                      version: item.version,
+                      reason: item.reason,
+                      message: item.message ?? "",
+                    })}
+                  </li>
                 ))}
               </ul>
             )}

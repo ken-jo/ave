@@ -335,6 +335,7 @@ describe("GitMarketplaceTab boot-install notice (design §15.1)", () => {
     required: [{ sourceId: "corp", kind: "plugin" as const, name: "vpn" }],
     unmanaged: [],
     lostGrants: [],
+    revoked: [],
   };
 
   it("lists what the boot installed, uninstalls a default install keeping MCP data, and dismisses", async () => {
@@ -362,6 +363,10 @@ describe("GitMarketplaceTab boot-install notice (design §15.1)", () => {
       required: [],
       unmanaged: ["orion"],
       lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai", "llm.apiKey.claude"] }],
+      revoked: [
+        { key: { sourceId: "acme", kind: "mcp" as const, name: "scraper" }, version: "1.2.0", reason: "exfiltrates cookies", outcome: "uninstalled" as const },
+        { key: { sourceId: "corp", kind: "plugin" as const, name: "vpn" }, version: "2.0.0", reason: "bad build", outcome: "required" as const },
+      ],
     };
     const fake = fakeMarketplace({ sources: [official], bootNotice: migrated });
     renderTab(fake);
@@ -369,6 +374,9 @@ describe("GitMarketplaceTab boot-install notice (design §15.1)", () => {
     const banner = await screen.findByTestId("git-marketplace:boot-notice");
     expect(within(banner).getByTestId("git-marketplace:boot-notice:unmanaged")).toHaveTextContent("ep은(는) 더 이상 Ave가 관리하지 않습니다");
     expect(within(banner).getByTestId("git-marketplace:boot-notice:lost-grants")).toHaveTextContent("meeting은(는) 업데이트하기 전까지 llm.apiKey.openai, llm.apiKey.claude");
+    const revoked = within(banner).getByTestId("git-marketplace:boot-notice:revoked");
+    expect(revoked).toHaveTextContent("acme이(가) scraper 1.2.0을(를) 철회해 제거했습니다: exfiltrates cookies");
+    expect(revoked).toHaveTextContent("corp이(가) vpn 2.0.0을(를) 철회했지만 조직이 요구하는 패키지라 설치된 채로 둡니다: bad build");
 
     // The unlocked and lost-grant lines are still news after the default is removed.
     fireEvent.click(within(banner).getByTestId("git-marketplace:boot-notice:uninstall:theme:nord"));

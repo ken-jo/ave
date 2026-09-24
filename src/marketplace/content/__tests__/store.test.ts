@@ -142,7 +142,7 @@ describe.skipIf(process.platform === "win32")("content package store (blueprint 
     expect(broken).toEqual([]);
     expect(loaded.map((item) => item.content)).toEqual([staged.content]);
     // The snapshot the install was planned from is kept while it is installed (§2.3).
-    expect(await contentLedgerOrigins(join(root, "packages", "ledger.json"))()).toEqual([{ sourceId: "acme", commit: first }]);
+    expect(await contentLedgerOrigins(join(root, "packages", "ledger.json"))()).toEqual([{ kind: "theme", name: "harbor", sourceId: "acme", commit: first }]);
 
     await expect(reopened.uninstall("theme", "harbor", { ...EMPTY_MARKETPLACE_POLICY, requiredInstalls: [{ kind: "theme", name: "harbor", source: "acme" }] }))
       .rejects.toMatchObject({ code: "PACKAGE_REQUIRED_BY_POLICY" });

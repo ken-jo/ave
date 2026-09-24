@@ -116,13 +116,11 @@ describe("dev-flags tamper snapshot", () => {
   it("reads offline registry flags only for unpackaged execution", () => {
     const env: NodeJS.ProcessEnv = {
       AVE_WHITELIST_OFFLINE: "1",
-      AVE_REVOCATION_OFFLINE: "1",
       AVE_ADMISSION_OFFLINE: "1",
     };
 
     for (const name of [
       "AVE_WHITELIST_OFFLINE",
-      "AVE_REVOCATION_OFFLINE",
       "AVE_ADMISSION_OFFLINE",
     ] as const) {
       expect(readDevelopmentEnvVar(name, env, false), name).toBe("1");

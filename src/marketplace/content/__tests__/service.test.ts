@@ -19,8 +19,8 @@ function entry(kind: LedgerEntry["kind"], name: string): LedgerEntry {
 
 const loaded = (kind: LedgerEntry["kind"], name: string, content: ParsedContent): LoadedContent => ({ entry: entry(kind, name), content, dir: `/pkgs/${kind}/${name}/1.0.0` });
 
-function service(items: LoadedContent[], broken: BrokenContent[] = []) {
-  return new InstalledContentService({ load: async () => ({ loaded: items, broken }) } as unknown as ContentStore, TOKEN);
+function service(items: LoadedContent[], broken: BrokenContent[] = [], revoked: (kind: string, name: string, version: string) => string | null = () => null) {
+  return new InstalledContentService({ load: async () => ({ loaded: items, broken }) } as unknown as ContentStore, TOKEN, revoked);
 }
 
 describe("InstalledContentService", () => {
@@ -57,5 +57,21 @@ describe("InstalledContentService", () => {
       { kind: "language", name: "french-alt", problem: "french already provides fr" },
       { kind: "font", name: "harbor-sans-2", problem: "harbor-sans already provides the Harbor Sans family" },
     ]);
+  });
+
+  it("lists a version its source revoked as broken and applies nothing from it (§10.4)", async () => {
+    const skill = loaded("skill", "pdf-tools", { kind: "skill", name: "pdf-tools", description: "PDF tools" });
+    const french = loaded("language", "french", { kind: "language", locale: "fr", nativeName: "Français", englishName: "French", messages: { "app.title": "Ave" }, missingKeys: [] });
+    const asked: string[] = [];
+    const svc = service([skill, french], [], (kind, name, version) => {
+      asked.push(`${kind}:${name}@${version}`);
+      return name === "french" ? "revoked by acme: leaks prompts" : null;
+    });
+    const view = await svc.reload();
+    expect(asked).toEqual(["skill:pdf-tools@1.0.0", "language:french@1.0.0"]);
+    expect(view.languages).toEqual([]);
+    expect(view.broken).toEqual([{ kind: "language", name: "french", problem: "revoked by acme: leaks prompts" }]);
+    expect(() => svc.languageMessages("fr")).toThrow("no installed language provides fr");
+    expect(svc.installedInstructions()).toEqual([{ kind: "skill", name: "pdf-tools", dir: "/pkgs/skill/pdf-tools/1.0.0" }]);
   });
 });

@@ -19,7 +19,7 @@
  * verification, receipt). Nothing here decides consent or reads the network.
  */
 import { errorMessage } from "../../shared/error-message.js";
-import { bootInstallNoticeIsEmpty, type BootInstallNoticeView, type PackageKeyView } from "../../shared/git-marketplace.js";
+import { bootInstallNoticeIsEmpty, type BootInstallNoticeView, type PackageKeyView, type RevokedPackageView } from "../../shared/git-marketplace.js";
 import { MarketplaceError } from "../errors.js";
 import type { CatalogRow } from "../catalog/aggregate.js";
 import type { PackageKind } from "../catalog/types.js";
@@ -65,6 +65,7 @@ export function bootInstallNoticeFrom(
   report: BootInstallReport,
   policy: MarketplacePolicy,
   legacy: Pick<LegacyPluginReport, "unmanaged" | "lostGrants"> | null,
+  revoked: readonly RevokedPackageView[],
 ): BootInstallNoticeView | null {
   const view = (key: PackageKey): PackageKeyView => ({ sourceId: key.source, kind: key.kind, name: key.name });
   const required = (key: PackageKey) => requiredByPolicy(policy, key.kind, key.name) !== undefined;
@@ -72,7 +73,7 @@ export function bootInstallNoticeFrom(
   const requiredKeys = [...report.installed.filter(required), ...report.updated, ...report.switched].map(view);
   const unmanaged = [...(legacy?.unmanaged ?? [])];
   const lostGrants = (legacy?.lostGrants ?? []).map((item) => ({ plugin: item.plugin, keys: [...item.keys] }));
-  const notice = { forYou, required: requiredKeys, unmanaged, lostGrants };
+  const notice = { forYou, required: requiredKeys, unmanaged, lostGrants, revoked: revoked.map((item) => ({ ...item, key: { ...item.key } })) };
   return bootInstallNoticeIsEmpty(notice) ? null : notice;
 }
 

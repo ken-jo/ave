@@ -2906,38 +2906,33 @@ abstract class PluginRuntimeState {
   }
 
   /**
-   * Plugin revocation gate (LOAD boundary). A plugin already on disk
-   * (installed before it was revoked, or sideloaded) must not silently keep
-   * running once the marketplace revocation registry blocks its exact
-   * version or drops it below the pinned minimum — mirrors
+   * Plugin revocation gate (LOAD boundary). A plugin whose installed version
+   * its bound source revoked (design §10.4) must not keep running — mirrors
    * `markIncompatibleAppVersion` immediately above, including the
    * "isolation" property: this plugin is skipped, every other plugin still
-   * loads normally.
-   *
-   * Fail-open by construction: `revocationRegistry.evaluate()` returns
-   * `allow` whenever no valid signed document has ever been obtained (see
-   * `revocation-registry.ts` for the fail-open/fail-closed rationale), so
-   * this method only ever blocks when a signed document actually says to.
+   * loads normally. The registry holds only each plugin's own source's
+   * revocations, fed from the marketplace snapshots before plugins load; an
+   * `uninstall` revocation is refused here too until the marketplace removes it.
    */
   protected markRevoked(manifest: PluginManifest): boolean {
-    const decision = revocationRegistry.evaluate(manifest.id, manifest.version);
+    const decision = revocationRegistry.evaluate("plugin", manifest.id, manifest.version);
     if (decision.kind === "allow") return false;
 
-    const reason = `plugin revoked — ${decision.reason}`;
+    const reason = `revoked by ${decision.sourceId}: ${decision.reason}`;
     log.error(`${manifest.id} rejected — ${reason}`);
     this.auditLog?.("error", "plugin_revoked", {
       pluginId: manifest.id,
       version: manifest.version,
-      ruleKind: decision.ruleKind,
+      sourceId: decision.sourceId,
+      action: decision.action,
       reason: decision.reason,
     });
     this.markLoadRefused(manifest.id, {
-      summary: decision.reason,
-      reason: decision.reason,
-      // NOT locally reinstall-fixable — a reinstall from the marketplace
-      // either re-fetches the same blocked version (the install path
-      // enforces the same registry) or is a genuine version upgrade, not a
-      // "repair". The Doctor must show the block reason and offer Remove.
+      summary: reason,
+      reason,
+      // NOT locally reinstall-fixable — the source offers no install of a
+      // revoked version, and moving to another version is an update, not a
+      // "repair". The Doctor must show the reason and offer Remove.
       kind: "plugin-revoked",
       displayName: manifest.name ?? manifest.id,
     });

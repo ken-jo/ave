@@ -24,7 +24,7 @@ import { MarketplaceError, isMarketplaceError, type MarketplaceErrorCode } from 
 import { BareRepo } from "../git/repo.js";
 import type { GitCommands, GitRemote } from "../git/run-git.js";
 import type { NetworkGate } from "../net/network-gate.js";
-import type { ResolvedSource, SourceRegistry, SourceState } from "./registry.js";
+import { readSourceState, type ResolvedSource, type SourceRegistry, type SourceState } from "./registry.js";
 import { SnapshotBuilder, type SourceSnapshot } from "./snapshot.js";
 
 export interface SourceSyncOptions {
@@ -297,20 +297,30 @@ export class SourceSyncer {
 
   /** The snapshot at the pin, or null before the first successful sync. Served offline as is (§7.5). */
   async readSnapshot(id: string): Promise<SourceSnapshot | null> {
-    const { pinnedCommit } = await this.options.registry.readState(id);
-    if (pinnedCommit === null) return null;
-    let text: string;
-    try {
-      text = await readFile(this.snapshotPath(id, pinnedCommit), "utf8");
-    } catch (error) {
-      // The next sync rebuilds a lost snapshot at the same pin.
-      if (isMissingPathError(error)) return null;
-      throw error;
-    }
-    const snapshot = parseStrictJson(text) as SourceSnapshot;
-    if (snapshot.sourceId !== id || snapshot.commit !== pinnedCommit) {
-      throw new Error(`snapshot ${pinnedCommit}.json of ${id} names ${snapshot.sourceId}@${snapshot.commit}`);
-    }
-    return snapshot;
+    return readPinnedSnapshot(this.options.root, id);
   }
+}
+
+/**
+ * The snapshot at a source's pin under `root` (`~/.ave/marketplaces`), or
+ * null before the first successful sync. Boot reads it before the syncer
+ * exists, to feed revocations to the plugin load gate.
+ */
+export async function readPinnedSnapshot(root: string, id: string): Promise<SourceSnapshot | null> {
+  const { pinnedCommit } = await readSourceState(root, id);
+  if (pinnedCommit === null) return null;
+  const path = join(root, id, "snapshots", `${pinnedCommit}.json`);
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch (error) {
+    // The next sync rebuilds a lost snapshot at the same pin.
+    if (isMissingPathError(error)) return null;
+    throw error;
+  }
+  const snapshot = parseStrictJson(text) as SourceSnapshot;
+  if (snapshot.sourceId !== id || snapshot.commit !== pinnedCommit) {
+    throw new Error(`snapshot ${pinnedCommit}.json of ${id} names ${snapshot.sourceId}@${snapshot.commit}`);
+  }
+  return snapshot;
 }

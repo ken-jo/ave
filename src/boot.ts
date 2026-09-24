@@ -69,7 +69,7 @@ import type { ParentContextTurn } from "./permissions/parent-context-evidence.js
 import { McpAppModelContextStore } from "./mcp/mcp-app-model-context.js";
 import { initPluginRuntime } from "./boot/steps/plugin-runtime.js";
 import { wireWhitelistRegistry } from "./boot/steps/whitelist-bootstrap.js";
-import { wireRevocationRegistry } from "./boot/steps/revocation-bootstrap.js";
+import { feedRevocationsFromSnapshots } from "./boot/steps/revocation-bootstrap.js";
 import { wireAdmissionRegistry } from "./boot/steps/admission-bootstrap.js";
 import { createServiceClient } from "./boot/steps/service-endpoint.js";
 import { wireAnnouncementCheck, wireReleasePrep,
@@ -556,20 +556,15 @@ export async function bootstrap(
     packaged: host.isPackaged,
   });
 
-  // Load the plugin revocation registry BEFORE initPluginRuntime, same
-  // ordering requirement as the whitelist above: the LOAD-boundary gate
-  // (`markRevoked`) runs inside `pluginRuntime.startAll()`, which fires later
-  // (deferStart:true — see `startPlugins()` below) but must see a populated
-  // registry the first time it runs. Resolves on every path (fresh, offline,
-  // cached) — fail-open on a fetch failure, never blocks boot.
-  // Also fetched on every launch. This one fails OPEN, which is exactly why a
-  // headless run must not skip it: a stale or absent document revokes nothing,
-  // so skipping the refresh loses the kill switch silently.
-  await wireRevocationRegistry({
-    userDataPath: host.userDataPath,
+  // Feed revocations from the marketplace snapshots on disk BEFORE
+  // initPluginRuntime: the LOAD-boundary gate (`markRevoked`) runs inside
+  // `pluginRuntime.startAll()`, and the installed-content reload the renderer
+  // triggers after boot reads the same registry. Local files only; the
+  // marketplace feeds it again after each sync.
+  await feedRevocationsFromSnapshots({
+    home: aveHome(),
+    pluginRegistryPath: resolvePluginPaths().registryPath,
     bootAuditLogger: ctx.bootAuditLogger,
-    networkFetch: ctx.singleHopNetworkFetch,
-    packaged: host.isPackaged,
   });
 
   // Warm the admission catalog. Unlike the two registries above this is not an

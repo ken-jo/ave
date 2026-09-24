@@ -143,7 +143,7 @@ export class ContentLedger {
   }
 }
 
-/** Origins of installed content packages, for snapshot retention (design §2.3). */
+/** Origins of installed content packages, for snapshot retention (design §2.3) and revocations (§10.4). */
 export function contentLedgerOrigins(ledgerPath: string): OriginReader {
-  return async () => (await ContentLedger.open(ledgerPath)).list().map((entry) => ({ sourceId: entry.origin.sourceId, commit: entry.origin.commit }));
+  return async () => (await ContentLedger.open(ledgerPath)).list().map((entry) => ({ kind: entry.kind, name: entry.name, sourceId: entry.origin.sourceId, commit: entry.origin.commit }));
 }

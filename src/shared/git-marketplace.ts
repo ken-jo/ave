@@ -349,6 +349,20 @@ export interface PackageUpdateView {
 }
 
 /** What the boot pass installed, moved or migrated (design §10.2, §16.3), shown once until dismissed. */
+/**
+ * An installed package its bound source revoked with `uninstall`, or with
+ * `disable` where the host has no load gate for the kind (design §10.4).
+ */
+export interface RevokedPackageView {
+  key: PackageKeyView;
+  version: string;
+  /** The source's reason, as written in its revocations file. */
+  reason: string;
+  /** `required`: a `requiredInstalls` entry locks it, so it stays; `failed`: the uninstall threw (`message`). */
+  outcome: "uninstalled" | "required" | "failed";
+  message?: string;
+}
+
 export interface BootInstallNoticeView {
   /** Default installs: they belong to the user now, each offered with Uninstall. */
   forYou: PackageKeyView[];
@@ -358,11 +372,13 @@ export interface BootInstallNoticeView {
   unmanaged: string[];
   /** Plugins that no longer read these host secrets until they update (§10.3). */
   lostGrants: Array<{ plugin: string; keys: string[] }>;
+  /** Packages removed, or left in place, because their source revoked them (§10.4). */
+  revoked: RevokedPackageView[];
 }
 
 /** Nothing left to show: every list is empty. */
 export function bootInstallNoticeIsEmpty(notice: BootInstallNoticeView): boolean {
-  return notice.forYou.length + notice.required.length + notice.unmanaged.length + notice.lostGrants.length === 0;
+  return notice.forYou.length + notice.required.length + notice.unmanaged.length + notice.lostGrants.length + notice.revoked.length === 0;
 }
 
 export type GitMarketplaceErrorCode = MarketplaceErrorCode | "invalid-request" | "unauthorized-frame" | "unavailable";

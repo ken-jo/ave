@@ -25,6 +25,7 @@ import { MarketplaceError } from "../../marketplace/errors.js";
 import type { LegacyActivations } from "../../marketplace/migration/legacy-content.js";
 import { installContentAssetProtocolHandler } from "../../main/content-asset-protocol.js";
 import { applyBootLocale } from "../../boot/services.js";
+import { revocationRegistry } from "../../plugins/revocation/revocation-registry.js";
 import { installedFontStack, type InstalledContentResult, type InstalledContentView } from "../../shared/installed-content.js";
 import { isMarketplaceEligibleLLMVendor } from "../../shared/llm-vendor-defaults.js";
 import { aveHome } from "../../shared/ave-home.js";
@@ -241,7 +242,10 @@ export async function loadInstalledContent(deps: IpcDeps, assetToken: string, ro
     english: messages.en,
     activation: createContentActivation(deps),
   });
-  const service = new InstalledContentService(store, assetToken);
+  const service = new InstalledContentService(store, assetToken, (kind, name, version) => {
+    const decision = revocationRegistry.evaluate(kind, name, version);
+    return decision.kind === "block" ? `revoked by ${decision.sourceId}: ${decision.reason}` : null;
+  });
   applyInMain(deps, service, await service.reload());
   // Settings were read before the ledger: apply an installed language the user selected.
   await applyBootLocale(deps.settingsService);
