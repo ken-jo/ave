@@ -282,6 +282,8 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:diagnostics:export",
         "ave:dlp:stats",
         "ave:feedback:submit",
+        "ave:git:runtime:install",
+        "ave:git:runtime:status",
         "ave:home-docs:custom:get",
         "ave:home-docs:custom:update",
         "ave:home-docs:marker:keep-mine",

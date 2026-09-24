@@ -1,0 +1,103 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { hostGitExecutable } from "../../__tests__/fixtures/git-runner.js";
+import {
+  parseNullConfigList,
+  readCopiedCredentialConfig,
+  selectCopiedEntries,
+  writeGeneratedGlobalConfig,
+} from "../global-config.js";
+
+describe("selectCopiedEntries", () => {
+  it("keeps credential helpers, per-URL credential keys and the two TLS keys only", () => {
+    const entries = parseNullConfigList(
+      [
+        "credential.helper\nosxkeychain",
+        "credential.https://github.com.helper\n!gh auth git-credential",
+        "credential.https://git.corp.example.username\nme",
+        "credential.usehttppath\ntrue",
+        "http.sslcainfo\n/etc/corp.pem",
+        "http.sslbackend\nschannel",
+        "http.sslverify\nfalse",
+        "http.extraheader\nAuthorization: Bearer leak",
+        "url.https://evil.example/.insteadof\nhttps://github.com/",
+        "core.sshcommand\nssh -o ProxyCommand=evil",
+        "alias.st\nstatus",
+        "http.https://github.com.sslcainfo\n/tmp/x.pem",
+        "credential.helper",
+      ].join("\0") + "\0",
+    );
+    expect(selectCopiedEntries(entries)).toEqual([
+      { key: "credential.helper", value: "osxkeychain" },
+      { key: "credential.https://github.com.helper", value: "!gh auth git-credential" },
+      { key: "credential.https://git.corp.example.username", value: "me" },
+      { key: "http.sslcainfo", value: "/etc/corp.pem" },
+      { key: "http.sslbackend", value: "schannel" },
+      { key: "credential.helper", value: "" },
+    ]);
+  });
+});
+
+describe("generated global config", () => {
+  let dir: string;
+  let savedHome: string | undefined;
+  let savedXdg: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "ave-global-config-"));
+    savedHome = process.env.HOME;
+    savedXdg = process.env.XDG_CONFIG_HOME;
+    process.env.HOME = dir;
+    delete process.env.XDG_CONFIG_HOME;
+  });
+  afterEach(() => {
+    process.env.HOME = savedHome;
+    if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = savedXdg;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("copies the user's credential helper and drops everything else", async () => {
+    writeFileSync(
+      join(dir, ".gitconfig"),
+      [
+        "[credential]",
+        "\thelper = store --file=\"/tmp/creds with space\"",
+        "[credential \"https://Git.Corp.Example\"]",
+        "\thelper = corp-helper",
+        "[url \"https://evil.example/\"]",
+        "\tinsteadOf = https://github.com/",
+        "[http]",
+        "\textraHeader = Authorization: Bearer leak",
+        "\tsslVerify = false",
+        "",
+      ].join("\n"),
+    );
+    const git = await hostGitExecutable();
+    const entries = await readCopiedCredentialConfig(git.path);
+    // git's config syntax treats the double quotes as quoting, not as part of the value.
+    expect(entries).toContainEqual({ key: "credential.helper", value: "store --file=/tmp/creds with space" });
+    expect(entries).toContainEqual({ key: "credential.https://Git.Corp.Example.helper", value: "corp-helper" });
+    expect(entries.map((entry) => entry.key)).not.toContain("url.https://evil.example/.insteadof");
+
+    const output = join(dir, "generated");
+    await writeGeneratedGlobalConfig(git.path, output, entries);
+    const text = readFileSync(output, "utf8");
+    expect(text).not.toContain("insteadOf");
+    expect(text).not.toContain("extraHeader");
+    expect(text).not.toContain("sslVerify");
+    // git reads back exactly what was copied, including the quoted value.
+    const { execFileSync } = await import("node:child_process");
+    const readBack = execFileSync(git.path, ["config", "--file", output, "--null", "--list"], { encoding: "utf8" });
+    expect(selectCopiedEntries(parseNullConfigList(readBack))).toEqual(entries);
+  });
+
+  it("produces an empty file when there is no user config", async () => {
+    const git = await hostGitExecutable();
+    const output = join(dir, "generated");
+    await writeGeneratedGlobalConfig(git.path, output, []);
+    expect(readFileSync(output, "utf8")).toBe("");
+  });
+});

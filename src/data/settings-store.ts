@@ -27,6 +27,7 @@ import {
   type LLMVendorSettings,
   type MarketplaceEligibleLLMVendor,
 } from "../shared/llm-vendor-defaults.js";
+import type { GitRuntimeMode } from "../shared/git-runtime-mode.js";
 import { isBundleId, type BundleId } from "../shared/theme-bundles.js";
 import {
   FONT_SIZE_SCALE_VALUES,
@@ -848,6 +849,8 @@ export interface MarketplaceSettings {
   cloudBaseUrl?: string;
   /** Local dev/test only: bypass SSRF guard for loopback servers. */
   cloudAllowPrivateNetwork?: boolean;
+  /** Which git the git marketplace runs (design §9.1). Unset means `auto`. */
+  git?: { mode: GitRuntimeMode };
   /**
    * Enable/disable plugin update detection at boot. Default true.
    */

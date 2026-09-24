@@ -293,6 +293,13 @@ export const CHANNELS = {
     /** Legacy main-to-renderer update notification; kept byte-identical on wire. */
     updatesAvailable: "marketplace:updates-available",
   },
+  // Git runtime of the git marketplace (design §9, §13). Host-renderer only;
+  // installing downloads and runs a binary, so it needs a live keyboard gesture.
+  gitRuntime: {
+    status: "ave:git:runtime:status",
+    install: "ave:git:runtime:install",
+    progress: "git-runtime:progress", // event main→renderer (GitRuntimeProgress)
+  },
   agents: {
     list: "ave:agents:list",
     install: "ave:agents:install",
@@ -790,6 +797,8 @@ export const CHANNEL_GESTURE: Record<string, "required" | "none"> = {
   // Running a binary for the owner is its own decision, made at this keyboard
   // against a command the surface has already shown in full.
   [CHANNELS.tailnetObserver.configureServe]: "required",
+  // Installing the managed git downloads a binary the marketplace then runs.
+  [CHANNELS.gitRuntime.install]: "required",
   // Waiving the approval click for a whole account, and taking that waiver
   // back, is a grant decision — gated exactly like the click it replaces.
   [CHANNELS.tailnetObserver.setOwnDeviceAdmission]: "required",

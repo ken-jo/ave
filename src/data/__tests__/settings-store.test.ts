@@ -129,6 +129,17 @@ describe("SettingsService marketplace defaults", () => {
     });
   });
 
+  it("keeps a valid git runtime mode and drops anything else", () => {
+    const load = (git: unknown) => {
+      writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({ marketplace: { git } }), "utf-8");
+      return new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("marketplace").git;
+    };
+    expect(load({ mode: "managed" })).toEqual({ mode: "managed" });
+    expect(load({ mode: "system", extra: true })).toEqual({ mode: "system" });
+    expect(load({ mode: "portable" })).toBeUndefined();
+    expect(load("managed")).toBeUndefined();
+  });
+
   it("keeps only the declaration of an installed messaging connection", async () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),

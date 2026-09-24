@@ -22,6 +22,7 @@ import { ipcUserKeyboardIntent } from "./gesture-intent.js";
 import { mcpApiSurface } from "./mcp-api-surface.js";
 import { buildTelegramConnectionApiSurface } from "./telegram-connection-api-surface.js";
 import { buildTailnetObserverApiSurface } from "./tailnet-observer-api-surface.js";
+import { buildGitRuntimeApiSurface } from "./git-runtime-api-surface.js";
 import { buildTailnetSharingApiSurface } from "./tailnet-sharing-api-surface.js";
 import { buildAwayAuthorityApiSurface } from "./away-authority-api-surface.js";
 import { classifySubscription } from "../plugins/capabilities.js";
@@ -242,6 +243,7 @@ export function buildInternalApiSurface() {
   },
   tailnetSharing: buildTailnetSharingApiSurface(),
   tailnetObserver: buildTailnetObserverApiSurface(),
+  gitRuntime: buildGitRuntimeApiSurface(),
   telegramConnection: buildTelegramConnectionApiSurface(),
   awayAuthority: buildAwayAuthorityApiSurface(),
   onSettingsUpdated: (handler: Parameters<AveApi["onSettingsUpdated"]>[0]) => {
