@@ -17,6 +17,11 @@ let installedThemeIds = new Set<string>();
 export function setInstalledThemeIds(ids: readonly string[]): void {
   installedThemeIds = new Set(ids);
 }
+
+/** Whether an installed theme package holds `id` (design §5.5). */
+export function isInstalledThemeId(id: string): boolean {
+  return installedThemeIds.has(id);
+}
 const ALLOWED_SHELLS = new Set(["light", "dark"]);
 const PLUGIN_TOKEN_NAMES: Set<string> = new Set(AVE_TOKEN_NAMES);
 // Token values the host is allowed to hand a plugin frame, composed from the

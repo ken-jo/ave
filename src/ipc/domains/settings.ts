@@ -7,6 +7,7 @@ import { validateExternalUrl } from "../../shared/external-url.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import { SETTINGS } from "../../shared/ipc-channels.js";
 import { envForcedSettingsPaths } from "../../shared/env-backed-settings.js";
+import { isInstalledThemeId } from "../../shared/plugin-theme-cache.js";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { sendToWindow } from "../safe-send.js";
@@ -809,6 +810,22 @@ export function registerSettingsHandlers(deps: IpcDeps): void {
     // patch naming it is refused whole, the same way as `a2aRemote`.
     if (partial && typeof partial === "object" && Object.prototype.hasOwnProperty.call(partial, "appliedMigrations")) {
       return { ok: false, error: "applied-migrations-main-owned" };
+    }
+    // A theme package owns its id (design §5.5). The legacy marketplace turns a
+    // compiled bundle on by patching this list, so the refusal the package path
+    // makes in the other direction is made here: otherwise both claim one id.
+    const themeIdsPatch = ((partial as Record<string, unknown> | null | undefined)?.marketplace as Record<string, unknown> | undefined)
+      ?.installedThemeBundleIds;
+    if (Array.isArray(themeIdsPatch)) {
+      const held: readonly string[] = settingsService.get("marketplace").installedThemeBundleIds;
+      const claimed = themeIdsPatch.find((id): id is string => typeof id === "string" && !held.includes(id) && isInstalledThemeId(id));
+      if (claimed !== undefined) {
+        return {
+          ok: false,
+          error: "theme-id-held-by-package",
+          message: `Theme ${claimed} is installed as a package; uninstall the package first.`,
+        };
+      }
     }
     const llmPatch = (partial as Record<string, unknown> | null | undefined)
       ?.llm as Record<string, unknown> | undefined;
