@@ -129,6 +129,10 @@ describe("checkMarketplaceRepository", () => {
     expect(checkMarketplaceRepository(tree(validFiles()), released([["alpha@0.9.0", manifest({}, "0.9.0")]]))).toEqual([
       { subject: "plugin/alpha", message: "a released plugin.json was supplied for alpha@0.9.0, which the index does not list" },
     ]);
+    // A key naming no listed plugin (a typo, or a package the index dropped) is not skipped.
+    expect(checkMarketplaceRepository(tree(validFiles()), released([["alhpa@1.0.0", manifest({})]]))).toEqual([
+      { subject: "alhpa@1.0.0", message: "a released plugin.json was supplied for a plugin the index does not list" },
+    ]);
   });
 
   it("lets only a yanked field pin carry the installPolicy of its era", () => {
@@ -152,6 +156,14 @@ describe("checkMarketplaceRepository", () => {
     const bad = validFiles();
     bad.set("themes/harbor/theme.json", { name: "Harbor", description: "Blue light.", shell: "light", css: "body{}" });
     expect(check(bad)).toEqual([{ subject: "theme/harbor", message: expect.stringContaining("theme.json") }]);
+  });
+
+  it("reports a listed content file it cannot read instead of checking it as empty", () => {
+    const files = validFiles();
+    files.set("themes/harbor/preview.png", "png");
+    const listed = tree(files);
+    const unreadable: RepositoryTree = { list: listed.list, read: (path) => (path === "themes/harbor/preview.png" ? null : listed.read(path)) };
+    expect(checkMarketplaceRepository(unreadable, OFFICIAL)).toEqual([{ subject: "theme/harbor", message: "preview.png is listed but cannot be read" }]);
   });
 
   it("holds MCP packages to the launcher grammar and their files", () => {

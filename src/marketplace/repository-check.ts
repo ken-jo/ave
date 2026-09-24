@@ -71,7 +71,12 @@ function packageFiles(tree: RepositoryTree, dir: string): Array<{ path: string; 
     .map((path) => path.slice(prefix.length))
     .filter((path) => path !== DESCRIPTOR_NAME)
     .sort()
-    .map((path) => ({ path, data: tree.read(repoPath(dir, path)) ?? Buffer.alloc(0) }));
+    .map((path) => {
+      const data = tree.read(repoPath(dir, path));
+      // Listed but unreadable: an empty stand-in would pass the size and extension rules.
+      if (!data) throw new Error(`${path} is listed but cannot be read`);
+      return { path, data };
+    });
 }
 
 function newestVersion(entry: IndexPackage): IndexVersion | null {
@@ -246,6 +251,13 @@ export function checkMarketplaceRepository(tree: RepositoryTree, options: Reposi
   if (!index.ok) return [{ subject: INDEX_PATH, message: index.error }];
   for (const diagnostic of index.value.diagnostics) problems.push(diagnostic);
   for (const entry of index.value.index.packages) checkPackage(tree, entry, options, problems);
+  // checkReleasedManifests consumes the keys of listed plugins; any other key names nothing to check against.
+  const plugins = new Set(index.value.index.packages.filter((entry) => entry.kind === "plugin").map((entry) => entry.name));
+  for (const key of options.releasedManifests?.keys() ?? []) {
+    if (!plugins.has(key.slice(0, key.lastIndexOf("@")))) {
+      problems.push({ subject: key, message: "a released plugin.json was supplied for a plugin the index does not list" });
+    }
+  }
   const listed = new Set(index.value.index.packages.map((entry) => entry.path));
   for (const dir of unlisted(tree, listed)) {
     problems.push({ subject: repoPath(dir, DESCRIPTOR_NAME), message: "no index entry points at this package" });
