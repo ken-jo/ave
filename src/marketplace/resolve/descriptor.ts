@@ -98,13 +98,21 @@ export async function readDescriptorAtVersion(plan: PackagePlan, access: Reposit
   const checked = validateDescriptorText(bytes.toString("utf8"), { direct: access.direct });
   if (!checked.ok) throw fail(`${path} is invalid: ${checked.error}`);
   const descriptor = checked.value;
-  const differs = [
-    descriptor.kind !== plan.kind && "kind",
-    descriptor.name !== plan.name && "name",
-    descriptor.version !== plan.version && "version",
-    descriptor.minAppVersion !== plan.minAppVersion && "minAppVersion",
-    JSON.stringify(descriptor.platforms ?? null) !== JSON.stringify(plan.platforms ?? null) && "platforms",
-  ].filter((field): field is string => typeof field === "string");
+  const differs = descriptorDiffersFromIndex(descriptor, plan);
   if (differs.length > 0) throw fail(`the index copy differs from ${path} in ${differs.join(", ")}`);
   return descriptor;
+}
+
+/** The index's copy of a version, as far as every kind compares it with the descriptor. */
+export type IndexedVersionFields = Pick<PackagePlan, "kind" | "name" | "version" | "minAppVersion" | "platforms">;
+
+/** The fields in which `descriptor` says something other than the index's copy of its version; empty when they agree. */
+export function descriptorDiffersFromIndex(descriptor: PackageDescriptor, indexed: IndexedVersionFields): string[] {
+  return [
+    descriptor.kind !== indexed.kind && "kind",
+    descriptor.name !== indexed.name && "name",
+    descriptor.version !== indexed.version && "version",
+    descriptor.minAppVersion !== indexed.minAppVersion && "minAppVersion",
+    JSON.stringify(descriptor.platforms ?? null) !== JSON.stringify(indexed.platforms ?? null) && "platforms",
+  ].filter((field): field is string => typeof field === "string");
 }

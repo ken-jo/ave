@@ -9,6 +9,7 @@
  * refused by the export itself (`BareRepo.exportPath`).
  */
 import type { PackageKind } from "../catalog/types.js";
+import { MarketplaceError } from "../errors.js";
 
 export const CONTENT_KINDS = ["skill", "agent", "theme", "font", "language", "provider", "messaging-connection"] as const satisfies readonly PackageKind[];
 export type ContentKind = (typeof CONTENT_KINDS)[number];
@@ -112,4 +113,20 @@ export function contentFileProblem(kind: ContentKind, path: string): string | nu
     return `${path}: a ${kind} package allows ${extensions.join(" ")} files there`;
   }
   return null;
+}
+
+/**
+ * Hold a package's `files` to the rules of `kind` (design §5.4): count, total
+ * size and every path. The descriptor must already be out of the list.
+ * CONTENT_RULE_VIOLATION names the first rule broken.
+ */
+export function checkContentFiles(kind: ContentKind, files: ReadonlyArray<{ path: string; data: Buffer }>): void {
+  const rule = CONTENT_RULES[kind];
+  if (files.length > rule.maxFiles) throw new MarketplaceError("CONTENT_RULE_VIOLATION", `a ${kind} package holds at most ${rule.maxFiles} files`);
+  const bytes = files.reduce((sum, file) => sum + file.data.length, 0);
+  if (bytes > rule.maxBytes) throw new MarketplaceError("CONTENT_RULE_VIOLATION", `a ${kind} package holds at most ${rule.maxBytes} bytes`);
+  for (const file of files) {
+    const problem = contentFileProblem(kind, file.path);
+    if (problem) throw new MarketplaceError("CONTENT_RULE_VIOLATION", problem);
+  }
 }

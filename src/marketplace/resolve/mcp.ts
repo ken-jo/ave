@@ -389,48 +389,77 @@ async function exportServerFiles(plan: McpInstallPlan, deps: McpResolveDeps): Pr
   }
 }
 
-/** Resolve an MCP package at the plan's commits into the spec the approval step shows. */
-export async function resolveMcpPackage(plan: McpInstallPlan, deps: McpResolveDeps): Promise<ResolvedMcpServer> {
-  const descriptor = await readDescriptorAtVersion(plan, deps);
-  const payload = descriptor.payload;
+/** Whether an MCP payload takes its spec from `server.json` rather than its own `server`. */
+export function mcpPayloadReadsServerJson(payload: Record<string, unknown>): boolean {
+  return !isRecord(payload.server);
+}
+
+/** The parsed bytes of the `server.json` at `path`; CONTENT_RULE_VIOLATION when they are not strict JSON. */
+export function parseServerJson(path: string, bytes: Buffer): unknown {
+  try {
+    return parseStrictJson(bytes.toString("utf8"));
+  } catch (error) {
+    throw refuse(`${path} does not parse: ${(error as Error).message}`);
+  }
+}
+
+/** What an MCP package declares, before its package files are exported. */
+export interface DeclaredMcpServer {
+  from: ResolvedMcpServer["from"];
+  runtime: McpRuntimeSpec;
+  /** The package-relative command (`server/…`) the server runs from the package's own files; null for a launcher or http. */
+  packageCommand: string | null;
+}
+
+/**
+ * The runtime spec an MCP package declares, from the descriptor's own
+ * `server` or from `serverJson` (the parsed `server.json`, which the caller
+ * reads only when `mcpPayloadReadsServerJson` says so). Both pass the
+ * launcher grammar. Install and the repository check share this.
+ */
+export function declaredMcpServer(name: string, payload: Record<string, unknown>, serverJson: unknown): DeclaredMcpServer {
   let runtime: McpRuntimeSpec;
   let from: ResolvedMcpServer["from"];
   if (isRecord(payload.server)) {
     runtime = runtimeFromDescriptor(payload.server);
     from = "descriptor";
   } else {
+    runtime = runtimeFromServerJson(serverJson, isRecord(payload.select) ? (payload.select as { package?: number; remote?: number }) : undefined);
+    from = "server.json";
+  }
+  if (usesToken(runtime, "$PYTHON")) throw refuse(`MCP server ${name} uses $PYTHON; Ave provides no Python runtime (use uvx)`);
+  // A stdio command cannot hold it: validation allows only a launcher or a `server/` path there.
+  if (runtime.transport !== "stdio" && JSON.stringify(runtime).includes("$DATA_DIR")) {
+    throw refuse(`MCP server ${name}: $DATA_DIR is filled in only in a stdio server's arguments and environment`);
+  }
+  assertMcpRuntimePinned(name, runtime);
+  // Validation allows only `server/…` for a non-launcher command (design §5.2); it runs from the exported files.
+  const packageCommand = runtime.transport === "stdio" && !LAUNCHERS.has(runtime.command) ? runtime.command : null;
+  if (packageCommand === null && usesToken(runtime, "$PLUGIN_DIR")) {
+    throw refuse(`MCP server ${name} refers to $PLUGIN_DIR but ships no package files`);
+  }
+  return { from, runtime, packageCommand };
+}
+
+/** Resolve an MCP package at the plan's commits into the spec the approval step shows. */
+export async function resolveMcpPackage(plan: McpInstallPlan, deps: McpResolveDeps): Promise<ResolvedMcpServer> {
+  const descriptor = await readDescriptorAtVersion(plan, deps);
+  const payload = descriptor.payload;
+  let serverJson: unknown;
+  if (mcpPayloadReadsServerJson(payload)) {
     const path = repoPath(plan.packagePath, "server.json");
     await deps.repo.ensureBlobs(deps.remote, plan.versionCommit, [path], deps.signal);
     const bytes = await deps.repo.readFile(plan.versionCommit, path, SERVER_JSON_LIMIT);
     if (!bytes) throw refuse(`${path} is missing at ${plan.versionCommit}`);
-    let document: unknown;
-    try {
-      document = parseStrictJson(bytes.toString("utf8"));
-    } catch (error) {
-      throw refuse(`${path} does not parse: ${(error as Error).message}`);
-    }
-    runtime = runtimeFromServerJson(document, isRecord(payload.select) ? (payload.select as { package?: number; remote?: number }) : undefined);
-    from = "server.json";
+    serverJson = parseServerJson(path, bytes);
   }
-  if (usesToken(runtime, "$PYTHON")) throw refuse(`MCP server ${plan.name} uses $PYTHON; Ave provides no Python runtime (use uvx)`);
-  // A stdio command cannot hold it: validation allows only a launcher or a `server/` path there.
-  if (runtime.transport !== "stdio" && JSON.stringify(runtime).includes("$DATA_DIR")) {
-    throw refuse(`MCP server ${plan.name}: $DATA_DIR is filled in only in a stdio server's arguments and environment`);
+  const { from, runtime, packageCommand } = declaredMcpServer(plan.name, payload, serverJson);
+  if (packageCommand === null || runtime.transport !== "stdio") return { plan, from, runtime, packageFiles: null };
+  const packageFiles = await exportServerFiles(plan, deps);
+  if (!new AdmZip(packageFiles.zipBuffer).getEntry(packageCommand)) {
+    throw refuse(`MCP server ${plan.name}: ${packageCommand} is not a file in the package at ${plan.versionCommit}`);
   }
-  assertMcpRuntimePinned(plan.name, runtime);
-  let packageFiles: ResolvedMcpServer["packageFiles"] = null;
-  if (runtime.transport === "stdio" && !LAUNCHERS.has(runtime.command)) {
-    // Validation allows only `server/…` here (design §5.2); it runs from the exported files.
-    packageFiles = await exportServerFiles(plan, deps);
-    const command = runtime.command;
-    if (!packageFiles || !new AdmZip(packageFiles.zipBuffer).getEntry(command)) {
-      throw refuse(`MCP server ${plan.name}: ${command} is not a file in the package at ${plan.versionCommit}`);
-    }
-    runtime = { ...runtime, command: `$PLUGIN_DIR/${command}` };
-  } else if (usesToken(runtime, "$PLUGIN_DIR")) {
-    throw refuse(`MCP server ${plan.name} refers to $PLUGIN_DIR but ships no package files`);
-  }
-  return { plan, from, runtime, packageFiles };
+  return { plan, from, runtime: { ...runtime, command: `$PLUGIN_DIR/${packageCommand}` }, packageFiles };
 }
 
 /** Where the MCP config the install registers points its tokens. */
