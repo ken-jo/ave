@@ -415,6 +415,11 @@ type McpServerSpec =
   exported at the version's commit, which must contain the command; the MCP
   artifact store installs those files and `$PLUGIN_DIR` points at them.
   `$PLUGIN_DIR` without package files, and `$PYTHON`, are refused.
+- `$DATA_DIR`, in arguments and environment, is the package's own data
+  directory (`~/.ave/mcp-data/<name>`): created at install, kept across
+  updates, and removed at uninstall only when the user chooses to remove
+  the data too. A server that keeps state (a database file, an opened
+  directory) uses it; `$PLUGIN_DIR` is replaced with every version.
 
 ### 5.3 Plugin manifest changes
 
