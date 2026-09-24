@@ -419,7 +419,10 @@ type McpServerSpec =
   directory (`~/.ave/mcp-data/<name>`): created at install, kept across
   updates, and removed at uninstall only when the user chooses to remove
   the data too. A server that keeps state (a database file, an opened
-  directory) uses it; `$PLUGIN_DIR` is replaced with every version.
+  directory) uses it; `$PLUGIN_DIR` is replaced with every version. A
+  remote (HTTP) server naming `$DATA_DIR` is refused: nothing fills it in
+  there. Tokens are filled in one pass, and a token ends where a name
+  character would continue it (`$NODE_OPTIONS` stays literal).
 
 ### 5.3 Plugin manifest changes
 
