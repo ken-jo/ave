@@ -1,0 +1,188 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { CatalogRow } from "../../catalog/aggregate.js";
+import type { IndexVersion, PackageKind } from "../../catalog/types.js";
+import type { InstalledPackage } from "../../resolve/identity.js";
+import { EMPTY_MARKETPLACE_POLICY, type MarketplacePolicy, type PackageKey } from "../../sources/policy.js";
+import type { SourceOrigin } from "../../sources/registry.js";
+import { AppliedDefaults } from "../applied.js";
+import { DEFAULT_INSTALLS } from "../default-installs.js";
+import { assertNotRequiredByPolicy, requiredByPolicy, runBootInstalls, type BootInstallInput } from "../run.js";
+
+const AT = new Date("2026-09-23T00:00:00.000Z");
+
+const version = (v: string, minAppVersion = "0.12.0"): IndexVersion => ({ version: v, commit: "c".repeat(40), minAppVersion, publishedAt: AT.toISOString() });
+
+function row(sourceId: string, name: string, choice: CatalogRow["choice"] = { state: "candidate", version: version("1.0.0") }, kind: PackageKind = "plugin"): CatalogRow {
+  const versions = choice.state === "candidate" ? [choice.version] : [version("9.0.0", "0.99.0")];
+  return { sourceId, sourceOrigin: "official", snapshotCommit: "d".repeat(40), kind, name, package: { kind, name, path: `plugins/${name}`, versions }, choice };
+}
+
+const key = (name: string, source = "ave", kind: PackageKind = "plugin"): PackageKey => ({ kind, name, source });
+
+describe("runBootInstalls (design §10.2)", () => {
+  let dir: string;
+  let file: string;
+  let installedState: Map<string, InstalledPackage>;
+  let calls: Array<{ name: string; source: string; switchSource: boolean; required: boolean }>;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "ave-boot-installs-"));
+    file = join(dir, "packages", "default-installs.json");
+    installedState = new Map();
+    calls = [];
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  async function boot(options: {
+    policy?: Partial<MarketplacePolicy>;
+    rows?: CatalogRow[];
+    synced?: Record<string, SourceOrigin>;
+    failing?: Set<string>;
+  } = {}) {
+    const input: BootInstallInput = {
+      policy: { ...EMPTY_MARKETPLACE_POLICY, ...options.policy },
+      defaults: DEFAULT_INSTALLS,
+      rows: options.rows ?? [row("ave", "meeting"), row("ave", "local-indexer")],
+      synced: new Map(Object.entries(options.synced ?? { ave: "official" })),
+      installed: async (_kind, name) => installedState.get(name) ?? null,
+      install: async (target, flags) => {
+        calls.push({ name: target.name, source: target.sourceId, ...flags });
+        if (options.failing?.has(target.name)) throw new Error("network down");
+        const choice = target.choice as { version: IndexVersion };
+        installedState.set(target.name, { kind: target.kind, name: target.name, version: choice.version.version, sourceId: target.sourceId });
+      },
+      applied: await AppliedDefaults.open(file),
+      now: () => AT,
+    };
+    return runBootInstalls(input);
+  }
+
+  it("installs the app's defaults once and never again after the user uninstalls them", async () => {
+    const first = await boot();
+    expect(first.installed).toEqual([key("meeting"), key("local-indexer")]);
+    expect(calls).toEqual([
+      { name: "meeting", source: "ave", switchSource: false, required: false },
+      { name: "local-indexer", source: "ave", switchSource: false, required: false },
+    ]);
+    installedState.clear(); // the user uninstalls both
+    calls = [];
+    const second = await boot();
+    expect(second).toEqual({ installed: [], updated: [], switched: [], skipped: [], failed: [] });
+    expect(calls).toEqual([]);
+    expect(JSON.parse(await readFile(file, "utf8"))).toMatchObject({
+      version: 1,
+      applied: [
+        { kind: "plugin", name: "meeting", source: "ave", result: "installed" },
+        { kind: "plugin", name: "local-indexer", source: "ave", result: "installed" },
+      ],
+    });
+  });
+
+  it("retries a default whose source has no snapshot yet or whose install failed, and records missing packages as skipped", async () => {
+    const offline = await boot({ synced: {} });
+    expect(offline.installed).toEqual([]);
+    expect((await AppliedDefaults.open(file)).list()).toEqual([]);
+
+    const failed = await boot({ failing: new Set(["meeting"]), rows: [row("ave", "meeting")] });
+    expect(failed.failed).toEqual([{ key: key("meeting"), message: "network down" }]);
+    expect(failed.skipped).toEqual([{ key: key("local-indexer"), reason: "ave does not list plugin local-indexer" }]);
+    const applied = await AppliedDefaults.open(file);
+    expect(applied.has(key("meeting"))).toBe(false);
+    expect(applied.get(key("local-indexer"))).toMatchObject({ result: "skipped" });
+
+    const retried = await boot({ rows: [row("ave", "meeting"), row("ave", "local-indexer")] });
+    expect(retried.installed).toEqual([key("meeting")]);
+  });
+
+  it("records a default already installed from its source, and skips one the user installed from another source", async () => {
+    installedState.set("meeting", { kind: "plugin", name: "meeting", version: "1.0.0", sourceId: "ave" });
+    installedState.set("local-indexer", { kind: "plugin", name: "local-indexer", version: "1.0.0", sourceId: "acme" });
+    const report = await boot();
+    expect(calls).toEqual([]);
+    expect(report.skipped).toEqual([{ key: key("local-indexer"), reason: "already installed from acme" }]);
+    const applied = await AppliedDefaults.open(file);
+    expect(applied.get(key("meeting"))).toMatchObject({ result: "installed" });
+    expect(applied.get(key("local-indexer"))).toMatchObject({ result: "skipped" });
+  });
+
+  it("skips an incompatible default and names the version it needs", async () => {
+    const report = await boot({ rows: [row("ave", "meeting", { state: "upgrade_required", minAppVersion: "0.99.0" }), row("ave", "local-indexer")] });
+    expect(report.skipped).toEqual([{ key: key("meeting"), reason: "needs Ave 0.99.0" }]);
+  });
+
+  it("adds the policy's defaults from managed sources and refuses a custom one", async () => {
+    const report = await boot({
+      policy: { defaultInstalls: [key("wiki", "corp"), key("toy", "acme")] },
+      rows: [row("ave", "meeting"), row("ave", "local-indexer"), row("corp", "wiki"), row("acme", "toy")],
+      synced: { ave: "official", corp: "managed", acme: "custom" },
+    });
+    expect(report.installed).toEqual([key("meeting"), key("local-indexer"), key("wiki", "corp")]);
+    expect(report.skipped).toEqual([{ key: key("toy", "acme"), reason: "source acme is neither official nor managed" }]);
+  });
+
+  it("brings required installs to the candidate every boot: install, update, switch, repair", async () => {
+    const policy = { requiredInstalls: [key("wiki", "corp")] };
+    const synced = { ave: "official", corp: "managed" } as Record<string, SourceOrigin>;
+    const rows = (v: string) => [row("ave", "meeting"), row("ave", "local-indexer"), row("corp", "wiki", { state: "candidate", version: version(v) })];
+
+    expect((await boot({ policy, synced, rows: rows("1.0.0") })).installed).toContainEqual(key("wiki", "corp"));
+    installedState.delete("wiki"); // removed behind the app's back: required means it comes back
+    expect((await boot({ policy, synced, rows: rows("1.0.0") })).installed).toEqual([key("wiki", "corp")]);
+    expect((await boot({ policy, synced, rows: rows("1.0.0") }))).toMatchObject({ installed: [], updated: [] });
+    expect((await boot({ policy, synced, rows: rows("1.1.0") })).updated).toEqual([key("wiki", "corp")]);
+
+    installedState.set("wiki", { kind: "plugin", name: "wiki", version: "5.0.0", sourceId: "acme" });
+    calls = [];
+    expect((await boot({ policy, synced, rows: rows("1.1.0") })).switched).toEqual([key("wiki", "corp")]);
+    expect(calls).toEqual([{ name: "wiki", source: "corp", switchSource: true, required: true }]);
+
+    installedState.set("wiki", { kind: "plugin", name: "wiki", version: null, sourceId: "corp" });
+    expect((await boot({ policy, synced, rows: rows("1.1.0") })).updated).toEqual([key("wiki", "corp")]);
+  });
+
+  it("never records required keys as defaults, and a required key is not also installed as a default", async () => {
+    const report = await boot({ policy: { requiredInstalls: [key("meeting")] } });
+    expect(report.installed).toEqual([key("meeting"), key("local-indexer")]);
+    expect(calls.filter((call) => call.name === "meeting")).toEqual([{ name: "meeting", source: "ave", switchSource: false, required: true }]);
+    expect((await AppliedDefaults.open(file)).has(key("meeting"))).toBe(false);
+  });
+
+  it("locks uninstall and disable only for a requiredInstalls entry", () => {
+    const policy = { ...EMPTY_MARKETPLACE_POLICY, requiredInstalls: [key("wiki", "corp")] };
+    expect(requiredByPolicy(policy, "plugin", "wiki")).toEqual(key("wiki", "corp"));
+    expect(requiredByPolicy(policy, "plugin", "meeting")).toBeUndefined();
+    expect(requiredByPolicy(policy, "skill", "wiki")).toBeUndefined();
+    expect(() => assertNotRequiredByPolicy(policy, "plugin", "wiki", "uninstall")).toThrow(
+      expect.objectContaining({ code: "PACKAGE_REQUIRED_BY_POLICY", message: "plugin wiki is required by policy (source corp); it cannot be uninstalled" }),
+    );
+    expect(() => assertNotRequiredByPolicy(policy, "plugin", "wiki", "disable")).toThrow(/cannot be disabled/u);
+    expect(() => assertNotRequiredByPolicy(policy, "plugin", "meeting", "uninstall")).not.toThrow();
+  });
+
+  it("leaves a default held back by a rollout or as a pre-release unrecorded, to try again next boot", async () => {
+    const report = await boot({ rows: [row("ave", "meeting", { state: "unavailable", reason: "pending" }), row("ave", "local-indexer", { state: "unavailable", reason: "withheld" })] });
+    expect(report.skipped).toEqual([
+      { key: key("meeting"), reason: "not offered to this installation yet (rollout or pre-release)" },
+      { key: key("local-indexer"), reason: "no version is offered to this installation" },
+    ]);
+    const applied = await AppliedDefaults.open(file);
+    expect(applied.has(key("meeting"))).toBe(false);
+    expect(applied.get(key("local-indexer"))).toMatchObject({ result: "skipped" });
+    expect((await boot()).installed).toEqual([key("meeting")]);
+  });
+
+  it("refuses to run over an applied file it cannot read", async () => {
+    mkdirSync(join(dir, "packages"));
+    writeFileSync(file, "{\"version\":1,\"applied\":[{\"kind\":\"plugin\",\"name\":\"meeting\",\"source\":\"ave\",\"result\":\"done\",\"at\":\"x\"}]}");
+    await expect(AppliedDefaults.open(file)).rejects.toThrow("result is invalid");
+    writeFileSync(file, "not json");
+    await expect(AppliedDefaults.open(file)).rejects.toThrow();
+  });
+});

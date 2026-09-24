@@ -125,6 +125,15 @@ export class NetworkGate {
     return verdict;
   }
 
+  /**
+   * Policy and scheme for a download that is fetched under another URL: a
+   * GitHub release asset a token fetches through api.github.com is governed
+   * by the rules for its github.com repository.
+   */
+  async checkDownloadPolicy(rawUrl: string, subject: GateSubject): Promise<void> {
+    await this.checkPolicyAndScheme(downloadUrlForPolicy(new URL(rawUrl)), subject, "download");
+  }
+
   /** A download or service call under steps 1–5. */
   async fetch(rawUrl: string, init: GatedFetchInit): Promise<Response> {
     let start: URL;

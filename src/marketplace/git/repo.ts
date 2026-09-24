@@ -224,7 +224,8 @@ export class BareRepo {
    * present first, then `git archive` of that subtree streams a tar that is
    * checked entry by entry. Only regular files and directories are accepted; a symlink,
    * submodule or path that is not portable stops the export. Files land
-   * relative to `path`.
+   * relative to `path`; `""` exports the whole tree (a direct source whose
+   * package is the repository root).
    */
   async exportPath(
     remote: GitRemote,
@@ -237,16 +238,25 @@ export class BareRepo {
     // A gitlink (submodule) becomes an empty directory in the tar and a
     // symlink a link entry; the tree says what each entry really is, and it is
     // present without blobs, so check it before fetching anything.
-    for (const entry of await this.lsTree(commit, path, true)) {
+    const root = path === "";
+    let fileCount = 0;
+    for (const entry of await this.lsTree(commit, root ? null : path, true)) {
       if (entry.type === "commit") {
         throw new MarketplaceError("CONTENT_RULE_VIOLATION", `submodules are not allowed: ${entry.path}`);
       }
       if (entry.type === "blob" && entry.mode !== "100644" && entry.mode !== "100755") {
         throw new MarketplaceError("CONTENT_RULE_VIOLATION", `only regular files are allowed (mode ${entry.mode}): ${entry.path}`);
       }
+      if (entry.type === "blob") fileCount += 1;
     }
-    await this.ensureBlobs(remote, commit, [path], signal);
-    const prefix = `${path}/`;
+    // Refuse an oversized tree before its blobs are downloaded; the byte limit
+    // needs the blobs and is checked while the archive streams.
+    if (fileCount > limits.maxFiles) {
+      throw new MarketplaceError("CONTENT_RULE_VIOLATION", `more than ${limits.maxFiles} files: ${path || "the repository root"}`);
+    }
+    await this.ensureBlobs(remote, commit, root ? [] : [path], signal);
+    // The prefix only tells archive entries from anything else in the stream.
+    const prefix = "export/";
     const files = new Map<string, { data: Buffer[]; size: number; executable: boolean }>();
     const identities = new Set<string>();
     let totalBytes = 0;
@@ -271,7 +281,7 @@ export class BareRepo {
       if (!entry.path.startsWith(prefix)) return rejectEntry("entry outside the exported path");
       let relative: string | null;
       try {
-        relative = sanitizeZipEntryPath(path, entry.path.slice(prefix.length));
+        relative = sanitizeZipEntryPath(path || "export", entry.path.slice(prefix.length));
       } catch (error) {
         return rejectEntry((error as Error).message);
       }
@@ -290,7 +300,7 @@ export class BareRepo {
 
     // The tree-ish form reads only this subtree; `archive <commit> -- <path>`
     // also reads blobs outside the path, which a partial clone does not have.
-    await this.runner.run(["archive", "--format=tar", `--prefix=${prefix}`, `${commit}:${path}`], {
+    await this.runner.run(["archive", "--format=tar", `--prefix=${prefix}`, root ? `${commit}^{tree}` : `${commit}:${path}`], {
       gitDir: this.dir,
       timeoutMs: GIT_TIMEOUTS_MS.export,
       ...(signal ? { signal } : {}),

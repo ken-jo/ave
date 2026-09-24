@@ -48,7 +48,19 @@ import {
   restoreSupersededPendingPluginUpdate,
 } from "./marketplace-update-recovery.js";
 import { PLUGIN_RUNTIME_DIR_NAMES, carryPluginDataDir, pluginPayloadCopyFilter } from "./plugin-storage-layout.js";
-import { installReceiptPath, listFilesRecursive, restoreInstallReceiptRaw, verifyInstallReceipt } from "./plugin-install-receipt.js";
+import {
+  buildGitInstallReceipt,
+  installReceiptPath,
+  listFilesRecursive,
+  restoreInstallReceiptRaw,
+  verifyInstallReceipt,
+} from "./plugin-install-receipt.js";
+import { assertGitInstallManifest } from "../marketplace/resolve/manifest-rules.js";
+import { classifyInstall, type InstallAction } from "../marketplace/resolve/identity.js";
+import { requiredByPolicy } from "../marketplace/boot-installs/run.js";
+import type { MarketplacePolicy } from "../marketplace/sources/policy.js";
+import { MarketplaceError } from "../marketplace/errors.js";
+import type { PluginInstallPlan, StagedPluginArtifact } from "../marketplace/resolve/plugin-ladder.js";
 import { canonicalJSON } from "./whitelist/canonical-json.js";
 import {
   abortRemovalTransaction,
@@ -321,6 +333,20 @@ function serializeNetworkAccessAcknowledgement(
   acknowledgement: NetworkAccessAcknowledgement | undefined,
 ): string {
   return JSON.stringify(buildNetworkAccessAcknowledgement(acknowledgement) ?? null);
+}
+
+/**
+ * The signed catalog is not a git source (design §15.1): replacing a plugin
+ * bound to one would switch its source without PACKAGE_ID_CONFLICT. The user
+ * updates or rolls back through the bound source, or uninstalls first.
+ */
+function assertCatalogMayReplace(entry: PluginRegistryEntry | null | undefined, pluginId: string): void {
+  if (entry?.origin) {
+    throw new MarketplaceError(
+      "PACKAGE_ID_CONFLICT",
+      `${pluginId} is installed from source ${entry.origin.sourceId}; the catalog does not replace it`,
+    );
+  }
 }
 
 function resolveRollbackInstallSource(
@@ -1045,6 +1071,8 @@ export class PluginMarketplaceService {
     }
 
     const existingEntry = await this.getRawRegistryEntry(canonicalPluginId);
+    // A managed (it-admin) install is the policy's decision and may replace it.
+    if (actor !== "it-admin") assertCatalogMayReplace(existingEntry, canonicalPluginId);
     if (existingEntry) {
       // Same-version installs are idempotent only when the install receipt is
       // valid and the installed artifact hash still matches the catalog.
@@ -1676,6 +1704,7 @@ export class PluginMarketplaceService {
       }
 
       const existingEntry = await this.getRawRegistryEntry(plugin.id);
+      assertCatalogMayReplace(existingEntry, plugin.id);
       await this.snapshotCurrentInstall(pluginId);
 
       let pendingEntry: PluginRegistryEntry | null = null;
@@ -1733,6 +1762,8 @@ export class PluginMarketplaceService {
       "marketplace rollback",
     );
     return this.withPluginLock(pluginId, async () => {
+      // Rollback fetches from the catalog; a git install's earlier versions are its source's.
+      assertCatalogMayReplace(await this.getRawRegistryEntry(pluginId), pluginId);
       const currentVersion = await this.getInstalledVersion(pluginId);
       const priorVersion = await this.artifactStore.findRollbackTarget(
         pluginId,
@@ -2319,6 +2350,206 @@ export class PluginMarketplaceService {
   }
 
   /**
+   * Install a plugin from a git source (design §6.2, §2.3). Inside the plugin
+   * lock: the deployment guard, then the dependency preflight on the plan's
+   * authority — before anything is downloaded — then the ladder (`stage`),
+   * then the shared zip transaction with a v4 receipt and the registry
+   * `origin`. There is no envelope verification on this path: the ladder
+   * proved the bytes against the pin or computed their tree digest, and the
+   * staged manifest against the descriptor.
+   */
+  async installGitPlugin(
+    plan: PluginInstallPlan,
+    options: {
+      stage: (plan: PluginInstallPlan) => Promise<StagedPluginArtifact>;
+      activatePreparedArtifact: PreparedMarketplacePluginActivation;
+      /** Replace an install bound to another source (or to none); the plugin's data is kept. */
+      switchSource?: boolean;
+      /**
+       * The managed policy. Only an install its `requiredInstalls` names,
+       * from that source (design §10.2), may replace an admin-installed
+       * plugin, and the entry stays admin-installed. The caller does not
+       * claim this; it is read from the policy here.
+       */
+      policy: MarketplacePolicy;
+      signal?: AbortSignal;
+    },
+  ): Promise<{ pluginId: string; installed: true; version: string; action: InstallAction; staged: StagedPluginArtifact }> {
+    const activatePreparedArtifact = requirePreparedMarketplacePluginActivation(
+      options?.activatePreparedArtifact,
+      "git plugin install",
+    );
+    const pluginId = assertSafeArtifactSlug(plan.name);
+    return this.withPluginLock(pluginId, async () => {
+      if (this.deploymentGuard) {
+        const guardResult = await this.deploymentGuard.canInstall(pluginId, "user", undefined);
+        if (!guardResult.allowed) {
+          throw new Error(guardResult.reason ?? `Plugin install denied: ${pluginId}`);
+        }
+      }
+      const current = await this.getRawRegistryEntry(pluginId);
+      if (current?.installSource === "admin" && requiredByPolicy(options.policy, "plugin", pluginId)?.source !== plan.sourceId) {
+        throw new MarketplaceError("PACKAGE_ID_CONFLICT", `refusing to replace admin-installed plugin ${pluginId}: only the policy's required install from its source may`);
+      }
+      const registryInstallSource = current?.installSource === "admin" ? "admin" : "user";
+      const action = classifyInstall(
+        plan,
+        current
+          ? {
+              kind: "plugin",
+              name: pluginId,
+              version: current.origin?.version ?? (await this.getInstalledVersion(pluginId)),
+              sourceId: current.origin?.sourceId ?? null,
+            }
+          : null,
+        { switchSource: options.switchSource === true },
+      );
+      await this.preflightGitDependencies(plan);
+      const staged = await options.stage(plan);
+      if (staged.plan !== plan) {
+        throw new Error(`git plugin install of ${pluginId}: the staged artifact belongs to another plan`);
+      }
+
+      const existingEntry = current;
+      await this.snapshotCurrentInstall(pluginId);
+      let pendingEntry: PluginRegistryEntry | null = null;
+      const installOutcome = await this.installZipTransaction(pluginId, staged.zipBuffer, {
+        // The ladder checked the zip's plugin.json; this checks the file that
+        // was actually extracted, which is the one that will run.
+        assertManifest: async (manifestFile) => {
+          assertGitInstallManifest(JSON.parse(await readFile(manifestFile, "utf-8")) as unknown, {
+            name: plan.name,
+            version: plan.version,
+            minAppVersion: plan.minAppVersion,
+            authority: plan.authority,
+          });
+        },
+        prepareReceipt: (pluginRoot, files) => this.prepareGitInstallReceipt(pluginId, pluginRoot, staged, files),
+        approvedPluginAccess: plan.authority.pluginAccess as PluginAccessSpec | undefined,
+        activatePreparedArtifact,
+        registryInstallSource,
+        signal: options.signal,
+        beforePromote: async (recoveryBackupDir) => {
+          // The replacement journal is the same as a catalog install's: the
+          // recovery restores a directory and a receipt, whatever wrote them.
+          pendingEntry = await this.markMarketplaceRegistryEntryPending(existingEntry, recoveryBackupDir);
+        },
+        commit: async (manifestPath, manifestAbsPath) => {
+          const manifestSha256 = await this.readManifestSha256(manifestAbsPath);
+          await this.commitGitRegistryEntry(staged, manifestPath, manifestSha256, existingEntry, registryInstallSource);
+        },
+      }).catch((err) => this.restoreMarketplaceRegistryEntryAfterFailure(pendingEntry, existingEntry, err));
+      const manifestAbsPath = isAbsolute(installOutcome.manifestPath)
+        ? installOutcome.manifestPath
+        : resolve(dirname(this.registryPath), installOutcome.manifestPath);
+      await this.artifactStore.cacheVersionFromManifest(pluginId, manifestAbsPath).catch((error) => {
+        log.warn({ pluginId, err: error }, "post-commit manifest cache degraded");
+      });
+      await this.artifactStore.appendHistory(pluginId, {
+        version: plan.version,
+        installedAt: new Date().toISOString(),
+      }).catch((error) => {
+        log.warn({ pluginId, err: error }, "post-commit install history degraded");
+      });
+      this.clearInstallReceiptValidationForPlugin(pluginId);
+      if (installOutcome.predecessorRetired) {
+        await this.discardSupersededPendingBackup(existingEntry).catch((error) => {
+          log.warn({ pluginId, err: error }, "post-retirement backup cleanup degraded");
+        });
+      }
+      return { pluginId, installed: true, version: plan.version, action, staged };
+    });
+  }
+
+  /** `requires.capabilities` and hard plugin dependencies of the plan's authority, against what is installed. */
+  private async preflightGitDependencies(plan: PluginInstallPlan): Promise<void> {
+    const required = plan.authority.requires?.capabilities ?? [];
+    const dependencies = normalizeDependencies({
+      dependencies: plan.authority.dependencies as PluginMarketplaceItem["dependencies"],
+    });
+    if (required.length === 0 && dependencies.length === 0) return;
+    const installed = await this.loadInstalledManifests();
+    const capabilities = resolveDependencies(required, installed);
+    if (!capabilities.ok) throw new MissingDependenciesError(capabilities.missing);
+    const installedIds = new Set(installed.map((manifest) => manifest.id));
+    const missing = dependencies.filter((dependency) => dependency.required && !installedIds.has(dependency.pluginId));
+    if (missing.length > 0) throw new MissingPluginDependenciesError(missing.map((dependency) => dependency.pluginId));
+  }
+
+  private async prepareGitInstallReceipt(
+    pluginId: string,
+    pluginRoot: string,
+    staged: StagedPluginArtifact,
+    files: string[],
+  ): Promise<string> {
+    const manifestRaw = await readFile(resolve(pluginRoot, "plugin.json"), "utf-8");
+    await materializePluginContributions(pluginRoot, flattenAgentPluginsManifest(JSON.parse(manifestRaw)));
+    const { plan } = staged;
+    return (await buildGitInstallReceipt(pluginRoot, {
+      pluginId,
+      version: plan.version,
+      artifactSha256: staged.artifactSha256,
+      git: {
+        sourceId: plan.sourceId,
+        sourceOrigin: plan.sourceOrigin,
+        snapshotCommit: plan.snapshotCommit,
+        versionCommit: plan.versionCommit,
+        packagePath: plan.packagePath,
+        rung: staged.rung,
+        rungs: staged.rungs,
+      },
+      files,
+    })).raw;
+  }
+
+  private async commitGitRegistryEntry(
+    staged: StagedPluginArtifact,
+    manifestPath: string,
+    manifestSha256: string,
+    previousEntry: PluginRegistryEntry | null,
+    installSource: "user" | "admin",
+  ): Promise<void> {
+    const { plan } = staged;
+    const origin: NonNullable<PluginRegistryEntry["origin"]> = {
+      sourceId: plan.sourceId,
+      sourceOrigin: plan.sourceOrigin,
+      commit: plan.snapshotCommit,
+      packagePath: plan.packagePath,
+      version: plan.version,
+      rung: staged.rung,
+      artifactSha256: staged.artifactSha256,
+      installedAt: new Date().toISOString(),
+    };
+    const approvedPluginAccess = plan.authority.pluginAccess as PluginAccessSpec | undefined;
+    await updatePluginRegistry(this.registryPath, (registry) => {
+      const existing = registry.plugins.find((entry) => entry.id === plan.name);
+      if (existing) {
+        const pendingCleanup = cleanupJournalAfterCommit(existing);
+        existing.manifestPath = manifestPath;
+        existing.manifestSha256 = manifestSha256;
+        existing.enabled = true;
+        existing.installSource = installSource;
+        existing.bundleRefs = this.mergeBundleRefs(existing.bundleRefs, null, plan.name);
+        existing.approvedPluginAccess = approvedPluginAccess;
+        existing.origin = origin;
+        existing.pendingUpdate = undefined;
+        existing.pendingCleanup = pendingCleanup;
+      } else {
+        registry.plugins.push({
+          id: plan.name,
+          manifestPath,
+          manifestSha256,
+          enabled: true,
+          installSource,
+          bundleRefs: this.mergeBundleRefs(previousEntry?.bundleRefs ?? [], null, plan.name),
+          approvedPluginAccess,
+          origin,
+        });
+      }
+    });
+  }
+
+  /**
    * Install path — single source: download + verify + extract.
    *
    * The historical file:-spec / npm-install branch is gone. Production and
@@ -2350,114 +2581,145 @@ export class PluginMarketplaceService {
       plugin,
       version,
       onProgress,
-      async (verified) => {
-        let priorReceiptRaw: string | undefined;
-        try {
-          priorReceiptRaw = await readFile(
-            installReceiptPath(this.cacheRoot, plugin.id),
-            "utf-8",
-          );
-        } catch (err) {
-          if (!isMissingPathError(err)) throw err;
-        }
-        let receiptCommitted = false;
-        let preparedReceiptRaw: string | undefined;
-        let preparedManifest: PluginManifest | undefined;
-        let preparedDocument: unknown;
-        try {
-          throwIfMarketplaceInstallAborted(opts.signal, "marketplace plugin", plugin.id);
-          const transaction = await this.artifactStore.extractZipWithCommit(
-            plugin.id,
-            verified.zipBuffer,
-            async (pluginDir) => {
-              const manifestFile = resolve(pluginDir, "plugin.json");
-              if (!preparedReceiptRaw || !preparedManifest) {
-                throw new Error(`plugin "${plugin.id}" durable commit ran before staged preparation`);
-              }
-              await this.artifactStore.persistPreparedInstallReceipt(plugin.id, preparedReceiptRaw);
-              receiptCommitted = true;
-              const manifestPath = toRegistryRelativeManifestPath(this.registryPath, manifestFile);
-              await opts.commit?.(manifestPath, manifestFile);
-              return manifestPath;
-            },
-            {
-              beforePromote: opts.beforePromote,
-              coordinateCommit: async ({ pluginRoot, files, durableCommit }) => {
-                const manifestFile = resolve(pluginRoot, "plugin.json");
-                let manifestRaw: string;
-                try {
-                  manifestRaw = await readFile(manifestFile, "utf-8");
-                } catch {
-                  throw new Error(
-                    `plugin "${plugin.id}" verified artifact is missing plugin.json — every published marketplace zip must ship its own manifest`,
-                  );
-                }
-                const validateCatalogMetadata =
-                  opts.validateCatalogMetadata ??
-                  (!plugin.version || plugin.version === version || version === "latest");
-                await this.assertInstalledManifestMatchesCatalog(
-                  plugin,
-                  version,
-                  manifestFile,
-                  pluginRoot,
-                  validateCatalogMetadata,
-                );
-                preparedDocument = JSON.parse(manifestRaw) as unknown;
-                preparedManifest = flattenAgentPluginsManifest(preparedDocument);
-                preparedReceiptRaw = await this.prepareInstallReceipt(plugin.id, pluginRoot, {
-                  version,
-                  installSource: "marketplace",
-                  artifactSha256: verified.artifactSha256,
-                  signerKeyId: verified.signerKeyId,
-                  admission: verified.admission,
-                  files: [...files],
-                });
-                return opts.activatePreparedArtifact({
-                  installId: plugin.id,
-                  pluginRoot,
-                  manifest: preparedManifest,
-                  receiptRaw: preparedReceiptRaw,
-                  registryEntry: {
-                    installSource: opts.registryInstallSource,
-                    // The pin covers the FILE, so it hashes the document —
-                    // `readManifestSha256` re-derives it that way on every later
-                    // read, and a pin taken over the projection would never
-                    // match one taken over the file.
-                    manifestSha256: shaOfManifest(preparedDocument),
-                  },
-                  ...(plugin.pluginAccess ? { approvedPluginAccess: plugin.pluginAccess } : {}),
-                  durableCommit,
-                });
-              },
-              onCommittedBackupResolved: (obsoleteDir) =>
-                clearObsoletePluginBackupOwnership(this.paths, plugin.id, obsoleteDir),
-            },
-          );
-          return {
-            manifestPath: transaction.result,
-            predecessorRetired: transaction.predecessorRetired,
-          };
-        } catch (err) {
-          if (isCommittedPluginGenerationPublicationError(err)) throw err;
-          if (!receiptCommitted) throw err;
-          if (err instanceof ArtifactRollbackError) throw err;
-          try {
-            if (priorReceiptRaw === undefined) {
-              await rm(installReceiptPath(this.cacheRoot, plugin.id), { force: true });
-            } else {
-              await restoreInstallReceiptRaw(this.cacheRoot, plugin.id, priorReceiptRaw);
-            }
-          } catch (receiptRestoreError) {
-            throw new ArtifactRollbackError(
-              `marketplace install and receipt rollback both failed: ${plugin.id}`,
-              [err, receiptRestoreError],
+      (verified) =>
+        this.installZipTransaction(plugin.id, verified.zipBuffer, {
+          ...opts,
+          assertManifest: async (manifestFile, pluginRoot) => {
+            const validateCatalogMetadata =
+              opts.validateCatalogMetadata ??
+              (!plugin.version || plugin.version === version || version === "latest");
+            await this.assertInstalledManifestMatchesCatalog(
+              plugin,
+              version,
+              manifestFile,
+              pluginRoot,
+              validateCatalogMetadata,
             );
-          }
-          throw err;
-        }
-      },
+          },
+          prepareReceipt: (pluginRoot, files) =>
+            this.prepareInstallReceipt(plugin.id, pluginRoot, {
+              version,
+              installSource: "marketplace",
+              artifactSha256: verified.artifactSha256,
+              signerKeyId: verified.signerKeyId,
+              admission: verified.admission,
+              files,
+            }),
+          approvedPluginAccess: plugin.pluginAccess,
+        }),
       opts.signal,
     );
+  }
+
+  /**
+   * Stage → receipt → registry → generation for one zip that the caller has
+   * already verified (a signed catalog artifact, or a git ladder result). The
+   * caller decides how the staged manifest is checked, which receipt is
+   * written and which access grant the registry records; everything else —
+   * promotion, the prior-receipt restore and activation — is shared.
+   */
+  private async installZipTransaction(
+    pluginId: string,
+    zipBuffer: Buffer,
+    opts: {
+      assertManifest: (manifestFile: string, pluginRoot: string) => Promise<void>;
+      prepareReceipt: (pluginRoot: string, files: string[]) => Promise<string>;
+      approvedPluginAccess: PluginAccessSpec | undefined;
+      beforePromote?: (recoveryBackupDir: string) => Promise<void>;
+      commit?: (manifestPath: string, manifestAbsPath: string) => Promise<void>;
+      activatePreparedArtifact: PreparedMarketplacePluginActivation;
+      registryInstallSource: PluginRegistryEntryInstallSource;
+      signal?: AbortSignal;
+    },
+  ): Promise<{ manifestPath: string; predecessorRetired: boolean }> {
+    let priorReceiptRaw: string | undefined;
+    try {
+      priorReceiptRaw = await readFile(
+        installReceiptPath(this.cacheRoot, pluginId),
+        "utf-8",
+      );
+    } catch (err) {
+      if (!isMissingPathError(err)) throw err;
+    }
+    let receiptCommitted = false;
+    let preparedReceiptRaw: string | undefined;
+    let preparedManifest: PluginManifest | undefined;
+    let preparedDocument: unknown;
+    try {
+      throwIfMarketplaceInstallAborted(opts.signal, "marketplace plugin", pluginId);
+      const transaction = await this.artifactStore.extractZipWithCommit(
+        pluginId,
+        zipBuffer,
+        async (pluginDir) => {
+          const manifestFile = resolve(pluginDir, "plugin.json");
+          if (!preparedReceiptRaw || !preparedManifest) {
+            throw new Error(`plugin "${pluginId}" durable commit ran before staged preparation`);
+          }
+          await this.artifactStore.persistPreparedInstallReceipt(pluginId, preparedReceiptRaw);
+          receiptCommitted = true;
+          const manifestPath = toRegistryRelativeManifestPath(this.registryPath, manifestFile);
+          await opts.commit?.(manifestPath, manifestFile);
+          return manifestPath;
+        },
+        {
+          beforePromote: opts.beforePromote,
+          coordinateCommit: async ({ pluginRoot, files, durableCommit }) => {
+            const manifestFile = resolve(pluginRoot, "plugin.json");
+            let manifestRaw: string;
+            try {
+              manifestRaw = await readFile(manifestFile, "utf-8");
+            } catch {
+              throw new Error(
+                `plugin "${pluginId}" verified artifact is missing plugin.json — every published marketplace zip must ship its own manifest`,
+              );
+            }
+            await opts.assertManifest(manifestFile, pluginRoot);
+            preparedDocument = JSON.parse(manifestRaw) as unknown;
+            preparedManifest = flattenAgentPluginsManifest(preparedDocument);
+            preparedReceiptRaw = await opts.prepareReceipt(pluginRoot, [...files]);
+            return opts.activatePreparedArtifact({
+              installId: pluginId,
+              pluginRoot,
+              manifest: preparedManifest,
+              receiptRaw: preparedReceiptRaw,
+              registryEntry: {
+                installSource: opts.registryInstallSource,
+                // The pin covers the FILE, so it hashes the document —
+                // `readManifestSha256` re-derives it that way on every later
+                // read, and a pin taken over the projection would never
+                // match one taken over the file.
+                manifestSha256: shaOfManifest(preparedDocument),
+              },
+              ...(opts.approvedPluginAccess ? { approvedPluginAccess: opts.approvedPluginAccess } : {}),
+              durableCommit,
+            });
+          },
+          onCommittedBackupResolved: (obsoleteDir) =>
+            clearObsoletePluginBackupOwnership(this.paths, pluginId, obsoleteDir),
+        },
+      );
+      return {
+        manifestPath: transaction.result,
+        predecessorRetired: transaction.predecessorRetired,
+      };
+    } catch (err) {
+      if (isCommittedPluginGenerationPublicationError(err)) throw err;
+      if (!receiptCommitted) throw err;
+      if (err instanceof ArtifactRollbackError) throw err;
+      try {
+        if (priorReceiptRaw === undefined) {
+          await rm(installReceiptPath(this.cacheRoot, pluginId), { force: true });
+        } else {
+          await restoreInstallReceiptRaw(this.cacheRoot, pluginId, priorReceiptRaw);
+        }
+      } catch (receiptRestoreError) {
+        throw new ArtifactRollbackError(
+          `marketplace install and receipt rollback both failed: ${pluginId}`,
+          [err, receiptRestoreError],
+        );
+      }
+      throw err;
+    }
   }
 
   private async commitMarketplaceRegistryEntry(
@@ -2477,6 +2739,9 @@ export class PluginMarketplaceService {
         existing.installSource = actor === "it-admin" ? "admin" : "user";
         existing.bundleRefs = this.mergeBundleRefs(existing.bundleRefs, null, plugin.id);
         existing.approvedPluginAccess = plugin.pluginAccess;
+        // Only a managed (it-admin) install reaches here over a git install
+        // (assertCatalogMayReplace); the policy replaces the binding.
+        existing.origin = undefined;
         existing.pendingUpdate = undefined;
         existing.pendingCleanup = pendingCleanup;
       } else {
@@ -2928,6 +3193,8 @@ export class PluginMarketplaceService {
                 existing.enabled = true;
                 existing.installSource = localInstallSource;
                 existing.approvedPluginAccess = approvedPluginAccess;
+                // A local build replaces whatever a git install put here.
+                existing.origin = undefined;
                 existing.pendingUpdate = undefined;
                 existing.pendingCleanup = pendingCleanup;
               } else {

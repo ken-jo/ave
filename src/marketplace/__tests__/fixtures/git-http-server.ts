@@ -28,6 +28,8 @@ export interface GitHttpServer {
   redirect(name: string, location: string): void;
   /** Never answer requests for `name`. */
   hang(name: string): void;
+  /** Answer GET `path` with `body` (release assets, archives); `null` removes it. */
+  file(path: string, body: Buffer | null, status?: number): void;
   close(): Promise<void>;
 }
 
@@ -175,9 +177,16 @@ export async function startGitHttpServer(options: GitHttpServerOptions): Promise
   const seen: SeenRequest[] = [];
   const redirects = new Map<string, string>();
   const hanging = new Set<string>();
+  const files = new Map<string, { body: Buffer; status: number }>();
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     seen.push({ method: req.method ?? "GET", path: url.pathname, authorization: req.headers.authorization });
+    const file = files.get(url.pathname);
+    if (file) {
+      res.writeHead(file.status, { "content-type": "application/octet-stream", "content-length": String(file.body.byteLength) });
+      res.end(file.body);
+      return;
+    }
     const repo = url.pathname.split("/")[1] ?? "";
     if (hanging.has(repo)) return;
     const location = redirects.get(repo);
@@ -202,6 +211,10 @@ export async function startGitHttpServer(options: GitHttpServerOptions): Promise
     url: (name) => `${origin}/${name}`,
     redirect: (name, location) => redirects.set(name, location),
     hang: (name) => hanging.add(name),
+    file: (path, body, status = 200) => {
+      if (body === null) files.delete(path);
+      else files.set(path, { body, status });
+    },
     close: () =>
       new Promise<void>((resolve) => {
         server.closeAllConnections();

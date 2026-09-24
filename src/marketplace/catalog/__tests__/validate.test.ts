@@ -138,9 +138,13 @@ describe("validateDescriptorText", () => {
       expect(checkDescriptor(withPayload({ authority: authority(), artifact: { release: { url: "https://dl.example.com/a.zip", sha256: SHA } } })).ok).toBe(true);
     });
 
+    it("accepts a release or archive without a pin, which the ladder skips as ARTIFACT_NOT_PINNED (design §6.2)", () => {
+      expect(checkDescriptor(withPayload({ authority: authority(), artifact: { release: { repo: "acme/alpha" } } })).ok).toBe(true);
+      expect(checkDescriptor(withPayload({ authority: authority(), artifact: { archive: { url: "https://dl.example.com/a.zip" } } })).ok).toBe(true);
+    });
+
     it.each([
       ["no artifact rung", {}],
-      ["release without sha256", { release: { repo: "acme/alpha" } }],
       ["archive over http", { archive: { url: "http://dl.example.com/a.zip", sha256: SHA } }],
       ["uppercase sha256", { release: { repo: "acme/alpha", sha256: SHA.toUpperCase() } }],
       ["url combined with repo", { release: { repo: "acme/alpha", url: "https://dl.example.com/a.zip", sha256: SHA } }],

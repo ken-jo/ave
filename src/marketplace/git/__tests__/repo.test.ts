@@ -153,9 +153,18 @@ describe("BareRepo", () => {
     expect(readFileSync(join(dest2, "dist/index.js"), "utf8")).toBe("export const v = 2;\n");
   });
 
-  it("enforces file-count and byte limits", async () => {
+  it("enforces file-count and byte limits, refusing too many files before any blob is fetched", async () => {
     const bare = await BareRepo.init(t.runner, localRepoDir());
     await bare.fetchRef(remote, undefined, "pin");
+    const missing = missingBlobs(bare.dir, second, ".").length;
+    const before = server.seen.length;
+    await expectCode(
+      bare.exportPath(remote, second, "", mkdtempSync(join(scratch, "export-")), { maxFiles: 1, maxBytes: 1024 * 1024 }),
+      "CONTENT_RULE_VIOLATION",
+    );
+    expect(server.seen.length).toBe(before);
+    expect(missing).toBeGreaterThan(0);
+    expect(missingBlobs(bare.dir, second, ".")).toHaveLength(missing);
     await expectCode(
       bare.exportPath(remote, second, "plugins/alpha", mkdtempSync(join(scratch, "export-")), { maxFiles: 1, maxBytes: 1024 }),
       "CONTENT_RULE_VIOLATION",
@@ -169,9 +178,18 @@ describe("BareRepo", () => {
   it("refuses paths that would reach git as options or escape", async () => {
     const bare = await BareRepo.init(t.runner, localRepoDir());
     await bare.fetchRef(remote, undefined, "pin");
-    for (const path of ["", "../x", "/abs", "plugins/", "a:b", "plugins/*"]) {
+    for (const path of ["../x", "/abs", "plugins/", "a:b", "plugins/*"]) {
       await expect(bare.exportPath(remote, second, path, scratch, LIMITS)).rejects.toThrow("invalid repository path");
     }
+  });
+
+  it("exports the whole tree for the root path of a direct source", async () => {
+    const bare = await BareRepo.init(t.runner, localRepoDir());
+    await bare.fetchRef(remote, undefined, "pin");
+    const dest = mkdtempSync(join(scratch, "export-"));
+    const files = await bare.exportPath(remote, second, "", dest, LIMITS);
+    expect(files.map((file) => file.path)).toEqual(hostGit(["ls-tree", "-r", "--name-only", second], repo.bare).split("\n").sort());
+    expect(readFileSync(join(dest, "plugins/alpha/dist/index.js"), "utf8")).toBe("export const v = 2;\n");
   });
 
   describe("tree entries a package may not contain", () => {

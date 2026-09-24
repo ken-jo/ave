@@ -1,0 +1,91 @@
+import { describe, expect, it } from "vitest";
+import type { PluginAuthority } from "../../catalog/types.js";
+import { isMarketplaceError } from "../../errors.js";
+import { assertGitInstallManifest, gitInstallManifestMismatches, PLUGIN_AUTHORITY_FIELDS, type ExpectedPlugin } from "../manifest-rules.js";
+
+const authority = (): PluginAuthority => ({
+  capabilities: ["llm.chat"],
+  networkAccess: { allowedDomains: ["api.example.com"] },
+  hostSecrets: { read: ["llm.apiKey.openai"] },
+  pluginAccess: { allow: ["notes"] },
+  auth: { kind: "none" },
+  requires: { capabilities: ["llm.chat"], minAppVersion: "0.12.0" },
+  dependencies: [{ id: "notes", version: ">=1.0.0" }],
+});
+
+const expected = (): ExpectedPlugin => ({ name: "alpha", version: "1.2.0", minAppVersion: "0.12.0", authority: authority() });
+
+/** A plugin.json whose Ave block lists the authority keys in reverse order. */
+function manifest(patch: Record<string, unknown> = {}): Record<string, unknown> {
+  const ave = Object.fromEntries(Object.entries(authority()).reverse());
+  return {
+    name: "alpha",
+    version: "1.2.0",
+    description: "Alpha",
+    extensions: { "ai.agent-connector.ave": { displayName: "Alpha", entry: "dist/index.js", ...ave, ...patch } },
+  };
+}
+
+describe("git-install manifest rules (design §5.3)", () => {
+  it("accepts a manifest equal to the descriptor, whatever its key order and extra host fields", () => {
+    expect(gitInstallManifestMismatches(manifest(), expected())).toEqual([]);
+  });
+
+  it.each(PLUGIN_AUTHORITY_FIELDS.filter((field) => field !== "requires"))("stops on a different %s", (field) => {
+    expect(gitInstallManifestMismatches(manifest({ [field]: ["changed"] }), expected())).toEqual([`${field} differs from the descriptor's authority`]);
+  });
+
+  it.each(PLUGIN_AUTHORITY_FIELDS.filter((field) => field !== "requires" && field !== "capabilities"))(
+    "stops when the manifest adds %s the descriptor does not declare",
+    (field) => {
+      const narrower = expected();
+      delete narrower.authority[field];
+      expect(gitInstallManifestMismatches(manifest(), narrower)).toEqual([`${field} differs from the descriptor's authority`]);
+    },
+  );
+
+  it("requires requires.minAppVersion and its equality with the descriptor", () => {
+    expect(gitInstallManifestMismatches(manifest({ requires: { capabilities: ["llm.chat"] } }), expected())).toEqual([
+      "requires.minAppVersion is required for a git install",
+      "requires differs from the descriptor's authority",
+    ]);
+    expect(gitInstallManifestMismatches(manifest({ requires: { capabilities: ["llm.chat"], minAppVersion: "0.11.0" } }), expected())).toEqual([
+      'requires.minAppVersion is "0.11.0", the descriptor says "0.12.0"',
+      "requires differs from the descriptor's authority",
+    ]);
+  });
+
+  it("throws PACKAGE_COMPAT_UNDECLARED for a missing requires.minAppVersion, MANIFEST_MISMATCH otherwise (design §14)", () => {
+    expect(() => assertGitInstallManifest(manifest({ requires: { capabilities: ["llm.chat"] } }), expected())).toThrow(
+      expect.objectContaining({ code: "PACKAGE_COMPAT_UNDECLARED" }),
+    );
+    expect(() => assertGitInstallManifest(manifest({ requires: { capabilities: ["llm.chat"], minAppVersion: "0.11.0" } }), expected())).toThrow(
+      expect.objectContaining({ code: "MANIFEST_MISMATCH" }),
+    );
+  });
+
+  it("checks name and version, and rejects installPolicy by name", () => {
+    const wrong = { ...manifest({ installPolicy: "admin" }), name: "beta", version: "1.2.1" };
+    expect(gitInstallManifestMismatches(wrong, expected())).toEqual([
+      'name is "beta", the descriptor says "alpha"',
+      'version is "1.2.1", the descriptor says "1.2.0"',
+      "installPolicy is no longer supported: no package is installed or locked by its own manifest",
+    ]);
+  });
+
+  it("refuses a document without the Ave extension block", () => {
+    expect(gitInstallManifestMismatches([], expected())).toEqual(["plugin.json is not a JSON object"]);
+    expect(gitInstallManifestMismatches({ name: "alpha", version: "1.2.0" }, expected())).toEqual(['extensions["ai.agent-connector.ave"] is missing']);
+  });
+
+  it("throws MANIFEST_MISMATCH naming every problem", () => {
+    try {
+      assertGitInstallManifest(manifest({ capabilities: [] }), expected());
+      expect.unreachable();
+    } catch (error) {
+      expect(isMarketplaceError(error) && error.code).toBe("MANIFEST_MISMATCH");
+      expect((error as Error).message).toContain("alpha@1.2.0: capabilities differs");
+    }
+    expect(() => assertGitInstallManifest(manifest(), expected())).not.toThrow();
+  });
+});

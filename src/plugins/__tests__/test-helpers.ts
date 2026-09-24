@@ -508,6 +508,8 @@ export interface TestRegistryEntry {
   installSource?: "admin" | "user" | "local-dev";
   installedBy?: "admin" | "user";
   _devLinked?: boolean;
+  /** The git source binding of a git install (design §15.1). */
+  origin?: unknown;
 }
 
 export async function writeTestPluginRegistry(

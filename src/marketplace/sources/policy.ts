@@ -34,7 +34,7 @@ import {
   type SourceAuth,
 } from "./official.js";
 
-interface PackageKey {
+export interface PackageKey {
   kind: PackageKind;
   name: string;
   source: string;
