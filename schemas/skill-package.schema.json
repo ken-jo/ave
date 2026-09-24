@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sdk.former-site.invalid/schemas/skill.schema.json",
   "title": "Ave Skill Package Manifest",
-  "description": "The plugin.json of a standalone skill package distributed through the Ave marketplace. The package is a directory holding this manifest next to SKILL.md. The skill itself — what SKILL.md's front matter declares — is described once, in $defs/skillComponent, and that same definition governs a skill bundled inside an Agent Plugins 1.0.0 plugin through the manifest's skills[] directory declarations. The package manifest reuses the component's fields by $ref, so the standalone path and the bundled path cannot drift apart. This SDK owns the schema; the Ave host never loads it, and the marketplace validates against a byte-identical snapshot of it.",
+  "description": "The plugin.json of a standalone skill package distributed through the Ave marketplace. The package is a directory holding this manifest next to SKILL.md. The skill itself — what SKILL.md's front matter declares — is described once, in $defs/skillComponent, and that same definition governs a skill bundled inside an Agent Plugins 1.0.0 plugin through the manifest's skills[] directory declarations. The package manifest reuses the component's fields by $ref, so the standalone path and the bundled path cannot drift apart. The Ave host owns this schema (design §5.6): src/main/skill-store.ts implements $defs/skillComponent, and its contract test reads the rule from this file. Marketplace delivery describes a skill package with its ave-package.json descriptor instead of this manifest.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -38,14 +38,6 @@
       "minLength": 1,
       "maxLength": 280,
       "description": "Short human-readable summary shown on the catalog card. Bounded tighter than the component description, which may run to the Agent Skills ceiling."
-    },
-    "installPolicy": {
-      "type": "string",
-      "enum": [
-        "admin",
-        "user"
-      ],
-      "description": "Install policy"
     },
     "author": {
       "type": "string",
