@@ -276,6 +276,7 @@ export const en = {
   "gitMarketplace.error.notAMarketplace": "No marketplace or package was found there. {message}",
   "gitMarketplace.error.idConflict": "{message}",
   "gitMarketplace.error.policyBlocked": "The MCP governance policy on this computer does not allow this server, so nothing was installed. {message}",
+  "gitMarketplace.error.sourceDisabled": "This package's marketplace is hidden. Show it again in Sources to install or update from it.",
   "gitMarketplace.error.unavailable": "The marketplace could not answer. {message}",
 };
 
@@ -553,5 +554,6 @@ export const ko: Record<keyof typeof en, string> = {
   "gitMarketplace.error.notAMarketplace": "그곳에서 마켓플레이스나 패키지를 찾지 못했습니다. {message}",
   "gitMarketplace.error.idConflict": "{message}",
   "gitMarketplace.error.policyBlocked": "이 컴퓨터의 MCP 거버넌스 정책이 이 서버를 허용하지 않아 아무것도 설치하지 않았습니다. {message}",
+  "gitMarketplace.error.sourceDisabled": "이 패키지의 마켓플레이스가 숨겨져 있습니다. 소스에서 다시 표시해야 설치하거나 업데이트할 수 있습니다.",
   "gitMarketplace.error.unavailable": "마켓플레이스가 응답하지 못했습니다. {message}",
 };

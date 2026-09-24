@@ -542,8 +542,11 @@ export class MarketplaceService {
   }
 
   async catalog(query: CatalogQuery): Promise<CatalogView> {
-    const { rows, snapshots, shown } = await this.rows();
-    const installed = new Map((await this.installedAll()).map((item) => [keyOf(item.kind, item.name), item]));
+    const installedAll = await this.installedAll();
+    // The Installed view reads hidden sources its packages are bound to, so their updates show (§7.3).
+    const bound = query.installedOnly ? new Set(installedAll.flatMap((item) => (item.sourceId === null ? [] : [item.sourceId]))) : undefined;
+    const { rows, snapshots, shown } = await this.rows(bound);
+    const installed = new Map(installedAll.map((item) => [keyOf(item.kind, item.name), item]));
     const existing = new Set(this.registry.list().map((source) => source.id));
     const labels = new Map(shown.map((source) => [source.id, sourceLabel(source, snapshots.get(source.id) ?? null)]));
     const text = query.query?.trim().toLowerCase() ?? "";
@@ -600,8 +603,15 @@ export class MarketplaceService {
     };
   }
 
+  /**
+   * The catalog row of `key`. A hidden source is read only for a package
+   * installed from it: its update is offered (§7.3), so its detail and update
+   * plan must open, while a new install from a hidden source stays refused.
+   */
   private async row(key: PackageKeyView): Promise<{ row: CatalogRow; rows: CatalogRow[]; snapshot: SourceSnapshot; label: string }> {
-    const { rows, snapshots, shown } = await this.rows();
+    const installed = await this.installed(key.kind, key.name);
+    const bound = installed?.sourceId === key.sourceId ? new Set([key.sourceId]) : undefined;
+    const { rows, snapshots, shown } = await this.rows(bound);
     const row = rows.find((item) => item.sourceId === key.sourceId && item.kind === key.kind && item.name === key.name);
     const snapshot = snapshots.get(key.sourceId);
     const source = shown.find((item) => item.id === key.sourceId);
@@ -682,6 +692,11 @@ export class MarketplaceService {
   /** `adopt` (content only): the install records an activation the settings already hold (§16.3). */
   private async plan(request: InstallPlanRequest, adopt: boolean): Promise<InstallPlanView> {
     const { row, snapshot } = await this.row(request);
+    // Refused at the plan, before the review asks to confirm, not at execution (§7.3).
+    const source = this.source(row.sourceId);
+    if (!this.registry.isEnabled(source, await this.registry.readState(source.id))) {
+      throw new MarketplaceError("SOURCE_DISABLED", `source ${source.id} is hidden; show it again to install or update from it`);
+    }
     const version = this.chosenVersion(row, snapshot, request.version);
     const installed = await this.installed(row.kind, row.name);
     const switchSource = request.switchSource === true;

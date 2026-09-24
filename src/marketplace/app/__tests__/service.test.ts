@@ -312,6 +312,14 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
     expect((await service.catalog({})).entries).toEqual([]);
     expect(await service.updates()).toEqual([{ key, displayName: "review", from: "1.0.0", to: "1.1.0" }]);
 
+    // The Installed view shows it with its update; the browse list does not.
+    expect((await service.catalog({ installedOnly: true })).entries.map((entry) => [entry.key.name, entry.state])).toEqual([["review", { state: "update", from: "1.0.0", to: "1.1.0" }]]);
+    // The offered update opens; its plan asks for the source to be shown first (§7.3).
+    expect((await service.detail(key)).entry.key).toEqual(key);
+    await expect(service.planUpdate(key)).rejects.toMatchObject({ code: "SOURCE_DISABLED", message: "source acme-tools is hidden; show it again to install or update from it" });
+    // A package the hidden source lists but that is not installed from it is not listed at all.
+    await expect(service.planInstall({ sourceId: "acme-tools", kind: "mcp", name: "notes" })).rejects.toMatchObject({ code: "PACKAGE_INCOMPATIBLE" });
+
     await service.setEnabled("acme-tools", true);
     await service.executeInstall((await service.planUpdate(key)).planId);
     expect(await service.updates()).toEqual([]);

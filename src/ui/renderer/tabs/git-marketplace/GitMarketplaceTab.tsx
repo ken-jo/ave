@@ -12,6 +12,7 @@ import { Input } from "../../../../components/ui/input.js";
 import { Switch } from "../../../../components/ui/switch.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import { cn } from "../../../../lib/utils.js";
+import { errorMessage } from "../../../../shared/error-message.js";
 import {
   bootInstallNoticeIsEmpty,
   type BootInstallNoticeView,
@@ -130,6 +131,7 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }
   const [offlineCacheEnabled, setOfflineCacheEnabled] = useState(true);
   // A switch flipped before the saved value arrives would write a guess.
   const [flagsLoaded, setFlagsLoaded] = useState(false);
+  const [flagsFailure, setFlagsFailure] = useState<string | null>(null);
   const envForcedPaths = useEnvForcedSettings(api);
   const syncedOnce = useRef(false);
 
@@ -220,7 +222,11 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }
       if (request.kind === "package") {
         setSheet({ key: request.key, mode: "update" });
       } else {
+        // Every installed package, whatever the list was filtered to, so no update is hidden.
         setSheet(null);
+        setKind(null);
+        setSourceId(null);
+        setQuery("");
         setInstalledOnly(true);
       }
     };
@@ -257,11 +263,15 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }
   };
 
   useEffect(() => {
-    void api.getSettings().then((settings) => {
-      setUpdateCheckEnabled(settings.marketplace?.updateCheckEnabled !== false);
-      setOfflineCacheEnabled(settings.marketplace?.offlineCacheEnabled !== false);
-      setFlagsLoaded(true);
-    });
+    void api.getSettings().then(
+      (settings) => {
+        setUpdateCheckEnabled(settings.marketplace?.updateCheckEnabled !== false);
+        setOfflineCacheEnabled(settings.marketplace?.offlineCacheEnabled !== false);
+        setFlagsLoaded(true);
+      },
+      // The switches stay disabled, since their state is unknown; the failure says why.
+      (error: unknown) => setFlagsFailure(errorMessage(error)),
+    );
   }, [api]);
 
   const persistFlag = async (patch: { updateCheckEnabled?: boolean; offlineCacheEnabled?: boolean }) => {
@@ -498,6 +508,11 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }
 
       <SettingsSection data-settings-section="marketplace-maintenance" title={t("gitMarketplace.maintenance.title")} description={t("gitMarketplace.maintenance.description")}>
         <GitRuntimeCard api={api} />
+        {flagsFailure !== null && (
+          <p className="mt-4 text-sm text-destructive" data-testid="git-marketplace:maintenance:error">
+            {t("gitMarketplace.error.unavailable", { message: flagsFailure })}
+          </p>
+        )}
         <div className="mt-4 flex items-center justify-between gap-4">
           <span className="text-sm font-medium">{t("gitMarketplace.maintenance.updateCheck")}</span>
           <Switch
