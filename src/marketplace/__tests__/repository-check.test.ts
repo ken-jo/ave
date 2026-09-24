@@ -142,7 +142,7 @@ describe("checkMarketplaceRepository", () => {
     const legacy = { name: "alpha", version: "0.9.0", extensions: { "ai.agent-connector.ave": { ...authority(), installPolicy: "admin" } } };
     const run = () => checkMarketplaceRepository(tree(files), { ...OFFICIAL, releasedManifests: new Map([["alpha@0.9.0", legacy]]) });
     expect(run()).toEqual([{ subject: "plugin/alpha", message: expect.stringContaining("the released plugin.json of 0.9.0: installPolicy is no longer supported") }]);
-    fieldPin.yanked = { reason: "Kept so installs of this zip keep their grant.", at: AT };
+    Object.assign(fieldPin, { yanked: { reason: "Kept so installs of this zip keep their grant.", at: AT } });
     expect(run()).toEqual([]);
     // Everything else still has to match.
     legacy.extensions["ai.agent-connector.ave"].capabilities = ["host:tasks"] as never[];
