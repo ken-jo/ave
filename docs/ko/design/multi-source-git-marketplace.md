@@ -1350,6 +1350,50 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
 요구합니다. 마켓플레이스가 실행할 바이너리를 내려받기 때문입니다. `planId`와 `previewId`는 1회용이고 10분 뒤 만료됩니다
 (`PLAN_EXPIRED`). 현재 채널의 처리는 §16.2에 있습니다.
 
+### 13.1 구현 결과(P4)
+
+위 표와 출시된 계약(`CHANNELS.gitMarketplace`, `src/shared/git-marketplace.ts`의
+`GitMarketplaceApi`)이 다르면 계약이 기준입니다.
+
+- 모든 응답은 봉투입니다. `{ ok: true, value }` 또는
+  `{ ok: false, code, message }`입니다. `code`는 §14 코드이거나,
+  `invalid-request`(서비스에 닿기 전에 요청 형태가 거부됨), `unauthorized-frame`,
+  `unavailable`(서비스가 시작하지 못했거나 마켓플레이스 오류가 아닌 이유로 실패함)입니다.
+- `sources:preview`는 `{ input; ref?; subdir?; auth: "none" | "token" | "ssh";
+  token? }`을 받아 마켓플레이스 미리보기나 단일 패키지 미리보기를 돌려줍니다.
+  git 폴더에서 직접 설치하는 경로도 `subdir`를 붙여 이 채널을 씁니다.
+  `remove`, `set-enabled`, `accept-rewrite`, `set-token`, `delete-token`은
+  위치 인자(`id`, `enabled`, `commit`, `host`, `token`)를 받고, `refresh`는
+  `SourceView[]`를 돌려줍니다.
+- `catalog:list`는 `{ entries, counts, sourceCount, syncedAt }`을 돌려줍니다.
+  `uninstall`은 `{ sourceId | null; kind; name; removeData? }`를 받습니다.
+  `sourceId: null`은 어떤 소스에도 묶이지 않은 패키지이고, `removeData`는 MCP
+  서버에만 적용됩니다(§5.2).
+- `direct:preview`는 `{ serverJson; select?: { package? | remote? } }`만 받아
+  실행될 명령과 `planId`를 돌려주고, 이 `planId`는 `install:execute`가 소비합니다.
+  MCP 설정 붙여넣기는 MCP 설정의 가져오기를, git 폴더는 `sources:preview`를 씁니다.
+- MCP 서버가 저장됐지만 연결되지 않으면 `InstallResult.connectionWarning`이
+  채워지고, 결과는 "설치됨"이 아니라 그 사실을 알립니다.
+- 추가: `deep-link:take`, `boot-installs:notice`, `boot-installs:dismiss`와 이벤트
+  `marketplace:deep-link`, `marketplace:boot-installs-applied`. 메인은 딥링크나
+  부팅 단계의 알림을 탭이 읽을 때까지 보관합니다. 그래서 창이나 탭이 생기기 전에
+  도착한 링크도 도착합니다. 거부된 프레임은 아무것도 소비하지 않습니다.
+- 딥링크는 확인 UI만 엽니다. `ave://install|uninstall/<kind>/<name>@<source>`는
+  패키지 시트를, `ave://marketplace/add?url=`는 주소만 채우고 검사는 하지 않은
+  추가 대화상자를 엽니다. 기존 `ave://install/<slug>` 링크는 자기 파서를 그대로
+  쓰며, 두 형태는 겹치지 않습니다.
+- 공지는 요청 채널이 아니라 기존에 밀어 주는 공지 이벤트(P5)로 렌더러에 닿습니다.
+- 계획은 쓰이거나, 만료되거나, 대체될 때까지 유효합니다. 같은 패키지를 다시
+  계획하면 이전 계획은 버려집니다. 쓰이지 않은 계획과 미리보기는 다른 일이 없어도
+  만료 시점에 버려지므로, 버려진 미리보기의 클론과 입력한 토큰이 남지 않습니다.
+- 마켓플레이스가 설치한 MCP 서버는 `packages/mcp-installs.json`에 기록됩니다.
+  붙여넣은 서버는 소스 없이 기록되고, 기록된 서버만 여기서 업데이트·제거할 수
+  있습니다. MCP 거버넌스 정책(Layer 1)은 계획할 때와 설치할 때 두 번
+  확인합니다(`PACKAGE_POLICY_BLOCKED`).
+- 메시지 키는 P6가 옛 탭의 `marketplace.*` 키를 걷어낼 때까지 `gitMarketplace.*`
+  아래에 있습니다(예: `gitMarketplace.error.authRequired`). 탭은 P6 전까지
+  `AVE_GIT_MARKETPLACE=1`(`window.ave.env.gitMarketplace`)일 때만 보입니다.
+
 ## 14. 오류 코드
 
 | 코드 | 언제 | 사용자 메시지(en 키) |
@@ -1362,7 +1406,7 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
 | `SOURCE_NAME_RESERVED` | 예약된 id | `marketplace.error.nameReserved` |
 | `SOURCE_ID_INVALID` | id가 2–63자의 소문자·숫자·`-`가 아님 | `marketplace.error.idInvalid` |
 | `SOURCE_ID_TAKEN` | 이미 쓰는 id | `marketplace.error.idTaken` |
-| `SOURCE_AUTH_REQUIRED` | 401/403, ssh 거부 | `marketplace.error.authRequired` |
+| `SOURCE_AUTH_REQUIRED` | 401/403, ssh 거부. 토큰 소스의 호스트가 404를 돌려주는데 그 호스트에 저장된 토큰이 없을 때도(GitHub는 비공개 저장소에 404로 답함) | `marketplace.error.authRequired` |
 | `SOURCE_SSH_HOST_UNKNOWN` | known_hosts에 없는 호스트 키 | `marketplace.error.sshHostUnknown` |
 | `SOURCE_REF_NOT_FOUND` | 브랜치나 태그 없음 | `marketplace.error.refNotFound` |
 | `SOURCE_UNREACHABLE` | 네트워크, DNS, 타임아웃 | `marketplace.error.unreachable` |
@@ -1376,10 +1420,11 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
 | `PACKAGE_YANKED` / `PACKAGE_REVOKED` | 모든 버전이 회수되거나 폐기됨(모두 폐기면 revoked) | `marketplace.error.yanked` / `.revoked` |
 | `PACKAGE_ID_CONFLICT` | 같은 `(kind, name)`이 다른 소스에서, 또는 소스 없이 설치됨. git에 묶인 플러그인 위로 서명 카탈로그의 설치·업데이트·롤백을 할 때도 | `marketplace.error.idConflict` |
 | `PACKAGE_REQUIRED_BY_POLICY` | `requiredInstalls` 패키지의 제거·비활성화 | `marketplace.error.requiredByPolicy` |
+| `PACKAGE_POLICY_BLOCKED` | MCP 거버넌스 정책(Layer 1)이 서버를 거부함. 계획할 때와 설치할 때 확인 | `marketplace.error.policyBlocked` |
 | `ARTIFACT_NOT_PINNED` | 단계 건너뜀: git에 sha256 없음 | (단계 상세) |
 | `ARTIFACT_DIGEST_MISMATCH` | sha256 불일치 | (단계 상세) |
 | `MANIFEST_MISMATCH` | plugin.json과 디스크립터 불일치 | `marketplace.error.manifestMismatch` |
-| `NO_INSTALLABLE_ARTIFACT` | 모든 단계가 건너뛰어졌거나 실패 | `marketplace.error.noArtifact` |
+| `NO_INSTALLABLE_ARTIFACT` | 모든 단계가 건너뛰어졌거나 실패(실패한 단계가 모두 로그인을 요구했으면 대신 `SOURCE_AUTH_REQUIRED`) | `marketplace.error.noArtifact` |
 | `CONTENT_RULE_VIOLATION` | 콘텐츠 종류 파일 규칙 위반 | `marketplace.error.contentRule` |
 
 ## 15. UI 명세

@@ -1442,6 +1442,59 @@ audited as today. `ave:git:runtime:install` also requires a live keyboard
 gesture: it downloads a binary the marketplace then runs. `planId` and `previewId` are single use and expire after 10
 minutes (`PLAN_EXPIRED`). Disposition of today's channels is in §16.2.
 
+### 13.1 As built (P4)
+
+Where the table above and the shipped contract (`CHANNELS.gitMarketplace`,
+`GitMarketplaceApi` in `src/shared/git-marketplace.ts`) differ, the contract
+wins:
+
+- Every answer is an envelope: `{ ok: true, value }` or
+  `{ ok: false, code, message }`. `code` is a §14 code, `invalid-request`
+  (the request shape was refused before the service saw it),
+  `unauthorized-frame`, or `unavailable` (the service could not start, or
+  failed with something that is not a marketplace error).
+- `sources:preview` takes `{ input; ref?; subdir?; auth: "none" | "token" |
+  "ssh"; token? }` and answers a marketplace preview or a direct-package
+  preview; a direct install from a git folder goes through it with `subdir`.
+  `remove`, `set-enabled`, `accept-rewrite`, `set-token` and `delete-token`
+  take positional arguments (`id`, `enabled`, `commit`, `host`, `token`), and
+  `refresh` answers `SourceView[]`.
+- `catalog:list` answers `{ entries, counts, sourceCount, syncedAt }`.
+  `uninstall` takes `{ sourceId | null; kind; name; removeData? }`:
+  `sourceId: null` is a package bound to no source, and `removeData` applies to
+  MCP servers only (§5.2).
+- `direct:preview` takes `{ serverJson; select?: { package? | remote? } }` only
+  and answers the command that will run, with a `planId` that
+  `install:execute` consumes. A pasted MCP config uses the MCP settings import;
+  a git folder uses `sources:preview`.
+- `InstallResult.connectionWarning` is set when an MCP server was saved but did
+  not connect; the result says so, not "installed".
+- Added: `deep-link:take`, `boot-installs:notice` and `boot-installs:dismiss`,
+  with the events `marketplace:deep-link` and
+  `marketplace:boot-installs-applied`. Main holds a deep link, or the boot
+  step's notice, until the tab reads it: a link that arrives before the window
+  or the tab exists still lands. A refused frame consumes nothing.
+- Deep links open the confirming UI and nothing more.
+  `ave://install|uninstall/<kind>/<name>@<source>` opens the package's sheet;
+  `ave://marketplace/add?url=` opens the Add dialog with the address filled in
+  but unchecked. The legacy `ave://install/<slug>` links keep their parser;
+  the two shapes never overlap.
+- Announcements reach the renderer on the existing pushed announcement event
+  (P5), not through a request channel.
+- A plan is live until it is used, expires, or is replaced: planning a package
+  again drops its older plan. An unused plan or preview is dropped at expiry
+  even if nothing else happens, so an abandoned preview's clone and typed token
+  do not linger.
+- Marketplace-installed MCP servers are recorded in
+  `packages/mcp-installs.json`. A pasted server is recorded with no source, and
+  only recorded servers can be updated or uninstalled here. The MCP governance
+  policy (Layer 1) is checked when the plan is made and again at install
+  (`PACKAGE_POLICY_BLOCKED`).
+- Message keys live under `gitMarketplace.*` (e.g.
+  `gitMarketplace.error.authRequired`) until P6 retires the old tab's
+  `marketplace.*` keys. The tab is shown only with `AVE_GIT_MARKETPLACE=1`
+  (`window.ave.env.gitMarketplace`) until P6.
+
 ## 14. Error codes
 
 | Code | When | User message (en key) |
@@ -1454,7 +1507,7 @@ minutes (`PLAN_EXPIRED`). Disposition of today's channels is in §16.2.
 | `SOURCE_NAME_RESERVED` | reserved id | `marketplace.error.nameReserved` |
 | `SOURCE_ID_INVALID` | id is not 2–63 lowercase letters, digits or `-` | `marketplace.error.idInvalid` |
 | `SOURCE_ID_TAKEN` | id already used | `marketplace.error.idTaken` |
-| `SOURCE_AUTH_REQUIRED` | 401/403, ssh denied | `marketplace.error.authRequired` |
+| `SOURCE_AUTH_REQUIRED` | 401/403, ssh denied; a 404 from a token source's host when no token is stored for it (GitHub answers 404 for a private repository) | `marketplace.error.authRequired` |
 | `SOURCE_SSH_HOST_UNKNOWN` | host key not in known_hosts | `marketplace.error.sshHostUnknown` |
 | `SOURCE_REF_NOT_FOUND` | branch or tag missing | `marketplace.error.refNotFound` |
 | `SOURCE_UNREACHABLE` | network, DNS, timeout | `marketplace.error.unreachable` |
@@ -1468,10 +1521,11 @@ minutes (`PLAN_EXPIRED`). Disposition of today's channels is in §16.2.
 | `PACKAGE_YANKED` / `PACKAGE_REVOKED` | every version is yanked or revoked (revoked when all are revoked) | `marketplace.error.yanked` / `.revoked` |
 | `PACKAGE_ID_CONFLICT` | same `(kind, name)` installed from another source, or from no source; also a signed-catalog install, update or rollback over a git-bound plugin | `marketplace.error.idConflict` |
 | `PACKAGE_REQUIRED_BY_POLICY` | uninstall or disable of a `requiredInstalls` package | `marketplace.error.requiredByPolicy` |
+| `PACKAGE_POLICY_BLOCKED` | the MCP governance policy refuses the server (Layer 1), at plan and again at install | `marketplace.error.policyBlocked` |
 | `ARTIFACT_NOT_PINNED` | rung skipped: no sha256 in git | (rung detail) |
 | `ARTIFACT_DIGEST_MISMATCH` | sha256 differs | (rung detail) |
 | `MANIFEST_MISMATCH` | plugin.json vs descriptor | `marketplace.error.manifestMismatch` |
-| `NO_INSTALLABLE_ARTIFACT` | every rung skipped or failed | `marketplace.error.noArtifact` |
+| `NO_INSTALLABLE_ARTIFACT` | every rung skipped or failed (`SOURCE_AUTH_REQUIRED` instead when every failed rung needed sign-in) | `marketplace.error.noArtifact` |
 | `CONTENT_RULE_VIOLATION` | content kind file rules | `marketplace.error.contentRule` |
 
 ## 15. UI specification
