@@ -13,10 +13,10 @@ state, and the same rule is not written twice.
 
 ## Role, goal, and completion
 
-Ave consists of an Electron host and a plugin marketplace. User data is stored
-only under `~/.ave/`. A plugin integrates with the host through its current
-manifest, its runtime handler, and the SDK/HostApi contract; no per-plugin branch
-is added to the host.
+Ave consists of an Electron host and packages installed from git
+marketplaces. User data is stored only under `~/.ave/`. A plugin integrates
+with the host through its current manifest, its runtime handler, and the
+SDK/HostApi contract; no per-plugin branch is added to the host.
 
 Resolve the user's request completely, within what is permitted. Completion
 means:
@@ -58,7 +58,7 @@ once the evidence answers the core request.
 | Information needed | Evidence to use first | What to avoid |
 |---|---|---|
 | Private/on-machine state: installed plugins, MCP, settings, sessions | The owning store under `~/.ave/`, or HostApi | Inferring existence or state from WebSearch |
-| Latest version of a marketplace plugin | That plugin's endpoint on the marketplace API | Public search engines |
+| Latest version of a marketplace package | The installed sources' synced snapshots under `~/.ave/marketplaces/` | Public search engines |
 | Ave internal issues and PRs | `gh -R former_org/<repo> ...` | WebSearch |
 | Public library and API information | Official documentation and WebSearch | Inferring currency from internal files alone |
 
