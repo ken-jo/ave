@@ -90,8 +90,8 @@ export interface SecretGateInput {
   readonly key: string;
   /** `manifest.hostSecrets.read[]`. */
   readonly allowlist: readonly string[];
-  /** Canonical sha256 of the manifest that is running now. */
-  readonly manifestSha256: string;
+  /** Canonical sha256 of the `plugin.json` document running now; null when the manifest was not read from one. */
+  readonly manifestSha256: string | null;
   /** The host-owned registry entry, read only when Tier 3 runs; undefined when the plugin has none. */
   readonly readRegistryEntry: () => Promise<PluginRegistryTrust | undefined>;
   readonly grantEvidence: HostSecretGrantEvidence;

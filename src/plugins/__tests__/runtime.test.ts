@@ -17,6 +17,10 @@ import {
   writeTestPluginRegistry,
 } from "./test-helpers.js";
 import { agentPluginsDocument, patchAveFields } from "./test-helpers.js";
+import { manifestDocumentSha256 } from "../runtime/manifest-validation.js";
+import type { PluginManifest } from "../types.js";
+import { canonicalJSON } from "../secret-access/canonical-json.js";
+import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
 
 function makeGenerationBoundRuntime(
@@ -788,6 +792,45 @@ describe("PluginRuntime.disable", () => {
 
     const manifest = runtime.getPluginManifest("meta-plugin");
     expect(manifest?.capabilities).toEqual(["sample-capability"]);
+  });
+
+  it("hands the HostApi factory the digest of the plugin.json document, the value installers pin", async () => {
+    // The registry's manifestSha256 is taken over the document as authored; the
+    // flat projection the runtime passes along hashes to something else, so a
+    // host-secret grant that compared the projection could never hold.
+    const pluginDir = join(installedDir, "pin-plugin");
+    await mkdir(pluginDir, { recursive: true });
+    await writeFile(join(pluginDir, "entry.mjs"), "export default async function createPlugin() { return { handlers: { pin_ping: async () => \"pong\" } }; }\n", "utf-8");
+    const manifestPath = join(pluginDir, "plugin.json");
+    await writeFile(manifestPath, JSON.stringify(agentPluginsDocument({
+      id: "pin-plugin",
+      name: "pin-plugin",
+      version: "1.0.0",
+      entry: "entry.mjs",
+      tools: [{ name: "pin_ping", description: "pin_ping tool", inputSchema: { type: "object", properties: {} }, _meta: { ui: { visibility: ["model", "app"] } } }],
+      description: "Test fixture.",
+    })), "utf-8");
+    await writeTestPluginRegistry({ registryPath }, [{ id: "pin-plugin", manifestPath, enabled: true }]);
+    const seen: PluginManifest[] = [];
+    const runtime = makeGenerationBoundRuntime({
+      hostRoot: testDir,
+      registryPath,
+      deploymentGuard: new PluginDeploymentGuard({ registryPath, pluginsRoot: installedDir, requiredInstalls: async () => [] }),
+      pluginsRoot: installedDir,
+      createHostApi: (_pluginId, manifest) => {
+        seen.push(manifest);
+        return { emitEvent: () => {}, onEvent: () => () => {}, getSecret: () => null, logEvent: () => {}, onShutdown: () => {} } as never;
+      },
+    });
+    await runtime.startAll();
+    await runtime.restartPlugin("pin-plugin");
+
+    const documentSha = sha256Hex(canonicalJSON(JSON.parse(await readFile(manifestPath, "utf-8"))));
+    expect(seen.length).toBeGreaterThanOrEqual(2);
+    for (const manifest of seen) {
+      expect(manifestDocumentSha256(manifest)).toBe(documentSha);
+      expect(sha256Hex(canonicalJSON(manifest))).not.toBe(documentSha);
+    }
   });
 
   describe("PluginHostApi cross-plugin isolation", () => {

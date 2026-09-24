@@ -132,6 +132,20 @@ import { initPluginRuntime } from "../plugin-runtime.js";
 import { withPluginInstallLock } from "../../../plugins/install-lifecycle.js";
 import type { PluginAccessSpec, PluginRegistryTrust } from "../../../plugins/types.js";
 import { canonicalJSON } from "../../../plugins/secret-access/canonical-json.js";
+import { recordManifestDocument } from "../../../plugins/runtime/manifest-validation.js";
+import { agentPluginsDocument } from "../../../plugins/__tests__/test-helpers.js";
+import type { PluginManifest } from "../../../plugins/types.js";
+
+/**
+ * A running manifest read from its plugin.json, and the pin an installer
+ * records for it: the canonical digest of the document, not of the projection.
+ */
+function granted(pluginId: string, secretKey: string): { manifest: PluginManifest; manifestSha256: string } {
+  const manifest = { id: pluginId, config: {}, hostSecrets: { read: [secretKey] } } as unknown as PluginManifest;
+  const document = agentPluginsDocument({ id: pluginId, version: "1.0.0", hostSecrets: { read: [secretKey] } });
+  recordManifestDocument(manifest, document);
+  return { manifest, manifestSha256: createHash("sha256").update(canonicalJSON(document)).digest("hex") };
+}
 
 type ConfigHostApi = {
   config: {
@@ -657,14 +671,7 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     // A granted plugin (design §10.3) whose registry row sits under an alias.
     const pluginId = "meeting";
     const secretKey = "llm.apiKey.openai";
-    const manifest = {
-      id: pluginId,
-      config: {},
-      hostSecrets: { read: [secretKey] },
-    };
-    const manifestSha256 = createHash("sha256")
-      .update(canonicalJSON(manifest))
-      .digest("hex");
+    const { manifest, manifestSha256 } = granted(pluginId, secretKey);
     runtimeTestState.readPluginRegistry.mockResolvedValueOnce({
       version: 1,
       plugins: [{
@@ -701,14 +708,7 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
   it("uses immutable candidate trust before the durable registry cache refresh", async () => {
     const pluginId = "meeting";
     const secretKey = "llm.apiKey.openai";
-    const manifest = {
-      id: pluginId,
-      config: {},
-      hostSecrets: { read: [secretKey] },
-    };
-    const manifestSha256 = createHash("sha256")
-      .update(canonicalJSON(manifest))
-      .digest("hex");
+    const { manifest, manifestSha256 } = granted(pluginId, secretKey);
     const settings = makeSettingsService(new Map());
     settings.getSecret.mockImplementation((key: string) =>
       key === secretKey ? "fresh-admin-secret" : undefined
@@ -734,8 +734,7 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     runtimeTestState.registryPath = join(dir, "registry.json");
     try {
       const secretKey = "llm.apiKey.openai";
-      const manifest = { id: "meeting", config: {}, hostSecrets: { read: [secretKey] } };
-      const manifestSha256 = createHash("sha256").update(canonicalJSON(manifest)).digest("hex");
+      const { manifest, manifestSha256 } = granted("meeting", secretKey);
       const entry = { id: "meeting", manifestPath: "meeting/plugin.json", installSource: "user", manifestSha256 };
       writeFileSync(runtimeTestState.registryPath, "unbound");
       runtimeTestState.readPluginRegistry.mockResolvedValue({ version: 1, plugins: [entry] });
@@ -752,6 +751,28 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     } finally {
       runtimeTestState.registryPath = "/tmp/ave-test/registry.json";
     }
+  });
+
+  it("compares the pin with the running document, never with the flat projection", async () => {
+    const secretKey = "llm.apiKey.openai";
+    const { manifest, manifestSha256 } = granted("meeting", secretKey);
+    const unread = { id: "meeting", config: {}, hostSecrets: { read: [secretKey] } } as unknown as PluginManifest;
+    const projectionSha256 = createHash("sha256").update(canonicalJSON(unread)).digest("hex");
+    expect(projectionSha256).not.toBe(manifestSha256);
+    const call = async (running: PluginManifest, pin: string) => {
+      runtimeTestState.readPluginRegistry.mockResolvedValue({
+        version: 1,
+        plugins: [{ id: "meeting", manifestPath: "meeting/plugin.json", installSource: "user", manifestSha256: pin, origin: OFFICIAL_ORIGIN }],
+      });
+      const settings = makeSettingsService(new Map());
+      settings.getSecret.mockImplementation((key: string) => (key === secretKey ? "official-secret" : undefined));
+      const createHostApi = await initAndGetFactory(settings);
+      return createHostApi("meeting", running, tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-pin-")), activeIncarnation(), "meeting").getSecret(secretKey);
+    };
+
+    expect(await call(manifest, manifestSha256)).toBe("official-secret");
+    // A manifest not read from a document matches no pin, not even one taken over its projection.
+    expect(await call(unread, projectionSha256)).toBeNull();
   });
 
   it("delivers an emitted event to a same-plugin subscriber with the pluginId injected, and unsubscribe stops delivery", async () => {

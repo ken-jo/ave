@@ -237,9 +237,9 @@ export function isPackagedElectronProcess(
 
 /**
  * The e2e harness, and only it: `AVE_E2E=1` under `NODE_ENV=test`. Every
- * e2e-only surface (whitelist key override, managed bootstrap skip, the
- * bundle-snapshot IPC, the preload `env.isE2E` flag) reads this one predicate;
- * two of them used to accept `AVE_E2E=1` alone.
+ * e2e-only surface (the marketplace background sync skip, the
+ * bundle-snapshot IPC, the preload `env.isE2E` flag) reads this one
+ * predicate; two of them used to accept `AVE_E2E=1` alone.
  */
 export function isE2eTestRuntime(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.AVE_E2E === "1" && env.NODE_ENV === "test";

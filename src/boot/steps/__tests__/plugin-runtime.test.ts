@@ -142,6 +142,21 @@ import { installPluginPartitionPolicy } from "../../../main/html-preview-partiti
 import { pluginPartitionName } from "../../../shared/plugin-partition.js";
 import { emitEvent } from "../../types.js";
 import { setAppShutdownStarted } from "../../../main/app-state.js";
+import { createHash } from "node:crypto";
+import { canonicalJSON } from "../../../plugins/secret-access/canonical-json.js";
+import { recordManifestDocument } from "../../../plugins/runtime/manifest-validation.js";
+import { agentPluginsDocument } from "../../../plugins/__tests__/test-helpers.js";
+import type { PluginManifest } from "../../../plugins/types.js";
+
+/**
+ * The pin an installer records for `manifest`: the digest of its plugin.json
+ * document, tied to the manifest object the way the runtime ties it at parse.
+ */
+function pinDocument(manifest: object): string {
+  const document = agentPluginsDocument(manifest as Record<string, unknown>);
+  recordManifestDocument(manifest as PluginManifest, document);
+  return createHash("sha256").update(canonicalJSON(document)).digest("hex");
+}
 
 type TestHostApiIncarnation = {
   registerDisposer: (dispose: () => void) => void;
@@ -1167,10 +1182,6 @@ describe("initPluginRuntime HostApi factory", () => {
     // `meeting` is in the app's grant table and installed from the official
     // source as the pinned artifact, so Tier 3 lets the call through; B6
     // exercises the Tier-4 active-vendor cross-check inside getSecret.
-    const { canonicalJSON } = await import(
-      "../../../plugins/secret-access/canonical-json.js"
-    );
-    const { createHash } = await import("node:crypto");
     const b6Manifest = {
       id: "meeting",
       config: {},
@@ -1184,7 +1195,7 @@ describe("initPluginRuntime HostApi factory", () => {
           manifestPath: "meeting/plugin.json",
           enabled: true,
           installSource: "user",
-          manifestSha256: createHash("sha256").update(canonicalJSON(b6Manifest)).digest("hex"),
+          manifestSha256: pinDocument(b6Manifest),
           origin: officialOrigin("meeting"),
         },
       ],
@@ -1277,10 +1288,6 @@ describe("initPluginRuntime HostApi factory", () => {
   it("getSecret grants no marketplace provider preset key: the grant table lists none", async () => {
     runtimeTestState.capturedRuntimeOptions = null;
     const bootAuditLogger = { log: vi.fn() };
-    const { canonicalJSON } = await import(
-      "../../../plugins/secret-access/canonical-json.js"
-    );
-    const { createHash } = await import("node:crypto");
     const activeKey = "llm.marketplaceProvider.future-router.apiKey";
     const idleKey = "llm.marketplaceProvider.idle-router.apiKey";
     const manifest = {
@@ -1288,9 +1295,7 @@ describe("initPluginRuntime HostApi factory", () => {
       config: {},
       hostSecrets: { read: [activeKey, idleKey] },
     };
-    const manifestSha256 = createHash("sha256")
-      .update(canonicalJSON(manifest))
-      .digest("hex");
+    const manifestSha256 = pinDocument(manifest);
     runtimeTestState.readPluginRegistry.mockResolvedValueOnce({
       version: 1,
       plugins: [
@@ -1399,19 +1404,13 @@ describe("initPluginRuntime HostApi factory", () => {
   it("getSecret denies generic OpenAI-compatible host key while a marketplace preset is active", async () => {
     runtimeTestState.capturedRuntimeOptions = null;
     const bootAuditLogger = { log: vi.fn() };
-    const { canonicalJSON } = await import(
-      "../../../plugins/secret-access/canonical-json.js"
-    );
-    const { createHash } = await import("node:crypto");
     const genericKey = "llm.apiKey.openai-compatible";
     const manifest = {
       id: "plugin-generic-compatible-secret",
       config: {},
       hostSecrets: { read: [genericKey] },
     };
-    const manifestSha256 = createHash("sha256")
-      .update(canonicalJSON(manifest))
-      .digest("hex");
+    const manifestSha256 = pinDocument(manifest);
     runtimeTestState.readPluginRegistry.mockResolvedValueOnce({
       version: 1,
       plugins: [
@@ -1685,18 +1684,12 @@ describe("initPluginRuntime HostApi factory", () => {
 
   it("clears registry-entry cache on refresh failure so a host-secret grant fails closed (#959)", async () => {
     runtimeTestState.capturedRuntimeOptions = null;
-    const { canonicalJSON } = await import(
-      "../../../plugins/secret-access/canonical-json.js"
-    );
-    const { createHash } = await import("node:crypto");
     const manifest = {
       id: "meeting",
       config: {},
       hostSecrets: { read: ["llm.apiKey.openai"] },
     };
-    const manifestSha256 = createHash("sha256")
-      .update(canonicalJSON(manifest))
-      .digest("hex");
+    const manifestSha256 = pinDocument(manifest);
     runtimeTestState.readPluginRegistry.mockResolvedValueOnce({
       version: 1,
       plugins: [

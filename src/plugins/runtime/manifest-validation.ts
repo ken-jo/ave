@@ -46,6 +46,8 @@ import { resolvePluginContributionDeclarations } from "../plugin-contributions.j
 import { errorMessage } from "../../shared/error-message.js";
 import { resolveAddFormats, resolveAjv } from "../config-schema.js";
 import { TOOL_NAME_PATTERN, isValidToolName } from "../../tools/types.js";
+import { canonicalJSON } from "../secret-access/canonical-json.js";
+import { sha256Hex } from "../../lib/hex-digest-equal.js";
 
 // Re-exported here so manifest/plugin-loading consumers can import the
 // minAppVersion gate error + IPC code alongside the other manifest contracts.
@@ -252,6 +254,24 @@ function onDiskFieldPath(fieldPath: string): string {
   const root = fieldPath.split(/[.[]/, 1)[0] ?? fieldPath;
   if (AGENT_PLUGINS_TOP_LEVEL_FIELDS.includes(root)) return fieldPath;
   return `extensions["${AVE_EXTENSION_NAMESPACE}"].${fieldPath}`;
+}
+
+const documentSha256ByManifest = new WeakMap<PluginManifest, string>();
+
+/**
+ * Tie a manifest to the `plugin.json` document it was read from. The
+ * registry's `manifestSha256` pins that document (every installer hashes the
+ * file as authored), not the flat projection the runtime works with, so a
+ * gate that compares a running plugin against its pin needs the document's
+ * digest, which the projection cannot reproduce.
+ */
+export function recordManifestDocument(manifest: PluginManifest, document: unknown): void {
+  documentSha256ByManifest.set(manifest, sha256Hex(canonicalJSON(document)));
+}
+
+/** The canonical sha256 of the document `manifest` was read from; null when it was not read from one. */
+export function manifestDocumentSha256(manifest: PluginManifest): string | null {
+  return documentSha256ByManifest.get(manifest) ?? null;
 }
 
 /**
@@ -949,5 +969,6 @@ export async function parsePluginJson(
     }
   }
 
+  recordManifestDocument(manifest, doc);
   return manifest;
 }

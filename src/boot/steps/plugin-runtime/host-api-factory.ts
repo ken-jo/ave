@@ -52,7 +52,7 @@ import {
   CAPABILITY_EXTERNAL_AUTH_CONSUMER,
 } from "../../../plugins/capabilities.js";
 import { auditPluginEmitDenial } from "../../../plugins/emit-denial-audit.js";
-import { getDeclaredEmittedEvents } from "../../../plugins/runtime/manifest-validation.js";
+import { getDeclaredEmittedEvents, manifestDocumentSha256 } from "../../../plugins/runtime/manifest-validation.js";
 import { applyConfigDefaults } from "../../../plugins/config-schema.js";
 import { shouldRestartAfterPluginConfigWrite } from "../../../plugins/config-restart-policy.js";
 import { OVERLAY_V1, WORK_BOARD } from "../../../shared/ipc-channels.js";
@@ -78,7 +78,6 @@ import { t } from "../../../i18n/index.js";
 import { createLogger } from "../../../lib/logger.js";
 import { logPluginLifecycle, PluginPhase } from "../../../plugins/lifecycle-log.js";
 import { incrementHostSecretCounter, sanitizeKeyPrefix } from "../../../telemetry/host-secret-counters.js";
-import { canonicalJSON } from "../../../plugins/secret-access/canonical-json.js";
 import type { HostSecretGrantEvidence } from "../../../plugins/secret-access/grants.js";
 import { runSecretGate } from "../../../plugins/secret-access/secret-gate.js";
 import type { GrantEvidenceReader } from "./grant-evidence.js";
@@ -110,7 +109,6 @@ import type {
   WorkProposalResult,
 } from "../../../shared/work-board-types.js";
 import type { LateBindingRefs } from "../plugin-runtime.js";
-import { sha256Hex } from "../../../lib/hex-digest-equal.js";
 import { proposalId } from "../../../work-board/board-file.js";
 import { errorMessage } from "../../../shared/error-message.js";
 
@@ -505,19 +503,14 @@ export function createHostApiFactory(
       };
     };
       // Manifest sha256 pin (design §10.3 condition 2). The host-secret gate
-      // compares the canonicalized JSON of the running manifest with the pin
-      // the registry recorded at install, so a post-install manifest swap
-      // (different tools / wider hostSecrets.read) loses every grant.
-      //
-      // The digest MUST come from a recursive canonical serializer
-      // (`canonicalJSON` — RFC 8785 JCS-style: sort keys at every depth,
-      // preserve array element order). The replacer-array form
-      // `JSON.stringify(manifest, Object.keys(manifest).sort())` does NOT
-      // work here: it filters only top-level keys and emits every nested
-      // object as `{}`, so distinct manifests collapse onto near-identical
-      // digests and the Tier-3 pin stops discriminating.
-      const canonical = canonicalJSON(manifest);
-      const manifestSha256 = sha256Hex(canonical);
+      // compares the running manifest with the pin the registry recorded at
+      // install, so a post-install manifest swap (different tools / wider
+      // hostSecrets.read) loses every grant. Installers pin the canonical JSON
+      // of the `plugin.json` DOCUMENT; the flat projection this factory
+      // receives hashes differently, so the digest is the one recorded when
+      // the document was parsed. A manifest not read from a document (null)
+      // matches no pin.
+      const manifestSha256 = manifestDocumentSha256(manifest);
       // Structural effect observability — wrap the whole hostApi so EVERY method
       // (and any future-added one) auto-records its host-observed effect on the
       // ambient per-invocation ledger, looked up by method PATH in the

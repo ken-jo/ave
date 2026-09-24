@@ -61,8 +61,12 @@ export interface HostSecretGrantInput {
   key: string;
   /** The host-owned registry entry; undefined when the plugin has none. */
   entry: Pick<PluginRegistryEntry, "origin" | "manifestSha256"> | undefined;
-  /** Canonical sha256 of the manifest that is running now. */
-  runningManifestSha256: string;
+  /**
+   * Canonical sha256 of the `plugin.json` document the running manifest was
+   * read from (what installers pin); null when it was not read from one, which
+   * matches no pin.
+   */
+  runningManifestSha256: string | null;
   evidence: HostSecretGrantEvidence;
 }
 
@@ -88,7 +92,7 @@ export async function evaluateHostSecretGrant(input: HostSecretGrantInput): Prom
   }
   if (origin.rung === "tree") return { granted: false, reason: "tree-install" };
   const recorded = input.entry?.manifestSha256;
-  if (!recorded || recorded.toLowerCase() !== input.runningManifestSha256.toLowerCase()) {
+  if (!recorded || !input.runningManifestSha256 || recorded.toLowerCase() !== input.runningManifestSha256.toLowerCase()) {
     return { granted: false, reason: "manifest-sha-mismatch" };
   }
   let installed: string | null;

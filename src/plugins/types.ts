@@ -38,9 +38,9 @@ export interface PluginRegistryEntry {
   id: string;
   manifestPath: string;
   /**
-   * Canonical JSON SHA-256 of plugin.json recorded at install time. Runtime
-   * HostApi gates compare the running manifest against this host-owned value
-   * before honoring admin secret-access bypasses.
+   * Canonical JSON SHA-256 of the plugin.json document recorded at install
+   * time. The host-secret grant (design §10.3 condition 2) compares the running
+   * document's digest against this host-owned value.
    */
   manifestSha256?: string;
   enabled?: boolean;
@@ -75,14 +75,4 @@ export type PluginRegistryTrust = Pick<PluginRegistryEntry, "installSource" | "m
 export interface PluginRegistry {
   version: number;
   plugins: PluginRegistryEntry[];
-}
-
-/**
- * A signed registry document after envelope verification, together with where
- * it was read from. The whitelist, admission and revocation registries all
- * cache exactly this pair.
- */
-export interface ResolvedSignedSnapshot<Doc, Source extends string> {
-  doc: Doc;
-  source: Source;
 }
