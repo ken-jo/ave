@@ -60,9 +60,9 @@ What is **not** true yet, and what this document designs:
    the isolated path (`out-of-process-plugins.ts:856-858` lists five ids; `template` is
    "not installed; a scaffold, out of scope", `:854`).
 
-Note for the reviewer: `docs/blueprints/plugin-process-isolation.md:3` still reads
-"Status: design, not implemented". The code and `git log` say Stages 5-8 shipped. That
-line is stale and should be corrected in the same change that lands this page.
+`docs/blueprints/plugin-process-isolation.md:3` read "Status: design, not implemented"
+although Stages 1-8 shipped; the change that lands this page corrects it and points
+Stages 9-10 here.
 
 ---
 
@@ -270,9 +270,10 @@ Why this and not the alternatives:
   library and any MCP server library, and one decoder serves both halves.
 - The current reverse channel is a bespoke shape distinguished by field presence
   (`child-stream-multiplex.ts:52-64`). It was chosen so the two contracts could not
-  collide; JSON-RPC `id` + a namespaced `method` gives the same guarantee, and MCP itself
-  reserves the `ave/` style prefix pattern for vendor methods the way `_meta` keys are
-  namespaced.
+  collide; JSON-RPC `id` + a namespaced `method` gives the same guarantee. JSON-RPC
+  treats a method name as opaque; the `ave/` prefix is what keeps these methods apart
+  from every name MCP defines, the way a reverse-domain prefix keeps a `_meta` key apart
+  from MCP's own.
 - Mapping hostApi onto standard client features (sampling for `callLlm`, elicitation
   for `pickFolders`) loses the host's own semantics — `callLlm` carries the host rate
   window and key resolution; `pickFolders` is an OS dialog, not a form — and
@@ -300,28 +301,40 @@ Two versions travel, because two contracts change for different reasons
    disconnects if it cannot speak the reply
    ([MCP lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle)).
    The host proposes `MCP_PROTOCOL_VERSION` (`protocol-constants.ts:17-18`).
-2. **Ave host protocol version** in `ave/instance/construct`:
+2. **Ave host protocol version.** The plugin declares it once, in the manifest
+   (`requires.hostProtocol`, §6.4), so an installer or a marketplace sync can decide
+   compatibility without spawning anything. A host serves a *set* of protocol versions,
+   not one. Before it spawns, the host checks the declared version against that set; at
+   `ave/instance/construct` it tells the plugin which version this connection speaks and
+   what that version serves:
 
 ```jsonc
 // host → plugin (construct params, additions)
 "hostProtocol": {
-  "version": "1",                                  // integer-as-string; bumps on any breaking change
+  "version": "1",                                  // the manifest's requires.hostProtocol; integer-as-string
   "capabilities": ["storage/read", "storage/write", "callLlm", "hostFetch",
-                   "startAudioCapture", "attachFloatingPanel", ...]   // every ave/host method this host serves
+                   "startAudioCapture", "attachFloatingPanel", ...]   // every ave/host method served at that version
 }
 // plugin → host (construct result, additions)
 "pluginProtocol": {
-  "version": "1",
   "requires": ["storage/read", "callLlm"]          // methods the plugin will not run without
 }
 ```
 
 Rules:
 
-- The host refuses the load with `incompatible-host-protocol` when the plugin's version
-  is not one the host serves, or when a `requires` entry is not in `capabilities`. This is
-  the same fail-closed shape as `markIncompatibleAppVersion`
-  (`runtime/index.ts:2883-2900`) and surfaces in the same plugin-status UI.
+- The host refuses the load with `incompatible-host-protocol` when the manifest's
+  `requires.hostProtocol` is not in its served set (before spawning), or when a
+  `requires` entry is not in `capabilities` (at construct). This is the same fail-closed
+  shape as `markIncompatibleAppVersion` (`runtime/index.ts:2883-2900`) and surfaces in
+  the same plugin-status UI. The version is never negotiated on the wire: the manifest is
+  the one declaration, and the construct reply carries no second copy that could
+  disagree with it.
+- A breaking change adds version `N+1` to the served set; it does not replace `N`.
+  Version `N` leaves the set only through the deprecation shape of §9.3 — a warning in
+  the plugin-status UI, the replacement, and an app-version boundary announced in advance.
+  This is what lets host and plugins release independently (reason 4): without it every
+  breaking bump would strand every installed plugin on the same day.
 - A plugin **may** call a method not in `requires` and handle `method-not-found`; that is
   how optional members (`hostFetch?`, `spawnWorker?`, `resolveApiKey?`,
   `getAppPreference?` are optional today, `public-contract.ts:1323, 1375, 1414, 1766`)
@@ -498,10 +511,13 @@ and the document says which members those are.
   `Authorization` at the egress chokepoint the same way it already attaches partition
   cookies (`host-api-factory.ts:1039`). Revocation then needs no child-side copy to
   forget (`host-api-child.ts:397-403`). A plugin that must hand the key to a vendor SDK
-  with its own HTTP client declares `capabilities: ["secrets.rawApiKey"]`, which the
+  with its own HTTP client declares `capabilities: ["secrets:raw-api-key"]` (the manifest capability pattern is
+  `^[a-z][a-z0-9:-]*$`, `schemas/plugin-manifest.schema.json:261`; the id joins the
+  host-enforced `KNOWN_CAPABILITY_IDS`, `src/plugins/capabilities.ts:37`), which the
   installer shows and the user approves; without it `resolveApiKey({ exposure: "raw" })`
   is refused with `effect-boundary-denied`. This is a contract change and is handled as a
-  flag-day across the plugin repositories, like `getSecret` was (blueprint §9, `:1000-1003`).
+  flag-day across the plugin sources — one change in the official marketplace repository
+  (`plugins/<name>/source/`) plus `orion` and `git` — like `getSecret` was (blueprint §9, `:1000-1003`).
 - `hostFetch` with partition cookies — cookie values never leave the host
   (`auth-partition-cookie-jar.ts:5-13`). Unchanged.
 - `config.onChange` for a secret key delivers the redaction sentinel, never the value
@@ -600,10 +616,15 @@ marketplace behaviour and everything the protocol does not cover.
 
 Add `requires.hostProtocol` (integer-as-string, e.g. `"1"`). Rules:
 
-- Each app version publishes exactly one served host protocol version, and the mapping
-  is in the release notes and in the schema's `x-ave-app-version-range`.
-- A plugin declares `hostProtocol`; the host refuses the load when it does not serve that
-  version (§3.2). `minAppVersion` remains additive: a plugin may set both.
+- Each app version publishes the set of host protocol versions it serves (§3.2); the
+  mapping is in the release notes and in each schema's `x-ave-app-version-range`.
+- A plugin declares `hostProtocol`; the host refuses the load when the version is not in
+  its served set (§3.2). `minAppVersion` remains additive: a plugin may set both.
+- In the git marketplace (`docs/design/multi-source-git-marketplace.md`) the index
+  carries `minAppVersion` as an authority field so a sync can pick the newest version the
+  app can run. `requires.hostProtocol` joins it: the repository check holds the released
+  manifest's value to the index, and the app's version selection skips a version whose
+  protocol it does not serve, exactly as it skips one whose `minAppVersion` is too new.
 - Capability-level needs are expressed by `requires` in `construct`, not in the manifest,
   because they are only knowable from the running host.
 - A `hostProtocol` mismatch is a distinct refusal code from `incompatible-app-version`,
@@ -700,8 +721,8 @@ Add `requires.hostProtocol` (integer-as-string, e.g. `"1"`). Rules:
 |---|---|---|---|
 | 0 (done) | five first-party plugins out of process on internal wire v1 | `OUT_OF_PROCESS_PLUGIN_IDS`, `out-of-process-plugin.test.ts`, `confined-plugin-child.test.ts` | none |
 | 1 | reverse channel becomes JSON-RPC `ave/host/*`; `initialize` + `construct` negotiation; newline framing; identity fields off the wire; schema generator + parity gate | golden-fixture conformance suite passes against the JS reference runtime for all five plugins | **none** — the reference runtime is host-shipped |
-| 2 | secrets lease (`bearer()` removed, `hostFetch` `auth.lease`), `sandbox` manifest block replaces `PLUGIN_ENVELOPE_GRANTS`, dispatcher rate limits | each plugin repo builds against the new contract; `local-indexer` manifest carries its grants | **flag-day**: `resolveApiKey` callers (`meeting`, `local-indexer`), `local-indexer` manifest |
-| 3 | schema + TS client published as release assets; validate CLI; `process` entry accepted in the schema | validate CLI passes for all seven plugins with the app not running; a non-JS smoke plugin (Python, stock MCP server library) passes conformance | none for existing plugins |
+| 2 | secrets lease (`bearer()` removed, `hostFetch` `auth.lease`), `sandbox` manifest block replaces `PLUGIN_ENVELOPE_GRANTS`, dispatcher rate limits | every plugin source builds against the new contract; `local-indexer` manifest carries its grants | **flag-day**: `resolveApiKey` callers (`meeting`, `local-indexer`), `local-indexer` manifest |
+| 3 | schema + TS client published as release assets; validate CLI; `process` entry accepted in the schema | validate CLI passes for every official marketplace plugin, `template`, `orion` and `git` with the app not running; a non-JS smoke plugin (Python, stock MCP server library) passes conformance | none for existing plugins |
 | 4 | out-of-process by default for every install; `git`, hello-world, `template`, `orion` (company git) onto the path; adversarial fixture | fixture attempts the four escapes (blueprint §9 Stage 9) and is denied; `allPluginsAreOutOfProcess` true for the catalog | `git`: confirm no ambient axis (it uses `openAuthWindow`, `openExternalUrl`, `getSecret`, `callLlm`, `clearAuthPartition` — all mediated) |
 | 5 | remove the in-process loader and the routing census | `importPluginFactory` has no call site in main; `OUT_OF_PROCESS_PLUGIN_IDS` deleted | none |
 
@@ -713,7 +734,10 @@ needs no No-Fallback exemption.
 ### 9.2 Order of plugins
 
 For the *protocol* migration (Phase 1 validation order), smallest surface first, so a
-wire defect is found where it is cheapest to read:
+wire defect is found where it is cheapest to read. The `ave-plugin-*/src` paths below
+are the pre-monorepo repositories the survey read; the official plugins now live in the
+marketplace repository under `plugins/<name>/source/` with the same `src/` layout, while
+`orion` moves to company git and `git` keeps its own repository.
 
 1. `vega-helper` — `triggerConversation`, `callLlm`, `onEvent`, `config`,
    `hasRoutineBySource`, `getInstalledPluginIds`, `onPluginsChanged`
@@ -785,8 +809,8 @@ permanent shim.
 
 `ave-plugin validate <dir>` is built from the host repo and published as a release
 asset (a single-file Node executable), replacing the per-plugin drift scripts such as
-`ave-plugin-meeting/scripts/validate-hostapi.mjs` (which today imports
-`@ave/plugin-sdk`, `:28`). It:
+`plugins/meeting/source/scripts/validate-hostapi.mjs` in the marketplace repository
+(which imports the vendored `@ave/plugin-contract`, `:27`). It:
 
 1. validates `plugin.json` against the manifest schema and the Ave `extensions` rules,
    including `requires.hostProtocol`;
@@ -862,7 +886,7 @@ What Ave should not adopt, and why:
 
 1. **Stay in-process and drop the types.** Keeps every cost (shared heap, Electron
    reachable, hang domain, no per-plugin accounting) and gains nothing: reasons 1-5 all
-   require the process boundary. Also moot: five of seven plugins are already out.
+   require the process boundary. Also moot: the five first-party plugins with host surface are already out.
 2. **VS Code-style extension host** (one process for all plugins, RPC-proxied objects).
    One crash still takes every plugin down; the proxied-object model is a typed TS API
    by construction (`rpcProtocol.ts` marshals proxies of `MainThread*` interfaces), so it
@@ -902,7 +926,7 @@ What Ave should not adopt, and why:
    track after confirming which framing the external servers it talks to actually use.
 2. **`resolveApiKey` raw exposure: remove `bearer()` outright, or keep it behind a
    declared capability?** Recommended: remove from the default path; raw exposure only
-   via `capabilities: ["secrets.rawApiKey"]` with install-time approval, as in §4.1.
+   via `capabilities: ["secrets:raw-api-key"]` with install-time approval, as in §4.1.
 3. **Third-party (marketplace) out-of-process plugins on Windows without process
    confinement.** Recommended: not by default. On Windows, marketplace plugins with a
    `process` entry are refused, and JS plugins load only under `installPolicy: "admin"`
@@ -934,7 +958,7 @@ What Ave should not adopt, and why:
   `agent-marketplace/server/seed-digests.json` references it; the Python server source
   was not read.
 - Which plugins hand the `resolveApiKey` bearer to a vendor SDK rather than to
-  `hostFetch` (decides how many need `secrets.rawApiKey` in Phase 2). `meeting` and
+  `hostFetch` (decides how many need `secrets:raw-api-key` in Phase 2). `meeting` and
   `local-indexer` call `resolveApiKey`; their HTTP paths were not traced.
 - Whether external MCP servers the host connects to accept `Content-Length` framing
   today (`mcp-client.ts:2366`), which bears on Open Question 1.
