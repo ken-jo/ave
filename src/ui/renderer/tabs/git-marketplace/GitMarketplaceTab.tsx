@@ -262,7 +262,7 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }
       <SettingsPageHeader title={t("gitMarketplace.title")} description={t("gitMarketplace.description")} />
 
       <SettingsSection
-        data-settings-section="git-marketplace-browse"
+        data-settings-section="marketplace-inventory"
         title={view === "sources" ? t("gitMarketplace.sources.title") : view === "direct" ? t("gitMarketplace.direct.title") : undefined}
       >
         <div className="flex flex-wrap items-center gap-2">
@@ -436,7 +436,7 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }
         )}
       </SettingsSection>
 
-      <SettingsSection data-settings-section="git-marketplace-maintenance" title={t("gitMarketplace.maintenance.title")} description={t("gitMarketplace.maintenance.description")}>
+      <SettingsSection data-settings-section="marketplace-maintenance" title={t("gitMarketplace.maintenance.title")} description={t("gitMarketplace.maintenance.description")}>
         <GitRuntimeCard api={api} />
         <div className="mt-4 flex items-center justify-between gap-4">
           <span className="text-sm font-medium">{t("gitMarketplace.maintenance.updateCheck")}</span>

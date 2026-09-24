@@ -316,11 +316,15 @@ describe("preload contextBridge world shape lock", () => {
           "gitMarketplace": [
             "acceptRewrite",
             "addSource",
+            "bootInstallNotice",
             "deleteToken",
+            "dismissBootInstallNotice",
             "executeInstall",
             "listCatalog",
             "listSources",
+            "onBootInstallsApplied",
             "onCatalogChanged",
+            "onDeepLink",
             "onInstallProgress",
             "onSyncProgress",
             "packageDetail",
@@ -332,6 +336,7 @@ describe("preload contextBridge world shape lock", () => {
             "removeSource",
             "setSourceEnabled",
             "setToken",
+            "takeDeepLink",
             "uninstall",
           ],
           "gitRuntime": [
