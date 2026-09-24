@@ -106,7 +106,7 @@ describe("SourceRegistry.add", () => {
     expect(await code(registry.add(custom({ id: "acme-3", url: "acme/market" })))).toBe("SOURCE_ID_TAKEN");
     expect(await code(registry.add(custom({ id: "acme-4", url: "acme/market-2" })))).toBe("passed");
     expect(await code(registry.add(custom({ id: "corp-2", url: "https://git.corp.example/ave/market/" })))).toBe("SOURCE_ID_TAKEN");
-    expect(await code(registry.add(custom({ id: "mine", url: "ken-jo/ave-marketplace-index" })))).toBe("SOURCE_ID_TAKEN");
+    expect(await code(registry.add(custom({ id: "mine", url: "ken-jo/agent-marketplace" })))).toBe("SOURCE_ID_TAKEN");
   });
 
   it("allows two direct sources from one repository with different subdirs", async () => {

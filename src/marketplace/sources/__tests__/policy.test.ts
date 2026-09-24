@@ -36,7 +36,7 @@ async function rejected(marketplaces: unknown): Promise<string> {
 }
 
 const DESIGN_EXAMPLE = {
-  allow: ["https://github.com/acme/*", "host:git.corp.example", "https://github.com/ken-jo/ave-marketplace-index"],
+  allow: ["https://github.com/acme/*", "host:git.corp.example", "https://github.com/ken-jo/agent-marketplace"],
   block: ["host:git.example.org"],
   allowHttpHosts: ["git.corp.example"],
   allowDirectInstall: true,
@@ -99,7 +99,7 @@ describe("loadMarketplacePolicy", () => {
     ["a reserved managed id", { additional: [{ id: "ave-corp", url: "https://git.corp.example/a" }] }, "ave-corp is reserved"],
     ["a managed id used twice", { additional: [{ id: "corp", url: "https://git.corp.example/a" }, { id: "corp", url: "https://git.corp.example/b" }] }, "corp is used twice"],
     ["the same repository twice", { additional: [{ id: "one", url: "https://git.corp.example/a" }, { id: "two", url: "https://GIT.corp.example/a.git" }] }, "already a source"],
-    ["the official repository as a managed source", { additional: [{ id: "corp", url: "ken-jo/ave-marketplace-index" }] }, "already a source"],
+    ["the official repository as a managed source", { additional: [{ id: "corp", url: "ken-jo/agent-marketplace" }] }, "already a source"],
     ["plain http without allowHttpHosts", { additional: [{ id: "corp", url: "http://git.corp.example/a" }] }, "allowHttpHosts"],
     ["a managed source its own policy blocks", { block: ["host:git.corp.example"], additional: [{ id: "corp", url: "https://git.corp.example/a" }] }, "blocked by this policy"],
     ["token auth on an ssh URL", { additional: [{ id: "corp", url: "ssh://git@git.corp.example/a", auth: { kind: "token", host: "git.corp.example" } }] }, "token auth needs an http(s) URL"],

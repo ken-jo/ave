@@ -24,7 +24,7 @@ const OFFICIAL_SOURCE_ID = "ave";
 
 export const OFFICIAL_MARKETPLACE: OfficialMarketplace = Object.freeze({
   id: OFFICIAL_SOURCE_ID,
-  url: "https://github.com/ken-jo/ave-marketplace-index",
+  url: "https://github.com/ken-jo/agent-marketplace",
   mirrors: Object.freeze([]),
   auth: Object.freeze({ kind: "token", host: "github.com" }),
 });
