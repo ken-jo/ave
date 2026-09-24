@@ -20,8 +20,14 @@ import { buildSafeChildEnv } from "../../tools/safe-env.js";
 
 export interface GitConfigEntry {
   key: string;
-  /** `null` for a valueless key (`[credential] useHttpPath`), which git reads as boolean true. */
+  /** `null` for a valueless key (`[credential "https://h"] useHttpPath` with no `=`). */
   value: string | null;
+}
+
+/** A copied entry: every copied key takes a string, so a valueless one has become `""`. */
+export interface CopiedConfigEntry {
+  key: string;
+  value: string;
 }
 
 const COPIED_TOP_LEVEL_KEYS = new Set(["credential.helper", "http.sslcainfo", "http.sslbackend"]);
@@ -29,10 +35,11 @@ const COPIED_TOP_LEVEL_KEYS = new Set(["credential.helper", "http.sslcainfo", "h
 /**
  * Keep only the keys above. Section and variable names arrive lowercased from
  * `git config --list`; a subsection (the URL in `credential.<url>.helper`)
- * keeps its case. A valueless helper is copied as the empty value that resets
- * the helper list, since git refuses a helper without a value.
+ * keeps its case. git refuses any of these keys without a value (for a helper
+ * that ends the credential lookup), so a valueless one is copied as `""`: an
+ * odd user config must not stop the marketplace.
  */
-export function selectCopiedEntries(entries: readonly GitConfigEntry[]): GitConfigEntry[] {
+export function selectCopiedEntries(entries: readonly GitConfigEntry[]): CopiedConfigEntry[] {
   return entries
     .filter(({ key }) => {
       if (COPIED_TOP_LEVEL_KEYS.has(key)) return true;
@@ -41,7 +48,7 @@ export function selectCopiedEntries(entries: readonly GitConfigEntry[]): GitConf
       const lastDot = rest.lastIndexOf(".");
       return lastDot > 0 && /^[a-z][a-z0-9-]*$/u.test(rest.slice(lastDot + 1));
     })
-    .map((entry) => (entry.value === null && entry.key.endsWith(".helper") ? { key: entry.key, value: "" } : entry));
+    .map(({ key, value }) => ({ key, value: value ?? "" }));
 }
 
 /** Parse `git config --null --list`: `key\nvalue\0` records; a valueless key has no `\n`. */
@@ -68,7 +75,7 @@ function runConfig(gitPath: string, args: string[], env: Record<string, string>)
  * cannot be read contributes nothing: an unreadable user config must not stop
  * the marketplace, it only means no credential helper answers.
  */
-export async function readCopiedCredentialConfig(gitPath: string): Promise<GitConfigEntry[]> {
+export async function readCopiedCredentialConfig(gitPath: string): Promise<CopiedConfigEntry[]> {
   const env = buildSafeChildEnv({ LC_ALL: "C", GIT_TERMINAL_PROMPT: "0" });
   if (process.env.XDG_CONFIG_HOME) env.XDG_CONFIG_HOME = process.env.XDG_CONFIG_HOME;
   const entries: GitConfigEntry[] = [];
@@ -87,18 +94,18 @@ export async function readCopiedCredentialConfig(gitPath: string): Promise<GitCo
  * while `git config --add` would file a value under an earlier section of the
  * same name. Values are quoted and escaped the way git reads them back.
  */
-export async function writeGeneratedGlobalConfig(outputPath: string, entries: readonly GitConfigEntry[]): Promise<void> {
+export async function writeGeneratedGlobalConfig(outputPath: string, entries: readonly CopiedConfigEntry[]): Promise<void> {
   await writeFileAtomicAtPath(outputPath, entries.map(formatConfigEntry).join(""));
 }
 
-function formatConfigEntry({ key, value }: GitConfigEntry): string {
+function formatConfigEntry({ key, value }: CopiedConfigEntry): string {
   const firstDot = key.indexOf(".");
   const lastDot = key.lastIndexOf(".");
   if (firstDot <= 0 || lastDot === key.length - 1) throw new Error(`git config key has no section and variable: ${key}`);
   const section = key.slice(0, firstDot);
   const variable = key.slice(lastDot + 1);
   const header = lastDot === firstDot ? `[${section}]` : `[${section} "${escapeSubsection(key.slice(firstDot + 1, lastDot))}"]`;
-  return value === null ? `${header}\n\t${variable}\n` : `${header}\n\t${variable} = "${escapeValue(value)}"\n`;
+  return `${header}\n\t${variable} = "${escapeValue(value)}"\n`;
 }
 
 function escapeSubsection(subsection: string): string {
@@ -108,8 +115,7 @@ function escapeSubsection(subsection: string): string {
 
 const VALUE_ESCAPES: Record<string, string> = { "\\": "\\\\", "\"": "\\\"", "\n": "\\n", "\t": "\\t", "\b": "\\b" };
 
+/** git reads other control characters inside quotes as they are, the way `git config` writes them. */
 function escapeValue(value: string): string {
-  // eslint-disable-next-line no-control-regex -- git config values carry no other control characters
-  if (/[\0-\x07\x0b-\x1f\x7f]/u.test(value)) throw new Error("git config value holds a control character git cannot store");
   return value.replace(/[\\"\n\t\b]/gu, (char) => VALUE_ESCAPES[char] ?? char);
 }

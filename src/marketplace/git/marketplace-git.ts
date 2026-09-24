@@ -14,7 +14,7 @@ import type { GitRuntimeMode } from "../../shared/git-runtime-mode.js";
 import { MarketplaceError } from "../errors.js";
 import { AskpassBroker } from "./askpass.js";
 import { detectGitRuntime, nodeGitDetectionDeps, type GitDetectionDeps, type GitExecutable, type ManagedGitInstall } from "./detect.js";
-import { readCopiedCredentialConfig, writeGeneratedGlobalConfig, type GitConfigEntry } from "./global-config.js";
+import { readCopiedCredentialConfig, writeGeneratedGlobalConfig, type CopiedConfigEntry } from "./global-config.js";
 import { findManagedGit, managedRunnerOptions } from "./managed-git.js";
 import { MANAGED_GIT, type ManagedGitPins } from "./managed-git-pins.js";
 import { GitRunner, type GitCommands, type GitRunnerOptions } from "./run-git.js";
@@ -37,12 +37,12 @@ export interface MarketplaceGitOptions {
 
 interface BuiltRunner {
   runner: GitRunner;
-  copied: readonly GitConfigEntry[];
+  copied: readonly CopiedConfigEntry[];
 }
 
 /** A copied entry that names a credential helper: `credential.helper` or `credential.<url>.helper`. */
-function isHelperEntry(entry: GitConfigEntry): boolean {
-  return Boolean(entry.value) && (entry.key === "credential.helper" || (entry.key.startsWith("credential.") && entry.key.endsWith(".helper")));
+function isHelperEntry(entry: CopiedConfigEntry): boolean {
+  return entry.value !== "" && (entry.key === "credential.helper" || (entry.key.startsWith("credential.") && entry.key.endsWith(".helper")));
 }
 
 export class MarketplaceGit {
