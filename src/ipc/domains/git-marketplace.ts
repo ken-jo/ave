@@ -101,6 +101,8 @@ export type GitMarketplacePort = Pick<
   | "previewDirectMcp"
   | "updates"
   | "applyBootInstalls"
+  | "enforceRevocations"
+  | "takeRevocationNotice"
 >;
 
 /** The settings secret each host's token is stored under (design §2.1). */
@@ -194,7 +196,6 @@ function dropKeptArtifactsIfOff(deps: IpcDeps, home: string): void {
   void clearKeptArtifacts(keptArtifactsDir(home)).catch((error: unknown) => log.warn({ err: errorMessage(error) }, "kept artifacts could not be removed"));
 }
 
-/** Build the marketplace over `~/.ave`. Nothing touches the network until a request does. */
 /**
  * Where the service's revocation feed lands (design §10.4): the registry the
  * load gates answer from. A changed set reloads installed content, which
@@ -215,6 +216,7 @@ export function revocationSink(
   };
 }
 
+/** Build the marketplace over `~/.ave`. Nothing touches the network until a request does. */
 async function createGitMarketplaceService(
   deps: IpcDeps,
   content: () => Promise<InstalledContentRuntime | null>,
@@ -319,6 +321,7 @@ async function createGitMarketplaceService(
     onSyncProgress: (progress: SyncProgressView) => broadcast(CHANNELS.gitMarketplace.syncProgress, progress),
     onCatalogChanged: catalogChanged,
     onInstallProgress: (progress: InstallProgressView) => broadcast(CHANNELS.gitMarketplace.installProgress, progress),
+    log: { warn: (message) => log.warn(message) },
     legacyMigration: {
       markerPath: join(packagesRoot, "legacy-migration.json"),
       plugins: (officialPlugin, applied) =>

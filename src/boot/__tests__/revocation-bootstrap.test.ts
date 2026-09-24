@@ -91,6 +91,17 @@ describe("feedRevocationsFromSnapshots", () => {
     expect(audit.log).toHaveBeenCalledWith(expect.objectContaining({ input: "revocations_loaded rules=1 unreadable=1" }));
   });
 
+  it("reports a pinned source whose snapshot file is gone as unreadable, not as revoking nothing", async () => {
+    const pluginRegistryPath = writePlugins();
+    writeSource("ave", []);
+    mkdirSync(join(home, "marketplaces", "acme"), { recursive: true });
+    writeFileSync(join(home, "marketplaces", "acme", "state.json"), JSON.stringify({ pinnedCommit: PIN, enabled: true }));
+
+    await feedRevocationsFromSnapshots({ home, pluginRegistryPath, bootAuditLogger: audit as never });
+
+    expect(audit.log).toHaveBeenCalledWith(expect.objectContaining({ input: "revocations_loaded rules=0 unreadable=1" }));
+  });
+
   it("feeds an empty set on a fresh home, so the gates know they were fed", async () => {
     await feedRevocationsFromSnapshots({ home, pluginRegistryPath: join(home, "plugins", "registry.json"), bootAuditLogger: audit as never });
     expect(revocationRegistry.replace([])).toBe(false);

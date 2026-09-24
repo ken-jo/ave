@@ -96,7 +96,7 @@ describe("AskpassBroker", () => {
   it.skipIf(process.platform === "win32")("removes directories a crashed run left behind, and keeps live and fresh ones", async () => {
     const parent = mkdtempSync(join(tmpdir(), "ave-sweep-"));
     const gone = spawnSync(process.execPath, ["-e", ""]).pid;
-    const make = (root: string, name: string, owner: number | null): string => {
+    const make = (root: string, name: string, owner: number | string | null): string => {
       const dir = join(root, name);
       mkdirSync(dir, { mode: 0o700 });
       if (owner !== null) writeFileSync(join(dir, "owner.pid"), String(owner));
@@ -106,8 +106,12 @@ describe("AskpassBroker", () => {
     const live = make(parent, "ave-askpass-live", process.ppid);
     const settingUp = make(parent, "ave-askpass-setting-up", null);
     const abandoned = make(parent, "ave-askpass-abandoned", null);
+    // An owner file read before its pid lands is empty: that owner may still be alive.
+    const halfClaimed = make(parent, "ave-askpass-half-claimed", "");
+    const garbledLongAgo = make(parent, "ave-askpass-garbled", "");
     const old = new Date(Date.now() - 10 * 60_000);
     utimesSync(abandoned, old, old);
+    utimesSync(garbledLongAgo, old, old);
     const unrelated = make(parent, "other-crashed", gone);
     const crashedSocket = mkdtempSync("/tmp/ave-ask-");
     writeFileSync(join(crashedSocket, "owner.pid"), String(gone));
@@ -115,6 +119,8 @@ describe("AskpassBroker", () => {
       broker = await AskpassBroker.start({ getToken: () => null, parentDir: parent });
       expect(existsSync(crashed)).toBe(false);
       expect(existsSync(abandoned)).toBe(false);
+      expect(existsSync(garbledLongAgo)).toBe(false);
+      expect(existsSync(halfClaimed)).toBe(true);
       expect(existsSync(crashedSocket)).toBe(false);
       expect(existsSync(live)).toBe(true);
       expect(existsSync(settingUp)).toBe(true);

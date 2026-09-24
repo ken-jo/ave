@@ -1,12 +1,14 @@
 /**
  * The git marketplace's work outside a request (design §7.3, §10.2).
  *
- * Once the window has loaded: sync every source, apply the default and
- * required installs, and publish what they did — the notice (§15.1) and the
- * status the boot pill shows, whose Retry runs the same pass again. Then
- * every `marketplace.updateCheckIntervalMs` sync again and tell the renderer
- * which installed packages have updates. The periodic sync runs whether or
- * not update notices are on: revocations reach installed packages through it.
+ * Once the window has loaded: enforce the revocations already on disk, sync
+ * every source, apply the default and required installs, and publish what
+ * they did — the notice (§15.1) and the status the boot pill shows, whose
+ * Retry runs the same pass again. Then every
+ * `marketplace.updateCheckIntervalMs` sync again and tell the renderer which
+ * installed packages have updates. The periodic sync runs whether or not
+ * update notices are on: revocations reach installed packages through it, and
+ * what they removed since the last notice is published as a notice.
  */
 import type { AppBootstrapStatus } from "../../shared/bootstrap-status.js";
 import { errorMessage } from "../../shared/error-message.js";
@@ -30,6 +32,8 @@ export function syncIntervalMs(stored: number | undefined): number {
 }
 
 export interface BackgroundService {
+  enforceRevocations(): Promise<void>;
+  takeRevocationNotice(): BootInstallNoticeView | null;
   refresh(): Promise<unknown>;
   updates(): Promise<PackageUpdateView[]>;
   applyBootInstalls(defaults: readonly PackageKey[], applied: AppliedDefaults): Promise<{ report: BootInstallReport; notice: BootInstallNoticeView | null }>;
@@ -93,6 +97,8 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
       input.publishStatus({ phase: "start" });
       try {
         const service = await input.service();
+        // A revocation the last session synced acts now, not after the network answers.
+        await service.enforceRevocations();
         // A source that fails to sync reports it in its status; a throw here is an unreadable file or a bug.
         await service.refresh();
         const { report, notice } = await service.applyBootInstalls(input.defaults, await input.appliedDefaults());
@@ -124,6 +130,9 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
       try {
         const service = await input.service();
         if (sync) await service.refresh();
+        // What a sync's revocations removed since the last notice, this tick's or one the user ran.
+        const revoked = service.takeRevocationNotice();
+        if (revoked) input.publishNotice(revoked);
         const settings = input.settings();
         // Notices off: the list the renderer holds is cleared, and nothing is looked up.
         const skipped = readSkippedPluginUpdates(settings.skippedPluginUpdates);

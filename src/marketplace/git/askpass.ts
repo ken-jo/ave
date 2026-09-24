@@ -24,6 +24,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createLogger } from "../../lib/logger.js";
+import { writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
 import { normalizeSourceHost } from "../net/source-url.js";
 
 const log = createLogger("marketplace-askpass");
@@ -37,7 +38,7 @@ const SOCKET_ROOT = "/tmp";
 const SOCKET_DIR_PREFIX = "ave-ask-";
 /** Written into every broker directory: the pid of the process that owns it. */
 const OWNER_FILE = "owner.pid";
-/** A directory with no owner yet may be one another process is still setting up. */
+/** A directory with no readable owner yet may be one another process is still setting up. */
 const UNCLAIMED_GRACE_MS = 60_000;
 const CONNECTION_TIMEOUT_MS = 5_000;
 
@@ -147,7 +148,8 @@ async function brokerEndpoint(dir: string, platform: NodeJS.Platform): Promise<{
 }
 
 async function claim(dir: string): Promise<void> {
-  await writeFile(join(dir, OWNER_FILE), String(process.pid), { mode: 0o600 });
+  // Written aside and renamed in, so a sweep never reads a half-written owner.
+  await writeFileAtomicAtPath(join(dir, OWNER_FILE), String(process.pid));
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -167,8 +169,9 @@ async function leftBehind(dir: string, modifiedMs: number): Promise<boolean> {
     if (errorCode(error) === "ENOENT") return Date.now() - modifiedMs > UNCLAIMED_GRACE_MS;
     throw error;
   }
-  const pid = Number(owner);
-  if (!Number.isSafeInteger(pid) || pid <= 0) return true;
+  const pid = Number(owner.trim());
+  // An empty or garbled owner is treated as no owner: removed only once the grace has passed.
+  if (owner.trim() === "" || !Number.isSafeInteger(pid) || pid <= 0) return Date.now() - modifiedMs > UNCLAIMED_GRACE_MS;
   if (pid === process.pid) return false;
   try {
     process.kill(pid, 0);

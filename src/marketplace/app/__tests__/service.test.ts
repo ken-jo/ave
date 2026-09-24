@@ -75,6 +75,10 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
   let contentReports: LegacyContentReport[];
   let adopting: boolean[];
   let feeds: RevocationFeed[];
+  let feedFails: boolean;
+  let warnings: string[];
+  /** Runs inside a content install, after the plan's first feed and before the store changes. */
+  let duringContentInstall: (() => Promise<void>) | null;
 
   beforeAll(async () => {
     serverRoot = mkdtempSync(join(tmpdir(), "ave-service-served-"));
@@ -99,6 +103,9 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
     contentReports = [];
     adopting = [];
     feeds = [];
+    feedFails = false;
+    warnings = [];
+    duringContentInstall = null;
     await build();
   });
 
@@ -132,7 +139,10 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
       },
       content: {
         list: async () => store.list().map((entry) => ({ kind: entry.kind, name: entry.name, version: entry.version, sourceId: entry.origin.sourceId, originCommit: entry.origin.commit })),
-        install: async (staged, options) => ({ action: (await store.install(staged, options)).action }),
+        install: async (staged, options) => {
+          await duringContentInstall?.();
+          return { action: (await store.install(staged, options)).action };
+        },
         uninstall: async (kind, name) => {
           if (kind === "plugin" || kind === "mcp") throw new Error("not content");
           await store.uninstall(kind, name, EMPTY_MARKETPLACE_POLICY);
@@ -159,7 +169,13 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
         catalogChanged += 1;
       },
       now: () => now,
-      revocations: { apply: async (feed) => void feeds.push(feed) },
+      revocations: {
+        apply: async (feed) => {
+          if (feedFails) throw new Error("revocation registry unwritable");
+          feeds.push(feed);
+        },
+      },
+      log: { warn: (message) => void warnings.push(message) },
       legacyMigration: {
         markerPath: join(root, "packages", "legacy-migration.json"),
         plugins: async (officialPlugin) => {
@@ -424,15 +440,17 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
       { kind: "mcp", name: "notes", versions: "=2.0.0", reason: "exfiltrates notes", at: "2026-09-24T00:00:00Z", action: "disable" },
       { kind: "skill", name: "unrelated", versions: "*", reason: "not installed", at: "2026-09-24T00:00:00Z", action: "uninstall" },
     ]);
+    const before = feeds.length;
     await service.refresh();
-    const fed = feeds.at(-1)!;
+    // The sync's first feed carries each package's own source's rules.
+    const fed = feeds[before]!;
     expect(fed.unreadable).toEqual([]);
     expect(fed.rules.map((rule) => `${rule.sourceId}/${rule.kind}/${rule.name}:${rule.action}`).sort()).toEqual([
       "acme-tools/mcp/notes:disable",
       "acme-tools/skill/review:disable",
     ]);
 
-    // The boot pass removes the MCP server (no load gate) and leaves the gated skill installed.
+    // The sync removed the MCP server (no load gate) and left the gated skill installed; the boot notice reports it.
     const { notice } = await service.applyBootInstalls([], await AppliedDefaults.open(join(root, "packages", "default-installs.json")));
     expect(notice?.revoked).toEqual([
       { key: { sourceId: "acme-tools", kind: "mcp", name: "notes" }, version: "2.0.0", reason: "exfiltrates notes", outcome: "uninstalled" },
@@ -457,6 +475,90 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
       { key: { sourceId: "acme-tools", kind: "mcp", name: "notes" }, version: "2.0.0", reason: "exfiltrates notes", outcome: "required" },
     ]);
     expect(manager.configs.has("notes")).toBe(true);
+  });
+
+  it("judges a package mid-switch by the source it moves to, in every feed while it moves", async () => {
+    const acme = market();
+    const other = market("1.1.0", "other-tools");
+    await addMarket(acme.url);
+    await addMarket(other.url);
+    await service.executeInstall((await service.planInstall({ sourceId: "acme-tools", kind: "skill", name: "review" })).planId);
+    createRevocations(acme, [{ kind: "skill", name: "review", versions: "*", reason: "prompt injection", at: "2026-09-24T00:00:00Z", action: "disable" }]);
+    await service.refresh();
+    expect(feeds.at(-1)!.rules.map((rule) => `${rule.sourceId}/${rule.name}`)).toEqual(["acme-tools/review"]);
+
+    const plan = await service.planInstall({ sourceId: "other-tools", kind: "skill", name: "review", switchSource: true });
+    let fedMidSwitch: RevocationFeed | undefined;
+    duringContentInstall = async () => {
+      // A sync finishing while the switch runs feeds and enforces again.
+      await service.enforceRevocations();
+      fedMidSwitch = feeds.at(-1);
+    };
+    await service.executeInstall(plan.planId);
+
+    // The source being left never judged the package while it moved, and nothing removed it.
+    expect(fedMidSwitch).toEqual({ rules: [], unreadable: [] });
+    expect(store.list().map((entry) => `${entry.name}@${entry.version}:${entry.origin.sourceId}`)).toEqual(["review@1.1.0:other-tools"]);
+    expect(feeds.at(-1)).toEqual({ rules: [], unreadable: [] });
+    expect(service.takeRevocationNotice()).toBeNull();
+  });
+
+  it("feeds the gates again after an uninstall, and logs a failed feed after a finished install", async () => {
+    const acme = market("1.0.0", "acme-tools", { theme: true });
+    await addMarket(acme.url);
+    await service.executeInstall((await service.planInstall({ sourceId: "acme-tools", kind: "skill", name: "review" })).planId);
+    createRevocations(acme, [{ kind: "skill", name: "review", versions: "*", reason: "prompt injection", at: "2026-09-24T00:00:00Z", action: "disable" }]);
+    await service.refresh();
+    expect(feeds.at(-1)!.rules).toHaveLength(1);
+
+    await service.uninstall({ sourceId: "acme-tools", kind: "skill", name: "review" });
+    expect(feeds.at(-1)).toEqual({ rules: [], unreadable: [] });
+
+    // The feed before the install lands; the one after fails. The install is done, so it resolves.
+    duringContentInstall = async () => {
+      feedFails = true;
+    };
+    await expect(service.executeInstall((await service.planInstall({ sourceId: "acme-tools", kind: "theme", name: "harbor" })).planId)).resolves.toMatchObject({
+      key: { sourceId: "acme-tools", kind: "theme", name: "harbor" },
+    });
+    expect(store.list().map((entry) => entry.name)).toEqual(["harbor"]);
+    expect(warnings).toEqual([expect.stringContaining("revocation feed after theme harbor install failed")]);
+  });
+
+  it("removes what a sync revokes at once, and queues its notice once", async () => {
+    const acme = market();
+    await addMarket(acme.url);
+    await service.executeInstall((await service.planInstall({ sourceId: "acme-tools", kind: "mcp", name: "notes" })).planId);
+    createRevocations(acme, [{ kind: "mcp", name: "notes", versions: "*", reason: "exfiltrates notes", at: "2026-09-24T00:00:00Z", action: "uninstall" }]);
+
+    await service.refresh();
+    expect(manager.configs.has("notes")).toBe(false);
+    expect(service.takeRevocationNotice()).toEqual({
+      forYou: [],
+      required: [],
+      unmanaged: [],
+      lostGrants: [],
+      revoked: [{ key: { sourceId: "acme-tools", kind: "mcp", name: "notes" }, version: "2.0.0", reason: "exfiltrates notes", outcome: "uninstalled" }],
+    });
+    expect(service.takeRevocationNotice()).toBeNull();
+    // The boot notice does not repeat what was already reported.
+    const { notice } = await service.applyBootInstalls([], await AppliedDefaults.open(join(root, "packages", "default-installs.json")));
+    expect(notice?.revoked ?? []).toEqual([]);
+  });
+
+  it("removes a revoked package when the requiredInstalls entry for it names another source", async () => {
+    const acme = market();
+    service.close();
+    await build(policyLoad({ requiredInstalls: [{ kind: "mcp", name: "notes", source: "other-tools" }] }));
+    await addMarket(acme.url);
+    await service.executeInstall((await service.planInstall({ sourceId: "acme-tools", kind: "mcp", name: "notes" })).planId);
+    createRevocations(acme, [{ kind: "mcp", name: "notes", versions: "*", reason: "exfiltrates notes", at: "2026-09-24T00:00:00Z", action: "uninstall" }]);
+
+    await service.refresh();
+    expect(manager.configs.has("notes")).toBe(false);
+    expect(service.takeRevocationNotice()?.revoked).toEqual([
+      { key: { sourceId: "acme-tools", kind: "mcp", name: "notes" }, version: "2.0.0", reason: "exfiltrates notes", outcome: "uninstalled" },
+    ]);
   });
 
   it("expires a plan after ten minutes", async () => {

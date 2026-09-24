@@ -1,7 +1,8 @@
 /**
- * The marketplace's work outside a request (design §7.3, §10.2): the boot
- * pass publishes what it did, the update list follows what is installed and
- * skipped, and the periodic tick syncs before it looks.
+ * The marketplace's work outside a request (design §7.3, §10.2, §10.4): the
+ * boot pass enforces the revocations on disk and publishes what it did, the
+ * update list follows what is installed and skipped, and the periodic tick
+ * syncs before it looks and publishes what its revocations removed.
  */
 import { describe, expect, it, vi } from "vitest";
 import type { AppliedDefaults } from "../../boot-installs/applied.js";
@@ -28,6 +29,10 @@ function harness(options: {
 } = {}) {
   const calls: string[] = [];
   const service: BackgroundService = {
+    enforceRevocations: vi.fn(async () => {
+      calls.push("enforceRevocations");
+    }),
+    takeRevocationNotice: vi.fn(() => null),
     refresh: vi.fn(async () => {
       calls.push("refresh");
     }),
@@ -73,7 +78,7 @@ describe("syncIntervalMs", () => {
 });
 
 describe("startMarketplaceBackground", () => {
-  it("syncs, applies the boot installs, publishes the notice and status, then the updates", async () => {
+  it("enforces the revocations on disk, syncs, applies the boot installs, publishes the notice and status, then the updates", async () => {
     const notice = { forYou: [{ sourceId: "ave", kind: "plugin" as const, name: "meeting" }], required: [], unmanaged: [], lostGrants: [], revoked: [] };
     const report: BootInstallReport = {
       ...EMPTY_REPORT,
@@ -95,7 +100,7 @@ describe("startMarketplaceBackground", () => {
 
     await startMarketplaceBackground(input).started;
 
-    expect(calls).toEqual(["refresh", "applyBootInstalls", "updates"]);
+    expect(calls).toEqual(["enforceRevocations", "refresh", "applyBootInstalls", "updates"]);
     expect(service.applyBootInstalls).toHaveBeenCalledWith(input.defaults, expect.anything());
     expect(input.publishNotice).toHaveBeenCalledWith(notice);
     expect(vi.mocked(input.publishStatus).mock.calls.map(([status]) => status)).toEqual([
@@ -119,7 +124,30 @@ describe("startMarketplaceBackground", () => {
 
     expect(input.publishStatus).toHaveBeenLastCalledWith({ phase: "error", message: "state file unreadable" });
     expect(input.publishNotice).not.toHaveBeenCalled();
-    expect(calls).toEqual(["refresh", "updates"]);
+    expect(calls).toEqual(["enforceRevocations", "refresh", "updates"]);
+  });
+
+  it("publishes what a sync's revocations removed as a notice of its own", async () => {
+    const revoked = {
+      forYou: [],
+      required: [],
+      unmanaged: [],
+      lostGrants: [],
+      revoked: [{ key: { sourceId: "acme", kind: "mcp" as const, name: "notes" }, version: "2.0.0", reason: "exfiltrates notes", outcome: "uninstalled" as const }],
+    };
+    const notices = [null, revoked];
+    const { input, ticks } = harness({
+      service: { takeRevocationNotice: vi.fn(() => notices.shift() ?? null) },
+      settings: { updateNotices: false, updateCheckIntervalMs: 60 * 60 * 1000 },
+    });
+    const background = startMarketplaceBackground(input);
+    await background.started;
+    expect(input.publishNotice).not.toHaveBeenCalled();
+
+    ticks[0]!();
+    await background.recheck();
+    // Published with notices off too: a removal is not an update offer.
+    expect(vi.mocked(input.publishNotice).mock.calls).toEqual([[revoked]]);
   });
 
   it("publishes nothing about updates while notices are off", async () => {

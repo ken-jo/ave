@@ -299,6 +299,11 @@ export class SourceSyncer {
   async readSnapshot(id: string): Promise<SourceSnapshot | null> {
     return readPinnedSnapshot(this.options.root, id);
   }
+
+  /** The revocations at the pin, for the revocation feed ({@link readPinnedRevocations}). */
+  readRevocations(id: string): Promise<SourceSnapshot["revocations"]> {
+    return readPinnedRevocations(this.options.root, id);
+  }
 }
 
 /**
@@ -306,7 +311,7 @@ export class SourceSyncer {
  * null before the first successful sync. Boot reads it before the syncer
  * exists, to feed revocations to the plugin load gate.
  */
-export async function readPinnedSnapshot(root: string, id: string): Promise<SourceSnapshot | null> {
+async function readPinnedSnapshot(root: string, id: string): Promise<SourceSnapshot | null> {
   const { pinnedCommit } = await readSourceState(root, id);
   if (pinnedCommit === null) return null;
   const path = join(root, id, "snapshots", `${pinnedCommit}.json`);
@@ -323,6 +328,20 @@ export async function readPinnedSnapshot(root: string, id: string): Promise<Sour
     throw new Error(`snapshot ${pinnedCommit}.json of ${id} names ${snapshot.sourceId}@${snapshot.commit}`);
   }
   return snapshot;
+}
+
+/**
+ * The revocations source `id` carries at its pin, for the revocation feed
+ * (design §10.4): none before the first sync. A pin whose snapshot file is
+ * gone throws, so the feed reports the source unreadable rather than
+ * dropping its revocations until a sync rebuilds the snapshot.
+ */
+export async function readPinnedRevocations(root: string, id: string): Promise<SourceSnapshot["revocations"]> {
+  const snapshot = await readPinnedSnapshot(root, id);
+  if (snapshot) return snapshot.revocations;
+  const { pinnedCommit } = await readSourceState(root, id);
+  if (pinnedCommit !== null) throw new Error(`snapshot ${pinnedCommit}.json of ${id} is missing`);
+  return [];
 }
 
 /**

@@ -12,7 +12,7 @@ import { mcpInstallOrigins } from "../../marketplace/app/mcp-installer.js";
 import { revocationFeed } from "../../marketplace/app/revocations.js";
 import { contentLedgerOrigins } from "../../marketplace/content/ledger.js";
 import { pluginRegistryOrigins, type InstalledOrigin, type OriginReader } from "../../marketplace/sources/retained.js";
-import { readPinnedSnapshot } from "../../marketplace/sources/sync.js";
+import { readPinnedRevocations } from "../../marketplace/sources/sync.js";
 import { revocationRegistry } from "../../plugins/revocation/revocation-registry.js";
 import { errorMessage } from "../../shared/error-message.js";
 
@@ -55,7 +55,7 @@ export async function feedRevocationsFromSnapshots(input: RevocationBootstrapInp
     }
   }
   const root = join(input.home, "marketplaces");
-  const feed = await revocationFeed(installed, async (sourceId) => (await readPinnedSnapshot(root, sourceId))?.revocations ?? []);
+  const feed = await revocationFeed(installed, (sourceId) => readPinnedRevocations(root, sourceId));
   for (const item of feed.unreadable) {
     log.error({ sourceId: item.sourceId, err: item.message }, "revocations: a source snapshot could not be read; its revocations wait for the next sync");
   }

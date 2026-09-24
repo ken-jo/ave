@@ -107,6 +107,9 @@ function heldTarget(held: HeldPlan): PendingBinding {
 
 type PendingBinding = Omit<BoundInstall, "sourceId"> & { sourceId: string | null };
 
+/** An installed version its own source revokes. */
+type RevokedInstall = { record: InstalledRecord & { sourceId: string }; revocation: RevocationFeed["rules"][number] };
+
 interface HeldPreview {
   sourceId: string;
   dir: string;
@@ -157,6 +160,8 @@ export interface MarketplaceServiceOptions {
    * could not be read.
    */
   revocations: { apply(feed: RevocationFeed): Promise<void> };
+  /** Where a failure that must not fail the finished operation is reported. */
+  log: { warn(message: string): void };
   now?: () => Date;
 }
 
@@ -205,6 +210,18 @@ export class MarketplaceService {
   private readonly plans: Tickets<HeldPlan>;
   private readonly previews: Tickets<HeldPreview>;
   private readonly syncing = new Set<string>();
+  /**
+   * Installs in flight, by `kind:name`, and the source each is moving to:
+   * every feed judges them by that source, not the one they leave (§10.4).
+   */
+  private readonly pendingBindings = new Map<string, PendingBinding>();
+  /** Feeds run one after another, so an older feed never lands after a newer one. */
+  private feedTail: Promise<unknown> = Promise.resolve();
+  /** One enforcement pass at a time, so two passes never remove the same package. */
+  private enforceTail: Promise<unknown> = Promise.resolve();
+  /** Revocations enforced but not yet reported, and every one queued this session. */
+  private readonly revokedUnreported: RevokedPackageView[] = [];
+  private readonly revokedQueued = new Set<string>();
 
   constructor(private readonly options: MarketplaceServiceOptions) {
     const now = () => (options.now?.() ?? new Date()).getTime();
@@ -317,8 +334,8 @@ export class MarketplaceService {
     }
     // Every source finishes; a failure outside a sync result (a bug, an unreadable file) is reported after.
     const settled = await Promise.allSettled(ids.map((sourceId) => this.syncOne(sourceId)));
-    // A moved pin may carry new revocations; the gates read them before anything else happens.
-    await this.feedRevocations();
+    // A moved pin may carry new revocations; they take effect before anything else happens.
+    await this.enforceRevocations();
     const failed = settled.find((item): item is PromiseRejectedResult => item.status === "rejected");
     if (failed) throw failed.reason;
     return this.listSources();
@@ -605,8 +622,9 @@ export class MarketplaceService {
 
   /**
    * The catalog row of `key`. A hidden source is read only for a package
-   * installed from it: its update is offered (§7.3), so its detail and update
-   * plan must open, while a new install from a hidden source stays refused.
+   * installed from it: its update is offered (§7.3), so its detail opens.
+   * A plan from a hidden source, install or update, is refused
+   * (SOURCE_DISABLED) until the source is shown again.
    */
   private async row(key: PackageKeyView): Promise<{ row: CatalogRow; rows: CatalogRow[]; snapshot: SourceSnapshot; label: string }> {
     const installed = await this.installed(key.kind, key.name);
@@ -780,11 +798,15 @@ export class MarketplaceService {
   async executeInstall(planId: string): Promise<InstallResultView> {
     const held = this.plans.take(planId);
     // The gates must judge the new install by the source it is about to be bound to, not the one it leaves.
-    await this.feedRevocations(heldTarget(held));
+    const target = heldTarget(held);
+    const key = keyOf(target.kind, target.name);
+    this.pendingBindings.set(key, target);
     try {
+      await this.feedRevocations();
       return await this.runInstall(planId, held);
     } finally {
-      await this.feedRevocations();
+      if (this.pendingBindings.get(key) === target) this.pendingBindings.delete(key);
+      await this.refeedAfter(`${target.kind} ${target.name} install`);
     }
   }
 
@@ -854,6 +876,11 @@ export class MarketplaceService {
 
   async uninstall(request: UninstallRequest): Promise<UninstallResultView> {
     assertNotRequiredByPolicy(this.options.policy, request.kind, request.name, "uninstall");
+    return this.remove(request);
+  }
+
+  /** Remove an installed package bound to `request.sourceId`; the caller has settled the policy. */
+  private async remove(request: UninstallRequest): Promise<UninstallResultView> {
     const installed = await this.installed(request.kind, request.name);
     if (!installed || installed.sourceId !== request.sourceId) {
       const from = request.sourceId === null ? "without a source" : `from ${request.sourceId}`;
@@ -863,7 +890,7 @@ export class MarketplaceService {
     if (request.kind === "plugin") await this.options.installers.plugin.uninstall(request.name);
     else if (request.kind === "mcp") ({ keptDataDir } = await this.options.installers.mcp.uninstall(request.name, { removeData: request.removeData === true }));
     else await this.options.installers.content.uninstall(request.kind, request.name);
-    await this.feedRevocations();
+    await this.refeedAfter(`${request.kind} ${request.name} uninstall`);
     this.options.onCatalogChanged?.();
     return { key: { sourceId: request.sourceId, kind: request.kind, name: request.name }, keptDataDir };
   }
@@ -945,7 +972,8 @@ export class MarketplaceService {
         }),
       now: () => this.now(),
     });
-    const revoked = await this.applyRevocations();
+    await this.enforceRevocations();
+    const revoked = this.revokedUnreported.splice(0);
     const { rows, snapshots, shown } = await this.rows();
     const synced = new Map<string, SourceOrigin>(shown.filter((source) => snapshots.has(source.id)).map((source) => [source.id, source.origin]));
     const report = await runBootInstalls({
@@ -965,21 +993,70 @@ export class MarketplaceService {
   }
 
   /**
-   * Feed the load gates each installed package's own source's revocations
-   * (§10.4) and return the installed versions they cover. `pending` binds one
-   * package to the source an install is about to move it to.
+   * Enforce the revocations the local snapshots carry (§10.4): feed the
+   * gates, remove what a gate cannot hold, and queue what that did for the
+   * next notice ({@link takeRevocationNotice}). Each outcome is queued once a
+   * session. Runs on every sync and before the boot pass syncs, so a
+   * revocation already on disk never waits for the network.
    */
-  private async feedRevocations(pending?: PendingBinding): Promise<Array<{ record: InstalledRecord & { sourceId: string }; revocation: RevocationFeed["rules"][number] }>> {
+  async enforceRevocations(): Promise<void> {
+    const run = this.enforceTail.then(() => this.applyRevocations(), () => this.applyRevocations());
+    this.enforceTail = run.catch(() => undefined);
+    for (const item of await run) {
+      const id = `${item.key.sourceId}/${item.key.kind}/${item.key.name}@${item.version}:${item.outcome}`;
+      if (this.revokedQueued.has(id)) continue;
+      this.revokedQueued.add(id);
+      this.revokedUnreported.push(item);
+    }
+  }
+
+  /** What enforcement did since the last notice, as a notice of its own; null when nothing. */
+  takeRevocationNotice(): BootInstallNoticeView | null {
+    const revoked = this.revokedUnreported.splice(0);
+    return revoked.length === 0 ? null : { forYou: [], required: [], unmanaged: [], lostGrants: [], revoked };
+  }
+
+  /**
+   * Feed the gates again after an install or removal. The operation is done
+   * either way, so a failed feed is logged rather than reported as its
+   * failure; the gates keep the last feed until the next one.
+   */
+  private async refeedAfter(operation: string): Promise<void> {
+    try {
+      await this.feedRevocations();
+    } catch (error) {
+      this.options.log.warn(`revocation feed after ${operation} failed; the gates keep the previous feed: ${errorMessage(error)}`);
+    }
+  }
+
+  /** Feed the gates (one feed at a time) and return the installed versions the feed revokes. */
+  private feedRevocations(): Promise<RevokedInstall[]> {
+    const run = this.feedTail.then(() => this.feedOnce(), () => this.feedOnce());
+    this.feedTail = run.catch(() => undefined);
+    return run;
+  }
+
+  /**
+   * Feed the load gates each installed package's own source's revocations
+   * (§10.4) — an install in flight counts as bound to the source it is moving
+   * to — and return the settled installs they cover. An install in flight is
+   * never returned: what it replaces is judged once it lands.
+   */
+  private async feedOnce(): Promise<RevokedInstall[]> {
     const installed = await this.installedAll();
+    const pending = [...this.pendingBindings.entries()];
+    const inFlight = new Set(pending.map(([key]) => key));
     const bound: BoundInstall[] = installed.flatMap((item) =>
-      item.sourceId !== null && !(pending && item.kind === pending.kind && item.name === pending.name) ? [{ kind: item.kind, name: item.name, sourceId: item.sourceId }] : [],
+      item.sourceId !== null && !inFlight.has(keyOf(item.kind, item.name)) ? [{ kind: item.kind, name: item.name, sourceId: item.sourceId }] : [],
     );
-    if (pending?.sourceId) bound.push({ kind: pending.kind, name: pending.name, sourceId: pending.sourceId });
-    const feed = await revocationFeed(bound, async (sourceId) => (await this.options.syncer.readSnapshot(sourceId))?.revocations ?? []);
+    for (const [, binding] of pending) {
+      if (binding.sourceId !== null) bound.push({ kind: binding.kind, name: binding.name, sourceId: binding.sourceId });
+    }
+    const feed = await revocationFeed(bound, (sourceId) => this.options.syncer.readRevocations(sourceId));
     await this.options.revocations.apply(feed);
-    const revoked: Array<{ record: InstalledRecord & { sourceId: string }; revocation: RevocationFeed["rules"][number] }> = [];
+    const revoked: RevokedInstall[] = [];
     for (const record of installed) {
-      if (record.sourceId === null || record.version === null) continue;
+      if (record.sourceId === null || record.version === null || inFlight.has(keyOf(record.kind, record.name))) continue;
       const sourceId = record.sourceId;
       const revocation = findRevocation(record.kind, record.name, record.version, feed.rules.filter((rule) => rule.sourceId === sourceId));
       if (revocation) revoked.push({ record: { ...record, sourceId }, revocation });
@@ -988,22 +1065,22 @@ export class MarketplaceService {
   }
 
   /**
-   * The boot pass's part of §10.4: feed the gates, then remove what a gate
-   * cannot hold — every `uninstall` revocation, and a `disable` one for a kind
-   * outside {@link GATED_KINDS}. A package a `requiredInstalls` entry locks
-   * stays (gated where its kind has a gate) and is reported.
+   * Feed the gates, then remove what a gate cannot hold — every `uninstall`
+   * revocation, and a `disable` one for a kind outside {@link GATED_KINDS}.
+   * A package the `requiredInstalls` entry for its own source locks stays
+   * (gated where its kind has a gate) and is reported.
    */
   private async applyRevocations(): Promise<RevokedPackageView[]> {
     const report: RevokedPackageView[] = [];
     for (const { record, revocation } of await this.feedRevocations()) {
       if (revocation.action === "disable" && GATED_KINDS.has(record.kind)) continue;
       const item = { key: { sourceId: record.sourceId, kind: record.kind, name: record.name }, version: record.version!, reason: revocation.reason };
-      if (requiredByPolicy(this.options.policy, record.kind, record.name)) {
+      if (requiredByPolicy(this.options.policy, record.kind, record.name)?.source === record.sourceId) {
         report.push({ ...item, outcome: "required" });
         continue;
       }
       try {
-        await this.uninstall({ sourceId: record.sourceId, kind: record.kind, name: record.name });
+        await this.remove({ sourceId: record.sourceId, kind: record.kind, name: record.name });
         report.push({ ...item, outcome: "uninstalled" });
       } catch (error) {
         report.push({ ...item, outcome: "failed", message: errorMessage(error) });

@@ -104,6 +104,20 @@ describe("runLegacyMigration", () => {
     expect(content).toHaveBeenCalledTimes(2);
   });
 
+  it("names an unlisted plugin once, though a failure makes the migration run again", async () => {
+    const failing = { adopted: [], failed: [{ key: { source: "ave", kind: "theme" as const, name: "aurora" }, message: "offline" }] };
+    const plugins = vi.fn()
+      .mockResolvedValueOnce({ ...CLEAN, unmanaged: ["calendar"] })
+      .mockResolvedValue({ bound: [], unmanaged: ["calendar", "notes"], lostGrants: [], failed: [] });
+    const content = vi.fn().mockResolvedValueOnce(failing).mockResolvedValueOnce(failing).mockResolvedValue(ADOPTED);
+    const run = () => runLegacyMigration({ markerPath, officialSnapshot: snapshot, plugins, content, now });
+
+    expect((await run())?.plugins.unmanaged).toEqual(["calendar"]);
+    expect((await run())?.plugins.unmanaged).toEqual(["notes"]);
+    expect((await run())?.plugins.unmanaged).toEqual([]);
+    expect(await run()).toBeNull();
+  });
+
   it("refuses a marker it cannot read rather than migrating again", async () => {
     writeFileSync(markerPath, `{"version":2}`);
     const plugins = vi.fn(async () => CLEAN);

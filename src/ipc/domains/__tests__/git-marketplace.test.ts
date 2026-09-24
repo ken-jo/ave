@@ -50,6 +50,8 @@ async function setup(overrides: Record<string, unknown> = {}) {
     uninstall: vi.fn(async (request: unknown) => ({ key: request, keptDataDir: null })),
     previewDirectMcp: vi.fn(),
     updates: vi.fn(async () => []),
+    enforceRevocations: vi.fn(async () => {}),
+    takeRevocationNotice: vi.fn(() => null),
     applyBootInstalls: vi.fn(async () => ({
       report: { installed: [{ kind: "plugin", name: "meeting", source: "ave" }], updated: [], switched: [], skipped: [], failed: [] },
       notice: { forYou: [{ sourceId: "ave", kind: "plugin", name: "meeting" }], required: [], unmanaged: [], lostGrants: [], revoked: [] },
