@@ -54,13 +54,13 @@ describe("env-surface scan", () => {
 
   it("finds literal reads through the packaged-gated development helper", () => {
     write("gated.ts", `
-      const whitelist = readDevelopmentEnvVar("AVE_WHITELIST_OFFLINE");
+      const admission = readDevelopmentEnvVar("AVE_ADMISSION_OFFLINE");
       const revocation = readDevelopmentEnvVar('AVE_REVOCATION_OFFLINE');
     `);
 
     expect([...scanEnvReads(dir).keys()].sort()).toEqual([
+      "AVE_ADMISSION_OFFLINE",
       "AVE_REVOCATION_OFFLINE",
-      "AVE_WHITELIST_OFFLINE",
     ]);
   });
 
@@ -178,7 +178,7 @@ describe("env-surface policy", () => {
       ACTIVE_DEVELOPMENT_ENV_VARS.filter((name) => name.startsWith("AVE_")),
     );
     expect(DEVELOPMENT).toContain("AVE_ADMISSION_OFFLINE");
-    expect(DEVELOPMENT).toContain("AVE_WHITELIST_OFFLINE");
+    expect(DEVELOPMENT).not.toContain("AVE_WHITELIST_OFFLINE");
     expect(DEVELOPMENT).not.toContain("AVE_REVOCATION_OFFLINE");
     expect(ACTIVE_DEVELOPMENT_ENV_VARS).toContain("VITE_DEBUG_STREAM");
     expect(DEVELOPMENT_ENV_TOMBSTONES).toContain("AVE_PLUGINS_DIR");
@@ -189,6 +189,8 @@ describe("env-surface policy", () => {
       "AVE_DEV_NO_SANDBOX",
       "AVE_PLUGINS_DIR",
       "AVE_REVOCATION_OFFLINE",
+      "AVE_WHITELIST_OFFLINE",
+      "AVE_E2E_WHITELIST_PUBLIC_KEY",
     ]));
     expect(
       DEVELOPMENT_ENV_POLICY

@@ -68,7 +68,6 @@ import { summarizeParentContextTurns } from "./permissions/parent-context-eviden
 import type { ParentContextTurn } from "./permissions/parent-context-evidence.js";
 import { McpAppModelContextStore } from "./mcp/mcp-app-model-context.js";
 import { initPluginRuntime } from "./boot/steps/plugin-runtime.js";
-import { wireWhitelistRegistry } from "./boot/steps/whitelist-bootstrap.js";
 import { feedRevocationsFromSnapshots } from "./boot/steps/revocation-bootstrap.js";
 import { wireAdmissionRegistry } from "./boot/steps/admission-bootstrap.js";
 import { createServiceClient } from "./boot/steps/service-endpoint.js";
@@ -164,14 +163,13 @@ export type { AppServices } from "./boot/types.js";
  * what any of them returns, and a run asked for one turn should not reach
  * anything the turn did not ask for.
  *
- * The plugin trust chain is NOT discretionary and is refreshed on every
- * launch. The whitelist gates plugin secret reads and fails CLOSED, so a
- * headless-only host that never fetched it would lock itself out of its own
- * secrets once the cached document aged out; the revocation list fails OPEN,
- * so the same host would silently lose the plugin kill switch. Admission is
- * the one signed document a headless run skips: it is consulted at install,
- * and the install path re-checks freshness itself, so warming it at boot only
- * ever saved the first install of a session a cold fetch.
+ * The plugin trust chain needs no connection: host-secret grants and
+ * revocations are read from the marketplace snapshots already on disk
+ * (design §10.3, §10.4), so a headless run keeps both without fetching
+ * anything. Admission is the one signed document a headless run skips: it is
+ * consulted at install, and the install path re-checks freshness itself, so
+ * warming it at boot only ever saved the first install of a session a cold
+ * fetch.
  *
  * An `"interactive"` launch keeps every one of them.
  */
@@ -540,21 +538,6 @@ export async function bootstrap(
         (err as Error).message,
       );
     });
-
-  // #893 Stage 2 — Load the marketplace whitelist registry BEFORE
-  // initPluginRuntime. The per-plugin HostApi factory consults the registry
-  // synchronously from `getSecret`; if the registry isn't initialized the
-  // tier-3 check fails closed with `whitelist-unreachable`. Resolves on every
-  // path (fresh, offline, cached) so a network blip never blocks boot.
-  // Fetched on every launch, headless included: the registry fails CLOSED, so
-  // a run that skipped it would deny its own plugins their secrets rather than
-  // save a request.
-  await wireWhitelistRegistry({
-    userDataPath: host.userDataPath,
-    bootAuditLogger: ctx.bootAuditLogger,
-    networkFetch: ctx.singleHopNetworkFetch,
-    packaged: host.isPackaged,
-  });
 
   // Feed revocations from the marketplace snapshots on disk BEFORE
   // initPluginRuntime: the LOAD-boundary gate (`markRevoked`) runs inside

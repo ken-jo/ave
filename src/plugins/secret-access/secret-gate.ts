@@ -7,25 +7,22 @@
  *   - `hostApi.resolveApiKey({purpose, vendor})` — src/main/host-api/resolve-api-key.ts
  *
  * Tiers, in order:
- *   (1) own namespace   — `plugin.<pluginId>.*`. ADDITIVE WHITELIST: this tier
- *       intentionally never consults the whitelist registry, so a
- *       non-whitelisted plugin still gets to hold its own keys under its own
- *       namespace.
+ *   (1) own namespace   — `plugin.<pluginId>.*`. Needs no grant, so any
+ *       plugin holds its own keys under its own namespace.
  *   (2) manifest allowlist — the key must appear verbatim in
  *       `manifest.hostSecrets.read[]`.
- *   (3) whitelist registry — `whitelistRegistry.isAllowed(pluginId, key,
- *       manifestSha256)`. A remote-signed policy roll can pull a grant without
- *       shipping a host build; the manifest-SHA pin stops a post-install
- *       manifest swap from inheriting the grant.
+ *   (3) host-secret grant — the app's grant table (design §10.3,
+ *       `grants.ts`): an official install of the exact artifact the official
+ *       snapshot pins, running the manifest recorded at install.
  *   (4) active-vendor cross-check — the vendor named by the key must be the
  *       user's ACTIVE provider, so a plugin cannot harvest idle credentials
  *       for a provider that is not in use.
  *
- * Tier-3 BEFORE Tier-4: the whitelist is a coarse, signed, statically-declared
+ * Tier-3 BEFORE Tier-4: the grant table is a coarse, statically-declared
  * ACL; the vendor cross-check is dynamic per-call state driven by
  * `settings.llm.provider`. Running the coarse ACL first keeps the dynamic
  * per-session vendor identity from leaking through the deny-reason channel of
- * an unwhitelisted plugin.
+ * an ungranted plugin.
  *
  * WHAT STAYS AT THE CALL SITES, and why: audit-log lines, counter increments,
  * and the shape of the returned value. `getSecret` answers with `string | null`
@@ -38,14 +35,15 @@
  * Tiers 1 and 2 used to be hand-copied into both callers while only 3+4 were
  * shared. The copies drifted: `resolveApiKey` synthesized only
  * `llm.apiKey.<vendor>` and so had NO reachable allow path for a
- * marketplace-provider preset key, a family `getSecret`, the manifest schema,
- * and the signed whitelist schema all accept.
+ * marketplace-provider preset key, a family `getSecret` and the manifest
+ * schema accept.
  */
 import {
   isMarketplaceProviderPresetId,
   marketplaceProviderPresetSecretKey,
 } from "../../shared/marketplace-package-assets.js";
-import { whitelistRegistry } from "./whitelist-registry.js";
+import { evaluateHostSecretGrant, type HostSecretGrantDenial, type HostSecretGrantEvidence } from "./grants.js";
+import type { PluginRegistryTrust } from "../types.js";
 
 /** `llm.apiKey.<vendor>` — the per-vendor host-secret key family. */
 const LLM_API_KEY_PREFIX = "llm.apiKey.";
@@ -56,29 +54,16 @@ const MARKETPLACE_PROVIDER_KEY_SUFFIX = ".apiKey";
 const OPENAI_COMPATIBLE = "openai-compatible";
 
 /**
- * #958 round-1 security MEDIUM — `via` discriminator on the `allow` variant so
- * the audit trail can record WHICH gate path produced the grant:
- *   - `"own-namespace"`  — Tier-1; no host secret was read at all.
- *   - `"admin-bypass"`   — Tier-3 skipped because `installPolicy === "admin"`.
- *     The install-time manifest SHA pin and Tier-4 still ran.
- *   - `undefined`        — all four tiers ran and passed.
- *
- * Callers pattern-match exhaustively, so a new variant is a compile-time error
- * at every audit/counter site rather than a silently wrong audit line.
+ * `via: "own-namespace"` marks a Tier-1 allow, where no host secret was read;
+ * a plain allow means all four tiers ran and passed. Callers pattern-match
+ * exhaustively, so a new variant is a compile-time error at every audit and
+ * counter site rather than a silently wrong audit line.
  */
 export type SecretGateOutcome =
-  | { kind: "allow"; via?: "admin-bypass" | "own-namespace" }
-  | {
-      kind: "deny";
-      tier: "tier-2" | "tier-3" | "tier-4";
-      reason:
-        | "not-allowlisted"
-        | "not-whitelisted"
-        | "manifest-sha-mismatch"
-        | "whitelist-unreachable"
-        | "whitelist-stale-exceeded"
-        | "vendor-mismatch";
-    };
+  | { kind: "allow"; via?: "own-namespace" }
+  | { kind: "deny"; tier: "tier-2"; reason: "not-allowlisted" }
+  | { kind: "deny"; tier: "tier-3"; reason: HostSecretGrantDenial }
+  | { kind: "deny"; tier: "tier-4"; reason: "vendor-mismatch" };
 
 /**
  * The dynamic settings state Tier-4 compares against. Passed in rather than
@@ -105,19 +90,11 @@ export interface SecretGateInput {
   readonly key: string;
   /** `manifest.hostSecrets.read[]`. */
   readonly allowlist: readonly string[];
-  readonly manifestSha256?: string;
-  readonly installedManifestSha256?: string;
-  /**
-   * #955 follow-up — when the REGISTRY recorded `installSource: "admin"`, the
-   * operator has explicitly accepted an elevated install grant and the separate
-   * Tier-3 signed whitelist ACL is redundant. Admin mode still preserves the
-   * install-time manifest SHA pin and Tier-4, so an elevated marketplace grant
-   * cannot survive a plugin.json swap or read an idle provider's key.
-   *
-   * Must be derived from registry data, never from `manifest.installPolicy`:
-   * plugin.json is inside the plugin's own writable surface.
-   */
-  readonly installPolicy?: "user" | "admin";
+  /** Canonical sha256 of the manifest that is running now. */
+  readonly manifestSha256: string;
+  /** The host-owned registry entry, read only when Tier 3 runs; undefined when the plugin has none. */
+  readonly readRegistryEntry: () => Promise<PluginRegistryTrust | undefined>;
+  readonly grantEvidence: HostSecretGrantEvidence;
   /**
    * Read LAZILY — only Tier-4 needs it, so a Tier-1 or Tier-2 verdict costs no
    * settings reads. Callers hand in a thunk rather than a snapshot to keep that
@@ -210,7 +187,7 @@ function marketplaceProviderPresetIdFromKey(key: string): string {
  * `getSecret` (which logs through `bootAuditLogger`) and the per-plugin
  * `resolveApiKey` (which logs through an injected `auditLogger`).
  */
-export function runSecretGate(input: SecretGateInput): SecretGateOutcome {
+export async function runSecretGate(input: SecretGateInput): Promise<SecretGateOutcome> {
   // Tier 1 — own namespace.
   if (input.key.startsWith(`plugin.${input.pluginId}.`)) {
     return { kind: "allow", via: "own-namespace" };
@@ -219,30 +196,19 @@ export function runSecretGate(input: SecretGateInput): SecretGateOutcome {
   if (!input.allowlist.includes(input.key)) {
     return { kind: "deny", tier: "tier-2", reason: "not-allowlisted" };
   }
-  const { vendor, activeProvider } = vendorCrossCheck(input.key, input.readSettings());
-  // Tier 3 — signed whitelist registry (skipped only for admin installs).
-  if (input.installPolicy === "admin") {
-    if (
-      !input.manifestSha256 ||
-      !input.installedManifestSha256 ||
-      input.manifestSha256.toLowerCase() !== input.installedManifestSha256.toLowerCase()
-    ) {
-      return { kind: "deny", tier: "tier-3", reason: "manifest-sha-mismatch" };
-    }
-    if (vendor !== activeProvider) {
-      return { kind: "deny", tier: "tier-4", reason: "vendor-mismatch" };
-    }
-    return { kind: "allow", via: "admin-bypass" };
-  }
-  const decision = whitelistRegistry.isAllowed(
-    input.pluginId,
-    input.key,
-    input.manifestSha256,
-  );
-  if (decision.kind === "deny") {
-    return { kind: "deny", tier: "tier-3", reason: decision.reason };
+  // Tier 3 — the app's host-secret grants.
+  const grant = await evaluateHostSecretGrant({
+    pluginId: input.pluginId,
+    key: input.key,
+    entry: await input.readRegistryEntry(),
+    runningManifestSha256: input.manifestSha256,
+    evidence: input.grantEvidence,
+  });
+  if (!grant.granted) {
+    return { kind: "deny", tier: "tier-3", reason: grant.reason };
   }
   // Tier 4 — active-vendor cross-check.
+  const { vendor, activeProvider } = vendorCrossCheck(input.key, input.readSettings());
   if (vendor !== activeProvider) {
     return { kind: "deny", tier: "tier-4", reason: "vendor-mismatch" };
   }

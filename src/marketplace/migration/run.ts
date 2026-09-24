@@ -14,7 +14,7 @@ import { readFile } from "node:fs/promises";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import { writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
-import type { SourceSnapshot } from "../sources/snapshot.js";
+import { pinnedArtifactSha256s, type SourceSnapshot } from "../sources/snapshot.js";
 import type { LegacyContentKind, LegacyContentReport } from "./legacy-content.js";
 import type { LegacyPluginReport, OfficialPlugin } from "./legacy-plugins.js";
 
@@ -46,12 +46,7 @@ export function officialPluginsFrom(snapshot: SourceSnapshot): (name: string) =>
     return {
       snapshotCommit: snapshot.commit,
       packagePath: found.path,
-      pins: (version) => {
-        const artifact = found.versions.find((item) => item.version === version)?.artifact;
-        return [artifact?.release?.sha256, artifact?.archive?.sha256]
-          .filter((pin): pin is string => typeof pin === "string")
-          .map((pin) => pin.toLowerCase());
-      },
+      pins: (version) => pinnedArtifactSha256s(snapshot, name, version),
     };
   };
 }

@@ -63,8 +63,7 @@ export const STABLE_SEMVER_RE =
 
 // #893 — the allow-listed host-secret key shapes a manifest's
 // `hostSecrets.read[]` may name have ONE definition,
-// `isAllowedHostSecretKey` (src/shared/marketplace-package-assets.ts), shared
-// with the signed-whitelist grant validator. It mirrors the JSON-schema
+// `isAllowedHostSecretKey` (src/shared/marketplace-package-assets.ts). It mirrors the JSON-schema
 // constraint as defence-in-depth so a plugin manifest cannot install a wider
 // allowlist than the schema permits — a claim that only holds while there is a
 // single definition, so do NOT re-derive the shape here.

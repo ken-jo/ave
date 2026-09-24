@@ -25,7 +25,7 @@ import { BareRepo } from "../git/repo.js";
 import type { GitCommands, GitRemote } from "../git/run-git.js";
 import type { NetworkGate } from "../net/network-gate.js";
 import { readSourceState, type ResolvedSource, type SourceRegistry, type SourceState } from "./registry.js";
-import { SnapshotBuilder, type SourceSnapshot } from "./snapshot.js";
+import { pinnedArtifactSha256s, SnapshotBuilder, type SourceSnapshot } from "./snapshot.js";
 
 export interface SourceSyncOptions {
   registry: SourceRegistry;
@@ -323,4 +323,21 @@ export async function readPinnedSnapshot(root: string, id: string): Promise<Sour
     throw new Error(`snapshot ${pinnedCommit}.json of ${id} names ${snapshot.sourceId}@${snapshot.commit}`);
   }
   return snapshot;
+}
+
+/**
+ * The artifact pins of source `id` at its current pin, for the host-secret
+ * grant (design §10.3 condition 2): `pins(plugin, version)` answers what
+ * `pinnedArtifactSha256s` reads from that snapshot. Each call reads the
+ * source's small state file and parses the snapshot again only after the pin
+ * moved, so a sync that changes the pins applies to the next secret read.
+ */
+export function pinnedArtifactReader(root: string, id: string): (plugin: string, version: string) => Promise<readonly string[]> {
+  let cached: SourceSnapshot | null = null;
+  return async (plugin, version) => {
+    const { pinnedCommit } = await readSourceState(root, id);
+    if (pinnedCommit === null) return [];
+    if (cached?.commit !== pinnedCommit) cached = await readPinnedSnapshot(root, id);
+    return cached ? pinnedArtifactSha256s(cached, plugin, version) : [];
+  };
 }

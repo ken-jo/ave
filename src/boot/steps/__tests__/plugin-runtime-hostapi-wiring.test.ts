@@ -29,7 +29,9 @@ const runtimeTestState = vi.hoisted(() => ({
   browserWindows: [] as Array<{ isDestroyed: () => boolean; webContents: { send: (channel: string, payload: unknown) => void };
   }>,
   capturedRuntimeOptions: null as Record<string, unknown> | null,
-  readPluginRegistry: vi.fn(async () => ({ version: 1, plugins: [] })),
+  readPluginRegistry: vi.fn(async (): Promise<{ version: number; plugins: unknown[] }> => ({ version: 1, plugins: [] })),
+  /** The registry file whose identity the HostApi's entry cache watches. */
+  registryPath: "/tmp/ave-test/registry.json",
   spawnWorker: vi.fn(),
   runtime: {
     // boot installs each loaded plugin's partition policy before starting any
@@ -97,7 +99,7 @@ vi.mock("../../../main/html-preview-partition.js", () => ({
 vi.mock("../../../plugins/plugin-paths.js", () => ({
   resolvePluginPaths: vi.fn(() => ({
     pluginsRoot: "/tmp/ave-test/plugins",
-    registryPath: "/tmp/ave-test/registry.json",
+    registryPath: runtimeTestState.registryPath,
     cacheRoot: "/tmp/ave-test/cache",
   })),
 }));
@@ -106,10 +108,30 @@ vi.mock("../../../plugins/registry.js", () => ({
   readPluginRegistry: runtimeTestState.readPluginRegistry,
 }));
 
+// The official snapshot pins the artifact every origin below names.
+vi.mock("../plugin-runtime/grant-evidence.js", () => ({
+  grantEvidenceReader: () => ({
+    officialPins: async () => ["a".repeat(64)],
+    receiptArtifactSha256: async () => null,
+  }),
+}));
+
+/** An official install of the pinned artifact: what a host-secret grant needs (design §10.3). */
+const OFFICIAL_ORIGIN = {
+  sourceId: "ave",
+  sourceOrigin: "official" as const,
+  commit: "c".repeat(40),
+  packagePath: "plugins/meeting",
+  version: "1.0.0",
+  rung: "release" as const,
+  artifactSha256: "a".repeat(64),
+  installedAt: "2026-09-24T00:00:00.000Z",
+};
+
 import { initPluginRuntime } from "../plugin-runtime.js";
 import { withPluginInstallLock } from "../../../plugins/install-lifecycle.js";
-import type { PluginAccessSpec } from "../../../plugins/types.js";
-import { canonicalJSON } from "../../../plugins/whitelist/canonical-json.js";
+import type { PluginAccessSpec, PluginRegistryTrust } from "../../../plugins/types.js";
+import { canonicalJSON } from "../../../plugins/secret-access/canonical-json.js";
 
 type ConfigHostApi = {
   config: {
@@ -168,10 +190,7 @@ type CreateHostApi = (
     isLifecycleHookActive: () => boolean;
   },
   installPluginId: string | null,
-  candidateRegistryEntry?: {
-    installSource?: "admin" | "user" | "local-dev";
-    manifestSha256?: string;
-  },
+  candidateRegistryEntry?: PluginRegistryTrust,
   candidateApprovedPluginAccess?: PluginAccessSpec | null,
 ) => ConfigHostApi;
 
@@ -234,7 +253,7 @@ function makeSettingsService(store: Map<string, Record<string, unknown>>) {
       if (key === "pluginConfigs") return {};
       return undefined;
     }),
-    getSecret: vi.fn(() => undefined),
+    getSecret: vi.fn((_key: string): string | undefined => undefined),
     getPluginConfig: vi.fn((pluginId: string) => store.get(pluginId) ?? {}),
     setPluginConfig: vi.fn(
       async (pluginId: string, record: Record<string, unknown>) => {
@@ -635,8 +654,9 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
 
   it("uses the raw registry install identity for canonical alias HostApi provenance", async () => {
     const installAlias = "marketplace-install-alias";
-    const pluginId = "plugin-canonical";
-    const secretKey = "host.shared.secret";
+    // A granted plugin (design §10.3) whose registry row sits under an alias.
+    const pluginId = "meeting";
+    const secretKey = "llm.apiKey.openai";
     const manifest = {
       id: pluginId,
       config: {},
@@ -650,8 +670,9 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
       plugins: [{
         id: installAlias,
         manifestPath: `${installAlias}/plugin.json`,
-        installSource: "admin",
+        installSource: "user",
         manifestSha256,
+        origin: OFFICIAL_ORIGIN,
       }],
     });
     runtimeTestState.runtime.resolvePluginInstallId.mockImplementation(
@@ -678,8 +699,8 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
   });
 
   it("uses immutable candidate trust before the durable registry cache refresh", async () => {
-    const pluginId = "fresh-admin-plugin";
-    const secretKey = "host.shared.secret";
+    const pluginId = "meeting";
+    const secretKey = "llm.apiKey.openai";
     const manifest = {
       id: pluginId,
       config: {},
@@ -698,12 +719,39 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
       manifest,
       tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-fresh-admin-")),
       activeIncarnation(),
-      "marketplace-fresh-admin",
-      { installSource: "admin", manifestSha256 },
+      "marketplace-fresh-install",
+      { installSource: "user", manifestSha256, origin: OFFICIAL_ORIGIN },
     );
 
     expect(await api.getSecret(secretKey)).toBe("fresh-admin-secret");
     expect(runtimeTestState.readPluginRegistry).toHaveBeenCalledOnce();
+  });
+
+  it("re-reads a registry entry another writer bound after the plugin started", async () => {
+    // The §16.3 migration binds a legacy entry to the official source from the
+    // background boot pass, after plugins run, and raises no install event.
+    const dir = tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-registry-"));
+    runtimeTestState.registryPath = join(dir, "registry.json");
+    try {
+      const secretKey = "llm.apiKey.openai";
+      const manifest = { id: "meeting", config: {}, hostSecrets: { read: [secretKey] } };
+      const manifestSha256 = createHash("sha256").update(canonicalJSON(manifest)).digest("hex");
+      const entry = { id: "meeting", manifestPath: "meeting/plugin.json", installSource: "user", manifestSha256 };
+      writeFileSync(runtimeTestState.registryPath, "unbound");
+      runtimeTestState.readPluginRegistry.mockResolvedValue({ version: 1, plugins: [entry] });
+      const settings = makeSettingsService(new Map());
+      settings.getSecret.mockImplementation((key: string) => (key === secretKey ? "bound-secret" : undefined));
+      const createHostApi = await initAndGetFactory(settings);
+      const api = createHostApi("meeting", manifest, tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-bound-")), activeIncarnation(), "meeting");
+
+      expect(await api.getSecret(secretKey)).toBeNull();
+
+      runtimeTestState.readPluginRegistry.mockResolvedValue({ version: 1, plugins: [{ ...entry, origin: OFFICIAL_ORIGIN }] });
+      writeFileSync(runtimeTestState.registryPath, "bound to the official source");
+      expect(await api.getSecret(secretKey)).toBe("bound-secret");
+    } finally {
+      runtimeTestState.registryPath = "/tmp/ave-test/registry.json";
+    }
   });
 
   it("delivers an emitted event to a same-plugin subscriber with the pluginId injected, and unsubscribe stops delivery", async () => {

@@ -25,7 +25,8 @@ export const DEVELOPMENT_ENV_POLICY = [
   { name: "AVE_DEV_PROMPT_SOURCE_DUMP", lifecycle: "active", packaged: "scrub" },
   { name: "AVE_DEV_RELOAD", lifecycle: "active", packaged: "scrub" },
   { name: "AVE_E2E", lifecycle: "active", packaged: "scrub" },
-  { name: "AVE_E2E_WHITELIST_PUBLIC_KEY", lifecycle: "active", packaged: "scrub" },
+  // Trusted an E2E-signed whitelist; host-secret grants now come from the app and local snapshots.
+  { name: "AVE_E2E_WHITELIST_PUBLIC_KEY", lifecycle: "tombstone", packaged: "scrub" },
   { name: "AVE_LOG_FILE", lifecycle: "active", packaged: "scrub" },
   { name: "AVE_LOG_FORMAT", lifecycle: "active", packaged: "scrub" },
   // Removed from plugin path resolution; retained as a scrub/audit tombstone.
@@ -41,7 +42,8 @@ export const DEVELOPMENT_ENV_POLICY = [
   { name: "AVE_TEST_NODE_EXEC_PATH", lifecycle: "active", packaged: "scrub" },
   // Explicitly source/test-only; packaged builds do not accept this env switch.
   { name: "AVE_TRACE", lifecycle: "active", packaged: "scrub" },
-  { name: "AVE_WHITELIST_OFFLINE", lifecycle: "active", packaged: "scrub" },
+  // Kept the signed whitelist feed offline; host-secret grants no longer fetch anything.
+  { name: "AVE_WHITELIST_OFFLINE", lifecycle: "tombstone", packaged: "scrub" },
   { name: "AVE_WIN_NO_SANDBOX", lifecycle: "active", packaged: "scrub" },
   // Renderer-build development flag: deliberately covered despite not using
   // the AVE_ namespace scanned by the env-surface policy gate.

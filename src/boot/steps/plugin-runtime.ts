@@ -16,6 +16,8 @@ import type { BootHost } from "../host-runtime.js";
  */
 import type { BrowserWindow } from "electron";
 import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { aveHome } from "../../shared/ave-home.js";
 import { registerBootPluginShutdown, registerShutdownHook } from "../../main/app-shutdown.js";
 import { onEvent as onHostEvent } from "../types.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
@@ -55,6 +57,7 @@ import { AuthRedirectCatchers } from "../../main/auth-redirect-catcher.js";
 import { createHostApiFactory } from "./plugin-runtime/host-api-factory.js";
 import { createLifecycleCallbacks } from "./plugin-runtime/lifecycle.js";
 import { createRegistryEntryCache } from "./plugin-runtime/registry-cache.js";
+import { grantEvidenceReader } from "./plugin-runtime/grant-evidence.js";
 import { PluginRuntimePreStartPhase } from "./plugin-runtime/pre-start-phase.js";
 const log = createLogger("ave");
 
@@ -364,7 +367,7 @@ export async function initPluginRuntime(
   // install-time manifest SHA pin; `plugin.json` is untrusted). Extracted to
   // ./plugin-runtime/registry-cache.ts and wired here so the HostApi closures
   // answer lookups synchronously and the install/uninstall listeners refresh it.
-  const { refreshRegistryEntryCache, getRegistryEntry } =
+  const { refreshRegistryEntryCache, refreshRegistryEntryCacheIfChanged, getRegistryEntry } =
     createRegistryEntryCache({
       registryPath: pluginPaths.registryPath,
       log,
@@ -446,6 +449,8 @@ export async function initPluginRuntime(
     getPluginRuntime: () => pluginRuntime,
     lateBinding,
     getRegistryEntry,
+    refreshRegistryEntryCacheIfChanged,
+    grantEvidence: grantEvidenceReader({ paths: pluginPaths, marketplacesRoot: join(aveHome(), "marketplaces") }),
     hostClassifiesRiskEnabled,
     pluginShutdownHandlers,
     readAppPreference,

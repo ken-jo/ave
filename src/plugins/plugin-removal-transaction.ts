@@ -9,7 +9,7 @@ import { assertSafeArtifactSlug } from "./plugin-id.js";
 import type { PluginPaths } from "./plugin-paths.js";
 import { readPluginRegistry, validatePluginRegistryEntries } from "./registry.js";
 import type { PluginRegistryEntry } from "./types.js";
-import { canonicalJSON } from "./whitelist/canonical-json.js";
+import { canonicalJSON } from "./secret-access/canonical-json.js";
 import { pendingOwnedBackupPaths } from "./marketplace-update-recovery.js";
 import { isRecord, hasOnlyKeys } from "../shared/is-record.js";
 import { errorMessage } from "../shared/error-message.js";

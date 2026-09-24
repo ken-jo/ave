@@ -2064,41 +2064,6 @@
     },
     {
       "type": "types",
-      "file": "src/plugins/whitelist/whitelist-registry.ts",
-      "name": "WhitelistDecision"
-    },
-    {
-      "type": "types",
-      "file": "src/plugins/whitelist/whitelist-registry.ts",
-      "name": "WhitelistInitOptions"
-    },
-    {
-      "type": "types",
-      "file": "src/plugins/whitelist/whitelist-registry.ts",
-      "name": "WhitelistSource"
-    },
-    {
-      "type": "types",
-      "file": "src/plugins/whitelist/whitelist-registry.ts",
-      "name": "WhitelistState"
-    },
-    {
-      "type": "types",
-      "file": "src/plugins/whitelist/whitelist-registry.ts",
-      "name": "WhitelistStatus"
-    },
-    {
-      "type": "types",
-      "file": "src/plugins/whitelist/whitelist-schema.ts",
-      "name": "WhitelistPluginGrant"
-    },
-    {
-      "type": "types",
-      "file": "src/plugins/whitelist/whitelist-schema.ts",
-      "name": "WhitelistSignatureEnvelope"
-    },
-    {
-      "type": "types",
       "file": "src/sdk/index.ts",
       "name": "ActiveHistoryResult"
     },
@@ -2401,11 +2366,6 @@
       "type": "types",
       "file": "src/skills/skill-registry.ts",
       "name": "SkillRegistryEntry"
-    },
-    {
-      "type": "types",
-      "file": "src/telemetry/host-secret-counters.ts",
-      "name": "HostSecretDeniedReason"
     },
     {
       "type": "types",

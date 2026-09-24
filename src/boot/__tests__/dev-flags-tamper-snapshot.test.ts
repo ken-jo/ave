@@ -113,19 +113,11 @@ describe("dev-flags tamper snapshot", () => {
     expect(isPackagedForbiddenEnvVar("NODE_ENV")).toBe(false);
   });
 
-  it("reads offline registry flags only for unpackaged execution", () => {
-    const env: NodeJS.ProcessEnv = {
-      AVE_WHITELIST_OFFLINE: "1",
-      AVE_ADMISSION_OFFLINE: "1",
-    };
+  it("reads the offline registry flag only for unpackaged execution", () => {
+    const env: NodeJS.ProcessEnv = { AVE_ADMISSION_OFFLINE: "1" };
 
-    for (const name of [
-      "AVE_WHITELIST_OFFLINE",
-      "AVE_ADMISSION_OFFLINE",
-    ] as const) {
-      expect(readDevelopmentEnvVar(name, env, false), name).toBe("1");
-      expect(readDevelopmentEnvVar(name, env, true), name).toBeUndefined();
-    }
+    expect(readDevelopmentEnvVar("AVE_ADMISSION_OFFLINE", env, false)).toBe("1");
+    expect(readDevelopmentEnvVar("AVE_ADMISSION_OFFLINE", env, true)).toBeUndefined();
   });
 
   it("keeps AVE_WIN_NO_SANDBOX Windows-only and packaged-gated", () => {

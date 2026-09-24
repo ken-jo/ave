@@ -16,7 +16,7 @@
  *   - origin-chain.ts, runtime-admission.ts, detached-operation.ts, types.ts
  */
 
-import type { PluginAccessSpec, PluginManifest, PluginHostApi, PluginRegistryEntry, PluginToolHandler, RuntimePlugin, RuntimePluginFactory, InstallPolicy, PluginAuthSpec, PluginConfigSchema, PluginOnboardingSpec, PluginUiExtension } from "../types.js";
+import type { PluginAccessSpec, PluginManifest, PluginHostApi, PluginToolHandler, RuntimePlugin, RuntimePluginFactory, InstallPolicy, PluginAuthSpec, PluginConfigSchema, PluginOnboardingSpec, PluginUiExtension, PluginRegistryTrust } from "../types.js";
 import { classifySubscription } from "../capabilities.js";
 import { normalizeInstallPolicy, parsePluginJson, buildManifestValidator, getDeclaredEmittedEvents } from "./manifest-validation.js";
 import { flattenAgentPluginsManifest } from "../public-contract.js";
@@ -40,7 +40,7 @@ import { readFile } from "node:fs/promises";
 import { type PluginDeploymentGuard, type Actor, PluginDeploymentDeniedError, assertDisableAllowed } from "../deployment-guard.js";
 import { pluginArtifactGenerationId } from "../plugin-artifact-identity.js";
 import { HostApiGenerationScope } from "../plugin-host-effect-scope.js";
-import { canonicalJSON } from "../whitelist/canonical-json.js";
+import { canonicalJSON } from "../secret-access/canonical-json.js";
 import { materializePluginGenerationRoot, removeRetainedPluginGeneration } from "../plugin-contributions.js";
 import { appVersionSatisfiesMin } from "../../shared/semver-compare.js";
 import { getAveAppVersion } from "../../shared/app-version.js";
@@ -237,7 +237,7 @@ interface PreparedArtifactRuntimeActivationInput<T> {
   manifest: PluginManifest;
   receiptRaw: string;
   registryEntry: Readonly<
-    Pick<PluginRegistryEntry, "installSource" | "manifestSha256">
+    PluginRegistryTrust
   >;
   approvedPluginAccess?: PluginAccessSpec;
   durableCommit(): Promise<T>;
@@ -269,7 +269,7 @@ export interface PluginRuntimeOptions {
     pluginDataDir: string,
     incarnation: PluginHostApiIncarnation,
     installPluginId: string | null,
-    candidateRegistryEntry?: Readonly<Pick<PluginRegistryEntry, "installSource" | "manifestSha256">>,
+    candidateRegistryEntry?: Readonly<PluginRegistryTrust>,
     candidateApprovedPluginAccess?: PluginAccessSpec | null,
   ) => PluginHostApi;
   deploymentGuard?: PluginDeploymentGuard;
@@ -1662,7 +1662,7 @@ abstract class PluginRuntimeState {
     incarnation: PluginHostApiIncarnation,
     installPluginId: string | null,
     candidateRegistryEntry?: Readonly<
-      Pick<PluginRegistryEntry, "installSource" | "manifestSha256">
+      PluginRegistryTrust
     >,
     candidateApprovedPluginAccess?: PluginAccessSpec | null,
   ) => PluginHostApi;
@@ -1985,7 +1985,7 @@ abstract class PluginRuntimeState {
     hostEffects?: HostApiGenerationScope,
     installPluginId: string | null = this.requirePluginInstallClaim(pluginId),
     candidateRegistryEntry?: Readonly<
-      Pick<PluginRegistryEntry, "installSource" | "manifestSha256">
+      PluginRegistryTrust
     >,
     candidateApprovedPluginAccess?: PluginAccessSpec | null,
   ): {
@@ -2476,10 +2476,10 @@ abstract class PluginRuntimeState {
   protected validatePreparedRegistryEntry(
     manifest: PluginManifest,
     registryEntry: Readonly<
-      Pick<PluginRegistryEntry, "installSource" | "manifestSha256">
+      PluginRegistryTrust
     > | undefined,
     manifestDocument: unknown,
-  ): Readonly<Pick<PluginRegistryEntry, "installSource" | "manifestSha256">> {
+  ): Readonly<PluginRegistryTrust> {
     if (!registryEntry) {
       throw new Error(`prepared artifact registry provenance missing for '${manifest.id}'`);
     }

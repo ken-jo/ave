@@ -15,7 +15,7 @@ import { createBootHostFixture } from "../../__tests__/support/host-runtime.js";
  *      must not silently drop or rename a service.
  *   2. CONSTRUCTION-ORDER invariants — the documented ordering guarantees that
  *      matter for correctness (approvalGate / permissionManager / routinesStore
- *      / whitelist registry all built BEFORE initPluginRuntime; the plugin
+ *      built and revocations fed BEFORE initPluginRuntime; the plugin
  *      runtime built before the ConversationLoop; the ConversationLoop built
  *      before the late-bound SubAgentRunner). Captured via call-order recording
  *      on the mocked seams.
@@ -276,16 +276,9 @@ vi.mock("../../plugins/plugin-bundle-lifecycle.js", () => ({
   },
 }));
 
-// The three signed registries are mocked together: each one otherwise reaches
-// the public document CDN from a unit run, and the `online` flag boot hands
-// them is what the service-connection assertions below read.
-vi.mock("../steps/whitelist-bootstrap.js", () => ({
-  wireWhitelistRegistry: vi.fn(async (input: { online?: boolean }) => {
-    h.captured["whitelistOnline"] = input.online;
-    h.rec("whitelist");
-  }),
-}));
-
+// The trust steps are mocked: admission otherwise reaches the public document
+// CDN from a unit run, and the `online` flag boot hands it is what the
+// service-connection assertions below read.
 vi.mock("../steps/revocation-bootstrap.js", () => ({
   feedRevocationsFromSnapshots: vi.fn(async (input: { home: string; pluginRegistryPath: string }) => {
     h.captured["revocationFeed"] = { home: input.home, pluginRegistryPath: input.pluginRegistryPath };
@@ -758,14 +751,13 @@ describe("bootstrap() integration lock", () => {
   it("enforces the documented construction-order invariants", () => {
     // Core services are the foundation — everything else depends on them.
     assertBefore("core", "approvalGate");
-    // §B1/§F7 + cluster M1 + Routines-SOT + #893 Stage 2: the ApprovalGate,
-    // PermissionManager, RoutinesStore, and whitelist registry are ALL built
-    // before initPluginRuntime, because the per-plugin HostApi factory wires
-    // against each of them at plugin construction time.
+    // §B1/§F7 + cluster M1 + Routines-SOT: the ApprovalGate,
+    // PermissionManager, and RoutinesStore are ALL built before
+    // initPluginRuntime, because the per-plugin HostApi factory wires against
+    // each of them at plugin construction time.
     assertBefore("approvalGate", "initPluginRuntime");
     assertBefore("permissionManager", "initPluginRuntime");
     assertBefore("routinesStore", "initPluginRuntime");
-    assertBefore("whitelist", "initPluginRuntime");
     // Revocations reach the load gate before any plugin can load.
     assertBefore("revocation", "initPluginRuntime");
     // The plugin runtime exists before the ConversationLoop is composed (the
@@ -887,7 +879,6 @@ describe("bootstrap() integration lock", () => {
   it("opens the host's own service connections (interactive launch is unchanged)", () => {
     // Every registry resolves `online` from its own default, so boot passes
     // nothing and each step keeps deciding.
-    expect(h.captured["whitelistOnline"]).toBeUndefined();
     expect(h.captured["admissionOnline"]).toBeUndefined();
     expect(h.captured["discretionaryEgress"]).toBe(true);
     expect(vi.mocked(wireAnnouncementCheck)).toHaveBeenCalled();
@@ -904,10 +895,9 @@ describe("bootstrap() integration lock", () => {
  * each consequence comes off it: the admission warm-up is skipped, and neither
  * the release check, the telemetry uploaders nor the announcement poll are
  * started. (The git marketplace's sync starts with the window, in main.ts, so
- * a headless boot never reaches it.) It also proves the two
- * halves of the boundary that are NOT discretionary: the whitelist document
- * is still refreshed, because it fails closed, revocations are still fed from
- * the local snapshots, and plugins on disk still load. The interactive boot above
+ * a headless boot never reaches it.) It also proves the halves of the
+ * boundary that are NOT discretionary: revocations are still fed from the
+ * local snapshots, and plugins on disk still load. The interactive boot above
  * is the control; both run against the same mocked seams.
  */
 describe("bootstrap() headless launch opens no discretionary service connection", () => {
@@ -937,12 +927,11 @@ describe("bootstrap() headless launch opens no discretionary service connection"
     else process.env["AVE_SANDBOX_ENABLED"] = savedSandboxEnv;
   });
 
-  it("skips the admission warm-up but still refreshes the plugin trust chain", () => {
+  it("skips the admission warm-up but still feeds the plugin trust chain", () => {
     // Admission is consulted at install and re-checked there, so warming it at
-    // boot is only latency. The whitelist fails closed, so skipping it would
-    // take a control with it; revocations read only local snapshots.
+    // boot is only latency. Revocations and host-secret grants read only local
+    // snapshots.
     expect(h.captured["admissionOnline"]).toBe(false);
-    expect(h.captured["whitelistOnline"]).toBeUndefined();
     expect(h.order).toContain("revocation");
     expect(h.captured["revocationFeed"]).toEqual({ home: expect.any(String), pluginRegistryPath: expect.stringMatching(/registry\.json$/u) });
   });

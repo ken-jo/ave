@@ -782,11 +782,9 @@ export const test = base.extend<ScreenshotFixtures & ScreenshotOptions>({
     // Plugin registry. When `installPlugins` is empty (default) this writes an
     // empty registry — the original no-plugin behavior. When a scenario names
     // plugins, their REAL built `dist/` bundle is copied from the sibling repo
-    // so the actual UI renders (see plugin-seed.ts), and a signed whitelist
-    // snapshot is produced for any host-secret grants they declare.
+    // so the actual UI renders (see plugin-seed.ts).
     if (reviewerMode) seedReviewerMode(aveHomeForTest, reviewerMode);
     if (executionMode) seedExecutionMode(aveHomeForTest, executionMode);
-    let pluginEnv: Record<string, string | undefined> = {};
     if (installPlugins.length === 0) {
       const pluginsRoot = path.join(aveHomeForTest, 'plugins');
       fs.mkdirSync(pluginsRoot, { recursive: true, mode: 0o700 });
@@ -799,7 +797,6 @@ export const test = base.extend<ScreenshotFixtures & ScreenshotOptions>({
       const result = await seedRealPlugins(REPO_ROOT, aveHomeForTest, installPlugins, {
         disableReviewer: !keepReviewer,
       });
-      pluginEnv = result.env;
       if (result.missing.length > 0) {
         // Surface missing bundles loudly — a scenario asked for a plugin whose
         // built dist is absent, so its capture will not be meaningful.
@@ -838,7 +835,6 @@ export const test = base.extend<ScreenshotFixtures & ScreenshotOptions>({
     const app = await electron.launch({
       args: [mainEntry, `--user-data-dir=${userDataDir}`, '--no-sandbox'],
       env: buildIsolatedElectronEnv({
-        ...pluginEnv,
         HOME: userDataDir,
         USERPROFILE: userDataDir,
         AVE_DEV: '1',

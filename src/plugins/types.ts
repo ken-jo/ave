@@ -69,6 +69,15 @@ export interface PluginRegistryEntry {
   }>;
 }
 
+/**
+ * The host-owned registry fields a running plugin's HostApi trusts: the
+ * install source, the manifest pin taken at install, and where the install
+ * came from. The host-secret gate (`plugins/secret-access/`) reads them;
+ * `plugin.json` sits inside the plugin's writable surface and is never
+ * trusted for any of them.
+ */
+export type PluginRegistryTrust = Pick<PluginRegistryEntry, "installSource" | "manifestSha256" | "origin">;
+
 export interface PluginRegistry {
   version: number;
   plugins: PluginRegistryEntry[];

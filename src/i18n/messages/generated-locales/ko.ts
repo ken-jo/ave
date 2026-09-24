@@ -66,7 +66,6 @@ import { ko as ko_be_systemPromptBuilder } from "../generated/be_systemPromptBui
 import { ko as ko_be_telegramBridge } from "../generated/be_telegramBridge.js";
 import { ko as ko_be_toolSearch } from "../generated/be_toolSearch.js";
 import { ko as ko_be_tools } from "../generated/be_tools.js";
-import { ko as ko_be_whitelistBootstrap } from "../generated/be_whitelistBootstrap.js";
 import { ko as ko_be_windowDomain } from "../generated/be_windowDomain.js";
 import { ko as ko_be_windowTitlebarShell } from "../generated/be_windowTitlebarShell.js";
 import { ko as ko_bootstrapStatusPill } from "../generated/bootstrapStatusPill.js";
@@ -241,7 +240,6 @@ export const koMessages: Record<string, string> = {
   ...ko_be_telegramBridge,
   ...ko_be_toolSearch,
   ...ko_be_tools,
-  ...ko_be_whitelistBootstrap,
   ...ko_be_windowDomain,
   ...ko_be_windowTitlebarShell,
   ...ko_bootstrapStatusPill,

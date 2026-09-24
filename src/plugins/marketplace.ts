@@ -11,7 +11,7 @@ import {
 import type { MarketplaceFetcher } from "./marketplace-fetcher.js";
 import { toRegistryRelativeManifestPath, type PluginPaths } from "./plugin-paths.js";
 import { assertLocalCatalogFetcherAllowed, isDevModeUnlocked } from "../boot/dev-flags.js";
-import type { PluginAccessSpec, PluginManifest, PluginMarketplaceItem, PluginRegistryEntryInstallSource } from "./types.js";
+import type { PluginAccessSpec, PluginManifest, PluginMarketplaceItem, PluginRegistryEntryInstallSource, PluginRegistryEntryOrigin, PluginRegistryTrust } from "./types.js";
 import { MissingDependenciesError, MissingPluginDependenciesError } from "./types.js";
 import { getAveAppVersion } from "../shared/app-version.js";
 import { describeBootstrapSkip } from "../shared/bootstrap-status.js";
@@ -61,7 +61,7 @@ import type { MarketplacePolicy } from "../marketplace/sources/policy.js";
 import type { PluginAuthority } from "../marketplace/catalog/types.js";
 import { MarketplaceError } from "../marketplace/errors.js";
 import type { PluginInstallPlan, StagedPluginArtifact } from "../marketplace/resolve/plugin-ladder.js";
-import { canonicalJSON } from "./whitelist/canonical-json.js";
+import { canonicalJSON } from "./secret-access/canonical-json.js";
 import {
   abortRemovalTransaction,
   assertCanonicalRegistryOwnership,
@@ -121,7 +121,7 @@ interface PreparedMarketplacePluginArtifact {
   readonly manifest: PluginManifest;
   readonly receiptRaw: string;
   readonly registryEntry: Readonly<
-    Pick<PluginRegistryEntry, "installSource" | "manifestSha256">
+    PluginRegistryTrust
   >;
   readonly approvedPluginAccess?: PluginAccessSpec;
   durableCommit(): Promise<string>;
@@ -464,6 +464,21 @@ type InstallReceiptValidation = {
   reason?: string;
   receipt?: PluginInstallReceipt;
 };
+
+/** Where a git install came from, as its registry entry records it (design §10.3 reads it). */
+function gitInstallOrigin(staged: StagedPluginArtifact): PluginRegistryEntryOrigin {
+  const { plan } = staged;
+  return {
+    sourceId: plan.sourceId,
+    sourceOrigin: plan.sourceOrigin,
+    commit: plan.snapshotCommit,
+    packagePath: plan.packagePath,
+    version: plan.version,
+    rung: staged.rung,
+    artifactSha256: staged.artifactSha256,
+    installedAt: new Date().toISOString(),
+  };
+}
 
 function cleanupJournalAfterCommit(entry: PluginRegistryEntry): PluginRegistryEntry["pendingCleanup"] {
   const journal = (entry.pendingCleanup ?? []).map((item) => ({ ...item, path: resolve(item.path) }));
@@ -2433,6 +2448,7 @@ export class PluginMarketplaceService {
       }
 
       const existingEntry = current;
+      const origin = gitInstallOrigin(staged);
       await this.snapshotCurrentInstall(pluginId);
       let pendingEntry: PluginRegistryEntry | null = null;
       const installOutcome = await this.installZipTransaction(pluginId, staged.zipBuffer, {
@@ -2450,6 +2466,7 @@ export class PluginMarketplaceService {
         approvedPluginAccess: plan.authority.pluginAccess as PluginAccessSpec | undefined,
         activatePreparedArtifact,
         registryInstallSource,
+        registryOrigin: origin,
         signal: options.signal,
         beforePromote: async (recoveryBackupDir) => {
           // The replacement journal is the same as a catalog install's: the
@@ -2458,7 +2475,7 @@ export class PluginMarketplaceService {
         },
         commit: async (manifestPath, manifestAbsPath) => {
           const manifestSha256 = await this.readManifestSha256(manifestAbsPath);
-          await this.commitGitRegistryEntry(staged, manifestPath, manifestSha256, existingEntry, registryInstallSource);
+          await this.commitGitRegistryEntry(staged, origin, manifestPath, manifestSha256, existingEntry, registryInstallSource);
         },
       }).catch((err) => this.restoreMarketplaceRegistryEntryAfterFailure(pendingEntry, existingEntry, err));
       const manifestAbsPath = isAbsolute(installOutcome.manifestPath)
@@ -2526,22 +2543,13 @@ export class PluginMarketplaceService {
 
   private async commitGitRegistryEntry(
     staged: StagedPluginArtifact,
+    origin: PluginRegistryEntryOrigin,
     manifestPath: string,
     manifestSha256: string,
     previousEntry: PluginRegistryEntry | null,
     installSource: "user" | "admin",
   ): Promise<void> {
     const { plan } = staged;
-    const origin: NonNullable<PluginRegistryEntry["origin"]> = {
-      sourceId: plan.sourceId,
-      sourceOrigin: plan.sourceOrigin,
-      commit: plan.snapshotCommit,
-      packagePath: plan.packagePath,
-      version: plan.version,
-      rung: staged.rung,
-      artifactSha256: staged.artifactSha256,
-      installedAt: new Date().toISOString(),
-    };
     const approvedPluginAccess = plan.authority.pluginAccess as PluginAccessSpec | undefined;
     await updatePluginRegistry(this.registryPath, (registry) => {
       const existing = registry.plugins.find((entry) => entry.id === plan.name);
@@ -2651,6 +2659,8 @@ export class PluginMarketplaceService {
       commit?: (manifestPath: string, manifestAbsPath: string) => Promise<void>;
       activatePreparedArtifact: PreparedMarketplacePluginActivation;
       registryInstallSource: PluginRegistryEntryInstallSource;
+      /** The origin the commit records; the candidate's HostApi trusts it from its first start. */
+      registryOrigin?: PluginRegistryEntryOrigin;
       signal?: AbortSignal;
     },
   ): Promise<{ manifestPath: string; predecessorRetired: boolean }> {
@@ -2706,6 +2716,7 @@ export class PluginMarketplaceService {
               receiptRaw: preparedReceiptRaw,
               registryEntry: {
                 installSource: opts.registryInstallSource,
+                ...(opts.registryOrigin ? { origin: opts.registryOrigin } : {}),
                 // The pin covers the FILE, so it hashes the document —
                 // `readManifestSha256` re-derives it that way on every later
                 // read, and a pin taken over the projection would never

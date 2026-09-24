@@ -519,10 +519,9 @@ const HOST_SECRET_KEY_MAX_LENGTH = 111;
  * THE shape gate for a `hostSecrets.read[]` entry — "is this a well-formed
  * host-secret key a plugin is permitted to name?".
  *
- * One definition for both runtime enforcement points: plugin manifests
- * (`src/plugins/runtime/manifest-validation.ts`) and signed whitelist grants
- * (`src/plugins/whitelist/whitelist-schema.ts`), which previously carried
- * byte-identical private copies.
+ * One definition, used by plugin manifest validation
+ * (`src/plugins/runtime/manifest-validation.ts`); the signed whitelist that
+ * once carried a byte-identical private copy is gone.
  *
  * Deliberately validates the RAW preset-id segment. Both former copies routed
  * this branch through a `marketplaceProviderPresetIdFromSecretKey` helper that
@@ -574,18 +573,11 @@ export type HostSecretReadListViolation =
  * {@link isAllowedHostSecretKey}, which judges one entry at a time and so can
  * see neither `maxItems` nor `uniqueItems`.
  *
- * One definition for both runtime enforcement points, for the same reason the
- * per-item predicate has one: a signed whitelist grant and a manifest must not
- * be able to disagree about how large a host-secret allowlist may be. On the
- * manifest path AJV enforces the same two bounds against the vendored schema,
- * so this is defence-in-depth there; on the signed-whitelist path
- * (`parseWhitelistDocument`) there is no schema leg at all and this is the only
- * gate (#1939).
+ * AJV enforces the same two bounds against the vendored manifest schema, so
+ * this is defence-in-depth on the manifest path (#1939).
  *
- * Reports the first violation rather than throwing: the two call sites raise
- * differently shaped errors (`fail()` vs a `[whitelist]`-prefixed throw), and
- * both reject the document — a signed grant is never silently trimmed, since
- * that would enforce something other than what was signed.
+ * Reports the first violation rather than throwing, so the caller raises its
+ * own error shape; a manifest over either bound is rejected, never trimmed.
  */
 export function findHostSecretReadListViolation(
   keys: readonly string[],

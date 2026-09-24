@@ -6,7 +6,7 @@
  * objects) and merges the English default catalog here. Non-English generated
  * catalogs are language-pack chunks under `../generated-locales/`.
  *
- * Fragments: 173
+ * Fragments: 172
  */
 import { en as en_app } from "./app.js";
 import { en as en_appearanceTab } from "./appearanceTab.js";
@@ -75,7 +75,6 @@ import { en as en_be_systemPromptBuilder } from "./be_systemPromptBuilder.js";
 import { en as en_be_telegramBridge } from "./be_telegramBridge.js";
 import { en as en_be_toolSearch } from "./be_toolSearch.js";
 import { en as en_be_tools } from "./be_tools.js";
-import { en as en_be_whitelistBootstrap } from "./be_whitelistBootstrap.js";
 import { en as en_be_windowDomain } from "./be_windowDomain.js";
 import { en as en_be_windowTitlebarShell } from "./be_windowTitlebarShell.js";
 import { en as en_bootstrapStatusPill } from "./bootstrapStatusPill.js";
@@ -250,7 +249,6 @@ export const generatedEn: Record<string, string> = {
   ...en_be_telegramBridge,
   ...en_be_toolSearch,
   ...en_be_tools,
-  ...en_be_whitelistBootstrap,
   ...en_be_windowDomain,
   ...en_be_windowTitlebarShell,
   ...en_bootstrapStatusPill,
