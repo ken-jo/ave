@@ -34,6 +34,7 @@ import { ensureCorporateCa } from "../../main/corp-ca-runtime.js";
 import { readPersistedCorpCaConfigSync } from "../../main/persisted-corp-ca.js";
 import { startMarketplaceBackground, type MarketplaceBackground } from "../../marketplace/app/background.js";
 import { revocationRegistry } from "../../plugins/revocation/revocation-registry.js";
+import type { RevocationFeed } from "../../marketplace/app/revocations.js";
 import { McpInstaller, mcpInstallOrigins } from "../../marketplace/app/mcp-installer.js";
 import type { ContentInstallerPort, InstallerPorts, PluginInstallerPort, TokenStore } from "../../marketplace/app/ports.js";
 import { MarketplaceService } from "../../marketplace/app/service.js";
@@ -195,6 +196,26 @@ function dropKeptArtifactsIfOff(deps: IpcDeps, home: string): void {
 }
 
 /** Build the marketplace over `~/.ave`. Nothing touches the network until a request does. */
+/**
+ * Where the service's revocation feed lands (design §10.4): the registry the
+ * load gates answer from. A changed set reloads installed content, which
+ * applies the gate, and refreshes the catalog; plugins meet it at their next
+ * load.
+ */
+export function revocationSink(
+  content: () => Promise<InstalledContentRuntime | null>,
+  catalogChanged: () => void,
+): { apply(feed: RevocationFeed): Promise<void> } {
+  return {
+    apply: async (feed) => {
+      for (const item of feed.unreadable) log.error({ sourceId: item.sourceId, err: item.message }, "revocations: a source snapshot could not be read; its revocations wait for the next sync");
+      if (!revocationRegistry.replace(feed.rules)) return;
+      await (await content())?.reload();
+      catalogChanged();
+    },
+  };
+}
+
 async function createGitMarketplaceService(
   deps: IpcDeps,
   content: () => Promise<InstalledContentRuntime | null>,
@@ -315,15 +336,7 @@ async function createGitMarketplaceService(
         }),
       content: (ports) => migrateLegacyContent({ ...ports, ...legacyContentSettings(deps), log: { warn: (message) => log.warn(message) } }),
     },
-    revocations: {
-      apply: async (feed) => {
-        for (const item of feed.unreadable) log.error({ sourceId: item.sourceId, err: item.message }, "revocations: a source snapshot could not be read; its revocations wait for the next sync");
-        if (!revocationRegistry.replace(feed.rules)) return;
-        // Installed content applies the gate when it reloads; plugins meet it at their next load.
-        await (await content())?.reload();
-        catalogChanged();
-      },
-    },
+    revocations: revocationSink(content, catalogChanged),
   });
   return {
     service,

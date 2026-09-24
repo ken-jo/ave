@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { latestBootstrapStatus } from "../../../boot/bootstrap-status.js";
+import { revocationRegistry, type RevocationRule } from "../../../plugins/revocation/revocation-registry.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
@@ -264,5 +265,41 @@ describe("git marketplace IPC boundary", () => {
     const { service } = await setup();
     await expect(invokeFileIpcHandler(handlers, channels.uninstall, { sourceId: null, kind: "mcp", name: "weather", removeData: true })).resolves.toMatchObject({ ok: true });
     expect(service.uninstall).toHaveBeenCalledWith({ sourceId: null, kind: "mcp", name: "weather", removeData: true });
+  });
+});
+
+describe("revocationSink", () => {
+  const rule: RevocationRule = { kind: "skill", name: "review", versions: "*", reason: "prompt injection", at: "2026-09-24T00:00:00Z", action: "disable", sourceId: "acme" };
+
+  it("feeds the registry, and reloads content and the catalog only when the rules change", async () => {
+    revocationRegistry.resetForTesting();
+    const reload = vi.fn(async () => {});
+    const catalogChanged = vi.fn();
+    const { revocationSink } = await import("../git-marketplace.js");
+    const sink = revocationSink(async () => ({ reload }) as never, catalogChanged);
+
+    await sink.apply({ rules: [rule], unreadable: [] });
+    expect(revocationRegistry.evaluate("skill", "review", "1.0.0")).toMatchObject({ kind: "block", sourceId: "acme" });
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(catalogChanged).toHaveBeenCalledTimes(1);
+
+    await sink.apply({ rules: [rule], unreadable: [{ sourceId: "broken", message: "unreadable" }] });
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(catalogChanged).toHaveBeenCalledTimes(1);
+
+    await sink.apply({ rules: [], unreadable: [] });
+    expect(revocationRegistry.evaluate("skill", "review", "1.0.0")).toEqual({ kind: "allow" });
+    expect(reload).toHaveBeenCalledTimes(2);
+    expect(catalogChanged).toHaveBeenCalledTimes(2);
+    revocationRegistry.resetForTesting();
+  });
+
+  it("refreshes the catalog when no installed content runtime exists yet", async () => {
+    revocationRegistry.resetForTesting();
+    const catalogChanged = vi.fn();
+    const { revocationSink } = await import("../git-marketplace.js");
+    await revocationSink(async () => null, catalogChanged).apply({ rules: [rule], unreadable: [] });
+    expect(catalogChanged).toHaveBeenCalledTimes(1);
+    revocationRegistry.resetForTesting();
   });
 });
