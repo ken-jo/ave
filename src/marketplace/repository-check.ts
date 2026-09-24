@@ -24,6 +24,7 @@ import { gitInstallManifestMismatches } from "./resolve/manifest-rules.js";
 import { declaredMcpServer, mcpPayloadReadsServerJson, parseServerJson } from "./resolve/mcp.js";
 import { AVE_EXTENSION_NAMESPACE } from "../plugins/public-contract.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
+import { errorMessage } from "../shared/error-message.js";
 import { isRecord } from "../shared/is-record.js";
 
 /** Read access to a repository tree. Paths are repository-relative with `/` separators. */
@@ -59,10 +60,6 @@ const INDEX_PATH = "marketplace.json";
 const REVOCATIONS_PATH = "policy/revocations.json";
 /** Files a plugin's tree rung installs (design §6.2), besides the descriptor. */
 const TREE_TOP_LEVEL = new Set(["plugin.json", "dist", "assets"]);
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 function packageFiles(tree: RepositoryTree, dir: string): Array<{ path: string; data: Buffer }> {
   const prefix = dir === "" ? "" : `${dir}/`;
@@ -154,7 +151,7 @@ function checkPlugin(
   try {
     document = JSON.parse(manifest.toString("utf8"));
   } catch (error) {
-    report(`${manifestPath} does not parse: ${message(error)}`);
+    report(`${manifestPath} does not parse: ${errorMessage(error)}`);
     return;
   }
   for (const mismatch of manifestMismatches(document, descriptor)) report(`${manifestPath}: ${mismatch}`);
@@ -224,7 +221,7 @@ function checkPackage(tree: RepositoryTree, entry: IndexPackage, options: Reposi
     else if (descriptor.kind === "mcp") checkMcp(tree, entry, descriptor, report);
     else checkContent(tree, entry, descriptor, options);
   } catch (error) {
-    report(message(error));
+    report(errorMessage(error));
   }
 }
 
