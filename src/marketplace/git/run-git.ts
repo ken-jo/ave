@@ -21,12 +21,12 @@
  * {@link MarketplaceError} code from git's (C-locale) stderr; any other
  * failure is a {@link GitCommandError} for the caller to interpret.
  */
-import { spawn } from "node:child_process";
+import type { ChildProcessByStdio } from "node:child_process";
 import { delimiter, dirname } from "node:path";
+import type { Readable } from "node:stream";
 import { proxyUrlFromPacEntry } from "../../shared/pac-proxy.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
-import { forceKillManagedChildProcess } from "../../main/managed-child-processes.js";
-import { terminateChildProcess } from "../../tools/terminate-child-process.js";
+import { forceKillManagedChildProcess, spawnManaged } from "../../main/managed-child-processes.js";
 import { MarketplaceError, type MarketplaceErrorCode } from "../errors.js";
 import type { NormalizedSourceUrl } from "../net/source-url.js";
 import type { AskpassBroker } from "./askpass.js";
@@ -41,6 +41,8 @@ export const GIT_TIMEOUTS_MS = {
 
 const DEFAULT_MAX_STDOUT_BYTES = 32 * 1024 * 1024;
 const STDERR_TAIL_BYTES = 64 * 1024;
+/** How long git gets to remove its lock files after SIGTERM before its group is killed. */
+const FORCE_KILL_AFTER_MS = 2_000;
 
 export class GitCommandError extends Error {
   constructor(
@@ -234,26 +236,48 @@ export class GitRunner {
     credentialOffered: () => boolean,
   ): Promise<GitResult> {
     return new Promise<GitResult>((resolve, reject) => {
-      const child = spawn(this.options.git.path, argv, {
-        cwd: options.gitDir ?? this.options.emptyDir,
-        env,
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-      });
+      // git runs its transport in a child (git-remote-https) that holds the
+      // output pipes, so a stop has to reach the whole tree or `close` never
+      // comes. On POSIX git leads its own process group; the app's shutdown
+      // sweep kills that group too.
+      const child = spawnManaged(
+        this.options.git.path,
+        argv,
+        {
+          cwd: options.gitDir ?? this.options.emptyDir,
+          env,
+          stdio: ["ignore", "pipe", "pipe"],
+          windowsHide: true,
+          detached: process.platform !== "win32",
+        },
+        { label: "marketplace-git" },
+      ) as ChildProcessByStdio<null, Readable, Readable>;
       const stdoutChunks: Buffer[] = [];
       let stdoutBytes = 0;
       let stderr = "";
       let failure: Error | null = null;
       let settled = false;
 
+      const signalGroup = (signal: NodeJS.Signals) => {
+        try {
+          if (child.pid !== undefined) process.kill(-child.pid, signal);
+        } catch {
+          // The group is gone.
+        }
+      };
       const stop = (error: Error) => {
         if (failure) return;
         failure = error;
-        // On Windows a kill reaches git.exe alone: its git-remote-https child
-        // keeps the output pipes open and `close` never comes, so the whole
-        // tree goes. Elsewhere git gets SIGTERM and removes its lock files.
-        if (process.platform === "win32") forceKillManagedChildProcess(child, `marketplace git ${command} stopped`);
-        else terminateChildProcess(child);
+        if (process.platform === "win32") {
+          // TerminateProcess leaves no cleanup either way; taskkill /T takes the tree.
+          forceKillManagedChildProcess(child, `marketplace git ${command} stopped`);
+          return;
+        }
+        // SIGTERM first so git removes its lock files, then the whole group.
+        signalGroup("SIGTERM");
+        setTimeout(() => {
+          if (!settled) signalGroup("SIGKILL");
+        }, FORCE_KILL_AFTER_MS).unref();
       };
       const timer = setTimeout(() => {
         stop(
