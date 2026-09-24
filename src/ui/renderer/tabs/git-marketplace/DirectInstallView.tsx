@@ -69,6 +69,8 @@ export function DirectInstallView({ api, onGitAddress, onOpenMcpSettings, onInst
         setServerJson("");
         onInstalled();
       } else {
+        // The install took the plan even though it failed; Review again plans afresh.
+        setPreview(null);
         setFailure(result);
       }
     } finally {
@@ -126,6 +128,8 @@ export function DirectInstallView({ api, onGitAddress, onOpenMcpSettings, onInst
             value={serverJson}
             onChange={(event) => {
               setServerJson(event.target.value);
+              // A package or remote picked in the previous document does not carry over to this one.
+              setSelect({});
               setPreview(null);
             }}
             className="min-h-40 font-mono text-xs"

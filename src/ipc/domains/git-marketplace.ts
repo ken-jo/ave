@@ -389,17 +389,21 @@ export function registerGitMarketplaceHandlers(
 ): void {
   let ready: Promise<{ service: GitMarketplacePort; close: () => Promise<void> }> | null = null;
   const loaded = () => {
-    ready ??= create().then(
-      async (built) => {
+    ready ??= (async () => {
+      const built = await create();
+      try {
         await onBuilt(built.close);
-        return built;
-      },
-      (error: unknown) => {
-        // Built again on the next request: a missing directory or a transient read may clear.
-        ready = null;
+      } catch (error) {
+        // Nothing would close a service no one can reach: close it here, then build afresh next time.
+        await built.close().catch((closeError: unknown) => log.warn({ err: errorMessage(closeError) }, "git marketplace close after a failed start failed"));
         throw error;
-      },
-    );
+      }
+      return built;
+    })().catch((error: unknown) => {
+      // Built again on the next request: a missing directory or a transient read may clear.
+      ready = null;
+      throw error;
+    });
     return ready;
   };
 

@@ -98,6 +98,28 @@ describe("GitMarketplaceTab browse", () => {
   });
 });
 
+describe("GitMarketplaceTab search answers", () => {
+  it("keeps the newest query's answer when an older one returns later", async () => {
+    const fake = fakeMarketplace({ sources: [team], entries: [entry("team", "skill", "proofread"), entry("team", "skill", "profile")] });
+    renderTab(fake);
+    await screen.findByTestId("git-marketplace:card:team:skill:proofread");
+
+    const answers = new Map<string, (value: unknown) => void>();
+    const catalogOf = (name: string) => ({ ok: true, value: { entries: [entry("team", "skill", name)], counts: { plugin: 0, mcp: 0, skill: 1, agent: 0, theme: 0, font: 0, language: 0, provider: 0, "messaging-connection": 0 }, sourceCount: 1, syncedAt: null } });
+    fake.market.listCatalog.mockImplementation((query: { query?: string }) => new Promise((resolve) => answers.set(query.query ?? "", resolve)));
+    fireEvent.change(screen.getByTestId("git-marketplace:search"), { target: { value: "pro" } });
+    fireEvent.change(screen.getByTestId("git-marketplace:search"), { target: { value: "proof" } });
+    await waitFor(() => expect(answers.has("proof")).toBe(true));
+
+    answers.get("proof")!(catalogOf("proofread"));
+    await screen.findByTestId("git-marketplace:card:team:skill:proofread");
+    answers.get("pro")!(catalogOf("profile"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.queryByTestId("git-marketplace:card:team:skill:profile")).toBeNull();
+    expect(screen.getByTestId("git-marketplace:card:team:skill:proofread")).toBeInTheDocument();
+  });
+});
+
 describe("GitMarketplaceTab package sheet", () => {
   it("reviews the plan and installs exactly the plan it showed", async () => {
     const calendar = entry("team", "plugin", "calendar");

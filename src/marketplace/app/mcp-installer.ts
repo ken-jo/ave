@@ -25,6 +25,7 @@ import { writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
 import type { McpServerConfig, ValidationResult } from "../../mcp/types.js";
 import { parseMcpRuntimeSpec } from "../../plugins/mcp-runtime-spec.js";
 import { assertSafeArtifactSlug } from "../../plugins/plugin-id.js";
+import { isResolvedPathWithin } from "../../plugins/plugin-storage-containment.js";
 import type { McpRuntimeSpec } from "../../plugins/types.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
 import { MarketplaceError } from "../errors.js";
@@ -255,8 +256,16 @@ export class McpInstaller implements McpInstallerPort {
     };
     if (zipBuffer) {
       const executables = executableEntries(zipBuffer);
-      const { result } = await this.deps.files.extractZipWithCommit(record.name, zipBuffer, async (installDir) => {
-        for (const entry of executables) await chmod(resolve(installDir, entry), 0o755);
+      const { result } = await this.deps.files.extractZipWithCommit(record.name, zipBuffer, async (installDir, files) => {
+        // The mode bits come from the zip, but only for a file extraction wrote as named, inside the install directory.
+        const extracted = new Set(files);
+        for (const entry of executables) {
+          const target = resolve(installDir, entry);
+          if (!extracted.has(entry) || !isResolvedPathWithin(installDir, target)) {
+            throw new Error(`MCP server ${record.name}: executable zip entry ${JSON.stringify(entry)} was not extracted as named`);
+          }
+          await chmod(target, 0o755);
+        }
         return register();
       });
       return result;
@@ -324,7 +333,13 @@ export class McpInstaller implements McpInstallerPort {
       const current = records.find((record) => record.name === name);
       if (!current) throw new MarketplaceError("PACKAGE_ID_CONFLICT", `MCP server ${name} was not installed from the marketplace`);
       await this.deps.manager.removeConfig(name);
-      await this.write(records.filter((record) => record !== current));
+      try {
+        await this.write(records.filter((record) => record !== current));
+      } catch (error) {
+        // The record still says installed, so the server keeps its config too.
+        await this.deps.manager.addConfig(this.configFor(current));
+        throw error;
+      }
       if (current.hasFiles) await rm(this.deps.files.installDirFor(name), { recursive: true, force: true });
       const dataDir = this.dataDir(name);
       if (options.removeData) {

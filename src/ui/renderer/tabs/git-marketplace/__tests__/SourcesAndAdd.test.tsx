@@ -29,6 +29,9 @@ describe("SourcesView", () => {
     const row = screen.getByTestId("git-marketplace:source:ave-official");
     expect(within(row).queryByTestId("git-marketplace:source:ave-official:remove")).toBeNull();
     expect(within(row).getByRole("switch")).toBeDisabled();
+    // Named once, as everywhere in the tab, not by its label plus an identical badge.
+    expect(within(row).getAllByText("Ave 공식")).toHaveLength(1);
+    expect(within(row).queryByText("Ave Official")).toBeNull();
   });
 
   it("removes a custom source and names the packages it leaves installed", async () => {
@@ -73,6 +76,21 @@ describe("SourcesView", () => {
     fireEvent.change(screen.getByPlaceholderText("액세스 토큰 붙여넣기"), { target: { value: "ghp_example" } });
     fireEvent.click(confirm);
     await waitFor(() => expect(fake.market.setToken).toHaveBeenCalledWith("github.com", "ghp_example"));
+  });
+
+  it("drops a token typed for one host when its dialog is cancelled, so the next host's dialog starts empty", async () => {
+    const fake = fakeMarketplace();
+    sourcesView(fake, [source({ id: "team", auth: "token", tokenHost: "github.com" }), source({ id: "corp", auth: "token", tokenHost: "git.corp.example" })]);
+
+    fireEvent.click(within(screen.getByTestId("git-marketplace:source:team")).getByRole("button", { name: "토큰 설정…" }));
+    fireEvent.change(await screen.findByPlaceholderText("액세스 토큰 붙여넣기"), { target: { value: "ghp_for_github" } });
+    fireEvent.click(screen.getByRole("button", { name: "취소" }));
+    await waitFor(() => expect(screen.queryByTestId("git-marketplace:sources:confirm")).toBeNull());
+
+    fireEvent.click(within(screen.getByTestId("git-marketplace:source:corp")).getByRole("button", { name: "토큰 설정…" }));
+    expect(await screen.findByPlaceholderText<HTMLInputElement>("액세스 토큰 붙여넣기")).toHaveValue("");
+    expect(screen.getByTestId("git-marketplace:sources:confirm")).toBeDisabled();
+    expect(fake.market.setToken).not.toHaveBeenCalled();
   });
 });
 
@@ -183,10 +201,8 @@ describe("GitRuntimeCard", () => {
   });
 });
 
-describe("DirectInstallView", () => {
-  it("connects a pasted server.json bound to no source after its review", async () => {
-    const fake = fakeMarketplace();
-    const preview = (select: { package?: number } | undefined) => ({
+function serverJsonPreview(select: { package?: number } | undefined) {
+  return {
       ok: true,
       value: {
         planId: select?.package === 1 ? "plan-docker" : "plan-npm",
@@ -203,12 +219,22 @@ describe("DirectInstallView", () => {
         },
         options: { packages: 2, remotes: 0 },
       },
-    });
-    fake.market.previewDirectMcp.mockImplementation(async (request: { select?: { package?: number } }) => preview(request.select));
+    };
+}
+
+function directView(fake: ReturnType<typeof fakeMarketplace>) {
+  fake.market.previewDirectMcp.mockImplementation(async (request: { select?: { package?: number } }) => serverJsonPreview(request.select));
+  const onInstalled = vi.fn();
+  const api = { gitMarketplace: fake.market, previewClaudeDesktopMcpImport: vi.fn(), applyClaudeDesktopMcpImport: vi.fn() };
+  render(<DirectInstallView api={api as unknown as Pick<AveApi, "gitMarketplace" | "previewClaudeDesktopMcpImport" | "applyClaudeDesktopMcpImport">} onGitAddress={vi.fn()} onOpenMcpSettings={vi.fn()} onInstalled={onInstalled} />);
+  return { onInstalled };
+}
+
+describe("DirectInstallView", () => {
+  it("connects a pasted server.json bound to no source after its review", async () => {
+    const fake = fakeMarketplace();
     fake.market.executeInstall.mockResolvedValue({ ok: true, value: { key: { sourceId: null, kind: "mcp", name: "weather" }, version: null, action: { action: "install" }, rungs: [], connectionWarning: null } });
-    const onInstalled = vi.fn();
-    const api = { gitMarketplace: fake.market, previewClaudeDesktopMcpImport: vi.fn(), applyClaudeDesktopMcpImport: vi.fn() };
-    render(<DirectInstallView api={api as unknown as Pick<AveApi, "gitMarketplace" | "previewClaudeDesktopMcpImport" | "applyClaudeDesktopMcpImport">} onGitAddress={vi.fn()} onOpenMcpSettings={vi.fn()} onInstalled={onInstalled} />);
+    const { onInstalled } = directView(fake);
 
     fireEvent.click(screen.getByTestId("git-marketplace:direct:tab:server-json"));
     fireEvent.change(screen.getByTestId("git-marketplace:direct:server-json"), { target: { value: '{"name":"weather"}' } });
@@ -226,5 +252,28 @@ describe("DirectInstallView", () => {
     await waitFor(() => expect(fake.market.executeInstall).toHaveBeenCalledWith("plan-docker"));
     expect(await screen.findByTestId("git-marketplace:direct:done")).toHaveTextContent("weather을(를) 연결했습니다.");
     expect(onInstalled).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks for a fresh review after a failed connect, and forgets the picked package when the document changes", async () => {
+    const fake = fakeMarketplace();
+    fake.market.executeInstall.mockResolvedValue({ ok: false, code: "unavailable", message: "the server did not start" });
+    const { onInstalled } = directView(fake);
+
+    fireEvent.click(screen.getByTestId("git-marketplace:direct:tab:server-json"));
+    fireEvent.change(screen.getByTestId("git-marketplace:direct:server-json"), { target: { value: '{"name":"weather"}' } });
+    fireEvent.click(screen.getByRole("button", { name: "검토" }));
+    fireEvent.click(within(await screen.findByTestId("git-marketplace:direct:server-json:preview")).getByRole("button", { name: "패키지 2" }));
+    await waitFor(() => expect(screen.getByTestId("git-marketplace:direct:server-json:preview")).toHaveTextContent("docker weather-mcp"));
+
+    fireEvent.click(screen.getByTestId("git-marketplace:direct:connect"));
+    await waitFor(() => expect(fake.market.executeInstall).toHaveBeenCalledWith("plan-docker"));
+    // The failed install consumed plan-docker, so Connect is not offered on it again.
+    await waitFor(() => expect(screen.queryByTestId("git-marketplace:direct:connect")).toBeNull());
+    expect(screen.getByRole("button", { name: "검토" })).toBeEnabled();
+    expect(onInstalled).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByTestId("git-marketplace:direct:server-json"), { target: { value: '{"name":"forecast"}' } });
+    fireEvent.click(screen.getByRole("button", { name: "검토" }));
+    await waitFor(() => expect(fake.market.previewDirectMcp).toHaveBeenLastCalledWith({ serverJson: '{"name":"forecast"}' }));
   });
 });

@@ -650,7 +650,8 @@ export class MarketplaceService {
     } else {
       held = { kind: "content", plan: base as ContentPlan, switchSource };
     }
-    const ticket = this.plans.issue(held);
+    // One live plan per package: planning again (another version, a source switch) drops the older one and its files.
+    const ticket = this.plans.issue(held, `${row.sourceId}:${row.kind}:${row.name}`);
     return {
       planId: ticket.id,
       expiresAt: ticket.expiresAt,
@@ -798,7 +799,7 @@ export class MarketplaceService {
     const runtime = runtimeFromServerJson(document, request.select);
     assertMcpRuntimePinned(name, runtime);
     this.options.installers.mcp.admit(name, runtime);
-    const ticket = this.plans.issue({ kind: "mcp-unbound", name, runtime });
+    const ticket = this.plans.issue({ kind: "mcp-unbound", name, runtime }, `unbound:mcp:${name}`);
     return {
       planId: ticket.id,
       expiresAt: ticket.expiresAt,

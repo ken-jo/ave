@@ -30,8 +30,14 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
   const { t, locale } = useTranslation();
   const [busy, setBusy] = useState<string | null>(null);
   const [failure, setFailure] = useState<{ code: GitMarketplaceErrorCode; message: string } | null>(null);
-  const [confirm, setConfirm] = useState<Confirm | null>(null);
+  const [confirm, setConfirmState] = useState<Confirm | null>(null);
   const [token, setToken] = useState("");
+  // A typed token belongs to the dialog it was typed in: opening or closing any dialog drops it, so a
+  // token typed for one host and cancelled can never be saved under the next source's host.
+  const setConfirm = (next: Confirm | null) => {
+    setToken("");
+    setConfirmState(next);
+  };
   const [orphaned, setOrphaned] = useState<PackageKeyView[] | null>(null);
 
   const run = async <T,>(key: string, action: () => Promise<{ ok: true; value: T } | { ok: false; code: GitMarketplaceErrorCode; message: string }>): Promise<T | null> => {
@@ -61,7 +67,6 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
     } else if (source.tokenHost && token) {
       await run(source.id, () => api.setToken(source.tokenHost!, token));
     }
-    setToken("");
     setConfirm(null);
   };
 
@@ -102,8 +107,15 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
                 <tr key={source.id} className="border-t align-top" data-testid={`git-marketplace:source:${source.id}`}>
                   <td className="px-3 py-2">
                     <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="font-medium">{source.label}</span>
-                      <Badge variant={source.origin === "official" ? "default" : "outline"} className="h-5 px-1.5 text-[10px]">{originLabel(t, source.origin)}</Badge>
+                      {/* The official source goes by its origin's name everywhere in the tab, so a badge would repeat it. */}
+                      {source.origin === "official" ? (
+                        <span className="font-medium">{originLabel(t, "official")}</span>
+                      ) : (
+                        <>
+                          <span className="font-medium">{source.label}</span>
+                          <Badge variant="outline" className="h-5 px-1.5 text-[10px]">{originLabel(t, source.origin)}</Badge>
+                        </>
+                      )}
                     </div>
                     <div className="break-all font-mono text-[11px] text-muted-foreground">
                       {source.url}

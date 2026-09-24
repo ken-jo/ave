@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_MARKETPLACE_ARTIFACT_LIMITS } from "../../../plugins/marketplace-artifact-limits.js";
 import { PluginArtifactStore } from "../../../plugins/plugin-artifact-store.js";
 import type { MarketplaceFetcher } from "../../../plugins/marketplace-fetcher.js";
@@ -489,6 +489,17 @@ describe.skipIf(process.platform === "win32")("plugin artifact ladder (design §
     await expect(gate.checkDownloadPolicy("https://github.com/evil/x/releases/download/v1.0.0/a.zip", { official: false }))
       .rejects.toMatchObject({ code: "SOURCE_POLICY_BLOCKED" });
     await expect(gate.checkDownloadPolicy("https://github.com/acme/x/releases/download/v1.0.0/a.zip", { official: false })).resolves.toBeUndefined();
+  });
+
+  it("needs an allow list to admit api.github.com for the token path, as design §6.2 says", async () => {
+    const fetchImpl = vi.fn();
+    const repositoryOnly = new NetworkGate({ policy: policyLoad({ allow: [parseSourcePattern("https://github.com/acme/*")] }), allowLoopback: false });
+    await expect(repositoryOnly.fetch("https://api.github.com/repos/acme/alpha/releases/tags/v1.0.0", { fetchImpl, official: false }))
+      .rejects.toMatchObject({ code: "SOURCE_POLICY_BLOCKED", message: expect.stringContaining("api.github.com") });
+    expect(fetchImpl).not.toHaveBeenCalled();
+
+    const withApi = new NetworkGate({ policy: policyLoad({ allow: [parseSourcePattern("https://github.com/acme/*"), parseSourcePattern("host:api.github.com")] }), allowLoopback: false });
+    await expect(withApi.checkDownloadPolicy("https://api.github.com/repos/acme/alpha/releases/assets/42", { official: false })).resolves.toBeUndefined();
   });
 
   it("builds an ssh source's release URL over https on the default port, and refuses . and .. repository segments", async () => {

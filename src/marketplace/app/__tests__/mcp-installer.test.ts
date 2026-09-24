@@ -8,7 +8,7 @@ import { mkdtempSync } from "node:fs";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { McpServerConfig } from "../../../mcp/types.js";
 import { DisabledMarketplaceFetcher } from "../../../plugins/marketplace.js";
 import { PluginArtifactStore } from "../../../plugins/plugin-artifact-store.js";
@@ -16,6 +16,19 @@ import type { ResolvedMcpServer } from "../../resolve/mcp.js";
 import { McpInstaller, mcpInstallOrigins } from "../mcp-installer.js";
 
 const SNAPSHOT = "a".repeat(40);
+
+/** Set to make the next record writes fail, as a full disk would. */
+const recordWrites = vi.hoisted(() => ({ fail: false }));
+vi.mock("../../../main/storage/feature-namespace.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../main/storage/feature-namespace.js")>();
+  return {
+    ...actual,
+    writeFileAtomicAtPath: async (...args: Parameters<typeof actual.writeFileAtomicAtPath>) => {
+      if (recordWrites.fail) throw new Error("disk full");
+      return actual.writeFileAtomicAtPath(...args);
+    },
+  };
+});
 
 class FakeManager {
   configs = new Map<string, McpServerConfig>();
@@ -117,6 +130,25 @@ describe("McpInstaller", () => {
     expect(await mcpInstallOrigins(recordsPath())()).toEqual([{ sourceId: "acme", commit: SNAPSHOT }]);
   });
 
+  it("refuses to mark executable a zip entry that extraction did not write as named, and registers nothing", async () => {
+    const installDir = join(home, "mcp", "notes");
+    const skipping = new McpInstaller({
+      recordsPath: recordsPath(),
+      dataRoot: join(home, "mcp-data"),
+      // An extractor that dropped the executable entry: the mode bits must not be applied to some other path.
+      files: {
+        installDirFor: () => installDir,
+        extractZipWithCommit: async (_name, _zip, commit) => ({ result: await commit(installDir, ["server/README.md"]) }),
+      },
+      manager,
+      nodePath: "/usr/bin/node",
+      now: () => new Date("2026-09-24T00:00:00.000Z"),
+    });
+    await expect(skipping.install(resolved("1.0.0", { files: serverZip("#!/bin/sh\n") }), { switchSource: false })).rejects.toThrow(/server\/run\.sh" was not extracted as named/);
+    expect(manager.configs.size).toBe(0);
+    expect(await skipping.list()).toEqual([]);
+  });
+
   it("updates in place and keeps $DATA_DIR; a failed config add restores the previous files and config", async () => {
     await installer.install(resolved("1.0.0", { files: serverZip("v1") }), { switchSource: false });
     await writeFile(join(home, "mcp-data", "notes", "state.db"), "kept");
@@ -187,6 +219,18 @@ describe("McpInstaller", () => {
       connectionWarning: null,
     });
     await expect(installer.installUnbound("notes", { transport: "http", url: "https://notes.example/mcp" })).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
+  });
+
+  it("keeps the server's config when uninstall cannot rewrite the record", async () => {
+    await installer.install(resolved("1.0.0"), { switchSource: false });
+    recordWrites.fail = true;
+    try {
+      await expect(installer.uninstall("notes", { removeData: false })).rejects.toThrow("disk full");
+    } finally {
+      recordWrites.fail = false;
+    }
+    expect(manager.configs.get("notes")).toMatchObject({ command: "npx", args: ["-y", "notes-mcp@1.0.0"] });
+    expect(await installer.list()).toEqual([{ kind: "mcp", name: "notes", version: "1.0.0", sourceId: "acme", originCommit: SNAPSHOT }]);
   });
 
   it("installs a pasted server unbound, and uninstall keeps or removes $DATA_DIR as asked", async () => {

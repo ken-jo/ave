@@ -130,6 +130,22 @@ describe("git marketplace IPC boundary", () => {
     expect(create).toHaveBeenCalledTimes(2);
   });
 
+  it("closes a service whose quit hook failed to register, and builds a fresh one next time", async () => {
+    handlers.clear();
+    const closes = [vi.fn(async () => {}), vi.fn(async () => {})];
+    const create = vi.fn()
+      .mockResolvedValueOnce({ service: { listSources: async () => [] }, close: closes[0] })
+      .mockResolvedValueOnce({ service: { listSources: async () => [] }, close: closes[1] });
+    const onBuilt = vi.fn().mockRejectedValueOnce(new Error("shutdown hook unavailable")).mockResolvedValue(undefined);
+    const { registerGitMarketplaceHandlers } = await import("../git-marketplace.js");
+    registerGitMarketplaceHandlers({ auditLogger: { log: vi.fn() } } as never, async () => null, create, onBuilt);
+    await expect(invokeFileIpcHandler(handlers, channels.sourcesList)).resolves.toMatchObject({ ok: false, code: "unavailable" });
+    expect(closes[0]).toHaveBeenCalledTimes(1);
+    await expect(invokeFileIpcHandler(handlers, channels.sourcesList)).resolves.toEqual({ ok: true, value: [] });
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(closes[1]).not.toHaveBeenCalled();
+  });
+
   it("checks each request before the service sees it", async () => {
     const { service } = await setup();
     const invalid = { ok: false, code: "invalid-request" };

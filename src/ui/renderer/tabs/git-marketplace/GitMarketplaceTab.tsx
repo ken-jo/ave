@@ -130,12 +130,16 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }
     return result.ok ? result.value : null;
   }, [market]);
 
+  // Each keystroke asks again; only the newest request's answer may land, whatever order they return in.
+  const catalogRequestRef = useRef(0);
   const loadCatalog = useCallback(async () => {
+    const request = ++catalogRequestRef.current;
     const result = await market.listCatalog({
       ...(sourceId ? { sourceId } : {}),
       ...(query.trim() ? { query: query.trim() } : {}),
       ...(installedOnly ? { installedOnly } : {}),
     });
+    if (request !== catalogRequestRef.current) return;
     if (result.ok) {
       setCatalog(result.value);
       setFailure(null);
@@ -351,7 +355,9 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }
                 );
               })}
             </div>
-            <div className="flex flex-wrap gap-1 border-b" role="tablist" aria-label={t("gitMarketplace.kindTabsLabel")}>
+            {/* The kinds wrap among themselves; Installed stays at the strip's end instead of wrapping alone onto a row. */}
+            <div className="flex items-start gap-1 border-b" role="tablist" aria-label={t("gitMarketplace.kindTabsLabel")}>
+              <div className="flex min-w-0 flex-1 flex-wrap gap-1">
               {[null, ...KIND_ORDER].map((item) => (
                 <button
                   key={item ?? "all"}
@@ -368,6 +374,7 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }
                   {item === null ? t("gitMarketplace.kindAll") : kindLabel(t, item)} <span className="text-muted-foreground">{item === null ? total : catalog?.counts[item] ?? 0}</span>
                 </button>
               ))}
+              </div>
               <button
                 type="button"
                 role="tab"
@@ -376,7 +383,7 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }
                   setInstalledOnly(true);
                   setKind(null);
                 }}
-                className={cn("-mb-px ml-auto border-b-2 px-2.5 py-1.5 text-xs", installedOnly ? "border-primary font-medium text-foreground" : "border-transparent text-muted-foreground hover:text-foreground")}
+                className={cn("-mb-px shrink-0 whitespace-nowrap border-b-2 px-2.5 py-1.5 text-xs", installedOnly ? "border-primary font-medium text-foreground" : "border-transparent text-muted-foreground hover:text-foreground")}
                 data-testid="git-marketplace:installed"
               >
                 {t("gitMarketplace.installedTab")}

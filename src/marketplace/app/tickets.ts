@@ -12,10 +12,14 @@ const TICKET_TTL_MS = 10 * 60 * 1000;
 interface Held<T> {
   value: T;
   expiresAt: number;
+  slot: string | null;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 export class Tickets<T> {
   private readonly held = new Map<string, Held<T>>();
+  /** The live ticket id per slot: a newer ticket for the same thing replaces the older one. */
+  private readonly slots = new Map<string, string>();
 
   constructor(
     private readonly what: string,
@@ -28,18 +32,42 @@ export class Tickets<T> {
   private sweep(): void {
     const now = this.now();
     for (const [id, item] of this.held) {
-      if (item.expiresAt <= now) {
-        this.held.delete(id);
-        this.onDrop?.(item.value);
-      }
+      if (item.expiresAt <= now) this.drop(id, item);
     }
   }
 
-  issue(value: T): { id: string; expiresAt: string } {
+  private release(id: string, item: Held<T>): void {
+    clearTimeout(item.timer);
+    this.held.delete(id);
+    if (item.slot !== null && this.slots.get(item.slot) === id) this.slots.delete(item.slot);
+  }
+
+  private drop(id: string, item: Held<T>): void {
+    this.release(id, item);
+    this.onDrop?.(item.value);
+  }
+
+  /**
+   * Hold `value` for the TTL. A value left unused is dropped when it expires even if no one asks
+   * again, so a preview's clone or typed token does not outlive an abandoned dialog. Issuing into
+   * an occupied `slot` drops the ticket held there: only the newest plan for one package is live.
+   */
+  issue(value: T, slot: string | null = null): { id: string; expiresAt: string } {
     this.sweep();
+    if (slot !== null) {
+      const previous = this.slots.get(slot);
+      const item = previous === undefined ? undefined : this.held.get(previous);
+      if (previous !== undefined && item) this.drop(previous, item);
+    }
     const id = randomBytes(18).toString("base64url");
     const expiresAt = this.now() + this.ttlMs;
-    this.held.set(id, { value, expiresAt });
+    const timer = setTimeout(() => {
+      const item = this.held.get(id);
+      if (item) this.drop(id, item);
+    }, this.ttlMs);
+    timer.unref?.();
+    this.held.set(id, { value, expiresAt, slot, timer });
+    if (slot !== null) this.slots.set(slot, id);
     return { id, expiresAt: new Date(expiresAt).toISOString() };
   }
 
@@ -54,13 +82,12 @@ export class Tickets<T> {
   /** Use the id up. */
   take(id: string): T {
     const value = this.peek(id);
-    this.held.delete(id);
+    this.release(id, this.held.get(id)!);
     return value;
   }
 
   /** Drop every held value (shutdown). */
   clear(): void {
-    for (const item of this.held.values()) this.onDrop?.(item.value);
-    this.held.clear();
+    for (const [id, item] of [...this.held]) this.drop(id, item);
   }
 }
