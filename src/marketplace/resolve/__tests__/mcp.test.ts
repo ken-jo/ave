@@ -277,6 +277,16 @@ describe.skipIf(process.platform === "win32")("resolveMcpPackage", () => {
     });
   });
 
+  it("fills tokens in one pass, so a filled-in path is never read as a token or a replacement pattern", async () => {
+    const resolved = await resolveFrom({
+      "mcp/notes/ave-package.json": descriptor({ server: { transport: "stdio", command: "uvx", args: ["notes-mcp==1.0.0", "--db", "$DATA_DIR/notes.sqlite"], env: { NOTES_HOME: "$DATA_DIR", NOTES_FLAGS: "$NODE_OPTIONS" } } }),
+    });
+    expect(mcpServerConfigFor(resolved, { installDir: "/ave/mcp/notes", dataDir: "/home/$&$$/$PLUGIN_DIR", nodePath: "/app/node" })).toMatchObject({
+      args: ["notes-mcp==1.0.0", "--db", "/home/$&$$/$PLUGIN_DIR/notes.sqlite"],
+      env: { NOTES_HOME: "/home/$&$$/$PLUGIN_DIR", NOTES_FLAGS: "$NODE_OPTIONS" },
+    });
+  });
+
   it("reads server.json at the version's commit", async () => {
     const resolved = await resolveFrom({
       "mcp/notes/ave-package.json": descriptor({ serverJson: "server.json", select: { remote: 0 } }),
@@ -310,6 +320,7 @@ describe.skipIf(process.platform === "win32")("resolveMcpPackage", () => {
     ["an unpinned npx package", { server: { transport: "stdio", command: "npx", args: ["-y", "@acme/notes"] } }, {}, "exact version"],
     ["$PLUGIN_DIR without package files", { server: { transport: "stdio", command: "npx", args: ["-y", "@acme/notes@1.0.0", "$PLUGIN_DIR/x"] } }, {}, "ships no package files"],
     ["$PYTHON", { server: { transport: "stdio", command: "npx", args: ["-y", "@acme/notes@1.0.0"], env: { PY: "$PYTHON" } } }, {}, "$PYTHON"],
+    ["$DATA_DIR in a remote server's URL", { server: { transport: "http", url: "https://mcp.acme.example/$DATA_DIR" } }, {}, "only in a stdio server's arguments and environment"],
   ])("refuses %s", async (_label, payload, extra, message) => {
     await expect(resolveFrom({ "mcp/notes/ave-package.json": descriptor(payload), ...extra })).rejects.toThrow(message);
   });

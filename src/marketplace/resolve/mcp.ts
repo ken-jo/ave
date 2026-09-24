@@ -33,7 +33,7 @@ import AdmZip from "adm-zip";
 import type { MarketplaceArtifactLimits } from "../../plugins/marketplace-artifact-limits.js";
 import type { McpRuntimeSpec } from "../../plugins/types.js";
 import type { McpServerConfig } from "../../mcp/types.js";
-import { buildMcpServerConfig, substituteRuntimeTokens } from "../../mcp/mcp-marketplace-install.js";
+import { buildMcpServerConfig } from "../../mcp/mcp-marketplace-install.js";
 import { ENV_NAME_RE, HTTP_HEADER_NAME_RE, MAX_NAME_LEN, RESERVED_ENV_NAMES, RESERVED_HEADERS } from "../../mcp/safe-names.js";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -358,6 +358,9 @@ function dockerImageOf(name: string, args: readonly string[]): string {
   return image;
 }
 
+/** A token ends where a name character cannot continue it: `$NODE_OPTIONS` is not `$NODE`. */
+const RUNTIME_TOKEN = /\$(PLUGIN_DIR|DATA_DIR|NODE)(?![A-Za-z0-9_])/gu;
+
 function usesToken(spec: McpRuntimeSpec, token: string): boolean {
   if (spec.transport !== "stdio") return false;
   return [spec.command, ...(spec.args ?? []), ...Object.values(spec.env ?? {})].some((value) => value.includes(token));
@@ -410,6 +413,10 @@ export async function resolveMcpPackage(plan: McpInstallPlan, deps: McpResolveDe
     from = "server.json";
   }
   if (usesToken(runtime, "$PYTHON")) throw refuse(`MCP server ${plan.name} uses $PYTHON; Ave provides no Python runtime (use uvx)`);
+  // A stdio command cannot hold it: validation allows only a launcher or a `server/` path there.
+  if (runtime.transport !== "stdio" && JSON.stringify(runtime).includes("$DATA_DIR")) {
+    throw refuse(`MCP server ${plan.name}: $DATA_DIR is filled in only in a stdio server's arguments and environment`);
+  }
   assertMcpRuntimePinned(plan.name, runtime);
   let packageFiles: ResolvedMcpServer["packageFiles"] = null;
   if (runtime.transport === "stdio" && !LAUNCHERS.has(runtime.command)) {
@@ -439,13 +446,15 @@ export interface McpServerDirs {
 /** The MCP config to register, with `$PLUGIN_DIR`, `$DATA_DIR` and `$NODE` filled in. */
 export function mcpServerConfigFor(resolved: ResolvedMcpServer, dirs: McpServerDirs): McpServerConfig {
   const runtime = resolved.runtime;
-  const withData =
-    runtime.transport === "stdio"
-      ? {
-          ...runtime,
-          ...(runtime.args ? { args: runtime.args.map((value) => value.replaceAll("$DATA_DIR", dirs.dataDir)) } : {}),
-          ...(runtime.env ? { env: Object.fromEntries(Object.entries(runtime.env).map(([key, value]) => [key, value.replaceAll("$DATA_DIR", dirs.dataDir)])) } : {}),
-        }
-      : runtime;
-  return buildMcpServerConfig(resolved.plan.name, substituteRuntimeTokens(withData, { pluginDir: dirs.installDir, nodePath: dirs.nodePath, pythonPath: "" }));
+  if (runtime.transport !== "stdio") return buildMcpServerConfig(resolved.plan.name, { ...runtime });
+  const values = { PLUGIN_DIR: dirs.installDir, DATA_DIR: dirs.dataDir, NODE: dirs.nodePath } as const;
+  // One pass with a function replacer: a filled-in path is never rescanned for
+  // tokens, and `$&`/`$$` in it stay literal.
+  const fill = (value: string): string => value.replace(RUNTIME_TOKEN, (_match, token: keyof typeof values) => values[token]);
+  return buildMcpServerConfig(resolved.plan.name, {
+    ...runtime,
+    command: fill(runtime.command),
+    ...(runtime.args ? { args: runtime.args.map(fill) } : {}),
+    ...(runtime.env ? { env: Object.fromEntries(Object.entries(runtime.env).map(([key, value]) => [key, fill(value)])) } : {}),
+  });
 }
