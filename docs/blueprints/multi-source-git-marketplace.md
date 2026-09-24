@@ -1,6 +1,10 @@
 # Multi-source Git Marketplace — Blueprint
 
-> Status: **Active plan, not started** (2026-09-23).
+> Status: **Phases 0–6 done; phase 7 remains** (2026-09-25). Phase 0 is merged
+> in `ken-jo/agent-marketplace`; phases 1–6 are the ave pull requests
+> #2551 (P1), #2552 (P2), #2554 (P3), #2556 (P4), #2553 (P5) and the phase 6
+> switch. Where the code differs from the design, design §13.1 and §16.4 say
+> how.
 > Architecture: [../architecture/proposals/multi-source-git-marketplace.md](../architecture/proposals/multi-source-git-marketplace.md) ·
 > Design specification: [../design/multi-source-git-marketplace.md](../design/multi-source-git-marketplace.md) ·
 > Mockup: [../design/multi-source-git-marketplace.html](../design/multi-source-git-marketplace.html) ·

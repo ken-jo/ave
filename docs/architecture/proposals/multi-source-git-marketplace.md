@@ -1,8 +1,9 @@
 # Multi-source Git Marketplace — Architecture
 
-> Status: **Proposal — accepted direction, not implemented** (owner decisions
-> 2026-09-23). Supersedes the single-server marketplace model described by
-> `src/plugins/cloud-marketplace-fetcher.ts` and the signing plans in
+> Status: **Implemented through blueprint phase 6** (owner decisions
+> 2026-09-23; phase 6 on 2026-09-25). Supersedes the single-server marketplace
+> model of the removed `src/plugins/cloud-marketplace-fetcher.ts` and the
+> signing plans in
 > [keyless-marketplace-signing](../../blueprints/keyless-marketplace-signing.md)
 > and [signed-admission-catalog](../../blueprints/signed-admission-catalog.md).
 >

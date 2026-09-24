@@ -1,6 +1,8 @@
 # Multi-source Git Marketplace — Design Specification
 
-> Status: **Proposal — accepted direction, not implemented** (2026-09-23).
+> Status: **Implemented through phase 6** (2026-09-25); phase 7, the release and
+> the server's retirement, remains. Where the shipped code differs from this
+> page, §13.1 and §16.4 say how.
 > Architecture: [../architecture/proposals/multi-source-git-marketplace.md](../architecture/proposals/multi-source-git-marketplace.md) ·
 > Blueprint: [../blueprints/multi-source-git-marketplace.md](../blueprints/multi-source-git-marketplace.md) ·
 > Mockup: [multi-source-git-marketplace.html](./multi-source-git-marketplace.html) ·
@@ -1711,6 +1713,63 @@ On first boot of the new version:
   keep it up to date by registering its marketplace."
 - Installed provider presets and theme/language activations become ledger
   entries.
+
+### 16.4 As built (P6)
+
+Where the sections above and the shipped code differ, the code wins:
+
+- **The lock names a source (§10.2).** A `requiredInstalls` entry locks the
+  package installed from the source the entry names, and nothing else: a
+  package with the same kind and name bound to another source, or to none,
+  can be uninstalled and disabled. The Plugins tab (`PluginDeploymentGuard`)
+  and the marketplace's uninstall apply the same rule, reading the policy
+  file at each check; a policy file that cannot be read locks nothing. The
+  deployment guard has no actor model any more, and there are no
+  administrator installs: the first boot turns `installSource: "admin"` into
+  `user` (§16.3), so a required install that finds its package bound to
+  another source performs an ordinary source switch.
+- **Retired manifest fields (§5.3).** The loader drops both `installPolicy`
+  and `publisher` before schema validation, with one warning per plugin;
+  git staging and the repository check reject a manifest that carries
+  either, by name.
+- **Revocations (§10.4)** are enforced at boot and again after every
+  background sync, not only at boot; each revoked install is reported once
+  per session. An install in progress is fed to the registry under the
+  source it is being installed from, so switching a package's source never
+  leaves it judged by the old source's revocations or by none. A pinned
+  snapshot whose file is missing is an error, not an empty feed.
+- **`update-condition.ts`** held only the managed update kinds and is
+  deleted; `update-detector.ts` stays.
+- **Local marketplaces in development (§16.2).** An unpackaged build started
+  with `AVE_DEV=1` may reach a marketplace over plain HTTP on loopback — an
+  author's checkout served by `git http-backend`, or the end-to-end test's
+  fixture. The file protocol stays refused, so a local directory is served
+  over loopback rather than registered as a direct source.
+- **End-to-end test (§17).** `test/e2e/ui/git-marketplace-lifecycle.spec.ts`
+  replaces `marketplace-e2e.yml` and runs with every other Playwright spec in
+  the nightly `e2e.yml`. MCP governance still decides whether a marketplace
+  MCP server may be configured (§13, `PACKAGE_POLICY_BLOCKED`), so the spec
+  writes a governance policy approving its server into the run's
+  `AVE_HOME`, as an organization would.
+- **Removed with the server stack, beyond §16.2:** the Doctor's server-install
+  cleanup action, the synthetic install-failure cards, the
+  `plugins.installProgress` channel (nothing emitted it), the unrendered
+  plugin grid and its web-store link, and the server-era artifact stores.
+  Boot removes what that stack left on disk: the admission, whitelist and
+  revocation documents, the catalog cache, and each package tree's tarball
+  cache and verified downloads. `AVE_ADMISSION_OFFLINE` is scrubbed from the
+  environment like the other retired variables.
+- **First-boot migration (§16.3)** runs once the official source has a
+  snapshot, and records itself in `packages/legacy-migration.json`: `{
+  version: 1, completedAt }` when every entry migrated, otherwise `{ version:
+  1, reportedUnmanaged }`, and the next run tries again without naming an
+  unmanaged entry a second time.
+- **Web documentation.** The site's server-marketplace pages and their
+  twelve screenshots are gone; `/docs/marketplace` explains sources, installs
+  and updates, and `/docs/marketplace/authors` is the package-author page
+  (both in Korean and English). The pages that described a marketplace
+  account, an install deeplink by slug or a publisher signature now describe
+  the git marketplace.
 
 ## 17. Test plan
 

@@ -17,7 +17,7 @@ This page owns the blueprint index and the status language for active, implement
 
 ## Plans In This Directory
 
-- [Multi-source git marketplace](./multi-source-git-marketplace.md) — active, not started. Supersedes [keyless-marketplace-signing](./keyless-marketplace-signing.md) and [signed-admission-catalog](./signed-admission-catalog.md).
+- [Multi-source git marketplace](./multi-source-git-marketplace.md) — phases 0–6 done; phase 7 (release and server retirement) remains. Supersedes [keyless-marketplace-signing](./keyless-marketplace-signing.md) and [signed-admission-catalog](./signed-admission-catalog.md).
 
 ## Implementation Anchors
 

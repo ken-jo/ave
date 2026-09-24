@@ -71,7 +71,6 @@ interface PluginManifest {
     titleField?: string;
     bodyField?: string;
   }>;
-  installPolicy?: "admin" | "user";
   /**
    * 마켓플레이스 install 시 호스트가 사용자에게 dep 누락을 알리는 "preflight" 메타데이터.
    * **Host 는 dep 을 absolutely auto-install 하지 않는다** (issue #92, 2026-05).
@@ -93,7 +92,6 @@ interface PluginManifest {
      */
     agentApprovalScopes?: string[];
   };
-  publisher?: string;
   /**
    * plugin start() 하드 타임아웃 (ms). `Promise.race` 기반, 초과 시 호스트가
    * 해당 플러그인을 fail-soft drop. 실제 start() 작업 자체는 AbortController
@@ -123,35 +121,27 @@ interface Tool {
 
 > `python` 필드는 **더 이상 지원되지 않는다** — AJV 스키마는 `additionalProperties: false` 이므로 매니페스트에 포함하면 로드 거부. Python 런타임은 `ave/src/main/python-runtime.ts` 호스트 쪽 bootstrap 로 제공되고 플러그인은 선언 없이 사용한다.
 
-> **`version` 필드는 플러그인 저자가 통제하는 SoT.** 마켓플레이스 backend 가 자동으로 bump 하지 않는다. Release 시점에 플러그인 저자가 직접:
+> **`version` 필드는 플러그인 저자가 통제하는 SoT.** 마켓플레이스는 버전을 바꾸지 않는다. 게시는 git 마켓플레이스 저장소에서 한다([퍼블리싱 가이드](../guides/marketplace-publishing.md)).
 >
-> 1. PR 으로 `plugin.json` 의 `version` 필드를 SemVer (예: `0.1.25`) 로 올림
-> 2. 머지 후 main 에서 매칭 git tag 푸시 — `git tag v0.1.25 -m "release 0.1.25" && git push origin v0.1.25`
-> 3. plugin repo 의 `.github/workflows/publish.yml` 이 tag-push 를 트리거로 받아 `plugin.json.version` 과 tag semver 가 일치하는지 fail-fast 검증 후 마켓플레이스 API 로 publish.
+> 1. `plugin.json`의 `version`과 `extensions["ai.agent-connector.ave"].requires.minAppVersion`을 올린다.
+> 2. 마켓플레이스 저장소의 패키지 설명자(`ave-package.json`)에 같은 `version`·`minAppVersion`과 `plugin.json`의 권한 필드 사본(`authority`), 아티팩트 고정값(`artifact`: sha256으로 고정한 release·archive, 또는 tree)을 적고 머지한다.
+> 3. 앱은 동기화한 커밋에서 설명자를 읽고, 스테이징한 `plugin.json`이 설명자와 다르면 설치를 멈춘다(`MANIFEST_MISMATCH`).
 >
-> 이전에는 CI 의 `bump_version.py` 가 `catalog 의 latest + 1` 으로 in-place rewrite 했지만, source `plugin.json` 과 catalog 가 갈라져서 사이드로드 (`Settings → 로컬 폴더에서 설치`) 한 플러그인에 false-positive "업데이트 있음" 배너가 떴음. **tag-as-SoT** 로 source manifest 와 catalog 가 항상 동일 — 사이드로드와 마켓플레이스 install 결과는 같은 `plugin.json` + `dist/` 레이아웃을 공유한다 (install-receipt 의 `installSource` / `signerKeyId` / `artifactSha256` 은 의도적으로 다르며 trust 표면 분리 목적).
+> 사이드로드(`Settings → 로컬 폴더에서 설치`)와 마켓플레이스 설치는 같은 `plugin.json` + `dist/` 레이아웃을 공유하고, install receipt 만 다르다(로컬 설치는 v3 `local-dev`, 마켓플레이스 설치는 v4 `git`).
 >
-> 이 룰의 enforcement 는 **각 plugin repo 의 `publish.yml` 워크플로우 안에서만** 일어난다. 호스트와 마켓플레이스 backend 는 catalog 상태를 trust 할 뿐 tag↔manifest 일치를 직접 강제하지 않는다 — discipline 은 publisher CI 에 있다 (`assertInstalledManifestMatchesCatalog` 는 호스트의 defense-in-depth 일 뿐 정문이 아님). 따라서 이 룰은 `ave-plugin-*` 레포 전반에 적용되는 contract 이며, 모든 신규 플러그인 repo 의 `publish.yml` 이 이 패턴을 따라야 한다.
+> **Format strictness — 같은 regex** `^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`:
 >
-> branch push 는 publish 트리거 안 함 (`on.push.tags: ['v*.*.*']` 만 listen). dev 중 main 으로 머지해도 catalog 는 가만히 있음 — 의도된 release 시점에만 tag 로 트리거.
+> 1. `ave/schemas/plugin-manifest.schema.json` — AJV 가 manifest 를 거절
+> 2. `ave/src/plugins/runtime/manifest-validation.ts` — 호스트가 로드 시점에 거절
 >
-> **Format strictness — 4 곳에서 동일 regex** `^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`:
->
-> 1. `ave-plugin-sdk/schemas/plugin-manifest.schema.json` — AJV 가 manifest 작성 시점에 거절
-> 2. `ave/src/plugins/runtime/manifest-validation.ts` — 호스트가 SDK schema 를 resolve 해 사이드로드 시점에 거절
-> 3. 각 plugin repo (6 개) + `ave-plugin-template` 의 `.github/workflows/publish.yml` — tag 푸시 시점에 거절
-> 4. `agent-marketplace/server/.../publisher.py` (`_SEMVER_RE`) + `schemas/plugin.schema.template.json` — POST `/api/v1/plugins/{slug}/versions` 거절
->
-> Pre-release (`1.2.3-rc1`) / build-metadata (`1.2.3+abc`) / leading-zero (`01.2.3`) 모두 5 곳에서 거절. 한 곳 풀어주려면 5 곳 같이 풀어야 (`host-plugin-contract-sync` 룰 적용).
->
-> 같은 strictness 가 `tools[].version` 과 `tools[].deprecatedSince` 에도 적용 (SDK + host AJV schema). publish.yml 의 tag-validation gate 는 top-level `version` 만 보므로 tool-level version 의 enforcement 정문은 AJV.
+> 같은 strictness 가 `tools[].version` 과 `tools[].deprecatedSince` 에도 적용된다.
 
 **각 필드의 런타임 소비처:**
 
 | 필드 | 소비처 | 타이밍 |
 |----------------------------- |--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |------------------------------------------- |
 | `id` | PluginRegistry, HostApi cleanup | boot + 런타임 전반 |
-| `version` | 마켓플레이스 카탈로그 카드 + update-detector 비교 + install receipt + `assertInstalledManifestMatchesCatalog` (defense-in-depth host check) + Settings UI 카드 | install + 런타임 전반 |
+| `version` | 마켓플레이스 카탈로그 + 설명자와의 일치 검사(`MANIFEST_MISMATCH`) + update-detector 비교 + install receipt + Settings UI 카드 | install + 런타임 전반 |
 | `icon` | plugin grid v3 popover (Lucide named-export 동적 lookup, 누락/매치 실패 시 `Plug` fallback). 옵션 필드 — 없으면 default 아이콘 | UI 렌더 |
 | `iconText` | plugin grid v3 popover — 짧은 텍스트 라벨 (1-4자, 예: `"ORION"`, `"MTG"`) 을 Lucide 아이콘 대신 아바타 안에 렌더. 둘 다 선언 시 `iconText` 우선. 적당한 Lucide 글리프가 없는 도메인-내부 식별자에 사용. 옵션 필드 | UI 렌더 |
 | `entry` | runtime.ts `require()` | boot |
@@ -162,10 +152,8 @@ interface Tool {
 | `notificationEvents[]` | `registerPluginNotifications()` — OS 알림 자동 등록 | boot |
 | `tools[]._meta.ui.visibility` | `PluginRuntime.callFromUi()` app-visible allowlist | renderer IPC 호출 |
 | `capabilities[]` | HostApi LYRA Mail 게이트 + `emitEvent` namespace 게이트 | 런타임 전반 |
-| `installPolicy` | Install-policy guard + signature gate policy | install + uninstall + load |
 | `dependencies` | Marketplace install **preflight gate**. `required:true` (default — string form / `required` 누락 object 포함) 미설치 시 install 거부 + `MissingPluginDependenciesError`; `required:false` 는 install 통과 + 컨슈머 책임으로 degrade. **Host 는 dep 을 auto-install 하지 않는다** (issue #92). | install |
 | `pluginAccess` | Cross-plugin tool/event access gate + agent approval scope grant | runtime |
-| `publisher` | 감사 로그 · 마켓플레이스 카드 | install + 표시 |
 
 **plugin.json 권한 메타데이터 예시 (meeting 플러그인의 핵심 도구 발췌):**
 
@@ -307,9 +295,7 @@ interface Tool {
             }
           }
         }
-      ],
-      "installPolicy": "user",
-      "publisher": "example-publisher"
+      ]
     }
   }
 }
@@ -319,15 +305,15 @@ interface Tool {
 
 ### 2.1 마켓플레이스 artifact 검증
 
-플러그인 repo는 `plugin.json` sidecar signature를 만들지 않는다. Marketplace upload API가 manifest/schema/policy/access를 검증하고 최종 artifact envelope를 서명한다. Host는 설치 시 envelope를 검증하고 install receipt를 저장하며, runtime load 전에 receipt의 file hash를 확인한다.
+플러그인 repo는 서명을 만들지 않는다. Host는 git 마켓플레이스 스냅숏 커밋이 고정한 아티팩트(sha256으로 고정한 release·archive, 또는 고정 트리)를 받아 설명자와 `plugin.json`을 대조하고 install receipt를 저장하며, runtime load 전에 receipt의 file hash를 확인한다.
 
 | 상황 | 정책 |
 |-------------------------------------- |--------------------------------------------------------------------- |
-| envelope 검증 성공 + receipt hash 일치 | 로드 후보. `plugin_integrity_verified` 감사 이벤트 기록. |
-| envelope 검증 실패 | 설치 거부. |
+| 고정값 일치 + receipt hash 일치 | 로드 후보. `plugin_integrity_verified` 감사 이벤트 기록. |
+| 고정값 불일치 또는 `MANIFEST_MISMATCH` | 설치 거부. |
 | receipt 누락/불일치 | **드롭 (fail-closed)**. `plugin_integrity_rejected` 감사 이벤트 기록. |
 
-마켓플레이스 trust anchor는 host-owned `src/plugins/marketplace-keys.ts`에 있다. `@ave/plugin-sdk`는 type/source-only 계약이며 키를 포함하지 않는다.
+신뢰 근거는 서명 키가 아니라 동기화한 커밋과 그 고정값이다. `@ave/plugin-sdk`는 type/source-only 계약이며 키를 포함하지 않는다.
 
 **`installLocal` (개발자 sideload) 패키징 — host 가 자동 제외하는 경로**: host 의 `buildSideloadCopyFilter` (`src/plugins/sideload-filter.ts`) 는 install 시 다음 subtree 를 건너뛴다 — 플러그인 런타임에 무관하면서 staging 단계에서 깨지는 컨텐츠라 자동 제외:
 
@@ -998,7 +984,7 @@ HostApi 에 새 메서드를 추가하려면:
 | 제안 | 결정 | 사유 |
 |------------------------------------------------------------- |------------------------- |-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **worker_threads / process 격리** | ❌ 기각 | in-process + try/catch 로 95% 장애 커버. 격리 시 IPC 오버헤드 + 디버깅 복잡도 증가. |
-| **marketplace artifact 검증** | ✅ **승인** | 플러그인 저자가 sidecar 서명을 만들지 않고 marketplace가 artifact envelope을 서명합니다. 호스트는 설치 시 envelope을 검증하고 로드 시 install receipt 해시를 확인합니다. §2.1. |
+| **marketplace artifact 검증** | ✅ **승인** | 플러그인 저자는 서명을 만들지 않습니다. 호스트는 git 마켓플레이스 커밋이 고정한 아티팩트(sha256 또는 트리)를 설치 시 검증하고 로드 시 install receipt 해시를 확인합니다. §2.1. |
 | **`permissions[]` 선언형 필드** | ⚠️ **부분 승인** | full permission 문자열 배열은 기각되었지만, 다음 3종의 선언형 게이트가 대체 도입됨: (1) renderer→plugin allowlist (당시 `uiActions` map; #885 Phase R 이후 각 tool 의 `_meta.ui.visibility` — 파괴적 도구의 확인 UX 는 플러그인이 책임), (2) `capabilities[]` — `lyra-mail-consumer` HostApi gate + event-emit namespace gate, (3) `PLUGIN_PRIVATE_NAMESPACES` — subscription deny-list. §2.2, §2.3. |
 | **LLM invoke HostApi 추상화 (full surface)** | ❌ 기각 (callLlm 만 채택) | 단발 텍스트 생성 `callLlm()` 만 Phase 1에서 채택 (§4). streaming·tool_choice·thinking·multi-turn 등 vendor 편차 큰 surface 는 여전히 기각. |
 | **파일 watcher HostApi (`watchFiles`)** | ❌ 기각 | local-indexer 1개 플러그인만 필요. "3+ 플러그인 규칙" 미충족. |
@@ -1019,17 +1005,9 @@ HostApi 에 새 메서드를 추가하려면:
 - **이벤트 채널**: dot 형식 (`meeting.started`, `email.action.needed`). capability 게이팅 대상 (§2.3).
 - 런타임 변환 없음 — manifest 에 선언한 이름이 그대로 Tool Registry 에 등록됨.
 
-### Deployment 모드
+### 설치와 잠금
 
-| 항목 | `managed` | `user` |
-|--------- |------------------------------------------------------- |------------------------------------------------------- |
-| 설치 주체 | 회사 IT Admin / marketplace admin review | 사용자 marketplace publish |
-| 삭제 권한 | 회사만 (`PluginDeploymentGuard.canUninstall()` = false) | 사용자 자유 |
-| 업데이트 | 정책 push 시 강제 | 사용자 opt-in |
-| 저장 경로 | `~/.ave/plugins/installed/<id>/` | `~/.ave/plugins/installed/<id>/` |
-| 검증 | marketplace envelope + install receipt 해시 fail-closed | marketplace envelope + install receipt 해시 fail-closed |
-
-상세 설계: `docs/architecture/plugin-deployment-model.md`
+관리형·사용자 배포 모드는 없다. 모든 플러그인은 git 마켓플레이스(또는 개발용 로컬 설치)로 `~/.ave/plugins/<id>/`에 설치되고, 설치 receipt 해시로 fail-closed 검증한다. 제거·비활성화를 막는 것은 시스템 정책 파일의 `marketplaces.requiredInstalls` 항목뿐이며, 그 항목이 가리키는 소스에서 설치된 플러그인만 잠근다(`PluginDeploymentGuard`). 상세 설계: [멀티 소스 git 마켓플레이스 설계서](../design/multi-source-git-marketplace.md) §10.
 
 ### 현행 코드 참조
 
@@ -1040,8 +1018,7 @@ HostApi 에 새 메서드를 추가하려면:
 | 플러그인 런타임 (로딩·주입·AJV·설치 영수증 검증) | `src/plugins/runtime.ts` |
 | Manifest JSON Schema | `@ave/plugin-sdk/schemas/plugin-manifest.schema.json` |
 | Capability taxonomy | `src/plugins/capabilities.ts` |
-| Marketplace artifact verifier | `src/plugins/envelope-verifier.ts` |
-| Marketplace keys (host-owned) | `src/plugins/marketplace-keys.ts` |
+| Marketplace artifact ladder | `src/marketplace/resolve/plugin-ladder.ts` |
 | Install receipt integrity | `src/plugins/plugin-install-receipt.ts` |
 | Deployment 가드 | `src/plugins/deployment-guard.ts` |
 | callLlm rate-limit | `src/boot/conversation.ts` (`createCallLlmForPlugin`) |
@@ -1128,8 +1105,7 @@ export const createPlugin: RuntimePluginFactory = async (context) => {
             }
           }
         }
-      ],
-      "installPolicy": "user"
+      ]
     }
   }
 }

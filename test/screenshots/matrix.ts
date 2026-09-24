@@ -1899,16 +1899,13 @@ export const scenarios: Record<string, ScenarioEntry> = {
 };
 
 /**
- * mp-* / ah-* / ep-* keys (marketplace, agent-hub SERVER dashboards,
- * internal portal) are WEB/server screens per the task's explicit scope —
- * they render in a browser against a separate Next.js app, not the Electron
+ * ah-* / ep-* keys (agent-hub SERVER dashboards, internal portal) are
+ * WEB/server screens per the task's explicit scope — they render in a browser against a separate Next.js app, not the Electron
  * host. Deliberately absent from `scenarios` (not even as skip entries) so
  * the matrix only enumerates keys this harness could ever plausibly own.
  * See README.md "Out of scope: web/server keys" for the full list.
  */
 export const WEB_SERVER_KEYS_OUT_OF_SCOPE = [
-  'mp-login', 'mp-plugin', 'mp-agents', 'mp-mcp', 'mp-skills',
-  'mp-publisher', 'mp-publisher-2', 'mp-admin', 'mp-admin-2', 'mp-admin-3', 'mp-admin-4', 'mp-admin-5',
   'ah-dashboard', 'ah-workboard', 'ah-worklog', 'ah-inbox', 'ah-report', 'ah-subscription',
   'orion-login', 'orion-attendance', 'orion-attendance-2', 'orion-attendance-3', 'orion-approval', 'orion-parking',
   'orion-meeting-room', 'orion-meeting-room-2', 'orion-meeting-room-3', 'orion-meeting-room-4', 'orion-meeting-room-5',
