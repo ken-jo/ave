@@ -79,7 +79,8 @@ describe("installed themes (blueprint 3.2)", () => {
       api.installedContent = bridge(view({ themes: [{ ...harbor, pair: "harbor-light" }, harborLight] })) as never;
       const { getByTestId } = render(<ThemeProvider api={api as never}><Probe /></ThemeProvider>);
       await waitFor(() => expect(getByTestId("bundle").textContent).toBe("harbor|harbor-light"));
-      expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("harbor-light");
+      // The pair member resolves after the installed content loads.
+      await waitFor(() => expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("harbor-light"));
     } finally {
       vi.unstubAllGlobals();
     }
