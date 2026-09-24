@@ -119,13 +119,30 @@ describe("checkMarketplaceRepository", () => {
     expect(messages).toContainEqual(expect.stringContaining("installPolicy is no longer supported"));
   });
 
-  it("holds a released plugin.json to the descriptor when the caller supplies it", () => {
-    const released = (patch: Record<string, unknown>) =>
-      new Map([["alpha", { name: "alpha", version: "1.0.0", extensions: { "ai.agent-connector.ave": { ...authority(), ...patch } } }]]);
-    expect(checkMarketplaceRepository(tree(validFiles()), { ...OFFICIAL, releasedManifests: released({}) })).toEqual([]);
-    expect(checkMarketplaceRepository(tree(validFiles()), { ...OFFICIAL, releasedManifests: released({ capabilities: ["host:tasks"] }) })).toEqual([
-      { subject: "plugin/alpha", message: "the released plugin.json: capabilities differs from the descriptor's authority" },
+  it("holds each released plugin.json to its index version when the caller supplies it", () => {
+    const manifest = (patch: Record<string, unknown>, at = "1.0.0") => ({ name: "alpha", version: at, extensions: { "ai.agent-connector.ave": { ...authority(), ...patch } } });
+    const released = (entries: Array<[string, unknown]>) => ({ ...OFFICIAL, releasedManifests: new Map(entries) });
+    expect(checkMarketplaceRepository(tree(validFiles()), released([["alpha@1.0.0", manifest({})]]))).toEqual([]);
+    expect(checkMarketplaceRepository(tree(validFiles()), released([["alpha@1.0.0", manifest({ capabilities: ["host:tasks"] })]]))).toEqual([
+      { subject: "plugin/alpha", message: "the released plugin.json of 1.0.0: capabilities differs from the descriptor's authority" },
     ]);
+    expect(checkMarketplaceRepository(tree(validFiles()), released([["alpha@0.9.0", manifest({}, "0.9.0")]]))).toEqual([
+      { subject: "plugin/alpha", message: "a released plugin.json was supplied for alpha@0.9.0, which the index does not list" },
+    ]);
+  });
+
+  it("lets only a yanked field pin carry the installPolicy of its era", () => {
+    const files = validFiles();
+    const fieldPin = version({ version: "0.9.0", authority: authority(), artifact: { release: { ...artifact().release, tag: "alpha-v0.9.0", asset: "alpha-0.9.0.zip" } } });
+    index(files).packages[0]!.versions = [version({ authority: authority(), artifact: artifact() }), fieldPin];
+    const legacy = { name: "alpha", version: "0.9.0", extensions: { "ai.agent-connector.ave": { ...authority(), installPolicy: "admin" } } };
+    const run = () => checkMarketplaceRepository(tree(files), { ...OFFICIAL, releasedManifests: new Map([["alpha@0.9.0", legacy]]) });
+    expect(run()).toEqual([{ subject: "plugin/alpha", message: expect.stringContaining("the released plugin.json of 0.9.0: installPolicy is no longer supported") }]);
+    fieldPin.yanked = { reason: "Kept so installs of this zip keep their grant.", at: AT };
+    expect(run()).toEqual([]);
+    // Everything else still has to match.
+    legacy.extensions["ai.agent-connector.ave"].capabilities = ["host:tasks"] as never[];
+    expect(run()).toEqual([{ subject: "plugin/alpha", message: "the released plugin.json of 0.9.0: capabilities differs from the descriptor's authority" }]);
   });
 
   it("holds content packages to the install rules", () => {

@@ -22,7 +22,9 @@ import { checkContentFiles, isContentKind } from "./content/rules.js";
 import { DESCRIPTOR_NAME, descriptorDiffersFromIndex, repoPath } from "./resolve/descriptor.js";
 import { gitInstallManifestMismatches } from "./resolve/manifest-rules.js";
 import { declaredMcpServer, mcpPayloadReadsServerJson, parseServerJson } from "./resolve/mcp.js";
+import { AVE_EXTENSION_NAMESPACE } from "../plugins/public-contract.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
+import { isRecord } from "../shared/is-record.js";
 
 /** Read access to a repository tree. Paths are repository-relative with `/` separators. */
 export interface RepositoryTree {
@@ -37,10 +39,12 @@ export interface RepositoryCheckOptions {
   sourceId: string;
   official: boolean;
   /**
-   * The `plugin.json` inside each plugin's released artifact, by plugin name,
-   * for the plugins whose release the caller downloaded. Each is held to the
-   * git-install manifest rules against the descriptor, as the ladder holds
-   * the staged manifest (design §5.3, §6.2).
+   * The `plugin.json` inside released artifacts, by `name@version`, for the
+   * versions whose release the caller downloaded. Each is held to the
+   * git-install manifest rules against its index version, as the ladder
+   * holds the staged manifest (design §5.3, §6.2). A yanked version may
+   * still carry `installPolicy`: it is a field pin kept only so installs of
+   * that exact zip keep their grant (design §16.3), and nothing installs it.
    */
   releasedManifests?: ReadonlyMap<string, unknown>;
 }
@@ -93,6 +97,31 @@ function manifestMismatches(document: unknown, descriptor: PackageDescriptor): s
   });
 }
 
+/** The manifest of a field pin without the `installPolicy` its era required; every other rule still holds. */
+function withoutLegacyInstallPolicy(document: unknown): unknown {
+  const extensions = isRecord(document) ? document.extensions : undefined;
+  const ave = isRecord(extensions) ? extensions[AVE_EXTENSION_NAMESPACE] : undefined;
+  if (!isRecord(document) || !isRecord(extensions) || !isRecord(ave) || !("installPolicy" in ave)) return document;
+  const { installPolicy: _installPolicy, ...rest } = ave;
+  return { ...document, extensions: { ...extensions, [AVE_EXTENSION_NAMESPACE]: rest } };
+}
+
+function checkReleasedManifests(entry: IndexPackage, released: ReadonlyMap<string, unknown>, report: (message: string) => void): void {
+  const prefix = `${entry.name}@`;
+  const versions = new Map((entry.versions ?? []).map((version) => [version.version, version]));
+  for (const [key, document] of released) {
+    if (!key.startsWith(prefix)) continue;
+    const version = versions.get(key.slice(prefix.length));
+    if (!version) {
+      report(`a released plugin.json was supplied for ${key}, which the index does not list`);
+      continue;
+    }
+    const expected = { name: entry.name, version: version.version, minAppVersion: version.minAppVersion, authority: version.authority as PluginAuthority };
+    const held = version.yanked ? withoutLegacyInstallPolicy(document) : document;
+    for (const mismatch of gitInstallManifestMismatches(held, expected)) report(`the released plugin.json of ${version.version}: ${mismatch}`);
+  }
+}
+
 function checkPlugin(
   tree: RepositoryTree,
   entry: IndexPackage,
@@ -100,10 +129,7 @@ function checkPlugin(
   options: RepositoryCheckOptions,
   report: (message: string) => void,
 ): void {
-  const released = options.releasedManifests;
-  if (released?.has(descriptor.name)) {
-    for (const mismatch of manifestMismatches(released.get(descriptor.name), descriptor)) report(`the released plugin.json: ${mismatch}`);
-  }
+  if (options.releasedManifests) checkReleasedManifests(entry, options.releasedManifests, report);
   const manifestPath = repoPath(entry.path, "plugin.json");
   const manifest = tree.read(manifestPath);
   const artifact = (descriptor.payload as { artifact: PluginArtifactPins }).artifact;
