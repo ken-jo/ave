@@ -61,14 +61,7 @@ test('every theme bundle resolves to a paintable surface', async ({ mainWindow }
     bgs.set(id, result.bg);
   }
 
-  /* Smoke that the CSS variable swap actually happens: at least one bundle
-     must paint a different body bg than tokyo-night. (We don't assert every
-     bundle is unique — high-contrast/midnight legitimately share base hues
-     with tokyo-night on some tokens.) */
-  const tokyoBg = bgs.get('tokyo-night');
-  const distinct = Array.from(bgs.values()).filter((bg) => bg !== tokyoBg);
-  expect(
-    distinct.length,
-    'at least 8 bundles should produce a bg different from tokyo-night',
-  ).toBeGreaterThanOrEqual(8);
+  /* Smoke that the CSS variable swap actually happens: the two compiled
+     bundles paint different body backgrounds. */
+  expect(bgs.get('gallery'), 'gallery should paint a bg different from moonstone').not.toBe(bgs.get('moonstone'));
 });

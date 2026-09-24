@@ -11,7 +11,6 @@ import { ThemeProvider, useTheme } from "../theme/ThemeProvider.js";
 import { AppearanceTab } from "../tabs/AppearanceTab.js";
 import { DEFAULT_BUNDLE_ID } from "../theme/index.js";
 import { moonstoneBundle } from "../theme/bundles/moonstone.js";
-import { resetLoadedThemeBundleCacheForTests } from "../theme/bundles/index.js";
 import { applyBundleToDocument } from "../theme/resolve-theme.js";
 import { applyInstalledContent, ensureInstalledContent, fontFaceCss, resetInstalledContentForTests } from "../installed-content.js";
 import { makeMockAveApi } from "../../../../test/renderer/mock-ave-api.js";
@@ -58,7 +57,6 @@ function Probe() {
 
 beforeEach(() => {
   resetInstalledContentForTests();
-  resetLoadedThemeBundleCacheForTests();
 });
 
 afterEach(() => {

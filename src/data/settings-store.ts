@@ -29,7 +29,7 @@ import {
   type MarketplaceEligibleLLMVendor,
 } from "../shared/llm-vendor-defaults.js";
 import type { GitRuntimeMode } from "../shared/git-runtime-mode.js";
-import { isThemeId, type BundleId } from "../shared/theme-bundles.js";
+import { isThemeId } from "../shared/theme-bundles.js";
 import {
   FONT_SIZE_SCALE_VALUES,
   type FontSizeScale,
@@ -922,9 +922,17 @@ export interface MarketplaceSettings {
   installedProviderIds: MarketplaceEligibleLLMVendor[];
   /** User-installed OpenAI-compatible provider presets from Marketplace. */
   installedProviderPresets: MarketplaceInstalledProviderPreset[];
-  /** Marketplace-installed theme bundles shown in Appearance. */
-  installedThemeBundleIds: BundleId[];
-  /** Marketplace-installed language packs shown in the language picker. */
+  /**
+   * Themes the server marketplace turned on. Legacy: read and emptied only by
+   * the first-boot migration (design §16.3), which installs the theme package
+   * of each id; the renderer lists installed theme packages instead.
+   */
+  installedThemeBundleIds: string[];
+  /**
+   * Language packs the server marketplace turned on. Legacy, like
+   * `installedThemeBundleIds`: the migration installs the language package
+   * for each locale.
+   */
   installedLanguagePacks: Locale[];
   /**
    * Messaging connections the owner installed, as the catalog declared them.

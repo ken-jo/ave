@@ -1,22 +1,13 @@
-import { beforeAll, describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect } from "vitest";
 import {
   BUNDLES,
   BUNDLE_IDS,
   DEFAULT_BUNDLE_ID,
-  DEFAULT_VISIBLE_BUNDLES,
-  MARKETPLACE_THEME_BUNDLE_MANIFESTS,
-  MARKETPLACE_THEME_BUNDLES,
   findBundle,
-  loadAllThemeBundles,
-  loadThemeBundle,
-  visibleBundlesFor,
+  setInstalledThemeBundles,
+  visibleBundles,
 } from "../index.js";
-import {
-  DEFAULT_VISIBLE_THEME_BUNDLE_IDS,
-  MARKETPLACE_ELIGIBLE_THEME_BUNDLE_IDS,
-  isDefaultVisibleThemeBundleId,
-  isMarketplaceEligibleThemeBundleId,
-} from "../../../../../shared/theme-bundles.js";
+import { moonstoneBundle } from "../moonstone.js";
 import { THEME_TOKEN_NAMES } from "../../../../../shared/theme-tokens.js";
 
 const REQUIRED_TOKEN_KEYS = THEME_TOKEN_NAMES;
@@ -24,80 +15,37 @@ const REQUIRED_TOKEN_KEYS = THEME_TOKEN_NAMES;
 /** Basic HSL-value or raw triple pattern: "H S% L%" or "H S% L% / A%" */
 const HSL_TRIPLE_RE = /^\d+(?:\.\d+)?\s+\d+(?:\.\d+)?%\s+\d+(?:\.\d+)?%/;
 
-let allBundles: Awaited<ReturnType<typeof loadAllThemeBundles>> = [];
+const nord = { ...moonstoneBundle, id: "nord", name: "Nord", shell: "dark" as const };
 
-beforeAll(async () => {
-  allBundles = await loadAllThemeBundles();
+afterEach(() => {
+  setInstalledThemeBundles([]);
 });
 
 describe("bundle registry", () => {
-  it("exports exactly 16 bundles", () => {
-    expect(allBundles).toHaveLength(16);
-    expect(BUNDLES).toHaveLength(2);
-  });
-
-  it("all bundle IDs are unique", () => {
-    const ids = allBundles.map((b) => b.id);
-    expect(new Set(ids).size).toBe(ids.length);
-  });
-
-  it("default bundle ID resolves to a bundle", () => {
-    expect(findBundle(DEFAULT_BUNDLE_ID)).toBeDefined();
-  });
-
-  it("starts fresh installs on the Moonstone light bundle", () => {
+  it("compiles in only Moonstone and Gallery, Moonstone first and the default", () => {
+    expect(BUNDLE_IDS).toEqual(["moonstone", "gallery"]);
+    expect(BUNDLES.map((bundle) => bundle.id)).toEqual(["moonstone", "gallery"]);
     expect(DEFAULT_BUNDLE_ID).toBe("moonstone");
-    expect(BUNDLES[0].id).toBe("moonstone");
     expect(findBundle(DEFAULT_BUNDLE_ID)?.shell).toBe("light");
   });
 
-  it("shows only the latest two themes in the default appearance surface", () => {
-    expect(DEFAULT_VISIBLE_THEME_BUNDLE_IDS).toEqual(["moonstone", "gallery"]);
-    expect(DEFAULT_VISIBLE_BUNDLES.map((bundle) => bundle.id)).toEqual([
-      "moonstone",
-      "gallery",
-    ]);
-    expect(MARKETPLACE_ELIGIBLE_THEME_BUNDLE_IDS).toContain("tokyo-night");
-    expect(MARKETPLACE_ELIGIBLE_THEME_BUNDLE_IDS).toContain("high-contrast");
-    expect(MARKETPLACE_THEME_BUNDLES.map((bundle) => bundle.id)).not.toContain("moonstone");
-    expect(MARKETPLACE_THEME_BUNDLES.map((bundle) => bundle.id)).not.toContain("gallery");
-    expect(isDefaultVisibleThemeBundleId("moonstone")).toBe(true);
-    expect(isDefaultVisibleThemeBundleId("tokyo-night")).toBe(false);
-    expect(isMarketplaceEligibleThemeBundleId("tokyo-night")).toBe(true);
-    expect(isMarketplaceEligibleThemeBundleId("moonstone")).toBe(false);
-    expect(isMarketplaceEligibleThemeBundleId("missing-theme")).toBe(false);
-  });
-
-  it("keeps a legacy marketplace-candidate theme visible when selected", () => {
-    expect(visibleBundlesFor(["forest"]).map((bundle) => bundle.id)).toEqual([
-      "moonstone",
-      "gallery",
-      "forest",
-    ]);
-  });
-
-  it("keeps marketplace manifests in sync with lazy-loaded bundle metadata", async () => {
-    for (const id of MARKETPLACE_ELIGIBLE_THEME_BUNDLE_IDS) {
-      const manifest = MARKETPLACE_THEME_BUNDLE_MANIFESTS[id];
-      const bundle = await loadThemeBundle(id);
-      expect(bundle).toMatchObject({
-        id: manifest.id,
-        name: manifest.name,
-        description: manifest.description,
-        shell: manifest.shell,
-        highContrast: manifest.highContrast,
-      });
-    }
-  });
-
-  it("findBundle returns undefined for unknown id", () => {
+  it("finds an installed theme package by name, and nothing for an id no one provides", () => {
+    expect(findBundle("nord")).toBeUndefined();
+    setInstalledThemeBundles([nord]);
+    expect(findBundle("nord")).toBe(nord);
     expect(findBundle("does-not-exist")).toBeUndefined();
   });
 
-  it("exactly one high-contrast bundle is flagged", () => {
-    const hc = allBundles.filter((b) => b.highContrast);
-    expect(hc).toHaveLength(1);
-    expect(hc[0].id).toBe("high-contrast");
+  it("lists the compiled bundles, then the installed themes", () => {
+    expect(visibleBundles().map((bundle) => bundle.id)).toEqual(["moonstone", "gallery"]);
+    setInstalledThemeBundles([nord]);
+    expect(visibleBundles().map((bundle) => bundle.id)).toEqual(["moonstone", "gallery", "nord"]);
+  });
+
+  it("keeps a compiled bundle when an installed theme claims its id", () => {
+    // The installer refuses the compiled ids; the registry does not let one through either.
+    setInstalledThemeBundles([{ ...nord, id: "moonstone" }]);
+    expect(findBundle("moonstone")).toBe(moonstoneBundle);
   });
 });
 
@@ -155,59 +103,3 @@ describe.each(BUNDLE_IDS.map((id) => [id] as [string]))(
     });
   },
 );
-
-describe("violet pair consistency", () => {
-  it("violet-light and violet-dark share the same primary accent", () => {
-    const light = findBundle("violet-light")!;
-    const dark = findBundle("violet-dark")!;
-    expect(light.tokens.primary).toBe(dark.tokens.primary);
-    expect(light.tokens["message-user-bg"]).toBe(dark.tokens["message-user-bg"]);
-    expect(light.tokens.destructive).toBe(dark.tokens.destructive);
-  });
-
-  it("violet-light is shell=light, violet-dark is shell=dark", () => {
-    expect(findBundle("violet-light")!.shell).toBe("light");
-    expect(findBundle("violet-dark")!.shell).toBe("dark");
-  });
-});
-
-describe("high-contrast bundle invariants", () => {
-  it("background is pure black", () => {
-    const hc = findBundle("high-contrast")!;
-    expect(hc.tokens.background).toBe("0 0% 0%");
-  });
-
-  it("primary is yellow (WCAG AA+)", () => {
-    const hc = findBundle("high-contrast")!;
-    expect(hc.tokens.primary).toBe("60 100% 50%");
-  });
-
-  it("border is pure white", () => {
-    const hc = findBundle("high-contrast")!;
-    expect(hc.tokens.border).toBe("0 0% 100%");
-  });
-});
-
-describe("midnight bundle invariants", () => {
-  it("primary is magenta hsl(290 80% 60%)", () => {
-    const m = findBundle("midnight")!;
-    expect(m.tokens.primary).toBe("290 80% 60%");
-  });
-});
-
-describe("forest bundle invariants", () => {
-  it("primary is teal hsl(170 70% 45%)", () => {
-    const f = findBundle("forest")!;
-    expect(f.tokens.primary).toBe("170 70% 45%");
-  });
-});
-
-describe("executive graphite bundle invariants", () => {
-  it("uses restrained graphite surfaces with a teal work accent", () => {
-    const g = findBundle("executive-graphite")!;
-    expect(g.shell).toBe("dark");
-    expect(g.tokens.background).toBe("24 8% 8%");
-    expect(g.tokens.primary).toBe("174 65% 45%");
-    expect(g.tokens["action-branch"]).toBe("38 86% 62%");
-  });
-});

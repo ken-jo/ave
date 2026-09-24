@@ -198,11 +198,10 @@ describe("createContentActivation", () => {
     await settingsService.patch({ marketplace: { installedProviderIds: ["azure-foundry"] } });
     await expect(activation.activate({ kind: "provider", vendor: { providerId: "azure-foundry" } }, entry("provider", "azure-foundry"), null, false)).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
 
-    // A theme package named after a compiled bundle the legacy install turned on.
+    // A legacy theme id names no compiled bundle any more: the package of that name takes it.
     const nord = { kind: "theme", name: "Nord", description: "Arctic.", shell: "dark", highContrast: false, tokens: {}, surfaces: {} } as unknown as ParsedContent;
-    await activation.activate(nord, entry("theme", "nord"), null, false);
     await settingsService.patch({ marketplace: { installedThemeBundleIds: ["nord"] } });
-    await expect(activation.activate(nord, entry("theme", "nord"), null, false)).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
+    await expect(activation.activate(nord, entry("theme", "nord"), null, false)).resolves.toBeUndefined();
   });
 
   it("reads the legacy activations for the first-boot migration, and drops only the theme ids and locales it was given", async () => {
@@ -235,10 +234,6 @@ describe("createContentActivation", () => {
     await settingsService.installMarketplaceProviderPreset(preset);
     await activation.activate({ kind: "provider", preset: { ...preset, label: "Harbor LLM 2" } }, entry("provider", "harbor-llm"), null, true);
     expect(settingsService.get("marketplace").installedProviderPresets.map((item) => item.label)).toEqual([preset.label]);
-
-    const nord = { kind: "theme", name: "Nord", description: "Arctic.", shell: "dark", highContrast: false, tokens: {}, surfaces: {} } as unknown as ParsedContent;
-    await settingsService.patch({ marketplace: { installedThemeBundleIds: ["nord"] } });
-    await expect(activation.activate(nord, entry("theme", "nord"), null, true)).resolves.toBeUndefined();
 
     // Nothing held: adopting activates as a normal install does.
     await activation.activate({ kind: "messaging-connection", connection }, entry("messaging-connection", "harbor-chat"), null, true);

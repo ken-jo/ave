@@ -5,10 +5,9 @@ import {
   BUNDLES,
   DEFAULT_BUNDLE_ID,
   findBundle,
-  loadThemeBundle,
 } from "./bundles/index.js";
 import { isThemeId } from "../../../shared/theme-bundles.js";
-import { ensureInstalledContent } from "../installed-content.js";
+import { ensureInstalledContent, useInstalledContent } from "../installed-content.js";
 import type { ThemeBundle } from "./bundles/index.js";
 import { applyBundleToDocument, resolveSystemPair } from "./resolve-theme.js";
 import { bundleToPluginTokens } from "./plugin-token-map.js";
@@ -188,7 +187,7 @@ export function ThemeProvider({
     // An installed theme is known only once the installed content has loaded;
     // resolve after it so a selected installed theme is not replaced by the default.
     void ensureInstalledContent(api)
-      .then(() => loadThemeBundle(effectiveBundleId))
+      .then(() => findBundle(effectiveBundleId))
       .then((bundle) => {
         if (cancelled) return;
         if (!bundle) {
@@ -208,6 +207,24 @@ export function ThemeProvider({
       cancelled = true;
     };
   }, [api, effectiveBundleId, resolveBundle]);
+
+  // A theme installed after this window started — the first-boot migration
+  // adopting the selected theme's package (design §16.3) — was replaced by the
+  // default above; once it arrives, the persisted selection applies again.
+  const installedThemes = useInstalledContent().themes;
+  useEffect(() => {
+    if (!api || installedThemes.length === 0) return;
+    let cancelled = false;
+    void api.getSettings().then(
+      (settings) => {
+        if (!cancelled && mountedRef.current) applySettingsAppearance(settings, { skipIfUserTouched: true });
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [api, installedThemes, applySettingsAppearance]);
 
   // Apply bundle to DOM on every active bundle change.
   useEffect(() => {

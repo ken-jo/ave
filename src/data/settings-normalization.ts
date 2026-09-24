@@ -26,7 +26,7 @@ import {
 } from "../shared/llm-vendor-defaults.js";
 import {
   DEFAULT_BUNDLE_ID,
-  isMarketplaceEligibleThemeBundleId,
+  isBundleId,
   isThemeId,
 } from "../shared/theme-bundles.js";
 import {
@@ -920,9 +920,11 @@ export function normalizeMarketplace(input: unknown): MarketplaceSettings {
   merged.installedProviderPresets = uniqueValidProviderPresets(
     raw.installedProviderPresets,
   );
+  // Legacy: read only by the first-boot migration (design §16.3), whose theme
+  // packages carry these ids; a compiled id never needed one.
   merged.installedThemeBundleIds = uniqueValidList(
     raw.installedThemeBundleIds,
-    isMarketplaceEligibleThemeBundleId,
+    (id: unknown): id is string => isThemeId(id) && !isBundleId(id),
   );
   merged.installedMessagingConnections = uniqueValidMessagingConnections(
     raw.installedMessagingConnections,

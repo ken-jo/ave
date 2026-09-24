@@ -21,11 +21,26 @@ import { bundleToPluginTokens } from "../theme/plugin-token-map.js";
 import {
   findBundle,
   DEFAULT_BUNDLE_ID,
-  loadAllThemeBundles,
-  resetLoadedThemeBundleCacheForTests,
-  setThemeBundleLoaderOverrideForTests,
+  setInstalledThemeBundles,
+  type ThemeBundle,
 } from "../theme/bundles/index.js";
+import { moonstoneBundle } from "../theme/bundles/moonstone.js";
+import { applyInstalledContent, resetInstalledContentForTests } from "../installed-content.js";
+import type { InstalledContentView } from "../../../shared/installed-content.js";
 import { makeMockAveApi, MOCK_DEFAULT_SETTINGS } from "../../../../test/renderer/mock-ave-api.js";
+
+/** Every theme but Moonstone and Gallery is an installed package; these stand in for the ones used below. */
+function installed(id: string, shell: "light" | "dark", tokens: Partial<ThemeBundle["tokens"]> = {}, highContrast = false): ThemeBundle {
+  return { ...moonstoneBundle, id, name: id, shell, highContrast, tokens: { ...moonstoneBundle.tokens, ...tokens } };
+}
+const INSTALLED_THEMES: ThemeBundle[] = [
+  installed("tokyo-night", "dark"),
+  installed("midnight", "dark"),
+  installed("forest", "light", { background: "0 0% 100%" }),
+  installed("violet-light", "light"),
+  installed("violet-dark", "dark", { primary: "253 100% 65%" }),
+  installed("high-contrast", "dark", { primary: "60 100% 50%" }, true),
+];
 
 afterEach(() => {
   document.documentElement.removeAttribute("data-theme-bundle");
@@ -35,11 +50,11 @@ afterEach(() => {
     .filter((c) => c.startsWith("ave-bundle-"))
     .forEach((c) => document.documentElement.classList.remove(c));
   vi.unstubAllGlobals();
+  resetInstalledContentForTests();
 });
 
-beforeEach(async () => {
-  resetLoadedThemeBundleCacheForTests();
-  await loadAllThemeBundles();
+beforeEach(() => {
+  setInstalledThemeBundles(INSTALLED_THEMES);
 });
 
 describe("applyBundleToDocument", () => {
@@ -264,28 +279,8 @@ describe("<ThemeProvider>", () => {
     expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("high-contrast");
   });
 
-  it("lazy-loads a marketplace initialBundleId from a cold bundle cache", async () => {
-    resetLoadedThemeBundleCacheForTests();
-    expect(findBundle("tokyo-night")).toBeUndefined();
-
-    let observed: string | null = null;
-    render(
-      <ThemeProvider initialBundleId="tokyo-night">
-        <Probe onValue={(v) => { observed = v.bundleId; }} />
-      </ThemeProvider>,
-    );
-
-    await waitFor(() => {
-      expect(observed).toBe("tokyo-night");
-      expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("tokyo-night");
-    });
-  });
-
-  it("falls back to the default bundle when a marketplace theme chunk fails", async () => {
-    resetLoadedThemeBundleCacheForTests();
-    setThemeBundleLoaderOverrideForTests("tokyo-night", async () => {
-      throw new Error("chunk unavailable");
-    });
+  it("falls back to the default bundle when the selected theme is not installed", async () => {
+    setInstalledThemeBundles([]);
 
     let observed: string | null = null;
     render(
@@ -297,6 +292,31 @@ describe("<ThemeProvider>", () => {
     await waitFor(() => {
       expect(observed).toBe(DEFAULT_BUNDLE_ID);
       expect(document.documentElement.getAttribute("data-theme-bundle")).toBe(DEFAULT_BUNDLE_ID);
+    });
+  });
+
+  it("applies the saved theme once its package is installed after the window started", async () => {
+    // The first boot after the upgrade: `nord` is selected, and its package arrives with the migration.
+    setInstalledThemeBundles([]);
+    const { api } = makeMockAveApi({ settings: { ...MOCK_DEFAULT_SETTINGS, appearance: { schemaVersion: 2, bundleId: "nord" } } });
+
+    let observed: string | null = null;
+    render(
+      <ThemeProvider api={api as never}>
+        <Probe onValue={(v) => { observed = v.bundleId; }} />
+      </ThemeProvider>,
+    );
+    await waitFor(() => expect(document.documentElement.getAttribute("data-theme-bundle")).toBe(DEFAULT_BUNDLE_ID));
+
+    const nord = installed("nord", "dark");
+    const view = { themes: [{ ...nord, preview: null }], languages: [], fonts: [], broken: [] } as unknown as InstalledContentView;
+    act(() => {
+      applyInstalledContent(view, { installed: vi.fn(), languageMessages: vi.fn() } as never);
+    });
+
+    await waitFor(() => {
+      expect(observed).toBe("nord");
+      expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("nord");
     });
   });
 

@@ -73,6 +73,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "a2a-remote-operation-rejected": "formatIpcError.remoteA2aOperationRejected",
   "a2a-remote-settings-main-owned": "formatIpcError.managed",
   "applied-migrations-main-owned": "formatIpcError.managed",
+  "legacy-marketplace-lists-main-owned": "formatIpcError.managed",
   "missing-durable-confirm": "formatIpcError.missingDurableConfirm",
   // Windows-only IPC (sandboxWindowsInstall) refused on a non-win32 platform.
   "not-applicable": "formatIpcError.notApplicable",
@@ -304,8 +305,6 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "reviewer-rewire-failed": "formatIpcError.reviewerRewireFailed",
   // The preset change is saved; the provider refresh that applies it failed.
   "provider-preset-refresh-failed": "formatIpcError.providerPresetRefreshFailed",
-  // A legacy theme install of an id an installed theme package holds (design §5.5).
-  "theme-id-held-by-package": "formatIpcError.themeIdHeldByPackage",
   // ── Tutorial-C — tour:{start,mark-complete,dismiss} validation ──
   "invalid-scenario-id": "formatIpcError.invalidScenarioId",
   "write-failed": "formatIpcError.writeFailed",

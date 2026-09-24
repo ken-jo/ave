@@ -1,7 +1,8 @@
 /**
  * AppearanceTab v2 — bundle picker tests.
  *
- * The tab shows one bundle card per ThemeBundle in a single grid.
+ * The tab shows one card per compiled bundle and per installed theme package
+ * in a single grid.
  * Clicking a card sets the active bundle and writes data-theme-bundle to <html>.
  *
  * followSystem toggle is shown only when the violet pair (violet-light / violet-dark)
@@ -10,26 +11,46 @@
  * The external URL (webView) section is unchanged from v1.
  */
 import "../../../../test/renderer/setup.js";
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { act, configure, fireEvent, render, waitFor } from "@testing-library/react";
 import { ThemeProvider } from "../theme/ThemeProvider.js";
 import { AppearanceTab } from "../tabs/AppearanceTab.js";
-import {
-  DEFAULT_BUNDLE_ID,
-  DEFAULT_VISIBLE_BUNDLES,
-} from "../theme/index.js";
+import { BUNDLES, DEFAULT_BUNDLE_ID } from "../theme/index.js";
+import { moonstoneBundle } from "../theme/bundles/moonstone.js";
+import { applyInstalledContent, resetInstalledContentForTests } from "../installed-content.js";
+import type { InstalledContentView, InstalledThemeView } from "../../../shared/installed-content.js";
 import { makeMockAveApi } from "../../../../test/renderer/mock-ave-api.js";
 import { getLocale, setLocale } from "../../../i18n/runtime.js";
 
-// Marketplace/legacy theme bundles (theme/bundles/index.ts) resolve via async
-// dynamic import. In isolation these tests pass well under the 1000ms default,
-// but a saturated full-suite run can starve the worker long enough to exceed it,
-// flaking the bundle-render `waitFor` checks (only under load — see the repo's
-// pre-push flaky-appearance-tab note). Give async assertions headroom so timing,
-// not correctness, stops deciding the result.
+// ThemeProvider resolves the selected theme after the installed content loads.
+// In isolation these tests pass well under the 1000ms default, but a saturated
+// full-suite run can starve the worker long enough to exceed it. Give async
+// assertions headroom so timing, not correctness, stops deciding the result.
 configure({ asyncUtilTimeout: 5000 });
 
+const FROM = { sourceId: "ave", version: "1.0.0" };
+
+function theme(id: string, name: string, shell: "light" | "dark", highContrast = false): InstalledThemeView {
+  return { ...FROM, id, name, description: `${name} theme.`, shell, highContrast, tokens: moonstoneBundle.tokens, surfaces: {} } as unknown as InstalledThemeView;
+}
+
+/** Every theme but Moonstone and Gallery is an installed package; these stand in for the ones used below. */
+const THEMES = [
+  theme("tokyo-night", "Tokyo Night", "dark"),
+  theme("violet-light", "Violet Light", "light"),
+  theme("violet-dark", "Violet Dark", "dark"),
+  theme("high-contrast", "High Contrast", "dark", true),
+];
+// Not Korean: an installed `ko` package would replace the compiled catalog this suite renders in.
+const FRENCH = { ...FROM, name: "french", locale: "fr", nativeName: "Français", englishName: "French", missingKeys: [] };
+
+function install(content: Partial<InstalledContentView>) {
+  const view = { themes: [], languages: [], fonts: [], broken: [], ...content } as InstalledContentView;
+  applyInstalledContent(view, { installed: vi.fn(), languageMessages: vi.fn() } as never);
+}
+
 afterEach(() => {
+  resetInstalledContentForTests();
   document.documentElement.removeAttribute("data-theme-bundle");
   document.documentElement.removeAttribute("data-shell");
   Array.from(document.documentElement.classList)
@@ -39,7 +60,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function renderWithBundle(initialBundleId = DEFAULT_BUNDLE_ID, onOpenMarketplace?: (filter: "theme" | "language") => void) {
+function renderWithBundle(initialBundleId: string = DEFAULT_BUNDLE_ID, onOpenMarketplace?: (filter: "theme" | "language") => void) {
   return render(
     <ThemeProvider initialBundleId={initialBundleId}>
       <AppearanceTab onOpenMarketplace={onOpenMarketplace} />
@@ -48,18 +69,18 @@ function renderWithBundle(initialBundleId = DEFAULT_BUNDLE_ID, onOpenMarketplace
 }
 
 describe("AppearanceTab — bundle card grid", () => {
-  it("renders exactly one card per default visible ThemeBundle", () => {
+  it("renders exactly one card per compiled bundle when no theme is installed", () => {
     const { getAllByRole } = renderWithBundle();
     // All cards have role="radio" with aria-label "테마: <name>"
     const cards = getAllByRole("radio").filter((el) =>
       el.getAttribute("aria-label")?.startsWith("테마:"),
     );
-    expect(cards).toHaveLength(DEFAULT_VISIBLE_BUNDLES.length);
+    expect(cards).toHaveLength(BUNDLES.length);
   });
 
-  it("renders a card for each default visible bundle", () => {
+  it("renders a card for each compiled bundle", () => {
     const { getByRole, queryByRole } = renderWithBundle();
-    for (const bundle of DEFAULT_VISIBLE_BUNDLES) {
+    for (const bundle of BUNDLES) {
       expect(getByRole("radio", { name: `테마: ${bundle.name}` })).toBeTruthy();
     }
     expect(queryByRole("radio", { name: /테마: Forest/ })).toBeNull();
@@ -85,68 +106,37 @@ describe("AppearanceTab — bundle card grid", () => {
     });
   });
 
-  it("keeps a selected marketplace-candidate theme in the picker", async () => {
-    const { getByRole, queryByRole } = renderWithBundle("violet-dark");
+  it("lists installed theme packages with their marketplace badge, and the selected one checked", async () => {
+    install({ themes: THEMES });
+    const { getByRole, getByTestId } = renderWithBundle("violet-dark");
     await waitFor(() => {
-      const selected = getByRole("radio", { name: /테마: Violet Dark/ });
-      expect(selected.getAttribute("aria-checked")).toBe("true");
+      expect(getByRole("radio", { name: /테마: Violet Dark/ }).getAttribute("aria-checked")).toBe("true");
     });
-    expect(queryByRole("radio", { name: /테마: Forest/ })).toBeNull();
+    expect(getByRole("radio", { name: /테마: Tokyo Night/ }).getAttribute("aria-checked")).toBe("false");
+    expect(getByTestId("appearance-tab:theme-marketplace-badge:tokyo-night")).toHaveTextContent("마켓플레이스");
   });
 
-  it("shows marketplace-installed themes and language packs", async () => {
-    const { api } = makeMockAveApi({
-      settings: {
-        marketplace: {
-          installedThemeBundleIds: ["tokyo-night"],
-          installedLanguagePacks: ["ko"],
-        },
-      },
-    });
-    (window as unknown as { aveApi: unknown }).aveApi = api;
-
-    const { getByRole, getByTestId } = renderWithBundle();
-    await waitFor(() => expect(api.getSettings).toHaveBeenCalled());
-
-    await waitFor(() => {
-      expect(getByRole("radio", { name: /테마: Tokyo Night/ })).toBeTruthy();
-    });
-    expect(getByTestId("language-option-ko")).toBeTruthy();
-    expect(getByTestId("appearance-tab:theme-marketplace-badge:tokyo-night"))
-      .toHaveTextContent("마켓플레이스");
-    expect(getByTestId("language-option-ko"))
-      .toHaveAttribute("data-marketplace-installed", "true");
-    expect(getByTestId("appearance-tab:language-marketplace-badge:ko"))
-      .toHaveTextContent("마켓플레이스");
+  it("lists an installed language package with its marketplace badge", () => {
+    install({ languages: [FRENCH] });
+    const { getByTestId } = renderWithBundle();
+    expect(getByTestId("language-option-fr")).toHaveAttribute("data-marketplace-installed", "true");
+    expect(getByTestId("appearance-tab:language-marketplace-badge:fr")).toHaveTextContent("마켓플레이스");
   });
 
-  it("reflects theme and language packages installed after a Marketplace settings broadcast", async () => {
-    const { api } = makeMockAveApi();
-    (window as unknown as { aveApi: unknown }).aveApi = api;
-
-    const { getByRole, getByTestId, queryByRole } = renderWithBundle();
-    await waitFor(() => expect(api.getSettings).toHaveBeenCalled());
+  it("reflects theme and language packages installed while the tab is open", async () => {
+    const { getByRole, getByTestId, queryByRole, queryByTestId } = renderWithBundle();
     expect(queryByRole("radio", { name: /테마: Tokyo Night/ })).toBeNull();
+    expect(queryByTestId("language-option-fr")).toBeNull();
 
-    await act(async () => {
-      await api.updateSettings({
-        marketplace: {
-          installedThemeBundleIds: ["tokyo-night"],
-          installedLanguagePacks: ["ko"],
-        },
-      });
+    act(() => {
+      install({ themes: THEMES, languages: [FRENCH] });
     });
 
     await waitFor(() => {
       expect(getByRole("radio", { name: /테마: Tokyo Night/ })).toBeTruthy();
-      expect(getByTestId("language-option-ko")).toBeTruthy();
+      expect(getByTestId("language-option-fr")).toBeTruthy();
     });
-    expect(getByTestId("appearance-tab:theme-marketplace-badge:tokyo-night"))
-      .toHaveTextContent("마켓플레이스");
-    expect(getByTestId("appearance-tab:language-marketplace-badge:ko"))
-      .toHaveTextContent("마켓플레이스");
   });
-
 
   it("opens Marketplace filters from theme and language CTAs", () => {
     const onOpenMarketplace = vi.fn();
@@ -191,7 +181,8 @@ describe("AppearanceTab — bundle card grid", () => {
     }
   });
 
-  it("clicking back to a default theme writes data-theme-bundle=gallery", async () => {
+  it("clicking back to a compiled theme writes data-theme-bundle=gallery", async () => {
+    install({ themes: THEMES });
     const { getByRole } = renderWithBundle("violet-dark");
     fireEvent.click(getByRole("radio", { name: /테마: Gallery/ }));
     await waitFor(() => {
@@ -199,7 +190,8 @@ describe("AppearanceTab — bundle card grid", () => {
     });
   });
 
-  it("keeps high-contrast visible only when it is the selected legacy theme", async () => {
+  it("checks an installed high-contrast theme when it is selected", async () => {
+    install({ themes: THEMES });
     const { getByRole } = renderWithBundle("high-contrast");
     await waitFor(() => {
       expect(getByRole("radio", { name: /테마: High Contrast/ }).getAttribute("aria-checked")).toBe("true");
@@ -207,17 +199,22 @@ describe("AppearanceTab — bundle card grid", () => {
   });
 
   it("selected card updates aria-checked after click", async () => {
-    const { getByRole, queryByRole } = renderWithBundle("tokyo-night");
+    install({ themes: THEMES });
+    const { getByRole } = renderWithBundle("tokyo-night");
     const gallery = getByRole("radio", { name: /테마: Gallery/ });
     fireEvent.click(gallery);
     await waitFor(() => {
       expect(gallery.getAttribute("aria-checked")).toBe("true");
     });
-    expect(queryByRole("radio", { name: /테마: Tokyo Night/ })).toBeNull();
+    expect(getByRole("radio", { name: /테마: Tokyo Night/ }).getAttribute("aria-checked")).toBe("false");
   });
 });
 
 describe("AppearanceTab — followSystem toggle (violet pair only)", () => {
+  beforeEach(() => {
+    install({ themes: THEMES });
+  });
+
   it("followSystem toggle is hidden when a non-violet bundle is active", () => {
     const { queryByTestId } = renderWithBundle("tokyo-night");
     expect(queryByTestId("follow-system-toggle")).toBeNull();

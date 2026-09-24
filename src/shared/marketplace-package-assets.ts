@@ -12,10 +12,7 @@ import {
   isMarketplaceEligibleLLMVendor,
   isLLMVendor,
 } from "./llm-vendor-defaults.js";
-import {
-  isMarketplaceEligibleThemeBundleId,
-  type MarketplaceEligibleThemeBundleId,
-} from "./theme-bundles.js";
+import { isBundleId, isThemeId } from "./theme-bundles.js";
 import { isLoopbackHttpUrl } from "./loopback-url.js";
 import { normalizeAllowedHosts } from "../main/host-allow-list.js";
 
@@ -141,7 +138,8 @@ export type MarketplaceThemeShellMode = "light" | "dark" | "system";
 
 export interface MarketplaceThemePackageAsset {
   type: "theme";
-  bundleId: MarketplaceEligibleThemeBundleId;
+  /** A theme package name; the compiled bundles are never delivered. */
+  bundleId: string;
   displayName?: string;
   description?: string;
   shellMode?: MarketplaceThemeShellMode;
@@ -670,7 +668,7 @@ function themeAsset(
   bundleId: unknown,
   metadata?: Record<string, unknown>,
 ): MarketplaceThemePackageAsset | undefined {
-  if (!isMarketplaceEligibleThemeBundleId(bundleId)) return undefined;
+  if (!isThemeId(bundleId) || isBundleId(bundleId)) return undefined;
   if (!metadata) return { type: "theme", bundleId };
   const displayName = cleanString(
     metadata.displayName ?? metadata.display_name ?? metadata.name,

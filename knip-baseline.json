@@ -53,11 +53,6 @@
       "name": "MAX_AGENT_SPAWNS_PER_ROUND,MAX_TOOL_CALLS_PER_ROUND"
     },
     {
-      "type": "duplicates",
-      "file": "src/ui/renderer/theme/bundles/index.ts",
-      "name": "BUNDLES,DEFAULT_VISIBLE_BUNDLES"
-    },
-    {
       "type": "exports",
       "file": "scripts/a2a-p4-5-live/evidence-lib.mjs",
       "name": "HEAD_SHA_RE"
@@ -889,43 +884,13 @@
     },
     {
       "type": "exports",
-      "file": "src/ui/renderer/theme/bundles/index.ts",
-      "name": "DEFAULT_VISIBLE_THEME_BUNDLE_IDS"
-    },
-    {
-      "type": "exports",
-      "file": "src/ui/renderer/theme/bundles/index.ts",
-      "name": "MARKETPLACE_ELIGIBLE_THEME_BUNDLE_IDS"
-    },
-    {
-      "type": "exports",
       "file": "src/ui/renderer/theme/index.ts",
       "name": "applyBundleToDocument"
     },
     {
       "type": "exports",
       "file": "src/ui/renderer/theme/index.ts",
-      "name": "BUNDLES"
-    },
-    {
-      "type": "exports",
-      "file": "src/ui/renderer/theme/index.ts",
       "name": "bundleShell"
-    },
-    {
-      "type": "exports",
-      "file": "src/ui/renderer/theme/index.ts",
-      "name": "loadAllThemeBundles"
-    },
-    {
-      "type": "exports",
-      "file": "src/ui/renderer/theme/index.ts",
-      "name": "loadThemeBundle"
-    },
-    {
-      "type": "exports",
-      "file": "src/ui/renderer/theme/index.ts",
-      "name": "MARKETPLACE_THEME_BUNDLES"
     },
     {
       "type": "exports",
@@ -2641,11 +2606,6 @@
       "type": "types",
       "file": "src/ui/renderer/preview/workspace-tabs.ts",
       "name": "WorkspaceTabMode"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/theme/index.ts",
-      "name": "ThemeBundleManifest"
     },
     {
       "type": "types",

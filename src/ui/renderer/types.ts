@@ -50,9 +50,7 @@ import type { ToolCategory, ToolSource, RiskLevel, DeferredApprovalSource, Defer
 import type {
   AssistantAgentSummary,
   AssistantSkillSummary,
-  MarketplacePackageType,
 } from "../../shared/assistant-context.js";
-import type { MarketplacePackageAsset } from "../../shared/marketplace-package-assets.js";
 import type {
   NativeContextMenuAction,
   NativeContextMenuPayload,
@@ -121,46 +119,6 @@ import type { PermissionRule } from "../../permissions/permission-manager.js";
 import type { ParentAdjudicationBackgroundEscalation, ParentAdjudicationMaxVerdict, ParentAdjudicationModelSource } from "../../permissions/permission-settings-store.js";
 export type { ApprovalChoice, ApprovalDecision, ApprovalRequest, PermissionRule, ParentAdjudicationBackgroundEscalation, ParentAdjudicationMaxVerdict, ParentAdjudicationModelSource };
 
-
-export type MarketplaceItem = {
-  id: string;
-  name: string;
-  description: string;
-  packageSpec: string;
-  installed: boolean;
-  enabled: boolean;
-  isManaged?: boolean;
-  /**
-   * Install policy from the catalog manifest. "admin" plugins gain system-wide
-   * administrator privileges on install, so the marketplace UI gates them
-   * behind an explicit consent step (#1098). Delivered by the backend via
-   * `MarketplaceListItem extends PluginMarketplaceItem`.
-   */
-  installPolicy?: "admin" | "user";
-  pluginType?: MarketplacePackageType;
-  /**
-   * The kind the catalog declared when this build does not recognise it. Read
-   * the pair with `pluginType` through `marketplacePackageTypeOf`.
-   */
-  unsupportedPackageKind?: string;
-  packageAsset?: MarketplacePackageAsset;
-  /** Display-only compatibility result: update Ave before installing. */
-  upgradeRequired?: {
-    code: "upgrade_required";
-    /** Omitted only when Marketplace cannot provide a trusted exact minimum. */
-    minAppVersion?: string;
-    message: string;
-  };
-  mcpAuth?: {
-    mode: "none" | "api-key" | "sso" | "oauth";
-    transport?: "stdio" | "http";
-  };
-  networkAccess?: {
-    allowedDomains: string[];
-    reasoning?: string;
-    allowPrivateNetworks?: boolean;
-  };
-};
 
 export type PluginUiExtension = PluginUiExtensionView;
 export type PluginManifestUiExtensionSummary = PluginUiExtensionView["extension"];

@@ -1,10 +1,9 @@
 /**
  * AppearanceTab — theme bundle picker (v2 single-bundle redesign).
  *
- * Single section: a card grid where each card represents a ThemeBundle
- * (Tokyo Night / Midnight / Forest / Violet Light / Violet Dark / High Contrast
- * plus the community bundles — Catppuccin Mocha/Latte, Nord, Gruvbox Dark
- * Hard, Solarized Light, Rosé Pine, Cherry Blossom).
+ * Single section: a card grid with the compiled bundles (Moonstone, Gallery)
+ * and every installed theme package; the marketplace button opens the theme
+ * packages. The language picker lists the built-in and installed languages.
  *
  * Clicking a card calls `setBundle(bundle.id)` and applies the bundle to
  * `<html data-theme-bundle>` immediately via ThemeProvider.
@@ -12,15 +11,13 @@
  * When the selected bundle is part of the violet pair (violet-light / violet-dark),
  * a `followSystem` toggle is shown. For all other bundles it is hidden.
  *
- * High-contrast is always shown (never auto-suggested).
- *
  * The external URL section (§B1 webView policy) is preserved verbatim.
  */
 import { useEffect, useRef, useState } from "react";
 import { Store } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { useTheme } from "../theme/index.js";
-import { VIOLET_PAIR_IDS, loadThemeBundles, visibleBundlesFor } from "../theme/index.js";
+import { VIOLET_PAIR_IDS, visibleBundles as listVisibleBundles } from "../theme/index.js";
 import type { ThemeBundle } from "../theme/index.js";
 import type { CSSProperties } from "react";
 import { getApi } from "../api-client.js";
@@ -272,53 +269,6 @@ function useFontPreferences() {
 }
 
 
-function useMarketplaceAppearanceAssets(): {
-  themeBundleIds: readonly string[];
-  languagePacks: readonly string[];
-} {
-  const [themeBundleIds, setThemeBundleIds] = useState<readonly string[]>([]);
-  const [languagePacks, setLanguagePacks] = useState<readonly string[]>([]);
-
-  useEffect(() => {
-    let cancelled = false;
-    let unsubscribe: (() => void) | undefined;
-    const applyMarketplaceAssets = (settings: {
-      marketplace?: {
-        installedThemeBundleIds?: readonly string[];
-        installedLanguagePacks?: readonly string[];
-      };
-    }) => {
-      const marketplace = settings.marketplace;
-      setThemeBundleIds(Array.isArray(marketplace?.installedThemeBundleIds)
-        ? marketplace.installedThemeBundleIds
-        : []);
-      setLanguagePacks(Array.isArray(marketplace?.installedLanguagePacks)
-        ? marketplace.installedLanguagePacks
-        : []);
-    };
-
-    void (async () => {
-      try {
-        const api = getApi();
-        const settings = await api.getSettings();
-        if (cancelled) return;
-        applyMarketplaceAssets(settings);
-        unsubscribe = api.onSettingsUpdated((nextSettings) => {
-          if (cancelled) return;
-          applyMarketplaceAssets(nextSettings);
-        });
-      } catch {
-        /* defaults remain */
-      }
-    })();
-    return () => {
-      cancelled = true;
-      unsubscribe?.();
-    };
-  }, []);
-
-  return { themeBundleIds, languagePacks };
-}
 
 /**
  * Free-form CSS font-family input with commit-on-blur semantics.
@@ -410,23 +360,18 @@ function FontFamilyCustomInput({
  * are recognizable regardless of the current language.
  */
 function LanguageSection({
-  installedLocaleIds,
   onOpenMarketplace,
 }: {
-  installedLocaleIds: readonly string[];
   onOpenMarketplace?: (filter: AppearanceMarketplaceFilter) => void;
 }) {
   const { locale, setLocale, t } = useTranslation();
   const notifySaved = useNotifySaved();
   // Re-render when installed languages load; the registry itself is module state.
   useInstalledContent();
-  const visibleLocales = visibleLocalesFor([locale, ...installedLocaleIds]);
-  const installedLocaleIdSet = new Set([...installedLocaleIds, ...visibleLocales.filter(isInstalledLocale)]);
+  const visibleLocales = visibleLocalesFor([locale]);
+  const installedLocaleIdSet = new Set(visibleLocales.filter(isInstalledLocale));
   const systemLocale = typeof navigator === "undefined" ? undefined : navigator.language;
-  const recommendedLocale = recommendedMarketplaceLocaleForSystem(systemLocale, [
-    locale,
-    ...installedLocaleIds,
-  ]);
+  const recommendedLocale = recommendedMarketplaceLocaleForSystem(systemLocale, [locale]);
   return (
     <SettingsSection
       data-settings-section="appearance-language"
@@ -513,7 +458,6 @@ export function AppearanceTab({ onOpenMarketplace }: { onOpenMarketplace?: (filt
   const { t } = useTranslation();
   const { bundleId, setBundle, followSystem, setFollowSystem } = useTheme();
   const { family, sizeScale, setFamily, setSizeScale } = useFontPreferences();
-  const marketplaceAssets = useMarketplaceAppearanceAssets();
   const notifySaved = useNotifySaved();
   // useTheme persists bundle + followSystem through its own ThemeProvider
   // (api.updateSettings inside ThemeProvider.tsx). The provider is a
@@ -524,34 +468,10 @@ export function AppearanceTab({ onOpenMarketplace }: { onOpenMarketplace?: (filt
   const selectFollowSystem = (next: boolean) => { setFollowSystem(next); notifySaved(); };
 
   const isVioletPair = VIOLET_PAIR_IDS.includes(bundleId);
-  const themeBundleIdsToLoad = [
-    bundleId,
-    ...marketplaceAssets.themeBundleIds,
-  ];
-  const themeBundleIdsToLoadKey = themeBundleIdsToLoad.join("\u0001");
-  const [loadedMarketplaceThemeBundles, setLoadedMarketplaceThemeBundles] = useState<ThemeBundle[]>([]);
-  useEffect(() => {
-    let cancelled = false;
-    void loadThemeBundles(themeBundleIdsToLoad)
-      .then((bundles) => {
-        if (!cancelled) setLoadedMarketplaceThemeBundles(bundles);
-      })
-      .catch(() => {
-        if (!cancelled) setLoadedMarketplaceThemeBundles([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [themeBundleIdsToLoadKey]);
+  // The installed themes are module state; this re-renders when they change.
   const installedContent = useInstalledContent();
-  const visibleBundles = visibleBundlesFor([
-    bundleId,
-    ...marketplaceAssets.themeBundleIds,
-  ], loadedMarketplaceThemeBundles);
-  const marketplaceThemeBundleIdSet = new Set([
-    ...marketplaceAssets.themeBundleIds,
-    ...installedContent.themes.map((theme) => theme.id),
-  ]);
+  const visibleBundles = listVisibleBundles();
+  const installedThemeIds = new Set(installedContent.themes.map((theme) => theme.id));
   const fontOptions: ReadonlyArray<{ value: string; text: string; stack: string }> = [
     ...FONT_FAMILY_PRESETS.map((preset) => ({ value: preset.value, text: t(preset.label), stack: preset.stack })),
     ...installedContent.fonts.map((font) => ({ value: `installed-${font.name}`, text: font.family, stack: font.stack })),
@@ -567,7 +487,7 @@ export function AppearanceTab({ onOpenMarketplace }: { onOpenMarketplace?: (filt
       />
 
       {/* ── Language ──────────────────────────────────── */}
-      <LanguageSection installedLocaleIds={marketplaceAssets.languagePacks} onOpenMarketplace={onOpenMarketplace} />
+      <LanguageSection onOpenMarketplace={onOpenMarketplace} />
 
       {/* ── 테마 선택 ─────────────────────────────────── */}
       <SettingsSection
@@ -598,7 +518,7 @@ export function AppearanceTab({ onOpenMarketplace }: { onOpenMarketplace?: (filt
               key={bundle.id}
               bundle={bundle}
               selected={bundleId === bundle.id}
-              marketplaceInstalled={marketplaceThemeBundleIdSet.has(bundle.id)}
+              marketplaceInstalled={installedThemeIds.has(bundle.id)}
               onSelect={() => selectBundle(bundle.id)}
             />
           ))}

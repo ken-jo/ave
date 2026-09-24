@@ -184,6 +184,7 @@ describe("SettingsService marketplace defaults", () => {
             "missing-theme",
             "gallery",
             "tokyo-night",
+            "Not_A_Package",
           ],
           installedLanguagePacks: ["en", "ko", "it", "ko"],
           installedProviderPresets: [
@@ -224,7 +225,8 @@ describe("SettingsService marketplace defaults", () => {
         modelOptions: ["future/free", "future/pro"],
         requiresApiKey: false,
       }],
-      installedThemeBundleIds: ["tokyo-night"],
+      // Legacy input of the first-boot migration: any theme package name, never a compiled id.
+      installedThemeBundleIds: ["tokyo-night", "missing-theme"],
       installedLanguagePacks: ["ko"],
     });
 
@@ -241,7 +243,7 @@ describe("SettingsService marketplace defaults", () => {
           },
           { providerId: "bad router", label: "Bad", baseUrl: "http://localhost:8000/v1", defaultModel: "x" },
         ],
-        installedThemeBundleIds: ["high-contrast", "moonstone", "nope"] as never,
+        installedThemeBundleIds: ["high-contrast", "moonstone", "No Theme"] as never,
         installedLanguagePacks: ["ko", "en", "nope"] as never,
       },
     });

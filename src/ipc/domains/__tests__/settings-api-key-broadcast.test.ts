@@ -1189,41 +1189,18 @@ describe("main-owned settings fields on ave:settings:update", () => {
   });
 });
 
-describe("theme ids a theme package holds", () => {
-  // Modules reset before each test: set the ids on the instance settings.js imports.
-  async function installThemePackages(ids: string[]) {
-    (await import("../../../shared/plugin-theme-cache.js")).setInstalledThemeIds(ids);
-  }
+describe("the server marketplace's theme and language lists", () => {
+  it.each(["installedThemeBundleIds", "installedLanguagePacks"])(
+    "refuses a patch that names marketplace.%s and writes nothing",
+    async (field) => {
+      const deps = makeDeps([makeWindow()]);
+      const { registerSettingsHandlers } = await import("../settings.js");
+      registerSettingsHandlers(deps as never);
 
-  function depsHolding(installedThemeBundleIds: string[]) {
-    const deps = makeDeps([makeWindow()]);
-    deps.settingsService.get.mockImplementation((key?: string) =>
-      key === "marketplace" ? { installedProviderIds: [], installedThemeBundleIds } : { provider: "openai" },
-    );
-    deps.settingsService.patch.mockResolvedValue({ ok: true });
-    return deps;
-  }
+      const result = await invoke("ave:settings:update", { marketplace: { [field]: [], updateCheckEnabled: false } });
 
-  it("refuses turning on the compiled bundle of an id a package holds, and writes nothing", async () => {
-    await installThemePackages(["nord"]);
-    const deps = depsHolding([]);
-    const { registerSettingsHandlers } = await import("../settings.js");
-    registerSettingsHandlers(deps as never);
-
-    const result = await invoke("ave:settings:update", { marketplace: { installedThemeBundleIds: ["nord"] } });
-
-    expect(result).toMatchObject({ ok: false, error: "theme-id-held-by-package" });
-    expect(deps.settingsService.patch).not.toHaveBeenCalled();
-  });
-
-  it("still lets the legacy list keep or drop an id it already held", async () => {
-    await installThemePackages(["nord"]);
-    const deps = depsHolding(["nord", "dracula"]);
-    const { registerSettingsHandlers } = await import("../settings.js");
-    registerSettingsHandlers(deps as never);
-
-    await invoke("ave:settings:update", { marketplace: { installedThemeBundleIds: ["nord"] } });
-
-    expect(deps.settingsService.patch).toHaveBeenCalledWith({ marketplace: { installedThemeBundleIds: ["nord"] } });
-  });
+      expect(result).toEqual({ ok: false, error: "legacy-marketplace-lists-main-owned" });
+      expect(deps.settingsService.patch).not.toHaveBeenCalled();
+    },
+  );
 });

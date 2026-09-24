@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, waitFor, cleanup } from "@testing-library/react";
 import { ThemeProvider, useTheme } from "../ThemeProvider.js";
-import { DEFAULT_BUNDLE_ID } from "../bundles/index.js";
+import { DEFAULT_BUNDLE_ID, setInstalledThemeBundles } from "../bundles/index.js";
+import { moonstoneBundle } from "../bundles/moonstone.js";
+
+// Every theme but Moonstone and Gallery is an installed package; these stand in for the ones used below.
+const INSTALLED_THEMES = ["midnight", "violet-light", "tokyo-night"].map((id) => ({ ...moonstoneBundle, id, name: id }));
 
 // `useTheme()` consumer that surfaces the effective bundleId as text so
 // the test can assert what the provider initialised with.
@@ -18,9 +22,11 @@ beforeEach(() => {
   document.documentElement.style.cssText = "";
   // Clear any previous global injected by another test.
   delete (window as { __aveInitialTheme?: unknown }).__aveInitialTheme;
+  setInstalledThemeBundles(INSTALLED_THEMES);
 });
 
 afterEach(() => {
+  setInstalledThemeBundles([]);
   // Each `render()` adds a fresh container to document.body; vitest doesn't
   // auto-cleanup react-testing-library, so without this every test would
   // see prior tests' DOM and `getByTestId` would throw "found multiple".
