@@ -208,6 +208,69 @@ export function isMarketplaceAnnouncementAction(
 }
 
 /**
+ * The announcement rows of a response: a bare array, or the array under
+ * `announcements` (or `items`). Anything else is no rows.
+ */
+function announcementRows(data: unknown): unknown[] {
+  if (Array.isArray(data)) return data;
+  if (data && typeof data === "object") {
+    const obj = data as Record<string, unknown>;
+    if (Array.isArray(obj.announcements)) return obj.announcements;
+    if (Array.isArray(obj.items)) return obj.items;
+  }
+  return [];
+}
+
+/**
+ * Normalizes one announcement row of the wire contract (snake_case or
+ * camelCase dates). Returns `null` for a row missing a required field, so a
+ * single malformed entry never blanks the whole banner; required fields are
+ * not defaulted into blank UI.
+ */
+function parseMarketplaceAnnouncementRow(value: unknown, appVersion: string): MarketplaceAnnouncement | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  const idRaw = row.id;
+  let id: number | null = null;
+  if (typeof idRaw === "number" && Number.isSafeInteger(idRaw)) {
+    id = idRaw;
+  } else if (typeof idRaw === "string" && /^\d+$/.test(idRaw)) {
+    const parsed = Number.parseInt(idRaw, 10);
+    if (Number.isSafeInteger(parsed)) id = parsed;
+  }
+  if (id === null) return null;
+  if (!isMarketplaceAnnouncementLevel(row.level)) return null;
+
+  const createdAtRaw = row.created_at !== undefined ? row.created_at : row.createdAt;
+  const startsAtRaw = row.starts_at !== undefined ? row.starts_at : row.startsAt;
+  const endsAtRaw = row.ends_at !== undefined ? row.ends_at : row.endsAt;
+  if (typeof row.title !== "string" || typeof row.body !== "string" || typeof createdAtRaw !== "string") {
+    return null;
+  }
+  return {
+    id,
+    title: row.title,
+    body: row.body,
+    level: row.level,
+    createdAt: createdAtRaw,
+    startsAt: typeof startsAtRaw === "string" ? startsAtRaw : null,
+    endsAt: typeof endsAtRaw === "string" ? endsAtRaw : null,
+    // Buttons this build can honour. An action naming a place this version
+    // does not have is dropped here rather than carried to the renderer, so
+    // the banner can only ever draw a control that leads somewhere. An empty
+    // app version keeps the version gate fail-closed.
+    actions: parseMarketplaceAnnouncementActions(row.actions, appVersion),
+  };
+}
+
+/** Every well-formed announcement in a response; malformed rows are dropped. */
+export function parseMarketplaceAnnouncementRows(data: unknown, appVersion: string): MarketplaceAnnouncement[] {
+  return announcementRows(data)
+    .map((row) => parseMarketplaceAnnouncementRow(row, appVersion))
+    .filter((announcement): announcement is MarketplaceAnnouncement => announcement !== null);
+}
+
+/**
  * Normalize the persisted `settings.marketplace.dismissedAnnouncementIds` list
  * — the single definition of "what counts as a valid dismissed id".
  *

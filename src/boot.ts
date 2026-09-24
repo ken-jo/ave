@@ -76,6 +76,7 @@ import { initPluginRuntime } from "./boot/steps/plugin-runtime.js";
 import { wireWhitelistRegistry } from "./boot/steps/whitelist-bootstrap.js";
 import { wireRevocationRegistry } from "./boot/steps/revocation-bootstrap.js";
 import { wireAdmissionRegistry } from "./boot/steps/admission-bootstrap.js";
+import { createServiceClient } from "./boot/steps/service-endpoint.js";
 import { wireAnnouncementCheck, wireReleasePrep, wireUpdateCheck,
 } from "./boot/steps/post-boot.js";
 import { migrateCanonicalization } from "./permissions/user-approval-store.js";
@@ -945,17 +946,19 @@ export async function bootstrap(
   ctx.feedbackStore = feedbackStore;
 
   // §4.2 Step 8: Post-boot — release prep (telemetry/crash/updater) + plugin update-check.
+  const serviceClient = createServiceClient(ctx.singleHopNetworkFetch);
   const { telemetry, pluginTelemetry, autoUpdaterStop } = wireReleasePrep({
     mainWindow,
     settingsService,
     bootAuditLogger: ctx.bootAuditLogger,
     networkFetch: ctx.singleHopNetworkFetch,
     tracing: ctx.tracing,
+    serviceClient,
     discretionaryEgress: !headless,
   }, host);
-  // Both pollers exist to push a banner at a renderer, and both read the
-  // marketplace to do it. A headless run has neither the renderer nor the
-  // lifetime, so it schedules neither.
+  // Both pollers exist to push a banner at a renderer: the update check reads
+  // the marketplace, the announcement check the service endpoint. A headless
+  // run has neither the renderer nor the lifetime, so it schedules neither.
   if (!headless) {
     wireUpdateCheck({
       mainWindow,
@@ -966,7 +969,7 @@ export async function bootstrap(
     wireAnnouncementCheck({
       getMainWindow,
       settingsService,
-      marketplaceFetcher: ctx.marketplaceFetcher,
+      listAnnouncements: () => serviceClient.announcements(),
     });
   }
   ctx.telemetry = telemetry;
