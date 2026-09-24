@@ -1049,15 +1049,10 @@ export class SettingsService {
   }
 
   /**
-   * Move each API key stored under a renamed vendor id to the new id's key
-   * (see {@link RENAMED_LLM_VENDOR_IDS}). Runs on every boot: it writes only
-   * while an old key remains, so a move that failed is retried next boot. A
-   * failure leaves the old key where it is and never fails the boot — the
-   * provider then reads as having no key until a later boot moves it.
-   */
-  /**
    * Delete the server marketplace's API key (design §16.2). Nothing reads it
-   * any more; a failure leaves it in the store and is retried at the next boot.
+   * any more; a failure leaves it in the store and is retried at the next
+   * boot. Once it is gone the delete writes nothing, so a store that cannot
+   * write reports nothing on the boots after.
    */
   async deleteRetiredMarketplaceApiKey(): Promise<void> {
     try {
@@ -1067,6 +1062,13 @@ export class SettingsService {
     }
   }
 
+  /**
+   * Move each API key stored under a renamed vendor id to the new id's key
+   * (see {@link RENAMED_LLM_VENDOR_IDS}). Runs on every boot: it writes only
+   * while an old key remains, so a move that failed is retried next boot. A
+   * failure leaves the old key where it is and never fails the boot — the
+   * provider then reads as having no key until a later boot moves it.
+   */
   async migrateRenamedVendorSecrets(): Promise<void> {
     for (const [from, to] of Object.entries(RENAMED_LLM_VENDOR_IDS)) {
       try {

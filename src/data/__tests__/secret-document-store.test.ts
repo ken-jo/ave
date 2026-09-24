@@ -169,6 +169,12 @@ describe("SecretDocumentStore atomicity and policy", () => {
     expect(() => readFileSync(path, "utf-8")).toThrow();
   });
 
+  it("writes nothing when the deleted key is absent, even with writes unavailable", async () => {
+    const store = new SecretDocumentStore({ path, policy: "packaged", encryption: unavailableEncryption() });
+    await expect(store.delete("marketplace.apiKey")).resolves.toBe(false);
+    expect(() => readFileSync(path, "utf-8")).toThrow();
+  });
+
   it("preserves the old bytes when a move cannot be written", async () => {
     await new SecretDocumentStore({ path, policy: "packaged", encryption: availableEncryption() })
       .set("llm.apiKey.old", "value");
