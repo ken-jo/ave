@@ -26,6 +26,7 @@ import { flattenAgentPluginsManifest } from "../../plugins/public-contract.js";
 import { verifyInstallReceipt } from "../../plugins/plugin-install-receipt.js";
 import type { PluginPaths } from "../../plugins/plugin-paths.js";
 import { readPluginRegistry, updatePluginRegistry } from "../../plugins/registry.js";
+import { resolveTrustedRegistryManifestPath } from "../../plugins/registry-manifest-trust.js";
 import { HOST_SECRET_GRANTS } from "../../plugins/secret-access/grants.js";
 import type { PluginRegistryEntry, PluginRegistryEntryOrigin } from "../../plugins/types.js";
 import type { AppliedDefaults } from "../boot-installs/applied.js";
@@ -40,7 +41,7 @@ export interface OfficialPlugin {
 }
 
 export interface LegacyPluginMigrationInput {
-  paths: Pick<PluginPaths, "registryPath" | "cacheRoot">;
+  paths: Pick<PluginPaths, "registryPath" | "cacheRoot" | "pluginsRoot">;
   /** The official snapshot's plugin of this name, or null when it lists none. */
   officialPlugin(name: string): OfficialPlugin | null;
   applied: AppliedDefaults;
@@ -92,8 +93,11 @@ export async function migrateLegacyPlugins(input: LegacyPluginMigrationInput): P
       continue;
     }
     try {
-      const receipt = await verifyInstallReceipt(input.paths.cacheRoot, entry.id, dirname(entry.manifestPath));
-      const version = receipt.ok ? receipt.receipt.version : await manifestVersion(entry.manifestPath);
+      // Installers record the path relative to the plugins directory.
+      const manifestPath = resolveTrustedRegistryManifestPath(entry.manifestPath, input.paths.pluginsRoot);
+      if (manifestPath === null) throw new Error(`its manifest path ${entry.manifestPath} is missing or outside the plugins directory`);
+      const receipt = await verifyInstallReceipt(input.paths.cacheRoot, entry.id, dirname(manifestPath));
+      const version = receipt.ok ? receipt.receipt.version : await manifestVersion(manifestPath);
       const grant = HOST_SECRET_GRANTS.find((item) => item.plugin === entry.id);
       if (grant) {
         const sha = receipt.ok ? receipt.receipt.artifactSha256 : null;

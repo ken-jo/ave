@@ -52,7 +52,8 @@ describe("migrateLegacyPlugins", () => {
       });
       await writeInstallReceipt(paths.cacheRoot, receipt);
     }
-    return join(dir, "plugin.json");
+    // As installers record it: relative to the plugins directory.
+    return `${id}/plugin.json`;
   }
 
   function registry(entries: PluginRegistryEntry[]): void {
@@ -125,7 +126,7 @@ describe("migrateLegacyPlugins", () => {
     expect(entries.get("orion")).toMatchObject({ installSource: "user" });
     expect(entries.get("orion")!.origin).toBeUndefined();
     // A user install no source lists is named too (it gets no updates now), and left as it was.
-    expect(entries.get("notes")).toEqual({ id: "notes", manifestPath: join(paths.pluginsRoot, "notes", "plugin.json"), installSource: "user" });
+    expect(entries.get("notes")).toEqual({ id: "notes", manifestPath: "notes/plugin.json", installSource: "user" });
     expect(applied.list()).toEqual([{ kind: "plugin", name: "calendar", source: "ave", result: "migrated", at: AT.toISOString() }]);
   });
 
@@ -168,7 +169,7 @@ describe("migrateLegacyPlugins", () => {
 
   it("reports an entry whose plugin.json cannot be read, and migrates the rest", async () => {
     const manifestPath = await plugin("calendar", "1.0.0");
-    writeFileSync(manifestPath, "{ not json");
+    writeFileSync(join(paths.pluginsRoot, manifestPath), "{ not json");
     registry([
       { id: "calendar", manifestPath, installSource: "admin" },
       { id: "meeting", manifestPath: await plugin("meeting", "0.5.0", SERVED), installSource: "user" },
@@ -180,5 +181,16 @@ describe("migrateLegacyPlugins", () => {
     expect(report.failed).toEqual([{ plugin: "calendar", message: expect.any(String) }]);
     expect(readRegistry().plugins.find((entry) => entry.id === "calendar")).toMatchObject({ installSource: "admin" });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("calendar"));
+  });
+
+  it("reports an entry whose manifest path leaves the plugins directory", async () => {
+    await plugin("meeting", "0.5.0", SERVED);
+    registry([{ id: "meeting", manifestPath: "../elsewhere/plugin.json", installSource: "user" }]);
+
+    const report = await run();
+
+    expect(report.bound).toEqual([]);
+    expect(report.failed).toEqual([{ plugin: "meeting", message: expect.stringContaining("outside the plugins directory") }]);
+    expect(readRegistry().plugins[0]).toEqual({ id: "meeting", manifestPath: "../elsewhere/plugin.json", installSource: "user" });
   });
 });
