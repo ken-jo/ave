@@ -96,21 +96,22 @@ export function createContentActivation(deps: IpcDeps): ContentActivation {
   const connectionsWithout = (connectionId: string) =>
     settings.get("marketplace").installedMessagingConnections.filter((entry) => entry.connectionId !== connectionId);
   /** A first install may not take an id the settings already hold from another path (design §15.1). */
-  const assertUnclaimed = (content: ParsedContent) => {
+  const assertUnclaimed = (content: ParsedContent, name: string) => {
     const marketplace = settings.get("marketplace");
     const held =
       content.kind === "provider"
         ? "vendor" in content
           ? marketplace.installedProviderIds.includes(content.vendor.providerId)
           : marketplace.installedProviderPresets.some((preset) => preset.providerId === content.preset.providerId)
-        : content.kind === "messaging-connection" &&
-          marketplace.installedMessagingConnections.some((entry) => entry.connectionId === content.connection.connectionId);
+        : content.kind === "messaging-connection"
+          ? marketplace.installedMessagingConnections.some((entry) => entry.connectionId === content.connection.connectionId)
+          : content.kind === "theme" && (marketplace.installedThemeBundleIds as readonly string[]).includes(name);
     if (held) throw new MarketplaceError("PACKAGE_ID_CONFLICT", "settings already hold this id from another install; remove it there first");
   };
 
   return {
     async activate(content: ParsedContent, entry: LedgerEntry, previous: LedgerEntry | null) {
-      if (!previous) assertUnclaimed(content);
+      if (!previous) assertUnclaimed(content, entry.name);
       if (content.kind === "provider" && "vendor" in content) {
         const { providerId, defaultModel, baseUrl } = content.vendor;
         const installed = settings.get("marketplace").installedProviderIds;

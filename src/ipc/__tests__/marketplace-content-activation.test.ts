@@ -26,6 +26,7 @@ vi.mock("electron", () => ({
 }));
 
 import { SettingsService } from "../../data/settings-store.js";
+import type { ParsedContent } from "../../marketplace/content/kinds.js";
 import type { LedgerEntry } from "../../marketplace/content/ledger.js";
 import { installedFontStack } from "../../shared/installed-content.js";
 import { DEFAULT_BUNDLE_ID } from "../../shared/theme-bundles.js";
@@ -196,6 +197,12 @@ describe("createContentActivation", () => {
     await expect(activation.activate({ kind: "messaging-connection", connection }, entry("messaging-connection", "harbor-chat"), null)).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
     await settingsService.patch({ marketplace: { installedProviderIds: ["azure-foundry"] } });
     await expect(activation.activate({ kind: "provider", vendor: { providerId: "azure-foundry" } }, entry("provider", "azure-foundry"), null)).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
+
+    // A theme package named after a compiled bundle the legacy install turned on.
+    const nord = { kind: "theme", name: "Nord", description: "Arctic.", shell: "dark", highContrast: false, tokens: {}, surfaces: {} } as unknown as ParsedContent;
+    await activation.activate(nord, entry("theme", "nord"), null);
+    await settingsService.patch({ marketplace: { installedThemeBundleIds: ["nord"] } });
+    await expect(activation.activate(nord, entry("theme", "nord"), null)).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
   });
 
   it("keeps a provider installed when the provider refresh after the settings write throws", async () => {

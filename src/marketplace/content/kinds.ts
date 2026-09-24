@@ -21,7 +21,7 @@ import { SUPPORTED_LOCALES } from "../../i18n/locale.js";
 import { isModelFacingKey } from "../../i18n/model-facing.js";
 import type { FontFormat } from "../../shared/installed-content.js";
 import { isMarketplaceEligibleLLMVendor, type MarketplaceEligibleLLMVendor } from "../../shared/llm-vendor-defaults.js";
-import { isBundleId } from "../../shared/theme-bundles.js";
+import { isDefaultVisibleThemeBundleId } from "../../shared/theme-bundles.js";
 import { themeSurfaceProblems, themeTokenProblems, type ThemeSurfaces, type ThemeTokens } from "../../shared/theme-tokens.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
 import { MarketplaceError } from "../errors.js";
@@ -185,8 +185,11 @@ const PREVIEW_MAX_SIDE = 2048;
 
 function theme(files: Map<string, Buffer>, context: ContentContext): ThemeContent {
   const path = "theme.json";
-  // Every compiled bundle keeps its id; an installed theme may not shadow one.
-  if (isBundleId(context.name)) throw new ContentFailure(path, `${context.name} is a built-in theme`);
+  // The bundles that stay compiled in keep their ids. The others are delivered
+  // as packages under their own ids, which the compiled copies give up when
+  // the switch removes them; until then activation refuses an id the legacy
+  // install already holds.
+  if (isDefaultVisibleThemeBundleId(context.name)) throw new ContentFailure(path, `${context.name} is a built-in theme`);
   const record = readJson(files, path);
   closed(record, path, ["name", "description", "shell", "highContrast", "tokens", "surfaces", "preview"]);
   if (record.shell !== "light" && record.shell !== "dark") throw new ContentFailure(path, 'shell must be "light" or "dark"');

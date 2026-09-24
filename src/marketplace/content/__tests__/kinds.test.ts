@@ -106,8 +106,8 @@ describe("theme packages (blueprint 3.2)", () => {
     expect(() => parse("theme", [themeFile({ surfaces: undefined })])).toThrow(/surfaces must be an object/u);
     expect(() => parse("theme", [themeFile({ tokens: { ...moonstoneBundle.tokens, primary: "url(x)" } })])).toThrow(/primary is not an "H S% L%" triple/u);
     expect(() => parse("theme", [themeFile()], "moonstone")).toThrow("moonstone is a built-in theme");
-    // Bundles the marketplace delivers are still compiled in; their ids stay theirs.
-    expect(() => parse("theme", [themeFile()], "nord")).toThrow("nord is a built-in theme");
+    // The bundles the marketplace delivers ship as packages under their own ids.
+    expect(parse("theme", [themeFile()], "nord")).toMatchObject({ kind: "theme" });
     expect(() => parse("theme", [themeFile({ preview: "missing.png" })])).toThrow(/preview must name an image file/u);
   });
 });
