@@ -120,7 +120,7 @@ function settingsTokenStore(deps: IpcDeps): TokenStore {
   };
 }
 
-function pluginInstaller(deps: IpcDeps, policy: MarketplacePolicy): PluginInstallerPort {
+function pluginInstaller(deps: IpcDeps): PluginInstallerPort {
   const { pluginMarketplace, pluginRuntime } = deps;
   const lifecycle = pluginLifecycleServices(deps);
   return {
@@ -137,7 +137,6 @@ function pluginInstaller(deps: IpcDeps, policy: MarketplacePolicy): PluginInstal
         const result = await pluginMarketplace.installGitPlugin(plan, {
           stage: options.stage,
           switchSource: options.switchSource,
-          policy,
           ...(options.signal ? { signal: options.signal } : {}),
           activatePreparedArtifact: (prepared) => pluginRuntime.activatePreparedArtifact<string>(prepared),
         });
@@ -265,7 +264,7 @@ async function createGitMarketplaceService(
     artifactLimits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,
   });
   const installers: InstallerPorts = {
-    plugin: pluginInstaller(deps, policy),
+    plugin: pluginInstaller(deps),
     content: contentInstaller(content, policy),
     mcp: new McpInstaller({
       recordsPath: mcpRecordsPath,

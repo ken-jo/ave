@@ -5,6 +5,7 @@ import { join, relative } from "node:path";
 import { PluginRuntime } from "../runtime.js";
 import { PluginPhase } from "../lifecycle-log.js";
 import { PluginDeploymentGuard } from "../deployment-guard.js";
+import type { PackageKey } from "../../marketplace/sources/policy.js";
 import { uninstallPluginWithLifecycle } from "../uninstall-lifecycle.js";
 import { mkdtempSync } from "node:fs";
 import {
@@ -37,6 +38,19 @@ describe("PluginRuntime.disable", () => {
   let testDir: string;
   let installedDir: string;
   let registryPath: string;
+  /** The machine policy's requiredInstalls the guard reads (design §10.2). */
+  let required: PackageKey[] = [];
+  const REQUIRED = { kind: "plugin" as const, name: "p-required", source: "corp" };
+  const corpOrigin = {
+    sourceId: "corp",
+    sourceOrigin: "managed",
+    commit: "c".repeat(40),
+    packagePath: "plugins/p-required",
+    version: "1.0.0",
+    rung: "release",
+    artifactSha256: "d".repeat(64),
+    installedAt: "2026-09-24T00:00:00.000Z",
+  };
 
   beforeEach(async () => {
     testDir = mkdtempSync(join(tmpdir(), "ave-runtime-"));
@@ -45,6 +59,7 @@ describe("PluginRuntime.disable", () => {
     installedDir = join(testDir, "plugins");
     await mkdir(installedDir, { recursive: true });
     registryPath = join(installedDir, "registry.json");
+    required = [];
   });
 
   afterEach(async () => {
@@ -88,6 +103,7 @@ describe("PluginRuntime.disable", () => {
     const guard = new PluginDeploymentGuard({
       registryPath,
       pluginsRoot: installedDir,
+      requiredInstalls: async () => required,
     });
     return makeTestPluginRuntime(
       {
@@ -194,38 +210,39 @@ describe("PluginRuntime.disable", () => {
     expect(entry.enabled).toBe(false);
   });
 
-  it("disable rejects managed plugin with guard error and leaves state unchanged", async () => {
-    const manifestPath = await writeFakePlugin("p-managed", "admin");
+  it("disable rejects a plugin the policy requires and leaves state unchanged", async () => {
+    const manifestPath = await writeFakePlugin("p-required");
     await writeTestPluginRegistry({ registryPath }, [
-      { id: "p-managed", manifestPath, enabled: true },
+      { id: "p-required", manifestPath, enabled: true, origin: corpOrigin },
     ]);
+    required = [REQUIRED];
     const runtime = makeRuntime();
     await runtime.startAll();
 
-    await expect(runtime.disable("p-managed", "user")).rejects.toThrow(
-      /Admin plugin/,
+    await expect(runtime.disable("p-required")).rejects.toThrow(
+      /required by policy \(source corp\); it cannot be disabled/,
     );
 
-    expect(runtime.listPluginIds()).toContain("p-managed");
-    expect(runtime.listToolNames()).toContain("p_managed_hello");
+    expect(runtime.listPluginIds()).toContain("p-required");
+    expect(runtime.listToolNames()).toContain("p_required_hello");
 
     // registry should NOT have enabled=false
     const registry = JSON.parse(await readFile(registryPath, "utf-8"));
     const entry = registry.plugins.find(
-      (p: { id: string }) => p.id === "p-managed",
+      (p: { id: string }) => p.id === "p-required",
     );
     expect(entry.enabled).toBe(true);
   });
 
-  it("disable allows it-admin actor to disable a managed plugin", async () => {
+  it("disable is not refused by a legacy admin claim in the manifest or the registry", async () => {
     const manifestPath = await writeFakePlugin("p-managed", "admin");
     await writeTestPluginRegistry({ registryPath }, [
-      { id: "p-managed", manifestPath, enabled: true },
+      { id: "p-managed", manifestPath, enabled: true, installSource: "admin" },
     ]);
     const runtime = makeRuntime();
     await runtime.startAll();
 
-    await runtime.disable("p-managed", "it-admin");
+    await runtime.disable("p-managed");
 
     expect(runtime.listPluginIds()).not.toContain("p-managed");
     const registry = JSON.parse(await readFile(registryPath, "utf-8"));
@@ -253,8 +270,8 @@ describe("PluginRuntime.disable", () => {
    * `setPluginEnabled` is the writer the renderer toggle actually reaches
    * (`ave:plugins:set-enabled` → `PluginRuntime.setPluginEnabled`);
    * `disable()` has no production caller. Both mutate the same registry
-   * `enabled` field, so both must consult the deployment guard — otherwise the
-   * admin-managed protection is reachable only from the dead lane.
+   * `enabled` field, so both must consult the deployment guard — otherwise a
+   * required plugin could be switched off from the settings tab.
    */
   function makeRuntimeWithGuard(): {
     runtime: PluginRuntime;
@@ -263,6 +280,7 @@ describe("PluginRuntime.disable", () => {
     const guard = new PluginDeploymentGuard({
       registryPath,
       pluginsRoot: installedDir,
+      requiredInstalls: async () => required,
     });
     const runtime = makeTestPluginRuntime(
       { rootDir: testDir, registryPath, pluginsRoot: installedDir },
@@ -271,44 +289,41 @@ describe("PluginRuntime.disable", () => {
     return { runtime, guard };
   }
 
-  it("setPluginEnabled(false) rejects a manifest-declared admin plugin and leaves it enabled", async () => {
-    const manifestPath = await writeFakePlugin("p-managed", "admin");
+  it("setPluginEnabled(false) rejects a plugin the policy requires and leaves it enabled", async () => {
+    const manifestPath = await writeFakePlugin("p-required");
     await writeTestPluginRegistry({ registryPath }, [
-      { id: "p-managed", manifestPath, enabled: true },
+      { id: "p-required", manifestPath, enabled: true, origin: corpOrigin },
     ]);
+    required = [REQUIRED];
     const { runtime } = makeRuntimeWithGuard();
     await runtime.startAll();
 
-    await expect(runtime.setPluginEnabled("p-managed", false)).rejects.toThrow(
-      /Admin plugin/,
+    await expect(runtime.setPluginEnabled("p-required", false)).rejects.toThrow(
+      /required by policy/,
     );
 
-    expect(runtime.listPluginIds()).toContain("p-managed");
-    expect(runtime.listToolNames()).toContain("p_managed_hello");
+    expect(runtime.listPluginIds()).toContain("p-required");
+    expect(runtime.listToolNames()).toContain("p_required_hello");
     const registry = JSON.parse(await readFile(registryPath, "utf-8"));
     expect(
-      registry.plugins.find((p: { id: string }) => p.id === "p-managed").enabled,
+      registry.plugins.find((p: { id: string }) => p.id === "p-required").enabled,
     ).toBe(true);
   });
 
-  it("setPluginEnabled(false) rejects a registry installSource=admin plugin", async () => {
-    // Trust-precedence shape: the manifest claims "user" (it is user-writable)
-    // but the host-recorded registry row says admin. The guard must win.
-    const manifestPath = await writeFakePlugin("p-managed", "user");
+  it("setPluginEnabled(false) disables a registry installSource=admin plugin: no install source locks it", async () => {
+    const manifestPath = await writeFakePlugin("p-managed");
     await writeTestPluginRegistry({ registryPath }, [
       { id: "p-managed", manifestPath, enabled: true, installSource: "admin" },
     ]);
     const { runtime } = makeRuntimeWithGuard();
     await runtime.startAll();
 
-    await expect(runtime.setPluginEnabled("p-managed", false)).rejects.toThrow(
-      /Admin plugin/,
-    );
+    await runtime.setPluginEnabled("p-managed", false);
 
     const registry = JSON.parse(await readFile(registryPath, "utf-8"));
     expect(
       registry.plugins.find((p: { id: string }) => p.id === "p-managed").enabled,
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("setPluginEnabled(false) still disables an ordinary user plugin", async () => {
@@ -329,18 +344,19 @@ describe("PluginRuntime.disable", () => {
   });
 
   it("setPluginEnabled does not consult the disable guard on the enable direction", async () => {
-    const manifestPath = await writeFakePlugin("p-managed", "admin");
+    const manifestPath = await writeFakePlugin("p-required");
     await writeTestPluginRegistry({ registryPath }, [
-      { id: "p-managed", manifestPath, enabled: true },
+      { id: "p-required", manifestPath, enabled: true, origin: corpOrigin },
     ]);
+    required = [REQUIRED];
     const { runtime, guard } = makeRuntimeWithGuard();
     await runtime.startAll();
     const canDisable = vi.spyOn(guard, "canDisable");
 
-    await runtime.setPluginEnabled("p-managed", true);
+    await runtime.setPluginEnabled("p-required", true);
 
     expect(canDisable).not.toHaveBeenCalled();
-    expect(runtime.listPluginIds()).toContain("p-managed");
+    expect(runtime.listPluginIds()).toContain("p-required");
   });
 
   it("plugin with kebab-case id (example-plugin) and underscore methods loads correctly", async () => {
@@ -823,6 +839,7 @@ describe("PluginRuntime.disable", () => {
       const guard = new PluginDeploymentGuard({
         registryPath,
         pluginsRoot: installedDir,
+        requiredInstalls: async () => [],
       });
       const runtime = makeGenerationBoundRuntime({
         hostRoot: testDir,
@@ -890,6 +907,7 @@ describe("PluginRuntime.disable", () => {
       const guard = new PluginDeploymentGuard({
         registryPath,
         pluginsRoot: installedDir,
+        requiredInstalls: async () => [],
       });
       const runtime = makeGenerationBoundRuntime({
         hostRoot: testDir,
@@ -1245,6 +1263,7 @@ describe("PluginRuntime.disable", () => {
       deploymentGuard: new PluginDeploymentGuard({
         registryPath,
         pluginsRoot: installedDir,
+        requiredInstalls: async () => [],
       }),
       createHostApi: (pluginId) =>
         ({
@@ -1299,6 +1318,7 @@ describe("PluginRuntime.disable", () => {
       deploymentGuard: new PluginDeploymentGuard({
         registryPath,
         pluginsRoot: installedDir,
+        requiredInstalls: async () => [],
       }),
       createHostApi: (pluginId) =>
         ({

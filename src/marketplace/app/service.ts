@@ -57,7 +57,7 @@ import { classifyInstall, updateFor, type InstalledPackage } from "../resolve/id
 import { assertMcpRuntimePinned, resolveMcpPackage, runtimeFromServerJson, type ResolvedMcpServer } from "../resolve/mcp.js";
 import { planPluginVersion, runPluginLadder, type LadderDeps, type PluginInstallPlan } from "../resolve/plugin-ladder.js";
 import type { AppliedDefaults } from "../boot-installs/applied.js";
-import { assertNotRequiredByPolicy, bootInstallNoticeFrom, requiredByPolicy, runBootInstalls, type BootInstallReport } from "../boot-installs/run.js";
+import { assertNotRequiredByPolicy, bootInstallNoticeFrom, lockedByPolicy, requiredByPolicy, runBootInstalls, type BootInstallReport } from "../boot-installs/run.js";
 import type { LegacyContentKind, LegacyContentReport } from "../migration/legacy-content.js";
 import type { LegacyPluginReport, OfficialPlugin } from "../migration/legacy-plugins.js";
 import { runLegacyMigration } from "../migration/run.js";
@@ -553,7 +553,7 @@ export class MarketplaceService {
       description: row.package.description ?? "",
       keywords: [...(row.package.keywords ?? [])],
       state: rowState(row, installed, rows, sources),
-      required: requiredByPolicy(this.options.policy, row.kind, row.name)?.source === row.sourceId,
+      required: lockedByPolicy(this.options.policy, row.kind, row.name, row.sourceId) !== undefined,
       runsCode: runsCode(row.kind),
     };
   }
@@ -603,7 +603,7 @@ export class MarketplaceService {
           description: "",
           keywords: [],
           state: existing.has(item.sourceId) ? { state: "installed", version: item.version } : { state: "source-removed", version: item.version },
-          required: requiredByPolicy(this.options.policy, item.kind, item.name)?.source === item.sourceId,
+          required: lockedByPolicy(this.options.policy, item.kind, item.name, item.sourceId) !== undefined,
           runsCode: runsCode(item.kind),
         });
       }
@@ -875,12 +875,7 @@ export class MarketplaceService {
   }
 
   async uninstall(request: UninstallRequest): Promise<UninstallResultView> {
-    assertNotRequiredByPolicy(this.options.policy, request.kind, request.name, "uninstall");
-    return this.remove(request);
-  }
-
-  /** Remove an installed package bound to `request.sourceId`; the caller has settled the policy. */
-  private async remove(request: UninstallRequest): Promise<UninstallResultView> {
+    assertNotRequiredByPolicy(this.options.policy, request.kind, request.name, request.sourceId, "uninstall");
     const installed = await this.installed(request.kind, request.name);
     if (!installed || installed.sourceId !== request.sourceId) {
       const from = request.sourceId === null ? "without a source" : `from ${request.sourceId}`;
@@ -1067,7 +1062,7 @@ export class MarketplaceService {
   /**
    * Feed the gates, then remove what a gate cannot hold — every `uninstall`
    * revocation, and a `disable` one for a kind outside {@link GATED_KINDS}.
-   * A package the `requiredInstalls` entry for its own source locks stays
+   * A package a `requiredInstalls` entry locks ({@link lockedByPolicy}) stays
    * (gated where its kind has a gate) and is reported.
    */
   private async applyRevocations(): Promise<RevokedPackageView[]> {
@@ -1075,12 +1070,12 @@ export class MarketplaceService {
     for (const { record, revocation } of await this.feedRevocations()) {
       if (revocation.action === "disable" && GATED_KINDS.has(record.kind)) continue;
       const item = { key: { sourceId: record.sourceId, kind: record.kind, name: record.name }, version: record.version!, reason: revocation.reason };
-      if (requiredByPolicy(this.options.policy, record.kind, record.name)?.source === record.sourceId) {
+      if (lockedByPolicy(this.options.policy, record.kind, record.name, record.sourceId)) {
         report.push({ ...item, outcome: "required" });
         continue;
       }
       try {
-        await this.remove({ sourceId: record.sourceId, kind: record.kind, name: record.name });
+        await this.uninstall({ sourceId: record.sourceId, kind: record.kind, name: record.name });
         report.push({ ...item, outcome: "uninstalled" });
       } catch (error) {
         report.push({ ...item, outcome: "failed", message: errorMessage(error) });

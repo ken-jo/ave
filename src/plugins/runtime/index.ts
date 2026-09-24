@@ -37,7 +37,7 @@ import { isDevModeUnlocked } from "../../boot/dev-flags.js";
 import { verifyInstallReceipt, installReceiptPath } from "../plugin-install-receipt.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readFile } from "node:fs/promises";
-import { type PluginDeploymentGuard, type Actor, PluginDeploymentDeniedError, assertDisableAllowed } from "../deployment-guard.js";
+import { type PluginDeploymentGuard, PluginDeploymentDeniedError, assertDisableAllowed } from "../deployment-guard.js";
 import { pluginArtifactGenerationId } from "../plugin-artifact-identity.js";
 import { HostApiGenerationScope } from "../plugin-host-effect-scope.js";
 import { canonicalJSON } from "../secret-access/canonical-json.js";
@@ -4541,21 +4541,20 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
   }
 
   /** Disable a loaded plugin at runtime. */
-  async disable(pluginId: string, actor: Actor = "user"): Promise<void> {
+  async disable(pluginId: string): Promise<void> {
     const canonicalPluginId = this.resolveKnownPluginId(pluginId);
     this.pendingRestartCancellations.get(canonicalPluginId)?.cancel();
     return withPluginInstallLock(canonicalPluginId, () =>
-      this.disableLocked(pluginId, canonicalPluginId, actor)
+      this.disableLocked(pluginId, canonicalPluginId)
     );
   }
 
   private async disableLocked(
     pluginId: string,
     canonicalPluginId: string,
-    actor: Actor,
   ): Promise<void> {
     if (this.deploymentGuard) {
-      const result = await this.deploymentGuard.canDisable(pluginId, actor);
+      const result = await this.deploymentGuard.canDisable(pluginId);
       if (!result.allowed) {
         throw new PluginDeploymentDeniedError(
           result.reason ?? `Plugin disable denied: ${pluginId}`,

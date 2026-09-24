@@ -301,14 +301,14 @@ export class ContentStore {
 
   /**
    * Remove an installed package; null when it is not installed. A package
-   * the policy's `requiredInstalls` lists cannot be removed
-   * (PACKAGE_REQUIRED_BY_POLICY).
+   * the policy's `requiredInstalls` locks, from its bound source, cannot be
+   * removed (PACKAGE_REQUIRED_BY_POLICY).
    */
   async uninstall(kind: ContentKind, name: string, policy: MarketplacePolicy): Promise<LedgerEntry | null> {
     return this.serialize(async () => {
       const entry = this.ledger.get(kind, name);
       if (!entry) return null;
-      assertNotRequiredByPolicy(policy, kind, name, "uninstall");
+      assertNotRequiredByPolicy(policy, kind, name, entry.origin.sourceId, "uninstall");
       const loaded = await this.loadOne(entry);
       await this.options.activation.deactivate(entry, "content" in loaded ? loaded.content : null);
       await this.ledger.remove(kind, name);

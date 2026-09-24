@@ -14,7 +14,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { _resetForTest, setIsPackaged } from "../../boot/dev-flags.js";
 import type { PluginAuthority } from "../../marketplace/catalog/types.js";
 import type { PluginInstallPlan, StagedPluginArtifact } from "../../marketplace/resolve/plugin-ladder.js";
-import { EMPTY_MARKETPLACE_POLICY, type MarketplacePolicy } from "../../marketplace/sources/policy.js";
 import { preparePendingPluginUpdate, recoverPendingPluginUpdates } from "../marketplace-update-recovery.js";
 import type { PluginPaths } from "../plugin-paths.js";
 import { installReceiptPath, verifyInstallReceipt } from "../plugin-install-receipt.js";
@@ -112,7 +111,7 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
   });
 
   const install = (forPlan: PluginInstallPlan, artifact = staged(forPlan), activate = activateAndCommitPreparedPluginForTest) =>
-    service.installGitPlugin(forPlan, { stage: async () => artifact, activatePreparedArtifact: activate, policy: EMPTY_MARKETPLACE_POLICY });
+    service.installGitPlugin(forPlan, { stage: async () => artifact, activatePreparedArtifact: activate });
 
   const entry = async () => (await readPluginRegistry(registryPath)).plugins.find((item) => item.id === "alpha");
 
@@ -159,7 +158,6 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
         return staged(p);
       },
       activatePreparedArtifact: activateAndCommitPreparedPluginForTest,
-      policy: EMPTY_MARKETPLACE_POLICY,
     })).rejects.toBeInstanceOf(MissingDependenciesError);
     const needsPlugin = plan("1.0.0", { authority: authority({ dependencies: [{ pluginId: "notes" }] }) });
     await expect(install(needsPlugin)).rejects.toBeInstanceOf(MissingPluginDependenciesError);
@@ -207,7 +205,6 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
     const switched = await service.installGitPlugin(official, {
       stage: async () => staged(official),
       activatePreparedArtifact: activateAndCommitPreparedPluginForTest,
-      policy: EMPTY_MARKETPLACE_POLICY,
       switchSource: true,
     });
     expect(switched.action).toEqual({ action: "switch", fromSource: "acme", from: "1.0.0" });
@@ -215,42 +212,19 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
     expect(await readPluginDataFixture(join(pluginsDir, "alpha"))).toEqual(PLUGIN_DATA_FIXTURE);
   });
 
-  const requiredFrom = (source: string): MarketplacePolicy => ({
-    ...EMPTY_MARKETPLACE_POLICY,
-    requiredInstalls: [{ kind: "plugin", name: "alpha", source }],
-  });
-
-  it("refuses to replace an admin-installed plugin unless the policy's required install does it, which keeps it admin-installed", async () => {
+  it("replaces a legacy admin-installed plugin like any other, and records the install as the user's", async () => {
     await install(plan("1.0.0", { sourceId: "ave", sourceOrigin: "official" }));
     await updatePluginRegistry(registryPath, (registry) => {
       registry.plugins[0]!.installSource = "admin";
       delete registry.plugins[0]!.origin;
     });
     const custom = plan("1.1.0");
-    await expect(service.installGitPlugin(custom, {
+    await service.installGitPlugin(custom, {
       stage: async () => staged(custom),
       activatePreparedArtifact: activateAndCommitPreparedPluginForTest,
-      policy: EMPTY_MARKETPLACE_POLICY,
-      switchSource: true,
-    })).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT", message: expect.stringContaining("admin-installed plugin alpha") });
-    // Required by policy, but from another source: still refused.
-    await expect(service.installGitPlugin(custom, {
-      stage: async () => staged(custom),
-      activatePreparedArtifact: activateAndCommitPreparedPluginForTest,
-      policy: requiredFrom("ave"),
-      switchSource: true,
-    })).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
-    expect(await entry()).toMatchObject({ installSource: "admin" });
-    expect((await entry())?.origin).toBeUndefined();
-
-    const required = plan("1.1.0", { sourceId: "ave", sourceOrigin: "official" });
-    await service.installGitPlugin(required, {
-      stage: async () => staged(required),
-      activatePreparedArtifact: activateAndCommitPreparedPluginForTest,
-      policy: requiredFrom("ave"),
       switchSource: true,
     });
-    expect(await entry()).toMatchObject({ installSource: "admin", origin: { sourceId: "ave", version: "1.1.0" } });
+    expect(await entry()).toMatchObject({ installSource: "user", origin: { sourceId: custom.sourceId, version: "1.1.0" } });
   });
 
   it("replaces an install without a source binding only as a switch", async () => {
@@ -264,7 +238,6 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
     const switched = await service.installGitPlugin(plan("1.1.0"), {
       stage: async (p) => staged(p),
       activatePreparedArtifact: activateAndCommitPreparedPluginForTest,
-      policy: EMPTY_MARKETPLACE_POLICY,
       switchSource: true,
     });
     expect(switched.action).toEqual({ action: "switch", fromSource: null, from: "1.0.0" });

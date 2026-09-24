@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { dirname, isAbsolute, posix, resolve } from "node:path";
 import { buildSideloadCopyFilter, rejectSideloadSymlinks } from "./sideload-filter.js";
 import { readPluginRegistry, updatePluginRegistry } from "./registry.js";
-import type { Actor, PluginDeploymentGuard } from "./deployment-guard.js";
+import type { PluginDeploymentGuard } from "./deployment-guard.js";
 import type { CommittedPluginGeneration } from "./plugin-host-generation.js";
 import {
   isCommittedPluginGenerationPublicationError,
@@ -36,10 +36,7 @@ import {
 } from "./plugin-install-receipt.js";
 import { assertGitInstallManifest, manifestAuthority } from "../marketplace/resolve/manifest-rules.js";
 import { classifyInstall, type InstallAction } from "../marketplace/resolve/identity.js";
-import { requiredByPolicy } from "../marketplace/boot-installs/run.js";
-import type { MarketplacePolicy } from "../marketplace/sources/policy.js";
 import type { PluginAuthority } from "../marketplace/catalog/types.js";
-import { MarketplaceError } from "../marketplace/errors.js";
 import type { PluginInstallPlan, StagedPluginArtifact } from "../marketplace/resolve/plugin-ladder.js";
 import { canonicalJSON } from "./secret-access/canonical-json.js";
 import {
@@ -214,16 +211,11 @@ export class PluginMarketplaceService {
 
   async uninstall(
     pluginId: string,
-    options?: { removeBundleMembers?: boolean; actor?: Actor },
+    options?: { removeBundleMembers?: boolean },
   ): Promise<{ pluginId: string; uninstalled: true }> {
-    // §7.2 PluginDeploymentGuard — managed 플러그인은 user actor에게 차단.
-    // `actor` defaults to "user"; boot's managed sync passes "it-admin", the
-    // same trust anchor the managed install path uses. The guard already
-    // admits it-admin unconditionally (deployment-guard.ts), so this reads
-    // the actor rather than deciding admin-ness a second time.
-    const actor: Actor = options?.actor ?? "user";
+    // A plugin the machine policy requires cannot be uninstalled (design §10.2).
     if (this.deploymentGuard) {
-      const guardResult = await this.deploymentGuard.canUninstall(pluginId, actor);
+      const guardResult = await this.deploymentGuard.canUninstall(pluginId);
       if (!guardResult.allowed) {
         throw new Error(guardResult.reason ?? `Plugin uninstall denied: ${pluginId}`);
       }
@@ -238,7 +230,7 @@ export class PluginMarketplaceService {
         if (entry.id === pluginId) continue;
         const withoutRoot = (entry.bundleRefs ?? []).filter((bundleId) => bundleId !== pluginId);
         if (withoutRoot.length === (entry.bundleRefs ?? []).length) continue;
-        if (options?.removeBundleMembers && withoutRoot.length === 0 && entry.installSource !== "admin") {
+        if (options?.removeBundleMembers && withoutRoot.length === 0) {
           idsToRemove.add(entry.id);
         } else {
           nextBundleRefs.set(entry.id, withoutRoot);
@@ -604,13 +596,6 @@ export class PluginMarketplaceService {
       activatePreparedArtifact: PreparedMarketplacePluginActivation;
       /** Replace an install bound to another source (or to none); the plugin's data is kept. */
       switchSource?: boolean;
-      /**
-       * The managed policy. Only an install its `requiredInstalls` names,
-       * from that source (design §10.2), may replace an admin-installed
-       * plugin, and the entry stays admin-installed. The caller does not
-       * claim this; it is read from the policy here.
-       */
-      policy: MarketplacePolicy;
       signal?: AbortSignal;
     },
   ): Promise<{ pluginId: string; installed: true; version: string; action: InstallAction; staged: StagedPluginArtifact }> {
@@ -620,17 +605,7 @@ export class PluginMarketplaceService {
     );
     const pluginId = assertSafeArtifactSlug(plan.name);
     return this.withPluginLock(pluginId, async () => {
-      if (this.deploymentGuard) {
-        const guardResult = await this.deploymentGuard.canInstall(pluginId, "user", undefined);
-        if (!guardResult.allowed) {
-          throw new Error(guardResult.reason ?? `Plugin install denied: ${pluginId}`);
-        }
-      }
       const current = await this.getRawRegistryEntry(pluginId);
-      if (current?.installSource === "admin" && requiredByPolicy(options.policy, "plugin", pluginId)?.source !== plan.sourceId) {
-        throw new MarketplaceError("PACKAGE_ID_CONFLICT", `refusing to replace admin-installed plugin ${pluginId}: only the policy's required install from its source may`);
-      }
-      const registryInstallSource = current?.installSource === "admin" ? "admin" : "user";
       const action = classifyInstall(
         plan,
         current
@@ -667,7 +642,7 @@ export class PluginMarketplaceService {
         prepareReceipt: (pluginRoot, files) => this.prepareGitInstallReceipt(pluginId, pluginRoot, staged, files),
         approvedPluginAccess: plan.authority.pluginAccess as PluginAccessSpec | undefined,
         activatePreparedArtifact,
-        registryInstallSource,
+        registryInstallSource: "user",
         registryOrigin: origin,
         signal: options.signal,
         beforePromote: async (recoveryBackupDir) => {
@@ -677,7 +652,7 @@ export class PluginMarketplaceService {
         },
         commit: async (manifestPath, manifestAbsPath) => {
           const manifestSha256 = await this.readManifestSha256(manifestAbsPath);
-          await this.commitGitRegistryEntry(staged, origin, manifestPath, manifestSha256, existingEntry, registryInstallSource);
+          await this.commitGitRegistryEntry(staged, origin, manifestPath, manifestSha256, existingEntry);
         },
       }).catch((err) => this.restoreMarketplaceRegistryEntryAfterFailure(pendingEntry, existingEntry, err));
       const manifestAbsPath = isAbsolute(installOutcome.manifestPath)
@@ -749,7 +724,6 @@ export class PluginMarketplaceService {
     manifestPath: string,
     manifestSha256: string,
     previousEntry: PluginRegistryEntry | null,
-    installSource: "user" | "admin",
   ): Promise<void> {
     const { plan } = staged;
     const approvedPluginAccess = plan.authority.pluginAccess as PluginAccessSpec | undefined;
@@ -760,7 +734,7 @@ export class PluginMarketplaceService {
         existing.manifestPath = manifestPath;
         existing.manifestSha256 = manifestSha256;
         existing.enabled = true;
-        existing.installSource = installSource;
+        existing.installSource = "user";
         existing.bundleRefs = this.mergeBundleRefs(existing.bundleRefs, null, plan.name);
         existing.approvedPluginAccess = approvedPluginAccess;
         existing.origin = origin;
@@ -772,7 +746,7 @@ export class PluginMarketplaceService {
           manifestPath,
           manifestSha256,
           enabled: true,
-          installSource,
+          installSource: "user",
           bundleRefs: this.mergeBundleRefs(previousEntry?.bundleRefs ?? [], null, plan.name),
           approvedPluginAccess,
           origin,
@@ -1077,15 +1051,8 @@ export class PluginMarketplaceService {
       const userPluginsRoot = this.pluginsRoot;
       const installDir = resolve(userPluginsRoot, pluginId);
 
-      // Refuse to clobber an admin-installed plugin under the same id —
-      // dev sideload should not silently downgrade an admin-managed entry.
       const existingRegistry = await readPluginRegistry(this.registryPath);
       const existingEntry = existingRegistry.plugins.find((p) => p.id === pluginId);
-      if (existingEntry?.installSource === "admin") {
-        throw new Error(
-          `[installLocal] refusing to overwrite admin-installed plugin: ${pluginId}`,
-        );
-      }
       const rollbackSnapshot = existingEntry
         ? existingEntry.pendingUpdate
           ? {
@@ -1148,8 +1115,6 @@ export class PluginMarketplaceService {
           signerKeyId: null,
           files: receiptFiles,
         });
-        const localInstallSource: PluginRegistryEntryInstallSource =
-          manifest.installPolicy === "admin" ? "admin" : "local-dev";
         const registryManifestPath = posix.join(pluginId, "plugin.json");
         const manifestSha256 = shaOfManifest(manifestDocument);
         const approvedPluginAccess = manifest.pluginAccess;
@@ -1188,7 +1153,7 @@ export class PluginMarketplaceService {
                 existing.manifestPath = registryManifestPath;
                 existing.manifestSha256 = manifestSha256;
                 existing.enabled = true;
-                existing.installSource = localInstallSource;
+                existing.installSource = "local-dev";
                 existing.approvedPluginAccess = approvedPluginAccess;
                 // A local build replaces whatever a git install put here.
                 existing.origin = undefined;
@@ -1200,7 +1165,7 @@ export class PluginMarketplaceService {
                   manifestPath: registryManifestPath,
                   manifestSha256,
                   enabled: true,
-                  installSource: localInstallSource,
+                  installSource: "local-dev",
                   approvedPluginAccess,
                 });
               }
@@ -1218,7 +1183,7 @@ export class PluginMarketplaceService {
           manifest,
           receiptRaw: localReceiptRaw,
           registryEntry: {
-            installSource: localInstallSource,
+            installSource: "local-dev",
             manifestSha256,
           },
           ...(approvedPluginAccess ? { approvedPluginAccess } : {}),

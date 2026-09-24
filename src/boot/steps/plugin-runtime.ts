@@ -25,6 +25,7 @@ import { PluginRuntime } from "../../plugins/runtime.js";
 import type { PythonRuntimeBootstrapper } from "../../main/python-runtime.js";
 import { startPluginDevWatcher } from "../../plugins/dev-watcher.js";
 import { PluginDeploymentGuard } from "../../plugins/deployment-guard.js";
+import { loadMarketplacePolicy } from "../../marketplace/sources/policy.js";
 import {
   setIsPackaged,
   shouldWarnPackagedFlagsIgnored,
@@ -347,20 +348,23 @@ export async function initPluginRuntime(
     };
   }
 
-  // §7.2 Plugin Deployment Guard.
-  // Plugin layout anchors at `aveHome()/plugins/<id>/` — single root for both
-  // user-installed and admin-injected plugins (distinguished by metadata,
-  // not by physical directory). The resolver always uses
-  // `aveHome()/plugins`; E2E overrides AVE_HOME once and every caller
-  // follows the same app-home SOT.
+  // Plugin layout anchors at `aveHome()/plugins/<id>/`, the single root every
+  // install lands in. The resolver always uses `aveHome()/plugins`; E2E
+  // overrides AVE_HOME once and every caller follows the same app-home SOT.
   const pluginPaths = resolvePluginPaths();
   // mkdir the root once so the trust-root realpath check in PluginRuntime
   // (and any first-install write under pluginsRoot/<id>/) doesn't trip on a
   // missing directory the very first time the app boots.
   mkdirSync(pluginPaths.pluginsRoot, { recursive: true });
+  // Only the machine policy's requiredInstalls locks a plugin (design §10.2).
+  // An unreadable policy file locks nothing, as in the marketplace, which logs it.
   const deploymentGuard = new PluginDeploymentGuard({
     registryPath: pluginPaths.registryPath,
     pluginsRoot: pluginPaths.pluginsRoot,
+    requiredInstalls: async () => {
+      const load = await loadMarketplacePolicy();
+      return load.ok ? load.policy.requiredInstalls : [];
+    },
   });
 
   // #958/#959 security — registry-entry cache (host-verified installSource +
