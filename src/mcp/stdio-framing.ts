@@ -4,9 +4,9 @@
  * plugin path (mcp-alignment-design.md §3.1, `untrusted-stdio-isolation`).
  *
  * Byte-accurate: lengths are UTF-8 byte counts (not char counts), so multi-byte
- * bodies frame correctly. Mirrors the framing `mcp-client.ts`'s external
- * `StdioTransport` already uses on the wire, so the two interoperate; this is the
- * reusable, independently-tested extraction used by the subprocess serving loop.
+ * bodies frame correctly. This is Ave's own host↔plugin-child wire, both ends
+ * Ave code; external MCP servers speak the spec's newline-delimited stdio
+ * framing through `mcp-client.ts`'s `StdioTransport` instead.
  */
 
 /** Frame one JSON-RPC message for an output stream. */

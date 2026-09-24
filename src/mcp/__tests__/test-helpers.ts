@@ -62,8 +62,8 @@ export function buildPolicy(
 }
 
 /**
- * A Content-Length framed JSON-RPC stdio child stub. Walks `stdinBuffer`,
- * extracts every complete frame, and writes a framed response back on stdout
+ * A newline-delimited JSON-RPC stdio child stub (MCP stdio transport). Walks
+ * `stdinBuffer`, takes every complete line, and writes a one-line response back on stdout
  * using the matching builder from `responses`. Notifications (no id) get no
  * reply. Shared between the stdio transport regression + sandbox-wrap tests.
  */
@@ -97,19 +97,11 @@ export class FakeChildProcess extends EventEmitter {
   private parseAndRespond(): void {
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const headerEnd = this.stdinBuffer.indexOf("\r\n\r\n");
-      if (headerEnd === -1) return;
-      const header = this.stdinBuffer.slice(0, headerEnd);
-      const m = header.match(/Content-Length:\s*(\d+)/i);
-      if (!m) {
-        this.stdinBuffer = this.stdinBuffer.slice(headerEnd + 4);
-        continue;
-      }
-      const len = parseInt(m[1], 10);
-      const bodyStart = headerEnd + 4;
-      if (this.stdinBuffer.length < bodyStart + len) return;
-      const body = this.stdinBuffer.slice(bodyStart, bodyStart + len);
-      this.stdinBuffer = this.stdinBuffer.slice(bodyStart + len);
+      const lineEnd = this.stdinBuffer.indexOf("\n");
+      if (lineEnd === -1) return;
+      const body = this.stdinBuffer.slice(0, lineEnd);
+      this.stdinBuffer = this.stdinBuffer.slice(lineEnd + 1);
+      if (body.trim().length === 0) continue;
       try {
         const req = JSON.parse(body) as { method: string; id?: number };
         // Notifications have no id → do not reply.
@@ -118,7 +110,7 @@ export class FakeChildProcess extends EventEmitter {
         if (!builder) continue;
         const result = builder(req.id);
         const payload = JSON.stringify({ jsonrpc: "2.0", id: req.id, result });
-        const frame = `Content-Length: ${Buffer.byteLength(payload)}\r\n\r\n${payload}`;
+        const frame = `${payload}\n`;
         // Defer slightly so the client's Promise has time to register.
         queueMicrotask(() => this.stdout.write(frame));
       } catch {
