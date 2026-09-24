@@ -4,7 +4,7 @@
  * the user previews is what is added, what a plan shows is what installs,
  * a plan is used once, and every install lands in its kind's installer.
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -31,6 +31,7 @@ import { McpInstaller } from "../mcp-installer.js";
 import type { InstallerPorts, TokenStore } from "../ports.js";
 import type { RevocationFeed } from "../revocations.js";
 import { MarketplaceService } from "../service.js";
+import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
 const AT = new Date("2026-09-24T00:00:00.000Z");
 const SURFACES = { "surface-sunken": "228 30% 97%", surface: "0 0% 100%", "surface-raised": "0 0% 100%", "surface-overlay": "0 0% 100%", "border-subtle": "228 24% 94%", "border-strong": "228 18% 84%" };
@@ -56,7 +57,7 @@ class FakeManager {
   }
 }
 
-describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
+describe("MarketplaceService", () => {
   let serverRoot: string;
   let server: GitHttpServer;
   let git: TestGitRunner;
@@ -89,7 +90,7 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
   afterAll(async () => {
     await server.close();
     await git.cleanup();
-    rmSync(serverRoot, { recursive: true, force: true });
+    await cleanupTmpDir(serverRoot);
   });
 
   beforeEach(async () => {
@@ -196,11 +197,11 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
     });
   }
 
-  afterEach(() => {
+  afterEach(async () => {
     service.close();
-    for (const repo of repos) removeFixtureRepo(repo);
+    for (const repo of repos) await removeFixtureRepo(repo);
     repos = [];
-    rmSync(root, { recursive: true, force: true });
+    await cleanupTmpDir(root);
   });
 
   /**
@@ -584,7 +585,8 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
     });
     expect(plan.runsCode).toBe(true);
     await service.executeInstall(plan.planId);
-    expect(manager.configs.get("notes")).toMatchObject({ command: "npx", args: ["-y", "@acme/notes@2.0.0", "--db", join(root, "mcp-data", "notes", "notes.db")] });
+    // `$DATA_DIR` is replaced in the author's text, so the rest of the path keeps its `/`.
+    expect(manager.configs.get("notes")).toMatchObject({ command: "npx", args: ["-y", "@acme/notes@2.0.0", "--db", `${join(root, "mcp-data", "notes")}/notes.db`] });
     await expect(service.uninstall({ sourceId: "acme-tools", kind: "mcp", name: "notes" })).resolves.toEqual({
       key: { sourceId: "acme-tools", kind: "mcp", name: "notes" },
       keptDataDir: join(root, "mcp-data", "notes"),

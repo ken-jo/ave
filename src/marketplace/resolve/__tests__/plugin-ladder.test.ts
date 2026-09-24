@@ -1,6 +1,6 @@
 import AdmZip from "adm-zip";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -25,6 +25,7 @@ import { createArtifactCache, NO_ARTIFACT_CACHE } from "../artifact-cache.js";
 import { candidateVersion } from "../descriptor.js";
 import { LadderError, planPluginInstall, runPluginLadder, treeDigest, type LadderDeps, type PluginInstallPlan } from "../plugin-ladder.js";
 import { sha256Hex as sha } from "../../__tests__/fixtures/package-files.js";
+import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
 const AT = "2026-09-23T00:00:00.000Z";
 const INSTALLATION = "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b";
@@ -54,7 +55,7 @@ function descriptor(name: string, version: string, artifact: Record<string, unkn
 
 const marketIndex = (packages: unknown[]) => `${JSON.stringify({ schemaVersion: 1, name: "acme", displayName: "Acme", packages })}\n`;
 
-describe.skipIf(process.platform === "win32")("plugin artifact ladder (design §6.2)", () => {
+describe("plugin artifact ladder (design §6.2)", () => {
   let serverRoot: string;
   let server: GitHttpServer;
   let git: TestGitRunner;
@@ -77,7 +78,7 @@ describe.skipIf(process.platform === "win32")("plugin artifact ladder (design §
   afterAll(async () => {
     await server.close();
     await git.cleanup();
-    rmSync(serverRoot, { recursive: true, force: true });
+    await cleanupTmpDir(serverRoot);
   });
 
   beforeEach(() => {
@@ -85,11 +86,11 @@ describe.skipIf(process.platform === "win32")("plugin artifact ladder (design §
     workRoot = mkdtempSync(join(tmpdir(), "ave-ladder-work-"));
   });
 
-  afterEach(() => {
-    for (const repo of repos) removeFixtureRepo(repo);
+  afterEach(async () => {
+    for (const repo of repos) await removeFixtureRepo(repo);
     repos = [];
-    rmSync(root, { recursive: true, force: true });
-    rmSync(workRoot, { recursive: true, force: true });
+    await cleanupTmpDir(root);
+    await cleanupTmpDir(workRoot);
   });
 
   function fixture(name?: string): { repo: FixtureRepo; name: string } {

@@ -1,5 +1,5 @@
-import { execFile, execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -17,6 +17,7 @@ import {
 import { createTestGitRunner, type TestGitRunner } from "../../__tests__/fixtures/git-runner.js";
 import { BareRepo } from "../repo.js";
 import type { GitRemote } from "../run-git.js";
+import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
 const execFileAsync = promisify(execFile);
 const LIMITS = { maxFiles: 100, maxBytes: 1024 * 1024 };
@@ -60,7 +61,9 @@ describe("BareRepo", () => {
       },
       "first",
     );
-    execFileSync("chmod", ["+x", join(repo.work, "plugins/alpha/dist/index.js")]);
+    // The file mode for git on POSIX, the index bit where core.fileMode is off (Windows).
+    chmodSync(join(repo.work, "plugins/alpha/dist/index.js"), 0o755);
+    hostGit(["update-index", "--chmod=+x", "plugins/alpha/dist/index.js"], repo.work);
     second = repo.commit({ "plugins/alpha/dist/index.js": "export const v = 2;\n" }, "second");
     server = await startGitHttpServer({ root });
     t = await createTestGitRunner();
@@ -69,9 +72,9 @@ describe("BareRepo", () => {
   afterAll(async () => {
     await t.cleanup();
     await server.close();
-    removeFixtureRepo(repo);
-    rmSync(root, { recursive: true, force: true });
-    rmSync(scratch, { recursive: true, force: true });
+    await removeFixtureRepo(repo);
+    await cleanupTmpDir(root);
+    await cleanupTmpDir(scratch);
   });
 
   it("lists the remote HEAD and a named ref", async () => {
@@ -87,6 +90,29 @@ describe("BareRepo", () => {
     expect(await bare.isAncestor(first, second)).toBe(true);
     expect(await bare.isAncestor(second, first)).toBe(false);
     expect(missingBlobs(bare.dir, second, "marketplace.json")).toHaveLength(1);
+  });
+
+  it("reads a commit's time without the blobs rename detection would want", async () => {
+    // A commit that deletes one file and adds others: `git show` would diff it
+    // against its parent and try to fetch blobs this clone never has.
+    const renamed = createFixtureRepo(root, "renamed");
+    try {
+      renamed.commit({ "README.md": "start\n" }, "start");
+      const moved = renamed.commitEntries(
+        [
+          { path: "skills/alpha/SKILL.md", mode: "100644", content: "# alpha\n" },
+          { path: "skills/alpha/ave-package.json", mode: "100644", content: "{}\n" },
+        ],
+        "move",
+      );
+      const bare = await BareRepo.init(t.runner, localRepoDir());
+      const renamedRemote = { ...remote, url: normalizeSourceUrl(server.url("renamed")) };
+      expect(await bare.fetchRef(renamedRemote, undefined, "pin")).toBe(moved);
+      expect(await bare.commitTime(moved)).toBe(new Date(hostGit(["log", "-1", "--format=%cI", moved], renamed.work)).toISOString());
+      expect(missingBlobs(bare.dir, moved, "skills")).toHaveLength(2);
+    } finally {
+      await removeFixtureRepo(renamed);
+    }
   });
 
   it("reports a missing ref", async () => {
@@ -149,7 +175,7 @@ describe("BareRepo", () => {
     const dest2 = mkdtempSync(join(scratch, "export-"));
     const files2 = await bare.exportPath(remote, second, "plugins/alpha", dest2, LIMITS);
     expect(files2.find((file) => file.path === "dist/index.js")).toMatchObject({ executable: true });
-    expect(statSync(join(dest2, "dist/index.js")).mode & 0o111).not.toBe(0);
+    if (process.platform !== "win32") expect(statSync(join(dest2, "dist/index.js")).mode & 0o111).not.toBe(0);
     expect(readFileSync(join(dest2, "dist/index.js"), "utf8")).toBe("export const v = 2;\n");
   });
 

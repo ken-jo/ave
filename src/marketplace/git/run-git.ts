@@ -25,6 +25,7 @@ import { spawn } from "node:child_process";
 import { delimiter, dirname } from "node:path";
 import { proxyUrlFromPacEntry } from "../../shared/pac-proxy.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
+import { forceKillManagedChildProcess } from "../../main/managed-child-processes.js";
 import { terminateChildProcess } from "../../tools/terminate-child-process.js";
 import { MarketplaceError, type MarketplaceErrorCode } from "../errors.js";
 import type { NormalizedSourceUrl } from "../net/source-url.js";
@@ -248,7 +249,11 @@ export class GitRunner {
       const stop = (error: Error) => {
         if (failure) return;
         failure = error;
-        terminateChildProcess(child);
+        // On Windows a kill reaches git.exe alone: its git-remote-https child
+        // keeps the output pipes open and `close` never comes, so the whole
+        // tree goes. Elsewhere git gets SIGTERM and removes its lock files.
+        if (process.platform === "win32") forceKillManagedChildProcess(child, `marketplace git ${command} stopped`);
+        else terminateChildProcess(child);
       };
       const timer = setTimeout(() => {
         stop(

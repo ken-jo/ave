@@ -1,5 +1,5 @@
 import AdmZip from "adm-zip";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -18,6 +18,7 @@ import { NetworkGate } from "../../net/network-gate.js";
 import { SourceRegistry } from "../../sources/registry.js";
 import { SourceSyncer } from "../../sources/sync.js";
 import { assertMcpRuntimePinned, mcpServerConfigFor, planMcpInstall, resolveMcpPackage, runtimeFromServerJson } from "../mcp.js";
+import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
 const AT = "2026-09-23T00:00:00.000Z";
 
@@ -175,7 +176,7 @@ describe("assertMcpRuntimePinned", () => {
   });
 });
 
-describe.skipIf(process.platform === "win32")("resolveMcpPackage", () => {
+describe("resolveMcpPackage", () => {
   let serverRoot: string;
   let server: GitHttpServer;
   let git: TestGitRunner;
@@ -192,17 +193,17 @@ describe.skipIf(process.platform === "win32")("resolveMcpPackage", () => {
   afterAll(async () => {
     await server.close();
     await git.cleanup();
-    rmSync(serverRoot, { recursive: true, force: true });
+    await cleanupTmpDir(serverRoot);
   });
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), "ave-mcp-root-"));
   });
 
-  afterEach(() => {
-    for (const repo of repos) removeFixtureRepo(repo);
+  afterEach(async () => {
+    for (const repo of repos) await removeFixtureRepo(repo);
     repos = [];
-    rmSync(root, { recursive: true, force: true });
+    await cleanupTmpDir(root);
   });
 
   async function resolveFrom(files: Record<string, string>, executable: string[] = []) {

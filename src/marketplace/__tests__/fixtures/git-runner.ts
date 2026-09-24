@@ -2,7 +2,8 @@
  * Test fixture: a {@link GitRunner} over the host's git with a real askpass
  * broker, an empty generated global config and Ave-owned empty directories.
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AskpassBroker } from "../../git/askpass.js";
@@ -48,7 +49,7 @@ export async function createTestGitRunner(
     dir,
     async cleanup() {
       await broker.close();
-      rmSync(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true });
     },
   };
 }

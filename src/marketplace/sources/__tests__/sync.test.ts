@@ -19,6 +19,7 @@ import { policyLoad as policyWith } from "../../__tests__/fixtures/policy.js";
 import type { PolicyLoad } from "../policy.js";
 import { SourceRegistry } from "../registry.js";
 import { SourceSyncer, shouldSyncSource, type SyncResult } from "../sync.js";
+import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
 const AT = "2026-09-23T00:00:00.000Z";
 const OTHER_COMMIT = "c".repeat(40);
@@ -56,7 +57,7 @@ function expectFailed(result: SyncResult, code: string): void {
   expect(result).toMatchObject({ status: "failed", code });
 }
 
-describe.skipIf(process.platform === "win32")("SourceSyncer", () => {
+describe("SourceSyncer", () => {
   let serverRoot: string;
   let server: GitHttpServer;
   let git: TestGitRunner;
@@ -73,17 +74,17 @@ describe.skipIf(process.platform === "win32")("SourceSyncer", () => {
   afterAll(async () => {
     await server.close();
     await git.cleanup();
-    rmSync(serverRoot, { recursive: true, force: true });
+    await cleanupTmpDir(serverRoot);
   });
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), "ave-sync-root-"));
   });
 
-  afterEach(() => {
-    for (const repo of repos) removeFixtureRepo(repo);
+  afterEach(async () => {
+    for (const repo of repos) await removeFixtureRepo(repo);
     repos = [];
-    rmSync(root, { recursive: true, force: true });
+    await cleanupTmpDir(root);
   });
 
   function fixture(): { repo: FixtureRepo; name: string } {
@@ -190,12 +191,12 @@ describe.skipIf(process.platform === "win32")("SourceSyncer", () => {
     await syncer.sync("acme");
 
     // The full-history fetch brings the pinned commit back when the candidate descends from it.
-    rmSync(join(root, "acme", "repo.git"), { recursive: true, force: true });
+    await cleanupTmpDir(join(root, "acme", "repo.git"));
     const moved = repo.commit({ "README.md": "v3\n" }, "third");
     expect(await syncer.sync("acme")).toEqual({ status: "ok", pinnedCommit: moved, changed: true });
 
     // When it does not, the pinned object stays missing and the move is held for review.
-    rmSync(join(root, "acme", "repo.git"), { recursive: true, force: true });
+    await cleanupTmpDir(join(root, "acme", "repo.git"));
     const rewritten = rewrite(repo, base, { "README.md": "other\n" });
     expectFailed(await syncer.sync("acme"), "SOURCE_HISTORY_REWRITTEN");
     expect(await registry.readState("acme")).toMatchObject({ pinnedCommit: moved, pendingRewrite: { candidate: rewritten } });
@@ -413,8 +414,10 @@ describe.skipIf(process.platform === "win32")("SourceSyncer", () => {
 
   it("reads the conventional layout when there is no index", async () => {
     const { repo, name } = fixture();
-    const commit = repo.commit(
-      {
+    repo.commit({ "README.md": "start\n" }, "start");
+    // Tree entries, not files: Windows cannot create `odd:name` on disk.
+    const commit = repo.commitEntries(
+      Object.entries({
         "skills/alpha/ave-package.json": skill("alpha"),
         "skills/alpha/SKILL.md": "# alpha\n",
         "plugins/wrong/ave-package.json": skill("wrong"),
@@ -422,7 +425,7 @@ describe.skipIf(process.platform === "win32")("SourceSyncer", () => {
         "skills/one/ave-package.json": skill("twin"),
         "skills/two/ave-package.json": skill("twin"),
         "skills/odd:name/ave-package.json": skill("odd"),
-      },
+      }).map(([path, content]) => ({ path, mode: "100644", content })),
       "layout",
     );
     const { registry, syncer } = await setup();

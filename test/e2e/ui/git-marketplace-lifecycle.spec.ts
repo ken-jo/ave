@@ -279,7 +279,7 @@ test.describe('git marketplace lifecycle', () => {
 
   test.afterAll(async () => {
     await server?.close();
-    if (repo) removeFixtureRepo(repo);
+    if (repo) await removeFixtureRepo(repo);
     if (served) rmSync(served, { recursive: true, force: true });
   });
 

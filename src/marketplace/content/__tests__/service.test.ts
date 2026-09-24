@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { moonstoneBundle } from "../../../ui/renderer/theme/bundles/moonstone.js";
 import type { ParsedContent } from "../kinds.js";
@@ -41,8 +42,8 @@ describe("InstalledContentService", () => {
     expect(view.broken).toEqual([{ kind: "theme", name: "tampered", problem: "the installed files changed after install" }]);
     expect(svc.languageMessages("fr")).toEqual({ "app.title": "Ave" });
     expect(() => svc.languageMessages("de")).toThrow("no installed language provides de");
-    expect(svc.servedFile("font", "harbor-sans", "files/Harbor Sans.woff2")).toEqual({ path: "/pkgs/font/harbor-sans/1.0.0/files/Harbor Sans.woff2", contentType: "font/woff2" });
-    expect(svc.servedFile("theme", "harbor", "preview.webp")).toEqual({ path: "/pkgs/theme/harbor/1.0.0/preview.webp", contentType: "image/webp" });
+    expect(svc.servedFile("font", "harbor-sans", "files/Harbor Sans.woff2")).toEqual({ path: join("/pkgs/font/harbor-sans/1.0.0", "files/Harbor Sans.woff2"), contentType: "font/woff2" });
+    expect(svc.servedFile("theme", "harbor", "preview.webp")).toEqual({ path: join("/pkgs/theme/harbor/1.0.0", "preview.webp"), contentType: "image/webp" });
     expect(svc.servedFile("theme", "harbor", "theme.json")).toBeNull();
     expect(svc.servedFile("font", "harbor-sans", "LICENSE")).toBeNull();
   });

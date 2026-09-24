@@ -42,7 +42,7 @@ interface BuiltRunner {
 
 /** A copied entry that names a credential helper: `credential.helper` or `credential.<url>.helper`. */
 function isHelperEntry(entry: GitConfigEntry): boolean {
-  return entry.value !== "" && (entry.key === "credential.helper" || (entry.key.startsWith("credential.") && entry.key.endsWith(".helper")));
+  return Boolean(entry.value) && (entry.key === "credential.helper" || (entry.key.startsWith("credential.") && entry.key.endsWith(".helper")));
 }
 
 export class MarketplaceGit {
@@ -85,7 +85,7 @@ export class MarketplaceGit {
     await mkdir(emptyDir, { recursive: true });
     const globalConfigPath = join(this.options.envRoot, "gitconfig");
     const copied = await readCopiedCredentialConfig(git.path);
-    await writeGeneratedGlobalConfig(git.path, globalConfigPath, copied);
+    await writeGeneratedGlobalConfig(globalConfigPath, copied);
     const managed = git.kind === "managed"
       ? await managedRunnerOptions(
           { path: git.path, root: git.managedRoot!, version: git.version },

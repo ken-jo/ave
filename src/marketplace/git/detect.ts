@@ -15,7 +15,7 @@
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { access } from "node:fs/promises";
-import { delimiter, join } from "node:path";
+import { posix } from "node:path";
 import type { GitRuntimeMode } from "../../shared/git-runtime-mode.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
 import { type GitVersion, meetsMinimumGitVersion, parseGitVersion } from "./git-version.js";
@@ -70,12 +70,12 @@ function wellKnownLocations(platform: NodeJS.Platform): string[] {
 
 export function systemGitCandidates(platform: NodeJS.Platform, searchPath: string | undefined): string[] {
   const binary = platform === "win32" ? "git.exe" : "git";
-  const sep = platform === "win32" ? ";" : delimiter;
+  const sep = platform === "win32" ? ";" : ":";
   const fromPath = (searchPath ?? "")
     .split(sep)
     .map((entry) => entry.trim().replace(/^"(.*)"$/u, "$1"))
     .filter((entry) => entry.length > 0 && (platform === "win32" ? /^[A-Za-z]:[\\/]/u.test(entry) : entry.startsWith("/")))
-    .map((entry) => (platform === "win32" ? `${entry.replace(/[\\/]+$/u, "")}\\${binary}` : join(entry, binary)));
+    .map((entry) => (platform === "win32" ? `${entry.replace(/[\\/]+$/u, "")}\\${binary}` : posix.join(entry, binary)));
   const seen = new Set<string>();
   const out: string[] = [];
   for (const candidate of [...fromPath, ...wellKnownLocations(platform)]) {

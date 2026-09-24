@@ -83,7 +83,7 @@ describe("generated global config", () => {
     expect(entries.map((entry) => entry.key)).not.toContain("url.https://evil.example/.insteadof");
 
     const output = join(dir, "generated");
-    await writeGeneratedGlobalConfig(git.path, output, entries);
+    await writeGeneratedGlobalConfig(output, entries);
     const text = readFileSync(output, "utf8");
     expect(text).not.toContain("insteadOf");
     expect(text).not.toContain("extraHeader");
@@ -95,9 +95,33 @@ describe("generated global config", () => {
   });
 
   it("produces an empty file when there is no user config", async () => {
-    const git = await hostGitExecutable();
     const output = join(dir, "generated");
-    await writeGeneratedGlobalConfig(git.path, output, []);
+    await writeGeneratedGlobalConfig(output, []);
     expect(readFileSync(output, "utf8")).toBe("");
+  });
+
+  it("keeps the copied order across sections, valueless keys and escaped values", async () => {
+    // git collects generic and per-URL helpers in file order, and an empty value
+    // resets the list: the reset must stay after the per-URL helper it clears.
+    const entries = [
+      { key: "credential.helper", value: "manager" },
+      { key: "credential.https://Dev.Example/a \"b\".usehttppath", value: null },
+      { key: "credential.https://Dev.Example/a \"b\".helper", value: "store --file=C:\\creds\\x" },
+      { key: "credential.helper", value: "" },
+      { key: "http.sslcainfo", value: " /etc/corp #1; \"quoted\"\tpem " },
+    ];
+    const output = join(dir, "generated");
+    await writeGeneratedGlobalConfig(output, entries);
+    const git = await hostGitExecutable();
+    const { execFileSync } = await import("node:child_process");
+    const readBack = execFileSync(git.path, ["config", "--file", output, "--null", "--list"], { encoding: "utf8" });
+    expect(parseNullConfigList(readBack)).toEqual(entries);
+    // git reads the valueless key as boolean true.
+    const flag = execFileSync(git.path, ["config", "--file", output, "--type=bool", "credential.https://Dev.Example/a \"b\".usehttppath"], { encoding: "utf8" });
+    expect(flag.trim()).toBe("true");
+  });
+
+  it("refuses a value git cannot store instead of writing a different one", async () => {
+    await expect(writeGeneratedGlobalConfig(join(dir, "generated"), [{ key: "credential.helper", value: "a\rb" }])).rejects.toThrow("control character");
   });
 });

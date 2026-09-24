@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,6 +22,7 @@ import { SourceSyncer } from "../../sources/sync.js";
 import type { ParsedContent } from "../kinds.js";
 import { ContentLedger, contentLedgerOrigins, type LedgerEntry } from "../ledger.js";
 import { ContentStore, stageContentPackage, type ContentActivation } from "../store.js";
+import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
 const AT = "2026-09-23T00:00:00.000Z";
 const INSTALLATION = "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b";
@@ -35,7 +36,7 @@ const language = (name: string, locale: string) => ({
   [`languages/${name}/messages.json`]: text({ "chat.send": "Envoyer" }),
 });
 
-describe.skipIf(process.platform === "win32")("content package store (blueprint 3.1)", () => {
+describe("content package store (blueprint 3.1)", () => {
   let serverRoot: string;
   let server: GitHttpServer;
   let git: TestGitRunner;
@@ -64,7 +65,7 @@ describe.skipIf(process.platform === "win32")("content package store (blueprint 
   afterAll(async () => {
     await server.close();
     await git.cleanup();
-    rmSync(serverRoot, { recursive: true, force: true });
+    await cleanupTmpDir(serverRoot);
   });
 
   beforeEach(() => {
@@ -73,10 +74,10 @@ describe.skipIf(process.platform === "win32")("content package store (blueprint 
     failActivation = false;
   });
 
-  afterEach(() => {
-    for (const repo of repos) removeFixtureRepo(repo);
+  afterEach(async () => {
+    for (const repo of repos) await removeFixtureRepo(repo);
     repos = [];
-    rmSync(root, { recursive: true, force: true });
+    await cleanupTmpDir(root);
   });
 
   /** A marketplace repository serving `packages` (kind, name, path) with the given files. */

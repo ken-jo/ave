@@ -123,10 +123,14 @@ export class BareRepo {
     }
   }
 
-  /** Committer time of `commit`, ISO-8601. */
+  /**
+   * Committer time of `commit`, ISO-8601. `git log`, not `git show -s`: show
+   * still diffs against the parent, and rename detection on a commit that
+   * deletes and adds files reads blobs this partial clone does not have.
+   */
   async commitTime(commit: string): Promise<string> {
     assertCommitId(commit, "commit");
-    const result = await this.runner.run(["show", "-s", "--format=%cI", commit], { gitDir: this.dir, timeoutMs: GIT_TIMEOUTS_MS.local });
+    const result = await this.runner.run(["log", "-1", "--format=%cI", commit], { gitDir: this.dir, timeoutMs: GIT_TIMEOUTS_MS.local });
     return new Date(result.stdout.toString("utf8").trim()).toISOString();
   }
 
