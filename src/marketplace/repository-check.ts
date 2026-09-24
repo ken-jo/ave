@@ -44,8 +44,9 @@ export interface RepositoryCheckOptions {
    * versions whose release the caller downloaded. Each is held to the
    * git-install manifest rules against its index version, as the ladder
    * holds the staged manifest (design §5.3, §6.2). A yanked version may
-   * still carry `installPolicy`: it is a field pin kept only so installs of
-   * that exact zip keep their grant (design §16.3), and nothing installs it.
+   * still carry `installPolicy` and `publisher`: it is a field pin kept only
+   * so installs of that exact zip keep their grant (design §16.3), and
+   * nothing installs it.
    */
   releasedManifests?: ReadonlyMap<string, unknown>;
 }
@@ -99,12 +100,12 @@ function manifestMismatches(document: unknown, descriptor: PackageDescriptor): s
   });
 }
 
-/** The manifest of a field pin without the `installPolicy` its era required; every other rule still holds. */
-function withoutLegacyInstallPolicy(document: unknown): unknown {
+/** The manifest of a field pin without the `installPolicy` and `publisher` of its era; every other rule still holds. */
+function withoutLegacyFields(document: unknown): unknown {
   const extensions = isRecord(document) ? document.extensions : undefined;
   const ave = isRecord(extensions) ? extensions[AVE_EXTENSION_NAMESPACE] : undefined;
-  if (!isRecord(document) || !isRecord(extensions) || !isRecord(ave) || !("installPolicy" in ave)) return document;
-  const { installPolicy: _installPolicy, ...rest } = ave;
+  if (!isRecord(document) || !isRecord(extensions) || !isRecord(ave)) return document;
+  const { installPolicy: _installPolicy, publisher: _publisher, ...rest } = ave;
   return { ...document, extensions: { ...extensions, [AVE_EXTENSION_NAMESPACE]: rest } };
 }
 
@@ -119,7 +120,7 @@ function checkReleasedManifests(entry: IndexPackage, released: ReadonlyMap<strin
       continue;
     }
     const expected = { name: entry.name, version: version.version, minAppVersion: version.minAppVersion, authority: version.authority as PluginAuthority };
-    const held = version.yanked ? withoutLegacyInstallPolicy(document) : document;
+    const held = version.yanked ? withoutLegacyFields(document) : document;
     for (const mismatch of gitInstallManifestMismatches(held, expected)) report(`the released plugin.json of ${version.version}: ${mismatch}`);
   }
 }
@@ -192,6 +193,7 @@ function checkContent(tree: RepositoryTree, entry: IndexPackage, descriptor: Pac
     payload: descriptor.payload,
     english: messages.en,
     sourceOrigin: options.official ? "official" : "custom",
+    unknownMessageKeys: "refuse",
   });
 }
 

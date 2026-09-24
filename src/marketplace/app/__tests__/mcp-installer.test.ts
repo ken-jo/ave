@@ -10,7 +10,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { McpServerConfig } from "../../../mcp/types.js";
-import { DisabledMarketplaceFetcher } from "../../../plugins/marketplace.js";
 import { PluginArtifactStore } from "../../../plugins/plugin-artifact-store.js";
 import type { ResolvedMcpServer } from "../../resolve/mcp.js";
 import { McpInstaller, mcpInstallOrigins } from "../mcp-installer.js";
@@ -98,9 +97,6 @@ describe("McpInstaller", () => {
     const files = new PluginArtifactStore({
       installRoot: join(home, "mcp"),
       cacheRoot: join(home, "mcp", ".cache"),
-      fetcher: new DisabledMarketplaceFetcher(),
-      publicKeys: {},
-      tarballCacheBase: null,
     });
     installer = new McpInstaller({
       recordsPath: recordsPath(),
@@ -124,10 +120,11 @@ describe("McpInstaller", () => {
       expect((await stat(script)).mode & 0o111).not.toBe(0);
       expect((await stat(join(home, "mcp", "notes", "server", "README.md"))).mode & 0o111).toBe(0);
     }
-    expect(manager.configs.get("notes")).toMatchObject({ command: script, args: ["--data", join(home, "mcp-data", "notes")] });
+    // `$PLUGIN_DIR` is replaced in the author's text, so the rest of the path keeps its `/`.
+    expect(manager.configs.get("notes")).toMatchObject({ command: `${join(home, "mcp", "notes")}/server/run.sh`, args: ["--data", join(home, "mcp-data", "notes")] });
     expect((await stat(join(home, "mcp-data", "notes"))).isDirectory()).toBe(true);
     expect(await installer.list()).toEqual([{ kind: "mcp", name: "notes", version: "1.0.0", sourceId: "acme", originCommit: SNAPSHOT }]);
-    expect(await mcpInstallOrigins(recordsPath())()).toEqual([{ sourceId: "acme", commit: SNAPSHOT }]);
+    expect(await mcpInstallOrigins(recordsPath())()).toEqual([{ kind: "mcp", name: "notes", sourceId: "acme", commit: SNAPSHOT }]);
   });
 
   it("refuses to mark executable a zip entry that extraction did not write as named, and registers nothing", async () => {

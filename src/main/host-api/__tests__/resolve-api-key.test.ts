@@ -1,98 +1,71 @@
 /**
  * #893 Ralph cycle 1 HIGH — unit tests for the host implementation of
- * `hostApi.resolveApiKey()`. Mirrors the 4-tier secret gate inside
- * `plugin-runtime.ts:getSecret` and exercises every refusal branch + the
- * Ralph cycle 1 fixes:
+ * `hostApi.resolveApiKey()`. Runs the same 4-tier secret gate as
+ * `hostApi.getSecret` and exercises every refusal branch:
  *   - signal.aborted at entry → reason="aborted"
  *   - own-namespace (Tier-1) short-circuit
  *   - manifest allowlist (Tier-2) miss → reason="not-whitelisted"
- *   - whitelist registry (Tier-3) deny passthrough
+ *   - host-secret grant (Tier-3, design §10.3) refusal → reason="not-whitelisted"
  *   - vendor cross-check (Tier-4) deny — runs AFTER Tier-3 (cycle 1 MEDIUM)
  *   - success path: bearer + release() lifetime, signal-bound release
  *   - vendor alias normalization (SDK "anthropic" → host "claude")
  *   - azure-foundry baseUrl resolution
  */
-import { afterEach, describe, it, expect, beforeEach, vi } from "vitest";
-import { generateKeyPairSync, sign, createHash } from "node:crypto";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { resolveApiKey } from "../resolve-api-key.js";
-import {
-  WhitelistCache,
-  whitelistRegistry,
-} from "../../../plugins/whitelist/whitelist-registry.js";
-import { WHITELIST_PRIMARY_KEY_ID } from "../../../plugins/marketplace-keys.js";
 import { resetHostSecretCountersForTesting } from "../../../telemetry/host-secret-counters.js";
-import { useTempDirs } from "../../../__tests__/test-helpers.js";
-import type { SignatureEnvelope } from "../../../plugins/types.js";
-import type { PluginManifest } from "../../../plugins/types.js";
-import { manifestSha } from "../../../__tests__/support/sign-envelope-fixture.js";
-import { unusedNetworkFetch } from "../../../__tests__/support/network-fetch-stubs.js";
+import type { PluginManifest, PluginRegistryTrust } from "../../../plugins/types.js";
+import type { HostSecretGrantEvidence } from "../../../plugins/secret-access/grants.js";
+import { manifestSha } from "../../../__tests__/support/manifest-sha-fixture.js";
 
 // -------- helpers --------
 
-const freshTmpDir = useTempDirs("ave-resolve-api-key-");
+/** A plugin the app's grant table lists (design §10.3). */
+const GRANTED = "meeting";
+const PIN = "a".repeat(64);
 
-let testPrivateKey: ReturnType<typeof generateKeyPairSync>["privateKey"];
-
-interface SeedOpts {
-  pluginId: string;
-  allowedKeys: string[];
-  manifestSha256: string;
-  // Tier-3 signature key swap is global to the registry singleton.
+/**
+ * Tier 3's inputs for an official install of the artifact the official
+ * snapshot pins, running the manifest recorded at install: the one case the
+ * grant table answers yes to.
+ */
+function officialGrant(manifestSha256: string, entry: Partial<PluginRegistryTrust> = {}) {
+  const grantEvidence: HostSecretGrantEvidence = {
+    officialPins: async () => [PIN],
+    receiptArtifactSha256: async () => null,
+  };
+  return {
+    readRegistryEntry: async (): Promise<PluginRegistryTrust | undefined> => ({
+      installSource: "user",
+      manifestSha256,
+      origin: {
+        sourceId: "ave",
+        sourceOrigin: "official",
+        commit: "c".repeat(40),
+        packagePath: `plugins/${GRANTED}`,
+        version: "1.0.0",
+        rung: "release",
+        artifactSha256: PIN,
+        installedAt: "2026-09-24T00:00:00.000Z",
+      },
+      ...entry,
+    }),
+    grantEvidence,
+  };
 }
 
-async function seedRegistryWithGrant(opts: SeedOpts): Promise<void> {
-  whitelistRegistry.resetForTesting();
-  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-  const rawPub = publicKey.export({ type: "spki", format: "der" }).slice(-32);
-  testPrivateKey = privateKey;
-  whitelistRegistry.setPublicKeysForTesting({
-    [WHITELIST_PRIMARY_KEY_ID]: rawPub.toString("base64"),
-  });
-
-  const doc = {
-    version: 1,
-    schemaVersion: 1,
-    issuedAt: "2026-05-17T00:00:00.000Z",
-    expiresAt: "2030-01-01T00:00:00.000Z",
-    pluginGrants: {
-      [opts.pluginId]: {
-        publisher: "test",
-        hostSecrets: { read: opts.allowedKeys },
-        approvedManifestSha256: opts.manifestSha256,
-      },
+/** Tier 3's inputs for a plugin with no registry entry: nothing is ever granted, so nothing is read. */
+const NO_GRANT = {
+  readRegistryEntry: async (): Promise<PluginRegistryTrust | undefined> => undefined,
+  grantEvidence: {
+    officialPins: async () => {
+      throw new Error("no grant evidence is read for a plugin without an entry");
     },
-  };
-  const body = JSON.stringify(doc);
-  const sigBytes = sign(null, Buffer.from(body, "utf-8"), testPrivateKey);
-  const envelope: SignatureEnvelope = {
-    version: 1,
-    iat: Math.floor(Date.now() / 1000),
-    artifact_sha256: createHash("sha256")
-      .update(Buffer.from(body, "utf-8"))
-      .digest("hex"),
-    signatures: [
-      {
-        key_id: WHITELIST_PRIMARY_KEY_ID,
-        alg: "ed25519",
-        sig: sigBytes.toString("base64"),
-      },
-    ],
-  };
-
-  const cacheRoot = freshTmpDir("ave-resolve-api-key-");
-  const cache = new WhitelistCache(cacheRoot);
-  await cache.store({
-    body,
-    signature: JSON.stringify(envelope),
-    meta: { highestSeenIssuedAt: doc.issuedAt },
-  });
-  await whitelistRegistry.init({
-    networkFetch: unusedNetworkFetch,
-    userDataDir: cacheRoot,
-    online: false,
-    now: () => Date.parse("2026-05-18T00:00:00.000Z"),
-  });
-}
+    receiptArtifactSha256: async () => {
+      throw new Error("no grant evidence is read for a plugin without an entry");
+    },
+  } satisfies HostSecretGrantEvidence,
+};
 
 function manifestFor(pluginId: string, allowedKeys: string[]): PluginManifest {
   return {
@@ -154,11 +127,6 @@ function makeSettingsService(overrides: SettingsOverrides) {
 
 beforeEach(() => {
   resetHostSecretCountersForTesting();
-  whitelistRegistry.resetForTesting();
-});
-
-afterEach(() => {
-  whitelistRegistry.resetForTesting();
 });
 
 describe("resolveApiKey — signal.aborted at entry", () => {
@@ -171,8 +139,10 @@ describe("resolveApiKey — signal.aborted at entry", () => {
       {
         pluginId: "p",
         manifest,
+        manifestSha256: manifestSha(manifest),
         settingsService: makeSettingsService({ provider: "openai" }) as never,
         auditLogger: makeAuditLogger(),
+        ...NO_GRANT,
       },
     );
     expect(result.ok).toBe(false);
@@ -192,8 +162,10 @@ describe("resolveApiKey — Tier-1 own-namespace short-circuit", () => {
       {
         pluginId: "plugin-x",
         manifest,
+        manifestSha256: manifestSha(manifest),
         settingsService: settings as never,
         auditLogger: makeAuditLogger(),
+        ...NO_GRANT,
       },
     );
     expect(result.ok).toBe(true);
@@ -216,8 +188,10 @@ describe("resolveApiKey — Tier-1 own-namespace short-circuit", () => {
       {
         pluginId: "plugin-x",
         manifest,
+        manifestSha256: manifestSha(manifest),
         settingsService: settings as never,
         auditLogger: audit,
+        ...NO_GRANT,
       },
     );
 
@@ -237,8 +211,10 @@ describe("resolveApiKey — Tier-2 manifest allowlist miss", () => {
       {
         pluginId: "p",
         manifest,
+        manifestSha256: manifestSha(manifest),
         settingsService: makeSettingsService({ provider: "openai" }) as never,
         auditLogger: makeAuditLogger(),
+        ...NO_GRANT,
       },
     );
     expect(result.ok).toBe(false);
@@ -251,11 +227,6 @@ describe("resolveApiKey — Tier-3 whitelist registry deny passthrough", () => {
     // Seed registry with a grant for OTHER plugin so this plugin is absent.
     const manifest = manifestFor("p", ["llm.apiKey.openai"]);
     const manifestSha256 = manifestSha(manifest);
-    await seedRegistryWithGrant({
-      pluginId: "other",
-      allowedKeys: ["llm.apiKey.openai"],
-      manifestSha256: "a".repeat(64),
-    });
     const result = await resolveApiKey(
       { purpose: "llm", vendor: "openai" },
       {
@@ -267,6 +238,7 @@ describe("resolveApiKey — Tier-3 whitelist registry deny passthrough", () => {
           secrets: { "llm.apiKey.openai": "sk-host" },
         }) as never,
         auditLogger: makeAuditLogger(),
+        ...officialGrant(manifestSha(manifest)),
       },
     );
     expect(result.ok).toBe(false);
@@ -281,11 +253,6 @@ describe("resolveApiKey — Tier-3 BEFORE Tier-4 ordering (cycle 1 MEDIUM)", () 
     // leak that would tell the plugin which vendor is active.
     const manifest = manifestFor("p", ["llm.apiKey.openai"]);
     const manifestSha256 = manifestSha(manifest);
-    await seedRegistryWithGrant({
-      pluginId: "other",
-      allowedKeys: ["llm.apiKey.openai"],
-      manifestSha256: "a".repeat(64),
-    });
     const result = await resolveApiKey(
       // plugin asks for openai but active is claude → vendor-mismatch.
       // Whitelist also denies → tier-3 should win.
@@ -299,6 +266,7 @@ describe("resolveApiKey — Tier-3 BEFORE Tier-4 ordering (cycle 1 MEDIUM)", () 
           secrets: { "llm.apiKey.openai": "sk-host" },
         }) as never,
         auditLogger: makeAuditLogger(),
+        ...officialGrant(manifestSha(manifest)),
       },
     );
     expect(result.ok).toBe(false);
@@ -308,22 +276,18 @@ describe("resolveApiKey — Tier-3 BEFORE Tier-4 ordering (cycle 1 MEDIUM)", () 
 
 describe("resolveApiKey — Tier-4 vendor mismatch", () => {
   it("returns vendor-mismatch when plugin allowlisted but vendor != active", async () => {
-    const manifest = manifestFor("p", ["llm.apiKey.openai"]);
+    const manifest = manifestFor(GRANTED, ["llm.apiKey.openai"]);
     const manifestSha256 = manifestSha(manifest);
-    await seedRegistryWithGrant({
-      pluginId: "p",
-      allowedKeys: ["llm.apiKey.openai"],
-      manifestSha256,
-    });
     const result = await resolveApiKey(
       { purpose: "llm", vendor: "openai" },
       {
-        pluginId: "p",
+        pluginId: GRANTED,
         manifest,
         manifestSha256,
         // Active vendor is claude → vendor-mismatch on requested openai.
         settingsService: makeSettingsService({ provider: "claude" }) as never,
         auditLogger: makeAuditLogger(),
+        ...officialGrant(manifestSha(manifest)),
       },
     );
     expect(result.ok).toBe(false);
@@ -335,19 +299,15 @@ describe("resolveApiKey — Tier-4 vendor mismatch", () => {
   // Tiers 1+2 used to be hand-copied into this file while only tiers 3+4 were
   // shared with `getSecret`. These pin the two behaviours that differed.
 
-  it("resolves a marketplace provider preset key — structurally unreachable before the gate merge", async () => {
-    // `getSecret` has always granted this key family (manifest schema and the
-    // signed whitelist schema both accept it). `resolveApiKey` synthesized only
-    // `llm.apiKey.<vendor>`, so with an active preset EVERY vendor landed on a
-    // Tier-4 mismatch and the family had no reachable allow path here at all.
+  it("asks for the active preset's key, which no host-secret grant covers", async () => {
+    // `resolveApiKey` used to synthesize only `llm.apiKey.<vendor>`; it now
+    // asks `hostSecretKeyForVendor`, so an active preset names the preset key.
+    // The app's grant table (design §10.3) lists only `llm.apiKey.*` keys, so
+    // Tier 3 refuses it and the key is never read.
     const presetKey = "llm.marketplaceProvider.future-router.apiKey";
-    const manifest = manifestFor("p", [presetKey]);
+    const manifest = manifestFor(GRANTED, [presetKey]);
     const manifestSha256 = manifestSha(manifest);
-    await seedRegistryWithGrant({
-      pluginId: "p",
-      allowedKeys: [presetKey],
-      manifestSha256,
-    });
+    const auditLogger = makeAuditLogger();
     const settingsService = makeSettingsService({
       provider: "openai-compatible",
       marketplaceProviderPresetId: "future-router",
@@ -357,32 +317,26 @@ describe("resolveApiKey — Tier-4 vendor mismatch", () => {
     const result = await resolveApiKey(
       { purpose: "llm" },
       {
-        pluginId: "p",
+        pluginId: GRANTED,
         manifest,
         manifestSha256,
         settingsService: settingsService as never,
-        auditLogger: makeAuditLogger(),
+        auditLogger,
+        ...officialGrant(manifestSha(manifest)),
       },
     );
 
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.bearer()).toBe("fr-secret");
-      result.release();
-    }
-    expect(settingsService.getSecret).toHaveBeenCalledWith(presetKey);
+    expect(result).toEqual({ ok: false, reason: "not-whitelisted" });
+    expect(settingsService.getSecret).not.toHaveBeenCalledWith(presetKey);
+    const lines = auditLogger.log.mock.calls.map((c) => (c[0] as { input?: string }).input ?? "");
+    expect(lines.some((l) => l.includes("reason=not-in-grant-table") && l.includes("(tier-3)"))).toBe(true);
   });
 
   it("still denies a preset key whose preset is installed but NOT active", async () => {
     // Tier-4 is preserved across the merge: reachable is not the same as open.
     const presetKey = "llm.marketplaceProvider.future-router.apiKey";
-    const manifest = manifestFor("p", [presetKey]);
+    const manifest = manifestFor(GRANTED, [presetKey]);
     const manifestSha256 = manifestSha(manifest);
-    await seedRegistryWithGrant({
-      pluginId: "p",
-      allowedKeys: [presetKey],
-      manifestSha256,
-    });
     const settingsService = makeSettingsService({
       provider: "openai-compatible",
       marketplaceProviderPresetId: "other-router",
@@ -393,11 +347,12 @@ describe("resolveApiKey — Tier-4 vendor mismatch", () => {
     const result = await resolveApiKey(
       { purpose: "llm", vendor: "openai" },
       {
-        pluginId: "p",
+        pluginId: GRANTED,
         manifest,
         manifestSha256,
         settingsService: settingsService as never,
         auditLogger: makeAuditLogger(),
+        ...officialGrant(manifestSha(manifest)),
       },
     );
 
@@ -425,6 +380,7 @@ describe("resolveApiKey — Tier-4 vendor mismatch", () => {
         manifestSha256,
         settingsService: settingsService as never,
         auditLogger,
+        ...NO_GRANT,
       },
     );
 
@@ -439,13 +395,8 @@ describe("resolveApiKey — Tier-4 vendor mismatch", () => {
 
   it("denies the generic OpenAI-compatible key while a marketplace preset is active", async () => {
     const genericKey = "llm.apiKey.openai-compatible";
-    const manifest = manifestFor("p", [genericKey]);
+    const manifest = manifestFor(GRANTED, [genericKey]);
     const manifestSha256 = manifestSha(manifest);
-    await seedRegistryWithGrant({
-      pluginId: "p",
-      allowedKeys: [genericKey],
-      manifestSha256,
-    });
     const settingsService = makeSettingsService({
       provider: "openai-compatible",
       marketplaceProviderPresetId: "future-router",
@@ -455,11 +406,12 @@ describe("resolveApiKey — Tier-4 vendor mismatch", () => {
     const result = await resolveApiKey(
       { purpose: "llm" },
       {
-        pluginId: "p",
+        pluginId: GRANTED,
         manifest,
         manifestSha256,
         settingsService: settingsService as never,
         auditLogger: makeAuditLogger(),
+        ...officialGrant(manifestSha(manifest)),
       },
     );
 
@@ -480,16 +432,11 @@ describe("resolveApiKey — Tier-4 vendor mismatch", () => {
 
 describe("resolveApiKey — success: release() lifetime", () => {
   it("bearer throws after release", async () => {
-    const manifest = manifestFor("p", ["llm.apiKey.openai"]);
-    await seedRegistryWithGrant({
-      pluginId: "p",
-      allowedKeys: ["llm.apiKey.openai"],
-      manifestSha256: manifestSha(manifest),
-    });
+    const manifest = manifestFor(GRANTED, ["llm.apiKey.openai"]);
     const result = await resolveApiKey(
       { purpose: "llm", vendor: "openai" },
       {
-        pluginId: "p",
+        pluginId: GRANTED,
         manifest,
         manifestSha256: manifestSha(manifest),
         settingsService: makeSettingsService({
@@ -497,6 +444,7 @@ describe("resolveApiKey — success: release() lifetime", () => {
           secrets: { "llm.apiKey.openai": "sk-host" },
         }) as never,
         auditLogger: makeAuditLogger(),
+        ...officialGrant(manifestSha(manifest)),
       },
     );
     expect(result.ok).toBe(true);
@@ -511,16 +459,11 @@ describe("resolveApiKey — success: release() lifetime", () => {
 describe("resolveApiKey — signal aborts mid-flight (cycle 1 HIGH)", () => {
   it("signal abort after resolve fires automatic release", async () => {
     const ac = new AbortController();
-    const manifest = manifestFor("p", ["llm.apiKey.openai"]);
-    await seedRegistryWithGrant({
-      pluginId: "p",
-      allowedKeys: ["llm.apiKey.openai"],
-      manifestSha256: manifestSha(manifest),
-    });
+    const manifest = manifestFor(GRANTED, ["llm.apiKey.openai"]);
     const result = await resolveApiKey(
       { purpose: "llm", vendor: "openai", signal: ac.signal },
       {
-        pluginId: "p",
+        pluginId: GRANTED,
         manifest,
         manifestSha256: manifestSha(manifest),
         settingsService: makeSettingsService({
@@ -528,6 +471,7 @@ describe("resolveApiKey — signal aborts mid-flight (cycle 1 HIGH)", () => {
           secrets: { "llm.apiKey.openai": "sk-host" },
         }) as never,
         auditLogger: makeAuditLogger(),
+        ...officialGrant(manifestSha(manifest)),
       },
     );
     expect(result.ok).toBe(true);
@@ -542,16 +486,11 @@ describe("resolveApiKey — signal aborts mid-flight (cycle 1 HIGH)", () => {
 
 describe("resolveApiKey — vendor alias normalization (cycle 1 CRITICAL)", () => {
   it("SDK vendor='anthropic' resolves against host activeProvider='claude'", async () => {
-    const manifest = manifestFor("p", ["llm.apiKey.claude"]);
-    await seedRegistryWithGrant({
-      pluginId: "p",
-      allowedKeys: ["llm.apiKey.claude"],
-      manifestSha256: manifestSha(manifest),
-    });
+    const manifest = manifestFor(GRANTED, ["llm.apiKey.claude"]);
     const result = await resolveApiKey(
       { purpose: "llm", vendor: "anthropic" }, // SDK enum name
       {
-        pluginId: "p",
+        pluginId: GRANTED,
         manifest,
         manifestSha256: manifestSha(manifest),
         settingsService: makeSettingsService({
@@ -559,6 +498,7 @@ describe("resolveApiKey — vendor alias normalization (cycle 1 CRITICAL)", () =
           secrets: { "llm.apiKey.claude": "sk-claude" },
         }) as never,
         auditLogger: makeAuditLogger(),
+        ...officialGrant(manifestSha(manifest)),
       },
     );
     expect(result.ok).toBe(true);
@@ -569,16 +509,11 @@ describe("resolveApiKey — vendor alias normalization (cycle 1 CRITICAL)", () =
   });
 
   it("SDK vendor='vertex' normalizes to host 'vertex-ai'", async () => {
-    const manifest = manifestFor("p", ["llm.apiKey.vertex-ai"]);
-    await seedRegistryWithGrant({
-      pluginId: "p",
-      allowedKeys: ["llm.apiKey.vertex-ai"],
-      manifestSha256: manifestSha(manifest),
-    });
+    const manifest = manifestFor(GRANTED, ["llm.apiKey.vertex-ai"]);
     const result = await resolveApiKey(
       { purpose: "llm", vendor: "vertex" },
       {
-        pluginId: "p",
+        pluginId: GRANTED,
         manifest,
         manifestSha256: manifestSha(manifest),
         settingsService: makeSettingsService({
@@ -586,6 +521,7 @@ describe("resolveApiKey — vendor alias normalization (cycle 1 CRITICAL)", () =
           secrets: { "llm.apiKey.vertex-ai": "sk-vertex" },
         }) as never,
         auditLogger: makeAuditLogger(),
+        ...officialGrant(manifestSha(manifest)),
       },
     );
     expect(result.ok).toBe(true);
@@ -596,16 +532,11 @@ describe("resolveApiKey — vendor alias normalization (cycle 1 CRITICAL)", () =
     // SDK 'azure-openai' → 'azure-foundry'. activeProvider = 'azure-foundry' →
     // should match (no mismatch). Conversely if activeProvider is anything
     // else, vendor-mismatch fires under the normalized name.
-    const manifest = manifestFor("p", ["llm.apiKey.azure-foundry"]);
-    await seedRegistryWithGrant({
-      pluginId: "p",
-      allowedKeys: ["llm.apiKey.azure-foundry"],
-      manifestSha256: manifestSha(manifest),
-    });
+    const manifest = manifestFor(GRANTED, ["llm.apiKey.azure-foundry"]);
     const result = await resolveApiKey(
       { purpose: "llm", vendor: "azure-openai" },
       {
-        pluginId: "p",
+        pluginId: GRANTED,
         manifest,
         manifestSha256: manifestSha(manifest),
         settingsService: makeSettingsService({
@@ -614,6 +545,7 @@ describe("resolveApiKey — vendor alias normalization (cycle 1 CRITICAL)", () =
           baseUrl: "https://my-region.openai.azure.com",
         }) as never,
         auditLogger: makeAuditLogger(),
+        ...officialGrant(manifestSha(manifest)),
       },
     );
     expect(result.ok).toBe(true);
@@ -630,16 +562,11 @@ describe("resolveApiKey — permission revoke fires release() on outstanding bea
     // PermissionManager. The host-api merges it with the caller's signal
     // via AbortSignal.any so the bearer aborts on either source.
     const revokeController = new AbortController();
-    const manifest = manifestFor("p", ["llm.apiKey.openai"]);
-    await seedRegistryWithGrant({
-      pluginId: "p",
-      allowedKeys: ["llm.apiKey.openai"],
-      manifestSha256: manifestSha(manifest),
-    });
+    const manifest = manifestFor(GRANTED, ["llm.apiKey.openai"]);
     const result = await resolveApiKey(
       { purpose: "llm", vendor: "openai" },
       {
-        pluginId: "p",
+        pluginId: GRANTED,
         manifest,
         manifestSha256: manifestSha(manifest),
         settingsService: makeSettingsService({
@@ -647,6 +574,7 @@ describe("resolveApiKey — permission revoke fires release() on outstanding bea
           secrets: { "llm.apiKey.openai": "sk-host" },
         }) as never,
         auditLogger: makeAuditLogger(),
+        ...officialGrant(manifestSha(manifest)),
         getPluginRevokeSignal: () => revokeController.signal,
       },
     );
@@ -669,8 +597,10 @@ describe("resolveApiKey — permission revoke fires release() on outstanding bea
       {
         pluginId: "p",
         manifest,
+        manifestSha256: manifestSha(manifest),
         settingsService: makeSettingsService({ provider: "openai" }) as never,
         auditLogger: makeAuditLogger(),
+        ...NO_GRANT,
         getPluginRevokeSignal: () => revokeController.signal,
       },
     );
@@ -681,16 +611,11 @@ describe("resolveApiKey — permission revoke fires release() on outstanding bea
 
 describe("resolveApiKey — baseUrl present on azure-foundry success", () => {
   it("baseUrl threaded from llm.vendors['azure-foundry'].baseUrl", async () => {
-    const manifest = manifestFor("p", ["llm.apiKey.azure-foundry"]);
-    await seedRegistryWithGrant({
-      pluginId: "p",
-      allowedKeys: ["llm.apiKey.azure-foundry"],
-      manifestSha256: manifestSha(manifest),
-    });
+    const manifest = manifestFor(GRANTED, ["llm.apiKey.azure-foundry"]);
     const result = await resolveApiKey(
       { purpose: "llm", vendor: "azure-openai" },
       {
-        pluginId: "p",
+        pluginId: GRANTED,
         manifest,
         manifestSha256: manifestSha(manifest),
         settingsService: makeSettingsService({
@@ -699,6 +624,7 @@ describe("resolveApiKey — baseUrl present on azure-foundry success", () => {
           baseUrl: "https://foo.bar/",
         }) as never,
         auditLogger: makeAuditLogger(),
+        ...officialGrant(manifestSha(manifest)),
       },
     );
     expect(result.ok).toBe(true);
@@ -708,241 +634,77 @@ describe("resolveApiKey — baseUrl present on azure-foundry success", () => {
   });
 });
 
-describe("resolveApiKey — registry.installSource precedence (#958 round-1)", () => {
-  it("registry.installSource='admin' triggers Tier-3 bypass even when manifest.installPolicy='user'", async () => {
-    // Setup: plugin's manifest says `"user"` (so Tier-3 should normally
-    // run and deny — the registry holds no grant), but the host-verified
-    // registry entry was recorded with `installSource:"admin"`. With the
-    // round-1 fix the registry value MUST win — Tier-3 is bypassed and
-    // the secret is returned.
-    const manifest = manifestFor("p", ["llm.apiKey.openai"]);
-    // Note: NO `seedRegistryWithGrant` call — the whitelist registry has
-    // no grant for this plugin. Without admin-bypass Tier-3 would deny.
-    const manifestSha256 = manifestSha(manifest);
+describe("resolveApiKey — Tier 3 reads the host-owned registry, never the manifest", () => {
+  const readsHostKey = { provider: "openai", secrets: { "llm.apiKey.openai": "sk-host" } };
+
+  it("attributes the allow line to the host-secret grant", async () => {
+    const manifest = manifestFor(GRANTED, ["llm.apiKey.openai"]);
     const auditLogger = makeAuditLogger();
     const result = await resolveApiKey(
       { purpose: "llm", vendor: "openai" },
       {
-        pluginId: "p",
-        manifest, // manifest.installPolicy === undefined (~"user")
-        manifestSha256,
-        settingsService: makeSettingsService({
-          provider: "openai",
-          secrets: { "llm.apiKey.openai": "sk-admin-host" },
-        }) as never,
-        auditLogger,
-        // Host-verified install record: admin install.
-        registryInstallSource: "admin",
-        registryManifestSha256: manifestSha256,
-      },
-    );
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.bearer()).toBe("sk-admin-host");
-    }
-    // Audit trail records the bypass with the registry source.
-    const bypassLine = auditLogger.mock.mock.calls.find((c) =>
-      String(c[0]?.input ?? "").includes("policy=admin manifest-allowlist-bypassed"),
-    );
-    expect(bypassLine).toBeDefined();
-    expect(String(bypassLine?.[0]?.input ?? "")).toContain(
-      "source=registry.installSource",
-    );
-  });
-
-  it("attributes the allow line to registry.installSource on the admin-bypass path", async () => {
-    // The admin-bypass path is precisely the one where the signed Tier-3
-    // whitelist ACL was NOT consulted, so the allow line must not claim
-    // `source=whitelist-registry`. No `seedRegistryWithGrant` here: the
-    // whitelist registry holds no grant at all for this plugin.
-    const manifest = manifestFor("p", ["llm.apiKey.openai"]);
-    const manifestSha256 = manifestSha(manifest);
-    const auditLogger = makeAuditLogger();
-
-    const result = await resolveApiKey(
-      { purpose: "llm", vendor: "openai" },
-      {
-        pluginId: "p",
+        pluginId: GRANTED,
         manifest,
-        manifestSha256,
-        settingsService: makeSettingsService({
-          provider: "openai",
-          secrets: { "llm.apiKey.openai": "sk-admin-host" },
-        }) as never,
+        manifestSha256: manifestSha(manifest),
+        settingsService: makeSettingsService(readsHostKey) as never,
         auditLogger,
-        registryInstallSource: "admin",
-        registryManifestSha256: manifestSha256,
+        ...officialGrant(manifestSha(manifest)),
       },
     );
-
     expect(result.ok).toBe(true);
     const allowLine = auditLogger.mock.mock.calls
       .map((c) => String(c[0]?.input ?? ""))
       .find((input) => input.includes("resolveApiKey allow"));
-    expect(allowLine).toBeDefined();
-    expect(allowLine).toContain("source=registry.installSource");
-    expect(allowLine).not.toContain("source=whitelist-registry");
+    expect(allowLine).toContain("source=host-secret-grant");
   });
 
-  it("attributes the allow line to whitelist-registry on the ordinary Tier-3 path", async () => {
-    const manifest = manifestFor("p", ["llm.apiKey.openai"]);
-    const manifestSha256 = manifestSha(manifest);
-    await seedRegistryWithGrant({
-      pluginId: "p",
-      allowedKeys: ["llm.apiKey.openai"],
-      manifestSha256,
-    });
-    const auditLogger = makeAuditLogger();
-
+  it("grants nothing to an admin install the official snapshot did not publish", async () => {
+    const manifest = manifestFor(GRANTED, ["llm.apiKey.openai"]);
+    const settingsService = makeSettingsService(readsHostKey);
     const result = await resolveApiKey(
       { purpose: "llm", vendor: "openai" },
       {
-        pluginId: "p",
-        manifest,
-        manifestSha256,
-        settingsService: makeSettingsService({
-          provider: "openai",
-          secrets: { "llm.apiKey.openai": "sk-host" },
-        }) as never,
-        auditLogger,
-        registryInstallSource: "user",
-      },
-    );
-
-    expect(result.ok).toBe(true);
-    const allowLine = auditLogger.mock.mock.calls
-      .map((c) => String(c[0]?.input ?? ""))
-      .find((input) => input.includes("resolveApiKey allow"));
-    expect(allowLine).toBeDefined();
-    expect(allowLine).toContain("source=whitelist-registry");
-    expect(allowLine).not.toContain("source=registry.installSource");
-  });
-
-  it("registry.installSource='admin' denies when registry manifest sha differs (#959)", async () => {
-    const manifest = manifestFor("p", ["llm.apiKey.openai"]);
-    const result = await resolveApiKey(
-      { purpose: "llm", vendor: "openai" },
-      {
-        pluginId: "p",
+        pluginId: GRANTED,
         manifest,
         manifestSha256: manifestSha(manifest),
-        registryManifestSha256: "f".repeat(64),
-        settingsService: makeSettingsService({
-          provider: "openai",
-          secrets: { "llm.apiKey.openai": "sk-admin-host" },
-        }) as never,
+        settingsService: settingsService as never,
         auditLogger: makeAuditLogger(),
-        registryInstallSource: "admin",
+        ...officialGrant(manifestSha(manifest), { installSource: "admin", origin: undefined }),
       },
     );
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toBe("not-whitelisted");
+    expect(result).toEqual({ ok: false, reason: "not-whitelisted" });
+    expect(settingsService.getSecret).not.toHaveBeenCalledWith("llm.apiKey.openai");
   });
 
-  it("registry.installSource='user' overrides a malicious manifest.installPolicy='admin'", async () => {
-    // The attack: a malicious post-install patch flips `plugin.json` to
-    // `"installPolicy":"admin"` to inherit Tier-3 bypass. The registry
-    // still holds the verified `"user"` record. With the round-1 fix
-    // the registry wins and the plugin is denied (no whitelist grant).
-    const manifest = {
-      ...manifestFor("p", ["llm.apiKey.openai"]),
-      installPolicy: "admin" as const,
-    };
+  it("ignores a manifest that claims an admin install policy", async () => {
+    const manifest = { ...manifestFor(GRANTED, ["llm.apiKey.openai"]), installPolicy: "admin" as const };
     const result = await resolveApiKey(
       { purpose: "llm", vendor: "openai" },
       {
-        pluginId: "p",
+        pluginId: GRANTED,
         manifest,
         manifestSha256: manifestSha(manifest),
-        settingsService: makeSettingsService({
-          provider: "openai",
-          secrets: { "llm.apiKey.openai": "sk-host" },
-        }) as never,
+        settingsService: makeSettingsService(readsHostKey) as never,
         auditLogger: makeAuditLogger(),
-        registryInstallSource: "user",
+        ...NO_GRANT,
       },
     );
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toBe("not-whitelisted");
+    expect(result).toEqual({ ok: false, reason: "not-whitelisted" });
   });
 
-  it("denies manifest-only admin bypass when registry manifest sha is absent (#959)", async () => {
-    // Admin secret-access bypass now requires the host-owned install-time
-    // manifest SHA. A manifest-only admin signal is not enough to skip Tier-3.
-    const manifest = {
-      ...manifestFor("p", ["llm.apiKey.openai"]),
-      installPolicy: "admin" as const,
-    };
+  it("refuses a granted plugin whose running manifest is not the one recorded at install", async () => {
+    const manifest = manifestFor(GRANTED, ["llm.apiKey.openai"]);
     const result = await resolveApiKey(
       { purpose: "llm", vendor: "openai" },
       {
-        pluginId: "p",
+        pluginId: GRANTED,
         manifest,
         manifestSha256: manifestSha(manifest),
-        settingsService: makeSettingsService({
-          provider: "openai",
-          secrets: { "llm.apiKey.openai": "sk-host" },
-        }) as never,
+        settingsService: makeSettingsService(readsHostKey) as never,
         auditLogger: makeAuditLogger(),
-        // registry fields deliberately omitted.
+        ...officialGrant("f".repeat(64)),
       },
     );
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toBe("not-whitelisted");
-  });
-
-  it("emits hostSecret_admin_bypass counter on admin-bypass success", async () => {
-    const { getHostSecretCounter } = await import(
-      "../../../telemetry/host-secret-counters.js"
-    );
-    const manifest = manifestFor("p", ["llm.apiKey.openai"]);
-    const manifestSha256 = manifestSha(manifest);
-    const result = await resolveApiKey(
-      { purpose: "llm", vendor: "openai" },
-      {
-        pluginId: "p",
-        manifest,
-        manifestSha256,
-        settingsService: makeSettingsService({
-          provider: "openai",
-          secrets: { "llm.apiKey.openai": "sk-admin" },
-        }) as never,
-        auditLogger: makeAuditLogger(),
-        registryInstallSource: "admin",
-        registryManifestSha256: manifestSha256,
-      },
-    );
-    expect(result.ok).toBe(true);
-    expect(getHostSecretCounter("hostSecret_admin_bypass", "p", "llm")).toBe(1);
-    // The regular read counter is incremented on top, so totals stay
-    // comparable across bypass and non-bypass paths.
-    expect(getHostSecretCounter("hostSecret_read", "p", "llm")).toBe(1);
-  });
-
-  it("does not emit admin-bypass audit when registry manifest sha is absent (#959)", async () => {
-    const manifest = {
-      ...manifestFor("p", ["llm.apiKey.openai"]),
-      installPolicy: "admin" as const,
-    };
-    const auditLogger = makeAuditLogger();
-    const result = await resolveApiKey(
-      { purpose: "llm", vendor: "openai" },
-      {
-        pluginId: "p",
-        manifest,
-        manifestSha256: manifestSha(manifest),
-        settingsService: makeSettingsService({
-          provider: "openai",
-          secrets: { "llm.apiKey.openai": "sk-x" },
-        }) as never,
-        auditLogger,
-        // registry fields omitted → manifest-only admin signal denied.
-      },
-    );
-    expect(result.ok).toBe(false);
-    const bypassLine = auditLogger.mock.mock.calls.find((c) =>
-      String(c[0]?.input ?? "").includes("policy=admin manifest-allowlist-bypassed"),
-    );
-    expect(bypassLine).toBeUndefined();
+    expect(result).toEqual({ ok: false, reason: "not-whitelisted" });
   });
 });

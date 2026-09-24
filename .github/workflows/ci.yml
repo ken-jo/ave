@@ -90,14 +90,14 @@ jobs:
       # release-signing workflow the evidence suite exercises the
       # release-tooling libraries themselves — descriptor reading,
       # signed-manifest verification, packaged executable selection — and
-      # `test:ci-tooling` covers the A2A wire harness and the marketplace-e2e
-      # control script that the dispatch workflows execute. Failure means that
-      # code is wrong. They run under `node --test` rather than vitest (whose
-      # include is `*.test.{ts,tsx}`), so they need their own step; the
-      # evidence suite was once invoked by nothing and sat red for twelve days
-      # after a batch dependency merge moved a pin without moving its
-      # assertion, and the two `test:ci-tooling` suites were never invoked at
-      # all until this step named them.
+      # `test:ci-tooling` covers the A2A wire harness that its dispatch
+      # workflow executes. Failure means that code is wrong. They run under
+      # `node --test` rather than vitest (whose include is
+      # `*.test.{ts,tsx}`), so they need their own step; the evidence suite
+      # was once invoked by nothing and sat red for twelve days after a batch
+      # dependency merge moved a pin without moving its assertion, and the
+      # `test:ci-tooling` suite was never invoked at all until this step
+      # named it.
       #
       # Last of the verification steps, so this narrow suite does not skip the
       # broad one. `packaging-discipline-source.test.ts` pins that position —

@@ -29,7 +29,7 @@ The manifest should include:
 - pure MCP `Tool[]` objects with colocated input schemas;
 - required capabilities;
 - settings schema if configurable;
-- marketplace metadata if published.
+- `requires.minAppVersion`, which a marketplace install requires.
 
 `tools[]` is the only callable surface. The retired `uiTool`, `uiTools`,
 `uiAction`, `uiActions`, top-level `operationGovernance`, and top-level
@@ -113,19 +113,28 @@ use secret fields and should not be copied into logs, audit output, or docs.
 
 ## Marketplace And Installation
 
-Marketplace installation should verify package metadata, manifest validity, and
-managed-plugin policy. Managed plugins cannot be removed or downgraded by normal
-user-installed plugin paths.
+Plugins are published through git marketplaces
+([Publishing To A Git Marketplace](./marketplace-publishing.md)). An install
+stages the pinned artifact (release, archive or tree), checks the staged
+`plugin.json` against the package descriptor, and refuses a manifest that
+declares the retired `installPolicy` or `publisher` fields. An installed
+manifest that still carries them loads with one warning; its next update
+replaces it.
 
-The catalog is the authority for a managed plugin, in both directions: boot sync
-installs and updates them without asking, and removes one the marketplace has
-stopped publishing. Removal needs the plugin to be confirmed gone by its own
-catalog endpoint, so an unreachable or degraded marketplace leaves installs
-untouched.
+No plugin protects itself. Only the machine's system policy file can keep a
+plugin installed: a `marketplaces.requiredInstalls` entry locks the plugin
+installed from the source it names against uninstall and disable, and updates
+it at boot.
 
-Local development install paths are useful during plugin authoring, but
-production install flows should go through the marketplace or an approved local
-package source.
+Host secrets beyond the plugin's own namespace come only from the app's
+`HOST_SECRET_GRANTS` table (`src/plugins/secret-access/grants.ts`): an official
+plugin installed from the artifact its snapshot pins, reading an LLM key its
+manifest declares in `hostSecrets.read` for the active vendor. Provider-preset
+keys are not in the table, and a local development install never qualifies.
+
+Local development installs (`installLocal`) are for authoring; to test the
+marketplace path, serve a repository to a development build
+([Testing A Marketplace Locally](./local-marketplace-testing.md)).
 
 ## Auth Windows
 
@@ -141,7 +150,7 @@ Before publishing or merging a plugin change:
 - validate `plugin.json` with manifest tests;
 - run tool-schema lint where applicable;
 - verify settings schema rendering;
-- verify install, update, remove, and managed-plugin behavior;
+- verify install, update and remove from a local git marketplace;
 - verify permission prompts for write, shell, network, and out-of-directory
   reads;
 - verify plugin UI error fallback and theme token application.

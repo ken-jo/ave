@@ -95,7 +95,7 @@ describe("ChatView", () => {
 
     fireEvent.click(marketplaceButton);
     await waitFor(() => {
-      expect(container.querySelector('[data-testid="marketplace:cta:open"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="git-marketplace"]')).not.toBeNull();
     });
   });
 

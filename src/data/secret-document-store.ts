@@ -434,12 +434,13 @@ export class SecretDocumentStore {
     });
   }
 
+  /** Resolves `false`, without writing, when `key` is absent (like `move`). */
   async delete(key: string): Promise<boolean> {
     validateSecretKey(key);
     return this.mutate(false, (document) => {
+      if (!Object.hasOwn(document.entries, key)) return false;
       this.assertWritesAvailable();
       this.upgradePlainEntries(document);
-      if (!Object.hasOwn(document.entries, key)) return false;
       delete document.entries[key];
       return true;
     });

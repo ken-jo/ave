@@ -15,7 +15,7 @@ import {
   type PluginRuntimeOptions,
 } from "../../runtime.js";
 import type { PluginManifest } from "../../types.js";
-import { canonicalJSON } from "../../whitelist/canonical-json.js";
+import { canonicalJSON } from "../../secret-access/canonical-json.js";
 import { agentPluginsDocument } from "../../__tests__/test-helpers.js";
 
 const roots: string[] = [];
@@ -51,7 +51,6 @@ async function writePreparedPlugin(
     version: "1.0.0",
     entry: "entry.mjs",
     description: "Prepared identity fixture.",
-    publisher: "Ave",
     tools: [{
       name: toolName,
       description: "ping",

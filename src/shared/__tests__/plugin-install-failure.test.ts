@@ -42,10 +42,6 @@ describe("isReinstallFixableFailureKind", () => {
     expect(isReinstallFixableFailureKind(undefined)).toBe(true);
   });
 
-  it("classifies catalog↔grant mismatch as NOT reinstall-fixable", () => {
-    expect(isReinstallFixableFailureKind("catalog-grant-mismatch")).toBe(false);
-  });
-
   it("classifies app-version incompatibility as NOT reinstall-fixable", () => {
     expect(isReinstallFixableFailureKind("incompatible-app-version")).toBe(false);
   });
@@ -71,7 +67,6 @@ describe("isReinstallFixableFailureKind", () => {
       "load-crash",
     ]);
     expect(notFixable).toEqual([
-      "catalog-grant-mismatch",
       "incompatible-app-version",
       "plugin-revoked",
     ]);

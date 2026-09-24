@@ -11,7 +11,8 @@
  * audited so a packaged build cannot revive removed development behaviour.
  */
 export const DEVELOPMENT_ENV_POLICY = [
-  { name: "AVE_ADMISSION_OFFLINE", lifecycle: "active", packaged: "scrub" },
+  // Kept the signed admission catalog offline; installs now resolve from git sources (design §6).
+  { name: "AVE_ADMISSION_OFFLINE", lifecycle: "tombstone", packaged: "scrub" },
   // Removed development bypasses retained as one-way packaged scrub tombstones.
   { name: "AVE_ALLOW_LINKED_PLUGIN_ENTRY", lifecycle: "tombstone", packaged: "scrub" },
   { name: "AVE_ALLOW_TEST_MARKETPLACE_KEYS", lifecycle: "tombstone", packaged: "scrub" },
@@ -25,16 +26,16 @@ export const DEVELOPMENT_ENV_POLICY = [
   { name: "AVE_DEV_PROMPT_SOURCE_DUMP", lifecycle: "active", packaged: "scrub" },
   { name: "AVE_DEV_RELOAD", lifecycle: "active", packaged: "scrub" },
   { name: "AVE_E2E", lifecycle: "active", packaged: "scrub" },
-  { name: "AVE_E2E_WHITELIST_PUBLIC_KEY", lifecycle: "active", packaged: "scrub" },
-  // The git marketplace's views before they replace today's marketplace (blueprint P6 removes it).
-  { name: "AVE_GIT_MARKETPLACE", lifecycle: "active", packaged: "scrub" },
+  // Trusted an E2E-signed whitelist; host-secret grants now come from the app and local snapshots.
+  { name: "AVE_E2E_WHITELIST_PUBLIC_KEY", lifecycle: "tombstone", packaged: "scrub" },
   { name: "AVE_LOG_FILE", lifecycle: "active", packaged: "scrub" },
   { name: "AVE_LOG_FORMAT", lifecycle: "active", packaged: "scrub" },
   // Removed from plugin path resolution; retained as a scrub/audit tombstone.
   { name: "AVE_PLUGINS_DIR", lifecycle: "tombstone", packaged: "scrub" },
   { name: "AVE_REQUIRE_SANDBOX_CASES", lifecycle: "active", packaged: "scrub" },
   { name: "AVE_RESOURCE_ROOT", lifecycle: "active", packaged: "scrub" },
-  { name: "AVE_REVOCATION_OFFLINE", lifecycle: "active", packaged: "scrub" },
+  // Kept the signed revocation feed offline; revocations now come from local snapshots.
+  { name: "AVE_REVOCATION_OFFLINE", lifecycle: "tombstone", packaged: "scrub" },
   { name: "AVE_RUN_PROBES", lifecycle: "active", packaged: "scrub" },
   { name: "AVE_SECRET_PROBE", lifecycle: "active", packaged: "scrub" },
   // A staging service base for source runs (design §11); packaged builds use the build constant or policy.
@@ -42,7 +43,8 @@ export const DEVELOPMENT_ENV_POLICY = [
   { name: "AVE_TEST_NODE_EXEC_PATH", lifecycle: "active", packaged: "scrub" },
   // Explicitly source/test-only; packaged builds do not accept this env switch.
   { name: "AVE_TRACE", lifecycle: "active", packaged: "scrub" },
-  { name: "AVE_WHITELIST_OFFLINE", lifecycle: "active", packaged: "scrub" },
+  // Kept the signed whitelist feed offline; host-secret grants no longer fetch anything.
+  { name: "AVE_WHITELIST_OFFLINE", lifecycle: "tombstone", packaged: "scrub" },
   { name: "AVE_WIN_NO_SANDBOX", lifecycle: "active", packaged: "scrub" },
   // Renderer-build development flag: deliberately covered despite not using
   // the AVE_ namespace scanned by the env-surface policy gate.

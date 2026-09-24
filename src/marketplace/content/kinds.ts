@@ -1,5 +1,5 @@
 /**
- * The data of each content kind (design §5.2, blueprint 3.2–3.5): the entry
+ * The data of each content kind (design §5.2): the entry
  * files of an installed package, parsed and checked. The same parse runs at
  * install (a failure refuses the package) and whenever installed content is
  * loaded (a failure lists the package as broken and applies nothing), so
@@ -21,7 +21,7 @@ import { SUPPORTED_LOCALES } from "../../i18n/locale.js";
 import { isModelFacingKey } from "../../i18n/model-facing.js";
 import type { FontFormat } from "../../shared/installed-content.js";
 import { isMarketplaceEligibleLLMVendor, type MarketplaceEligibleLLMVendor } from "../../shared/llm-vendor-defaults.js";
-import { isDefaultVisibleThemeBundleId } from "../../shared/theme-bundles.js";
+import { isBundleId, isThemeId } from "../../shared/theme-bundles.js";
 import { themeSurfaceProblems, themeTokenProblems, type ThemeSurfaces, type ThemeTokens } from "../../shared/theme-tokens.js";
 import { parseAgentFrontmatter } from "../../main/agent-profile-store.js";
 import { parseFrontmatter } from "../../main/skill-store.js";
@@ -45,6 +45,8 @@ interface ThemeContent {
   tokens: ThemeTokens;
   surfaces: ThemeSurfaces;
   preview?: string;
+  /** The theme of the other shell `followSystem` switches to with this one. */
+  pair?: string;
 }
 
 interface LanguageContent {
@@ -114,6 +116,15 @@ export interface ContentContext {
   english: Readonly<Record<string, string>>;
   /** The source the package came from; some content is reserved for official and managed sources. */
   sourceOrigin: SourceOrigin;
+  /**
+   * What a language key outside this app's interface keys does. The repository
+   * check refuses it, so an author learns of a typo or a model-facing key. On a
+   * device it is ignored and never applied: a package written for another app
+   * version names keys this one removed or has since made model-facing, and
+   * refusing them would break every installed language whenever the catalog
+   * loses a key.
+   */
+  unknownMessageKeys: "refuse" | "ignore";
 }
 
 class ContentFailure extends MarketplaceError {
@@ -207,15 +218,16 @@ const PREVIEW_MAX_SIDE = 2048;
 
 function theme(files: Map<string, Buffer>, context: ContentContext): ThemeContent {
   const path = "theme.json";
-  // The bundles that stay compiled in keep their ids. The others are delivered
-  // as packages under their own ids, which the compiled copies give up when
-  // the switch removes them; until then activation refuses an id the legacy
-  // install already holds.
-  if (isDefaultVisibleThemeBundleId(context.name)) throw new ContentFailure(path, `${context.name} is a built-in theme`);
+  // The bundles compiled into the app keep their ids; every other theme,
+  // the fourteen the server marketplace delivered among them, is a package.
+  if (isBundleId(context.name)) throw new ContentFailure(path, `${context.name} is a built-in theme`);
   const record = readJson(files, path);
-  closed(record, path, ["name", "description", "shell", "highContrast", "tokens", "surfaces", "preview"]);
+  closed(record, path, ["name", "description", "shell", "highContrast", "tokens", "surfaces", "preview", "pair"]);
   if (record.shell !== "light" && record.shell !== "dark") throw new ContentFailure(path, 'shell must be "light" or "dark"');
   if (typeof record.highContrast !== "boolean") throw new ContentFailure(path, "highContrast must be true or false");
+  if (record.pair !== undefined && (typeof record.pair !== "string" || !isThemeId(record.pair) || record.pair === context.name)) {
+    throw new ContentFailure(path, "pair must name another theme");
+  }
   const problems = [...themeTokenProblems(record.tokens), ...themeSurfaceProblems(record.surfaces)];
   if (problems.length > 0) throw new ContentFailure(path, problems.join("; "));
   let preview: string | undefined;
@@ -241,6 +253,7 @@ function theme(files: Map<string, Buffer>, context: ContentContext): ThemeConten
     tokens: record.tokens as ThemeTokens,
     surfaces: record.surfaces as ThemeSurfaces,
     ...(preview ? { preview } : {}),
+    ...(record.pair !== undefined ? { pair: record.pair } : {}),
   };
 }
 
@@ -297,7 +310,7 @@ function language(files: Map<string, Buffer>, context: ContentContext): Language
     }
     messages[key] = value;
   }
-  if (unknown.length > 0) {
+  if (unknown.length > 0 && context.unknownMessageKeys === "refuse") {
     const shown = unknown.slice(0, 5).join(", ");
     throw new ContentFailure(messagesPath, `${unknown.length} key(s) are not interface keys of the English catalog: ${shown}${unknown.length > 5 ? ", …" : ""}`);
   }

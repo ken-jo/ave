@@ -35,7 +35,6 @@ const INTERFACE_KEYS: ReadonlyMap<string, readonly string[]> = new Map([
   ["main/auto-updater.ts", ["common.", "mainDialog."]], // update dialogs
   ["main/global-shortcuts.ts", ["startupTab."]], // shortcut notifications
   ["main/host-api/pick-folders.ts", ["mainDialog."]], // folder picker
-  ["main/ave-deep-link.ts", ["pluginInstallDialog."]], // deep-link dialogs
   ["main/startup-launch.ts", ["startupTab."]], // login-item dialogs
   ["shared/format-time.ts", ["sidebar."]], // relative times in the sidebar
 ]);

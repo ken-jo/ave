@@ -1,33 +1,24 @@
-import { CHANNELS } from "../../contract/app-contract.js";
 import type { BootHost } from "../host-runtime.js";
 import type { TelemetryService } from "../../main/telemetry.js";
 import type { PluginTelemetryClient } from "../../telemetry/client.js";
 /**
- * Boot §4.2 Step 8 — Post-boot hooks (release prep + update detector).
+ * Boot §4.2 Step 8 — Post-boot hooks (release prep + announcements).
  *
  * Wires anonymous telemetry, crash reporter, auto-updater, plugin lifecycle
- * telemetry, first-boot consent prompt, and the plugin-update-check timer.
+ * telemetry, first-boot consent prompt, and the announcement poller. The
+ * marketplace's update notices start with the window (design §7.3).
  * All init is best-effort (try/catch around release prep; non-fatal).
  */
 import type { BrowserWindow } from "electron";
 import type { SettingsService } from "../../data/settings-store.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
-import type {
-  MarketplaceAnnouncement,
-  MarketplaceFetcher,
-} from "../../plugins/marketplace.js";
+import type { MarketplaceAnnouncement } from "../../shared/marketplace-announcements.js";
 import { MARKETPLACE } from "../../shared/ipc-channels.js";
 import {
   normalizeDismissedAnnouncementIds,
   type MarketplaceAnnouncementPayload,
 } from "../../shared/marketplace-announcements.js";
-import {
-  isSkippedPluginUpdate,
-  readSkippedPluginUpdates,
-} from "../../shared/skipped-plugin-updates.js";
-import type { PluginPaths } from "../../plugins/plugin-paths.js";
-import { PluginUpdateDetector, resolveUpdateCheckEnabled } from "../../plugins/update-detector.js";
-import { createUpdateCheckRunner } from "./update-check-runner.js";
+import { resolveUpdateCheckEnabled } from "../../plugins/update-detector.js";
 import { registerShutdownHook } from "../../main/app-shutdown.js";
 import { sendToWindow } from "../../ipc/safe-send.js";
 import { createLogger } from "../../lib/logger.js";
@@ -79,72 +70,6 @@ export interface ReleasePrepInput {
 export function wireReleasePrep(input: ReleasePrepInput, host: BootHost): ReleasePrepOutput {
   if (host.desktop) return host.desktop.prepareRelease(input);
   return {};
-}
-
-export interface UpdateCheckInput {
-  mainWindow: BrowserWindow | null;
-  settingsService: SettingsService;
-  marketplaceFetcher: MarketplaceFetcher;
-  /** SoT — registry path resolved once at boot from userDataDir. */
-  pluginPaths: PluginPaths;
-}
-
-/**
- * S8 — plugin update detection. Fires an IPC event `marketplace:updates-available`
- * to the renderer when newer catalog versions are found. Runs once at boot
- * and on a configurable interval (default 10m). Feature-flagged.
- */
-export function wireUpdateCheck(input: UpdateCheckInput): void {
-  const { mainWindow, settingsService, marketplaceFetcher, pluginPaths } = input;
-  const marketplaceSettings = settingsService.get("marketplace");
-  const updateCheckFeatureEnabled = resolveUpdateCheckEnabled(
-    marketplaceSettings?.updateCheckEnabled,
-  );
-  if (!updateCheckFeatureEnabled) return;
-
-  const registryPath = pluginPaths.registryPath;
-  const updateDetector = new PluginUpdateDetector(registryPath, marketplaceFetcher, {
-    canaryOptIn: marketplaceSettings?.canaryOptIn ?? false,
-  });
-  const DEFAULT_UPDATE_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
-
-  const runUpdateCheck = createUpdateCheckRunner({
-    check: () => updateDetector.checkForUpdatesResult(),
-    filter: (updates) => {
-      const skippedPluginUpdates = readSkippedPluginUpdates(
-        settingsService.get("marketplace")?.skippedPluginUpdates,
-      );
-      return updates.filter(
-        (update) => !isSkippedPluginUpdate(update, skippedPluginUpdates),
-      );
-    },
-    broadcast: (updates) => {
-      mainWindow?.webContents?.send(CHANNELS.marketplace.updatesAvailable, updates);
-      if (updates.length > 0) {
-        log.info("update-check: %d plugin update(s) available", updates.length);
-      } else {
-        log.debug("update-check: cleared previous updates");
-      }
-    },
-    onNoChange: (count) => log.debug("update-check: no change (%d)", count),
-    onCatalogUnavailable: () =>
-      log.warn("update-check: catalog unavailable; preserving last successful broadcast"),
-    onError: (err) => log.warn("update-check: error: %s", (err as Error).message),
-  });
-
-  void runUpdateCheck();
-
-  const intervalMs =
-    settingsService.get("marketplace")?.updateCheckIntervalMs ?? DEFAULT_UPDATE_INTERVAL_MS;
-  let updateCheckTimer: ReturnType<typeof setInterval> | undefined;
-  if (intervalMs > 0) {
-    updateCheckTimer = setInterval(() => void runUpdateCheck(), intervalMs);
-    updateCheckTimer.unref?.();
-  }
-
-  registerShutdownHook("plugin-update-check-timer", () => {
-    if (updateCheckTimer) clearInterval(updateCheckTimer);
-  });
 }
 
 export interface AnnouncementCheckInput {

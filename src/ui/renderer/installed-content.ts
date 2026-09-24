@@ -31,7 +31,16 @@ let offCatalogChanged: (() => void) | null = null;
 const listeners = new Set<() => void>();
 
 function themeBundle(view: InstalledContentView["themes"][number]): ThemeBundle {
-  return { id: view.id, name: view.name, description: view.description, shell: view.shell, highContrast: view.highContrast, tokens: view.tokens, surfaces: view.surfaces };
+  return {
+    id: view.id,
+    name: view.name,
+    description: view.description,
+    shell: view.shell,
+    highContrast: view.highContrast,
+    tokens: view.tokens,
+    surfaces: view.surfaces,
+    ...(view.pair ? { pair: view.pair } : {}),
+  };
 }
 
 const cssString = (value: string) => `"${value.replace(/["\\]/gu, "\\$&")}"`;

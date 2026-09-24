@@ -1,119 +1,13 @@
+/**
+ * Removal of agent packages the retired marketplace server installed under
+ * `~/.ave/agents/`. New agent packages arrive through the git marketplace
+ * (design §16.2); these installs stay removable.
+ */
 import { rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { isResolvedPathWithin } from "../plugins/plugin-storage-containment.js";
-
-import {
-  assertMarketplaceAppUpgradeNotRequired,
-  type PluginArtifactStore,
-} from "../plugins/plugin-artifact-store.js";
-import type { MarketplaceFetcher } from "../plugins/marketplace-fetcher.js";
-import type { InstallerProgressEvent } from "../plugins/marketplace-installer.js";
-import { MAX_ASSISTANT_PACKAGE_ROOT_TEXT_BYTES, throwIfMarketplaceInstallAborted } from "../plugins/marketplace-installer.js";
-import { AGENT_NAME_ALLOWLIST, parseAgentFrontmatter } from "../main/agent-profile-store.js";
+import { AGENT_NAME_ALLOWLIST } from "../main/agent-profile-store.js";
 import { updateAgentRegistry } from "./agent-registry.js";
-
-export interface InstallAgentPackageOptions {
-  fetcher: MarketplaceFetcher;
-  store: PluginArtifactStore;
-  registryPath: string;
-  onProgress?: (event: InstallerProgressEvent) => void;
-  signal?: AbortSignal;
-}
-
-export interface InstallAgentPackageResult {
-  agentId: string;
-  slug: string;
-  version: string;
-  installed: true;
-}
-
-export async function installAgentPackageFromMarketplace(
-  slug: string,
-  opts: InstallAgentPackageOptions,
-): Promise<InstallAgentPackageResult> {
-  if (!AGENT_NAME_ALLOWLIST.test(slug)) {
-    throw new Error(`agent package slug is not discoverable as an agent profile: ${slug}`);
-  }
-  const detail = await opts.fetcher.getPluginDetail(slug);
-  if (!detail) throw new Error(`marketplace catalog has no entry for slug "${slug}"`);
-  assertMarketplaceAppUpgradeNotRequired(detail);
-  if (detail.pluginType !== "agent") {
-    throw new Error(`slug "${slug}" is a ${detail.pluginType ?? "plugin"} entry, not an agent package`);
-  }
-  const version = detail.version;
-  if (!version) throw new Error(`marketplace entry "${slug}" has no published version`);
-
-  return opts.store.withVerifiedArtifactTransaction(
-    detail,
-    version,
-    opts.onProgress,
-    async (verified) => {
-      const rootFiles = opts.store.readRequiredRootTextFiles(slug, verified.zipBuffer, [
-        {
-          filename: "AGENTS.md",
-          maxBytes: MAX_ASSISTANT_PACKAGE_ROOT_TEXT_BYTES,
-          packageLabel: "agent",
-        },
-        {
-          filename: "plugin.json",
-          maxBytes: MAX_ASSISTANT_PACKAGE_ROOT_TEXT_BYTES,
-          packageLabel: "agent",
-        },
-      ]);
-      const { fm, body } = parseAgentFrontmatter(rootFiles["AGENTS.md"]);
-      const agentId = fm.name || slug;
-      if (!AGENT_NAME_ALLOWLIST.test(agentId)) {
-        throw new Error(`agent package "${slug}" declares invalid agent name "${agentId}"`);
-      }
-      if (agentId !== slug) {
-        throw new Error(
-          `agent package "${slug}" declares agent name "${agentId}", which must match the package slug`,
-        );
-      }
-      if (body.trim().length === 0) {
-        throw new Error(`agent package "${slug}" has an empty AGENTS.md body`);
-      }
-      throwIfMarketplaceInstallAborted(opts.signal, "agent package", slug);
-
-      const files = await opts.store.extractZip(slug, verified.zipBuffer);
-      const installDir = opts.store.installDirFor(slug);
-      const profilePath = resolve(installDir, "AGENTS.md");
-      const manifestPath = resolve(installDir, "plugin.json");
-
-      await opts.store.writeInstallReceipt(slug, {
-        version,
-        installSource: "marketplace",
-        artifactSha256: verified.artifactSha256,
-        signerKeyId: verified.signerKeyId,
-        files,
-      });
-      await opts.store.appendHistory(slug, {
-        version,
-        installedAt: new Date().toISOString(),
-      });
-
-      await updateAgentRegistry(opts.registryPath, (registry) => {
-        const entry = {
-          id: slug,
-          version,
-          source: "marketplace" as const,
-          manifestPath,
-          profilePath,
-          installedAt: new Date().toISOString(),
-          enabled: true,
-          artifactSha256: verified.artifactSha256,
-          signerKeyId: verified.signerKeyId,
-        };
-        const idx = registry.agents.findIndex((item) => item.id === slug);
-        if (idx >= 0) registry.agents[idx] = entry;
-        else registry.agents.push(entry);
-      });
-
-      return { agentId, slug, version, installed: true };
-    },
-    opts.signal,
-  );
-}
 
 export async function uninstallAgentPackage(
   slug: string,

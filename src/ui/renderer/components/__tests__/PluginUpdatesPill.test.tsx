@@ -5,8 +5,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { PluginUpdatesPill } from "../PluginUpdatesPill.js";
 import type { PluginUpdatesPillProps } from "../PluginUpdatesPill.js";
-import type { PluginUpdateInfo } from "../../hooks/use-marketplace-updates.js";
-import { TEST_IDS } from "../../../../shared/test-ids.js";
+import type { PackageKind, PackageUpdateView } from "../../../../shared/git-marketplace.js";
 
 describe("PluginUpdatesPill", () => {
   afterEach(() => cleanup());
@@ -19,169 +18,50 @@ describe("PluginUpdatesPill", () => {
   it("shows the count in the band and the full list in the hover text", () => {
     renderPill({
       updates: [
-        update("meeting", "Ave Meeting", "2.0.0"),
-        update("calendar", "Ave Calendar", "1.4.0"),
-        update("email", "Ave Email", "3.1.0"),
+        update("plugin", "meeting", "Ave Meeting", "2.0.0"),
+        update("skill", "calendar", "Calendar", "1.4.0"),
+        update("theme", "dusk", "Dusk", "3.1.0"),
       ],
     });
 
     const pill = screen.getByTestId("marketplace-update-action");
-    expect(pill.textContent).toContain("플러그인 업데이트 3개");
+    expect(pill.textContent).toContain("업데이트 3개");
     const title = pill.getAttribute("title") ?? "";
-    expect(title).toContain("3개 플러그인 업데이트 가능");
-    expect(title).toContain("Ave Meeting (meeting) → 2.0.0");
-    expect(title).toContain("Ave Calendar (calendar) → 1.4.0");
-    expect(title).toContain("Ave Email (email) → 3.1.0");
-  });
-
-  it("passes the expected latest version to the update action", async () => {
-    const onUpdate = vi.fn(async () => undefined);
-    renderPill({ updates: [update("meeting", "Ave Meeting", "0.5.24")], onUpdate });
-
-    screen.getByTestId("marketplace-update-action").click();
-    await vi.waitFor(() => expect(onUpdate).toHaveBeenCalledWith("meeting", "0.5.24", undefined));
-  });
-
-  it("requires networkAccess disclosure before updating a network-enabled plugin", async () => {
-    const onUpdate = vi.fn(async () => undefined);
-    renderPill({
-      updates: [{
-        ...update("network-plug", "Network Plug", "2.0.0"),
-        networkAccess: {
-          allowedDomains: ["api.example.com"],
-          reasoning: "Needs API access to sync user data.",
-        },
-      }],
-      onUpdate,
-    });
-
-    screen.getByTestId("marketplace-update-action").click();
-    await vi.waitFor(() => expect(screen.getByTestId(TEST_IDS.pluginInstallNetworkAccess).textContent).toContain("Needs API access"));
-    expect(onUpdate).not.toHaveBeenCalled();
-
-    screen.getByRole("button", { name: "설치" }).click();
-
-    await vi.waitFor(() => expect(onUpdate).toHaveBeenCalledWith(
-      "network-plug",
-      "2.0.0",
-      { networkAccessAcknowledgement: { allowedDomains: ["api.example.com"] } },
-    ));
-  });
-
-  it("falls back to plugin id when a display name is missing", () => {
-    renderPill({ updates: [{ pluginId: "local-indexer", installedVersion: "1.0.0", latestVersion: "1.1.0" }] });
-
-    expect(screen.getByTestId("marketplace-update-action").getAttribute("title")).toContain(
-      "local-indexer → 1.1.0",
-    );
-  });
-
-  it("dismisses the pill when every update in the batch succeeds", async () => {
-    const onUpdate = vi.fn(async () => undefined);
-    const onDismiss = vi.fn();
-    const onResolved = vi.fn();
-    renderPill({
-      updates: [update("meeting", "Ave Meeting", "2.0.0"), update("calendar", "Ave Calendar", "1.4.0")],
-      onUpdate,
-      onDismiss,
-      onResolved,
-    });
-
-    screen.getByTestId("marketplace-update-action").click();
-
-    await vi.waitFor(() => expect(onDismiss).toHaveBeenCalledOnce());
-    expect(onUpdate).toHaveBeenCalledTimes(2);
-    expect(onResolved).not.toHaveBeenCalled();
-  });
-
-  it("keeps failed updates for retry and reports succeeded ids on partial failure", async () => {
-    const onUpdate = vi.fn(async (pluginId: string) => {
-      if (pluginId === "calendar") throw new Error("download failed");
-    });
-    const onDismiss = vi.fn();
-    const onResolved = vi.fn();
-    renderPill({
-      updates: [
-        update("meeting", "Ave Meeting", "2.0.0"),
-        update("calendar", "Ave Calendar", "1.4.0"),
-      ],
-      onUpdate,
-      onDismiss,
-      onResolved,
-    });
-
-    screen.getByTestId("marketplace-update-action").click();
-
-    // "성공 1 · 실패 1 (Ave Calendar (calendar))" plus each failure's own
-    // message — the band shows the retry, the hover text shows why.
-    const pill = screen.getByTestId("marketplace-update-action");
-    await vi.waitFor(() => expect(pill.getAttribute("title")).toContain("성공 1"));
-    expect(pill.getAttribute("title")).toContain("실패 1");
-    expect(pill.getAttribute("title")).toContain("Ave Calendar (calendar)");
-    expect(pill.getAttribute("title")).toContain("download failed");
-    // Succeeded rows are pruned from the visible list; the pill stays for retry.
-    expect(onResolved).toHaveBeenCalledWith(["meeting"]);
-    expect(onDismiss).not.toHaveBeenCalled();
-    expect(pill.textContent).toContain("재시도");
-    // Hover text is not in the accessibility tree, so the failure has to be in
-    // the accessible name as well or a screen reader never hears about it.
-    const label = pill.getAttribute("aria-label");
-    expect(label).toContain("사용 가능한 플러그인 업데이트 설치");
-    expect(label).toContain("실패 1");
-    expect(label).toContain("Ave Calendar (calendar)");
-    expect(label).toContain("download failed");
-  });
-
-  it("leaves the accessible name alone while there is nothing but updates to report", () => {
-    renderPill({ updates: [update("meeting", "Ave Meeting", "2.0.0")] });
-
-    expect(screen.getByTestId("marketplace-update-action").getAttribute("aria-label")).toBe(
-      "사용 가능한 플러그인 업데이트 설치",
-    );
-  });
-
-  it("keeps the busy pill's tooltip reachable and its click inert", async () => {
-    let releaseUpdate: () => void = () => {};
-    const onUpdate = vi.fn(() => new Promise<void>((resolve) => {
-      releaseUpdate = resolve;
-    }));
-    renderPill({ updates: [update("meeting", "Ave Meeting", "2.0.0")], onUpdate });
-
-    const pill = screen.getByTestId("marketplace-update-action");
-    pill.click();
-    await vi.waitFor(() => expect(pill.textContent).toContain("업데이트 중"));
-
-    // Not natively disabled: that would take the pointer events and the tab
-    // stop the tooltip needs. Clicking is inert all the same.
-    expect((pill as HTMLButtonElement).disabled).toBe(false);
-    expect(pill.getAttribute("aria-disabled")).toBe("true");
-    pill.click();
-    expect(onUpdate).toHaveBeenCalledOnce();
-
+    expect(title).toContain("3개 업데이트 가능");
+    expect(title).toContain("Ave Meeting → 2.0.0");
+    expect(title).toContain("Calendar → 1.4.0");
+    expect(title).toContain("Dusk → 3.1.0");
     fireEvent.focus(pill);
-    expect(screen.getByRole("tooltip").textContent).toContain("Ave Meeting (meeting) → 2.0.0");
+    expect(screen.getByRole("tooltip").textContent).toContain("Ave Meeting → 2.0.0");
+  });
 
-    releaseUpdate();
-    await vi.waitFor(() => expect(pill.getAttribute("aria-disabled")).toBe("false"));
+  it("opens the review with the updates instead of installing them", () => {
+    const onReview = vi.fn();
+    const updates = [update("plugin", "meeting", "Ave Meeting", "0.5.24")];
+    renderPill({ updates, onReview });
+
+    screen.getByTestId("marketplace-update-action").click();
+
+    expect(onReview).toHaveBeenCalledWith(updates);
+    expect(screen.getByTestId("marketplace-update-action").getAttribute("aria-label")).toBe("사용 가능한 업데이트 검토");
   });
 
   it("uses the close control as a skip-until-next-version action", () => {
     const onSkip = vi.fn();
-    const onDismiss = vi.fn();
-    renderPill({ updates: [update("meeting", "Ave Meeting", "0.5.24")], onSkip, onDismiss });
+    const onReview = vi.fn();
+    renderPill({ updates: [update("plugin", "meeting", "Ave Meeting", "0.5.24")], onSkip, onReview });
 
-    screen.getByLabelText("이 플러그인 업데이트를 다음 버전까지 건너뛰기").click();
+    screen.getByLabelText("이 업데이트를 다음 버전까지 건너뛰기").click();
 
     expect(onSkip).toHaveBeenCalledOnce();
-    expect(onDismiss).not.toHaveBeenCalled();
+    expect(onReview).not.toHaveBeenCalled();
   });
 });
 
-function renderPill(overrides: Partial<PluginUpdatesPillProps> & { updates: PluginUpdateInfo[] }) {
+function renderPill(overrides: Partial<PluginUpdatesPillProps> & { updates: PackageUpdateView[] }) {
   const props: PluginUpdatesPillProps = {
-    onDismiss: vi.fn(),
     onSkip: vi.fn(),
-    onUpdate: vi.fn(async () => undefined),
+    onReview: vi.fn(),
     ...overrides,
   };
   return render(
@@ -191,11 +71,6 @@ function renderPill(overrides: Partial<PluginUpdatesPillProps> & { updates: Plug
   );
 }
 
-function update(pluginId: string, pluginName: string, latestVersion: string): PluginUpdateInfo {
-  return {
-    pluginId,
-    pluginName,
-    installedVersion: "1.0.0",
-    latestVersion,
-  };
+function update(kind: PackageKind, name: string, displayName: string, to: string): PackageUpdateView {
+  return { key: { sourceId: "ave", kind, name }, displayName, from: "1.0.0", to };
 }

@@ -200,6 +200,34 @@ export interface SourceRegistryOptions {
   now?: () => Date;
 }
 
+/**
+ * One source's state under `root`, without opening the registry: boot reads
+ * pins before anything else is wired. A missing state is a fresh source
+ * unless synced data exists beside it.
+ */
+export async function readSourceState(root: string, id: string): Promise<SourceState> {
+  const dir = join(root, id);
+  const path = join(dir, "state.json");
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch (error) {
+    if (isMissingPathError(error)) {
+      // Synced data without a state lost its pin; a fresh state would accept any history (§2.1).
+      if (existsSync(join(dir, "repo.git")) || existsSync(join(dir, "snapshots"))) {
+        throw new Error(`${path} is missing while ${dir} holds synced data; remove the directory to start the source over`, { cause: error });
+      }
+      return { ...FRESH_STATE };
+    }
+    throw error;
+  }
+  try {
+    return checkState(parseStrictJson(text));
+  } catch (error) {
+    throw new Error(`${path} is invalid: ${(error as Error).message}`, { cause: error });
+  }
+}
+
 export class SourceRegistry {
   private rawEntries: unknown[] = [];
   private stored: ResolvedSource[] = [];
@@ -417,25 +445,7 @@ export class SourceRegistry {
   }
 
   async readState(id: string): Promise<SourceState> {
-    let text: string;
-    try {
-      text = await readFile(this.statePath(id), "utf8");
-    } catch (error) {
-      if (isMissingPathError(error)) {
-        // Synced data without a state lost its pin; a fresh state would accept any history (§2.1).
-        const dir = join(this.options.root, id);
-        if (existsSync(join(dir, "repo.git")) || existsSync(join(dir, "snapshots"))) {
-          throw new Error(`${this.statePath(id)} is missing while ${dir} holds synced data; remove the directory to start the source over`, { cause: error });
-        }
-        return { ...FRESH_STATE };
-      }
-      throw error;
-    }
-    try {
-      return checkState(parseStrictJson(text));
-    } catch (error) {
-      throw new Error(`${this.statePath(id)} is invalid: ${(error as Error).message}`, { cause: error });
-    }
+    return readSourceState(this.options.root, id);
   }
 
   async writeState(id: string, state: SourceState): Promise<void> {

@@ -80,7 +80,6 @@ export default async function createPlugin() {
         entry: "entry.mjs",
         tools: [{ name: "lc_restart_ping", description: "lc_restart_ping tool", inputSchema: { type: "object", properties: {} }, _meta: { ui: { visibility: ["model", "app"] } } }],
         description: "Lifecycle restart test",
-        publisher: "Test",
       })),
       "utf-8");
     await writeFile(
@@ -144,7 +143,6 @@ export default async function createPlugin() {
         entry: "entry.mjs",
         tools: [{ name: "lc_restart_remove_race_ping", description: "restart removal race regression tool", inputSchema: { type: "object", properties: {} }, _meta: { ui: { visibility: ["model", "app"] } } }],
         description: "Lifecycle race regression",
-        publisher: "Test",
       })),
       "utf-8");
     await writeFile(
@@ -223,7 +221,6 @@ export default async function createPlugin() {
           _meta: { ui: { visibility: ["model", "app"] } },
         }],
         description: "Cancellation must prevent an in-flight replacement from starting or publishing.",
-        publisher: "Test",
       })),
       "utf-8");
     await writeFile(
@@ -289,7 +286,6 @@ export default async function createPlugin() {
           _meta: { ui: { visibility: ["model", "app"] } },
         }],
         description: "Lifecycle restart timeout regression.",
-        publisher: "Test",
       })),
       "utf-8");
     await writeFile(
@@ -340,7 +336,6 @@ export default async function createPlugin() {
           _meta: { ui: { visibility: ["model", "app"] } },
         }],
         description: "Stop timeout regression.",
-        publisher: "Test",
       })),
       "utf-8");
     await writeFile(
@@ -397,7 +392,6 @@ export default async function createPlugin() {
         entry: "entry.mjs",
         tools: [{ name: "lc_bust_version", description: "lc_bust_version tool", inputSchema: { type: "object", properties: {} }, _meta: { ui: { visibility: ["model", "app"] } } }],
         description: "Cache-bust regression test",
-        publisher: "Test",
       })),
       "utf-8");
     await writeFile(
@@ -453,7 +447,6 @@ export default async function createPlugin() {
         entry: "entry.mjs",
         tools: [{ name: "lc_fail_manifest_ping", description: "lc_fail_manifest_ping tool", inputSchema: { type: "object", properties: {} }, _meta: { ui: { visibility: ["model", "app"] } } }],
         description: "Lifecycle fail manifest test",
-        publisher: "Test",
       })),
       "utf-8");
     await writeFile(
@@ -500,7 +493,6 @@ export default async function createPlugin() {
         entry: "entry.mjs",
         tools: [{ name: "lc_restartall_ping", description: "lc_restartall_ping tool", inputSchema: { type: "object", properties: {} }, _meta: { ui: { visibility: ["model", "app"] } } }],
         description: "Lifecycle restartAll test",
-        publisher: "Test",
       })),
       "utf-8");
     await writeFile(
@@ -543,7 +535,6 @@ export default async function createPlugin() {
         entry: "entry.mjs",
         tools: [{ name: "lc_disable_ping", description: "lc_disable_ping tool", inputSchema: { type: "object", properties: {} }, _meta: { ui: { visibility: ["model", "app"] } } }],
         description: "Lifecycle disable test",
-        publisher: "Test",
       })),
       "utf-8");
     await writeFile(
@@ -599,7 +590,6 @@ export default async function createPlugin() {
         entry: "entry.mjs",
         tools: [{ name: `${pluginId.replace(/-/g, "_")}_ping`, description: "lifecycle ping tool", inputSchema: { type: "object", properties: {} }, _meta: { ui: { visibility: ["model", "app"] } } }],
         description: "x",
-        publisher: "x",
       })),
       "utf-8");
     await writeFile(
@@ -641,7 +631,6 @@ export default async function createPlugin() {
           },
         ],
         description: "x",
-        publisher: "x",
       })),
       "utf-8");
     return { pluginId, manifestPath, toolName };
@@ -770,7 +759,6 @@ export default async function createPlugin() {
         entry: "entry.mjs",
         tools: [{ name: "lc_add_fail_ping", description: "lc_add_fail_ping tool", inputSchema: { type: "object", properties: {} }, _meta: { ui: { visibility: ["model", "app"] } } }],
         description: "x",
-        publisher: "x",
       })),
       "utf-8");
     await writeFile(

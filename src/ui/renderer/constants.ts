@@ -28,7 +28,6 @@ import {
   LLM_VENDOR_DEFAULTS,
   LLM_VENDOR_MODEL_OPTIONS,
   LLM_VENDORS,
-  MARKETPLACE_ELIGIBLE_LLM_VENDOR_IDS,
   OPENAI_COMPATIBLE_PRESET_VENDOR_IDS,
   OPENAI_COMPATIBLE_VENDOR_PRESETS,
   isLLMVendor,
@@ -122,9 +121,6 @@ function requireVendorOption<T extends LLMVendor>(id: T): VendorOptionFor<T> {
 }
 
 export const VENDORS = DEFAULT_VISIBLE_LLM_VENDOR_IDS.map(requireVendorOption);
-
-export const MARKETPLACE_PROVIDER_VENDORS =
-  MARKETPLACE_ELIGIBLE_LLM_VENDOR_IDS.map(requireVendorOption);
 
 export function getVendorOption(vendorId: string): VendorOption {
   return ALL_VENDORS.find((vendor) => vendor.id === vendorId) ?? VENDORS[0]!;

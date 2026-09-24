@@ -14,7 +14,7 @@ export const MARKETPLACE_ANNOUNCEMENT_LEVELS = [
   "critical",
 ] as const;
 
-export type MarketplaceAnnouncementLevel =
+type MarketplaceAnnouncementLevel =
   typeof MARKETPLACE_ANNOUNCEMENT_LEVELS[number];
 
 /**
@@ -78,7 +78,7 @@ export interface MarketplaceAnnouncement {
 
 export type MarketplaceAnnouncementPayload = MarketplaceAnnouncement[];
 
-export function isMarketplaceAnnouncementLevel(
+function isMarketplaceAnnouncementLevel(
   value: unknown,
 ): value is MarketplaceAnnouncementLevel {
   return (

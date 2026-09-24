@@ -597,12 +597,6 @@
                 }
               }
             },
-            "installPolicy": {
-              "enum": [
-                "admin",
-                "user"
-              ]
-            },
             "dependencies": {
               "type": "array",
               "description": "Plugin dependencies that should be installed or considered with this plugin. This is not a delivery mode.",
@@ -712,10 +706,6 @@
               ],
               "default": "none",
               "description": "Whether this plugin uses host-managed LLM keys (host), its own keys (plugin), or no LLM at all (none). The 'host' source requires marketplace whitelist authorization at runtime."
-            },
-            "publisher": {
-              "type": "string",
-              "minLength": 1
             },
             "packageName": {
               "type": "string",

@@ -66,18 +66,14 @@ import { ko as ko_be_systemPromptBuilder } from "../generated/be_systemPromptBui
 import { ko as ko_be_telegramBridge } from "../generated/be_telegramBridge.js";
 import { ko as ko_be_toolSearch } from "../generated/be_toolSearch.js";
 import { ko as ko_be_tools } from "../generated/be_tools.js";
-import { ko as ko_be_whitelistBootstrap } from "../generated/be_whitelistBootstrap.js";
 import { ko as ko_be_windowDomain } from "../generated/be_windowDomain.js";
 import { ko as ko_be_windowTitlebarShell } from "../generated/be_windowTitlebarShell.js";
 import { ko as ko_bootstrapStatusPill } from "../generated/bootstrapStatusPill.js";
 import { ko as ko_bottomActionRow } from "../generated/bottomActionRow.js";
-import { ko as ko_catppuccinLatte } from "../generated/catppuccinLatte.js";
-import { ko as ko_catppuccinMocha } from "../generated/catppuccinMocha.js";
 import { ko as ko_chatPreviewRail } from "../generated/chatPreviewRail.js";
 import { ko as ko_chatTab } from "../generated/chatTab.js";
 import { ko as ko_chatView } from "../generated/chatView.js";
 import { ko as ko_checkpointDivider } from "../generated/checkpointDivider.js";
-import { ko as ko_cherryBlossom } from "../generated/cherryBlossom.js";
 import { ko as ko_clipboardPaste } from "../generated/clipboardPaste.js";
 import { ko as ko_codexSubscriptionCard } from "../generated/codexSubscriptionCard.js";
 import { ko as ko_commandActions } from "../generated/commandActions.js";
@@ -93,14 +89,10 @@ import { ko as ko_deferredQueuePanel } from "../generated/deferredQueuePanel.js"
 import { ko as ko_devToolsPanel } from "../generated/devToolsPanel.js";
 import { ko as ko_dockedApprovalCard } from "../generated/dockedApprovalCard.js";
 import { ko as ko_errorBoundary } from "../generated/errorBoundary.js";
-import { ko as ko_executiveGraphite } from "../generated/executiveGraphite.js";
 import { ko as ko_fileEditDiff } from "../generated/fileEditDiff.js";
-import { ko as ko_forest } from "../generated/forest.js";
 import { ko as ko_formatIpcError } from "../generated/formatIpcError.js";
 import { ko as ko_generalTab } from "../generated/generalTab.js";
 import { ko as ko_gitMarketplace } from "../generated/gitMarketplace.js";
-import { ko as ko_gruvboxDarkHard } from "../generated/gruvboxDarkHard.js";
-import { ko as ko_highContrast } from "../generated/highContrast.js";
 import { ko as ko_history } from "../generated/history.js";
 import { ko as ko_htmlPreview } from "../generated/htmlPreview.js";
 import { ko as ko_inputActionBar } from "../generated/inputActionBar.js";
@@ -116,8 +108,6 @@ import { ko as ko_mcpTab } from "../generated/mcpTab.js";
 import { ko as ko_memorySearchPanel } from "../generated/memorySearchPanel.js";
 import { ko as ko_messageQueuePanel } from "../generated/messageQueuePanel.js";
 import { ko as ko_messageQueueStore } from "../generated/messageQueueStore.js";
-import { ko as ko_midnight } from "../generated/midnight.js";
-import { ko as ko_nord } from "../generated/nord.js";
 import { ko as ko_overlayCard } from "../generated/overlayCard.js";
 import { ko as ko_overlayCardRegion } from "../generated/overlayCardRegion.js";
 import { ko as ko_pendingAnswerDot } from "../generated/pendingAnswerDot.js";
@@ -129,8 +119,6 @@ import { ko as ko_permissionsTab } from "../generated/permissionsTab.js";
 import { ko as ko_pluginAuthSection } from "../generated/pluginAuthSection.js";
 import { ko as ko_pluginConfigSchemaForm } from "../generated/pluginConfigSchemaForm.js";
 import { ko as ko_pluginConfigTab } from "../generated/pluginConfigTab.js";
-import { ko as ko_pluginGridButton } from "../generated/pluginGridButton.js";
-import { ko as ko_pluginInstallDialog } from "../generated/pluginInstallDialog.js";
 import { ko as ko_pluginPerfTab } from "../generated/pluginPerfTab.js";
 import { ko as ko_pluginUninstallDialog } from "../generated/pluginUninstallDialog.js";
 import { ko as ko_pluginUpdatesPill } from "../generated/pluginUpdatesPill.js";
@@ -139,7 +127,6 @@ import { ko as ko_reasoningCard } from "../generated/reasoningCard.js";
 import { ko as ko_remoteA2aActionButton } from "../generated/remoteA2aActionButton.js";
 import { ko as ko_remoteSurfacesTab } from "../generated/remoteSurfacesTab.js";
 import { ko as ko_rolesTab } from "../generated/rolesTab.js";
-import { ko as ko_rosePine } from "../generated/rosePine.js";
 import { ko as ko_routinePanel } from "../generated/routinePanel.js";
 import { ko as ko_savedToast } from "../generated/savedToast.js";
 import { ko as ko_sessionGoalPanel } from "../generated/sessionGoalPanel.js";
@@ -151,7 +138,6 @@ import { ko as ko_sidebar } from "../generated/sidebar.js";
 import { ko as ko_skillBadge } from "../generated/skillBadge.js";
 import { ko as ko_slashPicker } from "../generated/slashPicker.js";
 import { ko as ko_slashPickerPanel } from "../generated/slashPickerPanel.js";
-import { ko as ko_solarizedLight } from "../generated/solarizedLight.js";
 import { ko as ko_sparkline } from "../generated/sparkline.js";
 import { ko as ko_spotlightTour } from "../generated/spotlightTour.js";
 import { ko as ko_starredView } from "../generated/starredView.js";
@@ -164,7 +150,6 @@ import { ko as ko_tailnetAccessTab } from "../generated/tailnetAccessTab.js";
 import { ko as ko_telegramConnection } from "../generated/telegramConnection.js";
 import { ko as ko_tokenCostBadge } from "../generated/tokenCostBadge.js";
 import { ko as ko_tokenProgressRing } from "../generated/tokenProgressRing.js";
-import { ko as ko_tokyoNight } from "../generated/tokyoNight.js";
 import { ko as ko_toolActivity } from "../generated/toolActivity.js";
 import { ko as ko_toolApprovalDialog } from "../generated/toolApprovalDialog.js";
 import { ko as ko_toolDisplay } from "../generated/toolDisplay.js";
@@ -175,7 +160,6 @@ import { ko as ko_unifiedSearchPanel } from "../generated/unifiedSearchPanel.js"
 import { ko as ko_usageDashboard } from "../generated/usageDashboard.js";
 import { ko as ko_useChatState } from "../generated/useChatState.js";
 import { ko as ko_useMemorySearch } from "../generated/useMemorySearch.js";
-import { ko as ko_usePluginMarketplace } from "../generated/usePluginMarketplace.js";
 import { ko as ko_useSettingsOrchestration } from "../generated/useSettingsOrchestration.js";
 import { ko as ko_useStarred } from "../generated/useStarred.js";
 import { ko as ko_useStatusBarInstall } from "../generated/useStatusBarInstall.js";
@@ -183,8 +167,6 @@ import { ko as ko_useStatusBarVendor } from "../generated/useStatusBarVendor.js"
 import { ko as ko_userMessageEditor } from "../generated/userMessageEditor.js";
 import { ko as ko_viewModeBanner } from "../generated/viewModeBanner.js";
 import { ko as ko_viewPathNav } from "../generated/viewPathNav.js";
-import { ko as ko_violetDark } from "../generated/violetDark.js";
-import { ko as ko_violetLight } from "../generated/violetLight.js";
 import { ko as ko_webTab } from "../generated/webTab.js";
 import { ko as ko_workBoard } from "../generated/workBoard.js";
 import { ko as ko_workGroup } from "../generated/workGroup.js";
@@ -257,18 +239,14 @@ export const koMessages: Record<string, string> = {
   ...ko_be_telegramBridge,
   ...ko_be_toolSearch,
   ...ko_be_tools,
-  ...ko_be_whitelistBootstrap,
   ...ko_be_windowDomain,
   ...ko_be_windowTitlebarShell,
   ...ko_bootstrapStatusPill,
   ...ko_bottomActionRow,
-  ...ko_catppuccinLatte,
-  ...ko_catppuccinMocha,
   ...ko_chatPreviewRail,
   ...ko_chatTab,
   ...ko_chatView,
   ...ko_checkpointDivider,
-  ...ko_cherryBlossom,
   ...ko_clipboardPaste,
   ...ko_codexSubscriptionCard,
   ...ko_commandActions,
@@ -284,14 +262,10 @@ export const koMessages: Record<string, string> = {
   ...ko_devToolsPanel,
   ...ko_dockedApprovalCard,
   ...ko_errorBoundary,
-  ...ko_executiveGraphite,
   ...ko_fileEditDiff,
-  ...ko_forest,
   ...ko_formatIpcError,
   ...ko_generalTab,
   ...ko_gitMarketplace,
-  ...ko_gruvboxDarkHard,
-  ...ko_highContrast,
   ...ko_history,
   ...ko_htmlPreview,
   ...ko_inputActionBar,
@@ -307,8 +281,6 @@ export const koMessages: Record<string, string> = {
   ...ko_memorySearchPanel,
   ...ko_messageQueuePanel,
   ...ko_messageQueueStore,
-  ...ko_midnight,
-  ...ko_nord,
   ...ko_overlayCard,
   ...ko_overlayCardRegion,
   ...ko_pendingAnswerDot,
@@ -320,8 +292,6 @@ export const koMessages: Record<string, string> = {
   ...ko_pluginAuthSection,
   ...ko_pluginConfigSchemaForm,
   ...ko_pluginConfigTab,
-  ...ko_pluginGridButton,
-  ...ko_pluginInstallDialog,
   ...ko_pluginPerfTab,
   ...ko_pluginUninstallDialog,
   ...ko_pluginUpdatesPill,
@@ -330,7 +300,6 @@ export const koMessages: Record<string, string> = {
   ...ko_remoteA2aActionButton,
   ...ko_remoteSurfacesTab,
   ...ko_rolesTab,
-  ...ko_rosePine,
   ...ko_routinePanel,
   ...ko_savedToast,
   ...ko_sessionGoalPanel,
@@ -342,7 +311,6 @@ export const koMessages: Record<string, string> = {
   ...ko_skillBadge,
   ...ko_slashPicker,
   ...ko_slashPickerPanel,
-  ...ko_solarizedLight,
   ...ko_sparkline,
   ...ko_spotlightTour,
   ...ko_starredView,
@@ -355,7 +323,6 @@ export const koMessages: Record<string, string> = {
   ...ko_telegramConnection,
   ...ko_tokenCostBadge,
   ...ko_tokenProgressRing,
-  ...ko_tokyoNight,
   ...ko_toolActivity,
   ...ko_toolApprovalDialog,
   ...ko_toolDisplay,
@@ -366,7 +333,6 @@ export const koMessages: Record<string, string> = {
   ...ko_usageDashboard,
   ...ko_useChatState,
   ...ko_useMemorySearch,
-  ...ko_usePluginMarketplace,
   ...ko_useSettingsOrchestration,
   ...ko_useStarred,
   ...ko_useStatusBarInstall,
@@ -374,8 +340,6 @@ export const koMessages: Record<string, string> = {
   ...ko_userMessageEditor,
   ...ko_viewModeBanner,
   ...ko_viewPathNav,
-  ...ko_violetDark,
-  ...ko_violetLight,
   ...ko_webTab,
   ...ko_workBoard,
   ...ko_workGroup,

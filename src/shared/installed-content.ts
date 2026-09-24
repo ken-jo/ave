@@ -50,6 +50,8 @@ export interface InstalledThemeView extends InstalledFrom {
   tokens: ThemeTokens;
   surfaces: ThemeSurfaces;
   previewUrl?: string;
+  /** The theme of the other shell `followSystem` switches to with this one. */
+  pair?: string;
 }
 
 export interface InstalledLanguageView extends InstalledFrom {

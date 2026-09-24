@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,6 +22,7 @@ import { SourceSyncer } from "../../sources/sync.js";
 import type { ParsedContent } from "../kinds.js";
 import { ContentLedger, contentLedgerOrigins, type LedgerEntry } from "../ledger.js";
 import { ContentStore, stageContentPackage, type ContentActivation } from "../store.js";
+import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
 const AT = "2026-09-23T00:00:00.000Z";
 const INSTALLATION = "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b";
@@ -35,20 +36,20 @@ const language = (name: string, locale: string) => ({
   [`languages/${name}/messages.json`]: text({ "chat.send": "Envoyer" }),
 });
 
-describe.skipIf(process.platform === "win32")("content package store (blueprint 3.1)", () => {
+describe("content package store", () => {
   let serverRoot: string;
   let server: GitHttpServer;
   let git: TestGitRunner;
   let root: string;
   let repos: FixtureRepo[] = [];
   let counter = 0;
-  let activated: Array<{ op: "activate" | "deactivate"; key: string; content: ParsedContent | null; previous?: string | null }>;
+  let activated: Array<{ op: "activate" | "deactivate"; key: string; content: ParsedContent | null; previous?: string | null; adopt?: boolean }>;
   let failActivation: boolean;
 
   const activation: ContentActivation = {
-    async activate(content, entry, previous) {
+    async activate(content, entry, previous, adopt) {
       if (failActivation) throw new Error("settings write failed");
-      activated.push({ op: "activate", key: `${entry.kind}:${entry.name}@${entry.version}`, content, previous: previous ? previous.version : null });
+      activated.push({ op: "activate", key: `${entry.kind}:${entry.name}@${entry.version}`, content, previous: previous ? previous.version : null, adopt });
     },
     async deactivate(entry, content) {
       activated.push({ op: "deactivate", key: `${entry.kind}:${entry.name}@${entry.version}`, content });
@@ -64,7 +65,7 @@ describe.skipIf(process.platform === "win32")("content package store (blueprint 
   afterAll(async () => {
     await server.close();
     await git.cleanup();
-    rmSync(serverRoot, { recursive: true, force: true });
+    await cleanupTmpDir(serverRoot);
   });
 
   beforeEach(() => {
@@ -73,10 +74,10 @@ describe.skipIf(process.platform === "win32")("content package store (blueprint 
     failActivation = false;
   });
 
-  afterEach(() => {
-    for (const repo of repos) removeFixtureRepo(repo);
+  afterEach(async () => {
+    for (const repo of repos) await removeFixtureRepo(repo);
     repos = [];
-    rmSync(root, { recursive: true, force: true });
+    await cleanupTmpDir(root);
   });
 
   /** A marketplace repository serving `packages` (kind, name, path) with the given files. */
@@ -135,14 +136,14 @@ describe.skipIf(process.platform === "win32")("content package store (blueprint 
     // The descriptor is read at the version commit and never installed.
     expect(existsSync(join(root, "packages", "theme", "harbor", "1.0.0", "theme.json"))).toBe(true);
     expect(existsSync(join(root, "packages", "theme", "harbor", "1.0.0", "ave-package.json"))).toBe(false);
-    expect(activated.map((call) => call.key)).toEqual(["theme:harbor@1.0.0"]);
+    expect(activated.map((call) => [call.key, call.adopt])).toEqual([["theme:harbor@1.0.0", false]]);
 
     const reopened = await openStore();
     const { loaded, broken } = await reopened.load();
     expect(broken).toEqual([]);
     expect(loaded.map((item) => item.content)).toEqual([staged.content]);
     // The snapshot the install was planned from is kept while it is installed (§2.3).
-    expect(await contentLedgerOrigins(join(root, "packages", "ledger.json"))()).toEqual([{ sourceId: "acme", commit: first }]);
+    expect(await contentLedgerOrigins(join(root, "packages", "ledger.json"))()).toEqual([{ kind: "theme", name: "harbor", sourceId: "acme", commit: first }]);
 
     await expect(reopened.uninstall("theme", "harbor", { ...EMPTY_MARKETPLACE_POLICY, requiredInstalls: [{ kind: "theme", name: "harbor", source: "acme" }] }))
       .rejects.toMatchObject({ code: "PACKAGE_REQUIRED_BY_POLICY" });
@@ -151,6 +152,10 @@ describe.skipIf(process.platform === "win32")("content package store (blueprint 
     expect(existsSync(join(root, "packages", "theme", "harbor"))).toBe(false);
     expect(JSON.parse(readFileSync(join(root, "packages", "ledger.json"), "utf8"))).toEqual({ version: 1, packages: [] });
     expect(await reopened.uninstall("theme", "harbor", EMPTY_MARKETPLACE_POLICY)).toBeNull();
+
+    // The first-boot migration's install tells the activation it is adopting (design §16.3).
+    await reopened.install(staged, { adopt: true });
+    expect(activated.at(-1)).toMatchObject({ op: "activate", key: "theme:harbor@1.0.0", adopt: true });
   });
 
   it("replaces an older version in place and removes its directory", async () => {
@@ -247,6 +252,27 @@ describe.skipIf(process.platform === "win32")("content package store (blueprint 
     expect(calls).toBe(2);
     // The new version's files are still removed.
     expect(existsSync(join(root, "packages", "theme", "harbor", "1.1.0"))).toBe(false);
+  });
+
+  it("keeps a language whose keys the app catalog no longer has, applying only the keys it still has", async () => {
+    // Written against an older catalog: "chat.retired" is gone from this app's English catalog.
+    const { name } = market([{ kind: "language", name: "french", path: "languages/french" }], {
+      ...language("french", "fr"),
+      "languages/french/messages.json": text({ "chat.send": "Envoyer", "app.title": "Ave", "chat.retired": "Ancien" }),
+    });
+    const syncer = await open(name);
+    const store = await openStore();
+    const staged = await stage(syncer, (await rows(syncer))[0]!);
+    expect(staged.content).toMatchObject({ messages: { "chat.send": "Envoyer", "app.title": "Ave" } });
+    expect(await store.install(staged)).toMatchObject({ action: { action: "install" }, entry: { name: "french" } });
+
+    // A later app drops "app.title" as well: the installed package still loads, and the dropped keys never apply.
+    const updated = await ContentStore.open({ root: join(root, "packages"), english: { "chat.send": "Send" }, activation, now: () => new Date(AT) });
+    const { loaded, broken } = await updated.load();
+    expect(broken).toEqual([]);
+    expect(loaded.map((item) => item.content)).toEqual([
+      { kind: "language", locale: "fr", nativeName: "Français", englishName: "French", messages: { "chat.send": "Envoyer" }, missingKeys: [] },
+    ]);
   });
 
   it("refuses a second package for a locale another installed package provides", async () => {

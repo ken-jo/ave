@@ -7,6 +7,8 @@ import { McpAppView } from "../McpAppView.js";
 import { McpAppPipPanel } from "../McpAppPipPanel.js";
 import { ThemeProvider, useTheme } from "../../theme/index.js";
 import { DEFAULT_BUNDLE_ID } from "../../theme/index.js";
+import { setInstalledThemeBundles } from "../../theme/bundles/index.js";
+import { moonstoneBundle } from "../../theme/bundles/moonstone.js";
 import { ThemeWrapper } from "./mcp-app-test-helpers.js";
 import { mcpAppPartitionName } from "../../../../shared/mcp-app-partition.js";
 import { MCP_APP_CARD_MAX_HEIGHT_PX } from "../../../../shared/mcp-app-card-size.js";
@@ -112,6 +114,8 @@ beforeEach(() => {
   // so order-coupled shared state never leaks between cases (the store test and
   // McpAppPipPanel.test.tsx already do this).
   __resetMcpAppCardLocationStoreForTests();
+  // The dark theme the theme-change case switches to is an installed package.
+  setInstalledThemeBundles([{ ...moonstoneBundle, id: "midnight", name: "Midnight", shell: "dark" }]);
   readUiResource.mockClear();
   stubAve();
   createMcpAppBridgeMock.mockClear();
@@ -129,6 +133,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   __resetMcpAppCardLocationStoreForTests();
+  setInstalledThemeBundles([]);
 });
 
 /** Query the MOUNTED <webview> node (asserts the node attribute, not a setter). */
@@ -239,7 +244,7 @@ describe("McpAppView — standard McpUiHostContext wiring (P0)", () => {
       fireEvent.click(getByTestId("theme-toggle"));
     });
 
-    // "midnight" is lazy-loaded (dynamic import), so `effectiveBundleId` flips to
+    // "midnight" resolves after the installed content, so `effectiveBundleId` flips to
     // "midnight" a render before the bundle itself resolves — McpAppView's
     // host-context effect may push an interim call before `resolved` catches up.
     // Poll on the LAST call converging to "dark" rather than "called once" so the

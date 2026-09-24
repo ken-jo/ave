@@ -19,10 +19,11 @@
  * verification, receipt). Nothing here decides consent or reads the network.
  */
 import { errorMessage } from "../../shared/error-message.js";
-import type { BootInstallNoticeView, PackageKeyView } from "../../shared/git-marketplace.js";
+import { bootInstallNoticeIsEmpty, type BootInstallNoticeView, type PackageKeyView, type RevokedPackageView } from "../../shared/git-marketplace.js";
 import { MarketplaceError } from "../errors.js";
 import type { CatalogRow } from "../catalog/aggregate.js";
 import type { PackageKind } from "../catalog/types.js";
+import type { LegacyPluginReport } from "../migration/legacy-plugins.js";
 import { updateFor, type InstalledPackage } from "../resolve/identity.js";
 import type { MarketplacePolicy, PackageKey } from "../sources/policy.js";
 import type { SourceOrigin } from "../sources/registry.js";
@@ -60,25 +61,53 @@ const LISTABLE_ORIGINS = new Set<SourceOrigin>(["official", "managed"]);
  * installs, which are the user's now, apart from what the policy requires and
  * moved; null when the boot changed nothing.
  */
-export function bootInstallNoticeFrom(report: BootInstallReport, policy: MarketplacePolicy): BootInstallNoticeView | null {
+export function bootInstallNoticeFrom(
+  report: BootInstallReport,
+  policy: MarketplacePolicy,
+  legacy: Pick<LegacyPluginReport, "unmanaged" | "lostGrants"> | null,
+  revoked: readonly RevokedPackageView[],
+): BootInstallNoticeView | null {
   const view = (key: PackageKey): PackageKeyView => ({ sourceId: key.source, kind: key.kind, name: key.name });
   const required = (key: PackageKey) => requiredByPolicy(policy, key.kind, key.name) !== undefined;
   const forYou = report.installed.filter((key) => !required(key)).map(view);
   const requiredKeys = [...report.installed.filter(required), ...report.updated, ...report.switched].map(view);
-  return forYou.length + requiredKeys.length > 0 ? { forYou, required: requiredKeys } : null;
+  const unmanaged = [...(legacy?.unmanaged ?? [])];
+  const lostGrants = (legacy?.lostGrants ?? []).map((item) => ({ plugin: item.plugin, keys: [...item.keys] }));
+  const notice = { forYou, required: requiredKeys, unmanaged, lostGrants, revoked: revoked.map((item) => ({ ...item, key: { ...item.key } })) };
+  return bootInstallNoticeIsEmpty(notice) ? null : notice;
 }
 
-/** The requiredInstalls entry that locks `(kind, name)`, if any (PACKAGE_REQUIRED_BY_POLICY). */
-export function requiredByPolicy(policy: MarketplacePolicy, kind: PackageKind, name: string): PackageKey | undefined {
+/** The requiredInstalls entry naming `(kind, name)`, if any, whichever source it names. */
+export function requiredByPolicy(policy: Pick<MarketplacePolicy, "requiredInstalls">, kind: PackageKind, name: string): PackageKey | undefined {
   return policy.requiredInstalls.find((key) => key.kind === kind && key.name === name);
 }
 
-/** Refuse to uninstall or disable a package a `requiredInstalls` entry locks (design §10.2). */
-export function assertNotRequiredByPolicy(policy: MarketplacePolicy, kind: PackageKind, name: string, action: "uninstall" | "disable"): void {
+/**
+ * The requiredInstalls entry that locks `(kind, name)` as bound to
+ * `sourceId`, if any. An entry locks only the package it names: that kind
+ * and name from its source (design §10.2). A same-named package bound to
+ * another source is not the required one; the boot pass replaces it.
+ */
+export function lockedByPolicy(policy: Pick<MarketplacePolicy, "requiredInstalls">, kind: PackageKind, name: string, sourceId: string | null): PackageKey | undefined {
   const key = requiredByPolicy(policy, kind, name);
-  if (key) {
-    throw new MarketplaceError("PACKAGE_REQUIRED_BY_POLICY", `${kind} ${name} is required by policy (source ${key.source}); it cannot ${action === "uninstall" ? "be uninstalled" : "be disabled"}`);
-  }
+  return key && key.source === sourceId ? key : undefined;
+}
+
+/** Why a locked package cannot be uninstalled or disabled (PACKAGE_REQUIRED_BY_POLICY). */
+export function requiredByPolicyReason(kind: PackageKind, name: string, key: PackageKey, action: "uninstall" | "disable"): string {
+  return `${kind} ${name} is required by policy (source ${key.source}); it cannot ${action === "uninstall" ? "be uninstalled" : "be disabled"}`;
+}
+
+/** Refuse to uninstall or disable a package a `requiredInstalls` entry locks ({@link lockedByPolicy}). */
+export function assertNotRequiredByPolicy(
+  policy: Pick<MarketplacePolicy, "requiredInstalls">,
+  kind: PackageKind,
+  name: string,
+  sourceId: string | null,
+  action: "uninstall" | "disable",
+): void {
+  const key = lockedByPolicy(policy, kind, name, sourceId);
+  if (key) throw new MarketplaceError("PACKAGE_REQUIRED_BY_POLICY", requiredByPolicyReason(kind, name, key, action));
 }
 
 function rowFor(rows: readonly CatalogRow[], key: PackageKey): CatalogRow | undefined {

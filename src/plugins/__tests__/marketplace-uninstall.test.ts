@@ -1,0 +1,177 @@
+/**
+ * `PluginMarketplaceService.uninstall()` — the removal transaction stages the
+ * live directory and every path the registry row owns (recovery backups and
+ * pending cleanups), commits the registry removal, and restores all of it when
+ * the registry moved underneath.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+
+import { _resetForTest, setIsPackaged } from "../../boot/dev-flags.js";
+import {
+  agentPluginsDocument,
+  makeTestPluginPaths,
+  makeTestTreeWritable,
+  TestPluginMarketplaceService,
+} from "./test-helpers.js";
+import * as removalTransaction from "../plugin-removal-transaction.js";
+
+describe("PluginMarketplaceService uninstall()", () => {
+  let testDir: string;
+  let registryPath: string;
+  let installedDir: string;
+  let cacheRoot: string;
+
+  beforeEach(async () => {
+    setIsPackaged(false);
+    testDir = await mkdtemp(join(process.cwd(), ".ave-marketplace-uninstall-"));
+    installedDir = join(testDir, "plugins");
+    registryPath = join(installedDir, "registry.json");
+    cacheRoot = join(testDir, ".cache");
+    await mkdir(installedDir, { recursive: true });
+    await writeFile(registryPath, JSON.stringify({ version: 1, plugins: [] }), "utf-8");
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await makeTestTreeWritable(testDir);
+    await rm(testDir, { recursive: true, force: true });
+    _resetForTest();
+  });
+
+  function makeService() {
+    const paths = makeTestPluginPaths({ rootDir: testDir, pluginsRoot: installedDir, cacheRoot });
+    return { service: new TestPluginMarketplaceService(paths) };
+  }
+
+  it("stages the live directory and every owned recovery path during direct uninstall", async () => {
+    const pluginId = "owned-direct";
+    const installDir = join(installedDir, pluginId);
+    const recoveryDir = join(installedDir, `.${pluginId}.old-00000000-0000-4000-8000-000000000011`);
+    const cleanupDir = join(installedDir, `.${pluginId}.old-00000000-0000-4000-8000-000000000012`);
+    for (const dir of [installDir, recoveryDir, cleanupDir]) {
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, "keep.txt"), dir);
+    }
+    await writeFile(registryPath, JSON.stringify({
+      version: 1,
+      plugins: [{
+        id: pluginId,
+        manifestPath: `${pluginId}/plugin.json`,
+        installSource: "user",
+        pendingUpdate: {
+          kind: "marketplace",
+          previousManifestFileSha256: null,
+          previousReceiptRaw: null,
+          recoveryBackupDir: recoveryDir,
+          recoveryBackupMode: "rename",
+        },
+        pendingCleanup: [{ kind: "obsolete-artifact", path: cleanupDir }],
+      }],
+    }));
+    const { service } = makeService();
+
+    await expect(service.uninstall(pluginId)).resolves.toEqual({ pluginId, uninstalled: true });
+    for (const dir of [installDir, recoveryDir, cleanupDir]) expect(existsSync(dir)).toBe(false);
+    expect((JSON.parse(await readFile(registryPath, "utf-8")) as { plugins: unknown[] }).plugins).toEqual([]);
+  });
+
+  it("rejects a cross-wired registry row before it can remove another plugin directory", async () => {
+    for (const id of ["owner-a", "owner-b"]) {
+      await mkdir(join(installedDir, id), { recursive: true });
+      await writeFile(join(installedDir, id, "plugin.json"), JSON.stringify(agentPluginsDocument({ id })));
+    }
+    await writeFile(registryPath, JSON.stringify({
+      version: 1,
+      plugins: [{ id: "owner-a", manifestPath: "owner-b/plugin.json", installSource: "user" }],
+    }));
+    const { service } = makeService();
+
+    await expect(service.uninstall("owner-a")).rejects.toThrow("Registry ownership mismatch");
+    expect(existsSync(join(installedDir, "owner-a", "plugin.json"))).toBe(true);
+    expect(existsSync(join(installedDir, "owner-b", "plugin.json"))).toBe(true);
+  });
+
+  it("restores the live directory and every owned path when direct uninstall commit conflicts", async () => {
+    const pluginId = "owned-restore";
+    const installDir = join(installedDir, pluginId);
+    const recoveryDir = join(installedDir, `.${pluginId}.old-00000000-0000-4000-8000-000000000013`);
+    const cleanupDir = join(installedDir, `.${pluginId}.old-00000000-0000-4000-8000-000000000014`);
+    const row = {
+      id: pluginId,
+      manifestPath: `${pluginId}/plugin.json`,
+      installSource: "user",
+      pendingUpdate: {
+        kind: "marketplace",
+        previousManifestFileSha256: null,
+        previousReceiptRaw: null,
+        recoveryBackupDir: recoveryDir,
+        recoveryBackupMode: "rename",
+      },
+      pendingCleanup: [{ kind: "obsolete-artifact", path: cleanupDir }],
+    };
+    for (const dir of [installDir, recoveryDir, cleanupDir]) {
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, "keep.txt"), dir);
+    }
+    await writeFile(registryPath, JSON.stringify({ version: 1, plugins: [row] }));
+    const originalStage = removalTransaction.stageRemovalTransaction;
+    vi.spyOn(removalTransaction, "stageRemovalTransaction").mockImplementation(async (...args) => {
+      await originalStage(...args);
+      await writeFile(registryPath, JSON.stringify({
+        version: 1,
+        plugins: [{ ...row, enabled: false }],
+      }));
+    });
+    const { service } = makeService();
+
+    await expect(service.uninstall(pluginId)).rejects.toThrow(/registry changed during uninstall/);
+    for (const dir of [installDir, recoveryDir, cleanupDir]) {
+      expect(existsSync(dir)).toBe(true);
+      expect(await readFile(join(dir, "keep.txt"), "utf-8")).toBe(dir);
+    }
+  });
+
+  it("stages every member recovery path during bundle uninstall", async () => {
+    const rootId = "owned-bundle";
+    const memberId = "owned-member";
+    const rootDir = join(installedDir, rootId);
+    const memberDir = join(installedDir, memberId);
+    const memberRecovery = join(installedDir, `.${memberId}.old-00000000-0000-4000-8000-000000000021`);
+    const memberCleanup = join(installedDir, `.${memberId}.old-00000000-0000-4000-8000-000000000022`);
+    for (const dir of [rootDir, memberDir, memberRecovery, memberCleanup]) {
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, "keep.txt"), dir);
+    }
+    await writeFile(registryPath, JSON.stringify({
+      version: 1,
+      plugins: [
+        { id: rootId, manifestPath: `${rootId}/plugin.json`, installSource: "user" },
+        {
+          id: memberId,
+          manifestPath: `${memberId}/plugin.json`,
+          installSource: "user",
+          bundleRefs: [rootId],
+          pendingUpdate: {
+            kind: "marketplace",
+            previousManifestFileSha256: null,
+            previousReceiptRaw: null,
+            recoveryBackupDir: memberRecovery,
+            recoveryBackupMode: "rename",
+          },
+          pendingCleanup: [{ kind: "obsolete-artifact", path: memberCleanup }],
+        },
+      ],
+    }));
+    const { service } = makeService();
+
+    await expect(service.uninstall(rootId, { removeBundleMembers: true })).resolves.toEqual({
+      pluginId: rootId,
+      uninstalled: true,
+    });
+    for (const dir of [rootDir, memberDir, memberRecovery, memberCleanup]) expect(existsSync(dir)).toBe(false);
+    expect((JSON.parse(await readFile(registryPath, "utf-8")) as { plugins: unknown[] }).plugins).toEqual([]);
+  });
+});

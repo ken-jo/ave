@@ -45,7 +45,6 @@ describe("manifest AJV and Tool visibility guards", () => {
       name: id,
       version: "1.0.0",
       description: "Test fixture.",
-      publisher: "Test fixture",
       entry: "entry.mjs",
       ...manifestOverrides,
       tools: overrideTools.map((tool) =>

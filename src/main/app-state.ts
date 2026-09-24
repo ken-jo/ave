@@ -17,7 +17,7 @@
 import type { BrowserWindow, Tray } from "electron";
 import type { WindowManager } from "./window-manager.js";
 import type { AppServices } from "../boot.js";
-import type { BootInstallNoticeView, GitMarketplaceDeepLink } from "../shared/git-marketplace.js";
+import { bootInstallNoticeIsEmpty, type BootInstallNoticeView, type GitMarketplaceDeepLink } from "../shared/git-marketplace.js";
 
 // Main-window identity and mode-driven bounds manager. Created before
 // createWindow() so it is ready when the main window is registered.
@@ -53,7 +53,7 @@ export function setServices(value: AppServices | null): void {
   services = value;
 }
 
-// Git marketplace deep link (blueprint 4.6) and boot-install notice (design §15.1):
+// Git marketplace deep link and boot-install notice (design §15.1):
 // held here until the Marketplace tab reads them, since either can arrive
 // before the tab is open.
 let pendingGitMarketplaceLink: GitMarketplaceDeepLink | null = null;
@@ -67,9 +67,9 @@ export function takePendingGitMarketplaceLink(): GitMarketplaceDeepLink | null {
 }
 
 let bootInstallNotice: BootInstallNoticeView | null = null;
-/** Set by the boot-install step (blueprint 6.1); an empty notice clears it. */
+/** Set by the boot-install step; an empty notice clears it. */
 export function setBootInstallNotice(value: BootInstallNoticeView | null): void {
-  bootInstallNotice = value && (value.forYou.length > 0 || value.required.length > 0) ? value : null;
+  bootInstallNotice = value && !bootInstallNoticeIsEmpty(value) ? value : null;
 }
 export function getBootInstallNotice(): BootInstallNoticeView | null {
   return bootInstallNotice;

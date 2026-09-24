@@ -31,6 +31,16 @@ import { onEvent } from "../../boot/types.js";
 import { HOST_ONLY_EMIT_NAMESPACES } from "../../plugins/capabilities.js";
 import type { IpcDeps } from "../types.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { setInstalledThemeIds } from "../../shared/plugin-theme-cache.js";
+
+// Every theme but the compiled Moonstone and Gallery is an installed package.
+beforeEach(() => {
+  setInstalledThemeIds(["tokyo-night", "midnight", "forest", "violet-light", "violet-dark"]);
+});
+
+afterEach(() => {
+  setInstalledThemeIds([]);
+});
 
 type IpcHandler = (...args: unknown[]) => unknown;
 const pluginFixtureRoots: string[] = [];

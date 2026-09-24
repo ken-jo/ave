@@ -30,7 +30,6 @@ function manifest(
     name: pluginId,
     version,
     description: "dispatch readiness fixture",
-    publisher: "Ave tests",
     entry: "entry.mjs",
     tools,
   };

@@ -1,12 +1,11 @@
 import AdmZip from "adm-zip";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_MARKETPLACE_ARTIFACT_LIMITS } from "../../../plugins/marketplace-artifact-limits.js";
 import { PluginArtifactStore } from "../../../plugins/plugin-artifact-store.js";
-import type { MarketplaceFetcher } from "../../../plugins/marketplace-fetcher.js";
 import {
   createFixtureRepo,
   type FixtureRepo,
@@ -22,8 +21,11 @@ import { NetworkGate } from "../../net/network-gate.js";
 import { normalizeSourceUrl, parseSourcePattern } from "../../net/source-url.js";
 import { SourceRegistry } from "../../sources/registry.js";
 import { SourceSyncer } from "../../sources/sync.js";
+import { createArtifactCache, NO_ARTIFACT_CACHE } from "../artifact-cache.js";
 import { candidateVersion } from "../descriptor.js";
 import { LadderError, planPluginInstall, runPluginLadder, treeDigest, type LadderDeps, type PluginInstallPlan } from "../plugin-ladder.js";
+import { sha256Hex as sha } from "../../__tests__/fixtures/package-files.js";
+import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
 const AT = "2026-09-23T00:00:00.000Z";
 const INSTALLATION = "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b";
@@ -47,15 +49,13 @@ function pluginZip(name: string, version: string, auth: PluginAuthority = author
   return zip.toBuffer();
 }
 
-const sha = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
-
 function descriptor(name: string, version: string, artifact: Record<string, unknown>, auth: PluginAuthority = authority()): string {
   return `${JSON.stringify({ schemaVersion: 1, kind: "plugin", name, version, minAppVersion: "0.12.0", payload: { authority: auth, artifact } })}\n`;
 }
 
 const marketIndex = (packages: unknown[]) => `${JSON.stringify({ schemaVersion: 1, name: "acme", displayName: "Acme", packages })}\n`;
 
-describe.skipIf(process.platform === "win32")("plugin artifact ladder (design §6.2)", () => {
+describe("plugin artifact ladder (design §6.2)", () => {
   let serverRoot: string;
   let server: GitHttpServer;
   let git: TestGitRunner;
@@ -67,9 +67,6 @@ describe.skipIf(process.platform === "win32")("plugin artifact ladder (design §
     new PluginArtifactStore({
       installRoot: join(root, "plugins"),
       cacheRoot: join(root, "plugins", ".cache"),
-      fetcher: { listPlugins: async () => [] } as unknown as MarketplaceFetcher,
-      publicKeys: {},
-      tarballCacheBase: null,
     });
 
   beforeAll(async () => {
@@ -81,7 +78,7 @@ describe.skipIf(process.platform === "win32")("plugin artifact ladder (design §
   afterAll(async () => {
     await server.close();
     await git.cleanup();
-    rmSync(serverRoot, { recursive: true, force: true });
+    await cleanupTmpDir(serverRoot);
   });
 
   beforeEach(() => {
@@ -89,11 +86,11 @@ describe.skipIf(process.platform === "win32")("plugin artifact ladder (design §
     workRoot = mkdtempSync(join(tmpdir(), "ave-ladder-work-"));
   });
 
-  afterEach(() => {
-    for (const repo of repos) removeFixtureRepo(repo);
+  afterEach(async () => {
+    for (const repo of repos) await removeFixtureRepo(repo);
     repos = [];
-    rmSync(root, { recursive: true, force: true });
-    rmSync(workRoot, { recursive: true, force: true });
+    await cleanupTmpDir(root);
+    await cleanupTmpDir(workRoot);
   });
 
   function fixture(name?: string): { repo: FixtureRepo; name: string } {
@@ -150,6 +147,7 @@ describe.skipIf(process.platform === "win32")("plugin artifact ladder (design §
         zip: store(),
         limits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,
         workRoot,
+        artifacts: NO_ARTIFACT_CACHE,
         ...patch,
       }),
     );
@@ -185,6 +183,40 @@ describe.skipIf(process.platform === "win32")("plugin artifact ladder (design §
     expect(staged.zipBuffer.equals(zip)).toBe(true);
     expect(staged.manifestDocument).toMatchObject({ name: "alpha", version: "1.0.0" });
     server.file(releasePath, null);
+  });
+
+  it("keeps a downloaded pinned zip and installs it again with the release gone", async () => {
+    const { repo, name } = fixture();
+    const zip = pluginZip("alpha", "1.0.0");
+    server.file(releasePath, zip);
+    market(repo, { release: { repo: "acme/alpha", sha256: sha(zip) } });
+    const { gate, syncer } = await open(name);
+    const plan = planPluginInstall(await row(syncer));
+    const kept = join(root, "artifacts");
+    const artifacts = createArtifactCache({ dir: kept, enabled: () => true, maxFileBytes: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS.maxCompressedBytes, log: { warn: vi.fn() } });
+
+    await ladder(syncer, gate, plan, false, { artifacts });
+    expect(readdirSync(kept)).toEqual([`${sha(zip)}.zip`]);
+
+    // Offline: the release answers 404, and the kept bytes still carry the pin.
+    server.file(releasePath, null);
+    const again = await ladder(syncer, gate, plan, false, { artifacts });
+    expect(again.rungs).toEqual([{ rung: "release", outcome: "used" }]);
+    expect(again.zipBuffer.equals(zip)).toBe(true);
+    expect(again.artifactSha256).toBe(sha(zip));
+  });
+
+  it("keeps nothing from the tree rung", async () => {
+    const { repo, name } = fixture();
+    market(repo, { tree: "plugins/alpha" }, {
+      "plugins/alpha/plugin.json": pluginJson("alpha", "1.0.0"),
+      "plugins/alpha/dist/index.js": ENTRY_JS,
+    });
+    const { gate, syncer } = await open(name);
+    const keep = vi.fn(async () => undefined);
+    const staged = await ladder(syncer, gate, planPluginInstall(await row(syncer)), false, { artifacts: { read: async () => null, keep } });
+    expect(staged.rung).toBe("tree");
+    expect(keep).not.toHaveBeenCalled();
   });
 
   it("moves past a digest mismatch to the archive, and past a transport failure to the tree", async () => {
@@ -436,6 +468,7 @@ describe.skipIf(process.platform === "win32")("plugin artifact ladder (design §
         zip: store(),
         limits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,
         workRoot,
+        artifacts: NO_ARTIFACT_CACHE,
       }),
     );
     expect(staged.rungs).toEqual([{ rung: "release", outcome: "used" }]);
@@ -469,6 +502,7 @@ describe.skipIf(process.platform === "win32")("plugin artifact ladder (design §
           zip: store(),
           limits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,
           workRoot,
+          artifacts: NO_ARTIFACT_CACHE,
         }),
       ).catch((caught: unknown) => caught as LadderError);
     };
@@ -530,6 +564,7 @@ describe.skipIf(process.platform === "win32")("plugin artifact ladder (design §
         zip: store(),
         limits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,
         workRoot,
+        artifacts: NO_ARTIFACT_CACHE,
       }),
     );
     const staged = await run(await planFor("acme/alpha"));

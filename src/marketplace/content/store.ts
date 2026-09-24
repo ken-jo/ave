@@ -1,5 +1,5 @@
 /**
- * Content package store (design §2, §5.4; blueprint 3.1).
+ * Content package store (design §2, §5.4).
  *
  * Staging reads the package directory at the version commit, holds every
  * file to the kind's rules and parses the entry files. Installing writes the
@@ -93,6 +93,7 @@ export async function stageContentPackage(plan: PackagePlan, access: RepositoryA
       payload: descriptor.payload,
       english: options.english,
       sourceOrigin: dataPlan.sourceOrigin,
+      unknownMessageKeys: "ignore",
     });
     return { plan: dataPlan, files, contentSha256: digestOf(files), content };
   } finally {
@@ -109,9 +110,11 @@ export async function stageContentPackage(plan: PackagePlan, access: RepositoryA
 export interface ContentActivation {
   /**
    * After the ledger records the package; a throw undoes the install.
-   * `previous` is the entry it replaces, null for a first install.
+   * `previous` is the entry it replaces, null for a first install. `adopt`:
+   * the first-boot migration is recording an activation the settings already
+   * hold (design §16.3), which leaves those settings as they are.
    */
-  activate(content: ParsedContent, entry: LedgerEntry, previous: LedgerEntry | null): Promise<void>;
+  activate(content: ParsedContent, entry: LedgerEntry, previous: LedgerEntry | null, adopt: boolean): Promise<void>;
   /** Before the ledger drops the package; a throw leaves it installed. `content` is null when its files no longer parse. */
   deactivate(entry: LedgerEntry, content: ParsedContent | null): Promise<void>;
 }
@@ -216,7 +219,7 @@ export class ContentStore {
     return join(this.options.root, entry.kind, entry.name, entry.version);
   }
 
-  async install(staged: StagedContent, options: { switchSource?: boolean } = {}): Promise<{ action: InstallAction; entry: LedgerEntry }> {
+  async install(staged: StagedContent, options: { switchSource?: boolean; adopt?: boolean } = {}): Promise<{ action: InstallAction; entry: LedgerEntry }> {
     return this.serialize(async () => {
       const { plan } = staged;
       const previous = this.ledger.get(plan.kind, plan.name) ?? null;
@@ -258,7 +261,7 @@ export class ContentStore {
         await renameDirectory(files, dir);
         try {
           await this.ledger.put(entry);
-          await this.options.activation.activate(staged.content, entry, previous);
+          await this.options.activation.activate(staged.content, entry, previous, options.adopt === true);
         } catch (error) {
           await undo([
             ["restore the ledger entry", () => (previous ? this.ledger.put(previous) : this.ledger.remove(entry.kind, entry.name))],
@@ -299,14 +302,14 @@ export class ContentStore {
 
   /**
    * Remove an installed package; null when it is not installed. A package
-   * the policy's `requiredInstalls` lists cannot be removed
-   * (PACKAGE_REQUIRED_BY_POLICY).
+   * the policy's `requiredInstalls` locks, from its bound source, cannot be
+   * removed (PACKAGE_REQUIRED_BY_POLICY).
    */
   async uninstall(kind: ContentKind, name: string, policy: MarketplacePolicy): Promise<LedgerEntry | null> {
     return this.serialize(async () => {
       const entry = this.ledger.get(kind, name);
       if (!entry) return null;
-      assertNotRequiredByPolicy(policy, kind, name, "uninstall");
+      assertNotRequiredByPolicy(policy, kind, name, entry.origin.sourceId, "uninstall");
       const loaded = await this.loadOne(entry);
       await this.options.activation.deactivate(entry, "content" in loaded ? loaded.content : null);
       await this.ledger.remove(kind, name);
@@ -343,6 +346,7 @@ export class ContentStore {
         payload: null,
         english: this.options.english,
         sourceOrigin: entry.origin.sourceOrigin,
+        unknownMessageKeys: "ignore",
       });
       return { entry, content, dir };
     } catch (error) {

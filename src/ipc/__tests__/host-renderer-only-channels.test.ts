@@ -176,7 +176,7 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["settings", CHANNELS.settings.setApiKey, ["anthropic", "k"]],
   ["settings", CHANNELS.shell.openExternal, ["https://example.com/"]],
   // Plugin management — the host settings screen, not the plugin bridge.
-  ["plugins", CHANNELS.plugins.install, [{}]],
+  ["plugins", CHANNELS.plugins.installLocal, []],
   ["plugins", CHANNELS.plugins.uninstall, ["p"]],
   ["plugins", CHANNELS.plugins.configSecretSet, ["p", "k", "v"]],
   ["plugins", CHANNELS.runtime.counts, []],

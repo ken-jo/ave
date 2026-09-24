@@ -381,7 +381,7 @@ async function main() {
   }
 
   // §4.1 IPC Bridge — 반드시 index.html 로드 전에 등록 (renderer useEffect race 방지)
-  registerIpcHandlers(
+  const ipcRegistration = registerIpcHandlers(
     services,
     () => getMainWindow(),
     getAppWindows,
@@ -521,12 +521,16 @@ async function main() {
 
   // Process any ave:// URI that arrived before services were ready.
   // Deferred until after loadFile so IPC handlers are registered and the
-  // renderer's ave:plugins:install-result listener is active.
+  // renderer's deep-link listener is active.
   const pendingAveUri = getPendingAveUri();
   if (pendingAveUri) {
     void handleAveUri(pendingAveUri);
     setPendingAveUri(null);
   }
+
+  // The marketplace's boot sync and installs, then the periodic sync (design
+  // §7.3, §10.2). After the load so the renderer hears what they publish.
+  ipcRegistration.gitMarketplace.startBackground();
 }
 
 // ave:// custom URI scheme.

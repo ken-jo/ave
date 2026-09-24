@@ -40,7 +40,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "../../../components/ui/
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
 import { t } from "../../../i18n/runtime.js";
 import { useTranslation } from "../../../i18n/react.js";
-import type { PluginEntry } from "./PluginGridButton.js";
+import type { PluginEntry } from "../types.js";
 import { SlashPicker } from "./SlashPicker.js";
 import { ReasoningLevelControl, useReasoningLevel } from "./ReasoningSlider.js";
 import type { ReasoningLevel } from "./ReasoningSlider.js";
@@ -70,7 +70,6 @@ export interface InputActionBarProps {
   // count lives on the in-composer chip).
   onAttach: () => void | Promise<void>;
   attachDisabled: boolean;
-
 
   attachDisabledReason?: "limit" | "no-api-key" | "subscription-unsupported" | "runtime-pending";
   attachDisabledSubscriptionProvider?: string;
@@ -126,7 +125,6 @@ const PERMISSION_LABEL_KEYS: Record<ExecutionModeDisplay, string> = {
 };
 
 // Per-mode TEXT color (no pill/outline) — reuses the PermissionModeBadge color
-
 
 const PERMISSION_TEXT_COLOR: Record<ExecutionModeDisplay, string> = {
   default: "text-info",

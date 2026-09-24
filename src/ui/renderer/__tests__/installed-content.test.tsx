@@ -1,5 +1,5 @@
 /**
- * Installed content in the renderer (blueprint 3.2–3.4): installed themes,
+ * Installed content in the renderer: installed themes,
  * languages and fonts load from `aveApi.installedContent`, apply, and show
  * in the appearance pickers; a selected package that is gone falls back to
  * the default.
@@ -11,7 +11,6 @@ import { ThemeProvider, useTheme } from "../theme/ThemeProvider.js";
 import { AppearanceTab } from "../tabs/AppearanceTab.js";
 import { DEFAULT_BUNDLE_ID } from "../theme/index.js";
 import { moonstoneBundle } from "../theme/bundles/moonstone.js";
-import { resetLoadedThemeBundleCacheForTests } from "../theme/bundles/index.js";
 import { applyBundleToDocument } from "../theme/resolve-theme.js";
 import { applyInstalledContent, ensureInstalledContent, fontFaceCss, resetInstalledContentForTests } from "../installed-content.js";
 import { makeMockAveApi } from "../../../../test/renderer/mock-ave-api.js";
@@ -58,7 +57,6 @@ function Probe() {
 
 beforeEach(() => {
   resetInstalledContentForTests();
-  resetLoadedThemeBundleCacheForTests();
 });
 
 afterEach(() => {
@@ -72,7 +70,22 @@ afterEach(() => {
   delete (window as unknown as Record<string, unknown>).aveApi;
 });
 
-describe("installed themes (blueprint 3.2)", () => {
+describe("installed themes", () => {
+  it("follows the OS scheme across the pair an installed theme declares", async () => {
+    vi.stubGlobal("matchMedia", (query: string) => ({ matches: query.includes("light"), media: query, addEventListener: () => {}, removeEventListener: () => {} }));
+    try {
+      const harborLight: InstalledThemeView = { ...harbor, id: "harbor-light", name: "Harbor Light", shell: "light", pair: "harbor" };
+      const { api } = makeMockAveApi({ settings: { appearance: { schemaVersion: 2, language: "en", bundleId: "harbor", followSystem: true } } });
+      api.installedContent = bridge(view({ themes: [{ ...harbor, pair: "harbor-light" }, harborLight] })) as never;
+      const { getByTestId } = render(<ThemeProvider api={api as never}><Probe /></ThemeProvider>);
+      await waitFor(() => expect(getByTestId("bundle").textContent).toBe("harbor|harbor-light"));
+      // The pair member resolves after the installed content loads.
+      await waitFor(() => expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("harbor-light"));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("applies a selected installed theme as inline properties, and a compiled bundle clears them", async () => {
     const { api } = makeMockAveApi({ settings: { appearance: { schemaVersion: 2, language: "en", bundleId: "harbor" } } });
     api.installedContent = bridge(view({ themes: [harbor] })) as never;
@@ -103,7 +116,7 @@ describe("installed themes (blueprint 3.2)", () => {
   });
 });
 
-describe("installed languages (blueprint 3.3)", () => {
+describe("installed languages", () => {
   it("registers the locale and loads its catalog through the bridge, English answering the rest", async () => {
     const api = bridge(view({
       languages: [{ name: "french", locale: "fr", nativeName: "Français", englishName: "French", missingKeys: [], sourceId: "acme", version: "1.0.0" }],
@@ -127,7 +140,7 @@ describe("installed languages (blueprint 3.3)", () => {
   });
 });
 
-describe("marketplace changes (P4)", () => {
+describe("marketplace changes", () => {
   it("reads the installed content again when the marketplace catalog changes", async () => {
     const french = { name: "french", locale: "fr", nativeName: "Français", englishName: "French", missingKeys: [], sourceId: "acme", version: "1.0.0" };
     const api = bridge(view());
@@ -146,7 +159,7 @@ describe("marketplace changes (P4)", () => {
   });
 });
 
-describe("installed fonts (blueprint 3.4)", () => {
+describe("installed fonts", () => {
   it("declares @font-face rules only for ave-content font URLs", () => {
     const css = fontFaceCss([
       {

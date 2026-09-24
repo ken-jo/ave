@@ -68,11 +68,6 @@ export const CLI_COMMANDS: readonly CliCommand[] = [
     validate: (args) => (args[0] ? undefined : "permission:set-mode requires a <mode> argument"),
     run: (client, args) => client.setPermissionMode(args[0]),
   },
-  {
-    name: "marketplace:list",
-    summary: "List marketplace plugins",
-    run: (client) => client.listMarketplace(),
-  },
 ] as const;
 
 /** Result of {@link runCommand} — a defined envelope (no throws for bad input). */

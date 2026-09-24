@@ -56,7 +56,7 @@ docs/
 │   └── release-process.md                 # 릴리스 절차
 ├── references/
 │   ├── production-release-checklist.md    # installer·signing·smoke·publish 절차
-│   ├── plugin-signing-operations.md       # 플러그인 서명 운영
+│   ├── plugin-signing-operations.md       # 마켓플레이스 아티팩트 신뢰 운영
 │   └── observability-guide.md             # 관측·로깅 가이드
 ├── guides/
 │   ├── getting-started.md                 # 설치·실행·첫 실행 공급자 연결

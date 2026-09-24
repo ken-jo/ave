@@ -1,7 +1,7 @@
 /**
  * Shared helpers for marketplace test fixtures.
  *
- * Tests construct `PluginMarketplaceService` with the (paths, fetcher,
+ * Tests construct `PluginMarketplaceService` with the (paths,
  * deploymentGuard?) shape. registry.json lives at the root of pluginsRoot,
  * so tests pick a single tmp root and the helper derives the rest.
  */
@@ -19,7 +19,6 @@ import {
   PluginMarketplaceService,
   type PreparedMarketplacePluginActivation,
 } from "../marketplace.js";
-import type { MarketplaceFetcher } from "../marketplace-fetcher.js";
 import {
   createNoopHostApiForTests,
   PluginRuntime,
@@ -67,17 +66,6 @@ export const activateAndCommitPreparedPluginForTest: PreparedMarketplacePluginAc
 export const preparedActivationOptionsForTest = Object.freeze({
   activatePreparedArtifact: activateAndCommitPreparedPluginForTest,
 });
-export const preparedManagedActivationOptionsForTest = Object.freeze({
-  mode: "pre-start-sync" as const,
-  ensurePluginStateReadyForInstall: async (_pluginId: string) => undefined,
-  // Registry-removal commit only. What the real remover does around that commit
-  // is pinned in marketplace-managed-bootstrap.test.ts, which binds the actual
-  // `removeQuiescentPluginResidualState` instead of this default.
-  removeDelistedAdminInstall: async (
-    _removal: { pluginId: string; secretKeys: readonly string[] },
-    commitRegistryRemoval: () => Promise<void>,
-  ) => { await commitRegistryRemoval(); },
-});
 
 /**
  * Storage/unit-test service with an explicit test lifecycle default. Keeping
@@ -85,40 +73,6 @@ export const preparedManagedActivationOptionsForTest = Object.freeze({
  * options without weakening the production method signatures or runtime gate.
  */
 export class TestPluginMarketplaceService extends PluginMarketplaceService {
-  override install(...args: Parameters<PluginMarketplaceService["install"]>) {
-    const [pluginId, onProgress, options] = args;
-    return super.install(
-      pluginId,
-      onProgress,
-      options ?? preparedActivationOptionsForTest,
-    );
-  }
-
-  override ensureManagedInstalled(
-    ...args: Parameters<PluginMarketplaceService["ensureManagedInstalled"]>
-  ) {
-    return super.ensureManagedInstalled(
-      args[0] ?? preparedManagedActivationOptionsForTest,
-    );
-  }
-
-  override installPlugin(...args: Parameters<PluginMarketplaceService["installPlugin"]>) {
-    const [pluginId, version, options] = args;
-    return super.installPlugin(
-      pluginId,
-      version,
-      options ?? preparedActivationOptionsForTest,
-    );
-  }
-
-  override rollbackPlugin(...args: Parameters<PluginMarketplaceService["rollbackPlugin"]>) {
-    const [pluginId, options] = args;
-    return super.rollbackPlugin(
-      pluginId,
-      options ?? preparedActivationOptionsForTest,
-    );
-  }
-
   override installLocal(...args: Parameters<PluginMarketplaceService["installLocal"]>) {
     const [sourcePath, options] = args;
     return super.installLocal(
@@ -200,7 +154,6 @@ export function makeTestManifest(
     name: overrides.id,
     version: "0.0.0",
     description: "test fixture",
-    publisher: "tests",
     entry: "dist/hostPlugin.js",
     ...(rest as Partial<PluginManifest>),
     tools,
@@ -830,14 +783,8 @@ export class TestPluginRuntime extends PluginRuntime {
   }
 }
 
-export function makeTestPluginMarketplaceService(
-  rootDir: string,
-  fetcher: MarketplaceFetcher,
-): PluginMarketplaceService {
-  return new TestPluginMarketplaceService(
-    makeTestPluginPaths({ rootDir }),
-    fetcher,
-  );
+export function makeTestPluginMarketplaceService(rootDir: string): PluginMarketplaceService {
+  return new TestPluginMarketplaceService(makeTestPluginPaths({ rootDir }));
 }
 
 /**

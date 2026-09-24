@@ -1,5 +1,7 @@
-import { execFile } from "node:child_process";
-import { statSync } from "node:fs";
+import { execFile, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AskpassBroker, promptHost, TOKEN_USERNAME } from "../askpass.js";
 
@@ -71,6 +73,68 @@ describe("AskpassBroker", () => {
     expect(await runLauncher(broker, ticket.env, "Password for 'https://git.example': ")).toEqual({ code: 0, stdout: "tok\n" });
     expect(await runLauncher(broker, ticket.env, "Password for 'https://other.example': ")).toEqual({ code: 0, stdout: "\n" });
     expect((await runLauncher(broker, {}, "Password for 'https://git.example': ")).code).not.toBe(0);
+  });
+
+  it.skipIf(process.platform === "win32")("listens outside a directory too deep for a unix socket, and removes both on close", async () => {
+    const deep = join(mkdtempSync(join(tmpdir(), "ave-deep-")), "x".repeat(80));
+    mkdirSync(deep, { recursive: true });
+    try {
+      const long = await AskpassBroker.start({ getToken: () => "tok", parentDir: deep });
+      expect(Buffer.byteLength(long.endpoint)).toBeLessThanOrEqual(103);
+      expect(long.launcherPath.startsWith(deep)).toBe(true);
+      expect(statSync(dirname(long.endpoint)).mode & 0o777).toBe(0o700);
+      const ticket = long.issueTicket({ host: "git.example", sourceId: "custom" });
+      expect(await runLauncher(long, ticket.env, "Password for 'https://git.example': ")).toEqual({ code: 0, stdout: "tok\n" });
+      await long.close();
+      expect(existsSync(dirname(long.endpoint))).toBe(false);
+      expect(existsSync(dirname(long.launcherPath))).toBe(false);
+    } finally {
+      rmSync(dirname(deep), { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("removes directories a crashed run left behind, and keeps live and fresh ones", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "ave-sweep-"));
+    const gone = spawnSync(process.execPath, ["-e", ""]).pid;
+    const make = (root: string, name: string, owner: number | string | null): string => {
+      const dir = join(root, name);
+      mkdirSync(dir, { mode: 0o700 });
+      if (owner !== null) writeFileSync(join(dir, "owner.pid"), String(owner));
+      return dir;
+    };
+    const crashed = make(parent, "ave-askpass-crashed", gone);
+    const live = make(parent, "ave-askpass-live", process.ppid);
+    const settingUp = make(parent, "ave-askpass-setting-up", null);
+    const abandoned = make(parent, "ave-askpass-abandoned", null);
+    // An owner file read before its pid lands is empty: that owner may still be alive.
+    const halfClaimed = make(parent, "ave-askpass-half-claimed", "");
+    const garbledLongAgo = make(parent, "ave-askpass-garbled", "");
+    const old = new Date(Date.now() - 10 * 60_000);
+    utimesSync(abandoned, old, old);
+    utimesSync(garbledLongAgo, old, old);
+    const unrelated = make(parent, "other-crashed", gone);
+    const crashedSocket = mkdtempSync("/tmp/ave-ask-");
+    writeFileSync(join(crashedSocket, "owner.pid"), String(gone));
+    try {
+      broker = await AskpassBroker.start({ getToken: () => null, parentDir: parent });
+      expect(existsSync(crashed)).toBe(false);
+      expect(existsSync(abandoned)).toBe(false);
+      expect(existsSync(garbledLongAgo)).toBe(false);
+      expect(existsSync(halfClaimed)).toBe(true);
+      expect(existsSync(crashedSocket)).toBe(false);
+      expect(existsSync(live)).toBe(true);
+      expect(existsSync(settingUp)).toBe(true);
+      expect(existsSync(unrelated)).toBe(true);
+      // The new broker names its own process, so the next start keeps it.
+      const second = await AskpassBroker.start({ getToken: () => null, parentDir: parent });
+      expect(existsSync(broker.launcherPath)).toBe(true);
+      await second.close();
+    } finally {
+      await broker?.close();
+      broker = null;
+      rmSync(parent, { recursive: true, force: true });
+      rmSync(crashedSocket, { recursive: true, force: true });
+    }
   });
 
   it("refuses new tickets and removes its directory after close", async () => {

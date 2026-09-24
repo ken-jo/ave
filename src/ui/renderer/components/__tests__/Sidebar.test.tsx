@@ -1070,7 +1070,6 @@ const FAILED_PLUGIN_CARD: NonNullable<Parameters<typeof Sidebar>[0]["failedPlugi
   id: "notes",
   name: "Notes",
   description: "Notes fixture",
-  publisher: "Test fixture",
   sampleTools: [],
   capabilities: [],
   tools: [],

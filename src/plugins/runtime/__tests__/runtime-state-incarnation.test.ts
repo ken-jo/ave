@@ -67,7 +67,6 @@ describe("pending HostApi incarnation lifecycle", () => {
       version: "1.0.0",
       entry: "entry.mjs",
       description: "test",
-      publisher: "test",
       tools: [],
     } satisfies PluginManifest;
 
@@ -93,7 +92,6 @@ describe("pending HostApi incarnation lifecycle", () => {
       version: "1.0.0",
       entry: "entry.mjs",
       description: "test",
-      publisher: "test",
       tools: [],
     } satisfies PluginManifest;
 
@@ -125,7 +123,7 @@ describe("pending HostApi incarnation lifecycle", () => {
     });
     const manifest = {
       id: "plugin-a", name: "Plugin A", version: "1.0.0", entry: "entry.mjs",
-      description: "test", publisher: "test", tools: [],
+      description: "test", tools: [],
     } satisfies PluginManifest;
     const pending = runtime.buildPending(
       "plugin-a",
@@ -153,7 +151,7 @@ describe("pending HostApi incarnation lifecycle", () => {
     });
     const manifest = {
       id: "plugin-a", name: "Plugin A", version: "1.0.0", entry: "entry.mjs",
-      description: "test", publisher: "test", tools: [],
+      description: "test", tools: [],
     } satisfies PluginManifest;
     const committed = runtime.buildPending(
       "plugin-a",
@@ -180,7 +178,7 @@ describe("pending HostApi incarnation lifecycle", () => {
     });
     const manifest = {
       id: "plugin-a", name: "Plugin A", version: "1.0.0", entry: "entry.mjs",
-      description: "test", publisher: "test", tools: [],
+      description: "test", tools: [],
     } satisfies PluginManifest;
     const pending = runtime.buildPending(
       "plugin-a",
@@ -202,7 +200,7 @@ describe("pending HostApi incarnation lifecycle", () => {
     });
     const manifest = {
       id: "plugin-a", name: "Plugin A", version: "1.0.0", entry: "entry.mjs",
-      description: "test", publisher: "test", tools: [],
+      description: "test", tools: [],
     } satisfies PluginManifest;
     const first = runtime.buildPending(
       "plugin-a",
@@ -236,7 +234,7 @@ describe("pending HostApi incarnation lifecycle", () => {
     });
     const manifest = {
       id: "plugin-a", name: "Plugin A", version: "1.0.0", entry: "entry.mjs",
-      description: "test", publisher: "test", tools: [],
+      description: "test", tools: [],
     } satisfies PluginManifest;
     const pending = runtime.buildPending(
       "plugin-a",

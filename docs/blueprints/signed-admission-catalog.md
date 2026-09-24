@@ -3,8 +3,9 @@
 Status: **superseded, not implemented** (2026-09-23). The multi-source git
 marketplace ([architecture](../architecture/proposals/multi-source-git-marketplace.md),
 [blueprint](./multi-source-git-marketplace.md)) binds versions to commits and
-sha256 pins stored in git instead of a signed admission document; the admission
-registry is removed in its phase 6. Kept as the record of the analysis.
+sha256 pins stored in git instead of a signed admission document; its phase 6
+removed the admission registry and every signed-document transport
+(2026-09-25). Kept as the record of the analysis.
 
 Original status: design, not implemented. This document is the agreement that has to exist
 before any code moves, because the change swaps the *polarity* of a security

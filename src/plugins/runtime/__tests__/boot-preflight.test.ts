@@ -48,7 +48,6 @@ describe("PluginRuntime boot preflight", () => {
         name: id,
         version: "1.0.0",
         description: "boot preflight fixture",
-        publisher: "test",
         entry: "entry.mjs",
         ...(index === 2 ? { capabilities: ["rejected-capability"] } : {}),
         ...(index === 3 ? { requires: { capabilities: ["rejected-capability"] } } : {}),
@@ -241,7 +240,6 @@ describe("PluginRuntime boot preflight", () => {
       name: isolatedId,
       version: "1.0.0",
       description: "out-of-process fixture",
-      publisher: "test",
       entry: "entry.mjs",
       tools: [],
     });

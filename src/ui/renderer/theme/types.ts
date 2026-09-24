@@ -9,8 +9,9 @@
  *   - `bundleId`         — the active bundle id (e.g. "tokyo-night")
  *   - `setBundle`        — live-set the bundle + persist
  *   - `resolved`         — derived shell ("light" | "dark") from the active bundle (`ResolvedShell`)
- *   - `followSystem`     — violet pair only: auto-switch based on prefers-color-scheme
- *   - `setFollowSystem`  — toggle followSystem (only meaningful for violet pair)
+ *   - `followSystem`     — auto-switch a theme and its declared pair with prefers-color-scheme
+ *   - `canFollowSystem`  — whether the selected theme has a pair to switch with
+ *   - `setFollowSystem`  — toggle followSystem
  *
  * Legacy type aliases (ThemePreference, ChatThemePreference, etc.) live in
  * `settings-store.ts` for the migration path only and are marked @internal.
@@ -33,15 +34,15 @@ export type ResolvedShell = "light" | "dark";
 
 export interface ThemeContextValue {
   /**
-   * The user-configured bundle id (e.g. "violet-light" or "violet-dark").
+   * The user-configured bundle id (e.g. "moonstone" or an installed theme's name).
    * When `followSystem` is active this may differ from `effectiveBundleId`.
    */
   bundleId: UnvalidatedBundleId;
   /**
    * The bundle id actually applied to the DOM after resolving `followSystem`.
    * When `followSystem` is false this equals `bundleId`.
-   * When `followSystem` is true and bundleId is a violet pair id, this reflects
-   * the OS-resolved variant ("violet-light" or "violet-dark").
+   * When `followSystem` is true and the selected theme has a pair, this is
+   * whichever of the two matches the OS color scheme.
    */
   effectiveBundleId: UnvalidatedBundleId;
   /**
@@ -54,11 +55,10 @@ export interface ThemeContextValue {
    * Kept for backward compatibility (CustomTitleBar uses `optionalTheme.resolved`).
    */
   resolved: ResolvedShell;
-  /** When true (violet pair only): auto-switch violet-light/violet-dark on OS scheme change. */
+  /** When true and the selected theme has a pair: switch between the two on OS scheme change. */
   followSystem: boolean;
-  /** Toggle followSystem persistence. Only meaningful when bundleId is "violet-light" or "violet-dark". */
+  /** The selected theme declares a pair of the other shell that is available (`systemPairOf`). */
+  canFollowSystem: boolean;
+  /** Toggle followSystem persistence. Only meaningful while `canFollowSystem`. */
   setFollowSystem: (next: boolean) => void;
 }
-
-/** Violet pair bundle ids that support followSystem. */
-export const VIOLET_PAIR_IDS: readonly string[] = ["violet-light", "violet-dark"];

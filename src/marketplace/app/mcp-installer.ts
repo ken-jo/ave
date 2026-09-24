@@ -122,9 +122,9 @@ async function readRecords(path: string): Promise<McpRecord[]> {
   return parseRecords(text, path);
 }
 
-/** Origins of installed MCP servers, for snapshot retention (design §2.3). */
+/** Origins of installed MCP servers, for snapshot retention (design §2.3) and revocations (§10.4). */
 export function mcpInstallOrigins(recordsPath: string): OriginReader {
-  return async () => (await readRecords(recordsPath)).flatMap((record) => (record.origin ? [{ sourceId: record.origin.sourceId, commit: record.origin.commit }] : []));
+  return async () => (await readRecords(recordsPath)).flatMap((record) => (record.origin ? [{ kind: "mcp" as const, name: record.name, sourceId: record.origin.sourceId, commit: record.origin.commit }] : []));
 }
 
 export interface McpInstallerDeps {

@@ -33,7 +33,6 @@ import AdmZip from "adm-zip";
 import type { MarketplaceArtifactLimits } from "../../plugins/marketplace-artifact-limits.js";
 import type { McpRuntimeSpec } from "../../plugins/types.js";
 import type { McpServerConfig } from "../../mcp/types.js";
-import { buildMcpServerConfig } from "../../mcp/mcp-marketplace-install.js";
 import { ENV_NAME_RE, HTTP_HEADER_NAME_RE, MAX_NAME_LEN, RESERVED_ENV_NAMES, RESERVED_HEADERS } from "../../mcp/safe-names.js";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -490,4 +489,37 @@ export function mcpRuntimeConfig(name: string, runtime: McpRuntimeSpec, dirs: Mc
     ...(runtime.args ? { args: runtime.args.map(fill) } : {}),
     ...(runtime.env ? { env: Object.fromEntries(Object.entries(runtime.env).map(([key, value]) => [key, fill(value)])) } : {}),
   });
+}
+
+function buildMcpServerConfig(slug: string, runtime: McpRuntimeSpec): McpServerConfig {
+  if (runtime.transport === "stdio") {
+    const config: McpServerConfig = {
+      id: slug,
+      transport: "stdio",
+      command: runtime.command,
+      args: runtime.args,
+      env: runtime.env,
+      auth: runtime.auth ?? "none",
+    };
+    if (runtime.apiKeyEnv) {
+      config.apiKeyEnv = runtime.apiKeyEnv;
+    }
+    return config;
+  }
+  const config: McpServerConfig = {
+    id: slug,
+    transport: "http",
+    url: runtime.url,
+    auth: runtime.auth ?? "none",
+  };
+  if (runtime.apiKeyHeader) {
+    config.apiKeyHeader = runtime.apiKeyHeader;
+  }
+  if (typeof runtime.allowPrivateNetworks === "boolean") {
+    config.allowPrivateNetworks = runtime.allowPrivateNetworks;
+  }
+  if (runtime.oauth) {
+    config.oauth = runtime.oauth;
+  }
+  return config;
 }

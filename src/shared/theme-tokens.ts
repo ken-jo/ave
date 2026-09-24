@@ -1,6 +1,6 @@
 /**
  * Theme token contract shared by the compiled-in bundles, the theme package
- * installer (design §5.2, blueprint 3.2) and the renderer.
+ * installer (design §5.2) and the renderer.
  *
  * Every token is an `H S% L%` triple: the renderer writes it into
  * `hsl(var(--token))`, so a value in any other form either paints nothing or

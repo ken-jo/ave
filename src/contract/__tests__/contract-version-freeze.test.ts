@@ -147,7 +147,6 @@ const SERVICE_KEYS: (string | symbol)[] = [
   "postTurnHookChain",
   "approvalGate",
   "rewireReviewerAgent",
-  "refreshMarketplaceFetcherConfig",
   "refreshActiveLlmWildcard",
   "refreshSandboxNetworkConfig",
   "starredStore",

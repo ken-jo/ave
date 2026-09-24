@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -13,6 +13,7 @@ import {
 } from "../../__tests__/fixtures/git-http-server.js";
 import { createTestGitRunner, type TestGitRunner } from "../../__tests__/fixtures/git-runner.js";
 import { classifyRemoteFailure, GIT_TIMEOUTS_MS, type GitRemote } from "../run-git.js";
+import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
 function remote(url: string, allowHttp = true, useToken = true): GitRemote {
   return { url: normalizeSourceUrl(url), sourceId: "fixture", allowHttp, useToken };
@@ -133,10 +134,10 @@ describe("GitRunner against a smart-HTTP server", () => {
     await t.cleanup();
     await server.close();
     await otherServer.close();
-    removeFixtureRepo(repo);
-    rmSync(root, { recursive: true, force: true });
+    await removeFixtureRepo(repo);
+    await cleanupTmpDir(root);
   });
-  afterEach(() => {
+  afterEach(async () => {
     server.seen.length = 0;
     otherServer.seen.length = 0;
   });
@@ -238,8 +239,8 @@ describe("GitRunner authentication through the askpass broker", () => {
   });
   afterAll(async () => {
     await server.close();
-    removeFixtureRepo(repo);
-    rmSync(root, { recursive: true, force: true });
+    await removeFixtureRepo(repo);
+    await cleanupTmpDir(root);
   });
 
   it("answers with the stored token for the ticket's host", async () => {
@@ -278,7 +279,8 @@ describe("GitRunner authentication through the askpass broker", () => {
   it("keeps the token out of the user's credential helpers", async () => {
     const t = await createTestGitRunner({ tokens: { "127.0.0.1": "s3cret-token" } });
     const store = join(t.dir, "stored-credentials");
-    writeFileSync(join(t.dir, "gitconfig"), `[credential]\n\thelper = store --file=${store}\n`);
+    // Forward slashes: a raw Windows path is not a valid unquoted config value.
+    writeFileSync(join(t.dir, "gitconfig"), `[credential]\n\thelper = store --file=${store.replaceAll("\\", "/")}\n`);
     try {
       await t.runner.run(["ls-remote", server.url("private-tools")], {
         remote: remote(server.url("private-tools")),

@@ -15,7 +15,7 @@ step and no dependency on the app.
 | [`ask-user-question-card.html`](./ask-user-question-card.html) | `ask_user_question` LLM tool non-modal composer dock card — single-question form / 2–4 paginated multi-question / urgent variant / confirm-review step / `dismissed:true` fallback. Recommend + 대안 badges, choice-only answers. | PR #334 initial surface → composer dock `QuestionOverlay` + `AskUserQuestionCard` (current production) |
 | [`permission-reviewer-status-prefill.html`](./permission-reviewer-status-prefill.html) | Permission reviewer latency + HIGH approval purpose prefill — chat status card states for 검토중/승인 필요/자동 진행/목적 부족 and approval surface copy for automatic vs required purpose text. | Design review / not shipped |
 | [`agent-hub-work-board-v1.html`](./agent-hub-work-board-v1.html) | Agent Hub Plugin UI detached-window storyboard — scenario states from plugin entry/login waiting/callback sync to My Work, Team Board, and exception/empty states. | Design review / not shipped |
-| [`multi-source-git-marketplace.md`](./multi-source-git-marketplace.md) · [목업](../../design/multi-source-git-marketplace.html) | 멀티 소스 git 마켓플레이스 설계서(한국어 미러)와 설정 → 마켓플레이스 화면 목업 7종 | Design review / not shipped |
+| [`multi-source-git-marketplace.md`](./multi-source-git-marketplace.md) · [목업](../../design/multi-source-git-marketplace.html) | 멀티 소스 git 마켓플레이스 설계서(한국어 미러)와 설정 → 마켓플레이스 화면 목업 7종 | 구현됨 (공개 릴리스와 서버 종료가 남음) |
 | [`settings-controls-shadcn.html`](./settings-controls-shadcn.html) | Settings control primitive baseline — shadcn registry-backed Select, Checkbox, Switch, RadioGroup, Slider, NativeSelect, Field/Label visual contract. | PR #708 |
 
 ## When to update vs add a new file

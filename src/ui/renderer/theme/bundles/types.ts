@@ -39,4 +39,9 @@ export interface ThemeBundle {
    * installed one is applied as inline custom properties instead.
    */
   surfaces?: ThemeSurfaces;
+  /**
+   * The theme of the other shell `followSystem` switches to with this one,
+   * as an installed theme package declares it. Compiled bundles have none.
+   */
+  pair?: string;
 }

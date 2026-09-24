@@ -6,9 +6,8 @@
  * `resources/skills/` and are seeded into `~/.ave/skills/` on first boot
  * by `seed-ave-home-docs.ts`, so the user can freely edit each prompt.
  *
- * Front matter contract: the `skillComponent` definition of the SDK-owned
- * skill package schema, snapshotted at `schemas/sdk/skill-package.schema.json`
- * — `name` and `description` required, `triggers`, `license`,
+ * Front matter contract: the `skillComponent` definition of the host-owned
+ * skill package schema, `schemas/skill-package.schema.json` — `name` and `description` required, `triggers`, `license`,
  * `compatibility`, `metadata` and `allowed-tools` optional. The same
  * definition governs a skill shipped as a standalone marketplace package and a
  * skill bundled in a plugin's `skills[]` directory, so both paths through this

@@ -29,7 +29,7 @@ import {
   type MarketplaceEligibleLLMVendor,
 } from "../shared/llm-vendor-defaults.js";
 import type { GitRuntimeMode } from "../shared/git-runtime-mode.js";
-import { isThemeId, type BundleId } from "../shared/theme-bundles.js";
+import { isThemeId } from "../shared/theme-bundles.js";
 import {
   FONT_SIZE_SCALE_VALUES,
   type FontSizeScale,
@@ -132,6 +132,20 @@ const PROVIDER_PRESET_MODEL_SLOT_MIGRATION =
  */
 const LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION = "llm-vendor-id-package-names";
 /**
+ * One-time removal of the server marketplace's settings (design §16.2): the
+ * catalog they addressed is gone. The matching secret is deleted by
+ * {@link SettingsService.deleteRetiredMarketplaceApiKey}.
+ */
+const MARKETPLACE_SERVER_SETTINGS_REMOVED_MIGRATION = "marketplace-server-settings-removed";
+/** The removed keys, including the `real`-prefixed spellings older builds wrote. */
+const RETIRED_MARKETPLACE_SETTING_KEYS: readonly string[] = [
+  "backend",
+  "cloudBaseUrl",
+  "cloudAllowPrivateNetwork",
+  "real" + "CloudBaseUrl",
+  "real" + "CloudAllowPrivateNetwork",
+];
+/**
  * Built-in vendor ids that were renamed, old → new. Marketplace provider
  * packages are named after the vendor id and package names are lowercase
  * kebab-case of at least three characters, so neither a camelCase id nor one
@@ -155,6 +169,7 @@ const KNOWN_MIGRATIONS: readonly string[] = [
   PROVIDER_PRESET_ENDPOINT_UNMIRROR_MIGRATION,
   PROVIDER_PRESET_MODEL_SLOT_MIGRATION,
   LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION,
+  MARKETPLACE_SERVER_SETTINGS_REMOVED_MIGRATION,
 ];
 
 export type { LLMVendor, LLMVendorSettings };
@@ -521,9 +536,9 @@ export interface PluginSettings {}
  * specified set of shell + chat + code tokens, so combinatorial mismatches
  * are impossible.
  *
- * `followSystem` (optional, violet pair only): when true and the active bundle
- * is "violet-light" or "violet-dark", the host automatically switches between the
- * two based on `prefers-color-scheme`.
+ * `followSystem` (optional): when true and the selected theme declares a pair
+ * of the other shell (an installed theme's `pair`), the renderer switches
+ * between the two based on `prefers-color-scheme`.
  *
  * `schemaVersion: 2` distinguishes v2 from legacy v1 files that have
  * `theme`/`chatTheme`/`codeTheme` keys. On load, v1 files are migrated once
@@ -856,36 +871,30 @@ export interface WebSearchSettings {
 }
 
 /**
- * §9.5 — plugin marketplace backend.
- *
- * Server-only. The agent-marketplace REST API is the single
- * source of truth for catalog + signed artifacts. The historical "mock"
- * backend that read `plugins/marketplace.json` from disk is removed; tests
- * that need a deterministic catalog inject a stub fetcher directly.
+ * The git marketplace's settings (design §16.2). Sources, pins and tokens live
+ * in `~/.ave/marketplaces` and the secret store, not here.
  */
 export interface MarketplaceSettings {
-  /** Reserved for future variants. Currently always `"real-cloud"`. */
-  backend: "real-cloud";
-  cloudBaseUrl?: string;
-  /** Local dev/test only: bypass SSRF guard for loopback servers. */
-  cloudAllowPrivateNetwork?: boolean;
   /** Which git the git marketplace runs (design §9.1). Unset means `auto`. */
   git?: { mode: GitRuntimeMode };
   /**
-   * Enable/disable plugin update detection at boot. Default true.
+   * Whether the renderer is told about package updates. Default true.
    */
   updateCheckEnabled?: boolean;
   /**
-   * Use the on-disk marketplace catalog + tarball cache. Default true.
+   * Keep downloaded plugin artifacts under their pinned digest, so a
+   * reinstall of a version already fetched needs no network (design §7.5).
+   * Default true.
    *
    * `AVE_MARKETPLACE_USE_CACHE`, when set, overrides this either way — it is
    * the deployment-side kill switch and predates the setting. See
-   * `resolveOfflineCacheEnabled`.
+   * `resolveKeepArtifacts`.
    */
   offlineCacheEnabled?: boolean;
   /**
-   * Update-check interval in milliseconds. Default 10 minutes (600_000 ms).
-   * Set to 0 to disable periodic checks (manual / on-open only).
+   * Periodic sync interval in milliseconds (design §7.3). Unset means 6 hours;
+   * a value below 15 minutes reads as 15 minutes; 0 turns the periodic sync off
+   * (boot and manual only).
    */
   updateCheckIntervalMs?: number;
   /**
@@ -900,9 +909,9 @@ export interface MarketplaceSettings {
    */
   dismissedAnnouncementIds?: number[];
   /**
-   * Plugin update versions the user skipped, keyed by plugin id. A skipped
-   * plugin update is hidden only while the marketplace latestVersion equals
-   * the stored version; the next version surfaces again.
+   * Update versions the user skipped, keyed by a plugin's name or `kind:name`
+   * for other kinds. A skipped update is hidden only while the offered version
+   * equals the stored one; the next version surfaces again.
    */
   skippedPluginUpdates?: Record<string, string>;
   /**
@@ -913,9 +922,17 @@ export interface MarketplaceSettings {
   installedProviderIds: MarketplaceEligibleLLMVendor[];
   /** User-installed OpenAI-compatible provider presets from Marketplace. */
   installedProviderPresets: MarketplaceInstalledProviderPreset[];
-  /** Marketplace-installed theme bundles shown in Appearance. */
-  installedThemeBundleIds: BundleId[];
-  /** Marketplace-installed language packs shown in the language picker. */
+  /**
+   * Themes the server marketplace turned on. Legacy: read and emptied only by
+   * the first-boot migration (design §16.3), which installs the theme package
+   * of each id; the renderer lists installed theme packages instead.
+   */
+  installedThemeBundleIds: string[];
+  /**
+   * Language packs the server marketplace turned on. Legacy, like
+   * `installedThemeBundleIds`: the migration installs the language package
+   * for each locale.
+   */
   installedLanguagePacks: Locale[];
   /**
    * Messaging connections the owner installed, as the catalog declared them.
@@ -1029,6 +1046,20 @@ export class SettingsService {
 
   async migrateSecrets(): Promise<boolean> {
     return this.secretStore.migrate();
+  }
+
+  /**
+   * Delete the server marketplace's API key (design §16.2). Nothing reads it
+   * any more; a failure leaves it in the store and is retried at the next
+   * boot. Once it is gone the delete writes nothing, so a store that cannot
+   * write reports nothing on the boots after.
+   */
+  async deleteRetiredMarketplaceApiKey(): Promise<void> {
+    try {
+      await this.deleteSecret("marketplace.apiKey");
+    } catch (err) {
+      log.warn("retired marketplace API key delete failed: %s", (err as Error).message);
+    }
   }
 
   /**
@@ -1782,34 +1813,13 @@ export class SettingsService {
         undefined,
       );
       const marketplaceParsed: Record<string, unknown> = { ...(parsed.marketplace ?? {}) };
-      // Migration: the marketplace cloud fields were renamed (the old "real"
-      // prefix became vestigial once the mock backend was removed). Preserve
-      // customised values from an older settings.json. Legacy keys are split
-      // literals so the naming-gate (no new real*/mock* identifiers) is satisfied.
-      const legacyCloudUrlKey = "real" + "CloudBaseUrl";
-      const legacyCloudUrl = marketplaceParsed[legacyCloudUrlKey];
-      if (typeof legacyCloudUrl === "string" && marketplaceParsed.cloudBaseUrl === undefined) {
-        // Trim and only carry a non-empty value forward — a whitespace-only
-        // legacy URL would otherwise read as "configured" in non-trimming
-        // consumers (e.g. the boot fetcher selection) and yield invalid request
-        // URLs. Dropping it falls back to the cloudBaseUrl default.
-        const trimmed = legacyCloudUrl.trim();
-        if (trimmed) {
-          marketplaceParsed.cloudBaseUrl = trimmed;
-        }
+      // One-time: drop the server marketplace's settings and write the file
+      // back, so they leave settings.json rather than only this process.
+      if (!appliedMigrations.includes(MARKETPLACE_SERVER_SETTINGS_REMOVED_MIGRATION)) {
+        for (const key of RETIRED_MARKETPLACE_SETTING_KEYS) delete marketplaceParsed[key];
+        appliedMigrations.push(MARKETPLACE_SERVER_SETTINGS_REMOVED_MIGRATION);
+        migrationWriteBack = true;
       }
-      delete marketplaceParsed[legacyCloudUrlKey];
-      const legacyAllowPrivateKey = "real" + "CloudAllowPrivateNetwork";
-      if (
-        typeof marketplaceParsed[legacyAllowPrivateKey] === "boolean" &&
-        marketplaceParsed.cloudAllowPrivateNetwork === undefined
-      ) {
-        marketplaceParsed.cloudAllowPrivateNetwork = marketplaceParsed[legacyAllowPrivateKey];
-      }
-      delete marketplaceParsed[legacyAllowPrivateKey];
-      // Pin the only valid backend literal — narrows the unknown spread back
-      // to the AppSettings type without preserving legacy "mock" inputs.
-      marketplaceParsed.backend = "real-cloud";
       const pluginConfigs = sanitizeStoredPluginConfigs(parsed.pluginConfigs);
       // Unknown routine keys are preserved in storage but never read by current code.
       const normalizedRoutine: RoutineSettings = {

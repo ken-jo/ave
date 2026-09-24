@@ -74,7 +74,6 @@ describe("US-B1 — host plugin.schema.json declares configSchema", () => {
       name: "Test",
       version: "1.0.0",
       description: "Test fixture.",
-      publisher: "Test fixture",
       entry: "index.js",
       tools: [
         {
@@ -175,7 +174,6 @@ describe("pure Tool authority metadata — no toolSchemas, category, or workerId
       name: "Category-less",
       version: "1.0.0",
       description: "A manifest whose tools carry no permission category.",
-      publisher: "Test fixture",
       entry: "dist/index.js",
       tools: [
         {
@@ -207,7 +205,6 @@ describe("pure Tool authority metadata — no toolSchemas, category, or workerId
       name: "Worker aware",
       version: "1.0.0",
       description: "A manifest with a pure model-only tool (no worker self-claim).",
-      publisher: "Test fixture",
       entry: "dist/index.js",
       // #885 Phase R — per-tool `workerId` (and the whole toolSchemas map) left the
       // manifest contract; a pure Tool never carries a worker self-claim.
@@ -302,7 +299,6 @@ describe("US-B1 regression — baseline manifest WITHOUT configSchema still vali
       name: "회의록 녹음",
       version: "1.3.0",
       description: "Test fixture.",
-      publisher: "Test fixture",
       entry: "dist/index.js",
       tools: [
         {

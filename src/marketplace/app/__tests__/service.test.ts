@@ -4,29 +4,37 @@
  * the user previews is what is added, what a plan shows is what installs,
  * a plan is used once, and every install lands in its kind's installer.
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { descriptorText as descriptor, jsonText as text } from "../../__tests__/fixtures/package-files.js";
 import type { McpServerConfig } from "../../../mcp/types.js";
 import { DEFAULT_MARKETPLACE_ARTIFACT_LIMITS } from "../../../plugins/marketplace-artifact-limits.js";
-import { DisabledMarketplaceFetcher } from "../../../plugins/marketplace.js";
 import { PluginArtifactStore } from "../../../plugins/plugin-artifact-store.js";
 import { createFixtureRepo, type FixtureRepo, type GitHttpServer, removeFixtureRepo, startGitHttpServer } from "../../__tests__/fixtures/git-http-server.js";
 import { createTestGitRunner, type TestGitRunner } from "../../__tests__/fixtures/git-runner.js";
 import { policyLoad } from "../../__tests__/fixtures/policy.js";
 import { ContentStore } from "../../content/store.js";
 import { NetworkGate } from "../../net/network-gate.js";
-import { OFFICIAL_MARKETPLACE } from "../../sources/official.js";
-import { EMPTY_MARKETPLACE_POLICY } from "../../sources/policy.js";
+import { NO_ARTIFACT_CACHE } from "../../resolve/artifact-cache.js";
+import { migrateLegacyContent, type LegacyActivations, type LegacyContentReport } from "../../migration/legacy-content.js";
+import type { LegacyPluginReport, OfficialPlugin } from "../../migration/legacy-plugins.js";
+import { moonstoneBundle } from "../../../ui/renderer/theme/bundles/moonstone.js";
+import { OFFICIAL_MARKETPLACE, type OfficialMarketplace } from "../../sources/official.js";
+import { EMPTY_MARKETPLACE_POLICY, type PolicyLoad } from "../../sources/policy.js";
+import { AppliedDefaults } from "../../boot-installs/applied.js";
+import { normalizeSourceUrl } from "../../net/source-url.js";
 import { SourceRegistry } from "../../sources/registry.js";
 import { SourceSyncer } from "../../sources/sync.js";
 import { McpInstaller } from "../mcp-installer.js";
 import type { InstallerPorts, TokenStore } from "../ports.js";
+import type { RevocationFeed } from "../revocations.js";
 import { MarketplaceService } from "../service.js";
+import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
 const AT = new Date("2026-09-24T00:00:00.000Z");
+const SURFACES = { "surface-sunken": "228 30% 97%", surface: "0 0% 100%", "surface-raised": "0 0% 100%", "surface-overlay": "0 0% 100%", "border-subtle": "228 24% 94%", "border-strong": "228 18% 84%" };
 const INSTALLATION = "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b";
 const skill = (name: string, body: string) => `---\nname: ${name}\ndescription: ${name} things.\n---\n${body}\n`;
 
@@ -49,7 +57,7 @@ class FakeManager {
   }
 }
 
-describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
+describe("MarketplaceService", () => {
   let serverRoot: string;
   let server: GitHttpServer;
   let git: TestGitRunner;
@@ -61,6 +69,17 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
   let service: MarketplaceService;
   let store: ContentStore;
   let catalogChanged: number;
+  let legacyRuns: Array<(name: string) => OfficialPlugin | null>;
+  let legacyReport: LegacyPluginReport;
+  let legacyActivations: LegacyActivations;
+  let released: Array<{ themes: string[]; locales: string[] }>;
+  let contentReports: LegacyContentReport[];
+  let adopting: boolean[];
+  let feeds: RevocationFeed[];
+  let feedFails: boolean;
+  let warnings: string[];
+  /** Runs inside a content install, after the plan's first feed and before the store changes. */
+  let duringContentInstall: (() => Promise<void>) | null;
 
   beforeAll(async () => {
     serverRoot = mkdtempSync(join(tmpdir(), "ave-service-served-"));
@@ -71,26 +90,37 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
   afterAll(async () => {
     await server.close();
     await git.cleanup();
-    rmSync(serverRoot, { recursive: true, force: true });
+    await cleanupTmpDir(serverRoot);
   });
 
   beforeEach(async () => {
     root = mkdtempSync(join(tmpdir(), "ave-service-root-"));
     now = AT;
     catalogChanged = 0;
+    legacyRuns = [];
+    legacyReport = { bound: [], unmanaged: [], lostGrants: [], failed: [] };
+    legacyActivations = { themes: [], locales: [], providers: [] };
+    released = [];
+    contentReports = [];
+    adopting = [];
+    feeds = [];
+    feedFails = false;
+    warnings = [];
+    duringContentInstall = null;
+    await build();
+  });
+
+  /** The service over `root`, under `policy`; a test that needs a managed or a local official source builds again. */
+  async function build(policy: PolicyLoad = policyLoad({}), official?: OfficialMarketplace) {
     manager = new FakeManager();
-    const policy = policyLoad({});
     const gate = new NetworkGate({ policy, allowLoopback: true });
     const marketplaces = join(root, "marketplaces");
-    const registry = await SourceRegistry.open({ root: marketplaces, policy, now: () => now });
+    const registry = await SourceRegistry.open({ root: marketplaces, policy, now: () => now, ...(official ? { official } : {}) });
     const syncer = new SourceSyncer({ registry, gate, runner: git.runner, root: marketplaces, now: () => now, retainedCommits: async () => new Set() });
-    store = await ContentStore.open({ root: join(root, "packages"), english: {}, activation: { activate: async () => {}, deactivate: async () => {} }, now: () => now });
+    store = await ContentStore.open({ root: join(root, "packages"), english: {}, activation: { activate: async (_content, _entry, _previous, adopt) => void adopting.push(adopt), deactivate: async () => {} }, now: () => now });
     const artifacts = new PluginArtifactStore({
       installRoot: join(root, "mcp"),
       cacheRoot: join(root, "mcp", ".cache"),
-      fetcher: new DisabledMarketplaceFetcher(),
-      publicKeys: {},
-      tarballCacheBase: null,
     });
     const stored = new Map<string, string>();
     const tokens: TokenStore = {
@@ -110,7 +140,10 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
       },
       content: {
         list: async () => store.list().map((entry) => ({ kind: entry.kind, name: entry.name, version: entry.version, sourceId: entry.origin.sourceId, originCommit: entry.origin.commit })),
-        install: async (staged, options) => ({ action: (await store.install(staged, options)).action }),
+        install: async (staged, options) => {
+          await duringContentInstall?.();
+          return { action: (await store.install(staged, options)).action };
+        },
         uninstall: async (kind, name) => {
           if (kind === "plugin" || kind === "mcp") throw new Error("not content");
           await store.uninstall(kind, name, EMPTY_MARKETPLACE_POLICY);
@@ -125,30 +158,57 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
       gate,
       root: marketplaces,
       workRoot: mkdtempSync(join(root, "work-")),
-      policy: EMPTY_MARKETPLACE_POLICY,
+      policy: policy.ok ? policy.policy : EMPTY_MARKETPLACE_POLICY,
       tokens,
       previewTokens: new Map(),
       versionContext: () => ({ appVersion: "0.14.0", platform: process.platform, canaryOptIn: false, installationId: INSTALLATION }),
       installers,
-      ladder: { fetchImpl: fetch, zip: artifacts, limits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS },
+      ladder: { fetchImpl: fetch, zip: artifacts, limits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS, artifacts: NO_ARTIFACT_CACHE },
       mcpLimits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,
       english: {},
       onCatalogChanged: () => {
         catalogChanged += 1;
       },
       now: () => now,
+      revocations: {
+        apply: async (feed) => {
+          if (feedFails) throw new Error("revocation registry unwritable");
+          feeds.push(feed);
+        },
+      },
+      log: { warn: (message) => void warnings.push(message) },
+      legacyMigration: {
+        markerPath: join(root, "packages", "legacy-migration.json"),
+        plugins: async (officialPlugin) => {
+          legacyRuns.push(officialPlugin);
+          return legacyReport;
+        },
+        content: async (ports) => {
+          const report = await migrateLegacyContent({
+            ...ports,
+            activations: legacyActivations,
+            release: async (provided) => void released.push(provided),
+            log: { warn: () => {} },
+          });
+          contentReports.push(report);
+          return report;
+        },
+      },
     });
-  });
+  }
 
-  afterEach(() => {
+  afterEach(async () => {
     service.close();
-    for (const repo of repos) removeFixtureRepo(repo);
+    for (const repo of repos) await removeFixtureRepo(repo);
     repos = [];
-    rmSync(root, { recursive: true, force: true });
+    await cleanupTmpDir(root);
   });
 
-  /** A served marketplace listing a skill and an MCP server. */
-  function market(skillVersion = "1.0.0") {
+  /**
+   * A marketplace listing a skill and an MCP server, and the theme `harbor`
+   * when `theme`; `indexName` is `ave` when it stands in for the official source.
+   */
+  function market(skillVersion = "1.0.0", indexName = "acme-tools", options: { theme?: boolean } = {}) {
     counter += 1;
     const name = `market-${counter}`;
     const repo = createFixtureRepo(serverRoot, name);
@@ -158,13 +218,20 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
         {
           "marketplace.json": text({
             schemaVersion: 1,
-            name: "acme-tools",
+            name: indexName,
             displayName: "Acme Tools",
             packages: [
               { kind: "skill", name: "review", path: "skills/review" },
               { kind: "mcp", name: "notes", path: "mcp/notes" },
+              ...(options.theme ? [{ kind: "theme", name: "harbor", path: "themes/harbor" }] : []),
             ],
           }),
+          ...(options.theme
+            ? {
+                "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }),
+                "themes/harbor/theme.json": text({ name: "Harbor", description: "Harbor theme.", shell: "light", highContrast: false, tokens: moonstoneBundle.tokens, surfaces: SURFACES }),
+              }
+            : {}),
           "skills/review/ave-package.json": descriptor("skill", "review", version, { entry: "SKILL.md" }),
           "skills/review/SKILL.md": skill("review", `Review the change (${version}).`),
           "mcp/notes/ave-package.json": descriptor("mcp", "notes", "2.0.0", { server: { transport: "stdio", command: "npx", args: ["-y", "@acme/notes@2.0.0", "--db", "$DATA_DIR/notes.db"] } }),
@@ -172,7 +239,12 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
         `publish ${version}`,
       );
     publish(skillVersion);
-    return { name, url: server.url(name), publish };
+    return { name, url: server.url(name), publish, repo };
+  }
+
+  /** Publish `policy/revocations.json` in a marketplace made by `market`. */
+  function createRevocations(market: { repo: FixtureRepo }, revocations: unknown[]) {
+    market.repo.commit({ "policy/revocations.json": text({ schemaVersion: 1, revocations }) }, "revoke");
   }
 
   async function addMarket(url: string) {
@@ -237,6 +309,259 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
     expect(store.list()).toEqual([]);
   });
 
+  it("lists the updates of installed packages, from a hidden source too (design §7.3)", async () => {
+    const { url, publish } = market();
+    await addMarket(url);
+    const key = { sourceId: "acme-tools", kind: "skill" as const, name: "review" };
+    await service.executeInstall((await service.planInstall(key)).planId);
+    expect(await service.updates()).toEqual([]);
+
+    publish("1.1.0");
+    await service.refresh("acme-tools");
+    expect(await service.updates()).toEqual([{ key, displayName: "review", from: "1.0.0", to: "1.1.0" }]);
+
+    // Hidden: the catalog stops listing it, the installed package still hears of its update.
+    await service.setEnabled("acme-tools", false);
+    expect((await service.catalog({})).entries).toEqual([]);
+    expect(await service.updates()).toEqual([{ key, displayName: "review", from: "1.0.0", to: "1.1.0" }]);
+
+    // The Installed view shows it with its update; the browse list does not.
+    expect((await service.catalog({ installedOnly: true })).entries.map((entry) => [entry.key.name, entry.state])).toEqual([["review", { state: "update", from: "1.0.0", to: "1.1.0" }]]);
+    // The offered update opens; its plan asks for the source to be shown first (§7.3).
+    expect((await service.detail(key)).entry.key).toEqual(key);
+    await expect(service.planUpdate(key)).rejects.toMatchObject({ code: "SOURCE_DISABLED", message: "source acme-tools is hidden; show it again to install or update from it" });
+    // A package the hidden source lists but that is not installed from it is not listed at all.
+    await expect(service.planInstall({ sourceId: "acme-tools", kind: "mcp", name: "notes" })).rejects.toMatchObject({ code: "PACKAGE_INCOMPATIBLE" });
+
+    await service.setEnabled("acme-tools", true);
+    await service.executeInstall((await service.planUpdate(key)).planId);
+    expect(await service.updates()).toEqual([]);
+  });
+
+  it("applies a default install from a managed source through the plan, once", async () => {
+    const { url } = market();
+    service.close();
+    await build(policyLoad({ additional: [{ id: "corp", url: normalizeSourceUrl(url), auth: { kind: "none" } }] }));
+    await service.refresh();
+    const applied = await AppliedDefaults.open(join(root, "packages", "default-installs.json"));
+    const defaults = [
+      { kind: "skill" as const, name: "review", source: "corp" },
+      { kind: "skill" as const, name: "missing", source: "corp" },
+    ];
+
+    const first = await service.applyBootInstalls(defaults, applied);
+    expect(first.report.installed).toEqual([defaults[0]]);
+    expect(first.report.skipped).toEqual([{ key: defaults[1], reason: "corp does not list skill missing" }]);
+    expect(first.notice).toEqual({ forYou: [{ sourceId: "corp", kind: "skill", name: "review" }], required: [], unmanaged: [], lostGrants: [], revoked: [] });
+    // No official snapshot yet: the migration waits for one.
+    expect(legacyRuns).toEqual([]);
+    expect(store.list().map((entry) => `${entry.kind}:${entry.name}@${entry.origin.sourceId}`)).toEqual(["skill:review@corp"]);
+
+    // Uninstalling a default is final: the next boot installs nothing.
+    await service.uninstall({ sourceId: "corp", kind: "skill", name: "review" });
+    const second = await service.applyBootInstalls(defaults, applied);
+    expect(second.report).toEqual({ installed: [], updated: [], switched: [], skipped: [], failed: [] });
+    expect(second.notice).toBeNull();
+    expect(store.list()).toEqual([]);
+  });
+
+  it("migrates existing installs once the official snapshot exists, once, and names what it unlocked", async () => {
+    const { url } = market("1.0.0", "ave");
+    service.close();
+    await build(policyLoad({}), { id: "ave", url, mirrors: [], auth: { kind: "none" } });
+    const applied = await AppliedDefaults.open(join(root, "packages", "default-installs.json"));
+    legacyReport = { bound: ["meeting"], unmanaged: ["orion"], lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai"] }], failed: [] };
+
+    const before = await service.applyBootInstalls([], applied);
+    expect(legacyRuns).toEqual([]);
+    expect(before.notice).toBeNull();
+
+    await service.refresh();
+    const first = await service.applyBootInstalls([], applied);
+    expect(legacyRuns).toHaveLength(1);
+    // The lookup reads the official snapshot: this fixture lists skills, not plugins.
+    expect(legacyRuns[0]!("review")).toBeNull();
+    expect(first.notice).toEqual({ forYou: [], required: [], unmanaged: ["orion"], lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai"] }], revoked: [] });
+
+    const second = await service.applyBootInstalls([], applied);
+    expect(legacyRuns).toHaveLength(1);
+    expect(second.notice).toBeNull();
+  });
+
+  it("adopts a legacy theme from the official source during the migration, and drops it from the legacy list", async () => {
+    const { url } = market("1.0.0", "ave", { theme: true });
+    service.close();
+    await build(policyLoad({}), { id: "ave", url, mirrors: [], auth: { kind: "none" } });
+    await service.refresh();
+    const applied = await AppliedDefaults.open(join(root, "packages", "default-installs.json"));
+    legacyActivations = { themes: ["harbor", "retired"], locales: [], providers: [] };
+
+    const first = await service.applyBootInstalls([], applied);
+
+    expect(contentReports).toEqual([{ adopted: [{ source: "ave", kind: "theme", name: "harbor" }], failed: [] }]);
+    expect(store.list().map((entry) => `${entry.kind}:${entry.name}@${entry.origin.sourceId}`)).toEqual(["theme:harbor@ave"]);
+    expect(adopting).toEqual([true]);
+    // `retired` is not listed: it stays in the legacy list.
+    expect(released).toEqual([{ themes: ["harbor"], locales: [] }]);
+    // Adopting content is not news to the user.
+    expect(first.notice).toBeNull();
+
+    await service.applyBootInstalls([], applied);
+    expect(contentReports).toHaveLength(1);
+  });
+
+  it("runs the migration again on the next boot while an entry could not be read", async () => {
+    const { url } = market("1.0.0", "ave");
+    service.close();
+    await build(policyLoad({}), { id: "ave", url, mirrors: [], auth: { kind: "none" } });
+    await service.refresh();
+    const applied = await AppliedDefaults.open(join(root, "packages", "default-installs.json"));
+    legacyReport = { bound: [], unmanaged: [], lostGrants: [], failed: [{ plugin: "meeting", message: "plugin.json unreadable" }] };
+
+    await service.applyBootInstalls([], applied);
+    legacyReport = { bound: ["meeting"], unmanaged: [], lostGrants: [], failed: [] };
+    await service.applyBootInstalls([], applied);
+    await service.applyBootInstalls([], applied);
+    expect(legacyRuns).toHaveLength(2);
+  });
+
+  it("feeds each installed package only its own source's revocations (design §10.4)", async () => {
+    const acme = market();
+    const other = market("1.0.0", "other-tools");
+    await addMarket(acme.url);
+    await addMarket(other.url);
+    await service.executeInstall((await service.planInstall({ sourceId: "acme-tools", kind: "skill", name: "review" })).planId);
+    await service.executeInstall((await service.planInstall({ sourceId: "acme-tools", kind: "mcp", name: "notes" })).planId);
+    // After each install the gates are fed again from what is installed.
+    expect(feeds.at(-1)).toEqual({ rules: [], unreadable: [] });
+
+    createRevocations(other, [{ kind: "skill", name: "review", versions: "*", reason: "not ours to revoke", at: "2026-09-24T00:00:00Z", action: "uninstall" }]);
+    createRevocations(acme, [
+      { kind: "skill", name: "review", versions: "<2.0.0", reason: "prompt injection", at: "2026-09-24T00:00:00Z", action: "disable" },
+      { kind: "mcp", name: "notes", versions: "=2.0.0", reason: "exfiltrates notes", at: "2026-09-24T00:00:00Z", action: "disable" },
+      { kind: "skill", name: "unrelated", versions: "*", reason: "not installed", at: "2026-09-24T00:00:00Z", action: "uninstall" },
+    ]);
+    const before = feeds.length;
+    await service.refresh();
+    // The sync's first feed carries each package's own source's rules.
+    const fed = feeds[before]!;
+    expect(fed.unreadable).toEqual([]);
+    expect(fed.rules.map((rule) => `${rule.sourceId}/${rule.kind}/${rule.name}:${rule.action}`).sort()).toEqual([
+      "acme-tools/mcp/notes:disable",
+      "acme-tools/skill/review:disable",
+    ]);
+
+    // The sync removed the MCP server (no load gate) and left the gated skill installed; the boot notice reports it.
+    const { notice } = await service.applyBootInstalls([], await AppliedDefaults.open(join(root, "packages", "default-installs.json")));
+    expect(notice?.revoked).toEqual([
+      { key: { sourceId: "acme-tools", kind: "mcp", name: "notes" }, version: "2.0.0", reason: "exfiltrates notes", outcome: "uninstalled" },
+    ]);
+    expect(manager.configs.has("notes")).toBe(false);
+    expect(store.list().map((entry) => `${entry.kind}:${entry.name}`)).toEqual(["skill:review"]);
+    // What stays installed keeps its rule; the removed server's is gone.
+    expect(feeds.at(-1)!.rules.map((rule) => `${rule.kind}/${rule.name}`)).toEqual(["skill/review"]);
+  });
+
+  it("keeps a revoked package a requiredInstalls entry locks, and says so", async () => {
+    const acme = market();
+    service.close();
+    await build(policyLoad({ requiredInstalls: [{ kind: "mcp", name: "notes", source: "acme-tools" }] }));
+    await addMarket(acme.url);
+    await service.executeInstall((await service.planInstall({ sourceId: "acme-tools", kind: "mcp", name: "notes" })).planId);
+    createRevocations(acme, [{ kind: "mcp", name: "notes", versions: "*", reason: "exfiltrates notes", at: "2026-09-24T00:00:00Z", action: "uninstall" }]);
+    await service.refresh();
+
+    const { notice } = await service.applyBootInstalls([], await AppliedDefaults.open(join(root, "packages", "default-installs.json")));
+    expect(notice?.revoked).toEqual([
+      { key: { sourceId: "acme-tools", kind: "mcp", name: "notes" }, version: "2.0.0", reason: "exfiltrates notes", outcome: "required" },
+    ]);
+    expect(manager.configs.has("notes")).toBe(true);
+  });
+
+  it("judges a package mid-switch by the source it moves to, in every feed while it moves", async () => {
+    const acme = market();
+    const other = market("1.1.0", "other-tools");
+    await addMarket(acme.url);
+    await addMarket(other.url);
+    await service.executeInstall((await service.planInstall({ sourceId: "acme-tools", kind: "skill", name: "review" })).planId);
+    createRevocations(acme, [{ kind: "skill", name: "review", versions: "*", reason: "prompt injection", at: "2026-09-24T00:00:00Z", action: "disable" }]);
+    await service.refresh();
+    expect(feeds.at(-1)!.rules.map((rule) => `${rule.sourceId}/${rule.name}`)).toEqual(["acme-tools/review"]);
+
+    const plan = await service.planInstall({ sourceId: "other-tools", kind: "skill", name: "review", switchSource: true });
+    let fedMidSwitch: RevocationFeed | undefined;
+    duringContentInstall = async () => {
+      // A sync finishing while the switch runs feeds and enforces again.
+      await service.enforceRevocations();
+      fedMidSwitch = feeds.at(-1);
+    };
+    await service.executeInstall(plan.planId);
+
+    // The source being left never judged the package while it moved, and nothing removed it.
+    expect(fedMidSwitch).toEqual({ rules: [], unreadable: [] });
+    expect(store.list().map((entry) => `${entry.name}@${entry.version}:${entry.origin.sourceId}`)).toEqual(["review@1.1.0:other-tools"]);
+    expect(feeds.at(-1)).toEqual({ rules: [], unreadable: [] });
+    expect(service.takeRevocationNotice()).toBeNull();
+  });
+
+  it("feeds the gates again after an uninstall, and logs a failed feed after a finished install", async () => {
+    const acme = market("1.0.0", "acme-tools", { theme: true });
+    await addMarket(acme.url);
+    await service.executeInstall((await service.planInstall({ sourceId: "acme-tools", kind: "skill", name: "review" })).planId);
+    createRevocations(acme, [{ kind: "skill", name: "review", versions: "*", reason: "prompt injection", at: "2026-09-24T00:00:00Z", action: "disable" }]);
+    await service.refresh();
+    expect(feeds.at(-1)!.rules).toHaveLength(1);
+
+    await service.uninstall({ sourceId: "acme-tools", kind: "skill", name: "review" });
+    expect(feeds.at(-1)).toEqual({ rules: [], unreadable: [] });
+
+    // The feed before the install lands; the one after fails. The install is done, so it resolves.
+    duringContentInstall = async () => {
+      feedFails = true;
+    };
+    await expect(service.executeInstall((await service.planInstall({ sourceId: "acme-tools", kind: "theme", name: "harbor" })).planId)).resolves.toMatchObject({
+      key: { sourceId: "acme-tools", kind: "theme", name: "harbor" },
+    });
+    expect(store.list().map((entry) => entry.name)).toEqual(["harbor"]);
+    expect(warnings).toEqual([expect.stringContaining("revocation feed after theme harbor install failed")]);
+  });
+
+  it("removes what a sync revokes at once, and queues its notice once", async () => {
+    const acme = market();
+    await addMarket(acme.url);
+    await service.executeInstall((await service.planInstall({ sourceId: "acme-tools", kind: "mcp", name: "notes" })).planId);
+    createRevocations(acme, [{ kind: "mcp", name: "notes", versions: "*", reason: "exfiltrates notes", at: "2026-09-24T00:00:00Z", action: "uninstall" }]);
+
+    await service.refresh();
+    expect(manager.configs.has("notes")).toBe(false);
+    expect(service.takeRevocationNotice()).toEqual({
+      forYou: [],
+      required: [],
+      unmanaged: [],
+      lostGrants: [],
+      revoked: [{ key: { sourceId: "acme-tools", kind: "mcp", name: "notes" }, version: "2.0.0", reason: "exfiltrates notes", outcome: "uninstalled" }],
+    });
+    expect(service.takeRevocationNotice()).toBeNull();
+    // The boot notice does not repeat what was already reported.
+    const { notice } = await service.applyBootInstalls([], await AppliedDefaults.open(join(root, "packages", "default-installs.json")));
+    expect(notice?.revoked ?? []).toEqual([]);
+  });
+
+  it("removes a revoked package when the requiredInstalls entry for it names another source", async () => {
+    const acme = market();
+    service.close();
+    await build(policyLoad({ requiredInstalls: [{ kind: "mcp", name: "notes", source: "other-tools" }] }));
+    await addMarket(acme.url);
+    await service.executeInstall((await service.planInstall({ sourceId: "acme-tools", kind: "mcp", name: "notes" })).planId);
+    createRevocations(acme, [{ kind: "mcp", name: "notes", versions: "*", reason: "exfiltrates notes", at: "2026-09-24T00:00:00Z", action: "uninstall" }]);
+
+    await service.refresh();
+    expect(manager.configs.has("notes")).toBe(false);
+    expect(service.takeRevocationNotice()?.revoked).toEqual([
+      { key: { sourceId: "acme-tools", kind: "mcp", name: "notes" }, version: "2.0.0", reason: "exfiltrates notes", outcome: "uninstalled" },
+    ]);
+  });
+
   it("expires a plan after ten minutes", async () => {
     const { url } = market();
     await addMarket(url);
@@ -260,7 +585,8 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
     });
     expect(plan.runsCode).toBe(true);
     await service.executeInstall(plan.planId);
-    expect(manager.configs.get("notes")).toMatchObject({ command: "npx", args: ["-y", "@acme/notes@2.0.0", "--db", join(root, "mcp-data", "notes", "notes.db")] });
+    // `$DATA_DIR` is replaced in the author's text, so the rest of the path keeps its `/`.
+    expect(manager.configs.get("notes")).toMatchObject({ command: "npx", args: ["-y", "@acme/notes@2.0.0", "--db", `${join(root, "mcp-data", "notes")}/notes.db`] });
     await expect(service.uninstall({ sourceId: "acme-tools", kind: "mcp", name: "notes" })).resolves.toEqual({
       key: { sourceId: "acme-tools", kind: "mcp", name: "notes" },
       keptDataDir: join(root, "mcp-data", "notes"),

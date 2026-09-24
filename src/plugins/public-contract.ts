@@ -147,8 +147,6 @@ export interface PluginUiResourceDecl {
   };
 }
 
-export type InstallPolicy = "admin" | "user";
-
 /** Host-enforced minimum risk for one discriminated plugin operation. */
 export type GovernedRiskFloor = "read" | "write" | "network" | "shell";
 
@@ -571,11 +569,9 @@ export interface PluginManifest {
     /** 1..4 entries. Ids must be unique within the plugin. */
     kinds: WorkProposalKind[];
   };
-  installPolicy?: InstallPolicy;
   dependencies?: Array<string | DependencySpec>;
   pluginAccess?: PluginAccessSpec;
   requires?: RequiresSpec;
-  publisher?: string;
   /**
    * npm package name persisted into installed manifests by the marketplace
    * service for rollback support. The publish pipeline owns this value;

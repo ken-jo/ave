@@ -27,6 +27,8 @@ describe("selectCopiedEntries", () => {
         "alias.st\nstatus",
         "http.https://github.com.sslcainfo\n/tmp/x.pem",
         "credential.helper",
+        "credential.https://h.example.usehttppath",
+        "http.sslcainfo",
       ].join("\0") + "\0",
     );
     expect(selectCopiedEntries(entries)).toEqual([
@@ -36,6 +38,7 @@ describe("selectCopiedEntries", () => {
       { key: "http.sslcainfo", value: "/etc/corp.pem" },
       { key: "http.sslbackend", value: "schannel" },
       { key: "credential.helper", value: "" },
+      // A valueless helper resets the list; other valueless keys (git refuses them) are dropped.
     ]);
   });
 });
@@ -83,7 +86,7 @@ describe("generated global config", () => {
     expect(entries.map((entry) => entry.key)).not.toContain("url.https://evil.example/.insteadof");
 
     const output = join(dir, "generated");
-    await writeGeneratedGlobalConfig(git.path, output, entries);
+    await writeGeneratedGlobalConfig(output, entries);
     const text = readFileSync(output, "utf8");
     expect(text).not.toContain("insteadOf");
     expect(text).not.toContain("extraHeader");
@@ -95,9 +98,28 @@ describe("generated global config", () => {
   });
 
   it("produces an empty file when there is no user config", async () => {
-    const git = await hostGitExecutable();
     const output = join(dir, "generated");
-    await writeGeneratedGlobalConfig(git.path, output, []);
+    await writeGeneratedGlobalConfig(output, []);
     expect(readFileSync(output, "utf8")).toBe("");
+  });
+
+  it("keeps the copied order across sections, valueless keys and escaped values", async () => {
+    // git collects generic and per-URL helpers in file order, and an empty value
+    // resets the list: the reset must stay after the per-URL helper it clears.
+    const entries = [
+      { key: "credential.helper", value: "manager" },
+      { key: "credential.https://Dev.Example/a \"b\".usehttppath", value: "true" },
+      { key: "credential.https://Dev.Example/a \"b\".helper", value: "store --file=C:\\creds\\x" },
+      { key: "credential.helper", value: "" },
+      { key: "http.sslcainfo", value: " /etc/corp #1; \"quoted\"\tpem " },
+      // git stores other control characters raw and reads them back the same.
+      { key: "credential.https://Corp.Example.username", value: "a\u001bb\rc" },
+    ];
+    const output = join(dir, "generated");
+    await writeGeneratedGlobalConfig(output, entries);
+    const git = await hostGitExecutable();
+    const { execFileSync } = await import("node:child_process");
+    const readBack = execFileSync(git.path, ["config", "--file", output, "--null", "--list"], { encoding: "utf8" });
+    expect(parseNullConfigList(readBack)).toEqual(entries);
   });
 });

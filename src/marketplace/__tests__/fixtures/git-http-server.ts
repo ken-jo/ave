@@ -9,7 +9,8 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -104,7 +105,8 @@ export function createFixtureRepo(root: string, name: string, branch = "main"): 
           input: entry.content ?? "",
           encoding: "utf8",
         }).trim();
-        hostGit(["update-index", "--add", "--cacheinfo", `${entry.mode},${oid},${entry.path}`], work);
+        // Tree entries only: Git for Windows would refuse names like `odd:name` for a checkout.
+        hostGit(["-c", "core.protectNTFS=false", "update-index", "--add", "--cacheinfo", `${entry.mode},${oid},${entry.path}`], work);
       }
       const tree = hostGit(["write-tree"], work);
       const parent = hostGit(["rev-parse", "HEAD"], work);
@@ -119,8 +121,9 @@ export function createFixtureRepo(root: string, name: string, branch = "main"): 
   };
 }
 
-export function removeFixtureRepo(repo: FixtureRepo): void {
-  rmSync(repo.work, { recursive: true, force: true });
+/** Async `rm`: Electron's `rmSync` refuses the read-only object files git writes on Windows. */
+export async function removeFixtureRepo(repo: FixtureRepo): Promise<void> {
+  await rm(repo.work, { recursive: true, force: true });
 }
 
 function authorized(req: IncomingMessage, token: string | undefined): boolean {

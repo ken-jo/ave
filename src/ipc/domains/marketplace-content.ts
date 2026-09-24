@@ -7,8 +7,8 @@
  * request at boot: installed languages join the main process's locale
  * registry (dialogs, menus and notifications use them too), installed theme
  * ids become valid plugin theme broadcasts, and fonts and theme previews are
- * served through the asset scheme. Installing and removing packages comes with the install IPC
- * (blueprint 6.1); the activation below is what those calls run.
+ * served through the asset scheme. Installing and removing packages comes with
+ * the install IPC; the activation below is what those calls run.
  */
 import { ipcMain, protocol } from "electron";
 import { randomBytes } from "node:crypto";
@@ -22,8 +22,10 @@ import { ContentStore, type ContentActivation } from "../../marketplace/content/
 import type { ParsedContent } from "../../marketplace/content/kinds.js";
 import type { LedgerEntry } from "../../marketplace/content/ledger.js";
 import { MarketplaceError } from "../../marketplace/errors.js";
+import { legacySelectedThemes, type LegacyActivations } from "../../marketplace/migration/legacy-content.js";
 import { installContentAssetProtocolHandler } from "../../main/content-asset-protocol.js";
 import { applyBootLocale } from "../../boot/services.js";
+import { revocationRegistry } from "../../plugins/revocation/revocation-registry.js";
 import { installedFontStack, type InstalledContentResult, type InstalledContentView } from "../../shared/installed-content.js";
 import { isMarketplaceEligibleLLMVendor } from "../../shared/llm-vendor-defaults.js";
 import { aveHome } from "../../shared/ave-home.js";
@@ -42,9 +44,39 @@ function contentPackagesRoot(home: string = aveHome()): string {
 }
 
 /**
+ * The settings side of the first-boot content migration (design §16.3): the
+ * activations the server marketplace left in settings, and the removal of the
+ * theme ids and locales installed packages provide once it has adopted them.
+ */
+export function legacyContentSettings(deps: IpcDeps): {
+  activations: LegacyActivations;
+  release(provided: { themes: readonly string[]; locales: readonly string[] }): Promise<void>;
+} {
+  const settings = deps.settingsService;
+  const marketplace = settings.get("marketplace");
+  return {
+    activations: {
+      themes: [...marketplace.installedThemeBundleIds, ...legacySelectedThemes(settings.get("appearance"))],
+      locales: [...marketplace.installedLanguagePacks],
+      providers: [...marketplace.installedProviderIds, ...marketplace.installedProviderPresets.map((preset) => preset.providerId)],
+    },
+    async release(provided) {
+      const current = settings.get("marketplace");
+      await settings.patch({
+        marketplace: {
+          installedThemeBundleIds: current.installedThemeBundleIds.filter((id) => !provided.themes.includes(id)),
+          installedLanguagePacks: current.installedLanguagePacks.filter((locale) => !provided.locales.includes(locale)),
+        },
+      });
+      await broadcastSettingsSnapshot(deps);
+    },
+  };
+}
+
+/**
  * How installed content takes effect in this app. Providers go through the
  * same preset path the settings IPC uses and messaging connections through
- * the same settings field (blueprint 3.5); removing a theme, language or font
+ * the same settings field; removing a theme, language or font
  * that is selected puts its setting back to the default.
  *
  * A settings write that fails throws, so the store undoes the install (or
@@ -95,23 +127,23 @@ export function createContentActivation(deps: IpcDeps): ContentActivation {
   };
   const connectionsWithout = (connectionId: string) =>
     settings.get("marketplace").installedMessagingConnections.filter((entry) => entry.connectionId !== connectionId);
-  /** A first install may not take an id the settings already hold from another path (design §15.1). */
-  const assertUnclaimed = (content: ParsedContent, name: string) => {
+  /** Whether the settings already hold this package's id from another path (design §15.1). */
+  const heldBySettings = (content: ParsedContent): boolean => {
     const marketplace = settings.get("marketplace");
-    const held =
-      content.kind === "provider"
-        ? "vendor" in content
-          ? marketplace.installedProviderIds.includes(content.vendor.providerId)
-          : marketplace.installedProviderPresets.some((preset) => preset.providerId === content.preset.providerId)
-        : content.kind === "messaging-connection"
-          ? marketplace.installedMessagingConnections.some((entry) => entry.connectionId === content.connection.connectionId)
-          : content.kind === "theme" && (marketplace.installedThemeBundleIds as readonly string[]).includes(name);
-    if (held) throw new MarketplaceError("PACKAGE_ID_CONFLICT", "settings already hold this id from another install; remove it there first");
+    return content.kind === "provider"
+      ? "vendor" in content
+        ? marketplace.installedProviderIds.includes(content.vendor.providerId)
+        : marketplace.installedProviderPresets.some((preset) => preset.providerId === content.preset.providerId)
+      : content.kind === "messaging-connection" && marketplace.installedMessagingConnections.some((entry) => entry.connectionId === content.connection.connectionId);
   };
 
   return {
-    async activate(content: ParsedContent, entry: LedgerEntry, previous: LedgerEntry | null) {
-      if (!previous) assertUnclaimed(content, entry.name);
+    async activate(content: ParsedContent, entry: LedgerEntry, previous: LedgerEntry | null, adopt: boolean) {
+      if (!previous && heldBySettings(content)) {
+        // Adopting a legacy activation (design §16.3): the settings already describe it, so they stay as they are.
+        if (adopt) return;
+        throw new MarketplaceError("PACKAGE_ID_CONFLICT", "settings already hold this id from another install; remove it there first");
+      }
       if (!previous && (content.kind === "skill" || content.kind === "agent")) {
         const held = content.kind === "skill" ? await deps.skillStore?.userSkillFile(entry.name) : await deps.agentProfileStore?.userProfileFile(entry.name);
         // The user's own file wins in the store, so the package would never apply; replacing it is theirs to do.
@@ -210,7 +242,10 @@ export async function loadInstalledContent(deps: IpcDeps, assetToken: string, ro
     english: messages.en,
     activation: createContentActivation(deps),
   });
-  const service = new InstalledContentService(store, assetToken);
+  const service = new InstalledContentService(store, assetToken, (kind, name, version) => {
+    const decision = revocationRegistry.evaluate(kind, name, version);
+    return decision.kind === "block" ? `revoked by ${decision.sourceId}: ${decision.reason}` : null;
+  });
   applyInMain(deps, service, await service.reload());
   // Settings were read before the ledger: apply an installed language the user selected.
   await applyBootLocale(deps.settingsService);

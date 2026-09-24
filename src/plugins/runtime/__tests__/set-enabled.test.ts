@@ -12,6 +12,10 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeTestPluginRuntime } from "../../__tests__/test-helpers.js";
+import { createNoopHostApiForTests } from "../sandbox.js";
+import type { PluginRegistryTrust } from "../../types.js";
+import { canonicalJSON } from "../../secret-access/canonical-json.js";
+import { sha256Hex } from "../../../lib/hex-digest-equal.js";
 import {
   buildInstallReceipt,
   installReceiptPath,
@@ -110,7 +114,6 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
         entry: "entry.mjs",
         tools: [{ name: "se_ping", description: "se_ping tool", inputSchema: { type: "object", properties: {} }, _meta: { ui: { visibility: ["model", "app"] } } }],
         description: "set-enabled test",
-        publisher: "Test",
       })),
       "utf-8");
     await writeFile(
@@ -218,7 +221,6 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
         tools: [{ name: "calendar_provider_ping", description: "calendar provider ping", inputSchema: { type: "object", properties: {} }, _meta: { ui: { visibility: ["model", "app"] } } }],
         capabilities: ["calendar-source"],
         description: "set-enabled provider fixture",
-        publisher: "Test",
       })),
       "utf-8");
     const consumerManifest = JSON.parse(await readFile(manifestPath, "utf-8"));
@@ -268,6 +270,42 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
     expect(runtime.listPluginIds()).not.toContain("se-plugin");
     const registry = JSON.parse(await readFile(registryPath, "utf-8"));
     expect(registry.plugins.find((p: { id: string }) => p.id === "se-plugin").enabled).toBe(false);
+  });
+
+  it("re-enables with the registry entry's origin, so a host-secret grant survives the toggle", async () => {
+    const origin = {
+      sourceId: "ave",
+      sourceOrigin: "official" as const,
+      commit: "c".repeat(40),
+      packagePath: "plugins/se-plugin",
+      version: "1.0.0",
+      rung: "legacy" as const,
+      artifactSha256: null,
+      installedAt: new Date(0).toISOString(),
+    };
+    const manifestSha256 = sha256Hex(canonicalJSON(JSON.parse(await readFile(manifestPath, "utf-8"))));
+    await writeFile(
+      registryPath,
+      JSON.stringify({ version: 1, plugins: [{ id: "se-plugin", manifestPath, enabled: true, installSource: "user", manifestSha256, origin }] }),
+      "utf-8",
+    );
+    const candidates: Array<Readonly<PluginRegistryTrust> | undefined> = [];
+    const runtime = makeTestPluginRuntime(
+      { rootDir: testDir, registryPath, pluginsRoot: installedDir },
+      {
+        installReceiptCacheRoot: testDir,
+        createHostApi: (...args) => {
+          candidates.push(args[5]);
+          return createNoopHostApiForTests(args[0], args[1], args[2]);
+        },
+      },
+    );
+    await runtime.startAll();
+    await runtime.setPluginEnabled("se-plugin", false);
+    candidates.length = 0;
+    await runtime.setPluginEnabled("se-plugin", true);
+
+    expect(candidates).toEqual([{ installSource: "user", manifestSha256, origin }]);
   });
 
   it("re-enables a canonical manifest through its raw registry alias receipt", async () => {

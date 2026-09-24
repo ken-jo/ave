@@ -7,7 +7,6 @@ import { validateExternalUrl } from "../../shared/external-url.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import { SETTINGS } from "../../shared/ipc-channels.js";
 import { envForcedSettingsPaths } from "../../shared/env-backed-settings.js";
-import { isInstalledThemeId } from "../../shared/plugin-theme-cache.js";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { sendToWindow } from "../safe-send.js";
@@ -363,7 +362,7 @@ function refreshChatRuntimeProviders(
  * preset change needs (reviewer rewire, chat providers, wildcard, sandbox
  * endpoints, the settings broadcast), reporting a follow-up that fails as
  * `finishError` once `mutate` has saved. The settings IPC and the content store's
- * provider activation (blueprint 3.5) both go through here, so a preset
+ * provider activation both go through here, so a preset
  * installed from a git package behaves exactly like one installed today.
  */
 export async function mutateMarketplaceProviderPresets(
@@ -512,7 +511,12 @@ function llmSecretKeyForDeleteInput(deps: IpcDeps, vendor: unknown): string | un
   return isLLMVendor(vendor) ? `llm.apiKey.${vendor}` : undefined;
 }
 
-export function registerSettingsHandlers(deps: IpcDeps): void {
+export interface SettingsHandlerHooks {
+  /** A `settings:update` wrote `marketplace`: update notices and skips apply from now, not the next tick. */
+  marketplaceSettingsChanged(): void;
+}
+
+export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerHooks): void {
   const { settingsService, conversationLoop, auditLogger } = deps;
   let activeChatRuntimeTransitionRevision = 0;
   // Handler-start ownership prevents a slow verify/model lookup from applying
@@ -811,21 +815,16 @@ export function registerSettingsHandlers(deps: IpcDeps): void {
     if (partial && typeof partial === "object" && Object.prototype.hasOwnProperty.call(partial, "appliedMigrations")) {
       return { ok: false, error: "applied-migrations-main-owned" };
     }
-    // A theme package owns its id (design §5.5). The legacy marketplace turns a
-    // compiled bundle on by patching this list, so the refusal the package path
-    // makes in the other direction is made here: otherwise both claim one id.
-    const themeIdsPatch = ((partial as Record<string, unknown> | null | undefined)?.marketplace as Record<string, unknown> | undefined)
-      ?.installedThemeBundleIds;
-    if (Array.isArray(themeIdsPatch)) {
-      const held: readonly string[] = settingsService.get("marketplace").installedThemeBundleIds;
-      const claimed = themeIdsPatch.find((id): id is string => typeof id === "string" && !held.includes(id) && isInstalledThemeId(id));
-      if (claimed !== undefined) {
-        return {
-          ok: false,
-          error: "theme-id-held-by-package",
-          message: `Theme ${claimed} is installed as a package; uninstall the package first.`,
-        };
-      }
+    // The server marketplace's theme and language lists are read and emptied
+    // only by the first-boot migration (design §16.3); themes and languages
+    // are installed as packages now, so a patch naming either is refused whole.
+    const marketplacePatch = (partial as Record<string, unknown> | null | undefined)?.marketplace;
+    if (
+      marketplacePatch
+      && typeof marketplacePatch === "object"
+      && ["installedThemeBundleIds", "installedLanguagePacks"].some((field) => Object.prototype.hasOwnProperty.call(marketplacePatch, field))
+    ) {
+      return { ok: false, error: "legacy-marketplace-lists-main-owned" };
     }
     const llmPatch = (partial as Record<string, unknown> | null | undefined)
       ?.llm as Record<string, unknown> | undefined;
@@ -884,12 +883,6 @@ export function registerSettingsHandlers(deps: IpcDeps): void {
       prevLlm,
       settingsService.get("marketplace").installedProviderPresets,
     );
-    // The MarketplaceTab "즉시 적용" badge on the SSRF-bypass
-    // toggle promised next-request activation, but the marketplace fetcher was
-    // capturing the flag at boot only. Detect a change here and call the boot
-    // closure that pushes the new value into the live fetcher instance.
-    const prevAllowPrivate =
-      settingsService.get("marketplace").cloudAllowPrivateNetwork ?? false;
     // Capture shortcut/startup signature so we only re-register on change.
     const prevShortcutStartupSig = shortcutStartupSignature(
       settingsService.get("shortcuts"),
@@ -907,6 +900,7 @@ export function registerSettingsHandlers(deps: IpcDeps): void {
     // the `patch` above, so a subsequent rewire failure must NOT skip syncing
     // the OS state to what is now on disk. Idempotent + gated by the signature,
     // so calling it once per handler invocation is correct on either path.
+    const marketplaceWritten = typeof partial === "object" && partial !== null && Object.prototype.hasOwnProperty.call(partial, "marketplace");
     // Contract (side-effect ordering): only that it runs AFTER `patch` commits.
     let reconciledShortcutStartup = false;
     const reconcileShortcutStartupIfChanged = (): void => {
@@ -932,8 +926,6 @@ export function registerSettingsHandlers(deps: IpcDeps): void {
     const ownsAppliedLlm = sameLlmSettings(settingsService.get("llm"), appliedLlm);
     const newActiveLlmIdentity = activeLlmIdentity(newLlm);
     const newBaseUrl = newLlm.vendors?.["azure-foundry"]?.baseUrl ?? null;
-    const newAllowPrivate =
-      settingsService.get("marketplace").cloudAllowPrivateNetwork ?? false;
     if (
       ownsAppliedLlm
       && (prevBaseUrl !== newBaseUrl || prevActiveLlmIdentity !== newActiveLlmIdentity)
@@ -965,9 +957,6 @@ export function registerSettingsHandlers(deps: IpcDeps): void {
             }
           }
         }
-        if (prevAllowPrivate !== newAllowPrivate) {
-          deps.refreshMarketplaceFetcherConfig?.();
-        }
         refreshChatRuntimeProviders(deps);
         deps.refreshActiveLlmWildcard?.();
         if (
@@ -983,6 +972,7 @@ export function registerSettingsHandlers(deps: IpcDeps): void {
         // rewire failed, so a combined patch doesn't leave the accelerator /
         // login item out of sync with what the user just saved.
         reconcileShortcutStartupIfChanged();
+        if (marketplaceWritten) hooks?.marketplaceSettingsChanged();
         await broadcastSettingsSnapshot(deps);
         return {
           ok: false,
@@ -990,9 +980,6 @@ export function registerSettingsHandlers(deps: IpcDeps): void {
           message: rollbackMessage === null ? message : `${message}; rollback failed: ${rollbackMessage}`,
         };
       }
-    }
-    if (prevAllowPrivate !== newAllowPrivate) {
-      deps.refreshMarketplaceFetcherConfig?.();
     }
     refreshChatRuntimeProviders(deps);
     // #893 — vendor/baseUrl may have changed; re-sync the plugin wildcard so
@@ -1013,6 +1000,7 @@ export function registerSettingsHandlers(deps: IpcDeps): void {
     // Reconcile the OS-level global accelerator + login item to the newly
     // persisted shortcut/startup fields (no-op when unchanged; see closure).
     reconcileShortcutStartupIfChanged();
+    if (marketplaceWritten) hooks?.marketplaceSettingsChanged();
     await broadcastSettingsSnapshot(deps);
     return result;
   });
@@ -1526,25 +1514,6 @@ export function registerSettingsHandlers(deps: IpcDeps): void {
       return runtime.logout(provider);
     }),
   );
-  // ─── Marketplace API Key ──────────────────────
-  ipcMain.handle(CHANNELS.settings.marketplaceSetApiKey, async (e, apiKey: string) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.settings.marketplaceSetApiKey, e); return UNAUTHORIZED_FRAME; }
-    await settingsService.setSecret("marketplace.apiKey", apiKey);
-    await broadcastSettingsSnapshot(deps);
-    return { ok: true };
-  });
-
-  ipcMain.handle(CHANNELS.settings.marketplaceHasApiKey, () =>
-    settingsService.getSecret("marketplace.apiKey") != null,
-  );
-
-  ipcMain.handle(CHANNELS.settings.marketplaceDeleteApiKey, async (e) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.settings.marketplaceDeleteApiKey, e); return UNAUTHORIZED_FRAME; }
-    await settingsService.deleteSecret("marketplace.apiKey");
-    await broadcastSettingsSnapshot(deps);
-    return { ok: true };
-  });
-
   // ─── Shell external link ───────────────────────────
   ipcMain.handle(CHANNELS.shell.openExternal, async (e, url: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.shell.openExternal, e); return UNAUTHORIZED_FRAME; }

@@ -2,8 +2,7 @@
  * Settings → Marketplace as the in-app store of the git marketplace
  * (design §15): browse every shown source's packages by kind, open a
  * package's sheet to review and install it, manage the sources, and install
- * without a marketplace. Shown when `window.ave.env.gitMarketplace` is on,
- * until blueprint P6 makes it the only marketplace.
+ * without a marketplace.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "../../../../components/ui/badge.js";
@@ -13,16 +12,20 @@ import { Input } from "../../../../components/ui/input.js";
 import { Switch } from "../../../../components/ui/switch.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import { cn } from "../../../../lib/utils.js";
-import type {
-  BootInstallNoticeView,
-  CatalogEntryView,
-  CatalogView,
-  GitMarketplaceErrorCode,
-  PackageKeyView,
-  PackageKind,
-  SourcePreviewView,
-  SourceView,
+import { errorMessage } from "../../../../shared/error-message.js";
+import {
+  bootInstallNoticeIsEmpty,
+  type BootInstallNoticeView,
+  type CatalogEntryView,
+  type CatalogView,
+  type GitMarketplaceErrorCode,
+  type PackageKeyView,
+  type PackageKind,
+  type RevokedPackageView,
+  type SourcePreviewView,
+  type SourceView,
 } from "../../../../shared/git-marketplace.js";
+import { EnvForcedNotice, useEnvForcedSettings } from "../../components/EnvForcedNotice.js";
 import { SettingsPageHeader, SettingsSection } from "../../components/PageShell.js";
 import { isIpcErrorResult, type AveApi } from "../../types.js";
 import { AddSourceDialog } from "./AddSourceDialog.js";
@@ -31,8 +34,15 @@ import { GitRuntimeCard } from "./GitRuntimeCard.js";
 import { KIND_ORDER, failureText, kindLabel, originLabel, relativeTime, stateLabel } from "./labels.js";
 import { PackageSheet } from "./PackageSheet.js";
 import { SourcesView } from "./SourcesView.js";
+import { onUpdateReview, takeUpdateReview } from "./update-review-request.js";
 
 type View = "browse" | "sources" | "direct";
+
+const REVOKED_NOTICE_KEYS = {
+  uninstalled: "gitMarketplace.boot.revoked.uninstalled",
+  required: "gitMarketplace.boot.revoked.required",
+  failed: "gitMarketplace.boot.revoked.failed",
+} as const satisfies Record<RevokedPackageView["outcome"], string>;
 
 export interface GitMarketplaceTabProps {
   api: AveApi;
@@ -119,6 +129,10 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }
   const [notice, setNotice] = useState<BootInstallNoticeView | null>(null);
   const [updateCheckEnabled, setUpdateCheckEnabled] = useState(true);
   const [offlineCacheEnabled, setOfflineCacheEnabled] = useState(true);
+  // A switch flipped before the saved value arrives would write a guess.
+  const [flagsLoaded, setFlagsLoaded] = useState(false);
+  const [flagsFailure, setFlagsFailure] = useState<string | null>(null);
+  const envForcedPaths = useEnvForcedSettings(api);
   const syncedOnce = useRef(false);
 
   useEffect(() => setKind(initialKind), [initialKind]);
@@ -177,7 +191,7 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }
     };
   }, [market, loadSources]);
 
-  // A deep link opens the confirming UI only: the package sheet or the Add dialog (blueprint 4.6).
+  // A deep link opens the confirming UI only: the package sheet or the Add dialog.
   useEffect(() => {
     const take = () =>
       void market.takeDeepLink().then((result) => {
@@ -198,6 +212,27 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }
     take();
     return market.onDeepLink(take);
   }, [market]);
+
+  // The update pill asks for a review: an update installs only through it (design §15.6).
+  useEffect(() => {
+    const take = () => {
+      const request = takeUpdateReview();
+      if (!request) return;
+      setView("browse");
+      if (request.kind === "package") {
+        setSheet({ key: request.key, mode: "update" });
+      } else {
+        // Every installed package, whatever the list was filtered to, so no update is hidden.
+        setSheet(null);
+        setKind(null);
+        setSourceId(null);
+        setQuery("");
+        setInstalledOnly(true);
+      }
+    };
+    take();
+    return onUpdateReview(take);
+  }, []);
 
   // What the boot-install step did, until dismissed (design §15.1).
   useEffect(() => {
@@ -221,16 +256,22 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }
     setNotice((current) => {
       if (!current) return current;
       const forYou = current.forYou.filter((item) => !(item.sourceId === key.sourceId && item.kind === key.kind && item.name === key.name));
-      return forYou.length + current.required.length > 0 ? { ...current, forYou } : null;
+      const next = { ...current, forYou };
+      return bootInstallNoticeIsEmpty(next) ? null : next;
     });
     void loadCatalog();
   };
 
   useEffect(() => {
-    void api.getSettings().then((settings) => {
-      setUpdateCheckEnabled(settings.marketplace?.updateCheckEnabled !== false);
-      setOfflineCacheEnabled(settings.marketplace?.offlineCacheEnabled !== false);
-    });
+    void api.getSettings().then(
+      (settings) => {
+        setUpdateCheckEnabled(settings.marketplace?.updateCheckEnabled !== false);
+        setOfflineCacheEnabled(settings.marketplace?.offlineCacheEnabled !== false);
+        setFlagsLoaded(true);
+      },
+      // The switches stay disabled, since their state is unknown; the failure says why.
+      (error: unknown) => setFlagsFailure(errorMessage(error)),
+    );
   }, [api]);
 
   const persistFlag = async (patch: { updateCheckEnabled?: boolean; offlineCacheEnabled?: boolean }) => {
@@ -325,6 +366,35 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }
                   ))}
                 </ul>
               </div>
+            )}
+            {notice.unmanaged.length > 0 && (
+              <ul className="space-y-0.5" data-testid="git-marketplace:boot-notice:unmanaged">
+                {notice.unmanaged.map((name) => (
+                  <li key={name}>{t("gitMarketplace.boot.unmanaged", { name })}</li>
+                ))}
+              </ul>
+            )}
+            {notice.lostGrants.length > 0 && (
+              <ul className="space-y-0.5" data-testid="git-marketplace:boot-notice:lost-grants">
+                {notice.lostGrants.map((item) => (
+                  <li key={item.plugin}>{t("gitMarketplace.boot.lostGrant", { name: item.plugin, keys: item.keys.join(", ") })}</li>
+                ))}
+              </ul>
+            )}
+            {notice.revoked.length > 0 && (
+              <ul className="space-y-0.5" data-testid="git-marketplace:boot-notice:revoked">
+                {notice.revoked.map((item) => (
+                  <li key={`${item.key.sourceId}:${item.key.kind}:${item.key.name}`}>
+                    {t(REVOKED_NOTICE_KEYS[item.outcome], {
+                      source: item.key.sourceId,
+                      name: item.key.name,
+                      version: item.version,
+                      reason: item.reason,
+                      message: item.message ?? "",
+                    })}
+                  </li>
+                ))}
+              </ul>
             )}
           </div>
         )}
@@ -438,28 +508,53 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }
 
       <SettingsSection data-settings-section="marketplace-maintenance" title={t("gitMarketplace.maintenance.title")} description={t("gitMarketplace.maintenance.description")}>
         <GitRuntimeCard api={api} />
+        {flagsFailure !== null && (
+          <p className="mt-4 text-sm text-destructive" data-testid="git-marketplace:maintenance:error">
+            {t("gitMarketplace.error.unavailable", { message: flagsFailure })}
+          </p>
+        )}
         <div className="mt-4 flex items-center justify-between gap-4">
           <span className="text-sm font-medium">{t("gitMarketplace.maintenance.updateCheck")}</span>
           <Switch
             checked={updateCheckEnabled}
+            disabled={!flagsLoaded}
             aria-label={t("gitMarketplace.maintenance.updateCheck")}
+            data-testid="git-marketplace:update-check"
             onCheckedChange={(checked) => {
               setUpdateCheckEnabled(checked);
               void persistFlag({ updateCheckEnabled: checked });
             }}
           />
         </div>
+        <p className="mt-1 text-xs text-muted-foreground" data-testid="git-marketplace:update-check:help">{t("gitMarketplace.maintenance.updateCheckHelp")}</p>
+        <EnvForcedNotice
+          settingsPath="marketplace.updateCheckEnabled"
+          forcedPaths={envForcedPaths}
+          messageKey="gitMarketplace.maintenance.updateCheckEnvForced"
+          testId="git-marketplace:update-check:forced"
+          className="mt-1"
+        />
         <div className="mt-3 flex items-center justify-between gap-4">
           <span className="text-sm font-medium">{t("gitMarketplace.maintenance.offlineCache")}</span>
           <Switch
             checked={offlineCacheEnabled}
+            disabled={!flagsLoaded}
             aria-label={t("gitMarketplace.maintenance.offlineCache")}
+            data-testid="git-marketplace:offline-cache"
             onCheckedChange={(checked) => {
               setOfflineCacheEnabled(checked);
               void persistFlag({ offlineCacheEnabled: checked });
             }}
           />
         </div>
+        <p className="mt-1 text-xs text-muted-foreground" data-testid="git-marketplace:offline-cache:help">{t("gitMarketplace.maintenance.offlineCacheHelp")}</p>
+        <EnvForcedNotice
+          settingsPath="marketplace.offlineCacheEnabled"
+          forcedPaths={envForcedPaths}
+          messageKey="gitMarketplace.maintenance.offlineCacheEnvForced"
+          testId="git-marketplace:offline-cache:forced"
+          className="mt-1"
+        />
       </SettingsSection>
 
       <AddSourceDialog

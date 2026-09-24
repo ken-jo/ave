@@ -24,8 +24,8 @@ import { MarketplaceError, isMarketplaceError, type MarketplaceErrorCode } from 
 import { BareRepo } from "../git/repo.js";
 import type { GitCommands, GitRemote } from "../git/run-git.js";
 import type { NetworkGate } from "../net/network-gate.js";
-import type { ResolvedSource, SourceRegistry, SourceState } from "./registry.js";
-import { SnapshotBuilder, type SourceSnapshot } from "./snapshot.js";
+import { readSourceState, type ResolvedSource, type SourceRegistry, type SourceState } from "./registry.js";
+import { pinnedArtifactSha256s, SnapshotBuilder, type SourceSnapshot } from "./snapshot.js";
 
 export interface SourceSyncOptions {
   registry: SourceRegistry;
@@ -297,20 +297,66 @@ export class SourceSyncer {
 
   /** The snapshot at the pin, or null before the first successful sync. Served offline as is (§7.5). */
   async readSnapshot(id: string): Promise<SourceSnapshot | null> {
-    const { pinnedCommit } = await this.options.registry.readState(id);
-    if (pinnedCommit === null) return null;
-    let text: string;
-    try {
-      text = await readFile(this.snapshotPath(id, pinnedCommit), "utf8");
-    } catch (error) {
-      // The next sync rebuilds a lost snapshot at the same pin.
-      if (isMissingPathError(error)) return null;
-      throw error;
-    }
-    const snapshot = parseStrictJson(text) as SourceSnapshot;
-    if (snapshot.sourceId !== id || snapshot.commit !== pinnedCommit) {
-      throw new Error(`snapshot ${pinnedCommit}.json of ${id} names ${snapshot.sourceId}@${snapshot.commit}`);
-    }
-    return snapshot;
+    return readPinnedSnapshot(this.options.root, id);
   }
+
+  /** The revocations at the pin, for the revocation feed ({@link readPinnedRevocations}). */
+  readRevocations(id: string): Promise<SourceSnapshot["revocations"]> {
+    return readPinnedRevocations(this.options.root, id);
+  }
+}
+
+/**
+ * The snapshot at a source's pin under `root` (`~/.ave/marketplaces`), or
+ * null before the first successful sync. Boot reads it before the syncer
+ * exists, to feed revocations to the plugin load gate.
+ */
+async function readPinnedSnapshot(root: string, id: string): Promise<SourceSnapshot | null> {
+  const { pinnedCommit } = await readSourceState(root, id);
+  if (pinnedCommit === null) return null;
+  const path = join(root, id, "snapshots", `${pinnedCommit}.json`);
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch (error) {
+    // The next sync rebuilds a lost snapshot at the same pin.
+    if (isMissingPathError(error)) return null;
+    throw error;
+  }
+  const snapshot = parseStrictJson(text) as SourceSnapshot;
+  if (snapshot.sourceId !== id || snapshot.commit !== pinnedCommit) {
+    throw new Error(`snapshot ${pinnedCommit}.json of ${id} names ${snapshot.sourceId}@${snapshot.commit}`);
+  }
+  return snapshot;
+}
+
+/**
+ * The revocations source `id` carries at its pin, for the revocation feed
+ * (design §10.4): none before the first sync. A pin whose snapshot file is
+ * gone throws, so the feed reports the source unreadable rather than
+ * dropping its revocations until a sync rebuilds the snapshot.
+ */
+export async function readPinnedRevocations(root: string, id: string): Promise<SourceSnapshot["revocations"]> {
+  const snapshot = await readPinnedSnapshot(root, id);
+  if (snapshot) return snapshot.revocations;
+  const { pinnedCommit } = await readSourceState(root, id);
+  if (pinnedCommit !== null) throw new Error(`snapshot ${pinnedCommit}.json of ${id} is missing`);
+  return [];
+}
+
+/**
+ * The artifact pins of source `id` at its current pin, for the host-secret
+ * grant (design §10.3 condition 2): `pins(plugin, version)` answers what
+ * `pinnedArtifactSha256s` reads from that snapshot. Each call reads the
+ * source's small state file and parses the snapshot again only after the pin
+ * moved, so a sync that changes the pins applies to the next secret read.
+ */
+export function pinnedArtifactReader(root: string, id: string): (plugin: string, version: string) => Promise<readonly string[]> {
+  let cached: SourceSnapshot | null = null;
+  return async (plugin, version) => {
+    const { pinnedCommit } = await readSourceState(root, id);
+    if (pinnedCommit === null) return [];
+    if (cached?.commit !== pinnedCommit) cached = await readPinnedSnapshot(root, id);
+    return cached ? pinnedArtifactSha256s(cached, plugin, version) : [];
+  };
 }

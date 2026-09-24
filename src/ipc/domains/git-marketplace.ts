@@ -14,10 +14,17 @@
  * Every answer is a `GitMarketplaceResult` envelope: a marketplace failure
  * carries its error code, a malformed request is `invalid-request`, and any
  * other failure is `unavailable` with its message.
+ *
+ * The work outside a request — the boot sync and installs, the periodic sync
+ * and update notices (design §7.3, §10.2) — starts from `startBackground`,
+ * which the desktop launch calls once the window has loaded. The boot status
+ * pill's Retry (`ave:bootstrap:retry`) runs that boot pass again.
  */
 import { app, ipcMain, session, type IpcMainInvokeEvent } from "electron";
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { notifyBootstrapStatus } from "../../boot/bootstrap-status.js";
+import { isDevModeUnlocked, isE2eTestRuntime } from "../../boot/dev-flags.js";
 import { emitEvent as emitHostEvent } from "../../boot/types.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { messages } from "../../i18n/messages/index.js";
@@ -25,13 +32,21 @@ import { createLogger } from "../../lib/logger.js";
 import { getBootInstallNotice, setBootInstallNotice, takePendingGitMarketplaceLink } from "../../main/app-state.js";
 import { ensureCorporateCa } from "../../main/corp-ca-runtime.js";
 import { readPersistedCorpCaConfigSync } from "../../main/persisted-corp-ca.js";
+import { startMarketplaceBackground, type MarketplaceBackground } from "../../marketplace/app/background.js";
+import { revocationRegistry } from "../../plugins/revocation/revocation-registry.js";
+import type { RevocationFeed } from "../../marketplace/app/revocations.js";
 import { McpInstaller, mcpInstallOrigins } from "../../marketplace/app/mcp-installer.js";
 import type { ContentInstallerPort, InstallerPorts, PluginInstallerPort, TokenStore } from "../../marketplace/app/ports.js";
 import { MarketplaceService } from "../../marketplace/app/service.js";
+import { AppliedDefaults } from "../../marketplace/boot-installs/applied.js";
+import { DEFAULT_INSTALLS } from "../../marketplace/boot-installs/default-installs.js";
 import { loadInstallationId } from "../../marketplace/catalog/installation-id.js";
 import { contentLedgerOrigins } from "../../marketplace/content/ledger.js";
 import { MarketplaceError } from "../../marketplace/errors.js";
 import { MarketplaceGit } from "../../marketplace/git/marketplace-git.js";
+import { migrateLegacyContent } from "../../marketplace/migration/legacy-content.js";
+import { migrateLegacyPlugins } from "../../marketplace/migration/legacy-plugins.js";
+import { clearKeptArtifacts, createArtifactCache, resolveKeepArtifacts } from "../../marketplace/resolve/artifact-cache.js";
 import { gitRuntimeRoot } from "../../marketplace/git/runtime-service.js";
 import { NetworkGate } from "../../marketplace/net/network-gate.js";
 import { EMPTY_MARKETPLACE_POLICY, loadMarketplacePolicy, type MarketplacePolicy } from "../../marketplace/sources/policy.js";
@@ -40,8 +55,8 @@ import { pluginRegistryOrigins, retainedCommitsFrom } from "../../marketplace/so
 import { SourceSyncer } from "../../marketplace/sources/sync.js";
 import { withPluginInstallLock } from "../../plugins/install-lifecycle.js";
 import { DEFAULT_MARKETPLACE_ARTIFACT_LIMITS } from "../../plugins/marketplace-artifact-limits.js";
-import { DisabledMarketplaceFetcher } from "../../plugins/marketplace.js";
 import { PluginArtifactStore } from "../../plugins/plugin-artifact-store.js";
+import { resolveUpdateCheckEnabled } from "../../plugins/update-detector.js";
 import { getAveAppVersion } from "../../shared/app-version.js";
 import { errorMessage } from "../../shared/error-message.js";
 import {
@@ -59,9 +74,9 @@ import {
   type UninstallRequest,
 } from "../../shared/git-marketplace.js";
 import { aveHome } from "../../shared/ave-home.js";
-import { auditUnauthorized, validateHostRendererSender } from "../gated.js";
+import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../gated.js";
 import type { IpcDeps } from "../types.js";
-import type { InstalledContentRuntime } from "./marketplace-content.js";
+import { legacyContentSettings, type InstalledContentRuntime } from "./marketplace-content.js";
 import { pluginLifecycleServices } from "./plugins.js";
 
 const log = createLogger("git-marketplace");
@@ -84,6 +99,10 @@ export type GitMarketplacePort = Pick<
   | "executeInstall"
   | "uninstall"
   | "previewDirectMcp"
+  | "updates"
+  | "applyBootInstalls"
+  | "enforceRevocations"
+  | "takeRevocationNotice"
 >;
 
 /** The settings secret each host's token is stored under (design §2.1). */
@@ -101,7 +120,7 @@ function settingsTokenStore(deps: IpcDeps): TokenStore {
   };
 }
 
-function pluginInstaller(deps: IpcDeps, policy: MarketplacePolicy): PluginInstallerPort {
+function pluginInstaller(deps: IpcDeps): PluginInstallerPort {
   const { pluginMarketplace, pluginRuntime } = deps;
   const lifecycle = pluginLifecycleServices(deps);
   return {
@@ -118,7 +137,6 @@ function pluginInstaller(deps: IpcDeps, policy: MarketplacePolicy): PluginInstal
         const result = await pluginMarketplace.installGitPlugin(plan, {
           stage: options.stage,
           switchSource: options.switchSource,
-          policy,
           ...(options.signal ? { signal: options.signal } : {}),
           activatePreparedArtifact: (prepared) => pluginRuntime.activatePreparedArtifact<string>(prepared),
         });
@@ -153,7 +171,7 @@ function contentInstaller(content: () => Promise<InstalledContentRuntime | null>
       })),
     install: async (staged, options) => {
       const loaded = await runtime();
-      const { action } = await loaded.store.install(staged, { switchSource: options.switchSource });
+      const { action } = await loaded.store.install(staged, options);
       await loaded.reload();
       return { action };
     },
@@ -166,23 +184,60 @@ function contentInstaller(content: () => Promise<InstalledContentRuntime | null>
   };
 }
 
+/** Kept plugin zips (design §7.5): `~/.ave/packages/artifacts`. */
+function keptArtifactsDir(home: string): string {
+  return join(home, "packages", "artifacts");
+}
+
+/** Keeping is off: the kept zips go now, not at the next install. */
+function dropKeptArtifactsIfOff(deps: IpcDeps, home: string): void {
+  if (resolveKeepArtifacts(deps.settingsService.get("marketplace").offlineCacheEnabled)) return;
+  void clearKeptArtifacts(keptArtifactsDir(home)).catch((error: unknown) => log.warn({ err: errorMessage(error) }, "kept artifacts could not be removed"));
+}
+
+/**
+ * Where the service's revocation feed lands (design §10.4): the registry the
+ * load gates answer from. A changed set reloads installed content, which
+ * applies the gate, and refreshes the catalog; plugins meet it at their next
+ * load.
+ */
+export function revocationSink(
+  content: () => Promise<InstalledContentRuntime | null>,
+  catalogChanged: () => void,
+): { apply(feed: RevocationFeed): Promise<void> } {
+  return {
+    apply: async (feed) => {
+      for (const item of feed.unreadable) log.error({ sourceId: item.sourceId, err: item.message }, "revocations: a source snapshot could not be read; its revocations wait for the next sync");
+      if (!revocationRegistry.replace(feed.rules)) return;
+      await (await content())?.reload();
+      catalogChanged();
+    },
+  };
+}
+
 /** Build the marketplace over `~/.ave`. Nothing touches the network until a request does. */
 async function createGitMarketplaceService(
   deps: IpcDeps,
   content: () => Promise<InstalledContentRuntime | null>,
-  home: string = aveHome(),
+  home: string,
+  onCatalogChanged: () => void,
 ): Promise<{ service: MarketplaceService; close: () => Promise<void> }> {
   if (!deps.pluginPaths) throw new Error("plugin paths are not wired");
+  const pluginPaths = deps.pluginPaths;
   const root = join(home, "marketplaces");
   const workRoot = join(root, ".work");
   // Previews and scratch exports live only as long as the process that made them.
   await rm(join(root, ".previews"), { recursive: true, force: true });
   await rm(workRoot, { recursive: true, force: true });
   await mkdir(workRoot, { recursive: true });
+  // Keeping may have been turned off while the app was not running (or by the environment).
+  dropKeptArtifactsIfOff(deps, home);
   const policyLoad = await loadMarketplacePolicy();
   if (!policyLoad.ok) log.warn({ err: policyLoad.error }, "marketplace policy unreadable; only the official source is reachable");
   const policy = policyLoad.ok ? policyLoad.policy : EMPTY_MARKETPLACE_POLICY;
-  const gate = new NetworkGate({ policy: policyLoad, allowLoopback: false });
+  // A marketplace on this machine (an author's own checkout served over HTTP,
+  // the E2E fixture) is reachable only in an unpackaged build with AVE_DEV=1.
+  const gate = new NetworkGate({ policy: policyLoad, allowLoopback: isDevModeUnlocked() });
   const tokens = settingsTokenStore(deps);
   // A token typed into the add dialog answers only that preview's prompts (design §9.3).
   const previewTokens = new Map<string, string>();
@@ -196,12 +251,11 @@ async function createGitMarketplaceService(
   });
   const registry = await SourceRegistry.open({ root, policy: policyLoad });
 
-  const broadcast = (channel: string, payload?: unknown) => {
-    for (const window of deps.getAppWindows?.() ?? [deps.getMainWindow()]) {
-      if (window && !window.isDestroyed()) window.webContents.send(channel, payload);
-    }
+  const broadcast = (channel: string, payload?: unknown) => broadcastTo(deps, channel, payload);
+  const catalogChanged = () => {
+    broadcast(CHANNELS.gitMarketplace.catalogChanged);
+    onCatalogChanged();
   };
-  const catalogChanged = () => broadcast(CHANNELS.gitMarketplace.catalogChanged);
 
   const packagesRoot = join(home, "packages");
   const mcpRecordsPath = join(packagesRoot, "mcp-installs.json");
@@ -209,14 +263,10 @@ async function createGitMarketplaceService(
   const artifacts = new PluginArtifactStore({
     installRoot: join(home, "mcp"),
     cacheRoot: join(home, "mcp", ".cache"),
-    // Nothing here downloads through the legacy catalog: git artifacts arrive as verified bytes.
-    fetcher: new DisabledMarketplaceFetcher(),
-    publicKeys: {},
-    tarballCacheBase: null,
     artifactLimits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,
   });
   const installers: InstallerPorts = {
-    plugin: pluginInstaller(deps, policy),
+    plugin: pluginInstaller(deps),
     content: contentInstaller(content, policy),
     mcp: new McpInstaller({
       recordsPath: mcpRecordsPath,
@@ -232,7 +282,7 @@ async function createGitMarketplaceService(
     runner: git.commands,
     root,
     retainedCommits: retainedCommitsFrom([
-      pluginRegistryOrigins(deps.pluginPaths.registryPath),
+      pluginRegistryOrigins(pluginPaths.registryPath),
       contentLedgerOrigins(join(packagesRoot, "ledger.json")),
       mcpInstallOrigins(mcpRecordsPath),
     ]),
@@ -256,12 +306,36 @@ async function createGitMarketplaceService(
       installationId,
     }),
     installers,
-    ladder: { fetchImpl: deps.singleHopNetworkFetch, zip: artifacts, limits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS },
+    ladder: {
+      fetchImpl: deps.singleHopNetworkFetch,
+      zip: artifacts,
+      limits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,
+      artifacts: createArtifactCache({
+        dir: keptArtifactsDir(home),
+        enabled: () => resolveKeepArtifacts(deps.settingsService.get("marketplace").offlineCacheEnabled),
+        maxFileBytes: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS.maxCompressedBytes,
+        log,
+      }),
+    },
     mcpLimits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,
     english: messages.en,
     onSyncProgress: (progress: SyncProgressView) => broadcast(CHANNELS.gitMarketplace.syncProgress, progress),
     onCatalogChanged: catalogChanged,
     onInstallProgress: (progress: InstallProgressView) => broadcast(CHANNELS.gitMarketplace.installProgress, progress),
+    log: { warn: (message) => log.warn(message) },
+    legacyMigration: {
+      markerPath: join(packagesRoot, "legacy-migration.json"),
+      plugins: (officialPlugin, applied) =>
+        migrateLegacyPlugins({
+          paths: pluginPaths,
+          officialPlugin,
+          applied,
+          now: () => new Date(),
+          log: { warn: (message) => log.warn(message) },
+        }),
+      content: (ports) => migrateLegacyContent({ ...ports, ...legacyContentSettings(deps), log: { warn: (message) => log.warn(message) } }),
+    },
+    revocations: revocationSink(content, catalogChanged),
   });
   return {
     service,
@@ -381,16 +455,37 @@ async function closeOnQuit(close: () => Promise<void>): Promise<void> {
   });
 }
 
+function broadcastTo(deps: IpcDeps, channel: string, payload?: unknown): void {
+  for (const window of deps.getAppWindows?.() ?? [deps.getMainWindow()]) {
+    if (window && !window.isDestroyed()) window.webContents.send(channel, payload);
+  }
+}
+
+export interface GitMarketplaceRegistration {
+  /**
+   * Start the boot pass and the periodic sync (desktop only, once the window
+   * has loaded). An isolated E2E run reports the pass skipped: it must not
+   * reach the official repository.
+   */
+  startBackground(): void;
+  /** `marketplace` settings were written: recompute the update list under the new notice and skip settings. */
+  settingsChanged(): void;
+}
+
 export function registerGitMarketplaceHandlers(
   deps: IpcDeps,
   content: () => Promise<InstalledContentRuntime | null>,
-  create: () => Promise<{ service: GitMarketplacePort; close: () => Promise<void> }> = () => createGitMarketplaceService(deps, content),
+  create?: () => Promise<{ service: GitMarketplacePort; close: () => Promise<void> }>,
   onBuilt: (close: () => Promise<void>) => Promise<void> = closeOnQuit,
-): void {
+  home: string = aveHome(),
+): GitMarketplaceRegistration {
+  let background: MarketplaceBackground | null = null;
+  // What is installed or offered changed: the update pill follows without waiting for the next sync.
+  const build = create ?? (() => createGitMarketplaceService(deps, content, home, () => void background?.recheck()));
   let ready: Promise<{ service: GitMarketplacePort; close: () => Promise<void> }> | null = null;
   const loaded = () => {
     ready ??= (async () => {
-      const built = await create();
+      const built = await build();
       try {
         await onBuilt(built.close);
       } catch (error) {
@@ -462,4 +557,52 @@ export function registerGitMarketplaceHandlers(
     setBootInstallNotice(null);
     return null;
   });
+
+  ipcMain.handle(CHANNELS.bootstrap.retry, async (event: IpcMainInvokeEvent) => {
+    if (!validateHostRendererSender(event)) {
+      auditUnauthorized(deps.auditLogger, CHANNELS.bootstrap.retry, event);
+      return UNAUTHORIZED_FRAME;
+    }
+    if (!background) return { ok: false, error: "the marketplace boot pass has not started" } as const;
+    await background.retryBootInstalls();
+    return { ok: true } as const;
+  });
+
+  return {
+    settingsChanged: () => {
+      void background?.settingsChanged();
+      dropKeptArtifactsIfOff(deps, home);
+    },
+    startBackground: () => {
+      if (background) return;
+      if (isE2eTestRuntime()) {
+        notifyBootstrapStatus(deps.getMainWindow(), { phase: "complete", installed: [], failed: [], skipped: { reason: "e2e-isolated" } });
+        return;
+      }
+      background = startMarketplaceBackground({
+        service: async () => (await loaded()).service,
+        appliedDefaults: () => AppliedDefaults.open(join(home, "packages", "default-installs.json")),
+        defaults: DEFAULT_INSTALLS,
+        settings: () => {
+          const marketplace = deps.settingsService.get("marketplace");
+          return {
+            updateNotices: resolveUpdateCheckEnabled(marketplace.updateCheckEnabled),
+            ...(marketplace.updateCheckIntervalMs !== undefined ? { updateCheckIntervalMs: marketplace.updateCheckIntervalMs } : {}),
+            skippedPluginUpdates: marketplace.skippedPluginUpdates,
+          };
+        },
+        publishStatus: (status) => notifyBootstrapStatus(deps.getMainWindow(), status),
+        publishNotice: (notice) => {
+          setBootInstallNotice(notice);
+          broadcastTo(deps, channels.bootInstallsApplied);
+        },
+        publishUpdates: (updates) => broadcastTo(deps, CHANNELS.marketplace.updatesAvailable, updates),
+        log: { info: (message) => log.info(message), warn: (message) => log.warn(message) },
+      });
+      const started = background;
+      void import("../../main/app-shutdown.js")
+        .then(({ registerShutdownHook }) => registerShutdownHook("git-marketplace-background", () => started.stop()))
+        .catch((error: unknown) => log.warn({ err: errorMessage(error) }, "marketplace background stop hook failed"));
+    },
+  };
 }

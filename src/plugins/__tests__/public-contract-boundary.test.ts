@@ -18,7 +18,6 @@ describe("Host-owned public plugin contract boundary", () => {
       "PluginRegistryEntryInstallSource",
       "PluginRegistryEntry",
       "PluginRegistry",
-      "PluginMarketplaceItem",
     ]) {
       expect(source).not.toMatch(
         new RegExp(`^export (?:interface|type|class|const|enum) ${declaration}\\b`,

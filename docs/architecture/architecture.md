@@ -613,7 +613,12 @@ conversation since deleted — is listed in its own right rather than dropped.
 ## Plugin Runtime
 
 Plugin installation and runtime behavior are governed by manifest declarations,
-capability checks, marketplace policy, and host APIs.
+capability checks, the machine's marketplace policy, and host APIs. Plugins and
+every other package kind arrive through git marketplaces (`src/marketplace/`):
+the app syncs each source's repository, pins the commit it read, and installs
+only the bytes that commit names (release or archive by sha256, or the pinned
+tree). The [multi-source git marketplace design](../design/multi-source-git-marketplace.md)
+owns those contracts.
 
 Key boundaries:
 
@@ -641,7 +646,16 @@ Key boundaries:
   turn, or invokes a tool, and undeclared or unusable plugins produce no
   proposal. The host validates both halves of the path against the tabs and
   sections its build ships and rejects the manifest otherwise;
-- marketplace metadata should not override local policy or managed-plugin rules.
+- no package locks or privileges itself. The manifest's retired
+  `installPolicy` and `publisher` are refused at install and ignored, with one
+  warning, on an installed manifest. Only the system policy file's
+  `marketplaces.requiredInstalls` keeps a package installed: an entry locks the
+  package installed from the source it names against uninstall and disable.
+  Host secrets beyond a plugin's own namespace come only from the app's
+  `HOST_SECRET_GRANTS` table, for an official plugin installed from the
+  artifact its snapshot pins; provider-preset keys are never granted and a
+  local development install never qualifies. Each source's
+  `policy/revocations.json` disables or uninstalls only that source's installs;
 - boot verifies each installed payload's receipt before parsing its manifest.
   Receipt hashing and manifest validation run with bounded concurrency, but
   successful results and failures are projected in registry order. A rejected

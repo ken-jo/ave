@@ -28,32 +28,32 @@ async function renderInBundle(bundleId: string, node: JSX.Element) {
 }
 
 describe("Theme snapshots — semantic-token components are bundle-invariant", () => {
-  it("Button (primary) renders identical markup in tokyo-night vs forest", async () => {
-    const dark = await renderInBundle("tokyo-night", <Button>Click</Button>);
-    expect(dark.rootBundle).toBe("tokyo-night");
-    dark.cleanup();
-    const light = await renderInBundle("forest", <Button>Click</Button>);
-    expect(light.rootBundle).toBe("forest");
-    expect(light.html).toBe(dark.html);
-    light.cleanup();
+  it("Button (primary) renders identical markup in gallery vs moonstone", async () => {
+    const first = await renderInBundle("gallery", <Button>Click</Button>);
+    expect(first.rootBundle).toBe("gallery");
+    first.cleanup();
+    const second = await renderInBundle("moonstone", <Button>Click</Button>);
+    expect(second.rootBundle).toBe("moonstone");
+    expect(second.html).toBe(first.html);
+    second.cleanup();
   });
 
   it("Button variants still emit bundle-agnostic class strings", async () => {
     for (const variant of ["default", "destructive", "outline", "secondary", "ghost"] as const) {
-      const dark = await renderInBundle("tokyo-night", <Button variant={variant}>x</Button>);
-      dark.cleanup();
-      const light = await renderInBundle("forest", <Button variant={variant}>x</Button>);
-      expect(light.html, `variant=${variant} differs between bundles`).toBe(dark.html);
-      light.cleanup();
+      const first = await renderInBundle("gallery", <Button variant={variant}>x</Button>);
+      first.cleanup();
+      const second = await renderInBundle("moonstone", <Button variant={variant}>x</Button>);
+      expect(second.html, `variant=${variant} differs between bundles`).toBe(first.html);
+      second.cleanup();
     }
   });
 
   it("Input is bundle-invariant", async () => {
-    const dark = await renderInBundle("tokyo-night", <Input placeholder="search" />);
-    dark.cleanup();
-    const light = await renderInBundle("forest", <Input placeholder="search" />);
-    expect(light.html).toBe(dark.html);
-    light.cleanup();
+    const first = await renderInBundle("gallery", <Input placeholder="search" />);
+    first.cleanup();
+    const second = await renderInBundle("moonstone", <Input placeholder="search" />);
+    expect(second.html).toBe(first.html);
+    second.cleanup();
   });
 
   it("Card composition is bundle-invariant", async () => {
@@ -63,15 +63,15 @@ describe("Theme snapshots — semantic-token components are bundle-invariant", (
         <CardContent>Body</CardContent>
       </Card>
     );
-    const dark = await renderInBundle("tokyo-night", tree);
-    dark.cleanup();
-    const light = await renderInBundle("forest", tree);
-    expect(light.html).toBe(dark.html);
-    light.cleanup();
+    const first = await renderInBundle("gallery", tree);
+    first.cleanup();
+    const second = await renderInBundle("moonstone", tree);
+    expect(second.html).toBe(first.html);
+    second.cleanup();
   });
 
   it("Button does NOT include any theme-literal Tailwind palette utilities", async () => {
-    const { html, cleanup } = await renderInBundle("tokyo-night", <Button>x</Button>);
+    const { html, cleanup } = await renderInBundle("gallery", <Button>x</Button>);
     expect(html).not.toMatch(/\bbg-slate-\d+\b/);
     expect(html).not.toMatch(/\bbg-zinc-\d+\b/);
     expect(html).not.toMatch(/\bbg-gray-\d+\b/);

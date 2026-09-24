@@ -34,7 +34,7 @@ import { instrumentEffectsByPath } from "../../../permissions/hostapi-effect-rec
 import { enforceMutatingEffects, gateMutatingEffect } from "../../../permissions/effect-enforcement.js";
 import { recordEffect } from "../../../permissions/effect-ledger.js";
 import { methodEffect } from "../../../permissions/effect-kind.js";
-import type { PluginAccessSpec, PluginRegistryEntry } from "../../../plugins/types.js";
+import type { PluginAccessSpec, PluginRegistryTrust } from "../../../plugins/types.js";
 import type { PluginHostApiIncarnation } from "../../../plugins/runtime/index.js";
 import {
   createPluginStorage,
@@ -52,7 +52,8 @@ import {
   CAPABILITY_EXTERNAL_AUTH_CONSUMER,
 } from "../../../plugins/capabilities.js";
 import { auditPluginEmitDenial } from "../../../plugins/emit-denial-audit.js";
-import { getDeclaredEmittedEvents } from "../../../plugins/runtime/manifest-validation.js";
+import { getDeclaredEmittedEvents, manifestDocumentSha256 } from "../../../plugins/runtime/manifest-validation.js";
+import { canonicalJSON } from "../../../plugins/secret-access/canonical-json.js";
 import { applyConfigDefaults } from "../../../plugins/config-schema.js";
 import { shouldRestartAfterPluginConfigWrite } from "../../../plugins/config-restart-policy.js";
 import { OVERLAY_V1, WORK_BOARD } from "../../../shared/ipc-channels.js";
@@ -78,8 +79,9 @@ import { t } from "../../../i18n/index.js";
 import { createLogger } from "../../../lib/logger.js";
 import { logPluginLifecycle, PluginPhase } from "../../../plugins/lifecycle-log.js";
 import { incrementHostSecretCounter, sanitizeKeyPrefix } from "../../../telemetry/host-secret-counters.js";
-import { canonicalJSON } from "../../../plugins/whitelist/canonical-json.js";
-import { runSecretGate } from "../../../plugins/whitelist/secret-gate.js";
+import type { HostSecretGrantEvidence } from "../../../plugins/secret-access/grants.js";
+import { runSecretGate } from "../../../plugins/secret-access/secret-gate.js";
+import type { GrantEvidenceReader } from "./grant-evidence.js";
 import {
   resolveApiKey as resolveApiKeyImpl,
   type ResolveApiKeyPurpose,
@@ -108,7 +110,6 @@ import type {
   WorkProposalResult,
 } from "../../../shared/work-board-types.js";
 import type { LateBindingRefs } from "../plugin-runtime.js";
-import { sha256Hex } from "../../../lib/hex-digest-equal.js";
 import { proposalId } from "../../../work-board/board-file.js";
 import { errorMessage } from "../../../shared/error-message.js";
 
@@ -228,7 +229,9 @@ export interface CreateHostApiFactoryDeps {
   lateBinding: LateBindingRefs;
   getRegistryEntry: (
     pluginId: string,
-  ) => Pick<PluginRegistryEntry, "installSource" | "manifestSha256"> | undefined;
+  ) => PluginRegistryTrust | undefined;
+  /** Re-read the registry into `getRegistryEntry` when the file changed since the last read. */
+  refreshRegistryEntryCacheIfChanged: () => Promise<void>;
   hostClassifiesRiskEnabled: () => boolean;
   pluginShutdownHandlers: Array<{ pluginId: string; handler: () => void | Promise<void> }>;
   readAppPreference: (pluginId: string, key: string) => unknown;
@@ -289,6 +292,8 @@ export interface CreateHostApiFactoryDeps {
    * to degrade around.
    */
   getWorkBoardStore: () => WorkBoardStore | undefined;
+  /** What a host-secret grant reads from disk (design §10.3). */
+  grantEvidence: GrantEvidenceReader;
 }
 
 /**
@@ -304,7 +309,7 @@ export function createHostApiFactory(
   incarnation: PluginHostApiIncarnation,
   installPluginId: string | null,
   candidateRegistryEntry?: Readonly<
-    Pick<PluginRegistryEntry, "installSource" | "manifestSha256">
+    PluginRegistryTrust
   >,
   candidateApprovedPluginAccess?: PluginAccessSpec | null,
 ) => PluginHostApi {
@@ -312,6 +317,7 @@ export function createHostApiFactory(
     getPluginRuntime,
     lateBinding,
     getRegistryEntry,
+    refreshRegistryEntryCacheIfChanged,
     hostClassifiesRiskEnabled,
     pluginShutdownHandlers,
     readAppPreference,
@@ -331,6 +337,7 @@ export function createHostApiFactory(
     permissionManager,
     routinesStore,
     getWorkBoardStore,
+    grantEvidence,
   } = deps;
 
   /**
@@ -359,7 +366,7 @@ export function createHostApiFactory(
     incarnation: PluginHostApiIncarnation,
     installPluginId: string | null,
     candidateRegistryEntry?: Readonly<
-      Pick<PluginRegistryEntry, "installSource" | "manifestSha256">
+      PluginRegistryTrust
     >,
     candidateApprovedPluginAccess?: PluginAccessSpec | null,
   ): PluginHostApi => {
@@ -375,11 +382,31 @@ export function createHostApiFactory(
     if (installPluginId === undefined) {
       throw new Error(`HostApi install provenance missing: ${pluginId}`);
     }
-    const getCurrentRegistryEntry = () =>
-      candidateRegistryEntry
-      ?? (installPluginId === null
-        ? undefined
-        : getRegistryEntry(installPluginId));
+    // The host-owned entry a host-secret grant trusts: the registry's, re-read
+    // first if another writer changed the file. A candidate answers with its
+    // own entry until the registry records the same install (source, manifest
+    // and, when the candidate names one, origin); after that the registry's
+    // wins, so a later write (the §16.3 migration binding an origin) reaches
+    // this incarnation without a restart. A candidate from another source never
+    // borrows the registry's origin.
+    const readRegistryEntry = async (): Promise<PluginRegistryTrust | undefined> => {
+      if (installPluginId === null) return candidateRegistryEntry;
+      await refreshRegistryEntryCacheIfChanged();
+      const committed = getRegistryEntry(installPluginId);
+      if (!candidateRegistryEntry) return committed;
+      return committed && recordsCandidate(committed, candidateRegistryEntry) ? committed : candidateRegistryEntry;
+    };
+    // A legacy install's receipt is verified once per incarnation: an update
+    // installs through the ladder and starts a new one.
+    let legacyReceiptSha256: string | null | undefined;
+    const hostSecretGrantEvidence: HostSecretGrantEvidence = {
+      officialPins: (plugin, version) => grantEvidence.officialPins(plugin, version),
+      receiptArtifactSha256: async () => {
+        if (installPluginId === null) return null;
+        if (legacyReceiptSha256 === undefined) legacyReceiptSha256 = await grantEvidence.receiptArtifactSha256(installPluginId);
+        return legacyReceiptSha256;
+      },
+    };
     const hostIncarnation = incarnation;
     const hostEffects = hostIncarnation.generationScope;
     const registerOwnedDisposer = (dispose: () => void): (() => void) => {
@@ -481,21 +508,15 @@ export function createHostApiFactory(
         },
       };
     };
-      // #893 Stage 2 — manifest sha256 pin (Tier-3 whitelist check). The
-      // whitelist registry stores `approvedManifestSha256` per pluginId; we
-      // compare against the canonicalized JSON of the running manifest so a
-      // post-install manifest swap (different tools / wider hostSecrets.read)
-      // forces a fresh whitelist roll.
-      //
-      // The digest MUST come from a recursive canonical serializer
-      // (`canonicalJSON` — RFC 8785 JCS-style: sort keys at every depth,
-      // preserve array element order). The replacer-array form
-      // `JSON.stringify(manifest, Object.keys(manifest).sort())` does NOT
-      // work here: it filters only top-level keys and emits every nested
-      // object as `{}`, so distinct manifests collapse onto near-identical
-      // digests and the Tier-3 pin stops discriminating.
-      const canonical = canonicalJSON(manifest);
-      const manifestSha256 = sha256Hex(canonical);
+      // Manifest sha256 pin (design §10.3 condition 2). The host-secret gate
+      // compares the running manifest with the pin the registry recorded at
+      // install, so a post-install manifest swap (different tools / wider
+      // hostSecrets.read) loses every grant. Installers pin the canonical JSON
+      // of the `plugin.json` DOCUMENT; the flat projection this factory
+      // receives hashes differently, so the digest is the one recorded when
+      // the document was parsed. A manifest not read from a document (null)
+      // matches no pin.
+      const manifestSha256 = manifestDocumentSha256(manifest);
       // Structural effect observability — wrap the whole hostApi so EVERY method
       // (and any future-added one) auto-records its host-observed effect on the
       // ambient per-invocation ledger, looked up by method PATH in the
@@ -738,19 +759,8 @@ export function createHostApiFactory(
             manifestSha256,
             settingsService,
             auditLogger: bootAuditLogger,
-            // #958/#959 — feed the registry-anchored installSource and
-            // install-time manifest SHA so admin bypasses skip only the
-            // host-secret ACL, never the manifest tamper check.
-            ...((): {
-              registryInstallSource?: "admin" | "user" | "local-dev";
-              registryManifestSha256?: string;
-            } => {
-              const entry = getCurrentRegistryEntry();
-              return {
-                ...(entry?.installSource !== undefined ? { registryInstallSource: entry.installSource } : {}),
-                ...(entry?.manifestSha256 !== undefined ? { registryManifestSha256: entry.manifestSha256 } : {}),
-              };
-            })(),
+            readRegistryEntry,
+            grantEvidence: hostSecretGrantEvidence,
             // Bind the permission-manager revoke signal
             // accessor so an in-flight bearer aborts when permissions
             // change for this plugin. When permissionManager is not wired
@@ -773,7 +783,7 @@ export function createHostApiFactory(
       },
       getSecret: async (key) => {
         // #893 Stage 2 — the four-tier secret access gate. The DECISION lives
-        // in `runSecretGate` (src/plugins/whitelist/secret-gate.ts), the one
+        // in `runSecretGate` (src/plugins/secret-access/secret-gate.ts), the one
         // authority `resolveApiKey` above also calls; everything below is this
         // API's own audit vocabulary, counters, and `string | null` shape.
         //
@@ -798,20 +808,15 @@ export function createHostApiFactory(
             });
           } catch { /* audit must not break host */ }
         };
-        // #958/#959 security — registry-recorded `installSource` is the only
-        // source that can activate the admin secret-access bypass. The registry
-        // file is host-managed; `plugin.json` is inside the plugin's writable
-        // surface, so a malicious post-install patch could flip
-        // `installPolicy:"admin"` and inherit the Tier-3 bypass if
-        // manifest-only metadata were trusted here.
-        const registryEntry = getCurrentRegistryEntry();
-        const outcome = runSecretGate({
+        // The grant reads the host-owned registry entry, never `plugin.json`,
+        // which sits inside the plugin's writable surface.
+        const outcome = await runSecretGate({
           pluginId,
           key,
           allowlist: manifest.hostSecrets?.read ?? [],
           manifestSha256,
-          installedManifestSha256: registryEntry?.manifestSha256,
-          installPolicy: registryEntry?.installSource === "admin" ? "admin" : "user",
+          readRegistryEntry,
+          grantEvidence: hostSecretGrantEvidence,
           readSettings: () => {
             const llm = settingsService.get("llm");
             return {
@@ -849,19 +854,6 @@ export function createHostApiFactory(
           audit("info", `pluginSecret_read key=${auditKey}`);
           incrementHostSecretCounter("hostSecret_read", pluginId, keyPrefix);
           return value;
-        }
-        // Admin-bypass audit + counter. Emit BEFORE the host-secret read
-        // line so operators can pivot on
-        // `policy=admin manifest-allowlist-bypassed` in the audit log. The
-        // dedicated `hostSecret_admin_bypass` counter is on top of the regular
-        // `hostSecret_read` increment below so totals stay comparable across
-        // bypass and non-bypass reads.
-        if (outcome.via === "admin-bypass") {
-          audit(
-            "info",
-            `policy=admin manifest-allowlist-bypassed key=${auditKey} source=registry.installSource`,
-          );
-          incrementHostSecretCounter("hostSecret_admin_bypass", pluginId, keyPrefix);
         }
         audit("info", `hostSecret_read key=${auditKey}`);
         incrementHostSecretCounter("hostSecret_read", pluginId, keyPrefix);
@@ -1706,4 +1698,11 @@ export function createHostApiFactory(
         },
       ));
   };
+}
+
+function recordsCandidate(committed: Readonly<PluginRegistryTrust>, candidate: Readonly<PluginRegistryTrust>): boolean {
+  if (committed.installSource !== candidate.installSource) return false;
+  if (committed.manifestSha256 !== candidate.manifestSha256) return false;
+  if (!candidate.origin) return true;
+  return canonicalJSON(committed.origin ?? null) === canonicalJSON(candidate.origin);
 }

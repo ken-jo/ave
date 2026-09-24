@@ -1,8 +1,9 @@
 # Multi-source Git Marketplace — Architecture
 
-> Status: **Proposal — accepted direction, not implemented** (owner decisions
-> 2026-09-23). Supersedes the single-server marketplace model described by
-> `src/plugins/cloud-marketplace-fetcher.ts` and the signing plans in
+> Status: **Implemented** (owner decisions 2026-09-23; the app switched to
+> the git marketplace on 2026-09-25). Supersedes the single-server marketplace
+> model of the removed `src/plugins/cloud-marketplace-fetcher.ts` and the
+> signing plans in
 > [keyless-marketplace-signing](../../blueprints/keyless-marketplace-signing.md)
 > and [signed-admission-catalog](../../blueprints/signed-admission-catalog.md).
 >
@@ -342,18 +343,18 @@ blueprint:
 
 ## 12. Alternatives considered
 
-- **Keep one server, add git as a second backend.** Rejected by D1/D9: it keeps
-  the operational surface this change exists to remove.
+- **Keep one server, add git as a second backend.** Rejected by decisions D1 and D9,
+  because it keeps the operational surface this change exists to remove.
 - **Signatures for custom sources (TOFU keys).** Rejected by D4.
-- **Keep admin packages, declared by the official catalog.** Rejected by D10:
-  under D4 a merge to the official repository would install, lock and grant
+- **Keep admin packages, declared by the official catalog.** Rejected by decision D10,
+  because under D4 a merge to the official repository would install, lock and grant
   secrets in one step.
 - **No default installs at all.** Rejected: an empty first run, and
   organizations could not require internal plugins.
 - **A cross-source kill switch on the service endpoint.** Rejected by the
   owner: the service endpoint stays limited to announcements.
-- **Pure-JS git.** Rejected by D7: SSH and OS credential helpers matter for
-  internal git hosts.
+- **Pure-JS git.** Rejected by decision D7, because SSH and OS credential
+  helpers matter for internal git hosts.
 - **Build plugins on the user's machine.** Rejected: it runs arbitrary
   lifecycle scripts at install and needs a toolchain; no surveyed ecosystem
   does it.

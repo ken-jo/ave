@@ -11,29 +11,29 @@
  */
 import { describe, it, expect } from "vitest";
 import { THEME_CONTRAST_RULES, themeTokenProblems } from "../../../../../shared/theme-tokens.js";
-import { BUNDLE_IDS, loadThemeBundle } from "../index.js";
+import { BUNDLE_IDS, findBundle } from "../index.js";
 
 describe("Theme contrast (runtime rules)", () => {
   for (const bundleId of BUNDLE_IDS) {
     for (const rule of THEME_CONTRAST_RULES) {
-      it(`${bundleId}: ${rule.label} ≥ ${rule.minimum}`, async () => {
-        const bundle = await loadThemeBundle(bundleId);
+      it(`${bundleId}: ${rule.label} ≥ ${rule.minimum}`, () => {
+        const bundle = findBundle(bundleId);
         expect(bundle).toBeDefined();
         const ratio = rule.ratio(bundle!.tokens);
         expect(ratio, `${bundle!.id} ${rule.label} ratio ${ratio.toFixed(2)}`).toBeGreaterThanOrEqual(rule.minimum);
       });
     }
 
-    it(`${bundleId}: passes the installer's token check`, async () => {
-      const bundle = await loadThemeBundle(bundleId);
+    it(`${bundleId}: passes the installer's token check`, () => {
+      const bundle = findBundle(bundleId);
       expect(themeTokenProblems(bundle!.tokens)).toEqual([]);
     });
   }
 });
 
 describe("themeTokenProblems", () => {
-  it("refuses missing, unknown and malformed tokens before measuring contrast", async () => {
-    const bundle = await loadThemeBundle("moonstone");
+  it("refuses missing, unknown and malformed tokens before measuring contrast", () => {
+    const bundle = findBundle("moonstone");
     const { background: _dropped, ...missing } = bundle!.tokens;
     expect(themeTokenProblems(missing)).toEqual(["missing token background"]);
     expect(themeTokenProblems({ ...bundle!.tokens, extra: "0 0% 0%" })).toEqual(["unknown token extra"]);
@@ -42,8 +42,8 @@ describe("themeTokenProblems", () => {
     expect(themeTokenProblems([])).toEqual(["tokens must be an object"]);
   });
 
-  it("names every contrast rule a token set fails", async () => {
-    const bundle = await loadThemeBundle("moonstone");
+  it("names every contrast rule a token set fails", () => {
+    const bundle = findBundle("moonstone");
     const problems = themeTokenProblems({ ...bundle!.tokens, foreground: bundle!.tokens.background });
     expect(problems[0]).toMatch(/^background ↔ foreground contrast 1\.00 is under 4\.5$/u);
     expect(problems.some((problem) => problem.startsWith("foreground over the success diff wash"))).toBe(true);
