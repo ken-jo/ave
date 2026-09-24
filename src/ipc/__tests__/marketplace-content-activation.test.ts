@@ -221,6 +221,14 @@ describe("createContentActivation", () => {
     expect(sent).toContain("ave:settings:updated");
   });
 
+  it("adds the selected theme, and its old followSystem counterpart, to the legacy themes (§16.3)", async () => {
+    await settingsService.patch({ marketplace: { installedThemeBundleIds: ["nord"] }, appearance: { schemaVersion: 2, bundleId: "violet-dark", followSystem: true } });
+    expect(legacyContentSettings(deps).activations.themes).toEqual(["nord", "violet-dark", "violet-light"]);
+    // A compiled bundle is not a package.
+    await settingsService.patch({ appearance: { schemaVersion: 2, bundleId: "gallery", followSystem: false } });
+    expect(legacyContentSettings(deps).activations.themes).toEqual(["nord"]);
+  });
+
   it("adopts a legacy activation the settings hold without rewriting it, and activates one they do not", async () => {
     const activation = createContentActivation(deps);
     // A vendor the server marketplace unlocked, with the user's own model, address and key.

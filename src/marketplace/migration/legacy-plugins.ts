@@ -10,11 +10,14 @@
  *     `artifactSha256` is a pin the official index lists for the installed
  *     version; otherwise the report names the keys it lost.
  *   - `installSource: "admin"` becomes `user`. A bound one is recorded as an
- *     applied default install, so nothing reinstalls or removes it; one the
- *     official snapshot does not list is named as no longer managed.
+ *     applied default install, so nothing reinstalls or removes it.
+ *   - An entry the official snapshot does not list is named as no longer
+ *     managed (and, if an administrator installed it, unlocked).
  *
- * Entries that already carry an origin, local-dev entries and entries in the
- * middle of an update are left alone, so a second run changes nothing.
+ * Entries that already carry an origin and local-dev entries are left alone,
+ * so a second run changes nothing. An entry whose interrupted update boot
+ * recovery could not resolve is reported as failed, so the migration runs
+ * again once it is.
  */
 import { readFile } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -47,7 +50,7 @@ export interface LegacyPluginMigrationInput {
 
 export interface LegacyPluginReport {
   bound: string[];
-  /** Former admin installs the official snapshot does not list: unlocked, no updates. */
+  /** Entries the official snapshot does not list: no updates (a former admin install is unlocked too). */
   unmanaged: string[];
   /** Granted plugins whose receipt matches no official pin: the keys they no longer read. */
   lostGrants: Array<{ plugin: string; keys: string[] }>;
@@ -55,9 +58,13 @@ export interface LegacyPluginReport {
   failed: Array<{ plugin: string; message: string }>;
 }
 
-type Step =
-  | { id: string; manifestPath: string; bind: PluginRegistryEntryOrigin; wasAdmin: boolean }
-  | { id: string; manifestPath: string; bind: null; wasAdmin: true };
+interface Step {
+  id: string;
+  manifestPath: string;
+  /** Null: the official snapshot does not list it. */
+  bind: PluginRegistryEntryOrigin | null;
+  wasAdmin: boolean;
+}
 
 function migratable(entry: PluginRegistryEntry): boolean {
   return entry.origin === undefined && entry.installSource !== "local-dev" && entry.pendingUpdate === undefined;
@@ -73,10 +80,15 @@ export async function migrateLegacyPlugins(input: LegacyPluginMigrationInput): P
   const report: LegacyPluginReport = { bound: [], unmanaged: [], lostGrants: [], failed: [] };
   const registry = await readPluginRegistry(input.paths.registryPath);
   const steps: Step[] = [];
-  for (const entry of registry.plugins.filter(migratable)) {
+  for (const entry of registry.plugins) {
+    if (entry.origin === undefined && entry.installSource !== "local-dev" && entry.pendingUpdate !== undefined) {
+      report.failed.push({ plugin: entry.id, message: "an interrupted update is still pending recovery" });
+      continue;
+    }
+    if (!migratable(entry)) continue;
     const official = input.officialPlugin(entry.id);
     if (!official) {
-      if (entry.installSource === "admin") steps.push({ id: entry.id, manifestPath: entry.manifestPath, bind: null, wasAdmin: true });
+      steps.push({ id: entry.id, manifestPath: entry.manifestPath, bind: null, wasAdmin: entry.installSource === "admin" });
       continue;
     }
     try {
@@ -126,7 +138,14 @@ export async function migrateLegacyPlugins(input: LegacyPluginMigrationInput): P
   for (const step of applied) {
     if (step.bind) {
       report.bound.push(step.id);
-      if (step.wasAdmin) await input.applied.record({ kind: "plugin", name: step.id, source: "ave" }, "migrated", input.now());
+      if (step.wasAdmin) {
+        // The registry already changed, so a throw here would lose this run's
+        // notice. A default install left unrecorded is recorded by the boot
+        // installs, which find it installed from ave.
+        await input.applied.record({ kind: "plugin", name: step.id, source: "ave" }, "migrated", input.now()).catch((error: unknown) => {
+          input.log.warn(`legacy plugin ${step.id}: recording it as an applied default failed: ${errorMessage(error)}`);
+        });
+      }
     } else {
       report.unmanaged.push(step.id);
     }

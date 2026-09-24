@@ -110,7 +110,7 @@ describe("migrateLegacyPlugins", () => {
     expect(report.lostGrants.map((item) => item.plugin)).toEqual(["meeting"]);
   });
 
-  it("turns a former admin install into a user install recorded as an applied default, and unlocks one no source lists", async () => {
+  it("turns a former admin install into a user install recorded as an applied default, and names every entry no source lists", async () => {
     registry([
       { id: "calendar", manifestPath: await plugin("calendar", "1.0.0", OTHER), installSource: "admin" },
       { id: "orion", manifestPath: await plugin("orion", "2.0.0", OTHER), installSource: "admin" },
@@ -119,17 +119,17 @@ describe("migrateLegacyPlugins", () => {
 
     const report = await run();
 
-    expect(report).toEqual({ bound: ["calendar"], unmanaged: ["orion"], lostGrants: [], failed: [] });
+    expect(report).toEqual({ bound: ["calendar"], unmanaged: ["orion", "notes"], lostGrants: [], failed: [] });
     const entries = new Map(readRegistry().plugins.map((entry) => [entry.id, entry]));
     expect(entries.get("calendar")).toMatchObject({ installSource: "user", origin: { sourceId: "ave", rung: "legacy" } });
     expect(entries.get("orion")).toMatchObject({ installSource: "user" });
     expect(entries.get("orion")!.origin).toBeUndefined();
-    // A user install no source lists is left as it was: nothing to unlock or name.
+    // A user install no source lists is named too (it gets no updates now), and left as it was.
     expect(entries.get("notes")).toEqual({ id: "notes", manifestPath: join(paths.pluginsRoot, "notes", "plugin.json"), installSource: "user" });
     expect(applied.list()).toEqual([{ kind: "plugin", name: "calendar", source: "ave", result: "migrated", at: AT.toISOString() }]);
   });
 
-  it("leaves bound, local-dev and mid-update entries alone, so a second run changes nothing", async () => {
+  it("leaves bound and local-dev entries alone, so a second run changes nothing", async () => {
     const bound = { sourceId: "ave", sourceOrigin: "official" as const, commit: COMMIT, packagePath: "plugins/meeting", version: "0.6.0", rung: "release" as const, artifactSha256: SERVED, installedAt: "2026-09-01T00:00:00.000Z" };
     registry([
       { id: "meeting", manifestPath: await plugin("meeting", "0.6.0", SERVED), installSource: "user", origin: bound },
@@ -139,6 +139,31 @@ describe("migrateLegacyPlugins", () => {
 
     expect(await run()).toEqual({ bound: [], unmanaged: [], lostGrants: [], failed: [] });
     expect(readFileSync(paths.registryPath, "utf8")).toBe(before);
+  });
+
+  it("keeps its report when recording an applied default fails, since the registry already changed", async () => {
+    registry([{ id: "calendar", manifestPath: await plugin("calendar", "1.0.0", OTHER), installSource: "admin" }]);
+    vi.spyOn(applied, "record").mockRejectedValueOnce(new Error("disk full"));
+
+    const report = await run();
+
+    expect(report).toEqual({ bound: ["calendar"], unmanaged: [], lostGrants: [], failed: [] });
+    expect(warn).toHaveBeenCalledWith("legacy plugin calendar: recording it as an applied default failed: disk full");
+  });
+
+  it("reports an entry whose interrupted update is still pending, so the migration runs again", async () => {
+    const pendingUpdate = { kind: "marketplace" as const, previousManifestFileSha256: null, previousReceiptRaw: null };
+    registry([
+      { id: "calendar", manifestPath: await plugin("calendar", "1.0.0", OTHER), installSource: "admin", pendingUpdate },
+      { id: "meeting", manifestPath: await plugin("meeting", "0.5.0", SERVED), installSource: "user" },
+    ]);
+    const before = readRegistry().plugins.find((entry) => entry.id === "calendar");
+
+    const report = await run();
+
+    expect(report.failed).toEqual([{ plugin: "calendar", message: "an interrupted update is still pending recovery" }]);
+    expect(report.bound).toEqual(["meeting"]);
+    expect(readRegistry().plugins.find((entry) => entry.id === "calendar")).toEqual(before);
   });
 
   it("reports an entry whose plugin.json cannot be read, and migrates the rest", async () => {

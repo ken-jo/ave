@@ -5,7 +5,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { MarketplaceError } from "../../errors.js";
-import { migrateLegacyContent, type LegacyActivations, type LegacyContentKind } from "../legacy-content.js";
+import { legacySelectedThemes, migrateLegacyContent, type LegacyActivations, type LegacyContentKind } from "../legacy-content.js";
 
 const OFFICIAL = new Set(["theme:aurora", "theme:nebula", "language:korean", "provider:openrouter", "provider:nous-research"]);
 
@@ -25,6 +25,17 @@ function harness(activations: LegacyActivations, options: { installed?: string[]
     });
   return { run, adopt, release, warn };
 }
+
+describe("legacySelectedThemes", () => {
+  it("names the selected theme when it is a package, with the violet counterpart the old followSystem alternated", () => {
+    expect(legacySelectedThemes({ bundleId: "tokyo-night" })).toEqual(["tokyo-night"]);
+    expect(legacySelectedThemes({ bundleId: "violet-light", followSystem: false })).toEqual(["violet-light"]);
+    expect(legacySelectedThemes({ bundleId: "violet-light", followSystem: true })).toEqual(["violet-light", "violet-dark"]);
+    expect(legacySelectedThemes({ bundleId: "tokyo-night", followSystem: true })).toEqual(["tokyo-night"]);
+    expect(legacySelectedThemes({ bundleId: "moonstone" })).toEqual([]);
+    expect(legacySelectedThemes({ bundleId: "Not_A_Theme" })).toEqual([]);
+  });
+});
 
 describe("migrateLegacyContent", () => {
   it("adopts every legacy activation from the official source and drops the theme and language list entries", async () => {
@@ -98,5 +109,26 @@ describe("migrateLegacyContent", () => {
     const { run, release } = harness({ themes: [], locales: [], providers: [] });
     expect(await run()).toEqual({ adopted: [], failed: [] });
     expect(release).not.toHaveBeenCalled();
+  });
+
+  it("adopts a theme named twice once", async () => {
+    const { run, adopt } = harness({ themes: ["aurora", "aurora"], locales: [], providers: [] });
+    await run();
+    expect(adopt).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports the ids it could not drop from the legacy lists, so the next run drops them", async () => {
+    const { run, release, warn } = harness({ themes: ["aurora"], locales: ["ko"], providers: [] });
+    release.mockRejectedValueOnce(new Error("settings.json is read-only"));
+
+    const report = await run();
+
+    expect(report.adopted.map((key) => key.name)).toEqual(["aurora", "korean"]);
+    const message = "dropping it from the legacy list failed: settings.json is read-only";
+    expect(report.failed).toEqual([
+      { key: { source: "ave", kind: "theme", name: "aurora" }, message },
+      { key: { source: "ave", kind: "language", name: "korean" }, message },
+    ]);
+    expect(warn).toHaveBeenCalledWith(`legacy content: ${message}`);
   });
 });

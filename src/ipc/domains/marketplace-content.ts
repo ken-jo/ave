@@ -22,7 +22,7 @@ import { ContentStore, type ContentActivation } from "../../marketplace/content/
 import type { ParsedContent } from "../../marketplace/content/kinds.js";
 import type { LedgerEntry } from "../../marketplace/content/ledger.js";
 import { MarketplaceError } from "../../marketplace/errors.js";
-import type { LegacyActivations } from "../../marketplace/migration/legacy-content.js";
+import { legacySelectedThemes, type LegacyActivations } from "../../marketplace/migration/legacy-content.js";
 import { installContentAssetProtocolHandler } from "../../main/content-asset-protocol.js";
 import { applyBootLocale } from "../../boot/services.js";
 import { revocationRegistry } from "../../plugins/revocation/revocation-registry.js";
@@ -56,7 +56,7 @@ export function legacyContentSettings(deps: IpcDeps): {
   const marketplace = settings.get("marketplace");
   return {
     activations: {
-      themes: [...marketplace.installedThemeBundleIds],
+      themes: [...marketplace.installedThemeBundleIds, ...legacySelectedThemes(settings.get("appearance"))],
       locales: [...marketplace.installedLanguagePacks],
       providers: [...marketplace.installedProviderIds, ...marketplace.installedProviderPresets.map((preset) => preset.providerId)],
     },
