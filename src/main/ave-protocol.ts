@@ -10,7 +10,7 @@ export function findAveProtocolUri(argv: readonly string[]): string | null {
 const GIT_MARKETPLACE_ADD_URL_MAX = 2048;
 
 /**
- * Git marketplace deep links (blueprint 4.6):
+ * Git marketplace deep links:
  * `ave://install/<kind>/<name>@<source>`, `ave://uninstall/<kind>/<name>@<source>`
  * and `ave://marketplace/add?url=<address>`. They replace the server-era
  * `ave://install/<slug>` forms (design §16.2), which parse as nothing. The

@@ -1,5 +1,5 @@
 /**
- * Content package store (design §2, §5.4; blueprint 3.1).
+ * Content package store (design §2, §5.4).
  *
  * Staging reads the package directory at the version commit, holds every
  * file to the kind's rules and parses the entry files. Installing writes the

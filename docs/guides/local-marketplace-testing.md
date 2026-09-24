@@ -1,7 +1,7 @@
 # Testing A Marketplace Locally
 
 Status: **Active** (2026-09-25). Replaces the local server-marketplace loop,
-removed with the server stack in phase 6 of the
+removed with the server stack by the switch to the
 [multi-source git marketplace](../blueprints/multi-source-git-marketplace.md).
 
 Korean mirror: [docs/ko mirror](../ko/guides/local-marketplace-testing.md).

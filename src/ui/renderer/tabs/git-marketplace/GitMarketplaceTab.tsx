@@ -191,7 +191,7 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }
     };
   }, [market, loadSources]);
 
-  // A deep link opens the confirming UI only: the package sheet or the Add dialog (blueprint 4.6).
+  // A deep link opens the confirming UI only: the package sheet or the Add dialog.
   useEffect(() => {
     const take = () =>
       void market.takeDeepLink().then((result) => {

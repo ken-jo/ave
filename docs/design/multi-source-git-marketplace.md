@@ -1,7 +1,7 @@
 # Multi-source Git Marketplace — Design Specification
 
-> Status: **Implemented through phase 6** (2026-09-25); phase 7, the release and
-> the server's retirement, remains. Where the shipped code differs from this
+> Status: **Implemented** (2026-09-25); the public release and the server's
+> retirement remain. Where the shipped code differs from this
 > page, §13.1 and §16.4 say how.
 > Architecture: [../architecture/proposals/multi-source-git-marketplace.md](../architecture/proposals/multi-source-git-marketplace.md) ·
 > Blueprint: [../blueprints/multi-source-git-marketplace.md](../blueprints/multi-source-git-marketplace.md) ·
@@ -436,7 +436,7 @@ For a plugin installed from any git source:
 - Every field of `PluginAuthority` must equal the staged `plugin.json`.
 
 Removed from the manifest schema, `manifest-validation.ts` and their tests in
-one change (blueprint phase 6); there is no SDK copy to change with it
+one change, the switch to the git marketplace; there is no SDK copy to change with it
 (§5.6):
 
 - `extensions["ai.agent-connector.ave"].installPolicy` — there are no managed packages
@@ -446,7 +446,7 @@ one change (blueprint phase 6); there is no SDK copy to change with it
   installed manifest that has it loads as before, the field is ignored and one
   warning per plugin is logged, until the next update replaces the manifest
   (§16.3). The official plugins drop the field in their first release from
-  the official repository (blueprint phase 0.5); a field-pin version
+  the official repository; a field-pin version
   (§16.3) keeps it, because it serves existing installs only, and an install
   that resolves to such a version fails with the same named rejection.
 - `extensions["ai.agent-connector.ave"].publisher` — under D4 there is no verified
@@ -605,7 +605,7 @@ Neither file imports anything. There is no separate SDK package. The
 `ave-plugin-sdk` repository mirrored these two files under a version number
 of its own. Mapping an SDK tag to the app releases that implement it was a
 second numbering of the same contract, and nothing checked it. The repository
-is retired in blueprint phase 7.
+is retired with the server, after the first public release.
 
 - **Vendoring.** A plugin repository copies both files, unchanged, into
   `contract/` at an ave release tag. That may be the official monorepo or
@@ -1448,7 +1448,7 @@ audited as today. `ave:git:runtime:install` also requires a live keyboard
 gesture: it downloads a binary the marketplace then runs. `planId` and `previewId` are single use and expire after 10
 minutes (`PLAN_EXPIRED`). Disposition of today's channels is in §16.2.
 
-### 13.1 As built (P4)
+### 13.1 As built
 
 Where the table above and the shipped contract (`CHANNELS.gitMarketplace`,
 `GitMarketplaceApi` in `src/shared/git-marketplace.ts`) differ, the contract
@@ -1485,8 +1485,8 @@ wins:
   `ave://marketplace/add?url=` opens the Add dialog with the address filled in
   but unchecked. The legacy `ave://install/<slug>` links keep their parser;
   the two shapes never overlap.
-- Announcements reach the renderer on the existing pushed announcement event
-  (P5), not through a request channel.
+- Announcements reach the renderer on the existing pushed announcement event,
+  not through a request channel.
 - A plan is live until it is used, expires, or is replaced: planning a package
   again drops its older plan. An unused plan or preview is dropped at expiry
   even if nothing else happens, so an abandoned preview's clone and typed token
@@ -1557,7 +1557,7 @@ store (the web store is gone).
   Installing the second one is a source switch (`PACKAGE_ID_CONFLICT` explains
   it and offers the switch). The switch keeps the plugin's data directory, so
   the consent text says that the new source's code receives the data the
-  installed plugin stored. Until phase 6 removes the signed catalog, the
+  installed plugin stored. Until the switch removes the signed catalog, the
   catalog never replaces a git-bound plugin (install, update or rollback):
   the user updates or rolls back through the bound source, or uninstalls
   first.
@@ -1698,7 +1698,7 @@ On first boot of the new version:
   The official index therefore carries `versions[]` entries for every version
   of a granted plugin that is still installed in the field; for each, the zip
   the current server serves is uploaded unchanged as that version's release
-  asset and pinned by its sha256 (blueprint phase 0). "Every version" means
+  asset and pinned by its sha256 when the official repository is seeded. "Every version" means
   every version the app can load: a release from before the Agent Plugins
   manifest (the lines below `minAppVersion` 0.7.0, whose `plugin.json` has
   no `extensions["ai.agent-connector.ave"]`) fails `parsePluginJson` before and after the
@@ -1718,7 +1718,7 @@ On first boot of the new version:
 - Installed provider presets and theme/language activations become ledger
   entries.
 
-### 16.4 As built (P6)
+### 16.4 As built
 
 Where the sections above and the shipped code differ, the code wins:
 
@@ -1770,7 +1770,7 @@ Where the sections above and the shipped code differ, the code wins:
   unmanaged entry a second time.
 - **Language keys across app versions.** The upgrade run found every
   installed language breaking on the first boot of a build whose catalog
-  had lost keys (phase 6 removes 157). A key outside the interface set is
+  had lost keys (the switch removes 157). A key outside the interface set is
   now ignored on a device and refused only by the repository check (§5.5).
 - **Web documentation.** The site's server-marketplace pages and their
   twelve screenshots are gone; `/docs/marketplace` explains sources, installs

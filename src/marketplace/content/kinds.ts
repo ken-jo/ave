@@ -1,5 +1,5 @@
 /**
- * The data of each content kind (design §5.2, blueprint 3.2–3.5): the entry
+ * The data of each content kind (design §5.2): the entry
  * files of an installed package, parsed and checked. The same parse runs at
  * install (a failure refuses the package) and whenever installed content is
  * loaded (a failure lists the package as broken and applies nothing), so

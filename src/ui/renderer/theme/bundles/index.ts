@@ -1,6 +1,6 @@
 /**
  * Bundle registry: the bundles compiled into the app (`moonstone`, `gallery`)
- * and the installed theme packages (blueprint 3.2). Every other theme, the
+ * and the installed theme packages. Every other theme, the
  * fourteen the server marketplace delivered among them, is a theme package
  * under its own id (design §5.5).
  */

@@ -7,8 +7,8 @@
  * request at boot: installed languages join the main process's locale
  * registry (dialogs, menus and notifications use them too), installed theme
  * ids become valid plugin theme broadcasts, and fonts and theme previews are
- * served through the asset scheme. Installing and removing packages comes with the install IPC
- * (blueprint 6.1); the activation below is what those calls run.
+ * served through the asset scheme. Installing and removing packages comes with
+ * the install IPC; the activation below is what those calls run.
  */
 import { ipcMain, protocol } from "electron";
 import { randomBytes } from "node:crypto";
@@ -76,7 +76,7 @@ export function legacyContentSettings(deps: IpcDeps): {
 /**
  * How installed content takes effect in this app. Providers go through the
  * same preset path the settings IPC uses and messaging connections through
- * the same settings field (blueprint 3.5); removing a theme, language or font
+ * the same settings field; removing a theme, language or font
  * that is selected puts its setting back to the default.
  *
  * A settings write that fails throws, so the store undoes the install (or

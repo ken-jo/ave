@@ -2514,7 +2514,7 @@ describe("SettingsService appearance v2 — fresh install defaults", () => {
   });
 
   // The content ledger is read after settings: an installed theme or language
-  // the user selected must survive the settings load (blueprint 3.2, 3.3).
+  // the user selected must survive the settings load.
   it("keeps a well-formed installed theme id and language tag it cannot resolve yet", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),

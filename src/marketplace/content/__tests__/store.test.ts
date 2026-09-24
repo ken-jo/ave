@@ -36,7 +36,7 @@ const language = (name: string, locale: string) => ({
   [`languages/${name}/messages.json`]: text({ "chat.send": "Envoyer" }),
 });
 
-describe("content package store (blueprint 3.1)", () => {
+describe("content package store", () => {
   let serverRoot: string;
   let server: GitHttpServer;
   let git: TestGitRunner;

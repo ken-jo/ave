@@ -10,7 +10,7 @@
  * specific text wins), though namespacing keeps collisions out of practice.
  * `mergeLocale` below is the only place that order is written.
  *
- * An installed language package (blueprint 3.3) supplies its catalog through
+ * An installed language package supplies its catalog through
  * the loader its process registers ({@link setInstalledCatalogLoader}). For a
  * new locale the English catalog answers every key it does not translate; a
  * package for a compiled locale lays its interface keys over that locale's

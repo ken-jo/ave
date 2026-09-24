@@ -19,8 +19,8 @@ exercise.
 ## Scope and counts
 
 71 tracked images, all inspected individually. The twelve `mp-*` images of the
-server marketplace were deleted with that server in phase 6 of the git
-marketplace, which leaves 59; the counts below are after that removal.
+server marketplace were deleted with that server when the app switched to the
+git marketplace, which leaves 59; the counts below are after that removal.
 
 | Verdict | Count | Meaning |
 | --- | --- | --- |

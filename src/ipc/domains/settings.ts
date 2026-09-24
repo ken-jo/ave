@@ -362,7 +362,7 @@ function refreshChatRuntimeProviders(
  * preset change needs (reviewer rewire, chat providers, wildcard, sandbox
  * endpoints, the settings broadcast), reporting a follow-up that fails as
  * `finishError` once `mutate` has saved. The settings IPC and the content store's
- * provider activation (blueprint 3.5) both go through here, so a preset
+ * provider activation both go through here, so a preset
  * installed from a git package behaves exactly like one installed today.
  */
 export async function mutateMarketplaceProviderPresets(

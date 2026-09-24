@@ -1,5 +1,5 @@
 /**
- * Installed content in the renderer (blueprint 3.2–3.4): installed themes,
+ * Installed content in the renderer: installed themes,
  * languages and fonts load from `aveApi.installedContent`, apply, and show
  * in the appearance pickers; a selected package that is gone falls back to
  * the default.
@@ -70,7 +70,7 @@ afterEach(() => {
   delete (window as unknown as Record<string, unknown>).aveApi;
 });
 
-describe("installed themes (blueprint 3.2)", () => {
+describe("installed themes", () => {
   it("follows the OS scheme across the pair an installed theme declares", async () => {
     vi.stubGlobal("matchMedia", (query: string) => ({ matches: query.includes("light"), media: query, addEventListener: () => {}, removeEventListener: () => {} }));
     try {
@@ -116,7 +116,7 @@ describe("installed themes (blueprint 3.2)", () => {
   });
 });
 
-describe("installed languages (blueprint 3.3)", () => {
+describe("installed languages", () => {
   it("registers the locale and loads its catalog through the bridge, English answering the rest", async () => {
     const api = bridge(view({
       languages: [{ name: "french", locale: "fr", nativeName: "Français", englishName: "French", missingKeys: [], sourceId: "acme", version: "1.0.0" }],
@@ -140,7 +140,7 @@ describe("installed languages (blueprint 3.3)", () => {
   });
 });
 
-describe("marketplace changes (P4)", () => {
+describe("marketplace changes", () => {
   it("reads the installed content again when the marketplace catalog changes", async () => {
     const french = { name: "french", locale: "fr", nativeName: "Français", englishName: "French", missingKeys: [], sourceId: "acme", version: "1.0.0" };
     const api = bridge(view());
@@ -159,7 +159,7 @@ describe("marketplace changes (P4)", () => {
   });
 });
 
-describe("installed fonts (blueprint 3.4)", () => {
+describe("installed fonts", () => {
   it("declares @font-face rules only for ave-content font URLs", () => {
     const css = fontFaceCss([
       {

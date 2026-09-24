@@ -10,7 +10,7 @@ export type SafeThemePayload = {
 };
 
 const ALLOWED_BUNDLE_IDS = new Set<string>(BUNDLE_IDS);
-/** Installed theme packages (blueprint 3.2), set by main once the content store is loaded. */
+/** Installed theme packages, set by main once the content store is loaded. */
 let installedThemeIds = new Set<string>();
 
 /** Replace the installed theme ids a theme broadcast may name besides the compiled-in bundles. */

@@ -3,7 +3,7 @@
  *
  * Ave ships a global build with English as the default UI language. The
  * built-in locales have complete compiled catalogs; every other language is
- * an installed language package (design §5.2, blueprint 3.3) whose catalog is
+ * an installed language package (design §5.2) whose catalog is
  * layered over English, registered here at runtime by the process that loaded
  * it. The registry is open: a locale is any BCP 47 tag a built-in catalog or
  * an installed package provides.

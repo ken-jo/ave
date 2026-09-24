@@ -1,5 +1,5 @@
 /**
- * Content activation (blueprint 3.5): a provider or messaging-connection
+ * Content activation: a provider or messaging-connection
  * package takes effect through the same settings paths today's asset
  * install uses, and removing a selected theme, language or font returns its
  * setting to the default.

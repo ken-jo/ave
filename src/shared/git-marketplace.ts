@@ -328,7 +328,7 @@ export interface DirectMcpPreviewView {
 
 // ─── Envelope and API ───────────────────────────────────────────────────────
 
-// ─── Deep links and the boot-install notice (design §15.1, blueprint 4.6) ───
+// ─── Deep links and the boot-install notice (design §15.1) ───
 
 /**
  * What `ave://install|uninstall/<kind>/<name>@<source>` or

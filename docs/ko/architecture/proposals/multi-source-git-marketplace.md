@@ -1,6 +1,6 @@
 # 멀티 소스 Git 마켓플레이스 — 아키텍처
 
-> 상태: **청사진 6단계까지 구현** (오너 결정 2026-09-23, 6단계 2026-09-25). 영어 원문
+> 상태: **구현됨** (오너 결정 2026-09-23, git 마켓플레이스 전환 2026-09-25). 영어 원문
 > [../../../architecture/proposals/multi-source-git-marketplace.md](../../../architecture/proposals/multi-source-git-marketplace.md)이
 > 기준이고, 이 문서는 그 한국어 미러입니다. 내용이 다르면 영어 원문을 따릅니다.
 > 삭제된 `src/plugins/cloud-marketplace-fetcher.ts`가 전제하던 단일 서버 마켓플레이스

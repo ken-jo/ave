@@ -1,7 +1,7 @@
 # Publishing To A Git Marketplace
 
 Status: **Active** (2026-09-25). Replaces the server marketplace's publisher
-flow, which was removed in phase 6 of the
+flow, which was removed by the switch to the
 [multi-source git marketplace](../blueprints/multi-source-git-marketplace.md).
 
 Korean mirror: [docs/ko mirror](../ko/guides/marketplace-publishing.md).

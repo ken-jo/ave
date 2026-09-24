@@ -320,7 +320,7 @@ describe("GitMarketplaceTab package sheet", () => {
   });
 });
 
-describe("GitMarketplaceTab deep links (blueprint 4.6)", () => {
+describe("GitMarketplaceTab deep links", () => {
   it("opens the package's sheet for an install link held before the tab opened, and takes it once", async () => {
     const calendar = entry("team", "plugin", "calendar");
     const fake = fakeMarketplace({ sources: [team], entries: [calendar], deepLink: { action: "install", key: { sourceId: "team", kind: "plugin", name: "calendar" } } });

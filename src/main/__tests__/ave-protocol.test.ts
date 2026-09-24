@@ -144,7 +144,7 @@ describe("parsePluginAuthUri", () => {
   });
 });
 
-describe("parseGitMarketplaceUri (blueprint 4.6)", () => {
+describe("parseGitMarketplaceUri", () => {
   it("reads install and uninstall links with a kind, a package name and a source", () => {
     expect(parseGitMarketplaceUri("ave://install/plugin/calendar@ave")).toEqual({
       action: "install",

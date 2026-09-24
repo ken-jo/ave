@@ -87,7 +87,7 @@ describe("content file rules (design §5.4)", () => {
   });
 });
 
-describe("theme packages (blueprint 3.2)", () => {
+describe("theme packages", () => {
   it("parses a theme that passes the contrast rules", () => {
     const content = parse("theme", [themeFile({ preview: "preview.png" }), { path: "preview.png", data: png(640, 400) }], "harbor");
     expect(content).toMatchObject({ kind: "theme", name: "Harbor", shell: "light", preview: "preview.png" });
@@ -139,7 +139,7 @@ describe("theme packages (blueprint 3.2)", () => {
   });
 });
 
-describe("language packages (blueprint 3.3)", () => {
+describe("language packages", () => {
   const info = json("language.json", { locale: "fr", nativeName: "Français", englishName: "French" });
 
   it("layers the catalog over English and lists the interface keys it does not translate", () => {
@@ -222,7 +222,7 @@ describe("language packages (blueprint 3.3)", () => {
   });
 });
 
-describe("font packages (blueprint 3.4)", () => {
+describe("font packages", () => {
   const face: ContentFile = { path: "files/HarborSans.woff2", data: WOFF2 };
 
   it("parses the faces and their formats", () => {
@@ -251,7 +251,7 @@ describe("font packages (blueprint 3.4)", () => {
   });
 });
 
-describe("provider and messaging-connection packages (blueprint 3.5)", () => {
+describe("provider and messaging-connection packages", () => {
   const provider = {
     providerId: "harbor-llm",
     label: "Harbor LLM",
