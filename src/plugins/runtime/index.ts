@@ -1385,6 +1385,7 @@ export async function resolveManifestLoadPlan(opts: {
         approvedPluginAccess: entry.approvedPluginAccess as PluginAccessSpec | undefined,
         installSource: entry.installSource,
         manifestSha256: entry.manifestSha256,
+        ...(entry.origin ? { origin: entry.origin } : {}),
       }];
     }),
   );
@@ -7064,9 +7065,12 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
               pluginRoot,
               manifest,
               receiptRaw,
+              // The whole trust the registry holds: without `origin` a re-enabled
+              // official plugin would lose its host-secret grant until restart.
               registryEntry: {
                 installSource: targetPlan.installSource,
                 manifestSha256: targetPlan.manifestSha256,
+                ...(targetPlan.origin ? { origin: targetPlan.origin } : {}),
               },
               approvedPluginAccess:
                 targetPlan.approvedPluginAccess
