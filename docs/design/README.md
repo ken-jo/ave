@@ -18,6 +18,7 @@ This page owns the current contract for Design. Use it as the first review surfa
 ## Pages In This Directory
 
 - [Tiled chat groups](./tiled-chat-groups.md) — the source of truth for the main area's workbench model: up to four framed chat groups in work mode and one in chat mode, what is per group and what is per window, how `ave:chat:*` divides along that line, the split tree and its geometry, edge drops, gutter resizing, and the shape the work panel takes inside a tile. Change this page in the same commit that changes that behavior.
+- [Multi-source git marketplace](./multi-source-git-marketplace.md) — contracts for the git-based marketplace: source registry and sync, `marketplace.json` and `ave-package.json` schemas, version choice, the plugin artifact ladder, direct install, the git runtime, the service endpoint, IPC, error codes and UI states. Its mockup is [multi-source-git-marketplace.html](./multi-source-git-marketplace.html). Status: proposal, not implemented.
 - The `.html` files here are static mockups kept as provenance for reviews that have already landed. They record a proposal at the time it was made and are not maintained against the shipped UI; read the markdown pages and the source for current behavior.
 
 ## Implementation Anchors
