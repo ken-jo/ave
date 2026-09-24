@@ -90,6 +90,11 @@ const ADDITIONAL_KEYS = new Set(["id", "url", "ref", "auth", "label"]);
 const PACKAGE_KEY_KEYS = new Set(["kind", "name", "source"]);
 const PACKAGE_NAME_RE = /^(?!.*--)[a-z][a-z0-9-]*[a-z0-9]$/u;
 
+/** A package name as the descriptor schema defines it (`definitions.packageName`). */
+export function isPackageName(value: unknown): value is string {
+  return typeof value === "string" && value.length >= 3 && value.length <= 64 && PACKAGE_NAME_RE.test(value);
+}
+
 class PolicyShapeError extends Error {}
 
 function fail(path: string, message: string): never {
@@ -160,7 +165,7 @@ function packageKeys(value: unknown, path: string, sourceIds: ReadonlySet<string
     const at = `${path}[${index}]`;
     const entry = record(item, at, PACKAGE_KEY_KEYS);
     if (!PACKAGE_KINDS.includes(entry.kind as PackageKind)) fail(`${at}.kind`, "is not a package kind");
-    if (typeof entry.name !== "string" || entry.name.length < 3 || entry.name.length > 64 || !PACKAGE_NAME_RE.test(entry.name)) {
+    if (!isPackageName(entry.name)) {
       fail(`${at}.name`, "is not a package name");
     }
     if (typeof entry.source !== "string" || !sourceIds.has(entry.source)) {

@@ -343,6 +343,189 @@ describe("common subscription runtime IPC", () => {
     });
   });
 
+  it("rebinds execution to the previous runtime when the failed save already restored it", async () => {
+    const state = makeStatefulSelectionDeps({
+      provider: "openai",
+      vendors: { openai: { model: "gpt-5", baseUrl: null } },
+      activeChatRuntime: { kind: "api" },
+    });
+    // As SettingsService does: the change applies at once, and a failed save
+    // puts memory back on the saved settings before rejecting.
+    const patch = vi.fn((value: unknown) => {
+      state.applyLlmPatch(value);
+      return Promise.resolve().then(() => {
+        state.applyLlmPatch({ llm: { activeChatRuntime: { kind: "api" } } });
+        throw new Error("disk full");
+      });
+    });
+    const deps = { ...state.deps };
+    deps.settingsService.patch = patch;
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+
+    await expect(invoke("ave:settings:subscription:use-for-chat", "codex", "gpt-5")).resolves.toMatchObject({
+      ok: false,
+      error: "subscription-operation-failed",
+    });
+    expect(state.currentLlm().activeChatRuntime).toEqual({ kind: "api" });
+    // Bound once for the failed runtime, then again for the restored one —
+    // without a second write.
+    expect(patch).toHaveBeenCalledOnce();
+    expect(deps.conversationLoop.refreshProvider).toHaveBeenCalledTimes(2);
+    expect(deps.sideChatConversationLoop.refreshProvider).toHaveBeenCalledTimes(2);
+    expect(deps.rewireReviewerAgent).toHaveBeenCalledTimes(2);
+    expect(deps.refreshActiveLlmWildcard).toHaveBeenCalledTimes(2);
+  });
+
+  it("binds execution to the saved runtime when two overlapping switches fail to save", async () => {
+    const state = makeStatefulSelectionDeps({
+      provider: "openai",
+      vendors: { openai: { model: "gpt-5", baseUrl: null } },
+      activeChatRuntime: { kind: "api" },
+    });
+    // Each save settles with whether it landed.
+    const saves = [deferred<boolean>(), deferred<boolean>()];
+    const patch = vi.fn((value: unknown) => {
+      const snapshot = state.applyLlmPatch(value);
+      return saves[patch.mock.calls.length - 1]!.promise.then((landed) => {
+        if (!landed) throw new Error("disk full");
+        return snapshot;
+      });
+    });
+    const bound: unknown[] = [];
+    const deps = { ...state.deps };
+    deps.settingsService.patch = patch;
+    deps.conversationLoop.refreshProvider.mockImplementation(() => {
+      bound.push(state.currentLlm().activeChatRuntime);
+    });
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+
+    const first = invoke("ave:settings:subscription:use-for-chat", "codex", "gpt-5");
+    await vi.waitFor(() => expect(state.currentLlm().activeChatRuntime).toMatchObject({ provider: "codex" }));
+    const second = invoke("ave:settings:subscription:use-for-chat", "kimi-code");
+    await vi.waitFor(() => expect(state.currentLlm().activeChatRuntime).toMatchObject({ provider: "kimi-code" }));
+
+    // The first save fails; SettingsService puts memory back on disk (the
+    // API runtime) and fails the write made on top of it too.
+    state.applyLlmPatch({ llm: { activeChatRuntime: { kind: "api" } } });
+    saves[0]!.resolve(false);
+    saves[1]!.resolve(false);
+
+    await expect(first).resolves.toMatchObject({ ok: false });
+    await expect(second).resolves.toMatchObject({ ok: false });
+    expect(patch).toHaveBeenCalledTimes(2);
+    expect(bound.at(-1)).toEqual({ kind: "api" });
+  });
+
+  it("announces the subscription restored when overlapping switches fail to save", async () => {
+    const saved = { kind: "subscription", provider: "kimi-code" } as const;
+    const state = makeStatefulSelectionDeps({
+      provider: "openai",
+      vendors: { openai: { model: "gpt-5", baseUrl: null } },
+      activeChatRuntime: saved,
+    });
+    const saves = [deferred<boolean>(), deferred<boolean>()];
+    const patch = vi.fn((value: unknown) => {
+      const snapshot = state.applyLlmPatch(value);
+      return saves[patch.mock.calls.length - 1]!.promise.then((landed) => {
+        if (!landed) throw new Error("disk full");
+        return snapshot;
+      });
+    });
+    const send = vi.fn();
+    const deps = { ...state.deps };
+    deps.settingsService.patch = patch;
+    deps.getAppWindows = vi.fn(() => [{
+      isDestroyed: vi.fn(() => false),
+      webContents: { isDestroyed: vi.fn(() => false), send },
+    }]);
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+
+    const first = invoke("ave:settings:subscription:use-for-chat", "codex", "gpt-5");
+    await vi.waitFor(() => expect(state.currentLlm().activeChatRuntime).toMatchObject({ provider: "codex" }));
+    const second = invoke("ave:settings:subscription:use-api-for-chat");
+    await vi.waitFor(() => expect(state.currentLlm().activeChatRuntime).toEqual({ kind: "api" }));
+    state.applyLlmPatch({ llm: { activeChatRuntime: saved } });
+    saves[0]!.resolve(false);
+    saves[1]!.resolve(false);
+    await Promise.allSettled([first, second]);
+
+    expect(state.currentLlm().activeChatRuntime).toEqual(saved);
+    const announced = send.mock.calls
+      .filter(([channel]) => channel === "ave:settings:subscription:status-updated")
+      .map(([, event]) => (event as { provider: string }).provider);
+    expect(announced).toContain("kimi-code");
+  });
+
+  it("binds execution to the saved runtime when the restoring save fails too", async () => {
+    const state = makeStatefulSelectionDeps({
+      provider: "openai",
+      vendors: { openai: { model: "gpt-5", baseUrl: null } },
+      activeChatRuntime: { kind: "api" },
+    });
+    const patch = vi.fn(async (value: unknown) => {
+      const snapshot = state.applyLlmPatch(value);
+      if (patch.mock.calls.length === 1) return snapshot;
+      // The restore to the API runtime fails to save: memory goes back to
+      // the saved subscription selection.
+      await Promise.resolve();
+      state.applyLlmPatch({ llm: { activeChatRuntime: { kind: "subscription", provider: "codex", model: "gpt-5" } } });
+      throw new Error("disk full");
+    });
+    const bound: unknown[] = [];
+    const deps = {
+      ...state.deps,
+      rewireReviewerAgent: vi.fn().mockImplementationOnce(() => { throw new Error("reviewer unavailable"); }),
+    };
+    deps.settingsService.patch = patch;
+    deps.conversationLoop.refreshProvider.mockImplementation(() => {
+      bound.push(state.currentLlm().activeChatRuntime);
+    });
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+
+    await expect(invoke("ave:settings:subscription:use-for-chat", "codex", "gpt-5")).resolves.toMatchObject({
+      ok: false,
+      error: "subscription-operation-failed",
+    });
+    expect(patch).toHaveBeenCalledTimes(2);
+    expect(bound.at(-1)).toEqual({ kind: "subscription", provider: "codex", model: "gpt-5" });
+  });
+
+  it("refreshes to the new LLM settings when the reviewer-rewire rollback fails to save", async () => {
+    const state = makeStatefulSelectionDeps({
+      provider: "openai",
+      vendors: { openai: { model: "gpt-5", baseUrl: null } },
+      activeChatRuntime: { kind: "api" },
+    });
+    const bound: unknown[] = [];
+    const deps = {
+      ...state.deps,
+      rewireReviewerAgent: vi.fn().mockImplementationOnce(() => { throw new Error("reviewer unavailable"); }),
+      refreshSandboxNetworkConfig: vi.fn(async () => undefined),
+    };
+    // The rollback's save fails: memory stays on the new, saved settings.
+    deps.settingsService.replaceLlm = vi.fn(async () => { throw new Error("disk full"); });
+    deps.conversationLoop.refreshProvider.mockImplementation(() => {
+      bound.push(state.currentLlm().vendors.openai.baseUrl);
+    });
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+
+    await expect(invoke("ave:settings:update", {
+      llm: { vendors: { openai: { baseUrl: "https://gateway.example/v1" } } },
+    })).resolves.toMatchObject({
+      ok: false,
+      error: "reviewer-rewire-failed",
+      message: expect.stringContaining("rollback failed: disk full"),
+    });
+    expect(bound.at(-1)).toBe("https://gateway.example/v1");
+    expect(deps.refreshActiveLlmWildcard).toHaveBeenCalled();
+    expect(deps.refreshSandboxNetworkConfig).toHaveBeenCalled();
+  });
+
   it("supports ACP subscriptions through the same verification-and-selection path", async () => {
     const deps = makeDeps();
     const { registerSettingsHandlers } = await import("../settings.js");

@@ -168,6 +168,7 @@ export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, ho
     encryption: host.encryption,
   });
   await settingsService.migrateSecrets();
+  await settingsService.migrateRenamedVendorSecrets();
   applyBootPiiRedactionPolicy(settingsService);
 
   // Set the main-process UI locale from persisted settings (or system-detected

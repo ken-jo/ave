@@ -43,6 +43,18 @@ export function isBundleId(value: unknown): value is BundleId {
 
 export const DEFAULT_BUNDLE_ID: BundleId = "moonstone";
 
+const THEME_ID = /^(?!.*--)[a-z][a-z0-9-]*[a-z0-9]$/u;
+
+/**
+ * A value `appearance.bundleId` may hold: a compiled-in bundle id or the name
+ * of a theme package (the descriptor's package-name rule, which every
+ * compiled-in id also satisfies). Whether that theme is installed is decided
+ * where it is applied; one that is not falls back to the default bundle.
+ */
+export function isThemeId(value: unknown): value is string {
+  return typeof value === "string" && value.length >= 3 && value.length <= 64 && THEME_ID.test(value);
+}
+
 /**
  * Themes shown in the default in-app appearance picker while older/community
  * themes move toward marketplace packages. The full `BUNDLE_IDS` union remains

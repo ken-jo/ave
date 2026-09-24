@@ -29,7 +29,7 @@ export function Calendar({
 
   return (
     <DayPicker
-      locale={localeOverride ?? DATE_FNS_LOCALES[locale]}
+      locale={localeOverride ?? (Object.hasOwn(DATE_FNS_LOCALES, locale) ? DATE_FNS_LOCALES[locale as keyof typeof DATE_FNS_LOCALES] : DATE_FNS_LOCALES.en)}
       weekStartsOn={0}
       showOutsideDays={showOutsideDays}
       className={cn("relative p-3", className)}

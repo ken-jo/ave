@@ -10,6 +10,18 @@ export type SafeThemePayload = {
 };
 
 const ALLOWED_BUNDLE_IDS = new Set<string>(BUNDLE_IDS);
+/** Installed theme packages (blueprint 3.2), set by main once the content store is loaded. */
+let installedThemeIds = new Set<string>();
+
+/** Replace the installed theme ids a theme broadcast may name besides the compiled-in bundles. */
+export function setInstalledThemeIds(ids: readonly string[]): void {
+  installedThemeIds = new Set(ids);
+}
+
+/** Whether an installed theme package holds `id` (design §5.5). */
+export function isInstalledThemeId(id: string): boolean {
+  return installedThemeIds.has(id);
+}
 const ALLOWED_SHELLS = new Set(["light", "dark"]);
 const PLUGIN_TOKEN_NAMES: Set<string> = new Set(AVE_TOKEN_NAMES);
 // Token values the host is allowed to hand a plugin frame, composed from the
@@ -74,7 +86,7 @@ export function validateThemePayload(payload: unknown):
   | { ok: false; error: string } {
   if (!payload || typeof payload !== "object") return { ok: false, error: "invalid-payload" };
   const candidate = payload as Record<string, unknown>;
-  if (typeof candidate.bundleId !== "string" || !ALLOWED_BUNDLE_IDS.has(candidate.bundleId)) {
+  if (typeof candidate.bundleId !== "string" || !(ALLOWED_BUNDLE_IDS.has(candidate.bundleId) || installedThemeIds.has(candidate.bundleId))) {
     return { ok: false, error: "invalid-bundle-id" };
   }
   if (typeof candidate.shell !== "string" || !ALLOWED_SHELLS.has(candidate.shell)) {

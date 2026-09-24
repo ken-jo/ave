@@ -239,6 +239,7 @@ describe("US-3c.2 — PluginRuntime.restartPlugin", () => {
 const ipcHandlers = new Map<string, (...args: unknown[]) => unknown>();
 
 vi.mock("electron", () => ({
+  protocol: { handle: vi.fn() },
   ipcMain: {
     handle: vi.fn((channel: string, fn: (...args: unknown[]) => unknown) => {
       ipcHandlers.set(channel, fn);

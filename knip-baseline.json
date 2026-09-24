@@ -320,11 +320,6 @@
     {
       "type": "exports",
       "file": "src/i18n/index.ts",
-      "name": "isLocale"
-    },
-    {
-      "type": "exports",
-      "file": "src/i18n/index.ts",
       "name": "isLocaleMessagesLoaded"
     },
     {
@@ -335,17 +330,7 @@
     {
       "type": "exports",
       "file": "src/i18n/index.ts",
-      "name": "loadLocaleMessages"
-    },
-    {
-      "type": "exports",
-      "file": "src/i18n/index.ts",
       "name": "onLocaleChange"
-    },
-    {
-      "type": "exports",
-      "file": "src/i18n/index.ts",
-      "name": "SUPPORTED_LOCALES"
     },
     {
       "type": "exports",
@@ -930,11 +915,6 @@
     {
       "type": "exports",
       "file": "src/ui/renderer/theme/index.ts",
-      "name": "isBundleId"
-    },
-    {
-      "type": "exports",
-      "file": "src/ui/renderer/theme/index.ts",
       "name": "loadAllThemeBundles"
     },
     {
@@ -1156,11 +1136,6 @@
       "type": "files",
       "file": "src/plugins/__tests__/fixtures/registry-process-child.ts",
       "name": "src/plugins/__tests__/fixtures/registry-process-child.ts"
-    },
-    {
-      "type": "files",
-      "file": "src/shared/host-font-stack.ts",
-      "name": "src/shared/host-font-stack.ts"
     },
     {
       "type": "files",
@@ -2671,16 +2646,6 @@
       "type": "types",
       "file": "src/ui/renderer/preview/workspace-tabs.ts",
       "name": "WorkspaceTabMode"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/theme/bundles/index.ts",
-      "name": "BundleTokens"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/theme/index.ts",
-      "name": "BundleTokens"
     },
     {
       "type": "types",

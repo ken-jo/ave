@@ -4,6 +4,7 @@ import {
 } from "../shared/corp-ca-common-name.js";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { withFileLock } from "../lib/with-file-lock.js";
 import { writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 import {
@@ -28,7 +29,7 @@ import {
   type MarketplaceEligibleLLMVendor,
 } from "../shared/llm-vendor-defaults.js";
 import type { GitRuntimeMode } from "../shared/git-runtime-mode.js";
-import { isBundleId, type BundleId } from "../shared/theme-bundles.js";
+import { isThemeId, type BundleId } from "../shared/theme-bundles.js";
 import {
   FONT_SIZE_SCALE_VALUES,
   type FontSizeScale,
@@ -36,7 +37,7 @@ import {
   isValidFontFamilyOverride,
 } from "../shared/appearance-font.js";
 import {
-  normalizeLocale,
+  normalizeLocaleSetting,
   type Locale,
 } from "../i18n/index.js";
 import { normalizeAppMode, type InitialAppMode } from "../shared/initial-app-mode.js";
@@ -83,6 +84,7 @@ import {
   pruneLazyLlmVendorBlocks,
   withoutMirroredMarketplaceProviderPresetEndpoint,
   withMarketplaceProviderPresetModelSlot,
+  withRenamedLlmVendorIds,
   SIDE_PANEL_SPLIT_KEYS,
   normalizeSystem,
   isWebViewPreferredFlow,
@@ -123,6 +125,23 @@ const PROVIDER_PRESET_ENDPOINT_UNMIRROR_MIGRATION =
  */
 const PROVIDER_PRESET_MODEL_SLOT_MIGRATION =
   "marketplace-provider-preset-model-slot";
+/**
+ * One-time rewrite of renamed built-in vendor ids in the stored settings. See
+ * {@link withRenamedLlmVendorIds}; the matching API-key move is
+ * {@link SettingsService.migrateRenamedVendorSecrets}.
+ */
+const LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION = "llm-vendor-id-package-names";
+/**
+ * Built-in vendor ids that were renamed, old → new. Marketplace provider
+ * packages are named after the vendor id and package names are lowercase
+ * kebab-case of at least three characters, so neither a camelCase id nor one
+ * as short as `v0` could ship as a package. Read only by the one-time
+ * migrations: nothing resolves an old id at runtime.
+ */
+const RENAMED_LLM_VENDOR_IDS: Readonly<Record<string, LLMVendor>> = {
+  nousResearch: "nous-research",
+  v0: "vercel-v0",
+};
 
 /**
  * Every one-time migration this build knows. Fresh-install and
@@ -135,6 +154,7 @@ const KNOWN_MIGRATIONS: readonly string[] = [
   SUBAGENT_WAKE_DEFAULT_FLIP_MIGRATION,
   PROVIDER_PRESET_ENDPOINT_UNMIRROR_MIGRATION,
   PROVIDER_PRESET_MODEL_SLOT_MIGRATION,
+  LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION,
 ];
 
 export type { LLMVendor, LLMVendorSettings };
@@ -920,11 +940,69 @@ export interface SettingsServiceOptions {
 }
 
 
+/**
+ * `current` with the listed provider presets as they were in `previous`: an
+ * entry that changed goes back, a removed one returns, one added since goes.
+ */
+function withProviderPresetsFrom(
+  current: AppSettings,
+  previous: AppSettings,
+  providerIds: readonly string[],
+): AppSettings {
+  const listed = new Set(providerIds);
+  const before = new Map(
+    previous.marketplace.installedProviderPresets
+      .filter((preset) => listed.has(preset.providerId))
+      .map((preset) => [preset.providerId, preset]),
+  );
+  const presets: MarketplaceInstalledProviderPreset[] = [];
+  for (const preset of current.marketplace.installedProviderPresets) {
+    if (!listed.has(preset.providerId)) {
+      presets.push(preset);
+      continue;
+    }
+    const restored = before.get(preset.providerId);
+    if (restored) presets.push(restored);
+    before.delete(preset.providerId);
+  }
+  presets.push(...before.values());
+  return {
+    ...current,
+    marketplace: normalizeMarketplace({ ...current.marketplace, installedProviderPresets: presets }),
+  };
+}
+
 export class SettingsService {
   private readonly settingsPath: string;
   private readonly secretsPath: string;
   private readonly secretStore: SecretDocumentStore;
   private settings: AppSettings;
+  /** The settings last written to disk (or loaded): what memory returns to when a save fails. */
+  private saved: AppSettings;
+  /** Writes whose change is in memory but not yet on disk (see `commit`). */
+  private unsaved: Array<{ resolve: () => void; reject: (err: unknown) => void }> = [];
+  private saving = false;
+  /**
+   * Provider-preset keys left next to an address they were not entered for:
+   * their deletion failed and so did the save that put their old address
+   * back. This process never hands them out, and deletes them once a save
+   * lands again.
+   */
+  private readonly withheldSecretKeys = new Set<string>();
+  /**
+   * Provider-preset keys whose old address is being saved back. They are
+   * not handed out until that save lands; if it fails they are withheld.
+   */
+  private readonly restoringSecretKeys = new Set<string>();
+  /** Provider-preset keys with an invalidation in flight (saved or not, deletion unsettled), counted. */
+  private readonly invalidatingSecretKeys = new Map<string, number>();
+  /**
+   * Keys entered again while an invalidation of them was in flight, with the
+   * preset they were entered next to: that is their address now.
+   */
+  private readonly reenteredSecretKeys = new Map<string, MarketplaceInstalledProviderPreset | undefined>();
+  /** Re-entered keys whose new value is written: the only ones read while their invalidation runs. */
+  private readonly writtenReentries = new Set<string>();
 
   constructor(options: SettingsServiceOptions) {
     const dir = resolve(options.userDataPath);
@@ -938,10 +1016,11 @@ export class SettingsService {
     });
     const { settings: loaded, writeBack: needsWriteBack } = this.loadSettings();
     this.settings = loaded;
+    this.saved = structuredClone(loaded);
     // Migration write-back (appearance v2, one-time markers): persist so the
     // next load is clean.
     if (needsWriteBack) {
-      void this.saveSettings().catch(() => { /* best-effort — next load re-migrates */ });
+      void this.commit().catch(() => { /* best-effort — next load re-migrates */ });
     }
   }
 
@@ -950,6 +1029,23 @@ export class SettingsService {
 
   async migrateSecrets(): Promise<boolean> {
     return this.secretStore.migrate();
+  }
+
+  /**
+   * Move each API key stored under a renamed vendor id to the new id's key
+   * (see {@link RENAMED_LLM_VENDOR_IDS}). Runs on every boot: it writes only
+   * while an old key remains, so a move that failed is retried next boot. A
+   * failure leaves the old key where it is and never fails the boot — the
+   * provider then reads as having no key until a later boot moves it.
+   */
+  async migrateRenamedVendorSecrets(): Promise<void> {
+    for (const [from, to] of Object.entries(RENAMED_LLM_VENDOR_IDS)) {
+      try {
+        await this.secretStore.move(`llm.apiKey.${from}`, `llm.apiKey.${to}`);
+      } catch (err) {
+        log.warn("API key move from vendor %s to %s failed: %s", from, to, (err as Error).message);
+      }
+    }
   }
 
   getAll(): AppSettings {
@@ -962,7 +1058,7 @@ export class SettingsService {
 
   async set<K extends keyof AppSettings>(key: K, value: AppSettings[K]): Promise<void> {
     this.settings[key] = value;
-    await this.saveSettings();
+    await this.commit();
   }
 
   async patch(
@@ -1137,16 +1233,16 @@ export class SettingsService {
         );
       }
       nextAppearance.schemaVersion = 2;
-      // Same value set as the load path — `isBundleId` in shared/theme-bundles
+      // Same value set as the load path — `isThemeId` in shared/theme-bundles
       // is the single source of truth for both.
-      acceptField(nextAppearance, "bundleId", bundleIdPatch, isBundleId, "appearance", PATCHED_FIELD);
+      acceptField(nextAppearance, "bundleId", bundleIdPatch, isThemeId, "appearance", PATCHED_FIELD);
       acceptField(nextAppearance, "followSystem", followSystemPatch, isBooleanValue, "appearance", PATCHED_FIELD);
-      // Validate the language patch — coerce to a supported locale so a
-      // malformed renderer/IPC payload can never persist an unknown language
-      // (mirrors the font validation below; No-Fallback-Code: validate at the
-      // trust boundary instead of dropping on next load).
+      // Validate the language patch at the trust boundary (mirrors the font
+      // validation below): a malformed renderer/IPC payload becomes English. A
+      // well-formed tag no package provides yet is kept, because the content
+      // ledger is read after settings (see normalizeLocaleSetting).
       if ("language" in appearanceRest) {
-        nextAppearance.language = normalizeLocale((appearanceRest as { language?: unknown }).language);
+        nextAppearance.language = normalizeLocaleSetting((appearanceRest as { language?: unknown }).language);
       }
       // Accept `font: undefined`, missing field, or `font: null` — all three
       // mean "no font subfield patch in this call". Guard against `null` so
@@ -1323,11 +1419,7 @@ export class SettingsService {
         ...normalizeFeatureFlags(partial.features),
       };
     }
-    await this.saveSettings();
-    await this.deleteMarketplaceProviderPresetSecretsAtomically(
-      previousSettings,
-      providerPresetSecretInvalidationIds,
-    );
+    await this.commitPresetKeyInvalidation(previousSettings, providerPresetSecretInvalidationIds);
     return this.getAll();
   }
 
@@ -1375,40 +1467,137 @@ export class SettingsService {
       { inferInstalledFromCustom: false },
     );
     this.settings.llm = prunedLlm.llm;
-    await this.saveSettings();
-    await this.deleteMarketplaceProviderPresetSecretsAtomically(
-      previousSettings,
-      providerPresetSecretInvalidationIds,
-    );
+    await this.commitPresetKeyInvalidation(previousSettings, providerPresetSecretInvalidationIds);
     return this.getAll();
+  }
+
+  /**
+   * Save the change just made in memory, then delete the preset keys it
+   * invalidated (`providerIds`: presets that moved or went). Called right
+   * after the change, so its part before the first await — the applied
+   * snapshot and the in-flight count — sees memory holding this change.
+   */
+  private async commitPresetKeyInvalidation(
+    previousSettings: AppSettings,
+    providerIds: readonly string[],
+  ): Promise<void> {
+    if (providerIds.length === 0) {
+      await this.commit();
+      return;
+    }
+    const appliedSettings = this.getAll();
+    const keys = providerIds.map(marketplaceProviderPresetSecretKey);
+    for (const key of keys) this.invalidatingSecretKeys.set(key, (this.invalidatingSecretKeys.get(key) ?? 0) + 1);
+    try {
+      await this.commit();
+      await this.deleteMarketplaceProviderPresetSecretsAtomically(
+        previousSettings,
+        appliedSettings,
+        providerIds,
+      );
+    } finally {
+      for (const key of keys) {
+        const left = (this.invalidatingSecretKeys.get(key) ?? 1) - 1;
+        if (left > 0) {
+          this.invalidatingSecretKeys.set(key, left);
+        } else {
+          this.invalidatingSecretKeys.delete(key);
+          this.reenteredSecretKeys.delete(key);
+          this.writtenReentries.delete(key);
+        }
+      }
+    }
   }
 
   private async deleteMarketplaceProviderPresetSecretsAtomically(
     previousSettings: AppSettings,
+    appliedSettings: AppSettings,
     providerIds: readonly string[],
   ): Promise<void> {
     try {
-      await this.deleteMarketplaceProviderPresetSecrets(providerIds);
+      await this.deleteMarketplaceProviderPresetSecrets(providerIds, appliedSettings);
     } catch (err) {
       // SecretDocumentStore.deleteMany is one locked atomic mutation: a
       // rejected call leaves the previous secret document intact, so only
       // the settings write performed immediately before this call needs to
       // be rolled back. Avoid reading individual secrets here; encrypted
       // reads correctly fail closed when host encryption is unavailable.
-      this.settings = previousSettings;
-      await this.saveSettings().catch((rollbackErr: Error) => {
-        log.warn(
-          "settings rollback after provider preset secret deletion failure failed: %s",
-          rollbackErr.message,
-        );
-      });
+      // When other writes landed meanwhile, they already reported success:
+      // put back only the presets whose keys stayed, so each key is again
+      // next to the address it was entered for.
+      // An old address goes back only when it is the key's: no other
+      // invalidation of the key is in flight — one applied before this call
+      // would have made that address unconfirmed, one after would be
+      // undone — and the preset still holds what this call set. An earlier
+      // overlapping one that already failed withheld the key itself. Any
+      // other key is withheld and deleted later.
+      const presetIn = (settings: AppSettings, providerId: string) =>
+        settings.marketplace.installedProviderPresets.find((preset) => preset.providerId === providerId);
+      // A key entered again meanwhile belongs to the preset it was entered
+      // next to: it is never moved back, and stays usable while the preset
+      // is still that one.
+      const restorable = providerIds.filter((providerId) =>
+        !this.enteredForApplied(providerId, appliedSettings)
+        && this.invalidatingSecretKeys.get(marketplaceProviderPresetSecretKey(providerId)) === 1
+        && isDeepStrictEqual(presetIn(this.settings, providerId), presetIn(appliedSettings, providerId)));
+      for (const providerId of providerIds) {
+        if (restorable.includes(providerId)) continue;
+        const key = marketplaceProviderPresetSecretKey(providerId);
+        if (
+          this.enteredForApplied(providerId, appliedSettings)
+          && isDeepStrictEqual(this.reenteredSecretKeys.get(key), presetIn(this.settings, providerId))
+        ) {
+          continue;
+        }
+        this.withheldSecretKeys.add(key);
+      }
+      // Until the old addresses are back on disk their keys are held back,
+      // so nothing that runs when a failed rollback puts memory back on the
+      // new addresses can pair them.
+      const keys = restorable.map(marketplaceProviderPresetSecretKey);
+      for (const key of keys) this.restoringSecretKeys.add(key);
+      this.settings = restorable.length === providerIds.length && isDeepStrictEqual(this.settings, appliedSettings)
+        ? previousSettings
+        : withProviderPresetsFrom(this.settings, previousSettings, restorable);
+      await this.commit().then(
+        () => {
+          for (const key of keys) this.restoringSecretKeys.delete(key);
+        },
+        (rollbackErr: Error) => {
+          log.warn(
+            "settings rollback after provider preset secret deletion failure failed: %s",
+            rollbackErr.message,
+          );
+          for (const key of keys) {
+            this.restoringSecretKeys.delete(key);
+            this.withheldSecretKeys.add(key);
+          }
+        },
+      );
       throw err;
     }
   }
 
-  private async deleteMarketplaceProviderPresetSecrets(providerIds: readonly string[]): Promise<void> {
-    if (providerIds.length === 0) return;
-    await this.secretStore.deleteMany(providerIds.map(marketplaceProviderPresetSecretKey));
+  /** Whether the key was entered again next to the preset this change applied. */
+  private enteredForApplied(providerId: string, appliedSettings: AppSettings): boolean {
+    const key = marketplaceProviderPresetSecretKey(providerId);
+    return this.reenteredSecretKeys.has(key) && isDeepStrictEqual(
+      this.reenteredSecretKeys.get(key),
+      appliedSettings.marketplace.installedProviderPresets.find((preset) => preset.providerId === providerId),
+    );
+  }
+
+  private async deleteMarketplaceProviderPresetSecrets(
+    providerIds: readonly string[],
+    appliedSettings: AppSettings,
+  ): Promise<void> {
+    // A key entered again next to the preset this change applied is that
+    // preset's; one entered next to another preset is not spared.
+    const keys = providerIds
+      .filter((providerId) => !this.enteredForApplied(providerId, appliedSettings))
+      .map(marketplaceProviderPresetSecretKey);
+    if (keys.length === 0) return;
+    await this.secretStore.deleteMany(keys);
   }
 
   async replaceLlm(llm: LLMSettings): Promise<AppSettings> {
@@ -1417,7 +1606,7 @@ export class SettingsService {
       ...replacement,
       activeChatRuntime: normalizeActiveChatRuntime(replacement.activeChatRuntime),
     };
-    await this.saveSettings();
+    await this.commit();
     return this.getAll();
   }
 
@@ -1433,7 +1622,7 @@ export class SettingsService {
       ...this.settings.pluginConfigs,
       [safePluginId]: sanitizedConfig,
     };
-    await this.saveSettings();
+    await this.commit();
     return structuredClone(sanitizedConfig);
   }
 
@@ -1443,16 +1632,41 @@ export class SettingsService {
     const next = { ...this.settings.pluginConfigs };
     delete next[safePluginId];
     this.settings.pluginConfigs = next;
-    await this.saveSettings();
+    await this.commit();
   }
 
   /** Encrypt and store a secret value such as an API key. */
   async setSecret(key: string, value: string): Promise<void> {
-    await this.secretStore.set(key, value);
+    // Entered for the preset shown now, while an invalidation may be moving
+    // it: recorded at once, so a rollback or deletion running while the key
+    // is written already leaves it with that preset.
+    const invalidating = this.invalidatingSecretKeys.has(key);
+    if (invalidating) {
+      const enteredFor = this.settings.marketplace.installedProviderPresets.find(
+        (preset) => marketplaceProviderPresetSecretKey(preset.providerId) === key,
+      );
+      this.reenteredSecretKeys.set(key, structuredClone(enteredFor));
+      this.writtenReentries.delete(key);
+    }
+    try {
+      await this.secretStore.set(key, value);
+    } catch (err) {
+      if (invalidating) {
+        // The invalidation may have kept its preset, or skipped the old key,
+        // for this entry: whatever the store holds now is not known to be
+        // that preset's, so it is withheld until entered again.
+        this.reenteredSecretKeys.delete(key);
+        this.withheldSecretKeys.add(key);
+      }
+      throw err;
+    }
+    this.withheldSecretKeys.delete(key);
+    if (this.reenteredSecretKeys.has(key)) this.writtenReentries.add(key);
   }
 
   /** Decrypt and return a stored secret value. */
   getSecret(key: string): string | null {
+    if (!this.secretReadable(key)) return null;
     try {
       return this.secretStore.get(key);
     } catch (err) {
@@ -1463,11 +1677,43 @@ export class SettingsService {
 
   /** Security-sensitive consumers that must reject legacy `plain:` secret entries. */
   getEncryptedSecret(key: string): string | null {
+    if (!this.secretReadable(key)) return null;
     return this.secretStore.getEncrypted(key);
   }
 
   async deleteSecret(key: string): Promise<void> {
     await this.secretStore.delete(key);
+    this.withheldSecretKeys.delete(key);
+  }
+
+  /**
+   * Whether a stored key may be handed out. A preset key being invalidated
+   * may be the old address's; only a value entered again, written, and next
+   * to the preset it was entered for is read until the invalidation settles.
+   */
+  private secretReadable(key: string): boolean {
+    if (this.withheldSecretKeys.has(key) || this.restoringSecretKeys.has(key)) return false;
+    if (!this.invalidatingSecretKeys.has(key)) return true;
+    return this.writtenReentries.has(key) && isDeepStrictEqual(
+      this.reenteredSecretKeys.get(key),
+      this.settings.marketplace.installedProviderPresets.find(
+        (preset) => marketplaceProviderPresetSecretKey(preset.providerId) === key,
+      ),
+    );
+  }
+
+  /**
+   * Delete the withheld keys (see `withheldSecretKeys`). A key entered again
+   * while this runs may go too, which fails closed: it is asked for again.
+   */
+  private async deleteWithheldSecrets(): Promise<void> {
+    const keys = [...this.withheldSecretKeys];
+    try {
+      await this.secretStore.deleteMany(keys);
+      for (const key of keys) this.withheldSecretKeys.delete(key);
+    } catch (err) {
+      log.warn("withheld provider preset key deletion failed: %s", (err as Error).message);
+    }
   }
 
   /**
@@ -1508,9 +1754,24 @@ export class SettingsService {
     try {
       const raw = readFileSync(this.settingsPath, "utf-8");
       const rawParsed = JSON.parse(raw) as unknown;
-      const parsed = rawParsed !== null && typeof rawParsed === "object" && !Array.isArray(rawParsed)
+      const stored = rawParsed !== null && typeof rawParsed === "object" && !Array.isArray(rawParsed)
         ? rawParsed as Record<string, any>
         : {};
+      const appliedMigrations = Array.isArray(stored.appliedMigrations)
+        ? stored.appliedMigrations.filter((m): m is string => typeof m === "string")
+        : [];
+      let migrationWriteBack = false;
+
+      // One-time rename of built-in vendor ids. It has to rewrite the file as
+      // read, ahead of everything below: each normalizer drops a vendor id this
+      // build does not know.
+      let parsed = stored;
+      if (!appliedMigrations.includes(LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION)) {
+        parsed = withRenamedLlmVendorIds(stored, RENAMED_LLM_VENDOR_IDS);
+        appliedMigrations.push(LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION);
+        migrationWriteBack = true;
+      }
+
       const rawLlm = parsed.llm;
       let llm = mergeLlmPatch(
         DEFAULT_SETTINGS.llm,
@@ -1586,11 +1847,7 @@ export class SettingsService {
       // this migration ran is a real opt-out and sticks, because the marker
       // suppresses any re-run. Remove this block (and the marker constant)
       // once no pre-flip installs remain — target 2026-10.
-      const appliedMigrations = Array.isArray(parsed.appliedMigrations)
-        ? parsed.appliedMigrations.filter((m): m is string => typeof m === "string")
-        : [];
       const normalizedFeatures = normalizeFeatureFlags(parsed.features);
-      let migrationWriteBack = false;
       if (!appliedMigrations.includes(SUBAGENT_WAKE_DEFAULT_FLIP_MIGRATION)) {
         if (normalizedFeatures.subAgentAutonomousWake === false) {
           delete normalizedFeatures.subAgentAutonomousWake;
@@ -1652,9 +1909,49 @@ export class SettingsService {
     }
   }
 
-  private async saveSettings(): Promise<void> {
+  /**
+   * Save the change the caller just made in memory. A change applies to
+   * memory when the call is made, so a read and the write built from it stay
+   * atomic. Saves run one at a time, each writing memory as it is when the
+   * save starts; changes made while one waits on the file lock go in the
+   * next. When a save fails, memory returns to what is on disk and every
+   * write not on disk fails with it — the failed save's and the ones made on
+   * top of it — so the process never runs on settings that are not on disk,
+   * and no write reports success for a change that is gone.
+   */
+  private commit(): Promise<void> {
+    const done = new Promise<void>((resolve, reject) => {
+      this.unsaved.push({ resolve, reject });
+    });
+    void this.drain();
+    return done;
+  }
+
+  private async drain(): Promise<void> {
+    if (this.saving) return;
+    this.saving = true;
+    try {
+      while (this.unsaved.length > 0) {
+        const batch = this.unsaved.splice(0);
+        const snapshot = this.getAll();
+        try {
+          await this.saveSettings(snapshot);
+          this.saved = snapshot;
+          if (this.withheldSecretKeys.size > 0) void this.deleteWithheldSecrets();
+          for (const write of batch) write.resolve();
+        } catch (err) {
+          this.settings = structuredClone(this.saved);
+          for (const write of [...batch, ...this.unsaved.splice(0)]) write.reject(err);
+        }
+      }
+    } finally {
+      this.saving = false;
+    }
+  }
+
+  private async saveSettings(settings: AppSettings): Promise<void> {
     await withFileLock(this.settingsPath, async () => {
-      writeUtf8FileAtomicSync(this.settingsPath, JSON.stringify(this.settings, null, 2));
+      writeUtf8FileAtomicSync(this.settingsPath, JSON.stringify(settings, null, 2));
     });
   }
 

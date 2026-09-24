@@ -7,6 +7,7 @@ import { validateExternalUrl } from "../../shared/external-url.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import { SETTINGS } from "../../shared/ipc-channels.js";
 import { envForcedSettingsPaths } from "../../shared/env-backed-settings.js";
+import { isInstalledThemeId } from "../../shared/plugin-theme-cache.js";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { sendToWindow } from "../safe-send.js";
@@ -231,7 +232,7 @@ function rendererSettingsSnapshot(snapshot: AppSettings): RendererSettingsSnapsh
 
 /** Shared by every handler that mutates settings and must re-broadcast the
  *  projected snapshot to all windows. */
-async function broadcastSettingsSnapshot(
+export async function broadcastSettingsSnapshot(
   deps: IpcDeps,
   shouldBroadcast: () => boolean = () => true,
 ): Promise<void> {
@@ -357,6 +358,32 @@ function refreshChatRuntimeProviders(
   }
   if (failed) throw firstError;
 }
+/**
+ * Install or remove marketplace provider presets and run every follow-up a
+ * preset change needs (reviewer rewire, chat providers, wildcard, sandbox
+ * endpoints, the settings broadcast), reporting a follow-up that fails as
+ * `finishError` once `mutate` has saved. The settings IPC and the content store's
+ * provider activation (blueprint 3.5) both go through here, so a preset
+ * installed from a git package behaves exactly like one installed today.
+ */
+export async function mutateMarketplaceProviderPresets(
+  deps: IpcDeps,
+  mutate: () => Promise<AppSettings>,
+): Promise<{ result: AppSettings; finishError: { ok: false; error: string; message: string } | null }> {
+  const prevLlm = deps.settingsService.get("llm");
+  const prevPresets = deps.settingsService.get("marketplace").installedProviderPresets;
+  const result = await mutate();
+  // The settings are saved: whatever fails from here is reported, never
+  // thrown, so no caller undoes a write that already landed.
+  let finishError: { ok: false; error: string; message: string } | null;
+  try {
+    finishError = await finishProviderPresetMarketplaceMutation(deps, prevLlm, prevPresets);
+  } catch (err) {
+    finishError = { ok: false, error: "provider-preset-refresh-failed", message: errorMessage(err) };
+  }
+  return { result, finishError };
+}
+
 async function finishProviderPresetMarketplaceMutation(
   deps: IpcDeps,
   prevLlm: LLMSettings,
@@ -594,25 +621,12 @@ export function registerSettingsHandlers(deps: IpcDeps): void {
       && left.provider === right.provider
       && left.model === right.model;
   };
-  const rollbackActiveChatRuntime = async (
-    previousActiveChatRuntime: LLMSettings["activeChatRuntime"],
-    failedActiveChatRuntime: LLMSettings["activeChatRuntime"],
-    transitionRevision: number,
-  ): Promise<boolean> => {
-    // Only the request that still owns the active selection may undo it. This
-    // preserves unrelated LLM updates and a newer multi-window selection.
-    if (
-      transitionRevision !== activeChatRuntimeTransitionRevision
-      || !sameActiveChatRuntime(settingsService.get("llm").activeChatRuntime, failedActiveChatRuntime)
-    ) {
-      return false;
-    }
-    const persistRestoration = settingsService.patch({
-      llm: { activeChatRuntime: previousActiveChatRuntime },
-    });
-    // SettingsService mutates memory before its first await. Restore every
-    // executable binding in that same synchronous turn; waiting for disk here
-    // would leave the failed API/subscription provider reachable meanwhile.
+  /**
+   * Bind every execution consumer to the runtime in memory. Each step runs
+   * even when an earlier one fails: a restored selection stays authoritative,
+   * and a reviewer that cannot be rewired stays on its fail-closed path.
+   */
+  const bindExecutionToSettings = (): void => {
     try {
       refreshChatRuntimeProviders(deps);
     } catch {
@@ -621,30 +635,59 @@ export function registerSettingsHandlers(deps: IpcDeps): void {
     try {
       deps.rewireReviewerAgent?.();
     } catch {
-      // The restored selection remains authoritative; preserve the original
-      // selection error instead of masking it with a best-effort rewire error.
+      // Preserve the original selection error instead of masking it with a
+      // best-effort rewire error.
     }
     try {
       deps.refreshActiveLlmWildcard?.();
     } catch {
       // See reviewer rewire above.
     }
+  };
+  const rollbackActiveChatRuntime = async (
+    previousActiveChatRuntime: LLMSettings["activeChatRuntime"],
+    failedActiveChatRuntime: LLMSettings["activeChatRuntime"],
+    transitionRevision: number,
+  ): Promise<{ runtime: LLMSettings["activeChatRuntime"] } | null> => {
+    // Only the request that still owns the active selection may undo it; a
+    // newer selection binds execution itself.
+    if (transitionRevision !== activeChatRuntimeTransitionRevision) return null;
+    // Memory is authoritative. A failed save has already put it back on the
+    // saved settings (SettingsService never runs on settings that are not on
+    // disk), which may be older than `previousActiveChatRuntime` when that
+    // one was unsaved too. When memory no longer holds the failed runtime,
+    // only the bindings made for it must go, with no write — so an unrelated
+    // LLM update is preserved too.
+    const current = settingsService.get("llm").activeChatRuntime;
+    const restoredBySave = !sameActiveChatRuntime(current, failedActiveChatRuntime);
+    const restoredRuntime = restoredBySave ? current : previousActiveChatRuntime;
+    const persistRestoration = restoredBySave
+      ? Promise.resolve()
+      : settingsService.patch({ llm: { activeChatRuntime: previousActiveChatRuntime } });
+    // SettingsService mutates memory before its first await. Restore every
+    // executable binding in that same synchronous turn; waiting for disk here
+    // would leave the failed API/subscription provider reachable meanwhile.
+    bindExecutionToSettings();
+    const ownsRestoration = (): boolean => (
+      transitionRevision === activeChatRuntimeTransitionRevision
+      && sameActiveChatRuntime(settingsService.get("llm").activeChatRuntime, restoredRuntime)
+    );
     try {
       await persistRestoration;
     } catch {
-      return false;
+      // The restoring save failed as well, so memory is back on the settings
+      // on disk. Bind execution to them rather than to the runtime that could
+      // not be saved.
+      if (transitionRevision === activeChatRuntimeTransitionRevision) {
+        bindExecutionToSettings();
+        await broadcastSettingsSnapshot(deps, () => transitionRevision === activeChatRuntimeTransitionRevision);
+      }
+      return null;
     }
-    const ownsRestoration = (): boolean => (
-      transitionRevision === activeChatRuntimeTransitionRevision
-      && sameActiveChatRuntime(
-        settingsService.get("llm").activeChatRuntime,
-        previousActiveChatRuntime,
-      )
-    );
-    if (!ownsRestoration()) return false;
+    if (!ownsRestoration()) return null;
 
     await broadcastSettingsSnapshot(deps, ownsRestoration);
-    return ownsRestoration();
+    return ownsRestoration() ? { runtime: restoredRuntime } : null;
   };
   const setActiveChatRuntime = async (
     activeChatRuntime: LLMSettings["activeChatRuntime"],
@@ -684,7 +727,7 @@ export function registerSettingsHandlers(deps: IpcDeps): void {
       // before issuing the guarded restoration. This prevents an older write
       // from racing the rollback on disk.
       await persistSelection.catch(() => undefined);
-      let restored = false;
+      let restored: { runtime: LLMSettings["activeChatRuntime"] } | null = null;
       try {
         restored = await rollbackActiveChatRuntime(
           previousLlm.activeChatRuntime,
@@ -695,8 +738,12 @@ export function registerSettingsHandlers(deps: IpcDeps): void {
         // The renderer must never be told that the new runtime became active
         // when its exact persisted predecessor could not be restored.
       }
-      if (restored && previousSubscriptionProvider) {
-        publishSubscriptionRuntimeStatusUpdated(previousSubscriptionProvider);
+      // The runtime restored may be older than this switch's predecessor when
+      // that one failed to save too. The subscription mutation announces the
+      // provider that failed; announce the one restored.
+      const restoredProvider = restored?.runtime?.kind === "subscription" ? restored.runtime.provider : null;
+      if (restoredProvider && restoredProvider !== nextSubscriptionProvider) {
+        publishSubscriptionRuntimeStatusUpdated(restoredProvider);
       }
       throw new SubscriptionRuntimeServiceError("subscription-operation-failed");
     }
@@ -763,6 +810,22 @@ export function registerSettingsHandlers(deps: IpcDeps): void {
     // patch naming it is refused whole, the same way as `a2aRemote`.
     if (partial && typeof partial === "object" && Object.prototype.hasOwnProperty.call(partial, "appliedMigrations")) {
       return { ok: false, error: "applied-migrations-main-owned" };
+    }
+    // A theme package owns its id (design §5.5). The legacy marketplace turns a
+    // compiled bundle on by patching this list, so the refusal the package path
+    // makes in the other direction is made here: otherwise both claim one id.
+    const themeIdsPatch = ((partial as Record<string, unknown> | null | undefined)?.marketplace as Record<string, unknown> | undefined)
+      ?.installedThemeBundleIds;
+    if (Array.isArray(themeIdsPatch)) {
+      const held: readonly string[] = settingsService.get("marketplace").installedThemeBundleIds;
+      const claimed = themeIdsPatch.find((id): id is string => typeof id === "string" && !held.includes(id) && isInstalledThemeId(id));
+      if (claimed !== undefined) {
+        return {
+          ok: false,
+          error: "theme-id-held-by-package",
+          message: `Theme ${claimed} is installed as a package; uninstall the package first.`,
+        };
+      }
     }
     const llmPatch = (partial as Record<string, unknown> | null | undefined)
       ?.llm as Record<string, unknown> | undefined;
@@ -883,23 +946,23 @@ export function registerSettingsHandlers(deps: IpcDeps): void {
         // reviewer construction ran. Restore the full predecessor only when
         // this request's captured snapshot is still current; otherwise a full
         // replacement would discard the newer window's LLM settings.
+        let rollbackMessage: string | null = null;
         if (sameLlmSettings(settingsService.get("llm"), newLlm)) {
           try {
             await settingsService.replaceLlm(prevLlm);
           } catch (rollbackErr) {
-            const rollbackMessage = errorMessage(rollbackErr);
-            return {
-              ok: false,
-              error: "reviewer-rewire-failed",
-              message: `${message}; rollback failed: ${rollbackMessage}`,
-            };
+            // The restoring save failed, so memory is back on the new LLM
+            // settings, which are on disk. The refreshes below bind to them.
+            rollbackMessage = errorMessage(rollbackErr);
           }
-          try {
-            deps.rewireReviewerAgent?.();
-          } catch {
-            // The active LLM settings have been rolled back. Keep the IPC error
-            // focused on the original failing rewire; a second failure leaves the
-            // app on the same fail-closed reviewer path it had before the patch.
+          if (rollbackMessage === null) {
+            try {
+              deps.rewireReviewerAgent?.();
+            } catch {
+              // The active LLM settings have been rolled back. Keep the IPC error
+              // focused on the original failing rewire; a second failure leaves the
+              // app on the same fail-closed reviewer path it had before the patch.
+            }
           }
         }
         if (prevAllowPrivate !== newAllowPrivate) {
@@ -907,13 +970,25 @@ export function registerSettingsHandlers(deps: IpcDeps): void {
         }
         refreshChatRuntimeProviders(deps);
         deps.refreshActiveLlmWildcard?.();
+        if (
+          vendorBaseUrlSignature(
+            settingsService.get("llm"),
+            settingsService.get("marketplace").installedProviderPresets,
+          ) !== prevVendorBaseUrlSig
+        ) {
+          void deps.refreshSandboxNetworkConfig?.();
+        }
         // The shortcuts/system fields were already persisted
         // by `patch`; reconcile the OS state to disk even though the reviewer
         // rewire failed, so a combined patch doesn't leave the accelerator /
         // login item out of sync with what the user just saved.
         reconcileShortcutStartupIfChanged();
         await broadcastSettingsSnapshot(deps);
-        return { ok: false, error: "reviewer-rewire-failed", message };
+        return {
+          ok: false,
+          error: "reviewer-rewire-failed",
+          message: rollbackMessage === null ? message : `${message}; rollback failed: ${rollbackMessage}`,
+        };
       }
     }
     if (prevAllowPrivate !== newAllowPrivate) {
@@ -947,15 +1022,9 @@ export function registerSettingsHandlers(deps: IpcDeps): void {
       auditUnauthorized(auditLogger, CHANNELS.settings.marketplaceInstallProviderPreset, e);
       return UNAUTHORIZED_FRAME;
     }
-    const prevLlm = settingsService.get("llm");
-    const prevPresets = settingsService.get("marketplace").installedProviderPresets;
     try {
-      const result = await settingsService.installMarketplaceProviderPreset(
-        preset as MarketplaceInstalledProviderPreset,
-      );
-      const finishError = await finishProviderPresetMarketplaceMutation(
-        deps, prevLlm, prevPresets,
-      );
+      const { result, finishError } = await mutateMarketplaceProviderPresets(deps, () =>
+        settingsService.installMarketplaceProviderPreset(preset as MarketplaceInstalledProviderPreset));
       return finishError ?? result;
     } catch (err) {
       return {
@@ -978,13 +1047,9 @@ export function registerSettingsHandlers(deps: IpcDeps): void {
         message: "Provider preset id must be a string.",
       };
     }
-    const prevLlm = settingsService.get("llm");
-    const prevPresets = settingsService.get("marketplace").installedProviderPresets;
     try {
-      const result = await settingsService.uninstallMarketplaceProviderPreset(providerId);
-      const finishError = await finishProviderPresetMarketplaceMutation(
-        deps, prevLlm, prevPresets,
-      );
+      const { result, finishError } = await mutateMarketplaceProviderPresets(deps, () =>
+        settingsService.uninstallMarketplaceProviderPreset(providerId));
       return finishError ?? result;
     } catch (err) {
       return {

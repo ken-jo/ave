@@ -22,8 +22,9 @@
 
 /**
  * A bundle id as the renderer holds it before validation — settings and the
- * boot-time global can name a bundle that is not installed; `isBundleId`
- * narrows to the shared `BundleId` union before use.
+ * boot-time global can name a bundle that is not installed; `isThemeId`
+ * checks its form, and a theme that is neither compiled in nor installed
+ * falls back to the default bundle when it is resolved.
  */
 export type UnvalidatedBundleId = string;
 

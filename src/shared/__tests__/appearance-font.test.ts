@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { installedFontStack } from "../installed-content.js";
 import {
   FONT_SIZE_SCALE_VALUES,
   isValidFontFamilyOverride,
@@ -50,7 +51,9 @@ describe("appearance-font — shared frame-0 / write-time guards", () => {
 
   it("rejects empty, over-length, and non-string values", () => {
     expect(isValidFontFamilyOverride("")).toBe(false);
-    expect(isValidFontFamilyOverride("A".repeat(201))).toBe(false);
+    expect(isValidFontFamilyOverride("A".repeat(257))).toBe(false);
+    // The longest installed font stack (a 64-character package name) is still a valid selection.
+    expect(isValidFontFamilyOverride(installedFontStack(`a${"b".repeat(62)}c`))).toBe(true);
     expect(isValidFontFamilyOverride(123)).toBe(false);
     expect(isValidFontFamilyOverride(undefined)).toBe(false);
     expect(isValidFontFamilyOverride(null)).toBe(false);

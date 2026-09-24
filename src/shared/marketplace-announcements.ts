@@ -49,12 +49,12 @@ export type MarketplaceAnnouncementActionTarget =
  * One button on an announcement banner, already validated and already gated —
  * an action that reaches the renderer is one this build can honour.
  *
- * The label carries every shipped language rather than pre-resolved text: the
+ * The label carries every compiled language rather than pre-resolved text: the
  * user can switch language without the banner refetching, so the banner picks
- * `label[locale]` at render time.
+ * the label at render time ({@link announcementActionLabel}).
  */
 export interface MarketplaceAnnouncementAction {
-  label: Record<Locale, string>;
+  label: ActionLabel;
   target: MarketplaceAnnouncementActionTarget;
 }
 
@@ -87,10 +87,18 @@ export function isMarketplaceAnnouncementLevel(
   );
 }
 
-function parseActionLabel(value: unknown): Record<Locale, string> | null {
+/** One text per compiled language; English is always there. */
+type ActionLabel = { en: string } & Partial<Record<Locale, string>>;
+
+/** The label in `locale`, or in English for an installed language the announcement does not carry. */
+export function announcementActionLabel(action: Pick<MarketplaceAnnouncementAction, "label">, locale: Locale): string {
+  return action.label[locale] ?? action.label.en;
+}
+
+function parseActionLabel(value: unknown): ActionLabel | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;
-  const label = {} as Record<Locale, string>;
+  const label: Partial<Record<Locale, string>> = {};
   for (const locale of SUPPORTED_LOCALES) {
     const text = raw[locale];
     // Every shipped language is required. A missing one would render a blank
@@ -98,7 +106,7 @@ function parseActionLabel(value: unknown): Record<Locale, string> | null {
     if (typeof text !== "string" || text.trim().length === 0) return null;
     label[locale] = text.trim();
   }
-  return label;
+  return label as ActionLabel;
 }
 
 function parseActionTarget(
