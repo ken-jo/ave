@@ -172,7 +172,7 @@ skills/<name>/                   # ave-package.json, SKILL.md, resources
 agents/<name>/                   # ave-package.json, AGENTS.md
 themes/<name>/                   # ave-package.json, theme.json
 fonts/<name>/                    # ave-package.json, font.json, files/
-languages/<locale>/              # ave-package.json, language.json, messages.json
+languages/<name>/                # ave-package.json, language.json, messages.json
 providers/<name>/                # ave-package.json, provider.json
 messaging/<name>/                # ave-package.json, connection.json
 policy/revocations.json          # revocations of this repository's own packages
@@ -309,7 +309,7 @@ interface PackageDescriptor {
 |---|---|---|
 | `plugin` | `{ authority: PluginAuthority; artifact: PluginArtifactPins }` | `ave-package.json`; tree 단계면 `plugin.json`, `dist/**`, `assets/**`도 |
 | `mcp` | `{ server: McpServerSpec } \| { serverJson: "server.json", select?: { package?: number; remote?: number } }` | `ave-package.json`, `server.json`, 패키지 로컬 stdio 명령용 `server/**`(선택) |
-| `skill` | `{ entry: "SKILL.md" }` | `SKILL.md`, `references/**`, `assets/**` |
+| `skill` | `{ entry: "SKILL.md" }` | `SKILL.md`, `LICENSE`, `NOTICE`, `scripts/**`, `references/**`, `assets/**` (Agent Skills 레이아웃, agentskills.io) |
 | `agent` | `{ entry: "AGENTS.md" }` | `AGENTS.md` |
 | `theme` | `{ entry: "theme.json" }` | `theme.json`, 미리보기 이미지(선택) |
 | `font` | `{ entry: "font.json" }` | `font.json`, `files/*.woff2\|woff\|ttf\|otf`, `LICENSE` |
@@ -431,7 +431,7 @@ git 소스에서 설치하는 플러그인은:
 
 | 종류 | 최대 합계 | 최대 파일 수 | 허용 확장자 |
 |---|---|---|---|
-| skill | 2 MB | 64 | `.md .txt .json .yaml .yml .png .jpg .webp` |
+| skill | 2 MB | 64 | `.md .txt .json .yaml .yml .png .jpg .webp`. `scripts/`는 `.py .js .mjs .cjs .sh .pin` 추가, `assets/`는 `.csv .tsv .pdf .hwp .hwpx .docx .xlsx .pptx` 추가. `LICENSE`, `NOTICE` |
 | agent | 256 KB | 1 | `.md` |
 | theme | 256 KB | 4 | `.json .png .jpg .webp` |
 | font | 20 MB | 32 | `.json .woff2 .woff .ttf .otf` + `LICENSE` |
@@ -477,8 +477,12 @@ version, contentSha256, installedAt }`입니다. 콘텐츠에는 단계가 없�
   번들의 토큰 이름을 모두 `"H S% L%"` 형식으로, `surfaces`는 서피스 단계
   (`surface-sunken` … `border-strong`)를 담습니다. 설치된 테마도 컴파일된
   번들과 같은 토큰 계약과 WCAG 대비 규칙을 지켜야 하고(표는
-  `shared/theme-tokens.ts` 하나), 마켓플레이스가 배포하는 것까지 포함해
-  컴파일된 번들 id는 모두 거부합니다. `preview`는 바이트 기준으로 PNG, JPEG,
+  `shared/theme-tokens.ts` 하나), 계속 컴파일되어 남는 번들(`moonstone`,
+  `gallery`)의 id는 거부합니다. 서버 마켓이 배포하던 번들 14개는 같은 id의
+  테마 패키지로 배포되고, 전환 때 컴파일본이 제거되므로(청사진 6.2) 선택값과
+  기존 설치가 이름을 그대로 유지합니다. 그 전까지는 같은 id라면 설치된 테마가
+  컴파일된 번들보다 우선하고, 기존 설치가 이미 켜 둔 id를 처음 설치하려 하면
+  `PACKAGE_ID_CONFLICT`입니다. `preview`는 바이트 기준으로 PNG, JPEG,
   WebP 이미지여야 하고 한 변이 2048 px 이하여야 합니다. 이름과 설명에는 양방향
   재정의 문자나 보이지 않는 문자를 쓸 수 없습니다. 적용은 인라인 사용자 정의
   속성과 해당 shell의 그림자 스택, `color-scheme`으로 합니다.
@@ -1499,6 +1503,8 @@ Retry가 있는 `failed` 상태.
 | 설정 `backend`, `cloudBaseUrl`, `cloudAllowPrivateNetwork` | 설정 이관으로 제거 |
 | 설정 `updateCheckEnabled`, `updateCheckIntervalMs`, `canaryOptIn`, `skippedPluginUpdates`, `dismissedAnnouncementIds` | 위 의미로 유지 |
 | 설정 `installedThemeBundleIds`, `installedLanguagePacks`, `installedProviderPresets`, `installedProviderIds` | 원장(ledger) 항목으로 변환 |
+| `moonstone`, `gallery` 밖의 컴파일된 테마 번들 14개(`theme/bundles/*.ts`, `styles.css` 블록, `MARKETPLACE_ELIGIBLE_THEME_BUNDLE_IDS`) | 제거. 공식 테마 패키지가 같은 id를 가짐 |
+| 벤더 id `nousResearch`, `v0` | 공급자 패키지 이름이 벤더 id이므로 `nous-research`, `vercel-v0`로 바꾸고 설정·시크릿을 한 번 이관 |
 | 시크릿 `marketplace.apiKey`와 그 IPC(`ipc/domains/settings.ts`) | 삭제. 텔레메트리도 더는 읽지 않음 |
 | IPC `ave:plugins:marketplace:list`, `ave:plugins:install`, `ave:plugins:rollback` | `catalog:list`와 `install:plan/execute`로 대체. 롤백 = 목록의 이전 버전 설치 |
 | IPC `ave:marketplace:ping` | `sources:refresh` 결과로 대체 |

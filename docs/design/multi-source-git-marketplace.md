@@ -177,7 +177,7 @@ skills/<name>/                   # ave-package.json, SKILL.md, resources
 agents/<name>/                   # ave-package.json, AGENTS.md
 themes/<name>/                   # ave-package.json, theme.json
 fonts/<name>/                    # ave-package.json, font.json, files/
-languages/<locale>/              # ave-package.json, language.json, messages.json
+languages/<name>/                # ave-package.json, language.json, messages.json
 providers/<name>/                # ave-package.json, provider.json
 messaging/<name>/                # ave-package.json, connection.json
 policy/revocations.json          # revocations of this repository's own packages
@@ -319,7 +319,7 @@ interface PackageDescriptor {
 |---|---|---|
 | `plugin` | `{ authority: PluginAuthority; artifact: PluginArtifactPins }` | `ave-package.json`; for the tree rung also `plugin.json`, `dist/**`, `assets/**` |
 | `mcp` | `{ server: McpServerSpec } \| { serverJson: "server.json", select?: { package?: number; remote?: number } }` | `ave-package.json`, `server.json`, optional `server/**` for a package-local stdio command |
-| `skill` | `{ entry: "SKILL.md" }` | `SKILL.md`, `references/**`, `assets/**` |
+| `skill` | `{ entry: "SKILL.md" }` | `SKILL.md`, `LICENSE`, `NOTICE`, `scripts/**`, `references/**`, `assets/**` (the Agent Skills layout, agentskills.io) |
 | `agent` | `{ entry: "AGENTS.md" }` | `AGENTS.md` |
 | `theme` | `{ entry: "theme.json" }` | `theme.json`, optional preview image |
 | `font` | `{ entry: "font.json" }` | `font.json`, `files/*.woff2\|woff\|ttf\|otf`, `LICENSE` |
@@ -446,7 +446,7 @@ one change (blueprint phase 6); there is no SDK copy to change with it
 
 | Kind | Max total | Max files | Allowed extensions |
 |---|---|---|---|
-| skill | 2 MB | 64 | `.md .txt .json .yaml .yml .png .jpg .webp` |
+| skill | 2 MB | 64 | `.md .txt .json .yaml .yml .png .jpg .webp`; in `scripts/` also `.py .js .mjs .cjs .sh .pin`; in `assets/` also `.csv .tsv .pdf .hwp .hwpx .docx .xlsx .pptx`; `LICENSE`, `NOTICE` |
 | agent | 256 KB | 1 | `.md` |
 | theme | 256 KB | 4 | `.json .png .jpg .webp` |
 | font | 20 MB | 32 | `.json .woff2 .woff .ttf .otf` + `LICENSE` |
@@ -495,8 +495,13 @@ ledger feeds snapshot retention (§2.3) like the plugin registry does.
   one of the compiled bundles' token names as `"H S% L%"`, `surfaces` the
   surface ladder (`surface-sunken` … `border-strong`). An installed theme is
   held to the same token contract and WCAG contrast rules as the compiled
-  bundles (one table, `shared/theme-tokens.ts`). Every compiled bundle id is
-  refused, including the ones the marketplace delivers. `preview` must be a
+  bundles (one table, `shared/theme-tokens.ts`). The ids of the bundles that
+  stay compiled in (`moonstone`, `gallery`) are refused. The fourteen bundles
+  the server marketplace delivers ship as theme packages under their own
+  ids, and the switch removes their compiled copies (blueprint 6.2), so a
+  selection or a legacy install keeps its name. Until then an installed
+  theme wins over the compiled bundle of the same id, and a first install of
+  an id the legacy install already turned on is `PACKAGE_ID_CONFLICT`. `preview` must be a
   PNG, JPEG or WebP image by its bytes, at most 2048 px a side. Names and
   descriptions refuse bidirectional overrides and invisible characters. It
   applies as inline custom properties with its shell's shadow stack and
@@ -1597,6 +1602,8 @@ catalogs through the generator; no raw keys.
 | settings `backend`, `cloudBaseUrl`, `cloudAllowPrivateNetwork` | removed by a settings migration |
 | settings `updateCheckEnabled`, `updateCheckIntervalMs`, `canaryOptIn`, `skippedPluginUpdates`, `dismissedAnnouncementIds` | kept with the meanings above |
 | settings `installedThemeBundleIds`, `installedLanguagePacks`, `installedProviderPresets`, `installedProviderIds` | converted to ledger entries |
+| the fourteen compiled theme bundles outside `moonstone` and `gallery` (`theme/bundles/*.ts`, their `styles.css` blocks, `MARKETPLACE_ELIGIBLE_THEME_BUNDLE_IDS`) | removed; the official theme packages carry the same ids |
+| vendor ids `nousResearch`, `v0` | renamed `nous-research`, `vercel-v0` with a one-time settings and secret migration, because a provider package is named after its vendor id |
 | secret `marketplace.apiKey` and its IPC (`ipc/domains/settings.ts`) | deleted; telemetry no longer reads it |
 | IPC `ave:plugins:marketplace:list`, `ave:plugins:install`, `ave:plugins:rollback` | replaced by `catalog:list` and `install:plan/execute`; rollback = installing a listed older version |
 | IPC `ave:marketplace:ping` | replaced by `sources:refresh` results |
