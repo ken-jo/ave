@@ -12,7 +12,18 @@ import { compareSemver } from "../../shared/semver-compare.js";
 import type { CatalogRow } from "../catalog/aggregate.js";
 import type { PackageKind } from "../catalog/types.js";
 import { MarketplaceError } from "../errors.js";
+import { isSynthesizedVersion } from "../sources/direct-package.js";
 import type { PackagePlan } from "./descriptor.js";
+
+/**
+ * Semver order, except that two versions a commit names (`0.0.0+g…`, design
+ * §8.2) differ only in build metadata, which semver ignores: the pin only
+ * moves to descendant commits, so a different one is newer.
+ */
+function compareVersions(a: string, b: string): number {
+  if (isSynthesizedVersion(a) && isSynthesizedVersion(b)) return a === b ? 0 : 1;
+  return compareSemver(a, b);
+}
 
 export interface InstalledPackage {
   kind: PackageKind;
@@ -37,7 +48,7 @@ export function classifyInstall(plan: PackagePlan, installed: InstalledPackage |
   }
   if (installed.sourceId === plan.sourceId) {
     if (installed.version === null) return { action: "replace", direction: "repair", from: null };
-    const order = compareSemver(plan.version, installed.version);
+    const order = compareVersions(plan.version, installed.version);
     return { action: "replace", direction: order > 0 ? "upgrade" : order === 0 ? "reinstall" : "downgrade", from: installed.version };
   }
   if (!options.switchSource) {
@@ -72,7 +83,7 @@ export function updateFor(installed: InstalledPackage & { version: string }, row
   if (!row) return { state: "not_listed" };
   if (row.choice.state === "candidate") {
     const version = row.choice.version.version;
-    return compareSemver(version, installed.version) > 0 ? { state: "update", row, version } : { state: "current" };
+    return compareVersions(version, installed.version) > 0 ? { state: "update", row, version } : { state: "current" };
   }
   if (row.choice.state === "upgrade_required") {
     const newest = row.package.versions.reduce<string | null>(

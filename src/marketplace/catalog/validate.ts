@@ -237,25 +237,52 @@ export interface DescriptorContext {
 export function validateDescriptorText(text: string, context: DescriptorContext): Validation<PackageDescriptor> {
   const parsed = parse(text);
   if (!parsed.ok) return parsed;
+  return validateDescriptorValue(parsed.value, context, "ave-package.json");
+}
+
+function validateDescriptorValue(document: unknown, context: DescriptorContext, file: string): Validation<PackageDescriptor> {
   const { descriptor } = validators();
-  if (!descriptor(parsed.value)) return { ok: false, error: `ave-package.json: ${describeErrors(descriptor.errors)}` };
-  const value = parsed.value as PackageDescriptor;
+  if (!descriptor(document)) return { ok: false, error: `${file}: ${describeErrors(descriptor.errors)}` };
+  const value = document as PackageDescriptor;
   if (context.expected && (context.expected.kind !== value.kind || context.expected.name !== value.name)) {
     return {
       ok: false,
-      error: `ave-package.json declares ${value.kind}/${value.name} but the index lists ${context.expected.kind}/${context.expected.name}`,
+      error: `${file} declares ${value.kind}/${value.name} but the index lists ${context.expected.kind}/${context.expected.name}`,
     };
   }
   if (value.kind === "plugin") {
     const payload = value.payload as { authority: PluginAuthority; artifact: PluginArtifactPins };
     const rule = pluginRules(payload.authority, payload.artifact, value.minAppVersion, context.direct);
-    if (rule) return { ok: false, error: `ave-package.json: ${rule}` };
+    if (rule) return { ok: false, error: `${file}: ${rule}` };
   }
   if (value.kind === "mcp") {
     const rule = mcpRules(value.payload);
-    if (rule) return { ok: false, error: `ave-package.json: ${rule}` };
+    if (rule) return { ok: false, error: `${file}: ${rule}` };
   }
   return { ok: true, value };
+}
+
+/** Stands in for the default tree rung, which at a repository root has no path to name. */
+const ROOT_TREE_STAND_IN = "tree";
+
+/**
+ * A descriptor synthesized from a direct package's own file (design §8.2),
+ * held to the same schema and rules as a written one; errors name `file`.
+ * A plugin at the root of its repository has an empty `artifact`: its tree
+ * rung is the default, and the schema's one-rung minimum cannot name the
+ * root as a path, so that one field is checked with a stand-in and returned
+ * empty.
+ */
+export function validateSynthesizedDescriptor(document: PackageDescriptor, file: string): Validation<PackageDescriptor> {
+  const artifact = document.kind === "plugin" ? (document.payload as { artifact?: unknown }).artifact : undefined;
+  const rootTree = typeof artifact === "object" && artifact !== null && Object.keys(artifact).length === 0;
+  const checked = validateDescriptorValue(
+    rootTree ? { ...document, payload: { ...document.payload, artifact: { tree: ROOT_TREE_STAND_IN } } } : document,
+    { direct: true },
+    file,
+  );
+  if (!checked.ok || !rootTree) return checked;
+  return { ok: true, value: { ...checked.value, payload: { ...checked.value.payload, artifact: {} } } };
 }
 
 // ─── revocations ────────────────────────────────────────────────────────

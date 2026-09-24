@@ -462,6 +462,72 @@ describe.skipIf(process.platform === "win32")("SourceSyncer", () => {
     expectFailed(await syncer.sync("beta-src"), "SOURCE_NOT_A_MARKETPLACE");
   });
 
+  it("synthesizes a direct package from the first of plugin.json, SKILL.md, AGENTS.md and server.json (design §8.2)", async () => {
+    const { repo, name } = fixture();
+    const manifest = {
+      name: "tree-tool",
+      version: "1.2.0",
+      description: "Tools from a built tree",
+      extensions: { "ai.agent-connector.ave": { capabilities: ["host:overlay"], requires: { minAppVersion: "0.10.0" } } },
+    };
+    const commit = repo.commit(
+      {
+        "plugins/tree-tool/plugin.json": `${JSON.stringify(manifest)}\n`,
+        "plugins/tree-tool/SKILL.md": "---\nname: ignored\n---\nplugin.json comes first\n",
+        "skills/proofread/SKILL.md": "---\nname: proofread\ndescription: Checks Korean spelling\n---\nRead the text.\n",
+        "skills/versioned/SKILL.md": "---\nname: versioned\nversion: 2.0.1\n---\nBody\n",
+        "skills/versioned/ave-package.json": skill("versioned", "3.0.0"),
+        "agents/release-captain/AGENTS.md": "# Release captain\n",
+        "mcp/weather/server.json": `${JSON.stringify({ name: "io.github.example/weather", version: "0.5.0", description: "Weather", packages: [] })}\n`,
+      },
+      "direct files",
+    );
+    const { registry, syncer } = await setup();
+    const add = (id: string, subdir: string) => registry.add({ id, origin: "direct", url: server.url(name), subdir, auth: { kind: "none" } });
+    await add("tree-src", "plugins/tree-tool");
+    await add("skill-src", "skills/proofread");
+    await add("versioned-src", "skills/versioned");
+    await add("agent-src", "agents/release-captain");
+    await add("mcp-src", "mcp/weather");
+
+    const only = async (id: string) => {
+      expect(await syncer.sync(id)).toMatchObject({ status: "ok", pinnedCommit: commit });
+      return (await syncer.readSnapshot(id))!.packages[0]!;
+    };
+    expect(await only("tree-src")).toMatchObject({
+      kind: "plugin",
+      name: "tree-tool",
+      description: "Tools from a built tree",
+      versions: [{ version: "1.2.0", minAppVersion: "0.10.0", artifact: { tree: "plugins/tree-tool" }, authority: manifest.extensions["ai.agent-connector.ave"] }],
+    });
+    expect(await only("skill-src")).toMatchObject({
+      kind: "skill",
+      name: "proofread",
+      description: "Checks Korean spelling",
+      versions: [{ version: `0.0.0+g${commit.slice(0, 12)}`, minAppVersion: "0.0.0" }],
+    });
+    // A descriptor beside SKILL.md is used as is.
+    expect(await only("versioned-src")).toMatchObject({ kind: "skill", name: "versioned", latest: "3.0.0" });
+    // AGENTS.md without front matter: the folder names the package.
+    expect(await only("agent-src")).toMatchObject({ kind: "agent", name: "release-captain" });
+    expect(await only("mcp-src")).toMatchObject({ kind: "mcp", name: "weather", latest: "0.5.0" });
+  });
+
+  it("synthesizes a plugin at a direct source's root with the default tree rung, and refuses one without minAppVersion", async () => {
+    const good = fixture();
+    const extensions = { "ai.agent-connector.ave": { capabilities: [], requires: { minAppVersion: "0.10.0" } } };
+    good.repo.commit({ "plugin.json": `${JSON.stringify({ name: "root-tool", version: "0.1.0", extensions })}\n` }, "root");
+    const bad = fixture();
+    bad.repo.commit({ "plugin.json": `${JSON.stringify({ name: "loose", version: "0.1.0", extensions: { "ai.agent-connector.ave": { capabilities: [] } } })}\n` }, "root");
+    const { registry, syncer } = await setup();
+    await registry.add({ id: "good-src", origin: "direct", url: server.url(good.name), auth: { kind: "none" } });
+    await registry.add({ id: "bad-src", origin: "direct", url: server.url(bad.name), auth: { kind: "none" } });
+
+    expect(await syncer.sync("good-src")).toMatchObject({ status: "ok" });
+    expect((await syncer.readSnapshot("good-src"))!.packages).toMatchObject([{ kind: "plugin", name: "root-tool", path: "", versions: [{ artifact: {} }] }]);
+    expectFailed(await syncer.sync("bad-src"), "PACKAGE_COMPAT_UNDECLARED");
+  });
+
   it("joins a sync that is already running for the same source", async () => {
     const { repo, name } = fixture();
     repo.commit({ "marketplace.json": index("acme", []) }, "first");

@@ -9,7 +9,8 @@
  *     conventional layout (`<kind dir>/<name>/ave-package.json`, one level
  *     deep); a package the index lists without `versions` is read from its
  *     descriptor at this commit;
- *   - direct sources: the one `ave-package.json` at the subdir (or root);
+ *   - direct sources: the one package at the subdir (or root), from its
+ *     descriptor or synthesized from its own file (direct-package.ts);
  *   - every source: `policy/revocations.json` when present.
  * A package that fails validation is dropped with a diagnostic. An invalid
  * index or revocations file rejects the whole commit, so the caller keeps its
@@ -28,6 +29,7 @@ import type {
 } from "../catalog/types.js";
 import { validateDescriptorText, validateIndexText, validateRevocationsText, type CatalogDiagnostic } from "../catalog/validate.js";
 import { isMarketplaceError, type MarketplaceErrorCode } from "../errors.js";
+import { DIRECT_FILES, readDirectPackage } from "./direct-package.js";
 import type { ResolvedSource } from "./registry.js";
 
 export interface CatalogPackage {
@@ -166,7 +168,6 @@ export class SnapshotBuilder {
   /** Read and validate the descriptor at each path; failures become diagnostics. */
   private async descriptors(
     wanted: ReadonlyArray<{ path: string; expected?: { kind: PackageKind; name: string }; subject: string }>,
-    direct: boolean,
     diagnostics: CatalogDiagnostic[],
   ): Promise<Array<{ path: string; descriptor: PackageDescriptor }>> {
     await this.ensure(wanted.map((item) => descriptorPath(item.path)));
@@ -184,7 +185,7 @@ export class SnapshotBuilder {
         diagnostics.push({ subject: item.subject, message: `${descriptorPath(item.path)} is missing` });
         continue;
       }
-      const result = validateDescriptorText(text, { ...(item.expected ? { expected: item.expected } : {}), direct });
+      const result = validateDescriptorText(text, { ...(item.expected ? { expected: item.expected } : {}), direct: false });
       if (!result.ok) {
         diagnostics.push({ subject: item.subject, message: result.error });
         continue;
@@ -204,7 +205,6 @@ export class SnapshotBuilder {
     const unversioned = index.packages.filter((entry) => !entry.versions);
     const read = await this.descriptors(
       unversioned.map((entry) => ({ path: entry.path, expected: { kind: entry.kind, name: entry.name }, subject: subjectOf(entry) })),
-      false,
       diagnostics,
     );
     const readByPath = new Map(read.map((item) => [item.path, item.descriptor]));
@@ -248,7 +248,7 @@ export class SnapshotBuilder {
     if (wanted.length === 0) {
       throw new Rejection("SOURCE_NOT_A_MARKETPLACE", "no marketplace.json and no package descriptor in the conventional directories");
     }
-    const read = await this.descriptors(wanted, false, diagnostics);
+    const read = await this.descriptors(wanted, diagnostics);
     const publishedAt = await this.repo.commitTime(this.commit);
     const kindOf = new Map(wanted.map((item) => [item.path, item.kind]));
     const packages: CatalogPackage[] = [];
@@ -262,19 +262,15 @@ export class SnapshotBuilder {
     return packages;
   }
 
-  private async fromDirect(diagnostics: CatalogDiagnostic[]): Promise<CatalogPackage[]> {
+  /** The one package at the source's path (design §8.1): a descriptor, or one synthesized from the package's own file. */
+  private async fromDirect(): Promise<CatalogPackage[]> {
     const path = this.source.subdir ?? "";
-    const probe: CatalogDiagnostic[] = [];
-    const [found] = await this.descriptors([{ path, subject: this.source.id }], true, probe);
-    if (!found) {
-      const missing = probe.some((item) => item.message.endsWith("is missing"));
-      throw new Rejection(
-        missing ? "SOURCE_NOT_A_MARKETPLACE" : "SOURCE_INDEX_INVALID",
-        missing ? `no ${descriptorPath(path)} at the source's path` : probe.map((item) => item.message).join("; "),
-      );
+    const read = await readDirectPackage({ repo: this.repo, remote: this.remote, commit: this.commit, path, ...(this.signal ? { signal: this.signal } : {}) });
+    if (!read) {
+      throw new Rejection("SOURCE_NOT_A_MARKETPLACE", `no ${DIRECT_FILES.join(", ")} at ${path || "the repository root"}`);
     }
-    diagnostics.push(...probe);
-    return [packageFromDescriptor(found.descriptor, path, this.commit, await this.repo.commitTime(this.commit))];
+    if (!read.ok) throw new Rejection(read.code, read.error);
+    return [packageFromDescriptor(read.found.descriptor, path, this.commit, await this.repo.commitTime(this.commit))];
   }
 
   private async revocations(): Promise<Revocation[]> {
@@ -298,7 +294,7 @@ export class SnapshotBuilder {
       if (indexText !== null) {
         ({ identity, packages } = await this.fromIndex(indexText, diagnostics));
       } else if (direct) {
-        packages = await this.fromDirect(diagnostics);
+        packages = await this.fromDirect();
         const only = packages[0]!;
         identity = { name: this.source.id, displayName: this.source.label ?? only.displayName ?? only.name };
       } else {
