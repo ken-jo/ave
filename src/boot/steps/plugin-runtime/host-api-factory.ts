@@ -53,6 +53,7 @@ import {
 } from "../../../plugins/capabilities.js";
 import { auditPluginEmitDenial } from "../../../plugins/emit-denial-audit.js";
 import { getDeclaredEmittedEvents, manifestDocumentSha256 } from "../../../plugins/runtime/manifest-validation.js";
+import { canonicalJSON } from "../../../plugins/secret-access/canonical-json.js";
 import { applyConfigDefaults } from "../../../plugins/config-schema.js";
 import { shouldRestartAfterPluginConfigWrite } from "../../../plugins/config-restart-policy.js";
 import { OVERLAY_V1, WORK_BOARD } from "../../../shared/ipc-channels.js";
@@ -381,14 +382,19 @@ export function createHostApiFactory(
     if (installPluginId === undefined) {
       throw new Error(`HostApi install provenance missing: ${pluginId}`);
     }
-    // The host-owned entry a host-secret grant trusts: a candidate's own until
-    // it commits, else the registry's, re-read first if another writer
-    // changed the file.
+    // The host-owned entry a host-secret grant trusts: the registry's, re-read
+    // first if another writer changed the file. A candidate answers with its
+    // own entry until the registry records the same install (source, manifest
+    // and, when the candidate names one, origin); after that the registry's
+    // wins, so a later write (the §16.3 migration binding an origin) reaches
+    // this incarnation without a restart. A candidate from another source never
+    // borrows the registry's origin.
     const readRegistryEntry = async (): Promise<PluginRegistryTrust | undefined> => {
-      if (candidateRegistryEntry) return candidateRegistryEntry;
-      if (installPluginId === null) return undefined;
+      if (installPluginId === null) return candidateRegistryEntry;
       await refreshRegistryEntryCacheIfChanged();
-      return getRegistryEntry(installPluginId);
+      const committed = getRegistryEntry(installPluginId);
+      if (!candidateRegistryEntry) return committed;
+      return committed && recordsCandidate(committed, candidateRegistryEntry) ? committed : candidateRegistryEntry;
     };
     // A legacy install's receipt is verified once per incarnation: an update
     // installs through the ladder and starts a new one.
@@ -1692,4 +1698,11 @@ export function createHostApiFactory(
         },
       ));
   };
+}
+
+function recordsCandidate(committed: Readonly<PluginRegistryTrust>, candidate: Readonly<PluginRegistryTrust>): boolean {
+  if (committed.installSource !== candidate.installSource) return false;
+  if (committed.manifestSha256 !== candidate.manifestSha256) return false;
+  if (!candidate.origin) return true;
+  return canonicalJSON(committed.origin ?? null) === canonicalJSON(candidate.origin);
 }

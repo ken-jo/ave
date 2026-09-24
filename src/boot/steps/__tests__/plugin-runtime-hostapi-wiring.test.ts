@@ -753,6 +753,58 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     }
   });
 
+  it("lets a committed candidate see a registry entry bound after it started", async () => {
+    // A pre-switch entry re-enabled before the first sync: its candidate has no
+    // origin until the §16.3 migration binds one in the registry.
+    const dir = tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-candidate-bound-"));
+    runtimeTestState.registryPath = join(dir, "registry.json");
+    try {
+      const secretKey = "llm.apiKey.openai";
+      const { manifest, manifestSha256 } = granted("meeting", secretKey);
+      const entry = { id: "meeting", manifestPath: "meeting/plugin.json", installSource: "user", manifestSha256 };
+      writeFileSync(runtimeTestState.registryPath, "unbound");
+      runtimeTestState.readPluginRegistry.mockResolvedValue({ version: 1, plugins: [entry] });
+      const settings = makeSettingsService(new Map());
+      settings.getSecret.mockImplementation((key: string) => (key === secretKey ? "bound-secret" : undefined));
+      const createHostApi = await initAndGetFactory(settings);
+      const api = createHostApi(
+        "meeting",
+        manifest,
+        tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-candidate-")),
+        activeIncarnation(),
+        "meeting",
+        { installSource: "user", manifestSha256 },
+      );
+
+      expect(await api.getSecret(secretKey)).toBeNull();
+
+      runtimeTestState.readPluginRegistry.mockResolvedValue({ version: 1, plugins: [{ ...entry, origin: OFFICIAL_ORIGIN }] });
+      writeFileSync(runtimeTestState.registryPath, "bound to the official source");
+      expect(await api.getSecret(secretKey)).toBe("bound-secret");
+    } finally {
+      runtimeTestState.registryPath = "/tmp/ave-test/registry.json";
+    }
+  });
+
+  it("never lends a candidate from another source the registry's official origin", async () => {
+    const secretKey = "llm.apiKey.openai";
+    const { manifest, manifestSha256 } = granted("meeting", secretKey);
+    runtimeTestState.readPluginRegistry.mockResolvedValue({
+      version: 1,
+      plugins: [{ id: "meeting", manifestPath: "meeting/plugin.json", installSource: "user", manifestSha256, origin: OFFICIAL_ORIGIN }],
+    });
+    const settings = makeSettingsService(new Map());
+    settings.getSecret.mockImplementation((key: string) => (key === secretKey ? "official-secret" : undefined));
+    const createHostApi = await initAndGetFactory(settings);
+    const candidate = (entry: PluginRegistryTrust) =>
+      createHostApi("meeting", manifest, tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-other-")), activeIncarnation(), "meeting", entry);
+
+    const custom = { ...OFFICIAL_ORIGIN, sourceId: "team-mirror", sourceOrigin: "custom" as const };
+    expect(await candidate({ installSource: "user", manifestSha256, origin: custom }).getSecret(secretKey)).toBeNull();
+    expect(await candidate({ installSource: "local-dev", manifestSha256 }).getSecret(secretKey)).toBeNull();
+    expect(await candidate({ installSource: "user", manifestSha256, origin: OFFICIAL_ORIGIN }).getSecret(secretKey)).toBe("official-secret");
+  });
+
   it("compares the pin with the running document, never with the flat projection", async () => {
     const secretKey = "llm.apiKey.openai";
     const { manifest, manifestSha256 } = granted("meeting", secretKey);
