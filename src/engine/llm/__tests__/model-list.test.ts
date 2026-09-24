@@ -248,6 +248,7 @@ describe("LLM model list sync", () => {
           {
             id: "openai/gpt-4.1",
             name: "OpenAI GPT-4.1",
+            publisher: "OpenAI",
             summary: "A capable general-purpose model",
             limits: { max_input_tokens: 1_048_576 },
             supported_input_modalities: ["text", "image"],
