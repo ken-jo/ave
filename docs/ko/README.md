@@ -20,6 +20,7 @@ AI 프론티어 생산성 향상 엔터프라이즈 매니지먼트 시스템
 | [플러그인 배포 모델](./architecture/plugin-deployment-model.md) | managed vs user-installed 배포 정책 상세 |
 | [시작 가이드](./guides/getting-started.md) | 설치·실행, 그리고 첫 실행에서 설정 → 모델 화면의 공급자 카드로 공급자를 연결하는 절차 |
 | [타일로 나뉜 채팅 그룹](../design/tiled-chat-groups.md) | 메인 영역 워크벤치 모델의 기준 문서 — 타일 단위 대화, 그룹/창 범위 구분, `ave:chat:*` 채널 분리, 분할 트리 기하 |
+| [플러그인 HostApi 프로토콜화 설계](../design/plugin-hostapi-protocol.md) | 설계 단계 문서(영문) — 인프로세스 `PluginHostApi` 객체를 공개 JSON-RPC 프로토콜(`ave/host/*` + MCP)로 바꾸고 모든 코드 플러그인을 격리 프로세스에서 실행하는 계획, 48개 멤버 변환표, 비밀 처리, 계약 공개, 이행 단계 |
 | [디자인 문서 홈](../design/README.md) | 렌더러 UI 설계 문서 목록과 구현 앵커 |
 | [플러그인 개발 가이드 (역사 보존)](./guides/plugin-development.md) | 과거 한국어 검토·논의 이력 — 새 작성·검증은 [현재 English guide](../guides/plugin-development.md) |
 | [테마 및 UI primitive 기준](./development/theme-system.md) | semantic token theme system + shadcn registry primitive source of truth |

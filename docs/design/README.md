@@ -18,6 +18,7 @@ This page owns the current contract for Design. Use it as the first review surfa
 ## Pages In This Directory
 
 - [Tiled chat groups](./tiled-chat-groups.md) — the source of truth for the main area's workbench model: up to four framed chat groups in work mode and one in chat mode, what is per group and what is per window, how `ave:chat:*` divides along that line, the split tree and its geometry, edge drops, gutter resizing, and the shape the work panel takes inside a tile. Change this page in the same commit that changes that behavior.
+- [Plugin HostApi as a versioned protocol](./plugin-hostapi-protocol.md) — design, not implemented: how the in-process `PluginHostApi` object becomes a published JSON-RPC protocol (`ave/host/*` beside MCP) so every code plugin runs in its own confined process; the conversion table for all 48 members, secret handling, contract publication, migration phases and the removal condition for the in-process loader. Builds on `docs/blueprints/plugin-process-isolation.md`.
 - The `.html` files here are static mockups kept as provenance for reviews that have already landed. They record a proposal at the time it was made and are not maintained against the shipped UI; read the markdown pages and the source for current behavior.
 
 ## Implementation Anchors
