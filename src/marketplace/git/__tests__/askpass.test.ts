@@ -1,5 +1,5 @@
-import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { execFile, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -76,7 +76,7 @@ describe("AskpassBroker", () => {
   });
 
   it.skipIf(process.platform === "win32")("listens outside a directory too deep for a unix socket, and removes both on close", async () => {
-    const deep = join(mkdtempSync(join(tmpdir(), "ave-askpass-deep-")), "x".repeat(80));
+    const deep = join(mkdtempSync(join(tmpdir(), "ave-deep-")), "x".repeat(80));
     mkdirSync(deep, { recursive: true });
     try {
       const long = await AskpassBroker.start({ getToken: () => "tok", parentDir: deep });
@@ -90,6 +90,44 @@ describe("AskpassBroker", () => {
       expect(existsSync(dirname(long.launcherPath))).toBe(false);
     } finally {
       rmSync(dirname(deep), { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("removes directories a crashed run left behind, and keeps live and fresh ones", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "ave-sweep-"));
+    const gone = spawnSync(process.execPath, ["-e", ""]).pid;
+    const make = (root: string, name: string, owner: number | null): string => {
+      const dir = join(root, name);
+      mkdirSync(dir, { mode: 0o700 });
+      if (owner !== null) writeFileSync(join(dir, "owner.pid"), String(owner));
+      return dir;
+    };
+    const crashed = make(parent, "ave-askpass-crashed", gone);
+    const live = make(parent, "ave-askpass-live", process.ppid);
+    const settingUp = make(parent, "ave-askpass-setting-up", null);
+    const abandoned = make(parent, "ave-askpass-abandoned", null);
+    const old = new Date(Date.now() - 10 * 60_000);
+    utimesSync(abandoned, old, old);
+    const unrelated = make(parent, "other-crashed", gone);
+    const crashedSocket = mkdtempSync("/tmp/ave-ask-");
+    writeFileSync(join(crashedSocket, "owner.pid"), String(gone));
+    try {
+      broker = await AskpassBroker.start({ getToken: () => null, parentDir: parent });
+      expect(existsSync(crashed)).toBe(false);
+      expect(existsSync(abandoned)).toBe(false);
+      expect(existsSync(crashedSocket)).toBe(false);
+      expect(existsSync(live)).toBe(true);
+      expect(existsSync(settingUp)).toBe(true);
+      expect(existsSync(unrelated)).toBe(true);
+      // The new broker names its own process, so the next start keeps it.
+      const second = await AskpassBroker.start({ getToken: () => null, parentDir: parent });
+      expect(existsSync(broker.launcherPath)).toBe(true);
+      await second.close();
+    } finally {
+      await broker?.close();
+      broker = null;
+      rmSync(parent, { recursive: true, force: true });
+      rmSync(crashedSocket, { recursive: true, force: true });
     }
   });
 
