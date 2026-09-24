@@ -45,7 +45,7 @@ work in P1–P4 has real data to test against.
 
 | PR | Content |
 |---|---|
-| 0.1 | Layout from design §3.1, `README` for package authors, `CODEOWNERS`, branch protection (required review, required checks, no force-push, no direct push) |
+| 0.1 | Layout from design §3.1, `README` for package authors, `CODEOWNERS`, branch protection (required review, required checks, no force-push, no direct push, merge commits only). While the repository has one maintainer the required approvals are 0, since an author cannot approve their own pull request and protection is never bypassed; they become 1 when a second maintainer joins |
 | 0.2 | Validation workflow: descriptor and index schemas (vendored from ave `schemas/marketplace/` with a drift test), the plugin contract (design §5.6: vendored at an ave tag, offline hash check and networked tag check), content limits, naming, secret scan, `minAppVersion` present, plugin `authority` equal to the released `plugin.json`, version strictly increasing, `(kind,name,version)` → one commit, `latest` not yanked |
 | 0.3 | Index generator + "committed index equals regenerated index" check |
 | 0.4 | Release workflow (design §6.3): on `main`, build each plugin whose source version has no `<name>-v<X.Y.Z>` tag, tag it, upload `{name}-{X.Y.Z}.zip` as a release asset of this repository, and open the pin PR; CI on the pin PR downloads the asset, hashes, unpacks and compares `plugin.json` with the descriptor |
