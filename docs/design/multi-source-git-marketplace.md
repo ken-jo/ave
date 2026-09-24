@@ -1638,9 +1638,13 @@ On first boot of the new version:
   The official index therefore carries `versions[]` entries for every version
   of a granted plugin that is still installed in the field; for each, the zip
   the current server serves is uploaded unchanged as that version's release
-  asset and pinned by its sha256 (blueprint phase 0). An entry with no
-  matching pin loses the grant until it updates, and the boot notice says
-  which plugin lost which key.
+  asset and pinned by its sha256 (blueprint phase 0). "Every version" means
+  every version the app can load: a release from before the Agent Plugins
+  manifest (the lines below `minAppVersion` 0.7.0, whose `plugin.json` has
+  no `extensions["ai.agent-connector.ave"]`) fails `parsePluginJson` before and after the
+  switch, so it has no working grant to keep and is not pinned. An entry
+  with no matching pin loses the grant until it updates, and the boot notice
+  says which plugin lost which key.
 - `installSource: "admin"` becomes `user`; the keys of those packages are
   written to `packages/default-installs.json` as already applied, so nothing
   is reinstalled or removed.

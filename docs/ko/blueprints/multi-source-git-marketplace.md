@@ -52,7 +52,7 @@ P6뿐입니다.
 | 0.4 | 릴리스 워크플로(설계서 §6.3): `main`에서, 소스 버전의 `<name>-v<X.Y.Z>` 태그가 없는 플러그인을 빌드하고 태그를 달아 `{name}-{X.Y.Z}.zip`을 이 저장소의 릴리스 자산으로 올린 뒤 핀 PR을 엶. 핀 PR의 CI는 자산을 내려받아 해시하고 풀어서 `plugin.json`을 descriptor와 대조 |
 | 0.5 | 각 공식 플러그인의 소스를 히스토리와 함께 `plugins/<name>/source/`로 가져옴(`meeting`, `local-indexer`, `lyra-mail`, `vega-helper`. 레포가 없는 `hello-world`는 현재 서버가 합성하는 패키지로 다시 만듦), `ave-plugin-template`은 `templates/plugin/`으로. 각 플러그인은 자기 lockfile을 두고 자기 디렉터리에서 빌드. 각 플러그인을 `@ave/plugin-sdk` git 의존에서 복사해 둔 계약과 `tools/`의 공용 빌드 헬퍼로 전환(설계서 §5.6). `plugin.json`에 `requires.minAppVersion` 설정, `installPolicy` 제거(설계서 §5.3). `ave-plugin-draco`은 공식 플러그인이 아니고 `orion`는 소유자의 git으로 옮기므로 둘 다 가져오지 않음 |
 | 0.6 | 한 번만 실행하는 콘텐츠 변환 스크립트: 현재 시드 세트의 모든 에이전트, 스킬(Agent Skills 레이아웃, 설계서 §5.2), MCP 패키지, 기본이 아닌 테마 번들을 번들 id 그대로 `theme.json`으로, 한국어 카탈로그를 `korean` 언어 패키지로, 공급자 시드(모두 내장 벤더)를 벤더 패키지로, 메시징 연결(서버에 없음) |
-| 0.7 | 현재 게시된 모든 플러그인의 descriptor를, 0.5에서 가져온 소스로 0.4가 빌드한 릴리스 자산에 핀. `HOST_SECRET_GRANTS`에 있는 플러그인(지금은 `meeting`, `local-indexer`)은 `versions[]`에 현장에 아직 설치된 이전 버전도 모두 나열: 각 버전마다 현재 서버가 제공하는 zip을 그대로 그 버전의 릴리스 자산으로 올리고 그 sha256으로 핀해서, 이관된 설치본이 grant를 유지하게 함(설계서 §16.3) |
+| 0.7 | 현재 게시된 모든 플러그인의 descriptor를, 0.5에서 가져온 소스로 0.4가 빌드한 릴리스 자산에 핀. `HOST_SECRET_GRANTS`에 있는 플러그인(지금은 `meeting`, `local-indexer`)은 `versions[]`에 현장에 아직 설치된 이전 버전 중 앱이 불러올 수 있는 것(Agent Plugins 매니페스트 라인, `minAppVersion` 0.7.0, 설계서 §16.3)도 모두 나열: 각 버전마다 현재 서버가 제공하는 zip을 그대로 그 버전의 릴리스 자산으로 올리고 그 sha256으로 핀해서, 이관된 설치본이 grant를 유지하게 함(설계서 §16.3) |
 | 0.8 | 현재 유효한 공식 패키지 폐기를 담은 `policy/revocations.json` |
 
 **종료 조건:** `main`에서 검증 통과, 호스팅 API로 브랜치 보호 확인, 현재 카탈로그의
