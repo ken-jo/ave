@@ -84,6 +84,7 @@ import {
   pruneLazyLlmVendorBlocks,
   withoutMirroredMarketplaceProviderPresetEndpoint,
   withMarketplaceProviderPresetModelSlot,
+  withRenamedLlmVendorIds,
   SIDE_PANEL_SPLIT_KEYS,
   normalizeSystem,
   isWebViewPreferredFlow,
@@ -124,6 +125,23 @@ const PROVIDER_PRESET_ENDPOINT_UNMIRROR_MIGRATION =
  */
 const PROVIDER_PRESET_MODEL_SLOT_MIGRATION =
   "marketplace-provider-preset-model-slot";
+/**
+ * One-time rewrite of renamed built-in vendor ids in the stored settings. See
+ * {@link withRenamedLlmVendorIds}; the matching API-key move is
+ * {@link SettingsService.migrateRenamedVendorSecrets}.
+ */
+const LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION = "llm-vendor-id-package-names";
+/**
+ * Built-in vendor ids that were renamed, old → new. Marketplace provider
+ * packages are named after the vendor id and package names are lowercase
+ * kebab-case of at least three characters, so neither a camelCase id nor one
+ * as short as `v0` could ship as a package. Read only by the one-time
+ * migrations: nothing resolves an old id at runtime.
+ */
+const RENAMED_LLM_VENDOR_IDS: Readonly<Record<string, LLMVendor>> = {
+  nousResearch: "nous-research",
+  v0: "vercel-v0",
+};
 
 /**
  * Every one-time migration this build knows. Fresh-install and
@@ -136,6 +154,7 @@ const KNOWN_MIGRATIONS: readonly string[] = [
   SUBAGENT_WAKE_DEFAULT_FLIP_MIGRATION,
   PROVIDER_PRESET_ENDPOINT_UNMIRROR_MIGRATION,
   PROVIDER_PRESET_MODEL_SLOT_MIGRATION,
+  LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION,
 ];
 
 export type { LLMVendor, LLMVendorSettings };
@@ -1012,6 +1031,23 @@ export class SettingsService {
     return this.secretStore.migrate();
   }
 
+  /**
+   * Move each API key stored under a renamed vendor id to the new id's key
+   * (see {@link RENAMED_LLM_VENDOR_IDS}). Runs on every boot: it writes only
+   * while an old key remains, so a move that failed is retried next boot. A
+   * failure leaves the old key where it is and never fails the boot — the
+   * provider then reads as having no key until a later boot moves it.
+   */
+  async migrateRenamedVendorSecrets(): Promise<void> {
+    for (const [from, to] of Object.entries(RENAMED_LLM_VENDOR_IDS)) {
+      try {
+        await this.secretStore.move(`llm.apiKey.${from}`, `llm.apiKey.${to}`);
+      } catch (err) {
+        log.warn("API key move from vendor %s to %s failed: %s", from, to, (err as Error).message);
+      }
+    }
+  }
+
   getAll(): AppSettings {
     return structuredClone(this.settings);
   }
@@ -1718,9 +1754,24 @@ export class SettingsService {
     try {
       const raw = readFileSync(this.settingsPath, "utf-8");
       const rawParsed = JSON.parse(raw) as unknown;
-      const parsed = rawParsed !== null && typeof rawParsed === "object" && !Array.isArray(rawParsed)
+      const stored = rawParsed !== null && typeof rawParsed === "object" && !Array.isArray(rawParsed)
         ? rawParsed as Record<string, any>
         : {};
+      const appliedMigrations = Array.isArray(stored.appliedMigrations)
+        ? stored.appliedMigrations.filter((m): m is string => typeof m === "string")
+        : [];
+      let migrationWriteBack = false;
+
+      // One-time rename of built-in vendor ids. It has to rewrite the file as
+      // read, ahead of everything below: each normalizer drops a vendor id this
+      // build does not know.
+      let parsed = stored;
+      if (!appliedMigrations.includes(LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION)) {
+        parsed = withRenamedLlmVendorIds(stored, RENAMED_LLM_VENDOR_IDS);
+        appliedMigrations.push(LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION);
+        migrationWriteBack = true;
+      }
+
       const rawLlm = parsed.llm;
       let llm = mergeLlmPatch(
         DEFAULT_SETTINGS.llm,
@@ -1796,11 +1847,7 @@ export class SettingsService {
       // this migration ran is a real opt-out and sticks, because the marker
       // suppresses any re-run. Remove this block (and the marker constant)
       // once no pre-flip installs remain — target 2026-10.
-      const appliedMigrations = Array.isArray(parsed.appliedMigrations)
-        ? parsed.appliedMigrations.filter((m): m is string => typeof m === "string")
-        : [];
       const normalizedFeatures = normalizeFeatureFlags(parsed.features);
-      let migrationWriteBack = false;
       if (!appliedMigrations.includes(SUBAGENT_WAKE_DEFAULT_FLIP_MIGRATION)) {
         if (normalizedFeatures.subAgentAutonomousWake === false) {
           delete normalizedFeatures.subAgentAutonomousWake;

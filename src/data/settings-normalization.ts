@@ -261,6 +261,99 @@ export function withoutMirroredMarketplaceProviderPresetEndpoint(
   return { ...llm, vendors };
 }
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * Rewrite renamed built-in vendor ids in settings exactly as they were read
+ * from disk, before any normalization runs.
+ *
+ * Normalization drops every vendor id this build does not know, so an install
+ * still on an old id would otherwise lose its selected provider, its vendor
+ * block, its fallback entries, its price corrections, its cached model list and
+ * its installed-provider record in a single load. Where the file already holds
+ * the new id as well, the new id's value wins and the old one is dropped.
+ */
+export function withRenamedLlmVendorIds(
+  stored: Record<string, any>,
+  renames: Readonly<Record<string, LLMVendor>>,
+): Record<string, any> {
+  const renamedId = (id: unknown): unknown =>
+    typeof id === "string" && Object.hasOwn(renames, id) ? renames[id] : id;
+  // A row that would duplicate one already stored under the new id is dropped
+  // rather than renamed, so the new id's row wins.
+  const renameRows = (rows: unknown[], idField: string, modelField: string): unknown[] => {
+    const rowKey = (id: unknown, row: Record<string, unknown>) => `${String(id)}\u0000${String(row[modelField])}`;
+    const present = new Set(rows.filter(isPlainRecord).map((row) => rowKey(row[idField], row)));
+    return rows.flatMap((row) => {
+      if (!isPlainRecord(row)) return [row];
+      const to = renamedId(row[idField]);
+      if (to === row[idField]) return [row];
+      return present.has(rowKey(to, row)) ? [] : [{ ...row, [idField]: to }];
+    });
+  };
+  // Model-list cache entries are keyed by vendor + endpoint + credential scope.
+  const cacheKeyOf = (entry: Record<string, unknown>, vendor: string): string =>
+    llmModelListCacheKey(
+      vendor,
+      typeof entry.baseUrl === "string" ? entry.baseUrl : undefined,
+      typeof entry.credentialScope === "string" ? entry.credentialScope : undefined,
+    );
+  const next: Record<string, any> = { ...stored };
+
+  if (isPlainRecord(stored.llm)) {
+    const llm: Record<string, unknown> = { ...stored.llm };
+    if (llm.provider !== undefined) llm.provider = renamedId(llm.provider);
+    if (isPlainRecord(llm.vendors)) {
+      const vendors = { ...llm.vendors };
+      for (const [from, to] of Object.entries(renames)) {
+        if (!Object.hasOwn(vendors, from)) continue;
+        if (!Object.hasOwn(vendors, to)) vendors[to] = vendors[from];
+        delete vendors[from];
+      }
+      llm.vendors = vendors;
+    }
+    if (Array.isArray(llm.fallbackChain)) {
+      llm.fallbackChain = renameRows(llm.fallbackChain, "provider", "model");
+    }
+    if (Array.isArray(llm.pricingOverrides)) {
+      llm.pricingOverrides = renameRows(llm.pricingOverrides, "vendor", "model");
+    }
+    if (isPlainRecord(llm.modelListCache)) {
+      const cache: Record<string, unknown> = {};
+      const renamed: Array<[string, Record<string, unknown>]> = [];
+      for (const [key, entry] of Object.entries(llm.modelListCache)) {
+        const to = isPlainRecord(entry) ? renamedId(entry.vendor) : undefined;
+        if (isPlainRecord(entry) && typeof to === "string" && to !== entry.vendor) {
+          renamed.push([cacheKeyOf(entry, to), { ...entry, vendor: to }]);
+        } else {
+          cache[key] = entry;
+        }
+      }
+      const present = new Set(
+        Object.values(cache)
+          .filter(isPlainRecord)
+          .filter((entry) => typeof entry.vendor === "string")
+          .map((entry) => cacheKeyOf(entry, entry.vendor as string)),
+      );
+      for (const [key, entry] of renamed) {
+        if (!present.has(key)) cache[key] = entry;
+      }
+      llm.modelListCache = cache;
+    }
+    next.llm = llm;
+  }
+
+  if (isPlainRecord(stored.marketplace) && Array.isArray(stored.marketplace.installedProviderIds)) {
+    next.marketplace = {
+      ...stored.marketplace,
+      installedProviderIds: [...new Set(stored.marketplace.installedProviderIds.map(renamedId))],
+    };
+  }
+  return next;
+}
+
 /**
  * Give the selected marketplace preset its own model slot.
  *

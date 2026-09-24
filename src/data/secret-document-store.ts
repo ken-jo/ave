@@ -461,6 +461,24 @@ export class SecretDocumentStore {
     });
   }
 
+  /**
+   * Move the entry stored under `from` to `to` in one write, as stored — the
+   * value is never decrypted. An entry already under `to` wins and `from` is
+   * dropped. Resolves `false`, without writing, when `from` is absent.
+   */
+  async move(from: string, to: string): Promise<boolean> {
+    validateSecretKey(from);
+    validateSecretKey(to);
+    return this.mutate(false, (document) => {
+      if (!Object.hasOwn(document.entries, from)) return false;
+      this.assertWritesAvailable();
+      this.upgradePlainEntries(document);
+      if (!Object.hasOwn(document.entries, to)) document.entries[to] = document.entries[from];
+      delete document.entries[from];
+      return true;
+    });
+  }
+
   async migrate(): Promise<boolean> {
     if (!this.runtime.exists(this.path)) return false;
     return this.mutate(true, (document, source, modeWasRepaired) => {

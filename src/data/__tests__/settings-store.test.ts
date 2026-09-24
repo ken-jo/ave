@@ -3469,3 +3469,213 @@ describe("subAgentAutonomousWake un-fossilize migration", () => {
     expect(service.get("features")?.subAgentAutonomousWake).toBe(false);
   });
 });
+
+describe("vendor ids renamed to package names (nousResearch, v0)", () => {
+  const MARKER = "llm-vendor-id-package-names";
+  const MODEL = "DeepHermes-3-Llama-3-3-70B-Preview";
+  const BASE_URL = "https://inference-api.nousresearch.com/v1";
+  let userDataPath: string;
+  let settingsPath: string;
+  let secretsPath: string;
+
+  function cacheEntry(vendor: string, models: string[]) {
+    return {
+      vendor,
+      baseUrl: BASE_URL,
+      endpoint: `${BASE_URL}/models`,
+      models,
+      fetchedAt: "2026-09-01T00:00:00.000Z",
+    };
+  }
+
+  function writeSecrets(entries: Record<string, string>): void {
+    writeFileSync(secretsPath, `${JSON.stringify({
+      version: 1,
+      entries: Object.fromEntries(
+        Object.entries(entries).map(([key, value]) => [key, { encoding: "plain-development", value }]),
+      ),
+    })}\n`, { mode: 0o600 });
+  }
+
+  beforeEach(() => {
+    userDataPath = mkdtempSync(join(tmpdir(), "settings-store-vendor-rename-"));
+    settingsPath = join(userDataPath, "ave-settings.json");
+    secretsPath = join(userDataPath, "ave-secrets.json");
+    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(false);
+  });
+
+  afterEach(async () => {
+    vi.clearAllMocks();
+    await cleanupTmpDir(userDataPath);
+  });
+
+  it("carries every stored reference to the old id over to the new one, once", async () => {
+    writeFileSync(settingsPath, JSON.stringify({
+      llm: {
+        provider: "nousResearch",
+        vendors: { nousResearch: { model: MODEL, baseUrl: BASE_URL } },
+        fallbackChain: [{ provider: "nousResearch", model: MODEL }],
+        modelListCache: {
+          [llmModelListCacheKey("nousResearch", BASE_URL)]: cacheEntry("nousResearch", [MODEL]),
+        },
+        pricingOverrides: [{ vendor: "nousResearch", model: MODEL, inputPer1M: 1, outputPer1M: 2 }],
+      },
+      marketplace: { installedProviderIds: ["nousResearch"] },
+    }), "utf-8");
+
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const llm = service.get("llm");
+    expect(llm.provider).toBe("nous-research");
+    expect(getLlmVendorSettings(llm.vendors, "nous-research")).toMatchObject({ model: MODEL, baseUrl: BASE_URL });
+    expect(llm.fallbackChain).toEqual([{ provider: "nous-research", model: MODEL }]);
+    expect(llm.modelListCache[llmModelListCacheKey("nous-research", BASE_URL)]).toMatchObject({
+      vendor: "nous-research",
+      models: [MODEL],
+    });
+    expect(llm.pricingOverrides).toEqual([
+      { vendor: "nous-research", model: MODEL, inputPer1M: 1, outputPer1M: 2 },
+    ]);
+    expect(service.get("marketplace").installedProviderIds).toEqual(["nous-research"]);
+
+    // The load writes the result back with the marker; nothing on disk still
+    // names the old id.
+    await vi.waitFor(() => {
+      expect(JSON.parse(readFileSync(settingsPath, "utf-8")).appliedMigrations).toContain(MARKER);
+    });
+    expect(readFileSync(settingsPath, "utf-8")).not.toContain("nousResearch");
+  });
+
+  it("renames v0 to vercel-v0 in the same load as nousResearch", () => {
+    writeFileSync(settingsPath, JSON.stringify({
+      llm: {
+        provider: "v0",
+        vendors: { v0: { model: "v0-1.5-md" } },
+        fallbackChain: [
+          { provider: "nousResearch", model: MODEL },
+          { provider: "v0", model: "v0-1.5-md" },
+        ],
+      },
+      marketplace: { installedProviderIds: ["v0", "nousResearch"] },
+    }), "utf-8");
+
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const llm = service.get("llm");
+    expect(llm.provider).toBe("vercel-v0");
+    expect(getLlmVendorSettings(llm.vendors, "vercel-v0").model).toBe("v0-1.5-md");
+    expect(llm.fallbackChain).toEqual([
+      { provider: "nous-research", model: MODEL },
+      { provider: "vercel-v0", model: "v0-1.5-md" },
+    ]);
+    expect(service.get("marketplace").installedProviderIds).toEqual(["vercel-v0", "nous-research"]);
+  });
+
+  it("keeps the new id's value where the file holds both ids", () => {
+    writeFileSync(settingsPath, JSON.stringify({
+      llm: {
+        provider: "nous-research",
+        vendors: {
+          nousResearch: { model: "old-model" },
+          "nous-research": { model: MODEL },
+        },
+        fallbackChain: [
+          { provider: "nousResearch", model: MODEL },
+          { provider: "nous-research", model: MODEL },
+        ],
+        modelListCache: {
+          [llmModelListCacheKey("nousResearch", BASE_URL)]: cacheEntry("nousResearch", ["old-model"]),
+          [llmModelListCacheKey("nous-research", BASE_URL)]: cacheEntry("nous-research", [MODEL]),
+        },
+        pricingOverrides: [
+          { vendor: "nous-research", model: MODEL, inputPer1M: 3, outputPer1M: 4 },
+          { vendor: "nousResearch", model: MODEL, inputPer1M: 1, outputPer1M: 2 },
+        ],
+      },
+      marketplace: { installedProviderIds: ["nousResearch", "nous-research"] },
+    }), "utf-8");
+
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const llm = service.get("llm");
+    expect(getLlmVendorSettings(llm.vendors, "nous-research").model).toBe(MODEL);
+    expect(llm.fallbackChain).toEqual([{ provider: "nous-research", model: MODEL }]);
+    expect(Object.values(llm.modelListCache).map((entry) => entry.models)).toEqual([[MODEL]]);
+    expect(llm.pricingOverrides).toEqual([
+      { vendor: "nous-research", model: MODEL, inputPer1M: 3, outputPer1M: 4 },
+    ]);
+    expect(service.get("marketplace").installedProviderIds).toEqual(["nous-research"]);
+  });
+
+  it("does not run again once the marker is on disk", () => {
+    writeFileSync(settingsPath, JSON.stringify({
+      appliedMigrations: [MARKER],
+      llm: {
+        provider: "nousResearch",
+        vendors: { nousResearch: { model: MODEL } },
+      },
+      marketplace: { installedProviderIds: ["nousResearch"] },
+    }), "utf-8");
+
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    // No rename: normalization treats the old id as the unknown id it is.
+    expect(service.get("llm").provider).toBe(DEFAULT_LLM_VENDOR);
+    expect(service.get("marketplace").installedProviderIds).toEqual([]);
+  });
+
+  it("starts a fresh install already migrated", () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("appliedMigrations")).toContain(MARKER);
+  });
+
+  it("moves each API key stored under an old id to the new id's key", async () => {
+    writeSecrets({
+      "llm.apiKey.nousResearch": "nr_old",
+      "llm.apiKey.v0": "v0_old",
+      "llm.apiKey.openai": "sk-keep",
+    });
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "development" });
+
+    await service.migrateRenamedVendorSecrets();
+
+    expect(service.getSecret("llm.apiKey.nous-research")).toBe("nr_old");
+    expect(service.getSecret("llm.apiKey.nousResearch")).toBeNull();
+    expect(service.getSecret("llm.apiKey.vercel-v0")).toBe("v0_old");
+    expect(service.getSecret("llm.apiKey.v0")).toBeNull();
+    expect(service.getSecret("llm.apiKey.openai")).toBe("sk-keep");
+  });
+
+  it("drops the old key when the new id already has one", async () => {
+    writeSecrets({ "llm.apiKey.nousResearch": "nr_old", "llm.apiKey.nous-research": "nr_new" });
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "development" });
+
+    await service.migrateRenamedVendorSecrets();
+
+    expect(service.getSecret("llm.apiKey.nous-research")).toBe("nr_new");
+    expect(service.getSecret("llm.apiKey.nousResearch")).toBeNull();
+  });
+
+  it("writes nothing when no old key is stored", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "development" });
+    await service.migrateRenamedVendorSecrets();
+    expect(() => readFileSync(secretsPath, "utf-8")).toThrow();
+
+    writeSecrets({ "llm.apiKey.openai": "sk-keep" });
+    const before = readFileSync(secretsPath, "utf-8");
+    await service.migrateRenamedVendorSecrets();
+    expect(readFileSync(secretsPath, "utf-8")).toBe(before);
+  });
+
+  it("leaves the old key in place without failing the boot when the move fails", async () => {
+    // Packaged policy with no OS encryption refuses every secret write.
+    writeSecrets({ "llm.apiKey.nousResearch": "nr_old" });
+    const before = readFileSync(secretsPath, "utf-8");
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "packaged" });
+
+    await expect(service.migrateRenamedVendorSecrets()).resolves.toBeUndefined();
+    expect(readFileSync(secretsPath, "utf-8")).toBe(before);
+
+    // The next boot, with writes available again, completes the move.
+    const retry = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "development" });
+    await retry.migrateRenamedVendorSecrets();
+    expect(retry.getSecret("llm.apiKey.nous-research")).toBe("nr_old");
+    expect(retry.getSecret("llm.apiKey.nousResearch")).toBeNull();
+  });
+});

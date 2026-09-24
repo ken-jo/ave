@@ -23,10 +23,10 @@ export const OPENAI_COMPATIBLE_PRESET_VENDOR_IDS = [
   "litellm",
   "huggingface",
   "vercel-ai-gateway",
-  "v0",
+  "vercel-v0",
   "aihubmix",
   "hicap",
-  "nousResearch",
+  "nous-research",
   "huawei-cloud-maas",
   "wandb",
   "xiaomi",
@@ -163,7 +163,7 @@ export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
     defaultModel: "alibaba/qwen3.6-plus",
     modelOptions: ["alibaba/qwen3.6-plus", "anthropic/claude-sonnet-4.6", "openai/gpt-5.4"],
   },
-  v0: {
+  "vercel-v0": {
     label: "Vercel V0",
     apiKeyPlaceholder: "v0_...",
     baseUrl: "https://api.v0.dev/v1",
@@ -184,7 +184,7 @@ export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
     defaultModel: "hicap-pro",
     modelOptions: ["hicap-pro"],
   },
-  nousResearch: {
+  "nous-research": {
     label: "Nous Research",
     apiKeyPlaceholder: "nr_...",
     baseUrl: "https://inference-api.nousresearch.com/v1",
