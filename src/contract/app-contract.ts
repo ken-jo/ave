@@ -319,9 +319,14 @@ export const CHANNELS = {
     updatePlan: "ave:marketplace:update:plan",
     uninstall: "ave:marketplace:uninstall",
     directPreview: "ave:marketplace:direct:preview",
+    deepLinkTake: "ave:marketplace:deep-link:take",
+    bootInstallsNotice: "ave:marketplace:boot-installs:notice",
+    bootInstallsDismiss: "ave:marketplace:boot-installs:dismiss",
     syncProgress: "marketplace:sync-progress", // event main→renderer (SyncProgressView)
     catalogChanged: "marketplace:catalog-changed", // event main→renderer
     installProgress: "marketplace:install-progress", // event main→renderer (InstallProgressView)
+    deepLink: "marketplace:deep-link", // event main→renderer: a deep link waits in deepLinkTake
+    bootInstallsApplied: "marketplace:boot-installs-applied", // event main→renderer: a notice waits in bootInstallsNotice
   },
   // Installed content packages of the git marketplace (blueprint P3): what the
   // settings pickers list and the catalogs of installed languages. Host-renderer only.

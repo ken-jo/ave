@@ -328,6 +328,26 @@ export interface DirectMcpPreviewView {
 
 // ─── Envelope and API ───────────────────────────────────────────────────────
 
+// ─── Deep links and the boot-install notice (design §15.1, blueprint 4.6) ───
+
+/**
+ * What `ave://install|uninstall/<kind>/<name>@<source>` or
+ * `ave://marketplace/add?url=…` asks the marketplace to open. The link only
+ * opens the confirming UI (the package sheet, the Add dialog); nothing is
+ * installed, removed or added until the user confirms there.
+ */
+export type GitMarketplaceDeepLink =
+  | { action: "install" | "uninstall"; key: PackageKeyView }
+  | { action: "add"; url: string };
+
+/** What the boot-install step installed or moved (design §10.2), shown once until dismissed. */
+export interface BootInstallNoticeView {
+  /** Default installs: they belong to the user now, each offered with Uninstall. */
+  forYou: PackageKeyView[];
+  /** `requiredInstalls` entries installed, updated or switched to their listed source. */
+  required: PackageKeyView[];
+}
+
 export type GitMarketplaceErrorCode = MarketplaceErrorCode | "invalid-request" | "unauthorized-frame" | "unavailable";
 
 export type GitMarketplaceResult<T> = { ok: true; value: T } | { ok: false; code: GitMarketplaceErrorCode; message: string };
@@ -357,6 +377,14 @@ export interface GitMarketplaceApi {
   onSyncProgress(listener: (progress: SyncProgressView) => void): () => void;
   onCatalogChanged(listener: () => void): () => void;
   onInstallProgress(listener: (progress: InstallProgressView) => void): () => void;
+  /** The deep link waiting to be opened, cleared by this read. */
+  takeDeepLink(): Promise<GitMarketplaceResult<GitMarketplaceDeepLink | null>>;
+  /** A deep link arrived: read it with `takeDeepLink`. */
+  onDeepLink(listener: () => void): () => void;
+  bootInstallNotice(): Promise<GitMarketplaceResult<BootInstallNoticeView | null>>;
+  dismissBootInstallNotice(): Promise<GitMarketplaceResult<null>>;
+  /** The boot-install step published a notice: read it with `bootInstallNotice`. */
+  onBootInstallsApplied(listener: () => void): () => void;
 }
 
 // ─── Bridge checks ──────────────────────────────────────────────────────────

@@ -37,11 +37,12 @@ import {
   type NetworkAccessGrant,
 } from "../shared/network-access.js";
 import {
+  parseGitMarketplaceUri,
   parseMarketplacePluginActionUri,
   parseMcpLoginUri,
   parsePluginAuthUri,
 } from "./ave-protocol.js";
-import { getMainWindow, getServices, setPendingAveUri } from "./app-state.js";
+import { getMainWindow, getServices, setPendingGitMarketplaceLink, setPendingAveUri } from "./app-state.js";
 import {
   createWindow,
   getAppWindows,
@@ -488,6 +489,24 @@ export async function handleAveUri(url: string) {
       return;
     }
     await handleMcpLoginAction(activeServices, win, mcpLoginParams);
+    return;
+  }
+
+  const gitLink = parseGitMarketplaceUri(url);
+  if (gitLink) {
+    // Only the git marketplace UI opens these, and the development switch shows it until blueprint P6.
+    if (process.env.AVE_GIT_MARKETPLACE !== "1") {
+      aveDevWarn("[ave] handleAveUri: git marketplace link ignored while AVE_GIT_MARKETPLACE is off", { action: gitLink.action });
+      return;
+    }
+    if (!getServices()) {
+      setPendingAveUri(url);
+      return;
+    }
+    // The tab takes the link when it opens, or on this event when it is already open.
+    setPendingGitMarketplaceLink(gitLink);
+    activateInlineSettings("marketplace");
+    sendToWindow(getMainWindow(), CHANNELS.gitMarketplace.deepLink, null, log);
     return;
   }
 

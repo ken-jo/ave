@@ -23,12 +23,14 @@ export interface AddSourceDialogProps {
   open: boolean;
   /** Install from a git folder (§8.1): the address step also asks for a folder. */
   direct?: boolean;
+  /** An address from `ave://marketplace/add?url=…`, filled in for the user to check. */
+  initialInput?: string;
   onClose: () => void;
   /** The source was added; for a single package, the caller opens it. */
   onAdded: (source: SourceView, preview: SourcePreviewView) => void;
 }
 
-export function AddSourceDialog({ api, open, direct = false, onClose, onAdded }: AddSourceDialogProps) {
+export function AddSourceDialog({ api, open, direct = false, initialInput = "", onClose, onAdded }: AddSourceDialogProps) {
   const { t } = useTranslation();
   const [gitReady, setGitReady] = useState<boolean | null>(null);
   const [input, setInput] = useState("");
@@ -43,7 +45,7 @@ export function AddSourceDialog({ api, open, direct = false, onClose, onAdded }:
 
   useEffect(() => {
     if (!open) return;
-    setInput("");
+    setInput(initialInput);
     setRef("");
     setSubdir("");
     setAuth("none");
@@ -53,7 +55,7 @@ export function AddSourceDialog({ api, open, direct = false, onClose, onAdded }:
     setFailure(null);
     setGitReady(null);
     void api.gitRuntime.status().then((result) => setGitReady(result.ok && result.status.state === "ready"));
-  }, [open, api]);
+  }, [open, api, initialInput]);
 
   const check = async () => {
     setBusy(true);

@@ -71,6 +71,34 @@ describe("git marketplace IPC boundary", () => {
     expect(onBuilt).toHaveBeenCalledTimes(1);
   });
 
+  it("hands a held deep link to the tab once, and holds the boot-install notice until dismissed, building no marketplace", async () => {
+    const { create } = await setup();
+    const state = await import("../../../main/app-state.js");
+    await expect(invokeFileIpcHandler(handlers, channels.deepLinkTake)).resolves.toEqual({ ok: true, value: null });
+    state.setPendingGitMarketplaceLink({ action: "install", key: { sourceId: "ave", kind: "plugin", name: "calendar" } });
+    await expect(invokeFileIpcHandler(handlers, channels.deepLinkTake)).resolves.toEqual({
+      ok: true,
+      value: { action: "install", key: { sourceId: "ave", kind: "plugin", name: "calendar" } },
+    });
+    await expect(invokeFileIpcHandler(handlers, channels.deepLinkTake)).resolves.toEqual({ ok: true, value: null });
+
+    const notice = { forYou: [{ sourceId: "ave", kind: "plugin" as const, name: "meeting" }], required: [] };
+    state.setBootInstallNotice(notice);
+    await expect(invokeFileIpcHandler(handlers, channels.bootInstallsNotice)).resolves.toEqual({ ok: true, value: notice });
+    await expect(invokeFileIpcHandler(handlers, channels.bootInstallsNotice)).resolves.toEqual({ ok: true, value: notice });
+    await expect(invokeFileIpcHandler(handlers, channels.bootInstallsDismiss)).resolves.toEqual({ ok: true, value: null });
+    await expect(invokeFileIpcHandler(handlers, channels.bootInstallsNotice)).resolves.toEqual({ ok: true, value: null });
+    state.setBootInstallNotice({ forYou: [], required: [] });
+    await expect(invokeFileIpcHandler(handlers, channels.bootInstallsNotice)).resolves.toEqual({ ok: true, value: null });
+
+    state.setPendingGitMarketplaceLink({ action: "add", url: "acme/tools" });
+    await expect(invokeAppIpcHandlerFromFrame(handlers, channels.deepLinkTake, "file:///app/plugin-ui-shell.html"))
+      .resolves.toEqual({ ok: false, code: "unauthorized-frame", message: "unauthorized-frame" });
+    // A refused frame does not consume the link.
+    await expect(invokeFileIpcHandler(handlers, channels.deepLinkTake)).resolves.toEqual({ ok: true, value: { action: "add", url: "acme/tools" } });
+    expect(create).not.toHaveBeenCalled();
+  });
+
   it("refuses plugin frames without building the service", async () => {
     const { create, service } = await setup();
     const answer = await invokeAppIpcHandlerFromFrame(handlers, channels.installExecute, "file:///app/plugin-ui-shell.html", "p1");

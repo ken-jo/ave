@@ -19,6 +19,7 @@
  * verification, receipt). Nothing here decides consent or reads the network.
  */
 import { errorMessage } from "../../shared/error-message.js";
+import type { BootInstallNoticeView, PackageKeyView } from "../../shared/git-marketplace.js";
 import { MarketplaceError } from "../errors.js";
 import type { CatalogRow } from "../catalog/aggregate.js";
 import type { PackageKind } from "../catalog/types.js";
@@ -53,6 +54,19 @@ export interface BootInstallReport {
 }
 
 const LISTABLE_ORIGINS = new Set<SourceOrigin>(["official", "managed"]);
+
+/**
+ * The notice the boot-install step publishes (design §15.1): the default
+ * installs, which are the user's now, apart from what the policy requires and
+ * moved; null when the boot changed nothing.
+ */
+export function bootInstallNoticeFrom(report: BootInstallReport, policy: MarketplacePolicy): BootInstallNoticeView | null {
+  const view = (key: PackageKey): PackageKeyView => ({ sourceId: key.source, kind: key.kind, name: key.name });
+  const required = (key: PackageKey) => requiredByPolicy(policy, key.kind, key.name) !== undefined;
+  const forYou = report.installed.filter((key) => !required(key)).map(view);
+  const requiredKeys = [...report.installed.filter(required), ...report.updated, ...report.switched].map(view);
+  return forYou.length + requiredKeys.length > 0 ? { forYou, required: requiredKeys } : null;
+}
 
 /** The requiredInstalls entry that locks `(kind, name)`, if any (PACKAGE_REQUIRED_BY_POLICY). */
 export function requiredByPolicy(policy: MarketplacePolicy, kind: PackageKind, name: string): PackageKey | undefined {

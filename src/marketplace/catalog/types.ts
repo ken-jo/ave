@@ -21,6 +21,13 @@ export const PACKAGE_KINDS = [
 
 export type PackageKind = (typeof PACKAGE_KINDS)[number];
 
+const PACKAGE_NAME_RE = /^(?!.*--)[a-z][a-z0-9-]*[a-z0-9]$/u;
+
+/** A package name as the descriptor schema defines it (`definitions.packageName`). */
+export function isPackageName(value: unknown): value is string {
+  return typeof value === "string" && value.length >= 3 && value.length <= 64 && PACKAGE_NAME_RE.test(value);
+}
+
 type Platform = "darwin" | "win32" | "linux";
 
 interface MarketplaceOwner {

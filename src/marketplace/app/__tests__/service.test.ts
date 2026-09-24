@@ -8,6 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { descriptorText as descriptor, jsonText as text } from "../../__tests__/fixtures/package-files.js";
 import type { McpServerConfig } from "../../../mcp/types.js";
 import { DEFAULT_MARKETPLACE_ARTIFACT_LIMITS } from "../../../plugins/marketplace-artifact-limits.js";
 import { DisabledMarketplaceFetcher } from "../../../plugins/marketplace.js";
@@ -27,9 +28,6 @@ import { MarketplaceService } from "../service.js";
 
 const AT = new Date("2026-09-24T00:00:00.000Z");
 const INSTALLATION = "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b";
-const text = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
-const descriptor = (kind: string, name: string, version: string, payload: Record<string, unknown>) =>
-  text({ schemaVersion: 1, kind, name, version, minAppVersion: "0.12.0", payload });
 const skill = (name: string, body: string) => `---\nname: ${name}\ndescription: ${name} things.\n---\n${body}\n`;
 
 class FakeManager {

@@ -1,3 +1,7 @@
+import { PACKAGE_KINDS, isPackageName, type PackageKind } from "../marketplace/catalog/types.js";
+import { SOURCE_ID_RE } from "../marketplace/sources/official.js";
+import type { GitMarketplaceDeepLink } from "../shared/git-marketplace.js";
+
 export function findAveProtocolUri(argv: readonly string[]): string | null {
   // Scheme comparison is case-insensitive per RFC 3986 §3.1, so accept e.g. AVE://...
   return argv.find((arg) => arg.toLowerCase().startsWith("ave://")) ?? null;
@@ -40,6 +44,50 @@ export function parseMarketplacePluginActionUri(
   }
   if (!slug || !MARKETPLACE_SLUG_RE.test(slug)) return null;
   return { action: action as "install" | "uninstall", slug, packageType };
+}
+
+const GIT_MARKETPLACE_ADD_URL_MAX = 2048;
+
+/**
+ * Git marketplace deep links (blueprint 4.6):
+ * `ave://install/<kind>/<name>@<source>`, `ave://uninstall/<kind>/<name>@<source>`
+ * and `ave://marketplace/add?url=<address>`. The `@<source>` form is what
+ * tells them from the legacy slug links, whose slugs cannot hold `@`. The
+ * address is checked by the Add dialog's preview like one typed there.
+ */
+export function parseGitMarketplaceUri(url: string): GitMarketplaceDeepLink | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "ave:" || parsed.hash) return null;
+  const host = parsed.hostname.toLowerCase();
+  if (host === "marketplace") {
+    if (parsed.pathname !== "/add") return null;
+    const keys = [...parsed.searchParams.keys()];
+    const address = parsed.searchParams.get("url");
+    if (keys.length !== 1 || keys[0] !== "url" || !address) return null;
+    if (address.length > GIT_MARKETPLACE_ADD_URL_MAX || /[\u0000-\u001f\u007f]/u.test(address)) return null;
+    return { action: "add", url: address };
+  }
+  if (host !== "install" && host !== "uninstall") return null;
+  if (parsed.search) return null;
+  let segments: string[];
+  try {
+    segments = parsed.pathname.replace(/^\//, "").split("/").map((part) => decodeURIComponent(part));
+  } catch {
+    return null;
+  }
+  if (segments.length !== 2) return null;
+  const [kind, qualified] = segments as [string, string];
+  const at = qualified.lastIndexOf("@");
+  if (at < 0) return null;
+  const name = qualified.slice(0, at);
+  const sourceId = qualified.slice(at + 1);
+  if (!(PACKAGE_KINDS as readonly string[]).includes(kind) || !isPackageName(name) || !SOURCE_ID_RE.test(sourceId)) return null;
+  return { action: host, key: { sourceId, kind: kind as PackageKind, name } };
 }
 
 export function parseMcpLoginUri(url: string): { slug: string } | null {

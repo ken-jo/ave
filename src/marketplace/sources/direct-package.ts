@@ -15,7 +15,7 @@ import { parse as parseYaml } from "yaml";
 import { parseFrontmatterBlock } from "../../main/skill-store.js";
 import { AVE_EXTENSION_NAMESPACE } from "../../plugins/public-contract.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
-import type { PackageDescriptor } from "../catalog/types.js";
+import { isPackageName, type PackageDescriptor } from "../catalog/types.js";
 import { validateDescriptorText, validateSynthesizedDescriptor } from "../catalog/validate.js";
 import type { MarketplaceErrorCode } from "../errors.js";
 import { assertRepoPath, type BareRepo } from "../git/repo.js";
@@ -36,7 +36,6 @@ const LIMITS: Readonly<Record<DirectDetectedFile, number>> = {
 };
 
 const SYNTHESIZED = /^0\.0\.0\+g[0-9a-f]{12}$/u;
-const PACKAGE_NAME = /^(?!.*--)[a-z][a-z0-9-]*[a-z0-9]$/u;
 const DESCRIPTION_MAX = 1000;
 const LABEL_MAX = 100;
 
@@ -75,7 +74,7 @@ function filePath(dir: string, file: string): string {
 /** A package name from a directory or repository name: lowercase, `-` for anything else. */
 function nameFrom(raw: string): string | null {
   const name = raw.toLowerCase().replace(/\.git$/u, "").replace(/[^a-z0-9-]+/gu, "-").replace(/-{2,}/gu, "-").replace(/^[^a-z]+|-+$/gu, "");
-  return name.length >= 3 && name.length <= 64 && PACKAGE_NAME.test(name) ? name : null;
+  return isPackageName(name) ? name : null;
 }
 
 /** The package directory's own name, or the repository's at the root. */

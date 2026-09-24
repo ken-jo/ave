@@ -258,3 +258,87 @@ describe("GitMarketplaceTab package sheet", () => {
     expect(within(sheet).getByText("조직에서 필수로 지정")).toBeInTheDocument();
   });
 });
+
+describe("GitMarketplaceTab deep links (blueprint 4.6)", () => {
+  it("opens the package's sheet for an install link held before the tab opened, and takes it once", async () => {
+    const calendar = entry("team", "plugin", "calendar");
+    const fake = fakeMarketplace({ sources: [team], entries: [calendar], deepLink: { action: "install", key: { sourceId: "team", kind: "plugin", name: "calendar" } } });
+    renderTab(fake);
+
+    expect(await screen.findByTestId("git-marketplace:sheet")).toBeInTheDocument();
+    expect(fake.market.packageDetail).toHaveBeenCalledWith({ sourceId: "team", kind: "plugin", name: "calendar" });
+    // The sheet asks; nothing is planned or installed until the user confirms there.
+    expect(fake.market.planInstall).not.toHaveBeenCalled();
+    expect(fake.market.executeInstall).not.toHaveBeenCalled();
+    expect(fake.market.takeDeepLink).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the sources view for the sheet when a link arrives while the tab is open", async () => {
+    const calendar = entry("team", "plugin", "calendar");
+    const fake = fakeMarketplace({ sources: [team], entries: [calendar] });
+    renderTab(fake);
+    await screen.findByTestId("git-marketplace:card:team:plugin:calendar");
+    fireEvent.click(screen.getByTestId("git-marketplace:open-sources"));
+    await waitFor(() => expect(screen.queryByTestId("git-marketplace:card:team:plugin:calendar")).toBeNull());
+
+    fake.deliverDeepLink({ action: "uninstall", key: { sourceId: "team", kind: "plugin", name: "calendar" } });
+
+    expect(await screen.findByTestId("git-marketplace:sheet")).toBeInTheDocument();
+    expect(await screen.findByTestId("git-marketplace:card:team:plugin:calendar")).toBeInTheDocument();
+    expect(fake.market.uninstall).not.toHaveBeenCalled();
+  });
+
+  it("opens the Add dialog with an add link's address filled in, unchecked, and takes the next link's address", async () => {
+    const fake = fakeMarketplace({ sources: [team], deepLink: { action: "add", url: "https://github.com/acme/tools" } });
+    renderTab(fake);
+
+    const input = await screen.findByTestId<HTMLInputElement>("git-marketplace:add:url");
+    expect(input.value).toBe("https://github.com/acme/tools");
+    expect(fake.market.previewSource).not.toHaveBeenCalled();
+    expect(fake.market.addSource).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(input, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByTestId("git-marketplace:add")).toBeNull());
+    fake.deliverDeepLink({ action: "add", url: "acme/other" });
+    expect((await screen.findByTestId<HTMLInputElement>("git-marketplace:add:url")).value).toBe("acme/other");
+  });
+});
+
+describe("GitMarketplaceTab boot-install notice (design §15.1)", () => {
+  const notice = {
+    forYou: [
+      { sourceId: "ave-official", kind: "mcp" as const, name: "weather" },
+      { sourceId: "ave-official", kind: "theme" as const, name: "tokyo-night" },
+    ],
+    required: [{ sourceId: "corp", kind: "plugin" as const, name: "vpn" }],
+  };
+
+  it("lists what the boot installed, uninstalls a default install keeping MCP data, and dismisses", async () => {
+    const fake = fakeMarketplace({ sources: [official], bootNotice: notice });
+    renderTab(fake);
+
+    const banner = await screen.findByTestId("git-marketplace:boot-notice");
+    expect(banner).toHaveTextContent("tokyo-night");
+    expect(banner).toHaveTextContent("vpn");
+    expect(within(banner).queryByTestId("git-marketplace:boot-notice:uninstall:plugin:vpn")).toBeNull();
+
+    fireEvent.click(within(banner).getByTestId("git-marketplace:boot-notice:uninstall:mcp:weather"));
+    await waitFor(() => expect(fake.market.uninstall).toHaveBeenCalledWith({ sourceId: "ave-official", kind: "mcp", name: "weather", removeData: false }));
+    await waitFor(() => expect(within(banner).queryByTestId("git-marketplace:boot-notice:uninstall:mcp:weather")).toBeNull());
+    expect(within(banner).getByTestId("git-marketplace:boot-notice:uninstall:theme:tokyo-night")).toBeInTheDocument();
+
+    fireEvent.click(within(banner).getByTestId("git-marketplace:boot-notice:dismiss"));
+    await waitFor(() => expect(screen.queryByTestId("git-marketplace:boot-notice")).toBeNull());
+    expect(fake.market.dismissBootInstallNotice).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a notice the boot step publishes after the tab opened", async () => {
+    const fake = fakeMarketplace({ sources: [official] });
+    renderTab(fake);
+    await waitFor(() => expect(fake.market.bootInstallNotice).toHaveBeenCalledTimes(1));
+    expect(screen.queryByTestId("git-marketplace:boot-notice")).toBeNull();
+
+    fake.applyBootInstalls(notice);
+    expect(await screen.findByTestId("git-marketplace:boot-notice")).toHaveTextContent("weather");
+  });
+});

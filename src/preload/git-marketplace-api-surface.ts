@@ -56,5 +56,10 @@ export function buildGitMarketplaceApiSurface(): GitMarketplaceApi {
     onSyncProgress: (listener) => subscribe(channels.syncProgress, parseSyncProgress, listener),
     onCatalogChanged: (listener) => subscribe(channels.catalogChanged, () => true, () => listener()),
     onInstallProgress: (listener) => subscribe(channels.installProgress, parseInstallProgress, listener),
+    takeDeepLink: () => call(channels.deepLinkTake),
+    onDeepLink: (listener) => subscribe(channels.deepLink, () => true, () => listener()),
+    bootInstallNotice: () => call(channels.bootInstallsNotice),
+    dismissBootInstallNotice: () => call(channels.bootInstallsDismiss),
+    onBootInstallsApplied: (listener) => subscribe(channels.bootInstallsApplied, () => true, () => listener()),
   } satisfies GitMarketplaceApi);
 }

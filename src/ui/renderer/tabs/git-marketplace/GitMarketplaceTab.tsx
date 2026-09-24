@@ -14,6 +14,7 @@ import { Switch } from "../../../../components/ui/switch.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import { cn } from "../../../../lib/utils.js";
 import type {
+  BootInstallNoticeView,
   CatalogEntryView,
   CatalogView,
   GitMarketplaceErrorCode,
@@ -114,6 +115,8 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }
   const [query, setQuery] = useState("");
   const [sheet, setSheet] = useState<{ key: PackageKeyView; mode: "detail" | "update" } | null>(null);
   const [addOpen, setAddOpen] = useState<"marketplace" | "direct" | null>(null);
+  const [addInput, setAddInput] = useState("");
+  const [notice, setNotice] = useState<BootInstallNoticeView | null>(null);
   const [updateCheckEnabled, setUpdateCheckEnabled] = useState(true);
   const [offlineCacheEnabled, setOfflineCacheEnabled] = useState(true);
   const syncedOnce = useRef(false);
@@ -169,6 +172,55 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }
       offSync();
     };
   }, [market, loadSources]);
+
+  // A deep link opens the confirming UI only: the package sheet or the Add dialog (blueprint 4.6).
+  useEffect(() => {
+    const take = () =>
+      void market.takeDeepLink().then((result) => {
+        if (!result.ok) {
+          setFailure(result);
+          return;
+        }
+        const link = result.value;
+        if (!link) return;
+        if (link.action === "add") {
+          setAddInput(link.url);
+          setAddOpen("marketplace");
+        } else {
+          setView("browse");
+          setSheet({ key: link.key, mode: "detail" });
+        }
+      });
+    take();
+    return market.onDeepLink(take);
+  }, [market]);
+
+  // What the boot-install step did, until dismissed (design §15.1).
+  useEffect(() => {
+    const read = () => void market.bootInstallNotice().then((result) => setNotice(result.ok ? result.value : null));
+    read();
+    return market.onBootInstallsApplied(read);
+  }, [market]);
+
+  const dismissNotice = async () => {
+    const result = await market.dismissBootInstallNotice();
+    if (result.ok) setNotice(null);
+    else setFailure(result);
+  };
+
+  const uninstallFromNotice = async (key: PackageKeyView) => {
+    const result = await market.uninstall({ ...key, ...(key.kind === "mcp" ? { removeData: false } : {}) });
+    if (!result.ok) {
+      setFailure(result);
+      return;
+    }
+    setNotice((current) => {
+      if (!current) return current;
+      const forYou = current.forYou.filter((item) => !(item.sourceId === key.sourceId && item.kind === key.kind && item.name === key.name));
+      return forYou.length + current.required.length > 0 ? { ...current, forYou } : null;
+    });
+    void loadCatalog();
+  };
 
   useEffect(() => {
     void api.getSettings().then((settings) => {
@@ -236,6 +288,42 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }
         </div>
 
         {failure && <p className="mt-2 text-sm text-destructive" data-testid="git-marketplace:error">{failureText(t, failure)}</p>}
+
+        {view === "browse" && notice && (
+          <div className="mt-3 space-y-2 rounded-md border border-info/(--opacity-medium) bg-info/(--opacity-soft) px-3 py-2 text-xs" data-testid="git-marketplace:boot-notice">
+            <div className="flex items-start justify-between gap-2">
+              <p className="font-medium">{t("gitMarketplace.boot.title")}</p>
+              <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => void dismissNotice()} data-testid="git-marketplace:boot-notice:dismiss">
+                {t("gitMarketplace.boot.dismiss")}
+              </Button>
+            </div>
+            {notice.forYou.length > 0 && (
+              <div className="space-y-1">
+                <p className="text-muted-foreground">{t("gitMarketplace.boot.forYou")}</p>
+                <ul className="space-y-1">
+                  {notice.forYou.map((key) => (
+                    <li key={`${key.sourceId}:${key.kind}:${key.name}`} className="flex items-center gap-2">
+                      <span>{kindLabel(t, key.kind)} · <span className="font-mono">{key.name}</span></span>
+                      <Button size="sm" variant="outline" className="ml-auto h-6 px-2 text-[11px]" onClick={() => void uninstallFromNotice(key)} data-testid={`git-marketplace:boot-notice:uninstall:${key.kind}:${key.name}`}>
+                        {t("gitMarketplace.uninstall.button")}
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {notice.required.length > 0 && (
+              <div className="space-y-1">
+                <p className="text-muted-foreground">{t("gitMarketplace.state.required")}</p>
+                <ul className="space-y-0.5">
+                  {notice.required.map((key) => (
+                    <li key={`${key.sourceId}:${key.kind}:${key.name}`}>{kindLabel(t, key.kind)} · <span className="font-mono">{key.name}</span></li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
 
         {view === "browse" && (
           <div className="mt-3 space-y-3">
@@ -367,7 +455,20 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }
         </div>
       </SettingsSection>
 
-      <AddSourceDialog api={api} open={addOpen !== null} direct={addOpen === "direct"} onClose={() => setAddOpen(null)} onAdded={onAdded} />
+      <AddSourceDialog
+        api={api}
+        open={addOpen !== null}
+        direct={addOpen === "direct"}
+        initialInput={addInput}
+        onClose={() => {
+          setAddOpen(null);
+          setAddInput("");
+        }}
+        onAdded={(source, preview) => {
+          setAddInput("");
+          onAdded(source, preview);
+        }}
+      />
       <PackageSheet
         api={market}
         target={sheet}

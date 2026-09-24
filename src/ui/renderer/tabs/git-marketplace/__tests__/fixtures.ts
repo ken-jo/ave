@@ -6,8 +6,10 @@
 import { vi } from "vitest";
 import type {
   CatalogEntryView,
+  BootInstallNoticeView,
   CatalogView,
   GitMarketplaceApi,
+  GitMarketplaceDeepLink,
   InstallPlanView,
   InstallProgressView,
   PackageDetailView,
@@ -122,14 +124,24 @@ export interface FakeMarketplace {
   emitCatalogChanged(): void;
   emitSyncProgress(progress: SyncProgressView): void;
   emitInstallProgress(progress: InstallProgressView): void;
+  /** Hold a link for `takeDeepLink` and fire `onDeepLink`, as main does. */
+  deliverDeepLink(link: GitMarketplaceDeepLink): void;
+  /** Hold a notice for `bootInstallNotice` and fire `onBootInstallsApplied`. */
+  applyBootInstalls(notice: BootInstallNoticeView): void;
 }
 
-export function fakeMarketplace(options: { sources?: SourceView[]; entries?: CatalogEntryView[]; git?: GitRuntimeStatus["state"] } = {}): FakeMarketplace {
+export function fakeMarketplace(
+  options: { sources?: SourceView[]; entries?: CatalogEntryView[]; git?: GitRuntimeStatus["state"]; deepLink?: GitMarketplaceDeepLink; bootNotice?: BootInstallNoticeView } = {},
+): FakeMarketplace {
   const sources = options.sources ?? [];
   const entries = options.entries ?? [];
   const catalogListeners = new Set<() => void>();
   const syncListeners = new Set<(progress: SyncProgressView) => void>();
   const installListeners = new Set<(progress: InstallProgressView) => void>();
+  const deepLinkListeners = new Set<() => void>();
+  const bootListeners = new Set<() => void>();
+  let heldLink: GitMarketplaceDeepLink | null = options.deepLink ?? null;
+  let heldNotice: BootInstallNoticeView | null = options.bootNotice ?? null;
   const subscribe = <T,>(set: Set<T>) => (listener: T) => {
     set.add(listener);
     return () => set.delete(listener);
@@ -160,6 +172,18 @@ export function fakeMarketplace(options: { sources?: SourceView[]; entries?: Cat
     onSyncProgress: vi.fn(subscribe(syncListeners)),
     onCatalogChanged: vi.fn(subscribe(catalogListeners)),
     onInstallProgress: vi.fn(subscribe(installListeners)),
+    takeDeepLink: vi.fn(async () => {
+      const link = heldLink;
+      heldLink = null;
+      return ok(link);
+    }),
+    onDeepLink: vi.fn(subscribe(deepLinkListeners)),
+    bootInstallNotice: vi.fn(async () => ok(heldNotice)),
+    dismissBootInstallNotice: vi.fn(async () => {
+      heldNotice = null;
+      return ok(null);
+    }),
+    onBootInstallsApplied: vi.fn(subscribe(bootListeners)),
   };
   const gitRuntime = {
     status: vi.fn(async () => ({ ok: true as const, status: runtimeStatus(options.git ?? "ready") })),
@@ -172,5 +196,13 @@ export function fakeMarketplace(options: { sources?: SourceView[]; entries?: Cat
     emitCatalogChanged: () => catalogListeners.forEach((listener) => listener()),
     emitSyncProgress: (progress) => syncListeners.forEach((listener) => listener(progress)),
     emitInstallProgress: (progress) => installListeners.forEach((listener) => listener(progress)),
+    deliverDeepLink: (link) => {
+      heldLink = link;
+      deepLinkListeners.forEach((listener) => listener());
+    },
+    applyBootInstalls: (notice) => {
+      heldNotice = notice;
+      bootListeners.forEach((listener) => listener());
+    },
   };
 }

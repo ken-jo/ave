@@ -13,7 +13,7 @@ import { readFile } from "node:fs/promises";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import { getAdminPolicyPath } from "../../permissions/policy-store.js";
 import { parseStrictJson, StrictJsonError } from "../catalog/strict-json.js";
-import { PACKAGE_KINDS, type PackageKind } from "../catalog/types.js";
+import { PACKAGE_KINDS, isPackageName, type PackageKind } from "../catalog/types.js";
 import { isMarketplaceError } from "../errors.js";
 import {
   matchesSourcePattern,
@@ -88,12 +88,6 @@ const SECTION_KEYS = new Set([
 ]);
 const ADDITIONAL_KEYS = new Set(["id", "url", "ref", "auth", "label"]);
 const PACKAGE_KEY_KEYS = new Set(["kind", "name", "source"]);
-const PACKAGE_NAME_RE = /^(?!.*--)[a-z][a-z0-9-]*[a-z0-9]$/u;
-
-/** A package name as the descriptor schema defines it (`definitions.packageName`). */
-export function isPackageName(value: unknown): value is string {
-  return typeof value === "string" && value.length >= 3 && value.length <= 64 && PACKAGE_NAME_RE.test(value);
-}
 
 class PolicyShapeError extends Error {}
 

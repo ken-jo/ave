@@ -251,6 +251,10 @@ export const en = {
   "gitMarketplace.git.phaseSmokeTesting": "smoke-testing",
   "gitMarketplace.git.unavailable": "The git status is not available right now.",
 
+  "gitMarketplace.boot.title": "Installed when Ave started",
+  "gitMarketplace.boot.forYou": "Installed for you — yours to keep or remove",
+  "gitMarketplace.boot.dismiss": "Dismiss",
+
   "gitMarketplace.maintenance.title": "Maintenance",
   "gitMarketplace.maintenance.description": "Update checks, cache, and the git tool the marketplace uses.",
   "gitMarketplace.maintenance.updateCheck": "Check for updates at startup",
@@ -514,6 +518,10 @@ export const ko: Record<keyof typeof en, string> = {
   "gitMarketplace.git.phaseExtracting": "압축 해제",
   "gitMarketplace.git.phaseSmokeTesting": "실행 확인",
   "gitMarketplace.git.unavailable": "지금은 git 상태를 확인할 수 없습니다.",
+
+  "gitMarketplace.boot.title": "Ave 시작 시 설치됨",
+  "gitMarketplace.boot.forYou": "기본으로 설치됨 — 유지하거나 제거할 수 있습니다",
+  "gitMarketplace.boot.dismiss": "닫기",
 
   "gitMarketplace.maintenance.title": "유지 관리",
   "gitMarketplace.maintenance.description": "업데이트 확인, 캐시, 마켓플레이스가 쓰는 git 도구.",

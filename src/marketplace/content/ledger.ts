@@ -14,7 +14,7 @@ import { readFile } from "node:fs/promises";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import { writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
-import { isPackageName } from "../sources/policy.js";
+import { isPackageName } from "../catalog/types.js";
 import type { SourceOrigin } from "../sources/registry.js";
 import type { OriginReader } from "../sources/retained.js";
 import { CONTENT_KINDS, type ContentKind } from "./rules.js";

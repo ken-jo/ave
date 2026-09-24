@@ -22,6 +22,7 @@ import { emitEvent as emitHostEvent } from "../../boot/types.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { messages } from "../../i18n/messages/index.js";
 import { createLogger } from "../../lib/logger.js";
+import { getBootInstallNotice, setBootInstallNotice, takePendingGitMarketplaceLink } from "../../main/app-state.js";
 import { ensureCorporateCa } from "../../main/corp-ca-runtime.js";
 import { readPersistedCorpCaConfigSync } from "../../main/persisted-corp-ca.js";
 import { McpInstaller, mcpInstallOrigins } from "../../marketplace/app/mcp-installer.js";
@@ -440,4 +441,21 @@ export function registerGitMarketplaceHandlers(
   handle(channels.installExecute, (service, [planId]) => service.executeInstall(text(planId, "planId", 64)));
   handle(channels.uninstall, (service, [request]) => service.uninstall(uninstallRequest(request)));
   handle(channels.directPreview, (service, [request]) => service.previewDirectMcp(directMcpRequest(request)));
+
+  // Held in main until the tab reads them; answering them builds no marketplace.
+  const handleHeld = <T>(channel: string, run: () => T) => {
+    ipcMain.handle(channel, (event: IpcMainInvokeEvent): GitMarketplaceResult<T> => {
+      if (!validateHostRendererSender(event)) {
+        auditUnauthorized(deps.auditLogger, channel, event);
+        return UNAUTHORIZED;
+      }
+      return { ok: true, value: run() };
+    });
+  };
+  handleHeld(channels.deepLinkTake, takePendingGitMarketplaceLink);
+  handleHeld(channels.bootInstallsNotice, getBootInstallNotice);
+  handleHeld(channels.bootInstallsDismiss, () => {
+    setBootInstallNotice(null);
+    return null;
+  });
 }
