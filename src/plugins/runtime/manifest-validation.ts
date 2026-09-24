@@ -304,8 +304,12 @@ export async function parsePluginJson(
   // agreeing with the CI job that validates the same file with the same schema).
   let doc: unknown;
   let parsed: PluginManifest;
+  // Taken before anything below edits `doc` (retired fields are dropped from
+  // it in place): the registry pins the file as authored.
+  let authoredSha256: string;
   try {
     doc = JSON.parse(raw) as unknown;
+    authoredSha256 = sha256Hex(canonicalJSON(doc));
     parsed = flattenAgentPluginsManifest(doc);
   } catch (err) {
     throw new Error(
@@ -969,6 +973,6 @@ export async function parsePluginJson(
     }
   }
 
-  recordManifestDocument(manifest, doc);
+  documentSha256ByManifest.set(manifest, authoredSha256);
   return manifest;
 }

@@ -833,6 +833,43 @@ describe("PluginRuntime.disable", () => {
     }
   });
 
+  it("digests a pre-switch plugin.json as authored, though the loader drops its retired fields", async () => {
+    // Installs from before the git marketplace keep installPolicy and publisher
+    // until their next update, and their registry pin covers both fields.
+    const pluginDir = join(installedDir, "legacy-pin");
+    await mkdir(pluginDir, { recursive: true });
+    await writeFile(join(pluginDir, "entry.mjs"), "export default async function createPlugin() { return { handlers: { legacy_ping: async () => \"pong\" } }; }\n", "utf-8");
+    const manifestPath = join(pluginDir, "plugin.json");
+    await writeFile(manifestPath, JSON.stringify(agentPluginsDocument({
+      id: "legacy-pin",
+      name: "legacy-pin",
+      version: "1.0.0",
+      entry: "entry.mjs",
+      installPolicy: "admin",
+      publisher: "Ave",
+      tools: [{ name: "legacy_ping", description: "legacy_ping tool", inputSchema: { type: "object", properties: {} }, _meta: { ui: { visibility: ["model", "app"] } } }],
+      description: "Test fixture.",
+    })), "utf-8");
+    await writeTestPluginRegistry({ registryPath }, [{ id: "legacy-pin", manifestPath, enabled: true }]);
+    const seen: PluginManifest[] = [];
+    const runtime = makeGenerationBoundRuntime({
+      hostRoot: testDir,
+      registryPath,
+      deploymentGuard: new PluginDeploymentGuard({ registryPath, pluginsRoot: installedDir, requiredInstalls: async () => [] }),
+      pluginsRoot: installedDir,
+      createHostApi: (_pluginId, manifest) => {
+        seen.push(manifest);
+        return { emitEvent: () => {}, onEvent: () => () => {}, getSecret: () => null, logEvent: () => {}, onShutdown: () => {} } as never;
+      },
+    });
+    await runtime.startAll();
+
+    const authored = JSON.parse(await readFile(manifestPath, "utf-8")) as Record<string, unknown>;
+    expect(JSON.stringify(authored)).toContain("installPolicy");
+    expect(seen).toHaveLength(1);
+    expect(manifestDocumentSha256(seen[0]!)).toBe(sha256Hex(canonicalJSON(authored)));
+  });
+
   describe("PluginHostApi cross-plugin isolation", () => {
     it("does not synthesize a cross-plugin callTool surface", async () => {
       const pluginDir = join(installedDir, "calltool-plugin");
