@@ -20,6 +20,12 @@ const SNAPSHOT = "a".repeat(40);
 class FakeManager {
   configs = new Map<string, McpServerConfig>();
   failNextAdd = false;
+  /** The next add saves the config but its connection fails with this message. */
+  disconnectedNextAdd: string | null = null;
+  blocked = new Set<string>();
+  validateConfig(config: McpServerConfig) {
+    return this.blocked.has(config.id) ? { valid: false as const, reason: `Unapproved server: '${config.id}'`, layer: 1 } : { valid: true as const };
+  }
   async getConfigs() {
     return [...this.configs.values()];
   }
@@ -30,7 +36,9 @@ class FakeManager {
     }
     if (this.configs.has(config.id)) throw new Error(`${config.id} exists`);
     this.configs.set(config.id, config);
-    return { connected: true };
+    const warning = this.disconnectedNextAdd;
+    this.disconnectedNextAdd = null;
+    return warning ? { connected: false, warning } : { connected: true };
   }
   async removeConfig(id: string) {
     this.configs.delete(id);
@@ -96,7 +104,7 @@ describe("McpInstaller", () => {
   });
 
   it("installs package files with their execute bit, fills the tokens, and records the origin", async () => {
-    await expect(installer.install(resolved("1.0.0", { files: serverZip("#!/bin/sh\necho v1\n") }), { switchSource: false })).resolves.toEqual({ action: { action: "install" } });
+    await expect(installer.install(resolved("1.0.0", { files: serverZip("#!/bin/sh\necho v1\n") }), { switchSource: false })).resolves.toEqual({ action: { action: "install" }, connectionWarning: null });
     const script = join(home, "mcp", "notes", "server", "run.sh");
     expect(await readFile(script, "utf8")).toContain("v1");
     if (process.platform !== "win32") {
@@ -114,6 +122,7 @@ describe("McpInstaller", () => {
     await writeFile(join(home, "mcp-data", "notes", "state.db"), "kept");
     await expect(installer.install(resolved("1.1.0", { files: serverZip("v2") }), { switchSource: false })).resolves.toEqual({
       action: { action: "replace", direction: "upgrade", from: "1.0.0" },
+      connectionWarning: null,
     });
     expect(await readFile(join(home, "mcp", "notes", "server", "run.sh"), "utf8")).toBe("v2");
     expect(await readFile(join(home, "mcp-data", "notes", "state.db"), "utf8")).toBe("kept");
@@ -123,6 +132,39 @@ describe("McpInstaller", () => {
     expect(await readFile(join(home, "mcp", "notes", "server", "run.sh"), "utf8")).toBe("v2");
     expect(manager.configs.has("notes")).toBe(true);
     expect((await installer.list())[0]!.version).toBe("1.1.0");
+  });
+
+  it("keeps a server whose first connection failed and says why", async () => {
+    manager.disconnectedNextAdd = "Request timeout (10000ms): server/discover";
+    await expect(installer.install(resolved("1.0.0"), { switchSource: false })).resolves.toEqual({
+      action: { action: "install" },
+      connectionWarning: "Request timeout (10000ms): server/discover",
+    });
+    expect(manager.configs.has("notes")).toBe(true);
+    expect((await installer.list())[0]!.version).toBe("1.0.0");
+  });
+
+  it("writes nothing for a server the governance policy refuses", async () => {
+    manager.blocked.add("notes");
+    await expect(installer.install(resolved("1.0.0", { files: serverZip("v1") }), { switchSource: false })).rejects.toMatchObject({ code: "PACKAGE_POLICY_BLOCKED" });
+    await expect(installer.installUnbound("notes", { transport: "http", url: "https://notes.example/mcp" })).rejects.toMatchObject({ code: "PACKAGE_POLICY_BLOCKED" });
+    expect(() => installer.admit("notes", { transport: "stdio", command: "npx", args: [] })).toThrow(expect.objectContaining({ code: "PACKAGE_POLICY_BLOCKED" }));
+    await expect(stat(join(home, "mcp", "notes"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(join(home, "mcp-data", "notes"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(recordsPath())).rejects.toMatchObject({ code: "ENOENT" });
+    expect(manager.configs.size).toBe(0);
+  });
+
+  it("removes the data directory a failed first install created, and keeps one that held data", async () => {
+    manager.failNextAdd = true;
+    await expect(installer.install(resolved("1.0.0"), { switchSource: false })).rejects.toThrow("connect refused");
+    await expect(stat(join(home, "mcp-data", "notes"))).rejects.toMatchObject({ code: "ENOENT" });
+
+    await mkdir(join(home, "mcp-data", "notes"), { recursive: true });
+    await writeFile(join(home, "mcp-data", "notes", "state.db"), "kept");
+    manager.failNextAdd = true;
+    await expect(installer.install(resolved("1.0.0"), { switchSource: false })).rejects.toThrow("connect refused");
+    expect(await readFile(join(home, "mcp-data", "notes", "state.db"), "utf8")).toBe("kept");
   });
 
   it("removes the previous version's files when the new one runs none", async () => {
@@ -142,6 +184,7 @@ describe("McpInstaller", () => {
     await expect(installer.install(resolved("1.0.0", { sourceId: "other" }), { switchSource: false })).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
     await expect(installer.install(resolved("1.0.0", { sourceId: "other" }), { switchSource: true })).resolves.toEqual({
       action: { action: "switch", fromSource: "acme", from: "1.0.0" },
+      connectionWarning: null,
     });
     await expect(installer.installUnbound("notes", { transport: "http", url: "https://notes.example/mcp" })).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
   });

@@ -63,6 +63,8 @@ export interface LadderDeps extends RepositoryAccess {
   fetchImpl: typeof fetch;
   /** The stored token for the source host when the source uses token auth; GitHub release assets then go through the REST API. */
   sourceToken: string | null;
+  /** The source uses token auth and no token is stored for its host: a hidden (404) release asset needs sign-in. */
+  tokenMissing: boolean;
   zip: ZipInspector;
   limits: Readonly<MarketplaceArtifactLimits>;
   /** Scratch directory for the tree export; removed before the ladder returns. */
@@ -257,7 +259,10 @@ async function releaseRung(plan: PluginInstallPlan, deps: LadderDeps, pin: strin
   const asset = release.asset ?? `${plan.name}-${plan.version}.zip`;
   const bytes = deps.sourceUrl.host === "github.com" && deps.sourceToken
     ? await githubReleaseAsset(repo, tag, asset, deps.sourceToken, plan, deps)
-    : await downloadBounded(`${releaseOrigin(deps.sourceUrl)}/${repo}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(asset)}`, downloadOptions(deps, plan));
+    : await downloadBounded(`${releaseOrigin(deps.sourceUrl)}/${repo}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(asset)}`, {
+      ...downloadOptions(deps, plan),
+      tokenMissing: deps.tokenMissing,
+    });
   return verifyPinned(bytes, pin, "the release asset");
 }
 
@@ -376,5 +381,8 @@ export async function runPluginLadder(plan: PluginInstallPlan, deps: LadderDeps)
     return { plan, zipBuffer: bytes.zipBuffer, artifactSha256: bytes.artifactSha256, rung, rungs, manifestDocument };
   }
   const summary = rungs.map((item) => `${item.rung}: ${item.outcome === "failed" ? `${item.code} (${item.message})` : item.outcome === "skipped" ? `skipped (${item.reason})` : "used"}`);
-  throw new LadderError("NO_INSTALLABLE_ARTIFACT", `${plan.name}@${plan.version}: no rung produced an installable artifact — ${summary.join("; ")}`, rungs);
+  // Every rung that was tried wanted sign-in: that, not a missing artifact, is what to fix.
+  const failed = rungs.filter((item) => item.outcome === "failed");
+  const code = failed.length > 0 && failed.every((item) => item.code === "SOURCE_AUTH_REQUIRED") ? "SOURCE_AUTH_REQUIRED" : "NO_INSTALLABLE_ARTIFACT";
+  throw new LadderError(code, `${plan.name}@${plan.version}: no rung produced an installable artifact — ${summary.join("; ")}`, rungs);
 }

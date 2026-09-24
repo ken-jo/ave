@@ -34,6 +34,11 @@ const skill = (name: string, body: string) => `---\nname: ${name}\ndescription: 
 
 class FakeManager {
   configs = new Map<string, McpServerConfig>();
+  /** Server ids the governance policy refuses. */
+  blocked = new Set<string>();
+  validateConfig(config: McpServerConfig) {
+    return this.blocked.has(config.id) ? { valid: false as const, reason: `Unapproved server: '${config.id}'`, layer: 1 } : { valid: true as const };
+  }
   async getConfigs() {
     return [...this.configs.values()];
   }
@@ -212,7 +217,7 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
     const plan = await service.planInstall(key);
     expect(plan).toMatchObject({ version: "1.0.0", action: { action: "install" }, runsCode: false, authority: null, mcp: null });
     const changedBefore = catalogChanged;
-    await expect(service.executeInstall(plan.planId)).resolves.toEqual({ key, version: "1.0.0", action: { action: "install" }, rungs: [] });
+    await expect(service.executeInstall(plan.planId)).resolves.toEqual({ key, version: "1.0.0", action: { action: "install" }, rungs: [], connectionWarning: null });
     expect(catalogChanged).toBe(changedBefore + 1);
     // Single use.
     await expect(service.executeInstall(plan.planId)).rejects.toMatchObject({ code: "PLAN_EXPIRED" });
@@ -265,12 +270,24 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
     expect(manager.configs.has("notes")).toBe(false);
   });
 
+  it("refuses to plan an MCP server the governance policy does not allow", async () => {
+    const { url } = market();
+    await addMarket(url);
+    manager.blocked.add("notes");
+    await expect(service.planInstall({ sourceId: "acme-tools", kind: "mcp", name: "notes" })).rejects.toMatchObject({ code: "PACKAGE_POLICY_BLOCKED" });
+    manager.blocked.add("weather");
+    expect(() => service.previewDirectMcp({
+      serverJson: JSON.stringify({ name: "io.example/weather", version: "0.3.0", remotes: [{ type: "streamable-http", url: "https://weather.example/mcp" }] }),
+    })).toThrow(expect.objectContaining({ code: "PACKAGE_POLICY_BLOCKED" }));
+    expect(manager.configs.size).toBe(0);
+  });
+
   it("installs a pasted server.json bound to no source and lists it as unbound until removed", async () => {
     const preview = service.previewDirectMcp({
       serverJson: JSON.stringify({ name: "io.example/weather", version: "0.3.0", remotes: [{ type: "streamable-http", url: "https://weather.example/mcp" }] }),
     });
     expect(preview).toMatchObject({ name: "weather", version: "0.3.0", runtime: { transport: "http", url: "https://weather.example/mcp" }, options: { packages: 0, remotes: 1 } });
-    await expect(service.executeInstall(preview.planId)).resolves.toEqual({ key: { sourceId: null, kind: "mcp", name: "weather" }, version: null, action: { action: "install" }, rungs: [] });
+    await expect(service.executeInstall(preview.planId)).resolves.toEqual({ key: { sourceId: null, kind: "mcp", name: "weather" }, version: null, action: { action: "install" }, rungs: [], connectionWarning: null });
     expect((await service.catalog({ installedOnly: true })).entries).toEqual([
       expect.objectContaining({ key: { sourceId: null, kind: "mcp", name: "weather" }, sourceOrigin: null, sourceLabel: null, state: { state: "unbound", version: null }, runsCode: true }),
     ]);

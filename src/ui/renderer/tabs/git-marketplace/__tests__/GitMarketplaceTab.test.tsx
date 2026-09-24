@@ -124,7 +124,7 @@ describe("GitMarketplaceTab package sheet", () => {
     fake.emitInstallProgress({ planId: "plan-1", phase: "downloading", rung: "release", bytes: 10, total: 100 });
     await waitFor(() => expect(within(sheet).getByTestId("git-marketplace:installing")).toHaveTextContent("아티팩트 내려받고 검증하는 중"));
 
-    finish({ ok: true, value: { key: calendar.key, version: "1.0.0", action: { action: "install" }, rungs: [{ rung: "release", outcome: "used" }] } });
+    finish({ ok: true, value: { key: calendar.key, version: "1.0.0", action: { action: "install" }, rungs: [{ rung: "release", outcome: "used" }], connectionWarning: null } });
     expect(await within(sheet).findByTestId("git-marketplace:done")).toHaveTextContent("calendar 1.0.0을(를) 설치했습니다.");
     await waitFor(() => expect(fake.market.listCatalog.mock.calls.length).toBeGreaterThan(1));
   });
@@ -216,6 +216,32 @@ describe("GitMarketplaceTab package sheet", () => {
     fireEvent.click(await within(sheet).findByRole("checkbox"));
     fireEvent.click(within(sheet).getByTestId("git-marketplace:uninstall"));
     await waitFor(() => expect(fake.market.uninstall).toHaveBeenCalledWith({ sourceId: "team", kind: "mcp", name: "weather", removeData: true }));
+  });
+
+  it("says when an installed MCP server did not connect", async () => {
+    const weather = entry("team", "mcp", "weather");
+    const fake = fakeMarketplace({ sources: [team], entries: [weather] });
+    fake.market.planInstall.mockResolvedValue({ ok: true, value: installPlan(weather) });
+    fake.market.executeInstall.mockResolvedValue({
+      ok: true,
+      value: { key: weather.key, version: "1.0.0", action: { action: "install" }, rungs: [], connectionWarning: "Request timeout (10000ms): server/discover" },
+    });
+    renderTab(fake);
+
+    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:mcp:weather")).getByTestId("git-marketplace:card:state"));
+    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    fireEvent.click(await within(sheet).findByTestId("git-marketplace:plan"));
+    fireEvent.click(await within(sheet).findByTestId("git-marketplace:confirm"));
+    expect(await within(sheet).findByTestId("git-marketplace:done:connection")).toHaveTextContent("아직 연결되지 않았습니다: Request timeout (10000ms): server/discover");
+  });
+
+  it("closes the sheet from its close button", async () => {
+    const fake = fakeMarketplace({ sources: [team], entries: [entry("team", "skill", "proofread")] });
+    renderTab(fake);
+
+    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:skill:proofread")).getByTestId("git-marketplace:card:state"));
+    fireEvent.click(await screen.findByTestId("git-marketplace:sheet:close"));
+    await waitFor(() => expect(screen.queryByTestId("git-marketplace:sheet")).toBeNull());
   });
 
   it("offers no uninstall for a package the policy requires", async () => {

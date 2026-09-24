@@ -297,6 +297,8 @@ export interface InstallResultView {
   action: InstallActionView;
   /** Plugins: the rung that delivered and every rung's outcome. */
   rungs: RungOutcomeView[];
+  /** MCP servers: installed, but the first connection failed with this message (the server stays configured). */
+  connectionWarning: string | null;
 }
 
 export interface UninstallRequest extends InstalledKeyView {

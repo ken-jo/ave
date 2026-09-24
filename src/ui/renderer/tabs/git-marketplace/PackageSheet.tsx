@@ -7,7 +7,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge } from "../../../../components/ui/badge.js";
 import { Button } from "../../../../components/ui/button.js";
 import { Checkbox } from "../../../../components/ui/checkbox.js";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../../../components/ui/dialog.js";
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../../../components/ui/dialog.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import { cn } from "../../../../lib/utils.js";
 import type {
@@ -207,15 +207,17 @@ export function PackageSheet({ api, target, onClose, onChanged }: PackageSheetPr
 
   const diagnostic = useMemo(() => {
     if (stage.stage !== "failed") return "";
-    const subject = stage.plan ? `${stage.plan.key.kind} ${stage.plan.key.name} ${stage.plan.version} from ${stage.plan.key.sourceId}` : "";
+    const subject = stage.plan
+      ? `${stage.plan.key.kind} ${stage.plan.key.name} ${stage.plan.version} from ${stage.plan.key.sourceId}`
+      : target ? `${target.key.kind} ${target.key.name} from ${target.key.sourceId}` : "";
     return `${stage.failure.code} · ${subject}\n${stage.failure.message}`.trim();
-  }, [stage]);
+  }, [stage, target]);
 
   return (
     <Dialog open={target !== null} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-w-2xl" data-testid="git-marketplace:sheet">
         <DialogHeader>
-          <DialogTitle className="flex flex-wrap items-center gap-2">
+          <DialogTitle className="flex flex-wrap items-center gap-2 pr-8">
             {entry?.displayName ?? target?.key.name}
             {entry?.sourceOrigin && (
               <Badge variant="outline" className="h-5 px-1.5 text-[10px]">
@@ -225,6 +227,9 @@ export function PackageSheet({ api, target, onClose, onChanged }: PackageSheetPr
             {target && <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{kindLabel(t, target.key.kind)}</Badge>}
           </DialogTitle>
           <DialogDescription>{entry?.description ?? ""}</DialogDescription>
+          <DialogClose asChild>
+            <Button size="sm" variant="ghost" className="absolute right-4 top-4 h-7 w-7 p-0" aria-label={t("common.close")} data-testid="git-marketplace:sheet:close">✕</Button>
+          </DialogClose>
         </DialogHeader>
 
         <div className="max-h-[60vh] space-y-3 overflow-y-auto pr-1">
@@ -384,6 +389,11 @@ export function PackageSheet({ api, target, onClose, onChanged }: PackageSheetPr
           {stage.stage === "done" && (
             <div className="space-y-1 text-sm" data-testid="git-marketplace:done">
               <p>{t("gitMarketplace.install.done", { name: stage.result.key.name, version: stage.result.version ?? "" })}</p>
+              {stage.result.connectionWarning && (
+                <p className="text-xs text-warning" data-testid="git-marketplace:done:connection">
+                  {t("gitMarketplace.install.notConnected", { message: stage.result.connectionWarning })}
+                </p>
+              )}
               {stage.result.rungs.length > 0 && (
                 <ol className="text-xs text-muted-foreground">
                   {stage.result.rungs.map((rung) => (

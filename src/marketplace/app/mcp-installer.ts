@@ -22,7 +22,7 @@ import { chmod, mkdir, readFile, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import { writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
-import type { McpServerConfig } from "../../mcp/types.js";
+import type { McpServerConfig, ValidationResult } from "../../mcp/types.js";
 import { parseMcpRuntimeSpec } from "../../plugins/mcp-runtime-spec.js";
 import { assertSafeArtifactSlug } from "../../plugins/plugin-id.js";
 import type { McpRuntimeSpec } from "../../plugins/types.js";
@@ -138,8 +138,11 @@ export interface McpInstallerDeps {
   };
   manager: {
     getConfigs(): Promise<ReadonlyArray<{ id: string }>>;
-    addConfig(config: McpServerConfig): Promise<unknown>;
+    /** Saves the config, then connects; a failed connection keeps the config and says why. */
+    addConfig(config: McpServerConfig): Promise<{ connected: boolean; warning?: string }>;
     removeConfig(id: string): Promise<void>;
+    /** The governance decision `addConfig` applies, asked before anything is written. */
+    validateConfig(config: McpServerConfig): ValidationResult;
   };
   /** `$NODE`. */
   nodePath: string;
@@ -187,6 +190,13 @@ export class McpInstaller implements McpInstallerPort {
     });
   }
 
+  admit(name: string, runtime: McpRuntimeSpec): void {
+    const decision = this.deps.manager.validateConfig(this.configFor({ name: assertSafeArtifactSlug(name), runtime }));
+    if (!decision.valid) {
+      throw new MarketplaceError("PACKAGE_POLICY_BLOCKED", `the MCP governance policy does not allow ${name} (layer ${decision.layer}): ${decision.reason}`);
+    }
+  }
+
   private async write(records: McpRecord[]): Promise<void> {
     const file: RecordFile = { version: 1, servers: records };
     await writeFileAtomicAtPath(this.deps.recordsPath, `${JSON.stringify(file, null, 2)}\n`);
@@ -203,10 +213,11 @@ export class McpInstaller implements McpInstallerPort {
   }
 
   /** Replace the config of `previous` with `next`; a failed add puts the previous one back. */
-  private async swapConfig(previous: McpRecord | null, next: McpServerConfig): Promise<void> {
+  private async swapConfig(previous: McpRecord | null, next: McpServerConfig): Promise<string | null> {
     if (previous) await this.deps.manager.removeConfig(previous.name);
     try {
-      await this.deps.manager.addConfig(next);
+      const added = await this.deps.manager.addConfig(next);
+      return added.connected ? null : added.warning ?? "the server did not connect";
     } catch (error) {
       if (previous) await this.deps.manager.addConfig(this.configFor(previous));
       throw error;
@@ -214,11 +225,25 @@ export class McpInstaller implements McpInstallerPort {
   }
 
   /** Register `record`, swapping its files first when it has any, and write the record file last. */
-  private async apply(records: McpRecord[], previous: McpRecord | null, record: McpRecord, zipBuffer: Buffer | null): Promise<void> {
-    await mkdir(this.dataDir(record.name), { recursive: true });
+  /** Returns the first connection's failure, when there was one. */
+  private async apply(records: McpRecord[], previous: McpRecord | null, record: McpRecord, zipBuffer: Buffer | null): Promise<string | null> {
+    this.admit(record.name, record.runtime);
+    const dataDir = this.dataDir(record.name);
+    const createdDataDir = !(await exists(dataDir));
+    await mkdir(dataDir, { recursive: true });
+    try {
+      return await this.register(records, previous, record, zipBuffer);
+    } catch (error) {
+      // A failed first install leaves no data directory behind; an existing one is the server's data.
+      if (createdDataDir) await rm(dataDir, { recursive: true, force: true });
+      throw error;
+    }
+  }
+
+  private async register(records: McpRecord[], previous: McpRecord | null, record: McpRecord, zipBuffer: Buffer | null): Promise<string | null> {
     const next = records.filter((item) => item.name !== record.name).concat(record);
-    const register = async () => {
-      await this.swapConfig(previous, this.configFor(record));
+    const register = async (): Promise<string | null> => {
+      const connectionWarning = await this.swapConfig(previous, this.configFor(record));
       try {
         await this.write(next);
       } catch (error) {
@@ -226,18 +251,20 @@ export class McpInstaller implements McpInstallerPort {
         if (previous) await this.deps.manager.addConfig(this.configFor(previous));
         throw error;
       }
+      return connectionWarning;
     };
     if (zipBuffer) {
       const executables = executableEntries(zipBuffer);
-      await this.deps.files.extractZipWithCommit(record.name, zipBuffer, async (installDir) => {
+      const { result } = await this.deps.files.extractZipWithCommit(record.name, zipBuffer, async (installDir) => {
         for (const entry of executables) await chmod(resolve(installDir, entry), 0o755);
-        await register();
+        return register();
       });
-      return;
+      return result;
     }
-    await register();
+    const connectionWarning = await register();
     // The new version runs no package files; the previous version's go.
     if (previous?.hasFiles) await rm(this.deps.files.installDirFor(record.name), { recursive: true, force: true });
+    return connectionWarning;
   }
 
   list(): Promise<InstalledRecord[]> {
@@ -252,7 +279,7 @@ export class McpInstaller implements McpInstallerPort {
     );
   }
 
-  install(resolved: ResolvedMcpServer, options: { switchSource: boolean }): Promise<{ action: InstallAction }> {
+  install(resolved: ResolvedMcpServer, options: { switchSource: boolean }): Promise<{ action: InstallAction; connectionWarning: string | null }> {
     return this.serial(async () => {
       const { plan } = resolved;
       const { records, current } = await this.owned(plan.name);
@@ -276,18 +303,18 @@ export class McpInstaller implements McpInstallerPort {
           installedAt: (this.deps.now?.() ?? new Date()).toISOString(),
         },
       };
-      await this.apply(records, current, record, resolved.packageFiles?.zipBuffer ?? null);
-      return { action };
+      const connectionWarning = await this.apply(records, current, record, resolved.packageFiles?.zipBuffer ?? null);
+      return { action, connectionWarning };
     });
   }
 
-  installUnbound(name: string, runtime: McpRuntimeSpec): Promise<void> {
+  installUnbound(name: string, runtime: McpRuntimeSpec): Promise<{ connectionWarning: string | null }> {
     return this.serial(async () => {
       const { records, current } = await this.owned(assertSafeArtifactSlug(name));
       if (current?.origin) {
         throw new MarketplaceError("PACKAGE_ID_CONFLICT", `MCP server ${name} is installed from ${current.origin.sourceId}; uninstall it first`);
       }
-      await this.apply(records, current, { name, version: null, runtime, hasFiles: false, origin: null }, null);
+      return { connectionWarning: await this.apply(records, current, { name, version: null, runtime, hasFiles: false, origin: null }, null) };
     });
   }
 

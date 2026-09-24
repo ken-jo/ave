@@ -103,6 +103,7 @@ export function failureText(t: Translate, failure: { code: GitMarketplaceErrorCo
     case "SOURCE_AUTH_REQUIRED": return t("gitMarketplace.error.authRequired", { message: failure.message });
     case "SOURCE_NOT_A_MARKETPLACE": return t("gitMarketplace.error.notAMarketplace", { message: failure.message });
     case "PACKAGE_ID_CONFLICT": return t("gitMarketplace.error.idConflict", { message: failure.message });
+    case "PACKAGE_POLICY_BLOCKED": return t("gitMarketplace.error.policyBlocked", { message: failure.message });
     case "unavailable": return t("gitMarketplace.error.unavailable", { message: failure.message });
     default: return `${failure.code} · ${failure.message}`;
   }

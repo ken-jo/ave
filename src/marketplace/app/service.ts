@@ -644,6 +644,7 @@ export class MarketplaceService {
       const resolved = await this.repositoryAccess(row.sourceId, (access) =>
         resolveMcpPackage(plan, { ...access, limits: this.options.mcpLimits, workRoot: this.options.workRoot }),
       );
+      this.options.installers.mcp.admit(row.name, resolved.runtime);
       held = { kind: "mcp", resolved, switchSource };
       mcp = mcpRuntimeView(resolved.runtime);
     } else {
@@ -719,6 +720,7 @@ export class MarketplaceService {
               gate: this.options.gate,
               fetchImpl: this.options.ladder.fetchImpl,
               sourceToken: this.tokenFor(source),
+              tokenMissing: source.auth.kind === "token" && this.tokenFor(source) === null,
               zip: this.options.ladder.zip,
               limits: this.options.ladder.limits,
               workRoot: this.options.workRoot,
@@ -733,6 +735,7 @@ export class MarketplaceService {
         version: plan.version,
         action: installActionView(outcome.action),
         rungs: rungOutcomeViews(outcome.staged.rungs),
+        connectionWarning: null,
       };
     } else if (held.kind === "content") {
       const { plan } = held;
@@ -742,16 +745,16 @@ export class MarketplaceService {
       );
       this.progress(planId, "installing");
       const outcome = await this.options.installers.content.install(staged, { switchSource: held.switchSource });
-      result = { key: { sourceId: plan.sourceId, kind: plan.kind, name: plan.name }, version: plan.version, action: installActionView(outcome.action), rungs: [] };
+      result = { key: { sourceId: plan.sourceId, kind: plan.kind, name: plan.name }, version: plan.version, action: installActionView(outcome.action), rungs: [], connectionWarning: null };
     } else if (held.kind === "mcp") {
       const { plan } = held.resolved;
       this.progress(planId, "installing");
       const outcome = await this.options.installers.mcp.install(held.resolved, { switchSource: held.switchSource });
-      result = { key: { sourceId: plan.sourceId, kind: "mcp", name: plan.name }, version: plan.version, action: installActionView(outcome.action), rungs: [] };
+      result = { key: { sourceId: plan.sourceId, kind: "mcp", name: plan.name }, version: plan.version, action: installActionView(outcome.action), rungs: [], connectionWarning: outcome.connectionWarning };
     } else {
       this.progress(planId, "installing");
-      await this.options.installers.mcp.installUnbound(held.name, held.runtime);
-      result = { key: { sourceId: null, kind: "mcp", name: held.name }, version: null, action: { action: "install" }, rungs: [] };
+      const { connectionWarning } = await this.options.installers.mcp.installUnbound(held.name, held.runtime);
+      result = { key: { sourceId: null, kind: "mcp", name: held.name }, version: null, action: { action: "install" }, rungs: [], connectionWarning };
     }
     this.options.onCatalogChanged?.();
     return result;
@@ -794,6 +797,7 @@ export class MarketplaceService {
     if (!name) throw new MarketplaceError("CONTENT_RULE_VIOLATION", `server.json name ${record.name} does not end in a usable name`);
     const runtime = runtimeFromServerJson(document, request.select);
     assertMcpRuntimePinned(name, runtime);
+    this.options.installers.mcp.admit(name, runtime);
     const ticket = this.plans.issue({ kind: "mcp-unbound", name, runtime });
     return {
       planId: ticket.id,

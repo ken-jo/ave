@@ -5,7 +5,7 @@
 export const en = {
   "gitMarketplace.title": "Marketplace",
   "gitMarketplace.description": "Packages from the git sources this app reads. Each package stays bound to the source it was installed from.",
-  "gitMarketplace.summary": "{count} packages from {sources} sources",
+  "gitMarketplace.summary": "Packages: {count} · sources: {sources}",
   "gitMarketplace.synced": "synced {time}",
   "gitMarketplace.loading": "Loading…",
   "gitMarketplace.empty": "Nothing matches.",
@@ -129,6 +129,7 @@ export const en = {
   "gitMarketplace.install.phaseInstalling": "Installing…",
   "gitMarketplace.install.phaseActivating": "Starting…",
   "gitMarketplace.install.done": "Installed {name} {version}.",
+  "gitMarketplace.install.notConnected": "It is configured but did not connect yet: {message}. MCP settings shows its state and can reconnect it.",
 
   "gitMarketplace.uninstall.button": "Uninstall",
   "gitMarketplace.uninstall.removeData": "Also remove its data",
@@ -151,7 +152,7 @@ export const en = {
   "gitMarketplace.sources.colStatus": "Status",
   "gitMarketplace.sources.colOn": "On",
   "gitMarketplace.sources.colActions": "Actions",
-  "gitMarketplace.sources.mirrors": "{count} mirrors",
+  "gitMarketplace.sources.mirrors": "mirrors: {count}",
   "gitMarketplace.sources.enabledLabel": "Show packages from {source}",
   "gitMarketplace.sources.footnote": "Official and organization sources cannot be removed, and the official switch is locked unless policy allows hiding it. Removing a source you added keeps its installed packages; they show “Source removed”.",
   "gitMarketplace.sources.orphaned": "Still installed from the removed source: {packages}",
@@ -193,7 +194,7 @@ export const en = {
   "gitMarketplace.add.checking": "Checking…",
   "gitMarketplace.add.owner": "owner {owner}",
   "gitMarketplace.add.commit": "Commit {commit}",
-  "gitMarketplace.add.codeRunning": "{count} packages can run code on this computer. Adding the source installs nothing. Each plugin or MCP server asks for its permissions when you install it.",
+  "gitMarketplace.add.codeRunning": "Packages that can run code on this computer: {count}. Adding the source installs nothing. Each plugin or MCP server asks for its permissions when you install it.",
   "gitMarketplace.add.skipped": "Skipped: {detail}",
   "gitMarketplace.add.credentialHelper": "A credential helper on this computer answers for this host.",
   "gitMarketplace.add.sourceName": "Source name",
@@ -216,7 +217,7 @@ export const en = {
   "gitMarketplace.direct.noCode": "Runs no code — instructions only",
   "gitMarketplace.direct.confirm": "Add and review",
   "gitMarketplace.direct.review": "Review",
-  "gitMarketplace.direct.otherOptions": "{packages} packages · {remotes} remotes in the file:",
+  "gitMarketplace.direct.otherOptions": "The file lists packages: {packages} · remotes: {remotes}. Use:",
   "gitMarketplace.direct.usePackage": "Package {index}",
   "gitMarketplace.direct.useRemote": "Remote {index}",
   "gitMarketplace.direct.unbound": "Added without a source: nothing updates it, and you can remove it from Installed.",
@@ -224,7 +225,7 @@ export const en = {
   "gitMarketplace.direct.connected": "Connected {name}.",
   "gitMarketplace.direct.importHelp": "Paste an mcpServers object from a desktop client configuration or a project .mcp.json. You see every server before anything is added.",
   "gitMarketplace.direct.importPreview": "Preview import",
-  "gitMarketplace.direct.importApply": "Add {count} servers",
+  "gitMarketplace.direct.importApply": "Add servers ({count})",
 
   "gitMarketplace.git.title": "Git",
   "gitMarketplace.git.modeLabel": "Which git to use",
@@ -258,9 +259,10 @@ export const en = {
   "gitMarketplace.error.planExpired": "That plan is no longer valid. Open the package again to review a fresh one.",
   "gitMarketplace.error.gitMissing": "Git is not installed. Install it under Maintenance, or in the Add dialog.",
   "gitMarketplace.error.gitTooOld": "The git on this computer is too old. Install the managed copy under Maintenance.",
-  "gitMarketplace.error.authRequired": "This source needs sign-in. {message}",
+  "gitMarketplace.error.authRequired": "This source needs sign-in: set a token for its host under Sources. {message}",
   "gitMarketplace.error.notAMarketplace": "No marketplace or package was found there. {message}",
   "gitMarketplace.error.idConflict": "{message}",
+  "gitMarketplace.error.policyBlocked": "The MCP governance policy on this computer does not allow this server, so nothing was installed. {message}",
   "gitMarketplace.error.unavailable": "The marketplace could not answer. {message}",
 };
 
@@ -391,6 +393,7 @@ export const ko: Record<keyof typeof en, string> = {
   "gitMarketplace.install.phaseInstalling": "설치 중…",
   "gitMarketplace.install.phaseActivating": "시작하는 중…",
   "gitMarketplace.install.done": "{name} {version}을(를) 설치했습니다.",
+  "gitMarketplace.install.notConnected": "설정은 추가됐지만 아직 연결되지 않았습니다: {message}. MCP 설정에서 상태를 확인하고 다시 연결할 수 있습니다.",
 
   "gitMarketplace.uninstall.button": "제거",
   "gitMarketplace.uninstall.removeData": "데이터도 함께 삭제",
@@ -520,8 +523,9 @@ export const ko: Record<keyof typeof en, string> = {
   "gitMarketplace.error.planExpired": "이 계획은 더 이상 유효하지 않습니다. 패키지를 다시 열어 새 계획을 검토하세요.",
   "gitMarketplace.error.gitMissing": "git이 설치되어 있지 않습니다. 유지 관리나 추가 대화 상자에서 설치하세요.",
   "gitMarketplace.error.gitTooOld": "이 컴퓨터의 git이 너무 오래되었습니다. 유지 관리에서 관리형 사본을 설치하세요.",
-  "gitMarketplace.error.authRequired": "이 소스에는 로그인이 필요합니다. {message}",
+  "gitMarketplace.error.authRequired": "이 소스에는 로그인이 필요합니다. 소스에서 해당 호스트의 토큰을 설정하세요. {message}",
   "gitMarketplace.error.notAMarketplace": "그곳에서 마켓플레이스나 패키지를 찾지 못했습니다. {message}",
   "gitMarketplace.error.idConflict": "{message}",
+  "gitMarketplace.error.policyBlocked": "이 컴퓨터의 MCP 거버넌스 정책이 이 서버를 허용하지 않아 아무것도 설치하지 않았습니다. {message}",
   "gitMarketplace.error.unavailable": "마켓플레이스가 응답하지 못했습니다. {message}",
 };

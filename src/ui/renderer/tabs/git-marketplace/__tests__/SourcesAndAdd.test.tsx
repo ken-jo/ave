@@ -205,7 +205,7 @@ describe("DirectInstallView", () => {
       },
     });
     fake.market.previewDirectMcp.mockImplementation(async (request: { select?: { package?: number } }) => preview(request.select));
-    fake.market.executeInstall.mockResolvedValue({ ok: true, value: { key: { sourceId: null, kind: "mcp", name: "weather" }, version: null, action: { action: "install" }, rungs: [] } });
+    fake.market.executeInstall.mockResolvedValue({ ok: true, value: { key: { sourceId: null, kind: "mcp", name: "weather" }, version: null, action: { action: "install" }, rungs: [], connectionWarning: null } });
     const onInstalled = vi.fn();
     const api = { gitMarketplace: fake.market, previewClaudeDesktopMcpImport: vi.fn(), applyClaudeDesktopMcpImport: vi.fn() };
     render(<DirectInstallView api={api as unknown as Pick<AveApi, "gitMarketplace" | "previewClaudeDesktopMcpImport" | "applyClaudeDesktopMcpImport">} onGitAddress={vi.fn()} onOpenMcpSettings={vi.fn()} onInstalled={onInstalled} />);

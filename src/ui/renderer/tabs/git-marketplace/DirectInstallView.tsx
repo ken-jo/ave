@@ -60,7 +60,11 @@ export function DirectInstallView({ api, onGitAddress, onOpenMcpSettings, onInst
     try {
       const result = await api.gitMarketplace.executeInstall(preview.planId);
       if (result.ok) {
-        setDone(t("gitMarketplace.direct.connected", { name: preview.name }));
+        setDone(
+          result.value.connectionWarning
+            ? `${t("gitMarketplace.install.done", { name: preview.name, version: preview.version })} ${t("gitMarketplace.install.notConnected", { message: result.value.connectionWarning })}`
+            : t("gitMarketplace.direct.connected", { name: preview.name }),
+        );
         setPreview(null);
         setServerJson("");
         onInstalled();

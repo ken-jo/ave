@@ -34,9 +34,12 @@ export interface ContentInstallerPort {
 
 export interface McpInstallerPort {
   list(): Promise<InstalledRecord[]>;
-  install(resolved: ResolvedMcpServer, options: { switchSource: boolean }): Promise<{ action: InstallAction }>;
+  /** PACKAGE_POLICY_BLOCKED when the MCP governance policy would refuse the server: checked when a plan is made and again at install. */
+  admit(name: string, runtime: McpRuntimeSpec): void;
+  /** `connectionWarning`: the server was added but its first connection failed. */
+  install(resolved: ResolvedMcpServer, options: { switchSource: boolean }): Promise<{ action: InstallAction; connectionWarning: string | null }>;
   /** A server from a pasted server.json (design §8.1): an MCP entry bound to no source. */
-  installUnbound(name: string, runtime: McpRuntimeSpec): Promise<void>;
+  installUnbound(name: string, runtime: McpRuntimeSpec): Promise<{ connectionWarning: string | null }>;
   /** `removeData` also removes `$DATA_DIR` (design §5.2); the kept directory is returned otherwise. */
   uninstall(name: string, options: { removeData: boolean }): Promise<{ keptDataDir: string | null }>;
 }
