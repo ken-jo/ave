@@ -121,6 +121,15 @@ describe("theme packages (blueprint 3.2)", () => {
     expect(parse("theme", [themeFile()], "nord")).toMatchObject({ kind: "theme" });
     expect(() => parse("theme", [themeFile({ preview: "missing.png" })])).toThrow(/preview must name an image file/u);
   });
+
+  it("keeps the pair a theme names for followSystem, and refuses one that names no other theme", () => {
+    expect(parse("theme", [themeFile({ pair: "harbor-light" })], "harbor")).toMatchObject({ kind: "theme", pair: "harbor-light" });
+    expect(parse("theme", [themeFile({ pair: "moonstone" })], "harbor")).toMatchObject({ pair: "moonstone" });
+    expect(parse("theme", [themeFile()], "harbor")).not.toHaveProperty("pair");
+    for (const pair of ["harbor", "Not A Theme", 7]) {
+      expect(() => parse("theme", [themeFile({ pair })], "harbor")).toThrow("theme.json: pair must name another theme");
+    }
+  });
 });
 
 describe("language packages (blueprint 3.3)", () => {

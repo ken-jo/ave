@@ -92,6 +92,7 @@ export class InstalledContentService {
           tokens: content.tokens,
           surfaces: content.surfaces,
           ...(previewUrl ? { previewUrl } : {}),
+          ...(content.pair ? { pair: content.pair } : {}),
           ...from(item),
         });
       } else if (content.kind === "language") {

@@ -21,7 +21,7 @@ import { SUPPORTED_LOCALES } from "../../i18n/locale.js";
 import { isModelFacingKey } from "../../i18n/model-facing.js";
 import type { FontFormat } from "../../shared/installed-content.js";
 import { isMarketplaceEligibleLLMVendor, type MarketplaceEligibleLLMVendor } from "../../shared/llm-vendor-defaults.js";
-import { isBundleId } from "../../shared/theme-bundles.js";
+import { isBundleId, isThemeId } from "../../shared/theme-bundles.js";
 import { themeSurfaceProblems, themeTokenProblems, type ThemeSurfaces, type ThemeTokens } from "../../shared/theme-tokens.js";
 import { parseAgentFrontmatter } from "../../main/agent-profile-store.js";
 import { parseFrontmatter } from "../../main/skill-store.js";
@@ -45,6 +45,8 @@ interface ThemeContent {
   tokens: ThemeTokens;
   surfaces: ThemeSurfaces;
   preview?: string;
+  /** The theme of the other shell `followSystem` switches to with this one. */
+  pair?: string;
 }
 
 interface LanguageContent {
@@ -211,9 +213,12 @@ function theme(files: Map<string, Buffer>, context: ContentContext): ThemeConten
   // the fourteen the server marketplace delivered among them, is a package.
   if (isBundleId(context.name)) throw new ContentFailure(path, `${context.name} is a built-in theme`);
   const record = readJson(files, path);
-  closed(record, path, ["name", "description", "shell", "highContrast", "tokens", "surfaces", "preview"]);
+  closed(record, path, ["name", "description", "shell", "highContrast", "tokens", "surfaces", "preview", "pair"]);
   if (record.shell !== "light" && record.shell !== "dark") throw new ContentFailure(path, 'shell must be "light" or "dark"');
   if (typeof record.highContrast !== "boolean") throw new ContentFailure(path, "highContrast must be true or false");
+  if (record.pair !== undefined && (typeof record.pair !== "string" || !isThemeId(record.pair) || record.pair === context.name)) {
+    throw new ContentFailure(path, "pair must name another theme");
+  }
   const problems = [...themeTokenProblems(record.tokens), ...themeSurfaceProblems(record.surfaces)];
   if (problems.length > 0) throw new ContentFailure(path, problems.join("; "));
   let preview: string | undefined;
@@ -239,6 +244,7 @@ function theme(files: Map<string, Buffer>, context: ContentContext): ThemeConten
     tokens: record.tokens as ThemeTokens,
     surfaces: record.surfaces as ThemeSurfaces,
     ...(preview ? { preview } : {}),
+    ...(record.pair !== undefined ? { pair: record.pair } : {}),
   };
 }
 

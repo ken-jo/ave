@@ -15,4 +15,3 @@ export {
 } from "./bundles/index.js";
 export type { ThemeBundle } from "./bundles/index.js";
 export type { ThemeContextValue } from "./types.js";
-export { VIOLET_PAIR_IDS } from "./types.js";

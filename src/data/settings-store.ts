@@ -536,9 +536,9 @@ export interface PluginSettings {}
  * specified set of shell + chat + code tokens, so combinatorial mismatches
  * are impossible.
  *
- * `followSystem` (optional, violet pair only): when true and the active bundle
- * is "violet-light" or "violet-dark", the host automatically switches between the
- * two based on `prefers-color-scheme`.
+ * `followSystem` (optional): when true and the selected theme declares a pair
+ * of the other shell (an installed theme's `pair`), the renderer switches
+ * between the two based on `prefers-color-scheme`.
  *
  * `schemaVersion: 2` distinguishes v2 from legacy v1 files that have
  * `theme`/`chatTheme`/`codeTheme` keys. On load, v1 files are migrated once

@@ -43,6 +43,16 @@ export function findBundle(id: string): ThemeBundle | undefined {
   return isBundleId(id) ? COMPILED_BUNDLES[id] : installedBundles.get(id);
 }
 
+/**
+ * The theme `followSystem` alternates `bundle` with: its declared `pair`, when
+ * that theme is available and has the other shell. Undefined otherwise, and
+ * then `followSystem` has nothing to switch.
+ */
+export function systemPairOf(bundle: ThemeBundle): ThemeBundle | undefined {
+  const pair = bundle.pair ? findBundle(bundle.pair) : undefined;
+  return pair && pair.shell !== bundle.shell ? pair : undefined;
+}
+
 /** The themes the appearance picker lists: the compiled bundles, then the installed ones. */
 export function visibleBundles(): ThemeBundle[] {
   return [...BUNDLES, ...installedBundles.values()];

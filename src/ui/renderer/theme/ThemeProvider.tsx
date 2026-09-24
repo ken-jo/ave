@@ -5,6 +5,7 @@ import {
   BUNDLES,
   DEFAULT_BUNDLE_ID,
   findBundle,
+  systemPairOf,
 } from "./bundles/index.js";
 import { isThemeId } from "../../../shared/theme-bundles.js";
 import { ensureInstalledContent, useInstalledContent } from "../installed-content.js";
@@ -13,7 +14,6 @@ import { applyBundleToDocument, resolveSystemPair } from "./resolve-theme.js";
 import { bundleToPluginTokens } from "./plugin-token-map.js";
 export { bundleToPluginTokens };
 import type { ThemeContextValue, UnvalidatedBundleId, ResolvedShell } from "./types.js";
-import { VIOLET_PAIR_IDS } from "./types.js";
 import type { InitialThemePrime } from "../../../shared/initial-theme.js";
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
@@ -78,8 +78,8 @@ export interface ThemeProviderProps {
  * from `api.getSettings().appearance.bundleId`. On change, writes
  * `data-theme-bundle` on `<html>` and persists via `api.updateSettings`.
  *
- * For the violet pair (violet-light / violet-dark), `followSystem` auto-switches the
- * active bundle based on `prefers-color-scheme`.
+ * When the selected theme declares a pair of the other shell, `followSystem`
+ * switches between the two with `prefers-color-scheme`.
  */
 export function ThemeProvider({
   api,
@@ -169,16 +169,24 @@ export function ThemeProvider({
   // Tick counter — incremented by the OS media query listener below.
   // Must be declared before effectiveBundleId so it is in scope for the dep array.
   const [osTick, setOsTick] = useState(0);
+  // Installed themes are module state; a pair is known once they have loaded.
+  const installedThemes = useInstalledContent().themes;
 
-  // Derive the effective bundle — when followSystem is active and the bundleId
-  // is part of the violet pair, override with the OS-resolved variant.
-  // osTick is included so any OS scheme change triggers a re-evaluation.
+  // The selected theme and the pair `followSystem` alternates it with, if any.
+  const systemPair = useMemo(() => {
+    const bundle = findBundle(bundleId);
+    const pair = bundle ? systemPairOf(bundle) : undefined;
+    return bundle && pair ? { bundle, pair } : null;
+    // installedThemes: a pair installed later becomes available.
+  }, [bundleId, installedThemes]);
+
+  // Derive the effective bundle — when followSystem is on and the selected
+  // theme has a pair, the one matching the OS scheme applies. osTick is
+  // included so any OS scheme change triggers a re-evaluation.
   const effectiveBundleId: UnvalidatedBundleId = useMemo(() => {
-    if (followSystem && VIOLET_PAIR_IDS.includes(bundleId)) {
-      return resolveSystemPair();
-    }
+    if (followSystem && systemPair) return resolveSystemPair(systemPair.bundle, systemPair.pair);
     return bundleId;
-  }, [bundleId, followSystem, osTick]);
+  }, [bundleId, followSystem, systemPair, osTick]);
 
   useEffect(() => {
     let cancelled = false;
@@ -211,7 +219,6 @@ export function ThemeProvider({
   // A theme installed after this window started — the first-boot migration
   // adopting the selected theme's package (design §16.3) — was replaced by the
   // default above; once it arrives, the persisted selection applies again.
-  const installedThemes = useInstalledContent().themes;
   useEffect(() => {
     if (!api || installedThemes.length === 0) return;
     let cancelled = false;
@@ -254,16 +261,17 @@ export function ThemeProvider({
     });
   }, [api, activeBundle, effectiveBundleId]);
 
-  // Live-follow OS preference when followSystem is active for violet pair.
+  // Live-follow OS preference while followSystem alternates a pair.
   // A tick counter forces effectiveBundleId to re-evaluate on OS scheme change.
+  const followsPair = followSystem && systemPair !== null;
   useEffect(() => {
-    if (!followSystem || !VIOLET_PAIR_IDS.includes(bundleId)) return;
+    if (!followsPair) return;
     if (typeof window === "undefined" || !window.matchMedia) return;
     const mql = window.matchMedia("(prefers-color-scheme: light)");
     const onChange = () => setOsTick((n) => n + 1);
     mql.addEventListener("change", onChange);
     return () => mql.removeEventListener("change", onChange);
-  }, [followSystem, bundleId]);
+  }, [followsPair]);
 
   const persistAppearance = useCallback(
     (patch: { bundleId?: UnvalidatedBundleId; followSystem?: boolean }) => {
@@ -280,13 +288,14 @@ export function ThemeProvider({
       userTouchedRef.current = true;
       const safeId = isThemeId(id) ? id : DEFAULT_BUNDLE_ID;
       setBundleIdState(safeId);
-      /* When the user explicitly picks one of the violet pair while followSystem
+      /* When the user explicitly picks a theme with a pair while followSystem
        * is on, the pick would otherwise be silently overridden by the OS
        * preference resolution (resolveSystemPair). Treat the explicit pick as
        * "I want this exact bundle" and turn followSystem off so the click is
        * honored. Re-enabling the toggle continues to work normally. */
-      const isVioletPairPick = VIOLET_PAIR_IDS.includes(safeId);
-      if (isVioletPairPick && followSystem) {
+      const picked = findBundle(safeId);
+      const isPairPick = picked !== undefined && systemPairOf(picked) !== undefined;
+      if (isPairPick && followSystem) {
         setFollowSystemState(false);
         persistAppearance({ bundleId: safeId, followSystem: false });
       } else {
@@ -314,9 +323,10 @@ export function ThemeProvider({
       setBundle,
       resolved,
       followSystem,
+      canFollowSystem: systemPair !== null,
       setFollowSystem,
     }),
-    [bundleId, effectiveBundleId, setBundle, resolved, followSystem, setFollowSystem],
+    [bundleId, effectiveBundleId, setBundle, resolved, followSystem, systemPair, setFollowSystem],
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;

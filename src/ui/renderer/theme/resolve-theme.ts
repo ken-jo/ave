@@ -44,23 +44,23 @@ const INSTALLED_THEME_PROPERTIES = [
 ];
 
 /**
- * For the violet pair (violet-light / violet-dark): resolve which bundle to use based
- * on `prefers-color-scheme`. Returns "violet-light" for a light OS scheme, "violet-dark"
- * otherwise.
- *
- * Only called when `followSystem` is true and the current bundleId is one of
- * the violet pair.
+ * Of a theme and its pair of the other shell (`systemPairOf`), the id whose
+ * shell matches `prefers-color-scheme`; the dark one when the scheme cannot
+ * be read. Called only while `followSystem` is on.
  */
 export function resolveSystemPair(
+  bundle: Pick<ThemeBundle, "id" | "shell">,
+  pair: Pick<ThemeBundle, "id" | "shell">,
   win: Pick<Window, "matchMedia"> | undefined = typeof window !== "undefined" ? window : undefined,
-): "violet-light" | "violet-dark" {
+): string {
+  let light = false;
   try {
-    const mql = win?.matchMedia?.("(prefers-color-scheme: light)");
-    if (mql?.matches) return "violet-light";
+    light = win?.matchMedia?.("(prefers-color-scheme: light)").matches === true;
   } catch {
     /* matchMedia unavailable */
   }
-  return "violet-dark";
+  const wanted = light ? "light" : "dark";
+  return bundle.shell === wanted ? bundle.id : pair.id;
 }
 
 /**

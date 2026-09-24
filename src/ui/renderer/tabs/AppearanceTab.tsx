@@ -8,8 +8,8 @@
  * Clicking a card calls `setBundle(bundle.id)` and applies the bundle to
  * `<html data-theme-bundle>` immediately via ThemeProvider.
  *
- * When the selected bundle is part of the violet pair (violet-light / violet-dark),
- * a `followSystem` toggle is shown. For all other bundles it is hidden.
+ * When the selected theme declares a pair of the other shell, a `followSystem`
+ * toggle is shown. For all other themes it is hidden.
  *
  * The external URL section (§B1 webView policy) is preserved verbatim.
  */
@@ -17,7 +17,7 @@ import { useEffect, useRef, useState } from "react";
 import { Store } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { useTheme } from "../theme/index.js";
-import { VIOLET_PAIR_IDS, visibleBundles as listVisibleBundles } from "../theme/index.js";
+import { visibleBundles as listVisibleBundles } from "../theme/index.js";
 import type { ThemeBundle } from "../theme/index.js";
 import type { CSSProperties } from "react";
 import { getApi } from "../api-client.js";
@@ -456,7 +456,7 @@ function LanguageSection({
 
 export function AppearanceTab({ onOpenMarketplace }: { onOpenMarketplace?: (filter: AppearanceMarketplaceFilter) => void } = {}) {
   const { t } = useTranslation();
-  const { bundleId, setBundle, followSystem, setFollowSystem } = useTheme();
+  const { bundleId, setBundle, followSystem, canFollowSystem, setFollowSystem } = useTheme();
   const { family, sizeScale, setFamily, setSizeScale } = useFontPreferences();
   const notifySaved = useNotifySaved();
   // useTheme persists bundle + followSystem through its own ThemeProvider
@@ -467,7 +467,6 @@ export function AppearanceTab({ onOpenMarketplace }: { onOpenMarketplace?: (filt
   const selectBundle = (id: typeof bundleId) => { setBundle(id); notifySaved(); };
   const selectFollowSystem = (next: boolean) => { setFollowSystem(next); notifySaved(); };
 
-  const isVioletPair = VIOLET_PAIR_IDS.includes(bundleId);
   // The installed themes are module state; this re-renders when they change.
   const installedContent = useInstalledContent();
   const visibleBundles = listVisibleBundles();
@@ -524,8 +523,8 @@ export function AppearanceTab({ onOpenMarketplace }: { onOpenMarketplace?: (filt
           ))}
         </div>
 
-        {/* followSystem toggle — violet pair only */}
-        {isVioletPair && (
+        {/* followSystem toggle — only for a theme with a pair */}
+        {canFollowSystem && (
           <div className="flex items-center justify-between pt-2 border-t border-border">
             <div>
               <p className="text-sm font-medium">{t("appearanceTab.followSystemLabel")}</p>

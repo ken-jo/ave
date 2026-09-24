@@ -71,6 +71,20 @@ afterEach(() => {
 });
 
 describe("installed themes (blueprint 3.2)", () => {
+  it("follows the OS scheme across the pair an installed theme declares", async () => {
+    vi.stubGlobal("matchMedia", (query: string) => ({ matches: query.includes("light"), media: query, addEventListener: () => {}, removeEventListener: () => {} }));
+    try {
+      const harborLight: InstalledThemeView = { ...harbor, id: "harbor-light", name: "Harbor Light", shell: "light", pair: "harbor" };
+      const { api } = makeMockAveApi({ settings: { appearance: { schemaVersion: 2, language: "en", bundleId: "harbor", followSystem: true } } });
+      api.installedContent = bridge(view({ themes: [{ ...harbor, pair: "harbor-light" }, harborLight] })) as never;
+      const { getByTestId } = render(<ThemeProvider api={api as never}><Probe /></ThemeProvider>);
+      await waitFor(() => expect(getByTestId("bundle").textContent).toBe("harbor|harbor-light"));
+      expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("harbor-light");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("applies a selected installed theme as inline properties, and a compiled bundle clears them", async () => {
     const { api } = makeMockAveApi({ settings: { appearance: { schemaVersion: 2, language: "en", bundleId: "harbor" } } });
     api.installedContent = bridge(view({ themes: [harbor] })) as never;

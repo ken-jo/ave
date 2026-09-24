@@ -5,8 +5,8 @@
  * in a single grid.
  * Clicking a card sets the active bundle and writes data-theme-bundle to <html>.
  *
- * followSystem toggle is shown only when the violet pair (violet-light / violet-dark)
- * is selected; hidden otherwise.
+ * followSystem toggle is shown only when the selected theme declares an
+ * installed pair of the other shell; hidden otherwise.
  *
  * The external URL (webView) section is unchanged from v1.
  */
@@ -30,15 +30,15 @@ configure({ asyncUtilTimeout: 5000 });
 
 const FROM = { sourceId: "ave", version: "1.0.0" };
 
-function theme(id: string, name: string, shell: "light" | "dark", highContrast = false): InstalledThemeView {
-  return { ...FROM, id, name, description: `${name} theme.`, shell, highContrast, tokens: moonstoneBundle.tokens, surfaces: {} } as unknown as InstalledThemeView;
+function theme(id: string, name: string, shell: "light" | "dark", highContrast = false, pair?: string): InstalledThemeView {
+  return { ...FROM, id, name, description: `${name} theme.`, shell, highContrast, tokens: moonstoneBundle.tokens, surfaces: {}, ...(pair ? { pair } : {}) } as unknown as InstalledThemeView;
 }
 
 /** Every theme but Moonstone and Gallery is an installed package; these stand in for the ones used below. */
 const THEMES = [
   theme("tokyo-night", "Tokyo Night", "dark"),
-  theme("violet-light", "Violet Light", "light"),
-  theme("violet-dark", "Violet Dark", "dark"),
+  theme("violet-light", "Violet Light", "light", false, "violet-dark"),
+  theme("violet-dark", "Violet Dark", "dark", false, "violet-light"),
   theme("high-contrast", "High Contrast", "dark", true),
 ];
 // Not Korean: an installed `ko` package would replace the compiled catalog this suite renders in.
@@ -210,12 +210,12 @@ describe("AppearanceTab — bundle card grid", () => {
   });
 });
 
-describe("AppearanceTab — followSystem toggle (violet pair only)", () => {
+describe("AppearanceTab — followSystem toggle (a theme with a pair)", () => {
   beforeEach(() => {
     install({ themes: THEMES });
   });
 
-  it("followSystem toggle is hidden when a non-violet bundle is active", () => {
+  it("followSystem toggle is hidden when the active theme has no pair", () => {
     const { queryByTestId } = renderWithBundle("tokyo-night");
     expect(queryByTestId("follow-system-toggle")).toBeNull();
   });

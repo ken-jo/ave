@@ -26,13 +26,13 @@ function service(items: LoadedContent[], broken: BrokenContent[] = [], revoked: 
 describe("InstalledContentService", () => {
   it("builds the picker view, the catalogs and the files the asset scheme may serve", async () => {
     const svc = service([
-      loaded("theme", "harbor", { kind: "theme", name: "Harbor", description: "d", shell: "light", highContrast: false, tokens: moonstoneBundle.tokens, surfaces: SURFACES, preview: "preview.webp" }),
+      loaded("theme", "harbor", { kind: "theme", name: "Harbor", description: "d", shell: "light", highContrast: false, tokens: moonstoneBundle.tokens, surfaces: SURFACES, preview: "preview.webp", pair: "harbor-dark" }),
       loaded("language", "french", { kind: "language", locale: "fr", nativeName: "Français", englishName: "French", messages: { "app.title": "Ave" }, missingKeys: ["app.quit"] }),
       loaded("font", "harbor-sans", { kind: "font", family: "Harbor Sans", faces: [{ file: "files/Harbor Sans.woff2", format: "woff2", weight: "400", style: "normal" }] }),
       loaded("provider", "harbor-llm", { kind: "provider", preset: { providerId: "harbor-llm", label: "H", baseUrl: "https://h.example/v1", defaultModel: "m", modelOptions: ["m"], requiresApiKey: true } }),
     ], [{ entry: entry("theme", "tampered"), problem: "the installed files changed after install" }]);
     const view = await svc.reload();
-    expect(view.themes).toEqual([expect.objectContaining({ id: "harbor", previewUrl: `ave-content://${TOKEN}/theme/harbor/preview.webp`, sourceId: "acme", version: "1.0.0" })]);
+    expect(view.themes).toEqual([expect.objectContaining({ id: "harbor", previewUrl: `ave-content://${TOKEN}/theme/harbor/preview.webp`, pair: "harbor-dark", sourceId: "acme", version: "1.0.0" })]);
     expect(view.languages).toEqual([{ name: "french", locale: "fr", nativeName: "Français", englishName: "French", missingKeys: ["app.quit"], sourceId: "acme", version: "1.0.0" }]);
     expect(view.fonts[0]).toMatchObject({ family: "Harbor Sans", faces: [{ url: `ave-content://${TOKEN}/font/harbor-sans/files/Harbor%20Sans.woff2`, format: "woff2" }] });
     // Faces are declared under the package alias; the family is the picker's label.
