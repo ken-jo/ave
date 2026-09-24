@@ -57,6 +57,7 @@ import { assertMcpRuntimePinned, resolveMcpPackage, runtimeFromServerJson, type 
 import { planPluginVersion, runPluginLadder, type LadderDeps, type PluginInstallPlan } from "../resolve/plugin-ladder.js";
 import type { AppliedDefaults } from "../boot-installs/applied.js";
 import { assertNotRequiredByPolicy, bootInstallNoticeFrom, requiredByPolicy, runBootInstalls, type BootInstallReport } from "../boot-installs/run.js";
+import type { LegacyContentKind, LegacyContentReport } from "../migration/legacy-content.js";
 import type { LegacyPluginReport, OfficialPlugin } from "../migration/legacy-plugins.js";
 import { runLegacyMigration } from "../migration/run.js";
 import { readDirectPackage } from "../sources/direct-package.js";
@@ -84,7 +85,7 @@ type ContentPlan = PackagePlan & { kind: Exclude<PackageKind, "plugin" | "mcp"> 
 
 type HeldPlan =
   | { kind: "plugin"; plan: PluginInstallPlan; switchSource: boolean }
-  | { kind: "content"; plan: ContentPlan; switchSource: boolean }
+  | { kind: "content"; plan: ContentPlan; switchSource: boolean; adopt: boolean }
   | { kind: "mcp"; resolved: ResolvedMcpServer; switchSource: boolean }
   | { kind: "mcp-unbound"; name: string; runtime: McpRuntimeSpec };
 
@@ -126,6 +127,11 @@ export interface MarketplaceServiceOptions {
   legacyMigration: {
     markerPath: string;
     plugins(officialPlugin: (name: string) => OfficialPlugin | null, applied: AppliedDefaults): Promise<LegacyPluginReport>;
+    content(ports: {
+      listed(kind: LegacyContentKind, name: string): boolean;
+      installed(kind: LegacyContentKind, name: string): Promise<boolean>;
+      adopt(kind: LegacyContentKind, name: string): Promise<void>;
+    }): Promise<LegacyContentReport>;
   };
   now?: () => Date;
 }
@@ -636,6 +642,11 @@ export class MarketplaceService {
   }
 
   async planInstall(request: InstallPlanRequest): Promise<InstallPlanView> {
+    return this.plan(request, false);
+  }
+
+  /** `adopt` (content only): the install records an activation the settings already hold (§16.3). */
+  private async plan(request: InstallPlanRequest, adopt: boolean): Promise<InstallPlanView> {
     const { row, snapshot } = await this.row(request);
     const version = this.chosenVersion(row, snapshot, request.version);
     const installed = await this.installed(row.kind, row.name);
@@ -663,7 +674,7 @@ export class MarketplaceService {
       held = { kind: "mcp", resolved, switchSource };
       mcp = mcpRuntimeView(resolved.runtime);
     } else {
-      held = { kind: "content", plan: base as ContentPlan, switchSource };
+      held = { kind: "content", plan: base as ContentPlan, switchSource, adopt };
     }
     // One live plan per package: planning again (another version, a source switch) drops the older one and its files.
     const ticket = this.plans.issue(held, `${row.sourceId}:${row.kind}:${row.name}`);
@@ -761,7 +772,7 @@ export class MarketplaceService {
         stageContentPackage(plan, access, { workRoot: this.options.workRoot, english: this.options.english }),
       );
       this.progress(planId, "installing");
-      const outcome = await this.options.installers.content.install(staged, { switchSource: held.switchSource });
+      const outcome = await this.options.installers.content.install(staged, { switchSource: held.switchSource, adopt: held.adopt });
       result = { key: { sourceId: plan.sourceId, kind: plan.kind, name: plan.name }, version: plan.version, action: installActionView(outcome.action), rungs: [], connectionWarning: null };
     } else if (held.kind === "mcp") {
       const { plan } = held.resolved;
@@ -863,6 +874,15 @@ export class MarketplaceService {
       markerPath: this.options.legacyMigration.markerPath,
       officialSnapshot: await this.options.syncer.readSnapshot(OFFICIAL_MARKETPLACE.id),
       plugins: (officialPlugin) => this.options.legacyMigration.plugins(officialPlugin, applied),
+      content: (listed) =>
+        this.options.legacyMigration.content({
+          listed,
+          installed: async (kind, name) => (await this.installed(kind, name)) !== null,
+          adopt: async (kind, name) => {
+            const plan = await this.plan({ sourceId: OFFICIAL_MARKETPLACE.id, kind, name }, true);
+            await this.executeInstall(plan.planId);
+          },
+        }),
       now: () => this.now(),
     });
     const { rows, snapshots, shown } = await this.rows();
@@ -880,7 +900,7 @@ export class MarketplaceService {
       applied,
       now: () => this.now(),
     });
-    return { report, notice: bootInstallNoticeFrom(report, this.options.policy, legacy) };
+    return { report, notice: bootInstallNoticeFrom(report, this.options.policy, legacy?.plugins ?? null) };
   }
 
   /** Drop every preview clone and plan (shutdown). */

@@ -19,7 +19,9 @@ import { policyLoad } from "../../__tests__/fixtures/policy.js";
 import { ContentStore } from "../../content/store.js";
 import { NetworkGate } from "../../net/network-gate.js";
 import { NO_ARTIFACT_CACHE } from "../../resolve/artifact-cache.js";
+import { migrateLegacyContent, type LegacyActivations, type LegacyContentReport } from "../../migration/legacy-content.js";
 import type { LegacyPluginReport, OfficialPlugin } from "../../migration/legacy-plugins.js";
+import { moonstoneBundle } from "../../../ui/renderer/theme/bundles/moonstone.js";
 import { OFFICIAL_MARKETPLACE, type OfficialMarketplace } from "../../sources/official.js";
 import { EMPTY_MARKETPLACE_POLICY, type PolicyLoad } from "../../sources/policy.js";
 import { AppliedDefaults } from "../../boot-installs/applied.js";
@@ -31,6 +33,7 @@ import type { InstallerPorts, TokenStore } from "../ports.js";
 import { MarketplaceService } from "../service.js";
 
 const AT = new Date("2026-09-24T00:00:00.000Z");
+const SURFACES = { "surface-sunken": "228 30% 97%", surface: "0 0% 100%", "surface-raised": "0 0% 100%", "surface-overlay": "0 0% 100%", "border-subtle": "228 24% 94%", "border-strong": "228 18% 84%" };
 const INSTALLATION = "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b";
 const skill = (name: string, body: string) => `---\nname: ${name}\ndescription: ${name} things.\n---\n${body}\n`;
 
@@ -67,6 +70,10 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
   let catalogChanged: number;
   let legacyRuns: Array<(name: string) => OfficialPlugin | null>;
   let legacyReport: LegacyPluginReport;
+  let legacyActivations: LegacyActivations;
+  let released: Array<{ themes: string[]; locales: string[] }>;
+  let contentReports: LegacyContentReport[];
+  let adopting: boolean[];
 
   beforeAll(async () => {
     serverRoot = mkdtempSync(join(tmpdir(), "ave-service-served-"));
@@ -86,6 +93,10 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
     catalogChanged = 0;
     legacyRuns = [];
     legacyReport = { bound: [], unmanaged: [], lostGrants: [], failed: [] };
+    legacyActivations = { themes: [], locales: [], providers: [] };
+    released = [];
+    contentReports = [];
+    adopting = [];
     await build();
   });
 
@@ -96,7 +107,7 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
     const marketplaces = join(root, "marketplaces");
     const registry = await SourceRegistry.open({ root: marketplaces, policy, now: () => now, ...(official ? { official } : {}) });
     const syncer = new SourceSyncer({ registry, gate, runner: git.runner, root: marketplaces, now: () => now, retainedCommits: async () => new Set() });
-    store = await ContentStore.open({ root: join(root, "packages"), english: {}, activation: { activate: async () => {}, deactivate: async () => {} }, now: () => now });
+    store = await ContentStore.open({ root: join(root, "packages"), english: {}, activation: { activate: async (_content, _entry, _previous, adopt) => void adopting.push(adopt), deactivate: async () => {} }, now: () => now });
     const artifacts = new PluginArtifactStore({
       installRoot: join(root, "mcp"),
       cacheRoot: join(root, "mcp", ".cache"),
@@ -155,6 +166,16 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
           legacyRuns.push(officialPlugin);
           return legacyReport;
         },
+        content: async (ports) => {
+          const report = await migrateLegacyContent({
+            ...ports,
+            activations: legacyActivations,
+            release: async (provided) => void released.push(provided),
+            log: { warn: () => {} },
+          });
+          contentReports.push(report);
+          return report;
+        },
       },
     });
   }
@@ -166,9 +187,11 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  /** A served marketplace listing a skill and an MCP server. */
-  /** A marketplace listing a skill and an MCP server; `indexName` is `ave` when it stands in for the official source. */
-  function market(skillVersion = "1.0.0", indexName = "acme-tools") {
+  /**
+   * A marketplace listing a skill and an MCP server, and the theme `harbor`
+   * when `theme`; `indexName` is `ave` when it stands in for the official source.
+   */
+  function market(skillVersion = "1.0.0", indexName = "acme-tools", options: { theme?: boolean } = {}) {
     counter += 1;
     const name = `market-${counter}`;
     const repo = createFixtureRepo(serverRoot, name);
@@ -183,8 +206,15 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
             packages: [
               { kind: "skill", name: "review", path: "skills/review" },
               { kind: "mcp", name: "notes", path: "mcp/notes" },
+              ...(options.theme ? [{ kind: "theme", name: "harbor", path: "themes/harbor" }] : []),
             ],
           }),
+          ...(options.theme
+            ? {
+                "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }),
+                "themes/harbor/theme.json": text({ name: "Harbor", description: "Harbor theme.", shell: "light", highContrast: false, tokens: moonstoneBundle.tokens, surfaces: SURFACES }),
+              }
+            : {}),
           "skills/review/ave-package.json": descriptor("skill", "review", version, { entry: "SKILL.md" }),
           "skills/review/SKILL.md": skill("review", `Review the change (${version}).`),
           "mcp/notes/ave-package.json": descriptor("mcp", "notes", "2.0.0", { server: { transport: "stdio", command: "npx", args: ["-y", "@acme/notes@2.0.0", "--db", "$DATA_DIR/notes.db"] } }),
@@ -326,6 +356,28 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
     const second = await service.applyBootInstalls([], applied);
     expect(legacyRuns).toHaveLength(1);
     expect(second.notice).toBeNull();
+  });
+
+  it("adopts a legacy theme from the official source during the migration, and drops it from the legacy list", async () => {
+    const { url } = market("1.0.0", "ave", { theme: true });
+    service.close();
+    await build(policyLoad({}), { id: "ave", url, mirrors: [], auth: { kind: "none" } });
+    await service.refresh();
+    const applied = await AppliedDefaults.open(join(root, "packages", "default-installs.json"));
+    legacyActivations = { themes: ["harbor", "retired"], locales: [], providers: [] };
+
+    const first = await service.applyBootInstalls([], applied);
+
+    expect(contentReports).toEqual([{ adopted: [{ source: "ave", kind: "theme", name: "harbor" }], failed: [] }]);
+    expect(store.list().map((entry) => `${entry.kind}:${entry.name}@${entry.origin.sourceId}`)).toEqual(["theme:harbor@ave"]);
+    expect(adopting).toEqual([true]);
+    // `retired` is not listed: it stays in the legacy list.
+    expect(released).toEqual([{ themes: ["harbor"], locales: [] }]);
+    // Adopting content is not news to the user.
+    expect(first.notice).toBeNull();
+
+    await service.applyBootInstalls([], applied);
+    expect(contentReports).toHaveLength(1);
   });
 
   it("runs the migration again on the next boot while an entry could not be read", async () => {

@@ -42,13 +42,13 @@ describe.skipIf(process.platform === "win32")("content package store (blueprint 
   let root: string;
   let repos: FixtureRepo[] = [];
   let counter = 0;
-  let activated: Array<{ op: "activate" | "deactivate"; key: string; content: ParsedContent | null; previous?: string | null }>;
+  let activated: Array<{ op: "activate" | "deactivate"; key: string; content: ParsedContent | null; previous?: string | null; adopt?: boolean }>;
   let failActivation: boolean;
 
   const activation: ContentActivation = {
-    async activate(content, entry, previous) {
+    async activate(content, entry, previous, adopt) {
       if (failActivation) throw new Error("settings write failed");
-      activated.push({ op: "activate", key: `${entry.kind}:${entry.name}@${entry.version}`, content, previous: previous ? previous.version : null });
+      activated.push({ op: "activate", key: `${entry.kind}:${entry.name}@${entry.version}`, content, previous: previous ? previous.version : null, adopt });
     },
     async deactivate(entry, content) {
       activated.push({ op: "deactivate", key: `${entry.kind}:${entry.name}@${entry.version}`, content });
@@ -135,7 +135,7 @@ describe.skipIf(process.platform === "win32")("content package store (blueprint 
     // The descriptor is read at the version commit and never installed.
     expect(existsSync(join(root, "packages", "theme", "harbor", "1.0.0", "theme.json"))).toBe(true);
     expect(existsSync(join(root, "packages", "theme", "harbor", "1.0.0", "ave-package.json"))).toBe(false);
-    expect(activated.map((call) => call.key)).toEqual(["theme:harbor@1.0.0"]);
+    expect(activated.map((call) => [call.key, call.adopt])).toEqual([["theme:harbor@1.0.0", false]]);
 
     const reopened = await openStore();
     const { loaded, broken } = await reopened.load();
@@ -151,6 +151,10 @@ describe.skipIf(process.platform === "win32")("content package store (blueprint 
     expect(existsSync(join(root, "packages", "theme", "harbor"))).toBe(false);
     expect(JSON.parse(readFileSync(join(root, "packages", "ledger.json"), "utf8"))).toEqual({ version: 1, packages: [] });
     expect(await reopened.uninstall("theme", "harbor", EMPTY_MARKETPLACE_POLICY)).toBeNull();
+
+    // The first-boot migration's install tells the activation it is adopting (design §16.3).
+    await reopened.install(staged, { adopt: true });
+    expect(activated.at(-1)).toMatchObject({ op: "activate", key: "theme:harbor@1.0.0", adopt: true });
   });
 
   it("replaces an older version in place and removes its directory", async () => {

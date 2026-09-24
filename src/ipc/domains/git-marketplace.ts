@@ -42,6 +42,7 @@ import { loadInstallationId } from "../../marketplace/catalog/installation-id.js
 import { contentLedgerOrigins } from "../../marketplace/content/ledger.js";
 import { MarketplaceError } from "../../marketplace/errors.js";
 import { MarketplaceGit } from "../../marketplace/git/marketplace-git.js";
+import { migrateLegacyContent } from "../../marketplace/migration/legacy-content.js";
 import { migrateLegacyPlugins } from "../../marketplace/migration/legacy-plugins.js";
 import { createArtifactCache, resolveKeepArtifacts } from "../../marketplace/resolve/artifact-cache.js";
 import { gitRuntimeRoot } from "../../marketplace/git/runtime-service.js";
@@ -74,7 +75,7 @@ import {
 import { aveHome } from "../../shared/ave-home.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../gated.js";
 import type { IpcDeps } from "../types.js";
-import type { InstalledContentRuntime } from "./marketplace-content.js";
+import { legacyContentSettings, type InstalledContentRuntime } from "./marketplace-content.js";
 import { pluginLifecycleServices } from "./plugins.js";
 
 const log = createLogger("git-marketplace");
@@ -168,7 +169,7 @@ function contentInstaller(content: () => Promise<InstalledContentRuntime | null>
       })),
     install: async (staged, options) => {
       const loaded = await runtime();
-      const { action } = await loaded.store.install(staged, { switchSource: options.switchSource });
+      const { action } = await loaded.store.install(staged, options);
       await loaded.reload();
       return { action };
     },
@@ -298,6 +299,7 @@ async function createGitMarketplaceService(
           now: () => new Date(),
           log: { warn: (message) => log.warn(message) },
         }),
+      content: (ports) => migrateLegacyContent({ ...ports, ...legacyContentSettings(deps), log: { warn: (message) => log.warn(message) } }),
     },
   });
   return {

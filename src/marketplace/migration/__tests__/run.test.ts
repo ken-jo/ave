@@ -1,17 +1,19 @@
 /**
  * When the first-boot migration runs: not before the official snapshot
- * exists, once after every entry was read, and never over a marker it cannot
- * read.
+ * exists, plugins before content, once after both finished without a
+ * failure, and never over a marker it cannot read.
  */
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SourceSnapshot } from "../../sources/snapshot.js";
+import type { LegacyContentKind, LegacyContentReport } from "../legacy-content.js";
 import type { LegacyPluginReport } from "../legacy-plugins.js";
 import { officialPluginsFrom, runLegacyMigration } from "../run.js";
 
 const CLEAN: LegacyPluginReport = { bound: ["meeting"], unmanaged: [], lostGrants: [], failed: [] };
+const ADOPTED: LegacyContentReport = { adopted: [{ source: "ave", kind: "theme", name: "aurora" }], failed: [] };
 
 const snapshot = {
   sourceId: "ave",
@@ -29,6 +31,7 @@ const snapshot = {
       ],
     },
     { kind: "skill", name: "review", path: "skills/review", versions: [] },
+    { kind: "theme", name: "aurora", path: "themes/aurora", versions: [] },
   ],
   revocations: [],
   diagnostics: [],
@@ -62,30 +65,51 @@ describe("runLegacyMigration", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("waits for the official snapshot, then runs once", async () => {
-    const plugins = vi.fn(async () => CLEAN);
-    expect(await runLegacyMigration({ markerPath, officialSnapshot: null, plugins, now })).toBeNull();
+  it("waits for the official snapshot, then migrates plugins before content, once", async () => {
+    const order: string[] = [];
+    const plugins = vi.fn(async () => (order.push("plugins"), CLEAN));
+    const content = vi.fn(async () => (order.push("content"), ADOPTED));
+    expect(await runLegacyMigration({ markerPath, officialSnapshot: null, plugins, content, now })).toBeNull();
     expect(plugins).not.toHaveBeenCalled();
 
-    expect(await runLegacyMigration({ markerPath, officialSnapshot: snapshot, plugins, now })).toEqual(CLEAN);
-    expect(await runLegacyMigration({ markerPath, officialSnapshot: snapshot, plugins, now })).toBeNull();
-    expect(plugins).toHaveBeenCalledOnce();
+    expect(await runLegacyMigration({ markerPath, officialSnapshot: snapshot, plugins, content, now })).toEqual({ plugins: CLEAN, content: ADOPTED });
+    expect(await runLegacyMigration({ markerPath, officialSnapshot: snapshot, plugins, content, now })).toBeNull();
+    expect(order).toEqual(["plugins", "content"]);
   });
 
-  it("runs again while an entry could not be read", async () => {
-    const plugins = vi.fn()
-      .mockResolvedValueOnce({ ...CLEAN, failed: [{ plugin: "calendar", message: "unreadable" }] })
-      .mockResolvedValueOnce(CLEAN);
-    await runLegacyMigration({ markerPath, officialSnapshot: snapshot, plugins, now });
-    await runLegacyMigration({ markerPath, officialSnapshot: snapshot, plugins, now });
-    await runLegacyMigration({ markerPath, officialSnapshot: snapshot, plugins, now });
+  it("tells the content half what the official snapshot lists, by kind and name", async () => {
+    let listed: ((kind: LegacyContentKind, name: string) => boolean) | null = null;
+    await runLegacyMigration({
+      markerPath,
+      officialSnapshot: snapshot,
+      plugins: async () => CLEAN,
+      content: async (lookup) => ((listed = lookup), ADOPTED),
+      now,
+    });
+    expect(listed!("theme", "aurora")).toBe(true);
+    expect(listed!("provider", "aurora")).toBe(false);
+    expect(listed!("theme", "review")).toBe(false);
+  });
+
+  it.each([
+    ["a plugin entry could not be read", { ...CLEAN, failed: [{ plugin: "calendar", message: "unreadable" }] }, ADOPTED],
+    ["a content install failed", CLEAN, { adopted: [], failed: [{ key: { source: "ave", kind: "theme" as const, name: "aurora" }, message: "offline" }] }],
+  ])("runs again while %s", async (_what, firstPlugins, firstContent) => {
+    const plugins = vi.fn().mockResolvedValueOnce(firstPlugins).mockResolvedValue(CLEAN);
+    const content = vi.fn().mockResolvedValueOnce(firstContent).mockResolvedValue(ADOPTED);
+    await runLegacyMigration({ markerPath, officialSnapshot: snapshot, plugins, content, now });
+    await runLegacyMigration({ markerPath, officialSnapshot: snapshot, plugins, content, now });
+    await runLegacyMigration({ markerPath, officialSnapshot: snapshot, plugins, content, now });
     expect(plugins).toHaveBeenCalledTimes(2);
+    expect(content).toHaveBeenCalledTimes(2);
   });
 
   it("refuses a marker it cannot read rather than migrating again", async () => {
     writeFileSync(markerPath, `{"version":2}`);
     const plugins = vi.fn(async () => CLEAN);
-    await expect(runLegacyMigration({ markerPath, officialSnapshot: snapshot, plugins, now })).rejects.toThrow(/not a migration marker/);
+    const content = vi.fn(async () => ADOPTED);
+    await expect(runLegacyMigration({ markerPath, officialSnapshot: snapshot, plugins, content, now })).rejects.toThrow(/not a migration marker/);
     expect(plugins).not.toHaveBeenCalled();
+    expect(content).not.toHaveBeenCalled();
   });
 });

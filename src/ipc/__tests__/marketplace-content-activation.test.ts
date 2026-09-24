@@ -32,7 +32,7 @@ import { installedFontStack } from "../../shared/installed-content.js";
 import { DEFAULT_BUNDLE_ID } from "../../shared/theme-bundles.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import type { IpcDeps } from "../types.js";
-import { createContentActivation } from "../domains/marketplace-content.js";
+import { createContentActivation, legacyContentSettings } from "../domains/marketplace-content.js";
 
 const entry = (kind: LedgerEntry["kind"], name: string): LedgerEntry => ({
   kind,
@@ -83,7 +83,7 @@ describe("createContentActivation", () => {
 
   it("installs and removes a provider preset through the settings preset path", async () => {
     const activation = createContentActivation(deps);
-    await activation.activate({ kind: "provider", preset }, entry("provider", "harbor-llm"), null);
+    await activation.activate({ kind: "provider", preset }, entry("provider", "harbor-llm"), null, false);
     expect(settingsService.get("marketplace").installedProviderPresets).toEqual([preset]);
     expect(deps.conversationLoop.refreshProvider).toHaveBeenCalled();
     expect(sent).toContain("ave:settings:updated");
@@ -94,10 +94,10 @@ describe("createContentActivation", () => {
 
   it("adds and removes a messaging connection declaration", async () => {
     const activation = createContentActivation(deps);
-    await activation.activate({ kind: "messaging-connection", connection }, entry("messaging-connection", "harbor-chat"), null);
+    await activation.activate({ kind: "messaging-connection", connection }, entry("messaging-connection", "harbor-chat"), null, false);
     expect(settingsService.get("marketplace").installedMessagingConnections).toEqual([connection]);
     // A reinstall replaces its own declaration.
-    await activation.activate({ kind: "messaging-connection", connection: { ...connection, label: "Harbor Chat 2" } }, entry("messaging-connection", "harbor-chat"), entry("messaging-connection", "harbor-chat"));
+    await activation.activate({ kind: "messaging-connection", connection: { ...connection, label: "Harbor Chat 2" } }, entry("messaging-connection", "harbor-chat"), entry("messaging-connection", "harbor-chat"), false);
     expect(settingsService.get("marketplace").installedMessagingConnections.map((item) => item.label)).toEqual(["Harbor Chat 2"]);
     await activation.deactivate(entry("messaging-connection", "harbor-chat"), null);
     expect(settingsService.get("marketplace").installedMessagingConnections).toEqual([]);
@@ -128,7 +128,7 @@ describe("createContentActivation", () => {
   it("unlocks a built-in vendor with its default model and base URL, and locks it again on removal", async () => {
     const activation = createContentActivation(deps);
     const vendor = { providerId: "azure-foundry" as const, defaultModel: "gpt-5", baseUrl: "https://gateway.corp.example/foundry" };
-    await activation.activate({ kind: "provider", vendor }, entry("provider", "azure-foundry"), null);
+    await activation.activate({ kind: "provider", vendor }, entry("provider", "azure-foundry"), null, false);
     expect(settingsService.get("marketplace").installedProviderIds).toContain("azure-foundry");
     expect(settingsService.get("llm").vendors["azure-foundry"]).toMatchObject({ model: "gpt-5", baseUrl: "https://gateway.corp.example/foundry" });
     expect(sent).toContain("ave:settings:updated");
@@ -140,15 +140,15 @@ describe("createContentActivation", () => {
   it("drops a saved vendor key when the package moves the vendor's base URL, and keeps it otherwise", async () => {
     const activation = createContentActivation(deps);
     await settingsService.setSecret("llm.apiKey.azure-foundry", "sk-user");
-    await activation.activate({ kind: "provider", vendor: { providerId: "azure-foundry", defaultModel: "gpt-5" } }, entry("provider", "azure-foundry"), null);
+    await activation.activate({ kind: "provider", vendor: { providerId: "azure-foundry", defaultModel: "gpt-5" } }, entry("provider", "azure-foundry"), null, false);
     expect(settingsService.getSecret("llm.apiKey.azure-foundry")).toBe("sk-user");
 
     const moved = { providerId: "azure-foundry" as const, baseUrl: "https://gateway.corp.example/foundry" };
-    await activation.activate({ kind: "provider", vendor: moved }, entry("provider", "azure-foundry"), entry("provider", "azure-foundry"));
+    await activation.activate({ kind: "provider", vendor: moved }, entry("provider", "azure-foundry"), entry("provider", "azure-foundry"), false);
     expect(settingsService.getSecret("llm.apiKey.azure-foundry")).toBeNull();
 
     await settingsService.setSecret("llm.apiKey.azure-foundry", "sk-corp");
-    await activation.activate({ kind: "provider", vendor: moved }, entry("provider", "azure-foundry"), entry("provider", "azure-foundry"));
+    await activation.activate({ kind: "provider", vendor: moved }, entry("provider", "azure-foundry"), entry("provider", "azure-foundry"), false);
     expect(settingsService.getSecret("llm.apiKey.azure-foundry")).toBe("sk-corp");
 
     // Removing the package locks the vendor and drops the key entered for the package's address.
@@ -159,7 +159,7 @@ describe("createContentActivation", () => {
 
   it("removes a vendor package whose saved key can no longer be decrypted", async () => {
     const activation = createContentActivation(deps);
-    await activation.activate({ kind: "provider", vendor: { providerId: "azure-foundry" } }, entry("provider", "azure-foundry"), null);
+    await activation.activate({ kind: "provider", vendor: { providerId: "azure-foundry" } }, entry("provider", "azure-foundry"), null, false);
     await settingsService.setSecret("llm.apiKey.azure-foundry", "sk-user");
     const read = vi.spyOn(settingsService, "getSecret").mockImplementation(() => {
       throw new Error("keychain changed");
@@ -177,7 +177,7 @@ describe("createContentActivation", () => {
     // The real patch runs and changes memory; only the file write fails.
     const save = vi.spyOn(settingsService as unknown as { saveSettings(): Promise<void> }, "saveSettings").mockRejectedValueOnce(new Error("disk full"));
     await expect(
-      activation.activate({ kind: "provider", vendor: { providerId: "azure-foundry", baseUrl: "https://gateway.corp.example/foundry" } }, entry("provider", "azure-foundry"), null),
+      activation.activate({ kind: "provider", vendor: { providerId: "azure-foundry", baseUrl: "https://gateway.corp.example/foundry" } }, entry("provider", "azure-foundry"), null, false),
     ).rejects.toThrow("disk full");
     save.mockRestore();
     expect(settingsService.getSecret("llm.apiKey.azure-foundry")).toBe("sk-user");
@@ -188,35 +188,75 @@ describe("createContentActivation", () => {
   it("refuses a first install whose id the settings already hold from another path", async () => {
     const activation = createContentActivation(deps);
     await settingsService.installMarketplaceProviderPreset(preset);
-    await expect(activation.activate({ kind: "provider", preset }, entry("provider", "harbor-llm"), null)).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
+    await expect(activation.activate({ kind: "provider", preset }, entry("provider", "harbor-llm"), null, false)).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
     // An update of the package's own install replaces it.
-    await activation.activate({ kind: "provider", preset: { ...preset, label: "Harbor LLM 2" } }, entry("provider", "harbor-llm"), entry("provider", "harbor-llm"));
+    await activation.activate({ kind: "provider", preset: { ...preset, label: "Harbor LLM 2" } }, entry("provider", "harbor-llm"), entry("provider", "harbor-llm"), false);
     expect(settingsService.get("marketplace").installedProviderPresets.map((item) => item.label)).toEqual(["Harbor LLM 2"]);
 
     await settingsService.patch({ marketplace: { installedMessagingConnections: [connection] } });
-    await expect(activation.activate({ kind: "messaging-connection", connection }, entry("messaging-connection", "harbor-chat"), null)).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
+    await expect(activation.activate({ kind: "messaging-connection", connection }, entry("messaging-connection", "harbor-chat"), null, false)).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
     await settingsService.patch({ marketplace: { installedProviderIds: ["azure-foundry"] } });
-    await expect(activation.activate({ kind: "provider", vendor: { providerId: "azure-foundry" } }, entry("provider", "azure-foundry"), null)).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
+    await expect(activation.activate({ kind: "provider", vendor: { providerId: "azure-foundry" } }, entry("provider", "azure-foundry"), null, false)).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
 
     // A theme package named after a compiled bundle the legacy install turned on.
     const nord = { kind: "theme", name: "Nord", description: "Arctic.", shell: "dark", highContrast: false, tokens: {}, surfaces: {} } as unknown as ParsedContent;
-    await activation.activate(nord, entry("theme", "nord"), null);
+    await activation.activate(nord, entry("theme", "nord"), null, false);
     await settingsService.patch({ marketplace: { installedThemeBundleIds: ["nord"] } });
-    await expect(activation.activate(nord, entry("theme", "nord"), null)).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
+    await expect(activation.activate(nord, entry("theme", "nord"), null, false)).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
+  });
+
+  it("reads the legacy activations for the first-boot migration, and drops only the theme ids and locales it was given", async () => {
+    await settingsService.installMarketplaceProviderPreset(preset);
+    await settingsService.patch({ marketplace: { installedProviderIds: ["azure-foundry"], installedThemeBundleIds: ["nord", "forest"], installedLanguagePacks: ["ko"] } });
+    const legacy = legacyContentSettings(deps);
+    expect(legacy.activations).toEqual({ themes: ["nord", "forest"], locales: ["ko"], providers: ["azure-foundry", "harbor-llm"] });
+
+    await legacy.release({ themes: ["nord"], locales: ["ko"] });
+    expect(settingsService.get("marketplace")).toMatchObject({
+      installedThemeBundleIds: ["forest"],
+      installedLanguagePacks: [],
+      // Provider settings are the live activation of the adopted packages.
+      installedProviderIds: ["azure-foundry"],
+      installedProviderPresets: [expect.objectContaining({ providerId: "harbor-llm" })],
+    });
+    expect(sent).toContain("ave:settings:updated");
+  });
+
+  it("adopts a legacy activation the settings hold without rewriting it, and activates one they do not", async () => {
+    const activation = createContentActivation(deps);
+    // A vendor the server marketplace unlocked, with the user's own model, address and key.
+    await settingsService.patch({ marketplace: { installedProviderIds: ["azure-foundry"] }, llm: { vendors: { "azure-foundry": { model: "user-model", baseUrl: "https://own.example/foundry" } } } });
+    await settingsService.setSecret("llm.apiKey.azure-foundry", "sk-user");
+    const vendor = { providerId: "azure-foundry" as const, defaultModel: "gpt-5", baseUrl: "https://gateway.corp.example/foundry" };
+    await activation.activate({ kind: "provider", vendor }, entry("provider", "azure-foundry"), null, true);
+    expect(settingsService.get("llm").vendors["azure-foundry"]).toMatchObject({ model: "user-model", baseUrl: "https://own.example/foundry" });
+    expect(settingsService.getSecret("llm.apiKey.azure-foundry")).toBe("sk-user");
+
+    await settingsService.installMarketplaceProviderPreset(preset);
+    await activation.activate({ kind: "provider", preset: { ...preset, label: "Harbor LLM 2" } }, entry("provider", "harbor-llm"), null, true);
+    expect(settingsService.get("marketplace").installedProviderPresets.map((item) => item.label)).toEqual([preset.label]);
+
+    const nord = { kind: "theme", name: "Nord", description: "Arctic.", shell: "dark", highContrast: false, tokens: {}, surfaces: {} } as unknown as ParsedContent;
+    await settingsService.patch({ marketplace: { installedThemeBundleIds: ["nord"] } });
+    await expect(activation.activate(nord, entry("theme", "nord"), null, true)).resolves.toBeUndefined();
+
+    // Nothing held: adopting activates as a normal install does.
+    await activation.activate({ kind: "messaging-connection", connection }, entry("messaging-connection", "harbor-chat"), null, true);
+    expect(settingsService.get("marketplace").installedMessagingConnections).toEqual([connection]);
   });
 
   it("refuses a first skill or agent install whose name a user file already defines", async () => {
     const skillStore = { userSkillFile: vi.fn(async (name: string) => (name === "review" ? "/home/u/.ave/skills/review/SKILL.md" : null)) };
     const agentProfileStore = { userProfileFile: vi.fn(async (name: string) => (name === "triage" ? "/home/u/.ave/agents/triage.md" : null)) };
     const activation = createContentActivation({ ...deps, skillStore, agentProfileStore } as unknown as IpcDeps);
-    await expect(activation.activate({ kind: "skill", name: "review", description: "Reviews." }, entry("skill", "review"), null)).rejects.toMatchObject({
+    await expect(activation.activate({ kind: "skill", name: "review", description: "Reviews." }, entry("skill", "review"), null, false)).rejects.toMatchObject({
       code: "PACKAGE_ID_CONFLICT",
       message: expect.stringContaining("/home/u/.ave/skills/review/SKILL.md"),
     });
-    await expect(activation.activate({ kind: "agent", name: "triage", description: "Triages." }, entry("agent", "triage"), null)).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
-    await activation.activate({ kind: "skill", name: "summarize", description: "Summarizes." }, entry("skill", "summarize"), null);
+    await expect(activation.activate({ kind: "agent", name: "triage", description: "Triages." }, entry("agent", "triage"), null, false)).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
+    await activation.activate({ kind: "skill", name: "summarize", description: "Summarizes." }, entry("skill", "summarize"), null, false);
     // An update of the package's own install is not a first install.
-    await activation.activate({ kind: "skill", name: "review", description: "Reviews." }, entry("skill", "review"), entry("skill", "review"));
+    await activation.activate({ kind: "skill", name: "review", description: "Reviews." }, entry("skill", "review"), entry("skill", "review"), false);
     expect(skillStore.userSkillFile).toHaveBeenCalledTimes(2);
   });
 
@@ -225,7 +265,7 @@ describe("createContentActivation", () => {
     vi.mocked(deps.conversationLoop.refreshProvider).mockImplementation(() => {
       throw new Error("refresh boom");
     });
-    await expect(activation.activate({ kind: "provider", preset }, entry("provider", "harbor-llm"), null)).resolves.toBeUndefined();
+    await expect(activation.activate({ kind: "provider", preset }, entry("provider", "harbor-llm"), null, false)).resolves.toBeUndefined();
     expect(settingsService.get("marketplace").installedProviderPresets).toEqual([preset]);
     await expect(activation.deactivate(entry("provider", "harbor-llm"), null)).resolves.toBeUndefined();
     expect(settingsService.get("marketplace").installedProviderPresets).toEqual([]);
@@ -234,14 +274,14 @@ describe("createContentActivation", () => {
   it("throws when the settings write fails, and only logs a failed broadcast after it landed", async () => {
     const activation = createContentActivation(deps);
     const patch = vi.spyOn(settingsService, "patch").mockRejectedValueOnce(new Error("disk full"));
-    await expect(activation.activate({ kind: "messaging-connection", connection }, entry("messaging-connection", "harbor-chat"), null)).rejects.toThrow("disk full");
+    await expect(activation.activate({ kind: "messaging-connection", connection }, entry("messaging-connection", "harbor-chat"), null, false)).rejects.toThrow("disk full");
     patch.mockRestore();
 
     const windows = vi.fn(() => {
       throw new Error("window gone");
     });
     deps.getAppWindows = windows as unknown as IpcDeps["getAppWindows"];
-    await expect(activation.activate({ kind: "messaging-connection", connection }, entry("messaging-connection", "harbor-chat"), null)).resolves.toBeUndefined();
+    await expect(activation.activate({ kind: "messaging-connection", connection }, entry("messaging-connection", "harbor-chat"), null, false)).resolves.toBeUndefined();
     expect(windows).toHaveBeenCalled();
     expect(settingsService.get("marketplace").installedMessagingConnections).toEqual([connection]);
   });

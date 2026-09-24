@@ -22,6 +22,7 @@ import { ContentStore, type ContentActivation } from "../../marketplace/content/
 import type { ParsedContent } from "../../marketplace/content/kinds.js";
 import type { LedgerEntry } from "../../marketplace/content/ledger.js";
 import { MarketplaceError } from "../../marketplace/errors.js";
+import type { LegacyActivations } from "../../marketplace/migration/legacy-content.js";
 import { installContentAssetProtocolHandler } from "../../main/content-asset-protocol.js";
 import { applyBootLocale } from "../../boot/services.js";
 import { installedFontStack, type InstalledContentResult, type InstalledContentView } from "../../shared/installed-content.js";
@@ -39,6 +40,36 @@ const log = createLogger("marketplace-content");
 /** `~/.ave/packages` (design §2). */
 function contentPackagesRoot(home: string = aveHome()): string {
   return join(home, "packages");
+}
+
+/**
+ * The settings side of the first-boot content migration (design §16.3): the
+ * activations the server marketplace left in settings, and the removal of the
+ * theme ids and locales installed packages provide once it has adopted them.
+ */
+export function legacyContentSettings(deps: IpcDeps): {
+  activations: LegacyActivations;
+  release(provided: { themes: readonly string[]; locales: readonly string[] }): Promise<void>;
+} {
+  const settings = deps.settingsService;
+  const marketplace = settings.get("marketplace");
+  return {
+    activations: {
+      themes: [...marketplace.installedThemeBundleIds],
+      locales: [...marketplace.installedLanguagePacks],
+      providers: [...marketplace.installedProviderIds, ...marketplace.installedProviderPresets.map((preset) => preset.providerId)],
+    },
+    async release(provided) {
+      const current = settings.get("marketplace");
+      await settings.patch({
+        marketplace: {
+          installedThemeBundleIds: current.installedThemeBundleIds.filter((id) => !provided.themes.includes(id)),
+          installedLanguagePacks: current.installedLanguagePacks.filter((locale) => !provided.locales.includes(locale)),
+        },
+      });
+      await broadcastSettingsSnapshot(deps);
+    },
+  };
 }
 
 /**
@@ -95,23 +126,27 @@ export function createContentActivation(deps: IpcDeps): ContentActivation {
   };
   const connectionsWithout = (connectionId: string) =>
     settings.get("marketplace").installedMessagingConnections.filter((entry) => entry.connectionId !== connectionId);
-  /** A first install may not take an id the settings already hold from another path (design §15.1). */
-  const assertUnclaimed = (content: ParsedContent, name: string) => {
+  /** Whether the settings already hold this package's id from another path (design §15.1). */
+  const heldBySettings = (content: ParsedContent, name: string): boolean => {
     const marketplace = settings.get("marketplace");
-    const held =
+    return (
       content.kind === "provider"
         ? "vendor" in content
           ? marketplace.installedProviderIds.includes(content.vendor.providerId)
           : marketplace.installedProviderPresets.some((preset) => preset.providerId === content.preset.providerId)
         : content.kind === "messaging-connection"
           ? marketplace.installedMessagingConnections.some((entry) => entry.connectionId === content.connection.connectionId)
-          : content.kind === "theme" && (marketplace.installedThemeBundleIds as readonly string[]).includes(name);
-    if (held) throw new MarketplaceError("PACKAGE_ID_CONFLICT", "settings already hold this id from another install; remove it there first");
+          : content.kind === "theme" && (marketplace.installedThemeBundleIds as readonly string[]).includes(name)
+    );
   };
 
   return {
-    async activate(content: ParsedContent, entry: LedgerEntry, previous: LedgerEntry | null) {
-      if (!previous) assertUnclaimed(content, entry.name);
+    async activate(content: ParsedContent, entry: LedgerEntry, previous: LedgerEntry | null, adopt: boolean) {
+      if (!previous && heldBySettings(content, entry.name)) {
+        // Adopting a legacy activation (design §16.3): the settings already describe it, so they stay as they are.
+        if (adopt) return;
+        throw new MarketplaceError("PACKAGE_ID_CONFLICT", "settings already hold this id from another install; remove it there first");
+      }
       if (!previous && (content.kind === "skill" || content.kind === "agent")) {
         const held = content.kind === "skill" ? await deps.skillStore?.userSkillFile(entry.name) : await deps.agentProfileStore?.userProfileFile(entry.name);
         // The user's own file wins in the store, so the package would never apply; replacing it is theirs to do.

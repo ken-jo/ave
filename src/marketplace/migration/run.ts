@@ -1,18 +1,21 @@
 /**
  * When the first-boot migration (design §16.3) runs, and that it runs once.
  *
- * It needs the official snapshot — which plugins the official source lists,
- * and the pins of their versions — so it waits for the first sync that reads
- * one; until then nothing changes. Once every entry has been read it writes
- * `packages/legacy-migration.json`, and later boots skip it. An entry that
- * could not be read leaves the marker unwritten, so the next boot tries again;
- * entries already migrated are skipped by the migration itself.
+ * It needs the official snapshot — which packages the official source lists,
+ * and the pins of plugin versions — so it waits for the first sync that reads
+ * one; until then nothing changes. Plugins are bound first, then content is
+ * adopted. Once both finish without a failure it writes
+ * `packages/legacy-migration.json`, and later boots skip it. A plugin entry
+ * that could not be read or a content install that failed leaves the marker
+ * unwritten, so the next boot tries again; what was already migrated is
+ * skipped by each half itself.
  */
 import { readFile } from "node:fs/promises";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import { writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
 import type { SourceSnapshot } from "../sources/snapshot.js";
+import type { LegacyContentKind, LegacyContentReport } from "./legacy-content.js";
 import type { LegacyPluginReport, OfficialPlugin } from "./legacy-plugins.js";
 
 interface MarkerFile {
@@ -58,15 +61,24 @@ export interface LegacyMigrationInput {
   /** The official snapshot, or null before the first sync that read one. */
   officialSnapshot: SourceSnapshot | null;
   plugins(officialPlugin: (name: string) => OfficialPlugin | null): Promise<LegacyPluginReport>;
+  content(listed: (kind: LegacyContentKind, name: string) => boolean): Promise<LegacyContentReport>;
   now: () => Date;
 }
 
+export interface LegacyMigrationReport {
+  plugins: LegacyPluginReport;
+  content: LegacyContentReport;
+}
+
 /** Run the migration if it is due; null when it already ran or cannot run yet. */
-export async function runLegacyMigration(input: LegacyMigrationInput): Promise<LegacyPluginReport | null> {
+export async function runLegacyMigration(input: LegacyMigrationInput): Promise<LegacyMigrationReport | null> {
   if (await completed(input.markerPath)) return null;
-  if (!input.officialSnapshot) return null;
-  const report = await input.plugins(officialPluginsFrom(input.officialSnapshot));
-  if (report.failed.length === 0) {
+  const snapshot = input.officialSnapshot;
+  if (!snapshot) return null;
+  const plugins = await input.plugins(officialPluginsFrom(snapshot));
+  const content = await input.content((kind, name) => snapshot.packages.some((item) => item.kind === kind && item.name === name));
+  const report = { plugins, content };
+  if (plugins.failed.length === 0 && content.failed.length === 0) {
     const marker: MarkerFile = { version: 1, completedAt: input.now().toISOString() };
     await writeFileAtomicAtPath(input.markerPath, `${JSON.stringify(marker, null, 2)}\n`);
   }

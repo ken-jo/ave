@@ -109,9 +109,11 @@ export async function stageContentPackage(plan: PackagePlan, access: RepositoryA
 export interface ContentActivation {
   /**
    * After the ledger records the package; a throw undoes the install.
-   * `previous` is the entry it replaces, null for a first install.
+   * `previous` is the entry it replaces, null for a first install. `adopt`:
+   * the first-boot migration is recording an activation the settings already
+   * hold (design §16.3), which leaves those settings as they are.
    */
-  activate(content: ParsedContent, entry: LedgerEntry, previous: LedgerEntry | null): Promise<void>;
+  activate(content: ParsedContent, entry: LedgerEntry, previous: LedgerEntry | null, adopt: boolean): Promise<void>;
   /** Before the ledger drops the package; a throw leaves it installed. `content` is null when its files no longer parse. */
   deactivate(entry: LedgerEntry, content: ParsedContent | null): Promise<void>;
 }
@@ -216,7 +218,7 @@ export class ContentStore {
     return join(this.options.root, entry.kind, entry.name, entry.version);
   }
 
-  async install(staged: StagedContent, options: { switchSource?: boolean } = {}): Promise<{ action: InstallAction; entry: LedgerEntry }> {
+  async install(staged: StagedContent, options: { switchSource?: boolean; adopt?: boolean } = {}): Promise<{ action: InstallAction; entry: LedgerEntry }> {
     return this.serialize(async () => {
       const { plan } = staged;
       const previous = this.ledger.get(plan.kind, plan.name) ?? null;
@@ -258,7 +260,7 @@ export class ContentStore {
         await renameDirectory(files, dir);
         try {
           await this.ledger.put(entry);
-          await this.options.activation.activate(staged.content, entry, previous);
+          await this.options.activation.activate(staged.content, entry, previous, options.adopt === true);
         } catch (error) {
           await undo([
             ["restore the ledger entry", () => (previous ? this.ledger.put(previous) : this.ledger.remove(entry.kind, entry.name))],
