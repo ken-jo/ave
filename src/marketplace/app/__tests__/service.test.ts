@@ -18,8 +18,11 @@ import { createTestGitRunner, type TestGitRunner } from "../../__tests__/fixture
 import { policyLoad } from "../../__tests__/fixtures/policy.js";
 import { ContentStore } from "../../content/store.js";
 import { NetworkGate } from "../../net/network-gate.js";
+import { NO_ARTIFACT_CACHE } from "../../resolve/artifact-cache.js";
 import { OFFICIAL_MARKETPLACE } from "../../sources/official.js";
-import { EMPTY_MARKETPLACE_POLICY } from "../../sources/policy.js";
+import { EMPTY_MARKETPLACE_POLICY, type PolicyLoad } from "../../sources/policy.js";
+import { AppliedDefaults } from "../../boot-installs/applied.js";
+import { normalizeSourceUrl } from "../../net/source-url.js";
 import { SourceRegistry } from "../../sources/registry.js";
 import { SourceSyncer } from "../../sources/sync.js";
 import { McpInstaller } from "../mcp-installer.js";
@@ -78,8 +81,12 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
     root = mkdtempSync(join(tmpdir(), "ave-service-root-"));
     now = AT;
     catalogChanged = 0;
+    await build();
+  });
+
+  /** The service over `root`, under `policy`; a test that needs a managed source builds again. */
+  async function build(policy: PolicyLoad = policyLoad({})) {
     manager = new FakeManager();
-    const policy = policyLoad({});
     const gate = new NetworkGate({ policy, allowLoopback: true });
     const marketplaces = join(root, "marketplaces");
     const registry = await SourceRegistry.open({ root: marketplaces, policy, now: () => now });
@@ -125,12 +132,12 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
       gate,
       root: marketplaces,
       workRoot: mkdtempSync(join(root, "work-")),
-      policy: EMPTY_MARKETPLACE_POLICY,
+      policy: policy.ok ? policy.policy : EMPTY_MARKETPLACE_POLICY,
       tokens,
       previewTokens: new Map(),
       versionContext: () => ({ appVersion: "0.14.0", platform: process.platform, canaryOptIn: false, installationId: INSTALLATION }),
       installers,
-      ladder: { fetchImpl: fetch, zip: artifacts, limits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS },
+      ladder: { fetchImpl: fetch, zip: artifacts, limits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS, artifacts: NO_ARTIFACT_CACHE },
       mcpLimits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,
       english: {},
       onCatalogChanged: () => {
@@ -138,7 +145,7 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
       },
       now: () => now,
     });
-  });
+  }
 
   afterEach(() => {
     service.close();
@@ -234,6 +241,52 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
 
     await expect(service.uninstall({ ...key, sourceId: "other" })).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
     await expect(service.uninstall(key)).resolves.toEqual({ key, keptDataDir: null });
+    expect(store.list()).toEqual([]);
+  });
+
+  it("lists the updates of installed packages, from a hidden source too (design §7.3)", async () => {
+    const { url, publish } = market();
+    await addMarket(url);
+    const key = { sourceId: "acme-tools", kind: "skill" as const, name: "review" };
+    await service.executeInstall((await service.planInstall(key)).planId);
+    expect(await service.updates()).toEqual([]);
+
+    publish("1.1.0");
+    await service.refresh("acme-tools");
+    expect(await service.updates()).toEqual([{ key, displayName: "review", from: "1.0.0", to: "1.1.0" }]);
+
+    // Hidden: the catalog stops listing it, the installed package still hears of its update.
+    await service.setEnabled("acme-tools", false);
+    expect((await service.catalog({})).entries).toEqual([]);
+    expect(await service.updates()).toEqual([{ key, displayName: "review", from: "1.0.0", to: "1.1.0" }]);
+
+    await service.setEnabled("acme-tools", true);
+    await service.executeInstall((await service.planUpdate(key)).planId);
+    expect(await service.updates()).toEqual([]);
+  });
+
+  it("applies a default install from a managed source through the plan, once", async () => {
+    const { url } = market();
+    service.close();
+    await build(policyLoad({ additional: [{ id: "corp", url: normalizeSourceUrl(url), auth: { kind: "none" } }] }));
+    await service.refresh();
+    const applied = await AppliedDefaults.open(join(root, "packages", "default-installs.json"));
+    const defaults = [
+      { kind: "skill" as const, name: "review", source: "corp" },
+      { kind: "skill" as const, name: "missing", source: "corp" },
+    ];
+
+    const first = await service.applyBootInstalls(defaults, applied);
+    expect(first.report.installed).toEqual([defaults[0]]);
+    expect(first.report.skipped).toEqual([{ key: defaults[1], reason: "corp does not list skill missing" }]);
+    expect(first.notice).toEqual({ forYou: [{ sourceId: "corp", kind: "skill", name: "review" }], required: [] });
+    expect(store.list().map((entry) => `${entry.kind}:${entry.name}@${entry.origin.sourceId}`)).toEqual(["skill:review@corp"]);
+
+    // Uninstalling a default is final: the next boot installs nothing.
+    await service.uninstall({ sourceId: "corp", kind: "skill", name: "review" });
+    const second = await service.applyBootInstalls(defaults, applied);
+    expect(second.report).toEqual({ installed: [], updated: [], switched: [], skipped: [], failed: [] });
+    expect(second.notice).toBeNull();
     expect(store.list()).toEqual([]);
   });
 

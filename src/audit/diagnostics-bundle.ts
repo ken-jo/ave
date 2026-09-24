@@ -165,8 +165,8 @@ export function pickRedactedSettings(settings: AppSettings): Record<string, unkn
   if (settings.webSearch) out.webSearch = { provider: settings.webSearch.provider };
   if (settings.marketplace) {
     out.marketplace = {
-      backend: settings.marketplace.backend,
-      cloudBaseUrl: settings.marketplace.cloudBaseUrl,
+      gitMode: settings.marketplace.git?.mode ?? "auto",
+      updateCheckEnabled: settings.marketplace.updateCheckEnabled ?? true,
     };
   }
   if (settings.privacy) out.privacy = settings.privacy;

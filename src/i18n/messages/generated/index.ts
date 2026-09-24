@@ -6,7 +6,7 @@
  * objects) and merges the English default catalog here. Non-English generated
  * catalogs are language-pack chunks under `../generated-locales/`.
  *
- * Fragments: 189
+ * Fragments: 187
  */
 import { en as en_app } from "./app.js";
 import { en as en_appearanceTab } from "./appearanceTab.js";
@@ -139,7 +139,6 @@ import { en as en_pluginAuthSection } from "./pluginAuthSection.js";
 import { en as en_pluginConfigSchemaForm } from "./pluginConfigSchemaForm.js";
 import { en as en_pluginConfigTab } from "./pluginConfigTab.js";
 import { en as en_pluginGridButton } from "./pluginGridButton.js";
-import { en as en_pluginInstallDialog } from "./pluginInstallDialog.js";
 import { en as en_pluginPerfTab } from "./pluginPerfTab.js";
 import { en as en_pluginUninstallDialog } from "./pluginUninstallDialog.js";
 import { en as en_pluginUpdatesPill } from "./pluginUpdatesPill.js";
@@ -184,7 +183,6 @@ import { en as en_unifiedSearchPanel } from "./unifiedSearchPanel.js";
 import { en as en_usageDashboard } from "./usageDashboard.js";
 import { en as en_useChatState } from "./useChatState.js";
 import { en as en_useMemorySearch } from "./useMemorySearch.js";
-import { en as en_usePluginMarketplace } from "./usePluginMarketplace.js";
 import { en as en_useSettingsOrchestration } from "./useSettingsOrchestration.js";
 import { en as en_useStarred } from "./useStarred.js";
 import { en as en_useStatusBarInstall } from "./useStatusBarInstall.js";
@@ -330,7 +328,6 @@ export const generatedEn: Record<string, string> = {
   ...en_pluginConfigSchemaForm,
   ...en_pluginConfigTab,
   ...en_pluginGridButton,
-  ...en_pluginInstallDialog,
   ...en_pluginPerfTab,
   ...en_pluginUninstallDialog,
   ...en_pluginUpdatesPill,
@@ -375,7 +372,6 @@ export const generatedEn: Record<string, string> = {
   ...en_usageDashboard,
   ...en_useChatState,
   ...en_useMemorySearch,
-  ...en_usePluginMarketplace,
   ...en_useSettingsOrchestration,
   ...en_useStarred,
   ...en_useStatusBarInstall,

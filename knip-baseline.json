@@ -2160,11 +2160,6 @@
     {
       "type": "types",
       "file": "src/sdk/index.ts",
-      "name": "ListMarketplaceResult"
-    },
-    {
-      "type": "types",
-      "file": "src/sdk/index.ts",
       "name": "ListPluginsResult"
     },
     {

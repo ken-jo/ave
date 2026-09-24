@@ -119,6 +119,24 @@ export function promptHost(prompt: string): { field: "username" | "password"; ho
   }
 }
 
+/** `sun_path` holds 104 bytes on macOS (108 on Linux), the closing NUL included. */
+const MAX_SOCKET_PATH_BYTES = 103;
+
+/**
+ * Where the broker listens. The socket sits in the broker's directory unless
+ * that path is too long for a unix socket (a deep home directory, an isolated
+ * test home): then only the socket goes to a short private directory of its
+ * own, removed with the broker.
+ */
+async function brokerEndpoint(dir: string, platform: NodeJS.Platform): Promise<{ endpoint: string; socketDir: string | null }> {
+  if (platform === "win32") return { endpoint: `\\\\.\\pipe\\ave-askpass-${randomBytes(12).toString("hex")}`, socketDir: null };
+  const inDir = join(dir, "broker.sock");
+  if (Buffer.byteLength(inDir) <= MAX_SOCKET_PATH_BYTES) return { endpoint: inDir, socketDir: null };
+  const socketDir = await mkdtemp("/tmp/ave-ask-");
+  await chmod(socketDir, 0o700);
+  return { endpoint: join(socketDir, "b.sock"), socketDir };
+}
+
 export class AskpassBroker {
   private readonly tickets = new Map<string, TicketState>();
   private closed = false;
@@ -126,6 +144,7 @@ export class AskpassBroker {
   private constructor(
     private readonly server: Server,
     private readonly dir: string,
+    private readonly socketDir: string | null,
     readonly launcherPath: string,
     readonly endpoint: string,
     private readonly getToken: (host: string, sourceId: string) => string | null,
@@ -134,6 +153,7 @@ export class AskpassBroker {
   static async start(options: AskpassBrokerOptions): Promise<AskpassBroker> {
     const platform = options.platform ?? process.platform;
     const dir = await mkdtemp(join(options.parentDir ?? tmpdir(), "ave-askpass-"));
+    let socketDir: string | null = null;
     try {
       await chmod(dir, 0o700);
       const helperPath = join(dir, "askpass-helper.cjs");
@@ -142,9 +162,9 @@ export class AskpassBroker {
       await writeFile(launcherPath, launcherSource(platform, options.nodeExecPath ?? process.execPath, helperPath), {
         mode: 0o700,
       });
-      const endpoint = platform === "win32"
-        ? `\\\\.\\pipe\\ave-askpass-${randomBytes(12).toString("hex")}`
-        : join(dir, "broker.sock");
+      const listening = await brokerEndpoint(dir, platform);
+      socketDir = listening.socketDir;
+      const { endpoint } = listening;
       let broker: AskpassBroker | null = null;
       const server = createServer((socket) => broker?.handle(socket));
       await new Promise<void>((resolve, reject) => {
@@ -154,10 +174,11 @@ export class AskpassBroker {
           resolve();
         });
       });
-      broker = new AskpassBroker(server, dir, launcherPath, endpoint, options.getToken);
+      broker = new AskpassBroker(server, dir, socketDir, launcherPath, endpoint, options.getToken);
       return broker;
     } catch (error) {
       await rm(dir, { recursive: true, force: true });
+      if (socketDir) await rm(socketDir, { recursive: true, force: true });
       throw error;
     }
   }
@@ -225,8 +246,10 @@ export class AskpassBroker {
     this.closed = true;
     this.tickets.clear();
     await new Promise<void>((resolve) => this.server.close(() => resolve()));
-    await rm(this.dir, { recursive: true, force: true }).catch((error: unknown) => {
-      log.warn({ error: (error as Error).message }, "askpass: failed to remove broker directory");
-    });
+    for (const dir of this.socketDir ? [this.dir, this.socketDir] : [this.dir]) {
+      await rm(dir, { recursive: true, force: true }).catch((error: unknown) => {
+        log.warn({ error: (error as Error).message }, "askpass: failed to remove broker directory");
+      });
+    }
   }
 }

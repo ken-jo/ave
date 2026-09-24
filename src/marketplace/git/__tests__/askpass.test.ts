@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
-import { statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AskpassBroker, promptHost, TOKEN_USERNAME } from "../askpass.js";
 
@@ -71,6 +73,24 @@ describe("AskpassBroker", () => {
     expect(await runLauncher(broker, ticket.env, "Password for 'https://git.example': ")).toEqual({ code: 0, stdout: "tok\n" });
     expect(await runLauncher(broker, ticket.env, "Password for 'https://other.example': ")).toEqual({ code: 0, stdout: "\n" });
     expect((await runLauncher(broker, {}, "Password for 'https://git.example': ")).code).not.toBe(0);
+  });
+
+  it.skipIf(process.platform === "win32")("listens outside a directory too deep for a unix socket, and removes both on close", async () => {
+    const deep = join(mkdtempSync(join(tmpdir(), "ave-askpass-deep-")), "x".repeat(80));
+    mkdirSync(deep, { recursive: true });
+    try {
+      const long = await AskpassBroker.start({ getToken: () => "tok", parentDir: deep });
+      expect(Buffer.byteLength(long.endpoint)).toBeLessThanOrEqual(103);
+      expect(long.launcherPath.startsWith(deep)).toBe(true);
+      expect(statSync(dirname(long.endpoint)).mode & 0o777).toBe(0o700);
+      const ticket = long.issueTicket({ host: "git.example", sourceId: "custom" });
+      expect(await runLauncher(long, ticket.env, "Password for 'https://git.example': ")).toEqual({ code: 0, stdout: "tok\n" });
+      await long.close();
+      expect(existsSync(dirname(long.endpoint))).toBe(false);
+      expect(existsSync(dirname(long.launcherPath))).toBe(false);
+    } finally {
+      rmSync(dirname(deep), { recursive: true, force: true });
+    }
   });
 
   it("refuses new tickets and removes its directory after close", async () => {

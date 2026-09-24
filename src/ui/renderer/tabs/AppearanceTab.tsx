@@ -37,7 +37,7 @@ import { useInstalledContent } from "../installed-content.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { FONT_SIZE_SCALE_DEFAULT, type FontSizeScale } from "../../../shared/appearance-font.js";
 
-type AppearanceMarketplaceFilter = "theme" | "language-pack";
+type AppearanceMarketplaceFilter = "theme" | "language";
 
 /* ─── Bundle card mini-mock helpers ─────────────────────────────────────── */
 
@@ -439,7 +439,7 @@ function LanguageSection({
           variant="outline"
           className="h-7 gap-1.5 text-xs"
           data-testid="appearance-tab:marketplace-languages"
-          onClick={() => onOpenMarketplace("language-pack")}
+          onClick={() => onOpenMarketplace("language")}
         >
           <Store className="size-3.5" aria-hidden={true} />
           {t("appearanceTab.moreLanguagesInMarketplace")}
@@ -498,7 +498,7 @@ function LanguageSection({
             variant="outline"
             className="h-7 gap-1.5 text-xs"
             data-testid={`appearance-tab:language-recommendation-open:${recommendedLocale}`}
-            onClick={() => onOpenMarketplace("language-pack")}
+            onClick={() => onOpenMarketplace("language")}
           >
             <Store className="size-3.5" aria-hidden={true} />
             {t("appearanceTab.openMarketplace")}

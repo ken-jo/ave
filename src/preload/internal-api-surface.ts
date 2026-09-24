@@ -36,6 +36,7 @@ import type {
 } from "../shared/permissions-events.js";
 import type { DeferredApprovalSource } from "../shared/permission-review-status.js";
 import type { MarketplaceAnnouncementPayload } from "../shared/marketplace-announcements.js";
+import type { PackageUpdateView } from "../shared/git-marketplace.js";
 import type { AiProviderPingIpcResult } from "../shared/ai-provider-ping.js";
 import type {
   OpenHtmlPreviewWindowPayload,
@@ -113,17 +114,9 @@ function invokeMemoryCandidateAction<T>(
     : ipcRenderer.invoke(channel, { id, opts }) as Promise<T>;
 }
 
+/** What an uninstall channel answers, as the renderer reads it. */
 type PluginActionResult =
-  | {
-      ok: true;
-      pluginId: string;
-      installed?: true;
-      /** The install was a no-op: the marketplace had nothing but what is already on disk. */
-      unchanged?: true;
-      uninstalled?: true;
-      rolledBackTo?: string;
-      version?: string;
-    }
+  | { ok: true; pluginId: string; uninstalled: true }
   | { ok: false; error: string; message?: string };
 
 function invalidPluginActionResult(): PluginActionResult {
@@ -138,64 +131,12 @@ export function normalizePluginActionResult(result: unknown): PluginActionResult
   if (result && typeof result === "object" && "ok" in result && result.ok === false) {
     return result as PluginActionResult;
   }
-
   const payload = result && typeof result === "object"
-    ? result as {
-        pluginId?: unknown;
-        installed?: unknown;
-        unchanged?: unknown;
-        uninstalled?: unknown;
-        rolledBackTo?: unknown;
-        version?: unknown;
-      }
+    ? result as { pluginId?: unknown; uninstalled?: unknown }
     : {};
   const pluginId = typeof payload.pluginId === "string" ? payload.pluginId.trim() : "";
-  const installed = payload.installed === true;
-  const uninstalled = payload.uninstalled === true;
-  const rolledBackTo =
-    typeof payload.rolledBackTo === "string" ? payload.rolledBackTo.trim() : "";
-  if (!pluginId || (!installed && !uninstalled && !rolledBackTo)) {
-    return invalidPluginActionResult();
-  }
-  const normalized: PluginActionResult = {
-    ok: true,
-    pluginId,
-  };
-  if (installed) {
-    normalized.installed = true;
-  }
-  if (payload.unchanged === true) {
-    normalized.unchanged = true;
-  }
-  if (uninstalled) {
-    normalized.uninstalled = true;
-  }
-  if (rolledBackTo) {
-    normalized.rolledBackTo = rolledBackTo;
-  }
-  if (typeof payload.version === "string") {
-    normalized.version = payload.version;
-  }
-  return normalized;
-}
-
-export function normalizeMarketplacePackageActionResult(
-  result: unknown,
-  idField: "agentId" | "skillId",
-): PluginActionResult {
-  if (result && typeof result === "object" && "ok" in result && result.ok === false) {
-    return result as PluginActionResult;
-  }
-  const payload = result && typeof result === "object"
-    ? result as Record<string, unknown>
-    : {};
-  const packageId = typeof payload[idField] === "string" ? payload[idField].trim() : "";
-  if (!packageId) return invalidPluginActionResult();
-  const normalized: PluginActionResult = { ok: true, pluginId: packageId };
-  if (payload.uninstalled === true) normalized.uninstalled = true;
-  else normalized.installed = true;
-  if (typeof payload.version === "string") normalized.version = payload.version;
-  return normalized;
+  if (!pluginId || payload.uninstalled !== true) return invalidPluginActionResult();
+  return { ok: true, pluginId, uninstalled: true };
 }
 
 type RemoteA2AStatusPromise = ReturnType<AveApi["remoteA2a"]["status"]>;
@@ -313,9 +254,6 @@ export function buildInternalApiSurface() {
   setWebApiKey: async (provider: string, apiKey: string) => ipcRenderer.invoke(CHANNELS.settings.setWebApiKey, provider, apiKey),
   hasWebApiKey: async (provider: string) => ipcRenderer.invoke(CHANNELS.settings.hasWebApiKey, provider) as Promise<boolean>,
   deleteWebApiKey: async (provider: string) => ipcRenderer.invoke(CHANNELS.settings.deleteWebApiKey, provider),
-  setMarketplaceApiKey: async (apiKey: string) => ipcRenderer.invoke(CHANNELS.settings.marketplaceSetApiKey, apiKey),
-  hasMarketplaceApiKey: async () => ipcRenderer.invoke(CHANNELS.settings.marketplaceHasApiKey) as Promise<boolean>,
-  deleteMarketplaceApiKey: async () => ipcRenderer.invoke(CHANNELS.settings.marketplaceDeleteApiKey),
   // ─── Internal Usage Insights ─────────────────────
   // This can trigger a provider-backed LLM call, so it is intentionally kept
   // out of the externally-parity-safe public surface and local API allowlist.
@@ -495,10 +433,6 @@ export function buildInternalApiSurface() {
       protocol?: string;
       message?: string;
     }>,
-  // MCP marketplace catalog + install
-  listMcpCatalog: async () => ipcRenderer.invoke(CHANNELS.mcp.catalogList),
-  installMcpFromMarketplace: async (slug: string) =>
-    ipcRenderer.invoke(CHANNELS.mcp.installFromMarketplace, slug),
   // Claude Desktop config import (two-phase: preview → apply).
   previewClaudeDesktopMcpImport: async (raw: string) =>
     ipcRenderer.invoke(CHANNELS.mcp.importClaudeDesktopPreview, raw),
@@ -574,14 +508,6 @@ export function buildInternalApiSurface() {
   deletePersonaPrompt: async (id: string) => ipcRenderer.invoke(CHANNELS.prompts.delete, id),
   listAgentProfiles: async () => ipcRenderer.invoke(CHANNELS.agents.list),
   listSkills: async () => ipcRenderer.invoke(CHANNELS.skills.list),
-  installAgentFromMarketplace: async (slug: string) =>
-    ipcRenderer.invoke(CHANNELS.agents.install, slug),
-  uninstallAgentPackage: async (slug: string) =>
-    ipcRenderer.invoke(CHANNELS.agents.uninstall, slug),
-  installSkillFromMarketplace: async (slug: string) =>
-    ipcRenderer.invoke(CHANNELS.skills.install, slug),
-  uninstallSkillPackage: async (slug: string) =>
-    ipcRenderer.invoke(CHANNELS.skills.uninstall, slug),
   listPluginUiExtensions: async () => ipcRenderer.invoke(CHANNELS.plugins.uiList),
   // #237 — host renderer pre-binds (webContents.id → pluginId, entryUrl)
   // before each plugin webview navigates. Main rejects unknown pluginId
@@ -660,17 +586,7 @@ export function buildInternalApiSurface() {
     ipcRenderer.invoke(CHANNELS.trigger.import, sessionId) as ReturnType<AveApi["importTrigger"]>,
 
   // ─── Marketplace update notifications ────────────
-  onMarketplaceUpdatesAvailable: (handler: (updates: Array<{
-    pluginId: string;
-    pluginName?: string;
-    installedVersion: string;
-    latestVersion: string;
-    networkAccess?: {
-      allowedDomains: string[];
-      reasoning?: string;
-      allowPrivateNetworks?: boolean;
-    };
-  }>) => void) => {
+  onMarketplaceUpdatesAvailable: (handler: (updates: PackageUpdateView[]) => void) => {
     const listener = (_event: unknown, updates: Parameters<typeof handler>[0]) => handler(updates);
     ipcRenderer.on(CHANNELS.marketplace.updatesAvailable, listener);
     return () => ipcRenderer.removeListener(CHANNELS.marketplace.updatesAvailable, listener);
@@ -746,11 +662,10 @@ export function buildInternalApiSurface() {
   // separate result channel.
   retryBootstrap: () => ipcRenderer.invoke(CHANNELS.bootstrap.retry),
 
-  // ─── ave:// deep-link install lifecycle ─────────
-  // Fires when a marketplace install triggered via ave://install/{slug} has
-  // finished installing + restartAll() in the main process. Renderer uses
-  // this to refresh its plugin UI list so newly-installed plugin views
-  // appear without requiring an app restart.
+  // ─── Local install lifecycle ─────────────────────
+  // Fires when a local-folder install has finished installing + restartAll()
+  // in the main process. Renderer uses this to refresh its plugin UI list so
+  // newly-installed plugin views appear without requiring an app restart.
   onPluginInstallResult: (handler: (payload: PluginInstallResultPayload) => void) => {
     const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
     ipcRenderer.on(CHANNELS.plugins.installResult, listener);
@@ -808,20 +723,10 @@ export function buildInternalApiSurface() {
     return () => ipcRenderer.removeListener(CHANNELS.prompts.updated, listener);
   },
 
-  onAgentInstallResult: (handler: (payload: AgentInstallResultPayload) => void) => {
-    const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
-    ipcRenderer.on(CHANNELS.agents.installResult, listener);
-    return () => ipcRenderer.removeListener(CHANNELS.agents.installResult, listener);
-  },
   onAgentUninstallResult: (handler: (payload: AgentInstallResultPayload) => void) => {
     const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
     ipcRenderer.on(CHANNELS.agents.uninstallResult, listener);
     return () => ipcRenderer.removeListener(CHANNELS.agents.uninstallResult, listener);
-  },
-  onSkillInstallResult: (handler: (payload: SkillInstallResultPayload) => void) => {
-    const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
-    ipcRenderer.on(CHANNELS.skills.installResult, listener);
-    return () => ipcRenderer.removeListener(CHANNELS.skills.installResult, listener);
   },
   onSkillUninstallResult: (handler: (payload: SkillInstallResultPayload) => void) => {
     const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
@@ -829,11 +734,8 @@ export function buildInternalApiSurface() {
     return () => ipcRenderer.removeListener(CHANNELS.skills.uninstallResult, listener);
   },
 
-  // Phase progress for in-flight installs. Granular phases fire from inside
-  // installFromMarketplace: downloading (byte-level) → verifying → registering.
-  // The callers (handleAveUri, ave:plugins:install) emit `installing` at the
-  // start and `restarting` after the install completes. The result event clears
-  // the in-flight state. Renderer renders a skeleton card.
+  // Phase progress for in-flight local installs. The result event clears the
+  // in-flight state. Renderer renders a skeleton card.
   onPluginInstallProgress: (handler: (payload:
     | { slug: string; phase: "installing" | "restarting" | "verifying" | "registering" | "preparing" }
     | { slug: string; phase: "downloading"; bytesDownloaded: number; bytesTotal: number | null }
@@ -841,22 +743,6 @@ export function buildInternalApiSurface() {
     const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
     ipcRenderer.on(CHANNELS.plugins.installProgress, listener);
     return () => ipcRenderer.removeListener(CHANNELS.plugins.installProgress, listener);
-  },
-  onAgentInstallProgress: (handler: (payload:
-    | { slug: string; phase: "installing" | "restarting" | "verifying" | "registering" }
-    | { slug: string; phase: "downloading"; bytesDownloaded: number; bytesTotal: number | null }
-  ) => void) => {
-    const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
-    ipcRenderer.on(CHANNELS.agents.installProgress, listener);
-    return () => ipcRenderer.removeListener(CHANNELS.agents.installProgress, listener);
-  },
-  onSkillInstallProgress: (handler: (payload:
-    | { slug: string; phase: "installing" | "restarting" | "verifying" | "registering" }
-    | { slug: string; phase: "downloading"; bytesDownloaded: number; bytesTotal: number | null }
-  ) => void) => {
-    const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
-    ipcRenderer.on(CHANNELS.skills.installProgress, listener);
-    return () => ipcRenderer.removeListener(CHANNELS.skills.installProgress, listener);
   },
 
   // Status bar — aggregated runtime counters (tools / plugins / mcps).
@@ -875,13 +761,6 @@ export function buildInternalApiSurface() {
       platform: string;
       hostname: string;
       user: string;
-    }>,
-  // Status bar — marketplace reachability probe. Returns `configured: false`
-  // when the user is on the mock backend (nothing to ping).
-  pingMarketplace: async () =>
-    ipcRenderer.invoke(CHANNELS.marketplace.ping) as Promise<{
-      configured: boolean;
-      online: boolean;
     }>,
   // Status bar — active LLM provider reachability probe. This performs a
   // tiny one-shot model call from the main process so "connected" means the

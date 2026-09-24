@@ -12,8 +12,8 @@ import type { AveApi } from "../../../types.js";
 import { GitMarketplaceTab } from "../GitMarketplaceTab.js";
 import { COMMIT_A, COMMIT_B, entry, fakeMarketplace, installPlan, source } from "./fixtures.js";
 
-function renderTab(fake: ReturnType<typeof fakeMarketplace>) {
-  const { api } = makeMockAveApi();
+function renderTab(fake: ReturnType<typeof fakeMarketplace>, overrides: Parameters<typeof makeMockAveApi>[0] = {}) {
+  const { api } = makeMockAveApi(overrides);
   Object.assign(api, { gitMarketplace: fake.market, gitRuntime: fake.gitRuntime });
   const onOpenMcpSettings = vi.fn();
   render(<GitMarketplaceTab api={api as unknown as AveApi} onOpenMcpSettings={onOpenMcpSettings} />);
@@ -362,5 +362,33 @@ describe("GitMarketplaceTab boot-install notice (design §15.1)", () => {
 
     fake.applyBootInstalls(notice);
     expect(await screen.findByTestId("git-marketplace:boot-notice")).toHaveTextContent("weather");
+  });
+});
+
+describe("GitMarketplaceTab maintenance", () => {
+  it("holds the switches until the saved values arrive, then writes what the user flips", async () => {
+    let answer: (settings: unknown) => void = () => {};
+    const fake = fakeMarketplace({ sources: [team] });
+    const { api } = renderTab(fake, {
+      getSettings: () => new Promise((resolve) => {
+        answer = resolve;
+      }),
+    });
+
+    const notices = await screen.findByTestId("git-marketplace:update-check");
+    expect(notices).toBeDisabled();
+    answer({ marketplace: { updateCheckEnabled: false, offlineCacheEnabled: true } });
+    await waitFor(() => expect(notices).toBeEnabled());
+    expect(notices).toHaveAttribute("aria-checked", "false");
+
+    fireEvent.click(screen.getByTestId("git-marketplace:offline-cache"));
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ marketplace: { offlineCacheEnabled: false } }));
+  });
+
+  it("says when the environment decides a switch", async () => {
+    renderTab(fakeMarketplace({ sources: [team] }), { envForcedSettings: ["marketplace.offlineCacheEnabled"] });
+
+    expect(await screen.findByTestId("git-marketplace:offline-cache:forced")).toHaveTextContent("AVE_MARKETPLACE_USE_CACHE");
+    expect(screen.queryByTestId("git-marketplace:update-check:forced")).toBeNull();
   });
 });

@@ -1,6 +1,6 @@
 import AdmZip from "adm-zip";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,6 +22,7 @@ import { NetworkGate } from "../../net/network-gate.js";
 import { normalizeSourceUrl, parseSourcePattern } from "../../net/source-url.js";
 import { SourceRegistry } from "../../sources/registry.js";
 import { SourceSyncer } from "../../sources/sync.js";
+import { createArtifactCache, NO_ARTIFACT_CACHE } from "../artifact-cache.js";
 import { candidateVersion } from "../descriptor.js";
 import { LadderError, planPluginInstall, runPluginLadder, treeDigest, type LadderDeps, type PluginInstallPlan } from "../plugin-ladder.js";
 
@@ -150,6 +151,7 @@ describe.skipIf(process.platform === "win32")("plugin artifact ladder (design §
         zip: store(),
         limits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,
         workRoot,
+        artifacts: NO_ARTIFACT_CACHE,
         ...patch,
       }),
     );
@@ -185,6 +187,40 @@ describe.skipIf(process.platform === "win32")("plugin artifact ladder (design §
     expect(staged.zipBuffer.equals(zip)).toBe(true);
     expect(staged.manifestDocument).toMatchObject({ name: "alpha", version: "1.0.0" });
     server.file(releasePath, null);
+  });
+
+  it("keeps a downloaded pinned zip and installs it again with the release gone", async () => {
+    const { repo, name } = fixture();
+    const zip = pluginZip("alpha", "1.0.0");
+    server.file(releasePath, zip);
+    market(repo, { release: { repo: "acme/alpha", sha256: sha(zip) } });
+    const { gate, syncer } = await open(name);
+    const plan = planPluginInstall(await row(syncer));
+    const kept = join(root, "artifacts");
+    const artifacts = createArtifactCache({ dir: kept, enabled: () => true, maxFileBytes: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS.maxCompressedBytes, log: { warn: vi.fn() } });
+
+    await ladder(syncer, gate, plan, false, { artifacts });
+    expect(readdirSync(kept)).toEqual([`${sha(zip)}.zip`]);
+
+    // Offline: the release answers 404, and the kept bytes still carry the pin.
+    server.file(releasePath, null);
+    const again = await ladder(syncer, gate, plan, false, { artifacts });
+    expect(again.rungs).toEqual([{ rung: "release", outcome: "used" }]);
+    expect(again.zipBuffer.equals(zip)).toBe(true);
+    expect(again.artifactSha256).toBe(sha(zip));
+  });
+
+  it("keeps nothing from the tree rung", async () => {
+    const { repo, name } = fixture();
+    market(repo, { tree: "plugins/alpha" }, {
+      "plugins/alpha/plugin.json": pluginJson("alpha", "1.0.0"),
+      "plugins/alpha/dist/index.js": ENTRY_JS,
+    });
+    const { gate, syncer } = await open(name);
+    const keep = vi.fn(async () => undefined);
+    const staged = await ladder(syncer, gate, planPluginInstall(await row(syncer)), false, { artifacts: { read: async () => null, keep } });
+    expect(staged.rung).toBe("tree");
+    expect(keep).not.toHaveBeenCalled();
   });
 
   it("moves past a digest mismatch to the archive, and past a transport failure to the tree", async () => {
@@ -436,6 +472,7 @@ describe.skipIf(process.platform === "win32")("plugin artifact ladder (design §
         zip: store(),
         limits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,
         workRoot,
+        artifacts: NO_ARTIFACT_CACHE,
       }),
     );
     expect(staged.rungs).toEqual([{ rung: "release", outcome: "used" }]);
@@ -469,6 +506,7 @@ describe.skipIf(process.platform === "win32")("plugin artifact ladder (design §
           zip: store(),
           limits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,
           workRoot,
+          artifacts: NO_ARTIFACT_CACHE,
         }),
       ).catch((caught: unknown) => caught as LadderError);
     };
@@ -530,6 +568,7 @@ describe.skipIf(process.platform === "win32")("plugin artifact ladder (design §
         zip: store(),
         limits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,
         workRoot,
+        artifacts: NO_ARTIFACT_CACHE,
       }),
     );
     const staged = await run(await planFor("acme/alpha"));

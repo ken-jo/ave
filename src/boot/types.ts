@@ -232,15 +232,6 @@ export interface AppServices {
    */
   getApprovalSentenceSelector?: () => ApprovalSentenceSelector | undefined;
   /**
-   * Re-apply the live MarketplaceTab settings to the marketplace fetcher
-   * constructed at boot. Currently used for the SSRF-guard bypass toggle
-   * (`marketplace.cloudAllowPrivateNetwork`) — the field is read
-   * per-request on the fetcher, so calling this after a settings patch
-   * makes the toggle effective on the next marketplace request without
-   * an app restart. No-op for the disabled fetcher.
-   */
-  refreshMarketplaceFetcherConfig?: () => void;
-  /**
    * #893 — Re-sync the plugin runtime's wildcard config overrides. Only the
    * non-secret `hostApiVendor` is projected, and only while an API provider
    * owns generation; subscription runtime selection clears it. Invoked from

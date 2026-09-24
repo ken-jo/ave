@@ -58,7 +58,7 @@ const TAB_SOURCES: Record<SettingsTab, readonly string[]> = {
     "tabs/PluginPerfTab.tsx",
     "components/PluginAuthSection.tsx",
   ],
-  marketplace: ["tabs/MarketplaceTab.tsx"],
+  marketplace: ["tabs/git-marketplace/GitMarketplaceTab.tsx"],
   about: ["tabs/AboutTab.tsx"],
 };
 

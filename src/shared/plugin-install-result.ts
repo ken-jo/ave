@@ -4,14 +4,10 @@ import {
   INCOMPATIBLE_APP_VERSION_CODE,
 } from "../plugins/public-contract.js";
 
-/** Stable English IPC code for {@link MarketplaceBackendDisabledError}. */
-export const MARKETPLACE_DISABLED_CODE = "marketplace-disabled";
-
 /**
- * Stable English IPC code for {@link PluginRevokedError}. Not exported —
- * unlike {@link MARKETPLACE_DISABLED_CODE}, no caller throws/checks this
- * error type directly today; `buildInstallFailureResult` below is the only
- * consumer. The renderer's `formatIpcError` map (`ui/renderer/format-ipc-error.ts`)
+ * Stable English IPC code for {@link PluginRevokedError}. Not exported: no
+ * caller throws/checks this error type directly today;
+ * `buildInstallFailureResult` below is the only consumer. The renderer's `formatIpcError` map (`ui/renderer/format-ipc-error.ts`)
  * matches the literal `"plugin-revoked"` string rather than importing this
  * constant, matching how it already treats every other code in that map.
  */
@@ -24,8 +20,7 @@ const PLUGIN_REVOKED_CODE = "plugin-revoked";
  * (`plugins/plugin-artifact-store.ts`), the install-time twin of the
  * `markRevoked` LOAD-boundary gate in `plugins/runtime/index.ts`.
  *
- * A class (not an inline `new Error(...)`) for the same reason
- * {@link MarketplaceBackendDisabledError} is one: `buildInstallFailureResult`
+ * A class (not an inline `new Error(...)`) because `buildInstallFailureResult`
  * needs to recognise it by type to emit the stable `plugin-revoked` code
  * instead of leaking the raw English sentence into a localized toast.
  */
@@ -110,31 +105,6 @@ export const PACKAGE_NOT_INSTALLED_CODE = "package-not-installed";
 export const ADMIN_PLUGIN_UNINSTALL_DENIED_CODE = "admin-plugin-uninstall-denied";
 
 /**
- * The agent/skill marketplace backend is compiled out of this build, so the
- * artifact store the installer needs does not exist.
- *
- * A class rather than an inline `new Error(...)` at each site because the code
- * and the English sentence have to agree across two producers: the IPC handler
- * returns `{ error: MARKETPLACE_DISABLED_CODE }` to its caller while the
- * deep-link handler broadcasts a failure payload built from the thrown error.
- * Before this existed the deep link threw a bare `Error` and the toast rendered
- * that raw English sentence in a Korean UI.
- *
- * It lives here and not in `plugins/public-contract.ts` because that module is
- * copied mechanically into the SDK and must stay import-free of host concepts;
- * this failure is a host build-configuration fact, not part of the plugin API.
- */
-export class MarketplaceBackendDisabledError extends Error {
-  constructor(public readonly packageType: "agent" | "skill") {
-    super(
-      `${packageType === "agent" ? "Agent" : "Skill"} marketplace install is unavailable: `
-        + "marketplace backend is disabled in this build.",
-    );
-    this.name = "MarketplaceBackendDisabledError";
-  }
-}
-
-/**
  * Producer for the install/uninstall failure payload on all three package
  * families — `plugins.*`, `agents.*` and `skills.*`. Sole constructor of the
  * shape, so the code/message pairing cannot drift between the IPC handlers, the
@@ -157,13 +127,11 @@ export function buildInstallFailureResult(
   const message = (error instanceof Error ? error.message : "") || fallbackMessage;
   const code = error instanceof IncompatibleAppVersionError
     ? INCOMPATIBLE_APP_VERSION_CODE
-    : error instanceof MarketplaceBackendDisabledError
-      ? MARKETPLACE_DISABLED_CODE
-      : error instanceof PluginRevokedError
-        ? PLUGIN_REVOKED_CODE
-        : error instanceof PluginNotAdmittedError
-          ? PLUGIN_NOT_ADMITTED_CODE
-          : undefined;
+    : error instanceof PluginRevokedError
+      ? PLUGIN_REVOKED_CODE
+      : error instanceof PluginNotAdmittedError
+        ? PLUGIN_NOT_ADMITTED_CODE
+        : undefined;
   return {
     slug,
     success: false,

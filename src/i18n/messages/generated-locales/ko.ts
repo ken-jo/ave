@@ -130,7 +130,6 @@ import { ko as ko_pluginAuthSection } from "../generated/pluginAuthSection.js";
 import { ko as ko_pluginConfigSchemaForm } from "../generated/pluginConfigSchemaForm.js";
 import { ko as ko_pluginConfigTab } from "../generated/pluginConfigTab.js";
 import { ko as ko_pluginGridButton } from "../generated/pluginGridButton.js";
-import { ko as ko_pluginInstallDialog } from "../generated/pluginInstallDialog.js";
 import { ko as ko_pluginPerfTab } from "../generated/pluginPerfTab.js";
 import { ko as ko_pluginUninstallDialog } from "../generated/pluginUninstallDialog.js";
 import { ko as ko_pluginUpdatesPill } from "../generated/pluginUpdatesPill.js";
@@ -175,7 +174,6 @@ import { ko as ko_unifiedSearchPanel } from "../generated/unifiedSearchPanel.js"
 import { ko as ko_usageDashboard } from "../generated/usageDashboard.js";
 import { ko as ko_useChatState } from "../generated/useChatState.js";
 import { ko as ko_useMemorySearch } from "../generated/useMemorySearch.js";
-import { ko as ko_usePluginMarketplace } from "../generated/usePluginMarketplace.js";
 import { ko as ko_useSettingsOrchestration } from "../generated/useSettingsOrchestration.js";
 import { ko as ko_useStarred } from "../generated/useStarred.js";
 import { ko as ko_useStatusBarInstall } from "../generated/useStatusBarInstall.js";
@@ -321,7 +319,6 @@ export const koMessages: Record<string, string> = {
   ...ko_pluginConfigSchemaForm,
   ...ko_pluginConfigTab,
   ...ko_pluginGridButton,
-  ...ko_pluginInstallDialog,
   ...ko_pluginPerfTab,
   ...ko_pluginUninstallDialog,
   ...ko_pluginUpdatesPill,
@@ -366,7 +363,6 @@ export const koMessages: Record<string, string> = {
   ...ko_usageDashboard,
   ...ko_useChatState,
   ...ko_useMemorySearch,
-  ...ko_usePluginMarketplace,
   ...ko_useSettingsOrchestration,
   ...ko_useStarred,
   ...ko_useStatusBarInstall,

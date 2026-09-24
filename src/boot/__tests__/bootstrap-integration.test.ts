@@ -27,9 +27,9 @@ import { createBootHostFixture } from "../../__tests__/support/host-runtime.js";
  * modules, every store/service class, MCP, ASRT sandbox). The OS sandbox gate
  * is held OFF (settings `osToolSandbox:false`, no `AVE_SANDBOX_ENABLED`) so the
  * boot takes the deterministic skip path and never touches @anthropic-ai/
- * sandbox-runtime. The marketplace fetcher resolves to the disabled variant
- * (no `cloudBaseUrl`), which is why mcp/agent/skill artifact stores are absent
- * from the graph — that is faithful current behavior for an unconfigured host.
+ * sandbox-runtime. The server marketplace fetcher is always the disabled
+ * variant (packages arrive through the git marketplace), which is why the
+ * mcp/agent/skill artifact stores are absent from the graph.
  *
  * COVERAGE CAVEAT: this locks the service-assembly SHAPE + ordering, not the
  * runtime behavior of each wired closure (those closures capture mocked deps
@@ -117,8 +117,7 @@ vi.mock("../services.js", () => ({
         get: vi.fn((key: string) => {
           switch (key) {
             case "marketplace":
-              return { cloudBaseUrl: undefined, cloudAllowPrivateNetwork: false,
-              };
+              return {};
             case "llm":
               return { provider: "openai", vendors: { openai: { model: "gpt", baseUrl: undefined } },
               };
@@ -221,13 +220,6 @@ vi.mock("../plugins.js", () => ({
   registerPluginNotifications: vi.fn(() => h.disposer()),
 }));
 
-vi.mock("../managed-marketplace.js", () => ({
-  runManagedBootstrap: vi.fn(async (input: unknown) => {
-    h.captured["managedBootstrapInput"] = input;
-    h.rec("managedPreStartSync");
-  }),
-}));
-
 // Captures the dep bag each uninstall-lifecycle entry point receives FROM
 // bootstrap(). These are the real closures boot.ts builds; the module behind
 // them is stubbed so boot stays hermetic, but the arguments are production's.
@@ -236,14 +228,6 @@ vi.mock("../../plugins/uninstall-lifecycle.js", () => ({
     h.captured["recoverCleanupDeps"] = deps;
     return [] as string[];
   }),
-  ensurePluginStateReadyForInstall: vi.fn(async (_pluginId: string, deps: unknown) => {
-    h.captured["ensureInstallReadyDeps"] = deps;
-  }),
-  removeQuiescentPluginResidualState: vi.fn(
-    async (_input: unknown, _commit: unknown, deps: unknown) => {
-      h.captured["delistedRemovalDeps"] = deps;
-    },
-  ),
 }));
 
 vi.mock("../steps/plugin-runtime.js", () => ({
@@ -332,7 +316,6 @@ vi.mock("../steps/post-boot.js", () => ({
       autoUpdaterStop: vi.fn(),
     };
   }),
-  wireUpdateCheck: vi.fn(),
   wireAnnouncementCheck: vi.fn(),
 }));
 
@@ -624,8 +607,7 @@ vi.mock("../../ipc/domains/permissions.js", () => ({
 }));
 
 import { bootstrap, type AppServices } from "../../boot.js";
-import { runManagedBootstrap } from "../managed-marketplace.js";
-import { wireAnnouncementCheck, wireUpdateCheck } from "../steps/post-boot.js";
+import { wireAnnouncementCheck } from "../steps/post-boot.js";
 
 /**
  * Node reports a listener leak through `process.emitWarning`, so the spy has to
@@ -736,7 +718,6 @@ describe("bootstrap() integration lock", () => {
         "pythonPath",
         "pythonRuntime",
         "refreshActiveLlmWildcard",
-        "refreshMarketplaceFetcherConfig",
         "refreshPluginNotifications",
         "refreshSandboxNetworkConfig",
         "registerPluginEventBridge",
@@ -792,8 +773,7 @@ describe("bootstrap() integration lock", () => {
     // reuses the loop's dep set.
     assertBefore("conversationLoop", "subAgentRunner");
     assertBefore("lifecycleBound", "retirementsRecovered");
-    assertBefore("retirementsRecovered", "managedPreStartSync");
-    assertBefore("managedPreStartSync", "startPlugins");
+    assertBefore("retirementsRecovered", "startPlugins");
   });
 
   // ── plugin-state cleanup dep bag ────────────────────────────────────────
@@ -807,9 +787,8 @@ describe("bootstrap() integration lock", () => {
   // silently emits nothing.
   //
   // boot.ts used to hand-spell the dep bag three times and pass `emitHostEvent`
-  // in exactly ONE of them. These assertions drive the REAL closures bootstrap()
-  // built — including the two it hands to runManagedBootstrap — and check the
-  // arguments that actually reach the lifecycle module.
+  // in exactly ONE of them. These assertions drive the REAL closure bootstrap()
+  // built and check the arguments that actually reach the lifecycle module.
   describe("plugin-state cleanup dep bag", () => {
     function bagFor(key: string): Record<string, unknown> {
       const bag = h.captured[key];
@@ -819,61 +798,6 @@ describe("bootstrap() integration lock", () => {
 
     it("gives boot-time cleanup recovery the host event emitter", () => {
       expect(typeof bagFor("recoverCleanupDeps")["emitHostEvent"]).toBe("function");
-    });
-
-    it("gives the managed pre-start install-readiness check the host event emitter", async () => {
-      const input = h.captured["managedBootstrapInput"] as {
-        ensurePluginStateReadyForInstall: (pluginId: string) => Promise<void>;
-      };
-      await input.ensurePluginStateReadyForInstall("managed-plugin");
-
-      expect(typeof bagFor("ensureInstallReadyDeps")["emitHostEvent"]).toBe("function");
-    });
-
-    it("gives delisted admin removal the host event emitter", async () => {
-      const input = h.captured["managedBootstrapInput"] as {
-        removeDelistedAdminInstall: (
-          removal: { pluginId: string; secretKeys: readonly string[] },
-          commit: () => Promise<void>,
-        ) => Promise<void>;
-      };
-      await input.removeDelistedAdminInstall(
-        { pluginId: "delisted-plugin", secretKeys: [] },
-        async () => {},
-      );
-
-      expect(typeof bagFor("delistedRemovalDeps")["emitHostEvent"]).toBe("function");
-    });
-
-    it("spells one identical cleanup service set at every boot entry point", async () => {
-      // The three bags are one value set, not three capabilities. Compare the
-      // KEYS: a fourth boot wiring that hand-spells a subset (which is exactly
-      // how emitHostEvent went missing) shows up here as a key-set mismatch.
-      const managed = h.captured["managedBootstrapInput"] as {
-        ensurePluginStateReadyForInstall: (pluginId: string) => Promise<void>;
-        removeDelistedAdminInstall: (
-          removal: { pluginId: string; secretKeys: readonly string[] },
-          commit: () => Promise<void>,
-        ) => Promise<void>;
-      };
-      await managed.ensurePluginStateReadyForInstall("managed-plugin");
-      await managed.removeDelistedAdminInstall(
-        { pluginId: "delisted-plugin", secretKeys: [] },
-        async () => {},
-      );
-
-      // `pluginMarketplace` is genuinely not part of the set: the delisted
-      // remover takes `PluginStateCleanupDeps`, which omits it by type. Every
-      // OTHER key is the shared set.
-      const keysOf = (key: string) =>
-        Object.keys(bagFor(key)).filter((k) => k !== "pluginMarketplace").sort();
-      const recover = keysOf("recoverCleanupDeps");
-      expect(keysOf("ensureInstallReadyDeps")).toEqual(recover);
-      expect(keysOf("delistedRemovalDeps")).toEqual(recover);
-      // And that shared set is the one the module needs to do its job.
-      expect(recover).toContain("emitHostEvent");
-      expect(recover).toContain("drainPluginInstallLockOperationsService");
-      expect(recover).toContain("clearAuthPartitionService");
     });
   });
 
@@ -892,8 +816,8 @@ describe("bootstrap() integration lock", () => {
     expect(services.pluginRuntime).toBeDefined();
     expect(services.toolRegistry).toBeDefined();
     expect(services.settingsService).toBeDefined();
-    // Unconfigured marketplace (no cloudBaseUrl) → the disabled fetcher path,
-    // so the signed-artifact stores are intentionally absent from the graph.
+    // The server fetcher is always disabled, so the signed-artifact stores
+    // are absent from the graph.
     expect(services.mcpArtifactStore).toBeUndefined();
     expect(services.agentArtifactStore).toBeUndefined();
     expect(services.skillArtifactStore).toBeUndefined();
@@ -964,9 +888,7 @@ describe("bootstrap() integration lock", () => {
     expect(h.captured["whitelistOnline"]).toBeUndefined();
     expect(h.captured["revocationOnline"]).toBeUndefined();
     expect(h.captured["admissionOnline"]).toBeUndefined();
-    expect(vi.mocked(runManagedBootstrap)).toHaveBeenCalled();
     expect(h.captured["discretionaryEgress"]).toBe(true);
-    expect(vi.mocked(wireUpdateCheck)).toHaveBeenCalled();
     expect(vi.mocked(wireAnnouncementCheck)).toHaveBeenCalled();
     expect(
       (h.captured["mainConversationDeps"] as Record<string, unknown>)["approvalSurface"],
@@ -978,9 +900,10 @@ describe("bootstrap() integration lock", () => {
  * A headless `--exec` boot opens no DISCRETIONARY service connection.
  *
  * The rule is one fact — the `launch` argument — and this suite is what proves
- * each consequence comes off it: the marketplace catalog is not read, the
- * admission warm-up is skipped, and neither the release check, the telemetry
- * uploaders nor the two marketplace polls are started. It also proves the two
+ * each consequence comes off it: the admission warm-up is skipped, and neither
+ * the release check, the telemetry uploaders nor the announcement poll are
+ * started. (The git marketplace's sync starts with the window, in main.ts, so
+ * a headless boot never reaches it.) It also proves the two
  * halves of the boundary that are NOT discretionary: the whitelist and
  * revocation documents are still refreshed, because one fails closed and the
  * other fails open, and plugins on disk still load. The interactive boot above
@@ -995,8 +918,6 @@ describe("bootstrap() headless launch opens no discretionary service connection"
     delete process.env["AVE_SANDBOX_ENABLED"];
     // The interactive boot above already called each of these, and recorded its
     // own ordering; the assertions here are about what THIS boot does.
-    vi.mocked(runManagedBootstrap).mockClear();
-    vi.mocked(wireUpdateCheck).mockClear();
     vi.mocked(wireAnnouncementCheck).mockClear();
     h.order.length = 0;
     (h.captured["shutdownHooks"] as string[]).length = 0;
@@ -1015,10 +936,6 @@ describe("bootstrap() headless launch opens no discretionary service connection"
     else process.env["AVE_SANDBOX_ENABLED"] = savedSandboxEnv;
   });
 
-  it("does not read the marketplace catalog at boot", () => {
-    expect(vi.mocked(runManagedBootstrap)).not.toHaveBeenCalled();
-  });
-
   it("skips the admission warm-up but still refreshes the plugin trust chain", () => {
     // Admission is consulted at install and re-checked there, so warming it at
     // boot is only latency. The whitelist fails closed and the revocation list
@@ -1033,8 +950,7 @@ describe("bootstrap() headless launch opens no discretionary service connection"
     expect(h.captured["discretionaryEgress"]).toBe(false);
   });
 
-  it("schedules neither marketplace poll", () => {
-    expect(vi.mocked(wireUpdateCheck)).not.toHaveBeenCalled();
+  it("does not schedule the announcement poll", () => {
     expect(vi.mocked(wireAnnouncementCheck)).not.toHaveBeenCalled();
   });
 

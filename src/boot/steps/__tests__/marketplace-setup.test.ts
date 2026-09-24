@@ -2,12 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { BootContext } from "../../context.js";
 
 const state = vi.hoisted(() => {
-  const canonicalAppVersion = "0.5.10";
   return {
-    electronAppVersion: "0.0",
-    canonicalAppVersion,
-    fetcherConfigs: [] as Array<Record<string, unknown>>,
-    getAveAppVersion: vi.fn(() => canonicalAppVersion),
+    disabledFetchers: 0,
     refreshActiveLlmWildcard: vi.fn(),
     disposeRefreshActiveLlmWildcard: vi.fn(),
     refreshDeps: null as {
@@ -19,27 +15,17 @@ const state = vi.hoisted(() => {
 
 vi.mock("electron", () => ({
   app: {
-    getVersion: vi.fn(() => state.electronAppVersion),
+    getVersion: vi.fn(() => "0.0"),
     getPath: vi.fn(() => "/tmp/ave-marketplace-setup-test"),
   },
 }));
 
-vi.mock("../../../shared/app-version.js", () => ({
-  getAveAppVersion: state.getAveAppVersion,
-}));
-
-vi.mock("../../../plugins/cloud-marketplace-fetcher.js", () => ({
-  CloudMarketplaceFetcher: class {
-    constructor(config: unknown) {
-      state.fetcherConfigs.push(config as Record<string, unknown>);
-    }
-
-    updateAllowPrivateNetwork(): void {}
-  },
-}));
-
 vi.mock("../../../plugins/marketplace.js", () => ({
-  DisabledMarketplaceFetcher: class {},
+  DisabledMarketplaceFetcher: class {
+    constructor() {
+      state.disabledFetchers += 1;
+    }
+  },
   PluginMarketplaceService: class {},
 }));
 
@@ -74,12 +60,7 @@ function makeContext(
     settingsService: {
       get: vi.fn((key: string) => {
         if (key === "llm") return { provider: "openai", activeChatRuntime };
-        if (key === "marketplace") {
-          return {
-            cloudBaseUrl: "https://marketplace.example.com",
-            cloudAllowPrivateNetwork: false,
-          };
-        }
+        if (key === "marketplace") return {};
         return {};
       }),
       getSecret: vi.fn(() => undefined),
@@ -92,28 +73,20 @@ function makeContext(
   } as unknown as BootContext;
 }
 
-describe("setupMarketplace app-version resolver wiring", () => {
+describe("setupMarketplace wiring", () => {
   beforeEach(() => {
-    state.fetcherConfigs.length = 0;
-    state.getAveAppVersion.mockClear();
+    state.disabledFetchers = 0;
     state.refreshActiveLlmWildcard.mockClear();
     state.disposeRefreshActiveLlmWildcard.mockClear();
     state.refreshDeps = null;
   });
 
-  it("passes the canonical Ave app version to CloudMarketplaceFetcher", async () => {
+  it("builds the plugin store over the disabled fetcher: packages arrive through the git marketplace", async () => {
     const ctx = makeContext();
 
     await setupMarketplace(ctx);
 
-    expect(state.fetcherConfigs).toEqual([
-      expect.objectContaining({
-        baseUrl: "https://marketplace.example.com",
-        appVersion: state.canonicalAppVersion,
-        allowPrivateNetwork: false,
-      }),
-    ]);
-    expect(state.getAveAppVersion).toHaveBeenCalledOnce();
+    expect(state.disabledFetchers).toBe(1);
     expect(state.refreshActiveLlmWildcard).toHaveBeenCalledOnce();
     expect(ctx.disposeRefreshActiveLlmWildcard).toBe(state.disposeRefreshActiveLlmWildcard);
   });

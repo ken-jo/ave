@@ -157,7 +157,7 @@ async function setup(options: { appWindows?: ReturnType<typeof makeWindow>[] } =
       })),
     },
     settingsService: {
-      get: vi.fn(() => ({ backend: "real-cloud", cloudBaseUrl: "https://marketplace.example" })),
+      get: vi.fn(() => ({})),
       deletePluginConfig: vi.fn(async () => undefined),
       deletePluginSecrets: vi.fn(async () => 0),
       setSecret: vi.fn(async () => undefined),
@@ -238,20 +238,6 @@ beforeEach(() => {
 });
 
 describe("plugins IPC lifecycle broadcast", () => {
-  it("live-activates a true missing managed plugin before retry returns success", async () => {
-    const { deps } = await setup();
-
-    await expect(invoke("ave:bootstrap:retry")).resolves.toEqual({ ok: true });
-
-    expect(deps.pluginMarketplace.ensureManagedInstalled).toHaveBeenCalledWith({
-      mode: "repair-missing-only",
-      ensurePluginStateReadyForInstall: expect.any(Function),
-      activatePreparedArtifact: expect.any(Function),
-    });
-    expect(deps.pluginRuntime.activatePreparedArtifact).toHaveBeenCalledOnce();
-    expect(deps.pluginRuntime.listPluginIds()).toContain("meeting");
-  });
-
   it("serves the recorded bootstrap status to a renderer that mounted after boot", async () => {
     await setup();
     // Boot's own emit: on a cold boot there is no window listening yet, which
@@ -277,195 +263,6 @@ describe("plugins IPC lifecycle broadcast", () => {
     if (!handler) throw new Error("No handler registered for: ave:bootstrap:status:get");
     expect(await handler(untrustedEvent())).toBeNull();
     expect(deps.auditLogger.log).toHaveBeenCalled();
-  });
-
-  it("broadcasts marketplace install progress and result to every app window", async () => {
-    const { appWindows } = await setup();
-
-    await invoke("ave:plugins:install", "agent-hub");
-
-    for (const win of appWindows) {
-      expect(win.webContents.send).toHaveBeenCalledWith(
-        "ave:plugins:install-progress",
-        { slug: "agent-hub", phase: "installing" },
-      );
-      expect(win.webContents.send).toHaveBeenCalledWith(
-        "ave:plugins:install-progress",
-        { slug: "agent-hub", phase: "registering" },
-      );
-      expect(win.webContents.send).toHaveBeenCalledWith(
-        "ave:plugins:install-result",
-        { slug: "agent-hub", success: true },
-      );
-    }
-  });
-
-  it("uses the requested marketplace slug for every install lifecycle event when it resolves to a different plugin id", async () => {
-    const { deps, appWindows, runActivation } = await setup();
-    deps.pluginMarketplace.install.mockImplementationOnce(async (...args: unknown[]) => {
-      emitRegisteringProgress(args);
-      await runActivation(args, "meeting");
-      return { pluginId: "meeting", installed: true };
-    });
-
-    await invoke("ave:plugins:install", "ave-plugin-meeting");
-
-    expect(deps.pluginRuntime.addPlugin).toHaveBeenCalledWith("meeting");
-    for (const win of appWindows) {
-      expect(win.webContents.send).toHaveBeenCalledWith(
-        "ave:plugins:install-progress",
-        { slug: "ave-plugin-meeting", phase: "installing" },
-      );
-      expect(win.webContents.send).toHaveBeenCalledWith(
-        "ave:plugins:install-progress",
-        { slug: "ave-plugin-meeting", phase: "registering" },
-      );
-      expect(win.webContents.send).toHaveBeenCalledWith(
-        "ave:plugins:install-result",
-        { slug: "ave-plugin-meeting", success: true },
-      );
-      expect(win.webContents.send).not.toHaveBeenCalledWith(
-        "ave:plugins:install-progress",
-        expect.objectContaining({ slug: "meeting" }),
-      );
-      expect(win.webContents.send).not.toHaveBeenCalledWith(
-        "ave:plugins:install-result",
-        expect.objectContaining({ slug: "meeting" }),
-      );
-    }
-  });
-
-  it("keeps the canonical plugin generation active when an alias candidate fails before commit", async () => {
-    const { deps, appWindows, runActivation } = await setup();
-    deps.pluginRuntime.listPluginIds.mockReturnValue(["meeting"]);
-    deps.pluginMarketplace.install.mockImplementationOnce(async (...args: unknown[]) => {
-      emitRegisteringProgress(args);
-      await runActivation(args, "meeting");
-      return { pluginId: "meeting", installed: true };
-    });
-    deps.pluginRuntime.addPlugin.mockRejectedValueOnce(new Error("restart failed"));
-
-    await expect(invoke("ave:plugins:install", "ave-plugin-meeting")).rejects.toThrow("restart failed");
-
-    expect(deps.pluginRuntime.removePlugin).not.toHaveBeenCalled();
-    expect(deps.pluginMarketplace.rollbackPlugin).not.toHaveBeenCalled();
-    expect(deps.pluginMarketplace.uninstall).not.toHaveBeenCalledWith("meeting");
-    for (const win of appWindows) {
-      expect(win.webContents.send).toHaveBeenCalledWith(
-        "ave:plugins:install-progress",
-        { slug: "ave-plugin-meeting", phase: "restarting" },
-      );
-      expect(win.webContents.send).toHaveBeenCalledWith(
-        "ave:plugins:install-result",
-        { slug: "ave-plugin-meeting", success: false, error: "restart failed" },
-      );
-    }
-  });
-
-  it("broadcasts marketplace install failure with the requested slug when install throws before a canonical plugin id exists", async () => {
-    const { deps, appWindows } = await setup();
-    deps.pluginMarketplace.install.mockRejectedValueOnce(new Error("download failed"));
-
-    await expect(invoke("ave:plugins:install", "ave-plugin-meeting")).rejects.toThrow("download failed");
-
-    expect(deps.pluginRuntime.addPlugin).not.toHaveBeenCalled();
-    for (const win of appWindows) {
-      expect(win.webContents.send).toHaveBeenCalledWith(
-        "ave:plugins:install-progress",
-        { slug: "ave-plugin-meeting", phase: "installing" },
-      );
-      expect(win.webContents.send).toHaveBeenCalledWith(
-        "ave:plugins:install-result",
-        { slug: "ave-plugin-meeting", success: false, error: "download failed" },
-      );
-    }
-  });
-
-  it("broadcasts marketplace candidate activation failure without durable compensation", async () => {
-    const { deps, appWindows } = await setup();
-    deps.pluginRuntime.addPlugin.mockRejectedValueOnce(new Error("runtime failed"));
-
-    await expect(invoke("ave:plugins:install", "agent-hub")).rejects.toThrow("runtime failed");
-
-    expect(deps.pluginMarketplace.uninstall).not.toHaveBeenCalled();
-    expect(deps.pluginMarketplace.rollbackPlugin).not.toHaveBeenCalled();
-    for (const win of appWindows) {
-      expect(win.webContents.send).toHaveBeenCalledWith(
-        "ave:plugins:install-result",
-        { slug: "agent-hub", success: false, error: "runtime failed" },
-      );
-    }
-  });
-
-  it("delays marketplace install success until async dependency preparation finishes", async () => {
-    const { deps, appWindows } = await setup();
-    let resolveReady!: () => void;
-    const readyPromise = new Promise<void>((resolve) => {
-      resolveReady = resolve;
-    });
-    deps.pluginRuntime.addPlugin.mockResolvedValueOnce("preparing");
-    deps.pluginRuntime.waitForPluginReady.mockReturnValueOnce(readyPromise);
-
-    const installPromise = invoke("ave:plugins:install", "agent-hub");
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    for (const win of appWindows) {
-      expect(win.webContents.send).toHaveBeenCalledWith(
-        "ave:plugins:install-progress",
-        { slug: "agent-hub", phase: "preparing" },
-      );
-      expect(win.webContents.send).not.toHaveBeenCalledWith(
-        "ave:plugins:install-result",
-        { slug: "agent-hub", success: true },
-      );
-    }
-
-    resolveReady();
-    await expect(installPromise).resolves.toMatchObject({
-      pluginId: "agent-hub",
-      installed: true,
-    });
-
-    for (const win of appWindows) {
-      expect(win.webContents.send).toHaveBeenCalledWith(
-        "ave:plugins:install-result",
-        { slug: "agent-hub", success: true },
-      );
-    }
-  });
-
-  it("preserves marketplace durable state when async candidate preparation fails", async () => {
-    const { deps, appWindows } = await setup();
-    deps.pluginRuntime.addPlugin.mockResolvedValueOnce("preparing");
-    deps.pluginRuntime.waitForPluginReady.mockRejectedValueOnce(new Error("prepare failed"));
-
-    await expect(invoke("ave:plugins:install", "agent-hub")).rejects.toThrow("prepare failed");
-
-    expect(deps.pluginMarketplace.uninstall).not.toHaveBeenCalled();
-    for (const win of appWindows) {
-      expect(win.webContents.send).toHaveBeenCalledWith(
-        "ave:plugins:install-result",
-        { slug: "agent-hub", success: false, error: "prepare failed" },
-      );
-    }
-  });
-
-  it("keeps the loaded plugin generation active while a marketplace candidate is rejected", async () => {
-    const { deps, appWindows } = await setup();
-    deps.pluginRuntime.listPluginIds.mockReturnValue(["agent-hub"]);
-    deps.pluginRuntime.addPlugin.mockRejectedValueOnce(new Error("prepare failed"));
-
-    await expect(invoke("ave:plugins:install", "agent-hub")).rejects.toThrow("prepare failed");
-
-    expect(deps.pluginMarketplace.rollbackPlugin).not.toHaveBeenCalled();
-    expect(deps.pluginRuntime.removePlugin).not.toHaveBeenCalled();
-    expect(deps.pluginMarketplace.uninstall).not.toHaveBeenCalledWith("agent-hub");
-    for (const win of appWindows) {
-      expect(win.webContents.send).toHaveBeenCalledWith(
-        "ave:plugins:install-result",
-        { slug: "agent-hub", success: false, error: "prepare failed" },
-      );
-    }
   });
 
   it("rejects endpoint URLs saved into API-key secret fields", async () => {
@@ -690,34 +487,6 @@ describe("plugins IPC lifecycle broadcast", () => {
     }
   });
 
-  it("candidate start failure does not run legacy remove/uninstall compensation", async () => {
-    const { deps } = await setup();
-    deps.pluginRuntime.addPlugin.mockRejectedValueOnce(new Error("start exception"));
-
-    await expect(invoke("ave:plugins:install", "agent-hub")).rejects.toThrow("start exception");
-
-    expect(deps.pluginRuntime.removePlugin).not.toHaveBeenCalled();
-    expect(deps.pluginMarketplace.uninstall).not.toHaveBeenCalled();
-  });
-
-  it("routes marketplace rollback through the atomic runtime activation seam", async () => {
-    const { deps, runActivation } = await setup();
-    deps.pluginMarketplace.rollbackPlugin.mockImplementationOnce(async (...args: unknown[]) => {
-      await runActivation(args, "agent-hub");
-      return { pluginId: "agent-hub", rolledBackTo: "0.0.1" };
-    });
-
-    await expect(invoke("ave:plugins:rollback", "agent-hub")).resolves.toEqual({
-      pluginId: "agent-hub",
-      rolledBackTo: "0.0.1",
-    });
-    expect(deps.pluginMarketplace.rollbackPlugin).toHaveBeenCalledWith(
-      "agent-hub",
-      { activatePreparedArtifact: expect.any(Function) },
-    );
-    expect(deps.pluginRuntime.activatePreparedArtifact).toHaveBeenCalledOnce();
-  });
-
   it("broadcasts idempotent uninstall success when marketplace entry is already gone", async () => {
     const { deps, appWindows } = await setup();
     deps.pluginMarketplace.uninstall.mockRejectedValueOnce(new Error("Plugin not installed: agent-hub"));
@@ -830,10 +599,10 @@ describe("plugins IPC lifecycle broadcast", () => {
     const destroyedWindow = makeWindow({ destroyed: true });
     await setup({ appWindows: [liveWindow, destroyedWindow] });
 
-    await invoke("ave:plugins:install", "agent-hub");
+    await invoke("ave:plugins:uninstall", "agent-hub");
 
     expect(liveWindow.webContents.send).toHaveBeenCalledWith(
-      "ave:plugins:install-result",
+      "ave:plugins:uninstall-result",
       { slug: "agent-hub", success: true },
     );
     expect(destroyedWindow.webContents.send).not.toHaveBeenCalled();

@@ -166,7 +166,6 @@ export class BootContext {
   // ── Marketplace (setupMarketplace) ─────────────────────────────────────────
   declare marketplaceFetcher: MarketplaceFetcher;
   declare pluginMarketplace: PluginMarketplaceService;
-  declare refreshMarketplaceFetcherConfig: () => void;
   declare refreshActiveLlmWildcard: () => void;
   /** Cancels the active-LLM wildcard restart debounce during host shutdown. */
   declare disposeRefreshActiveLlmWildcard: () => void;
@@ -322,7 +321,6 @@ const BOOT_CONTEXT_FIELDS = [
   "idleScheduler",
   "marketplaceFetcher",
   "pluginMarketplace",
-  "refreshMarketplaceFetcherConfig",
   "refreshActiveLlmWildcard",
   "disposeRefreshActiveLlmWildcard",
   "refreshSandboxNetworkConfig",

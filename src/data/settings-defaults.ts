@@ -69,9 +69,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
 
     // No fallback to a local catalog file — the only way to populate the
     // host's plugin layout is through the marketplace API.
-    backend: "real-cloud",
-    cloudBaseUrl: "https://marketplace.former-site.invalid",
-    cloudAllowPrivateNetwork: false,
     installedProviderIds: [],
     installedProviderPresets: [],
     installedThemeBundleIds: [],

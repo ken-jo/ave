@@ -39,7 +39,7 @@ import type {
 import type { ChatSendInputOrigin } from "../../shared/chat-origin.js";
 import type { TailnetSharingOwnerApi } from "../../shared/tailnet-sharing.js";
 import type { TailnetObserverConfigApi } from "../../shared/tailnet-observer-config.js";
-import type { GitMarketplaceApi } from "../../shared/git-marketplace.js";
+import type { GitMarketplaceApi, PackageUpdateView } from "../../shared/git-marketplace.js";
 import type { GitRuntimeApi } from "../../shared/git-runtime.js";
 import type { InstalledContentApi } from "../../shared/installed-content.js";
 import type { TelegramConnectionOwnerApi } from "../../shared/telegram-connection.js";
@@ -67,7 +67,6 @@ import type {
 import type { SessionTaskItem } from "../../shared/session-tasks.js";
 import type { SessionGoal } from "../../shared/session-goal.js";
 import type { MarketplaceAnnouncementPayload } from "../../shared/marketplace-announcements.js";
-import type { NetworkAccessAcknowledgement } from "../../shared/network-access.js";
 import type { PluginInstallFailureKind } from "../../shared/plugin-install-failure.js";
 import type { PluginOnboardingSpec } from "../../plugins/types.js";
 import type {
@@ -388,26 +387,8 @@ type LongTermMemoryConsolidationResult =
   | { ok: false; error: string };
 
 export type PluginMarketplaceActionResult =
-  | {
-      ok: true;
-      pluginId: string;
-      installed?: true;
-      uninstalled?: true;
-      rolledBackTo?: string;
-      version?: string;
-      /**
-       * The install replaced nothing — the marketplace carries the same
-       * version, receipt, and artifact already on disk. For a repair attempt
-       * this is the difference between "reinstalled" and "there was nothing to
-       * reinstall but the broken bundle".
-       */
-      unchanged?: true;
-    }
+  | { ok: true; pluginId: string; uninstalled: true }
   | { ok: false; error: string; message?: string };
-
-export type PluginMarketplaceInstallOptions = {
-  networkAccessAcknowledgement?: NetworkAccessAcknowledgement;
-};
 
 export type PluginMarketplaceUninstallOptions = {
   doctorCleanup?: {
@@ -613,9 +594,6 @@ export type AveApi = {
   setWebApiKey: (provider: string, k: string) => Promise<{ ok: true }>;
   hasWebApiKey: (provider: string) => Promise<boolean>;
   deleteWebApiKey: (provider: string) => Promise<{ ok: true }>;
-  setMarketplaceApiKey: (k: string) => Promise<{ ok: true }>;
-  hasMarketplaceApiKey: () => Promise<boolean>;
-  deleteMarketplaceApiKey: () => Promise<{ ok: true }>;
   /**
    * Interactive PTY terminal (#1444, workspace rail). `spawn` is idempotent per
    * tab (a remount replays the scrollback rather than starting a fresh shell);
@@ -740,22 +718,6 @@ export type AveApi = {
     protocol?: string;
     message?: string;
   }>;
-  /** MCP catalog (filtered to plugin_type === "mcp"). */
-  listMcpCatalog: () => Promise<Array<{
-    id: string;
-    name: string;
-    description: string;
-    version?: string;
-    publisher?: string;
-    pluginType?: MarketplacePackageType;
-    installed: boolean;
-    enabled: boolean;
-    isManaged?: boolean;
-  }>>;
-  installMcpFromMarketplace: (slug: string) => Promise<
-    | { ok: true; slug: string; installDir: string; connected: boolean; warning?: string; needsCredential: boolean; authMode: "none" | "api-key" | "sso" | "oauth" }
-    | { ok: false; error: string; message: string }
-  >;
   /** Claude Desktop config import. */
   previewClaudeDesktopMcpImport: (raw: string) => Promise<{
     entries: Array<{
@@ -969,26 +931,9 @@ export type AveApi = {
     { ok: true } | { ok: false; error: string }
   >;
   homeDocsDiscardMerged: () => Promise<{ ok: true }>;
-  listMarketplacePlugins: () => Promise<MarketplaceItem[]>;
   memoryRefreshLongTerm: () => Promise<LongTermMemoryConsolidationResult>;
   listAgentProfiles: () => Promise<{ agents: AssistantAgentSummary[] }>;
   listSkills: () => Promise<{ skills: AssistantSkillSummary[] }>;
-  installAgentFromMarketplace: (slug: string) => Promise<
-    | { ok: true; slug: string; agentId: string; version: string }
-    | { ok: false; error: string; message: string }
-  >;
-  uninstallAgentPackage: (slug: string) => Promise<
-    | { ok: true; slug: string; agentId: string }
-    | { ok: false; error: string; message: string }
-  >;
-  installSkillFromMarketplace: (slug: string) => Promise<
-    | { ok: true; slug: string; skillId: string; version: string }
-    | { ok: false; error: string; message: string }
-  >;
-  uninstallSkillPackage: (slug: string) => Promise<
-    | { ok: true; slug: string; skillId: string }
-    | { ok: false; error: string; message: string }
-  >;
   listPluginUiExtensions: () => Promise<PluginUiExtension[]>;
   readPluginUiModule: (pluginId: string, viewId: string) => Promise<string>;
   callPluginMethod: (
@@ -1258,13 +1203,8 @@ export type AveApi = {
   onWorkBoardRunFailed: (
     handler: (payload: { itemId: number; reason: string; at: string }) => void,
   ) => () => void;
-  onMarketplaceUpdatesAvailable: (h: (updates: Array<{
-    pluginId: string;
-    pluginName?: string;
-    installedVersion: string;
-    latestVersion: string;
-    networkAccess?: MarketplaceItem["networkAccess"];
-  }>) => void) => () => void;
+  /** Installed packages whose bound source offers a newer version (design §7.3). */
+  onMarketplaceUpdatesAvailable: (h: (updates: PackageUpdateView[]) => void) => () => void;
   /**
    * Marketplace announcement stream — the host pushes the currently-active,
    * not-yet-dismissed announcements whenever the announcement poller runs.
@@ -1307,9 +1247,7 @@ export type AveApi = {
   onPluginEnabledChanged?: (h: (payload: { pluginId: string; enabled: boolean }) => void) => () => void;
   /** Fires after a loaded plugin runtime is restarted/reloaded without a full app restart. */
   onPluginRuntimeUpdated?: (h: (payload: { pluginId: string }) => void) => () => void;
-  onAgentInstallResult: (h: (payload: AgentInstallResultPayload) => void) => () => void;
   onAgentUninstallResult: (h: (payload: AgentInstallResultPayload) => void) => () => void;
-  onSkillInstallResult: (h: (payload: SkillInstallResultPayload) => void) => () => void;
   onSkillUninstallResult: (h: (payload: SkillInstallResultPayload) => void) => () => void;
   /**
    * Dev-only: open a folder picker and install a local plugin directory.
@@ -1325,17 +1263,8 @@ export type AveApi = {
     | { slug: string; phase: "installing" | "restarting" | "verifying" | "registering" | "preparing" }
     | { slug: string; phase: "downloading"; bytesDownloaded: number; bytesTotal: number | null }
   ) => void) => () => void;
-  onAgentInstallProgress: (h: (payload:
-    | { slug: string; phase: "installing" | "restarting" | "verifying" | "registering" }
-    | { slug: string; phase: "downloading"; bytesDownloaded: number; bytesTotal: number | null }
-  ) => void) => () => void;
-  onSkillInstallProgress: (h: (payload:
-    | { slug: string; phase: "installing" | "restarting" | "verifying" | "registering" }
-    | { slug: string; phase: "downloading"; bytesDownloaded: number; bytesTotal: number | null }
-  ) => void) => () => void;
   getRuntimeCounts: () => Promise<{ tools: number; plugins: number; mcps: number }>;
   getRuntimeEnv: () => Promise<{ platform: string; hostname: string; user: string }>;
-  pingMarketplace: () => Promise<{ configured: boolean; online: boolean }>;
   pingAiProvider: () => Promise<AiProviderPingIpcResult>;
 
 
@@ -1778,21 +1707,12 @@ export type AvePluginsApi = {
   cards: () => Promise<PluginCardSummary[]>;
 };
 
+/** Plugin removal only: packages install through the git marketplace (`gitMarketplace`, design §13). */
 export type AveHostMarketplaceApi = {
-  installMarketplacePlugin: (
-    id: string,
-    expectedVersion?: string,
-    options?: PluginMarketplaceInstallOptions,
-  ) => Promise<PluginMarketplaceActionResult>;
   uninstallMarketplacePlugin: (
     id: string,
     options?: PluginMarketplaceUninstallOptions,
   ) => Promise<PluginMarketplaceActionResult>;
-  rollbackMarketplacePlugin?: (id: string) => Promise<PluginMarketplaceActionResult>;
-  installMarketplaceAgent?: (slug: string) => Promise<PluginMarketplaceActionResult>;
-  uninstallMarketplaceAgent?: (slug: string) => Promise<PluginMarketplaceActionResult>;
-  installMarketplaceSkill?: (slug: string) => Promise<PluginMarketplaceActionResult>;
-  uninstallMarketplaceSkill?: (slug: string) => Promise<PluginMarketplaceActionResult>;
 };
 
 export type AveHostApi = {
@@ -2144,8 +2064,6 @@ declare global {
         isE2E: boolean;
         enableDevConsole: boolean;
         debugStream: boolean;
-        /** Source runs only: show the git marketplace (`AVE_GIT_MARKETPLACE=1`) until blueprint P6. */
-        gitMarketplace: boolean;
       };
     };
   }

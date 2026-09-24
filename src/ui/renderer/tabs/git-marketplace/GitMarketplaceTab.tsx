@@ -2,8 +2,7 @@
  * Settings → Marketplace as the in-app store of the git marketplace
  * (design §15): browse every shown source's packages by kind, open a
  * package's sheet to review and install it, manage the sources, and install
- * without a marketplace. Shown when `window.ave.env.gitMarketplace` is on,
- * until blueprint P6 makes it the only marketplace.
+ * without a marketplace.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "../../../../components/ui/badge.js";
@@ -23,6 +22,7 @@ import type {
   SourcePreviewView,
   SourceView,
 } from "../../../../shared/git-marketplace.js";
+import { EnvForcedNotice, useEnvForcedSettings } from "../../components/EnvForcedNotice.js";
 import { SettingsPageHeader, SettingsSection } from "../../components/PageShell.js";
 import { isIpcErrorResult, type AveApi } from "../../types.js";
 import { AddSourceDialog } from "./AddSourceDialog.js";
@@ -31,6 +31,7 @@ import { GitRuntimeCard } from "./GitRuntimeCard.js";
 import { KIND_ORDER, failureText, kindLabel, originLabel, relativeTime, stateLabel } from "./labels.js";
 import { PackageSheet } from "./PackageSheet.js";
 import { SourcesView } from "./SourcesView.js";
+import { onUpdateReview, takeUpdateReview } from "./update-review-request.js";
 
 type View = "browse" | "sources" | "direct";
 
@@ -119,6 +120,9 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }
   const [notice, setNotice] = useState<BootInstallNoticeView | null>(null);
   const [updateCheckEnabled, setUpdateCheckEnabled] = useState(true);
   const [offlineCacheEnabled, setOfflineCacheEnabled] = useState(true);
+  // A switch flipped before the saved value arrives would write a guess.
+  const [flagsLoaded, setFlagsLoaded] = useState(false);
+  const envForcedPaths = useEnvForcedSettings(api);
   const syncedOnce = useRef(false);
 
   useEffect(() => setKind(initialKind), [initialKind]);
@@ -199,6 +203,23 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }
     return market.onDeepLink(take);
   }, [market]);
 
+  // The update pill asks for a review: an update installs only through it (design §15.6).
+  useEffect(() => {
+    const take = () => {
+      const request = takeUpdateReview();
+      if (!request) return;
+      setView("browse");
+      if (request.kind === "package") {
+        setSheet({ key: request.key, mode: "update" });
+      } else {
+        setSheet(null);
+        setInstalledOnly(true);
+      }
+    };
+    take();
+    return onUpdateReview(take);
+  }, []);
+
   // What the boot-install step did, until dismissed (design §15.1).
   useEffect(() => {
     const read = () => void market.bootInstallNotice().then((result) => setNotice(result.ok ? result.value : null));
@@ -230,6 +251,7 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }
     void api.getSettings().then((settings) => {
       setUpdateCheckEnabled(settings.marketplace?.updateCheckEnabled !== false);
       setOfflineCacheEnabled(settings.marketplace?.offlineCacheEnabled !== false);
+      setFlagsLoaded(true);
     });
   }, [api]);
 
@@ -262,7 +284,7 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }
       <SettingsPageHeader title={t("gitMarketplace.title")} description={t("gitMarketplace.description")} />
 
       <SettingsSection
-        data-settings-section="git-marketplace-browse"
+        data-settings-section="marketplace-inventory"
         title={view === "sources" ? t("gitMarketplace.sources.title") : view === "direct" ? t("gitMarketplace.direct.title") : undefined}
       >
         <div className="flex flex-wrap items-center gap-2">
@@ -436,30 +458,50 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }
         )}
       </SettingsSection>
 
-      <SettingsSection data-settings-section="git-marketplace-maintenance" title={t("gitMarketplace.maintenance.title")} description={t("gitMarketplace.maintenance.description")}>
+      <SettingsSection data-settings-section="marketplace-maintenance" title={t("gitMarketplace.maintenance.title")} description={t("gitMarketplace.maintenance.description")}>
         <GitRuntimeCard api={api} />
         <div className="mt-4 flex items-center justify-between gap-4">
           <span className="text-sm font-medium">{t("gitMarketplace.maintenance.updateCheck")}</span>
           <Switch
             checked={updateCheckEnabled}
+            disabled={!flagsLoaded}
             aria-label={t("gitMarketplace.maintenance.updateCheck")}
+            data-testid="git-marketplace:update-check"
             onCheckedChange={(checked) => {
               setUpdateCheckEnabled(checked);
               void persistFlag({ updateCheckEnabled: checked });
             }}
           />
         </div>
+        <p className="mt-1 text-xs text-muted-foreground" data-testid="git-marketplace:update-check:help">{t("gitMarketplace.maintenance.updateCheckHelp")}</p>
+        <EnvForcedNotice
+          settingsPath="marketplace.updateCheckEnabled"
+          forcedPaths={envForcedPaths}
+          messageKey="gitMarketplace.maintenance.updateCheckEnvForced"
+          testId="git-marketplace:update-check:forced"
+          className="mt-1"
+        />
         <div className="mt-3 flex items-center justify-between gap-4">
           <span className="text-sm font-medium">{t("gitMarketplace.maintenance.offlineCache")}</span>
           <Switch
             checked={offlineCacheEnabled}
+            disabled={!flagsLoaded}
             aria-label={t("gitMarketplace.maintenance.offlineCache")}
+            data-testid="git-marketplace:offline-cache"
             onCheckedChange={(checked) => {
               setOfflineCacheEnabled(checked);
               void persistFlag({ offlineCacheEnabled: checked });
             }}
           />
         </div>
+        <p className="mt-1 text-xs text-muted-foreground" data-testid="git-marketplace:offline-cache:help">{t("gitMarketplace.maintenance.offlineCacheHelp")}</p>
+        <EnvForcedNotice
+          settingsPath="marketplace.offlineCacheEnabled"
+          forcedPaths={envForcedPaths}
+          messageKey="gitMarketplace.maintenance.offlineCacheEnvForced"
+          testId="git-marketplace:offline-cache:forced"
+          className="mt-1"
+        />
       </SettingsSection>
 
       <AddSourceDialog

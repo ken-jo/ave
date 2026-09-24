@@ -16,8 +16,6 @@ interface Options {
   ) => string;
 }
 
-type InstallTargetKind = "plugin" | "agent" | "skill";
-
 type InstallProgressPayload =
   | { slug: string; phase: "installing" | "restarting" | "verifying" | "registering" | "preparing" }
   | { slug: string; phase: "downloading"; bytesDownloaded: number; bytesTotal: number | null };
@@ -33,20 +31,16 @@ function targetLabel(slug: string, label: string): string {
   return label ? `${slug} ${label}` : slug;
 }
 
-function installToastId(kind: InstallTargetKind, slug: string): string {
-  return `install:${kind}:${slug}`;
+function installToastId(slug: string): string {
+  return `install:plugin:${slug}`;
 }
 
 export function useStatusBarInstall({ api, pushToast, upsertToast }: Options): void {
   useEffect(() => {
     const unsubs: Array<() => void> = [];
-    const handleProgress = (
-      payload: InstallProgressPayload,
-      label = "",
-      kind: InstallTargetKind = "plugin",
-    ) => {
+    const handleProgress = (payload: InstallProgressPayload) => {
       const safeSlug = sanitizeToastField(payload.slug, 64);
-      const target = targetLabel(safeSlug, label);
+      const target = safeSlug;
       let message: string;
       if (payload.phase === "downloading") {
         const { bytesDownloaded, bytesTotal } = payload;
@@ -69,22 +63,18 @@ export function useStatusBarInstall({ api, pushToast, upsertToast }: Options): v
       } else {
         message = t("useStatusBarInstall.installing", { target });
       }
-      upsertToast(installToastId(kind, safeSlug), { severity: "info", message, ttlMs: 8000 });
+      upsertToast(installToastId(safeSlug), { severity: "info", message, ttlMs: 8000 });
     };
-    const handleInstallResult = (
-      { slug, success, error, message }: InstallResultPayload,
-      label = "",
-      kind: InstallTargetKind = "plugin",
-    ) => {
+    const handleInstallResult = ({ slug, success, error, message }: InstallResultPayload) => {
       const safeSlug = sanitizeToastField(slug, 64);
-      const target = targetLabel(safeSlug, label);
+      const target = safeSlug;
       if (success) {
-        upsertToast(installToastId(kind, safeSlug), {
+        upsertToast(installToastId(safeSlug), {
           severity: "success",
           message: t("useStatusBarInstall.installSuccess", { target }),
         });
       } else {
-        upsertToast(installToastId(kind, safeSlug), {
+        upsertToast(installToastId(safeSlug), {
           severity: "error",
           // The producer sends a stable English code plus its human detail
           // precisely so this maps to localized copy. Rendering `error` raw
@@ -120,22 +110,10 @@ export function useStatusBarInstall({ api, pushToast, upsertToast }: Options): v
     };
 
     if (typeof api.onPluginInstallProgress === "function") {
-      unsubs.push(api.onPluginInstallProgress((payload) => handleProgress(payload, "", "plugin")));
-    }
-    if (typeof api.onAgentInstallProgress === "function") {
-      unsubs.push(api.onAgentInstallProgress((payload) => handleProgress(payload, t("useStatusBarInstall.labelAgent"), "agent")));
-    }
-    if (typeof api.onSkillInstallProgress === "function") {
-      unsubs.push(api.onSkillInstallProgress((payload) => handleProgress(payload, t("useStatusBarInstall.labelSkill"), "skill")));
+      unsubs.push(api.onPluginInstallProgress(handleProgress));
     }
     if (typeof api.onPluginInstallResult === "function") {
-      unsubs.push(api.onPluginInstallResult((payload) => handleInstallResult(payload, "", "plugin")));
-    }
-    if (typeof api.onAgentInstallResult === "function") {
-      unsubs.push(api.onAgentInstallResult((payload) => handleInstallResult(payload, t("useStatusBarInstall.labelAgent"), "agent")));
-    }
-    if (typeof api.onSkillInstallResult === "function") {
-      unsubs.push(api.onSkillInstallResult((payload) => handleInstallResult(payload, t("useStatusBarInstall.labelSkill"), "skill")));
+      unsubs.push(api.onPluginInstallResult(handleInstallResult));
     }
     if (typeof api.onPluginUninstallResult === "function") unsubs.push(api.onPluginUninstallResult((payload) => handleUninstallResult(payload)));
     if (typeof api.onAgentUninstallResult === "function") unsubs.push(api.onAgentUninstallResult((payload) => handleUninstallResult(payload, t("useStatusBarInstall.labelAgent"))));

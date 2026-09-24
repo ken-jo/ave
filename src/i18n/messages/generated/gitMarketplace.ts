@@ -256,9 +256,13 @@ export const en = {
   "gitMarketplace.boot.dismiss": "Dismiss",
 
   "gitMarketplace.maintenance.title": "Maintenance",
-  "gitMarketplace.maintenance.description": "Update checks, cache, and the git tool the marketplace uses.",
-  "gitMarketplace.maintenance.updateCheck": "Check for updates at startup",
-  "gitMarketplace.maintenance.offlineCache": "Keep downloaded packages for offline use",
+  "gitMarketplace.maintenance.description": "Update notices, kept downloads, and the git tool the marketplace uses.",
+  "gitMarketplace.maintenance.updateCheck": "Show available updates",
+  "gitMarketplace.maintenance.updateCheckHelp": "Applies right away. The marketplace syncs its sources on schedule either way, so a revoked package is still caught; this decides only whether the toolbar offers updates.",
+  "gitMarketplace.maintenance.updateCheckEnvForced": "The environment variable {envVar} is currently turning this off, whatever is saved here.",
+  "gitMarketplace.maintenance.offlineCache": "Keep downloaded plugin packages",
+  "gitMarketplace.maintenance.offlineCacheHelp": "Applies right away. A kept package installs again without the network — a repair, or a return to a version you had. Up to 500 MB; the least recently used go first. Turn it off to stop reading and writing them.",
+  "gitMarketplace.maintenance.offlineCacheEnvForced": "The environment variable {envVar} is deciding this right now, instead of the value saved here.",
 
   "gitMarketplace.error.planExpired": "That plan is no longer valid. Open the package again to review a fresh one.",
   "gitMarketplace.error.gitMissing": "Git is not installed. Install it under Maintenance, or in the Add dialog.",
@@ -524,9 +528,13 @@ export const ko: Record<keyof typeof en, string> = {
   "gitMarketplace.boot.dismiss": "닫기",
 
   "gitMarketplace.maintenance.title": "유지 관리",
-  "gitMarketplace.maintenance.description": "업데이트 확인, 캐시, 마켓플레이스가 쓰는 git 도구.",
-  "gitMarketplace.maintenance.updateCheck": "시작할 때 업데이트 확인",
-  "gitMarketplace.maintenance.offlineCache": "오프라인 사용을 위해 내려받은 패키지 보관",
+  "gitMarketplace.maintenance.description": "업데이트 알림, 보관된 다운로드, 마켓플레이스가 쓰는 git 도구.",
+  "gitMarketplace.maintenance.updateCheck": "사용 가능한 업데이트 표시",
+  "gitMarketplace.maintenance.updateCheckHelp": "즉시 적용됩니다. 마켓플레이스는 이 설정과 관계없이 정해진 주기로 소스를 동기화하므로 철회된 패키지는 계속 감지됩니다. 이 설정은 도구 모음에 업데이트를 보여 줄지만 정합니다.",
+  "gitMarketplace.maintenance.updateCheckEnvForced": "환경 변수 {envVar} 가 여기에 저장된 값과 관계없이 이 항목을 끄고 있습니다.",
+  "gitMarketplace.maintenance.offlineCache": "내려받은 플러그인 패키지 보관",
+  "gitMarketplace.maintenance.offlineCacheHelp": "즉시 적용됩니다. 보관된 패키지는 네트워크 없이 다시 설치됩니다(복구, 또는 쓰던 버전으로 되돌리기). 최대 500 MB이며 가장 오래 쓰지 않은 것부터 지웁니다. 끄면 보관 파일을 읽거나 쓰지 않습니다.",
+  "gitMarketplace.maintenance.offlineCacheEnvForced": "환경 변수 {envVar} 가 여기에 저장된 값 대신 이 항목을 결정하고 있습니다.",
 
   "gitMarketplace.error.planExpired": "이 계획은 더 이상 유효하지 않습니다. 패키지를 다시 열어 새 계획을 검토하세요.",
   "gitMarketplace.error.gitMissing": "git이 설치되어 있지 않습니다. 유지 관리나 추가 대화 상자에서 설치하세요.",

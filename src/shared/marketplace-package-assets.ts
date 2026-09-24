@@ -485,18 +485,6 @@ export function normalizeMarketplaceProviderPreset(
   return fields ? { providerId, ...fields } : undefined;
 }
 
-export function marketplaceProviderPresetFromAsset(
-  asset: MarketplacePackageAsset | undefined,
-  fallbackLabel?: string,
-): MarketplaceInstalledProviderPreset | undefined {
-  if (!asset || asset.type !== "provider") return undefined;
-  if (isLLMVendor(asset.providerId)) return undefined;
-  return normalizeMarketplaceProviderPreset({
-    ...asset,
-    ...(fallbackLabel && !asset.label ? { label: fallbackLabel } : {}),
-  });
-}
-
 export function marketplaceProviderPresetSecretId(providerId: string): string {
   return `${MARKETPLACE_PROVIDER_PRESET_SECRET_ID_PREFIX}${providerId}`;
 }

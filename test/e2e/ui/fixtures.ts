@@ -20,6 +20,7 @@ import {
 import { canonicalJSON } from "../../../src/plugins/whitelist/canonical-json.js";
 import { makeTestT, type TestT } from "./i18n.js";
 import { agentPluginsDocument } from "../../../src/plugins/__tests__/test-helpers.js";
+import { flattenAgentPluginsManifest } from "../../../src/plugins/public-contract.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -384,8 +385,10 @@ async function seedE2ePlugins(
       }
 
       const sourceManifestText = fs.readFileSync(sourceManifest, "utf-8");
+      // Plugin repositories ship the Agent Plugins document; the seeding below
+      // edits the flat host view and writes the document back.
       const manifest = prepareE2eManifest(
-        JSON.parse(sourceManifestText) as E2eManifest,
+        flattenAgentPluginsManifest(JSON.parse(sourceManifestText)) as unknown as E2eManifest,
         enableCredentialProbe,
       );
       if (

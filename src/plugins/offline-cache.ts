@@ -9,7 +9,6 @@
  */
 import { mkdir, readFile, rm, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
-import { resolveEnvBackedBoolean } from "../shared/env-backed-settings.js";
 import type { PluginMarketplaceItem } from "./types.js";
 import { createLogger } from "../lib/logger.js";
 import { writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
@@ -18,35 +17,6 @@ import {
   readCompressedArtifactFile,
 } from "./marketplace-artifact-limits.js";
 const log = createLogger("offline-cache");
-
-// ---------------------------------------------------------------------------
-// Feature flag
-// ---------------------------------------------------------------------------
-
-/** Registry key for the `AVE_MARKETPLACE_USE_CACHE` / setting pair. */
-const OFFLINE_CACHE_SETTINGS_PATH = "marketplace.offlineCacheEnabled";
-
-/**
- * Combine the `marketplace.offlineCacheEnabled` setting with the environment.
- *
- * The environment wins WHEN SET, in both directions — it was the only control
- * before the setting existed, and a deployment that pinned it is entitled to
- * keep that pin rather than have a profile quietly override it. When it is
- * unset, which is every packaged install, the setting decides; and when the
- * setting is absent too, the answer is the same `true` the env-only resolver
- * gave.
- *
- * The "when set, which way" half is not decided here: it is the registry entry
- * the settings UI reads to tell the user the environment is deciding this. The
- * precedence itself is not decided here either — every env-backed boolean
- * resolves through the same function.
- */
-export function resolveOfflineCacheEnabled(
-  settingEnabled: boolean | undefined,
-  env: NodeJS.ProcessEnv = process.env,
-): boolean {
-  return resolveEnvBackedBoolean(OFFLINE_CACHE_SETTINGS_PATH, settingEnabled, env);
-}
 
 // ---------------------------------------------------------------------------
 // Paths + constants

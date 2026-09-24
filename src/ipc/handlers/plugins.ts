@@ -213,8 +213,3 @@ export function handlePluginCards(deps: IpcDeps) {
     }));
   return [...cards, ...failureCards];
 }
-
-/** PUBLIC `ave:plugins:marketplace:list` — marketplace catalog listing. */
-export function handleMarketplaceList(deps: IpcDeps) {
-  return deps.pluginMarketplace.list();
-}

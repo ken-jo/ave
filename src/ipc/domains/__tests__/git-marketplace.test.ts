@@ -8,6 +8,10 @@ import { CHANNELS, isPublicChannel } from "../../../contract/app-contract.js";
 import { MarketplaceError } from "../../../marketplace/errors.js";
 import { parseGitMarketplaceResult } from "../../../shared/git-marketplace.js";
 import { invokeAppIpcHandlerFromFrame, invokeFileIpcHandler } from "./test-helpers.js";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { latestBootstrapStatus } from "../../../boot/bootstrap-status.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
@@ -44,13 +48,26 @@ async function setup(overrides: Record<string, unknown> = {}) {
     }),
     uninstall: vi.fn(async (request: unknown) => ({ key: request, keptDataDir: null })),
     previewDirectMcp: vi.fn(),
+    updates: vi.fn(async () => []),
+    applyBootInstalls: vi.fn(async () => ({
+      report: { installed: [{ kind: "plugin", name: "meeting", source: "ave" }], updated: [], switched: [], skipped: [], failed: [] },
+      notice: { forYou: [{ sourceId: "ave", kind: "plugin", name: "meeting" }], required: [] },
+    })),
     ...overrides,
   };
   const create = vi.fn(async () => ({ service: service as never, close: async () => {} }));
   const { registerGitMarketplaceHandlers } = await import("../git-marketplace.js");
   const onBuilt = vi.fn(async () => {});
-  registerGitMarketplaceHandlers({ auditLogger: { log: vi.fn() }, getMainWindow: () => null } as never, async () => null, create, onBuilt);
-  return { service, create, onBuilt };
+  const home = mkdtempSync(join(tmpdir(), "ave-git-marketplace-ipc-"));
+  const settings = { get: () => ({ updateCheckIntervalMs: 0 }) };
+  const registration = registerGitMarketplaceHandlers(
+    { auditLogger: { log: vi.fn() }, getMainWindow: () => null, settingsService: settings } as never,
+    async () => null,
+    create,
+    onBuilt,
+    home,
+  );
+  return { service, create, onBuilt, registration, home };
 }
 
 beforeEach(() => {
@@ -96,6 +113,55 @@ describe("git marketplace IPC boundary", () => {
       .resolves.toEqual({ ok: false, code: "unauthorized-frame", message: "unauthorized-frame" });
     // A refused frame does not consume the link.
     await expect(invokeFileIpcHandler(handlers, channels.deepLinkTake)).resolves.toEqual({ ok: true, value: { action: "add", url: "acme/tools" } });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("runs the boot pass once started, publishes its notice and status, and runs it again on Retry", async () => {
+    const { registration, service } = await setup();
+    const state = await import("../../../main/app-state.js");
+    state.setBootInstallNotice(null);
+    // Before the window starts it, Retry has nothing to run.
+    await expect(invokeFileIpcHandler(handlers, CHANNELS.bootstrap.retry)).resolves.toEqual({
+      ok: false,
+      error: "the marketplace boot pass has not started",
+    });
+    expect(service.refresh).not.toHaveBeenCalled();
+
+    registration.startBackground();
+    await vi.waitFor(() => expect(latestBootstrapStatus()).toEqual({ phase: "complete", installed: ["meeting"], failed: [] }));
+    expect(service.refresh).toHaveBeenCalledTimes(1);
+    expect(service.applyBootInstalls).toHaveBeenCalledTimes(1);
+    expect(state.getBootInstallNotice()).toEqual({ forYou: [{ sourceId: "ave", kind: "plugin", name: "meeting" }], required: [] });
+
+    await expect(invokeFileIpcHandler(handlers, CHANNELS.bootstrap.retry)).resolves.toEqual({ ok: true });
+    expect(service.applyBootInstalls).toHaveBeenCalledTimes(2);
+    await expect(invokeAppIpcHandlerFromFrame(handlers, CHANNELS.bootstrap.retry, "file:///app/plugin-ui-shell.html"))
+      .resolves.toEqual({ ok: false, error: "unauthorized-frame" });
+    expect(service.applyBootInstalls).toHaveBeenCalledTimes(2);
+  });
+
+  it("rechecks the updates when marketplace settings are written, once the boot pass runs", async () => {
+    const { registration, service } = await setup();
+    registration.settingsChanged();
+    expect(service.updates).not.toHaveBeenCalled();
+
+    registration.startBackground();
+    await vi.waitFor(() => expect(service.updates).toHaveBeenCalledTimes(1));
+    registration.settingsChanged();
+    await vi.waitFor(() => expect(service.updates).toHaveBeenCalledTimes(2));
+    expect(service.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports the boot pass skipped in an isolated E2E run, and never builds the marketplace", async () => {
+    const { registration, create } = await setup();
+    vi.stubEnv("AVE_E2E", "1");
+    vi.stubEnv("NODE_ENV", "test");
+    try {
+      registration.startBackground();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(latestBootstrapStatus()).toEqual({ phase: "complete", installed: [], failed: [], skipped: { reason: "e2e-isolated" } });
     expect(create).not.toHaveBeenCalled();
   });
 

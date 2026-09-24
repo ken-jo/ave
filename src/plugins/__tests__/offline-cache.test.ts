@@ -11,7 +11,6 @@ import {resolve, join} from "node:path";
 import {
   getCachedCatalog,
   getCachedTarball,
-  resolveOfflineCacheEnabled,
   setCachedCatalog,
   setCachedTarball
 } from "../offline-cache.js";
@@ -47,20 +46,6 @@ afterEach(async () => {
 // ---------------------------------------------------------------------------
 // Catalog cache
 // ---------------------------------------------------------------------------
-
-describe("resolveOfflineCacheEnabled", () => {
-  it("lets the setting decide when the variable is unset", () => {
-    expect(resolveOfflineCacheEnabled(false, {})).toBe(false);
-    expect(resolveOfflineCacheEnabled(true, {})).toBe(true);
-    // A profile written before the setting existed has no field at all.
-    expect(resolveOfflineCacheEnabled(undefined, {})).toBe(true);
-  });
-
-  it("lets the environment win in both directions", () => {
-    expect(resolveOfflineCacheEnabled(true, { AVE_MARKETPLACE_USE_CACHE: "0" })).toBe(false);
-    expect(resolveOfflineCacheEnabled(false, { AVE_MARKETPLACE_USE_CACHE: "1" })).toBe(true);
-  });
-});
 
 describe("catalog cache", () => {
   it("returns null on cold cache", async () => {

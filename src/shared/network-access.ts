@@ -33,7 +33,7 @@ export function mapNetworkAccessGrant(value: unknown): NormalizedNetworkAccessGr
   });
 }
 
-export function normalizeNetworkAccessGrant(
+function normalizeNetworkAccessGrant(
   value: NetworkAccessGrant | null | undefined,
 ): NormalizedNetworkAccessGrant | undefined {
   // Loopback literals are admitted for the same reason the manifest validator
@@ -53,15 +53,6 @@ export function normalizeNetworkAccessGrant(
     ...(reasoning ? { reasoning } : {}),
     ...(allowPrivateNetworks ? { allowPrivateNetworks: true as const } : {}),
   };
-}
-
-export function hasNetworkAccessDisclosure(value: NetworkAccessGrant | null | undefined): boolean {
-  const normalized = normalizeNetworkAccessGrant(value);
-  return !!normalized && (
-    normalized.allowedDomains.length > 0 ||
-    !!normalized.reasoning ||
-    normalized.allowPrivateNetworks === true
-  );
 }
 
 export function buildNetworkAccessAcknowledgement(

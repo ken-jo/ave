@@ -178,15 +178,12 @@ export const CHANNELS = {
     timeout: "ave:ask-user-question:timeout",
   },
   plugins: {
-    install: "ave:plugins:install",
-    rollback: "ave:plugins:rollback",
     uninstall: "ave:plugins:uninstall",
     setEnabled: "ave:plugins:set-enabled",
     installLocal: "ave:plugins:install-local",
     uiList: "ave:plugins:ui:list",
     uiReadModule: "ave:plugins:ui:read-module",
     cards: "ave:plugins:cards",
-    marketplaceList: "ave:plugins:marketplace:list",
     configGet: "ave:plugins:config:get",
     configSet: "ave:plugins:config:set",
     configSchemaGet: "ave:plugins:config:schema:get",
@@ -289,7 +286,6 @@ export const CHANNELS = {
     disarm: "ave:away-authority:disarm",
   },
   marketplace: {
-    ping: "ave:marketplace:ping",
     /** Legacy main-to-renderer update notification; kept byte-identical on wire. */
     updatesAvailable: "marketplace:updates-available",
   },
@@ -336,20 +332,14 @@ export const CHANNELS = {
   },
   agents: {
     list: "ave:agents:list",
-    install: "ave:agents:install",
     uninstall: "ave:agents:uninstall",
-    // Lifecycle event channels (main → renderer).
-    installProgress: "ave:agents:install-progress",
-    installResult: "ave:agents:install-result",
+    // Lifecycle event channel (main → renderer).
     uninstallResult: "ave:agents:uninstall-result",
   },
   skills: {
     list: "ave:skills:list",
-    install: "ave:skills:install",
     uninstall: "ave:skills:uninstall",
-    // Lifecycle event channels (main → renderer).
-    installProgress: "ave:skills:install-progress",
-    installResult: "ave:skills:install-result",
+    // Lifecycle event channel (main → renderer).
     uninstallResult: "ave:skills:uninstall-result",
   },
   mcp: {
@@ -443,8 +433,6 @@ export const CHANNELS = {
     // Registered in ipc/domains/plugins.ts and gated on validateHostRendererSender — it
     // mutates what the model reads next turn.
     uiModelContext: "ave:mcp:ui-model-context",
-    catalogList: "ave:mcp:catalog:list",
-    installFromMarketplace: "ave:mcp:install-from-marketplace",
     importClaudeDesktopPreview: "ave:mcp:import:claude-desktop:preview",
     importClaudeDesktopApply: "ave:mcp:import:claude-desktop:apply",
     // #885 b3 — INTERNAL: absent from PUBLIC_CHANNELS / CHANNEL_GESTURE /
@@ -548,9 +536,6 @@ export const CHANNELS = {
     acpSubscriptionLogout: "ave:settings:acp-subscription:logout",
     marketplaceInstallProviderPreset: "ave:settings:marketplace:install-provider-preset",
     marketplaceUninstallProviderPreset: "ave:settings:marketplace:uninstall-provider-preset",
-    marketplaceSetApiKey: "ave:settings:marketplace:set-api-key",
-    marketplaceHasApiKey: "ave:settings:marketplace:has-api-key",
-    marketplaceDeleteApiKey: "ave:settings:marketplace:delete-api-key",
     setWebApiKey: "ave:settings:set-web-api-key",
     hasWebApiKey: "ave:settings:has-web-api-key",
     deleteWebApiKey: "ave:settings:delete-web-api-key",
@@ -750,13 +735,13 @@ export const CHANNELS = {
  * classification, or a public channel's payload shape) changes in a way an
  * external SDK/CLI must react to. Read-first callers pin this.
  */
-export const CONTRACT_VERSION = "1.2.0";
+export const CONTRACT_VERSION = "2.0.0";
 
 /**
  * The versioned allowlist of channels an external surface (SDK / CLI / local
  * API) MAY touch. Deliberately a small, mostly-read subset:
  *   - chat send + session list/history/get-history (renderer-parity reads + send)
- *   - plugin status/list + marketplace list
+ *   - plugin status/list
  *   - permission mode (READ only — mutation stays internal + gesture-gated)
  *   - usage summary/range
  *
@@ -770,7 +755,6 @@ export const PUBLIC_CHANNELS = [
   CHANNELS.chat.getHistory,
   CHANNELS.chat.sessionHistory,
   CHANNELS.plugins.cards,
-  CHANNELS.plugins.marketplaceList,
   PERMISSIONS.getMode,
   CHANNELS.usage.summary,
   CHANNELS.usage.range,
@@ -801,7 +785,6 @@ export const CHANNEL_GESTURE: Record<string, "required" | "none"> = {
   [CHANNELS.chat.getHistory]: "none",
   [CHANNELS.chat.sessionHistory]: "none",
   [CHANNELS.plugins.cards]: "none",
-  [CHANNELS.plugins.marketplaceList]: "none",
   [PERMISSIONS.getMode]: "none",
   [CHANNELS.usage.summary]: "none",
   [CHANNELS.usage.range]: "none",

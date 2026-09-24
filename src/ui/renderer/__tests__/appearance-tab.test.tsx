@@ -39,7 +39,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function renderWithBundle(initialBundleId = DEFAULT_BUNDLE_ID, onOpenMarketplace?: (filter: "theme" | "language-pack") => void) {
+function renderWithBundle(initialBundleId = DEFAULT_BUNDLE_ID, onOpenMarketplace?: (filter: "theme" | "language") => void) {
   return render(
     <ThemeProvider initialBundleId={initialBundleId}>
       <AppearanceTab onOpenMarketplace={onOpenMarketplace} />
@@ -153,7 +153,7 @@ describe("AppearanceTab — bundle card grid", () => {
     const { getByTestId } = renderWithBundle(DEFAULT_BUNDLE_ID, onOpenMarketplace);
 
     fireEvent.click(getByTestId("appearance-tab:marketplace-languages"));
-    expect(onOpenMarketplace).toHaveBeenLastCalledWith("language-pack");
+    expect(onOpenMarketplace).toHaveBeenLastCalledWith("language");
 
     fireEvent.click(getByTestId("appearance-tab:marketplace-themes"));
     expect(onOpenMarketplace).toHaveBeenLastCalledWith("theme");
@@ -181,7 +181,7 @@ describe("AppearanceTab — bundle card grid", () => {
       expect(getByTestId("appearance-tab:language-recommendation"))
         .toHaveTextContent("Korean language pack matches your system language.");
       fireEvent.click(getByTestId("appearance-tab:language-recommendation-open:ko"));
-      expect(onOpenMarketplace).toHaveBeenCalledWith("language-pack");
+      expect(onOpenMarketplace).toHaveBeenCalledWith("language");
     } finally {
       setLocale(originalLocale);
       Object.defineProperty(navigator, "language", {

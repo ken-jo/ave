@@ -79,17 +79,10 @@ describe("SettingsService marketplace defaults", () => {
     await cleanupTmpDir(userDataPath);
   });
 
-  it("defaults to real-cloud against the local marketplace server", () => {
-    // Phase 2-final: marketplace server is the single source. Default
-    // now points at the production tunnel so a fresh install lands on the
-    // live catalog with no extra setup. Local-marketplace operators
-    // override via Settings → 마켓플레이스 tab.
+  it("defaults carry no server marketplace fields", () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
 
     expect(service.get("marketplace")).toEqual({
-      backend: "real-cloud",
-      cloudBaseUrl: "https://marketplace.former-site.invalid",
-      cloudAllowPrivateNetwork: false,
       updateCheckEnabled: DEFAULT_SETTINGS.marketplace.updateCheckEnabled,
       offlineCacheEnabled: DEFAULT_SETTINGS.marketplace.offlineCacheEnabled,
       installedProviderIds: [],
@@ -100,33 +93,35 @@ describe("SettingsService marketplace defaults", () => {
     });
   });
 
-  it("preserves an explicitly configured real-cloud endpoint", () => {
+  it("drops the server marketplace settings once and writes the file back (design §16.2)", async () => {
+    const path = join(userDataPath, "ave-settings.json");
     writeFileSync(
-      join(userDataPath, "ave-settings.json"),
+      path,
       JSON.stringify({
         marketplace: {
           backend: "real-cloud",
           cloudBaseUrl: "https://marketplace.ave.local",
-          cloudAllowPrivateNetwork: false,
+          cloudAllowPrivateNetwork: true,
+          realCloudBaseUrl: "https://legacy.example",
+          realCloudAllowPrivateNetwork: true,
+          updateCheckEnabled: false,
         },
       }),
       "utf-8",
     );
 
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const marketplace = service.get("marketplace") as unknown as Record<string, unknown>;
+    for (const key of ["backend", "cloudBaseUrl", "cloudAllowPrivateNetwork", "realCloudBaseUrl", "realCloudAllowPrivateNetwork"]) {
+      expect(marketplace[key], key).toBeUndefined();
+    }
+    // The settings the git marketplace keeps are kept.
+    expect(marketplace.updateCheckEnabled).toBe(false);
 
-    expect(service.get("marketplace")).toEqual({
-      backend: "real-cloud",
-      cloudBaseUrl: "https://marketplace.ave.local",
-      cloudAllowPrivateNetwork: false,
-      updateCheckEnabled: DEFAULT_SETTINGS.marketplace.updateCheckEnabled,
-      offlineCacheEnabled: DEFAULT_SETTINGS.marketplace.offlineCacheEnabled,
-      installedProviderIds: [],
-      installedProviderPresets: [],
-      installedThemeBundleIds: [],
-      installedLanguagePacks: [],
-      installedMessagingConnections: [],
+    await vi.waitFor(() => {
+      expect(JSON.parse(readFileSync(path, "utf-8")).appliedMigrations).toContain("marketplace-server-settings-removed");
     });
+    expect(readFileSync(path, "utf-8")).not.toMatch(/cloudBaseUrl|CloudBaseUrl|real-cloud|AllowPrivateNetwork/u);
   });
 
   it("keeps a valid git runtime mode and drops anything else", () => {
@@ -145,7 +140,6 @@ describe("SettingsService marketplace defaults", () => {
       join(userDataPath, "ave-settings.json"),
       JSON.stringify({
         marketplace: {
-          backend: "real-cloud",
           installedMessagingConnections: [
             {
               connectionId: "telegram",
@@ -183,7 +177,6 @@ describe("SettingsService marketplace defaults", () => {
       join(userDataPath, "ave-settings.json"),
       JSON.stringify({
         marketplace: {
-          backend: "real-cloud",
           installedProviderIds: ["openrouter", "groq", "missing-vendor", "openai", "groq"],
           installedThemeBundleIds: [
             "moonstone",
@@ -984,29 +977,6 @@ describe("SettingsService marketplace defaults", () => {
       .toBeNull();
   });
 
-  it("migrates legacy realCloud* keys → cloud* (renamed when the mock backend was removed)", () => {
-    writeFileSync(
-      join(userDataPath, "ave-settings.json"),
-      JSON.stringify({
-        marketplace: {
-          backend: "real-cloud",
-          realCloudBaseUrl: "https://legacy.example",
-          realCloudAllowPrivateNetwork: true,
-        },
-      }),
-      "utf-8",
-    );
-
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    const mk = service.get("marketplace") as Record<string, unknown>;
-
-    expect(mk.cloudBaseUrl).toBe("https://legacy.example");
-    expect(mk.cloudAllowPrivateNetwork).toBe(true);
-    // Legacy keys are not carried forward.
-    expect(mk.realCloudBaseUrl).toBeUndefined();
-    expect(mk.realCloudAllowPrivateNetwork).toBeUndefined();
-  });
-
   it("unmirrors a preset endpoint that an older install left in the generic block", () => {
     // Before the preset registry became the only owner of a preset's address,
     // that address was copied into the generic openai-compatible block. On this
@@ -1237,21 +1207,6 @@ describe("SettingsService marketplace defaults", () => {
 
     expect(block.model).toBe("local-model");
     expect(block.presetModels).toBeUndefined();
-  });
-
-  it("drops a whitespace-only legacy realCloudBaseUrl and falls back to the default", () => {
-    writeFileSync(
-      join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ marketplace: { backend: "real-cloud", realCloudBaseUrl: "   " } }),
-      "utf-8",
-    );
-
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    const mk = service.get("marketplace") as Record<string, unknown>;
-
-    // Whitespace-only legacy value is dropped → default, not "   ".
-    expect(mk.cloudBaseUrl).toBe("https://marketplace.former-site.invalid");
-    expect(mk.realCloudBaseUrl).toBeUndefined();
   });
 
 });
@@ -2119,7 +2074,7 @@ describe("SettingsService webView (B1 — external URL viewer policy)", () => {
   it("applies default 'in-app' when webView field is absent on disk (legacy settings.json)", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ marketplace: { backend: "real-cloud" } }),
+      JSON.stringify({ marketplace: { updateCheckEnabled: true } }),
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
@@ -2148,7 +2103,7 @@ describe("SettingsService webView (B1 — external URL viewer policy)", () => {
       JSON.stringify({
         webView: { preferredFlow: badValue },
         chat: { systemPrompt: "preserved-prompt", autoCompact: false },
-        marketplace: { backend: "real-cloud", cloudBaseUrl: "https://preserved.example" },
+        marketplace: { updateCheckEnabled: false },
       }),
       "utf-8",
     );
@@ -2157,7 +2112,7 @@ describe("SettingsService webView (B1 — external URL viewer policy)", () => {
     // Unrelated sections must be preserved (no full default reset).
     expect(service.get("chat").systemPrompt).toBe("preserved-prompt");
     expect(service.get("chat").autoCompact).toBe(false);
-    expect(service.get("marketplace").cloudBaseUrl).toBe("https://preserved.example");
+    expect(service.get("marketplace").updateCheckEnabled).toBe(false);
   });
 
   it("falls back to default when webView block is not an object", () => {
@@ -2256,7 +2211,7 @@ describe("SettingsService system — close behavior (PR #1032)", () => {
   it("applies default 'hide-to-tray' when system field is absent on disk (legacy settings.json)", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ marketplace: { backend: "real-cloud" } }),
+      JSON.stringify({ marketplace: { updateCheckEnabled: true } }),
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
@@ -2285,7 +2240,7 @@ describe("SettingsService system — close behavior (PR #1032)", () => {
       JSON.stringify({
         system: { closeBehavior: badValue },
         chat: { systemPrompt: "preserved-prompt", autoCompact: false },
-        marketplace: { backend: "real-cloud", cloudBaseUrl: "https://preserved.example" },
+        marketplace: { updateCheckEnabled: false },
       }),
       "utf-8",
     );
@@ -2293,7 +2248,7 @@ describe("SettingsService system — close behavior (PR #1032)", () => {
     expect(service.get("system")).toEqual({ closeBehavior: "hide-to-tray", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidePanelSplitBrowserPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
     expect(service.get("chat").systemPrompt).toBe("preserved-prompt");
     expect(service.get("chat").autoCompact).toBe(false);
-    expect(service.get("marketplace").cloudBaseUrl).toBe("https://preserved.example");
+    expect(service.get("marketplace").updateCheckEnabled).toBe(false);
   });
 
   it("falls back to default when system block is not an object", () => {
@@ -3677,5 +3632,25 @@ describe("vendor ids renamed to package names (nousResearch, v0)", () => {
     await retry.migrateRenamedVendorSecrets();
     expect(retry.getSecret("llm.apiKey.nous-research")).toBe("nr_old");
     expect(retry.getSecret("llm.apiKey.nousResearch")).toBeNull();
+  });
+
+  it("deletes the retired marketplace API key and keeps every other secret", async () => {
+    writeSecrets({ "marketplace.apiKey": "mk_old", "llm.apiKey.openai": "sk-keep" });
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "development" });
+
+    await service.deleteRetiredMarketplaceApiKey();
+
+    expect(service.getSecret("marketplace.apiKey")).toBeNull();
+    expect(readFileSync(secretsPath, "utf-8")).not.toContain("marketplace.apiKey");
+    expect(service.getSecret("llm.apiKey.openai")).toBe("sk-keep");
+  });
+
+  it("leaves the retired key for the next boot when the store refuses the write", async () => {
+    writeSecrets({ "marketplace.apiKey": "mk_old" });
+    const before = readFileSync(secretsPath, "utf-8");
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "packaged" });
+
+    await expect(service.deleteRetiredMarketplaceApiKey()).resolves.toBeUndefined();
+    expect(readFileSync(secretsPath, "utf-8")).toBe(before);
   });
 });

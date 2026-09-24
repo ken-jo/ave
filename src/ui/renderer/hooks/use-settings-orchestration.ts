@@ -101,14 +101,6 @@ export interface SettingsOrchestrationState {
   setSubAgentMaxRounds: (next: number) => void;
   setSubAgentAutonomousWake: (v: boolean) => void;
   // Marketplace
-  marketplaceBaseUrl: string;
-  setMarketplaceBaseUrl: (v: string) => void;
-  marketplaceAllowPrivateNetwork: boolean;
-  setMarketplaceAllowPrivateNetwork: (v: boolean) => void;
-  hasMarketplaceApiKey: boolean;
-  setHasMarketplaceApiKey: (v: boolean) => void;
-  marketplaceApiKeyInput: string;
-  setMarketplaceApiKeyInput: (v: string) => void;
   marketplaceProviderPresetId: string;
   marketplaceProviderPresets: readonly MarketplaceInstalledProviderPreset[];
   selectMarketplaceProviderPreset: (preset: MarketplaceInstalledProviderPreset) => void;
@@ -190,10 +182,6 @@ export function useSettingsOrchestration(
   const [memoryCaptureMode, setMemoryCaptureMode] = useState<MemoryCaptureMode>("off");
   const [subAgentAutonomousWake, setSubAgentAutonomousWake] = useState(false);
   const [subAgentMaxRounds, setSubAgentMaxRounds] = useState(SUBAGENT_MAX_ROUNDS_DEFAULT);
-  const [marketplaceBaseUrl, setMarketplaceBaseUrl] = useState("");
-  const [marketplaceAllowPrivateNetwork, setMarketplaceAllowPrivateNetwork] = useState(true);
-  const [hasMarketplaceApiKey, setHasMarketplaceApiKey] = useState(false);
-  const [marketplaceApiKeyInput, setMarketplaceApiKeyInput] = useState("");
   const [marketplaceProviderPresetId, setMarketplaceProviderPresetId] = useState("");
   const [marketplaceProviderPresets, setMarketplaceProviderPresets] = useState<MarketplaceInstalledProviderPreset[]>([]);
   const [saving, setSaving] = useState(false);
@@ -230,12 +218,11 @@ export function useSettingsOrchestration(
       const providerPresetId = provider === "openai-compatible"
         ? s.llm.marketplaceProviderPresetId ?? ""
         : "";
-      const [apiKeySet, webApiKeySet, marketplaceKeySet] = await Promise.all([
+      const [apiKeySet, webApiKeySet] = await Promise.all([
         api.hasApiKey(providerPresetId
           ? marketplaceProviderPresetSecretId(providerPresetId)
           : provider),
         api.hasWebApiKey(s.webSearch.provider),
-        api.hasMarketplaceApiKey(),
       ]);
       if (cancelled) return;
       const block = getLlmVendorSettings(s.llm.vendors, provider);
@@ -261,9 +248,6 @@ export function useSettingsOrchestration(
       setMemoryCaptureMode(s.features?.memoryCaptureMode ?? "off");
       setSubAgentAutonomousWake(s.features?.subAgentAutonomousWake ?? false);
       setSubAgentMaxRounds(s.chat?.subAgentMaxRounds ?? SUBAGENT_MAX_ROUNDS_DEFAULT);
-      setMarketplaceBaseUrl(s.marketplace?.cloudBaseUrl ?? "");
-      setMarketplaceAllowPrivateNetwork(s.marketplace?.cloudAllowPrivateNetwork ?? false);
-      setHasMarketplaceApiKey(marketplaceKeySet);
       setFallbackChain(s.llm.fallbackChain.map((e) => ({ provider: e.provider, model: e.model })));
       setSettingsLoaded(true);
     })();
@@ -501,14 +485,6 @@ export function useSettingsOrchestration(
             }),
           );
         }
-        if (marketplaceApiKeyInput.trim()) {
-          secretUpdates.push(
-            api.setMarketplaceApiKey(marketplaceApiKeyInput.trim()).then(() => {
-              setMarketplaceApiKeyInput("");
-              setHasMarketplaceApiKey(true);
-            }),
-          );
-        }
         await Promise.all(secretUpdates);
         // The row's OWN endpoint, never the active preset's. A preset's
         // address belongs to the preset registry; writing it here would put it
@@ -551,10 +527,6 @@ export function useSettingsOrchestration(
           webSearch: { provider: webProvider },
           chat: { autoCompact, processingDisplayLevel },
           privacy: { piiRedactEnabled },
-          marketplace: {
-            cloudBaseUrl: marketplaceBaseUrl.trim() || undefined,
-            cloudAllowPrivateNetwork: marketplaceAllowPrivateNetwork,
-          },
         });
         if (isIpcErrorResult(updateResult)) {
           throw new Error(formatIpcError(updateResult.error, updateResult.message));
@@ -776,10 +748,6 @@ export function useSettingsOrchestration(
     memoryCaptureMode, setMemoryCaptureMode: setMemoryCaptureModeLive,
     subAgentAutonomousWake, setSubAgentAutonomousWake: setSubAgentAutonomousWakeLive,
     subAgentMaxRounds, setSubAgentMaxRounds: setSubAgentMaxRoundsLive,
-    marketplaceBaseUrl, setMarketplaceBaseUrl,
-    marketplaceAllowPrivateNetwork, setMarketplaceAllowPrivateNetwork,
-    hasMarketplaceApiKey, setHasMarketplaceApiKey,
-    marketplaceApiKeyInput, setMarketplaceApiKeyInput,
     marketplaceProviderPresetId,
     marketplaceProviderPresets,
     selectMarketplaceProviderPreset,

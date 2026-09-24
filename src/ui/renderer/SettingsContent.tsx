@@ -36,7 +36,6 @@ import { ChatTab } from "./tabs/ChatTab.js";
 import { WebTab } from "./tabs/WebTab.js";
 import { McpTab } from "./tabs/McpTab.js";
 import { PluginConfigTab } from "./tabs/PluginConfigTab.js";
-import { MarketplaceTab } from "./tabs/MarketplaceTab.js";
 import { GitMarketplaceTab } from "./tabs/git-marketplace/GitMarketplaceTab.js";
 import { AboutTab, useAppInfo } from "./tabs/AboutTab.js";
 import { StartupTab } from "./tabs/StartupTab.js";
@@ -44,7 +43,7 @@ import { useSettingsOrchestration } from "./hooks/use-settings-orchestration.js"
 import { useSettingsSectionArrival } from "./hooks/use-settings-tab.js";
 import { useDebouncedSave } from "./hooks/use-debounced-save.js";
 import { normalizeSettingsTab, SETTINGS_TAB_LABEL_KEYS, type SettingsTab } from "../../shared/settings-tabs.js";
-import type { MarketplacePackageFilter } from "../../shared/marketplace-package-sections.js";
+import type { PackageKind } from "../../shared/git-marketplace.js";
 import type { ExactDenyDraft } from "./exact-permission-decision.js";
 import { TEST_IDS } from "../../shared/test-ids.js";
 
@@ -195,7 +194,7 @@ export function SettingsContent({
   const { t } = useTranslation();
   const appInfo = useAppInfo(api);
   const [tab, setTab] = useState(() => normalizeSettingsTab(initialTab));
-  const [marketplaceFilter, setMarketplaceFilter] = useState<MarketplacePackageFilter>("all");
+  const [marketplaceKind, setMarketplaceKind] = useState<PackageKind | null>(null);
   const [pendingPermissions, setPendingPermissions] = useState(0);
 
   // the settings route. Tabs whose save runs through the orchestration hook hit
@@ -231,13 +230,11 @@ export function SettingsContent({
 
   const chatSave = useDebouncedSave(() => void s.save("chat"), 200, { flushOnUnmount: true });
   const webSave = useDebouncedSave(() => void s.save("web"), 200, { flushOnUnmount: true });
-  const marketplaceSave = useDebouncedSave(() => void s.save("marketplace"), 200, { flushOnUnmount: true });
   const flushPendingSaves = useCallback(() => {
     llmSave.flush();
     chatSave.flush();
     webSave.flush();
-    marketplaceSave.flush();
-  }, [llmSave, chatSave, webSave, marketplaceSave]);
+  }, [llmSave, chatSave, webSave]);
   // Single writer for the tab so every in-panel move is reported outward; a
   // second `setTab` call site would be a silent hole in that contract.
   const selectTab = useCallback((nextTab: string) => {
@@ -245,13 +242,13 @@ export function SettingsContent({
     setTab(normalized);
     onTabChange?.(normalized);
   }, [onTabChange]);
-  const openMarketplaceTab = useCallback((filter: MarketplacePackageFilter = "all") => {
-    setMarketplaceFilter(filter);
+  const openMarketplaceTab = useCallback((kind: PackageKind | null = null) => {
+    setMarketplaceKind(kind);
     selectTab("marketplace");
   }, [selectTab]);
   const handleTabValueChange = useCallback((nextTab: string) => {
     const normalized = normalizeSettingsTab(nextTab);
-    if (normalized === "marketplace") setMarketplaceFilter("all");
+    if (normalized === "marketplace") setMarketplaceKind(null);
     selectTab(normalized);
     // Committing a category (click, or Enter in manual/narrow mode) drops into
     // depth-2 detail on narrow; inert on wide (both regions stay visible).
@@ -695,30 +692,11 @@ export function SettingsContent({
           <TabsContent value="mcp" className={tabContentCls}><McpTab /></TabsContent>
           <TabsContent value="plugin-config" className={tabContentCls}><PluginConfigTab api={api} /></TabsContent>
           <TabsContent value="marketplace" className={tabContentCls}>
-            {window.ave?.env?.gitMarketplace === true ? (
-              <GitMarketplaceTab
-                api={api}
-                initialKind={marketplaceFilter === "all" ? null : marketplaceFilter === "language-pack" ? "language" : marketplaceFilter}
-                onOpenMcpSettings={() => handleTabValueChange("mcp")}
-              />
-            ) : (
-            <MarketplaceTab
+            <GitMarketplaceTab
               api={api}
-              baseUrl={s.marketplaceBaseUrl}
-              setBaseUrl={s.setMarketplaceBaseUrl}
-              allowPrivateNetwork={s.marketplaceAllowPrivateNetwork}
-              setAllowPrivateNetwork={s.setMarketplaceAllowPrivateNetwork}
-              hasApiKey={s.hasMarketplaceApiKey}
-              setHasApiKey={s.setHasMarketplaceApiKey}
-              apiKeyInput={s.marketplaceApiKeyInput}
-              setApiKeyInput={s.setMarketplaceApiKeyInput}
-              initialFilter={marketplaceFilter}
-              onSaved={onSaved}
-              onImmediateChange={marketplaceSave.schedule}
+              initialKind={marketplaceKind}
+              onOpenMcpSettings={() => handleTabValueChange("mcp")}
             />
-            )}
-            {/* No bottom TabSaveBar — URL + API key each own an inline
-                Save; private-network toggle is immediate-apply. */}
           </TabsContent>
       </div>
       </div>

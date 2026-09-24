@@ -242,11 +242,8 @@ export async function installFromMarketplace(
   // pre-existing tests) bypass the cache entirely, preventing stale-cache
   // interference with signature verification tests.
   //
-  // This deliberately does NOT re-read the env flag. The caller
-  // (PluginArtifactStore) already resolves setting-vs-env through
-  // `resolveOfflineCacheEnabled` and passes null when the answer is off; a
-  // second, env-only predicate here would ignore the user's setting and
-  // silently disagree with the catalog half of the same feature.
+  // This deliberately does NOT re-read the env flag: the caller
+  // (PluginArtifactStore) decides and passes null when the cache is off.
   const cacheBase = typeof opts.cacheBase === "string" ? opts.cacheBase : null;
   const useCache = cacheBase !== null;
   let body: Buffer = Buffer.alloc(0);

@@ -142,7 +142,7 @@ function makeDeps() {
       getAll: vi.fn(() => ({ appearance: { language: "en" }, llm })),
       get: vi.fn((key: string) => {
         if (key === "llm") return llm;
-        if (key === "marketplace") return { cloudAllowPrivateNetwork: false };
+        if (key === "marketplace") return {};
         if (key === "shortcuts") return { toggleWindow: null, enabled: false };
         if (key === "system") return { launchAtStartup: false, launchMinimized: false };
         return {};
@@ -178,7 +178,7 @@ function makeStatefulSelectionDeps(initialLlm: TestLlm) {
   deps.settingsService.getAll = vi.fn(snapshot);
   deps.settingsService.get = vi.fn((key: string) => {
     if (key === "llm") return llm;
-    if (key === "marketplace") return { cloudAllowPrivateNetwork: false };
+    if (key === "marketplace") return {};
     if (key === "shortcuts") return { toggleWindow: null, enabled: false };
     if (key === "system") return { launchAtStartup: false, launchMinimized: false };
     return {};

@@ -238,7 +238,6 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "entry-url-outside-install-root": "formatIpcError.entryUrlOutsideInstallRoot",
   "install-failed": "formatIpcError.installFailed",
   "uninstall-failed": "formatIpcError.uninstallFailed",
-  "marketplace-disabled": "formatIpcError.marketplaceDisabled",
   // Uninstall refusals from the `ave://` deep link (#1967). Both used to be
   // broadcast as English sentences with no `message` half, so the toast fell
   // through to `${error}` and printed them verbatim in a localized UI.

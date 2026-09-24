@@ -17,6 +17,7 @@ import { renameDirectory } from "../../lib/transient-fs-lock-retry.js";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import { appVersionSatisfiesMin } from "../../shared/semver-compare.js";
 import type {
+  BootInstallNoticeView,
   CatalogEntryView,
   CatalogQuery,
   CatalogView,
@@ -29,6 +30,7 @@ import type {
   McpRuntimeView,
   PackageDetailView,
   PackageKeyView,
+  PackageUpdateView,
   SourceAddRequest,
   SourcePreviewRequest,
   SourcePreviewView,
@@ -50,14 +52,15 @@ import type { GitCommands, GitRemote } from "../git/run-git.js";
 import type { NetworkGate } from "../net/network-gate.js";
 import { normalizeSourceHost, normalizeSourceUrl, type NormalizedSourceUrl } from "../net/source-url.js";
 import { candidateVersion, planPackage, type PackagePlan } from "../resolve/descriptor.js";
-import { classifyInstall, type InstalledPackage } from "../resolve/identity.js";
+import { classifyInstall, updateFor, type InstalledPackage } from "../resolve/identity.js";
 import { assertMcpRuntimePinned, resolveMcpPackage, runtimeFromServerJson, type ResolvedMcpServer } from "../resolve/mcp.js";
 import { planPluginVersion, runPluginLadder, type LadderDeps, type PluginInstallPlan } from "../resolve/plugin-ladder.js";
-import { assertNotRequiredByPolicy, requiredByPolicy } from "../boot-installs/run.js";
+import type { AppliedDefaults } from "../boot-installs/applied.js";
+import { assertNotRequiredByPolicy, bootInstallNoticeFrom, requiredByPolicy, runBootInstalls, type BootInstallReport } from "../boot-installs/run.js";
 import { readDirectPackage } from "../sources/direct-package.js";
 import { isReservedSourceId, SOURCE_ID_RE, type SourceAuth } from "../sources/official.js";
-import type { MarketplacePolicy } from "../sources/policy.js";
-import type { ResolvedSource, SourceRegistry, SourceState } from "../sources/registry.js";
+import type { MarketplacePolicy, PackageKey } from "../sources/policy.js";
+import type { ResolvedSource, SourceOrigin, SourceRegistry, SourceState } from "../sources/registry.js";
 import { SnapshotBuilder, type SourceSnapshot } from "../sources/snapshot.js";
 import { shouldSyncSource, type SourceSyncer } from "../sources/sync.js";
 import { Tickets } from "./tickets.js";
@@ -111,7 +114,7 @@ export interface MarketplaceServiceOptions {
   previewTokens: Map<string, string>;
   versionContext: () => VersionChoiceContext;
   installers: InstallerPorts;
-  ladder: Pick<LadderDeps, "fetchImpl" | "zip" | "limits">;
+  ladder: Pick<LadderDeps, "fetchImpl" | "zip" | "limits" | "artifacts">;
   mcpLimits: LadderDeps["limits"];
   english: Readonly<Record<string, string>>;
   onSyncProgress?: (progress: SyncProgressView) => void;
@@ -454,14 +457,19 @@ export class MarketplaceService {
     return [...plugins, ...content, ...mcp];
   }
 
-  /** Rows of every shown source that has a snapshot, with the sources that have one. */
-  private async rows(): Promise<{ rows: CatalogRow[]; snapshots: Map<string, SourceSnapshot>; shown: ResolvedSource[] }> {
+  /**
+   * Rows of every shown source that has a snapshot, with the sources that have
+   * one. `bound` adds hidden sources that installed packages are bound to: they
+   * keep syncing, and their update notices keep reaching those packages (§7.3).
+   */
+  private async rows(bound?: ReadonlySet<string>): Promise<{ rows: CatalogRow[]; snapshots: Map<string, SourceSnapshot>; shown: ResolvedSource[] }> {
     const shown: ResolvedSource[] = [];
     const snapshots = new Map<string, SourceSnapshot>();
     for (const source of this.registry.list()) {
       const read = await this.read(source);
       // A source whose files cannot be read shows as broken in Sources and lists nothing.
-      if ("problem" in read || !this.registry.isEnabled(source, read.state)) continue;
+      if ("problem" in read) continue;
+      if (!this.registry.isEnabled(source, read.state) && !bound?.has(source.id)) continue;
       shown.push(source);
       if (read.snapshot) snapshots.set(source.id, read.snapshot);
     }
@@ -725,6 +733,7 @@ export class MarketplaceService {
               zip: this.options.ladder.zip,
               limits: this.options.ladder.limits,
               workRoot: this.options.workRoot,
+              artifacts: this.options.ladder.artifacts,
             });
           }).then((staged) => {
             this.progress(planId, "installing", staged.rung);
@@ -811,6 +820,53 @@ export class MarketplaceService {
         remotes: Array.isArray(record.remotes) ? record.remotes.length : 0,
       },
     };
+  }
+
+  // ─── boot and periodic work (§7.3, §10.2) ─────────────────────────────────
+
+  /** Installed packages whose bound source offers a newer version, hidden sources included (§7.3). */
+  async updates(): Promise<PackageUpdateView[]> {
+    const installed = await this.installedAll();
+    const bound = new Set(installed.map((item) => item.sourceId).filter((sourceId): sourceId is string => sourceId !== null));
+    const { rows } = await this.rows(bound);
+    const existing = new Set(this.registry.list().map((source) => source.id));
+    const updates: PackageUpdateView[] = [];
+    for (const item of installed) {
+      if (item.sourceId === null || item.version === null) continue;
+      const state = updateFor({ ...item, version: item.version }, rows, existing);
+      if (state.state !== "update") continue;
+      updates.push({
+        key: { sourceId: item.sourceId, kind: item.kind, name: item.name },
+        displayName: state.row.package.displayName ?? item.name,
+        from: item.version,
+        to: state.version,
+      });
+    }
+    return updates;
+  }
+
+  /**
+   * Default and required installs (§10.2), each through the normal plan: the
+   * ladder, verification and receipt. Returns the report and the notice the
+   * boot publishes (null when nothing changed).
+   */
+  async applyBootInstalls(defaults: readonly PackageKey[], applied: AppliedDefaults): Promise<{ report: BootInstallReport; notice: BootInstallNoticeView | null }> {
+    const { rows, snapshots, shown } = await this.rows();
+    const synced = new Map<string, SourceOrigin>(shown.filter((source) => snapshots.has(source.id)).map((source) => [source.id, source.origin]));
+    const report = await runBootInstalls({
+      policy: this.options.policy,
+      defaults,
+      rows,
+      synced,
+      installed: (kind, name) => this.installed(kind, name),
+      install: async (row, options) => {
+        const plan = await this.planInstall({ sourceId: row.sourceId, kind: row.kind, name: row.name, ...(options.switchSource ? { switchSource: true } : {}) });
+        await this.executeInstall(plan.planId);
+      },
+      applied,
+      now: () => this.now(),
+    });
+    return { report, notice: bootInstallNoticeFrom(report, this.options.policy) };
   }
 
   /** Drop every preview clone and plan (shutdown). */

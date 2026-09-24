@@ -13,6 +13,8 @@
  *     would only hide that.
  *
  * The result is a zip in memory with its hash and the outcome of every rung.
+ * A pinned zip already kept under its digest is read back instead of
+ * downloaded, and a downloaded one that the rung used is kept.
  * The tree rung packs the exported files into a zip too, so every rung goes
  * through the same zip preflight and the same install pipeline.
  */
@@ -30,6 +32,7 @@ import type { IndexVersion, PluginArtifactPins, PluginAuthority } from "../catal
 import { MarketplaceError, isMarketplaceError, type MarketplaceErrorCode } from "../errors.js";
 import type { NetworkGate } from "../net/network-gate.js";
 import type { NormalizedSourceUrl } from "../net/source-url.js";
+import type { ArtifactCache } from "./artifact-cache.js";
 import { candidateVersion, DESCRIPTOR_NAME, planPackage, readDescriptorAtVersion, repoPath, type PackagePlan, type RepositoryAccess } from "./descriptor.js";
 import { downloadBounded } from "./download.js";
 import { assertGitInstallManifest } from "./manifest-rules.js";
@@ -69,6 +72,8 @@ export interface LadderDeps extends RepositoryAccess {
   limits: Readonly<MarketplaceArtifactLimits>;
   /** Scratch directory for the tree export; removed before the ladder returns. */
   workRoot: string;
+  /** Pinned zips kept from earlier downloads, by digest. */
+  artifacts: ArtifactCache;
 }
 
 /** Ladder failure that carries every rung outcome so far (for the plan view and diagnostics). */
@@ -362,8 +367,13 @@ export async function runPluginLadder(plan: PluginInstallPlan, deps: LadderDeps)
       }
     }
     let bytes: RungBytes;
+    let kept = false;
     try {
-      bytes = pinned === undefined ? await treeRung(plan, deps) : rung === "release" ? await releaseRung(plan, deps, pinned) : await archiveRung(plan, deps, pinned);
+      const keptZip = pinned === undefined ? null : await deps.artifacts.read(pinned);
+      kept = keptZip !== null;
+      bytes = keptZip !== null
+        ? { zipBuffer: keptZip, artifactSha256: pinned!.toLowerCase() }
+        : pinned === undefined ? await treeRung(plan, deps) : rung === "release" ? await releaseRung(plan, deps, pinned) : await archiveRung(plan, deps, pinned);
     } catch (error) {
       deps.signal?.throwIfAborted();
       rungs.push({ rung, outcome: "failed", code: failureCode(error), message: (error as Error).message });
@@ -378,6 +388,7 @@ export async function runPluginLadder(plan: PluginInstallPlan, deps: LadderDeps)
       continue;
     }
     rungs.push({ rung, outcome: "used" });
+    if (pinned !== undefined && !kept) await deps.artifacts.keep(bytes.artifactSha256, bytes.zipBuffer);
     return { plan, zipBuffer: bytes.zipBuffer, artifactSha256: bytes.artifactSha256, rung, rungs, manifestDocument };
   }
   const summary = rungs.map((item) => `${item.rung}: ${item.outcome === "failed" ? `${item.code} (${item.message})` : item.outcome === "skipped" ? `skipped (${item.reason})` : "used"}`);

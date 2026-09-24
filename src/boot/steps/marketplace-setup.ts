@@ -1,19 +1,14 @@
 /**
- * Boot step — marketplace backend + managed plugin bootstrap (§9.5, extracted
- * from boot.ts C18).
+ * Boot step — the plugin store and its live-refresh closures (extracted from
+ * boot.ts C18).
  *
- * Selects the marketplace fetcher (real-cloud when a base URL is configured,
- * otherwise the disabled variant), constructs the PluginMarketplaceService, and
- * wires the live-refresh closures the settings IPC handlers invoke: the fetcher
- * SSRF-bypass toggle, the active-LLM wildcard config push, and the ASRT sandbox
- * network allow-list rebuild. Finally it runs the managed enterprise-plugin
- * bootstrap.
+ * Constructs the PluginMarketplaceService over the disabled fetcher — packages
+ * arrive through the git marketplace (design §16.2) — and wires the
+ * live-refresh closures the settings IPC handlers invoke: the active-LLM
+ * wildcard config push and the ASRT sandbox network allow-list rebuild.
  */
 import { DisabledMarketplaceFetcher, PluginMarketplaceService } from "../../plugins/marketplace.js";
 import type { MarketplaceFetcher } from "../../plugins/marketplace.js";
-import { CloudMarketplaceFetcher } from "../../plugins/cloud-marketplace-fetcher.js";
-import { resolveOfflineCacheEnabled } from "../../plugins/offline-cache.js";
-import { getAveAppVersion } from "../../shared/app-version.js";
 import { activeHostApiVendor, createRefreshActiveLlmWildcard } from "./refresh-active-llm-wildcard.js";
 import { createLogger } from "../../lib/logger.js";
 import type { BootContext } from "../context.js";
@@ -30,51 +25,17 @@ export async function setupMarketplace(ctx: BootContext): Promise<void> {
     pluginRuntime,
   } = ctx;
 
-  // §9.5 marketplace backend selection.
-  const marketplaceSettings = settingsService.get("marketplace");
-  // Marketplace fetcher selection — single production path:
-  //   - real-cloud + URL → CloudMarketplaceFetcher
-  //   - otherwise (no URL configured) → DisabledMarketplaceFetcher
-  // No `LocalCatalogMarketplaceFetcher` fallback at boot. Default points at the
-  // production tunnel (`https://marketplace.former-site.invalid`); dev operators
-  // running the marketplace server locally override via the settings UI.
-  // Tests inject their own fetcher.
-  let marketplaceFetcher: MarketplaceFetcher;
-  if (marketplaceSettings.cloudBaseUrl) {
-    marketplaceFetcher = new CloudMarketplaceFetcher({
-      baseUrl: marketplaceSettings.cloudBaseUrl,
-      networkFetch: ctx.singleHopNetworkFetch,
-      appVersion: getAveAppVersion(),
-      apiKey: settingsService.getSecret("marketplace.apiKey") ?? undefined,
-      allowPrivateNetwork: marketplaceSettings.cloudAllowPrivateNetwork,
-    });
-    log.info("boot: marketplace backend = real-cloud (%s)", marketplaceSettings.cloudBaseUrl);
-  } else {
-    marketplaceFetcher = new DisabledMarketplaceFetcher();
-    log.warn("boot: marketplace backend disabled (no cloudBaseUrl configured)");
-  }
+  // The server catalog is gone; nothing installs through this fetcher (design §16.2).
+  const marketplaceFetcher: MarketplaceFetcher = new DisabledMarketplaceFetcher();
   const pluginMarketplace = new PluginMarketplaceService(
     pluginPaths,
     marketplaceFetcher,
     deploymentGuard,
     bootAuditLogger,
-    // Re-read on every catalog list / install so the Settings toggle applies
-    // without a restart. `marketplaceSettings` above is a boot-time snapshot
-    // and would go stale the moment the user changed it.
-    () => resolveOfflineCacheEnabled(settingsService.get("marketplace").offlineCacheEnabled),
+    // No server catalog or tarball to cache: `offlineCacheEnabled` now keeps
+    // git marketplace artifacts (marketplace/resolve/artifact-cache.ts).
+    () => false,
   );
-
-  // Closure invoked by the settings IPC handler when MarketplaceTab fields
-  // change. Re-reads the persisted `marketplace.cloudAllowPrivateNetwork`
-  // value and pushes it into the live CloudMarketplaceFetcher so the
-  // SSRF-guard bypass toggle takes effect on the next request (honoring the
-
-  // a disabled marketplace has no live config to refresh.
-  const refreshMarketplaceFetcherConfig = (): void => {
-    if (!(marketplaceFetcher instanceof CloudMarketplaceFetcher)) return;
-    const next = settingsService.get("marketplace").cloudAllowPrivateNetwork ?? false;
-    marketplaceFetcher.updateAllowPrivateNetwork(next);
-  };
 
   // #893 — Push the active LLM vendor id into the plugin runtime's wildcard
   // configOverrides slot. Plugins read this via
@@ -172,7 +133,6 @@ export async function setupMarketplace(ctx: BootContext): Promise<void> {
 
   ctx.marketplaceFetcher = marketplaceFetcher;
   ctx.pluginMarketplace = pluginMarketplace;
-  ctx.refreshMarketplaceFetcherConfig = refreshMarketplaceFetcherConfig;
   ctx.refreshActiveLlmWildcard = refreshActiveLlmWildcard;
   ctx.disposeRefreshActiveLlmWildcard = disposeRefreshActiveLlmWildcard;
   ctx.buildSandboxUnionDomains = buildSandboxUnionDomains;

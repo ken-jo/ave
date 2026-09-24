@@ -7,52 +7,13 @@ export function findAveProtocolUri(argv: readonly string[]): string | null {
   return argv.find((arg) => arg.toLowerCase().startsWith("ave://")) ?? null;
 }
 
-const MARKETPLACE_ACTIONS = new Set(["install", "uninstall"]);
-const MARKETPLACE_PACKAGE_TYPES = new Set(["plugin", "mcp", "agent", "skill"]);
-const MARKETPLACE_SLUG_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
-
-export function parseMarketplacePluginActionUri(
-  url: string,
-): { action: "install" | "uninstall"; slug: string; packageType: "plugin" | "mcp" | "agent" | "skill" } | null {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return null;
-  }
-  if (parsed.protocol !== "ave:") return null;
-  const action = parsed.hostname.toLowerCase();
-  if (!MARKETPLACE_ACTIONS.has(action)) return null;
-  if (parsed.search || parsed.hash) return null;
-  let segments: string[];
-  try {
-    segments = parsed.pathname
-      .replace(/^\//, "")
-      .split("/")
-      .filter((part) => part.length > 0)
-      .map((part) => decodeURIComponent(part));
-  } catch {
-    return null;
-  }
-  if (segments.length !== 1 && segments.length !== 2) return null;
-  let packageType: "plugin" | "mcp" | "agent" | "skill" = "plugin";
-  let slug = segments[0];
-  if (segments.length === 2) {
-    if (!MARKETPLACE_PACKAGE_TYPES.has(segments[0])) return null;
-    packageType = segments[0] as typeof packageType;
-    slug = segments[1];
-  }
-  if (!slug || !MARKETPLACE_SLUG_RE.test(slug)) return null;
-  return { action: action as "install" | "uninstall", slug, packageType };
-}
-
 const GIT_MARKETPLACE_ADD_URL_MAX = 2048;
 
 /**
  * Git marketplace deep links (blueprint 4.6):
  * `ave://install/<kind>/<name>@<source>`, `ave://uninstall/<kind>/<name>@<source>`
- * and `ave://marketplace/add?url=<address>`. The `@<source>` form is what
- * tells them from the legacy slug links, whose slugs cannot hold `@`. The
+ * and `ave://marketplace/add?url=<address>`. They replace the server-era
+ * `ave://install/<slug>` forms (design §16.2), which parse as nothing. The
  * address is checked by the Add dialog's preview like one typed there.
  */
 export function parseGitMarketplaceUri(url: string): GitMarketplaceDeepLink | null {
@@ -90,32 +51,6 @@ export function parseGitMarketplaceUri(url: string): GitMarketplaceDeepLink | nu
   return { action: host, key: { sourceId, kind: kind as PackageKind, name } };
 }
 
-export function parseMcpLoginUri(url: string): { slug: string } | null {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return null;
-  }
-  if (parsed.protocol !== "ave:") return null;
-  if (parsed.hostname.toLowerCase() !== "mcp-login") return null;
-  if (parsed.search || parsed.hash) return null;
-  let slug: string;
-  try {
-    const segments = parsed.pathname
-      .replace(/^\//, "")
-      .split("/")
-      .filter((part) => part.length > 0)
-      .map((part) => decodeURIComponent(part));
-    if (segments.length !== 1) return null;
-    slug = segments[0];
-  } catch {
-    return null;
-  }
-  if (!slug || !MARKETPLACE_SLUG_RE.test(slug)) return null;
-  return { slug };
-}
-
 /**
  * `ave://plugin-auth/<pluginId>?code=<code>` parser.
  *
@@ -128,9 +63,9 @@ export function parseMcpLoginUri(url: string): { slug: string } | null {
  * plugin exchanges back. We only enforce shape and length so a
  * malformed/oversized URI cannot reach the plugin event bus.
  *
- * The pattern parallels the existing `ave://install/<slug>` install route:
- * a generic, registration-free routing prefix where the second segment
- * targets the specific plugin/operation.
+ * The pattern parallels the `ave://install/<kind>/<name>@<source>` route:
+ * a generic, registration-free routing prefix where the path targets the
+ * specific plugin/operation.
  *
  * Returns `{ pluginId, code }` on success; `null` otherwise.
  *

@@ -340,6 +340,14 @@ export type GitMarketplaceDeepLink =
   | { action: "install" | "uninstall"; key: PackageKeyView }
   | { action: "add"; url: string };
 
+/** An installed package whose bound source offers a newer version (`marketplace:updates-available`, design §7.3). */
+export interface PackageUpdateView {
+  key: PackageKeyView;
+  displayName: string;
+  from: string;
+  to: string;
+}
+
 /** What the boot-install step installed or moved (design §10.2), shown once until dismissed. */
 export interface BootInstallNoticeView {
   /** Default installs: they belong to the user now, each offered with Uninstall. */

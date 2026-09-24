@@ -241,7 +241,6 @@ function buildSurfaceForChatGroup(chatGroupId: string) {
   // unfiltered banner would announce it in every open tile at once.
   onChatFallback: (handler: (payload: { from: string; to: string }) => void) =>
     subscribeForChatGroup(CHANNELS.chat.fallback, chatGroupId, handler),
-  listMarketplacePlugins: async () => ipcRenderer.invoke(CHANNELS.plugins.marketplaceList),
   listPluginCards: async () => ipcRenderer.invoke(CHANNELS.plugins.cards),
   // ─── Plugin Performance (Observability) ──────────
   plugins: {

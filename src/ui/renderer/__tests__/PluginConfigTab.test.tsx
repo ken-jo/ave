@@ -27,18 +27,43 @@ const mockUninstall = vi.fn(async () => ({
   error: "unauthorized-frame",
   message: "제거 권한이 없습니다.",
 }));
-const mockInstall = vi.fn(
-  async (): Promise<{
-    ok: true;
-    pluginId: string;
-    installed?: true;
-    /** Set when the install replaced nothing — see PluginActionResult. */
-    unchanged?: true;
-  }> => ({
+/**
+ * The git marketplace a Doctor repair goes through. `bind(name)` makes the
+ * catalog list that plugin as installed from `ave` at 1.0.0; without it the
+ * plugin has no bound source.
+ */
+const market = {
+  listCatalog: vi.fn(),
+  planInstall: vi.fn(),
+  executeInstall: vi.fn(),
+};
+
+function bind(name: string): void {
+  market.listCatalog.mockResolvedValue({
     ok: true as const,
-    pluginId: "meeting",
-  }),
-);
+    value: {
+      entries: [{
+        key: { sourceId: "ave", kind: "plugin", name },
+        sourceOrigin: "official",
+        sourceLabel: "Ave",
+        displayName: name,
+        description: "",
+        keywords: [],
+        state: { state: "installed", version: "1.0.0" },
+        required: false,
+        runsCode: true,
+      }],
+      counts: {},
+      sourceCount: 1,
+      syncedAt: null,
+    },
+  });
+}
+
+function expectRepairPlanned(name: string): void {
+  expect(market.planInstall).toHaveBeenCalledWith({ sourceId: "ave", kind: "plugin", name, version: "1.0.0" });
+  expect(market.executeInstall).toHaveBeenCalledWith("plan-1");
+}
 
 function setRendererApi(value: Record<string, unknown>): void {
   Object.defineProperty(window, "aveApi", {
@@ -49,8 +74,25 @@ function setRendererApi(value: Record<string, unknown>): void {
 }
 
 beforeEach(() => {
-  mockInstall.mockReset();
-  mockInstall.mockResolvedValue({ ok: true as const, pluginId: "meeting" });
+  market.listCatalog.mockReset();
+  market.planInstall.mockReset();
+  market.executeInstall.mockReset();
+  market.listCatalog.mockResolvedValue({
+    ok: true as const,
+    value: { entries: [], counts: {}, sourceCount: 1, syncedAt: null },
+  });
+  market.planInstall.mockResolvedValue({ ok: true as const, value: { planId: "plan-1" } });
+  market.executeInstall.mockResolvedValue({
+    ok: true as const,
+    value: {
+      key: { sourceId: "ave", kind: "plugin", name: "meeting" },
+      version: "1.0.0",
+      action: { action: "replace", direction: "reinstall", from: "1.0.0" },
+      rungs: [],
+      connectionWarning: null,
+    },
+  });
+  setRendererApi({ gitMarketplace: market });
   Object.defineProperty(window, "ave", {
     value: {
       plugins: {
@@ -67,7 +109,6 @@ beforeEach(() => {
   Object.defineProperty(window, "aveHost", {
     value: {
       takePluginMarketplaceApi: () => ({
-        installMarketplacePlugin: mockInstall,
         uninstallMarketplacePlugin: mockUninstall,
       }),
     },
@@ -193,7 +234,7 @@ describe("PluginConfigTab", () => {
     const cards = vi.fn()
       .mockResolvedValueOnce([broken])
       .mockResolvedValueOnce([repaired]);
-    mockInstall.mockResolvedValue({ ok: true as const, pluginId: "agent-hub" });
+    bind("agent-hub");
     Object.defineProperty(window, "ave", {
       value: {
         plugins: { cards },
@@ -205,7 +246,6 @@ describe("PluginConfigTab", () => {
     Object.defineProperty(window, "aveHost", {
       value: {
         takePluginMarketplaceApi: () => ({
-          installMarketplacePlugin: mockInstall,
           uninstallMarketplacePlugin: mockUninstall,
         }),
       },
@@ -222,7 +262,7 @@ describe("PluginConfigTab", () => {
     fireEvent.click(screen.getByTestId("plugin-config:doctor:agent-hub"));
 
     await waitFor(() => {
-      expect(mockInstall).toHaveBeenCalledWith("ave-plugin-hydra");
+      expectRepairPlanned("agent-hub");
       expect(cards).toHaveBeenCalledTimes(2);
       expect(screen.getByText("Agent Hub 복구 완료")).toBeInTheDocument();
     });
@@ -245,7 +285,7 @@ describe("PluginConfigTab", () => {
       const cards = vi.fn()
         .mockResolvedValueOnce([broken])
         .mockResolvedValueOnce(refreshedState === "failed" ? [broken] : []);
-      mockInstall.mockResolvedValue({ ok: true as const, pluginId: "agent-hub" });
+      bind("agent-hub");
       Object.defineProperty(window, "ave", {
         value: {
           plugins: { cards },
@@ -263,7 +303,7 @@ describe("PluginConfigTab", () => {
       fireEvent.click(screen.getByTestId("plugin-config:doctor:agent-hub"));
 
       await waitFor(() => {
-        expect(mockInstall).toHaveBeenCalledWith("ave-plugin-hydra");
+        expectRepairPlanned("agent-hub");
         expect(cards).toHaveBeenCalledTimes(2);
         expect(
           screen.getByText("Agent Hub: 진단 완료 — 로컬 복구 불가, 아직 실행할 수 없습니다."),
@@ -274,11 +314,7 @@ describe("PluginConfigTab", () => {
     },
   );
 
-  it("names the cause when the reinstall had nothing newer to install", async () => {
-    // The install path reports success for a no-op: same version, same
-    // receipt, same artifact, nothing replaced. The plugin is still broken, so
-    // the generic "no local repair available" reads as an unexplained dead
-    // end — the user is actually waiting on the publisher.
+  it("warns without planning an install when no source binds the failed plugin", async () => {
     const broken = {
       id: "agent-hub",
       name: "Agent Hub",
@@ -287,16 +323,9 @@ describe("PluginConfigTab", () => {
       sampleTools: [],
       capabilities: [],
       tools: [],
-      installAliases: ["ave-plugin-hydra"],
       loadStatus: "failed" as const,
     };
     const cards = vi.fn().mockResolvedValue([broken]);
-    mockInstall.mockResolvedValue({
-      ok: true as const,
-      pluginId: "agent-hub",
-      installed: true as const,
-      unchanged: true as const,
-    });
     Object.defineProperty(window, "ave", {
       value: {
         plugins: { cards },
@@ -316,65 +345,16 @@ describe("PluginConfigTab", () => {
     await waitFor(() => {
       expect(
         screen.getByText(
-          "Agent Hub: 마켓플레이스에 설치본보다 새로운 패키지가 없어 재설치로는 고칠 수 없습니다. 게시자의 수정본을 기다리거나 플러그인을 제거하세요.",
+          "Agent Hub: 이 플러그인에 연결된 마켓플레이스 소스가 없어 재설치할 수 없습니다. 제거하거나 설정 → 마켓플레이스에서 다시 설치하세요.",
         ),
       ).toBeInTheDocument();
     });
-    // The generic message must not also fire — they are alternatives.
-    expect(
-      screen.queryByText("Agent Hub: 진단 완료 — 로컬 복구 불가, 아직 실행할 수 없습니다."),
-    ).toBeNull();
+    expect(market.listCatalog).toHaveBeenCalledWith({ kind: "plugin", installedOnly: true });
+    expect(market.planInstall).not.toHaveBeenCalled();
+    expect(cards).toHaveBeenCalledOnce();
     expect(screen.getByTestId("plugin-config:banner")).toHaveClass("text-warning");
   });
 
-  it("keeps the generic unresolved message when the reinstall did replace the bundle", async () => {
-    // Same failed end state, but a real reinstall happened — the marketplace
-    // did have something else and it still did not load. Naming a missing
-    // newer package here would be wrong, so this pins the two apart.
-    const broken = {
-      id: "agent-hub",
-      name: "Agent Hub",
-      description: "Agent orchestration",
-      publisher: "Test fixture",
-      sampleTools: [],
-      capabilities: [],
-      tools: [],
-      installAliases: ["ave-plugin-hydra"],
-      loadStatus: "failed" as const,
-    };
-    const cards = vi.fn().mockResolvedValue([broken]);
-    mockInstall.mockResolvedValue({
-      ok: true as const,
-      pluginId: "agent-hub",
-      installed: true as const,
-    });
-    Object.defineProperty(window, "ave", {
-      value: {
-        plugins: { cards },
-        pluginConfig: { get: mockGet, set: mockSet },
-      },
-      writable: true,
-      configurable: true,
-    });
-
-    render(<PluginConfigTab />);
-
-    await waitFor(() => {
-      expect(screen.getByTestId("plugin-config:doctor-panel:agent-hub")).toBeInTheDocument();
-    });
-    fireEvent.click(screen.getByTestId("plugin-config:doctor:agent-hub"));
-
-    await waitFor(() => {
-      expect(
-        screen.getByText("Agent Hub: 진단 완료 — 로컬 복구 불가, 아직 실행할 수 없습니다."),
-      ).toBeInTheDocument();
-    });
-    expect(
-      screen.queryByText(
-        "Agent Hub: 마켓플레이스에 설치본보다 새로운 패키지가 없어 재설치로는 고칠 수 없습니다. 게시자의 수정본을 기다리거나 플러그인을 제거하세요.",
-      ),
-    ).toBeNull();
-  });
   it("keeps a card refresh failure instead of overwriting it with repair success", async () => {
     const broken = {
       id: "agent-hub",
@@ -390,7 +370,7 @@ describe("PluginConfigTab", () => {
     const cards = vi.fn()
       .mockResolvedValueOnce([broken])
       .mockRejectedValueOnce(new Error("card refresh failed"));
-    mockInstall.mockResolvedValue({ ok: true as const, pluginId: "agent-hub" });
+    bind("agent-hub");
     Object.defineProperty(window, "ave", {
       value: {
         plugins: { cards },
@@ -408,7 +388,7 @@ describe("PluginConfigTab", () => {
     fireEvent.click(screen.getByTestId("plugin-config:doctor:agent-hub"));
 
     await waitFor(() => {
-      expect(mockInstall).toHaveBeenCalledWith("ave-plugin-hydra");
+      expectRepairPlanned("agent-hub");
       expect(cards).toHaveBeenCalledTimes(2);
       expect(screen.getByText("card refresh failed")).toBeInTheDocument();
     });
@@ -417,68 +397,6 @@ describe("PluginConfigTab", () => {
       screen.queryByText("Agent Hub: 진단 완료 — 로컬 복구 불가, 아직 실행할 수 없습니다."),
     ).toBeNull();
     expect(screen.getByTestId("plugin-config:banner")).toHaveClass("text-destructive");
-  });
-
-  it("passes networkAccess acknowledgement when Doctor reinstalls a network-enabled failed plugin", async () => {
-    const broken = {
-      id: "meeting",
-      name: "Meeting",
-      description: "Meeting plugin",
-      publisher: "Test fixture",
-      sampleTools: [],
-      capabilities: [],
-      tools: [],
-      installAliases: ["ave-plugin-meeting"],
-      loadStatus: "failed" as const,
-      networkAccess: {
-        allowedDomains: ["graph.microsoft.com"],
-        allowPrivateNetworks: true,
-      },
-    };
-    const repaired = {
-      ...broken,
-      loadStatus: "loaded" as const,
-    };
-    const cards = vi.fn()
-      .mockResolvedValueOnce([broken])
-      .mockResolvedValueOnce([repaired]);
-    mockInstall.mockResolvedValue({ ok: true as const, pluginId: "meeting" });
-    Object.defineProperty(window, "ave", {
-      value: {
-        plugins: { cards },
-        pluginConfig: { get: mockGet, set: mockSet },
-      },
-      writable: true,
-      configurable: true,
-    });
-    Object.defineProperty(window, "aveHost", {
-      value: {
-        takePluginMarketplaceApi: () => ({
-          installMarketplacePlugin: mockInstall,
-          uninstallMarketplacePlugin: mockUninstall,
-        }),
-      },
-      writable: true,
-      configurable: true,
-    });
-
-    render(<PluginConfigTab />);
-
-    await waitFor(() => {
-      expect(screen.getByTestId("plugin-config:doctor-panel:meeting")).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByTestId("plugin-config:doctor:meeting"));
-
-    await waitFor(() => {
-      expect(mockInstall).toHaveBeenCalledWith("ave-plugin-meeting", undefined, {
-        networkAccessAcknowledgement: {
-          allowedDomains: ["graph.microsoft.com"],
-          allowPrivateNetworks: true,
-        },
-      });
-      expect(screen.getByText("Meeting 복구 완료")).toBeInTheDocument();
-    });
   });
 
   it("shows an unresolved warning without reinstalling when grants do not match", async () => {
@@ -523,7 +441,7 @@ describe("PluginConfigTab", () => {
     fireEvent.click(screen.getByTestId("plugin-config:doctor:meeting"));
 
     await waitFor(() => {
-      expect(mockInstall).not.toHaveBeenCalled();
+      expect(market.planInstall).not.toHaveBeenCalled();
       expect(cards).toHaveBeenCalledTimes(2);
       expect(
         screen.getByText("Meeting: 진단 완료 — 로컬 복구 불가, 아직 실행할 수 없습니다."),
@@ -572,7 +490,7 @@ describe("PluginConfigTab", () => {
     fireEvent.click(screen.getByTestId("plugin-config:doctor:meeting"));
 
     await waitFor(() => {
-      expect(mockInstall).not.toHaveBeenCalled();
+      expect(market.planInstall).not.toHaveBeenCalled();
       expect(cards).toHaveBeenCalledTimes(2);
       expect(screen.getByText("Meeting 복구 완료")).toBeInTheDocument();
       expect(screen.getByTestId("plugin-config:banner")).toHaveClass("text-success");
@@ -617,7 +535,7 @@ describe("PluginConfigTab", () => {
 
     await waitFor(() => {
       // NOT reinstall-fixable → no reinstall attempt, diagnostic only.
-      expect(mockInstall).not.toHaveBeenCalled();
+      expect(market.planInstall).not.toHaveBeenCalled();
       expect(cards).toHaveBeenCalledTimes(2);
       expect(
         screen.getByText("Meeting: 진단 완료 — 로컬 복구 불가, 아직 실행할 수 없습니다."),
@@ -645,7 +563,7 @@ describe("PluginConfigTab", () => {
     const cards = vi.fn()
       .mockResolvedValueOnce([broken])
       .mockResolvedValueOnce([repaired]);
-    mockInstall.mockResolvedValue({ ok: true as const, pluginId: "meeting" });
+    bind("meeting");
     Object.defineProperty(window, "ave", {
       value: {
         plugins: { cards },
@@ -665,8 +583,8 @@ describe("PluginConfigTab", () => {
     fireEvent.click(screen.getByTestId("plugin-config:doctor:meeting"));
 
     await waitFor(() => {
-      // Reinstall-fixable → Doctor auto-attempts reinstall of the latest version.
-      expect(mockInstall).toHaveBeenCalledWith("ave-plugin-meeting");
+      // Reinstall-fixable → Doctor puts the version on disk back from its source.
+      expectRepairPlanned("meeting");
       expect(cards).toHaveBeenCalledTimes(2);
       expect(screen.getByText("Meeting 복구 완료")).toBeInTheDocument();
     });
@@ -687,10 +605,11 @@ describe("PluginConfigTab", () => {
       loadStatus: "failed" as const,
     };
     const cards = vi.fn().mockResolvedValue([broken]);
-    mockInstall.mockResolvedValue({
+    bind("meeting");
+    market.executeInstall.mockResolvedValue({
       ok: false as const,
-      error: "plugin-not-found",
-      message: "Plugin not found in marketplace: meeting",
+      code: "NO_INSTALLABLE_ARTIFACT",
+      message: "release asset missing: meeting-1.0.0.zip",
     });
     Object.defineProperty(window, "ave", {
       value: {
@@ -710,9 +629,9 @@ describe("PluginConfigTab", () => {
     fireEvent.click(screen.getByTestId("plugin-config:doctor:meeting"));
 
     await waitFor(() => {
-      expect(mockInstall).toHaveBeenCalledWith("ave-plugin-meeting");
+      expectRepairPlanned("meeting");
       // Graceful fallback: the reinstall failure is surfaced; Remove stays available.
-      expect(screen.getByText("Plugin not found in marketplace: meeting")).toBeInTheDocument();
+      expect(screen.getByText("release asset missing: meeting-1.0.0.zip")).toBeInTheDocument();
     });
     expect(screen.queryByText("Meeting 복구 완료")).toBeNull();
   });
@@ -750,68 +669,6 @@ describe("PluginConfigTab", () => {
     expect(screen.getByText("플러그인 manifest 검증 실패")).toBeInTheDocument();
     expect(screen.getByText("상세 오류")).toBeInTheDocument();
     expect(screen.getByText(/unknown property: 'startupTools'/)).toBeInTheDocument();
-  });
-
-  it("resolves Doctor install id from marketplace when a failed plugin has no install alias", async () => {
-    const broken = {
-      id: "orion-api",
-      name: "Ave ORION",
-      description: "Ave ORION plugin",
-      publisher: "Test fixture",
-      sampleTools: [],
-      capabilities: [],
-      tools: [],
-      loadStatus: "failed" as const,
-    };
-    const repaired = {
-      ...broken,
-      loadStatus: "loaded" as const,
-    };
-    const cards = vi.fn()
-      .mockResolvedValueOnce([broken])
-      .mockResolvedValueOnce([repaired]);
-    const listMarketplacePlugins = vi.fn(async () => [
-      {
-        id: "ave-plugin-orion",
-        name: "Ave ORION",
-        description: "Ave ORION plugin",
-        packageSpec: "@ave/ave-plugin-orion",
-        installed: false,
-        enabled: false,
-        pluginType: "plugin" as const,
-      },
-    ]);
-    mockInstall.mockResolvedValue({ ok: true as const, pluginId: "orion-api" });
-    Object.defineProperty(window, "ave", {
-      value: {
-        plugins: { cards },
-        pluginConfig: { get: mockGet, set: mockSet },
-      },
-      writable: true,
-      configurable: true,
-    });
-    Object.defineProperty(window, "aveApi", {
-      value: {
-        listMarketplacePlugins,
-      },
-      writable: true,
-      configurable: true,
-    });
-
-    render(<PluginConfigTab />);
-
-    await waitFor(() => {
-      expect(screen.getByTestId("plugin-config:doctor-panel:orion-api")).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByTestId("plugin-config:doctor:orion-api"));
-
-    await waitFor(() => {
-      expect(listMarketplacePlugins).toHaveBeenCalledOnce();
-      expect(mockInstall).toHaveBeenCalledWith("ave-plugin-orion");
-      expect(cards).toHaveBeenCalledTimes(2);
-      expect(screen.getByText("Ave ORION 복구 완료")).toBeInTheDocument();
-    });
   });
 
   it("opens uninstall from the Doctor panel even for a managed failed plugin", async () => {

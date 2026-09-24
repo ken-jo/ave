@@ -909,17 +909,7 @@ export function normalizeMarketplace(input: unknown): MarketplaceSettings {
   const merged: MarketplaceSettings = {
     ...DEFAULT_SETTINGS.marketplace,
     ...raw,
-    backend: "real-cloud",
   };
-  if (typeof raw.cloudBaseUrl === "string") {
-    const trimmed = raw.cloudBaseUrl.trim();
-    merged.cloudBaseUrl = trimmed || DEFAULT_SETTINGS.marketplace.cloudBaseUrl;
-  } else {
-    merged.cloudBaseUrl = DEFAULT_SETTINGS.marketplace.cloudBaseUrl;
-  }
-  merged.cloudAllowPrivateNetwork = typeof raw.cloudAllowPrivateNetwork === "boolean"
-    ? raw.cloudAllowPrivateNetwork
-    : DEFAULT_SETTINGS.marketplace.cloudAllowPrivateNetwork;
   const gitMode = raw.git && typeof raw.git === "object" ? (raw.git as { mode?: unknown }).mode : undefined;
   if (isGitRuntimeMode(gitMode)) merged.git = { mode: gitMode };
   else delete merged.git;

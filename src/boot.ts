@@ -25,8 +25,7 @@ import { configureHostResources } from "./main/host-resources.js";
  *   steps/plugin-runtime          PluginRuntime + per-plugin HostApi factory.
  *   steps/work-board-setup        Work Board persistence + due-soon scanner.
  *   steps/workflow-stores         workflow stores + builtin tool registration.
- *   steps/marketplace-setup       marketplace backend + managed bootstrap +
- *                                 live-refresh closures.
+ *   steps/marketplace-setup       plugin store + live-refresh closures.
  *   steps/reviewer-permission-wiring  reviewer agent + PermissionManager
  *                                 broadcasts + manifest-integrity bridge.
  *   steps/plugin-tool-executor    plugin-surface ToolExecutor + invoke delegate.
@@ -50,11 +49,7 @@ import { resolvePluginPaths } from "./plugins/plugin-paths.js";
 import { StarredStore } from "./data/starred-store.js";
 import { FeedbackStore } from "./data/feedback-store.js";
 import { forgetTrackedPluginAuthPartitions, getTrackedPluginAuthPartitions } from "./main/plugin-auth-partition-tracker.js";
-import {
-  ensurePluginStateReadyForInstall,
-  recoverPendingPluginUninstallCleanups,
-  removeQuiescentPluginResidualState,
-} from "./plugins/uninstall-lifecycle.js";
+import { recoverPendingPluginUninstallCleanups } from "./plugins/uninstall-lifecycle.js";
 import { drainPluginInstallLockOperations } from "./plugins/install-lifecycle.js";
 import { registerShutdownHook, configureAppShutdownHost } from "./main/app-shutdown.js";
 
@@ -77,7 +72,7 @@ import { wireWhitelistRegistry } from "./boot/steps/whitelist-bootstrap.js";
 import { wireRevocationRegistry } from "./boot/steps/revocation-bootstrap.js";
 import { wireAdmissionRegistry } from "./boot/steps/admission-bootstrap.js";
 import { createServiceClient } from "./boot/steps/service-endpoint.js";
-import { wireAnnouncementCheck, wireReleasePrep, wireUpdateCheck,
+import { wireAnnouncementCheck, wireReleasePrep,
 } from "./boot/steps/post-boot.js";
 import { migrateCanonicalization } from "./permissions/user-approval-store.js";
 import { reconcileWorkspaceRoots } from "./permissions/workspace-root-reconciler.js";
@@ -98,7 +93,6 @@ import { setupAuditAndNotification } from "./boot/steps/audit-notification.js";
 import { setupWorkBoard } from "./boot/steps/work-board-setup.js";
 import { setupWorkflowStores } from "./boot/steps/workflow-stores.js";
 import { setupMarketplace } from "./boot/steps/marketplace-setup.js";
-import { runManagedBootstrap } from "./boot/managed-marketplace.js";
 import { wireReviewerAndPermissions } from "./boot/steps/reviewer-permission-wiring.js";
 import { setupPluginToolExecutor } from "./boot/steps/plugin-tool-executor.js";
 import { wireRationaleHost } from "./boot/steps/rationale-host-wiring.js";
@@ -669,7 +663,6 @@ export async function bootstrap(
     loopbackManager,
     setBundleLifecycleHandler,
     startPlugins,
-    admitPreStartOperation,
   } = await initPluginRuntime({
     host,
     projectRoot,
@@ -732,11 +725,11 @@ export async function bootstrap(
   // `plugin.uninstalled`, and that event is what drops the stale registry-entry
   // cache (boot/steps/plugin-runtime.ts, "so a re-install does not inherit the
   // previous Tier-3 bypass or manifest SHA decision"). The subscriber is
-  // registered by initPluginRuntime above, so it is live for both uses below.
+  // registered by initPluginRuntime above, so it is live for the use below.
   //
   // `refreshPluginNotifications` is deliberately NOT in this set: it re-registers
-  // the notification bridge against a renderer window, and the first use below
-  // runs before conversation wiring has one. The renderer-driven (IPC) and
+  // the notification bridge against a renderer window, and the use below runs
+  // before conversation wiring has one. The renderer-driven (IPC) and
   // deep-link wirings pass it because they run with a live window; boot does not.
   const pluginStateCleanupDeps = {
     pluginRuntime,
@@ -853,40 +846,6 @@ export async function bootstrap(
   setBundleLifecycleHandler?.(pluginBundleLifecycle);
   await pluginBundleLifecycle.recoverRetirements();
 
-  // The lifecycle and its retirement journal are recovered before managed
-  // durable sync. The sync is admitted into the boot-local promise tail and
-  // commits verified bytes/receipt/registry only: it never publishes or starts
-  // a candidate. startPlugins() seals admission synchronously, waits for the
-  // tail (including rollback), then loads the one committed registry snapshot.
-  //
-  // A headless run skips the sync entirely: it is the boot-time reader of the
-  // marketplace catalog, and nothing about running one turn needs the managed
-  // set to be current. The plugins already on disk still load — this drops the
-  // network refresh, not the registry snapshot `startPlugins()` reads.
-  let managedPreStartSync: Promise<void> = Promise.resolve();
-  if (!headless) {
-    managedPreStartSync = runManagedBootstrap({
-      pluginMarketplace: ctx.pluginMarketplace,
-      ensurePluginStateReadyForInstall: (pluginId) =>
-        ensurePluginStateReadyForInstall(pluginId, {
-          pluginMarketplace: ctx.pluginMarketplace,
-          ...pluginStateCleanupDeps,
-        }),
-      // The registry-entry cache, the uninstall telemetry track and every
-      // per-plugin `onEvent("plugin.uninstalled")` subscriber hang off this
-      // event; an enforced removal has to publish it like any other.
-      removeDelistedAdminInstall: (removal, commitRegistryRemoval) =>
-        removeQuiescentPluginResidualState(
-          { ...removal, installPluginId: removal.pluginId },
-          commitRegistryRemoval,
-          pluginStateCleanupDeps,
-        ),
-      mainWindow: mainWindow!,
-      marketplace: ctx.settingsService.get("marketplace"),
-      mode: "pre-start-sync",
-      admitPreStartOperation,
-    });
-  }
   // §691: OS-level tool sandbox — decided exactly once here at boot, and
   // BEFORE startPlugins(): an out-of-process plugin's factory spawns its
   // confined child inside startAll(), and wrapWorkerCommand refuses to build
@@ -895,8 +854,7 @@ export async function bootstrap(
   // (same builder, safe global live-swap) after load() and before startAll().
   await initSandboxGate(ctx);
 
-  const sealedPluginStart = startPlugins();
-  await Promise.all([managedPreStartSync, sealedPluginStart]);
+  await startPlugins();
 
   log.info(
     "boot: ready (%d tools, %d plugins, %d mcp)",
@@ -956,16 +914,10 @@ export async function bootstrap(
     serviceClient,
     discretionaryEgress: !headless,
   }, host);
-  // Both pollers exist to push a banner at a renderer: the update check reads
-  // the marketplace, the announcement check the service endpoint. A headless
-  // run has neither the renderer nor the lifetime, so it schedules neither.
+  // The announcement poller exists to push a banner at a renderer. A headless
+  // run has neither the renderer nor the lifetime, so it does not schedule it.
+  // The marketplace's sync and update notices start with the window (main.ts).
   if (!headless) {
-    wireUpdateCheck({
-      mainWindow,
-      settingsService,
-      marketplaceFetcher: ctx.marketplaceFetcher,
-      pluginPaths,
-    });
     wireAnnouncementCheck({
       getMainWindow,
       settingsService,

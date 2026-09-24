@@ -19,8 +19,8 @@ import { PluginAuthSection } from "../components/PluginAuthSection.js";
 import { usePluginAuthStatuses } from "../hooks/use-plugin-auth-status.js";
 import { PluginUninstallDialog } from "../dialogs/PluginUninstallDialog.js";
 import {
-  findPluginDoctorMarketplaceItem,
   getPluginDoctorInstallKey,
+  repairPluginFromMarketplace,
 } from "./plugin-doctor-match.js";
 import { PluginConfigSchemaForm } from "./PluginConfigSchemaForm.js";
 import { PluginPerfTab } from "./PluginPerfTab.js";
@@ -31,7 +31,6 @@ import { isPluginInstallKey } from "../utils/plugin-install-aliases.js";
 import { SettingsPageHeader } from "../components/PageShell.js";
 import { t } from "../../../i18n/runtime.js";
 import { useTranslation } from "../../../i18n/react.js";
-import { buildNetworkAccessAcknowledgement } from "../../../shared/network-access.js";
 import { isReinstallFixableFailureKind } from "../../../shared/plugin-install-failure.js";
 import { formatBytes } from "../../../lib/turn-summary-format.js";
 import { errorMessage } from "../../../shared/error-message.js";
@@ -83,23 +82,6 @@ function findRefreshedDoctorPlugin(
 
 function isDoctorRepairLoaded(plugin: PluginCardSummary | undefined): boolean {
   return plugin?.loadStatus === "loaded" && isRuntimeCallablePlugin(plugin);
-}
-
-async function resolvePluginDoctorInstallKey(plugin: PluginCardSummary): Promise<string> {
-  const fallback = getPluginDoctorInstallKey(plugin);
-  let api: ReturnType<typeof getApi>;
-  try {
-    api = getApi();
-  } catch {
-    return fallback;
-  }
-
-  try {
-    const marketplace = await api.listMarketplacePlugins();
-    return findPluginDoctorMarketplaceItem(plugin, marketplace)?.id ?? fallback;
-  } catch {
-    return fallback;
-  }
 }
 
 function clampProgressPct(value: unknown): number | null {
@@ -576,44 +558,28 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
       }
 
       // Reinstall-fixable failure (stale/pre-v6 on-disk manifest, missing/corrupt
-      // files, generic load error) → automatically attempt reinstalling the latest
-      // marketplace version. One attempt, no loop: on failure we surface the cause
-      // and the Remove button in the Doctor panel stays available as the fallback.
-      const installKey = await resolvePluginDoctorInstallKey(plugin);
-      const networkAccessAcknowledgement = buildNetworkAccessAcknowledgement(plugin.networkAccess);
-      const result = networkAccessAcknowledgement
-        ? await getHostMarketplaceApi().installMarketplacePlugin(installKey, undefined, {
-            networkAccessAcknowledgement,
-          })
-        : await getHostMarketplaceApi().installMarketplacePlugin(installKey);
-      if (!result.ok) {
-        // Auto-repair could not complete (no marketplace version, latest still
-        // invalid, network unreachable). Fall back to naming the cause; Remove
-        // remains the user-initiated exit.
-        showBanner("error", result.message ?? result.error ?? t("pluginConfigTab.errorDoctor"));
+      // files, generic load error) → reinstall the version on disk from the
+      // plugin's own marketplace source. One attempt, no loop: on failure we
+      // surface the cause and the Remove button in the Doctor panel stays
+      // available as the fallback.
+      const repair = await repairPluginFromMarketplace(getApi().gitMarketplace, plugin);
+      if (repair.status === "unbound") {
+        showBanner("warning", t("pluginConfigTab.doctorNoSource", { displayName: plugin.name }));
+        return;
+      }
+      if (repair.status === "failed") {
+        showBanner("error", repair.message || t("pluginConfigTab.errorDoctor"));
         return;
       }
 
-      const preferredInstallKey = result.pluginId || installKey;
-      const refreshedCards = await refreshPlugins({ preferInstallKey: preferredInstallKey });
+      const installKey = getPluginDoctorInstallKey(plugin);
+      const refreshedCards = await refreshPlugins({ preferInstallKey: installKey });
       if (!refreshedCards) return;
-      const refreshedPlugin = findRefreshedDoctorPlugin(
-        refreshedCards,
-        plugin,
-        [preferredInstallKey, installKey],
-      );
+      const refreshedPlugin = findRefreshedDoctorPlugin(refreshedCards, plugin, [installKey]);
       if (!isDoctorRepairLoaded(refreshedPlugin)) {
-        // The install reported success but replaced nothing: the marketplace
-        // carries the same version already on disk, so the reinstall could
-        // only put the broken bundle back. Saying "no local repair available"
-        // here reads as an unexplained dead end — name the actual reason, so
-        // the user knows they are waiting on a publisher, not on a retry.
-        showBanner(
-          "warning",
-          result.unchanged
-            ? t("pluginConfigTab.doctorNoNewerPackage", { displayName: plugin.name })
-            : t("pluginConfigTab.doctorDiagnosticUnresolved", { displayName: plugin.name }),
-        );
+        // The same bytes went back on disk and still do not load: the fix is
+        // the publisher's, not a retry.
+        showBanner("warning", t("pluginConfigTab.doctorDiagnosticUnresolved", { displayName: plugin.name }));
         return;
       }
       showBanner("success", t("pluginConfigTab.successDoctor", { displayName: plugin.name }));
