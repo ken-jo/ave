@@ -48,7 +48,7 @@ import {
   stageRemovalTransaction,
   type RemovalTransactionKind,
 } from "./plugin-removal-transaction.js";
-import type { PluginAdmissionRecord, PluginInstallReceipt } from "./plugin-install-receipt.js";
+import type { PluginInstallReceipt } from "./plugin-install-receipt.js";
 import { flattenAgentPluginsManifest } from "./public-contract.js";
 import type { PluginRegistryEntry } from "./types.js";
 import { createLogger } from "../lib/logger.js";
@@ -551,26 +551,13 @@ export class PluginMarketplaceService {
   }
 
   /**
-   * Shared post-install finalization called by both installArtifact and
-   * installLocal after the install dir is in place.
-   *
-   * Currently handles the receipt write only; registry update and entry-path
-   * assertion are planned for a future expansion (#402 follow-up). Having a
-   * single call site means receipt schema changes (e.g. adding a field) need
-   * one edit here rather than one per install branch.
+   * The receipt of an `installLocal` install, built against the staged tree
+   * after its contributions resolve. Git installs write their own (schema v4).
    */
   private async prepareInstallReceipt(
     pluginId: string,
     pluginRoot: string,
-    opts: {
-      version: string;
-      installSource: "marketplace" | "local-dev";
-      artifactSha256: string | null;
-      signerKeyId: string | null;
-      admission?: PluginAdmissionRecord | null;
-      files: string[];
-      installedAt?: string;
-    },
+    opts: { version: string; files: string[]; installedAt?: string },
   ): Promise<string> {
     const manifestRaw = await readFile(resolve(pluginRoot, "plugin.json"), "utf-8");
     const manifest = flattenAgentPluginsManifest(JSON.parse(manifestRaw));
@@ -1110,9 +1097,6 @@ export class PluginMarketplaceService {
         const receiptFiles = await listFilesRecursive(stagingDir, PLUGIN_RUNTIME_DIR_NAMES);
         const localReceiptRaw = await this.prepareInstallReceipt(pluginId, stagingDir, {
           version: manifestVersion,
-          installSource: "local-dev",
-          artifactSha256: null,
-          signerKeyId: null,
           files: receiptFiles,
         });
         const registryManifestPath = posix.join(pluginId, "plugin.json");

@@ -46,7 +46,6 @@ import { tombstoneAndDeferredRemove } from "./installed-entry-fs.js";
 import {
   buildInstallReceipt,
   restoreInstallReceiptRaw,
-  type PluginAdmissionRecord,
   type PluginInstallReceipt,
 } from "./plugin-install-receipt.js";
 import { createLogger } from "../lib/logger.js";
@@ -657,40 +656,18 @@ export class PluginArtifactStore {
     return entries;
   }
 
-  async writeInstallReceipt(
-    slug: string,
-    input: {
-      version: string;
-      installSource: "marketplace" | "local-dev";
-      artifactSha256: string | null;
-      signerKeyId: string | null;
-      files: string[];
-      installedAt?: string;
-    },
-  ): Promise<PluginInstallReceipt> {
-    const safeSlug = assertSafeArtifactSlug(slug);
-    const pluginRoot = this.installDirFor(safeSlug);
-    const { receipt, raw } = await this.prepareInstallReceipt(safeSlug, pluginRoot, input);
-    await this.persistPreparedInstallReceipt(safeSlug, raw);
-    return receipt;
-  }
-
+  /** The receipt of a local development install: it has no artifact, signer or admission. */
   async prepareInstallReceipt(
     slug: string,
     pluginRoot: string,
-    input: {
-      version: string;
-      installSource: "marketplace" | "local-dev";
-      artifactSha256: string | null;
-      signerKeyId: string | null;
-      admission?: PluginAdmissionRecord | null;
-      files: string[];
-      installedAt?: string;
-    },
+    input: { version: string; files: string[]; installedAt?: string },
   ): Promise<{ receipt: PluginInstallReceipt; raw: string }> {
     return buildInstallReceipt(pluginRoot, {
       pluginId: assertSafeArtifactSlug(slug),
       ...input,
+      installSource: "local-dev",
+      artifactSha256: null,
+      signerKeyId: null,
     });
   }
 

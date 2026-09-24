@@ -13,13 +13,11 @@ export interface InstallReceiptFile {
 }
 
 /**
- * Which signed admission catalog authorised this install.
+ * Which signed admission catalog authorised a server-marketplace install.
  *
- * Recorded because `signerKeyId` alone cannot answer "under whose authority is
- * this on disk" once the artifact key stops being the authority — and because
- * `documentSha256` makes the claim checkable after the fact: given a receipt,
- * an operator can fetch the archived issuance, hash it, and confirm the
- * distributor really made that statement.
+ * The server marketplace and its admission catalog are gone (design §16.2);
+ * nothing writes this any more. A receipt written before the switch may carry
+ * it, and it parses so that receipt keeps verifying.
  */
 export interface PluginAdmissionRecord {
   /** `issuedAt` of the authorising catalog document. */
@@ -57,14 +55,10 @@ export interface GitInstallRecord {
 }
 
 /**
- * Schema v3 — written by every marketplace and local-dev install.
- * installSource is the authoritative trust signal; signerKeyId / artifactSha256
- * are null for local-dev installs (no signed artifact to validate against).
- *
- * `admission` is null for local-dev installs, exactly as `signerKeyId` already
- * is, and for marketplace installs performed while the admission catalog is
- * not yet the authority. A null there is a true statement — "no catalog
- * authorised this" — not a missing value to be defaulted.
+ * Schema v3 — written by local-dev installs, which have no artifact, signer or
+ * admission. A server-marketplace install from before the git marketplace kept
+ * its v3 receipt (`installSource: "marketplace"`), which still verifies.
+ * installSource is the authoritative trust signal.
  */
 export interface SignedOrLocalInstallReceipt {
   schemaVersion: 3;
