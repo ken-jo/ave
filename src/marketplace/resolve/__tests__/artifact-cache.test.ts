@@ -3,14 +3,12 @@
  * to, keeping follows the setting at each use, and the oldest-used zips go
  * once the total passes the cap.
  */
-import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createArtifactCache, resolveKeepArtifacts } from "../artifact-cache.js";
-
-const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+import { sha256Hex as sha } from "../../__tests__/fixtures/package-files.js";
 
 describe("createArtifactCache", () => {
   let dir: string;

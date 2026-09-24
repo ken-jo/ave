@@ -25,6 +25,7 @@ import { SourceSyncer } from "../../sources/sync.js";
 import { createArtifactCache, NO_ARTIFACT_CACHE } from "../artifact-cache.js";
 import { candidateVersion } from "../descriptor.js";
 import { LadderError, planPluginInstall, runPluginLadder, treeDigest, type LadderDeps, type PluginInstallPlan } from "../plugin-ladder.js";
+import { sha256Hex as sha } from "../../__tests__/fixtures/package-files.js";
 
 const AT = "2026-09-23T00:00:00.000Z";
 const INSTALLATION = "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b";
@@ -47,8 +48,6 @@ function pluginZip(name: string, version: string, auth: PluginAuthority = author
   zip.addFile("dist/index.js", Buffer.from(ENTRY_JS));
   return zip.toBuffer();
 }
-
-const sha = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 
 function descriptor(name: string, version: string, artifact: Record<string, unknown>, auth: PluginAuthority = authority()): string {
   return `${JSON.stringify({ schemaVersion: 1, kind: "plugin", name, version, minAppVersion: "0.12.0", payload: { authority: auth, artifact } })}\n`;
