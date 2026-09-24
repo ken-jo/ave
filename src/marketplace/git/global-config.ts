@@ -24,7 +24,7 @@ export interface GitConfigEntry {
   value: string | null;
 }
 
-/** A copied entry: every copied key takes a string, so a valueless one has become `""`. */
+/** A copied entry: every copied key takes a string value. */
 export interface CopiedConfigEntry {
   key: string;
   value: string;
@@ -35,9 +35,10 @@ const COPIED_TOP_LEVEL_KEYS = new Set(["credential.helper", "http.sslcainfo", "h
 /**
  * Keep only the keys above. Section and variable names arrive lowercased from
  * `git config --list`; a subsection (the URL in `credential.<url>.helper`)
- * keeps its case. git refuses any of these keys without a value (for a helper
- * that ends the credential lookup), so a valueless one is copied as `""`: an
- * odd user config must not stop the marketplace.
+ * keeps its case. git refuses any of these keys without a value, and an odd
+ * user config must not stop the marketplace: a valueless helper becomes the
+ * empty value that resets the helper list, and any other valueless key is
+ * dropped (an empty `http.sslCAInfo` would fail every TLS connection).
  */
 export function selectCopiedEntries(entries: readonly GitConfigEntry[]): CopiedConfigEntry[] {
   return entries
@@ -48,7 +49,10 @@ export function selectCopiedEntries(entries: readonly GitConfigEntry[]): CopiedC
       const lastDot = rest.lastIndexOf(".");
       return lastDot > 0 && /^[a-z][a-z0-9-]*$/u.test(rest.slice(lastDot + 1));
     })
-    .map(({ key, value }) => ({ key, value: value ?? "" }));
+    .flatMap(({ key, value }) => {
+      if (value !== null) return [{ key, value }];
+      return key.endsWith(".helper") ? [{ key, value: "" }] : [];
+    });
 }
 
 /** Parse `git config --null --list`: `key\nvalue\0` records; a valueless key has no `\n`. */

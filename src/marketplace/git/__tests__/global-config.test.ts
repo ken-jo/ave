@@ -28,6 +28,7 @@ describe("selectCopiedEntries", () => {
         "http.https://github.com.sslcainfo\n/tmp/x.pem",
         "credential.helper",
         "credential.https://h.example.usehttppath",
+        "http.sslcainfo",
       ].join("\0") + "\0",
     );
     expect(selectCopiedEntries(entries)).toEqual([
@@ -37,8 +38,7 @@ describe("selectCopiedEntries", () => {
       { key: "http.sslcainfo", value: "/etc/corp.pem" },
       { key: "http.sslbackend", value: "schannel" },
       { key: "credential.helper", value: "" },
-      // git refuses a valueless credential key, so it is copied as the empty value.
-      { key: "credential.https://h.example.usehttppath", value: "" },
+      // A valueless helper resets the list; other valueless keys (git refuses them) are dropped.
     ]);
   });
 });
