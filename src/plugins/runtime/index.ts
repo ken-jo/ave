@@ -16,9 +16,9 @@
  *   - origin-chain.ts, runtime-admission.ts, detached-operation.ts, types.ts
  */
 
-import type { PluginAccessSpec, PluginManifest, PluginHostApi, PluginToolHandler, RuntimePlugin, RuntimePluginFactory, InstallPolicy, PluginAuthSpec, PluginConfigSchema, PluginOnboardingSpec, PluginUiExtension, PluginRegistryTrust } from "../types.js";
+import type { PluginAccessSpec, PluginManifest, PluginHostApi, PluginToolHandler, RuntimePlugin, RuntimePluginFactory, PluginAuthSpec, PluginConfigSchema, PluginOnboardingSpec, PluginUiExtension, PluginRegistryTrust } from "../types.js";
 import { classifySubscription } from "../capabilities.js";
-import { normalizeInstallPolicy, parsePluginJson, buildManifestValidator, getDeclaredEmittedEvents } from "./manifest-validation.js";
+import { parsePluginJson, buildManifestValidator, getDeclaredEmittedEvents } from "./manifest-validation.js";
 import { flattenAgentPluginsManifest } from "../public-contract.js";
 import { isModelVisible } from "./tool-visibility.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -74,7 +74,6 @@ const log = createLogger("plugin-runtime");
 export const MAX_UI_RESOURCE_HTML_BYTES = 4 * 1024 * 1024;
 
 
-export type { InstallPolicy };
 
 
 // Re-export public interface types so callers that do
@@ -95,10 +94,6 @@ export interface PluginCard {
   capabilities: string[];
   /** tool name → the tool's own `description` (#885 v6 — toolSchemas removed). */
   toolDescriptions?: Record<string, string>;
-  /** true when the plugin is protected from ordinary user uninstall/disable */
-  isManaged?: boolean;
-  /** Install policy declared in the manifest: "admin" (IT-managed) or "user" (anyone). */
-  installPolicy?: "admin" | "user";
   /** Runtime load status derived from loaded/failed/disabled runtime state. */
   loadStatus: "loaded" | "preparing" | "failed" | "disabled";
   /** Whether this plugin's tools are currently exposed to the model. */
@@ -114,7 +109,6 @@ export interface PluginCard {
   /** Manifest-declared sidebar UI metadata, even before the plugin is loaded. */
   uiExtensions?: PluginUiExtension[];
   version?: string;
-  publisher?: string;
   configSchema?: PluginConfigSchema;
   /** Optional declarative auth contract — see architecture.md §9.4a "Plugin-Owned OAuth — Host UI Surface". */
   auth?: PluginAuthSpec;
@@ -476,8 +470,6 @@ export function buildPluginCard(
     tools: filteredNames,
     capabilities: manifest.capabilities ?? [],
     toolDescriptions: Object.keys(toolDescriptions).length > 0 ? toolDescriptions : undefined,
-    isManaged: normalizeInstallPolicy(manifest) === "admin",
-    installPolicy: manifest.installPolicy ?? "user",
     loadStatus,
     active: state.active,
     runtimeLoaded: state.runtimeLoaded,
@@ -486,7 +478,6 @@ export function buildPluginCard(
     iconText: manifest.iconText,
     uiExtensions: uiExtensions && uiExtensions.length > 0 ? uiExtensions : undefined,
     version: manifest.version,
-    publisher: manifest.publisher,
     configSchema: manifest.configSchema,
     auth: manifest.auth,
     networkAccess: manifest.networkAccess,
@@ -6792,7 +6783,6 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
         version: "1.0.0",
         entry: "index.js",
         description: "Test fixture",
-        publisher: "Test fixture",
         // #885 v6 — pure Tool[] (model-visible, matching the old tools[]-only shape).
         tools: [
           {

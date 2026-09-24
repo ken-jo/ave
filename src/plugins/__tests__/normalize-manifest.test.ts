@@ -51,7 +51,6 @@ describe("parsePluginJson — manifest materialization (visibility + name defaul
       version: "1.0.0",
       entry: "index.js",
       description: "test plugin",
-      publisher: "tests",
       tools,
       ...over,
     };

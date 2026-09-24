@@ -64,12 +64,13 @@ describe("git-install manifest rules (design §5.3)", () => {
     );
   });
 
-  it("checks name and version, and rejects installPolicy by name", () => {
-    const wrong = { ...manifest({ installPolicy: "admin" }), name: "beta", version: "1.2.1" };
+  it("checks name and version, and rejects installPolicy and publisher by name", () => {
+    const wrong = { ...manifest({ installPolicy: "admin", publisher: "Ave Official" }), name: "beta", version: "1.2.1" };
     expect(gitInstallManifestMismatches(wrong, expected())).toEqual([
       'name is "beta", the descriptor says "alpha"',
       'version is "1.2.1", the descriptor says "1.2.0"',
       "installPolicy is no longer supported: no package is installed or locked by its own manifest",
+      "publisher is no longer supported: no verified publishing identity backs it",
     ]);
   });
 

@@ -81,7 +81,6 @@ describe("manifest hostSecrets.read[] validator (#893)", () => {
       name: "Marketplace Provider Secret Plugin",
       version: "1.0.0",
       description: "Marketplace provider secret fixture.",
-      publisher: "Ave",
       entry: "dist/index.js",
       tools: [],
       hostSecrets: {
@@ -119,7 +118,6 @@ describe("manifest hostSecrets.read[] validator (#893)", () => {
         name: "Host Secret Corpus Plugin",
         version: "1.0.0",
         description: "Host secret corpus fixture.",
-        publisher: "Ave",
         entry: "dist/index.js",
         tools: [],
         hostSecrets: { read: [key] },
@@ -313,7 +311,6 @@ describe("manifest hostSecrets.read[] validator (#893)", () => {
         name: "Host Secret Bounds Plugin",
         version: "1.0.0",
         description: "Host secret bounds fixture.",
-        publisher: "Ave",
         entry: "dist/index.js",
         tools: [],
       };

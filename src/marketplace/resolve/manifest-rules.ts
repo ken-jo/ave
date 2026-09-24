@@ -72,6 +72,9 @@ export function gitInstallManifestMismatches(document: unknown, expected: Expect
   if (Object.prototype.hasOwnProperty.call(ave, "installPolicy")) {
     problems.push("installPolicy is no longer supported: no package is installed or locked by its own manifest");
   }
+  if (Object.prototype.hasOwnProperty.call(ave, "publisher")) {
+    problems.push("publisher is no longer supported: no verified publishing identity backs it");
+  }
   const requires = ave.requires;
   const minAppVersion = isRecord(requires) ? requires.minAppVersion : undefined;
   if (typeof minAppVersion !== "string") {

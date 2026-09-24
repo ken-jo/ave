@@ -393,7 +393,6 @@ describe("PluginRuntime.disable", () => {
         },
       ],
       description: "Test plugin fixture.",
-      publisher: "Test fixture",
     };
     const manifestPath = join(pluginDir, "plugin.json");
     await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
@@ -429,7 +428,6 @@ describe("PluginRuntime.disable", () => {
       entry: "entry.mjs",
       tools: ["bad.method"],
       description: "Test fixture.",
-      publisher: "Test fixture",
     };
     const manifestPath = join(pluginDir, "plugin.json");
     await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
@@ -468,7 +466,6 @@ describe("PluginRuntime.disable", () => {
       entry: "entry.mjs",
       tools: ["1bad_name"],
       description: "Test fixture.",
-      publisher: "Test fixture",
     };
     const manifestPath = join(pluginDir, "plugin.json");
     await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
@@ -507,7 +504,6 @@ describe("PluginRuntime.disable", () => {
       entry: "entry.mjs",
       tools: ["bad-name"],
       description: "Test fixture.",
-      publisher: "Test fixture",
     };
     const manifestPath = join(pluginDir, "plugin.json");
     await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
@@ -595,7 +591,6 @@ describe("PluginRuntime.disable", () => {
         },
       ],
       description: "",
-      publisher: "Test fixture",
     };
     const manifestPath = join(pluginDir, "plugin.json");
     await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
@@ -643,7 +638,6 @@ describe("PluginRuntime.disable", () => {
         name: "ui-actions",
         version: "1.0.0",
         description: "Test fixture.",
-        publisher: "Test fixture",
         entry: "entry.mjs",
         tools: [
           // uic_get is UI-invokable (dual) — reachable from callFromUi.
@@ -716,7 +710,6 @@ describe("PluginRuntime.disable", () => {
         name: "ui-only-method",
         version: "1.0.0",
         description: "Test fixture.",
-        publisher: "Test fixture",
         entry: "entry.mjs",
         // UI-only method: app-only visibility, not model-visible (not an LLM tool).
         tools: [
@@ -769,7 +762,6 @@ describe("PluginRuntime.disable", () => {
         name: "meta-plugin",
         version: "1.0.0",
         description: "Test fixture.",
-        publisher: "Test fixture",
         entry: "entry.mjs",
         tools: [
           {
@@ -827,7 +819,6 @@ describe("PluginRuntime.disable", () => {
             },
           ],
           description: "Test fixture.",
-          publisher: "Test fixture",
         })),
         "utf-8");
       await writeTestPluginRegistry({ registryPath }, [
@@ -897,7 +888,6 @@ describe("PluginRuntime.disable", () => {
             },
           ],
           description: "Test fixture.",
-          publisher: "Test fixture",
         })),
         "utf-8");
       await writeTestPluginRegistry({ registryPath }, [
@@ -967,7 +957,6 @@ describe("PluginRuntime.disable", () => {
           name: id,
           version: "1.0.0",
           description: "Test fixture.",
-          publisher: "Test fixture",
           entry: "entry.mjs",
           tools: [
             {
@@ -1135,7 +1124,6 @@ describe("PluginRuntime.disable", () => {
         name: id,
         version: "1.0.0",
         description: "Test fixture.",
-        publisher: "Test fixture",
         installPolicy: "user",
         entry: relative(pluginDir, entryPath),
         tools: [
@@ -1377,7 +1365,6 @@ describe("PluginRuntime.disable", () => {
         name: "cap-provider",
         version: "1.0.0",
         description: "Test fixture.",
-        publisher: "Test fixture",
         entry: "entry.mjs",
         tools: [
           {
@@ -1413,7 +1400,6 @@ describe("PluginRuntime.disable", () => {
         name: "needs-calendar",
         version: "1.0.0",
         description: "Test fixture.",
-        publisher: "Test fixture",
         entry: "entry.mjs",
         tools: [
           {
@@ -1498,7 +1484,6 @@ describe("PluginRuntime registry trusted-path", () => {
         name: id,
         version: "1.0.0",
         description: "Test fixture.",
-        publisher: "Test fixture",
         entry: "entry.mjs",
         tools: [
           {
@@ -1644,7 +1629,6 @@ export default async function createPlugin(ctx) {
         },
       ],
       description: "Test fixture.",
-      publisher: "Test fixture",
     };
     const manifestPath = join(pluginDir, "plugin.json");
     await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
@@ -1685,7 +1669,6 @@ export default async function createPlugin() {
         },
       ],
       description: "Start failure fixture.",
-      publisher: "Test fixture",
     };
     const manifestPath = join(pluginDir, "plugin.json");
     await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
@@ -1729,7 +1712,6 @@ export default async function createPlugin({ hostApi }) {
         },
       ],
       description: "Start failure fixture.",
-      publisher: "Test fixture",
     };
     const manifestPath = join(pluginDir, "plugin.json");
     await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
@@ -1835,7 +1817,6 @@ export default async function createPlugin({ hostApi }) {
           },
         ],
         description: "Disposer incarnation fixture.",
-        publisher: "Test fixture",
       })),
       "utf-8");
     return manifestPath;
@@ -1925,7 +1906,6 @@ export default async function createPlugin({ hostApi }) {
         },
       ],
       description: "Boot timeout revocation fixture.",
-      publisher: "Test fixture",
     });
     const timedManifestPath = join(timedDir, "plugin.json");
     const slowManifestPath = join(slowDir, "plugin.json");
@@ -2777,7 +2757,6 @@ export default async function createPlugin() {
             },
           ],
           description: "stale start fixture",
-          publisher: "Test fixture",
         })),
         "utf-8");
       await writeFile(
@@ -2841,7 +2820,6 @@ export default async function createPlugin() {
             },
           ],
           description: "fresh start fixture",
-          publisher: "Test fixture",
         })),
         "utf-8");
       await writeFile(
@@ -2942,7 +2920,6 @@ export default async function createPlugin() {
           },
         ],
         description: "Restart configuration fixture.",
-        publisher: "Test fixture",
       })),
       "utf-8");
     await writeFile(
@@ -3298,7 +3275,6 @@ export default async function createPlugin() { return {}; }`,
           },
         ],
         description: "test fixture for addPlugin import-fail rollback signal",
-        publisher: "test",
       })),
       "utf-8");
     await writeFile(
@@ -3345,7 +3321,6 @@ export default async function createPlugin() {
         name: "Update",
         version: "1.0.0",
         description: "regression fixture",
-        publisher: "Test fixture",
         entry: "entry-v1.mjs",
         tools: [
           {
@@ -3401,7 +3376,6 @@ export default async function createPlugin() {
         name: "Update",
         version: "2.0.0",
         description: "regression fixture v2",
-        publisher: "Test fixture",
         entry: "entry-v2.mjs",
         tools: [
           {
@@ -3464,7 +3438,6 @@ export default async function createPlugin() {
           name: "Update Schema",
           version,
           description: `schema fixture ${version}`,
-          publisher: "Test fixture",
           entry: "entry.mjs",
           tools: [
             {

@@ -201,7 +201,6 @@ async function seedE2ePlugins(
         version: "0.0.0",
         description:
           "Minimal plugin used by plugin active/inactive E2E coverage.",
-        publisher: "Ave E2E",
         entry: "dist/hostPlugin.js",
         tools: [
           {

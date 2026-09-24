@@ -292,7 +292,7 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
     await mkdir(join(source, "dist"), { recursive: true });
     await writeFile(
       join(source, "plugin.json"),
-      JSON.stringify(agentPluginsDocument({ id: "alpha", name: "Alpha", version: "2.0.0", description: "local", publisher: "tests", entry: "dist/index.js" })),
+      JSON.stringify(agentPluginsDocument({ id: "alpha", name: "Alpha", version: "2.0.0", description: "local", entry: "dist/index.js" })),
     );
     await writeFile(join(source, "dist", "index.js"), ENTRY_JS);
     await service.installLocal(source, preparedActivationOptionsForTest);

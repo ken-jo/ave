@@ -69,7 +69,6 @@ export function buildPluginZip(
     entry: "index.js",
     installPolicy: options.installPolicy ?? "user",
     description: "Marketplace loopback e2e test plugin",
-    publisher: "ave-community",
     requires: { minAppVersion: "0.5.2" },
     tools: [
       {

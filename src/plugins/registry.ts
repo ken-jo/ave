@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { dirname, resolve } from "node:path";
-import type { InstallPolicy, PluginAccessSpec, PluginRegistry, PluginRegistryEntry, PluginRegistryEntryInstallSource } from "./types.js";
+import type { PluginAccessSpec, PluginRegistry, PluginRegistryEntry, PluginRegistryEntryInstallSource } from "./types.js";
 import { logPluginLifecycle, PluginPhase } from "./lifecycle-log.js";
 import { isCommittedAtomicWriteError, isMissingPathError, writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 import { FileLockReleaseError, withFileLock, withInProcessFileQueue } from "../lib/with-file-lock.js";
@@ -29,7 +29,7 @@ import { isRecord, isStringArray } from "../shared/is-record.js";
  * sees a clear failure (missing receipt) instead of a silent skip.
  */
 interface LegacyRegistryEntry extends Omit<PluginRegistryEntry, "installSource"> {
-  installedBy?: InstallPolicy;
+  installedBy?: "admin" | "user";
   _devLinked?: boolean;
   /**
    * Pre-2026-05 registries may carry `installSource: "dev-link"`. The

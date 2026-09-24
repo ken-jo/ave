@@ -1189,11 +1189,6 @@
     },
     {
       "type": "types",
-      "file": "src/audit/audit-logger.ts",
-      "name": "PluginInstallEscalationAudit"
-    },
-    {
-      "type": "types",
       "file": "src/audit/audit-schema.ts",
       "name": "AuditAllow"
     },
@@ -2031,11 +2026,6 @@
       "type": "types",
       "file": "src/plugins/runtime.ts",
       "name": "PluginPreparationStatus"
-    },
-    {
-      "type": "types",
-      "file": "src/plugins/runtime/index.ts",
-      "name": "InstallPolicy"
     },
     {
       "type": "types",

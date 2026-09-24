@@ -28,7 +28,6 @@ import { parseSettingsPath } from "../../shared/settings-tabs.js";
 import type {
   PluginManifest,
   PluginToolOperationPolicy,
-  InstallPolicy,
   Tool,
 } from "../types.js";
 import { toolVisibility } from "./tool-visibility.js";
@@ -81,13 +80,29 @@ export function formatUnknownErrorMessage(err: unknown): string {
   return String(err);
 }
 
-export function normalizeInstallPolicy(
-  source: Partial<Pick<PluginManifest, "installPolicy">> | null | undefined,
-): InstallPolicy {
-  if (source?.installPolicy === "admin") {
-    return "admin";
+/**
+ * Ave extension fields the manifest no longer has (design §5.3). Every
+ * official plugin installed before the git marketplace carries them, so an
+ * installed manifest that still has one loads: the field is dropped before
+ * validation and one warning per plugin is logged, until the next update
+ * replaces the manifest. A git install refuses them (manifest-rules.ts).
+ */
+const RETIRED_EXTENSION_FIELDS = ["installPolicy", "publisher"] as const;
+const retiredFieldsWarned = new Set<string>();
+
+function dropRetiredExtensionFields(doc: unknown, parsed: PluginManifest, pid: string, path: string): void {
+  const extensions = typeof doc === "object" && doc !== null ? (doc as { extensions?: unknown }).extensions : undefined;
+  const ave = typeof extensions === "object" && extensions !== null ? (extensions as Record<string, unknown>)[AVE_EXTENSION_NAMESPACE] : undefined;
+  if (typeof ave !== "object" || ave === null) return;
+  const found = RETIRED_EXTENSION_FIELDS.filter((field) => Object.prototype.hasOwnProperty.call(ave, field));
+  if (found.length === 0) return;
+  for (const field of found) {
+    delete (ave as Record<string, unknown>)[field];
+    delete (parsed as unknown as Record<string, unknown>)[field];
   }
-  return "user";
+  if (retiredFieldsWarned.has(pid)) return;
+  retiredFieldsWarned.add(pid);
+  log.warn(`[manifest] ${path}: ignoring retired field(s) ${found.join(", ")}; the plugin's next update removes them`);
 }
 
 export function getDeclaredEmittedEvents(manifest: Pick<PluginManifest, "emittedEvents">,
@@ -402,6 +417,8 @@ export async function parsePluginJson(
     }
   }
 
+  dropRetiredExtensionFields(doc, parsed, pid, path);
+
   if (!validator(doc)) {
     // Enrich the error so users can act on it. Pre-fix AJV's default text
     // for additional-properties was "/ must NOT have additional properties"
@@ -450,7 +467,6 @@ export async function parsePluginJson(
       `[manifest:${pid}] schema validation failed (${path}): ${errs}${hint}`,
     );
   }
-  parsed.installPolicy = normalizeInstallPolicy(parsed);
 
   if (typeof parsed.id !== "string" || parsed.id.length === 0) {
     fail("id", "must be a non-empty string", `"id": "meeting-recorder"`);
@@ -523,13 +539,6 @@ export async function parsePluginJson(
       `"description": "One-line summary of what this plugin does."`,
     );
   }
-  if (typeof parsed.publisher !== "string" || parsed.publisher.length === 0) {
-    log.warn(
-      `plugin '${pid}' at '${path}' is missing publisher field (SHOULD). ` +
-        `Add: "publisher": "Your Org"`,
-    );
-  }
-
   // #885 v6 — materialize each tool's `_meta.ui.visibility` (and the `name`
   // default) into the pure `PluginManifest` every host check below reads (the
   // standard `["model","app"]` default is filled in here, an explicit `[]` is
@@ -687,18 +696,6 @@ export async function parsePluginJson(
     }
   }
 
-  // Surface any remaining testMode flag in a protected plugin manifest.
-  if (
-    normalizeInstallPolicy(parsed) === "admin" &&
-    parsed.config &&
-    typeof parsed.config === "object" &&
-    (parsed.config as Record<string, unknown>).testMode === true
-  ) {
-    log.warn(
-      `protected plugin '${pid}' has config.testMode=true (${path}). ` +
-        `testMode is a development flag and must not ship in production installs — please remove it from the installed manifest.`,
-    );
-  }
 
   // `startupTimeoutMs` 는 *plugin instance.start() lifecycle hook 의 timeout* 만
   // 통제한다 — manifest 의 tool name list 자동 invoke 메커니즘 (runManifestStartupTools,

@@ -41,7 +41,6 @@ describe("#885 v6 — dual-declared visibility (the #1554 governed-vs-bypass inv
         description: "x",
         version: "1.0.0",
         entry: "dist/p.js",
-        publisher: "Ave",
         ...restExtra,
         tools: (tools ?? []).map((tool) =>
           typeof tool === "string" ? pureTool(tool, ["model"]) : tool,

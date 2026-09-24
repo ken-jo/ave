@@ -154,7 +154,6 @@ export function makeTestManifest(
     name: overrides.id,
     version: "0.0.0",
     description: "test fixture",
-    publisher: "tests",
     entry: "dist/hostPlugin.js",
     ...(rest as Partial<PluginManifest>),
     tools,

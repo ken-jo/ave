@@ -50,7 +50,6 @@ function writePlugin(root: string, id: string, opts: {
     name: opts.name,
     version: "1.0.0",
     description: "Test fixture.",
-    publisher: "Test fixture",
     entry: "index.mjs",
     icon: opts.icon,
     iconText: opts.iconText,
@@ -338,7 +337,6 @@ describe("PluginRuntime.listPluginCards — Phase 1.5 Option C catalog", () => {
         name: "Failed",
         version: "1.0.0",
         description: "Test fixture.",
-        publisher: "Test fixture",
         entry: "index.mjs",
         tools: ["failed_read"],
       })));

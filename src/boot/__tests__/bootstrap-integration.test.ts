@@ -502,19 +502,10 @@ vi.mock("../../work-board/work-memory.js", () => ({
 
 // ── plugins/* ────────────────────────────────────────────────────────────────
 vi.mock("../../plugins/marketplace.js", () => ({
-  DisabledMarketplaceFetcher: class {},
   PluginMarketplaceService: class {},
-}));
-vi.mock("../../plugins/cloud-marketplace-fetcher.js", () => ({
-  CloudMarketplaceFetcher: class {
-    updateAllowPrivateNetwork = vi.fn();
-  },
 }));
 vi.mock("../../plugins/plugin-artifact-store.js", () => ({
   PluginArtifactStore: class {},
-}));
-vi.mock("../../plugins/publisher-keys.js", () => ({
-  getBundledPublicKeys: vi.fn(() => ({})),
 }));
 vi.mock("../../plugins/orphan-uninstall-sweeper.js", () => ({
   sweepOrphanUninstallDirs: vi.fn(async () => ({ swept: [], failed: [] })),

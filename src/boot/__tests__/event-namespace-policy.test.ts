@@ -173,7 +173,6 @@ describe("registerManifestEventSubscriptions namespace gate", () => {
       name: id,
       version: "1.0.0",
       description: "Test fixture.",
-      publisher: "Test fixture",
       entry: "entry.mjs",
       tools: [
         {
@@ -321,7 +320,6 @@ describe("capability emit gate", () => {
       name: id,
       version: "1.0.0",
       description: "Test fixture.",
-      publisher: "Test fixture",
       entry: "entry.mjs",
       tools: [
         {

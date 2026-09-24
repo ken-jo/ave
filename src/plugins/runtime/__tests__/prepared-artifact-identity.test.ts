@@ -51,7 +51,6 @@ async function writePreparedPlugin(
     version: "1.0.0",
     entry: "entry.mjs",
     description: "Prepared identity fixture.",
-    publisher: "Ave",
     tools: [{
       name: toolName,
       description: "ping",

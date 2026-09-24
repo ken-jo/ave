@@ -135,13 +135,16 @@ describe("checkMarketplaceRepository", () => {
     ]);
   });
 
-  it("lets only a yanked field pin carry the installPolicy of its era", () => {
+  it("lets only a yanked field pin carry the installPolicy and publisher of its era", () => {
     const files = validFiles();
     const fieldPin = version({ version: "0.9.0", authority: authority(), artifact: { release: { ...artifact().release, tag: "alpha-v0.9.0", asset: "alpha-0.9.0.zip" } } });
     index(files).packages[0]!.versions = [version({ authority: authority(), artifact: artifact() }), fieldPin];
-    const legacy = { name: "alpha", version: "0.9.0", extensions: { "ai.agent-connector.ave": { ...authority(), installPolicy: "admin" } } };
+    const legacy = { name: "alpha", version: "0.9.0", extensions: { "ai.agent-connector.ave": { ...authority(), installPolicy: "admin", publisher: "Ave Official" } } };
     const run = () => checkMarketplaceRepository(tree(files), { ...OFFICIAL, releasedManifests: new Map([["alpha@0.9.0", legacy]]) });
-    expect(run()).toEqual([{ subject: "plugin/alpha", message: expect.stringContaining("the released plugin.json of 0.9.0: installPolicy is no longer supported") }]);
+    expect(run()).toEqual([
+      { subject: "plugin/alpha", message: expect.stringContaining("the released plugin.json of 0.9.0: installPolicy is no longer supported") },
+      { subject: "plugin/alpha", message: expect.stringContaining("the released plugin.json of 0.9.0: publisher is no longer supported") },
+    ]);
     Object.assign(fieldPin, { yanked: { reason: "Kept so installs of this zip keep their grant.", at: AT } });
     expect(run()).toEqual([]);
     // Everything else still has to match.

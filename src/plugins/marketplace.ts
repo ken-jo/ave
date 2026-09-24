@@ -10,7 +10,7 @@ import {
 } from "./committed-generation-publication-error.js";
 import { toRegistryRelativeManifestPath, type PluginPaths } from "./plugin-paths.js";
 import { isDevModeUnlocked } from "../boot/dev-flags.js";
-import type { PluginAccessSpec, PluginManifest, PluginMarketplaceItem, PluginRegistryEntryInstallSource, PluginRegistryEntryOrigin, PluginRegistryTrust } from "./types.js";
+import type { DependencySpec, PluginAccessSpec, PluginManifest, PluginRegistryEntryInstallSource, PluginRegistryEntryOrigin, PluginRegistryTrust } from "./types.js";
 import { MissingDependenciesError, MissingPluginDependenciesError } from "./types.js";
 import { resolveDependencies } from "./dependency-resolver.js";
 import {
@@ -90,7 +90,7 @@ function shaOfManifest(manifest: unknown): string {
 }
 
 function normalizeDependencies(
-  plugin: Pick<PluginMarketplaceItem, "dependencies">,
+  plugin: { dependencies?: Array<string | DependencySpec> },
 ): Array<{ pluginId: string; versionRange?: string; required: boolean }> {
   const result: Array<{ pluginId: string; versionRange?: string; required: boolean }> = [];
   for (const dependency of plugin.dependencies ?? []) {
@@ -681,7 +681,7 @@ export class PluginMarketplaceService {
   private async preflightGitDependencies(plan: PluginInstallPlan): Promise<void> {
     const required = plan.authority.requires?.capabilities ?? [];
     const dependencies = normalizeDependencies({
-      dependencies: plan.authority.dependencies as PluginMarketplaceItem["dependencies"],
+      dependencies: plan.authority.dependencies as Array<string | DependencySpec> | undefined,
     });
     if (required.length === 0 && dependencies.length === 0) return;
     const installed = await this.loadInstalledManifests();

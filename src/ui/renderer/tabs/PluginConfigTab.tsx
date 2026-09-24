@@ -656,7 +656,6 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
                     }`}
                   >
                     <div className="flex items-center gap-1 min-w-0">
-                      {p.isManaged && <span title={t("pluginConfigTab.managedPluginTitle")}>🔒</span>}
                       <span className="min-w-0 line-clamp-1">{p.name}</span>
                     </div>
                     <div className="flex items-center gap-1 mt-0.5">
@@ -728,27 +727,6 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-1">
                       <h3 className="min-w-0 break-words text-sm font-semibold">{selectedPlugin.name}</h3>
-                      {selectedPlugin.isManaged && (
-                        <span className="inline-flex items-center gap-0.5 rounded-full bg-info/(--opacity-soft) px-1.5 py-px text-[9px] font-medium text-info">🔒 {t("pluginConfigTab.badgeManaged")}</span>
-                      )}
-                      {selectedPlugin.installPolicy === "admin" && (
-                        <span
-                          className="inline-flex items-center gap-0.5 rounded-full border border-destructive/(--opacity-muted) bg-destructive/(--opacity-subtle) px-1.5 py-px text-[9px] font-medium text-destructive"
-                          title={t("pluginConfigTab.adminOnlyTitle")}
-                          aria-label={t("pluginConfigTab.adminOnlyAriaLabel")}
-                        >
-                          🔐 {t("pluginConfigTab.badgeAdminOnly")}
-                        </span>
-                      )}
-                      {selectedPlugin.installPolicy === "user" && (
-                        <span
-                          className="inline-flex items-center gap-0.5 rounded-full border border-border bg-muted px-1.5 py-px text-[9px] font-medium text-muted-foreground"
-                          title={t("pluginConfigTab.userInstallableTitle")}
-                          aria-label={t("pluginConfigTab.userInstallableAriaLabel")}
-                        >
-                          {t("pluginConfigTab.badgeUserInstallable")}
-                        </span>
-                      )}
                       {selectedPlugin.loadStatus && (
                         selectedPlugin.loadStatus === "loaded" ? (
                           <span
@@ -785,9 +763,6 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
                       <span className="font-mono text-[10px] text-muted-foreground">{selectedPlugin.id}</span>
                       {selectedPlugin.version && (
                         <span className="text-[10px] text-muted-foreground">· v{selectedPlugin.version}</span>
-                      )}
-                      {selectedPlugin.publisher && (
-                        <span className="text-[10px] text-muted-foreground">· {selectedPlugin.publisher}</span>
                       )}
                     </div>
                     {selectedPlugin.description && (
@@ -831,8 +806,7 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
                       variant="destructive"
                       className="h-7 text-xs px-2"
                       onClick={() => setUninstallTarget(selectedPlugin)}
-                      disabled={saving || selectedPlugin.isManaged}
-                      title={selectedPlugin.isManaged ? t("pluginConfigTab.managedCannotRemoveTitle") : undefined}
+                      disabled={saving}
                     >
                       {t("pluginConfigTab.uninstallButton")}
                     </Button>

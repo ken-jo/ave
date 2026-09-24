@@ -55,7 +55,6 @@ describe("PluginMarketplaceService.installLocal", () => {
           name: "Test Plugin",
           version: "1.2.3",
           description: "fixture",
-          publisher: "tests",
           entry: "dist/hostPlugin.js",
         }),
         null,
@@ -145,7 +144,6 @@ describe("PluginMarketplaceService.installLocal", () => {
         id: "test-plugin",
         name: "Test Plugin",
         description: "fixture",
-        publisher: "tests",
         entry: "dist/hostPlugin.js",
       })),
       "utf-8");
@@ -266,7 +264,6 @@ describe("PluginMarketplaceService.installLocal", () => {
         name: "Test Plugin",
         version: "2.0.0",
         description: "broken staged candidate",
-        publisher: "tests",
         entry: "dist/hostPlugin.js",
       })),
       "utf-8");
@@ -342,7 +339,6 @@ describe("PluginMarketplaceService.installLocal", () => {
         name: "Test Plugin",
         version: "2.0.0",
         description: "fixture v2",
-        publisher: "tests",
         entry: "dist/hostPlugin.js",
       })),
       "utf-8");
@@ -384,7 +380,6 @@ describe("PluginMarketplaceService.installLocal", () => {
         name: "Test Plugin",
         version: "2.0.0",
         description: "fixture v2",
-        publisher: "tests",
         entry: "dist/hostPlugin.js",
       })),
       "utf-8");
@@ -415,7 +410,6 @@ describe("PluginMarketplaceService.installLocal", () => {
         name: "Test Plugin",
         version: "2.0.0",
         description: "fixture v2",
-        publisher: "tests",
         entry: "dist/hostPlugin.js",
       })),
       "utf-8");
@@ -444,7 +438,6 @@ describe("PluginMarketplaceService.installLocal", () => {
         name: "Test Plugin",
         version: "2.0.0",
         description: "committed candidate",
-        publisher: "tests",
         entry: "dist/hostPlugin.js",
       })),
       "utf-8");
@@ -499,7 +492,6 @@ describe("PluginMarketplaceService.installLocal", () => {
         name: "Test Plugin",
         version: "2.0.0",
         description: "fixture v2",
-        publisher: "tests",
         entry: "dist/hostPlugin.js",
       })),
       "utf-8");
@@ -560,7 +552,6 @@ describe("PluginMarketplaceService.installLocal", () => {
         name: "Test Plugin",
         version: "2.0.0",
         description: "verified retry",
-        publisher: "tests",
         entry: "dist/hostPlugin.js",
       })));
 
@@ -592,7 +583,6 @@ describe("PluginMarketplaceService.installLocal", () => {
           name: "Test Plugin",
           version: "1.2.3",
           description: "fixture",
-          publisher: "tests",
           entry: "dist/hostPlugin.js",
           pluginAccess: accessSpec,
         }),
@@ -647,7 +637,6 @@ describe("PluginMarketplaceService.installLocal", () => {
           name: "Test Plugin",
           version: "1.2.3",
           description: "fixture",
-          publisher: "tests",
           entry: "dist/hostPlugin.js",
           pluginAccess: accessSpec,
         }),

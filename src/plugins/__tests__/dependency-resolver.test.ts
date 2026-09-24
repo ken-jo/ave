@@ -10,7 +10,6 @@ function makeManifest(caps: string[]): PluginManifest {
     entry: "dist/index.js",
     tools: [],
     description: "Test fixture.",
-    publisher: "Test fixture",
     capabilities: caps,
   };
 }
