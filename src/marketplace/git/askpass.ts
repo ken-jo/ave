@@ -48,8 +48,12 @@ interface TicketState {
 }
 
 export interface AskpassBrokerOptions {
-  /** Stored token for a normalized host, or null. */
-  getToken(host: string): string | null;
+  /**
+   * The token for a normalized host as the call's source uses it, or null.
+   * Stored tokens are per host; the source id lets a token typed into the
+   * add dialog answer for that preview only.
+   */
+  getToken(host: string, sourceId: string): string | null;
   /** Binary that runs the helper in Node mode; defaults to `process.execPath`. */
   nodeExecPath?: string;
   platform?: NodeJS.Platform;
@@ -124,7 +128,7 @@ export class AskpassBroker {
     private readonly dir: string,
     readonly launcherPath: string,
     readonly endpoint: string,
-    private readonly getToken: (host: string) => string | null,
+    private readonly getToken: (host: string, sourceId: string) => string | null,
   ) {}
 
   static async start(options: AskpassBrokerOptions): Promise<AskpassBroker> {
@@ -158,9 +162,9 @@ export class AskpassBroker {
     }
   }
 
-  /** Whether a token is stored for `host`, so a ticket would have something to answer with. */
-  hasToken(host: string): boolean {
-    return this.getToken(host) !== null;
+  /** Whether a token exists for `host` and `sourceId`, so a ticket would have something to answer with. */
+  hasToken(host: string, sourceId: string): boolean {
+    return this.getToken(host, sourceId) !== null;
   }
 
   issueTicket(binding: { host: string; sourceId: string }): AskpassTicket {
@@ -183,7 +187,7 @@ export class AskpassBroker {
     if (!ticket) return "";
     const asked = promptHost(prompt);
     if (!asked || asked.host !== ticket.host) return "";
-    const token = this.getToken(ticket.host);
+    const token = this.getToken(ticket.host, ticket.sourceId);
     if (!token) return "";
     if (asked.field === "username") return TOKEN_USERNAME;
     ticket.credentialOffered = true;

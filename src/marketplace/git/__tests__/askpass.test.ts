@@ -47,6 +47,16 @@ describe("AskpassBroker", () => {
     expect(broker.answer(id, "Password for 'https://github.com': ")).toBe("");
   });
 
+  it("asks for the token with the ticket's source, so a token typed into a preview answers that preview only", async () => {
+    broker = await AskpassBroker.start({ getToken: (host, sourceId) => (sourceId === "preview-1" ? "typed" : host === "github.com" ? "stored" : null) });
+    const preview = broker.issueTicket({ host: "github.com", sourceId: "preview-1" });
+    const other = broker.issueTicket({ host: "github.com", sourceId: "ave" });
+    expect(broker.answer(preview.env.AVE_ASKPASS_TICKET!, "Password for 'https://github.com': ")).toBe("typed");
+    expect(broker.answer(other.env.AVE_ASKPASS_TICKET!, "Password for 'https://github.com': ")).toBe("stored");
+    expect(broker.hasToken("github.com", "ave")).toBe(true);
+    expect(broker.hasToken("git.example", "ave")).toBe(false);
+  });
+
   it("answers nothing when no token is stored for the host", async () => {
     broker = await AskpassBroker.start({ getToken: () => null });
     const ticket = broker.issueTicket({ host: "git.example", sourceId: "custom" });

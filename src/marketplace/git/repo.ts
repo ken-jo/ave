@@ -17,7 +17,7 @@ import { dirname, join } from "node:path";
 import { Parser, type ReadEntry } from "tar";
 import { canonicalZipEntryPathIdentity, sanitizeZipEntryPath } from "../../plugins/zip-entry-path.js";
 import { MarketplaceError } from "../errors.js";
-import { GitCommandError, type GitRemote, type GitRunner, GIT_TIMEOUTS_MS } from "./run-git.js";
+import { GitCommandError, type GitCommands, type GitRemote, GIT_TIMEOUTS_MS } from "./run-git.js";
 
 const OID = /^[0-9a-f]{40}$/u;
 /** Upper bound on object ids requested in one fetch, to keep the command line bounded. */
@@ -62,11 +62,11 @@ export function assertRepoPath(path: string): void {
 
 export class BareRepo {
   constructor(
-    private readonly runner: GitRunner,
+    private readonly runner: GitCommands,
     readonly dir: string,
   ) {}
 
-  static async init(runner: GitRunner, dir: string): Promise<BareRepo> {
+  static async init(runner: GitCommands, dir: string): Promise<BareRepo> {
     await mkdir(dirname(dir), { recursive: true });
     await runner.run(["init", "--bare", "--quiet", dir], { timeoutMs: GIT_TIMEOUTS_MS.local });
     return new BareRepo(runner, dir);

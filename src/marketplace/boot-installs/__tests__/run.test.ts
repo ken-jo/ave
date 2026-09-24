@@ -10,7 +10,7 @@ import { EMPTY_MARKETPLACE_POLICY, type MarketplacePolicy, type PackageKey } fro
 import type { SourceOrigin } from "../../sources/registry.js";
 import { AppliedDefaults } from "../applied.js";
 import { DEFAULT_INSTALLS } from "../default-installs.js";
-import { assertNotRequiredByPolicy, requiredByPolicy, runBootInstalls, type BootInstallInput } from "../run.js";
+import { assertNotRequiredByPolicy, bootInstallNoticeFrom, requiredByPolicy, runBootInstalls, type BootInstallInput } from "../run.js";
 
 const AT = new Date("2026-09-23T00:00:00.000Z");
 
@@ -184,5 +184,32 @@ describe("runBootInstalls (design §10.2)", () => {
     await expect(AppliedDefaults.open(file)).rejects.toThrow("result is invalid");
     writeFileSync(file, "not json");
     await expect(AppliedDefaults.open(file)).rejects.toThrow();
+  });
+});
+
+describe("bootInstallNoticeFrom (design §15.1)", () => {
+  const empty = { installed: [], updated: [], switched: [], skipped: [], failed: [] };
+
+  it("is null when the boot installed, updated and moved nothing", () => {
+    expect(bootInstallNoticeFrom({ ...empty, skipped: [{ key: key("a"), reason: "r" }], failed: [{ key: key("b"), message: "m" }] }, EMPTY_MARKETPLACE_POLICY)).toBeNull();
+  });
+
+  it("offers the default installs to the user and lists what the policy required, updated or moved", () => {
+    const policy: MarketplacePolicy = { ...EMPTY_MARKETPLACE_POLICY, requiredInstalls: [key("vpn", "corp")] };
+    const notice = bootInstallNoticeFrom(
+      { ...empty, installed: [key("meeting"), key("vpn", "corp"), key("tokyo-night", "ave", "theme")], updated: [key("audit", "corp")], switched: [key("mail", "corp")] },
+      policy,
+    );
+    expect(notice).toEqual({
+      forYou: [
+        { sourceId: "ave", kind: "plugin", name: "meeting" },
+        { sourceId: "ave", kind: "theme", name: "tokyo-night" },
+      ],
+      required: [
+        { sourceId: "corp", kind: "plugin", name: "vpn" },
+        { sourceId: "corp", kind: "plugin", name: "audit" },
+        { sourceId: "corp", kind: "plugin", name: "mail" },
+      ],
+    });
   });
 });

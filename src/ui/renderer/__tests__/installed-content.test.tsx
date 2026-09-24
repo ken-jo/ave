@@ -127,6 +127,25 @@ describe("installed languages (blueprint 3.3)", () => {
   });
 });
 
+describe("marketplace changes (P4)", () => {
+  it("reads the installed content again when the marketplace catalog changes", async () => {
+    const french = { name: "french", locale: "fr", nativeName: "Français", englishName: "French", missingKeys: [], sourceId: "acme", version: "1.0.0" };
+    const api = bridge(view());
+    let changed: () => void = () => undefined;
+    const off = vi.fn();
+    await ensureInstalledContent({ installedContent: api, gitMarketplace: { onCatalogChanged: (listener) => ((changed = listener), off) } });
+    expect(isLocale("fr")).toBe(false);
+
+    vi.mocked(api.installed).mockResolvedValue({ ok: true, content: view({ languages: [french] }) });
+    changed();
+    await waitFor(() => expect(isLocale("fr")).toBe(true));
+    expect(api.installed).toHaveBeenCalledTimes(2);
+
+    resetInstalledContentForTests();
+    expect(off).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("installed fonts (blueprint 3.4)", () => {
   it("declares @font-face rules only for ave-content font URLs", () => {
     const css = fontFaceCss([

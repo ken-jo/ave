@@ -147,6 +147,7 @@ describe("IPC domain runtime named-export lock", () => {
         "plugins": [
           "__resetLastThemePayloadForTests",
           "getLastThemePayload",
+          "pluginLifecycleServices",
           "publishHostThemeChanged",
           "recordValidatedTheme",
           "registerPluginsHandlers",

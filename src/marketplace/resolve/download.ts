@@ -21,12 +21,20 @@ export interface DownloadOptions {
   headers?: Record<string, string>;
   stallMs?: number;
   signal?: AbortSignal;
+  /**
+   * The source signs in with a token and none is stored: a 404 is how a
+   * private repository's host hides what it will not serve without one.
+   */
+  tokenMissing?: boolean;
 }
 
-function statusError(url: string, status: number): MarketplaceError {
+function statusError(url: string, status: number, tokenMissing: boolean): MarketplaceError {
   const where = new URL(url).host;
   if (status === 401 || status === 403) {
     return new MarketplaceError("SOURCE_AUTH_REQUIRED", `${where} refused the download (HTTP ${status})`);
+  }
+  if (status === 404 && tokenMissing) {
+    return new MarketplaceError("SOURCE_AUTH_REQUIRED", `${where} answered HTTP 404 and no token is stored for this source's host`);
   }
   return new MarketplaceError("SOURCE_UNREACHABLE", `${where} answered HTTP ${status}`);
 }
@@ -41,7 +49,7 @@ async function gatedGet(url: string, options: Omit<DownloadOptions, "maxBytes" |
   });
   if (!response.ok) {
     await response.body?.cancel().catch(() => undefined);
-    throw statusError(url, response.status);
+    throw statusError(url, response.status, options.tokenMissing === true);
   }
   return response;
 }

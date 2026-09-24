@@ -19,7 +19,7 @@ const STATUS: GitRuntimeStatus = Object.freeze({
   state: "missing",
   active: null,
   systemTooOld: { path: "/usr/bin/git", version: "2.34.1" },
-  managed: { version: "2.53.0", installed: false, available: true },
+  managed: { version: "2.53.0", installed: false, available: true, size: 62348987 },
   lastInstallError: null,
 });
 

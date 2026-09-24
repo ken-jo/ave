@@ -28,7 +28,7 @@ import { treeDigest } from "../resolve/plugin-ladder.js";
 import type { MarketplacePolicy } from "../sources/policy.js";
 import { isDataContentKind, parseContent, type ContentFile, type DataContentKind, type ParsedContent } from "./kinds.js";
 import { ContentLedger, type LedgerEntry } from "./ledger.js";
-import { CONTENT_RULES, DESCRIPTOR_ALLOWANCE_BYTES, contentFileProblem, isContentKind, type ContentKind } from "./rules.js";
+import { CONTENT_RULES, DESCRIPTOR_ALLOWANCE_BYTES, checkContentFiles, isContentKind, type ContentKind } from "./rules.js";
 
 const log = createLogger("marketplace-content-store");
 
@@ -53,21 +53,9 @@ export interface StageOptions {
 
 function asDataPlan(plan: PackagePlan): DataContentPlan {
   if (!isContentKind(plan.kind) || !isDataContentKind(plan.kind)) {
-    throw new Error(`${plan.kind} ${plan.name} is not a theme, language, font, provider or messaging-connection package`);
+    throw new Error(`${plan.kind} ${plan.name} is not a content package`);
   }
   return plan as DataContentPlan;
-}
-
-/** Hold `files` to the rules of `kind` (design §5.4); the descriptor must already be out of the list. */
-function checkFiles(kind: ContentKind, files: readonly ContentFile[]): void {
-  const rule = CONTENT_RULES[kind];
-  if (files.length > rule.maxFiles) throw new MarketplaceError("CONTENT_RULE_VIOLATION", `a ${kind} package holds at most ${rule.maxFiles} files`);
-  const bytes = files.reduce((sum, file) => sum + file.data.length, 0);
-  if (bytes > rule.maxBytes) throw new MarketplaceError("CONTENT_RULE_VIOLATION", `a ${kind} package holds at most ${rule.maxBytes} bytes`);
-  for (const file of files) {
-    const problem = contentFileProblem(kind, file.path);
-    if (problem) throw new MarketplaceError("CONTENT_RULE_VIOLATION", problem);
-  }
 }
 
 function digestOf(files: readonly ContentFile[]): string {
@@ -99,7 +87,7 @@ export async function stageContentPackage(plan: PackagePlan, access: RepositoryA
       if (file.path === DESCRIPTOR_NAME) continue;
       files.push({ path: file.path, data: await readFile(join(dest, ...file.path.split("/"))) });
     }
-    checkFiles(dataPlan.kind, files);
+    checkContentFiles(dataPlan.kind, files);
     const content = parseContent(dataPlan.kind, files, {
       name: dataPlan.name,
       payload: descriptor.payload,
@@ -347,7 +335,7 @@ export class ContentStore {
     try {
       const dir = this.packageDir(entry);
       const files = await readInstalledFiles(dir);
-      checkFiles(entry.kind, files);
+      checkContentFiles(entry.kind, files);
       if (digestOf(files) !== entry.origin.contentSha256) throw new Error("the installed files changed after install");
       // The descriptor is not installed; the digest ties these bytes to the ones checked against it at install.
       const content = parseContent(entry.kind, files, {

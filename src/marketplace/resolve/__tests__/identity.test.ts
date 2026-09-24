@@ -66,6 +66,16 @@ describe("updateFor (update binding)", () => {
     expect(updateFor({ ...installed(), version: "1.1.0" }, [rows[0]!], sources)).toEqual({ state: "not_listed" });
   });
 
+  it("treats a new commit-named version of a direct package as an update, though semver ranks them equal (design §8.2)", () => {
+    const older = `0.0.0+g${"1".repeat(12)}`;
+    const newer = `0.0.0+g${"2".repeat(12)}`;
+    const rows = [row("acme", { state: "candidate", version: version(newer) })];
+    expect(updateFor({ ...installed(), version: older }, rows, sources)).toMatchObject({ state: "update", version: newer });
+    expect(updateFor({ ...installed(), version: newer }, rows, sources)).toEqual({ state: "current" });
+    expect(classifyInstall(plan({ version: newer }), installed({ version: older }))).toEqual({ action: "replace", direction: "upgrade", from: older });
+    expect(classifyInstall(plan({ version: newer }), installed({ version: newer }))).toEqual({ action: "replace", direction: "reinstall", from: newer });
+  });
+
   it("reports a removed source, an unbound install and an update that needs a newer app", () => {
     expect(updateFor({ ...installed({ sourceId: "gone" }), version: "1.1.0" }, [], sources)).toEqual({ state: "source_removed" });
     expect(updateFor({ ...installed({ sourceId: null }), version: "1.1.0" }, [], sources)).toEqual({ state: "unbound" });

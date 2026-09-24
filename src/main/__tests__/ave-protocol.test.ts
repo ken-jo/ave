@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   findAveProtocolUri,
+  parseGitMarketplaceUri,
   parseMarketplacePluginActionUri,
   parseMcpLoginUri,
   parsePluginAuthUri,
@@ -205,5 +206,55 @@ describe("parseMcpLoginUri", () => {
     expect(parseMcpLoginUri("ave://mcp-login/%2E%2E%2Fcontext7-mcp")).toBeNull();
     expect(parseMcpLoginUri("ave://install/mcp/context7-mcp")).toBeNull();
     expect(parseMcpLoginUri("https://mcp-login/context7-mcp")).toBeNull();
+  });
+});
+
+describe("parseGitMarketplaceUri (blueprint 4.6)", () => {
+  it("reads install and uninstall links with a kind, a package name and a source", () => {
+    expect(parseGitMarketplaceUri("ave://install/plugin/calendar@ave")).toEqual({
+      action: "install",
+      key: { sourceId: "ave", kind: "plugin", name: "calendar" },
+    });
+    expect(parseGitMarketplaceUri("AVE://UNINSTALL/messaging-connection/team-chat@corp-tools")).toEqual({
+      action: "uninstall",
+      key: { sourceId: "corp-tools", kind: "messaging-connection", name: "team-chat" },
+    });
+  });
+
+  it("reads an add link's address as given, for the Add dialog to check", () => {
+    expect(parseGitMarketplaceUri("ave://marketplace/add?url=https%3A%2F%2Fgithub.com%2Facme%2Ftools")).toEqual({
+      action: "add",
+      url: "https://github.com/acme/tools",
+    });
+    expect(parseGitMarketplaceUri("ave://marketplace/add?url=acme%2Ftools")).toEqual({ action: "add", url: "acme/tools" });
+  });
+
+  it("leaves the legacy slug links to their own parser", () => {
+    expect(parseGitMarketplaceUri("ave://install/my-plugin")).toBeNull();
+    expect(parseGitMarketplaceUri("ave://install/plugin/my-plugin")).toBeNull();
+    expect(parseMarketplacePluginActionUri("ave://install/plugin/calendar@ave")).toBeNull();
+  });
+
+  it("refuses anything outside the three shapes", () => {
+    for (const url of [
+      "ave://install/widget/calendar@ave",
+      "ave://install/plugin/Calendar@ave",
+      "ave://install/plugin/calendar@Ave",
+      "ave://install/plugin/calendar@",
+      "ave://install/plugin/@ave",
+      "ave://install/plugin/cal--endar@ave",
+      "ave://install/plugin/calendar@ave/extra",
+      "ave://install/plugin/calendar@ave?auto=1",
+      "ave://install/plugin/calendar@ave#now",
+      "ave://marketplace/add",
+      "ave://marketplace/add?url=",
+      "ave://marketplace/add?url=a&id=b",
+      "ave://marketplace/remove?url=acme%2Ftools",
+      "ave://marketplace/add?url=acme%0Atools",
+      `ave://marketplace/add?url=${"a".repeat(2049)}`,
+      "https://install/plugin/calendar@ave",
+    ]) {
+      expect(parseGitMarketplaceUri(url), url).toBeNull();
+    }
   });
 });

@@ -29,7 +29,8 @@ vi.mock("electron", () => ({
 }));
 vi.mock("node:path", () => ({ resolve: (...p: string[]) => p.join("/") }));
 vi.mock("../../i18n/index.js", () => ({ t: (k: string) => k }));
-vi.mock("../../ipc/safe-send.js", () => ({ sendToWindow: vi.fn() }));
+const sendToWindow = vi.fn();
+vi.mock("../../ipc/safe-send.js", () => ({ sendToWindow: (...a: unknown[]) => sendToWindow(...a) }));
 vi.mock("../../boot/types.js", () => ({ emitEvent: vi.fn() }));
 vi.mock("../../shared/ave-home.js", () => ({ aveHome: () => "/tmp/ave" }));
 vi.mock("../../plugins/install-lifecycle.js", () => ({ installMarketplacePluginWithLifecycle: vi.fn() }));
@@ -42,7 +43,8 @@ vi.mock("../../shared/network-access.js", () => ({
 // `activateInlineSettings` (settings-inline-overhaul) — mock it so this test
 // stays isolated from app-menu.js's heavy transitive graph (tray/window-manager
 // /electron Menu), which would otherwise fail the bare `await import`.
-vi.mock("../app-menu.js", () => ({ activateInlineSettings: vi.fn() }));
+const activateInlineSettings = vi.fn();
+vi.mock("../app-menu.js", () => ({ activateInlineSettings: (...a: unknown[]) => activateInlineSettings(...a) }));
 vi.mock("../main-window.js", () => ({
   createWindow: (...a: unknown[]) => createWindow(...a),
   getAppWindows: vi.fn(() => []),
@@ -55,8 +57,11 @@ const getServices = vi.fn();
 vi.mock("../app-state.js", () => ({
   getMainWindow: (...a: unknown[]) => getMainWindow(...a),
   getServices: (...a: unknown[]) => getServices(...a),
-  setPendingAveUri: vi.fn(),
+  setPendingAveUri: (...a: unknown[]) => setPendingAveUri(...a),
+  setPendingGitMarketplaceLink: (...a: unknown[]) => setPendingGitMarketplaceLink(...a),
 }));
+const setPendingAveUri = vi.fn();
+const setPendingGitMarketplaceLink = vi.fn();
 
 function makeHiddenWindow() {
   // Hidden but NOT destroyed — the exact alive-but-hidden state a tray/hidden
@@ -77,6 +82,7 @@ function makeServices() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.unstubAllEnvs();
 });
 
 describe("handleAveUri surfaces a hidden window (MAJOR-1)", () => {
@@ -103,5 +109,53 @@ describe("handleAveUri surfaces a hidden window (MAJOR-1)", () => {
 
     expect(showMainWindow).toHaveBeenCalledWith(win);
     expect(createWindow).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleAveUri git marketplace links (blueprint 4.6)", () => {
+  const link = "ave://install/plugin/calendar@ave";
+
+  it("holds the link for the marketplace tab, opens it, and tells an open tab to take it", async () => {
+    vi.stubEnv("AVE_GIT_MARKETPLACE", "1");
+    const win = makeHiddenWindow();
+    getMainWindow.mockReturnValue(win);
+    getServices.mockReturnValue(makeServices());
+
+    const { handleAveUri } = await import("../ave-deep-link.js");
+    await handleAveUri(link);
+
+    expect(setPendingGitMarketplaceLink).toHaveBeenCalledWith({
+      action: "install",
+      key: { sourceId: "ave", kind: "plugin", name: "calendar" },
+    });
+    expect(activateInlineSettings).toHaveBeenCalledWith("marketplace");
+    expect(sendToWindow).toHaveBeenCalledWith(win, "marketplace:deep-link", null, expect.anything());
+    expect(setPendingAveUri).not.toHaveBeenCalled();
+  });
+
+  it("keeps the whole link for replay while the services are still starting", async () => {
+    vi.stubEnv("AVE_GIT_MARKETPLACE", "1");
+    getServices.mockReturnValue(null);
+
+    const { handleAveUri } = await import("../ave-deep-link.js");
+    await handleAveUri(link);
+
+    expect(setPendingAveUri).toHaveBeenCalledWith(link);
+    expect(setPendingGitMarketplaceLink).not.toHaveBeenCalled();
+    expect(activateInlineSettings).not.toHaveBeenCalled();
+  });
+
+  it("ignores the link while the development switch is off, without falling through to the legacy parser", async () => {
+    vi.stubEnv("AVE_GIT_MARKETPLACE", "");
+    getMainWindow.mockReturnValue(makeHiddenWindow());
+    getServices.mockReturnValue(makeServices());
+
+    const { handleAveUri } = await import("../ave-deep-link.js");
+    await handleAveUri(link);
+
+    expect(setPendingGitMarketplaceLink).not.toHaveBeenCalled();
+    expect(activateInlineSettings).not.toHaveBeenCalled();
+    expect(showMainWindow).not.toHaveBeenCalled();
+    expect(setPendingAveUri).not.toHaveBeenCalled();
   });
 });

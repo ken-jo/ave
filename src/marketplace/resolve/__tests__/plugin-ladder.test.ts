@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_MARKETPLACE_ARTIFACT_LIMITS } from "../../../plugins/marketplace-artifact-limits.js";
 import { PluginArtifactStore } from "../../../plugins/plugin-artifact-store.js";
 import type { MarketplaceFetcher } from "../../../plugins/marketplace-fetcher.js";
@@ -146,6 +146,7 @@ describe.skipIf(process.platform === "win32")("plugin artifact ladder (design §
         // Archive URLs must be https (schema); the loopback fixture speaks http.
         fetchImpl: ((input: string, init?: RequestInit) => fetch(input.replace(/^https:\/\/127\.0\.0\.1:/u, "http://127.0.0.1:"), init)) as typeof fetch,
         sourceToken: null,
+        tokenMissing: false,
         zip: store(),
         limits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,
         workRoot,
@@ -431,6 +432,7 @@ describe.skipIf(process.platform === "win32")("plugin artifact ladder (design §
         gate: fakeGate,
         fetchImpl: fetch,
         sourceToken: "ghp_test",
+        tokenMissing: false,
         zip: store(),
         limits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,
         workRoot,
@@ -446,11 +448,58 @@ describe.skipIf(process.platform === "win32")("plugin artifact ladder (design §
     void gate;
   });
 
+  it("reads a hidden release asset of a token source without a stored token as sign-in required", async () => {
+    const zip = pluginZip("alpha", "1.0.0");
+    const hiding = { fetch: async () => new Response("", { status: 404 }) } as unknown as NetworkGate;
+    const run = async (tokenMissing: boolean) => {
+      const { repo, name } = fixture();
+      market(repo, { release: { repo: "acme/alpha", sha256: sha(zip) } });
+      const { syncer } = await open(name);
+      const plan = planPluginInstall(await row(syncer));
+      return syncer.withRepository("acme", ({ repo: bare, remote }) =>
+        runPluginLadder(plan, {
+          repo: bare,
+          remote,
+          sourceUrl: normalizeSourceUrl("https://github.com/acme/market"),
+          direct: false,
+          gate: hiding,
+          fetchImpl: fetch,
+          sourceToken: null,
+          tokenMissing,
+          zip: store(),
+          limits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,
+          workRoot,
+        }),
+      ).catch((caught: unknown) => caught as LadderError);
+    };
+
+    const hidden = await run(true);
+    expect(hidden).toBeInstanceOf(LadderError);
+    expect(hidden).toMatchObject({ code: "SOURCE_AUTH_REQUIRED" });
+    expect((hidden as LadderError).rungs[0]).toMatchObject({ rung: "release", outcome: "failed", code: "SOURCE_AUTH_REQUIRED" });
+
+    // A source that signs in with no token: a 404 is a missing asset.
+    const missing = await run(false);
+    expect(missing).toMatchObject({ code: "NO_INSTALLABLE_ARTIFACT" });
+    expect((missing as LadderError).rungs[0]).toMatchObject({ rung: "release", outcome: "failed", code: "SOURCE_UNREACHABLE" });
+  });
+
   it("holds a token-fetched release asset to the policy for its github.com repository", async () => {
     const gate = new NetworkGate({ policy: policyLoad({ block: [parseSourcePattern("https://github.com/evil/*")] }), allowLoopback: false });
     await expect(gate.checkDownloadPolicy("https://github.com/evil/x/releases/download/v1.0.0/a.zip", { official: false }))
       .rejects.toMatchObject({ code: "SOURCE_POLICY_BLOCKED" });
     await expect(gate.checkDownloadPolicy("https://github.com/acme/x/releases/download/v1.0.0/a.zip", { official: false })).resolves.toBeUndefined();
+  });
+
+  it("needs an allow list to admit api.github.com for the token path, as design §6.2 says", async () => {
+    const fetchImpl = vi.fn();
+    const repositoryOnly = new NetworkGate({ policy: policyLoad({ allow: [parseSourcePattern("https://github.com/acme/*")] }), allowLoopback: false });
+    await expect(repositoryOnly.fetch("https://api.github.com/repos/acme/alpha/releases/tags/v1.0.0", { fetchImpl, official: false }))
+      .rejects.toMatchObject({ code: "SOURCE_POLICY_BLOCKED", message: expect.stringContaining("api.github.com") });
+    expect(fetchImpl).not.toHaveBeenCalled();
+
+    const withApi = new NetworkGate({ policy: policyLoad({ allow: [parseSourcePattern("https://github.com/acme/*"), parseSourcePattern("host:api.github.com")] }), allowLoopback: false });
+    await expect(withApi.checkDownloadPolicy("https://api.github.com/repos/acme/alpha/releases/assets/42", { official: false })).resolves.toBeUndefined();
   });
 
   it("builds an ssh source's release URL over https on the default port, and refuses . and .. repository segments", async () => {
@@ -477,6 +526,7 @@ describe.skipIf(process.platform === "win32")("plugin artifact ladder (design §
         gate: fakeGate,
         fetchImpl: fetch,
         sourceToken: null,
+        tokenMissing: false,
         zip: store(),
         limits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,
         workRoot,

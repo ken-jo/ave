@@ -28,6 +28,8 @@ export interface GitRuntimeStatus {
     installed: boolean;
     /** A build is pinned for this platform and architecture. */
     available: boolean;
+    /** The pinned archive's size in bytes for this platform (design §15.7); null when none is pinned. */
+    size: number | null;
   };
   /** The last install attempt's failure in this session, cleared by a success. */
   lastInstallError: { code: string; message: string } | null;

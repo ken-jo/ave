@@ -11,6 +11,7 @@ import {
   startGitHttpServer,
 } from "../../__tests__/fixtures/git-http-server.js";
 import { createTestGitRunner, type TestGitRunner } from "../../__tests__/fixtures/git-runner.js";
+import { descriptorText as descriptor, jsonText as text } from "../../__tests__/fixtures/package-files.js";
 import { policyLoad } from "../../__tests__/fixtures/policy.js";
 import { aggregateCatalog, type CatalogRow } from "../../catalog/aggregate.js";
 import { NetworkGate } from "../../net/network-gate.js";
@@ -26,9 +27,6 @@ const AT = "2026-09-23T00:00:00.000Z";
 const INSTALLATION = "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b";
 const ENGLISH = { "app.title": "Ave", "chat.send": "Send" };
 
-const text = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
-const descriptor = (kind: string, name: string, version: string, payload: Record<string, unknown>) =>
-  text({ schemaVersion: 1, kind, name, version, minAppVersion: "0.12.0", payload });
 const SURFACES = { "surface-sunken": "228 30% 97%", surface: "0 0% 100%", "surface-raised": "0 0% 100%", "surface-overlay": "0 0% 100%", "border-subtle": "228 24% 94%", "border-strong": "228 18% 84%" };
 const theme = (name: string) => text({ name, description: `${name} theme.`, shell: "light", highContrast: false, tokens: moonstoneBundle.tokens, surfaces: SURFACES });
 const language = (name: string, locale: string) => ({

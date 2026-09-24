@@ -10,6 +10,7 @@
 import type { CatalogRow } from "../catalog/aggregate.js";
 import type { IndexVersion, PackageDescriptor, PackageKind } from "../catalog/types.js";
 import { validateDescriptorText } from "../catalog/validate.js";
+import { readDirectPackage } from "../sources/direct-package.js";
 import { MarketplaceError } from "../errors.js";
 import type { BareRepo } from "../git/repo.js";
 import type { GitRemote } from "../git/run-git.js";
@@ -87,24 +88,42 @@ export function repoPath(dir: string, file: string): string {
 /**
  * The descriptor at the version's commit, validated, naming the planned
  * package. Anything else is MANIFEST_MISMATCH: the index said one thing and
- * the commit it points at says another.
+ * the commit it points at says another. A direct source's package is read
+ * as its snapshot read it, synthesized from its own file when it has no
+ * descriptor (design §8.2).
  */
 export async function readDescriptorAtVersion(plan: PackagePlan, access: RepositoryAccess): Promise<PackageDescriptor> {
   const path = repoPath(plan.packagePath, DESCRIPTOR_NAME);
   const fail = (why: string) => new MarketplaceError("MANIFEST_MISMATCH", `${plan.kind} ${plan.name}@${plan.version} at ${plan.versionCommit}: ${why}`);
-  await access.repo.ensureBlobs(access.remote, plan.versionCommit, [path], access.signal);
-  const bytes = await access.repo.readFile(plan.versionCommit, path, DESCRIPTOR_LIMIT);
-  if (!bytes) throw fail(`${path} is missing`);
-  const checked = validateDescriptorText(bytes.toString("utf8"), { direct: access.direct });
-  if (!checked.ok) throw fail(`${path} is invalid: ${checked.error}`);
-  const descriptor = checked.value;
-  const differs = [
-    descriptor.kind !== plan.kind && "kind",
-    descriptor.name !== plan.name && "name",
-    descriptor.version !== plan.version && "version",
-    descriptor.minAppVersion !== plan.minAppVersion && "minAppVersion",
-    JSON.stringify(descriptor.platforms ?? null) !== JSON.stringify(plan.platforms ?? null) && "platforms",
-  ].filter((field): field is string => typeof field === "string");
-  if (differs.length > 0) throw fail(`the index copy differs from ${path} in ${differs.join(", ")}`);
+  let descriptor: PackageDescriptor;
+  if (access.direct) {
+    const read = await readDirectPackage({ repo: access.repo, remote: access.remote, commit: plan.versionCommit, path: plan.packagePath, ...(access.signal ? { signal: access.signal } : {}) });
+    if (!read) throw fail(`no package file at ${plan.packagePath || "the repository root"}`);
+    if (!read.ok) throw fail(read.error);
+    descriptor = read.found.descriptor;
+  } else {
+    await access.repo.ensureBlobs(access.remote, plan.versionCommit, [path], access.signal);
+    const bytes = await access.repo.readFile(plan.versionCommit, path, DESCRIPTOR_LIMIT);
+    if (!bytes) throw fail(`${path} is missing`);
+    const checked = validateDescriptorText(bytes.toString("utf8"), { direct: false });
+    if (!checked.ok) throw fail(`${path} is invalid: ${checked.error}`);
+    descriptor = checked.value;
+  }
+  const differs = descriptorDiffersFromIndex(descriptor, plan);
+  if (differs.length > 0) throw fail(`the index copy differs from the package at ${plan.packagePath || "the root"} in ${differs.join(", ")}`);
   return descriptor;
+}
+
+/** The index's copy of a version, as far as every kind compares it with the descriptor. */
+export type IndexedVersionFields = Pick<PackagePlan, "kind" | "name" | "version" | "minAppVersion" | "platforms">;
+
+/** The fields in which `descriptor` says something other than the index's copy of its version; empty when they agree. */
+export function descriptorDiffersFromIndex(descriptor: PackageDescriptor, indexed: IndexedVersionFields): string[] {
+  return [
+    descriptor.kind !== indexed.kind && "kind",
+    descriptor.name !== indexed.name && "name",
+    descriptor.version !== indexed.version && "version",
+    descriptor.minAppVersion !== indexed.minAppVersion && "minAppVersion",
+    JSON.stringify(descriptor.platforms ?? null) !== JSON.stringify(indexed.platforms ?? null) && "platforms",
+  ].filter((field): field is string => typeof field === "string");
 }

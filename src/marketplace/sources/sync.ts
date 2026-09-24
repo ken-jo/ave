@@ -22,7 +22,7 @@ import { writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
 import { MarketplaceError, isMarketplaceError, type MarketplaceErrorCode } from "../errors.js";
 import { BareRepo } from "../git/repo.js";
-import type { GitRemote, GitRunner } from "../git/run-git.js";
+import type { GitCommands, GitRemote } from "../git/run-git.js";
 import type { NetworkGate } from "../net/network-gate.js";
 import type { ResolvedSource, SourceRegistry, SourceState } from "./registry.js";
 import { SnapshotBuilder, type SourceSnapshot } from "./snapshot.js";
@@ -30,7 +30,7 @@ import { SnapshotBuilder, type SourceSnapshot } from "./snapshot.js";
 export interface SourceSyncOptions {
   registry: SourceRegistry;
   gate: NetworkGate;
-  runner: GitRunner;
+  runner: GitCommands;
   /** `~/.ave/marketplaces`, the registry's root. */
   root: string;
   now?: () => Date;

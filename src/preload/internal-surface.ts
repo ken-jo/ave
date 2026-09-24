@@ -227,6 +227,9 @@ export function buildAveNamespaceExtras() {
     isDev: process.env.AVE_DEV === "1",
     isE2E: isE2eTestRuntime(),
     enableDevConsole: process.env.AVE_DEV_CONSOLE === "1",
+    // The git marketplace's views ship behind this source-run switch until
+    // they replace today's marketplace (blueprint P6).
+    gitMarketplace: process.env.AVE_GIT_MARKETPLACE === "1",
     debugStream:
       process.env.VITE_DEBUG_STREAM === "1" ||
       process.env.AVE_DEBUG_STREAM === "1",

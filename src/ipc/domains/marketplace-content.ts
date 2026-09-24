@@ -24,7 +24,7 @@ import type { LedgerEntry } from "../../marketplace/content/ledger.js";
 import { MarketplaceError } from "../../marketplace/errors.js";
 import { installContentAssetProtocolHandler } from "../../main/content-asset-protocol.js";
 import { applyBootLocale } from "../../boot/services.js";
-import { installedFontStack, type InstalledContentResult } from "../../shared/installed-content.js";
+import { installedFontStack, type InstalledContentResult, type InstalledContentView } from "../../shared/installed-content.js";
 import { isMarketplaceEligibleLLMVendor } from "../../shared/llm-vendor-defaults.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { setInstalledThemeIds } from "../../shared/plugin-theme-cache.js";
@@ -112,6 +112,11 @@ export function createContentActivation(deps: IpcDeps): ContentActivation {
   return {
     async activate(content: ParsedContent, entry: LedgerEntry, previous: LedgerEntry | null) {
       if (!previous) assertUnclaimed(content, entry.name);
+      if (!previous && (content.kind === "skill" || content.kind === "agent")) {
+        const held = content.kind === "skill" ? await deps.skillStore?.userSkillFile(entry.name) : await deps.agentProfileStore?.userProfileFile(entry.name);
+        // The user's own file wins in the store, so the package would never apply; replacing it is theirs to do.
+        if (held) throw new MarketplaceError("PACKAGE_ID_CONFLICT", `${held} already defines ${content.kind} ${entry.name}; rename or remove it first`);
+      }
       if (content.kind === "provider" && "vendor" in content) {
         const { providerId, defaultModel, baseUrl } = content.vendor;
         const installed = settings.get("marketplace").installedProviderIds;
@@ -133,7 +138,7 @@ export function createContentActivation(deps: IpcDeps): ContentActivation {
         await settings.patch({ marketplace: { installedMessagingConnections: [...connectionsWithout(content.connection.connectionId), content.connection] } });
         await afterPersist(`activating ${entry.name}`, null, true);
       }
-      // Themes, languages and fonts are read from the loaded store; selecting one is the user's.
+      // Themes, languages, fonts, skills and agents are read from the loaded store; selecting one is the user's.
     },
     async deactivate(entry: LedgerEntry, content: ParsedContent | null) {
       const appearance = settings.get("appearance");
@@ -175,26 +180,47 @@ export function createContentActivation(deps: IpcDeps): ContentActivation {
 
 type InstalledContentPort = Pick<InstalledContentService, "installed" | "languageMessages" | "servedFile">;
 
+/** The loaded store, its service, and the reload an install or uninstall runs. */
+export interface InstalledContentRuntime {
+  store: ContentStore;
+  service: InstalledContentPort;
+  /** Re-read the store and apply it in main again. */
+  reload(): Promise<void>;
+}
+
+/** Apply the loaded content to this process: locales, theme ids, and the skill and agent stores. */
+function applyInMain(deps: IpcDeps, service: InstalledContentService, view: InstalledContentView): void {
+  for (const broken of view.broken) log.warn(broken, "installed content package not applied");
+  registerInstalledLocales(view.languages);
+  setInstalledCatalogLoader(async (locale) => service.languageMessages(locale));
+  setInstalledThemeIds(view.themes.map((theme) => theme.id));
+  const instructions = service.installedInstructions();
+  deps.skillStore?.setInstalledPackages(instructions.filter((item) => item.kind === "skill"));
+  deps.agentProfileStore?.setInstalledPackages(instructions.filter((item) => item.kind === "agent"));
+}
+
 /**
  * Open the store and apply what it holds to this process. A ledger that
  * cannot be read leaves every installed package unapplied (and logged)
  * rather than stopping the app.
  */
-export async function loadInstalledContent(deps: IpcDeps, assetToken: string, root: string = contentPackagesRoot()): Promise<InstalledContentPort> {
+export async function loadInstalledContent(deps: IpcDeps, assetToken: string, root: string = contentPackagesRoot()): Promise<InstalledContentRuntime> {
   const store = await ContentStore.open({
     root,
     english: messages.en,
     activation: createContentActivation(deps),
   });
   const service = new InstalledContentService(store, assetToken);
-  const view = await service.reload();
-  for (const broken of view.broken) log.warn(broken, "installed content package not applied");
-  registerInstalledLocales(view.languages);
-  setInstalledCatalogLoader(async (locale) => service.languageMessages(locale));
-  setInstalledThemeIds(view.themes.map((theme) => theme.id));
+  applyInMain(deps, service, await service.reload());
   // Settings were read before the ledger: apply an installed language the user selected.
   await applyBootLocale(deps.settingsService);
-  return service;
+  return {
+    store,
+    service,
+    async reload() {
+      applyInMain(deps, service, await service.reload());
+    },
+  };
 }
 
 /**
@@ -210,24 +236,24 @@ export function registerMarketplaceContentHandlers(
   deps: IpcDeps,
   // Drawn once per launch: the host of every `ave-content:` URL (see content-asset-protocol.ts).
   assetToken: string = `t${randomBytes(16).toString("hex")}`,
-  load: () => Promise<InstalledContentPort> = () => loadInstalledContent(deps, assetToken),
-): void {
-  let ready: Promise<InstalledContentPort | null> | null = null;
+  load: () => Promise<InstalledContentRuntime> = () => loadInstalledContent(deps, assetToken),
+): () => Promise<InstalledContentRuntime | null> {
+  let ready: Promise<InstalledContentRuntime | null> | null = null;
   const loaded = () =>
     (ready ??= load().catch((error: unknown) => {
       log.error({ err: errorMessage(error) }, "installed content could not be loaded");
       return null;
     }));
-  installContentAssetProtocolHandler(protocol, assetToken, async (kind, name, path) => (await loaded())?.servedFile(kind, name, path) ?? null);
+  installContentAssetProtocolHandler(protocol, assetToken, async (kind, name, path) => (await loaded())?.service.servedFile(kind, name, path) ?? null);
 
   ipcMain.handle(CHANNELS.marketplaceContent.installed, async (event): Promise<InstalledContentResult | typeof UNAUTHORIZED_FRAME> => {
     if (!validateHostRendererSender(event)) {
       auditUnauthorized(deps.auditLogger, CHANNELS.marketplaceContent.installed, event);
       return UNAUTHORIZED_FRAME;
     }
-    const service = await loaded();
-    if (!service) return { ok: false, error: "installed-content-unavailable" };
-    return { ok: true, content: service.installed() };
+    const runtime = await loaded();
+    if (!runtime) return { ok: false, error: "installed-content-unavailable" };
+    return { ok: true, content: runtime.service.installed() };
   });
 
   ipcMain.handle(CHANNELS.marketplaceContent.languageMessages, async (event, locale: unknown) => {
@@ -236,12 +262,14 @@ export function registerMarketplaceContentHandlers(
       return UNAUTHORIZED_FRAME;
     }
     if (typeof locale !== "string") return { ok: false, error: "invalid-locale" };
-    const service = await loaded();
-    if (!service) return { ok: false, error: "installed-content-unavailable" };
+    const runtime = await loaded();
+    if (!runtime) return { ok: false, error: "installed-content-unavailable" };
     try {
-      return { ok: true, messages: service.languageMessages(locale) };
+      return { ok: true, messages: runtime.service.languageMessages(locale) };
     } catch (error) {
       return { ok: false, error: "language-not-installed", message: errorMessage(error) };
     }
   });
+
+  return loaded;
 }

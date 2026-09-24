@@ -133,6 +133,9 @@ function lastLine(text: string): string {
   return lines[lines.length - 1] ?? "";
 }
 
+/** What a repository needs from a runner: running one command. */
+export type GitCommands = Pick<GitRunner, "run">;
+
 export class GitRunner {
   constructor(private readonly options: GitRunnerOptions) {}
 
@@ -143,7 +146,7 @@ export class GitRunner {
   /** The `-c` flags every call carries, before the subcommand. */
   /** The call answers with the stored token (see {@link GitRemote.useToken}). */
   private offersToken(remote: GitRemote | undefined): remote is GitRemote {
-    return remote !== undefined && remote.useToken && this.options.askpass.hasToken(remote.url.host);
+    return remote !== undefined && remote.useToken && this.options.askpass.hasToken(remote.url.host, remote.sourceId);
   }
 
   async configArgs(remote: GitRemote | undefined): Promise<string[]> {

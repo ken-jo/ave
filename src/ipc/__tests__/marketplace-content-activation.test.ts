@@ -205,6 +205,21 @@ describe("createContentActivation", () => {
     await expect(activation.activate(nord, entry("theme", "nord"), null)).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
   });
 
+  it("refuses a first skill or agent install whose name a user file already defines", async () => {
+    const skillStore = { userSkillFile: vi.fn(async (name: string) => (name === "review" ? "/home/u/.ave/skills/review/SKILL.md" : null)) };
+    const agentProfileStore = { userProfileFile: vi.fn(async (name: string) => (name === "triage" ? "/home/u/.ave/agents/triage.md" : null)) };
+    const activation = createContentActivation({ ...deps, skillStore, agentProfileStore } as unknown as IpcDeps);
+    await expect(activation.activate({ kind: "skill", name: "review", description: "Reviews." }, entry("skill", "review"), null)).rejects.toMatchObject({
+      code: "PACKAGE_ID_CONFLICT",
+      message: expect.stringContaining("/home/u/.ave/skills/review/SKILL.md"),
+    });
+    await expect(activation.activate({ kind: "agent", name: "triage", description: "Triages." }, entry("agent", "triage"), null)).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
+    await activation.activate({ kind: "skill", name: "summarize", description: "Summarizes." }, entry("skill", "summarize"), null);
+    // An update of the package's own install is not a first install.
+    await activation.activate({ kind: "skill", name: "review", description: "Reviews." }, entry("skill", "review"), entry("skill", "review"));
+    expect(skillStore.userSkillFile).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps a provider installed when the provider refresh after the settings write throws", async () => {
     const activation = createContentActivation(deps);
     vi.mocked(deps.conversationLoop.refreshProvider).mockImplementation(() => {

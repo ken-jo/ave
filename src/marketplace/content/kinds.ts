@@ -23,6 +23,8 @@ import type { FontFormat } from "../../shared/installed-content.js";
 import { isMarketplaceEligibleLLMVendor, type MarketplaceEligibleLLMVendor } from "../../shared/llm-vendor-defaults.js";
 import { isDefaultVisibleThemeBundleId } from "../../shared/theme-bundles.js";
 import { themeSurfaceProblems, themeTokenProblems, type ThemeSurfaces, type ThemeTokens } from "../../shared/theme-tokens.js";
+import { parseAgentFrontmatter } from "../../main/agent-profile-store.js";
+import { parseFrontmatter } from "../../main/skill-store.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
 import { MarketplaceError } from "../errors.js";
 import type { SourceOrigin } from "../sources/registry.js";
@@ -74,13 +76,33 @@ interface MessagingConnectionContent {
   connection: MarketplaceInstalledMessagingConnection;
 }
 
-export type ParsedContent = ThemeContent | LanguageContent | FontContent | ProviderContent | MessagingConnectionContent;
+/**
+ * A skill (`SKILL.md`, the Agent Skills layout) or an agent profile
+ * (`AGENTS.md`): instructions the model reads, applied by the skill and
+ * agent stores reading the installed package directory.
+ */
+interface InstructionContent {
+  kind: "skill" | "agent";
+  /** The package name; the front matter may repeat it and may not say another. */
+  name: string;
+  description: string;
+}
 
-/** The kinds P3 gives a data model; skills and agents join with the install switch (blueprint 6.1). */
+export type ParsedContent = ThemeContent | LanguageContent | FontContent | ProviderContent | MessagingConnectionContent | InstructionContent;
+
+/** Every content kind has a data model; the name stays for the store's plan type. */
 export type DataContentKind = ParsedContent["kind"];
 
 export function isDataContentKind(kind: ContentKind): kind is DataContentKind {
-  return kind === "theme" || kind === "language" || kind === "font" || kind === "provider" || kind === "messaging-connection";
+  return (
+    kind === "theme" ||
+    kind === "language" ||
+    kind === "font" ||
+    kind === "provider" ||
+    kind === "messaging-connection" ||
+    kind === "skill" ||
+    kind === "agent"
+  );
 }
 
 export interface ContentContext {
@@ -398,10 +420,35 @@ function messagingConnection(files: Map<string, Buffer>, context: ContentContext
   return { kind: "messaging-connection", connection: connection! };
 }
 
+/**
+ * `SKILL.md` or `AGENTS.md`: the front matter the stores read (YAML for a
+ * skill, the flat header for an agent profile), a name that is the package's
+ * when it is given, and a body.
+ */
+function instruction(kind: "skill" | "agent", files: Map<string, Buffer>, context: ContentContext): InstructionContent {
+  const path = kind === "skill" ? "SKILL.md" : "AGENTS.md";
+  const bytes = files.get(path);
+  if (!bytes) throw new ContentFailure(path, "is missing");
+  const source = bytes.toString("utf8");
+  let header: { name: string; description?: string };
+  let body: string;
+  try {
+    ({ fm: header, body } = kind === "skill" ? parseFrontmatter(source) : parseAgentFrontmatter(source));
+  } catch (error) {
+    throw new ContentFailure(path, `front matter does not parse (${(error as Error).message})`);
+  }
+  if (header.name && header.name !== context.name) throw new ContentFailure(path, `names ${header.name}, the package is ${context.name}`);
+  if (body.trim().length === 0) throw new ContentFailure(path, "has no body");
+  return { kind, name: context.name, description: header.description ?? "" };
+}
+
 /** The parsed entry files of a `kind` package; CONTENT_RULE_VIOLATION when they do not hold. */
 export function parseContent(kind: DataContentKind, files: readonly ContentFile[], context: ContentContext): ParsedContent {
   const map = fileMap(files);
   switch (kind) {
+    case "skill":
+    case "agent":
+      return instruction(kind, map, context);
     case "theme":
       return theme(map, context);
     case "language":
