@@ -7,7 +7,12 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("electron", () => ({ app: { isPackaged: false } }));
+const electronApp = vi.hoisted(() => ({ isPackaged: false }));
+vi.mock("electron", () => ({ app: electronApp }));
+const warn = vi.fn();
+vi.mock("../../lib/logger.js", () => ({
+  createLogger: () => ({ info: vi.fn(), warn: (...a: unknown[]) => warn(...a), error: vi.fn(), debug: vi.fn() }),
+}));
 const sendToWindow = vi.fn();
 vi.mock("../../ipc/safe-send.js", () => ({ sendToWindow: (...a: unknown[]) => sendToWindow(...a) }));
 const emitEvent = vi.fn();
@@ -27,6 +32,7 @@ vi.mock("../app-state.js", () => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  electronApp.isPackaged = false;
 });
 
 describe("handleAveUri", () => {
@@ -71,6 +77,16 @@ describe("handleAveUri", () => {
     expect(setPendingAveUri).not.toHaveBeenCalled();
     expect(setPendingGitMarketplaceLink).not.toHaveBeenCalled();
     expect(activateInlineSettings).not.toHaveBeenCalled();
+  });
+
+  it("logs a refused link in a packaged build too, without its query", async () => {
+    electronApp.isPackaged = true;
+
+    const { handleAveUri } = await import("../ave-deep-link.js");
+    await handleAveUri("ave://install/calendar?token=secret#frag");
+
+    expect(warn).toHaveBeenCalledWith({ link: "ave://install/calendar" }, expect.stringContaining("unrecognized"));
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("secret");
   });
 
   it("re-emits a plugin OAuth callback as a host event", async () => {

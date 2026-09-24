@@ -11,7 +11,8 @@
  * audited so a packaged build cannot revive removed development behaviour.
  */
 export const DEVELOPMENT_ENV_POLICY = [
-  { name: "AVE_ADMISSION_OFFLINE", lifecycle: "active", packaged: "scrub" },
+  // Kept the signed admission catalog offline; installs now resolve from git sources (design §6).
+  { name: "AVE_ADMISSION_OFFLINE", lifecycle: "tombstone", packaged: "scrub" },
   // Removed development bypasses retained as one-way packaged scrub tombstones.
   { name: "AVE_ALLOW_LINKED_PLUGIN_ENTRY", lifecycle: "tombstone", packaged: "scrub" },
   { name: "AVE_ALLOW_TEST_MARKETPLACE_KEYS", lifecycle: "tombstone", packaged: "scrub" },

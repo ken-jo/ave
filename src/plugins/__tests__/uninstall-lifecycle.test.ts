@@ -4,7 +4,6 @@ import { mkdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  cleanupFailedPluginInstallWithLifecycle,
   ensurePluginStateReadyForInstall,
   recoverPendingPluginUninstallCleanups,
   uninstallPluginWithLifecycle,
@@ -45,7 +44,6 @@ function makeDeps(pluginId: string, cacheRoot: string, uninstallError?: Error) {
         if (uninstallError) throw uninstallError;
         return { pluginId, uninstalled: true as const };
       }),
-      clearInstallFailureDiagnostic: vi.fn(),
     },
     pluginRuntime,
     settingsService: {
@@ -232,62 +230,6 @@ describe("uninstallPluginWithLifecycle", () => {
       ]);
       expect(existsSync(join(cacheRoot, "canonical-plugin"))).toBe(false);
       expect(existsSync(join(cacheRoot, "marketplace-alias"))).toBe(false);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps failed-install retry serialized under the journaled install alias", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ave-failed-cleanup-alias-lock-"));
-    try {
-      const deps = makeDeps("canonical-plugin", join(root, ".cache"));
-      deps.pluginRuntime.resolvePluginId.mockReturnValue("canonical-plugin");
-      deps.pluginMarketplace.getInstalledVersion
-        .mockResolvedValueOnce("1.0.0")
-        .mockResolvedValue(null);
-      deps.clearAuthPartitionService.mockRejectedValueOnce(
-        new Error("partition still busy"),
-      );
-      await expect(
-        uninstallPluginWithLifecycle("marketplace-alias", deps),
-      ).rejects.toThrow(/incomplete post-commit cleanup/);
-      deps.clearAuthPartitionService.mockResolvedValue(undefined);
-
-      let releaseAliasLock!: () => void;
-      let aliasLockEntered!: () => void;
-      const aliasLockGate = new Promise<void>((resolve) => {
-        releaseAliasLock = resolve;
-      });
-      const aliasLockStarted = new Promise<void>((resolve) => {
-        aliasLockEntered = resolve;
-      });
-      const aliasHolder = withPluginInstallLock(
-        "marketplace-alias",
-        async () => {
-          aliasLockEntered();
-          await aliasLockGate;
-        },
-      );
-      await aliasLockStarted;
-
-      let cleanupSettled = false;
-      const cleanup = cleanupFailedPluginInstallWithLifecycle(
-        "canonical-plugin",
-        deps,
-      ).finally(() => {
-        cleanupSettled = true;
-      });
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(cleanupSettled).toBe(false);
-
-      releaseAliasLock();
-      await aliasHolder;
-      await expect(cleanup).resolves.toEqual({
-        pluginId: "canonical-plugin",
-        uninstalled: true,
-      });
-      expect(deps.pluginRuntime.removePlugin).not.toHaveBeenCalled();
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -535,65 +477,6 @@ describe("uninstallPluginWithLifecycle", () => {
       ).resolves.toEqual({ pluginId: "agent-hub", uninstalled: true });
       expect(deps.pluginRuntime.removePluginWithCommit).toHaveBeenCalledOnce();
       expect(deps.settingsService.deletePluginConfig).toHaveBeenCalledOnce();
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps failed-install cleanup blocked until boot proves runtime quiescence", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ave-failed-install-cleanup-"));
-    try {
-      const deps = makeDeps("agent-hub", join(root, ".cache"));
-      const retirementFailure = new Error("retirement failed after purge");
-      deps.pluginMarketplace.getInstalledVersion.mockResolvedValue(null);
-      deps.pluginRuntime.removePlugin.mockRejectedValueOnce(retirementFailure);
-      deps.settingsService.deletePluginConfig.mockRejectedValueOnce(
-        new Error("config file locked"),
-      );
-
-      await expect(
-        cleanupFailedPluginInstallWithLifecycle("agent-hub", deps),
-      ).rejects.toThrow(/pending runtime retirement/);
-      const pending = JSON.parse(
-        await readFile(
-          join(root, ".cache", "plugin-uninstall-cleanup.json"),
-          "utf8",
-        ),
-      );
-      expect(pending.cleanups).toHaveLength(1);
-      expect(pending.cleanups[0]).toMatchObject({
-        pluginId: "agent-hub",
-        registryRemovalCommitted: true,
-        runtimeRetirementComplete: false,
-      });
-      expect(deps.settingsService.deletePluginConfig).not.toHaveBeenCalled();
-      expect(
-        deps.pluginMarketplace.clearInstallFailureDiagnostic,
-      ).not.toHaveBeenCalled();
-
-      await expect(
-        cleanupFailedPluginInstallWithLifecycle("agent-hub", deps),
-      ).rejects.toThrow(/runtime retirement cleanup is pending/);
-      expect(deps.pluginRuntime.removePlugin).toHaveBeenCalledOnce();
-      expect(deps.settingsService.deletePluginConfig).not.toHaveBeenCalled();
-
-      await expect(
-        recoverPendingPluginUninstallCleanups(deps),
-      ).resolves.toEqual(["agent-hub"]);
-      expect(deps.settingsService.deletePluginConfig).toHaveBeenCalledOnce();
-      await expect(
-        recoverPendingPluginUninstallCleanups(deps),
-      ).resolves.toEqual([]);
-      expect(
-        deps.pluginMarketplace.clearInstallFailureDiagnostic,
-      ).toHaveBeenCalledWith("agent-hub");
-      const completed = JSON.parse(
-        await readFile(
-          join(root, ".cache", "plugin-uninstall-cleanup.json"),
-          "utf8",
-        ),
-      );
-      expect(completed.cleanups).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

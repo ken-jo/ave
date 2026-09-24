@@ -7,7 +7,6 @@
  * trusted-renderer + AVE_E2E wrapper.
  */
 import type { IpcDeps } from "../types.js";
-import type { PluginCard } from "../../plugins/runtime/index.js";
 import { filterRegistryByEventAndTool } from "../../hooks/hook-registry.js";
 
 export type PluginBundleE2eSnapshot =
@@ -187,29 +186,5 @@ export async function handlePluginBundleE2eSnapshot(
 
 /** PUBLIC `ave:plugins:cards` — installed plugin cards for the renderer/api. */
 export function handlePluginCards(deps: IpcDeps) {
-  const cards = deps.pluginRuntime.listPluginCards(deps.toolRegistry);
-  const existingIds = new Set(cards.map((card) => card.id));
-  const failureCards: PluginCard[] = deps.pluginMarketplace
-    .getInstallFailureDiagnostics()
-    .filter((failure) => !existingIds.has(failure.id))
-    .map((failure) => ({
-      id: failure.id,
-      name: failure.name,
-      description: `Marketplace install failed: ${failure.error}`,
-      sampleTools: [],
-      tools: [],
-      capabilities: [],
-      isManaged: failure.isManaged,
-      installPolicy: failure.installPolicy,
-      loadStatus: "failed",
-      active: false,
-      runtimeLoaded: false,
-      installAliases: failure.installAliases,
-      ...(failure.installFailureKind ? { installFailureKind: failure.installFailureKind } : {}),
-      installFailureMessage: failure.error,
-      ...(failure.networkAccess ? { networkAccess: failure.networkAccess } : {}),
-      ...(failure.version ? { version: failure.version } : {}),
-      ...(failure.publisher ? { publisher: failure.publisher } : {}),
-    }));
-  return [...cards, ...failureCards];
+  return deps.pluginRuntime.listPluginCards(deps.toolRegistry);
 }

@@ -1,6 +1,5 @@
 import { useEffect, useMemo } from "react";
 import type { getApi } from "../api-client.js";
-import { useInstallingPlugins } from "./use-installing-plugins.js";
 import type { usePluginMarketplace } from "./use-plugin-marketplace.js";
 
 type Api = ReturnType<typeof getApi>;
@@ -15,9 +14,8 @@ export interface UsePluginLifecycleRefreshDeps {
 
 /**
  * Plugin lifecycle → view/card refresh, extracted verbatim from App.tsx. Owns
- * the in-flight install tracker (drives the grid overlay spinner) and every IPC
- * subscription that keeps plugin views and cards fresh without an app restart:
- * install/uninstall/runtime-updated/install-progress broadcasts and the
+ * every IPC subscription that keeps plugin views and cards fresh without an
+ * app restart: install/uninstall/runtime-updated broadcasts and the
  * preparing-plugin poll interval. All effects are independent IPC
  * subscriptions with no cross-effect state; each returns void.
  */
@@ -27,13 +25,10 @@ export function usePluginLifecycleRefresh({
   refreshViews,
   refreshCards,
 }: UsePluginLifecycleRefreshDeps): void {
-  // Track in-flight plugin installs for the grid overlay spinner.
-  const installingPlugins = useInstallingPlugins(api);
-
-  const hasPreparingPlugin = useMemo(() => {
-    if (pluginCards.some((card) => card.loadStatus === "preparing")) return true;
-    return Array.from(installingPlugins.values()).some((phase) => phase === "preparing");
-  }, [installingPlugins, pluginCards]);
+  const hasPreparingPlugin = useMemo(
+    () => pluginCards.some((card) => card.loadStatus === "preparing"),
+    [pluginCards],
+  );
 
   // Refresh plugin views when an install completes in the main process, so
   // new plugin entries appear without requiring an app restart.
@@ -61,16 +56,6 @@ export function usePluginLifecycleRefresh({
     const unsubscribe = api.onPluginRuntimeUpdated(() => {
       void refreshViews();
       void refreshCards();
-    });
-    return unsubscribe;
-  }, [api, refreshViews, refreshCards]);
-
-  useEffect(() => {
-    if (typeof api.onPluginInstallProgress !== "function") return;
-    const unsubscribe = api.onPluginInstallProgress((payload) => {
-      if (payload.phase !== "preparing") return;
-      void refreshCards();
-      void refreshViews();
     });
     return unsubscribe;
   }, [api, refreshViews, refreshCards]);

@@ -1,6 +1,4 @@
 import AdmZip from "adm-zip";
-import type { MarketplaceHttp } from "../../src/plugins/marketplace-installer.js";
-import type { SignatureEnvelope } from "../../src/plugins/types.js";
 import { agentPluginsDocument } from "../../src/plugins/__tests__/test-helpers.js";
 
 export const EXACT_LOOPBACK_MARKETPLACE_ORIGIN = "http://127.0.0.1:8765";
@@ -205,32 +203,6 @@ export function buildPluginZip(
     ].join("\n")));
   }
   return zip.toBuffer();
-}
-
-export function makeLiveHttp(baseUrl: string): MarketplaceHttp {
-  return {
-    async downloadArtifact(slug, version) {
-      const url = `${baseUrl}/api/v1/plugins/${slug}/versions/${version}/download`;
-      const res = await fetch(url);
-      const body = Buffer.from(await res.arrayBuffer());
-      return {
-        body,
-        sha256Header: res.headers.get("X-Plugin-SHA256"),
-        status: res.status,
-        retryAfterSeconds: res.headers.get("Retry-After")
-          ? Number(res.headers.get("Retry-After")) || undefined
-          : undefined,
-      };
-    },
-    async fetchSignatureEnvelope(slug, version) {
-      const url = `${baseUrl}/api/v1/plugins/${slug}/versions/${version}/download.sig`;
-      const res = await fetch(url);
-      if (!res.ok) {
-        throw new Error(`download.sig returned ${res.status}`);
-      }
-      return (await res.json()) as SignatureEnvelope;
-    },
-  };
 }
 
 export async function publishPlugin(

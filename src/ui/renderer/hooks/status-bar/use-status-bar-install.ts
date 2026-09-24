@@ -5,7 +5,6 @@ import { formatIpcError } from "../../format-ipc-error.js";
 import type { AveApi } from "../../types.js";
 import type { StatusBarSeverity } from "./types.js";
 import { sanitizeToastField } from "./toast-field.js";
-import { formatBytes } from "../../../../lib/turn-summary-format.js";
 
 interface Options {
   api: AveApi;
@@ -15,10 +14,6 @@ interface Options {
     input: { severity: StatusBarSeverity; message: string; ttlMs?: number },
   ) => string;
 }
-
-type InstallProgressPayload =
-  | { slug: string; phase: "installing" | "restarting" | "verifying" | "registering" | "preparing" }
-  | { slug: string; phase: "downloading"; bytesDownloaded: number; bytesTotal: number | null };
 
 /**
  * The channel's own declaration. `preparing` used to be re-spelled here and in
@@ -38,33 +33,6 @@ function installToastId(slug: string): string {
 export function useStatusBarInstall({ api, pushToast, upsertToast }: Options): void {
   useEffect(() => {
     const unsubs: Array<() => void> = [];
-    const handleProgress = (payload: InstallProgressPayload) => {
-      const safeSlug = sanitizeToastField(payload.slug, 64);
-      const target = safeSlug;
-      let message: string;
-      if (payload.phase === "downloading") {
-        const { bytesDownloaded, bytesTotal } = payload;
-        if (bytesTotal !== null) {
-          message = t("useStatusBarInstall.downloadingWithProgress", {
-            progress: `${formatBytes(bytesDownloaded)} / ${formatBytes(bytesTotal)}`,
-            target,
-          });
-        } else {
-          message = t("useStatusBarInstall.downloadingNoTotal", { target });
-        }
-      } else if (payload.phase === "verifying") {
-        message = t("useStatusBarInstall.verifying", { target });
-      } else if (payload.phase === "registering") {
-        message = t("useStatusBarInstall.registering", { target });
-      } else if (payload.phase === "restarting") {
-        message = t("useStatusBarInstall.restarting", { target });
-      } else if (payload.phase === "preparing") {
-        message = t("useStatusBarInstall.preparingRuntime", { target });
-      } else {
-        message = t("useStatusBarInstall.installing", { target });
-      }
-      upsertToast(installToastId(safeSlug), { severity: "info", message, ttlMs: 8000 });
-    };
     const handleInstallResult = ({ slug, success, error, message }: InstallResultPayload) => {
       const safeSlug = sanitizeToastField(slug, 64);
       const target = safeSlug;
@@ -109,9 +77,6 @@ export function useStatusBarInstall({ api, pushToast, upsertToast }: Options): v
       });
     };
 
-    if (typeof api.onPluginInstallProgress === "function") {
-      unsubs.push(api.onPluginInstallProgress(handleProgress));
-    }
     if (typeof api.onPluginInstallResult === "function") {
       unsubs.push(api.onPluginInstallResult(handleInstallResult));
     }

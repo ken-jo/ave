@@ -127,7 +127,6 @@ export function readInitialAppModeArg(): InitialAppMode | null {
   }
 }
 
-
 export function buildAveHostWorld() {
   let hostMarketplaceApiClaimed = false;
   return {
@@ -135,11 +134,8 @@ export function buildAveHostWorld() {
     if (hostMarketplaceApiClaimed) return null;
     hostMarketplaceApiClaimed = true;
     return {
-      uninstallMarketplacePlugin: async (
-        pluginId: string,
-        options?: { doctorCleanup?: { installFailureKind?: string } },
-      ) =>
-        normalizePluginActionResult(await ipcRenderer.invoke(CHANNELS.plugins.uninstall, pluginId, options)),
+      uninstallMarketplacePlugin: async (pluginId: string) =>
+        normalizePluginActionResult(await ipcRenderer.invoke(CHANNELS.plugins.uninstall, pluginId)),
     };
   },
   };

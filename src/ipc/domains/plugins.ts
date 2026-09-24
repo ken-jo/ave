@@ -95,13 +95,11 @@ import {
 } from "../../plugins/install-lifecycle.js";
 import { shouldRestartAfterPluginConfigWrite } from "../../plugins/config-restart-policy.js";
 import {
-  cleanupFailedPluginInstallWithLifecycle,
   ensurePluginStateReadyForInstall,
   uninstallPluginWithLifecycle,
 } from "../../plugins/uninstall-lifecycle.js";
 import { buildInstallFailureResult } from "../../shared/plugin-install-result.js";
 import { aveHome } from "../../shared/ave-home.js";
-import { isPluginInstallFailureKind, type PluginInstallFailureKind } from "../../shared/plugin-install-failure.js";
 import { isPathWithin } from "../../plugins/plugin-storage-containment.js";
 import {
   handlePluginBundleE2eSnapshot,
@@ -129,13 +127,6 @@ function asPlainRecord(value: unknown): Record<string, unknown> {
     return value as Record<string, unknown>;
   }
   return {};
-}
-
-function parseDoctorCleanupKind(value: unknown): PluginInstallFailureKind | undefined {
-  const input = asPlainRecord(value);
-  const doctorCleanup = asPlainRecord(input.doctorCleanup);
-  const kind = doctorCleanup.installFailureKind;
-  return isPluginInstallFailureKind(kind) ? kind : undefined;
 }
 
 function sanitizeNotificationContextRef(value: unknown): NotificationContextRef | undefined {
@@ -270,7 +261,6 @@ function clearPendingEntryUrl(webContentsId: number): void {
   for (const resolve of resolvers) resolve({ ok: false, error: "not-registered" });
 }
 
-
 export function unregisterPluginWebview(
   webContentsId: number,
   revokeSession: (appSessionId: string) => void,
@@ -352,7 +342,7 @@ export function pluginLifecycleServices(deps: IpcDeps) {
       emitHostEvent,
       log,
     });
-  return { requireCleanupServices, ensureInstallStateReady, uninstall };
+  return { ensureInstallStateReady, uninstall };
 }
 
 export function registerPluginsHandlers(deps: IpcDeps): void {
@@ -370,7 +360,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       sendToWindow(win, channel, payload, log);
     }
   };
-  const { requireCleanupServices, ensureInstallStateReady, uninstall: uninstallPlugin } = pluginLifecycleServices(deps);
+  const { ensureInstallStateReady, uninstall: uninstallPlugin } = pluginLifecycleServices(deps);
   // Late-mount sync for the bootstrap status event. On a cold boot the whole
   // start → complete/error sequence is emitted while the window still shows
   // the splash document, so the renderer pulls the recorded snapshot once it
@@ -383,42 +373,12 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     return latestBootstrapStatus();
   });
 
-  ipcMain.handle(CHANNELS.plugins.uninstall, async (e, pluginId: string, rawOptions?: unknown) => {
+  ipcMain.handle(CHANNELS.plugins.uninstall, async (e, pluginId: string) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.plugins.uninstall, e); return UNAUTHORIZED_FRAME; }
     const broadcastUninstallResult = (payload: { slug: string; success: boolean; error?: string }) => {
       broadcastPluginLifecycleEvent(CHANNELS.plugins.uninstallResult, payload);
     };
     try {
-      const doctorCleanupKind = parseDoctorCleanupKind(rawOptions);
-      const matchingFailure = doctorCleanupKind
-        ? pluginMarketplace
-            .getInstallFailureDiagnostics()
-            .find((failure) => failure.id === pluginId && failure.installFailureKind === doctorCleanupKind)
-        : undefined;
-      const canCleanupSyntheticFailure = matchingFailure
-        ? await pluginMarketplace.getInstalledVersion(pluginId)
-            .then((installedVersion) => installedVersion === null)
-            .catch((err) => {
-              log.warn(`doctor cleanup refused for '${pluginId}': cannot prove plugin is absent: ${errMessage(err)}`);
-              return false;
-            })
-        : false;
-      if (matchingFailure && canCleanupSyntheticFailure) {
-        const result = await cleanupFailedPluginInstallWithLifecycle(pluginId, {
-          pluginMarketplace,
-          pluginRuntime,
-          settingsService,
-          ...requireCleanupServices(),
-          drainPluginInstallLockOperationsService:
-            drainPluginInstallLockOperations,
-          refreshPluginNotifications,
-          emitHostEvent,
-          log,
-        });
-        broadcastUninstallResult({ slug: pluginId, success: true });
-        return result;
-      }
-
       // Lifecycle ordering lives in uninstallPluginWithLifecycle: durable
       // marketplace removal runs inside the runtime generation barrier, then
       // journaled config/secret/auth/cache cleanup completes or stays

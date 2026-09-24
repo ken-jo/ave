@@ -6,7 +6,7 @@
  * objects) and merges the English default catalog here. Non-English generated
  * catalogs are language-pack chunks under `../generated-locales/`.
  *
- * Fragments: 172
+ * Fragments: 171
  */
 import { en as en_app } from "./app.js";
 import { en as en_appearanceTab } from "./appearanceTab.js";
@@ -128,7 +128,6 @@ import { en as en_permissionsTab } from "./permissionsTab.js";
 import { en as en_pluginAuthSection } from "./pluginAuthSection.js";
 import { en as en_pluginConfigSchemaForm } from "./pluginConfigSchemaForm.js";
 import { en as en_pluginConfigTab } from "./pluginConfigTab.js";
-import { en as en_pluginGridButton } from "./pluginGridButton.js";
 import { en as en_pluginPerfTab } from "./pluginPerfTab.js";
 import { en as en_pluginUninstallDialog } from "./pluginUninstallDialog.js";
 import { en as en_pluginUpdatesPill } from "./pluginUpdatesPill.js";
@@ -302,7 +301,6 @@ export const generatedEn: Record<string, string> = {
   ...en_pluginAuthSection,
   ...en_pluginConfigSchemaForm,
   ...en_pluginConfigTab,
-  ...en_pluginGridButton,
   ...en_pluginPerfTab,
   ...en_pluginUninstallDialog,
   ...en_pluginUpdatesPill,

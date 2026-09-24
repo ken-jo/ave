@@ -29,11 +29,6 @@ export const aveDevLog = (msg: string, obj?: object) => {
   if (obj !== undefined) log.info(obj, msg);
   else log.info(msg);
 };
-const aveDevWarn = (msg: string, obj?: object) => {
-  if (app.isPackaged) return;
-  if (obj !== undefined) log.warn(obj, msg);
-  else log.warn(msg);
-};
 
 export async function handleAveUri(url: string) {
   aveDevLog("[ave] handleAveUri called", { url });
@@ -69,6 +64,8 @@ export async function handleAveUri(url: string) {
   }
 
   // The server-era forms (`ave://install/<slug>`, `ave://mcp-login/<slug>`) named a catalog
-  // that no longer exists; they are refused like any other unknown link.
-  aveDevWarn("[ave] handleAveUri: unrecognized ave:// link ignored", { url });
+  // that no longer exists; they are refused like any other unknown link. Logged in every
+  // build so a link that does nothing leaves a trace; the query can carry a secret, so it
+  // stays out of the log.
+  log.warn({ link: url.split(/[?#]/, 1)[0] }, "[ave] handleAveUri: unrecognized ave:// link ignored");
 }

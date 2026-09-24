@@ -15,7 +15,6 @@ import { _resetForTest, setIsPackaged } from "../../boot/dev-flags.js";
 import type { PluginAuthority } from "../../marketplace/catalog/types.js";
 import type { PluginInstallPlan, StagedPluginArtifact } from "../../marketplace/resolve/plugin-ladder.js";
 import { EMPTY_MARKETPLACE_POLICY, type MarketplacePolicy } from "../../marketplace/sources/policy.js";
-import type { MarketplaceFetcher } from "../marketplace-fetcher.js";
 import { preparePendingPluginUpdate, recoverPendingPluginUpdates } from "../marketplace-update-recovery.js";
 import type { PluginPaths } from "../plugin-paths.js";
 import { installReceiptPath, verifyInstallReceipt } from "../plugin-install-receipt.js";
@@ -101,9 +100,8 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
     registryPath = join(pluginsDir, "registry.json");
     await mkdir(pluginsDir, { recursive: true });
     await writeFile(registryPath, JSON.stringify({ version: 1, plugins: [] }), "utf-8");
-    const fetcher = { listPlugins: async () => [], getPluginDetail: async () => null, listAnnouncements: async () => [] } as unknown as MarketplaceFetcher;
     paths = makeTestPluginPaths({ rootDir: testDir, cacheRoot });
-    service = new TestPluginMarketplaceService(paths, fetcher);
+    service = new TestPluginMarketplaceService(paths);
   });
 
   afterEach(async () => {
@@ -167,6 +165,13 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
     await expect(install(needsPlugin)).rejects.toBeInstanceOf(MissingPluginDependenciesError);
     expect(staging).toBe(0);
     expect(await entry()).toBeUndefined();
+  });
+
+  it("installs past an absent optional dependency, but not past an absent required one", async () => {
+    const optional = plan("1.0.0", { authority: authority({ dependencies: [{ pluginId: "notes", required: false }] }) });
+    await expect(install(optional)).resolves.toMatchObject({ pluginId: "alpha", installed: true });
+    const mixed = plan("1.0.1", { authority: authority({ dependencies: [{ pluginId: "notes", required: false }, { pluginId: "calendar" }] }) });
+    await expect(install(mixed)).rejects.toMatchObject({ missing: ["calendar"] });
   });
 
   it("refuses an extracted plugin.json that differs from the plan, leaving nothing behind", async () => {

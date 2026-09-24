@@ -55,7 +55,6 @@ import { pluginRegistryOrigins, retainedCommitsFrom } from "../../marketplace/so
 import { SourceSyncer } from "../../marketplace/sources/sync.js";
 import { withPluginInstallLock } from "../../plugins/install-lifecycle.js";
 import { DEFAULT_MARKETPLACE_ARTIFACT_LIMITS } from "../../plugins/marketplace-artifact-limits.js";
-import { DisabledMarketplaceFetcher } from "../../plugins/marketplace.js";
 import { PluginArtifactStore } from "../../plugins/plugin-artifact-store.js";
 import { resolveUpdateCheckEnabled } from "../../plugins/update-detector.js";
 import { getAveAppVersion } from "../../shared/app-version.js";
@@ -261,10 +260,6 @@ async function createGitMarketplaceService(
   const artifacts = new PluginArtifactStore({
     installRoot: join(home, "mcp"),
     cacheRoot: join(home, "mcp", ".cache"),
-    // Nothing here downloads through the legacy catalog: git artifacts arrive as verified bytes.
-    fetcher: new DisabledMarketplaceFetcher(),
-    publicKeys: {},
-    tarballCacheBase: null,
     artifactLimits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,
   });
   const installers: InstallerPorts = {

@@ -10,7 +10,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { McpServerConfig } from "../../../mcp/types.js";
-import { DisabledMarketplaceFetcher } from "../../../plugins/marketplace.js";
 import { PluginArtifactStore } from "../../../plugins/plugin-artifact-store.js";
 import type { ResolvedMcpServer } from "../../resolve/mcp.js";
 import { McpInstaller, mcpInstallOrigins } from "../mcp-installer.js";
@@ -98,9 +97,6 @@ describe("McpInstaller", () => {
     const files = new PluginArtifactStore({
       installRoot: join(home, "mcp"),
       cacheRoot: join(home, "mcp", ".cache"),
-      fetcher: new DisabledMarketplaceFetcher(),
-      publicKeys: {},
-      tarballCacheBase: null,
     });
     installer = new McpInstaller({
       recordsPath: recordsPath(),

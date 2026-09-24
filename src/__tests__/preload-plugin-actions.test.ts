@@ -76,16 +76,15 @@ describe("preload plugin action normalization", () => {
     });
   });
 
-  it("forwards Doctor cleanup options to the uninstall IPC channel", async () => {
+  it("sends only the plugin id on the uninstall IPC channel", async () => {
     mockInvoke.mockResolvedValueOnce({ pluginId: "meeting", uninstalled: true });
     const api = await loadExposedApi();
     const hostApi = api.takePluginMarketplaceApi();
     if (!hostApi) throw new Error("host plugin marketplace api unavailable");
 
-    const options = { doctorCleanup: { installFailureKind: "catalog-grant-mismatch" } };
-    await hostApi.uninstallMarketplacePlugin("meeting", options);
+    await hostApi.uninstallMarketplacePlugin("meeting");
 
-    expect(mockInvoke).toHaveBeenCalledWith("ave:plugins:uninstall", "meeting", options);
+    expect(mockInvoke).toHaveBeenCalledWith("ave:plugins:uninstall", "meeting");
   });
 
   it("allows the host marketplace api to be claimed only once", async () => {

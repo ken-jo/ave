@@ -113,11 +113,11 @@ describe("dev-flags tamper snapshot", () => {
     expect(isPackagedForbiddenEnvVar("NODE_ENV")).toBe(false);
   });
 
-  it("reads the offline registry flag only for unpackaged execution", () => {
-    const env: NodeJS.ProcessEnv = { AVE_ADMISSION_OFFLINE: "1" };
+  it("reads a development flag only for unpackaged execution", () => {
+    const env: NodeJS.ProcessEnv = { AVE_TRACE: "1" };
 
-    expect(readDevelopmentEnvVar("AVE_ADMISSION_OFFLINE", env, false)).toBe("1");
-    expect(readDevelopmentEnvVar("AVE_ADMISSION_OFFLINE", env, true)).toBeUndefined();
+    expect(readDevelopmentEnvVar("AVE_TRACE", env, false)).toBe("1");
+    expect(readDevelopmentEnvVar("AVE_TRACE", env, true)).toBeUndefined();
   });
 
   it("keeps AVE_WIN_NO_SANDBOX Windows-only and packaged-gated", () => {

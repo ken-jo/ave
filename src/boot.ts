@@ -69,7 +69,6 @@ import type { ParentContextTurn } from "./permissions/parent-context-evidence.js
 import { McpAppModelContextStore } from "./mcp/mcp-app-model-context.js";
 import { initPluginRuntime } from "./boot/steps/plugin-runtime.js";
 import { feedRevocationsFromSnapshots } from "./boot/steps/revocation-bootstrap.js";
-import { wireAdmissionRegistry } from "./boot/steps/admission-bootstrap.js";
 import { createServiceClient } from "./boot/steps/service-endpoint.js";
 import { wireAnnouncementCheck, wireReleasePrep,
 } from "./boot/steps/post-boot.js";
@@ -158,18 +157,15 @@ export type { AppServices } from "./boot/types.js";
  *
  * `"headless"` is the one-shot `--exec` / `--set-secret` run: it performs a
  * single request and quits. Such a run opens no DISCRETIONARY service
- * connection — no marketplace catalog sync, no admission warm-up, no release
- * check, no polling, no telemetry — because nothing in the process can act on
+ * connection — no marketplace catalog sync, no release check, no polling, no
+ * telemetry — because nothing in the process can act on
  * what any of them returns, and a run asked for one turn should not reach
  * anything the turn did not ask for.
  *
  * The plugin trust chain needs no connection: host-secret grants and
  * revocations are read from the marketplace snapshots already on disk
  * (design §10.3, §10.4), so a headless run keeps both without fetching
- * anything. Admission is the one signed document a headless run skips: it is
- * consulted at install, and the install path re-checks freshness itself, so
- * warming it at boot only ever saved the first install of a session a cold
- * fetch.
+ * anything.
  *
  * An `"interactive"` launch keeps every one of them.
  */
@@ -198,16 +194,9 @@ export async function bootstrap(
   if (!headless && !mainWindow) throw new Error("Interactive boot requires a main window");
   if (headless) {
     log.info(
-      "boot: headless launch — no catalog sync, admission warm-up, release check, polling or telemetry",
+      "boot: headless launch — no catalog sync, release check, polling or telemetry",
     );
   }
-  /**
-   * Offline override for the admission warm-up — the one signed document a
-   * headless run can skip (see {@link BootLaunch}). Spread rather than passed
-   * as a plain `online:` so an interactive launch still resolves the toggle
-   * exactly as it always has, from the step's own default.
-   */
-  const admissionOffline = headless ? { online: false as const } : {};
   const ctx = createBootContext({ projectRoot, mainWindow, getMainWindow, host });
 
   // Before any provider exists, so the AI SDK integration is registered by the
@@ -548,18 +537,6 @@ export async function bootstrap(
     home: aveHome(),
     pluginRegistryPath: resolvePluginPaths().registryPath,
     bootAuditLogger: ctx.bootAuditLogger,
-  });
-
-  // Warm the admission catalog. Unlike the two registries above this is not an
-  // ordering requirement — admission is consulted at install, not at load, and
-  // the install path re-checks freshness itself. Warming here only saves the
-  // first install of a session a cold fetch.
-  await wireAdmissionRegistry({
-    userDataPath: host.userDataPath,
-    bootAuditLogger: ctx.bootAuditLogger,
-    networkFetch: ctx.singleHopNetworkFetch,
-    packaged: host.isPackaged,
-    ...admissionOffline,
   });
 
   // PermissionManager is built BEFORE initPluginRuntime

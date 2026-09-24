@@ -177,13 +177,14 @@ describe("env-surface policy", () => {
     expect(DEVELOPMENT).toEqual(
       ACTIVE_DEVELOPMENT_ENV_VARS.filter((name) => name.startsWith("AVE_")),
     );
-    expect(DEVELOPMENT).toContain("AVE_ADMISSION_OFFLINE");
+    expect(DEVELOPMENT).not.toContain("AVE_ADMISSION_OFFLINE");
     expect(DEVELOPMENT).not.toContain("AVE_WHITELIST_OFFLINE");
     expect(DEVELOPMENT).not.toContain("AVE_REVOCATION_OFFLINE");
     expect(ACTIVE_DEVELOPMENT_ENV_VARS).toContain("VITE_DEBUG_STREAM");
     expect(DEVELOPMENT_ENV_TOMBSTONES).toContain("AVE_PLUGINS_DIR");
     expect(DEVELOPMENT).not.toContain("AVE_PLUGINS_DIR");
     expect(DEVELOPMENT_ENV_TOMBSTONES).toEqual(expect.arrayContaining([
+      "AVE_ADMISSION_OFFLINE",
       "AVE_ALLOW_LINKED_PLUGIN_ENTRY",
       "AVE_ALLOW_TEST_MARKETPLACE_KEYS",
       "AVE_DEV_NO_SANDBOX",

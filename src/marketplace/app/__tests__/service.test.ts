@@ -11,7 +11,6 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { descriptorText as descriptor, jsonText as text } from "../../__tests__/fixtures/package-files.js";
 import type { McpServerConfig } from "../../../mcp/types.js";
 import { DEFAULT_MARKETPLACE_ARTIFACT_LIMITS } from "../../../plugins/marketplace-artifact-limits.js";
-import { DisabledMarketplaceFetcher } from "../../../plugins/marketplace.js";
 import { PluginArtifactStore } from "../../../plugins/plugin-artifact-store.js";
 import { createFixtureRepo, type FixtureRepo, type GitHttpServer, removeFixtureRepo, startGitHttpServer } from "../../__tests__/fixtures/git-http-server.js";
 import { createTestGitRunner, type TestGitRunner } from "../../__tests__/fixtures/git-runner.js";
@@ -114,9 +113,6 @@ describe.skipIf(process.platform === "win32")("MarketplaceService", () => {
     const artifacts = new PluginArtifactStore({
       installRoot: join(root, "mcp"),
       cacheRoot: join(root, "mcp", ".cache"),
-      fetcher: new DisabledMarketplaceFetcher(),
-      publicKeys: {},
-      tarballCacheBase: null,
     });
     const stored = new Map<string, string>();
     const tokens: TokenStore = {

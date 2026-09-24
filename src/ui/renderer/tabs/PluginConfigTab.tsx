@@ -8,12 +8,10 @@ import { Switch } from "../../../components/ui/switch.js";
 import { sanitizePluginConfig, sanitizePluginConfigKey } from "../../../shared/plugin-config.js";
 import { getApi } from "../api-client.js";
 import { getHostMarketplaceApi } from "../host-marketplace-api.js";
-import type { InstallInFlight, InstallPhase, InstallProgressPayload } from "../hooks/use-plugin-marketplace.js";
 import type {
   AveApi,
   PluginCardSummary,
   PluginContributionTrustRow,
-  PluginMarketplaceUninstallOptions,
 } from "../types.js";
 import { PluginAuthSection } from "../components/PluginAuthSection.js";
 import { usePluginAuthStatuses } from "../hooks/use-plugin-auth-status.js";
@@ -29,23 +27,12 @@ import { useNotifySaved } from "../context/SavedToastContext.js";
 import { MARKDOWN_REMARK_PLUGINS } from "../utils/markdown-plugins.js";
 import { isPluginInstallKey } from "../utils/plugin-install-aliases.js";
 import { SettingsPageHeader } from "../components/PageShell.js";
-import { t } from "../../../i18n/runtime.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { isReinstallFixableFailureKind } from "../../../shared/plugin-install-failure.js";
-import { formatBytes } from "../../../lib/turn-summary-format.js";
 import { errorMessage } from "../../../shared/error-message.js";
 
 type KV = { key: string; value: string };
 type BannerType = "error" | "success" | "warning";
-
-const INSTALL_PHASE_I18N_KEY: Record<InstallPhase, string> = {
-  installing: "pluginConfigTab.phaseInstalling",
-  downloading: "pluginConfigTab.phaseDownloading",
-  verifying: "pluginConfigTab.phaseVerifying",
-  registering: "pluginConfigTab.phaseRegistering",
-  restarting: "pluginConfigTab.phaseRestarting",
-  preparing: "pluginConfigTab.phasePreparing",
-};
 
 const PREPARATION_PHASE_I18N_KEY: Record<string, string> = {
   pending: "pluginConfigTab.prepPhasePending",
@@ -55,15 +42,6 @@ const PREPARATION_PHASE_I18N_KEY: Record<string, string> = {
   ready: "pluginConfigTab.prepPhaseReady",
   error: "pluginConfigTab.prepPhaseError",
 };
-
-function formatInstallProgress(progress: InstallProgressPayload): string {
-  if (progress.phase !== "downloading") return t(INSTALL_PHASE_I18N_KEY[progress.phase]);
-  const received = formatBytes(progress.bytesDownloaded);
-  if (typeof progress.bytesTotal !== "number" || progress.bytesTotal <= 0) {
-    return t("pluginConfigTab.downloadingBytes", { received });
-  }
-  return t("pluginConfigTab.downloadingBytesOf", { received, total: formatBytes(progress.bytesTotal) });
-}
 
 function isRuntimeCallablePlugin(plugin: PluginCardSummary): boolean {
   return plugin.runtimeLoaded ?? (plugin.loadStatus === "loaded");
@@ -155,7 +133,6 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
   // gaze without each tab having to roll its own banner.
   const notifySaved = useNotifySaved();
   const [plugins, setPlugins] = useState<PluginCardSummary[]>([]);
-  const [installInFlight, setInstallInFlight] = useState<InstallInFlight>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [uninstallTarget, setUninstallTarget] = useState<PluginCardSummary | null>(null);
   // Tools list is collapsed by default — plugins that declare many tools
@@ -331,25 +308,9 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
       return;
     }
     const unsubs: Array<() => void> = [];
-    if (typeof api.onPluginInstallProgress === "function") {
-      unsubs.push(
-        api.onPluginInstallProgress((payload) => {
-          setInstallInFlight((prev) => ({ ...prev, [payload.slug]: payload }));
-          if (payload.phase === "preparing") {
-            void refreshPlugins({ preferInstallKey: payload.slug });
-          }
-        }),
-      );
-    }
     if (typeof api.onPluginInstallResult === "function") {
       unsubs.push(
-        api.onPluginInstallResult(({ slug, success }) => {
-          setInstallInFlight((prev) => {
-            if (!(slug in prev)) return prev;
-            const next = { ...prev };
-            delete next[slug];
-            return next;
-          });
+        api.onPluginInstallResult(({ success }) => {
           if (success) {
             void refreshPlugins();
           }
@@ -593,15 +554,7 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
   const handleUninstall = useCallback(async (pluginId: string, displayName: string) => {
     setSaving(true);
     try {
-      const doctorCleanupKind = uninstallTarget?.id === pluginId ? uninstallTarget.installFailureKind : undefined;
-      const uninstallOptions: PluginMarketplaceUninstallOptions | undefined =
-        doctorCleanupKind
-          ? { doctorCleanup: { installFailureKind: doctorCleanupKind } }
-          : undefined;
-      const marketplaceApi = getHostMarketplaceApi();
-      const result = uninstallOptions
-        ? await marketplaceApi.uninstallMarketplacePlugin(pluginId, uninstallOptions)
-        : await marketplaceApi.uninstallMarketplacePlugin(pluginId);
+      const result = await getHostMarketplaceApi().uninstallMarketplacePlugin(pluginId);
       if (!result.ok) {
         showBanner("error", result.message ?? t("pluginConfigTab.errorUninstall"));
         return;
@@ -615,7 +568,7 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
       setSaving(false);
       setUninstallTarget(null);
     }
-  }, [showBanner, t, uninstallTarget]);
+  }, [showBanner, t]);
 
   return (
     <div className="flex min-w-0 flex-1 min-h-0 flex-col gap-3">
@@ -760,31 +713,6 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
                     )}
                   </button>
                 ))}
-                {/* Skeleton rows for installs the main process is still
-                    pipelining. The slug is removed from `installInFlight`
-                    when the install-result event lands and `refreshPlugins`
-                    promotes it into a real `plugins` entry. */}
-                {Object.entries(installInFlight)
-                  .filter(([slug]) => !plugins.some((p) => isPluginInstallKey(p.id, slug, p.installAliases)))
-                  .map(([slug, progress]) => (
-                    <div
-                      key={`in-flight:${slug}`}
-                      className="flex w-full animate-pulse items-center gap-2 rounded border border-dashed border-muted px-2 py-1.5 text-xs text-muted-foreground"
-                      aria-label={t("pluginConfigTab.installingAriaLabel", { slug })}
-                      aria-live="polite"
-                    >
-                      <span
-                        className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent"
-                        aria-hidden="true"
-                      />
-                      <span className="flex min-w-0 flex-col">
-                        <span className="line-clamp-1 [overflow-wrap:anywhere]">{slug}</span>
-                        <span className="line-clamp-1 [overflow-wrap:anywhere] text-[9px] opacity-70">
-                          {formatInstallProgress(progress)}
-                        </span>
-                      </span>
-                    </div>
-                  ))}
               </div>
             </ScrollArea>
           </div>
@@ -921,34 +849,30 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0 space-y-0.5">
                         <p className="text-xs font-medium text-destructive">
-                          {selectedPlugin.installFailureKind === "catalog-grant-mismatch"
-                            ? t("pluginConfigTab.doctorGrantMismatchTitle")
-                            : selectedPlugin.installFailureKind === "incompatible-app-version"
-                              ? t("pluginConfigTab.doctorIncompatibleAppTitle")
-                              : selectedPlugin.installFailureKind === "manifest-validation-error"
-                                ? t("pluginConfigTab.doctorManifestValidationTitle")
-                                : selectedPlugin.installFailureKind === "plugin-revoked"
-                                  ? t("pluginConfigTab.doctorRevokedTitle")
-                                  : selectedPlugin.installFailureKind === "untrusted-manifest-path"
-                                    ? t("pluginConfigTab.doctorUntrustedManifestPathTitle")
-                                    : selectedPlugin.installFailureKind === "load-crash"
-                                      ? t("pluginConfigTab.doctorLoadCrashTitle")
-                                      : t("pluginConfigTab.doctorTitle")}
+                          {selectedPlugin.installFailureKind === "incompatible-app-version"
+                            ? t("pluginConfigTab.doctorIncompatibleAppTitle")
+                            : selectedPlugin.installFailureKind === "manifest-validation-error"
+                              ? t("pluginConfigTab.doctorManifestValidationTitle")
+                              : selectedPlugin.installFailureKind === "plugin-revoked"
+                                ? t("pluginConfigTab.doctorRevokedTitle")
+                                : selectedPlugin.installFailureKind === "untrusted-manifest-path"
+                                  ? t("pluginConfigTab.doctorUntrustedManifestPathTitle")
+                                  : selectedPlugin.installFailureKind === "load-crash"
+                                    ? t("pluginConfigTab.doctorLoadCrashTitle")
+                                    : t("pluginConfigTab.doctorTitle")}
                         </p>
                         <p className="text-[11px] text-destructive/(--opacity-intense)">
-                          {selectedPlugin.installFailureKind === "catalog-grant-mismatch"
-                            ? t("pluginConfigTab.doctorGrantMismatchDescription")
-                            : selectedPlugin.installFailureKind === "incompatible-app-version"
-                              ? t("pluginConfigTab.doctorIncompatibleAppDescription")
-                              : selectedPlugin.installFailureKind === "manifest-validation-error"
-                                ? t("pluginConfigTab.doctorManifestValidationDescription")
-                                : selectedPlugin.installFailureKind === "plugin-revoked"
-                                  ? t("pluginConfigTab.doctorRevokedDescription")
-                                  : selectedPlugin.installFailureKind === "untrusted-manifest-path"
-                                    ? t("pluginConfigTab.doctorUntrustedManifestPathDescription")
-                                    : selectedPlugin.installFailureKind === "load-crash"
-                                      ? t("pluginConfigTab.doctorLoadCrashDescription")
-                                      : t("pluginConfigTab.doctorDescription")}
+                          {selectedPlugin.installFailureKind === "incompatible-app-version"
+                            ? t("pluginConfigTab.doctorIncompatibleAppDescription")
+                            : selectedPlugin.installFailureKind === "manifest-validation-error"
+                              ? t("pluginConfigTab.doctorManifestValidationDescription")
+                              : selectedPlugin.installFailureKind === "plugin-revoked"
+                                ? t("pluginConfigTab.doctorRevokedDescription")
+                                : selectedPlugin.installFailureKind === "untrusted-manifest-path"
+                                  ? t("pluginConfigTab.doctorUntrustedManifestPathDescription")
+                                  : selectedPlugin.installFailureKind === "load-crash"
+                                    ? t("pluginConfigTab.doctorLoadCrashDescription")
+                                    : t("pluginConfigTab.doctorDescription")}
                         </p>
                         {selectedPlugin.installFailureMessage ? (
                           <div className="mt-2 rounded border border-destructive/(--opacity-muted) bg-background/(--opacity-muted) px-2 py-1.5">

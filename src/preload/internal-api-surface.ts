@@ -448,8 +448,6 @@ export function buildInternalApiSurface() {
 
   // Plugin-owned OAuth removed host-owned provider auth IPC bridges.
 
-
-
   // ─── Memory ──────────────────────────────────────
   memoryListEntries: async (opts?: MemoryProjectOptions) =>
     invokeWithOptionalMemoryOptions(CHANNELS.memory.entriesList, opts),
@@ -553,7 +551,6 @@ export function buildInternalApiSurface() {
       hookProbeToolName,
     ) as Promise<unknown>,
 
-
   // ─── Overlay trigger lifecycle ────────────────────────────────────────
   onTriggerStarted: (handler: (payload: OverlayTriggerStartedPayload) => void) => {
     const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
@@ -639,9 +636,9 @@ export function buildInternalApiSurface() {
   skipAppUpdate: () =>
     ipcRenderer.invoke(CHANNELS.update.skipVersion) as Promise<{ ok: boolean; reason?: string }>,
 
-  // ─── Managed bootstrap status ────────────────────
-  // The host emits these around `ensureManagedInstalled()` so the renderer
-  // can show a banner / toast during startup install. Three lifecycle states:
+  // ─── Boot-install status ────────────────────
+  // The marketplace boot pass emits these so the renderer can show a banner /
+  // toast during startup install. Three lifecycle states:
   //   - { phase: "start" }
   //   - { phase: "complete", installed[], failed[], skipped? }
   //   - { phase: "error", message }
@@ -732,17 +729,6 @@ export function buildInternalApiSurface() {
     const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
     ipcRenderer.on(CHANNELS.skills.uninstallResult, listener);
     return () => ipcRenderer.removeListener(CHANNELS.skills.uninstallResult, listener);
-  },
-
-  // Phase progress for in-flight local installs. The result event clears the
-  // in-flight state. Renderer renders a skeleton card.
-  onPluginInstallProgress: (handler: (payload:
-    | { slug: string; phase: "installing" | "restarting" | "verifying" | "registering" | "preparing" }
-    | { slug: string; phase: "downloading"; bytesDownloaded: number; bytesTotal: number | null }
-  ) => void) => {
-    const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
-    ipcRenderer.on(CHANNELS.plugins.installProgress, listener);
-    return () => ipcRenderer.removeListener(CHANNELS.plugins.installProgress, listener);
   },
 
   // Status bar — aggregated runtime counters (tools / plugins / mcps).

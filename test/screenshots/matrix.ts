@@ -163,9 +163,8 @@ async function openPluginPanel(
 async function selectPluginPanel(page: Page, pluginId: string): Promise<void> {
   await openWorkMode(page);
 
-  // Scoped to the sidebar: PluginGridButton emits the SAME `data-viewkey`, so an
-  // unscoped match resolves by DOM order and can land on the grid's button —
-  // which is `disabled` while a plugin installs, making the click hang.
+  // Scoped to the sidebar so the match cannot land on another surface that
+  // carries the same `data-viewkey`.
   const row = page
     .locator(`[data-testid="primary-sidebar"] [data-viewkey^="plugin:${pluginId}:"]`)
     .first();

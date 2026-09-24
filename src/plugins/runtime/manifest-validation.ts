@@ -48,7 +48,6 @@ import { errorMessage } from "../../shared/error-message.js";
 import { resolveAddFormats, resolveAjv } from "../config-schema.js";
 import { TOOL_NAME_PATTERN, isValidToolName } from "../../tools/types.js";
 
-
 // Re-exported here so manifest/plugin-loading consumers can import the
 // minAppVersion gate error + IPC code alongside the other manifest contracts.
 /**
@@ -58,7 +57,7 @@ import { TOOL_NAME_PATTERN, isValidToolName } from "../../tools/types.js";
  * the per-plugin `publish.yml` tag-validation step. Updating any of those copies
  * MUST update the others (cross-repo, see `host-plugin-contract-sync` rule).
  */
-export const STABLE_SEMVER_RE =
+const STABLE_SEMVER_RE =
   /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 
 // #893 — the allow-listed host-secret key shapes a manifest's
@@ -81,7 +80,6 @@ export function formatUnknownErrorMessage(err: unknown): string {
   }
   return String(err);
 }
-
 
 export function normalizeInstallPolicy(
   source: Partial<Pick<PluginManifest, "installPolicy">> | null | undefined,

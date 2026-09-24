@@ -12,7 +12,7 @@ import type { PluginTelemetryClient } from "../../telemetry/client.js";
 import type { BrowserWindow } from "electron";
 import type { SettingsService } from "../../data/settings-store.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
-import type { MarketplaceAnnouncement } from "../../plugins/marketplace.js";
+import type { MarketplaceAnnouncement } from "../../shared/marketplace-announcements.js";
 import { MARKETPLACE } from "../../shared/ipc-channels.js";
 import {
   normalizeDismissedAnnouncementIds,

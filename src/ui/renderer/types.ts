@@ -119,7 +119,6 @@ import type { PermissionRule } from "../../permissions/permission-manager.js";
 import type { ParentAdjudicationBackgroundEscalation, ParentAdjudicationMaxVerdict, ParentAdjudicationModelSource } from "../../permissions/permission-settings-store.js";
 export type { ApprovalChoice, ApprovalDecision, ApprovalRequest, PermissionRule, ParentAdjudicationBackgroundEscalation, ParentAdjudicationMaxVerdict, ParentAdjudicationModelSource };
 
-
 export type PluginUiExtension = PluginUiExtensionView;
 export type PluginManifestUiExtensionSummary = PluginUiExtensionView["extension"];
 
@@ -347,12 +346,6 @@ type LongTermMemoryConsolidationResult =
 export type PluginMarketplaceActionResult =
   | { ok: true; pluginId: string; uninstalled: true }
   | { ok: false; error: string; message?: string };
-
-export type PluginMarketplaceUninstallOptions = {
-  doctorCleanup?: {
-    installFailureKind: PluginInstallFailureKind;
-  };
-};
 
 /** ask_user_question — one FIFO request main pushes to the composer dock. */
 export type AskUserQuestionRequest = {
@@ -1217,15 +1210,9 @@ export type AveApi = {
    *     toast/alert; collapsing the error into `null` would hide failures.
    */
   installLocalPlugin: () => Promise<{ pluginId: string; installed: true } | null>;
-  onPluginInstallProgress: (h: (payload:
-    | { slug: string; phase: "installing" | "restarting" | "verifying" | "registering" | "preparing" }
-    | { slug: string; phase: "downloading"; bytesDownloaded: number; bytesTotal: number | null }
-  ) => void) => () => void;
   getRuntimeCounts: () => Promise<{ tools: number; plugins: number; mcps: number }>;
   getRuntimeEnv: () => Promise<{ platform: string; hostname: string; user: string }>;
   pingAiProvider: () => Promise<AiProviderPingIpcResult>;
-
-
 
   getAppInfo: () => Promise<{
     version: string;
@@ -1653,8 +1640,6 @@ export type AvePluginConfigApi = {
     | { ok: false; error: string; message?: string }
   >;
 
-
-
   listSecretKeys: (pluginId: string) => Promise<
     | { ok: true; keys: string[] }
     | { ok: false; error: string; message?: string }
@@ -1665,12 +1650,35 @@ export type AvePluginsApi = {
   cards: () => Promise<PluginCardSummary[]>;
 };
 
+/** One installed plugin view as the composer surfaces (slash picker, input bar) list it. */
+export interface PluginEntry {
+  viewKey: string;
+  /** Plugin id owning the view — drives auth-state lookup. @optional */
+  pluginId?: string;
+  /** Runtime card status for surfacing host-managed dependency preparation. */
+  loadStatus?: PluginCardSummary["loadStatus"];
+  /** Current dependency/runtime preparation step while loadStatus is "preparing". */
+  preparationStatus?: PluginCardSummary["preparationStatus"];
+  label: string;
+  /** Lucide icon name from the plugin manifest (PascalCase, e.g. "Mic"). */
+  icon?: string;
+  /**
+   * Short text (1-4 chars) rendered in place of the Lucide icon — e.g.
+   * `"ORION"`. Takes precedence over `icon` when both are set.
+   */
+  iconText?: string;
+  /**
+   * `true` when the owning plugin declares `manifest.auth` and its current
+   * statusTool result is `kind: "unauthed"`. (architecture.md §9.4a)
+   */
+  unauthed?: boolean;
+  /** True when this cell represents a failed plugin that should route to Doctor. */
+  doctorRequired?: boolean;
+}
+
 /** Plugin removal only: packages install through the git marketplace (`gitMarketplace`, design §13). */
 export type AveHostMarketplaceApi = {
-  uninstallMarketplacePlugin: (
-    id: string,
-    options?: PluginMarketplaceUninstallOptions,
-  ) => Promise<PluginMarketplaceActionResult>;
+  uninstallMarketplacePlugin: (id: string) => Promise<PluginMarketplaceActionResult>;
 };
 
 export type AveHostApi = {

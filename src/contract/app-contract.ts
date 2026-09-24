@@ -196,7 +196,6 @@ export const CHANNELS = {
     /** Trusted-renderer, AVE_E2E-only bundle generation observation. */
     e2eBundleSnapshot: "ave:plugins:e2e:bundle-snapshot",
     // Lifecycle event channels (main → renderer). Not registered via ipcMain.
-    installProgress: "ave:plugins:install-progress",
     installResult: "ave:plugins:install-result",
     uninstallResult: "ave:plugins:uninstall-result",
     enabledChanged: "ave:plugins:enabled-changed",

@@ -198,17 +198,6 @@ export interface AppServices {
   }>;
   /** Revoke one plugin-panel session and its read/grant lifecycle state. */
   revokePluginOperationSession: (appSessionId: string) => void;
-  /**
-   * §FU#259 — artifact store rooted at `userData/mcp-servers/`.
-   * Constructed at boot when the marketplace fetcher supports verified
-   * downloads; absent when the build uses the disabled fetcher (no
-   * marketplace configured) so the MCP install IPC degrades gracefully.
-   */
-  mcpArtifactStore?: import("../plugins/plugin-artifact-store.js").PluginArtifactStore;
-  /** Issue #456 — signed marketplace agent packages extracted under ~/.ave/agents/. */
-  agentArtifactStore?: import("../plugins/plugin-artifact-store.js").PluginArtifactStore;
-  /** Issue #456 — signed marketplace skill packages extracted under ~/.ave/skills/. */
-  skillArtifactStore?: import("../plugins/plugin-artifact-store.js").PluginArtifactStore;
   idleScheduler?: IdleSchedulerService;
   preferenceRefreshService?: PreferenceRefreshService;
   /** Reviewer-backed merge of the packaged agent context with the user's own. */

@@ -276,20 +276,12 @@ vi.mock("../../plugins/plugin-bundle-lifecycle.js", () => ({
   },
 }));
 
-// The trust steps are mocked: admission otherwise reaches the public document
-// CDN from a unit run, and the `online` flag boot hands it is what the
-// service-connection assertions below read.
+// The revocation feed is mocked so the headless assertions below can read
+// what boot hands it.
 vi.mock("../steps/revocation-bootstrap.js", () => ({
   feedRevocationsFromSnapshots: vi.fn(async (input: { home: string; pluginRegistryPath: string }) => {
     h.captured["revocationFeed"] = { home: input.home, pluginRegistryPath: input.pluginRegistryPath };
     h.rec("revocation");
-  }),
-}));
-
-vi.mock("../steps/admission-bootstrap.js", () => ({
-  wireAdmissionRegistry: vi.fn(async (input: { online?: boolean }) => {
-    h.captured["admissionOnline"] = input.online;
-    h.rec("admission");
   }),
 }));
 
@@ -463,7 +455,6 @@ vi.mock("../../memory/preference-refresh-service.js", () => ({
   },
 }));
 
-
 vi.mock("../../memory/memory-consolidation-service.js", () => ({
   MemoryConsolidationService: class {},
   MemoryMaintenanceCoordinator: class {
@@ -602,6 +593,16 @@ vi.mock("../../ipc/domains/permissions.js", () => ({
 import { bootstrap, type AppServices } from "../../boot.js";
 import { wireAnnouncementCheck } from "../steps/post-boot.js";
 
+// Boot resolves `~/.ave` through `AVE_HOME` (the retired-cache sweep in
+// marketplace-setup removes directories under it), so both boots below run
+// against a scratch home, never the developer's own.
+const savedAveHome = process.env["AVE_HOME"];
+process.env["AVE_HOME"] = "/tmp/ave-boot-test/ave-home";
+afterAll(() => {
+  if (savedAveHome === undefined) delete process.env["AVE_HOME"];
+  else process.env["AVE_HOME"] = savedAveHome;
+});
+
 /**
  * Node reports a listener leak through `process.emitWarning`, so the spy has to
  * be in place before the first boot below runs. It keeps the real
@@ -669,7 +670,6 @@ describe("bootstrap() integration lock", () => {
     expect(Object.keys(services).sort()).toMatchInlineSnapshot(`
       [
         "a2aRemoteRuntime",
-        "agentArtifactStore",
         "agentProfileStore",
         "agentsDocMergeService",
         "approvalGate",
@@ -692,7 +692,6 @@ describe("bootstrap() integration lock", () => {
         "inputClassifier",
         "listPluginAuthPartitionsService",
         "mcpAppModelContext",
-        "mcpArtifactStore",
         "mcpManager",
         "memoryCaptureService",
         "memoryConsolidationService",
@@ -733,7 +732,6 @@ describe("bootstrap() integration lock", () => {
         "sideChatConversationLoop",
         "sideChatMemoryManager",
         "singleHopNetworkFetch",
-        "skillArtifactStore",
         "skillStore",
         "starredStore",
         "startRoutinesScheduler",
@@ -810,11 +808,6 @@ describe("bootstrap() integration lock", () => {
     expect(services.pluginRuntime).toBeDefined();
     expect(services.toolRegistry).toBeDefined();
     expect(services.settingsService).toBeDefined();
-    // The server fetcher is always disabled, so the signed-artifact stores
-    // are absent from the graph.
-    expect(services.mcpArtifactStore).toBeUndefined();
-    expect(services.agentArtifactStore).toBeUndefined();
-    expect(services.skillArtifactStore).toBeUndefined();
   });
 
   it("keeps rationale interactive while wiring the subscription runtime across execution loops", () => {
@@ -877,9 +870,6 @@ describe("bootstrap() integration lock", () => {
   });
 
   it("opens the host's own service connections (interactive launch is unchanged)", () => {
-    // Every registry resolves `online` from its own default, so boot passes
-    // nothing and each step keeps deciding.
-    expect(h.captured["admissionOnline"]).toBeUndefined();
     expect(h.captured["discretionaryEgress"]).toBe(true);
     expect(vi.mocked(wireAnnouncementCheck)).toHaveBeenCalled();
     expect(
@@ -892,9 +882,8 @@ describe("bootstrap() integration lock", () => {
  * A headless `--exec` boot opens no DISCRETIONARY service connection.
  *
  * The rule is one fact — the `launch` argument — and this suite is what proves
- * each consequence comes off it: the admission warm-up is skipped, and neither
- * the release check, the telemetry uploaders nor the announcement poll are
- * started. (The git marketplace's sync starts with the window, in main.ts, so
+ * each consequence comes off it: neither the release check, the telemetry
+ * uploaders nor the announcement poll are started. (The git marketplace's sync starts with the window, in main.ts, so
  * a headless boot never reaches it.) It also proves the halves of the
  * boundary that are NOT discretionary: revocations are still fed from the
  * local snapshots, and plugins on disk still load. The interactive boot above
@@ -927,11 +916,8 @@ describe("bootstrap() headless launch opens no discretionary service connection"
     else process.env["AVE_SANDBOX_ENABLED"] = savedSandboxEnv;
   });
 
-  it("skips the admission warm-up but still feeds the plugin trust chain", () => {
-    // Admission is consulted at install and re-checked there, so warming it at
-    // boot is only latency. Revocations and host-secret grants read only local
-    // snapshots.
-    expect(h.captured["admissionOnline"]).toBe(false);
+  it("still feeds the plugin trust chain", () => {
+    // Revocations and host-secret grants read only local snapshots.
     expect(h.order).toContain("revocation");
     expect(h.captured["revocationFeed"]).toEqual({ home: expect.any(String), pluginRegistryPath: expect.stringMatching(/registry\.json$/u) });
   });

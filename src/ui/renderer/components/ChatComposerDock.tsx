@@ -17,7 +17,7 @@ import type { ApprovalRequest, AveApi } from "../types.js";
 import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
 import type { SuggestedRepliesSnapshot } from "../hooks/use-suggested-replies.js";
 import type { QuickAction } from "./command-actions.js";
-import type { PluginEntry } from "./PluginGridButton.js";
+import type { PluginEntry } from "../types.js";
 import type { ViewModeState } from "./ViewModeBanner.js";
 import type { RolePreset } from "../../../data/role-presets.js";
 import type { AskUserQuestionRequest } from "./AskUserQuestionCard.js";

@@ -100,7 +100,7 @@ export function parseMcpRuntimeSpec(value: unknown): McpRuntimeSpec | undefined 
   return undefined;
 }
 
-export function parseMcpOAuthMetadata(value: unknown): McpOAuthMetadata | undefined {
+function parseMcpOAuthMetadata(value: unknown): McpOAuthMetadata | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const raw = value as Record<string, unknown>;
   const out: McpOAuthMetadata = {};

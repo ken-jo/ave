@@ -437,7 +437,6 @@ describe("preload contextBridge world shape lock", () => {
           "onPersonaPromptsUpdated": "function",
           "onPluginEnabledChanged": "function",
           "onPluginEvent": "function",
-          "onPluginInstallProgress": "function",
           "onPluginInstallResult": "function",
           "onPluginRuntimeUpdated": "function",
           "onPluginUninstallResult": "function",

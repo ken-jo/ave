@@ -399,69 +399,17 @@ describe("PluginConfigTab", () => {
     expect(screen.getByTestId("plugin-config:banner")).toHaveClass("text-destructive");
   });
 
-  it("shows an unresolved warning without reinstalling when grants do not match", async () => {
-    const broken = {
-      id: "meeting",
-      name: "Meeting",
-      description:
-        'Marketplace install failed: plugin "meeting" artifact manifest external-auth-consumer capability does not match the catalog-approved grant',
-      publisher: "Test fixture",
-      sampleTools: [],
-      capabilities: [],
-      tools: [],
-      installAliases: ["ave-plugin-meeting"],
-      installFailureKind: "catalog-grant-mismatch" as const,
-      loadStatus: "failed" as const,
-    };
-    const refreshedButNotRunnable = {
-      ...broken,
-      installFailureKind: undefined,
-      loadStatus: "loaded" as const,
-      runtimeLoaded: false,
-    };
-    const cards = vi.fn()
-      .mockResolvedValueOnce([broken])
-      .mockResolvedValueOnce([refreshedButNotRunnable]);
-    Object.defineProperty(window, "ave", {
-      value: {
-        plugins: { cards },
-        pluginConfig: { get: mockGet, set: mockSet },
-      },
-      writable: true,
-      configurable: true,
-    });
-
-    render(<PluginConfigTab />);
-
-    await waitFor(() => {
-      expect(screen.getByTestId("plugin-config:doctor-panel:meeting")).toBeInTheDocument();
-    });
-    expect(screen.getByText("마켓플레이스 패키지 불일치")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByTestId("plugin-config:doctor:meeting"));
-
-    await waitFor(() => {
-      expect(market.planInstall).not.toHaveBeenCalled();
-      expect(cards).toHaveBeenCalledTimes(2);
-      expect(
-        screen.getByText("Meeting: 진단 완료 — 로컬 복구 불가, 아직 실행할 수 없습니다."),
-      ).toBeInTheDocument();
-      expect(screen.getByTestId("plugin-config:banner")).toHaveClass("text-warning");
-    });
-  });
-
   it("reports a non-reinstallable diagnosis as repaired only after the refreshed runtime is loaded", async () => {
     const broken = {
       id: "meeting",
       name: "Meeting",
-      description:
-        'Marketplace install failed: plugin "meeting" artifact manifest external-auth-consumer capability does not match the catalog-approved grant',
+      description: "Meeting plugin",
       publisher: "Test fixture",
       sampleTools: [],
       capabilities: [],
       tools: [],
       installAliases: ["ave-plugin-meeting"],
-      installFailureKind: "catalog-grant-mismatch" as const,
+      installFailureKind: "incompatible-app-version" as const,
       loadStatus: "failed" as const,
     };
     const repaired = {
@@ -711,94 +659,6 @@ describe("PluginConfigTab", () => {
     });
   });
 
-  it("requests Doctor cleanup when removing a catalog grant mismatch diagnostic", async () => {
-    const broken = {
-      id: "meeting",
-      name: "Ave Meeting",
-      description: "Meeting plugin",
-      publisher: "Test fixture",
-      sampleTools: [],
-      capabilities: [],
-      tools: [],
-      isManaged: true,
-      installPolicy: "admin" as const,
-      loadStatus: "failed" as const,
-      installFailureKind: "catalog-grant-mismatch" as const,
-    };
-    const cards = vi.fn(async () => [broken]);
-    mockUninstall.mockResolvedValueOnce({ ok: true as const });
-    Object.defineProperty(window, "ave", {
-      value: {
-        plugins: { cards },
-        pluginConfig: { get: mockGet, set: mockSet },
-      },
-      writable: true,
-      configurable: true,
-    });
-
-    render(<PluginConfigTab />);
-
-    await waitFor(() => {
-      expect(screen.getByTestId("plugin-config:doctor-panel:meeting")).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByTestId("plugin-config:doctor-remove:meeting"));
-    const dialog = await screen.findByRole("dialog");
-    fireEvent.click(within(dialog).getByRole("button", { name: "제거" }));
-
-    await waitFor(() => {
-      expect(mockUninstall).toHaveBeenCalledWith("meeting", {
-        doctorCleanup: { installFailureKind: "catalog-grant-mismatch" },
-      });
-      expect(screen.getByText("Ave Meeting 제거 완료")).toBeInTheDocument();
-    });
-  });
-
-  it("requests Doctor cleanup when removing a manifest validation diagnostic", async () => {
-    const broken = {
-      id: "meeting",
-      name: "Ave Meeting",
-      description: "Meeting plugin",
-      publisher: "Test fixture",
-      sampleTools: [],
-      capabilities: [],
-      tools: [],
-      isManaged: true,
-      installPolicy: "admin" as const,
-      loadStatus: "failed" as const,
-      installFailureKind: "manifest-validation-error" as const,
-      installFailureMessage:
-        "[manifest:meeting] schema validation failed (/tmp/plugin.json): / unknown property: 'startupTools'",
-    };
-    const cards = vi.fn(async () => [broken]);
-    mockUninstall.mockResolvedValueOnce({ ok: true as const });
-    Object.defineProperty(window, "ave", {
-      value: {
-        plugins: { cards },
-        pluginConfig: { get: mockGet, set: mockSet },
-      },
-      writable: true,
-      configurable: true,
-    });
-
-    render(<PluginConfigTab />);
-
-    await waitFor(() => {
-      expect(screen.getByTestId("plugin-config:doctor-panel:meeting")).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByTestId("plugin-config:doctor-remove:meeting"));
-    const dialog = await screen.findByRole("dialog");
-    fireEvent.click(within(dialog).getByRole("button", { name: "제거" }));
-
-    await waitFor(() => {
-      expect(mockUninstall).toHaveBeenCalledWith("meeting", {
-        doctorCleanup: { installFailureKind: "manifest-validation-error" },
-      });
-      expect(screen.getByText("Ave Meeting 제거 완료")).toBeInTheDocument();
-    });
-  });
-
   it("refreshes the settings plugin list when an install result event arrives", async () => {
     const meeting = {
       id: "meeting",
@@ -834,7 +694,6 @@ describe("PluginConfigTab", () => {
     });
     Object.defineProperty(window, "aveApi", {
       value: {
-        onPluginInstallProgress: vi.fn(() => () => undefined),
         onPluginInstallResult: vi.fn((handler: (payload: { slug: string; success: boolean; error?: string }) => void) => {
           installResultHandler = handler;
           return () => undefined;
@@ -903,7 +762,6 @@ describe("PluginConfigTab", () => {
     });
     Object.defineProperty(window, "aveApi", {
       value: {
-        onPluginInstallProgress: vi.fn(() => () => undefined),
         onPluginInstallResult: vi.fn((handler: (payload: { slug: string; success: boolean; error?: string }) => void) => {
           installResultHandler = handler;
           return () => undefined;
@@ -931,35 +789,6 @@ describe("PluginConfigTab", () => {
       expect(screen.getByText("Base URL")).toBeInTheDocument();
     });
     expect(screen.queryByText("Endpoint")).toBeNull();
-  });
-
-  it("does not render duplicate in-flight rows for marketplace alias slugs", async () => {
-    let installProgressHandler: ((payload: { slug: string; phase: "installing" | "restarting" }) => void) | null = null;
-    Object.defineProperty(window, "aveApi", {
-      value: {
-        onPluginInstallProgress: vi.fn((handler: (payload: { slug: string; phase: "installing" | "restarting" }) => void) => {
-          installProgressHandler = handler;
-          return () => undefined;
-        }),
-        onPluginInstallResult: vi.fn(() => () => undefined),
-        onPluginUninstallResult: vi.fn(() => () => undefined),
-      },
-      writable: true,
-      configurable: true,
-    });
-
-    render(<PluginConfigTab />);
-
-    await waitFor(() => {
-      expect(mockCards).toHaveBeenCalledOnce();
-      expect(screen.getAllByText("Meeting").length).toBeGreaterThan(0);
-    });
-
-    await act(async () => {
-      installProgressHandler?.({ slug: "ave-plugin-meeting", phase: "restarting" });
-    });
-
-    expect(screen.queryByLabelText("ave-plugin-meeting 설치 진행 중")).toBeNull();
   });
 
   it("renders preparation progress details for a selected preparing plugin", async () => {
@@ -1000,75 +829,6 @@ describe("PluginConfigTab", () => {
     expect(screen.getByText("준비가 끝나면 플러그인이 자동으로 로드됩니다.")).toBeInTheDocument();
   });
 
-  it("refreshes and selects the preparing plugin when install progress enters preparing", async () => {
-    const meeting = {
-      id: "meeting",
-      name: "Meeting",
-      description: "Meeting plugin",
-      publisher: "Test fixture",
-      sampleTools: [],
-      capabilities: [],
-      tools: [],
-      loadStatus: "loaded" as const,
-    };
-    const agentHub = {
-      id: "agent-hub",
-      name: "Agent Hub",
-      description: "Agent orchestration",
-      publisher: "Test fixture",
-      sampleTools: [],
-      capabilities: [],
-      tools: [],
-      loadStatus: "preparing" as const,
-      preparationStatus: {
-        phase: "installing-python",
-        message: "Python 3.12 설치 중...",
-        progressPct: 10,
-        updatedAt: "2026-05-21T00:00:00.000Z",
-      },
-    };
-    const cards = vi.fn()
-      .mockResolvedValueOnce([meeting])
-      .mockResolvedValue([meeting, agentHub]);
-    let installProgressHandler: ((payload: { slug: string; phase: "preparing" }) => void) | null = null;
-    Object.defineProperty(window, "ave", {
-      value: {
-        plugins: { cards },
-        pluginConfig: { get: mockGet, set: mockSet },
-      },
-      writable: true,
-      configurable: true,
-    });
-    Object.defineProperty(window, "aveApi", {
-      value: {
-        onPluginInstallProgress: vi.fn((handler: (payload: { slug: string; phase: "preparing" }) => void) => {
-          installProgressHandler = handler;
-          return () => undefined;
-        }),
-        onPluginInstallResult: vi.fn(() => () => undefined),
-        onPluginUninstallResult: vi.fn(() => () => undefined),
-      },
-      writable: true,
-      configurable: true,
-    });
-
-    render(<PluginConfigTab />);
-
-    await waitFor(() => {
-      expect(cards).toHaveBeenCalledTimes(1);
-      expect(screen.getAllByText("Meeting").length).toBeGreaterThan(0);
-    });
-
-    await act(async () => {
-      installProgressHandler?.({ slug: "agent-hub", phase: "preparing" });
-    });
-
-    await waitFor(() => {
-      expect(cards.mock.calls.length).toBeGreaterThanOrEqual(2);
-      expect(screen.getByText("Python 런타임 설치")).toBeInTheDocument();
-    });
-    expect(screen.getAllByText("Python 3.12 설치 중...").length).toBeGreaterThan(0);
-  });
 });
 
 describe("PluginConfigTab — §9.2 Track B configSchema rendering", () => {

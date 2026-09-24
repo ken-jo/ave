@@ -129,7 +129,6 @@ async function discardOwnedPluginRoot(
   await retryOnTransientFsLock(() => rm(rootDir, { recursive: true, force: true }));
 }
 
-
 function assertOwnedBackupPath(
   paths: PluginPaths,
   pluginId: string,
@@ -376,7 +375,7 @@ function assertPendingCleanupPath(paths: PluginPaths, pluginId: string, pending:
   );
 }
 
-export async function cleanupObsoletePluginBackup(paths: PluginPaths, pluginId: string): Promise<boolean> {
+async function cleanupObsoletePluginBackup(paths: PluginPaths, pluginId: string): Promise<boolean> {
   assertSafeArtifactSlug(pluginId);
   let cleaned = false;
   while (true) {

@@ -1,5 +1,4 @@
 import { compareSemver, appVersionSatisfiesMin } from "../shared/semver-compare.js";
-import { IncompatibleAppVersionError } from "./types.js";
 import type { PluginMarketplaceItem } from "./types.js";
 import { normalizeInstallPolicy } from "./runtime/manifest-validation.js";
 
@@ -101,25 +100,6 @@ export function resolvePluginUpdateCondition(
   return managed
     ? CONDITIONS.eligibleManagedBootUpdate
     : CONDITIONS.eligibleUserUpdate;
-}
-
-export function assertPluginCandidateAppCompatible(
-  candidate: Pick<PluginMarketplaceItem, "version" | "requires" | "upgradeRequired">,
-  appVersion: string,
-): void {
-  const condition = resolvePluginUpdateCondition({
-    appVersion,
-    installed: { presence: "absent" },
-    candidate,
-  });
-  if (condition.kind !== "blocked_by_app") return;
-  if (condition.minAppVersion) {
-    throw new IncompatibleAppVersionError(
-      condition.minAppVersion,
-      condition.currentAppVersion,
-    );
-  }
-  throw new Error(condition.message ?? "This plugin requires an Ave app update.");
 }
 
 export function isNewerPluginVersion(candidate: string, installed: string): boolean {

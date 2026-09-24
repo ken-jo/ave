@@ -16,7 +16,7 @@ import { resolveApiKey } from "../resolve-api-key.js";
 import { resetHostSecretCountersForTesting } from "../../../telemetry/host-secret-counters.js";
 import type { PluginManifest, PluginRegistryTrust } from "../../../plugins/types.js";
 import type { HostSecretGrantEvidence } from "../../../plugins/secret-access/grants.js";
-import { manifestSha } from "../../../__tests__/support/sign-envelope-fixture.js";
+import { manifestSha } from "../../../__tests__/support/manifest-sha-fixture.js";
 
 // -------- helpers --------
 

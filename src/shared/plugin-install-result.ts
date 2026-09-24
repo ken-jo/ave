@@ -5,37 +5,6 @@ import {
 } from "../plugins/public-contract.js";
 
 /**
- * Stable English IPC code for {@link PluginNotAdmittedError}. Not exported,
- * because `buildInstallFailureResult` below is the only consumer and the
- * renderer's `formatIpcError` map matches the literal string.
- */
-const PLUGIN_NOT_ADMITTED_CODE = "plugin-not-admitted";
-
-/**
- * Install refused because the signed admission catalog does not authorise
- * this exact `slug@version`: the catalog is unreachable, stale, or simply
- * does not name this artifact.
- *
- * `refusalCode` carries which condition fired. The renderer keeps one string
- * for the family, so the specific code travels in the message for the log and
- * the audit trail rather than fanning out the locale table.
- */
-export class PluginNotAdmittedError extends Error {
-  constructor(
-    public readonly pluginId: string,
-    public readonly pluginVersion: string,
-    public readonly refusalCode: string,
-    public readonly reasonDetail: string,
-  ) {
-    super(
-      `plugin '${pluginId}@${pluginVersion}' is not admitted by the marketplace admission catalog`
-        + ` (${refusalCode}): ${reasonDetail}`,
-    );
-    this.name = "PluginNotAdmittedError";
-  }
-}
-
-/**
  * Uninstall refused because the package is not installed (plugin, agent, skill).
  *
  * Deliberately NOT the existing `not-found` code. This condition is reached from
@@ -85,9 +54,7 @@ export function buildInstallFailureResult(
   const message = (error instanceof Error ? error.message : "") || fallbackMessage;
   const code = error instanceof IncompatibleAppVersionError
     ? INCOMPATIBLE_APP_VERSION_CODE
-    : error instanceof PluginNotAdmittedError
-      ? PLUGIN_NOT_ADMITTED_CODE
-      : undefined;
+    : undefined;
   return {
     slug,
     success: false,

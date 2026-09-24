@@ -37,21 +37,10 @@ import { carryPluginDataDir } from "./plugin-storage-layout.js";
 import { randomUUID } from "node:crypto";
 
 import {
-  installFromMarketplace,
-  type InstallerProgressEvent,
-  type MarketplaceHttp,
-} from "./marketplace-installer.js";
-import {
   canonicalZipEntryPathIdentity,
   sanitizeZipEntryPath,
 } from "./zip-entry-path.js";
-import type { MarketplaceFetcher } from "./marketplace-fetcher.js";
-import type { PublicKeyInput } from "./envelope-verifier.js";
-import {
-  type PluginAccessSpec,
-  type PluginMarketplaceItem,
-  type PluginRegistryEntryInstallSource,
-} from "./types.js";
+import { type PluginAccessSpec, type PluginRegistryEntryInstallSource } from "./types.js";
 import { stripLegacyPluginToolGrants } from "./registry.js";
 import { tombstoneAndDeferredRemove } from "./installed-entry-fs.js";
 import {
@@ -69,19 +58,11 @@ import {
 import { assertSafeArtifactSlug } from "./plugin-id.js";
 import {
   assertCompressedArtifactSize,
-  isMarketplaceArtifactLimitProvider,
   MarketplaceArtifactLimitError,
   resolveMarketplaceArtifactLimits,
   type MarketplaceArtifactLimits,
 } from "./marketplace-artifact-limits.js";
 import { withMarketplaceArtifactResourceSlot } from "./marketplace-artifact-resource-gate.js";
-import { getAveAppVersion } from "../shared/app-version.js";
-import { assertPluginCandidateAppCompatible } from "./update-condition.js";
-import { PluginNotAdmittedError } from "../shared/plugin-install-result.js";
-import {
-  admissionRegistry,
-  ADMISSION_ENFORCEMENT,
-} from "./admission/admission-registry.js";
 import {
   isCommittedPluginGenerationPublicationError,
   type CommittedPluginGenerationPublicationError,
@@ -90,103 +71,7 @@ import { sleep } from "../shared/abortable-deadline.js";
 import { writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
 export { assertSafeArtifactSlug } from "./plugin-id.js";
 
-/** Shared last-line defense for every marketplace artifact consumer. */
-export function assertMarketplaceAppUpgradeNotRequired(
-  plugin: Pick<PluginMarketplaceItem, "version" | "requires" | "upgradeRequired">,
-): void {
-  assertPluginCandidateAppCompatible(plugin, getAveAppVersion());
-}
-
 const log = createLogger("plugin-artifact-store");
-
-/**
- * Resolve the sha256 the downloaded bytes must match, from the signed
- * admission catalog.
- *
- * This is the install-time ALLOW gate, and it is the only place the catalog is
- * consulted. It runs BEFORE any bytes move, so a refusal costs one conditional
- * GET rather than a full artifact download.
- *
- * Three things happen here that the pre-catalog path could not do:
- *
- *  1. The version is resolved to a concrete one first. `downloadVerifiedArtifact`
- *     accepts the literal `"latest"`, which an allow list cannot look up — it
- *     can only admit a name it holds. `"latest"` resolves through the catalog
- *     row's own `version`; if that is absent the install is REFUSED rather than
- *     admitted against an unspecified version.
- *  2. The hash the download is checked against comes from a SIGNED statement.
- *     Before this it came from the marketplace's unsigned catalog JSON, served
- *     by the same origin as the bytes, so it was a consistency check and not
- *     evidence — and `selectExpectedArtifactSha256` returns `undefined` for a
- *     pinned or rollback install whose exact hash the row does not carry,
- *     leaving no catalog cross-check at all for precisely those installs.
- *  3. The unsigned catalog row's hash, when it has one, is cross-checked
- *     against the signed row BEFORE the download. A disagreement means the
- *     marketplace is offering bytes the distributor did not admit, which on
- *     the happy path never happens, so it is surfaced as an integrity event
- *     rather than as a routine mismatch.
- *
- * While {@link ADMISSION_ENFORCEMENT} is `"observe"` the same decision is
- * computed and logged but not thrown, and the legacy unsigned hash is returned
- * so behaviour is unchanged. That mode never turns a refusal into an
- * admission: there is no path here that reports success on a missing catalog.
- */
-async function resolveMarketplaceAdmission(
-  plugin: Pick<
-    PluginMarketplaceItem,
-    "id" | "slug" | "version" | "artifactSha256" | "artifactSha256ByVersion"
-  >,
-  version: string,
-  signal?: AbortSignal,
-): Promise<{
-  expectedArtifactSha256: string | undefined;
-  admission: PluginAdmissionRecord | null;
-}> {
-  const slug = plugin.slug ?? plugin.id;
-  const catalogSha256 = selectExpectedArtifactSha256(plugin, version);
-  const resolvedVersion = version === "latest" ? (plugin.version ?? version) : version;
-
-  await admissionRegistry.ensureFresh(signal);
-  const decision = admissionRegistry.evaluate(slug, resolvedVersion);
-
-  if (decision.kind === "refused") {
-    if (ADMISSION_ENFORCEMENT === "enforce") {
-      throw new PluginNotAdmittedError(plugin.id, resolvedVersion, decision.code, decision.detail);
-    }
-    log.warn(
-      `admission would refuse '${slug}@${resolvedVersion}': ${decision.code} — ${decision.detail}`,
-    );
-    return { expectedArtifactSha256: catalogSha256, admission: null };
-  }
-
-  const admittedSha256 = decision.entry.artifactSha256;
-  if (catalogSha256 && catalogSha256.trim().toLowerCase() !== admittedSha256) {
-    const detail =
-      `the marketplace catalog offers sha256=${catalogSha256} for '${slug}@${resolvedVersion}'`
-      + ` but the distributor admitted sha256=${admittedSha256}`;
-    if (ADMISSION_ENFORCEMENT === "enforce") {
-      throw new PluginNotAdmittedError(
-        plugin.id,
-        resolvedVersion,
-        "admission-hash-mismatch",
-        detail,
-      );
-    }
-    log.error(`admission hash mismatch (not enforced): ${detail}`);
-    return { expectedArtifactSha256: catalogSha256, admission: null };
-  }
-
-  const admission: PluginAdmissionRecord = {
-    issuedAt: decision.issuedAt,
-    documentSha256: decision.documentSha256,
-    publisher: decision.entry.publisher,
-  };
-  return {
-    expectedArtifactSha256:
-      ADMISSION_ENFORCEMENT === "enforce" ? admittedSha256 : catalogSha256,
-    admission,
-  };
-}
 
 /**
  * Windows transient-lock codes for the directory-swap / `rm()` paths. The set
@@ -248,19 +133,6 @@ export interface CachedRegistryEntrySnapshot {
   approvedPluginAccess?: PluginAccessSpec;
 }
 
-export interface VerifiedArtifact {
-  zipBuffer: Buffer;
-  artifactSha256: string;
-  signerKeyId: string;
-  /**
-   * The catalog statement that authorised this install, or `null` when none
-   * did. Carried out of the download so the install receipt records the
-   * authority rather than re-deriving it from a registry that may have
-   * refreshed in between.
-   */
-  admission: PluginAdmissionRecord | null;
-}
-
 export interface PreparedArtifactCommit<T> {
   /** Verified extraction root. It remains staged until durableCommit runs. */
   pluginRoot: string;
@@ -307,112 +179,20 @@ export interface ArtifactStoreOptions {
    * `~/.ave/mcp/.cache/`.
    */
   cacheRoot: string;
-  /**
-   * Marketplace fetcher used for verified-zip download. The store does
-   * not call `fetcher.listPlugins()` — that's the catalog reader's
-   * concern. It does need `downloadArtifact` + `fetchSignatureEnvelope`
-   * (the {@link MarketplaceHttp} surface).
-   */
-  fetcher: MarketplaceFetcher;
-  /** Map of `key_id → ed25519 public key` used to verify the envelope. */
-  publicKeys: Record<string, PublicKeyInput>;
-  /**
-   * Tarball offline cache base directory. Pass `null` to disable the
-   * cache entirely (test mock fetcher). Pass a path to enable. When
-   * `undefined`, the store uses `cacheRoot/.tarballs` so the cache stays
-   * inside the same `~/.ave/<topic>/.cache/` tree as the SoT.
-   */
-  tarballCacheBase?: string | null;
-  /**
-   * Live read of the offline-cache preference. Read per install rather than
-   * captured at construction so the Settings toggle takes effect without a
-   * restart; the store is built once at boot.
-   */
-  offlineCacheEnabled?: () => boolean;
   /** Resource ceilings shared by download, cache, and zip extraction. */
   artifactLimits?: Partial<MarketplaceArtifactLimits>;
-}
-
-type VerifiedMarketplaceFetcher = MarketplaceFetcher & MarketplaceHttp;
-
-function isVerifiedMarketplaceFetcher(fetcher: MarketplaceFetcher): fetcher is VerifiedMarketplaceFetcher {
-  return (
-    typeof (fetcher as Partial<VerifiedMarketplaceFetcher>).downloadArtifact === "function" &&
-    typeof (fetcher as Partial<VerifiedMarketplaceFetcher>).fetchSignatureEnvelope === "function"
-  );
-}
-
-/**
- * The catalog hash to compare the downloaded bytes against, or `undefined`
- * when the catalog offers none for this version.
- *
- * An explicit prior-version install — a rollback, or a pinned `installPlugin` —
- * used to get `undefined` unconditionally, because only the LATEST hash was
- * read off the catalog row. That left the signature alone to carry it, and a
- * signature binds the BYTES without saying which plugin or version they belong
- * to, so a different validly-signed artifact served in place of the requested
- * one would have installed.
- *
- * Exported so the selection can be tested directly: it is the decision this
- * change is about, and reaching it through a download requires standing up the
- * whole fetch path.
- */
-export function selectExpectedArtifactSha256(
-  plugin: Pick<PluginMarketplaceItem, "version" | "artifactSha256" | "artifactSha256ByVersion">,
-  version: string,
-): string | undefined {
-  // A hash for the exact version wins — this is the case the latest-only read
-  // could not serve.
-  if (version !== "latest") {
-    const exact = plugin.artifactSha256ByVersion?.[version];
-    if (exact !== undefined) return exact;
-  }
-  // Otherwise the row's latest hash applies only when the version being
-  // installed IS the latest. Returning it for some other version would compare
-  // against the wrong artifact and refuse a correct one.
-  if (!plugin.version || plugin.version === version || version === "latest") {
-    return plugin.artifactSha256;
-  }
-  return undefined;
 }
 
 export class PluginArtifactStore {
   private readonly installRoot: string;
   private readonly cacheRoot: string;
-  private readonly fetcher: MarketplaceFetcher;
-  private readonly publicKeys: Record<string, PublicKeyInput>;
-  private readonly tarballCacheBase: string | null;
-  private readonly offlineCacheEnabled: () => boolean;
   private readonly artifactLimits: Readonly<MarketplaceArtifactLimits>;
   private readonly deferredCommitCleanups = new Set<Promise<void>>();
 
   constructor(options: ArtifactStoreOptions) {
     this.installRoot = options.installRoot;
     this.cacheRoot = options.cacheRoot;
-    this.fetcher = options.fetcher;
-    this.publicKeys = options.publicKeys;
-    const fetcherLimits = isMarketplaceArtifactLimitProvider(options.fetcher)
-      ? options.fetcher.getArtifactLimits()
-      : undefined;
-    this.artifactLimits = resolveMarketplaceArtifactLimits(
-      options.artifactLimits ?? fetcherLimits,
-    );
-    if (options.artifactLimits && fetcherLimits) {
-      for (const name of Object.keys(this.artifactLimits) as Array<keyof MarketplaceArtifactLimits>) {
-        if (this.artifactLimits[name] !== fetcherLimits[name]) {
-          throw new RangeError(`marketplace artifact limit ${name} must match the fetcher policy`);
-        }
-      }
-    }
-    // The store owns the SoT for the tarball cache. `null` disables it
-    // (test fetcher); `undefined` falls back to a sibling under cacheRoot.
-    // `paths.cacheRoot` lives under the plugin tree's own `.cache/` so
-    // disk usage tracks install state.
-    this.tarballCacheBase =
-      options.tarballCacheBase === null
-        ? null
-        : options.tarballCacheBase ?? resolve(options.cacheRoot, ".tarballs");
-    this.offlineCacheEnabled = options.offlineCacheEnabled ?? (() => true);
+    this.artifactLimits = resolveMarketplaceArtifactLimits(options.artifactLimits);
   }
 
   /** `{installRoot}/{slug}` — exposed for callers that need to know the path before download. */
@@ -431,30 +211,6 @@ export class PluginArtifactStore {
     signal?: AbortSignal,
   ): Promise<T> {
     return withMarketplaceArtifactResourceSlot(operation, { signal });
-  }
-
-  /**
-   * Owning transaction for every production marketplace package consumer.
-   * The global lease spans verified download, bounded inspection, extraction,
-   * and caller commit/rollback work so package kinds cannot bypass the
-   * aggregate-memory bound by composing low-level methods independently.
-   */
-  withVerifiedArtifactTransaction<T>(
-    plugin: PluginMarketplaceItem,
-    version: string,
-    onProgress: ((event: InstallerProgressEvent) => void) | undefined,
-    operation: (verified: VerifiedArtifact) => Promise<T>,
-    signal?: AbortSignal,
-  ): Promise<T> {
-    return withMarketplaceArtifactResourceSlot(async () => {
-      const verified = await this.downloadVerifiedArtifact(
-        plugin,
-        version,
-        onProgress,
-        signal,
-      );
-      return operation(verified);
-    }, { signal });
   }
 
   /**
@@ -516,70 +272,6 @@ export class PluginArtifactStore {
       }
     }
     return Object.freeze(result);
-  }
-
-  /**
-   * Download + envelope-verify the signed zip for `plugin@version`.
-   * Returns the raw bytes; extraction is a separate step so MCP-side
-   * callers can read the manifest off the zip before deciding where to
-   * extract.
-   */
-  async downloadVerifiedZip(
-    plugin: PluginMarketplaceItem,
-    version: string,
-    onProgress?: (event: InstallerProgressEvent) => void,
-    signal?: AbortSignal,
-  ): Promise<Buffer> {
-    return (await this.downloadVerifiedArtifact(plugin, version, onProgress, signal)).zipBuffer;
-  }
-
-  async downloadVerifiedArtifact(
-    plugin: PluginMarketplaceItem,
-    version: string,
-    onProgress?: (event: InstallerProgressEvent) => void,
-    signal?: AbortSignal,
-  ): Promise<VerifiedArtifact> {
-    assertMarketplaceAppUpgradeNotRequired(plugin);
-    const slug = assertSafeArtifactSlug(plugin.slug ?? plugin.id);
-    if (!isVerifiedMarketplaceFetcher(this.fetcher)) {
-      throw new Error(
-        `marketplace fetcher for "${plugin.id}" does not support signed artifact verification`,
-      );
-    }
-    const { expectedArtifactSha256, admission } = await resolveMarketplaceAdmission(
-      plugin,
-      version,
-      signal,
-    );
-    const verified = await installFromMarketplace(slug, version, {
-      http: this.fetcher,
-      publicKeys: this.publicKeys,
-      downloadRoot: resolve(this.cacheRoot, "verified-downloads"),
-      // A disabled cache is expressed as "no cache base", which is the same
-      // shape the test fetcher already uses — so the download path has one
-      // meaning for "no cache" rather than two.
-      cacheBase: this.offlineCacheEnabled() ? this.tarballCacheBase : null,
-      // Under enforcement this is the signed admission row's hash, present for
-      // EVERY version including pinned and rollback installs. Until then it is
-      // the marketplace catalog's own hash, which is only available when the
-      // requested version is the row's latest — see
-      // `resolveAdmittedArtifactSha256`.
-      expectedArtifactSha256,
-      artifactLimits: this.artifactLimits,
-      onProgress,
-      signal,
-    });
-    assertCompressedArtifactSize(
-      verified.zipBuffer.byteLength,
-      this.artifactLimits.maxCompressedBytes,
-      `verified marketplace artifact ${slug}@${version}`,
-    );
-    return {
-      zipBuffer: verified.zipBuffer,
-      artifactSha256: verified.sha256,
-      signerKeyId: verified.signerKeyId,
-      admission,
-    };
   }
 
   /**

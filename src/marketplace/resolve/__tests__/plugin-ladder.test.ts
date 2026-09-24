@@ -6,7 +6,6 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_MARKETPLACE_ARTIFACT_LIMITS } from "../../../plugins/marketplace-artifact-limits.js";
 import { PluginArtifactStore } from "../../../plugins/plugin-artifact-store.js";
-import type { MarketplaceFetcher } from "../../../plugins/marketplace-fetcher.js";
 import {
   createFixtureRepo,
   type FixtureRepo,
@@ -67,9 +66,6 @@ describe.skipIf(process.platform === "win32")("plugin artifact ladder (design §
     new PluginArtifactStore({
       installRoot: join(root, "plugins"),
       cacheRoot: join(root, "plugins", ".cache"),
-      fetcher: { listPlugins: async () => [] } as unknown as MarketplaceFetcher,
-      publicKeys: {},
-      tarballCacheBase: null,
     });
 
   beforeAll(async () => {

@@ -554,18 +554,8 @@
     },
     {
       "type": "exports",
-      "file": "src/plugins/envelope-verifier.ts",
-      "name": "toKeyObject"
-    },
-    {
-      "type": "exports",
       "file": "src/plugins/installed-entry-fs.ts",
       "name": "deferTombstoneRemoval"
-    },
-    {
-      "type": "exports",
-      "file": "src/plugins/marketplace-installer.ts",
-      "name": "encodeMarketplaceVersionForFilename"
     },
     {
       "type": "exports",

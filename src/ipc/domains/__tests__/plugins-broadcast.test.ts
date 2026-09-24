@@ -18,16 +18,6 @@ const cleanupRoots: string[] = [];
 const electronMocks = vi.hoisted(() => ({
   showOpenDialog: vi.fn(),
 }));
-type InstallProgressHandler = (event: { phase: string }) => void;
-
-function emitRegisteringProgress(args: unknown[]): void {
-  const onProgress = args.find((arg): arg is InstallProgressHandler => typeof arg === "function");
-  if (!onProgress) {
-    throw new TypeError("install mock expected progress handler");
-  }
-  onProgress({ phase: "registering" });
-}
-
 vi.mock("electron", () => ({
   app: {
     isPackaged: false,
@@ -78,54 +68,8 @@ async function setup(options: { appWindows?: ReturnType<typeof makeWindow>[] } =
   const activePluginIds = new Set<string>();
   const deps = {
     pluginMarketplace: {
-      list: vi.fn(async () => [
-        { id: "agent-hub", slug: "ave-plugin-hydra" },
-        { id: "meeting", slug: "ave-plugin-meeting" },
-      ]),
-      getLiveCatalogVersion: vi.fn(async () => "1.0.0"),
       getInstalledVersion: vi.fn(async () => "1.0.0"),
-      preflightInstall: vi.fn(async (requestedPluginId: string) => ({
-        pluginId: requestedPluginId === "ave-plugin-meeting" ? "meeting" : requestedPluginId,
-        catalogVersion: "1.0.0",
-        installed: false,
-      })),
-      revalidateInstallAdmission: vi.fn(async () => undefined),
-      ensureManagedInstalled: vi.fn(async (options: {
-        activatePreparedArtifact: (prepared: {
-          installId: string;
-          pluginRoot: string;
-          manifest: { id: string; version: string };
-          receiptRaw: string;
-          registryEntry: { installSource: "admin" };
-          durableCommit(): Promise<string>;
-        }) => Promise<unknown>;
-      }) => {
-        await options.activatePreparedArtifact({
-          installId: "meeting",
-          pluginRoot: "/staged/meeting",
-          manifest: { id: "meeting", version: "1.0.0" },
-          receiptRaw: "{}",
-          registryEntry: { installSource: "admin" },
-          durableCommit: async () => "meeting/plugin.json",
-        });
-        return { installed: ["meeting"], updated: [], failed: [] };
-      }),
-      install: vi.fn(),
       uninstall: vi.fn(async (pluginId: string) => ({ pluginId, uninstalled: true })),
-      getInstallFailureDiagnostics: vi.fn(() => []),
-      clearInstallFailureDiagnostic: vi.fn(() => true),
-      rollbackPlugin: vi.fn(async (pluginId: string, options) => {
-        await options?.activatePreparedArtifact?.({
-          installId: pluginId,
-          pluginRoot: `/staged/${pluginId}`,
-          manifest: { id: pluginId, version: "0.0.1" },
-          receiptRaw: "{}",
-          durableCommit: async () => pluginId,
-        });
-        return { pluginId, rolledBackTo: "0.0.1" };
-      }),
-      rollbackLocalInstall: vi.fn(async (pluginId: string) => ({ pluginId, rolledBack: true })),
-      clearLocalInstallRollback: vi.fn(async () => undefined),
       resolveLocalInstallPluginId: vi.fn(async () => "local-plugin"),
       installLocal: vi.fn(),
     },
@@ -209,11 +153,6 @@ async function setup(options: { appWindows?: ReturnType<typeof makeWindow>[] } =
     const result = await prepared.durableCommit();
     activePluginIds.add(prepared.manifest.id);
     return { result, retirement: Promise.resolve() };
-  });
-  deps.pluginMarketplace.install.mockImplementation(async (...args: unknown[]) => {
-    emitRegisteringProgress(args);
-    await runActivation(args, "agent-hub");
-    return { pluginId: "agent-hub", installed: true };
   });
   deps.pluginMarketplace.installLocal.mockImplementation(async (...args: unknown[]) => {
     await runActivation(args, "local-plugin");
@@ -317,109 +256,16 @@ describe("plugins IPC lifecycle broadcast", () => {
     }
   });
 
-  it("cleans up catalog grant mismatch diagnostics without bypassing general admin uninstall policy", async () => {
+  it("surfaces a deployment guard refusal as an uninstall failure", async () => {
     const { deps, appWindows } = await setup();
-    deps.pluginMarketplace.getInstalledVersion.mockResolvedValue(null);
-    deps.pluginMarketplace.getInstallFailureDiagnostics.mockReturnValueOnce([
-      {
-        id: "meeting",
-        name: "Ave Meeting",
-        description: "Meeting plugin",
-        error:
-          'plugin "meeting" artifact manifest external-auth-consumer capability does not match the catalog-approved grant',
-        installFailureKind: "catalog-grant-mismatch",
-        isManaged: true,
-        installPolicy: "admin",
-        installAliases: ["ave-plugin-meeting"],
-      },
-    ]);
-    deps.listPluginAuthPartitionsService.mockReturnValueOnce([
-      "persist:plugin-auth:meeting",
-      "persist:plugin-auth:meeting:tenant",
-    ]);
-
-    await expect(invoke("ave:plugins:uninstall", "meeting", {
-      doctorCleanup: { installFailureKind: "catalog-grant-mismatch" },
-    })).resolves.toEqual({
-      pluginId: "meeting",
-      uninstalled: true,
-    });
-
-    expect(deps.pluginRuntime.removePlugin).toHaveBeenCalledWith("meeting");
-    expect(deps.pluginMarketplace.uninstall).not.toHaveBeenCalledWith("meeting");
-    expect(deps.pluginMarketplace.clearInstallFailureDiagnostic).toHaveBeenCalledWith("meeting");
-    expect(deps.settingsService.deletePluginConfig).toHaveBeenCalledWith("meeting");
-    expect(deps.settingsService.deletePluginSecrets).toHaveBeenCalledWith("meeting", new Set(["apiKey", "sttApiKey"]));
-    expect(deps.clearAuthPartitionService).toHaveBeenCalledWith("persist:plugin-auth:meeting");
-    expect(deps.clearAuthPartitionService).toHaveBeenCalledWith("persist:plugin-auth:meeting:tenant");
-    expect(deps.forgetPluginAuthPartitionsService).toHaveBeenCalledWith("meeting");
-    for (const win of appWindows) {
-      expect(win.webContents.send).toHaveBeenCalledWith(
-        "ave:plugins:uninstall-result",
-        { slug: "meeting", success: true },
-      );
-    }
-  });
-
-  it("cleans up manifest validation diagnostics without bypassing general admin uninstall policy", async () => {
-    const { deps, appWindows } = await setup();
-    deps.pluginMarketplace.getInstalledVersion.mockResolvedValue(null);
-    deps.pluginMarketplace.getInstallFailureDiagnostics.mockReturnValueOnce([
-      {
-        id: "meeting",
-        name: "Ave Meeting",
-        description: "Meeting plugin",
-        error: "[manifest:meeting] schema validation failed (/tmp/plugin.json): / unknown property: 'startupTools'",
-        installFailureKind: "manifest-validation-error",
-        isManaged: true,
-        installPolicy: "admin",
-        installAliases: ["ave-plugin-meeting"],
-      },
-    ]);
-
-    await expect(invoke("ave:plugins:uninstall", "meeting", {
-      doctorCleanup: { installFailureKind: "manifest-validation-error" },
-    })).resolves.toEqual({
-      pluginId: "meeting",
-      uninstalled: true,
-    });
-
-    expect(deps.pluginRuntime.removePlugin).toHaveBeenCalledWith("meeting");
-    expect(deps.pluginMarketplace.uninstall).not.toHaveBeenCalledWith("meeting");
-    expect(deps.pluginMarketplace.clearInstallFailureDiagnostic).toHaveBeenCalledWith("meeting");
-    for (const win of appWindows) {
-      expect(win.webContents.send).toHaveBeenCalledWith(
-        "ave:plugins:uninstall-result",
-        { slug: "meeting", success: true },
-      );
-    }
-  });
-
-  it("does not Doctor-cleanup an installed managed plugin update diagnostic", async () => {
-    const { deps, appWindows } = await setup();
-    deps.pluginMarketplace.getInstalledVersion.mockResolvedValueOnce("1.0.0");
-    deps.pluginMarketplace.getInstallFailureDiagnostics.mockReturnValueOnce([
-      {
-        id: "meeting",
-        name: "Ave Meeting",
-        description: "Meeting plugin",
-        error: "[manifest:meeting] schema validation failed (/tmp/plugin.json): / unknown property: 'startupTools'",
-        installFailureKind: "manifest-validation-error",
-        isManaged: true,
-        installPolicy: "admin",
-        installAliases: ["ave-plugin-meeting"],
-      },
-    ]);
     deps.pluginMarketplace.uninstall.mockRejectedValueOnce(
       new Error("Managed plugin cannot be uninstalled by user: meeting"),
     );
 
-    await expect(invoke("ave:plugins:uninstall", "meeting", {
-      doctorCleanup: { installFailureKind: "manifest-validation-error" },
-    })).rejects.toThrow("Managed plugin cannot be uninstalled by user: meeting");
+    await expect(invoke("ave:plugins:uninstall", "meeting"))
+      .rejects.toThrow("Managed plugin cannot be uninstalled by user: meeting");
 
     expect(deps.pluginMarketplace.uninstall).toHaveBeenCalledWith("meeting");
-    expect(deps.pluginMarketplace.clearInstallFailureDiagnostic).not.toHaveBeenCalled();
     for (const win of appWindows) {
       expect(win.webContents.send).toHaveBeenCalledWith(
         "ave:plugins:uninstall-result",
@@ -564,7 +410,6 @@ describe("plugins IPC lifecycle broadcast", () => {
     await expect(invoke("ave:plugins:install-local")).rejects.toThrow("local runtime failed");
 
     expect(deps.pluginMarketplace.uninstall).not.toHaveBeenCalled();
-    expect(deps.pluginMarketplace.rollbackLocalInstall).not.toHaveBeenCalled();
     for (const win of appWindows) {
       expect(win.webContents.send).toHaveBeenCalledWith(
         "ave:plugins:install-result",
@@ -584,7 +429,6 @@ describe("plugins IPC lifecycle broadcast", () => {
 
     await expect(invoke("ave:plugins:install-local")).rejects.toThrow("local runtime failed");
 
-    expect(deps.pluginMarketplace.rollbackLocalInstall).not.toHaveBeenCalled();
     expect(deps.pluginMarketplace.uninstall).not.toHaveBeenCalledWith("local-plugin");
     for (const win of appWindows) {
       expect(win.webContents.send).toHaveBeenCalledWith(

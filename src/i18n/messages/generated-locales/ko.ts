@@ -119,7 +119,6 @@ import { ko as ko_permissionsTab } from "../generated/permissionsTab.js";
 import { ko as ko_pluginAuthSection } from "../generated/pluginAuthSection.js";
 import { ko as ko_pluginConfigSchemaForm } from "../generated/pluginConfigSchemaForm.js";
 import { ko as ko_pluginConfigTab } from "../generated/pluginConfigTab.js";
-import { ko as ko_pluginGridButton } from "../generated/pluginGridButton.js";
 import { ko as ko_pluginPerfTab } from "../generated/pluginPerfTab.js";
 import { ko as ko_pluginUninstallDialog } from "../generated/pluginUninstallDialog.js";
 import { ko as ko_pluginUpdatesPill } from "../generated/pluginUpdatesPill.js";
@@ -293,7 +292,6 @@ export const koMessages: Record<string, string> = {
   ...ko_pluginAuthSection,
   ...ko_pluginConfigSchemaForm,
   ...ko_pluginConfigTab,
-  ...ko_pluginGridButton,
   ...ko_pluginPerfTab,
   ...ko_pluginUninstallDialog,
   ...ko_pluginUpdatesPill,

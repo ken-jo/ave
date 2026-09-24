@@ -2,40 +2,73 @@
  * Boot step — the plugin store and its live-refresh closures (extracted from
  * boot.ts C18).
  *
- * Constructs the PluginMarketplaceService over the disabled fetcher — packages
- * arrive through the git marketplace (design §16.2) — and wires the
+ * Constructs the PluginMarketplaceService — the plugin install/uninstall
+ * transactions the git marketplace drives (design §16.2) — and wires the
  * live-refresh closures the settings IPC handlers invoke: the active-LLM
  * wildcard config push and the ASRT sandbox network allow-list rebuild.
  */
-import { DisabledMarketplaceFetcher, PluginMarketplaceService } from "../../plugins/marketplace.js";
-import type { MarketplaceFetcher } from "../../plugins/marketplace.js";
+import { rm } from "node:fs/promises";
+import { join } from "node:path";
+import { PluginMarketplaceService } from "../../plugins/marketplace.js";
 import { activeHostApiVendor, createRefreshActiveLlmWildcard } from "./refresh-active-llm-wildcard.js";
 import { createLogger } from "../../lib/logger.js";
 import type { BootContext } from "../context.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { aveHome } from "../../shared/ave-home.js";
 
 const log = createLogger("ave");
+
+/**
+ * What the retired server marketplace left on disk (design §16.2): the signed
+ * admission, whitelist and revocation documents under `userData`, the catalog
+ * cache, and the tarball cache and verified downloads of each package tree it
+ * installed into. Nothing reads them any more.
+ */
+export function retiredMarketplaceCachePaths(input: {
+  userDataPath: string;
+  /** `~/.ave`. */
+  home: string;
+  /** `~/.ave/plugins/.cache`. */
+  pluginCacheRoot: string;
+}): string[] {
+  const packageCacheRoots = [
+    input.pluginCacheRoot,
+    join(input.home, "mcp", ".cache"),
+    join(input.home, "agents", ".cache"),
+    join(input.home, "skills", ".cache"),
+  ];
+  return [
+    ...["marketplace-admission", "marketplace-whitelist", "marketplace-revocation"].map((dir) => join(input.userDataPath, dir)),
+    join(input.pluginCacheRoot, "marketplace-catalog"),
+    ...packageCacheRoots.flatMap((root) => [join(root, ".tarballs"), join(root, "verified-downloads")]),
+  ];
+}
+
+/** Best effort: a path that cannot be removed now is tried again next boot. */
+export async function removeRetiredMarketplaceCaches(paths: readonly string[]): Promise<void> {
+  await Promise.all(paths.map(async (path) => {
+    try {
+      await rm(path, { recursive: true, force: true });
+    } catch (error) {
+      log.warn({ path, err: errorMessage(error) }, "retired marketplace cache could not be removed");
+    }
+  }));
+}
 
 export async function setupMarketplace(ctx: BootContext): Promise<void> {
   const {
     settingsService,
     pluginPaths,
     deploymentGuard,
-    bootAuditLogger,
     pluginRuntime,
   } = ctx;
 
-  // The server catalog is gone; nothing installs through this fetcher (design §16.2).
-  const marketplaceFetcher: MarketplaceFetcher = new DisabledMarketplaceFetcher();
-  const pluginMarketplace = new PluginMarketplaceService(
-    pluginPaths,
-    marketplaceFetcher,
-    deploymentGuard,
-    bootAuditLogger,
-    // No server catalog or tarball to cache: `offlineCacheEnabled` now keeps
-    // git marketplace artifacts (marketplace/resolve/artifact-cache.ts).
-    () => false,
-  );
+  const pluginMarketplace = new PluginMarketplaceService(pluginPaths, deploymentGuard);
+  void removeRetiredMarketplaceCaches(retiredMarketplaceCachePaths({
+    userDataPath: ctx.host.userDataPath,
+    home: aveHome(),
+    pluginCacheRoot: pluginPaths.cacheRoot,
+  }));
 
   // #893 — Push the active LLM vendor id into the plugin runtime's wildcard
   // configOverrides slot. Plugins read this via
@@ -131,7 +164,6 @@ export async function setupMarketplace(ctx: BootContext): Promise<void> {
       );
     });
 
-  ctx.marketplaceFetcher = marketplaceFetcher;
   ctx.pluginMarketplace = pluginMarketplace;
   ctx.refreshActiveLlmWildcard = refreshActiveLlmWildcard;
   ctx.disposeRefreshActiveLlmWildcard = disposeRefreshActiveLlmWildcard;

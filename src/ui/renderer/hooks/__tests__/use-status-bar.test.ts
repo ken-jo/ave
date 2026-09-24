@@ -184,203 +184,54 @@ describe("useStatusBar — removePersistent", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Case 5 — Install lifecycle producer wires onPluginInstallProgress
+// Case 5 — Install lifecycle producer wires onPluginInstallResult
 // ─────────────────────────────────────────────────────────────────────────────
-type InstallProgressPayload =
-  | { slug: string; phase: "installing" | "restarting" | "verifying" | "extracting" | "registering" }
-  | { slug: string; phase: "downloading"; bytesDownloaded: number; bytesTotal: number | null };
+type InstallResultHandler = (payload: { slug: string; success: boolean; error?: string }) => void;
 
 describe("useStatusBar — install lifecycle producer", () => {
-  it("pushes a toast when onPluginInstallProgress fires with phase=installing", () => {
-    let capturedHandler:
-      | ((payload: InstallProgressPayload) => void)
-      | null = null;
-
+  function renderWithResultHandler() {
+    let handler: InstallResultHandler | null = null;
     const api = statusBarApi({
-      onPluginInstallProgress: vi.fn((h) => {
-        capturedHandler = h;
+      onPluginInstallResult: vi.fn((h) => {
+        handler = h;
         return noop();
       }),
     });
+    const hook = renderHook(() => useStatusBar({ api }));
+    expect(api.onPluginInstallResult).toHaveBeenCalledOnce();
+    return { ...hook, emit: (payload: Parameters<InstallResultHandler>[0]) => act(() => handler!(payload)) };
+  }
 
-    const { result } = renderHook(() => useStatusBar({ api }));
+  it("pushes a success toast when onPluginInstallResult reports an install", () => {
+    const { result, emit } = renderWithResultHandler();
 
-    expect(api.onPluginInstallProgress).toHaveBeenCalledOnce();
-    expect(capturedHandler).not.toBeNull();
-
-    act(() => {
-      capturedHandler!({ slug: "agent-hub", phase: "installing" });
-    });
+    emit({ slug: "agent-hub", success: true });
 
     expect(result.current.toasts).toHaveLength(1);
-    // Spaces and hyphens are NOT stripped by CONTROL_CHARS (they're visible
-    // ASCII, not control chars). Only 0x00–0x1F and 0x7F are stripped.
-    expect(result.current.toasts[0]?.message).toBe("agent-hub 설치 중…");
+    expect(result.current.toasts[0]).toMatchObject({ severity: "success", message: "agent-hub 설치 완료" });
   });
 
   it("sanitizeToastField strips C0 control characters (0x00–0x1F) from slug", () => {
-    let capturedHandler:
-      | ((payload: InstallProgressPayload) => void)
-      | null = null;
-
-    const api = statusBarApi({
-      onPluginInstallProgress: vi.fn((h) => {
-        capturedHandler = h;
-        return noop();
-      }),
-    });
-
-    const { result } = renderHook(() => useStatusBar({ api }));
+    const { result, emit } = renderWithResultHandler();
 
     // Null byte (0x00) is in the C0 range → stripped.
-    act(() => {
-      capturedHandler!({ slug: "ev\x00il", phase: "installing" });
-    });
-
-    expect(result.current.toasts[0]?.message).toBe("evil 설치 중…");
+    emit({ slug: "ev\x00il", success: true });
+    expect(result.current.toasts[0]?.message).toBe("evil 설치 완료");
 
     // Other C0 control chars — tab (0x09), LF (0x0A), CR (0x0D).
-    act(() => {
-      capturedHandler!({ slug: "a\tb\nc\rd", phase: "installing" });
-    });
-    expect(result.current.toasts[1]?.message).toBe("abcd 설치 중…");
+    emit({ slug: "a\tb\nc\rd", success: true });
+    expect(result.current.toasts[1]?.message).toBe("abcd 설치 완료");
   });
 
-  it("renders downloading label with byte counts when bytesTotal is known", () => {
-    let capturedHandler: ((payload: InstallProgressPayload) => void) | null = null;
+  it("keeps one toast per slug, replacing it with the latest result", () => {
+    const { result, emit } = renderWithResultHandler();
 
-    const api = statusBarApi({
-      onPluginInstallProgress: vi.fn((h) => {
-        capturedHandler = h;
-        return noop();
-      }),
-    });
-
-    const { result } = renderHook(() => useStatusBar({ api }));
-
-    act(() => {
-      capturedHandler!({
-        slug: "agent-hub",
-        phase: "downloading",
-        bytesDownloaded: 13_000_000,
-        bytesTotal: 32_000_000,
-      });
-    });
+    emit({ slug: "vega-helper", success: false, error: "disk full" });
+    const toastId = result.current.toasts[0]?.id;
+    emit({ slug: "vega-helper", success: true });
 
     expect(result.current.toasts).toHaveLength(1);
-    // 13 000 000 bytes = 12.4 MB (rounded), 32 000 000 bytes = 30.5 MB
-    expect(result.current.toasts[0]?.message).toBe("12.4 MB / 30.5 MB · agent-hub 다운로드 중");
-  });
-
-  it("renders downloading label without denominator when bytesTotal is null", () => {
-    let capturedHandler: ((payload: InstallProgressPayload) => void) | null = null;
-
-    const api = statusBarApi({
-      onPluginInstallProgress: vi.fn((h) => {
-        capturedHandler = h;
-        return noop();
-      }),
-    });
-
-    const { result } = renderHook(() => useStatusBar({ api }));
-
-    act(() => {
-      capturedHandler!({
-        slug: "my-plugin",
-        phase: "downloading",
-        bytesDownloaded: 5_000,
-        bytesTotal: null,
-      });
-    });
-
-    expect(result.current.toasts[0]?.message).toBe("my-plugin … 다운로드 중");
-  });
-
-  it("updates one toast for download chunks and replaces it with the install result", () => {
-    let progressHandler: ((payload: InstallProgressPayload) => void) | null = null;
-    let resultHandler: ((payload: { slug: string; success: boolean; error?: string }) => void) | null = null;
-
-    const api = statusBarApi({
-      onPluginInstallProgress: vi.fn((handler) => {
-        progressHandler = handler;
-        return noop();
-      }),
-      onPluginInstallResult: vi.fn((handler) => {
-        resultHandler = handler;
-        return noop();
-      }),
-    });
-
-    const { result } = renderHook(() => useStatusBar({ api }));
-
-    act(() => {
-      progressHandler!({
-        slug: "vega-helper",
-        phase: "downloading",
-        bytesDownloaded: 1_200,
-        bytesTotal: 241_400,
-      });
-      progressHandler!({
-        slug: "vega-helper",
-        phase: "downloading",
-        bytesDownloaded: 4_800,
-        bytesTotal: 241_400,
-      });
-    });
-
-    expect(result.current.toasts).toHaveLength(1);
-    const progressToastId = result.current.toasts[0]?.id;
-    expect(result.current.toasts[0]?.message).toBe("4.7 KB / 235.7 KB · vega-helper 다운로드 중");
-    expect(result.current.pendingCount).toBe(0);
-
-    act(() => {
-      resultHandler!({ slug: "vega-helper", success: true });
-    });
-
-    expect(result.current.toasts).toHaveLength(1);
-    expect(result.current.toasts[0]).toMatchObject({
-      id: progressToastId,
-      severity: "success",
-      message: "vega-helper 설치 완료",
-    });
-  });
-
-  it("renders verifying label for phase=verifying", () => {
-    let capturedHandler: ((payload: InstallProgressPayload) => void) | null = null;
-
-    const api = statusBarApi({
-      onPluginInstallProgress: vi.fn((h) => {
-        capturedHandler = h;
-        return noop();
-      }),
-    });
-
-    const { result } = renderHook(() => useStatusBar({ api }));
-
-    act(() => {
-      capturedHandler!({ slug: "agent-hub", phase: "verifying" });
-    });
-
-    expect(result.current.toasts[0]?.message).toBe("agent-hub 검증 중…");
-  });
-
-  it("renders registering label for phase=registering", () => {
-    let capturedHandler: ((payload: InstallProgressPayload) => void) | null = null;
-
-    const api = statusBarApi({
-      onPluginInstallProgress: vi.fn((h) => {
-        capturedHandler = h;
-        return noop();
-      }),
-    });
-
-    const { result } = renderHook(() => useStatusBar({ api }));
-
-    act(() => {
-      capturedHandler!({ slug: "agent-hub", phase: "registering" });
-    });
-
-    expect(result.current.toasts[0]?.message).toBe("agent-hub 등록 중…");
+    expect(result.current.toasts[0]).toMatchObject({ id: toastId, severity: "success", message: "vega-helper 설치 완료" });
   });
 });
 
