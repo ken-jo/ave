@@ -255,7 +255,7 @@ describe.skipIf(process.platform === "win32")("resolveMcpPackage", () => {
       "mcp/notes/ave-package.json": descriptor({ server: { transport: "stdio", command: "npx", args: ["-y", "@acme/notes@1.2.3"], env: { NOTES_MODE: "ro" }, auth: "api-key", apiKeyEnv: "NOTES_TOKEN" } }),
     });
     expect(resolved).toMatchObject({ from: "descriptor", packageFiles: null, runtime: { command: "npx", args: ["-y", "@acme/notes@1.2.3"] } });
-    expect(mcpServerConfigFor(resolved, "/ave/mcp/notes", "/app/node")).toEqual({
+    expect(mcpServerConfigFor(resolved, { installDir: "/ave/mcp/notes", dataDir: "/ave/mcp-data/notes", nodePath: "/app/node" })).toEqual({
       id: "notes",
       transport: "stdio",
       command: "npx",
@@ -263,6 +263,17 @@ describe.skipIf(process.platform === "win32")("resolveMcpPackage", () => {
       env: { NOTES_MODE: "ro" },
       auth: "api-key",
       apiKeyEnv: "NOTES_TOKEN",
+    });
+  });
+
+  it("gives a server its own data directory in its arguments and environment", async () => {
+    const resolved = await resolveFrom({
+      "mcp/notes/ave-package.json": descriptor({ server: { transport: "stdio", command: "uvx", args: ["notes-mcp==1.0.0", "--db", "$DATA_DIR/notes.sqlite"], env: { NOTES_HOME: "$DATA_DIR" } } }),
+    });
+    expect(resolved).toMatchObject({ packageFiles: null, runtime: { args: ["notes-mcp==1.0.0", "--db", "$DATA_DIR/notes.sqlite"] } });
+    expect(mcpServerConfigFor(resolved, { installDir: "/ave/mcp/notes", dataDir: "/ave/mcp-data/notes", nodePath: "/app/node" })).toMatchObject({
+      args: ["notes-mcp==1.0.0", "--db", "/ave/mcp-data/notes/notes.sqlite"],
+      env: { NOTES_HOME: "/ave/mcp-data/notes" },
     });
   });
 
@@ -288,7 +299,7 @@ describe.skipIf(process.platform === "win32")("resolveMcpPackage", () => {
     const zip = new AdmZip(resolved.packageFiles!.zipBuffer);
     expect(zip.getEntries().map((entry) => entry.entryName).sort()).toEqual(["server/config.json", "server/index.js", "server/run.sh"]);
     expect(resolved.packageFiles!.digest).toMatch(/^[0-9a-f]{64}$/u);
-    expect(mcpServerConfigFor(resolved, "/ave/mcp/notes", "/app/node")).toMatchObject({
+    expect(mcpServerConfigFor(resolved, { installDir: "/ave/mcp/notes", dataDir: "/ave/mcp-data/notes", nodePath: "/app/node" })).toMatchObject({
       command: "/ave/mcp/notes/server/run.sh",
       args: ["/ave/mcp/notes/server/config.json"],
     });

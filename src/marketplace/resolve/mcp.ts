@@ -51,7 +51,7 @@ export interface ResolvedMcpServer {
   plan: McpInstallPlan;
   /** Where the spec came from. */
   from: "descriptor" | "server.json";
-  /** Before `$PLUGIN_DIR`/`$NODE` substitution; this is what the approval step shows. */
+  /** Before `$PLUGIN_DIR`/`$DATA_DIR`/`$NODE` substitution; this is what the approval step shows. */
   runtime: McpRuntimeSpec;
   /** The package's `server/` files for a package-local command, zipped for the MCP artifact store; null otherwise. */
   packageFiles: { zipBuffer: Buffer; digest: string } | null;
@@ -426,7 +426,26 @@ export async function resolveMcpPackage(plan: McpInstallPlan, deps: McpResolveDe
   return { plan, from, runtime, packageFiles };
 }
 
-/** The MCP config to register, with `$PLUGIN_DIR` and `$NODE` filled in. */
-export function mcpServerConfigFor(resolved: ResolvedMcpServer, installDir: string, nodePath: string): McpServerConfig {
-  return buildMcpServerConfig(resolved.plan.name, substituteRuntimeTokens(resolved.runtime, { pluginDir: installDir, nodePath, pythonPath: "" }));
+/** Where the MCP config the install registers points its tokens. */
+export interface McpServerDirs {
+  /** `$PLUGIN_DIR`: the installed `server/` files of this version, replaced on update. */
+  installDir: string;
+  /** `$DATA_DIR`: the package's own data directory, kept across updates (design §5.2). */
+  dataDir: string;
+  /** `$NODE`. */
+  nodePath: string;
+}
+
+/** The MCP config to register, with `$PLUGIN_DIR`, `$DATA_DIR` and `$NODE` filled in. */
+export function mcpServerConfigFor(resolved: ResolvedMcpServer, dirs: McpServerDirs): McpServerConfig {
+  const runtime = resolved.runtime;
+  const withData =
+    runtime.transport === "stdio"
+      ? {
+          ...runtime,
+          ...(runtime.args ? { args: runtime.args.map((value) => value.replaceAll("$DATA_DIR", dirs.dataDir)) } : {}),
+          ...(runtime.env ? { env: Object.fromEntries(Object.entries(runtime.env).map(([key, value]) => [key, value.replaceAll("$DATA_DIR", dirs.dataDir)])) } : {}),
+        }
+      : runtime;
+  return buildMcpServerConfig(resolved.plan.name, substituteRuntimeTokens(withData, { pluginDir: dirs.installDir, nodePath: dirs.nodePath, pythonPath: "" }));
 }
