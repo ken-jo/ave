@@ -253,6 +253,27 @@ describe.skipIf(process.platform === "win32")("content package store (blueprint 
     expect(existsSync(join(root, "packages", "theme", "harbor", "1.1.0"))).toBe(false);
   });
 
+  it("keeps a language whose keys the app catalog no longer has, applying only the keys it still has", async () => {
+    // Written against an older catalog: "chat.retired" is gone from this app's English catalog.
+    const { name } = market([{ kind: "language", name: "french", path: "languages/french" }], {
+      ...language("french", "fr"),
+      "languages/french/messages.json": text({ "chat.send": "Envoyer", "app.title": "Ave", "chat.retired": "Ancien" }),
+    });
+    const syncer = await open(name);
+    const store = await openStore();
+    const staged = await stage(syncer, (await rows(syncer))[0]!);
+    expect(staged.content).toMatchObject({ messages: { "chat.send": "Envoyer", "app.title": "Ave" } });
+    expect(await store.install(staged)).toMatchObject({ action: { action: "install" }, entry: { name: "french" } });
+
+    // A later app drops "app.title" as well: the installed package still loads, and the dropped keys never apply.
+    const updated = await ContentStore.open({ root: join(root, "packages"), english: { "chat.send": "Send" }, activation, now: () => new Date(AT) });
+    const { loaded, broken } = await updated.load();
+    expect(broken).toEqual([]);
+    expect(loaded.map((item) => item.content)).toEqual([
+      { kind: "language", locale: "fr", nativeName: "Français", englishName: "French", messages: { "chat.send": "Envoyer" }, missingKeys: [] },
+    ]);
+  });
+
   it("refuses a second package for a locale another installed package provides", async () => {
     const { name } = market(
       [

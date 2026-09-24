@@ -116,6 +116,15 @@ export interface ContentContext {
   english: Readonly<Record<string, string>>;
   /** The source the package came from; some content is reserved for official and managed sources. */
   sourceOrigin: SourceOrigin;
+  /**
+   * What a language key outside this app's interface keys does. The repository
+   * check refuses it, so an author learns of a typo or a model-facing key. On a
+   * device it is ignored and never applied: a package written for another app
+   * version names keys this one removed or has since made model-facing, and
+   * refusing them would break every installed language whenever the catalog
+   * loses a key.
+   */
+  unknownMessageKeys: "refuse" | "ignore";
 }
 
 class ContentFailure extends MarketplaceError {
@@ -301,7 +310,7 @@ function language(files: Map<string, Buffer>, context: ContentContext): Language
     }
     messages[key] = value;
   }
-  if (unknown.length > 0) {
+  if (unknown.length > 0 && context.unknownMessageKeys === "refuse") {
     const shown = unknown.slice(0, 5).join(", ");
     throw new ContentFailure(messagesPath, `${unknown.length} key(s) are not interface keys of the English catalog: ${shown}${unknown.length > 5 ? ", …" : ""}`);
   }

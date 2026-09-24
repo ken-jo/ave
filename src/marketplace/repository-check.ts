@@ -193,6 +193,7 @@ function checkContent(tree: RepositoryTree, entry: IndexPackage, descriptor: Pac
     payload: descriptor.payload,
     english: messages.en,
     sourceOrigin: options.official ? "official" : "custom",
+    unknownMessageKeys: "refuse",
   });
 }
 

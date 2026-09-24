@@ -93,6 +93,7 @@ export async function stageContentPackage(plan: PackagePlan, access: RepositoryA
       payload: descriptor.payload,
       english: options.english,
       sourceOrigin: dataPlan.sourceOrigin,
+      unknownMessageKeys: "ignore",
     });
     return { plan: dataPlan, files, contentSha256: digestOf(files), content };
   } finally {
@@ -345,6 +346,7 @@ export class ContentStore {
         payload: null,
         english: this.options.english,
         sourceOrigin: entry.origin.sourceOrigin,
+        unknownMessageKeys: "ignore",
       });
       return { entry, content, dir };
     } catch (error) {

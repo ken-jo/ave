@@ -526,7 +526,11 @@ ledger feeds snapshot retention (§2.3) like the plugin registry does.
     reviewer text), the shell execution environment the system prompt
     describes, and a message a surface sends as the user's own
     (`i18n/model-facing.ts`; a static test fails when a key reaches the
-    model from outside it). Missing keys are listed, not refused.
+    model from outside it). Missing keys are listed, not refused. Any
+    other key is refused by the repository check and ignored on a device,
+    where it never applies: a package written for another app version names
+    keys this one removed or has since made model-facing, and refusing them
+    would break every installed language whenever the catalog loses a key.
   - A translation keeps the English placeholder set, and refuses
     bidirectional overrides and invisible characters: an approval prompt
     must ask about what it says.
@@ -1764,6 +1768,10 @@ Where the sections above and the shipped code differ, the code wins:
   version: 1, completedAt }` when every entry migrated, otherwise `{ version:
   1, reportedUnmanaged }`, and the next run tries again without naming an
   unmanaged entry a second time.
+- **Language keys across app versions.** The upgrade run found every
+  installed language breaking on the first boot of a build whose catalog
+  had lost keys (phase 6 removes 157). A key outside the interface set is
+  now ignored on a device and refused only by the repository check (§5.5).
 - **Web documentation.** The site's server-marketplace pages and their
   twelve screenshots are gone; `/docs/marketplace` explains sources, installs
   and updates, and `/docs/marketplace/authors` is the package-author page
