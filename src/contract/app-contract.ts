@@ -300,6 +300,29 @@ export const CHANNELS = {
     install: "ave:git:runtime:install",
     progress: "git-runtime:progress", // event main→renderer (GitRuntimeProgress)
   },
+  // The git marketplace (design §13): sources, catalog, install plans and
+  // execution. Host-renderer only; every answer is a GitMarketplaceResult.
+  gitMarketplace: {
+    sourcesList: "ave:marketplace:sources:list",
+    sourcesPreview: "ave:marketplace:sources:preview",
+    sourcesAdd: "ave:marketplace:sources:add",
+    sourcesRemove: "ave:marketplace:sources:remove",
+    sourcesSetEnabled: "ave:marketplace:sources:set-enabled",
+    sourcesRefresh: "ave:marketplace:sources:refresh",
+    sourcesAcceptRewrite: "ave:marketplace:sources:accept-rewrite",
+    sourcesSetToken: "ave:marketplace:sources:set-token",
+    sourcesDeleteToken: "ave:marketplace:sources:delete-token",
+    catalogList: "ave:marketplace:catalog:list",
+    packageDetail: "ave:marketplace:package:detail",
+    installPlan: "ave:marketplace:install:plan",
+    installExecute: "ave:marketplace:install:execute",
+    updatePlan: "ave:marketplace:update:plan",
+    uninstall: "ave:marketplace:uninstall",
+    directPreview: "ave:marketplace:direct:preview",
+    syncProgress: "marketplace:sync-progress", // event main→renderer (SyncProgressView)
+    catalogChanged: "marketplace:catalog-changed", // event main→renderer
+    installProgress: "marketplace:install-progress", // event main→renderer (InstallProgressView)
+  },
   // Installed content packages of the git marketplace (blueprint P3): what the
   // settings pickers list and the catalogs of installed languages. Host-renderer only.
   marketplaceContent: {

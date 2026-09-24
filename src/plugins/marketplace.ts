@@ -55,10 +55,11 @@ import {
   restoreInstallReceiptRaw,
   verifyInstallReceipt,
 } from "./plugin-install-receipt.js";
-import { assertGitInstallManifest } from "../marketplace/resolve/manifest-rules.js";
+import { assertGitInstallManifest, manifestAuthority } from "../marketplace/resolve/manifest-rules.js";
 import { classifyInstall, type InstallAction } from "../marketplace/resolve/identity.js";
 import { requiredByPolicy } from "../marketplace/boot-installs/run.js";
 import type { MarketplacePolicy } from "../marketplace/sources/policy.js";
+import type { PluginAuthority } from "../marketplace/catalog/types.js";
 import { MarketplaceError } from "../marketplace/errors.js";
 import type { PluginInstallPlan, StagedPluginArtifact } from "../marketplace/resolve/plugin-ladder.js";
 import { canonicalJSON } from "./whitelist/canonical-json.js";
@@ -2106,6 +2107,43 @@ export class PluginMarketplaceService {
     }
     const parsed = flattenAgentPluginsManifest(JSON.parse(raw));
     return typeof parsed.version === "string" ? parsed.version : null;
+  }
+
+  /**
+   * Every installed plugin with the git origin it is bound to, for the git
+   * marketplace's installed view (design §15.2). Rows mid-replacement are
+   * left out; a missing manifest gives a null version.
+   */
+  async listInstalledPackages(): Promise<Array<{ name: string; version: string | null; sourceId: string | null; originCommit: string | null }>> {
+    const registry = await readPluginRegistry(this.registryPath);
+    const rows = [];
+    for (const entry of registry.plugins) {
+      if (entry.pendingUpdate) continue;
+      rows.push({
+        name: entry.id,
+        version: entry.origin?.version ?? (await this.readInstalledManifestVersion(entry)),
+        sourceId: entry.origin?.sourceId ?? null,
+        originCommit: entry.origin?.commit ?? null,
+      });
+    }
+    return rows;
+  }
+
+  /** The authority the installed plugin.json declares (design §15.6 update review); null when it is not installed. */
+  async getInstalledAuthority(pluginId: string): Promise<PluginAuthority | null> {
+    const entry = await this.getRawRegistryEntry(pluginId);
+    if (!entry || entry.pendingUpdate) return null;
+    const manifestPath = isAbsolute(entry.manifestPath) ? entry.manifestPath : resolve(dirname(this.registryPath), entry.manifestPath);
+    let raw: string;
+    try {
+      raw = await readFile(manifestPath, "utf-8");
+    } catch (err) {
+      if (isMissingPathError(err)) return null;
+      throw err;
+    }
+    const authority = manifestAuthority(JSON.parse(raw) as unknown);
+    if (!authority) throw new Error(`installed plugin.json of ${pluginId} has no Ave extension`);
+    return authority;
   }
 
   /**

@@ -28,11 +28,19 @@ export interface ServedContentFile {
   contentType: string;
 }
 
+/** An installed skill or agent profile: the stores read its entry file from `dir`. */
+export interface InstalledInstruction {
+  kind: "skill" | "agent";
+  name: string;
+  dir: string;
+}
+
 export class InstalledContentService {
   private view: InstalledContentView = { themes: [], languages: [], fonts: [], broken: [] };
   private catalogs = new Map<string, Record<string, string>>();
   /** `<kind>/<name>/<path>` → the file and its type, for the asset scheme. */
   private served = new Map<string, ServedContentFile>();
+  private instructions: InstalledInstruction[] = [];
 
   /** `assetToken` is the launch token asset URLs carry (see `contentAssetUrl`). */
   constructor(
@@ -49,6 +57,7 @@ export class InstalledContentService {
     const brokenViews: BrokenContentView[] = broken.map(({ entry, problem }) => ({ kind: entry.kind, name: entry.name, problem }));
     const catalogs = new Map<string, Record<string, string>>();
     const served = new Map<string, ServedContentFile>();
+    const instructions: InstalledInstruction[] = [];
     const from = (item: LoadedContent) => ({ sourceId: item.entry.origin.sourceId, version: item.entry.version });
     const refuse = (item: LoadedContent, problem: string) => brokenViews.push({ kind: item.entry.kind, name: item.entry.name, problem });
 
@@ -105,17 +114,25 @@ export class InstalledContentService {
           faces: content.faces.map((face) => ({ url: contentAssetUrl(this.assetToken, "font", entry.name, face.file), format: face.format, weight: face.weight, style: face.style })),
           ...from(item),
         });
+      } else if (content.kind === "skill" || content.kind === "agent") {
+        instructions.push({ kind: content.kind, name: entry.name, dir });
       }
       // Providers and messaging connections take effect through settings (their activation).
     }
     this.view = { themes, languages, fonts, broken: brokenViews };
     this.catalogs = catalogs;
     this.served = served;
+    this.instructions = instructions;
     return this.installed();
   }
 
   installed(): InstalledContentView {
     return structuredClone(this.view);
+  }
+
+  /** Installed skills and agent profiles, for the skill and agent stores in main. */
+  installedInstructions(): InstalledInstruction[] {
+    return this.instructions.map((item) => ({ ...item }));
   }
 
   /** The catalog of an installed language; throws for a locale no package provides. */

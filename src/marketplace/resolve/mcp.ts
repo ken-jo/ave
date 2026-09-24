@@ -382,7 +382,7 @@ async function exportServerFiles(plan: McpInstallPlan, deps: McpResolveDeps): Pr
       files.push({ path: `server/${file.path}`, data: await readFile(join(dest, ...file.path.split("/"))), executable: file.executable });
     }
     const zip = new AdmZip();
-    for (const file of files) zip.addFile(file.path, file.data, "", file.executable ? 0o755 << 16 : 0o644 << 16);
+    for (const file of files) zip.addFile(file.path, file.data, "", file.executable ? 0o755 : 0o644);
     return { zipBuffer: zip.toBuffer(), digest: treeDigest(files) };
   } finally {
     await rm(dest, { recursive: true, force: true });
@@ -474,13 +474,17 @@ export interface McpServerDirs {
 
 /** The MCP config to register, with `$PLUGIN_DIR`, `$DATA_DIR` and `$NODE` filled in. */
 export function mcpServerConfigFor(resolved: ResolvedMcpServer, dirs: McpServerDirs): McpServerConfig {
-  const runtime = resolved.runtime;
-  if (runtime.transport !== "stdio") return buildMcpServerConfig(resolved.plan.name, { ...runtime });
+  return mcpRuntimeConfig(resolved.plan.name, resolved.runtime, dirs);
+}
+
+/** The MCP config for server `name` running `runtime`, tokens filled in. */
+export function mcpRuntimeConfig(name: string, runtime: McpRuntimeSpec, dirs: McpServerDirs): McpServerConfig {
+  if (runtime.transport !== "stdio") return buildMcpServerConfig(name, { ...runtime });
   const values = { PLUGIN_DIR: dirs.installDir, DATA_DIR: dirs.dataDir, NODE: dirs.nodePath } as const;
   // One pass with a function replacer: a filled-in path is never rescanned for
   // tokens, and `$&`/`$$` in it stay literal.
   const fill = (value: string): string => value.replace(RUNTIME_TOKEN, (_match, token: keyof typeof values) => values[token]);
-  return buildMcpServerConfig(resolved.plan.name, {
+  return buildMcpServerConfig(name, {
     ...runtime,
     command: fill(runtime.command),
     ...(runtime.args ? { args: runtime.args.map(fill) } : {}),

@@ -93,11 +93,11 @@ const TREE_TOP_LEVEL_DIRS = new Set(["dist", "assets"]);
 /** A plan for the row's candidate version (design §6.1). */
 export function planPluginInstall(row: CatalogRow): PluginInstallPlan {
   if (row.kind !== "plugin") throw new Error(`${row.kind} ${row.name} is not a plugin`);
-  return planForVersion(row, candidateVersion(row));
+  return planPluginVersion(row, candidateVersion(row));
 }
 
-/** A plan for one listed version of the row. */
-function planForVersion(row: CatalogRow, version: IndexVersion): PluginInstallPlan {
+/** A plan for one listed version of the row: the candidate, or an older version chosen to roll back. */
+export function planPluginVersion(row: CatalogRow, version: IndexVersion): PluginInstallPlan {
   if (row.kind !== "plugin") throw new Error(`${row.kind} ${row.name} is not a plugin`);
   // Snapshot validation requires both for every plugin version.
   if (!version.authority || !version.artifact) throw new Error(`${row.name}@${version.version} has no authority or artifact`);
@@ -311,7 +311,7 @@ async function treeRung(plan: PluginInstallPlan, deps: LadderDeps): Promise<Rung
       files.push({ path: file.path, data: await readFile(join(dest, ...file.path.split("/"))), executable: file.executable });
     }
     const zip = new AdmZip();
-    for (const file of files) zip.addFile(file.path, file.data, "", file.executable ? 0o755 << 16 : 0o644 << 16);
+    for (const file of files) zip.addFile(file.path, file.data, "", file.executable ? 0o755 : 0o644);
     return { zipBuffer: zip.toBuffer(), artifactSha256: treeDigest(files) };
   } finally {
     await rm(dest, { recursive: true, force: true });

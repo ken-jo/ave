@@ -15,12 +15,12 @@ import { parse as parseYaml } from "yaml";
 import { parseFrontmatterBlock } from "../../main/skill-store.js";
 import { AVE_EXTENSION_NAMESPACE } from "../../plugins/public-contract.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
-import type { PackageDescriptor, PluginAuthority } from "../catalog/types.js";
+import type { PackageDescriptor } from "../catalog/types.js";
 import { validateDescriptorText, validateSynthesizedDescriptor } from "../catalog/validate.js";
 import type { MarketplaceErrorCode } from "../errors.js";
 import { assertRepoPath, type BareRepo } from "../git/repo.js";
 import type { GitRemote } from "../git/run-git.js";
-import { PLUGIN_AUTHORITY_FIELDS } from "../resolve/manifest-rules.js";
+import { manifestAuthority } from "../resolve/manifest-rules.js";
 
 export const DIRECT_FILES = ["ave-package.json", "plugin.json", "SKILL.md", "AGENTS.md", "server.json"] as const;
 
@@ -116,7 +116,7 @@ function fromPluginManifest(source: string, path: string): Synthesis {
     return { ok: false, code: "PACKAGE_COMPAT_UNDECLARED", error: "plugin.json does not declare requires.minAppVersion" };
   }
   // Exactly the manifest's own fields: the staged plugin.json is compared with them field by field.
-  const authority = Object.fromEntries(PLUGIN_AUTHORITY_FIELDS.filter((field) => ave[field] !== undefined).map((field) => [field, ave[field]])) as unknown as PluginAuthority;
+  const authority = manifestAuthority(manifest)!;
   return {
     ok: true,
     versionSynthesized: false,

@@ -48,6 +48,7 @@ const port = {
   },
   servedFile: () => null,
 };
+const runtime = (service: typeof port) => ({ store: {} as ContentStore, service, reload: async () => {} });
 
 type SchemeHandler = (request: { url: string; headers: Headers; referrer: string }) => Promise<Response>;
 const assetRequest = (url: string) => ({ url, headers: new Headers({ origin: "null" }), referrer: "" });
@@ -63,7 +64,7 @@ describe("registerMarketplaceContentHandlers", () => {
   });
 
   it("registers the scheme handler up front and loads once, on the first request", async () => {
-    const load = vi.fn(async () => port);
+    const load = vi.fn(async () => runtime(port));
     registerMarketplaceContentHandlers({} as IpcDeps, TOKEN, load);
     schemeHandler();
     expect(load).not.toHaveBeenCalled();
@@ -79,7 +80,7 @@ describe("registerMarketplaceContentHandlers", () => {
 
   it("serves an asset request through the same load, even before the renderer asks", async () => {
     const servedFile = vi.fn(() => null);
-    const load = vi.fn(async () => ({ ...port, servedFile }));
+    const load = vi.fn(async () => runtime({ ...port, servedFile }));
     registerMarketplaceContentHandlers({} as IpcDeps, TOKEN, load);
     const response = await schemeHandler()(assetRequest(`ave-content://${TOKEN}/font/harbor-serif/files/a.woff2`));
     expect(response.status).toBe(404);
@@ -117,11 +118,11 @@ describe("loadInstalledContent", () => {
   });
 
   /** Install `content` from `files` the way the install path does, without a git source. */
-  async function install(kind: "language", name: string, files: Record<string, unknown>, content: ParsedContent) {
-    const list = Object.entries(files).map(([path, value]) => ({ path, data: Buffer.from(JSON.stringify(value)) }));
+  async function install(kind: "language" | "skill", name: string, files: Record<string, unknown>, content: ParsedContent, into?: ContentStore) {
+    const list = Object.entries(files).map(([path, value]) => ({ path, data: Buffer.from(typeof value === "string" ? value : JSON.stringify(value)) }));
     const plan = { sourceId: "acme", sourceOrigin: "custom", snapshotCommit: "a".repeat(40), versionCommit: "a".repeat(40), packagePath: `${kind}s/${name}`, kind, name, version: "1.0.0", minAppVersion: "0.12.0" } as PackagePlan;
     const staged = { plan, files: list, contentSha256: treeDigest(list.map((file) => ({ ...file, executable: false }))), content } as StagedContent;
-    const store = await ContentStore.open({ root, english: {}, activation: { activate: async () => {}, deactivate: async () => {} } });
+    const store = into ?? (await ContentStore.open({ root, english: {}, activation: { activate: async () => {}, deactivate: async () => {} } }));
     await store.install(staged);
   }
 
@@ -133,7 +134,7 @@ describe("loadInstalledContent", () => {
     await install("language", "french", { "language.json": language, "messages.json": messages }, { kind: "language", ...language, messages, missingKeys: [] });
     const settingsService = { get: () => ({ language: "fr" }) };
 
-    const service = await loadInstalledContent({ settingsService } as unknown as IpcDeps, TOKEN, root);
+    const { service } = await loadInstalledContent({ settingsService } as unknown as IpcDeps, TOKEN, root);
     expect(service.installed().languages.map((item) => item.locale)).toEqual(["fr"]);
     expect(isInstalledLocale("fr")).toBe(true);
     expect(await loadLocaleMessages("fr")).toMatchObject(messages);
@@ -142,8 +143,22 @@ describe("loadInstalledContent", () => {
   });
 
   it("lists nothing and applies nothing for an empty store", async () => {
-    const service = await loadInstalledContent({ settingsService: { get: () => ({ language: "en" }) } } as unknown as IpcDeps, TOKEN, root);
+    const { service } = await loadInstalledContent({ settingsService: { get: () => ({ language: "en" }) } } as unknown as IpcDeps, TOKEN, root);
     expect(service.installed()).toEqual({ themes: [], languages: [], fonts: [], broken: [] });
     expect(isInstalledLocale("fr")).toBe(false);
+  });
+
+  it("hands installed skills and agents to their stores, and reload applies an install made after load", async () => {
+    const skillStore = { setInstalledPackages: vi.fn(), userSkillFile: async () => null };
+    const agentProfileStore = { setInstalledPackages: vi.fn() };
+    const deps = { settingsService: { get: () => ({ language: "en" }) }, skillStore, agentProfileStore } as unknown as IpcDeps;
+    const loaded = await loadInstalledContent(deps, TOKEN, root);
+    expect(skillStore.setInstalledPackages).toHaveBeenLastCalledWith([]);
+    expect(agentProfileStore.setInstalledPackages).toHaveBeenLastCalledWith([]);
+
+    await install("skill", "review", { "SKILL.md": "---\nname: review\ndescription: Reviews.\n---\nReview the change.\n" }, { kind: "skill", name: "review", description: "Reviews." }, loaded.store);
+    await loaded.reload();
+    expect(skillStore.setInstalledPackages).toHaveBeenLastCalledWith([{ kind: "skill", name: "review", dir: expect.stringContaining("review") }]);
+    expect(agentProfileStore.setInstalledPackages).toHaveBeenLastCalledWith([]);
   });
 });

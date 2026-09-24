@@ -321,28 +321,21 @@ export function revokePluginWebviewsForPlugin(
   }
 }
 
-export function registerPluginsHandlers(deps: IpcDeps): void {
+/**
+ * The cleanup services and install-state preparation every plugin install or
+ * uninstall runs, shared by these handlers and the git marketplace's.
+ */
+export function pluginLifecycleServices(deps: IpcDeps) {
   const {
     pluginRuntime,
     pluginMarketplace,
     settingsService,
-    auditLogger,
     refreshPluginNotifications,
     pluginPaths,
     clearAuthPartitionService,
     listPluginAuthPartitionsService,
     forgetPluginAuthPartitionsService,
-    mcpArtifactStore,
-    agentArtifactStore,
-    skillArtifactStore,
-    getMainWindow,
-    getAppWindows,
   } = deps;
-  const broadcastPluginLifecycleEvent = (channel: string, payload: unknown) => {
-    for (const win of getAppWindows?.() ?? [getMainWindow()]) {
-      sendToWindow(win, channel, payload, log);
-    }
-  };
   const requireCleanupServices = () => {
     if (
       !pluginPaths
@@ -373,6 +366,41 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       log,
     });
   };
+  /** Uninstall through the runtime generation barrier with journaled cleanup (see the uninstall handler). */
+  const uninstall = (pluginId: string) =>
+    uninstallPluginWithLifecycle(pluginId, {
+      pluginMarketplace,
+      pluginRuntime,
+      settingsService,
+      ...requireCleanupServices(),
+      drainPluginInstallLockOperationsService:
+        drainPluginInstallLockOperations,
+      refreshPluginNotifications,
+      emitHostEvent,
+      log,
+    });
+  return { requireCleanupServices, ensureInstallStateReady, uninstall };
+}
+
+export function registerPluginsHandlers(deps: IpcDeps): void {
+  const {
+    pluginRuntime,
+    pluginMarketplace,
+    settingsService,
+    auditLogger,
+    refreshPluginNotifications,
+    mcpArtifactStore,
+    agentArtifactStore,
+    skillArtifactStore,
+    getMainWindow,
+    getAppWindows,
+  } = deps;
+  const broadcastPluginLifecycleEvent = (channel: string, payload: unknown) => {
+    for (const win of getAppWindows?.() ?? [getMainWindow()]) {
+      sendToWindow(win, channel, payload, log);
+    }
+  };
+  const { requireCleanupServices, ensureInstallStateReady, uninstall: uninstallPlugin } = pluginLifecycleServices(deps);
   let marketplacePingCache:
     | { key: string; result: MarketplacePingResult; timestampMs: number }
     | null = null;
@@ -569,17 +597,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       // journaled config/secret/auth/cache cleanup completes or stays
       // explicitly retryable. This preserves the Windows EBUSY defense while
       // preventing a partial cleanup from being reported as success.
-      const result = await uninstallPluginWithLifecycle(pluginId, {
-        pluginMarketplace,
-        pluginRuntime,
-        settingsService,
-        ...requireCleanupServices(),
-        drainPluginInstallLockOperationsService:
-          drainPluginInstallLockOperations,
-        refreshPluginNotifications,
-        emitHostEvent,
-        log,
-      });
+      const result = await uninstallPlugin(pluginId);
       broadcastUninstallResult({ slug: pluginId, success: true });
       return result;
     } catch (err) {

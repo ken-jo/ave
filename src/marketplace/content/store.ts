@@ -53,7 +53,7 @@ export interface StageOptions {
 
 function asDataPlan(plan: PackagePlan): DataContentPlan {
   if (!isContentKind(plan.kind) || !isDataContentKind(plan.kind)) {
-    throw new Error(`${plan.kind} ${plan.name} is not a theme, language, font, provider or messaging-connection package`);
+    throw new Error(`${plan.kind} ${plan.name} is not a content package`);
   }
   return plan as DataContentPlan;
 }

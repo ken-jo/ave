@@ -308,6 +308,9 @@ describe.skipIf(process.platform === "win32")("resolveMcpPackage", () => {
     expect(resolved.runtime).toEqual({ transport: "stdio", command: "$PLUGIN_DIR/server/run.sh", args: ["$PLUGIN_DIR/server/config.json"] });
     const zip = new AdmZip(resolved.packageFiles!.zipBuffer);
     expect(zip.getEntries().map((entry) => entry.entryName).sort()).toEqual(["server/config.json", "server/index.js", "server/run.sh"]);
+    // The zip carries each file's mode: the installer restores the execute bit from it.
+    const modes = Object.fromEntries(zip.getEntries().map((entry) => [entry.entryName, (entry.attr >>> 16) & 0o777]));
+    expect(modes).toEqual({ "server/config.json": 0o644, "server/index.js": 0o644, "server/run.sh": 0o755 });
     expect(resolved.packageFiles!.digest).toMatch(/^[0-9a-f]{64}$/u);
     expect(mcpServerConfigFor(resolved, { installDir: "/ave/mcp/notes", dataDir: "/ave/mcp-data/notes", nodePath: "/app/node" })).toMatchObject({
       command: "/ave/mcp/notes/server/run.sh",

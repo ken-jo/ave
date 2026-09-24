@@ -60,6 +60,7 @@ import { registerHomeDocsHandlers } from "./domains/home-docs.js";
 import { registerUsageHandlers } from "./domains/usage.js";
 import { registerGitRuntimeHandlers } from "./domains/git-runtime.js";
 import { registerMarketplaceContentHandlers } from "./domains/marketplace-content.js";
+import { registerGitMarketplaceHandlers } from "./domains/git-marketplace.js";
 import { registerAuditHandlers } from "./domains/audit.js";
 import { registerDiagnosticsHandlers } from "./domains/diagnostics.js";
 import { registerPermissionsHandlers } from "./domains/permissions.js";
@@ -133,7 +134,8 @@ export function registerIpcHandlers(
   registerHomeDocsHandlers(deps);
   registerUsageHandlers(deps);
   registerGitRuntimeHandlers(deps);
-  registerMarketplaceContentHandlers(deps);
+  const installedContent = registerMarketplaceContentHandlers(deps);
+  registerGitMarketplaceHandlers(deps, installedContent);
   registerAuditHandlers(deps);
   registerDiagnosticsHandlers(deps);
   registerPermissionsHandlers(deps);

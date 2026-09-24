@@ -39,6 +39,7 @@ import type {
 import type { ChatSendInputOrigin } from "../../shared/chat-origin.js";
 import type { TailnetSharingOwnerApi } from "../../shared/tailnet-sharing.js";
 import type { TailnetObserverConfigApi } from "../../shared/tailnet-observer-config.js";
+import type { GitMarketplaceApi } from "../../shared/git-marketplace.js";
 import type { GitRuntimeApi } from "../../shared/git-runtime.js";
 import type { InstalledContentApi } from "../../shared/installed-content.js";
 import type { TelegramConnectionOwnerApi } from "../../shared/telegram-connection.js";
@@ -533,6 +534,8 @@ export type AveApi = {
   tailnetObserver: TailnetObserverConfigApi;
   /** Git marketplace runtime: status, managed install, install progress. */
   gitRuntime: GitRuntimeApi;
+  /** Git marketplace: sources, catalog, install plans and execution (design §13). */
+  gitMarketplace: GitMarketplaceApi;
   /** Installed content packages: themes, languages and fonts, and installed language catalogs. */
   installedContent: InstalledContentApi;
   telegramConnection: TelegramConnectionOwnerApi;
@@ -2141,6 +2144,8 @@ declare global {
         isE2E: boolean;
         enableDevConsole: boolean;
         debugStream: boolean;
+        /** Source runs only: show the git marketplace (`AVE_GIT_MARKETPLACE=1`) until blueprint P6. */
+        gitMarketplace: boolean;
       };
     };
   }

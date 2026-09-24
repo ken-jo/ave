@@ -38,6 +38,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * The authority a `plugin.json` declares: exactly the fields its Ave
+ * extension carries, so a comparison with a descriptor's is field by field.
+ * Null when the manifest has no Ave extension.
+ */
+export function manifestAuthority(manifest: unknown): PluginAuthority | null {
+  const ave = isRecord(manifest) && isRecord(manifest.extensions) ? manifest.extensions[AVE_EXTENSION_NAMESPACE] : undefined;
+  if (!isRecord(ave)) return null;
+  return Object.fromEntries(PLUGIN_AUTHORITY_FIELDS.filter((field) => ave[field] !== undefined).map((field) => [field, ave[field]])) as unknown as PluginAuthority;
+}
+
 function sameField(record: Record<string, unknown>, expected: PluginAuthority, field: keyof PluginAuthority): boolean {
   const has = Object.prototype.hasOwnProperty.call(record, field) && record[field] !== undefined;
   const wants = expected[field] !== undefined;

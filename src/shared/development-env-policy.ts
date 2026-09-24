@@ -26,6 +26,8 @@ export const DEVELOPMENT_ENV_POLICY = [
   { name: "AVE_DEV_RELOAD", lifecycle: "active", packaged: "scrub" },
   { name: "AVE_E2E", lifecycle: "active", packaged: "scrub" },
   { name: "AVE_E2E_WHITELIST_PUBLIC_KEY", lifecycle: "active", packaged: "scrub" },
+  // The git marketplace's views before they replace today's marketplace (blueprint P6 removes it).
+  { name: "AVE_GIT_MARKETPLACE", lifecycle: "active", packaged: "scrub" },
   { name: "AVE_LOG_FILE", lifecycle: "active", packaged: "scrub" },
   { name: "AVE_LOG_FORMAT", lifecycle: "active", packaged: "scrub" },
   // Removed from plugin path resolution; retained as a scrub/audit tombstone.
