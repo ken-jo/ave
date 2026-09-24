@@ -27,10 +27,7 @@ import {
 } from "./marketplace-installer.js";
 import type { MarketplaceFetcher } from "./marketplace-fetcher.js";
 import type { MarketplaceAnnouncement } from "../shared/marketplace-announcements.js";
-import {
-  isMarketplaceAnnouncementLevel,
-  parseMarketplaceAnnouncementActions,
-} from "../shared/marketplace-announcements.js";
+import { parseMarketplaceAnnouncementRows } from "../shared/marketplace-announcements.js";
 import {
   isMarketplacePackageType,
   type MarketplacePackageType,
@@ -199,21 +196,6 @@ interface ServerCatalogRow {
   manifest?: unknown;
 }
 
-/** Loose shape for an announcement row returned by the server. */
-interface ServerAnnouncementRow {
-  id?: number | string;
-  title?: string;
-  body?: string;
-  level?: string;
-  created_at?: unknown;
-  createdAt?: unknown;
-  starts_at?: unknown;
-  startsAt?: unknown;
-  ends_at?: unknown;
-  endsAt?: unknown;
-  actions?: unknown;
-}
-
 export class CloudMarketplaceFetcher implements MarketplaceFetcher, MarketplaceHttp, MarketplaceArtifactLimitProvider {
   private readonly artifactLimits: Readonly<MarketplaceArtifactLimits>;
   private readonly artifactReadTimeoutMs: number;
@@ -307,10 +289,9 @@ export class CloudMarketplaceFetcher implements MarketplaceFetcher, MarketplaceH
   async listAnnouncements(): Promise<MarketplaceAnnouncement[]> {
     const res = await this.request("GET", "/api/v1/announcements");
     const data = (await res.json()) as unknown;
-    const rows = this.extractAnnouncementRows(data);
-    return rows
-      .map((row) => this.mapAnnouncement(row))
-      .filter((a): a is MarketplaceAnnouncement => a !== null);
+    // The empty string keeps the action version gate fail-closed when no app
+    // version was configured on this fetcher.
+    return parseMarketplaceAnnouncementRows(data, this.configuredAppVersion() ?? "");
   }
 
   async downloadArtifact(
@@ -557,74 +538,6 @@ export class CloudMarketplaceFetcher implements MarketplaceFetcher, MarketplaceH
   private asRow(data: unknown): ServerCatalogRow {
     if (data && typeof data === "object") return data as ServerCatalogRow;
     return {};
-  }
-
-  private extractAnnouncementRows(data: unknown): ServerAnnouncementRow[] {
-    if (Array.isArray(data)) return data as ServerAnnouncementRow[];
-    if (data && typeof data === "object") {
-      const obj = data as Record<string, unknown>;
-      if (Array.isArray(obj.announcements)) {
-        return obj.announcements as ServerAnnouncementRow[];
-      }
-      if (Array.isArray(obj.items)) return obj.items as ServerAnnouncementRow[];
-    }
-    return [];
-  }
-
-  /**
-   * Normalizes one server announcement row. Returns `null` for rows missing
-   * required fields so a single malformed entry never blanks the whole banner.
-   * Required server contract fields are not defaulted into blank UI.
-   */
-  private mapAnnouncement(
-    row: ServerAnnouncementRow,
-  ): MarketplaceAnnouncement | null {
-    const idRaw = row.id;
-    let id: number | null = null;
-    if (typeof idRaw === "number" && Number.isSafeInteger(idRaw)) {
-      id = idRaw;
-    } else if (typeof idRaw === "string" && /^\d+$/.test(idRaw)) {
-      const parsed = Number.parseInt(idRaw, 10);
-      if (Number.isSafeInteger(parsed)) {
-        id = parsed;
-      }
-    }
-    if (id === null) return null;
-
-    const levelRaw = row.level;
-    if (!isMarketplaceAnnouncementLevel(levelRaw)) {
-      return null;
-    }
-
-    const createdAtRaw = row.created_at !== undefined ? row.created_at : row.createdAt;
-    const startsAtRaw = row.starts_at !== undefined ? row.starts_at : row.startsAt;
-    const endsAtRaw = row.ends_at !== undefined ? row.ends_at : row.endsAt;
-    if (
-      typeof row.title !== "string" ||
-      typeof row.body !== "string" ||
-      typeof createdAtRaw !== "string"
-    ) {
-      return null;
-    }
-
-    return {
-      id,
-      title: row.title,
-      body: row.body,
-      level: levelRaw,
-      createdAt: createdAtRaw,
-      startsAt: typeof startsAtRaw === "string" ? startsAtRaw : null,
-      endsAt: typeof endsAtRaw === "string" ? endsAtRaw : null,
-      // Buttons this build can honour. An action naming a place this version
-      // does not have is dropped here rather than carried to the renderer, so
-      // the banner can only ever draw a control that leads somewhere. The empty
-      // string keeps the version gate fail-closed when no app version was
-      // configured on this fetcher.
-      actions: parseMarketplaceAnnouncementActions(
-        row.actions,
-        this.configuredAppVersion() ?? "",
-      ),
-    };
   }
 
   private mapItem(row: ServerCatalogRow): PluginMarketplaceItem | null {

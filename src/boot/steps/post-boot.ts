@@ -31,6 +31,7 @@ import { createUpdateCheckRunner } from "./update-check-runner.js";
 import { registerShutdownHook } from "../../main/app-shutdown.js";
 import { sendToWindow } from "../../ipc/safe-send.js";
 import { createLogger } from "../../lib/logger.js";
+import type { ServiceClient } from "../../marketplace/service/client.js";
 import type { TracingHandle } from "../../engine/telemetry/tracing.js";
 const log = createLogger("ave");
 
@@ -48,6 +49,11 @@ export interface ReleasePrepInput {
   networkFetch: typeof fetch;
   /** Boot-configured tracing; its batched spans are flushed on quit. */
   tracing: TracingHandle;
+  /**
+   * The service endpoint: telemetry posts to the endpoint its document names
+   * (design §11). The document is read for telemetry only once the user opted in.
+   */
+  serviceClient: Pick<ServiceClient, "ensureResolved" | "telemetryEndpoint">;
   /**
    * Whether this launch may open the connections in here that nothing forces
    * it to open: the release check, the two telemetry uploaders, and crash
@@ -144,15 +150,22 @@ export function wireUpdateCheck(input: UpdateCheckInput): void {
 export interface AnnouncementCheckInput {
   getMainWindow: () => BrowserWindow | null;
   settingsService: SettingsService;
-  marketplaceFetcher: MarketplaceFetcher;
+  /** The service endpoint's active announcements (design §11). */
+  listAnnouncements: () => Promise<MarketplaceAnnouncement[]>;
+  /** Poll interval; the design's 6 hours unless a test passes another. */
+  intervalMs?: number;
 }
 
+/** Announcements are fetched after boot and every 6 hours (design §11). */
+const ANNOUNCEMENT_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
 /**
- * Marketplace announcement polling. Fetches the server's active announcement
+ * Announcement polling. Fetches the service endpoint's active announcement
  * set, drops the ids the user has already dismissed (persisted in
  * `settings.marketplace.dismissedAnnouncementIds`), and pushes the remainder
  * to the renderer via `MARKETPLACE.announcements`. Runs once after the real
- * renderer load and on the same interval as the plugin update-check.
+ * renderer load and then every {@link ANNOUNCEMENT_INTERVAL_MS}, while the
+ * update-check switch is on.
  *
  * The dedup key folds in the target webContents, full visible payload, and
  * dismissed id set so a dismiss clears the banner, server-side corrections to
@@ -160,8 +173,7 @@ export interface AnnouncementCheckInput {
  * the current payload at least once.
  */
 export function wireAnnouncementCheck(input: AnnouncementCheckInput): void {
-  const { getMainWindow, settingsService, marketplaceFetcher } = input;
-  const DEFAULT_ANNOUNCEMENT_INTERVAL_MS = 10 * 60 * 1000; // default 10m
+  const { getMainWindow, settingsService, listAnnouncements } = input;
   const marketplaceSettings = settingsService.get("marketplace");
   const announcementCheckEnabled = resolveUpdateCheckEnabled(
     marketplaceSettings?.updateCheckEnabled,
@@ -225,7 +237,7 @@ export function wireAnnouncementCheck(input: AnnouncementCheckInput): void {
 
   const runAnnouncementCheck = async () => {
     try {
-      const announcements = await marketplaceFetcher.listAnnouncements();
+      const announcements = await listAnnouncements();
       const dismissedIds = normalizeDismissedAnnouncementIds(
         settingsService.get("marketplace")?.dismissedAnnouncementIds,
       );
@@ -278,9 +290,7 @@ export function wireAnnouncementCheck(input: AnnouncementCheckInput): void {
 
   runAfterRendererLoad();
 
-  const intervalMs =
-    settingsService.get("marketplace")?.updateCheckIntervalMs ??
-    DEFAULT_ANNOUNCEMENT_INTERVAL_MS;
+  const intervalMs = input.intervalMs ?? ANNOUNCEMENT_INTERVAL_MS;
   let announcementTimer: ReturnType<typeof setInterval> | undefined;
   if (intervalMs > 0) {
     announcementTimer = setInterval(() => void runAnnouncementCheck(), intervalMs);
