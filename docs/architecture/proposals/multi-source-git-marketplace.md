@@ -330,8 +330,15 @@ service document advertises an ingestion endpoint.
 | `ave://` deep links | `ave://install/<kind>/<name>@<source>`, `ave://marketplace/add?url=` | The "open web marketplace" button |
 | Update detection toggle | Update detection reads source snapshots | Telemetry coupling to `marketplace.cloudBaseUrl` |
 
-The agent-marketplace server repository and the marketplace-whitelist
-repository are archived after the migration described in the blueprint.
+The following repositories are archived after the migration described in the
+blueprint:
+
+- the agent-marketplace server repository and the marketplace-whitelist
+  repository;
+- ave-plugin-sdk. Plugins vendor the host's own contract files at an app
+  release tag instead of depending on the SDK (design §5.6).
+- the official plugin repositories. Their source moves into the official
+  monorepo (design §3.1).
 
 ## 12. Alternatives considered
 

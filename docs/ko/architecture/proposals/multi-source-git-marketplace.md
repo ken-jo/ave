@@ -321,8 +321,12 @@ GET {serviceBase}/.well-known/former-service.json
 | `ave://` 딥 링크 | `ave://install/<kind>/<name>@<source>`, `ave://marketplace/add?url=` | "웹 마켓플레이스 열기" 버튼 |
 | 업데이트 확인 토글 | 업데이트 확인은 소스 스냅숏을 읽습니다 | 텔레메트리와 `marketplace.cloudBaseUrl`의 결합 |
 
-agent-marketplace 서버 레포와 marketplace-whitelist 레포는 청사진의 이전 절차를
-마친 뒤 archive합니다.
+청사진의 이전 절차를 마친 뒤 다음 레포를 archive합니다.
+
+- agent-marketplace 서버 레포와 marketplace-whitelist 레포.
+- ave-plugin-sdk. 플러그인은 SDK에 의존하는 대신 호스트의 계약 파일을 앱 릴리스
+  태그 시점으로 복사해 씁니다(설계서 §5.6).
+- 공식 플러그인 레포. 소스가 공식 모노레포로 옮겨갑니다(설계서 §3.1).
 
 ## 12. 검토한 대안
 

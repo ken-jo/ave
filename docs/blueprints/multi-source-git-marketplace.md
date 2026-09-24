@@ -16,7 +16,7 @@ no compatibility shim outlives the switch.
 
 | Input | Owner | Needed by |
 |---|---|---|
-| Location of the official marketplace repository (and optional mirrors) | Decided 2026-09-23: `ken-jo/ave-marketplace-index`, private while the design is built, public (or moved) before phase 7 (design §2.1) | Phase 1 constant `OFFICIAL_MARKETPLACE`, phase 0 |
+| Location of the official marketplace repository (and optional mirrors) | Decided 2026-09-23: `ken-jo/agent-marketplace` (renamed from `ave-marketplace-index` on 2026-09-24), a monorepo that also holds the official plugins' source; private while the design is built, public (or moved) before phase 7 (design §2.1, §3.1) | Phase 1 constant `OFFICIAL_MARKETPLACE`, phase 0 |
 | Working CI on the hosting account that builds plugin release assets | Repository migration plan | Phase 0 release pins |
 | Service domain default (`https://former-site.invalid` unless changed) | Owner | Phase 5 |
 | Organizations that rely on today's managed installs (the internal `orion` plugin) have an internal marketplace and a policy file with `requiredInstalls` ready | Each organization | Phase 7 step 1 |
@@ -46,12 +46,12 @@ work in P1–P4 has real data to test against.
 | PR | Content |
 |---|---|
 | 0.1 | Layout from design §3.1, `README` for package authors, `CODEOWNERS`, branch protection (required review, required checks, no force-push, no direct push) |
-| 0.2 | Validation workflow: descriptor and index schemas (vendored from ave `schemas/marketplace/` with a drift test), content limits, naming, secret scan, `minAppVersion` present, plugin `authority` equal to the released `plugin.json`, version strictly increasing, `(kind,name,version)` → one commit, `latest` not yanked |
+| 0.2 | Validation workflow: descriptor and index schemas (vendored from ave `schemas/marketplace/` with a drift test), the plugin contract (design §5.6: vendored at an ave tag, offline hash check and networked tag check), content limits, naming, secret scan, `minAppVersion` present, plugin `authority` equal to the released `plugin.json`, version strictly increasing, `(kind,name,version)` → one commit, `latest` not yanked |
 | 0.3 | Index generator + "committed index equals regenerated index" check |
-| 0.4 | Release-pin workflow (design §6.3): download the asset, hash, unpack, compare `plugin.json` with the descriptor, open the pin PR |
-| 0.5 | One release-workflow PR in **each official plugin repository**: on tag `vX.Y.Z` build `{name}-{X.Y.Z}.zip` and upload it as a release asset of that repository; `requires.minAppVersion` set in `plugin.json`, and `installPolicy` removed from it (design §5.3) |
+| 0.4 | Release workflow (design §6.3): on `main`, build each plugin whose source version has no `<name>-v<X.Y.Z>` tag, tag it, upload `{name}-{X.Y.Z}.zip` as a release asset of this repository, and open the pin PR; CI on the pin PR downloads the asset, hashes, unpacks and compares `plugin.json` with the descriptor |
+| 0.5 | Import each official plugin's source into `plugins/<name>/source/` with its history (`meeting`, `local-indexer`, `lyra-mail`, `vega-helper`; `hello-world`, which has no repository, is rebuilt from the package the current server synthesizes), and `ave-plugin-template` into `templates/plugin/`; bun workspaces at the root; each plugin moved from the `@ave/plugin-sdk` git dependency to the vendored contract and the shared build helper in `tools/` (design §5.6); `requires.minAppVersion` set in `plugin.json` and `installPolicy` removed from it (design §5.3). `ave-plugin-draco` is not an official plugin and `orion` moves to its owner's git; neither is imported |
 | 0.6 | Content conversion scripts, run once: every agent, skill and MCP package in the current seed set; the non-default theme bundles to `theme.json`; the Korean catalog to a language package; provider presets; messaging connections |
-| 0.7 | Plugin descriptors for every currently published plugin, pinned to the release assets from 0.5. For plugins in `HOST_SECRET_GRANTS` (today `meeting` and `local-indexer`), `versions[]` also lists every older version still installed in the field: the exact zip the current server serves for that version is uploaded unchanged as that version's release asset and pinned by its sha256, so migrated installs keep their grant (design §16.3) |
+| 0.7 | Plugin descriptors for every currently published plugin, pinned to the release assets that 0.4 builds from the sources imported in 0.5. For plugins in `HOST_SECRET_GRANTS` (today `meeting` and `local-indexer`), `versions[]` also lists every older version still installed in the field: the exact zip the current server serves for that version is uploaded unchanged as that version's release asset and pinned by its sha256, so migrated installs keep their grant (design §16.3) |
 | 0.8 | `policy/revocations.json` carrying today's active revocations of official packages |
 
 **Exit:** validation passes on `main`; branch protection verified through the
@@ -170,7 +170,7 @@ this phase.
 |---|---|
 | 6.1 | Boot and IPC use the new stack; Settings → Marketplace renders the new UI; the settings migration removes `backend`, `cloudBaseUrl` and `cloudAllowPrivateNetwork`; the `marketplace.apiKey` secret and its IPC are deleted; the old IPC channels and the `ave://install`/`ave://uninstall` slug forms are replaced (design §16.2) |
 | 6.2 | First-boot migration of existing installs (design §16.3): bind registry entries to `ave` as `legacy`; grant continuity by receipt hash; `installSource: "admin"` → `user` and recorded as applied default installs; unmatched entries unlocked with the boot notice; provider presets and theme/language activations to ledger entries |
-| 6.3 | Remove privileged packages (design §10.1): `installPolicy` and `publisher` leave the manifest schema, `manifest-validation.ts`, renderer types and — in a paired SDK PR merged in the same window — the SDK schema, while the runtime loader ignores the field on an installed legacy manifest with one warning (design §5.3); managed boot install, managed update kinds, actor escalation, delisted removal; the deployment guard's admin branch is replaced by the `requiredInstalls` check in uninstall and disable; the secret-gate admin bypass and its audit path are deleted and tier 3 reads `HOST_SECRET_GRANTS` |
+| 6.3 | Remove privileged packages (design §10.1): `installPolicy` and `publisher` leave the manifest schema, `manifest-validation.ts` and renderer types (no SDK copy exists, design §5.6), the skill package schema moves from `schemas/sdk/` to the host-owned `schemas/skill-package.schema.json` and the `check:sdk-schemas` gates and `sdk-schema-drift.yml` are removed, while the runtime loader ignores the field on an installed legacy manifest with one warning (design §5.3); managed boot install, managed update kinds, actor escalation, delisted removal; the deployment guard's admin branch is replaced by the `requiredInstalls` check in uninstall and disable; the secret-gate admin bypass and its audit path are deleted and tier 3 reads `HOST_SECRET_GRANTS` |
 | 6.4 | Delete the server stack per design §16.2: `cloud-marketplace-fetcher.ts`, the local/disabled fetchers, server download and `.sig` handling in `marketplace-installer.ts`, `envelope-verifier.ts`, `marketplace-keys.ts`, `publisher-keys.ts`, `signed-doc-fetcher.ts`, `signed-doc-cache.ts`, `admission/`, the `whitelist/` and `revocation/` transports and their boot steps, `mcp-marketplace-install.ts`, `offline-cache.ts`; move `canonical-json.ts` and `secret-gate.ts` to `src/plugins/secret-access/`; feed `revocationRegistry` from snapshots; public-key parameters removed from `plugin-artifact-store.ts` and `mcp-setup.ts`; the web-store button; rewrite the tests that asserted managed or signed behavior |
 | 6.5 | Replace `.github/workflows/marketplace-e2e.yml` with an in-repo end-to-end test against a local git fixture (design §17), in the same series so CI never loses marketplace E2E coverage |
 | 6.6 | Documentation: `docs/architecture/architecture.md` Plugin Runtime section, plugin development and publishing guides (EN and KO, including the `installPolicy: "admin"` examples), `docs/ko/references/plugin-tool-schema-design.md`, `resources/AGENTS.md`, and `web/app/docs/servers/marketplace/*` (server pages removed, a package-author page added); this plan's status updated |
@@ -198,7 +198,10 @@ old server's announcement endpoint.
    been out for one release cycle.
 4. Stop the old server, its web UI and its deployment; remove its secrets and
    runners.
-5. Archive the `agent-marketplace` and `marketplace-whitelist` repositories.
+5. Archive the `agent-marketplace` and `marketplace-whitelist` repositories,
+   `ave-plugin-sdk`, and the plugin repositories whose source moved into the
+   official repository in 0.5 (`ave-plugin-meeting`, `ave-plugin-local-indexer`,
+   `ave-plugin-lyra-mail`, `ave-plugin-vega-helper`, `ave-plugin-template`).
 
 **Exit:** no app code path or workflow references the old server; the old
 repositories are archived.
