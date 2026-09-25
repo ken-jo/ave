@@ -19,7 +19,15 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmdirSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -338,6 +346,28 @@ describe("the generator writes the same bytes on every checkout", () => {
   }, 120_000);
 });
 
+/**
+ * Remove the link at `path`, and never what it points to.
+ *
+ * No step recurses, so no platform's reading of a Windows junction can walk
+ * into the target, which is how a recursive `rmSync` of a directory holding a
+ * junction deleted the real scripts/ tree. `unlinkSync` removes a symlink or
+ * a junction and refuses a real directory. Where it refuses a junction too,
+ * `rmdirSync` without `recursive` removes it: RemoveDirectory deletes a
+ * junction's reparse point whatever its target holds. On anything else, a
+ * directory that is not empty, it throws.
+ */
+function removeLinkOnly(path: string): void {
+  try {
+    unlinkSync(path);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return;
+    if (code !== "EPERM" && code !== "EISDIR") throw error;
+    rmdirSync(path);
+  }
+}
+
 describe("the command line always reports an outcome", () => {
   const nodeCommand = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
   const runCli = (scriptsDir: string, args: readonly string[]) =>
@@ -353,11 +383,11 @@ describe("the command line always reports an outcome", () => {
     );
 
   it("checks, and says so, when started through a path spelled unlike its real one", () => {
-    // A symlink here. On Windows a junction, a `subst` drive, a short name or
-    // a drive letter's case gives the entry a second spelling the same way.
+    // A symlink here, a junction on Windows. A `subst` drive, a short name or a
+    // drive letter's case gives the entry a second spelling the same way.
     const dir = mkdtempSync(join(tmpdir(), "schema-cli-"));
+    const linked = join(dir, "scripts");
     try {
-      const linked = join(dir, "scripts");
       symlinkSync(join(REPO_ROOT, "scripts"), linked, "junction");
       const result = runCli(linked, ["--check"]);
       expect(result.stdout).toBe(
@@ -365,9 +395,30 @@ describe("the command line always reports an outcome", () => {
       );
       expect(result.status, result.stderr).toBe(0);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      // The link points at the repository's own scripts/. Nothing below
+      // recurses: the link goes first, on its own, and then its parent, which
+      // is empty by then — or, if the link somehow stayed, refuses to go.
+      removeLinkOnly(linked);
+      rmdirSync(dir);
+      expect(existsSync(join(REPO_ROOT, "scripts", "generate-plugin-host-protocol-schema.ts"))).toBe(true);
+      expect(existsSync(join(REPO_ROOT, "scripts", "lib", "plugin-host-protocol-schema.ts"))).toBe(true);
     }
   }, 120_000);
+
+  it("removes a link without ever reaching into a real directory", () => {
+    // What makes the case above safe to clean up, held on every platform: given
+    // a real directory with something in it, the removal refuses.
+    const dir = mkdtempSync(join(tmpdir(), "schema-cli-real-"));
+    const kept = join(dir, "kept.txt");
+    writeFileSync(kept, "kept", "utf-8");
+    try {
+      expect(() => removeLinkOnly(dir)).toThrow();
+      expect(existsSync(kept)).toBe(true);
+    } finally {
+      unlinkSync(kept);
+      rmdirSync(dir);
+    }
+  });
 
   it("refuses an argument it does not know, in one line and with a failing status", () => {
     const result = runCli(join(REPO_ROOT, "scripts"), ["--chek"]);
