@@ -10,9 +10,9 @@ ave `origin/main` at `ccf81ced5` and the official marketplace monorepo at
 `plugins/lyra-mail/source` 0.5.3, `plugins/meeting/source` 0.8.5); the internal
 `orion-api` plugin is 0.21.5.
 
-"The alerts release" below is the ave release that carries the last two
-host pull requests of the plan (marketplace conditional revocations and the
-routine/deprecation changes). This page writes it as 0.12.0; substitute the
+"The alerts release" below is the ave release that carries all seven
+host pull requests of the plan (Pull request plan, below); a release with
+some of them is not it. This page writes it as 0.12.0; substitute the
 version that actually carries them, because every successor plugin's
 `minAppVersion` and the revocation's `appVersions` are fixed to it. "The
 follow-on release" is the minor release after the alerts release, where the
@@ -233,8 +233,9 @@ window.
    cap; `key` matches its pattern; unknown slot → `invalid`.
 3. **Predecessor.** While any plugin named in the kind's `inherits[].pluginId`
    is **loaded, or installed (registry) and not revoked**
-   (`revocationRegistry`), the kind is not delivered and its entry holds
-   only the declaration's value, never the record's (Settings) →
+   (`revocationRegistry`), the kind is not delivered and the retired
+   record is not read: a missing entry is written from the declaration,
+   an existing one keeps its value (Settings) →
    `blocked_by_predecessor`. "Loaded" is part of the condition
    because `markRevoked` acts only at load (`runtime/index.ts:2957-2980`) and
    a revocation applied mid-session does not stop a running plugin: a
@@ -375,24 +376,34 @@ interface AlertKindChoice {
 }
 ```
 
-An entry is written the first time its kind is registered, whether or not
-the kind is blocked, so that the origin of the kind is durable from that
-moment: a blocked kind whose entry waited for the block to lift would, after
-a restart and an ordinary uninstall of the predecessor, be indistinguishable
-from a fresh install, and a `defaultEnabled: true` kind that arrived in an
-update would turn itself on. The first write takes the kind's own
-`defaultEnabled` and `osNotification.defaultEnabled` — with one override: a
-kind that is **first seen in an update** of an already-installed plugin is
-written `enabled: false` regardless of its declaration. An update must not
-turn on a card the user never agreed to. The retired record is not
-consulted at this point, and while the kind is blocked (step 3) it is never
-consulted: the running predecessor still owns the user's choice.
+A **missing** entry is written the first time its kind is registered,
+whether or not the kind is blocked, so that the origin of the kind is
+durable from that moment: a blocked kind whose entry waited for the block
+to lift would, after a restart and an ordinary uninstall of the
+predecessor, be indistinguishable from a fresh install, and a
+`defaultEnabled: true` kind that arrived in an update would turn itself on.
+The first write takes the kind's own `defaultEnabled` and
+`osNotification.defaultEnabled` — with one override: a kind that is
+**first seen in an update** of an already-installed plugin is written
+`enabled: false` regardless of its declaration. An update must not turn on
+a card the user never agreed to. This initialisation applies to a missing
+entry only: an existing entry, including one the user toggled while the
+kind was blocked, keeps its value. The retired record is not consulted at
+this point, and while the kind is blocked (step 3) it is never consulted:
+the running predecessor still owns the user's choice.
 
-Entries the host may still change are the **eligible** ones: `seenByUser:
-false`, not `repaired`, not `escalated`. Every other entry — visited by the
-user, repaired after damage, or turned off by an escalation — is changed
-only by the user's own `setKind`, which also clears the two flags. Three
-automatic transitions exist, and they change eligible entries only:
+Three automatic transitions exist, each with its own scope:
+
+- **Inheritance** changes only **eligible** entries: `seenByUser: false`,
+  not `repaired`, not `escalated`. A visited, repaired or escalated entry
+  is never inherited into; only the user's own `setKind` changes it, which
+  also clears the two flags.
+- **Escalation** applies to every entry, whatever its flags, and only ever
+  sets it off.
+- **Repair** applies to a damaged entry, whatever it held, and only ever
+  sets it off.
+
+In detail:
 
 - **Inheritance.** Whenever the alerts service resolves a kind — at every
   registration of its plugin (install, update, load), when a retired record
@@ -911,10 +922,22 @@ the successors without the host naming any plugin.
      `pluginConfigs[<id>]` as today.
    A user-initiated uninstall keeps deleting. The retained record is removed
    by the alerts service — never by the settings loader — when `consumedBy`
-   contains every `successors.plugins[].pluginId` **and** the retired plugin
-   is not installed; the check runs whenever `consumedBy` is written and on
-   every later registration pass, so a crash between the two writes is
-   healed by the next pass. A record with an unconsumed successor is kept
+   contains every `successors.plugins[].pluginId`, the retired plugin is
+   not installed, **and** the uninstall cleanup journal holds no record for
+   that plugin id (a `has(pluginId)` port on
+   `plugin-uninstall-cleanup-journal.ts`). The third condition exists
+   because registry removal precedes the cleanup phases
+   (`uninstall-lifecycle.ts:426`) and a phase is checkpointed only after it
+   succeeds (`:146-147`): a retaining uninstall whose `config` phase failed
+   leaves the registry empty while its replay can still write the captured
+   retirement, and if the record had been removed in between, the replay
+   would recreate it with an empty `consumedBy` and hand a later version
+   the inheritance that binding refused. While the record survives, the
+   replay's write-if-absent finds it and writes nothing; the record goes on
+   the first pass after the journal record is cleared. The check runs
+   whenever `consumedBy` is written and on every later registration pass,
+   so a crash between the two writes is healed by the next pass. A record
+   with an unconsumed successor is kept
    for as long as it takes, because plugins do not auto-update and the
    choices it carries belong to the user; a record whose retired package is
    still installed (policy-locked, or its uninstall failed) is kept because
@@ -934,13 +957,18 @@ the successors without the host naming any plugin.
      declares is the successor's whole migration. Once the plugin id is in
      `consumedBy`, the record is never read again for that plugin: an
      `inherits` or `configInherits` entry that a later version adds for the
-     same predecessor is ignored with a load warning and the kind or key
-     resolves as with no record — the same outcome the entry would have had
-     if the record had already been removed. The alternative, reading the
-     record for as long as it happens to exist, would make the outcome
-     depend on whether the predecessor's uninstall succeeded; a successor
-     that declares its migration piecemeal loses the part it declared late,
-     deterministically, and its author is told so at load.
+     same predecessor is ignored and the kind or key resolves as with no
+     record — the same outcome the entry would have had if the record had
+     already been removed. A load warning names the ignored entry while
+     the record survives and lists the plugin in `consumedBy`; after the
+     record is removed the host holds no evidence that a consumption ever
+     happened, the history is indistinguishable from a user who never had
+     the predecessor, and the entry resolves silently. The alternative,
+     reading the record for as long as it happens to exist, would make the
+     outcome depend on whether the predecessor's uninstall succeeded; a
+     successor that declares its migration piecemeal loses the part it
+     declared late, deterministically, and its author is told so at load
+     whenever the record is still there to tell it.
    - **Kinds stage** is scoped to the successor's kinds whose `inherits`
      names *this record's* predecessor — a kind inheriting from a different
      predecessor, one that may still be installed and blocking, has no
@@ -1107,7 +1135,7 @@ the successors without the host naming any plugin.
 | IPC / preload | `src/shared/ipc-channels.ts`, `src/ipc/domains/alerts.ts`, `src/ipc/index.ts`, `src/preload/internal-api-surface.ts` | `ALERTS` channels |
 | Settings UI | `src/ui/renderer/tabs/PluginConfigTab.tsx`, marketplace post-install/update views | per-plugin Alerts section, unseen-kind badge |
 | Marketplace | `src/marketplace/sources/{snapshot,sync}.ts`, `catalog/{types,validate,aggregate}.ts`, `app/{service,views,revocations}.ts`, `repository-check.ts`, `schemas/marketplace/revocations-by-app.schema.json` | snapshot format version, raw conditional entries, `effectiveRevocations` accessor for every reader |
-| Uninstall | `src/plugins/uninstall-lifecycle.ts`, `src/plugins/plugin-uninstall-cleanup-journal.ts`, `src/marketplace/app/service.ts` (`applyRevocations` writes the retired record; `uninstall` passes `retain`), `src/marketplace/app/ports.ts` (`InstallerPorts.plugin.uninstall(name, retain?)`), `src/ipc/domains/git-marketplace.ts:151` (installer port), `src/ipc/domains/plugins.ts` | retired record written at revocation time; internal `retain` option captured at prepare and persisted in the journal record |
+| Uninstall | `src/plugins/uninstall-lifecycle.ts`, `src/plugins/plugin-uninstall-cleanup-journal.ts`, `src/marketplace/app/service.ts` (`applyRevocations` writes the retired record; `uninstall` passes `retain`), `src/marketplace/app/ports.ts` (`InstallerPorts.plugin.uninstall(name, retain?)`), `src/ipc/domains/git-marketplace.ts:151` (installer port), `src/ipc/domains/plugins.ts` | retired record written at revocation time; internal `retain` option captured at prepare and persisted in the journal record; the journal's `has(pluginId)` port gates retired-record removal |
 | Routines | `src/boot/routine.ts`, `src/main/routines-scheduler.ts`, `RoutinePanel.tsx`, `src/shared/routines-types.ts` | `plugins-missing` skip, `needsAttention` |
 | Retirement of host references | `src/plugins/isolation/out-of-process-plugins.ts:417-428, :856` (`OUT_OF_PROCESS_PLUGIN_IDS` census), `src/ui/renderer/onboarding/default-tour-scenarios.ts:183-212, :316-345, :360-371`, `test/screenshots/plugin-seed.ts:224`, `test/screenshots/matrix.ts`, `test/e2e/ui/fixtures.ts:25-29`, `test/e2e/ui/plugin-load.spec.ts:15-19`, `.github/workflows/e2e.yml:59-67`, the `ALLOWED_FILE_LITERALS` entry in the decoupling audit | the last literals go in the follow-on release PR, after the index entry is deleted |
 | Docs | `docs/architecture/architecture.md` (Plugin Runtime), `docs/references/overlay-trigger.md`, `CHANGELOG.md` | contract, deprecations, the opt-in loss |
@@ -1234,9 +1262,9 @@ Contract tests (host):
   untouched and the record unconsumed until the restart, after which the
   entry is re-resolved and the record consumed; binding: v1 declares only
   `configInherits` and is consumed, v2 adds `inherits` for the same
-  predecessor — the kind resolves as with no record (off, new) with a load
-  warning, whether or not the record still exists, and the reverse order
-  (kinds first, config later) leaves the target key unset; the consumed
+  predecessor — the kind resolves as with no record (off, new), with a load
+  warning while the record survives and silently once it is gone, and the
+  reverse order (kinds first, config later) leaves the target key unset; the consumed
   record is not read again: after consumption the record's config is
   changed in the test and a re-registration leaves every entry and config
   key as it was; crash between the writes: the entries and config are
@@ -1246,7 +1274,13 @@ Contract tests (host):
   predecessor is not installed, stays while the predecessor is still
   installed after full consumption (a further feed pass writes nothing and
   `consumedBy` and `retiredAtAppVersion` are untouched), and goes on the
-  next pass after the package is finally uninstalled; a malformed record is
+  next pass after the package is finally uninstalled; replay: after full
+  consumption a retaining uninstall removes the registry entry and its
+  `config` phase fails before its checkpoint, a later version registers
+  with a new `inherits` — the record is kept because the journal still
+  holds the cleanup record, the replay on restart writes nothing, the
+  record goes on the first pass after the journal clears, and the later
+  version never inherits; a malformed record is
   dropped at load and a successor registering afterwards resolves from its
   declaration with no warning about the record; a successor that is never
   updated leaves the record pending indefinitely.
@@ -1302,6 +1336,9 @@ Contract tests (host):
   when applied, with a warning; the
   superseded-row uninstall passes `retain` internally and the journal
   captures it at prepare, including a crash replay of a prepared record; a
+  replay whose retired record already exists writes nothing and leaves
+  `consumedBy` untouched, and the journal's `has(pluginId)` answers true
+  from prepare until the last phase is checkpointed; a
   renderer `UninstallRequest` cannot carry `retain`; a user uninstall does
   not retain.
 - Routines: no allow-listed plugin installed skips with reason; some missing
@@ -1504,16 +1541,19 @@ published the same day as the monorepo commit. Gates: ported suites,
   sets it. A retired record out of shape is dropped whole, which loses its
   inheritance and leaves the successor on its own declaration — stated as
   a loss, not covered by the kind-entry guarantee.
-- The host changes only **eligible** entries — unseen, not repaired, not
-  escalated. A visibility escalation sets the entry off, new and
+- Inheritance changes only **eligible** entries — unseen, not repaired, not
+  escalated; escalation and repair apply to any entry and only ever set it
+  off; declaration-based initialisation applies to a missing entry only,
+  so a choice made while the kind was blocked survives. A visibility
+  escalation sets the entry off, new and
   `escalated`, whatever it was, and an escalated entry stays off through a
   later retirement record and a later `inherits` declaration until the
   user sets it: consent to a lower visibility is not consent to a higher
   one. An escalated entry is pruned for absence like a visited one; only
   `repaired` is exempt.
-- A kind's entry is written at its first registration even while the kind
-  is blocked — from the declaration, off when the kind arrived in an update
-  — so its install-or-update origin is durable; the record is consulted
+- A missing kind entry is written at its first registration even while
+  the kind is blocked — from the declaration, off when the kind arrived in
+  an update — so its install-or-update origin is durable; the record is consulted
   only once the block lifts, through the same inheritance pass that runs
   at every registration, at record write and when the predecessor stops
   blocking. The pass is idempotent and ends with consumption.
@@ -1531,9 +1571,14 @@ published the same day as the monorepo commit. Gates: ported suites,
   old successor version that declares nothing stays pending, and the
   attempt is retried on every registration and when the predecessor stops
   blocking. The consuming version binds the inheritance: a declaration a
-  later version adds for the same predecessor is ignored with a load
-  warning and resolves as with no record, so the outcome never depends on
-  whether the record still exists.
+  later version adds for the same predecessor is ignored and resolves as
+  with no record, so the outcome never depends on whether the record still
+  exists; the load warning that names it is given while the record
+  survives, since nothing else records that a consumption happened.
+- The alerts service removes a retired record only when every successor
+  has consumed it, the package is not installed, and the uninstall cleanup
+  journal holds nothing for that id — a pending retaining replay could
+  otherwise recreate the record with an empty `consumedBy`.
 - A `configInherits` entry whose `from` key is absent from the record's
   effective config is an intentional skip: the target stays unset and the
   stage is terminal. The config stage runs on the same events as
