@@ -1,8 +1,11 @@
 # Plugin Process Isolation — Design And Staged Plan
 
-Status: design, not implemented. This document is the agreement that has to exist
-before any code moves, because a half-migrated plugin boundary is worse than the
-one we have.
+Status: Stages 1-8 shipped — the five first-party plugins run in a confined child
+process (`src/plugins/isolation/out-of-process-plugins.ts`). Stage 9 (third-party
+admission) and Stage 10 (removing the in-process loader) are not implemented; their
+successor design is `docs/design/plugin-hostapi-protocol.md`. This document was the
+agreement that had to exist before any code moved, because a half-migrated plugin
+boundary is worse than the one we had.
 
 Anchors: `docs/architecture/architecture.md` (Process Boundaries, Plugin Runtime,
 OS Execution Sandbox And Plugin Workers) and
