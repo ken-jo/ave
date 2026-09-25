@@ -12,8 +12,12 @@
  *  - the goldens: every frame under `fixtures/host-protocol/1/`, each recorded
  *    against the real child runtime, validates against it. A wire form the
  *    generator guessed wrong fails here, on a frame that really crossed.
+ *
+ * And it holds the generator to its own promise of byte-stable output, which
+ * `check:plugin-host-protocol-schema` relies on to mean the same thing on a
+ * Windows checkout.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,6 +33,8 @@ import { PLUGIN_INSTANCE_METHODS } from "../plugin-instance-wire.js";
 import { hostProtocolCapabilities } from "../host-api-dispatcher.js";
 import { createBoundHostApiDispatchTable } from "../out-of-process-plugin.js";
 import { createGoldenHost } from "./host-protocol-golden-host.js";
+import { ts } from "ts-json-schema-generator";
+import { generateHostProtocolSchema } from "../../../../scripts/generate-plugin-host-protocol-schema.js";
 
 type JsonSchema = Record<string, unknown>;
 type Frame = Record<string, unknown>;
@@ -245,4 +251,39 @@ describe("every golden frame is valid under the schema", () => {
     expect(failures).toEqual([]);
     expect(checked).toBeGreaterThan(100);
   });
+});
+
+describe("the generator writes the same bytes on every checkout", () => {
+  it("reads CRLF sources to exactly what it reads LF sources to, and to the committed file", () => {
+    const committed = readFileSync(
+      join(REPO_ROOT, "schemas/plugin-host-protocol/1/protocol.schema.json"),
+      "utf-8",
+    );
+    const fromLf = generateHostProtocolSchema().text;
+    expect(fromLf).toBe(committed);
+
+    // A Windows checkout with `core.autocrlf` hands the compiler CRLF sources.
+    const sourceRoot = join(REPO_ROOT, "src").replaceAll("\\", "/");
+    const readFile = ts.sys.readFile.bind(ts.sys);
+    const crlfSources = new Set<string>();
+    const reading = vi.spyOn(ts.sys, "readFile").mockImplementation((path, encoding) => {
+      const text = readFile(path, encoding);
+      if (text === undefined || !path.replaceAll("\\", "/").startsWith(sourceRoot)) return text;
+      crlfSources.add(relative(REPO_ROOT, path).replaceAll("\\", "/"));
+      return text.replace(/\r?\n/g, "\r\n");
+    });
+    let fromCrlf: string;
+    try {
+      fromCrlf = generateHostProtocolSchema().text;
+    } finally {
+      reading.mockRestore();
+    }
+    // The control: the generator really read the sources it documents as CRLF.
+    expect([...crlfSources]).toEqual(expect.arrayContaining([
+      "src/plugins/public-contract.ts",
+      "src/plugins/isolation/host-api-wire.ts",
+      "src/plugins/isolation/plugin-instance-wire.ts",
+    ]));
+    expect(fromCrlf).toBe(fromLf);
+  }, 120_000);
 });

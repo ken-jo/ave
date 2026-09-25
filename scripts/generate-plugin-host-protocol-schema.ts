@@ -31,7 +31,7 @@
  * same change, and `scripts/release.mjs` does so after it bumps.
  */
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   DEFAULT_CONFIG,
@@ -135,12 +135,21 @@ interface Signature {
   readonly description: string | undefined;
 }
 
+/**
+ * The first paragraph of a comment's text, on one line. Line endings are made
+ * `\n` FIRST: a CRLF source would otherwise leave a lone `\r` at the end of
+ * the paragraph, which no later step can tell from a real one.
+ */
+function firstParagraph(text: string): string {
+  return text.replace(/\r\n?/g, "\n").trim().split(/\n\s*\n/)[0]!.replace(/\s*\n\s*/g, " ");
+}
+
 /** The first paragraph of a node's JSDoc, which is its summary. */
 function summaryOf(node: ts.Node): string | undefined {
   for (const doc of ts.getJSDocCommentsAndTags(node)) {
     if (!ts.isJSDoc(doc)) continue;
-    const text = ts.getTextOfJSDocComment(doc.comment)?.trim();
-    if (text) return text.split(/\n\s*\n/)[0]!.replace(/\s*\n\s*/g, " ");
+    const text = ts.getTextOfJSDocComment(doc.comment);
+    if (text?.trim()) return firstParagraph(text);
   }
   return undefined;
 }
@@ -223,8 +232,11 @@ function to2020(value: unknown): unknown {
 }
 
 /**
- * Canonical key order and line endings, so the file is byte-stable — on a
- * Windows checkout the sources' JSDoc arrives with CRLF.
+ * Canonical key order and line endings, so the file is byte-stable. On a
+ * Windows checkout the generator's own descriptions of named types keep the
+ * sources' `\r\n`, which becomes `\n` here. The summaries this script cuts
+ * are normalised before the cut instead ({@link firstParagraph}): a `\r` the
+ * cut left alone would become a `\n` here, not disappear.
  */
 function sortKeys(value: unknown): unknown {
   if (typeof value === "string") return value.replace(/\r\n?/g, "\n");
@@ -273,7 +285,7 @@ function errorSchema(
 }
 
 /** Build the schema for one served protocol version. */
-function generateHostProtocolSchema(): { path: string; text: string } {
+export function generateHostProtocolSchema(): { path: string; text: string } {
   if (HOST_PROTOCOL_VERSIONS_SERVED.length !== 1) {
     fail(
       `the host serves ${HOST_PROTOCOL_VERSIONS_SERVED.join(", ")}; one schema per version `
@@ -448,21 +460,25 @@ function generateHostProtocolSchema(): { path: string; text: string } {
     const key = nameNode.exprName.right.text as keyof typeof HOST_PROTOCOL_NOTIFICATIONS;
     const method = HOST_PROTOCOL_NOTIFICATIONS[key] ?? fail(`no notification named '${key}'`);
     if (method in notifications) fail(`'${method}' is declared twice`);
-    // The member's own JSDoc sits on the union member, which the compiler does
-    // not attach a JSDoc node to; read the comment that precedes it.
-    const comment = ts
-      .getLeadingCommentRanges(wire.text, member.getFullStart())
-      ?.map((range) => wire.text.slice(range.pos, range.end))
-      .find((text) => text.startsWith("/**"));
-    const description = comment
-      ?.replace(/^\/\*\*|\*\/$/g, "")
-      .split("\n")
-      .map((line) => line.replace(/^\s*\* ?/, ""))
-      .join("\n")
-      .trim()
-      .split(/\n\s*\n/)[0]!
-      .replace(/\s*\n\s*/g, " ");
-    notifications[method] = { ...(description ? { description } : {}), params: schemaOf(paramsNode) };
+    // The member's JSDoc precedes its `|`, so it is trivia of that token and
+    // neither a JSDoc node nor a leading comment of the member: read the last
+    // doc comment between the previous member and this one.
+    const index = union.type.types.indexOf(member);
+    const gap = wire.text.slice(
+      index === 0 ? union.type.pos : union.type.types[index - 1]!.end,
+      member.getStart(wire),
+    );
+    const comment = gap.match(/\/\*\*[\s\S]*?\*\//g)?.at(-1)
+      ?? fail(`'${method}' has no doc comment in HostApiNotification; it is the notification's description`);
+    const description = firstParagraph(
+      comment
+        .replace(/^\/\*\*|\*\/$/g, "")
+        .replace(/\r\n?/g, "\n")
+        .split("\n")
+        .map((line) => line.replace(/^\s*\* ?/, ""))
+        .join("\n"),
+    );
+    notifications[method] = { description, params: schemaOf(paramsNode) };
   }
   for (const method of Object.values(HOST_PROTOCOL_NOTIFICATIONS)) {
     if (!(method in notifications)) fail(`'${method}' has no shape in HostApiNotification`);
@@ -521,4 +537,5 @@ function main(): void {
   console.log(`${LABEL} ${path} matches its sources`);
 }
 
-main();
+// Run as a script; a test imports the generator without writing anything.
+if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();

@@ -3937,6 +3937,7 @@
     },
     "notifications": {
       "notifications/cancelled": {
+        "description": "child → host: cancel an in-flight `ave/host/*` request.",
         "params": {
           "properties": {
             "reason": {
@@ -3953,6 +3954,7 @@
         }
       },
       "notifications/ave/config/snapshot": {
+        "description": "host → child: the plugin's resolved config changed.",
         "params": {
           "properties": {
             "keys": {
@@ -3974,6 +3976,7 @@
         }
       },
       "notifications/ave/installedPlugins/snapshot": {
+        "description": "host → child: the installed-plugin set changed.",
         "params": {
           "properties": {
             "pluginIds": {
@@ -3990,6 +3993,7 @@
         }
       },
       "notifications/ave/log": {
+        "description": "child → host: `context.log`, which is a host closure in-process (§3.4).",
         "params": {
           "properties": {
             "message": {
@@ -4004,6 +4008,7 @@
         }
       },
       "notifications/ave/preferences/snapshot": {
+        "description": "host → child: an allow-listed HOST preference now reads differently.",
         "params": {
           "properties": {
             "keys": {
@@ -4025,6 +4030,7 @@
         }
       },
       "notifications/ave/subscription": {
+        "description": "host → child: an event for a subscription the child opened.",
         "params": {
           "properties": {
             "payload": {},
@@ -4040,6 +4046,7 @@
         }
       },
       "notifications/ave/subscription/closed": {
+        "description": "host → child: the host ended a subscription the child still holds.",
         "params": {
           "properties": {
             "reason": {
@@ -4058,6 +4065,7 @@
         }
       },
       "notifications/ave/subscription/release": {
+        "description": "child → host: the plugin called its disposer; release the host side.",
         "params": {
           "properties": {
             "subscriptionId": {
