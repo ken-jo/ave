@@ -15,6 +15,7 @@ import { PassThrough } from "node:stream";
 import { homedir } from "node:os";
 import { frameMessage } from "../../../mcp/stdio-framing.js";
 import { nextFramedMessage as nextFramed } from "../../../mcp/__tests__/test-helpers.js";
+import { settleMacrotask as settle } from "../../../__tests__/test-helpers.js";
 import type { PluginManifest, RuntimePlugin } from "../../types.js";
 import {
   HOSTAPI_DISPATCH_TABLE,
@@ -626,9 +627,6 @@ describe("a signal cancels the request it was passed with, and nothing else", ()
       }),
     };
   }
-
-  /** Let the request reach the host before the test acts on it. */
-  const settle = () => new Promise((resolve) => setImmediate(resolve));
 
   it("cancels the host's work when the plugin aborts, and the plugin reads an AbortError", async () => {
     const observed: { signal?: AbortSignal; finish?: (value: string) => void } = {};
