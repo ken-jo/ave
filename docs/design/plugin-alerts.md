@@ -453,8 +453,10 @@ so the repair guarantee below holds for as long as the entry exists and a
 reinstall after the window cannot recreate the kind from a third-party
 `defaultEnabled: true`. The loader never prunes a retired record: it is
 removed by the alerts service, and only once every plugin in its
-`successors.plugins` has consumed it (`consumedBy`, Migration) **and** the
-retired plugin is no longer installed (registry). Plugins do not
+`successors.plugins` has consumed it (`consumedBy`, Migration), the
+retired plugin is no longer installed (registry), **and** the uninstall
+cleanup journal holds nothing for its id — the three-condition rule under
+Migration, where the journal condition is explained. Plugins do not
 auto-update, so a user who updates the app before the successor plugins
 must not lose the choices the record carries; and while the retired package
 is still installed — policy-locked, or its uninstall failed — the
@@ -1270,8 +1272,9 @@ Contract tests (host):
   key as it was; crash between the writes: the entries and config are
   durable but `consumedBy` is not, and the next registration repeats the
   idempotent pass, changes nothing, and writes `consumedBy`; removal: the
-  record is removed once the last successor has consumed it and the
-  predecessor is not installed, stays while the predecessor is still
+  record is removed once the last successor has consumed it, the
+  predecessor is not installed and the cleanup journal holds nothing for
+  it, stays while the predecessor is still
   installed after full consumption (a further feed pass writes nothing and
   `consumedBy` and `retiredAtAppVersion` are untouched), and goes on the
   next pass after the package is finally uninstalled; replay: after full
@@ -1559,7 +1562,9 @@ published the same day as the monorepo commit. Gates: ported suites,
   blocking. The pass is idempotent and ends with consumption.
 - A retired record carries `consumedBy`; the settings loader never prunes
   it, and the alerts service removes it only when every listed successor
-  has consumed it and the retired package is not installed, so updating
+  has consumed it, the retired package is not installed and the uninstall
+  cleanup journal holds nothing for it (the three-condition rule under
+  Migration), so updating
   the app before the plugins cannot lose the user's choices and a
   policy-locked or failed uninstall cannot restart the retirement through
   the feed's write-if-absent rule. `retiredAtAppVersion` is a stamp, not a
