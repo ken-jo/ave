@@ -31,9 +31,10 @@ The process boundary exists. It is not the open question.
   (`src/plugins/isolation/out-of-process-plugins.ts:856-858`; commit `72b8c3b50`,
   2026-08-26, "admit orion-api out-of-process — 5/5"). The set is frozen and read by no
   configuration, manifest field or environment variable; a plugin moves only through a
-  reviewed commit (`out-of-process-plugins.ts:7-12`). `vega-helper` leaves the set when
-  it becomes a host domain (`docs/design/vega-helper-builtin.md`); the census and the
-  conformance fixtures of §9.4 then shrink to four.
+  reviewed commit (`out-of-process-plugins.ts:7-12`). `vega-helper` is being retired — its
+  alerts move to a host alert contract that plugins declare, under a separate design —
+  and when it leaves the set, the routing census and the conformance fixtures of §9.4
+  shrink to four.
 - The child is spawned through `spawnConfinedChild` with `process.execPath` under
   `ELECTRON_RUN_AS_NODE=1`, piped stdio, ASRT wrap when the host's own sandbox is on,
   and `deny-only` grant mode on Windows (`out-of-process-plugin.ts:954-986`).
@@ -63,7 +64,7 @@ What is **not** true yet, and what this document designs:
    (`out-of-process-plugin.ts:317-360`).
 5. `resolveApiKey` ships the raw credential into the child (`host-api-wire.ts:1628-1645`,
    `host-api-child.ts:397-421`).
-6. The `git` plugin, the `templates/plugin` scaffold and the official `hello-world` plugin
+6. The `git` plugin, the `templates/plugin` scaffold (official repository) and the official `hello-world` plugin
    (`plugins/hello-world/source` in the official repository, a source package built and
    released like the other four) are not on the isolated path
    (`out-of-process-plugins.ts:856-858` lists five ids; `template` is "not installed; a
@@ -83,10 +84,10 @@ has the process. This track makes the contract match it.
 | # | Reason | Ave gains it? | How |
 |---|---|---|---|
 | 1 | Executable parts are separate processes; a compile-time type cannot guarantee the other side anyway | **Yes** | Already true for 5/5 first-party plugins (§0). The remaining plugins move by default (§9). |
-| 2 | Contract is language neutral | **Yes** | The reverse channel becomes JSON-RPC 2.0 (`ave/host/*`) with a host-published JSON Schema (§3, §6). A plugin may ship its own executable instead of a JS entry (§2.1). |
+| 2 | Contract is language neutral | **Yes** | The reverse channel becomes JSON-RPC 2.0 (`ave/host/*`) with a host-published JSON Schema (§3, §6): an Ave peer channel beside MCP, so a non-JS plugin needs a JSON-RPC library or the generated client next to its MCP server library (§3.1). A plugin may ship its own executable instead of a JS entry (§2.1). |
 | 3 | Same plugin loads in several hosts | **Partial, deliberately** | The manifest is already an Agent Plugins 1.0.0 document with `extensions["ai.agent-connector.ave"]` (`schemas/plugin-manifest.schema.json:5`, `public-contract.ts:36-37`). Skills, hooks and `mcpServers` contributions are portable. The `ave/host/*` surface is Ave-only by design: audio capture, floating dock, auth partitions and work proposals have no portable equivalent, and pretending otherwise would produce a lowest-common-denominator API. |
 | 4 | Host and plugins release independently through version and capability negotiation, plus report-and-ignore for unknown fields | **Yes** | `ave/instance/construct` carries the host protocol version and the capability list, and the MCP half negotiates per request (`2026-07-28`); unknown optional fields are reported and ignored; unknown methods fail loudly (§3.2, §3.3). |
-| 5 | Host isolates and sandboxes at the boundary | **Yes on macOS/Linux; filesystem+network only on Windows** | ASRT (`architecture.md:1013-1020`). The Windows process-confinement gap stays an owner decision (§7.3, decision 3 in §13). |
+| 5 | Host isolates and sandboxes at the boundary | **Yes on macOS/Linux; filesystem+network only on Windows** | ASRT (`architecture.md:1013-1020`). The Windows process-confinement gap is decided in decision 3 (§13): admission does not depend on it, and a `process` entry is refused on Windows (§2.2, §7.3). |
 | 6 | Run-time errors are covered by `$schema` editor validation, a validate CLI and clear failure at load | **Yes** | Manifest schema already exists; the protocol schema and a host-built validate CLI are added (§6, §10). |
 
 Non-goals:
@@ -149,8 +150,10 @@ the host's own tools, its workers and its plugin children alike; when it is off 
 is spawned unwrapped and nothing marks it confined, so the reviewer grants no
 sandbox-based relaxation (`out-of-process-plugin.ts:13-21`, `sandbox-gate.ts:20`).
 This design does not change that rule. It does add one requirement: a plugin with a
-`process` entry (non-JS) **must** run wrapped; when the sandbox is off it does not load,
-because an arbitrary executable with no confinement is a different risk class than a JS
+`process` entry (non-JS) **must** run under a wrap whose published `confines` includes
+`process` (`architecture.md:1017-1020`); when the sandbox is off, or when the substrate
+confines only filesystem and network — srt-win, `deny-only`, `out-of-process-plugin.ts:970`
+— it does not load, because an arbitrary executable with no confinement is a different risk class than a JS
 module the host's own runtime evaluates (§7.3).
 
 The filesystem envelope is `{pluginRoot, pluginDataDir, socketDir, workerRunRoot}` for
@@ -283,10 +286,18 @@ direction. Notifications go both ways with the same `notifications/` convention.
 
 Why this and not the alternatives:
 
-- MCP already is a bidirectional JSON-RPC session — sampling, elicitation and
-  `roots/list` are server→client requests. A host-capability namespace in the reverse
-  direction is MCP-shaped without being MCP-defined, so the plugin can use any JSON-RPC
-  library and any MCP server library, and one decoder serves both halves.
+- MCP `2026-07-28` has one request direction: the client sends requests and the server
+  answers them — "Servers MUST NOT initiate JSON-RPC requests, and clients do not send
+  JSON-RPC responses"; sampling, elicitation and roots travel as `InputRequiredResult`
+  answers that the client retries ([MCP patterns](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns)).
+  `ave/host/*` is therefore **not MCP**: it is an Ave-owned JSON-RPC 2.0 peer channel
+  that shares the stream and the framing with the MCP half and lives outside MCP's
+  message patterns, as `ave/instance/*` already does. JSON-RPC `id`s and the `ave/`
+  prefix keep the two halves apart, and one decoder per direction serves both. A non-JS
+  author pairs a stock MCP server library (tools, `ui://` resources) with a JSON-RPC
+  library or the client generated from the schema (§6.2) for `ave/host/*` and
+  `ave/instance/*`, multiplexed onto the same stdin and stdout the way the reference
+  runtime does it; no MCP library will speak that half for them.
 - The current reverse channel is a bespoke shape distinguished by field presence
   (`child-stream-multiplex.ts:52-64`). It was chosen so the two contracts could not
   collide; JSON-RPC `id` + a namespaced `method` gives the same guarantee. JSON-RPC
@@ -397,7 +408,7 @@ two-sided lifetime; this is the shipped `SubscriptionLedger` mechanism
 | host→plugin notification | `notifications/ave/subscription/closed` `{ subscriptionId, reason: "revoked" }` | host ended it (plugin retired, dock slot detached, capture surface lost) |
 | plugin→host notification | `notifications/ave/subscription/release` `{ subscriptionId }` | plugin called its disposer |
 | host→plugin request | `ave/instance/shutdown` | replaces `onShutdown` delivery: a **request** the host awaits (bounded), preserving today's "host awaits the handler" semantics (blueprint §3.1 row `onShutdown`) |
-| plugin→host notification | `notifications/ave/log` `{ level, message, data? }` | `context.log` lines, tagged `plugin:<id>` by the host; today `kind: "log"` (`host-api-wire.ts:136-150`, sent from `plugin-child-runtime.ts:350-353`) |
+| plugin→host notification | `notifications/ave/log` `{ message, meta? }` | `context.log(message, meta?)` lines (`public-contract.ts:2209`), tagged `plugin:<id>` by the host; today `kind: "log"` with the same two fields (`host-api-wire.ts:136-141`, sent from `plugin-child-runtime.ts:348-356`) |
 | host→plugin notification | `notifications/ave/config/snapshot`, `notifications/ave/installedPlugins/snapshot`, `notifications/ave/preferences/snapshot` | the three child-local snapshots; today `config-snapshot`, `installed-plugins`, `preference-snapshot` (`host-api-wire.ts:152-215`; sent from `out-of-process-plugin.ts:1224-1316`, consumed at `plugin-child-runtime.ts:634-672`) |
 | either direction | `notifications/cancelled` | replaces `kind: "abort"` (`host-api-wire.ts:131-135`; §3.5) |
 
@@ -428,9 +439,11 @@ Optional, not required in protocol `1`.
 
 ### 3.5 Cancellation
 
-MCP `notifications/cancelled` `{ requestId, reason }` in either direction
-([MCP cancellation](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/cancellation))
-replaces the bespoke `signalChannelId` and abort-channel notification
+`notifications/cancelled` `{ requestId, reason }` in either direction — MCP's own
+notification host→plugin
+([MCP cancellation](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/cancellation)),
+and the same shape reused by the Ave peer channel plugin→host, where MCP defines no
+pattern (§3.1) — replaces the bespoke `signalChannelId` and abort-channel notification
 (`host-api-wire.ts:125-135`, `:1607-1618`). The two directions have different targets:
 host→plugin names an in-flight `tools/call`, and the child maps it to the tool handler's
 `AbortSignal`; plugin→host names an in-flight `ave/host/*` request, and the host aborts
@@ -632,7 +645,7 @@ never the alias.
 | TypeScript types (`PluginHostApi` and friends) | none: the file itself | `public-contract.ts` | the vendored copy in the plugin repository's `contract/` (marketplace design §5.6), unchanged |
 | JS reference runtime (`plugin-child-main.js`) | host build | `src/plugins/isolation/*` | **inside the app**; a JS plugin never vendors it. The host runs it for every `entry` plugin (`out-of-process-plugin.ts:200-204`) |
 | Protocol-level TS client (JSON-RPC stubs) | host build | protocol schema | emitted beside the schema under `schemas/plugin-host-protocol/<version>/` and vendored with it; used by the conformance tests and by authors who want to speak the protocol from JS without the reference runtime |
-| Other languages | plugin author or community, from the schema | protocol schema | not Ave-maintained. The conformance suite (§10) is the guarantee, not a maintained SDK. This is how MCP handles it: SDKs exist at the protocol level, generated from `schema.ts` |
+| Other languages | plugin author or community, from the schema | protocol schema | not Ave-maintained. The conformance suite (§10) is the guarantee, not a maintained SDK. An author pairs a stock MCP server library (tools, `ui://`) with a JSON-RPC library or this generated client for `ave/host/*` and `ave/instance/*`, which no MCP library speaks (§3.1). This is how MCP handles its own SDKs: at the protocol level, generated from `schema.ts` |
 
 ### 6.3 How this builds on the vendored contract
 
@@ -743,7 +756,7 @@ Add `requires.hostProtocol` (integer-as-string, e.g. `"1"`). Rules:
 | A plugin process outlives the host | child exits on stdin end (`plugin-child-main.ts:319-326`); `managed-child-processes.ts` tracks and kills process groups on app quit; a `process`-entry plugin must pass the stdin-close conformance check (§10). Residual: a hard host crash on Windows leaves the child to notice a closed pipe on its next write. |
 | Arbitrary executable via `process` entry | a pinned release or archive artifact only (§2.1); mandatory ASRT wrap; refused when the sandbox is off; the command must be inside the plugin root (Agent Plugins rule); no `PATH` search for a marketplace plugin. |
 | Envelope widening via the manifest `sandbox` block | closed `hostDirectory` allow-list; `userChosenDirectory` requires a user-set absolute path; deny-floor piercing requires install-time approval (§2.2). |
-| Windows: no process confinement | unchanged from `architecture.md:1018-1020`; admission does not depend on it (decision 3), a `process` entry is refused there (§2.2), and the Doctor names the confinement each plugin runs under. |
+| Windows: no process confinement | unchanged from `architecture.md:1018-1020`; admission does not depend on it (decision 3); a `process` entry is refused on Windows because srt-win is a wrap that does not confine processes (§2.2); the Doctor names the confinement each plugin runs under. |
 | Confused deputy through the host's own credentials | `hostFetch` attaches a lease only to a URL that passes the allow-list for *that* plugin; the lease id is per plugin per session and is refused on any other connection. Matches the MCP security guidance on token passthrough ([MCP security best practices](https://modelcontextprotocol.io/docs/2026-07-28/tutorials/security/security_best_practices)). |
 
 ---
@@ -782,7 +795,7 @@ Add `requires.hostProtocol` (integer-as-string, e.g. `"1"`). Rules:
 | Isolated five (done) | five first-party plugins out of process on the internal wire | `OUT_OF_PROCESS_PLUGIN_IDS`, `out-of-process-plugin.test.ts`, `confined-plugin-child.test.ts` | none |
 | Wire (§9.4) | reverse channel becomes JSON-RPC `ave/host/*`; `construct` negotiation; newline framing; identity fields off the wire; schema generator + parity gate | golden-fixture conformance suite passes against the JS reference runtime for all five plugins | **none** — the reference runtime is host-shipped |
 | Lease | secrets lease (`bearer()` removed, `hostFetch` `auth.lease`), a host egress path for `local-indexer`'s bearer or its `secrets:raw-api-key` (§4.1), `sandbox` manifest block replaces `PLUGIN_ENVELOPE_GRANTS`, dispatcher rate limits | every plugin source builds against the new contract; `local-indexer` manifest carries its grants | **flag-day**: `resolveApiKey` callers (`meeting`, `local-indexer`), `local-indexer` manifest |
-| Publication | protocol schema and TS client vendored with the contract (§6.3); validate CLI; `process` entry and `hostProtocol` in the descriptor and index; `requires.hostProtocol` declared by the official plugins | validate CLI passes for every official plugin (`plugins/*/source`), `templates/plugin`, `orion` and `git` with the app not running; a non-JS smoke plugin (Python, stock MCP server library) passes conformance | none for existing plugins |
+| Publication | protocol schema and TS client vendored with the contract (§6.3); validate CLI; `process` entry and `hostProtocol` in the descriptor and index; `requires.hostProtocol` declared by the official plugins | validate CLI passes for every official plugin (`plugins/*/source`), `templates/plugin`, `orion` and `git` with the app not running; a non-JS smoke plugin (Python: a stock MCP server library plus a JSON-RPC library for the Ave peer channel) passes conformance | none for existing plugins |
 | Admission | out-of-process by default for every install and every source (decision 3); `git`, `hello-world`, `templates/plugin`, `orion` (company git) onto the path; adversarial fixture | fixture attempts the four escapes (blueprint §9 Stage 9) and is denied; `allPluginsAreOutOfProcess` true for the official index | `git`: confirm no ambient axis (it uses `openAuthWindow`, `openExternalUrl`, `getSecret`, `callLlm`, `clearAuthPartition` — all mediated) |
 | Loader removal | remove the in-process loader and the routing census | `importPluginFactory` has no call site in main; `OUT_OF_PROCESS_PLUGIN_IDS` deleted | none |
 
@@ -815,7 +828,8 @@ its own repository.
    exercises the streaming path and the secrets lease.
 5. `hello-world` (`plugins/hello-world/source` in the official repository, built and
    released through the same flow as the other four, marketplace design §6.3) and
-   `templates/plugin` (`your-plugin-id`, `config.get` only) — the marketplace admission
+   `templates/plugin` (official repository; `your-plugin-id`, `config.get` only) — the
+   marketplace admission
    path end to end.
 6. `orion-api` in company git — `openAuthWindow` ×5, `getAuthPartitionCookies`,
    `spawnWorker` ×3 (`ave-plugin-orion` at `1fc4909`, `src/nativeAdClient.ts:91-96`), `probePrivateHost`;
@@ -839,8 +853,8 @@ permanent shim.
   suite has passed for two consecutive app releases, **and** the in-process arm has
   needed no change in those releases — verifiable in the history of
   `src/plugins/runtime` and `plugin-loader.ts`, since there is no fleet telemetry.
-- **Owner:** the repository's sole maintainer (decision 5), recorded as that role in
-  `TODO.md` when the wire step starts.
+- **Owner:** the organization owner role (the repository's sole maintainer; decision 5),
+  recorded as that role in `TODO.md` when the wire step starts.
 - **Version boundary:** the removal ships no later than two minor releases after the
   admission step lands, or the owner records why not in `TODO.md`.
 - **What is deleted:** `importPluginFactory` from main (`plugin-loader.ts:77`, the
@@ -873,7 +887,14 @@ migrated.
    envelope's `wire` field goes with it, and `HOST_API_WIRE_VERSION` (`:46`) together with
    `PLUGIN_INSTANCE_WIRE_VERSION` (`plugin-instance-wire.ts:29`) become one
    `HOST_PROTOCOL_VERSIONS_SERVED` in `host-api-wire.ts`, so no version check survives in
-   the old shape (`host-api-dispatcher.ts:2009-2013`). The method name is
+   the old shape (`host-api-dispatcher.ts:2009-2013`). From this change on `construct`
+   carries `hostProtocol: { version }`, and the child's check at
+   `plugin-child-main.ts:164` becomes a membership check of that version against the
+   runtime's own served set — the reference runtime is host-shipped, so the two sets are
+   equal by construction, and the check exists so a stale bundle fails loudly instead of
+   answering a version it does not speak. So no commit is without a version check, and
+   the constant has a user in the PR that exports it (the knip baseline warns on unused
+   exports, `knip.jsonc:13`). The method name is
    `ave/host/<path with "." as "/">`, produced and parsed by two total functions over
    `HostApiPath`. Params are a JSON object: each `HOSTAPI_PATH_CONTRACTS` entry
    (`:590-1005`) gains a fifth axis, `params`, the argument names in order; the child stub
@@ -908,7 +929,8 @@ migrated.
    `_meta["io.modelcontextprotocol/protocolVersion"]` checked by the child's server
    (`plugin-mcp-server.ts:238-250`) and `server/discover` (`:112`) — and the Ave
    negotiation travels only in `construct`. `PluginConstructParams`
-   (`plugin-instance-wire.ts:65-82`) gains `hostProtocol: { version, capabilities }`;
+   (`plugin-instance-wire.ts:65-82`) already carries `hostProtocol.version` (item 2) and
+   gains `hostProtocol.capabilities`;
    `PluginConstructResult` (`:84-92`) gains `pluginProtocol: { requires }`; both drop
    `wire` (item 2). `capabilities` is derived from the dispatcher's **bound** table — the
    `implemented` entries of `options.table` (`host-api-dispatcher.ts:1927`), never the
@@ -917,10 +939,7 @@ migrated.
    `hostFetch`, `spawnWorker`, `resolveApiKey` or `getAppPreference` unbound does not
    advertise them and the four child-local paths (`storage.resolve`, `config.get`,
    `getInstalledPluginIds`, `getAppPreference`; `:269`, `:281`, `:285`, `:289`) are never
-   methods. The child's check at `plugin-child-main.ts:164` becomes a membership check of
-   `hostProtocol.version` against the runtime's own served set: the reference runtime is
-   host-shipped, so the two sets are equal by construction, and the check exists so a
-   stale bundle fails loudly instead of answering a version it does not speak. In the same
+   methods. In the same
    change `onShutdown` delivery becomes the `ave/instance/shutdown` request (§3.4) and
    `readUiResource` folds into MCP `resources/read`, which the child's server already
    serves (`plugin-mcp-server.ts:137`); `PLUGIN_INSTANCE_METHODS` stays at five.
@@ -989,7 +1008,8 @@ migrated.
   plugin and the forged fields are reported as unknown (§3.3).
 - Golden fixtures under `src/plugins/isolation/__tests__/fixtures/host-protocol/1/`:
   `methods/<method>.json`, one request/response pair per method and one per error code;
-  and `plugins/<id>/` for `vega-helper`, `lyra-mail`, `local-indexer`, `meeting` and
+  `notifications/<name>.json`, one frame per notification kind, all eight of §3.4; and
+  `plugins/<id>/` for `vega-helper`, `lyra-mail`, `local-indexer`, `meeting` and
   `orion-api`, each a fixture entry module that calls exactly the members that plugin uses
   (the §9.2 survey) beside that plugin's `extensions["ai.agent-connector.ave"]` block, with
   `expected.jsonl`, the frame sequence the reference runtime must produce.
@@ -999,6 +1019,14 @@ migrated.
   normalisation. The harness lands with the first wire change (PR 2 below) so every
   later change is caught by it; once the schema exists (PR 4) every golden frame is also
   validated against `protocol.schema.json`, which is what ties the goldens to the schema.
+- Negotiation (PR 3), in `out-of-process-plugin.test.ts` and `plugin-child-runtime.test.ts`:
+  a manifest with `requires.hostProtocol: "2"` is refused with `incompatible-host-protocol`
+  and the spawn count stays zero, while the same manifest without the field loads; a
+  dispatcher whose bound table leaves `hostFetch` unimplemented sends construct params
+  whose `capabilities` omit `hostFetch`, and a plugin whose `requires` names it is
+  refused at construct; `ave/instance/shutdown` is awaited before `stop`, and a handler
+  that overruns the bound gets the child killed (`plugin-child-transport.ts:141-146`).
+  Each of these fails if its behaviour is removed.
 - Real process: `confined-plugin-child.test.ts` runs the `meeting` fixture through a real
   confined child in the macOS and Linux jobs of `ci.yml`.
 - In the app, for every PR that changes the wire (PRs 1-3): start the app from the
@@ -1034,14 +1062,15 @@ changes, so no page lags a merged change.
 1. `feat(plugins): the plugin channel is newline-delimited` — item 1 and its tests, with
    the framing sentences in `docs/architecture/mcp-alignment-design.md:250-259`, blueprint
    §5.2 and the `src/mcp/experimental/*` headers.
-2. `feat(plugins): the reverse channel is JSON-RPC ave/host/*` — items 2, 3 and 4, the
+2. `feat(plugins): the reverse channel is JSON-RPC ave/host/*` — items 2 (with the
+   version half of the `construct` negotiation), 3 and 4, the
    updated suites, the forged-identity test and the golden harness with the per-method
    goldens and the five plugin fixtures; blueprint §2.2 describes the new reverse
    channel. The largest of the four; it is one rewrite of `host-api-wire.ts` and its two
    ends, and splitting the shapes from the identity removal would leave a commit that
    carries identity in a params object nothing checks.
-3. `feat(plugins): construct negotiates the host protocol` — items 5 and 6, goldens
-   updated; blueprint §2.1 and §3.1 (rows `onShutdown`, `readUiResource`) follow.
+3. `feat(plugins): construct negotiates the host protocol` — items 5 and 6, the
+   negotiation tests above, goldens updated; blueprint §2.1 and §3.1 (rows `onShutdown`, `readUiResource`) follow.
 4. `feat(plugins): the host protocol schema is generated and gated` — item 7, the parity
    test, schema validation of every golden frame, the header at `public-contract.ts:1-8`
    (which still names the retired SDK generator as the copier of that file) and this
@@ -1067,8 +1096,9 @@ changes, so no page lags a merged change.
 4. **Adversarial fixture** (admission step): read `~/.ave/secrets/`, direct egress,
    `require("electron")`, monkey-patch a host internal, name another plugin's id, replay a
    lease id on another connection — each denied.
-5. **Cross-language smoke**: a minimal Python plugin using a stock MCP server library and
-   hand-written `ave/host/*` calls passes 1-3.
+5. **Cross-language smoke**: a minimal Python plugin using a stock MCP server library for
+   tools and a JSON-RPC library (or the generated client) for `ave/host/*` and
+   `ave/instance/*` on the same stream passes 1-3.
 
 ### 10.2 Validating without the app: the validate CLI
 
@@ -1168,7 +1198,10 @@ What Ave should not adopt, and why:
    binding layer on top of the JSON one; the OS sandbox already gives the isolation.
    Revisit only if a plugin class appears that needs neither processes nor sockets.
 4. **MCP unchanged for everything**: model `callLlm` as sampling, `pickFolders` and
-   `agentApproval` as elicitation, storage as resources, secrets as OAuth. Loses host
+   `agentApproval` as elicitation, storage as resources, secrets as OAuth. In
+   `2026-07-28` sampling and elicitation are `InputRequiredResult` answers to a client
+   request, not server-initiated calls, so a plugin could ask for anything only while
+   answering a tool call. Loses host
    semantics (rate window, key gate, OS dialogs, the approval HMAC), forces a bespoke
    `_meta` dialect to carry what standard messages cannot, and was already set aside
    when the wire migration was deferred (`mcp-alignment-design.md:1-12`).
@@ -1195,7 +1228,7 @@ What Ave should not adopt, and why:
 | 2 | `resolveApiKey` stops exporting the raw key: `bearer()` leaves the contract, `hostFetch` gains `auth.lease`, and raw exposure exists only under `capabilities: ["secrets:raw-api-key"]` with install-time approval (§4.1). | The credential attaches at the egress chokepoint the way partition cookies already do; the capability makes the exception visible to the user and countable by the host. `meeting` needs no exception (its STT egress already goes through `hostFetch`); `local-indexer` forwards the bearer itself, so the lease step must give it a worker egress path or the capability (§4.1). |
 | 3 | Out-of-process admission is decided the same way on every platform and for every install source — official, managed, custom, direct, local development, and origin-less legacy entries (`legacy-plugins.ts:90-93`). A code plugin loads out of process under the confinement the host chose for itself: `features.osToolSandbox`, off by default on every platform (`sandbox-gate.ts:20-21`); while it is off the child is spawned unwrapped (`out-of-process-plugin.ts:13-21`). What admission promises is the process boundary — separate heap, no Electron, own crash domain, one structural chokepoint — not OS confinement; OS confinement is whatever the substrate publishes (`architecture.md:1017-1020`): filesystem, process and network on macOS and Linux, filesystem and network on Windows. Only a non-JS `process` entry requires a wrap whose `confines` includes `process`, so it never loads on Windows and does not load anywhere with the sandbox off (§2.2). The Doctor's plugin report names, per plugin, the confinement it runs under. | An earlier draft refused custom and direct code plugins on Windows and admitted official and managed ones. Rejected on evidence: `origin.sourceOrigin` alone is not evidence, because the registry file is user-writable and `src/plugins/registry.ts:300-311` checks only shape, legacy migration binds `official` by plugin id with `artifactSha256: null` (`legacy-plugins.ts:95-124`), and a removed `additional` source leaves `managed` behind, so a sound version would need the host-secret evidence chain (`grants.ts:87-106`); it would grant the official and managed sources a privilege the marketplace design forbids (§10: the badge is the only thing the official source grants; §10.5); it would refuse `orion-api` and `git` on Windows, since neither is in the official index (`marketplace.json` at `6a4d3b3df` lists `hello-world`, `local-indexer`, `meeting`, `lyra-mail`, `vega-helper`) while `orion-api` already runs out of process there (`out-of-process-plugins.ts:857`); and its rationale was false by default on every platform, because with the sandbox off macOS and Linux run a custom plugin without process confinement too. |
 | 4 | A non-JS `process` entry is in the schema from protocol `1`; marketplace admission for it waits for the admission step. | The protocol is language-neutral from its first published version, and admission needs the adversarial fixture first. |
-| 5 | The deprecation owner of the in-process loader is the repository's sole maintainer, the GitHub owner of `former_org/ave` — a role, recorded as such in `TODO.md` when the wire step starts; ave has no `CODEOWNERS` file. | AGENTS.md requires a named owner and a removal condition for any coexistence (§9.3). |
+| 5 | The deprecation owner of the in-process loader is the organization owner role of `former_org` (the repository's sole maintainer) — a role, recorded as such in `TODO.md` when the wire step starts; ave has no `CODEOWNERS` file. | AGENTS.md requires a named owner and a removal condition for any coexistence (§9.3). |
 | 6 | The protocol schema is canonical in the ave tree at a release tag and vendored like the rest of the contract (§6.3); its `$id` carries the app tag; `former-site.invalid` mirrors every tagged copy from `web/public/schemas/`, with `/1/protocol.schema.json` as a documented moving alias for editors. The validate CLI is a `tools/vendor/` bundle built from an ave entry (§10.2). | A release tag plus a sha256 in `contract/sources.json` is what the contract already pins; `tools/vendor.mjs` already holds bundles built from ave entries with a recorded bun version (`vendor.mjs:5-11`); release assets would be a second publication of the same bytes. The tag in `$id` is what keeps an additive revision (§3.3) from changing the bytes behind one identifier, since the site deploys on every `web/**` merge, not on tags. |
 | 7 | Per-plugin resource limits on macOS are deferred: crash containment ships first, and the conformance suite records RSS and startup time per plugin. | No number exists to size an `RLIMIT` against. |
 
@@ -1209,10 +1242,6 @@ None. Decision 5 names a role, not a person, so nothing waits on the owner.
 
 - The RSS and wall-clock startup cost of one plugin child (§8). No measurement exists in
   the checkout; the conformance suite is asked to produce it.
-- Whether stock MCP server libraries (the Python and TypeScript SDKs) let a server send a
-  custom server→client request such as `ave/host/*` and already speak the `2026-07-28`
-  revision. The non-JS smoke plugin of the publication step is the test; if a library
-  cannot, the `process`-entry author hand-writes the reverse channel from the schema.
 - Whether `ts-json-schema-generator` 2.9.0 reads `public-contract.ts` and
   `host-api-wire.ts`: it pins its own TypeScript `^5.9.3` while ave compiles with
   TypeScript `^7.0.2` (`package.json:198`). Its `--functions hide` option and custom type
