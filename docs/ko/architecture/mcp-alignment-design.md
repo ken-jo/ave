@@ -236,8 +236,8 @@ staged invocation path (`tools/invocation-authorization.ts` and
 `tools/invocation-execution.ts`) — a focused effort of its own.
 
 **`untrusted-stdio-isolation` (4) — experimental serving core DONE; spawner/sandbox/artifact
-gated.** `stdio-framing.ts` (`frameMessage` + `StdioFrameDecoder`, byte-accurate
-Content-Length) + `experimental/stdio-server-loop.ts` (`StdioServerLoop`) implement the
+gated.** `stdio-framing.ts` (`frameMessage` + `StdioFrameDecoder`, newline-delimited,
+one JSON-RPC message per line) + `experimental/stdio-server-loop.ts` (`StdioServerLoop`) implement the
 subprocess-side serving core: read framed JSON-RPC → dispatch to the SAME
 `PluginMcpServer` → write framed response (tested over in-memory paired streams; a
 thrown handler → -32603, loop survives). Remaining (gated above this loop): the

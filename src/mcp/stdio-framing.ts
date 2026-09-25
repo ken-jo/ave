@@ -1,26 +1,29 @@
 /**
- * Content-Length stdio framing for MCP JSON-RPC (LSP/MCP standard:
- * `Content-Length: <bytes>\r\n\r\n<utf8-json>`), shared by the out-of-process
+ * Newline-delimited stdio framing for JSON-RPC, shared by the out-of-process
  * plugin path (mcp-alignment-design.md §3.1, `untrusted-stdio-isolation`).
  *
- * Byte-accurate: lengths are UTF-8 byte counts (not char counts), so multi-byte
- * bodies frame correctly. This is Ave's own host↔plugin-child wire, both ends
- * Ave code; external MCP servers speak the spec's newline-delimited stdio
- * framing through `mcp-client.ts`'s `StdioTransport` instead.
+ * One message is one line: the MCP `2026-07-28` stdio binding ("newline-delimited
+ * JSON-RPC over a byte stream"), which is what an off-the-shelf MCP server
+ * library emits, so a plugin written in another language frames the way the
+ * host-shipped reference runtime does (plugin-hostapi-protocol.md §2.3).
+ * External MCP servers are read by `mcp-client.ts`'s `StdioTransport`, which
+ * keeps its own line parser because it is the external boundary.
  */
 
 /** Frame one JSON-RPC message for an output stream. */
 export function frameMessage(message: unknown): Buffer {
-  const json = JSON.stringify(message);
-  const header = `Content-Length: ${Buffer.byteLength(json, "utf-8")}\r\n\r\n`;
-  return Buffer.concat([Buffer.from(header, "ascii"), Buffer.from(json, "utf-8")]);
+  // JSON.stringify escapes every newline inside a string, so the serialized
+  // message never contains 0x0A and the trailing one is its only delimiter.
+  return Buffer.from(`${JSON.stringify(message)}\n`, "utf-8");
 }
 
 /**
- * Incremental decoder: feed it stream chunks; it returns every COMPLETE framed
- * message parsed so far, buffering partial frames across `push` calls. Malformed
- * frames (missing/!numeric Content-Length, unparseable body) are skipped, not
- * thrown — a hostile/buggy peer must not crash the loop.
+ * Incremental decoder: feed it stream chunks; it returns every COMPLETE line
+ * parsed so far, buffering a partial line across `push` calls. The buffer stays
+ * bytes until a whole line is in, so a multi-byte UTF-8 character split across
+ * chunks decodes intact (0x0A never occurs inside a multi-byte sequence). A line
+ * that is not a JSON object is skipped, not thrown — a hostile/buggy peer must
+ * not crash the loop.
  */
 export class StdioFrameDecoder {
   private buffer = Buffer.alloc(0);
@@ -30,32 +33,19 @@ export class StdioFrameDecoder {
     const out: Array<Record<string, unknown>> = [];
 
     for (;;) {
-      const headerEnd = this.buffer.indexOf("\r\n\r\n");
-      if (headerEnd === -1) break;
+      const lineEnd = this.buffer.indexOf(0x0a);
+      if (lineEnd === -1) break;
 
-      const headerBlock = this.buffer.subarray(0, headerEnd).toString("ascii");
-      const match = headerBlock.match(/Content-Length:\s*(\d+)/i);
-      if (!match) {
-        // Unframed/garbage header — drop it and resync past the separator.
-        this.buffer = this.buffer.subarray(headerEnd + 4);
-        continue;
-      }
-
-      const contentLength = parseInt(match[1], 10);
-      const start = headerEnd + 4;
-      const end = start + contentLength;
-      if (this.buffer.length < end) break; // body not fully arrived yet
-
-      const body = this.buffer.subarray(start, end).toString("utf-8");
-      this.buffer = this.buffer.subarray(end);
+      const line = this.buffer.subarray(0, lineEnd).toString("utf-8");
+      this.buffer = this.buffer.subarray(lineEnd + 1);
 
       try {
-        const parsed = JSON.parse(body);
+        const parsed = JSON.parse(line);
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
           out.push(parsed as Record<string, unknown>);
         }
       } catch {
-        // Skip an unparseable body; the next frame may still be intact.
+        // Skip an unparseable line; the next one may still be intact.
       }
     }
     return out;

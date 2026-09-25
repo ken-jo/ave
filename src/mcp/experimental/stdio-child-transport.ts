@@ -4,8 +4,8 @@
  * `untrusted-stdio-isolation`).
  *
  * Spawns a subprocess that runs {@link StdioServerLoop} + a `PluginMcpServer` and
- * frames RC JSON-RPC over its stdin/stdout (the same byte-accurate Content-Length
- * framing as `stdio-framing.ts`). A {@link PluginMcpHost} drives it exactly as it
+ * frames RC JSON-RPC over its stdin/stdout (the same newline-delimited framing as
+ * `stdio-framing.ts`). A {@link PluginMcpHost} drives it exactly as it
  * drives the in-process {@link LoopbackTransport} for first-party plugins — same
  * host, same projection, a different transport — which is the hybrid topology's
  * untrusted arm.

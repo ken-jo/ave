@@ -496,8 +496,8 @@ confinement that is the entire security argument. The trade is not close.
 
 ### 5.2 Spawned stdio child, not `utilityProcess`
 
-**Decision: `spawn` a Node child speaking Content-Length-framed JSON-RPC over
-stdio. Not `utilityProcess.fork`.**
+**Decision: `spawn` a Node child speaking newline-delimited JSON-RPC over stdio
+(one message per line, the MCP `2026-07-28` stdio binding). Not `utilityProcess.fork`.**
 
 The deciding reason is not preference:
 
@@ -512,8 +512,10 @@ The deciding reason is not preference:
 Secondary reasons, in order:
 
 1. `StdioChildTransport` + `StdioServerLoop` already exist and are tested; the
-   framing (`stdio-framing.ts`) is shared with the MCP client; `PluginMcpHost` is
-   already transport-agnostic. This is the arm the architecture named.
+   framing (`stdio-framing.ts`) is the one the MCP client speaks to external stdio
+   servers, so a plugin built on a stock MCP server library frames the same way
+   (`docs/design/plugin-hostapi-protocol.md` §2.3); `PluginMcpHost` is already
+   transport-agnostic. This is the arm the architecture named.
 2. The child is a plain Node process, so the ASRT wrapper, the sandboxed env
    builder, and the managed-child supervision from `worker-spawn.ts` apply
    unchanged.

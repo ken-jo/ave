@@ -4,7 +4,7 @@
  * `untrusted-stdio-isolation`).
  *
  * This is what runs INSIDE a spawned, sandboxed plugin process: it reads
- * Content-Length-framed JSON-RPC requests from an input stream (the subprocess's
+ * newline-delimited JSON-RPC requests from an input stream (the subprocess's
  * stdin), dispatches each to a {@link PluginMcpServer}-shaped handler, and writes
  * the framed response to an output stream (stdout). The host side drives it via a
  * stdio transport (the untrusted arm of the hybrid topology), exactly as the

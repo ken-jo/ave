@@ -36,11 +36,30 @@ describe("stdio-framing", () => {
     expect(out).toEqual([msg]);
   });
 
+  it("frames a message as its JSON text plus one 0x0A, with no header", () => {
+    const msg = { jsonrpc: "2.0", id: 1, method: "ping", params: { s: "line one\nline two" } };
+    const framed = frameMessage(msg);
+    expect(framed.equals(Buffer.from(`${JSON.stringify(msg)}\n`, "utf-8"))).toBe(true);
+    // The embedded newline is escaped by JSON, so the delimiter is the only 0x0A.
+    expect(framed.indexOf(0x0a)).toBe(framed.length - 1);
+  });
+
   it("buffers a frame split across chunks, then yields it whole", () => {
     const decoder = new StdioFrameDecoder();
     const framed = frameMessage({ jsonrpc: "2.0", id: 7, method: "m" });
     expect(decoder.push(framed.subarray(0, 10))).toEqual([]); // partial → nothing
     expect(decoder.push(framed.subarray(10))).toEqual([{ jsonrpc: "2.0", id: 7, method: "m" }]);
+  });
+
+  it("decodes a hand-written newline stream whose multi-byte character is split across chunks", () => {
+    const decoder = new StdioFrameDecoder();
+    const stream = Buffer.from('{"jsonrpc":"2.0","id":3,"method":"m","params":{"s":"한"}}\n', "utf-8");
+    // "한" is three UTF-8 bytes; cut after its first byte so neither chunk holds it whole.
+    const cut = stream.indexOf(Buffer.from("한", "utf-8")) + 1;
+    expect(decoder.push(stream.subarray(0, cut))).toEqual([]);
+    expect(decoder.push(stream.subarray(cut))).toEqual([
+      { jsonrpc: "2.0", id: 3, method: "m", params: { s: "한" } },
+    ]);
   });
 
   it("yields multiple frames arriving in one chunk", () => {
@@ -52,9 +71,9 @@ describe("stdio-framing", () => {
     expect(decoder.push(both).map((m) => m.id)).toEqual([1, 2]);
   });
 
-  it("skips a malformed body without throwing and recovers on the next frame", () => {
+  it("skips a line that is not a JSON object without throwing and recovers on the next line", () => {
     const decoder = new StdioFrameDecoder();
-    const bad = Buffer.from("Content-Length: 3\r\n\r\n{x{", "utf-8");
+    const bad = Buffer.from('{x{\n[1,2]\n"text"\n\nContent-Length: 3\r\n\r\n', "utf-8");
     const good = frameMessage({ jsonrpc: "2.0", id: 9, method: "ok" });
     expect(decoder.push(Buffer.concat([bad, good])).map((m) => m.id)).toEqual([9]);
   });
