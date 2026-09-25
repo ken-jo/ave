@@ -419,7 +419,13 @@ not auto-update, and a user who updates the app before the successor
 plugins must not lose the choices the record carries. The loader takes the
 running version as an optional constructor argument and prunes nothing
 when it is absent or not a stable semver core — keeping data is the safe
-failure.
+failure. Version formats: the stored fields `absentSinceAppVersion` and
+`retiredAtAppVersion` are validated with the strict SemVer 2.0 validator
+the marketplace shares, so a pre-release or build suffix is kept
+(`0.12.0-beta.1+build.2`) and a malformed form (leading zeros, missing
+segments, `"unknown"`) is not; the age rule compares major and minor only.
+The running version, by contrast, must be a stable core for any prune to
+happen at all.
 
 **A damaged kind entry never turns a kind on.** The settings loader keeps a
 kind entry only under a key in the `<pluginId>:<kind>` / `@host:<kind>`
@@ -882,13 +888,20 @@ the successors without the host naming any plugin.
      Consumption is attempted at record-write time and again on every
      registration of the successor (install, update, load), so the version
      that first declares the inheritance is the one that consumes.
-   - **Kinds stage** is terminal when every inheriting kind of the plugin
-     has a written-back entry: resolved from the record, or intentionally
+   - **Kinds stage** is scoped to the successor's kinds whose `inherits`
+     names *this record's* predecessor — a kind inheriting from a different
+     predecessor, one that may still be installed and blocking, has no
+     bearing on this record. The stage is terminal when each such kind has
+     a durable written-back entry, whatever produced it: resolved from the
+     record; resolved from the kind's own declaration because the record's
+     `enabled` is false (a disabled predecessor reads as no record, and
+     that default resolution is as final as any other); or intentionally
      left alone because the entry is visited or repaired (re-resolution
-     never touches those, so waiting would never end). A kind that is
-     `blocked_by_predecessor` is not terminal — a loaded predecessor blocks
-     resolution until restart — and the attempt is retried when the
-     predecessor stops blocking.
+     never touches those, so waiting would never end). A successor with no
+     kind naming the predecessor has a trivially terminal kinds stage. A
+     kind that is `blocked_by_predecessor` is not terminal — a loaded
+     predecessor blocks resolution until restart — and the attempt is
+     retried when the predecessor stops blocking.
    - **Config stage** is terminal when every `configInherits` entry naming
      the predecessor has been applied, or intentionally skipped: the target
      key already set, the record's `enabled` false (nothing to copy), or the
@@ -1106,8 +1119,16 @@ Contract tests (host):
   predecessor still loaded the config stage completes but `consumedBy` is
   not written until the kinds stage is terminal after the restart; visited
   and repaired kinds, an already-set target key, a disabled record and an
-  `anySource` successor's config all count as terminal skips; a successor
-  that is never updated leaves the record pending indefinitely.
+  `anySource` successor's config all count as terminal skips; a disabled
+  record (`enabled: false`) lets the successor's kinds resolve from their
+  own declarations and that counts as terminal, so the record is consumed
+  without a user visit; a successor with one kind inheriting from this
+  record's predecessor and another from a different, still-installed
+  predecessor consumes this record once its own kind is written back,
+  while the other kind stays blocked; a successor with no kind naming the
+  predecessor but a `configInherits` for it consumes on the config stage
+  alone; a successor that is never updated leaves the record pending
+  indefinitely.
   `absentSinceAppVersion` set on uninstall, cleared on reinstall, entry
   dropped two minors later; `settings.alerts` is written only through the
   alerts service.
@@ -1353,9 +1374,13 @@ published the same day as the monorepo commit. Gates: ported suites,
   app before the plugins cannot lose the user's choices. Consumption is one
   decision per successor, taken when a version that declares the
   inheritance has brought both the kinds stage and the config stage to a
-  terminal outcome; an old successor version that declares nothing stays
-  pending, and the attempt is retried on every registration and when the
-  predecessor stops blocking.
+  terminal outcome; the kinds stage covers only the kinds that inherit
+  from this record's predecessor, and a default resolution (disabled
+  record) or no inheriting kind at all is terminal; an old successor
+  version that declares nothing stays pending, and the attempt is retried
+  on every registration and when the predecessor stops blocking.
+- Stored version fields are strict SemVer 2.0 (pre-release and build
+  suffixes kept); the running version must be a stable core for any prune.
 - A `repaired` flag present with any value other than `true` makes the
   entry fail-closed again, and a repaired entry is exempt from the absence
   prune, so the repair guarantee holds for as long as the entry exists.
