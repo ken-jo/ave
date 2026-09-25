@@ -29,10 +29,11 @@ export const ALERT_HOST_PLUGIN_ID = "@host";
 /**
  * A settings key for one alert kind: `<pluginId>:<kind>` or `@host:<kind>`.
  * Both halves follow the manifest grammar — lowercase, digits and single
- * hyphens, never `--` — so a key can be split back into its parts without
- * ambiguity. Bounded so a hand-edited file cannot store an unbounded key.
+ * hyphens, never `--`; a plugin id of 3 to 64 characters, a kind id of 2 to
+ * 32 — so a key can be split back into its parts without ambiguity, and a
+ * hand-edited file cannot store a key no manifest could declare.
  */
-const ALERT_KIND_KEY_RE = /^(?!.*--)(?:@host|[a-z][a-z0-9-]{0,62}[a-z0-9]|[a-z]):[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
+const ALERT_KIND_KEY_RE = /^(?!.*--)(?:@host|[a-z][a-z0-9-]{1,62}[a-z0-9]):[a-z][a-z0-9-]{0,30}[a-z0-9]$/;
 
 export function isAlertKindKey(value: unknown): value is string {
   return typeof value === "string" && ALERT_KIND_KEY_RE.test(value);

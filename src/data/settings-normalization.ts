@@ -1708,6 +1708,10 @@ export function normalizeAlertSettings(input: unknown): AlertSettings {
   return result;
 }
 
+/**
+ * An inherit rule names at least one value: with none, a `listed: "disabled"`
+ * rule would read as on for every former user whatever they had chosen.
+ */
 function normalizeAlertInheritRule(input: unknown): AlertInheritRule | undefined {
   if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
   const obj = input as Record<string, unknown>;
@@ -1715,6 +1719,7 @@ function normalizeAlertInheritRule(input: unknown): AlertInheritRule | undefined
     typeof obj.key !== "string" || obj.key.length === 0
     || (obj.listed !== "enabled" && obj.listed !== "disabled")
     || !Array.isArray(obj.values)
+    || obj.values.length === 0
     || !obj.values.every((v) => typeof v === "string" && v.length > 0)
   ) {
     return undefined;

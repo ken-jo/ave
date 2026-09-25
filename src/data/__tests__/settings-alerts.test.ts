@@ -91,8 +91,13 @@ describe("alert kind keys", () => {
   it("accept plugin and host kinds in the manifest grammar and nothing else", () => {
     expect(isAlertKindKey("fixturemail:mail-reply")).toBe(true);
     expect(isAlertKindKey(HOST_DUE_SOON)).toBe(true);
-    expect(isAlertKindKey("a:b")).toBe(true);
+    // The bounds of each half: plugin ids 3 to 64 characters, kind ids 2 to 32.
+    expect(isAlertKindKey("abc:de")).toBe(true);
+    expect(isAlertKindKey(`${"p".repeat(64)}:${"k".repeat(32)}`)).toBe(true);
     for (const bad of [
+      "ab:mail-reply",              // plugin id below the manifest minimum
+      `${"p".repeat(65)}:mail`,     // plugin id above the manifest maximum
+      "fixturemail:m",              // kind id below its minimum
       "fixturemail",                // no kind
       "fixturemail:",               // empty kind
       ":mail-reply",                // empty plugin
@@ -176,19 +181,19 @@ describe("normalizeAlertSettings", () => {
   it("keeps absentSinceAppVersion only as a real version string", () => {
     const kinds = normalizeAlertSettings({
       kinds: {
-        "fixturemail:a": choice({ absentSinceAppVersion: "0.12.0" }),
-        "fixturemail:b": choice({ absentSinceAppVersion: "0.12.0-beta.1" }),
-        "fixturemail:c": choice({ absentSinceAppVersion: "unknown" }),
-        "fixturemail:d": choice({ absentSinceAppVersion: 12 as never }),
-        "fixturemail:e": choice({ absentSinceAppVersion: "01.2.3" }),
-        "fixturemail:f": choice({ absentSinceAppVersion: "0.12" }),
-        "fixturemail:g": choice({ absentSinceAppVersion: `0.12.0-${"x".repeat(40)}` }),
+        "fixturemail:kind-a": choice({ absentSinceAppVersion: "0.12.0" }),
+        "fixturemail:kind-b": choice({ absentSinceAppVersion: "0.12.0-beta.1" }),
+        "fixturemail:kind-c": choice({ absentSinceAppVersion: "unknown" }),
+        "fixturemail:kind-d": choice({ absentSinceAppVersion: 12 as never }),
+        "fixturemail:kind-e": choice({ absentSinceAppVersion: "01.2.3" }),
+        "fixturemail:kind-f": choice({ absentSinceAppVersion: "0.12" }),
+        "fixturemail:kind-g": choice({ absentSinceAppVersion: `0.12.0-${"x".repeat(40)}` }),
       },
     }).kinds;
-    expect(kinds["fixturemail:a"]?.absentSinceAppVersion).toBe("0.12.0");
-    expect(kinds["fixturemail:b"]?.absentSinceAppVersion).toBe("0.12.0-beta.1");
+    expect(kinds["fixturemail:kind-a"]?.absentSinceAppVersion).toBe("0.12.0");
+    expect(kinds["fixturemail:kind-b"]?.absentSinceAppVersion).toBe("0.12.0-beta.1");
     for (const key of ["c", "d", "e", "f", "g"]) {
-      expect(kinds[`fixturemail:${key}`], key).toEqual(choice());
+      expect(kinds[`fixturemail:kind-${key}`], key).toEqual(choice());
     }
   });
 });
@@ -226,7 +231,8 @@ describe("normalizeRetiredPluginConfigs", () => {
       hostKindWithoutEnabled: withHostKind({ kind: HOST_DUE_SOON, osNotification: OS_RULE }),
       badRuleListed: withHostKind({ ...hostKind, enabled: { ...ENABLED_RULE, listed: "off" } }),
       badRuleValues: withHostKind({ ...hostKind, enabled: { ...ENABLED_RULE, values: ["due-soon", 3] } }),
-      emptyRuleKey: withHostKind({ ...hostKind, enabled: { ...ENABLED_RULE, key: "" } }),
+      emptyRuleValues: withHostKind({ ...hostKind, enabled: { ...ENABLED_RULE, values: [] } }),
+      emptyRuleKey:withHostKind({ ...hostKind, enabled: { ...ENABLED_RULE, key: "" } }),
       badMasterKey: withHostKind({ ...hostKind, osNotification: { ...OS_RULE, masterKey: false } }),
       badOsRule: withHostKind({ ...hostKind, osNotification: "on" }),
       arrayConfig: { ...record, config: [] },
