@@ -627,6 +627,13 @@ Generation, not authorship: `HOSTAPI_PATH_CONTRACTS` supplies the axes,
 the emitted file differs from the committed one (`check:plugin-host-protocol-schema`,
 carried by the `build` script beside `scripts/check-generated-assets.mjs`, so CI
 `build-and-test` runs it).
+A method's `.errors` is every code in the closed set except `protocol-version-mismatch`
+(which only `construct` returns), not the member's own contract list: the dispatcher
+classifies a failure by the error class thrown, whichever member threw it, so
+`detached-operation`, `manifest-integrity-violation` or `subscription-unknown` can cross
+on members whose contract list omits them. The member's own codes are named in the
+entry's `description`. Narrowing the enum per member would first need the dispatcher to
+narrow what it returns.
 The completeness test that today walks the real hostApi object
 (`hostapi-effect-completeness.test.ts:11-16`) gains a sibling that walks the schema:
 every dispatchable path has a schema entry and vice versa.
