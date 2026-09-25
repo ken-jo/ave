@@ -22,6 +22,7 @@
  */
 import type { Readable, Writable } from "node:stream";
 import { randomUUID } from "node:crypto";
+import { createLogger } from "../../lib/logger.js";
 import {
   classifyMultiplexedMessage,
   FramedMessageStream,
@@ -34,10 +35,13 @@ import {
 } from "./host-api-dispatcher.js";
 import type { HostApiNotification, HostApiRequest } from "./host-api-wire.js";
 
+const log = createLogger("plugin-child-transport");
+
 /** A JSON-RPC error as it arrives from the child. */
 interface JsonRpcErrorBody {
   readonly code: number;
   readonly message: string;
+  readonly data?: { readonly code?: unknown };
 }
 
 /**
@@ -46,15 +50,19 @@ interface JsonRpcErrorBody {
  * The code is kept because the child distinguishes "the plugin is not
  * constructed yet" from "your method does not exist" from "the handler threw",
  * and collapsing all three into one message would leave the host unable to tell
- * a protocol mistake from a plugin bug.
+ * a protocol mistake from a plugin bug. `boundaryCode` is the boundary's own
+ * refusal code when the error carries one (`payload-too-large` for a result
+ * too large to frame), so a caller can tell a refused call from a failed one.
  */
 class PluginChildRequestError extends Error {
   readonly code: number;
+  readonly boundaryCode: string | undefined;
 
   constructor(method: string, body: JsonRpcErrorBody) {
     super(`[plugin-child-transport] ${method}: ${body.message}`);
     this.name = "PluginChildRequestError";
     this.code = body.code;
+    this.boundaryCode = typeof body.data?.code === "string" ? body.data.code : undefined;
   }
 }
 
@@ -93,6 +101,7 @@ export class PluginChildTransport {
   private readonly pending = new PendingCallTable<unknown>();
   private readonly dispatcher: HostApiDispatcher;
   private readonly link: ChildLink;
+  private readonly pluginId: string;
   private closedReason: string | undefined;
 
   constructor(options: PluginChildTransportOptions) {
@@ -103,10 +112,21 @@ export class PluginChildTransport {
         deliver: (notification) => this.sendToChild(notification),
       },
     });
+    this.pluginId = options.pluginId;
     this.stream = new FramedMessageStream(
       options.link.input,
       options.link.output,
       (message) => this.route(message),
+      // A child that broke the framing is killed like one that stopped
+      // answering: nothing it writes after an unbounded line can be trusted to
+      // start on a line boundary.
+      (reason) => this.close(`[plugin-child-transport] ${reason}`),
+      (dropped) => {
+        log.warn(
+          { pluginId: options.pluginId, ...dropped },
+          "dropped a notification too large to frame",
+        );
+      },
     );
   }
 
@@ -144,7 +164,13 @@ export class PluginChildTransport {
       // confined process running plugin code that nothing is waiting for.
       this.close(`[plugin-child-transport] '${method}' timed out after ${String(timeoutMs)}ms`);
     });
-    this.stream.send({ jsonrpc: "2.0", id, method, params });
+    try {
+      this.stream.send({ jsonrpc: "2.0", id, method, params });
+    } catch (error) {
+      // Refused before it was written (a request too large to frame), so no
+      // reply will ever come for it.
+      this.pending.fail(id, error as Error);
+    }
     return await settled;
   }
 
@@ -163,6 +189,15 @@ export class PluginChildTransport {
   close(reason: string): void {
     if (this.closedReason !== undefined) return;
     this.closedReason = reason;
+    // A frame cut off by the close is dropped with the channel. Said here,
+    // quietly, so a child that died mid-write is distinguishable from one that
+    // went away between messages.
+    if (this.stream.pendingBytes > 0) {
+      log.debug(
+        { pluginId: this.pluginId, pendingBytes: this.stream.pendingBytes },
+        "channel closed with a partial frame unread",
+      );
+    }
     this.link.terminate(reason);
     this.pending.rejectAll(reason);
     this.dispatcher.childGone();

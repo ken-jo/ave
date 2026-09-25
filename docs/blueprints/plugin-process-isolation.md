@@ -499,8 +499,8 @@ confinement that is the entire security argument. The trade is not close.
 
 ### 5.2 Spawned stdio child, not `utilityProcess`
 
-**Decision: `spawn` a Node child speaking Content-Length-framed JSON-RPC over
-stdio. Not `utilityProcess.fork`.**
+**Decision: `spawn` a Node child speaking newline-delimited JSON-RPC over stdio
+(one message per line, the MCP `2026-07-28` stdio binding). Not `utilityProcess.fork`.**
 
 The deciding reason is not preference:
 
@@ -515,8 +515,22 @@ The deciding reason is not preference:
 Secondary reasons, in order:
 
 1. `StdioChildTransport` + `StdioServerLoop` already exist and are tested; the
-   framing (`stdio-framing.ts`) is shared with the MCP client; `PluginMcpHost` is
-   already transport-agnostic. This is the arm the architecture named.
+   framing (`stdio-framing.ts`) is the same framing the MCP client speaks to
+   external stdio servers — its own parser, not shared code — so a plugin built on
+   a stock MCP server library frames the same way
+   (`docs/design/plugin-hostapi-protocol.md` §2.3); `PluginMcpHost` is already
+   transport-agnostic. This is the arm the architecture named. One line is bounded
+   by `FRAME_BYTES_MAX` (`host-api-wire.ts`, sized so a byte payload at
+   `WIRE_BYTES_MAX` always fits), and it is the only bound plain-JSON traffic has —
+   a tool result, a `storage.readText` reply, a `writeJson` argument. So the writer
+   enforces it first: a reply too large to frame is sent as a `payload-too-large`
+   error for the same call, a request throws that error to its caller, and a
+   notification — which nobody waits for, and whose in-process senders never
+   throw — is dropped and named in the sender's log, so one oversized value
+   fails one call. A peer that writes a longer
+   line anyway has skipped that check, and the reader ends the channel — the host
+   kills the child, the child treats the host as gone — rather than buffering
+   without end.
 2. The child is a plain Node process, so the ASRT wrapper, the sandboxed env
    builder, and the managed-child supervision from `worker-spawn.ts` apply
    unchanged.

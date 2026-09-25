@@ -4,7 +4,7 @@
  */
 import { describe, it, expect, vi } from "vitest";
 import { PassThrough } from "node:stream";
-import { frameMessage, StdioFrameDecoder } from "../stdio-framing.js";
+import { frameMessage, StdioFrameDecoder, StdioFrameOverflowError } from "../stdio-framing.js";
 import { nextFramedMessage as nextResponse } from "./test-helpers.js";
 import { StdioServerLoop, type StdioRequestHandler } from "../experimental/stdio-server-loop.js";
 import { PluginMcpServer, type PluginToolDelegate } from "../plugin-mcp-server.js";
@@ -28,23 +28,45 @@ const MANIFEST: PluginManifest = {
 
 const RC_META = { _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28" } };
 
+/** A bound far above anything these cases frame; the bound itself has its own cases. */
+const LINE_MAX = 1024 * 1024;
+
 describe("stdio-framing", () => {
   it("round-trips a message through frame → decode (byte-accurate)", () => {
-    const decoder = new StdioFrameDecoder();
+    const decoder = new StdioFrameDecoder(LINE_MAX);
     const msg = { jsonrpc: "2.0", id: 1, method: "ping", params: { s: "유니코드 🚀" } };
     const out = decoder.push(frameMessage(msg));
     expect(out).toEqual([msg]);
   });
 
+  it("frames a message as its JSON text plus one 0x0A, with no header", () => {
+    const msg = { jsonrpc: "2.0", id: 1, method: "ping", params: { s: "line one\nline two" } };
+    const framed = frameMessage(msg);
+    expect(framed.equals(Buffer.from(`${JSON.stringify(msg)}\n`, "utf-8"))).toBe(true);
+    // The embedded newline is escaped by JSON, so the delimiter is the only 0x0A.
+    expect(framed.indexOf(0x0a)).toBe(framed.length - 1);
+  });
+
   it("buffers a frame split across chunks, then yields it whole", () => {
-    const decoder = new StdioFrameDecoder();
+    const decoder = new StdioFrameDecoder(LINE_MAX);
     const framed = frameMessage({ jsonrpc: "2.0", id: 7, method: "m" });
     expect(decoder.push(framed.subarray(0, 10))).toEqual([]); // partial → nothing
     expect(decoder.push(framed.subarray(10))).toEqual([{ jsonrpc: "2.0", id: 7, method: "m" }]);
   });
 
+  it("decodes a hand-written newline stream whose multi-byte character is split across chunks", () => {
+    const decoder = new StdioFrameDecoder(LINE_MAX);
+    const stream = Buffer.from('{"jsonrpc":"2.0","id":3,"method":"m","params":{"s":"한"}}\n', "utf-8");
+    // "한" is three UTF-8 bytes; cut after its first byte so neither chunk holds it whole.
+    const cut = stream.indexOf(Buffer.from("한", "utf-8")) + 1;
+    expect(decoder.push(stream.subarray(0, cut))).toEqual([]);
+    expect(decoder.push(stream.subarray(cut))).toEqual([
+      { jsonrpc: "2.0", id: 3, method: "m", params: { s: "한" } },
+    ]);
+  });
+
   it("yields multiple frames arriving in one chunk", () => {
-    const decoder = new StdioFrameDecoder();
+    const decoder = new StdioFrameDecoder(LINE_MAX);
     const both = Buffer.concat([
       frameMessage({ jsonrpc: "2.0", id: 1, method: "a" }),
       frameMessage({ jsonrpc: "2.0", id: 2, method: "b" }),
@@ -52,9 +74,86 @@ describe("stdio-framing", () => {
     expect(decoder.push(both).map((m) => m.id)).toEqual([1, 2]);
   });
 
-  it("skips a malformed body without throwing and recovers on the next frame", () => {
-    const decoder = new StdioFrameDecoder();
-    const bad = Buffer.from("Content-Length: 3\r\n\r\n{x{", "utf-8");
+  it("decodes a line ended CRLF, as a peer on Windows may write it", () => {
+    const decoder = new StdioFrameDecoder(LINE_MAX);
+    expect(decoder.push(Buffer.from('{"id":1}\r\n', "utf-8"))).toEqual([{ id: 1 }]);
+  });
+
+  it("reassembles one frame delivered as many 7-byte chunks", () => {
+    const decoder = new StdioFrameDecoder(LINE_MAX);
+    const msg = { jsonrpc: "2.0", id: 11, method: "m", params: { s: "조각난 프레임 🚀" } };
+    const framed = frameMessage(msg);
+    const out: Array<Record<string, unknown>> = [];
+    for (let at = 0; at < framed.length; at += 7) out.push(...decoder.push(framed.subarray(at, at + 7)));
+    expect(out).toEqual([msg]);
+    expect(decoder.pendingBytes).toBe(0);
+  });
+
+  describe("the line bound", () => {
+    const CAP = 64;
+    /** A JSON object line of exactly `bytes` bytes, newline excluded. */
+    const lineOf = (bytes: number): string => {
+      const shell = '{"s":""}';
+      return `{"s":"${"x".repeat(bytes - shell.length)}"}`;
+    };
+
+    it("decodes a line exactly at the bound", () => {
+      const decoder = new StdioFrameDecoder(CAP);
+      const line = lineOf(CAP);
+      expect(Buffer.byteLength(line)).toBe(CAP);
+      expect(decoder.push(Buffer.from(`${line}\n`))).toHaveLength(1);
+    });
+
+    it("throws once an unended line passes the bound, and keeps throwing", () => {
+      const decoder = new StdioFrameDecoder(CAP);
+      expect(decoder.push(Buffer.alloc(CAP, 0x78))).toEqual([]);
+      expect(decoder.pendingBytes).toBe(CAP);
+      // One more byte with no newline anywhere: the peer has written more than
+      // any line may hold, and the rest of this line is all that could follow.
+      expect(() => decoder.push(Buffer.from("x"))).toThrow(StdioFrameOverflowError);
+      expect(() => decoder.push(frameMessage({ id: 1 }))).toThrow(StdioFrameOverflowError);
+      expect(decoder.pendingBytes).toBe(0);
+    });
+
+    it("throws for an over-long line even when its newline arrived in the same chunk", () => {
+      const decoder = new StdioFrameDecoder(CAP);
+      expect(() => decoder.push(Buffer.from(`${lineOf(CAP + 1)}\n`))).toThrow(StdioFrameOverflowError);
+    });
+
+    it("copies each byte of a long line once, however many chunks it arrives in", () => {
+      // A line re-joined on every push costs O(chunks²) — the stall a peer
+      // buys by writing a line just under the cap in small chunks. Counted in
+      // bytes copied rather than timed, so the test cannot be flaky.
+      const lineBytes = 1024 * 1024;
+      const chunkBytes = 4096;
+      const decoder = new StdioFrameDecoder(lineBytes);
+      const concat = vi.spyOn(Buffer, "concat");
+      try {
+        const line = Buffer.from(`${lineOf(lineBytes)}\n`);
+        const decoded: Array<Record<string, unknown>> = [];
+        for (let offset = 0; offset < line.length; offset += chunkBytes) {
+          decoded.push(...decoder.push(line.subarray(offset, offset + chunkBytes)));
+        }
+        expect(decoded).toHaveLength(1);
+        const copied = concat.mock.calls.reduce(
+          (total, [list]) => total + list.reduce((sum, part) => sum + part.length, 0),
+          0,
+        );
+        expect(copied).toBeLessThanOrEqual(lineBytes);
+      } finally {
+        concat.mockRestore();
+      }
+    });
+
+    it("refuses a bound that is not a positive integer", () => {
+      expect(() => new StdioFrameDecoder(0)).toThrow(RangeError);
+      expect(() => new StdioFrameDecoder(Number.POSITIVE_INFINITY)).toThrow(RangeError);
+    });
+  });
+
+  it("skips a line that is not a JSON object without throwing and recovers on the next line", () => {
+    const decoder = new StdioFrameDecoder(LINE_MAX);
+    const bad = Buffer.from('{x{\n[1,2]\n"text"\n\nContent-Length: 3\r\n\r\n', "utf-8");
     const good = frameMessage({ jsonrpc: "2.0", id: 9, method: "ok" });
     expect(decoder.push(Buffer.concat([bad, good])).map((m) => m.id)).toEqual([9]);
   });
@@ -65,7 +164,7 @@ describe("StdioServerLoop — subprocess serving core over real streams", () => 
     const clientToServer = new PassThrough();
     const serverToClient = new PassThrough();
     const server = new PluginMcpServer(MANIFEST, delegate);
-    new StdioServerLoop(clientToServer, serverToClient, server).start();
+    new StdioServerLoop(clientToServer, serverToClient, server, LINE_MAX).start();
     return { clientToServer, serverToClient };
   }
 
@@ -113,7 +212,7 @@ describe("StdioServerLoop — subprocess serving core over real streams", () => 
     };
     const clientToServer = new PassThrough();
     const serverToClient = new PassThrough();
-    new StdioServerLoop(clientToServer, serverToClient, handler).start();
+    new StdioServerLoop(clientToServer, serverToClient, handler, LINE_MAX).start();
 
     const pending = nextResponse(serverToClient);
     clientToServer.write(frameMessage({ jsonrpc: "2.0", id: 5, method: "tools/list" }));
@@ -125,9 +224,12 @@ describe("StdioServerLoop — subprocess serving core over real streams", () => 
   });
 
   it("rejects double start", () => {
-    const loop = new StdioServerLoop(new PassThrough(), new PassThrough(), {
-      handle: async () => ({ jsonrpc: "2.0", id: 0, result: {} }),
-    });
+    const loop = new StdioServerLoop(
+      new PassThrough(),
+      new PassThrough(),
+      { handle: async () => ({ jsonrpc: "2.0", id: 0, result: {} }) },
+      LINE_MAX,
+    );
     loop.start();
     expect(() => loop.start()).toThrow(/already started/);
   });

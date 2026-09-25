@@ -118,13 +118,17 @@ export function servePluginChild(
   output: Writable,
 ): PluginChildService {
   let runtime: PluginChildRuntime | undefined;
+  // Named in this child's own diagnostics once construct has told it.
+  let constructedPluginId: string | undefined;
   const hostApiReplies = new PendingCallTable<HostApiReply>();
   // The MCP server writes whole frames into this and they are forwarded
-  // verbatim — nothing re-decodes them, so a forwarded chunk is always exactly
-  // one frame and can never split around another writer's.
+  // as they are — nothing re-decodes them, so a forwarded chunk is always
+  // exactly one frame and can never split around another writer's. They go
+  // through the stream's own writer so a tool result too large to frame is
+  // refused for its call instead of ending the channel at the host's reader.
   const mcpOut = new Writable({
     write(chunk: Buffer, _encoding, callback) {
-      output.write(chunk);
+      stream.forward(chunk);
       callback();
     },
   });
@@ -132,8 +136,28 @@ export function servePluginChild(
   // five lifecycle methods and the entire hostApi direction never reach it.
   const mcpIn = new PassThrough();
 
-  const stream = new FramedMessageStream(input as never, output, (message) =>
-    route(message),
+  const stream = new FramedMessageStream(
+    input as never,
+    output,
+    (message) => route(message),
+    (reason) => {
+      // A host that broke the framing is a host this child can no longer
+      // serve. Destroying stdin is what the process entry already treats as
+      // the host being gone, so the child exits the one way it always does.
+      process.stderr.write(`[plugin-child] ${reason}; ending\n`);
+      (input as NodeJS.ReadableStream & { destroy(): void }).destroy();
+    },
+    (dropped) => {
+      // Stderr, which the host already collects for this child: the dropped
+      // notification may itself be the `context.log` line that would have
+      // carried this.
+      process.stderr.write(
+        `[plugin-child] dropped a notification too large to frame ${JSON.stringify({
+          pluginId: constructedPluginId,
+          ...dropped,
+        })}\n`,
+      );
+    },
   );
 
   const channel: HostApiChannel = {
@@ -166,6 +190,7 @@ export function servePluginChild(
         `[plugin-child] instance wire ${String(params.wire)} != ${PLUGIN_INSTANCE_WIRE_VERSION}`,
       );
     }
+    constructedPluginId = params.context.pluginId;
     runtime = await startPluginChildRuntime({
       input: mcpIn,
       output: mcpOut,
