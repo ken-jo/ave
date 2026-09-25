@@ -970,6 +970,13 @@ export interface SettingsServiceOptions {
    * stored value takes precedence — this field is ignored.
    */
   systemLocale?: string;
+  /**
+   * The running app version. The load drops alert entries and retired plugin
+   * records that have outlived it (two minor releases, see
+   * `normalizeAlertSettings` and `normalizeRetiredPluginConfigs`). Absent or
+   * not a stable semver core — the resolver's `"unknown"` — drops nothing.
+   */
+  appVersion?: string;
 }
 
 
@@ -1047,7 +1054,7 @@ export class SettingsService {
       policy: options.secretPolicy ?? "packaged",
       encryption: options.encryption,
     });
-    const { settings: loaded, writeBack: needsWriteBack } = this.loadSettings();
+    const { settings: loaded, writeBack: needsWriteBack } = this.loadSettings(options.appVersion);
     this.settings = loaded;
     this.saved = structuredClone(loaded);
     // Migration write-back (appearance v2, one-time markers): persist so the
@@ -1790,7 +1797,7 @@ export class SettingsService {
 
   // --- private helpers ---
 
-  private loadSettings(): { settings: AppSettings; writeBack: boolean } {
+  private loadSettings(appVersion: string | undefined): { settings: AppSettings; writeBack: boolean } {
     if (!existsSync(this.settingsPath)) {
       const defaults = structuredClone(DEFAULT_SETTINGS);
       // Fresh installs stay English-first while non-English language packs move
@@ -1925,8 +1932,8 @@ export class SettingsService {
         shortcuts: normalizeShortcuts(parsed.shortcuts, DEFAULT_SETTINGS.shortcuts),
         plugins: {},
         pluginConfigs: { ...DEFAULT_SETTINGS.pluginConfigs, ...pluginConfigs },
-        alerts: normalizeAlertSettings(parsed.alerts),
-        retiredPluginConfigs: normalizeRetiredPluginConfigs(parsed.retiredPluginConfigs),
+        alerts: normalizeAlertSettings(parsed.alerts, appVersion),
+        retiredPluginConfigs: normalizeRetiredPluginConfigs(parsed.retiredPluginConfigs, appVersion),
         features: { ...DEFAULT_SETTINGS.features, ...normalizedFeatures },
         appliedMigrations,
       };

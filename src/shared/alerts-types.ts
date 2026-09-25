@@ -59,6 +59,12 @@ export interface AlertKindChoice {
    * dropped once it is two minor releases behind the running version.
    */
   absentSinceAppVersion?: string;
+  /**
+   * Set only when the stored entry was malformed and the host replaced it
+   * with the fail-closed choice. Re-resolution from a retirement leaves a
+   * repaired entry alone, and the user's own change clears the mark.
+   */
+  repaired?: true;
 }
 
 export interface AlertSettings {
@@ -111,7 +117,8 @@ export interface RetirementSuccessors {
  * What a retirement leaves behind for a plugin: its effective config as the
  * live getter would have merged it, whether the user had the plugin enabled,
  * the marketplace source it was bound to (`null` when never bound), the app
- * version that retired it, and who may inherit from it.
+ * version that retired it, who may inherit from it, and which of those have
+ * already inherited.
  */
 export interface RetiredPluginConfigRecord {
   config: PluginConfigRecord;
@@ -119,4 +126,11 @@ export interface RetiredPluginConfigRecord {
   sourceId: string | null;
   retiredAtAppVersion: string;
   successors: RetirementSuccessors;
+  /**
+   * Successor plugin ids that have taken their inheritance from this record.
+   * The record outlives its age limit until every successor in
+   * `successors.plugins` is listed here, so a successor installed late still
+   * inherits.
+   */
+  consumedBy: string[];
 }

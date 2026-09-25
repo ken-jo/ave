@@ -3,7 +3,12 @@
  * gate predicate (`appVersionSatisfiesMin`).
  */
 import { describe, it, expect } from "vitest";
-import { compareSemver, appVersionSatisfiesMin, SEMVER_CORE_PATTERN } from "../semver-compare.js";
+import {
+  compareSemver,
+  appVersionSatisfiesMin,
+  isTwoMinorReleasesBehind,
+  SEMVER_CORE_PATTERN,
+} from "../semver-compare.js";
 
 describe("compareSemver", () => {
   it("orders plain numeric cores numerically (not lexically)", () => {
@@ -52,5 +57,26 @@ describe("SEMVER_CORE_PATTERN", () => {
     expect(SEMVER_CORE_PATTERN.test("1.2.3-beta.1+build")).toBe(true);
     expect(SEMVER_CORE_PATTERN.test("1.2")).toBe(false);
     expect(SEMVER_CORE_PATTERN.test("v1.2.3")).toBe(false);
+  });
+});
+
+describe("isTwoMinorReleasesBehind", () => {
+  it("counts minors within a major and ignores patch and pre-release", () => {
+    expect(isTwoMinorReleasesBehind("0.12.0", "0.13.9")).toBe(false);
+    expect(isTwoMinorReleasesBehind("0.12.9", "0.14.0")).toBe(true);
+    expect(isTwoMinorReleasesBehind("0.12.0", "0.14.0-beta.1")).toBe(true);
+    expect(isTwoMinorReleasesBehind("0.12.0", "0.12.5")).toBe(false);
+  });
+
+  it("treats any higher running major as behind, and a lower one as not", () => {
+    expect(isTwoMinorReleasesBehind("0.12.0", "1.0.0")).toBe(true);
+    expect(isTwoMinorReleasesBehind("0.99.0", "1.0.0")).toBe(true);
+    expect(isTwoMinorReleasesBehind("1.0.0", "0.14.0")).toBe(false);
+  });
+
+  it("is false when either version has no stable core, so nothing is dropped", () => {
+    expect(isTwoMinorReleasesBehind("0.12.0", "unknown")).toBe(false);
+    expect(isTwoMinorReleasesBehind("0.12.0", "")).toBe(false);
+    expect(isTwoMinorReleasesBehind("unknown", "1.0.0")).toBe(false);
   });
 });

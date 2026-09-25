@@ -66,6 +66,9 @@ export function compareSemver(a: string, b: string): number {
   return 0;
 }
 
+/** A stable `major.minor.patch` core, pre-release or build suffix allowed after it. */
+const STABLE_CORE = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)/;
+
 /**
  * Plugin↔app minimum-version gate. Returns `true` when the running app version
  * satisfies the plugin's declared `minAppVersion` (i.e. `appVersion >= min`).
@@ -77,10 +80,26 @@ export function compareSemver(a: string, b: string): number {
  */
 export function appVersionSatisfiesMin(appVersion: string, minAppVersion: string): boolean {
   if (!appVersion || !minAppVersion) return false;
-  const STABLE_CORE = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)/;
   // The app version is the running build's package.json version. If it is the
   // `"unknown"` fallback sentinel (or otherwise not a recognizable semver
   // core), fail closed — we cannot prove compatibility.
   if (!STABLE_CORE.test(appVersion)) return false;
   return compareSemver(appVersion, minAppVersion) >= 0;
+}
+
+/**
+ * Whether `version` is at least two minor releases behind `running`: a higher
+ * running major, or the same major with a minor at least two ahead. Patch and
+ * pre-release are not compared. False when either is not a stable semver core
+ * — callers drop data on `true`, so the resolver's `"unknown"` sentinel must
+ * keep everything.
+ */
+export function isTwoMinorReleasesBehind(version: string, running: string): boolean {
+  const stored = STABLE_CORE.exec(version);
+  const current = STABLE_CORE.exec(running);
+  if (!stored || !current) return false;
+  const storedMajor = Number(stored[1]);
+  const currentMajor = Number(current[1]);
+  if (currentMajor !== storedMajor) return currentMajor > storedMajor;
+  return Number(current[2]) - Number(stored[2]) >= 2;
 }

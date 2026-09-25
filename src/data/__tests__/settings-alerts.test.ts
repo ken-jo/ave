@@ -34,12 +34,13 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 const SETTINGS_FILE = "ave-settings.json";
 const HOST_DUE_SOON = `${ALERT_HOST_PLUGIN_ID}:due-soon`;
 
-/** What a malformed kind entry is stored as: off, unseen, lowest visibility. */
+/** What a malformed kind entry is stored as: off, unseen, lowest visibility, marked repaired. */
 const FAIL_CLOSED: AlertKindChoice = {
   enabled: false,
   osNotification: false,
   visibility: "silent",
   seenByUser: false,
+  repaired: true,
 };
 
 const ENABLED_RULE: AlertInheritRule = {
@@ -77,6 +78,7 @@ function retiredRecord(overrides: Partial<RetiredPluginConfigRecord> = {}): Reti
         { kind: `${ALERT_HOST_PLUGIN_ID}:reminder`, enabled: ENABLED_RULE },
       ],
     },
+    consumedBy: [],
     ...overrides,
   };
 }
@@ -196,6 +198,57 @@ describe("normalizeAlertSettings", () => {
       expect(kinds[`fixturemail:kind-${key}`], key).toEqual(choice());
     }
   });
+
+  it("keeps the repaired mark only as literal true", () => {
+    const kinds = normalizeAlertSettings({
+      kinds: {
+        "fixturemail:repaired": { ...FAIL_CLOSED },
+        "fixturemail:string-mark": { ...choice(), repaired: "yes" },
+        "fixturemail:false-mark": { ...choice(), repaired: false },
+      },
+    }).kinds;
+    expect(kinds["fixturemail:repaired"]).toEqual(FAIL_CLOSED);
+    expect(kinds["fixturemail:string-mark"]).toEqual(choice());
+    expect(kinds["fixturemail:false-mark"]).toEqual(choice());
+  });
+
+  describe("with the running app version", () => {
+    const absent = (version: string): AlertKindChoice => choice({ absentSinceAppVersion: version });
+
+    it("drops an entry whose plugin has been absent for two minor releases", () => {
+      const stored = {
+        kinds: {
+          "fixturemail:absent": absent("0.12.0"),
+          "fixturemail:present": choice(),
+        },
+      };
+      expect(Object.keys(normalizeAlertSettings(stored, "0.13.9").kinds))
+        .toEqual(["fixturemail:absent", "fixturemail:present"]);
+      expect(Object.keys(normalizeAlertSettings(stored, "0.14.0").kinds)).toEqual(["fixturemail:present"]);
+    });
+
+    it("drops it at any higher major, whatever the minor", () => {
+      const stored = { kinds: { "fixturemail:absent": absent("0.99.0") } };
+      expect(normalizeAlertSettings(stored, "1.0.0").kinds).toEqual({});
+      expect(Object.keys(normalizeAlertSettings({ kinds: { "fixturemail:absent": absent("1.0.0") } }, "0.14.0").kinds))
+        .toEqual(["fixturemail:absent"]);
+    });
+
+    it("ages a repaired entry by the same rule", () => {
+      const repaired = { ...FAIL_CLOSED, absentSinceAppVersion: "0.12.0" };
+      const stored = { kinds: { "fixturemail:repaired": { enabled: "yes", absentSinceAppVersion: "0.12.0" } } };
+      expect(normalizeAlertSettings(stored, "0.13.0").kinds).toEqual({ "fixturemail:repaired": repaired });
+      expect(normalizeAlertSettings(stored, "0.14.0").kinds).toEqual({});
+    });
+
+    it("drops nothing without a usable running version", () => {
+      const stored = { kinds: { "fixturemail:absent": absent("0.12.0") } };
+      for (const running of [undefined, "unknown", ""]) {
+        expect(Object.keys(normalizeAlertSettings(stored, running).kinds), String(running))
+          .toEqual(["fixturemail:absent"]);
+      }
+    });
+  });
 });
 
 describe("normalizeRetiredPluginConfigs", () => {
@@ -232,9 +285,13 @@ describe("normalizeRetiredPluginConfigs", () => {
       badRuleListed: withHostKind({ ...hostKind, enabled: { ...ENABLED_RULE, listed: "off" } }),
       badRuleValues: withHostKind({ ...hostKind, enabled: { ...ENABLED_RULE, values: ["due-soon", 3] } }),
       emptyRuleValues: withHostKind({ ...hostKind, enabled: { ...ENABLED_RULE, values: [] } }),
-      emptyRuleKey:withHostKind({ ...hostKind, enabled: { ...ENABLED_RULE, key: "" } }),
+      emptyRuleKey: withHostKind({ ...hostKind, enabled: { ...ENABLED_RULE, key: "" } }),
       badMasterKey: withHostKind({ ...hostKind, osNotification: { ...OS_RULE, masterKey: false } }),
       badOsRule: withHostKind({ ...hostKind, osNotification: "on" }),
+      missingConsumedBy: { ...record, consumedBy: undefined },
+      stringConsumedBy: { ...record, consumedBy: "fixturemail" },
+      badConsumedById: { ...record, consumedBy: ["fixturemail", "not a plugin id"] },
+      numericConsumedBy: { ...record, consumedBy: [7] },
       arrayConfig: { ...record, config: [] },
       reservedConfigKey: { ...record, config: JSON.parse('{"__proto__": {"polluted": true}}') },
       notObject: "record",
@@ -250,6 +307,37 @@ describe("normalizeRetiredPluginConfigs", () => {
     const record = retiredRecord();
     expect(normalizeRetiredPluginConfigs({ "*": record, "bad id": record, retiredfixture: record }))
       .toEqual({ retiredfixture: record });
+  });
+
+  describe("with the running app version", () => {
+    // Retired at 0.12.0 with two successors, fixturemail and fixtureep.
+    const waiting = retiredRecord({ consumedBy: ["fixturemail"] });
+    const spent = retiredRecord({ consumedBy: ["fixtureep", "fixturemail", "fixturemail"] });
+
+    it("keeps a record while any successor has not inherited, however old it is", () => {
+      for (const running of ["0.14.0", "0.20.0", "1.0.0"]) {
+        expect(normalizeRetiredPluginConfigs({ retiredfixture: waiting }, running), running)
+          .toEqual({ retiredfixture: waiting });
+      }
+    });
+
+    it("drops a record once every successor inherited and it is two minor releases old", () => {
+      expect(normalizeRetiredPluginConfigs({ retiredfixture: spent }, "0.13.9")).toEqual({ retiredfixture: spent });
+      expect(normalizeRetiredPluginConfigs({ retiredfixture: spent }, "0.14.0")).toEqual({});
+    });
+
+    it("drops a spent record at any higher major, and keeps one from a later major", () => {
+      expect(normalizeRetiredPluginConfigs({ retiredfixture: spent }, "1.0.0")).toEqual({});
+      const later = retiredRecord({ retiredAtAppVersion: "1.0.0", consumedBy: ["fixtureep", "fixturemail"] });
+      expect(normalizeRetiredPluginConfigs({ retiredfixture: later }, "0.14.0")).toEqual({ retiredfixture: later });
+    });
+
+    it("drops nothing without a usable running version", () => {
+      for (const running of [undefined, "unknown", ""]) {
+        expect(normalizeRetiredPluginConfigs({ retiredfixture: spent }, running), String(running))
+          .toEqual({ retiredfixture: spent });
+      }
+    });
   });
 });
 
@@ -334,6 +422,35 @@ describe("SettingsService alerts and retired plugin configs", () => {
     expect(reloaded.get("chat").autoCompact).toBe(false);
     expect(reloaded.get("alerts")).toEqual({ osNotificationsEnabled: true, kinds });
     expect(reloaded.get("retiredPluginConfigs")).toEqual({ retiredfixture: retiredRecord() });
+  });
+
+  it("drops outlived entries on load when it knows the running version, and only then", () => {
+    const waiting = retiredRecord({ consumedBy: ["fixturemail"] });
+    const spent = retiredRecord({ consumedBy: ["fixturemail", "fixtureep"] });
+    const present = choice({ seenByUser: true });
+    writeStored({
+      alerts: {
+        kinds: {
+          "fixturemail:absent": choice({ absentSinceAppVersion: "0.12.0" }),
+          "fixturemail:present": present,
+        },
+      },
+      retiredPluginConfigs: { waitingfixture: waiting, spentfixture: spent },
+    });
+
+    const current = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, appVersion: "0.14.0" });
+    expect(current.get("alerts").kinds).toEqual({ "fixturemail:present": present });
+    expect(current.get("retiredPluginConfigs")).toEqual({ waitingfixture: waiting });
+
+    const unversioned = load();
+    expect(Object.keys(unversioned.get("alerts").kinds)).toEqual(["fixturemail:absent", "fixturemail:present"]);
+    expect(Object.keys(unversioned.get("retiredPluginConfigs"))).toEqual(["waitingfixture", "spentfixture"]);
+  });
+
+  it("is given the running version by the boot step that creates it", () => {
+    const bootSource = readFileSync(new URL("../../boot/services.ts", import.meta.url), "utf8");
+    const construction = /new SettingsService\(\{[^}]*\}\)/.exec(bootSource)?.[0] ?? "";
+    expect(construction).toContain("appVersion: getAveAppVersion()");
   });
 
   it("persists a whole-block set and reads it back through the normaliser", async () => {

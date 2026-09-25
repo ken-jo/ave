@@ -76,6 +76,7 @@ import {
 } from "../shared/marketplace-package-assets.js";
 import { projectRootKey } from "../shared/project-identity.js";
 import { clampLogRetentionDays } from "../shared/log-retention.js";
+import { isTwoMinorReleasesBehind } from "../shared/semver-compare.js";
 import { createLogger } from "../lib/logger.js";
 import {
   STORED_FIELD,
@@ -1646,6 +1647,7 @@ const FAIL_CLOSED_ALERT_KIND_CHOICE: Readonly<AlertKindChoice> = Object.freeze({
   osNotification: false,
   visibility: "silent",
   seenByUser: false,
+  repaired: true,
 });
 
 function normalizeAlertKindChoice(key: string, input: unknown): AlertKindChoice {
@@ -1665,6 +1667,7 @@ function normalizeAlertKindChoice(key: string, input: unknown): AlertKindChoice 
       visibility: obj.visibility,
       seenByUser: obj.seenByUser,
     };
+    if (obj.repaired === true) choice.repaired = true;
   } else {
     log.warn("alert kind entry %s is malformed, storing it off and unseen", key);
     choice = { ...FAIL_CLOSED_ALERT_KIND_CHOICE };
@@ -1682,8 +1685,12 @@ function normalizeAlertKindChoice(key: string, input: unknown): AlertKindChoice 
  * is stored as {@link FAIL_CLOSED_ALERT_KIND_CHOICE} rather than repaired
  * field by field, because a repaired choice would read as one the user made.
  * `absentSinceAppVersion` is kept only as a real version string.
+ *
+ * With the running `appVersion`, an entry whose plugin has been absent for two
+ * minor releases is dropped: a reinstall after that starts from the kind's
+ * declaration. Without a usable version nothing is dropped.
  */
-export function normalizeAlertSettings(input: unknown): AlertSettings {
+export function normalizeAlertSettings(input: unknown, appVersion?: string): AlertSettings {
   const base = DEFAULT_SETTINGS.alerts;
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     return { osNotificationsEnabled: base.osNotificationsEnabled, kinds: {} };
@@ -1702,7 +1709,16 @@ export function normalizeAlertSettings(input: unknown): AlertSettings {
         log.warn("dropping alert kind entry with an invalid key: %s", key);
         continue;
       }
-      result.kinds[key] = normalizeAlertKindChoice(key, value);
+      const choice = normalizeAlertKindChoice(key, value);
+      if (
+        appVersion !== undefined
+        && choice.absentSinceAppVersion !== undefined
+        && isTwoMinorReleasesBehind(choice.absentSinceAppVersion, appVersion)
+      ) {
+        log.info("dropping alert kind entry %s: its plugin was removed at %s", key, choice.absentSinceAppVersion);
+        continue;
+      }
+      result.kinds[key] = choice;
     }
   }
   return result;
@@ -1777,6 +1793,15 @@ function normalizeRetiredPluginConfigRecord(input: unknown): RetiredPluginConfig
   if (!isStoredAppVersion(obj.retiredAtAppVersion)) return undefined;
   const successors = normalizeRetirementSuccessors(obj.successors);
   if (!successors) return undefined;
+  if (!Array.isArray(obj.consumedBy)) return undefined;
+  const consumedBy: string[] = [];
+  for (const id of obj.consumedBy) {
+    try {
+      consumedBy.push(sanitizePluginConfigPluginId(id as string));
+    } catch {
+      return undefined;
+    }
+  }
   let config: PluginConfigRecord;
   try {
     config = sanitizePluginConfig(obj.config);
@@ -1789,7 +1814,20 @@ function normalizeRetiredPluginConfigRecord(input: unknown): RetiredPluginConfig
     sourceId: obj.sourceId,
     retiredAtAppVersion: obj.retiredAtAppVersion,
     successors,
+    consumedBy,
   };
+}
+
+/**
+ * A retired record has served its purpose once it is two minor releases old
+ * AND every successor it names has inherited from it. Age alone is not
+ * enough: a user who updates the app before installing a successor would
+ * lose the choices that successor was meant to carry over.
+ */
+function isRetiredRecordSpent(record: RetiredPluginConfigRecord, appVersion: string): boolean {
+  if (!isTwoMinorReleasesBehind(record.retiredAtAppVersion, appVersion)) return false;
+  const consumed = new Set(record.consumedBy);
+  return record.successors.plugins.every((successor) => consumed.has(successor.pluginId));
 }
 
 /**
@@ -1797,8 +1835,14 @@ function normalizeRetiredPluginConfigRecord(input: unknown): RetiredPluginConfig
  * retirement wrote for one plugin, and a successor reads it as the user's
  * former choices, so a record with any field out of shape is dropped whole:
  * a half-repaired record would hand a successor choices nobody made.
+ *
+ * With the running `appVersion`, a record that is spent is dropped (see
+ * {@link isRetiredRecordSpent}). Without a usable version nothing is dropped.
  */
-export function normalizeRetiredPluginConfigs(input: unknown): Record<string, RetiredPluginConfigRecord> {
+export function normalizeRetiredPluginConfigs(
+  input: unknown,
+  appVersion?: string,
+): Record<string, RetiredPluginConfigRecord> {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     return {};
   }
@@ -1814,6 +1858,10 @@ export function normalizeRetiredPluginConfigs(input: unknown): Record<string, Re
     const record = normalizeRetiredPluginConfigRecord(value);
     if (!record) {
       log.warn("dropping malformed retired plugin config: %s", safePluginId);
+      continue;
+    }
+    if (appVersion !== undefined && isRetiredRecordSpent(record, appVersion)) {
+      log.info("dropping retired plugin config %s: every successor inherited from it", safePluginId);
       continue;
     }
     out[safePluginId] = record;
