@@ -433,6 +433,22 @@ describe("the dispatcher refuses rather than defaults", () => {
     expect(reports.at(-1)).toEqual({ kind: "suppressed", limit: UNKNOWN_FIELD_REPORTS_MAX });
   });
 
+  it("cuts a long field name by code point, never through a surrogate pair", async () => {
+    const table = {
+      ...HOSTAPI_DISPATCH_TABLE,
+      hasRoutineBySource: defineHostApiPath("hasRoutineBySource", async () => true),
+    };
+    const reports: UnknownFieldReport[] = [];
+    const host = dispatcher({ table, reportUnknownField: (report) => reports.push(report) });
+    // The 64th code point is two UTF-16 units; a cut by unit would keep only
+    // the first of them.
+    const field = `${"f".repeat(63)}\u{1F600}tail`;
+    await host.handle(request({ params: { source: "nightly", [field]: 1 } }));
+    expect(reports).toEqual([
+      { kind: "field", method: "ave/host/hasRoutineBySource", field: `${"f".repeat(63)}\u{1F600}…` },
+    ]);
+  });
+
   it("reads an omitted params member as the empty object, and still refuses a non-object", async () => {
     // JSON-RPC 2.0 §4 lets a client leave `params` out, which is how a stock
     // client calls a member that takes no arguments.

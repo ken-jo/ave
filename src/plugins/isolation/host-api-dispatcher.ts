@@ -1839,8 +1839,24 @@ export function classifyHostApiError(error: unknown): HostApiWireError {
 /** Distinct undeclared params fields reported per connection before the rest are suppressed. */
 export const UNKNOWN_FIELD_REPORTS_MAX = 32;
 
-/** The longest field name a report carries; the rest is cut. */
+/** The longest field name a report carries, in code points; the rest is cut. */
 const UNKNOWN_FIELD_NAME_MAX = 64;
+
+/**
+ * `field` cut to {@link UNKNOWN_FIELD_NAME_MAX} code points. Counted by code
+ * point, not UTF-16 unit, so the cut never leaves half a surrogate pair in a
+ * log line; and stopped early, because the child picks how long the name is.
+ */
+function shownFieldName(field: string): string {
+  let shown = "";
+  let count = 0;
+  for (const point of field) {
+    if (count === UNKNOWN_FIELD_NAME_MAX) return `${shown}…`;
+    shown += point;
+    count += 1;
+  }
+  return field;
+}
 
 /** One diagnostic about an undeclared params field. */
 export type UnknownFieldReport =
@@ -2044,8 +2060,7 @@ export class HostApiDispatcher {
 
   private reportUnknownField(method: string, field: string): void {
     if (this.unknownFieldsSuppressed) return;
-    const shown =
-      field.length > UNKNOWN_FIELD_NAME_MAX ? `${field.slice(0, UNKNOWN_FIELD_NAME_MAX)}…` : field;
+    const shown = shownFieldName(field);
     const key = `${method}\u0000${shown}`;
     if (this.reportedUnknownFields.has(key)) return;
     if (this.reportedUnknownFields.size >= UNKNOWN_FIELD_REPORTS_MAX) {
