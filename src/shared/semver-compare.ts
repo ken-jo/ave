@@ -99,16 +99,22 @@ export function appVersionSatisfiesMin(appVersion: string, minAppVersion: string
   return compareSemver(appVersion, minAppVersion) >= 0;
 }
 
+/** A stable release and nothing else: `X.Y.Z`, no leading zeros, no suffix. */
+const STABLE_RELEASE = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
+
 /**
  * Whether `version` is at least two minor releases behind `running`: a higher
  * running major, or the same major with a minor at least two ahead. Patch and
- * pre-release are not compared. False when either is not a stable semver core
- * — callers drop data on `true`, so the resolver's `"unknown"` sentinel must
- * keep everything.
+ * the stored version's pre-release are not compared.
+ *
+ * Callers drop data on `true`, so the running version must be a stable
+ * release: a pre-release build has not shipped the version it names, and the
+ * resolver's `"unknown"` sentinel or any malformed string must keep
+ * everything. The stored version must be a complete SemVer version.
  */
 export function isTwoMinorReleasesBehind(version: string, running: string): boolean {
-  const stored = STABLE_CORE.exec(version);
-  const current = STABLE_CORE.exec(running);
+  const stored = isSemver(version) ? STABLE_CORE.exec(version) : null;
+  const current = STABLE_RELEASE.exec(running);
   if (!stored || !current) return false;
   const storedMajor = Number(stored[1]);
   const currentMajor = Number(current[1]);

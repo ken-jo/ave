@@ -973,8 +973,9 @@ export interface SettingsServiceOptions {
   /**
    * The running app version. The load drops alert entries and retired plugin
    * records that have outlived it (two minor releases, see
-   * `normalizeAlertSettings` and `normalizeRetiredPluginConfigs`). Absent or
-   * not a stable semver core — the resolver's `"unknown"` — drops nothing.
+   * `normalizeAlertSettings` and `normalizeRetiredPluginConfigs`). Absent, a
+   * pre-release build, or anything but a stable `X.Y.Z` release — the
+   * resolver's `"unknown"` included — drops nothing.
    */
   appVersion?: string;
 }

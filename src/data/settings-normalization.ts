@@ -1688,7 +1688,7 @@ function normalizeAlertKindChoice(key: string, input: unknown): AlertKindChoice 
     && isAlertVisibility(obj.visibility)
     // A damaged mark is a damaged entry: read as absent, it would turn a
     // repaired entry back into one a later retirement may switch on.
-    && (obj.repaired === undefined || obj.repaired === true)
+    && (!Object.hasOwn(obj, "repaired") || obj.repaired === true)
   ) {
     choice = {
       enabled: obj.enabled,
@@ -1719,7 +1719,7 @@ function normalizeAlertKindChoice(key: string, input: unknown): AlertKindChoice 
  * minor releases is dropped: a reinstall after that starts from the kind's
  * declaration. A repaired entry is kept whatever its age, because dropping it
  * would let the kind resolve from its declaration again — the outcome the
- * repair exists to prevent. Without a usable version nothing is dropped.
+ * repair exists to prevent. Without a stable release version nothing is dropped.
  */
 export function normalizeAlertSettings(input: unknown, appVersion?: string): AlertSettings {
   const base = DEFAULT_SETTINGS.alerts;
@@ -1860,7 +1860,7 @@ function isRetiredRecordSpent(record: RetiredPluginConfigRecord, appVersion: str
  * a half-repaired record would hand a successor choices nobody made.
  *
  * With the running `appVersion`, a record that is spent is dropped (see
- * {@link isRetiredRecordSpent}). Without a usable version nothing is dropped.
+ * {@link isRetiredRecordSpent}). Without a stable release version nothing is dropped.
  */
 export function normalizeRetiredPluginConfigs(
   input: unknown,

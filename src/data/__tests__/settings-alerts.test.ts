@@ -63,6 +63,9 @@ const INVALID_VERSIONS: unknown[] = [
   "0.12.0-01", "0.12.0+", "0.12.0+build..2", " 0.12.0", "0.12.0 ", `0.12.0-${"x".repeat(130)}`, 12, null,
 ];
 
+/** Running versions that are not stable releases: pre-release builds and malformed strings prune nothing. */
+const UNSTABLE_RUNNING_VERSIONS = ["0.14.0-beta.1", "1.0.0-rc.1", "0.14.00", "0.14.0garbage", "0.14.0-.."];
+
 function choice(overrides: Partial<AlertKindChoice> = {}): AlertKindChoice {
   return {
     enabled: true,
@@ -208,9 +211,12 @@ describe("normalizeAlertSettings", () => {
         "fixturemail:string-mark": { ...FAIL_CLOSED, repaired: "true" },
         "fixturemail:false-mark": { ...choice({ seenByUser: true }), repaired: false },
         "fixturemail:null-mark": { ...choice(), repaired: null, absentSinceAppVersion: "0.12.0" },
+        // Present is present: an own `repaired` key holding undefined is not a missing one.
+        "fixturemail:undefined-mark": { ...choice({ seenByUser: true }), repaired: undefined },
       },
     }).kinds;
     expect(kinds).toEqual({
+      "fixturemail:undefined-mark": FAIL_CLOSED,
       "fixturemail:repaired": FAIL_CLOSED,
       "fixturemail:string-mark": FAIL_CLOSED,
       "fixturemail:false-mark": FAIL_CLOSED,
@@ -255,7 +261,7 @@ describe("normalizeAlertSettings", () => {
 
     it("drops nothing without a usable running version", () => {
       const stored = { kinds: { "fixturemail:absent": absent("0.12.0") } };
-      for (const running of [undefined, "unknown", ""]) {
+      for (const running of [undefined, "unknown", "", ...UNSTABLE_RUNNING_VERSIONS]) {
         expect(Object.keys(normalizeAlertSettings(stored, running).kinds), String(running))
           .toEqual(["fixturemail:absent"]);
       }
@@ -383,7 +389,7 @@ describe("normalizeRetiredPluginConfigs", () => {
     });
 
     it("drops nothing without a usable running version", () => {
-      for (const running of [undefined, "unknown", ""]) {
+      for (const running of [undefined, "unknown", "", ...UNSTABLE_RUNNING_VERSIONS]) {
         expect(normalizeRetiredPluginConfigs({ retiredfixture: spent }, running), String(running))
           .toEqual({ retiredfixture: spent });
       }
@@ -495,6 +501,22 @@ describe("SettingsService alerts and retired plugin configs", () => {
     const unversioned = load();
     expect(Object.keys(unversioned.get("alerts").kinds)).toEqual(["fixturemail:absent", "fixturemail:present"]);
     expect(Object.keys(unversioned.get("retiredPluginConfigs"))).toEqual(["waitingfixture", "spentfixture"]);
+  });
+
+  it("keeps outlived entries through a load and a later save when the running version is not a stable release", async () => {
+    const absentChoice = choice({ enabled: false, absentSinceAppVersion: "0.12.0" });
+    const spent = retiredRecord({ consumedBy: ["fixturemail", "fixtureep"] });
+    for (const running of UNSTABLE_RUNNING_VERSIONS) {
+      writeStored({
+        alerts: { osNotificationsEnabled: true, kinds: { "fixturemail:absent": absentChoice } },
+        retiredPluginConfigs: { spentfixture: spent },
+      });
+      const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, appVersion: running });
+      await service.patch({ chat: { autoCompact: false } });
+      const onDisk = JSON.parse(readFileSync(join(userDataPath, SETTINGS_FILE), "utf-8")) as Record<string, unknown>;
+      expect(onDisk.alerts, running).toEqual({ osNotificationsEnabled: true, kinds: { "fixturemail:absent": absentChoice } });
+      expect(onDisk.retiredPluginConfigs, running).toEqual({ spentfixture: spent });
+    }
   });
 
   it("is given the running version by the boot step that creates it", () => {

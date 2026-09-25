@@ -61,11 +61,16 @@ describe("SEMVER_CORE_PATTERN", () => {
   });
 });
 
+/** Pre-release builds and malformed strings: a running version that must prune nothing. */
+const UNSTABLE_RUNNING_VERSIONS = [
+  "0.14.0-beta.1", "1.0.0-rc.1", "0.14.00", "0.14.0garbage", "0.14.0-..", "0.14.0+", "0.14.0\n", "0.14.0.9", "0.14.0+build.1",
+];
+
 describe("isTwoMinorReleasesBehind", () => {
   it("counts minors within a major and ignores patch and pre-release", () => {
     expect(isTwoMinorReleasesBehind("0.12.0", "0.13.9")).toBe(false);
     expect(isTwoMinorReleasesBehind("0.12.9", "0.14.0")).toBe(true);
-    expect(isTwoMinorReleasesBehind("0.12.0", "0.14.0-beta.1")).toBe(true);
+    expect(isTwoMinorReleasesBehind("0.12.0-beta.1+build.2", "0.14.0")).toBe(true);
     expect(isTwoMinorReleasesBehind("0.12.0", "0.12.5")).toBe(false);
   });
 
@@ -79,6 +84,13 @@ describe("isTwoMinorReleasesBehind", () => {
     expect(isTwoMinorReleasesBehind("0.12.0", "unknown")).toBe(false);
     expect(isTwoMinorReleasesBehind("0.12.0", "")).toBe(false);
     expect(isTwoMinorReleasesBehind("unknown", "1.0.0")).toBe(false);
+    expect(isTwoMinorReleasesBehind("0.12.0-..", "1.0.0")).toBe(false);
+  });
+
+  it("is false for a running version that is not a stable release", () => {
+    for (const running of UNSTABLE_RUNNING_VERSIONS) {
+      expect(isTwoMinorReleasesBehind("0.12.0", running), JSON.stringify(running)).toBe(false);
+    }
   });
 });
 
