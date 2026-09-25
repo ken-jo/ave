@@ -545,3 +545,120 @@ describe("the host keeps the child's config snapshot current", () => {
     }
   });
 });
+
+describe("a message too large to frame fails its call, not the channel", () => {
+  // Past `FRAME_BYTES_MAX` (about 44 MB) but plain JSON, which no byte-payload
+  // limit reaches. Before the writer checked the bound, each of these ended the
+  // channel at the other end's reader and took every pending call with it.
+  const MiB = 1024 * 1024;
+  const TOOLS = ["big_result", "read_big_file", "write_big_json", "echo"];
+  const MODULE = `export const createPlugin = async (context) => {
+  const refusal = (error) => ({ name: error.name, code: error.code ?? null });
+  return {
+    handlers: {
+      // Crosses twice — text content and raw result — so about 46 MB.
+      big_result: async () => "x".repeat(23 * ${MiB}),
+      read_big_file: async () => {
+        try {
+          return { length: (await context.hostApi.storage.readText("big.txt")).length };
+        } catch (error) {
+          return refusal(error);
+        }
+      },
+      write_big_json: async () => {
+        try {
+          await context.hostApi.storage.writeJson("big.json", { blob: "x".repeat(46 * ${MiB}) });
+          return { written: true };
+        } catch (error) {
+          return refusal(error);
+        }
+      },
+      echo: async (payload) => ({ echoed: payload ?? null }),
+    },
+  };
+};
+`;
+
+  async function construct(hostApi: PluginHostApi) {
+    const dir = mkdtempSync(join(tmpdir(), "oop-plugin-oversize-"));
+    const entryPath = join(dir, "plugin.mjs");
+    writeFileSync(entryPath, MODULE, "utf-8");
+    const { child } = pairedChild();
+    const terminate = vi.fn(child.link.terminate);
+    const factory = createOutOfProcessPluginFactory({
+      manifest: {
+        ...MANIFEST,
+        tools: TOOLS.map((name) => ({ name, description: name, inputSchema: EMPTY_SCHEMA })),
+      },
+      entryPath,
+      connect: async () => ({ link: { ...child.link, terminate } }),
+    });
+    const instance = await factory(hostContext(hostApi));
+    return { dir, instance, terminate };
+  }
+
+  it("refuses a tool result too large to frame, and the plugin keeps serving", async () => {
+    const { dir, instance, terminate } = await construct(fakeHostApi());
+    try {
+      await expect(instance.handlers.big_result!()).rejects.toMatchObject({
+        boundaryCode: "payload-too-large",
+      });
+      await expect(instance.handlers.echo!({ still: "alive" })).resolves.toEqual({
+        echoed: { still: "alive" },
+      });
+      expect(terminate).not.toHaveBeenCalled();
+      await instance.stop?.();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a host reply too large to frame to the plugin that asked, and the plugin keeps serving", async () => {
+    const hostApi = fakeHostApi();
+    vi.mocked(hostApi.storage.readText).mockResolvedValue("x".repeat(46 * MiB));
+    const { dir, instance, terminate } = await construct(hostApi);
+    try {
+      await expect(instance.handlers.read_big_file!()).resolves.toEqual({
+        name: "HostApiBoundaryError",
+        code: "payload-too-large",
+      });
+      await expect(instance.handlers.echo!()).resolves.toEqual({ echoed: null });
+      expect(terminate).not.toHaveBeenCalled();
+      await instance.stop?.();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a plugin's request too large to frame before it is written", async () => {
+    const hostApi = fakeHostApi();
+    const { dir, instance, terminate } = await construct(hostApi);
+    try {
+      await expect(instance.handlers.write_big_json!()).resolves.toEqual({
+        name: "HostApiBoundaryError",
+        code: "payload-too-large",
+      });
+      expect(hostApi.storage.writeJson).not.toHaveBeenCalled();
+      await expect(instance.handlers.echo!()).resolves.toEqual({ echoed: null });
+      expect(terminate).not.toHaveBeenCalled();
+      await instance.stop?.();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a host request too large to frame to the host caller", async () => {
+    const { dir, instance, terminate } = await construct(fakeHostApi());
+    try {
+      await expect(instance.handlers.echo!({ blob: "x".repeat(46 * MiB) })).rejects.toMatchObject({
+        name: "HostApiBoundaryError",
+        code: "payload-too-large",
+      });
+      await expect(instance.handlers.echo!()).resolves.toEqual({ echoed: null });
+      expect(terminate).not.toHaveBeenCalled();
+      await instance.stop?.();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

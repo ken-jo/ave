@@ -120,11 +120,13 @@ export function servePluginChild(
   let runtime: PluginChildRuntime | undefined;
   const hostApiReplies = new PendingCallTable<HostApiReply>();
   // The MCP server writes whole frames into this and they are forwarded
-  // verbatim — nothing re-decodes them, so a forwarded chunk is always exactly
-  // one frame and can never split around another writer's.
+  // as they are — nothing re-decodes them, so a forwarded chunk is always
+  // exactly one frame and can never split around another writer's. They go
+  // through the stream's own writer so a tool result too large to frame is
+  // refused for its call instead of ending the channel at the host's reader.
   const mcpOut = new Writable({
     write(chunk: Buffer, _encoding, callback) {
-      output.write(chunk);
+      stream.forward(chunk);
       callback();
     },
   });

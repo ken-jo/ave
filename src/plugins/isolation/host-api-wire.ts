@@ -474,15 +474,21 @@ export const WIRE_BYTES_MAX = 16 * 1024 * 1024;
 const FRAME_ENVELOPE_HEADROOM_BYTES = 1024 * 1024;
 
 /**
- * The longest line either end of the plugin channel reads before it ends the
- * channel as broken (`StdioFrameDecoder`).
+ * The longest line either end of the plugin channel writes or reads.
  *
- * Derived from {@link WIRE_BYTES_MAX} rather than chosen: a payload at the
- * limit crosses base64-encoded, 4 bytes for every 3, and a `tools/call` result
- * carries the plugin's value twice — as MCP text content and as the raw result
- * in `_meta` — so the largest legitimate frame is twice the encoded payload,
- * plus room for the envelope. Anything longer is not a message this protocol
- * can produce.
+ * It is the ONLY bound on plain-JSON traffic — a tool result, a `readText` or
+ * `readJson` reply, a `writeJson` argument, a config value — which
+ * {@link WIRE_BYTES_MAX} does not reach, since that bounds byte payloads alone.
+ * So both ends enforce it. The writer refuses a message that would exceed it
+ * (`FramedMessageStream.send`: a reply becomes a `payload-too-large` error for
+ * the same call, anything else throws that error to its writer), and the reader
+ * (`StdioFrameDecoder`) ends the channel on a longer line, which only a peer
+ * that skipped the writer's check can produce.
+ *
+ * Sized so a byte payload at {@link WIRE_BYTES_MAX} always fits: it crosses
+ * base64-encoded, 4 bytes for every 3, and a `tools/call` result carries the
+ * plugin's value twice — as MCP text content and as the raw result in `_meta`
+ * — so that frame is twice the encoded payload, plus room for the envelope.
  */
 export const FRAME_BYTES_MAX =
   2 * Math.ceil(WIRE_BYTES_MAX / 3) * 4 + FRAME_ENVELOPE_HEADROOM_BYTES;

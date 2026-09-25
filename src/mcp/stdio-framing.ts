@@ -46,7 +46,12 @@ export class StdioFrameOverflowError extends Error {
  * 0x0A grows it until this process runs out of memory.
  */
 export class StdioFrameDecoder {
-  private buffer = Buffer.alloc(0);
+  // The unfinished line, as the chunks it arrived in. Joined once, when its
+  // newline arrives: re-joining on every push, and rescanning the joined bytes
+  // for a newline, is quadratic in the chunk count, and a peer that writes a
+  // line just under the cap in small chunks would stall the reader on it.
+  private partial: Buffer[] = [];
+  private partialBytes = 0;
   private overflowed = false;
 
   constructor(private readonly maxLineBytes: number) {
@@ -57,24 +62,31 @@ export class StdioFrameDecoder {
 
   /** Bytes of a line that has started but not ended. */
   get pendingBytes(): number {
-    return this.buffer.length;
+    return this.partialBytes;
   }
 
   push(chunk: Buffer): Array<Record<string, unknown>> {
     if (this.overflowed) throw new StdioFrameOverflowError(this.maxLineBytes);
-    this.buffer = Buffer.concat([this.buffer, chunk]);
     const out: Array<Record<string, unknown>> = [];
 
+    // Each byte of `chunk` is scanned once; bytes held from earlier pushes
+    // are never scanned again, because they are known to hold no newline.
+    let lineStart = 0;
     for (;;) {
-      const lineEnd = this.buffer.indexOf(0x0a);
+      const lineEnd = chunk.indexOf(0x0a, lineStart);
       if (lineEnd === -1) break;
-      if (lineEnd > this.maxLineBytes) this.overflow();
+      const lineBytes = this.partialBytes + (lineEnd - lineStart);
+      if (lineBytes > this.maxLineBytes) this.overflow();
 
-      const line = this.buffer.subarray(0, lineEnd).toString("utf-8");
-      this.buffer = this.buffer.subarray(lineEnd + 1);
+      const tail = chunk.subarray(lineStart, lineEnd);
+      const line =
+        this.partialBytes === 0 ? tail : Buffer.concat([...this.partial, tail], lineBytes);
+      this.partial = [];
+      this.partialBytes = 0;
+      lineStart = lineEnd + 1;
 
       try {
-        const parsed = JSON.parse(line);
+        const parsed = JSON.parse(line.toString("utf-8"));
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
           out.push(parsed as Record<string, unknown>);
         }
@@ -82,13 +94,18 @@ export class StdioFrameDecoder {
         // Skip an unparseable line; the next one may still be intact.
       }
     }
-    if (this.buffer.length > this.maxLineBytes) this.overflow();
+    if (lineStart < chunk.length) {
+      this.partial.push(chunk.subarray(lineStart));
+      this.partialBytes += chunk.length - lineStart;
+      if (this.partialBytes > this.maxLineBytes) this.overflow();
+    }
     return out;
   }
 
   private overflow(): never {
     this.overflowed = true;
-    this.buffer = Buffer.alloc(0);
+    this.partial = [];
+    this.partialBytes = 0;
     throw new StdioFrameOverflowError(this.maxLineBytes);
   }
 }

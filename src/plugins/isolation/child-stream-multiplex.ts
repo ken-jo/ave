@@ -22,7 +22,7 @@
 import type { Readable, Writable } from "node:stream";
 import { frameMessage, StdioFrameDecoder } from "../../mcp/stdio-framing.js";
 import { errorMessage } from "../../shared/error-message.js";
-import { FRAME_BYTES_MAX } from "./host-api-wire.js";
+import { FRAME_BYTES_MAX, HostApiBoundaryError } from "./host-api-wire.js";
 import { isPluginInstanceMethod } from "./plugin-instance-wire.js";
 
 /** A decoded frame, before anyone has decided what it is. */
@@ -121,10 +121,75 @@ export class FramedMessageStream {
    * Every writer on this side funnels through here so a frame is always one
    * `write` call, and one line: two writers can interleave whole frames but
    * never splice one line into another.
+   *
+   * The line bound is enforced HERE as well as by the reader, because the
+   * reader's only answer to an over-long line is to end the channel. A reply
+   * too large to send is sent as a `payload-too-large` error for the same
+   * call, and any other message throws that error to its writer, so a peer
+   * that stays inside the protocol never trips the other end's kill — it is
+   * left for a peer that skipped this check.
    */
   send(message: unknown): void {
-    this.output.write(frameMessage(message));
+    const frame = frameMessage(message);
+    if (frame.length - 1 <= FRAME_BYTES_MAX) {
+      this.output.write(frame);
+      return;
+    }
+    this.output.write(frameMessage(refuseOversizedFrame(message, frame.length - 1)));
   }
+
+  /**
+   * Write a frame another writer already built — the child's MCP server, which
+   * frames its own responses. Held to the same bound as {@link send}.
+   */
+  forward(frame: Buffer): void {
+    if (frame.length - 1 <= FRAME_BYTES_MAX) {
+      this.output.write(frame);
+      return;
+    }
+    // Parsed only on this path: the id of the call it answers is inside.
+    const message: unknown = JSON.parse(frame.toString("utf-8"));
+    this.output.write(frameMessage(refuseOversizedFrame(message, frame.length - 1)));
+  }
+}
+
+/** The JSON-RPC server-error code a boundary refusal carries (plugin-hostapi-protocol.md §3.3). */
+const RPC_PAYLOAD_TOO_LARGE = -32000;
+
+/**
+ * What an over-long message is sent as instead, or the error its writer gets.
+ *
+ * A REPLY becomes a refusal of the call it answers: the caller is waiting on
+ * that id, and an error it can read is the difference between one failed call
+ * and a peer that waits forever. A request or notification has a caller on
+ * THIS side, so it throws to that caller instead.
+ */
+function refuseOversizedFrame(message: unknown, lineBytes: number): unknown {
+  const text =
+    `[child-stream-multiplex] a ${lineBytes}-byte message exceeds the ${FRAME_BYTES_MAX}-byte frame limit`;
+  const detail = { byteLength: lineBytes, limit: FRAME_BYTES_MAX };
+  const candidate = (message ?? {}) as MultiplexedMessage;
+  const kind = classifyMultiplexedMessage(candidate);
+  if (kind === "rpc-response") {
+    return {
+      jsonrpc: "2.0",
+      id: candidate.id,
+      error: {
+        code: RPC_PAYLOAD_TOO_LARGE,
+        message: text,
+        data: { code: "payload-too-large", name: "HostApiBoundaryError", detail },
+      },
+    };
+  }
+  if (kind === "host-api-reply") {
+    return {
+      wire: candidate.wire,
+      callId: candidate.callId,
+      ok: false,
+      error: { code: "payload-too-large", name: "HostApiBoundaryError", message: text, detail },
+    };
+  }
+  throw new HostApiBoundaryError("payload-too-large", text, detail);
 }
 
 /** A request awaiting its reply. */

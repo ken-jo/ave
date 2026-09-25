@@ -120,6 +120,31 @@ describe("stdio-framing", () => {
       expect(() => decoder.push(Buffer.from(`${lineOf(CAP + 1)}\n`))).toThrow(StdioFrameOverflowError);
     });
 
+    it("copies each byte of a long line once, however many chunks it arrives in", () => {
+      // A line re-joined on every push costs O(chunks²) — the stall a peer
+      // buys by writing a line just under the cap in small chunks. Counted in
+      // bytes copied rather than timed, so the test cannot be flaky.
+      const lineBytes = 1024 * 1024;
+      const chunkBytes = 4096;
+      const decoder = new StdioFrameDecoder(lineBytes);
+      const concat = vi.spyOn(Buffer, "concat");
+      try {
+        const line = Buffer.from(`${lineOf(lineBytes)}\n`);
+        const decoded: Array<Record<string, unknown>> = [];
+        for (let offset = 0; offset < line.length; offset += chunkBytes) {
+          decoded.push(...decoder.push(line.subarray(offset, offset + chunkBytes)));
+        }
+        expect(decoded).toHaveLength(1);
+        const copied = concat.mock.calls.reduce(
+          (total, [list]) => total + list.reduce((sum, part) => sum + part.length, 0),
+          0,
+        );
+        expect(copied).toBeLessThanOrEqual(lineBytes);
+      } finally {
+        concat.mockRestore();
+      }
+    });
+
     it("refuses a bound that is not a positive integer", () => {
       expect(() => new StdioFrameDecoder(0)).toThrow(RangeError);
       expect(() => new StdioFrameDecoder(Number.POSITIVE_INFINITY)).toThrow(RangeError);

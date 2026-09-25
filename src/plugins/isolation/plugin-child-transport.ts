@@ -41,6 +41,7 @@ const log = createLogger("plugin-child-transport");
 interface JsonRpcErrorBody {
   readonly code: number;
   readonly message: string;
+  readonly data?: { readonly code?: unknown };
 }
 
 /**
@@ -49,15 +50,19 @@ interface JsonRpcErrorBody {
  * The code is kept because the child distinguishes "the plugin is not
  * constructed yet" from "your method does not exist" from "the handler threw",
  * and collapsing all three into one message would leave the host unable to tell
- * a protocol mistake from a plugin bug.
+ * a protocol mistake from a plugin bug. `boundaryCode` is the boundary's own
+ * refusal code when the error carries one (`payload-too-large` for a result
+ * too large to frame), so a caller can tell a refused call from a failed one.
  */
 class PluginChildRequestError extends Error {
   readonly code: number;
+  readonly boundaryCode: string | undefined;
 
   constructor(method: string, body: JsonRpcErrorBody) {
     super(`[plugin-child-transport] ${method}: ${body.message}`);
     this.name = "PluginChildRequestError";
     this.code = body.code;
+    this.boundaryCode = typeof body.data?.code === "string" ? body.data.code : undefined;
   }
 }
 
@@ -153,7 +158,13 @@ export class PluginChildTransport {
       // confined process running plugin code that nothing is waiting for.
       this.close(`[plugin-child-transport] '${method}' timed out after ${String(timeoutMs)}ms`);
     });
-    this.stream.send({ jsonrpc: "2.0", id, method, params });
+    try {
+      this.stream.send({ jsonrpc: "2.0", id, method, params });
+    } catch (error) {
+      // Refused before it was written (a request too large to frame), so no
+      // reply will ever come for it.
+      this.pending.fail(id, error as Error);
+    }
     return await settled;
   }
 

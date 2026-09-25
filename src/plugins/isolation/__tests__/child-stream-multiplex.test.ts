@@ -4,12 +4,14 @@
  * Each end reads the other's stdout into a buffer the other end fills. Without
  * a bound, a peer that never writes 0x0A grows that buffer until the reader
  * runs out of memory — on the host side, the Electron main process. The bound
- * is {@link FRAME_BYTES_MAX}, derived from the payload limit, and crossing it
- * ends the channel from whichever side saw it.
+ * is {@link FRAME_BYTES_MAX}. A writer refuses to cross it — a reply too large
+ * becomes a `payload-too-large` error for its call — and a reader that sees a
+ * longer line anyway ends the channel.
  */
 import { describe, expect, it } from "vitest";
 import { PassThrough } from "node:stream";
 import { frameMessage } from "../../../mcp/stdio-framing.js";
+import { RAW_RESULT_META } from "../../../mcp/protocol-constants.js";
 import { FramedMessageStream } from "../child-stream-multiplex.js";
 import { FRAME_BYTES_MAX, WIRE_BYTES_MAX } from "../host-api-wire.js";
 import { PluginChildTransport, type ChildLink } from "../plugin-child-transport.js";
@@ -28,13 +30,15 @@ describe("the frame bound", () => {
   it("holds the largest frame the protocol produces: a payload at the limit, twice", () => {
     // A `tools/call` result carries the plugin's value as text content AND as
     // the raw result, so a value at the payload limit crosses twice.
+    // The shape `plugin-child-runtime`'s delegate emits for a string value:
+    // the text content, and the value itself under the raw-result key.
     const encoded = Buffer.alloc(WIRE_BYTES_MAX, 0xff).toString("base64");
     const frame = frameMessage({
       jsonrpc: "2.0",
       id: "00000000-0000-4000-8000-000000000000",
       result: {
         content: [{ type: "text", text: encoded }],
-        _meta: { "ave/rawResult": { encoding: "base64", data: encoded } },
+        _meta: { [RAW_RESULT_META]: encoded },
       },
     });
     expect(frame.length - 1).toBeLessThanOrEqual(FRAME_BYTES_MAX);

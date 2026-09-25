@@ -517,10 +517,15 @@ Secondary reasons, in order:
    a stock MCP server library frames the same way
    (`docs/design/plugin-hostapi-protocol.md` §2.3); `PluginMcpHost` is already
    transport-agnostic. This is the arm the architecture named. One line is bounded
-   by `FRAME_BYTES_MAX` (`host-api-wire.ts`, derived from the payload limit
-   `WIRE_BYTES_MAX`): a peer that writes past it without a newline has broken the
-   framing, and the reader ends the channel — the host kills the child, the child
-   treats the host as gone — rather than buffering without end.
+   by `FRAME_BYTES_MAX` (`host-api-wire.ts`, sized so a byte payload at
+   `WIRE_BYTES_MAX` always fits), and it is the only bound plain-JSON traffic has —
+   a tool result, a `storage.readText` reply, a `writeJson` argument. So the writer
+   enforces it first: a reply too large to frame is sent as a `payload-too-large`
+   error for the same call, and a request or notification throws that error to
+   its caller, so one oversized value fails one call. A peer that writes a longer
+   line anyway has skipped that check, and the reader ends the channel — the host
+   kills the child, the child treats the host as gone — rather than buffering
+   without end.
 2. The child is a plain Node process, so the ASRT wrapper, the sandboxed env
    builder, and the managed-child supervision from `worker-spawn.ts` apply
    unchanged.
