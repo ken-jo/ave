@@ -224,6 +224,26 @@ describe("normalizeAlertSettings", () => {
     });
   });
 
+  it("keeps an escalated mark of literal true and treats any other value as a damaged entry", () => {
+    const escalated = choice({ enabled: false, visibility: "summary-only", escalated: true });
+    const kinds = normalizeAlertSettings({
+      kinds: {
+        "fixturemail:escalated": escalated,
+        "fixturemail:string-mark": { ...escalated, escalated: "true" },
+        "fixturemail:false-mark": { ...choice({ seenByUser: true }), escalated: false },
+        "fixturemail:null-mark": { ...choice(), escalated: null, absentSinceAppVersion: "0.12.0" },
+        "fixturemail:undefined-mark": { ...choice({ seenByUser: true }), escalated: undefined },
+      },
+    }).kinds;
+    expect(kinds).toEqual({
+      "fixturemail:escalated": escalated,
+      "fixturemail:string-mark": FAIL_CLOSED,
+      "fixturemail:false-mark": FAIL_CLOSED,
+      "fixturemail:null-mark": { ...FAIL_CLOSED, absentSinceAppVersion: "0.12.0" },
+      "fixturemail:undefined-mark": FAIL_CLOSED,
+    });
+  });
+
   describe("with the running app version", () => {
     const absent = (version: string): AlertKindChoice => choice({ absentSinceAppVersion: version });
 
@@ -246,11 +266,12 @@ describe("normalizeAlertSettings", () => {
         .toEqual(["fixturemail:absent"]);
     });
 
-    it("keeps a repaired entry however long its plugin has been absent", () => {
+    it("keeps a repaired entry however long its plugin has been absent, and ages an escalated one", () => {
       const repaired = { ...FAIL_CLOSED, absentSinceAppVersion: "0.12.0" };
       const stored = {
         kinds: {
           "fixturemail:repaired": repaired,
+          "fixturemail:escalated": choice({ enabled: false, escalated: true, absentSinceAppVersion: "0.12.0" }),
           "fixturemail:ordinary": absent("0.12.0"),
         },
       };
@@ -364,37 +385,6 @@ describe("normalizeRetiredPluginConfigs", () => {
     expect(normalizeRetiredPluginConfigs(JSON.parse(JSON.stringify({ retiredfixture: record }))))
       .toEqual({ retiredfixture: record });
   });
-
-  describe("with the running app version", () => {
-    // Retired at 0.12.0 with two successors, fixturemail and fixtureep.
-    const waiting = retiredRecord({ consumedBy: ["fixturemail"] });
-    const spent = retiredRecord({ consumedBy: ["fixtureep", "fixturemail", "fixturemail"] });
-
-    it("keeps a record while any successor has not inherited, however old it is", () => {
-      for (const running of ["0.14.0", "0.20.0", "1.0.0"]) {
-        expect(normalizeRetiredPluginConfigs({ retiredfixture: waiting }, running), running)
-          .toEqual({ retiredfixture: waiting });
-      }
-    });
-
-    it("drops a record once every successor inherited and it is two minor releases old", () => {
-      expect(normalizeRetiredPluginConfigs({ retiredfixture: spent }, "0.13.9")).toEqual({ retiredfixture: spent });
-      expect(normalizeRetiredPluginConfigs({ retiredfixture: spent }, "0.14.0")).toEqual({});
-    });
-
-    it("drops a spent record at any higher major, and keeps one from a later major", () => {
-      expect(normalizeRetiredPluginConfigs({ retiredfixture: spent }, "1.0.0")).toEqual({});
-      const later = retiredRecord({ retiredAtAppVersion: "1.0.0", consumedBy: ["fixtureep", "fixturemail"] });
-      expect(normalizeRetiredPluginConfigs({ retiredfixture: later }, "0.14.0")).toEqual({ retiredfixture: later });
-    });
-
-    it("drops nothing without a usable running version", () => {
-      for (const running of [undefined, "unknown", "", ...UNSTABLE_RUNNING_VERSIONS]) {
-        expect(normalizeRetiredPluginConfigs({ retiredfixture: spent }, running), String(running))
-          .toEqual({ retiredfixture: spent });
-      }
-    });
-  });
 });
 
 describe("SettingsService alerts and retired plugin configs", () => {
@@ -480,7 +470,7 @@ describe("SettingsService alerts and retired plugin configs", () => {
     expect(reloaded.get("retiredPluginConfigs")).toEqual({ retiredfixture: retiredRecord() });
   });
 
-  it("drops outlived entries on load when it knows the running version, and only then", () => {
+  it("drops outlived kind entries on load when it knows the running version, and only then", () => {
     const waiting = retiredRecord({ consumedBy: ["fixturemail"] });
     const spent = retiredRecord({ consumedBy: ["fixturemail", "fixtureep"] });
     const present = choice({ seenByUser: true });
@@ -496,7 +486,7 @@ describe("SettingsService alerts and retired plugin configs", () => {
 
     const current = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, appVersion: "0.14.0" });
     expect(current.get("alerts").kinds).toEqual({ "fixturemail:present": present });
-    expect(current.get("retiredPluginConfigs")).toEqual({ waitingfixture: waiting });
+    expect(current.get("retiredPluginConfigs")).toEqual({ waitingfixture: waiting, spentfixture: spent });
 
     const unversioned = load();
     expect(Object.keys(unversioned.get("alerts").kinds)).toEqual(["fixturemail:absent", "fixturemail:present"]);
@@ -519,6 +509,19 @@ describe("SettingsService alerts and retired plugin configs", () => {
     }
   });
 
+  it("never removes a well-formed retired record, whatever the running version", async () => {
+    // Retired at 0.12.0; every successor has inherited. Removal is the alerts service's decision.
+    const spent = retiredRecord({ consumedBy: ["fixtureep", "fixturemail"] });
+    for (const running of [undefined, "0.12.0", "0.14.0", "0.20.0", "1.0.0", "9.0.0", "unknown"]) {
+      writeStored({ retiredPluginConfigs: { spentfixture: spent } });
+      const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, appVersion: running });
+      expect(service.get("retiredPluginConfigs"), String(running)).toEqual({ spentfixture: spent });
+      await service.patch({ chat: { autoCompact: false } });
+      const onDisk = JSON.parse(readFileSync(join(userDataPath, SETTINGS_FILE), "utf-8")) as Record<string, unknown>;
+      expect(onDisk.retiredPluginConfigs, String(running)).toEqual({ spentfixture: spent });
+    }
+  });
+
   it("is given the running version by the boot step that creates it", () => {
     const bootSource = readFileSync(new URL("../../boot/services.ts", import.meta.url), "utf8");
     const construction = /new SettingsService\(\{[^}]*\}\)/.exec(bootSource)?.[0] ?? "";
@@ -530,6 +533,8 @@ describe("SettingsService alerts and retired plugin configs", () => {
     const kinds = {
       "fixturemail:mail-reply": choice({ absentSinceAppVersion: "0.12.0" }),
       [HOST_DUE_SOON]: choice({ enabled: false, seenByUser: true }),
+      "fixturemail:escalated": choice({ enabled: false, visibility: "summary-only", escalated: true }),
+      "fixturemail:repaired": FAIL_CLOSED,
     };
     await service.set("alerts", { osNotificationsEnabled: false, kinds });
     await service.set("retiredPluginConfigs", { retiredfixture: retiredRecord() });

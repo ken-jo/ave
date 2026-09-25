@@ -1687,8 +1687,10 @@ function normalizeAlertKindChoice(key: string, input: unknown): AlertKindChoice 
     && typeof obj.seenByUser === "boolean"
     && isAlertVisibility(obj.visibility)
     // A damaged mark is a damaged entry: read as absent, it would turn a
-    // repaired entry back into one a later retirement may switch on.
+    // repaired or escalated entry back into one a later retirement may
+    // switch on.
     && (!Object.hasOwn(obj, "repaired") || obj.repaired === true)
+    && (!Object.hasOwn(obj, "escalated") || obj.escalated === true)
   ) {
     choice = {
       enabled: obj.enabled,
@@ -1697,6 +1699,7 @@ function normalizeAlertKindChoice(key: string, input: unknown): AlertKindChoice 
       seenByUser: obj.seenByUser,
     };
     if (obj.repaired === true) choice.repaired = true;
+    if (obj.escalated === true) choice.escalated = true;
   } else {
     log.warn("alert kind entry %s is malformed, storing it off and unseen", key);
     choice = { ...FAIL_CLOSED_ALERT_KIND_CHOICE };
@@ -1842,30 +1845,16 @@ function normalizeRetiredPluginConfigRecord(input: unknown): RetiredPluginConfig
 }
 
 /**
- * A retired record has served its purpose once it is two minor releases old
- * AND every successor it names has inherited from it. Age alone is not
- * enough: a user who updates the app before installing a successor would
- * lose the choices that successor was meant to carry over.
- */
-function isRetiredRecordSpent(record: RetiredPluginConfigRecord, appVersion: string): boolean {
-  if (!isTwoMinorReleasesBehind(record.retiredAtAppVersion, appVersion)) return false;
-  const consumed = new Set(record.consumedBy);
-  return record.successors.plugins.every((successor) => consumed.has(successor.pluginId));
-}
-
-/**
  * Coerce the on-disk `retiredPluginConfigs` block. A record is what a
  * retirement wrote for one plugin, and a successor reads it as the user's
  * former choices, so a record with any field out of shape is dropped whole:
  * a half-repaired record would hand a successor choices nobody made.
  *
- * With the running `appVersion`, a record that is spent is dropped (see
- * {@link isRetiredRecordSpent}). Without a stable release version nothing is dropped.
+ * The load never removes a well-formed record, whatever its age: whether
+ * every successor has inherited and the retired package is gone is the
+ * alerts service's question, not one the settings file can answer.
  */
-export function normalizeRetiredPluginConfigs(
-  input: unknown,
-  appVersion?: string,
-): Record<string, RetiredPluginConfigRecord> {
+export function normalizeRetiredPluginConfigs(input: unknown): Record<string, RetiredPluginConfigRecord> {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     return {};
   }
@@ -1878,10 +1867,6 @@ export function normalizeRetiredPluginConfigs(
     const record = normalizeRetiredPluginConfigRecord(value);
     if (!record) {
       log.warn("dropping malformed retired plugin config: %s", pluginId);
-      continue;
-    }
-    if (appVersion !== undefined && isRetiredRecordSpent(record, appVersion)) {
-      log.info("dropping retired plugin config %s: every successor inherited from it", pluginId);
       continue;
     }
     out[pluginId] = record;

@@ -66,6 +66,13 @@ export interface AlertKindChoice {
    * repaired entry alone, and the user's own change clears the mark.
    */
   repaired?: true;
+  /**
+   * Set when an update raised the kind's declared visibility above the one
+   * the user consented to and the host turned the kind off. The user's own
+   * change clears the mark. Unlike `repaired`, it does not keep an absent
+   * plugin's entry past its age limit.
+   */
+  escalated?: true;
 }
 
 export interface AlertSettings {
@@ -129,8 +136,8 @@ export interface RetiredPluginConfigRecord {
   successors: RetirementSuccessors;
   /**
    * Successor plugin ids that have taken their inheritance from this record.
-   * The record outlives its age limit until every successor in
-   * `successors.plugins` is listed here, so a successor installed late still
+   * The record stays until every successor in `successors.plugins` is listed
+   * here and the retired package is gone, so a successor installed late still
    * inherits.
    */
   consumedBy: string[];

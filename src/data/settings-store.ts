@@ -971,11 +971,10 @@ export interface SettingsServiceOptions {
    */
   systemLocale?: string;
   /**
-   * The running app version. The load drops alert entries and retired plugin
-   * records that have outlived it (two minor releases, see
-   * `normalizeAlertSettings` and `normalizeRetiredPluginConfigs`). Absent, a
-   * pre-release build, or anything but a stable `X.Y.Z` release — the
-   * resolver's `"unknown"` included — drops nothing.
+   * The running app version. The load drops alert kind entries whose plugin
+   * has been absent for two minor releases (see `normalizeAlertSettings`).
+   * Absent, a pre-release build, or anything but a stable `X.Y.Z` release —
+   * the resolver's `"unknown"` included — drops nothing.
    */
   appVersion?: string;
 }
@@ -1934,7 +1933,7 @@ export class SettingsService {
         plugins: {},
         pluginConfigs: { ...DEFAULT_SETTINGS.pluginConfigs, ...pluginConfigs },
         alerts: normalizeAlertSettings(parsed.alerts, appVersion),
-        retiredPluginConfigs: normalizeRetiredPluginConfigs(parsed.retiredPluginConfigs, appVersion),
+        retiredPluginConfigs: normalizeRetiredPluginConfigs(parsed.retiredPluginConfigs),
         features: { ...DEFAULT_SETTINGS.features, ...normalizedFeatures },
         appliedMigrations,
       };
