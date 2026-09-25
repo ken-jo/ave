@@ -617,10 +617,13 @@ describe("installer smoke and packaging discipline", () => {
     // gates by the list above, but each can still fail ci.yml's build step and
     // skip the suite behind it. They stay because each reads either the
     // sources being compiled or the bytes the build itself just wrote, and a
-    // local `bun run build` is where that drift has to surface. Pinned as an
-    // exact list so a check added to `build` fails here and has to be argued
-    // for, and so the count in ci.yml's comment beside the trailing gates
-    // cannot drift away from the composite it describes.
+    // local `bun run build` is where that drift has to surface. The protocol
+    // schema check is the first kind: it regenerates from the contract and
+    // wire sources the build compiles, and compares against the copy
+    // committed beside them. Pinned as an exact list so a check added to
+    // `build` fails here and has to be argued for, and so the count in
+    // ci.yml's comment beside the trailing gates cannot drift away from the
+    // composite it describes.
     const commands = (packageScripts["build"] as string)
       .split("&&")
       .map((part) => part.trim());
@@ -630,6 +633,7 @@ describe("installer smoke and packaging discipline", () => {
     expect(assertions).toEqual([
       "bun run check:import-cycles",
       "node scripts/check-generated-assets.mjs",
+      "bun run check:plugin-host-protocol-schema",
       "bun run check:i18n-catalog",
       "bun run check:i18n-barrels",
       "node scripts/check-no-tls-bypass.mjs",
@@ -640,7 +644,7 @@ describe("installer smoke and packaging discipline", () => {
       "bun run check:source-text-safe",
     ]);
 
-    // Of those ten, the four that a later command in the same composite
+    // Of those eleven, the five that a later command in the same composite
     // compiles behind. ci.yml's comment states this number; this is where it
     // comes from.
     const lastCompile = commands.reduce(
@@ -654,6 +658,7 @@ describe("installer smoke and packaging discipline", () => {
     ).toEqual([
       "bun run check:import-cycles",
       "node scripts/check-generated-assets.mjs",
+      "bun run check:plugin-host-protocol-schema",
       "bun run check:i18n-catalog",
       "bun run check:i18n-barrels",
     ]);
