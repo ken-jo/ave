@@ -445,9 +445,16 @@ notification host→plugin
 and the same shape reused by the Ave peer channel plugin→host, where MCP defines no
 pattern (§3.1) — replaces the bespoke `signalChannelId` and abort-channel notification
 (`host-api-wire.ts:125-135`, `:1607-1618`). The two directions have different targets:
-host→plugin names an in-flight `tools/call`, and the child maps it to the tool handler's
-`AbortSignal`; plugin→host names an in-flight `ave/host/*` request, and the host aborts
-the `AbortController` it holds for `hostFetch`, `callLlm` and `resolveApiKey`. The
+host→plugin names an in-flight `tools/call`; plugin→host names an in-flight
+`ave/host/*` request, and the host aborts the `AbortController` it holds for
+`hostFetch`, `callLlm` and `resolveApiKey`. The host→plugin direction is reserved: a
+`PluginToolHandler` (`public-contract.ts:2213`) takes no `AbortSignal` today, so the
+child drops that notification until the handler contract gains a signal, and the host
+does not send it. A cancelled `ave/host/*` request still gets a reply — an error with
+`data.code` `host-internal` and `data.name` `AbortError` — although MCP says a receiver
+SHOULD NOT respond to a cancelled request: the child's typed client holds a pending
+entry per request id, and the reply is what releases it. A non-JS runtime must expect
+that reply. The
 plugin's `AbortSignal` in the typed client maps to sending the notification for the
 in-flight request id. A cancellation naming an id that is not in the receiving
 direction's pending table is dropped, like any unrecognised frame (§9.4 item 4). MCP
@@ -751,7 +758,7 @@ Add `requires.hostProtocol` (integer-as-string, e.g. `"1"`). Rules:
 
 | Risk | Control |
 |---|---|
-| RPC surface abuse: a plugin hammers `ave/host/*` (log flood, storage churn, `triggerConversation` spam, subscription leak) | per-(plugin, method) token bucket in the dispatcher with a refusal code `rate-limited` (new, added to the closed set); cap on open subscriptions per plugin; `WIRE_BYTES_MAX` 16 MiB per decoded payload (`host-api-wire.ts:471`), and a per-line cap in the frame decoder derived from it, whose overrun terminates the child (added with the newline framing, §9.4 item 1), so a child that never writes a newline cannot grow the host's buffer without bound; `logEvent` key/prefix caps already exist for `getSecret` (`host-api-factory.ts:790-798`) and are generalised. Today no rate limiting exists in the dispatcher (verified by absence of any limit constant in `host-api-dispatcher.ts`). |
+| RPC surface abuse: a plugin hammers `ave/host/*` (log flood, storage churn, `triggerConversation` spam, subscription leak) | per-(plugin, method) token bucket in the dispatcher with a refusal code `rate-limited` (new, added to the closed set); cap on open subscriptions per plugin; `WIRE_BYTES_MAX` 16 MiB per decoded payload (`host-api-wire.ts:471`), and a per-line cap in the frame decoder derived from it, whose overrun terminates the child (added with the newline framing, §9.4 item 1), so a child that never writes a newline cannot grow the host's buffer without bound. Plain-JSON values (tool results, `storage.readText`/`readJson` replies, arguments) have no payload cap of their own, so each side checks the frame against the same cap before it writes: an oversized reply becomes a `payload-too-large` error for the same id, and an oversized request rejects its caller with `payload-too-large`. The receiver's kill is reserved for a peer that skipped that check; `logEvent` key/prefix caps already exist for `getSecret` (`host-api-factory.ts:790-798`) and are generalised. Today no rate limiting exists in the dispatcher (verified by absence of any limit constant in `host-api-dispatcher.ts`). |
 | Resource exhaustion: a plugin process consumes memory/CPU | Linux: a per-plugin cgroup from the workload resource controller once it is wired to the spawn path (`linux-workload-resource-controller.md:1-15` says it is not yet). macOS: `RLIMIT` in the wrapper is deferred (decision 7); Windows: Job Objects are not available through srt-win today. Until then the control is crash containment: the host survives, the plugin is marked degraded. |
 | A plugin process outlives the host | child exits on stdin end (`plugin-child-main.ts:319-326`); `managed-child-processes.ts` tracks and kills process groups on app quit; a `process`-entry plugin must pass the stdin-close conformance check (§10). Residual: a hard host crash on Windows leaves the child to notice a closed pipe on its next write. |
 | Arbitrary executable via `process` entry | a pinned release or archive artifact only (§2.1); a wrap whose published `confines` includes `process` (never srt-win); refused when the sandbox is off; the command must be inside the plugin root (Agent Plugins rule); no `PATH` search for a marketplace plugin. |
@@ -876,7 +883,9 @@ migrated.
    emits `JSON.stringify(message) + "\n"` (the stringifier escapes every newline inside a
    string, so one message is one line), and `StdioFrameDecoder` splits the byte buffer on
    `0x0A` before decoding and refuses a line longer than a cap derived from
-   `WIRE_BYTES_MAX` (the overrun is a contract violation that terminates the child), so a multi-byte character split across chunks decodes intact —
+   `WIRE_BYTES_MAX` (the overrun is a contract violation that terminates the child; the
+   sender checks the same cap first and turns an oversized frame into a
+   `payload-too-large` error, so only a peer that skipped the check is terminated), so a multi-byte character split across chunks decodes intact —
    the rule `mcp-client.ts` applies at `:2453-2458`. A line that is not a JSON object is
    dropped, never thrown on, as today. The Content-Length path is deleted in the same
    change; its callers are `child-stream-multiplex.ts:23`, `plugin-child-main.ts:32`, the
