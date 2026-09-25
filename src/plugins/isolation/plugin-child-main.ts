@@ -45,8 +45,7 @@ import {
   type PluginConstructParams,
   type PluginConstructResult,
   type PluginLifecycleHookName,
-  type ReadUiResourceParams,
-  type ReadUiResourceResult,
+  type PluginShutdownParams,
 } from "./plugin-instance-wire.js";
 import {
   HOST_PROTOCOL_NOTIFICATIONS,
@@ -214,6 +213,13 @@ export function servePluginChild(
         { version: String(version), served: [...HOST_PROTOCOL_VERSIONS_SERVED] },
       );
     }
+    const capabilities: unknown = params.hostProtocol.capabilities;
+    if (!Array.isArray(capabilities) || !capabilities.every((entry) => typeof entry === "string")) {
+      throw new HostApiBoundaryError(
+        "argument-marshalling-rejected",
+        "[plugin-child] construct: hostProtocol.capabilities must be an array of method names",
+      );
+    }
     constructedPluginId = params.context.pluginId;
     runtime = await startPluginChildRuntime({
       input: mcpIn,
@@ -231,8 +237,14 @@ export function servePluginChild(
       implementedToolNames: params.declaredToolNames.filter(
         (name) => typeof instance.handlers[name] === "function",
       ),
-      servesUiResources: typeof instance.readUiResource === "function",
+      servesUiResources: runtime.servesUiResources,
       lifecycleHooks: describeLifecycleHooks(instance),
+      // Nothing, for a JavaScript plugin: an optional member it lacks answers
+      // `path-not-implemented` at the call, which is what it gets in-process
+      // from `typeof hostApi.hostFetch !== "function"` — there is no
+      // declaration for this runtime to report. A plugin that speaks the
+      // protocol itself names its hard needs here.
+      pluginProtocol: { requires: [] },
     };
   }
 
@@ -255,16 +267,13 @@ export function servePluginChild(
       case PLUGIN_INSTANCE_METHODS.stop:
         await instance.stop?.();
         return null;
-      case PLUGIN_INSTANCE_METHODS.readUiResource: {
-        const uri = (params as unknown as ReadUiResourceParams | undefined)?.uri;
-        if (typeof uri !== "string") {
-          throw new Error("[plugin-child] readUiResource requires a string 'uri'");
+      case PLUGIN_INSTANCE_METHODS.shutdown: {
+        const subscriptionId = (params as unknown as PluginShutdownParams | undefined)?.subscriptionId;
+        if (typeof subscriptionId !== "string") {
+          throw new Error("[plugin-child] shutdown requires a string 'subscriptionId'");
         }
-        if (typeof instance.readUiResource !== "function") {
-          throw new Error("[plugin-child] this plugin serves no ui resources");
-        }
-        const html = await instance.readUiResource(uri);
-        return { html } satisfies ReadUiResourceResult;
+        await runtime.runShutdownHandler(subscriptionId);
+        return null;
       }
       default:
         throw new Error(`[plugin-child] unknown instance method '${method}'`);

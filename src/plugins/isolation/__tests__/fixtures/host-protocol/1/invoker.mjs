@@ -131,6 +131,5 @@ export const createPlugin = async (context) => {
     start: async () => undefined,
     onPublished: async () => undefined,
     stop: async () => undefined,
-    readUiResource: async (uri) => `<p>${uri}</p>`,
   };
 };

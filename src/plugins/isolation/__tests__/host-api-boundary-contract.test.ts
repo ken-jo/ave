@@ -97,6 +97,10 @@ function dispatcher(
     isActive: () => true,
     notifications: silentSink,
     reportUnknownField: () => {},
+    // No child runs here, so a shutdown reaching for one is a test bug.
+    shutdownChild: async (subscriptionId) => {
+      throw new Error(`no child to run shutdown handler '${subscriptionId}'`);
+    },
     ...options,
   });
 }

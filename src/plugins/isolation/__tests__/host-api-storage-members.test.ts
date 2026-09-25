@@ -134,6 +134,10 @@ function harness(
     isActive: () => true,
     notifications: silentSink,
     reportUnknownField: () => {},
+    // No child runs here, so a shutdown reaching for one is a test bug.
+    shutdownChild: async (subscriptionId) => {
+      throw new Error(`no child to run shutdown handler '${subscriptionId}'`);
+    },
     table:
       options.bind === false
         ? HOSTAPI_DISPATCH_TABLE
@@ -596,6 +600,10 @@ describe("the boundary refuses a member the plugin is no longer entitled to", ()
       isActive: () => false,
       notifications: silentSink,
       reportUnknownField: () => {},
+      // No child runs here, so a shutdown reaching for one is a test bug.
+      shutdownChild: async (subscriptionId) => {
+        throw new Error(`no child to run shutdown handler '${subscriptionId}'`);
+      },
       table: { ...HOSTAPI_DISPATCH_TABLE, ...createStorageHostApiPaths(hostApi) },
     });
     writeFileSync(join(dataDir, "live.txt"), "live");

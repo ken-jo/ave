@@ -721,6 +721,12 @@ export interface ConfigSubscriptionChildDeps {
   readonly config: Record<string, unknown>;
   /** `context.log`, so an async failure with no caller to throw to is still seen. */
   readonly report: (message: string, meta?: unknown) => void;
+  /**
+   * The plugin's `onShutdown` handlers, by the id each registered under. The
+   * host runs one through `ave/instance/shutdown`, a request it awaits, so a
+   * handler is looked up and awaited rather than delivered as a payload.
+   */
+  readonly shutdownHandlers: Map<string, () => void | Promise<void>>;
 }
 
 /**
@@ -893,30 +899,30 @@ export function createConfigSubscriptionChildMembers(
     // (`lifetime: "host-terminated"`). The child still holds a ledger entry so
     // the registration dies with the host rather than outliving it, but the
     // plugin is given no disposer — matching the in-process signature exactly.
+    //
+    // No payload is ever delivered to it. The host runs the handler through
+    // `ave/instance/shutdown`, a request it awaits with a bound, so the
+    // handler's settling is the reply and a throw crosses as an error the
+    // host logs beside every other plugin's shutdown failure.
     onShutdown: (...args) => {
       const handler = requireFunctionArgument(pluginId, "onShutdown", "handler", args[0]);
       const subscription: ChildSubscriptionHandle = subscribe(
         deps,
         "onShutdown",
         (subscriptionId) => [subscriptionId],
-        () => {
-          void (async () => {
-            try {
-              await handler();
-            } catch (error) {
-              deps.report("hostApi.onShutdown: the plugin's handler threw", {
-                error: errorMessage(error),
-              });
-            } finally {
-              // The release is how the host learns the handler has finished —
-              // it is the reply to a fire-and-forget notification. It runs even
-              // when the handler threw, because a host that waits forever for a
-              // plugin that has already failed is the hang this replaces.
-              subscription.dispose();
-            }
-          })();
-        },
+        () => undefined,
       );
+      deps.shutdownHandlers.set(subscription.subscriptionId, async () => {
+        try {
+          await handler();
+        } finally {
+          // Ran once, whichever way it settled: the host fires shutdown once,
+          // and releasing the registration keeps its ledger entry from
+          // outliving the only thing it was for.
+          deps.shutdownHandlers.delete(subscription.subscriptionId);
+          subscription.dispose();
+        }
+      });
       return undefined;
     },
   };

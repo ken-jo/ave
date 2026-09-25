@@ -80,20 +80,23 @@ import {
   createConfigSubscriptionHostApiPaths,
   createInteractionHostApiPaths,
   createServiceHostApiPaths,
+  hostProtocolCapabilities,
   createStorageHostApiPaths,
   type DelegatedWorkerConfinement,
   type HostApiPathHandler,
 } from "./host-api-dispatcher.js";
 import {
   HOST_PROTOCOL_NOTIFICATIONS,
+  IncompatibleHostProtocolError,
   NEWEST_HOST_PROTOCOL_VERSION,
+  isServedHostProtocolVersion,
   type HostApiPath,
+  type HostProtocolVersion,
 } from "./host-api-wire.js";
 import {
   PLUGIN_INSTANCE_METHODS,
   type PluginConstructParams,
   type PluginConstructResult,
-  type ReadUiResourceResult,
 } from "./plugin-instance-wire.js";
 import {
   PluginChildTransport,
@@ -1113,6 +1116,57 @@ function readToolResult(pluginId: string, toolName: string, result: unknown): un
 }
 
 /**
+ * The host protocol version this plugin's connection speaks (§3.2).
+ *
+ * Its declared `requires.hostProtocol`, or — for a plugin that declares none —
+ * the newest this host serves: the host-shipped runtime speaks for a JS plugin,
+ * so there is nothing to negotiate. A declared version this host does not
+ * serve is refused, never downgraded.
+ */
+function connectionHostProtocol(manifest: PluginManifest): HostProtocolVersion {
+  const declared = manifest.requires?.hostProtocol;
+  if (declared === undefined) return NEWEST_HOST_PROTOCOL_VERSION;
+  if (!isServedHostProtocolVersion(declared)) {
+    throw new IncompatibleHostProtocolError(manifest.id, { declared });
+  }
+  return declared;
+}
+
+/**
+ * Refuse a child whose `construct` reply names a method it cannot run without
+ * that this connection did not advertise (§3.2). A reply with no
+ * `pluginProtocol` is a child that does not speak this protocol version, and
+ * fails as one rather than being read as "requires nothing".
+ */
+function requireServedCapabilities(
+  pluginId: string,
+  construction: PluginConstructResult,
+  capabilities: readonly string[],
+): void {
+  const requires: unknown = construction.pluginProtocol?.requires;
+  if (!Array.isArray(requires) || !requires.every((entry) => typeof entry === "string")) {
+    throw new Error(
+      `[out-of-process-plugin] ${pluginId}: construct answered no pluginProtocol.requires list`,
+    );
+  }
+  const served = new Set(capabilities);
+  const missing = requires.filter((method) => !served.has(method));
+  if (missing.length > 0) {
+    throw new IncompatibleHostProtocolError(pluginId, { missingCapabilities: missing });
+  }
+}
+
+/** The card's HTML out of an MCP `resources/read` result, or a clear failure. */
+function readUiResourceHtml(pluginId: string, uri: string, result: unknown): string {
+  const contents = (result as { contents?: unknown } | undefined)?.contents;
+  const first = Array.isArray(contents) ? (contents[0] as { text?: unknown } | undefined) : undefined;
+  if (typeof first?.text !== "string") {
+    throw new Error(`[out-of-process-plugin] ${pluginId}: resources/read('${uri}') returned no html`);
+  }
+  return first.text;
+}
+
+/**
  * Build the factory the lifecycle calls in place of the in-process one.
  *
  * The returned factory does the whole of the boundary's setup — spawn,
@@ -1129,6 +1183,11 @@ export function createOutOfProcessPluginFactory(
   const pluginId = spec.manifest.id;
 
   return async (context: PluginRuntimeContext): Promise<RuntimePlugin> => {
+    // Refused before anything is spawned. `runtime/index.ts` refuses the same
+    // manifest at every load path; this is the spawn path's own copy of the
+    // rule, so a factory reached any other way cannot start a child that would
+    // be told a version it does not speak.
+    const hostProtocolVersion = connectionHostProtocol(spec.manifest);
     // No generation id crosses: each factory call spawns its own child, so the
     // connection IS the incarnation (§2.4), and the pipe closing when the
     // incarnation retires is what pins it.
@@ -1153,6 +1212,9 @@ export function createOutOfProcessPluginFactory(
     });
 
     let live = true;
+    // ONE table: the dispatcher serves it and `construct` advertises it, so
+    // what the child is told it may call is what the host will answer.
+    const table = createBoundHostApiDispatchTable(hostApi, envelope);
     const transport = new PluginChildTransport({
       pluginId,
       // The boundary's own liveness, not a second authority. The authoritative
@@ -1189,7 +1251,7 @@ export function createOutOfProcessPluginFactory(
           "ignored an undeclared params field",
         );
       },
-      table: createBoundHostApiDispatchTable(hostApi, envelope),
+      table,
       link: child.link,
     });
     transport.start();
@@ -1359,9 +1421,10 @@ export function createOutOfProcessPluginFactory(
         ...(constructionPreferences ? { appPreferences: constructionPreferences } : {}),
       };
       const constructParams: PluginConstructParams = {
-        // The host-shipped runtime speaks for a JS plugin, so the connection
-        // speaks the newest version that runtime serves.
-        hostProtocol: { version: NEWEST_HOST_PROTOCOL_VERSION },
+        hostProtocol: {
+          version: hostProtocolVersion,
+          capabilities: hostProtocolCapabilities(table),
+        },
         manifest: spec.manifest,
         context: childContext,
         entryPath: spec.entryPath,
@@ -1378,6 +1441,7 @@ export function createOutOfProcessPluginFactory(
         // under a confinement nobody is watching.
         TOOL_TIMEOUT_POLICY.pluginImportMs + TOOL_TIMEOUT_POLICY.pluginFactoryMs,
       )) as PluginConstructResult;
+      requireServedCapabilities(pluginId, construction, constructParams.hostProtocol.capabilities);
 
       /**
        * The seed above was read BEFORE the child could receive anything, so this
@@ -1463,17 +1527,12 @@ export function createOutOfProcessPluginFactory(
         };
       }
       if (construction.servesUiResources) {
-        instance.readUiResource = async (uri: string) => {
-          const result = (await transport.request(PLUGIN_INSTANCE_METHODS.readUiResource, {
-            uri,
-          })) as ReadUiResourceResult;
-          if (typeof result?.html !== "string") {
-            throw new Error(
-              `[out-of-process-plugin] ${pluginId}: readUiResource('${uri}') returned no html`,
-            );
-          }
-          return result.html;
-        };
+        // MCP `resources/read`, which the child's server answers with the
+        // card's HTML — the same verb a plugin in any language serves its card
+        // with. The host's own provider still applies the manifest's policy to
+        // what comes back; this is only the content.
+        instance.readUiResource = async (uri: string) =>
+          readUiResourceHtml(pluginId, uri, await transport.request("resources/read", { uri }));
       }
       return instance;
     } catch (error) {

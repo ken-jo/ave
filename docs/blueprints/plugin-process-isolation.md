@@ -94,6 +94,31 @@ The `PluginRuntimeContext` handed to (1) carries: `pluginId`, `pluginRoot`,
 `hostRoot`, `pluginDataDir` (all strings), `config` (resolved plain object from
 `applyConfigDefaults`), `log` (a **function**), and `hostApi` (the object below).
 
+**On the wire** (`docs/design/plugin-hostapi-protocol.md` §3.2): (1)–(4) are the
+`ave/instance/construct`, `start`, `onPublished` and `stop` requests, (5) is MCP
+`tools/call`, and (6) is MCP `resources/read` for a `ui://` URI the manifest
+declares, answered by the child's own MCP server — the verb a plugin in any
+language serves its card with; the host still applies the manifest's policy to
+the HTML that comes back. `construct` reports a card only when the plugin has the
+hook *and* declares a card, so the host is never handed a read the child refuses.
+The fifth instance method, `ave/instance/shutdown`, runs one registered
+`onShutdown` handler (§3.1).
+
+`construct` is also the negotiation. Its params carry `hostProtocol.version` and
+`hostProtocol.capabilities`, the `ave/host/*` methods this host answers — read
+off the dispatcher's **bound** table, so a host build without `hostFetch`,
+`spawnWorker` or `resolveApiKey` does not advertise it, and what is advertised is
+what the dispatcher serves. The reply carries `pluginProtocol.requires`, the
+methods the plugin cannot run without; one this host did not advertise refuses
+the plugin with `incompatible-host-protocol`, and a reply with no
+`pluginProtocol` is a child that does not speak the version and fails. The
+host-shipped runtime answers `requires: []` for a JavaScript plugin, which meets
+a missing optional member as `path-not-implemented` at the call, as it does
+in-process. A manifest may declare `requires.hostProtocol`; a version this app
+does not serve is refused with `incompatible-host-protocol` at every load path,
+before anything is spawned, and a plugin that declares none is spoken for with
+the newest served version.
+
 ### 2.2 Plugin → host: the 36 hostApi paths
 
 The authoritative list is `HOSTAPI_EFFECT_BY_PATH` in
@@ -212,7 +237,7 @@ stack, and its ability to crash the host). So each sync member gets a real decis
 | `onEvent(type, handler)` | `() => void` | Handler stays in the child. The child sends `subscribe(type)`, stores the handler in a child-local map, and returns a **local** disposer that sends `unsubscribe`. The host delivers matching events as notifications. Only strings and JSON payloads cross. |
 | `config.onChange(key, cb)` | `() => void` | Same pattern. |
 | `onPluginsChanged(handler)` | `() => void` | Same pattern. |
-| `onShutdown(handler)` | `void` | Child registers locally. The host sends a `shutdown` **request** and awaits the reply before terminating, bounded by the existing lifecycle timeout, then SIGTERM → SIGKILL. This preserves today's "host awaits the handler's promise" semantics; the bound is new and is an improvement (today a plugin can hang shutdown forever). |
+| `onShutdown(handler)` | `void` | Child registers locally under a subscription id. The host runs it with the `ave/instance/shutdown` **request** naming that id and awaits the reply, bounded by `TOOL_TIMEOUT_POLICY.pluginShutdownHandlerMs` — the same bound the host's shutdown step gives an in-process handler. A handler that overruns it gets the transport closed and the child killed; one that throws is the request's error, which the host logs beside every other plugin's shutdown failure. This preserves today's "host awaits the handler's promise" semantics; the kill is new and is an improvement (in-process, an overrunning handler is only abandoned). |
 
 ### 3.2 Async members returning non-clonable values
 

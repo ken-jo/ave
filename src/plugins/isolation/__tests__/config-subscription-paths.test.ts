@@ -185,6 +185,8 @@ async function harness(
     isActive: options.isActive ?? (() => true),
     notifications: { deliver: (notification) => child.deliver(notification) },
     reportUnknownField: () => {},
+    // `ave/instance/shutdown`, answered by the child runtime itself.
+    shutdownChild: (subscriptionId) => child.runShutdownHandler(subscriptionId),
     table: {
       ...HOSTAPI_DISPATCH_TABLE,
       ...createConfigSubscriptionHostApiPaths(api.hostApi),
@@ -529,8 +531,8 @@ describe("onShutdown is the subscription the HOST ends", () => {
       order.push("host-returned");
     });
     await flush();
-    // The host is blocked on a notification it cannot await directly; the
-    // registration IS the wait, and the child's release is the reply.
+    // The host is blocked on `ave/instance/shutdown`; the handler settling
+    // is the reply.
     expect(order).toEqual(["plugin-started"]);
     expect(hostReturned).toBe(false);
 
@@ -543,12 +545,38 @@ describe("onShutdown is the subscription the HOST ends", () => {
     expect(child.openSubscriptionCount).toBe(0);
   });
 
-  it("stops waiting when the plugin's handler throws, instead of hanging forever", async () => {
-    const { hostApi, api, host } = await harness();
+  it("hands the host the plugin's failure when the handler throws, instead of hanging forever", async () => {
+    const { hostApi, api, host, child } = await harness();
     hostApi.onShutdown(() => Promise.reject(new Error("teardown failed")));
     await flush();
-    await expect(api.runShutdown()).resolves.toBeUndefined();
+    // The reply to `ave/instance/shutdown` is the failure, so the host's own
+    // shutdown loop logs it beside every other plugin's.
+    await expect(api.runShutdown()).rejects.toThrow("teardown failed");
+    await flush();
     expect(host.openSubscriptionCount).toBe(0);
+    expect(child.openSubscriptionCount).toBe(0);
+  });
+
+  it("runs the handler once, however often the host fires shutdown", async () => {
+    const { hostApi, api } = await harness();
+    let runs = 0;
+    hostApi.onShutdown(() => {
+      runs += 1;
+    });
+    await flush();
+    await api.runShutdown();
+    await flush();
+    await expect(api.runShutdown()).resolves.toBeUndefined();
+    expect(runs).toBe(1);
+  });
+
+  it("refuses a shutdown that names no open registration, instead of answering it done", async () => {
+    const { child } = await harness();
+    // A host that believed it had waited for a handler the child never held
+    // would log a clean shutdown of work that did not run.
+    await expect(child.runShutdownHandler("never-registered")).rejects.toThrow(
+      /no open onShutdown registration 'never-registered'/,
+    );
   });
 
   it("stops waiting when the child died before shutdown ran", async () => {
@@ -744,6 +772,10 @@ describe("the group binds to one incarnation and claims exactly its own members"
       isActive: () => true,
       notifications: { deliver: () => {} },
       reportUnknownField: () => {},
+      // No child runs here, so a shutdown reaching for one is a test bug.
+      shutdownChild: async (subscriptionId) => {
+        throw new Error(`no child to run shutdown handler '${subscriptionId}'`);
+      },
       table: {
         ...HOSTAPI_DISPATCH_TABLE,
         ...createConfigSubscriptionHostApiPaths(drifted),
@@ -775,6 +807,10 @@ describe("the group binds to one incarnation and claims exactly its own members"
       isActive: () => true,
       notifications: { deliver: () => {} },
       reportUnknownField: () => {},
+      // No child runs here, so a shutdown reaching for one is a test bug.
+      shutdownChild: async (subscriptionId) => {
+        throw new Error(`no child to run shutdown handler '${subscriptionId}'`);
+      },
       table,
     });
     const reply = await host.handle(hostApiRequest("config.set", ["theme", "light"], "c1"));

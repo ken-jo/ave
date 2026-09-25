@@ -693,6 +693,14 @@
                     "pattern": "[\\r\\n]"
                   },
                   "description": "Minimum Ave app version (plain SemVer MAJOR.MINOR.PATCH, not a range) required to load this plugin. The host refuses to install (hard block before download) and refuses to activate (skips start(), surfaces a non-dismissable \"needs newer app\" state) when the running app is older. Omit for no minimum (compatible with all app versions)."
+                },
+                "hostProtocol": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]*$",
+                  "not": {
+                    "pattern": "[\\r\\n]"
+                  },
+                  "description": "The Ave host protocol version the plugin speaks, an integer written as a string (\"1\"). The host refuses to load the plugin (incompatible-host-protocol) when the running app does not serve that version. Omit for a JavaScript plugin: the host speaks its newest version for it. An app whose schema predates this field rejects the manifest, so a plugin that declares it sets minAppVersion to the first release that knows it."
                 }
               },
               "additionalProperties": false

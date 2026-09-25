@@ -31,6 +31,13 @@ The manifest should include:
 - settings schema if configurable;
 - `requires.minAppVersion`, which a marketplace install requires.
 
+A JavaScript plugin leaves `requires.hostProtocol` out: the host's own runtime
+speaks the plugin protocol for it. A plugin that declares one (a positive integer
+written as a string, such as `"1"`) is refused with `incompatible-host-protocol`
+by an app that does not serve that version, and an app whose schema predates the
+field rejects the manifest outright, so its `minAppVersion` must name a release
+that knows the field.
+
 `tools[]` is the only callable surface. The retired `uiTool`, `uiTools`,
 `uiAction`, `uiActions`, top-level `operationGovernance`, and top-level
 `appAllowed` shapes are rejected. App/model visibility belongs on each Tool at

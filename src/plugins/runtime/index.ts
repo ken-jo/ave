@@ -52,6 +52,11 @@ import { buildImportUrl, buildMethodMap, importPluginFactory, declaredAppVisible
 import { withPluginInstallLock, hasExclusivePluginLifecycleMutation, isPluginInstallLockHeld, withAllPluginInstallLocks, withResolvedPluginInstallLocks } from "../install-lifecycle.js";
 import { isOutOfProcessPlugin } from "../isolation/out-of-process-plugins.js";
 import { createOutOfProcessPluginFactory } from "../isolation/out-of-process-plugin.js";
+import {
+  HOST_PROTOCOL_VERSIONS_SERVED,
+  IncompatibleHostProtocolError,
+  isServedHostProtocolVersion,
+} from "../isolation/host-api-wire.js";
 import { createPluginStorage, createPluginStorageAuditSink } from "../storage.js";
 import type { SecretEncryption } from "../../data/secret-document-store.js";
 import { runWithCeiling } from "../../tools/executor-ceiling.js";
@@ -2898,6 +2903,49 @@ abstract class PluginRuntimeState {
   }
 
   /**
+   * Host protocol gate (LOAD boundary), the sibling of
+   * {@link markIncompatibleAppVersion} and run beside it on every load path.
+   * Returns `true` and marks the plugin failed when `requires.hostProtocol`
+   * names a version this app does not serve (plugin-hostapi-protocol.md §3.2);
+   * `false` when the field is absent, which the host answers with its newest
+   * version, or served.
+   *
+   * A distinct refusal from `incompatible-app-version`, so the Doctor can say
+   * "this plugin was built for a different protocol" rather than "update the
+   * app" — a newer app may have dropped the version rather than lacking it.
+   */
+  protected markIncompatibleHostProtocol(manifest: PluginManifest): boolean {
+    const declared = manifest.requires?.hostProtocol;
+    if (declared === undefined || isServedHostProtocolVersion(declared)) return false;
+    this.refuseIncompatibleHostProtocol(
+      manifest,
+      new IncompatibleHostProtocolError(manifest.id, { declared }),
+    );
+    return true;
+  }
+
+  /** Report an {@link IncompatibleHostProtocolError}, found before a spawn or at construct. */
+  protected refuseIncompatibleHostProtocol(
+    manifest: PluginManifest,
+    error: IncompatibleHostProtocolError,
+  ): void {
+    log.error(`${manifest.id} rejected — ${error.message}`);
+    this.auditLog?.("error", "plugin_incompatible_host_protocol", {
+      pluginId: manifest.id,
+      ...error.detail,
+      served: [...HOST_PROTOCOL_VERSIONS_SERVED],
+    });
+    this.markLoadRefused(manifest.id, {
+      summary: error.message,
+      reason: error.message,
+      // NOT locally reinstall-fixable — the same package speaks the same
+      // protocol after a reinstall.
+      kind: "incompatible-host-protocol",
+      displayName: manifest.name ?? manifest.id,
+    });
+  }
+
+  /**
    * Plugin revocation gate (LOAD boundary). A plugin whose installed version
    * its bound source revoked (design §10.4) must not keep running — mirrors
    * `markIncompatibleAppVersion` immediately above, including the
@@ -3734,6 +3782,12 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       return "failed";
     }
 
+    // Host protocol gate — HARD BLOCK at LOAD, beside the app-version gate.
+    if (!canCommit()) return "cancelled";
+    if (this.markIncompatibleHostProtocol(manifest)) {
+      return "failed";
+    }
+
     // Plugin revocation gate — HARD BLOCK at LOAD (see boot path).
     if (!canCommit()) return "cancelled";
     if (this.markRevoked(manifest)) {
@@ -3906,7 +3960,13 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         return "cancelled";
       }
       log.error(`${manifest.id} createPlugin failed: %s`, (err as Error).message);
-      this.markFailed(manifest.id);
+      // A child whose `construct` named a host method this app does not serve
+      // is the same refusal as an unserved declared version, and says so.
+      if (err instanceof IncompatibleHostProtocolError) {
+        this.refuseIncompatibleHostProtocol(manifest, err);
+      } else {
+        this.markFailed(manifest.id);
+      }
       await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
       return "failed";
     }
@@ -5286,6 +5346,11 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     if (this.markIncompatibleAppVersion(manifest)) {
       return;
     }
+    // Host protocol gate. Same LOAD-boundary shape: a plugin built for a
+    // protocol this app does not serve is skipped before anything spawns.
+    if (this.markIncompatibleHostProtocol(manifest)) {
+      return;
+    }
     // Plugin revocation gate. Same LOAD-boundary shape as the
     // version gate immediately above: skip this plugin, keep loading
     // everything else (isolation).
@@ -5400,7 +5465,11 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       await this.drainPluginHostApiOperations(manifest.id, {
         drainHostApiOperations: drainOperations,
       });
-      this.markFailed(manifest.id);
+      if (err instanceof IncompatibleHostProtocolError) {
+        this.refuseIncompatibleHostProtocol(manifest, err);
+      } else {
+        this.markFailed(manifest.id);
+      }
       await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
       logPluginLifecycle("error", { pluginId: manifest.id, phase: PluginPhase.LOAD_FAIL, err, reason: "factory" }, "plugin factory failed");
       return;

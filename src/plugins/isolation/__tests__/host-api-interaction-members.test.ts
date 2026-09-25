@@ -172,6 +172,8 @@ async function harness(
     log: (message, meta) => hostLogs.push({ message, meta }),
     pluginId: PLUGIN_ID,
     reportUnknownField: () => {},
+    // `ave/instance/shutdown`, answered by the child runtime itself.
+    shutdownChild: (subscriptionId) => child.runShutdownHandler(subscriptionId),
     isActive: options.isActive ?? (() => true),
     notifications: { deliver: (notification) => child.deliver(notification) },
     table:

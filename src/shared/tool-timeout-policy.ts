@@ -132,6 +132,10 @@ export const TOOL_TIMEOUT_POLICY = {
   pluginFactoryMs: 10_000,
   pluginStartupDefaultMs: 10_000,
   pluginStartupMaxMs: 60_000,
+  // Each plugin `onShutdown` handler, at app quit. Slow handlers are logged and
+  // do not block quit; for an out-of-process plugin the same bound is the
+  // `ave/instance/shutdown` request deadline, past which the child is killed.
+  pluginShutdownHandlerMs: 5_000,
   // Ceiling for `RuntimePlugin.readUiResource` — the plugin hook that serves one
   // of its manifest-declared `ui://` MCP App cards. It sits on the RENDER path
   // (the user is waiting on a card, not on work a tool was asked to do), so it is
