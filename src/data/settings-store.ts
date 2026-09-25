@@ -20,6 +20,7 @@ import {
   sanitizePluginConfigPluginId,
   type PluginConfigRecord,
 } from "../shared/plugin-config.js";
+import type { AlertSettings, RetiredPluginConfigRecord } from "../shared/alerts-types.js";
 import {
   isMarketplaceEligibleLLMVendor,
   LLM_VENDORS,
@@ -91,6 +92,8 @@ import {
   normalizeWebView,
   preserveInstalledProviderPresetMetadata,
   sanitizeStoredPluginConfigs,
+  normalizeAlertSettings,
+  normalizeRetiredPluginConfigs,
   isActiveViewKey,
   isCloseBehavior,
   normalizeTelemetry,
@@ -517,6 +520,19 @@ export interface AppSettings {
   plugins: PluginSettings;
 
   pluginConfigs: Record<string, PluginConfigRecord>;
+  /**
+   * The user's per-kind choices for the alert kinds plugins declare, plus the
+   * master OS-notification switch. Written only by the alerts service, never
+   * through `patch()`: a generic settings patch and the service's own
+   * write-back must not race. Shapes in `src/shared/alerts-types.ts`.
+   */
+  alerts: AlertSettings;
+  /**
+   * The effective config a retired (revoked) plugin left behind, keyed by
+   * plugin id, so its successors can inherit the user's choices. Written by
+   * the retirement paths, never through `patch()`.
+   */
+  retiredPluginConfigs: Record<string, RetiredPluginConfigRecord>;
   /** Experimental feature flags. All default false. */
   features?: FeatureFlags;
   /**
@@ -1095,7 +1111,8 @@ export class SettingsService {
   async patch(
     partial: Partial<Omit<
       AppSettings,
-      "llm" | "chat" | "marketplace" | "shortcuts" | "telemetry" | "appliedMigrations"
+      | "llm" | "chat" | "marketplace" | "shortcuts" | "telemetry" | "appliedMigrations"
+      | "alerts" | "retiredPluginConfigs"
     >> & {
       marketplace?: Partial<MarketplaceSettings>;
       llm?: LLMSettingsPatch;
@@ -1908,6 +1925,8 @@ export class SettingsService {
         shortcuts: normalizeShortcuts(parsed.shortcuts, DEFAULT_SETTINGS.shortcuts),
         plugins: {},
         pluginConfigs: { ...DEFAULT_SETTINGS.pluginConfigs, ...pluginConfigs },
+        alerts: normalizeAlertSettings(parsed.alerts),
+        retiredPluginConfigs: normalizeRetiredPluginConfigs(parsed.retiredPluginConfigs),
         features: { ...DEFAULT_SETTINGS.features, ...normalizedFeatures },
         appliedMigrations,
       };
