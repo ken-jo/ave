@@ -399,10 +399,29 @@ Two later events can change an entry without the user:
 Settings shows every `seenByUser: false` kind with a "new" mark.
 `settings.alerts` is written only by the alerts service — from the `setKind`
 IPC and from its own write-back — so a generic settings patch and main's
-write-back cannot race. Removing a plugin leaves its entries in place with
-`absentSinceAppVersion` so a reinstall keeps the user's choice; a settings
-migration drops entries whose `absentSinceAppVersion` is two minor releases
-behind the running version.
+write-back cannot race; `SettingsService.patch()` excludes `alerts` and
+`retiredPluginConfigs` from its parameter type and ignores them at runtime.
+Removing a plugin leaves its entries in place with `absentSinceAppVersion`
+so a reinstall keeps the user's choice; the settings loader drops an entry
+whose `absentSinceAppVersion` is two minor releases behind the running
+version (a higher major, or the same major with a minor difference of at
+least two), and a retired record by `retiredAtAppVersion` the same way. The
+loader takes the running version as an optional constructor argument and
+prunes nothing when it is absent or not a stable semver core — keeping data
+is the safe failure.
+
+**A damaged file never turns a kind on.** The settings loader keeps a kind
+entry only under a key in the `<pluginId>:<kind>` / `@host:<kind>` grammar
+(anything else is dropped with a warning), and an entry whose `enabled`,
+`osNotification`, `seenByUser` or `visibility` is out of shape is replaced
+by the fail-closed choice `{ enabled: false, osNotification: false,
+visibility: "silent", seenByUser: false }` rather than dropped: a dropped
+entry would resolve again from the kind's declaration, which for a
+third-party kind may say `defaultEnabled: true`, while the fail-closed
+entry stays off, is marked new, and — because `silent` is the lowest
+consented visibility — treats any declared level as an escalation that
+keeps it off until the user visits it. An invalid `absentSinceAppVersion`
+alone only loses that field.
 
 **Opt-in is the rule, and it is a visible loss.** Every kind in this page
 declares `defaultEnabled: false`, including the successors of the OS
@@ -707,7 +726,9 @@ source the official data cannot name (custom and managed source ids are
 chosen per install, `src/marketplace/sources/registry.ts:400-405`, and a
 managed id may be an organisation name); an `anySource` successor may use
 `inherits` (toggles) only, never `configInherits` — and `hostKinds` for the
-host's own kinds (Migration). Absent file = no entries. An invalid file rejects the
+host's own kinds, each keyed by the full `@host:<kind>` settings key with a
+required `enabled` rule and an optional `osNotification` rule (Migration).
+Absent file = no entries. An invalid file rejects the
 commit exactly as `revocations.json` does, for the same reason: a policy file
 that cannot be trusted must not partially apply.
 
@@ -818,7 +839,11 @@ the successors without the host naming any plugin.
      phase writes the retired record from it if none exists and removes
      `pluginConfigs[<id>]` as today.
    A user-initiated uninstall keeps deleting. The retained record is dropped
-   by a settings migration two minor releases after `retiredAtAppVersion`.
+   by the settings loader two minor releases after `retiredAtAppVersion`
+   (the same rule and the same fail-safe as `absentSinceAppVersion`), and a
+   record with any field out of shape is dropped whole on load: a
+   half-repaired record would hand a successor choices nobody made, and no
+   record means the successor's own `defaultEnabled: false` applies.
    Writing the record also triggers `configInherits` for installed successors
    and the one-time re-resolution of auto-resolved kinds (Settings).
 2. **`inherits` on a kind**, resolved only from a retired record whose
@@ -838,9 +863,11 @@ the successors without the host naming any plugin.
    }]
    ```
 
-   `enabled` is true unless any of `values` is in the list at `key` (or false
-   unless listed, per `listed`); `osNotification` likewise, and false when
-   `masterKey` is `false`. Because the record holds the *effective* config,
+   `enabled` is required and `osNotification` optional — a kind that
+   declares no OS notification has nothing to inherit there; `values` are
+   non-empty strings. `enabled` is true unless any of `values` is in the
+   list at `key` (or false unless listed, per `listed`); `osNotification`
+   likewise, and false when `masterKey` is `false`. Because the record holds the *effective* config,
    a user who never opened vega-helper's settings inherits its defaults
    (alerts on), and a user who saved only `disabledDetectors` keeps the
    default OS-notification intents. With no record at all — the user never
@@ -940,8 +967,21 @@ Contract tests (host):
   block; kind id pattern, `--` and the cap; slot name pattern; template
   references only declared slots and all declared slots; `<`/`>` in templates;
   `osNotification.body` static and capped; locale maps require `en`;
-  `inherits` and `configInherits` shapes, with `inherits[].sourceId`
-  required — an entry without it refuses the block.
+  `inherits` and `configInherits` shapes, with `inherits[].sourceId` and
+  `inherits[].enabled` required and `osNotification` optional — an entry
+  without `sourceId` or `enabled` refuses the block.
+- Settings store: `alerts` and `retiredPluginConfigs` default on a fresh
+  install and on a file without them; a generic `patch()` carrying either
+  leaves both unchanged; a `set()` of either round-trips through the file
+  and the loader; a kind entry under an invalid key is dropped; an entry
+  with a field out of shape loads as the fail-closed choice, marked new;
+  an invalid `absentSinceAppVersion` alone loses only that field; a retired
+  record with any field out of shape (missing `enabled`, non-string
+  `sourceId`, `"unknown"` version, `anySource: false`, a plugin kind under
+  `hostKinds`, a bad inherit rule, a non-object config) is dropped whole and
+  its neighbours kept; the two-minor prune drops an absent kind entry and a
+  retired record only when the loader is given a stable running version
+  two minors ahead, and keeps everything without one.
 - Pipeline result codes in order: `kind_not_granted`; `invalid` per slot rule
   and key pattern (a 200-char key accepted); `blocked_by_predecessor` while
   the named plugin is installed but not loaded, while it is revoked but
@@ -1207,5 +1247,15 @@ published the same day as the monorepo commit. Gates: ported suites,
   cap of 1 loses the second approval mail before the user reads the first,
   and priority-first eviction keeps a `high` card through a burst of
   `normal` ones.
+
+- A kind entry that loads with a field out of shape becomes the fail-closed
+  choice (off, no OS notification, `silent`, unseen) instead of being
+  dropped, so a damaged settings file can never turn a kind on; a retired
+  record out of shape is dropped whole.
+- `enabled` is required and `osNotification` optional in both a kind's
+  `inherits[]` entry and a retirement entry's `hostKinds[]` mapping.
+- The two-minor prune of absent kind entries and retired records runs in
+  the settings loader against the running version, and keeps everything
+  when no stable version is supplied.
 
 There are no open questions.
