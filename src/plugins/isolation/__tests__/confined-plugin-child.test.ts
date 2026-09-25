@@ -65,15 +65,16 @@
  *    than the objection, because one plugin's admission depended on which
  *    thing each platform proves.
  *  - Anything at all, on a machine where the sandbox backend cannot
- *    initialize — for the five cases that need a live one. Where
+ *    initialize — for the cases that need a live one. Where
  *    `asrtCanInitialize()` answers false they return before measuring. That is
  *    not a hypothetical machine: the Linux runner that runs the whole suite on
  *    every pull request has no bubblewrap — nothing in `.github/` or `scripts/`
  *    installs it and ASRT vendors only seccomp and srt-win — so on that runner
- *    those five return without spawning anything. To see what that looks like,
+ *    those cases return without spawning anything. To see what that looks like,
  *    make `asrtCanInitialize()` return false and run this file: on darwin/arm64
- *    all 28 cases pass in milliseconds, with no skip mark and no warning, where
- *    the five take hundreds of milliseconds each when the backend is there.
+ *    all 36 cases that run there pass in about a second, with no skip mark and
+ *    no warning, where the 13 that need the backend take hundreds of
+ *    milliseconds each when it is there.
  *    `sandboxCasesRun()` below is what stops that from being invisible: an
  *    environment that is SUPPOSED to run them sets
  *    `AVE_REQUIRE_SANDBOX_CASES=1` and gets a failure instead of a silent
@@ -84,12 +85,13 @@
  *    The OTHER 23 cases need no sandbox: they drive `derivePluginChildEnvelope`
  *    directly, or they drive the spawn's refusal paths, which run ahead of the
  *    wrap. Measured with `asrtCanInitialize()` forced false on darwin/arm64:
- *    23 passed and 5 failed under `AVE_REQUIRE_SANDBOX_CASES=1`. So the
+ *    23 passed and 13 failed under `AVE_REQUIRE_SANDBOX_CASES=1`. So the
  *    envelope decisions this file pins keep being measured on a machine that
  *    cannot sandbox; what stops being measured there is the kernel half.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -101,6 +103,7 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   resolvePluginSocketDir,
   resolvePluginWorkerRunRoot,
@@ -127,6 +130,9 @@ import { isPluginChildConfined } from "../../../permissions/sandbox-capability.j
 import { connect } from "node:net";
 import { createServer } from "node:http";
 import { spawnConfinedPluginChild } from "../out-of-process-plugin.js";
+import type { ChildLink } from "../plugin-child-transport.js";
+import { flattenAgentPluginsManifest } from "../../public-contract.js";
+import { createGoldenHost } from "./host-protocol-golden-host.js";
 
 const PLUGIN_ID = "vega-helper";
 /**
@@ -166,7 +172,7 @@ const ASRT_DEFAULT_TEMP_ROOT = "/tmp/claude";
  * It is ALSO how these cases pass without measuring anything, which is not a
  * theoretical concern: the Linux runner that runs the whole suite on every pull
  * request has no bubblewrap, so `asrtCanInitialize()` is false there and the
- * five cases that call this return immediately — no skip mark, no warning,
+ * cases that call this return immediately — no skip mark, no warning,
  * green. Every case that calls it is an `it.runIf` spawning a real child; the
  * file's other 23 cases do not call it and keep measuring there.
  *
@@ -1589,6 +1595,235 @@ export const createPlugin = async (context) => ({
       } finally {
         await instance.stop?.();
         rmSync(childOutDir, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
+});
+
+/**
+ * The host protocol's process rules, and one golden conversation, against a
+ * REAL confined child (plugin-hostapi-protocol.md §2.5, §9.4).
+ *
+ * `host-protocol-golden.test.ts` pins the frames over paired streams, which
+ * proves nothing about the process: that the child leaves when the host does,
+ * that nothing but protocol reaches its stdout, and that the bundle which ships
+ * speaks the same conversation the in-memory runtime recorded. Those three
+ * need the bundled entry running in its sandbox.
+ */
+describe("the host protocol, spoken by a real confined child", () => {
+  const MEETING_GOLDEN = fileURLToPath(
+    new URL("./fixtures/host-protocol/1/plugins/meeting/", import.meta.url),
+  );
+
+  /** The plugin's own tool results in a recorded transcript, by tool name. */
+  function recordedToolResults(transcript: string): Record<string, unknown> {
+    const calls = new Map<unknown, string>();
+    const results: Record<string, unknown> = {};
+    for (const line of transcript.trim().split("\n")) {
+      const { from, frame } = JSON.parse(line) as {
+        from: string;
+        frame: { id?: unknown; method?: string; params?: { name?: string }; result?: { _meta?: Record<string, unknown> } };
+      };
+      if (from === "host" && frame.method === "tools/call") calls.set(frame.id, frame.params!.name!);
+      else if (from === "child" && calls.has(frame.id) && frame.result) {
+        results[calls.get(frame.id)!] = frame.result._meta?.["ave/rawResult"];
+      }
+    }
+    return results;
+  }
+
+  function contextFor(fx: Fixture, plugin: InstalledPlugin, hostApi: PluginHostApi): PluginRuntimeContext {
+    return {
+      pluginId: plugin.pluginId,
+      pluginSocketDir: resolvePluginSocketDir(plugin.pluginDataDir),
+      pluginRoot: plugin.pluginRoot,
+      hostRoot: fx.hostRoot,
+      pluginDataDir: plugin.pluginDataDir,
+      userHome: homedir(),
+      aveHome: aveHome(),
+      config: {},
+      log: () => undefined,
+      hostApi,
+    };
+  }
+
+  /** A one-tool plugin whose code is `body`, installed where a real one lives. */
+  function installOneToolPlugin(fx: Fixture, pluginId: string, body: string): {
+    readonly plugin: InstalledPlugin;
+    readonly entryPath: string;
+    readonly manifest: PluginManifest;
+  } {
+    const plugin = installPlugin(fx, pluginId);
+    const entryPath = join(plugin.pluginRoot, "entry.mjs");
+    writeFileSync(entryPath, body, "utf-8");
+    return {
+      plugin,
+      entryPath,
+      manifest: {
+        id: pluginId,
+        name: pluginId,
+        version: "1.0.0",
+        entry: "entry.mjs",
+        description: "a child the protocol's process rules are measured on",
+        tools: [{ name: "speak", description: "speak", inputSchema: { type: "object", properties: {} } }],
+      },
+    };
+  }
+
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "runs the meeting golden fixture and answers exactly as its recorded transcript does",
+    async () => {
+      if (!(await sandboxCasesRun())) return;
+      const fx = fixture!;
+      const plugin = installPlugin(fx, "meeting");
+      const childOutDir = childBundleDir(CHILD_BUNDLE_CACHE);
+      const childEntryPath = await buildChildEntry(CHILD_BUNDLE_CACHE);
+      // Copied into the plugin's own root, which is where an installed entry
+      // lives and what the child's read grant covers.
+      const entryPath = join(plugin.pluginRoot, "entry.mjs");
+      copyFileSync(join(MEETING_GOLDEN, "entry.mjs"), entryPath);
+      const manifest = flattenAgentPluginsManifest(
+        JSON.parse(readFileSync(join(MEETING_GOLDEN, "plugin.json"), "utf-8")),
+      );
+
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+      const host = createGoldenHost();
+      const factory = createOutOfProcessPluginFactory({ manifest, entryPath, childEntryPath });
+      const instance = await factory(contextFor(fx, plugin, host.api));
+      try {
+        const exercised = await instance.handlers.exercise_host!();
+        // Pushed down the same pipe the next call travels, so the child has
+        // delivered every one of them before it runs `report_host`.
+        host.fireAll();
+        const reported = await instance.handlers.report_host!();
+        expect({ exercise_host: exercised, report_host: reported }).toEqual(
+          recordedToolResults(readFileSync(join(MEETING_GOLDEN, "expected.jsonl"), "utf-8")),
+        );
+      } finally {
+        await instance.stop?.();
+        rmSync(childOutDir, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
+
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "exits within five seconds of its stdin closing, with no request from the host",
+    async () => {
+      if (!(await sandboxCasesRun())) return;
+      const fx = fixture!;
+      const childOutDir = childBundleDir(CHILD_BUNDLE_CACHE);
+      const childEntryPath = await buildChildEntry(CHILD_BUNDLE_CACHE);
+      const { plugin, entryPath, manifest } = installOneToolPlugin(
+        fx,
+        "stdinprobe",
+        // A timer, as a plugin with a watcher or a poll loop holds one: without
+        // it the event loop drains when stdin ends and the child leaves whether
+        // or not it implements the rule, which would make this case prove nothing.
+        `export const createPlugin = async () => {
+  setInterval(() => undefined, 1_000);
+  return { handlers: { speak: async () => "spoke" } };
+};
+`,
+      );
+
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+      let link: ChildLink | undefined;
+      const factory = createOutOfProcessPluginFactory({
+        manifest,
+        entryPath,
+        childEntryPath,
+        connect: async (spec) => {
+          const child = await spawnConfinedPluginChild(spec);
+          link = child.link;
+          return child;
+        },
+      });
+      const instance = await factory(contextFor(fx, plugin, createGoldenHost().api));
+      try {
+        await expect(instance.handlers.speak!()).resolves.toBe("spoke");
+        const gone = new Promise<string>((resolve) => link!.onGone(resolve));
+        // The host dying looks like this from the child: its stdin ends. No
+        // `stop`, no signal — a host that crashed sends neither.
+        link!.output.end();
+        const outcome = await Promise.race([
+          gone.then(() => "exited"),
+          new Promise<string>((resolve) => setTimeout(() => resolve("still running"), 5_000)),
+        ]);
+        expect(outcome).toBe("exited");
+      } finally {
+        await instance.stop?.();
+        rmSync(childOutDir, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
+
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "puts nothing on stdout but protocol frames, whatever the plugin prints",
+    async () => {
+      if (!(await sandboxCasesRun())) return;
+      const fx = fixture!;
+      const childOutDir = childBundleDir(CHILD_BUNDLE_CACHE);
+      const childEntryPath = await buildChildEntry(CHILD_BUNDLE_CACHE);
+      // Both ways a plugin reaches stdout, at import, in the factory and in a
+      // tool: a stray line anywhere joins the next frame's line and takes that
+      // frame with it.
+      const { plugin, entryPath, manifest } = installOneToolPlugin(
+        fx,
+        "stdoutprobe",
+        `console.log("printed at import");
+process.stdout.write("written at import\\n");
+export const createPlugin = async () => {
+  console.log("printed in the factory");
+  return {
+    handlers: {
+      speak: async () => {
+        console.log("printed in a tool");
+        process.stdout.write("written in a tool, with no newline");
+        return "spoke";
+      },
+    },
+  };
+};
+`,
+      );
+
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+      let stdout = "";
+      const factory = createOutOfProcessPluginFactory({
+        manifest,
+        entryPath,
+        childEntryPath,
+        connect: async (spec) => {
+          const child = await spawnConfinedPluginChild(spec);
+          child.link.input.on("data", (chunk: Buffer) => {
+            stdout += chunk.toString("utf-8");
+          });
+          return child;
+        },
+      });
+      const instance = await factory(contextFor(fx, plugin, createGoldenHost().api));
+      try {
+        // Bounded: a stray line that swallowed the reply would otherwise hang
+        // the call until the case times out, and say nothing about why.
+        const spoke = await Promise.race([
+          instance.handlers.speak!(),
+          new Promise((resolve) => setTimeout(() => resolve("no reply: a frame was lost"), 10_000)),
+        ]);
+        expect(spoke).toBe("spoke");
+      } finally {
+        await instance.stop?.();
+        rmSync(childOutDir, { recursive: true, force: true });
+      }
+      const lines = stdout.split("\n");
+      // The stream ends on a newline, so the last element is the empty tail.
+      expect(lines.at(-1)).toBe("");
+      const frames = lines.slice(0, -1);
+      expect(frames.length).toBeGreaterThan(0);
+      for (const line of frames) {
+        expect(JSON.parse(line), line).toMatchObject({ jsonrpc: "2.0" });
       }
     },
     120_000,

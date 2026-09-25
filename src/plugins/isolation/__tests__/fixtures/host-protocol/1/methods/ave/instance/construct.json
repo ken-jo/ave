@@ -1,0 +1,102 @@
+{
+  "request": {
+    "id": "<uuid-1>",
+    "jsonrpc": "2.0",
+    "method": "ave/instance/construct",
+    "params": {
+      "context": {
+        "appPreferences": {
+          "keys": [
+            "webView.preferredFlow"
+          ],
+          "values": {
+            "webView.preferredFlow": "system"
+          }
+        },
+        "config": {},
+        "hostRoot": "/app",
+        "installedPluginIds": [
+          "orion-api",
+          "local-indexer",
+          "meeting",
+          "lyra-mail",
+          "vega-helper"
+        ],
+        "aveHome": "/Users/example/.ave",
+        "pluginDataDir": "/plugins/golden-invoker/data",
+        "pluginId": "golden-invoker",
+        "pluginRoot": "/plugins/golden-invoker",
+        "userHome": "/Users/example"
+      },
+      "declaredToolNames": [
+        "invoke_member",
+        "invoke_cancelled",
+        "write_log",
+        "dispose_all"
+      ],
+      "entryPath": "<golden>/invoker.mjs",
+      "hostProtocol": {
+        "version": "1"
+      },
+      "manifest": {
+        "description": "calls one hostApi member per tool call, so each method's golden is one pair",
+        "entry": "invoker.mjs",
+        "id": "golden-invoker",
+        "name": "Golden Invoker",
+        "tools": [
+          {
+            "description": "invoke_member",
+            "inputSchema": {
+              "properties": {},
+              "type": "object"
+            },
+            "name": "invoke_member"
+          },
+          {
+            "description": "invoke_cancelled",
+            "inputSchema": {
+              "properties": {},
+              "type": "object"
+            },
+            "name": "invoke_cancelled"
+          },
+          {
+            "description": "write_log",
+            "inputSchema": {
+              "properties": {},
+              "type": "object"
+            },
+            "name": "write_log"
+          },
+          {
+            "description": "dispose_all",
+            "inputSchema": {
+              "properties": {},
+              "type": "object"
+            },
+            "name": "dispose_all"
+          }
+        ],
+        "version": "1.0.0"
+      }
+    }
+  },
+  "response": {
+    "id": "<uuid-1>",
+    "jsonrpc": "2.0",
+    "result": {
+      "implementedToolNames": [
+        "invoke_member",
+        "invoke_cancelled",
+        "write_log",
+        "dispose_all"
+      ],
+      "lifecycleHooks": [
+        "start",
+        "onPublished",
+        "stop"
+      ],
+      "servesUiResources": true
+    }
+  }
+}

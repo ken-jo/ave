@@ -28,7 +28,6 @@
  * projection — is untouched and cannot tell the difference, which is exactly
  * why the five plugins that are not the pilot keep loading as they did.
  */
-import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import { createLogger } from "../../lib/logger.js";
@@ -85,10 +84,13 @@ import {
   type DelegatedWorkerConfinement,
   type HostApiPathHandler,
 } from "./host-api-dispatcher.js";
-import { HOST_API_WIRE_VERSION, type HostApiPath } from "./host-api-wire.js";
+import {
+  HOST_PROTOCOL_NOTIFICATIONS,
+  NEWEST_HOST_PROTOCOL_VERSION,
+  type HostApiPath,
+} from "./host-api-wire.js";
 import {
   PLUGIN_INSTANCE_METHODS,
-  PLUGIN_INSTANCE_WIRE_VERSION,
   type PluginConstructParams,
   type PluginConstructResult,
   type ReadUiResourceResult,
@@ -1127,10 +1129,9 @@ export function createOutOfProcessPluginFactory(
   const pluginId = spec.manifest.id;
 
   return async (context: PluginRuntimeContext): Promise<RuntimePlugin> => {
-    // Minted per factory call, which is per incarnation. Its job (§2.4) is that
-    // the child is told which incarnation it serves and a message naming a
-    // different one is refused; a fresh id per construction is exactly that.
-    const generationId = randomUUID();
+    // No generation id crosses: each factory call spawns its own child, so the
+    // connection IS the incarnation (§2.4), and the pipe closing when the
+    // incarnation retires is what pins it.
     const hostApi = context.hostApi as unknown as DispatchableHostApi;
     // Derived ONCE, here, and then held: the spawn wraps the child with it and
     // the dispatch table checks delegated workers against it, so the two cannot
@@ -1154,7 +1155,6 @@ export function createOutOfProcessPluginFactory(
     let live = true;
     const transport = new PluginChildTransport({
       pluginId,
-      generationId,
       // The boundary's own liveness, not a second authority. The authoritative
       // check is still `enforceActiveHostApi` on the object below, which throws
       // on every member once the incarnation deactivates — and which the child
@@ -1172,6 +1172,12 @@ export function createOutOfProcessPluginFactory(
           return;
         }
         log.info({ pluginId }, message);
+      },
+      // The host's own voice about the connection, not the plugin's: a params
+      // field the member does not declare is accepted and ignored (§3.3), and
+      // named here once per (method, field) so a protocol skew is visible.
+      reportUnknownField: (method, field) => {
+        log.warn({ pluginId, method, field }, "ignored an undeclared params field");
       },
       table: createBoundHostApiDispatchTable(hostApi, envelope),
       link: child.link,
@@ -1221,11 +1227,9 @@ export function createOutOfProcessPluginFactory(
       // plugin ever subscribed to `onPluginsChanged`.
       hostWatchers.push(hostApi.onPluginsChanged(() => {
         transport.sendToChild({
-          wire: HOST_API_WIRE_VERSION,
-          pluginId,
-          generationId,
-          kind: "installed-plugins",
-          pluginIds: hostApi.getInstalledPluginIds(),
+          jsonrpc: "2.0",
+          method: HOST_PROTOCOL_NOTIFICATIONS.installedPluginsSnapshot,
+          params: { pluginIds: hostApi.getInstalledPluginIds() },
         });
       }));
 
@@ -1258,12 +1262,9 @@ export function createOutOfProcessPluginFactory(
           if (value !== undefined) values[key] = value;
         }
         transport.sendToChild({
-          wire: HOST_API_WIRE_VERSION,
-          pluginId,
-          generationId,
-          kind: "config-snapshot",
-          keys: configKeys,
-          values,
+          jsonrpc: "2.0",
+          method: HOST_PROTOCOL_NOTIFICATIONS.configSnapshot,
+          params: { keys: configKeys, values },
         });
       }));
       /**
@@ -1308,12 +1309,9 @@ export function createOutOfProcessPluginFactory(
         // is; it is here so the two stay one decision rather than two.
         if (!snapshot) return;
         transport.sendToChild({
-          wire: HOST_API_WIRE_VERSION,
-          pluginId,
-          generationId,
-          kind: "preference-snapshot",
-          keys: snapshot.keys,
-          values: snapshot.values,
+          jsonrpc: "2.0",
+          method: HOST_PROTOCOL_NOTIFICATIONS.preferencesSnapshot,
+          params: { keys: snapshot.keys, values: snapshot.values },
         });
       };
 
@@ -1344,7 +1342,6 @@ export function createOutOfProcessPluginFactory(
         // two would only ever disagree in the case that matters.
         userHome: context.userHome,
         aveHome: context.aveHome,
-        generationId,
         installedPluginIds: hostApi.getInstalledPluginIds(),
         ...(context.config !== undefined ? { config: context.config } : {}),
         // Omitted entirely when the host implements no reader, which is what lets
@@ -1352,7 +1349,9 @@ export function createOutOfProcessPluginFactory(
         ...(constructionPreferences ? { appPreferences: constructionPreferences } : {}),
       };
       const constructParams: PluginConstructParams = {
-        wire: PLUGIN_INSTANCE_WIRE_VERSION,
+        // The host-shipped runtime speaks for a JS plugin, so the connection
+        // speaks the newest version that runtime serves.
+        hostProtocol: { version: NEWEST_HOST_PROTOCOL_VERSION },
         manifest: spec.manifest,
         context: childContext,
         entryPath: spec.entryPath,
@@ -1374,7 +1373,7 @@ export function createOutOfProcessPluginFactory(
        * The seed above was read BEFORE the child could receive anything, so this
        * re-push closes the window between the two.
        *
-       * A `preference-snapshot` sent while the child is still constructing is
+       * A preferences snapshot sent while the child is still constructing is
        * DROPPED: the child routes notifications through a runtime it assigns only
        * after the plugin module has imported and its factory has run
        * (`plugin-child-main.ts`). The two watchers above survive that: neither

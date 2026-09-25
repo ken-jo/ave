@@ -41,7 +41,11 @@
         // Loaded through the local @ave/shell-parser-runtime package exports.
         "resources/shell-parser/wasm_exec.cjs",
         // Explicit parser rebuild entry documented in tools/shell-parser/README.md.
-        "tools/shell-parser/build.mjs"
+        "tools/shell-parser/build.mjs",
+        // Plugin modules the host-protocol golden harness hands the child runtime
+        // BY PATH, which imports them through `importPluginFactory` as it imports
+        // an installed plugin's entry — nothing names them in an import.
+        "src/plugins/isolation/__tests__/fixtures/host-protocol/*/**/*.mjs"
       ]
     },
     "web": {

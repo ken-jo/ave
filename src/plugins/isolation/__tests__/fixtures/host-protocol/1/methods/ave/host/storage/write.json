@@ -1,0 +1,19 @@
+{
+  "request": {
+    "id": 6,
+    "jsonrpc": "2.0",
+    "method": "ave/host/storage/write",
+    "params": {
+      "data": {
+        "data": "AID/",
+        "encoding": "base64"
+      },
+      "relPath": "notes/today.bin"
+    }
+  },
+  "response": {
+    "id": 6,
+    "jsonrpc": "2.0",
+    "result": null
+  }
+}

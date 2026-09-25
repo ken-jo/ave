@@ -86,9 +86,9 @@ describe("the host, reading a child that breaks the bound", () => {
     };
     const transport = new PluginChildTransport({
       pluginId: "boundprobe",
-      generationId: "generation-1",
       isActive: () => true,
       log: () => undefined,
+      reportUnknownField: () => undefined,
       link,
     });
     transport.start();

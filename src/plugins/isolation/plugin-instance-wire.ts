@@ -2,7 +2,7 @@
  * The FORWARD direction of the boundary: the six host→plugin entry points
  * (`docs/blueprints/plugin-process-isolation.md` §2.1).
  *
- * `host-api-wire.ts` is the reverse channel — the 38 members a plugin calls on
+ * `host-api-wire.ts` is the reverse channel — the members a plugin calls on
  * the host. This is the other half: what the HOST calls on the plugin. They are
  * separate contracts with separate failure modes, which is why they are
  * separate modules and not one file called "the wire".
@@ -18,15 +18,7 @@
  */
 import type { PluginManifest } from "../types.js";
 import type { PluginChildContext } from "./plugin-child-runtime.js";
-
-/**
- * Wire format revision for the forward direction.
- *
- * Versioned INDEPENDENTLY of {@link HOST_API_WIRE_VERSION}: the two contracts
- * change for different reasons — a new hostApi member is not a new lifecycle
- * entry point — and a shared number would force a lockstep neither side needs.
- */
-export const PLUGIN_INSTANCE_WIRE_VERSION = 1;
+import type { HostProtocolVersion } from "./host-api-wire.js";
 
 /**
  * The JSON-RPC methods the child answers besides MCP's own.
@@ -63,7 +55,14 @@ export function isPluginInstanceMethod(method: string): method is PluginInstance
  * host never checked.
  */
 export interface PluginConstructParams {
-  readonly wire: typeof PLUGIN_INSTANCE_WIRE_VERSION;
+  /**
+   * The host protocol version this connection speaks (§3.2). One version for
+   * both directions: the lifecycle methods and the reverse channel release
+   * together, so they are versioned together. The child refuses a version its
+   * runtime does not serve, which is what makes a stale bundle fail loudly
+   * instead of answering a version it does not speak.
+   */
+  readonly hostProtocol: { readonly version: HostProtocolVersion };
   readonly manifest: PluginManifest;
   readonly context: PluginChildContext;
   /** Absolute path of the plugin entry module the child imports. */
@@ -82,7 +81,6 @@ export interface PluginConstructParams {
 
 /** What `construct` answers. */
 export interface PluginConstructResult {
-  readonly wire: typeof PLUGIN_INSTANCE_WIRE_VERSION;
   /** The subset of `declaredToolNames` the instance exposes a handler for. */
   readonly implementedToolNames: readonly string[];
   /** Whether the instance implements the optional `readUiResource`. */

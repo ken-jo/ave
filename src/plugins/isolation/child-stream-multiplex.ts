@@ -1,28 +1,35 @@
 /**
- * One framed stdio stream, four kinds of traffic
- * (`docs/blueprints/plugin-process-isolation.md` §5.2).
+ * One framed stdio stream, both directions of one JSON-RPC 2.0 session
+ * (`docs/blueprints/plugin-process-isolation.md` §5.2,
+ * `docs/design/plugin-hostapi-protocol.md` §3.1).
  *
- * The host owns the child's pipes, and both contracts have to share them:
- * MCP + lifecycle requests travel host→child, hostApi requests travel
- * child→host, and notifications travel both ways. §5.2 chose a spawned stdio
- * child precisely BECAUSE its argv can be wrapped by ASRT, so a second channel
- * (a socket, an extra descriptor) would have to be carried through the sandbox
- * wrap as well — three new pieces of attack surface for a multiplex that four
- * disjoint message shapes give for free.
+ * The host owns the child's pipes, and both halves of the protocol share them:
+ * MCP and `ave/instance/*` requests travel host→child, `ave/host/*` requests
+ * travel child→host, and notifications travel both ways. §5.2 chose a spawned
+ * stdio child precisely BECAUSE its argv can be wrapped by ASRT, so a second
+ * channel (a socket, an extra descriptor) would have to be carried through the
+ * sandbox wrap as well.
  *
- * They are disjoint by construction, not by convention: the hostApi wire was
- * never JSON-RPC (`host-api-wire.ts` messages carry `callId`/`kind`, never
- * `method`/`id`), so {@link classifyMultiplexedMessage} discriminates on fields
- * that only one shape has. A message matching none of them is `unknown` and is
- * DROPPED by both sides rather than guessed at — guessing is how a malformed
- * frame becomes a call to the wrong handler.
+ * Every frame is JSON-RPC, so {@link classifyMultiplexedMessage} discriminates
+ * on JSON-RPC fields only: a `method` with an `id` is a request, routed by its
+ * namespace; a `method` without one is a notification; an `id` with `result` or
+ * `error` is a response, matched against the pending table of the direction it
+ * arrived on. The `ave/` prefix is what keeps the Ave methods apart from every
+ * name MCP defines. A frame matching none of these is `unknown` and is DROPPED
+ * by both sides rather than guessed at — guessing is how a malformed frame
+ * becomes a call to the wrong handler.
  *
  * ELECTRON-FREE BY CONSTRUCTION: the child imports this.
  */
 import type { Readable, Writable } from "node:stream";
 import { frameMessage, StdioFrameDecoder } from "../../mcp/stdio-framing.js";
 import { errorMessage } from "../../shared/error-message.js";
-import { FRAME_BYTES_MAX, HostApiBoundaryError } from "./host-api-wire.js";
+import {
+  FRAME_BYTES_MAX,
+  HostApiBoundaryError,
+  isHostApiMethod,
+  toHostApiRpcError,
+} from "./host-api-wire.js";
 import { isPluginInstanceMethod } from "./plugin-instance-wire.js";
 
 /** A decoded frame, before anyone has decided what it is. */
@@ -34,36 +41,45 @@ export type MultiplexedMessage = Record<string, unknown>;
  * `mcp-request` and `instance-request` are split because they are answered by
  * DIFFERENT handlers in the child — the `PluginMcpServer` and the lifecycle
  * handler — and routing them from one place is what keeps the child from
- * needing a second decoder.
+ * needing a second decoder. `host-request` is the reverse direction's request,
+ * answered only by the host.
  */
 export type MultiplexedKind =
   | "mcp-request"
   | "instance-request"
-  | "rpc-response"
-  | "host-api-request"
-  | "host-api-reply"
-  | "host-api-notification"
+  | "host-request"
+  | "notification"
+  | "response"
   | "unknown";
 
 export function classifyMultiplexedMessage(
   message: MultiplexedMessage,
 ): MultiplexedKind {
-  if (typeof message.method === "string") {
-    return isPluginInstanceMethod(message.method) ? "instance-request" : "mcp-request";
+  const { method, id } = message;
+  if (typeof method === "string") {
+    if (id === undefined) {
+      return method.startsWith("notifications/") && isParamsObject(message.params)
+        ? "notification"
+        : "unknown";
+    }
+    // A request whose id JSON-RPC does not allow could not be answered anyway.
+    if (typeof id !== "string" && typeof id !== "number") return "unknown";
+    if (isPluginInstanceMethod(method)) return "instance-request";
+    if (isHostApiMethod(method)) return "host-request";
+    return "mcp-request";
   }
-  // Checked BEFORE `callId` alone: a hostApi request and its reply share the
-  // correlation field and are told apart by what else they carry.
-  if (typeof message.path === "string" && typeof message.callId === "string") {
-    return "host-api-request";
-  }
-  if (typeof message.callId === "string" && typeof message.ok === "boolean") {
-    return "host-api-reply";
-  }
-  if (typeof message.kind === "string") return "host-api-notification";
-  if (message.id !== undefined && ("result" in message || "error" in message)) {
-    return "rpc-response";
+  if (
+    (typeof id === "string" || typeof id === "number")
+    && ("result" in message || "error" in message)
+  ) {
+    return "response";
   }
   return "unknown";
+}
+
+/** A notification's params must be an object; anything else is not one. */
+function isParamsObject(params: unknown): boolean {
+  return typeof params === "object" && params !== null && !Array.isArray(params);
 }
 
 /**
@@ -170,12 +186,9 @@ export class FramedMessageStream {
   }
 }
 
-/** The JSON-RPC server-error code a boundary refusal carries (plugin-hostapi-protocol.md §3.3). */
-const RPC_PAYLOAD_TOO_LARGE = -32000;
-
 /** A notification {@link FramedMessageStream.send} did not write, for its owner's log. */
 export interface DroppedNotification {
-  /** The notification's kind. */
+  /** The notification's method. */
   readonly method: string;
   /** The subscription it was for, when it was for one. */
   readonly subscriptionId?: string;
@@ -186,10 +199,11 @@ export interface DroppedNotification {
 /** Describe `message` as a dropped notification, or `undefined` when it is not one. */
 function droppedNotificationOf(message: unknown, lineBytes: number): DroppedNotification | undefined {
   const candidate = (message ?? {}) as MultiplexedMessage;
-  if (classifyMultiplexedMessage(candidate) !== "host-api-notification") return undefined;
+  if (classifyMultiplexedMessage(candidate) !== "notification") return undefined;
+  const subscriptionId = (candidate.params as Record<string, unknown>).subscriptionId;
   return {
-    method: String(candidate.kind),
-    ...(typeof candidate.subscriptionId === "string" ? { subscriptionId: candidate.subscriptionId } : {}),
+    method: String(candidate.method),
+    ...(typeof subscriptionId === "string" ? { subscriptionId } : {}),
     byteLength: lineBytes,
     limit: FRAME_BYTES_MAX,
   };
@@ -204,31 +218,23 @@ function droppedNotificationOf(message: unknown, lineBytes: number): DroppedNoti
  * throws to that caller instead.
  */
 function refuseOversizedFrame(message: unknown, lineBytes: number): unknown {
-  const text =
-    `[child-stream-multiplex] a ${lineBytes}-byte message exceeds the ${FRAME_BYTES_MAX}-byte frame limit`;
-  const detail = { byteLength: lineBytes, limit: FRAME_BYTES_MAX };
+  const refusal = new HostApiBoundaryError(
+    "payload-too-large",
+    `[child-stream-multiplex] a ${lineBytes}-byte message exceeds the ${FRAME_BYTES_MAX}-byte frame limit`,
+    { byteLength: lineBytes, limit: FRAME_BYTES_MAX },
+  );
   const candidate = (message ?? {}) as MultiplexedMessage;
-  const kind = classifyMultiplexedMessage(candidate);
-  if (kind === "rpc-response") {
-    return {
-      jsonrpc: "2.0",
-      id: candidate.id,
-      error: {
-        code: RPC_PAYLOAD_TOO_LARGE,
-        message: text,
-        data: { code: "payload-too-large", name: "HostApiBoundaryError", detail },
-      },
-    };
-  }
-  if (kind === "host-api-reply") {
-    return {
-      wire: candidate.wire,
-      callId: candidate.callId,
-      ok: false,
-      error: { code: "payload-too-large", name: "HostApiBoundaryError", message: text, detail },
-    };
-  }
-  throw new HostApiBoundaryError("payload-too-large", text, detail);
+  if (classifyMultiplexedMessage(candidate) !== "response") throw refusal;
+  return {
+    jsonrpc: "2.0",
+    id: candidate.id,
+    error: toHostApiRpcError({
+      code: refusal.code,
+      name: refusal.name,
+      message: refusal.message,
+      detail: refusal.detail,
+    }),
+  };
 }
 
 /** A request awaiting its reply. */
@@ -242,9 +248,8 @@ interface PendingCall<T> {
  * Correlate outbound requests with inbound replies, and fail every one of them
  * when the peer goes away.
  *
- * Both sides need this and they key it differently — the host by JSON-RPC `id`,
- * the child by `callId` — so it is generic over the key rather than written
- * twice. {@link rejectAll} is the reason it exists at all: a pending call whose
+ * Both sides need this, each for the requests it sends, keyed by the JSON-RPC
+ * `id` it allocated — so it is generic rather than written twice. {@link rejectAll} is the reason it exists at all: a pending call whose
  * peer died must REJECT, because a promise that never settles is exactly the
  * hung host this whole boundary is supposed to make impossible.
  */
