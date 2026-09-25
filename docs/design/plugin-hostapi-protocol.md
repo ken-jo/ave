@@ -281,8 +281,8 @@ spawn ──► ave/instance/construct ──► ave/instance/start ──► [g
 
 Decision: keep MCP unchanged for everything the plugin *serves* (`tools/list`,
 `tools/call`, `resources/read` for `ui://`), and make everything the plugin *calls on
-the host* a JSON-RPC method under `ave/host/`, on the same session, in the reverse
-direction. Notifications go both ways with the same `notifications/` convention.
+the host* a JSON-RPC method under `ave/host/`, on the same stream, as a separate Ave
+peer channel. Notifications go both ways with the same `notifications/` convention.
 
 Why this and not the alternatives:
 
@@ -754,7 +754,7 @@ Add `requires.hostProtocol` (integer-as-string, e.g. `"1"`). Rules:
 | RPC surface abuse: a plugin hammers `ave/host/*` (log flood, storage churn, `triggerConversation` spam, subscription leak) | per-(plugin, method) token bucket in the dispatcher with a refusal code `rate-limited` (new, added to the closed set); cap on open subscriptions per plugin; `WIRE_BYTES_MAX` 16 MiB per message (`host-api-wire.ts:471`); `logEvent` key/prefix caps already exist for `getSecret` (`host-api-factory.ts:790-798`) and are generalised. Today no rate limiting exists in the dispatcher (verified by absence of any limit constant in `host-api-dispatcher.ts`). |
 | Resource exhaustion: a plugin process consumes memory/CPU | Linux: a per-plugin cgroup from the workload resource controller once it is wired to the spawn path (`linux-workload-resource-controller.md:1-15` says it is not yet). macOS: `RLIMIT` in the wrapper is deferred (decision 7); Windows: Job Objects are not available through srt-win today. Until then the control is crash containment: the host survives, the plugin is marked degraded. |
 | A plugin process outlives the host | child exits on stdin end (`plugin-child-main.ts:319-326`); `managed-child-processes.ts` tracks and kills process groups on app quit; a `process`-entry plugin must pass the stdin-close conformance check (§10). Residual: a hard host crash on Windows leaves the child to notice a closed pipe on its next write. |
-| Arbitrary executable via `process` entry | a pinned release or archive artifact only (§2.1); mandatory ASRT wrap; refused when the sandbox is off; the command must be inside the plugin root (Agent Plugins rule); no `PATH` search for a marketplace plugin. |
+| Arbitrary executable via `process` entry | a pinned release or archive artifact only (§2.1); a wrap whose published `confines` includes `process` (never srt-win); refused when the sandbox is off; the command must be inside the plugin root (Agent Plugins rule); no `PATH` search for a marketplace plugin. |
 | Envelope widening via the manifest `sandbox` block | closed `hostDirectory` allow-list; `userChosenDirectory` requires a user-set absolute path; deny-floor piercing requires install-time approval (§2.2). |
 | Windows: no process confinement | unchanged from `architecture.md:1018-1020`; admission does not depend on it (decision 3); a `process` entry is refused on Windows because srt-win is a wrap that does not confine processes (§2.2); the Doctor names the confinement each plugin runs under. |
 | Confused deputy through the host's own credentials | `hostFetch` attaches a lease only to a URL that passes the allow-list for *that* plugin; the lease id is per plugin per session and is refused on any other connection. Matches the MCP security guidance on token passthrough ([MCP security best practices](https://modelcontextprotocol.io/docs/2026-07-28/tutorials/security/security_best_practices)). |
@@ -1248,3 +1248,6 @@ None. Decision 5 names a role, not a person, so nothing waits on the owner.
   formatters cover function-typed members, but the generator avoids them by reading the
   `Wire*` types for encoded and handle axes (§9.4 item 7). If the two files do not parse
   under 5.9, the fallback is a compiler-API walker using the app's own TypeScript.
+- Whether the stock MCP server SDKs (Python, TypeScript) already speak `2026-07-28`
+  (`server/discover`, the per-request `_meta` version). The Publication cross-language
+  smoke and the validate CLI's `server/discover` probe (§10.2) both depend on it.
