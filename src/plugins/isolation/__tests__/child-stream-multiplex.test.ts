@@ -16,9 +16,7 @@ import { FramedMessageStream } from "../child-stream-multiplex.js";
 import { FRAME_BYTES_MAX, WIRE_BYTES_MAX } from "../host-api-wire.js";
 import { PluginChildTransport, type ChildLink } from "../plugin-child-transport.js";
 import { servePluginChild } from "../plugin-child-main.js";
-
-/** Let queued stream events drain. */
-const settle = () => new Promise((resolve) => setImmediate(resolve));
+import { settleMacrotask as settle } from "../../../__tests__/test-helpers.js";
 
 /** A JSON object line of exactly `bytes` bytes, newline excluded. */
 function lineOf(bytes: number): Buffer {
