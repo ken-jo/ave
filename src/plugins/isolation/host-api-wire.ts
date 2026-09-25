@@ -89,13 +89,14 @@ export type JsonRpcRequestId = string | number;
  *
  * `params` is an OBJECT keyed by the member's own parameter names (the
  * contract's `params` axis), never a positional array, so a field can be added
- * without shifting an argument.
+ * without shifting an argument. It may be absent, as JSON-RPC 2.0 §4 allows,
+ * and absent reads as the empty object; the reference runtime always sends it.
  */
 export interface HostApiRequest {
   readonly jsonrpc: "2.0";
   readonly id: JsonRpcRequestId;
   readonly method: string;
-  readonly params: Record<string, unknown>;
+  readonly params?: Record<string, unknown>;
 }
 
 /** The settled outcome of a {@link HostApiRequest}, travelling host → child. */
@@ -193,13 +194,15 @@ export function hostApiMethodOf(path: HostApiPath): string {
 
 /**
  * `ave/host/storage/read` → `storage.read`, or `undefined` for a method that
- * names no member. Total over strings, and the inverse of
- * {@link hostApiMethodOf} over every path.
+ * names no member. Total over strings, and the exact inverse of
+ * {@link hostApiMethodOf}: a method is accepted only in the one spelling that
+ * function produces, so `ave/host/storage.read` names nothing rather than
+ * being a silent alias of `ave/host/storage/read`.
  */
 export function hostApiPathOf(method: string): HostApiPath | undefined {
   if (!method.startsWith(HOST_METHOD_PREFIX)) return undefined;
   const path = method.slice(HOST_METHOD_PREFIX.length).replaceAll("/", ".");
-  return isHostApiPath(path) ? path : undefined;
+  return isHostApiPath(path) && hostApiMethodOf(path) === method ? path : undefined;
 }
 
 /** Whether a method belongs to the host-served half of the channel. */

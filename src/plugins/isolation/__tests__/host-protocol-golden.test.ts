@@ -295,32 +295,45 @@ const methodGoldenFile = (method: string): string => join(GOLDEN_ROOT, "methods"
  */
 const errorGoldenName = (code: HostApiWireErrorCode): string => `errors/code-${code}.json`;
 
-/** Every frame the invoker session recorded, kept for the notification goldens. */
-const recordedForNotifications: RecordedFrame[] = [];
+/**
+ * Run a recording once, however many describes need it and whichever of them
+ * a filtered run (`-t`) selects: the notification goldens are drawn from the
+ * same conversations the method goldens are, and must not depend on those
+ * tests having run first.
+ */
+function once<T>(record: () => Promise<T>): () => Promise<T> {
+  let recording: Promise<T> | undefined;
+  return () => (recording ??= record());
+}
+
+/** The invoker calling every member and every lifecycle method once. */
+const recordInvokerConversation = once(async (): Promise<RecordedFrame[]> => {
+  const host = createGoldenHost();
+  const session = await openSession(INVOKER_MANIFEST, INVOKER_ENTRY, host);
+  const { instance, frames } = session;
+
+  await instance.start?.();
+  await instance.onPublished?.();
+  await instance.readUiResource?.("ui://golden-invoker/card");
+  for (const path of WIRE_PATHS) {
+    const outcome = (await instance.handlers.invoke_member!({ path })) as { error?: unknown };
+    // A pair whose reply is an error would pin a refusal as the method's
+    // shape; the error goldens below are where refusals belong.
+    expect(outcome.error, path).toBeUndefined();
+  }
+  await instance.handlers.write_log!();
+  host.fireAll();
+  await settle();
+  await instance.handlers.dispose_all!();
+  await settle();
+  await instance.stop?.();
+  await settle();
+  return frames;
+});
 
 describe("one request/response pair per method", () => {
   it("covers every ave/host method and every ave/instance method, and nothing else", async () => {
-    const host = createGoldenHost();
-    const session = await openSession(INVOKER_MANIFEST, INVOKER_ENTRY, host);
-    const { instance, frames } = session;
-
-    await instance.start?.();
-    await instance.onPublished?.();
-    await instance.readUiResource?.("ui://golden-invoker/card");
-    for (const path of WIRE_PATHS) {
-      const outcome = (await instance.handlers.invoke_member!({ path })) as { error?: unknown };
-      // A pair whose reply is an error would pin a refusal as the method's
-      // shape; the error goldens below are where refusals belong.
-      expect(outcome.error, path).toBeUndefined();
-    }
-    await instance.handlers.write_log!();
-    host.fireAll();
-    await settle();
-    await instance.handlers.dispose_all!();
-    await settle();
-    await instance.stop?.();
-    await settle();
-    recordedForNotifications.push(...frames);
+    const frames = await recordInvokerConversation();
 
     const methods = [
       ...WIRE_PATHS.map((path) => hostApiMethodOf(path)),
@@ -468,15 +481,13 @@ const ERROR_TRIGGERS: Readonly<Record<Exclude<HostApiWireErrorCode, "protocol-ve
   },
 };
 
-describe("one reply per error code", () => {
-  it("has a trigger for every code in the closed set", () => {
-    expect([...Object.keys(ERROR_TRIGGERS), "protocol-version-mismatch"].sort()).toEqual(
-      [...HOST_API_WIRE_ERROR_CODES].sort(),
-    );
-  });
+type ErrorTriggerCode = keyof typeof ERROR_TRIGGERS;
 
-  for (const [code, { trigger, overrides, afterStop, provoke }] of Object.entries(ERROR_TRIGGERS)) {
-    it(code, async () => {
+/** One session per error code: the request that provoked it, its reply, and every frame. */
+const recordErrorConversation = Object.fromEntries(
+  Object.entries(ERROR_TRIGGERS).map(([code, { overrides, afterStop, provoke }]) => [
+    code,
+    once(async () => {
       const host = createGoldenHost(overrides);
       const session = await openSession(INVOKER_MANIFEST, INVOKER_ENTRY, host);
       if (afterStop) await session.instance.stop?.();
@@ -484,7 +495,24 @@ describe("one reply per error code", () => {
       const response = await replyTo(session.frames, request);
       if (!afterStop) await session.instance.stop?.();
       await settle();
-      recordedForNotifications.push(...session.frames);
+      return { request, response, frames: session.frames };
+    }),
+  ]),
+) as Record<
+  ErrorTriggerCode,
+  () => Promise<{ request: RecordedFrame; response: RecordedFrame; frames: RecordedFrame[] }>
+>;
+
+describe("one reply per error code", () => {
+  it("has a trigger for every code in the closed set", () => {
+    expect([...Object.keys(ERROR_TRIGGERS), "protocol-version-mismatch"].sort()).toEqual(
+      [...HOST_API_WIRE_ERROR_CODES].sort(),
+    );
+  });
+
+  for (const [code, { trigger }] of Object.entries(ERROR_TRIGGERS)) {
+    it(code, async () => {
+      const { request, response } = await recordErrorConversation[code as ErrorTriggerCode]();
 
       const error = (response.frame as { error?: { code: number; data?: { code?: string } } }).error;
       expect(error?.data?.code).toBe(code);
@@ -530,23 +558,29 @@ describe("one reply per error code", () => {
   });
 });
 
+/** The invoker abandoning a call in flight, which is what sends `notifications/cancelled`. */
+const recordCancelledConversation = once(async () => {
+  let hostSignal: AbortSignal | undefined;
+  const host = createGoldenHost({
+    callLlm: (_prompt: string, options: { signal: AbortSignal }) =>
+      new Promise((_resolve, reject) => {
+        hostSignal = options.signal;
+        options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+      }),
+  });
+  const session = await openSession(INVOKER_MANIFEST, INVOKER_ENTRY, host);
+  const outcome = (await session.instance.handlers.invoke_cancelled!()) as {
+    error?: { name: string };
+  };
+  await session.instance.stop?.();
+  await settle();
+  return { session, outcome, hostSignal: () => hostSignal };
+});
+
 describe("a cancelled request", () => {
   it("is aborted host-side and answered as the plugin's own abort would be", async () => {
-    let hostSignal: AbortSignal | undefined;
-    const host = createGoldenHost({
-      callLlm: (_prompt: string, options: { signal: AbortSignal }) =>
-        new Promise((_resolve, reject) => {
-          hostSignal = options.signal;
-          options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
-        }),
-    });
-    const session = await openSession(INVOKER_MANIFEST, INVOKER_ENTRY, host);
-    const outcome = (await session.instance.handlers.invoke_cancelled!()) as {
-      error?: { name: string };
-    };
-    await session.instance.stop?.();
-    await settle();
-    recordedForNotifications.push(...session.frames);
+    const { session, outcome, hostSignal: signal } = await recordCancelledConversation();
+    const hostSignal = signal();
 
     // The host's controller for THAT request aborted, and the reply carries
     // the name a plugin checks for, so `name === "AbortError"` holds across
@@ -563,9 +597,19 @@ describe("a cancelled request", () => {
 });
 
 describe("one frame per notification kind", () => {
-  // Drawn from the frames the two describes above recorded, so a notification
-  // golden is a frame that really crossed in a recorded conversation rather
-  // than one assembled here.
+  // Drawn from the conversations the describes above record, so a notification
+  // golden is a frame that really crossed rather than one assembled here. The
+  // recordings are shared, not re-run, and this describe starts them itself so
+  // it stands alone under a filter.
+  const recordedForNotifications: RecordedFrame[] = [];
+  beforeAll(async () => {
+    recordedForNotifications.push(...(await recordInvokerConversation()));
+    for (const code of Object.keys(ERROR_TRIGGERS) as ErrorTriggerCode[]) {
+      recordedForNotifications.push(...(await recordErrorConversation[code]()).frames);
+    }
+    recordedForNotifications.push(...(await recordCancelledConversation()).session.frames);
+  });
+
   for (const method of Object.values(HOST_PROTOCOL_NOTIFICATIONS)) {
     it(method, async () => {
       const recorded = recordedForNotifications.find((candidate) => candidate.frame.method === method);

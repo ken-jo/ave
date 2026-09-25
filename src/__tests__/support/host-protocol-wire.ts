@@ -51,7 +51,7 @@ export function settleHostApiReply(reply: HostApiReply): unknown {
 
 /** The positional arguments a recorded request carried, as the host reads them. */
 export function argsOfRequest(request: HostApiRequest): unknown[] {
-  return hostApiArgsOf(pathOfRequest(request), request.params).args;
+  return hostApiArgsOf(pathOfRequest(request), request.params ?? {}).args;
 }
 
 /** The member a recorded request named. */

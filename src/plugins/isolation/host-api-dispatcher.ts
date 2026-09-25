@@ -1836,6 +1836,17 @@ export function classifyHostApiError(error: unknown): HostApiWireError {
   };
 }
 
+/** Distinct undeclared params fields reported per connection before the rest are suppressed. */
+export const UNKNOWN_FIELD_REPORTS_MAX = 32;
+
+/** The longest field name a report carries; the rest is cut. */
+const UNKNOWN_FIELD_NAME_MAX = 64;
+
+/** One diagnostic about an undeclared params field. */
+export type UnknownFieldReport =
+  | { readonly kind: "field"; readonly method: string; readonly field: string }
+  | { readonly kind: "suppressed"; readonly limit: number };
+
 export interface HostApiDispatcherOptions {
   readonly pluginId: string;
   /**
@@ -1862,12 +1873,15 @@ export interface HostApiDispatcherOptions {
   readonly log: (message: string, meta?: unknown) => void;
   /**
    * Where the HOST's own diagnostic about this connection goes: a params field
-   * the member does not declare (§3.3). Accepted and ignored, and written once
-   * per (method, field) for the life of the connection, so a plugin built
-   * against a newer protocol is visible without flooding the log. Separate
-   * from {@link log}, which is the plugin's own voice.
+   * the member does not declare (§3.3). Accepted and ignored, and reported once
+   * per (method, field), so a plugin built against a newer protocol is visible.
+   * The child chooses both strings, so the reports are capped per connection
+   * ({@link UNKNOWN_FIELD_REPORTS_MAX}, then one `suppressed` report) and each
+   * field name is truncated: an unbounded set of distinct names is a log flood
+   * and a memory leak the child controls. Separate from {@link log}, which is
+   * the plugin's own voice.
    */
-  readonly reportUnknownField: (method: string, field: string) => void;
+  readonly reportUnknownField: (report: UnknownFieldReport) => void;
   /** Injectable so a handler can be exercised without the whole table. */
   readonly table?: Record<HostApiPath, HostApiPathHandler>;
 }
@@ -1887,6 +1901,7 @@ export class HostApiDispatcher {
    */
   private readonly inFlight = new Map<string, AbortController>();
   private readonly reportedUnknownFields = new Set<string>();
+  private unknownFieldsSuppressed = false;
 
   constructor(private readonly options: HostApiDispatcherOptions) {
     this.table = options.table ?? HOSTAPI_DISPATCH_TABLE;
@@ -2005,7 +2020,10 @@ export class HostApiDispatcher {
         inactiveHostApiMessage(this.options.pluginId, `hostApi.${path}`),
       );
     }
-    const { params } = request;
+    // JSON-RPC 2.0 §4: `params` MAY be omitted, and a member that takes no
+    // arguments is called that way by a stock client. Absent is the empty
+    // object; null, an array and a scalar are still refused.
+    const params = request.params === undefined ? {} : request.params;
     if (params === null || typeof params !== "object" || Array.isArray(params)) {
       throw new HostApiBoundaryError(
         "argument-marshalling-rejected",
@@ -2025,10 +2043,18 @@ export class HostApiDispatcher {
   }
 
   private reportUnknownField(method: string, field: string): void {
-    const key = `${method}\u0000${field}`;
+    if (this.unknownFieldsSuppressed) return;
+    const shown =
+      field.length > UNKNOWN_FIELD_NAME_MAX ? `${field.slice(0, UNKNOWN_FIELD_NAME_MAX)}…` : field;
+    const key = `${method}\u0000${shown}`;
     if (this.reportedUnknownFields.has(key)) return;
+    if (this.reportedUnknownFields.size >= UNKNOWN_FIELD_REPORTS_MAX) {
+      this.unknownFieldsSuppressed = true;
+      this.options.reportUnknownField({ kind: "suppressed", limit: UNKNOWN_FIELD_REPORTS_MAX });
+      return;
+    }
     this.reportedUnknownFields.add(key);
-    this.options.reportUnknownField(method, field);
+    this.options.reportUnknownField({ kind: "field", method, field: shown });
   }
 
   /**

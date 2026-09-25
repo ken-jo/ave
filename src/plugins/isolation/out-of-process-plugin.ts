@@ -1176,8 +1176,18 @@ export function createOutOfProcessPluginFactory(
       // The host's own voice about the connection, not the plugin's: a params
       // field the member does not declare is accepted and ignored (§3.3), and
       // named here once per (method, field) so a protocol skew is visible.
-      reportUnknownField: (method, field) => {
-        log.warn({ pluginId, method, field }, "ignored an undeclared params field");
+      reportUnknownField: (report) => {
+        if (report.kind === "suppressed") {
+          log.warn(
+            { pluginId, limit: report.limit },
+            "further undeclared params fields suppressed for this connection",
+          );
+          return;
+        }
+        log.warn(
+          { pluginId, method: report.method, field: report.field },
+          "ignored an undeclared params field",
+        );
       },
       table: createBoundHostApiDispatchTable(hostApi, envelope),
       link: child.link,

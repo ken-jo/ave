@@ -30,12 +30,14 @@ import {
 import {
   HOSTAPI_DISPATCH_TABLE,
   HostApiDispatcher,
+  UNKNOWN_FIELD_REPORTS_MAX,
   childLocalHostApiPath,
   classifyHostApiError,
   defineHostApiPath,
   unimplementedHostApiPath,
   type HostApiCall,
   type HostApiPathStatus,
+  type UnknownFieldReport,
 } from "../host-api-dispatcher.js";
 import {
   HostApiBoundaryError,
@@ -44,6 +46,7 @@ import {
   decodeWireBinary,
   decodeWireBytes,
   encodeWireBytes,
+  hostApiPathOf,
   inactiveHostApiMessage,
   reconstructWireError,
   type ArgumentMarshalling,
@@ -371,7 +374,9 @@ describe("the dispatcher refuses rather than defaults", () => {
     const reported: [string, string][] = [];
     const host = dispatcher({
       table,
-      reportUnknownField: (method, field) => reported.push([method, field]),
+      reportUnknownField: (report) => {
+        if (report.kind === "field") reported.push([report.method, report.field]);
+      },
     });
     const forged = request({
       params: { source: "nightly", pluginId: "com.example.other", generationId: "gen-0" },
@@ -396,6 +401,69 @@ describe("the dispatcher refuses rather than defaults", () => {
     expect(refused.error.message).toBe(
       inactiveHostApiMessage(PLUGIN_ID, "hostApi.hasRoutineBySource"),
     );
+  });
+
+  it("caps what the child can make it report, and cuts long field names", async () => {
+    // The child chooses both the method and the field name, so per-(method,
+    // field) dedupe alone is a log flood and an unbounded set it controls.
+    const table = {
+      ...HOSTAPI_DISPATCH_TABLE,
+      hasRoutineBySource: defineHostApiPath("hasRoutineBySource", async () => true),
+    };
+    const reports: UnknownFieldReport[] = [];
+    const host = dispatcher({ table, reportUnknownField: (report) => reports.push(report) });
+    const long = "f".repeat(10_000);
+    await host.handle(request({ params: { source: "nightly", [long]: 1 } }));
+    const fields: Record<string, unknown> = { source: "nightly" };
+    for (let index = 0; index < 100; index += 1) fields[`extra${index}`] = index;
+    await host.handle(request({ params: fields }));
+    await host.handle(request({ params: { source: "nightly", another: true } }));
+
+    const named = reports.filter((report) => report.kind === "field");
+    expect(named).toHaveLength(UNKNOWN_FIELD_REPORTS_MAX);
+    expect(named[0]).toEqual({
+      kind: "field",
+      method: "ave/host/hasRoutineBySource",
+      field: `${"f".repeat(64)}…`,
+    });
+    // One line says the rest are being dropped, and nothing follows it.
+    expect(reports.filter((report) => report.kind === "suppressed")).toEqual([
+      { kind: "suppressed", limit: UNKNOWN_FIELD_REPORTS_MAX },
+    ]);
+    expect(reports.at(-1)).toEqual({ kind: "suppressed", limit: UNKNOWN_FIELD_REPORTS_MAX });
+  });
+
+  it("reads an omitted params member as the empty object, and still refuses a non-object", async () => {
+    // JSON-RPC 2.0 §4 lets a client leave `params` out, which is how a stock
+    // client calls a member that takes no arguments.
+    const table = {
+      ...HOSTAPI_DISPATCH_TABLE,
+      listAudioInputDevices: defineHostApiPath("listAudioInputDevices", async () => []),
+    };
+    const host = dispatcher({ table });
+    const { params: _omitted, ...bare } = request({ path: "listAudioInputDevices", args: [] });
+    expect("params" in bare).toBe(false);
+    expect(await host.handle(bare)).toEqual({ jsonrpc: "2.0", id: "c1", result: [] });
+    for (const params of [null, [], "x", 1]) {
+      const reply = await host.handle({ ...bare, params } as unknown as HostApiRequest);
+      if (!("error" in reply)) throw new Error(`expected a refusal for ${JSON.stringify(params)}`);
+      expect(reply.error.data.code).toBe("argument-marshalling-rejected");
+    }
+  });
+
+  it("answers a method only in its one spelling, never a dotted alias", async () => {
+    expect(hostApiPathOf("ave/host/storage/read")).toBe("storage.read");
+    for (const alias of ["ave/host/storage.read", "ave/host/agentApproval.request"]) {
+      expect(hostApiPathOf(alias), alias).toBeUndefined();
+    }
+    const reply = await dispatcher().handle({
+      jsonrpc: "2.0",
+      id: "c1",
+      method: "ave/host/storage.read",
+      params: { path: "notes.txt" },
+    });
+    if (!("error" in reply)) throw new Error("expected a refusal");
+    expect(reply.error.data.code).toBe("path-unknown");
   });
 
   it("reproduces the in-process inactive-incarnation message byte for byte", async () => {

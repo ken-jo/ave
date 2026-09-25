@@ -125,7 +125,8 @@ carry. (36, not 37, once the `callTool` drift in §2.3 is closed.)
 answers is a JSON-RPC 2.0 request on the child's own stdio stream, beside the MCP
 traffic. The method is `ave/host/` followed by the path with `.` spelled `/`
 (`storage.read` is `ave/host/storage/read`); the paths whose contract answers
-`child-local` are never methods. Params are an object keyed by the member's
+`child-local` are never methods, and a method is recognised only in that one
+spelling (`ave/host/storage.read` names nothing). Params are an object keyed by the member's
 parameter names, in declaration order — the `params` axis of
 `HOSTAPI_PATH_CONTRACTS` in `src/plugins/isolation/host-api-wire.ts`, which
 `host-api-path-params.test.ts` holds to the signatures in `public-contract.ts` with
@@ -134,8 +135,11 @@ an `error` whose `data.code` is one of the closed codes in
 `HOST_API_WIRE_ERROR_CODES`; the numeric code is `-32601` for an unknown method
 and `-32000` for every other refusal. No message carries a plugin id or a
 generation: the dispatcher is constructed per child for the plugin it serves, so
-the connection is the identity, and a params field the member does not declare is
-ignored and logged once per method and field. The plugin's `AbortSignal` becomes
+the connection is the identity. An omitted `params` reads as the empty object, as
+JSON-RPC allows; `null`, an array or a scalar is refused. A params field the member
+does not declare is ignored and logged once per method and field, up to 32 distinct
+reports per connection with each name cut to 64 characters, then one line saying
+the rest are suppressed — the child chooses those strings. The plugin's `AbortSignal` becomes
 `notifications/cancelled` naming the in-flight request id, and subscriptions,
 their release and revocation, `context.log` and the three host snapshots are the
 `notifications/ave/*` messages. The goldens under
