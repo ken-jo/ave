@@ -137,6 +137,8 @@ export default defineConfig({
       "react-dom": rootPath("node_modules/react-dom/index.js"),
       react: rootPath("node_modules/react/index.js"),
       "ajv-formats": rootPath("node_modules/ajv-formats/dist/index.js"),
+      // Before `ajv`, which would otherwise match this as its prefix.
+      "ajv/dist/2020.js": rootPath("node_modules/ajv/dist/2020.js"),
       ajv: rootPath("node_modules/ajv/dist/ajv.js"),
       pino: rootPath("node_modules/pino/pino.js"),
     },

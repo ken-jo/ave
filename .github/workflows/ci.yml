@@ -155,10 +155,11 @@ jobs:
       # one runner per gate.
       #
       # What this ordering does NOT reach: `bun run build` above is one workflow
-      # step and sixteen commands, and ten of those assert rather than compile.
-      # Four of the ten — `check:import-cycles`, `check-generated-assets`,
+      # step and seventeen commands, and eleven of those assert rather than
+      # compile. Five of the eleven — `check:import-cycles`,
+      # `check-generated-assets`, `check:plugin-host-protocol-schema`,
       # `check:i18n-catalog`, `check:i18n-barrels` — sit ahead of a later
-      # compile command inside the composite, and all ten sit ahead of the
+      # compile command inside the composite, and all eleven sit ahead of the
       # suite in this job, so any of them can fail the build step and skip the
       # steps after it. That residual is deliberate and bounded: each reads
       # either the sources being compiled or the bytes the build itself just
@@ -225,6 +226,12 @@ jobs:
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -FailureFixture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/test-windows-job.mjs
+      # The tag build runs `bun run build` on Windows, and this check is part of
+      # it: there the generator finds its sources through Windows path spellings
+      # (drive letters, `\` separators), and must still produce the same bytes.
+      - name: Plugin host protocol schema matches its sources
+        working-directory: ave
+        run: bun run check:plugin-host-protocol-schema
       - name: Run Windows permission regressions
         working-directory: ave
         run: >

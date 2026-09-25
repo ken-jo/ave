@@ -310,7 +310,10 @@ interface HostProtocolNotification<M extends string, P> {
  * are never awaited; anything that needs an answer is a {@link HostApiRequest}.
  */
 export type HostApiNotification =
-  /** host → child: an event for a subscription the child opened. */
+  /**
+   * host → child: an event for a subscription the child opened. The payload's
+   * shape is the `events` of the method that opened it (`HostApiEventPayloads`).
+   */
   | HostProtocolNotification<
       typeof HOST_PROTOCOL_NOTIFICATIONS.subscription,
       { readonly subscriptionId: string; readonly payload: unknown }
@@ -1471,6 +1474,45 @@ export interface PluginLifecycleDelivery {
 }
 
 /**
+ * What `config.onChange` puts on the wire: the new value, or in its place the
+ * flag that stands for {@link SECRET_REDACTED_SENTINEL} (see
+ * {@link encodeConfigChange}).
+ */
+export type WireConfigChangeEvent =
+  | { readonly key: string; readonly value?: unknown }
+  | { readonly key: string; readonly secretRedacted: true };
+
+/**
+ * The `payload` of each `notifications/ave/subscription` frame, by the member
+ * whose registration or handle it is for.
+ *
+ * One table serves both ends of the claim: the dispatcher's
+ * `SubscriptionScope.deliver` takes its payload type from here, so a handler
+ * cannot push another shape, and the published protocol schema reads each
+ * member's `events` from the same entries. Every `handler-registration` member
+ * and every `handle` result has one, and the schema generator refuses to run
+ * without it. A member that pushes nothing is `never`.
+ */
+export interface HostApiEventPayloads {
+  /** One per change of the watched key. */
+  readonly "config.onChange": WireConfigChangeEvent;
+  /** One per event of the subscribed type. */
+  readonly onEvent: HostEventDelivery;
+  /** One per plugin installed, updated, enabled, disabled or removed. */
+  readonly onPluginsChanged: PluginLifecycleDelivery;
+  /** Output as it is written, then one `exit`. */
+  readonly spawnWorker: WireWorkerEvent;
+  /** PCM frames in order, then one `end`. */
+  readonly startAudioCapture: WireAudioCaptureEvent;
+  /** One `detached` when the slot goes away. */
+  readonly attachFloatingPanel: WireFloatingPanelEvent;
+  /** Pushes nothing: a lease is only ever closed, by `notifications/ave/subscription/closed`. */
+  readonly resolveApiKey: never;
+  /** Pushes nothing: the host runs the handler with the `ave/instance/shutdown` request. */
+  readonly onShutdown: never;
+}
+
+/**
  * Read one event payload as a record, or refuse.
  *
  * The host is the trust root for this direction, so this is not a security
@@ -1522,7 +1564,7 @@ function asEventRecord(payload: unknown, label: string): Record<string, unknown>
  * dropped and reported, and the plugin receives nothing rather than a payload
  * it would read as "cleared".
  */
-export function encodeConfigChange(key: string, value: unknown): Record<string, unknown> {
+export function encodeConfigChange(key: string, value: unknown): WireConfigChangeEvent {
   if (value === SECRET_REDACTED_SENTINEL) {
     return { key, [SECRET_REDACTED_WIRE_FIELD]: true };
   }
