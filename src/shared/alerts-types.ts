@@ -56,7 +56,8 @@ export interface AlertKindChoice {
   /**
    * The app version at which the kind's plugin was uninstalled. Set so a
    * reinstall keeps the user's choice, cleared on reinstall, and the entry is
-   * dropped once it is two minor releases behind the running version.
+   * dropped once it is two minor releases behind the running version — unless
+   * it is repaired, which must never fall back to the kind's declaration.
    */
   absentSinceAppVersion?: string;
   /**

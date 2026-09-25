@@ -66,6 +66,18 @@ export function compareSemver(a: string, b: string): number {
   return 0;
 }
 
+/**
+ * A complete SemVer 2.0 version: no leading zeros in numeric parts, a
+ * pre-release of dot-separated non-empty identifiers, build metadata likewise.
+ * Bounded so a hand-edited file cannot hand the comparator an unbounded string.
+ */
+const SEMVER_RE =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/u;
+
+export function isSemver(value: string): boolean {
+  return value.length <= 128 && SEMVER_RE.test(value);
+}
+
 /** A stable `major.minor.patch` core, pre-release or build suffix allowed after it. */
 const STABLE_CORE = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)/;
 

@@ -2,6 +2,7 @@ import {
   normalizeCorpCaCommonName,
 } from "../shared/corp-ca-common-name.js";
 import { isIP } from "node:net";
+import { isDeepStrictEqual } from "node:util";
 import { isCanonicalA2APublicHttpsOrigin } from "../shared/a2a-public-origin.js";
 import {
   normalizeSidePanelSplitPercent,
@@ -10,6 +11,7 @@ import {
 } from "../shared/side-panel.js";
 import {
   sanitizePluginConfig,
+  sanitizePluginConfigKey,
   sanitizePluginConfigPluginId,
   type PluginConfigRecord,
 } from "../shared/plugin-config.js";
@@ -76,7 +78,8 @@ import {
 } from "../shared/marketplace-package-assets.js";
 import { projectRootKey } from "../shared/project-identity.js";
 import { clampLogRetentionDays } from "../shared/log-retention.js";
-import { isTwoMinorReleasesBehind } from "../shared/semver-compare.js";
+import { isSemver, isTwoMinorReleasesBehind } from "../shared/semver-compare.js";
+import { SOURCE_ID_RE } from "../marketplace/sources/official.js";
 import { createLogger } from "../lib/logger.js";
 import {
   STORED_FIELD,
@@ -1623,15 +1626,38 @@ export function sanitizeStoredPluginConfigs(input: unknown): Record<string, Plug
 }
 
 /**
- * A stored app version: a stable semver core with an optional pre-release or
- * build suffix, bounded so a hand-edited file cannot store an unbounded one.
- * The `"unknown"` sentinel the version resolver can return is not a version
- * and must never be persisted as one.
+ * A stored app version is a complete SemVer version, judged by the same
+ * validator the marketplace applies to version ranges. The `"unknown"`
+ * sentinel the version resolver can return is not a version and must never be
+ * persisted as one.
  */
-const STORED_APP_VERSION_RE = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:[-+][0-9A-Za-z.-]{1,32})?$/;
-
 function isStoredAppVersion(value: unknown): value is string {
-  return typeof value === "string" && value.length <= 48 && STORED_APP_VERSION_RE.test(value);
+  return typeof value === "string" && isSemver(value);
+}
+
+/**
+ * The identities in the alert blocks — plugin ids, source ids, config keys —
+ * are compared exactly by their readers, so they are validated as stored and
+ * never rewritten. Trimming `" sample "` into `sample` would let a second
+ * record overwrite the first under the same id, or accept a successor id no
+ * plugin carries.
+ */
+function isStoredPluginId(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    return sanitizePluginConfigPluginId(value) === value;
+  } catch {
+    return false;
+  }
+}
+
+function isStoredConfigKey(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    return sanitizePluginConfigKey(value) === value;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -1660,6 +1686,9 @@ function normalizeAlertKindChoice(key: string, input: unknown): AlertKindChoice 
     && typeof obj.osNotification === "boolean"
     && typeof obj.seenByUser === "boolean"
     && isAlertVisibility(obj.visibility)
+    // A damaged mark is a damaged entry: read as absent, it would turn a
+    // repaired entry back into one a later retirement may switch on.
+    && (obj.repaired === undefined || obj.repaired === true)
   ) {
     choice = {
       enabled: obj.enabled,
@@ -1688,7 +1717,9 @@ function normalizeAlertKindChoice(key: string, input: unknown): AlertKindChoice 
  *
  * With the running `appVersion`, an entry whose plugin has been absent for two
  * minor releases is dropped: a reinstall after that starts from the kind's
- * declaration. Without a usable version nothing is dropped.
+ * declaration. A repaired entry is kept whatever its age, because dropping it
+ * would let the kind resolve from its declaration again — the outcome the
+ * repair exists to prevent. Without a usable version nothing is dropped.
  */
 export function normalizeAlertSettings(input: unknown, appVersion?: string): AlertSettings {
   const base = DEFAULT_SETTINGS.alerts;
@@ -1712,6 +1743,7 @@ export function normalizeAlertSettings(input: unknown, appVersion?: string): Ale
       const choice = normalizeAlertKindChoice(key, value);
       if (
         appVersion !== undefined
+        && choice.repaired !== true
         && choice.absentSinceAppVersion !== undefined
         && isTwoMinorReleasesBehind(choice.absentSinceAppVersion, appVersion)
       ) {
@@ -1732,7 +1764,7 @@ function normalizeAlertInheritRule(input: unknown): AlertInheritRule | undefined
   if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
   const obj = input as Record<string, unknown>;
   if (
-    typeof obj.key !== "string" || obj.key.length === 0
+    !isStoredConfigKey(obj.key)
     || (obj.listed !== "enabled" && obj.listed !== "disabled")
     || !Array.isArray(obj.values)
     || obj.values.length === 0
@@ -1742,7 +1774,7 @@ function normalizeAlertInheritRule(input: unknown): AlertInheritRule | undefined
   }
   const rule: AlertInheritRule = { key: obj.key, listed: obj.listed, values: [...obj.values] };
   if (obj.masterKey !== undefined) {
-    if (typeof obj.masterKey !== "string" || obj.masterKey.length === 0) return undefined;
+    if (!isStoredConfigKey(obj.masterKey)) return undefined;
     rule.masterKey = obj.masterKey;
   }
   return rule;
@@ -1756,12 +1788,8 @@ function normalizeRetirementSuccessors(input: unknown): RetirementSuccessors | u
   for (const entry of obj.plugins) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) return undefined;
     const e = entry as Record<string, unknown>;
-    let pluginId: string;
-    try {
-      pluginId = sanitizePluginConfigPluginId(e.pluginId as string);
-    } catch {
-      return undefined;
-    }
+    if (!isStoredPluginId(e.pluginId)) return undefined;
+    const pluginId = e.pluginId;
     if (e.anySource !== undefined && e.anySource !== true) return undefined;
     plugins.push(e.anySource === true ? { pluginId, anySource: true } : { pluginId });
   }
@@ -1787,27 +1815,22 @@ function normalizeRetiredPluginConfigRecord(input: unknown): RetiredPluginConfig
   if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
   const obj = input as Record<string, unknown>;
   if (typeof obj.enabled !== "boolean") return undefined;
-  if (obj.sourceId !== null && (typeof obj.sourceId !== "string" || obj.sourceId.length === 0)) {
+  if (obj.sourceId !== null && (typeof obj.sourceId !== "string" || !SOURCE_ID_RE.test(obj.sourceId))) {
     return undefined;
   }
   if (!isStoredAppVersion(obj.retiredAtAppVersion)) return undefined;
   const successors = normalizeRetirementSuccessors(obj.successors);
   if (!successors) return undefined;
-  if (!Array.isArray(obj.consumedBy)) return undefined;
-  const consumedBy: string[] = [];
-  for (const id of obj.consumedBy) {
-    try {
-      consumedBy.push(sanitizePluginConfigPluginId(id as string));
-    } catch {
-      return undefined;
-    }
-  }
+  if (!Array.isArray(obj.consumedBy) || !obj.consumedBy.every(isStoredPluginId)) return undefined;
+  const consumedBy: string[] = [...obj.consumedBy];
   let config: PluginConfigRecord;
   try {
     config = sanitizePluginConfig(obj.config);
   } catch {
     return undefined;
   }
+  // Sanitising trims keys; a config it had to change was not written by the host.
+  if (!isDeepStrictEqual(config, obj.config)) return undefined;
   return {
     config,
     enabled: obj.enabled,
@@ -1848,23 +1871,20 @@ export function normalizeRetiredPluginConfigs(
   }
   const out: Record<string, RetiredPluginConfigRecord> = {};
   for (const [pluginId, value] of Object.entries(input)) {
-    let safePluginId: string;
-    try {
-      safePluginId = sanitizePluginConfigPluginId(pluginId);
-    } catch (err) {
-      log.warn("dropping retired plugin config with an invalid id: %s", (err as Error).message);
+    if (!isStoredPluginId(pluginId)) {
+      log.warn("dropping retired plugin config with an invalid id: %s", JSON.stringify(pluginId));
       continue;
     }
     const record = normalizeRetiredPluginConfigRecord(value);
     if (!record) {
-      log.warn("dropping malformed retired plugin config: %s", safePluginId);
+      log.warn("dropping malformed retired plugin config: %s", pluginId);
       continue;
     }
     if (appVersion !== undefined && isRetiredRecordSpent(record, appVersion)) {
-      log.info("dropping retired plugin config %s: every successor inherited from it", safePluginId);
+      log.info("dropping retired plugin config %s: every successor inherited from it", pluginId);
       continue;
     }
-    out[safePluginId] = record;
+    out[pluginId] = record;
   }
   return out;
 }

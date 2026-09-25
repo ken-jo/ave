@@ -6,6 +6,7 @@ import { describe, it, expect } from "vitest";
 import {
   compareSemver,
   appVersionSatisfiesMin,
+  isSemver,
   isTwoMinorReleasesBehind,
   SEMVER_CORE_PATTERN,
 } from "../semver-compare.js";
@@ -78,5 +79,20 @@ describe("isTwoMinorReleasesBehind", () => {
     expect(isTwoMinorReleasesBehind("0.12.0", "unknown")).toBe(false);
     expect(isTwoMinorReleasesBehind("0.12.0", "")).toBe(false);
     expect(isTwoMinorReleasesBehind("unknown", "1.0.0")).toBe(false);
+  });
+});
+
+describe("isSemver", () => {
+  it("accepts complete versions with pre-release and build metadata", () => {
+    for (const v of ["0.12.0", "0.12.0-beta.1", "0.12.0-beta.1+build.2", "1.0.0+20260926", "1.0.0-0.3.7"]) {
+      expect(isSemver(v), v).toBe(true);
+    }
+  });
+
+  it("rejects partial, padded, zero-led and empty-identifier versions", () => {
+    for (const v of ["0.12", "v1.0.0", "01.0.0", "1.0.0-01", "0.12.0-..", "0.12.0-", "0.12.0+", " 1.0.0", "unknown"]) {
+      expect(isSemver(v), v).toBe(false);
+    }
+    expect(isSemver(`1.0.0-${"x".repeat(130)}`)).toBe(false);
   });
 });

@@ -55,6 +55,14 @@ const OS_RULE: AlertInheritRule = {
   masterKey: "osNotificationsEnabled",
 };
 
+/** Complete SemVer versions, pre-release and build metadata included. */
+const VALID_VERSIONS = ["0.12.0", "0.12.0-beta.1", "0.12.0-beta.1+build.2", "1.0.0+20260926", "0.12.0-rc-1.x"];
+/** Not versions: partial, prefixed, leading zeros, empty identifiers, the resolver's sentinel, oversized. */
+const INVALID_VERSIONS: unknown[] = [
+  "unknown", "", "0.12", "v0.12.0", "01.2.3", "0.12.0-", "0.12.0-..", "0.12.0-beta..1",
+  "0.12.0-01", "0.12.0+", "0.12.0+build..2", " 0.12.0", "0.12.0 ", `0.12.0-${"x".repeat(130)}`, 12, null,
+];
+
 function choice(overrides: Partial<AlertKindChoice> = {}): AlertKindChoice {
   return {
     enabled: true,
@@ -180,36 +188,34 @@ describe("normalizeAlertSettings", () => {
     });
   });
 
-  it("keeps absentSinceAppVersion only as a real version string", () => {
-    const kinds = normalizeAlertSettings({
-      kinds: {
-        "fixturemail:kind-a": choice({ absentSinceAppVersion: "0.12.0" }),
-        "fixturemail:kind-b": choice({ absentSinceAppVersion: "0.12.0-beta.1" }),
-        "fixturemail:kind-c": choice({ absentSinceAppVersion: "unknown" }),
-        "fixturemail:kind-d": choice({ absentSinceAppVersion: 12 as never }),
-        "fixturemail:kind-e": choice({ absentSinceAppVersion: "01.2.3" }),
-        "fixturemail:kind-f": choice({ absentSinceAppVersion: "0.12" }),
-        "fixturemail:kind-g": choice({ absentSinceAppVersion: `0.12.0-${"x".repeat(40)}` }),
-      },
-    }).kinds;
-    expect(kinds["fixturemail:kind-a"]?.absentSinceAppVersion).toBe("0.12.0");
-    expect(kinds["fixturemail:kind-b"]?.absentSinceAppVersion).toBe("0.12.0-beta.1");
-    for (const key of ["c", "d", "e", "f", "g"]) {
-      expect(kinds[`fixturemail:kind-${key}`], key).toEqual(choice());
+  it("keeps absentSinceAppVersion exactly when it is a complete SemVer version", () => {
+    for (const version of VALID_VERSIONS) {
+      const stored = { kinds: { "fixturemail:mail-reply": choice({ absentSinceAppVersion: version }) } };
+      expect(normalizeAlertSettings(JSON.parse(JSON.stringify(stored))).kinds["fixturemail:mail-reply"], version)
+        .toEqual(choice({ absentSinceAppVersion: version }));
+    }
+    for (const version of INVALID_VERSIONS) {
+      const stored = { kinds: { "fixturemail:mail-reply": { ...choice(), absentSinceAppVersion: version } } };
+      expect(normalizeAlertSettings(stored).kinds["fixturemail:mail-reply"], String(version)).toEqual(choice());
     }
   });
 
-  it("keeps the repaired mark only as literal true", () => {
+  it("keeps a repaired mark of literal true and treats any other value as a damaged entry", () => {
     const kinds = normalizeAlertSettings({
       kinds: {
         "fixturemail:repaired": { ...FAIL_CLOSED },
-        "fixturemail:string-mark": { ...choice(), repaired: "yes" },
-        "fixturemail:false-mark": { ...choice(), repaired: false },
+        // A repaired entry whose mark alone is damaged stays repaired, not auto-resolved.
+        "fixturemail:string-mark": { ...FAIL_CLOSED, repaired: "true" },
+        "fixturemail:false-mark": { ...choice({ seenByUser: true }), repaired: false },
+        "fixturemail:null-mark": { ...choice(), repaired: null, absentSinceAppVersion: "0.12.0" },
       },
     }).kinds;
-    expect(kinds["fixturemail:repaired"]).toEqual(FAIL_CLOSED);
-    expect(kinds["fixturemail:string-mark"]).toEqual(choice());
-    expect(kinds["fixturemail:false-mark"]).toEqual(choice());
+    expect(kinds).toEqual({
+      "fixturemail:repaired": FAIL_CLOSED,
+      "fixturemail:string-mark": FAIL_CLOSED,
+      "fixturemail:false-mark": FAIL_CLOSED,
+      "fixturemail:null-mark": { ...FAIL_CLOSED, absentSinceAppVersion: "0.12.0" },
+    });
   });
 
   describe("with the running app version", () => {
@@ -234,11 +240,17 @@ describe("normalizeAlertSettings", () => {
         .toEqual(["fixturemail:absent"]);
     });
 
-    it("ages a repaired entry by the same rule", () => {
+    it("keeps a repaired entry however long its plugin has been absent", () => {
       const repaired = { ...FAIL_CLOSED, absentSinceAppVersion: "0.12.0" };
-      const stored = { kinds: { "fixturemail:repaired": { enabled: "yes", absentSinceAppVersion: "0.12.0" } } };
-      expect(normalizeAlertSettings(stored, "0.13.0").kinds).toEqual({ "fixturemail:repaired": repaired });
-      expect(normalizeAlertSettings(stored, "0.14.0").kinds).toEqual({});
+      const stored = {
+        kinds: {
+          "fixturemail:repaired": repaired,
+          "fixturemail:ordinary": absent("0.12.0"),
+        },
+      };
+      for (const running of ["0.14.0", "1.0.0"]) {
+        expect(normalizeAlertSettings(stored, running).kinds, running).toEqual({ "fixturemail:repaired": repaired });
+      }
     });
 
     it("drops nothing without a usable running version", () => {
@@ -306,6 +318,44 @@ describe("normalizeRetiredPluginConfigs", () => {
   it("drops a record under an invalid plugin id and keeps the others", () => {
     const record = retiredRecord();
     expect(normalizeRetiredPluginConfigs({ "*": record, "bad id": record, retiredfixture: record }))
+      .toEqual({ retiredfixture: record });
+  });
+
+  it("never trims an identity into validity, so a padded id cannot overwrite a record", () => {
+    const off = retiredRecord({ enabled: false });
+    const stored = JSON.parse(JSON.stringify({ retiredfixture: off, " retiredfixture ": retiredRecord() })) as unknown;
+    expect(normalizeRetiredPluginConfigs(stored)).toEqual({ retiredfixture: off });
+
+    const record = retiredRecord();
+    const padded: Record<string, unknown> = {
+      successorId: { ...record, successors: { ...record.successors, plugins: [{ pluginId: " fixturemail " }] } },
+      consumedById: { ...record, consumedBy: ["fixturemail "] },
+      sourceId: { ...record, sourceId: " ave" },
+      sourceIdGrammar: { ...record, sourceId: "Not A Source" },
+      ruleKey: withHostKind({ kind: HOST_DUE_SOON, enabled: { ...ENABLED_RULE, key: " disabledDetectors" } }),
+      masterKey: withHostKind({ kind: HOST_DUE_SOON, enabled: ENABLED_RULE, osNotification: { ...OS_RULE, masterKey: "osNotificationsEnabled " } }),
+      configKey: { ...record, config: { " disabledDetectors": ["reply"] } },
+    };
+    for (const [name, broken] of Object.entries(padded)) {
+      expect(normalizeRetiredPluginConfigs({ retiredfixture: broken }), name).toEqual({});
+    }
+  });
+
+  it("keeps retiredAtAppVersion exactly when it is a complete SemVer version", () => {
+    for (const version of VALID_VERSIONS) {
+      const record = retiredRecord({ retiredAtAppVersion: version });
+      expect(normalizeRetiredPluginConfigs(JSON.parse(JSON.stringify({ retiredfixture: record }))), version)
+        .toEqual({ retiredfixture: record });
+    }
+    for (const version of INVALID_VERSIONS) {
+      const record = { ...retiredRecord(), retiredAtAppVersion: version };
+      expect(normalizeRetiredPluginConfigs({ retiredfixture: record }), String(version)).toEqual({});
+    }
+  });
+
+  it("round-trips a non-empty consumedBy list", () => {
+    const record = retiredRecord({ consumedBy: ["fixturemail", "fixtureep"] });
+    expect(normalizeRetiredPluginConfigs(JSON.parse(JSON.stringify({ retiredfixture: record }))))
       .toEqual({ retiredfixture: record });
   });
 
