@@ -34,14 +34,22 @@ export interface StdioRequestHandler {
 }
 
 export class StdioServerLoop {
-  private readonly decoder = new StdioFrameDecoder();
+  private readonly decoder: StdioFrameDecoder;
   private started = false;
 
+  /**
+   * `maxLineBytes` bounds one request line. It is the caller's because the
+   * bound belongs to the channel this loop is mounted on, not to the loop: an
+   * overflow throws out of the input's `data` event, to whoever wrote it.
+   */
   constructor(
     private readonly input: Readable,
     private readonly output: Writable,
     private readonly handler: StdioRequestHandler,
-  ) {}
+    maxLineBytes: number,
+  ) {
+    this.decoder = new StdioFrameDecoder(maxLineBytes);
+  }
 
   /** Begin consuming framed requests from the input stream. */
   start(): void {

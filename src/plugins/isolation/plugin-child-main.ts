@@ -132,8 +132,17 @@ export function servePluginChild(
   // five lifecycle methods and the entire hostApi direction never reach it.
   const mcpIn = new PassThrough();
 
-  const stream = new FramedMessageStream(input as never, output, (message) =>
-    route(message),
+  const stream = new FramedMessageStream(
+    input as never,
+    output,
+    (message) => route(message),
+    (reason) => {
+      // A host that broke the framing is a host this child can no longer
+      // serve. Destroying stdin is what the process entry already treats as
+      // the host being gone, so the child exits the one way it always does.
+      process.stderr.write(`[plugin-child] ${reason}; ending\n`);
+      (input as NodeJS.ReadableStream & { destroy(): void }).destroy();
+    },
   );
 
   const channel: HostApiChannel = {

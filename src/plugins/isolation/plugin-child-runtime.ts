@@ -49,6 +49,7 @@ import {
   createStorageChildMembers,
 } from "./host-api-child.js";
 import {
+  FRAME_BYTES_MAX,
   HOSTAPI_PATH_CONTRACTS,
   HOST_API_WIRE_VERSION,
   reconstructWireError,
@@ -619,7 +620,9 @@ export async function startPluginChildRuntime(
   };
 
   const server = new PluginMcpServer(manifest, delegate, options.uiResources);
-  new StdioServerLoop(options.input, options.output, server).start();
+  // Fed only by the child's multiplexer, which has already bounded every line
+  // it forwards by the same limit.
+  new StdioServerLoop(options.input, options.output, server, FRAME_BYTES_MAX).start();
 
   return {
     instance,

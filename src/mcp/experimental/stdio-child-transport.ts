@@ -20,8 +20,15 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { frameMessage, StdioFrameDecoder } from "../stdio-framing.js";
 import type { JsonRpcMessage, JsonRpcResponse, McpTransport } from "../mcp-client.js";
+import { errorMessage } from "../../shared/error-message.js";
 
 export interface StdioChildOptions {
+  /**
+   * The longest line the child may write before it is killed as broken. No
+   * default: an unbounded read of an untrusted process's stdout is the thing
+   * being prevented.
+   */
+  maxLineBytes: number;
   cwd?: string;
   env?: Record<string, string>;
   /**
@@ -37,15 +44,17 @@ export class StdioChildTransport implements McpTransport {
 
   private child: ChildProcess | null = null;
   private alive = false;
-  private readonly decoder = new StdioFrameDecoder();
+  private readonly decoder: StdioFrameDecoder;
   private messageHandler: ((msg: JsonRpcResponse) => void) | null = null;
   private closeHandler: ((reason: string) => void) | null = null;
 
   constructor(
     private readonly command: string,
     private readonly args: string[] = [],
-    private readonly options: StdioChildOptions = {},
-  ) {}
+    private readonly options: StdioChildOptions,
+  ) {
+    this.decoder = new StdioFrameDecoder(options.maxLineBytes);
+  }
 
   async open(): Promise<void> {
     const { command, args } = this.options.sandboxWrap
@@ -61,7 +70,16 @@ export class StdioChildTransport implements McpTransport {
     this.alive = true;
 
     child.stdout?.on("data", (chunk: Buffer) => {
-      for (const message of this.decoder.push(chunk)) {
+      let messages: Array<Record<string, unknown>>;
+      try {
+        messages = this.decoder.push(chunk);
+      } catch (error) {
+        // The child broke the framing; it is ended, not resynchronised.
+        this.fail(`child framing violated: ${errorMessage(error)}`);
+        child.kill("SIGKILL");
+        return;
+      }
+      for (const message of messages) {
         this.messageHandler?.(message as unknown as JsonRpcResponse);
       }
     });

@@ -470,6 +470,23 @@ export interface ChildNotificationSink {
  */
 export const WIRE_BYTES_MAX = 16 * 1024 * 1024;
 
+/** What one frame may carry beyond its payloads: ids, method names, the JSON around them. */
+const FRAME_ENVELOPE_HEADROOM_BYTES = 1024 * 1024;
+
+/**
+ * The longest line either end of the plugin channel reads before it ends the
+ * channel as broken (`StdioFrameDecoder`).
+ *
+ * Derived from {@link WIRE_BYTES_MAX} rather than chosen: a payload at the
+ * limit crosses base64-encoded, 4 bytes for every 3, and a `tools/call` result
+ * carries the plugin's value twice — as MCP text content and as the raw result
+ * in `_meta` — so the largest legitimate frame is twice the encoded payload,
+ * plus room for the envelope. Anything longer is not a message this protocol
+ * can produce.
+ */
+export const FRAME_BYTES_MAX =
+  2 * Math.ceil(WIRE_BYTES_MAX / 3) * 4 + FRAME_ENVELOPE_HEADROOM_BYTES;
+
 /**
  * Bytes or text on the wire, with the encoding stated rather than inferred.
  *

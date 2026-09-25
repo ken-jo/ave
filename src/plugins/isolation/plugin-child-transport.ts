@@ -22,6 +22,7 @@
  */
 import type { Readable, Writable } from "node:stream";
 import { randomUUID } from "node:crypto";
+import { createLogger } from "../../lib/logger.js";
 import {
   classifyMultiplexedMessage,
   FramedMessageStream,
@@ -33,6 +34,8 @@ import {
   type HostApiDispatcherOptions,
 } from "./host-api-dispatcher.js";
 import type { HostApiNotification, HostApiRequest } from "./host-api-wire.js";
+
+const log = createLogger("plugin-child-transport");
 
 /** A JSON-RPC error as it arrives from the child. */
 interface JsonRpcErrorBody {
@@ -93,6 +96,7 @@ export class PluginChildTransport {
   private readonly pending = new PendingCallTable<unknown>();
   private readonly dispatcher: HostApiDispatcher;
   private readonly link: ChildLink;
+  private readonly pluginId: string;
   private closedReason: string | undefined;
 
   constructor(options: PluginChildTransportOptions) {
@@ -103,10 +107,15 @@ export class PluginChildTransport {
         deliver: (notification) => this.sendToChild(notification),
       },
     });
+    this.pluginId = options.pluginId;
     this.stream = new FramedMessageStream(
       options.link.input,
       options.link.output,
       (message) => this.route(message),
+      // A child that broke the framing is killed like one that stopped
+      // answering: nothing it writes after an unbounded line can be trusted to
+      // start on a line boundary.
+      (reason) => this.close(`[plugin-child-transport] ${reason}`),
     );
   }
 
@@ -163,6 +172,15 @@ export class PluginChildTransport {
   close(reason: string): void {
     if (this.closedReason !== undefined) return;
     this.closedReason = reason;
+    // A frame cut off by the close is dropped with the channel. Said here,
+    // quietly, so a child that died mid-write is distinguishable from one that
+    // went away between messages.
+    if (this.stream.pendingBytes > 0) {
+      log.debug(
+        { pluginId: this.pluginId, pendingBytes: this.stream.pendingBytes },
+        "channel closed with a partial frame unread",
+      );
+    }
     this.link.terminate(reason);
     this.pending.rejectAll(reason);
     this.dispatcher.childGone();

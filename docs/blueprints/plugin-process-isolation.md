@@ -512,10 +512,15 @@ The deciding reason is not preference:
 Secondary reasons, in order:
 
 1. `StdioChildTransport` + `StdioServerLoop` already exist and are tested; the
-   framing (`stdio-framing.ts`) is the one the MCP client speaks to external stdio
-   servers, so a plugin built on a stock MCP server library frames the same way
+   framing (`stdio-framing.ts`) is the same framing the MCP client speaks to
+   external stdio servers — its own parser, not shared code — so a plugin built on
+   a stock MCP server library frames the same way
    (`docs/design/plugin-hostapi-protocol.md` §2.3); `PluginMcpHost` is already
-   transport-agnostic. This is the arm the architecture named.
+   transport-agnostic. This is the arm the architecture named. One line is bounded
+   by `FRAME_BYTES_MAX` (`host-api-wire.ts`, derived from the payload limit
+   `WIRE_BYTES_MAX`): a peer that writes past it without a newline has broken the
+   framing, and the reader ends the channel — the host kills the child, the child
+   treats the host as gone — rather than buffering without end.
 2. The child is a plain Node process, so the ASRT wrapper, the sandboxed env
    builder, and the managed-child supervision from `worker-spawn.ts` apply
    unchanged.

@@ -21,6 +21,8 @@
  */
 import type { Readable, Writable } from "node:stream";
 import { frameMessage, StdioFrameDecoder } from "../../mcp/stdio-framing.js";
+import { errorMessage } from "../../shared/error-message.js";
+import { FRAME_BYTES_MAX } from "./host-api-wire.js";
 import { isPluginInstanceMethod } from "./plugin-instance-wire.js";
 
 /** A decoded frame, before anyone has decided what it is. */
@@ -71,31 +73,54 @@ export function classifyMultiplexedMessage(
  * loose functions: attaching a second decoder to the same `Readable` would give
  * two consumers two independent views of the same bytes, and a partial frame
  * would then be reassembled twice.
+ *
+ * `onViolation` is how the owner learns the peer broke the framing — a line
+ * past {@link FRAME_BYTES_MAX}. It is called once, reading stops, and ending
+ * the channel is the owner's to do: the host kills the child, the child treats
+ * the host as gone.
  */
 export class FramedMessageStream {
-  private readonly decoder = new StdioFrameDecoder();
+  private readonly decoder = new StdioFrameDecoder(FRAME_BYTES_MAX);
   private started = false;
+  private violated = false;
 
   constructor(
     private readonly input: Readable,
     private readonly output: Writable,
     private readonly onMessage: (message: MultiplexedMessage) => void,
+    private readonly onViolation: (reason: string) => void,
   ) {}
+
+  /** Bytes of a frame that started arriving and never ended. */
+  get pendingBytes(): number {
+    return this.decoder.pendingBytes;
+  }
 
   start(): void {
     if (this.started) throw new Error("[child-stream-multiplex] already started");
     this.started = true;
-    this.input.on("data", (chunk: Buffer) => {
-      for (const message of this.decoder.push(chunk)) this.onMessage(message);
-    });
+    const onData = (chunk: Buffer): void => {
+      let messages: Array<Record<string, unknown>>;
+      try {
+        messages = this.decoder.push(chunk);
+      } catch (error) {
+        if (this.violated) return;
+        this.violated = true;
+        this.input.off("data", onData);
+        this.onViolation(errorMessage(error));
+        return;
+      }
+      for (const message of messages) this.onMessage(message);
+    };
+    this.input.on("data", onData);
   }
 
   /**
    * Write one whole frame.
    *
    * Every writer on this side funnels through here so a frame is always one
-   * `write` call. Two writers each emitting header-then-body could interleave
-   * and produce a stream neither peer can resynchronise.
+   * `write` call, and one line: two writers can interleave whole frames but
+   * never splice one line into another.
    */
   send(message: unknown): void {
     this.output.write(frameMessage(message));
