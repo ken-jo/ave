@@ -615,6 +615,7 @@ same sources the dispatcher compiles against:
 ```
 schemas/plugin-host-protocol/1/protocol.schema.json
   $defs.methods["ave/host/storage/read"].params / .result / .errors
+  $defs.methods["ave/host/startAudioCapture"].events    (subscription payloads)
   $defs.methods["ave/instance/construct"] ...
   $defs.notifications["notifications/ave/subscription"] ...
   $defs.errorCodes            (the closed set, host-api-wire.ts:312-333)
@@ -634,6 +635,12 @@ classifies a failure by the error class thrown, whichever member threw it, so
 on members whose contract list omits them. The member's own codes are named in the
 entry's `description`. Narrowing the enum per member would first need the dispatcher to
 narrow what it returns.
+A member that registers a handler or returns a handle also carries `.events`: the
+payload schema of the `notifications/ave/subscription` frames delivered for it (worker
+output, audio frames, floating-panel events, config changes, host events, plugin
+lifecycle), generated from the same types the host encodes. Without it a plugin in
+another language has no machine-readable shape for what its subscriptions deliver, and
+a payload change would pass the schema gate unnoticed.
 The completeness test that today walks the real hostApi object
 (`hostapi-effect-completeness.test.ts:11-16`) gains a sibling that walks the schema:
 every dispatchable path has a schema entry and vice versa.
