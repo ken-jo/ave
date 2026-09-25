@@ -49,7 +49,7 @@ describe("the frame bound", () => {
     const messages: unknown[] = [];
     const violations: string[] = [];
     new FramedMessageStream(input, new PassThrough(), (message) => messages.push(message), (reason) =>
-      violations.push(reason),
+      violations.push(reason), () => {},
     ).start();
     input.write(lineOf(FRAME_BYTES_MAX));
     await settle();
@@ -62,7 +62,7 @@ describe("the frame bound", () => {
     const messages: unknown[] = [];
     const violations: string[] = [];
     new FramedMessageStream(input, new PassThrough(), (message) => messages.push(message), (reason) =>
-      violations.push(reason),
+      violations.push(reason), () => {},
     ).start();
     input.write(Buffer.alloc(FRAME_BYTES_MAX + 1, 0x78));
     await settle();

@@ -121,6 +121,12 @@ export class PluginChildTransport {
       // answering: nothing it writes after an unbounded line can be trusted to
       // start on a line boundary.
       (reason) => this.close(`[plugin-child-transport] ${reason}`),
+      (dropped) => {
+        log.warn(
+          { pluginId: options.pluginId, ...dropped },
+          "dropped a notification too large to frame",
+        );
+      },
     );
   }
 

@@ -521,8 +521,10 @@ Secondary reasons, in order:
    `WIRE_BYTES_MAX` always fits), and it is the only bound plain-JSON traffic has —
    a tool result, a `storage.readText` reply, a `writeJson` argument. So the writer
    enforces it first: a reply too large to frame is sent as a `payload-too-large`
-   error for the same call, and a request or notification throws that error to
-   its caller, so one oversized value fails one call. A peer that writes a longer
+   error for the same call, a request throws that error to its caller, and a
+   notification — which nobody waits for, and whose in-process senders never
+   throw — is dropped and named in the sender's log, so one oversized value
+   fails one call. A peer that writes a longer
    line anyway has skipped that check, and the reader ends the channel — the host
    kills the child, the child treats the host as gone — rather than buffering
    without end.

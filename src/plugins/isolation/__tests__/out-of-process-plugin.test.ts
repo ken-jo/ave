@@ -15,6 +15,22 @@
  * wiring and calls it protection.
  */
 import { describe, expect, it, vi } from "vitest";
+
+/** What the host transport warned, for the cases that assert a notification was dropped. */
+const transportWarnings = vi.hoisted(() => [] as unknown[][]);
+vi.mock("../../../lib/logger.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../lib/logger.js")>();
+  return {
+    ...actual,
+    createLogger: (name: string) => {
+      const logger = actual.createLogger(name);
+      if (name !== "plugin-child-transport") return logger;
+      return Object.assign(Object.create(logger) as typeof logger, {
+        warn: (...args: unknown[]) => void transportWarnings.push(args),
+      });
+    },
+  };
+});
 import { PassThrough } from "node:stream";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,7 +43,7 @@ import {
   type ConfinedPluginChild,
 } from "../out-of-process-plugin.js";
 import type { ChildLink } from "../plugin-child-transport.js";
-import { HOSTAPI_PATH_CONTRACTS, type HostApiPath } from "../host-api-wire.js";
+import { FRAME_BYTES_MAX, HOSTAPI_PATH_CONTRACTS, type HostApiPath } from "../host-api-wire.js";
 
 const PLUGIN_ID = "vega-helper";
 const EMPTY_SCHEMA = { type: "object", properties: {} } as const;
@@ -551,11 +567,19 @@ describe("a message too large to frame fails its call, not the channel", () => {
   // limit reaches. Before the writer checked the bound, each of these ended the
   // channel at the other end's reader and took every pending call with it.
   const MiB = 1024 * 1024;
-  const TOOLS = ["big_result", "read_big_file", "write_big_json", "echo"];
+  const TOOLS = ["big_result", "read_big_file", "write_big_json", "echo", "events_seen", "log_big"];
   const MODULE = `export const createPlugin = async (context) => {
   const refusal = (error) => ({ name: error.name, code: error.code ?? null });
+  const seen = [];
+  context.hostApi.onEvent("board.changed", (data) => seen.push(data));
   return {
     handlers: {
+      events_seen: async () => ({ seen }),
+      // A log line the child cannot frame. context.log never throws in-process.
+      log_big: async () => {
+        context.log("a large log line", { blob: "x".repeat(46 * ${MiB}) });
+        return { logged: true };
+      },
       // Crosses twice — text content and raw result — so about 46 MB.
       big_result: async () => "x".repeat(23 * ${MiB}),
       read_big_file: async () => {
@@ -596,6 +620,56 @@ describe("a message too large to frame fails its call, not the channel", () => {
     const instance = await factory(hostContext(hostApi));
     return { dir, instance, terminate };
   }
+
+  it("drops a host notification too large to frame, names it in the host log, and delivers the next", async () => {
+    const hostApi = fakeHostApi();
+    const { dir, instance, terminate } = await construct(hostApi);
+    try {
+      await vi.waitFor(() => expect(hostApi.onEvent).toHaveBeenCalledWith("board.changed", expect.any(Function)));
+      const deliver = vi.mocked(hostApi.onEvent).mock.calls.find(([type]) => type === "board.changed")![1];
+      transportWarnings.length = 0;
+      // The host's event bus calls this like any listener; it must not throw.
+      expect(() => deliver({ blob: "x".repeat(46 * MiB) })).not.toThrow();
+      deliver({ small: true });
+      await vi.waitFor(async () =>
+        expect(await instance.handlers.events_seen!()).toEqual({ seen: [{ small: true }] }));
+      expect(transportWarnings).toHaveLength(1);
+      expect(transportWarnings[0]![0]).toMatchObject({
+        pluginId: PLUGIN_ID,
+        method: "subscription-event",
+        subscriptionId: expect.any(String),
+        byteLength: expect.any(Number),
+        limit: FRAME_BYTES_MAX,
+      });
+      expect(terminate).not.toHaveBeenCalled();
+      await instance.stop?.();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("drops a plugin's log line too large to frame without throwing into the plugin", async () => {
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const { dir, instance, terminate } = await construct(fakeHostApi());
+    try {
+      await expect(instance.handlers.log_big!()).resolves.toEqual({ logged: true });
+      const reported = stderr.mock.calls
+        .map(([chunk]) => String(chunk))
+        .filter((line) => line.startsWith("[plugin-child] dropped a notification too large to frame"));
+      expect(reported).toHaveLength(1);
+      expect(JSON.parse(reported[0]!.slice(reported[0]!.indexOf("{")))).toMatchObject({
+        pluginId: PLUGIN_ID,
+        method: "log",
+        limit: FRAME_BYTES_MAX,
+      });
+      await expect(instance.handlers.echo!()).resolves.toEqual({ echoed: null });
+      expect(terminate).not.toHaveBeenCalled();
+      await instance.stop?.();
+    } finally {
+      stderr.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   it("refuses a tool result too large to frame, and the plugin keeps serving", async () => {
     const { dir, instance, terminate } = await construct(fakeHostApi());

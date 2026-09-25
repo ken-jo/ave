@@ -481,7 +481,8 @@ const FRAME_ENVELOPE_HEADROOM_BYTES = 1024 * 1024;
  * {@link WIRE_BYTES_MAX} does not reach, since that bounds byte payloads alone.
  * So both ends enforce it. The writer refuses a message that would exceed it
  * (`FramedMessageStream.send`: a reply becomes a `payload-too-large` error for
- * the same call, anything else throws that error to its writer), and the reader
+ * the same call, a request throws that error to its writer, a notification is
+ * dropped and logged), and the reader
  * (`StdioFrameDecoder`) ends the channel on a longer line, which only a peer
  * that skipped the writer's check can produce.
  *

@@ -78,6 +78,10 @@ export function classifyMultiplexedMessage(
  * past {@link FRAME_BYTES_MAX}. It is called once, reading stops, and ending
  * the channel is the owner's to do: the host kills the child, the child treats
  * the host as gone.
+ *
+ * `onDroppedNotification` is how the owner learns THIS side dropped a
+ * notification too large to frame, so it can say so in its own log (see
+ * {@link FramedMessageStream.send}).
  */
 export class FramedMessageStream {
   private readonly decoder = new StdioFrameDecoder(FRAME_BYTES_MAX);
@@ -89,6 +93,7 @@ export class FramedMessageStream {
     private readonly output: Writable,
     private readonly onMessage: (message: MultiplexedMessage) => void,
     private readonly onViolation: (reason: string) => void,
+    private readonly onDroppedNotification: (dropped: DroppedNotification) => void,
   ) {}
 
   /** Bytes of a frame that started arriving and never ended. */
@@ -123,16 +128,28 @@ export class FramedMessageStream {
    * never splice one line into another.
    *
    * The line bound is enforced HERE as well as by the reader, because the
-   * reader's only answer to an over-long line is to end the channel. A reply
-   * too large to send is sent as a `payload-too-large` error for the same
-   * call, and any other message throws that error to its writer, so a peer
+   * reader's only answer to an over-long line is to end the channel, so a peer
    * that stays inside the protocol never trips the other end's kill — it is
-   * left for a peer that skipped this check.
+   * left for a peer that skipped this check. What happens instead depends on
+   * who is waiting:
+   *
+   *  - a reply is sent as a `payload-too-large` error for the same call, so its
+   *    caller fails and nothing else does;
+   *  - a request throws that error to its caller;
+   *  - a notification is DROPPED and reported to the owner. Nobody waits for
+   *    one, and what sends it — an event listener, `context.log`, a snapshot
+   *    push — never throws in-process, so a throw here would surface in code
+   *    that has no reason to expect one.
    */
   send(message: unknown): void {
     const frame = frameMessage(message);
     if (frame.length - 1 <= FRAME_BYTES_MAX) {
       this.output.write(frame);
+      return;
+    }
+    const dropped = droppedNotificationOf(message, frame.length - 1);
+    if (dropped) {
+      this.onDroppedNotification(dropped);
       return;
     }
     this.output.write(frameMessage(refuseOversizedFrame(message, frame.length - 1)));
@@ -156,13 +173,35 @@ export class FramedMessageStream {
 /** The JSON-RPC server-error code a boundary refusal carries (plugin-hostapi-protocol.md §3.3). */
 const RPC_PAYLOAD_TOO_LARGE = -32000;
 
+/** A notification {@link FramedMessageStream.send} did not write, for its owner's log. */
+export interface DroppedNotification {
+  /** The notification's kind. */
+  readonly method: string;
+  /** The subscription it was for, when it was for one. */
+  readonly subscriptionId?: string;
+  readonly byteLength: number;
+  readonly limit: number;
+}
+
+/** Describe `message` as a dropped notification, or `undefined` when it is not one. */
+function droppedNotificationOf(message: unknown, lineBytes: number): DroppedNotification | undefined {
+  const candidate = (message ?? {}) as MultiplexedMessage;
+  if (classifyMultiplexedMessage(candidate) !== "host-api-notification") return undefined;
+  return {
+    method: String(candidate.kind),
+    ...(typeof candidate.subscriptionId === "string" ? { subscriptionId: candidate.subscriptionId } : {}),
+    byteLength: lineBytes,
+    limit: FRAME_BYTES_MAX,
+  };
+}
+
 /**
  * What an over-long message is sent as instead, or the error its writer gets.
  *
  * A REPLY becomes a refusal of the call it answers: the caller is waiting on
  * that id, and an error it can read is the difference between one failed call
- * and a peer that waits forever. A request or notification has a caller on
- * THIS side, so it throws to that caller instead.
+ * and a peer that waits forever. A request has a caller on THIS side, so it
+ * throws to that caller instead.
  */
 function refuseOversizedFrame(message: unknown, lineBytes: number): unknown {
   const text =

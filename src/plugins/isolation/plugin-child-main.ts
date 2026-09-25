@@ -118,6 +118,8 @@ export function servePluginChild(
   output: Writable,
 ): PluginChildService {
   let runtime: PluginChildRuntime | undefined;
+  // Named in this child's own diagnostics once construct has told it.
+  let constructedPluginId: string | undefined;
   const hostApiReplies = new PendingCallTable<HostApiReply>();
   // The MCP server writes whole frames into this and they are forwarded
   // as they are — nothing re-decodes them, so a forwarded chunk is always
@@ -144,6 +146,17 @@ export function servePluginChild(
       // the host being gone, so the child exits the one way it always does.
       process.stderr.write(`[plugin-child] ${reason}; ending\n`);
       (input as NodeJS.ReadableStream & { destroy(): void }).destroy();
+    },
+    (dropped) => {
+      // Stderr, which the host already collects for this child: the dropped
+      // notification may itself be the `context.log` line that would have
+      // carried this.
+      process.stderr.write(
+        `[plugin-child] dropped a notification too large to frame ${JSON.stringify({
+          pluginId: constructedPluginId,
+          ...dropped,
+        })}\n`,
+      );
     },
   );
 
@@ -177,6 +190,7 @@ export function servePluginChild(
         `[plugin-child] instance wire ${String(params.wire)} != ${PLUGIN_INSTANCE_WIRE_VERSION}`,
       );
     }
+    constructedPluginId = params.context.pluginId;
     runtime = await startPluginChildRuntime({
       input: mcpIn,
       output: mcpOut,
