@@ -56,11 +56,13 @@ const SCHEMA = JSON.parse(
 const GOLDEN_ROOT = fileURLToPath(new URL("./fixtures/host-protocol/1/", import.meta.url));
 
 const Ajv2020 = (Ajv2020Module as unknown as { default?: unknown }).default ?? Ajv2020Module;
-// Not strict: a method entry holds its schemas under `params`, `result`,
-// `errors` and `events` (§6.1), which are not JSON Schema keywords. Each is
-// compiled on its own below, with the named types beside it.
+// Configured the way the plugin guide tells a consumer to: strict, with union
+// types allowed because a field of more than one type is a type array. A
+// method entry holds its schemas under `params`, `result`, `errors` and
+// `events` (§6.1), which are not JSON Schema keywords, so each is compiled on
+// its own below, with the named types beside it, as a consumer would.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const ajv = new (Ajv2020 as any)({ strict: false, allErrors: true });
+const ajv = new (Ajv2020 as any)({ strict: true, allowUnionTypes: true, allErrors: true });
 
 const compiled = new Map<string, (value: unknown) => boolean>();
 

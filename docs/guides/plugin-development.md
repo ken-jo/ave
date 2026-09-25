@@ -76,9 +76,14 @@ handed. Underneath, each member is a JSON-RPC `ave/host/*` request on the
 plugin's own stdio, and `schemas/plugin-host-protocol/1/protocol.schema.json`
 describes every method, notification and error code of that channel. The file is
 generated from the host's own sources at each app release, so it describes what
-the host actually serves. The host does not yet admit a plugin that speaks the
-protocol without its JavaScript runtime; every plugin today is a JavaScript
-`entry`.
+the host actually serves. To validate a frame, compile a method's `params`,
+`result`, `errors` or `events` sub-schema (for example
+`#/$defs/methods/ave~1host~1storage~1read/params`), not the method entry, which
+groups them under names that are not JSON Schema keywords; with Ajv, set
+`allowUnionTypes: true`, because a field that takes more than one type (a
+request id, a nullable value) is a type array. The host does not yet admit a
+plugin that speaks the protocol without its JavaScript runtime; every plugin
+today is a JavaScript `entry`.
 
 ## UI Plugins
 
