@@ -387,14 +387,22 @@ and is written back only when it is final:
 
 Two later events can change an entry without the user:
 
-- **A retirement mapping arrives.** An entry that is still auto-resolved
-  (`seenByUser: false` and not `repaired`) is re-resolved once from the
-  retired record when that record is written — this is how `@host:due-soon`,
-  resolved off on the first boot before any retirement, picks up the
-  `successors.hostKinds` mapping. An entry the user has visited is never
-  changed, and neither is a repaired one: corruption recovery outranks
-  every automatic transition, so the only thing that turns a repaired
-  entry on is the user setting it (which also clears `repaired`).
+- **A retirement mapping arrives, or a plugin starts declaring one.** An
+  entry that is still auto-resolved (`seenByUser: false` and not
+  `repaired`) is re-resolved once from the retired record in two cases:
+  when that record is written — this is how `@host:due-soon`, resolved off
+  on the first boot before any retirement, picks up the
+  `successors.hostKinds` mapping — and when the entry's plugin registers a
+  version whose kind newly names, in `inherits`, a predecessor that already
+  has a retired record. The second case exists because initial resolution
+  runs only for a missing entry: a kind that resolved to off under a
+  version with no `inherits` would otherwise keep that default when the
+  next version starts inheriting, and the record would count as consumed
+  without ever transferring the user's choice. An entry the user has
+  visited is never changed, and neither is a repaired one: corruption
+  recovery outranks every automatic transition, so the only thing that
+  turns a repaired entry on is the user setting it (which also clears
+  `repaired`).
 - **Visibility escalates.** The entry stores the `visibility` the user
   consented to; when an update declares a higher visibility than stored,
   the entry is reset to `enabled: false`, `seenByUser: false` and the new
@@ -887,17 +895,26 @@ the successors without the host naming any plugin.
      record stays pending — an empty declaration must not count as done.
      Consumption is attempted at record-write time and again on every
      registration of the successor (install, update, load), so the version
-     that first declares the inheritance is the one that consumes.
+     that first declares the inheritance is the one that consumes — and at
+     that registration the kinds stage first re-resolves the eligible
+     entries against the new declaration, so a kind that a non-inheriting
+     version left at its default receives the user's choice before the
+     record is marked consumed.
    - **Kinds stage** is scoped to the successor's kinds whose `inherits`
      names *this record's* predecessor — a kind inheriting from a different
      predecessor, one that may still be installed and blocking, has no
-     bearing on this record. The stage is terminal when each such kind has
-     a durable written-back entry, whatever produced it: resolved from the
-     record; resolved from the kind's own declaration because the record's
-     `enabled` is false (a disabled predecessor reads as no record, and
-     that default resolution is as final as any other); or intentionally
-     left alone because the entry is visited or repaired (re-resolution
-     never touches those, so waiting would never end). A successor with no
+     bearing on this record. Before the stage is judged, every eligible
+     entry of those kinds (`seenByUser: false`, not `repaired`) is
+     re-resolved against the inheritance the registering version declares
+     (Settings, "a plugin starts declaring one") — a pre-existing default
+     is never accepted as the transfer of the user's choice. Only after
+     that decision is the stage terminal, when each such kind has a durable
+     written-back entry: resolved from the record; resolved from the kind's
+     own declaration because the record's `enabled` is false (a disabled
+     predecessor reads as no record, and that default resolution, taken
+     after the re-resolution decision, is as final as any other); or
+     intentionally left alone because the entry is visited or repaired
+     (re-resolution never touches those, so waiting would never end). A successor with no
      kind naming the predecessor has a trivially terminal kinds stage. A
      kind that is `blocked_by_predecessor` is not terminal — a loaded
      predecessor blocks resolution until restart — and the attempt is
@@ -1127,7 +1144,13 @@ Contract tests (host):
   predecessor consumes this record once its own kind is written back,
   while the other kind stays blocked; a successor with no kind naming the
   predecessor but a `configInherits` for it consumes on the config stage
-  alone; a successor that is never updated leaves the record pending
+  alone; late inheritance: successor v1 registers a kind with no
+  `inherits` and it resolves to off and unseen, the retirement then writes
+  an enabled record whose mapping says "on", successor v2 adds `inherits`
+  naming the predecessor — at v2's registration the entry is re-resolved
+  to on from the record and only then is the record consumed, while the
+  same sequence with the entry visited by the user leaves it as the user
+  set it; a successor that is never updated leaves the record pending
   indefinitely.
   `absentSinceAppVersion` set on uninstall, cleared on reinstall, entry
   dropped two minors later; `settings.alerts` is written only through the
@@ -1378,7 +1401,12 @@ published the same day as the monorepo commit. Gates: ported suites,
   from this record's predecessor, and a default resolution (disabled
   record) or no inheriting kind at all is terminal; an old successor
   version that declares nothing stays pending, and the attempt is retried
-  on every registration and when the predecessor stops blocking.
+  on every registration and when the predecessor stops blocking. When a
+  version newly declares `inherits` for a predecessor that already has a
+  retired record, the eligible entries (unseen, not repaired) are
+  re-resolved from the record before consumption is decided, so a default
+  left by an earlier non-inheriting version is never counted as the
+  transfer of the user's choice.
 - Stored version fields are strict SemVer 2.0 (pre-release and build
   suffixes kept); the running version must be a stable core for any prune.
 - A `repaired` flag present with any value other than `true` makes the
