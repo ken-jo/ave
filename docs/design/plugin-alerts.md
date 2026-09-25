@@ -233,8 +233,9 @@ window.
    cap; `key` matches its pattern; unknown slot → `invalid`.
 3. **Predecessor.** While any plugin named in the kind's `inherits[].pluginId`
    is **loaded, or installed (registry) and not revoked**
-   (`revocationRegistry`), the kind is not delivered and its toggle is not
-   resolved → `blocked_by_predecessor`. "Loaded" is part of the condition
+   (`revocationRegistry`), the kind is not delivered and its entry holds
+   only the declaration's value, never the record's (Settings) →
+   `blocked_by_predecessor`. "Loaded" is part of the condition
    because `markRevoked` acts only at load (`runtime/index.ts:2957-2980`) and
    a revocation applied mid-session does not stop a running plugin: a
    revoked predecessor whose uninstall failed or is policy-locked keeps
@@ -369,44 +370,63 @@ interface AlertKindChoice {
   visibility: "user-visible" | "summary-only" | "silent"; // the declared visibility the user consented to
   seenByUser: boolean;                                    // false = auto-resolved, never visited
   repaired?: true;                                        // the loader replaced a damaged entry; cleared when the user sets the kind
+  escalated?: true;                                       // an update raised the visibility and the host turned the kind off; cleared when the user sets the kind
   absentSinceAppVersion?: string;                         // set when the plugin is uninstalled; cleared on reinstall
 }
 ```
 
-Resolution of a kind with no entry happens when the kind is first registered
-and is written back only when it is final:
+An entry is written the first time its kind is registered, whether or not
+the kind is blocked, so that the origin of the kind is durable from that
+moment: a blocked kind whose entry waited for the block to lift would, after
+a restart and an ordinary uninstall of the predecessor, be indistinguishable
+from a fresh install, and a `defaultEnabled: true` kind that arrived in an
+update would turn itself on. The first write takes the kind's own
+`defaultEnabled` and `osNotification.defaultEnabled` — with one override: a
+kind that is **first seen in an update** of an already-installed plugin is
+written `enabled: false` regardless of its declaration. An update must not
+turn on a card the user never agreed to. The retired record is not
+consulted at this point, and while the kind is blocked (step 3) it is never
+consulted: the running predecessor still owns the user's choice.
 
-- If a plugin named in the kind's `inherits` is installed and not revoked,
-  nothing is resolved (the kind is blocked, above).
-- Else if a retired record for such a plugin exists and names the kind's
-  plugin as a successor, the `inherits` mapping decides (Migration).
-- Else the kind's own `defaultEnabled` and `osNotification.defaultEnabled`
-  apply — with one override: a kind that is **first seen in an update** of an
-  already-installed plugin resolves to `enabled: false` regardless of its
-  declaration. An update must not turn on a card the user never agreed to.
+Entries the host may still change are the **eligible** ones: `seenByUser:
+false`, not `repaired`, not `escalated`. Every other entry — visited by the
+user, repaired after damage, or turned off by an escalation — is changed
+only by the user's own `setKind`, which also clears the two flags. Three
+automatic transitions exist, and they change eligible entries only:
 
-Two later events can change an entry without the user:
-
-- **A retirement mapping arrives, or a plugin starts declaring one.** An
-  entry that is still auto-resolved (`seenByUser: false` and not
-  `repaired`) is re-resolved once from the retired record in two cases:
-  when that record is written — this is how `@host:due-soon`, resolved off
-  on the first boot before any retirement, picks up the
-  `successors.hostKinds` mapping — and when the entry's plugin registers a
-  version whose kind newly names, in `inherits`, a predecessor that already
-  has a retired record. The second case exists because initial resolution
-  runs only for a missing entry: a kind that resolved to off under a
-  version with no `inherits` would otherwise keep that default when the
-  next version starts inheriting, and the record would count as consumed
-  without ever transferring the user's choice. An entry the user has
-  visited is never changed, and neither is a repaired one: corruption
-  recovery outranks every automatic transition, so the only thing that
-  turns a repaired entry on is the user setting it (which also clears
-  `repaired`).
+- **Inheritance.** Whenever the alerts service resolves a kind — at every
+  registration of its plugin (install, update, load), when a retired record
+  is written, and when the kind's predecessor stops blocking — an eligible
+  entry is re-resolved from the retired record of the predecessor the kind
+  names in `inherits`, provided the kind is not blocked, the record is
+  enabled and names the kind's plugin as a successor, and the plugin is not
+  yet in the record's `consumedBy` (Migration). The pass is idempotent: the
+  same record gives the same value, so repeating it before consumption is
+  harmless, and after consumption the record is never read again for that
+  plugin. Without a usable record the entry keeps its value. This is how
+  `@host:due-soon`, written off on the first boot before any retirement,
+  picks up the `successors.hostKinds` mapping when the record is written;
+  how a kind that a non-inheriting version wrote at its default receives
+  the user's choice when the next version declares `inherits`; and how a
+  kind written while blocked receives it once the block lifts. An entry the
+  user has visited is never changed, and neither is a repaired or an
+  escalated one: corruption recovery and consent outrank every automatic
+  transition, so the only thing that turns such an entry on is the user
+  setting it.
 - **Visibility escalates.** The entry stores the `visibility` the user
   consented to; when an update declares a higher visibility than stored,
-  the entry is reset to `enabled: false`, `seenByUser: false` and the new
-  visibility. Lowering never resets.
+  the entry is set to `enabled: false`, `seenByUser: false`, `escalated:
+  true` and the new visibility, whatever its state before — a visited entry
+  and an eligible one alike. The flag is what keeps the off durable: an
+  escalated entry is not eligible, so a retirement record written later, or
+  a version that then starts declaring `inherits`, cannot turn it on; the
+  user's choice for the lower visibility is not consent for the higher one.
+  Lowering never resets. An escalated entry is pruned for absence like a
+  visited one — a reinstall after the window registers the kind afresh,
+  under the fresh-install rule — which is why the flag differs from
+  `repaired`.
+- **Repair.** The loader replaces a damaged entry with the fail-closed
+  choice (below).
 
 Settings shows every `seenByUser: false` kind with a "new" mark.
 `settings.alerts` is written only by the alerts service — from the `setKind`
@@ -420,20 +440,26 @@ version (a higher major, or the same major with a minor difference of at
 least two) — except a repaired entry, which is kept until the user sets it,
 so the repair guarantee below holds for as long as the entry exists and a
 reinstall after the window cannot recreate the kind from a third-party
-`defaultEnabled: true`. A retired record ages by `retiredAtAppVersion`
-under the same rule, but is pruned only once every plugin in its
-`successors.plugins` has consumed it (`consumedBy`, Migration): plugins do
-not auto-update, and a user who updates the app before the successor
-plugins must not lose the choices the record carries. The loader takes the
-running version as an optional constructor argument and prunes nothing
-when it is absent or not a stable semver core — keeping data is the safe
-failure. Version formats: the stored fields `absentSinceAppVersion` and
-`retiredAtAppVersion` are validated with the strict SemVer 2.0 validator
-the marketplace shares, so a pre-release or build suffix is kept
-(`0.12.0-beta.1+build.2`) and a malformed form (leading zeros, missing
-segments, `"unknown"`) is not; the age rule compares major and minor only.
-The running version, by contrast, must be a stable core for any prune to
-happen at all.
+`defaultEnabled: true`. The loader never prunes a retired record: it is
+removed by the alerts service, and only once every plugin in its
+`successors.plugins` has consumed it (`consumedBy`, Migration) **and** the
+retired plugin is no longer installed (registry). Plugins do not
+auto-update, so a user who updates the app before the successor plugins
+must not lose the choices the record carries; and while the retired package
+is still installed — policy-locked, or its uninstall failed — the
+revocation feed re-applies it on every pass and the record is what stops
+the feed from writing a fresh one (Migration): pruning it on age would
+restart the retirement with an empty `consumedBy`. `retiredAtAppVersion`
+stamps the app version that applied the retirement; no rule prunes on it.
+The loader takes the running version as an optional constructor argument
+and prunes nothing when it is absent or not a stable semver core — keeping
+data is the safe failure. Version formats: the stored fields
+`absentSinceAppVersion` and `retiredAtAppVersion` are validated with the
+strict SemVer 2.0 validator the marketplace shares, so a pre-release or
+build suffix is kept (`0.12.0-beta.1+build.2`) and a malformed form
+(leading zeros, missing segments, `"unknown"`) is not; the absence rule
+compares major and minor only. The running version, by contrast, must be a
+stable core for any prune to happen at all.
 
 **A damaged kind entry never turns a kind on.** The settings loader keeps a
 kind entry only under a key in the `<pluginId>:<kind>` / `@host:<kind>`
@@ -446,20 +472,20 @@ visibility: "silent", seenByUser: false, repaired: true }` rather than
 dropped: a dropped entry would resolve again from the kind's declaration,
 which for a third-party kind may say `defaultEnabled: true`, while the
 repaired entry stays off and is marked new. `repaired` is what enforces
-that: the retirement re-resolution above skips repaired entries, the
-escalation rule only ever resets to off, and delivery reads `enabled`; so
-no automatic transition can turn a repaired entry on, only the user's own
+that: a repaired entry is not eligible, so inheritance skips it, the
+escalation rule only ever sets off, and delivery reads `enabled`; so no
+automatic transition can turn a repaired entry on, only the user's own
 `setKind`, which clears the flag. (`silent` is stored as the lowest
 consented visibility so a later declaration counts as an escalation, but
 the flag, not the visibility, carries the guarantee.) An invalid
-`absentSinceAppVersion` alone only loses that field. A `repaired` key that
-is present with any value other than `true` is itself damage to the flag
-that carries the guarantee, so the entry is treated as malformed and
-becomes the fail-closed choice again — reading it as absent would let a
-later retirement mapping turn the entry on. This guarantee is about kind
-entries, and it holds for as long as the entry exists: a repaired entry is
-never pruned for absence (above); what a damaged retired record means is
-under Migration.
+`absentSinceAppVersion` alone only loses that field. A `repaired` or
+`escalated` key that is present with any value other than `true` is itself
+damage to a flag that keeps the entry off, so the entry is treated as
+malformed and becomes the fail-closed choice again — reading either flag as
+absent would make the entry eligible and let a later retirement mapping
+turn it on. This guarantee is about kind entries, and it holds for as long
+as the entry exists: a repaired entry is never pruned for absence (above);
+what a damaged retired record means is under Migration.
 
 **Opt-in is the rule, and it is a visible loss.** Every kind in this page
 declares `defaultEnabled: false`, including the successors of the OS
@@ -852,9 +878,14 @@ the successors without the host naming any plugin.
      writes the record when it applies an `uninstall` revocation, before
      calling `this.uninstall`, and **only if no record for that id exists**:
      a locked or failed package is re-applied on every feed, and a rewrite
-     would move `retiredAtAppVersion` forever, re-trigger the one-time
-     re-resolution and `configInherits`, and defeat the removal migration.
-     The effective config is computed from the installed manifest **on
+     would move `retiredAtAppVersion` forever, empty `consumedBy` and run
+     the whole migration again. That is why the record outlives its
+     consumption for as long as the retired package is installed (Settings):
+     the record is the feed's only durable memory that this retirement was
+     applied. The config is captured when the revocation is applied; a
+     change the user makes to the predecessor's settings in the remainder of
+     that session, while a revoked plugin keeps running until restart, is
+     not carried over. The effective config is computed from the installed manifest **on
      disk** (the package directory's manifest, read through the same layered
      helper), not from the runtime: a revoked plugin was refused at load and
      has no runtime manifest, which is also why the lifecycle's own lookup
@@ -878,16 +909,19 @@ the successors without the host naming any plugin.
      (`src/plugins/plugin-uninstall-cleanup-journal.ts:6`); the `config`
      phase writes the retired record from it if none exists and removes
      `pluginConfigs[<id>]` as today.
-   A user-initiated uninstall keeps deleting. The retained record is dropped
-   by the settings loader when it is two minor releases behind the running
-   version by `retiredAtAppVersion` (the same rule and the same fail-safe as
-   `absentSinceAppVersion`) **and** `consumedBy` contains every
-   `successors.plugins[].pluginId`; a record with an unconsumed successor is
-   kept for as long as it takes, because plugins do not auto-update and the
-   choices it carries belong to the user. Consumption is one decision per
-   successor, taken by the alerts service when **both** of its stages have
-   reached a durable terminal outcome, and only then is the plugin id
-   written to `consumedBy`:
+   A user-initiated uninstall keeps deleting. The retained record is removed
+   by the alerts service — never by the settings loader — when `consumedBy`
+   contains every `successors.plugins[].pluginId` **and** the retired plugin
+   is not installed; the check runs whenever `consumedBy` is written and on
+   every later registration pass, so a crash between the two writes is
+   healed by the next pass. A record with an unconsumed successor is kept
+   for as long as it takes, because plugins do not auto-update and the
+   choices it carries belong to the user; a record whose retired package is
+   still installed (policy-locked, or its uninstall failed) is kept because
+   it is what keeps the feed from writing a fresh one (above). Consumption
+   is one decision per successor, taken by the alerts service when **both**
+   of its stages have reached a durable terminal outcome, and only then is
+   the plugin id written to `consumedBy`:
    - **Readiness.** A successor version is ready when its loaded manifest
      names the predecessor in at least one kind's `inherits` or in
      `configInherits`. An installed *old* version (the supported pairing
@@ -895,34 +929,43 @@ the successors without the host naming any plugin.
      record stays pending — an empty declaration must not count as done.
      Consumption is attempted at record-write time and again on every
      registration of the successor (install, update, load), so the version
-     that first declares the inheritance is the one that consumes — and at
-     that registration the kinds stage first re-resolves the eligible
-     entries against the new declaration, so a kind that a non-inheriting
-     version left at its default receives the user's choice before the
-     record is marked consumed.
+     registered when the decision is taken is the one that consumes.
+   - **The consuming version binds the inheritance.** What that version
+     declares is the successor's whole migration. Once the plugin id is in
+     `consumedBy`, the record is never read again for that plugin: an
+     `inherits` or `configInherits` entry that a later version adds for the
+     same predecessor is ignored with a load warning and the kind or key
+     resolves as with no record — the same outcome the entry would have had
+     if the record had already been removed. The alternative, reading the
+     record for as long as it happens to exist, would make the outcome
+     depend on whether the predecessor's uninstall succeeded; a successor
+     that declares its migration piecemeal loses the part it declared late,
+     deterministically, and its author is told so at load.
    - **Kinds stage** is scoped to the successor's kinds whose `inherits`
      names *this record's* predecessor — a kind inheriting from a different
      predecessor, one that may still be installed and blocking, has no
-     bearing on this record. Before the stage is judged, every eligible
-     entry of those kinds (`seenByUser: false`, not `repaired`) is
-     re-resolved against the inheritance the registering version declares
-     (Settings, "a plugin starts declaring one") — a pre-existing default
-     is never accepted as the transfer of the user's choice. Only after
-     that decision is the stage terminal, when each such kind has a durable
-     written-back entry: resolved from the record; resolved from the kind's
-     own declaration because the record's `enabled` is false (a disabled
-     predecessor reads as no record, and that default resolution, taken
-     after the re-resolution decision, is as final as any other); or
-     intentionally left alone because the entry is visited or repaired
-     (re-resolution never touches those, so waiting would never end). A successor with no
-     kind naming the predecessor has a trivially terminal kinds stage. A
-     kind that is `blocked_by_predecessor` is not terminal — a loaded
-     predecessor blocks resolution until restart — and the attempt is
-     retried when the predecessor stops blocking.
+     bearing on this record. The stage is not terminal while any of those
+     kinds is `blocked_by_predecessor`: a loaded predecessor blocks until
+     restart, and the attempt is retried when it stops blocking. Otherwise
+     the service runs the inheritance pass over those kinds (Settings) —
+     every eligible entry is re-resolved from the record, so an entry
+     written at its default while the kind was blocked, or by a version
+     that did not inherit, receives the user's choice before anything is
+     counted; a pre-existing default is never accepted as the transfer. The
+     stage is terminal once that pass has run with each kind's entry
+     durable: re-resolved from the record; left at its own declaration
+     because the record's `enabled` is false (a disabled predecessor reads
+     as no record, and that outcome is as final as any other); or left
+     alone because the entry is visited, repaired or escalated (the pass
+     never touches those, so waiting would never end). A successor with no
+     kind naming the predecessor has a trivially terminal kinds stage.
    - **Config stage** is terminal when every `configInherits` entry naming
      the predecessor has been applied, or intentionally skipped: the target
-     key already set, the record's `enabled` false (nothing to copy), or the
-     successor named `anySource` (config inheritance is refused for it).
+     key already set, the record's `enabled` false (nothing to copy), the
+     `from` key absent from the record's effective config (a key with no
+     manifest default that the user never set: nothing to copy, the target
+     stays unset), or the successor named `anySource` (config inheritance
+     is refused for it).
    Host kinds are consumed at record-write time and need no entry. There is
    no cap on retained records: one per retired plugin id, bounded by the
    plugins an install ever had. A record with
@@ -934,15 +977,23 @@ the successors without the host naming any plugin.
    third-party successor means whatever it declares. The kind-entry
    guarantee (Settings) does not extend to this case, and this page says so
    rather than pretending a tombstone could carry choices nobody can read.
-   Writing the record also triggers `configInherits` for installed successors
-   and the one-time re-resolution of auto-resolved kinds (Settings).
+   Writing the record also runs the consumption attempt for every installed
+   successor, which is what applies `configInherits` and the inheritance
+   pass over eligible kinds (Settings).
 2. **`inherits` on a kind**, resolved only from a retired record whose
    `successors.plugins` names the kind's plugin (same source as the entry,
    or `anySource`), only once the predecessor no longer blocks (step 3),
    and only when `enabled` in that record is `true` — a user who had disabled the
    whole plugin (`runtime/index.ts:297-306`) is treated as never having had it.
-   An `inherits` entry naming a plugin whose record does not list the reader
-   is ignored with a load warning:
+   A kind names **at most one** predecessor: manifest validation refuses
+   the `alerts` block when a kind's `inherits` has more than one entry. Two
+   predecessors whose mappings disagree would need a precedence rule, and
+   the consumption of each record would then depend on the other's timing;
+   a kind that merges two predecessors is not a case this page has, so the
+   array carries one entry and a second refuses the block rather than
+   being arbitrated. Different kinds of one plugin may name different
+   predecessors. An `inherits` entry naming a plugin whose record does not
+   list the reader is ignored with a load warning:
 
    ```jsonc
    "inherits": [{
@@ -983,14 +1034,21 @@ the successors without the host naming any plugin.
    ]
    ```
 
-   `from` copies a value; `value` sets a constant; an `anySource` successor
-   may use neither (its entry is toggles only) — since `anySource` is known
-   only from the retirement entry, not at manifest validation, the entry is
-   refused when applied, with a load warning. It is applied at the moment
-   the retired record is written if the plugin is installed, and otherwise
-   when the plugin is next installed. Applying it completes the config
-   stage only; the plugin id reaches `consumedBy` when the kinds stage is
-   terminal too (Migration 1), never from this path alone.
+   `from` copies a value; `value` sets a constant; an entry has exactly one
+   of the two, and two entries with the same `to` refuse the block; an
+   `anySource` successor may use neither (its entry is toggles only) —
+   since `anySource` is known only from the retirement entry, not at
+   manifest validation, the entry is refused when applied, with a load
+   warning. It is applied on the same events as the consumption attempt
+   (Migration 1): when the retired record is written, if the plugin is
+   installed, and on every registration of the plugin — install, update,
+   load — until the plugin has consumed the record, so a version that adds
+   the declaration in an update applies it at that update, not at a
+   reinstall. A `from` key that the record's effective config does not
+   hold is an intentional skip: nothing is copied, the target stays unset,
+   and the stage is terminal. Applying it completes the config stage only;
+   the plugin id reaches `consumedBy` when the kinds stage is terminal too
+   (Migration 1), never from this path alone.
    `settingsService.setPluginConfig`
    only stores (`settings-store.ts:1649-1658`); the restart lives in the
    `hostApi.config.set` wrapper (`host-api-factory.ts:636-650`) and
@@ -1045,7 +1103,7 @@ the successors without the host naming any plugin.
 | Notifications | `src/main/notification-service.ts`, `src/ui/renderer/types.ts:377` | kind `"alert"` in both copies |
 | Events | `src/plugins/capabilities.ts`, `src/plugins/runtime/index.ts`, `src/boot/__tests__/event-namespace-policy.test.ts` | `alert` host-only emit, per-plugin delivery filter with grants |
 | Work Board | `src/work-board/due-soon.ts`, `work-board-setup.ts` | raise `@host:due-soon` through the pipeline |
-| Settings | `src/data/settings-store.ts`, `settings-defaults.ts` | `alerts` (with `visibility`, `seenByUser`, `absentSinceAppVersion`), `retiredPluginConfigs`; no new section anchor — the Alerts block nests in the selected plugin under `plugin-config-installed` |
+| Settings | `src/data/settings-store.ts`, `settings-defaults.ts` | `alerts` (with `visibility`, `seenByUser`, `repaired`, `escalated`, `absentSinceAppVersion`), `retiredPluginConfigs`; no new section anchor — the Alerts block nests in the selected plugin under `plugin-config-installed` |
 | IPC / preload | `src/shared/ipc-channels.ts`, `src/ipc/domains/alerts.ts`, `src/ipc/index.ts`, `src/preload/internal-api-surface.ts` | `ALERTS` channels |
 | Settings UI | `src/ui/renderer/tabs/PluginConfigTab.tsx`, marketplace post-install/update views | per-plugin Alerts section, unseen-kind badge |
 | Marketplace | `src/marketplace/sources/{snapshot,sync}.ts`, `catalog/{types,validate,aggregate}.ts`, `app/{service,views,revocations}.ts`, `repository-check.ts`, `schemas/marketplace/revocations-by-app.schema.json` | snapshot format version, raw conditional entries, `effectiveRevocations` accessor for every reader |
@@ -1065,7 +1123,10 @@ Contract tests (host):
   `osNotification.body` static and capped; locale maps require `en`;
   `inherits` and `configInherits` shapes, with `inherits[].sourceId` and
   `inherits[].enabled` required and `osNotification` optional — an entry
-  without `sourceId` or `enabled` refuses the block.
+  without `sourceId` or `enabled` refuses the block; a kind whose
+  `inherits` has two entries refuses the block, two kinds naming different
+  predecessors are accepted; a `configInherits` entry with both `from` and
+  `value`, or neither, and two entries with the same `to` refuse the block.
 - Settings store: `alerts` and `retiredPluginConfigs` default on a fresh
   install and on a file without them; a generic `patch()` carrying either
   leaves both unchanged; a `set()` of either round-trips through the file
@@ -1082,15 +1143,19 @@ Contract tests (host):
   entry whose `repaired` is present with any other value loads as the
   fail-closed choice — an off, unseen, repaired entry whose flag alone is
   damaged to `"true"` stays repaired, so a later retirement mapping of
-  "on" cannot turn it on; a repaired entry with `absentSinceAppVersion`
-  survives the two-minor prune; `consumedBy` is required and
-  holds valid plugin ids; the two-minor prune drops an absent kind entry
-  only when the loader is given a stable running version two minors ahead
-  (same major, minor difference ≥ 2) or a higher major, keeps everything
-  without a version, and drops a retired record only when both the age rule
-  holds and every listed successor is in `consumedBy` — a record retired at
-  0.12.0 with one unconsumed successor survives a 0.14.0 and a 1.0.0 load,
-  and goes once the last successor has consumed it.
+  "on" cannot turn it on; `escalated: true` round-trips, and an entry whose
+  `escalated` is present with any other value loads as the fail-closed
+  choice; a repaired entry with `absentSinceAppVersion` survives the
+  two-minor prune and an escalated one does not; `consumedBy` is required
+  and holds valid plugin ids; the two-minor prune drops an absent kind
+  entry only when the loader is given a stable running version two minors
+  ahead (same major, minor difference ≥ 2) or a higher major, keeps
+  everything without a version and everything under an explicitly supplied
+  pre-release or malformed running version (`0.14.0-beta.1`, `0.14.00`),
+  keeps a stored `absentSinceAppVersion` of `0.12.0-beta.1+build.2` with
+  its suffix intact, and never drops a retired record — a record whose
+  every listed successor is in `consumedBy` survives a load at any running
+  version.
 - Pipeline result codes in order: `kind_not_granted`; `invalid` per slot rule
   and key pattern (a 200-char key accepted); `blocked_by_predecessor` while
   the named plugin is installed but not loaded, while it is revoked but
@@ -1120,38 +1185,71 @@ Contract tests (host):
   `enabled: true`, with legacy spellings, with `masterKey` false, with the
   effective defaults of an untouched config; a retired record with
   `enabled: false` behaves as no record; a record whose `successors.plugins`
-  does not name the reader is ignored; no resolution and no write-back while
-  the predecessor is installed and unrevoked; a kind first seen in an update
-  resolves off and is marked new; a visibility escalation resets a visited
-  entry to off and new, a lowering does not; an auto-resolved entry is
-  re-resolved once when a retired record arrives, a visited entry never,
-  and a repaired entry never — a retired record whose mapping says "on"
-  arriving over a repaired entry leaves it off, and the user's `setKind`
-  clears `repaired`; a visibility escalation over a repaired entry keeps it
-  off and repaired.
+  does not name the reader is ignored; while the predecessor is installed
+  and unrevoked the entry is written from the declaration (off when the
+  kind arrived in an update, the declared default on a fresh install),
+  marked new, not delivered, and the record is not read; a kind first seen
+  in an update resolves off and is marked new; a visibility escalation sets
+  a visited entry and an eligible one alike to off, new and `escalated`, a
+  lowering does not; an eligible entry is re-resolved when a retired record
+  arrives, a visited entry never, a repaired entry never, an escalated
+  entry never — a retired record whose mapping says "on" arriving over a
+  repaired or an escalated entry leaves it off, and the user's `setKind`
+  clears both flags; a visibility escalation over a repaired entry keeps it
+  off and repaired; the consent sequence: the user turns a `summary-only`
+  kind off, an update declares `user-visible` (off, new, escalated), then a
+  retired record whose mapping says "on" is written and a further update
+  newly declares `inherits` — the entry stays off through both, and turns
+  on only by `setKind`; the deferred-origin sequence: an update introduces
+  a `defaultEnabled: true` kind while the predecessor blocks (entry written
+  off), the app restarts, the predecessor is uninstalled by the user with
+  no record, and the kind registers again — it stays off; the same
+  sequence from a fresh install stays at the declared default; with a
+  record instead of a plain uninstall, both variants take the record's
+  mapping once the block lifts.
 - Consumption lifecycle: retirement → app upgrade two minors → successor
   update: an installed old successor with no inheritance declarations is
   not consumed and the record survives the upgrade; the version that first
   declares `inherits`/`configInherits` consumes on registration; with the
   predecessor still loaded the config stage completes but `consumedBy` is
-  not written until the kinds stage is terminal after the restart; visited
-  and repaired kinds, an already-set target key, a disabled record and an
-  `anySource` successor's config all count as terminal skips; a disabled
-  record (`enabled: false`) lets the successor's kinds resolve from their
-  own declarations and that counts as terminal, so the record is consumed
-  without a user visit; a successor with one kind inheriting from this
-  record's predecessor and another from a different, still-installed
-  predecessor consumes this record once its own kind is written back,
-  while the other kind stays blocked; a successor with no kind naming the
-  predecessor but a `configInherits` for it consumes on the config stage
-  alone; late inheritance: successor v1 registers a kind with no
-  `inherits` and it resolves to off and unseen, the retirement then writes
-  an enabled record whose mapping says "on", successor v2 adds `inherits`
-  naming the predecessor — at v2's registration the entry is re-resolved
-  to on from the record and only then is the record consumed, while the
-  same sequence with the entry visited by the user leaves it as the user
-  set it; a successor that is never updated leaves the record pending
-  indefinitely.
+  not written until the kinds stage is terminal after the restart; visited,
+  repaired and escalated kinds, an already-set target key, a `from` key
+  absent from the record's config (target left unset), a disabled record
+  and an `anySource` successor's config all count as terminal skips; a
+  disabled record (`enabled: false`) lets the successor's kinds resolve
+  from their own declarations and that counts as terminal, so the record
+  is consumed without a user visit; a successor with one kind inheriting
+  from this record's predecessor and another from a different,
+  still-installed predecessor consumes this record once its own kind is
+  written back, while the other kind stays blocked; a successor with no
+  kind naming the predecessor but a `configInherits` for it consumes on
+  the config stage alone; late inheritance: successor v1 registers a kind
+  with no `inherits` and it resolves to off and unseen, the retirement
+  then writes an enabled record whose mapping says "on", successor v2 adds
+  `inherits` naming the predecessor — at v2's registration the entry is
+  re-resolved to on from the record and only then is the record consumed,
+  while the same sequence with the entry visited by the user leaves it as
+  the user set it, with the entry repaired leaves it off and repaired, and
+  with the predecessor still loaded at v2's registration leaves the entry
+  untouched and the record unconsumed until the restart, after which the
+  entry is re-resolved and the record consumed; binding: v1 declares only
+  `configInherits` and is consumed, v2 adds `inherits` for the same
+  predecessor — the kind resolves as with no record (off, new) with a load
+  warning, whether or not the record still exists, and the reverse order
+  (kinds first, config later) leaves the target key unset; the consumed
+  record is not read again: after consumption the record's config is
+  changed in the test and a re-registration leaves every entry and config
+  key as it was; crash between the writes: the entries and config are
+  durable but `consumedBy` is not, and the next registration repeats the
+  idempotent pass, changes nothing, and writes `consumedBy`; removal: the
+  record is removed once the last successor has consumed it and the
+  predecessor is not installed, stays while the predecessor is still
+  installed after full consumption (a further feed pass writes nothing and
+  `consumedBy` and `retiredAtAppVersion` are untouched), and goes on the
+  next pass after the package is finally uninstalled; a malformed record is
+  dropped at load and a successor registering afterwards resolves from its
+  declaration with no warning about the record; a successor that is never
+  updated leaves the record pending indefinitely.
   `absentSinceAppVersion` set on uninstall, cleared on reinstall, entry
   dropped two minors later; `settings.alerts` is written only through the
   alerts service.
@@ -1179,9 +1277,13 @@ Contract tests (host):
   refused by `reviewer-dispatch.ts`; with a reviewer attached a non-low
   verdict is still refused.
 - `configInherits`: applied when the retired record is written (installed
-  successor, plugin restarted) and on a later install; skipped when the
-  target key is set, when the record's `enabled` is false, or when the
-  reader is not a listed successor.
+  successor, plugin restarted), on a later install, and at the update that
+  first declares it for an already-installed successor (the record written
+  earlier, the key set at that update and still set after a restart and a
+  load); skipped when the target key is set, when the record's `enabled` is
+  false, when the `from` key is absent from the record's config (no write,
+  stage terminal, no load warning), or when the reader is not a listed
+  successor.
 - Namespace policy, decoupling audit (no plugin id needles in `src/alerts/`),
   channel inventory, preload shape, host-renderer-only guard, settings section
   anchors, i18n catalog.
@@ -1246,7 +1348,13 @@ CDP checks (port 9222 against a built app; the `test/e2e/ui` harness):
 ## Pull request plan
 
 Every PR merges alone and leaves `main` shippable. Settings keys land before
-any reader. Common gates: `bun run typecheck`, the touched suites plus their
+any reader, and the retaining uninstall lands before the UI that offers it.
+Ownership of the lifecycle: 2 owns the persisted shapes, normalisation and
+the absence prune; 3 owns resolution, the inheritance pass, escalation,
+readiness, both migration stages, consumption, the binding rule and record
+removal; 4 owns host kinds and `setKind`; 5 owns retirement capture, the
+retaining uninstall and journal replay; 6 owns presentation. Common gates:
+`bun run typecheck`, the touched suites plus their
 consumers, `check:import-cycles`, `check:knip`, `check:sot-shapes`,
 `check:no-inline-channels`, the naming gate, the decoupling audit,
 `check:i18n-catalog` + barrels, `bun run build`.
@@ -1282,23 +1390,27 @@ ave:
 4. **Host kind and IPC** — Work Board due-soon through the pipeline, `ALERTS`
    channels, preload, IPC domain. Gates: common + channel inventory, preload
    shape, host-renderer-only, work-board suites.
-5. **Settings UI** — the per-plugin Alerts section (nested under the
-   existing `plugin-config-installed` anchor, no new anchor), the
-   `removePredecessor` channel, unseen badge, post-install/update link,
-   i18n, screenshot matrix and E2E fixture updates. Gates: common + renderer suites,
-   settings-section-anchors, CDP layout check of the section at phone and
-   desktop widths.
-6. **Marketplace: conditional revocations and retained config** — snapshot
+5. **Marketplace: conditional revocations and retained config** — snapshot
    format version and rebuild-at-same-pin, raw conditional entries,
    `effectiveRevocations` in every reader, schema, `repository-check`,
-   `retain` through `applyRevocations` → lifecycle → journal record. Gates:
+   `retain` through `applyRevocations` → lifecycle → journal record. It
+   lands before the Settings UI because the superseded row's Remove is
+   specified only through the retaining path: shipping the button first
+   would leave it either inoperable or deleting the user's choices. Gates:
    common + catalog, snapshot, sync, service, views, uninstall-lifecycle,
    journal, revocation-bootstrap suites.
+6. **Settings UI** — the per-plugin Alerts section (nested under the
+   existing `plugin-config-installed` anchor, no new anchor), the
+   `removePredecessor` channel over the retaining path from 5, unseen
+   badge, post-install/update link, i18n, screenshot matrix and E2E
+   fixture updates. Gates: common + renderer suites,
+   settings-section-anchors, CDP layout check of the section at phone and
+   desktop widths.
 7. **Routines: missing-plugin rule** and **deprecation warnings** for
    `notificationEvents`; `architecture.md`, `overlay-trigger.md`, CHANGELOG
    with the opt-in loss. Gates: common + routine suites.
 
-The alerts release is whichever release carries both 6 and 7; the
+The alerts release is whichever release carries all seven; the
 successors' `minAppVersion` and the revocation's `appVersions` are set to
 that version at publication, not before.
 
@@ -1386,39 +1498,65 @@ published the same day as the monorepo commit. Gates: ported suites,
 
 - A kind entry that loads with a field out of shape becomes the fail-closed
   choice (off, no OS notification, `silent`, unseen, `repaired: true`)
-  instead of being dropped; the flag outranks every automatic transition
-  (retirement re-resolution skips it, escalation only resets to off), so a
-  damaged kind entry can never turn a kind on until the user sets it. A
-  retired record out of shape is dropped whole, which loses its inheritance
-  and leaves the successor on its own declaration — stated as a loss, not
-  covered by the kind-entry guarantee.
-- A retired record carries `consumedBy` and is pruned only when it is two
-  minors old and every listed successor has consumed it, so updating the
-  app before the plugins cannot lose the user's choices. Consumption is one
-  decision per successor, taken when a version that declares the
-  inheritance has brought both the kinds stage and the config stage to a
-  terminal outcome; the kinds stage covers only the kinds that inherit
-  from this record's predecessor, and a default resolution (disabled
-  record) or no inheriting kind at all is terminal; an old successor
-  version that declares nothing stays pending, and the attempt is retried
-  on every registration and when the predecessor stops blocking. When a
-  version newly declares `inherits` for a predecessor that already has a
-  retired record, the eligible entries (unseen, not repaired) are
-  re-resolved from the record before consumption is decided, so a default
-  left by an earlier non-inheriting version is never counted as the
-  transfer of the user's choice.
+  instead of being dropped; the flag makes the entry ineligible for every
+  automatic transition (the inheritance pass skips it, escalation only sets
+  off), so a damaged kind entry can never turn a kind on until the user
+  sets it. A retired record out of shape is dropped whole, which loses its
+  inheritance and leaves the successor on its own declaration — stated as
+  a loss, not covered by the kind-entry guarantee.
+- The host changes only **eligible** entries — unseen, not repaired, not
+  escalated. A visibility escalation sets the entry off, new and
+  `escalated`, whatever it was, and an escalated entry stays off through a
+  later retirement record and a later `inherits` declaration until the
+  user sets it: consent to a lower visibility is not consent to a higher
+  one. An escalated entry is pruned for absence like a visited one; only
+  `repaired` is exempt.
+- A kind's entry is written at its first registration even while the kind
+  is blocked — from the declaration, off when the kind arrived in an update
+  — so its install-or-update origin is durable; the record is consulted
+  only once the block lifts, through the same inheritance pass that runs
+  at every registration, at record write and when the predecessor stops
+  blocking. The pass is idempotent and ends with consumption.
+- A retired record carries `consumedBy`; the settings loader never prunes
+  it, and the alerts service removes it only when every listed successor
+  has consumed it and the retired package is not installed, so updating
+  the app before the plugins cannot lose the user's choices and a
+  policy-locked or failed uninstall cannot restart the retirement through
+  the feed's write-if-absent rule. `retiredAtAppVersion` is a stamp, not a
+  prune key. Consumption is one decision per successor, taken when a
+  version that declares the inheritance has brought both the kinds stage
+  and the config stage to a terminal outcome; the kinds stage covers only
+  the kinds that inherit from this record's predecessor, and a default
+  resolution (disabled record) or no inheriting kind at all is terminal; an
+  old successor version that declares nothing stays pending, and the
+  attempt is retried on every registration and when the predecessor stops
+  blocking. The consuming version binds the inheritance: a declaration a
+  later version adds for the same predecessor is ignored with a load
+  warning and resolves as with no record, so the outcome never depends on
+  whether the record still exists.
+- A `configInherits` entry whose `from` key is absent from the record's
+  effective config is an intentional skip: the target stays unset and the
+  stage is terminal. The config stage runs on the same events as
+  consumption, including the update that first declares it.
+- A kind names at most one predecessor; a second `inherits` entry refuses
+  the `alerts` block. Two `configInherits` entries with the same `to`
+  refuse the block.
 - Stored version fields are strict SemVer 2.0 (pre-release and build
   suffixes kept); the running version must be a stable core for any prune.
-- A `repaired` flag present with any value other than `true` makes the
-  entry fail-closed again, and a repaired entry is exempt from the absence
-  prune, so the repair guarantee holds for as long as the entry exists.
+- A `repaired` or `escalated` flag present with any value other than
+  `true` makes the entry fail-closed again, and a repaired entry is exempt
+  from the absence prune, so the repair guarantee holds for as long as the
+  entry exists.
 - `enabled` is required and `osNotification` optional in both a kind's
   `inherits[]` entry and a retirement entry's `hostKinds[]` mapping; an
   inherit rule's `values` list is non-empty.
 - Kind keys carry the manifest's bounds: plugin id 3 to 64 characters,
   kind id 2 to 32.
-- The two-minor prune of absent kind entries and retired records runs in
-  the settings loader against the running version, and keeps everything
-  when no stable version is supplied.
+- The two-minor prune of absent kind entries runs in the settings loader
+  against the running version, and keeps everything when no stable
+  version is supplied; retired records are not pruned there.
+- The marketplace change with the retaining uninstall lands before the
+  Settings UI, so the superseded row's Remove never ships ahead of the
+  path it is specified through.
 
 There are no open questions.
