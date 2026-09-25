@@ -225,6 +225,12 @@ jobs:
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -FailureFixture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/test-windows-job.mjs
+      # The tag build runs `bun run build` on Windows, and this check is part of
+      # it: a Windows checkout reads the protocol sources with CRLF and paths
+      # with `\`, so the generator has to produce the same bytes there too.
+      - name: Plugin host protocol schema matches its sources
+        working-directory: ave
+        run: bun run check:plugin-host-protocol-schema
       - name: Run Windows permission regressions
         working-directory: ave
         run: >
