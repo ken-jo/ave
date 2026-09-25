@@ -14,6 +14,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // ─── Electron mock ────────────────────────────────────────────────────────────
 
 vi.mock("electron", () => ({
+  protocol: { handle: vi.fn() },
   ipcMain: { handle: vi.fn() },
   app: { getVersion: vi.fn(() => "0.0.0"), isPackaged: false },
   shell: {},

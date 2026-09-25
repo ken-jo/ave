@@ -97,10 +97,9 @@ describe("MainToolbar", () => {
     renderWithProvider(defaultProps({
       appUpdateState: { kind: "available", version: "9.9.9" },
       pluginUpdates: {
-        updates: [{ pluginId: "meeting", pluginName: "Ave Meeting", installedVersion: "1.0.0", latestVersion: "2.0.0" }],
-        onDismiss: vi.fn(),
+        updates: [{ key: { sourceId: "ave", kind: "plugin", name: "meeting" }, displayName: "Ave Meeting", from: "1.0.0", to: "2.0.0" }],
         onSkip: vi.fn(),
-        onUpdate: vi.fn(async () => undefined),
+        onReview: vi.fn(),
       },
       bootstrapStatus: {
         status: { phase: "complete", installed: [], failed: [{ id: "meeting", error: "tarball 404" }] },
@@ -126,9 +125,8 @@ describe("MainToolbar", () => {
     renderWithProvider(defaultProps({
       pluginUpdates: {
         updates: [],
-        onDismiss: vi.fn(),
         onSkip: vi.fn(),
-        onUpdate: vi.fn(async () => undefined),
+        onReview: vi.fn(),
       },
       bootstrapStatus: { status: null, onDismiss: vi.fn(), onRetry: vi.fn() },
     }));

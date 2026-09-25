@@ -177,7 +177,7 @@ const VERIFICATION_CHECKS: ReadonlyArray<{ script: string; file: string }> = [
  *  other tool directly, under a spelling nobody has written here, is not
  *  recognised, and the ordering invariant would let a hygiene gate precede it.
  *  These two are what `.github/workflows/` calls today — `bunx playwright test`
- *  in e2e.yml and marketplace-e2e.yml, and `tsc --noEmit`, which is
+ *  in e2e.yml, and `tsc --noEmit`, which is
  *  `bun run typecheck`'s body and is listed so a workflow inlining it is still
  *  seen. */
 const DIRECT_TOOL_INVOCATIONS = ["tsc --noEmit", "playwright test"];
@@ -276,32 +276,8 @@ describe("installer smoke and packaging discipline", () => {
     expect(smokeScript).toContain("prompts");
   });
 
-  it("does not persist cross-repository E2E checkout credentials into PR-controlled steps", () => {
-    const workflow = readRepoFile(".github/workflows/marketplace-e2e.yml");
-    const checkoutNames = [
-      "ave",
-      "agent-marketplace",
-      "ave-plugin-sdk",
-      "ave-plugin-orion",
-    ];
-
-    for (const name of checkoutNames) {
-      const start = workflow.indexOf(`- name: Checkout ${name}`);
-      expect(start).toBeGreaterThanOrEqual(0);
-      const nextStep = workflow.indexOf("\n      - name:", start + 1);
-      const block = workflow.slice(start, nextStep);
-      expect(block).toContain("persist-credentials: false");
-    }
-
-    const sdkStart = workflow.indexOf("- name: Checkout ave-plugin-sdk");
-    const sdkEnd = workflow.indexOf("\n      - name:", sdkStart + 1);
-    const sdkCheckout = workflow.slice(sdkStart, sdkEnd);
-    expect(sdkCheckout).not.toContain("M4_MARKETPLACE_CHECKOUT_TOKEN");
-  });
-
   it("keeps privileged workflows on trusted default-branch events", () => {
     for (const path of [
-      ".github/workflows/marketplace-e2e.yml",
       ".github/workflows/e2e.yml",
       ".github/workflows/a2a-p4-5-packaged-evidence.yml",
       ".github/workflows/web-deploy.yml",
@@ -311,10 +287,6 @@ describe("installer smoke and packaging discipline", () => {
       expect(workflow).not.toContain("workflow_dispatch:");
       expect(workflow).not.toContain("pull_request:");
     }
-
-    const marketplaceE2e = readRepoFile(".github/workflows/marketplace-e2e.yml");
-    expect(marketplaceE2e).toContain("merge-base --is-ancestor");
-    expect(marketplaceE2e).toContain("persist-credentials: false");
 
     const signing = readRepoFile(
       ".github/workflows/a2a-p4-5-packaged-evidence.yml",

@@ -71,7 +71,8 @@ async function setWindowSize(
   }, { w, h });
 }
 
-for (const bundleId of ['violet-light', 'violet-dark'] as const) {
+// The compiled bundles; every other theme is an installed package.
+for (const bundleId of ['moonstone', 'gallery'] as const) {
   for (const { name: sizeName, width } of [
     { name: 'wide', width: 1200 },
     { name: 'narrow', width: 620 },

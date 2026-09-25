@@ -253,6 +253,10 @@ subprocess-side serving core: read framed JSON-RPC → dispatch to the SAME
 thrown handler → -32603, loop survives). Remaining (gated above this loop): the
 subprocess spawner + OS sandbox (bubblewrap/sandbox-exec) + the signed
 spawnable-artifact format (§6 open decision) + installed-plugin migration.
+That Content-Length framing is Ave's own host↔plugin-child wire. External stdio MCP
+servers (MCP settings, imported configs, marketplace installs) are spoken to by
+`mcp-client.ts`'s `StdioTransport` with the spec's newline-delimited framing: one
+JSON-RPC message per line, no embedded newlines.
 
 **`hooks-on-mcp-calls` (6) — category + per-request identity DONE.** Beyond the
 transitive category, the executor now threads `tool.mcpServerId`/`tool.pluginId`

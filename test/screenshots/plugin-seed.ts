@@ -1,13 +1,11 @@
 import path from 'node:path';
 import fs from 'node:fs';
-import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { execSync } from 'node:child_process';
 import {
   hashReceiptFiles,
   listFilesRecursive,
   writeInstallReceipt,
 } from '../../src/plugins/plugin-install-receipt.js';
-import { canonicalJSON } from '../../src/plugins/whitelist/canonical-json.js';
 
 /**
  * Whether this run may use the machine's pre-provisioned Python venvs.
@@ -47,7 +45,6 @@ export const REAL_PYTHON_CAPTURES = process.env.AVE_SCREENSHOT_REAL_PYTHON === '
  * sibling assets resolve.
  */
 
-type LaunchEnv = Record<string, string | undefined>;
 
 /** Manifest shape we read the few fields we care about off of. */
 interface PluginManifest {
@@ -55,7 +52,6 @@ interface PluginManifest {
   version?: unknown;
   entry?: unknown;
   pluginAccess?: unknown;
-  hostSecrets?: { read?: unknown };
   ui?: Array<{ entry?: unknown; kind?: unknown }>;
 }
 
@@ -65,11 +61,6 @@ export interface SeededPluginEntry {
   enabled: boolean;
   installSource: 'local-dev';
   approvedPluginAccess?: unknown;
-}
-
-function manifestIdentitySha256(manifestPath: string): string {
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as unknown;
-  return createHash('sha256').update(canonicalJSON(manifest)).digest('hex');
 }
 
 /**
@@ -142,8 +133,6 @@ function copyDir(src: string, dest: string): void {
 }
 
 export interface SeedRealPluginsResult {
-  /** Env vars (signed whitelist snapshot) to merge into the Electron launch env. */
-  env: LaunchEnv;
   /** Plugin ids successfully seeded. */
   seeded: string[];
   /** Plugin ids requested but not found on disk (skipped, not fatal). */
@@ -211,8 +200,10 @@ export function seedExecutionMode(
 
 /**
  * Copy the REAL built bundles of the requested plugins into the isolated
- * `~/.ave/plugins/` and write the registry + receipts + signed whitelist
- * snapshot so the host loads them as local-dev installs at boot.
+ * `~/.ave/plugins/` and write the registry + receipts so the host loads them
+ * as local-dev installs at boot. A local-dev install holds no host-secret
+ * grant (design §10.3), so a panel that reads the host's LLM key shows its
+ * no-key state.
  *
  * @param pluginIds manifest ids to install (e.g. ["local-indexer", "meeting"]).
  */
@@ -251,7 +242,6 @@ export async function seedRealPlugins(
 
   const sourceRoot = resolvePluginSourceRoot(repoRoot);
   const entries: SeededPluginEntry[] = [];
-  const whitelistGrants: Record<string, { read: string[]; manifestSha256: string }> = {};
   const seeded: string[] = [];
   const missing: string[] = [];
 
@@ -298,8 +288,8 @@ export async function seedRealPlugins(
     // cache-hits the pre-provisioned venv that fixtures.ts hardlinks into the
     // isolated runtime — no network, no build). This lets the worker start for
     // real and the live panel render. The worker script itself already ships in
-    // the copied `dist/worker/` tree. The receipt + whitelist grant are
-    // computed against whichever manifest shape is written here.
+    // the copied `dist/worker/` tree. The receipt is computed against whichever
+    // manifest shape is written here.
     const seededManifest = { ...(manifest as Record<string, unknown>) };
     const pythonBlock = (manifest as { python?: { requirementsLock?: unknown } }).python;
     if (!REAL_PYTHON_CAPTURES || !pythonBlock) {
@@ -328,19 +318,6 @@ export async function seedRealPlugins(
       } else {
         console.warn(`[screenshots] real-python: lockfile missing, worker will not start: ${lockSrc}`);
       }
-    }
-
-    // Signed-whitelist grant for any host-secret reads the manifest declares
-    // (local-indexer + meeting read llm.apiKey.*). No grant needed for plugins
-    // with no hostSecrets.read (vega-helper).
-    const hostSecretReads = Array.isArray(manifest.hostSecrets?.read)
-      ? manifest.hostSecrets.read.filter((x): x is string => typeof x === 'string')
-      : [];
-    if (hostSecretReads.length > 0) {
-      whitelistGrants[manifest.id] = {
-        read: hostSecretReads,
-        manifestSha256: manifestIdentitySha256(pluginJsonPath),
-      };
     }
 
     // Receipt: list plugin.json + the entire copied dist tree so the integrity
@@ -384,61 +361,5 @@ export async function seedRealPlugins(
     'utf-8',
   );
 
-  return {
-    env: buildSignedWhitelistEnv(aveHomeForTest, whitelistGrants),
-    seeded,
-    missing,
-  };
-}
-
-/**
- * Build a signed marketplace-whitelist snapshot granting the declared
- * `hostSecrets.read` for each seeded plugin, plus the env vars that point the
- * host at it. Byte-for-byte the same construction as `test/e2e/ui/fixtures.ts`
- * `buildSignedWhitelistEnv` — kept here so the screenshot harness stays
- * independent of the e2e fixture module (which also seeds stub plugins).
- */
-function buildSignedWhitelistEnv(
-  aveHomeForTest: string,
-  grants: Record<string, { read: string[]; manifestSha256: string }>,
-): LaunchEnv {
-  if (Object.keys(grants).length === 0) return {};
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const rawPublicKey = publicKey.export({ type: 'spki', format: 'der' }).slice(-32);
-  const doc = {
-    version: 1,
-    schemaVersion: 1,
-    issuedAt: '2026-05-17T00:00:00.000Z',
-    expiresAt: '2030-01-01T00:00:00.000Z',
-    pluginGrants: Object.fromEntries(
-      Object.entries(grants).map(([pluginId, grant]) => [
-        pluginId,
-        {
-          publisher: 'screenshots',
-          hostSecrets: { read: grant.read },
-          approvedManifestSha256: grant.manifestSha256,
-        },
-      ]),
-    ),
-  };
-  const body = JSON.stringify(doc);
-  const envelope = {
-    version: 1,
-    iat: Math.floor(Date.now() / 1000),
-    artifact_sha256: createHash('sha256').update(Buffer.from(body, 'utf-8')).digest('hex'),
-    signatures: [
-      {
-        key_id: 'whitelist-v1',
-        alg: 'ed25519',
-        sig: sign(null, Buffer.from(body, 'utf-8'), privateKey).toString('base64'),
-      },
-    ],
-  };
-  const whitelistPath = path.join(aveHomeForTest, 'screenshots-marketplace-whitelist.fixture.json');
-  fs.writeFileSync(whitelistPath, body, 'utf-8');
-  fs.writeFileSync(`${whitelistPath}.sig`, JSON.stringify(envelope), 'utf-8');
-  return {
-    AVE_E2E_WHITELIST_SNAPSHOT_PATH: whitelistPath,
-    AVE_E2E_WHITELIST_PUBLIC_KEY: rawPublicKey.toString('base64'),
-  };
+  return { seeded, missing };
 }

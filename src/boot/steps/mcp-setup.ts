@@ -8,7 +8,6 @@
  * rooted under `~/.ave/<feature>/` and only when the marketplace fetcher
  * supports verified downloads (the disabled fetcher leaves them undefined).
  */
-import { resolve } from "node:path";
 import { McpGovernance } from "../../mcp/mcp-governance.js";
 import { McpManager } from "../../mcp/mcp-manager.js";
 import { createElicitationResolverFactory } from "../../mcp/mcp-elicitation-resolver.js";
@@ -16,18 +15,13 @@ import { createElicitationResolverFactory } from "../../mcp/mcp-elicitation-reso
 // it: McpManager (external) here, and PluginLoopbackManager (in-process plugin
 // servers) at its own teardown. One factory, one event shape, identical card UX.
 import { createMcpServerDisconnectedSink } from "../../mcp/mcp-server-disconnect-sink.js";
-import { DisabledMarketplaceFetcher } from "../../plugins/marketplace.js";
-import { PluginArtifactStore } from "../../plugins/plugin-artifact-store.js";
-import { getBundledPublicKeys } from "../../plugins/publisher-keys.js";
-import { aveHome } from "../../shared/ave-home.js";
 import { createLogger } from "../../lib/logger.js";
 import type { BootContext } from "../context.js";
 
 const log = createLogger("ave");
 
 export async function setupMcp(ctx: BootContext): Promise<void> {
-  const { approvalGate, toolRegistry, permissionManager, bootAuditLogger, marketplaceFetcher } = ctx;
-
+  const { approvalGate, toolRegistry, permissionManager, bootAuditLogger } = ctx;
 
   const mcpGovernance = new McpGovernance();
   // MRTR live-resolver wiring (milestone mrtr-input-loop): a server's
@@ -63,47 +57,6 @@ export async function setupMcp(ctx: BootContext): Promise<void> {
     }
   });
 
-  // §FU#259 — MCP marketplace artifact store. Rooted at ~/.ave/mcp/ so the
-  // server config (servers.json) and install directories share one parent —
-  // user-controlled state lives under ~/.ave/, not Electron's userData.
-  // Each installed server gets ~/.ave/mcp/<slug>/; the catalog config sits
-  // at ~/.ave/mcp/servers.json. Constructed only when the fetcher supports
-  // verified downloads (the disabled fetcher throws on any download attempt
-  // anyway).
-  const mcpArtifactStore = (() => {
-    if (marketplaceFetcher instanceof DisabledMarketplaceFetcher) return undefined;
-    const mcpInstallRoot = resolve(aveHome(), "mcp");
-    return new PluginArtifactStore({
-      installRoot: mcpInstallRoot,
-      cacheRoot: resolve(mcpInstallRoot, ".cache"),
-      fetcher: marketplaceFetcher,
-      publicKeys: getBundledPublicKeys(),
-    });
-  })();
-  const agentArtifactStore = (() => {
-    if (marketplaceFetcher instanceof DisabledMarketplaceFetcher) return undefined;
-    const agentInstallRoot = resolve(aveHome(), "agents");
-    return new PluginArtifactStore({
-      installRoot: agentInstallRoot,
-      cacheRoot: resolve(agentInstallRoot, ".cache"),
-      fetcher: marketplaceFetcher,
-      publicKeys: getBundledPublicKeys(),
-    });
-  })();
-  const skillArtifactStore = (() => {
-    if (marketplaceFetcher instanceof DisabledMarketplaceFetcher) return undefined;
-    const skillInstallRoot = resolve(aveHome(), "skills");
-    return new PluginArtifactStore({
-      installRoot: skillInstallRoot,
-      cacheRoot: resolve(skillInstallRoot, ".cache"),
-      fetcher: marketplaceFetcher,
-      publicKeys: getBundledPublicKeys(),
-    });
-  })();
-
   ctx.mcpGovernance = mcpGovernance;
   ctx.mcpManager = mcpManager;
-  ctx.mcpArtifactStore = mcpArtifactStore;
-  ctx.agentArtifactStore = agentArtifactStore;
-  ctx.skillArtifactStore = skillArtifactStore;
 }

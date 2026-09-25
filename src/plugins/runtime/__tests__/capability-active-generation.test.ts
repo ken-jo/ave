@@ -23,7 +23,7 @@ import {
 } from "../../plugin-install-receipt.js";
 import { createNoopHostApiForTests, PluginRuntime } from "../../runtime.js";
 import type { PluginManifest } from "../../types.js";
-import { canonicalJSON } from "../../whitelist/canonical-json.js";
+import { canonicalJSON } from "../../secret-access/canonical-json.js";
 import { agentPluginsDocument } from "../../__tests__/test-helpers.js";
 import { settleMacrotask as nextTurn } from "../../../__tests__/test-helpers.js";
 import { unavailableSecretEncryption } from "../../../__tests__/support/host-runtime.js";
@@ -90,7 +90,6 @@ describe("PluginRuntime capability dependencies use active generations", () => {
       name: options.id,
       version: "1.0.0",
       description: "active capability dependency fixture",
-      publisher: "Ave tests",
       entry: "entry.mjs",
       tools: [{
         name: toolName,
@@ -288,7 +287,6 @@ describe("PluginRuntime capability dependencies use active generations", () => {
       name: "prepared-consumer",
       version: "1.0.0",
       description: "prepared active capability fixture",
-      publisher: "Ave tests",
       entry: "entry.mjs",
       requires: { capabilities: ["calendar-source"] },
       tools: [{
@@ -358,7 +356,6 @@ describe("PluginRuntime capability dependencies use active generations", () => {
       name: plugin.id,
       version: "1.0.1",
       description: "prepared replacement without a pending capability requirement",
-      publisher: "Ave tests",
       entry: "entry.mjs",
       tools: [{
         name: toolName,

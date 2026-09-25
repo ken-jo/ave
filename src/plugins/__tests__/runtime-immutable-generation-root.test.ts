@@ -38,7 +38,6 @@ describe("PluginRuntime immutable generation root", () => {
       version: "1.0.0",
       entry: "entry.mjs",
       description: "Reads one receipt-covered fixture byte.",
-      publisher: "Ave",
       tools: [{
         name: "immutable_root_read",
         description: "Read the immutable generation fixture.",

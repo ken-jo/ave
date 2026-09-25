@@ -9,9 +9,6 @@ import { type StatusBarProps } from "./components/StatusBar.js";
 import { ChatSidePanel } from "./components/ChatSidePanel.js";
 import type { SideChatOpenRequest } from "./components/SideChatView.js";
 
-
-
-
 import { getApi } from "./api-client.js";
 import { useChatContext } from "./context/ChatContext.js";
 import type { AppMode } from "./MainToolbar.js";
@@ -19,7 +16,7 @@ import { useInputStatusRow } from "./hooks/use-input-status-row.js";
 import { type ComposerHandle } from "./components/Composer.js";
 import { useSuggestedReplies } from "./hooks/use-suggested-replies.js";
 import { hasActiveSuggestedReplies } from "./utils/composer-placeholder.js";
-import type { PluginEntry } from "./components/PluginGridButton.js";
+import type { PluginEntry } from "./types.js";
 import type { QuickAction } from "./components/command-actions.js";
 import { type AskUserQuestionRequest } from "./components/AskUserQuestionCard.js";
 import type { ApprovalRequest, AveApi } from "./types.js";
@@ -474,8 +471,6 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onEditSave, onFork, onRet
     [visibleEntries],
   );
 
-
-
   const turnSummaryByTurnStart = useMemo(() => {
     const map = new Map<number, TurnSummary>();
     let curTurnStart = -1;
@@ -575,7 +570,6 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onEditSave, onFork, onRet
   const handleInsertSlashCommand = useCallback((cmd: string) => {
     setQuestion((prev) => (prev ? `${prev}${cmd} ` : `${cmd} `));
   }, [setQuestion]);
-
 
   const handleBottomSend = useCallback(() => {
     handleComposerSend({ inputOrigin: "user-keyboard", token: "" });

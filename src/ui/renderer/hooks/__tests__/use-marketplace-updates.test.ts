@@ -1,21 +1,22 @@
 /**
  * Marketplace update hook regression tests.
  *
- * Plugin update skips are exact-version suppressions. A user skip must hide the
- * visible banner immediately, persist `pluginId -> latestVersion`, and allow a
- * newer plugin version to surface again.
+ * Update skips are exact-version suppressions. A user skip must hide the
+ * visible pill immediately, persist `name -> offered version` (a plugin's name,
+ * `kind:name` for other kinds), and allow a newer version to surface again.
  */
 import "../../../../../test/renderer/setup.js";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { useMarketplaceUpdates, type PluginUpdateInfo } from "../use-marketplace-updates.js";
+import { useMarketplaceUpdates } from "../use-marketplace-updates.js";
+import type { PackageKind, PackageUpdateView } from "../../../../shared/git-marketplace.js";
 import type { AppSettings, DeepPartial, AveApi, SettingsUpdateResult } from "../../types.js";
 
 function marketplaceUpdatesApi(options: {
   settings?: DeepPartial<AppSettings>;
   updateSettings?: (patch: DeepPartial<AppSettings>) => Promise<SettingsUpdateResult>;
 } = {}) {
-  let handler: ((updates: PluginUpdateInfo[]) => void) | null = null;
+  let handler: ((updates: PackageUpdateView[]) => void) | null = null;
   const api = {
     getSettings: vi.fn(async () => options.settings ?? {}),
     updateSettings: vi.fn(
@@ -23,7 +24,7 @@ function marketplaceUpdatesApi(options: {
         (async (patch: DeepPartial<AppSettings>) =>
           ({ ...(options.settings ?? {}), ...patch }) as SettingsUpdateResult),
     ),
-    onMarketplaceUpdatesAvailable: vi.fn((h: (updates: PluginUpdateInfo[]) => void) => {
+    onMarketplaceUpdatesAvailable: vi.fn((h: (updates: PackageUpdateView[]) => void) => {
       handler = h;
       return () => {
         handler = null;
@@ -33,7 +34,7 @@ function marketplaceUpdatesApi(options: {
   return {
     api: api as unknown as AveApi,
     rawApi: api,
-    emit: (updates: PluginUpdateInfo[]) => {
+    emit: (updates: PackageUpdateView[]) => {
       if (!handler) throw new Error("marketplace updates handler not registered");
       handler(updates);
     },
@@ -80,6 +81,29 @@ describe("useMarketplaceUpdates", () => {
     expect(rawApi.updateSettings).toHaveBeenCalledWith({
       marketplace: { skippedPluginUpdates: { meeting: "0.5.24" } },
     });
+  });
+
+  it("stores a non-plugin skip under its kind, so a plugin of the same name still shows", async () => {
+    const { api, rawApi, emit } = marketplaceUpdatesApi();
+    const { result } = renderHook(() => useMarketplaceUpdates(api));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    act(() => {
+      emit([update("meeting", "2.0.0", "skill")]);
+    });
+    await act(async () => {
+      await result.current.skip();
+    });
+
+    expect(rawApi.updateSettings).toHaveBeenCalledWith({
+      marketplace: { skippedPluginUpdates: { "skill:meeting": "2.0.0" } },
+    });
+    act(() => {
+      emit([update("meeting", "2.0.0", "skill"), update("meeting", "2.0.0")]);
+    });
+    expect(result.current.updates).toEqual([update("meeting", "2.0.0")]);
   });
 
   it("keeps skip persistence best-effort when settings writes fail", async () => {
@@ -201,13 +225,8 @@ describe("useMarketplaceUpdates", () => {
   });
 });
 
-function update(pluginId: string, latestVersion: string): PluginUpdateInfo {
-  return {
-    pluginId,
-    pluginName: `Ave ${pluginId}`,
-    installedVersion: "1.0.0",
-    latestVersion,
-  };
+function update(name: string, to: string, kind: PackageKind = "plugin"): PackageUpdateView {
+  return { key: { sourceId: "ave", kind, name }, displayName: `Ave ${name}`, from: "1.0.0", to };
 }
 
 function defineSkippedSetting(

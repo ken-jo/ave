@@ -104,7 +104,7 @@ export function pluginIconFor(
   if (cached) return cached;
   // Eviction policy:
   //   • `.then` "invalid name" → DO NOT evict. The cache exists to keep the
-  //     same React.lazy reference across renders so PluginGridButton does
+  //     same React.lazy reference across renders so an icon does
   //     not unmount/remount + re-Suspense on every paint. Evicting on a
   //     stable manifest-input failure (icon name simply does not exist in
   //     lucide-react) reintroduces that churn and re-imports lucide-react

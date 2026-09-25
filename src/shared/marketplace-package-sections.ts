@@ -15,7 +15,7 @@ export const MARKETPLACE_ASSET_PACKAGE_TYPES = [
 export type MarketplaceAssetPackageType =
   (typeof MARKETPLACE_ASSET_PACKAGE_TYPES)[number];
 
-export type MarketplacePackageFilter = "all" | MarketplacePackageType;
+type MarketplacePackageFilter = "all" | MarketplacePackageType;
 
 export interface MarketplacePackageFilterOption {
   value: MarketplacePackageFilter;

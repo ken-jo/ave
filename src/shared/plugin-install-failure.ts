@@ -1,5 +1,4 @@
 export const PLUGIN_INSTALL_FAILURE_KINDS = [
-  "catalog-grant-mismatch",
   "manifest-validation-error",
   "incompatible-app-version",
   "plugin-revoked",
@@ -16,8 +15,6 @@ export function isPluginInstallFailureKind(value: unknown): value is PluginInsta
 /**
  * Kinds the Plugin Doctor cannot repair by reinstalling the latest marketplace
  * version:
- *   - `catalog-grant-mismatch` — the downloaded artifact manifest disagrees with
- *     the catalog-approved grant; only fixed by republishing the package.
  *   - `incompatible-app-version` — the plugin requires a newer Ave build; a
  *     reinstall re-fetches the same too-new package and re-throws, so the user
  *     must update the app instead.
@@ -38,7 +35,6 @@ export function isPluginInstallFailureKind(value: unknown): value is PluginInsta
  * payload, which a reinstall replaces wholesale.
  */
 const REINSTALL_NOT_FIXABLE_KINDS: ReadonlySet<PluginInstallFailureKind> = new Set([
-  "catalog-grant-mismatch",
   "incompatible-app-version",
   "plugin-revoked",
 ]);

@@ -2150,7 +2150,7 @@ class StdioTransport implements McpTransport {
     // and its writes are confined to the per-server filesystem jail. ASRT is
     // stdio-transparent on mac/linux: it wraps as `[shell, -c, <wrapped>]`;
     // a child spawned with inherited stdio:["pipe","pipe","pipe"] passes
-    // stdin/stdout through, so MCP's Content-Length framing survives. Windows
+    // stdin/stdout through, so MCP's newline-delimited framing survives. Windows
     // is fail-closed in openWrapped until ASRT can apply the per-server
     // allowRead/allowWrite grants this path needs.
     // Gate OFF ⇒ the plain spawn below is UNCHANGED.
@@ -2273,7 +2273,7 @@ class StdioTransport implements McpTransport {
 
       assertManagedChildProcessAdmissionOpen(`mcp:${this.config.id}:asrt`);
       this.process = spawn(cmd, args, {
-        // stdin pipe MUST stay writable for JSON-RPC Content-Length framing.
+        // stdin pipe MUST stay writable for newline-delimited JSON-RPC.
         stdio: ["pipe", "pipe", "pipe"],
         shell: false,
         windowsHide: true,
@@ -2362,10 +2362,12 @@ class StdioTransport implements McpTransport {
     if (!this.process?.stdin?.writable) {
       throw new Error(`[mcp-client] ${t("be_mcpClient.stdinNotWritable")}`);
     }
-    const json = JSON.stringify(message);
-    const header = `Content-Length: ${Buffer.byteLength(json)}\r\n\r\n`;
+    // MCP stdio transport: one JSON-RPC message per line, no embedded
+    // newlines. JSON.stringify escapes every newline inside strings, so the
+    // serialized message is always a single line.
+    const line = `${JSON.stringify(message)}\n`;
     try {
-      this.process.stdin.write(header + json);
+      this.process.stdin.write(line);
     } catch (err) {
       throw err instanceof Error ? err : new Error(String(err));
     }
@@ -2448,33 +2450,17 @@ class StdioTransport implements McpTransport {
   }
 
   private parseMessages(): void {
-    // Content-Length 기반 메시지 파싱 (LSP/MCP 표준)
-    // inputBuffer를 Buffer로 유지해 UTF-8 다중바이트 문자 포함 시에도
-    // Content-Length(바이트 단위)와 정확히 일치하게 처리한다.
+    // MCP stdio transport (spec "Transports › stdio"): messages are delimited
+    // by newlines. The buffer stays bytes until a whole line is in, so a
+    // multi-byte UTF-8 character split across chunks decodes intact (0x0A
+    // never occurs inside a multi-byte sequence).
     while (true) {
-      // \r\n\r\n 구분자를 바이트 레벨에서 찾기
-      const headerEnd = indexOfCrLfCrLf(this.inputBuffer);
-      if (headerEnd === -1) break;
+      const lineEnd = this.inputBuffer.indexOf(0x0a);
+      if (lineEnd === -1) break;
 
-      const headerBlock = this.inputBuffer.slice(0, headerEnd).toString("ascii");
-      const contentLengthMatch = headerBlock.match(/Content-Length:\s*(\d+)/i);
-      if (!contentLengthMatch) {
-        // 잘못된 헤더 — 건너뛰기
-        this.inputBuffer = this.inputBuffer.slice(headerEnd + 4);
-        continue;
-      }
-
-      const contentLength = parseInt(contentLengthMatch[1], 10);
-      const messageStart = headerEnd + 4;
-      const messageEnd = messageStart + contentLength;
-
-      if (this.inputBuffer.length < messageEnd) {
-        // 메시지가 아직 완전히 도착하지 않음
-        break;
-      }
-
-      const messageStr = this.inputBuffer.slice(messageStart, messageEnd).toString("utf-8");
-      this.inputBuffer = this.inputBuffer.slice(messageEnd);
+      const messageStr = this.inputBuffer.subarray(0, lineEnd).toString("utf-8").replace(/\r$/u, "");
+      this.inputBuffer = this.inputBuffer.subarray(lineEnd + 1);
+      if (messageStr.trim().length === 0) continue;
 
       try {
         const parsed = JSON.parse(messageStr) as JsonRpcResponse;
@@ -2890,22 +2876,6 @@ function indexOfAny(haystack: string, needles: string[]): number {
     if (earliest === -1 || idx < earliest) earliest = idx;
   }
   return earliest;
-}
-
-/**
- * Find the byte offset of the first `\r\n\r\n` sequence in a Buffer.
- * Returns -1 if not found. Used by StdioTransport.parseMessages() to
- * correctly handle Content-Length framing when the JSON body contains
- * multi-byte UTF-8 characters (Korean, CJK, etc.) — the Content-Length
- * header value is in bytes, not JS string characters.
- */
-function indexOfCrLfCrLf(buf: Buffer): number {
-  for (let i = 0; i <= buf.length - 4; i++) {
-    if (buf[i] === 0x0d && buf[i + 1] === 0x0a && buf[i + 2] === 0x0d && buf[i + 3] === 0x0a) {
-      return i;
-    }
-  }
-  return -1;
 }
 
 /**

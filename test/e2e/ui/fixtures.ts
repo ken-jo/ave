@@ -4,7 +4,6 @@ import { test as base, expect } from "@playwright/test";
 import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { execSync } from "node:child_process";
 import {
@@ -17,9 +16,9 @@ import {
   buildE2eSecrets,
   buildIsolatedElectronEnv,
 } from "./seeded-electron";
-import { canonicalJSON } from "../../../src/plugins/whitelist/canonical-json.js";
 import { makeTestT, type TestT } from "./i18n.js";
 import { agentPluginsDocument } from "../../../src/plugins/__tests__/test-helpers.js";
+import { flattenAgentPluginsManifest } from "../../../src/plugins/public-contract.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -29,7 +28,6 @@ const E2E_PLUGIN_REPOS = [
   "ave-plugin-vega-helper",
 ] as const;
 
-const E2E_RESOLVE_CREDENTIAL_PROBE_TOOL = "meeting_resolve_credential_probe";
 const E2E_PLUGIN_UI_STUB_SOURCE =
   'export function mount({ root }) { root.textContent = "E2E Plugin UI"; }\nexport default { mount };\n';
 
@@ -40,75 +38,19 @@ type E2eManifest = {
   version?: unknown;
   pluginAccess?: unknown;
   tools?: unknown;
-  hostSecrets?: { read?: unknown };
   ui?: unknown;
   python?: unknown;
 };
 
-function addCredentialProbeTool(tools: unknown): unknown[] {
-  if (
-    !Array.isArray(tools) ||
-    tools.some((tool) =>
-        tool === null || typeof tool !== "object" || Array.isArray(tool),
-    )
-  ) {
-    throw new Error("E2E plugin manifest must declare pure Tool objects");
-  }
-  if (
-    tools.some(
-      (tool) =>
-        (tool as { name?: unknown }).name === E2E_RESOLVE_CREDENTIAL_PROBE_TOOL,
-    )
-  ) {
-    return tools;
-  }
-  return [
-    ...tools,
-    {
-      name: E2E_RESOLVE_CREDENTIAL_PROBE_TOOL,
-      description:
-        "E2E-only probe that resolves the host-managed OpenAI key through hostApi.resolveApiKey.",
-      inputSchema: {
-        type: "object",
-        properties: {},
-        additionalProperties: false,
-      },
-      _meta: {
-        ui: { visibility: ["model", "app"] },
-      },
-    },
-  ];
-}
-
-function manifestIdentitySha256FromPluginJson(pluginJsonPath: string): string {
-  const manifest = JSON.parse(fs.readFileSync(pluginJsonPath, "utf-8"),
-  ) as unknown;
-  return createHash("sha256").update(canonicalJSON(manifest)).digest("hex");
-}
-
-function prepareE2eManifest(manifest: E2eManifest, enableCredentialProbe: boolean,
-): E2eManifest {
+/** The seeded copy runs without its Python runtime; everything else is the plugin's own manifest. */
+function prepareE2eManifest(manifest: E2eManifest): E2eManifest {
   const base = { ...manifest };
   delete base.python;
-  if (!enableCredentialProbe || base.id !== "meeting") return base;
-
-  const declaredHostKeyNames = Array.isArray(base.hostSecrets?.read)
-    ? base.hostSecrets.read.filter((item): item is string => typeof item === "string",
-      )
-    : [];
-  const hostSecretReads = declaredHostKeyNames.includes("llm.apiKey.openai")
-    ? declaredHostKeyNames
-    : [...declaredHostKeyNames, "llm.apiKey.openai"];
-  return {
-    ...base,
-    hostSecrets: { read: hostSecretReads },
-    tools: addCredentialProbeTool(base.tools),
-  };
+  return base;
 }
 
 function buildHostPluginStub(
   manifestId: string,
-  enableCredentialProbe: boolean,
   toolNames: readonly string[] = [],
 ): string {
   /**
@@ -126,8 +68,7 @@ function buildHostPluginStub(
       + `{ ok: true, stub: ${JSON.stringify(`e2e-stub:${manifestId}:`)} + ${JSON.stringify(name)}, args }),`)
     .join("\n");
 
-  if (!enableCredentialProbe || manifestId !== "meeting") {
-    return `export default function createPlugin() {
+  return `export default function createPlugin() {
   return {
     handlers: {
 ${echoHandlers}
@@ -137,84 +78,6 @@ ${echoHandlers}
   };
 }
 `;
-  }
-
-  return `export default function createPlugin(context) {
-  return {
-    handlers: {
-${echoHandlers}
-      ${E2E_RESOLVE_CREDENTIAL_PROBE_TOOL}: async () => {
-        const resolver = context.hostApi && context.hostApi.resolveApiKey;
-        if (typeof resolver !== "function") {
-          return { ok: false, reason: "missing-resolveApiKey" };
-        }
-        const result = await resolver({ purpose: "llm", vendor: "openai" });
-        if (!result.ok) return result;
-        try {
-          return { ok: true, vendor: result.vendor, bearer: result.bearer() };
-        } finally {
-          result.release();
-        }
-      }
-    },
-    start() {},
-    stop() {}
-  };
-}\n`;
-}
-
-function buildSignedWhitelistEnv(
-  aveHomeForTest: string,
-  grants: Record<string, { read: string[]; manifestSha256: string }>,
-): LaunchEnv {
-  if (Object.keys(grants).length === 0) return {};
-  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-  const rawPublicKey = publicKey
-    .export({ type: "spki", format: "der" })
-    .slice(-32);
-  const doc = {
-    version: 1,
-    schemaVersion: 1,
-    issuedAt: "2026-05-17T00:00:00.000Z",
-    expiresAt: "2030-01-01T00:00:00.000Z",
-    pluginGrants: Object.fromEntries(
-      Object.entries(grants).map(([pluginId, grant]) => [
-        pluginId,
-        {
-          publisher: "e2e",
-          hostSecrets: { read: grant.read },
-          approvedManifestSha256: grant.manifestSha256,
-        },
-      ]),
-    ),
-  };
-  const body = JSON.stringify(doc);
-  const envelope = {
-    version: 1,
-    iat: Math.floor(Date.now() / 1000),
-    artifact_sha256: createHash("sha256")
-      .update(Buffer.from(body, "utf-8"))
-      .digest("hex"),
-    signatures: [
-      {
-        key_id: "whitelist-v1",
-        alg: "ed25519",
-        sig: sign(null, Buffer.from(body, "utf-8"), privateKey).toString(
-          "base64",
-        ),
-      },
-    ],
-  };
-  const whitelistPath = path.join(
-    aveHomeForTest,
-    "e2e-marketplace-whitelist.fixture.json",
-  );
-  fs.writeFileSync(whitelistPath, body, "utf-8");
-  fs.writeFileSync(`${whitelistPath}.sig`, JSON.stringify(envelope), "utf-8");
-  return {
-    AVE_E2E_WHITELIST_SNAPSHOT_PATH: whitelistPath,
-    AVE_E2E_WHITELIST_PUBLIC_KEY: rawPublicKey.toString("base64"),
-  };
 }
 
 /** Kill any processes occupying the local-indexer worker port so E2E runs cleanly. */
@@ -270,18 +133,12 @@ function resolveE2ePluginSourceRoot(repoRoot: string): string {
 async function seedE2ePlugins(
   repoRoot: string,
   aveHomeForTest: string,
-  enableCredentialProbe: boolean,
   seedTogglePlugin: boolean,
   seedRepositoryPlugins: boolean,
-): Promise<LaunchEnv> {
+): Promise<void> {
   const pluginsRoot = path.join(aveHomeForTest, "plugins");
   const cacheRoot = path.join(pluginsRoot, ".cache");
   fs.mkdirSync(pluginsRoot, { recursive: true, mode: 0o700 });
-  const whitelistGrants: Record<
-    string,
-    { read: string[]; manifestSha256: string }
-  > = {};
-
   const entries: Array<{
     id: string;
     manifestPath: string;
@@ -344,7 +201,6 @@ async function seedE2ePlugins(
         version: "0.0.0",
         description:
           "Minimal plugin used by plugin active/inactive E2E coverage.",
-        publisher: "Ave E2E",
         entry: "dist/hostPlugin.js",
         tools: [
           {
@@ -384,9 +240,10 @@ async function seedE2ePlugins(
       }
 
       const sourceManifestText = fs.readFileSync(sourceManifest, "utf-8");
+      // Plugin repositories ship the Agent Plugins document; the seeding below
+      // edits the flat host view and writes the document back.
       const manifest = prepareE2eManifest(
-        JSON.parse(sourceManifestText) as E2eManifest,
-        enableCredentialProbe,
+        flattenAgentPluginsManifest(JSON.parse(sourceManifestText)) as unknown as E2eManifest,
       );
       if (
         typeof manifest.id !== "string" ||
@@ -401,18 +258,6 @@ async function seedE2ePlugins(
       const pluginJsonPath = path.join(pluginDir, "plugin.json");
       fs.writeFileSync(pluginJsonPath, manifestText, "utf-8");
 
-      const hostSecretReads = Array.isArray(manifest.hostSecrets?.read)
-        ? manifest.hostSecrets.read.filter(
-            (item): item is string => typeof item === "string",
-          )
-        : [];
-      if (hostSecretReads.length > 0) {
-        whitelistGrants[manifest.id] = {
-          read: hostSecretReads,
-          manifestSha256: manifestIdentitySha256FromPluginJson(pluginJsonPath),
-        };
-      }
-
       const targetDist = path.join(pluginDir, "dist");
       const uiEntries = Array.isArray((manifest as { ui?: unknown }).ui)
         ? (
@@ -426,7 +271,6 @@ async function seedE2ePlugins(
         path.join(targetDist, "hostPlugin.js"),
         buildHostPluginStub(
           manifest.id,
-          enableCredentialProbe,
           (Array.isArray(manifest.tools) ? manifest.tools : [])
             .map((tool) => (tool as { name?: unknown }).name)
             .filter((name): name is string => typeof name === "string"),
@@ -475,7 +319,6 @@ async function seedE2ePlugins(
     "utf-8",
   );
 
-  return buildSignedWhitelistEnv(aveHomeForTest, whitelistGrants);
 }
 
 /**
@@ -626,10 +469,9 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
         { encoding: "utf-8", mode: 0o600 },
       );
     }
-    const e2eWhitelistEnv = await seedE2ePlugins(
+    await seedE2ePlugins(
       repoRoot,
       aveHomeForTest,
-      launchEnv.AVE_E2E_RESOLVE_CREDENTIAL_PROBE === "1",
       seedTogglePlugin,
       seedRepositoryPlugins,
     );
@@ -637,7 +479,6 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
       args: [mainEntry, `--user-data-dir=${userDataDir}`, "--no-sandbox"],
       env: buildIsolatedElectronEnv({
         ...launchEnv,
-        ...e2eWhitelistEnv,
         HOME: userDataDir,
         USERPROFILE: userDataDir,
         AVE_DEV: "1",

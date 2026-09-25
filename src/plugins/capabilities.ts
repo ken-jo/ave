@@ -34,7 +34,7 @@
  * (`KNOWN_CAPABILITIES`) and the compile-time {@link CapabilityId} union, so a
  * typo in one of the host's own enforced-capability gates is a `tsc` error.
  */
-export const KNOWN_CAPABILITY_IDS = [
+const KNOWN_CAPABILITY_IDS = [
   "external-auth-consumer",
   // host:overlay — plugin may call triggerConversation() as overlay runner.
   // triggerConversation() routes to OverlayContext staging instead of spawning

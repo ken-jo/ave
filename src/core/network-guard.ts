@@ -206,6 +206,7 @@ const GLOBALLY_REACHABLE_IPV6_BLOCKS = GLOBALLY_REACHABLE_IPV6.map(parseIpv6Bloc
 const GLOBAL_UNICAST_IPV6_BLOCK = parseIpv6Block(GLOBAL_UNICAST_IPV6);
 const LOOPBACK_IPV4_BLOCK = parseIpv4Block(LOOPBACK_IPV4);
 const LOOPBACK_IPV6_BLOCK = parseIpv6Block(LOOPBACK_IPV6);
+const NAT64_IPV6_BLOCK = parseIpv6Block("64:ff9b::/96");
 const UNIQUE_LOCAL_IPV6_BLOCK = parseIpv6Block(UNIQUE_LOCAL_IPV6);
 
 /**
@@ -262,6 +263,13 @@ export function isGloballyRoutableAddress(address: string): boolean {
   if (isIPv6(address)) {
     const value = ipv6ToBigInt(address);
     if (value === null) return false;
+    if (inBlock(value, NAT64_IPV6_BLOCK)) {
+      // The gateway forwards to the IPv4 address in the low 32 bits, so the
+      // address reaches exactly what that one does: 64:ff9b::a9fe:a9fe is the
+      // metadata service, not the internet.
+      const v4 = value & 0xffffffffn;
+      return isGloballyRoutableAddress([24n, 16n, 8n, 0n].map((shift) => String((v4 >> shift) & 0xffn)).join("."));
+    }
     if (GLOBALLY_REACHABLE_IPV6_BLOCKS.some((block) => inBlock(value, block))) return true;
     if (!inBlock(value, GLOBAL_UNICAST_IPV6_BLOCK)) return false;
     return !SPECIAL_PURPOSE_IPV6_BLOCKS.some((block) => inBlock(value, block));

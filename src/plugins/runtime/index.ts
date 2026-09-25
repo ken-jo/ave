@@ -16,9 +16,9 @@
  *   - origin-chain.ts, runtime-admission.ts, detached-operation.ts, types.ts
  */
 
-import type { PluginAccessSpec, PluginManifest, PluginHostApi, PluginRegistryEntry, PluginToolHandler, RuntimePlugin, RuntimePluginFactory, InstallPolicy, PluginAuthSpec, PluginConfigSchema, PluginOnboardingSpec, PluginUiExtension } from "../types.js";
+import type { PluginAccessSpec, PluginManifest, PluginHostApi, PluginToolHandler, RuntimePlugin, RuntimePluginFactory, PluginAuthSpec, PluginConfigSchema, PluginOnboardingSpec, PluginUiExtension, PluginRegistryTrust } from "../types.js";
 import { classifySubscription } from "../capabilities.js";
-import { normalizeInstallPolicy, parsePluginJson, buildManifestValidator, getDeclaredEmittedEvents } from "./manifest-validation.js";
+import { parsePluginJson, buildManifestValidator, getDeclaredEmittedEvents, recordManifestDocument } from "./manifest-validation.js";
 import { flattenAgentPluginsManifest } from "../public-contract.js";
 import { isModelVisible } from "./tool-visibility.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -37,10 +37,10 @@ import { isDevModeUnlocked } from "../../boot/dev-flags.js";
 import { verifyInstallReceipt, installReceiptPath } from "../plugin-install-receipt.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readFile } from "node:fs/promises";
-import { type PluginDeploymentGuard, type Actor, PluginDeploymentDeniedError, assertDisableAllowed } from "../deployment-guard.js";
+import { type PluginDeploymentGuard, PluginDeploymentDeniedError, assertDisableAllowed } from "../deployment-guard.js";
 import { pluginArtifactGenerationId } from "../plugin-artifact-identity.js";
 import { HostApiGenerationScope } from "../plugin-host-effect-scope.js";
-import { canonicalJSON } from "../whitelist/canonical-json.js";
+import { canonicalJSON } from "../secret-access/canonical-json.js";
 import { materializePluginGenerationRoot, removeRetainedPluginGeneration } from "../plugin-contributions.js";
 import { appVersionSatisfiesMin } from "../../shared/semver-compare.js";
 import { getAveAppVersion } from "../../shared/app-version.js";
@@ -74,7 +74,6 @@ const log = createLogger("plugin-runtime");
 export const MAX_UI_RESOURCE_HTML_BYTES = 4 * 1024 * 1024;
 
 
-export type { InstallPolicy };
 
 
 // Re-export public interface types so callers that do
@@ -95,10 +94,6 @@ export interface PluginCard {
   capabilities: string[];
   /** tool name → the tool's own `description` (#885 v6 — toolSchemas removed). */
   toolDescriptions?: Record<string, string>;
-  /** true when the plugin is protected from ordinary user uninstall/disable */
-  isManaged?: boolean;
-  /** Install policy declared in the manifest: "admin" (IT-managed) or "user" (anyone). */
-  installPolicy?: "admin" | "user";
   /** Runtime load status derived from loaded/failed/disabled runtime state. */
   loadStatus: "loaded" | "preparing" | "failed" | "disabled";
   /** Whether this plugin's tools are currently exposed to the model. */
@@ -114,7 +109,6 @@ export interface PluginCard {
   /** Manifest-declared sidebar UI metadata, even before the plugin is loaded. */
   uiExtensions?: PluginUiExtension[];
   version?: string;
-  publisher?: string;
   configSchema?: PluginConfigSchema;
   /** Optional declarative auth contract — see architecture.md §9.4a "Plugin-Owned OAuth — Host UI Surface". */
   auth?: PluginAuthSpec;
@@ -237,7 +231,7 @@ interface PreparedArtifactRuntimeActivationInput<T> {
   manifest: PluginManifest;
   receiptRaw: string;
   registryEntry: Readonly<
-    Pick<PluginRegistryEntry, "installSource" | "manifestSha256">
+    PluginRegistryTrust
   >;
   approvedPluginAccess?: PluginAccessSpec;
   durableCommit(): Promise<T>;
@@ -269,7 +263,7 @@ export interface PluginRuntimeOptions {
     pluginDataDir: string,
     incarnation: PluginHostApiIncarnation,
     installPluginId: string | null,
-    candidateRegistryEntry?: Readonly<Pick<PluginRegistryEntry, "installSource" | "manifestSha256">>,
+    candidateRegistryEntry?: Readonly<PluginRegistryTrust>,
     candidateApprovedPluginAccess?: PluginAccessSpec | null,
   ) => PluginHostApi;
   deploymentGuard?: PluginDeploymentGuard;
@@ -476,8 +470,6 @@ export function buildPluginCard(
     tools: filteredNames,
     capabilities: manifest.capabilities ?? [],
     toolDescriptions: Object.keys(toolDescriptions).length > 0 ? toolDescriptions : undefined,
-    isManaged: normalizeInstallPolicy(manifest) === "admin",
-    installPolicy: manifest.installPolicy ?? "user",
     loadStatus,
     active: state.active,
     runtimeLoaded: state.runtimeLoaded,
@@ -486,7 +478,6 @@ export function buildPluginCard(
     iconText: manifest.iconText,
     uiExtensions: uiExtensions && uiExtensions.length > 0 ? uiExtensions : undefined,
     version: manifest.version,
-    publisher: manifest.publisher,
     configSchema: manifest.configSchema,
     auth: manifest.auth,
     networkAccess: manifest.networkAccess,
@@ -1394,6 +1385,7 @@ export async function resolveManifestLoadPlan(opts: {
         approvedPluginAccess: entry.approvedPluginAccess as PluginAccessSpec | undefined,
         installSource: entry.installSource,
         manifestSha256: entry.manifestSha256,
+        ...(entry.origin ? { origin: entry.origin } : {}),
       }];
     }),
   );
@@ -1445,7 +1437,7 @@ export type PluginIntegrityCheckResult =
   | {
       ok: true;
       verified?: {
-        installSource: "marketplace" | "local-dev";
+        installSource: "marketplace" | "local-dev" | "git";
         signerKeyId: string | null;
         artifactSha256: string | null;
       };
@@ -1662,7 +1654,7 @@ abstract class PluginRuntimeState {
     incarnation: PluginHostApiIncarnation,
     installPluginId: string | null,
     candidateRegistryEntry?: Readonly<
-      Pick<PluginRegistryEntry, "installSource" | "manifestSha256">
+      PluginRegistryTrust
     >,
     candidateApprovedPluginAccess?: PluginAccessSpec | null,
   ) => PluginHostApi;
@@ -1985,7 +1977,7 @@ abstract class PluginRuntimeState {
     hostEffects?: HostApiGenerationScope,
     installPluginId: string | null = this.requirePluginInstallClaim(pluginId),
     candidateRegistryEntry?: Readonly<
-      Pick<PluginRegistryEntry, "installSource" | "manifestSha256">
+      PluginRegistryTrust
     >,
     candidateApprovedPluginAccess?: PluginAccessSpec | null,
   ): {
@@ -2476,10 +2468,10 @@ abstract class PluginRuntimeState {
   protected validatePreparedRegistryEntry(
     manifest: PluginManifest,
     registryEntry: Readonly<
-      Pick<PluginRegistryEntry, "installSource" | "manifestSha256">
+      PluginRegistryTrust
     > | undefined,
     manifestDocument: unknown,
-  ): Readonly<Pick<PluginRegistryEntry, "installSource" | "manifestSha256">> {
+  ): Readonly<PluginRegistryTrust> {
     if (!registryEntry) {
       throw new Error(`prepared artifact registry provenance missing for '${manifest.id}'`);
     }
@@ -2906,38 +2898,33 @@ abstract class PluginRuntimeState {
   }
 
   /**
-   * Plugin revocation gate (LOAD boundary). A plugin already on disk
-   * (installed before it was revoked, or sideloaded) must not silently keep
-   * running once the marketplace revocation registry blocks its exact
-   * version or drops it below the pinned minimum — mirrors
+   * Plugin revocation gate (LOAD boundary). A plugin whose installed version
+   * its bound source revoked (design §10.4) must not keep running — mirrors
    * `markIncompatibleAppVersion` immediately above, including the
    * "isolation" property: this plugin is skipped, every other plugin still
-   * loads normally.
-   *
-   * Fail-open by construction: `revocationRegistry.evaluate()` returns
-   * `allow` whenever no valid signed document has ever been obtained (see
-   * `revocation-registry.ts` for the fail-open/fail-closed rationale), so
-   * this method only ever blocks when a signed document actually says to.
+   * loads normally. The registry holds only each plugin's own source's
+   * revocations, fed from the marketplace snapshots before plugins load; an
+   * `uninstall` revocation is refused here too until the marketplace removes it.
    */
   protected markRevoked(manifest: PluginManifest): boolean {
-    const decision = revocationRegistry.evaluate(manifest.id, manifest.version);
+    const decision = revocationRegistry.evaluate("plugin", manifest.id, manifest.version);
     if (decision.kind === "allow") return false;
 
-    const reason = `plugin revoked — ${decision.reason}`;
+    const reason = `revoked by ${decision.sourceId}: ${decision.reason}`;
     log.error(`${manifest.id} rejected — ${reason}`);
     this.auditLog?.("error", "plugin_revoked", {
       pluginId: manifest.id,
       version: manifest.version,
-      ruleKind: decision.ruleKind,
+      sourceId: decision.sourceId,
+      action: decision.action,
       reason: decision.reason,
     });
     this.markLoadRefused(manifest.id, {
-      summary: decision.reason,
-      reason: decision.reason,
-      // NOT locally reinstall-fixable — a reinstall from the marketplace
-      // either re-fetches the same blocked version (the install path
-      // enforces the same registry) or is a genuine version upgrade, not a
-      // "repair". The Doctor must show the block reason and offer Remove.
+      summary: reason,
+      reason,
+      // NOT locally reinstall-fixable — the source offers no install of a
+      // revoked version, and moving to another version is an update, not a
+      // "repair". The Doctor must show the reason and offer Remove.
       kind: "plugin-revoked",
       displayName: manifest.name ?? manifest.id,
     });
@@ -4546,21 +4533,20 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
   }
 
   /** Disable a loaded plugin at runtime. */
-  async disable(pluginId: string, actor: Actor = "user"): Promise<void> {
+  async disable(pluginId: string): Promise<void> {
     const canonicalPluginId = this.resolveKnownPluginId(pluginId);
     this.pendingRestartCancellations.get(canonicalPluginId)?.cancel();
     return withPluginInstallLock(canonicalPluginId, () =>
-      this.disableLocked(pluginId, canonicalPluginId, actor)
+      this.disableLocked(pluginId, canonicalPluginId)
     );
   }
 
   private async disableLocked(
     pluginId: string,
     canonicalPluginId: string,
-    actor: Actor,
   ): Promise<void> {
     if (this.deploymentGuard) {
-      const result = await this.deploymentGuard.canDisable(pluginId, actor);
+      const result = await this.deploymentGuard.canDisable(pluginId);
       if (!result.allowed) {
         throw new PluginDeploymentDeniedError(
           result.reason ?? `Plugin disable denied: ${pluginId}`,
@@ -4668,6 +4654,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     const manifestRaw = await readFile(manifestPath, "utf8");
     const manifestDocument: unknown = JSON.parse(manifestRaw);
     const manifest = flattenAgentPluginsManifest(manifestDocument);
+    recordManifestDocument(manifest, manifestDocument);
     if (manifest.id !== input.manifest.id || manifest.version !== input.manifest.version) {
       throw new Error(`prepared artifact manifest identity changed for '${input.manifest.id}'`);
     }
@@ -6798,7 +6785,6 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
         version: "1.0.0",
         entry: "index.js",
         description: "Test fixture",
-        publisher: "Test fixture",
         // #885 v6 — pure Tool[] (model-visible, matching the old tools[]-only shape).
         tools: [
           {
@@ -7079,9 +7065,12 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
               pluginRoot,
               manifest,
               receiptRaw,
+              // The whole trust the registry holds: without `origin` a re-enabled
+              // official plugin would lose its host-secret grant until restart.
               registryEntry: {
                 installSource: targetPlan.installSource,
                 manifestSha256: targetPlan.manifestSha256,
+                ...(targetPlan.origin ? { origin: targetPlan.origin } : {}),
               },
               approvedPluginAccess:
                 targetPlan.approvedPluginAccess

@@ -434,12 +434,13 @@ export class SecretDocumentStore {
     });
   }
 
+  /** Resolves `false`, without writing, when `key` is absent (like `move`). */
   async delete(key: string): Promise<boolean> {
     validateSecretKey(key);
     return this.mutate(false, (document) => {
+      if (!Object.hasOwn(document.entries, key)) return false;
       this.assertWritesAvailable();
       this.upgradePlainEntries(document);
-      if (!Object.hasOwn(document.entries, key)) return false;
       delete document.entries[key];
       return true;
     });
@@ -458,6 +459,24 @@ export class SecretDocumentStore {
         deleted += 1;
       }
       return deleted;
+    });
+  }
+
+  /**
+   * Move the entry stored under `from` to `to` in one write, as stored — the
+   * value is never decrypted. An entry already under `to` wins and `from` is
+   * dropped. Resolves `false`, without writing, when `from` is absent.
+   */
+  async move(from: string, to: string): Promise<boolean> {
+    validateSecretKey(from);
+    validateSecretKey(to);
+    return this.mutate(false, (document) => {
+      if (!Object.hasOwn(document.entries, from)) return false;
+      this.assertWritesAvailable();
+      this.upgradePlainEntries(document);
+      if (!Object.hasOwn(document.entries, to)) document.entries[to] = document.entries[from];
+      delete document.entries[from];
+      return true;
     });
   }
 

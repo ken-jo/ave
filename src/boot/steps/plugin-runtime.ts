@@ -16,6 +16,8 @@ import type { BootHost } from "../host-runtime.js";
  */
 import type { BrowserWindow } from "electron";
 import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { aveHome } from "../../shared/ave-home.js";
 import { registerBootPluginShutdown, registerShutdownHook } from "../../main/app-shutdown.js";
 import { onEvent as onHostEvent } from "../types.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
@@ -23,6 +25,7 @@ import { PluginRuntime } from "../../plugins/runtime.js";
 import type { PythonRuntimeBootstrapper } from "../../main/python-runtime.js";
 import { startPluginDevWatcher } from "../../plugins/dev-watcher.js";
 import { PluginDeploymentGuard } from "../../plugins/deployment-guard.js";
+import { loadMarketplacePolicy } from "../../marketplace/sources/policy.js";
 import {
   setIsPackaged,
   shouldWarnPackagedFlagsIgnored,
@@ -55,6 +58,7 @@ import { AuthRedirectCatchers } from "../../main/auth-redirect-catcher.js";
 import { createHostApiFactory } from "./plugin-runtime/host-api-factory.js";
 import { createLifecycleCallbacks } from "./plugin-runtime/lifecycle.js";
 import { createRegistryEntryCache } from "./plugin-runtime/registry-cache.js";
+import { grantEvidenceReader } from "./plugin-runtime/grant-evidence.js";
 import { PluginRuntimePreStartPhase } from "./plugin-runtime/pre-start-phase.js";
 const log = createLogger("ave");
 
@@ -344,27 +348,30 @@ export async function initPluginRuntime(
     };
   }
 
-  // §7.2 Plugin Deployment Guard.
-  // Plugin layout anchors at `aveHome()/plugins/<id>/` — single root for both
-  // user-installed and admin-injected plugins (distinguished by metadata,
-  // not by physical directory). The resolver always uses
-  // `aveHome()/plugins`; E2E overrides AVE_HOME once and every caller
-  // follows the same app-home SOT.
+  // Plugin layout anchors at `aveHome()/plugins/<id>/`, the single root every
+  // install lands in. The resolver always uses `aveHome()/plugins`; E2E
+  // overrides AVE_HOME once and every caller follows the same app-home SOT.
   const pluginPaths = resolvePluginPaths();
   // mkdir the root once so the trust-root realpath check in PluginRuntime
   // (and any first-install write under pluginsRoot/<id>/) doesn't trip on a
   // missing directory the very first time the app boots.
   mkdirSync(pluginPaths.pluginsRoot, { recursive: true });
+  // Only the machine policy's requiredInstalls locks a plugin (design §10.2).
+  // An unreadable policy file locks nothing, as in the marketplace, which logs it.
   const deploymentGuard = new PluginDeploymentGuard({
     registryPath: pluginPaths.registryPath,
     pluginsRoot: pluginPaths.pluginsRoot,
+    requiredInstalls: async () => {
+      const load = await loadMarketplacePolicy();
+      return load.ok ? load.policy.requiredInstalls : [];
+    },
   });
 
   // #958/#959 security — registry-entry cache (host-verified installSource +
   // install-time manifest SHA pin; `plugin.json` is untrusted). Extracted to
   // ./plugin-runtime/registry-cache.ts and wired here so the HostApi closures
   // answer lookups synchronously and the install/uninstall listeners refresh it.
-  const { refreshRegistryEntryCache, getRegistryEntry } =
+  const { refreshRegistryEntryCache, refreshRegistryEntryCacheIfChanged, getRegistryEntry } =
     createRegistryEntryCache({
       registryPath: pluginPaths.registryPath,
       log,
@@ -446,6 +453,8 @@ export async function initPluginRuntime(
     getPluginRuntime: () => pluginRuntime,
     lateBinding,
     getRegistryEntry,
+    refreshRegistryEntryCacheIfChanged,
+    grantEvidence: grantEvidenceReader({ paths: pluginPaths, marketplacesRoot: join(aveHome(), "marketplaces") }),
     hostClassifiesRiskEnabled,
     pluginShutdownHandlers,
     readAppPreference,

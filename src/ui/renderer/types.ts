@@ -39,6 +39,9 @@ import type {
 import type { ChatSendInputOrigin } from "../../shared/chat-origin.js";
 import type { TailnetSharingOwnerApi } from "../../shared/tailnet-sharing.js";
 import type { TailnetObserverConfigApi } from "../../shared/tailnet-observer-config.js";
+import type { GitMarketplaceApi, PackageUpdateView } from "../../shared/git-marketplace.js";
+import type { GitRuntimeApi } from "../../shared/git-runtime.js";
+import type { InstalledContentApi } from "../../shared/installed-content.js";
 import type { TelegramConnectionOwnerApi } from "../../shared/telegram-connection.js";
 import type { AwayAuthorityOwnerApi } from "../../shared/away-authority-arm.js";
 import type { RolePreset } from "../../data/role-presets.js";
@@ -47,9 +50,7 @@ import type { ToolCategory, ToolSource, RiskLevel, DeferredApprovalSource, Defer
 import type {
   AssistantAgentSummary,
   AssistantSkillSummary,
-  MarketplacePackageType,
 } from "../../shared/assistant-context.js";
-import type { MarketplacePackageAsset } from "../../shared/marketplace-package-assets.js";
 import type {
   NativeContextMenuAction,
   NativeContextMenuPayload,
@@ -64,7 +65,6 @@ import type {
 import type { SessionTaskItem } from "../../shared/session-tasks.js";
 import type { SessionGoal } from "../../shared/session-goal.js";
 import type { MarketplaceAnnouncementPayload } from "../../shared/marketplace-announcements.js";
-import type { NetworkAccessAcknowledgement } from "../../shared/network-access.js";
 import type { PluginInstallFailureKind } from "../../shared/plugin-install-failure.js";
 import type { PluginOnboardingSpec } from "../../plugins/types.js";
 import type {
@@ -119,47 +119,6 @@ import type { PermissionRule } from "../../permissions/permission-manager.js";
 import type { ParentAdjudicationBackgroundEscalation, ParentAdjudicationMaxVerdict, ParentAdjudicationModelSource } from "../../permissions/permission-settings-store.js";
 export type { ApprovalChoice, ApprovalDecision, ApprovalRequest, PermissionRule, ParentAdjudicationBackgroundEscalation, ParentAdjudicationMaxVerdict, ParentAdjudicationModelSource };
 
-
-export type MarketplaceItem = {
-  id: string;
-  name: string;
-  description: string;
-  packageSpec: string;
-  installed: boolean;
-  enabled: boolean;
-  isManaged?: boolean;
-  /**
-   * Install policy from the catalog manifest. "admin" plugins gain system-wide
-   * administrator privileges on install, so the marketplace UI gates them
-   * behind an explicit consent step (#1098). Delivered by the backend via
-   * `MarketplaceListItem extends PluginMarketplaceItem`.
-   */
-  installPolicy?: "admin" | "user";
-  pluginType?: MarketplacePackageType;
-  /**
-   * The kind the catalog declared when this build does not recognise it. Read
-   * the pair with `pluginType` through `marketplacePackageTypeOf`.
-   */
-  unsupportedPackageKind?: string;
-  packageAsset?: MarketplacePackageAsset;
-  /** Display-only compatibility result: update Ave before installing. */
-  upgradeRequired?: {
-    code: "upgrade_required";
-    /** Omitted only when Marketplace cannot provide a trusted exact minimum. */
-    minAppVersion?: string;
-    message: string;
-  };
-  mcpAuth?: {
-    mode: "none" | "api-key" | "sso" | "oauth";
-    transport?: "stdio" | "http";
-  };
-  networkAccess?: {
-    allowedDomains: string[];
-    reasoning?: string;
-    allowPrivateNetworks?: boolean;
-  };
-};
-
 export type PluginUiExtension = PluginUiExtensionView;
 export type PluginManifestUiExtensionSummary = PluginUiExtensionView["extension"];
 
@@ -193,9 +152,6 @@ export type PluginCardSummary = {
   capabilities: string[];
   tools: string[];
   toolDescriptions?: Record<string, string>;
-  isManaged?: boolean;
-  /** Install policy from the plugin manifest: "admin" (IT-managed only) or "user" (anyone). */
-  installPolicy?: "admin" | "user";
   loadStatus?: "loaded" | "preparing" | "failed" | "disabled";
   /** Whether the plugin's tools are currently exposed to the model. */
   active?: boolean;
@@ -214,7 +170,6 @@ export type PluginCardSummary = {
   /** Manifest-declared sidebar UI metadata, even before the plugin is loaded. */
   uiExtensions?: PluginManifestUiExtensionSummary[];
   version?: string;
-  publisher?: string;
   /** Declarative settings schema, when the manifest declares one. */
   configSchema?: PluginConfigSchemaSummary;
   /** Optional declarative auth contract for the host UI surface. */
@@ -385,32 +340,8 @@ type LongTermMemoryConsolidationResult =
   | { ok: false; error: string };
 
 export type PluginMarketplaceActionResult =
-  | {
-      ok: true;
-      pluginId: string;
-      installed?: true;
-      uninstalled?: true;
-      rolledBackTo?: string;
-      version?: string;
-      /**
-       * The install replaced nothing — the marketplace carries the same
-       * version, receipt, and artifact already on disk. For a repair attempt
-       * this is the difference between "reinstalled" and "there was nothing to
-       * reinstall but the broken bundle".
-       */
-      unchanged?: true;
-    }
+  | { ok: true; pluginId: string; uninstalled: true }
   | { ok: false; error: string; message?: string };
-
-export type PluginMarketplaceInstallOptions = {
-  networkAccessAcknowledgement?: NetworkAccessAcknowledgement;
-};
-
-export type PluginMarketplaceUninstallOptions = {
-  doctorCleanup?: {
-    installFailureKind: PluginInstallFailureKind;
-  };
-};
 
 /** ask_user_question — one FIFO request main pushes to the composer dock. */
 export type AskUserQuestionRequest = {
@@ -529,6 +460,12 @@ export type AveApi = {
   };
   tailnetSharing: TailnetSharingOwnerApi;
   tailnetObserver: TailnetObserverConfigApi;
+  /** Git marketplace runtime: status, managed install, install progress. */
+  gitRuntime: GitRuntimeApi;
+  /** Git marketplace: sources, catalog, install plans and execution (design §13). */
+  gitMarketplace: GitMarketplaceApi;
+  /** Installed content packages: themes, languages and fonts, and installed language catalogs. */
+  installedContent: InstalledContentApi;
   telegramConnection: TelegramConnectionOwnerApi;
   awayAuthority: AwayAuthorityOwnerApi;
   /**
@@ -604,9 +541,6 @@ export type AveApi = {
   setWebApiKey: (provider: string, k: string) => Promise<{ ok: true }>;
   hasWebApiKey: (provider: string) => Promise<boolean>;
   deleteWebApiKey: (provider: string) => Promise<{ ok: true }>;
-  setMarketplaceApiKey: (k: string) => Promise<{ ok: true }>;
-  hasMarketplaceApiKey: () => Promise<boolean>;
-  deleteMarketplaceApiKey: () => Promise<{ ok: true }>;
   /**
    * Interactive PTY terminal (#1444, workspace rail). `spawn` is idempotent per
    * tab (a remount replays the scrollback rather than starting a fresh shell);
@@ -731,22 +665,6 @@ export type AveApi = {
     protocol?: string;
     message?: string;
   }>;
-  /** MCP catalog (filtered to plugin_type === "mcp"). */
-  listMcpCatalog: () => Promise<Array<{
-    id: string;
-    name: string;
-    description: string;
-    version?: string;
-    publisher?: string;
-    pluginType?: MarketplacePackageType;
-    installed: boolean;
-    enabled: boolean;
-    isManaged?: boolean;
-  }>>;
-  installMcpFromMarketplace: (slug: string) => Promise<
-    | { ok: true; slug: string; installDir: string; connected: boolean; warning?: string; needsCredential: boolean; authMode: "none" | "api-key" | "sso" | "oauth" }
-    | { ok: false; error: string; message: string }
-  >;
   /** Claude Desktop config import. */
   previewClaudeDesktopMcpImport: (raw: string) => Promise<{
     entries: Array<{
@@ -960,26 +878,9 @@ export type AveApi = {
     { ok: true } | { ok: false; error: string }
   >;
   homeDocsDiscardMerged: () => Promise<{ ok: true }>;
-  listMarketplacePlugins: () => Promise<MarketplaceItem[]>;
   memoryRefreshLongTerm: () => Promise<LongTermMemoryConsolidationResult>;
   listAgentProfiles: () => Promise<{ agents: AssistantAgentSummary[] }>;
   listSkills: () => Promise<{ skills: AssistantSkillSummary[] }>;
-  installAgentFromMarketplace: (slug: string) => Promise<
-    | { ok: true; slug: string; agentId: string; version: string }
-    | { ok: false; error: string; message: string }
-  >;
-  uninstallAgentPackage: (slug: string) => Promise<
-    | { ok: true; slug: string; agentId: string }
-    | { ok: false; error: string; message: string }
-  >;
-  installSkillFromMarketplace: (slug: string) => Promise<
-    | { ok: true; slug: string; skillId: string; version: string }
-    | { ok: false; error: string; message: string }
-  >;
-  uninstallSkillPackage: (slug: string) => Promise<
-    | { ok: true; slug: string; skillId: string }
-    | { ok: false; error: string; message: string }
-  >;
   listPluginUiExtensions: () => Promise<PluginUiExtension[]>;
   readPluginUiModule: (pluginId: string, viewId: string) => Promise<string>;
   callPluginMethod: (
@@ -1249,13 +1150,8 @@ export type AveApi = {
   onWorkBoardRunFailed: (
     handler: (payload: { itemId: number; reason: string; at: string }) => void,
   ) => () => void;
-  onMarketplaceUpdatesAvailable: (h: (updates: Array<{
-    pluginId: string;
-    pluginName?: string;
-    installedVersion: string;
-    latestVersion: string;
-    networkAccess?: MarketplaceItem["networkAccess"];
-  }>) => void) => () => void;
+  /** Installed packages whose bound source offers a newer version (design §7.3). */
+  onMarketplaceUpdatesAvailable: (h: (updates: PackageUpdateView[]) => void) => () => void;
   /**
    * Marketplace announcement stream — the host pushes the currently-active,
    * not-yet-dismissed announcements whenever the announcement poller runs.
@@ -1298,9 +1194,7 @@ export type AveApi = {
   onPluginEnabledChanged?: (h: (payload: { pluginId: string; enabled: boolean }) => void) => () => void;
   /** Fires after a loaded plugin runtime is restarted/reloaded without a full app restart. */
   onPluginRuntimeUpdated?: (h: (payload: { pluginId: string }) => void) => () => void;
-  onAgentInstallResult: (h: (payload: AgentInstallResultPayload) => void) => () => void;
   onAgentUninstallResult: (h: (payload: AgentInstallResultPayload) => void) => () => void;
-  onSkillInstallResult: (h: (payload: SkillInstallResultPayload) => void) => () => void;
   onSkillUninstallResult: (h: (payload: SkillInstallResultPayload) => void) => () => void;
   /**
    * Dev-only: open a folder picker and install a local plugin directory.
@@ -1312,24 +1206,9 @@ export type AveApi = {
    *     toast/alert; collapsing the error into `null` would hide failures.
    */
   installLocalPlugin: () => Promise<{ pluginId: string; installed: true } | null>;
-  onPluginInstallProgress: (h: (payload:
-    | { slug: string; phase: "installing" | "restarting" | "verifying" | "registering" | "preparing" }
-    | { slug: string; phase: "downloading"; bytesDownloaded: number; bytesTotal: number | null }
-  ) => void) => () => void;
-  onAgentInstallProgress: (h: (payload:
-    | { slug: string; phase: "installing" | "restarting" | "verifying" | "registering" }
-    | { slug: string; phase: "downloading"; bytesDownloaded: number; bytesTotal: number | null }
-  ) => void) => () => void;
-  onSkillInstallProgress: (h: (payload:
-    | { slug: string; phase: "installing" | "restarting" | "verifying" | "registering" }
-    | { slug: string; phase: "downloading"; bytesDownloaded: number; bytesTotal: number | null }
-  ) => void) => () => void;
   getRuntimeCounts: () => Promise<{ tools: number; plugins: number; mcps: number }>;
   getRuntimeEnv: () => Promise<{ platform: string; hostname: string; user: string }>;
-  pingMarketplace: () => Promise<{ configured: boolean; online: boolean }>;
   pingAiProvider: () => Promise<AiProviderPingIpcResult>;
-
-
 
   getAppInfo: () => Promise<{
     version: string;
@@ -1757,8 +1636,6 @@ export type AvePluginConfigApi = {
     | { ok: false; error: string; message?: string }
   >;
 
-
-
   listSecretKeys: (pluginId: string) => Promise<
     | { ok: true; keys: string[] }
     | { ok: false; error: string; message?: string }
@@ -1769,21 +1646,35 @@ export type AvePluginsApi = {
   cards: () => Promise<PluginCardSummary[]>;
 };
 
+/** One installed plugin view as the composer surfaces (slash picker, input bar) list it. */
+export interface PluginEntry {
+  viewKey: string;
+  /** Plugin id owning the view — drives auth-state lookup. @optional */
+  pluginId?: string;
+  /** Runtime card status for surfacing host-managed dependency preparation. */
+  loadStatus?: PluginCardSummary["loadStatus"];
+  /** Current dependency/runtime preparation step while loadStatus is "preparing". */
+  preparationStatus?: PluginCardSummary["preparationStatus"];
+  label: string;
+  /** Lucide icon name from the plugin manifest (PascalCase, e.g. "Mic"). */
+  icon?: string;
+  /**
+   * Short text (1-4 chars) rendered in place of the Lucide icon — e.g.
+   * `"ORION"`. Takes precedence over `icon` when both are set.
+   */
+  iconText?: string;
+  /**
+   * `true` when the owning plugin declares `manifest.auth` and its current
+   * statusTool result is `kind: "unauthed"`. (architecture.md §9.4a)
+   */
+  unauthed?: boolean;
+  /** True when this cell represents a failed plugin that should route to Doctor. */
+  doctorRequired?: boolean;
+}
+
+/** Plugin removal only: packages install through the git marketplace (`gitMarketplace`, design §13). */
 export type AveHostMarketplaceApi = {
-  installMarketplacePlugin: (
-    id: string,
-    expectedVersion?: string,
-    options?: PluginMarketplaceInstallOptions,
-  ) => Promise<PluginMarketplaceActionResult>;
-  uninstallMarketplacePlugin: (
-    id: string,
-    options?: PluginMarketplaceUninstallOptions,
-  ) => Promise<PluginMarketplaceActionResult>;
-  rollbackMarketplacePlugin?: (id: string) => Promise<PluginMarketplaceActionResult>;
-  installMarketplaceAgent?: (slug: string) => Promise<PluginMarketplaceActionResult>;
-  uninstallMarketplaceAgent?: (slug: string) => Promise<PluginMarketplaceActionResult>;
-  installMarketplaceSkill?: (slug: string) => Promise<PluginMarketplaceActionResult>;
-  uninstallMarketplaceSkill?: (slug: string) => Promise<PluginMarketplaceActionResult>;
+  uninstallMarketplacePlugin: (id: string) => Promise<PluginMarketplaceActionResult>;
 };
 
 export type AveHostApi = {

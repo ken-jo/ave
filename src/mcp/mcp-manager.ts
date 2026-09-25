@@ -13,6 +13,7 @@ import type {
   McpServerState,
   McpUiPayload,
   McpUiResourceRead,
+  ValidationResult,
 } from "./types.js";
 import { McpGovernance } from "./mcp-governance.js";
 import { McpClient, scrubSecrets } from "./mcp-client.js";
@@ -724,6 +725,11 @@ export class McpManager {
    * 설정 파일에 서버 추가 + 연결 시도.
    * 이미 동일 id가 있으면 에러. write-lock으로 동시 추가 시 TOCTOU 방지.
    */
+  /** What `addConfig` would decide about `config` under the governance policy, without adding it. */
+  validateConfig(config: McpServerConfig): ValidationResult {
+    return this.governance.validateServer(config);
+  }
+
   async addConfig(config: McpServerConfig): Promise<{ connected: boolean; warning?: string }> {
     // Runtime payload validation (IPC cast is type-only, disappears at runtime)
     if (!config?.id || typeof config.id !== "string") {

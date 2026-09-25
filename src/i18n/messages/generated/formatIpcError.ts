@@ -124,12 +124,9 @@ export const en = {
   "formatIpcError.entryUrlOutsideInstallRoot": "The entry URL is outside the install path.",
   "formatIpcError.installFailed": "Plugin installation failed.",
   "formatIpcError.uninstallFailed": "Plugin removal failed.",
-  "formatIpcError.marketplaceDisabled": "The marketplace feature is disabled.",
   "formatIpcError.packageNotInstalled": "This package is not installed.",
   "formatIpcError.adminPluginUninstallDenied": "An administrator installed this plugin, so it cannot be removed here. Contact your administrator.",
   "formatIpcError.incompatibleAppVersion": "This plugin requires a newer version of Ave. Please update the app.",
-  "formatIpcError.pluginRevoked": "This plugin version has been blocked by the marketplace for security reasons.",
-  "formatIpcError.pluginNotAdmitted": "This plugin version is not authorized for installation. The marketplace admission list could not be verified, or no longer offers this version.",
   "formatIpcError.unauthorizedFrame": "Request from an untrusted frame. Please refresh the window or restart the app.",
   "formatIpcError.pathNotAuthorized": "The path is not allowed.",
   "formatIpcError.notImage": "The file is not an image.",
@@ -200,6 +197,11 @@ export const en = {
   "formatIpcError.allowSelectionFailed": "That sentence couldn't be resolved. Pick one of the buttons on the approval card.",
   "formatIpcError.unknownError": "Unknown error",
   "formatIpcError.errorSuffix": " has occurred.",
+
+  // Installed content packages (themes, languages, fonts)
+  "formatIpcError.installedContentUnavailable": "Installed themes, languages and fonts could not be loaded.",
+  "formatIpcError.languageNotInstalled": "That language is not installed.",
+  "formatIpcError.providerPresetRefreshFailed": "The provider change was saved but could not be applied yet. Restart the app to apply it.",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "formatIpcError.invalidPath": "경로가 올바르지 않습니다.",
@@ -326,12 +328,9 @@ export const ko: Record<keyof typeof en, string> = {
   "formatIpcError.entryUrlOutsideInstallRoot": "entry URL이 설치 경로를 벗어났습니다.",
   "formatIpcError.installFailed": "플러그인 설치에 실패했습니다.",
   "formatIpcError.uninstallFailed": "플러그인 제거에 실패했습니다.",
-  "formatIpcError.marketplaceDisabled": "마켓플레이스 기능이 비활성화되었습니다.",
   "formatIpcError.packageNotInstalled": "이 패키지는 설치되어 있지 않습니다.",
   "formatIpcError.adminPluginUninstallDenied": "관리자가 배포한 플러그인이라 앱에서 제거할 수 없습니다. 관리자에게 문의하세요.",
   "formatIpcError.incompatibleAppVersion": "이 플러그인은 더 높은 버전의 Ave가 필요합니다. 앱을 업데이트하세요.",
-  "formatIpcError.pluginRevoked": "마켓플레이스가 보안상의 이유로 이 플러그인 버전을 차단했습니다.",
-  "formatIpcError.pluginNotAdmitted": "이 플러그인 버전은 설치가 승인되지 않았습니다. 마켓플레이스 승인 목록을 확인할 수 없거나, 해당 버전이 더 이상 제공되지 않습니다.",
   "formatIpcError.unauthorizedFrame": "인증되지 않은 프레임에서의 요청입니다. 창을 새로고침하거나 앱을 다시 시작해 주세요.",
   "formatIpcError.pathNotAuthorized": "허용되지 않은 경로입니다.",
   "formatIpcError.notImage": "이미지 파일이 아닙니다.",
@@ -402,4 +401,9 @@ export const ko: Record<keyof typeof en, string> = {
   "formatIpcError.allowSelectionFailed": "그 문장을 해석하지 못했습니다. 승인 카드의 버튼 중 하나를 눌러 주세요.",
   "formatIpcError.unknownError": "알 수 없는 오류",
   "formatIpcError.errorSuffix": "가 발생했습니다.",
+
+  // 설치한 콘텐츠 패키지(테마, 언어, 글꼴)
+  "formatIpcError.installedContentUnavailable": "설치한 테마, 언어, 글꼴을 불러오지 못했습니다.",
+  "formatIpcError.languageNotInstalled": "설치되지 않은 언어입니다.",
+  "formatIpcError.providerPresetRefreshFailed": "프로바이더 변경은 저장했지만 아직 적용하지 못했습니다. 앱을 다시 시작하면 적용됩니다.",
 };

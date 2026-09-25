@@ -28,7 +28,6 @@ import { parseSettingsPath } from "../../shared/settings-tabs.js";
 import type {
   PluginManifest,
   PluginToolOperationPolicy,
-  InstallPolicy,
   Tool,
 } from "../types.js";
 import { toolVisibility } from "./tool-visibility.js";
@@ -47,7 +46,8 @@ import { resolvePluginContributionDeclarations } from "../plugin-contributions.j
 import { errorMessage } from "../../shared/error-message.js";
 import { resolveAddFormats, resolveAjv } from "../config-schema.js";
 import { TOOL_NAME_PATTERN, isValidToolName } from "../../tools/types.js";
-
+import { canonicalJSON } from "../secret-access/canonical-json.js";
+import { sha256Hex } from "../../lib/hex-digest-equal.js";
 
 // Re-exported here so manifest/plugin-loading consumers can import the
 // minAppVersion gate error + IPC code alongside the other manifest contracts.
@@ -58,13 +58,12 @@ import { TOOL_NAME_PATTERN, isValidToolName } from "../../tools/types.js";
  * the per-plugin `publish.yml` tag-validation step. Updating any of those copies
  * MUST update the others (cross-repo, see `host-plugin-contract-sync` rule).
  */
-export const STABLE_SEMVER_RE =
+const STABLE_SEMVER_RE =
   /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 
 // #893 — the allow-listed host-secret key shapes a manifest's
 // `hostSecrets.read[]` may name have ONE definition,
-// `isAllowedHostSecretKey` (src/shared/marketplace-package-assets.ts), shared
-// with the signed-whitelist grant validator. It mirrors the JSON-schema
+// `isAllowedHostSecretKey` (src/shared/marketplace-package-assets.ts). It mirrors the JSON-schema
 // constraint as defence-in-depth so a plugin manifest cannot install a wider
 // allowlist than the schema permits — a claim that only holds while there is a
 // single definition, so do NOT re-derive the shape here.
@@ -83,14 +82,29 @@ export function formatUnknownErrorMessage(err: unknown): string {
   return String(err);
 }
 
+/**
+ * Ave extension fields the manifest no longer has (design §5.3). Every
+ * official plugin installed before the git marketplace carries them, so an
+ * installed manifest that still has one loads: the field is dropped before
+ * validation and one warning per plugin is logged, until the next update
+ * replaces the manifest. A git install refuses them (manifest-rules.ts).
+ */
+const RETIRED_EXTENSION_FIELDS = ["installPolicy", "publisher"] as const;
+const retiredFieldsWarned = new Set<string>();
 
-export function normalizeInstallPolicy(
-  source: Partial<Pick<PluginManifest, "installPolicy">> | null | undefined,
-): InstallPolicy {
-  if (source?.installPolicy === "admin") {
-    return "admin";
+function dropRetiredExtensionFields(doc: unknown, parsed: PluginManifest, pid: string, path: string): void {
+  const extensions = typeof doc === "object" && doc !== null ? (doc as { extensions?: unknown }).extensions : undefined;
+  const ave = typeof extensions === "object" && extensions !== null ? (extensions as Record<string, unknown>)[AVE_EXTENSION_NAMESPACE] : undefined;
+  if (typeof ave !== "object" || ave === null) return;
+  const found = RETIRED_EXTENSION_FIELDS.filter((field) => Object.prototype.hasOwnProperty.call(ave, field));
+  if (found.length === 0) return;
+  for (const field of found) {
+    delete (ave as Record<string, unknown>)[field];
+    delete (parsed as unknown as Record<string, unknown>)[field];
   }
-  return "user";
+  if (retiredFieldsWarned.has(pid)) return;
+  retiredFieldsWarned.add(pid);
+  log.warn(`[manifest] ${path}: ignoring retired field(s) ${found.join(", ")}; the plugin's next update removes them`);
 }
 
 export function getDeclaredEmittedEvents(manifest: Pick<PluginManifest, "emittedEvents">,
@@ -242,6 +256,24 @@ function onDiskFieldPath(fieldPath: string): string {
   return `extensions["${AVE_EXTENSION_NAMESPACE}"].${fieldPath}`;
 }
 
+const documentSha256ByManifest = new WeakMap<PluginManifest, string>();
+
+/**
+ * Tie a manifest to the `plugin.json` document it was read from. The
+ * registry's `manifestSha256` pins that document (every installer hashes the
+ * file as authored), not the flat projection the runtime works with, so a
+ * gate that compares a running plugin against its pin needs the document's
+ * digest, which the projection cannot reproduce.
+ */
+export function recordManifestDocument(manifest: PluginManifest, document: unknown): void {
+  documentSha256ByManifest.set(manifest, sha256Hex(canonicalJSON(document)));
+}
+
+/** The canonical sha256 of the document `manifest` was read from; null when it was not read from one. */
+export function manifestDocumentSha256(manifest: PluginManifest): string | null {
+  return documentSha256ByManifest.get(manifest) ?? null;
+}
+
 /**
  * Parse and fully validate a plugin.json manifest file.
  *
@@ -272,8 +304,12 @@ export async function parsePluginJson(
   // agreeing with the CI job that validates the same file with the same schema).
   let doc: unknown;
   let parsed: PluginManifest;
+  // Taken before anything below edits `doc` (retired fields are dropped from
+  // it in place): the registry pins the file as authored.
+  let authoredSha256: string;
   try {
     doc = JSON.parse(raw) as unknown;
+    authoredSha256 = sha256Hex(canonicalJSON(doc));
     parsed = flattenAgentPluginsManifest(doc);
   } catch (err) {
     throw new Error(
@@ -405,6 +441,8 @@ export async function parsePluginJson(
     }
   }
 
+  dropRetiredExtensionFields(doc, parsed, pid, path);
+
   if (!validator(doc)) {
     // Enrich the error so users can act on it. Pre-fix AJV's default text
     // for additional-properties was "/ must NOT have additional properties"
@@ -453,7 +491,6 @@ export async function parsePluginJson(
       `[manifest:${pid}] schema validation failed (${path}): ${errs}${hint}`,
     );
   }
-  parsed.installPolicy = normalizeInstallPolicy(parsed);
 
   if (typeof parsed.id !== "string" || parsed.id.length === 0) {
     fail("id", "must be a non-empty string", `"id": "meeting-recorder"`);
@@ -526,13 +563,6 @@ export async function parsePluginJson(
       `"description": "One-line summary of what this plugin does."`,
     );
   }
-  if (typeof parsed.publisher !== "string" || parsed.publisher.length === 0) {
-    log.warn(
-      `plugin '${pid}' at '${path}' is missing publisher field (SHOULD). ` +
-        `Add: "publisher": "Your Org"`,
-    );
-  }
-
   // #885 v6 — materialize each tool's `_meta.ui.visibility` (and the `name`
   // default) into the pure `PluginManifest` every host check below reads (the
   // standard `["model","app"]` default is filled in here, an explicit `[]` is
@@ -690,18 +720,6 @@ export async function parsePluginJson(
     }
   }
 
-  // Surface any remaining testMode flag in a protected plugin manifest.
-  if (
-    normalizeInstallPolicy(parsed) === "admin" &&
-    parsed.config &&
-    typeof parsed.config === "object" &&
-    (parsed.config as Record<string, unknown>).testMode === true
-  ) {
-    log.warn(
-      `protected plugin '${pid}' has config.testMode=true (${path}). ` +
-        `testMode is a development flag and must not ship in production installs — please remove it from the installed manifest.`,
-    );
-  }
 
   // `startupTimeoutMs` 는 *plugin instance.start() lifecycle hook 의 timeout* 만
   // 통제한다 — manifest 의 tool name list 자동 invoke 메커니즘 (runManifestStartupTools,
@@ -955,5 +973,6 @@ export async function parsePluginJson(
     }
   }
 
+  documentSha256ByManifest.set(manifest, authoredSha256);
   return manifest;
 }

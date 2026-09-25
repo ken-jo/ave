@@ -19,7 +19,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { Command as CommandIcon } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
-import type { PluginEntry } from "./PluginGridButton.js";
+import type { PluginEntry } from "../types.js";
 import type { RolePreset } from "../../../data/role-presets.js";
 import { useTranslation } from "../../../i18n/react.js";
 

@@ -14,7 +14,6 @@ Set the following environment variables before running the release script:
 | `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` | macOS notarization                          | macOS builds   |
 | `WIN_CSC_LINK` / `WIN_CSC_KEY_PASSWORD`                      | Windows code-signing cert                   | Windows builds |
 | `GH_TOKEN`                                                   | GitHub Releases upload token (`repo` scope) | Publish        |
-| `AVE_PUBLISHER_PRIVATE_KEY_PATH`                            | Plugin manifest signing key (Ed25519 PEM)   | Plugin signing |
 | `AVE_SENTRY_DSN`                                            | Forward crashes to Sentry (optional)        | Optional       |
 | `AVE_RELEASE_VERSION`                                       | Explicit version (otherwise patch-bump)     | Optional       |
 

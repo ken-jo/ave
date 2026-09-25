@@ -11,6 +11,7 @@ export interface WorkspaceStats {
   agentCount: number;
   skillCount: number;
   roleCount: number;
+  /** `configured`: a source is enabled; `online`: one of them is synced (design §7.3). */
   marketplace: {
     configured: boolean;
     online: boolean;
@@ -49,14 +50,14 @@ export function useWorkspaceStats(api: AveApi): {
       agentsRes,
       skillsRes,
       promptsRes,
-      pingRes,
+      sourcesRes,
     ] = await Promise.allSettled([
       api.listPluginUiExtensions(),
       api.listPluginCards(),
       api.listAgentProfiles(),
       api.listSkills(),
       api.listPersonaPromptSummaries(),
-      api.pingMarketplace(),
+      api.gitMarketplace.listSources(),
     ]);
     if (!aliveRef.current) return;
 
@@ -82,10 +83,11 @@ export function useWorkspaceStats(api: AveApi): {
     if (promptsRes.status === "fulfilled") {
       next.roleCount = promptsRes.value.prompts.length;
     }
-    if (pingRes.status === "fulfilled") {
+    if (sourcesRes.status === "fulfilled" && sourcesRes.value.ok) {
+      const enabled = sourcesRes.value.value.filter((source) => source.enabled);
       next.marketplace = {
-        configured: pingRes.value.configured,
-        online: pingRes.value.online,
+        configured: enabled.length > 0,
+        online: enabled.some((source) => source.status.state === "up-to-date"),
       };
     }
     next.lastSyncedAt = new Date().toISOString();

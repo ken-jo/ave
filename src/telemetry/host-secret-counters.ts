@@ -17,24 +17,6 @@
 export type HostSecretCounterEvent =
   | "hostSecret_read"
   | "hostSecret_denied"
-  // Separate counter for admin-install
-  // Tier-3 bypass events so anomaly detection can spot an unexpected
-  // burst of admin-bypass reads (e.g. a runaway plugin, or one whose
-  // installSource was upgraded without operator awareness). Bucketed
-  // by the same `(pluginId, keyPrefix)` tuple as the other host-secret
-  // counters; `hostSecret_read` is still incremented on top so totals
-  // remain comparable.
-  | "hostSecret_admin_bypass"
-  // #893 Stage 2 — whitelist registry observability. Bucketed under the same
-  // counter map so operators see allow / deny / whitelist-fetch state in a
-  // single inspection. `pluginId` = "boot" for registry-wide events; the
-  // `keyPrefix` slot holds the reason/source bucket (e.g. "network",
-  // "primary", "monotonicity").
-  | "whitelist_fetch_ok"
-  | "whitelist_fetch_failed"
-  | "whitelist_cache_hit"
-  | "whitelist_cache_stale"
-  | "whitelist_cache_miss_offline"
   // Tier A — plugin egress observability for `hostApi.hostFetch`. Bucketed by
   // `(pluginId, reason)` so operators can spot an unexpected egress burst or a
   // plugin repeatedly tripping deny-by-default. `hostFetch_egress` uses the
@@ -46,21 +28,6 @@ export type HostSecretCounterEvent =
   | "hostFetch_denied";
 
 /**
- * #893 — `hostSecret_denied` denial taxonomy. Recorded into the audit log
- * (free-form text) alongside the counter increment so operators can pivot
- * on specific reasons. The bucket key in `counters` stays one of
- * `HostSecretCounterEvent` to keep cardinality bounded — the reason is a
- * free-form audit-only tag, not a Map index.
- */
-export type HostSecretDeniedReason =
-  | "not-allowlisted"
-  | "vendor-mismatch"
-  | "not-whitelisted"
-  | "manifest-sha-mismatch"
-  | "whitelist-unreachable"
-  | "whitelist-stale-exceeded";
-
-/**
  * Known, bounded set of key prefixes the host counter
  * map will accept. An attacker-controlled plugin could otherwise call
  * `hostApi.getSecret("<random>.x")` in a loop and balloon the counter map
@@ -69,30 +36,16 @@ export type HostSecretDeniedReason =
  *
  * Keep this list narrow. It is the bounded bucket allowlist for ALL counter
  * dimensions, not just secret namespaces — secret-key prefixes (`llm`,
- * `plugin`, …), whitelist-registry reason buckets, and Tier A plugin-egress
- * reason buckets (`egress`, `capability`, …) all live here so the counter map
- * stays O(1). Adding a bucket here does NOT grant any access — the gates in
- * `plugin-runtime.ts` remain the authority — it only changes how the counter
- * buckets the call. Anything not listed folds to `"other"`.
+ * `plugin`, …) and Tier A plugin-egress reason buckets (`egress`,
+ * `capability`, …) all live here so the counter map stays O(1). Adding a
+ * bucket here does NOT grant any access — the gates in `plugin-runtime.ts`
+ * remain the authority — it only changes how the counter buckets the call. Anything not listed folds to `"other"`.
  */
 const KNOWN_PREFIXES = new Set<string>([
   "llm",
   "plugin",
   "marketplace",
   "web",
-  // #893 Stage 2 — whitelist registry buckets ("primary" / "fallback" /
-  // "network" / "monotonicity" / "no-cache" / etc.). Keeping the bucket
-  // names in this allowlist preserves the O(1) cardinality guard while
-  // making the registry's per-reason counters readable in inspections.
-  "primary",
-  "fallback",
-  "network",
-  "signature_invalid",
-  "monotonicity",
-  "no-cache",
-  "corrupt",
-  "cache",
-  "default",
   // Tier A plugin-egress buckets (hostFetch_egress / hostFetch_denied).
   "egress",
   "capability",

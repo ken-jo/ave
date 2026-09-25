@@ -3,16 +3,16 @@
  * Production release builder.
  *
  * Steps:
- *   1. Pre-flight security checks (dev-key block, signing-env validation)
+ *   1. Pre-flight security check (signing-env validation)
  *   2. Read + patch-bump version in package.json
  *   3. node scripts/build-installers.mjs --current --publish=never
  *
- * Usage:  node scripts/release.mjs [--allow-dev-key] [--skip-code-sign]
+ * Usage:  node scripts/release.mjs [--skip-code-sign]
  *
  * Credentials (signing certs, GH_TOKEN, etc.) must come from the environment
  * — never checked in. See docs/references/production-release-checklist.md.
  */
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { runCommand } from "./hooks/spawn-command.mjs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,7 +22,6 @@ const root = resolve(__dirname, "..");
 const pkgPath = resolve(root, "package.json");
 
 const argv = process.argv.slice(2);
-const ALLOW_DEV_KEY = argv.includes("--allow-dev-key");
 const SKIP_CODE_SIGN = argv.includes("--skip-code-sign");
 const IS_CI = process.env.CI === "true";
 
@@ -36,39 +35,6 @@ function bumpPatch(version) {
     throw new Error(`Cannot parse version: ${version}`);
   }
   return `${maj}.${min}.${patch + 1}`;
-}
-
-/**
- * Refuse to ship if the embedded publisher keys still include the
- * development key. Under CI without --allow-dev-key this is a hard failure.
- * Locally it prints a loud warning so the developer notices before upload.
- */
-async function checkDevPublisherKey() {
-  const pkKeysSrc = resolve(root, "src/plugins/publisher-keys.ts");
-  if (!existsSync(pkKeysSrc)) {
-    console.warn("[release] publisher-keys.ts not found — skipping dev-key check");
-    return;
-  }
-  // Always parse the TypeScript source directly. Previously we tried
-  // `dist/src/plugins/publisher-keys.js` first, but that can be stale —
-  // a developer who edits the TS file without rebuilding would pass the
-  // preflight even with the dev key reintroduced. The TS source is the
-  // single source of truth for what the next `bun run build` will emit.
-  const raw = readFileSync(pkKeysSrc, "utf-8");
-  // Cheap heuristic: the dev-key constant contains "DEVELOPMENT" in its
-  // name; if BUNDLED_PUBLISHER_PUBLIC_KEYS array literally references it we
-  // treat that as "dev key embedded".
-  const arrayRefsDev = /BUNDLED_PUBLISHER_PUBLIC_KEYS[^=]*=\s*\[[^\]]*DEVELOPMENT_PUBLISHER_PUBLIC_KEY_PEM[^\]]*\]/s.test(raw);
-  if (!arrayRefsDev) return;
-  const msg =
-    "[release] SECURITY: BUNDLED_PUBLISHER_PUBLIC_KEYS still contains DEVELOPMENT_PUBLISHER_PUBLIC_KEY_PEM.\n" +
-    "         Replace it with the production publisher key before shipping.\n" +
-    "         Re-run with --allow-dev-key only for internal dev snapshots.";
-  if (IS_CI && !ALLOW_DEV_KEY) {
-    console.error(msg);
-    process.exit(1);
-  }
-  console.warn(msg);
 }
 
 /**
@@ -132,8 +98,7 @@ function checkSigningEnv(pkg) {
 async function main() {
   const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
 
-  // Pre-flight security gates (fail CI early before any build work).
-  await checkDevPublisherKey();
+  // Pre-flight security gate (fail CI early before any build work).
   checkSigningEnv(pkg);
 
   const oldVersion = pkg.version;

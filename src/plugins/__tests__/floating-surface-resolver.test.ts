@@ -45,7 +45,6 @@ function writePlugin(root: string, id: string, ui: UiEntry[]): string {
       name: id,
       version: "1.0.0",
       description: "Test fixture.",
-      publisher: "Test fixture",
       entry: "index.mjs",
       tools: [pureTool(`${id}_noop`, ["model"])],
       ui,

@@ -27,7 +27,7 @@ import {
 import {
   DEFAULT_BUNDLE_ID,
   isBundleId,
-  isMarketplaceEligibleThemeBundleId,
+  isThemeId,
 } from "../shared/theme-bundles.js";
 import {
   FONT_SIZE_SCALE_VALUES,
@@ -37,8 +37,9 @@ import {
 } from "../shared/appearance-font.js";
 import {
   isMarketplaceEligibleLocale,
-  normalizeLocale,
+  normalizeLocaleSetting,
 } from "../i18n/index.js";
+import { isGitRuntimeMode } from "../shared/git-runtime-mode.js";
 import { normalizeAppMode } from "../shared/initial-app-mode.js";
 import { isProcessingDisplayLevel } from "../shared/processing-display-level.js";
 import { isSidebarTab } from "../shared/sidebar-tab.js";
@@ -258,6 +259,99 @@ export function withoutMirroredMarketplaceProviderPresetEndpoint(
     "openai-compatible",
   );
   return { ...llm, vendors };
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * Rewrite renamed built-in vendor ids in settings exactly as they were read
+ * from disk, before any normalization runs.
+ *
+ * Normalization drops every vendor id this build does not know, so an install
+ * still on an old id would otherwise lose its selected provider, its vendor
+ * block, its fallback entries, its price corrections, its cached model list and
+ * its installed-provider record in a single load. Where the file already holds
+ * the new id as well, the new id's value wins and the old one is dropped.
+ */
+export function withRenamedLlmVendorIds(
+  stored: Record<string, any>,
+  renames: Readonly<Record<string, LLMVendor>>,
+): Record<string, any> {
+  const renamedId = (id: unknown): unknown =>
+    typeof id === "string" && Object.hasOwn(renames, id) ? renames[id] : id;
+  // A row that would duplicate one already stored under the new id is dropped
+  // rather than renamed, so the new id's row wins.
+  const renameRows = (rows: unknown[], idField: string, modelField: string): unknown[] => {
+    const rowKey = (id: unknown, row: Record<string, unknown>) => `${String(id)}\u0000${String(row[modelField])}`;
+    const present = new Set(rows.filter(isPlainRecord).map((row) => rowKey(row[idField], row)));
+    return rows.flatMap((row) => {
+      if (!isPlainRecord(row)) return [row];
+      const to = renamedId(row[idField]);
+      if (to === row[idField]) return [row];
+      return present.has(rowKey(to, row)) ? [] : [{ ...row, [idField]: to }];
+    });
+  };
+  // Model-list cache entries are keyed by vendor + endpoint + credential scope.
+  const cacheKeyOf = (entry: Record<string, unknown>, vendor: string): string =>
+    llmModelListCacheKey(
+      vendor,
+      typeof entry.baseUrl === "string" ? entry.baseUrl : undefined,
+      typeof entry.credentialScope === "string" ? entry.credentialScope : undefined,
+    );
+  const next: Record<string, any> = { ...stored };
+
+  if (isPlainRecord(stored.llm)) {
+    const llm: Record<string, unknown> = { ...stored.llm };
+    if (llm.provider !== undefined) llm.provider = renamedId(llm.provider);
+    if (isPlainRecord(llm.vendors)) {
+      const vendors = { ...llm.vendors };
+      for (const [from, to] of Object.entries(renames)) {
+        if (!Object.hasOwn(vendors, from)) continue;
+        if (!Object.hasOwn(vendors, to)) vendors[to] = vendors[from];
+        delete vendors[from];
+      }
+      llm.vendors = vendors;
+    }
+    if (Array.isArray(llm.fallbackChain)) {
+      llm.fallbackChain = renameRows(llm.fallbackChain, "provider", "model");
+    }
+    if (Array.isArray(llm.pricingOverrides)) {
+      llm.pricingOverrides = renameRows(llm.pricingOverrides, "vendor", "model");
+    }
+    if (isPlainRecord(llm.modelListCache)) {
+      const cache: Record<string, unknown> = {};
+      const renamed: Array<[string, Record<string, unknown>]> = [];
+      for (const [key, entry] of Object.entries(llm.modelListCache)) {
+        const to = isPlainRecord(entry) ? renamedId(entry.vendor) : undefined;
+        if (isPlainRecord(entry) && typeof to === "string" && to !== entry.vendor) {
+          renamed.push([cacheKeyOf(entry, to), { ...entry, vendor: to }]);
+        } else {
+          cache[key] = entry;
+        }
+      }
+      const present = new Set(
+        Object.values(cache)
+          .filter(isPlainRecord)
+          .filter((entry) => typeof entry.vendor === "string")
+          .map((entry) => cacheKeyOf(entry, entry.vendor as string)),
+      );
+      for (const [key, entry] of renamed) {
+        if (!present.has(key)) cache[key] = entry;
+      }
+      llm.modelListCache = cache;
+    }
+    next.llm = llm;
+  }
+
+  if (isPlainRecord(stored.marketplace) && Array.isArray(stored.marketplace.installedProviderIds)) {
+    next.marketplace = {
+      ...stored.marketplace,
+      installedProviderIds: [...new Set(stored.marketplace.installedProviderIds.map(renamedId))],
+    };
+  }
+  return next;
 }
 
 /**
@@ -815,17 +909,10 @@ export function normalizeMarketplace(input: unknown): MarketplaceSettings {
   const merged: MarketplaceSettings = {
     ...DEFAULT_SETTINGS.marketplace,
     ...raw,
-    backend: "real-cloud",
   };
-  if (typeof raw.cloudBaseUrl === "string") {
-    const trimmed = raw.cloudBaseUrl.trim();
-    merged.cloudBaseUrl = trimmed || DEFAULT_SETTINGS.marketplace.cloudBaseUrl;
-  } else {
-    merged.cloudBaseUrl = DEFAULT_SETTINGS.marketplace.cloudBaseUrl;
-  }
-  merged.cloudAllowPrivateNetwork = typeof raw.cloudAllowPrivateNetwork === "boolean"
-    ? raw.cloudAllowPrivateNetwork
-    : DEFAULT_SETTINGS.marketplace.cloudAllowPrivateNetwork;
+  const gitMode = raw.git && typeof raw.git === "object" ? (raw.git as { mode?: unknown }).mode : undefined;
+  if (isGitRuntimeMode(gitMode)) merged.git = { mode: gitMode };
+  else delete merged.git;
   merged.installedProviderIds = uniqueValidList(
     raw.installedProviderIds,
     isMarketplaceEligibleLLMVendor,
@@ -833,9 +920,11 @@ export function normalizeMarketplace(input: unknown): MarketplaceSettings {
   merged.installedProviderPresets = uniqueValidProviderPresets(
     raw.installedProviderPresets,
   );
+  // Legacy: read only by the first-boot migration (design §16.3), whose theme
+  // packages carry these ids; a compiled id never needed one.
   merged.installedThemeBundleIds = uniqueValidList(
     raw.installedThemeBundleIds,
-    isMarketplaceEligibleThemeBundleId,
+    (id: unknown): id is string => isThemeId(id) && !isBundleId(id),
   );
   merged.installedMessagingConnections = uniqueValidMessagingConnections(
     raw.installedMessagingConnections,
@@ -933,19 +1022,20 @@ export function normalizeAppearance(input: unknown): AppearanceSettings {
 
   // v2 path — schemaVersion:2 present.
   if (obj.schemaVersion === 2) {
-    // Retired bundle IDs from earlier internal builds are not migrated:
-    // the open-source release has no install base that would carry them
-    // forward. Unknown bundleIds fall through to DEFAULT_BUNDLE_ID via
-    // `isBundleId` — the same predicate the patch path in settings-store uses,
-    // so the two write paths cannot accept different value sets.
-    const bundleId = isBundleId(obj.bundleId) ? obj.bundleId : DEFAULT_BUNDLE_ID;
+    // A compiled-in bundle id or an installed theme's package name (design
+    // §5.2): whether that theme is still installed is decided where it is
+    // applied, since the content ledger is read after settings. Anything else
+    // falls through to DEFAULT_BUNDLE_ID via `isThemeId` — the same predicate
+    // the patch path in settings-store uses, so the two write paths cannot
+    // accept different value sets.
+    const bundleId = isThemeId(obj.bundleId) ? obj.bundleId : DEFAULT_BUNDLE_ID;
     const followSystem = typeof obj.followSystem === "boolean" ? obj.followSystem : undefined;
     const result: AppearanceSettings = {
       schemaVersion: 2,
       bundleId,
       // Coerce any stored/legacy value to a supported locale; missing →
       // English default for the global build.
-      language: normalizeLocale(obj.language),
+      language: normalizeLocaleSetting(obj.language),
     };
     if (followSystem !== undefined) result.followSystem = followSystem;
     const font = normalizeAppearanceFont(obj.font);
@@ -963,7 +1053,7 @@ export function normalizeAppearance(input: unknown): AppearanceSettings {
       codeTheme: (typeof obj.codeTheme === "string" ? obj.codeTheme : "auto") as CodeThemePreference,
     };
     // Preserve any stored language across the v1→v2 migration; default English.
-    return { ...migrateAppearanceV1ToV2(legacy), language: normalizeLocale(obj.language) };
+    return { ...migrateAppearanceV1ToV2(legacy), language: normalizeLocaleSetting(obj.language) };
   }
 
   return { ...DEFAULT_SETTINGS.appearance };

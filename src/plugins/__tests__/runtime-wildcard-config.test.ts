@@ -111,7 +111,6 @@ describe("PluginRuntime wildcard configOverrides (#893)", () => {
         name: "Test",
         version: "1.0.0",
         description: "Test",
-        publisher: "Test",
         entry: "index.js",
         tools: [],
       },

@@ -36,3 +36,4 @@
 - `composer-redesign-message-queue.md`
 - `composer-redesign-mockup.html`
 - `openharness-selective-borrow-plan.md`
+- [`multi-source-git-marketplace.md`](./multi-source-git-marketplace.md) — 멀티 소스 git 마켓플레이스 실행 계획(0~6단계 완료, 7단계 남음). 영어 원문: [`../../blueprints/multi-source-git-marketplace.md`](../../blueprints/multi-source-git-marketplace.md)

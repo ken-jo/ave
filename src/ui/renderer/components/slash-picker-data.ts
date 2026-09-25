@@ -1,11 +1,9 @@
 
 
-
-
 import { Terminal, Zap, Puzzle, Server, Sparkles, MessageSquareText, type LucideIcon } from "lucide-react";
 import { t } from "../../../i18n/runtime.js";
 import type { QuickAction } from "./command-actions.js";
-import type { PluginEntry } from "./PluginGridButton.js";
+import type { PluginEntry } from "../types.js";
 import type { RolePreset } from "../../../data/role-presets.js";
 import type { NativeMenuRow } from "../hooks/use-native-context-menu.js";
 

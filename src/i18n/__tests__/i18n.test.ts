@@ -9,6 +9,7 @@ import {
   isMarketplaceEligibleLocale,
   normalizeLocale,
   recommendedMarketplaceLocaleForSystem,
+  registerInstalledLocales,
   visibleLocalesFor,
 } from "../locale.js";
 import {
@@ -18,6 +19,7 @@ import {
   loadAllLocaleMessages,
   loadLocaleMessages,
   messages,
+  setInstalledCatalogLoader,
 } from "../messages/index.js";
 import { interpolate, translate } from "../translate.js";
 import { getLocale, setLocale, t } from "../runtime.js";
@@ -106,6 +108,34 @@ describe("interpolate", () => {
 });
 
 describe("translate", () => {
+  it("lays an installed package for a compiled locale over that locale's catalog, keeping its model-facing keys", async () => {
+    const restore = __setLocaleLoaderForTest("ko", async () => ({ "common.cancel": "취소", be_intro: "당신은 Ave 입니다." }));
+    registerInstalledLocales([{ locale: "ko", nativeName: "한국어", englishName: "Korean" }]);
+    setInstalledCatalogLoader(async () => ({ "common.cancel": "그만두기" }));
+    try {
+      await loadLocaleMessages("ko");
+      expect(translate("ko", "common.cancel")).toBe("그만두기");
+      expect(translate("ko", "be_intro")).toBe("당신은 Ave 입니다.");
+    } finally {
+      registerInstalledLocales([]);
+      setInstalledCatalogLoader(null);
+      restore();
+    }
+  });
+
+  it("reads a new installed locale over English only", async () => {
+    registerInstalledLocales([{ locale: "fr", nativeName: "Français", englishName: "French" }]);
+    setInstalledCatalogLoader(async () => ({ "common.cancel": "Annuler" }));
+    try {
+      await loadLocaleMessages("fr");
+      expect(translate("fr", "common.cancel")).toBe("Annuler");
+      expect(translate("fr", "common.save")).toBe(translate("en", "common.save"));
+    } finally {
+      registerInstalledLocales([]);
+      setInstalledCatalogLoader(null);
+    }
+  });
+
   it("keeps marketplace language-pack locales lazy until explicitly loaded", () => {
     expect(isLocaleMessagesLoaded("en")).toBe(true);
     expect(isLocaleMessagesLoaded("ko")).toBe(false);

@@ -23,7 +23,6 @@ const VALID_MANIFEST = {
   entry: "dist/index.js",
   tools: [{ name: "snap_ping", description: "snap_ping tool", inputSchema: { type: "object", properties: {} }, _meta: { ui: { visibility: ["model", "app"] } } }],
   description: "Snapshot test plugin",
-  publisher: "Test",
 };
 
 async function makeTempDir() {

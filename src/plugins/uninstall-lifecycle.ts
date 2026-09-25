@@ -22,8 +22,6 @@ export interface PluginUninstallLifecycleDeps {
   pluginMarketplace: Pick<
     PluginMarketplaceService,
     "uninstall" | "getInstalledVersion"
-  > & Partial<
-    Pick<PluginMarketplaceService, "clearInstallFailureDiagnostic">
   >;
   pluginRuntime: Pick<
     PluginRuntime,
@@ -49,15 +47,7 @@ export interface PluginUninstallLifecycleDeps {
   log?: WarnLogger;
 }
 
-export interface PluginFailedInstallCleanupLifecycleDeps
-  extends Omit<PluginUninstallLifecycleDeps, "pluginMarketplace"> {
-  pluginMarketplace: Pick<
-    PluginMarketplaceService,
-    "clearInstallFailureDiagnostic" | "getInstalledVersion"
-  >;
-}
-
-export type PluginStateCleanupDeps = Omit<PluginUninstallLifecycleDeps, "pluginMarketplace">;
+type PluginStateCleanupDeps = Omit<PluginUninstallLifecycleDeps, "pluginMarketplace">;
 type RequiredPluginStateCleanupDeps = PluginStateCleanupDeps & {
   settingsService: Pick<
     SettingsService,
@@ -300,9 +290,6 @@ export async function recoverPendingPluginUninstallCleanups(
         },
       );
       if (outcome === "cancelled") continue;
-      deps.pluginMarketplace.clearInstallFailureDiagnostic?.(
-        record.installPluginId,
-      );
       deps.emitHostEvent?.("plugin.uninstalled", {
         pluginId: record.pluginId,
       });
@@ -316,63 +303,6 @@ export async function recoverPendingPluginUninstallCleanups(
   }
 
   return Object.freeze(unresolved);
-}
-
-/**
- * Removal of a plugin whose runtime generation was never started, wrapped
- * around the caller's own registry-removal commit.
- *
- * The enforced half of admin marketplace sync removes a delisted admin install
- * directly through `PluginMarketplaceService.uninstall`, which is only the
- * inner (registry + directories) half of a removal. Everything the Host owns —
- * config, secrets, the plugin's auth partitions, its cache directory, the
- * cleanup journal that makes all of that crash-safe, and the
- * `plugin.uninstalled` event — lives in this module and was skipped entirely.
- * That left the residual state of a removed plugin on disk, and a later
- * re-install silently inherited the previous install's secrets because
- * `ensurePluginStateReadyForInstall` found no journal record.
- *
- * The journal record is prepared BEFORE the commit, so a crash between the
- * registry write and the state cleanup is recovered by
- * `recoverPendingPluginUninstallCleanups` on the next boot rather than lost.
- * `assumeRuntimeQuiescent` is true because the only caller runs before the
- * sealed `startPlugins()`; if that ever stops holding, the cleanup throws with
- * the journal record committed instead of deleting state out from under a
- * running generation.
- */
-export async function removeQuiescentPluginResidualState(
-  input: {
-    pluginId: string;
-    installPluginId: string;
-    secretKeys: readonly string[];
-  },
-  commitRegistryRemoval: () => Promise<void>,
-  deps: PluginStateCleanupDeps,
-): Promise<void> {
-  const cleanupDeps = requirePluginStateCleanupDeps(deps);
-  const journal = cleanupJournal(cleanupDeps);
-  const record = journal.prepare({
-    pluginId: input.pluginId,
-    installPluginId: input.installPluginId,
-    secretKeys: [...input.secretKeys],
-    authPartitions: cleanupDeps.listPluginAuthPartitionsService(input.pluginId),
-    cleanupCache: true,
-  });
-  try {
-    await commitRegistryRemoval();
-  } catch (error) {
-    journal.cancel(input.pluginId);
-    throw error;
-  }
-  await finishCommittedPluginCleanup(record, cleanupDeps, journal, {
-    // The caller already holds every plugin install lock for the whole sync
-    // pass, so draining that queue from inside would wait on itself.
-    drainRuntimeOperations: false,
-    assumeRuntimeQuiescent: true,
-    cleanupCache: true,
-  });
-  deps.emitHostEvent?.("plugin.uninstalled", { pluginId: input.pluginId });
-  deps.refreshPluginNotifications?.();
 }
 
 /**
@@ -400,9 +330,6 @@ export async function ensurePluginStateReadyForInstall(
     },
   );
   if (outcome === "completed") {
-    deps.pluginMarketplace.clearInstallFailureDiagnostic?.(
-      record.installPluginId,
-    );
     deps.emitHostEvent?.("plugin.uninstalled", { pluginId: record.pluginId });
     deps.refreshPluginNotifications?.();
   }
@@ -563,129 +490,6 @@ export async function uninstallPluginWithLifecycle(
     }
 
     return result;
-    },
-    (pluginIds) => {
-      for (const discoveredPluginId of pluginIds) {
-        deps.pluginRuntime.cancelPendingRestart(discoveredPluginId);
-      }
-    },
-  );
-}
-
-export async function cleanupFailedPluginInstallWithLifecycle(
-  pluginId: string,
-  deps: PluginFailedInstallCleanupLifecycleDeps,
-): Promise<{ pluginId: string; uninstalled: true }> {
-  const cleanupDeps = requirePluginStateCleanupDeps(deps);
-  const journal = cleanupJournal(cleanupDeps);
-  const initialCanonicalPluginId = deps.pluginRuntime.resolvePluginId(pluginId);
-  deps.pluginRuntime.cancelPendingRestart(initialCanonicalPluginId);
-  return withResolvedPluginInstallLocks(
-    () => {
-      const canonicalPluginId = deps.pluginRuntime.resolvePluginId(pluginId);
-      const installPluginId =
-        deps.pluginRuntime.resolvePluginInstallIdIfKnown(pluginId);
-      const pendingCleanup =
-        journal.find(pluginId) ?? journal.find(canonicalPluginId);
-      return [
-        pluginId,
-        canonicalPluginId,
-        ...(typeof installPluginId === "string" ? [installPluginId] : []),
-        ...(pendingCleanup
-          ? [pendingCleanup.pluginId, pendingCleanup.installPluginId]
-          : []),
-      ];
-    },
-    async () => {
-    const canonicalPluginId = deps.pluginRuntime.resolvePluginId(pluginId);
-    const installPluginId =
-      deps.pluginRuntime.resolvePluginInstallIdIfKnown(pluginId) ?? pluginId;
-    const installedVersion =
-      await deps.pluginMarketplace.getInstalledVersion(installPluginId);
-    if (installedVersion !== null) {
-      throw new Error(
-        `Failed-install cleanup refused because plugin is installed: ${installPluginId}`,
-      );
-    }
-    const pendingRecord =
-      journal.find(pluginId) ?? journal.find(canonicalPluginId);
-    if (pendingRecord) {
-      const outcome = await reconcilePendingPluginCleanup(
-        pendingRecord,
-        {
-          ...cleanupDeps,
-          pluginMarketplace: deps.pluginMarketplace,
-        },
-        journal,
-        {
-          drainRuntimeOperations: true,
-          assumeRuntimeQuiescent: false,
-        },
-      );
-      if (outcome === "cancelled") {
-        throw new Error(
-          `Failed-install cleanup lost marketplace absence: ${installPluginId}`,
-        );
-      }
-      deps.pluginMarketplace.clearInstallFailureDiagnostic(pluginId);
-      deps.emitHostEvent?.("plugin.uninstalled", {
-        pluginId: pendingRecord.pluginId,
-      });
-      deps.refreshPluginNotifications?.();
-      return { pluginId, uninstalled: true as const };
-    }
-    const secretKeys = listSecretKeys(
-      deps.pluginRuntime.getPluginManifest(canonicalPluginId)?.configSchema,
-    );
-    const record = journal.prepare({
-      pluginId: canonicalPluginId,
-      installPluginId,
-      secretKeys: [...secretKeys],
-      authPartitions:
-        cleanupDeps.listPluginAuthPartitionsService(canonicalPluginId),
-      cleanupCache: true,
-    });
-    journal.markRegistryRemovalCommitted(record.pluginId, {
-      cleanupCache: true,
-    });
-    let removalError: unknown;
-    try {
-      await deps.pluginRuntime.removePlugin(canonicalPluginId);
-      journal.markRuntimeRetirementComplete(canonicalPluginId);
-    } catch (error) {
-      removalError = error;
-    }
-    if (removalError !== undefined) {
-      throw new AggregateError(
-        [removalError],
-        `failed-install removal committed with pending runtime retirement: ${canonicalPluginId}`,
-      );
-    }
-    let cleanupError: unknown;
-    try {
-      await finishCommittedPluginCleanup(
-        record,
-        cleanupDeps,
-        journal,
-        {
-          drainRuntimeOperations: true,
-          assumeRuntimeQuiescent: false,
-          cleanupCache: true,
-        },
-      );
-    } catch (error) {
-      cleanupError = error;
-    }
-    if (cleanupError !== undefined) {
-      throw new AggregateError(
-        [cleanupError],
-        `failed-install removal committed with incomplete cleanup: ${canonicalPluginId}`,
-      );
-    }
-    deps.pluginMarketplace.clearInstallFailureDiagnostic(pluginId);
-    deps.emitHostEvent?.("plugin.uninstalled", { pluginId: canonicalPluginId });
-    deps.refreshPluginNotifications?.();
-    return { pluginId, uninstalled: true as const };
     },
     (pluginIds) => {
       for (const discoveredPluginId of pluginIds) {

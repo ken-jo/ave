@@ -79,7 +79,7 @@ function makeDeps(opts: {
       getAll: vi.fn(() => ({ llm: nextLlm })),
       get: vi.fn((key: string) => {
         if (key === "llm") return patched ? nextLlm : prevLlm;
-        if (key === "marketplace") return { cloudAllowPrivateNetwork: false };
+        if (key === "marketplace") return {};
         if (key === "shortcuts") {
           return opts.flip === "shortcuts" && patched
             ? { toggleWindow: "Alt+Space", enabled: true }
