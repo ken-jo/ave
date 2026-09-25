@@ -113,14 +113,16 @@ export class PluginChildTransport {
       notifications: {
         deliver: (notification) => this.sendToChild(notification),
       },
-      // Bounded by the same per-handler limit the host's shutdown runner
-      // applies in-process, and enforced here as that runner cannot: a child
-      // whose handler overruns it is killed by the request deadline.
+      // Bounded by the per-handler limit the host's shutdown runner applies,
+      // and enforced here as that runner cannot: a child whose handler
+      // overruns it is killed by the request deadline. The deadline sits a
+      // grace past the runner's, so the runner reports the overrun first and
+      // the kill follows it.
       shutdownChild: async (subscriptionId) => {
         await this.request(
           PLUGIN_INSTANCE_METHODS.shutdown,
           { subscriptionId },
-          TOOL_TIMEOUT_POLICY.pluginShutdownHandlerMs,
+          TOOL_TIMEOUT_POLICY.pluginShutdownHandlerMs + TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs,
         );
       },
     });

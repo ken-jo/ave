@@ -1003,15 +1003,25 @@ describe("onShutdown runs through ave/instance/shutdown", () => {
     }
   });
 
-  it("kills the child whose handler overruns the shutdown bound", async () => {
+  it("kills the child whose handler overruns the shutdown bound, after the runner's timeout", async () => {
     const { dir, instance, runShutdown, terminate } = await constructHeld();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
-      const shutdown = runShutdown();
+      const { pluginShutdownHandlerMs, pluginShutdownKillGraceMs } = TOOL_TIMEOUT_POLICY;
+      let settled = false;
+      const shutdown = runShutdown().finally(() => {
+        settled = true;
+      });
       const outcome = expect(shutdown).rejects.toThrow(
-        `exceeded ${String(TOOL_TIMEOUT_POLICY.pluginShutdownHandlerMs)}ms`,
+        `exceeded ${String(pluginShutdownHandlerMs + pluginShutdownKillGraceMs)}ms`,
       );
-      await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.pluginShutdownHandlerMs);
+      // The host's shutdown runner times the handler out at this bound. The
+      // child must still be alive and the request still open here, or the
+      // transport's error would race the runner's for the report.
+      await vi.advanceTimersByTimeAsync(pluginShutdownHandlerMs);
+      expect(settled).toBe(false);
+      expect(terminate).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(pluginShutdownKillGraceMs);
       await outcome;
       expect(terminate).toHaveBeenCalledTimes(1);
       // The transport is closed with it, so nothing else waits on this child.
