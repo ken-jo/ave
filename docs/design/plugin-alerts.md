@@ -419,7 +419,9 @@ stable semver core — keeping data is the safe failure.
 
 **A damaged kind entry never turns a kind on.** The settings loader keeps a
 kind entry only under a key in the `<pluginId>:<kind>` / `@host:<kind>`
-grammar (anything else is dropped with a warning), and an entry whose
+grammar with the manifest's bounds — a plugin id of 3 to 64 characters
+(`schemas/plugin-manifest.schema.json:22-27`) and a kind id of 2 to 32 —
+(anything else is dropped with a warning), and an entry whose
 `enabled`, `osNotification`, `seenByUser` or `visibility` is out of shape is
 replaced by the fail-closed choice `{ enabled: false, osNotification: false,
 visibility: "silent", seenByUser: false, repaired: true }` rather than
@@ -892,8 +894,11 @@ the successors without the host naming any plugin.
    ```
 
    `enabled` is required and `osNotification` optional — a kind that
-   declares no OS notification has nothing to inherit there; `values` are
-   non-empty strings. `enabled` is true unless any of `values` is in the
+   declares no OS notification has nothing to inherit there; `values` is a
+   non-empty list of non-empty strings — an empty `listed: "disabled"` rule
+   would read as "on" for every former user, so it is malformed and takes
+   the block (manifest) or the record (retirement) with it. `enabled` is
+   true unless any of `values` is in the
    list at `key` (or false unless listed, per `listed`); `osNotification`
    likewise, and false when `masterKey` is `false`. Because the record holds the *effective* config,
    a user who never opened vega-helper's settings inherits its defaults
@@ -1003,7 +1008,10 @@ Contract tests (host):
 - Settings store: `alerts` and `retiredPluginConfigs` default on a fresh
   install and on a file without them; a generic `patch()` carrying either
   leaves both unchanged; a `set()` of either round-trips through the file
-  and the loader; a kind entry under an invalid key is dropped; an entry
+  and the loader; a kind entry under an invalid key is dropped, including a
+  plugin id shorter than 3 or longer than 64 characters and a
+  one-character kind id; an inherit rule with an empty `values` list makes
+  its retired record malformed; an entry
   with a field out of shape loads as the fail-closed choice, marked new;
   an invalid `absentSinceAppVersion` alone loses only that field; a retired
   record with any field out of shape (missing `enabled`, non-string
@@ -1300,7 +1308,10 @@ published the same day as the monorepo commit. Gates: ported suites,
   minors old and every listed successor has consumed it, so updating the
   app before the plugins cannot lose the user's choices.
 - `enabled` is required and `osNotification` optional in both a kind's
-  `inherits[]` entry and a retirement entry's `hostKinds[]` mapping.
+  `inherits[]` entry and a retirement entry's `hostKinds[]` mapping; an
+  inherit rule's `values` list is non-empty.
+- Kind keys carry the manifest's bounds: plugin id 3 to 64 characters,
+  kind id 2 to 32.
 - The two-minor prune of absent kind entries and retired records runs in
   the settings loader against the running version, and keeps everything
   when no stable version is supplied.
