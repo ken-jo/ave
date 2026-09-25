@@ -5,7 +5,7 @@
  * JSDoc. Keep runtime-only registry and marketplace persistence declarations in
  * `types.ts`. Two things read it mechanically and add nothing of their own: a
  * plugin repository vendors it unchanged at an app release tag into
- * `contract/`, hash-checked; and `scripts/generate-plugin-host-protocol-schema.ts`
+ * `contract/`, hash-checked; and `scripts/lib/plugin-host-protocol-schema.ts`
  * reads its `PluginHostApi` member types into the host protocol schema.
  */
 

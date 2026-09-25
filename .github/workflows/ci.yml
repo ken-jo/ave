@@ -226,8 +226,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/test-windows-job.mjs
       # The tag build runs `bun run build` on Windows, and this check is part of
-      # it: a Windows checkout reads the protocol sources with CRLF and paths
-      # with `\`, so the generator has to produce the same bytes there too.
+      # it: there the generator finds its sources through Windows path spellings
+      # (drive letters, `\` separators), and must still produce the same bytes.
       - name: Plugin host protocol schema matches its sources
         working-directory: ave
         run: bun run check:plugin-host-protocol-schema

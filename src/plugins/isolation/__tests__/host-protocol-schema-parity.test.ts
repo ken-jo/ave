@@ -18,7 +18,9 @@
  * Windows checkout.
  */
 import { describe, expect, it, vi } from "vitest";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as Ajv2020Module from "ajv/dist/2020.js";
@@ -34,7 +36,10 @@ import { hostProtocolCapabilities } from "../host-api-dispatcher.js";
 import { createBoundHostApiDispatchTable } from "../out-of-process-plugin.js";
 import { createGoldenHost } from "./host-protocol-golden-host.js";
 import { ts } from "ts-json-schema-generator";
-import { generateHostProtocolSchema } from "../../../../scripts/generate-plugin-host-protocol-schema.js";
+import {
+  HOST_PROTOCOL_SCHEMA_LABEL,
+  generateHostProtocolSchema,
+} from "../../../../scripts/lib/plugin-host-protocol-schema.js";
 
 type JsonSchema = Record<string, unknown>;
 type Frame = Record<string, unknown>;
@@ -320,7 +325,8 @@ describe("the generator writes the same bytes on every checkout", () => {
     const fromLf = generateHostProtocolSchema().text;
     expect(fromLf).toBe(committed);
 
-    // A Windows checkout with `core.autocrlf` hands the compiler CRLF sources.
+    // Every blob is LF, but a source saved with platform endings, or a tree
+    // copied without git, reaches the compiler as CRLF.
     const sourceRoot = join(REPO_ROOT, "src").replaceAll("\\", "/");
     const readFile = ts.sys.readFile.bind(ts.sys);
     const crlfSources = new Set<string>();
@@ -343,5 +349,46 @@ describe("the generator writes the same bytes on every checkout", () => {
       "src/plugins/isolation/plugin-instance-wire.ts",
     ]));
     expect(fromCrlf).toBe(fromLf);
+  }, 120_000);
+});
+
+describe("the command line always reports an outcome", () => {
+  const nodeCommand = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
+  const runCli = (scriptsDir: string, args: readonly string[]) =>
+    spawnSync(
+      nodeCommand,
+      ["--import", "tsx", join(scriptsDir, "generate-plugin-host-protocol-schema.ts"), ...args],
+      {
+        cwd: REPO_ROOT,
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+        encoding: "utf8",
+        timeout: 120_000,
+      },
+    );
+
+  it("checks, and says so, when started through a path spelled unlike its real one", () => {
+    // A symlink here. On Windows a junction, a `subst` drive, a short name or
+    // a drive letter's case gives the entry a second spelling the same way.
+    const dir = mkdtempSync(join(tmpdir(), "schema-cli-"));
+    try {
+      const linked = join(dir, "scripts");
+      symlinkSync(join(REPO_ROOT, "scripts"), linked, "junction");
+      const result = runCli(linked, ["--check"]);
+      expect(result.stdout).toBe(
+        `${HOST_PROTOCOL_SCHEMA_LABEL} schemas/plugin-host-protocol/1/protocol.schema.json matches its sources\n`,
+      );
+      expect(result.status, result.stderr).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it("refuses an argument it does not know, in one line and with a failing status", () => {
+    const result = runCli(join(REPO_ROOT, "scripts"), ["--chek"]);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toBe(
+      `${HOST_PROTOCOL_SCHEMA_LABEL} unexpected arguments '--chek'; the only option is --check\n`,
+    );
+    expect(result.status).toBe(1);
   }, 120_000);
 });

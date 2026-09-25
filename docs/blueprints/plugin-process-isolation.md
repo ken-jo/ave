@@ -180,9 +180,11 @@ whose registration or handle outlives the reply — the `payload` of each
 type the dispatcher's `deliver` accepts), one per notification, the
 closed error set, and the capabilities a host with every optional member bound
 advertises. It is generated, not written —
-`scripts/generate-plugin-host-protocol-schema.ts` reads the contract table, the
-`PluginHostApi` member types and the `Wire*` types — and `bun run build` fails
-when the committed file differs from what the sources generate
+`scripts/lib/plugin-host-protocol-schema.ts` reads the contract table, the
+`PluginHostApi` member types and the `Wire*` types, and
+`scripts/generate-plugin-host-protocol-schema.ts` is its command line — and
+`bun run build` fails when the committed file differs from what the sources
+generate
 (`check:plugin-host-protocol-schema`). `host-protocol-schema-parity.test.ts`
 holds it to the dispatcher's own tables and validates every golden frame
 against it. A method's `errors` admits every code but the version mismatch:
