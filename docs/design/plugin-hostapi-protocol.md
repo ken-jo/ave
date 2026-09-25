@@ -187,8 +187,8 @@ well (`child-stream-multiplex.ts:5-11`, blueprint §5.2). The pipes are the iden
 host (`worker-spawn.ts:12-29`), and that stays a `spawnWorker` concern, not a protocol
 transport.
 
-Framing: the shipped host↔child channel is LSP-style `Content-Length` framing
-(`stdio-framing.ts:1-17`), shared with the experimental stdio arm
+Framing: before the wire step the host↔child channel is LSP-style `Content-Length` framing
+(`stdio-framing.ts:1-17` on `d036d87c6`), shared with the experimental stdio arm
 (`src/mcp/experimental/stdio-child-transport.ts`, `stdio-server-loop.ts`). The host's
 external MCP client speaks the MCP `2026-07-28` stdio binding, "newline-delimited
 JSON-RPC over a byte stream" (`mcp-client.ts:2365-2368`, `:2453-2458`;
@@ -751,7 +751,7 @@ Add `requires.hostProtocol` (integer-as-string, e.g. `"1"`). Rules:
 
 | Risk | Control |
 |---|---|
-| RPC surface abuse: a plugin hammers `ave/host/*` (log flood, storage churn, `triggerConversation` spam, subscription leak) | per-(plugin, method) token bucket in the dispatcher with a refusal code `rate-limited` (new, added to the closed set); cap on open subscriptions per plugin; `WIRE_BYTES_MAX` 16 MiB per message (`host-api-wire.ts:471`); `logEvent` key/prefix caps already exist for `getSecret` (`host-api-factory.ts:790-798`) and are generalised. Today no rate limiting exists in the dispatcher (verified by absence of any limit constant in `host-api-dispatcher.ts`). |
+| RPC surface abuse: a plugin hammers `ave/host/*` (log flood, storage churn, `triggerConversation` spam, subscription leak) | per-(plugin, method) token bucket in the dispatcher with a refusal code `rate-limited` (new, added to the closed set); cap on open subscriptions per plugin; `WIRE_BYTES_MAX` 16 MiB per decoded payload (`host-api-wire.ts:471`), and a per-line cap in the frame decoder derived from it, whose overrun terminates the child (added with the newline framing, §9.4 item 1), so a child that never writes a newline cannot grow the host's buffer without bound; `logEvent` key/prefix caps already exist for `getSecret` (`host-api-factory.ts:790-798`) and are generalised. Today no rate limiting exists in the dispatcher (verified by absence of any limit constant in `host-api-dispatcher.ts`). |
 | Resource exhaustion: a plugin process consumes memory/CPU | Linux: a per-plugin cgroup from the workload resource controller once it is wired to the spawn path (`linux-workload-resource-controller.md:1-15` says it is not yet). macOS: `RLIMIT` in the wrapper is deferred (decision 7); Windows: Job Objects are not available through srt-win today. Until then the control is crash containment: the host survives, the plugin is marked degraded. |
 | A plugin process outlives the host | child exits on stdin end (`plugin-child-main.ts:319-326`); `managed-child-processes.ts` tracks and kills process groups on app quit; a `process`-entry plugin must pass the stdin-close conformance check (§10). Residual: a hard host crash on Windows leaves the child to notice a closed pipe on its next write. |
 | Arbitrary executable via `process` entry | a pinned release or archive artifact only (§2.1); a wrap whose published `confines` includes `process` (never srt-win); refused when the sandbox is off; the command must be inside the plugin root (Agent Plugins rule); no `PATH` search for a marketplace plugin. |
@@ -875,7 +875,8 @@ migrated.
 1. **Framing.** `src/mcp/stdio-framing.ts` becomes newline-delimited: `frameMessage`
    emits `JSON.stringify(message) + "\n"` (the stringifier escapes every newline inside a
    string, so one message is one line), and `StdioFrameDecoder` splits the byte buffer on
-   `0x0A` before decoding, so a multi-byte character split across chunks decodes intact —
+   `0x0A` before decoding and refuses a line longer than a cap derived from
+   `WIRE_BYTES_MAX` (the overrun is a contract violation that terminates the child), so a multi-byte character split across chunks decodes intact —
    the rule `mcp-client.ts` applies at `:2453-2458`. A line that is not a JSON object is
    dropped, never thrown on, as today. The Content-Length path is deleted in the same
    change; its callers are `child-stream-multiplex.ts:23`, `plugin-child-main.ts:32`, the
