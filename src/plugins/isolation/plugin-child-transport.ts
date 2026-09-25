@@ -34,6 +34,8 @@ import {
   type HostApiDispatcherOptions,
 } from "./host-api-dispatcher.js";
 import type { HostApiNotification, HostApiRequest } from "./host-api-wire.js";
+import { PLUGIN_INSTANCE_METHODS } from "./plugin-instance-wire.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 
 const log = createLogger("plugin-child-transport");
 
@@ -92,7 +94,7 @@ export interface ChildLink {
 }
 
 export interface PluginChildTransportOptions
-  extends Omit<HostApiDispatcherOptions, "notifications"> {
+  extends Omit<HostApiDispatcherOptions, "notifications" | "shutdownChild"> {
   readonly link: ChildLink;
 }
 
@@ -110,6 +112,18 @@ export class PluginChildTransport {
       ...options,
       notifications: {
         deliver: (notification) => this.sendToChild(notification),
+      },
+      // Bounded by the per-handler limit the host's shutdown runner applies,
+      // and enforced here as that runner cannot: a child whose handler
+      // overruns it is killed by the request deadline. The deadline sits a
+      // grace past the runner's, so the runner reports the overrun first and
+      // the kill follows it.
+      shutdownChild: async (subscriptionId) => {
+        await this.request(
+          PLUGIN_INSTANCE_METHODS.shutdown,
+          { subscriptionId },
+          TOOL_TIMEOUT_POLICY.pluginShutdownHandlerMs + TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs,
+        );
       },
     });
     this.pluginId = options.pluginId;

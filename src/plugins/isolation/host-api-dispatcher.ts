@@ -68,6 +68,7 @@ import {
   encodeWireBytes,
   encodeWireHttpResponse,
   hostApiArgsOf,
+  hostApiMethodOf,
   hostApiPathOf,
   inactiveHostApiMessage,
   toHostApiRpcError,
@@ -145,6 +146,12 @@ export interface SubscriptionScope {
    * child, instead of a comment claiming it does.
    */
   release(subscriptionId: string): boolean;
+  /**
+   * Run the child's `onShutdown` handler registered under `subscriptionId`,
+   * and settle when it has — `ave/instance/shutdown`, a request the owner
+   * bounds (§3.4).
+   */
+  shutdown(subscriptionId: string): Promise<void>;
 }
 
 /** What a handler may resolve with, derived from its declared `result` axis. */
@@ -167,8 +174,29 @@ export type HostApiPathInvoke<C extends HostApiPathContract> =
     ? (call: HostApiCall) => Promise<WireResultFor<C>>
     : (call: HostApiCall, scope: SubscriptionScope) => Promise<WireResultFor<C>>;
 
-/** How complete one table entry is. Read by the contract test, not by the wire. */
+/**
+ * How complete one table entry is. Read by the contract test, and by
+ * {@link hostProtocolCapabilities}, which is how it reaches the wire.
+ */
 export type HostApiPathStatus = "implemented" | "unimplemented" | "child-local";
+
+/**
+ * The `ave/host/*` methods a bound table serves: its `implemented` entries,
+ * as method names (§3.2).
+ *
+ * Read from the table the connection's dispatcher actually uses, never from
+ * {@link HOSTAPI_DISPATCH_TABLE}, which marks every path unimplemented or
+ * child-local. So a host build without an optional member does not advertise
+ * it, and a child-local path is never a method.
+ */
+export function hostProtocolCapabilities(
+  table: Record<HostApiPath, HostApiPathHandler>,
+): string[] {
+  return (Object.keys(table) as HostApiPath[])
+    .filter((path) => table[path].status === "implemented")
+    .map((path) => hostApiMethodOf(path))
+    .sort();
+}
 
 /** One entry of the dispatch table. */
 export interface HostApiPathHandler {
@@ -203,7 +231,7 @@ export function defineHostApiPath<P extends HostApiPath>(
  * a success — three silent wrong answers that no test would catch, because the
  * call succeeded.
  */
-export function unimplementedHostApiPath(path: HostApiPath): HostApiPathHandler {
+export function unimplementedHostApiPath(path: HostApiPath, why?: string): HostApiPathHandler {
   return {
     path,
     contract: HOSTAPI_PATH_CONTRACTS[path],
@@ -212,7 +240,9 @@ export function unimplementedHostApiPath(path: HostApiPath): HostApiPathHandler 
       Promise.reject(
         new HostApiBoundaryError(
           "path-not-implemented",
-          `[host-api-dispatcher] '${path}' has no handler`,
+          why === undefined
+            ? `[host-api-dispatcher] '${path}' has no handler`
+            : `[host-api-dispatcher] '${path}': ${why}`,
           { path },
         ),
       ),
@@ -641,7 +671,7 @@ function requireString(call: HostApiCall, index: number, name: string): string {
 }
 
 /**
- * Resolve an OPTIONAL hostApi member, or refuse the call.
+ * Bind an OPTIONAL hostApi member, or leave its path unimplemented.
  *
  * `hostFetch`, `resolveApiKey` and `spawnWorker` are `?`-optional on
  * `PluginHostApi` because older host builds predate them. On a build without
@@ -649,16 +679,19 @@ function requireString(call: HostApiCall, index: number, name: string): string {
  * not a `TypeError` from calling `undefined` — a plugin branching on
  * `typeof hostApi.hostFetch === "function"` in-process must get the same
  * verdict through the boundary.
+ *
+ * Decided once, when the table is bound, because the bound table is what
+ * `construct` advertises (§3.2): a member decided per call would be advertised
+ * by a host that then refuses it.
  */
-function requireMember<T>(path: HostApiPath, member: T | undefined, name: string): T {
-  if (typeof member !== "function") {
-    throw new HostApiBoundaryError(
-      "path-not-implemented",
-      `[host-api-dispatcher] '${path}': this host build has no '${name}'`,
-      { path },
-    );
-  }
-  return member;
+function bindOptional(
+  path: HostApiPath,
+  member: unknown,
+  bind: () => HostApiPathHandler,
+): HostApiPathHandler {
+  return typeof member === "function"
+    ? bind()
+    : unimplementedHostApiPath(path, `this host build has no '${path}'`);
 }
 
 /** Read a positional argument the contract declares as a plain object. */
@@ -728,10 +761,9 @@ function getAuthPartitionCookiesPath(hostApi: ServiceHostApi): HostApiPathHandle
 
 function resolveApiKeyPath(hostApi: ServiceHostApi): HostApiPathHandler {
   return defineHostApiPath("resolveApiKey", async (call, scope) => {
-    // Presence-checked, then called through the object: a detached reference
-    // would lose the hostApi proxy as its receiver, and the proxy is where the
-    // liveness and effect wrappers live.
-    requireMember(call.path, hostApi.resolveApiKey, "resolveApiKey");
+    // Called through the object, not a detached reference: that would lose the
+    // hostApi proxy as its receiver, and the proxy is where the liveness and
+    // effect wrappers live. Presence was settled when the table was bound.
     const wire = requireRecord(call, 0, "opts") as unknown as WireResolveApiKeyOptions;
     const purpose = wire.purpose;
     if (!RESOLVE_API_KEY_PURPOSES.includes(purpose as ResolveApiKeyPurpose)) {
@@ -808,7 +840,6 @@ function resolveApiKeyPath(hostApi: ServiceHostApi): HostApiPathHandler {
  */
 function hostFetchPath(hostApi: ServiceHostApi): HostApiPathHandler {
   return defineHostApiPath("hostFetch", async (call) => {
-    requireMember(call.path, hostApi.hostFetch, "hostFetch");
     const input = requireString(call, 0, "input");
     const init = decodeWireRequestInit(call.args[1], call.signal, `${call.path}(init)`);
     const response = await hostApi.hostFetch!(input, init);
@@ -1154,7 +1185,6 @@ function spawnWorkerPath(
   confinement: DelegatedWorkerConfinement,
 ): HostApiPathHandler {
   return defineHostApiPath("spawnWorker", async (call, scope) => {
-    requireMember(call.path, hostApi.spawnWorker, "spawnWorker");
     const spec = decodeWorkerSpec(call, confinement);
     const worker = await hostApi.spawnWorker!(spec);
 
@@ -1297,12 +1327,14 @@ export function createServiceHostApiPaths(
     proposeWork: proposeWorkPath(hostApi),
     withdrawWorkProposal: withdrawWorkProposalPath(hostApi),
     probePrivateHost: probePrivateHostPath(hostApi),
-    resolveApiKey: resolveApiKeyPath(hostApi),
+    resolveApiKey: bindOptional("resolveApiKey", hostApi.resolveApiKey, () =>
+      resolveApiKeyPath(hostApi)),
     emitEvent: emitEventPath(hostApi),
     logEvent: logEventPath(hostApi),
     callLlm: callLlmPath(hostApi),
-    hostFetch: hostFetchPath(hostApi),
-    spawnWorker: spawnWorkerPath(hostApi, confinement),
+    hostFetch: bindOptional("hostFetch", hostApi.hostFetch, () => hostFetchPath(hostApi)),
+    spawnWorker: bindOptional("spawnWorker", hostApi.spawnWorker, () =>
+      spawnWorkerPath(hostApi, confinement)),
     resolveMappedDriveRoot: resolveMappedDriveRootPath(hostApi),
     listAudioInputDevices: listAudioInputDevicesPath(hostApi),
     startAudioCapture: startAudioCapturePath(hostApi),
@@ -1726,38 +1758,29 @@ export function createConfigSubscriptionHostApiPaths(
      * The child gets no disposer because it cannot end this one, so the ledger
      * entry exists for the OTHER two deaths: the host firing shutdown, and the
      * child dying first. The host's in-process contract is that it AWAITS the
-     * plugin's handler, and a notification cannot be awaited — so the wait is
-     * the registration itself. The host fires the event and blocks on the entry
-     * closing; the child releases it when its handler settles, and that release
-     * is the reply. A child that died instead closes the entry as `peer-gone`
-     * and the wait ends the same way, which is why nothing here holds a timeout
-     * of its own: the bound belongs to the lifecycle caller that awaits this
-     * handler, not to six copies of one policy.
+     * plugin's handler, so firing it is `ave/instance/shutdown`, a request
+     * naming this registration, and the handler settling is the reply (§3.4).
+     * The wait is bounded where the request is sent: a handler that overruns
+     * it gets the child killed, which in-process nothing can do.
      */
     onShutdown: defineHostApiPath("onShutdown", async (call, scope) => {
       requireArity(call, 1);
       const subscriptionId = stringArgument(call, 0, "subscriptionId");
       let ended = false;
-      let finish: (() => void) | undefined;
       // Adopt BEFORE registering the shutdown handler: `hostApi.onShutdown`
       // returns no disposer, so a handler registered against a refused id could
       // never be taken back off the host's shutdown list.
       scope.adopt(subscriptionId, () => {
         ended = true;
-        finish?.();
       });
       // Returned for the same reason `config.set` is: this member declares no
       // result, and a handler that discarded the host's is a handler the
       // void-drift check can never fire on.
       return hostApi.onShutdown(async () => {
         // Already released — the child is gone, or the incarnation was torn
-        // down. There is no handler left to wait for.
+        // down. There is no handler left to run.
         if (ended) return;
-        const settled = new Promise<void>((resolve) => {
-          finish = resolve;
-        });
-        scope.deliver(subscriptionId, {});
-        await settled;
+        await scope.shutdown(subscriptionId);
       });
     }),
   };
@@ -1873,6 +1896,12 @@ export interface HostApiDispatcherOptions {
   readonly isActive: () => boolean;
   /** Where host-originated notifications go. */
   readonly notifications: ChildNotificationSink;
+  /**
+   * Send the child `ave/instance/shutdown` for one `onShutdown` registration
+   * and settle when it answers. The owner holds the request table and the
+   * bound; the dispatcher only knows which registration to name.
+   */
+  readonly shutdownChild: (subscriptionId: string) => Promise<void>;
   /**
    * Where the child's `context.log` goes.
    *
@@ -2140,6 +2169,7 @@ export class HostApiDispatcher {
       },
       open: (teardown) => this.subscriptions.open({ path, teardown }, release),
       release: (subscriptionId) => this.subscriptions.close(subscriptionId, "revoked"),
+      shutdown: (subscriptionId) => this.options.shutdownChild(subscriptionId),
       deliver: (subscriptionId, payload) => {
         if (!this.subscriptions.get(subscriptionId)) {
           throw new HostApiBoundaryError(

@@ -76,6 +76,32 @@ export function isServedHostProtocolVersion(value: unknown): value is HostProtoc
   return (HOST_PROTOCOL_VERSIONS_SERVED as readonly unknown[]).includes(value);
 }
 
+/**
+ * The load refusal for a plugin that speaks a host protocol this host cannot
+ * serve (§3.2): a declared `requires.hostProtocol` outside the served set,
+ * found before anything is spawned, or a `pluginProtocol.requires` method the
+ * host does not advertise, found at `construct`. One class for both, because
+ * both mean the same thing to the user — this plugin was built for a
+ * different protocol — and the Doctor's remedy is the same.
+ */
+export class IncompatibleHostProtocolError extends Error {
+  constructor(
+    readonly pluginId: string,
+    readonly detail:
+      | { readonly declared: string }
+      | { readonly missingCapabilities: readonly string[] },
+  ) {
+    super(
+      "declared" in detail
+        ? `plugin '${pluginId}' speaks host protocol ${detail.declared}; this app serves `
+          + HOST_PROTOCOL_VERSIONS_SERVED.join(", ")
+        : `plugin '${pluginId}' requires host methods this app does not serve: `
+          + detail.missingCapabilities.join(", "),
+    );
+    this.name = "IncompatibleHostProtocolError";
+  }
+}
+
 /** A JSON-RPC request id. The two directions allocate from separate spaces. */
 export type JsonRpcRequestId = string | number;
 

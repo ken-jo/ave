@@ -61,6 +61,9 @@ import { sha256Hex } from "../../lib/hex-digest-equal.js";
 const STABLE_SEMVER_RE =
   /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 
+/** `requires.hostProtocol`, mirroring its `pattern` in the manifest schema. */
+const HOST_PROTOCOL_VERSION_RE = /^[1-9][0-9]*$/;
+
 // #893 — the allow-listed host-secret key shapes a manifest's
 // `hostSecrets.read[]` may name have ONE definition,
 // `isAllowedHostSecretKey` (src/shared/marketplace-package-assets.ts). It mirrors the JSON-schema
@@ -943,6 +946,19 @@ export async function parsePluginJson(
           "requires.minAppVersion",
           "must be a stable SemVer string MAJOR.MINOR.PATCH (no range, pre-release, build metadata, or leading zeros) — manifest_schema",
           `"requires": { "minAppVersion": "1.4.0" }`,
+        );
+      }
+    }
+    // The host protocol gate reads this value at every load, so a malformed
+    // one must fail here, loudly, rather than as an "unserved version" that
+    // names a version nobody declared.
+    const hostProtocolRaw: unknown = (requiresRaw as { hostProtocol?: unknown }).hostProtocol;
+    if (hostProtocolRaw !== undefined) {
+      if (typeof hostProtocolRaw !== "string" || !HOST_PROTOCOL_VERSION_RE.test(hostProtocolRaw)) {
+        fail(
+          "requires.hostProtocol",
+          "must be a positive integer written as a string, with no leading zeros — manifest_schema",
+          `"requires": { "hostProtocol": "1" }`,
         );
       }
     }

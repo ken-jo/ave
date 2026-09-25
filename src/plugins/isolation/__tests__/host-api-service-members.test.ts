@@ -191,6 +191,8 @@ async function createServiceHarness(
     pluginId: PLUGIN_ID,
     isActive: () => true,
     reportUnknownField: () => {},
+    // `ave/instance/shutdown`, answered by the child runtime itself.
+    shutdownChild: (subscriptionId) => child.runShutdownHandler(subscriptionId),
     notifications: {
       deliver: (notification) => {
         pushed.push(notification);
@@ -269,7 +271,8 @@ function detachedLog(harness: ServiceHarness): { message: string; meta?: unknown
 
 describe("this group implements exactly the members left after the other three", () => {
   it("binds every service-reaching member, and only against a real hostApi", () => {
-    const bound = createServiceHostApiPaths({} as PluginHostApi, CONFINEMENT);
+    const optional = { resolveApiKey: () => {}, hostFetch: () => {}, spawnWorker: () => {} };
+    const bound = createServiceHostApiPaths(optional as unknown as PluginHostApi, CONFINEMENT);
     expect(Object.keys(bound).sort()).toEqual([...SERVICE_HOSTAPI_PATHS].sort());
     for (const path of SERVICE_HOSTAPI_PATHS) {
       expect(bound[path].status).toBe("implemented");
@@ -279,6 +282,15 @@ describe("this group implements exactly the members left after the other three",
       // handler that can only fail — and nothing routes out-of-process yet.
       expect(HOSTAPI_DISPATCH_TABLE[path].status).toBe("unimplemented");
     }
+  });
+
+  it("decides an optional member at bind time, so construct never advertises one it lacks", () => {
+    // `hostProtocol.capabilities` is read off the bound table (§3.2). A member
+    // bound unconditionally and refused per call would be advertised by a
+    // host that then answers path-not-implemented.
+    const bound = createServiceHostApiPaths({} as PluginHostApi, CONFINEMENT);
+    const unbound = SERVICE_HOSTAPI_PATHS.filter((path) => bound[path].status === "unimplemented");
+    expect(unbound.sort()).toEqual(["hostFetch", "resolveApiKey", "spawnWorker"]);
   });
 
   it("cancels an abort-bearing member per request, so only the lease outlives its reply", () => {

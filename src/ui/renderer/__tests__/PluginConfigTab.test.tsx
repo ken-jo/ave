@@ -485,6 +485,47 @@ describe("PluginConfigTab", () => {
     });
   });
 
+  it("names a host protocol mismatch, and does not reinstall for it", async () => {
+    const broken = {
+      id: "meeting",
+      name: "Meeting",
+      description: "Plugin could not be loaded.",
+      sampleTools: [],
+      capabilities: [],
+      tools: [],
+      installAliases: ["ave-plugin-meeting"],
+      installFailureKind: "incompatible-host-protocol" as const,
+      installFailureMessage: "plugin 'meeting' speaks host protocol 2; this app serves 1",
+      loadStatus: "failed" as const,
+    };
+    const cards = vi.fn().mockResolvedValue([broken]);
+    Object.defineProperty(window, "ave", {
+      value: {
+        plugins: { cards },
+        pluginConfig: { get: mockGet, set: mockSet },
+      },
+      writable: true,
+      configurable: true,
+    });
+
+    render(<PluginConfigTab />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("plugin-config:doctor-panel:meeting")).toBeInTheDocument();
+    });
+    // Its own diagnosis, not "update the app": a newer app may have dropped
+    // the version rather than lacking it.
+    expect(screen.getByText("다른 Ave 프로토콜용 플러그인")).toBeInTheDocument();
+    expect(screen.queryByText("앱 업데이트 필요")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("plugin-config:doctor:meeting"));
+
+    await waitFor(() => {
+      expect(market.planInstall).not.toHaveBeenCalled();
+      expect(cards).toHaveBeenCalledTimes(2);
+    });
+  });
+
   it("auto-reinstalls when a failed load is a reinstall-fixable manifest schema error", async () => {
     const broken = {
       id: "meeting",

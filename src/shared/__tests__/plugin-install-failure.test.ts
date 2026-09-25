@@ -46,6 +46,12 @@ describe("isReinstallFixableFailureKind", () => {
     expect(isReinstallFixableFailureKind("incompatible-app-version")).toBe(false);
   });
 
+  it("classifies host-protocol incompatibility as NOT reinstall-fixable", () => {
+    // Reinstalling fetches the same manifest naming the same protocol version;
+    // only a newer app, or a plugin release that speaks this one, changes it.
+    expect(isReinstallFixableFailureKind("incompatible-host-protocol")).toBe(false);
+  });
+
   it("classifies a marketplace revocation block as NOT reinstall-fixable", () => {
     // A reinstall either re-fetches the same blocked version (the install
     // path enforces the same revocation registry) or is a genuine upgrade,
@@ -68,6 +74,7 @@ describe("isReinstallFixableFailureKind", () => {
     ]);
     expect(notFixable).toEqual([
       "incompatible-app-version",
+      "incompatible-host-protocol",
       "plugin-revoked",
     ]);
   });

@@ -1,6 +1,7 @@
 export const PLUGIN_INSTALL_FAILURE_KINDS = [
   "manifest-validation-error",
   "incompatible-app-version",
+  "incompatible-host-protocol",
   "plugin-revoked",
   "untrusted-manifest-path",
   "load-crash",
@@ -18,6 +19,11 @@ export function isPluginInstallFailureKind(value: unknown): value is PluginInsta
  *   - `incompatible-app-version` — the plugin requires a newer Ave build; a
  *     reinstall re-fetches the same too-new package and re-throws, so the user
  *     must update the app instead.
+ *   - `incompatible-host-protocol` — the plugin speaks a host protocol version
+ *     this app does not serve, or requires a host method it does not serve; a
+ *     reinstall fetches the same package speaking the same protocol, so the
+ *     remedy is a plugin built for this app's protocol, or an app that serves
+ *     the plugin's.
  *   - `plugin-revoked` — the marketplace revocation registry blocks this
  *     exact `slug@version` (explicit blocklist) or the version is below the
  *     plugin's pinned minimum. A reinstall from the marketplace either
@@ -36,6 +42,7 @@ export function isPluginInstallFailureKind(value: unknown): value is PluginInsta
  */
 const REINSTALL_NOT_FIXABLE_KINDS: ReadonlySet<PluginInstallFailureKind> = new Set([
   "incompatible-app-version",
+  "incompatible-host-protocol",
   "plugin-revoked",
 ]);
 

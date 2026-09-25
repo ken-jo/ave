@@ -825,28 +825,32 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
                         <p className="text-xs font-medium text-destructive">
                           {selectedPlugin.installFailureKind === "incompatible-app-version"
                             ? t("pluginConfigTab.doctorIncompatibleAppTitle")
-                            : selectedPlugin.installFailureKind === "manifest-validation-error"
-                              ? t("pluginConfigTab.doctorManifestValidationTitle")
-                              : selectedPlugin.installFailureKind === "plugin-revoked"
-                                ? t("pluginConfigTab.doctorRevokedTitle")
-                                : selectedPlugin.installFailureKind === "untrusted-manifest-path"
-                                  ? t("pluginConfigTab.doctorUntrustedManifestPathTitle")
-                                  : selectedPlugin.installFailureKind === "load-crash"
-                                    ? t("pluginConfigTab.doctorLoadCrashTitle")
-                                    : t("pluginConfigTab.doctorTitle")}
+                            : selectedPlugin.installFailureKind === "incompatible-host-protocol"
+                              ? t("pluginConfigTab.doctorIncompatibleProtocolTitle")
+                              : selectedPlugin.installFailureKind === "manifest-validation-error"
+                                ? t("pluginConfigTab.doctorManifestValidationTitle")
+                                : selectedPlugin.installFailureKind === "plugin-revoked"
+                                  ? t("pluginConfigTab.doctorRevokedTitle")
+                                  : selectedPlugin.installFailureKind === "untrusted-manifest-path"
+                                    ? t("pluginConfigTab.doctorUntrustedManifestPathTitle")
+                                    : selectedPlugin.installFailureKind === "load-crash"
+                                      ? t("pluginConfigTab.doctorLoadCrashTitle")
+                                      : t("pluginConfigTab.doctorTitle")}
                         </p>
                         <p className="text-[11px] text-destructive/(--opacity-intense)">
                           {selectedPlugin.installFailureKind === "incompatible-app-version"
                             ? t("pluginConfigTab.doctorIncompatibleAppDescription")
-                            : selectedPlugin.installFailureKind === "manifest-validation-error"
-                              ? t("pluginConfigTab.doctorManifestValidationDescription")
-                              : selectedPlugin.installFailureKind === "plugin-revoked"
-                                ? t("pluginConfigTab.doctorRevokedDescription")
-                                : selectedPlugin.installFailureKind === "untrusted-manifest-path"
-                                  ? t("pluginConfigTab.doctorUntrustedManifestPathDescription")
-                                  : selectedPlugin.installFailureKind === "load-crash"
-                                    ? t("pluginConfigTab.doctorLoadCrashDescription")
-                                    : t("pluginConfigTab.doctorDescription")}
+                            : selectedPlugin.installFailureKind === "incompatible-host-protocol"
+                              ? t("pluginConfigTab.doctorIncompatibleProtocolDescription")
+                              : selectedPlugin.installFailureKind === "manifest-validation-error"
+                                ? t("pluginConfigTab.doctorManifestValidationDescription")
+                                : selectedPlugin.installFailureKind === "plugin-revoked"
+                                  ? t("pluginConfigTab.doctorRevokedDescription")
+                                  : selectedPlugin.installFailureKind === "untrusted-manifest-path"
+                                    ? t("pluginConfigTab.doctorUntrustedManifestPathDescription")
+                                    : selectedPlugin.installFailureKind === "load-crash"
+                                      ? t("pluginConfigTab.doctorLoadCrashDescription")
+                                      : t("pluginConfigTab.doctorDescription")}
                         </p>
                         {selectedPlugin.installFailureMessage ? (
                           <div className="mt-2 rounded border border-destructive/(--opacity-muted) bg-background/(--opacity-muted) px-2 py-1.5">

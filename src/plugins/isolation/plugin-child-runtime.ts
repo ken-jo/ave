@@ -31,7 +31,7 @@ import {
   PluginMcpServer,
   type PluginToolDelegate,
 } from "../../mcp/plugin-mcp-server.js";
-import type { PluginUiResourceProvider } from "../../mcp/plugin-ui-resource-provider.js";
+import { createPluginUiResourceProvider } from "../../mcp/plugin-ui-resource-provider.js";
 import { describeNonJson } from "../../shared/json-representable.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { RAW_RESULT_META } from "../../mcp/protocol-constants.js";
@@ -152,13 +152,17 @@ export interface PluginChildRuntimeOptions {
   readonly context: PluginChildContext;
   readonly channel: HostApiChannel;
   readonly loadFactory: PluginFactoryLoader;
-  /** Serves this plugin's declared `ui://` cards, when it declares any. */
-  readonly uiResources?: PluginUiResourceProvider;
 }
 
 export interface PluginChildRuntime {
   readonly instance: RuntimePlugin;
   readonly hostApi: PluginHostApi;
+  /**
+   * Whether MCP `resources/read` answers a card here: the plugin implements
+   * the hook AND its manifest declares a card. `construct` reports this, not
+   * the hook alone, so the host never routes a read to a server that refuses.
+   */
+  readonly servesUiResources: boolean;
   /** Live child-side registrations. Zero after {@link hostGone}. */
   readonly openSubscriptionCount: number;
   /**
@@ -196,6 +200,12 @@ export interface PluginChildRuntime {
   ): () => void;
   /** Host → child notification. */
   deliver(notification: HostApiNotification): NotificationOutcome;
+  /**
+   * Run the `onShutdown` handler registered under `subscriptionId` and settle
+   * when it has — the child's half of `ave/instance/shutdown`. An id with no
+   * open registration is refused: the host names only ids the plugin gave it.
+   */
+  runShutdownHandler(subscriptionId: string): Promise<void>;
   /**
    * The host is gone. Every registration is dropped WITHOUT notifying, because
    * there is no longer anyone to notify — the case that turns a release into a
@@ -417,6 +427,7 @@ export async function startPluginChildRuntime(
    * captured it sees exactly what it sees today.
    */
   const config: Record<string, unknown> = { ...(context.config ?? {}) };
+  const shutdownHandlers = new Map<string, () => void | Promise<void>>();
   /**
    * The child's copy of the installed-plugin set, and the member that reads it.
    *
@@ -462,6 +473,7 @@ export async function startPluginChildRuntime(
       openSubscription,
       config,
       report: log,
+      shutdownHandlers,
     }),
     ...createStorageChildMembers(caller, context),
     getInstalledPluginIds: () => [...installedPluginIds],
@@ -594,7 +606,20 @@ export async function startPluginChildRuntime(
     };
   };
 
-  const server = new PluginMcpServer(manifest, delegate, options.uiResources);
+  // The plugin's `ui://` cards are MCP `resources/read`, behind the same gate
+  // the in-process loopback host builds — own namespace, declared only, policy
+  // from the manifest — with the instance's hook as the content. Absent when
+  // the plugin declares no card or implements no hook, so a read fails closed.
+  const readUiResource = instance.readUiResource?.bind(instance);
+  const uiResources =
+    readUiResource && manifest.uiResources && manifest.uiResources.length > 0
+      ? createPluginUiResourceProvider({
+          pluginId,
+          declarations: manifest.uiResources,
+          readHtml: async (uri) => await readUiResource(uri),
+        })
+      : undefined;
+  const server = new PluginMcpServer(manifest, delegate, uiResources);
   // Fed only by the child's multiplexer, which has already bounded every line
   // it forwards by the same limit.
   new StdioServerLoop(options.input, options.output, server, FRAME_BYTES_MAX).start();
@@ -602,6 +627,7 @@ export async function startPluginChildRuntime(
   return {
     instance,
     hostApi,
+    servesUiResources: uiResources !== undefined,
     get openSubscriptionCount() {
       return subscriptions.openCount;
     },
@@ -676,6 +702,15 @@ export async function startPluginChildRuntime(
       if (!subscription) return "unknown-subscription";
       subscription.handler(notification.params.payload);
       return "delivered";
+    },
+    async runShutdownHandler(subscriptionId) {
+      const run = shutdownHandlers.get(subscriptionId);
+      if (!run || !subscriptions.get(subscriptionId)) {
+        throw new Error(
+          `[plugin-child:${pluginId}] no open onShutdown registration '${subscriptionId}'`,
+        );
+      }
+      await run();
     },
     hostGone() {
       return subscriptions.end("peer-gone");

@@ -341,7 +341,6 @@ const recordInvokerConversation = once(async (): Promise<RecordedFrame[]> => {
 
   await instance.start?.();
   await instance.onPublished?.();
-  await instance.readUiResource?.("ui://golden-invoker/card");
   for (const path of WIRE_PATHS) {
     const outcome = (await instance.handlers.invoke_member!({ path })) as { error?: unknown };
     // A pair whose reply is an error would pin a refusal as the method's
@@ -352,6 +351,10 @@ const recordInvokerConversation = once(async (): Promise<RecordedFrame[]> => {
   host.fireAll();
   await settle();
   await instance.handlers.dispose_all!();
+  await settle();
+  // Before stop, as the host's shutdown step runs: the `onShutdown` the
+  // invoker registered is what `ave/instance/shutdown` names.
+  await host.runShutdown();
   await settle();
   await instance.stop?.();
   await settle();

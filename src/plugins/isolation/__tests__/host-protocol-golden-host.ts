@@ -58,6 +58,11 @@ export interface GoldenHost {
    * running host would eventually do, compressed into one deterministic step.
    */
   fireAll(): void;
+  /**
+   * Run every `onShutdown` handler and wait for each, as the host's shutdown
+   * step does — which is what sends `ave/instance/shutdown`.
+   */
+  runShutdown(): Promise<void>;
   /** `logEvent` lines and `emitEvent` calls, for the cases that assert on them. */
   readonly logged: Array<readonly [string, string, unknown]>;
   readonly emitted: Array<readonly [string, unknown]>;
@@ -74,6 +79,7 @@ export function createGoldenHost(overrides: GoldenHostOverrides = {}): GoldenHos
   const config = new Map<string, unknown>(INITIAL_CONFIG);
   const configListeners: Array<{ key: string; listener: Listener<unknown> }> = [];
   const firing: Array<() => void> = [];
+  const shutdownHandlers: Array<() => void | Promise<void>> = [];
 
   const register = <T>(listeners: Set<Listener<T>>, listener: Listener<T>, fire: () => void) => {
     listeners.add(listener);
@@ -160,7 +166,7 @@ export function createGoldenHost(overrides: GoldenHostOverrides = {}): GoldenHos
       new Response("pong", { status: 200, headers: { "content-type": "text/plain" } }),
     logEvent: (level: string, message: string, data?: unknown) =>
       void logged.push([level, message, data]),
-    onShutdown: () => undefined,
+    onShutdown: (handler: () => void | Promise<void>) => void shutdownHandlers.push(handler),
     spawnWorker: async (spec: { workerId: string }) => fakeWorker(spec),
     openAuthWindow: async (options: { returnFinalUrl?: boolean }) => {
       const cookies = [{ name: "session", value: "cookie-value", domain: "login.example.com" }];
@@ -251,6 +257,9 @@ export function createGoldenHost(overrides: GoldenHostOverrides = {}): GoldenHos
     emitted,
     fireAll: () => {
       for (const fire of firing.splice(0)) fire();
+    },
+    runShutdown: async () => {
+      for (const handler of shutdownHandlers.splice(0)) await handler();
     },
   };
 }
