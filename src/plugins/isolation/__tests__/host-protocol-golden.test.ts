@@ -27,7 +27,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PassThrough, type Readable } from "node:stream";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { PluginManifest, PluginRuntimeContext, RuntimePlugin } from "../../types.js";
 import { flattenAgentPluginsManifest } from "../../public-contract.js";
@@ -209,14 +209,36 @@ async function openSession(
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 
 /**
+ * A path under the golden root, as `<golden>/` and `/`-separated segments.
+ * The separators are the platform's (`\` on Windows) only below the root,
+ * which the root's replacement alone would leave behind.
+ */
+function goldenPath(text: string): string {
+  let out = "";
+  let from = 0;
+  for (let at = text.indexOf(GOLDEN_ROOT); at !== -1; at = text.indexOf(GOLDEN_ROOT, from)) {
+    const rest = text.slice(at + GOLDEN_ROOT.length).match(/^[^\s"'`]*/)![0];
+    out += `${text.slice(from, at)}<golden>/${rest.replaceAll("\\", "/")}`;
+    from = at + GOLDEN_ROOT.length + rest.length;
+  }
+  return out + text.slice(from);
+}
+
+/**
  * Canonical JSON: keys sorted at every depth, every UUID replaced by
  * `<uuid-N>` in order of first appearance across the whole golden, and the
  * checkout's own path replaced, so a golden reads the same on every machine.
  */
 function canonicalise(value: unknown, ids: Map<string, string>): unknown {
   if (typeof value === "string") {
-    return value
-      .replaceAll(GOLDEN_ROOT, "<golden>/")
+    const pathed = goldenPath(value);
+    // Two ways a checkout leaks into a golden only it can match: a separator
+    // left below the root, or the root spelled another way (a drive letter's
+    // case) and so not replaced at all.
+    if (/<golden>\/[^\s"'`]*\\/.test(pathed) || /fixtures[\\/]host-protocol[\\/]1[\\/]/.test(pathed)) {
+      throw new Error(`a golden kept a checkout path: ${pathed}`);
+    }
+    return pathed
       .replace(UUID, (uuid) => {
         const key = uuid.toLowerCase();
         if (!ids.has(key)) ids.set(key, `<uuid-${ids.size + 1}>`);
@@ -267,17 +289,22 @@ function lastRequest(frames: readonly RecordedFrame[], method: string): Recorded
   return found;
 }
 
-/** Every golden file under `dir`, relative to it. */
+/**
+ * Every golden file under `dir`, relative to it and `/`-separated on every
+ * platform: the names are built from segments rather than by `relative`, which
+ * answers with `\` on Windows.
+ */
 function goldenFiles(dir: string): string[] {
   const out: string[] = [];
-  const walk = (current: string): void => {
+  const walk = (current: string, prefix: string): void => {
     for (const name of readdirSync(current)) {
       const full = join(current, name);
-      if (statSync(full).isDirectory()) walk(full);
-      else out.push(relative(dir, full));
+      const named = `${prefix}${name}`;
+      if (statSync(full).isDirectory()) walk(full, `${named}/`);
+      else out.push(named);
     }
   };
-  walk(dir);
+  walk(dir, "");
   return out.sort();
 }
 
@@ -625,6 +652,17 @@ describe("one frame per notification kind", () => {
         .map((method) => `${method.slice("notifications/".length)}.json`)
         .sort(),
     );
+  });
+});
+
+describe("a golden reads the same on every machine", () => {
+  it("records a path under the golden root with `/`, whatever separator the platform used", () => {
+    // What a Windows checkout records: the root in its own spelling, then `\`.
+    expect(goldenPath(`${GOLDEN_ROOT}plugins\\orion-api\\entry.mjs`)).toBe("<golden>/plugins/orion-api/entry.mjs");
+    expect(goldenPath(`${GOLDEN_ROOT}plugins/orion-api/entry.mjs`)).toBe("<golden>/plugins/orion-api/entry.mjs");
+    expect(goldenPath(`cannot load ${GOLDEN_ROOT}invoker.mjs: gone`)).toBe("cannot load <golden>/invoker.mjs: gone");
+    // A backslash that is not under the root is content, and stays.
+    expect(goldenPath("a\\b")).toBe("a\\b");
   });
 });
 
