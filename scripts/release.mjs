@@ -4,7 +4,8 @@
  *
  * Steps:
  *   1. Pre-flight security check (signing-env validation)
- *   2. Read + patch-bump version in package.json
+ *   2. Read + patch-bump version in package.json, and regenerate the host
+ *      protocol schema whose `$id` carries it
  *   3. node scripts/build-installers.mjs --current --publish=never
  *
  * Usage:  node scripts/release.mjs [--skip-code-sign]
@@ -106,6 +107,9 @@ async function main() {
   console.log(`[release] version: ${oldVersion} → ${newVersion}`);
   pkg.version = newVersion;
   writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n", "utf-8");
+  // The host protocol schema's `$id` carries the app version, and the build
+  // below refuses a committed schema that differs from its sources.
+  run("bun", ["run", "generate:plugin-host-protocol-schema"]);
 
   run("node", [
     "scripts/build-installers.mjs",

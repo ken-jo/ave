@@ -1,10 +1,12 @@
 /**
  * Host-owned public contract for Ave plugin authors.
  *
- * This module is the sole source for the SDK type surface and its JSDoc. Keep
- * runtime-only registry and marketplace persistence declarations in `types.ts`.
- * The SDK generator copies this module mechanically; it must not add policy,
- * declarations, aliases, or documentation.
+ * This module is the sole source of the plugin-facing type surface and its
+ * JSDoc. Keep runtime-only registry and marketplace persistence declarations in
+ * `types.ts`. Two things read it mechanically and add nothing of their own: a
+ * plugin repository vendors it unchanged at an app release tag into
+ * `contract/`, hash-checked; and `scripts/generate-plugin-host-protocol-schema.ts`
+ * reads its `PluginHostApi` member types into the host protocol schema.
  */
 
 /**

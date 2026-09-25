@@ -1,0 +1,248 @@
+/**
+ * The published host protocol schema, held to the host that serves it.
+ *
+ * `schemas/plugin-host-protocol/1/protocol.schema.json` is generated from the
+ * contract table and the wire types, and `check:plugin-host-protocol-schema`
+ * holds the committed file to that output. Neither proves the output is RIGHT.
+ * This does, two ways:
+ *
+ *  - parity: the schema names exactly the methods, notifications, error codes
+ *    and capabilities the running dispatcher does — read from the same tables
+ *    the host routes with, not from a list kept here;
+ *  - the goldens: every frame under `fixtures/host-protocol/1/`, each recorded
+ *    against the real child runtime, validates against it. A wire form the
+ *    generator guessed wrong fails here, on a frame that really crossed.
+ */
+import { describe, expect, it } from "vitest";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
+import * as Ajv2020Module from "ajv/dist/2020.js";
+import {
+  HOSTAPI_PATH_CONTRACTS,
+  HOST_API_WIRE_ERROR_CODES,
+  HOST_PROTOCOL_NOTIFICATIONS,
+  hostApiMethodOf,
+  type HostApiPath,
+} from "../host-api-wire.js";
+import { PLUGIN_INSTANCE_METHODS } from "../plugin-instance-wire.js";
+import { hostProtocolCapabilities } from "../host-api-dispatcher.js";
+import { createBoundHostApiDispatchTable } from "../out-of-process-plugin.js";
+import { createGoldenHost } from "./host-protocol-golden-host.js";
+
+type JsonSchema = Record<string, unknown>;
+type Frame = Record<string, unknown>;
+
+const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
+const SCHEMA = JSON.parse(
+  readFileSync(join(REPO_ROOT, "schemas/plugin-host-protocol/1/protocol.schema.json"), "utf-8"),
+) as {
+  $id: string;
+  $defs: {
+    methods: Record<string, { params: JsonSchema; result: JsonSchema; errors: JsonSchema }>;
+    notifications: Record<string, { params: JsonSchema }>;
+    error: JsonSchema;
+    errorCodes: { enum: string[] };
+    capabilities: { items: { enum: string[] } };
+    types: Record<string, JsonSchema>;
+  };
+};
+const GOLDEN_ROOT = fileURLToPath(new URL("./fixtures/host-protocol/1/", import.meta.url));
+
+const Ajv2020 = (Ajv2020Module as unknown as { default?: unknown }).default ?? Ajv2020Module;
+// Not strict: a method entry holds its three schemas under `params`, `result`
+// and `errors` (§6.1), which are not JSON Schema keywords. Each is compiled on
+// its own below, with the named types beside it.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const ajv = new (Ajv2020 as any)({ strict: false, allErrors: true });
+
+const compiled = new Map<string, (value: unknown) => boolean>();
+
+/** Validate `value` against one sub-schema, and return what failed. */
+function violations(where: string, schema: JsonSchema, value: unknown): string[] {
+  let validate = compiled.get(where);
+  if (!validate) {
+    validate = ajv.compile({ ...schema, $defs: { types: SCHEMA.$defs.types } }) as (value: unknown) => boolean;
+    compiled.set(where, validate);
+  }
+  if (validate(value)) return [];
+  const errors = (validate as unknown as { errors: Array<{ instancePath: string; message: string }> }).errors;
+  return errors.map((error) => `${where}${error.instancePath}: ${error.message}`);
+}
+
+/** Every `enum` value found under `schema`, at any depth. */
+function enumValues(schema: unknown): unknown[] {
+  if (Array.isArray(schema)) return schema.flatMap(enumValues);
+  if (!schema || typeof schema !== "object") return [];
+  const own = Array.isArray((schema as JsonSchema).enum) ? ((schema as JsonSchema).enum as unknown[]) : [];
+  return [...own, ...Object.values(schema).flatMap(enumValues)];
+}
+
+const DISPATCHABLE = (Object.keys(HOSTAPI_PATH_CONTRACTS) as HostApiPath[]).filter(
+  (path) => HOSTAPI_PATH_CONTRACTS[path].result !== "child-local",
+);
+
+describe("the schema names what the host serves, and nothing else", () => {
+  it("is a valid 2020-12 schema whose references all resolve", () => {
+    expect(ajv.validateSchema(SCHEMA), JSON.stringify(ajv.errors)).toBe(true);
+    for (const [method, entry] of Object.entries(SCHEMA.$defs.methods)) {
+      for (const part of ["params", "result", "errors"] as const) {
+        expect(() => violations(`${method}.${part}`, entry[part], null), `${method}.${part}`).not.toThrow();
+      }
+    }
+    for (const [method, entry] of Object.entries(SCHEMA.$defs.notifications)) {
+      expect(() => violations(`${method}.params`, entry.params, null), method).not.toThrow();
+    }
+  });
+
+  it("carries the app version it was generated from in its $id", () => {
+    const { version } = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf-8")) as {
+      version: string;
+    };
+    expect(SCHEMA.$id).toBe(
+      `https://former-site.invalid/schemas/plugin-host-protocol/1/v${version}/protocol.schema.json`,
+    );
+  });
+
+  it("has one method entry per dispatchable path and per instance method, and no other", () => {
+    expect(DISPATCHABLE).toHaveLength(44);
+    expect(Object.keys(SCHEMA.$defs.methods).sort()).toEqual(
+      [...DISPATCHABLE.map((path) => hostApiMethodOf(path)), ...Object.values(PLUGIN_INSTANCE_METHODS)].sort(),
+    );
+  });
+
+  it("has one notification entry per notification kind, and no other", () => {
+    expect(Object.keys(SCHEMA.$defs.notifications).sort()).toEqual(
+      Object.values(HOST_PROTOCOL_NOTIFICATIONS).sort(),
+    );
+  });
+
+  it("publishes the closed error set, and names no code outside it", () => {
+    expect(SCHEMA.$defs.errorCodes.enum).toEqual([...HOST_API_WIRE_ERROR_CODES]);
+    const closed = new Set<unknown>(HOST_API_WIRE_ERROR_CODES);
+    const named = [
+      ...Object.values(SCHEMA.$defs.methods).flatMap((entry) => enumValues(entry.errors)),
+      ...enumValues(SCHEMA.$defs.error),
+    ];
+    expect(named.length).toBeGreaterThan(0);
+    expect(named.filter((code) => !closed.has(code))).toEqual([]);
+    for (const path of DISPATCHABLE) {
+      const errors = SCHEMA.$defs.methods[hostApiMethodOf(path)]!.errors;
+      // Any class the host throws is named by the classifier whichever member
+      // threw it, so a method may reply with any code but the version
+      // mismatch, which only `construct` answers.
+      expect(enumValues(errors), path).toEqual(
+        HOST_API_WIRE_ERROR_CODES.filter((code) => code !== "protocol-version-mismatch"),
+      );
+      // What the member's own implementation raises is still said there.
+      for (const code of HOSTAPI_PATH_CONTRACTS[path].errors) {
+        expect(String(errors.description), path).toContain(code);
+      }
+    }
+  });
+
+  it("advertises what construct advertises for a host with every optional member bound", () => {
+    // `createGoldenHost` implements every member, optional ones included.
+    const table = createBoundHostApiDispatchTable(createGoldenHost().api, { read: [], write: [] });
+    expect(SCHEMA.$defs.capabilities.items.enum).toEqual(hostProtocolCapabilities(table));
+  });
+});
+
+/** Every file under `dir`, relative to it. */
+function filesUnder(dir: string): string[] {
+  const out: string[] = [];
+  const walk = (current: string): void => {
+    for (const name of readdirSync(current)) {
+      const full = join(current, name);
+      if (statSync(full).isDirectory()) walk(full);
+      else out.push(relative(dir, full));
+    }
+  };
+  walk(dir);
+  return out.sort();
+}
+
+/** What a request, a reply or a notification must look like under the schema. */
+function frameViolations(where: string, frame: Frame, request?: Frame): string[] {
+  const method = typeof frame.method === "string" ? frame.method : undefined;
+  if (method !== undefined && "id" in frame) {
+    const entry = SCHEMA.$defs.methods[method];
+    return entry ? violations(`${where} ${method}.params`, entry.params, frame.params) : [];
+  }
+  if (method !== undefined) {
+    const entry = SCHEMA.$defs.notifications[method];
+    if (!entry) return [`${where}: '${method}' is not a notification the schema names`];
+    return violations(`${where} ${method}.params`, entry.params, frame.params);
+  }
+  const requested = typeof request?.method === "string" ? request.method : undefined;
+  const entry = requested ? SCHEMA.$defs.methods[requested] : undefined;
+  if ("error" in frame) {
+    return violations(`${where} ${requested}.errors`, entry?.errors ?? SCHEMA.$defs.error, frame.error);
+  }
+  return entry ? violations(`${where} ${requested}.result`, entry.result, frame.result) : [];
+}
+
+describe("every golden frame is valid under the schema", () => {
+  it("holds for each method's request and reply", () => {
+    const files = filesUnder(join(GOLDEN_ROOT, "methods")).filter((file) => !file.startsWith("errors/"));
+    expect(files.length).toBe(DISPATCHABLE.length + Object.keys(PLUGIN_INSTANCE_METHODS).length);
+    const failures = files.flatMap((file) => {
+      const { request, response } = JSON.parse(readFileSync(join(GOLDEN_ROOT, "methods", file), "utf-8")) as {
+        request: Frame;
+        response: Frame;
+      };
+      return [...frameViolations(file, request), ...frameViolations(file, response, request)];
+    });
+    expect(failures).toEqual([]);
+  });
+
+  it("holds for each error code's reply", () => {
+    const files = filesUnder(join(GOLDEN_ROOT, "methods", "errors"));
+    expect(files).toHaveLength(HOST_API_WIRE_ERROR_CODES.length);
+    const failures = files.flatMap((file) => {
+      const { request, response } = JSON.parse(
+        readFileSync(join(GOLDEN_ROOT, "methods", "errors", file), "utf-8"),
+      ) as { request: Frame; response: Frame };
+      // The request is not checked: most of these are malformed on purpose.
+      return frameViolations(file, response, request);
+    });
+    expect(failures).toEqual([]);
+  });
+
+  it("holds for each notification kind", () => {
+    const files = filesUnder(join(GOLDEN_ROOT, "notifications"));
+    expect(files).toHaveLength(Object.keys(HOST_PROTOCOL_NOTIFICATIONS).length);
+    const failures = files.flatMap((file) => {
+      const { frame } = JSON.parse(readFileSync(join(GOLDEN_ROOT, "notifications", file), "utf-8")) as {
+        frame: Frame;
+      };
+      return frameViolations(file, frame);
+    });
+    expect(failures).toEqual([]);
+  });
+
+  it("holds for every ave frame of each installed plugin's conversation", () => {
+    const transcripts = filesUnder(join(GOLDEN_ROOT, "plugins")).filter((file) => file.endsWith(".jsonl"));
+    expect(transcripts).toHaveLength(5);
+    let checked = 0;
+    const failures = transcripts.flatMap((file) => {
+      const lines = readFileSync(join(GOLDEN_ROOT, "plugins", file), "utf-8").trim().split("\n");
+      const recorded = lines.map((line) => JSON.parse(line) as { from: string; frame: Frame });
+      // A reply is matched to the request the OTHER end sent with its id; the
+      // two directions allocate ids independently.
+      const requests = new Map<string, Frame>();
+      return recorded.flatMap(({ from, frame }) => {
+        if (typeof frame.method === "string" && "id" in frame) requests.set(`${from}:${String(frame.id)}`, frame);
+        const request = "method" in frame
+          ? undefined
+          : requests.get(`${from === "host" ? "child" : "host"}:${String(frame.id)}`);
+        const method = String(frame.method ?? request?.method ?? "");
+        if (!method.startsWith("ave/") && !method.startsWith("notifications/")) return [];
+        checked += 1;
+        return frameViolations(file, frame, request);
+      });
+    });
+    expect(failures).toEqual([]);
+    expect(checked).toBeGreaterThan(100);
+  });
+});

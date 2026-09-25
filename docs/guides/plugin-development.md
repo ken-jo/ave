@@ -71,6 +71,15 @@ as:
 The caller plugin identity is bound by the host factory. Plugins must not pass
 or spoof another plugin id.
 
+A JavaScript plugin reaches the bridge through the `PluginHostApi` object it is
+handed. Underneath, each member is a JSON-RPC `ave/host/*` request on the
+plugin's own stdio, and `schemas/plugin-host-protocol/1/protocol.schema.json`
+describes every method, notification and error code of that channel. The file is
+generated from the host's own sources at each app release, so it describes what
+the host actually serves. The host does not yet admit a plugin that speaks the
+protocol without its JavaScript runtime; every plugin today is a JavaScript
+`entry`.
+
 ## UI Plugins
 
 Plugin UI loads in a host-owned shell. The host resolves the plugin entry URL,

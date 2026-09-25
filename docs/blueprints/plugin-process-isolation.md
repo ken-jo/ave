@@ -173,6 +173,20 @@ reply per method, one reply per error code, one frame per notification and the
 whole conversation of each installed plugin's surface, recorded against the real
 child runtime (`host-protocol-golden.test.ts`).
 
+The published form of all of this is `schemas/plugin-host-protocol/1/protocol.schema.json`:
+one entry per method (`params`, `result`, `errors`), one per notification, the
+closed error set, and the capabilities a host with every optional member bound
+advertises. It is generated, not written —
+`scripts/generate-plugin-host-protocol-schema.ts` reads the contract table, the
+`PluginHostApi` member types and the `Wire*` types — and `bun run build` fails
+when the committed file differs from what the sources generate
+(`check:plugin-host-protocol-schema`). `host-protocol-schema-parity.test.ts`
+holds it to the dispatcher's own tables and validates every golden frame
+against it. A method's `errors` admits every code but the version mismatch:
+the dispatcher names a failure by the class the host threw, whichever member
+threw it, so the contract's per-member list is what that member's
+implementation raises, not a narrowing of the reply.
+
 ### 2.3 Two drifts that must be closed before the contract is frozen
 
 Both are small; both would silently corrupt the enumeration if left.
