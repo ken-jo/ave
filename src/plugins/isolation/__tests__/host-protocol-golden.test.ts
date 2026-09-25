@@ -25,7 +25,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PassThrough, type Readable } from "node:stream";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,7 +53,12 @@ import {
   type HostApiWireErrorCode,
 } from "../host-api-wire.js";
 import { PLUGIN_INSTANCE_METHODS } from "../plugin-instance-wire.js";
-import { createGoldenHost, type GoldenHost, type GoldenHostOverrides } from "./host-protocol-golden-host.js";
+import {
+  createGoldenHost,
+  goldenFiles,
+  type GoldenHost,
+  type GoldenHostOverrides,
+} from "./host-protocol-golden-host.js";
 
 const GOLDEN_ROOT = fileURLToPath(new URL("./fixtures/host-protocol/1/", import.meta.url));
 const INVOKER_ENTRY = join(GOLDEN_ROOT, "invoker.mjs");
@@ -287,25 +292,6 @@ function lastRequest(frames: readonly RecordedFrame[], method: string): Recorded
   const found = frames.findLast((recorded) => recorded.frame.method === method && "id" in recorded.frame);
   if (!found) throw new Error(`no '${method}' request crossed`);
   return found;
-}
-
-/**
- * Every golden file under `dir`, relative to it and `/`-separated on every
- * platform: the names are built from segments rather than by `relative`, which
- * answers with `\` on Windows.
- */
-function goldenFiles(dir: string): string[] {
-  const out: string[] = [];
-  const walk = (current: string, prefix: string): void => {
-    for (const name of readdirSync(current)) {
-      const full = join(current, name);
-      const named = `${prefix}${name}`;
-      if (statSync(full).isDirectory()) walk(full, `${named}/`);
-      else out.push(named);
-    }
-  };
-  walk(dir, "");
-  return out.sort();
 }
 
 /** The members a plugin reaches over the wire: not child-local, so each is a method. */

@@ -19,7 +19,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,7 +34,7 @@ import {
 import { PLUGIN_INSTANCE_METHODS } from "../plugin-instance-wire.js";
 import { hostProtocolCapabilities } from "../host-api-dispatcher.js";
 import { createBoundHostApiDispatchTable } from "../out-of-process-plugin.js";
-import { createGoldenHost } from "./host-protocol-golden-host.js";
+import { createGoldenHost, goldenFiles } from "./host-protocol-golden-host.js";
 import { ts } from "ts-json-schema-generator";
 import {
   HOST_PROTOCOL_SCHEMA_LABEL,
@@ -173,20 +173,6 @@ describe("the schema names what the host serves, and nothing else", () => {
   });
 });
 
-/** Every file under `dir`, relative to it. */
-function filesUnder(dir: string): string[] {
-  const out: string[] = [];
-  const walk = (current: string): void => {
-    for (const name of readdirSync(current)) {
-      const full = join(current, name);
-      if (statSync(full).isDirectory()) walk(full);
-      else out.push(relative(dir, full));
-    }
-  };
-  walk(dir);
-  return out.sort();
-}
-
 /** What a request, a reply or a notification must look like under the schema. */
 function frameViolations(where: string, frame: Frame, request?: Frame): string[] {
   const method = typeof frame.method === "string" ? frame.method : undefined;
@@ -209,7 +195,7 @@ function frameViolations(where: string, frame: Frame, request?: Frame): string[]
 
 describe("every golden frame is valid under the schema", () => {
   it("holds for each method's request and reply", () => {
-    const files = filesUnder(join(GOLDEN_ROOT, "methods")).filter((file) => !file.startsWith("errors/"));
+    const files = goldenFiles(join(GOLDEN_ROOT, "methods")).filter((file) => !file.startsWith("errors/"));
     expect(files.length).toBe(DISPATCHABLE.length + Object.keys(PLUGIN_INSTANCE_METHODS).length);
     const failures = files.flatMap((file) => {
       const { request, response } = JSON.parse(readFileSync(join(GOLDEN_ROOT, "methods", file), "utf-8")) as {
@@ -222,7 +208,7 @@ describe("every golden frame is valid under the schema", () => {
   });
 
   it("holds for each error code's reply", () => {
-    const files = filesUnder(join(GOLDEN_ROOT, "methods", "errors"));
+    const files = goldenFiles(join(GOLDEN_ROOT, "methods", "errors"));
     expect(files).toHaveLength(HOST_API_WIRE_ERROR_CODES.length);
     const failures = files.flatMap((file) => {
       const { request, response } = JSON.parse(
@@ -235,7 +221,7 @@ describe("every golden frame is valid under the schema", () => {
   });
 
   it("holds for each notification kind", () => {
-    const files = filesUnder(join(GOLDEN_ROOT, "notifications"));
+    const files = goldenFiles(join(GOLDEN_ROOT, "notifications"));
     expect(files).toHaveLength(Object.keys(HOST_PROTOCOL_NOTIFICATIONS).length);
     const failures = files.flatMap((file) => {
       const { frame } = JSON.parse(readFileSync(join(GOLDEN_ROOT, "notifications", file), "utf-8")) as {
@@ -247,7 +233,7 @@ describe("every golden frame is valid under the schema", () => {
   });
 
   it("holds for every ave frame of each installed plugin's conversation", () => {
-    const transcripts = filesUnder(join(GOLDEN_ROOT, "plugins")).filter((file) => file.endsWith(".jsonl"));
+    const transcripts = goldenFiles(join(GOLDEN_ROOT, "plugins")).filter((file) => file.endsWith(".jsonl"));
     expect(transcripts).toHaveLength(5);
     let checked = 0;
     const failures = transcripts.flatMap((file) => {
@@ -272,7 +258,7 @@ describe("every golden frame is valid under the schema", () => {
   });
 
   it("holds for every subscription payload, against the events of the method that opened it", () => {
-    const transcripts = filesUnder(join(GOLDEN_ROOT, "plugins")).filter((file) => file.endsWith(".jsonl"));
+    const transcripts = goldenFiles(join(GOLDEN_ROOT, "plugins")).filter((file) => file.endsWith(".jsonl"));
     const covered = new Set<string>();
     const failures = transcripts.flatMap((file) => {
       const lines = readFileSync(join(GOLDEN_ROOT, "plugins", file), "utf-8").trim().split("\n");

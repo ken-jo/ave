@@ -10,8 +10,11 @@
  * Shared by `host-protocol-golden.test.ts`, which records over paired streams,
  * and `confined-plugin-child.test.ts`, which runs a fixture through a real
  * confined child — the second is only evidence about the first if both talk to
- * the same host.
+ * the same host. `host-protocol-schema-parity.test.ts` reads the recordings
+ * through {@link goldenFiles}, so it walks the same files the recorder wrote.
  */
+import { readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 import type {
   AudioCaptureEnd,
   AudioCaptureFrame,
@@ -262,4 +265,23 @@ export function createGoldenHost(overrides: GoldenHostOverrides = {}): GoldenHos
       for (const handler of shutdownHandlers.splice(0)) await handler();
     },
   };
+}
+
+/**
+ * Every golden file under `dir`, relative to it and `/`-separated on every
+ * platform: the names are built from segments rather than by `relative`, which
+ * answers with `\` on Windows.
+ */
+export function goldenFiles(dir: string): string[] {
+  const out: string[] = [];
+  const walk = (current: string, prefix: string): void => {
+    for (const name of readdirSync(current)) {
+      const full = join(current, name);
+      const named = `${prefix}${name}`;
+      if (statSync(full).isDirectory()) walk(full, `${named}/`);
+      else out.push(named);
+    }
+  };
+  walk(dir, "");
+  return out.sort();
 }
