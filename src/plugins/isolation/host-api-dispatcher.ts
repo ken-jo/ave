@@ -92,6 +92,8 @@ import {
   type WireHttpResponse,
   type WireResolveApiKeyOptions,
   type WireWorkerHandle,
+  type WireWorkerEvent,
+  type HostApiEventPayloads,
   type WireAudioCaptureEvent,
   type WireFloatingPanelEvent,
   type WireFloatingPanelHandle,
@@ -128,13 +130,17 @@ export interface HostSubscription {
  * own bookkeeping. Six members need this; six implementations of it would be six
  * chances to leak.
  */
-export interface SubscriptionScope {
+export interface SubscriptionScope<Event = unknown> {
   /** Register under the id the CHILD allocated (subscriptions). */
   adopt(subscriptionId: string, teardown: (reason: SubscriptionCloseReason) => void): void;
   /** Register under a host-allocated id and return it (worker handles, key leases). */
   open(teardown: (reason: SubscriptionCloseReason) => void): string;
-  /** Push a payload to the child's handler for this registration. */
-  deliver(subscriptionId: string, payload: unknown): void;
+  /**
+   * Push a payload to the child's handler for this registration. `Event` is the
+   * member's entry in `HostApiEventPayloads`, which the published schema
+   * documents; `never` for a member that pushes nothing.
+   */
+  deliver(subscriptionId: string, payload: Event): void;
   /**
    * End one registration from the host side. A handler calls this when the work
    * it was tracking is over — the exited worker behind a handle, a lease the
@@ -169,10 +175,15 @@ type WireResultFor<C extends HostApiPathContract> = C["result"] extends "void"
  * `lifetime: "none"` member is not given a subscription scope it would have no
  * use for; a lifetime-bearing one cannot forget to take it.
  */
-export type HostApiPathInvoke<C extends HostApiPathContract> =
+export type HostApiPathInvoke<C extends HostApiPathContract, Event = never> =
   C["lifetime"] extends "none"
     ? (call: HostApiCall) => Promise<WireResultFor<C>>
-    : (call: HostApiCall, scope: SubscriptionScope) => Promise<WireResultFor<C>>;
+    : (call: HostApiCall, scope: SubscriptionScope<Event>) => Promise<WireResultFor<C>>;
+
+/** What `P` pushes to its registration, or `never` for a member that pushes nothing. */
+type EventPayloadOf<P extends HostApiPath> = P extends keyof HostApiEventPayloads
+  ? HostApiEventPayloads[P]
+  : never;
 
 /**
  * How complete one table entry is. Read by the contract test, and by
@@ -213,7 +224,7 @@ export interface HostApiPathHandler {
  */
 export function defineHostApiPath<P extends HostApiPath>(
   path: P,
-  invoke: HostApiPathInvoke<ContractOf<P>>,
+  invoke: HostApiPathInvoke<ContractOf<P>, EventPayloadOf<P>>,
 ): HostApiPathHandler {
   return {
     path,
@@ -1199,7 +1210,7 @@ function spawnWorkerPath(
     // Pushes stop at the release, not at the exit: `deliver` throws on an unknown
     // subscription, and a chunk arriving after the handle was released would turn
     // a routine race into an exception inside an event listener.
-    const push = (payload: unknown): void => {
+    const push = (payload: WireWorkerEvent): void => {
       if (live) scope.deliver(handleId, payload);
     };
     worker.onStdout((chunk) => push({ kind: "stdout", chunk }));

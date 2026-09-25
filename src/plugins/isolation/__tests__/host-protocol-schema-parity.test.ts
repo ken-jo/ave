@@ -45,7 +45,7 @@ const SCHEMA = JSON.parse(
 ) as {
   $id: string;
   $defs: {
-    methods: Record<string, { params: JsonSchema; result: JsonSchema; errors: JsonSchema }>;
+    methods: Record<string, { params: JsonSchema; result: JsonSchema; errors: JsonSchema; events?: JsonSchema }>;
     notifications: Record<string, { params: JsonSchema }>;
     error: JsonSchema;
     errorCodes: { enum: string[] };
@@ -56,9 +56,9 @@ const SCHEMA = JSON.parse(
 const GOLDEN_ROOT = fileURLToPath(new URL("./fixtures/host-protocol/1/", import.meta.url));
 
 const Ajv2020 = (Ajv2020Module as unknown as { default?: unknown }).default ?? Ajv2020Module;
-// Not strict: a method entry holds its three schemas under `params`, `result`
-// and `errors` (§6.1), which are not JSON Schema keywords. Each is compiled on
-// its own below, with the named types beside it.
+// Not strict: a method entry holds its schemas under `params`, `result`,
+// `errors` and `events` (§6.1), which are not JSON Schema keywords. Each is
+// compiled on its own below, with the named types beside it.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const ajv = new (Ajv2020 as any)({ strict: false, allErrors: true });
 
@@ -92,8 +92,10 @@ describe("the schema names what the host serves, and nothing else", () => {
   it("is a valid 2020-12 schema whose references all resolve", () => {
     expect(ajv.validateSchema(SCHEMA), JSON.stringify(ajv.errors)).toBe(true);
     for (const [method, entry] of Object.entries(SCHEMA.$defs.methods)) {
-      for (const part of ["params", "result", "errors"] as const) {
-        expect(() => violations(`${method}.${part}`, entry[part], null), `${method}.${part}`).not.toThrow();
+      for (const part of ["params", "result", "errors", "events"] as const) {
+        const schema = entry[part];
+        if (schema === undefined) continue;
+        expect(() => violations(`${method}.${part}`, schema, null), `${method}.${part}`).not.toThrow();
       }
     }
     for (const [method, entry] of Object.entries(SCHEMA.$defs.notifications)) {
@@ -115,6 +117,16 @@ describe("the schema names what the host serves, and nothing else", () => {
     expect(Object.keys(SCHEMA.$defs.methods).sort()).toEqual(
       [...DISPATCHABLE.map((path) => hostApiMethodOf(path)), ...Object.values(PLUGIN_INSTANCE_METHODS)].sort(),
     );
+  });
+
+  it("names what every registration and handle pushes, and nothing else does", () => {
+    const outlivesReply = DISPATCHABLE.filter((path) =>
+      HOSTAPI_PATH_CONTRACTS[path].arguments === "handler-registration"
+      || HOSTAPI_PATH_CONTRACTS[path].result === "handle");
+    expect(outlivesReply.length).toBeGreaterThan(0);
+    expect(
+      Object.entries(SCHEMA.$defs.methods).filter(([, entry]) => entry.events).map(([method]) => method).sort(),
+    ).toEqual(outlivesReply.map((path) => hostApiMethodOf(path)).sort());
   });
 
   it("has one notification entry per notification kind, and no other", () => {
@@ -250,6 +262,50 @@ describe("every golden frame is valid under the schema", () => {
     });
     expect(failures).toEqual([]);
     expect(checked).toBeGreaterThan(100);
+  });
+
+  it("holds for every subscription payload, against the events of the method that opened it", () => {
+    const transcripts = filesUnder(join(GOLDEN_ROOT, "plugins")).filter((file) => file.endsWith(".jsonl"));
+    const covered = new Set<string>();
+    const failures = transcripts.flatMap((file) => {
+      const lines = readFileSync(join(GOLDEN_ROOT, "plugins", file), "utf-8").trim().split("\n");
+      const recorded = lines.map((line) => JSON.parse(line) as { from: string; frame: Frame });
+      // A registration's reply names the id the child chose; a handle's names
+      // the one the host allocated. Either way it is `result.handleId`. Read
+      // in a pass of its own: a registration's first event can cross before
+      // its reply does.
+      const requests = new Map<string, string>();
+      const openedBy = new Map<string, string>();
+      for (const { from, frame } of recorded) {
+        if (from === "child" && typeof frame.method === "string" && "id" in frame) {
+          requests.set(String(frame.id), frame.method);
+        }
+        if (from === "host" && !("method" in frame)) {
+          const method = requests.get(String(frame.id));
+          const handleId = (frame.result as { handleId?: unknown } | undefined)?.handleId;
+          if (method && SCHEMA.$defs.methods[method]?.events && typeof handleId === "string") {
+            openedBy.set(handleId, method);
+          }
+        }
+      }
+      return recorded.flatMap(({ frame }): string[] => {
+        if (frame.method !== "notifications/ave/subscription") return [];
+        const params = frame.params as { subscriptionId: string; payload: unknown };
+        const method = openedBy.get(params.subscriptionId);
+        if (!method) return [`${file}: subscription '${params.subscriptionId}' was not opened by a method with events`];
+        covered.add(method);
+        return violations(`${method}.events`, SCHEMA.$defs.methods[method]!.events!, params.payload)
+          .map((failure) => `${file} ${failure}`);
+      });
+    });
+    expect(failures).toEqual([]);
+    // Every member that pushes something is exercised by a recorded conversation.
+    expect([...covered].sort()).toEqual(
+      Object.entries(SCHEMA.$defs.methods)
+        .filter(([, entry]) => entry.events && !("not" in entry.events))
+        .map(([method]) => method)
+        .sort(),
+    );
   });
 });
 

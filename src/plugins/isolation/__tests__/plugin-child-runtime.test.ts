@@ -26,6 +26,7 @@ import {
   PluginHostApiError,
   type HostApiNotification,
   type HostApiRequest,
+  type HostEventDelivery,
 } from "../host-api-wire.js";
 import {
   createChildHostApiStub,
@@ -588,7 +589,7 @@ describe("a subscription releases on both sides, whichever side dies", () => {
 
   it("carries a payload from the host handler to the plugin's callback", async () => {
     const delivered: unknown[] = [];
-    let push: ((payload: unknown) => void) | undefined;
+    let push: ((payload: HostEventDelivery) => void) | undefined;
     const table = {
       ...HOSTAPI_DISPATCH_TABLE,
       onEvent: defineHostApiPath("onEvent", async (invocation, scope) => {
@@ -604,11 +605,11 @@ describe("a subscription releases on both sides, whichever side dies", () => {
     );
     await wired.call("onEvent", ["task.created", subscription.subscriptionId]);
 
-    push?.({ taskId: "t1" });
-    expect(delivered).toEqual([{ taskId: "t1" }]);
+    push?.({ data: { taskId: "t1" } });
+    expect(delivered).toEqual([{ data: { taskId: "t1" } }]);
 
     subscription.dispose();
-    expect(() => push?.({ taskId: "t2" })).toThrow(/no open subscription/u);
+    expect(() => push?.({ data: { taskId: "t2" } })).toThrow(/no open subscription/u);
   });
 });
 

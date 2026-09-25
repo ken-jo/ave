@@ -174,7 +174,10 @@ whole conversation of each installed plugin's surface, recorded against the real
 child runtime (`host-protocol-golden.test.ts`).
 
 The published form of all of this is `schemas/plugin-host-protocol/1/protocol.schema.json`:
-one entry per method (`params`, `result`, `errors`), one per notification, the
+one entry per method (`params`, `result`, `errors`, and `events` for a member
+whose registration or handle outlives the reply — the `payload` of each
+`notifications/ave/subscription` frame, read from `HostApiEventPayloads`, the
+type the dispatcher's `deliver` accepts), one per notification, the
 closed error set, and the capabilities a host with every optional member bound
 advertises. It is generated, not written —
 `scripts/generate-plugin-host-protocol-schema.ts` reads the contract table, the

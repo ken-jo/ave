@@ -351,6 +351,23 @@
           ],
           "type": "object"
         },
+        "events": {
+          "description": "One `detached` when the slot goes away.",
+          "properties": {
+            "kind": {
+              "const": "detached",
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ],
+          "type": "object"
+        },
         "params": {
           "properties": {
             "request": {
@@ -793,6 +810,39 @@
             "data"
           ],
           "type": "object"
+        },
+        "events": {
+          "anyOf": [
+            {
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "value": {}
+              },
+              "required": [
+                "key"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "secretRedacted": {
+                  "const": true,
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "key",
+                "secretRedacted"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "One per change of the watched key."
         },
         "params": {
           "properties": {
@@ -1451,6 +1501,13 @@
           ],
           "type": "object"
         },
+        "events": {
+          "description": "One per event of the subscribed type.",
+          "properties": {
+            "data": {}
+          },
+          "type": "object"
+        },
         "params": {
           "properties": {
             "eventType": {
@@ -1523,6 +1580,18 @@
           ],
           "type": "object"
         },
+        "events": {
+          "description": "One per plugin installed, updated, enabled, disabled or removed.",
+          "properties": {
+            "event": {
+              "$ref": "#/$defs/types/PluginLifecycleEvent"
+            }
+          },
+          "required": [
+            "event"
+          ],
+          "type": "object"
+        },
         "params": {
           "properties": {
             "handler": {
@@ -1590,6 +1659,10 @@
             "data"
           ],
           "type": "object"
+        },
+        "events": {
+          "description": "Pushes nothing: the host runs the handler with the `ave/instance/shutdown` request.",
+          "not": {}
         },
         "params": {
           "properties": {
@@ -2421,6 +2494,10 @@
           ],
           "type": "object"
         },
+        "events": {
+          "description": "Pushes nothing: a lease is only ever closed, by `notifications/ave/subscription/closed`.",
+          "not": {}
+        },
         "params": {
           "properties": {
             "opts": {
@@ -2558,6 +2635,69 @@
           ],
           "type": "object"
         },
+        "events": {
+          "anyOf": [
+            {
+              "properties": {
+                "chunk": {
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "stdout",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "chunk"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "chunk": {
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "stderr",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "chunk"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "code": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "kind": {
+                  "const": "exit",
+                  "type": "string"
+                },
+                "signal": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "code",
+                "signal"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Output as it is written, then one `exit`."
+        },
         "params": {
           "properties": {
             "spec": {
@@ -2678,6 +2818,54 @@
             "data"
           ],
           "type": "object"
+        },
+        "events": {
+          "anyOf": [
+            {
+              "properties": {
+                "kind": {
+                  "const": "frame",
+                  "type": "string"
+                },
+                "pcm": {
+                  "type": "string"
+                },
+                "peak": {
+                  "type": "number"
+                },
+                "seq": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "kind",
+                "seq",
+                "pcm",
+                "peak"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "detail": {
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "end",
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "reason"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "PCM frames in order, then one `end`."
         },
         "params": {
           "properties": {
@@ -4030,7 +4218,7 @@
         }
       },
       "notifications/ave/subscription": {
-        "description": "host → child: an event for a subscription the child opened.",
+        "description": "host → child: an event for a subscription the child opened. The payload's shape is the `events` of the method that opened it (`HostApiEventPayloads`).",
         "params": {
           "properties": {
             "payload": {},
@@ -4633,6 +4821,50 @@
           "actionLabel"
         ],
         "type": "object"
+      },
+      "PluginLifecycleEvent": {
+        "anyOf": [
+          {
+            "properties": {
+              "pluginId": {
+                "type": "string"
+              },
+              "source": {
+                "enum": [
+                  "marketplace",
+                  "local-dev"
+                ],
+                "type": "string"
+              },
+              "type": {
+                "const": "installed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "pluginId",
+              "source"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "pluginId": {
+                "type": "string"
+              },
+              "type": {
+                "const": "uninstalled",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "pluginId"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "PluginLifecycleHookName": {
         "enum": [
@@ -5702,6 +5934,6 @@
   },
   "$id": "https://former-site.invalid/schemas/plugin-host-protocol/1/v0.10.0/protocol.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Generated by scripts/generate-plugin-host-protocol-schema.ts from ave 0.10.0; do not edit. Each method names its params, its result and the errors it may reply with; each notification names its params. docs/design/plugin-hostapi-protocol.md describes the protocol.",
+  "description": "Generated by scripts/generate-plugin-host-protocol-schema.ts from ave 0.10.0; do not edit. Each method names its params, its result and the errors it may reply with, and a method whose registration or handle outlives the reply names the payload of every notifications/ave/subscription frame for it under events; each notification names its params. docs/design/plugin-hostapi-protocol.md describes the protocol.",
   "title": "Ave plugin host protocol 1"
 }
