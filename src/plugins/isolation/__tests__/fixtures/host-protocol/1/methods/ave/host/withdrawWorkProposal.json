@@ -1,0 +1,16 @@
+{
+  "request": {
+    "id": 17,
+    "jsonrpc": "2.0",
+    "method": "ave/host/withdrawWorkProposal",
+    "params": {
+      "key": "mail-1",
+      "kind": "follow-up"
+    }
+  },
+  "response": {
+    "id": 17,
+    "jsonrpc": "2.0",
+    "result": true
+  }
+}

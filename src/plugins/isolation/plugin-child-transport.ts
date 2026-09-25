@@ -2,10 +2,10 @@
  * The host end of one plugin child's pipes
  * (`docs/blueprints/plugin-process-isolation.md` §5.2).
  *
- * It owns exactly one thing: turning a pair of streams into the two contracts
- * that run over them — outbound requests (MCP `tools/call` and the five
- * lifecycle methods of `plugin-instance-wire.ts`) and inbound hostApi traffic,
- * which it hands to a {@link HostApiDispatcher}.
+ * It owns exactly one thing: turning a pair of streams into the two halves of
+ * the protocol that run over them — outbound requests (MCP `tools/call` and the
+ * five lifecycle methods of `plugin-instance-wire.ts`) and inbound `ave/host/*`
+ * traffic, which it hands to a {@link HostApiDispatcher}.
  *
  * STREAM-INJECTED, not process-owning. The spawn, the ASRT wrap and the
  * managed-child registration live in `out-of-process-plugin.ts`; this class
@@ -205,7 +205,7 @@ export class PluginChildTransport {
 
   private route(message: MultiplexedMessage): void {
     switch (classifyMultiplexedMessage(message)) {
-      case "rpc-response": {
+      case "response": {
         const id = String(message.id);
         if (message.error !== undefined) {
           this.pending.fail(
@@ -217,12 +217,12 @@ export class PluginChildTransport {
         this.pending.settle(id, message.result);
         return;
       }
-      case "host-api-request":
+      case "host-request":
         void this.dispatcher
           .handle(message as unknown as HostApiRequest)
           .then((reply) => this.stream.send(reply));
         return;
-      case "host-api-notification":
+      case "notification":
         this.dispatcher.handleNotification(message as unknown as HostApiNotification);
         return;
       default:

@@ -21,8 +21,12 @@ import {
 } from "../host-api-dispatcher.js";
 import { HOSTAPI_PATH_CONTRACTS, type HostApiPath } from "../host-api-wire.js";
 import {
-  HOST_API_WIRE_VERSION,
-  type HostApiChannel,
+  argsOfRequest,
+  directHostApiChannel,
+  hostApiRequest,
+  pathOfRequest,
+} from "../../../__tests__/support/host-protocol-wire.js";
+import {
   type HostApiNotification,
   type HostApiRequest,
 } from "../host-api-wire.js";
@@ -43,7 +47,6 @@ import type { PluginManifest } from "../../types.js";
 import { settleMacrotask as flush } from "../../../__tests__/test-helpers.js";
 
 const PLUGIN_ID = "com.example.subscriber";
-const GENERATION = "gen-11";
 
 const MANIFEST: PluginManifest = {
   id: PLUGIN_ID,
@@ -145,9 +148,10 @@ interface Harness {
  * subscribe request itself.
  */
 function subscriptionIdOf(requests: HostApiRequest[], path: HostApiPath): string {
-  const request = requests.find((candidate) => candidate.path === path);
+  const request = requests.find((candidate) => pathOfRequest(candidate) === path);
   if (!request) throw new Error(`no '${path}' request crossed the wire`);
-  return request.args[request.args.length - 1] as string;
+  const args = argsOfRequest(request);
+  return args[args.length - 1] as string;
 }
 
 async function harness(
@@ -164,16 +168,13 @@ async function harness(
   let host!: HostApiDispatcher;
   let child!: PluginChildRuntime;
 
-  const channel: HostApiChannel = {
-    call: (request) => {
-      requests.push(request);
-      return host.handle(request);
+  const channel = directHostApiChannel(
+    {
+      handle: (request) => host.handle(request),
+      handleNotification: (notification) => host.handleNotification(notification),
     },
-    notify: (notification) => {
-      notifications.push(notification);
-      host.handleNotification(notification);
-    },
-  };
+    { requests, notifications },
+  );
 
   const hostLogs: { message: string; meta?: unknown }[] = [];
   host = new HostApiDispatcher({
@@ -181,9 +182,9 @@ async function harness(
     // test that discards could not tell the difference.
     log: (message, meta) => hostLogs.push({ message, meta }),
     pluginId: PLUGIN_ID,
-    generationId: GENERATION,
     isActive: options.isActive ?? (() => true),
     notifications: { deliver: (notification) => child.deliver(notification) },
+    reportUnknownField: () => {},
     table: {
       ...HOSTAPI_DISPATCH_TABLE,
       ...createConfigSubscriptionHostApiPaths(api.hostApi),
@@ -205,17 +206,13 @@ async function harness(
       aveHome: "/Users/example/.ave",
       installedPluginIds: [],
       config: options.config ?? { theme: "dark" },
-      generationId: GENERATION,
       ...(options.appPreferences ? { appPreferences: options.appPreferences } : {}),
     },
     channel,
     loadFactory,
   });
 
-  const call = createHostApiCaller(channel, {
-    pluginId: PLUGIN_ID,
-    generationId: GENERATION,
-  });
+  const call = createHostApiCaller(channel, { pluginId: PLUGIN_ID });
 
   return { child, host, api, hostApi: child.hostApi, notifications, requests, call };
 }
@@ -297,7 +294,10 @@ describe("config.set crosses as plain JSON and comes back as nothing", () => {
 
   it("refuses a malformed call off the wire rather than persisting a bad key", async () => {
     const { call, api } = await harness();
-    for (const args of [[], ["only-a-key"], [42, "value"], ["k", "v", "extra"]]) {
+    // A surplus positional argument is not in this list: the params object has
+    // no slot for one, and an undeclared FIELD is reported and ignored (§3.3),
+    // which the boundary contract suite asserts.
+    for (const args of [[], ["only-a-key"], [42, "value"]]) {
       await expect(call("config.set", args)).rejects.toMatchObject({
         code: "argument-marshalling-rejected",
       });
@@ -388,7 +388,6 @@ describe.each(DISPOSABLE)(
       const malformed = [
         [],
         wireArgs("s1").slice(0, arity - 1),
-        [...wireArgs("s1"), "extra"],
         wireArgs("s1").map(() => 42),
       ];
       for (const args of malformed) {
@@ -425,7 +424,9 @@ describe.each(DISPOSABLE)(
       expect(child.openSubscriptionCount).toBe(0);
       expect(host.openSubscriptionCount).toBe(0);
       expect(hostListenerCount(api)).toBe(0);
-      expect(notifications.at(-1)).toMatchObject({ kind: "subscription-release" });
+      expect(notifications.at(-1)).toMatchObject({
+        method: "notifications/ave/subscription/release",
+      });
       // Idempotent: a plugin that disposes twice does not release twice.
       dispose();
       expect(host.openSubscriptionCount).toBe(0);
@@ -463,12 +464,12 @@ describe.each(DISPOSABLE)(
       const before = notifications.length;
       expect(
         child.deliver({
-          wire: HOST_API_WIRE_VERSION,
-          pluginId: PLUGIN_ID,
-          generationId: GENERATION,
-          kind: "subscription-closed",
-          subscriptionId: subscriptionIdOf(requests, path),
-          reason: "revoked",
+          jsonrpc: "2.0",
+          method: "notifications/ave/subscription/closed",
+          params: {
+            subscriptionId: subscriptionIdOf(requests, path),
+            reason: "revoked",
+          },
         }),
       ).toBe("closed");
       expect(child.openSubscriptionCount).toBe(0);
@@ -572,7 +573,7 @@ describe("onShutdown is the subscription the HOST ends", () => {
 
   it("refuses a malformed registration off the wire", async () => {
     const { call } = await harness();
-    for (const args of [[], [42], ["a", "b"]]) {
+    for (const args of [[], [42]]) {
       await expect(call("onShutdown", args)).rejects.toMatchObject({
         code: "argument-marshalling-rejected",
       });
@@ -597,11 +598,11 @@ describe("a subscribe the host refuses does not leave the plugin holding a live 
     expect(child.openSubscriptionCount).toBe(0);
     expect(host.openSubscriptionCount).toBe(0);
     expect(api.eventListenerCount("task.created")).toBe(0);
-    const reported = notifications.filter((n) => n.kind === "log");
+    const reported = notifications.filter((n) => n.method === "notifications/ave/log");
     expect(reported).toHaveLength(1);
     expect(reported[0]).toMatchObject({
-      kind: "log",
-      message: "hostApi.onEvent: the host refused the subscription",
+      method: "notifications/ave/log",
+      params: { message: "hostApi.onEvent: the host refused the subscription" },
     });
   });
 
@@ -613,7 +614,9 @@ describe("a subscribe the host refuses does not leave the plugin holding a live 
     await flush();
     expect(child.openSubscriptionCount).toBe(0);
     expect(
-      notifications.flatMap((n) => (n.kind === "log" ? [n.message] : [])).sort(),
+      notifications
+        .flatMap((n) => (n.method === "notifications/ave/log" ? [n.params.message] : []))
+        .sort(),
     ).toEqual([
       "hostApi.config.onChange: the host refused the subscription",
       "hostApi.onPluginsChanged: the host refused the subscription",
@@ -738,27 +741,20 @@ describe("the group binds to one incarnation and claims exactly its own members"
       // test that discards could not tell the difference.
       log: (message, meta) => hostLogs.push({ message, meta }),
       pluginId: PLUGIN_ID,
-      generationId: GENERATION,
       isActive: () => true,
       notifications: { deliver: () => {} },
+      reportUnknownField: () => {},
       table: {
         ...HOSTAPI_DISPATCH_TABLE,
         ...createConfigSubscriptionHostApiPaths(drifted),
       } as Record<HostApiPath, HostApiPathHandler>,
     });
-    const envelope = {
-      wire: HOST_API_WIRE_VERSION,
-      pluginId: PLUGIN_ID,
-      generationId: GENERATION,
-    } as const;
     for (const [path, args] of [
       ["config.set", ["theme", "light"]],
       ["onShutdown", ["s1"]],
     ] as const) {
-      const reply = await host.handle({ ...envelope, callId: "c1", path, args });
-      expect(reply.ok, path).toBe(false);
-      if (reply.ok) continue;
-      expect(reply.error.code, path).toBe("result-marshalling-rejected");
+      const reply = await host.handle(hostApiRequest(path, args, "c1"));
+      expect("error" in reply && reply.error.data.code, path).toBe("result-marshalling-rejected");
     }
   });
 
@@ -776,20 +772,13 @@ describe("the group binds to one incarnation and claims exactly its own members"
       // test that discards could not tell the difference.
       log: (message, meta) => hostLogs.push({ message, meta }),
       pluginId: PLUGIN_ID,
-      generationId: GENERATION,
       isActive: () => true,
       notifications: { deliver: () => {} },
+      reportUnknownField: () => {},
       table,
     });
-    const reply = await host.handle({
-      wire: HOST_API_WIRE_VERSION,
-      pluginId: PLUGIN_ID,
-      generationId: GENERATION,
-      callId: "c1",
-      path: "config.set",
-      args: ["theme", "light"],
-    });
-    expect(reply.ok).toBe(true);
+    const reply = await host.handle(hostApiRequest("config.set", ["theme", "light"], "c1"));
+    expect("result" in reply).toBe(true);
     expect(first.written).toEqual([["theme", "light"]]);
     expect(spy).not.toHaveBeenCalled();
   });
@@ -807,12 +796,12 @@ describe("the config snapshot the child reads is re-pushed, not frozen at constr
 
     expect(
       child.deliver({
-        wire: 1,
-        pluginId: PLUGIN_ID,
-        generationId: GENERATION,
-        kind: "config-snapshot",
-        keys: ["theme", "locale"],
-        values: { theme: "light", locale: "ko" },
+        jsonrpc: "2.0",
+        method: "notifications/ave/config/snapshot",
+        params: {
+          keys: ["theme", "locale"],
+          values: { theme: "light", locale: "ko" },
+        },
       }),
     ).toBe("delivered");
 
@@ -828,12 +817,12 @@ describe("the config snapshot the child reads is re-pushed, not frozen at constr
     expect(hostApi.config.get("token")).toBe("abc");
 
     child.deliver({
-      wire: 1,
-      pluginId: PLUGIN_ID,
-      generationId: GENERATION,
-      kind: "config-snapshot",
-      keys: ["token"],
-      values: {},
+      jsonrpc: "2.0",
+      method: "notifications/ave/config/snapshot",
+      params: {
+        keys: ["token"],
+        values: {},
+      },
     });
 
     expect(hostApi.config.get("token")).toBeUndefined();
@@ -848,12 +837,12 @@ describe("the config snapshot the child reads is re-pushed, not frozen at constr
     expect(hostApi.config.get("adhoc")).toBe(41);
 
     child.deliver({
-      wire: 1,
-      pluginId: PLUGIN_ID,
-      generationId: GENERATION,
-      kind: "config-snapshot",
-      keys: ["theme"],
-      values: { theme: "light" },
+      jsonrpc: "2.0",
+      method: "notifications/ave/config/snapshot",
+      params: {
+        keys: ["theme"],
+        values: { theme: "light" },
+      },
     });
 
     expect(hostApi.config.get("theme")).toBe("light");
@@ -955,12 +944,12 @@ describe("getAppPreference answers from a snapshot the host keeps current", () =
 
     expect(
       child.deliver({
-        wire: 1,
-        pluginId: PLUGIN_ID,
-        generationId: GENERATION,
-        kind: "preference-snapshot",
-        keys: ["webView.preferredFlow"],
-        values: { "webView.preferredFlow": "system-browser" },
+        jsonrpc: "2.0",
+        method: "notifications/ave/preferences/snapshot",
+        params: {
+          keys: ["webView.preferredFlow"],
+          values: { "webView.preferredFlow": "system-browser" },
+        },
       }),
     ).toBe("delivered");
 
@@ -979,12 +968,12 @@ describe("getAppPreference answers from a snapshot the host keeps current", () =
     });
 
     child.deliver({
-      wire: 1,
-      pluginId: PLUGIN_ID,
-      generationId: GENERATION,
-      kind: "preference-snapshot",
-      keys: ["webView.preferredFlow"],
-      values: {},
+      jsonrpc: "2.0",
+      method: "notifications/ave/preferences/snapshot",
+      params: {
+        keys: ["webView.preferredFlow"],
+        values: {},
+      },
     });
 
     expect(hostApi.getAppPreference!("webView.preferredFlow")).toBeUndefined();
@@ -1033,12 +1022,12 @@ describe("getAppPreference answers from a snapshot the host keeps current", () =
     const { child } = await harness();
     expect(
       child.deliver({
-        wire: 1,
-        pluginId: PLUGIN_ID,
-        generationId: GENERATION,
-        kind: "preference-snapshot",
-        keys: ["webView.preferredFlow"],
-        values: { "webView.preferredFlow": "in-app" },
+        jsonrpc: "2.0",
+        method: "notifications/ave/preferences/snapshot",
+        params: {
+          keys: ["webView.preferredFlow"],
+          values: { "webView.preferredFlow": "in-app" },
+        },
       }),
     ).toBe("unknown-subscription");
   });

@@ -1,0 +1,16 @@
+{
+  "request": {
+    "id": 12,
+    "jsonrpc": "2.0",
+    "method": "ave/host/config/set",
+    "params": {
+      "key": "region",
+      "value": "south"
+    }
+  },
+  "response": {
+    "id": 12,
+    "jsonrpc": "2.0",
+    "result": null
+  }
+}

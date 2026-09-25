@@ -1,0 +1,119 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "vega-helper",
+  "version": "0.11.3",
+  "description": "Host protocol golden fixture: the hostApi surface the vega-helper plugin reaches, beside its own lifecycle and access declarations.",
+  "extensions": {
+    "ai.agent-connector.ave": {
+      "displayName": "Ave Vega Helper",
+      "entry": "entry.mjs",
+      "capabilities": [
+        "host:overlay",
+        "lifecycle-observer"
+      ],
+      "emittedEvents": [
+        "vega_helper.alert.mail-action",
+        "vega_helper.alert.mail-approval",
+        "vega_helper.alert.mail-meeting",
+        "vega_helper.alert.mail-reply",
+        "vega_helper.alert.meeting-summary",
+        "vega_helper.alert.calendar-event-prep",
+        "vega_helper.alert.work-item-due-soon",
+        "vega_helper.alert.video-conference-prep-register",
+        "vega_helper.alert.calendar-conflict-prep",
+        "vega_helper.alert.meeting-room-suggest",
+        "vega_helper.alert.webex-link-missing",
+        "vega_helper.snapshot.requested",
+        "vega_helper.calendar.sync.requested",
+        "vega_helper.meeting.prep.requested",
+        "vega_helper.meeting.recording.requested"
+      ],
+      "eventSubscriptions": [
+        "email.new",
+        "meeting.summary.created",
+        "meeting.ended",
+        "calendar.event.upcoming",
+        "calendar.event.starting",
+        "calendar.event.added",
+        "calendar.event.conflict.detected",
+        "work_board.work_item.due_soon",
+        "lyra-mail.auth.changed",
+        "lyra-mail.snapshot.ready",
+        "orion-api.video-conference.reserved"
+      ],
+      "pluginAccess": {
+        "plugins": [
+          {
+            "pluginId": "lyra-mail",
+            "events": [
+              "email.new",
+              "calendar.event.upcoming",
+              "calendar.event.starting",
+              "calendar.event.conflict.detected",
+              "calendar.event.added",
+              "lyra-mail.auth.changed",
+              "lyra-mail.snapshot.ready"
+            ]
+          },
+          {
+            "pluginId": "meeting",
+            "events": [
+              "meeting.summary.created",
+              "meeting.ended"
+            ]
+          },
+          {
+            "pluginId": "orion-api",
+            "events": [
+              "orion-api.video-conference.reserved"
+            ]
+          }
+        ]
+      },
+      "dependencies": [
+        {
+          "pluginId": "lyra-mail",
+          "required": false
+        },
+        {
+          "pluginId": "meeting",
+          "required": false
+        },
+        {
+          "pluginId": "orion-api",
+          "required": false
+        }
+      ],
+      "requires": {
+        "minAppVersion": "0.10.0"
+      },
+      "configSchema": {
+        "properties": {
+          "osNotificationsEnabled": {
+            "type": "boolean",
+            "title": "OS notifications",
+            "default": true
+          }
+        }
+      },
+      "tools": [
+        {
+          "name": "exercise_host",
+          "description": "Call each hostApi member this surface uses, once.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {}
+          }
+        },
+        {
+          "name": "report_host",
+          "description": "Report what the host pushed since, and release what is held.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {}
+          }
+        }
+      ]
+    }
+  }
+}

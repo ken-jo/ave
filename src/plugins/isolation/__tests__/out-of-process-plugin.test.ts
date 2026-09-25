@@ -329,10 +329,12 @@ describe("the pilot, out of process", () => {
       // The bound instance, not a fresh one: the effect recorder and the effect
       // gate wrap THIS object in production, so a boundary bound to any other
       // would record nothing.
-      // `{}` and not `undefined`: `callLlm`'s handler always passes an options
-      // object, because the wire carries the three declared option fields
-      // individually and rebuilds them host-side.
-      expect(hostApi.callLlm).toHaveBeenCalledWith("say hello", {});
+      // An options object and not `undefined`: `callLlm`'s handler always
+      // rebuilds one host-side from the declared fields, and it always carries
+      // the request's own cancellation signal, which the wire never does.
+      expect(hostApi.callLlm).toHaveBeenCalledWith("say hello", {
+        signal: expect.any(AbortSignal),
+      });
       await instance.stop?.();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -636,7 +638,7 @@ describe("a message too large to frame fails its call, not the channel", () => {
       expect(transportWarnings).toHaveLength(1);
       expect(transportWarnings[0]![0]).toMatchObject({
         pluginId: PLUGIN_ID,
-        method: "subscription-event",
+        method: "notifications/ave/subscription",
         subscriptionId: expect.any(String),
         byteLength: expect.any(Number),
         limit: FRAME_BYTES_MAX,
@@ -659,7 +661,7 @@ describe("a message too large to frame fails its call, not the channel", () => {
       expect(reported).toHaveLength(1);
       expect(JSON.parse(reported[0]!.slice(reported[0]!.indexOf("{")))).toMatchObject({
         pluginId: PLUGIN_ID,
-        method: "log",
+        method: "notifications/ave/log",
         limit: FRAME_BYTES_MAX,
       });
       await expect(instance.handlers.echo!()).resolves.toEqual({ echoed: null });

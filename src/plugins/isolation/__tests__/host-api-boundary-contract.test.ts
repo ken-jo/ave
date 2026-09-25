@@ -30,27 +30,28 @@ import {
 import {
   HOSTAPI_DISPATCH_TABLE,
   HostApiDispatcher,
+  UNKNOWN_FIELD_REPORTS_MAX,
   childLocalHostApiPath,
   classifyHostApiError,
   defineHostApiPath,
   unimplementedHostApiPath,
   type HostApiCall,
   type HostApiPathStatus,
+  type UnknownFieldReport,
 } from "../host-api-dispatcher.js";
 import {
-  HOST_API_WIRE_VERSION,
   HostApiBoundaryError,
   UNIVERSAL_WIRE_ERROR_CODES,
   WIRE_BYTES_MAX,
   decodeWireBinary,
   decodeWireBytes,
   encodeWireBytes,
+  hostApiPathOf,
   inactiveHostApiMessage,
   reconstructWireError,
   type ArgumentMarshalling,
   type ChildNotificationSink,
   type DisposerLifetime,
-  type HostApiEnvelope,
   type HostApiRequest,
   type ResultMarshalling,
 } from "../host-api-wire.js";
@@ -59,27 +60,29 @@ import {
   allPluginsAreOutOfProcess,
   isOutOfProcessPlugin,
 } from "../out-of-process-plugins.js";
+import { hostApiRequest } from "../../../__tests__/support/host-protocol-wire.js";
 
 const PLUGIN_ID = "com.example.contract";
-const GENERATION = "gen-1";
 
 const silentSink: ChildNotificationSink = { deliver: () => {} };
 
-/** The identity every message carries; the host checks all three of it. */
-const ENVELOPE: HostApiEnvelope = {
-  wire: HOST_API_WIRE_VERSION,
-  pluginId: PLUGIN_ID,
-  generationId: GENERATION,
-};
-
-function request(overrides: Partial<HostApiRequest> = {}): HostApiRequest {
-  return {
-    ...ENVELOPE,
-    callId: "c1",
-    path: "hasRoutineBySource",
-    args: ["nightly"],
-    ...overrides,
-  } as HostApiRequest;
+/**
+ * One `ave/host/*` request. Nothing in it names the plugin: the dispatcher is
+ * built for one child, and the connection is the identity.
+ */
+function request(
+  overrides: {
+    readonly path?: string;
+    readonly args?: readonly unknown[];
+    readonly params?: Record<string, unknown>;
+  } = {},
+): HostApiRequest {
+  const base = hostApiRequest(
+    overrides.path ?? "hasRoutineBySource",
+    overrides.args ?? ["nightly"],
+    "c1",
+  );
+  return overrides.params ? { ...base, params: overrides.params } : base;
 }
 
 function dispatcher(
@@ -91,9 +94,9 @@ function dispatcher(
     // test that discards could not tell the difference.
     log: (message, meta) => hostLogs.push({ message, meta }),
     pluginId: PLUGIN_ID,
-    generationId: GENERATION,
     isActive: () => true,
     notifications: silentSink,
+    reportUnknownField: () => {},
     ...options,
   });
 }
@@ -205,7 +208,7 @@ describe("the marshalling contract covers exactly the classified hostApi surface
     expect(implemented.status).toBe("implemented");
   });
 
-  it("hands a handler the invocation identity it needs to audit the call", async () => {
+  it("hands a handler the member, its positional arguments and the request's own signal", async () => {
     let seen: HostApiCall | undefined;
     const table = {
       ...HOSTAPI_DISPATCH_TABLE,
@@ -215,13 +218,11 @@ describe("the marshalling contract covers exactly the classified hostApi surface
       }),
     };
     await dispatcher({ table }).handle(request());
-    expect(seen).toEqual({
-      path: "hasRoutineBySource",
-      callId: "c1",
-      pluginId: PLUGIN_ID,
-      generationId: GENERATION,
-      args: ["nightly"],
-    });
+    expect(Object.keys(seen ?? {}).sort()).toEqual(["args", "path", "signal"]);
+    expect(seen?.path).toBe("hasRoutineBySource");
+    expect(seen?.args).toEqual(["nightly"]);
+    expect(seen?.signal).toBeInstanceOf(AbortSignal);
+    expect(seen?.signal.aborted).toBe(false);
   });
 
   it("marks a member child-local in the table exactly when its contract says so", () => {
@@ -339,50 +340,152 @@ describe("the routing set names the isolated plugins and nothing else", () => {
 describe("the dispatcher refuses rather than defaults", () => {
   it("fails a member whose handler has not been written", async () => {
     const reply = await dispatcher().handle(request({ path: "getSecret" }));
-    expect(reply.ok).toBe(false);
-    if (reply.ok) return;
-    expect(reply.error.code).toBe("path-not-implemented");
+    if (!("error" in reply)) throw new Error("expected a refusal");
+    expect(reply.error.data.code).toBe("path-not-implemented");
   });
 
   it("fails a member the child was supposed to answer locally", async () => {
     const reply = await dispatcher().handle(request({ path: "config.get" }));
-    expect(reply.ok).toBe(false);
-    if (reply.ok) return;
-    expect(reply.error.code).toBe("path-not-dispatchable");
+    if (!("error" in reply)) throw new Error("expected a refusal");
+    expect(reply.error.data.code).toBe("path-not-dispatchable");
   });
 
   it("fails a member that does not exist", async () => {
     const reply = await dispatcher().handle(
       request({ path: "callTool" as HostApiPath }),
     );
-    expect(reply.ok).toBe(false);
-    if (reply.ok) return;
-    expect(reply.error.code).toBe("path-unknown");
+    if (!("error" in reply)) throw new Error("expected a refusal");
+    expect(reply.error.data.code).toBe("path-unknown");
   });
 
-  it("refuses a stale generation, a foreign plugin id, and a foreign wire", async () => {
-    const codes = await Promise.all(
-      [
-        request({ generationId: "gen-0" }),
-        request({ pluginId: "com.example.other" }),
-        request({ wire: 99 as typeof HOST_API_WIRE_VERSION }),
-      ].map(async (candidate) => {
-        const reply = await dispatcher().handle(candidate);
-        return reply.ok ? "ok" : reply.error.code;
+  it("attributes a forged identity to the bound plugin and reports the fields as unknown", async () => {
+    // The plugin never names itself: the host spawned the process and owns its
+    // pipes, so the connection IS the plugin and the generation (§2.4). A params
+    // field claiming otherwise is not refused and not read — it is one more
+    // field the member does not declare, reported once and ignored (§3.3).
+    let seen: HostApiCall | undefined;
+    const table = {
+      ...HOSTAPI_DISPATCH_TABLE,
+      hasRoutineBySource: defineHostApiPath("hasRoutineBySource", async (call) => {
+        seen = call;
+        return true;
       }),
-    );
-    expect(codes).toEqual([
-      "generation-mismatch",
-      "plugin-mismatch",
-      "wire-version-mismatch",
+    };
+    const reported: [string, string][] = [];
+    const host = dispatcher({
+      table,
+      reportUnknownField: (report) => {
+        if (report.kind === "field") reported.push([report.method, report.field]);
+      },
+    });
+    const forged = request({
+      params: { source: "nightly", pluginId: "com.example.other", generationId: "gen-0" },
+    });
+
+    const reply = await host.handle(forged);
+    expect(reply).toEqual({ jsonrpc: "2.0", id: "c1", result: true });
+    expect(seen?.args).toEqual(["nightly"]);
+    expect(reported).toEqual([
+      ["ave/host/hasRoutineBySource", "pluginId"],
+      ["ave/host/hasRoutineBySource", "generationId"],
     ]);
+
+    // Once per (method, field) for the life of the connection, not per call.
+    await host.handle(forged);
+    expect(reported).toHaveLength(2);
+
+    // Attributed to the BOUND plugin: a refusal names the plugin this
+    // dispatcher serves, never the one the params claimed.
+    const refused = await dispatcher({ isActive: () => false }).handle(forged);
+    if (!("error" in refused)) throw new Error("expected a refusal");
+    expect(refused.error.message).toBe(
+      inactiveHostApiMessage(PLUGIN_ID, "hostApi.hasRoutineBySource"),
+    );
+  });
+
+  it("caps what the child can make it report, and cuts long field names", async () => {
+    // The child chooses both the method and the field name, so per-(method,
+    // field) dedupe alone is a log flood and an unbounded set it controls.
+    const table = {
+      ...HOSTAPI_DISPATCH_TABLE,
+      hasRoutineBySource: defineHostApiPath("hasRoutineBySource", async () => true),
+    };
+    const reports: UnknownFieldReport[] = [];
+    const host = dispatcher({ table, reportUnknownField: (report) => reports.push(report) });
+    const long = "f".repeat(10_000);
+    await host.handle(request({ params: { source: "nightly", [long]: 1 } }));
+    const fields: Record<string, unknown> = { source: "nightly" };
+    for (let index = 0; index < 100; index += 1) fields[`extra${index}`] = index;
+    await host.handle(request({ params: fields }));
+    await host.handle(request({ params: { source: "nightly", another: true } }));
+
+    const named = reports.filter((report) => report.kind === "field");
+    expect(named).toHaveLength(UNKNOWN_FIELD_REPORTS_MAX);
+    expect(named[0]).toEqual({
+      kind: "field",
+      method: "ave/host/hasRoutineBySource",
+      field: `${"f".repeat(64)}…`,
+    });
+    // One line says the rest are being dropped, and nothing follows it.
+    expect(reports.filter((report) => report.kind === "suppressed")).toEqual([
+      { kind: "suppressed", limit: UNKNOWN_FIELD_REPORTS_MAX },
+    ]);
+    expect(reports.at(-1)).toEqual({ kind: "suppressed", limit: UNKNOWN_FIELD_REPORTS_MAX });
+  });
+
+  it("cuts a long field name by code point, never through a surrogate pair", async () => {
+    const table = {
+      ...HOSTAPI_DISPATCH_TABLE,
+      hasRoutineBySource: defineHostApiPath("hasRoutineBySource", async () => true),
+    };
+    const reports: UnknownFieldReport[] = [];
+    const host = dispatcher({ table, reportUnknownField: (report) => reports.push(report) });
+    // The 64th code point is two UTF-16 units; a cut by unit would keep only
+    // the first of them.
+    const field = `${"f".repeat(63)}\u{1F600}tail`;
+    await host.handle(request({ params: { source: "nightly", [field]: 1 } }));
+    expect(reports).toEqual([
+      { kind: "field", method: "ave/host/hasRoutineBySource", field: `${"f".repeat(63)}\u{1F600}…` },
+    ]);
+  });
+
+  it("reads an omitted params member as the empty object, and still refuses a non-object", async () => {
+    // JSON-RPC 2.0 §4 lets a client leave `params` out, which is how a stock
+    // client calls a member that takes no arguments.
+    const table = {
+      ...HOSTAPI_DISPATCH_TABLE,
+      listAudioInputDevices: defineHostApiPath("listAudioInputDevices", async () => []),
+    };
+    const host = dispatcher({ table });
+    const { params: _omitted, ...bare } = request({ path: "listAudioInputDevices", args: [] });
+    expect("params" in bare).toBe(false);
+    expect(await host.handle(bare)).toEqual({ jsonrpc: "2.0", id: "c1", result: [] });
+    for (const params of [null, [], "x", 1]) {
+      const reply = await host.handle({ ...bare, params } as unknown as HostApiRequest);
+      if (!("error" in reply)) throw new Error(`expected a refusal for ${JSON.stringify(params)}`);
+      expect(reply.error.data.code).toBe("argument-marshalling-rejected");
+    }
+  });
+
+  it("answers a method only in its one spelling, never a dotted alias", async () => {
+    expect(hostApiPathOf("ave/host/storage/read")).toBe("storage.read");
+    for (const alias of ["ave/host/storage.read", "ave/host/agentApproval.request"]) {
+      expect(hostApiPathOf(alias), alias).toBeUndefined();
+    }
+    const reply = await dispatcher().handle({
+      jsonrpc: "2.0",
+      id: "c1",
+      method: "ave/host/storage.read",
+      params: { path: "notes.txt" },
+    });
+    if (!("error" in reply)) throw new Error("expected a refusal");
+    expect(reply.error.data.code).toBe("path-unknown");
   });
 
   it("reproduces the in-process inactive-incarnation message byte for byte", async () => {
     const reply = await dispatcher({ isActive: () => false }).handle(request());
-    expect(reply.ok).toBe(false);
-    if (reply.ok) return;
-    expect(reply.error.code).toBe("plugin-inactive");
+    if (!("error" in reply)) throw new Error("expected a refusal");
+    expect(reply.error.data.code).toBe("plugin-inactive");
     expect(reply.error.message).toBe(
       `[plugin:${PLUGIN_ID}] hostApi.hasRoutineBySource: plugin instance is no longer active`,
     );
@@ -395,9 +498,8 @@ describe("the dispatcher refuses rather than defaults", () => {
     const reply = await dispatcher().handle(
       request({ args: [new Date("2020-01-01")] }),
     );
-    expect(reply.ok).toBe(false);
-    if (reply.ok) return;
-    expect(reply.error.code).toBe("argument-marshalling-rejected");
+    if (!("error" in reply)) throw new Error("expected a refusal");
+    expect(reply.error.data.code).toBe("argument-marshalling-rejected");
     expect(reply.error.message).toContain("Date");
   });
 
@@ -412,9 +514,8 @@ describe("the dispatcher refuses rather than defaults", () => {
       ),
     };
     const reply = await dispatcher({ table }).handle(request());
-    expect(reply.ok).toBe(false);
-    if (reply.ok) return;
-    expect(reply.error.code).toBe("result-marshalling-rejected");
+    if (!("error" in reply)) throw new Error("expected a refusal");
+    expect(reply.error.data.code).toBe("result-marshalling-rejected");
     expect(reply.error.message).toContain("Map");
   });
 
@@ -430,9 +531,8 @@ describe("the dispatcher refuses rather than defaults", () => {
     const reply = await dispatcher({ table }).handle(
       request({ path: "logEvent", args: ["info", "hi"] }),
     );
-    expect(reply.ok).toBe(false);
-    if (reply.ok) return;
-    expect(reply.error.code).toBe("result-marshalling-rejected");
+    if (!("error" in reply)) throw new Error("expected a refusal");
+    expect(reply.error.data.code).toBe("result-marshalling-rejected");
   });
 
   it("carries a value back when the handler is wired", async () => {
@@ -444,9 +544,8 @@ describe("the dispatcher refuses rather than defaults", () => {
       ),
     };
     const reply = await dispatcher({ table }).handle(request());
-    expect(reply.ok).toBe(true);
-    if (!reply.ok) return;
-    expect(reply.value).toBe(true);
+    if (!("result" in reply)) throw new Error("expected a value");
+    expect(reply.result).toBe(true);
   });
 });
 

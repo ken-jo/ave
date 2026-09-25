@@ -6,7 +6,7 @@
  * Two directions are proven here. Host → plugin is the MCP arm that already
  * exists: the child stands up a `PluginMcpServer` over `StdioServerLoop` and
  * answers `server/discover` and `tools/call` end to end. Plugin → host is the
- * arm this work adds: a request/reply envelope, a marshalling gate on both
+ * `ave/host/*` half: a JSON-RPC request and reply, a marshalling gate on both
  * sides, an error identity that survives, and a subscription lifetime that
  * releases on BOTH sides whichever one dies first.
  */
@@ -15,6 +15,7 @@ import { PassThrough } from "node:stream";
 import { homedir } from "node:os";
 import { frameMessage } from "../../../mcp/stdio-framing.js";
 import { nextFramedMessage as nextFramed } from "../../../mcp/__tests__/test-helpers.js";
+import { settleMacrotask as settle } from "../../../__tests__/test-helpers.js";
 import type { PluginManifest, RuntimePlugin } from "../../types.js";
 import {
   HOSTAPI_DISPATCH_TABLE,
@@ -23,8 +24,8 @@ import {
 } from "../host-api-dispatcher.js";
 import {
   PluginHostApiError,
-  type HostApiChannel,
   type HostApiNotification,
+  type HostApiRequest,
 } from "../host-api-wire.js";
 import {
   createChildHostApiStub,
@@ -36,9 +37,9 @@ import {
   type PluginFactoryLoader,
 } from "../plugin-child-runtime.js";
 import { HOSTAPI_PATH_CONTRACTS } from "../host-api-wire.js";
+import { directHostApiChannel } from "../../../__tests__/support/host-protocol-wire.js";
 
 const PLUGIN_ID = "com.example.child";
-const GENERATION = "gen-7";
 
 const MANIFEST: PluginManifest = {
   id: PLUGIN_ID,
@@ -69,7 +70,13 @@ interface Harness {
   readonly toChild: PassThrough;
   readonly fromChild: PassThrough;
   readonly childNotifications: HostApiNotification[];
-  readonly call: (path: string, args: readonly unknown[]) => Promise<unknown>;
+  /** Every `ave/host/*` request the child sent, in order. */
+  readonly requests: HostApiRequest[];
+  readonly call: (
+    path: string,
+    args: readonly unknown[],
+    signal?: AbortSignal,
+  ) => Promise<unknown>;
 }
 
 /**
@@ -87,16 +94,17 @@ async function harness(
   const toChild = new PassThrough();
   const fromChild = new PassThrough();
   const childNotifications: HostApiNotification[] = [];
+  const requests: HostApiRequest[] = [];
   let host!: HostApiDispatcher;
   let child!: PluginChildRuntime;
 
-  const channel: HostApiChannel = {
-    call: (request) => host.handle(request),
-    notify: (notification) => {
-      childNotifications.push(notification);
-      host.handleNotification(notification);
+  const channel = directHostApiChannel(
+    {
+      handle: (request) => host.handle(request),
+      handleNotification: (notification) => host.handleNotification(notification),
     },
-  };
+    { requests, notifications: childNotifications },
+  );
 
   const hostLogs: { message: string; meta?: unknown }[] = [];
   host = new HostApiDispatcher({
@@ -104,7 +112,7 @@ async function harness(
     // test that discards could not tell the difference.
     log: (message, meta) => hostLogs.push({ message, meta }),
     pluginId: PLUGIN_ID,
-    generationId: GENERATION,
+    reportUnknownField: () => {},
     isActive: options.isActive ?? (() => true),
     notifications: { deliver: (notification) => child.deliver(notification) },
     table: (options.table ?? HOSTAPI_DISPATCH_TABLE) as typeof HOSTAPI_DISPATCH_TABLE,
@@ -130,16 +138,12 @@ async function harness(
       aveHome: "/Users/example/.ave",
       installedPluginIds: [],
       config: { enabled: true },
-      generationId: GENERATION,
     },
     channel,
     loadFactory,
   });
 
-  const call = createHostApiCaller(channel, {
-    pluginId: PLUGIN_ID,
-    generationId: GENERATION,
-  });
+  const call = createHostApiCaller(channel, { pluginId: PLUGIN_ID });
 
   return {
     child,
@@ -147,7 +151,8 @@ async function harness(
     toChild,
     fromChild,
     childNotifications,
-    call: (path, args) => call(path as never, args),
+    requests,
+    call: (path, args, signal) => call(path as never, args, signal),
   };
 }
 
@@ -220,8 +225,7 @@ describe("the child serves its plugin over framed stdio", () => {
           userHome: "/Users/example",
           aveHome: "/Users/example/.ave",
           installedPluginIds: [],
-          generationId: GENERATION,
-        },
+            },
         channel: { call: () => Promise.reject(new Error("unused")), notify: () => {} },
         loadFactory: async () => undefined,
       }),
@@ -309,8 +313,7 @@ describe("the hostApi stub the child hands the plugin", () => {
         userHome: "/Users/example",
         aveHome: "/somewhere/else/.ave",
         installedPluginIds: [],
-        generationId: GENERATION,
-      },
+        },
       channel: {
         call: () => Promise.reject(new Error("unused")),
         notify: () => {},
@@ -335,8 +338,7 @@ describe("the hostApi stub the child hands the plugin", () => {
         userHome: "/Users/example",
         aveHome: "/Users/example/.ave",
         installedPluginIds: [],
-        generationId: GENERATION,
-      };
+        };
       delete (context as Record<string, unknown>)[field];
       let factoryRan = false;
       await expect(
@@ -375,8 +377,7 @@ describe("the hostApi stub the child hands the plugin", () => {
         userHome: "/Users/example",
         aveHome: "/Users/example/.ave",
         installedPluginIds: [],
-        generationId: GENERATION,
-      },
+        },
       channel: {
         call: () => Promise.reject(new Error("unused")),
         notify: (notification) => notifications.push(notification),
@@ -389,12 +390,12 @@ describe("the hostApi stub the child hands the plugin", () => {
     expect(child.instance.handlers).toEqual({});
     expect(notifications).toEqual([
       {
-        wire: 1,
-        pluginId: PLUGIN_ID,
-        generationId: GENERATION,
-        kind: "log",
-        message: "starting",
-        meta: { attempt: 1 },
+        jsonrpc: "2.0",
+        method: "notifications/ave/log",
+        params: {
+          message: "starting",
+          meta: { attempt: 1 },
+        },
       },
     ]);
   });
@@ -435,15 +436,25 @@ describe("a hostApi call crosses the reverse channel and settles", () => {
     expect(handle).not.toHaveBeenCalled();
   });
 
-  it("refuses a call naming an incarnation the host is no longer serving", async () => {
-    const { host } = await harness();
-    const stale = createHostApiCaller(
-      { call: (request) => host.handle(request), notify: () => {} },
-      { pluginId: PLUGIN_ID, generationId: "gen-6" },
-    );
-    await expect(stale("hasRoutineBySource", ["nightly"])).rejects.toMatchObject({
-      code: "generation-mismatch",
+  it("sends the method and a params object keyed by the member's own names, and no identity", async () => {
+    // The connection is the identity (§2.4): a request that also named the
+    // plugin or its generation would carry a field the host must ignore, and a
+    // field the host ignores is one an author will try to set.
+    const { call, requests } = await harness({
+      table: {
+        ...HOSTAPI_DISPATCH_TABLE,
+        withdrawWorkProposal: defineHostApiPath("withdrawWorkProposal", async () => true),
+      },
     });
+    await call("withdrawWorkProposal", ["digest", "k1"]);
+    expect(requests).toEqual([
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "ave/host/withdrawWorkProposal",
+        params: { kind: "digest", key: "k1" },
+      },
+    ]);
   });
 });
 
@@ -478,11 +489,11 @@ describe("a subscription releases on both sides, whichever side dies", () => {
     const table = HOSTAPI_DISPATCH_TABLE;
     expect(table.onEvent.status).toBe("unimplemented");
     host.handleNotification({
-      wire: 1,
-      pluginId: PLUGIN_ID,
-      generationId: GENERATION,
-      kind: "subscription-release",
-      subscriptionId: `${subscription.subscriptionId}-nope`,
+      jsonrpc: "2.0",
+      method: "notifications/ave/subscription/release",
+      params: {
+        subscriptionId: `${subscription.subscriptionId}-nope`,
+      },
     });
     expect(received).toEqual([]);
   });
@@ -496,9 +507,10 @@ describe("a subscription releases on both sides, whichever side dies", () => {
     expect(child.openSubscriptionCount).toBe(0);
     expect(host.openSubscriptionCount).toBe(0);
     expect(teardown).toHaveBeenCalledTimes(1);
-    expect(childNotifications.at(-1)).toMatchObject({
-      kind: "subscription-release",
-      subscriptionId: subscription.subscriptionId,
+    expect(childNotifications.at(-1)).toEqual({
+      jsonrpc: "2.0",
+      method: "notifications/ave/subscription/release",
+      params: { subscriptionId: subscription.subscriptionId },
     });
 
     // Disposing again is a no-op on both sides rather than a second teardown.
@@ -542,12 +554,12 @@ describe("a subscription releases on both sides, whichever side dies", () => {
 
     expect(
       child.deliver({
-        wire: 1,
-        pluginId: PLUGIN_ID,
-        generationId: GENERATION,
-        kind: "subscription-closed",
-        subscriptionId: subscription.subscriptionId,
-        reason: "revoked",
+        jsonrpc: "2.0",
+        method: "notifications/ave/subscription/closed",
+        params: {
+          subscriptionId: subscription.subscriptionId,
+          reason: "revoked",
+        },
       }),
     ).toBe("closed");
 
@@ -562,12 +574,12 @@ describe("a subscription releases on both sides, whichever side dies", () => {
     // not an error — but it is REPORTED rather than dropped in silence, because
     // "no handler ran" is exactly the symptom a leak or a mis-keyed id produces.
     const outcome: NotificationOutcome = child.deliver({
-      wire: 1,
-      pluginId: PLUGIN_ID,
-      generationId: GENERATION,
-      kind: "subscription-event",
-      subscriptionId: subscription.subscriptionId,
-      payload: { late: true },
+      jsonrpc: "2.0",
+      method: "notifications/ave/subscription",
+      params: {
+        subscriptionId: subscription.subscriptionId,
+        payload: { late: true },
+      },
     });
     expect(outcome).toBe("unknown-subscription");
   });
@@ -598,41 +610,69 @@ describe("a subscription releases on both sides, whichever side dies", () => {
   });
 });
 
-describe("an abort channel replaces the AbortSignal three members carry", () => {
-  /** A host handler that takes a signal the way `callLlm` will. */
-  function abortingTable(observed: { signal?: AbortSignal }) {
+describe("a signal cancels the request it was passed with, and nothing else", () => {
+  /**
+   * A host member that runs until its request is cancelled, the way `callLlm`
+   * does — and records the signal the dispatcher handed it.
+   */
+  function cancellableTable(observed: { signal?: AbortSignal; finish?: (value: string) => void }) {
     return {
       ...HOSTAPI_DISPATCH_TABLE,
-      onEvent: defineHostApiPath("onEvent", async (invocation, scope) => {
-        const channelId = invocation.args[0] as string;
-        observed.signal = scope.abortChannel(channelId);
-        return { handleId: channelId };
+      callLlm: defineHostApiPath("callLlm", (invocation) => {
+        observed.signal = invocation.signal;
+        return new Promise<unknown>((resolve, reject) => {
+          observed.finish = resolve;
+          invocation.signal.addEventListener("abort", () => reject(invocation.signal.reason));
+        });
       }),
     };
   }
 
-  it("cancels the host's work when the plugin aborts", async () => {
-    const observed: { signal?: AbortSignal } = {};
-    const wired = await harness({ table: abortingTable(observed) });
+  it("cancels the host's work when the plugin aborts, and the plugin reads an AbortError", async () => {
+    const observed: { signal?: AbortSignal; finish?: (value: string) => void } = {};
+    const wired = await harness({ table: cancellableTable(observed) });
     const controller = new AbortController();
-    const channel = wired.child.openAbortChannel(controller.signal);
-    await wired.call("onEvent", [channel.subscriptionId]);
+    const pending = wired.call("callLlm", ["write an essay"], controller.signal);
+    await settle();
     expect(observed.signal?.aborted).toBe(false);
 
     controller.abort(new Error("the plugin changed its mind"));
 
     expect(observed.signal?.aborted).toBe(true);
-    expect(wired.host.openSubscriptionCount).toBe(0);
+    // The call settles through the host's reply, and the name a plugin checks
+    // for a cancellation survives the wire.
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("names the in-flight request in MCP's cancellation notification", async () => {
+    const observed: { signal?: AbortSignal; finish?: (value: string) => void } = {};
+    const wired = await harness({ table: cancellableTable(observed) });
+    const controller = new AbortController();
+    const pending = wired.call("callLlm", ["hi"], controller.signal);
+    await settle();
+
+    controller.abort(new Error("the plugin changed its mind"));
+    await pending.catch(() => undefined);
+
+    expect(wired.childNotifications).toEqual([
+      {
+        jsonrpc: "2.0",
+        method: "notifications/cancelled",
+        params: { requestId: wired.requests[0].id, reason: "the plugin changed its mind" },
+      },
+    ]);
+    // The signal itself never crossed: the request carries the prompt alone.
+    expect(wired.requests[0].params).toEqual({ prompt: "hi" });
   });
 
   it("cancels work started for a child that has since died", async () => {
-    // The host is fetching on behalf of a process that no longer exists. Not
-    // aborting leaves the request in flight with nowhere to deliver its answer.
-    const observed: { signal?: AbortSignal } = {};
-    const wired = await harness({ table: abortingTable(observed) });
-    const controller = new AbortController();
-    const channel = wired.child.openAbortChannel(controller.signal);
-    await wired.call("onEvent", [channel.subscriptionId]);
+    // The host is working on behalf of a process that no longer exists. Not
+    // aborting leaves the request in flight with nowhere to deliver its answer,
+    // and that holds whether or not the plugin passed a signal.
+    const observed: { signal?: AbortSignal; finish?: (value: string) => void } = {};
+    const wired = await harness({ table: cancellableTable(observed) });
+    void wired.call("callLlm", ["hi"]).catch(() => undefined);
+    await settle();
 
     wired.host.childGone();
 
@@ -640,42 +680,30 @@ describe("an abort channel replaces the AbortSignal three members carry", () => 
   });
 
   it("detaches the child's listener when the call settles", async () => {
-    const observed: { signal?: AbortSignal } = {};
-    const wired = await harness({ table: abortingTable(observed) });
+    const observed: { signal?: AbortSignal; finish?: (value: string) => void } = {};
+    const wired = await harness({ table: cancellableTable(observed) });
     const controller = new AbortController();
-    const channel = wired.child.openAbortChannel(controller.signal);
-    await wired.call("onEvent", [channel.subscriptionId]);
+    const pending = wired.call("callLlm", ["hi"], controller.signal);
+    await settle();
+    observed.finish?.("done");
+    await expect(pending).resolves.toBe("done");
     const before = wired.childNotifications.length;
 
-    channel.release();
     controller.abort(new Error("too late"));
 
-    // No abort notification: the channel was already closed, so the listener is
-    // gone. A channel that stayed attached would keep the settled call's
-    // closure alive for as long as the plugin holds the signal.
+    // No cancellation: the request already settled, so the listener is gone. A
+    // listener that stayed attached would keep the settled call's closure alive
+    // for as long as the plugin holds the signal.
     expect(wired.childNotifications).toHaveLength(before);
-    expect(observed.signal?.aborted).toBe(false);
   });
 
-  it("throws the signal's own reason instead of opening a doomed channel", async () => {
+  it("throws the signal's own reason instead of sending a doomed request", async () => {
     const wired = await harness();
+    const handle = vi.spyOn(wired.host, "handle");
     const controller = new AbortController();
     const reason = new Error("already cancelled");
     controller.abort(reason);
-    expect(() => wired.child.openAbortChannel(controller.signal)).toThrow(reason);
-  });
-
-  it("drops its channels when the host dies", async () => {
-    const observed: { signal?: AbortSignal } = {};
-    const wired = await harness({ table: abortingTable(observed) });
-    const controller = new AbortController();
-    const channel = wired.child.openAbortChannel(controller.signal);
-    await wired.call("onEvent", [channel.subscriptionId]);
-    const before = wired.childNotifications.length;
-
-    expect(wired.child.hostGone()).toBe(1);
-    controller.abort(new Error("nobody listening"));
-
-    expect(wired.childNotifications).toHaveLength(before);
+    await expect(wired.call("callLlm", ["hi"], controller.signal)).rejects.toBe(reason);
+    expect(handle).not.toHaveBeenCalled();
   });
 });

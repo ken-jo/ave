@@ -124,6 +124,33 @@ IPC contract afterwards.
 Total: **36 paths + 6 host→instance entry points = 42 members** the boundary must
 carry. (36, not 37, once the `callTool` drift in §2.3 is closed.)
 
+**On the wire** (`docs/design/plugin-hostapi-protocol.md` §3): each path the host
+answers is a JSON-RPC 2.0 request on the child's own stdio stream, beside the MCP
+traffic. The method is `ave/host/` followed by the path with `.` spelled `/`
+(`storage.read` is `ave/host/storage/read`); the paths whose contract answers
+`child-local` are never methods, and a method is recognised only in that one
+spelling (`ave/host/storage.read` names nothing). Params are an object keyed by the member's
+parameter names, in declaration order — the `params` axis of
+`HOSTAPI_PATH_CONTRACTS` in `src/plugins/isolation/host-api-wire.ts`, which
+`host-api-path-params.test.ts` holds to the signatures in `public-contract.ts` with
+the TypeScript compiler. A reply carries `result` (`null` for a `void` member) or
+an `error` whose `data.code` is one of the closed codes in
+`HOST_API_WIRE_ERROR_CODES`; the numeric code is `-32601` for an unknown method
+and `-32000` for every other refusal. No message carries a plugin id or a
+generation: the dispatcher is constructed per child for the plugin it serves, so
+the connection is the identity. An omitted `params` reads as the empty object, as
+JSON-RPC allows; `null`, an array or a scalar is refused. A params field the member
+does not declare is ignored and logged once per method and field, up to 32 distinct
+reports per connection with each name cut to 64 characters, then one line saying
+the rest are suppressed — the child chooses those strings. The plugin's `AbortSignal` becomes
+`notifications/cancelled` naming the in-flight request id, and subscriptions,
+their release and revocation, `context.log` and the three host snapshots are the
+`notifications/ave/*` messages. The goldens under
+`src/plugins/isolation/__tests__/fixtures/host-protocol/1/` pin one request and
+reply per method, one reply per error code, one frame per notification and the
+whole conversation of each installed plugin's surface, recorded against the real
+child runtime (`host-protocol-golden.test.ts`).
+
 ### 2.3 Two drifts that must be closed before the contract is frozen
 
 Both are small; both would silently corrupt the enumeration if left.
@@ -155,7 +182,7 @@ misses. Each needs a decided fate.
 | `enforceActiveHostApi` Proxy (`host-api-factory.ts:90`) | Wraps the whole hostApi so every member throws once the incarnation deactivates | Becomes a host-side dispatcher precondition. **Strictly stronger** — today the plugin shares a heap with the proxy target and can reach around it. |
 | `incarnation.trackOperation(promise)` | Host tracks every returned promise so teardown can drain in-flight work | Survives unchanged. The host still holds the promise; it is now the RPC promise. |
 | `runWithCeiling` detached settlement (`runtime/index.ts:~400`) | A hung handler's work stays detached **in main**, holding a generation lease indefinitely (`PluginRuntimeDetachedOperationError`) | Becomes recoverable: kill the child, the lease releases. Real win. |
-| `withPinnedGeneration` lease | Pins the active generation across a handler call | Stays host-side. The child is told which `generationId` it serves and rejects a mismatched request. |
+| `withPinnedGeneration` lease | Pins the active generation across a handler call | Stays host-side. No generation crosses: each incarnation spawns its own child, so the connection is the generation, and a child that outlived its incarnation has no pipe left to send on. |
 | `_meta["ave/rawResult"]` | `plugin-runtime-delegate.ts` puts the plugin's **raw return value** into the MCP result | **This is the hazard.** See §3.6. |
 | `context.log` | A host closure the plugin calls directly | Becomes a notification. |
 | `perf.beginCall` stats | Host-side timing around the handler | Unchanged; now measures RPC round-trip too. |
@@ -201,9 +228,10 @@ streaming body; neither survives a wire.
   **throws a typed error** — never a silent truncation.
 - *Argument:* `init` may carry a `Headers` instance, an `AbortSignal`, and a
   `ReadableStream` body. The child serializes to
-  `{ method, headers: [[k, v], …], body: string | base64 }`. A `signal` becomes an
-  **abort-channel id**: the child sends `abort(id)` and the host aborts its own
-  `AbortController`. A stream body is **rejected with a typed error**, not silently
+  `{ method, headers: [[k, v], …], body: string | base64 }`. A `signal` does not
+  cross: when it aborts, the child sends `notifications/cancelled` naming the
+  in-flight request id and the host aborts the `AbortController` it holds for that
+  request. A stream body is **rejected with a typed error**, not silently
   buffered.
 - *Loss, stated:* streaming responses stop streaming. If a first-party plugin needs
   it, the follow-up is a chunked notification stream keyed by request id — designed
@@ -217,26 +245,27 @@ streaming body; neither survives a wire.
 **`resolveApiKey(opts) → { ok, vendor, bearer(), baseUrl?, release() }`.** Two
 functions in a return value.
 
-- The host replies with `{ ok, vendor, baseUrl?, key, leaseId }`; the child stub
+- The host replies with `{ ok, vendor, baseUrl?, key, handleId }`; the child stub
   closes over `key` and synthesizes `bearer()` / `release()` locally. `release()`
-  drops the child's copy and sends `release(leaseId)` so the host drops its own and
-  unwires the abort. `bearer()` after release throws, per the existing contract.
+  drops the child's copy and sends `notifications/ave/subscription/release` for
+  `handleId` so the host drops its own. `bearer()` after release throws, per the
+  existing contract.
 - *The other direction is a message too.* A host-side revocation reaches the child
-  as `subscription-closed`, and the child's lease stub drops its copy of the key on
+  as `notifications/ave/subscription/closed`, and the child's lease stub drops its copy of the key on
   it — otherwise the credential outlives the host's decision to take it back. That
   notification is sent from the dispatcher's release path and from nowhere else,
   for exactly one of the three close reasons: `disposed` came from the child so
   echoing it is a ping-pong, `peer-gone` means the pipe is already closed, and
   `revoked` is the host's own decision and the only one the child cannot otherwise
   learn.
-- The `signal` in `opts` becomes an abort-channel id, as above.
+- The `signal` in `opts` cancels by request id, as above.
 - *Honest note:* an isolated plugin still receives whatever credential the gate
   grants it. Isolation does not shrink what a **granted** plugin can exfiltrate; it
   shrinks what an **ungranted** one can reach. `resolveApiKey` is a gate, and the
   gate is what does the work here.
 
 **`callLlm(prompt, { maxTokens, systemPrompt, signal })`.** Plain data plus an
-`AbortSignal` → abort-channel id. Reply is a `string`.
+`AbortSignal`, which cancels by request id as above. Reply is a `string`.
 
 **`spawnWorker(spec) → SpawnedPluginWorker`.** Returns `{ socketPath, pid, stop(),
 onStdout(), onStderr(), onExit() }` — live process control.

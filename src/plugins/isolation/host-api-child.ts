@@ -128,10 +128,10 @@ function assertRelayable(path: HostApiPath): void {
 /**
  * Build this group's child-side stubs.
  *
- * Every stub goes through {@link HostApiCaller}, which is the one place the
- * envelope is stamped and the one place a reply's error identity is rebuilt.
- * A stub that assembled its own request would be a second place the generation
- * is claimed, and the generation is what the host checks the call against.
+ * Every stub goes through {@link HostApiCaller}, which is the one place a call
+ * becomes its `ave/host/*` request and the one place a reply's error identity
+ * is rebuilt. A stub that assembled its own request would be a second encoding
+ * of the method name and params that could disagree with the first.
  */
 export function createInteractionChildMembers(
   call: HostApiCaller,
@@ -161,13 +161,11 @@ export function createInteractionChildMembers(
 export interface ServiceChildMemberDeps {
   readonly pluginId: string;
   readonly manifest: PluginManifest;
-  /** Send one hostApi call and settle it. The runtime's single call path. */
-  readonly call: (path: HostApiPath, args: readonly unknown[]) => Promise<unknown>;
-  /** Hand over an `AbortSignal`, receive the id that crosses in its place. */
-  readonly openAbortChannel: (signal: AbortSignal) => {
-    readonly subscriptionId: string;
-    readonly release: () => void;
-  };
+  /**
+   * Send one hostApi call and settle it. The runtime's single call path; a
+   * `signal` cancels the request rather than crossing.
+   */
+  readonly call: HostApiCaller;
   /**
    * Register a child-side handler under a HOST-allocated id.
    *
@@ -247,19 +245,6 @@ export function createServiceChildMembers(
     });
   };
 
-  /** Open an abort channel for an argument that carried a signal. */
-  const withAbortChannel = <T>(
-    signal: AbortSignal | undefined,
-    body: (channelId: string | undefined) => Promise<T>,
-  ): Promise<T> => {
-    if (!signal) return body(undefined);
-    // An ALREADY-aborted signal throws its own reason rather than opening a
-    // channel — the in-process call rejects immediately, and a round trip the
-    // host would be told to abort on arrival is a slower way to say the same
-    // thing. `openAbortChannel` owns that rule.
-    const channel = deps.openAbortChannel(signal);
-    return body(channel.subscriptionId).finally(channel.release);
-  };
 
   return {
     getSecret: async (...args) =>
@@ -316,14 +301,11 @@ export function createServiceChildMembers(
 
     callLlm: async (...args) => {
       const options = args[1] as { signal?: AbortSignal; maxTokens?: number; systemPrompt?: string } | undefined;
-      return withAbortChannel(options?.signal, async (channelId) => {
-        const wire: WireCallLlmOptions = {
-          ...(options?.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
-          ...(options?.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}),
-          ...(channelId !== undefined ? { signalChannelId: channelId } : {}),
-        };
-        return (await call("callLlm", positional(args[0], wire))) as string;
-      });
+      const wire: WireCallLlmOptions = {
+        ...(options?.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
+        ...(options?.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}),
+      };
+      return (await call("callLlm", positional(args[0], wire), options?.signal)) as string;
     },
 
     /**
@@ -334,28 +316,13 @@ export function createServiceChildMembers(
     hostFetch: async (...args) => {
       const input = args[0] as string | URL;
       const init = args[1] as RequestInit | undefined;
-      const signal = init?.signal ?? undefined;
-      return withAbortChannel(signal ?? undefined, async (channelId) => {
-        const wire = encodeWireRequestInit(
-          init,
-          // The signal was already handed to `withAbortChannel`; this closure
-          // only supplies the id it allocated, so one signal never opens two
-          // channels. Unreachable when `init.signal` is absent, and loud rather
-          // than cast if that ever stops being true.
-          () => {
-            if (channelId === undefined) {
-              throw new HostApiBoundaryError(
-                "argument-marshalling-rejected",
-                "[host-api-child] 'hostFetch': init.signal has no abort channel",
-              );
-            }
-            return channelId;
-          },
-          "hostFetch(init)",
-        );
-        const reply = await call("hostFetch", positional(String(input), wire));
-        return decodeWireHttpResponse(reply, "hostFetch(result)");
-      });
+      const wire = encodeWireRequestInit(init, "hostFetch(init)");
+      const reply = await call(
+        "hostFetch",
+        positional(String(input), wire),
+        init?.signal ?? undefined,
+      );
+      return decodeWireHttpResponse(reply, "hostFetch(result)");
     },
 
     /**
@@ -370,56 +337,53 @@ export function createServiceChildMembers(
         vendor?: WireResolveApiKeyOptions["vendor"];
         signal?: AbortSignal;
       };
-      return withAbortChannel(opts?.signal, async (channelId) => {
-        const wire: WireResolveApiKeyOptions = {
-          purpose: opts.purpose,
-          ...(opts.vendor !== undefined ? { vendor: opts.vendor } : {}),
-          ...(channelId !== undefined ? { signalChannelId: channelId } : {}),
-        };
-        const lease = requireHandle(
-          await call("resolveApiKey", [wire]),
-          "resolveApiKey",
-        ) as unknown as WireApiKeyLease;
-        if (!lease.ok) return { ok: false as const, reason: lease.reason };
-        let key: string | undefined = lease.key;
-        const dispose = deps.adoptSubscription(
-          "resolveApiKey",
-          lease.handleId,
-          // A lease carries no events. One arriving means the host is pushing
-          // on a registration it has nothing to push for, which is reported
-          // rather than ignored: silently dropping it would hide a real
-          // disagreement about what this member's id means.
-          () => {
-            deps.report("hostApi.resolveApiKey: the host pushed an event on a lease", {
-              handleId: lease.handleId,
-            });
-          },
-          // The host revoked the lease. Drop the child's copy so a later
-          // `bearer()` cannot return a credential the host has already unwired.
-          // This is the whole reason the credential is held as a mutable
-          // closure variable rather than a constant.
-          () => {
-            key = undefined;
-          },
-        );
-        return {
-          ok: true as const,
-          vendor: lease.vendor,
-          ...(lease.baseUrl !== undefined ? { baseUrl: lease.baseUrl } : {}),
-          bearer: () => {
-            if (key === undefined) {
-              throw new Error(
-                `[plugin:${pluginId}] hostApi.resolveApiKey().bearer: lease already released`,
-              );
-            }
-            return key;
-          },
-          release: () => {
-            key = undefined;
-            dispose();
-          },
-        };
-      });
+      const wire: WireResolveApiKeyOptions = {
+        purpose: opts.purpose,
+        ...(opts.vendor !== undefined ? { vendor: opts.vendor } : {}),
+      };
+      const lease = requireHandle(
+        await call("resolveApiKey", [wire], opts?.signal),
+        "resolveApiKey",
+      ) as unknown as WireApiKeyLease;
+      if (!lease.ok) return { ok: false as const, reason: lease.reason };
+      let key: string | undefined = lease.key;
+      const dispose = deps.adoptSubscription(
+        "resolveApiKey",
+        lease.handleId,
+        // A lease carries no events. One arriving means the host is pushing
+        // on a registration it has nothing to push for, which is reported
+        // rather than ignored: silently dropping it would hide a real
+        // disagreement about what this member's id means.
+        () => {
+          deps.report("hostApi.resolveApiKey: the host pushed an event on a lease", {
+            handleId: lease.handleId,
+          });
+        },
+        // The host revoked the lease. Drop the child's copy so a later
+        // `bearer()` cannot return a credential the host has already unwired.
+        // This is the whole reason the credential is held as a mutable
+        // closure variable rather than a constant.
+        () => {
+          key = undefined;
+        },
+      );
+      return {
+        ok: true as const,
+        vendor: lease.vendor,
+        ...(lease.baseUrl !== undefined ? { baseUrl: lease.baseUrl } : {}),
+        bearer: () => {
+          if (key === undefined) {
+            throw new Error(
+              `[plugin:${pluginId}] hostApi.resolveApiKey().bearer: lease already released`,
+            );
+          }
+          return key;
+        },
+        release: () => {
+          key = undefined;
+          dispose();
+        },
+      };
     },
 
     /**
@@ -572,7 +536,7 @@ export function createServiceChildMembers(
         }
         // This side does NOT let go here. The host owns the process, so the
         // host owns the news that it ended: it releases its own registration
-        // and the `subscription-closed` that follows drops this one. Disposing
+        // and the closed notification that follows drops this one. Disposing
         // here as well would be a second authority for one fact, and it was
         // only ever written because a host-side release could not reach the
         // child — which it now can.
@@ -633,10 +597,10 @@ function requireBytesOrText(pluginId: string, value: unknown): string | Uint8Arr
  * Build this group's child-side stubs.
  *
  * Every stub that crosses goes through {@link HostApiCaller}, which is the one
- * place the envelope is stamped and the one place a reply's error identity is
- * rebuilt. A stub that assembled its own request would be a second place the
- * generation is claimed, and the generation is what the host checks the call
- * against.
+ * place a call becomes its `ave/host/*` request and the one place a reply's
+ * error identity is rebuilt. A stub that assembled its own request would be a
+ * second encoding of the method name and params that could disagree with the
+ * first.
  */
 export function createStorageChildMembers(
   call: HostApiCaller,
@@ -739,7 +703,7 @@ interface ChildSubscriptionHandle {
 /** What the child runtime lends this group so it does not re-derive any of it. */
 export interface ConfigSubscriptionChildDeps {
   readonly pluginId: string;
-  /** The one place the envelope is stamped and the call id allocated. */
+  /** The one place a call becomes its `ave/host/*` request. */
   readonly call: HostApiCaller;
   /** The one child-side subscription ledger, shared with every other member. */
   readonly openSubscription: (
