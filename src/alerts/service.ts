@@ -236,6 +236,7 @@ export class AlertsService {
       declaration: kind,
       choice: this.deps.settings.get().kinds[kindKey]!,
       blockedByPredecessor: blocked ? predecessor.pluginId : null,
+      predecessor: null,
     });
   }
 

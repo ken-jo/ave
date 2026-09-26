@@ -21,9 +21,9 @@ const { registerAlertsHandlers } = await import("../alerts.js");
 
 const card = { id: "alert:abc", source: { kind: "alert", pluginId: "fixturemail", kindId: "reply", alertId: "abc" } };
 
-function register(alertsService: unknown) {
+function register(alertsService: unknown, deps: Record<string, unknown> = {}, marketplace: unknown = {}) {
   handlers.clear();
-  registerAlertsHandlers({ alertsService, auditLogger: { log: vi.fn() } } as never);
+  registerAlertsHandlers({ alertsService, auditLogger: { log: vi.fn() }, ...deps } as never, async () => marketplace as never);
   return (channel: string, ...args: unknown[]) => handlers.get(channel)!(hostFrameEvent(), ...args);
 }
 
@@ -69,7 +69,7 @@ describe("alerts IPC", () => {
   });
 
   it.each([
-    [ALERTS.listKinds, []], [ALERTS.listOpen, []], [ALERTS.cardClosed, ["abc", "accepted"]],
+    [ALERTS.removePredecessor, ["fixturemail:reply"]], [ALERTS.listKinds, []], [ALERTS.listOpen, []], [ALERTS.cardClosed, ["abc", "accepted"]],
     [ALERTS.setKind, ["@host:due-soon", { enabled: true }]], [ALERTS.setOsNotificationsEnabled, [false]],
   ])("refuses a plugin frame before reaching the service on %s", async (channel, args) => {
     const reached = vi.fn();
@@ -83,5 +83,94 @@ describe("alerts IPC", () => {
     expect(await invoke(ALERTS.listKinds)).toEqual([]);
     expect(await invoke(ALERTS.setKind, "@host:due-soon", {})).toEqual({ ok: false, error: "no-alerts-service" });
     expect(await invoke(ALERTS.setOsNotificationsEnabled, false)).toEqual({ ok: false, error: "no-alerts-service" });
+  });
+});
+
+describe("retaining predecessor removal", () => {
+  function setup() {
+    const row = { kindKey: "successor:reply", pluginId: "successor", blockedByPredecessor: "retired-plugin", predecessor: null,
+      declaration: { inherits: [{ pluginId: "retired-plugin", sourceId: "trusted" }] } };
+    const listKinds = vi.fn(async () => [row]);
+    const installed = [
+      { name: "retired-plugin", version: "1.0.0", sourceId: "trusted", originCommit: null },
+      { name: "successor", version: "2.0.0", sourceId: "trusted", originCommit: null },
+    ];
+    const entry = { key: { kind: "plugin", name: "retired-plugin", sourceId: "trusted" }, displayName: "Retired helper", required: false };
+    const retirement = { sourceId: "trusted", successors: { plugins: [{ pluginId: "successor" }], hostKinds: [] } };
+    const marketplace = {
+      catalog: vi.fn(async () => ({ entries: [entry] })),
+      getRetirementEntry: vi.fn(async () => retirement),
+      uninstall: vi.fn(async (request: unknown) => ({ key: request, keptDataDir: null })),
+    };
+    const deps = { pluginMarketplace: { listInstalledPackages: vi.fn(async () => installed) },
+      pluginRuntime: { getPluginManifest: vi.fn(), listPluginIds: vi.fn(() => ["retired-plugin"]) } };
+    const invoke = register({ listKinds }, deps, marketplace);
+    return { row, listKinds, installed, entry, retirement, marketplace, deps, invoke };
+  }
+
+  it("computes labels and eligibility in main and always requests retaining uninstall", async () => {
+    const h = setup();
+    expect(await h.invoke(ALERTS.listKinds)).toMatchObject([{ predecessor: {
+      pluginId: "retired-plugin", label: "Retired helper", locked: false, restartRequired: false, removable: true,
+    } }]);
+    expect(await h.invoke(ALERTS.removePredecessor, "successor:reply")).toMatchObject({ ok: true });
+    expect(h.marketplace.uninstall).toHaveBeenCalledExactlyOnceWith(
+      { kind: "plugin", name: "retired-plugin", sourceId: "trusted" }, { retain: { reason: "superseded" } },
+    );
+  });
+
+  it.each(["unrelated:reply", "retired-plugin", { kindKey: "successor:reply", pluginId: "unrelated", sourceId: "trusted", retain: false }])(
+    "refuses renderer-selected removal targets: %j", async (input) => {
+      const h = setup();
+      expect(await h.invoke(ALERTS.removePredecessor, input)).toMatchObject({ ok: false });
+      expect(h.marketplace.getRetirementEntry).not.toHaveBeenCalled();
+      expect(h.marketplace.uninstall).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects extra renderer options rather than accepting a non-retaining path", async () => {
+    const h = setup();
+    expect(await h.invoke(ALERTS.removePredecessor, "successor:reply", { retain: false, sourceId: "other" }))
+      .toEqual({ ok: false, error: "invalid-arguments" });
+    expect(h.marketplace.uninstall).not.toHaveBeenCalled();
+  });
+
+  it("cannot remove a policy-locked predecessor and publishes its locked state", async () => {
+    const h = setup(); h.entry.required = true;
+    expect(await h.invoke(ALERTS.listKinds)).toMatchObject([{ predecessor: { locked: true, removable: false } }]);
+    expect(await h.invoke(ALERTS.removePredecessor, "successor:reply")).toEqual({ ok: false, error: "predecessor-policy-locked" });
+    expect(h.marketplace.uninstall).not.toHaveBeenCalled();
+  });
+
+  it.each(["unnamed", "foreign-successor", "foreign-predecessor", "missing", "unblocked"])("refuses %s predecessor authority", async (reason) => {
+    const h = setup();
+    if (reason === "unnamed") h.retirement.successors.plugins = [];
+    if (reason === "foreign-successor") h.installed[1]!.sourceId = "other";
+    if (reason === "foreign-predecessor") h.installed[0]!.sourceId = "other";
+    if (reason === "missing") h.installed.splice(0, 1);
+    if (reason === "unblocked") h.row.blockedByPredecessor = "";
+    expect(await h.invoke(ALERTS.removePredecessor, "successor:reply")).toEqual({ ok: false, error: "predecessor-not-removable" });
+    expect(h.marketplace.uninstall).not.toHaveBeenCalled();
+  });
+
+  it("rechecks the registered declaration after asynchronous metadata reads", async () => {
+    const h = setup();
+    h.listKinds.mockResolvedValueOnce([h.row]).mockResolvedValueOnce([{ ...h.row, blockedByPredecessor: "other" }]);
+    expect(await h.invoke(ALERTS.removePredecessor, "successor:reply")).toEqual({ ok: false, error: "predecessor-not-removable" });
+    expect(h.marketplace.uninstall).not.toHaveBeenCalled();
+  });
+
+  it("maps a policy change during uninstall to a stable error", async () => {
+    const { MarketplaceError } = await import("../../../marketplace/errors.js");
+    const h = setup(); h.marketplace.uninstall.mockRejectedValueOnce(new MarketplaceError("PACKAGE_REQUIRED_BY_POLICY", "locked"));
+    expect(await h.invoke(ALERTS.removePredecessor, "successor:reply")).toEqual({ ok: false, error: "predecessor-policy-locked" });
+  });
+
+  it("shows a next-restart state for a revoked predecessor that is still loaded", async () => {
+    const { revocationRegistry } = await import("../../../plugins/revocation/revocation-registry.js");
+    const h = setup();
+    revocationRegistry.replace([{ sourceId: "trusted", kind: "plugin", name: "retired-plugin", versions: "*", reason: "retired", at: "2026-09-01", action: "disable" }]);
+    try { expect(await h.invoke(ALERTS.listKinds)).toMatchObject([{ predecessor: { restartRequired: true } }]); }
+    finally { revocationRegistry.resetForTesting(); }
   });
 });

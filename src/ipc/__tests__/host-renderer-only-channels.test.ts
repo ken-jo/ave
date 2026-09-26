@@ -203,6 +203,7 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   // host-rendered prompts.
   ["alerts", ALERTS.cardClosed, ["id", "dismissed"]],
   ["alerts", ALERTS.listOpen, []],
+  ["alerts", ALERTS.removePredecessor, ["fixturemail:reply"]],
   ["alerts", ALERTS.listKinds, []],
   ["alerts", ALERTS.setKind, ["@host:due-soon", { enabled: true }]],
   ["alerts", ALERTS.setOsNotificationsEnabled, [false]],
@@ -291,7 +292,7 @@ beforeEach(async () => {
   registerUsageHandlers(deps);
   registerDevHandlers(deps);
   registerWindowHandlers(deps);
-  registerAlertsHandlers(deps);
+  registerAlertsHandlers(deps, async () => ({} as never));
 });
 
 describe("host-renderer-only IPC channels", () => {

@@ -98,6 +98,7 @@ export type GitMarketplacePort = Pick<
   | "planUpdate"
   | "executeInstall"
   | "uninstall"
+  | "getRetirementEntry"
   | "previewDirectMcp"
   | "updates"
   | "applyBootInstalls"
@@ -465,6 +466,8 @@ function broadcastTo(deps: IpcDeps, channel: string, payload?: unknown): void {
 }
 
 export interface GitMarketplaceRegistration {
+  /** Reuse the same main-owned service for retaining alert predecessor removal. */
+  getService(): Promise<GitMarketplacePort>;
   /**
    * Start the boot pass and the periodic sync (desktop only, once the window
    * has loaded). An isolated E2E run reports the pass skipped: it must not
@@ -572,6 +575,7 @@ export function registerGitMarketplaceHandlers(
   });
 
   return {
+    getService: async () => (await loaded()).service,
     settingsChanged: () => {
       void background?.settingsChanged();
       dropKeptArtifactsIfOff(deps, home);

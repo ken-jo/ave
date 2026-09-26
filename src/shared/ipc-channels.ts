@@ -25,6 +25,7 @@ export const OVERLAY_V1 = {
  */
 export const ALERTS = {
   listKinds: "ave:alerts:list-kinds",
+  removePredecessor: "ave:alerts:remove-predecessor",
   setKind: "ave:alerts:set-kind",
   setOsNotificationsEnabled: "ave:alerts:set-os-notifications-enabled",
   /** main → renderer: re-read registered kinds and alert settings. */

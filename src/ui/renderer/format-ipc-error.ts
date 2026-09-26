@@ -331,6 +331,9 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "notification-unavailable": "formatIpcError.notificationUnavailable",
   "no-alerts-service": "formatIpcError.notificationUnavailable",
   "kind-not-registered": "alerts.kindNotRegistered",
+  "predecessor-not-removable": "alerts.predecessorNotRemovable",
+  "predecessor-policy-locked": "alerts.predecessorPolicyLocked",
+  "predecessor-removal-failed": "alerts.predecessorRemovalFailed",
 
   // ── Misc IO / system ──
   "no-window": "formatIpcError.noWindow",

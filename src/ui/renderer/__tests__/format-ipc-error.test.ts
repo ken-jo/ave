@@ -9,6 +9,9 @@ describe("formatIpcError (SOT — #830)", () => {
   it.each([
     ["invalid-arguments", "formatIpcError.invalidInput"],
     ["no-alerts-service", "formatIpcError.notificationUnavailable"],
+    ["predecessor-not-removable", "alerts.predecessorNotRemovable"],
+    ["predecessor-policy-locked", "alerts.predecessorPolicyLocked"],
+    ["predecessor-removal-failed", "alerts.predecessorRemovalFailed"],
   ])("localizes the alert IPC error %s", (code, messageKey) => {
     expect(formatIpcError(code, undefined)).toBe(t(messageKey));
     expect(formatIpcError(code, undefined)).not.toContain(code);

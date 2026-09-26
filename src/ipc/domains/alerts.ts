@@ -14,19 +14,32 @@ import { ALERTS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
 import type { AlertCard, AlertCardClosedReason, AlertKindRow, SetAlertKindResult, SetAlertOsNotificationsResult } from "../../shared/alerts-types.js";
 
+import { AlertPredecessorAccess } from "./alert-predecessor.js";
+import type { GitMarketplacePort } from "./git-marketplace.js";
+
 function isClosedReason(value: unknown): value is AlertCardClosedReason {
   return value === "accepted" || value === "dismissed";
 }
 
-export function registerAlertsHandlers(deps: IpcDeps): void {
+export function registerAlertsHandlers(deps: IpcDeps, marketplace: () => Promise<Pick<GitMarketplacePort, "catalog" | "getRetirementEntry" | "uninstall">>): void {
   const { alertsService, auditLogger } = deps;
+  const predecessors = new AlertPredecessorAccess(deps, marketplace);
+
+  ipcMain.handle(ALERTS.removePredecessor, (e, kindKey: unknown, ...extra: unknown[]) => {
+    if (!validateHostRendererSender(e)) {
+      auditUnauthorized(auditLogger, ALERTS.removePredecessor, e);
+      return { ...UNAUTHORIZED_FRAME, ok: false };
+    }
+    if (extra.length > 0) return { ok: false, error: "invalid-arguments" };
+    return predecessors.remove(kindKey);
+  });
 
   ipcMain.handle(ALERTS.listKinds, async (e): Promise<AlertKindRow[] | typeof UNAUTHORIZED_FRAME> => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, ALERTS.listKinds, e);
       return UNAUTHORIZED_FRAME;
     }
-    return alertsService?.listKinds() ?? [];
+    return predecessors.present(await alertsService?.listKinds() ?? []);
   });
 
   ipcMain.handle(ALERTS.setKind, async (e, kindKey: unknown, patch: unknown): Promise<SetAlertKindResult> => {
@@ -35,7 +48,8 @@ export function registerAlertsHandlers(deps: IpcDeps): void {
       return { ...UNAUTHORIZED_FRAME, ok: false };
     }
     if (!alertsService) return { ok: false, error: "no-alerts-service" };
-    return alertsService.setKind(kindKey, patch);
+    const result = await alertsService.setKind(kindKey, patch);
+    return "error" in result ? result : (await predecessors.present([result]))[0]!;
   });
 
   ipcMain.handle(ALERTS.setOsNotificationsEnabled, async (e, enabled: unknown): Promise<SetAlertOsNotificationsResult> => {

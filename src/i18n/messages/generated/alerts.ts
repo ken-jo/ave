@@ -1,5 +1,8 @@
 /** Alert interface strings and the host's declared due-soon templates. */
 export const en = {
+  "alerts.predecessorNotRemovable": "This predecessor can no longer be removed here. Refresh the alert settings.",
+  "alerts.predecessorPolicyLocked": "This plugin is managed by policy and cannot be removed.",
+  "alerts.predecessorRemovalFailed": "Could not remove the predecessor. Try again.",
   "alerts.builtInNotice": "Built-in notice",
   "alerts.kindNotRegistered": "This alert kind is no longer available. Refresh the alert settings.",
   "be_alerts.builtInLabel": "Built-in",
@@ -12,6 +15,9 @@ export const en = {
 } as const;
 
 export const ko: Record<keyof typeof en, string> = {
+  "alerts.predecessorNotRemovable": "이전 플러그인을 여기에서 더 이상 제거할 수 없습니다. 알림 설정을 새로고침해 주세요.",
+  "alerts.predecessorPolicyLocked": "정책으로 관리되는 플러그인이므로 제거할 수 없습니다.",
+  "alerts.predecessorRemovalFailed": "이전 플러그인을 제거하지 못했습니다. 다시 시도해 주세요.",
   "alerts.builtInNotice": "기본 기능 알림",
   "alerts.kindNotRegistered": "이 알림 유형은 더 이상 사용할 수 없습니다. 알림 설정을 새로고침해 주세요.",
   "be_alerts.builtInLabel": "기본 기능",
