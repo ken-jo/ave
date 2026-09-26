@@ -12,7 +12,7 @@ import { setupAlerts } from "../alerts-setup.js";
 import { emitEvent, onEvent } from "../../types.js";
 import { revocationRegistry } from "../../../plugins/revocation/revocation-registry.js";
 import { OVERLAY_V1 } from "../../../shared/ipc-channels.js";
-import type { AlertSettings } from "../../../shared/alerts-types.js";
+import type { AlertSettings, RetiredPluginConfigRecord } from "../../../shared/alerts-types.js";
 import type { BootContext } from "../../context.js";
 
 const kinds = [
@@ -36,19 +36,32 @@ type Row = { name: string; version: string | null; sourceId: string | null; orig
 let home: string;
 let previousHome: string | undefined;
 let settings: AlertSettings;
+let records: Record<string, RetiredPluginConfigRecord>;
 let installed: Row[];
 let loaded: string[];
 const disposers: Array<() => void> = [];
 
 function context() {
   const send = vi.fn();
+  const config: Record<string, Record<string, unknown>> = {};
+  const listeners = new Map<string, Set<() => void>>();
   const ctx = {
     settingsService: {
-      get: vi.fn(() => structuredClone(settings)),
-      set: vi.fn(async (_key: string, next: AlertSettings) => { settings = structuredClone(next); }),
+      get: vi.fn((key: string) => structuredClone(key === "alerts" ? settings : records)),
+      set: vi.fn(async (key: string, next: never) => {
+        if (key === "alerts") settings = structuredClone(next); else records = structuredClone(next);
+        for (const listener of listeners.get(key) ?? []) listener();
+      }),
+      onChanged: vi.fn((key: string, listener: () => void) => {
+        const set = listeners.get(key) ?? new Set(); listeners.set(key, set); set.add(listener);
+        return () => set.delete(listener);
+      }),
+      getPluginConfig: vi.fn((id: string) => structuredClone(config[id] ?? {})),
+      setPluginConfig: vi.fn(async (id: string, next: Record<string, unknown>) => { config[id] = structuredClone(next); }),
     },
+    pluginPaths: { cacheRoot: join(home, "plugins", ".cache") },
     pluginMarketplace: { listInstalledPackages: vi.fn(async () => installed) },
-    pluginRuntime: { listPluginIds: vi.fn(() => loaded) },
+    pluginRuntime: { listPluginIds: vi.fn(() => loaded), setConfigOverride: vi.fn(), restartPlugin: vi.fn(async () => "started") },
     bootAuditLogger: { log: vi.fn() },
     notificationService: { isFocusGateActive: () => false, fire: vi.fn() },
     getMainWindow: () => ({ isDestroyed: () => false, webContents: { send } }),
@@ -66,6 +79,7 @@ beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "ave-alerts-setup-"));
   process.env.AVE_HOME = home;
   settings = { osNotificationsEnabled: true, kinds: {} };
+  records = {};
   installed = [];
   loaded = [];
   revocationRegistry.replace([]);
@@ -256,4 +270,69 @@ describe("setupAlerts", () => {
     });
     await ctx.alertsService.flush();
   });
+});
+
+it.each([true, false])("migrates a newly persisted retirement and detaches its restart (outer lock=%s)", async (outerLock) => {
+  const { withPluginInstallLock, isPluginInstallLockHeld } = await import("../../../plugins/install-lifecycle.js");
+  const { subscribePluginConfigChange } = await import("../../../plugins/config-change-bus.js");
+  const { ctx } = context();
+  installed = [{ name: "fixturemail", version: "1.0.0", sourceId: "ave", originCommit: null }];
+  disposers.push(await setupAlerts(ctx));
+  const changes = vi.fn();
+  disposers.push(subscribePluginConfigChange("fixturemail", "*", changes));
+  const restartLockContexts: boolean[] = [];
+  vi.mocked(ctx.pluginRuntime.restartPlugin).mockImplementation(async () => {
+    restartLockContexts.push(isPluginInstallLockHeld("fixturemail"));
+    return "started";
+  });
+  await ctx.settingsService.setPluginConfig("fixturemail", { saved: "mine" });
+  const writeLockContexts: boolean[] = [];
+  const saveConfig = vi.mocked(ctx.settingsService.setPluginConfig).getMockImplementation()!;
+  vi.mocked(ctx.settingsService.setPluginConfig).mockImplementation(async (id, next) => {
+    writeLockContexts.push(isPluginInstallLockHeld(id));
+    return await saveConfig(id, next);
+  });
+  const declarations = { alerts: { reasoning: "Mail.", kinds }, configInherits: [
+    { pluginId: "retiredfixture", from: "senders", to: "senders" },
+    { pluginId: "retiredfixture", value: "legacy", to: "saved" },
+    { pluginId: "retiredfixture", from: "missing", to: "absent" },
+  ] };
+  await ctx.alertsService.register("fixturemail", declarations as never);
+  const writeRecord = async () => {
+    await ctx.settingsService.set("retiredPluginConfigs", { retiredfixture: {
+      config: { disabledDetectors: [], senders: ["example.test"] }, enabled: true, sourceId: "ave", retiredAtAppVersion: "0.12.0",
+      successors: { plugins: [{ pluginId: "fixturemail" }], hostKinds: [] }, consumedBy: [],
+    } });
+    await ctx.alertsService.flush();
+    await vi.waitFor(() => expect(ctx.pluginRuntime.restartPlugin).toHaveBeenCalledTimes(1));
+  };
+  if (outerLock) await withPluginInstallLock("fixturemail", writeRecord); else await writeRecord();
+  expect(restartLockContexts).toEqual([false]);
+  expect(writeLockContexts).toEqual([true]);
+  expect(ctx.settingsService.getPluginConfig("fixturemail")).toEqual({ saved: "mine", senders: ["example.test"] });
+  expect(ctx.pluginRuntime.setConfigOverride).toHaveBeenCalledWith("fixturemail", { saved: "mine", senders: ["example.test"] });
+  expect(changes.mock.calls).toEqual([["senders", ["example.test"]]]);
+  expect(settings.kinds["fixturemail:reply"]!.enabled).toBe(true);
+  expect(records).toEqual({});
+  await ctx.alertsService.flush();
+});
+
+it("retries pending host mappings on choice registration and releases both settings observers", async () => {
+  const { ctx } = context();
+  records = { retiredfixture: { config: {}, enabled: true, sourceId: "ave", retiredAtAppVersion: "0.12.0",
+    successors: { plugins: [], hostKinds: [{ kind: "@host:due-soon", enabled: { key: "disabled", listed: "disabled", values: ["due"] } }] }, consumedBy: [],
+  } };
+  const dispose = await setupAlerts(ctx); disposers.push(dispose); await ctx.alertsService.flush();
+  expect(records.retiredfixture).toBeDefined();
+  await ctx.settingsService.set("alerts", { osNotificationsEnabled: true, kinds: {
+    "@host:due-soon": { enabled: false, osNotification: false, visibility: "user-visible", seenByUser: false },
+  } });
+  await ctx.alertsService.flush();
+  expect(settings.kinds["@host:due-soon"]!.enabled).toBe(true);
+  expect(records).toEqual({});
+  dispose(); await ctx.alertsService.flush();
+  const reconcile = vi.spyOn(ctx.alertsService, "reconcileMigration");
+  await ctx.settingsService.set("retiredPluginConfigs", {});
+  await ctx.settingsService.set("alerts", settings);
+  expect(reconcile).not.toHaveBeenCalled();
 });

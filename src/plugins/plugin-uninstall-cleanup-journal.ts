@@ -162,6 +162,12 @@ export class PluginUninstallCleanupJournal {
     return Object.freeze([...this.records.values()].map(freezeRecord));
   }
 
+  /** Includes install aliases: either identity still owns pending cleanup. */
+  has(pluginId: string): boolean {
+    return this.records.has(pluginId)
+      || [...this.records.values()].some((record) => record.installPluginId === pluginId);
+  }
+
   find(pluginId: string): PluginUninstallCleanupRecord | undefined {
     const direct = this.records.get(pluginId);
     const record = direct

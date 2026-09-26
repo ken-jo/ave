@@ -1,3 +1,4 @@
+import { createAlertMigrationPorts } from "../../__tests__/support/alert-migration.js";
 import { createBootHostFixture } from "../../__tests__/support/host-runtime.js";
 /**
  * Construction of the REAL plugin hostApi object, and the traversal every
@@ -90,6 +91,7 @@ export async function buildRealHostApi(
   const alertsDir = mkdtempSync(join(tmpdir(), "ave-probe-alerts-"));
   let alertSettings: AlertSettings = { osNotificationsEnabled: true, kinds: {} };
   const alertsService = new AlertsService({
+    migration: createAlertMigrationPorts(),
     dir: () => alertsDir,
     settings: { get: () => alertSettings, set: async (next) => { alertSettings = next; } },
     installedPluginIds: async () => [],

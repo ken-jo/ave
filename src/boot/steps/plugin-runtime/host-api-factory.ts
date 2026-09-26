@@ -439,7 +439,7 @@ export function createHostApiFactory(
     };
     // Candidate grants become effective only with their generation. A failed
     // candidate cannot replace the incumbent's kinds or alter its settings.
-    const alertRegistration = getAlertsService()?.prepareRegistration(pluginId, manifest);
+    const alertRegistration = getAlertsService()?.prepareRegistration(pluginId, manifest, () => hostIncarnation.isActive());
     if (alertRegistration) {
       const publish = () => {
         void alertRegistration.publish().catch((err: unknown) => {

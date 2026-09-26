@@ -1,3 +1,4 @@
+import { createAlertMigrationPorts } from "../../../__tests__/support/alert-migration.js";
 import { createBootHostFixture, createDesktopHostFixture } from "../../../__tests__/support/host-runtime.js";
 /**
  * HostApi window targeting — a host→renderer send must go to the CURRENT main
@@ -161,6 +162,7 @@ async function overlayHostApi(input: {
   manifest?: Record<string, unknown>;
   alertsService?: AlertsService;
   incarnation?: PluginHostApiIncarnation;
+  isActive?: () => boolean;
 }): Promise<OverlayHostApi> {
   runtimeTestState.capturedRuntimeOptions = null;
   await initPluginRuntime({
@@ -212,7 +214,7 @@ async function overlayHostApi(input: {
     input.incarnation ?? {
       registerDisposer: vi.fn(),
       trackOperation: <T>(operation: Promise<T>) => operation,
-      isActive: () => true,
+      isActive: input.isActive ?? (() => true),
       isLifecycleHookActive: () => false,
     },
     null,
@@ -443,6 +445,7 @@ describe("hostApi.raiseAlert, withdrawAlert and alert events", () => {
     let settings: AlertSettings = { osNotificationsEnabled: true, kinds: {} };
     const dir = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-alerts-hostapi-")));
     const alerts = new AlertsService({
+    migration: createAlertMigrationPorts(),
       dir: () => dir,
       settings: { get: () => settings, set: async (next) => { settings = next; } },
       installedPluginIds: async () => [],
@@ -558,4 +561,14 @@ describe("hostApi.raiseAlert, withdrawAlert and alert events", () => {
     runtimeTestState.runtime.getApprovedPluginAccess.mockReturnValue(undefined);
     unsubscribe();
   });
+});
+
+it("binds migration readiness to the exact HostApi incarnation", async () => {
+  let active = false;
+  const prepareRegistration = vi.fn(() => ({ publish: vi.fn(async () => {}), unpublish: vi.fn() }));
+  await overlayHostApi({ bootWindow: null, isActive: () => active, alertsService: { prepareRegistration } as unknown as AlertsService });
+  const readiness = (prepareRegistration.mock.calls as unknown as Array<[string, unknown, () => boolean]>)[0]![2];
+  expect(readiness()).toBe(false);
+  active = true;
+  expect(readiness()).toBe(true);
 });
