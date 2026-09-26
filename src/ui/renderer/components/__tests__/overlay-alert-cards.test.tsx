@@ -11,8 +11,8 @@
 import "../../../../../test/renderer/setup.js";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { createRef } from "react";
-import { describe, expect, it, vi } from "vitest";
-import { t } from "../../../../i18n/index.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { loadLocaleMessages, setLocale, t } from "../../../../i18n/index.js";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { OverlayCardRegion } from "../OverlayCardRegion.js";
 import {
@@ -86,7 +86,11 @@ function expectPluginIdentity(pluginId: string, name?: string) {
   expect(id.getAttribute("aria-label")).toBe(fullId);
   const displayName = screen.queryByTestId("plugin-provenance-name");
   if (name) {
-    expect(displayName?.textContent).toBe(name);
+    const labeledName = t("alerts.pluginDisplayName", { name });
+    expect(displayName?.textContent).toBe(labeledName);
+    expect(displayName?.getAttribute("title")).toBe(labeledName);
+    expect(displayName?.getAttribute("aria-label")).toBe(labeledName);
+    expect(displayName?.getAttribute("role")).toBe("group");
     expect(displayName?.className).toContain("opacity-60");
     expect(id.textContent).not.toContain(name);
   } else {
@@ -95,6 +99,8 @@ function expectPluginIdentity(pluginId: string, name?: string) {
 }
 
 describe("alert cards in the overlay queue", () => {
+  beforeEach(() => setLocale("en"));
+
   it("shows distinct canonical ids when names and kind titles match", () => {
     const q = mount();
     q.add({ ...alertItem("mail", undefined, "Plugin: fixturecalendar"), pluginDisplayName: "Mail tools" });
@@ -155,8 +161,27 @@ describe("alert cards in the overlay queue", () => {
 
   it("separates a host-looking display name from the canonical id", () => {
     const q = mount();
-    q.add({ ...pluginItem("spoof"), pluginDisplayName: "Plugin: lyra-mail · Ave Lyra Mail" });
-    expectPluginIdentity("fixturemail", "Plugin: lyra-mail · Ave Lyra Mail");
+    q.add({
+      ...pluginItem("spoof"),
+      source: { kind: "plugin", pluginId: "fixture-6", eventId: "spoof" },
+      pluginDisplayName: "Plugin: lyra-mail · Ave Lyra Mail",
+    });
+    expectPluginIdentity("fixture-6", "Plugin: lyra-mail · Ave Lyra Mail");
+    expect(screen.getByTestId("plugin-provenance-name").textContent)
+      .toBe("Name: Plugin: lyra-mail · Ave Lyra Mail");
+  });
+
+  it("labels the display-name field in Korean too", async () => {
+    await loadLocaleMessages("ko");
+    setLocale("ko");
+    try {
+      const q = mount();
+      q.add({ ...pluginItem("ko"), pluginDisplayName: "메일 도구" });
+      expectPluginIdentity("fixturemail", "메일 도구");
+      expect(screen.getByTestId("plugin-provenance-name").textContent).toBe("이름: 메일 도구");
+    } finally {
+      setLocale("en");
+    }
   });
 
   it("identifies a host alert as built-in rather than a plugin notice", () => {

@@ -148,6 +148,9 @@ export function OverlayCard({
   }, [firedAt]);
 
   const showNav = queueTotal >= 2;
+  const displayNameLabel = pluginDisplayName && pluginDisplayName !== pluginId
+    ? t("alerts.pluginDisplayName", { name: pluginDisplayName })
+    : null;
 
   return (
     <Card
@@ -180,13 +183,15 @@ export function OverlayCard({
                   >
                     {t("alerts.pluginIdOnly", { id: pluginId })}
                   </span>
-                  {pluginDisplayName && pluginDisplayName !== pluginId && (
+                  {displayNameLabel && (
                     <span
                       className="block min-w-0 truncate text-[10px] opacity-60"
-                      title={pluginDisplayName}
+                      role="group"
+                      aria-label={displayNameLabel}
+                      title={displayNameLabel}
                       data-testid="plugin-provenance-name"
                     >
-                      {pluginDisplayName}
+                      {displayNameLabel}
                     </span>
                   )}
                 </span>
