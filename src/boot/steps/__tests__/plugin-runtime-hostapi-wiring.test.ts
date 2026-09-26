@@ -27,6 +27,7 @@ import { directHostApiChannel } from "../../../__tests__/support/host-protocol-w
 import { HOSTAPI_DISPATCH_TABLE, HostApiDispatcher, createServiceHostApiPaths } from "../../../plugins/isolation/host-api-dispatcher.js";
 import { startPluginChildRuntime } from "../../../plugins/isolation/plugin-child-runtime.js";
 import type { PluginHostApi } from "../../../plugins/types.js";
+import { runWithEffectGateContext } from "../../../permissions/effect-enforcement.js";
 
 const tmpDirs = createTmpDirTracker();
 
@@ -36,6 +37,7 @@ const runtimeTestState = vi.hoisted(() => ({
   capturedRuntimeOptions: null as Record<string, unknown> | null,
   readPluginRegistry: vi.fn(async (): Promise<{ version: number; plugins: unknown[] }> => ({ version: 1, plugins: [] })),
   receiptReviewedAppVersion: vi.fn(async (): Promise<string | null> => null),
+  officialPins: vi.fn(async () => ["a".repeat(64)]),
   /** The registry file whose identity the HostApi's entry cache watches. */
   registryPath: "/tmp/ave-test/registry.json",
   spawnWorker: vi.fn(),
@@ -117,7 +119,7 @@ vi.mock("../../../plugins/registry.js", () => ({
 // The official snapshot pins the artifact every origin below names.
 vi.mock("../plugin-runtime/grant-evidence.js", () => ({
   grantEvidenceReader: () => ({
-    officialPins: async () => ["a".repeat(64)],
+    officialPins: runtimeTestState.officialPins,
     receiptArtifactSha256: async () => null,
     receiptReviewedAppVersion: runtimeTestState.receiptReviewedAppVersion,
   }),
@@ -231,6 +233,7 @@ async function initAndGetFactory(
   settingsService: unknown,
   bootAuditLogger: { log: ReturnType<typeof vi.fn> } = { log: vi.fn() },
   networkFetch: typeof fetch = vi.fn(async () => new Response(null)) as unknown as typeof fetch,
+  approvalGate: unknown = { requestAndWait: vi.fn() },
 ): Promise<CreateHostApi> {
   runtimeTestState.capturedRuntimeOptions = null;
   // Honour a caller-supplied logger; only default when none was given. The
@@ -258,7 +261,7 @@ async function initAndGetFactory(
     openAuthPartitionViewerService: vi.fn(),
     clearAuthPartitionService: vi.fn(async () => {}),
     shellOpenExternal: vi.fn(),
-    approvalGate: { requestAndWait: vi.fn() } as never,
+    approvalGate: approvalGate as never,
     routinesStore: { list: () => [] } as never,
     // This harness has no Work Board; the proposal verbs are not exercised here.
     getWorkBoardStore: () => undefined,
@@ -277,8 +280,8 @@ function makeSettingsService(store: Map<string, Record<string, unknown>>) {
   return {
     getProviderConfigRevision: () => 0,
     getSecretGeneration: () => 0,
-    onLeaseStateChanged: () => () => {},
-    get: vi.fn((key: string) => {
+    onLeaseStateChanged: (_listener: () => void) => () => {},
+    get: vi.fn((key: string): unknown => {
       if (key === "llm") return { provider: "openai" };
       if (key === "marketplace") return { installedProviderPresets: [] };
       if (key === "pluginConfigs") return {};
@@ -304,6 +307,8 @@ function activeIncarnation() {
 }
 
 beforeEach(() => {
+  runtimeTestState.officialPins.mockReset();
+  runtimeTestState.officialPins.mockResolvedValue(["a".repeat(64)]);
   runtimeTestState.receiptReviewedAppVersion.mockReset();
   runtimeTestState.receiptReviewedAppVersion.mockResolvedValue(null);
   runtimeTestState.readPluginRegistry.mockReset();
@@ -747,6 +752,61 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     expect(runtimeTestState.readPluginRegistry).toHaveBeenCalledOnce();
   });
 
+  it("rejects issuance when configuration changes while the provenance gate is pending", async () => {
+    const { manifest, manifestSha256 } = granted("meeting", "llm.apiKey.openai");
+    const settings = makeSettingsService(new Map());
+    settings.getSecret.mockImplementation((key: string) =>
+      key === "llm.apiKey.openai" ? "host-secret-value" : undefined);
+    let revision = 0;
+    const listeners = new Set<() => void>();
+    settings.getProviderConfigRevision = () => revision;
+    settings.onLeaseStateChanged = (listener: () => void) => {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    };
+    let passGate: ((pins: string[]) => void) | undefined;
+    runtimeTestState.officialPins.mockImplementationOnce(() =>
+      new Promise((resolve) => { passGate = resolve; }));
+    const createHostApi = await initAndGetFactory(settings);
+    const api = createHostApi(
+      "meeting", manifest, tmpDirs.track(mkdtempSync("/tmp/ave-lease-issuing-")),
+      activeIncarnation(), "meeting",
+      { installSource: "user", manifestSha256, origin: OFFICIAL_ORIGIN },
+    );
+    const pending = api.resolveApiKey({ purpose: "llm", vendor: "openai" });
+    await vi.waitFor(() => expect(runtimeTestState.officialPins).toHaveBeenCalledOnce());
+    revision += 1;
+    for (const listener of listeners) listener();
+    passGate!(["a".repeat(64)]);
+    await expect(pending).resolves.toEqual({ ok: false, reason: "stale-authorization" });
+  });
+
+  it("rejects issuance when the host key rotates during the secret read", async () => {
+    const { manifest, manifestSha256 } = granted("meeting", "llm.apiKey.openai");
+    const settings = makeSettingsService(new Map());
+    let generation = 0;
+    const listeners = new Set<() => void>();
+    settings.getSecretGeneration = () => generation;
+    settings.onLeaseStateChanged = (listener: () => void) => {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    };
+    settings.getSecret.mockImplementation((key: string) => {
+      if (key !== "llm.apiKey.openai") return undefined;
+      generation += 1;
+      for (const listener of listeners) listener();
+      return "host-secret-value";
+    });
+    const createHostApi = await initAndGetFactory(settings);
+    const api = createHostApi(
+      "meeting", manifest, tmpDirs.track(mkdtempSync("/tmp/ave-lease-secret-read-")),
+      activeIncarnation(), "meeting",
+      { installSource: "user", manifestSha256, origin: OFFICIAL_ORIGIN },
+    );
+    await expect(api.resolveApiKey({ purpose: "llm", vendor: "openai" }))
+      .resolves.toEqual({ ok: false, reason: "stale-authorization" });
+  });
+
   it("denies unsupported sources and a host endpoint that has not been configured", async () => {
     const settings = makeSettingsService(new Map());
     settings.get.mockImplementation((key: string) => {
@@ -1057,6 +1117,48 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     await api.hostFetch("https://api.openai.com/v1/models", { headers: { Authorization: "Bearer plugin-owned" } });
     expect(new Headers(((transport as ReturnType<typeof vi.fn>).mock.calls[1]?.[1] as RequestInit).headers)
       .get("authorization")).toBe("Bearer plugin-owned");
+  });
+
+  it("refuses a lease revoked while a mutating request waits for approval", async () => {
+    const settings = makeSettingsService(new Map());
+    settings.getSecret.mockImplementation((key: string) =>
+      key === "plugin.plugin-a.llm.apiKey.openai" ? "synthetic-secret" : undefined);
+    const originalGet = settings.get.getMockImplementation()!;
+    settings.get.mockImplementation((key: string) =>
+      key === "features" ? { hostClassifiesRisk: true } : originalGet(key));
+    let revision = 0;
+    const listeners = new Set<() => void>();
+    settings.getProviderConfigRevision = () => revision;
+    settings.onLeaseStateChanged = (listener: () => void) => {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    };
+    let approve: ((decision: { choice: "allow-once" }) => void) | undefined;
+    const approvalGate = {
+      requestAndWait: vi.fn(() => new Promise((resolve) => { approve = resolve as typeof approve; })),
+    };
+    const transport = vi.fn(async () => new Response("sent")) as unknown as typeof fetch;
+    const createHostApi = await initAndGetFactory(settings, { log: vi.fn() }, transport, approvalGate);
+    const api = createHostApi(
+      "plugin-a",
+      { id: "plugin-a", config: {}, capabilities: ["external-auth-consumer"], networkAccess: { allowedDomains: ["api.openai.com"] } },
+      tmpDirs.track(mkdtempSync("/tmp/ave-lease-approval-")), activeIncarnation(), "plugin-a",
+    );
+    const result = await api.resolveApiKey({ purpose: "llm", vendor: "openai" });
+    if (!result.ok || result.exposure !== "lease") throw new Error("expected lease");
+    const pending = runWithEffectGateContext(
+      { headless: false, approvalSurface: "interactive", toolName: "sample" },
+      () => api.hostFetch("https://api.openai.com/v1/models", {
+        method: "POST", auth: { lease: result.leaseId },
+      }),
+    );
+    await vi.waitFor(() => expect(approvalGate.requestAndWait).toHaveBeenCalledOnce());
+    expect(approve).toBeDefined();
+    revision += 1;
+    for (const listener of listeners) listener();
+    approve!({ choice: "allow-once" });
+    await expect(pending).rejects.toMatchObject({ code: "lease-unavailable" });
+    expect(transport).not.toHaveBeenCalled();
   });
 
   it("carries a lease through child, dispatcher and factory into the gated transport", async () => {
