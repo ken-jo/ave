@@ -1,0 +1,38 @@
+import { describe, expect, it, vi } from "vitest";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { ToolExecutor } from "../executor.js";
+import { ToolRegistry } from "../registry.js";
+import { createDynamicTool } from "../base.js";
+import { userPermissionContext } from "./tool-context-fixture.js";
+import { PermissionManager } from "../../permissions/permission-manager.js";
+import { VerdictCache } from "../../permissions/reviewer/verdict-cache.js";
+import { DeferredQueue } from "../../permissions/reviewer/deferred-queue.js";
+
+describe("routine write permission dependency", () => {
+  it.each([undefined, "medium", "high"] as const)("denies a reply with default effect classification and reviewer %s", async (level) => {
+    const dir = mkdtempSync(join(tmpdir(), "routine-write-"));
+    try {
+      const execute = vi.fn(async () => ({ output: "sent", isError: false }));
+      const registry = new ToolRegistry();
+      registry.register(createDynamicTool({
+        name: "lyramail_email_reply", pluginId: "lyra-mail", source: "plugin",
+        description: "Send a reply", category: "network", pathFields: [], isReadOnly: () => false,
+        jsonSchema: { type: "object", properties: {} }, execute,
+      }));
+      const manager = new PermissionManager(join(dir, "permissions.json"));
+      manager.setMode("auto");
+      const classify = vi.fn(() => ({ level: level ?? "high", reason: "External write" }));
+      if (level) manager.setReviewer({ classifier: { classify }, cache: new VerdictCache(join(dir, "cache.jsonl")), deferredQueue: new DeferredQueue(join(dir, "deferred.jsonl")) });
+      const executor = new ToolExecutor(registry, undefined, manager);
+      const [result] = await executor.executeAll([{ id: "reply", name: "lyramail_email_reply", input: {} }], {
+        sessionId: "routine-session", permissionContext: userPermissionContext({ headless: true }),
+      });
+      expect(result.is_error).toBe(true);
+      expect(execute).not.toHaveBeenCalled();
+      if (level) expect(classify).toHaveBeenCalled();
+    } finally { await cleanupTmpDir(dir); }
+  });
+});

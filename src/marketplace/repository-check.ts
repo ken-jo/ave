@@ -26,6 +26,7 @@ import { AVE_EXTENSION_NAMESPACE } from "../plugins/public-contract.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
 import { errorMessage } from "../shared/error-message.js";
 import { isRecord } from "../shared/is-record.js";
+import { compareSemver, isSemver } from "../shared/semver-compare.js";
 
 /** Read access to a repository tree. Paths are repository-relative with `/` separators. */
 export interface RepositoryTree {
@@ -36,6 +37,8 @@ export interface RepositoryTree {
 }
 
 export interface RepositoryCheckOptions {
+  /** Published stable app version carrying the complete alerts contract. No guessed default. */
+  alertsReleaseVersion: string;
   /** The source id the index must carry when `official` (the official source is `ave`). */
   sourceId: string;
   official: boolean;
@@ -109,7 +112,15 @@ function withoutLegacyFields(document: unknown): unknown {
   return { ...document, extensions: { ...extensions, [AVE_EXTENSION_NAMESPACE]: rest } };
 }
 
-function checkReleasedManifests(entry: IndexPackage, released: ReadonlyMap<string, unknown>, report: (message: string) => void): void {
+function checkNotificationDeprecation(document: unknown, minAppVersion: string, alertsReleaseVersion: string, report: (message: string) => void): void {
+  const extensions = isRecord(document) ? document.extensions : undefined;
+  const ave = isRecord(extensions) ? extensions[AVE_EXTENSION_NAMESPACE] : undefined;
+  if (isRecord(ave) && Object.hasOwn(ave, "notificationEvents") && compareSemver(minAppVersion, alertsReleaseVersion) >= 0) {
+    report(`notificationEvents is deprecated for minAppVersion ${minAppVersion} at or above the alerts release ${alertsReleaseVersion}; declare alerts kinds instead`);
+  }
+}
+
+function checkReleasedManifests(entry: IndexPackage, released: ReadonlyMap<string, unknown>, alertsReleaseVersion: string, report: (message: string) => void): void {
   const prefix = `${entry.name}@`;
   const versions = new Map((entry.versions ?? []).map((version) => [version.version, version]));
   for (const [key, document] of released) {
@@ -122,6 +133,8 @@ function checkReleasedManifests(entry: IndexPackage, released: ReadonlyMap<strin
     const expected = { name: entry.name, version: version.version, minAppVersion: version.minAppVersion, authority: version.authority as PluginAuthority };
     const held = version.yanked ? withoutLegacyFields(document) : document;
     for (const mismatch of gitInstallManifestMismatches(held, expected)) report(`the released plugin.json of ${version.version}: ${mismatch}`);
+    checkNotificationDeprecation(held, version.minAppVersion, alertsReleaseVersion,
+      (message) => report(`the released plugin.json of ${version.version}: ${message}`));
   }
 }
 
@@ -132,12 +145,15 @@ function checkPlugin(
   options: RepositoryCheckOptions,
   report: (message: string) => void,
 ): void {
-  if (options.releasedManifests) checkReleasedManifests(entry, options.releasedManifests, report);
+  if (options.releasedManifests) checkReleasedManifests(entry, options.releasedManifests, options.alertsReleaseVersion, report);
   const manifestPath = repoPath(entry.path, "plugin.json");
   const manifest = tree.read(manifestPath);
   const artifact = (descriptor.payload as { artifact: PluginArtifactPins }).artifact;
   if (!manifest) {
     if (artifact.tree !== undefined) report(`artifact.tree is declared but ${manifestPath} is missing`);
+    if (compareSemver(descriptor.minAppVersion, options.alertsReleaseVersion) >= 0 && !options.releasedManifests?.has(`${descriptor.name}@${descriptor.version}`)) {
+      report(`Supply releasedManifests for ${descriptor.name}@${descriptor.version} to check notificationEvents at or above the alerts release`);
+    }
     return;
   }
   // A plugin.json in the package directory declares the tree rung (design §6.2): hold it to that rung's layout.
@@ -156,6 +172,8 @@ function checkPlugin(
     return;
   }
   for (const mismatch of manifestMismatches(document, descriptor)) report(`${manifestPath}: ${mismatch}`);
+  checkNotificationDeprecation(document, descriptor.minAppVersion, options.alertsReleaseVersion,
+    (message) => report(`${manifestPath}: ${message}`));
 }
 
 function checkMcp(tree: RepositoryTree, entry: IndexPackage, descriptor: PackageDescriptor, report: (message: string) => void): void {
@@ -243,6 +261,9 @@ function unlisted(tree: RepositoryTree, listed: ReadonlySet<string>): string[] {
  * revocations file. Empty = the app accepts every package as it stands.
  */
 export function checkMarketplaceRepository(tree: RepositoryTree, options: RepositoryCheckOptions): RepositoryProblem[] {
+  if (typeof options.alertsReleaseVersion !== "string" || !isSemver(options.alertsReleaseVersion) || /[-+]/.test(options.alertsReleaseVersion)) {
+    return [{ subject: "alertsReleaseVersion", message: "Set alertsReleaseVersion to the published stable app version carrying the complete alerts contract before checking a repository" }];
+  }
   const problems: RepositoryProblem[] = [];
   const indexBytes = tree.read(INDEX_PATH);
   if (!indexBytes) return [{ subject: INDEX_PATH, message: "is missing" }];

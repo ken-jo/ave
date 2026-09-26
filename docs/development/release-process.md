@@ -62,3 +62,33 @@ adding secrets to this unsigned workflow.
 ## Review Notes
 
 This English page should let a reviewer understand scope, risk, and validation without opening the Korean archive. If the archive contains rationale that still matters, translate the relevant part into this page and keep the archive link as provenance.
+
+## Alerts release publication
+
+The alerts release is the version carrying the complete
+[alerts rollout](../design/plugin-alerts.md#pull-request-plan), not a guessed
+version from the design example. At publication:
+
+1. Record that stable version in the marketplace CI caller's
+   `RepositoryCheckOptions.alertsReleaseVersion`, alongside successor plugin
+   `minAppVersion` and conditional revocation `appVersions`.
+2. Re-vendor the repository checker and update its caller in the same marketplace
+   change. The option is required and validated at runtime: missing, malformed,
+   pre-release or build-suffixed values produce a repository problem before any
+   package is checked. There is no default threshold that silently disables the
+   rule or prematurely chooses a release number.
+3. Supply `releasedManifests` for published artifacts. The checker examines tree
+   manifests and supplied release manifests against the matching descriptor or
+   index minimum version. An eligible release-only package without manifest
+   evidence fails the check. A `notificationEvents` declaration at or above the
+   threshold is reported even when its array is empty. Older packages retain
+   the compatibility window.
+4. Include the new-mail and meeting-summary opt-in loss in the release notes.
+   Confirm the remaining official notification consumer has migrated before the
+   following minor release retires `notificationEvents`, its bridge and contract
+   type. That removal must drop the field with a warning rather than refuse the
+   whole installed manifest.
+
+The explicit caller option lets publication select the actual release once and
+keeps the same checker usable by every source. Updating the app's own package
+version cannot move the deprecation threshold on later releases.

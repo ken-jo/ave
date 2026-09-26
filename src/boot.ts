@@ -1,3 +1,4 @@
+import { readPluginRegistry } from "./plugins/registry.js";
 import { requireDesktopHost, type BootHost } from "./boot/host-runtime.js";
 import { configureHostResources } from "./main/host-resources.js";
 /**
@@ -673,7 +674,10 @@ export async function bootstrap(
   // (subAgentRunner, askUserQuestionGate) hop through closures so the
   // ConversationLoop / BrowserWindow are available before the tool fires.
   // (routinesStore is constructed above — it must exist before initPluginRuntime.)
-  const routinesScheduler = new RoutinesScheduler(routinesStore);
+  const routinesScheduler = new RoutinesScheduler(routinesStore, async () => {
+    const registry = await readPluginRegistry(pluginPaths.registryPath);
+    return registry.plugins.map((entry) => pluginRuntime.resolvePluginId(entry.id));
+  });
   ctx.routinesScheduler = routinesScheduler;
 
   await setupWorkBoard(ctx);

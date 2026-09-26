@@ -153,3 +153,45 @@ describe("RoutinePanel scope payload mapping", () => {
     expect(payload.scope?.pluginIds).toEqual({ mode: "allow", ids: ["plugin-a"] });
   });
 });
+
+describe("RoutinePanel missing plugins", () => {
+  it.each([true, false])("shows missing ids and removes the routine (skipped=%s)", async (skipped) => {
+    const { RoutinePanel } = await import("../components/RoutinePanel.js");
+    const routine: RoutineRecord = {
+      id: "missing-routine", trigger: "schedule", execution: "llm-session", title: "Daily summary",
+      createdAt: new Date().toISOString(),
+      needsAttention: { missingPluginIds: ["missing-plugin"] },
+      ...(skipped ? { lastSkippedReason: "plugins-missing" as const } : { lastFiredAt: new Date().toISOString() }),
+    };
+    let rows = [routine];
+    const removeRoutine = vi.fn(async () => { rows = []; return { ok: true }; });
+    const api = {
+      listRoutines: vi.fn(async () => rows), listRoutineSessions: vi.fn(async () => []), removeRoutine,
+      onRoutineFired: vi.fn(() => () => {}),
+    } as unknown as AveApi;
+    const view = render(<RoutinePanel api={api} />);
+    const status = await view.findByRole("status");
+    expect(status.textContent).toContain("missing-plugin");
+    expect(status.textContent).toContain(skipped ? "건너뛰었습니다" : "확인이 필요합니다");
+    fireEvent.click(view.getByRole("button", { name: "삭제" }));
+    await waitFor(() => expect(view.queryByTestId("routine-row")).toBeNull());
+    expect(removeRoutine).toHaveBeenCalledWith("missing-routine");
+  });
+});
+
+it("refreshes a skipped occurrence while open without a fired event", async () => {
+  const { RoutinePanel } = await import("../components/RoutinePanel.js");
+  let rows: RoutineRecord[] = [{ id: "waiting", title: "Waiting", trigger: "schedule", execution: "llm-session", createdAt: new Date().toISOString() }];
+  const api = { listRoutines: vi.fn(async () => rows), listRoutineSessions: vi.fn(async () => []) } as unknown as AveApi;
+  vi.useFakeTimers();
+  let view: ReturnType<typeof render> | undefined;
+  try {
+    await act(async () => { view = render(<RoutinePanel api={api} />); });
+    expect(view!.queryByRole("status")).toBeNull();
+    rows = [{ ...rows[0], lastSkippedReason: "plugins-missing", needsAttention: { missingPluginIds: ["missing-plugin"] } }];
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(view!.getByRole("status").textContent).toContain("missing-plugin");
+    view!.unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  } finally { view?.unmount(); vi.useRealTimers(); }
+});
