@@ -583,9 +583,11 @@ describe("runHostFetchHops — redirect policy", () => {
     const { options } = hopOptions(await firstAllow("https://api.example.com/a"), {}, transport);
     const lease = registeredCredentialUse();
     const finish = vi.spyOn(lease.use, "finish");
-    const response = await runHostFetchHops({ ...options, credentialUse: lease.use });
+    const onResponseBodyError = vi.fn(() => { throw new Error("audit sink failed"); });
+    const response = await runHostFetchHops({ ...options, credentialUse: lease.use, onResponseBodyError });
     lease.revoke();
     await expect(response.text()).rejects.toMatchObject({ code: "lease-unavailable" });
+    expect(onResponseBodyError).toHaveBeenCalledWith(expect.objectContaining({ code: "lease-unavailable" }));
     expect(finish).toHaveBeenCalledOnce();
   });
   it("default (no redirect field) refuses a redirect, after one hop only", async () => {

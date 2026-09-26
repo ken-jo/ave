@@ -256,6 +256,7 @@ export interface CreateHostApiFactoryDeps {
   readAppPreference: (pluginId: string, key: string) => unknown;
   settingsService: SettingsService;
   bootAuditLogger: AuditLogger;
+  leaseDenialAudit?: LeaseDenialAudit;
   /**
    * The very callback handed to `new PluginRuntime({ auditLog })`, narrowed to
    * what the storage rejection sink needs. Reused (rather than re-derived from
@@ -368,7 +369,7 @@ export function createHostApiFactory(
     settingsService,
     (pluginId) => permissionManager?.getPluginRevokeEpoch(pluginId) ?? 0,
   );
-  const leaseDenialAudit = new LeaseDenialAudit(bootAuditLogger);
+  const leaseDenialAudit = deps.leaseDenialAudit ?? new LeaseDenialAudit(bootAuditLogger);
 
   /**
    * The window a host→renderer send (or a host-opened child window's parent)
@@ -1202,6 +1203,9 @@ export function createHostApiFactory(
             } catch { /* audit must not break host */ }
           },
           auditDeny: auditEgressDeny,
+          onResponseBodyError: (error) => {
+            if (error instanceof CredentialLeaseError) leaseDenialAudit.record(pluginId, "hostFetch", error);
+          },
         });
         } catch (error) {
           if (error instanceof CredentialLeaseError) leaseDenialAudit.record(pluginId, "hostFetch", error);

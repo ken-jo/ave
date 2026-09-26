@@ -23,6 +23,7 @@ import { registerBootPluginShutdown, registerShutdownHook } from "../../main/app
 import { onEvent as onHostEvent } from "../types.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { PluginRuntime } from "../../plugins/runtime.js";
+import { LeaseDenialAudit } from "../../plugins/secret-access/lease-denial-audit.js";
 import type { PythonRuntimeBootstrapper } from "../../main/python-runtime.js";
 import { startPluginDevWatcher } from "../../plugins/dev-watcher.js";
 import { PluginDeploymentGuard } from "../../plugins/deployment-guard.js";
@@ -455,6 +456,7 @@ export async function initPluginRuntime(
    * would be a bound port with no owner left to close it.
    */
   const authRedirectCatchers = new AuthRedirectCatchers();
+  const leaseDenialAudit = new LeaseDenialAudit(bootAuditLogger);
   const createHostApi = createHostApiFactory({
     host: input.host,
     getPluginRuntime: () => pluginRuntime,
@@ -467,6 +469,7 @@ export async function initPluginRuntime(
     readAppPreference,
     settingsService,
     bootAuditLogger,
+    leaseDenialAudit,
     pluginRuntimeAuditLog,
     networkFetch,
     mainWindow,
@@ -504,6 +507,9 @@ export async function initPluginRuntime(
     deploymentGuard,
     installReceiptCacheRoot: pluginPaths.cacheRoot,
     auditLog: pluginRuntimeAuditLog,
+    onMalformedCredentialSelector: (pluginId) => {
+      leaseDenialAudit.record(pluginId, "hostFetch", { code: "credential-conflict" });
+    },
     preparePluginStart,
     onDisable,
     onActiveStateChange,

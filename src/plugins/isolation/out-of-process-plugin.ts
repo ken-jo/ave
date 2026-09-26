@@ -164,13 +164,14 @@ export function createBoundHostApiDispatchTable(
    * checking against something other than the jail.
    */
   confinement: DelegatedWorkerConfinement,
+  onMalformedCredentialSelector?: () => void,
 ): Record<HostApiPath, HostApiPathHandler> {
   return {
     ...HOSTAPI_DISPATCH_TABLE,
     ...createStorageHostApiPaths(hostApi),
     ...createConfigSubscriptionHostApiPaths(hostApi),
     ...createInteractionHostApiPaths(hostApi),
-    ...createServiceHostApiPaths(hostApi, confinement),
+    ...createServiceHostApiPaths(hostApi, confinement, onMalformedCredentialSelector),
   };
 }
 
@@ -1073,6 +1074,7 @@ export interface OutOfProcessPluginSpec {
     assertCurrent(): void;
     dispose(): void;
   };
+  readonly onMalformedCredentialSelector?: (pluginId: string) => void;
 }
 
 /**
@@ -1264,7 +1266,13 @@ export function createOutOfProcessPluginFactory(
     let live = true;
     // ONE table: the dispatcher serves it and `construct` advertises it, so
     // what the child is told it may call is what the host will answer.
-    const table = createBoundHostApiDispatchTable(hostApi, envelope);
+    const table = createBoundHostApiDispatchTable(
+      hostApi,
+      envelope,
+      spec.onMalformedCredentialSelector
+        ? () => spec.onMalformedCredentialSelector?.(pluginId)
+        : undefined,
+    );
     const transport = new PluginChildTransport({
       pluginId,
       // The boundary's own liveness, not a second authority. The authoritative

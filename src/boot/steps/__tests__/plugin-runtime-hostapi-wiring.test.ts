@@ -1119,6 +1119,38 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
       .get("authorization")).toBe("Bearer plugin-owned");
   });
 
+  it("audits a lease revoked after response headers but before body consumption", async () => {
+    const settings = makeSettingsService(new Map());
+    settings.getSecret.mockImplementation((key: string) =>
+      key === "plugin.plugin-a.llm.apiKey.openai" ? "synthetic-secret" : undefined);
+    let generation = 0;
+    const listeners = new Set<() => void>();
+    settings.getSecretGeneration = () => generation;
+    settings.onLeaseStateChanged = (listener: () => void) => {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    };
+    const auditLog = vi.fn();
+    const createHostApi = await initAndGetFactory(
+      settings, { log: auditLog }, vi.fn(async () => new Response("body")) as unknown as typeof fetch,
+    );
+    const api = createHostApi(
+      "plugin-a",
+      { id: "plugin-a", config: {}, capabilities: ["external-auth-consumer"], networkAccess: { allowedDomains: ["api.openai.com"] } },
+      tmpDirs.track(mkdtempSync("/tmp/ave-lease-body-audit-")), activeIncarnation(), "plugin-a",
+    );
+    const result = await api.resolveApiKey({ purpose: "llm", vendor: "openai" });
+    if (!result.ok || result.exposure !== "lease") throw new Error("expected lease");
+    const response = await api.hostFetch("https://api.openai.com/v1/models", { auth: { lease: result.leaseId } });
+    generation += 1;
+    for (const listener of listeners) listener();
+    await expect(response.text()).rejects.toMatchObject({ code: "lease-unavailable" });
+    const denials = auditLog.mock.calls.map(([entry]) => entry as { type: string; input: string })
+      .filter((entry) => entry.type === "plugin_hostapi_denied");
+    expect(denials).toHaveLength(1);
+    expect(denials[0]?.input).toContain("code=lease-unavailable count=1 stage=after-await");
+  });
+
   it("refuses a lease revoked while a mutating request waits for approval", async () => {
     const settings = makeSettingsService(new Map());
     settings.getSecret.mockImplementation((key: string) =>

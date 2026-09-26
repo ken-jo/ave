@@ -161,6 +161,7 @@ interface ServiceHarness {
 async function createServiceHarness(
   hostApi: Partial<PluginHostApi> = {},
   manifest: PluginManifest = MANIFEST,
+  onMalformedCredentialSelector?: () => void,
 ): Promise<ServiceHarness> {
   const requests: HostApiRequest[] = [];
   const notifications: HostApiNotification[] = [];
@@ -204,7 +205,7 @@ async function createServiceHarness(
     // is a closure and the composition happens where the child is owned.
     table: {
       ...HOSTAPI_DISPATCH_TABLE,
-      ...createServiceHostApiPaths(api, CONFINEMENT),
+      ...createServiceHostApiPaths(api, CONFINEMENT, onMalformedCredentialSelector),
     },
   });
 
@@ -498,6 +499,19 @@ describe("hostFetch carries bytes a text codec would corrupt", () => {
     expect((hostFetch.mock.calls[0] as unknown as [string, { auth: unknown }])[1].auth).toEqual({ lease: "lease_test" });
     await expect(harness.child.hostApi.hostFetch!("https://example.test/a", { auth: { lease: 1 } } as never))
       .rejects.toMatchObject({ code: "credential-conflict" });
+  });
+
+  it("audits a malformed selector rejected by the host wire decoder", async () => {
+    const hostFetch = vi.fn(async () => new Response(null));
+    const onMalformedCredentialSelector = vi.fn();
+    const harness = await createServiceHarness({ hostFetch }, MANIFEST, onMalformedCredentialSelector);
+    const reply = await harness.host.handle({
+      jsonrpc: "2.0", id: "malformed-auth", method: "ave/host/hostFetch",
+      params: { input: "https://example.test/a", init: { auth: { lease: 7 } } },
+    });
+    expect(reply).toMatchObject({ error: { data: { code: "credential-conflict" } } });
+    expect(onMalformedCredentialSelector).toHaveBeenCalledOnce();
+    expect(hostFetch).not.toHaveBeenCalled();
   });
 
   it("refuses a stream body instead of quietly buffering it", async () => {

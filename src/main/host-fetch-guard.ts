@@ -321,6 +321,8 @@ export interface HostFetchHopOptions {
   auditHop?: (line: string) => void;
   /** Audit sink for a denied hop — same shape the caller uses for hop 0. */
   auditDeny?: (reason: HostFetchDenyReason | "redirect-cap", detail: string) => void;
+  /** The response body can fail after this function has returned to its caller. */
+  onResponseBodyError?: (error: unknown) => void;
   /** Test seams, forwarded into {@link evaluateHostFetch} per hop. */
   ensurePublicUrl?: HostFetchGuardInput["ensurePublicUrl"];
   resolveLoopbackOnly?: HostFetchGuardInput["resolveLoopbackOnly"];
@@ -365,6 +367,7 @@ export async function runHostFetchHops(options: HostFetchHopOptions): Promise<Re
     allowPrivateNetworks,
     auditHop,
     auditDeny,
+    onResponseBodyError,
     ensurePublicUrl,
     resolveLoopbackOnly,
     resolvePrivateOnly,
@@ -403,6 +406,7 @@ export async function runHostFetchHops(options: HostFetchHopOptions): Promise<Re
           if (next.done) { credentialUse.finish(); controller.close(); }
           else controller.enqueue(next.value);
         } catch (error) {
+          try { onResponseBodyError?.(error); } catch { /* preserve the original body failure */ }
           credentialUse.finish();
           controller.error(error);
         }

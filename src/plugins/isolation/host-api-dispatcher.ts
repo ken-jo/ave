@@ -840,10 +840,21 @@ function resolveApiKeyPath(hostApi: ServiceHostApi): HostApiPathHandler {
  * a NUL, or high bytes survives base64 and does not survive a `text()` round
  * trip, and the corruption reads as success.
  */
-function hostFetchPath(hostApi: ServiceHostApi): HostApiPathHandler {
+function hostFetchPath(
+  hostApi: ServiceHostApi,
+  onMalformedCredentialSelector?: () => void,
+): HostApiPathHandler {
   return defineHostApiPath("hostFetch", async (call) => {
     const input = requireString(call, 0, "input");
-    const init = decodeWireRequestInit(call.args[1], call.signal, `${call.path}(init)`);
+    let init: ReturnType<typeof decodeWireRequestInit>;
+    try {
+      init = decodeWireRequestInit(call.args[1], call.signal, `${call.path}(init)`);
+    } catch (error) {
+      if (error instanceof HostApiBoundaryError && error.code === "credential-conflict") {
+        onMalformedCredentialSelector?.();
+      }
+      throw error;
+    }
     const response = await hostApi.hostFetch!(input, init);
     // Drained here, while the request is still in flight: a cancellation that
     // lands between the headers and the body aborts the read too, rather than
@@ -1347,6 +1358,7 @@ export function createServiceHostApiPaths(
    * default this exists to remove.
    */
   confinement: DelegatedWorkerConfinement,
+  onMalformedCredentialSelector?: () => void,
 ): Record<ServiceHostApiPath, HostApiPathHandler> {
   return {
     getSecret: getSecretPath(hostApi),
@@ -1362,7 +1374,8 @@ export function createServiceHostApiPaths(
     emitEvent: emitEventPath(hostApi),
     logEvent: logEventPath(hostApi),
     callLlm: callLlmPath(hostApi),
-    hostFetch: bindOptional("hostFetch", hostApi.hostFetch, () => hostFetchPath(hostApi)),
+    hostFetch: bindOptional("hostFetch", hostApi.hostFetch, () =>
+      hostFetchPath(hostApi, onMalformedCredentialSelector)),
     spawnWorker: bindOptional("spawnWorker", hostApi.spawnWorker, () =>
       spawnWorkerPath(hostApi, confinement)),
     resolveMappedDriveRoot: resolveMappedDriveRootPath(hostApi),

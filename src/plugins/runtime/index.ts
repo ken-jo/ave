@@ -276,6 +276,7 @@ export interface PluginRuntimeOptions {
   deploymentGuard?: PluginDeploymentGuard;
   installReceiptCacheRoot?: string;
   auditLog?: (level: "info" | "warn" | "error", message: string, data?: unknown) => void;
+  onMalformedCredentialSelector?: (pluginId: string) => void;
   /**
    * Fires when a plugin's tear-down path runs (`restartPlugin` stop phase,
    * `restartAll` stop phase per plugin, `disable`, `removePlugin`,
@@ -1679,6 +1680,7 @@ abstract class PluginRuntimeState {
   protected readonly deploymentGuard?: PluginDeploymentGuard;
   protected readonly installReceiptCacheRoot?: string;
   protected readonly auditLog?: (level: "info" | "warn" | "error", message: string, data?: unknown) => void;
+  protected readonly onMalformedCredentialSelector?: (pluginId: string) => void;
   protected readonly onDisable?: (pluginId: string) => void;
   protected readonly onPluginUiRevisionChange?: (pluginId: string) => void;
   protected readonly onEnable?: (pluginId: string) => void;
@@ -1892,6 +1894,7 @@ abstract class PluginRuntimeState {
       ? resolve(options.installReceiptCacheRoot)
       : undefined;
     this.auditLog = options.auditLog;
+    this.onMalformedCredentialSelector = options.onMalformedCredentialSelector;
     this.onDisable = options.onDisable;
     this.onPluginUiRevisionChange = options.onPluginUiRevisionChange;
     this.onEnable = options.onEnable;
@@ -5157,6 +5160,9 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
         auditLog: this.auditLog,
         registerSandboxEnvelope: (paths, pluginRoot, pluginDataDir) =>
           this.registerSandboxEnvelope(manifest.id, paths, pluginRoot, pluginDataDir),
+        ...(this.onMalformedCredentialSelector
+          ? { onMalformedCredentialSelector: this.onMalformedCredentialSelector }
+          : {}),
       });
     }
     try {
