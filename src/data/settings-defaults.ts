@@ -158,6 +158,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
   },
   plugins: {},
   pluginConfigs: {},
+  alerts: {
+    // The master switch is on; every kind is opt-in on its own row, so this
+    // alone notifies nothing.
+    osNotificationsEnabled: true,
+    kinds: {},
+  },
+  retiredPluginConfigs: {},
   features: {
     // Profile changes affect every future prompt, so background refresh is explicit opt-in.
     idlePreferenceRefresh: false,

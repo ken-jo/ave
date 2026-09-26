@@ -2,6 +2,7 @@ import {
   normalizeCorpCaCommonName,
 } from "../shared/corp-ca-common-name.js";
 import { isIP } from "node:net";
+import { isDeepStrictEqual } from "node:util";
 import { isCanonicalA2APublicHttpsOrigin } from "../shared/a2a-public-origin.js";
 import {
   normalizeSidePanelSplitPercent,
@@ -10,9 +11,22 @@ import {
 } from "../shared/side-panel.js";
 import {
   sanitizePluginConfig,
+  sanitizePluginConfigKey,
   sanitizePluginConfigPluginId,
   type PluginConfigRecord,
 } from "../shared/plugin-config.js";
+import {
+  ALERT_HOST_PLUGIN_ID,
+  isAlertKindKey,
+  isAlertVisibility,
+  type AlertInheritRule,
+  type AlertKindChoice,
+  type AlertSettings,
+  type RetiredPluginConfigRecord,
+  type RetirementHostKindMapping,
+  type RetirementSuccessorPlugin,
+  type RetirementSuccessors,
+} from "../shared/alerts-types.js";
 import {
   DEFAULT_LLM_VENDOR,
   getLlmVendorSettings,
@@ -64,6 +78,8 @@ import {
 } from "../shared/marketplace-package-assets.js";
 import { projectRootKey } from "../shared/project-identity.js";
 import { clampLogRetentionDays } from "../shared/log-retention.js";
+import { isSemver, isTwoMinorReleasesBehind } from "../shared/semver-compare.js";
+import { SOURCE_ID_RE } from "../marketplace/sources/official.js";
 import { createLogger } from "../lib/logger.js";
 import {
   STORED_FIELD,
@@ -1605,6 +1621,255 @@ export function sanitizeStoredPluginConfigs(input: unknown): Record<string, Plug
         (err as Error).message,
       );
     }
+  }
+  return out;
+}
+
+/**
+ * A stored app version is a complete SemVer version, judged by the same
+ * validator the marketplace applies to version ranges. The `"unknown"`
+ * sentinel the version resolver can return is not a version and must never be
+ * persisted as one.
+ */
+function isStoredAppVersion(value: unknown): value is string {
+  return typeof value === "string" && isSemver(value);
+}
+
+/**
+ * The identities in the alert blocks — plugin ids, source ids, config keys —
+ * are compared exactly by their readers, so they are validated as stored and
+ * never rewritten. Trimming `" sample "` into `sample` would let a second
+ * record overwrite the first under the same id, or accept a successor id no
+ * plugin carries.
+ */
+function isStoredPluginId(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    return sanitizePluginConfigPluginId(value) === value;
+  } catch {
+    return false;
+  }
+}
+
+function isStoredConfigKey(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    return sanitizePluginConfigKey(value) === value;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * What a malformed kind entry becomes: off, no OS notification, never seen,
+ * and consented to the lowest visibility. Dropping the entry instead would
+ * let the kind resolve again from its declaration, and a declaration may say
+ * `defaultEnabled: true` for a plugin the user already has — a damaged file
+ * must not turn a kind on. The lowest visibility makes any declared level an
+ * escalation, which leaves the kind off until the user visits it.
+ */
+const FAIL_CLOSED_ALERT_KIND_CHOICE: Readonly<AlertKindChoice> = Object.freeze({
+  enabled: false,
+  osNotification: false,
+  visibility: "silent",
+  seenByUser: false,
+  repaired: true,
+});
+
+function normalizeAlertKindChoice(key: string, input: unknown): AlertKindChoice {
+  const obj = input && typeof input === "object" && !Array.isArray(input)
+    ? input as Record<string, unknown>
+    : {};
+  let choice: AlertKindChoice;
+  if (
+    typeof obj.enabled === "boolean"
+    && typeof obj.osNotification === "boolean"
+    && typeof obj.seenByUser === "boolean"
+    && isAlertVisibility(obj.visibility)
+    // A damaged mark is a damaged entry: read as absent, it would turn a
+    // repaired or escalated entry back into one a later retirement may
+    // switch on.
+    && (!Object.hasOwn(obj, "repaired") || obj.repaired === true)
+    && (!Object.hasOwn(obj, "escalated") || obj.escalated === true)
+  ) {
+    choice = {
+      enabled: obj.enabled,
+      osNotification: obj.osNotification,
+      visibility: obj.visibility,
+      seenByUser: obj.seenByUser,
+    };
+    if (obj.repaired === true) choice.repaired = true;
+    if (obj.escalated === true) choice.escalated = true;
+  } else {
+    log.warn("alert kind entry %s is malformed, storing it off and unseen", key);
+    choice = { ...FAIL_CLOSED_ALERT_KIND_CHOICE };
+  }
+  if (isStoredAppVersion(obj.absentSinceAppVersion)) {
+    choice.absentSinceAppVersion = obj.absentSinceAppVersion;
+  }
+  return choice;
+}
+
+/**
+ * Coerce the on-disk `alerts` block to AlertSettings. The master switch falls
+ * back to its default. A kind entry is kept only under a key that follows the
+ * `<pluginId>:<kind>` grammar; an entry whose choice fields are out of shape
+ * is stored as {@link FAIL_CLOSED_ALERT_KIND_CHOICE} rather than repaired
+ * field by field, because a repaired choice would read as one the user made.
+ * `absentSinceAppVersion` is kept only as a real version string.
+ *
+ * With the running `appVersion`, an entry whose plugin has been absent for two
+ * minor releases is dropped: a reinstall after that starts from the kind's
+ * declaration. A repaired entry is kept whatever its age, because dropping it
+ * would let the kind resolve from its declaration again — the outcome the
+ * repair exists to prevent. Without a stable release version nothing is dropped.
+ */
+export function normalizeAlertSettings(input: unknown, appVersion?: string): AlertSettings {
+  const base = DEFAULT_SETTINGS.alerts;
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return { osNotificationsEnabled: base.osNotificationsEnabled, kinds: {} };
+  }
+  const obj = input as Record<string, unknown>;
+  const result: AlertSettings = {
+    osNotificationsEnabled: typeof obj.osNotificationsEnabled === "boolean"
+      ? obj.osNotificationsEnabled
+      : base.osNotificationsEnabled,
+    kinds: {},
+  };
+  const rawKinds = obj.kinds;
+  if (rawKinds && typeof rawKinds === "object" && !Array.isArray(rawKinds)) {
+    for (const [key, value] of Object.entries(rawKinds as Record<string, unknown>)) {
+      if (!isAlertKindKey(key)) {
+        log.warn("dropping alert kind entry with an invalid key: %s", key);
+        continue;
+      }
+      const choice = normalizeAlertKindChoice(key, value);
+      if (
+        appVersion !== undefined
+        && choice.repaired !== true
+        && choice.absentSinceAppVersion !== undefined
+        && isTwoMinorReleasesBehind(choice.absentSinceAppVersion, appVersion)
+      ) {
+        log.info("dropping alert kind entry %s: its plugin was removed at %s", key, choice.absentSinceAppVersion);
+        continue;
+      }
+      result.kinds[key] = choice;
+    }
+  }
+  return result;
+}
+
+/**
+ * An inherit rule names at least one value: with none, a `listed: "disabled"`
+ * rule would read as on for every former user whatever they had chosen.
+ */
+function normalizeAlertInheritRule(input: unknown): AlertInheritRule | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const obj = input as Record<string, unknown>;
+  if (
+    !isStoredConfigKey(obj.key)
+    || (obj.listed !== "enabled" && obj.listed !== "disabled")
+    || !Array.isArray(obj.values)
+    || obj.values.length === 0
+    || !obj.values.every((v) => typeof v === "string" && v.length > 0)
+  ) {
+    return undefined;
+  }
+  const rule: AlertInheritRule = { key: obj.key, listed: obj.listed, values: [...obj.values] };
+  if (obj.masterKey !== undefined) {
+    if (!isStoredConfigKey(obj.masterKey)) return undefined;
+    rule.masterKey = obj.masterKey;
+  }
+  return rule;
+}
+
+function normalizeRetirementSuccessors(input: unknown): RetirementSuccessors | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const obj = input as Record<string, unknown>;
+  if (!Array.isArray(obj.plugins) || !Array.isArray(obj.hostKinds)) return undefined;
+  const plugins: RetirementSuccessorPlugin[] = [];
+  for (const entry of obj.plugins) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return undefined;
+    const e = entry as Record<string, unknown>;
+    if (!isStoredPluginId(e.pluginId)) return undefined;
+    const pluginId = e.pluginId;
+    if (e.anySource !== undefined && e.anySource !== true) return undefined;
+    plugins.push(e.anySource === true ? { pluginId, anySource: true } : { pluginId });
+  }
+  const hostKinds: RetirementHostKindMapping[] = [];
+  for (const entry of obj.hostKinds) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return undefined;
+    const e = entry as Record<string, unknown>;
+    if (!isAlertKindKey(e.kind) || !e.kind.startsWith(`${ALERT_HOST_PLUGIN_ID}:`)) return undefined;
+    const enabled = normalizeAlertInheritRule(e.enabled);
+    if (!enabled) return undefined;
+    const mapping: RetirementHostKindMapping = { kind: e.kind, enabled };
+    if (e.osNotification !== undefined) {
+      const osNotification = normalizeAlertInheritRule(e.osNotification);
+      if (!osNotification) return undefined;
+      mapping.osNotification = osNotification;
+    }
+    hostKinds.push(mapping);
+  }
+  return { plugins, hostKinds };
+}
+
+function normalizeRetiredPluginConfigRecord(input: unknown): RetiredPluginConfigRecord | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const obj = input as Record<string, unknown>;
+  if (typeof obj.enabled !== "boolean") return undefined;
+  if (obj.sourceId !== null && (typeof obj.sourceId !== "string" || !SOURCE_ID_RE.test(obj.sourceId))) {
+    return undefined;
+  }
+  if (!isStoredAppVersion(obj.retiredAtAppVersion)) return undefined;
+  const successors = normalizeRetirementSuccessors(obj.successors);
+  if (!successors) return undefined;
+  if (!Array.isArray(obj.consumedBy) || !obj.consumedBy.every(isStoredPluginId)) return undefined;
+  const consumedBy: string[] = [...obj.consumedBy];
+  let config: PluginConfigRecord;
+  try {
+    config = sanitizePluginConfig(obj.config);
+  } catch {
+    return undefined;
+  }
+  // Sanitising trims keys; a config it had to change was not written by the host.
+  if (!isDeepStrictEqual(config, obj.config)) return undefined;
+  return {
+    config,
+    enabled: obj.enabled,
+    sourceId: obj.sourceId,
+    retiredAtAppVersion: obj.retiredAtAppVersion,
+    successors,
+    consumedBy,
+  };
+}
+
+/**
+ * Coerce the on-disk `retiredPluginConfigs` block. A record is what a
+ * retirement wrote for one plugin, and a successor reads it as the user's
+ * former choices, so a record with any field out of shape is dropped whole:
+ * a half-repaired record would hand a successor choices nobody made.
+ *
+ * The load never removes a well-formed record, whatever its age: whether
+ * every successor has inherited and the retired package is gone is the
+ * alerts service's question, not one the settings file can answer.
+ */
+export function normalizeRetiredPluginConfigs(input: unknown): Record<string, RetiredPluginConfigRecord> {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return {};
+  }
+  const out: Record<string, RetiredPluginConfigRecord> = {};
+  for (const [pluginId, value] of Object.entries(input)) {
+    if (!isStoredPluginId(pluginId)) {
+      log.warn("dropping retired plugin config with an invalid id: %s", JSON.stringify(pluginId));
+      continue;
+    }
+    const record = normalizeRetiredPluginConfigRecord(value);
+    if (!record) {
+      log.warn("dropping malformed retired plugin config: %s", pluginId);
+      continue;
+    }
+    out[pluginId] = record;
   }
   return out;
 }

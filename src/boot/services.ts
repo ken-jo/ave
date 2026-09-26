@@ -36,6 +36,7 @@ import { createLogger, initFileLogSink } from "../lib/logger.js";
 import { LOG_RETENTION_DAYS, LOG_MAX_BYTES, reprunePersistedRetention,
 } from "../lib/log-file-sink.js";
 import { aveHome } from "../shared/ave-home.js";
+import { getAveAppVersion } from "../shared/app-version.js";
 import { join } from "node:path";
 const log = createLogger("ave");
 
@@ -166,6 +167,7 @@ export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, ho
     systemLocale: host.systemLocale,
     secretPolicy: host.isPackaged ? "packaged" : "development",
     encryption: host.encryption,
+    appVersion: getAveAppVersion(),
   });
   await settingsService.migrateSecrets();
   await settingsService.migrateRenamedVendorSecrets();
