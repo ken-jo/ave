@@ -303,6 +303,24 @@ functions in a return value.
   `revoked` is the host's own decision and the only one the child cannot otherwise
   learn.
 - The `signal` in `opts` cancels by request id, as above.
+- *Correction (2026-09-27, at `f1a8d191e`).* What is shipped is the delivery path,
+  not a proven revocation: the wire result still carries `key`
+  (`WireApiKeyLease`, `host-api-wire.ts:2003-2015`; filled from `result.bearer()` at
+  `host-api-dispatcher.ts:828`), the ledger entry for the lease is opened and torn
+  down by the dispatcher (`host-api-dispatcher.ts:795-832`) while the factory passes
+  the PermissionManager's per-plugin revoke accessor into the resolver
+  (`host-api-factory.ts:813-816`; the signal itself is `permission-manager.ts:817-829`),
+  so a revocation aborts a resolve in flight and clears the key the resolver's closure
+  captured (`resolve-api-key.ts:157-186`), but nothing recalls a key already copied
+  into a reply, closes an already-issued ledger entry or sends `subscription/closed`
+  for it, and the child removes its abort listener when
+  the resolve request settles (`plugin-child-runtime.ts:264-281`), so request
+  cancellation ends with the reply and is **not** a lease lifetime. The successor
+  design replaces this account: the default result carries no key, a host-owned lease
+  registry with epoch fencing owns the lifetime on both loader arms, and request
+  cancellation is documented as a separate mechanism
+  (`docs/design/plugin-hostapi-protocol.md` §4.1.1-4.1.2, decisions 12-13). This
+  section is kept as the record of the shipped Stage 5 shape.
 - *Honest note:* an isolated plugin still receives whatever credential the gate
   grants it. Isolation does not shrink what a **granted** plugin can exfiltrate; it
   shrinks what an **ungranted** one can reach. `resolveApiKey` is a gate, and the
