@@ -6,6 +6,7 @@
 import type { SeedMessageKey } from "./en.js";
 
 export const ko: Record<SeedMessageKey, string> = {
+  "formatIpcError.pluginsMissing": "이 루틴에서 허용한 플러그인이 모두 설치되어 있지 않아 실행할 수 없습니다. 플러그인을 다시 설치하거나 루틴을 삭제해 주세요.",
   "routinePanel.pluginsMissing": "필요한 플러그인이 설치되지 않아 실행을 건너뛰었습니다({plugins}). 플러그인을 다시 설치하거나 이 루틴을 삭제하세요.",
   "routinePanel.pluginsPartlyMissing": "확인이 필요합니다. 허용한 플러그인 중 일부가 설치되지 않았습니다({plugins}). 설치된 나머지 플러그인으로 루틴을 실행했습니다.",
   // ── Common / shared ───────────────────────────────────────────────

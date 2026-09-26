@@ -670,7 +670,7 @@ export async function bootstrap(
   // (routinesStore is constructed above — it must exist before initPluginRuntime.)
   const routinesScheduler = new RoutinesScheduler(routinesStore, async () => {
     const registry = await readPluginRegistry(pluginPaths.registryPath);
-    return registry.plugins.map((entry) => entry.id);
+    return registry.plugins.map((entry) => pluginRuntime.resolvePluginId(entry.id));
   });
   ctx.routinesScheduler = routinesScheduler;
 

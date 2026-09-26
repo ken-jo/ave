@@ -216,6 +216,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "memory-consolidation-service-unavailable": "rolesTab.errorLongTermMemoryConsolidationUnavailable",
   "memory-consolidation-failed": "rolesTab.errorLongTermMemoryConsolidationFailed",
   "routine-not-found": "formatIpcError.routineNotFound",
+  "plugins-missing": "formatIpcError.pluginsMissing",
   "no-user-message": "formatIpcError.noUserMessage",
   "last-message-not-user": "formatIpcError.lastMessageNotUser",
   "no-scheduler": "formatIpcError.noScheduler",
