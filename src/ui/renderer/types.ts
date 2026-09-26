@@ -1008,8 +1008,12 @@ export type AveApi = {
   onOverlayDismiss: (handler: (id: string) => void) => () => void;
   /** Plugin alert cards: report the user's answer, and pull the cards staged before this window listened. */
   alerts?: {
+    listKinds: () => Promise<import("../../shared/alerts-types.js").AlertKindRow[]>;
+    setKind: (kindKey: string, patch: import("../../shared/alerts-types.js").AlertKindPatch) => Promise<import("../../shared/alerts-types.js").SetAlertKindResult>;
+    setOsNotificationsEnabled: (enabled: boolean) => Promise<import("../../shared/alerts-types.js").SetAlertOsNotificationsResult>;
+    onKindsChanged: (handler: () => void) => () => void;
     cardClosed: (alertId: string, reason: import("../../shared/alerts-types.js").AlertCardClosedReason) => Promise<{ ok: boolean; error?: string }>;
-    openCards: () => Promise<import("../../shared/alerts-types.js").AlertCard[]>;
+    listOpen: () => Promise<import("../../shared/alerts-types.js").AlertCard[]>;
   };
   // Routine session history
   listRoutineSessions: (

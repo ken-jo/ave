@@ -1305,10 +1305,21 @@ export function buildInternalApiSurface() {
   // Plugin alert cards: what the user did with one, and the cards staged
   // before this window was listening.
   alerts: {
+    listKinds: async () =>
+      ipcRenderer.invoke(ALERTS.listKinds) as Promise<import("../shared/alerts-types.js").AlertKindRow[]>,
+    setKind: async (kindKey: string, patch: import("../shared/alerts-types.js").AlertKindPatch) =>
+      ipcRenderer.invoke(ALERTS.setKind, kindKey, patch) as Promise<import("../shared/alerts-types.js").SetAlertKindResult>,
+    setOsNotificationsEnabled: async (enabled: boolean) =>
+      ipcRenderer.invoke(ALERTS.setOsNotificationsEnabled, enabled) as Promise<import("../shared/alerts-types.js").SetAlertOsNotificationsResult>,
+    onKindsChanged: (handler: () => void) => {
+      const listener = () => handler();
+      ipcRenderer.on(ALERTS.kindsChanged, listener);
+      return () => ipcRenderer.removeListener(ALERTS.kindsChanged, listener);
+    },
     cardClosed: async (alertId: string, reason: "accepted" | "dismissed") =>
       ipcRenderer.invoke(ALERTS.cardClosed, alertId, reason) as Promise<{ ok: boolean; error?: string }>,
-    openCards: async () =>
-      ipcRenderer.invoke(ALERTS.openCards) as Promise<import("../shared/alerts-types.js").AlertCard[]>,
+    listOpen: async () =>
+      ipcRenderer.invoke(ALERTS.listOpen) as Promise<import("../shared/alerts-types.js").AlertCard[]>,
   },
 
   // session_tasks — assistant's current-turn checklist

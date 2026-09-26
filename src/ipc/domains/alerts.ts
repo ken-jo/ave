@@ -1,7 +1,8 @@
 /**
  * Alerts IPC handlers — `ave:alerts:*`, host renderer only.
  *
- * The renderer reports what the user did with an alert card — accepted or
+ * The renderer reads registered kinds and changes their switches through the
+ * service. It also reports what the user did with an alert card — accepted or
  * dismissed, after which the identity stays closed for its lifetime — and a
  * window that appeared or reloaded after an alert was raised pulls the cards
  * already staged. Nothing here raises an alert: that is a plugin's HostApi
@@ -11,7 +12,7 @@ import { ipcMain } from "electron";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { ALERTS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
-import type { AlertCard, AlertCardClosedReason } from "../../shared/alerts-types.js";
+import type { AlertCard, AlertCardClosedReason, AlertKindRow, SetAlertKindResult, SetAlertOsNotificationsResult } from "../../shared/alerts-types.js";
 
 function isClosedReason(value: unknown): value is AlertCardClosedReason {
   return value === "accepted" || value === "dismissed";
@@ -19,6 +20,32 @@ function isClosedReason(value: unknown): value is AlertCardClosedReason {
 
 export function registerAlertsHandlers(deps: IpcDeps): void {
   const { alertsService, auditLogger } = deps;
+
+  ipcMain.handle(ALERTS.listKinds, async (e): Promise<AlertKindRow[] | typeof UNAUTHORIZED_FRAME> => {
+    if (!validateHostRendererSender(e)) {
+      auditUnauthorized(auditLogger, ALERTS.listKinds, e);
+      return UNAUTHORIZED_FRAME;
+    }
+    return alertsService?.listKinds() ?? [];
+  });
+
+  ipcMain.handle(ALERTS.setKind, async (e, kindKey: unknown, patch: unknown): Promise<SetAlertKindResult> => {
+    if (!validateHostRendererSender(e)) {
+      auditUnauthorized(auditLogger, ALERTS.setKind, e);
+      return { ...UNAUTHORIZED_FRAME, ok: false };
+    }
+    if (!alertsService) return { ok: false, error: "no-alerts-service" };
+    return alertsService.setKind(kindKey, patch);
+  });
+
+  ipcMain.handle(ALERTS.setOsNotificationsEnabled, async (e, enabled: unknown): Promise<SetAlertOsNotificationsResult> => {
+    if (!validateHostRendererSender(e)) {
+      auditUnauthorized(auditLogger, ALERTS.setOsNotificationsEnabled, e);
+      return { ...UNAUTHORIZED_FRAME, ok: false };
+    }
+    if (!alertsService) return { ok: false, error: "no-alerts-service" };
+    return alertsService.setOsNotificationsEnabled(enabled);
+  });
 
   ipcMain.handle(ALERTS.cardClosed, (e, alertId: unknown, reason: unknown) => {
     if (!validateHostRendererSender(e)) {
@@ -30,11 +57,11 @@ export function registerAlertsHandlers(deps: IpcDeps): void {
     return { ok: alertsService.cardClosed(alertId, reason) };
   });
 
-  ipcMain.handle(ALERTS.openCards, (e): AlertCard[] | typeof UNAUTHORIZED_FRAME => {
+  ipcMain.handle(ALERTS.listOpen, (e): AlertCard[] | typeof UNAUTHORIZED_FRAME => {
     if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, ALERTS.openCards, e);
+      auditUnauthorized(auditLogger, ALERTS.listOpen, e);
       return UNAUTHORIZED_FRAME;
     }
-    return alertsService?.openCards() ?? [];
+    return alertsService?.listOpen() ?? [];
   });
 }

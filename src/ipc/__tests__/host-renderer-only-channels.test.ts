@@ -202,7 +202,10 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   // Closing an alert card keeps its identity closed; the staged cards carry
   // host-rendered prompts.
   ["alerts", ALERTS.cardClosed, ["id", "dismissed"]],
-  ["alerts", ALERTS.openCards, []],
+  ["alerts", ALERTS.listOpen, []],
+  ["alerts", ALERTS.listKinds, []],
+  ["alerts", ALERTS.setKind, ["@host:due-soon", { enabled: true }]],
+  ["alerts", ALERTS.setOsNotificationsEnabled, [false]],
   // Saved prompts are user-authored content.
   ["prompts", CHANNELS.prompts.list, []],
   ["prompts", CHANNELS.prompts.save, [{}]],

@@ -12,6 +12,8 @@ import { join } from "node:path";
 import type { AuditEntry } from "../../audit/audit-logger.js";
 import type { PluginManifest } from "../../plugins/public-contract.js";
 import type { AlertCard, AlertSettings } from "../../shared/alerts-types.js";
+import { normalizeAlertSettings } from "../../data/settings-normalization.js";
+import { parseStagedEnvelope } from "../../shared/staged-origins.js";
 import { AlertsService } from "../service.js";
 
 type Json = Record<string, unknown>;
@@ -116,13 +118,14 @@ interface Harness {
   clock: { now: number };
   focused: { value: boolean };
   blocks: ReturnType<typeof vi.fn>;
+  changed: ReturnType<typeof vi.fn>;
 }
 
 let dir: string;
 let sharedSettings: AlertSettings;
 const services: AlertsService[] = [];
 
-async function harness(options: { installed?: string[] } = {}): Promise<Harness> {
+async function harness(options: { installed?: string[]; beforeSettingsWrite?: () => Promise<void> } = {}): Promise<Harness> {
   const h = {
     shown: [] as AlertCard[],
     dismissed: [] as string[],
@@ -132,13 +135,17 @@ async function harness(options: { installed?: string[] } = {}): Promise<Harness>
     clock: { now: 1_000_000 },
     focused: { value: false },
     blocks: vi.fn(async () => false),
+    changed: vi.fn(),
   };
   const service = new AlertsService({
     migration: createAlertMigrationPorts(),
     dir: () => dir,
     settings: {
       get: () => structuredClone(sharedSettings),
-      set: async (next) => { sharedSettings = structuredClone(next); },
+      set: async (next) => {
+        await options.beforeSettingsWrite?.();
+        sharedSettings = structuredClone(next);
+      },
     },
     installedPluginIds: async () => options.installed ?? [],
     appVersion: "0.12.0",
@@ -154,6 +161,7 @@ async function harness(options: { installed?: string[] } = {}): Promise<Harness>
     },
     emit: (type, payload) => { h.events.push({ type, payload }); },
     audit: (entry) => { h.audits.push(entry); },
+    kindsChanged: h.changed,
     now: () => h.clock.now,
   });
   services.push(service);
@@ -273,8 +281,8 @@ describe("an accepted alert", () => {
     expect(result).toMatchObject({ status: "raised", delivered: { card: true, osNotification: true } });
     const alertId = (result as { alertId: string }).alertId;
     expect(h.shown).toEqual([]);
-    expect(h.service.openCards()).toHaveLength(1);
-    expect(h.service.openCards()[0]?.source.alertId).toBe(alertId);
+    expect(h.service.listOpen()).toHaveLength(1);
+    expect(h.service.listOpen()[0]?.source.alertId).toBe(alertId);
     expect(h.fired).toHaveLength(1);
     expect(h.events).toEqual([expect.objectContaining({ type: "alert.raised", payload: expect.objectContaining({ alertId }) })]);
     expect(h.audits.at(-1)?.input).toContain(`alert.raised kind=reply alertId=${alertId}`);
@@ -341,9 +349,9 @@ describe("an accepted alert", () => {
   it("serves its card to a window that appears later, until the card is gone", async () => {
     const h = await registered();
     const { alertId } = (await h.service.raise("fixturemail", reply())) as { alertId: string };
-    expect(h.service.openCards().map((card) => card.id)).toEqual([`alert:${alertId}`]);
+    expect(h.service.listOpen().map((card) => card.id)).toEqual([`alert:${alertId}`]);
     h.service.cardClosed(alertId, "dismissed");
-    expect(h.service.openCards()).toEqual([]);
+    expect(h.service.listOpen()).toEqual([]);
   });
 });
 
@@ -355,7 +363,7 @@ describe("open and closed identities", () => {
     const { alertId } = first as { alertId: string };
     h.clock.now += elapsed;
     expect(await h.service.raise("fixturemail", reply())).toEqual({ status: "cooldown" });
-    expect(h.service.openCards()).toEqual([]);
+    expect(h.service.listOpen()).toEqual([]);
     expect(h.dismissed).toEqual([`alert:${alertId}`]);
     expect(h.events.at(-1)).toEqual({
       type: "alert.withdrawn",
@@ -375,7 +383,7 @@ describe("open and closed identities", () => {
     vi.spyOn(h.dismissed, "push").mockImplementationOnce(() => { throw new Error("window destroyed"); });
     h.clock.now += MINUTE + 1;
     expect(await h.service.raise("fixturemail", reply())).toEqual({ status: "cooldown" });
-    expect(h.service.openCards()).toEqual([]);
+    expect(h.service.listOpen()).toEqual([]);
     expect(h.events.at(-1)?.payload.reason).toBe("expired");
   });
 
@@ -438,9 +446,9 @@ describe("open and closed identities", () => {
     const restarted = await harness();
     restarted.clock.now = h.clock.now + MINUTE;
     await restarted.service.register("fixturemail", manifest());
-    expect(restarted.service.openCards()).toEqual([]);
+    expect(restarted.service.listOpen()).toEqual([]);
     expect((await restarted.service.raise("fixturemail", reply())).status).toBe("refreshed");
-    expect(restarted.service.openCards()).toHaveLength(1);
+    expect(restarted.service.listOpen()).toHaveLength(1);
   });
 
   it("lets a card-less identity live for its lifetime, refreshing without delivery, then expire", async () => {
@@ -616,7 +624,7 @@ describe("withdrawal and uninstall", () => {
     const h = await registered();
     await h.service.raise("fixturemail", reply());
     await h.service.register("fixturemail", manifest());
-    expect(h.service.openCards()).toHaveLength(1);
+    expect(h.service.listOpen()).toHaveLength(1);
     expect(h.dismissed).toEqual([]);
   });
 
@@ -643,5 +651,117 @@ describe("withdrawal and uninstall", () => {
     const h = await registered({ installed: ["fixturemail"] });
     expect(sharedSettings.kinds["fixturemail:reply"]).toMatchObject({ enabled: false, seenByUser: false });
     expect(await h.service.raise("fixturemail", reply())).toEqual({ status: "disabled_by_user" });
+  });
+});
+
+describe("Settings choices", () => {
+  it("lists declarations, plugin labels, choices and live predecessor blocking", async () => {
+    const h = await harness();
+    await h.service.register("fixturemail", { ...manifest(), name: "Fixture Mail" });
+    h.blocks.mockResolvedValue(true);
+    const rows = await h.service.listKinds();
+    expect(rows.find((row) => row.kindKey === "fixturemail:successor")).toMatchObject({
+      pluginLabel: "Fixture Mail", reasoning: "Tells you about mail.",
+      blockedByPredecessor: "retiredfixture", choice: { seenByUser: false },
+    });
+    rows[0]!.choice.enabled = false;
+    rows[0]!.declaration.label.en = "changed outside service";
+    expect((await h.service.listKinds())[0]).toMatchObject({
+      choice: { enabled: true }, declaration: { label: { en: "Mail needing a reply" } },
+    });
+    await h.service.pluginUninstalled("fixturemail");
+    expect(await h.service.listKinds()).toEqual([]);
+    expect(h.changed).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears repair, escalation and the new mark only through explicit consent", async () => {
+    sharedSettings = normalizeAlertSettings({ kinds: { "fixturemail:reply": { enabled: "damaged" } } });
+    const h = await registered();
+    expect(sharedSettings.kinds["fixturemail:reply"]).toMatchObject({
+      enabled: false, seenByUser: false, repaired: true, escalated: true,
+    });
+    expect(await h.service.setKind("fixturemail:reply", { enabled: true })).toMatchObject({
+      choice: { enabled: true, osNotification: false, visibility: "user-visible", seenByUser: true },
+    });
+    expect(sharedSettings.kinds["fixturemail:reply"]).not.toHaveProperty("repaired");
+    expect(sharedSettings.kinds["fixturemail:reply"]).not.toHaveProperty("escalated");
+    expect(normalizeAlertSettings(sharedSettings)).toEqual(sharedSettings);
+    await h.service.register("fixturemail", manifest());
+    expect((await h.service.raise("fixturemail", reply())).status).toBe("raised");
+  });
+
+  it("lets a user visit a blocked kind without enabling it or losing that choice at registration", async () => {
+    const h = await registered();
+    h.blocks.mockResolvedValue(true);
+    expect(await h.service.setKind("fixturemail:successor", { enabled: false })).toMatchObject({
+      blockedByPredecessor: "retiredfixture", choice: { enabled: false, seenByUser: true },
+    });
+    expect(await h.service.setKind("fixturemail:offbydefault", {})).toMatchObject({
+      choice: { enabled: false, seenByUser: true },
+    });
+    await h.service.register("fixturemail", manifest());
+    h.blocks.mockResolvedValue(false);
+    expect(await h.service.raise("fixturemail", { kind: "successor", key: "a" })).toEqual({ status: "disabled_by_user" });
+  });
+
+  it.each([null, [], { enabled: 1 }, { osNotification: "true" }, { visibility: "silent" },
+    { repaired: true }, { escalated: true }, { seenByUser: false }, { absentSinceAppVersion: "1.0.0" },
+    { enabled: true, extra: false }])("refuses invalid or service-owned patch fields: %j", async (patch) => {
+    const h = await registered();
+    const before = structuredClone(sharedSettings);
+    const changes = h.changed.mock.calls.length;
+    expect(await h.service.setKind("fixturemail:reply", patch)).toEqual({ ok: false, error: "invalid-arguments" });
+    expect(sharedSettings).toEqual(before);
+    expect(h.changed).toHaveBeenCalledTimes(changes);
+  });
+
+  it("refuses unknown kinds, malformed keys and an undeclared OS cue", async () => {
+    const h = await registered();
+    expect(await h.service.setKind("fixturemail:unknown", {})).toEqual({ ok: false, error: "kind-not-registered" });
+    expect(await h.service.setKind("unknown:reply", {})).toEqual({ ok: false, error: "kind-not-registered" });
+    expect(await h.service.setKind("fixturemail:reply:extra", {})).toEqual({ ok: false, error: "invalid-arguments" });
+    expect(await h.service.setKind("fixturemail:quiet", { osNotification: true })).toEqual({ ok: false, error: "invalid-arguments" });
+  });
+
+  it("keeps concurrent per-kind changes and the master switch without charging a delivery window", async () => {
+    const h = await harness({ beforeSettingsWrite: async () => { await Promise.resolve(); } });
+    await h.service.register("fixturemail", manifest());
+    await Promise.all([
+      h.service.setKind("fixturemail:reply", { enabled: false }),
+      h.service.setKind("fixturemail:offbydefault", { enabled: true }),
+      h.service.setOsNotificationsEnabled(false),
+    ]);
+    expect(sharedSettings.osNotificationsEnabled).toBe(false);
+    expect(sharedSettings.kinds["fixturemail:reply"]!.enabled).toBe(false);
+    expect(sharedSettings.kinds["fixturemail:offbydefault"]!.enabled).toBe(true);
+    expect(await h.service.setOsNotificationsEnabled("true")).toEqual({ ok: false, error: "invalid-arguments" });
+    expect((await h.service.raise("fixturemail", { kind: "offbydefault", key: "a" })).status).toBe("raised");
+  });
+});
+
+describe("host kinds", () => {
+  it("starts off, registers without plugins, and preserves host identity while staging a valid source", async () => {
+    const h = await harness();
+    await h.service.registerHostKinds();
+    expect(await h.service.listKinds()).toMatchObject([{
+      kindKey: "@host:due-soon", pluginId: "@host", pluginLabel: "Built-in",
+      choice: { enabled: false, osNotification: false, seenByUser: false },
+      blockedByPredecessor: null,
+    }]);
+    const input = { kind: "due-soon", key: "7:2026-09-26T01:00:00.000Z", slots: { title: "Finish report", itemId: "7" } };
+    expect(await h.service.raise("@host", input)).toEqual({ status: "disabled_by_user" });
+    await h.service.setKind("@host:due-soon", { enabled: true, osNotification: true });
+    const result = await h.service.raise("@host", input);
+    expect(result).toMatchObject({ status: "raised", delivered: { card: true, osNotification: true } });
+    const card = h.shown[0]!;
+    expect(card.source).toMatchObject({ pluginId: "@host", kindId: "due-soon" });
+    expect(card.summary).toBe("Due soon: Finish report");
+    expect(card.pendingPrompt).toContain("- itemId: <untrusted-itemId>7</untrusted-itemId>");
+    expect(parseStagedEnvelope(card.pendingPrompt)).toMatchObject({ source: "overlay:host--due-soon", kind: { inputOrigin: "plugin-emitted" } });
+    expect(h.events.at(-1)?.payload.pluginId).toBe("@host");
+    expect(h.fired[0]?.body).toBe("A Work Board item is due within 24 hours.");
+    expect(h.blocks).not.toHaveBeenCalled();
+    expect(await h.service.withdraw("work-board", "due-soon", input.key)).toBe(false);
+    expect(h.service.listOpen()).toHaveLength(1);
   });
 });

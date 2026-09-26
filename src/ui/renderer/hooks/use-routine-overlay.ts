@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 
 import type { getApi } from "../api-client.js";
 import type { RoutineFiredPayload } from "../../../shared/routines-types.js";
 import type { AlertCardClosedReason } from "../../../shared/alerts-types.js";
+import { ALERT_HOST_PLUGIN_ID } from "../../../shared/alerts-types.js";
 import type {
   OverlayContextValue,
   OverlayItem,
@@ -192,12 +193,12 @@ export function useRoutineOverlay({
         })
       : () => {};
     if (api.alerts) {
-      void api.alerts.openCards().then((cards) => {
+      void api.alerts.listOpen().then((cards) => {
         if (pulled) for (const card of cards) {
           if (!changedDuringPull.has(card.id)) show(card);
         }
       }).catch((err) => {
-        console.warn("[ave] alerts openCards failed:", errorMessage(err));
+        console.warn("[ave] alerts listOpen failed:", errorMessage(err));
       }).finally(finishPull);
     } else {
       finishPull();
@@ -260,7 +261,8 @@ export function useRoutineOverlay({
       // user bubble (architecture §9 plugin provenance contract; same rule for apps).
       tile.insertImportedTriggerEntry({
         sessionId: source.kind === "alert" ? source.alertId : source.eventId,
-        source: source.kind === "app" ? `app:${source.serverId}` : `plugin:${source.pluginId}`,
+        source: source.kind === "app" ? `app:${source.serverId}`
+          : source.kind === "alert" && source.pluginId === ALERT_HOST_PLUGIN_ID ? `host:${source.kindId}` : `plugin:${source.pluginId}`,
         prompt: pendingPrompt,
         summary,
       });

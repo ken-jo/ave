@@ -11,8 +11,12 @@ import { join } from "node:path";
 import { setupAlerts } from "../alerts-setup.js";
 import { emitEvent, onEvent } from "../../types.js";
 import { revocationRegistry } from "../../../plugins/revocation/revocation-registry.js";
-import { OVERLAY_V1 } from "../../../shared/ipc-channels.js";
 import type { AlertSettings, RetiredPluginConfigRecord } from "../../../shared/alerts-types.js";
+import { ALERTS, OVERLAY_V1 } from "../../../shared/ipc-channels.js";
+import { scanAndEmitDueSoon, DUE_SOON_EVENT } from "../../../work-board/due-soon.js";
+import { createDirStorage } from "../../../work-board/storage.js";
+import { openFeatureNamespace } from "../../../main/storage/feature-namespace.js";
+import type { WorkItemResolved } from "../../../shared/work-board-types.js";
 import type { BootContext } from "../../context.js";
 import { withAllPluginInstallLocks, withPluginInstallLock } from "../../../plugins/install-lifecycle.js";
 import { PluginMarketplaceService } from "../../../plugins/marketplace.js";
@@ -223,6 +227,16 @@ describe("setupAlerts", () => {
     await ctx.alertsService.flush();
   }, 2_000);
 
+  it("keeps consent committed when the Settings notification cannot reach the window", async () => {
+    const { ctx, send } = context();
+    disposers.push(await setupAlerts(ctx));
+    send.mockImplementation(() => { throw new Error("window destroyed"); });
+    await expect(ctx.alertsService.setKind("@host:due-soon", { enabled: true })).resolves.not.toHaveProperty("error");
+    expect(settings.kinds["@host:due-soon"]).toMatchObject({ enabled: true, seenByUser: true });
+    expect(send).toHaveBeenLastCalledWith(ALERTS.kindsChanged);
+    await ctx.alertsService.flush();
+  });
+
   it.each(["disable", "uninstall"] as const)("finishes every revoked card after a failed dismissal on a %s feed", async (action) => {
     const { ctx, send } = context();
     disposers.push(await setupAlerts(ctx));
@@ -244,7 +258,7 @@ describe("setupAlerts", () => {
     send.mockImplementationOnce(() => { throw new Error("window destroyed during dismissal"); });
     const rule = { sourceId: "ave", kind: "plugin" as const, name: "fixturemail", versions: "*", reason: "revoked", at: "2026-09-01", action };
     revocationRegistry.replace([rule]);
-    await vi.waitFor(() => expect(ctx.alertsService.openCards().map((card) => card.source.alertId)).toEqual([safeId]));
+    await vi.waitFor(() => expect(ctx.alertsService.listOpen().map((card) => card.source.alertId)).toEqual([safeId]));
     expect(send.mock.calls).toEqual(ids.map((id) => [OVERLAY_V1.dismiss, `alert:${id}`]));
     expect(withdrawn).toEqual(ids.map((alertId, index) => ({
       pluginId: "fixturemail", kind: index === 0 ? "reply" : "extra", alertId, reason: "withdrawn",
@@ -259,9 +273,9 @@ describe("setupAlerts", () => {
     expect(revocationRegistry.replace([rule])).toBe(false);
     await new Promise((resolve) => setTimeout(resolve, 0));
     await ctx.alertsService.pluginUninstalled("fixturemail");
-    expect(ctx.alertsService.openCards().map((card) => card.source.alertId)).toEqual([safeId]);
+    expect(ctx.alertsService.listOpen().map((card) => card.source.alertId)).toEqual([safeId]);
     expect(withdrawn).toHaveLength(2);
-    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls.filter(([channel]) => channel === OVERLAY_V1.dismiss)).toHaveLength(2);
     expect((await ctx.alertsService.raise("safeplugin", { kind: "reply", key: "safe" })).status).toBe("refreshed");
     await ctx.alertsService.flush();
   });
@@ -269,11 +283,16 @@ describe("setupAlerts", () => {
   it("keeps a queued acceptance when the live window send throws once", async () => {
     const { ctx, send } = context();
     disposers.push(await setupAlerts(ctx));
-    send.mockImplementationOnce(() => { throw new Error("window destroyed"); });
+    send.mockImplementation((channel) => {
+      if (channel === OVERLAY_V1.show) {
+        send.mockImplementation(() => undefined);
+        throw new Error("window destroyed");
+      }
+    });
     const result = await raiseReply(ctx);
     expect(result).toMatchObject({ status: "raised", delivered: { card: true } });
     const { alertId } = result as { alertId: string };
-    expect(ctx.alertsService.openCards()).toEqual([
+    expect(ctx.alertsService.listOpen()).toEqual([
       expect.objectContaining({ source: expect.objectContaining({ alertId }) }),
     ]);
     expect(await ctx.alertsService.raise("fixturemail", { kind: "reply", key: "mail-1" })).toEqual({ status: "refreshed", alertId });
@@ -292,7 +311,7 @@ describe("setupAlerts", () => {
     revocationRegistry.replace([]);
     installed = [{ name: "fixturemail", version: "1.0.0", sourceId: "ave", originCommit: null }];
     revocationRegistry.replace([{ sourceId: "ave", kind: "plugin", name: "fixturemail", versions: "*", reason: "revoked", at: "2026-09-01", action: "disable" }]);
-    await vi.waitFor(() => expect(ctx.alertsService.openCards()).toEqual([]));
+    await vi.waitFor(() => expect(ctx.alertsService.listOpen()).toEqual([]));
     release([]);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(await ctx.alertsService.raise("fixturemail", { kind: "reply", key: "new" })).toEqual({ status: "kind_not_granted", kind: "reply" });
@@ -309,7 +328,7 @@ describe("setupAlerts", () => {
     revocationRegistry.replace([{
       sourceId: "ave", kind: "plugin", name: "fixturemail", versions: "*", reason: "revoked", at: "2026-09-01", action,
     }]);
-    await vi.waitFor(() => expect(ctx.alertsService.openCards()).toEqual([]));
+    await vi.waitFor(() => expect(ctx.alertsService.listOpen()).toEqual([]));
     expect(send).toHaveBeenCalledWith(OVERLAY_V1.dismiss, expect.any(String));
     expect(settings.kinds["fixturemail:reply"]?.absentSinceAppVersion).toBeUndefined();
     expect(settings.kinds["fixturemail:reply"]?.enabled).toBe(true);
@@ -324,10 +343,10 @@ describe("setupAlerts", () => {
     const rule = { sourceId: "ave", kind: "plugin" as const, name: "fixturemail", versions: "1.0.0", reason: "revoked", at: "2026-09-01", action: "disable" as const };
     revocationRegistry.replace([rule]);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(ctx.alertsService.openCards()).toHaveLength(1);
+    expect(ctx.alertsService.listOpen()).toHaveLength(1);
     installed = [{ name: "fixturemail", version: "1.0.0", sourceId: "ave", originCommit: null }];
     expect(revocationRegistry.replace([rule])).toBe(false);
-    await vi.waitFor(() => expect(ctx.alertsService.openCards()).toEqual([]));
+    await vi.waitFor(() => expect(ctx.alertsService.listOpen()).toEqual([]));
     await ctx.alertsService.flush();
   });
 
@@ -339,7 +358,7 @@ describe("setupAlerts", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     installed = [{ name: "fixturemail", version: "1.0.0", sourceId: "ave", originCommit: null }];
     emitEvent("plugin.installed", { pluginId: "fixturemail" });
-    await vi.waitFor(() => expect(ctx.alertsService.openCards()).toEqual([]));
+    await vi.waitFor(() => expect(ctx.alertsService.listOpen()).toEqual([]));
     dispose();
     const reads = vi.mocked(ctx.pluginMarketplace.listInstalledPackages).mock.calls.length;
     revocationRegistry.replace([]);
@@ -348,6 +367,30 @@ describe("setupAlerts", () => {
     await ctx.alertsService.flush();
   });
 
+  it("delivers the host deadline through the pipeline with no plugin and still emits the board event", async () => {
+    const { ctx, send } = context();
+    disposers.push(await setupAlerts(ctx));
+    const now = Date.now();
+    const dueAt = new Date(now + 60 * 60_000).toISOString();
+    const item: WorkItemResolved = {
+      id: 7, title: "Finish report", status: "planned", status_resolved: "planned", priority: "medium",
+      created_at: new Date(now).toISOString(), updated_at: new Date(now).toISOString(), due_at: dueAt,
+    };
+    const store = { list: async () => ({ status: "ok" as const, items: [item] }) };
+    const storage = createDirStorage(openFeatureNamespace("work-board").dir);
+    const emit = vi.fn();
+    const raise = (input: Parameters<typeof ctx.alertsService.raise>[1]) => ctx.alertsService.raise("@host", input);
+    await scanAndEmitDueSoon(store, storage, emit, now, raise);
+    expect(ctx.alertsService.listOpen()).toEqual([]);
+    expect(emit).toHaveBeenCalledWith(DUE_SOON_EVENT, { itemId: 7, title: "Finish report", notifiedAt: new Date(now).toISOString() });
+    await ctx.alertsService.setKind("@host:due-soon", { enabled: true });
+    await scanAndEmitDueSoon(store, storage, emit, now + 1, raise);
+    expect(emit).toHaveBeenCalledTimes(1);
+    expect(ctx.alertsService.listOpen()[0]?.source.pluginId).toBe("@host");
+    expect(send).toHaveBeenCalledWith(ALERTS.kindsChanged);
+    expect(send).toHaveBeenCalledWith(OVERLAY_V1.show, expect.objectContaining({ source: expect.objectContaining({ pluginId: "@host" }) }));
+    await ctx.alertsService.flush();
+  });
   it("blocks a successor while its predecessor from the hinted source is installed and not revoked", async () => {
     installed = [{ name: "retiredfixture", version: "1.0.0", sourceId: "ave", originCommit: null }];
     const { ctx } = context();
@@ -449,15 +492,15 @@ it.each([true, false])("migrates a newly persisted retirement and detaches its r
 it("retries pending host mappings on choice registration and releases both settings observers", async () => {
   const { ctx } = context();
   records = { retiredfixture: { config: {}, enabled: true, sourceId: "ave", retiredAtAppVersion: "0.12.0",
-    successors: { plugins: [], hostKinds: [{ kind: "@host:due-soon", enabled: { key: "disabled", listed: "disabled", values: ["due"] } }] }, consumedBy: [],
+    successors: { plugins: [], hostKinds: [{ kind: "@host:future-kind", enabled: { key: "disabled", listed: "disabled", values: ["due"] } }] }, consumedBy: [],
   } };
   const dispose = await setupAlerts(ctx); disposers.push(dispose); await ctx.alertsService.flush();
   expect(records.retiredfixture).toBeDefined();
   await ctx.settingsService.set("alerts", { osNotificationsEnabled: true, kinds: {
-    "@host:due-soon": { enabled: false, osNotification: false, visibility: "user-visible", seenByUser: false },
+    "@host:future-kind": { enabled: false, osNotification: false, visibility: "user-visible", seenByUser: false },
   } });
   await ctx.alertsService.flush();
-  expect(settings.kinds["@host:due-soon"]!.enabled).toBe(true);
+  expect(settings.kinds["@host:future-kind"]!.enabled).toBe(true);
   expect(records).toEqual({});
   dispose(); await ctx.alertsService.flush();
   const reconcile = vi.spyOn(ctx.alertsService, "reconcileMigration");

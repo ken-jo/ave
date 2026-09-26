@@ -9,7 +9,8 @@
  * the alerts service (`src/alerts/service.ts`) is their only writer. The
  * design page `docs/design/plugin-alerts.md` owns the shapes.
  */
-import type { AlertInheritRule, AlertVisibility } from "../plugins/public-contract.js";
+import type { AlertInheritRule, AlertKindDeclaration, AlertVisibility } from "../plugins/public-contract.js";
+import { isRecord } from "./is-record.js";
 import type { PluginConfigRecord } from "./plugin-config.js";
 
 export type { AlertInheritRule, AlertVisibility };
@@ -56,6 +57,34 @@ export interface AlertCard {
 
 /** What the user did to an alert card. */
 export type AlertCardClosedReason = "accepted" | "dismissed";
+
+/** A registered kind and the host's current resolution for Settings. */
+export interface AlertKindRow {
+  kindKey: string;
+  pluginId: string;
+  pluginLabel: string;
+  reasoning: string;
+  declaration: AlertKindDeclaration;
+  choice: AlertKindChoice;
+  blockedByPredecessor: string | null;
+}
+
+/** Only user switches are writable; consent metadata is owned by the service. */
+export type AlertKindPatch = Partial<Pick<AlertKindChoice, "enabled" | "osNotification">>;
+
+export function isAlertKindPatch(value: unknown): value is AlertKindPatch {
+  return isRecord(value) && Object.entries(value).every(
+    ([key, entry]) => (key === "enabled" || key === "osNotification") && typeof entry === "boolean",
+  );
+}
+
+interface AlertSettingsError {
+  ok: false;
+  error: "invalid-arguments" | "kind-not-registered" | "no-alerts-service" | "unauthorized-frame";
+}
+
+export type SetAlertKindResult = AlertKindRow | AlertSettingsError;
+export type SetAlertOsNotificationsResult = { osNotificationsEnabled: boolean } | AlertSettingsError;
 
 /**
  * A settings key for one alert kind: `<pluginId>:<kind>` or `@host:<kind>`.
