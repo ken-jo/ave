@@ -99,10 +99,10 @@ describe("FloatingRightLane", () => {
     expect(lane.contains(card)).toBe(true);
   });
 
-  it("passes a wheel to the pane transcript only after card and lane scrolling are exhausted", () => {
+  function renderWheelSurface() {
     render(
       <div data-approval-scope>
-        <div className="ave-chat-scroll"><div data-radix-scroll-area-viewport="" data-testid="transcript" /></div>
+        <div className="ave-chat-scroll"><div data-radix-scroll-area-viewport="" data-testid="transcript" style={{ lineHeight: "20px" }} /></div>
         <FloatingRightLane>
           <section data-testid="approval-lane-card">
             <div data-testid="card-scroll" style={{ overflowY: "auto" }}>
@@ -117,9 +117,14 @@ describe("FloatingRightLane", () => {
     const transcript = screen.getByTestId("transcript");
     const button = screen.getByRole("button", { name: "Approval action" });
     Object.defineProperties(transcript, { clientHeight: { value: 200 }, scrollHeight: { value: 2000 } });
-    Object.defineProperties(cardScroll, { clientHeight: { value: 100 }, scrollHeight: { value: 500 } });
-    Object.defineProperties(lane, { clientHeight: { value: 200 }, scrollHeight: { value: 400 } });
+    Object.defineProperties(cardScroll, { clientHeight: { value: 100 }, scrollHeight: { value: 500, configurable: true } });
+    Object.defineProperties(lane, { clientHeight: { value: 200 }, scrollHeight: { value: 400, configurable: true } });
     transcript.scrollTop = 1000;
+    return { lane, cardScroll, transcript, button };
+  }
+
+  it("keeps a scrollable card or lane as the wheel target at both boundaries", () => {
+    const { lane, cardScroll, transcript, button } = renderWheelSurface();
 
     fireEvent.wheel(button, { deltaY: 350 });
     expect(transcript.scrollTop).toBe(1000);
@@ -128,14 +133,87 @@ describe("FloatingRightLane", () => {
     fireEvent.wheel(button, { deltaY: 350 });
     expect(transcript.scrollTop).toBe(1000);
 
+    Object.defineProperty(lane, "scrollHeight", { value: 200, configurable: true });
+    fireEvent.wheel(button, { deltaY: 350 });
+    expect(transcript.scrollTop).toBe(1000);
+
+    Object.defineProperty(lane, "scrollHeight", { value: 400, configurable: true });
     lane.scrollTop = 200;
     fireEvent.wheel(button, { deltaY: 350 });
-    expect(transcript.scrollTop).toBe(1350);
+    expect(transcript.scrollTop).toBe(1000);
 
     cardScroll.scrollTop = 0;
     lane.scrollTop = 0;
     fireEvent.wheel(button, { deltaY: -350 });
     expect(transcript.scrollTop).toBe(1000);
+
+    Object.defineProperty(cardScroll, "scrollHeight", { value: 100 });
+    lane.scrollTop = 200;
+    fireEvent.wheel(button, { deltaY: 350 });
+    expect(transcript.scrollTop).toBe(1000);
+    lane.scrollTop = 0;
+    fireEvent.wheel(button, { deltaY: -350 });
+    expect(transcript.scrollTop).toBe(1000);
+
+    Object.defineProperty(lane, "scrollHeight", { value: 200 });
+    fireEvent.wheel(button, { deltaY: 350 });
+    expect(transcript.scrollTop).toBe(1350);
+  });
+
+  it("reserves modifier-wheel gestures for the browser", () => {
+    const { lane, cardScroll, transcript, button } = renderWheelSurface();
+    Object.defineProperty(cardScroll, "scrollHeight", { value: 100 });
+    Object.defineProperty(lane, "scrollHeight", { value: 200 });
+
+    for (const modifier of ["ctrlKey", "metaKey", "altKey", "shiftKey"] as const) {
+      fireEvent.wheel(button, { deltaY: 120, [modifier]: true });
+      expect(transcript.scrollTop).toBe(1000);
+    }
+    fireEvent.wheel(button, { deltaY: 120 });
+    expect(transcript.scrollTop).toBe(1120);
+  });
+
+  it("preserves fractional wheel input and normalizes line and page units", () => {
+    const { lane, cardScroll, transcript, button } = renderWheelSurface();
+    Object.defineProperty(cardScroll, "scrollHeight", { value: 100 });
+    Object.defineProperty(lane, "scrollHeight", { value: 200 });
+    let scrollTop = 1000;
+    Object.defineProperty(transcript, "scrollTop", {
+      get: () => scrollTop,
+      set: (value: number) => { scrollTop = Math.round(value); },
+    });
+
+    for (let index = 0; index < 20; index += 1) fireEvent.wheel(button, { deltaY: 0.25 });
+    expect(transcript.scrollTop).toBe(1005);
+    for (let index = 0; index < 20; index += 1) fireEvent.wheel(button, { deltaY: -0.25 });
+    expect(transcript.scrollTop).toBe(1000);
+
+    fireEvent.wheel(button, { deltaY: 2, deltaMode: 1 });
+    expect(transcript.scrollTop).toBe(1040);
+    fireEvent.wheel(button, { deltaY: 1, deltaMode: 2 });
+    expect(transcript.scrollTop).toBe(1240);
+
+    transcript.scrollTop = 750;
+    fireEvent.wheel(button, { deltaY: 0.25 });
+    expect(transcript.scrollTop).toBe(750);
+    fireEvent.wheel(button, { deltaY: 0.75 });
+    expect(transcript.scrollTop).toBe(751);
+
+    transcript.scrollTop = 1000;
+    for (const deltaY of [30, 15.5, 5.25, 1.25, 0.5, 0.25]) {
+      fireEvent.wheel(button, { deltaY });
+    }
+    expect(transcript.scrollTop).toBe(1053);
+  });
+
+  it("does not cancel a forwarded wheel from a passive listener", () => {
+    const { lane, cardScroll, button } = renderWheelSurface();
+    Object.defineProperty(cardScroll, "scrollHeight", { value: 100 });
+    Object.defineProperty(lane, "scrollHeight", { value: 200 });
+    const wheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 120 });
+    const preventDefault = vi.spyOn(wheel, "preventDefault");
+    fireEvent(button, wheel);
+    expect(preventDefault).not.toHaveBeenCalled();
   });
 
   it("leaves positioning to the lane — the occupant does not anchor itself", () => {

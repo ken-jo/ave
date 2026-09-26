@@ -11,28 +11,52 @@ import type { ReactNode, WheelEvent } from "react";
  */
 export const FLOATING_LANE_ITEM_WIDTH = "w-[23rem] max-w-full";
 
-function canScrollVertically(element: Element, deltaY: number): boolean {
-  const remaining = element.scrollHeight - element.clientHeight;
-  return deltaY > 0 ? element.scrollTop < remaining - 1 : element.scrollTop > 1;
+function hasVerticalScrollRange(element: Element): boolean {
+  return element.scrollHeight > element.clientHeight;
+}
+
+// Some renderers round scrollTop to pixels; carry the unused wheel fraction.
+const forwardedScroll = new WeakMap<HTMLElement, { actual: number; remainder: number }>();
+
+function forwardWheel(transcript: HTMLElement, delta: number) {
+  const actual = transcript.scrollTop;
+  const previous = forwardedScroll.get(transcript);
+  const pending = previous?.actual === actual ? previous.remainder : 0;
+  const total = pending + delta;
+  const whole = Math.sign(total) * Math.round(Math.abs(total));
+  if (whole === 0) {
+    forwardedScroll.set(transcript, { actual, remainder: total });
+    return;
+  }
+
+  const limit = Math.max(0, transcript.scrollHeight - transcript.clientHeight);
+  transcript.scrollTop = Math.max(0, Math.min(limit, actual + whole));
+  const moved = transcript.scrollTop - actual;
+  const atBoundary = (transcript.scrollTop === 0 && total < 0)
+    || (transcript.scrollTop === limit && total > 0);
+  forwardedScroll.set(transcript, { actual: transcript.scrollTop, remainder: atBoundary ? 0 : total - moved });
 }
 
 function handleLaneWheel(event: WheelEvent<HTMLDivElement>) {
-  if (event.deltaY === 0) return;
+  if (event.deltaY === 0 || !Number.isFinite(event.deltaY)
+    || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
   const lane = event.currentTarget;
+  // A scrollable surface owns the gesture even after it reaches either end.
   let target = event.target instanceof Element ? event.target : null;
   while (target && target !== lane) {
     if (/^(auto|scroll)$/.test(getComputedStyle(target).overflowY)
-      && canScrollVertically(target, event.deltaY)) return;
+      && hasVerticalScrollRange(target)) return;
     target = target.parentElement;
   }
-  if (canScrollVertically(lane, event.deltaY)) return;
+  if (hasVerticalScrollRange(lane)) return;
 
   const transcript = lane.closest('[data-approval-scope]')
     ?.querySelector<HTMLElement>('.ave-chat-scroll [data-radix-scroll-area-viewport]');
   if (!transcript) return;
-  const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? transcript.clientHeight : 1;
-  event.preventDefault();
-  transcript.scrollTop += event.deltaY * unit;
+  const lineHeight = Number.parseFloat(getComputedStyle(transcript).lineHeight);
+  const unit = event.deltaMode === 1 ? (Number.isFinite(lineHeight) ? lineHeight : 16)
+    : event.deltaMode === 2 ? transcript.clientHeight : 1;
+  forwardWheel(transcript, event.deltaY * unit);
 }
 
 export function FloatingRightLane({ children }: { children: ReactNode }) {
