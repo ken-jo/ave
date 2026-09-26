@@ -35,6 +35,7 @@ import { StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
 import { EffectBoundaryDeniedError } from "../../../permissions/effect-enforcement.js";
 import { ManifestIntegrityError } from "../../../permissions/manifest-integrity.js";
 import { PluginRuntimeDetachedOperationError } from "../../runtime/detached-operation.js";
+import { CredentialLeaseError } from "../../secret-access/credential-lease-registry.js";
 import {
   PluginStorageEncryptionUnavailableError,
   PluginStorageError,
@@ -468,6 +469,20 @@ const ERROR_TRIGGERS: Readonly<Record<Exclude<HostApiWireErrorCode, "protocol-ve
       ),
     },
     provoke: throughStub("openExternalUrl"),
+  },
+  "credential-conflict": {
+    trigger: "a malformed credential selector",
+    provoke: byHand("ave/host/hostFetch", { input: "https://example.com", init: { auth: { token: "x" } } }),
+  },
+  "lease-unavailable": {
+    trigger: "a lease that is no longer live",
+    overrides: { hostFetch: throwing(() => new CredentialLeaseError("lease-unavailable", { stage: "before-send" })) },
+    provoke: throughStub("hostFetch"),
+  },
+  "lease-audience-denied": {
+    trigger: "a URL outside the credential audience",
+    overrides: { hostFetch: throwing(() => new CredentialLeaseError("lease-audience-denied", { origin: "https://example.com", hop: 0 })) },
+    provoke: throughStub("hostFetch"),
   },
   "manifest-integrity-violation": {
     trigger: "the call broke the manifest's integrity pin",

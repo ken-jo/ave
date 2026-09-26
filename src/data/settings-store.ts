@@ -1014,6 +1014,29 @@ function withProviderPresetsFrom(
 
 export class SettingsService {
   private readonly changeListeners = new Map<keyof AppSettings, Set<() => void>>();
+  private providerConfigRevision = 0;
+  private readonly secretGenerations = new Map<string, number>();
+  private readonly leaseStateListeners = new Set<() => void>();
+
+  getProviderConfigRevision(): number { return this.providerConfigRevision; }
+  getSecretGeneration(key: string): number { return this.secretGenerations.get(key) ?? 0; }
+  onLeaseStateChanged(listener: () => void): () => void {
+    this.leaseStateListeners.add(listener);
+    return () => { this.leaseStateListeners.delete(listener); };
+  }
+  private notifyLeaseState(): void {
+    for (const listener of this.leaseStateListeners) {
+      try { listener(); } catch (error) { log.warn({ error }, "lease state listener failed"); }
+    }
+  }
+  private providerConfigChanged(): void {
+    this.providerConfigRevision += 1;
+    this.notifyLeaseState();
+  }
+  private secretStateChanged(key: string): void {
+    this.secretGenerations.set(key, this.getSecretGeneration(key) + 1);
+    this.notifyLeaseState();
+  }
   private readonly settingsPath: string;
   private readonly secretsPath: string;
   private readonly secretStore: SecretDocumentStore;
@@ -1113,6 +1136,7 @@ export class SettingsService {
 
   async set<K extends keyof AppSettings>(key: K, value: AppSettings[K]): Promise<void> {
     this.settings[key] = value;
+    if (key === "llm" || key === "marketplace") this.providerConfigChanged();
     await this.commit();
     for (const listener of this.changeListeners.get(key) ?? []) {
       try { listener(); } catch (error) { log.warn({ error }, "settings change listener failed"); }
@@ -1179,6 +1203,7 @@ export class SettingsService {
         nextMarketplace.installedProviderIds,
         nextMarketplace.installedProviderPresets,
       );
+      this.providerConfigChanged();
     }
     if (partial.chat) this.settings.chat = normalizeChat({ ...this.settings.chat, ...partial.chat });
     if (partial.a2aRemote) this.settings.a2aRemote = normalizeA2ARemote({ ...this.settings.a2aRemote, ...partial.a2aRemote });
@@ -1192,6 +1217,7 @@ export class SettingsService {
         { inferInstalledFromCustom: false },
       );
       this.settings.llm = prunedLlm.llm;
+      this.providerConfigChanged();
     }
     if (partial.routine) {
       this.settings.routine = { ...this.settings.routine, ...partial.routine };
@@ -1555,6 +1581,7 @@ export class SettingsService {
     const appliedSettings = this.getAll();
     const keys = providerIds.map(marketplaceProviderPresetSecretKey);
     for (const key of keys) this.invalidatingSecretKeys.set(key, (this.invalidatingSecretKeys.get(key) ?? 0) + 1);
+    for (const key of keys) this.secretStateChanged(key);
     try {
       await this.commit();
       await this.deleteMarketplaceProviderPresetSecretsAtomically(
@@ -1572,6 +1599,7 @@ export class SettingsService {
           this.reenteredSecretKeys.delete(key);
           this.writtenReentries.delete(key);
         }
+        this.secretStateChanged(key);
       }
     }
   }
@@ -1617,18 +1645,22 @@ export class SettingsService {
           continue;
         }
         this.withheldSecretKeys.add(key);
+        this.secretStateChanged(key);
       }
       // Until the old addresses are back on disk their keys are held back,
       // so nothing that runs when a failed rollback puts memory back on the
       // new addresses can pair them.
       const keys = restorable.map(marketplaceProviderPresetSecretKey);
       for (const key of keys) this.restoringSecretKeys.add(key);
+      for (const key of keys) this.secretStateChanged(key);
       this.settings = restorable.length === providerIds.length && isDeepStrictEqual(this.settings, appliedSettings)
         ? previousSettings
         : withProviderPresetsFrom(this.settings, previousSettings, restorable);
+      this.providerConfigChanged();
       await this.commit().then(
         () => {
           for (const key of keys) this.restoringSecretKeys.delete(key);
+          for (const key of keys) this.secretStateChanged(key);
         },
         (rollbackErr: Error) => {
           log.warn(
@@ -1638,6 +1670,7 @@ export class SettingsService {
           for (const key of keys) {
             this.restoringSecretKeys.delete(key);
             this.withheldSecretKeys.add(key);
+            this.secretStateChanged(key);
           }
         },
       );
@@ -1665,6 +1698,7 @@ export class SettingsService {
       .map(marketplaceProviderPresetSecretKey);
     if (keys.length === 0) return;
     await this.secretStore.deleteMany(keys);
+    for (const key of keys) this.secretStateChanged(key);
   }
 
   async replaceLlm(llm: LLMSettings): Promise<AppSettings> {
@@ -1673,6 +1707,7 @@ export class SettingsService {
       ...replacement,
       activeChatRuntime: normalizeActiveChatRuntime(replacement.activeChatRuntime),
     };
+    this.providerConfigChanged();
     await this.commit();
     return this.getAll();
   }
@@ -1714,6 +1749,7 @@ export class SettingsService {
       );
       this.reenteredSecretKeys.set(key, structuredClone(enteredFor));
       this.writtenReentries.delete(key);
+      this.secretStateChanged(key);
     }
     try {
       await this.secretStore.set(key, value);
@@ -1724,11 +1760,13 @@ export class SettingsService {
         // that preset's, so it is withheld until entered again.
         this.reenteredSecretKeys.delete(key);
         this.withheldSecretKeys.add(key);
+        this.secretStateChanged(key);
       }
       throw err;
     }
     this.withheldSecretKeys.delete(key);
     if (this.reenteredSecretKeys.has(key)) this.writtenReentries.add(key);
+    this.secretStateChanged(key);
   }
 
   /** Decrypt and return a stored secret value. */
@@ -1751,6 +1789,7 @@ export class SettingsService {
   async deleteSecret(key: string): Promise<void> {
     await this.secretStore.delete(key);
     this.withheldSecretKeys.delete(key);
+    this.secretStateChanged(key);
   }
 
   /**
@@ -1777,7 +1816,10 @@ export class SettingsService {
     const keys = [...this.withheldSecretKeys];
     try {
       await this.secretStore.deleteMany(keys);
-      for (const key of keys) this.withheldSecretKeys.delete(key);
+      for (const key of keys) {
+        this.withheldSecretKeys.delete(key);
+        this.secretStateChanged(key);
+      }
     } catch (err) {
       log.warn("withheld provider preset key deletion failed: %s", (err as Error).message);
     }
@@ -1799,7 +1841,9 @@ export class SettingsService {
       const safeKey = sanitizePluginConfigKey(key);
       storageKeys.push(`plugin.${safePluginId}.${safeKey}`);
     }
-    return this.secretStore.deleteMany(storageKeys);
+    const deleted = await this.secretStore.deleteMany(storageKeys);
+    for (const key of storageKeys) this.secretStateChanged(key);
+    return deleted;
   }
 
   // Historical note: hasApiKey() only checked the single `llm.apiKey` key,
@@ -1989,6 +2033,7 @@ export class SettingsService {
           for (const write of batch) write.resolve();
         } catch (err) {
           this.settings = structuredClone(this.saved);
+          this.providerConfigChanged();
           for (const write of [...batch, ...this.unsaved.splice(0)]) write.reject(err);
         }
       }

@@ -12,9 +12,12 @@
       "code": -32000,
       "data": {
         "code": "host-internal",
+        "detail": {
+          "kind": "other"
+        },
         "name": "Error"
       },
-      "message": "the keychain daemon went away"
+      "message": "Host request failed."
     },
     "id": 1,
     "jsonrpc": "2.0"

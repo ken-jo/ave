@@ -271,6 +271,10 @@ export const REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 30
 
 /** How many gated hops a `redirect: "follow"` request may take after the first. */
 export const MAX_REDIRECT_HOPS = 5;
+export const CREDENTIAL_HEADERS = [
+  "authorization", "proxy-authorization", "cookie", "api-key", "x-api-key",
+  "ocp-apim-subscription-key",
+] as const;
 
 export interface HostFetchHopOptions {
   /** The plugin whose manifest governs every hop. */
@@ -307,6 +311,12 @@ export interface HostFetchHopOptions {
    *     vault scopes to the new origin.
    */
   injectSessionCookie?: (url: URL) => Promise<string>;
+  credentialUse?: {
+    signal: AbortSignal;
+    assertLive(stage: "before-send" | "redirect" | "after-await"): void;
+    headersFor(url: URL, hop: number): Headers;
+    finish(): void;
+  };
   /** Audit sink for an allowed hop (hop >= 1; the caller logged hop 0). */
   auditHop?: (line: string) => void;
   /** Audit sink for a denied hop — same shape the caller uses for hop 0. */
@@ -359,6 +369,7 @@ export async function runHostFetchHops(options: HostFetchHopOptions): Promise<Re
     resolveLoopbackOnly,
     resolvePrivateOnly,
     injectSessionCookie,
+    credentialUse,
   } = options;
   const requestedPolicy = init.redirect;
   const policy: "error" | "manual" | "follow" =
@@ -379,8 +390,32 @@ export async function runHostFetchHops(options: HostFetchHopOptions): Promise<Re
     if (header.length > 0) headers.set("cookie", header);
     else headers.delete("cookie");
   };
+  const finishResponse = (response: Response): Response => {
+    if (!credentialUse) return response;
+    if (!response.body) { credentialUse.finish(); return response; }
+    const reader = response.body.getReader();
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        try {
+          credentialUse.assertLive("after-await");
+          const next = await reader.read();
+          credentialUse.assertLive("after-await");
+          if (next.done) { credentialUse.finish(); controller.close(); }
+          else controller.enqueue(next.value);
+        } catch (error) {
+          credentialUse.finish();
+          controller.error(error);
+        }
+      },
+      async cancel(reason) { credentialUse.finish(); await reader.cancel(reason); },
+    });
+    return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+  };
+  try {
   await applyInjectedCookie(url);
   for (let hop = 0; ; hop++) {
+    credentialUse?.assertLive(hop === 0 ? "after-await" : "redirect");
+    for (const [key, value] of credentialUse?.headersFor(url, hop) ?? []) headers.set(key, value);
     // Every hop gets its own deadline to PRODUCE HEADERS. A plugin may pass a
     // signal of its own and most do not, which used to mean no deadline at
     // all — a server that accepts the connection and never answers held the
@@ -398,9 +433,11 @@ export async function runHostFetchHops(options: HostFetchHopOptions): Promise<Re
         method,
         // The plugin's own signal still cancels; the ceiling only adds an
         // upper bound it cannot raise.
-        signal: init.signal
-          ? AbortSignal.any([init.signal, hopDeadline.signal])
-          : hopDeadline.signal,
+        signal: AbortSignal.any([
+          hopDeadline.signal,
+          ...(init.signal ? [init.signal] : []),
+          ...(credentialUse ? [credentialUse.signal] : []),
+        ]),
         // The transport ignores this by contract; pinned so a call site reads
         // true and a future fetch-shaped transport fails toward NOT following.
         redirect: "manual",
@@ -408,10 +445,11 @@ export async function runHostFetchHops(options: HostFetchHopOptions): Promise<Re
     } finally {
       clearTimeout(hopTimer);
     }
-    if (!REDIRECT_STATUSES.has(response.status)) return response;
+    credentialUse?.assertLive("after-await");
+    if (!REDIRECT_STATUSES.has(response.status)) return finishResponse(response);
     const location = response.headers.get("location");
     // A 3xx without a location names nowhere; per fetch it is a final response.
-    if (location === null) return response;
+    if (location === null) return finishResponse(response);
     if (policy === "error") {
       auditDeny?.(
         "redirect-cap",
@@ -422,7 +460,7 @@ export async function runHostFetchHops(options: HostFetchHopOptions): Promise<Re
           + `(init.redirect is "error"; pass "manual" to see the redirect or "follow" for gated hops)`,
       );
     }
-    if (policy === "manual") return response;
+    if (policy === "manual") return finishResponse(response);
     if (hop >= MAX_REDIRECT_HOPS) {
       auditDeny?.("redirect-cap", `redirect cap exceeded after ${MAX_REDIRECT_HOPS} hops at ${url.origin}`);
       throw new Error(
@@ -448,6 +486,7 @@ export async function runHostFetchHops(options: HostFetchHopOptions): Promise<Re
       ...(resolveLoopbackOnly ? { resolveLoopbackOnly } : {}),
       ...(resolvePrivateOnly ? { resolvePrivateOnly } : {}),
     });
+    credentialUse?.assertLive("after-await");
     if (!decision.ok) {
       auditDeny?.(decision.reason, `redirect hop ${hop + 1}: ${decision.detail}`);
       throw new Error(decision.message);
@@ -473,9 +512,8 @@ export async function runHostFetchHops(options: HostFetchHopOptions): Promise<Re
       );
     }
     if (decision.url.origin !== url.origin) {
-      headers.delete("authorization");
-      headers.delete("proxy-authorization");
-      headers.delete("cookie");
+      for (const header of CREDENTIAL_HEADERS) headers.delete(header);
+      headers.delete("anthropic-version");
     }
     url = decision.url;
     // Re-scope the vault's cookies to the NEW hop URL. Placed after the
@@ -483,6 +521,11 @@ export async function runHostFetchHops(options: HostFetchHopOptions): Promise<Re
     // cross-origin hop — whose prior `cookie` was just dropped — receives only
     // what the vault scopes to the new origin (empty ⇒ header stays removed).
     await applyInjectedCookie(url);
+    credentialUse?.assertLive("after-await");
     auditHop?.(`host_fetch ${url.origin} method=${method} effect=${decision.effect} hop=${hop + 1}`);
+  }
+  } catch (error) {
+    credentialUse?.finish();
+    throw error;
   }
 }

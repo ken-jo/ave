@@ -147,6 +147,18 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
         git: { sourceId: "acme", snapshotCommit: SNAPSHOT, versionCommit: VERSION_COMMIT, rung: "archive", rungs: artifact.rungs },
       },
     });
+    if (receipt.ok) expect(receipt.receipt.reviewedAppVersion).toBeUndefined();
+  });
+
+  it("carries an explicit review version into the verified install receipt", async () => {
+    const forPlan = plan();
+    await service.installGitPlugin(forPlan, {
+      stage: async () => staged(forPlan),
+      activatePreparedArtifact: activateAndCommitPreparedPluginForTest,
+      reviewedAppVersion: "0.12.0",
+    });
+    const receipt = await verifyInstallReceipt(cacheRoot, "alpha", join(pluginsDir, "alpha"));
+    expect(receipt).toMatchObject({ ok: true, receipt: { reviewedAppVersion: "0.12.0" } });
   });
 
   it("checks dependencies on the plan's authority before staging anything", async () => {

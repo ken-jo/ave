@@ -26,7 +26,7 @@ export const createPlugin = async (context) => {
         return {
           folders,
           driveRoot,
-          lease: { ok: held.lease.ok, vendor: held.lease.vendor, bearer: held.lease.bearer() },
+          lease: { ok: held.lease.ok, vendor: held.lease.vendor, leaseId: held.lease.leaseId },
           worker: { socketPath: held.worker.socketPath, pid: held.worker.pid },
         };
       },

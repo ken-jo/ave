@@ -65,6 +65,8 @@ export type ResolveApiKeyResult =
   | {
       ok: true;
       vendor: string;
+      keyName: string;
+      source: "host-secret" | "plugin-own";
       bearer: () => string;
       baseUrl?: string;
       release: () => void;
@@ -83,6 +85,7 @@ export type ResolveApiKeyResult =
 export interface ResolveApiKeyRequest {
   purpose: ResolveApiKeyPurpose;
   vendor?: ResolveApiKeyVendor;
+  exposure?: "lease" | "raw";
   signal?: AbortSignal;
 }
 
@@ -125,7 +128,7 @@ const VENDOR_ALIAS_MAP: Record<string, string> = {
   vertex: "vertex-ai",
 };
 
-function normalizeVendor(v: string): string {
+export function normalizeVendor(v: string): string {
   return VENDOR_ALIAS_MAP[v] ?? v;
 }
 
@@ -156,6 +159,8 @@ function audit(deps: ResolveApiKeyDeps, level: "info" | "warn", message: string)
  */
 function makeSuccess(
   vendor: string,
+  keyName: string,
+  source: "host-secret" | "plugin-own",
   value: string,
   signal?: AbortSignal,
   baseUrl?: string,
@@ -177,6 +182,8 @@ function makeSuccess(
   const result: ResolveApiKeyResult & { ok: true } = {
     ok: true,
     vendor,
+    keyName,
+    source,
     bearer: () => {
       if (captured === null) {
         throw new Error("released");
@@ -282,11 +289,12 @@ export async function resolveApiKey(
       `resolveApiKey allow source=plugin-namespace vendor=${vendor} purpose=${request.purpose}`,
     );
     incrementHostSecretCounter("hostSecret_read", deps.pluginId, keyPrefix);
-    return makeSuccess(vendor, ownValue, mergedSignal);
+    return makeSuccess(vendor, ownNamespaceKey, "plugin-own", ownValue, mergedSignal);
   }
 
   const gateOutcome = await runSecretGate({
     pluginId: deps.pluginId,
+    operation: "lease",
     key: llmKey,
     allowlist: deps.manifest.hostSecrets?.read ?? [],
     manifestSha256: deps.manifestSha256,
@@ -333,7 +341,26 @@ export async function resolveApiKey(
     };
     baseUrl = llmSettings?.vendors?.["azure-foundry"]?.baseUrl;
   }
-  return makeSuccess(vendor, value, mergedSignal, baseUrl);
+  return makeSuccess(vendor, llmKey, "host-secret", value, mergedSignal, baseUrl);
+}
+
+/** Resolve the two possible key identities before issuance crosses an await. */
+export function apiKeyIdentities(
+  request: ResolveApiKeyRequest,
+  pluginId: string,
+  settingsService: Pick<SettingsService, "get">,
+): readonly string[] {
+  const llm = settingsService.get("llm");
+  const active = typeof llm.provider === "string" ? llm.provider : "";
+  const requested = request.vendor ?? active;
+  const vendor = normalizeVendor(requested);
+  return [
+    `plugin.${pluginId}.llm.apiKey.${vendor}`,
+    hostSecretKeyForVendor(vendor, {
+      llmProvider: active,
+      marketplaceProviderPresetId: llm.marketplaceProviderPresetId,
+    }),
+  ];
 }
 
 /**

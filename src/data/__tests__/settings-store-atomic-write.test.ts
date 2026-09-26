@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { SettingsService, settingsFilePath } from "../settings-store.js";
+import { CredentialLeaseRegistry } from "../../plugins/secret-access/credential-lease-registry.js";
 
 let root: string;
 let service: SettingsService;
@@ -16,6 +17,52 @@ beforeEach(async () => {
 afterEach(async () => cleanupTmpDir(root));
 
 describe("settings persistence", () => {
+  it.each(["rollback", "commit"] as const)("fences leases across a visible endpoint change and %s", async (outcome) => {
+    const key = "llm.apiKey.openai";
+    const registry = new CredentialLeaseRegistry(service);
+    const incarnation = {};
+    const permission = new AbortController();
+    const issue = () => {
+      const reservation = registry.reserve("fixture", incarnation, [key], permission.signal, "lease");
+      if (!reservation) throw new Error("reservation missing");
+      const result = registry.register(reservation, {
+        key, vendor: "openai", secret: "synthetic-secret", scheme: "bearer",
+        audience: () => true, permissionSignal: permission.signal,
+      });
+      if (!result || result.exposure !== "lease") throw new Error("lease missing");
+      return result;
+    };
+    await service.patch({ llm: { vendors: { openai: { baseUrl: "https://a.example.test" } } } });
+    const before = issue();
+    const closedBefore = vi.fn();
+    before.onClosed(closedBefore);
+    const save = vi.spyOn(service as unknown as { saveSettings(settings: unknown): Promise<void> }, "saveSettings");
+    const realSave = (settings: unknown) => (SettingsService.prototype as unknown as { saveSettings(settings: unknown): Promise<void> }).saveSettings.call(service, settings);
+    let settle!: () => void;
+    save.mockImplementationOnce((settings) => new Promise<void>((resolve, reject) => {
+      settle = () => {
+        if (outcome === "rollback") reject(new Error("disk full"));
+        else void realSave(settings).then(resolve, reject);
+      };
+    }));
+    const writing = service.patch({ llm: { vendors: { openai: { baseUrl: "https://b.example.test" } } } });
+    expect(service.get("llm").vendors.openai?.baseUrl).toBe("https://b.example.test");
+    expect(closedBefore).toHaveBeenCalledWith("revoked");
+    const during = issue();
+    const closedDuring = vi.fn();
+    during.onClosed(closedDuring);
+    settle();
+    if (outcome === "rollback") {
+      await expect(writing).rejects.toThrow("disk full");
+      expect(service.get("llm").vendors.openai?.baseUrl).toBe("https://a.example.test");
+      expect(closedDuring).toHaveBeenCalledWith("revoked");
+      expect(() => registry.beginUse(during.leaseId, "fixture", incarnation)).toThrowError(expect.objectContaining({ code: "lease-unavailable" }));
+    } else {
+      await writing;
+      expect(closedDuring).not.toHaveBeenCalled();
+      expect(registry.beginUse(during.leaseId, "fixture", incarnation).headersFor(new URL("https://b.example.test"), 0).get("authorization")).toBe("Bearer synthetic-secret");
+    }
+  });
   it("lets an existing reader finish the previous complete settings while publishing the next version", async () => {
     const path = settingsFilePath(root);
     const before = readFileSync(path, "utf8");

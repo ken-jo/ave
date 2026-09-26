@@ -1268,6 +1268,47 @@ export interface SpawnedPluginWorker {
  * Host API — 플러그인이 호스트 서비스에 접근하는 인터페이스.
  * 플러그인 제거 시 해당 플러그인이 등록한 모든 것이 자동 정리된다.
  */
+export interface ResolveApiKeyOptions {
+  purpose: "llm" | "stt" | "embedding" | "vision";
+  vendor?: "openai" | "azure-openai" | "vertex" | "anthropic";
+  exposure?: "lease" | "raw";
+  signal?: AbortSignal;
+}
+
+export interface ApiKeyLease {
+  readonly exposure: "lease";
+  readonly leaseId: string;
+  readonly vendor: string;
+  readonly baseUrl?: string;
+  release(): Promise<void>;
+  onClosed(listener: (reason: "revoked" | "peer-gone") => void): () => void;
+}
+
+export interface ApiKeyRaw {
+  readonly exposure: "raw";
+  readonly vendor: string;
+  readonly baseUrl?: string;
+  readonly key: string;
+  release(): Promise<void>;
+}
+
+export type ResolveApiKeyDenied = {
+  ok: false;
+  reason: "no-host-vendor" | "vendor-mismatch" | "not-whitelisted"
+    | "user-mode-plugin" | "aborted" | "user-endpoint-with-host-key"
+    | "raw-exposure-denied" | "audience-not-allowlisted" | "vendor-unsupported"
+    | "endpoint-unavailable" | "stale-authorization" | "lease-limit";
+};
+
+export type ResolveApiKeyResult =
+  | ({ ok: true } & ApiKeyLease)
+  | ({ ok: true } & ApiKeyRaw)
+  | ResolveApiKeyDenied;
+
+export interface HostFetchInit extends RequestInit {
+  auth?: { lease: string };
+}
+
 export interface PluginHostApi {
   /**
    * Sandboxed filesystem API scoped to this plugin's `pluginDataDir`. Plugins
@@ -1358,29 +1399,7 @@ export interface PluginHostApi {
    * gate and returns the `ResolveApiKeyResult` discriminated union. Callers
    * receive the same `ok: true | false` discriminator across supported releases.
    */
-  resolveApiKey?(opts: {
-    purpose: "llm" | "stt" | "embedding" | "vision";
-    vendor?: "openai" | "azure-openai" | "vertex" | "anthropic";
-    signal?: AbortSignal;
-  }): Promise<
-    | {
-        ok: true;
-        vendor: string;
-        bearer: () => string;
-        baseUrl?: string;
-        release: () => void;
-      }
-    | {
-        ok: false;
-        reason:
-          | "no-host-vendor"
-          | "vendor-mismatch"
-          | "not-whitelisted"
-          | "user-mode-plugin"
-          | "aborted"
-          | "user-endpoint-with-host-key";
-      }
-  >;
+  resolveApiKey?(opts: ResolveApiKeyOptions): Promise<ResolveApiKeyResult>;
 
   // ─── LLM 접근 (선제성 기능용) ────────────────────────────────────────
   /**
@@ -1410,7 +1429,7 @@ export interface PluginHostApi {
    * (`typeof hostApi.hostFetch === "function"`) and fail closed when absent;
    * do not replace this chokepoint with bare plugin fetch.
    */
-  hostFetch?(input: string | URL, init?: RequestInit): Promise<Response>;
+  hostFetch?(input: string | URL, init?: HostFetchInit): Promise<Response>;
 
   /**
    * Structured log event routed through AuditLogger.

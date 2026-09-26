@@ -1,0 +1,39 @@
+{
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "ave/host/hostFetch",
+    "params": {
+      "init": {
+        "body": {
+          "data": "ping",
+          "encoding": "utf8"
+        },
+        "headers": [
+          [
+            "content-type",
+            "text/plain"
+          ]
+        ],
+        "method": "POST"
+      },
+      "input": "https://api.example.com/ping"
+    }
+  },
+  "response": {
+    "error": {
+      "code": -32000,
+      "data": {
+        "code": "lease-unavailable",
+        "detail": {
+          "stage": "before-send"
+        },
+        "name": "CredentialLeaseError"
+      },
+      "message": "Credential lease is unavailable."
+    },
+    "id": 1,
+    "jsonrpc": "2.0"
+  },
+  "trigger": "a lease that is no longer live"
+}

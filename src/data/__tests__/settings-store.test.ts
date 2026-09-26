@@ -17,6 +17,7 @@ vi.mock("electron", () => ({
 }));
 
 import { SettingsService, type SystemSettings } from "../settings-store.js";
+import { CredentialLeaseRegistry } from "../../plugins/secret-access/credential-lease-registry.js";
 import { DEFAULT_SETTINGS } from "../settings-defaults.js";
 import {
   LOG_RETENTION_DAYS,
@@ -824,6 +825,18 @@ describe("SettingsService marketplace defaults", () => {
     const key = marketplaceProviderPresetSecretKey("future-router");
     await service.installMarketplaceProviderPreset(preset);
     await service.setSecret(key, "entered-for-future");
+    const registry = new CredentialLeaseRegistry(service);
+    const incarnation = {};
+    const permission = new AbortController();
+    const previous = registry.reserve("fixture", incarnation, [key], permission.signal, "lease");
+    if (!previous) throw new Error("reservation missing");
+    const lease = registry.register(previous, {
+      key, vendor: "openai-compatible", secret: "entered-for-future", scheme: "bearer",
+      audience: () => true, permissionSignal: permission.signal,
+    });
+    if (!lease || lease.exposure !== "lease") throw new Error("lease missing");
+    const closed = vi.fn();
+    lease.onClosed(closed);
     const secrets = (service as unknown as { secretStore: { set(key: string, value: string): Promise<void> } }).secretStore;
     // The entry's write fails only after the move's deletion has run.
     vi.spyOn(secrets, "set").mockImplementationOnce(
@@ -832,10 +845,12 @@ describe("SettingsService marketplace defaults", () => {
     type Internals = { saveSettings(settings: unknown): Promise<void> };
     const realSave = (settings: unknown) => (SettingsService.prototype as unknown as Internals).saveSettings.call(service, settings);
     let entry: Promise<void> | undefined;
+    let issuing: ReturnType<typeof registry.reserve> | undefined;
     vi.spyOn(service as unknown as Internals, "saveSettings").mockImplementationOnce(async (settings) => {
       // The entry for the new address starts during the move, then fails.
       entry = service.setSecret(key, "entered-for-elsewhere");
       entry.catch(() => undefined);
+      issuing = registry.reserve("fixture", incarnation, [key], permission.signal, "lease");
       await realSave(settings);
     });
 
@@ -844,6 +859,12 @@ describe("SettingsService marketplace defaults", () => {
 
     // The key kept for the entry is the old address's: it is not handed out.
     expect(service.getSecret(key)).toBeNull();
+    expect(closed).toHaveBeenCalledWith("revoked");
+    if (!issuing) throw new Error("issuing reservation missing");
+    expect(registry.register(issuing, {
+      key, vendor: "openai-compatible", secret: "entered-for-elsewhere", scheme: "bearer",
+      audience: () => true, permissionSignal: permission.signal,
+    })).toBeNull();
   });
 
   it("deletes a key entered next to an earlier address when a later move lands", async () => {

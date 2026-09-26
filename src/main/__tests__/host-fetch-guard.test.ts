@@ -513,6 +513,65 @@ describe("runHostFetchHops — hop deadline", () => {
 });
 
 describe("runHostFetchHops — redirect policy", () => {
+  it("checks the lease audience again on a followed redirect before a second send", async () => {
+    publicDns();
+    const { transport, calls } = scriptedTransport([redirect(302, "https://sso.example.com/next")]);
+    const { options } = hopOptions(await firstAllow("https://api.example.com/a"), { redirect: "follow" }, transport);
+    const use = {
+      signal: new AbortController().signal,
+      assertLive: vi.fn(),
+      headersFor: (url: URL, hop: number) => {
+        if (url.origin !== "https://api.example.com") {
+          throw Object.assign(new Error("Credential lease audience denied this URL."), {
+            code: "lease-audience-denied", detail: { hop },
+          });
+        }
+        return new Headers({ authorization: "Bearer synthetic-secret" });
+      },
+      finish: vi.fn(),
+    };
+    await expect(runHostFetchHops({ ...options, credentialUse: use })).rejects.toMatchObject({
+      code: "lease-audience-denied", detail: { hop: 1 },
+    });
+    expect(calls).toHaveLength(1);
+    expect(use.finish).toHaveBeenCalledOnce();
+  });
+
+  it("rechecks a lease after the asynchronous cookie lookup and before transport", async () => {
+    publicDns();
+    const { transport, calls } = scriptedTransport([new Response("unused")]);
+    const { options } = hopOptions(await firstAllow("https://api.example.com/a"), {}, transport);
+    let live = true;
+    const use = {
+      signal: new AbortController().signal,
+      assertLive: () => { if (!live) throw Object.assign(new Error("closed"), { code: "lease-unavailable" }); },
+      headersFor: () => new Headers({ authorization: "Bearer synthetic-secret" }),
+      finish: vi.fn(),
+    };
+    await expect(runHostFetchHops({
+      ...options, credentialUse: use,
+      injectSessionCookie: async () => { live = false; return "sid=synthetic"; },
+    })).rejects.toMatchObject({ code: "lease-unavailable" });
+    expect(calls).toHaveLength(0);
+    expect(use.finish).toHaveBeenCalledOnce();
+  });
+
+  it("drops a response body when the lease closes before it is drained", async () => {
+    publicDns();
+    const { transport } = scriptedTransport([new Response("body")]);
+    const { options } = hopOptions(await firstAllow("https://api.example.com/a"), {}, transport);
+    let live = true;
+    const use = {
+      signal: new AbortController().signal,
+      assertLive: () => { if (!live) throw Object.assign(new Error("closed"), { code: "lease-unavailable" }); },
+      headersFor: () => new Headers({ authorization: "Bearer synthetic-secret" }),
+      finish: vi.fn(),
+    };
+    const response = await runHostFetchHops({ ...options, credentialUse: use });
+    live = false;
+    await expect(response.text()).rejects.toMatchObject({ code: "lease-unavailable" });
+    expect(use.finish).toHaveBeenCalledOnce();
+  });
   it("default (no redirect field) refuses a redirect, after one hop only", async () => {
     publicDns();
     const { transport, calls } = scriptedTransport([redirect(302, "https://api.example.com/next")]);
@@ -678,7 +737,7 @@ describe("runHostFetchHops — method, body, and credentials across a followed h
       await firstAllow("https://api.example.com/a"),
       {
         redirect: "follow",
-        headers: { authorization: "Bearer t", cookie: "sid=1", "x-app": "keep" },
+        headers: { authorization: "Bearer t", cookie: "sid=1", "api-key": "secret-a", "x-api-key": "secret-b", "ocp-apim-subscription-key": "secret-c", "x-app": "keep" },
       },
       crossOrigin.transport,
     );
@@ -686,6 +745,9 @@ describe("runHostFetchHops — method, body, and credentials across a followed h
     expect(crossOrigin.calls[0]!.headers.authorization).toBe("Bearer t");
     expect(crossOrigin.calls[1]!.headers.authorization).toBeUndefined();
     expect(crossOrigin.calls[1]!.headers.cookie).toBeUndefined();
+    expect(crossOrigin.calls[1]!.headers["api-key"]).toBeUndefined();
+    expect(crossOrigin.calls[1]!.headers["x-api-key"]).toBeUndefined();
+    expect(crossOrigin.calls[1]!.headers["ocp-apim-subscription-key"]).toBeUndefined();
     expect(crossOrigin.calls[1]!.headers["x-app"]).toBe("keep");
 
     const sameOrigin = scriptedTransport([

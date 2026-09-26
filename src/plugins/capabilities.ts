@@ -40,6 +40,7 @@ const KNOWN_CAPABILITY_IDS = [
   // triggerConversation() routes to OverlayContext staging instead of spawning
   // a fresh ConversationLoop. Capability gates the same method (trigger-gate.ts).
   "host:overlay",
+  "secrets:raw-api-key",
 ] as const;
 
 /** Compile-time union of every valid capability id (typo-safety for gates). */
@@ -61,6 +62,7 @@ export const KNOWN_CAPABILITIES: ReadonlySet<string> = new Set(KNOWN_CAPABILITY_
  */
 export const CAPABILITY_EXTERNAL_AUTH_CONSUMER: CapabilityId = "external-auth-consumer";
 export const CAPABILITY_HOST_OVERLAY: CapabilityId = "host:overlay";
+export const CAPABILITY_RAW_API_KEY: CapabilityId = "secrets:raw-api-key";
 
 /**
  * Map of gated event-namespace prefix → the internal effect LABEL for emitting

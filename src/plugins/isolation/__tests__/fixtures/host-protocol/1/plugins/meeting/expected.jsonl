@@ -3,26 +3,26 @@
 {"frame":{"jsonrpc":"2.0","method":"notifications/ave/preferences/snapshot","params":{"keys":["webView.preferredFlow"],"values":{"webView.preferredFlow":"system"}}},"from":"host"}
 {"frame":{"id":"<uuid-2>","jsonrpc":"2.0","method":"tools/call","params":{"arguments":{},"name":"exercise_host"}},"from":"host"}
 {"frame":{"id":1,"jsonrpc":"2.0","method":"ave/host/resolveApiKey","params":{"opts":{"purpose":"stt"}}},"from":"child"}
-{"frame":{"id":1,"jsonrpc":"2.0","result":{"baseUrl":"https://api.example.com/v1","handleId":"<uuid-3>","key":"sk-golden-bearer","ok":true,"vendor":"openai"}},"from":"host"}
+{"frame":{"id":1,"jsonrpc":"2.0","result":{"baseUrl":"https://api.example.com/v1","exposure":"lease","handleId":"lease_golden","ok":true,"vendor":"openai"}},"from":"host"}
 {"frame":{"id":2,"jsonrpc":"2.0","method":"ave/host/attachFloatingPanel","params":{"request":{"extensionId":"meeting-recorder","height":240}}},"from":"child"}
-{"frame":{"id":2,"jsonrpc":"2.0","result":{"handleId":"<uuid-4>","height":240,"panelId":"panel-1"}},"from":"host"}
+{"frame":{"id":2,"jsonrpc":"2.0","result":{"handleId":"<uuid-3>","height":240,"panelId":"panel-1"}},"from":"host"}
 {"frame":{"id":3,"jsonrpc":"2.0","method":"ave/host/startAudioCapture","params":{"request":{"frameMs":200,"microphone":true,"sampleRate":16000,"systemAudio":false}}},"from":"child"}
-{"frame":{"id":3,"jsonrpc":"2.0","result":{"captureId":"capture-1","handleId":"<uuid-5>","opened":{"microphone":true,"systemAudio":false}}},"from":"host"}
+{"frame":{"id":3,"jsonrpc":"2.0","result":{"captureId":"capture-1","handleId":"<uuid-4>","opened":{"microphone":true,"systemAudio":false}}},"from":"host"}
 {"frame":{"id":4,"jsonrpc":"2.0","method":"ave/host/spawnWorker","params":{"spec":{"args":["-version"],"command":"/usr/local/bin/ffmpeg","workerId":"ffmpeg"}}},"from":"child"}
-{"frame":{"id":4,"jsonrpc":"2.0","result":{"handleId":"<uuid-6>","pid":4242,"socketPath":"/run/ffmpeg.sock"}},"from":"host"}
+{"frame":{"id":4,"jsonrpc":"2.0","result":{"handleId":"<uuid-5>","pid":4242,"socketPath":"/run/ffmpeg.sock"}},"from":"host"}
 {"frame":{"id":5,"jsonrpc":"2.0","method":"ave/host/callLlm","params":{"options":{"maxTokens":256,"systemPrompt":"You write meeting notes."},"prompt":"summarise the meeting"}},"from":"child"}
 {"frame":{"id":5,"jsonrpc":"2.0","result":"the host answered"},"from":"host"}
 {"frame":{"id":"<uuid-2>","jsonrpc":"2.0","result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Ave Meeting","version":"0.8.5"},"ave/rawResult":{"capture":{"captureId":"capture-1","opened":{"microphone":true,"systemAudio":false}},"lease":{"ok":true,"vendor":"openai"},"panel":{"height":240,"panelId":"panel-1"},"summary":"the host answered"}},"content":[{"text":"{\"lease\":{\"ok\":true,\"vendor\":\"openai\"},\"panel\":{\"panelId\":\"panel-1\",\"height\":240},\"capture\":{\"captureId\":\"capture-1\",\"opened\":{\"microphone\":true,\"systemAudio\":false}},\"summary\":\"the host answered\"}","type":"text"}],"resultType":"complete"}},"from":"child"}
 {"frame":{"jsonrpc":"2.0","method":"notifications/ave/installedPlugins/snapshot","params":{"pluginIds":["orion-api","local-indexer","meeting","lyra-mail","vega-helper"]}},"from":"host"}
-{"frame":{"jsonrpc":"2.0","method":"notifications/ave/subscription","params":{"payload":{"kind":"detached","reason":"host-closed"},"subscriptionId":"<uuid-4>"}},"from":"host"}
+{"frame":{"jsonrpc":"2.0","method":"notifications/ave/subscription","params":{"payload":{"kind":"detached","reason":"host-closed"},"subscriptionId":"<uuid-3>"}},"from":"host"}
+{"frame":{"jsonrpc":"2.0","method":"notifications/ave/subscription/closed","params":{"reason":"revoked","subscriptionId":"<uuid-3>"}},"from":"host"}
+{"frame":{"jsonrpc":"2.0","method":"notifications/ave/subscription","params":{"payload":{"kind":"frame","pcm":"AACA/w==","peak":0.5,"seq":0},"subscriptionId":"<uuid-4>"}},"from":"host"}
+{"frame":{"jsonrpc":"2.0","method":"notifications/ave/subscription","params":{"payload":{"kind":"end","reason":"stopped"},"subscriptionId":"<uuid-4>"}},"from":"host"}
 {"frame":{"jsonrpc":"2.0","method":"notifications/ave/subscription/closed","params":{"reason":"revoked","subscriptionId":"<uuid-4>"}},"from":"host"}
-{"frame":{"jsonrpc":"2.0","method":"notifications/ave/subscription","params":{"payload":{"kind":"frame","pcm":"AACA/w==","peak":0.5,"seq":0},"subscriptionId":"<uuid-5>"}},"from":"host"}
-{"frame":{"jsonrpc":"2.0","method":"notifications/ave/subscription","params":{"payload":{"kind":"end","reason":"stopped"},"subscriptionId":"<uuid-5>"}},"from":"host"}
+{"frame":{"jsonrpc":"2.0","method":"notifications/ave/subscription","params":{"payload":{"chunk":"ffmpeg ready\n","kind":"stdout"},"subscriptionId":"<uuid-5>"}},"from":"host"}
+{"frame":{"jsonrpc":"2.0","method":"notifications/ave/subscription","params":{"payload":{"chunk":"ffmpeg warming up\n","kind":"stderr"},"subscriptionId":"<uuid-5>"}},"from":"host"}
+{"frame":{"jsonrpc":"2.0","method":"notifications/ave/subscription","params":{"payload":{"code":0,"kind":"exit","signal":null},"subscriptionId":"<uuid-5>"}},"from":"host"}
 {"frame":{"jsonrpc":"2.0","method":"notifications/ave/subscription/closed","params":{"reason":"revoked","subscriptionId":"<uuid-5>"}},"from":"host"}
-{"frame":{"jsonrpc":"2.0","method":"notifications/ave/subscription","params":{"payload":{"chunk":"ffmpeg ready\n","kind":"stdout"},"subscriptionId":"<uuid-6>"}},"from":"host"}
-{"frame":{"jsonrpc":"2.0","method":"notifications/ave/subscription","params":{"payload":{"chunk":"ffmpeg warming up\n","kind":"stderr"},"subscriptionId":"<uuid-6>"}},"from":"host"}
-{"frame":{"jsonrpc":"2.0","method":"notifications/ave/subscription","params":{"payload":{"code":0,"kind":"exit","signal":null},"subscriptionId":"<uuid-6>"}},"from":"host"}
-{"frame":{"jsonrpc":"2.0","method":"notifications/ave/subscription/closed","params":{"reason":"revoked","subscriptionId":"<uuid-6>"}},"from":"host"}
-{"frame":{"id":"<uuid-7>","jsonrpc":"2.0","method":"tools/call","params":{"arguments":{},"name":"report_host"}},"from":"host"}
-{"frame":{"jsonrpc":"2.0","method":"notifications/ave/subscription/release","params":{"subscriptionId":"<uuid-3>"}},"from":"child"}
-{"frame":{"id":"<uuid-7>","jsonrpc":"2.0","result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Ave Meeting","version":"0.8.5"},"ave/rawResult":{"detached":["host-closed"],"ends":[{"reason":"stopped"}],"ffmpeg":["ffmpeg ready\n"],"frames":[{"pcm":[0,0,128,255],"peak":0.5,"seq":0}]}},"content":[{"text":"{\"frames\":[{\"seq\":0,\"peak\":0.5,\"pcm\":[0,0,128,255]}],\"ends\":[{\"reason\":\"stopped\"}],\"detached\":[\"host-closed\"],\"ffmpeg\":[\"ffmpeg ready\\n\"]}","type":"text"}],"resultType":"complete"}},"from":"child"}
+{"frame":{"id":"<uuid-6>","jsonrpc":"2.0","method":"tools/call","params":{"arguments":{},"name":"report_host"}},"from":"host"}
+{"frame":{"jsonrpc":"2.0","method":"notifications/ave/subscription/release","params":{"subscriptionId":"lease_golden"}},"from":"child"}
+{"frame":{"id":"<uuid-6>","jsonrpc":"2.0","result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"Ave Meeting","version":"0.8.5"},"ave/rawResult":{"detached":["host-closed"],"ends":[{"reason":"stopped"}],"ffmpeg":["ffmpeg ready\n"],"frames":[{"pcm":[0,0,128,255],"peak":0.5,"seq":0}]}},"content":[{"text":"{\"frames\":[{\"seq\":0,\"peak\":0.5,\"pcm\":[0,0,128,255]}],\"ends\":[{\"reason\":\"stopped\"}],\"detached\":[\"host-closed\"],\"ffmpeg\":[\"ffmpeg ready\\n\"]}","type":"text"}],"resultType":"complete"}},"from":"child"}

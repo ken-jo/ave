@@ -463,6 +463,43 @@ describe("hostFetch carries bytes a text codec would corrupt", () => {
     ).toBe('{"a":1}');
   });
 
+  it("serializes FormData within the complete 16 MiB body budget", async () => {
+    const hostFetch = vi.fn(async () => new Response(null, { status: 204 }));
+    const harness = await createServiceHarness({ hostFetch });
+    const form = new FormData();
+    form.append("model", "sample-model");
+    form.append("file", new File([new Uint8Array([0, 255, 1])], "voice.wav", { type: "audio/wav" }));
+    await harness.child.hostApi.hostFetch!("https://example.test/upload", { method: "POST", body: form });
+    const wire = wireArg<WireRequestInit>(harness, "hostFetch", 1);
+    const contentType = new Headers(wire.headers?.map(([key, value]) => [key, value])).get("content-type");
+    expect(contentType).toMatch(/^multipart\/form-data; boundary=ave-/);
+    const [, init] = hostFetch.mock.calls[0] as unknown as [string, RequestInit];
+    const body = init.body as Uint8Array;
+    expect(Buffer.from(body).includes(Buffer.from([0, 255, 1]))).toBe(true);
+    expect(Buffer.from(body).toString("latin1")).toContain('filename="voice.wav"');
+    expect(Buffer.from(body).toString("latin1")).toContain("Content-Type: audio/wav");
+  });
+
+  it("refuses an oversized multipart body before dispatch", async () => {
+    const hostFetch = vi.fn(async () => new Response(null));
+    const harness = await createServiceHarness({ hostFetch });
+    const form = new FormData();
+    form.append("file", new File([new Uint8Array(16 * 1024 * 1024)], "large.bin"));
+    await expect(harness.child.hostApi.hostFetch!("https://example.test/upload", { body: form }))
+      .rejects.toMatchObject({ code: "payload-too-large" });
+    expect(hostFetch).not.toHaveBeenCalled();
+  });
+
+  it("forwards only a validated auth selector to the host", async () => {
+    const hostFetch = vi.fn(async () => new Response(null));
+    const harness = await createServiceHarness({ hostFetch });
+    await harness.child.hostApi.hostFetch!("https://example.test/a", { auth: { lease: "lease_test" } });
+    expect(wireArg<WireRequestInit>(harness, "hostFetch", 1).auth).toEqual({ lease: "lease_test" });
+    expect((hostFetch.mock.calls[0] as unknown as [string, { auth: unknown }])[1].auth).toEqual({ lease: "lease_test" });
+    await expect(harness.child.hostApi.hostFetch!("https://example.test/a", { auth: { lease: 1 } } as never))
+      .rejects.toMatchObject({ code: "credential-conflict" });
+  });
+
   it("refuses a stream body instead of quietly buffering it", async () => {
     const harness = await createServiceHarness({
       hostFetch: async () => new Response(new Uint8Array(0)),
@@ -677,15 +714,17 @@ describe("callLlm carries plain data, and a signal cancels the request", () => {
   });
 });
 
-describe("resolveApiKey crosses as a lease, not as two closures", () => {
-  it("synthesises bearer() and release() around the host's lease", async () => {
-    const release = vi.fn();
+describe("resolveApiKey crosses as an opaque lease", () => {
+  it("releases the same host registration without sending key bytes", async () => {
+    const release = vi.fn(async () => {});
     const harness = await createServiceHarness({
       resolveApiKey: async () => ({
         ok: true,
         vendor: "openai",
         baseUrl: "https://api.example.test",
-        bearer: () => "sk-live",
+        exposure: "lease" as const,
+        leaseId: "lease_test",
+        onClosed: () => () => {},
         release,
       }),
     });
@@ -694,17 +733,39 @@ describe("resolveApiKey crosses as a lease, not as two closures", () => {
     if (!result.ok) return;
     expect(result.vendor).toBe("openai");
     expect(result.baseUrl).toBe("https://api.example.test");
-    expect(result.bearer()).toBe("sk-live");
+    expect(result.exposure).toBe("lease");
+    if (result.exposure !== "lease") return;
+    expect(result.leaseId).toBe("lease_test");
     expect(harness.host.openSubscriptionCount).toBe(1);
 
-    result.release();
+    await result.release();
     await settle();
     // Both sides let go: the child dropped its copy and the host ran the lease's
     // own `release`, which is the two-sided lifetime the contract declares.
     expect(release).toHaveBeenCalledTimes(1);
     expect(harness.host.openSubscriptionCount).toBe(0);
     expect(harness.child.openSubscriptionCount).toBe(0);
-    expect(() => result.bearer()).toThrow(/already released/u);
+    expect(JSON.stringify(result)).not.toContain("sk-live");
+  });
+
+  it("copies a reviewed raw result once and releases its registration", async () => {
+    const release = vi.fn(async () => {});
+    const raw = Object.defineProperties({
+      ok: true as const, exposure: "raw" as const, vendor: "openai",
+      key: "synthetic-secret", release,
+    }, {
+      handleId: { value: "raw_test" },
+      onClosed: { value: () => () => {} },
+    });
+    const harness = await createServiceHarness({ resolveApiKey: async () => raw });
+    const result = await harness.child.hostApi.resolveApiKey!({ purpose: "llm", exposure: "raw" });
+    expect(result).toMatchObject({ ok: true, exposure: "raw", key: "synthetic-secret" });
+    expect(harness.host.openSubscriptionCount).toBe(1);
+    if (!result.ok) throw new Error("raw result missing");
+    await result.release();
+    await settle();
+    expect(release).toHaveBeenCalledOnce();
+    expect(harness.host.openSubscriptionCount).toBe(0);
   });
 
   it("carries a denial without opening a lease", async () => {
@@ -717,13 +778,35 @@ describe("resolveApiKey crosses as a lease, not as two closures", () => {
     expect(harness.child.openSubscriptionCount).toBe(0);
   });
 
+  it("orders a closure raised during adoption after the reply and replays it to a late listener", async () => {
+    const release = vi.fn(async () => {});
+    const harness = await createServiceHarness({
+      resolveApiKey: async () => ({
+        ok: true, exposure: "lease" as const, vendor: "openai", leaseId: "lease_closed_during_adoption",
+        onClosed: (listener) => { listener("revoked"); return () => {}; },
+        release,
+      }),
+    });
+    const result = await harness.child.hostApi.resolveApiKey!({ purpose: "llm" });
+    if (!result.ok || result.exposure !== "lease") throw new Error("expected lease");
+    const onClosed = vi.fn();
+    result.onClosed(onClosed);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(onClosed).toHaveBeenCalledExactlyOnceWith("revoked");
+    expect(harness.replies.find((reply) => reply.id !== null)).toBeDefined();
+    expect(harness.host.openSubscriptionCount).toBe(0);
+    expect(release).toHaveBeenCalledOnce();
+  });
+
   it("releases the host lease when the child dies holding it", async () => {
-    const release = vi.fn();
+    const release = vi.fn(async () => {});
     const harness = await createServiceHarness({
       resolveApiKey: async () => ({
         ok: true,
         vendor: "anthropic",
-        bearer: () => "sk-live",
+        exposure: "lease" as const,
+        leaseId: "lease_child_dies",
+        onClosed: () => () => {},
         release,
       }),
     });
@@ -737,13 +820,13 @@ describe("resolveApiKey crosses as a lease, not as two closures", () => {
   });
 
   it("drops the credential when the child dies while the resolve is in flight", async () => {
-    const release = vi.fn();
+    const release = vi.fn(async () => {});
     let admit!: () => void;
     const harness = await createServiceHarness({
       resolveApiKey: () =>
         new Promise((resolve) => {
           admit = () =>
-            resolve({ ok: true, vendor: "openai", bearer: () => "sk-live", release });
+            resolve({ ok: true, vendor: "openai", exposure: "lease", leaseId: "lease_pending", onClosed: () => () => {}, release });
         }),
     });
     const pending = harness.child.hostApi.resolveApiKey!({ purpose: "llm" });
@@ -1031,7 +1114,7 @@ describe("emitEvent keeps its synchronous throw and its host-side authority", ()
     await settle();
     expect(detachedLog(harness)).toMatchObject({
       message: "hostApi.emitEvent failed after returning",
-      meta: { error: "host says no" },
+      meta: { error: "Host request failed." },
     });
   });
 });
@@ -1351,21 +1434,25 @@ describe("a host-side revocation reaches the child", () => {
   });
 });
 
-describe("a revoked key lease stops being spendable in the child", () => {
-  it("drops the child's copy when the host takes the lease back", async () => {
-    const release = vi.fn();
+describe("a revoked key lease closes in the child", () => {
+  it("notifies listeners when the host takes the lease back", async () => {
+    const release = vi.fn(async () => {});
     const harness = await createServiceHarness({
       resolveApiKey: async () => ({
         ok: true as const,
         vendor: "openai" as const,
-        bearer: () => "sk-live-credential",
+        exposure: "lease" as const,
+        leaseId: "lease_revoke",
+        onClosed: () => () => {},
         release,
       }),
     });
     const lease = await harness.child.hostApi.resolveApiKey!({ purpose: "llm" });
     expect(lease.ok).toBe(true);
     if (!lease.ok) return;
-    expect(lease.bearer()).toBe("sk-live-credential");
+    if (lease.exposure !== "lease") return;
+    const onClosed = vi.fn();
+    lease.onClosed(onClosed);
 
     const handleId = handleIdOf(harness, "resolveApiKey");
     harness.child.deliver({
@@ -1379,7 +1466,7 @@ describe("a revoked key lease stops being spendable in the child", () => {
 
     // The credential is a mutable closure variable precisely so this can drop
     // it. Before the sender existed the child held it until the process ended.
-    expect(() => lease.bearer()).toThrow(/lease already released/);
+    expect(onClosed).toHaveBeenCalledWith("revoked");
   });
 });
 
