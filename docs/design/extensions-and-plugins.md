@@ -261,7 +261,9 @@ the same namespace. The complete root contract after this design:
      Studio edits;
    - `resolveRuntimeMcp(static, { generationRoot, dataDir, activation })`: the
      **runtime resolution**, run at preparation only — it anchors package paths and
-     expands data paths through the placeholder adapter of §3.3, then builds what
+     expands data paths through the placeholder adapter of §3.3 under the **MCP
+     launcher policy** (the launcher grammar identifies the executable and the package
+     or image tokens that stay literal), then builds what
      `plugin-mcp-projection.ts` builds today (the `plugin_<hash>` id, the approval, the
      anchored argv, `:112-134`, `:173-190`), with `cwd` added to the parser's allowed
      fields (`:72-76`). Nothing it produces enters a descriptor, a digest or an export;
@@ -732,7 +734,31 @@ works on the whole argv; the invocation is constructed by a placeholder-aware ad
 `resolveBundledArgv`, used for hooks and for the portable MCP `command`/`args`/`env`/
 `cwd` alike (§2.1 item 5, runtime resolution):
 
+The adapter takes an **executable policy** from its caller, and the two callers have
+different ones, because a hook and an MCP server are admitted by different grammars:
+
+- *hook policy*: `command[0]` must be a package path, or `node`/`bun` followed by a
+  package path; every other token is a package path, a data reference or a plain
+  literal as classified below. A hook never names a registry package or an image.
+- *MCP launcher policy*: the launcher grammar of §3.2 (marketplace design §5.2) has
+  already validated the argv before the adapter runs, and it hands the adapter what it
+  found: the executable (`npx`, `uvx`, `docker`, `node`, `bun`, or a `./`-relative
+  package path) and the indexes of the **launcher literals** — the pinned package spec
+  (`example-server@1.2.3`, `@example/server@1.2.3`, `package[extras]==1.2.3`), the
+  image reference (`ghcr.io/example/server:1.2.3`, `example/server@sha256:…`), the
+  pinned option tokens (`-y`, `--from`, `run`, `-i`, `--rm`, `-e NAME`, `--network
+  none`) and `node`/`bun`'s script token. Those indexes are literal by grammar: they
+  are copied through verbatim and are exempt from the path-shape refusal, because a
+  scoped package name and a namespaced image contain `/` and `looksLikePath`
+  (`plugin-bundled-command.ts:7-9`) would otherwise call them paths. Everything after
+  the package or image belongs to the server and is classified below.
+
+Placeholder resolution and indexed anchoring (steps 2–4) are shared; only the
+classification of `command[0]` and of the grammar-identified literals differs.
+
 1. **Classify every token** of the symbolic argv into exactly one class:
+   - *launcher literal* (MCP policy only): a token whose index the launcher grammar
+     identified — copied through verbatim, never anchored, never expanded;
    - *package path*: `${PLUGIN_ROOT}/<p>` or a `./`-relative token — rewritten to
      `./<p>` (the `./` is **kept**, so a root file such as `${PLUGIN_ROOT}/hook.js`
      becomes `./hook.js`, which `looksLikePath` recognizes and the anchoring pass seals
@@ -742,9 +768,10 @@ works on the whole argv; the invocation is constructed by a placeholder-aware ad
      `\`, no NUL; refused otherwise;
    - *literal*: everything else — a flag, a number, a word, a URL. A literal that
      looks like a path (`looksLikePath` true) or still contains `${` is **refused**:
-     a bundled program may name a filesystem path only through the two placeholders.
-   `command[0]` must be a package path, or `node`/`bun` followed by a package path (the
-   list of §3.2); a data reference in `command[0]` is refused (Agent Plugins §9.2).
+     a bundled program may name a filesystem path only through the two placeholders,
+     and a registry package or image only where the launcher grammar admits one.
+   `command[0]` is held to the caller's executable policy; a data reference in
+   `command[0]` is refused under both (Agent Plugins §9.2).
 2. **Anchor package paths only.** `anchorBundledCommand` gains a parameter
    `anchorIndexes: readonly number[]`; the adapter passes the indexes of the package
    tokens and the **package root** as the descriptor directory (the plugin hook
@@ -759,13 +786,29 @@ works on the whole argv; the invocation is constructed by a placeholder-aware ad
 
 The symbolic argv of step 1 (placeholders intact, `./`-relative package paths) is what
 the descriptor authority hashes (§5.2) and what the consent sheet shows; the resolved
-argv of step 3 exists only in the running host. Tests for the adapter: a package script
-with a data-path argument (`node ${PLUGIN_ROOT}/server/hook.js ${PLUGIN_DATA}/state.json`
-resolves, anchors `server/hook.js`, expands the second token); a root-file reference
-(`${PLUGIN_ROOT}/hook.js` → `./hook.js`, sealed and hashed); a literal with spaces
-preserved verbatim; `${PLUGIN_ROOT}/../x`, `${PLUGIN_DATA}/../x`, a bare path literal,
-a `${` left over, and a data symlink that escapes — each refused by name. What the
-program then does is bounded by the confinement above, not by the anchoring.
+argv of step 3 exists only in the running host. Tests for the adapter, one fixture
+file for both policies:
+
+- *hook policy*: a package script with a data-path argument
+  (`node ${PLUGIN_ROOT}/server/hook.js ${PLUGIN_DATA}/state.json` resolves, anchors
+  `server/hook.js`, expands the second token); a root-file reference
+  (`${PLUGIN_ROOT}/hook.js` → `./hook.js`, sealed and hashed); a literal with spaces
+  preserved verbatim; `${PLUGIN_ROOT}/../x`, `${PLUGIN_DATA}/../x`, a bare path
+  literal, a `${` left over, a data symlink that escapes, and `npx example@1.2.3` as a
+  hook — each refused by name;
+- *MCP launcher policy*, each run through the **complete path** from `mcp.json` bytes
+  (parse, §2.1 item 5) to the resolved runtime config: pinned `npx` unscoped
+  (`npx -y example-server@1.2.3 --data ${PLUGIN_DATA}/db`: literals kept, the data
+  token expanded); pinned `npx` scoped (`npx -y @example/server@1.2.3`: the `/` in the
+  package name is not a path); `uvx` (`uvx example-server==1.2.3` and
+  `uvx --from example-server==1.2.3 example-cli`); a namespaced image by tag
+  (`docker run -i --rm ghcr.io/example/server:1.2.3`) and by digest
+  (`docker run -i --rm example/server@sha256:<64 hex>`); a package-local server
+  (`./server/run` with `${PLUGIN_ROOT}/config.json` in `args`, anchored and hashed);
+  and the refusals the grammar keeps: `npx example-server` unpinned, `example/server:latest`,
+  a package spec that is a path or URL, and `${PLUGIN_ROOT}/…` as `command`.
+
+What the program then does is bounded by the confinement above, not by the anchoring.
 
 **Consent and tests.** The consent sheet shows the symbolic argv (step 1 above), the
 event, the matcher, the timeout, and the confinement class the hook will run under on
@@ -1426,7 +1469,7 @@ Every product choice this page raised has been decided by the owner. None remain
 | 23 | No dependency on the Lease wave in either direction; the wave carries the README, template and generator changes, and the kind's schema only in timeline 1 (§6.4, §7) | Extensions are extensions under any protocol version; the wave is the cheapest moment to change wording; no wave step may wait for a tag that does not exist |
 | 24 | Five slices with the gates and lock suites of §7; B in 0.12.0 (owner decision 1); C after the amendment's slice C on one of two stated timelines; D and E in 0.13.0; nothing in v0.11.0; the full validation run happens once, in the pre-push hook | Owner constraint; each slice is coherent at its own boundary; the format-2 reader is written once; the hook owns the full run |
 | 25 | A bundled server's credential is stored in the encrypted secret document store under a stable installed-package key, resolved into the in-memory connect config at preparation, entered through `setBundledApiKey`, kept across updates that keep the declaration, and never routed through `setApiKey`/`saveConfigs` (§3.2) | The existing setter persists plain JSON and needs a persisted config entry; a bundled server has neither, and its runtime id is generation-bound |
-| 26 | Bundled hooks (plugin and extension) run under the MCP stdio confinement class: ASRT-wrapped with a `PLUGIN_DATA`-only write grant and the deny-list read model when the sandbox is on, fail-closed (every blocking event denied, observe-only events pass), plain spawn stated as unconfined when it is off, refused on Windows with the sandbox on; the wrap is one shared helper; the invocation is built by the placeholder-aware adapter `resolveBundledArgv` — classify tokens, anchor package paths only (`./` kept, `anchorIndexes`), expand validated data references afterwards, refuse bare path literals — shared with the portable MCP runtime resolution (§3.3) | The runner has no sandbox branch today and anchoring a path does not confine a program; the anchoring helper examines every path-like token, so a whole-argv pass either rejects data arguments or admits absolute ones; a consent sheet must describe what holds; the two spawn sites must not drift |
+| 26 | Bundled hooks (plugin and extension) run under the MCP stdio confinement class: ASRT-wrapped with a `PLUGIN_DATA`-only write grant and the deny-list read model when the sandbox is on, fail-closed (every blocking event denied, observe-only events pass), plain spawn stated as unconfined when it is off, refused on Windows with the sandbox on; the wrap is one shared helper; the invocation is built by the placeholder-aware adapter `resolveBundledArgv` — classify tokens, anchor package paths only (`./` kept, `anchorIndexes`), expand validated data references afterwards, refuse bare path literals — shared with the portable MCP runtime resolution under a separate executable policy in which the launcher grammar marks pinned package and image tokens as literals (§3.3) | The runner has no sandbox branch today and anchoring a path does not confine a program; the anchoring helper examines every path-like token, so a whole-argv pass either rejects data arguments or admits absolute ones; a consent sheet must describe what holds; the two spawn sites must not drift |
 | 27 | `cwd` is a projected, validated, descriptor-carried field honoured by both spawn paths; `PLUGIN_DATA` is `~/.ave/agent-plugin-data/<name>/`, keyed by package name, and is the one directory added to the wrapped write grant (§2.1 item 7, §3.2) | Two environment variables do not make a directory writable or a relative path resolvable; the grant must be narrow and the identity stable across updates |
 
 ---
