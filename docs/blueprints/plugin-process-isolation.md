@@ -306,10 +306,12 @@ functions in a return value.
 - *Correction (2026-09-27, at `f1a8d191e`).* What is shipped is the delivery path,
   not a proven revocation: the wire result still carries `key`
   (`WireApiKeyLease`, `host-api-wire.ts:2003-2015`; filled from `result.bearer()` at
-  `host-api-dispatcher.ts:828`), the factory's resolver opens a subscription and
-  installs a disposer but does not bind the PermissionManager's per-plugin revoke
-  signal (`permission-manager.ts:817-829`) to that subscription's release
-  (`host-api-factory.ts:794-827`), and the child removes its abort listener when
+  `host-api-dispatcher.ts:828`), the ledger entry for the lease is opened and torn
+  down by the dispatcher (`host-api-dispatcher.ts:795-832`) while the factory passes
+  the PermissionManager's per-plugin revoke accessor into the resolver
+  (`host-api-factory.ts:813-816`; the signal itself is `permission-manager.ts:817-829`),
+  so a revocation aborts a resolve in flight but nothing closes an already-issued
+  ledger entry or sends `subscription/closed` for it, and the child removes its abort listener when
   the resolve request settles (`plugin-child-runtime.ts:264-281`), so request
   cancellation ends with the reply and is **not** a lease lifetime. The successor
   design replaces this account: the default result carries no key, a host-owned lease
