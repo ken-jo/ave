@@ -8,6 +8,9 @@
  *   - dismiss (permanent removal)
  *   - snooze removed (production smoke test: UX risk)
  *   - stale fire replace: new fire for same routineId replaces all prior entries
+ *   - priority bands: an alert card sits in its priority's band (low, then
+ *     normal, then high, oldest first within a band); every other card counts
+ *     as normal, so without alerts the queue is plain arrival order
  *
  * Isolation: only summary plus the exact routine session id flows here.
  */
@@ -32,6 +35,10 @@ export type OverlayItemSource =
   // as `plugin` (a `pendingPrompt` that becomes an `imported_trigger` on confirm), with
   // its own provenance: the prompt is wrapped in `<app-message source="app:<serverId>">`.
   | { kind: "app"; serverId: string; eventId: string }
+  // A declared plugin alert the host rendered from the kind's templates. An
+  // insertion card like `plugin`; `alertId` is the host's keyed identity for
+  // (plugin, kind, key), so a re-raise refreshes the card instead of adding one.
+  | { kind: "alert"; pluginId: string; kindId: string; alertId: string }
   // A plugin's onboarding proposal, staged by main once the tour gate opens.
   // It ASKS rather than stages: it carries no `pendingPrompt` and starts no
   // turn, and `action` is what accepting it does — performed by the host.
@@ -41,6 +48,28 @@ export type OverlayItemSource =
       proposalId: string;
       action: PluginOnboardingAction;
     };
+
+export type OverlayPriority = "low" | "normal" | "high";
+
+const PRIORITY_RANK: Record<OverlayPriority, number> = { low: 0, normal: 1, high: 2 };
+
+function priorityRank(item: OverlayItem): number {
+  if (item.source.kind !== "alert") return PRIORITY_RANK.normal;
+  return item.priority === "low" || item.priority === "high"
+    ? PRIORITY_RANK[item.priority]
+    : PRIORITY_RANK.normal;
+}
+
+/**
+ * Put `item` at the end of its priority band. The queue is kept band-sorted,
+ * so this is the arrival-order position among cards of the same rank, and a
+ * refreshed alert moves to the top of its band.
+ */
+function insertByPriority(queue: readonly OverlayItem[], item: OverlayItem): OverlayItem[] {
+  const rank = priorityRank(item);
+  const at = queue.findIndex((it) => priorityRank(it) > rank);
+  return at === -1 ? [...queue, item] : [...queue.slice(0, at), item, ...queue.slice(at)];
+}
 
 export interface OverlayItem {
   /** Unique id: `${source.kind}-${unique}` */
@@ -59,6 +88,11 @@ export interface OverlayItem {
    * user confirms (primary action). Absent for routine-source items.
    */
   pendingPrompt?: string;
+  /**
+   * Where an `alert` card sits in the queue: `high` above `normal` above
+   * `low`. Read for alert cards only; every other card counts as `normal`.
+   */
+  priority?: OverlayPriority;
   /**
    * When the card came into being, as an ISO timestamp.
    *
@@ -86,7 +120,7 @@ export interface OverlayItem {
 
 export interface OverlayContextValue {
   /**
-   * Every live card, oldest first. The WINDOW's queue: which of these a given
+   * Every live card, in priority bands and oldest first within a band. The WINDOW's queue: which of these a given
    * tile shows, and which one of those is active there, is that tile's own
    * question — see `OverlayCardRegion`.
    */
@@ -115,6 +149,7 @@ export function OverlayContextProvider({
   children,
   onOpenSession,
   addFireRef,
+  dismissRef,
   runningRoutines,
   onQueueChange,
 }: {
@@ -126,6 +161,11 @@ export function OverlayContextProvider({
    * The ref is set synchronously during render, before any effects fire.
    */
   addFireRef?: RefObject<((item: OverlayItem) => void) | null>;
+  /**
+   * The same, for dismiss(): main withdraws a card it staged (an alert the
+   * plugin withdrew, or one that expired) by id, from outside the React tree.
+   */
+  dismissRef?: RefObject<((id: string) => void) | null>;
   /**
    * C1: Set of currently-running routine IDs from App.tsx runningRoutines state.
    * Provider syncs queue items' running flag when this set changes.
@@ -167,7 +207,8 @@ export function OverlayContextProvider({
     setQueue((prev) => {
       // Stale fire replace: source.kind === "routine" + same routineId → replace;
       // source.kind === "plugin" + same (pluginId, eventId) → replace;
-      // source.kind === "proposal" + same (pluginId, proposalId) → replace.
+      // source.kind === "proposal" + same (pluginId, proposalId) → replace;
+      // source.kind === "alert" + same alertId → replace (a refresh).
       // Stale guard: for routine items, only replace if incoming firedAt >= existing firedAt.
       // Date.parse() defensive comparison — handles any ISO string normalisation differences.
       // Invalid timestamp on incoming item → drop (stale-by-default); invalid existing → accept incoming.
@@ -190,6 +231,9 @@ export function OverlayContextProvider({
           }
           return false; // drop existing, incoming is newer (or existing timestamp invalid)
         }
+        if (item.source.kind === "alert" && it.source.kind === "alert") {
+          return it.source.alertId !== item.source.alertId;
+        }
         if (item.source.kind === "plugin" && it.source.kind === "plugin") {
           const replaced = it.source.pluginId === item.source.pluginId
             && it.source.eventId === item.source.eventId;
@@ -207,7 +251,7 @@ export function OverlayContextProvider({
         return true;
       });
       if (dominated) return prev; // stale replay — discard
-      return [...filtered, item];
+      return insertByPriority(filtered, item);
     });
   }, []);
 
@@ -228,6 +272,11 @@ export function OverlayContextProvider({
       return next;
     });
   }, []);
+
+  if (dismissRef) {
+    // Safe: synchronous assignment during render, before effects
+    dismissRef.current = dismiss;
+  }
 
   const setCardExpanded = useCallback((id: string, expanded: boolean) => {
     setExpandedCardIds((prev) => {

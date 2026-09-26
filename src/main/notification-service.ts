@@ -36,6 +36,7 @@ export type NotificationKind =
   | "ask-user"
   | "approval"
   | "plugin"
+  | "alert"
   | "system";
 
 /**
@@ -51,6 +52,7 @@ export const NOTIFICATION_KINDS: ReadonlySet<NotificationKind> = new Set([
   "ask-user",
   "approval",
   "plugin",
+  "alert",
   "system",
 ]);
 
@@ -109,6 +111,8 @@ const ELLIPSIS = "…";
  *   - routine  : 0    (rare — always fire)
  *   - ask-user : 0    (rare — user expects every one)
  *   - plugin   : 5 s  (#841 — protects against runaway plugin emit loops)
+ *   - alert    : 5 s  (a declared plugin alert, fired only after the host
+ *                      accepted it; same guard as `plugin`)
  *   - system   : 0    (rare boot/config upgrade cues)
  *
  * In-memory only — cooldown resets on app restart by design
@@ -125,6 +129,7 @@ const COOLDOWN_MS_BY_KIND: Record<NotificationKind, number> = {
   // coalesce legitimate independent alerts. Still tight enough to defang a
   // buggy plugin emitting 30 events/sec from blasting toasts.
   plugin: 5_000,
+  alert: 5_000,
   system: 0,
 };
 

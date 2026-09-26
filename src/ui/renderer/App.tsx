@@ -628,6 +628,7 @@ export function App() {
   );
   const {
     addFireRef,
+    dismissRef,
     runningRoutines,
     handlePluginPrimaryAction,
     handleRoutineAcknowledge,
@@ -1760,6 +1761,7 @@ export function App() {
           <OverlayContextProvider
             onOpenSession={handleOpenRoutineSession}
             addFireRef={addFireRef}
+            dismissRef={dismissRef}
             runningRoutines={runningRoutines}
             onQueueChange={setOverlayQueue}
           >

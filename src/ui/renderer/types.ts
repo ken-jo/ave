@@ -374,7 +374,7 @@ export type AskUserQuestionResponse = {
 };
 
 /** Which surface raised an in-app toast / OS notification. */
-type NotificationKind = "turn-end" | "routine" | "ask-user" | "approval" | "plugin" | "system";
+type NotificationKind = "turn-end" | "routine" | "ask-user" | "approval" | "plugin" | "alert" | "system";
 
 /** What the notification points back at, so a click can land on its source. */
 type NotificationContextRef = {
