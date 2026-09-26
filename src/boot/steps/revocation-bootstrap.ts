@@ -21,6 +21,7 @@ const log = createLogger("revocation-bootstrap");
 export interface RevocationBootstrapInput {
   /** `~/.ave`. */
   home: string;
+  appVersion: string;
   /** The plugin registry, whose entries carry each git install's origin. */
   pluginRegistryPath: string;
   bootAuditLogger: AuditLogger;
@@ -55,7 +56,7 @@ export async function feedRevocationsFromSnapshots(input: RevocationBootstrapInp
     }
   }
   const root = join(input.home, "marketplaces");
-  const feed = await revocationFeed(installed, (sourceId) => readPinnedRevocations(root, sourceId));
+  const feed = await revocationFeed(installed, (sourceId) => readPinnedRevocations(root, sourceId, input.appVersion));
   for (const item of feed.unreadable) {
     log.error({ sourceId: item.sourceId, err: item.message }, "revocations: a source snapshot could not be read; its revocations wait for the next sync");
   }

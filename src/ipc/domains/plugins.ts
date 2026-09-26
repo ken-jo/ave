@@ -5,6 +5,8 @@
  *         ave:marketplace:ping, ave:host:plugin-theme-notify,
  *         ave:notification:clicked
  */
+import { createPluginRetirementPort, type PluginConfigRetention } from "../../plugins/retired-config.js";
+import { getAveAppVersion } from "../../shared/app-version.js";
 import { dialog, ipcMain, webContents } from "electron";
 import { t } from "../../i18n/index.js";
 import { randomUUID } from "node:crypto";
@@ -289,6 +291,12 @@ export function revokePluginWebviewsForPlugin(
  * uninstall runs, shared by these handlers and the git marketplace's.
  */
 export function pluginLifecycleServices(deps: IpcDeps) {
+  const retirement = createPluginRetirementPort({
+    settings: deps.settingsService,
+    marketplace: deps.pluginMarketplace,
+    wildcard: () => deps.pluginRuntime.getWildcardConfigOverride(),
+    appVersion: getAveAppVersion,
+  });
   const {
     pluginRuntime,
     pluginMarketplace,
@@ -321,6 +329,7 @@ export function pluginLifecycleServices(deps: IpcDeps) {
       pluginMarketplace,
       pluginRuntime,
       settingsService,
+      retirement,
       ...cleanupServices,
       drainPluginInstallLockOperationsService:
         drainPluginInstallLockOperations,
@@ -330,19 +339,20 @@ export function pluginLifecycleServices(deps: IpcDeps) {
     });
   };
   /** Uninstall through the runtime generation barrier with journaled cleanup (see the uninstall handler). */
-  const uninstall = (pluginId: string) =>
+  const uninstall = (pluginId: string, retain?: PluginConfigRetention) =>
     uninstallPluginWithLifecycle(pluginId, {
       pluginMarketplace,
       pluginRuntime,
       settingsService,
       ...requireCleanupServices(),
+      retirement,
       drainPluginInstallLockOperationsService:
         drainPluginInstallLockOperations,
       refreshPluginNotifications,
       emitHostEvent,
       log,
-    });
-  return { ensureInstallStateReady, uninstall };
+    }, retain);
+  return { ensureInstallStateReady, uninstall, retirement };
 }
 
 export function registerPluginsHandlers(deps: IpcDeps): void {

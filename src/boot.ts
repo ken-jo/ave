@@ -49,6 +49,7 @@ import { resolvePluginPaths } from "./plugins/plugin-paths.js";
 import { StarredStore } from "./data/starred-store.js";
 import { FeedbackStore } from "./data/feedback-store.js";
 import { forgetTrackedPluginAuthPartitions, getTrackedPluginAuthPartitions } from "./main/plugin-auth-partition-tracker.js";
+import { createPluginRetirementPort } from "./plugins/retired-config.js";
 import { recoverPendingPluginUninstallCleanups } from "./plugins/uninstall-lifecycle.js";
 import { drainPluginInstallLockOperations } from "./plugins/install-lifecycle.js";
 import { registerShutdownHook, configureAppShutdownHost } from "./main/app-shutdown.js";
@@ -535,6 +536,7 @@ export async function bootstrap(
   // triggers after boot reads the same registry. Local files only; the
   // marketplace feeds it again after each sync.
   await feedRevocationsFromSnapshots({
+    appVersion: getAveAppVersion(),
     home: aveHome(),
     pluginRegistryPath: resolvePluginPaths().registryPath,
     bootAuditLogger: ctx.bootAuditLogger,
@@ -708,6 +710,12 @@ export async function bootstrap(
     await recoverPendingPluginUninstallCleanups({
       pluginMarketplace: ctx.pluginMarketplace,
       ...pluginStateCleanupDeps,
+      retirement: createPluginRetirementPort({
+        settings: settingsService,
+        marketplace: ctx.pluginMarketplace,
+        wildcard: () => pluginRuntime.getWildcardConfigOverride(),
+        appVersion: getAveAppVersion,
+      }),
     });
   if (unresolvedUninstallCleanups.length > 0) {
     ctx.bootAuditLogger.log({

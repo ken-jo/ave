@@ -10,6 +10,7 @@
  * what installs. Each kind's installer is a port the host composition
  * provides; the service plans, stages the bytes and dispatches.
  */
+import { isDeepStrictEqual } from "node:util";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -67,6 +68,9 @@ import type { MarketplacePolicy, PackageKey } from "../sources/policy.js";
 import type { ResolvedSource, SourceOrigin, SourceRegistry, SourceState } from "../sources/registry.js";
 import { SnapshotBuilder, type SourceSnapshot } from "../sources/snapshot.js";
 import { shouldSyncSource, type SourceSyncer } from "../sources/sync.js";
+import type { PluginConfigRetention } from "../../plugins/retired-config.js";
+import type { RetirementEntry, RetirementEntryLookup } from "./retirement-entry.js";
+import { effectiveRevocations } from "../catalog/effective-revocations.js";
 import { revocationFeed, type BoundInstall, type RevocationFeed } from "./revocations.js";
 import { Tickets } from "./tickets.js";
 import type { InstallerPorts, InstalledRecord, TokenStore } from "./ports.js";
@@ -206,7 +210,7 @@ function idFrom(raw: string): string | null {
   return SOURCE_ID_RE.test(id) && !isReservedSourceId(id) ? id : null;
 }
 
-export class MarketplaceService {
+export class MarketplaceService implements RetirementEntryLookup {
   private readonly plans: Tickets<HeldPlan>;
   private readonly previews: Tickets<HeldPreview>;
   private readonly syncing = new Set<string>();
@@ -679,7 +683,7 @@ export class MarketplaceService {
         row.kind === "plugin" && shownVersion?.artifact
           ? rungViews(shownVersion.artifact, row.package.path, await this.treeDeclared(key.sourceId, shownVersion, row.package.path))
           : [],
-      versions: versionViews(row, snapshot.revocations, context, installedHere),
+      versions: versionViews(row, effectiveRevocations(snapshot, context.appVersion), context, installedHere),
     };
   }
 
@@ -690,7 +694,8 @@ export class MarketplaceService {
     if (requested === undefined) return candidateVersion(row);
     const version = row.package.versions.find((item) => item.version === requested);
     if (!version) throw new MarketplaceError("PACKAGE_INCOMPATIBLE", `${row.sourceId} does not list ${row.name} ${requested}`);
-    const blocking = versionExclusions(row.sourceId, row.kind, row.name, version, snapshot.revocations, this.options.versionContext())
+    const context = this.options.versionContext();
+    const blocking = versionExclusions(row.sourceId, row.kind, row.name, version, effectiveRevocations(snapshot, context.appVersion), context)
       // Choosing a version by hand overrides the rollout and the pre-release opt-in, nothing else.
       .filter((reason) => reason !== "rollout" && reason !== "prerelease");
     if (blocking.includes("revoked")) throw new MarketplaceError("PACKAGE_REVOKED", `${row.name} ${requested} is revoked by ${row.sourceId}`);
@@ -874,7 +879,24 @@ export class MarketplaceService {
     return source.auth.kind === "token" ? this.options.tokens.get(source.auth.host) : null;
   }
 
-  async uninstall(request: UninstallRequest): Promise<UninstallResultView> {
+  async getRetirementEntry(pluginId: string): Promise<RetirementEntry | null> {
+    let found: RetirementEntry | null = null;
+    const appVersion = this.options.versionContext().appVersion;
+    for (const source of this.options.registry.list()) {
+      const snapshot = await this.options.syncer.readSnapshot(source.id);
+      if (!snapshot) continue;
+      for (const entry of effectiveRevocations(snapshot, appVersion)) {
+        if (entry.kind !== "plugin" || entry.name !== pluginId || !entry.successors) continue;
+        if (found && (found.sourceId !== source.id || !isDeepStrictEqual(found.successors, entry.successors))) {
+          throw new Error("Conflicting plugin retirement entries");
+        }
+        found = { sourceId: source.id, successors: structuredClone(entry.successors) };
+      }
+    }
+    return found;
+  }
+
+  async uninstall(request: UninstallRequest, options?: { retain: { reason: PluginConfigRetention["reason"] } }): Promise<UninstallResultView> {
     assertNotRequiredByPolicy(this.options.policy, request.kind, request.name, request.sourceId, "uninstall");
     const installed = await this.installed(request.kind, request.name);
     if (!installed || installed.sourceId !== request.sourceId) {
@@ -882,8 +904,15 @@ export class MarketplaceService {
       throw new MarketplaceError("PACKAGE_ID_CONFLICT", `${request.kind} ${request.name} is not installed ${from}`);
     }
     let keptDataDir: string | null = null;
-    if (request.kind === "plugin") await this.options.installers.plugin.uninstall(request.name);
-    else if (request.kind === "mcp") ({ keptDataDir } = await this.options.installers.mcp.uninstall(request.name, { removeData: request.removeData === true }));
+    if (request.kind === "plugin") {
+      let retain: PluginConfigRetention | undefined;
+      if (options?.retain) {
+        const entry = await this.getRetirementEntry(request.name);
+        if (!entry || (request.sourceId !== null && entry.sourceId !== request.sourceId)) throw new Error("Plugin retirement entry is unavailable");
+        retain = { reason: options.retain.reason, sourceId: request.sourceId, successors: entry.successors };
+      }
+      await this.options.installers.plugin.uninstall(request.name, retain);
+    } else if (request.kind === "mcp") ({ keptDataDir } = await this.options.installers.mcp.uninstall(request.name, { removeData: request.removeData === true }));
     else await this.options.installers.content.uninstall(request.kind, request.name);
     await this.refeedAfter(`${request.kind} ${request.name} uninstall`);
     this.options.onCatalogChanged?.();
@@ -1047,7 +1076,7 @@ export class MarketplaceService {
     for (const [, binding] of pending) {
       if (binding.sourceId !== null) bound.push({ kind: binding.kind, name: binding.name, sourceId: binding.sourceId });
     }
-    const feed = await revocationFeed(bound, (sourceId) => this.options.syncer.readRevocations(sourceId));
+    const feed = await revocationFeed(bound, (sourceId) => this.options.syncer.readRevocations(sourceId, this.options.versionContext().appVersion));
     await this.options.revocations.apply(feed);
     const revoked: RevokedInstall[] = [];
     for (const record of installed) {
@@ -1070,12 +1099,19 @@ export class MarketplaceService {
     for (const { record, revocation } of await this.feedRevocations()) {
       if (revocation.action === "disable" && GATED_KINDS.has(record.kind)) continue;
       const item = { key: { sourceId: record.sourceId, kind: record.kind, name: record.name }, version: record.version!, reason: revocation.reason };
-      if (lockedByPolicy(this.options.policy, record.kind, record.name, record.sourceId)) {
-        report.push({ ...item, outcome: "required" });
-        continue;
-      }
       try {
-        await this.uninstall({ sourceId: record.sourceId, kind: record.kind, name: record.name });
+        const retaining = record.kind === "plugin" && revocation.action === "uninstall" && revocation.successors !== undefined;
+        if (retaining) {
+          await this.options.installers.plugin.retire(record.name, {
+            reason: "revoked", sourceId: record.sourceId, successors: revocation.successors!,
+          });
+        }
+        if (lockedByPolicy(this.options.policy, record.kind, record.name, record.sourceId)) {
+          report.push({ ...item, outcome: "required" });
+          continue;
+        }
+        await this.uninstall({ sourceId: record.sourceId, kind: record.kind, name: record.name },
+          retaining ? { retain: { reason: "revoked" } } : undefined);
         report.push({ ...item, outcome: "uninstalled" });
       } catch (error) {
         report.push({ ...item, outcome: "failed", message: errorMessage(error) });

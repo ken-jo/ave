@@ -59,7 +59,7 @@ import {
 import { auditPluginEmitDenial } from "../../../plugins/emit-denial-audit.js";
 import { getDeclaredEmittedEvents, manifestDocumentSha256 } from "../../../plugins/runtime/manifest-validation.js";
 import { canonicalJSON } from "../../../plugins/secret-access/canonical-json.js";
-import { applyConfigDefaults } from "../../../plugins/config-schema.js";
+import { effectivePluginConfig } from "../../../plugins/effective-config.js";
 import { shouldRestartAfterPluginConfigWrite } from "../../../plugins/config-restart-policy.js";
 import { OVERLAY_V1, WORK_BOARD } from "../../../shared/ipc-channels.js";
 import {
@@ -611,11 +611,10 @@ export function createHostApiFactory(
           // runtime/sandbox.ts) returned the author-declared default — the two
           // now agree. applyConfigDefaults only backfills keys still undefined,
           // so it never changes the precedence of the higher layers.
-          const merged = applyConfigDefaults(manifest.configSchema, {
-            ...(manifest.config ?? {}),
-            ...(pluginRuntime.getWildcardConfigOverride?.() ?? {}),
-            ...(settingsService.getPluginConfig(pluginId) ?? {}),
-          });
+          const merged = effectivePluginConfig(manifest,
+            pluginRuntime.getWildcardConfigOverride?.() ?? {},
+            settingsService.getPluginConfig(pluginId) ?? {},
+          );
           return merged[key] as T | undefined;
         },
         set: <T = unknown>(key: string, value: T): Promise<void> => {

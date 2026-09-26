@@ -1,9 +1,12 @@
+import type { RetiredPluginConfigRecord } from "../shared/alerts-types.js";
+import { normalizeRetiredPluginConfigRecord } from "../data/settings-normalization.js";
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { writeUtf8FileAtomicSync, isMissingPathError } from "../lib/atomic-file.js";
 import { isStringArray } from "../shared/is-record.js";
 
 export interface PluginUninstallCleanupRecord {
+  retirement?: RetiredPluginConfigRecord;
   pluginId: string;
   installPluginId: string;
   secretKeys: readonly string[];
@@ -24,7 +27,7 @@ export type PluginUninstallCleanupPhase =
   | "cache";
 
 interface JournalFile {
-  version: 3;
+  version: 3 | 4;
   cleanups: PluginUninstallCleanupRecord[];
 }
 
@@ -70,6 +73,7 @@ function freezeRecord(
 ): PluginUninstallCleanupRecord {
   return Object.freeze({
     ...record,
+    ...(record.retirement ? { retirement: structuredClone(record.retirement) } : {}),
     secretKeys: Object.freeze([...record.secretKeys]),
     authPartitions: Object.freeze([...record.authPartitions]),
     completedPhases: Object.freeze([...record.completedPhases]),
@@ -96,7 +100,7 @@ export class PluginUninstallCleanupJournal {
         | LegacyJournalFileV2
         | LegacyJournalFileV1;
       if (
-        (parsed.version !== 1 && parsed.version !== 2 && parsed.version !== 3)
+        (parsed.version !== 1 && parsed.version !== 2 && parsed.version !== 3 && parsed.version !== 4)
         || !Array.isArray(parsed.cleanups)
       ) {
         throw new Error("unsupported plugin uninstall cleanup journal");
@@ -115,7 +119,7 @@ export class PluginUninstallCleanupJournal {
               ? persistedRecord.registryRemovalCommitted
               : false,
           runtimeRetirementComplete:
-            parsed.version === 3
+            parsed.version >= 3
               && "runtimeRetirementComplete" in persistedRecord
               ? persistedRecord.runtimeRetirementComplete
               : false,
@@ -133,6 +137,7 @@ export class PluginUninstallCleanupJournal {
           || record.authPartitions.some(
             (partition) => !isOwnedAuthPartition(record.pluginId, partition),
           )
+          || (record.retirement !== undefined && !normalizeRetiredPluginConfigRecord(record.retirement))
           || typeof record.cleanupCache !== "boolean"
           || typeof record.registryRemovalCommitted !== "boolean"
           || typeof record.runtimeRetirementComplete !== "boolean"
@@ -178,6 +183,7 @@ export class PluginUninstallCleanupJournal {
   }
 
   prepare(input: {
+    retirement?: RetiredPluginConfigRecord;
     pluginId: string;
     installPluginId: string;
     secretKeys: readonly string[];
@@ -190,7 +196,8 @@ export class PluginUninstallCleanupJournal {
       );
     }
     if (
-      input.secretKeys.length > MAX_VALUES_PER_RECORD
+      (input.retirement !== undefined && !normalizeRetiredPluginConfigRecord(input.retirement))
+      || input.secretKeys.length > MAX_VALUES_PER_RECORD
       || input.authPartitions.length > MAX_VALUES_PER_RECORD
       || input.authPartitions.some(
         (partition) => !isOwnedAuthPartition(input.pluginId, partition),
@@ -347,7 +354,7 @@ export class PluginUninstallCleanupJournal {
   ): void {
     mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
     const body: JournalFile = {
-      version: 3,
+      version: 4,
       cleanups: [...records.values()],
     };
     writeUtf8FileAtomicSync(

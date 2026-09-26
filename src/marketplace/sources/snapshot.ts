@@ -27,7 +27,8 @@ import type {
   PluginAuthority,
   Revocation,
 } from "../catalog/types.js";
-import { validateDescriptorText, validateIndexText, validateRevocationsText, type CatalogDiagnostic } from "../catalog/validate.js";
+import type { ConditionalRevocation } from "../catalog/types.js";
+import { validateConditionalRevocationsText, validateDescriptorText, validateIndexText, validateRevocationsText, type CatalogDiagnostic } from "../catalog/validate.js";
 import { isMarketplaceError, type MarketplaceErrorCode } from "../errors.js";
 import { DIRECT_FILES, readDirectPackage } from "./direct-package.js";
 import type { ResolvedSource } from "./registry.js";
@@ -48,6 +49,9 @@ export interface CatalogPackage {
 }
 
 export interface SourceSnapshot {
+  /** Absent on snapshots written before conditional policies. */
+  formatVersion?: 1 | 2;
+  conditionalRevocations?: ConditionalRevocation[];
   sourceId: string;
   commit: string;
   fetchedAt: string;
@@ -302,9 +306,17 @@ export class SnapshotBuilder {
         identity = { name: this.source.id, displayName: this.source.label ?? this.source.id };
       }
       const revocations = await this.revocations();
+      const conditionalPath = "policy/revocations-by-app.json";
+      // ensureBlobs ignores absent paths; the sibling is never required.
+      await this.ensure([conditionalPath]);
+      const conditionalText = await this.read(conditionalPath, SNAPSHOT_FILE_LIMITS.revocations);
+      const conditional = conditionalText === null ? null : validateConditionalRevocationsText(conditionalText);
+      if (conditional && !conditional.ok) throw new Rejection("SOURCE_INDEX_INVALID", conditional.error);
       return {
         ok: true,
         snapshot: {
+          formatVersion: 2,
+          conditionalRevocations: conditional?.value.revocations ?? [],
           sourceId: this.source.id,
           commit: this.commit,
           fetchedAt,

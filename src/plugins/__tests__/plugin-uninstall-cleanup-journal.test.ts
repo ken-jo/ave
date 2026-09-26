@@ -26,6 +26,26 @@ afterEach(async () => {
 });
 
 describe("PluginUninstallCleanupJournal", () => {
+  it("round-trips captured retirement and rejects damage without discarding pending cleanup", async () => {
+    const { path } = fixture();
+    const retirement = { config: { disabled: ["mail"] }, enabled: true, sourceId: "fixture", retiredAtAppVersion: "0.12.0",
+      successors: { plugins: [{ pluginId: "successor-fixture" }], hostKinds: [] }, consumedBy: [] };
+    const journal = new PluginUninstallCleanupJournal(path);
+    const input = { pluginId: "retired-fixture", installPluginId: "retired-fixture", secretKeys: [], authPartitions: [], cleanupCache: false, retirement };
+    journal.prepare(input);
+    retirement.config.disabled.push("changed-after-prepare");
+    const loaded = new PluginUninstallCleanupJournal(path);
+    expect(loaded.find(input.pluginId)?.retirement?.config).toEqual({ disabled: ["mail"] });
+    const returned = loaded.find(input.pluginId)!;
+    returned.retirement!.consumedBy.push("changed-after-read");
+    expect(loaded.find(input.pluginId)?.retirement?.consumedBy).toEqual([]);
+    const persisted = JSON.parse(await readFile(path, "utf8"));
+    expect(persisted.version).toBe(4);
+    persisted.cleanups[0].retirement.successors.plugins[0].anySource = false;
+    await writeFile(path, JSON.stringify(persisted));
+    expect(() => new PluginUninstallCleanupJournal(path)).toThrow("invalid plugin uninstall cleanup journal record");
+  });
+
   it("persists phase and per-partition progress across process restart", () => {
     const { path } = fixture();
     const journal = new PluginUninstallCleanupJournal(path);

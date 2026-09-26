@@ -15,6 +15,9 @@ import type { ErrorObject, ValidateFunction } from "ajv";
 import manifestSchema from "../../../schemas/plugin-manifest.schema.json" with { type: "json" };
 import indexSchema from "../../../schemas/marketplace/index.schema.json" with { type: "json" };
 import packageSchema from "../../../schemas/marketplace/package.schema.json" with { type: "json" };
+import conditionalSchema from "../../../schemas/marketplace/revocations-by-app.schema.json" with { type: "json" };
+import type { SourceSnapshot } from "../sources/snapshot.js";
+import type { ConditionalRevocationsFile } from "./types.js";
 import revocationsSchema from "../../../schemas/marketplace/revocations.schema.json" with { type: "json" };
 import { RESERVED_ENV_NAMES, RESERVED_HEADERS } from "../../mcp/safe-names.js";
 import { resolveAddFormats, resolveAjv } from "../../plugins/config-schema.js";
@@ -48,6 +51,8 @@ interface Validators {
   indexPackage: ValidateFunction;
   descriptor: ValidateFunction;
   revocations: ValidateFunction;
+  conditionalRevocations: ValidateFunction;
+  snapshot: ValidateFunction;
 }
 
 let compiled: Validators | null = null;
@@ -61,6 +66,7 @@ function validators(): Validators {
   ajv.addSchema(packageSchema);
   ajv.addSchema(indexSchema);
   ajv.addSchema(revocationsSchema);
+  ajv.addSchema(conditionalSchema);
   const get = (ref: string): ValidateFunction => {
     const fn = ajv.getSchema(ref);
     if (!fn) throw new Error(`marketplace schema reference does not resolve: ${ref}`);
@@ -71,6 +77,49 @@ function validators(): Validators {
     indexPackage: get(`${INDEX_ID}#/definitions/indexPackage`),
     descriptor: get(PACKAGE_ID),
     revocations: get(REVOCATIONS_ID),
+    conditionalRevocations: get(conditionalSchema.$id),
+    snapshot: ajv.compile({
+      type: "object", additionalProperties: false,
+      required: ["formatVersion", "sourceId", "commit", "fetchedAt", "marketplace", "packages", "revocations", "conditionalRevocations", "diagnostics"],
+      properties: {
+        formatVersion: { const: 2 },
+        sourceId: { $ref: PACKAGE_ID + "#/definitions/sourceId" },
+        commit: { $ref: PACKAGE_ID + "#/definitions/commit" },
+        fetchedAt: { type: "string", format: "date-time" },
+        marketplace: {
+          type: "object", additionalProperties: false, required: ["name", "displayName"],
+          properties: Object.fromEntries(["name", "displayName", "description", "owner"].map((key) =>
+            [key, { $ref: INDEX_ID + "#/definitions/indexRoot/properties/" + key }])),
+        },
+        packages: { type: "array", items: {
+          type: "object", additionalProperties: false, required: ["kind", "name", "path", "versions"],
+          properties: {
+            ...Object.fromEntries(Object.keys(indexSchema.definitions.indexPackage.properties).map((key) =>
+              [key, { $ref: INDEX_ID + "#/definitions/indexPackage/properties/" + key }])),
+            // Direct sources can install a package from the repository root.
+            path: { anyOf: [{ const: "" }, { $ref: PACKAGE_ID + "#/definitions/repoPath" }] },
+            versions: {
+              ...indexSchema.definitions.indexPackage.properties.versions,
+              items: {
+                ...indexSchema.definitions.indexVersion,
+                properties: {
+                  ...Object.fromEntries(Object.keys(indexSchema.definitions.indexVersion.properties).map((key) =>
+                    [key, { $ref: INDEX_ID + "#/definitions/indexVersion/properties/" + key }])),
+                  // An implicit tree install synthesized at the root has no artifact pins.
+                  artifact: { anyOf: [{ type: "object", maxProperties: 0 }, { $ref: PACKAGE_ID + "#/definitions/pluginArtifactPins" }] },
+                },
+              },
+            },
+          },
+        } },
+        revocations: { $ref: REVOCATIONS_ID + "#/properties/revocations" },
+        conditionalRevocations: { $ref: conditionalSchema.$id + "#/properties/revocations" },
+        diagnostics: { type: "array", items: {
+          type: "object", additionalProperties: false, required: ["subject", "message"],
+          properties: { subject: { type: "string" }, message: { type: "string" } },
+        } },
+      },
+    }),
   };
   return compiled;
 }
@@ -319,4 +368,37 @@ export function validateRevocationsText(text: string): Validation<RevocationsFil
     }
   }
   return { ok: true, value: file };
+}
+
+/** The sibling policy is optional, but a present invalid file rejects its commit. */
+export function validateConditionalRevocationsText(text: string): Validation<ConditionalRevocationsFile> {
+  const parsed = parse(text);
+  if (!parsed.ok) return parsed;
+  const check = validators().conditionalRevocations;
+  if (!check(parsed.value)) return { ok: false, error: "policy/revocations-by-app.json: " + describeErrors(check.errors) };
+
+  const file = parsed.value as ConditionalRevocationsFile;
+  for (const entry of file.revocations) {
+    try { parseVersionRange(entry.versions); } catch (error) {
+      return { ok: false, error: "policy/revocations-by-app.json: " + (error as Error).message };
+    }
+    if (entry.kind !== "plugin" && (entry.successors.plugins.length || entry.successors.hostKinds.length)) {
+      return { ok: false, error: "Only plugin retirements may name successors" };
+    }
+  }
+  return { ok: true, value: file };
+}
+
+/** A same-pin sync may reuse only a complete, current and readable cache. */
+export function validateCachedSnapshotText(text: string): Validation<SourceSnapshot> {
+  const parsed = parse(text);
+  if (!parsed.ok) return parsed;
+  const validate = validators().snapshot;
+  if (!validate(parsed.value)) return { ok: false, error: "snapshot: " + describeErrors(validate.errors) };
+  const snapshot = parsed.value as SourceSnapshot;
+  const plain = validateRevocationsText(JSON.stringify({ schemaVersion: 1, revocations: snapshot.revocations }));
+  if (!plain.ok) return plain;
+  const conditional = validateConditionalRevocationsText(JSON.stringify({ schemaVersion: 1, revocations: snapshot.conditionalRevocations }));
+  if (!conditional.ok) return conditional;
+  return { ok: true, value: snapshot };
 }

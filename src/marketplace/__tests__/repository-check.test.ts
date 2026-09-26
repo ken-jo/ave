@@ -85,6 +85,20 @@ function index(files: Map<string, unknown>) {
 }
 
 describe("checkMarketplaceRepository", () => {
+  it("checks the optional conditional policy and rejects an invalid successor mapping", () => {
+    const files = validFiles();
+    const entry = { kind: "plugin", name: "alpha", versions: "*", appVersions: "0.12.0", reason: "Replaced", at: AT,
+      action: "uninstall", successors: { plugins: [], hostKinds: [] } };
+    files.set("policy/revocations-by-app.json", { schemaVersion: 1, revocations: [entry] });
+    expect(check(files)).toEqual([]);
+    files.set("policy/revocations-by-app.json", { schemaVersion: 1, revocations: [{ ...entry, successors: { plugins: [{ pluginId: "alpha", anySource: false }], hostKinds: [] } }] });
+    expect(check(files)).toEqual([expect.objectContaining({ subject: "policy/revocations-by-app.json" })]);
+    for (const pluginId of ["constructor", "prototype", "__proto__"]) {
+      files.set("policy/revocations-by-app.json", { schemaVersion: 1, revocations: [{ ...entry, successors: { plugins: [{ pluginId }], hostKinds: [] } }] });
+      expect(check(files)).toEqual([expect.objectContaining({ subject: "policy/revocations-by-app.json" })]);
+    }
+  });
+
   it("accepts a repository the app would accept", () => {
     expect(check(validFiles())).toEqual([]);
   });
