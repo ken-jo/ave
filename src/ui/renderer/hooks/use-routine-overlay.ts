@@ -23,6 +23,8 @@ export interface UseRoutineOverlayResult {
    * threads this straight into OverlayContextProvider.
    */
   addFireRef: MutableRefObject<OverlayContextValue["addFire"] | null>;
+  /** The same for dismiss(), so main can withdraw a card it staged. */
+  dismissRef: MutableRefObject<OverlayContextValue["dismiss"] | null>;
   /** In-flight LLM routine sessions; OverlayContextProvider derives running flags. */
   runningRoutines: Set<string>;
   handlePluginPrimaryAction: (overlayItemId: string, chatGroupId: string) => Promise<void>;
@@ -73,6 +75,7 @@ export function useRoutineOverlay({
   // addFire ref is populated by OverlayContextProvider during render
   // so the IPC subscription below can call it without prop-drilling
   const addFireRef = useRef<OverlayContextValue["addFire"] | null>(null);
+  const dismissRef = useRef<OverlayContextValue["dismiss"] | null>(null);
 
   const pushRoutineResult = useCallback((evt: RoutineFiredPayload) => {
     addFireRef.current?.({
@@ -163,7 +166,10 @@ export function useRoutineOverlay({
     });
     const unsubDismiss = typeof api.onOverlayDismiss === "function"
       ? api.onOverlayDismiss((id) => {
+          // Main withdrew the card: it leaves the queue as well as the lookup,
+          // so no one can confirm a card whose prompt main no longer stands by.
           overlayItemsRef.current.delete(id);
+          dismissRef.current?.(id);
         })
       : () => {};
     return () => { unsubShow(); unsubDismiss(); };
@@ -184,10 +190,11 @@ export function useRoutineOverlay({
       if (!item) return;
 
       const { source, pendingPrompt, summary } = item;
-      // Only the two INSERTION sources reach this handler. A routine has its own
+      // Only the INSERTION sources reach this handler. A routine has its own
       // primary action, and a proposal answers rather than inserts — see
-      // `handleProposalAnswer`.
-      if (source.kind !== "plugin" && source.kind !== "app") return;
+      // `handleProposalAnswer`. An alert is a plugin's insertion card rendered
+      // by the host: same staged origin, same confirm.
+      if (source.kind !== "plugin" && source.kind !== "app" && source.kind !== "alert") return;
       if (!pendingPrompt) return;
 
       // Resolved from the card's ORIGIN, not from the surface that rendered
@@ -212,8 +219,8 @@ export function useRoutineOverlay({
       // Insert as imported_trigger entry — staged provenance preserved, NOT a plain
       // user bubble (architecture §9 plugin provenance contract; same rule for apps).
       tile.insertImportedTriggerEntry({
-        sessionId: source.eventId,
-        source: source.kind === "plugin" ? `plugin:${source.pluginId}` : `app:${source.serverId}`,
+        sessionId: source.kind === "alert" ? source.alertId : source.eventId,
+        source: source.kind === "app" ? `app:${source.serverId}` : `plugin:${source.pluginId}`,
         prompt: pendingPrompt,
         summary,
       });
@@ -223,7 +230,7 @@ export function useRoutineOverlay({
       // already represents the staged prompt.
       void tile.ask(
         pendingPrompt,
-        source.kind === "plugin" ? "trigger-import" : "app-message",
+        source.kind === "app" ? "app-message" : "trigger-import",
       );
     },
     [registry],
@@ -286,6 +293,7 @@ export function useRoutineOverlay({
 
   return {
     addFireRef,
+    dismissRef,
     runningRoutines,
     handlePluginPrimaryAction,
     handleRoutineAcknowledge,

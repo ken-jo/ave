@@ -8,7 +8,7 @@ export type StatusBarSeverity = "info" | "success" | "warning" | "error";
  * only without coupling the component to every producer.
  */
 export interface NotificationToastMeta {
-  kind: "turn-end" | "routine" | "ask-user" | "approval" | "plugin" | "system";
+  kind: "turn-end" | "routine" | "ask-user" | "approval" | "plugin" | "alert" | "system";
   contextRef?: {
     sessionId?: string;
     routineId?: string;

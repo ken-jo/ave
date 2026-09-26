@@ -16,8 +16,9 @@
 // Two source variants:
 //   - routine: primary action opens the routine's session (only when
 //     `routineSessionId` is present — notification-only routines hide it)
-//   - plugin / app (insertion-type): primary action deferred to
-//     `onPluginPrimaryAction`.
+//   - plugin / app / alert (insertion-type): primary action deferred to
+//     `onPluginPrimaryAction`. An alert is a plugin's card the host rendered
+//     from the kind's declared templates.
 //   - proposal: a plugin's onboarding question. Three answers instead of one
 //     confirm, and the host performs the accepted action itself.
 
@@ -200,8 +201,8 @@ export function OverlayCardRegion({
   // Insertion variants — plugin overlay trigger and MCP-app `ui/message`. Both stage a
   // `pendingPrompt` that only a user CLICK turns into a chat turn; they differ solely in
   // provenance (the envelope in `pendingPrompt` and the badge below).
-  if (active.source.kind === "plugin" || active.source.kind === "app") {
-    const kind = active.source.kind;
+  if (active.source.kind === "plugin" || active.source.kind === "app" || active.source.kind === "alert") {
+    const kind = active.source.kind === "app" ? "app" : "plugin";
     return (
       <div
         data-testid="overlay-card-region"
@@ -223,7 +224,7 @@ export function OverlayCardRegion({
             expanded={expanded}
             onExpandedChange={onExpandedChange}
             onPrimaryAction={() => {
-              // Dismiss from queue first, then notify App for chat insert
+              // Dismiss from queue first, then notify App for chat insert.
               dismiss(active.id);
               onPluginPrimaryAction(active.id, actionChatGroupId);
             }}
