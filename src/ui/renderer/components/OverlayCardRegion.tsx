@@ -238,6 +238,9 @@ export function OverlayCardRegion({
             }}
             primaryActionLabel={active.primaryActionLabel ?? t("overlayCardRegion.confirm")}
             kind={kind}
+            alertProvenance={active.source.kind === "alert" && kind === "plugin"
+              ? t("alerts.pluginNotice", { name: active.pluginDisplayName ?? active.source.pluginId })
+              : undefined}
           />
         </div>
       </div>

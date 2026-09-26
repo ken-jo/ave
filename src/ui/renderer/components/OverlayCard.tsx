@@ -74,6 +74,8 @@ export interface OverlayCardProps {
 
   /** `app` = an MCP App's `ui/message` staged for user confirmation (no turn in flight). */
   kind?: "routine" | "plugin" | "app" | "host";
+  /** Host-formatted provenance for a declared alert. */
+  alertProvenance?: string;
 
   /**
    * A proposal is a question the user answers ONCE, so its card carries the
@@ -119,6 +121,7 @@ export function OverlayCard({
   expanded,
   onExpandedChange,
   kind = "routine",
+  alertProvenance,
   dispositions,
 }: OverlayCardProps) {
   const { t } = useTranslation();
@@ -163,24 +166,24 @@ export function OverlayCard({
               )}
               <span className="truncate">{title}</span>
             </CardTitle>
-            <CardDescription className="mt-0.5 flex items-center gap-1 text-[11px]">
-              <span>
+            <CardDescription className="mt-0.5 flex min-w-0 items-center gap-0.5 text-[11px]">
+              <span className="min-w-0 truncate" title={alertProvenance}>
                 {running
                   ? t("overlayCard.running")
                   : kind === "host"
                     ? t("alerts.builtInNotice")
                   : kind === "plugin"
-                    ? t("overlayCard.pluginNotice")
+                    ? alertProvenance ?? t("overlayCard.pluginNotice")
                     : kind === "app"
                       ? t("overlayCard.appNotice")
                       : t("overlayCard.routineDone")}
               </span>
               {!running && (
                 <>
-                  <span>·</span>
+                  <span className="shrink-0">·</span>
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <span className="cursor-default">{relTime}</span>
+                      <span className="cursor-default whitespace-nowrap">{relTime}</span>
                     </TooltipTrigger>
                     <TooltipContent>{isoLabel}</TooltipContent>
                   </Tooltip>

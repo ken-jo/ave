@@ -79,6 +79,19 @@ function mount(onPluginPrimaryAction = vi.fn(), onAlertDismiss = vi.fn()) {
 }
 
 describe("alert cards in the overlay queue", () => {
+  it("shows distinct host-resolved plugin names even when kind titles and slot text match another plugin", () => {
+    const q = mount();
+    q.add({ ...alertItem("mail", undefined, "Plugin: Calendar tools"), pluginDisplayName: "Mail tools" });
+    q.add({
+      ...alertItem("calendar", undefined, "Plugin: Mail tools"),
+      source: { kind: "alert", pluginId: "fixturecalendar", kindId: "reply", alertId: "calendar" },
+      pluginDisplayName: "Calendar tools",
+    });
+    expect(screen.getByText(t("alerts.pluginNotice", { name: "Calendar tools" }), { selector: "span[title]" })).toBeTruthy();
+    fireEvent.click(screen.getByTestId("overlay-card-prev"));
+    expect(screen.getByText(t("alerts.pluginNotice", { name: "Mail tools" }), { selector: "span[title]" })).toBeTruthy();
+  });
+
   it("identifies a host alert as built-in rather than a plugin notice", () => {
     const q = mount();
     q.add({ ...alertItem("host"), source: { kind: "alert", pluginId: "@host", kindId: "due-soon", alertId: "host" } });
