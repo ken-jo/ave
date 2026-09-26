@@ -103,6 +103,7 @@ vi.mock("../../../plugins/registry.js", () => ({
 
 import { initPluginRuntime } from "../plugin-runtime.js";
 import { OVERLAY_V1 } from "../../../shared/ipc-channels.js";
+import { SuggestionLedger, suggestionLedger } from "../../../alerts/suggestion-ledger.js";
 
 interface FakeWindow {
   destroyed: boolean;
@@ -332,8 +333,52 @@ describe("hostApi.triggerConversation for a plugin that declares alerts", () => 
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     if (previousHome === undefined) delete process.env.AVE_HOME;
     else process.env.AVE_HOME = previousHome;
+  });
+
+  it("stages before a window closes while acceptance persistence is pending", async () => {
+    const window = makeWindow();
+    const pluginId = "flushrace";
+    const api = await overlayHostApi({ bootWindow: window, getMainWindow: () => window, pluginId, manifest });
+    const flush = suggestionLedger.flush.bind(suggestionLedger);
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const spy = vi.spyOn(suggestionLedger, "flush").mockImplementation(async () => {
+      window.destroyed = true;
+      await pending;
+      await flush();
+    });
+    const result = api.triggerConversation({ source, prompt: "Review this." });
+    await vi.waitFor(() => expect(spy).toHaveBeenCalledOnce());
+    const sentBeforeFlush = window.webContents.send.mock.calls.filter(([channel]) => channel === OVERLAY_V1.show);
+    release();
+    await expect(result).resolves.toMatchObject({ accepted: true });
+    expect(sentBeforeFlush).toHaveLength(1);
+    const reloaded = new SuggestionLedger(() => join(process.env.AVE_HOME!, "alerts"));
+    await reloaded.load();
+    expect(reloaded.isLimited(pluginId, source, Date.now())).toBe(true);
+  });
+
+  it("keeps an undelivered suggestion retryable in memory and on disk", async () => {
+    const window = makeWindow();
+    const pluginId = "sendrace";
+    const api = await overlayHostApi({ bootWindow: window, getMainWindow: () => window, pluginId, manifest });
+    window.webContents.send.mockImplementationOnce(() => {
+      window.destroyed = true;
+      throw new Error("Window closed during delivery");
+    });
+    const spec = { source, prompt: "Review this.", dedupeKey: "failed-delivery" };
+    await expect(api.triggerConversation(spec)).rejects.toThrow("Window closed during delivery");
+    await suggestionLedger.flush();
+    expect(suggestionLedger.isLimited(pluginId, source, Date.now())).toBe(false);
+    const reloaded = new SuggestionLedger(() => join(process.env.AVE_HOME!, "alerts"));
+    await reloaded.load();
+    expect(reloaded.isLimited(pluginId, source, Date.now())).toBe(false);
+    window.destroyed = false;
+    await expect(api.triggerConversation(spec)).resolves.toMatchObject({ accepted: true });
+    expect(window.webContents.send).toHaveBeenCalledTimes(2);
   });
 
   it("stages a declared source once, persists the acceptance, and refuses undeclared ones", async () => {

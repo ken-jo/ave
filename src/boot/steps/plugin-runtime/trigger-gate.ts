@@ -288,6 +288,8 @@ export const triggerDenyAuditThrottle = new TriggerDenyAuditThrottle();
 export interface EvaluateTriggerSpecInput {
   /** Host delivery precondition, checked after input validation and before state changes. */
   assertDeliveryAvailable?: () => void;
+  /** Synchronously stage delivery before any acceptance budget is charged. */
+  stageDelivery?: (source: string) => void;
   spec: ConversationTriggerSpec | undefined | null;
   pluginId: string;
   capabilities: readonly string[];
@@ -423,6 +425,8 @@ export function evaluateTriggerSpec(
       result: { accepted: false, reason: "duplicate", source },
     };
   }
+
+  input.stageDelivery?.(source);
 
   // Allow path — record both bookkeeping operations BEFORE returning so the
   // caller never gets an "accepted=true" without the dedupe + rate window

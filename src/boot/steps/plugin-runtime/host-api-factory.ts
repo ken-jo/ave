@@ -1600,12 +1600,33 @@ export function createHostApiFactory(
       //
       //
       // A plugin that declares `alerts` may pass only its declared suggestion
-      // sources, each accepted once per 30 days; the acceptance is written
-      // before the item is staged so a restart cannot grant a second one.
+      // sources, each accepted once per 30 days. Stage synchronously before
+      // charging acceptance, then persist before resolving the call.
       triggerConversation: async (spec: ConversationTriggerSpec) => {
         const declaredSuggestions = getDeclaredSuggestionSources(manifest, pluginId);
         if (declaredSuggestions !== null) await suggestionLedger.load();
+        const eventId = randomUUID();
         const decision = evaluateTriggerSpec({
+          stageDelivery: (source) => {
+            const overlayTarget = requireMainWindow();
+
+            // Allow path — push to renderer OverlayContext via IPC instead of
+            // spawning a fresh ConversationLoop.
+            const overlayId = `plugin:${pluginId}:${eventId}`;
+            const derivedSummary = deriveOverlaySummaryForDisplay(spec);
+            const overlayItem = {
+              id: overlayId,
+              source: { kind: "plugin" as const, pluginId, eventId },
+              title: spec.title ?? spec.source.replace(/^overlay:/, ""),
+              summary: derivedSummary,
+              running: false,
+              primaryActionLabel: spec.primaryActionLabel ?? t("be_pluginRuntime.overlayPrimaryActionLabel"),
+              pendingPrompt: formatPluginPendingPrompt(spec.prompt, source),
+              createdAt: new Date().toISOString(),
+            };
+            overlayTarget.webContents.send(OVERLAY_V1.show, overlayItem);
+
+          },
           assertDeliveryAvailable: () => { requireMainWindow(); },
           spec,
           pluginId,
@@ -1623,24 +1644,6 @@ export function createHostApiFactory(
           return decision.result;
         }
         if (declaredSuggestions !== null) await suggestionLedger.flush();
-        const overlayTarget = requireMainWindow();
-
-        // Allow path — push to renderer OverlayContext via IPC instead of
-        // spawning a fresh ConversationLoop.
-        const eventId = randomUUID();
-        const overlayId = `plugin:${pluginId}:${eventId}`;
-        const derivedSummary = deriveOverlaySummaryForDisplay(spec);
-        const overlayItem = {
-          id: overlayId,
-          source: { kind: "plugin" as const, pluginId, eventId },
-          title: spec.title ?? spec.source.replace(/^overlay:/, ""),
-          summary: derivedSummary,
-          running: false,
-          primaryActionLabel: spec.primaryActionLabel ?? t("be_pluginRuntime.overlayPrimaryActionLabel"),
-          pendingPrompt: formatPluginPendingPrompt(spec.prompt, decision.source),
-          createdAt: new Date().toISOString(),
-        };
-        overlayTarget.webContents.send(OVERLAY_V1.show, overlayItem);
 
         return { accepted: true, source: decision.source, eventId };
       },

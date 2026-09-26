@@ -413,11 +413,18 @@ describe("the host manifest schema — alert declarations", () => {
     expect(ok).toBe(true);
   });
 
-  it.each([
+  it.each<[string, Json]>([
     ["a fifth suggestion", { alerts: alertsBlock({ suggestions: ["overlay:a", "overlay:b", "overlay:c", "overlay:d", "overlay:e"] }) }],
     ["a suggestion containing --", { alerts: alertsBlock({ suggestions: ["overlay:fixturemail--reply"] }) }],
     ["a kind id containing --", { alerts: alertsBlock({ kinds: [{ ...digestKind(), id: "morning--digest" }] }) }],
     ["two predecessors", { alerts: alertsBlock({ kinds: [{ ...replyKind(), inherits: [(replyKind().inherits as Json[])[0], (replyKind().inherits as Json[])[0]] }] }) }],
+    ["a blank label", { alerts: alertsBlock({ kinds: [{ ...digestKind(), label: { en: " " } }] }) }],
+    ["blank reasoning", { alerts: alertsBlock({ reasoning: "\u00a0" }) }],
+    ["a static body containing a brace", { alerts: alertsBlock({ kinds: [{ ...replyKind(), osNotification: { defaultEnabled: false, body: { en: "A {new} item" } } }] }) }],
+    ...["description", "actionLabel", "summary", "prompt"].map((field) => [
+      "blank " + field, { alerts: alertsBlock({ kinds: [{ ...replyKind(), [field]: { en: "\u00a0" } }] }) },
+    ] as [string, Json]),
+    ["a blank static body", { alerts: alertsBlock({ kinds: [{ ...replyKind(), osNotification: { defaultEnabled: false, body: { en: " " } } }] }) }],
     ["a label without en", { alerts: alertsBlock({ kinds: [{ ...digestKind(), label: { ko: "요약" } }] }) }],
     ["a template with <", { alerts: alertsBlock({ kinds: [{ ...digestKind(), summary: { en: "<b>{topics}</b>" } }] }) }],
     ["a configInherits entry with from and value", { configInherits: [{ pluginId: "retiredfixture", from: "a", to: "b", value: 1 }] }],

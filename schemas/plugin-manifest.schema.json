@@ -584,7 +584,14 @@
                   "type": "string",
                   "description": "Why this plugin alerts at all, shown in Settings.",
                   "minLength": 1,
-                  "maxLength": 400
+                  "maxLength": 400,
+                  "allOf": [
+                    {
+                      "not": {
+                        "pattern": "^\\s*$"
+                      }
+                    }
+                  ]
                 },
                 "kinds": {
                   "type": "array",
@@ -1595,7 +1602,14 @@
             "maxLength": 40,
             "not": {
               "pattern": "[\\r\\n]"
-            }
+            },
+            "allOf": [
+              {
+                "not": {
+                  "pattern": "^\\s*$"
+                }
+              }
+            ]
           }
         },
         "description": {
@@ -1616,7 +1630,14 @@
           "additionalProperties": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 200
+            "maxLength": 200,
+            "allOf": [
+              {
+                "not": {
+                  "pattern": "^\\s*$"
+                }
+              }
+            ]
           }
         },
         "defaultEnabled": {
@@ -1665,8 +1686,15 @@
                 "minLength": 1,
                 "maxLength": 80,
                 "not": {
-                  "pattern": "[\\r\\n]"
-                }
+                  "pattern": "[{}\\r\\n]"
+                },
+                "allOf": [
+                  {
+                    "not": {
+                      "pattern": "^\\s*$"
+                    }
+                  }
+                ]
               }
             }
           }
@@ -1692,7 +1720,14 @@
             "maxLength": 24,
             "not": {
               "pattern": "[\\r\\n]"
-            }
+            },
+            "allOf": [
+              {
+                "not": {
+                  "pattern": "^\\s*$"
+                }
+              }
+            ]
           }
         },
         "slots": {
@@ -1729,7 +1764,14 @@
             "maxLength": 200,
             "not": {
               "pattern": "[<>\\r\\n]"
-            }
+            },
+            "allOf": [
+              {
+                "not": {
+                  "pattern": "^\\s*$"
+                }
+              }
+            ]
           }
         },
         "prompt": {
@@ -1753,7 +1795,14 @@
             "maxLength": 1000,
             "not": {
               "pattern": "[<>]"
-            }
+            },
+            "allOf": [
+              {
+                "not": {
+                  "pattern": "^\\s*$"
+                }
+              }
+            ]
           }
         },
         "inherits": {
