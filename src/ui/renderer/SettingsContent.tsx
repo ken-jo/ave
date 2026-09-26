@@ -194,6 +194,7 @@ export function SettingsContent({
   const { t } = useTranslation();
   const appInfo = useAppInfo(api);
   const [tab, setTab] = useState(() => normalizeSettingsTab(initialTab));
+  const [pluginSettingsTarget, setPluginSettingsTarget] = useState<string | null>(null);
   const [marketplaceKind, setMarketplaceKind] = useState<PackageKind | null>(null);
   const [pendingPermissions, setPendingPermissions] = useState(0);
 
@@ -690,12 +691,13 @@ export function SettingsContent({
           </TabsContent>
           <TabsContent value="audit" className={tabContentCls}><AuditTab /></TabsContent>
           <TabsContent value="mcp" className={tabContentCls}><McpTab /></TabsContent>
-          <TabsContent value="plugin-config" className={tabContentCls}><PluginConfigTab api={api} /></TabsContent>
+          <TabsContent value="plugin-config" className={tabContentCls}><PluginConfigTab api={api} initialPluginId={pluginSettingsTarget} /></TabsContent>
           <TabsContent value="marketplace" className={tabContentCls}>
             <GitMarketplaceTab
               api={api}
               initialKind={marketplaceKind}
               onOpenMcpSettings={() => handleTabValueChange("mcp")}
+              onOpenPluginSettings={(pluginId) => { setPluginSettingsTarget(pluginId); handleTabValueChange("plugin-config"); }}
             />
           </TabsContent>
       </div>

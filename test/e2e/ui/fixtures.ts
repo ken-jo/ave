@@ -20,12 +20,13 @@ import { makeTestT, type TestT } from "./i18n.js";
 import { agentPluginsDocument } from "../../../src/plugins/__tests__/test-helpers.js";
 import { flattenAgentPluginsManifest } from "../../../src/plugins/public-contract.js";
 
+import { ALERT_FIXTURE_MANIFEST, ALERT_FIXTURE_SOURCE } from "./alert-fixture.js";
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 const E2E_PLUGIN_REPOS = [
   "ave-plugin-local-indexer",
   "ave-plugin-meeting",
-  "ave-plugin-vega-helper",
 ] as const;
 
 const E2E_PLUGIN_UI_STUB_SOURCE =
@@ -80,27 +81,6 @@ ${echoHandlers}
 `;
 }
 
-/** Kill any processes occupying the local-indexer worker port so E2E runs cleanly. */
-function killLocalIndexerWorkers(): void {
-  if (process.platform === "win32") return;
-
-  try {
-    const raw = execSync("lsof -ti :43129 2>/dev/null || true")
-      .toString()
-      .trim();
-    const pids = raw.split("\n").filter(Boolean);
-    for (const pid of pids) {
-      try {
-        process.kill(parseInt(pid), "SIGKILL");
-      } catch {
-        /* already dead */
-      }
-    }
-  } catch {
-    /* lsof unavailable */
-  }
-}
-
 function resolveE2ePluginSourceRoot(repoRoot: string): string {
   if (process.env.AVE_E2E_PLUGIN_SOURCE_ROOT) {
     return path.resolve(process.env.AVE_E2E_PLUGIN_SOURCE_ROOT);
@@ -135,6 +115,7 @@ async function seedE2ePlugins(
   aveHomeForTest: string,
   seedTogglePlugin: boolean,
   seedRepositoryPlugins: boolean,
+  seedAlertPlugin: boolean,
 ): Promise<void> {
   const pluginsRoot = path.join(aveHomeForTest, "plugins");
   const cacheRoot = path.join(pluginsRoot, ".cache");
@@ -192,6 +173,8 @@ async function seedE2ePlugins(
       approvedPluginAccess: manifest.pluginAccess,
     });
   }
+
+  if (seedAlertPlugin) await writeSeededPlugin(ALERT_FIXTURE_MANIFEST, ALERT_FIXTURE_SOURCE);
 
   if (seedTogglePlugin) {
     await writeSeededPlugin(
@@ -336,6 +319,7 @@ export type ElectronOptions = {
   launchEnv: LaunchEnv;
   onboardingCompleted: boolean;
   seedTogglePlugin: boolean;
+  seedAlertPlugin: boolean;
   seedRepositoryPlugins: boolean;
   seedApiKey: boolean;
   seedLocale: "ko" | "en";
@@ -345,6 +329,7 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
   launchEnv: [{}, { option: true }],
   onboardingCompleted: [true, { option: true }],
   seedTogglePlugin: [false, { option: true }],
+  seedAlertPlugin: [false, { option: true }],
   seedRepositoryPlugins: [true, { option: true }],
   // Seed a usable LLM key so the composer is enabled (see buildE2eSecrets).
   // Specs that assert the no-key / key-toggle state override with
@@ -374,6 +359,7 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
       onboardingCompleted,
       seedTogglePlugin,
       seedRepositoryPlugins,
+      seedAlertPlugin,
       seedApiKey,
       seedLocale,
     },
@@ -386,8 +372,6 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
         `Electron main entry not found at ${mainEntry}. Run 'bun run build' before 'playwright test'.`,
       );
     }
-    // Kill any leftover local-indexer worker from a previous run before launching
-    killLocalIndexerWorkers();
     /* Isolate Ave user-data state under the per-test temp dir so encrypted
        secret blobs from a previous dev run on `~/.ave/secrets/` do not bleed
        into the test (their Keychain key may have rotated, decryption fails,
@@ -474,6 +458,7 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
       aveHomeForTest,
       seedTogglePlugin,
       seedRepositoryPlugins,
+      seedAlertPlugin,
     );
     const app = await electron.launch({
       args: [mainEntry, `--user-data-dir=${userDataDir}`, "--no-sandbox"],
@@ -502,8 +487,6 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
       );
     await use(app);
     await app.close().catch(() => {});
-    // Ensure child Python workers spawned by local-indexer are cleaned up
-    killLocalIndexerWorkers();
   },
 
   mainWindow: async ({ app }, use) => {

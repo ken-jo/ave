@@ -56,16 +56,6 @@ jobs:
           token: ${{ secrets.AVE_REPO_READ_TOKEN }}
           persist-credentials: false
 
-      - name: Checkout vega-helper input
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: former_org/ave-plugin-vega-helper
-          path: ave-plugin-vega-helper
-          ref: main
-          fetch-depth: 0
-          token: ${{ secrets.AVE_REPO_READ_TOKEN }}
-          persist-credentials: false
-
       - id: stage
         name: Verify exact refs and create execution-only archives
         shell: bash
@@ -81,8 +71,7 @@ jobs:
           for repo in \
             ave \
             ave-plugin-local-indexer \
-            ave-plugin-meeting \
-            ave-plugin-vega-helper
+            ave-plugin-meeting
           do
             actual="$(git -C "$repo" rev-parse HEAD)"
             if [[ ! "$actual" =~ ^[0-9a-f]{40}$ ]]; then

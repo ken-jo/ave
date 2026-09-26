@@ -25,6 +25,9 @@ import type {
 import { actionLabel, exclusionLabel, failureText, kindLabel, originLabel, shortSha, stateLabel } from "./labels.js";
 import { McpRuntimeSummary } from "./McpRuntimeSummary.js";
 
+import type { AveApi } from "../../types.js";
+import { InstalledPluginAlerts } from "./InstalledPluginAlerts.js";
+
 type Stage =
   | { stage: "detail" }
   | { stage: "review"; plan: InstallPlanView | UpdatePlanView }
@@ -34,6 +37,8 @@ type Stage =
 
 export interface PackageSheetProps {
   api: GitMarketplaceApi;
+  alertsApi?: AveApi;
+  onOpenPluginSettings?: (pluginId: string) => void;
   target: { key: PackageKeyView; mode: "detail" | "update" } | null;
   onClose: () => void;
   /** Something was installed or removed: the catalog should be read again. */
@@ -111,7 +116,7 @@ function RungList({ rungs }: { rungs: RungView[] }) {
   );
 }
 
-export function PackageSheet({ api, target, onClose, onChanged }: PackageSheetProps) {
+export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, onClose, onChanged }: PackageSheetProps) {
   const { t, locale } = useTranslation();
   const [detail, setDetail] = useState<PackageDetailView | null>(null);
   const [loadFailure, setLoadFailure] = useState<{ code: GitMarketplaceErrorCode; message: string } | null>(null);
@@ -389,6 +394,7 @@ export function PackageSheet({ api, target, onClose, onChanged }: PackageSheetPr
           {stage.stage === "done" && (
             <div className="space-y-1 text-sm" data-testid="git-marketplace:done">
               <p>{t("gitMarketplace.install.done", { name: stage.result.key.name, version: stage.result.version ?? "" })}</p>
+              {stage.result.key.kind === "plugin" && alertsApi && onOpenPluginSettings && <InstalledPluginAlerts api={alertsApi} pluginId={stage.result.key.name} onOpen={(id) => { onClose(); onOpenPluginSettings(id); }} />}
               {stage.result.connectionWarning && (
                 <p className="text-xs text-warning" data-testid="git-marketplace:done:connection">
                   {t("gitMarketplace.install.notConnected", { message: stage.result.connectionWarning })}

@@ -49,6 +49,7 @@ export interface GitMarketplaceTabProps {
   /** A kind to open on, from another settings tab's "Get more…" link. */
   initialKind?: PackageKind | null;
   onOpenMcpSettings: () => void;
+  onOpenPluginSettings?: (pluginId: string) => void;
 }
 
 function stateTone(entry: CatalogEntryView): string {
@@ -112,7 +113,7 @@ function PackageCard({ entry, onOpen, onUninstallUnbound }: { entry: CatalogEntr
   );
 }
 
-export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }: GitMarketplaceTabProps) {
+export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, onOpenPluginSettings }: GitMarketplaceTabProps) {
   const { t, locale } = useTranslation();
   const market = api.gitMarketplace;
   const [view, setView] = useState<View>("browse");
@@ -573,6 +574,8 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings }
       />
       <PackageSheet
         api={market}
+        alertsApi={api}
+        onOpenPluginSettings={onOpenPluginSettings}
         target={sheet}
         onClose={() => setSheet(null)}
         onChanged={() => {

@@ -1285,3 +1285,30 @@ describe("PluginConfigSchemaForm — values prop sync", () => {
     });
   });
 });
+
+it("opens a requested plugin under the existing anchor and updates its unseen badge", async () => {
+  const cards = [
+    { id: "other", name: "Other", description: "Other plugin", sampleTools: [], capabilities: [], tools: [], loadStatus: "loaded" as const },
+    { id: "meeting", name: "Meeting", description: "Meeting plugin", sampleTools: [], capabilities: [], tools: [], loadStatus: "loaded" as const },
+  ];
+  mockCards.mockResolvedValueOnce(cards);
+  const row: import("../../../shared/alerts-types.js").AlertKindRow = {
+    kindKey: "meeting:summary", pluginId: "meeting", pluginLabel: "Meeting", reasoning: "Review completed meetings.",
+    declaration: { id: "summary", label: { en: "Meeting summary" }, defaultEnabled: false, visibility: "user-visible", summary: { en: "Review meeting" }, prompt: { en: "Review meeting" } },
+    choice: { enabled: false, osNotification: false, visibility: "user-visible", seenByUser: false }, blockedByPredecessor: null, predecessor: null,
+  };
+  let changed = () => {};
+  setRendererApi({
+    gitMarketplace: market,
+    getSettings: async () => ({ alerts: { osNotificationsEnabled: false } }),
+    alerts: { listKinds: async () => [{ ...row, choice: { ...row.choice } }], onKindsChanged: (callback: () => void) => { changed = callback; return () => {}; } },
+  });
+  render(<PluginConfigTab initialPluginId="meeting" />);
+  const section = await screen.findByTestId("plugin-alerts:meeting");
+  expect(section.closest("[data-settings-section]")).toHaveAttribute("data-settings-section", "plugin-config-installed");
+  expect(screen.getByTestId("alert-unseen:meeting")).toHaveTextContent("1");
+  expect(screen.queryByTestId("alert-unseen:other")).toBeNull();
+  row.choice.seenByUser = true;
+  act(changed);
+  await waitFor(() => expect(screen.queryByTestId("alert-unseen:meeting")).toBeNull());
+});

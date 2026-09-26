@@ -17,8 +17,9 @@ function renderTab(fake: ReturnType<typeof fakeMarketplace>, overrides: Paramete
   const { api } = makeMockAveApi(overrides);
   Object.assign(api, { gitMarketplace: fake.market, gitRuntime: fake.gitRuntime });
   const onOpenMcpSettings = vi.fn();
-  render(<GitMarketplaceTab api={api as unknown as AveApi} onOpenMcpSettings={onOpenMcpSettings} />);
-  return { api, onOpenMcpSettings };
+  const onOpenPluginSettings = vi.fn();
+  render(<GitMarketplaceTab api={api as unknown as AveApi} onOpenMcpSettings={onOpenMcpSettings} onOpenPluginSettings={onOpenPluginSettings} />);
+  return { api, onOpenMcpSettings, onOpenPluginSettings };
 }
 
 const official = source({ id: "ave-official", origin: "official", label: "Ave Official", canRemove: false, canDisable: false });
@@ -154,7 +155,12 @@ describe("GitMarketplaceTab package sheet", () => {
     fake.market.planInstall.mockResolvedValue({ ok: true, value: installPlan(calendar) });
     let finish: (value: unknown) => void = () => undefined;
     fake.market.executeInstall.mockReturnValue(new Promise((resolve) => (finish = resolve)));
-    renderTab(fake);
+    const { api, onOpenPluginSettings } = renderTab(fake);
+    Object.assign(api, { alerts: {
+      listKinds: async () => [{ pluginId: "calendar", choice: { enabled: true } }],
+      onKindsChanged: () => () => {},
+    } });
+    api.getSettings.mockResolvedValue({ alerts: { osNotificationsEnabled: false } });
 
     fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:plugin:calendar")).getByTestId("git-marketplace:card:state"));
     const sheet = await screen.findByTestId("git-marketplace:sheet");
@@ -176,6 +182,12 @@ describe("GitMarketplaceTab package sheet", () => {
     finish({ ok: true, value: { key: calendar.key, version: "1.0.0", action: { action: "install" }, rungs: [{ rung: "release", outcome: "used" }], connectionWarning: null } });
     expect(await within(sheet).findByTestId("git-marketplace:done")).toHaveTextContent("calendar 1.0.0을(를) 설치했습니다.");
     await waitFor(() => expect(fake.market.listCatalog.mock.calls.length).toBeGreaterThan(1));
+    const alertNotice = await within(sheet).findByTestId("installed-plugin-alerts");
+    expect(alertNotice).toHaveTextContent("알림 유형 1개 사용 가능");
+    expect(alertNotice).not.toHaveTextContent("모두 꺼짐");
+    fireEvent.click(within(alertNotice).getByRole("button", { name: "알림 설정 열기" }));
+    expect(onOpenPluginSettings).toHaveBeenCalledWith("calendar");
+    await waitFor(() => expect(screen.queryByTestId("git-marketplace:sheet")).toBeNull());
   });
 
   it("holds a source switch until the switch is acknowledged", async () => {
