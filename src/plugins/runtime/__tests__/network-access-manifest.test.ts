@@ -3,8 +3,8 @@
  * validator (`buildManifestValidator()`), the load-time path `parsePluginJson()`
  * runs at boot/install.
  *
- * Regression guard: when the host's `@ave/plugin-sdk` pin lagged the SDK's
- * `networkAccess` schema, the strict root `additionalProperties:false` rejected
+ * Regression guard: when the host schema lacked `networkAccess`, the strict
+ * root `additionalProperties:false` rejected
  * every migrated plugin manifest (meeting STT, lyra-mail) as an unknown
  * property; the fail-soft load path then dropped the plugin with only an
  * audit-log entry. No prior test drove `buildManifestValidator()` with a

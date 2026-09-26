@@ -1,8 +1,7 @@
 /**
  * Manifest validation — host-owned schema SOT + host cross-field MUST/SHOULD
- * checks. The manifest shape is validated against the vendored
- * `schemas/plugin-manifest.schema.json` (ph2 — host owns the schema; no runtime
- * `@ave/plugin-sdk` import).
+ * checks. The manifest shape is validated against the host-owned
+ * `schemas/plugin-manifest.schema.json`.
  *
  * Exported for unit testing and reuse by the PluginRuntime class.
  */
@@ -577,12 +576,9 @@ export function getDeclaredConfigInherits(
 /**
  * Compile the host-owned plugin manifest schema into an AJV validator.
  *
- * ph2 — the manifest-shape SOT is now `schemas/plugin-manifest.schema.json`,
- * vendored into the host and imported as a bundler-visible JSON module (see the
- * top-of-file import). The host no longer imports `@ave/plugin-sdk` at runtime,
- * so plugin loading no longer depends on the SDK package or its pinned version
- * (which removes the former circular host→SDK runtime edge + validator-version
- * skew). If the schema cannot be compiled, plugin loading must fail closed.
+ * The manifest-shape source is `schemas/plugin-manifest.schema.json`, imported
+ * as a bundler-visible JSON module. If the schema cannot be compiled, plugin
+ * loading must fail closed.
  *
  * AJV options mirror the SDK's former `compileManifestValidator()` exactly
  * (`strict` + `strictRequired:false` + `allErrors` + `allowUnionTypes`, plus
@@ -954,7 +950,7 @@ export async function parsePluginJson(
     fail(
       `tools[${preV6ToolIdx}]`,
       "must be an MCP Tool object — this plugin targets a pre-v6 contract " +
-        "(legacy tools[] name strings + toolSchemas/uiActions); upgrade to @ave/plugin-sdk v6",
+        "(legacy tools[] name strings + toolSchemas/uiActions); update to the app release contract",
       `"tools": [{ "name": "sample_ping", "inputSchema": { "type": "object", "properties": {} } }]`,
     );
   }

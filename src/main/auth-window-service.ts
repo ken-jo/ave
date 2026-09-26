@@ -126,7 +126,7 @@ export interface OpenAuthWindowOptions {
    * user input. Caller MUST pair `show: false` with a finite `timeoutMs`
    * so a hidden challenge page cannot hang invisibly.
    *
-   * Mirrors `OpenAuthWindowBaseOptions.show` in `@ave/plugin-sdk`.
+   * Matches `OpenAuthWindowBaseOptions.show` in the public contract.
    *
    * @default true
    */

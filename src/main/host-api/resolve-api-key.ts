@@ -1,8 +1,8 @@
 /**
  * #893 Stage 2 — Host implementation of `hostApi.resolveApiKey()`.
  *
- * Wraps the four-tier secret gate (`runSecretGate`) and returns the SDK's
- * discriminated union (`@ave/plugin-sdk` → `ResolveApiKeyResult`).
+ * Wraps the four-tier secret gate (`runSecretGate`) and returns the public
+ * contract's `ResolveApiKeyResult` discriminated union.
  * On `ok=true` the host yields a one-shot bearer thunk + `release()`; plugins
  * should call `release()` in a `finally` block so the in-memory copy of the
  * key has a deterministic lifetime.
@@ -26,10 +26,10 @@
  *   the deny-reason channel.
  *
  * Vendor alias normalization:
- *   The SDK enum (`@ave/plugin-sdk`) uses
+ *   The public contract uses
  *   `"openai" | "azure-openai" | "vertex" | "anthropic"`; the host's
  *   internal vendor union (`src/shared/llm-vendor-defaults.ts`) uses
- *   `"openai" | "azure-foundry" | "vertex-ai" | "claude"`. Map the SDK
+ *   `"openai" | "azure-foundry" | "vertex-ai" | "claude"`. Map the public
  *   names to host names at the entry so a Claude-default user and an
  *   plugin that asks for `vendor:"anthropic"` doesn't silently fall into
  *   `not-whitelisted` for a non-existent `llm.apiKey.anthropic` key.

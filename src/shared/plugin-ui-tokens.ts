@@ -2,8 +2,7 @@
  * Host-owned plugin UI token contract.
  *
  * The app runtime is the source of truth for plugin theme payload validation
- * and theme token broadcasts. The SDK copies this module into its public
- * `@ave/plugin-sdk/ui/tokens` surface via `bun run sync:from-host`.
+ * and theme token broadcasts.
  */
 export const AVE_TOKEN_NAMES = [
   "--ave-bg",
@@ -119,9 +118,6 @@ export const AVE_THEME_BUNDLE_IDS: readonly AveThemeBundleId[] = Object.freeze([
  * theme package name. Accepts `unknown` at the boundary so callers need not
  * pre-cast IPC payloads or deserialized objects before validating.
  *
- * @example
- * import { isAveThemeBundleId } from "@ave/plugin-sdk/ui/tokens";
- * if (isAveThemeBundleId(rawId)) { /* rawId is a theme id *\/ }
  */
 export function isAveThemeBundleId(id: unknown): id is AveThemeBundleId {
   return isThemeId(id);

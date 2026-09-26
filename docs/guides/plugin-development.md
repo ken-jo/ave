@@ -18,8 +18,9 @@ host APIs or tool execution.
 
 Every plugin package needs a `plugin.json` manifest. The Host owns the canonical
 shape in `schemas/plugin-manifest.schema.json` and the complete TypeScript/JSDoc
-authoring contract in `src/plugins/public-contract.ts`. `@ave/plugin-sdk`
-publishes generated mirrors of those two Host files.
+authoring contract in `src/plugins/public-contract.ts`. Vendor both files
+unchanged into `contract/` at an app release tag, and record their hashes in
+`contract/sources.json`.
 
 The manifest should include:
 

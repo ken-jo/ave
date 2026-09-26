@@ -11,8 +11,8 @@
 
 /**
  * Modules supplied by the Host process and therefore excluded from plugin
- * runtime bundles. The Host owns this value; SDK build helpers consume the
- * mechanically mirrored constant without adding policy.
+ * runtime bundles. The Host owns this value; plugin build helpers consume the
+ * vendored constant without adding policy.
  */
 export const HOST_EXTERNAL_MODULES = ["electron"] as const;
 
@@ -359,8 +359,8 @@ export interface EventSubscription {
  * app-action map:
  * `PluginManifest.tools` is `Tool[]` and every host consumer reads surface
  * visibility off each tool's `_meta.ui.visibility` (materialized once at manifest
- * load by `parsePluginJson`). The SDK public surface (`@ave/plugin-sdk`) mirrors
- * these via `sync-from-host`.
+ * load by `parsePluginJson`). Plugin repositories vendor this public contract
+ * unchanged at an app release tag.
  * ==========================================================================*/
 /**
  * A tool a plugin exposes — the pure MCP `Tool` object (manifest == wire, §2.1/§2.2).
@@ -883,10 +883,8 @@ export interface VerifyResult {
  * Dependency specification extracted from plugin manifest's `requires` block.
  * Capabilities are kebab-case tags matching `^[a-z][a-z0-9-]*$`.
  *
- * NOTE: This interface is the host-side source of truth that the SDK's
- * generated TS mirror (`ave-plugin-sdk/src/index.ts` `RequiresSpec`) is
- * regenerated from via `sync-from-host`. Keep it consistent with the
- * Host-owned JSON schema (`schemas/plugin-manifest.schema.json`).
+ * Keep this host-owned interface consistent with the manifest JSON schema
+ * (`schemas/plugin-manifest.schema.json`). Plugins vendor both files together.
  */
 export interface RequiresSpec {
   /** Dependency capabilities required from installed plugins. @optional */
@@ -1689,10 +1687,8 @@ export interface PluginHostApi {
    * **Capability gate:** `manifest.capabilities[]` must include
    * `external-auth-consumer` (same gate as `openAuthWindow`).
    *
-   * **Required (not `?`-optional)** — declared in lockstep with SDK
-   * `@ave/plugin-sdk@5.6.0`. Plugin authors get a typed signature; a
-   * missing host wiring throws loudly. Matches the "No Fallback Code"
-   * rule (CLAUDE.md) — silent optional-chain would let sign-out look
+   * **Required (not `?`-optional)** — plugin authors get a typed signature;
+   * missing host wiring throws loudly. Silent optional-chain would let sign-out look
    * successful while leaving the partition populated.
    */
   clearAuthPartition(partition: string): Promise<void>;

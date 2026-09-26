@@ -2,8 +2,7 @@
  * Host-owned manifest validator SOT guard (ph2).
  *
  * The host compiles its OWN vendored `schemas/plugin-manifest.schema.json`
- * (imported as a bundler-visible JSON module) with AJV — no runtime
- * `@ave/plugin-sdk` import. This suite pins:
+ * (imported as a bundler-visible JSON module) with AJV. This suite pins:
  *   1. the validator compiles + accepts every host-required field,
  *   2. the negative-strictness guards (formerly runtime probes, now test-time
  *      assertions per ph2) still REJECT removed / unreachable / removed-ui shapes,

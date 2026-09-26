@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **플러그인 작성 계약은 앱 릴리스 태그에서 가져옵니다.** 별도 SDK 저장소는
+  폐기됩니다. 플러그인 저장소의 `contract/`에 공개 계약과 매니페스트 스키마를
+  그대로 복사하고, 출처 태그와 파일 해시를 `contract/sources.json`에 기록하세요.
+
 - **플러그인 호환성: `triggerConversation` 이 `--` 가 들어간 `source` 를 거부합니다.**
   `overlay:이름--종류` 모양의 출처는 이제 앱의 알림 파이프라인만 만들 수 있습니다. 이런
   `source` 로 부르는 플러그인은 `{ accepted: false, reason: "invalid_source" }` 를 받으므로,
