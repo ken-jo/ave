@@ -107,10 +107,17 @@ at install (marketplace design §6.2), the same refusal as a descriptor that dis
 with its `plugin.json`.
 
 **A malformed marker refuses the package; it never downgrades it.** A block whose
-`entry` or `process` is present but invalid (wrong type, empty, absolute, both present)
-matches no branch of the schema (§2.1) and the manifest is refused with the branch
-mismatch named. A package is classified only after it validated; there is no path on
-which a broken extension is loaded as content.
+`entry` or `process` is present but of the wrong type, empty, or present together with
+the other marker matches no branch of the schema (§2.1) and the manifest is refused with
+the branch mismatch named. The schema checks the marker's shape only (`entry` is a
+non-empty string, `schemas/plugin-manifest.schema.json:135-138`; the runtime check at
+`src/plugins/runtime/manifest-validation.ts:919-923` is the same); an absolute or
+escaping `entry` passes the schema, still matches the entry branch — so the package is
+still an extension — and is refused later by the containment gate that resolves the
+entry inside the plugin directory (`resolvePluginEntryPath`,
+`src/plugins/runtime/sandbox.ts:37-54`), before anything is spawned. A package is
+classified only after it validated, and both refusals are refusals of an extension:
+there is no path on which a broken extension is loaded as content.
 
 **One package is never both.** The manifest schema makes the namespace block a
 three-branch `oneOf` (§2.1): two extension branches (`entry` xor `process`) and one
@@ -191,6 +198,16 @@ the same namespace. The complete root contract after this design:
    only at the marketplace or studio boundary that needs a version, with the missing
    field named. `extensions` becomes optional at the root: a plugin with no Ave data
    has no block at all, which is what a package written for another host looks like.
+   **The host's `name` is a stated subset of the standard's**: the retained pattern
+   (`schemas/plugin-manifest.schema.json:20-28`) admits kebab-case only, three to
+   sixty-four characters, no leading digit, no dot and no double hyphen, while the
+   official schema admits shorter names, leading digits and dots. A portable package
+   whose name is outside the subset is refused at parse with the pattern named; the
+   "loads unchanged" promise below holds for names inside it. The subset is kept
+   because the name is also the package identity in every persisted place (§6.2) and,
+   for a plugin, the package segment of the secret key and the selectors of §3.2 and
+   §3.5. Should dots ever be admitted, those keys already use a segment encoding that
+   cannot collide (§3.2, Storage).
 2. **The namespace block is a three-branch `oneOf`**:
    - **entry extension**: today's block with `entry` required and `process` forbidden
      (`schemas/plugin-manifest.schema.json:122-125` plus `"not": { "required": ["process"] }`);
@@ -234,12 +251,24 @@ the same namespace. The complete root contract after this design:
      never expanded in `command`; `cwd` is `${PLUGIN_ROOT}`-rooted,
      `${PLUGIN_DATA}`-rooted or plugin-relative and stays inside that root; `env` may
      not name `PLUGIN_ROOT` or `PLUGIN_DATA`); `sse` is refused by name as unsupported;
-   - `projectPortableMcp(parsed, packageIdentity)`: `type: "stdio"` → `transport:
-     "stdio"`, `type: "streamable-http"` → `transport: "http"`, `cwd` carried (§3.2),
-     `mcpAuth` merged in; the result is what `plugin-mcp-projection.ts` builds today,
-     with `cwd` added to its allowed fields;
-   - `exportPortableMcp(projection)`: the inverse, writing `$schema` and `type` back,
-     so an export is a portable file (P1-1 fixture: the round trip equals the input).
+   - `projectPortableMcp(parsed)`: the **static projection** — `type: "stdio"` →
+     `transport: "stdio"`, `type: "streamable-http"` → `transport: "http"`, `cwd`
+     carried (§3.2), `mcpAuth` merged in, and every path left **symbolic**: `command`
+     stays bare or `./`-relative, `args`, `env` and `cwd` keep their `${PLUGIN_ROOT}` /
+     `${PLUGIN_DATA}` placeholders and package-relative forms. It contains no absolute
+     path, no generation or activation id, no server id and no secret. It is the
+     representation the descriptor's authority is derived from (§5.2) and the one the
+     Studio edits;
+   - `resolveRuntimeMcp(static, { generationRoot, dataDir, activation })`: the
+     **runtime resolution**, run at preparation only — it anchors package paths and
+     expands data paths through the placeholder adapter of §3.3, then builds what
+     `plugin-mcp-projection.ts` builds today (the `plugin_<hash>` id, the approval, the
+     anchored argv, `:112-134`, `:173-190`), with `cwd` added to the parser's allowed
+     fields (`:72-76`). Nothing it produces enters a descriptor, a digest or an export;
+   - `exportPortableMcp(static)`: the inverse of the static projection, writing
+     `$schema` and `type` back, so an export is a portable file (P1-1 fixture: the round
+     trip equals the input). It takes the static form, never the runtime one, which is
+     why it can be written at all.
    The two vocabularies stay distinct on purpose: `type` is the portable word,
    `transport` the host's, and neither is relabelled.
 6. **Unknown top-level fields are reported and ignored; unknown `extensions`
@@ -364,18 +393,27 @@ Inputs and detection, in order at the given path:
      nothing validates without it, §4.4); `description` likewise required at review;
      `author`, `homepage`, `repository`, `license`, `keywords` copied when present;
      every other key dropped with a diagnostic;
-   - **reads the component locations the legacy manifest declares**, not only the
-     defaults: the `skills`, `commands`, `agents`, `hooks` and `mcpServers` fields of that
-     manifest may name paths or carry inline definitions (source 3); a declared path is
-     read from where it points, an inline definition is written to the corresponding
-     Ave file, and the defaults (`skills/`, `commands/`, `agents/`, `hooks/hooks.json`,
-     `.mcp.json`) are read when no declaration overrides them;
+   - **reads the component locations the legacy manifest declares, combined with the
+     defaults the way that host combines them** (source 3, "How each key combines with
+     its default location"); a declared path is read from where it points, an inline
+     definition is written to the corresponding Ave file:
+
+     | Legacy key | Combination rule applied by the importer |
+     |---|---|
+     | `skills` | **adds** to the default: `skills/` is scanned and every declared directory is scanned too |
+     | `commands`, `agents` | **replaces** the default: when the key is set, `commands/` (or `agents/`) is not scanned unless the declaration lists it; a declared command map (`source` or inline `content`) yields one template prompt per entry |
+     | `hooks` | **merges**: `hooks/hooks.json` is read first when it exists, then every declared file or inline object is merged into it |
+     | `mcpServers` | **merges**: `.mcp.json` is read first when it exists, then every declared file or inline map is merged into it; a later server with the same name replaces the earlier one, and the diagnostic names both |
+     | any other component key (`outputStyles`, `workflows`, `lspServers`, `monitors`, `themes`, `settings`, `userConfig`, `channels`, `dependencies`) | not imported; one diagnostic per key (§2.2) |
    - maps `skills/` (or a root `SKILL.md`, which that layout treats as a single skill)
      to `skills/`, commands to template prompts (§2.3), `agents/*.md` to
      `ai.agent-connector.ave/agents/<name>/AGENTS.md`, hooks per §2.3 with `needsAdaptation`;
-   - converts the legacy MCP file to the portable `mcp.json`: `$schema` inserted;
-     `type` derived (`command` present → `"stdio"`; `url` present → `"streamable-http"`;
-     a `type: "sse"` or other value → the entry is dropped with a diagnostic);
+   - converts the merged legacy MCP servers to the portable `mcp.json`: `$schema`
+     inserted; `type` decided by one rule table — legacy `type: "stdio"` or no `type`
+     with `command` → `"stdio"`; legacy `type: "http"` or no `type` with `url` →
+     `"streamable-http"`; legacy `type: "sse"`, `"ws"` or any other value → the entry
+     is dropped with a diagnostic naming the unsupported transport; `command` present
+     together with `url` → dropped as ambiguous;
      `command`/`args`/`env`/`url`/`headers` kept; `${CLAUDE_PLUGIN_ROOT}` and
      `${CLAUDE_PLUGIN_DATA}` rewritten; a placeholder in `command` rewritten to the
      `./`-relative form when it names a package file, otherwise refused; `oauth` and
@@ -434,8 +472,9 @@ user (§3.4). Everything else a plugin contains is text the host reads.
 
 ### 3.2 MCP servers
 
-**Admission.** Each `mcp.json` entry is parsed and projected (§2.1 item 5) into what
-the extension-bundled projection builds today (`src/mcp/plugin-mcp-projection.ts:112-134`):
+**Admission.** Each `mcp.json` entry is parsed, statically projected (§2.1 item 5) and,
+at preparation, runtime-resolved into what the extension-bundled projection builds today
+(`src/mcp/plugin-mcp-projection.ts:112-134`):
 a server id `plugin_<hash>` derived from the package name, version, generation, local id
 and fingerprint (and, for stdio, the activation id, so a successor never inherits a
 process rooted in a retired payload); an approval with `allowedCommands: [command]`
@@ -454,42 +493,67 @@ server cap counts runtime approvals (`mcp-governance.ts:187`).
 
 **Organization switch.** `globalRules.allowUserApprovedServers: boolean` is added to the
 governance policy file (`src/mcp/mcp-governance.ts:77-84` holds `globalRules`), default
-`true`. It is enforced at the one place every consumer reads approvals from and at every
-place a runtime approval can enter, so that no path connects a server the rule forbids:
+`true`, together with `bundledServers: [{ package: "<kind>/<name>", server: "<localId>",
+fingerprint }]`, a fingerprint allow-list through which an organization approves a
+bundled server whose runtime id it cannot know (a bundled id changes with its
+generation, so it is never listed in `policy.servers`, and the collision check `:406-408`
+keeps meaning "a managed id is never a bundled id"). Every runtime approval carries a
+`provenance: "user" | "policy-fingerprint"` field (the approval record already has
+`approvedBy`, `src/mcp/types.ts:28`; the provenance is a closed discriminant beside it).
+**One predicate** decides whether an approval is admitted, and it is the only rule the
+lookup, the insertions, reuse, publication and reload apply:
 
-- **Lookup.** `findApproval` (`mcp-governance.ts:482`) consults runtime approvals only
-  when the rule is `true`. Every validation and capability check goes through it
-  (`:175`, `:259`, `:329`, `:391`, `:401`), so with the rule `false` a runtime-approved
-  server fails Layer 1 at `validateServer` wherever it is asked — connect, reconnect,
-  tool call, a reused client.
+```ts
+admitted(a) =
+     a is in policy.servers                                                     // managed
+  || (a.provenance === "policy-fingerprint" && a.fingerprint is still listed in policy.bundledServers)
+  || (a.provenance === "user" && policy.globalRules.allowUserApprovedServers)
+```
+
+- **Lookup.** `findApproval` (`mcp-governance.ts:482-484`, today managed list then
+  runtime map) returns a runtime approval only when `admitted` holds for it. Every
+  validation and capability check goes through it (`:175`, `:259`, `:329`, `:391`,
+  `:401`), so a user approval with the rule `false`, or a policy-fingerprint approval
+  whose fingerprint was removed from the list, fails Layer 1 at `validateServer`
+  wherever it is asked — connect, reconnect, tool call, a reused client — and a
+  policy-fingerprint approval whose fingerprint is still listed is returned with the
+  rule `false`, which is what makes it usable.
 - **Insertion.** `registerRuntimeApproval` (`:405-414`), `scopedRuntimeApproval`
   (`:421-427`), `replaceRuntimeApprovals` (`:431-447`) and `prepareRuntimeApprovals`
-  (`:451-475`) throw `runtime approvals are disabled by policy` when the rule is
-  `false`, unless the approval is policy-sourced (below). Because `scopedRuntimeApproval`
-  runs before the client is constructed (`mcp-manager.ts:338-343`), a refused
-  preparation spawns nothing and connects nothing. The manager additionally checks the
-  rule before starting bundled candidate discovery and records the component as
-  `blocked-by-policy` in the package sheet, so the throw is a guard, not the UX.
+  (`:451-475`) throw `runtime approval not admitted by policy` for an approval that
+  `admitted` rejects. Because `scopedRuntimeApproval` runs before the client is
+  constructed (`mcp-manager.ts:338-343`), a refused preparation spawns nothing and
+  connects nothing. The manager additionally evaluates `admitted` before starting
+  bundled candidate discovery and records the component as `blocked-by-policy` in the
+  package sheet, so the throw is a guard, not the UX.
+- **Publication rechecks.** `prepareRuntimeApprovals` builds a snapshot before
+  connection; its `publish()` re-evaluates `admitted` against the policy **current at
+  publication**, not the one the snapshot was prepared under, and refuses (the manager
+  then disconnects the prepared candidates) when a policy reload in between withdrew
+  admission. A prepared snapshot never carries a stale exemption forward.
 - **A change while servers run.** Governance reloads its policy on the refresh interval
-  (`mcp-governance.ts:135`) or on an explicit reload. When a reload turns the rule from
-  `true` to `false`, the manager disconnects every active client whose approval is
-  runtime-sourced (not listed in `policy.servers`), reused clients included, unregisters
-  their approvals, and marks their components `blocked-by-policy`. When the rule returns
-  to `true`, nothing reconnects by itself: the user re-enables the component; the
-  fingerprint approval persists, so no re-consent is needed.
-- **Administrator-approved bundled servers.** A bundled server's runtime id changes with
-  its generation, so it can never be listed in `policy.servers`, and the collision check
-  (`:406-408`) keeps meaning "a managed id is never a bundled id". The policy file gains
-  `bundledServers: [{ package: "<kind>/<name>", server: "<localId>", fingerprint }]`, a
-  fingerprint allow-list. A projection whose fingerprint matches is registered as a
-  runtime approval with `approvedBy: "policy"`: it is exempt from the switch, it needs
-  no user consent (the package sheet says "approved by your organization"), and an
-  update with a new fingerprint is again unapproved until the list is updated.
+  (`mcp-governance.ts:135`) or on an explicit reload. After every reload the manager
+  re-evaluates `admitted` for every active runtime approval — by provenance, not by
+  membership in the managed-id list — and disconnects every client whose approval is
+  no longer admitted (user approvals when the rule turned `false`; policy-fingerprint
+  approvals whose fingerprint left the list), reused clients included, unregisters
+  those approvals, and marks their components `blocked-by-policy`. Approvals that are
+  still admitted are untouched. When admission returns (the rule set back to `true`, a
+  fingerprint re-listed), nothing reconnects by itself: the user re-enables the
+  component; the fingerprint consent persists, so no re-consent is needed.
+- **Consent.** A policy-fingerprint approval needs no user consent (the package sheet
+  says "approved by your organization"); an update with a new fingerprint is unapproved
+  again until the list is updated, and the per-fingerprint component consent and the
+  stored-credential disclosure below stay on the same sheet.
 - **Tests, on the manager path**: with the rule `false`, preparing a user-approved
-  bundled server constructs no `McpClient` and calls no `connect`; flipping the rule
-  while a bundled server is connected disconnects it and blocks its tools; a
-  fingerprint listed in `bundledServers` connects with the rule `false`; an extension's
-  bundled server behaves identically, because the path is shared.
+  bundled server constructs no `McpClient` and calls no `connect`; a bundled server
+  whose fingerprint is listed in `bundledServers` connects with the rule `false`,
+  survives a reload with the rule `false`, and its tools stay callable; flipping the
+  rule while a user-approved server is connected disconnects it and blocks its tools
+  while the policy-approved one beside it keeps running; removing a fingerprint from
+  the list disconnects that server; a snapshot prepared under `true` and published
+  after a reload to `false` is refused; an extension's bundled server behaves
+  identically, because the path is shared.
 
 **Launcher grammar.** A stdio `command` is one executable token (Agent Plugins §7.2.1):
 `npx`, `uvx` or `docker` with the pinned forms of the marketplace design (§5.2: exact
@@ -540,8 +604,15 @@ persisted config entry and its stdio id changes with every activation
 - **Storage.** The value is written to the host's encrypted secret document store
   (`src/data/secret-document-store.ts:26-39`, `:381`, the store behind the marketplace
   git tokens `marketplace.gitToken.<host>`, `src/ipc/domains/git-marketplace.ts:111`)
-  under the key `mcp.bundled.<kind>.<packageName>.<serverName>`. The key is the stable
-  installed identity; it does not contain the version, generation or activation id.
+  under the key `mcp.bundled:` followed by the JSON array
+  `["<kind>","<packageName>","<serverName>"]` — a segment encoding, so a package name
+  and a server name can never be split ambiguously whatever characters they carry
+  (the store accepts any key without a NUL byte up to 1,024 characters,
+  `secret-document-store.ts:239-245`). The key is the stable installed identity; it
+  does not contain the version, generation or activation id. Lookup and write are
+  host-owned: no plugin text gains a secret-read API. In packaged policy the store
+  refuses to write when encryption is unavailable (`:527-533`); the persistence tests
+  below run under that policy, because development policy may store plaintext.
 - **Entry.** MCP settings shows the plugin's server with a "credential" field the way a
   marketplace `mcp` package's server has one. Saving calls a new manager method
   `setBundledApiKey(packageRef, serverName, value)` that validates the declaration,
@@ -566,9 +637,10 @@ persisted config entry and its stdio id changes with every activation
   `env` value and every `args` token verbatim and requires the user to confirm each
   before it is copied, the advisory lint (§4.6) flags high-entropy tokens, and the
   export test of §2.4 asserts the absence of stored values.
-- **Tests.** Persistence bytes contain no plaintext value; reconnect after restart
-  injects the value; an activation-id change does not lose it; export contains no
-  value; `setApiKey` on a bundled id is refused with the new method named.
+- **Tests** (packaged secret policy). Persistence bytes contain no plaintext value;
+  reconnect after restart injects the value; an activation-id change does not lose it;
+  export contains no value; `setApiKey` on a bundled id is refused with the new method
+  named.
 
 A server named in `mcpAuth` that is not in `mcp.json`, or a second secret for one
 server, is a schema error.
@@ -618,12 +690,19 @@ the same confinement class as a bundled MCP stdio server:
   (`src/permissions/asrt-sandbox.ts:1337`; the branch the MCP client takes,
   `src/mcp/mcp-client.ts:2156-2172`), with write access to a fresh process home and the
   package's `PLUGIN_DATA` only, the centralized read and write deny floors restated
-  (`:2244-2249`), and the sandbox's egress allow-list. A wrap that cannot be produced
-  **fails closed**: the hook does not run, the event proceeds as if the hook were
-  absent for observe-only events and is **denied** for blocking events
-  (`UserPromptSubmit`, `perm`), and the result carries `denied: sandbox unavailable`.
-  On Windows, where the wrapped path refuses (`mcp-client.ts:2203-2209`), bundled hooks
-  do not run with the sandbox on, and the package sheet says so before consent.
+  (`:2244-2249`), and the sandbox's egress allow-list. The read model is what ASRT's
+  is: a **deny-list** of known-sensitive paths (`~/.ave/secrets`, `~/.ssh`, `~/.aws`,
+  the Ave namespaces of `src/permissions/sensitive-paths.ts:216-247`, …), not a read
+  jail — a wrapped hook can read ordinary files the user can read, and the consent
+  sheet says "cannot read your secrets, keys or credential directories", never "cannot
+  read your files". A wrap that cannot be produced **fails closed**: the hook does not
+  run, the event proceeds as if the hook were absent for observe-only events and is
+  **denied** for **every** blocking event — each event whose result carries a decision
+  (`UserPromptSubmit`, `pre`, `perm`, and any event the closed set marks blocking,
+  `src/hooks/script-hook-types.ts:74-86`, `:92`) — and the result carries
+  `denied: sandbox unavailable`. On Windows, where the wrapped path refuses
+  (`mcp-client.ts:2203-2209`), bundled hooks do not run with the sandbox on, and the
+  package sheet says so before consent.
 - **Sandbox off**: a plain spawn, the class every MCP server and extension child has
   with the sandbox off (protocol design §13, decision 3). The consent sheet then says,
   in those words, that the hook runs with the user's own permissions and no OS
@@ -642,26 +721,55 @@ root (`PLUGIN_ROOT`); environment = `buildSafeChildEnv` (`safe-env.ts:21-52`) pl
 stdin = the DLP-redacted envelope as today; timeout and output caps as today
 (`src/hooks/script-hook-types.ts:261`, `:264`).
 
-**Placeholders and anchoring.** `anchorBundledCommand` rejects absolute tokens and
-resolves relative ones against the descriptor's directory
-(`plugin-bundled-command.ts:27-49`), so a pre-expanded `${PLUGIN_ROOT}/...` would be
-rejected and a literal one would resolve to nothing. The order is therefore fixed:
-(1) every `${PLUGIN_ROOT}/<p>` token is rewritten to `<p>` and the argv is anchored with
-the **package root** as the descriptor directory (the plugin hook projection passes
-`plugin.json` as the descriptor path, not `ai.agent-connector.ave/hooks.json`), which yields sealed
-generation paths and the file identities the fingerprint covers; (2) after anchoring,
-`${PLUGIN_DATA}` tokens in `args` and `env` are expanded to the absolute data directory,
-which is outside the payload and therefore never anchored; (3) the wrap is applied.
-`${PLUGIN_ROOT}` may appear only as a path prefix of a token, `${PLUGIN_DATA}` never in
-`command[0]` (Agent Plugins §9.2), and a token that still contains a `${` after
-expansion is refused. `command[0]` must be `${PLUGIN_ROOT}/<path>` to a package file, or
-`node`/`bun` followed by such a path — the same list as §3.2 — so the sheet shows a
-program that lives in the package; what that program then does is bounded by the
-confinement above, not by the anchoring.
+**Placeholders and anchoring: the adapter.** `anchorBundledCommand` examines **every**
+path-like token of the argv it is given (`plugin-bundled-command.ts:31-42`, with
+`looksLikePath` at `:7-9`: a token that starts with `.` or `~` or contains a separator),
+rejects absolute tokens (`:34-35`) and resolves the rest against the descriptor's
+directory. Handing it an argv that still contains a `${PLUGIN_DATA}/…` token therefore
+throws (`command path is not a retained package file`), and expanding that token first
+throws too (absolute). Neither "rewrite, anchor, then expand" nor "expand, then anchor"
+works on the whole argv; the invocation is constructed by a placeholder-aware adapter,
+`resolveBundledArgv`, used for hooks and for the portable MCP `command`/`args`/`env`/
+`cwd` alike (§2.1 item 5, runtime resolution):
 
-**Consent and tests.** The consent sheet shows the argv verbatim after rewriting, the
+1. **Classify every token** of the symbolic argv into exactly one class:
+   - *package path*: `${PLUGIN_ROOT}/<p>` or a `./`-relative token — rewritten to
+     `./<p>` (the `./` is **kept**, so a root file such as `${PLUGIN_ROOT}/hook.js`
+     becomes `./hook.js`, which `looksLikePath` recognizes and the anchoring pass seals
+     and file-hashes; a bare `hook.js` would be skipped by `:33` and is never produced);
+   - *data reference*: `${PLUGIN_DATA}` or `${PLUGIN_DATA}/<p>` — validated
+     symbolically: `<p>` has no `..` segment, no absolute or drive-letter form, no
+     `\`, no NUL; refused otherwise;
+   - *literal*: everything else — a flag, a number, a word, a URL. A literal that
+     looks like a path (`looksLikePath` true) or still contains `${` is **refused**:
+     a bundled program may name a filesystem path only through the two placeholders.
+   `command[0]` must be a package path, or `node`/`bun` followed by a package path (the
+   list of §3.2); a data reference in `command[0]` is refused (Agent Plugins §9.2).
+2. **Anchor package paths only.** `anchorBundledCommand` gains a parameter
+   `anchorIndexes: readonly number[]`; the adapter passes the indexes of the package
+   tokens and the **package root** as the descriptor directory (the plugin hook
+   projection passes `plugin.json` as the descriptor path, not `ai.agent-connector.ave/hooks.json`).
+   Tokens not listed are copied through verbatim by the helper, so a literal is
+   preserved as written and a data reference is never seen by the anchoring pass. The
+   helper's fingerprint covers the anchored package files as today (`:50-56`).
+3. **Expand data references after anchoring**, replacing each with the absolute
+   `PLUGIN_DATA` path and re-checking containment on the resolved result (`realpath`
+   inside the data directory, a symlink out of it refused).
+4. **Apply the confinement** of this section to the resolved argv.
+
+The symbolic argv of step 1 (placeholders intact, `./`-relative package paths) is what
+the descriptor authority hashes (§5.2) and what the consent sheet shows; the resolved
+argv of step 3 exists only in the running host. Tests for the adapter: a package script
+with a data-path argument (`node ${PLUGIN_ROOT}/server/hook.js ${PLUGIN_DATA}/state.json`
+resolves, anchors `server/hook.js`, expands the second token); a root-file reference
+(`${PLUGIN_ROOT}/hook.js` → `./hook.js`, sealed and hashed); a literal with spaces
+preserved verbatim; `${PLUGIN_ROOT}/../x`, `${PLUGIN_DATA}/../x`, a bare path literal,
+a `${` left over, and a data symlink that escapes — each refused by name. What the
+program then does is bounded by the confinement above, not by the anchoring.
+
+**Consent and tests.** The consent sheet shows the symbolic argv (step 1 above), the
 event, the matcher, the timeout, and the confinement class the hook will run under on
-this machine. The exact-generation approval (`src/hooks/plugin-hook-projection.ts:14-31`)
+this machine, with the read model stated as the deny-list it is. The exact-generation approval (`src/hooks/plugin-hook-projection.ts:14-31`)
 does not survive a version change. Slice E's tests exercise denied effects, not only a
 successful spawn: a wrapped hook that reads `~/.ssh` fails, one that writes outside
 `PLUGIN_DATA` and the process home fails, one that opens a socket to a host outside the
@@ -705,9 +813,11 @@ touches no routine: the record stays, the attribution label changes to "template
 longer installed", and the Routines panel offers the usual delete. A template that
 changes in an update changes nothing already created. Because no routine execution is
 bound to a package generation, there is nothing package-scoped to abort on revocation:
-a running routine is the user's, and it ends the way any user routine ends (the user
-removes it through `ave:routines:remove`, `ipc-channels.ts:43`, or the engine finishes
-the turn). The scope predicate is unchanged: `pluginIds` restricts extension tools and
+a running routine is the user's and behaves as every user routine does today — removing
+it (`ave:routines:remove`, `ipc-channels.ts:43`) deletes the stored record
+(`src/main/routines-store.ts:411-420`) and does **not** abort a turn the engine has
+already started; that turn ends when `runTurn` returns, and no later run starts. This
+page changes nothing about that behaviour. The scope predicate is unchanged: `pluginIds` restricts extension tools and
 extension skills only (`src/tools/pipeline/plugin-turn-scope.ts:45-60`), and a routine
 created from a template is held to the scope the user confirmed, exactly like one the
 user typed.
@@ -815,8 +925,12 @@ assistant authored, `{ kind: "typed" }` for the form.
 
 **What travels with the package.** The draft directory itself is never exported. The
 provenance that leaves with the package is `ai.agent-connector.ave/provenance.json`
-`{ version: 1, parts: [{ path, origin }] }` — the same list, with `sessionId` removed
-— plus, where the format has a place for it, `SKILL.md` `metadata` (a string map, Agent
+`{ version: 1, parts: [{ path, origin }] }` — the same list with every machine-local
+value removed: `sessionId` is dropped, and a `user-store` origin is exported as the
+logical identity `{ kind: "user-store", store: "skills" | "prompts" | "agents", name }`
+instead of its absolute path, which stays in `draft.json` only, so a shared package
+never carries a username or a private directory name — plus, where the format has a
+place for it, `SKILL.md` `metadata` (a string map, Agent
 Skills §frontmatter) and a prompt's frontmatter get `ave-origin: studio` and
 `ave-authored-by: model | user`. This provenance is **author-declared**: the installer's
 package sheet labels it "declared by the author, not verified" and shows it beside,
@@ -958,7 +1072,7 @@ payload: {
 
 interface AgentPluginComponents {
   skills: Array<{ name: string; hasScripts: boolean; digest: string }>;
-  mcpServers: Record<string, McpServerSpec & { cwd?: string; digest: string }>;   // marketplace design §5.2 shape after projection (§2.1 item 5)
+  mcpServers: Record<string, McpServerSpec & { cwd?: string; digest: string }>;   // the static projection of §2.1 item 5: symbolic paths, placeholders intact
   mcpAuth?: Record<string, { auth: "api-key"; apiKeyEnv?: string; apiKeyHeader?: string }>;
   prompts: Array<{ name: string; kind: "template" | "persona"; digest: string }>;
   agents: Array<{ name: string; digest: string }>;
@@ -970,13 +1084,33 @@ interface AgentPluginComponents {
 }
 ```
 
-**Canonical derivation.** `components` is computed from the package tree by one
-function shared by the app, the studio and the repository checker: every `digest` is the
-SHA-256 of the component's canonical bytes (a skill's directory in path order, a
-prompt or profile file, a routine template serialized with sorted keys, an `mcp.json`
-entry after projection, a hook entry after rewriting). The descriptor's `components`
-must equal the derived value; a difference is `MANIFEST_MISMATCH` at install
-(marketplace design §6.2), and the repository check enforces the same equality in CI.
+**Canonical derivation: static authority, from package content only.** `components`
+is computed from the package tree by one function shared by the app, the studio and the
+repository checker, and it is **deterministic across machines**: the same package bytes
+yield the same `components` on a publisher's checkout, in a Studio draft, in the
+repository checker and on every installed generation. That holds because the derivation
+reads only the **static** representation of each component and nothing the runtime
+produces:
+
+| Component | Canonical bytes hashed into `digest` |
+|---|---|
+| skill | every file under `skills/<name>/` in sorted path order, each as `<relative path>\0<sha256 of bytes>` |
+| prompt, agent profile | the file bytes |
+| routine template | the template object serialized with sorted keys |
+| MCP server | the **static projection** of §2.1 item 5 serialized with sorted keys: `transport`, symbolic `command` (bare or `./`-relative), symbolic `args`, `env`, `cwd` and `url`/`headers` with placeholders intact, `mcpAuth` declaration, plus `<relative path>\0<sha256>` for every package file a package path names |
+| hook | the entry serialized with sorted keys: event, matcher, the **symbolic argv** of §3.3 step 1, `timeoutMs`, plus `<relative path>\0<sha256>` for every package file a package path names |
+
+Excluded by construction: absolute installation, data and home paths, sealed
+generation paths, generation and activation ids, `plugin_<hash>` server ids, anchored
+argv, and injected or stored secret values. The runtime projection
+(`plugin-mcp-projection.ts:112-134`, `:173-190`; the adapter of §3.3) is derived
+**from** the static form at preparation and never flows back into it. The descriptor's
+`components` must equal the derived value; a difference is `MANIFEST_MISMATCH` at
+install (marketplace design §6.2), and the repository check enforces the same equality
+in CI. Tests: the same package under two different roots and two activation ids yields
+byte-identical `components`; a real install of an unchanged package passes the
+equality check; changing one byte of a referenced package file changes that
+component's digest and no other.
 
 **What the summary is for.** `components` plays the role `PluginAuthority` plays for
 extensions (marketplace design §5.2): the index copies it into each `IndexVersion`, the
@@ -1010,15 +1144,16 @@ checker validates both. The new kind is listed **only in `marketplace.2.json` an
 
 | App | What it reads | What it sees of an `agent-plugin` package |
 |---|---|---|
-| ≤ 0.11 | the frozen `marketplace.json` | nothing: the official generator never writes the kind into format 1, and the repository checker refuses a format-1 index that carries it. If a hand-written format-1 index carries it anyway, the entry fails the per-entry schema and is dropped with a diagnostic while the rest of the index stands (`src/marketplace/catalog/validate.ts:258-266`). One case is not covered by the app: an entry claims its `path` before the schema check (`:261-262`), so a malformed new-kind entry that names an existing package's path drops that package too (`:275-284`). That is a publisher error the checker catches before merge; the app cannot tell it from any other duplicate path, and this page does not claim otherwise |
+| ≤ 0.11 | the frozen `marketplace.json` | nothing: the official generator never writes the kind into format 1, and the repository checker refuses a format-1 index that carries it. If a hand-written format-1 index carries it anyway, the entry fails the per-entry schema and is dropped with a diagnostic while the rest of the index stands (`src/marketplace/catalog/validate.ts:258-266`). One case is not covered by the app: an entry claims its `path` before the schema check (`:261-262`) and before the semantic rules (`:267-270`), so a malformed or rule-failing new-kind entry that names an existing package's path drops that package too (`:275-284`). That is a publisher error the checker catches before merge; the app cannot tell it from any other duplicate path, and this page does not claim otherwise |
 | 0.12.0 without slice C (only if C ships in 0.13.0, §7) | `marketplace.2.json` | nothing: the kind literal is unknown to its schema, so the entry is dropped per entry with a diagnostic in the sync log, **before** version choice (`src/marketplace/catalog/aggregate.ts:85`, `:144`) could show `upgrade_required`. The user sees no row, not an upgrade hint; the tab that would hold it does not exist on that app either. Extensions are unaffected because the drop is per entry; the path-claim case above applies identically and is the checker's to prevent |
 | first release with slice C | `marketplace.2.json` | the package, held to its `minAppVersion` (the release that ships C) through the ordinary `min_app_version` exclusion (`aggregate.ts:85`), so a later app that lacks a feature the package's `requires.minAppVersion` names shows `upgrade_required` (`:144`) |
 
-Slice C also moves the path claim in the index validator after the per-entry schema
-check (`validate.ts:261-262` → after `:263-266`), so that from the first release with C
-a malformed entry can never evict a valid one; the fixture "malformed new-kind entry
-sharing a path" proves it. Older apps keep the old order; the checker is their
-protection.
+Slice C also moves the path claim in the index validator after **both** the per-entry
+schema check and the semantic rules (`validate.ts:261-262` → after `indexPackageRules`,
+`:267-270`), so that from the first release with C an entry that is dropped for any
+reason never evicts a valid one; the fixtures "schema-invalid new-kind entry sharing a
+path" and "schema-valid, rule-failing entry sharing a path" prove it. Older apps keep
+the old order; the checker is their protection.
 
 The trap a review found — renaming a kind literal or adding a field to a closed object,
 which drops a whole package from every older client — is avoided by never touching the
@@ -1195,9 +1330,9 @@ documentation for what it changes. Lock suites are named where a slice touches t
 |---|---|---|---|
 | **A. Design** | this page; the superseded pointer on the 2026-08-16 proposal; the design README entry | markdown policy, naming gate against `origin/main`, link check of the citations | none |
 | **B. Vocabulary and classification** (0.12.0, owner decision 1) | i18n values in `en` and `ko` for every "plugin" value that means a code package (§6.1: "extension" / 익스텐션), with keys unchanged; docs, web pages (with redirects), `resources/AGENTS.md`, `CHANGELOG.md` `## Unreleased`; a pure `isExtensionManifest(manifest)` in `src/plugins/` (true iff `entry` or `process` is present) used by the Sidebar group, the settings tabs, the Doctor labels and the package sheet section names. No kind-tab reorder (`KIND_ORDER` waits for the union member, slice C), no schema, IPC, settings or `package.json` change | `check:i18n-catalog`, `check:i18n-barrels` (`package.json:59`, `:62`; both run inside `build`, `:47`) and the used-keys test `src/i18n/__tests__/used-keys-exist.test.ts:35-62`, which proves every literal `t("…")` key resolves — it is the static gate a parity check lacks; a CDP run of the app from the worktree reading the sidebar, settings and marketplace tab text proves the rendered flow (computed keys and the actual strings); Playwright specs that assert labels; `bun run typecheck` | `channel-inventory`, `host-renderer-only-channels`, `domain-exports`, `preload-shape`, `settings-store` and `packaging-discipline-source` unchanged; naming gate |
-| **C. The `agent-plugin` kind** | `PACKAGE_KINDS`, `schemas/marketplace/package.schema.json` and `index.schema.json` (format 2 only), descriptor `components` with canonical derivation and digests (§5.2), content rules, tree install and ledger, the validator's path-claim reorder (§5.2), activation of skills (plugin-skill map and selector, §3.5), prompts (both kinds, package-qualified persona ids, the `plugin-prompt-emitted` origin sweep), agent profiles, routine templates (panel prefill and `routine_schedule` attribution, §3.4) and MCP servers: the portable parser/projection/exporter (§2.1 item 5), `cwd` and `PLUGIN_DATA` on both spawn paths, the bundled credential store and `setBundledApiKey`, fingerprint approval, the `allowUserApprovedServers` rule and `bundledServers` list at the shared lookup and every insertion (§3.2); the manifest schema's three-branch namespace block and root `required` (§2.1) and its public type; direct-install detection; deep-link and policy kind acceptance; `repository-check.ts`; package sheet Components section and update-review delta; kind tab order; the extension contribution set gains routine templates and prompts (§1.3, reason 2). **Lands after the amendment's slice C** (public type, format-2 reader). Uses the existing `ave:marketplace:*` channels; DTOs in `src/shared/git-marketplace.ts` grow | catalog validate fixtures for the kind (valid, each invalid rule, unknown keys, format-1 index with the kind → dropped per entry, malformed entry sharing a path → only that entry dropped, older-app snapshot unchanged); official `plugin.schema.json` and `mcp.schema.json` as fixtures (portable-only manifest, `streamable-http`, `./`-relative command, placeholder in `command` refused, `cwd` outside roots refused, export round trip); manifest `oneOf` fixtures (entry extension, process extension, plugin, malformed `entry`, both markers → refused); installed-manifest retired-field strip unchanged; content rules; content service activation and rollback; skill selector and collision fixtures; persona id and `user-keyboard` guard fixtures; routine template prefill and attribution, plugin removal leaves the routine; MCP: fingerprint, approval-not-transferring-across-versions, policy collision, `allowUserApprovedServers: false` → zero `McpClient` construction on the manager path, mid-run flip disconnects, `bundledServers` fingerprint connects, `PLUGIN_DATA` marker survives update and restart on plain and wrapped paths, credential persistence bytes and reconnect, export contains no value; `mcpAuth` schema; direct-install branches; repository-check bundle rebuilt for the official repository; the git-marketplace lifecycle E2E adds one `agent-plugin` package with a skill, a prompt, a routine template and a stdio server | `src/shared/git-marketplace.ts` DTO tests; `preload-shape` only if the bridge grows a method (it does not: existing channels carry the kind); `settings-store` unchanged (routine templates are routines' prefill, not settings; the policy rule is in the governance file); `domain-exports` unchanged; `packaging-discipline-source` unchanged; manifest schema and hardening tests; naming gate |
+| **C. The `agent-plugin` kind** | `PACKAGE_KINDS`, `schemas/marketplace/package.schema.json` and `index.schema.json` (format 2 only), descriptor `components` with canonical derivation and digests (§5.2), content rules, tree install and ledger, the validator's path-claim reorder (§5.2), activation of skills (plugin-skill map and selector, §3.5), prompts (both kinds, package-qualified persona ids, the `plugin-prompt-emitted` origin sweep), agent profiles, routine templates (panel prefill and `routine_schedule` attribution, §3.4) and MCP servers: the portable parser, static projection, runtime resolution and exporter (§2.1 item 5), the `resolveBundledArgv` adapter and `anchorIndexes` parameter (§3.3), `cwd` and `PLUGIN_DATA` on both spawn paths, the bundled credential store and `setBundledApiKey`, fingerprint approval, the `admitted` predicate with approval provenance, the `allowUserApprovedServers` rule and `bundledServers` list at the shared lookup, every insertion, publication and reload (§3.2); the static component authority and its derivation function (§5.2); the manifest schema's three-branch namespace block and root `required` (§2.1) and its public type; direct-install detection; deep-link and policy kind acceptance; `repository-check.ts`; package sheet Components section and update-review delta; kind tab order; the extension contribution set gains routine templates and prompts (§1.3, reason 2). **Lands after the amendment's slice C** (public type, format-2 reader). Uses the existing `ave:marketplace:*` channels; DTOs in `src/shared/git-marketplace.ts` grow | catalog validate fixtures for the kind (valid, each invalid rule, unknown keys, format-1 index with the kind → dropped per entry, malformed entry sharing a path → only that entry dropped, older-app snapshot unchanged); official `plugin.schema.json` and `mcp.schema.json` as fixtures (portable-only manifest, `streamable-http`, `./`-relative command, placeholder in `command` refused, `cwd` outside roots refused, export round trip); manifest `oneOf` fixtures (entry extension, process extension, plugin, malformed `entry`, both markers → refused); installed-manifest retired-field strip unchanged; content rules; content service activation and rollback; skill selector and collision fixtures; persona id and `user-keyboard` guard fixtures; routine template prefill and attribution, plugin removal leaves the routine; MCP: fingerprint, approval-not-transferring-across-versions, policy collision, `allowUserApprovedServers: false` → zero `McpClient` construction on the manager path, mid-run flip disconnects user approvals and leaves policy-fingerprint ones running, fingerprint removal disconnects, stale prepared snapshot refused at publication, `PLUGIN_DATA` marker survives update and restart on plain and wrapped paths, credential persistence bytes and reconnect under packaged secret policy, export contains no value; static authority: identical `components` under two roots and two activation ids, unchanged install passes equality, one changed file changes one digest; `mcpAuth` schema; direct-install branches; repository-check bundle rebuilt for the official repository; the git-marketplace lifecycle E2E adds one `agent-plugin` package with a skill, a prompt, a routine template and a stdio server | `src/shared/git-marketplace.ts` DTO tests; `preload-shape` only if the bridge grows a method (it does not: existing channels carry the kind); `settings-store` unchanged (routine templates are routines' prefill, not settings; the policy rule is in the governance file); `domain-exports` unchanged; `packaging-discipline-source` unchanged; manifest schema and hardening tests; naming gate |
 | **D. Studio: create, import, export, install from file** | `~/.ave/studio/` namespace, `draft.json` with `reviewed: { treeDigest, at }` and `provenance.json`; the three `plugin_studio_*` tools; the form flow; the review page with the lost/rewritten/needs-input groups; import (§2.4, declared paths and inline definitions, synthesis, precedence, `needsAdaptation`) and export projections; *Install from file*; *Share* gated on the current `reviewed`; the advisory lint. One new IPC domain `ave:plugin-studio:*` (list/read/write drafts, validate, import, export, install-from-file) registered with its handlers, preload bridge, shared types, callers, sender guard and tests in one change (AGENTS.md, "A new IPC channel is one coherent change") | tool registry and executor parity tests for the three tools (approval-gated, `builtin`, `meta`); draft namespace permissions (`0o700`/`0o600`); import fixtures for each detection branch, each mapping row of §2.3, each synthesis and precedence rule of §2.4, including every rejection; export round trip (export → import equals the source package, with and without the optional projection); `reviewed` cleared on every write path; lint fixtures; install-from-file goes through the package sheet and records `sourceId: null`; a Playwright spec for form → review → install | **`channel-inventory`, `host-renderer-only-channels`, `domain-exports`, `preload-shape`, `preload` updated in the same change**; `settings-store` unchanged (no setting); `packaging-discipline-source` unchanged unless a script is added (none planned); naming gate |
-| **E. Hooks in plugins** | the shared ASRT wrap helper used by the MCP client and the hook runner; the runner's `confinement` option and bundled-hook spawn contract (§3.3); placeholder rewriting and root anchoring; the package sheet's hook consent with the confinement class; export/import of hooks (§2.3) | hook parse and rejection fixtures per §2.3 row; anchoring and placeholder refusals; exact-generation approval and re-ask on update; runner timeout and output caps; denied-effect tests (read `~/.ssh`, write outside the grant, socket outside the allow-list), wrap-failure denies a blocking event, Windows sandbox-on refusal; a real spawned hook in the macOS and Linux CI jobs; the MCP client's wrapped-path tests unchanged after the helper extraction | hook registry and trust tests; MCP client wrap tests; no channel, preload, settings or script change; naming gate |
+| **E. Hooks in plugins** | the shared ASRT wrap helper used by the MCP client and the hook runner; the runner's `confinement` option and bundled-hook spawn contract (§3.3); the hook side of the `resolveBundledArgv` adapter (the adapter itself and `anchorIndexes` land in slice C for MCP); the package sheet's hook consent with the confinement class; export/import of hooks (§2.3) | hook parse and rejection fixtures per §2.3 row; the adapter fixtures of §3.3 (data-path argument, root file, spaces, escaped roots, bare path literal, leftover `${`, escaping data symlink); exact-generation approval and re-ask on update; runner timeout and output caps; denied-effect tests (read `~/.ssh`, write outside the grant, socket outside the allow-list), wrap-failure denies a blocking event, Windows sandbox-on refusal; a real spawned hook in the macOS and Linux CI jobs; the MCP client's wrapped-path tests unchanged after the helper extraction | hook registry and trust tests; MCP client wrap tests; no channel, preload, settings or script change; naming gate |
 
 Validation discipline follows the repository contract (`AGENTS.md`, "Validation:
 proportional during work, complete once at publish"): narrow vitest runs and
@@ -1274,7 +1409,7 @@ Every product choice this page raised has been decided by the owner. None remain
 | 6 | Commands become template prompts through the MCP-prompt surface; hooks map onto the closed Ave event set in argv form only; unmappable events and handler types are rejected by name; the stdin and decision protocol is not translated and imported hooks carry `needsAdaptation` until the user clears it (§2.3) | The slash picker already carries author-written prompts with non-keyboard provenance; the hook runner spawns argv and nothing else; emulating another host's protocol would be a second protocol |
 | 7 | Import and export are studio operations that produce a reviewed draft, never part of install; portable files win over legacy projections; `$schema` is always synthesized; declared component paths and inline definitions are read; missing `version`/`description` block validation until the user supplies them (§2.4) | The transformation drops and rewrites fields; the user must see the result before it runs; a re-import of an export must not read anything twice |
 | 8 | A plugin's MCP servers go through the extension-bundled projection: fingerprint approval that never transfers, scoped preparation and atomic publication, governance at connect, ASRT wrap when the sandbox is on, `low` tier (§3.2) | The path exists, is tested, and is the same one hand-added and extension-bundled servers use; no new path means no new back door |
-| 9 | `globalRules.allowUserApprovedServers` (default `true`) is enforced at `findApproval` and at every runtime-approval insertion, refused preparations spawn nothing, a mid-run flip disconnects, and organizations approve bundled servers by fingerprint through `bundledServers` (§3.2) | The named-setter design missed the manager's real path; a switch that any path can bypass is not a switch; bundled ids are generation-bound and cannot be listed as managed servers |
+| 9 | One `admitted` predicate over approval provenance — managed, or policy-fingerprint still listed in `bundledServers`, or user with `allowUserApprovedServers` true — governs lookup, every insertion, reuse, publication (rechecked against the current policy) and reload cleanup; refused preparations spawn nothing; a policy change disconnects exactly the approvals that stopped being admitted (§3.2) | The named-setter design missed the manager's real path, and an exemption at insertion cannot rescue an approval the lookup refuses; one predicate in one place is the only way the five paths cannot disagree; bundled ids are generation-bound and cannot be listed as managed servers |
 | 10 | A plugin ships routine templates only; a routine is created by the user through the panel's add form or the approval-gated `routine_schedule` tool, is user-owned, carries the template as attribution, and is untouched by plugin disable, update, uninstall or revocation (§3.4; owner decision 4) | Installation is never consent to an unattended turn; no package-bound execution exists, so there is nothing package-scoped to abort; the user's routine controls are the only controls |
 | 11 | Template prompts get their own `ChatInputOrigin` value; package personas and skills use package-qualified ids and selectors (`agent-plugin:<package>:<name>`), the bare name space stays the user's, and the `user-keyboard` persona guard is untouched (§3.5) | Attribution must say who wrote the text; a package must never shadow a local identity or another package's; the guard is a security boundary, not an inconvenience |
 | 12 | The studio composes from installed skills, routines (as templates), connectors, prompts and profiles plus model-authored text; it never composes code, hooks or scripts (§4.1) | No-code means no code; the studio says so instead of degrading |
@@ -1283,7 +1418,7 @@ Every product choice this page raised has been decided by the owner. None remain
 | 15 | Sharing is export-a-file or write-into-a-marketplace-checkout; the app never commits or pushes (§4.5; owner decision 3) | The git contract is read-only; a merge is the publish |
 | 16 | Author review is bound to the tree digest and cleared by any write; installer review of full texts before installing; an advisory injection lint that is explicitly not a security control (§4.6) | A review of bytes that later changed is not a review; the permission system is the control; a heuristic must not be sold as a gate |
 | 17 | New kind literal `agent-plugin`; the `plugin` literal keeps its value; kind tab order puts Plugins first from slice C (§5.1) | The literal names the specification; the old literal is persisted everywhere; ordinary users come first; the union member must exist before the order names it |
-| 18 | The descriptor's `components` summary is canonically derived, carries a content digest per component and the execution-relevant fields (routine prompt and schedule, hook matcher and timeout, MCP `cwd`); update review diffs by digest; a changed MCP server or hook is unapproved until re-approved (§5.2) | The catalog must show what executes before any byte is fetched, and a human must be able to see which text changed; an inventory is not an authority |
+| 18 | The descriptor's `components` summary is a **static authority** derived from package content only — symbolic paths and placeholders, component names, per-file hashes — with a content digest per component and the execution-relevant fields (routine prompt and schedule, hook matcher and timeout, MCP `cwd`); it excludes every runtime value (absolute paths, generation and activation ids, server ids, secrets); update review diffs by digest; a changed MCP server or hook is unapproved until re-approved (§5.2) | The catalog must show what executes before any byte is fetched, and a human must be able to see which text changed; an inventory is not an authority; a digest that includes an installation path differs on every machine and would reject an unchanged install |
 | 19 | The new kind is listed only in `marketplace.2.json` and `schemaVersion: 2` descriptors; the three app cohorts are stated with what each actually sees, including the per-entry drop on a 0.12.0 app without C and the path-claim case the checker must prevent; slice C reorders the validator's path claim (§5.2) | The older-app trap is a renamed literal or a widened closed object; a compatibility claim must say what the old reader does, not what it never sees |
 | 20 | Delivery is the tree export with a tree digest; no artifact ladder (§5.2) | Nothing is compiled; skills already ship this way |
 | 21 | Identifiers are not renamed: IDs, tool names, channels, `plugin.json`, the namespace key, receipts, the `plugin` kind literal, i18n keys, code names (§6.2); the proposal's `ave-plugin.json` rename is rejected | Each is persisted, vendored, hash-pinned or locked; the collision the proposal feared is solved by the namespace the manifest already uses |
@@ -1291,7 +1426,7 @@ Every product choice this page raised has been decided by the owner. None remain
 | 23 | No dependency on the Lease wave in either direction; the wave carries the README, template and generator changes, and the kind's schema only in timeline 1 (§6.4, §7) | Extensions are extensions under any protocol version; the wave is the cheapest moment to change wording; no wave step may wait for a tag that does not exist |
 | 24 | Five slices with the gates and lock suites of §7; B in 0.12.0 (owner decision 1); C after the amendment's slice C on one of two stated timelines; D and E in 0.13.0; nothing in v0.11.0; the full validation run happens once, in the pre-push hook | Owner constraint; each slice is coherent at its own boundary; the format-2 reader is written once; the hook owns the full run |
 | 25 | A bundled server's credential is stored in the encrypted secret document store under a stable installed-package key, resolved into the in-memory connect config at preparation, entered through `setBundledApiKey`, kept across updates that keep the declaration, and never routed through `setApiKey`/`saveConfigs` (§3.2) | The existing setter persists plain JSON and needs a persisted config entry; a bundled server has neither, and its runtime id is generation-bound |
-| 26 | Bundled hooks (plugin and extension) run under the MCP stdio confinement class: ASRT-wrapped with a `PLUGIN_DATA`-only write grant when the sandbox is on, fail-closed (blocking events denied, observe-only events pass), plain spawn stated as unconfined when it is off, refused on Windows with the sandbox on; the wrap is one shared helper; `${PLUGIN_ROOT}` is rewritten before root anchoring and `${PLUGIN_DATA}` expanded after it (§3.3) | The runner has no sandbox branch today and anchoring a path does not confine a program; a consent sheet must describe what holds; the two spawn sites must not drift |
+| 26 | Bundled hooks (plugin and extension) run under the MCP stdio confinement class: ASRT-wrapped with a `PLUGIN_DATA`-only write grant and the deny-list read model when the sandbox is on, fail-closed (every blocking event denied, observe-only events pass), plain spawn stated as unconfined when it is off, refused on Windows with the sandbox on; the wrap is one shared helper; the invocation is built by the placeholder-aware adapter `resolveBundledArgv` — classify tokens, anchor package paths only (`./` kept, `anchorIndexes`), expand validated data references afterwards, refuse bare path literals — shared with the portable MCP runtime resolution (§3.3) | The runner has no sandbox branch today and anchoring a path does not confine a program; the anchoring helper examines every path-like token, so a whole-argv pass either rejects data arguments or admits absolute ones; a consent sheet must describe what holds; the two spawn sites must not drift |
 | 27 | `cwd` is a projected, validated, descriptor-carried field honoured by both spawn paths; `PLUGIN_DATA` is `~/.ave/agent-plugin-data/<name>/`, keyed by package name, and is the one directory added to the wrapped write grant (§2.1 item 7, §3.2) | Two environment variables do not make a directory writable or a relative path resolvable; the grant must be narrow and the identity stable across updates |
 
 ---
@@ -1343,6 +1478,15 @@ Every product choice this page raised has been decided by the owner. None remain
 14. **Store a bundled server's credential through the existing `setApiKey`.** It writes
     the whole config list as plain JSON and needs a persisted entry with a stable id;
     neither holds for a bundled server.
+15. **Hash the runtime projection into the descriptor's `components`** (the second
+    revision). The runtime projection anchors argv to absolute sealed paths and mints
+    generation- and activation-bound ids, so identical package bytes hash differently on
+    every machine and an unchanged install fails `MANIFEST_MISMATCH`; the authority is
+    the static form (§5.2), and the runtime form is derived from it.
+16. **Exempt policy-approved bundled servers from the organization switch at insertion
+    while the lookup hides every runtime approval** (the second revision). An approval
+    the lookup refuses cannot connect whatever the insertion allowed; admission is one
+    predicate over provenance (§3.2).
 
 ---
 
