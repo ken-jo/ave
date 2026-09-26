@@ -310,8 +310,10 @@ functions in a return value.
   down by the dispatcher (`host-api-dispatcher.ts:795-832`) while the factory passes
   the PermissionManager's per-plugin revoke accessor into the resolver
   (`host-api-factory.ts:813-816`; the signal itself is `permission-manager.ts:817-829`),
-  so a revocation aborts a resolve in flight but nothing closes an already-issued
-  ledger entry or sends `subscription/closed` for it, and the child removes its abort listener when
+  so a revocation aborts a resolve in flight and clears the key the resolver's closure
+  captured (`resolve-api-key.ts:157-186`), but nothing recalls a key already copied
+  into a reply, closes an already-issued ledger entry or sends `subscription/closed`
+  for it, and the child removes its abort listener when
   the resolve request settles (`plugin-child-runtime.ts:264-281`), so request
   cancellation ends with the reply and is **not** a lease lifetime. The successor
   design replaces this account: the default result carries no key, a host-owned lease

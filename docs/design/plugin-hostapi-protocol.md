@@ -260,8 +260,8 @@ current inputs or refuses.**
   re-resolves at exec, so it sees the reduced set. A restart is refused with the same
   status until the plugin's config names a path inside the remaining ceiling or the
   user approves the directory again; the plugin cannot widen the ceiling from its
-  config. Boot: the workspace-root reconciler runs before plugins load
-  (`src/permissions/workspace-root-reconciler.ts:81-98`, `source: "boot"`), so
+  config. Boot: the workspace-root reconciler runs before any plugin receives a
+  HostApi (`src/boot.ts:573-582`, `source: "boot"`), so
   resolution at spawn sees the reconciled set and no incarnation is ever spawned
   against a root that no longer exists. The slice C acceptance test for workspace
   revocation asserts exactly this: remove a root while a delegated worker holds a file
@@ -479,8 +479,9 @@ Rules:
   envelope policy for `N`, because "retaining `N`" would mean all of those, frozen and
   tested per version, and a version label in an array implements none of them. What the
   boundary promises instead is the deprecation shape of §9.3: the boundary is announced
-  at least one minor release ahead, replacement artifacts for every official plugin
-  exist before the boundary is tagged, and an artifact that does not declare a served
+  at least one minor release ahead, **tested candidate** replacements for every official
+  plugin exist before the boundary is tagged and **published** replacements before the
+  app draft is published (§9.3, §9.5), and an artifact that does not declare a served
   version is refused **before factory activation** with `incompatible-host-protocol`
   and an update path — on both loader arms, for every install source, offline included.
   Reason 4 (independent release) is kept by the *additive* rule of §3.3 — which is what
@@ -834,7 +835,7 @@ under `$defs.methods["ave/host/resolveApiKey"].result`):
 // success, lease — no key anywhere in the frame
 { "handleId": "lease_…", "ok": true, "exposure": "lease", "vendor": "azure-openai", "baseUrl": "https://…" }
 // success, raw — key crosses, once, on this reply only
-{ "handleId": "lease_…", "ok": true, "exposure": "raw", "vendor": "openai", "key": "sk-…" }
+{ "handleId": "raw_…", "ok": true, "exposure": "raw", "vendor": "openai", "key": "sk-…" }
 // denied — nothing to release, so no handleId
 { "ok": false, "reason": "audience-not-allowlisted" }
 ```
@@ -857,9 +858,14 @@ Rules:
   The Promise resolves when the stub's local state is terminal and the frame is
   written; a second call, or a call for an id the host no longer knows, is harmless
   and is counted in the bounded diagnostics of §3.6, never an error — no thrown code
-  exists for release. Host closure is ordered on the stream: the dispatcher registers
-  the ledger entry **before** it sends the resolve reply, so a `closed` notification
-  for that id can only follow the reply. Because the stub adopts the handle only in the
+  exists for release. Host closure is ordered on the stream: the resolve reply is
+  written **before** any `closed` notification for that id. Registering the entry
+  before the reply does not give that by itself — the dispatcher builds the reply only
+  after the handler returns (`host-api-dispatcher.ts:2022-2028`), and a ledger close
+  runs its teardown at once (`subscription-ledger.ts:131-135`) — so the ordering is a
+  requirement the synchronous commit-and-reply section of §4.1.2 enforces: a
+  revocation that lands between registration and the reply write is queued behind the
+  reply, never sent ahead of it. Because the stub adopts the handle only in the
   continuation after `await`ing the reply (`host-api-child.ts:352-377`; the ledger's own
   comment names this race, `subscription-ledger.ts:99-106`), the reference runtime keeps
   a **pending-closure map** keyed by subscription id, bounded to the registration cap
@@ -944,8 +950,10 @@ resolve request ──► issuing ──► active ──► released   (plugin:
   concurrent resolves cannot all observe 31 and exceed the cap); (3) run the secret
   gate (`runSecretGate`, `:288-296`), read the secret and, for a source that needs one,
   the endpoint (`:313-336`); (4) in one synchronous section with no await between
-  compare and insert, compare `S` with the current values and either register the
-  record and send the reply, or return the reservation and answer
+  compare and insert, compare `S` with the current counters — which, by the Record
+  rule below, move synchronously with every *visible* transition, so equality proves
+  that the values read at (3) are still the ones the host itself would use — and
+  either register the record and send the reply, or return the reservation and answer
   `"stale-authorization"`. There is no re-read into the new epoch: a change during
   issuance is a denial, and the caller decides whether to resolve again. Raw success
   goes through the same fence; the key is copied into the reply only after the commit.
@@ -954,16 +962,48 @@ resolve request ──► issuing ──► active ──► released   (plugin:
   scheme, audience, activeUses: Set<AbortController> }`. `permissionEpoch` is the count
   of `revokePluginAccess` calls for the plugin (`permission-manager.ts:817-829` aborts
   and replaces the controller today; the epoch makes that observable to the registry
-  even when no controller existed). `secretGeneration(key)` is a per-key counter in the
-  settings store, incremented after a **successful** `setSecret` or `deleteSecret` of
-  that key (`src/data/settings-store.ts:1706-1732`, `:1751-1754`), for each key a bulk
-  or plugin-secret removal deletes, and for each key a provider-preset invalidation
-  withholds (`:1710-1716`); a failed write leaves it unchanged, because the stored value
-  is unchanged. `providerConfigRevision` is one counter incremented on any successful
-  write of the active provider, a per-vendor endpoint or a provider preset. Both
-  counters are host-owned hooks on the store's post-commit path — a generic
-  "this secret / this configuration changed" signal, which the store does not have
-  today and which the registry subscribes to; no plugin- or vendor-specific branch.
+  even when no controller existed). `secretGeneration(key)` and
+  `providerConfigRevision` are counters over the **authorization state visible to the
+  resolver**, not over disk writes. The resolver reads live store state: `get("llm")`
+  clones the in-memory object (`src/data/settings-store.ts:1110-1112`) that `set`, the
+  `llm` patch and `replaceLlm` mutate **before** their `commit()` resolves
+  (`:1114-1116`, `:1175-1181`, `:1670-1677`), and a failed save restores the last saved
+  settings in memory (`:1978-1993`; `this.saved` is that state, `:1021-1024`);
+  `resolve-api-key.ts:216-239` and `:330-334` read the active provider and the Azure
+  endpoint through that path. Secret readability changes outside successful writes
+  too: a preset invalidation marks its keys before its own commit
+  (`settings-store.ts:1555-1559`), a failed re-entry withholds the key (`:1720-1728`),
+  and `secretReadable` consults the invalidating, restoring, withheld and re-entered
+  bookkeeping (`:1761-1768`). Therefore `providerConfigRevision` is incremented,
+  synchronously in the same job as the mutation, at **every transition of the visible
+  provider configuration**: the in-memory assignment by `set`, the `llm` patch or
+  `replaceLlm` of the active provider, a per-vendor endpoint or a provider preset, and
+  the rollback in `drain`; a save that succeeds changes nothing visible and increments
+  nothing. `secretGeneration(key)` is incremented, likewise synchronously, at every
+  change of the bookkeeping `secretReadable(key)` consults and at the completion of a
+  `secretStore` write or delete of the key (`:1719`, `:1751-1754`, and each key a bulk
+  or plugin-secret removal deletes), because that completion is when the value
+  `getSecret` returns changes; a secret write that fails without touching readability
+  leaves the value, and so the generation, unchanged. The counters over-revoke by
+  design: a lease bound to A is closed when B becomes visible even if B is rolled back
+  a moment later, and the caller resolves again; under-revocation is the defect, and
+  no counter may lag a visible transition by an await. Both counters are host-owned
+  hooks on the store's mutation and rollback points — a generic "the visible secret /
+  configuration state changed" signal, which the store does not have today and which
+  the registry subscribes to; no plugin- or vendor-specific branch. The alternative, a
+  committed-only view for lease issuance and use, is rejected: the host's own adapters
+  and the resolver read the live state, so a lease bound to the committed value would
+  diverge from the host's own egress during a pending save, and the store has no
+  committed getter to bind to. **Acceptance (slice D, §9.6)** drives the real
+  `SettingsStore` with a controllable persistence barrier under `saveSettings`
+  (`:1986`), never a counter incremented by the test: (a) endpoint A committed, a write
+  exposes B and its save is held, a lease resolved meanwhile binds B, the save fails
+  and memory returns to A — the B-bound lease is closed `revoked` and its next use is
+  `lease-unavailable` with no request sent; (b) the same with the save succeeding — the
+  B-bound lease stays live and a lease issued before the write was closed when B became
+  visible; (c) a preset invalidation and a failed re-entry withhold a key before,
+  during and after an issuance — issuance during it is `stale-authorization`, the
+  earlier lease is closed, and no use sends the withheld key.
 - **Revocation events**, each ending every registration it matches with
   `notifications/ave/subscription/closed { reason: "revoked" }` and an audit line: a
   `permissionEpoch` change for the plugin; a `secretGeneration` change of the resolved
@@ -974,9 +1014,11 @@ resolve request ──► issuing ──► active ──► released   (plugin:
   `peer-gone`. Today nothing closes an issued ledger entry on any of these: the
   dispatcher opens and tears down the entry (`host-api-dispatcher.ts:795-832`), the
   factory passes the permission revoke accessor into the resolver
-  (`host-api-factory.ts:813-816`) where it can only abort a resolve in flight, and
-  `subscription/closed` reaches the child at `plugin-child-runtime.ts:693-696` only when
-  sent. The registry is that missing edge, and it is one code path for both arms,
+  (`host-api-factory.ts:813-816`) where it aborts a resolve in flight and, through the
+  listener `makeSuccess` attaches (`resolve-api-key.ts:157-186`), clears the key the
+  returned closure captured — but it cannot recall bytes already copied over the wire
+  nor close the dispatcher's ledger entry — and `subscription/closed` reaches the child
+  at `plugin-child-runtime.ts:693-696` only when sent. The registry is that missing edge, and it is one code path for both arms,
   owned by the plugin-runtime boot step (the factory's owner), not by the dispatcher.
 - **Epoch fencing at use.** Every use compares the record's `incarnationId`,
   `permissionEpoch`, `secretGeneration` and `providerConfigRevision` with the current
@@ -1020,7 +1062,7 @@ record, not by the request union, and every record the host can hold has a row
 
 | Normalized source (key slot) | Lease support in 0.12.0 | Scheme (header the host injects) | Audience origin |
 |---|---|---|---|
-| `openai` (`llm.apiKey.openai`) | supported | `Authorization: Bearer <key>` | the origin the host's own OpenAI adapter uses: the configured OpenAI base URL if the host has one (`adapter.ts:662-668` shows the same pattern for `gemini`), else `https://api.openai.com` |
+| `openai` (`llm.apiKey.openai`) | supported | `Authorization: Bearer <key>` | the origin the host's own OpenAI adapter uses: the configured OpenAI base URL if the host has one (`adapter.ts:671-675`), else `https://api.openai.com` |
 | `azure-foundry` (`llm.apiKey.azure-foundry`) | supported | `api-key: <key>` | the origin of the host's configured Azure base URL (`resolve-api-key.ts:326-336`); with no configured base URL the resolve is denied `"endpoint-unavailable"` |
 | `claude` (`llm.apiKey.claude`) | supported | `x-api-key: <key>` (plus the host's `anthropic-version` header) | the configured Anthropic base URL's origin if any, else `https://api.anthropic.com` |
 | `gemini` (`llm.apiKey.gemini`) | **denied**, `"vendor-unsupported"` | — | deferred: no official consumer asks for it; adding it later is an additive row (`x-goog-api-key`) |
@@ -1045,7 +1087,8 @@ record, not by the request union, and every record the host can hold has a row
   default or explicit-equal). No path binding: Azure deployment paths and OpenAI
   endpoints vary under one origin and a path rule would bind nothing a credential does
   not already reach.
-- **Private and loopback targets.** Lease mode does not add a network rule of its own:
+- **Private and loopback targets.** Beyond the https-only audience above, lease mode
+  does not add a network rule of its own:
   the existing guard already admits a declared loopback host that resolves only to
   loopback and an allow-listed host that resolves only to private space when the
   plugin has opted into private networks (`host-fetch-guard.ts:178-212`, `:248-255`),
@@ -1184,7 +1227,9 @@ and the acceptance tests of §9.1 assert its absence in every official caller.
   is still denied to a tree install by provenance, so raw there can only return a
   plugin-own key. Headless (no UI): no consent can be recorded, so raw is denied unless
   a policy install carries it.
-- **Ordering.** Every raw denial happens before the secret is read.
+- **Ordering.** Every capability, consent, provenance and entitlement denial of raw
+  happens before the secret is read; the one denial that can follow the read is the
+  issuance fence's `stale-authorization` (§4.1.2), which copies nothing into the reply.
 
 #### 4.1.7 Consumers at the reviewed revisions
 
@@ -1328,23 +1373,50 @@ is committed. Three facts bind the Lease step:
   serves `1`.
 - **The web mirror has an owner.** No `web/public/schemas/` exists at `f1a8d191e`; the
   generator writes only its canonical path (`generate-plugin-host-protocol-schema.ts:33-38`).
-  The mirror is delivered in two named actions, because the site deploys on every
-  `web/**` merge and a tag is not a deployment event: **(E1, the pre-tag release PR)**
-  `scripts/release.mjs` regenerates the schema after the bump and copies it to
-  `web/public/schemas/plugin-host-protocol/<v>/v<app>/protocol.schema.json`; that
-  immutable, tag-named copy may deploy before the tag exists, deliberately, because its
-  `$id` is the tag URL and its bytes are the bytes the tag will carry — if the tag is
-  never created the copy is an orphan that no `contract/sources.json` pins, which is
-  harmless; a superseding tag gets its own path. `check:plugin-host-protocol-mirror`, a
-  `build`-chain script (which changes `src/__tests__/packaging-discipline-source.test.ts:627-663`
-  in the same PR), holds every tag-named copy byte-equal to the canonical file of its
-  version. **(E2, the post-publication runbook step)** the moving alias
-  `/<v>/protocol.schema.json` is promoted by a `web`-only PR merged after the app draft
-  is published (§9.5 step 5), which is the explicit promotion mechanism; the mirror
-  check asserts the alias equals the newest *published* tag copy, so a candidate's copy
-  cannot become the alias by deploying. The v0.11.0 release does not carry the mirror;
-  its `1/v0.11.0` copy is added retroactively by E1, so the first published `$id`
-  still resolves.
+  Two copies of one protocol version are never byte-equal across app releases, even
+  when no member changed, because the generator embeds the app version in `$id` and in
+  the description (`plugin-host-protocol-schema.ts:325-326`, `:541-547`); the rules
+  below are written for that fact, so no historical copy is ever compared with the
+  current canonical file. The mirror is delivered in two named actions, because the
+  site deploys on every `web/**` merge and a tag is not a deployment event, and it is
+  described by one manifest, `web/public/schemas/plugin-host-protocol/mirror.json`:
+  one entry per copy, `{ protocol, appVersion, sha256, generatedFrom: <commit>,
+  publishedTag: <tag> | null }`, and one `alias` per protocol version naming a
+  published entry. **(E1, the pre-tag release PR)** `scripts/release.mjs` regenerates
+  the schema after the bump, copies it to
+  `web/public/schemas/plugin-host-protocol/<v>/v<app>/protocol.schema.json` and adds
+  the entry with the copy's sha256, the commit it was generated from and
+  `publishedTag: null`; that copy may deploy before the tag exists, deliberately,
+  because its `$id` is the tag URL and its bytes are the bytes the tag will carry. A
+  copy is in one of three states, decided from the manifest and the current
+  `package.json` version: **candidate** (unpublished, `appVersion` equal to the current
+  version), **orphan** (unpublished and superseded by a later bump: the tag was never
+  created or was abandoned; no `contract/sources.json` pins it, and it stays where it
+  is, frozen with its recorded commit and hash) or **published** (`publishedTag` set).
+  `check:plugin-host-protocol-mirror`, a `build`-chain script (which changes
+  `src/__tests__/packaging-discipline-source.test.ts:627-663` in the same PR), holds
+  three things: every copy, in every state, is byte-equal to its recorded sha256 —
+  published and orphan copies are checked against their own record only; the
+  candidate copy, and only it, is additionally byte-equal to the current canonical file
+  of its protocol version; and each alias is byte-equal to the published copy the
+  manifest names for it, never to a candidate or an orphan. Regenerating the canonical
+  file therefore changes one copy at most, the candidate. A protocol change on `main`
+  while a candidate is open (E1 merged, E2 not yet) is refused by the check unless the
+  candidate is regenerated in the same change, which is the same release-window freeze
+  §9.5 imposes; a protocol change that must ship after the freeze ships as the next
+  candidate. **(E2, the post-publication runbook step)** the `web`-only PR merged after
+  the app draft is published (§9.5 step 6) sets the entry's `publishedTag` and moves
+  `alias` to that entry in the same commit, which is the explicit promotion mechanism;
+  a candidate's copy cannot become the alias by deploying. The v0.11.0 release does
+  not carry the mirror; E1 adds its `1/v0.11.0` copy and entry from the frozen
+  canonical `1/` file with `publishedTag: "v0.11.0"` and the `1` alias naming it, so
+  the first published `$id` still resolves. **Acceptance (E1):** a fixture with
+  `2/v0.12.0` published, `2/v0.12.1` orphaned (E1 merged, tag abandoned, superseded)
+  and `2/v0.12.2` as the candidate: regeneration at 0.12.2 changes only the candidate
+  copy, the published and orphan bytes are unchanged and the check passes; editing any
+  byte of a published or orphan copy, or pointing an alias at the orphan or the
+  candidate, fails it; the E2 fixture proves the alias moves only together with
+  `publishedTag`.
 
 ### 6.2 Typed clients
 
@@ -1475,8 +1547,11 @@ declared second surface, not a tolerant reader:
   vendored checker validates both.
 - An app at X or later reads `marketplace.2.json` and nothing else
   (`INDEX_PATH`, `src/marketplace/sources/snapshot.ts:74`, becomes the format-2 name);
-  a source that has no `marketplace.2.json` is `SOURCE_NOT_A_MARKETPLACE` on X
-  (`snapshot.ts:253` raises it today for a missing `marketplace.json`), because a source that has not
+  a source that has no `marketplace.2.json` reaches `SOURCE_NOT_A_MARKETPLACE` on X
+  the way a source with no index does today — a missing index alone is not the
+  refusal: `snapshot.ts:297-305` falls through to the conventional-layout read, and
+  `:252-253` refuses only when that finds no descriptor either; on X the legacy file
+  is simply not one of the indexes that read consults — because a source that has not
   adopted format 2 cannot carry a protocol-2 artifact. That is a declared format
   choice, not a fallback: there is no read of the legacy file on X and no retry. An
   app ≤ 0.11 reads `marketplace.json` as it always has. The rule is the same for the
@@ -1495,7 +1570,7 @@ protocol-2 versions, and shows the new `local-indexer` sandbox authority in revi
 | App | Installed artifact | Result |
 |---|---|---|
 | ≤ 0.11 | old (no declaration or `"1"`, `minAppVersion` ≤ app) | runs, unchanged |
-| ≤ 0.11 | new (`"2"`, `minAppVersion` X) | not offered by the catalog (`min_app_version`); a direct or offline install is refused at load with `incompatible-app-version` ("update the app"); on an app whose manifest schema predates the field the closed `requires` object refuses it with a schema error. Never activated |
+| ≤ 0.11 | new (`"2"`, `minAppVersion` X) | never listed for it: the frozen `marketplace.json` an old app reads carries no format-2 version (decision 24), so `min_app_version` is not even consulted; a direct or offline install is refused at load with `incompatible-app-version` ("update the app"); on an app whose manifest schema predates the field the closed `requires` object refuses it with a schema error. Never activated |
 | X | old, declares nothing | **refused before activation**, `incompatible-host-protocol`, plugin-status "update required", with the update path: the catalog's newest eligible version if the source publishes one, otherwise the plugin's own repository named in the receipt |
 | X | old, declares `"1"` | same refusal; the message names the served version |
 | X | new | runs |
@@ -2092,8 +2167,9 @@ step deployed something.
    update, downgrade.
 5. **Publish the app draft.** Only after 4 is verified is the draft release published.
    From this point an old installed artifact is refused on X.
-6. **Promote the alias (E2).** A `web`-only PR promotes `/2/protocol.schema.json` to
-   the published tag's copy (§6.1); the mirror check holds it there.
+6. **Promote the alias (E2).** A `web`-only PR sets the copy's `publishedTag` in
+   `mirror.json` and promotes `/2/protocol.schema.json` to it in the same commit
+   (§6.1); the mirror check holds it there.
 
 Rollback: an app release X that fails step 4 stays a draft and is superseded by a new
 tag, never rewritten; published plugin artifacts are never withdrawn, because an older
@@ -2104,17 +2180,20 @@ app still selects its older versions from the frozen `marketplace.json` (decisio
 Each slice is independently coherent at its own boundary: a public field, its schema,
 its producers and consumers, its runtime enforcement and its tests travel together,
 and no slice merges an accepted field without enforcement or a compatibility shim to
-keep an intermediate commit green (AGENTS.md, "No Fallback Code"). Slices are based on
-`main` after the previous one merges.
+keep an intermediate commit green (AGENTS.md, "No Fallback Code"). The one stated
+temporary coexistence is C's retention of `PLUGIN_ENVELOPE_GRANTS` until D (its row
+below): it has an owner and a removal condition, it selects a policy source by the
+manifest's declaration rather than recovering from a denial, and it adds no plugin-id
+branch. Slices are based on `main` after the previous one merges.
 
 | Slice | Scope | Focused gates | Lock suites touched |
 |---|---|---|---|
 | **A. Design** | this amendment; blueprint §3.2 companion correction | diff, path, naming and reference checks; the document governs runtime security and is reviewed as such, not waved through as Markdown | none |
 | **B. Dispatcher budgets** | §7.4 buckets, in-flight and subscription caps, `rate-limited` in the closed set, schema and golden updates; cleanup exemptions. Independent of the resolver break, so it may land first | dispatcher boundary and service-member tests, `subscription-ledger` tests, notification floods, release/cancel/shutdown under saturation, the service-limit results preserved, golden and schema parity, generated-schema check | `host-protocol-golden`, `host-protocol-schema-parity`, `host-api-boundary-contract`, `host-api-service-members`; no channels, preload, settings or package-script change |
 | **C. Sandbox authority end to end** | manifest schema and public type, runtime hardening (including the `configSchema` string-key rule), `HOST_DIRECTORY_CATALOG`, envelope resolver reading `manifest.sandbox` with `ceilingSubtractions` over the catalog, approved-root withdrawal retirement (decision 25), worker delegation, marketplace authority/descriptor/index/plan/review/delta/receipt, catalog format 2 reader and schemas (decision 24), checker update. **`PLUGIN_ENVELOPE_GRANTS` is retained in C** as the grant source for an artifact that declares no `sandbox` block, and deleted in D: while the host still serves protocol `1`, an old `local-indexer` artifact — which declares nothing, or `"1"` — passes the load gate (`runtime/index.ts:2917-2919`), so deleting the table here would silently shrink it to the base envelope; the table's owner is the organization owner role and its removal condition is D, in the same release. A declared block takes precedence over the table for the same plugin, so a new candidate is exercised through the real resolver in C | manifest schema and hardening tests; `manifest-rules`, plugin ladder, service and view tests; `PackageSheet` review tests and the changed lifecycle spec; catalog format-2 read and legacy-file freeze tests; real confined-child path-escape, sibling/symlink/cert-floor, delegated-worker and workspace-revocation tests (the decision 25 assertion), on macOS, Linux and Windows; an old sandbox-less indexer bundle still runs with its table grants in C | marketplace DTOs; `preload-shape` only if the bridge surface changes; settings suites only if consent storage becomes a setting (it does not: the receipt carries it) |
-| **D. Credential lease and egress cutover — the protocol-2 boundary** | public union and `HostFetchInit`, wire types, encoder/decoder/validation, `handle-or-denied` result axis, host registry with linearised issuance and epoch fencing, secret/config generation hooks in the store, child stub with the pending-closure map, dispatcher forwarding `auth` to the factory, factory snapshot and credential-use context, guard hop loop with `CREDENTIAL_HEADERS`, audience table by normalized source, cookie matrix, raw consent and receipt version, the gate's operation axis and the official plugins' fallback removal, the four error codes with bounded audit, fixed transport messages, `FormData` bounded serialisation, **`HOST_PROTOCOL_VERSIONS_SERVED = ["2"]` with `1` retired, the refusal of undeclared or `"1"` manifests before activation on both arms, `PLUGIN_ENVELOPE_GRANTS` deleted**, catalog protocol eligibility, plugin-status update path. One release-bound contract change; `auth.lease` typing never merges ahead of its enforcement, and protocol `2` is never served before its credential implementation | resolver gate, provenance and revocation tests; child → dispatcher → factory → guard → transport integration proving the lease reaches the gate and the network init carries no auth; goldens and schema for protocol `2`; two-plugin and old-incarnation replay; issuance barriers before and after the gate, the secret read and the reply with rotate/revoke/endpoint-switch/retire at each; revoke during approval, resolve, cookie lookup, redirect and body drain; revoke before child adoption; release during concurrent uses; conflicts, audience, scheme and redirect matrices for Bearer, `api-key` and `x-api-key`; alias/source fixtures including omitted vendor, `gemini` and `vertex-ai` denial and a missing Azure endpoint; raw denied before the secret read; the full cookie matrix; getter mutation on the in-process arm; rebuilt `meeting` and `local-indexer` candidates exercised as in §9.1 with a synthetic key marker; old `meeting`/`local-indexer` bundles refused before activation; no lease-failure fallback anywhere | all HostApi contract locks (`hostapi-effect-completeness`, serialization conformance, `host-api-boundary-contract`, `host-api-service-members`, `host-protocol-golden`, `host-protocol-schema-parity`, public-contract boundary tests); `channel-inventory` and `host-renderer-only-channels` unchanged (stdio methods add no Electron channel); `preload-shape` (`src/__tests__/preload-shape.test.ts:82`, `:119`) unchanged unless the plugin-status DTO grows; settings domain exports (`src/ipc/__tests__/domain-exports.test.ts:118`, `:172`) unchanged — the lease registry is ephemeral and needs no setting, and the generation counters are in-memory store state |
-| **E1. Release PR, before the tag** | version and changelog, schema regenerated at the final version, the tag-named `web/public/schemas/` copy with `check:plugin-host-protocol-mirror`, rollback note; coordinates the v0.11.0 release PR and the alerts successor branch at final hashes. Nothing in E1 depends on tag X existing | full pre-push once, fresh CI on the rollup (`build-and-test`, `naming-gate`), packaged smoke on the final tree per OS, canonical/mirror byte equality | `package.json` scripts and `src/__tests__/packaging-discipline-source.test.ts:627-663` for the mirror check; CI composition if a required status is added |
-| **E2. Release runbook, after the tag** | §9.5 steps 3-6: final-tag vendor receipts in the three plugin repositories and the official checker rebuild, plugin releases and index/descriptor pins, the §6.4 matrix against published artifacts, app draft publication, then the alias-promotion `web` PR. These are gates on the published release, not inputs to creating the tag | source/tag/vendor hash equality per repository; published manifests, hashes and index entries verified; 0.10 and 0.11 binaries against the published source; alias equals the published copy | none in the app tree except the alias PR under `web/` |
+| **D. Credential lease and egress cutover — the protocol-2 boundary** | public union and `HostFetchInit`, wire types, encoder/decoder/validation, `handle-or-denied` result axis, host registry with linearised issuance and epoch fencing, secret/config generation hooks in the store, child stub with the pending-closure map, dispatcher forwarding `auth` to the factory, factory snapshot and credential-use context, guard hop loop with `CREDENTIAL_HEADERS`, audience table by normalized source, cookie matrix, raw consent and receipt version, the gate's operation axis and the official plugins' fallback removal, the four error codes with bounded audit, fixed transport messages, `FormData` bounded serialisation, **`HOST_PROTOCOL_VERSIONS_SERVED = ["2"]` with `1` retired, the refusal of undeclared or `"1"` manifests before activation on both arms, `PLUGIN_ENVELOPE_GRANTS` deleted**, catalog protocol eligibility, plugin-status update path. One release-bound contract change; `auth.lease` typing never merges ahead of its enforcement, and protocol `2` is never served before its credential implementation | resolver gate, provenance and revocation tests; child → dispatcher → factory → guard → transport integration proving the lease reaches the gate and the network init carries no auth; goldens and schema for protocol `2`; two-plugin and old-incarnation replay; issuance barriers before and after the gate, the secret read and the reply with rotate/revoke/endpoint-switch/retire at each; the settings-store visibility cases of §4.1.2 (held save that fails and rolls back, held save that succeeds, invalidation and failed re-entry withholding) driven through the real store's `saveSettings` barrier; revoke during approval, resolve, cookie lookup, redirect and body drain; revoke before child adoption; release during concurrent uses; conflicts, audience, scheme and redirect matrices for Bearer, `api-key` and `x-api-key`; alias/source fixtures including omitted vendor, `gemini` and `vertex-ai` denial and a missing Azure endpoint; raw denied before the secret read; the full cookie matrix; getter mutation on the in-process arm; rebuilt `meeting` and `local-indexer` candidates exercised as in §9.1 with a synthetic key marker; old `meeting`/`local-indexer` bundles refused before activation; no lease-failure fallback anywhere | all HostApi contract locks (`hostapi-effect-completeness`, serialization conformance, `host-api-boundary-contract`, `host-api-service-members`, `host-protocol-golden`, `host-protocol-schema-parity`, public-contract boundary tests); `channel-inventory` and `host-renderer-only-channels` unchanged (stdio methods add no Electron channel); `preload-shape` (`src/__tests__/preload-shape.test.ts:82`, `:119`) unchanged unless the plugin-status DTO grows; settings domain exports (`src/ipc/__tests__/domain-exports.test.ts:118`, `:172`) unchanged — the lease registry is ephemeral and needs no setting, and the generation counters are in-memory store state |
+| **E1. Release PR, before the tag** | version and changelog, schema regenerated at the final version, the tag-named `web/public/schemas/` copy and its `mirror.json` entry with `check:plugin-host-protocol-mirror`, rollback note; coordinates the v0.11.0 release PR and the alerts successor branch at final hashes. Nothing in E1 depends on tag X existing | full pre-push once, fresh CI on the rollup (`build-and-test`, `naming-gate`), packaged smoke on the final tree per OS, the mirror check: candidate copy equal to the canonical file, every copy equal to its recorded sha256, aliases naming published entries only, with the two-versions-plus-orphan fixture of §6.1 | `package.json` scripts and `src/__tests__/packaging-discipline-source.test.ts:627-663` for the mirror check; CI composition if a required status is added |
+| **E2. Release runbook, after the tag** | §9.5 steps 3-6: final-tag vendor receipts in the three plugin repositories and the official checker rebuild, plugin releases and index/descriptor pins, the §6.4 matrix against published artifacts, app draft publication, then the alias-promotion `web` PR. These are gates on the published release, not inputs to creating the tag | source/tag/vendor hash equality per repository; published manifests, hashes and index entries verified; 0.10 and 0.11 binaries against the published source; the alias moves only in the commit that sets `publishedTag`, and equals that copy | none in the app tree except the alias PR under `web/` |
 
 Validation discipline: narrow tests while iterating (`bun run test:vitest -- run <dirs>`),
 `bun run typecheck`, then the full `bun run test` and `bun run build` once before
@@ -2275,7 +2354,7 @@ What Ave should not adopt, and why:
 | 3 | Out-of-process admission is decided the same way on every platform and for every install source — official, managed, custom, direct, local development, and origin-less legacy entries (`legacy-plugins.ts:90-93`). A code plugin loads out of process under the confinement the host chose for itself: `features.osToolSandbox`, off by default on every platform (`sandbox-gate.ts:20-21`); while it is off the child is spawned unwrapped (`out-of-process-plugin.ts:13-21`). What admission promises is the process boundary — separate heap, no Electron, own crash domain, one structural chokepoint — not OS confinement; OS confinement is whatever the substrate publishes (`architecture.md:1017-1020`): filesystem, process and network on macOS and Linux, filesystem and network on Windows. Only a non-JS `process` entry requires a wrap whose `confines` includes `process`, so it never loads on Windows and does not load anywhere with the sandbox off (§2.2). The Doctor's plugin report names, per plugin, the confinement it runs under. | An earlier draft refused custom and direct code plugins on Windows and admitted official and managed ones. Rejected on evidence: `origin.sourceOrigin` alone is not evidence, because the registry file is user-writable and `src/plugins/registry.ts:300-311` checks only shape, legacy migration binds `official` by plugin id with `artifactSha256: null` (`legacy-plugins.ts:95-124`), and a removed `additional` source leaves `managed` behind, so a sound version would need the host-secret evidence chain (`grants.ts:87-106`); it would grant the official and managed sources a privilege the marketplace design forbids (§10: the badge is the only thing the official source grants; §10.5); it would refuse `orion-api` and `git` on Windows, since neither is in the official index (`marketplace.json` at `6a4d3b3df` lists `hello-world`, `local-indexer`, `meeting`, `lyra-mail`, `vega-helper`) while `orion-api` already runs out of process there (`out-of-process-plugins.ts:857`); and its rationale was false by default on every platform, because with the sandbox off macOS and Linux run a custom plugin without process confinement too. |
 | 4 | A non-JS `process` entry is in the schema from protocol `1`; marketplace admission for it waits for the admission step. | The protocol is language-neutral from its first published version, and admission needs the adversarial fixture first. |
 | 5 | The deprecation owner of the in-process loader is the organization owner role of `former_org` (the repository's sole maintainer) — a role, recorded as such in `TODO.md` when the wire step starts; ave has no `CODEOWNERS` file. | AGENTS.md requires a named owner and a removal condition for any coexistence (§9.3). |
-| 6 | The protocol schema is canonical in the ave tree at a release tag and vendored like the rest of the contract (§6.3); its `$id` carries the app tag; `former-site.invalid` mirrors every tagged copy from `web/public/schemas/`, with `/1/protocol.schema.json` as a documented moving alias for editors. The validate CLI is a `tools/vendor/` bundle built from an ave entry (§10.2). | A release tag plus a sha256 in `contract/sources.json` is what the contract already pins; `tools/vendor.mjs` already holds bundles built from ave entries with a recorded bun version (`vendor.mjs:5-11`); release assets would be a second publication of the same bytes. The tag in `$id` is what keeps an additive revision (§3.3) from changing the bytes behind one identifier, since the site deploys on every `web/**` merge, not on tags. |
+| 6 | The protocol schema is canonical in the ave tree at a release tag and vendored like the rest of the contract (§6.3); its `$id` carries the app tag; `former-site.invalid` mirrors every copy `mirror.json` records from `web/public/schemas/` (published, candidate or orphan, each frozen against its own hash, §6.1), with `/1/protocol.schema.json` as a documented moving alias for editors. The validate CLI is a `tools/vendor/` bundle built from an ave entry (§10.2). | A release tag plus a sha256 in `contract/sources.json` is what the contract already pins; `tools/vendor.mjs` already holds bundles built from ave entries with a recorded bun version (`vendor.mjs:5-11`); release assets would be a second publication of the same bytes. The tag in `$id` is what keeps an additive revision (§3.3) from changing the bytes behind one identifier, since the site deploys on every `web/**` merge, not on tags. |
 | 7 | Per-plugin resource limits on macOS are deferred: crash containment ships first, and the conformance suite records RSS and startup time per plugin. | No number exists to size an `RLIMIT` against. |
 | 8 | **Release target (owner, 2026-09-27).** Lease ships in **0.12.0** (X). v0.11.0 ships first with its current scope (wire and alerts). Official plugins publish their alerts versions first and bump again for Lease, with no combined bump; a published artifact is never rewritten (§9.5). | Lease is a protocol boundary with its own notice, replacement and matrix gates; folding it into a release whose scope is already fixed would either skip those gates or reopen that release. The version number itself is not the gate. |
 | 9 | **Installed-plugin cutover (owner).** Announced hard cutoff with pre-activation refusal: X serves protocol `2` only; a code plugin whose manifest does not declare a served `requires.hostProtocol` — including one that declares nothing — is refused before factory activation on both loader arms and for every install source, with a clear status and an update path. The rule is generic, never keyed to a plugin id or a method heuristic; `minAppVersion` is never an upper bound. §3.2's retention promise is rewritten; the cost, the notice and replacement gates and the old/new matrix with downgrade are in §6.4 and §9.3 (§9.5 for the sequence). | Retaining `1` would mean a second frozen runtime, schema set, codec, child stub and envelope policy, which the generator (`plugin-host-protocol-schema.ts:317-324`) and the single bound dispatch table (`out-of-process-plugin.ts:1423-1444`) cannot express by adding an array element; a version label that does not select an implementation is not compatibility. Omission cannot keep meaning "newest" on X because the newest is incompatible with the bearer the old bundle calls (`host-api-child.ts:342-394`; `meeting` `plugins/meeting/source/src/hostPlugin.ts:1911`). Postponing X when the gates are unmet is what protects users; a runtime fallback would hide the break. |
@@ -2288,14 +2367,14 @@ What Ave should not adopt, and why:
 | 16 | **Errors.** Four thrown codes join the closed set: `lease-unavailable` (one code for unknown, foreign, raw, released, revoked and stale-epoch, no oracle; never raised by `release()`), `lease-audience-denied`, `credential-conflict`, `rate-limited` (`retryAfterMs` ≤ 5000). Resolver outcomes stay `ok: false`, with six new reasons. Audit is coalesced per `(plugin, method, code)` with a 60 s summary; transport failures get a fixed public message and a bounded `data.kind`, not a sanitiser. Broker → HTTP 403 terminal / 429 / 499 / 502; worker retries only 429 and 502-504 (§3.6, §4.1.5, §4.1.7). | Distinguishing foreign from unknown handles would let a plugin probe another's handle space; a 504-for-everything broker and a worker that retries broad `APIError` classes would turn a denied lease into repeated requests and a silent degraded search; a per-raise audit would let a refused flood do unbounded work; a regex cannot prove credential bytes are absent from arbitrary text. |
 | 17 | **Raw scope and the export rule.** `secrets:raw-api-key` gates `resolveApiKey({ exposure: "raw" })` only. The shared secret gate gains an operation axis: `getSecret` is `export`, refused for the host-provider secret class for every plugin before the read; `resolveApiKey` is `lease`, which keeps the unchanged tiers including the entitlement rows (`grants.ts:41-44`) and provenance (`:87-111`, `secret-gate.ts:190-215`) for both exposures; raw adds the capability in the reviewed authority and a receipt reviewed on app version ≥ X; every denial precedes the secret read (§4.1.6). | Deleting the entitlement rows was rejected because `getSecret` and the resolver share one gate that denies a missing row before provenance, so the rows' removal would deny every host-key lease; an operation rule by secret class is generic and needs no plugin-id branch. An inert string in an old artifact was never shown as a privilege, so its bytes cannot be consent for one. |
 | 18 | **Publication prerequisites advanced into Lease.** Protocol-aware catalog selection (`hostProtocol` in descriptor and index, a `host_protocol` exclusion), final-tag contract and checker sync, the protocol schema as a vendored artifact (so `orion`'s two-file inventory changes). The TS client and the validate CLI stay in Publication (§6.3, §6.4). | The `"2"` pin needs the bytes it pins and a sync must not offer what the app cannot run; the client and CLI are conveniences with no compatibility consequence. |
-| 19 | **Publication sequence.** One timeline: tested candidates and the 14-day notice before the tag → app tag with the installer release held as a draft (E1) → re-vendor from the tag → publish plugins, pins and both index files → packaged matrix against the published artifacts → publish the app draft → promote the schema alias (E2); alerts versions first, Lease versions after, no combined bump; `vega-helper` revocation stays with 0.11.0 and a revoked plugin is outside the replacement set (§9.5, §6.4). | The draft release (`build-installers.yml:308-316`) separates tag creation from rollout, which is what lets replacements exist before an old artifact can be refused; a replacement vendored from a tag cannot be required before that tag, so the earlier "replacements before the tag" wording was circular and is withdrawn. |
+| 19 | **Publication sequence.** One timeline: tested candidates and the 14-day notice before the tag → app tag with the installer release held as a draft (E1) → re-vendor from the tag → publish plugins, pins and both index files → packaged matrix against the published artifacts → publish the app draft → promote the schema alias (E2, the alias moves only to a copy `mirror.json` marks published, §6.1); alerts versions first, Lease versions after, no combined bump; `vega-helper` revocation stays with 0.11.0 and a revoked plugin is outside the replacement set (§9.5, §6.4). | The draft release (`build-installers.yml:308-316`) separates tag creation from rollout, which is what lets replacements exist before an old artifact can be refused; a replacement vendored from a tag cannot be required before that tag, so the earlier "replacements before the tag" wording was circular and is withdrawn. |
 | 20 | **Budgets.** The numbers of §7.4: 50/s default, `hostFetch` 20/s, `resolveApiKey` 10/s, notifications dropped and counted, 64 in flight, 256 subscriptions with per-kind caps, 32 leases; keyed by plugin id, cleanup exempt; dispatcher-only scope stated. | Sized from the configured 400 RPM indexer batch rate as an input with ~3× headroom, to be confirmed by the measured acceptance run; not from the number alone. |
 | 21 | **Multipart and upload budget.** The reference runtime serialises `FormData` to bytes with a generated boundary, counting as it appends and refusing before over-allocation; the 16 MiB cap is the entire serialized body and stays; 15 MiB is `meeting`'s audio target under it with non-file fields bounded; the direct 25 MiB upload route joins the staged route's segmentation for anything that would exceed the budget, the staged 500 MiB limit stays, and both return the structured `file-too-large` result (§8). | A `FormData` body is refused by the encoder today, reproduced by the cross-review; raising the cap would move the frame and memory bounds for every member to fix one caller; lowering only the staged segment check would leave the direct route sending 25 MiB in one request. |
 | 22 | **git.** The "all mediated / no ambient axis" claim is withdrawn; direct `fetch` and the `~`-expanded external `dataDirectory` are Admission prerequisites, not Lease work (§9.1, §9.2). | Source at `d71fb95` shows two global `fetch` sites and a home-relative cache; keeping `git` in process during Lease does not make those Lease's to fix, and claiming isolation from a method list would be false. |
 | 23 | **Slicing.** Host PRs A, B, C, D, E1, E2 of §9.6: B independent; C ships the sandbox authority and format-2 catalog while **retaining** `PLUGIN_ENVELOPE_GRANTS` as the source for undeclared artifacts (owner: the organization owner role; removal condition: D); D is the single protocol-2 boundary that serves `2`, retires `1`, refuses undeclared and `"1"` manifests and deletes the table; E1 is the pre-tag release PR; E2 is the post-tag runbook whose gates are on the published release. | Each slice is coherent at its boundary; the places a slice could hide a break are named and forbidden: a typed `auth` field without enforcement in D, a deleted table while protocol `1` is still served in C, and a tag whose creation depends on receipts vendored from itself in E. |
 | 24 | **Catalog format 2.** `marketplace.json` (`schemaVersion: 1`) is frozen at X to pre-X versions and never gains a format-2 field; `marketplace.2.json` (`schemaVersion: 2`) carries every version with `hostProtocol` and `authority.sandbox`; descriptors gain `schemaVersion: 2`; an app ≥ X reads only the format-2 file and treats a source without it as not a marketplace; older apps read only the legacy file (§6.4). | The index root, version and authority objects are closed and a package is validated whole, so any new field in the shared file drops every version of that package from every older client, which would break the "old app keeps its old versions" promise the downgrade and rollback rows depend on. A presence-declared format is deterministic; a tolerant reader or a retry is not. |
 | 25 | **Approved-root withdrawal.** A resolved envelope has two inputs, manifest authority and the approved-directory ceiling; when either stops covering a running incarnation's grants the runtime retires that incarnation and its delegated workers before the change is acknowledged, marks `sandbox-grant-outside-ceiling`, and refuses a restart until the config or the ceiling changes; overlapping roots keep a grant; the boot reconciler runs before plugins load (§2.2). | The kernel envelope cannot narrow after spawn (`out-of-process-plugin.ts:682-687`) and root removal already revokes permission signals (`permission-manager.ts:1148-1155`), so an update-only rule would leave a child using a withdrawn root until its next restart. |
-| 26 | **Linearised issuance.** `issuing` starts before the first authorization await: resolve the key identity, capture `{ incarnation, permissionEpoch, secretGeneration(key), providerConfigRevision }`, reserve a registration slot, run the gate and reads, then compare-and-register in one synchronous section or deny `stale-authorization` and return the slot; the store gains post-commit generation hooks for successful secret writes/deletes/withholdings and provider-configuration writes; a failed write leaves the generation unchanged (§4.1.2). | Counters alone do not say which snapshot a lease represents; without a reservation, concurrent resolves can all observe 31 and exceed the cap; re-reading into a new epoch would silently launder a stale authorization. |
+| 26 | **Linearised issuance.** `issuing` starts before the first authorization await: resolve the key identity, capture `{ incarnation, permissionEpoch, secretGeneration(key), providerConfigRevision }`, reserve a registration slot, run the gate and reads, then compare-and-register in one synchronous section or deny `stale-authorization` and return the slot; the store gains generation hooks at every transition of the state the resolver can see — the in-memory provider-configuration mutation before its save, the rollback after a failed save, every change of secret readability, and the completion of a secret write or delete — never only on successful commits (§4.1.2). | Counters alone do not say which snapshot a lease represents; without a reservation, concurrent resolves can all observe 31 and exceed the cap; re-reading into a new epoch would silently launder a stale authorization; the store makes a configuration visible before it is saved and restores the saved one when the save fails (`settings-store.ts:1114-1116`, `:1978-1993`), so a post-commit counter would leave a lease bound to a rolled-back endpoint usable. |
 
 ### Owner decisions still open
 
