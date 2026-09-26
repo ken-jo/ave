@@ -329,6 +329,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "tool-call-failed": "formatIpcError.toolCallFailed",
   "notification-unavailable": "formatIpcError.notificationUnavailable",
   "no-alerts-service": "formatIpcError.notificationUnavailable",
+  "kind-not-registered": "alerts.kindNotRegistered",
 
   // ── Misc IO / system ──
   "no-window": "formatIpcError.noWindow",
