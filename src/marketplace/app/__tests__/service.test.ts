@@ -466,6 +466,32 @@ describe("MarketplaceService", () => {
     expect(records[entry.name]).toEqual(consumed);
   });
 
+  it.each([
+    ["disable", "uninstall"], ["uninstall", "uninstall"], ["uninstall", "disable"],
+  ] as const)("retains config when unconditional %s overlaps conditional %s", async (plainAction, conditionalAction) => {
+    const source = market();
+    const entry = { kind: "plugin", name: "retired-fixture", versions: "*", appVersions: "0.12.0", reason: "Replaced", at: AT.toISOString(),
+      action: conditionalAction, successors: { plugins: [{ pluginId: "successor-fixture" }], hostKinds: [] } };
+    const { successors: _successors, appVersions: _appVersions, ...plain } = entry;
+    source.repo.commit({
+      "policy/revocations.json": text({ schemaVersion: 1, revocations: [{ ...plain, action: plainAction }] }),
+      "policy/revocations-by-app.json": text({ schemaVersion: 1, revocations: [entry] }),
+    }, "overlapping policies");
+    await addMarket(source.url);
+    pluginPort.list = async () => [{ kind: "plugin", name: entry.name, version: "1.0.0", sourceId: "acme-tools", originCommit: null }];
+    const retain = { reason: "revoked", sourceId: "acme-tools", successors: entry.successors };
+    const retire = vi.fn(async () => {});
+    const uninstall = vi.fn(async () => {
+      expect(retire).toHaveBeenCalledWith(entry.name, retain);
+      pluginPort.list = async () => [];
+    });
+    pluginPort.retire = retire;
+    pluginPort.uninstall = uninstall;
+    await service.enforceRevocations();
+    expect(uninstall).toHaveBeenCalledExactlyOnceWith(entry.name, retain);
+    expect(service.takeRevocationNotice()?.revoked).toEqual([expect.objectContaining({ outcome: "uninstalled" })]);
+  });
+
   it("finds retirement authority without an installed predecessor and reports source conflicts", async () => {
     expect(await service.getRetirementEntry("retired-fixture")).toBeNull();
     const entry = { kind: "plugin", name: "retired-fixture", versions: "*", appVersions: "0.12.0", reason: "Replaced", at: AT.toISOString(),

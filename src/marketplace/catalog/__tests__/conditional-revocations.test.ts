@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { validateConditionalRevocationsText, validateRevocationsText } from "../validate.js";
 import { effectiveRevocations } from "../effective-revocations.js";
 import type { ConditionalRevocation } from "../types.js";
-import { aggregateCatalog } from "../aggregate.js";
+import { aggregateCatalog, findRevocation } from "../aggregate.js";
 import { versionViews } from "../../app/views.js";
 import type { SourceSnapshot } from "../../sources/snapshot.js";
 
@@ -50,5 +50,26 @@ describe("conditional revocation policy", () => {
     expect(snapshot.conditionalRevocations).toEqual([entry]);
     const { formatVersion: _format, conditionalRevocations: _conditional, ...legacy } = snapshot;
     expect(effectiveRevocations(legacy, "0.14.0")).toEqual([]);
+  });
+});
+
+
+describe("overlapping revocation rules", () => {
+  it.each(["disable", "uninstall"] as const)("preserves successors alongside an unconditional %s in either order", (action) => {
+    const { successors: _successors, appVersions: _appVersions, ...plain } = entry;
+    const unconditional = { ...plain, action, reason: "Security policy" };
+    for (const rules of [[unconditional, entry], [entry, unconditional]]) {
+      expect(findRevocation("plugin", entry.name, "1.0.0", rules)).toMatchObject({ action: "uninstall", successors: entry.successors });
+    }
+  });
+  it("uses metadata from a conditional disable without weakening an unconditional uninstall", () => {
+    const { successors: _successors, appVersions: _appVersions, ...plain } = entry;
+    expect(findRevocation("plugin", entry.name, "1.0.0", [plain, { ...entry, action: "disable" }])).toEqual({ ...plain, successors: entry.successors });
+  });
+  it("only combines rules matching the installed version and rejects conflicting successors", () => {
+    const { successors: _successors, appVersions: _appVersions, ...plain } = entry;
+    const disable = { ...plain, action: "disable" as const };
+    expect(findRevocation("plugin", entry.name, "1.0.0", [disable, { ...entry, versions: ">=2.0.0" }])).toEqual(disable);
+    expect(() => findRevocation("plugin", entry.name, "1.0.0", [entry, { ...entry, successors: { plugins: [], hostKinds: [] } }])).toThrow("Conflicting plugin retirement entries");
   });
 });

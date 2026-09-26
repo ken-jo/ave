@@ -885,7 +885,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       const snapshot = await this.options.syncer.readSnapshot(source.id);
       if (!snapshot) continue;
       for (const entry of effectiveRevocations(snapshot, appVersion)) {
-        if (entry.kind !== "plugin" || entry.name !== pluginId || entry.action !== "uninstall" || !entry.successors) continue;
+        if (entry.kind !== "plugin" || entry.name !== pluginId || !entry.successors) continue;
         if (found && (found.sourceId !== source.id || JSON.stringify(found.successors) !== JSON.stringify(entry.successors))) {
           throw new Error("Conflicting plugin retirement entries");
         }
