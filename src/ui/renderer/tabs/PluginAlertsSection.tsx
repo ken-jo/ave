@@ -22,20 +22,30 @@ function AlertKindControl({ row, api, refresh }: { row: AlertKindRow; api: Alert
     setWorking(true); setError(null);
     try {
       const result = await api.setKind(row.kindKey, patch);
-      if ("error" in result) setError(formatIpcError(result.error, undefined));
-      else await refresh();
-    } catch { setError(t("alerts.saveFailed")); }
+      if ("error" in result) {
+        setError(formatIpcError(result.error, undefined));
+        return { ok: false };
+      }
+      await refresh();
+      return { ok: true };
+    } catch { setError(t("alerts.saveFailed")); return { ok: false }; }
     finally { setWorking(false); }
   }, [api, row.kindKey, refresh, t]);
 
   // Prefetching a plugin's kinds is not a visit. A row must reach the viewport.
   useEffect(() => {
     if (row.choice.seenByUser || acknowledged.current || !root.current) return;
+    let visible = false;
     const observer = new IntersectionObserver((entries) => {
-      if (!entries.some((entry) => entry.isIntersecting) || acknowledged.current) return;
+      const intersecting = entries.some((entry) => entry.isIntersecting);
+      const entered = intersecting && !visible;
+      visible = intersecting;
+      if (!entered || acknowledged.current) return;
       acknowledged.current = true;
-      observer.disconnect();
-      void save({});
+      void save({}).then((result) => {
+        if (result.ok) observer.disconnect();
+        else acknowledged.current = false;
+      });
     });
     observer.observe(root.current);
     return () => observer.disconnect();
@@ -56,6 +66,7 @@ function AlertKindControl({ row, api, refresh }: { row: AlertKindRow; api: Alert
       <div className="min-w-0 break-words [overflow-wrap:anywhere]">
         <span className="text-sm font-medium">{label}</span>
         {!row.choice.seenByUser && <span className="ml-2 text-xs text-primary">{t("alerts.new")}</span>}
+        {row.pluginId === ALERT_HOST_PLUGIN_ID && row.reasoning && <p className="mt-1 text-xs text-muted-foreground">{row.reasoning}</p>}
         {row.declaration.description && <p className="mt-1 text-xs text-muted-foreground">{localeText(row.declaration.description, locale)}</p>}
       </div>
       <Switch className="shrink-0" aria-label={t("alerts.enabledLabel", { label })} checked={row.choice.enabled} disabled={working} onCheckedChange={(enabled) => void save({ enabled })} />
@@ -103,7 +114,7 @@ export function PluginAlertsSection({ pluginId, rows, api, osEnabled, refresh }:
     <h3 className="text-sm font-semibold">{t(builtIn ? "alerts.builtIn" : "alerts.title")}</h3>
     {builtIn && <label className="flex items-center justify-between gap-3 text-xs"><span>{t("alerts.osMaster")}</span><Switch className="shrink-0" aria-label={t("alerts.osMaster")} checked={osEnabled} disabled={working} onCheckedChange={(enabled) => void setMaster(enabled)} /></label>}
     {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
-    {kinds[0]?.reasoning && <p className="break-words [overflow-wrap:anywhere] text-xs text-muted-foreground">{kinds[0].reasoning}</p>}
+    {!builtIn && kinds[0]?.reasoning && <p className="break-words [overflow-wrap:anywhere] text-xs text-muted-foreground">{kinds[0].reasoning}</p>}
     {kinds.map((row) => <AlertKindControl key={`${row.kindKey}:${row.declaration.visibility}`} row={row} api={api} refresh={refresh} />)}
   </section>;
 }

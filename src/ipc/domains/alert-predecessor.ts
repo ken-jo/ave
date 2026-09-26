@@ -4,6 +4,7 @@ import type { GitMarketplacePort } from "./git-marketplace.js";
 import type { IpcDeps } from "../types.js";
 import { revocationRegistry } from "../../plugins/revocation/revocation-registry.js";
 import { MarketplaceError } from "../../marketplace/errors.js";
+import { withResolvedPluginInstallLocks } from "../../plugins/install-lifecycle.js";
 import { createLogger } from "../../lib/logger.js";
 
 const log = createLogger("alert-predecessor");
@@ -55,18 +56,27 @@ export class AlertPredecessorAccess {
       const row = (await this.deps.alertsService.listKinds()).find((entry) => entry.kindKey === kindKey);
       if (!row) return { ok: false, error: "predecessor-not-removable" };
       const market = await this.marketplace();
-      const resolved = await this.resolve(row, market);
-      if (resolved?.state.locked) return { ok: false, error: "predecessor-policy-locked" };
-      if (!resolved?.state.removable || !resolved.predecessor) return { ok: false, error: "predecessor-not-removable" };
-      // Do not remove for a declaration that changed while metadata was read.
-      const current = (await this.deps.alertsService.listKinds()).find((entry) => entry.kindKey === kindKey);
-      if (current?.blockedByPredecessor !== row.blockedByPredecessor
-        || current?.declaration.inherits?.[0]?.pluginId !== row.blockedByPredecessor) {
-        return { ok: false, error: "predecessor-not-removable" };
-      }
-      const value = await market.uninstall({ kind: "plugin", name: resolved.predecessor.name, sourceId: resolved.predecessor.sourceId },
-        { retain: { reason: "superseded" } });
-      return { ok: true, value };
+      const predecessorId = row.blockedByPredecessor;
+      if (!predecessorId) return { ok: false, error: "predecessor-not-removable" };
+      return await withResolvedPluginInstallLocks(() => [row.pluginId, predecessorId].flatMap((id) => {
+        const canonical = this.deps.pluginRuntime.resolvePluginId(id);
+        const installed = this.deps.pluginRuntime.resolvePluginInstallIdIfKnown(id);
+        return [id, canonical, ...(installed ? [installed] : [])];
+      }), async (): Promise<RemoveAlertPredecessorResult> => {
+        // Installation and removal share these locks: read authority only after
+        // admission and hold both bindings until retaining uninstall finishes.
+        const current = (await this.deps.alertsService!.listKinds()).find((entry) => entry.kindKey === kindKey);
+        if (!current || current.pluginId !== row.pluginId || current.blockedByPredecessor !== predecessorId
+          || current.declaration.inherits?.[0]?.pluginId !== predecessorId) {
+          return { ok: false, error: "predecessor-not-removable" };
+        }
+        const resolved = await this.resolve(current, market);
+        if (resolved?.state.locked) return { ok: false, error: "predecessor-policy-locked" };
+        if (!resolved?.state.removable || !resolved.predecessor) return { ok: false, error: "predecessor-not-removable" };
+        const value = await market.uninstall({ kind: "plugin", name: resolved.predecessor.name, sourceId: resolved.predecessor.sourceId },
+          { retain: { reason: "superseded" } });
+        return { ok: true, value };
+      });
     } catch (error) {
       if (error instanceof MarketplaceError && error.code === "PACKAGE_REQUIRED_BY_POLICY") {
         return { ok: false, error: "predecessor-policy-locked" };

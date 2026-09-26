@@ -1,8 +1,34 @@
+import type { Page } from "playwright";
+import type { TestT } from "./i18n.js";
 import { test, expect } from "./fixtures.js";
 import { openInlineSettings, closeInlineSettings } from "./inline-settings.js";
 import type { AveApi } from "../../../src/ui/renderer/types.js";
 
-test.use({ seedRepositoryPlugins: false, seedAlertPlugin: true });
+test.use({ seedRepositoryPlugins: false, seedAlertPlugin: true, seedPermissionMode: "default" });
+
+async function raiseFixtureAlert(page: Page, t: TestT, key: string) {
+  let settled = false;
+  const pending = page.evaluate((key) => (window as unknown as { aveApi: AveApi }).aveApi.callPluginMethod("alert_fixture_raise", { key }), key)
+    .then((value) => { settled = true; return { value }; }, (error: unknown) => { settled = true; return { error }; });
+  const panel = page.getByTestId("tool-approval-panel");
+  let previousId: string | null = null;
+  for (const scope of [null, "raiseAlert"]) {
+    await expect.poll(async () => settled || (await panel.isVisible() && await panel.getAttribute("data-approval-request-id") !== previousId)).toBe(true);
+    expect(settled, "Invocation completed before its expected approval").toBe(false);
+    await expect(panel).toHaveAttribute("data-approval-tool-name", "alert_fixture_raise");
+    const scopeLabel = panel.getByText(t("toolApprovalDialog.approvalScopePrefix") + ":", { exact: false });
+    if (scope) await expect(scopeLabel).toHaveText(t("toolApprovalDialog.approvalScopePrefix") + ": " + scope);
+    else await expect(scopeLabel).toHaveCount(0);
+    previousId = await panel.getAttribute("data-approval-request-id");
+    console.log("[alert-approval]", JSON.stringify({ key, scope: scope ?? "tool-call", requestId: previousId }));
+    await panel.getByRole("button", { name: t("toolApprovalDialog.allowOnce"), exact: true }).click();
+  }
+  await expect.poll(async () => settled || (await panel.isVisible() && await panel.getAttribute("data-approval-request-id") !== previousId)).toBe(true);
+  expect(settled, "Unexpected additional approval after the two named requests").toBe(true);
+  const result = await pending;
+  if ("error" in result) throw result.error;
+  return result.value;
+}
 
 test("alert choices control declared delivery and stay inside plugin Settings", async ({ app, mainWindow, t }, testInfo) => {
   test.setTimeout(120_000);
@@ -21,13 +47,10 @@ test("alert choices control declared delivery and stay inside plugin Settings", 
   await expect(enabled).toBeChecked();
   await section.screenshot({ path: testInfo.outputPath("alerts-settings.png") });
   await closeInlineSettings(app, mainWindow);
-  const raise = async (key: string) => {
-    const pending = mainWindow.evaluate((key) => (window as unknown as { aveApi: AveApi }).aveApi.callPluginMethod("alert_fixture_raise", { key }), key);
-    await mainWindow.getByRole("button", { name: "Allow once", exact: true }).click();
-    return pending;
-  };
+  const raise = (key: string) => raiseFixtureAlert(mainWindow, t, key);
   const accepted = await raise("fixture-one") as { status: string; alertId: string };
   expect(accepted.status).toBe("raised");
+  expect(accepted).toMatchObject({ delivered: { card: true, osNotification: false, toast: false } });
   const audit = await mainWindow.evaluate((alertId) => (window as unknown as { aveApi: AveApi }).aveApi.audit.search({ textSearch: alertId }), accepted.alertId) as { entries: Array<{ input: string }> };
   const raisedAudit = audit.entries.find((entry) => entry.input.includes("alert.raised"));
   expect(raisedAudit?.input).toContain(accepted.alertId);
@@ -47,6 +70,9 @@ test("alert choices control declared delivery and stay inside plugin Settings", 
   await mainWindow.getByTestId("overlay-card-primary-action").click();
   await expect(card).not.toBeVisible();
   await expect(mainWindow.getByText("overlay:alert-fixture--reply", { exact: true })).toBeVisible();
+  const cancel = mainWindow.getByRole("button", { name: t("bottomActionRow.cancelButton"), exact: true });
+  if (await cancel.isVisible()) await cancel.click();
+  await expect(cancel).not.toBeVisible();
   expect(await raise("fixture-one")).toMatchObject({ status: "closed" });
   await openInlineSettings(app, mainWindow, "plugin-config");
   await section.scrollIntoViewIfNeeded(); await enabled.click(); await expect(enabled).not.toBeChecked();
@@ -72,11 +98,7 @@ test("OS switches persist independently and dismissal closes the alert identity"
   expect(state.alerts.osNotificationsEnabled).toBe(true);
   expect(state.alerts.kinds["alert-fixture:reply"]).toMatchObject({ enabled: true, osNotification: true });
   await closeInlineSettings(app, mainWindow);
-  const raise = async () => {
-    const pending = mainWindow.evaluate(() => (window as unknown as { aveApi: AveApi }).aveApi.callPluginMethod("alert_fixture_raise", { key: "dismissed-fixture" }));
-    await mainWindow.getByRole("button", { name: "Allow once", exact: true }).click();
-    return pending;
-  };
+  const raise = () => raiseFixtureAlert(mainWindow, t, "dismissed-fixture");
   expect(await raise()).toMatchObject({ status: "raised" });
   await mainWindow.getByTestId("routine-card-dismiss").click();
   await expect(mainWindow.getByTestId("overlay-card-region")).not.toBeVisible();

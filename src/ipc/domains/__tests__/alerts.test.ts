@@ -103,7 +103,7 @@ describe("retaining predecessor removal", () => {
       uninstall: vi.fn(async (request: unknown) => ({ key: request, keptDataDir: null })),
     };
     const deps = { pluginMarketplace: { listInstalledPackages: vi.fn(async () => installed) },
-      pluginRuntime: { getPluginManifest: vi.fn(), listPluginIds: vi.fn(() => ["retired-plugin"]) } };
+      pluginRuntime: { resolvePluginId: (id: string) => id, resolvePluginInstallIdIfKnown: (id: string) => id, getPluginManifest: vi.fn(), listPluginIds: vi.fn(() => ["retired-plugin"]) } };
     const invoke = register({ listKinds }, deps, marketplace);
     return { row, listKinds, installed, entry, retirement, marketplace, deps, invoke };
   }

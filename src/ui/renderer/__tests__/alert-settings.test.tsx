@@ -41,6 +41,33 @@ describe("alert Settings controls", () => {
     expect(h.bridge.setKind).toHaveBeenCalledExactlyOnceWith("fixturemail:reply", {});
   });
 
+  it.each(["rejected", "error-code"])("retries a %s acknowledgement only after another viewport entry", async (failure) => {
+    const h = harness(); const refresh = vi.fn(async () => {});
+    if (failure === "rejected") h.bridge.setKind.mockRejectedValueOnce(new Error("temporary"));
+    else h.bridge.setKind.mockResolvedValueOnce({ error: "alerts-write-failed" } as never);
+    render(<PluginAlertsSection pluginId="fixturemail" rows={h.rows} api={h.bridge} osEnabled={false} refresh={refresh} />);
+    const control = screen.getByTestId("alert-kind:fixturemail:reply");
+    act(() => { triggerIntersection(control); });
+    await screen.findByRole("alert");
+    await waitFor(() => expect(screen.getAllByRole("switch")[0]).toBeEnabled());
+    act(() => { triggerIntersection(control); });
+    expect(h.bridge.setKind).toHaveBeenCalledTimes(1);
+    act(() => { triggerIntersection(control, false); triggerIntersection(control); });
+    await waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+    expect(h.bridge.setKind).toHaveBeenNthCalledWith(2, "fixturemail:reply", {});
+    expect(screen.queryByRole("alert")).toBeNull();
+    act(() => { triggerIntersection(control, false); triggerIntersection(control); });
+    expect(h.bridge.setKind).toHaveBeenCalledTimes(2);
+  });
+
+  it("groups the built-in reasoning with its kind rather than the OS master", () => {
+    const h = harness([row("@host")]);
+    render(<PluginAlertsSection pluginId="@host" rows={h.rows} api={h.bridge} osEnabled={false} refresh={async () => {}} />);
+    const kind = screen.getByTestId("alert-kind:@host:reply");
+    expect(within(kind).getByText(h.rows[0]!.reasoning)).toBeInTheDocument();
+    expect(within(kind).queryByRole("switch", { name: t("alerts.osMaster") })).toBeNull();
+  });
+
   it("acknowledges a newly visible declaration after its visibility changes", async () => {
     const h = harness(); h.rows[0]!.declaration.visibility = "summary-only";
     const refresh = vi.fn(async () => {});

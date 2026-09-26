@@ -320,6 +320,7 @@ export type ElectronOptions = {
   onboardingCompleted: boolean;
   seedTogglePlugin: boolean;
   seedAlertPlugin: boolean;
+  seedPermissionMode: "default" | "allow" | undefined;
   seedRepositoryPlugins: boolean;
   seedApiKey: boolean;
   seedLocale: "ko" | "en";
@@ -330,6 +331,7 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
   onboardingCompleted: [true, { option: true }],
   seedTogglePlugin: [false, { option: true }],
   seedAlertPlugin: [false, { option: true }],
+  seedPermissionMode: [undefined, { option: true }],
   seedRepositoryPlugins: [true, { option: true }],
   // Seed a usable LLM key so the composer is enabled (see buildE2eSecrets).
   // Specs that assert the no-key / key-toggle state override with
@@ -360,6 +362,7 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
       seedTogglePlugin,
       seedRepositoryPlugins,
       seedAlertPlugin,
+      seedPermissionMode,
       seedApiKey,
       seedLocale,
     },
@@ -383,7 +386,7 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
     // card — nobody answers it headlessly, so a live spec that needs tools to
     // actually RUN never gets past the first one. Export
     // AVE_E2E_PERMISSION_MODE=allow to exercise the tool path end to end.
-    const permissionMode = process.env.AVE_E2E_PERMISSION_MODE?.trim();
+    const permissionMode = seedPermissionMode ?? process.env.AVE_E2E_PERMISSION_MODE?.trim();
     if (permissionMode) {
       // The WHOLE PermissionsFile shape. `readPermissionsFile` discards the
       // file unless `version === 1` and `rules` is an array, and a discarded
