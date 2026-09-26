@@ -79,6 +79,29 @@ describe("overlapping revocation rules", () => {
     const { successors: _successors, appVersions: _appVersions, ...plain } = entry;
     expect(findRevocation("plugin", entry.name, "1.0.0", [plain, { ...entry, action: "disable" }])).toEqual({ ...plain, successors: entry.successors });
   });
+  it("accepts schema-parsed successor objects with reordered keys recursively", () => {
+    const reordered = { ...entry, appVersions: "0.13.0", successors: {
+      hostKinds: [{ enabled: { values: ["due"], listed: "disabled", key: "disabled" }, kind: "@host:due-soon" }],
+      plugins: [{ anySource: true, pluginId: "successor-fixture" }],
+    } };
+    const parsed = validateConditionalRevocationsText(JSON.stringify({ schemaVersion: 1, revocations: [entry, reordered] }));
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error(parsed.error);
+    for (const rules of [parsed.value.revocations, [...parsed.value.revocations].reverse()]) {
+      expect(findRevocation("plugin", entry.name, "1.0.0", rules)).toMatchObject({ action: "uninstall", successors: entry.successors });
+    }
+  });
+  it.each(["plugin-id", "any-source", "plugin-order"])("rejects different successor declarations: %s", (difference) => {
+    const plugins = [{ pluginId: "successor-fixture", anySource: true as const }, { pluginId: "second-fixture" }];
+    const changed = difference === "plugin-id" ? [{ pluginId: "other-fixture" }, plugins[1]!]
+      : difference === "any-source" ? [{ pluginId: "successor-fixture" }, plugins[1]!]
+        : [...plugins].reverse();
+    const rules = [
+      { ...entry, successors: { plugins, hostKinds: [] } },
+      { ...entry, successors: { plugins: changed, hostKinds: [] } },
+    ];
+    expect(() => findRevocation("plugin", entry.name, "1.0.0", rules)).toThrow("Conflicting plugin retirement entries");
+  });
   it("only combines rules matching the installed version and rejects conflicting successors", () => {
     const { successors: _successors, appVersions: _appVersions, ...plain } = entry;
     const disable = { ...plain, action: "disable" as const };

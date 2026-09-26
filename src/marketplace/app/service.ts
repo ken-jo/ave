@@ -10,6 +10,7 @@
  * what installs. Each kind's installer is a port the host composition
  * provides; the service plans, stages the bytes and dispatches.
  */
+import { isDeepStrictEqual } from "node:util";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -886,7 +887,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       if (!snapshot) continue;
       for (const entry of effectiveRevocations(snapshot, appVersion)) {
         if (entry.kind !== "plugin" || entry.name !== pluginId || !entry.successors) continue;
-        if (found && (found.sourceId !== source.id || JSON.stringify(found.successors) !== JSON.stringify(entry.successors))) {
+        if (found && (found.sourceId !== source.id || !isDeepStrictEqual(found.successors, entry.successors))) {
           throw new Error("Conflicting plugin retirement entries");
         }
         found = { sourceId: source.id, successors: structuredClone(entry.successors) };

@@ -6,6 +6,7 @@
  * revocations. For each row the version choice runs the six drops of §6.1 in
  * order and takes the highest remaining version as the candidate.
  */
+import { isDeepStrictEqual } from "node:util";
 import { effectiveRevocations } from "./effective-revocations.js";
 import { createHash } from "node:crypto";
 import { appVersionSatisfiesMin, compareSemver } from "../../shared/semver-compare.js";
@@ -104,7 +105,7 @@ export function findRevocation<T extends Revocation>(kind: PackageKind, name: st
   let successors: Revocation["successors"];
   for (const entry of matches) {
     if (!entry.successors) continue;
-    if (successors && JSON.stringify(successors) !== JSON.stringify(entry.successors)) {
+    if (successors && !isDeepStrictEqual(successors, entry.successors)) {
       throw new Error("Conflicting plugin retirement entries");
     }
     successors = entry.successors;
