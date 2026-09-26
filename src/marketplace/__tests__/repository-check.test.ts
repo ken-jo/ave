@@ -93,6 +93,10 @@ describe("checkMarketplaceRepository", () => {
     expect(check(files)).toEqual([]);
     files.set("policy/revocations-by-app.json", { schemaVersion: 1, revocations: [{ ...entry, successors: { plugins: [{ pluginId: "alpha", anySource: false }], hostKinds: [] } }] });
     expect(check(files)).toEqual([expect.objectContaining({ subject: "policy/revocations-by-app.json" })]);
+    for (const pluginId of ["constructor", "prototype", "__proto__"]) {
+      files.set("policy/revocations-by-app.json", { schemaVersion: 1, revocations: [{ ...entry, successors: { plugins: [{ pluginId }], hostKinds: [] } }] });
+      expect(check(files)).toEqual([expect.objectContaining({ subject: "policy/revocations-by-app.json" })]);
+    }
   });
 
   it("accepts a repository the app would accept", () => {

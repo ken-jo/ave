@@ -81,7 +81,15 @@
                   ],
                   "properties": {
                     "pluginId": {
-                      "$ref": "package.schema.json#/definitions/packageName"
+                      "type": "string",
+                      "pattern": "^[A-Za-z][A-Za-z0-9._-]{0,127}$",
+                      "not": {
+                        "enum": [
+                          "__proto__",
+                          "constructor",
+                          "prototype"
+                        ]
+                      }
                     },
                     "anySource": {
                       "const": true

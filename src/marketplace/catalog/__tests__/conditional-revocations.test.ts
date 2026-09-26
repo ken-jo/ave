@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { normalizeRetiredPluginConfigRecord } from "../../../data/settings-normalization.js";
 import { validateConditionalRevocationsText, validateRevocationsText } from "../validate.js";
 import { effectiveRevocations } from "../effective-revocations.js";
 import type { ConditionalRevocation } from "../types.js";
@@ -30,6 +31,18 @@ describe("conditional revocation policy", () => {
     { unexpected: true },
   ])("rejects a malformed conditional entry %j", (patch) => {
     expect(validateConditionalRevocationsText(policy({ ...entry, ...patch })).ok).toBe(false);
+  });
+  it.each([
+    ["constructor", false], ["prototype", false], ["__proto__", false], ["*", false], ["", false],
+    [" successor-fixture", false], ["successor-fixture ", false], ["successor-fixture\n", false],
+    ["plugin/child", false], ["1plugin", false], ["a".repeat(129), false],
+    ["a", true], ["a".repeat(128), true], ["Legacy.Plugin_1", true], ["Constructor", true], ["successor-fixture", true],
+  ])("aligns successor ID %j with persisted retirement records (%s)", (pluginId, accepted) => {
+    const successors = { plugins: [{ pluginId }], hostKinds: [] };
+    const record = normalizeRetiredPluginConfigRecord({ config: {}, enabled: true, sourceId: "fixture",
+      retiredAtAppVersion: "0.12.0", successors, consumedBy: [] });
+    expect(record !== undefined).toBe(accepted);
+    expect(validateConditionalRevocationsText(policy({ ...entry, successors })).ok).toBe(accepted);
   });
   it("evaluates raw entries at read time across catalog and version views", () => {
     const snapshot: SourceSnapshot = {
