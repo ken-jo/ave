@@ -44,19 +44,20 @@ describe("credential lease registry", () => {
     expect(state.reserve()).not.toBeNull();
   });
 
-  it("refuses a registration whose configuration, secret or permission changed during issuance", () => {
-    for (const change of ["config", "secret", "permission"] as const) {
+  it("refuses a registration whose configuration, secret, permission or incarnation changed during issuance", () => {
+    for (const change of ["config", "secret", "permission", "retire"] as const) {
       const state = setup();
       const reservation = state.reserve();
       if (!reservation) throw new Error("reservation missing");
       if (change === "config") state.changeConfig();
       else if (change === "secret") state.changeSecret();
-      else state.permission.abort();
+      else if (change === "permission") state.permission.abort();
+      else state.registry.endIncarnation(state.incarnation);
       expect(state.registry.register(reservation, {
         key: state.key, vendor: "openai", secret: "synthetic-secret", scheme: "bearer",
         audience: () => true, permissionSignal: state.permission.signal,
       })).toBeNull();
-      expect(state.reserve()).not.toBeNull();
+      if (change !== "retire") expect(state.reserve()).not.toBeNull();
     }
   });
 

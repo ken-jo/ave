@@ -61,6 +61,7 @@ export interface IssuanceReservation {
 export class CredentialLeaseRegistry {
   private readonly registrations = new Map<string, Registration>();
   private readonly occupied = new Map<object, number>();
+  private readonly retired = new WeakSet<object>();
 
   constructor(private readonly state: LeaseStateSource, private readonly getPermissionEpoch: (pluginId: string) => number = () => 0) {
     state.onLeaseStateChanged(() => this.closeStale());
@@ -100,6 +101,7 @@ export class CredentialLeaseRegistry {
   current(reservation: IssuanceReservation, key: string, permissionSignal: AbortSignal): boolean {
     const snapshot = reservation.snapshot;
     return !snapshot.permissionSignal.aborted
+      && !this.retired.has(reservation.incarnation)
       && snapshot.permissionSignal === permissionSignal
       && snapshot.permissionEpoch === this.getPermissionEpoch(reservation.pluginId)
       && snapshot.providerConfigRevision === this.state.getProviderConfigRevision()
@@ -193,6 +195,7 @@ export class CredentialLeaseRegistry {
   }
 
   endIncarnation(incarnation: object): void {
+    this.retired.add(incarnation);
     for (const registration of [...this.registrations.values()]) {
       if (registration.incarnation === incarnation) this.close(registration.id, "peer-gone");
     }
@@ -207,6 +210,7 @@ export class CredentialLeaseRegistry {
 
   private isCurrent(registration: Registration): boolean {
     return registration.state === "active" && !registration.snapshot.permissionSignal.aborted
+      && !this.retired.has(registration.incarnation)
       && registration.snapshot.permissionEpoch === this.getPermissionEpoch(registration.pluginId)
       && registration.snapshot.providerConfigRevision === this.state.getProviderConfigRevision()
       && registration.snapshot.secretGenerations.get(registration.key) === this.state.getSecretGeneration(registration.key);
