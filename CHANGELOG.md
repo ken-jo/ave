@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **New-mail and meeting-summary OS notifications become opt-in with the alerts release.** When the corresponding plugins migrate, these notifications stop until you enable their alert kinds and OS-notification toggles in plugin settings. Eligible choices retained from a predecessor are inherited.
+- Scheduled LLM routines report missing allowed plugins. If none are installed, the occurrence is skipped and a one-shot remains pending; if some are missing, the routine runs with an attention notice. Both notices offer removal.
+- `notificationEvents` remains supported through the alerts release and is retired in the following minor release, after its remaining official consumer migrates. Marketplace publication checks flag declarations requiring the alerts release or later.
+
 ## v0.10.0 — 2026-09-05
 
 - **첫 실행 안내가 가리키는 것이 실제로 보입니다.** 안내가 켜지면 화면이 어두워지되 지금

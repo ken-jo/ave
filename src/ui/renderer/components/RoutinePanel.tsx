@@ -110,6 +110,14 @@ function RoutineRow({ routine, onDismiss, onRemove, onTriggerNow, recentlyFired 
           <div className="mt-0.5 text-[11px] text-muted-foreground">
             {describeSchedule(routine)}
           </div>
+          {routine.needsAttention && (
+            <p className="mt-1 break-words text-xs text-warning" role="status">
+              {t(routine.lastSkippedReason === "plugins-missing"
+                ? "routinePanel.pluginsMissing" : "routinePanel.pluginsPartlyMissing", {
+                plugins: routine.needsAttention.missingPluginIds.join(", "),
+              })}
+            </p>
+          )}
           {routine.prePrompt && (
             <p className="mt-1 line-clamp-2 text-[11px] text-muted-foreground">
               {routine.prePrompt}
@@ -680,12 +688,13 @@ export function RoutinePanel({ api, onOpenSession }: RoutinePanelProps) {
 
   useEffect(() => {
     void refresh();
-    if (typeof api.onRoutineFired !== "function") return undefined;
-    const unsub = api.onRoutineFired((r) => {
+    // A skipped occurrence has no fired event; refresh its status while this panel is open.
+    const timer = setInterval(() => void refresh(), 30_000);
+    const unsub = api.onRoutineFired?.((r) => {
       setRecentlyFired((prev) => (prev.includes(r.id) ? prev : [...prev, r.id]));
       void refresh();
     });
-    return unsub;
+    return () => { clearInterval(timer); unsub?.(); };
   }, [api, refresh]);
 
   const handleDismiss = useCallback(
@@ -706,8 +715,8 @@ export function RoutinePanel({ api, onOpenSession }: RoutinePanelProps) {
 
   const handleTriggerNow = useCallback(
     async (id: string) => {
-      await api.triggerRoutineNow(id);
-      setRecentlyFired((prev) => (prev.includes(id) ? prev : [...prev, id]));
+      const result = await api.triggerRoutineNow(id);
+      if (result.ok) setRecentlyFired((prev) => (prev.includes(id) ? prev : [...prev, id]));
       await refresh();
     },
     [api, refresh],

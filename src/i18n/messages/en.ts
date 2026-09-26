@@ -11,6 +11,8 @@
  * migrated off hardcoded strings.
  */
 export const en = {
+  "routinePanel.pluginsMissing": "Skipped: required plugins are not installed ({plugins}). Reinstall them or remove this routine.",
+  "routinePanel.pluginsPartlyMissing": "Needs attention: some allowed plugins are not installed ({plugins}). The routine ran with the remaining plugins.",
   // ── Common / shared ───────────────────────────────────────────────
   "common.cancel": "Cancel",
   "common.save": "Save",

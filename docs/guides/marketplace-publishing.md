@@ -113,6 +113,16 @@ The app's own rules are exported as `checkMarketplaceRepository`
 (`tools/vendor/`) and runs it in CI with its extra rules; any marketplace can
 do the same. An empty result means the app accepts every package as it stands.
 
+Pass `alertsReleaseVersion` in the check options: the published stable app
+version carrying the complete alerts contract. Missing or invalid configuration
+fails the check. Keep this value fixed across later app releases; the
+[release checklist](../development/release-process.md#alerts-release-publication)
+owns its publication-time selection. Supply `releasedManifests` when checking
+release artifacts, including release-only packages whose minimum app version is
+at or above that threshold. The checker reports `notificationEvents` on eligible
+tree and supplied release manifests; older declarations keep their transition
+window. This publication check does not remove legacy runtime support.
+
 ## Linking To A Package
 
 `ave://install/<kind>/<name>@<source>` and

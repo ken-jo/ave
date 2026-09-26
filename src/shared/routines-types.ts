@@ -110,6 +110,12 @@ export interface RoutineRecord {
   scope?: RoutineScope;
   createdAt: string;
   lastFiredAt?: string;
+  /** Latest scheduled occurrence skipped because every named plugin was absent. */
+  lastSkippedReason?: "plugins-missing";
+  /** UTC minute of a skipped cron occurrence; distinct from a completed fire. */
+  lastSkippedMinuteUTC?: string;
+  /** Installed registry ids are checked independently of runtime load state. */
+  needsAttention?: { missingPluginIds: string[] };
   /**
    * Last routine result the user explicitly acknowledged in the overlay UI.
    * When this differs from `lastFiredAt`, the renderer must rehydrate the

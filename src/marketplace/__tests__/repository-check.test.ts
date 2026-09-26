@@ -74,7 +74,7 @@ function tree(files: Map<string, unknown>): RepositoryTree {
   };
 }
 
-const OFFICIAL = { sourceId: "ave", official: true };
+const OFFICIAL = { sourceId: "ave", official: true, alertsReleaseVersion: "0.13.0" };
 
 function check(files: Map<string, unknown>) {
   return checkMarketplaceRepository(tree(files), OFFICIAL);
@@ -191,5 +191,63 @@ describe("checkMarketplaceRepository", () => {
       { subject: "agents/orphan/ave-package.json", message: "no index entry points at this package" },
       { subject: "policy/revocations.json", message: expect.stringContaining("revocations.json") },
     ]);
+  });
+});
+
+describe("notification declaration deprecation", () => {
+  function pluginDocument(notificationEvents: unknown = []) {
+    return { name: "alpha", version: "1.0.0", extensions: { "ai.agent-connector.ave": { ...authority(), notificationEvents } } };
+  }
+  function treeFiles(document: unknown) {
+    const files = validFiles();
+    files.delete("plugins/alpha/source/package.json");
+    files.set("plugins/alpha/plugin.json", document);
+    return files;
+  }
+
+  it.each([undefined, "", "unknown", "0.12", "0.012.0", "0.12.0-beta.1", "0.12.0+build"])("refuses an unset or non-stable alerts release version: %s", (alertsReleaseVersion) => {
+    const options = { ...OFFICIAL, alertsReleaseVersion } as Parameters<typeof checkMarketplaceRepository>[1];
+    expect(checkMarketplaceRepository(tree(validFiles()), options)).toEqual([
+      { subject: "alertsReleaseVersion", message: expect.stringContaining("Set alertsReleaseVersion") },
+    ]);
+  });
+
+  it.each(["0.12.0", "0.11.9"])("flags a legacy tree declaration at or above release %s", (alertsReleaseVersion) => {
+    expect(checkMarketplaceRepository(tree(treeFiles(pluginDocument())), { ...OFFICIAL, alertsReleaseVersion })).toEqual([
+      { subject: "plugin/alpha", message: expect.stringContaining("notificationEvents is deprecated for minAppVersion 0.12.0") },
+    ]);
+  });
+
+  it("keeps older legacy plugins valid during the transition", () => {
+    expect(check(treeFiles(pluginDocument([{ event: "alpha.ready" }])))).toEqual([]);
+  });
+
+  it("uses the descriptor minimum even if the manifest tries to claim an older minimum", () => {
+    const document = pluginDocument(null);
+    document.extensions["ai.agent-connector.ave"].requires.minAppVersion = "0.1.0";
+    const problems = checkMarketplaceRepository(tree(treeFiles(document)), { ...OFFICIAL, alertsReleaseVersion: "0.12.0" });
+    expect(problems).toContainEqual({ subject: "plugin/alpha", message: expect.stringContaining("notificationEvents is deprecated") });
+  });
+
+  it("checks release-only manifests, including retained yanked versions", () => {
+    const files = validFiles();
+    const versions = index(files).packages[0]!.versions as Array<Record<string, unknown>>;
+    versions.push(version({ version: "0.9.0", authority: authority(), artifact: artifact(), yanked: { reason: "Retained pin", at: AT } }));
+    const old = { ...pluginDocument(), version: "0.9.0" };
+    const problems = checkMarketplaceRepository(tree(files), { ...OFFICIAL, alertsReleaseVersion: "0.12.0", releasedManifests: new Map([["alpha@1.0.0", pluginDocument()], ["alpha@0.9.0", old]]) });
+    expect(problems).toContainEqual({ subject: "plugin/alpha", message: expect.stringContaining("the released plugin.json of 1.0.0: notificationEvents is deprecated") });
+    expect(problems).toContainEqual({ subject: "plugin/alpha", message: expect.stringContaining("the released plugin.json of 0.9.0: notificationEvents is deprecated") });
+  });
+
+  it("requires a manifest for an eligible release-only descriptor instead of silently skipping the check", () => {
+    expect(checkMarketplaceRepository(tree(validFiles()), { ...OFFICIAL, alertsReleaseVersion: "0.12.0" })).toEqual([
+      { subject: "plugin/alpha", message: expect.stringContaining("Supply releasedManifests for alpha@1.0.0") },
+    ]);
+  });
+
+  it("accepts an eligible manifest without the deprecated field", () => {
+    const document = { name: "alpha", version: "1.0.0", extensions: { "ai.agent-connector.ave": authority() } };
+    expect(checkMarketplaceRepository(tree(treeFiles(document)), { ...OFFICIAL, alertsReleaseVersion: "0.12.0" })).toEqual([]);
+    expect(checkMarketplaceRepository(tree(validFiles()), { ...OFFICIAL, alertsReleaseVersion: "0.12.0", releasedManifests: new Map([["alpha@1.0.0", document]]) })).toEqual([]);
   });
 });

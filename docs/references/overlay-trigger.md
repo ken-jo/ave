@@ -1,39 +1,123 @@
-# Overlay Trigger
+# Overlay triggers and plugin alerts
 
-Status: Active English default. The Korean archive keeps earlier review history and original discussion, but this page must be usable on its own.
+This page owns the host delivery and trust contract for actions that begin
+outside direct chat input. The alerts contract describes the complete alerts
+release; a build containing only part of the
+[rollout](../design/plugin-alerts.md#pull-request-plan) does not enable the whole
+surface. Historical discussion remains in the
+[Korean archive](../ko/references/overlay-trigger.md).
 
-Korean archive: [docs/ko mirror](../ko/references/overlay-trigger.md).
+## Recurring alerts
 
-## What This Page Owns
+A plugin detects a signal and calls `raiseAlert({ kind, key, slots, ... })`.
+Its `extensions["ai.agent-connector.ave"].alerts.kinds` declaration authorizes the kind and
+owns its localized templates, bounded slots, visibility and static OS text.
+The host owns consent, identity, budgets, presentation and withdrawal.
+Malformed declarations grant nothing. Alert kinds require no `host:overlay`
+capability. `withdrawAlert(kind, key)` is scoped to the calling plugin.
 
-This page owns overlay-origin semantics for actions that begin outside direct chat input. Use it as the first review surface when changing this area; use the archive for background, not as a substitute for current English guidance.
+The delivery stages run in this order:
 
-## Current Operating Contract
+1. Check the declared kind and input shape.
+2. Block an inheriting kind while its predecessor is loaded, or installed and
+   not revoked. A revoked predecessor still running after a failed uninstall
+   blocks until its load is refused on restart.
+3. Check the user's kind toggle.
+4. Resolve open and closed identities. Refresh an open identity without another
+   notification; reject a dismissed or accepted identity until its TTL expires.
+5. Apply the per-kind cooldown and per-plugin rate limit.
+6. Render the declared templates with sanitized slots, then stage according to
+   effective visibility, which a call may only lower.
+7. Deliver the permitted notification cue, then emit host-owned audit and events.
 
-- English is the default review and contributor language for this app surface.
-- The document must name the behavior that still matters today, the code or test locations that enforce it, and the conditions that make the note stale.
-- Source files and tests are authoritative when this prose and implementation disagree.
-- Korean-only material stays in the mirrored archive unless it is translated or summarized here.
+Only acceptance charges cooldown and rate windows. Identity is an HMAC of the
+caller, kind and key under an installation secret. The raw key and slot text
+never enter `open.json`, audit rows or `alert.*` events. Slots in model-facing
+text are wrapped as untrusted data; reference slots appear only in the prompt,
+not on the card. OS notifications use static declared text.
 
-## Implementation Anchors
+| Visibility | Delivery |
+| --- | --- |
+| `user-visible` | Overlay card; OS notification when allowed. |
+| `summary-only` | In-app toast while focused, or an allowed OS notification; no card or model prompt. |
+| `silent` | Audit and `alert.raised` only. |
 
-- `src/tools/`
-- `src/engine/`
-- `src/permissions/`
-- `src/observability/`
+There is one notification cue per alert: an eligible OS notification replaces
+the toast. OS delivery requires the kind's OS declaration, its user toggle and
+the master switch. Low priority never sends an OS notification. Focus normally
+selects the in-app path; a declared focus bypass can select OS delivery.
+High-priority cards sort first. Closed identities persist across restart;
+rendered cards do not. Because disk state contains no slot text, a still-open
+identity is drawn again only when its plugin raises it again, returning
+`refreshed`. Cards staged in the current process before a window exists are
+available when the renderer attaches.
 
-## Update Checklist
+Accepting a card inserts its pending prompt into the chosen conversation and
+closes the alert with reason `accepted`. Dismissal closes it with `dismissed`.
+The renderer reports closures through `ave:alerts:card-closed` and obtains
+staged cards through `ave:alerts:open-cards`; both are host-renderer-only IPC.
+Plugin restarts and updates do not discard cards. Uninstall and revocation
+cleanup follow the plugin lifecycle; a still-running revoked plugin can retain
+cards until restart.
 
-- State whether the document is active, implemented, superseded, or historical before adding new detail.
-- Keep links relative to the current file depth; mirrored files under `docs/ko` need different paths from default docs.
-- Add or update tests when a documented behavior is enforced by code.
-- Remove template language and stale plan wording instead of carrying it forward.
+## One-time suggestions
 
-## Related Entry Points
+`triggerConversation` remains for plugin-authored setup suggestions. It requires
+`host:overlay`. For plugins declaring an `alerts` block, its source must appear
+in `alerts.suggestions` (at most four sources), and a source is accepted at most
+once per 30 days, persisted across restart. Invalid alerts declarations do not
+escape this restriction. Refusals include `source_not_declared` and
+`suggestion_limit`.
 
-- [Ave Project Documentation](../README.md)
-- [Getting Started](../guides/getting-started.md)
+During the transition, plugins without an alerts block retain their existing
+trigger behavior. This exception ends in the minor release after the alerts
+release, once the official plugins have migrated. The deprecated trigger fields
+`visibility` and `priority` are accepted and ignored during the window and are
+removed in that follow-on release.
 
-## Review Notes
+A trigger source must match `overlay:[a-z][a-z0-9-]*` and must not contain `--`.
+Only the alerts pipeline can mint `overlay:<pluginId>--<kind>` sources. Host
+kinds use `overlay:host--<kind>`, with `@host` as their identity namespace; the
+package name `host` is reserved. A suggestion's overlay source differs from a
+routine's `suggestion:<pluginId>:<intent>` idempotency marker.
 
-This English page should let a reviewer understand scope, risk, and validation without opening the Korean archive. If the archive contains rationale that still matters, translate the relevant part into this page and keep the archive link as provenance.
+## Trust and migration
+
+An accepted prompt retains the `plugin-emitted` staged origin and the
+`imported-from-proactive` envelope. It cannot dispatch privileged slash commands.
+All resulting tool calls retain the ordinary permission and force-ask gates;
+clicking a card does not approve its tools.
+
+`notificationEvents` remains functional through the alerts release. A manifest
+that declares it alongside `alerts.kinds` receives one load warning per plugin.
+The repository checker reports it when the matching descriptor or index
+version's `minAppVersion` is at or above the configured alerts-release version.
+Removal belongs to the next minor release: drop the field with a warning,
+remove its registration bridge and contract type, after `local-indexer` has
+published alert kinds. There is no unconditional legacy load warning.
+
+New-mail and meeting-summary OS notifications become opt-in when their plugins
+migrate. Users enable the relevant kinds and OS toggles in plugin settings;
+eligible choices retained from a predecessor can be inherited. Durable work
+proposals continue to use `proposeWork`; an alert is a time-bound nudge.
+
+A scheduled LLM routine with a non-empty explicit plugin allow-list checks the
+installed registry at execution time. If every named plugin is absent, it
+records `lastSkippedReason: "plugins-missing"` without creating a result. A
+one-shot stays pending; repeating skips advance the occurrence. If only some
+are absent, the routine runs and stores `needsAttention.missingPluginIds`.
+Both states remain visible with a remove action. Installed but unloaded,
+disabled, or updating plugins count as installed; this check does not grant
+them tool access. Missing scope, an empty allow-list, deny-all and inherit
+retain their existing execution behavior. Headless tool review remains the
+write guard, including when optional effect classification is disabled.
+
+## Implementation owners
+
+- Contract and validation: `src/plugins/public-contract.ts`,
+  `schemas/plugin-manifest.schema.json`, `src/plugins/runtime/manifest-validation.ts`.
+- Identity, rendering, state and admission: `src/alerts/{identity,render,store,kinds,gate,service}.ts`.
+- Events and suggestion limits: `src/alerts/{events,suggestion-ledger}.ts`.
+- Boot and renderer boundary: `src/boot/steps/alerts-setup.ts`, `src/ipc/domains/alerts.ts`.
+- Routine persistence and dispatch: `src/main/{routines-store,routines-scheduler}.ts`.
+- Complete budgets and migration rules: [plugin alerts design](../design/plugin-alerts.md).

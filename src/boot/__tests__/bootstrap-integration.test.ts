@@ -252,6 +252,7 @@ vi.mock("../steps/plugin-runtime.js", () => ({
       },
       runPluginShutdownHandlers: vi.fn(async () => {}),
       pluginPaths: {
+        registryPath: "/tmp/ave-boot-test/plugins/registry.json",
         pluginsRoot: "/tmp/ave-boot-test/plugins",
         cacheRoot: "/tmp/ave-boot-test/plugins/.cache",
       },
@@ -390,11 +391,21 @@ vi.mock("../../main/routines-store.js", () => ({
 }));
 vi.mock("../../main/routines-scheduler.js", () => ({
   RoutinesScheduler: class {
+    constructor(_store: unknown, getInstalledPluginIds: () => Promise<readonly string[]>) {
+      h.captured["routineInstalledPluginIds"] = getInstalledPluginIds;
+    }
     onLlmSession = vi.fn();
     onNotification = vi.fn();
     start = vi.fn();
     stop = vi.fn();
   },
+}));
+vi.mock("../../plugins/registry.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../plugins/registry.js")>(),
+  readPluginRegistry: vi.fn(async () => ({ plugins: [
+    { id: "updating-plugin", pendingUpdate: { transactionId: "update" } },
+    { id: "disabled-plugin", enabled: false },
+  ] })),
 }));
 vi.mock("../../main/work-board-store.js", () => ({
   WorkBoardStore: class {
@@ -655,6 +666,15 @@ describe("bootstrap() integration lock", () => {
     if (savedSandboxEnv === undefined)
       delete process.env["AVE_SANDBOX_ENABLED"];
     else process.env["AVE_SANDBOX_ENABLED"] = savedSandboxEnv;
+  });
+
+  it("reads installed routine plugins from the live registry including pending updates and disabled entries", async () => {
+    const getIds = h.captured["routineInstalledPluginIds"] as () => Promise<readonly string[]>;
+    expect(await getIds()).toEqual(["updating-plugin", "disabled-plugin"]);
+    const { readPluginRegistry } = await import("../../plugins/registry.js");
+    expect(readPluginRegistry).toHaveBeenLastCalledWith("/tmp/ave-boot-test/plugins/registry.json");
+    vi.mocked(readPluginRegistry).mockResolvedValueOnce({ version: 1, plugins: [] });
+    expect(await getIds()).toEqual([]);
   });
 
   it("assembles the exact AppServices key set (C18 must not drop/rename a service)", () => {

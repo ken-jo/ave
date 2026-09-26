@@ -72,6 +72,13 @@ function isValidRecord(r: unknown): r is RoutineRecord {
   if (x.execution !== "llm-session" && x.execution !== "notification-only") return false;
   if (x.lastFiredMinuteUTC !== undefined && typeof x.lastFiredMinuteUTC !== "string") return false;
   if (x.lastFiredAt !== undefined && typeof x.lastFiredAt !== "string") return false;
+  if (x.lastSkippedReason !== undefined && x.lastSkippedReason !== "plugins-missing") return false;
+  if (x.lastSkippedMinuteUTC !== undefined && typeof x.lastSkippedMinuteUTC !== "string") return false;
+  if (x.needsAttention !== undefined) {
+    if (!x.needsAttention || typeof x.needsAttention !== "object" || Array.isArray(x.needsAttention)) return false;
+    const ids = (x.needsAttention as Record<string, unknown>).missingPluginIds;
+    if (!isStringArray(ids) || ids.length === 0 || ids.some((id) => !ROUTINE_PLUGIN_ID_PATTERN.test(id))) return false;
+  }
   if (x.lastResultAcknowledgedAt !== undefined && typeof x.lastResultAcknowledgedAt !== "string") return false;
   if (x.lastRoutineSessionId !== undefined && typeof x.lastRoutineSessionId !== "string") return false;
   if (x.dismissedAt !== undefined && typeof x.dismissedAt !== "string") return false;
@@ -179,6 +186,9 @@ async function writeFileAtomic(filePath: string, data: RoutinesFile): Promise<vo
 function cloneRecord(r: RoutineRecord): RoutineRecord {
   return {
     ...r,
+    needsAttention: r.needsAttention
+      ? { missingPluginIds: [...r.needsAttention.missingPluginIds] }
+      : undefined,
     schedule: r.schedule
       ? {
           ...r.schedule,
@@ -490,11 +500,11 @@ export class RoutinesStore {
   }
 
   /**
-   * Mark a routine as fired. For non-repeating routines, sets dismissedAt.
+   * Mark a routine as fired. Completed one-shots without attention are dismissed.
    * For repeating routines, advances the next-fire time using the cron evaluator.
    * Returns the updated record.
    */
-  async markFired(id: string): Promise<RoutineRecord | null> {
+  async markFired(id: string, missingPluginIds: string[] = []): Promise<RoutineRecord | null> {
     if (!this.loaded) await this.load();
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await readFileOrEmpty(this.filePath);
@@ -505,27 +515,16 @@ export class RoutinesStore {
       }
       const firedAt = new Date().toISOString();
       r.lastFiredAt = firedAt;
+      delete r.lastSkippedReason;
+      delete r.lastSkippedMinuteUTC;
+      if (missingPluginIds.length > 0) r.needsAttention = { missingPluginIds: [...missingPluginIds] };
+      else delete r.needsAttention;
       delete r.lastRoutineSessionId;
       const repeat = r.schedule?.repeat;
       if (!repeat || repeat.kind === "none") {
-        r.dismissedAt = firedAt;
-      } else if (repeat.kind === "daily") {
-        const next = advanceDaily(r.schedule?.at ?? firedAt);
-        if (!r.schedule) r.schedule = {};
-        r.schedule.at = next;
-      } else if (repeat.kind === "weekly") {
-        const next = advanceWeekly(r.schedule?.at ?? firedAt);
-        if (!r.schedule) r.schedule = {};
-        r.schedule.at = next;
-      } else if (repeat.kind === "monthly") {
-        const next = advanceMonthly(r.schedule?.at ?? firedAt);
-        if (!r.schedule) r.schedule = {};
-        r.schedule.at = next;
-      } else if (repeat.kind === "interval") {
-        const next = advanceInterval(r.schedule?.at ?? firedAt, repeat.intervalMs);
-        if (!r.schedule) r.schedule = {};
-        r.schedule.at = next;
-      }
+        // A partial run stays visible for review and removal, but is not due again.
+        if (missingPluginIds.length === 0) r.dismissedAt = firedAt;
+      } else advanceRepeatingSchedule(r, firedAt);
       // cron routines: next-fire is re-computed by the scheduler each tick —
       // no need to advance `at` here.
       await writeFileAtomic(this.filePath, file);
@@ -533,9 +532,38 @@ export class RoutinesStore {
       return r;
     });
   }
+
+  /** Keep a skipped routine visible without creating a result or consuming a one-shot. */
+  async markPluginsMissing(id: string, missingPluginIds: string[], minuteUTC?: string): Promise<void> {
+    if (!this.loaded) await this.load();
+    await withInProcessFileQueue(this.filePath, async () => {
+      const file = await readFileOrEmpty(this.filePath);
+      const r = file.routines.find((record) => record.id === id && !record.dismissedAt);
+      if (!r) return;
+      const previous = JSON.stringify(r);
+      r.lastSkippedReason = "plugins-missing";
+      r.needsAttention = { missingPluginIds: [...missingPluginIds] };
+      if (minuteUTC !== undefined) r.lastSkippedMinuteUTC = minuteUTC;
+      advanceRepeatingSchedule(r, new Date().toISOString());
+      if (JSON.stringify(r) !== previous) await writeFileAtomic(this.filePath, file);
+      this.cache = file.routines;
+    });
+  }
 }
 
 // ─── Next-fire helpers ────────────────────────────────────────────────────────
+
+function advanceRepeatingSchedule(routine: RoutineRecord, now: string): void {
+  const schedule = routine.schedule;
+  if (!schedule) return;
+  const at = schedule.at ?? now;
+  switch (schedule.repeat?.kind) {
+    case "daily": schedule.at = advanceDaily(at); break;
+    case "weekly": schedule.at = advanceWeekly(at); break;
+    case "monthly": schedule.at = advanceMonthly(at); break;
+    case "interval": schedule.at = advanceInterval(at, schedule.repeat.intervalMs); break;
+  }
+}
 
 function advanceDaily(atIso: string): string {
   const d = new Date(atIso);
@@ -543,7 +571,7 @@ function advanceDaily(atIso: string): string {
   if (d.getTime() <= nowMs) {
     const intervalMs = 24 * 60 * 60 * 1000;
     const elapsed = nowMs - d.getTime();
-    const skips = Math.ceil(elapsed / intervalMs);
+    const skips = Math.floor(elapsed / intervalMs) + 1;
     d.setTime(d.getTime() + skips * intervalMs);
   }
   return d.toISOString();
@@ -555,7 +583,7 @@ function advanceWeekly(atIso: string): string {
   if (d.getTime() <= nowMs) {
     const intervalMs = 7 * 24 * 60 * 60 * 1000;
     const elapsed = nowMs - d.getTime();
-    const skips = Math.ceil(elapsed / intervalMs);
+    const skips = Math.floor(elapsed / intervalMs) + 1;
     d.setTime(d.getTime() + skips * intervalMs);
   }
   return d.toISOString();
@@ -590,7 +618,7 @@ function advanceInterval(atIso: string, intervalMs: number): string {
   if (intervalMs <= 0) return d.toISOString();
   if (d.getTime() <= nowMs) {
     const elapsed = nowMs - d.getTime();
-    const skips = Math.ceil(elapsed / intervalMs);
+    const skips = Math.floor(elapsed / intervalMs) + 1;
     d.setTime(d.getTime() + skips * intervalMs);
   }
   return d.toISOString();
