@@ -20,13 +20,14 @@ The delivery stages run in this order:
 
 1. Check the declared kind and input shape.
 2. Block an inheriting kind while its predecessor is loaded, or installed and
-   not revoked. A revoked predecessor still running after a failed uninstall
-   blocks until its load is refused on restart.
+   not revoked, if its source matches the declaration or has no binding.
+   A revoked predecessor still running after a failed uninstall blocks until
+   its load is refused on restart.
 3. Check the user's kind toggle.
 4. Resolve open and closed identities. Refresh an open identity without another
    notification; reject a dismissed or accepted identity until its TTL expires.
 5. Apply the per-kind cooldown and per-plugin rate limit.
-6. Render the declared templates with sanitized slots, then stage according to
+6. Stage the declared content with sanitized slots according to
    effective visibility, which a call may only lower.
 7. Deliver the permitted notification cue, then emit host-owned audit and events.
 
@@ -51,14 +52,16 @@ rendered cards do not. Because disk state contains no slot text, a still-open
 identity is drawn again only when its plugin raises it again, returning
 `refreshed`. Cards staged in the current process before a window exists are
 available when the renderer attaches.
+An accepted card remains queued if a window send fails; `delivered.card`
+reports staging, not renderer acknowledgment.
 
 Accepting a card inserts its pending prompt into the chosen conversation and
 closes the alert with reason `accepted`. Dismissal closes it with `dismissed`.
 The renderer reports closures through `ave:alerts:card-closed` and obtains
 staged cards through `ave:alerts:open-cards`; both are host-renderer-only IPC.
-Plugin restarts and updates do not discard cards. Uninstall and revocation
-cleanup follow the plugin lifecycle; a still-running revoked plugin can retain
-cards until restart.
+Plugin restarts and updates do not discard cards. Uninstall cleanup withdraws
+the plugin's cards. Revocation withdraws them during the current session, even
+if the plugin keeps running; its saved alert choices remain available.
 
 ## One-time suggestions
 

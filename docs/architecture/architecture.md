@@ -740,9 +740,10 @@ own signal detection and declare localized templates and bounded slots in
 grants no kinds. Durable work proposals retain their separate contract.
 
 The pipeline checks grant, input shape, predecessor, user toggle, open/closed
-identity, cooldown and rate before rendering and delivery. A predecessor blocks
-while loaded, or installed and not revoked; revocation without unloading does
-not immediately lift the block. Only accepted alerts consume delivery budgets.
+identity, cooldown and rate before accepting and delivering an alert. A
+predecessor from the declared source, or without a source binding, blocks while
+loaded, or installed and not revoked; revocation without unloading does not
+immediately lift the block. Only accepted alerts consume delivery budgets.
 Effective visibility can only decrease: a user-visible alert stages a card,
 a summary-only alert delivers a notification cue without a model prompt, and a
 silent alert writes audit and an event. OS delivery requires the declaration,
