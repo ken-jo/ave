@@ -75,6 +75,33 @@ describe("useStatusBar — toast TTL eviction", () => {
     expect(result.current.toasts).toHaveLength(0);
   });
 
+  it("keeps a sticky notification toast at the head until it is dismissed", async () => {
+    let emit: ((payload: { kind: "alert"; title: string; body: string; sticky?: true }) => void) | undefined;
+    const api = statusBarApi({
+      onNotificationToast: (handler) => {
+        emit = handler as typeof emit;
+        return noop();
+      },
+    });
+    const { result } = renderHook(() => useStatusBar({ api, defaultToastTtlMs: 5000 }));
+    act(() => {
+      emit?.({ kind: "alert", title: "Meeting", body: "starting", sticky: true });
+      emit?.({ kind: "alert", title: "Mail", body: "new" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    expect(result.current.visibleToast?.message).toBe("Meeting: starting");
+    act(() => {
+      result.current.removeToast(result.current.visibleToast!.id);
+    });
+    expect(result.current.visibleToast?.message).toBe("Mail: new");
+    await act(async () => {
+      vi.advanceTimersByTime(6000);
+    });
+    expect(result.current.visibleToast).toBeNull();
+  });
+
   it("extends long toast TTL so marquee text can finish flowing", async () => {
     const api = statusBarApi();
     const { result } = renderHook(() =>

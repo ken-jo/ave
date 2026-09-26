@@ -42,6 +42,7 @@ export type RevocationDecision =
 
 class RevocationRegistry {
   private rules = new Map<string, RevocationRule[]>();
+  private readonly listeners = new Set<() => void>();
   private fed = false;
   /** Whether the pre-feed use has already been reported — reported once. */
   private reportedUnfed = false;
@@ -63,7 +64,16 @@ class RevocationRegistry {
     const changed = !this.fed || fingerprint(next) !== fingerprint(this.rules);
     this.rules = next;
     this.fed = true;
+    // Even an unchanged feed can describe a newly installed package version.
+    for (const listener of this.listeners) {
+      try { listener(); } catch (error) { log.error({ error }, "revocation listener failed"); }
+    }
     return changed;
+  }
+
+  onUpdated(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
   }
 
   /** Whether an installed `version` of `(kind, name)` is revoked by the source it is bound to. */

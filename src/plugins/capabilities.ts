@@ -108,11 +108,16 @@ export const EVENT_NAMESPACE_CAPABILITY: ReadonlyMap<string, string> = new Map([
  * the host from the user's own rows. It is a namespace with no legitimate
  * plugin-side emitter, so leaving it out let any plugin forge a due-soon nudge
  * for an item the user never has, and have every subscriber react to it.
+ *
+ * `alert` likewise: `alert.raised` / `alert.withdrawn` report what the host's
+ * alert pipeline accepted and withdrew. A plugin that could emit them could
+ * make subscribers react to an alert nobody raised.
  */
 export const HOST_ONLY_EMIT_NAMESPACES: ReadonlySet<string> = new Set([
   "plugin",
   "host",
   "work_board",
+  "alert",
 ]);
 
 /**

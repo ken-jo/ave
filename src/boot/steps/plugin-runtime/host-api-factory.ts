@@ -21,7 +21,12 @@ import { normalizeAllowedHosts, urlHostMatchesAllowList } from "../../../main/ho
 import type { AuthRedirectCatchers } from "../../../main/auth-redirect-catcher.js";
 import { resolveMappedDriveRoot } from "../../../main/host-api/mapped-drive-root.js";
 import { AudioCaptureService } from "../../../main/audio-capture.js";
-import type { AttachFloatingPanelRequest, AudioCaptureRequest } from "../../../plugins/public-contract.js";
+import type {
+  AlertInput,
+  AlertResult,
+  AttachFloatingPanelRequest,
+  AudioCaptureRequest,
+} from "../../../plugins/public-contract.js";
 import { FloatingDock } from "../../../main/floating-dock.js";
 import { evaluateHostFetch, runHostFetchHops } from "../../../main/host-fetch-guard.js";
 import {
@@ -108,6 +113,8 @@ import {
   getDeclaredWorkProposalKinds,
 } from "../../../plugins/runtime/manifest-validation.js";
 import { suggestionLedger } from "../../../alerts/suggestion-ledger.js";
+import type { AlertsService } from "../../../alerts/service.js";
+import { alertEventReaches, isAlertEvent } from "../../../alerts/events.js";
 import type {
   WorkProposalChangedEventPayload,
   WorkProposalInput,
@@ -296,6 +303,11 @@ export interface CreateHostApiFactoryDeps {
    * to degrade around.
    */
   getWorkBoardStore: () => WorkBoardStore | undefined;
+  /**
+   * Late-bound alerts service, built before plugins start. A host without one
+   * (a minimal test host) registers no kinds, and `raiseAlert` fails loudly.
+   */
+  getAlertsService: () => AlertsService | undefined;
   /** What a host-secret grant reads from disk (design §10.3). */
   grantEvidence: GrantEvidenceReader;
 }
@@ -341,6 +353,7 @@ export function createHostApiFactory(
     permissionManager,
     routinesStore,
     getWorkBoardStore,
+    getAlertsService,
     grantEvidence,
   } = deps;
 
@@ -423,6 +436,29 @@ export function createHostApiFactory(
       hostIncarnation.registerDisposer(disposeOnce);
       hostEffects?.registerDisposer(disposeOnce);
       return disposeOnce;
+    };
+    // Candidate grants become effective only with their generation. A failed
+    // candidate cannot replace the incumbent's kinds or alter its settings.
+    const alertRegistration = getAlertsService()?.prepareRegistration(pluginId, manifest);
+    if (alertRegistration) {
+      const publish = () => {
+        void alertRegistration.publish().catch((err: unknown) => {
+          log.warn(`[plugin:${pluginId}] alert kind registration failed: ${errorMessage(err)}`);
+        });
+      };
+      registerOwnedDisposer(alertRegistration.unpublish);
+      if (hostEffects) {
+        hostEffects.stagePublish(publish);
+        hostEffects.onSupersede(alertRegistration.unpublish);
+      } else if (hostIncarnation.isActive()) {
+        publish();
+      }
+    }
+    /** The alerts service, or a loud failure: plugins start after it is built. */
+    const requireAlertsService = (member: string): AlertsService => {
+      const service = getAlertsService();
+      if (!service) throw new Error(`[plugin:${pluginId}] hostApi.${member}: alerts service is not constructed`);
+      return service;
     };
     /**
      * The Work Board store, or a loud failure. Plugins start long after
@@ -704,8 +740,13 @@ export function createHostApiFactory(
           type,
           candidateApprovedPluginAccess,
         );
+        // The host emits `alert.*`, so its owner is the payload's plugin: a
+        // subscriber hears its own alerts and, with a grant, the named plugin's.
+        const alertEvent = isAlertEvent(type);
         const dispatch = (data: unknown) => {
-          if (hostIncarnation.isActive()) handler(data);
+          if (!hostIncarnation.isActive()) return;
+          if (alertEvent && !alertEventReaches(pluginId, type, data, getApprovedPluginAccess())) return;
+          handler(data);
         };
         // Contained for the same reason `config.onChange` is: `emitEvent`
         // catches what a synchronous handler throws, and a `void`-discarded
@@ -1705,6 +1746,17 @@ export function createHostApiFactory(
         if (withdrawn) notifyProposalChanged(proposalId(pluginId, kind, key.trim()), "withdrawn");
         return withdrawn;
       },
+
+      // ─── Alerts — hostApi.raiseAlert() / withdrawAlert() ────────────────
+      // What arrives is a declared kind id, a key and typed slot values; the
+      // card, the prompt and the notification are the host's, rendered from
+      // the kind's declaration. The identity is keyed by the CALLER's plugin
+      // id, so a plugin can neither raise nor withdraw another's alert.
+      raiseAlert: async (input: AlertInput): Promise<AlertResult> =>
+        requireAlertsService("raiseAlert").raise(pluginId, input),
+
+      withdrawAlert: async (kind: string, key: string): Promise<boolean> =>
+        requireAlertsService("withdrawAlert").withdraw(pluginId, kind, key),
         }),
         {
           pluginId,

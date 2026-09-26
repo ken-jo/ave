@@ -125,6 +125,16 @@ describe("capabilities module namespace policy", () => {
     expect(HOST_ONLY_EMIT_NAMESPACES.has("work_board")).toBe(true);
   });
 
+  it("refuses a forged alert emit even when the plugin declares it", () => {
+    // `alert.raised` / `alert.withdrawn` report what the host's alert pipeline
+    // accepted and withdrew; a plugin that could emit them could make
+    // subscribers react to an alert nobody raised.
+    expect(canEmitEvent("alert.raised", [])).toBe(false);
+    expect(canEmitEvent("alert.raised", ["alert.raised"])).toBe(false);
+    expect(canEmitEvent("alert.withdrawn", ["alert.withdrawn"])).toBe(false);
+    expect(HOST_ONLY_EMIT_NAMESPACES.has("alert")).toBe(true);
+  });
+
   it("private namespaces reject plugin emit even when explicitly declared", () => {
     for (const eventType of [
       "memory.private.document",

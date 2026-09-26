@@ -52,6 +52,8 @@ export interface OverlayCardRegionProps {
    * the turn is started in.
    */
   onPluginPrimaryAction: (overlayItemId: string, chatGroupId: string) => void;
+  /** Called when the user closes an alert card without accepting it. */
+  onAlertDismiss?: (overlayItemId: string) => void;
   onRoutineAcknowledge?: (routineId: string, firedAt: string) => void;
   /**
    * The user's answer to an onboarding proposal, with the tile that showed the
@@ -66,7 +68,7 @@ export interface OverlayCardRegionProps {
 }
 
 export function OverlayCardRegion({
-  chatGroupId, actionChatGroupId, overlayCardTile, onPluginPrimaryAction, onRoutineAcknowledge,
+  chatGroupId, actionChatGroupId, overlayCardTile, onPluginPrimaryAction, onAlertDismiss, onRoutineAcknowledge,
   onProposalAnswer,
 }: OverlayCardRegionProps) {
   const { t } = useTranslation();
@@ -203,6 +205,7 @@ export function OverlayCardRegion({
   // provenance (the envelope in `pendingPrompt` and the badge below).
   if (active.source.kind === "plugin" || active.source.kind === "app" || active.source.kind === "alert") {
     const kind = active.source.kind === "app" ? "app" : "plugin";
+    const isAlert = active.source.kind === "alert";
     return (
       <div
         data-testid="overlay-card-region"
@@ -220,7 +223,10 @@ export function OverlayCardRegion({
             queueTotal={queueTotal}
             onPrev={prev}
             onNext={next}
-            onDismiss={() => dismiss(active.id)}
+            onDismiss={() => {
+              dismiss(active.id);
+              if (isAlert) onAlertDismiss?.(active.id);
+            }}
             expanded={expanded}
             onExpandedChange={onExpandedChange}
             onPrimaryAction={() => {

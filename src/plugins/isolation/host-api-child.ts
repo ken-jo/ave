@@ -62,6 +62,7 @@ import type {
   FloatingPanelHandle,
   AudioCaptureRequest,
   WorkProposalResult,
+  AlertResult,
 } from "../public-contract.js";
 import type { HostApiCaller, PluginChildContext } from "./plugin-child-runtime.js";
 import {
@@ -267,6 +268,13 @@ export function createServiceChildMembers(
 
     withdrawWorkProposal: async (...args) =>
       call("withdrawWorkProposal", positional(args[0], args[1])) as Promise<boolean>,
+
+    // No local pre-check either: the host answers every refusal with a status.
+    raiseAlert: async (...args) =>
+      call("raiseAlert", positional(args[0])) as Promise<AlertResult>,
+
+    withdrawAlert: async (...args) =>
+      call("withdrawAlert", positional(args[0], args[1])) as Promise<boolean>,
 
     probePrivateHost: async (...args) =>
       call("probePrivateHost", positional(args[0], args[1])) as Promise<boolean>,

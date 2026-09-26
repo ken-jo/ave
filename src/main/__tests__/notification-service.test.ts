@@ -748,6 +748,39 @@ describe("NotificationService — alert kind", () => {
     expect(factoryStub.calls.length).toBe(3);
     vi.restoreAllMocks();
   });
+
+  function alertService(win: ReturnType<typeof makeMockWindow> | null, focused: boolean | (() => boolean)) {
+    return new NotificationService({
+      getMainWindow: () => win as unknown as Electron.BrowserWindow,
+      auditLogger: makeMockAuditLogger(),
+      notificationFactory: makeNotificationFactoryStub().factory,
+      isReady: () => true,
+      isTestEnv: () => false,
+      isAnyWindowFocused: typeof focused === "function" ? focused : () => focused,
+    });
+  }
+
+  it("says ahead of a fire whether it would be an in-app toast", () => {
+    expect(alertService(makeMockWindow(), true).isFocusGateActive()).toBe(true);
+    expect(alertService(makeMockWindow(), false).isFocusGateActive()).toBe(false);
+    // A minimized or missing main window cannot show a toast.
+    expect(alertService(makeMockWindow({ minimized: true }), true).isFocusGateActive()).toBe(false);
+    expect(alertService(null, true).isFocusGateActive()).toBe(false);
+    expect(alertService(makeMockWindow(), () => { throw new Error("probe failed"); }).isFocusGateActive()).toBe(false);
+  });
+
+  it("marks a sticky toast, and only when asked", () => {
+    const win = makeMockWindow();
+    const svc = alertService(win, true);
+    svc.fire({ kind: "alert", title: "Meeting", body: "now", sticky: true });
+    expect(win.webContents.send).toHaveBeenLastCalledWith(
+      IPC_NOTIFICATION_TOAST,
+      expect.objectContaining({ kind: "alert", sticky: true }),
+    );
+    const plain = makeMockWindow();
+    alertService(plain, true).fire({ kind: "alert", title: "Mail", body: "new" });
+    expect(plain.webContents.send.mock.calls[0]![1]).not.toHaveProperty("sticky");
+  });
 });
 
 // CRITICAL regression guard — critic iter 1 finding. The pre-fix `fire()`

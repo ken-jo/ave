@@ -220,6 +220,10 @@ describe("preload contextBridge world shape lock", () => {
           "acpSubscriptionVerify": "function",
           "addRoutine": "function",
           "addWorkBoardItem": "function",
+          "alerts": [
+            "cardClosed",
+            "openCards",
+          ],
           "applyClaudeDesktopMcpImport": "function",
           "approval": [
             "listPending",

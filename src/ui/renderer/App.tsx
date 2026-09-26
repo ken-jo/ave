@@ -631,6 +631,7 @@ export function App() {
     dismissRef,
     runningRoutines,
     handlePluginPrimaryAction,
+    handleAlertDismiss,
     handleRoutineAcknowledge,
     handleProposalAnswer,
   } = useRoutineOverlay({
@@ -1472,6 +1473,7 @@ export function App() {
         onPluginPrimaryAction={(id, actionChatGroupId) => {
           void handlePluginPrimaryAction(id, actionChatGroupId);
         }}
+        onAlertDismiss={handleAlertDismiss}
         onRoutineAcknowledge={handleRoutineAcknowledge}
         onProposalAnswer={(id, disposition, actionChatGroupId) => {
           void handleProposalAnswer(id, disposition, actionChatGroupId);

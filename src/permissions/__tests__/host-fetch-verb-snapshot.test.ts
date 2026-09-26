@@ -195,6 +195,7 @@ async function buildRealHostApi(): Promise<{
     routinesStore: { list: () => [] } as never,
     // This harness has no Work Board; the proposal verbs are not exercised here.
     getWorkBoardStore: () => undefined,
+    getAlertsService: () => undefined,
   });
 
   const createHostApi = harness.capturedRuntimeOptions?.createHostApi as

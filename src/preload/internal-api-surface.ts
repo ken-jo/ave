@@ -1,6 +1,7 @@
 // The internal renderer API is intentionally assembled in one typed surface.
 import { ipcRenderer } from "electron";
 import {
+  ALERTS,
   CHANNELS,
   MARKETPLACE,
   OVERLAY_V1,
@@ -1299,6 +1300,15 @@ export function buildInternalApiSurface() {
     const listener = (_e: unknown, id: string) => handler(id);
     ipcRenderer.on(OVERLAY_V1.dismiss, listener);
     return () => ipcRenderer.removeListener(OVERLAY_V1.dismiss, listener);
+  },
+
+  // Plugin alert cards: what the user did with one, and the cards staged
+  // before this window was listening.
+  alerts: {
+    cardClosed: async (alertId: string, reason: "accepted" | "dismissed") =>
+      ipcRenderer.invoke(ALERTS.cardClosed, alertId, reason) as Promise<{ ok: boolean; error?: string }>,
+    openCards: async () =>
+      ipcRenderer.invoke(ALERTS.openCards) as Promise<import("../shared/alerts-types.js").AlertCard[]>,
   },
 
   // session_tasks — assistant's current-turn checklist

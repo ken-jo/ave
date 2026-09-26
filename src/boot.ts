@@ -89,6 +89,7 @@ import { assembleAppServices } from "./boot/assemble-services.js";
 import { setupNetworkFetch } from "./boot/steps/network-fetch-setup.js";
 import { setupAuditAndNotification } from "./boot/steps/audit-notification.js";
 import { setupWorkBoard } from "./boot/steps/work-board-setup.js";
+import { setupAlerts } from "./boot/steps/alerts-setup.js";
 import { setupWorkflowStores } from "./boot/steps/workflow-stores.js";
 import { setupMarketplace } from "./boot/steps/marketplace-setup.js";
 import { wireReviewerAndPermissions } from "./boot/steps/reviewer-permission-wiring.js";
@@ -645,6 +646,9 @@ export async function bootstrap(
     // Recommended-work channel target for `hostApi.proposeWork`. Read lazily:
     // setupWorkBoard() runs below this call, and plugins only start after it.
     getWorkBoardStore: () => ctx.workBoardStore,
+    // Alerts channel for `hostApi.raiseAlert`, read lazily for the same reason:
+    // setupAlerts() runs below this call, before plugins start.
+    getAlertsService: () => ctx.alertsService,
     onPluginUiRevisionChange: (pluginId) => {
       host.desktop?.revokePluginWebviews(pluginId, (appSessionId) =>
         ctx.revokePluginOperationSession?.(appSessionId),
@@ -673,6 +677,9 @@ export async function bootstrap(
   await setupWorkBoard(ctx);
   await setupWorkflowStores(ctx, workspaceSessionStores);
   await setupMarketplace(ctx);
+  // Before cleanup replay and plugin startup: uninstall events must reach the
+  // alerts service, and declared kinds must register before their first raise.
+  await setupAlerts(ctx);
   // ONE cleanup service set for every boot entry point into
   // plugins/uninstall-lifecycle. It used to be hand-spelled per call site, and
   // `emitHostEvent` — optional on the dep interface, so its absence type-checks

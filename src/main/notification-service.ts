@@ -28,6 +28,7 @@ import type { ActivationArguments, BrowserWindow } from "electron";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import { createLogger } from "../lib/logger.js";
 import { stripMarkdown } from "../shared/strip-markdown.js";
+import { errorMessage } from "../shared/error-message.js";
 const log = createLogger("ave");
 
 export type NotificationKind =
@@ -81,6 +82,11 @@ export interface FireOptions {
    * (silent: !urgent still applies).
    */
   bypassFocusGate?: boolean;
+  /**
+   * Keep the in-app toast until the user dismisses it, instead of letting it
+   * time out. The OS path ignores it. Used for `high` priority alerts.
+   */
+  sticky?: boolean;
 }
 
 /**
@@ -151,6 +157,8 @@ export interface ToastPayload {
   title: string;
   body: string;
   contextRef?: NotificationContextRef;
+  /** Stays until the user dismisses it. */
+  sticky?: true;
 }
 
 /**
@@ -310,9 +318,7 @@ export class NotificationService {
     // Ave, the conversation itself is the completion signal; do not surface a
     // composer/status toast, and do not consume the cooldown slot.
     const win = this.getMainWindow();
-    const mainAlive = win !== null && !win.isDestroyed() && !win.isMinimized();
-    const anyFocused = this.isAnyWindowFocused();
-    const focusGateActive = !opts.bypassFocusGate && mainAlive && anyFocused;
+    const focusGateActive = !opts.bypassFocusGate && this.canShowToast(win);
     if (opts.kind === "turn-end" && focusGateActive) {
       this.auditSuppressed(opts.kind, 0, "foreground");
       return;
@@ -390,6 +396,7 @@ export class NotificationService {
         title: cleanTitle,
         body: truncatedBody,
         contextRef: opts.contextRef,
+        ...(opts.sticky === true ? { sticky: true as const } : {}),
       };
       try {
         win.webContents.send(IPC_NOTIFICATION_TOAST, payload);
@@ -409,6 +416,30 @@ export class NotificationService {
     }
 
     this.audit(gate, opts.kind, cleanTitle);
+  }
+
+  /**
+   * Whether a cue fired now without `bypassFocusGate` would be an in-app
+   * toast rather than an OS notification — so a caller can choose between
+   * the two before it fires. Never throws, like {@link fire}: a failed window
+   * probe reads as "not focused".
+   */
+  isFocusGateActive(): boolean {
+    try {
+      return this.canShowToast(this.getMainWindow());
+    } catch (err) {
+      log.warn("notification focus probe failed: %s", errorMessage(err));
+      return false;
+    }
+  }
+
+  /**
+   * The main window can show an in-app toast (alive and not minimized, so the
+   * user can see it) and some Ave window has focus.
+   */
+  private canShowToast(win: BrowserWindow | null): boolean {
+    const mainAlive = win !== null && !win.isDestroyed() && !win.isMinimized();
+    return mainAlive && this.isAnyWindowFocused();
   }
 
   private fireOsNotification(opts: FireOptions, title: string, body: string, urgent: boolean): void {

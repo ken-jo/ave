@@ -30,6 +30,7 @@
           "ave/host/pickFolders",
           "ave/host/probePrivateHost",
           "ave/host/proposeWork",
+          "ave/host/raiseAlert",
           "ave/host/resizeFloatingPanel",
           "ave/host/resolveApiKey",
           "ave/host/resolveMappedDriveRoot",
@@ -47,6 +48,7 @@
           "ave/host/storage/writeEncrypted",
           "ave/host/storage/writeJson",
           "ave/host/triggerConversation",
+          "ave/host/withdrawAlert",
           "ave/host/withdrawWorkProposal"
         ]
       },
@@ -2371,6 +2373,264 @@
           ]
         }
       },
+      "ave/host/raiseAlert": {
+        "description": "Raise one alert of a kind declared in this plugin's `alerts` block.",
+        "errors": {
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
+          "properties": {
+            "code": {
+              "type": "integer"
+            },
+            "data": {
+              "properties": {
+                "code": {
+                  "enum": [
+                    "plugin-inactive",
+                    "path-unknown",
+                    "path-not-dispatchable",
+                    "path-not-implemented",
+                    "argument-marshalling-rejected",
+                    "result-marshalling-rejected",
+                    "payload-too-large",
+                    "subscription-unknown",
+                    "effect-boundary-denied",
+                    "manifest-integrity-violation",
+                    "detached-operation",
+                    "plugin-storage",
+                    "plugin-storage-encryption-unavailable",
+                    "host-internal"
+                  ]
+                },
+                "detail": {
+                  "type": "object"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "name"
+              ],
+              "type": "object"
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "data"
+          ],
+          "type": "object"
+        },
+        "params": {
+          "properties": {
+            "input": {
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "priority": {
+                  "enum": [
+                    "low",
+                    "normal",
+                    "high"
+                  ],
+                  "type": "string"
+                },
+                "slots": {
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      }
+                    ]
+                  },
+                  "type": "object"
+                },
+                "ttlMs": {
+                  "type": "number"
+                },
+                "visibility": {
+                  "$ref": "#/$defs/types/AlertVisibility"
+                }
+              },
+              "required": [
+                "kind",
+                "key"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "input"
+          ],
+          "type": "object"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "properties": {
+                "alertId": {
+                  "type": "string"
+                },
+                "delivered": {
+                  "properties": {
+                    "card": {
+                      "type": "boolean"
+                    },
+                    "osNotification": {
+                      "type": "boolean"
+                    },
+                    "toast": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "card",
+                    "osNotification",
+                    "toast"
+                  ],
+                  "type": "object"
+                },
+                "status": {
+                  "const": "raised",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "alertId",
+                "delivered"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "alertId": {
+                  "type": "string"
+                },
+                "status": {
+                  "const": "refreshed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "alertId"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "type": "string"
+                },
+                "status": {
+                  "const": "kind_not_granted",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "status": {
+                  "const": "disabled_by_user",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "pluginId": {
+                  "type": "string"
+                },
+                "status": {
+                  "const": "blocked_by_predecessor",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "pluginId"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "status": {
+                  "const": "closed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "status": {
+                  "const": "cooldown",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "status": {
+                  "const": "rate_limited",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "field": {
+                  "type": "string"
+                },
+                "status": {
+                  "const": "invalid",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "field"
+              ],
+              "type": "object"
+            }
+          ]
+        }
+      },
       "ave/host/resizeFloatingPanel": {
         "description": "Change one of this plugin's dock slots to a new height.",
         "errors": {
@@ -3836,6 +4096,77 @@
             "source"
           ],
           "type": "object"
+        }
+      },
+      "ave/host/withdrawAlert": {
+        "description": "Withdraw this plugin's open alert for `(kind, key)` because its condition no longer holds. Scoped to the caller; resolves `false` when no such alert is open.",
+        "errors": {
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
+          "properties": {
+            "code": {
+              "type": "integer"
+            },
+            "data": {
+              "properties": {
+                "code": {
+                  "enum": [
+                    "plugin-inactive",
+                    "path-unknown",
+                    "path-not-dispatchable",
+                    "path-not-implemented",
+                    "argument-marshalling-rejected",
+                    "result-marshalling-rejected",
+                    "payload-too-large",
+                    "subscription-unknown",
+                    "effect-boundary-denied",
+                    "manifest-integrity-violation",
+                    "detached-operation",
+                    "plugin-storage",
+                    "plugin-storage-encryption-unavailable",
+                    "host-internal"
+                  ]
+                },
+                "detail": {
+                  "type": "object"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "name"
+              ],
+              "type": "object"
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "data"
+          ],
+          "type": "object"
+        },
+        "params": {
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "key"
+          ],
+          "type": "object"
+        },
+        "result": {
+          "type": "boolean"
         }
       },
       "ave/host/withdrawWorkProposal": {

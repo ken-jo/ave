@@ -319,6 +319,8 @@ export const HOSTAPI_DISPATCH_TABLE: Record<HostApiPath, HostApiPathHandler> = {
   hasRoutineBySource: unimplementedHostApiPath("hasRoutineBySource"),
   proposeWork: unimplementedHostApiPath("proposeWork"),
   withdrawWorkProposal: unimplementedHostApiPath("withdrawWorkProposal"),
+  raiseAlert: unimplementedHostApiPath("raiseAlert"),
+  withdrawAlert: unimplementedHostApiPath("withdrawAlert"),
   getAppPreference: childLocalHostApiPath("getAppPreference"),
   probePrivateHost: unimplementedHostApiPath("probePrivateHost"),
   resolveApiKey: unimplementedHostApiPath("resolveApiKey"),
@@ -529,7 +531,8 @@ export function createInteractionHostApiPaths(
  * provider (`callLlm`), credentials (`getSecret`, `resolveApiKey`), the worker
  * supervisor (`spawnWorker`), the event bus (`emitEvent`), the audit log
  * (`logEvent`), the routine store (`hasRoutineBySource`), the Work Board
- * (`proposeWork`, `withdrawWorkProposal`) and the Windows
+ * (`proposeWork`, `withdrawWorkProposal`), the alert pipeline
+ * (`raiseAlert`, `withdrawAlert`) and the Windows
  * drive-mapping lookup (`resolveMappedDriveRoot`). Between them they
  * hold every member §3.2 classified as not JSON-representable, which is why the
  * marshalling work concentrates here.
@@ -574,6 +577,8 @@ export type ServiceHostApi = Pick<
   | "hasRoutineBySource"
   | "proposeWork"
   | "withdrawWorkProposal"
+  | "raiseAlert"
+  | "withdrawAlert"
   | "probePrivateHost"
   | "resolveApiKey"
   | "emitEvent"
@@ -1315,6 +1320,32 @@ function withdrawWorkProposalPath(hostApi: ServiceHostApi): HostApiPathHandler {
 }
 
 /**
+ * `raiseAlert(input) → Promise<AlertResult>`.
+ *
+ * As with `proposeWork`, the grant, the slot shapes and every budget are the
+ * host implementation's; the boundary checks only that an object arrived.
+ */
+function raiseAlertPath(hostApi: ServiceHostApi): HostApiPathHandler {
+  return defineHostApiPath("raiseAlert", async (call) => {
+    const input = call.args[0];
+    if (!input || typeof input !== "object" || Array.isArray(input)) {
+      rejectArgument(call.path, "input must be an object");
+    }
+    return hostApi.raiseAlert(input as Parameters<ServiceHostApi["raiseAlert"]>[0]);
+  });
+}
+
+/** `withdrawAlert(kind, key) → Promise<boolean>`. */
+function withdrawAlertPath(hostApi: ServiceHostApi): HostApiPathHandler {
+  return defineHostApiPath("withdrawAlert", async (call) =>
+    hostApi.withdrawAlert(
+      requireString(call, 0, "kind"),
+      requireString(call, 1, "key"),
+    ),
+  );
+}
+
+/**
  * Bind this group's handlers to one plugin incarnation's `hostApi`.
  *
  * Composed over the dispatch table by the caller that owns the child, so the
@@ -1337,6 +1368,8 @@ export function createServiceHostApiPaths(
     hasRoutineBySource: hasRoutineBySourcePath(hostApi),
     proposeWork: proposeWorkPath(hostApi),
     withdrawWorkProposal: withdrawWorkProposalPath(hostApi),
+    raiseAlert: raiseAlertPath(hostApi),
+    withdrawAlert: withdrawAlertPath(hostApi),
     probePrivateHost: probePrivateHostPath(hostApi),
     resolveApiKey: bindOptional("resolveApiKey", hostApi.resolveApiKey, () =>
       resolveApiKeyPath(hostApi)),

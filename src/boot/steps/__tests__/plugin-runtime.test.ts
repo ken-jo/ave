@@ -434,6 +434,7 @@ describe("initPluginRuntime partition policy", () => {
       routinesStore: { list: () => [] } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
     });
 
     const handler = vi.fn(async () => {});
@@ -495,6 +496,7 @@ describe("initPluginRuntime partition policy", () => {
       routinesStore: { list: () => [] } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
     });
 
     const onEnable = runtimeTestState.capturedRuntimeOptions?.onEnable as
@@ -581,6 +583,7 @@ describe("initPluginRuntime partition policy", () => {
       routinesStore: { list: () => [] } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
     });
 
     // Post-`startAll` loop: every plugin that can render a UI view.
@@ -680,6 +683,7 @@ describe("initPluginRuntime HostApi factory", () => {
       routinesStore: { list: () => [] } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
     });
 
     const createHostApi = runtimeTestState.capturedRuntimeOptions
@@ -880,6 +884,7 @@ describe("initPluginRuntime HostApi factory", () => {
       routinesStore: { list: () => [] } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
     });
 
     const createHostApi = runtimeTestState.capturedRuntimeOptions
@@ -986,6 +991,7 @@ describe("initPluginRuntime HostApi factory", () => {
       routinesStore: { list: () => [] } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
     });
 
     const createHostApi = runtimeTestState.capturedRuntimeOptions
@@ -1084,6 +1090,7 @@ describe("initPluginRuntime HostApi factory", () => {
       routinesStore: { list: () => [] } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
     });
 
     const createHostApi = runtimeTestState.capturedRuntimeOptions
@@ -1147,6 +1154,7 @@ describe("initPluginRuntime HostApi factory", () => {
       routinesStore: { list: () => [] } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
     });
 
     const createHostApi = runtimeTestState.capturedRuntimeOptions
@@ -1244,6 +1252,7 @@ describe("initPluginRuntime HostApi factory", () => {
       routinesStore: { list: () => [] } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
     });
 
     const createHostApi = runtimeTestState.capturedRuntimeOptions
@@ -1362,6 +1371,7 @@ describe("initPluginRuntime HostApi factory", () => {
       routinesStore: { list: () => [] } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
     });
 
     const createHostApi = runtimeTestState.capturedRuntimeOptions
@@ -1472,6 +1482,7 @@ describe("initPluginRuntime HostApi factory", () => {
       routinesStore: { list: () => [] } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
     });
 
     const createHostApi = runtimeTestState.capturedRuntimeOptions
@@ -1549,6 +1560,7 @@ describe("initPluginRuntime HostApi factory", () => {
       routinesStore: { list: () => [] } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
     });
 
     const createHostApi = runtimeTestState.capturedRuntimeOptions
@@ -1637,6 +1649,7 @@ describe("initPluginRuntime HostApi factory", () => {
       routinesStore: { list: () => [] } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
     });
 
     const createHostApi = runtimeTestState.capturedRuntimeOptions
@@ -1742,6 +1755,7 @@ describe("initPluginRuntime HostApi factory", () => {
       routinesStore: { list: () => [] } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
     });
 
     const createHostApi = runtimeTestState.capturedRuntimeOptions
@@ -1831,6 +1845,7 @@ describe("hostApi.hasRoutineBySource — prefix-scoped idempotency probe", () =>
       routinesStore: { list: () => records } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
     });
     const createHostApi = runtimeTestState.capturedRuntimeOptions
       ?.createHostApi as CreateHostApi | undefined;
@@ -1945,6 +1960,7 @@ describe("initPluginRuntime sandbox union ordering", () => {
       routinesStore: { list: () => [] } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
       deferStart: true,
       refreshSandboxUnionDomains,
     });

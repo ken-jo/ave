@@ -215,6 +215,12 @@ export interface InitPluginRuntimeInput {
    * time a proposal can arrive.
    */
   getWorkBoardStore: () => import("../../main/work-board-store.js").WorkBoardStore | undefined;
+  /**
+   * Alerts service — backs `hostApi.raiseAlert` / `withdrawAlert` and
+   * registers each plugin's declared kinds at start. Late-bound like the Work
+   * Board store: `setupAlerts` runs after this step and before plugins start.
+   */
+  getAlertsService: () => import("../../alerts/service.js").AlertsService | undefined;
   /** Production defers activation until Skill/Hook/MCP lifecycle wiring exists. */
   deferStart?: boolean;
   /**
@@ -279,6 +285,7 @@ export async function initPluginRuntime(
     permissionManager,
     routinesStore,
     getWorkBoardStore,
+    getAlertsService,
   } = input;
 
   // §B3 — host public preference reader, shared across all per-plugin HostApi
@@ -474,6 +481,7 @@ export async function initPluginRuntime(
     permissionManager,
     routinesStore,
     getWorkBoardStore,
+    getAlertsService,
   });
   const { preparePluginStart, onDisable, onActiveStateChange, onEnable } =
     createLifecycleCallbacks({

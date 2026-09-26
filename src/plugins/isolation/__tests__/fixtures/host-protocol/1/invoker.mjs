@@ -74,6 +74,14 @@ const CALLS = {
   "agentApproval.request": (api) =>
     api.agentApproval.request({ toolName: "golden_tool", args: {}, reason: "needs approval", scope: "once" }),
   "agentApproval.respond": (api) => api.agentApproval.respond("request-1", "allow-once", "nonce-1", "hmac-1"),
+  raiseAlert: (api) =>
+    api.raiseAlert({
+      kind: "mail-reply",
+      key: "mail-1",
+      slots: { subject: "Quarterly report" },
+      priority: "high",
+    }),
+  withdrawAlert: (api) => api.withdrawAlert("mail-reply", "mail-1"),
 };
 
 /** A value the plugin received, as JSON: live handles become their data members. */

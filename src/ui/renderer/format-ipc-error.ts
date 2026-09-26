@@ -82,6 +82,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "invalid-dynamic-menu": "formatIpcError.invalidPayload",
   "invalid-params": "formatIpcError.invalidParams",
   "invalid-input": "formatIpcError.invalidInput",
+  "invalid-arguments": "formatIpcError.invalidInput",
   "invalid-answer": "formatIpcError.invalidInput",
   "invalid-proposal-key": "formatIpcError.invalidInput",
   "invalid-disposition": "formatIpcError.invalidValue",
@@ -327,6 +328,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "invalid-tool-name": "formatIpcError.invalidToolName",
   "tool-call-failed": "formatIpcError.toolCallFailed",
   "notification-unavailable": "formatIpcError.notificationUnavailable",
+  "no-alerts-service": "formatIpcError.notificationUnavailable",
 
   // ── Misc IO / system ──
   "no-window": "formatIpcError.noWindow",

@@ -155,6 +155,7 @@ async function initAndGetFactory(): Promise<CreateHostApi> {
     routinesStore: { list: () => [] } as never,
     // This harness has no Work Board; the proposal verbs are not exercised here.
     getWorkBoardStore: () => undefined,
+    getAlertsService: () => undefined,
   });
   const createHostApi = (
     runtimeTestState.capturedRuntimeOptions as {
