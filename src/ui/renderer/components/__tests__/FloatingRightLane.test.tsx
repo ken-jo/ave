@@ -76,6 +76,16 @@ describe("FloatingRightLane", () => {
     expect(lane.className).toContain("flex-col");
   });
 
+  it("keeps each occupant inside the same inset on both pane edges", () => {
+    renderLane();
+
+    const lane = screen.getByTestId("floating-right-lane");
+    const card = screen.getByTestId("overlay-card-region");
+
+    expect(lane.classList.contains("inset-x-4")).toBe(true);
+    expect(card.classList.contains("max-w-full")).toBe(true);
+  });
+
   it("leaves positioning to the lane — the occupant does not anchor itself", () => {
     renderLane();
 
