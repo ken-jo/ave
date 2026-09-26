@@ -159,6 +159,19 @@ describe("alert cards in the overlay queue", () => {
     expectPluginIdentity(firstId, "Enterprise Calendar and Scheduling Tools");
   });
 
+  it("gives provenance the full row below title and close controls", () => {
+    const q = mount();
+    q.add({ ...pluginItem("full-row"), pluginDisplayName: "Mail tools" });
+
+    const title = screen.getByRole("heading", { name: /suggestion/ });
+    const titleRow = title.parentElement;
+    const provenance = screen.getByTestId("plugin-provenance");
+    const close = screen.getByTestId("routine-card-dismiss");
+    expect(titleRow?.contains(close)).toBe(true);
+    expect(titleRow?.contains(provenance)).toBe(false);
+    expect(provenance.classList.contains("w-full")).toBe(true);
+  });
+
   it("separates a host-looking display name from the canonical id", () => {
     const q = mount();
     q.add({

@@ -86,6 +86,18 @@ describe("FloatingRightLane", () => {
     expect(card.classList.contains("max-w-full")).toBe(true);
   });
 
+  it("bounds the lane vertically and lets card gestures scroll to actions", () => {
+    renderLane();
+
+    const lane = screen.getByTestId("floating-right-lane");
+    const card = screen.getByTestId("overlay-card-region");
+
+    expect(lane.classList.contains("bottom-4")).toBe(true);
+    expect(lane.classList.contains("overflow-y-auto")).toBe(true);
+    expect(lane.classList.contains("touch-pan-y")).toBe(true);
+    expect(card.classList.contains("shrink-0")).toBe(true);
+  });
+
   it("leaves positioning to the lane — the occupant does not anchor itself", () => {
     renderLane();
 

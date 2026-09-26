@@ -17,7 +17,7 @@ export function FloatingRightLane({ children }: { children: ReactNode }) {
       // `pointer-events-none` on the lane and `-auto` on each occupant: the lane
       // spans dead space between and beside its children, and chat has to stay
       // clickable through it.
-      className="pointer-events-none absolute inset-x-4 top-2 z-50 flex flex-col items-end gap-2"
+      className="pointer-events-none absolute inset-x-4 top-2 bottom-4 z-50 flex touch-pan-y flex-col items-end gap-2 overflow-y-auto overscroll-contain"
       data-testid="floating-right-lane"
     >
       {children}
