@@ -3765,6 +3765,7 @@
                   "type": "string"
                 },
                 "priority": {
+                  "deprecated": true,
                   "enum": [
                     "low",
                     "normal",
@@ -3785,6 +3786,7 @@
                   "type": "string"
                 },
                 "visibility": {
+                  "deprecated": true,
                   "enum": [
                     "silent",
                     "summary-only",
@@ -3819,7 +3821,9 @@
                 "invalid_source",
                 "duplicate",
                 "rate_limited",
-                "loop_unavailable"
+                "loop_unavailable",
+                "source_not_declared",
+                "suggestion_limit"
               ],
               "type": "string"
             },
@@ -4268,6 +4272,204 @@
       }
     },
     "types": {
+      "AlertInheritDeclaration": {
+        "properties": {
+          "enabled": {
+            "$ref": "#/$defs/types/AlertInheritRule"
+          },
+          "osNotification": {
+            "$ref": "#/$defs/types/AlertInheritRule"
+          },
+          "pluginId": {
+            "type": "string"
+          },
+          "sourceId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pluginId",
+          "sourceId",
+          "enabled"
+        ],
+        "type": "object"
+      },
+      "AlertInheritRule": {
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "listed": {
+            "enum": [
+              "enabled",
+              "disabled"
+            ],
+            "type": "string"
+          },
+          "masterKey": {
+            "type": "string"
+          },
+          "values": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "key",
+          "listed",
+          "values"
+        ],
+        "type": "object"
+      },
+      "AlertKindDeclaration": {
+        "properties": {
+          "actionLabel": {
+            "$ref": "#/$defs/types/AlertLocaleText"
+          },
+          "defaultEnabled": {
+            "type": "boolean"
+          },
+          "description": {
+            "$ref": "#/$defs/types/AlertLocaleText"
+          },
+          "id": {
+            "type": "string"
+          },
+          "inherits": {
+            "items": {
+              "$ref": "#/$defs/types/AlertInheritDeclaration"
+            },
+            "type": "array"
+          },
+          "label": {
+            "$ref": "#/$defs/types/AlertLocaleText"
+          },
+          "osNotification": {
+            "properties": {
+              "body": {
+                "$ref": "#/$defs/types/AlertLocaleText"
+              },
+              "bypassFocusGate": {
+                "type": "boolean"
+              },
+              "defaultEnabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "defaultEnabled",
+              "body"
+            ],
+            "type": "object"
+          },
+          "prompt": {
+            "$ref": "#/$defs/types/AlertLocaleText"
+          },
+          "slots": {
+            "additionalProperties": {
+              "$ref": "#/$defs/types/AlertSlotDeclaration"
+            },
+            "type": "object"
+          },
+          "summary": {
+            "$ref": "#/$defs/types/AlertLocaleText"
+          },
+          "visibility": {
+            "$ref": "#/$defs/types/AlertVisibility"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "defaultEnabled",
+          "visibility",
+          "summary",
+          "prompt"
+        ],
+        "type": "object"
+      },
+      "AlertLocaleText": {
+        "properties": {
+          "en": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "en"
+        ],
+        "type": "object"
+      },
+      "AlertSlotDeclaration": {
+        "anyOf": [
+          {
+            "properties": {
+              "kind": {
+                "const": "text",
+                "type": "string"
+              },
+              "maxLength": {
+                "type": "number"
+              },
+              "optional": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "kind",
+              "maxLength"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "list",
+                "type": "string"
+              },
+              "maxItems": {
+                "type": "number"
+              },
+              "maxLength": {
+                "type": "number"
+              },
+              "optional": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "kind",
+              "maxItems",
+              "maxLength"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "ref",
+                "type": "string"
+              },
+              "optional": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "AlertVisibility": {
+        "enum": [
+          "user-visible",
+          "summary-only",
+          "silent"
+        ],
+        "type": "string"
+      },
       "AudioCaptureDevice": {
         "properties": {
           "deviceId": {
@@ -4336,6 +4538,46 @@
           "value"
         ],
         "type": "object"
+      },
+      "ConfigInheritDeclaration": {
+        "anyOf": [
+          {
+            "properties": {
+              "from": {
+                "type": "string"
+              },
+              "pluginId": {
+                "type": "string"
+              },
+              "to": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "pluginId",
+              "to",
+              "from"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "pluginId": {
+                "type": "string"
+              },
+              "to": {
+                "type": "string"
+              },
+              "value": {}
+            },
+            "required": [
+              "pluginId",
+              "to",
+              "value"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "DependencySpec": {
         "properties": {
@@ -4465,6 +4707,30 @@
         },
         "required": [
           "pluginId"
+        ],
+        "type": "object"
+      },
+      "PluginAlertsDeclaration": {
+        "properties": {
+          "kinds": {
+            "items": {
+              "$ref": "#/$defs/types/AlertKindDeclaration"
+            },
+            "type": "array"
+          },
+          "reasoning": {
+            "type": "string"
+          },
+          "suggestions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "reasoning",
+          "kinds"
         ],
         "type": "object"
       },
@@ -4876,6 +5142,9 @@
       },
       "PluginManifest": {
         "properties": {
+          "alerts": {
+            "$ref": "#/$defs/types/PluginAlertsDeclaration"
+          },
           "auth": {
             "$ref": "#/$defs/types/PluginAuthSpec"
           },
@@ -4888,6 +5157,12 @@
           "config": {
             "additionalProperties": {},
             "type": "object"
+          },
+          "configInherits": {
+            "items": {
+              "$ref": "#/$defs/types/ConfigInheritDeclaration"
+            },
+            "type": "array"
           },
           "configSchema": {
             "$ref": "#/$defs/types/PluginConfigSchema"
@@ -4992,6 +5267,7 @@
             "type": "object"
           },
           "notificationEvents": {
+            "deprecated": true,
             "items": {
               "properties": {
                 "bodyField": {

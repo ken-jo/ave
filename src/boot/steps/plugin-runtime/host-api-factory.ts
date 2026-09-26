@@ -103,7 +103,11 @@ import {
   triggerDenyAuditThrottle,
   TriggerConversationRateLimiter,
 } from "./trigger-gate.js";
-import { getDeclaredWorkProposalKinds } from "../../../plugins/runtime/manifest-validation.js";
+import {
+  getDeclaredSuggestionSources,
+  getDeclaredWorkProposalKinds,
+} from "../../../plugins/runtime/manifest-validation.js";
+import { suggestionLedger } from "../../../alerts/suggestion-ledger.js";
 import type {
   WorkProposalChangedEventPayload,
   WorkProposalInput,
@@ -1594,7 +1598,13 @@ export function createHostApiFactory(
       // started). The user's confirm action inserts the prompt as a user
       // message into main chat via the imported_trigger mechanism.
       //
+      //
+      // A plugin that declares `alerts` may pass only its declared suggestion
+      // sources, each accepted once per 30 days; the acceptance is written
+      // before the item is staged so a restart cannot grant a second one.
       triggerConversation: async (spec: ConversationTriggerSpec) => {
+        const declaredSuggestions = getDeclaredSuggestionSources(manifest, pluginId);
+        if (declaredSuggestions !== null) await suggestionLedger.load();
         const decision = evaluateTriggerSpec({
           assertDeliveryAvailable: () => { requireMainWindow(); },
           spec,
@@ -1604,11 +1614,15 @@ export function createHostApiFactory(
           rateLimiter: triggerConversationRateLimiter,
           denyAuditThrottle: triggerDenyAuditThrottle,
           auditLogger: bootAuditLogger,
+          suggestions: declaredSuggestions === null
+            ? undefined
+            : { declared: declaredSuggestions, ledger: suggestionLedger },
         });
 
         if (decision.kind === "deny") {
           return decision.result;
         }
+        if (declaredSuggestions !== null) await suggestionLedger.flush();
         const overlayTarget = requireMainWindow();
 
         // Allow path — push to renderer OverlayContext via IPC instead of

@@ -9,11 +9,13 @@
  * them: the settings store normalises and defaults them, nothing else touches
  * them yet. The design page `docs/design/plugin-alerts.md` owns the shapes.
  */
+import type { AlertInheritRule, AlertVisibility } from "../plugins/public-contract.js";
 import type { PluginConfigRecord } from "./plugin-config.js";
 
+export type { AlertInheritRule, AlertVisibility };
+
 /** The delivery levels a kind can declare; a plugin may only lower them at raise time. */
-const ALERT_VISIBILITIES =["user-visible", "summary-only", "silent"] as const;
-export type AlertVisibility = (typeof ALERT_VISIBILITIES)[number];
+const ALERT_VISIBILITIES = ["user-visible", "summary-only", "silent"] as const satisfies readonly AlertVisibility[];
 
 export function isAlertVisibility(value: unknown): value is AlertVisibility {
   return typeof value === "string" && (ALERT_VISIBILITIES as readonly string[]).includes(value);
@@ -25,6 +27,14 @@ export function isAlertVisibility(value: unknown): value is AlertVisibility {
  * with a plugin's kind.
  */
 export const ALERT_HOST_PLUGIN_ID = "@host";
+
+/**
+ * The package id no plugin may take. The alert pipeline mints the overlay
+ * source `overlay:<pluginId>--<kind>` and host kinds use `overlay:host--<kind>`,
+ * because a staged source admits no `@`; a plugin named `host` could otherwise
+ * mint a host kind's source.
+ */
+export const ALERT_RESERVED_PACKAGE_ID = "host";
 
 /**
  * A settings key for one alert kind: `<pluginId>:<kind>` or `@host:<kind>`.
@@ -80,20 +90,6 @@ export interface AlertSettings {
   osNotificationsEnabled: boolean;
   /** Keyed by {@link isAlertKindKey}. Absent = not yet resolved. */
   kinds: Record<string, AlertKindChoice>;
-}
-
-/**
- * How a successor kind reads one toggle out of a retired plugin's config: the
- * list stored at `key` either names the disabled members (`listed:
- * "disabled"`) or the enabled ones (`listed: "enabled"`), and `values` are the
- * spellings — current and legacy — under which this kind appears in it.
- * `masterKey` names a boolean that, when false, turns the toggle off outright.
- */
-export interface AlertInheritRule {
-  key: string;
-  listed: "enabled" | "disabled";
-  values: string[];
-  masterKey?: string;
 }
 
 /** A plugin allowed to inherit from a retired record, as the retirement entry names it. */
