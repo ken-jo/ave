@@ -1,5 +1,7 @@
 # Plugin alerts — a host delivery contract, declared per kind
 
+The code packages described here are called extensions in user-facing copy.
+
 Status: proposed design, not implemented. Owner decisions recorded in this
 page: the alert *mechanism* is raised to the host contract; each plugin
 declares what it alerts on in its manifest and detects it itself; the host

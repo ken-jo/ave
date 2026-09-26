@@ -17,7 +17,7 @@ format below; this page is the author's route through it.
 
 | Source | Who adds it | What it can do |
 |---|---|---|
-| Official (`ave`) | built into the app | the only source whose plugins can receive host-secret grants (§10.3) |
+| Official (`ave`) | built into the app | the only source whose extensions can receive host-secret grants (§10.3) |
 | Managed | the machine's system policy file (`marketplaces.additional`) | its packages can be listed in the policy's `defaultInstalls` and `requiredInstalls` |
 | Custom | the user, in Settings → Marketplace → Add | ordinary installs |
 | Direct | the user, from one git folder | one package, no index |
@@ -59,9 +59,9 @@ within a marketplace.
 
 SVG is refused in every kind. Size and file-count limits are in design §5.4.
 
-## Plugins
+## Extensions
 
-A plugin's `artifact` says where its bytes come from. The app tries, in order:
+An extension's `artifact` says where its bytes come from. The app tries, in order:
 
 1. `release` — a GitHub release asset, used only with a `sha256` pin;
 2. `archive` — an https zip, used only with a `sha256` pin;
@@ -76,7 +76,7 @@ the descriptor's `minAppVersion`, and every authority field (`capabilities`,
 the descriptor's copy. A manifest that still declares `installPolicy` or
 `publisher` is refused by name: neither field exists any more.
 
-Only an official plugin installed from the release or archive its snapshot
+Only an official extension installed from the release or archive its snapshot
 pins can receive a host-secret grant, and only for the keys the app's
 `HOST_SECRET_GRANTS` table lists; a tree install never does (design §10.3).
 
@@ -145,7 +145,7 @@ the source it names.
 - `schemas/marketplace/*.schema.json`
 - `src/marketplace/catalog/validate.ts` — index and descriptor validation
 - `src/marketplace/content/kinds.ts`, `src/marketplace/content/rules.ts` — content kinds
-- `src/marketplace/resolve/plugin-ladder.ts`, `src/marketplace/resolve/manifest-rules.ts` — plugins
+- `src/marketplace/resolve/plugin-ladder.ts`, `src/marketplace/resolve/manifest-rules.ts` — extensions
 - `src/marketplace/resolve/mcp.ts` — MCP servers
 - `src/marketplace/repository-check.ts` — the repository check
 - `src/marketplace/sources/policy.ts` — the system policy file

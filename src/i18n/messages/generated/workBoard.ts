@@ -66,7 +66,7 @@ export const en = {
   "workBoard.errorLoadFailed": "Failed to load the task.",
   // Reports
   "workBoard.proposalsHeading": "Recommended work",
-  "workBoard.proposalSourceLabel": "Suggested by {plugin}",
+  "workBoard.proposalSourceLabel": "Suggested by {extension}",
   "workBoard.proposalSourceBriefing": "From your briefing",
   "workBoard.proposalExpand": "Details",
   "workBoard.proposalCollapse": "Collapse",
@@ -165,7 +165,7 @@ export const ko: Record<keyof typeof en, string> = {
   "workBoard.errorSaveFailed": "작업 저장에 실패했습니다.",
   "workBoard.errorLoadFailed": "작업을 불러오지 못했습니다.",
   "workBoard.proposalsHeading": "추천 작업",
-  "workBoard.proposalSourceLabel": "{plugin} 제안",
+  "workBoard.proposalSourceLabel": "{extension} 제안",
   "workBoard.proposalSourceBriefing": "브리핑 제안",
   "workBoard.proposalExpand": "자세히",
   "workBoard.proposalCollapse": "접기",

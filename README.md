@@ -1,19 +1,19 @@
 # ave
 
-Extensible Electron desktop agent workspace for Ave chat, plugin workflows, local indexing, meetings, LYRA Mail, and managed marketplace extensions.
+Extensible Electron desktop agent workspace for Ave chat, extension workflows, local indexing, meetings, LYRA Mail, and managed marketplace extensions.
 
-Ave App brings chat, work mode, tool execution, plugins, local state, permissions, and installable extensions into one desktop host. This repository owns the Electron main/renderer/preload layers, plugin runtime, managed marketplace install flow, Python runtime bootstrap, local/cloud retrieval bridge, and OS installer packaging.
+Ave App brings chat, work mode, tool execution, extensions, local state, permissions, and installable extensions into one desktop host. This repository owns the Electron main/renderer/preload layers, extension runtime, managed marketplace install flow, Python runtime bootstrap, local/cloud retrieval bridge, and OS installer packaging.
 
 Korean documentation: [docs/ko/app-readme.md](./docs/ko/app-readme.md)
 
 ## What This Repository Owns
 
-- Electron main, renderer, preload, and plugin-preload bundles.
+- Electron main, renderer, preload, and `plugin-preload` bundles.
 - The Ave chat UI, conversation sessions, branching, export, compaction, and inline user-question cards.
-- Manifest-driven plugin runtime with dynamic loading from the local plugin registry.
-- Managed marketplace install and refresh for first-party Ave plugins.
-- Host-side retrieval that fuses Local Indexer plugin BM25/vector results with cloud adapters.
-- Plugin UI hosting, IPC bridging, event contracts, OS notifications, and overlay-triggered conversation proposals.
+- Manifest-driven extension runtime with dynamic loading from the local extension registry.
+- Managed marketplace install and refresh for first-party Ave extensions.
+- Host-side retrieval that fuses Local Indexer extension BM25/vector results with cloud adapters.
+- Extension UI hosting, IPC bridging, event contracts, OS notifications, and overlay-triggered conversation proposals.
 - macOS Apple Silicon, Linux, and Windows installer build scripts and GitHub Actions workflows.
 - Development, smoke, E2E, packaging, i18n, test-quality, and security guard scripts.
 
@@ -21,7 +21,7 @@ Korean documentation: [docs/ko/app-readme.md](./docs/ko/app-readme.md)
 
 ### Desktop Agent Workspace
 
-Ave is designed as a reliable desktop environment where chat, work mode, tools, plugins, settings, and local status can coexist without visual noise. The UI makes model state, tool calls, plugin activity, file effects, approvals, indexing, and permissions visible enough for repeated daily work.
+Ave is designed as a reliable desktop environment where chat, work mode, tools, extensions, settings, and local status can coexist without visual noise. The UI makes model state, tool calls, extension activity, file effects, approvals, indexing, and permissions visible enough for repeated daily work.
 
 The main area follows a workbench model: it is divided into framed chat groups, called tiles below, and each tile is a conversation of its own rather than a second view of the same one. Work mode holds up to four tiles; chat mode holds exactly one. Focus is drawn on the tile's frame, so which tile the next keystroke lands in is answerable at a glance.
 
@@ -33,15 +33,15 @@ The main area follows a workbench model: it is divided into framed chat groups, 
 
 The design record for this area is [docs/design/tiled-chat-groups.md](./docs/design/tiled-chat-groups.md); it is the source of truth for the group model, the channel split, and the geometry.
 
-### Plugin Runtime
+### Extension Runtime
 
-Installed plugins live under `~/.ave/plugins/<id>/plugin.json`, and `~/.ave/plugins/registry.json` controls the active plugin set. The app no longer relies on an in-tree `plugins/installed/...` layout. More generally, the `~/.ave/` root holds only cross-cutting resources — `settings.json`, `audit.log`, `secrets/` — and everything a single domain owns lives under `~/.ave/<feature>/`, so one domain can be backed up or cleared as one directory. Skill approvals are read from `~/.ave/skills/approvals.json` and starred messages from `~/.ave/sessions/starred.json`; a file left in the root by an older build is moved into its namespace on first load.
+Installed extensions live under `~/.ave/plugins/<id>/plugin.json`, and `~/.ave/plugins/registry.json` controls the active extension set. The app no longer relies on an in-tree `plugins/installed/...` layout. More generally, the `~/.ave/` root holds only cross-cutting resources — `settings.json`, `audit.log`, `secrets/` — and everything a single domain owns lives under `~/.ave/<feature>/`, so one domain can be backed up or cleared as one directory. Skill approvals are read from `~/.ave/skills/approvals.json` and starred messages from `~/.ave/sessions/starred.json`; a file left in the root by an older build is moved into its namespace on first load.
 
-Plugins expose a host entry, methods such as `index_scan` or `meeting_start`, optional UI modules, declared capabilities, emitted events, subscriptions, and notification events. The main app does not import plugin implementations directly; `PluginRuntime` reads manifests, dynamically loads plugin host entries, manages lifecycle, and bridges IPC calls into plugin methods.
+Extensions expose a host entry, methods such as `index_scan` or `meeting_start`, optional UI modules, declared capabilities, emitted events, subscriptions, and notification events. The main app does not import extension implementations directly; `PluginRuntime` reads manifests, dynamically loads extension host entries, manages lifecycle, and bridges IPC calls into extension methods.
 
-A plugin's own startup failure is degraded, not fatal: the instance stays constructed and every other plugin keeps dispatching, and each call to the failed plugin reports its real reason. Only a failure of the host's own generation fence closes dispatch for the session.
+An extension's own startup failure is degraded, not fatal: the instance stays constructed and every other extension keeps dispatching, and each call to the failed extension reports its real reason. Only a failure of the host's own generation fence closes dispatch for the session.
 
-Current managed plugin families include:
+Current managed extension families include:
 
 - `@ave/plugin-local-indexer`
 - `@ave/plugin-meeting`
@@ -50,27 +50,27 @@ Current managed plugin families include:
 
 ### Marketplace And Local Development
 
-Plugins can be installed through marketplace cards or `ave://install/<slug>` deep links. In an unpackaged development build, open **Settings → Plugin Config → Developer tools → Install from local folder** and select the build folder that contains `plugin.json`. The running host owns this installation so durable registry state and live plugin state remain synchronized.
+Extensions can be installed through marketplace cards or `ave://install/<slug>` deep links. In an unpackaged development build, open **Settings → Extension Settings → Developer tools → Install from local folder** and select the build folder that contains `plugin.json`. The running host owns this installation so durable registry state and live extension state remain synchronized.
 
-On boot, managed marketplace plugins are checked and refreshed by `src/boot/managed-marketplace.ts`. Stale registry entries are repaired when the manifest is missing, the plugin runtime restarts after managed changes, and renderer boot progress is emitted through `ave:bootstrap:status`.
+On boot, managed marketplace extensions are checked and refreshed by `src/boot/managed-marketplace.ts`. Stale registry entries are repaired when the manifest is missing, the extension runtime restarts after managed changes, and renderer boot progress is emitted through `ave:bootstrap:status`.
 
 ### Local And Cloud Retrieval
 
-The host-side `HybridRetriever` in `src/main/hybrid-retriever.ts` fuses Local Indexer plugin BM25/vector results with cloud adapter results using reciprocal rank fusion. Document indexing and worker lifecycle remain owned by `@ave/plugin-local-indexer`; the app owns orchestration, IPC, and chat integration.
+The host-side `HybridRetriever` in `src/main/hybrid-retriever.ts` fuses Local Indexer extension BM25/vector results with cloud adapter results using reciprocal rank fusion. Document indexing and worker lifecycle remain owned by `@ave/plugin-local-indexer`; the app owns orchestration, IPC, and chat integration.
 
 ### Overlay Trigger Surface
 
-Plugins with the `host:overlay` capability may call `hostApi.triggerConversation()` to stage an overlay suggestion. This does not start a conversation automatically. Only after the user accepts the overlay CTA does the request enter the main chat `ConversationLoop` and the normal permission path.
+Extensions with the `host:overlay` capability may call `hostApi.triggerConversation()` to stage an overlay suggestion. This does not start a conversation automatically. Only after the user accepts the overlay CTA does the request enter the main chat `ConversationLoop` and the normal permission path.
 
 - `source` must use the `overlay:<reason>` format.
-- Plugin-authored prompts are sanitized so a leading `/` cannot dispatch a slash command.
+- Extension-authored prompts are sanitized so a leading `/` cannot dispatch a slash command.
 - Write, shell, and network tools require user confirmation again when invoked from an overlay-trigger origin.
 
 ### Event Bus And Notifications
 
-Proactive features communicate through the asynchronous `emitEvent` / `onEvent` event bus. Plugins declare `emittedEvents`, `subscriptions`, and `notificationEvents` in `plugin.json`; manifest validation checks capability and cross-field consistency during boot.
+Proactive features communicate through the asynchronous `emitEvent` / `onEvent` event bus. Extensions declare `emittedEvents`, `subscriptions`, and `notificationEvents` in `plugin.json`; manifest validation checks capability and cross-field consistency during boot.
 
-Plugins can request OS notifications declaratively. The host reads the manifest and registers notifications without hard-coding plugin-specific behavior.
+Extensions can request OS notifications declaratively. The host reads the manifest and registers notifications without hard-coding extension-specific behavior.
 
 ### Chat UX
 
@@ -88,7 +88,7 @@ The renderer includes production chat primitives for:
 
 **Sidebar.** The Chats list holds every conversation the app keeps: main chats, routine runs, work-board item runs, and side chats nested under the conversation they were started from. Main conversation rows carry rename, mark unread, mark read, archive, share, copy, and delete; a row from any other family offers open and nothing else, because those sessions live in their own stores and the row actions act on the main one. Project rows carry edit and archive alongside pin, reveal, and remove. A row whose conversation is mid-turn shows a responding indicator, and a turn that ends where the user is not looking — an unfocused tile, or the focused tile behind another view — leaves the conversation marked unread until they look at it. The Chats list reveals a further page as the reader scrolls rather than ending in a count of hidden rows, and each group in the Projects tab pages behind its own button so one long project cannot push its siblings below the fold.
 
-**Work panel.** The Browser tab lists the web sources of the session's tool activity, taken from both the tool input and the tool result, each labelled with whether it was requested or came back in a result. The Files tab lists the session's files with the operation that touched each one — read, written, attached, or tool. The activity dashboard's plugin and MCP call counters are recovered from the transcript, so they survive a reload of the session. An empty panel shows the same activity content as the header's tool-activity popover.
+**Work panel.** The Browser tab lists the web sources of the session's tool activity, taken from both the tool input and the tool result, each labelled with whether it was requested or came back in a result. The Files tab lists the session's files with the operation that touched each one — read, written, attached, or tool. The activity dashboard's extension and MCP call counters are recovered from the transcript, so they survive a reload of the session. An empty panel shows the same activity content as the header's tool-activity popover.
 
 Key IPC domains live under `src/ipc/domains/*.ts`. Representative channels include:
 
@@ -156,17 +156,17 @@ bun run build
 
 Type checking is intentionally separate. Run `bun run typecheck` before relying on a build for release readiness.
 
-## Plugin Registry Inspection CLI
+## Extension Registry Inspection CLI
 
-The registry CLI is read-only so it cannot make durable state diverge from a running host. Installation and mutations are handled by marketplace cards, `ave://install/<slug>` deep links, or host settings. For local development, run an unpackaged build, open **Settings → Plugin Config → Developer tools → Install from local folder**, and select the build folder containing `plugin.json`.
+The registry CLI is read-only so it cannot make durable state diverge from a running host. Installation and mutations are handled by marketplace cards, `ave://install/<slug>` deep links, or host settings. For local development, run an unpackaged build, open **Settings → Extension Settings → Developer tools → Install from local folder**, and select the build folder containing `plugin.json`.
 
 ```bash
 bun run plugins:list
 ```
 
-If an installed plugin provides a `ui` extension in `plugin.json`, the host can mount that UI in the app. `ui.displayName` is preferred for labels, with `title` as fallback. `kind: "embedded-module"` UI extensions are dynamically imported from plugin package assets and rendered by the Ave host.
+If an installed extension provides a `ui` extension in `plugin.json`, the host can mount that UI in the app. `ui.displayName` is preferred for labels, with `title` as fallback. `kind: "embedded-module"` UI extensions are dynamically imported from extension package assets and rendered by the Ave host.
 
-Plugin settings are saved only through sender-guarded IPC. Values must be plain JSON-compatible objects, arrays, or primitives; dangerous keys such as `__proto__`, `constructor`, `prototype`, and `"*"` are blocked.
+Extension settings are saved only through sender-guarded IPC. Values must be plain JSON-compatible objects, arrays, or primitives; dangerous keys such as `__proto__`, `constructor`, `prototype`, and `"*"` are blocked.
 
 ## Packaging
 
@@ -254,7 +254,7 @@ Known-good: granting `sandbox-runtime-users:(OI)(CI)(RX)` on the ASRT package di
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `AVE_DEV` | `1` when unpackaged | Relaxes plugin root boundary checks for development paths such as `../../../node_modules/@ave/*`. |
+| `AVE_DEV` | `1` when unpackaged | Relaxes extension root boundary checks for development paths such as `../../../node_modules/@ave/*`. |
 | `AVE_KEEP_GPU` | unset | Set to `1` to skip Windows GPU safe-flag injection. |
 | `AVE_EXTRA_ELECTRON_FLAGS` | unset | Appends extra Electron flags, for example `--foo --bar`. |
 | `PYTHONIOENCODING` | `utf-8` on Windows dev launch | Keeps Python subprocess logs UTF-8 encoded. |
@@ -263,7 +263,7 @@ Known-good: granting `sandbox-runtime-users:(OI)(CI)(RX)` on the ASRT package di
 Example Local Indexer validation:
 
 ```bash
-# 1) Install the Local Indexer plugin through the marketplace or the development-only Settings flow.
+# 1) Install the Local Indexer extension through the marketplace or the development-only Settings flow.
 # 2) Set OPENAI_API_KEY before launch.
 OPENAI_API_KEY=... bun run start
 ```
@@ -299,4 +299,4 @@ A retired historical E2E script is no longer the source of truth. Current host-s
 - Tiled chat groups: [docs/design/tiled-chat-groups.md](./docs/design/tiled-chat-groups.md)
 - Production release checklist: [docs/references/production-release-checklist.md](./docs/references/production-release-checklist.md)
 - Windows setup: [docs/guides/windows-setup.md](./docs/guides/windows-setup.md)
-- Plugin development: [docs/guides/plugin-development.md](./docs/guides/plugin-development.md)
+- Extension development: [docs/guides/plugin-development.md](./docs/guides/plugin-development.md)

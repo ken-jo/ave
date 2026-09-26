@@ -35,6 +35,7 @@ describe("GitMarketplaceTab browse", () => {
 
     expect(await screen.findByTestId("git-marketplace:card:ave-official:plugin:calendar")).toBeInTheDocument();
     expect(screen.getByTestId("git-marketplace:summary").textContent).toContain("소스 2개의 패키지 3개");
+    expect(screen.getByTestId("git-marketplace:kind:plugin")).toHaveTextContent("익스텐션");
 
     fireEvent.click(screen.getByTestId("git-marketplace:kind:skill"));
     expect(screen.getByTestId("git-marketplace:card:team:skill:proofread")).toBeInTheDocument();
@@ -113,6 +114,18 @@ describe("GitMarketplaceTab browse", () => {
     fireEvent.click(within(card).getByRole("button", { name: "제거" }));
 
     await waitFor(() => expect(fake.market.uninstall).toHaveBeenCalledWith({ sourceId: null, kind: "mcp", name: "weather", removeData: false }));
+  });
+
+  it("labels an installed code package from its catalog kind", async () => {
+    const fake = fakeMarketplace({
+      sources: [team],
+      entries: [entry(null, "plugin", "calendar", { state: { state: "unbound", version: null } })],
+    });
+    renderTab(fake);
+    fireEvent.click(screen.getByTestId("git-marketplace:installed"));
+
+    const card = await screen.findByTestId("git-marketplace:card:unbound:plugin:calendar");
+    expect(within(card).getByText("익스텐션")).toBeInTheDocument();
   });
 
   it("opens on the kind another settings tab asked for", async () => {
@@ -201,7 +214,7 @@ describe("GitMarketplaceTab package sheet", () => {
     fireEvent.click(await within(sheet).findByTestId("git-marketplace:plan"));
     await within(sheet).findByTestId("git-marketplace:review");
     expect(fake.market.planInstall).toHaveBeenCalledWith({ sourceId: "team", kind: "plugin", name: "calendar", switchSource: true });
-    expect(within(sheet).getByText(/플러그인 데이터는 유지되므로/)).toBeInTheDocument();
+    expect(within(sheet).getByText(/익스텐션 데이터는 유지되므로/)).toBeInTheDocument();
 
     const confirm = within(sheet).getByTestId("git-marketplace:confirm");
     expect(confirm).toBeDisabled();

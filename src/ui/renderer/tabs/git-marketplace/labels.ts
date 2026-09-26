@@ -3,6 +3,9 @@
  * `t("…")` call so the used-keys gate proves it exists in the catalog.
  */
 import type { TranslateFn as Translate } from "../../../../i18n/translate.js";
+import type { Locale } from "../../../../i18n/locale.js";
+import { getLocale } from "../../../../i18n/runtime.js";
+import { packageVocabularyKind } from "../../../../shared/marketplace-package-sections.js";
 import type {
   GitMarketplaceErrorCode,
   InstallActionView,
@@ -16,9 +19,14 @@ import type {
 /** The kind tabs, in the order of design §15.1. */
 export const KIND_ORDER: readonly PackageKind[] = ["plugin", "mcp", "skill", "agent", "theme", "font", "language", "provider", "messaging-connection"];
 
-export function kindLabel(t: Translate, kind: PackageKind): string {
+export function kindLabel(t: Translate, kind: PackageKind | "agent-plugin", locale: Locale = getLocale()): string {
   switch (kind) {
-    case "plugin": return t("gitMarketplace.kind.plugin");
+    case "plugin":
+    case "agent-plugin":
+      // The future kind has no catalog key until its schema slice lands.
+      return packageVocabularyKind(kind) === "extension"
+        ? t("gitMarketplace.kind.plugin")
+        : locale === "ko" ? "플러그인" : "Plugin";
     case "mcp": return t("gitMarketplace.kind.mcp");
     case "skill": return t("gitMarketplace.kind.skill");
     case "agent": return t("gitMarketplace.kind.agent");
