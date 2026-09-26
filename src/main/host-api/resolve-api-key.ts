@@ -13,7 +13,7 @@
  *   - tier-2 manifest allowlist     → check
  *   - tier-3 host-secret grant      → check (BEFORE Tier-4 — see ORDER below)
  *   - tier-4 active-vendor cross    → reason "vendor-mismatch"
- *   - tier-2/tier-3 refusal         → reason "not-whitelisted" (closest SDK enum)
+ *   - tier-2/tier-3 refusal         → reason "not-whitelisted" (public contract reason)
  *   - missing key in settings       → reason "no-host-vendor"
  *
  * Tier-3 / Tier-4 ORDER:
@@ -109,13 +109,13 @@ export interface ResolveApiKeyDeps {
 }
 
 /**
- * Map SDK-enum vendor names to host internal vendor names. The SDK ships
+ * Map public-contract vendor names to host internal vendor names. The contract has
  * `"openai" | "azure-openai" | "vertex" | "anthropic"`; the host's
  * `LLM_VENDORS` union is
  * `"openai" | "azure-foundry" | "vertex-ai" | "claude" | "gemini" | "copilot"`.
  *
  * Only the three aliases that *differ* between the two surfaces are
- * mapped; `"openai"` passes through unchanged. Adding a new SDK alias
+ * mapped; `"openai"` passes through unchanged. Adding a new public alias
  * needs an entry here AND an `llm.apiKey.<host-vendor>` key wired into
  * the manifest allowlist and host whitelist.
  */
@@ -145,9 +145,8 @@ function audit(deps: ResolveApiKeyDeps, level: "info" | "warn", message: string)
 /**
  * One-shot bearer thunk wired to the request's `AbortSignal`. The captured
  * string is dropped after `release()` so subsequent `bearer()` calls throw
- * `Error("released")` per SDK contract
- * (see `sdk/src/index.ts` `bearer()` docs). Strings in JS are immutable
- * so we cannot literally zero the buffer; the "zeroize" here is a
+ * `Error("released")` per the vendored HostApi contract. Strings in JS are
+ * immutable, so we cannot literally zero the buffer; the "zeroize" here is a
  * best-effort signal: the reference is dropped, and tests can assert
  * the post-release state.
  *
@@ -194,8 +193,8 @@ function makeSuccess(
 
 /**
  * Resolve an API key for a plugin. Runs the same 4-tier `runSecretGate` as
- * `hostApi.getSecret`, returning the SDK's discriminated union so plugins can
- * branch on each refusal cause.
+ * `hostApi.getSecret`, returning the public contract's discriminated union so
+ * plugins can branch on each refusal cause.
  */
 export async function resolveApiKey(
   request: ResolveApiKeyRequest,
@@ -212,24 +211,23 @@ export async function resolveApiKey(
     return { ok: false, reason: "aborted" };
   }
   // Default vendor to the user's active LLM provider when the plugin omits
-  // it (purpose-only call). This matches the SDK example where the plugin
-  // declines to pin a specific provider and asks the host to pick.
+  // it (purpose-only call). The plugin may decline to pin a provider and
+  // ask the host to pick.
   const llmSettings = deps.settingsService.get("llm") as {
     provider?: unknown;
     marketplaceProviderPresetId?: unknown;
   };
   const defaultActiveProvider =
     typeof llmSettings.provider === "string" ? llmSettings.provider : "";
-  // Map the SDK vendor enum to the host vendor name so a Claude-default user
-  // + `vendor:"anthropic"` request lands on `llm.apiKey.claude`, not a
-  // non-existent `llm.apiKey.anthropic`.
+  // Map public vendor aliases before key lookup so the request reaches the
+  // host's configured key rather than a key built from the alias.
   const requestedVendor = request.vendor ?? defaultActiveProvider;
   const normalizedVendor =
     typeof requestedVendor === "string" ? normalizeVendor(requestedVendor) : requestedVendor;
   if (typeof normalizedVendor !== "string" || normalizedVendor.length === 0) {
     return { ok: false, reason: "no-host-vendor" };
   }
-  // Audit log records BOTH the requested SDK name and the normalized
+  // Audit log records BOTH the requested public name and the normalized
   // host name so operators see the alias resolution.
   if (typeof requestedVendor === "string" && requestedVendor !== normalizedVendor) {
     audit(
@@ -307,8 +305,8 @@ export async function resolveApiKey(
       return { ok: false, reason: "vendor-mismatch" };
     }
     // Tier-2/Tier-3 deny — map the gate's reasons (`not-allowlisted` and the
-    // grant's refusals) to the SDK enum's narrow `not-whitelisted` slot. The
-    // precise reason lives in the audit log.
+    // grant's refusals) to the public contract's narrow `not-whitelisted` slot.
+    // The precise reason lives in the audit log.
     return { ok: false, reason: "not-whitelisted" };
   }
   // All four tiers passed — fetch the key from settings.
@@ -325,7 +323,7 @@ export async function resolveApiKey(
   );
   incrementHostSecretCounter("hostSecret_read", deps.pluginId, keyPrefix);
 
-  // azure-foundry needs a baseUrl alongside the bearer — the SDK contract
+  // azure-foundry needs a baseUrl alongside the bearer — the public contract
   // already exposes it. Reach into the per-vendor settings block when
   // the vendor is azure-foundry; otherwise leave baseUrl unset.
   let baseUrl: string | undefined;

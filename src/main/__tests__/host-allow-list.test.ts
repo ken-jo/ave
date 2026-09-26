@@ -95,10 +95,10 @@ describe("normalizeAllowedHosts", () => {
     });
   });
 
-  // The list mirrored by the SDK's plugin-manifest.schema.json `not.enum`
+  // The list mirrored by the host's plugin-manifest.schema.json `not.enum`
   // gate. Drift would mean a manifest passes AJV at publish but throws at
-  // plugin load. If you change this list, also update the SDK schema in
-  // lockstep (cross-repo sync per CLAUDE.md "Cross-repo contract sync").
+  // plugin load. If you change this list, update the host schema in
+  // lockstep; plugins refresh their vendored copy at an app release tag.
   it.each([
     "com", "net", "org", "kr", "co.kr", "or.kr", "go.kr",
     "io", "ai", "dev", "app",
@@ -106,9 +106,9 @@ describe("normalizeAllowedHosts", () => {
     expect(() => normalizeAllowedHosts([suffix])).toThrow(/public-suffix/);
   });
 
-  // Defense-in-depth against IDN homoglyph phishing: SDK schema rejects
+  // Defense-in-depth against IDN homoglyph phishing: the host schema rejects
   // `xn--*` at publish time, host normalizer rejects at load time. Both
-  // layers required — a hand-edited manifest bypasses the SDK schema.
+  // layers required — a hand-edited manifest bypasses schema validation.
   it("refuses IDN-punycode labels (xn--*) — homoglyph risk", () => {
     expect(() => normalizeAllowedHosts(["xn--80ak6aa92e.com"])).toThrow(
       /punycode/,

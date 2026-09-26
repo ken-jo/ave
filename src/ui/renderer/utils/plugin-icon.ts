@@ -47,7 +47,7 @@ const TEXT_FONT_SIZE_REM: Readonly<Record<1 | 2 | 3 | 4, number>> = {
 
 function buildTextIcon(rawText: string): ComponentType<LucideProps> {
   // Defense-in-depth: hard-truncate at entry so a manifest that somehow
-  // bypasses the SDK schema's `maxLength: 4` (e.g. legacy install path,
+  // bypasses the host schema's `maxLength: 4` (e.g. legacy install path,
   // dev-mode validator skip) still can't blow up the avatar layout or
   // seed an unbounded cache key.
   const text = rawText.slice(0, 4);

@@ -220,8 +220,7 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
     );
   });
 
-  // ── accept-probes (formerly runtime guards vs a stale SDK; now test-time
-  // assertions against the host-compiled validator) ──────────────────────────
+  // ── accept-probes against the host-compiled validator ────────────────────
   it("accepts a pure MCP Tool[] object carrying _meta.ui.visibility", async () => {
     const validator = await buildManifestValidator();
     expect(

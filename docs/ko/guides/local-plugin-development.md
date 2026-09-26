@@ -211,7 +211,7 @@ watch 빌드가 `dist/*.js` 를 갱신하면 호스트 watcher 가 디바운스 
 |------|-------------|
 | 부팅 후 플러그인이 안 보이고 `[plugin-runtime] ignoring untrusted registry manifest path for <id>` 로그 | manifest 가 trust-root 밖. §3-1의 Settings 로컬 폴더 설치 또는 [local-marketplace-testing.md](./local-marketplace-testing.md)의 로컬 git 마켓플레이스를 사용합니다. symlink도 안 됩니다 (`realpathSync` 검사). |
 | `bun run plugins:list` 결과가 기대와 다름 | CLI와 Electron 모두 `~/.ave/plugins/`를 플러그인 루트로 사용합니다. 오래된 `.ave-dev` 잔재를 제거한 뒤 Settings 로컬 폴더 설치를 다시 실행하세요. registry는 직접 편집하지 않습니다. |
-| `[manifest:<id>] schema validation failed (<jsonpath>): ...` | AJV 검증 실패. `plugin.json` 의 해당 필드 확인. SDK 빌드시 `bun run validate:hostapi` 로 미리 잡힘. |
+| `[manifest:<id>] schema validation failed (<jsonpath>): ...` | AJV 검증 실패. `plugin.json`의 해당 필드를 확인하고, 앱 릴리스 태그에서 가져온 `contract/plugin-manifest.schema.json`으로 검증합니다. |
 | `MANIFEST_MISMATCH` 또는 아티팩트 sha256 불일치 (마켓플레이스 설치에서) | 설명자의 `minAppVersion`·`authority`와 스테이징한 `plugin.json`이 같은지, release/archive 의 `sha256` 고정이 실제 바이트와 같은지 확인합니다. dev 우회 토글은 없습니다. |
 | Hot-reload 가 안 됨 | (a) `AVE_DEV_RELOAD=1` 누락 (`bun run start` 는 자동 세팅 X — `bun run dev` 거나 직접 export). (b) `dist/` 가 watch 가능 위치인지 확인 (네트워크 드라이브 등에서는 fs.watch 부정확). (c) plugin.json 자체를 바꿨다면 호스트 재시작 필수. |
 | 한글 깨짐 (cp949) | PowerShell 에서 `chcp 65001` 후 `bun run start`. 또는 Windows Terminal (UTF-8 default) 사용. |

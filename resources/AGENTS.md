@@ -15,8 +15,9 @@ state, and the same rule is not written twice.
 
 Ave consists of an Electron host and packages installed from git
 marketplaces. User data is stored only under `~/.ave/`. A plugin integrates
-with the host through its current manifest, its runtime handler, and the
-SDK/HostApi contract; no per-plugin branch is added to the host.
+with the host through its current manifest, its runtime handler, and HostApi
+types vendored from an app release tag; no per-plugin branch is added to the
+host.
 
 Resolve the user's request completely, within what is permitted. Completion
 means:
@@ -115,8 +116,11 @@ sits at the root.
 - `tools[]` in the current manifest holds MCP Tool objects carrying name,
   description, inputSchema, and UI metadata. Do not produce a legacy tool-name
   list or a `toolSchemas` shape.
-- Implement execution through the runtime handler and the current SDK/HostApi
-  contract.
+- Implement execution through the runtime handler and HostApi. Vendor
+  `public-contract.ts` and `plugin-manifest.schema.json` unchanged in the
+  plugin's `contract/` directory from an app release tag, recording the tag and
+  file hashes in `contract/sources.json`. Set
+  `requires.minAppVersion` to a release that supports every contract member used.
 - A tool name must satisfy `^[a-zA-Z_][a-zA-Z0-9_]*$`.
 - A plugin manifest does not decide its permission category. The host computes
   the effective risk category from per-call signals, and permission policy
