@@ -20,7 +20,8 @@ import type { AlertCard, AlertCardClosedReason, AlertSettings } from "../shared/
 import { isAlertVisibility } from "../shared/alerts-types.js";
 import type { AuditEntry } from "../audit/audit-logger.js";
 import { t } from "../i18n/index.js";
-import { getDeclaredAlertKinds } from "../plugins/runtime/manifest-validation.js";
+import { getDeclaredAlertKinds, getDeclaredConfigInherits } from "../plugins/runtime/manifest-validation.js";
+import { AlertMigration, type AlertMigrationPorts } from "./migration.js";
 import {
   TriggerConversationRateLimiter,
   TriggerDenyAuditThrottle,
@@ -48,6 +49,7 @@ const EXPIRY_SWEEP_MS = 60_000;
 export type AlertWithdrawReason = "withdrawn" | "expired" | "evicted" | AlertCardClosedReason;
 
 export interface AlertsServiceDeps {
+  migration: AlertMigrationPorts;
   /** The `alerts` feature namespace directory. */
   dir: () => string;
   settings: {
@@ -95,6 +97,8 @@ function cardId(alertId: string): string {
 export class AlertsService {
   private readonly store: AlertStore;
   private readonly ledger: RegistrationLedger;
+  private readonly migration: AlertMigration;
+  private mutations: Promise<unknown> = Promise.resolve();
   private readonly registrations = new Map<string, Promise<Registration>>();
   private revokedPlugins = new Set<string>();
   private readonly lastFired = new Map<string, number>();
@@ -110,6 +114,7 @@ export class AlertsService {
   constructor(private readonly deps: AlertsServiceDeps) {
     this.store = new AlertStore(deps.dir);
     this.ledger = new RegistrationLedger(deps.dir);
+    this.migration = new AlertMigration(deps.migration, deps.settings, deps.predecessorBlocks);
     this.now = deps.now ?? Date.now;
   }
 
@@ -149,30 +154,49 @@ export class AlertsService {
    * or load. Writes the missing entries of its declared kinds and escalates
    * entries whose declared visibility went up.
    */
-  register(pluginId: string, manifest: Pick<PluginManifest, "alerts">): Promise<void> {
-    return this.prepareRegistration(pluginId, manifest).publish();
+  register(pluginId: string, manifest: Pick<PluginManifest, "alerts" | "configInherits">, isReady: () => boolean = () => true): Promise<void> {
+    return this.prepareRegistration(pluginId, manifest, isReady).publish();
   }
 
-  /** Keep candidate grants and settings private until its generation is published. */
-  prepareRegistration(pluginId: string, manifest: Pick<PluginManifest, "alerts">): {
+  /** Keep candidate grants, choices and inheritance private until publication. */
+  prepareRegistration(pluginId: string, manifest: Pick<PluginManifest, "alerts" | "configInherits">, isReady: () => boolean = () => true): {
     publish(): Promise<void>;
     unpublish(): void;
   } {
     const kinds = getDeclaredAlertKinds(manifest, pluginId);
+    const config = getDeclaredConfigInherits(manifest, pluginId) ?? [];
     const loaded = this.loaded();
     let registration: Promise<Registration> | undefined;
+    const isCurrent = () => this.registrations.get(pluginId) === registration && isReady();
     return {
       publish: () => {
-        registration ??= loaded.then(() => this.resolve(pluginId, kinds));
+        registration ??= this.mutate(async () => { await loaded; return this.resolve(pluginId, kinds); });
         this.registrations.set(pluginId, registration);
-        return registration.then(() => undefined);
+        return this.mutate(async () => {
+          await registration;
+          if (this.registrations.get(pluginId) !== registration) return;
+          this.migration.register(pluginId, kinds, config, isCurrent);
+          await this.migration.run();
+        });
       },
       unpublish: () => {
         if (registration && this.registrations.get(pluginId) === registration) {
           this.registrations.delete(pluginId);
+          this.migration.forget(pluginId);
         }
       },
     };
+  }
+
+  private mutate<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.mutations.then(operation, operation);
+    this.mutations = result.catch(() => undefined);
+    return result;
+  }
+
+  /** Retry pending inheritance when records, installed state, or host kinds change. */
+  reconcileMigration(): Promise<void> {
+    return this.mutate(async () => { await this.loaded(); await this.migration.run(); });
   }
 
   private async resolve(pluginId: string, kinds: readonly AlertKindDeclaration[]): Promise<Registration> {
@@ -186,6 +210,7 @@ export class AlertsService {
     const pending = this.registrations.get(pluginId);
     if (!pending) throw new Error(`raiseAlert from '${pluginId}' before its kinds were registered`);
     const registration = await pending;
+    await this.reconcileMigration();
     if (!input || typeof input !== "object") return { status: "invalid", field: "input" };
     const kind = typeof input.kind === "string" ? registration.kinds.get(input.kind) : undefined;
     if (!kind) return { status: "kind_not_granted", kind: String(input.kind) };
@@ -318,12 +343,16 @@ export class AlertsService {
 
   /** An uninstalled plugin's cards go; its choices stay, marked absent, until they age out. */
   async pluginUninstalled(pluginId: string): Promise<void> {
-    await this.loaded();
-    for (const open of this.store.removePlugin(pluginId)) this.finish(open, "withdrawn");
-    this.registrations.delete(pluginId);
-    this.ledger.forget(pluginId);
-    const next = markPluginAbsent(this.deps.settings.get(), pluginId, this.deps.appVersion);
-    if (next) await this.deps.settings.set(next);
+    await this.mutate(async () => {
+      await this.loaded();
+      for (const open of this.store.removePlugin(pluginId)) this.finish(open, "withdrawn");
+      this.registrations.delete(pluginId);
+      this.migration.forget(pluginId);
+      this.ledger.forget(pluginId);
+      const next = markPluginAbsent(this.deps.settings.get(), pluginId, this.deps.appVersion);
+      if (next) await this.deps.settings.set(next);
+      await this.migration.run();
+    });
   }
 
   /** End every open alert past its lifetime. */
@@ -333,6 +362,7 @@ export class AlertsService {
 
   /** Resolves once every queued write has settled. */
   async flush(): Promise<void> {
+    await this.mutations;
     await this.store.flush();
     await this.ledger.flush();
   }

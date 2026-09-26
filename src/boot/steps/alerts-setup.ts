@@ -18,6 +18,13 @@ import { emitEvent, onEvent } from "../types.js";
 import { createLogger } from "../../lib/logger.js";
 import { errorMessage } from "../../shared/error-message.js";
 import type { BootContext } from "../context.js";
+import { AsyncResource } from "node:async_hooks";
+import { inheritedConfig } from "../../alerts/migration.js";
+import { PluginUninstallCleanupJournal, pluginUninstallCleanupJournalPath } from "../../plugins/plugin-uninstall-cleanup-journal.js";
+import { hasExclusivePluginLifecycleMutation, hasPluginInstallInFlight, isPluginInstallLockHeld, withPluginInstallLock } from "../../plugins/install-lifecycle.js";
+import { readPluginRegistry } from "../../plugins/registry.js";
+import { shouldRestartAfterPluginConfigWrite } from "../../plugins/config-restart-policy.js";
+import { emitPluginConfigChange } from "../../plugins/config-change-bus.js";
 
 const log = createLogger("alerts");
 
@@ -27,11 +34,65 @@ const log = createLogger("alerts");
  */
 export async function setupAlerts(ctx: BootContext): Promise<() => void> {
   const { settingsService, pluginMarketplace, bootAuditLogger, notificationService } = ctx;
+  let disposed = false;
+  const pendingConfigRetries = new Set<string>();
+  // Lock order: a contended lifecycle lock is acquired outside the alert lane,
+  // then reconciliation enters the lane while owning that lock. Inside the
+  // lane, only reentrant or synchronously reserved uncontended locks are allowed.
+  const retryConfig = AsyncResource.bind((pluginId: string) => {
+    if (disposed || pendingConfigRetries.has(pluginId)) return;
+    pendingConfigRetries.add(pluginId);
+    void withPluginInstallLock(pluginId, async () => {
+      if (!disposed) await service.reconcileMigration();
+    }).catch((err: unknown) => log.warn(`alert config migration failed: ${errorMessage(err)}`))
+      .finally(() => pendingConfigRetries.delete(pluginId));
+  });
   const liveWindow = () => {
     const win = ctx.getMainWindow();
     return win && !win.isDestroyed() ? win : null;
   };
+  // Capture the host boot context, outside any plugin lifecycle hook. A
+  // registration may migrate config while start holds its lifecycle lock;
+  // its restart must queue behind that start rather than re-enter it.
+  const restartMigratedPlugin = AsyncResource.bind((pluginId: string) => {
+    if (!shouldRestartAfterPluginConfigWrite({ mutatedCleartextConfig: true, restartUnsafe: false })) return;
+    void ctx.pluginRuntime.restartPlugin(pluginId, { skipPreparation: true }).then((result) => {
+      if (result !== "started") log.warn(`alert config migration restart for '${pluginId}' returned ${result}`);
+    }).catch((err: unknown) => log.warn(`alert config migration restart failed: ${errorMessage(err)}`));
+  });
   const service = new AlertsService({
+    migration: {
+      records: {
+        get: () => settingsService.get("retiredPluginConfigs"),
+        set: (records) => settingsService.set("retiredPluginConfigs", records),
+      },
+      installed: async () => (await pluginMarketplace.listInstalledPackages()).map((row) => ({ pluginId: row.name, sourceId: row.sourceId })),
+      isInstalled: async (pluginId) => (await readPluginRegistry(ctx.pluginPaths.registryPath)).plugins.some((entry) => entry.id === pluginId),
+      hasPendingCleanup: (pluginId) => new PluginUninstallCleanupJournal(pluginUninstallCleanupJournalPath(ctx.pluginPaths.cacheRoot)).has(pluginId),
+      applyConfig: async (pluginId, entries, source, isCurrent) => {
+        if (!isCurrent()) return null;
+        if (!isPluginInstallLockHeld(pluginId) && (hasPluginInstallInFlight(pluginId) || hasExclusivePluginLifecycleMutation())) {
+          retryConfig(pluginId);
+          return null;
+        }
+        return withPluginInstallLock(pluginId, async () => {
+          if (!isCurrent()) return null;
+          const current = settingsService.getPluginConfig(pluginId);
+          const next = inheritedConfig(current, entries, source);
+          if (!next) return false;
+          if (!isCurrent()) return null;
+          await settingsService.setPluginConfig(pluginId, next);
+          if (!isCurrent()) return true;
+          ctx.pluginRuntime.setConfigOverride(pluginId, next);
+          for (const key of Object.keys(next)) {
+            if (!Object.hasOwn(current, key)) emitPluginConfigChange(pluginId, key, next[key]);
+          }
+          return true;
+        });
+      },
+      configApplied: (pluginId) => { setImmediate(() => restartMigratedPlugin(pluginId)); },
+      warn: (message) => log.warn(message),
+    },
     dir: () => openFeatureNamespace("alerts").dir,
     settings: {
       get: () => settingsService.get("alerts"),
@@ -61,7 +122,12 @@ export async function setupAlerts(ctx: BootContext): Promise<() => void> {
     audit: (entry) => bootAuditLogger.log(entry),
   });
   await service.load();
-  let disposed = false;
+  const handleMigrationChanged = () => {
+    void service.reconcileMigration().catch((err: unknown) => log.warn(`alert inheritance failed: ${errorMessage(err)}`));
+  };
+  const unsubscribeRecords = settingsService.onChanged("retiredPluginConfigs", handleMigrationChanged);
+  const unsubscribeChoices = settingsService.onChanged("alerts", handleMigrationChanged);
+  await service.reconcileMigration();
   let revision = 0;
   const reconcileRevocations = async () => {
     const current = ++revision;
@@ -69,6 +135,7 @@ export async function setupAlerts(ctx: BootContext): Promise<() => void> {
     if (disposed || current !== revision) return;
     service.setRevokedPlugins(rows.filter((row) => row.version !== null
       && revocationRegistry.evaluate("plugin", row.name, row.version).kind === "block").map((row) => row.name));
+    handleMigrationChanged();
   };
   const handleRevocationsUpdated = () => {
     void reconcileRevocations().catch((err: unknown) => {
@@ -92,5 +159,7 @@ export async function setupAlerts(ctx: BootContext): Promise<() => void> {
     unsubscribe();
     unsubscribeInstalled();
     unsubscribeRevocations();
+    unsubscribeRecords();
+    unsubscribeChoices();
   };
 }

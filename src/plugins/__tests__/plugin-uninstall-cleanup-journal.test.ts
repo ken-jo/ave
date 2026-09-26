@@ -217,3 +217,18 @@ describe("PluginUninstallCleanupJournal", () => {
     });
   });
 });
+
+it("holds both canonical and install identities until the durable cleanup is complete", () => {
+  const { path } = fixture();
+  const journal = new PluginUninstallCleanupJournal(path);
+  expect(journal.has("retired-plugin")).toBe(false);
+  journal.prepare({ pluginId: "retired-plugin", installPluginId: "retired-package", secretKeys: [], authPartitions: [], cleanupCache: false });
+  const reloaded = new PluginUninstallCleanupJournal(path);
+  expect(reloaded.has("retired-plugin")).toBe(true);
+  expect(reloaded.has("retired-package")).toBe(true);
+  expect(reloaded.has("other-plugin")).toBe(false);
+  reloaded.complete("retired-plugin");
+  const completed = new PluginUninstallCleanupJournal(path);
+  expect(completed.has("retired-plugin")).toBe(false);
+  expect(completed.has("retired-package")).toBe(false);
+});

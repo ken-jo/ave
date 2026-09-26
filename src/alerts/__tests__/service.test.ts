@@ -1,3 +1,4 @@
+import { createAlertMigrationPorts } from "../../__tests__/support/alert-migration.js";
 /**
  * The raise pipeline end to end: one result code per step, in order; windows
  * charged only on acceptance; the card, the cue, the audit row and the event
@@ -133,6 +134,7 @@ async function harness(options: { installed?: string[] } = {}): Promise<Harness>
     blocks: vi.fn(async () => false),
   };
   const service = new AlertsService({
+    migration: createAlertMigrationPorts(),
     dir: () => dir,
     settings: {
       get: () => structuredClone(sharedSettings),

@@ -485,6 +485,7 @@ export async function initPluginRuntime(
   });
   const { preparePluginStart, onDisable, onActiveStateChange, onEnable } =
     createLifecycleCallbacks({
+      getAlertsService,
       getAppWindows: () => input.host.desktop?.getAppWindows() ?? [],
       lateBinding,
       getMainWindow,
