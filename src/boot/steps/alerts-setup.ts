@@ -21,7 +21,8 @@ import type { BootContext } from "../context.js";
 import { AsyncResource } from "node:async_hooks";
 import { inheritedConfig } from "../../alerts/migration.js";
 import { PluginUninstallCleanupJournal, pluginUninstallCleanupJournalPath } from "../../plugins/plugin-uninstall-cleanup-journal.js";
-import { withPluginInstallLock } from "../../plugins/install-lifecycle.js";
+import { hasExclusivePluginLifecycleMutation, hasPluginInstallInFlight, isPluginInstallLockHeld, withPluginInstallLock } from "../../plugins/install-lifecycle.js";
+import { readPluginRegistry } from "../../plugins/registry.js";
 import { shouldRestartAfterPluginConfigWrite } from "../../plugins/config-restart-policy.js";
 import { emitPluginConfigChange } from "../../plugins/config-change-bus.js";
 
@@ -33,6 +34,19 @@ const log = createLogger("alerts");
  */
 export async function setupAlerts(ctx: BootContext): Promise<() => void> {
   const { settingsService, pluginMarketplace, bootAuditLogger, notificationService } = ctx;
+  let disposed = false;
+  const pendingConfigRetries = new Set<string>();
+  // Lock order: a contended lifecycle lock is acquired outside the alert lane,
+  // then reconciliation enters the lane while owning that lock. Inside the
+  // lane, only reentrant or synchronously reserved uncontended locks are allowed.
+  const retryConfig = AsyncResource.bind((pluginId: string) => {
+    if (disposed || pendingConfigRetries.has(pluginId)) return;
+    pendingConfigRetries.add(pluginId);
+    void withPluginInstallLock(pluginId, async () => {
+      if (!disposed) await service.reconcileMigration();
+    }).catch((err: unknown) => log.warn(`alert config migration failed: ${errorMessage(err)}`))
+      .finally(() => pendingConfigRetries.delete(pluginId));
+  });
   const liveWindow = () => {
     const win = ctx.getMainWindow();
     return win && !win.isDestroyed() ? win : null;
@@ -53,18 +67,29 @@ export async function setupAlerts(ctx: BootContext): Promise<() => void> {
         set: (records) => settingsService.set("retiredPluginConfigs", records),
       },
       installed: async () => (await pluginMarketplace.listInstalledPackages()).map((row) => ({ pluginId: row.name, sourceId: row.sourceId })),
+      isInstalled: async (pluginId) => (await readPluginRegistry(ctx.pluginPaths.registryPath)).plugins.some((entry) => entry.id === pluginId),
       hasPendingCleanup: (pluginId) => new PluginUninstallCleanupJournal(pluginUninstallCleanupJournalPath(ctx.pluginPaths.cacheRoot)).has(pluginId),
-      applyConfig: (pluginId, entries, source) => withPluginInstallLock(pluginId, async () => {
-        const current = settingsService.getPluginConfig(pluginId);
-        const next = inheritedConfig(current, entries, source);
-        if (!next) return false;
-        await settingsService.setPluginConfig(pluginId, next);
-        ctx.pluginRuntime.setConfigOverride(pluginId, next);
-        for (const key of Object.keys(next)) {
-          if (!Object.hasOwn(current, key)) emitPluginConfigChange(pluginId, key, next[key]);
+      applyConfig: async (pluginId, entries, source, isCurrent) => {
+        if (!isCurrent()) return null;
+        if (!isPluginInstallLockHeld(pluginId) && (hasPluginInstallInFlight(pluginId) || hasExclusivePluginLifecycleMutation())) {
+          retryConfig(pluginId);
+          return null;
         }
-        return true;
-      }),
+        return withPluginInstallLock(pluginId, async () => {
+          if (!isCurrent()) return null;
+          const current = settingsService.getPluginConfig(pluginId);
+          const next = inheritedConfig(current, entries, source);
+          if (!next) return false;
+          if (!isCurrent()) return null;
+          await settingsService.setPluginConfig(pluginId, next);
+          if (!isCurrent()) return true;
+          ctx.pluginRuntime.setConfigOverride(pluginId, next);
+          for (const key of Object.keys(next)) {
+            if (!Object.hasOwn(current, key)) emitPluginConfigChange(pluginId, key, next[key]);
+          }
+          return true;
+        });
+      },
       configApplied: (pluginId) => { setImmediate(() => restartMigratedPlugin(pluginId)); },
       warn: (message) => log.warn(message),
     },
@@ -103,7 +128,6 @@ export async function setupAlerts(ctx: BootContext): Promise<() => void> {
   const unsubscribeRecords = settingsService.onChanged("retiredPluginConfigs", handleMigrationChanged);
   const unsubscribeChoices = settingsService.onChanged("alerts", handleMigrationChanged);
   await service.reconcileMigration();
-  let disposed = false;
   let revision = 0;
   const reconcileRevocations = async () => {
     const current = ++revision;

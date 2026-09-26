@@ -42,6 +42,7 @@ async function harness() {
   const configs: Record<string, PluginConfigRecord> = {};
   const installed = [{ pluginId: PLUGIN, sourceId: "trusted" as string | null }];
   const blocked = new Set<string>();
+  const predecessorBlocks = vi.fn(async (id: string) => blocked.has(id));
   const journal = new PluginUninstallCleanupJournal(join(dir, "journal.json"));
   journal.prepare({ pluginId: PREDECESSOR, installPluginId: PREDECESSOR, secretKeys: [], authPartitions: [], cleanupCache: false });
   const warn = vi.fn();
@@ -69,16 +70,17 @@ async function harness() {
         records = structuredClone(next); writes.push("records");
       } },
       installed: async () => installed,
+      isInstalled: async (id) => installed.some((entry) => entry.pluginId === id),
       hasPendingCleanup: (id) => journal.has(id),
       applyConfig, configApplied: restart, warn,
     },
     installedPluginIds: async () => installed.map((entry) => entry.pluginId),
-    predecessorBlocks: async (id) => blocked.has(id),
+    predecessorBlocks,
     appVersion: "0.14.0", locale: () => "en", overlay: { show: vi.fn(), dismiss: vi.fn() },
     notifications: { isFocusGateActive: () => false, fire: vi.fn() }, emit: vi.fn(), audit: vi.fn(),
   });
   services.push(service); await service.load();
-  return { service, installed, blocked, configs, warn, restart, writes, journal, applyConfig,
+  return { service, installed, blocked, configs, warn, restart, writes, journal, applyConfig, predecessorBlocks,
     get settings() { return settings; }, get records() { return records; },
     put: (record = retirement(), id = PREDECESSOR) => { records[id] = structuredClone(record); },
     failConsumption: (value: boolean) => { failConsumption = value; },
@@ -87,6 +89,28 @@ async function harness() {
 }
 
 describe("retirement inheritance and binding", () => {
+  it("drops an unpublished generation after its predecessor lookup resumes", async () => {
+    const h = await harness();
+    await h.service.register(PLUGIN, manifest([kind({ inherits: undefined })]));
+    h.put();
+    let resume!: () => void;
+    let entered!: () => void;
+    const suspended = new Promise<void>((resolve) => { resume = resolve; });
+    const lookup = new Promise<void>((resolve) => { entered = resolve; });
+    h.predecessorBlocks.mockImplementationOnce(async () => { entered(); await suspended; return false; });
+    const old = h.service.prepareRegistration(PLUGIN, manifest(undefined, [{ pluginId: PREDECESSOR, from: "senders", to: "allowed" }]));
+    const oldPublish = old.publish();
+    await lookup;
+    old.unpublish();
+    const replacement = h.service.register(PLUGIN, manifest([kind({ inherits: undefined })]));
+    resume();
+    await Promise.all([oldPublish, replacement]);
+    expect(h.settings.kinds[KEY]!.enabled).toBe(false);
+    expect(h.configs[PLUGIN]).toBeUndefined();
+    expect(h.records[PREDECESSOR]!.consumedBy).toEqual([]);
+    expect(h.restart).not.toHaveBeenCalled();
+  }, 2_000);
+
   it("keeps an old non-inheriting version pending and inherits when a later version declares the mapping", async () => {
     const h = await harness();
     await h.service.register(PLUGIN, manifest([kind({ inherits: undefined })]));

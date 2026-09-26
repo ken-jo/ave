@@ -10,9 +10,15 @@ export interface AlertMigrationPorts {
     set(records: Record<string, RetiredPluginConfigRecord>): Promise<void>;
   };
   installed(): Promise<readonly { pluginId: string; sourceId: string | null }[]>;
+  /** Registry presence includes packages undergoing replacement. */
+  isInstalled(pluginId: string): Promise<boolean>;
   hasPendingCleanup(pluginId: string): boolean;
-  /** Reads target keys and writes under the plugin's config mutation lock. */
-  applyConfig(pluginId: string, entries: readonly ConfigInheritDeclaration[], config: PluginConfigRecord): Promise<boolean>;
+  /**
+   * Never waits for a contended lifecycle lock. Check isCurrent under the lock
+   * before writing: null means deferred or obsolete, false means no copy is
+   * needed, and true means config was persisted. Only terminal stages consume.
+   */
+  applyConfig(pluginId: string, entries: readonly ConfigInheritDeclaration[], config: PluginConfigRecord, isCurrent: () => boolean): Promise<boolean | null>;
   /** Schedules a restart outside any registration lifecycle hook. */
   configApplied(pluginId: string): void;
   warn(message: string): void;
@@ -106,8 +112,9 @@ export class AlertMigration {
       }
       if (changed) await this.choices.set(settings);
 
-      for (const [pluginId, declaration] of this.declarations) {
-        if (!declaration.isReady()) continue;
+      declarations: for (const [pluginId, declaration] of this.declarations) {
+        const isCurrent = () => this.declarations.get(pluginId) === declaration && declaration.isReady();
+        if (!isCurrent()) continue;
         const kinds = declaration.kinds.filter((kind) => kind.inherits?.[0]?.pluginId === predecessor);
         const config = declaration.config.filter((entry) => entry.pluginId === predecessor);
         if (kinds.length === 0 && config.length === 0) continue;
@@ -127,7 +134,9 @@ export class AlertMigration {
         let kindsTerminal = true;
         for (const kind of kinds) {
           const inherit = kind.inherits![0]!;
-          if (await this.blocks(predecessor, inherit.sourceId)) { kindsTerminal = false; continue; }
+          const blocked = await this.blocks(predecessor, inherit.sourceId);
+          if (!isCurrent()) continue declarations;
+          if (blocked) { kindsTerminal = false; continue; }
           const current = this.choices.get();
           const key = alertKindKey(pluginId, kind.id);
           const choice = current.kinds[key];
@@ -136,22 +145,26 @@ export class AlertMigration {
           const next = { ...choice, enabled: inheritedToggle(record.config, inherit.enabled),
             osNotification: kind.osNotification && inherit.osNotification ? inheritedToggle(record.config, inherit.osNotification) : false };
           if (next.enabled !== choice.enabled || next.osNotification !== choice.osNotification) {
+            if (!isCurrent()) continue declarations;
             await this.choices.set({ ...current, kinds: { ...current.kinds, [key]: next } });
           }
         }
+        if (!isCurrent()) continue;
         if (successor.anySource) {
           for (const entry of config) this.warn(pluginId, predecessor, `config:${entry.to}`, "any-source successors may inherit toggles only");
         } else if (record.enabled && config.length > 0) {
-          if (await this.ports.applyConfig(pluginId, config, record.config)) this.ports.configApplied(pluginId);
+          const applied = await this.ports.applyConfig(pluginId, config, record.config, isCurrent);
+          if (!isCurrent() || applied === null) continue;
+          if (applied) this.ports.configApplied(pluginId);
         }
-        if (!kindsTerminal || !declaration.isReady()) continue;
+        if (!kindsTerminal || !isCurrent()) continue;
         // Writes above settled before binding this version's whole declaration.
         record.consumedBy = [...record.consumedBy, pluginId];
         await this.ports.records.set({ ...this.ports.records.get(), [predecessor]: record });
         declaration.consumedHere.add(predecessor);
       }
       if (hostTerminal && record.successors.plugins.every((entry) => record.consumedBy.includes(entry.pluginId))
-        && !installed.some((entry) => entry.pluginId === predecessor) && !this.ports.hasPendingCleanup(predecessor)) {
+        && !(await this.ports.isInstalled(predecessor)) && !this.ports.hasPendingCleanup(predecessor)) {
         const next = { ...this.ports.records.get() };
         delete next[predecessor];
         await this.ports.records.set(next);

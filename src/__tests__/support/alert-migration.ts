@@ -9,8 +9,10 @@ export function createAlertMigrationPorts(): AlertMigrationPorts {
   return {
     records: { get: () => structuredClone(records), set: async (next) => { records = structuredClone(next); } },
     installed: async () => [],
+    isInstalled: async () => false,
     hasPendingCleanup: () => false,
-    applyConfig: async (pluginId, entries, source) => {
+    applyConfig: async (pluginId, entries, source, isCurrent) => {
+      if (!isCurrent()) return null;
       const next = inheritedConfig(config[pluginId] ?? {}, entries, source);
       if (!next) return false;
       config[pluginId] = next;
