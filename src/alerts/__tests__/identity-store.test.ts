@@ -17,12 +17,21 @@ import {
 } from "../store.js";
 
 let dir: string;
+const stores: AlertStore[] = [];
+
+function createStore(): AlertStore {
+  const storeDir = dir;
+  const store = new AlertStore(() => storeDir);
+  stores.push(store);
+  return store;
+}
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "ave-alerts-identity-"));
 });
 
 afterEach(async () => {
+  await Promise.all(stores.splice(0).map((store) => store.flush()));
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -73,7 +82,7 @@ function open(alertId: string, overrides: Partial<OpenAlert> = {}): OpenAlert {
 
 describe("AlertStore", () => {
   it("persists open and closed identities across a reload, and drops what expired meanwhile", async () => {
-    const store = new AlertStore(() => dir);
+    const store = createStore();
     await store.load(0);
     store.add(open("a"));
     store.add(open("b", { expiresAt: 5_000 }));
@@ -81,7 +90,7 @@ describe("AlertStore", () => {
     store.close("c");
     await store.flush();
 
-    const reloaded = new AlertStore(() => dir);
+    const reloaded = createStore();
     await reloaded.load(10_000);
     expect(reloaded.getOpen("a")?.alertId).toBe("a");
     expect(reloaded.getOpen("b")).toBeUndefined();
@@ -90,7 +99,7 @@ describe("AlertStore", () => {
   });
 
   it("writes only ids, kind ids and enums", async () => {
-    const store = new AlertStore(() => dir);
+    const store = createStore();
     await store.load(0);
     store.add(open("a"));
     await store.flush();
@@ -101,7 +110,7 @@ describe("AlertStore", () => {
   });
 
   it("evicts the lowest priority first, then the oldest, past three per kind", async () => {
-    const store = new AlertStore(() => dir);
+    const store = createStore();
     await store.load(0);
     store.add(open("high", { priority: "high", raisedAt: 1 }));
     store.add(open("old", { raisedAt: 2 }));
@@ -114,7 +123,7 @@ describe("AlertStore", () => {
   });
 
   it("allows a bounded number of refreshes per window and changes nothing past it", async () => {
-    const store = new AlertStore(() => dir);
+    const store = createStore();
     await store.load(0);
     store.add(open("a"));
     for (let i = 0; i < MAX_REFRESHES_PER_WINDOW; i += 1) {
@@ -126,7 +135,7 @@ describe("AlertStore", () => {
   });
 
   it("keeps at most the newest closed identities per plugin", async () => {
-    const store = new AlertStore(() => dir);
+    const store = createStore();
     await store.load(0);
     for (let i = 0; i <= MAX_CLOSED_PER_PLUGIN; i += 1) {
       store.add(open(`id${i}`, { kindId: `k${i}` }));
@@ -138,7 +147,7 @@ describe("AlertStore", () => {
   });
 
   it("expires open identities at their lifetime and forgets closed ones past theirs", async () => {
-    const store = new AlertStore(() => dir);
+    const store = createStore();
     await store.load(0);
     store.add(open("a", { expiresAt: 50 }));
     store.add(open("b", { expiresAt: 500, kindId: "digest" }));
@@ -150,7 +159,7 @@ describe("AlertStore", () => {
   });
 
   it("removes an uninstalled plugin's open identities but keeps its closed ones", async () => {
-    const store = new AlertStore(() => dir);
+    const store = createStore();
     await store.load(0);
     store.add(open("a"));
     store.add(open("b", { kindId: "digest" }));
