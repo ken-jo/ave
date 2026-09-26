@@ -6,6 +6,7 @@
  * revocations. For each row the version choice runs the six drops of §6.1 in
  * order and takes the highest remaining version as the candidate.
  */
+import { effectiveRevocations } from "./effective-revocations.js";
 import { createHash } from "node:crypto";
 import { appVersionSatisfiesMin, compareSemver } from "../../shared/semver-compare.js";
 import type { SourceOrigin } from "../sources/registry.js";
@@ -152,7 +153,7 @@ export function aggregateCatalog(inputs: readonly AggregateInput[], context: Ver
         kind: pkg.kind,
         name: pkg.name,
         package: pkg,
-        choice: chooseVersion(sourceId, pkg, snapshot.revocations, context),
+        choice: chooseVersion(sourceId, pkg, effectiveRevocations(snapshot, context.appVersion), context),
       });
     }
   }

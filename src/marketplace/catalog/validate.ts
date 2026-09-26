@@ -15,6 +15,8 @@ import type { ErrorObject, ValidateFunction } from "ajv";
 import manifestSchema from "../../../schemas/plugin-manifest.schema.json" with { type: "json" };
 import indexSchema from "../../../schemas/marketplace/index.schema.json" with { type: "json" };
 import packageSchema from "../../../schemas/marketplace/package.schema.json" with { type: "json" };
+import conditionalSchema from "../../../schemas/marketplace/revocations-by-app.schema.json" with { type: "json" };
+import type { ConditionalRevocationsFile } from "./types.js";
 import revocationsSchema from "../../../schemas/marketplace/revocations.schema.json" with { type: "json" };
 import { RESERVED_ENV_NAMES, RESERVED_HEADERS } from "../../mcp/safe-names.js";
 import { resolveAddFormats, resolveAjv } from "../../plugins/config-schema.js";
@@ -47,6 +49,7 @@ interface Validators {
   indexPackage: ValidateFunction;
   descriptor: ValidateFunction;
   revocations: ValidateFunction;
+  conditionalRevocations: ValidateFunction;
 }
 
 let compiled: Validators | null = null;
@@ -60,6 +63,7 @@ function validators(): Validators {
   ajv.addSchema(packageSchema);
   ajv.addSchema(indexSchema);
   ajv.addSchema(revocationsSchema);
+  ajv.addSchema(conditionalSchema);
   const get = (ref: string): ValidateFunction => {
     const fn = ajv.getSchema(ref);
     if (!fn) throw new Error(`marketplace schema reference does not resolve: ${ref}`);
@@ -70,6 +74,7 @@ function validators(): Validators {
     indexPackage: get(`${INDEX_ID}#/definitions/indexPackage`),
     descriptor: get(PACKAGE_ID),
     revocations: get(REVOCATIONS_ID),
+    conditionalRevocations: get(conditionalSchema.$id),
   };
   return compiled;
 }
@@ -300,6 +305,25 @@ export function validateRevocationsText(text: string): Validation<RevocationsFil
       parseVersionRange(revocation.versions);
     } catch (error) {
       return { ok: false, error: `policy/revocations.json: revocations[${index}].versions: ${(error as Error).message}` };
+    }
+  }
+  return { ok: true, value: file };
+}
+
+/** The sibling policy is optional, but a present invalid file rejects its commit. */
+export function validateConditionalRevocationsText(text: string): Validation<ConditionalRevocationsFile> {
+  const parsed = parse(text);
+  if (!parsed.ok) return parsed;
+  const check = validators().conditionalRevocations;
+  if (!check(parsed.value)) return { ok: false, error: "policy/revocations-by-app.json: " + describeErrors(check.errors) };
+
+  const file = parsed.value as ConditionalRevocationsFile;
+  for (const entry of file.revocations) {
+    try { parseVersionRange(entry.versions); } catch (error) {
+      return { ok: false, error: "policy/revocations-by-app.json: " + (error as Error).message };
+    }
+    if (entry.kind !== "plugin" && (entry.successors.plugins.length || entry.successors.hostKinds.length)) {
+      return { ok: false, error: "Only plugin retirements may name successors" };
     }
   }
   return { ok: true, value: file };

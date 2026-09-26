@@ -37,13 +37,13 @@ describe("feedRevocationsFromSnapshots", () => {
     installedAt: "2026-09-23T00:00:00.000Z",
   });
 
-  function writeSource(id: string, revocations: unknown[]) {
+  function writeSource(id: string, revocations: unknown[], conditionalRevocations: unknown[] = []) {
     const dir = join(home, "marketplaces", id);
     mkdirSync(join(dir, "snapshots"), { recursive: true });
     writeFileSync(join(dir, "state.json"), JSON.stringify({ pinnedCommit: PIN, enabled: true }));
     writeFileSync(
       join(dir, "snapshots", `${PIN}.json`),
-      JSON.stringify({ sourceId: id, commit: PIN, fetchedAt: "2026-09-24T00:00:00.000Z", marketplace: { name: id, displayName: id }, packages: [], revocations, diagnostics: [] }),
+      JSON.stringify({ sourceId: id, commit: PIN, fetchedAt: "2026-09-24T00:00:00.000Z", marketplace: { name: id, displayName: id }, packages: [], revocations, conditionalRevocations, diagnostics: [], formatVersion: 2 }),
     );
   }
 
@@ -63,12 +63,21 @@ describe("feedRevocationsFromSnapshots", () => {
 
   const bad = (name: string, source: string) => ({ kind: "plugin", name, versions: "<2.0.0", reason: `${name} revoked by ${source}`, at: "2026-09-24T00:00:00Z", action: "disable" });
 
+  it("applies a cached conditional policy only at the running app minimum", async () => {
+    const pluginRegistryPath = writePlugins();
+    writeSource("acme", [], [{ ...bad("meeting", "acme"), appVersions: "0.12.0", successors: { plugins: [], hostKinds: [] } }]);
+    for (const appVersion of ["0.11.0", "0.12.0"]) {
+      await feedRevocationsFromSnapshots({ appVersion, home, pluginRegistryPath, bootAuditLogger: audit as never });
+      expect(revocationRegistry.evaluate("plugin", "meeting", "1.0.0").kind).toBe(appVersion === "0.11.0" ? "allow" : "block");
+    }
+  });
+
   it("blocks an installed plugin only by the source it is bound to", async () => {
     const pluginRegistryPath = writePlugins();
     writeSource("acme", [bad("meeting", "acme"), bad("orion", "acme"), bad("sideloaded", "acme")]);
     writeSource("ave", []);
 
-    await feedRevocationsFromSnapshots({ home, pluginRegistryPath, bootAuditLogger: audit as never });
+    await feedRevocationsFromSnapshots({ appVersion: "0.12.0", home, pluginRegistryPath, bootAuditLogger: audit as never });
 
     expect(revocationRegistry.evaluate("plugin", "meeting", "1.0.0")).toEqual({ kind: "block", sourceId: "acme", action: "disable", reason: "meeting revoked by acme" });
     expect(revocationRegistry.evaluate("plugin", "meeting", "2.0.0")).toEqual({ kind: "allow" });
@@ -84,7 +93,7 @@ describe("feedRevocationsFromSnapshots", () => {
     mkdirSync(join(home, "marketplaces", "acme"), { recursive: true });
     writeFileSync(join(home, "marketplaces", "acme", "state.json"), "{ not json");
 
-    await expect(feedRevocationsFromSnapshots({ home, pluginRegistryPath, bootAuditLogger: audit as never })).resolves.toBeUndefined();
+    await expect(feedRevocationsFromSnapshots({ appVersion: "0.12.0", home, pluginRegistryPath, bootAuditLogger: audit as never })).resolves.toBeUndefined();
 
     expect(revocationRegistry.evaluate("plugin", "orion", "1.0.0")).toMatchObject({ kind: "block", sourceId: "ave" });
     expect(revocationRegistry.evaluate("plugin", "meeting", "1.0.0")).toEqual({ kind: "allow" });
@@ -97,13 +106,13 @@ describe("feedRevocationsFromSnapshots", () => {
     mkdirSync(join(home, "marketplaces", "acme"), { recursive: true });
     writeFileSync(join(home, "marketplaces", "acme", "state.json"), JSON.stringify({ pinnedCommit: PIN, enabled: true }));
 
-    await feedRevocationsFromSnapshots({ home, pluginRegistryPath, bootAuditLogger: audit as never });
+    await feedRevocationsFromSnapshots({ appVersion: "0.12.0", home, pluginRegistryPath, bootAuditLogger: audit as never });
 
     expect(audit.log).toHaveBeenCalledWith(expect.objectContaining({ input: "revocations_loaded rules=0 unreadable=1" }));
   });
 
   it("feeds an empty set on a fresh home, so the gates know they were fed", async () => {
-    await feedRevocationsFromSnapshots({ home, pluginRegistryPath: join(home, "plugins", "registry.json"), bootAuditLogger: audit as never });
+    await feedRevocationsFromSnapshots({ appVersion: "0.12.0", home, pluginRegistryPath: join(home, "plugins", "registry.json"), bootAuditLogger: audit as never });
     expect(revocationRegistry.replace([])).toBe(false);
   });
 });

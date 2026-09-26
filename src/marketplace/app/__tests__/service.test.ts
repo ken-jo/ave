@@ -28,7 +28,9 @@ import { normalizeSourceUrl } from "../../net/source-url.js";
 import { SourceRegistry } from "../../sources/registry.js";
 import { SourceSyncer } from "../../sources/sync.js";
 import { McpInstaller } from "../mcp-installer.js";
-import type { InstallerPorts, TokenStore } from "../ports.js";
+import { createPluginRetirementPort } from "../../../plugins/retired-config.js";
+import type { RetiredPluginConfigRecord } from "../../../shared/alerts-types.js";
+import type { InstallerPorts, PluginInstallerPort, TokenStore } from "../ports.js";
 import type { RevocationFeed } from "../revocations.js";
 import { MarketplaceService } from "../service.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
@@ -77,6 +79,7 @@ describe("MarketplaceService", () => {
   let adopting: boolean[];
   let feeds: RevocationFeed[];
   let feedFails: boolean;
+  let pluginPort: PluginInstallerPort;
   let warnings: string[];
   /** Runs inside a content install, after the plan's first feed and before the store changes. */
   let duringContentInstall: (() => Promise<void>) | null;
@@ -136,6 +139,7 @@ describe("MarketplaceService", () => {
         install: vi.fn(async () => {
           throw new Error("no plugin installs in this suite");
         }),
+        retire: vi.fn(async () => {}),
         uninstall: vi.fn(async () => {}),
       },
       content: {
@@ -151,6 +155,7 @@ describe("MarketplaceService", () => {
       },
       mcp: new McpInstaller({ recordsPath: join(root, "packages", "mcp-installs.json"), dataRoot: join(root, "mcp-data"), files: artifacts, manager, nodePath: "/usr/bin/node" }),
     };
+    pluginPort = installers.plugin;
     service = new MarketplaceService({
       registry,
       syncer,
@@ -423,6 +428,87 @@ describe("MarketplaceService", () => {
     await service.applyBootInstalls([], applied);
     await service.applyBootInstalls([], applied);
     expect(legacyRuns).toHaveLength(2);
+  });
+
+  it.each([false, true])("captures retirement before a failed uninstall or policy lock (locked=%s)", async (locked) => {
+    if (locked) await build(policyLoad({ requiredInstalls: [{ kind: "plugin", name: "retired-fixture", source: "acme-tools" }] }));
+    const source = market();
+    const entry = { kind: "plugin", name: "retired-fixture", versions: "*", appVersions: "0.12.0", reason: "Replaced", at: AT.toISOString(),
+      action: "uninstall", successors: { plugins: [{ pluginId: "successor-fixture" }], hostKinds: [] } };
+    source.repo.commit({ "policy/revocations-by-app.json": text({ schemaVersion: 1, revocations: [entry] }) }, "retire fixture");
+    const installed = { kind: "plugin" as const, name: entry.name, version: "1.0.0", sourceId: "acme-tools", originCommit: null };
+    pluginPort.list = async () => [installed];
+    let records: Record<string, RetiredPluginConfigRecord> = {};
+    const set = vi.fn(async (_key: string, value: typeof records) => { records = structuredClone(value); });
+    const retirement = createPluginRetirementPort({ settings: { get: () => structuredClone(records), set, getPluginConfig: () => ({ enabledIntents: ["due"] }) } as never,
+      marketplace: { getInstalledConfigManifest: async () => ({ manifest: { id: entry.name } as never, enabled: false, sourceId: "acme-tools" }) },
+      wildcard: () => ({}), appVersion: () => "0.12.0" });
+    pluginPort.retire = async (name, retain) => retirement.writeIfAbsent(name, await retirement.capture(name, retain));
+    const uninstall = vi.fn(async () => {
+      expect(records[entry.name]).toMatchObject({ enabled: false, config: { enabledIntents: ["due"] } });
+      throw new Error("fixture uninstall failed");
+    });
+    pluginPort.uninstall = uninstall;
+    await addMarket(source.url);
+    uninstall.mockClear();
+    await service.enforceRevocations();
+    const report = service.takeRevocationNotice()?.revoked;
+    expect(report).toEqual([expect.objectContaining({ outcome: locked ? "required" : "failed" })]);
+    expect(uninstall).toHaveBeenCalledTimes(locked ? 0 : 1);
+    const record = records[entry.name]!;
+    expect(record).toBeDefined();
+    expect(record.successors).toEqual(entry.successors);
+    record.consumedBy = ["successor-fixture"];
+    const consumed = structuredClone(record);
+    set.mockClear();
+    await service.enforceRevocations();
+    expect(set).not.toHaveBeenCalled();
+    expect(records[entry.name]).toEqual(consumed);
+  });
+
+  it("finds retirement authority without an installed predecessor and reports source conflicts", async () => {
+    expect(await service.getRetirementEntry("retired-fixture")).toBeNull();
+    const entry = { kind: "plugin", name: "retired-fixture", versions: "*", appVersions: "0.12.0", reason: "Replaced", at: AT.toISOString(),
+      action: "uninstall", successors: { plugins: [], hostKinds: [] } };
+    const first = market();
+    first.repo.commit({ "policy/revocations-by-app.json": text({ schemaVersion: 1, revocations: [entry] }) }, "retire fixture");
+    await addMarket(first.url);
+    expect(await service.getRetirementEntry(entry.name)).toEqual({ sourceId: "acme-tools", successors: entry.successors });
+    const second = market("1.0.0", "other-tools");
+    second.repo.commit({ "policy/revocations-by-app.json": text({ schemaVersion: 1, revocations: [entry] }) }, "conflicting retirement");
+    await addMarket(second.url);
+    await expect(service.getRetirementEntry(entry.name)).rejects.toThrow("Conflicting plugin retirement entries");
+  });
+
+  it("ignores a renderer-injected retain field and resolves retention only from a host argument", async () => {
+    const source = market();
+    const entry = { kind: "plugin", name: "retired-fixture", versions: "*", appVersions: "0.12.0", reason: "Replaced", at: AT.toISOString(),
+      action: "uninstall", successors: { plugins: [], hostKinds: [] } };
+    source.repo.commit({ "policy/revocations-by-app.json": text({ schemaVersion: 1, revocations: [entry] }) }, "retire fixture");
+    await addMarket(source.url);
+    pluginPort.list = async () => [{ kind: "plugin", name: entry.name, version: "1.0.0", sourceId: "acme-tools", originCommit: null }];
+    const uninstall = vi.fn(async () => {});
+    pluginPort.uninstall = uninstall;
+    const request = { sourceId: "acme-tools", kind: "plugin" as const, name: entry.name, retain: { reason: "superseded" } };
+    await service.uninstall(request);
+    expect(uninstall).toHaveBeenLastCalledWith(entry.name, undefined);
+    await service.uninstall(request, { retain: { reason: "superseded" } });
+    expect(uninstall).toHaveBeenLastCalledWith(entry.name, { reason: "superseded", sourceId: "acme-tools", successors: entry.successors });
+  });
+
+  it("uses conditional policies for detail and install/update review", async () => {
+    const source = market();
+    await addMarket(source.url);
+    const key = { sourceId: "acme-tools", kind: "skill" as const, name: "review" };
+    const plan = await service.planInstall(key);
+    await service.executeInstall(plan.planId);
+    source.repo.commit({ "policy/revocations-by-app.json": text({ schemaVersion: 1, revocations: [
+      { kind: "skill", name: "review", versions: "*", appVersions: "0.14.0", reason: "Replaced", at: AT.toISOString(), action: "disable", successors: { plugins: [], hostKinds: [] } },
+    ] }) }, "conditional policy");
+    await service.refresh("acme-tools");
+    expect((await service.detail(key)).versions[0]!.excluded).toContain("revoked");
+    await expect(service.planInstall({ ...key, version: "1.0.0" })).rejects.toMatchObject({ code: "PACKAGE_REVOKED" });
+    await expect(service.planUpdate(key)).rejects.toMatchObject({ code: "PACKAGE_REVOKED" });
   });
 
   it("feeds each installed package only its own source's revocations (design §10.4)", async () => {
