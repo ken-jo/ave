@@ -4,7 +4,7 @@
  * "/ must NOT have additional properties".
  *
  * Companion to #736: clear error message helps users diagnose why a stale
- * plugin install fails AJV validation after the SDK schema tightens.
+ * plugin install fails AJV validation after the host schema tightens.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -28,7 +28,7 @@ describe("manifest-validation enriched error messages (#737)", () => {
     await rm(workDir, { recursive: true, force: true });
   });
 
-  // Strict envelope, mirroring the SDK's additionalProperties:false discipline.
+  // Strict envelope, matching the host schema's additionalProperties:false rule.
   const makeValidator = permissiveManifestValidatorFactory({
     strict: true,
     namespaceProperties: {

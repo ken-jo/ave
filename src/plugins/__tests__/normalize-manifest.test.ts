@@ -9,7 +9,7 @@
  * REJECTED (fail-closed, never widened to dual), and `name` defaults to `id`.
  *
  * A permissive validator is used so a fixture reaches the host-side materializer
- * directly — the real SDK schema rejects `visibility: []` upstream at its
+ * directly — the host schema rejects `visibility: []` upstream at its
  * `minItems:1` gate, but the host keeps its own fail-closed backstop and that is
  * what these tests exercise.
  */

@@ -1,5 +1,5 @@
 /**
- * Tier A — `networkAccess` manifest validation through the REAL SDK-schema
+ * Tier A — `networkAccess` manifest validation through the host schema
  * validator (`buildManifestValidator()`), the load-time path `parsePluginJson()`
  * runs at boot/install.
  *

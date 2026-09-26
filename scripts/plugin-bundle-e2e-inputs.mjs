@@ -2,7 +2,7 @@
 
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { lstatSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -54,8 +54,18 @@ function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-function readJson(path) {
-  return JSON.parse(readFileSync(path, "utf8"));
+function requireCommittedEntry(repoRoot, commit, path, modes, type) {
+  const entry = gitBytes(repoRoot, "ls-tree", "--full-tree", "-z", commit, "--", path)
+    .toString("utf8");
+  const match = /^([0-7]{6}) (blob|tree) [0-9a-f]{40}\t([^\0]+)\0$/.exec(entry);
+  if (!match || match[3] !== path || match[2] !== type || !modes.includes(match[1])) {
+    fail(`orion-api ${path} must be a committed ${type === "tree" ? "directory" : "regular file"}`);
+  }
+}
+
+function readCommittedFile(repoRoot, commit, path) {
+  requireCommittedEntry(repoRoot, commit, path, ["100644", "100755"], "blob");
+  return gitBytes(repoRoot, "show", `${commit}:${path}`);
 }
 
 function requireReleaseTag(hostRoot, ref) {
@@ -87,7 +97,7 @@ export function verifyPluginBundleE2EInputs({
   requireCheckout("Marketplace", marketplaceRoot, refs.marketplace);
   requireCheckout("orion-api", orionApiRoot, refs.orionApi);
 
-  const epPackage = readJson(resolve(orionApiRoot, "package.json"));
+  const epPackage = JSON.parse(readCommittedFile(orionApiRoot, refs.orionApi, "package.json").toString("utf8"));
   for (const section of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"]) {
     for (const [name, version] of Object.entries(epPackage[section] ?? {})) {
       if (RETIRED_SDK.test(name) || RETIRED_SDK.test(String(version))) {
@@ -95,12 +105,15 @@ export function verifyPluginBundleE2EInputs({
       }
     }
   }
-  const lock = readFileSync(resolve(orionApiRoot, "bun.lock"), "utf8");
+  const lock = readCommittedFile(orionApiRoot, refs.orionApi, "bun.lock").toString("utf8");
   if (RETIRED_SDK.test(lock)) {
     fail("orion-api bun.lock still resolves the retired SDK dependency");
   }
 
-  const sources = readJson(resolve(orionApiRoot, "contract/sources.json"));
+  requireCommittedEntry(orionApiRoot, refs.orionApi, "contract", ["040000"], "tree");
+  const sources = JSON.parse(
+    readCommittedFile(orionApiRoot, refs.orionApi, "contract/sources.json").toString("utf8"),
+  );
   if (sources.repository !== "retiredname-project/retiredname-app") {
     fail("orion-api contract must name retiredname-project/retiredname-app as its source");
   }
@@ -111,11 +124,7 @@ export function verifyPluginBundleE2EInputs({
     if (entry?.from !== from || !SHA256.test(entry.sha256 ?? "")) {
       fail(`orion-api contract metadata is invalid for ${name}`);
     }
-    const copyPath = resolve(orionApiRoot, "contract", name);
-    if (!lstatSync(copyPath).isFile()) {
-      fail(`orion-api contract ${name} must be a regular file`);
-    }
-    const vendoredDigest = sha256(readFileSync(copyPath));
+    const vendoredDigest = sha256(readCommittedFile(orionApiRoot, refs.orionApi, `contract/${name}`));
     if (vendoredDigest !== entry.sha256) {
       fail(`orion-api contract bytes differ from sources.json for ${name}`);
     }

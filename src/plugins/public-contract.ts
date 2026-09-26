@@ -152,7 +152,7 @@ export interface PluginUiResourceDecl {
 /** Host-enforced minimum risk for one discriminated plugin operation. */
 export type GovernedRiskFloor = "read" | "write" | "network" | "shell";
 
-/** Host-owned schema source consumed by the public SDK drift generator. */
+/** Host-owned operation rule carried in the vendored public contract. */
 export interface PluginToolOperationRule {
   kind: "read" | "write";
   minimumRisk: GovernedRiskFloor;
@@ -223,7 +223,6 @@ export type OpenAuthWindowBaseOptions = {
    * invisible to the user.
    *
    * @default true
-   * @since SDK 5.6.0
    */
   show?: boolean;
   /**
@@ -238,7 +237,6 @@ export type OpenAuthWindowBaseOptions = {
    * — this keeps that credential on the host, never in the plugin bundle.
    *
    * @default false
-   * @since SDK 12.2.0
    */
   retainCookies?: boolean;
 };
@@ -659,9 +657,8 @@ export interface PluginManifest {
    * allow + deny) and currently accepts entries shaped
    * `llm.apiKey.<vendor>` or
    * `llm.marketplaceProvider.<presetId>.apiKey` — enforced both here at
-   * manifest load time and by the SDK JSON-schema/host compatibility patch
-   * so plugins can't grant themselves wildcard access by shipping an older
-   * SDK build.
+   * manifest load time and by the host-owned JSON schema, so plugins cannot
+   * grant themselves wildcard access with an older vendored contract.
    *
    * Keys outside the namespace are rejected at manifest load
    * (`manifest_schema` reason) so a misconfigured plugin never reaches the
@@ -1077,7 +1074,7 @@ export class PluginStorageEncryptionUnavailableError extends Error {
 
 /**
  * Supported text encodings for PluginStorage read/write operations.
- * Defined explicitly to avoid leaking @types/node into the SDK public surface.
+ * Defined explicitly to avoid leaking @types/node into the public contract.
  */
 export type StorageEncoding =
   | "utf-8"
@@ -1342,15 +1339,13 @@ export interface PluginHostApi {
   getSecret(key: string): Promise<string | null>;
 
   /**
-   * #893 Stage 2 — Host-managed LLM key resolver. Mirrors the SDK's
-   * `PluginHostApi.resolveApiKey` (optional, may be undefined on older host
-   * builds — plugins guard with `typeof hostApi.resolveApiKey === "function"`).
+   * Host-managed LLM key resolver. Optional on older app releases; plugins
+   * guard with `typeof hostApi.resolveApiKey === "function"` unless their
+   * `requires.minAppVersion` guarantees a supporting release.
    *
    * Implementation in `src/main/host-api/resolve-api-key.ts` runs the four-tier
-   * gate and returns the SDK's discriminated union (`ResolveApiKeyResult`).
-   * The host interface accepts a structurally compatible shape so the SDK
-   * import stays optional at the type level — callers receive the same
-   * `ok: true | false` discriminator either way.
+   * gate and returns the `ResolveApiKeyResult` discriminated union. Callers
+   * receive the same `ok: true | false` discriminator across supported releases.
    */
   resolveApiKey?(opts: {
     purpose: "llm" | "stt" | "embedding" | "vision";
@@ -1655,15 +1650,11 @@ export interface PluginHostApi {
    * hard load failure (not on user close).
    *
    * **Required (not `?`-optional)** unlike `hostFetch?` / `spawnWorker?` /
-   * `getAppPreference?`. Convention: HostApi methods are
-   * declared required when the SDK + host wiring land in the same release
-   * window (lockstep shipping); methods are declared optional only when
-   * the SDK legitimately ships ahead of host adoption. Declaring this
-   * method required forces plugins to call it directly — a missing host
-   * wiring throws loudly at runtime instead of being silently optional-
-   * chained, matching CLAUDE.md "No Fallback Code" + the security
-   * "fail-closed" principle (silent fallback could route the user to a
-   * less-protected window).
+   * `getAppPreference?`. Plugins vendor this contract at an app release tag
+   * and set `requires.minAppVersion` to a release serving every method they
+   * use. This method is required so missing host wiring throws loudly instead
+   * of being silently optional-chained. A silent fallback could route the
+   * user to a less-protected window.
    */
   openAuthPartitionViewer(opts: {
     url: string;
@@ -1714,7 +1705,6 @@ export interface PluginHostApi {
    *
    * **Capability gate:** `external-auth-consumer`, same as `openAuthWindow`.
    *
-   * @since SDK 12.2.0
    */
   getAuthPartitionCookies(opts: {
     partitionSub: string;
@@ -1738,11 +1728,10 @@ export interface PluginHostApi {
    * validates the scheme is http(s) (file:/javascript:/etc. are rejected with an
    * English error) before routing.
    *
-   * **Required (not `?`-optional)** — promoted in lockstep with the host wiring
-   * (SDK v8 regenerates this surface; see `openAuthPartitionViewer` for the
-   * lockstep-shipping convention). Replaces the SDK runtime `getShell` shim so
-   * plugins never reach Electron `shell.openExternal` directly. A missing host
-   * wiring throws loudly rather than being silently optional-chained.
+   * **Required (not `?`-optional)** — plugins using this method set
+   * `requires.minAppVersion` to a supporting app release. Plugins never reach
+   * Electron `shell.openExternal` directly. Missing host wiring throws loudly
+   * rather than being silently optional-chained.
    */
   openExternalUrl(url: string): Promise<void>;
 
@@ -1753,8 +1742,7 @@ export interface PluginHostApi {
    * timeout — on-corp DNS resolves the private host, off-corp DNS returns
    * `ENOTFOUND`, and the async asymmetry is the signal.
    *
-   * Semantics (ported from the SDK's `detectViaPrivateDnsProbe`, replacing that
-   * runtime shim): a `dns.lookup` race against a `timeoutMs` deadline (default
+   * Semantics: a `dns.lookup` race against a `timeoutMs` deadline (default
    * 1500ms, host-clamped to sane bounds); fail-SAFE to `false` on timeout (a slow
    * user gate is worse than a false-negative); same-host in-flight dedup whose
    * lifetime is bound to the UNDERLYING lookup; NO result cache (corp↔off-corp
@@ -1769,9 +1757,9 @@ export interface PluginHostApi {
    * enforce real trust downstream (cookie/origin level) and never treat a `true`
    * here as authorization.
    *
-   * **Required (not `?`-optional)** — declared in lockstep with the host wiring
-   * (SDK v8 regen follows). A missing host wiring throws loudly instead of being
-   * silently optional-chained.
+   * **Required (not `?`-optional)** — plugins using this method set
+   * `requires.minAppVersion` to a supporting app release. Missing host wiring
+   * throws loudly instead of being silently optional-chained.
    */
   probePrivateHost(
     host: string,
@@ -1963,8 +1951,8 @@ export interface PluginHostApi {
 
 /**
  * §8 ApprovalChoice — mirrors `approval-gate.ts` ApprovalChoice.
- * Duplicated here so the plugin SDK surface does not need to import
- * from `permissions/approval-gate.ts` directly.
+ * Defined here so the vendored public contract does not import the Host-private
+ * `permissions/approval-gate.ts` module.
  */
 export type ApprovalChoice =
   | "allow-once"

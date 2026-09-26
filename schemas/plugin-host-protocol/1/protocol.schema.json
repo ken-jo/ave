@@ -2703,7 +2703,7 @@
         }
       },
       "ave/host/resolveApiKey": {
-        "description": "#893 Stage 2 — Host-managed LLM key resolver. Mirrors the SDK's `PluginHostApi.resolveApiKey` (optional, may be undefined on older host builds — plugins guard with `typeof hostApi.resolveApiKey === \"function\"`).",
+        "description": "Host-managed LLM key resolver. Optional on older app releases; plugins guard with `typeof hostApi.resolveApiKey === \"function\"` unless their `requires.minAppVersion` guarantees a supporting release.",
         "errors": {
           "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises none of its own.",
           "properties": {

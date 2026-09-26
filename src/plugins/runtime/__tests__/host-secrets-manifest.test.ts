@@ -34,7 +34,7 @@ describe("manifest hostSecrets.read[] validator (#893)", () => {
   });
 
   // Permissive envelope — the host-side cross-field check is what this suite
-  // exercises, NOT the SDK schema.
+  // exercises, rather than the host schema.
   const makeValidator = permissiveManifestValidatorFactory({
     namespaceProperties: {
       entry: { type: "string" },
@@ -74,7 +74,7 @@ describe("manifest hostSecrets.read[] validator (#893)", () => {
     ]);
   });
 
-  it("patches the SDK schema to accept marketplace provider preset host secret keys", async () => {
+  it("accepts marketplace provider preset host secret keys in the host schema", async () => {
     const validator = await buildManifestValidator();
     const valid = validator(agentPluginsDocument({
       id: "marketplace-provider-secret",
@@ -219,7 +219,7 @@ describe("manifest hostSecrets.read[] validator (#893)", () => {
       );
     });
 
-    // Leading dots are rejected at AJV pattern level (the SDK schema's
+    // Leading dots are rejected at AJV pattern level (the host schema's
     // id pattern requires a leading letter), so the host-side check never
     // sees them. We still want to verify the AJV path rejects.
     it("rejects ids with leading dots", async () => {

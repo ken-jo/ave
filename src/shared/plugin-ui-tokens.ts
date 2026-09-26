@@ -102,8 +102,7 @@ export type AveThemeBundleId = string;
 /**
  * The bundles compiled into the host, copied from the canonical list in
  * `theme-bundles.ts` (used by settings-store, plugins IPC and the renderer).
- * This re-export exists so that the Plugin SDK — which syncs this file via
- * `bun run sync:from-host` — can expose the list under the stable public name
+ * This re-export gives host consumers the stable name
  * `AVE_THEME_BUNDLE_IDS` without duplicating the array. Installed theme
  * packages add ids this list does not name.
  *
@@ -142,15 +141,15 @@ export interface AveHostThemeEvent {
 }
 
 /**
- * @deprecated v2 SDK consumers — use {@link AveHostThemeEvent} instead.
+ * @deprecated Legacy consumers should use {@link AveHostThemeEvent} instead.
  *
  * Legacy standalone payload type. Preserves the old contract exactly:
  * only `bundleId` (as `string`), `colorScheme`, `reducedMotion`, and `fonts`.
  * Does **not** extend `AveHostThemeEvent` — `shell` and `tokens` are NOT
- * part of this type, so SDK ≤ v4 consumers that pass
+ * part of this type, so older consumers that pass
  * `{ bundleId: "...", colorScheme: "dark" }` continue to compile without error.
  *
- * v2 SDK consumers: use {@link AveHostThemeEvent} directly.
+ * New consumers: use {@link AveHostThemeEvent} directly.
  * Migration: replace all `AveThemePayload` usages with `AveHostThemeEvent`.
  * These deprecated fields will be removed in a future cleanup PR.
  */

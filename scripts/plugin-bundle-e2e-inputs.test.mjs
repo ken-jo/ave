@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -248,7 +248,18 @@ test("rejects a contract path that is not a file", () => {
   rmSync(path);
   mkdirSync(path);
   f.orionApiSha = commitFixtureChange(f.orionApiRoot, "remove vendored file");
-  assert.throws(() => verifyPluginBundleE2EInputs(f), /must be a regular file/);
+  assert.throws(() => verifyPluginBundleE2EInputs(f), /must be a committed regular file/);
+});
+
+test("rejects a committed contract directory symlink", () => {
+  const f = fixture();
+  const contractPath = join(f.orionApiRoot, "contract");
+  const outsidePath = join(f.root, "contract-outside");
+  renameSync(contractPath, outsidePath);
+  symlinkSync(outsidePath, contractPath, "dir");
+  f.orionApiSha = commitFixtureChange(f.orionApiRoot, "replace contract tree with symlink");
+  assert.equal(git(f.orionApiRoot, "status", "--porcelain"), "");
+  assert.throws(() => verifyPluginBundleE2EInputs(f), /contract must be a committed directory/);
 });
 
 test("rejects a self-consistent copy that differs from the app tag", () => {
