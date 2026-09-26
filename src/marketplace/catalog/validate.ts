@@ -16,6 +16,7 @@ import manifestSchema from "../../../schemas/plugin-manifest.schema.json" with {
 import indexSchema from "../../../schemas/marketplace/index.schema.json" with { type: "json" };
 import packageSchema from "../../../schemas/marketplace/package.schema.json" with { type: "json" };
 import conditionalSchema from "../../../schemas/marketplace/revocations-by-app.schema.json" with { type: "json" };
+import type { SourceSnapshot } from "../sources/snapshot.js";
 import type { ConditionalRevocationsFile } from "./types.js";
 import revocationsSchema from "../../../schemas/marketplace/revocations.schema.json" with { type: "json" };
 import { RESERVED_ENV_NAMES, RESERVED_HEADERS } from "../../mcp/safe-names.js";
@@ -50,6 +51,7 @@ interface Validators {
   descriptor: ValidateFunction;
   revocations: ValidateFunction;
   conditionalRevocations: ValidateFunction;
+  snapshot: ValidateFunction;
 }
 
 let compiled: Validators | null = null;
@@ -75,6 +77,48 @@ function validators(): Validators {
     descriptor: get(PACKAGE_ID),
     revocations: get(REVOCATIONS_ID),
     conditionalRevocations: get(conditionalSchema.$id),
+    snapshot: ajv.compile({
+      type: "object", additionalProperties: false,
+      required: ["formatVersion", "sourceId", "commit", "fetchedAt", "marketplace", "packages", "revocations", "conditionalRevocations", "diagnostics"],
+      properties: {
+        formatVersion: { const: 2 },
+        sourceId: { $ref: PACKAGE_ID + "#/definitions/sourceId" },
+        commit: { $ref: PACKAGE_ID + "#/definitions/commit" },
+        fetchedAt: { type: "string", format: "date-time" },
+        marketplace: {
+          type: "object", additionalProperties: false, required: ["name", "displayName"],
+          properties: Object.fromEntries(["name", "displayName", "description", "owner"].map((key) =>
+            [key, { $ref: INDEX_ID + "#/definitions/indexRoot/properties/" + key }])),
+        },
+        packages: { type: "array", items: {
+          type: "object", additionalProperties: false, required: ["kind", "name", "path", "versions"],
+          properties: {
+            ...Object.fromEntries(Object.keys(indexSchema.definitions.indexPackage.properties).map((key) =>
+              [key, { $ref: INDEX_ID + "#/definitions/indexPackage/properties/" + key }])),
+            // Direct sources can install a package from the repository root.
+            path: { anyOf: [{ const: "" }, { $ref: PACKAGE_ID + "#/definitions/repoPath" }] },
+            versions: {
+              ...indexSchema.definitions.indexPackage.properties.versions,
+              items: {
+                ...indexSchema.definitions.indexVersion,
+                properties: {
+                  ...Object.fromEntries(Object.keys(indexSchema.definitions.indexVersion.properties).map((key) =>
+                    [key, { $ref: INDEX_ID + "#/definitions/indexVersion/properties/" + key }])),
+                  // An implicit tree install synthesized at the root has no artifact pins.
+                  artifact: { anyOf: [{ type: "object", maxProperties: 0 }, { $ref: PACKAGE_ID + "#/definitions/pluginArtifactPins" }] },
+                },
+              },
+            },
+          },
+        } },
+        revocations: { $ref: REVOCATIONS_ID + "#/properties/revocations" },
+        conditionalRevocations: { $ref: conditionalSchema.$id + "#/properties/revocations" },
+        diagnostics: { type: "array", items: {
+          type: "object", additionalProperties: false, required: ["subject", "message"],
+          properties: { subject: { type: "string" }, message: { type: "string" } },
+        } },
+      },
+    }),
   };
   return compiled;
 }
@@ -327,4 +371,18 @@ export function validateConditionalRevocationsText(text: string): Validation<Con
     }
   }
   return { ok: true, value: file };
+}
+
+/** A same-pin sync may reuse only a complete, current and readable cache. */
+export function validateCachedSnapshotText(text: string): Validation<SourceSnapshot> {
+  const parsed = parse(text);
+  if (!parsed.ok) return parsed;
+  const validate = validators().snapshot;
+  if (!validate(parsed.value)) return { ok: false, error: "snapshot: " + describeErrors(validate.errors) };
+  const snapshot = parsed.value as SourceSnapshot;
+  const plain = validateRevocationsText(JSON.stringify({ schemaVersion: 1, revocations: snapshot.revocations }));
+  if (!plain.ok) return plain;
+  const conditional = validateConditionalRevocationsText(JSON.stringify({ schemaVersion: 1, revocations: snapshot.conditionalRevocations }));
+  if (!conditional.ok) return conditional;
+  return { ok: true, value: snapshot };
 }

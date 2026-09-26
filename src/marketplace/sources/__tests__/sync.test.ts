@@ -265,6 +265,35 @@ describe("SourceSyncer", () => {
     expect(await syncer.readRevocations("acme", "0.12.0")).toEqual([entry]);
   });
 
+  it("repairs damaged snapshots at the same pin before accepting a no-op", async () => {
+    const { repo, name } = fixture();
+    const entry = { kind: "plugin", name: "retired-fixture", versions: "*", appVersions: "0.12.0", reason: "Replaced", at: AT,
+      action: "uninstall", successors: { plugins: [{ pluginId: "successor-fixture" }], hostKinds: [] } };
+    const commit = repo.commit({ "marketplace.json": index("acme", []), "policy/revocations-by-app.json": revocations([entry]) }, "conditional policy");
+    const { registry, syncer, changed } = await setup();
+    await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
+    await syncer.sync("acme");
+    const snapshot = (await syncer.readSnapshot("acme"))!;
+    const patches = [
+      { conditionalRevocations: {} }, { conditionalRevocations: undefined }, { revocations: {} },
+      { conditionalRevocations: [{ ...entry, versions: "invalid range" }] },
+      { conditionalRevocations: [{ ...entry, successors: null }] },
+      { packages: {} }, { packages: [{ kind: "skill", name: "alpha", path: "skills/alpha", versions: [{}] }] },
+      { marketplace: null }, { diagnostics: {} }, { sourceId: "other-source" }, { commit: OTHER_COMMIT },
+    ];
+    const damaged = ["{", "null", ...patches.map((patch) => JSON.stringify({ ...snapshot, ...patch }))];
+    for (const text of damaged) {
+      writeFileSync(join(root, "acme", "snapshots", commit + ".json"), text);
+      changed.length = 0;
+      expect(await syncer.sync("acme"), text).toEqual({ status: "ok", pinnedCommit: commit, changed: true });
+      expect(await syncer.readSnapshot("acme")).toEqual(snapshot);
+      expect(await syncer.readRevocations("acme", "0.12.0")).toEqual([entry]);
+      expect(await syncer.readRevocations("acme", "0.11.0")).toEqual([]);
+      expect(await syncer.sync("acme")).toEqual({ status: "ok", pinnedCommit: commit, changed: false });
+      expect(changed).toEqual(["acme"]);
+    }
+  });
+
   it("reports no change when the ref has not moved, and rebuilds a lost snapshot at the same pin", async () => {
     const { repo, name } = fixture();
     const commit = repo.commit({ "marketplace.json": index("acme", []) }, "empty");
@@ -550,6 +579,7 @@ describe("SourceSyncer", () => {
     await registry.add({ id: "bad-src", origin: "direct", url: server.url(bad.name), auth: { kind: "none" } });
 
     expect(await syncer.sync("good-src")).toMatchObject({ status: "ok" });
+    expect(await syncer.sync("good-src")).toMatchObject({ status: "ok", changed: false });
     expect((await syncer.readSnapshot("good-src"))!.packages).toMatchObject([{ kind: "plugin", name: "root-tool", path: "", versions: [{ artifact: {} }] }]);
     expectFailed(await syncer.sync("bad-src"), "PACKAGE_COMPAT_UNDECLARED");
   });

@@ -3,7 +3,7 @@
  *
  *   fetch the ref with --filter=blob:none (full commit history)
  *   candidate = fetched commit
- *   candidate == pin            → nothing to do if the snapshot format is current
+ *   candidate == pin            → nothing to do if the cached snapshot is current and valid
  *   pin not an ancestor         → official, managed: keep pin, SOURCE_HISTORY_REWRITTEN
  *                                 custom, direct:    keep pin, record pendingRewrite for review
  *   snapshot at candidate fails → keep pin, record the code
@@ -14,6 +14,7 @@
  * snapshot at the pin keeps being served (`readSnapshot`); nothing falls back
  * to another source.
  */
+import { validateCachedSnapshotText } from "../catalog/validate.js";
 import { effectiveRevocations } from "../catalog/effective-revocations.js";
 import { existsSync } from "node:fs";
 import { readdir, readFile, rm } from "node:fs/promises";
@@ -162,6 +163,18 @@ export class SourceSyncer {
     }
   }
 
+  private async hasReusableSnapshot(id: string, commit: string): Promise<boolean> {
+    let text: string;
+    try {
+      text = await readFile(this.snapshotPath(id, commit), "utf8");
+    } catch (error) {
+      if (isMissingPathError(error)) return false;
+      throw error;
+    }
+    const validated = validateCachedSnapshotText(text);
+    return validated.ok && validated.value.sourceId === id && validated.value.commit === commit;
+  }
+
   private async run(id: string, signal?: AbortSignal): Promise<SyncResult> {
     const source = this.source(id);
     // Written before the repository exists, so a state file that goes missing
@@ -180,7 +193,7 @@ export class SourceSyncer {
     const { candidate, remote } = fetched;
 
     if (candidate === pin) {
-      if ((await this.readSnapshot(id))?.formatVersion === 2) {
+      if (await this.hasReusableSnapshot(id, pin)) {
         await this.options.registry.updateState(id, (current) => {
           const { pendingRewrite: _cleared, ...rest } = current;
           return { ...rest, lastSync: { at: this.now(), result: "ok" } };
