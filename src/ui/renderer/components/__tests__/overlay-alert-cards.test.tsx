@@ -169,7 +169,9 @@ describe("alert cards in the overlay queue", () => {
     const close = screen.getByTestId("routine-card-dismiss");
     expect(titleRow?.contains(close)).toBe(true);
     expect(titleRow?.contains(provenance)).toBe(false);
-    expect(provenance.classList.contains("w-full")).toBe(true);
+    expect(provenance.classList.contains("contents")).toBe(true);
+    expect(provenance.parentElement?.classList.contains("flex-wrap")).toBe(true);
+    expect(screen.getByTestId("plugin-provenance-id").classList.contains("max-w-full")).toBe(true);
   });
 
   it("separates a host-looking display name from the canonical id", () => {

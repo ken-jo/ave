@@ -19,7 +19,7 @@
  * measurable is the cause: whether an occupant positions itself.
  */
 import "../../../../../test/renderer/setup.js";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { createRef } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
@@ -95,7 +95,47 @@ describe("FloatingRightLane", () => {
     expect(lane.classList.contains("bottom-4")).toBe(true);
     expect(lane.classList.contains("overflow-y-auto")).toBe(true);
     expect(lane.classList.contains("touch-pan-y")).toBe(true);
-    expect(card.classList.contains("shrink-0")).toBe(true);
+    expect(lane.classList.contains("[&>*]:shrink-0")).toBe(true);
+    expect(lane.contains(card)).toBe(true);
+  });
+
+  it("passes a wheel to the pane transcript only after card and lane scrolling are exhausted", () => {
+    render(
+      <div data-approval-scope>
+        <div className="ave-chat-scroll"><div data-radix-scroll-area-viewport="" data-testid="transcript" /></div>
+        <FloatingRightLane>
+          <section data-testid="approval-lane-card">
+            <div data-testid="card-scroll" style={{ overflowY: "auto" }}>
+              <button type="button">Approval action</button>
+            </div>
+          </section>
+        </FloatingRightLane>
+      </div>,
+    );
+    const lane = screen.getByTestId("floating-right-lane");
+    const cardScroll = screen.getByTestId("card-scroll");
+    const transcript = screen.getByTestId("transcript");
+    const button = screen.getByRole("button", { name: "Approval action" });
+    Object.defineProperties(transcript, { clientHeight: { value: 200 }, scrollHeight: { value: 2000 } });
+    Object.defineProperties(cardScroll, { clientHeight: { value: 100 }, scrollHeight: { value: 500 } });
+    Object.defineProperties(lane, { clientHeight: { value: 200 }, scrollHeight: { value: 400 } });
+    transcript.scrollTop = 1000;
+
+    fireEvent.wheel(button, { deltaY: 350 });
+    expect(transcript.scrollTop).toBe(1000);
+
+    cardScroll.scrollTop = 400;
+    fireEvent.wheel(button, { deltaY: 350 });
+    expect(transcript.scrollTop).toBe(1000);
+
+    lane.scrollTop = 200;
+    fireEvent.wheel(button, { deltaY: 350 });
+    expect(transcript.scrollTop).toBe(1350);
+
+    cardScroll.scrollTop = 0;
+    lane.scrollTop = 0;
+    fireEvent.wheel(button, { deltaY: -350 });
+    expect(transcript.scrollTop).toBe(1000);
   });
 
   it("leaves positioning to the lane — the occupant does not anchor itself", () => {

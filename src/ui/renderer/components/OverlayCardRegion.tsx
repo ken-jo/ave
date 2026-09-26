@@ -85,7 +85,7 @@ export function OverlayCardRegion({
   );
 
   // The region hangs in the tile's floating lane at the lane's own width.
-  const regionClassName = `pointer-events-none shrink-0 ${FLOATING_LANE_ITEM_WIDTH}`;
+  const regionClassName = `pointer-events-none ${FLOATING_LANE_ITEM_WIDTH}`;
 
   const [activeIndex, setActiveIndex] = useState(0);
   // Clamped rather than corrected in an effect: the slice can shrink between

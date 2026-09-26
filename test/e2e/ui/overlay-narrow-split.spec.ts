@@ -1,9 +1,10 @@
 import { expect, test } from "@playwright/test";
 import { OVERLAY_V1 } from "../../../src/shared/ipc-channels.js";
+import { CHANNELS } from "../../../src/contract/app-contract.js";
 import type { AlertCard } from "../../../src/shared/alerts-types.js";
 import { buildE2eBaseSettings, launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
 
-test("a long-id card keeps its actions reachable after a split narrows", async ({}, testInfo) => {
+test("a narrowed split keeps alert and approval actions reachable", async ({}, testInfo) => {
   const ctx = await launchSeededElectron({ historyRows: [], settings: buildE2eBaseSettings(true, "en") });
   try {
     const { app, page } = ctx;
@@ -104,9 +105,11 @@ test("a long-id card keeps its actions reachable after a split narrows", async (
     expect((await layout())!.laneScrollTop).toBeGreaterThan(0);
 
     await page.evaluate(() => {
-      const lane = document.querySelector<HTMLElement>('[data-testid="floating-right-lane"]');
+      const lane = document.querySelector<HTMLElement>('[data-testid="routine-card"]')
+        ?.closest<HTMLElement>('[data-testid="floating-right-lane"]');
       if (lane) lane.scrollTop = 0;
     });
+    expect((await layout())!.laneScrollTop).toBe(0);
     expect((await layout())!.closeHit).toBe(true);
     const cdp = await page.context().newCDPSession(page);
     try {
@@ -127,6 +130,86 @@ test("a long-id card keeps its actions reachable after a split narrows", async (
     } finally {
       await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false });
       await cdp.detach();
+    }
+
+    await page.evaluate(() => {
+      const lane = document.querySelector<HTMLElement>('[data-testid="routine-card"]')
+        ?.closest<HTMLElement>('[data-testid="floating-right-lane"]');
+      if (lane) lane.scrollTop = 0;
+    });
+    await app.evaluate(({ BrowserWindow }, payload) => {
+      const win = BrowserWindow.getAllWindows().find((window) => !window.isDestroyed() && window.isVisible());
+      if (!win) throw new Error("No visible window");
+      win.webContents.send(payload.channel, payload.request);
+    }, {
+      channel: CHANNELS.approval.request,
+      request: {
+        id: "approval:narrow-split",
+        category: "tool",
+        toolName: "read_file",
+        toolCategory: "read",
+        args: { path: "/tmp/layout-fixture.txt" },
+        reason: "Review fixture read",
+        createdAt: Date.now(),
+        requireExplicit: false,
+      },
+    });
+    const approval = page.getByTestId("approval-lane-card");
+    await expect(approval).toBeVisible();
+    const approvalLayout = () => page.evaluate(() => {
+      const approval = document.querySelector<HTMLElement>('[data-testid="approval-lane-card"]');
+      const lane = approval?.closest<HTMLElement>('[data-testid="floating-right-lane"]');
+      if (!approval || !lane) return null;
+      const hit = (element: HTMLElement) => {
+        const rect = element.getBoundingClientRect();
+        const under = document.elementFromPoint((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2);
+        return under === element || element.contains(under);
+      };
+      return {
+        shrink: getComputedStyle(approval).flexShrink,
+        scrollRange: approval.scrollHeight - approval.clientHeight,
+        scrollTop: approval.scrollTop,
+        laneScrollTop: lane.scrollTop,
+        buttons: ["open-permanent-deny-settings", "deny-button", "allow-always-button", "approve-button"]
+          .map((id) => {
+            const button = approval.querySelector<HTMLElement>(`[data-testid="${id}"]`);
+            return button ? hit(button) : false;
+          }),
+      };
+    });
+    const approvalBefore = await approvalLayout();
+    expect(approvalBefore).not.toBeNull();
+    expect(approvalBefore!.shrink).toBe("0");
+    expect(approvalBefore!.scrollRange).toBeGreaterThan(0);
+    await page.mouse.move(touchX, 180);
+    await page.mouse.wheel(0, approvalBefore!.scrollRange);
+    await expect.poll(async () => (await approvalLayout())?.buttons).toEqual([true, true, true, true]);
+    await page.screenshot({ path: testInfo.outputPath("approval-narrow-split-wheel.png") });
+
+    await page.evaluate(() => {
+      const approval = document.querySelector<HTMLElement>('[data-testid="approval-lane-card"]');
+      const lane = approval?.closest<HTMLElement>('[data-testid="floating-right-lane"]');
+      if (approval) approval.scrollTop = 0;
+      if (lane) lane.scrollTop = 0;
+    });
+    const approvalTouch = await page.context().newCDPSession(page);
+    try {
+      await approvalTouch.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+      for (let gesture = 0; gesture < 8; gesture++) {
+        await approvalTouch.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: touchX, y: 250 }] });
+        for (const y of [230, 210, 190, 170, 150]) {
+          await approvalTouch.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: touchX, y }] });
+          await page.waitForTimeout(30);
+        }
+        await approvalTouch.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+        await page.waitForTimeout(180);
+        if ((await approvalLayout())?.buttons.every(Boolean)) break;
+      }
+      await expect.poll(async () => (await approvalLayout())?.buttons).toEqual([true, true, true, true]);
+      await page.screenshot({ path: testInfo.outputPath("approval-narrow-split-touch.png") });
+    } finally {
+      await approvalTouch.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+      await approvalTouch.detach();
     }
   } finally {
     await teardownSeededElectron(ctx);

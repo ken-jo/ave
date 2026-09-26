@@ -210,11 +210,11 @@ export function OverlayCard({
             </Button>
           </div>
         </div>
-        <CardDescription className="mt-0.5 min-w-0 text-[11px]">
+        <CardDescription className="mt-0.5 flex min-w-0 flex-wrap items-baseline gap-x-1 text-[11px]">
           {kind === "plugin" && pluginId && (
-            <span className="block w-full min-w-0" data-testid="plugin-provenance">
+            <span className="contents" data-testid="plugin-provenance">
               <span
-                className="block break-all font-medium tracking-tight text-foreground"
+                className="max-w-full flex-none break-all font-medium tracking-tight text-foreground"
                 role="group"
                 aria-label={t("alerts.pluginIdOnly", { id: pluginId })}
                 title={t("alerts.pluginIdOnly", { id: pluginId })}
@@ -224,7 +224,7 @@ export function OverlayCard({
               </span>
               {displayNameLabel && (
                 <span
-                  className="block min-w-0 truncate text-[10px] opacity-60"
+                  className="min-w-14 max-w-full flex-1 truncate text-[10px] opacity-60"
                   role="group"
                   aria-label={displayNameLabel}
                   title={displayNameLabel}
@@ -235,38 +235,36 @@ export function OverlayCard({
               )}
             </span>
           )}
-          <span className="flex min-w-0 flex-wrap items-start gap-0.5">
-            {!(kind === "plugin" && pluginId) && (
-              <span className="min-w-0 truncate">
-                {running
-                  ? t("overlayCard.running")
-                  : kind === "host"
-                    ? t("alerts.builtInNotice")
-                    : kind === "app"
-                      ? t("overlayCard.appNotice")
-                      : t("overlayCard.routineDone")}
+          {!(kind === "plugin" && pluginId) && (
+            <span className="min-w-0 truncate">
+              {running
+                ? t("overlayCard.running")
+                : kind === "host"
+                  ? t("alerts.builtInNotice")
+                  : kind === "app"
+                    ? t("overlayCard.appNotice")
+                    : t("overlayCard.routineDone")}
+            </span>
+          )}
+          {!running && (
+            <>
+              {!(kind === "plugin" && pluginId) && <span className="shrink-0">·</span>}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="cursor-default whitespace-nowrap">{relTime}</span>
+                </TooltipTrigger>
+                <TooltipContent>{isoLabel}</TooltipContent>
+              </Tooltip>
+            </>
+          )}
+          {showNav && (
+            <>
+              <span>·</span>
+              <span data-testid="routine-card-indicator" className="text-action-view">
+                {queueIndex}/{queueTotal}
               </span>
-            )}
-            {!running && (
-              <>
-                {!(kind === "plugin" && pluginId) && <span className="shrink-0">·</span>}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span className="cursor-default whitespace-nowrap">{relTime}</span>
-                  </TooltipTrigger>
-                  <TooltipContent>{isoLabel}</TooltipContent>
-                </Tooltip>
-              </>
-            )}
-            {showNav && (
-              <>
-                <span>·</span>
-                <span data-testid="routine-card-indicator" className="text-action-view">
-                  {queueIndex}/{queueTotal}
-                </span>
-              </>
-            )}
-          </span>
+            </>
+          )}
         </CardDescription>
       </CardHeader>
       <CardContent className="min-h-0 overflow-hidden pt-0">
