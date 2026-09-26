@@ -98,6 +98,32 @@ describe("checkMarketplaceRepository", () => {
     expect(check(renamed)).toEqual([{ subject: "marketplace.json", message: expect.stringContaining('must be named "ave"') }]);
   });
 
+  it("refuses a plugin named host, the id the host's own alert sources use", () => {
+    const files = validFiles();
+    const plugin = index(files).packages[0]!;
+    plugin.name = "host";
+    plugin.path = "plugins/host";
+    files.delete("plugins/alpha/ave-package.json");
+    files.delete("plugins/alpha/source/package.json");
+    files.set("plugins/host/ave-package.json", descriptor("plugin", "host", { authority: authority(), artifact: artifact() }));
+    expect(check(files)).toEqual([
+      { subject: "plugin/host", message: "the plugin name host is reserved for the host" },
+      { subject: "plugins/host/ave-package.json", message: "no index entry points at this package" },
+    ]);
+  });
+
+  it("allows host as the name of a package that is not a plugin", () => {
+    const files = validFiles();
+    const skill = index(files).packages[3]!;
+    skill.name = "host";
+    skill.path = "skills/host";
+    files.delete("skills/review/ave-package.json");
+    files.delete("skills/review/SKILL.md");
+    files.set("skills/host/ave-package.json", descriptor("skill", "host", { entry: "SKILL.md" }));
+    files.set("skills/host/SKILL.md", "---\nname: host\ndescription: Review a change.\n---\nRead the diff first.\n");
+    expect(check(files)).toEqual([]);
+  });
+
   it("reports a descriptor the index copy disagrees with", () => {
     const files = validFiles();
     files.set("themes/harbor/ave-package.json", descriptor("theme", "harbor", { entry: "theme.json" }, { minAppVersion: "0.13.0" }));

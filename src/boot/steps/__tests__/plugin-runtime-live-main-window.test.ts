@@ -16,7 +16,7 @@ import { createBootHostFixture, createDesktopHostFixture } from "../../../__test
  * `createHostApiFactory({...})` call site is caught here.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -103,6 +103,7 @@ vi.mock("../../../plugins/registry.js", () => ({
 
 import { initPluginRuntime } from "../plugin-runtime.js";
 import { OVERLAY_V1 } from "../../../shared/ipc-channels.js";
+import { SuggestionLedger, suggestionLedger } from "../../../alerts/suggestion-ledger.js";
 
 interface FakeWindow {
   destroyed: boolean;
@@ -144,6 +145,8 @@ type CreateHostApi = (
 async function overlayHostApi(input: {
   bootWindow: FakeWindow | null;
   getMainWindow?: () => FakeWindow | null;
+  pluginId?: string;
+  manifest?: Record<string, unknown>;
 }): Promise<OverlayHostApi> {
   runtimeTestState.capturedRuntimeOptions = null;
   await initPluginRuntime({
@@ -186,9 +189,10 @@ async function overlayHostApi(input: {
     runtimeTestState.capturedRuntimeOptions as { createHostApi?: CreateHostApi } | null
   )?.createHostApi;
   expect(createHostApi).toBeDefined();
+  const pluginId = input.pluginId ?? "plugin-a";
   return createHostApi!(
-    "plugin-a",
-    { id: "plugin-a", capabilities: ["host:overlay"] },
+    pluginId,
+    input.manifest ?? { id: pluginId, capabilities: ["host:overlay"] },
     tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-overlay-win-"))),
     {
       registerDisposer: vi.fn(),
@@ -298,5 +302,105 @@ describe("hostApi.triggerConversation overlay send targets the live main window"
         ([channel]) => channel === OVERLAY_V1.show,
       ),
     ).toHaveLength(1);
+  });
+});
+
+describe("hostApi.triggerConversation for a plugin that declares alerts", () => {
+  const source = "overlay:fixturemail-routine";
+  const manifest = {
+    id: "fixturemail",
+    capabilities: ["host:overlay"],
+    alerts: {
+      reasoning: "Tells you when a mail needs an answer.",
+      kinds: [{
+        id: "reply",
+        label: { en: "Mail needing a reply" },
+        defaultEnabled: false,
+        visibility: "user-visible",
+        slots: { subject: { kind: "text", maxLength: 80 } },
+        summary: { en: "Reply to {subject}" },
+        prompt: { en: "Help me answer {subject}." },
+      }],
+      suggestions: [source],
+    },
+  };
+  let previousHome: string | undefined;
+
+  beforeEach(() => {
+    // The ledger lives in ~/.ave/alerts; this suite must never reach the real one.
+    previousHome = process.env.AVE_HOME;
+    process.env.AVE_HOME = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-alerts-home-")));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (previousHome === undefined) delete process.env.AVE_HOME;
+    else process.env.AVE_HOME = previousHome;
+  });
+
+  it("stages before a window closes while acceptance persistence is pending", async () => {
+    const window = makeWindow();
+    const pluginId = "flushrace";
+    const api = await overlayHostApi({ bootWindow: window, getMainWindow: () => window, pluginId, manifest });
+    const flush = suggestionLedger.flush.bind(suggestionLedger);
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const spy = vi.spyOn(suggestionLedger, "flush").mockImplementation(async () => {
+      window.destroyed = true;
+      await pending;
+      await flush();
+    });
+    const result = api.triggerConversation({ source, prompt: "Review this." });
+    await vi.waitFor(() => expect(spy).toHaveBeenCalledOnce());
+    const sentBeforeFlush = window.webContents.send.mock.calls.filter(([channel]) => channel === OVERLAY_V1.show);
+    release();
+    await expect(result).resolves.toMatchObject({ accepted: true });
+    expect(sentBeforeFlush).toHaveLength(1);
+    const reloaded = new SuggestionLedger(() => join(process.env.AVE_HOME!, "alerts"));
+    await reloaded.load();
+    expect(reloaded.isLimited(pluginId, source, Date.now())).toBe(true);
+  });
+
+  it("keeps an undelivered suggestion retryable in memory and on disk", async () => {
+    const window = makeWindow();
+    const pluginId = "sendrace";
+    const api = await overlayHostApi({ bootWindow: window, getMainWindow: () => window, pluginId, manifest });
+    window.webContents.send.mockImplementationOnce(() => {
+      window.destroyed = true;
+      throw new Error("Window closed during delivery");
+    });
+    const spec = { source, prompt: "Review this.", dedupeKey: "failed-delivery" };
+    await expect(api.triggerConversation(spec)).rejects.toThrow("Window closed during delivery");
+    await suggestionLedger.flush();
+    expect(suggestionLedger.isLimited(pluginId, source, Date.now())).toBe(false);
+    const reloaded = new SuggestionLedger(() => join(process.env.AVE_HOME!, "alerts"));
+    await reloaded.load();
+    expect(reloaded.isLimited(pluginId, source, Date.now())).toBe(false);
+    window.destroyed = false;
+    await expect(api.triggerConversation(spec)).resolves.toMatchObject({ accepted: true });
+    expect(window.webContents.send).toHaveBeenCalledTimes(2);
+  });
+
+  it("stages a declared source once, persists the acceptance, and refuses undeclared ones", async () => {
+    const window = makeWindow();
+    const api = await overlayHostApi({
+      bootWindow: window,
+      getMainWindow: () => window,
+      pluginId: "fixturemail",
+      manifest,
+    });
+
+    await expect(api.triggerConversation({ source: "overlay:fixturemail-other", prompt: "Review this." }))
+      .resolves.toMatchObject({ accepted: false, reason: "source_not_declared" });
+    await expect(api.triggerConversation({ source, prompt: "Set up a morning briefing?" }))
+      .resolves.toMatchObject({ accepted: true, source });
+    await expect(api.triggerConversation({ source, prompt: "Set up a morning briefing?" }))
+      .resolves.toMatchObject({ accepted: false, reason: "suggestion_limit" });
+
+    expect(window.webContents.send.mock.calls.filter(([channel]) => channel === OVERLAY_V1.show)).toHaveLength(1);
+    const ledger = JSON.parse(
+      readFileSync(join(process.env.AVE_HOME!, "alerts", "suggestions.json"), "utf8"),
+    ) as { accepted: Record<string, Record<string, number>> };
+    expect(Object.keys(ledger.accepted.fixturemail ?? {})).toEqual([source]);
   });
 });

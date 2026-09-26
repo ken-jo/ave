@@ -18,6 +18,7 @@ import packageSchema from "../../../schemas/marketplace/package.schema.json" wit
 import revocationsSchema from "../../../schemas/marketplace/revocations.schema.json" with { type: "json" };
 import { RESERVED_ENV_NAMES, RESERVED_HEADERS } from "../../mcp/safe-names.js";
 import { resolveAddFormats, resolveAjv } from "../../plugins/config-schema.js";
+import { ALERT_RESERVED_PACKAGE_ID } from "../../shared/alerts-types.js";
 import { compareSemver } from "../../shared/semver-compare.js";
 import { parseStrictJson } from "./strict-json.js";
 import type {
@@ -136,7 +137,20 @@ function mcpRules(payload: Record<string, unknown>): string | null {
 
 // ─── index ──────────────────────────────────────────────────────────────
 
+/**
+ * A plugin may not take the host's own package id: host alert kinds stage
+ * the overlay source `overlay:host--<kind>`, which a plugin named `host`
+ * would mint for its own kinds. Plugin load refuses the id as well.
+ */
+function reservedPluginName(kind: string, name: string): string | null {
+  return kind === "plugin" && name === ALERT_RESERVED_PACKAGE_ID
+    ? `the plugin name ${ALERT_RESERVED_PACKAGE_ID} is reserved for the host`
+    : null;
+}
+
 function indexPackageRules(entry: IndexPackage): string | null {
+  const reserved = reservedPluginName(entry.kind, entry.name);
+  if (reserved) return reserved;
   const versions = entry.versions;
   if (!versions) {
     return entry.latest ? "latest needs versions[]" : null;
@@ -250,6 +264,8 @@ function validateDescriptorValue(document: unknown, context: DescriptorContext, 
       error: `${file} declares ${value.kind}/${value.name} but the index lists ${context.expected.kind}/${context.expected.name}`,
     };
   }
+  const reserved = reservedPluginName(value.kind, value.name);
+  if (reserved) return { ok: false, error: `${file}: ${reserved}` };
   if (value.kind === "plugin") {
     const payload = value.payload as { authority: PluginAuthority; artifact: PluginArtifactPins };
     const rule = pluginRules(payload.authority, payload.artifact, value.minAppVersion, context.direct);

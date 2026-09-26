@@ -114,6 +114,14 @@ describe("validateDescriptorText", () => {
   describe("plugin rules", () => {
     const withPayload = (payload: Record<string, unknown>) => descriptor("plugin", { payload });
 
+    it("refuses the plugin name host in a direct source and in a repository", () => {
+      for (const direct of [true, false]) {
+        const result = checkDescriptor(descriptor("plugin", { name: "host" }), direct);
+        expect(result).toEqual({ ok: false, error: "ave-package.json: the plugin name host is reserved for the host" });
+      }
+      expect(checkDescriptor(descriptor("skill", { name: "host" })).ok).toBe(true);
+    });
+
     it("requires authority.requires.minAppVersion equal to minAppVersion", () => {
       const mismatch = authority();
       mismatch.requires.minAppVersion = "0.11.0";

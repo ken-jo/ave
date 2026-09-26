@@ -103,7 +103,11 @@ import {
   triggerDenyAuditThrottle,
   TriggerConversationRateLimiter,
 } from "./trigger-gate.js";
-import { getDeclaredWorkProposalKinds } from "../../../plugins/runtime/manifest-validation.js";
+import {
+  getDeclaredSuggestionSources,
+  getDeclaredWorkProposalKinds,
+} from "../../../plugins/runtime/manifest-validation.js";
+import { suggestionLedger } from "../../../alerts/suggestion-ledger.js";
 import type {
   WorkProposalChangedEventPayload,
   WorkProposalInput,
@@ -1594,8 +1598,35 @@ export function createHostApiFactory(
       // started). The user's confirm action inserts the prompt as a user
       // message into main chat via the imported_trigger mechanism.
       //
+      //
+      // A plugin that declares `alerts` may pass only its declared suggestion
+      // sources, each accepted once per 30 days. Stage synchronously before
+      // charging acceptance, then persist before resolving the call.
       triggerConversation: async (spec: ConversationTriggerSpec) => {
+        const declaredSuggestions = getDeclaredSuggestionSources(manifest, pluginId);
+        if (declaredSuggestions !== null) await suggestionLedger.load();
+        const eventId = randomUUID();
         const decision = evaluateTriggerSpec({
+          stageDelivery: (source) => {
+            const overlayTarget = requireMainWindow();
+
+            // Allow path — push to renderer OverlayContext via IPC instead of
+            // spawning a fresh ConversationLoop.
+            const overlayId = `plugin:${pluginId}:${eventId}`;
+            const derivedSummary = deriveOverlaySummaryForDisplay(spec);
+            const overlayItem = {
+              id: overlayId,
+              source: { kind: "plugin" as const, pluginId, eventId },
+              title: spec.title ?? spec.source.replace(/^overlay:/, ""),
+              summary: derivedSummary,
+              running: false,
+              primaryActionLabel: spec.primaryActionLabel ?? t("be_pluginRuntime.overlayPrimaryActionLabel"),
+              pendingPrompt: formatPluginPendingPrompt(spec.prompt, source),
+              createdAt: new Date().toISOString(),
+            };
+            overlayTarget.webContents.send(OVERLAY_V1.show, overlayItem);
+
+          },
           assertDeliveryAvailable: () => { requireMainWindow(); },
           spec,
           pluginId,
@@ -1604,29 +1635,15 @@ export function createHostApiFactory(
           rateLimiter: triggerConversationRateLimiter,
           denyAuditThrottle: triggerDenyAuditThrottle,
           auditLogger: bootAuditLogger,
+          suggestions: declaredSuggestions === null
+            ? undefined
+            : { declared: declaredSuggestions, ledger: suggestionLedger },
         });
 
         if (decision.kind === "deny") {
           return decision.result;
         }
-        const overlayTarget = requireMainWindow();
-
-        // Allow path — push to renderer OverlayContext via IPC instead of
-        // spawning a fresh ConversationLoop.
-        const eventId = randomUUID();
-        const overlayId = `plugin:${pluginId}:${eventId}`;
-        const derivedSummary = deriveOverlaySummaryForDisplay(spec);
-        const overlayItem = {
-          id: overlayId,
-          source: { kind: "plugin" as const, pluginId, eventId },
-          title: spec.title ?? spec.source.replace(/^overlay:/, ""),
-          summary: derivedSummary,
-          running: false,
-          primaryActionLabel: spec.primaryActionLabel ?? t("be_pluginRuntime.overlayPrimaryActionLabel"),
-          pendingPrompt: formatPluginPendingPrompt(spec.prompt, decision.source),
-          createdAt: new Date().toISOString(),
-        };
-        overlayTarget.webContents.send(OVERLAY_V1.show, overlayItem);
+        if (declaredSuggestions !== null) await suggestionLedger.flush();
 
         return { accepted: true, source: decision.source, eventId };
       },

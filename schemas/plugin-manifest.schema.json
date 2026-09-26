@@ -571,8 +571,132 @@
                 }
               }
             },
+            "alerts": {
+              "type": "object",
+              "description": "Alert declaration. Declaration IS authorization: a kind not declared here is not granted, and a block that is malformed in any entry grants nothing. A manifest that carries this block may pass only its declared `suggestions` to triggerConversation, each at most once per 30 days.",
+              "additionalProperties": false,
+              "required": [
+                "reasoning",
+                "kinds"
+              ],
+              "properties": {
+                "reasoning": {
+                  "type": "string",
+                  "description": "Why this plugin alerts at all, shown in Settings.",
+                  "minLength": 1,
+                  "maxLength": 400,
+                  "allOf": [
+                    {
+                      "not": {
+                        "pattern": "^\\s*$"
+                      }
+                    }
+                  ]
+                },
+                "kinds": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 12,
+                  "items": {
+                    "$ref": "#/definitions/alertKind"
+                  }
+                },
+                "suggestions": {
+                  "type": "array",
+                  "description": "The overlay sources triggerConversation accepts from this plugin.",
+                  "maxItems": 4,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "pattern": "^(?!.*--)overlay:[a-z][a-z0-9-]*$",
+                    "not": {
+                      "pattern": "[\\r\\n]"
+                    },
+                    "maxLength": 128
+                  }
+                }
+              }
+            },
+            "configInherits": {
+              "type": "array",
+              "description": "Config keys this plugin fills, once, from a retired predecessor that names it as a successor. A key the user already set is never overwritten. Two entries with the same `to` refuse the list.",
+              "minItems": 1,
+              "maxItems": 16,
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "pluginId",
+                      "to",
+                      "from"
+                    ],
+                    "properties": {
+                      "pluginId": {
+                        "type": "string",
+                        "pattern": "^(?!.*--)[a-z][a-z0-9-]*[a-z0-9]$",
+                        "minLength": 3,
+                        "maxLength": 64,
+                        "not": {
+                          "pattern": "[\\r\\n]"
+                        }
+                      },
+                      "to": {
+                        "type": "string",
+                        "description": "A top-level plugin config key.",
+                        "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+                        "not": {
+                          "pattern": "[\\r\\n]"
+                        }
+                      },
+                      "from": {
+                        "type": "string",
+                        "description": "A top-level plugin config key.",
+                        "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+                        "not": {
+                          "pattern": "[\\r\\n]"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "pluginId",
+                      "to",
+                      "value"
+                    ],
+                    "properties": {
+                      "pluginId": {
+                        "type": "string",
+                        "pattern": "^(?!.*--)[a-z][a-z0-9-]*[a-z0-9]$",
+                        "minLength": 3,
+                        "maxLength": 64,
+                        "not": {
+                          "pattern": "[\\r\\n]"
+                        }
+                      },
+                      "to": {
+                        "type": "string",
+                        "description": "A top-level plugin config key.",
+                        "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+                        "not": {
+                          "pattern": "[\\r\\n]"
+                        }
+                      },
+                      "value": {
+                        "description": "The constant the key is set to."
+                      }
+                    }
+                  }
+                ]
+              }
+            },
             "notificationEvents": {
               "type": "array",
+              "description": "Deprecated: declare the alert as a kind in `alerts` instead. The host warns at load when a manifest declares both; the field keeps working until the release that retires it.",
               "items": {
                 "type": "object",
                 "required": [
@@ -1434,6 +1558,409 @@
           "type": "object",
           "description": "Request the Geolocation API for this card's frame. Absent means denied.",
           "additionalProperties": false
+        }
+      }
+    },
+    "alertKind": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "defaultEnabled",
+        "visibility",
+        "summary",
+        "prompt"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Kind id, unique within the plugin. Namespaced by the host as <pluginId>:<kind>; never contains `--`, so the host-minted source overlay:<pluginId>--<kind> splits unambiguously.",
+          "pattern": "^(?!.*--)[a-z][a-z0-9-]{0,30}[a-z0-9]$",
+          "not": {
+            "pattern": "[\\r\\n]"
+          }
+        },
+        "label": {
+          "type": "object",
+          "description": "The kind's name in Settings and on the card; also the OS notification title.",
+          "minProperties": 1,
+          "maxProperties": 16,
+          "required": [
+            "en"
+          ],
+          "propertyNames": {
+            "pattern": "^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$",
+            "not": {
+              "pattern": "[\\r\\n]"
+            },
+            "maxLength": 35
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40,
+            "not": {
+              "pattern": "[\\r\\n]"
+            },
+            "allOf": [
+              {
+                "not": {
+                  "pattern": "^\\s*$"
+                }
+              }
+            ]
+          }
+        },
+        "description": {
+          "type": "object",
+          "description": "What the kind is for, shown in Settings.",
+          "minProperties": 1,
+          "maxProperties": 16,
+          "required": [
+            "en"
+          ],
+          "propertyNames": {
+            "pattern": "^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$",
+            "not": {
+              "pattern": "[\\r\\n]"
+            },
+            "maxLength": 35
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "allOf": [
+              {
+                "not": {
+                  "pattern": "^\\s*$"
+                }
+              }
+            ]
+          }
+        },
+        "defaultEnabled": {
+          "type": "boolean",
+          "description": "The kind's toggle on a fresh install. A kind that first arrives in an update resolves off whatever this says."
+        },
+        "visibility": {
+          "enum": [
+            "user-visible",
+            "summary-only",
+            "silent"
+          ]
+        },
+        "osNotification": {
+          "type": "object",
+          "description": "Absent = the kind never notifies the OS.",
+          "additionalProperties": false,
+          "required": [
+            "defaultEnabled",
+            "body"
+          ],
+          "properties": {
+            "defaultEnabled": {
+              "type": "boolean"
+            },
+            "bypassFocusGate": {
+              "type": "boolean"
+            },
+            "body": {
+              "type": "object",
+              "description": "Static notification text. It admits no slot, so no user content reaches the OS.",
+              "minProperties": 1,
+              "maxProperties": 16,
+              "required": [
+                "en"
+              ],
+              "propertyNames": {
+                "pattern": "^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$",
+                "not": {
+                  "pattern": "[\\r\\n]"
+                },
+                "maxLength": 35
+              },
+              "additionalProperties": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80,
+                "not": {
+                  "pattern": "[{}\\r\\n]"
+                },
+                "allOf": [
+                  {
+                    "not": {
+                      "pattern": "^\\s*$"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "actionLabel": {
+          "type": "object",
+          "description": "The card's button label.",
+          "minProperties": 1,
+          "maxProperties": 16,
+          "required": [
+            "en"
+          ],
+          "propertyNames": {
+            "pattern": "^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$",
+            "not": {
+              "pattern": "[\\r\\n]"
+            },
+            "maxLength": 35
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 24,
+            "not": {
+              "pattern": "[\\r\\n]"
+            },
+            "allOf": [
+              {
+                "not": {
+                  "pattern": "^\\s*$"
+                }
+              }
+            ]
+          }
+        },
+        "slots": {
+          "type": "object",
+          "maxProperties": 8,
+          "propertyNames": {
+            "pattern": "^[a-z][a-zA-Z0-9]{0,31}$",
+            "not": {
+              "pattern": "[\\r\\n]"
+            }
+          },
+          "additionalProperties": {
+            "$ref": "#/definitions/alertSlot"
+          }
+        },
+        "summary": {
+          "type": "object",
+          "description": "The card text. Its only dynamic parts are {slot} references to declared text or list slots; no < or >.",
+          "minProperties": 1,
+          "maxProperties": 16,
+          "required": [
+            "en"
+          ],
+          "propertyNames": {
+            "pattern": "^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$",
+            "not": {
+              "pattern": "[\\r\\n]"
+            },
+            "maxLength": 35
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "not": {
+              "pattern": "[<>\\r\\n]"
+            },
+            "allOf": [
+              {
+                "not": {
+                  "pattern": "^\\s*$"
+                }
+              }
+            ]
+          }
+        },
+        "prompt": {
+          "type": "object",
+          "description": "The prompt the user's accept stages, under the same template rules as summary.",
+          "minProperties": 1,
+          "maxProperties": 16,
+          "required": [
+            "en"
+          ],
+          "propertyNames": {
+            "pattern": "^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$",
+            "not": {
+              "pattern": "[\\r\\n]"
+            },
+            "maxLength": 35
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "not": {
+              "pattern": "[<>]"
+            },
+            "allOf": [
+              {
+                "not": {
+                  "pattern": "^\\s*$"
+                }
+              }
+            ]
+          }
+        },
+        "inherits": {
+          "type": "array",
+          "description": "The retired plugin whose saved choice this kind takes, at most one.",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "pluginId",
+              "sourceId",
+              "enabled"
+            ],
+            "properties": {
+              "pluginId": {
+                "type": "string",
+                "pattern": "^(?!.*--)[a-z][a-z0-9-]*[a-z0-9]$",
+                "minLength": 3,
+                "maxLength": 64,
+                "not": {
+                  "pattern": "[\\r\\n]"
+                }
+              },
+              "sourceId": {
+                "type": "string",
+                "description": "The marketplace source the predecessor is expected to come from, used only until the host knows the retirement entry.",
+                "pattern": "^[a-z0-9][a-z0-9-]{1,62}$",
+                "not": {
+                  "pattern": "[\\r\\n]"
+                }
+              },
+              "enabled": {
+                "$ref": "#/definitions/alertInheritRule"
+              },
+              "osNotification": {
+                "$ref": "#/definitions/alertInheritRule"
+              }
+            }
+          }
+        }
+      }
+    },
+    "alertSlot": {
+      "description": "A typed, bounded, untrusted value a raise supplies. `text` and `list` slots are named by `{slot}` in the templates; a `ref` slot is never named by a template — the host appends it to the prompt as a wrapped footer line.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "maxLength"
+          ],
+          "properties": {
+            "kind": {
+              "const": "text"
+            },
+            "maxLength": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200
+            },
+            "optional": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "maxItems",
+            "maxLength"
+          ],
+          "properties": {
+            "kind": {
+              "const": "list"
+            },
+            "maxItems": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5
+            },
+            "maxLength": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 120
+            },
+            "optional": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "ref"
+            },
+            "optional": {
+              "type": "boolean"
+            }
+          }
+        }
+      ]
+    },
+    "alertInheritRule": {
+      "type": "object",
+      "description": "How a successor kind reads one toggle out of a retired plugin's config. `enabled` is true unless one of `values` is in the list at `key` (listed: \"disabled\"), or false unless one is (listed: \"enabled\"); a `masterKey` boolean that is false turns the toggle off.",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "listed",
+        "values"
+      ],
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "A top-level plugin config key.",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+          "not": {
+            "pattern": "[\\r\\n]"
+          }
+        },
+        "listed": {
+          "enum": [
+            "enabled",
+            "disabled"
+          ]
+        },
+        "values": {
+          "type": "array",
+          "description": "Every spelling, current and legacy, under which the kind appears in the list. An empty list would read as \"on\" for every former user, so it is refused.",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "not": {
+              "pattern": "[\\r\\n]"
+            }
+          }
+        },
+        "masterKey": {
+          "type": "string",
+          "description": "A top-level plugin config key.",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+          "not": {
+            "pattern": "[\\r\\n]"
+          }
         }
       }
     }

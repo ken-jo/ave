@@ -26,10 +26,19 @@ import {
 } from "../public-contract.js";
 import { parseSettingsPath } from "../../shared/settings-tabs.js";
 import type {
+  AlertInheritRule,
+  AlertKindDeclaration,
+  AlertLocaleText,
+  ConfigInheritDeclaration,
   PluginManifest,
   PluginToolOperationPolicy,
   Tool,
 } from "../types.js";
+import { ALERT_RESERVED_PACKAGE_ID } from "../../shared/alerts-types.js";
+import { PLUGIN_CONFIG_RESERVED_KEYS, sanitizePluginConfig } from "../../shared/plugin-config.js";
+import { isPluginOverlaySource } from "../../shared/overlay-trigger-source.js";
+import { isPackageName } from "../../marketplace/catalog/types.js";
+import { SOURCE_ID_RE } from "../../marketplace/sources/official.js";
 import { toolVisibility } from "./tool-visibility.js";
 import { createLogger } from "../../lib/logger.js";
 import { normalizeAllowedHosts } from "../../main/host-allow-list.js";
@@ -94,6 +103,8 @@ export function formatUnknownErrorMessage(err: unknown): string {
  */
 const RETIRED_EXTENSION_FIELDS = ["installPolicy", "publisher"] as const;
 const retiredFieldsWarned = new Set<string>();
+/** Plugins already warned for declaring both `alerts` and `notificationEvents`. */
+const alertsDeprecationWarned = new Set<string>();
 
 function dropRetiredExtensionFields(doc: unknown, parsed: PluginManifest, pid: string, path: string): void {
   const extensions = typeof doc === "object" && doc !== null ? (doc as { extensions?: unknown }).extensions : undefined;
@@ -170,6 +181,397 @@ export function getDeclaredWorkProposalKinds(
     ids.push(kind.id);
   }
   return ids;
+}
+
+// ─── Alert declarations ─────────────────────────────────────────────────────
+//
+// The schema bounds every field; these readers re-check each bound (a plugin
+// built against a stale schema must not widen what it declares, the rule
+// `hostSecrets` follows) and add the cross-field rules the schema cannot
+// state: template references, unused slots, duplicate ids and `to` keys.
+
+const MAX_ALERT_KINDS = 12;
+const MAX_ALERT_SUGGESTIONS = 4;
+const MAX_ALERT_SLOTS = 8;
+const MAX_ALERT_LOCALES = 16;
+const MAX_CONFIG_INHERITS = 16;
+const MAX_INHERIT_VALUES = 32;
+const ALERT_REASONING_MAX = 400;
+const ALERT_KIND_ID_RE = /^(?!.*--)[a-z][a-z0-9-]{0,30}[a-z0-9]$/;
+const ALERT_SLOT_NAME_RE = /^[a-z][a-zA-Z0-9]{0,31}$/;
+const ALERT_LOCALE_RE = /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/;
+const ALERT_LOCALE_MAX = 35;
+const MANIFEST_CONFIG_KEY_RE = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+const TEXT_SLOT_MAX = 200;
+const LIST_SLOT_MAX_ITEMS = 5;
+const LIST_SLOT_ITEM_MAX = 120;
+const INHERIT_VALUE_MAX = 64;
+
+/** Thrown inside the readers below; never escapes them. */
+class DeclarationRefused extends Error {}
+
+function refuse(why: string): never {
+  throw new DeclarationRefused(why);
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Length in code points, the unit JSON Schema's `maxLength` counts. */
+function codePointLength(text: string): number {
+  let n = 0;
+  for (const _ of text) n += 1;
+  return n;
+}
+
+function checkKeys(obj: Record<string, unknown>, allowed: readonly string[], at: string): void {
+  for (const key of Object.keys(obj)) {
+    if (!allowed.includes(key)) refuse(`${at} has unknown field '${key}'`);
+  }
+}
+
+function checkLocaleText(
+  value: unknown,
+  at: string,
+  max: number,
+  rules: { template?: boolean; singleLine?: boolean } = {},
+): AlertLocaleText {
+  if (!isObject(value)) refuse(`${at} is not a locale map`);
+  const locales = Object.keys(value);
+  if (locales.length === 0 || locales.length > MAX_ALERT_LOCALES) {
+    refuse(`${at} has ${locales.length} locales; 1 to ${MAX_ALERT_LOCALES} are allowed`);
+  }
+  if (!Object.hasOwn(value, "en")) refuse(`${at} has no 'en' text`);
+  for (const locale of locales) {
+    if (locale.length > ALERT_LOCALE_MAX || !ALERT_LOCALE_RE.test(locale)) {
+      refuse(`${at} has an invalid locale '${locale}'`);
+    }
+    const text = value[locale];
+    if (typeof text !== "string" || text.trim().length === 0) refuse(`${at}.${locale} is empty`);
+    if (codePointLength(text) > max) refuse(`${at}.${locale} is longer than ${max} characters`);
+    if (rules.template && /[<>]/.test(text)) refuse(`${at}.${locale} contains '<' or '>'`);
+    if (rules.singleLine && /[\r\n]/.test(text)) refuse(`${at}.${locale} contains a line break`);
+  }
+  return value as AlertLocaleText;
+}
+
+function checkBoolean(value: unknown, at: string, optional = false): void {
+  if (optional && value === undefined) return;
+  if (typeof value !== "boolean") refuse(`${at} is not a boolean`);
+}
+
+function checkBoundedInteger(value: unknown, at: string, max: number): void {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > max) {
+    refuse(`${at} is not an integer from 1 to ${max}`);
+  }
+}
+
+/** A top-level plugin config key an inheritance may read or write. */
+function checkConfigKey(value: unknown, at: string): void {
+  if (
+    typeof value !== "string"
+    || !MANIFEST_CONFIG_KEY_RE.test(value)
+    || PLUGIN_CONFIG_RESERVED_KEYS.has(value)
+  ) {
+    refuse(`${at} is not a usable config key`);
+  }
+}
+
+/** Whether `value` survives the plugin-config sanitiser unchanged, so writing it later cannot fail or reshape it. */
+function isStoredConfigValue(value: unknown): boolean {
+  try {
+    return canonicalJSON(sanitizePluginConfig({ value })) === canonicalJSON({ value });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The `{slot}` references in one template, or a refusal when a brace is not
+ * part of a well-formed reference — a stray brace would otherwise render as
+ * literal text the plugin could shape into something that reads like a slot.
+ */
+function templateReferences(text: string, at: string): string[] {
+  const refs: string[] = [];
+  for (const match of text.matchAll(/\{([^{}]*)\}|[{}]/g)) {
+    if (match[1] === undefined) refuse(`${at} has an unmatched brace`);
+    refs.push(match[1]);
+  }
+  return refs;
+}
+
+function checkInheritRule(value: unknown, at: string): AlertInheritRule {
+  if (!isObject(value)) refuse(`${at} is not an object`);
+  checkKeys(value, ["key", "listed", "values", "masterKey"], at);
+  checkConfigKey(value.key, `${at}.key`);
+  if (value.listed !== "enabled" && value.listed !== "disabled") refuse(`${at}.listed is not "enabled" or "disabled"`);
+  const values = value.values;
+  if (!Array.isArray(values) || values.length === 0 || values.length > MAX_INHERIT_VALUES) {
+    refuse(`${at}.values is not a list of 1 to ${MAX_INHERIT_VALUES} spellings`);
+  }
+  for (const item of values) {
+    if (typeof item !== "string" || item.length === 0 || codePointLength(item) > INHERIT_VALUE_MAX || /[\r\n]/.test(item)) {
+      refuse(`${at}.values has an unusable spelling`);
+    }
+  }
+  if (new Set(values).size !== values.length) refuse(`${at}.values repeats a spelling`);
+  if (value.masterKey !== undefined) checkConfigKey(value.masterKey, `${at}.masterKey`);
+  return value as unknown as AlertInheritRule;
+}
+
+function checkAlertKind(kind: unknown, at: string): AlertKindDeclaration {
+  if (!isObject(kind)) refuse(`${at} is not an object`);
+  checkKeys(kind, [
+    "id", "label", "description", "defaultEnabled", "visibility", "osNotification",
+    "actionLabel", "slots", "summary", "prompt", "inherits",
+  ], at);
+  if (typeof kind.id !== "string" || !ALERT_KIND_ID_RE.test(kind.id)) {
+    refuse(`${at}.id '${String(kind.id)}' does not match ${ALERT_KIND_ID_RE.source}`);
+  }
+  const where = `kind '${kind.id}'`;
+  checkLocaleText(kind.label, `${where} label`, 40, { singleLine: true });
+  if (kind.description !== undefined) checkLocaleText(kind.description, `${where} description`, 200);
+  checkBoolean(kind.defaultEnabled, `${where} defaultEnabled`);
+  if (kind.visibility !== "user-visible" && kind.visibility !== "summary-only" && kind.visibility !== "silent") {
+    refuse(`${where} visibility is not user-visible, summary-only or silent`);
+  }
+  if (kind.osNotification !== undefined) {
+    const os = kind.osNotification;
+    if (!isObject(os)) refuse(`${where} osNotification is not an object`);
+    checkKeys(os, ["defaultEnabled", "bypassFocusGate", "body"], `${where} osNotification`);
+    checkBoolean(os.defaultEnabled, `${where} osNotification.defaultEnabled`);
+    checkBoolean(os.bypassFocusGate, `${where} osNotification.bypassFocusGate`, true);
+    const body = checkLocaleText(os.body, `${where} osNotification.body`, 80, { singleLine: true });
+    // Static text: a brace would read as a slot the host never fills.
+    if (Object.values(body).some((text) => /[{}]/.test(text))) {
+      refuse(`${where} osNotification.body names a slot; it must be static text`);
+    }
+  }
+  if (kind.actionLabel !== undefined) checkLocaleText(kind.actionLabel, `${where} actionLabel`, 24, { singleLine: true });
+
+  // Slot kind by name; only text and list slots may appear in a template.
+  const slotKinds = new Map<string, "text" | "list" | "ref">();
+  if (kind.slots !== undefined) {
+    if (!isObject(kind.slots)) refuse(`${where} slots is not an object`);
+    const names = Object.keys(kind.slots);
+    if (names.length > MAX_ALERT_SLOTS) refuse(`${where} declares more than ${MAX_ALERT_SLOTS} slots`);
+    for (const name of names) {
+      if (!ALERT_SLOT_NAME_RE.test(name)) refuse(`${where} slot name '${name}' does not match ${ALERT_SLOT_NAME_RE.source}`);
+      const slot = kind.slots[name];
+      const slotAt = `${where} slot '${name}'`;
+      if (!isObject(slot)) refuse(`${slotAt} is not an object`);
+      checkBoolean(slot.optional, `${slotAt} optional`, true);
+      if (slot.kind === "text") {
+        checkKeys(slot, ["kind", "maxLength", "optional"], slotAt);
+        checkBoundedInteger(slot.maxLength, `${slotAt} maxLength`, TEXT_SLOT_MAX);
+      } else if (slot.kind === "list") {
+        checkKeys(slot, ["kind", "maxItems", "maxLength", "optional"], slotAt);
+        checkBoundedInteger(slot.maxItems, `${slotAt} maxItems`, LIST_SLOT_MAX_ITEMS);
+        checkBoundedInteger(slot.maxLength, `${slotAt} maxLength`, LIST_SLOT_ITEM_MAX);
+      } else if (slot.kind === "ref") {
+        checkKeys(slot, ["kind", "optional"], slotAt);
+      } else {
+        refuse(`${slotAt} kind is not text, list or ref`);
+      }
+      slotKinds.set(name, slot.kind);
+    }
+  }
+
+  const summary = checkLocaleText(kind.summary, `${where} summary`, 200, { template: true, singleLine: true });
+  const prompt = checkLocaleText(kind.prompt, `${where} prompt`, 1000, { template: true });
+  const usedInEnglish = new Set<string>();
+  for (const [field, template] of [["summary", summary], ["prompt", prompt]] as const) {
+    for (const [locale, text] of Object.entries(template)) {
+      for (const ref of templateReferences(text, `${where} ${field}.${locale}`)) {
+        const slotKind = slotKinds.get(ref);
+        if (slotKind === undefined) refuse(`${where} ${field}.${locale} names undeclared slot '{${ref}}'`);
+        // A ref reaches the model only as the host's wrapped footer line.
+        if (slotKind === "ref") refuse(`${where} ${field}.${locale} names ref slot '{${ref}}'; ref slots are never templated`);
+        if (locale === "en") usedInEnglish.add(ref);
+      }
+    }
+  }
+  for (const [name, slotKind] of slotKinds) {
+    if (slotKind !== "ref" && !usedInEnglish.has(name)) {
+      refuse(`${where} declares slot '${name}' that neither English template uses`);
+    }
+  }
+
+  if (kind.inherits !== undefined) {
+    if (!Array.isArray(kind.inherits) || kind.inherits.length !== 1) {
+      refuse(`${where} inherits must name exactly one predecessor`);
+    }
+    const entry: unknown = kind.inherits[0];
+    const entryAt = `${where} inherits[0]`;
+    if (!isObject(entry)) refuse(`${entryAt} is not an object`);
+    checkKeys(entry, ["pluginId", "sourceId", "enabled", "osNotification"], entryAt);
+    if (!isPackageName(entry.pluginId)) refuse(`${entryAt}.pluginId is not a plugin id`);
+    if (typeof entry.sourceId !== "string" || !SOURCE_ID_RE.test(entry.sourceId)) {
+      refuse(`${entryAt}.sourceId is not a source id`);
+    }
+    checkInheritRule(entry.enabled, `${entryAt}.enabled`);
+    if (entry.osNotification !== undefined) {
+      if (kind.osNotification === undefined) {
+        refuse(`${entryAt}.osNotification maps a toggle the kind does not declare`);
+      }
+      checkInheritRule(entry.osNotification, `${entryAt}.osNotification`);
+    }
+  }
+  return kind as unknown as AlertKindDeclaration;
+}
+
+interface DeclaredAlerts {
+  readonly kinds: readonly AlertKindDeclaration[];
+  readonly suggestions: readonly string[];
+}
+
+function checkAlertsBlock(block: unknown): DeclaredAlerts {
+  if (!isObject(block)) refuse("not an object");
+  checkKeys(block, ["reasoning", "kinds", "suggestions"], "the block");
+  if (
+    typeof block.reasoning !== "string"
+    || block.reasoning.trim().length === 0
+    || codePointLength(block.reasoning) > ALERT_REASONING_MAX
+  ) {
+    refuse(`reasoning is not a string of 1 to ${ALERT_REASONING_MAX} characters`);
+  }
+  if (!Array.isArray(block.kinds) || block.kinds.length === 0 || block.kinds.length > MAX_ALERT_KINDS) {
+    refuse(`kinds is not a list of 1 to ${MAX_ALERT_KINDS} kinds`);
+  }
+  const ids = new Set<string>();
+  const kinds = block.kinds.map((kind, i) => {
+    const checked = checkAlertKind(kind, `kinds[${i}]`);
+    if (ids.has(checked.id)) refuse(`duplicate kind id '${checked.id}'`);
+    ids.add(checked.id);
+    return checked;
+  });
+  let suggestions: string[] = [];
+  if (block.suggestions !== undefined) {
+    if (!Array.isArray(block.suggestions) || block.suggestions.length > MAX_ALERT_SUGGESTIONS) {
+      refuse(`suggestions is not a list of at most ${MAX_ALERT_SUGGESTIONS} sources`);
+    }
+    for (const source of block.suggestions) {
+      if (typeof source !== "string" || !isPluginOverlaySource(source)) {
+        refuse(`suggestion '${String(source)}' is not an overlay source a plugin may use`);
+      }
+    }
+    if (new Set(block.suggestions).size !== block.suggestions.length) refuse("suggestions repeats a source");
+    suggestions = block.suggestions as string[];
+  }
+  // A copy, so what was checked is what is granted even if the manifest
+  // object is edited after load.
+  return structuredClone({ kinds, suggestions });
+}
+
+/**
+ * Read results by block object: a refused block warns once, and the gates
+ * that consult it on every call do not re-validate it.
+ */
+const declaredAlertsByBlock = new WeakMap<object, DeclaredAlerts | null>();
+
+function readDeclaredAlerts(manifest: Pick<PluginManifest, "alerts">, pluginId: string | undefined): DeclaredAlerts | null {
+  const block: unknown = manifest.alerts;
+  if (block === undefined) return null;
+  const cacheable = typeof block === "object" && block !== null;
+  if (cacheable) {
+    const cached = declaredAlertsByBlock.get(block);
+    if (cached !== undefined) return cached;
+  }
+  let result: DeclaredAlerts | null;
+  try {
+    result = checkAlertsBlock(block);
+  } catch (err) {
+    if (!(err instanceof DeclarationRefused)) throw err;
+    log.warn(
+      `Plugin manifest '${pluginId ?? "?"}': alerts declaration rejected (${err.message}) — the plugin may raise no alerts and trigger no overlay suggestion`,
+    );
+    result = null;
+  }
+  if (cacheable) declaredAlertsByBlock.set(block, result);
+  return result;
+}
+
+/**
+ * The alert kinds a plugin is authorized to raise, read off its installed
+ * manifest. As {@link getDeclaredWorkProposalKinds}: the declaration is the
+ * grant, and a block malformed in any entry grants nothing.
+ */
+export function getDeclaredAlertKinds(
+  manifest: Pick<PluginManifest, "alerts">,
+  pluginId?: string,
+): readonly AlertKindDeclaration[] {
+  return readDeclaredAlerts(manifest, pluginId)?.kinds ?? [];
+}
+
+/**
+ * The overlay sources `triggerConversation` accepts from this plugin, or
+ * `null` when its manifest has no `alerts` block and the call is not scoped.
+ *
+ * FAIL-CLOSED: a manifest that carries the block counts as declared even
+ * when the block is refused, and then declares no source at all, so a
+ * deliberately broken block cannot lift the limit.
+ */
+export function getDeclaredSuggestionSources(
+  manifest: Pick<PluginManifest, "alerts">,
+  pluginId?: string,
+): readonly string[] | null {
+  if (manifest.alerts === undefined) return null;
+  return readDeclaredAlerts(manifest, pluginId)?.suggestions ?? [];
+}
+
+const configInheritsByList = new WeakMap<object, readonly ConfigInheritDeclaration[] | null>();
+
+function checkConfigInherits(list: unknown): readonly ConfigInheritDeclaration[] {
+  if (!Array.isArray(list) || list.length === 0 || list.length > MAX_CONFIG_INHERITS) {
+    refuse(`not a list of 1 to ${MAX_CONFIG_INHERITS} entries`);
+  }
+  const targets = new Set<string>();
+  list.forEach((entry: unknown, i) => {
+    const at = `[${i}]`;
+    if (!isObject(entry)) refuse(`${at} is not an object`);
+    const hasFrom = Object.hasOwn(entry, "from");
+    const hasValue = Object.hasOwn(entry, "value");
+    if (hasFrom === hasValue) refuse(`${at} must have exactly one of 'from' and 'value'`);
+    checkKeys(entry, ["pluginId", "to", hasFrom ? "from" : "value"], at);
+    if (!isPackageName(entry.pluginId)) refuse(`${at}.pluginId is not a plugin id`);
+    checkConfigKey(entry.to, `${at}.to`);
+    if (hasFrom) checkConfigKey(entry.from, `${at}.from`);
+    else if (!isStoredConfigValue(entry.value)) refuse(`${at}.value is not a value a plugin config can hold`);
+    if (targets.has(entry.to as string)) refuse(`two entries fill '${String(entry.to)}'`);
+    targets.add(entry.to as string);
+  });
+  return structuredClone(list) as ConfigInheritDeclaration[];
+}
+
+/**
+ * The plugin's `configInherits` entries: `[]` when it declares none, `null`
+ * when the list is refused. A refused list applies nothing, so it can never
+ * count as a completed migration either.
+ */
+export function getDeclaredConfigInherits(
+  manifest: Pick<PluginManifest, "configInherits">,
+  pluginId?: string,
+): readonly ConfigInheritDeclaration[] | null {
+  const list: unknown = manifest.configInherits;
+  if (list === undefined) return [];
+  const cacheable = typeof list === "object" && list !== null;
+  if (cacheable) {
+    const cached = configInheritsByList.get(list);
+    if (cached !== undefined) return cached;
+  }
+  let result: readonly ConfigInheritDeclaration[] | null;
+  try {
+    result = checkConfigInherits(list);
+  } catch (err) {
+    if (!(err instanceof DeclarationRefused)) throw err;
+    log.warn(
+      `Plugin manifest '${pluginId ?? "?"}': configInherits declaration rejected (${err.message}) — no config is inherited`,
+    );
+    result = null;
+  }
+  if (cacheable) configInheritsByList.set(list, result);
+  return result;
 }
 
 /**
@@ -964,6 +1366,31 @@ export async function parsePluginJson(
     }
   }
 
+  // The package id `host` is the host's own: host alert kinds stage the
+  // source `overlay:host--<kind>`, which a plugin named `host` would mint for
+  // its own kinds. The marketplace validators refuse the name too; this
+  // covers every other way a manifest reaches the loader.
+  if (parsed.id === ALERT_RESERVED_PACKAGE_ID) {
+    fail(
+      "id",
+      `value '${ALERT_RESERVED_PACKAGE_ID}' is reserved for the host`,
+      `"name": "meeting-recorder"`,
+    );
+  }
+
+  // Alert and config-inheritance declarations are read here once so a refused
+  // block is reported when the plugin loads, not first at a raise. A refusal
+  // does not fail the load: the block grants nothing, as `workProposals`.
+  getDeclaredAlertKinds(parsed, pid);
+  getDeclaredConfigInherits(parsed, pid);
+  const notifEvents = Array.isArray(parsed.notificationEvents) ? parsed.notificationEvents : [];
+  if (parsed.alerts !== undefined && notifEvents.length > 0 && !alertsDeprecationWarned.has(pid)) {
+    alertsDeprecationWarned.add(pid);
+    log.warn(
+      `Plugin manifest '${pid}': declares both alerts and the deprecated notificationEvents — move each notification to an alert kind; notificationEvents keeps working until the release that retires it`,
+    );
+  }
+
   // notificationEvents[i].event must resolve to an event the plugin actually
   // knows about: one it SUBSCRIBES to (eventSubscriptions → received via
   // hostApi.onEvent) OR one it EMITS itself (emittedEvents → the plugin is the
@@ -979,7 +1406,6 @@ export async function parsePluginJson(
     ),
     ...getDeclaredEmittedEvents(parsed as PluginManifest),
   ]);
-  const notifEvents = Array.isArray(parsed.notificationEvents) ? parsed.notificationEvents : [];
   for (let i = 0; i < notifEvents.length; i += 1) {
     const e = notifEvents[i]?.event;
     if (typeof e === "string" && !knownTypes.has(e)) {
