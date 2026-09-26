@@ -6,6 +6,14 @@ import {
 import { t } from "../../../i18n/runtime.js";
 
 describe("formatIpcError (SOT — #830)", () => {
+  it.each([
+    ["invalid-arguments", "formatIpcError.invalidInput"],
+    ["no-alerts-service", "formatIpcError.notificationUnavailable"],
+  ])("localizes the alert IPC error %s", (code, messageKey) => {
+    expect(formatIpcError(code, undefined)).toBe(t(messageKey));
+    expect(formatIpcError(code, undefined)).not.toContain(code);
+  });
+
   it("resolves a known common code from the default map", () => {
     // The map now holds translation keys; formatIpcError resolves them via t().
     expect(formatIpcError("invalid-key", undefined)).toBe(

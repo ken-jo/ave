@@ -437,11 +437,23 @@ export function createHostApiFactory(
       hostEffects?.registerDisposer(disposeOnce);
       return disposeOnce;
     };
-    // Every start registers the plugin's declared alert kinds — install,
-    // update and load alike — so the user's choices exist from its first run.
-    getAlertsService()?.register(pluginId, manifest).catch((err: unknown) => {
-      log.warn(`[plugin:${pluginId}] alert kind registration failed: ${errorMessage(err)}`);
-    });
+    // Candidate grants become effective only with their generation. A failed
+    // candidate cannot replace the incumbent's kinds or alter its settings.
+    const alertRegistration = getAlertsService()?.prepareRegistration(pluginId, manifest);
+    if (alertRegistration) {
+      const publish = () => {
+        void alertRegistration.publish().catch((err: unknown) => {
+          log.warn(`[plugin:${pluginId}] alert kind registration failed: ${errorMessage(err)}`);
+        });
+      };
+      registerOwnedDisposer(alertRegistration.unpublish);
+      if (hostEffects) {
+        hostEffects.stagePublish(publish);
+        hostEffects.onSupersede(alertRegistration.unpublish);
+      } else if (hostIncarnation.isActive()) {
+        publish();
+      }
+    }
     /** The alerts service, or a loud failure: plugins start after it is built. */
     const requireAlertsService = (member: string): AlertsService => {
       const service = getAlertsService();

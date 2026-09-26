@@ -150,10 +150,29 @@ export class AlertsService {
    * entries whose declared visibility went up.
    */
   register(pluginId: string, manifest: Pick<PluginManifest, "alerts">): Promise<void> {
+    return this.prepareRegistration(pluginId, manifest).publish();
+  }
+
+  /** Keep candidate grants and settings private until its generation is published. */
+  prepareRegistration(pluginId: string, manifest: Pick<PluginManifest, "alerts">): {
+    publish(): Promise<void>;
+    unpublish(): void;
+  } {
     const kinds = getDeclaredAlertKinds(manifest, pluginId);
-    const registration = this.loaded().then(() => this.resolve(pluginId, kinds));
-    this.registrations.set(pluginId, registration);
-    return registration.then(() => undefined);
+    const loaded = this.loaded();
+    let registration: Promise<Registration> | undefined;
+    return {
+      publish: () => {
+        registration ??= loaded.then(() => this.resolve(pluginId, kinds));
+        this.registrations.set(pluginId, registration);
+        return registration.then(() => undefined);
+      },
+      unpublish: () => {
+        if (registration && this.registrations.get(pluginId) === registration) {
+          this.registrations.delete(pluginId);
+        }
+      },
+    };
   }
 
   private async resolve(pluginId: string, kinds: readonly AlertKindDeclaration[]): Promise<Registration> {
@@ -202,7 +221,12 @@ export class AlertsService {
     const alertId = alertIdFor(this.requireSecret(), pluginId, kind.id, input.key);
     const rendered = renderAlert(kind, slots.values, this.deps.locale());
 
-    const open = this.store.getOpen(alertId);
+    let open = this.store.getOpen(alertId);
+    if (open && open.expiresAt <= now) {
+      this.store.remove(alertId);
+      this.finish(open, "expired");
+      open = undefined;
+    }
     if (open) {
       if (!this.store.refresh(alertId, now, { expiresAt: now + ttlMs, priority })) {
         this.auditSuppressed(pluginId, kind.id, "rate_limited");
@@ -338,7 +362,12 @@ export class AlertsService {
       createdAt: new Date(now).toISOString(),
     };
     this.cards.set(alertId, item);
-    this.deps.overlay.show(item);
+    try {
+      this.deps.overlay.show(item);
+    } catch (err) {
+      // The accepted card remains queued for the next window snapshot.
+      log.warn(`alert card delivery failed: ${errorMessage(err)}`);
+    }
   }
 
   /**
@@ -381,7 +410,13 @@ export class AlertsService {
 
   /** An open alert left without the user: its card goes and the bus hears why. */
   private finish(open: OpenAlert, reason: Exclude<AlertWithdrawReason, AlertCardClosedReason>): void {
-    if (this.cards.delete(open.alertId)) this.deps.overlay.dismiss(cardId(open.alertId));
+    if (this.cards.delete(open.alertId)) {
+      try {
+        this.deps.overlay.dismiss(cardId(open.alertId));
+      } catch (err) {
+        log.warn(`alert card dismissal failed: ${errorMessage(err)}`);
+      }
+    }
     this.announceWithdrawn(open, reason);
   }
 

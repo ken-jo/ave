@@ -264,6 +264,29 @@ describe("predecessor and toggle", () => {
 });
 
 describe("an accepted alert", () => {
+  it("completes queued acceptance when the current window send fails once", async () => {
+    const h = await registered();
+    vi.spyOn(h.shown, "push").mockImplementationOnce(() => { throw new Error("window destroyed"); });
+    const result = await h.service.raise("fixturemail", reply());
+    expect(result).toMatchObject({ status: "raised", delivered: { card: true, osNotification: true } });
+    const alertId = (result as { alertId: string }).alertId;
+    expect(h.shown).toEqual([]);
+    expect(h.service.openCards()).toHaveLength(1);
+    expect(h.service.openCards()[0]?.source.alertId).toBe(alertId);
+    expect(h.fired).toHaveLength(1);
+    expect(h.events).toEqual([expect.objectContaining({ type: "alert.raised", payload: expect.objectContaining({ alertId }) })]);
+    expect(h.audits.at(-1)?.input).toContain(`alert.raised kind=reply alertId=${alertId}`);
+    await h.service.flush();
+    expect(JSON.parse(await readFile(join(dir, "open.json"), "utf8")).open).toEqual([
+      expect.objectContaining({ alertId }),
+    ]);
+    expect(await h.service.raise("fixturemail", reply())).toEqual({ status: "refreshed", alertId });
+    expect(h.shown).toHaveLength(1);
+    expect(h.events).toHaveLength(1);
+    expect(h.fired).toHaveLength(1);
+    expect(await h.service.raise("fixturemail", reply("mail-2"))).toEqual({ status: "cooldown" });
+  });
+
   it("stages a card rendered by the host, then audits and announces it without the key or slots", async () => {
     const h = await registered();
     const result = await h.service.raise("fixturemail", reply("secret-subject-key", { priority: "high" }));
@@ -323,6 +346,37 @@ describe("an accepted alert", () => {
 });
 
 describe("open and closed identities", () => {
+  it.each([MINUTE, MINUTE + 1])("expires the identity at +%i ms before refreshing, without waiting for the sweep", async (elapsed) => {
+    const h = await registered();
+    const first = await h.service.raise("fixturemail", reply("mail-1", { ttlMs: MINUTE }));
+    expect(first.status).toBe("raised");
+    const { alertId } = first as { alertId: string };
+    h.clock.now += elapsed;
+    expect(await h.service.raise("fixturemail", reply())).toEqual({ status: "cooldown" });
+    expect(h.service.openCards()).toEqual([]);
+    expect(h.dismissed).toEqual([`alert:${alertId}`]);
+    expect(h.events.at(-1)).toEqual({
+      type: "alert.withdrawn",
+      payload: { pluginId: "fixturemail", kind: "reply", alertId, reason: "expired" },
+    });
+    await h.service.flush();
+    expect(JSON.parse(await readFile(join(dir, "open.json"), "utf8")).open).toEqual([]);
+    h.service.sweep();
+    expect(h.events).toHaveLength(2);
+    h.clock.now += 5 * MINUTE;
+    expect((await h.service.raise("fixturemail", reply())).status).toBe("raised");
+  });
+
+  it("completes expiry and normal gating when the current window cannot dismiss the expired card", async () => {
+    const h = await registered();
+    await h.service.raise("fixturemail", reply("mail-1", { ttlMs: MINUTE }));
+    vi.spyOn(h.dismissed, "push").mockImplementationOnce(() => { throw new Error("window destroyed"); });
+    h.clock.now += MINUTE + 1;
+    expect(await h.service.raise("fixturemail", reply())).toEqual({ status: "cooldown" });
+    expect(h.service.openCards()).toEqual([]);
+    expect(h.events.at(-1)?.payload.reason).toBe("expired");
+  });
+
   it("refreshes an open identity in place: no cue, no cooldown charge, a bounded budget", async () => {
     const h = await registered();
     const first = (await h.service.raise("fixturemail", reply())) as { alertId: string };
@@ -529,6 +583,20 @@ describe("visibility and cues", () => {
 });
 
 describe("withdrawal and uninstall", () => {
+  it("leaves incumbent settings untouched while a candidate is prepared and discarded", async () => {
+    const h = await registered();
+    const before = structuredClone(h.settings());
+    const candidate = h.service.prepareRegistration("fixturemail", manifest([
+      { ...KINDS[2], visibility: "user-visible" },
+      { ...KINDS[0], id: "replacement" },
+    ]));
+    expect((await h.service.raise("fixturemail", reply())).status).toBe("raised");
+    expect(h.settings()).toEqual(before);
+    candidate.unpublish();
+    expect((await h.service.raise("fixturemail", reply())).status).toBe("refreshed");
+    expect(h.settings()).toEqual(before);
+  });
+
   it("withdraws only the caller's own alert, and a withdrawn identity can open again", async () => {
     const h = await registered();
     await h.service.register("otherfixture", manifest());

@@ -80,6 +80,22 @@ afterEach(async () => {
 });
 
 describe("setupAlerts", () => {
+  it("keeps a queued acceptance when the live window send throws once", async () => {
+    const { ctx, send } = context();
+    disposers.push(await setupAlerts(ctx));
+    send.mockImplementationOnce(() => { throw new Error("window destroyed"); });
+    const result = await raiseReply(ctx);
+    expect(result).toMatchObject({ status: "raised", delivered: { card: true } });
+    const { alertId } = result as { alertId: string };
+    expect(ctx.alertsService.openCards()).toEqual([
+      expect.objectContaining({ source: expect.objectContaining({ alertId }) }),
+    ]);
+    expect(await ctx.alertsService.raise("fixturemail", { kind: "reply", key: "mail-1" })).toEqual({ status: "refreshed", alertId });
+    expect(send).toHaveBeenLastCalledWith(OVERLAY_V1.show, expect.objectContaining({ source: expect.objectContaining({ alertId }) }));
+    expect(await ctx.alertsService.raise("fixturemail", { kind: "reply", key: "mail-2" })).toEqual({ status: "cooldown" });
+    await ctx.alertsService.flush();
+  });
+
   it("ignores an older installed-package read after a newer reconciliation finishes", async () => {
     const { ctx } = context();
     disposers.push(await setupAlerts(ctx));

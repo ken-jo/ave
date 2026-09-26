@@ -108,6 +108,11 @@ import { emitEvent } from "../../types.js";
 import { AlertsService } from "../../../alerts/service.js";
 import type { AlertSettings } from "../../../shared/alerts-types.js";
 import type { AlertInput, AlertResult } from "../../../plugins/public-contract.js";
+import { HostApiGenerationScope } from "../../../plugins/plugin-host-effect-scope.js";
+import type { PluginRuntimeGenerationAccess } from "../../../plugins/plugin-host-generation.js";
+import type { PluginHostApiIncarnation } from "../../../plugins/runtime/index.js";
+
+const alertsServices: AlertsService[] = [];
 
 interface FakeWindow {
   destroyed: boolean;
@@ -140,7 +145,7 @@ type CreateHostApi = (
   pluginId: string,
   manifest: Record<string, unknown>,
   pluginDataDir: string,
-  incarnation: Record<string, unknown>,
+  incarnation: PluginHostApiIncarnation,
   installPluginId: string | null,
 ) => OverlayHostApi;
 
@@ -155,6 +160,7 @@ async function overlayHostApi(input: {
   pluginId?: string;
   manifest?: Record<string, unknown>;
   alertsService?: AlertsService;
+  incarnation?: PluginHostApiIncarnation;
 }): Promise<OverlayHostApi> {
   runtimeTestState.capturedRuntimeOptions = null;
   await initPluginRuntime({
@@ -203,7 +209,7 @@ async function overlayHostApi(input: {
     pluginId,
     input.manifest ?? { id: pluginId, capabilities: ["host:overlay"] },
     tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-overlay-win-"))),
-    {
+    input.incarnation ?? {
       registerDisposer: vi.fn(),
       trackOperation: <T>(operation: Promise<T>) => operation,
       isActive: () => true,
@@ -219,7 +225,10 @@ beforeEach(() => {
   runtimeTestState.runtime.getPluginManifest.mockReturnValue(null);
 });
 
-afterEach(() => tmpDirs.cleanup());
+afterEach(async () => {
+  for (const alerts of alertsServices.splice(0)) await alerts.flush();
+  tmpDirs.cleanup();
+});
 
 describe("hostApi.triggerConversation overlay send targets the live main window", () => {
   it("validates invalid proposals even when no desktop exists", async () => {
@@ -446,6 +455,7 @@ describe("hostApi.raiseAlert, withdrawAlert and alert events", () => {
       audit: vi.fn(),
     });
     await alerts.load();
+    alertsServices.push(alerts);
     return alerts;
   }
 
@@ -457,6 +467,72 @@ describe("hostApi.raiseAlert, withdrawAlert and alert events", () => {
     await expect(mail.raiseAlert({ kind: "reply", key: "mail-1" })).resolves.toMatchObject({ status: "raised" });
     await expect(other.withdrawAlert("reply", "mail-1")).resolves.toBe(false);
     await expect(mail.withdrawAlert("reply", "mail-1")).resolves.toBe(true);
+    await alerts.flush();
+  });
+
+  it.each([false, true])("keeps incumbent grants when an inactive candidate is discarded (generation scope: %s)", async (scoped) => {
+    const alerts = await service();
+    const incumbent = await overlayHostApi({ bootWindow: null, pluginId: "fixturemail", manifest: manifestOf("fixturemail"), alertsService: alerts });
+    expect((await incumbent.raiseAlert({ kind: "reply", key: "mail-1" })).status).toBe("raised");
+    const disposers: Array<() => void> = [];
+    const scope = new HostApiGenerationScope("fixturemail");
+    await overlayHostApi({
+      bootWindow: null,
+      pluginId: "fixturemail",
+      manifest: { id: "fixturemail", alerts: { reasoning: "Replacement mail.", kinds: [{ ...kinds[0], id: "replacement" }] } },
+      alertsService: alerts,
+      incarnation: {
+        registerDisposer: (dispose) => { disposers.push(dispose); },
+        trackOperation: (operation) => operation,
+        isActive: () => scoped,
+        isLifecycleHookActive: () => false,
+        ...(scoped ? { generationScope: scope } : {}),
+      },
+    });
+    expect((await incumbent.raiseAlert({ kind: "reply", key: "mail-1" })).status).toBe("refreshed");
+    expect(await incumbent.raiseAlert({ kind: "replacement", key: "new" })).toEqual({ status: "kind_not_granted", kind: "replacement" });
+    scope.discard();
+    for (const dispose of disposers) dispose();
+    expect((await incumbent.raiseAlert({ kind: "reply", key: "mail-1" })).status).toBe("refreshed");
+    await alerts.flush();
+  });
+
+  it("publishes candidate grants, restores the incumbent on resume, and isolates retired cleanup", async () => {
+    const alerts = await service();
+    const access = {} as PluginRuntimeGenerationAccess;
+    const incumbentScope = new HostApiGenerationScope("fixturemail");
+    const candidateScope = new HostApiGenerationScope("fixturemail");
+    const incarnation = (scope: HostApiGenerationScope): PluginHostApiIncarnation => ({
+      registerDisposer: (dispose) => scope.registerDisposer(dispose),
+      trackOperation: (operation) => operation,
+      isActive: () => true,
+      isLifecycleHookActive: () => false,
+      generationScope: scope,
+    });
+    const incumbent = await overlayHostApi({ bootWindow: null, pluginId: "fixturemail", manifest: manifestOf("fixturemail"), alertsService: alerts, incarnation: incarnation(incumbentScope) });
+    incumbentScope.bindGeneration(access, "incumbent");
+    incumbentScope.publish();
+    expect((await incumbent.raiseAlert({ kind: "reply", key: "mail-1" })).status).toBe("raised");
+    const candidate = await overlayHostApi({
+      bootWindow: null, pluginId: "fixturemail", alertsService: alerts, incarnation: incarnation(candidateScope),
+      manifest: { id: "fixturemail", alerts: { reasoning: "Replacement mail.", kinds: [{ ...kinds[0], id: "replacement" }] } },
+    });
+    candidateScope.bindGeneration(access, "candidate");
+    incumbentScope.supersede();
+    await expect(alerts.raise("fixturemail", { kind: "reply", key: "mail-1" })).rejects.toThrow(/before its kinds were registered/);
+    candidateScope.publish();
+    expect(await candidate.raiseAlert({ kind: "reply", key: "mail-1" })).toEqual({ status: "kind_not_granted", kind: "reply" });
+    // A new update kind is declared but still needs the user's opt-in.
+    expect(await candidate.raiseAlert({ kind: "replacement", key: "new" })).toEqual({ status: "disabled_by_user" });
+    candidateScope.supersede();
+    incumbentScope.resume();
+    expect((await incumbent.raiseAlert({ kind: "reply", key: "mail-1" })).status).toBe("refreshed");
+    incumbentScope.supersede();
+    candidateScope.resume();
+    incumbentScope.retire();
+    expect(await candidate.raiseAlert({ kind: "replacement", key: "new" })).toEqual({ status: "disabled_by_user" });
+    candidateScope.retire();
+    await expect(alerts.raise("fixturemail", { kind: "replacement", key: "new" })).rejects.toThrow(/before its kinds were registered/);
     await alerts.flush();
   });
 
