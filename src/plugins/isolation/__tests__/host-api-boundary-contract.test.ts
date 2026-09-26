@@ -584,7 +584,7 @@ describe("error identity survives the wire by code, never by message", () => {
     }
   });
 
-  it("preserves the class name the SDK contract tells plugins to match on", () => {
+  it("preserves the class name the public contract tells plugins to match on", () => {
     const wire = classifyHostApiError(
       new PluginStorageError("escapes the root", PLUGIN_ID, "../x"),
     );

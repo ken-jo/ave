@@ -1,5 +1,5 @@
 /**
- * SKILL.md front matter against the SDK component contract.
+ * SKILL.md front matter against the host-owned component contract.
  *
  * The host used to read a skill header with a line-at-a-time parser that kept
  * `name` and `description` and discarded the other five fields
@@ -7,11 +7,11 @@
  * particular was a field an author could write and nothing downstream would
  * ever see.
  *
- * What this suite pins is the join between the two repos: the fields survive
- * on both paths, the keyword hints reach the catalog and leave with the skill,
+ * This suite checks both delivery paths against the host schema: the fields
+ * survive, the keyword hints reach the catalog and leave with the skill,
  * and the host's name rule is the schema's name rule — read out of the
  * committed snapshot rather than restated here, so a test cannot agree with a
- * host constant that has drifted from the SDK.
+ * host constant that has drifted from the schema.
  */
 import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
@@ -349,7 +349,7 @@ describe("skill front matter — triggers reach the catalog and leave with the s
 describe("skill name rule — one charset, and it is the schema's", () => {
   it("the host's charset is the pattern the SDK schema carries", () => {
     // Read, never restated: a literal here would pass against a host constant
-    // that had drifted away from the SDK, which is the whole failure this
+    // that had drifted away from the schema, which is the whole failure this
     // guards.
     expect(SKILL_NAME_ALLOWLIST.source).toBe(skillComponent.properties.name.pattern);
   });
@@ -359,7 +359,7 @@ describe("skill name rule — one charset, and it is the schema's", () => {
     // longer one at publication. The host does not re-police that: a name is
     // the author's, and a long directory name is not a safety property. If
     // this ever starts failing, the host has grown a length check that the
-    // SDK's description says it does not have.
+    // schema's description says it does not have.
     const ceiling = skillComponent.properties.name.maxLength;
     expect(ceiling).toBeGreaterThan(0);
     expect(SKILL_NAME_ALLOWLIST.test("a".repeat((ceiling as number) + 1))).toBe(true);

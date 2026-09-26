@@ -25,7 +25,7 @@ Ave app 은 sibling plugin repo 경로에 의존하지 않는다. 플러그인�
 mkdir former_org
 cd former_org
 
-git clone --recurse-submodules https://github.com/former_org/ave.git
+git clone https://github.com/former_org/ave.git
 ```
 
 완성된 구조:
@@ -35,17 +35,12 @@ former_org/
 └── ave/                  ← host (여기서 빌드·실행)
 ```
 
-> `ave` 은 `--recurse-submodules` 플래그 필수.
-> `packages/plugin-sdk` 가 submodule 이기 때문.
-
 ## 2. 설치
 
 ```powershell
 cd ave
 bun install
 ```
-
-`packages/plugin-sdk` 는 source/type-only 패키지라 별도 빌드 불필요.
 
 > **CI 와의 차이**: CI 는 `bun install --frozen-lockfile` 로 잠금 상태 그대로 재현한다.
 > 로컬에서 잘 빌드되는데 CI 가 "lockfile mismatch" 로 실패하면 `bun install --frozen-lockfile`
@@ -128,16 +123,6 @@ PowerShell 5.x 는 directory 삭제 시 일부 잠금/권한 문제로 stub 을 
 ```powershell
 cmd /c "if exist node_modules rmdir /s /q node_modules"
 cmd /c "if exist dist rmdir /s /q dist"
-```
-
-### 실행 시 `Cannot find module '@ave/plugin-sdk'`
-**원인**: `node_modules` 가 오래되어 source/type-only SDK 링크가 갱신되지 않음.
-**해결**: `node_modules` 를 삭제한 뒤 다시 설치합니다.
-
-```powershell
-cmd /c "if exist node_modules rmdir /s /q node_modules"
-bun install
-bun run start
 ```
 
 ### Electron 창 크래시: "GPU process isn't usable. Goodbye!" / error_code=18

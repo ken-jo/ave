@@ -21,8 +21,8 @@ synced and the pins that commit carries
 5. Runtime boot verifies the install receipt before parsing `plugin.json` or
    importing plugin code.
 
-Plugin repositories do not generate signatures, and `@ave/plugin-sdk` carries
-no trust keys: it is a type/source-only authoring contract.
+Plugin repositories do not generate signatures. Their vendored `contract/`
+contains authoring types and the manifest schema, with no trust keys.
 
 ## What an organization controls
 

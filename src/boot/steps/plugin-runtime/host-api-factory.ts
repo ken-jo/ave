@@ -783,8 +783,8 @@ export function createHostApiFactory(
         const unsubscribe = () => { unsubInstalled(); unsubUninstalled(); };
         return registerOwnedDisposer(unsubscribe);
       },
-      // #893 Stage 2 — Host implementation of the SDK's `resolveApiKey`.
-      // Returns the SDK `ResolveApiKeyResult` discriminated union (bearer +
+      // Host implementation of the public contract's `resolveApiKey`.
+      // Returns the `ResolveApiKeyResult` discriminated union (bearer +
       // release on success; typed reason on failure). Plugins read the
       // key via `result.bearer()` and SHOULD call `result.release()` in a
       // `finally` so the captured string has a deterministic lifetime.
@@ -1165,9 +1165,9 @@ export function createHostApiFactory(
         return readAppPreference(pluginId, key) as T | undefined;
       },
       // ─── Corp-network presence probe ───────────────────────────────────
-      // Lands the SDK `runtime/network.ts#detectViaPrivateDnsProbe` shim in
-      // hostApi so plugins never reach `dns.lookup` (or a raw corp-network
-      // presence probe) directly. Pure DNS race with host-side host validation
+      // HostApi owns the private DNS probe so plugins never reach `dns.lookup`
+      // (or a raw corp-network presence probe) directly. Pure DNS race with
+      // host-side host validation
       // + timeout clamping; UX hint only, NOT a trust boundary (see the impl
       // header). Module-level dedup/no-cache/unref'd-timer semantics live in
       // private-host-probe.ts.
@@ -1436,7 +1436,7 @@ export function createHostApiFactory(
         );
       },
 
-      // ─── SDK 5.6.0 — clearAuthPartition ──────────────────────────────
+      // ─── HostApi clearAuthPartition ───────────────────────────────────
       // Wipe cookies / storage / cache / HTTP-auth from one of the calling
       // plugin's own `persist:plugin-auth:<pluginId>[:<sub>]` partitions.
       // Used after a user-triggered plugin sign-out so a subsequent

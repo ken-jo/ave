@@ -1,5 +1,5 @@
 /**
- * probePrivateHost — host landing of the SDK detectViaPrivateDnsProbe shim.
+ * probePrivateHost — host-owned private DNS presence probe.
  *
  * Verifies the ported DNS-race semantics (resolve→true, ENOTFOUND→false,
  * timeout→false, no cache, single-flight dedup) PLUS the host-side additions:
@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
 // vi.mock is hoisted above imports — capture the mock fn via vi.hoisted so the
-// factory can reference it without a TDZ issue (mirrors the SDK network test).
+// factory can reference it without a TDZ issue.
 const { mockLookup } = vi.hoisted(() => ({ mockLookup: vi.fn() }));
 vi.mock("node:dns/promises", () => ({
   __esModule: true,

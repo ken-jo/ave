@@ -638,10 +638,10 @@ is retired with the server, after the first public release.
 - **Package schemas.** For marketplace delivery, the descriptor (§5.1–5.2)
   replaces the SDK's skill and agent package schemas. The host still needs
   one of them: the SKILL.md front-matter definition it implements.
-  - Today that definition is `schemas/sdk/skill-package.schema.json`, a
-    snapshot of the SDK file.
-  - It becomes the host-owned `schemas/skill-package.schema.json`.
-  - The snapshot gates are removed in blueprint 6.3: `check:sdk-schemas`,
+  - The definition moved from `schemas/sdk/skill-package.schema.json`, a
+    snapshot of the retired repository's file, to the host-owned
+    `schemas/skill-package.schema.json`.
+  - The snapshot gates were removed in blueprint 6.3: `check:sdk-schemas`,
     `check:sdk-schemas:verify` and `sdk-schema-drift.yml`.
 - **Interim, not the end state.** Code plugins stay in the host process. There,
   compile-time types are the only early check on the HostApi they call.

@@ -3,12 +3,12 @@
  *
  * Two production lanes deny plugin event emission on the SAME predicate
  * (`canEmitEvent`, src/plugins/capabilities.ts):
- *   - "plugin"     — SDK lane: `hostApi.emitEvent` in
+ *   - "plugin"     — HostApi lane: `hostApi.emitEvent` in
  *                    boot/steps/plugin-runtime/host-api-factory.ts
  *   - "ipc-bridge" — webview lane: the `ave:plugin:emit-event` handler in
  *                    ipc/domains/plugins.ts, reached from plugin-preload.ts
  *
- * Before this module the SDK lane wrote an audit row plus a CAPABILITY_DENY
+ * Before this module the HostApi lane wrote an audit row plus a CAPABILITY_DENY
  * lifecycle line and the webview lane wrote nothing, so a denied emit was
  * forensically invisible exactly when it came from the LESS trusted caller
  * (sandboxed webview JS). The row shape and the lifecycle line live here so
@@ -21,7 +21,7 @@ import { logPluginLifecycle, PluginPhase } from "./lifecycle-log.js";
 /**
  * Which production emit lane denied. Recorded as the audit row's `sessionId`,
  * matching the sessionId convention each lane already uses for its other rows,
- * so an auditor can tell a sandboxed-webview denial from an SDK-side one.
+ * so an auditor can tell a sandboxed-webview denial from a HostApi one.
  */
 export type PluginEmitLane = "plugin" | "ipc-bridge";
 

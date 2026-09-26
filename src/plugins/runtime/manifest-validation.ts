@@ -1,20 +1,18 @@
 /**
  * Manifest validation — host-owned schema SOT + host cross-field MUST/SHOULD
- * checks. The manifest shape is validated against the vendored
- * `schemas/plugin-manifest.schema.json` (ph2 — host owns the schema; no runtime
- * `@ave/plugin-sdk` import).
+ * checks. The manifest shape is validated against the host-owned
+ * `schemas/plugin-manifest.schema.json`.
  *
  * Exported for unit testing and reuse by the PluginRuntime class.
  */
 
 import { readFile } from "node:fs/promises";
 import type { ValidateFunction } from "ajv";
-// Host-owned manifest-shape SOT (ph2). The schema is imported as a
+// Host-owned manifest-shape source. The schema is imported as a
 // bundler-visible JSON module so it inlines into the packaged main bundle —
 // no runtime disk read, so no electron-builder `files`/asar gap can leave the
-// packaged app unable to resolve it. The `schemas/plugin-manifest.schema.json`
-// file is byte-identical to the SDK's former canonical copy; the SDK now
-// mirrors from here (host is SOT).
+// packaged app unable to resolve it. Plugin repositories vendor this schema
+// at an app release tag alongside the public contract.
 import manifestSchema from "../../../schemas/plugin-manifest.schema.json" with { type: "json" };
 import {
   AGENT_PLUGINS_SCHEMA_URL,
@@ -577,19 +575,13 @@ export function getDeclaredConfigInherits(
 /**
  * Compile the host-owned plugin manifest schema into an AJV validator.
  *
- * ph2 — the manifest-shape SOT is now `schemas/plugin-manifest.schema.json`,
- * vendored into the host and imported as a bundler-visible JSON module (see the
- * top-of-file import). The host no longer imports `@ave/plugin-sdk` at runtime,
- * so plugin loading no longer depends on the SDK package or its pinned version
- * (which removes the former circular host→SDK runtime edge + validator-version
- * skew). If the schema cannot be compiled, plugin loading must fail closed.
+ * The manifest-shape source is `schemas/plugin-manifest.schema.json`, imported
+ * as a bundler-visible JSON module. If the schema cannot be compiled, plugin
+ * loading must fail closed.
  *
- * AJV options mirror the SDK's former `compileManifestValidator()` exactly
- * (`strict` + `strictRequired:false` + `allErrors` + `allowUnionTypes`, plus
- * `ajv-formats`), so behavior is unchanged from the last host↔SDK-pinned build.
- * The former runtime accept/reject probes (which guarded against a stale SDK
- * schema) are gone — a host-vendored schema cannot be version-skewed — and are
- * re-expressed as test-time assertions against this compiled validator
+ * AJV uses `strict`, `strictRequired:false`, `allErrors`, `allowUnionTypes`,
+ * and `ajv-formats`. Test-time assertions pin the resulting accept/reject
+ * behavior against this compiled validator
  * (`manifest-validator-host-sot.test.ts`).
  */
 export async function buildManifestValidator(): Promise<ValidateFunction> {
@@ -743,7 +735,7 @@ export async function parsePluginJson(
   // top-level fields rather than refusing the plugin over another vendor's
   // data. The projection already drops them; this is the "reports" half, kept
   // here rather than inside the projection so that projection stays pure and
-  // mirrorable into the SDK.
+  // can be vendored unchanged.
   const foreign = foreignManifestTopLevelFields(doc);
   if (foreign.length > 0) {
     log.warn(
@@ -853,7 +845,7 @@ export async function parsePluginJson(
     // for additional-properties was "/ must NOT have additional properties"
     // — never named WHICH property was rejected, leaving users stuck (#737).
     // Now we name the offending field(s) and append a reinstall hint when
-    // it's the additional-property case (typical when SDK schema tightens
+    // it's the additional-property case (typical when the host schema tightens
     // and a stale plugin install carries a deprecated field).
     const rawAjvErrors = validator.errors ?? [];
     const ajvErrors = rawAjvErrors;
@@ -909,7 +901,7 @@ export async function parsePluginJson(
       `"id": "meeting-recorder"`,
     );
   }
-  // Stable SemVer only — same regex as the SDK schema and the per-plugin
+  // Stable SemVer only — same regex as the host schema and the per-plugin
   // publish.yml tag-validation step. Anchored on both ends so `1.2.3.4`,
   // pre-release tags (`1.2.3-rc1`), build metadata (`1.2.3+abc`), and
   // leading zeros (`01.2.3`) all fail at this gate instead of slipping
@@ -944,7 +936,7 @@ export async function parsePluginJson(
   // message instead of letting it fall through to the downstream tool-name loop,
   // which would spread a bare string into a nameless object and throw the
   // confusing "Invalid tool name 'undefined'" (security-review nitpick a). The
-  // Host and SDK schemas both reject that legacy shape. Keep this host-side guard
+  // The host schema rejects that legacy shape. Keep this host-side guard
   // as a loud, author-facing error if validation is ever invoked with a custom
   // validator that is accidentally more permissive than the Host source of truth.
   const preV6ToolIdx = (parsed.tools as unknown[]).findIndex(
@@ -954,7 +946,7 @@ export async function parsePluginJson(
     fail(
       `tools[${preV6ToolIdx}]`,
       "must be an MCP Tool object — this plugin targets a pre-v6 contract " +
-        "(legacy tools[] name strings + toolSchemas/uiActions); upgrade to @ave/plugin-sdk v6",
+        "(legacy tools[] name strings + toolSchemas/uiActions); update to the app release contract",
       `"tools": [{ "name": "sample_ping", "inputSchema": { "type": "object", "properties": {} } }]`,
     );
   }
@@ -1210,9 +1202,8 @@ export async function parsePluginJson(
     // rejected by `exactlyApp` (`model ∉ vis` required). No separate leak guard.
   }
 
-  // #893 — hostSecrets.read[] schema enforcement. The SDK JSON-schema mirrors
-  // this rule, but we re-check at host load time so a plugin shipped with a
-  // stale SDK schema cannot grant itself a wider allowlist by adding a
+  // hostSecrets.read[] schema enforcement. Re-check at host load time so a
+  // plugin using older vendored contract files cannot widen its allowlist by adding a
   // non-`llm.apiKey.*` entry. Reason tag is `manifest_schema` to mirror the
   // host's other supply-chain-visibility audit tags.
   const hostSecretsRaw: unknown = (parsed as { hostSecrets?: unknown })
@@ -1285,7 +1276,7 @@ export async function parsePluginJson(
   // answer is stored under, so a duplicate would let one card's "never show
   // this" silence a different card the user never saw. The count is re-checked
   // alongside it for the same reason `hostSecrets` re-checks its own bounds — a
-  // plugin shipped against a stale SDK schema must not widen what it declares.
+  // plugin using older contract files must not widen what it declares.
   const onboardingRaw: unknown = (parsed as { onboarding?: unknown }).onboarding;
   const highlightsRaw: unknown =
     onboardingRaw && typeof onboardingRaw === "object" && !Array.isArray(onboardingRaw)
@@ -1334,8 +1325,8 @@ export async function parsePluginJson(
   }
 
   // Plugin↔app minimum-version gate — re-validate the format at host load even
-  // though the SDK JSON-schema mirrors the same `pattern` (same rationale as
-  // hostSecrets above: a plugin shipped against a stale SDK schema must not
+  // though the host schema has the same `pattern` (same rationale as
+  // hostSecrets above: a plugin using older contract files must not
   // smuggle a non-SemVer `minAppVersion`). The host enforces compatibility at
   // install + load against this value, so a malformed string would make the
   // `compareSemver` gate fail-closed silently — fail loud here instead.

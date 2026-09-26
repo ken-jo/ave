@@ -197,7 +197,7 @@ export function publishHostThemeChanged(safe: SafeThemePayload): void {
 /**
  * Push the cached theme payload to a freshly registered webview so the
  * plugin paints with the active tokens from first frame instead of the
- * SDK `:root` fallback. Returns the payload that was sent (or null when
+ * plugin's `:root` fallback. Returns the payload that was sent (or null when
  * the cache is empty / wc destroyed) so callers can log lifecycle.
  *
  * Synchronous between `register-webview` returning OK and this call, so
@@ -2201,7 +2201,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
   // shell asks, regardless of when preload listeners were set up.
   //
   // Returns `null` when the host hasn't broadcast yet (extreme cold-
-  // boot window). The shell falls back to SDK CSS-side defaults in
+  // boot window). The plugin falls back to its CSS defaults in
   // that case.
   ipcMain.handle(CHANNELS.pluginBridge.getTheme, (e) => {
     if (!validatePluginFrame(e)) {

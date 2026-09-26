@@ -1,5 +1,10 @@
 # Ave ⇄ MCP 2026-07-28 RC Alignment — Design
 
+> **Plugin contract instructions superseded:** SDK schema and release steps below
+> describe the earlier plan. Plugins now vendor the host's contract files at an
+> app release tag and set `requires.minAppVersion` for new members. Follow
+> [marketplace design §5.6](../design/multi-source-git-marketplace.md#56-plugin-contract-for-authors).
+
 > **2026-07-09 scope narrowing (maintainer):** the **plugin-contract axis of #885 is NO LONGER driven by
 > this document.** #885 is narrowed to "borrow the MCP `Tool` **object** shape + MCP **isolation parity**"
 > and is owned by [`plugin-contract-v6-design.md`](./plugin-contract-v6-design.md); the full stateless

@@ -68,8 +68,8 @@ pre-push hook / CI 에서 줄줄이 막힌다. 책임은 마지막 머지자에�
    (`KNOWN_*`, `*_ENUM` 등) 모두 갱신. sync 테스트 (`schema.enum === KNOWN_X`) 추가.
 3. **Test fixtures migration** — `grep -rn "<old path>" src/ test/` 로 잔존 참조 0건.
 4. **Self-check before commit** — `bun run test` 전체 pass 필수. `--no-verify` 금지.
-5. **Sweep dependent repos** (host-plugin-contract-sync 룰 연계) — host ↔ SDK ↔
-   plugin repos 가 모두 새 SoT 를 일관되게 보는지 확인.
+5. **Sweep dependent repos** (host-plugin-contract-sync 룰 연계) — 호스트와
+   플러그인 저장소가 새 계약을 일관되게 보는지 확인.
 
 **적용 대상**: schema, type 정의, enum/capability 리스트, 권한/policy SoT,
 이벤트 카탈로그 등 contract artifact 의 위치/포맷이 이동하는 모든 PR.
@@ -105,16 +105,16 @@ flushSync(() => {
 - 회귀 테스트 — 두 state 의 분리된 업데이트가 실제 race 를 일으키는 e2e 시나리오
   추가 (단위 테스트로는 commit timing 을 잡기 어렵다).
 
-### 2.4 Cross-repo contract sync — host ↔ SDK ↔ plugin repos 같은 세션에서 sweep
+### 2.4 Cross-repo contract sync — 호스트와 플러그인 저장소를 함께 확인
 
-**Why**: Ave 의 plugin contract 는 5개 repo (`ave`, `ave-plugin-sdk`,
-6개 `ave-plugin-*`, `ave-plugin-template`, `agent-marketplace`) 에 걸쳐 있다.
+**Why**: 플러그인 계약은 앱의 공개 계약 파일과 매니페스트 스키마에서 시작해
+플러그인 저장소의 `contract/`에 앱 릴리스 태그 기준으로 복사된다.
 한 곳만 바꾸고 나머지를 stale 로 두면, 사이드바 탭 미등록 / `bridge.callPluginMethod
 is not a function` / loose vs strict regex 분기 등 silent regression 이 누적된다.
 
 **How to apply**:
 - 변경 surface 가 다음 중 하나라면 cross-repo sweep 의무:
-  - plugin manifest schema (SDK schema + host validator + plugin/template plugin.json)
+  - plugin manifest schema (host schema + validator + plugin/template plugin.json)
   - plugin webview bridge / host API (host preload + 6 plugin repos src/)
   - publish workflow contract (template + 6 plugin repos publish.yml + marketplace API)
   - install policy / capability / pluginAccess / event names
@@ -123,13 +123,13 @@ is not a function` / loose vs strict regex 분기 등 silent regression 이 누�
   ```bash
   grep -rn "<deprecated-symbol>" \
     /Users/example/Documents/former_org/ave/src \
-    /Users/example/Documents/former_org/ave-plugin-sdk/{src,schemas} \
     /Users/example/Documents/former_org/ave-plugin-*/{src,.github} \
     /Users/example/Documents/former_org/ave-plugin-template \
     /Users/example/Documents/former_org/agent-marketplace
   ```
-- 발견된 모든 사용처에 대해 같은 세션 안에 PR 펼침. PR description 에
-  "Companion PRs" 섹션으로 묶어 머지 순서 의존성 명시 (예: SDK → host → template).
+- 발견된 모든 사용처에 대해 같은 세션 안에 PR 펼침. 공개 계약을 바꾸면 앱
+  릴리스 태그에서 플러그인 `contract/`을 갱신하고 해시를 검증한다. PR description 에
+  "Companion PRs" 섹션으로 묶어 머지 순서 의존성을 명시한다.
 - 4-에이전트 셀프리뷰 시 plugin-auditor / architect 에게 "다른 repo 에 누락된 곳
   grep 으로 확인" 명시. 단일 PR diff 만으로는 cross-repo 누락 못 잡는다.
 
@@ -141,7 +141,7 @@ PR 머지 버튼을 누르기 직전, 작성자가 본인 PR 에 대해 다음�
 - [ ] `bun run test` 전체 로컬에서 pass 하는가? (`--no-verify` 우회 금지)
 - [ ] SoT/contract 변경이라면 — validator + 파생 const + 테스트 fixture 모두
       같은 PR 안에 있는가? (`grep -rn "<old>"` 0건)
-- [ ] cross-repo dependency (host ↔ SDK ↔ plugin repos) 가 영향받는다면
+- [ ] 저장소 간 계약 (host ↔ plugin repos) 이 영향받는다면
       companion PR 들이 같은 세션 안에 펼쳐져 있는가? PR description 에 명시?
 - [ ] state-A ↔ B 를 같이 다루는 useEffect 가 있는 영역을 건드렸다면 —
       모든 call site 가 같은 batch (한 flushSync 또는 React 자동 batching) 안인가?
