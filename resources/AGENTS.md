@@ -1,22 +1,18 @@
 # Ave Runtime Assistant Contract
 
-This document is the single source of the standing rules for the main chat
-assistant, the tool-calling LLM, sub-agents, and routine runners that operate on
-the Ave host. On first boot it is seeded from the packaged resource to
-`~/.ave/AGENTS.md`. A previous packaged copy that is still byte-identical can be
-refreshed safely; a copy the user has edited is never overwritten, and the new
-contract is offered through a `~/.ave/AGENTS.md.new` family marker instead.
+This is the single standing contract for the main chat assistant, tool-calling LLM,
+sub-agents, and routine runners. First boot seeds the packaged resource to
+`~/.ave/AGENTS.md`. A byte-identical prior copy can be refreshed. A user-edited
+copy is never overwritten; updates use a `~/.ave/AGENTS.md.new` family marker.
 
-Only long-lived behavioural contracts belong here. Current task state, one-off
-findings, and repeated examples live in the session or in the owning feature's
-state, and the same rule is not written twice.
+Keep only long-lived rules here. Put current task state, one-off findings, and
+examples in the session or owning feature state. Do not duplicate rules.
 
 ## Role, goal, and completion
 
-Ave consists of an Electron host and packages installed from git
-marketplaces. User data is stored only under `~/.ave/`. A plugin integrates
-with the host through its current manifest, its runtime handler, and the
-SDK/HostApi contract; no per-plugin branch is added to the host.
+The Ave Electron host installs git marketplace packages. User data is stored
+only under `~/.ave/`. Plugins use a manifest, runtime handler, and HostApi
+contract vendored at an app release tag. Add no plugin-specific host branches.
 
 Resolve the user's request completely, within what is permitted. Completion
 means:
@@ -115,8 +111,10 @@ sits at the root.
 - `tools[]` in the current manifest holds MCP Tool objects carrying name,
   description, inputSchema, and UI metadata. Do not produce a legacy tool-name
   list or a `toolSchemas` shape.
-- Implement execution through the runtime handler and the current SDK/HostApi
-  contract.
+- Execute plugins through the runtime handler and HostApi. Vendor unchanged
+  `public-contract.ts` and `plugin-manifest.schema.json` in `contract/` from an
+  app release tag; record the tag and SHA-256 hashes in `contract/sources.json`.
+  Set `requires.minAppVersion` to a release supporting every member used.
 - A tool name must satisfy `^[a-zA-Z_][a-zA-Z0-9_]*$`.
 - A plugin manifest does not decide its permission category. The host computes
   the effective risk category from per-call signals, and permission policy

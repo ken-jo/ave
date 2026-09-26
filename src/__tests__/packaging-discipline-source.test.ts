@@ -883,8 +883,8 @@ describe("installer smoke and packaging discipline", () => {
     expect(agents).toContain("degrades non-brickingly when unavailable");
     expect(agents).toContain("relaxation/effect-boundary coupling");
     expect(agents).toContain("No Fallback Code");
-    expect(agents).toContain("plugin manifest field updates its schema and SDK");
-    expect(agents).toContain("HostApi change bumps every plugin dependency pin");
+    expect(agents).toContain("plugin manifest field updates its host schema and public");
+    expect(agents).toContain("HostApi change updates the host protocol and all");
     expect(agents).toContain("UI edits start with `grep` before editing");
     expect(agents).toContain("app shells `*Window`");
     expect(agents).toContain("bodies `*Content`, and modals `*Dialog`");

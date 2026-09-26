@@ -467,7 +467,7 @@ export interface WorkItemRunResult {
 
 // The plugin-facing half of this vocabulary — what a plugin hands over and
 // what it gets back — is declared in `plugins/public-contract.ts`, which is the
-// SDK mirror source and therefore cannot import anything. Importing FROM it
+// import-free module plugins vendor at an app release tag. Importing FROM it
 // here (rather than restating the shapes) keeps one definition: a proposal the
 // plugin composed and a proposal the store persisted are the same type, not two
 // that agree today.

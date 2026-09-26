@@ -1,5 +1,9 @@
 # Plugin Schema Design — Ave
 
+> 역사적 설계 자료입니다. 현재 플러그인 작성 계약과 빌드 방법은
+> [영문 플러그인 개발 가이드](../../guides/plugin-development.md)와
+> [앱 릴리스 계약 설계](../../design/multi-source-git-marketplace.md#56-plugin-contract-for-authors)를 따릅니다.
+
 **Status:** v6 반영 (tool 계약 #885 Phase R; 이전 v4 스키마 설계 배경 포함)
 **Updated:** 2026-04-18
 **Architect 승인:** manifest signature + tool visibility + capability taxonomy + AJV 검증 플로우

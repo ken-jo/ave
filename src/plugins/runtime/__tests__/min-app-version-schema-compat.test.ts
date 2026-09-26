@@ -1,7 +1,7 @@
 /**
- * `requires.minAppVersion` schema-compatibility — the REAL SDK-schema validator
- * path (not a permissive test schema). As of @ave/plugin-sdk v5.18.0 the
- * schema's `requires` block declares `minAppVersion` natively while keeping
+ * `requires.minAppVersion` schema-compatibility — the host schema validator
+ * path (not a permissive test schema). The schema's `requires` block declares
+ * `minAppVersion` natively while keeping
  * `additionalProperties:false`, so a manifest declaring `requires.minAppVersion`
  * (the local-indexer shape) is accepted and an unknown `requires` field is still
  * rejected — with no host compatibility patch (sibling to

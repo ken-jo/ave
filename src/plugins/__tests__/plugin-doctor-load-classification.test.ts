@@ -39,7 +39,7 @@ describe("PluginRuntime Doctor load-failure classification", () => {
       id: "p-prev6",
       tools: ["p_prev6_ping"],
       entrySource: makeTestPluginEntrySource({ p_prev6_ping: JSON.stringify("hi") }),
-      // Unknown top-level property rejected by the current SDK schema — this is
+      // Unknown top-level property rejected by the current host schema — this is
       // the shape a manifest shipped before #885 Phase R now fails validation on.
       manifest: { startupTools: [] },
     });

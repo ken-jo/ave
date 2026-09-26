@@ -660,15 +660,6 @@ function runAppChecks(dir) {
   if (!bun) {
     throw new Error("bun is required for ave checks");
   }
-  // The SDK lives outside this repo and is only present in a linked local
-  // layout, so its absence is a real state rather than a broken reference.
-  if (hasFile(join(dir, "packages", "plugin-sdk", "package.json"))) {
-    runPackageScripts(
-      join(dir, "packages", "plugin-sdk"),
-      ["check:drift", "build"],
-      "linked plugin-sdk checks"
-    );
-  }
   ensureAppTestRuntimeAbi(dir);
   runAppTypecheckGate(dir, "full checks");
   runPackageScripts(dir, ["test", "build"], "ave full checks");

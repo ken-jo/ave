@@ -169,7 +169,7 @@ export interface InitPluginRuntimeInput {
     opts: import("../../main/auth-partition-viewer-service.js").OpenAuthPartitionViewerOptions,
   ) => Promise<void>;
   /**
-   * SDK 5.6.0 — wipe-partition surface used by plugin `clearAuthPartition`
+   * HostApi wipe-partition surface used by plugin `clearAuthPartition`
    * to delete cookies / storage / cache / HTTP-auth from one of the
    * plugin's own `persist:plugin-auth:<pluginId>[:<sub>]` partitions
    * after a user-triggered sign-out. Production wiring is

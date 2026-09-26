@@ -1,8 +1,8 @@
 /**
  * Plugin↔app minimum-version gate — manifest `requires.minAppVersion` format
  * validation. The host re-validates the SemVer shape at load even though the
- * SDK JSON-schema mirrors the same `pattern` (a plugin shipped against a stale
- * SDK schema must not smuggle a non-SemVer minAppVersion, which would make the
+ * host JSON schema has the same `pattern` (a plugin using older contract files
+ * must not smuggle a non-SemVer minAppVersion, which would make the
  * compatibility gate fail-closed silently).
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";

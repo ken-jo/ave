@@ -59,7 +59,6 @@ Ave App은 채팅, 워크 모드, 도구 호출, 플러그인, 로컬 상태, �
 
 - Bun
 - Node.js `>=22.4`
-- git submodule (`packages/plugin-sdk`)
 
 ```bash
 git clone <repo-url>

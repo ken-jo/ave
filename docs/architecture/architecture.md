@@ -624,9 +624,10 @@ Key boundaries:
 
 - The complete plugin-author TypeScript contract and its JSDoc are Host-owned in
   `src/plugins/public-contract.ts`. `src/plugins/types.ts` re-exports that
-  surface and adds Host-private registry/marketplace DTOs. The SDK copies the
-  public module mechanically and adds no declarations, documentation, aliases,
-  or validation policy.
+  surface and adds Host-private registry/marketplace DTOs. Plugin repositories
+  vendor the public module and `schemas/plugin-manifest.schema.json` unchanged
+  at an app release tag, recorded in `contract/sources.json`. A plugin using a
+  new contract member sets `requires.minAppVersion` to a supporting app release.
 - plugin code cannot invent its own identity when calling HostApi;
 - installed plugin assets are loaded through host-approved URLs;
 - plugin tools must declare schemas (pure MCP `Tool` objects); per-tool category

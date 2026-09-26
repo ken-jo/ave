@@ -607,10 +607,9 @@ version, contentSha256, installedAt }`입니다. 콘텐츠에는 단계가 없�
 - **패키지 스키마.** 마켓플레이스 배포에서는 디스크립터(§5.1–5.2)가 SDK의 스킬·
   에이전트 패키지 스키마를 대신합니다. 호스트에 여전히 필요한 것은 하나, 호스트가
   구현하는 SKILL.md front matter 정의입니다.
-  - 지금 그 정의는 SDK 파일의 스냅숏인 `schemas/sdk/skill-package.schema.json`
-    입니다.
-  - 이것을 호스트 소유 `schemas/skill-package.schema.json`으로 바꿉니다.
-  - 스냅숏 게이트는 청사진 6.3에서 제거합니다: `check:sdk-schemas`,
+  - 그 정의는 폐기된 저장소 파일의 스냅숏인 `schemas/sdk/skill-package.schema.json`에서
+    호스트 소유 `schemas/skill-package.schema.json`으로 옮겼습니다.
+  - 스냅숏 게이트는 청사진 6.3에서 제거했습니다: `check:sdk-schemas`,
     `check:sdk-schemas:verify`, `sdk-schema-drift.yml`.
 - **최종 상태가 아닌 과도기.** 코드 플러그인은 호스트 프로세스 안에 그대로
   있습니다. 여기서는 컴파일 타임 타입이 플러그인이 부르는 HostApi를 미리

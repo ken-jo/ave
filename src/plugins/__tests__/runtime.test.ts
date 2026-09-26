@@ -364,7 +364,7 @@ describe("PluginRuntime.disable", () => {
   });
 
   it("plugin with kebab-case id (example-plugin) and underscore methods loads correctly", async () => {
-    // Plugin ID must use kebab-case (SDK v5.11.0 pattern ^[a-z][a-z0-9-]*$)
+    // Plugin ID must use kebab-case (host schema pattern ^[a-z][a-z0-9-]*$)
     // Tool names (methods[]) must still be underscore-only (LLM tool name namespace)
     const pluginId = "example-plugin";
     const pluginDir = join(installedDir, "com-example-test");

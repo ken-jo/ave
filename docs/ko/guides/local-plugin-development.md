@@ -46,7 +46,7 @@ bun run dev
 |------|------|
 | Node.js ≥ 18 | `ave` Electron launcher + `postinstall` 훅이 시스템 `node` 직접 호출 |
 | bun (선택) | `ave`/플러그인 기본 패키지 매니저. 없으면 `npm` 폴백 (`*:npm` 스크립트) |
-| git | 플러그인 레포 클론 + submodule (`@ave/plugin-sdk`) |
+| git | 플러그인 저장소와 앱 릴리스 태그 확인 |
 
 ---
 
@@ -56,14 +56,15 @@ bun run dev
 
 ```bash
 # GitHub 에서 "Use this template" → 새 레포 생성 후
-git clone --recurse-submodules <your-repo-url> ave-plugin-<yourname>
+git clone <your-repo-url> ave-plugin-<yourname>
 cd ave-plugin-<yourname>
 bun install
 bun run build         # tsup → dist/
 bun run test
 ```
 
-submodule 누락 시: `git submodule update --init --recursive`.
+플러그인 저장소의 `contract/`에는 앱 릴리스 태그에서 가져온 공개 계약과 매니페스트
+스키마가 들어 있습니다. `contract/sources.json`으로 태그와 파일 해시를 확인하세요.
 
 매니페스트 작성 규칙(필수 필드, AJV 검증, tool 스키마 — v6 는 pure `Tool[]`)은 [현재 English Plugin Development Guide](../../guides/plugin-development.md#manifest-basics)와 [`plugin-manifest.schema.json`](../../../schemas/plugin-manifest.schema.json)을 참고하세요. 한국어 [`plugin-development.md`](./plugin-development.md)는 과거 검토·논의 이력이며 현재 계약의 정본이 아닙니다.
 
@@ -210,7 +211,7 @@ watch 빌드가 `dist/*.js` 를 갱신하면 호스트 watcher 가 디바운스 
 |------|-------------|
 | 부팅 후 플러그인이 안 보이고 `[plugin-runtime] ignoring untrusted registry manifest path for <id>` 로그 | manifest 가 trust-root 밖. §3-1의 Settings 로컬 폴더 설치 또는 [local-marketplace-testing.md](./local-marketplace-testing.md)의 로컬 git 마켓플레이스를 사용합니다. symlink도 안 됩니다 (`realpathSync` 검사). |
 | `bun run plugins:list` 결과가 기대와 다름 | CLI와 Electron 모두 `~/.ave/plugins/`를 플러그인 루트로 사용합니다. 오래된 `.ave-dev` 잔재를 제거한 뒤 Settings 로컬 폴더 설치를 다시 실행하세요. registry는 직접 편집하지 않습니다. |
-| `[manifest:<id>] schema validation failed (<jsonpath>): ...` | AJV 검증 실패. `plugin.json` 의 해당 필드 확인. SDK 빌드시 `bun run validate:hostapi` 로 미리 잡힘. |
+| `[manifest:<id>] schema validation failed (<jsonpath>): ...` | AJV 검증 실패. `plugin.json`의 해당 필드를 확인하고, 앱 릴리스 태그에서 가져온 `contract/plugin-manifest.schema.json`으로 검증합니다. |
 | `MANIFEST_MISMATCH` 또는 아티팩트 sha256 불일치 (마켓플레이스 설치에서) | 설명자의 `minAppVersion`·`authority`와 스테이징한 `plugin.json`이 같은지, release/archive 의 `sha256` 고정이 실제 바이트와 같은지 확인합니다. dev 우회 토글은 없습니다. |
 | Hot-reload 가 안 됨 | (a) `AVE_DEV_RELOAD=1` 누락 (`bun run start` 는 자동 세팅 X — `bun run dev` 거나 직접 export). (b) `dist/` 가 watch 가능 위치인지 확인 (네트워크 드라이브 등에서는 fs.watch 부정확). (c) plugin.json 자체를 바꿨다면 호스트 재시작 필수. |
 | 한글 깨짐 (cp949) | PowerShell 에서 `chcp 65001` 후 `bun run start`. 또는 Windows Terminal (UTF-8 default) 사용. |
@@ -243,7 +244,6 @@ cd ave
 git stash push --include-untracked -m "pre-single-root-migration"
 git checkout main
 git pull origin main
-git submodule update --init --recursive   # SDK 서브모듈 갱신 (af62b1e+)
 bun install                                # bun.lock 동기화
 git stash pop  # 필요 시
 
@@ -251,7 +251,7 @@ git stash pop  # 필요 시
 cd ..
 for r in ave-plugin-meeting ave-plugin-local-indexer ave-plugin-vega-helper \
          ave-plugin-vega-helper ave-plugin-lyra-mail \
-         ave-plugin-hydra ave-plugin-template ave-plugin-sdk \
+         ave-plugin-hydra ave-plugin-template \
          ave-agent-hub; do
   (cd "$r" && git checkout main && git pull origin main)
 done
@@ -299,7 +299,7 @@ bun run dev
 
 | 증상 | 원인 / 해결 |
 |------|-------------|
-| `Cannot find module '@ave/plugin-sdk/keys'` 또는 관련 keys export 오류 | 로컬 working copy / SDK 서브모듈 stale 또는 오래된 코드가 폐기된 키 소유 모델을 참조 중. `git pull && git submodule update --recursive` 후 키 import 를 지웁니다. |
+| 이전 키 모듈을 찾을 수 없음 | 오래된 코드가 폐기된 키 소유 모델을 참조 중입니다. 해당 import를 제거하고 앱 릴리스 태그의 계약 파일로 갱신합니다. |
 | `bun install --frozen-lockfile` 실패 | bun.lock 갱신 필요 → `bun install` (frozen 없이) 후 커밋 |
 | 플러그인이 안 보임 | Settings → Plugin Config → 개발자 도구에서 빌드 폴더를 다시 설치하고 `bun run plugins:list`로 조회 |
 | 두 위치에서 플러그인 충돌 | `.ave-dev` 잔재를 삭제한 뒤 Settings에서 빌드 폴더를 다시 설치. registry는 직접 편집하지 않음 |

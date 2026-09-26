@@ -43,8 +43,8 @@ export const ADMIN_PLUGIN_UNINSTALL_DENIED_CODE = "admin-plugin-uninstall-denied
  * localized copy; an unrecognised failure has no code, so the plain message
  * goes in `error` and the renderer's fallback surfaces it verbatim.
  *
- * This lives outside `public-contract.ts` deliberately: that module is copied
- * mechanically into the SDK and must stay import-free.
+ * This lives outside `public-contract.ts` deliberately: plugins vendor that
+ * import-free module unchanged from an app release tag.
  */
 export function buildInstallFailureResult(
   slug: string,

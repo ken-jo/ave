@@ -1,5 +1,11 @@
 # Ave ⇄ MCP 2026-07-28 RC Alignment — Design
 
+> **플러그인 계약 이전 계획:** 아래 SDK 스키마 동기화 지시는 현재 작성 절차가
+> 아닙니다. 플러그인은 앱 릴리스 태그의 호스트 계약 파일을 `contract/`에 복사하고
+> `requires.minAppVersion`으로 필요한 앱 버전을 지정합니다. 현재 기준은
+> [설계서 §5.6](../../design/multi-source-git-marketplace.md#56-plugin-contract-for-authors)과
+> [영문 원문](../../architecture/mcp-alignment-design.md)의 범위 축소 공지입니다.
+
 > Status: **Design / approved direction** (decisions §0 ratified by the maintainer 2026-06-06).
 > Target revision: MCP `2026-07-28` Release Candidate (stateless protocol, per-request `_meta`,
 > `server/discover`, MRTR, + Apps/Tasks/Skills extensions).

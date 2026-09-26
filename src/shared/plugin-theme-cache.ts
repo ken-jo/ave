@@ -23,8 +23,8 @@ const PLUGIN_TOKEN_NAMES: Set<string> = new Set(AVE_TOKEN_NAMES);
 // Token values the host is allowed to hand a plugin frame, composed from the
 // shapes `bundleToPluginTokens` actually emits.
 //
-// Anything this rejects is dropped silently and the plugin keeps the SDK's
-// static fallback for that token — which is a dark-theme value, so a dropped
+// Anything this rejects is dropped silently and the plugin keeps its own
+// static fallback for that token — which may be a dark-theme value, so a dropped
 // token shows up as a dark chip in a light shell rather than as an error. That
 // is what a flat `hsl()`-only pattern did to the seven derived tinted tokens
 // (`--ave-*-bg-subtle`, `--ave-primary-bg-strong`, `--ave-surface-hover`,
@@ -59,7 +59,7 @@ let lastThemePayload: SafeThemePayload | null = null;
 /**
  * The last validated host theme is replayed to webviews registered after the
  * renderer's most recent broadcast. It remains null during the short window
- * before the renderer publishes its first theme, when the SDK fallback applies.
+ * before the renderer publishes its first theme, when the plugin's fallback applies.
  */
 
 export function cloneThemePayload(payload: SafeThemePayload): SafeThemePayload {
@@ -102,7 +102,7 @@ export function validateThemePayload(payload: unknown):
     }
   }
   safe.tokens = safeTokens;
-  // Fonts intentionally remain host-owned. The SDK no longer emits a fonts
+  // Fonts intentionally remain host-owned. The theme event has no fonts
   // channel, so an inbound legacy field must not enter the replay cache.
   if (candidate.colorScheme === "light" || candidate.colorScheme === "dark") {
     safe.colorScheme = candidate.colorScheme;

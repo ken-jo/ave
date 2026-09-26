@@ -170,7 +170,7 @@ describe("pluginIconFor", () => {
     expect(isLazy(Icon)).toBe(true);
   });
 
-  // Defense-in-depth: if the SDK schema's maxLength: 4 is somehow bypassed
+  // Defense-in-depth: if the host schema's maxLength: 4 is somehow bypassed
   // (legacy install, dev-mode validator skip), the renderer must still cap
   // the visible text to 4 chars rather than overflowing the avatar.
   it("iconText is hard-truncated to 4 chars at the renderer", () => {

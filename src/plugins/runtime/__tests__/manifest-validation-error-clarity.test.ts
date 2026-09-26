@@ -4,7 +4,7 @@
  * "/ must NOT have additional properties".
  *
  * Companion to #736: clear error message helps users diagnose why a stale
- * plugin install fails AJV validation after the SDK schema tightens.
+ * plugin install fails AJV validation after the host schema tightens.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -28,7 +28,7 @@ describe("manifest-validation enriched error messages (#737)", () => {
     await rm(workDir, { recursive: true, force: true });
   });
 
-  // Strict envelope, mirroring the SDK's additionalProperties:false discipline.
+  // Strict envelope, matching the host schema's additionalProperties:false rule.
   const makeValidator = permissiveManifestValidatorFactory({
     strict: true,
     namespaceProperties: {
@@ -163,9 +163,9 @@ describe("manifest-validation enriched error messages (#737)", () => {
   it("rejects a pre-v6 legacy string-tools manifest with an actionable upgrade message (#885 Phase R)", async () => {
     const path = join(workDir, "plugin.json");
     // A legacy pre-v6 manifest: `tools` is a list of name STRINGS. The lenient
-    // validator (mirroring an SDK still carrying the legacy oneOf arm) ACCEPTS
+    // validator (still carrying the legacy oneOf arm) ACCEPTS
     // it, so the host-side pure-v6 guard is the loud fail-closed point — it must
-    // name the offending index and point the author at @ave/plugin-sdk v6,
+    // name the offending index and point the author at the app release contract,
     // NOT fall through to the opaque "Invalid tool name 'undefined'".
     await writeFile(
       path,
@@ -186,7 +186,7 @@ describe("manifest-validation enriched error messages (#737)", () => {
     expect(err).toBeInstanceOf(Error);
     expect(err!.message).toContain("tools[0]");
     expect(err!.message).toContain("pre-v6 contract");
-    expect(err!.message).toContain("@ave/plugin-sdk v6");
+    expect(err!.message).toContain("app release contract");
     expect(err!.message).not.toContain("Invalid tool name 'undefined'");
   });
 });

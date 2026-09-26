@@ -39,7 +39,7 @@ const log = createLogger("ave");
  * metacharacters into the resolved file path.
  *
  * This charset is ALSO the authoring contract: it is what
- * `$defs/skillComponent/properties/name` of the SDK schema carries, so a name
+ * `$defs/skillComponent/properties/name` of the host manifest schema carries, so a name
  * the marketplace admits is a name this host can install. A test reads the
  * pattern out of the committed schema snapshot rather than restating it
  * (`__tests__/skill-front-matter-contract.test.ts`). The regex stays written
@@ -389,7 +389,7 @@ export function unquoteFrontmatterValue(raw: string): string {
  *
  * Undeclared keys are ignored rather than refused. Admission against the
  * schema happens where publication does, in the marketplace; a second refusal
- * here would mean an SDK that adds a field breaks every already-installed
+ * here would mean a newer contract field breaks every already-installed
  * skill that uses it until the host ships a new snapshot.
  */
 export function parseFrontmatter(raw: string): {

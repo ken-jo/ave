@@ -1,5 +1,5 @@
 /**
- * Manifest loading must use the SDK schema validator as the single source of truth.
+ * Manifest loading must use the host-owned schema validator as its source of truth.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -15,7 +15,7 @@ vi.mock("../../../lib/logger.js", () => ({
 }));
 import { agentPluginsDocument } from "../../__tests__/test-helpers.js";
 
-describe("parsePluginJson — SDK schema validator required", () => {
+describe("parsePluginJson — host schema validator required", () => {
   let testDir: string;
   let manifestPath: string;
 

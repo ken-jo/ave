@@ -214,8 +214,9 @@ Keep task-specific inventories in issues rather than in this instruction file.
   aborts; default/settings mode may gracefully degrade. Windows always
   degrades non-brickingly when unavailable. Preserve
   relaxation/effect-boundary coupling.
-- No Fallback Code: a plugin manifest field updates its schema and SDK in the
-  same PR; a HostApi change bumps every plugin dependency pin in the same PR.
+- No Fallback Code: a plugin manifest field updates its host schema and public
+  contract in the same PR; a HostApi change updates the host protocol and all
+  affected plugin contract copies at an app release tag.
 - UI edits start with `grep` before editing. Component-name shapes are in
   `Naming` > `Events and handlers`.
 - Private or non-indexed assets use the marketplace API, `gh`, or local sources,
