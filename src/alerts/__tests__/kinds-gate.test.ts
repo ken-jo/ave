@@ -131,6 +131,7 @@ describe("RegistrationLedger", () => {
     await ledger.flush();
     expect(JSON.parse(await readFile(join(dir, "plugins.json"), "utf-8"))).toEqual({ version: 1, plugins: [] });
     expect(ledger.register("fixturemail")).toBe("install");
+    await ledger.flush();
   });
 });
 
@@ -177,6 +178,9 @@ describe("alert event delivery", () => {
 
   it("reaches no plugin for a host kind or a payload without an owner", () => {
     expect(alertEventReaches("fixturemail", "alert.raised", { pluginId: "@host" }, undefined)).toBe(false);
+    expect(alertEventReaches("fixturemail", "alert.raised", { pluginId: "@host" }, {
+      plugins: [{ pluginId: "@host", events: ["alert.raised"] }],
+    })).toBe(false);
     expect(alertEventReaches("fixturemail", "alert.raised", {}, grant)).toBe(false);
   });
 
