@@ -61,13 +61,36 @@ export async function setupAlerts(ctx: BootContext): Promise<() => void> {
     audit: (entry) => bootAuditLogger.log(entry),
   });
   await service.load();
+  let disposed = false;
+  let revision = 0;
+  const reconcileRevocations = async () => {
+    const current = ++revision;
+    const rows = await pluginMarketplace.listInstalledPackages();
+    if (disposed || current !== revision) return;
+    service.setRevokedPlugins(rows.filter((row) => row.version !== null
+      && revocationRegistry.evaluate("plugin", row.name, row.version).kind === "block").map((row) => row.name));
+  };
+  const handleRevocationsUpdated = () => {
+    void reconcileRevocations().catch((err: unknown) => {
+      log.warn(`alert revocation reconciliation failed: ${errorMessage(err)}`);
+    });
+  };
+  const unsubscribeRevocations = revocationRegistry.onUpdated(handleRevocationsUpdated);
+  const unsubscribeInstalled = onEvent("plugin.installed", handleRevocationsUpdated);
+  await reconcileRevocations();
   const unsubscribe = onEvent("plugin.uninstalled", (data) => {
     const pluginId = (data as { pluginId?: unknown } | undefined)?.pluginId;
     if (typeof pluginId !== "string") return;
     service.pluginUninstalled(pluginId).catch((err: unknown) => {
       log.warn(`alerts cleanup for uninstalled plugin '${pluginId}' failed: ${errorMessage(err)}`);
     });
+    handleRevocationsUpdated();
   });
   ctx.alertsService = service;
-  return unsubscribe;
+  return () => {
+    disposed = true;
+    unsubscribe();
+    unsubscribeInstalled();
+    unsubscribeRevocations();
+  };
 }

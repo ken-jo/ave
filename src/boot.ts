@@ -677,8 +677,8 @@ export async function bootstrap(
   await setupWorkBoard(ctx);
   await setupWorkflowStores(ctx, workspaceSessionStores);
   await setupMarketplace(ctx);
-  // Before the cleanup replay below, which can finish an uninstall the alerts
-  // pipeline must hear, and before plugins start registering their kinds.
+  // Before cleanup replay and plugin startup: uninstall events must reach the
+  // alerts service, and declared kinds must register before their first raise.
   await setupAlerts(ctx);
   // ONE cleanup service set for every boot entry point into
   // plugins/uninstall-lifecycle. It used to be hand-spelled per call site, and

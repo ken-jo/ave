@@ -214,6 +214,20 @@ describe("grant and shape", () => {
 });
 
 describe("predecessor and toggle", () => {
+  it("refuses a raise revoked while predecessor lookup is pending, and allows a later unrevoked raise", async () => {
+    const h = await registered();
+    let release!: (value: boolean) => void;
+    h.blocks.mockImplementationOnce(() => new Promise<boolean>((resolve) => { release = resolve; }));
+    const pending = h.service.raise("fixturemail", { kind: "successor", key: "race" });
+    await vi.waitFor(() => expect(h.blocks).toHaveBeenCalled());
+    h.service.setRevokedPlugins(["fixturemail"]);
+    release(false);
+    expect(await pending).toEqual({ status: "kind_not_granted", kind: "successor" });
+    expect(h.shown).toEqual([]);
+    h.service.setRevokedPlugins([]);
+    expect((await h.service.raise("fixturemail", { kind: "successor", key: "race" })).status).toBe("raised");
+  });
+
   it("stays silent while the kind's predecessor blocks, and asks about it by name and source hint", async () => {
     const h = await registered();
     h.blocks.mockResolvedValue(true);

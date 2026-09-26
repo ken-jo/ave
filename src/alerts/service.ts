@@ -96,6 +96,7 @@ export class AlertsService {
   private readonly store: AlertStore;
   private readonly ledger: RegistrationLedger;
   private readonly registrations = new Map<string, Promise<Registration>>();
+  private revokedPlugins = new Set<string>();
   private readonly lastFired = new Map<string, number>();
   private readonly rate = new TriggerConversationRateLimiter(ALERT_RATE_WINDOW_MS, ALERT_RATE_MAX_CALLS);
   private readonly denyThrottle = new TriggerDenyAuditThrottle();
@@ -186,6 +187,8 @@ export class AlertsService {
       return { status: "blocked_by_predecessor", pluginId: predecessor.pluginId };
     }
 
+    // A feed may revoke the caller while predecessor lookup is pending.
+    if (this.revokedPlugins.has(pluginId)) return { status: "kind_not_granted", kind: kind.id };
     const settings = this.deps.settings.get();
     const choice = settings.kinds[alertKindKey(pluginId, kind.id)];
     if (!choice?.enabled) {
@@ -279,6 +282,14 @@ export class AlertsService {
   /** Every staged card, for a window that appeared or reloaded after the alert was raised. */
   openCards(): AlertCard[] {
     return [...this.cards.values()];
+  }
+
+  /** Revocation withdraws cards without forgetting the installed plugin's choices. */
+  setRevokedPlugins(pluginIds: readonly string[]): void {
+    this.revokedPlugins = new Set(pluginIds);
+    for (const pluginId of this.revokedPlugins) {
+      for (const open of this.store.removePlugin(pluginId)) this.finish(open, "withdrawn");
+    }
   }
 
   /** An uninstalled plugin's cards go; its choices stay, marked absent, until they age out. */

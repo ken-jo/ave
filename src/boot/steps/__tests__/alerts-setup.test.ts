@@ -80,6 +80,72 @@ afterEach(async () => {
 });
 
 describe("setupAlerts", () => {
+  it("ignores an older installed-package read after a newer reconciliation finishes", async () => {
+    const { ctx } = context();
+    disposers.push(await setupAlerts(ctx));
+    await raiseReply(ctx);
+    const read = vi.mocked(ctx.pluginMarketplace.listInstalledPackages);
+    let release!: (rows: never[]) => void;
+    read.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    revocationRegistry.replace([]);
+    installed = [{ name: "fixturemail", version: "1.0.0", sourceId: "ave", originCommit: null }];
+    revocationRegistry.replace([{ sourceId: "ave", kind: "plugin", name: "fixturemail", versions: "*", reason: "revoked", at: "2026-09-01", action: "disable" }]);
+    await vi.waitFor(() => expect(ctx.alertsService.openCards()).toEqual([]));
+    release([]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(await ctx.alertsService.raise("fixturemail", { kind: "reply", key: "new" })).toEqual({ status: "kind_not_granted", kind: "reply" });
+    await ctx.alertsService.flush();
+  });
+
+  it.each(["disable", "uninstall"] as const)("withdraws cards on a %s feed while the plugin remains installed and loaded", async (action) => {
+    const { ctx, send } = context();
+    disposers.push(await setupAlerts(ctx));
+    const result = await raiseReply(ctx);
+    expect(result.status).toBe("raised");
+    installed = [{ name: "fixturemail", version: "1.0.0", sourceId: "ave", originCommit: null }];
+    loaded = ["fixturemail"];
+    revocationRegistry.replace([{
+      sourceId: "ave", kind: "plugin", name: "fixturemail", versions: "*", reason: "revoked", at: "2026-09-01", action,
+    }]);
+    await vi.waitFor(() => expect(ctx.alertsService.openCards()).toEqual([]));
+    expect(send).toHaveBeenCalledWith(OVERLAY_V1.dismiss, expect.any(String));
+    expect(settings.kinds["fixturemail:reply"]?.absentSinceAppVersion).toBeUndefined();
+    expect(settings.kinds["fixturemail:reply"]?.enabled).toBe(true);
+    expect(await ctx.alertsService.raise("fixturemail", { kind: "reply", key: "another" })).toEqual({ status: "kind_not_granted", kind: "reply" });
+    await ctx.alertsService.flush();
+  });
+
+  it("rechecks installed versions even when the feed rules do not change", async () => {
+    const { ctx } = context();
+    disposers.push(await setupAlerts(ctx));
+    await raiseReply(ctx);
+    const rule = { sourceId: "ave", kind: "plugin" as const, name: "fixturemail", versions: "1.0.0", reason: "revoked", at: "2026-09-01", action: "disable" as const };
+    revocationRegistry.replace([rule]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(ctx.alertsService.openCards()).toHaveLength(1);
+    installed = [{ name: "fixturemail", version: "1.0.0", sourceId: "ave", originCommit: null }];
+    expect(revocationRegistry.replace([rule])).toBe(false);
+    await vi.waitFor(() => expect(ctx.alertsService.openCards()).toEqual([]));
+    await ctx.alertsService.flush();
+  });
+
+  it("hears installed registry changes and releases the feed subscription on disposal", async () => {
+    const { ctx } = context();
+    const dispose = await setupAlerts(ctx);
+    await raiseReply(ctx);
+    revocationRegistry.replace([{ sourceId: "ave", kind: "plugin", name: "fixturemail", versions: "*", reason: "revoked", at: "2026-09-01", action: "disable" }]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    installed = [{ name: "fixturemail", version: "1.0.0", sourceId: "ave", originCommit: null }];
+    emitEvent("plugin.installed", { pluginId: "fixturemail" });
+    await vi.waitFor(() => expect(ctx.alertsService.openCards()).toEqual([]));
+    dispose();
+    const reads = vi.mocked(ctx.pluginMarketplace.listInstalledPackages).mock.calls.length;
+    revocationRegistry.replace([]);
+    emitEvent("plugin.installed", { pluginId: "fixturemail" });
+    expect(vi.mocked(ctx.pluginMarketplace.listInstalledPackages).mock.calls).toHaveLength(reads);
+    await ctx.alertsService.flush();
+  });
+
   it("blocks a successor while its predecessor from the hinted source is installed and not revoked", async () => {
     installed = [{ name: "retiredfixture", version: "1.0.0", sourceId: "ave", originCommit: null }];
     const { ctx } = context();
