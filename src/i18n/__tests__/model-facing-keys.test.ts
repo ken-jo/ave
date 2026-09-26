@@ -37,6 +37,7 @@ const INTERFACE_KEYS: ReadonlyMap<string, readonly string[]> = new Map([
   ["main/host-api/pick-folders.ts", ["mainDialog."]], // folder picker
   ["main/startup-launch.ts", ["startupTab."]], // login-item dialogs
   ["shared/format-time.ts", ["sidebar."]], // relative times in the sidebar
+  ["shared/plugin-provenance.ts", ["alerts."]], // plugin identity on cards and notifications
 ]);
 /** The renderer and the catalogs themselves. */
 const RENDERER_ROOTS = ["ui", "components", "i18n"];

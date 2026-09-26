@@ -41,6 +41,7 @@ import {
 } from "./gate.js";
 import { RegistrationLedger, alertKindKey, markPluginAbsent, resolveRegistration } from "./kinds.js";
 import { HOST_ALERT_KINDS } from "./host-kinds.js";
+import { formatPluginProvenance, resolvePluginDisplayName } from "../shared/plugin-provenance.js";
 
 const log = createLogger("alerts");
 
@@ -178,7 +179,7 @@ export class AlertsService {
         registration ??= this.mutate(async () => {
           await loaded;
           const resolved = await this.resolve(pluginId, kinds);
-          return { ...resolved, pluginLabel: manifest.name?.trim() || pluginId, reasoning: manifest.alerts?.reasoning ?? "" };
+          return { ...resolved, pluginLabel: resolvePluginDisplayName(pluginId, manifest.name), reasoning: manifest.alerts?.reasoning ?? "" };
         });
         this.registrations.set(pluginId, registration);
         return this.mutate(async () => {
@@ -508,7 +509,7 @@ export class AlertsService {
     const toast = !os && visibility === "summary-only" && focused;
     const title = pluginId === ALERT_HOST_PLUGIN_ID
       ? rendered.title
-      : `${translate(this.deps.locale(), "alerts.pluginNotice", { name: pluginDisplayName })} · ${rendered.title}`;
+      : `${formatPluginProvenance((key, vars) => translate(this.deps.locale(), key, vars), pluginId, pluginDisplayName)} · ${rendered.title}`;
     if (os) {
       this.deps.notifications.fire({
         kind: "alert",

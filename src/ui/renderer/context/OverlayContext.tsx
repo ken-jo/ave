@@ -75,7 +75,7 @@ export interface OverlayItem {
   /** Unique id: `${source.kind}-${unique}` */
   id: string;
   source: OverlayItemSource;
-  /** Host-resolved name for an alert card; absent for other overlay sources. */
+  /** Host-resolved name for a plugin alert, suggestion, or proposal. */
   pluginDisplayName?: string;
   title: string;
   summary: string;

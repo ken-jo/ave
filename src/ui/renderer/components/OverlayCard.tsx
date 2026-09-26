@@ -74,8 +74,8 @@ export interface OverlayCardProps {
 
   /** `app` = an MCP App's `ui/message` staged for user confirmation (no turn in flight). */
   kind?: "routine" | "plugin" | "app" | "host";
-  /** Host-formatted provenance for a declared alert. */
-  alertProvenance?: string;
+  /** Host-formatted provenance for a plugin-originated card. */
+  pluginProvenance?: string;
 
   /**
    * A proposal is a question the user answers ONCE, so its card carries the
@@ -121,7 +121,7 @@ export function OverlayCard({
   expanded,
   onExpandedChange,
   kind = "routine",
-  alertProvenance,
+  pluginProvenance,
   dispositions,
 }: OverlayCardProps) {
   const { t } = useTranslation();
@@ -167,13 +167,13 @@ export function OverlayCard({
               <span className="truncate">{title}</span>
             </CardTitle>
             <CardDescription className="mt-0.5 flex min-w-0 items-center gap-0.5 text-[11px]">
-              <span className="min-w-0 truncate" title={alertProvenance}>
+              <span className="min-w-0 truncate" title={pluginProvenance}>
                 {running
                   ? t("overlayCard.running")
                   : kind === "host"
                     ? t("alerts.builtInNotice")
                   : kind === "plugin"
-                    ? alertProvenance ?? t("overlayCard.pluginNotice")
+                    ? pluginProvenance
                     : kind === "app"
                       ? t("overlayCard.appNotice")
                       : t("overlayCard.routineDone")}

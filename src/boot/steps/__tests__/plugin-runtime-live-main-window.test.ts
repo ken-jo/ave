@@ -262,6 +262,7 @@ describe("hostApi.triggerConversation overlay send targets the live main window"
     const api = await overlayHostApi({
       bootWindow,
       getMainWindow: () => current,
+      manifest: { id: "plugin-a", name: "Mail tools", capabilities: ["host:overlay"] },
     });
 
     // Close + reopen: the boot handle is destroyed and a new window registers.
@@ -283,6 +284,7 @@ describe("hostApi.triggerConversation overlay send targets the live main window"
     expect(sent).toHaveLength(1);
     expect(sent[0][1]).toMatchObject({
       source: { kind: "plugin", pluginId: "plugin-a" },
+      pluginDisplayName: "Mail tools",
       running: false,
     });
   });

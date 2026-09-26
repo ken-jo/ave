@@ -79,24 +79,60 @@ function mount(onPluginPrimaryAction = vi.fn(), onAlertDismiss = vi.fn()) {
 }
 
 describe("alert cards in the overlay queue", () => {
-  it("shows distinct host-resolved plugin names even when kind titles and slot text match another plugin", () => {
+  it("shows distinct canonical ids when names and kind titles match", () => {
     const q = mount();
-    q.add({ ...alertItem("mail", undefined, "Plugin: Calendar tools"), pluginDisplayName: "Mail tools" });
+    q.add({ ...alertItem("mail", undefined, "Plugin: fixturecalendar"), pluginDisplayName: "Mail tools" });
     q.add({
-      ...alertItem("calendar", undefined, "Plugin: Mail tools"),
+      ...alertItem("calendar", undefined, "Plugin: fixturemail"),
       source: { kind: "alert", pluginId: "fixturecalendar", kindId: "reply", alertId: "calendar" },
-      pluginDisplayName: "Calendar tools",
+      pluginDisplayName: "Mail tools",
     });
-    expect(screen.getByText(t("alerts.pluginNotice", { name: "Calendar tools" }), { selector: "span[title]" })).toBeTruthy();
+    expect(screen.getByText(t("alerts.pluginProvenance", { id: "fixturecalendar", name: "Mail tools" }), { selector: "span[title]" })).toBeTruthy();
     fireEvent.click(screen.getByTestId("overlay-card-prev"));
-    expect(screen.getByText(t("alerts.pluginNotice", { name: "Mail tools" }), { selector: "span[title]" })).toBeTruthy();
+    expect(screen.getByText(t("alerts.pluginProvenance", { id: "fixturemail", name: "Mail tools" }), { selector: "span[title]" })).toBeTruthy();
+  });
+
+  it("identifies plugin suggestions and onboarding proposals under plugin-authored titles", () => {
+    const q = mount();
+    q.add({ ...pluginItem("suggestion"), title: "Built-in notice", pluginDisplayName: "Ave" });
+    expect(screen.getByText(t("alerts.pluginProvenance", { id: "fixturemail", name: "Ave" }), { selector: "span[title]" })).toBeTruthy();
+    q.add({
+      id: "proposal:fixturecalendar:first-task",
+      source: { kind: "proposal", pluginId: "fixturecalendar", proposalId: "first-task", action: { kind: "composer", prompt: "Review this" } },
+      title: "Built-in notice",
+      summary: "A proposed action",
+      running: false,
+      createdAt: "2026-09-26T00:00:00.000Z",
+      pluginDisplayName: "Ave",
+    });
+    expect(screen.getByText(t("alerts.pluginProvenance", { id: "fixturecalendar", name: "Ave" }), { selector: "span[title]" })).toBeTruthy();
+    fireEvent.click(screen.getByTestId("overlay-card-prev"));
+    expect(screen.getByText(t("alerts.pluginProvenance", { id: "fixturemail", name: "Ave" }), { selector: "span[title]" })).toBeTruthy();
+  });
+
+  it("falls back to the canonical id for a plugin card without a display name", () => {
+    const q = mount();
+    q.add(pluginItem("legacy"));
+    expect(screen.getByText(t("alerts.pluginIdOnly", { id: "fixturemail" }), { selector: "span[title]" })).toBeTruthy();
+  });
+
+  it("keeps the full id in the provenance tooltip for a long plugin name", () => {
+    const q = mount();
+    const pluginId = `plugin-${"x".repeat(57)}`;
+    q.add({
+      ...pluginItem("long"),
+      source: { kind: "plugin", pluginId, eventId: "long" },
+      pluginDisplayName: "Enterprise Calendar and Scheduling Tools",
+    });
+    const provenance = t("alerts.pluginProvenance", { id: pluginId, name: "Enterprise Calendar and Scheduling Tools" });
+    expect(screen.getByText(provenance, { selector: "span[title]" }).getAttribute("title")).toBe(provenance);
   });
 
   it("identifies a host alert as built-in rather than a plugin notice", () => {
     const q = mount();
     q.add({ ...alertItem("host"), source: { kind: "alert", pluginId: "@host", kindId: "due-soon", alertId: "host" } });
     expect(screen.getByText(t("alerts.builtInNotice"))).toBeTruthy();
-    expect(screen.queryByText(t("overlayCard.pluginNotice"))).toBeNull();
+    expect(screen.queryByText(t("alerts.pluginIdOnly", { id: "@host" }))).toBeNull();
   });
   it.each(["urgent", "toString", "__proto__", 3, null])("ranks malformed priority %s as normal below high", (priority) => {
     const q = mount();
