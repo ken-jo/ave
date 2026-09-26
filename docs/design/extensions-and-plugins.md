@@ -743,22 +743,29 @@ different ones, because a hook and an MCP server are admitted by different gramm
 - *MCP launcher policy*: the launcher grammar of §3.2 (marketplace design §5.2) has
   already validated the argv before the adapter runs, and it hands the adapter what it
   found: the executable (`npx`, `uvx`, `docker`, `node`, `bun`, or a `./`-relative
-  package path) and the indexes of the **launcher literals** — the pinned package spec
-  (`example-server@1.2.3`, `@example/server@1.2.3`, `package[extras]==1.2.3`), the
-  image reference (`ghcr.io/example/server:1.2.3`, `example/server@sha256:…`), the
-  pinned option tokens (`-y`, `--from`, `run`, `-i`, `--rm`, `-e NAME`, `--network
-  none`) and `node`/`bun`'s script token. Those indexes are literal by grammar: they
-  are copied through verbatim and are exempt from the path-shape refusal, because a
-  scoped package name and a namespaced image contain `/` and `looksLikePath`
-  (`plugin-bundled-command.ts:7-9`) would otherwise call them paths. Everything after
-  the package or image belongs to the server and is classified below.
+  package path) and the indexes of the **launcher literals**, which are exactly three
+  things and nothing else: the pinned registry package spec for `npx` and `uvx`
+  (`example-server@1.2.3`, `@example/server@1.2.3`, `package[extras]==1.2.3`); the
+  image reference for `docker` (`ghcr.io/example/server:1.2.3`,
+  `example/server@sha256:…`); and the fixed option tokens the grammar allows (`-y`,
+  `--from`, `run`, `-i`, `--rm`, `-e NAME`, `--network none`). **A launcher literal is
+  never a local path.** The script token that follows `node` or `bun` is a **package
+  path**, not a literal: it is classified, `${PLUGIN_ROOT}`-rewritten, anchored to the
+  package root, sealed and hashed exactly like any other package-path token, so the
+  program the sheet shows is a retained package file and not a name the runtime
+  resolves. Launcher-literal indexes are copied through verbatim and are exempt from
+  the path-shape refusal, because a scoped package name and a namespaced image contain
+  `/` and `looksLikePath` (`plugin-bundled-command.ts:7-9`) would otherwise call them
+  paths. Everything after the package or image belongs to the server and is classified
+  below.
 
 Placeholder resolution and indexed anchoring (steps 2–4) are shared; only the
 classification of `command[0]` and of the grammar-identified literals differs.
 
 1. **Classify every token** of the symbolic argv into exactly one class:
-   - *launcher literal* (MCP policy only): a token whose index the launcher grammar
-     identified — copied through verbatim, never anchored, never expanded;
+   - *launcher literal* (MCP policy only): a registry package spec, an image reference
+     or a fixed option token whose index the launcher grammar identified — copied
+     through verbatim, never anchored, never expanded; never a local path;
    - *package path*: `${PLUGIN_ROOT}/<p>` or a `./`-relative token — rewritten to
      `./<p>` (the `./` is **kept**, so a root file such as `${PLUGIN_ROOT}/hook.js`
      becomes `./hook.js`, which `looksLikePath` recognizes and the anchoring pass seals
@@ -805,8 +812,12 @@ file for both policies:
   (`docker run -i --rm ghcr.io/example/server:1.2.3`) and by digest
   (`docker run -i --rm example/server@sha256:<64 hex>`); a package-local server
   (`./server/run` with `${PLUGIN_ROOT}/config.json` in `args`, anchored and hashed);
-  and the refusals the grammar keeps: `npx example-server` unpinned, `example/server:latest`,
-  a package spec that is a path or URL, and `${PLUGIN_ROOT}/…` as `command`.
+  a `node`/`bun` script as a package path (`node ${PLUGIN_ROOT}/server.js` and
+  `bun ./server.ts` are anchored to the package root, sealed and hashed, and the
+  resolved argv names the sealed file); and the refusals the grammar keeps:
+  `npx example-server` unpinned, `example/server:latest`, a package spec that is a
+  path or URL, `${PLUGIN_ROOT}/…` as `command`, `node ../escape.js` (escapes the
+  package root) and `node /usr/lib/anything.js` (absolute script path).
 
 What the program then does is bounded by the confinement above, not by the anchoring.
 
