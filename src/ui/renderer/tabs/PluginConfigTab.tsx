@@ -837,6 +837,8 @@ export function PluginConfigTab({ api, initialPluginId }: { api?: AveApi; initia
                             ? t("pluginConfigTab.doctorIncompatibleAppTitle")
                             : selectedPlugin.installFailureKind === "incompatible-host-protocol"
                               ? t("pluginConfigTab.doctorIncompatibleProtocolTitle")
+                              : selectedPlugin.installFailureKind === "sandbox-grant-outside-ceiling"
+                                ? t("pluginConfigTab.doctorSandboxGrantTitle")
                               : selectedPlugin.installFailureKind === "manifest-validation-error"
                                 ? t("pluginConfigTab.doctorManifestValidationTitle")
                                 : selectedPlugin.installFailureKind === "plugin-revoked"
@@ -852,6 +854,8 @@ export function PluginConfigTab({ api, initialPluginId }: { api?: AveApi; initia
                             ? t("pluginConfigTab.doctorIncompatibleAppDescription")
                             : selectedPlugin.installFailureKind === "incompatible-host-protocol"
                               ? t("pluginConfigTab.doctorIncompatibleProtocolDescription")
+                              : selectedPlugin.installFailureKind === "sandbox-grant-outside-ceiling"
+                                ? t("pluginConfigTab.doctorSandboxGrantDescription")
                               : selectedPlugin.installFailureKind === "manifest-validation-error"
                                 ? t("pluginConfigTab.doctorManifestValidationDescription")
                                 : selectedPlugin.installFailureKind === "plugin-revoked"

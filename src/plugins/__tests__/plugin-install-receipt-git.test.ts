@@ -17,6 +17,8 @@ import {
   type GitInstallRecord,
 } from "../plugin-install-receipt.js";
 import { verifyPluginIntegrity } from "../runtime/index.js";
+import { canonicalJSON } from "../secret-access/canonical-json.js";
+import { sha256Hex } from "../../lib/hex-digest-equal.js";
 
 const SNAPSHOT = "a".repeat(40);
 const VERSION_COMMIT = "b".repeat(40);
@@ -67,6 +69,32 @@ describe("git install receipts (schema v4)", () => {
     await expect(verifyPluginIntegrity(cacheRoot, "alpha", pluginRoot)).resolves.toEqual({
       ok: true,
       verified: { installSource: "git", artifactSha256: DIGEST, signerKeyId: null },
+    });
+  });
+
+  it("binds the reviewed filesystem authority to a running git manifest", async () => {
+    const authority = { capabilities: [], sandbox: { write: [{ kind: "userChosenDirectory", configKey: "workspace", why: "Store project data" }] } };
+    await writeFile(join(pluginRoot, "plugin.json"), JSON.stringify({
+      name: "alpha",
+      extensions: { "ai.agent-connector.ave": authority },
+    }));
+    const digest = sha256Hex(canonicalJSON(authority));
+    const { raw } = await built(record({ authoritySha256: digest }));
+    await restoreInstallReceiptRaw(cacheRoot, "alpha", raw);
+    await expect(verifyPluginIntegrity(cacheRoot, "alpha", pluginRoot)).resolves.toMatchObject({ ok: true });
+
+    const { raw: mismatched } = await built(record({ authoritySha256: "d".repeat(64) }));
+    await restoreInstallReceiptRaw(cacheRoot, "alpha", mismatched);
+    await expect(verifyPluginIntegrity(cacheRoot, "alpha", pluginRoot)).resolves.toEqual({
+      ok: false,
+      reason: "plugin authority differs from install review",
+    });
+
+    const { raw: unreviewed } = await built();
+    await restoreInstallReceiptRaw(cacheRoot, "alpha", unreviewed);
+    await expect(verifyPluginIntegrity(cacheRoot, "alpha", pluginRoot)).resolves.toEqual({
+      ok: false,
+      reason: "sandbox authority has no install review evidence",
     });
   });
 

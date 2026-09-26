@@ -130,6 +130,13 @@ export interface SpawnWorkerSpec {
 }
 
 const activeWrappedWorkerKeys = new Set<string>();
+const workerExitWaiters = new Map<string, Promise<void>>();
+
+/** Resolve after every worker of this plugin has definitively exited. */
+export async function waitForPluginWorkersStopped(pluginId: string): Promise<void> {
+  const prefix = `${pluginId.length}:${pluginId}:`;
+  await Promise.all([...workerExitWaiters].filter(([key]) => key.startsWith(prefix)).map(([, ended]) => ended));
+}
 
 function wrappedWorkerKey(pluginId: string, workerId: string): string {
   return `${pluginId.length}:${pluginId}:${workerId}`;
@@ -143,17 +150,22 @@ function reserveWrappedWorker(pluginId: string, workerId: string): () => void {
     );
   }
   activeWrappedWorkerKeys.add(key);
+  let resolveExit!: () => void;
+  workerExitWaiters.set(key, new Promise<void>((resolve) => { resolveExit = resolve; }));
   let released = false;
   return () => {
     if (released) return;
     released = true;
     activeWrappedWorkerKeys.delete(key);
+    workerExitWaiters.delete(key);
+    resolveExit();
   };
 }
 
 /** Test-only reset for mocked children that do not emit a definitive exit. */
 export function __resetActiveWrappedWorkersForTest(): void {
   activeWrappedWorkerKeys.clear();
+  workerExitWaiters.clear();
 }
 
 /**

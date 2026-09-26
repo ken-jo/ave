@@ -198,6 +198,7 @@ export interface AuthorityView {
   secrets: string[];
   pluginAccess: string[];
   dependencies: string[];
+  filesystem: Array<{ access: "read" | "write"; target: string; why: string }>;
 }
 
 type RungKindView = "release" | "archive" | "tree";

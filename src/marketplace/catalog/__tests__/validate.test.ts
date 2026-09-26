@@ -32,7 +32,7 @@ const PAYLOADS: Record<string, () => Record<string, unknown>> = {
 
 function descriptor(kind: string, patch: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     kind,
     name: `sample-${kind}`,
     version: "1.2.0",
@@ -80,7 +80,7 @@ describe("validateDescriptorText", () => {
 
   it.each([
     ["unknown root key", { extra: 1 }],
-    ["wrong schemaVersion", { schemaVersion: 2 }],
+    ["wrong schemaVersion", { schemaVersion: 1 }],
     ["unknown kind", { kind: "widget" }],
     ["name with double hyphen", { name: "a--b" }],
     ["name starting with a digit", { name: "1abc" }],
@@ -210,7 +210,7 @@ describe("validateDescriptorText", () => {
 });
 
 function index(packages: unknown[], patch: Record<string, unknown> = {}): string {
-  return JSON.stringify({ schemaVersion: 1, name: "acme", displayName: "Acme", packages, ...patch });
+  return JSON.stringify({ schemaVersion: 2, name: "acme", displayName: "Acme", packages, ...patch });
 }
 
 const version = (v: string, patch: Record<string, unknown> = {}) => ({
@@ -242,9 +242,9 @@ describe("validateIndexText", () => {
   it.each([
     ["unparseable JSON", "{"],
     ["an unknown root key", index([], { extra: 1 })],
-    ["a wrong schemaVersion", index([], { schemaVersion: 2 })],
+    ["a wrong schemaVersion", index([], { schemaVersion: 1 })],
     ["duplicate root keys", index([]).replace('"name":"acme"', '"name":"acme","name":"other"')],
-    ["a packages object", JSON.stringify({ schemaVersion: 1, name: "acme", displayName: "Acme", packages: {} })],
+    ["a packages object", JSON.stringify({ schemaVersion: 2, name: "acme", displayName: "Acme", packages: {} })],
   ])("rejects the whole index for %s", (_label, text) => {
     expect(validateIndexText(text, context).ok).toBe(false);
   });

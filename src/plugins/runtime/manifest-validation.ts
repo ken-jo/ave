@@ -55,6 +55,7 @@ import { resolveAddFormats, resolveAjv } from "../config-schema.js";
 import { TOOL_NAME_PATTERN, isValidToolName } from "../../tools/types.js";
 import { canonicalJSON } from "../secret-access/canonical-json.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
+import { sandboxDeclarationProblem } from "../sandbox-authority.js";
 
 // Re-exported here so manifest/plugin-loading consumers can import the
 // minAppVersion gate error + IPC code alongside the other manifest contracts.
@@ -966,6 +967,11 @@ export async function parsePluginJson(
   // rejected). From here on all tool checks read `manifest.tools: Tool[]` —
   // never `parsed.tools`.
   const manifest = materializeManifest(parsed);
+
+  const sandboxProblem = sandboxDeclarationProblem(manifest);
+  if (sandboxProblem) {
+    fail("sandbox", `${sandboxProblem} — manifest_schema`, `"sandbox": { "read": [] }`);
+  }
 
   // Contribution paths and owner-local IDs are security-bearing cross-field
   // contracts that JSON Schema alone cannot normalize or collision-check.

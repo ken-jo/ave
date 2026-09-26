@@ -79,6 +79,7 @@ function AuthorityList({ authority, sign }: { authority: AuthorityView; sign?: "
   const { t } = useTranslation();
   const rows: string[] = [
     ...authority.networkHosts.map((host) => t("gitMarketplace.authority.network", { host })),
+    ...authority.filesystem.map((grant) => t("gitMarketplace.authority.filesystem", { grant: `${grant.access}: ${grant.target} — ${grant.why}` })),
     ...authority.secrets.map((secret) => t("gitMarketplace.authority.secret", { secret })),
     ...authority.capabilities.map((capability) => t("gitMarketplace.authority.capability", { capability })),
     ...authority.pluginAccess.map((plugin) => t("gitMarketplace.authority.pluginAccess", { plugin })),

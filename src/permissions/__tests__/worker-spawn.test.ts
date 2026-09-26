@@ -119,7 +119,7 @@ vi.mock("../asrt-sandbox.js", () => ({
 }));
 
 // Module imports AFTER the mocks.
-import { __resetActiveWrappedWorkersForTest, spawnWorker } from "../worker-spawn.js";
+import { __resetActiveWrappedWorkersForTest, spawnWorker, waitForPluginWorkersStopped } from "../worker-spawn.js";
 import { aveHome } from "../../shared/ave-home.js";
 import {
   resolveReviewerSandboxCapability,
@@ -398,6 +398,23 @@ describe("spawnWorker — gate ON (macOS)", () => {
 // ─── Gate ON (linux) — registers the socketDir; FS-jail-only wrap ───
 
 describe("spawnWorker — gate ON (linux)", () => {
+  it("does not report plugin workers stopped until their process exits", async () => {
+    setProcessPlatform("linux");
+    gateActive = true;
+    wrapWorkerCommandMock.mockResolvedValueOnce({ argv: ["/bin/bash", "-c", "wrapped"], env: { ...process.env } });
+    const child = new StubWorkerChild();
+    spawnMock.mockReturnValueOnce(child);
+    const worker = await spawnWorker({ pluginId: "sandbox-candidate", workerId: "index", command: "/opt/worker" });
+    let completed = false;
+    const waiting = waitForPluginWorkersStopped("sandbox-candidate").then(() => { completed = true; });
+    worker.stop();
+    await Promise.resolve();
+    expect(completed).toBe(false);
+    child.emit("exit", 0, null);
+    await waiting;
+    expect(completed).toBe(true);
+  });
+
   it("registers the socketDir on the shared config and wraps with the FS jail only (no per-command UDS option)", async () => {
     setProcessPlatform("linux");
     gateActive = true;

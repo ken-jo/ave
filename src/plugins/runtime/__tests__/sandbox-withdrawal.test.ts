@@ -1,0 +1,163 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { PluginRuntime, createNoopHostApiForTests } from "../../runtime.js";
+import { derivePluginChildEnvelope } from "../../isolation/out-of-process-plugin.js";
+import { unavailableSecretEncryption } from "../../../__tests__/support/host-runtime.js";
+
+const PLUGIN_ID = "sandbox-candidate";
+let root: string;
+let previousHome: string | undefined;
+
+function setApproved(directories: string[]): void {
+  writeFileSync(join(root, "home", "settings.json"), JSON.stringify({
+    permissions: { additionalDirectories: directories },
+  }));
+}
+
+class WithdrawalRuntime extends PluginRuntime {
+  register(path: string, pluginRoot: string, pluginDataDir: string) {
+    return this.registerSandboxEnvelope(PLUGIN_ID, [path], pluginRoot, pluginDataDir);
+  }
+
+  attach(stop: () => Promise<void>, retire: () => Error[] = () => []): void {
+    this.plugins.set(PLUGIN_ID, {
+      manifest: { id: PLUGIN_ID, name: "Sandbox Candidate", version: "1.0.0", entry: "index.js", description: "test", tools: [] },
+      instance: { handlers: {}, stop },
+      methods: new Map(),
+      hostEffects: { retire },
+    } as never);
+  }
+
+  failureKind(): string | undefined {
+    return this.loadFailureInfo.get(PLUGIN_ID)?.installFailureKind;
+  }
+
+  running(): boolean {
+    return this.plugins.has(PLUGIN_ID);
+  }
+}
+
+function runtime(): WithdrawalRuntime {
+  return new WithdrawalRuntime({
+    hostRoot: root,
+    manifestPaths: [],
+    encryption: unavailableSecretEncryption,
+    createHostApi: createNoopHostApiForTests,
+  });
+}
+
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), "ave-sandbox-withdrawal-"));
+  previousHome = process.env.AVE_HOME;
+  process.env.AVE_HOME = join(root, "home");
+  mkdirSync(process.env.AVE_HOME, { recursive: true });
+});
+
+afterEach(() => {
+  if (previousHome === undefined) delete process.env.AVE_HOME;
+  else process.env.AVE_HOME = previousHome;
+  rmSync(root, { recursive: true, force: true });
+});
+
+describe("approved-directory withdrawal", () => {
+  it("waits for a spawn still starting to release its confined child", async () => {
+    const approved = join(root, "approved");
+    const pluginRoot = join(root, "home", "plugins", PLUGIN_ID);
+    const dataDir = join(pluginRoot, "data");
+    mkdirSync(approved, { recursive: true });
+    mkdirSync(dataDir, { recursive: true });
+    setApproved([approved]);
+    const subject = runtime();
+    const pending = subject.register(approved, pluginRoot, dataDir);
+    setApproved([]);
+    let acknowledged = false;
+    const retirement = subject.retireSandboxGrantsOutsideCeiling().then((value) => {
+      acknowledged = true;
+      return value;
+    });
+    await Promise.resolve();
+    expect(pending.assertCurrent).toThrow(/sandbox-grant-outside-ceiling/);
+    expect(acknowledged).toBe(false);
+    pending.dispose();
+    expect(await retirement).toEqual([PLUGIN_ID]);
+    expect(subject.failureKind()).toBe("sandbox-grant-outside-ceiling");
+  });
+
+  it("preserves a grant covered by an overlapping approved root", async () => {
+    const approved = join(root, "approved");
+    const nested = join(approved, "nested");
+    const chosen = join(nested, "index");
+    const pluginRoot = join(root, "home", "plugins", PLUGIN_ID);
+    const dataDir = join(pluginRoot, "data");
+    mkdirSync(chosen, { recursive: true });
+    mkdirSync(dataDir, { recursive: true });
+    setApproved([approved, nested]);
+    const subject = runtime();
+    const grant = subject.register(chosen, pluginRoot, dataDir);
+    setApproved([nested]);
+    expect(await subject.retireSandboxGrantsOutsideCeiling()).toEqual([]);
+    expect(grant.assertCurrent).not.toThrow();
+    grant.dispose();
+  });
+
+  it("waits for incarnation retirement and reports the withdrawn grant", async () => {
+    const approved = join(root, "approved");
+    const chosen = join(approved, "index");
+    const pluginRoot = join(root, "home", "plugins", PLUGIN_ID);
+    const dataDir = join(pluginRoot, "data");
+    mkdirSync(chosen, { recursive: true });
+    mkdirSync(dataDir, { recursive: true });
+    setApproved([approved]);
+    const subject = runtime();
+    const grant = subject.register(chosen, pluginRoot, dataDir);
+    let release!: () => void;
+    const stopped = new Promise<void>((resolve) => { release = resolve; });
+    const stop = vi.fn(async () => { await stopped; grant.dispose(); });
+    const retireEffects = vi.fn(() => []);
+    subject.attach(stop, retireEffects);
+    setApproved([]);
+    let acknowledged = false;
+    const retirement = subject.retireSandboxGrantsOutsideCeiling().then((value) => {
+      acknowledged = true;
+      return value;
+    });
+    await vi.waitFor(() => expect(stop).toHaveBeenCalledOnce());
+    expect(acknowledged).toBe(false);
+    expect(retireEffects).toHaveBeenCalledOnce();
+    expect(grant.assertCurrent).toThrow(/sandbox-grant-outside-ceiling/);
+    release();
+    expect(await retirement).toEqual([PLUGIN_ID]);
+    expect(subject.running()).toBe(false);
+    expect(subject.failureKind()).toBe("sandbox-grant-outside-ceiling");
+    const nextSpawn = () => derivePluginChildEnvelope({
+      pluginId: PLUGIN_ID,
+      sandbox: { write: [{ kind: "userChosenDirectory", configKey: "workspace", why: "Store project data" }] },
+      pluginRoot,
+      pluginDataDir: dataDir,
+      configValue: () => chosen,
+    });
+    expect(nextSpawn).toThrow(/no workspace root the user approved covers it/);
+    setApproved([approved]);
+    expect(nextSpawn).not.toThrow();
+  });
+
+  it("still stops the incarnation when effect retirement reports an error", async () => {
+    const approved = join(root, "approved");
+    const pluginRoot = join(root, "home", "plugins", PLUGIN_ID);
+    const dataDir = join(pluginRoot, "data");
+    mkdirSync(approved, { recursive: true });
+    mkdirSync(dataDir, { recursive: true });
+    setApproved([approved]);
+    const subject = runtime();
+    const grant = subject.register(approved, pluginRoot, dataDir);
+    const stop = vi.fn(async () => { grant.dispose(); });
+    subject.attach(stop, () => [new Error("effect cleanup failed")]);
+    setApproved([]);
+    await expect(subject.retireSandboxGrantsOutsideCeiling()).rejects.toThrow(/sandbox grant retirement failed/);
+    expect(stop).toHaveBeenCalledOnce();
+    expect(subject.running()).toBe(false);
+    expect(subject.failureKind()).toBe("sandbox-grant-outside-ceiling");
+  });
+});

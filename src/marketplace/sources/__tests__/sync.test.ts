@@ -25,10 +25,10 @@ const AT = "2026-09-23T00:00:00.000Z";
 const OTHER_COMMIT = "c".repeat(40);
 
 const skill = (name: string, version = "1.0.0", patch: Record<string, unknown> = {}) =>
-  `${JSON.stringify({ schemaVersion: 1, kind: "skill", name, version, minAppVersion: "0.12.0", payload: { entry: "SKILL.md" }, ...patch })}\n`;
+  `${JSON.stringify({ schemaVersion: 2, kind: "skill", name, version, minAppVersion: "0.12.0", payload: { entry: "SKILL.md" }, ...patch })}\n`;
 
 const index = (name: string, packages: unknown[]) =>
-  `${JSON.stringify({ schemaVersion: 1, name, displayName: `${name} market`, packages })}\n`;
+  `${JSON.stringify({ schemaVersion: 2, name, displayName: `${name} market`, packages })}\n`;
 
 const revocations = (entries: unknown[]) => `${JSON.stringify({ schemaVersion: 1, revocations: entries })}\n`;
 
@@ -120,7 +120,7 @@ describe("SourceSyncer", () => {
     const { repo, name } = fixture();
     const commit = repo.commit(
       {
-        "marketplace.json": index("acme", [
+        "marketplace.2.json": index("acme", [
           { kind: "skill", name: "alpha", path: "skills/alpha", keywords: ["docs"] },
           {
             kind: "skill",
@@ -161,7 +161,7 @@ describe("SourceSyncer", () => {
 
   it("fast-forwards a pin that is far behind and prunes all but the pin, the previous pin and retained commits", async () => {
     const { repo, name } = fixture();
-    const files = (version: string) => ({ "marketplace.json": index("acme", [{ kind: "skill", name: "alpha", path: "skills/alpha" }]), "skills/alpha/ave-package.json": skill("alpha", version) });
+    const files = (version: string) => ({ "marketplace.2.json": index("acme", [{ kind: "skill", name: "alpha", path: "skills/alpha" }]), "skills/alpha/ave-package.json": skill("alpha", version) });
     const first = repo.commit(files("1.0.0"), "v1");
     const { registry, syncer } = await setup({ retained: [first] });
     await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
@@ -184,7 +184,7 @@ describe("SourceSyncer", () => {
 
   it("re-proves ancestry from a fresh fetch when the local repository is lost", async () => {
     const { repo, name } = fixture();
-    const base = repo.commit({ "marketplace.json": index("acme", []) }, "base");
+    const base = repo.commit({ "marketplace.2.json": index("acme", []) }, "base");
     repo.commit({ "README.md": "v2\n" }, "second");
     const { registry, syncer } = await setup();
     await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
@@ -204,7 +204,7 @@ describe("SourceSyncer", () => {
 
   it("refuses to treat a source with synced data but no state file as fresh", async () => {
     const { repo, name } = fixture();
-    repo.commit({ "marketplace.json": index("acme", []) }, "first");
+    repo.commit({ "marketplace.2.json": index("acme", []) }, "first");
     const { registry, syncer } = await setup();
     await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
     await syncer.sync("acme");
@@ -214,7 +214,7 @@ describe("SourceSyncer", () => {
 
   it("lets a running sync finish before its source is removed", async () => {
     const { repo, name } = fixture();
-    repo.commit({ "marketplace.json": index("acme", []) }, "first");
+    repo.commit({ "marketplace.2.json": index("acme", []) }, "first");
     const { registry, syncer } = await setup();
     await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
     const order: string[] = [];
@@ -232,7 +232,7 @@ describe("SourceSyncer", () => {
 
   it("still syncs a hidden source, but refuses installs and updates from it with SOURCE_DISABLED", async () => {
     const { repo, name } = fixture();
-    repo.commit({ "marketplace.json": index("acme", []) }, "first");
+    repo.commit({ "marketplace.2.json": index("acme", []) }, "first");
     const { registry, syncer } = await setup();
     await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
     await registry.setEnabled("acme", false);
@@ -246,7 +246,7 @@ describe("SourceSyncer", () => {
     const { repo, name } = fixture();
     const entry = { kind: "plugin", name: "retired-fixture", versions: "*", appVersions: "0.12.0", reason: "Replaced", at: AT,
       action: "uninstall", successors: { plugins: [{ pluginId: "successor-fixture" }], hostKinds: [] } };
-    const commit = repo.commit({ "marketplace.json": index("acme", []), "policy/revocations-by-app.json": revocations([entry]) }, "conditional policy");
+    const commit = repo.commit({ "marketplace.2.json": index("acme", []), "policy/revocations-by-app.json": revocations([entry]) }, "conditional policy");
     const { registry, syncer, changed } = await setup();
     await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
     await syncer.sync("acme");
@@ -269,7 +269,7 @@ describe("SourceSyncer", () => {
     const { repo, name } = fixture();
     const entry = { kind: "plugin", name: "retired-fixture", versions: "*", appVersions: "0.12.0", reason: "Replaced", at: AT,
       action: "uninstall", successors: { plugins: [{ pluginId: "successor-fixture" }], hostKinds: [] } };
-    const commit = repo.commit({ "marketplace.json": index("acme", []), "policy/revocations-by-app.json": revocations([entry]) }, "conditional policy");
+    const commit = repo.commit({ "marketplace.2.json": index("acme", []), "policy/revocations-by-app.json": revocations([entry]) }, "conditional policy");
     const { registry, syncer, changed } = await setup();
     await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
     await syncer.sync("acme");
@@ -296,7 +296,7 @@ describe("SourceSyncer", () => {
 
   it("reports no change when the ref has not moved, and rebuilds a lost snapshot at the same pin", async () => {
     const { repo, name } = fixture();
-    const commit = repo.commit({ "marketplace.json": index("acme", []) }, "empty");
+    const commit = repo.commit({ "marketplace.2.json": index("acme", []) }, "empty");
     const { registry, syncer, changed } = await setup();
     await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
     await syncer.sync("acme");
@@ -311,7 +311,7 @@ describe("SourceSyncer", () => {
 
   it("refuses rewritten history on a managed source and keeps the pin", async () => {
     const { repo, name } = fixture();
-    const base = repo.commit({ "marketplace.json": index("corp", []) }, "base");
+    const base = repo.commit({ "marketplace.2.json": index("corp", []) }, "base");
     const pinned = repo.commit({ "README.md": "v2\n" }, "second");
     const policy = policyWith({
       additional: [{ id: "corp", url: normalizeSourceUrl(server.url(name)), auth: { kind: "none" } }],
@@ -331,7 +331,7 @@ describe("SourceSyncer", () => {
 
   it("holds rewritten history of a custom source for review, and moves the pin only when the reviewed commit is accepted", async () => {
     const { repo, name } = fixture();
-    const base = repo.commit({ "marketplace.json": index("acme", []) }, "base");
+    const base = repo.commit({ "marketplace.2.json": index("acme", []) }, "base");
     const pinned = repo.commit({ "README.md": "v2\n" }, "second");
     const { registry, syncer, changed } = await setup();
     await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
@@ -361,16 +361,16 @@ describe("SourceSyncer", () => {
 
   it("keeps the pin when the candidate's index or revocations are invalid", async () => {
     const { repo, name } = fixture();
-    const good = repo.commit({ "marketplace.json": index("acme", []) }, "good");
+    const good = repo.commit({ "marketplace.2.json": index("acme", []) }, "good");
     const { registry, syncer } = await setup();
     await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
     await syncer.sync("acme");
 
-    const brokenIndex = repo.commit({ "marketplace.json": '{"schemaVersion":1,"schemaVersion":1}' }, "broken index");
+    const brokenIndex = repo.commit({ "marketplace.2.json": '{"schemaVersion":1,"schemaVersion":1}' }, "broken index");
     expectFailed(await syncer.sync("acme"), "SOURCE_INDEX_INVALID");
     expect(await registry.readState("acme")).toMatchObject({ pinnedCommit: good, lastSync: { result: "SOURCE_INDEX_INVALID", candidate: brokenIndex } });
 
-    repo.commit({ "marketplace.json": index("acme", []), "policy/revocations.json": revocations([{ kind: "skill", name: "alpha" }]) }, "broken revocations");
+    repo.commit({ "marketplace.2.json": index("acme", []), "policy/revocations.json": revocations([{ kind: "skill", name: "alpha" }]) }, "broken revocations");
     expectFailed(await syncer.sync("acme"), "SOURCE_INDEX_INVALID");
     expect((await registry.readState("acme")).pinnedCommit).toBe(good);
     expect((await syncer.readSnapshot("acme"))!.commit).toBe(good);
@@ -389,7 +389,7 @@ describe("SourceSyncer", () => {
 
   it("names the official index after the official id", async () => {
     const { repo, name } = fixture();
-    repo.commit({ "marketplace.json": index("acme", []) }, "wrong name");
+    repo.commit({ "marketplace.2.json": index("acme", []) }, "wrong name");
     const official: OfficialMarketplace = { id: "ave", url: server.url(name), mirrors: [], auth: { kind: "none" } };
     const { syncer } = await setup({ official });
     expectFailed(await syncer.sync("ave"), "SOURCE_INDEX_INVALID");
@@ -397,7 +397,7 @@ describe("SourceSyncer", () => {
 
   it("takes the candidate from a mirror when the primary is unreachable, under the same history rule", async () => {
     const { repo, name } = fixture();
-    const base = repo.commit({ "marketplace.json": index("ave", []) }, "base");
+    const base = repo.commit({ "marketplace.2.json": index("ave", []) }, "base");
     const commit = repo.commit({ "README.md": "v2\n" }, "official");
     const official: OfficialMarketplace = { id: "ave", url: server.url("no-such-repo"), mirrors: [server.url(name)], auth: { kind: "none" } };
     const { registry, syncer } = await setup({ official });
@@ -418,13 +418,13 @@ describe("SourceSyncer", () => {
 
   it("reports a host that goes down while an accepted rewrite fetches its files as the sync's result", async () => {
     const { repo, name } = fixture();
-    const base = repo.commit({ "marketplace.json": index("acme", []) }, "base");
+    const base = repo.commit({ "marketplace.2.json": index("acme", []) }, "base");
     const pinned = repo.commit({ "README.md": "v2\n" }, "second");
     const second = await startGitHttpServer({ root: serverRoot });
     const { registry, syncer } = await setup();
     await registry.add({ id: "acme", origin: "custom", url: second.url(name), auth: { kind: "none" } });
     await syncer.sync("acme");
-    const rewritten = rewrite(repo, base, { "marketplace.json": index("acme", [{ kind: "skill", name: "alpha", path: "skills/alpha" }]) });
+    const rewritten = rewrite(repo, base, { "marketplace.2.json": index("acme", [{ kind: "skill", name: "alpha", path: "skills/alpha" }]) });
     expectFailed(await syncer.sync("acme"), "SOURCE_HISTORY_REWRITTEN");
     await second.close();
 
@@ -439,7 +439,7 @@ describe("SourceSyncer", () => {
 
   it("serves the last snapshot while the host is down", async () => {
     const { repo, name } = fixture();
-    const commit = repo.commit({ "marketplace.json": index("acme", []) }, "first");
+    const commit = repo.commit({ "marketplace.2.json": index("acme", []) }, "first");
     const second = await startGitHttpServer({ root: serverRoot });
     const { registry, syncer } = await setup();
     await registry.add({ id: "acme", origin: "custom", url: second.url(name), auth: { kind: "none" } });
@@ -453,7 +453,7 @@ describe("SourceSyncer", () => {
 
   it("does not contact a source the managed policy blocks", async () => {
     const { repo, name } = fixture();
-    repo.commit({ "marketplace.json": index("acme", []) }, "first");
+    repo.commit({ "marketplace.2.json": index("acme", []) }, "first");
     const url = server.url(name);
     const { registry } = await setup();
     await registry.add({ id: "acme", origin: "custom", url, auth: { kind: "none" } });
@@ -464,12 +464,13 @@ describe("SourceSyncer", () => {
     expect(existsSync(join(root, "acme", "snapshots"))).toBe(false);
   });
 
-  it("reads the conventional layout when there is no index", async () => {
+  it("requires the format 2 index even when descriptors use a conventional layout", async () => {
     const { repo, name } = fixture();
     repo.commit({ "README.md": "start\n" }, "start");
     // Tree entries, not files: Windows cannot create `odd:name` on disk.
-    const commit = repo.commitEntries(
+    repo.commitEntries(
       Object.entries({
+        "marketplace.json": `${JSON.stringify({ schemaVersion: 1, name: "acme", displayName: "Legacy", packages: [] })}\n`,
         "skills/alpha/ave-package.json": skill("alpha"),
         "skills/alpha/SKILL.md": "# alpha\n",
         "plugins/wrong/ave-package.json": skill("wrong"),
@@ -482,16 +483,8 @@ describe("SourceSyncer", () => {
     );
     const { registry, syncer } = await setup();
     await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" }, label: "Acme tools" });
-    expect(await syncer.sync("acme")).toMatchObject({ status: "ok", pinnedCommit: commit });
-    const snapshot = (await syncer.readSnapshot("acme"))!;
-    expect(snapshot.marketplace).toEqual({ name: "acme", displayName: "Acme tools" });
-    expect(snapshot.packages.map((entry) => `${entry.path}:${entry.name}`)).toEqual(["skills/alpha:alpha"]);
-    expect(snapshot.diagnostics.map((item) => item.message)).toEqual([
-      'invalid repository path: "skills/odd:name"',
-      "declares kind skill inside plugins/",
-      "more than one package declares this kind and name",
-      "more than one package declares this kind and name",
-    ]);
+    expect(await syncer.sync("acme")).toMatchObject({ status: "failed", code: "SOURCE_NOT_A_MARKETPLACE", pinnedCommit: null });
+    expect(await syncer.readSnapshot("acme")).toBeNull();
   });
 
   it("refuses a repository that is neither a marketplace nor a package", async () => {
@@ -586,7 +579,7 @@ describe("SourceSyncer", () => {
 
   it("joins a sync that is already running for the same source", async () => {
     const { repo, name } = fixture();
-    repo.commit({ "marketplace.json": index("acme", []) }, "first");
+    repo.commit({ "marketplace.2.json": index("acme", []) }, "first");
     const { registry, syncer, changed } = await setup();
     await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
     const [a, b] = await Promise.all([syncer.sync("acme"), syncer.sync("acme")]);
@@ -596,7 +589,7 @@ describe("SourceSyncer", () => {
 
   it("keeps a joined sync running when one caller aborts, and stops it when every caller has", async () => {
     const { repo, name } = fixture();
-    const commit = repo.commit({ "marketplace.json": index("acme", []) }, "first");
+    const commit = repo.commit({ "marketplace.2.json": index("acme", []) }, "first");
     const { registry, syncer } = await setup();
     await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
     const a = new AbortController();
