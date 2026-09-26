@@ -5,7 +5,8 @@
  * An alert is a plugin's insertion card the host rendered from the kind's
  * declared templates. It sits in its priority band — high above normal above
  * low — a re-raise of the same identity refreshes the card and moves it to the
- * top of its band, and main can withdraw a card it staged.
+ * top of its band, and main can withdraw a card it staged. Closing an alert
+ * card is reported, so main keeps its identity closed.
  */
 import "../../../../../test/renderer/setup.js";
 import { act, fireEvent, render, screen } from "@testing-library/react";
@@ -46,7 +47,7 @@ function pluginItem(eventId: string): OverlayItem {
   };
 }
 
-function mount(onPluginPrimaryAction = vi.fn()) {
+function mount(onPluginPrimaryAction = vi.fn(), onAlertDismiss = vi.fn()) {
   const addFireRef = createRef<((item: OverlayItem) => void) | null>();
   const dismissRef = createRef<((id: string) => void) | null>();
   let queue: readonly OverlayItem[] = [];
@@ -63,6 +64,7 @@ function mount(onPluginPrimaryAction = vi.fn()) {
           actionChatGroupId="main"
           overlayCardTile={() => ({ chatGroupId: "main", orphaned: false })}
           onPluginPrimaryAction={onPluginPrimaryAction}
+          onAlertDismiss={onAlertDismiss}
         />
       </OverlayContextProvider>
     </TooltipProvider>,
@@ -130,6 +132,18 @@ describe("alert cards in the overlay queue", () => {
     expect(screen.getByText("summary a")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Draft a reply" }));
     expect(onPluginPrimaryAction).toHaveBeenCalledWith("alert:a", "main");
+    expect(q.ids()).toEqual([]);
+  });
+
+  it("reports an alert card the user closed, and not a plugin card", () => {
+    const onAlertDismiss = vi.fn();
+    const q = mount(vi.fn(), onAlertDismiss);
+    q.add(pluginItem("1"));
+    fireEvent.click(screen.getByTestId("routine-card-dismiss"));
+    expect(onAlertDismiss).not.toHaveBeenCalled();
+    q.add(alertItem("a"));
+    fireEvent.click(screen.getByTestId("routine-card-dismiss"));
+    expect(onAlertDismiss).toHaveBeenCalledWith("alert:a");
     expect(q.ids()).toEqual([]);
   });
 });

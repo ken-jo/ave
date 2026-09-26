@@ -389,6 +389,8 @@ export type NotificationToastPayload = {
   title: string;
   body: string;
   contextRef?: NotificationContextRef;
+  /** Stays until the user dismisses it (a `high` priority alert). */
+  sticky?: true;
 };
 
 /** An overlay trigger began running — main → renderer, before any item is shown. */
@@ -1004,6 +1006,11 @@ export type AveApi = {
   onOverlayShow: (handler: (item: import("./context/OverlayContext.js").OverlayItem) => void) => () => void;
   onOverlayUpdate: (handler: (id: string, patch: Partial<import("./context/OverlayContext.js").OverlayItem>) => void) => () => void;
   onOverlayDismiss: (handler: (id: string) => void) => () => void;
+  /** Plugin alert cards: report the user's answer, and pull the cards staged before this window listened. */
+  alerts?: {
+    cardClosed: (alertId: string, reason: import("../../shared/alerts-types.js").AlertCardClosedReason) => Promise<{ ok: boolean; error?: string }>;
+    openCards: () => Promise<import("../../shared/alerts-types.js").AlertCard[]>;
+  };
   // Routine session history
   listRoutineSessions: (
     routineId: string,

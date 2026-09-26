@@ -59,6 +59,8 @@ export interface ToastItem {
   ttlMs?: number;
   /** Wall-clock ms when the current queue-head toast should auto-evict. */
   expiresAt: number;
+  /** Never auto-evicts: it stays at the head until the user dismisses it. */
+  sticky?: true;
   /**
    * Issue #260 — when present, identifies this toast as a notification
    * toast. The StatusBar renders an onClick that calls `notifyClick` and

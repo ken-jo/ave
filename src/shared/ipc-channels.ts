@@ -19,6 +19,18 @@ export const OVERLAY_V1 = {
   dismiss: "ave:overlay:dismiss",
 } as const;
 
+/**
+ * Plugin alert cards (renderer → main). The cards themselves travel on
+ * {@link OVERLAY_V1}; these report what the user did with one and let a
+ * window that appeared late pull the cards already staged.
+ */
+export const ALERTS = {
+  /** invoke `(alertId, "accepted" | "dismissed")`: the identity stays closed for its lifetime. */
+  cardClosed: "ave:alerts:card-closed",
+  /** invoke → every staged alert card. */
+  openCards: "ave:alerts:open-cards",
+} as const;
+
 export const ROUTINES = {
   list: "ave:routines:list",
   add: "ave:routines:add",

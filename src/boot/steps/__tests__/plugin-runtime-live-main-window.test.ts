@@ -104,6 +104,10 @@ vi.mock("../../../plugins/registry.js", () => ({
 import { initPluginRuntime } from "../plugin-runtime.js";
 import { OVERLAY_V1 } from "../../../shared/ipc-channels.js";
 import { SuggestionLedger, suggestionLedger } from "../../../alerts/suggestion-ledger.js";
+import { emitEvent } from "../../types.js";
+import { AlertsService } from "../../../alerts/service.js";
+import type { AlertSettings } from "../../../shared/alerts-types.js";
+import type { AlertInput, AlertResult } from "../../../plugins/public-contract.js";
 
 interface FakeWindow {
   destroyed: boolean;
@@ -127,6 +131,9 @@ type OverlayHostApi = {
     title?: string;
     dedupeKey?: string;
   }) => Promise<{ accepted: boolean }>;
+  raiseAlert: (input: AlertInput) => Promise<AlertResult>;
+  withdrawAlert: (kind: string, key: string) => Promise<boolean>;
+  onEvent: (type: string, handler: (data: unknown) => void) => () => void;
 };
 
 type CreateHostApi = (
@@ -147,6 +154,7 @@ async function overlayHostApi(input: {
   getMainWindow?: () => FakeWindow | null;
   pluginId?: string;
   manifest?: Record<string, unknown>;
+  alertsService?: AlertsService;
 }): Promise<OverlayHostApi> {
   runtimeTestState.capturedRuntimeOptions = null;
   await initPluginRuntime({
@@ -184,6 +192,7 @@ async function overlayHostApi(input: {
     routinesStore: { list: () => [] } as never,
     // This harness has no Work Board; the proposal verbs are not exercised here.
     getWorkBoardStore: () => undefined,
+    getAlertsService: () => input.alertsService,
   });
   const createHostApi = (
     runtimeTestState.capturedRuntimeOptions as { createHostApi?: CreateHostApi } | null
@@ -402,5 +411,75 @@ describe("hostApi.triggerConversation for a plugin that declares alerts", () => 
       readFileSync(join(process.env.AVE_HOME!, "alerts", "suggestions.json"), "utf8"),
     ) as { accepted: Record<string, Record<string, number>> };
     expect(Object.keys(ledger.accepted.fixturemail ?? {})).toEqual([source]);
+  });
+});
+
+/**
+ * The HostApi door to the alert pipeline: each start registers the plugin's
+ * kinds, a raise and a withdrawal are scoped to the calling plugin, and the
+ * host's `alert.*` events reach a subscriber only for its own alerts.
+ */
+describe("hostApi.raiseAlert, withdrawAlert and alert events", () => {
+  const kinds = [{
+    id: "reply",
+    label: { en: "Mail needing a reply" },
+    defaultEnabled: true,
+    visibility: "silent",
+    summary: { en: "A mail" },
+    prompt: { en: "Help me answer." },
+  }];
+  const manifestOf = (id: string) => ({ id, alerts: { reasoning: "Tells you about mail.", kinds } });
+
+  async function service(): Promise<AlertsService> {
+    let settings: AlertSettings = { osNotificationsEnabled: true, kinds: {} };
+    const dir = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-alerts-hostapi-")));
+    const alerts = new AlertsService({
+      dir: () => dir,
+      settings: { get: () => settings, set: async (next) => { settings = next; } },
+      installedPluginIds: async () => [],
+      appVersion: "0.0.0",
+      locale: () => "en",
+      predecessorBlocks: async () => false,
+      overlay: { show: vi.fn(), dismiss: vi.fn() },
+      notifications: { isFocusGateActive: () => false, fire: vi.fn() },
+      emit: emitEvent,
+      audit: vi.fn(),
+    });
+    await alerts.load();
+    return alerts;
+  }
+
+  it("registers the plugin's kinds at start and scopes raise and withdraw to the caller", async () => {
+    const alerts = await service();
+    const mail = await overlayHostApi({ bootWindow: null, pluginId: "fixturemail", manifest: manifestOf("fixturemail"), alertsService: alerts });
+    const other = await overlayHostApi({ bootWindow: null, pluginId: "otherfixture", manifest: manifestOf("otherfixture"), alertsService: alerts });
+
+    await expect(mail.raiseAlert({ kind: "reply", key: "mail-1" })).resolves.toMatchObject({ status: "raised" });
+    await expect(other.withdrawAlert("reply", "mail-1")).resolves.toBe(false);
+    await expect(mail.withdrawAlert("reply", "mail-1")).resolves.toBe(true);
+    await alerts.flush();
+  });
+
+  it("fails loudly when the host built no alerts service", async () => {
+    const api = await overlayHostApi({ bootWindow: null, pluginId: "fixturemail", manifest: manifestOf("fixturemail") });
+    await expect(api.raiseAlert({ kind: "reply", key: "mail-1" })).rejects.toThrow(/alerts service is not constructed/);
+  });
+
+  it("delivers an alert event to its own plugin, and another's only with a grant", async () => {
+    const api = await overlayHostApi({ bootWindow: null, pluginId: "fixturemail" });
+    const heard: unknown[] = [];
+    const unsubscribe = api.onEvent("alert.raised", (data) => { heard.push(data); });
+    emitEvent("alert.raised", { pluginId: "otherfixture", kind: "reply", alertId: "x" });
+    emitEvent("alert.raised", { pluginId: "@host", kind: "due-soon", alertId: "y" });
+    emitEvent("alert.raised", { pluginId: "fixturemail", kind: "reply", alertId: "z" });
+    expect(heard).toEqual([{ pluginId: "fixturemail", kind: "reply", alertId: "z" }]);
+
+    runtimeTestState.runtime.getApprovedPluginAccess.mockReturnValue({
+      plugins: [{ pluginId: "otherfixture", events: ["alert.raised"] }],
+    } as never);
+    emitEvent("alert.raised", { pluginId: "otherfixture", kind: "reply", alertId: "w" });
+    expect(heard).toHaveLength(2);
+    runtimeTestState.runtime.getApprovedPluginAccess.mockReturnValue(undefined);
+    unsubscribe();
   });
 });

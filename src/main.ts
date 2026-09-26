@@ -487,6 +487,9 @@ async function main() {
   // due-soon scanner after IPC + plugin bus are wired so the first emit of
   // `work_board.work_item.due_soon` reaches any subscribed consumer.
   services.startWorkBoardDueSoon?.();
+  // And the alerts expiry sweep, so a card whose lifetime ends is withdrawn
+  // from a renderer that is listening.
+  services.startAlerts?.();
 
   refreshApplicationMenu();
   ensureTray();

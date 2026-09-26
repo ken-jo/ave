@@ -63,6 +63,7 @@
           "ave/host/pickFolders",
           "ave/host/probePrivateHost",
           "ave/host/proposeWork",
+          "ave/host/raiseAlert",
           "ave/host/resizeFloatingPanel",
           "ave/host/resolveApiKey",
           "ave/host/resolveMappedDriveRoot",
@@ -80,6 +81,7 @@
           "ave/host/storage/writeEncrypted",
           "ave/host/storage/writeJson",
           "ave/host/triggerConversation",
+          "ave/host/withdrawAlert",
           "ave/host/withdrawWorkProposal"
         ],
         "version": "1"

@@ -5,9 +5,9 @@
  * `AppSettings.alerts` holds the user's per-kind choices for the alert kinds
  * plugins declare, and `AppSettings.retiredPluginConfigs` holds the effective
  * config a retired (revoked) plugin left behind so its successors can inherit
- * the user's choices. Both keys land here ahead of the pipeline that reads
- * them: the settings store normalises and defaults them, nothing else touches
- * them yet. The design page `docs/design/plugin-alerts.md` owns the shapes.
+ * the user's choices. The settings store normalises and defaults them, and
+ * the alerts service (`src/alerts/service.ts`) is their only writer. The
+ * design page `docs/design/plugin-alerts.md` owns the shapes.
  */
 import type { AlertInheritRule, AlertVisibility } from "../plugins/public-contract.js";
 import type { PluginConfigRecord } from "./plugin-config.js";
@@ -35,6 +35,27 @@ export const ALERT_HOST_PLUGIN_ID = "@host";
  * mint a host kind's source.
  */
 export const ALERT_RESERVED_PACKAGE_ID = "host";
+
+/**
+ * An alert card as main stages it: the renderer's overlay item for source
+ * kind `alert`. Built only from the kind's declared templates and sanitised
+ * slot values; `pendingPrompt` is the envelope an accept inserts.
+ */
+export interface AlertCard {
+  /** `alert:<alertId>`. */
+  id: string;
+  source: { kind: "alert"; pluginId: string; kindId: string; alertId: string };
+  title: string;
+  summary: string;
+  running: false;
+  primaryActionLabel: string;
+  pendingPrompt: string;
+  priority: "low" | "normal" | "high";
+  createdAt: string;
+}
+
+/** What the user did to an alert card. */
+export type AlertCardClosedReason = "accepted" | "dismissed";
 
 /**
  * A settings key for one alert kind: `<pluginId>:<kind>` or `@host:<kind>`.

@@ -172,6 +172,8 @@ const SERVICE_KEYS: (string | symbol)[] = [
   "shutdown",
   "startRoutinesScheduler",
   "startWorkBoardDueSoon",
+  "startAlerts",
+  "alertsService",
   "notificationService",
   "scriptHookManager",
 ];
@@ -232,6 +234,8 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:a2a-remote:task",
         "ave:agents:list",
         "ave:agents:uninstall",
+        "ave:alerts:card-closed",
+        "ave:alerts:open-cards",
         "ave:app:info",
         "ave:approval:pending",
         "ave:approval:respond",

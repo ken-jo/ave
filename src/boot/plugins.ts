@@ -3,6 +3,7 @@
 
 
 import type { BrowserWindow } from "electron";
+import { isAlertEvent } from "../alerts/events.js";
 import type { PluginRuntime } from "../plugins/runtime.js";
 import type { SettingsService } from "../data/settings-store.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
@@ -183,6 +184,13 @@ export function registerPluginNotifications(
       const event = typeof spec.event === "string" ? spec.event.trim() : "";
       if (!event) {
         log.warn("boot: notificationEvents spec with missing/empty 'event' skipped: %s", spec);
+        continue;
+      }
+      if (isAlertEvent(event)) {
+        // An `alert.*` event names the plugin that raised it; a notification
+        // registered here would announce every plugin's alerts to one that has
+        // no grant to hear them. A plugin's own alerts bring their own cue.
+        log.warn(`boot: plugin:${pluginId} notificationEvents["${event}"] is a host alert event, skipped`);
         continue;
       }
       if (spec.titleField !== undefined && typeof spec.titleField !== "string") {

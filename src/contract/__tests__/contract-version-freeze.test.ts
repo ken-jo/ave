@@ -174,6 +174,8 @@ const SERVICE_KEYS: (string | symbol)[] = [
   "shutdown",
   "startRoutinesScheduler",
   "startWorkBoardDueSoon",
+  "startAlerts",
+  "alertsService",
   "notificationService",
   "scriptHookManager",
 ];

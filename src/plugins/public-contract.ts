@@ -1886,6 +1886,29 @@ export interface PluginHostApi {
   withdrawWorkProposal(kind: string, key: string): Promise<boolean>;
 
   /**
+   * Raise one alert of a kind declared in this plugin's `alerts` block.
+   *
+   * The plugin supplies typed slot values, never text: the host renders the
+   * kind's declared summary and prompt in the app locale, decides whether the
+   * alert reaches the user at all (the user's toggle for `<pluginId>:<kind>`,
+   * a predecessor still installed, cooldown and rate budgets), and owns the
+   * card, the OS notification and the conversation an accept starts.
+   *
+   * `(kind, key)` is the identity. Re-raising an open identity refreshes its
+   * card (`refreshed`); an identity the user dismissed or accepted stays
+   * closed for the card's lifetime (`closed`). Callers branch on `status`
+   * rather than expecting a throw.
+   */
+  raiseAlert(input: AlertInput): Promise<AlertResult>;
+
+  /**
+   * Withdraw this plugin's open alert for `(kind, key)` because its condition
+   * no longer holds. Scoped to the caller; resolves `false` when no such
+   * alert is open.
+   */
+  withdrawAlert(kind: string, key: string): Promise<boolean>;
+
+  /**
    * §8 Agent Approval System — main-process–side approval management.
    *
    * Plugins use this namespace to interact with the host's §8 ApprovalGate
@@ -2166,6 +2189,49 @@ export interface PluginAlertsDeclaration {
    */
   suggestions?: string[];
 }
+
+/** One raise of a declared alert kind. */
+export interface AlertInput {
+  /** A kind id declared in this plugin's `alerts.kinds`. */
+  kind: string;
+  /**
+   * The dedupe identity within the kind, `^[A-Za-z0-9_.:/@+=-]{1,256}$`.
+   * Never rendered and never logged: the host keys the alert by a keyed hash
+   * of it.
+   */
+  key: string;
+  /** Values for the kind's declared slots: a string for `text` and `ref`, strings for `list`. */
+  slots?: Record<string, string | string[]>;
+  /** Default `normal`. `high` cards sort first; `low` never notifies the OS. */
+  priority?: "low" | "normal" | "high";
+  /** May only lower the kind's declared visibility. */
+  visibility?: AlertVisibility;
+  /** Card lifetime; the host clamps it to 1 minute – 7 days, default 24 hours. */
+  ttlMs?: number;
+}
+
+export type AlertResult =
+  | {
+      status: "raised";
+      alertId: string;
+      delivered: { card: boolean; osNotification: boolean; toast: boolean };
+    }
+  /** An open alert with this identity was updated in place. */
+  | { status: "refreshed"; alertId: string }
+  /** `kind` is not among this plugin's declared kinds. */
+  | { status: "kind_not_granted"; kind: string }
+  /** The user turned this kind off. */
+  | { status: "disabled_by_user" }
+  /** A plugin this kind inherits from is still installed and not revoked. */
+  | { status: "blocked_by_predecessor"; pluginId: string }
+  /** The user dismissed or accepted this identity within its lifetime. */
+  | { status: "closed" }
+  /** The kind was raised within its cooldown window. */
+  | { status: "cooldown" }
+  /** This plugin raised faster than the host's budget allows. */
+  | { status: "rate_limited" }
+  /** Names the field that failed validation. Nothing was delivered. */
+  | { status: "invalid"; field: string };
 
 /** Fill config key `to` from a retired predecessor's config key `from`, or with a constant `value`. */
 export type ConfigInheritDeclaration =

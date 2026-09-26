@@ -226,6 +226,7 @@ vi.mock("../plugins.js", () => ({
 vi.mock("../../plugins/uninstall-lifecycle.js", () => ({
   recoverPendingPluginUninstallCleanups: vi.fn(async (deps: unknown) => {
     h.captured["recoverCleanupDeps"] = deps;
+    h.rec("uninstallCleanupReplay");
     return [] as string[];
   }),
 }));
@@ -322,6 +323,14 @@ vi.mock("../steps/refresh-active-llm-wildcard.js", () => ({
 
 vi.mock("../steps/watcher-telemetry-collector.js", () => ({
   startWatcherTelemetryCollector: vi.fn(() => ({ stop: vi.fn() })),
+}));
+
+vi.mock("../steps/alerts-setup.js", () => ({
+  setupAlerts: vi.fn(async (ctx: { alertsService: unknown }) => {
+    h.rec("alertsSetup");
+    ctx.alertsService = { start: vi.fn(), stop: vi.fn() };
+    return () => {};
+  }),
 }));
 
 vi.mock("../steps/work-board-migration.js", () => ({
@@ -663,6 +672,7 @@ describe("bootstrap() integration lock", () => {
         "a2aRemoteRuntime",
         "agentProfileStore",
         "agentsDocMergeService",
+        "alertsService",
         "approvalGate",
         "askUserQuestionGate",
         "auditLogger",
@@ -725,6 +735,7 @@ describe("bootstrap() integration lock", () => {
         "singleHopNetworkFetch",
         "skillStore",
         "starredStore",
+        "startAlerts",
         "startRoutinesScheduler",
         "startWorkBoardDueSoon",
         "systemPromptBuilder",
@@ -757,6 +768,10 @@ describe("bootstrap() integration lock", () => {
     assertBefore("conversationLoop", "subAgentRunner");
     assertBefore("lifecycleBound", "retirementsRecovered");
     assertBefore("retirementsRecovered", "startPlugins");
+    // Plugins register their alert kinds as they start, and a boot-time
+    // uninstall replay must find the alerts pipeline listening.
+    assertBefore("alertsSetup", "uninstallCleanupReplay");
+    assertBefore("alertsSetup", "startPlugins");
   });
 
   // ── plugin-state cleanup dep bag ────────────────────────────────────────

@@ -10,7 +10,9 @@ import type { OverlayItem } from "../../context/OverlayContext.js";
  * An alert carries a host-rendered prompt inside the same staged envelope a
  * plugin's overlay trigger uses, so confirming it must travel the same
  * `imported_trigger` path with the plugin's provenance — never a plain user
- * turn. A card main withdrew must leave the queue, not just the lookup.
+ * turn. A card main withdrew must leave the queue, not just the lookup. What
+ * the user did with a card is reported back, so main keeps its identity
+ * closed, and cards staged before the window listened are pulled on mount.
  */
 const TILE = "group-1";
 
@@ -25,7 +27,7 @@ const ALERT: OverlayItem = {
   createdAt: "2026-09-26T00:00:00.000Z",
 };
 
-function setup() {
+function setup(staged: OverlayItem[] = []) {
   let showOverlay: ((item: OverlayItem) => void) | undefined;
   let dismissOverlay: ((id: string) => void) | undefined;
   const api = {
@@ -43,6 +45,10 @@ function setup() {
       dismissOverlay = handler;
       return () => {};
     }),
+    alerts: {
+      cardClosed: vi.fn(async () => ({ ok: true })),
+      openCards: vi.fn(async () => staged),
+    },
   };
   const ask = vi.fn();
   const insertImportedTriggerEntry = vi.fn();
@@ -60,8 +66,12 @@ function setup() {
     }));
   const queueDismiss = vi.fn();
   hook.result.current.dismissRef.current = queueDismiss;
+  const queueAdd = vi.fn();
+  hook.result.current.addFireRef.current = queueAdd;
   return {
     hook,
+    api,
+    queueAdd,
     ask,
     insertImportedTriggerEntry,
     queueDismiss,
@@ -96,5 +106,39 @@ describe("useRoutineOverlay — alert cards", () => {
     });
     expect(s.insertImportedTriggerEntry).not.toHaveBeenCalled();
     expect(s.ask).not.toHaveBeenCalled();
+  });
+
+  it("reports an accepted card, so main closes its identity", async () => {
+    const s = setup();
+    s.show(ALERT);
+    await act(async () => {
+      await s.hook.result.current.handlePluginPrimaryAction("alert:abc", TILE);
+    });
+    expect(s.api.alerts.cardClosed).toHaveBeenCalledWith("abc", "accepted");
+  });
+
+  it("reports a card the user dismissed, and only an alert card", async () => {
+    const s = setup();
+    s.show(ALERT);
+    s.show({ ...ALERT, id: "plugin:x", source: { kind: "plugin", pluginId: "fixturemail", eventId: "x" } });
+    act(() => {
+      s.hook.result.current.handleAlertDismiss("alert:abc");
+      s.hook.result.current.handleAlertDismiss("plugin:x");
+    });
+    expect(s.api.alerts.cardClosed).toHaveBeenCalledTimes(1);
+    expect(s.api.alerts.cardClosed).toHaveBeenCalledWith("abc", "dismissed");
+  });
+
+  it("pulls the cards main staged before the window listened", async () => {
+    const s = setup([ALERT]);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(s.api.alerts.openCards).toHaveBeenCalledTimes(1);
+    expect(s.queueAdd).toHaveBeenCalledWith(ALERT);
+    await act(async () => {
+      await s.hook.result.current.handlePluginPrimaryAction("alert:abc", TILE);
+    });
+    expect(s.ask).toHaveBeenCalledWith(ALERT.pendingPrompt, "trigger-import");
   });
 });

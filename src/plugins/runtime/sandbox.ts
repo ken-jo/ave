@@ -221,6 +221,10 @@ export function createNoopHostApi(
     // `status` either way.
     proposeWork: async (input) => ({ status: "kind_not_granted", kind: input.kind }),
     withdrawWorkProposal: async () => false,
+    // Nor an alert pipeline: the same envelope a plugin sees for a kind it did
+    // not declare.
+    raiseAlert: async (input) => ({ status: "kind_not_granted", kind: input.kind }),
+    withdrawAlert: async () => false,
     agentApproval: {
       request: async () => "deny-once" as const,
       respond: async () => {},

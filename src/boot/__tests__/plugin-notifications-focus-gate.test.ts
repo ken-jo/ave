@@ -118,6 +118,19 @@ describe("registerPluginNotifications — routed via NotificationService", () =>
     dispose();
   });
 
+  it("registers no notification for a host alert event, which names another plugin's alerts", () => {
+    const win = makeMockWindow({ focused: false });
+    const ns = makeNotificationServiceStub();
+    const runtime = makeRuntime([{ event: "alert.raised", titleField: "kind" }]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const dispose = registerPluginNotifications(runtime as any, win, ns);
+
+    emitEvent("alert.raised", { pluginId: "otherfixture", kind: "reply", alertId: "x" });
+
+    expect(ns.calls).toEqual([]);
+    dispose();
+  });
+
   it("falls back to event name when titleField resolves to empty string", () => {
     const win = makeMockWindow({ focused: false });
     const ns = makeNotificationServiceStub();
