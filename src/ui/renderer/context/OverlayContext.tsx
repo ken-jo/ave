@@ -54,7 +54,10 @@ export type OverlayPriority = "low" | "normal" | "high";
 const PRIORITY_RANK: Record<OverlayPriority, number> = { low: 0, normal: 1, high: 2 };
 
 function priorityRank(item: OverlayItem): number {
-  return item.source.kind === "alert" ? PRIORITY_RANK[item.priority ?? "normal"] : PRIORITY_RANK.normal;
+  if (item.source.kind !== "alert") return PRIORITY_RANK.normal;
+  return item.priority === "low" || item.priority === "high"
+    ? PRIORITY_RANK[item.priority]
+    : PRIORITY_RANK.normal;
 }
 
 /**

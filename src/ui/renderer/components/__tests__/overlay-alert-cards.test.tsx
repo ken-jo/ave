@@ -76,6 +76,15 @@ function mount(onPluginPrimaryAction = vi.fn()) {
 }
 
 describe("alert cards in the overlay queue", () => {
+  it.each(["urgent", "toString", "__proto__", 3, null])("ranks malformed priority %s as normal below high", (priority) => {
+    const q = mount();
+    q.add(alertItem("high", "high"));
+    q.add({ ...alertItem("malformed"), priority: priority as OverlayPriority });
+    expect(q.ids()).toEqual(["alert:malformed", "alert:high"]);
+    expect(screen.getByText("summary high")).toBeTruthy();
+    expect(screen.queryByText("summary malformed")).toBeNull();
+  });
+
   it("orders alerts high above normal above low, oldest first within a band", () => {
     const q = mount();
     q.add(alertItem("a", "low"));
