@@ -123,6 +123,7 @@ import type {
 import type { LateBindingRefs } from "../plugin-runtime.js";
 import { proposalId } from "../../../work-board/board-file.js";
 import { errorMessage } from "../../../shared/error-message.js";
+import { resolvePluginDisplayName } from "../../../shared/plugin-provenance.js";
 
 const log = createLogger("ave");
 
@@ -1657,6 +1658,7 @@ export function createHostApiFactory(
             const overlayItem = {
               id: overlayId,
               source: { kind: "plugin" as const, pluginId, eventId },
+              pluginDisplayName: resolvePluginDisplayName(pluginId, manifest.name),
               title: spec.title ?? spec.source.replace(/^overlay:/, ""),
               summary: derivedSummary,
               running: false,

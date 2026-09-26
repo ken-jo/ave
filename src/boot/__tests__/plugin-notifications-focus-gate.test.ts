@@ -15,7 +15,7 @@
  * stubbed so any accidental direct `new Notification` instantiation would
  * be caught — we now expect ZERO such instantiations from the plugin path.
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // vi.mock is hoisted above all imports, so the ctor spy must be created via
 // vi.hoisted (also hoisted) so the mock factory can capture the same reference
@@ -29,6 +29,7 @@ vi.mock("electron", () => ({
 
 import { registerPluginNotifications } from "../plugins.js";
 import { emitEvent } from "../types.js";
+import { getLocale, setLocale } from "../../i18n/runtime.js";
 import type { PluginManifest } from "../../plugins/types.js";
 import type { BrowserWindow } from "electron";
 import type { AuditLogger } from "../../audit/audit-logger.js";
@@ -52,13 +53,14 @@ function makeMockWindow(opts: { focused?: boolean; minimized?: boolean; destroye
 function makeRuntime(
   events: Array<{ event: string; titleField?: string; bodyField?: string; bypassFocusGate?: boolean }>,
   pluginId = "test-plugin",
+  displayName = pluginId,
 ) {
   return {
     listPluginManifests: () => [{
       pluginId,
       manifest: {
         id: pluginId,
-        name: pluginId,
+        name: displayName,
         version: "0.0.1",
         entry: "index.js",
         tools: [],
@@ -87,13 +89,18 @@ function makeNotificationServiceStub(): NotificationService & { calls: FireOptio
 }
 
 describe("registerPluginNotifications — routed via NotificationService", () => {
+  let previousLocale = getLocale();
   beforeEach(() => {
+    previousLocale = getLocale();
+    setLocale("en");
     notificationCtor.mockReset();
     notificationCtor.mockImplementation(function (this: NotificationStubInstance) {
       this.on = vi.fn();
       this.show = vi.fn();
     });
   });
+
+  afterEach(() => setLocale(previousLocale));
 
   it("routes plugin emit through notificationService.fire with kind=plugin (no direct new Notification)", () => {
     const win = makeMockWindow({ focused: false, minimized: false });
@@ -111,7 +118,7 @@ describe("registerPluginNotifications — routed via NotificationService", () =>
     expect(notificationCtor).not.toHaveBeenCalled();
     expect(ns.calls.length).toBe(1);
     expect(ns.calls[0].kind).toBe("plugin");
-    expect(ns.calls[0].title).toBe("hello");
+    expect(ns.calls[0].title).toBe("Plugin [agent-hub] · hello");
     expect(ns.calls[0].body).toBe("world");
     expect(ns.calls[0].bypassFocusGate).toBe(false);
     expect(audit.calls.length).toBe(0); // routing path doesn't audit; NS handles audit
@@ -141,7 +148,24 @@ describe("registerPluginNotifications — routed via NotificationService", () =>
     emitEvent("meeting.starting-soon", { other: "field" });
 
     expect(ns.calls.length).toBe(1);
-    expect(ns.calls[0].title).toBe("meeting.starting-soon");
+    expect(ns.calls[0].title).toBe("Plugin [test-plugin] · meeting.starting-soon");
+    dispose();
+  });
+
+  it("adds a distinct id field to legacy event titles with a repeated identity label", () => {
+    const win = makeMockWindow({ focused: false });
+    const ns = makeNotificationServiceStub();
+    const runtime = makeRuntime(
+      [{ event: "fixture.notice", titleField: "title" }],
+      "fixture-6",
+      "Plugin: lyra-mail · Ave Lyra Mail",
+    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const dispose = registerPluginNotifications(runtime as any, win, ns);
+
+    emitEvent("fixture.notice", { title: "Security notice" });
+
+    expect(ns.calls[0]?.title).toBe("Plugin [fixture-6] · Plugin lyra-mail Ave Lyra Mail · Security notice");
     dispose();
   });
 

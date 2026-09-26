@@ -46,6 +46,8 @@ export interface AlertCard {
   /** `alert:<alertId>`. */
   id: string;
   source: { kind: "alert"; pluginId: string; kindId: string; alertId: string };
+  /** Installed manifest name resolved by the host, or the plugin id. */
+  pluginDisplayName: string;
   title: string;
   summary: string;
   running: false;

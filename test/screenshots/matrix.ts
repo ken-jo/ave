@@ -198,6 +198,7 @@ async function pushAlertOverlay(
   }, {
     id: `alert:capture-${spec.intent}`,
     source: { kind: 'alert', pluginId: 'alert-fixture', kindId: spec.intent, alertId: `capture-${spec.intent}` },
+    pluginDisplayName: 'Alert fixture',
     title: spec.intent,
     summary: spec.summary,
     running: false,

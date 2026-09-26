@@ -11,8 +11,8 @@
 import "../../../../../test/renderer/setup.js";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { createRef } from "react";
-import { describe, expect, it, vi } from "vitest";
-import { t } from "../../../../i18n/index.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { loadLocaleMessages, setLocale, t } from "../../../../i18n/index.js";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { OverlayCardRegion } from "../OverlayCardRegion.js";
 import {
@@ -78,12 +78,132 @@ function mount(onPluginPrimaryAction = vi.fn(), onAlertDismiss = vi.fn()) {
   };
 }
 
+function expectPluginIdentity(pluginId: string, name?: string) {
+  const id = screen.getByTestId("plugin-provenance-id");
+  const fullId = t("alerts.pluginIdOnly", { id: pluginId });
+  expect(id.textContent?.trim()).toBe(fullId);
+  expect(id.getAttribute("title")).toBe(fullId);
+  expect(id.getAttribute("aria-label")).toBe(fullId);
+  const displayName = screen.queryByTestId("plugin-provenance-name");
+  if (name) {
+    const labeledName = t("alerts.pluginDisplayName", { name });
+    expect(displayName?.textContent).toBe(labeledName);
+    expect(displayName?.getAttribute("title")).toBe(labeledName);
+    expect(displayName?.getAttribute("aria-label")).toBe(labeledName);
+    expect(displayName?.getAttribute("role")).toBe("group");
+    expect(displayName?.className).toContain("opacity-60");
+    expect(id.textContent).not.toContain(name);
+  } else {
+    expect(displayName).toBeNull();
+  }
+}
+
 describe("alert cards in the overlay queue", () => {
+  beforeEach(() => setLocale("en"));
+
+  it("shows distinct canonical ids when names and kind titles match", () => {
+    const q = mount();
+    q.add({ ...alertItem("mail", undefined, "Plugin: fixturecalendar"), pluginDisplayName: "Mail tools" });
+    q.add({
+      ...alertItem("calendar", undefined, "Plugin: fixturemail"),
+      source: { kind: "alert", pluginId: "fixturecalendar", kindId: "reply", alertId: "calendar" },
+      pluginDisplayName: "Mail tools",
+    });
+    expectPluginIdentity("fixturecalendar", "Mail tools");
+    fireEvent.click(screen.getByTestId("overlay-card-prev"));
+    expectPluginIdentity("fixturemail", "Mail tools");
+  });
+
+  it("identifies plugin suggestions and onboarding proposals under plugin-authored titles", () => {
+    const q = mount();
+    q.add({ ...pluginItem("suggestion"), title: "Built-in notice", pluginDisplayName: "Ave" });
+    expectPluginIdentity("fixturemail", "Ave");
+    q.add({
+      id: "proposal:fixturecalendar:first-task",
+      source: { kind: "proposal", pluginId: "fixturecalendar", proposalId: "first-task", action: { kind: "composer", prompt: "Review this" } },
+      title: "Built-in notice",
+      summary: "A proposed action",
+      running: false,
+      createdAt: "2026-09-26T00:00:00.000Z",
+      pluginDisplayName: "Ave",
+    });
+    expectPluginIdentity("fixturecalendar", "Ave");
+    fireEvent.click(screen.getByTestId("overlay-card-prev"));
+    expectPluginIdentity("fixturemail", "Ave");
+  });
+
+  it("falls back to the canonical id for a plugin card without a display name", () => {
+    const q = mount();
+    q.add(pluginItem("legacy"));
+    expectPluginIdentity("fixturemail");
+  });
+
+  it("keeps the full id visible and accessible when two maximum-length ids differ at the end", () => {
+    const q = mount();
+    const head = `plugin-${"x".repeat(56)}`;
+    const firstId = `${head}a`;
+    const secondId = `${head}b`;
+    q.add({
+      ...pluginItem("first"),
+      source: { kind: "plugin", pluginId: firstId, eventId: "first" },
+      pluginDisplayName: "Enterprise Calendar and Scheduling Tools",
+    });
+    q.add({
+      ...pluginItem("second"),
+      source: { kind: "plugin", pluginId: secondId, eventId: "second" },
+      pluginDisplayName: "Enterprise Calendar and Scheduling Tools",
+    });
+    expectPluginIdentity(secondId, "Enterprise Calendar and Scheduling Tools");
+    expect(screen.getByTestId("plugin-provenance-id").className).toContain("break-all");
+    fireEvent.click(screen.getByTestId("overlay-card-prev"));
+    expectPluginIdentity(firstId, "Enterprise Calendar and Scheduling Tools");
+  });
+
+  it("gives provenance the full row below title and close controls", () => {
+    const q = mount();
+    q.add({ ...pluginItem("full-row"), pluginDisplayName: "Mail tools" });
+
+    const title = screen.getByRole("heading", { name: /suggestion/ });
+    const titleRow = title.parentElement;
+    const provenance = screen.getByTestId("plugin-provenance");
+    const close = screen.getByTestId("routine-card-dismiss");
+    expect(titleRow?.contains(close)).toBe(true);
+    expect(titleRow?.contains(provenance)).toBe(false);
+    expect(provenance.classList.contains("contents")).toBe(true);
+    expect(provenance.parentElement?.classList.contains("flex-wrap")).toBe(true);
+    expect(screen.getByTestId("plugin-provenance-id").classList.contains("max-w-full")).toBe(true);
+  });
+
+  it("separates a host-looking display name from the canonical id", () => {
+    const q = mount();
+    q.add({
+      ...pluginItem("spoof"),
+      source: { kind: "plugin", pluginId: "fixture-6", eventId: "spoof" },
+      pluginDisplayName: "Plugin: lyra-mail · Ave Lyra Mail",
+    });
+    expectPluginIdentity("fixture-6", "Plugin: lyra-mail · Ave Lyra Mail");
+    expect(screen.getByTestId("plugin-provenance-name").textContent)
+      .toBe("Name: Plugin: lyra-mail · Ave Lyra Mail");
+  });
+
+  it("labels the display-name field in Korean too", async () => {
+    await loadLocaleMessages("ko");
+    setLocale("ko");
+    try {
+      const q = mount();
+      q.add({ ...pluginItem("ko"), pluginDisplayName: "메일 도구" });
+      expectPluginIdentity("fixturemail", "메일 도구");
+      expect(screen.getByTestId("plugin-provenance-name").textContent).toBe("이름: 메일 도구");
+    } finally {
+      setLocale("en");
+    }
+  });
+
   it("identifies a host alert as built-in rather than a plugin notice", () => {
     const q = mount();
     q.add({ ...alertItem("host"), source: { kind: "alert", pluginId: "@host", kindId: "due-soon", alertId: "host" } });
     expect(screen.getByText(t("alerts.builtInNotice"))).toBeTruthy();
-    expect(screen.queryByText(t("overlayCard.pluginNotice"))).toBeNull();
+    expect(screen.queryByTestId("plugin-provenance-id")).toBeNull();
   });
   it.each(["urgent", "toString", "__proto__", 3, null])("ranks malformed priority %s as normal below high", (priority) => {
     const q = mount();

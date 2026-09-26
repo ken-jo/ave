@@ -21,6 +21,7 @@ test("an older alert snapshot cannot undo a live withdrawal or refresh", async (
     const card = (id: string, title: string): AlertCard => ({
       id: `alert:${id}`,
       source: { kind: "alert", pluginId: "fixturemail", kindId: "reply", alertId: id },
+      pluginDisplayName: "Fixture Mail",
       title, summary: "Old snapshot summary", pendingPrompt: "A pending alert prompt.",
       primaryActionLabel: "Review mail",
       running: false, priority: "normal", createdAt: new Date().toISOString(),

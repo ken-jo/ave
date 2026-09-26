@@ -27,6 +27,7 @@ import { sendToWebContents } from "../safe-send.js";
 import { DEFAULT_LOCALE } from "../../i18n/locale.js";
 import type { IpcDeps } from "../types.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { resolvePluginDisplayName } from "../../shared/plugin-provenance.js";
 
 const log = createLogger("tour-ipc");
 
@@ -84,8 +85,8 @@ export function registerTourHandlers(deps: IpcDeps): void {
     sender: WebContents,
     locale: string,
   ): Promise<PendingOnboardingProposal[]> => {
-    const sources: OnboardingProposalSource[] = deps.pluginRuntime
-      .listPluginCards(deps.toolRegistry)
+    const pluginCards = deps.pluginRuntime.listPluginCards(deps.toolRegistry);
+    const sources: OnboardingProposalSource[] = pluginCards
       .flatMap((card) =>
         card.loadStatus === "loaded" && card.active === true && card.onboarding !== undefined
           ? [{ pluginId: card.id, onboarding: card.onboarding }]
@@ -100,6 +101,10 @@ export function registerTourHandlers(deps: IpcDeps): void {
         OVERLAY_V1.show,
         {
           id: `proposal:${head.key}`,
+          pluginDisplayName: resolvePluginDisplayName(
+            head.pluginId,
+            pluginCards.find((card) => card.id === head.pluginId)?.name,
+          ),
           source: {
             kind: "proposal" as const,
             pluginId: head.pluginId,

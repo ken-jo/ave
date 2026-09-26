@@ -283,6 +283,80 @@ describe("predecessor and toggle", () => {
 });
 
 describe("an accepted alert", () => {
+  it("keeps canonical ids visible when two plugins share a name and kind title", async () => {
+    const h = await harness();
+    await h.service.register("fixturemail", { ...manifest([KINDS[0]!]), name: "Mail tools" });
+    await h.service.register("fixturecalendar", { ...manifest([KINDS[0]!]), name: "Mail tools" });
+    await h.service.raise("fixturemail", reply("first", { slots: { subject: "Plugin: fixturecalendar", emailId: "a" } }));
+    await h.service.raise("fixturecalendar", reply("second", { slots: { subject: "Plugin: fixturemail", emailId: "b" } }));
+    expect(h.shown.map(({ title, pluginDisplayName }) => ({ title, pluginDisplayName }))).toEqual([
+      { title: "Mail needing a reply", pluginDisplayName: "Mail tools" },
+      { title: "Mail needing a reply", pluginDisplayName: "Mail tools" },
+    ]);
+    expect(h.shown[0]?.summary).toContain("fixturecalendar");
+    expect(h.shown[1]?.summary).toContain("fixturemail");
+    expect(h.fired.map(({ title }) => title)).toEqual([
+      "Plugin [fixturemail] · Mail tools · Mail needing a reply",
+      "Plugin [fixturecalendar] · Mail tools · Mail needing a reply",
+    ]);
+  });
+
+  it("keeps a host-looking name as a label beside the canonical id", async () => {
+    const h = await harness();
+    await h.service.register("fixturemail", { ...manifest([KINDS[0]!]), name: "Ave" });
+    await h.service.raise("fixturemail", reply());
+    expect(h.shown[0]?.pluginDisplayName).toBe("Ave");
+    expect(h.fired[0]?.title).toBe("Plugin [fixturemail] · Ave · Mail needing a reply");
+  });
+
+  it("neutralizes a repeated identity label in a notification title", async () => {
+    const h = await harness();
+    await h.service.register("fixture-6", {
+      ...manifest([{ ...KINDS[0]!, label: { en: "Security notice" } }]),
+      name: "Plugin: lyra-mail · Ave Lyra Mail",
+    });
+    await h.service.raise("fixture-6", reply());
+    expect(h.shown[0]?.pluginDisplayName).toBe("Plugin: lyra-mail · Ave Lyra Mail");
+    expect(h.fired[0]?.title).toBe("Plugin [fixture-6] · Plugin lyra-mail Ave Lyra Mail · Security notice");
+  });
+
+  it("does not let a display name or kind title create another bracketed id field", async () => {
+    const h = await harness();
+    await h.service.register("fixture-6", {
+      ...manifest([{ ...KINDS[0]!, label: { en: "Plugin [another] · Security notice" } }]),
+      name: "Plugin [lyra-mail] · Ave Lyra Mail",
+    });
+    await h.service.raise("fixture-6", reply());
+    expect(h.fired[0]?.title).toBe("Plugin [fixture-6] · Plugin lyra-mail Ave Lyra Mail · Plugin another Security notice");
+  });
+
+  it("keeps the full maximum-length plugin id in a capped notification title", async () => {
+    const h = await harness();
+    const pluginId = `plugin-${"x".repeat(57)}`;
+    await h.service.register(pluginId, { ...manifest([KINDS[0]!]), name: "A very long display name" });
+    await h.service.raise(pluginId, reply());
+    expect(h.fired[0]?.title).toContain(pluginId);
+  });
+
+  it("removes direction controls from manifest names before staging or notifying", async () => {
+    const h = await harness();
+    await h.service.register("fixturemail", { ...manifest([KINDS[0]!]), name: "Mail\u202e tools" });
+    await h.service.raise("fixturemail", reply());
+    expect(h.shown[0]?.pluginDisplayName).toBe("Mail tools");
+    expect(h.fired[0]?.title).toBe("Plugin [fixturemail] · Mail tools · Mail needing a reply");
+  });
+
+  it("falls back to the plugin id when its installed manifest has no name", async () => {
+    const h = await registered();
+    await h.service.register("fixturecalendar", { ...manifest([KINDS[0]!]), name: "  " });
+    await h.service.raise("fixturemail", reply());
+    await h.service.raise("fixturecalendar", reply("calendar"));
+    expect(h.shown[0]?.pluginDisplayName).toBe("fixturemail");
+    expect(h.shown[1]?.pluginDisplayName).toBe("fixturecalendar");
+    expect(h.fired[0]?.title).toBe("Plugin [fixturemail] · Mail needing a reply");
+    expect(h.fired[1]?.title).toBe("Plugin [fixturecalendar] · Mail needing a reply");
+  });
+
   it("completes queued acceptance when the current window send fails once", async () => {
     const h = await registered();
     vi.spyOn(h.shown, "push").mockImplementationOnce(() => { throw new Error("window destroyed"); });
@@ -520,6 +594,19 @@ describe("budgets", () => {
 });
 
 describe("visibility and cues", () => {
+  it("identifies each plugin in focused summary toasts even when display names match", async () => {
+    const h = await harness();
+    h.focused.value = true;
+    await h.service.register("fixturemail", { ...manifest([KINDS[1]!]), name: "Mail tools" });
+    await h.service.register("fixturecalendar", { ...manifest([KINDS[1]!]), name: "Mail tools" });
+    await h.service.raise("fixturemail", { kind: "digest", key: "mail" });
+    await h.service.raise("fixturecalendar", { kind: "digest", key: "calendar" });
+    expect(h.fired.map(({ title }) => title)).toEqual([
+      "Plugin [fixturemail] · Mail tools · New mail",
+      "Plugin [fixturecalendar] · Mail tools · New mail",
+    ]);
+  });
+
   it("routes the three levels: a card, a toast while focused, or only the record", async () => {
     const h = await registered();
     h.focused.value = true;
@@ -527,7 +614,7 @@ describe("visibility and cues", () => {
     expect(await h.service.raise("fixturemail", { kind: "digest", key: "d" })).toMatchObject({ delivered: { card: false, toast: true, osNotification: false } });
     expect(await h.service.raise("fixturemail", { kind: "quiet", key: "q" })).toMatchObject({ delivered: { card: false, toast: false, osNotification: false } });
     expect(h.shown).toHaveLength(1);
-    expect(h.fired).toEqual([{ kind: "alert", title: "New mail", body: "New mail arrived." }]);
+    expect(h.fired).toEqual([{ kind: "alert", title: "Plugin [fixturemail] · New mail", body: "New mail arrived." }]);
     expect(h.events.map((event) => event.payload.visibility)).toEqual(["user-visible", "summary-only", "silent"]);
   });
 
@@ -541,7 +628,7 @@ describe("visibility and cues", () => {
   it("notifies the OS for an unfocused window when the kind and both switches allow it", async () => {
     const h = await registered();
     expect(await h.service.raise("fixturemail", reply())).toMatchObject({ delivered: { osNotification: true } });
-    expect(h.fired).toEqual([{ kind: "alert", title: "Mail needing a reply", body: "A mail needs your reply." }]);
+    expect(h.fired).toEqual([{ kind: "alert", title: "Plugin [fixturemail] · Mail needing a reply", body: "A mail needs your reply." }]);
   });
 
   it("never notifies the OS for a low priority alert", async () => {
@@ -581,7 +668,7 @@ describe("visibility and cues", () => {
     await h.service.raise("fixturemail", reply());
     expect(h.fired).toEqual([]);
     expect(await h.service.raise("fixturemail", { kind: "urgent", key: "u" })).toMatchObject({ delivered: { osNotification: true } });
-    expect(h.fired).toEqual([{ kind: "alert", title: "Meeting starting", body: "A meeting is starting.", bypassFocusGate: true }]);
+    expect(h.fired).toEqual([{ kind: "alert", title: "Plugin [fixturemail] · Meeting starting", body: "A meeting is starting.", bypassFocusGate: true }]);
   });
 
   it("gives one cue at most: the OS notification replaces the toast when both would fire", async () => {
@@ -589,7 +676,7 @@ describe("visibility and cues", () => {
     h.focused.value = true;
     expect(await h.service.raise("fixturemail", { kind: "loudsummary", key: "l" }))
       .toMatchObject({ delivered: { toast: false, osNotification: true } });
-    expect(h.fired).toEqual([{ kind: "alert", title: "Urgent mail", body: "Urgent mail arrived.", bypassFocusGate: true }]);
+    expect(h.fired).toEqual([{ kind: "alert", title: "Plugin [fixturemail] · Urgent mail", body: "Urgent mail arrived.", bypassFocusGate: true }]);
   });
 
   it("fires nothing for a refusal", async () => {

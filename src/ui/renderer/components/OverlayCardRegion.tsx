@@ -111,6 +111,10 @@ export function OverlayCardRegion({
   const next = () => setActiveIndex(Math.min(mine.length - 1, index + 1));
   const expanded = expandedCardIds.has(active.id);
   const onExpandedChange = (value: boolean) => setCardExpanded(active.id, value);
+  const pluginId = active.source.kind === "plugin" || active.source.kind === "proposal"
+    || (active.source.kind === "alert" && active.source.pluginId !== ALERT_HOST_PLUGIN_ID)
+    ? active.source.pluginId
+    : undefined;
 
   if (active.source.kind === "routine") {
     const { routineId, firedAt } = active.source;
@@ -195,6 +199,8 @@ export function OverlayCardRegion({
               onNever: answer("never"),
             }}
             kind="plugin"
+            pluginId={pluginId}
+            pluginDisplayName={active.pluginDisplayName}
           />
         </div>
       </div>
@@ -238,6 +244,8 @@ export function OverlayCardRegion({
             }}
             primaryActionLabel={active.primaryActionLabel ?? t("overlayCardRegion.confirm")}
             kind={kind}
+            pluginId={pluginId}
+            pluginDisplayName={active.pluginDisplayName}
           />
         </div>
       </div>

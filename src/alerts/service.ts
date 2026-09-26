@@ -41,6 +41,7 @@ import {
 } from "./gate.js";
 import { RegistrationLedger, alertKindKey, markPluginAbsent, resolveRegistration } from "./kinds.js";
 import { HOST_ALERT_KINDS } from "./host-kinds.js";
+import { formatPluginNotificationTitle, resolvePluginDisplayName } from "../shared/plugin-provenance.js";
 
 const log = createLogger("alerts");
 
@@ -178,7 +179,7 @@ export class AlertsService {
         registration ??= this.mutate(async () => {
           await loaded;
           const resolved = await this.resolve(pluginId, kinds);
-          return { ...resolved, pluginLabel: manifest.name ?? pluginId, reasoning: manifest.alerts?.reasoning ?? "" };
+          return { ...resolved, pluginLabel: resolvePluginDisplayName(pluginId, manifest.name), reasoning: manifest.alerts?.reasoning ?? "" };
         });
         this.registrations.set(pluginId, registration);
         return this.mutate(async () => {
@@ -339,7 +340,7 @@ export class AlertsService {
       }
       // The identity keeps the level it opened at: a card-less alert gains no
       // card by being raised again. A card lost to a restart is drawn again.
-      if (open.visibility === "user-visible") this.stageCard(pluginId, kind.id, alertId, rendered, priority, now);
+      if (open.visibility === "user-visible") this.stageCard(pluginId, registration.pluginLabel, kind.id, alertId, rendered, priority, now);
       return { status: "refreshed", alertId };
     }
     if (this.store.isClosed(alertId, now)) {
@@ -373,8 +374,8 @@ export class AlertsService {
     for (const gone of evicted) this.finish(gone, "evicted");
 
     const card = visibility === "user-visible";
-    if (card) this.stageCard(pluginId, kind.id, alertId, rendered, priority, now);
-    const cues = this.notify(kind, rendered, visibility, priority, choice.osNotification && settings.osNotificationsEnabled);
+    if (card) this.stageCard(pluginId, registration.pluginLabel, kind.id, alertId, rendered, priority, now);
+    const cues = this.notify(pluginId, registration.pluginLabel, kind, rendered, visibility, priority, choice.osNotification && settings.osNotificationsEnabled);
 
     this.writeAudit({
       timestamp: new Date(now).toISOString(),
@@ -456,6 +457,7 @@ export class AlertsService {
 
   private stageCard(
     pluginId: string,
+    pluginDisplayName: string,
     kindId: string,
     alertId: string,
     rendered: RenderedAlert,
@@ -465,6 +467,7 @@ export class AlertsService {
     const item: AlertCard = {
       id: cardId(alertId),
       source: { kind: "alert", pluginId, kindId, alertId },
+      pluginDisplayName,
       title: rendered.title,
       summary: rendered.summary,
       running: false,
@@ -491,6 +494,8 @@ export class AlertsService {
    * toast stays until the user dismisses it.
    */
   private notify(
+    pluginId: string,
+    pluginDisplayName: string,
     kind: AlertKindDeclaration,
     rendered: RenderedAlert,
     visibility: AlertVisibility,
@@ -502,17 +507,22 @@ export class AlertsService {
     const bypass = kind.osNotification?.bypassFocusGate === true;
     const os = kind.osNotification !== undefined && osToggles && priority !== "low" && (!focused || bypass);
     const toast = !os && visibility === "summary-only" && focused;
+    const title = pluginId === ALERT_HOST_PLUGIN_ID
+      ? rendered.title
+      : formatPluginNotificationTitle(
+        (key, vars) => translate(this.deps.locale(), key, vars), pluginId, pluginDisplayName, rendered.title,
+      );
     if (os) {
       this.deps.notifications.fire({
         kind: "alert",
-        title: rendered.title,
+        title,
         body: rendered.notificationBody,
         ...(focused ? { bypassFocusGate: true } : {}),
       });
     } else if (toast) {
       this.deps.notifications.fire({
         kind: "alert",
-        title: rendered.title,
+        title,
         body: rendered.notificationBody,
         ...(priority === "high" ? { sticky: true } : {}),
       });
