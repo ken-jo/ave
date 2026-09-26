@@ -3,7 +3,7 @@
  *
  *   fetch the ref with --filter=blob:none (full commit history)
  *   candidate = fetched commit
- *   candidate == pin            → nothing to do (a lost snapshot is rebuilt)
+ *   candidate == pin            → nothing to do if the cached snapshot is current and valid
  *   pin not an ancestor         → official, managed: keep pin, SOURCE_HISTORY_REWRITTEN
  *                                 custom, direct:    keep pin, record pendingRewrite for review
  *   snapshot at candidate fails → keep pin, record the code
@@ -14,6 +14,8 @@
  * snapshot at the pin keeps being served (`readSnapshot`); nothing falls back
  * to another source.
  */
+import { validateCachedSnapshotText } from "../catalog/validate.js";
+import { effectiveRevocations } from "../catalog/effective-revocations.js";
 import { existsSync } from "node:fs";
 import { readdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -36,7 +38,7 @@ export interface SourceSyncOptions {
   now?: () => Date;
   /** Commits that installed packages from this source still reference (`origin.commit`); never pruned. */
   retainedCommits: (sourceId: string) => Promise<ReadonlySet<string>>;
-  /** Called after a source's pin moved. */
+  /** Called after a snapshot is published, including a same-pin rebuild. */
   onCatalogChanged?: (sourceId: string) => void;
 }
 
@@ -148,8 +150,8 @@ export class SourceSyncer {
       return { ...rest, pinnedCommit: commit, lastSync: { at: this.now(), result: "ok" } };
     });
     await this.prune(source.id, commit, previousPin);
-    if (commit !== previousPin) this.options.onCatalogChanged?.(source.id);
-    return { status: "ok", pinnedCommit: commit, changed: commit !== previousPin };
+    this.options.onCatalogChanged?.(source.id);
+    return { status: "ok", pinnedCommit: commit, changed: true };
   }
 
   /** Keep the pin, the previous pin and every commit an installed package still references. */
@@ -159,6 +161,18 @@ export class SourceSyncer {
     for (const name of await readdir(dir)) {
       if (SNAPSHOT_FILE.test(name) && !keep.has(name.slice(0, 40))) await rm(join(dir, name), { force: true });
     }
+  }
+
+  private async hasReusableSnapshot(id: string, commit: string): Promise<boolean> {
+    let text: string;
+    try {
+      text = await readFile(this.snapshotPath(id, commit), "utf8");
+    } catch (error) {
+      if (isMissingPathError(error)) return false;
+      throw error;
+    }
+    const validated = validateCachedSnapshotText(text);
+    return validated.ok && validated.value.sourceId === id && validated.value.commit === commit;
   }
 
   private async run(id: string, signal?: AbortSignal): Promise<SyncResult> {
@@ -179,7 +193,7 @@ export class SourceSyncer {
     const { candidate, remote } = fetched;
 
     if (candidate === pin) {
-      if (existsSync(this.snapshotPath(id, pin))) {
+      if (await this.hasReusableSnapshot(id, pin)) {
         await this.options.registry.updateState(id, (current) => {
           const { pendingRewrite: _cleared, ...rest } = current;
           return { ...rest, lastSync: { at: this.now(), result: "ok" } };
@@ -301,8 +315,8 @@ export class SourceSyncer {
   }
 
   /** The revocations at the pin, for the revocation feed ({@link readPinnedRevocations}). */
-  readRevocations(id: string): Promise<SourceSnapshot["revocations"]> {
-    return readPinnedRevocations(this.options.root, id);
+  readRevocations(id: string, appVersion: string): Promise<SourceSnapshot["revocations"]> {
+    return readPinnedRevocations(this.options.root, id, appVersion);
   }
 }
 
@@ -336,9 +350,9 @@ async function readPinnedSnapshot(root: string, id: string): Promise<SourceSnaps
  * gone throws, so the feed reports the source unreadable rather than
  * dropping its revocations until a sync rebuilds the snapshot.
  */
-export async function readPinnedRevocations(root: string, id: string): Promise<SourceSnapshot["revocations"]> {
+export async function readPinnedRevocations(root: string, id: string, appVersion: string): Promise<SourceSnapshot["revocations"]> {
   const snapshot = await readPinnedSnapshot(root, id);
-  if (snapshot) return snapshot.revocations;
+  if (snapshot) return effectiveRevocations(snapshot, appVersion);
   const { pinnedCommit } = await readSourceState(root, id);
   if (pinnedCommit !== null) throw new Error(`snapshot ${pinnedCommit}.json of ${id} is missing`);
   return [];

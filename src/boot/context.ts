@@ -39,6 +39,7 @@ import type { PluginRuntime } from "../plugins/runtime.js";
 import type { PluginDeploymentGuard } from "../plugins/deployment-guard.js";
 import type { LateBindingRefs } from "./steps/plugin-runtime.js";
 import type { WorkBoardStore } from "../main/work-board-store.js";
+import type { AlertsService } from "../alerts/service.js";
 import type { WorkBoardEngine } from "../core/work-board-engine.js";
 import type { WorkBoardReporter } from "../work-board/work-report.js";
 import type { SessionTasksStore } from "../main/session-tasks-store.js";
@@ -150,6 +151,7 @@ export class BootContext {
   declare workBoardStorage: WorkBoardStorage;
   declare dueSoonTimer: ReturnType<typeof setInterval> | undefined;
   declare startWorkBoardDueSoon: () => void;
+  declare alertsService: AlertsService;
   declare sessionTasksStore: SessionTasksStore;
   declare sessionGoalStore: SessionGoalStore;
   declare skillStore: SkillStore;
@@ -303,6 +305,7 @@ const BOOT_CONTEXT_FIELDS = [
   "workBoardStorage",
   "dueSoonTimer",
   "startWorkBoardDueSoon",
+  "alertsService",
   "sessionTasksStore",
   "sessionGoalStore",
   "skillStore",

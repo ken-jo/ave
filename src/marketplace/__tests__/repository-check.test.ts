@@ -85,6 +85,20 @@ function index(files: Map<string, unknown>) {
 }
 
 describe("checkMarketplaceRepository", () => {
+  it("checks the optional conditional policy and rejects an invalid successor mapping", () => {
+    const files = validFiles();
+    const entry = { kind: "plugin", name: "alpha", versions: "*", appVersions: "0.12.0", reason: "Replaced", at: AT,
+      action: "uninstall", successors: { plugins: [], hostKinds: [] } };
+    files.set("policy/revocations-by-app.json", { schemaVersion: 1, revocations: [entry] });
+    expect(check(files)).toEqual([]);
+    files.set("policy/revocations-by-app.json", { schemaVersion: 1, revocations: [{ ...entry, successors: { plugins: [{ pluginId: "alpha", anySource: false }], hostKinds: [] } }] });
+    expect(check(files)).toEqual([expect.objectContaining({ subject: "policy/revocations-by-app.json" })]);
+    for (const pluginId of ["constructor", "prototype", "__proto__"]) {
+      files.set("policy/revocations-by-app.json", { schemaVersion: 1, revocations: [{ ...entry, successors: { plugins: [{ pluginId }], hostKinds: [] } }] });
+      expect(check(files)).toEqual([expect.objectContaining({ subject: "policy/revocations-by-app.json" })]);
+    }
+  });
+
   it("accepts a repository the app would accept", () => {
     expect(check(validFiles())).toEqual([]);
   });
@@ -96,6 +110,32 @@ describe("checkMarketplaceRepository", () => {
     const renamed = validFiles();
     index(renamed).name = "other";
     expect(check(renamed)).toEqual([{ subject: "marketplace.json", message: expect.stringContaining('must be named "ave"') }]);
+  });
+
+  it("refuses a plugin named host, the id the host's own alert sources use", () => {
+    const files = validFiles();
+    const plugin = index(files).packages[0]!;
+    plugin.name = "host";
+    plugin.path = "plugins/host";
+    files.delete("plugins/alpha/ave-package.json");
+    files.delete("plugins/alpha/source/package.json");
+    files.set("plugins/host/ave-package.json", descriptor("plugin", "host", { authority: authority(), artifact: artifact() }));
+    expect(check(files)).toEqual([
+      { subject: "plugin/host", message: "the plugin name host is reserved for the host" },
+      { subject: "plugins/host/ave-package.json", message: "no index entry points at this package" },
+    ]);
+  });
+
+  it("allows host as the name of a package that is not a plugin", () => {
+    const files = validFiles();
+    const skill = index(files).packages[3]!;
+    skill.name = "host";
+    skill.path = "skills/host";
+    files.delete("skills/review/ave-package.json");
+    files.delete("skills/review/SKILL.md");
+    files.set("skills/host/ave-package.json", descriptor("skill", "host", { entry: "SKILL.md" }));
+    files.set("skills/host/SKILL.md", "---\nname: host\ndescription: Review a change.\n---\nRead the diff first.\n");
+    expect(check(files)).toEqual([]);
   });
 
   it("reports a descriptor the index copy disagrees with", () => {

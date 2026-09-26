@@ -16,7 +16,7 @@
  */
 import { messages } from "../i18n/messages/index.js";
 import type { IndexPackage, IndexVersion, PackageDescriptor, PluginArtifactPins, PluginAuthority } from "./catalog/types.js";
-import { validateDescriptorText, validateIndexText, validateRevocationsText } from "./catalog/validate.js";
+import { validateConditionalRevocationsText, validateDescriptorText, validateIndexText, validateRevocationsText } from "./catalog/validate.js";
 import { isDataContentKind, parseContent } from "./content/kinds.js";
 import { checkContentFiles, isContentKind } from "./content/rules.js";
 import { DESCRIPTOR_NAME, descriptorDiffersFromIndex, repoPath } from "./resolve/descriptor.js";
@@ -286,6 +286,12 @@ export function checkMarketplaceRepository(tree: RepositoryTree, options: Reposi
   if (revocations) {
     const checked = validateRevocationsText(revocations.toString("utf8"));
     if (!checked.ok) problems.push({ subject: REVOCATIONS_PATH, message: checked.error });
+  }
+  const conditionalPath = "policy/revocations-by-app.json";
+  const conditional = tree.read(conditionalPath);
+  if (conditional) {
+    const checked = validateConditionalRevocationsText(conditional.toString("utf8"));
+    if (!checked.ok) problems.push({ subject: conditionalPath, message: checked.error });
   }
   return problems;
 }

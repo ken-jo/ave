@@ -148,8 +148,11 @@ function pluginInstaller(deps: IpcDeps): PluginInstallerPort {
         return { action: result.action, staged: result.staged };
       });
     },
-    uninstall: async (name) => {
-      await lifecycle.uninstall(name);
+    retire: async (name, retain) => {
+      await lifecycle.retirement.writeIfAbsent(name, await lifecycle.retirement.capture(name, retain));
+    },
+    uninstall: async (name, retain) => {
+      await lifecycle.uninstall(name, retain);
     },
   };
 }

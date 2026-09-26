@@ -128,7 +128,7 @@ describe("the schema names what the host serves, and nothing else", () => {
   });
 
   it("has one method entry per dispatchable path and per instance method, and no other", () => {
-    expect(DISPATCHABLE).toHaveLength(44);
+    expect(DISPATCHABLE).toHaveLength(46);
     expect(Object.keys(SCHEMA.$defs.methods).sort()).toEqual(
       [...DISPATCHABLE.map((path) => hostApiMethodOf(path)), ...Object.values(PLUGIN_INSTANCE_METHODS)].sort(),
     );

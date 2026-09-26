@@ -16,12 +16,14 @@
 // Two source variants:
 //   - routine: primary action opens the routine's session (only when
 //     `routineSessionId` is present — notification-only routines hide it)
-//   - plugin / app (insertion-type): primary action deferred to
-//     `onPluginPrimaryAction`.
+//   - plugin / app / alert (insertion-type): primary action deferred to
+//     `onPluginPrimaryAction`. An alert is a plugin's card the host rendered
+//     from the kind's declared templates.
 //   - proposal: a plugin's onboarding question. Three answers instead of one
 //     confirm, and the host performs the accepted action itself.
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { ALERT_HOST_PLUGIN_ID } from "../../../shared/alerts-types.js";
 import { useOverlayContext } from "../context/OverlayContext.js";
 import { OverlayCard } from "./OverlayCard.js";
 import { useTranslation } from "../../../i18n/react.js";
@@ -51,6 +53,8 @@ export interface OverlayCardRegionProps {
    * the turn is started in.
    */
   onPluginPrimaryAction: (overlayItemId: string, chatGroupId: string) => void;
+  /** Called when the user closes an alert card without accepting it. */
+  onAlertDismiss?: (overlayItemId: string) => void;
   onRoutineAcknowledge?: (routineId: string, firedAt: string) => void;
   /**
    * The user's answer to an onboarding proposal, with the tile that showed the
@@ -65,7 +69,7 @@ export interface OverlayCardRegionProps {
 }
 
 export function OverlayCardRegion({
-  chatGroupId, actionChatGroupId, overlayCardTile, onPluginPrimaryAction, onRoutineAcknowledge,
+  chatGroupId, actionChatGroupId, overlayCardTile, onPluginPrimaryAction, onAlertDismiss, onRoutineAcknowledge,
   onProposalAnswer,
 }: OverlayCardRegionProps) {
   const { t } = useTranslation();
@@ -200,8 +204,10 @@ export function OverlayCardRegion({
   // Insertion variants — plugin overlay trigger and MCP-app `ui/message`. Both stage a
   // `pendingPrompt` that only a user CLICK turns into a chat turn; they differ solely in
   // provenance (the envelope in `pendingPrompt` and the badge below).
-  if (active.source.kind === "plugin" || active.source.kind === "app") {
-    const kind = active.source.kind;
+  if (active.source.kind === "plugin" || active.source.kind === "app" || active.source.kind === "alert") {
+    const kind = active.source.kind === "app" ? "app"
+      : active.source.kind === "alert" && active.source.pluginId === ALERT_HOST_PLUGIN_ID ? "host" : "plugin";
+    const isAlert = active.source.kind === "alert";
     return (
       <div
         data-testid="overlay-card-region"
@@ -219,11 +225,14 @@ export function OverlayCardRegion({
             queueTotal={queueTotal}
             onPrev={prev}
             onNext={next}
-            onDismiss={() => dismiss(active.id)}
+            onDismiss={() => {
+              dismiss(active.id);
+              if (isAlert) onAlertDismiss?.(active.id);
+            }}
             expanded={expanded}
             onExpandedChange={onExpandedChange}
             onPrimaryAction={() => {
-              // Dismiss from queue first, then notify App for chat insert
+              // Dismiss from queue first, then notify App for chat insert.
               dismiss(active.id);
               onPluginPrimaryAction(active.id, actionChatGroupId);
             }}

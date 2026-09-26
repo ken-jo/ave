@@ -21,7 +21,12 @@ import { normalizeAllowedHosts, urlHostMatchesAllowList } from "../../../main/ho
 import type { AuthRedirectCatchers } from "../../../main/auth-redirect-catcher.js";
 import { resolveMappedDriveRoot } from "../../../main/host-api/mapped-drive-root.js";
 import { AudioCaptureService } from "../../../main/audio-capture.js";
-import type { AttachFloatingPanelRequest, AudioCaptureRequest } from "../../../plugins/public-contract.js";
+import type {
+  AlertInput,
+  AlertResult,
+  AttachFloatingPanelRequest,
+  AudioCaptureRequest,
+} from "../../../plugins/public-contract.js";
 import { FloatingDock } from "../../../main/floating-dock.js";
 import { evaluateHostFetch, runHostFetchHops } from "../../../main/host-fetch-guard.js";
 import {
@@ -54,7 +59,7 @@ import {
 import { auditPluginEmitDenial } from "../../../plugins/emit-denial-audit.js";
 import { getDeclaredEmittedEvents, manifestDocumentSha256 } from "../../../plugins/runtime/manifest-validation.js";
 import { canonicalJSON } from "../../../plugins/secret-access/canonical-json.js";
-import { applyConfigDefaults } from "../../../plugins/config-schema.js";
+import { effectivePluginConfig } from "../../../plugins/effective-config.js";
 import { shouldRestartAfterPluginConfigWrite } from "../../../plugins/config-restart-policy.js";
 import { OVERLAY_V1, WORK_BOARD } from "../../../shared/ipc-channels.js";
 import {
@@ -103,7 +108,13 @@ import {
   triggerDenyAuditThrottle,
   TriggerConversationRateLimiter,
 } from "./trigger-gate.js";
-import { getDeclaredWorkProposalKinds } from "../../../plugins/runtime/manifest-validation.js";
+import {
+  getDeclaredSuggestionSources,
+  getDeclaredWorkProposalKinds,
+} from "../../../plugins/runtime/manifest-validation.js";
+import { suggestionLedger } from "../../../alerts/suggestion-ledger.js";
+import type { AlertsService } from "../../../alerts/service.js";
+import { alertEventReaches, isAlertEvent } from "../../../alerts/events.js";
 import type {
   WorkProposalChangedEventPayload,
   WorkProposalInput,
@@ -292,6 +303,11 @@ export interface CreateHostApiFactoryDeps {
    * to degrade around.
    */
   getWorkBoardStore: () => WorkBoardStore | undefined;
+  /**
+   * Late-bound alerts service, built before plugins start. A host without one
+   * (a minimal test host) registers no kinds, and `raiseAlert` fails loudly.
+   */
+  getAlertsService: () => AlertsService | undefined;
   /** What a host-secret grant reads from disk (design §10.3). */
   grantEvidence: GrantEvidenceReader;
 }
@@ -337,6 +353,7 @@ export function createHostApiFactory(
     permissionManager,
     routinesStore,
     getWorkBoardStore,
+    getAlertsService,
     grantEvidence,
   } = deps;
 
@@ -419,6 +436,29 @@ export function createHostApiFactory(
       hostIncarnation.registerDisposer(disposeOnce);
       hostEffects?.registerDisposer(disposeOnce);
       return disposeOnce;
+    };
+    // Candidate grants become effective only with their generation. A failed
+    // candidate cannot replace the incumbent's kinds or alter its settings.
+    const alertRegistration = getAlertsService()?.prepareRegistration(pluginId, manifest, () => hostIncarnation.isActive());
+    if (alertRegistration) {
+      const publish = () => {
+        void alertRegistration.publish().catch((err: unknown) => {
+          log.warn(`[plugin:${pluginId}] alert kind registration failed: ${errorMessage(err)}`);
+        });
+      };
+      registerOwnedDisposer(alertRegistration.unpublish);
+      if (hostEffects) {
+        hostEffects.stagePublish(publish);
+        hostEffects.onSupersede(alertRegistration.unpublish);
+      } else if (hostIncarnation.isActive()) {
+        publish();
+      }
+    }
+    /** The alerts service, or a loud failure: plugins start after it is built. */
+    const requireAlertsService = (member: string): AlertsService => {
+      const service = getAlertsService();
+      if (!service) throw new Error(`[plugin:${pluginId}] hostApi.${member}: alerts service is not constructed`);
+      return service;
     };
     /**
      * The Work Board store, or a loud failure. Plugins start long after
@@ -571,11 +611,10 @@ export function createHostApiFactory(
           // runtime/sandbox.ts) returned the author-declared default — the two
           // now agree. applyConfigDefaults only backfills keys still undefined,
           // so it never changes the precedence of the higher layers.
-          const merged = applyConfigDefaults(manifest.configSchema, {
-            ...(manifest.config ?? {}),
-            ...(pluginRuntime.getWildcardConfigOverride?.() ?? {}),
-            ...(settingsService.getPluginConfig(pluginId) ?? {}),
-          });
+          const merged = effectivePluginConfig(manifest,
+            pluginRuntime.getWildcardConfigOverride?.() ?? {},
+            settingsService.getPluginConfig(pluginId) ?? {},
+          );
           return merged[key] as T | undefined;
         },
         set: <T = unknown>(key: string, value: T): Promise<void> => {
@@ -700,8 +739,13 @@ export function createHostApiFactory(
           type,
           candidateApprovedPluginAccess,
         );
+        // The host emits `alert.*`, so its owner is the payload's plugin: a
+        // subscriber hears its own alerts and, with a grant, the named plugin's.
+        const alertEvent = isAlertEvent(type);
         const dispatch = (data: unknown) => {
-          if (hostIncarnation.isActive()) handler(data);
+          if (!hostIncarnation.isActive()) return;
+          if (alertEvent && !alertEventReaches(pluginId, type, data, getApprovedPluginAccess())) return;
+          handler(data);
         };
         // Contained for the same reason `config.onChange` is: `emitEvent`
         // catches what a synchronous handler throws, and a `void`-discarded
@@ -1594,8 +1638,35 @@ export function createHostApiFactory(
       // started). The user's confirm action inserts the prompt as a user
       // message into main chat via the imported_trigger mechanism.
       //
+      //
+      // A plugin that declares `alerts` may pass only its declared suggestion
+      // sources, each accepted once per 30 days. Stage synchronously before
+      // charging acceptance, then persist before resolving the call.
       triggerConversation: async (spec: ConversationTriggerSpec) => {
+        const declaredSuggestions = getDeclaredSuggestionSources(manifest, pluginId);
+        if (declaredSuggestions !== null) await suggestionLedger.load();
+        const eventId = randomUUID();
         const decision = evaluateTriggerSpec({
+          stageDelivery: (source) => {
+            const overlayTarget = requireMainWindow();
+
+            // Allow path — push to renderer OverlayContext via IPC instead of
+            // spawning a fresh ConversationLoop.
+            const overlayId = `plugin:${pluginId}:${eventId}`;
+            const derivedSummary = deriveOverlaySummaryForDisplay(spec);
+            const overlayItem = {
+              id: overlayId,
+              source: { kind: "plugin" as const, pluginId, eventId },
+              title: spec.title ?? spec.source.replace(/^overlay:/, ""),
+              summary: derivedSummary,
+              running: false,
+              primaryActionLabel: spec.primaryActionLabel ?? t("be_pluginRuntime.overlayPrimaryActionLabel"),
+              pendingPrompt: formatPluginPendingPrompt(spec.prompt, source),
+              createdAt: new Date().toISOString(),
+            };
+            overlayTarget.webContents.send(OVERLAY_V1.show, overlayItem);
+
+          },
           assertDeliveryAvailable: () => { requireMainWindow(); },
           spec,
           pluginId,
@@ -1604,29 +1675,15 @@ export function createHostApiFactory(
           rateLimiter: triggerConversationRateLimiter,
           denyAuditThrottle: triggerDenyAuditThrottle,
           auditLogger: bootAuditLogger,
+          suggestions: declaredSuggestions === null
+            ? undefined
+            : { declared: declaredSuggestions, ledger: suggestionLedger },
         });
 
         if (decision.kind === "deny") {
           return decision.result;
         }
-        const overlayTarget = requireMainWindow();
-
-        // Allow path — push to renderer OverlayContext via IPC instead of
-        // spawning a fresh ConversationLoop.
-        const eventId = randomUUID();
-        const overlayId = `plugin:${pluginId}:${eventId}`;
-        const derivedSummary = deriveOverlaySummaryForDisplay(spec);
-        const overlayItem = {
-          id: overlayId,
-          source: { kind: "plugin" as const, pluginId, eventId },
-          title: spec.title ?? spec.source.replace(/^overlay:/, ""),
-          summary: derivedSummary,
-          running: false,
-          primaryActionLabel: spec.primaryActionLabel ?? t("be_pluginRuntime.overlayPrimaryActionLabel"),
-          pendingPrompt: formatPluginPendingPrompt(spec.prompt, decision.source),
-          createdAt: new Date().toISOString(),
-        };
-        overlayTarget.webContents.send(OVERLAY_V1.show, overlayItem);
+        if (declaredSuggestions !== null) await suggestionLedger.flush();
 
         return { accepted: true, source: decision.source, eventId };
       },
@@ -1688,6 +1745,17 @@ export function createHostApiFactory(
         if (withdrawn) notifyProposalChanged(proposalId(pluginId, kind, key.trim()), "withdrawn");
         return withdrawn;
       },
+
+      // ─── Alerts — hostApi.raiseAlert() / withdrawAlert() ────────────────
+      // What arrives is a declared kind id, a key and typed slot values; the
+      // card, the prompt and the notification are the host's, rendered from
+      // the kind's declaration. The identity is keyed by the CALLER's plugin
+      // id, so a plugin can neither raise nor withdraw another's alert.
+      raiseAlert: async (input: AlertInput): Promise<AlertResult> =>
+        requireAlertsService("raiseAlert").raise(pluginId, input),
+
+      withdrawAlert: async (kind: string, key: string): Promise<boolean> =>
+        requireAlertsService("withdrawAlert").withdraw(pluginId, kind, key),
         }),
         {
           pluginId,

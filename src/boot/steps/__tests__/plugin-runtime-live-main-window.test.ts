@@ -1,3 +1,4 @@
+import { createAlertMigrationPorts } from "../../../__tests__/support/alert-migration.js";
 import { createBootHostFixture, createDesktopHostFixture } from "../../../__tests__/support/host-runtime.js";
 /**
  * HostApi window targeting — a host→renderer send must go to the CURRENT main
@@ -16,7 +17,7 @@ import { createBootHostFixture, createDesktopHostFixture } from "../../../__test
  * `createHostApiFactory({...})` call site is caught here.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -103,6 +104,16 @@ vi.mock("../../../plugins/registry.js", () => ({
 
 import { initPluginRuntime } from "../plugin-runtime.js";
 import { OVERLAY_V1 } from "../../../shared/ipc-channels.js";
+import { SuggestionLedger, suggestionLedger } from "../../../alerts/suggestion-ledger.js";
+import { emitEvent } from "../../types.js";
+import { AlertsService } from "../../../alerts/service.js";
+import type { AlertSettings } from "../../../shared/alerts-types.js";
+import type { AlertInput, AlertResult } from "../../../plugins/public-contract.js";
+import { HostApiGenerationScope } from "../../../plugins/plugin-host-effect-scope.js";
+import type { PluginRuntimeGenerationAccess } from "../../../plugins/plugin-host-generation.js";
+import type { PluginHostApiIncarnation } from "../../../plugins/runtime/index.js";
+
+const alertsServices: AlertsService[] = [];
 
 interface FakeWindow {
   destroyed: boolean;
@@ -126,13 +137,16 @@ type OverlayHostApi = {
     title?: string;
     dedupeKey?: string;
   }) => Promise<{ accepted: boolean }>;
+  raiseAlert: (input: AlertInput) => Promise<AlertResult>;
+  withdrawAlert: (kind: string, key: string) => Promise<boolean>;
+  onEvent: (type: string, handler: (data: unknown) => void) => () => void;
 };
 
 type CreateHostApi = (
   pluginId: string,
   manifest: Record<string, unknown>,
   pluginDataDir: string,
-  incarnation: Record<string, unknown>,
+  incarnation: PluginHostApiIncarnation,
   installPluginId: string | null,
 ) => OverlayHostApi;
 
@@ -144,6 +158,11 @@ type CreateHostApi = (
 async function overlayHostApi(input: {
   bootWindow: FakeWindow | null;
   getMainWindow?: () => FakeWindow | null;
+  pluginId?: string;
+  manifest?: Record<string, unknown>;
+  alertsService?: AlertsService;
+  incarnation?: PluginHostApiIncarnation;
+  isActive?: () => boolean;
 }): Promise<OverlayHostApi> {
   runtimeTestState.capturedRuntimeOptions = null;
   await initPluginRuntime({
@@ -181,19 +200,21 @@ async function overlayHostApi(input: {
     routinesStore: { list: () => [] } as never,
     // This harness has no Work Board; the proposal verbs are not exercised here.
     getWorkBoardStore: () => undefined,
+    getAlertsService: () => input.alertsService,
   });
   const createHostApi = (
     runtimeTestState.capturedRuntimeOptions as { createHostApi?: CreateHostApi } | null
   )?.createHostApi;
   expect(createHostApi).toBeDefined();
+  const pluginId = input.pluginId ?? "plugin-a";
   return createHostApi!(
-    "plugin-a",
-    { id: "plugin-a", capabilities: ["host:overlay"] },
+    pluginId,
+    input.manifest ?? { id: pluginId, capabilities: ["host:overlay"] },
     tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-overlay-win-"))),
-    {
+    input.incarnation ?? {
       registerDisposer: vi.fn(),
       trackOperation: <T>(operation: Promise<T>) => operation,
-      isActive: () => true,
+      isActive: input.isActive ?? (() => true),
       isLifecycleHookActive: () => false,
     },
     null,
@@ -206,7 +227,10 @@ beforeEach(() => {
   runtimeTestState.runtime.getPluginManifest.mockReturnValue(null);
 });
 
-afterEach(() => tmpDirs.cleanup());
+afterEach(async () => {
+  for (const alerts of alertsServices.splice(0)) await alerts.flush();
+  tmpDirs.cleanup();
+});
 
 describe("hostApi.triggerConversation overlay send targets the live main window", () => {
   it("validates invalid proposals even when no desktop exists", async () => {
@@ -299,4 +323,252 @@ describe("hostApi.triggerConversation overlay send targets the live main window"
       ),
     ).toHaveLength(1);
   });
+});
+
+describe("hostApi.triggerConversation for a plugin that declares alerts", () => {
+  const source = "overlay:fixturemail-routine";
+  const manifest = {
+    id: "fixturemail",
+    capabilities: ["host:overlay"],
+    alerts: {
+      reasoning: "Tells you when a mail needs an answer.",
+      kinds: [{
+        id: "reply",
+        label: { en: "Mail needing a reply" },
+        defaultEnabled: false,
+        visibility: "user-visible",
+        slots: { subject: { kind: "text", maxLength: 80 } },
+        summary: { en: "Reply to {subject}" },
+        prompt: { en: "Help me answer {subject}." },
+      }],
+      suggestions: [source],
+    },
+  };
+  let previousHome: string | undefined;
+
+  beforeEach(() => {
+    // The ledger lives in ~/.ave/alerts; this suite must never reach the real one.
+    previousHome = process.env.AVE_HOME;
+    process.env.AVE_HOME = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-alerts-home-")));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (previousHome === undefined) delete process.env.AVE_HOME;
+    else process.env.AVE_HOME = previousHome;
+  });
+
+  it("stages before a window closes while acceptance persistence is pending", async () => {
+    const window = makeWindow();
+    const pluginId = "flushrace";
+    const api = await overlayHostApi({ bootWindow: window, getMainWindow: () => window, pluginId, manifest });
+    const flush = suggestionLedger.flush.bind(suggestionLedger);
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const spy = vi.spyOn(suggestionLedger, "flush").mockImplementation(async () => {
+      window.destroyed = true;
+      await pending;
+      await flush();
+    });
+    const result = api.triggerConversation({ source, prompt: "Review this." });
+    await vi.waitFor(() => expect(spy).toHaveBeenCalledOnce());
+    const sentBeforeFlush = window.webContents.send.mock.calls.filter(([channel]) => channel === OVERLAY_V1.show);
+    release();
+    await expect(result).resolves.toMatchObject({ accepted: true });
+    expect(sentBeforeFlush).toHaveLength(1);
+    const reloaded = new SuggestionLedger(() => join(process.env.AVE_HOME!, "alerts"));
+    await reloaded.load();
+    expect(reloaded.isLimited(pluginId, source, Date.now())).toBe(true);
+  });
+
+  it("keeps an undelivered suggestion retryable in memory and on disk", async () => {
+    const window = makeWindow();
+    const pluginId = "sendrace";
+    const api = await overlayHostApi({ bootWindow: window, getMainWindow: () => window, pluginId, manifest });
+    window.webContents.send.mockImplementationOnce(() => {
+      window.destroyed = true;
+      throw new Error("Window closed during delivery");
+    });
+    const spec = { source, prompt: "Review this.", dedupeKey: "failed-delivery" };
+    await expect(api.triggerConversation(spec)).rejects.toThrow("Window closed during delivery");
+    await suggestionLedger.flush();
+    expect(suggestionLedger.isLimited(pluginId, source, Date.now())).toBe(false);
+    const reloaded = new SuggestionLedger(() => join(process.env.AVE_HOME!, "alerts"));
+    await reloaded.load();
+    expect(reloaded.isLimited(pluginId, source, Date.now())).toBe(false);
+    window.destroyed = false;
+    await expect(api.triggerConversation(spec)).resolves.toMatchObject({ accepted: true });
+    expect(window.webContents.send).toHaveBeenCalledTimes(2);
+  });
+
+  it("stages a declared source once, persists the acceptance, and refuses undeclared ones", async () => {
+    const window = makeWindow();
+    const api = await overlayHostApi({
+      bootWindow: window,
+      getMainWindow: () => window,
+      pluginId: "fixturemail",
+      manifest,
+    });
+
+    await expect(api.triggerConversation({ source: "overlay:fixturemail-other", prompt: "Review this." }))
+      .resolves.toMatchObject({ accepted: false, reason: "source_not_declared" });
+    await expect(api.triggerConversation({ source, prompt: "Set up a morning briefing?" }))
+      .resolves.toMatchObject({ accepted: true, source });
+    await expect(api.triggerConversation({ source, prompt: "Set up a morning briefing?" }))
+      .resolves.toMatchObject({ accepted: false, reason: "suggestion_limit" });
+
+    expect(window.webContents.send.mock.calls.filter(([channel]) => channel === OVERLAY_V1.show)).toHaveLength(1);
+    const ledger = JSON.parse(
+      readFileSync(join(process.env.AVE_HOME!, "alerts", "suggestions.json"), "utf8"),
+    ) as { accepted: Record<string, Record<string, number>> };
+    expect(Object.keys(ledger.accepted.fixturemail ?? {})).toEqual([source]);
+  });
+});
+
+/**
+ * The HostApi door to the alert pipeline: each start registers the plugin's
+ * kinds, a raise and a withdrawal are scoped to the calling plugin, and the
+ * host's `alert.*` events reach a subscriber only for its own alerts.
+ */
+describe("hostApi.raiseAlert, withdrawAlert and alert events", () => {
+  const kinds = [{
+    id: "reply",
+    label: { en: "Mail needing a reply" },
+    defaultEnabled: true,
+    visibility: "silent",
+    summary: { en: "A mail" },
+    prompt: { en: "Help me answer." },
+  }];
+  const manifestOf = (id: string) => ({ id, alerts: { reasoning: "Tells you about mail.", kinds } });
+
+  async function service(): Promise<AlertsService> {
+    let settings: AlertSettings = { osNotificationsEnabled: true, kinds: {} };
+    const dir = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-alerts-hostapi-")));
+    const alerts = new AlertsService({
+    migration: createAlertMigrationPorts(),
+      dir: () => dir,
+      settings: { get: () => settings, set: async (next) => { settings = next; } },
+      installedPluginIds: async () => [],
+      appVersion: "0.0.0",
+      locale: () => "en",
+      predecessorBlocks: async () => false,
+      overlay: { show: vi.fn(), dismiss: vi.fn() },
+      notifications: { isFocusGateActive: () => false, fire: vi.fn() },
+      emit: emitEvent,
+      audit: vi.fn(),
+    });
+    await alerts.load();
+    alertsServices.push(alerts);
+    return alerts;
+  }
+
+  it("registers the plugin's kinds at start and scopes raise and withdraw to the caller", async () => {
+    const alerts = await service();
+    const mail = await overlayHostApi({ bootWindow: null, pluginId: "fixturemail", manifest: manifestOf("fixturemail"), alertsService: alerts });
+    const other = await overlayHostApi({ bootWindow: null, pluginId: "otherfixture", manifest: manifestOf("otherfixture"), alertsService: alerts });
+
+    await expect(mail.raiseAlert({ kind: "reply", key: "mail-1" })).resolves.toMatchObject({ status: "raised" });
+    await expect(other.withdrawAlert("reply", "mail-1")).resolves.toBe(false);
+    await expect(mail.withdrawAlert("reply", "mail-1")).resolves.toBe(true);
+    await alerts.flush();
+  });
+
+  it.each([false, true])("keeps incumbent grants when an inactive candidate is discarded (generation scope: %s)", async (scoped) => {
+    const alerts = await service();
+    const incumbent = await overlayHostApi({ bootWindow: null, pluginId: "fixturemail", manifest: manifestOf("fixturemail"), alertsService: alerts });
+    expect((await incumbent.raiseAlert({ kind: "reply", key: "mail-1" })).status).toBe("raised");
+    const disposers: Array<() => void> = [];
+    const scope = new HostApiGenerationScope("fixturemail");
+    await overlayHostApi({
+      bootWindow: null,
+      pluginId: "fixturemail",
+      manifest: { id: "fixturemail", alerts: { reasoning: "Replacement mail.", kinds: [{ ...kinds[0], id: "replacement" }] } },
+      alertsService: alerts,
+      incarnation: {
+        registerDisposer: (dispose) => { disposers.push(dispose); },
+        trackOperation: (operation) => operation,
+        isActive: () => scoped,
+        isLifecycleHookActive: () => false,
+        ...(scoped ? { generationScope: scope } : {}),
+      },
+    });
+    expect((await incumbent.raiseAlert({ kind: "reply", key: "mail-1" })).status).toBe("refreshed");
+    expect(await incumbent.raiseAlert({ kind: "replacement", key: "new" })).toEqual({ status: "kind_not_granted", kind: "replacement" });
+    scope.discard();
+    for (const dispose of disposers) dispose();
+    expect((await incumbent.raiseAlert({ kind: "reply", key: "mail-1" })).status).toBe("refreshed");
+    await alerts.flush();
+  });
+
+  it("publishes candidate grants, restores the incumbent on resume, and isolates retired cleanup", async () => {
+    const alerts = await service();
+    const access = {} as PluginRuntimeGenerationAccess;
+    const incumbentScope = new HostApiGenerationScope("fixturemail");
+    const candidateScope = new HostApiGenerationScope("fixturemail");
+    const incarnation = (scope: HostApiGenerationScope): PluginHostApiIncarnation => ({
+      registerDisposer: (dispose) => scope.registerDisposer(dispose),
+      trackOperation: (operation) => operation,
+      isActive: () => true,
+      isLifecycleHookActive: () => false,
+      generationScope: scope,
+    });
+    const incumbent = await overlayHostApi({ bootWindow: null, pluginId: "fixturemail", manifest: manifestOf("fixturemail"), alertsService: alerts, incarnation: incarnation(incumbentScope) });
+    incumbentScope.bindGeneration(access, "incumbent");
+    incumbentScope.publish();
+    expect((await incumbent.raiseAlert({ kind: "reply", key: "mail-1" })).status).toBe("raised");
+    const candidate = await overlayHostApi({
+      bootWindow: null, pluginId: "fixturemail", alertsService: alerts, incarnation: incarnation(candidateScope),
+      manifest: { id: "fixturemail", alerts: { reasoning: "Replacement mail.", kinds: [{ ...kinds[0], id: "replacement" }] } },
+    });
+    candidateScope.bindGeneration(access, "candidate");
+    incumbentScope.supersede();
+    await expect(alerts.raise("fixturemail", { kind: "reply", key: "mail-1" })).rejects.toThrow(/before its kinds were registered/);
+    candidateScope.publish();
+    expect(await candidate.raiseAlert({ kind: "reply", key: "mail-1" })).toEqual({ status: "kind_not_granted", kind: "reply" });
+    // A new update kind is declared but still needs the user's opt-in.
+    expect(await candidate.raiseAlert({ kind: "replacement", key: "new" })).toEqual({ status: "disabled_by_user" });
+    candidateScope.supersede();
+    incumbentScope.resume();
+    expect((await incumbent.raiseAlert({ kind: "reply", key: "mail-1" })).status).toBe("refreshed");
+    incumbentScope.supersede();
+    candidateScope.resume();
+    incumbentScope.retire();
+    expect(await candidate.raiseAlert({ kind: "replacement", key: "new" })).toEqual({ status: "disabled_by_user" });
+    candidateScope.retire();
+    await expect(alerts.raise("fixturemail", { kind: "replacement", key: "new" })).rejects.toThrow(/before its kinds were registered/);
+    await alerts.flush();
+  });
+
+  it("fails loudly when the host built no alerts service", async () => {
+    const api = await overlayHostApi({ bootWindow: null, pluginId: "fixturemail", manifest: manifestOf("fixturemail") });
+    await expect(api.raiseAlert({ kind: "reply", key: "mail-1" })).rejects.toThrow(/alerts service is not constructed/);
+  });
+
+  it("delivers an alert event to its own plugin, and another's only with a grant", async () => {
+    const api = await overlayHostApi({ bootWindow: null, pluginId: "fixturemail" });
+    const heard: unknown[] = [];
+    const unsubscribe = api.onEvent("alert.raised", (data) => { heard.push(data); });
+    emitEvent("alert.raised", { pluginId: "otherfixture", kind: "reply", alertId: "x" });
+    emitEvent("alert.raised", { pluginId: "@host", kind: "due-soon", alertId: "y" });
+    emitEvent("alert.raised", { pluginId: "fixturemail", kind: "reply", alertId: "z" });
+    expect(heard).toEqual([{ pluginId: "fixturemail", kind: "reply", alertId: "z" }]);
+
+    runtimeTestState.runtime.getApprovedPluginAccess.mockReturnValue({
+      plugins: [{ pluginId: "otherfixture", events: ["alert.raised"] }],
+    } as never);
+    emitEvent("alert.raised", { pluginId: "otherfixture", kind: "reply", alertId: "w" });
+    expect(heard).toHaveLength(2);
+    runtimeTestState.runtime.getApprovedPluginAccess.mockReturnValue(undefined);
+    unsubscribe();
+  });
+});
+
+it("binds migration readiness to the exact HostApi incarnation", async () => {
+  let active = false;
+  const prepareRegistration = vi.fn(() => ({ publish: vi.fn(async () => {}), unpublish: vi.fn() }));
+  await overlayHostApi({ bootWindow: null, isActive: () => active, alertsService: { prepareRegistration } as unknown as AlertsService });
+  const readiness = (prepareRegistration.mock.calls as unknown as Array<[string, unknown, () => boolean]>)[0]![2];
+  expect(readiness()).toBe(false);
+  active = true;
+  expect(readiness()).toBe(true);
 });

@@ -534,6 +534,13 @@ export interface PluginManifest {
 
 
 
+  /**
+   * Deprecated: declare the alert as a kind in `alerts` and raise it through
+   * the host alert pipeline instead. The host warns at load when a manifest
+   * declares both; the field keeps working until the release that retires it.
+   *
+   * @deprecated
+   */
   notificationEvents?: Array<{
     event: string;
     titleField?: string;
@@ -571,6 +578,25 @@ export interface PluginManifest {
     /** 1..4 entries. Ids must be unique within the plugin. */
     kinds: WorkProposalKind[];
   };
+  /**
+   * Alert declaration — the kinds of alert this plugin may raise, each with
+   * declared, localised templates and typed slots, plus the overlay sources
+   * it may pass to {@link PluginHostApi.triggerConversation}.
+   *
+   * DECLARATION IS AUTHORIZATION, as for {@link PluginManifest.workProposals}:
+   * a kind that is not declared is not granted, and a block that is malformed
+   * in any entry grants nothing. A manifest that carries the block at all —
+   * even a refused one — may trigger conversations only from the sources
+   * listed in `suggestions`.
+   */
+  alerts?: PluginAlertsDeclaration;
+  /**
+   * Config keys this plugin fills from a retired predecessor's saved config,
+   * once, when the retirement names this plugin as a successor. A target key
+   * the user already set is never overwritten. Two entries with the same
+   * `to` refuse the whole list.
+   */
+  configInherits?: ConfigInheritDeclaration[];
   dependencies?: Array<string | DependencySpec>;
   pluginAccess?: PluginAccessSpec;
   requires?: RequiresSpec;
@@ -1793,6 +1819,13 @@ export interface PluginHostApi {
    * - `dedupeKey` should be set when the same observation can fire multiple
    *   times (e.g., the same mail re-emitting events) — host will reject the
    *   second call within a short window.
+   * - `source` never contains `--`; that spelling is reserved for sources the
+   *   host's alert pipeline mints.
+   *
+   * A plugin whose manifest declares {@link PluginManifest.alerts} uses this
+   * method for one-time suggestions only: `source` must be one of
+   * `alerts.suggestions` (`source_not_declared` otherwise), and each declared
+   * source is accepted at most once per 30 days (`suggestion_limit`).
    */
   triggerConversation(
     spec: ConversationTriggerSpec,
@@ -1851,6 +1884,29 @@ export interface PluginHostApi {
    * Resolves `false` when no matching open proposal existed. Idempotent.
    */
   withdrawWorkProposal(kind: string, key: string): Promise<boolean>;
+
+  /**
+   * Raise one alert of a kind declared in this plugin's `alerts` block.
+   *
+   * The plugin supplies typed slot values, never text: the host renders the
+   * kind's declared summary and prompt in the app locale, decides whether the
+   * alert reaches the user at all (the user's toggle for `<pluginId>:<kind>`,
+   * a predecessor still installed, cooldown and rate budgets), and owns the
+   * card, the OS notification and the conversation an accept starts.
+   *
+   * `(kind, key)` is the identity. Re-raising an open identity refreshes its
+   * card (`refreshed`); an identity the user dismissed or accepted stays
+   * closed for the card's lifetime (`closed`). Callers branch on `status`
+   * rather than expecting a throw.
+   */
+  raiseAlert(input: AlertInput): Promise<AlertResult>;
+
+  /**
+   * Withdraw this plugin's open alert for `(kind, key)` because its condition
+   * no longer holds. Scoped to the caller; resolves `false` when no such
+   * alert is open.
+   */
+  withdrawAlert(kind: string, key: string): Promise<boolean>;
 
   /**
    * §8 Agent Approval System — main-process–side approval management.
@@ -1949,9 +2005,21 @@ export interface ConversationTriggerSpec {
    *
    * Current limitation: all three values currently produce identical UI
    * behaviour; the field is recorded into audit only.
+   *
+   * Deprecated: accepted and ignored. A recurring alert declares its
+   * visibility as an alert kind; this field leaves the spec in a later release.
+   *
+   * @deprecated
    */
   visibility?: "silent" | "summary-only" | "user-visible";
-  /** Routing hint for queueing when multiple triggers compete (audit-only today). */
+  /**
+   * Routing hint for queueing when multiple triggers compete (audit-only today).
+   *
+   * Deprecated: accepted and ignored. Alert priority is a field of the alert
+   * pipeline's input; this field leaves the spec in a later release.
+   *
+   * @deprecated
+   */
   priority?: "low" | "normal" | "high";
   /** Suppress duplicate triggers for the same observation (window enforced by host). */
   dedupeKey?: string;
@@ -1981,17 +2049,25 @@ export interface ConversationTriggerResult {
    * When `accepted=false`, why:
    *   `capability_denied` — plugin lacks `host:overlay`.
    *   `invalid_source`    — `source` does not match `^overlay:[a-z][a-z0-9-]*$`,
-   *                         `prompt` empty, or other shape problem.
+   *                         contains `--` (reserved for host-minted alert
+   *                         sources), `prompt` empty, or other shape problem.
    *   `duplicate`         — `dedupeKey` matched a recent trigger.
    *   `rate_limited`      — per-plugin call cap exceeded (sliding window).
    *   `loop_unavailable`  — ConversationLoop not yet bound (boot ordering, legacy).
+   *   `source_not_declared` — the manifest declares an `alerts` block and
+   *                         `source` is not one of its `alerts.suggestions`.
+   *   `suggestion_limit`  — the manifest declares an `alerts` block and this
+   *                         declared source was already accepted within the
+   *                         last 30 days.
    */
   reason?:
     | "capability_denied"
     | "invalid_source"
     | "duplicate"
     | "rate_limited"
-    | "loop_unavailable";
+    | "loop_unavailable"
+    | "source_not_declared"
+    | "suggestion_limit";
   /** Echoed back so callers can correlate logs across plugin/host. */
   source: string;
   /**
@@ -2001,6 +2077,166 @@ export interface ConversationTriggerResult {
    */
   eventId?: string;
 }
+
+// ─── Alert declarations ──────────────────────────────────────────────────────
+//
+// An alert is a declared kind the host renders from declared templates: the
+// plugin supplies typed slot values at raise time, never free text, and the
+// host owns localisation, the card, the OS notification and the user's toggle
+// for `<pluginId>:<kind>`.
+
+/**
+ * User-facing text in every locale the plugin ships, keyed by BCP 47-style
+ * lowercase tag (`en`, `ko`, `pt-br`). `en` is required and is the fallback
+ * when the app locale is missing.
+ */
+export type AlertLocaleText = { en: string } & Record<string, string>;
+
+/** How far an alert reaches the user; a raise may only lower the declared level. */
+export type AlertVisibility = "user-visible" | "summary-only" | "silent";
+
+/**
+ * One typed, bounded, untrusted value a raise supplies.
+ *
+ * - `text` — third-party text, capped at `maxLength` (at most 200).
+ * - `list` — at most `maxItems` (at most 5) texts, each capped at `maxLength`
+ *   (at most 120); joined with `; ` in the summary and one bullet line per
+ *   item in the prompt.
+ * - `ref` — an opaque id (`^[A-Za-z0-9+/=_-]{1,256}$`). A template never
+ *   names it: the host appends it to the model-facing prompt as a wrapped
+ *   footer line, so an id never reaches the card.
+ *
+ * A slot is required unless `optional` is true.
+ */
+export type AlertSlotDeclaration =
+  | { kind: "text"; maxLength: number; optional?: boolean }
+  | { kind: "list"; maxItems: number; maxLength: number; optional?: boolean }
+  | { kind: "ref"; optional?: boolean };
+
+/**
+ * How a successor kind reads one toggle out of a retired plugin's config: the
+ * list stored at `key` either names the disabled members (`listed:
+ * "disabled"`) or the enabled ones (`listed: "enabled"`), and `values` are the
+ * spellings — current and legacy — under which this kind appears in it.
+ * `masterKey` names a boolean that, when false, turns the toggle off outright.
+ */
+export interface AlertInheritRule {
+  key: string;
+  listed: "enabled" | "disabled";
+  values: string[];
+  masterKey?: string;
+}
+
+/**
+ * The predecessor a kind inherits the user's choice from. `sourceId` is the
+ * marketplace source the predecessor is expected to come from, used only
+ * until the host knows the retirement entry.
+ */
+export interface AlertInheritDeclaration {
+  pluginId: string;
+  sourceId: string;
+  enabled: AlertInheritRule;
+  /** Only for a kind that declares `osNotification`. */
+  osNotification?: AlertInheritRule;
+}
+
+export interface AlertKindDeclaration {
+  /** `^(?!.*--)[a-z][a-z0-9-]{0,30}[a-z0-9]$`, unique within the plugin. */
+  id: string;
+  /** At most 40 characters per locale. Also the OS notification title. */
+  label: AlertLocaleText;
+  /** At most 200 characters per locale. */
+  description?: AlertLocaleText;
+  /** The kind's toggle on a fresh install. An update never turns a kind on. */
+  defaultEnabled: boolean;
+  visibility: AlertVisibility;
+  /** Absent = the kind never notifies the OS. */
+  osNotification?: {
+    defaultEnabled: boolean;
+    bypassFocusGate?: boolean;
+    /** Static text, no slots, at most 80 characters per locale. */
+    body: AlertLocaleText;
+  };
+  /** The card's button label, at most 24 characters per locale. */
+  actionLabel?: AlertLocaleText;
+  /** At most 8 slots, named `^[a-z][a-zA-Z0-9]{0,31}$`. */
+  slots?: Record<string, AlertSlotDeclaration>;
+  /**
+   * The card text: a template whose only dynamic parts are `{slot}`
+   * references to `text` or `list` slots. No `<` or `>`. At most 200
+   * characters per locale.
+   */
+  summary: AlertLocaleText;
+  /**
+   * The model-facing prompt the user's accept stages, under the same template
+   * rules as `summary`. At most 1000 characters per locale. Every `text` and
+   * `list` slot appears in the English summary or prompt.
+   */
+  prompt: AlertLocaleText;
+  /** At most one predecessor. */
+  inherits?: AlertInheritDeclaration[];
+}
+
+export interface PluginAlertsDeclaration {
+  /** Why this plugin alerts at all; shown in Settings. At most 400 characters. */
+  reasoning: string;
+  /** 1..12 kinds. */
+  kinds: AlertKindDeclaration[];
+  /**
+   * The only `source` values {@link PluginHostApi.triggerConversation} accepts
+   * from this plugin: at most 4, each matching `^overlay:[a-z][a-z0-9-]*$`
+   * with no `--`. Each is accepted at most once per 30 days.
+   */
+  suggestions?: string[];
+}
+
+/** One raise of a declared alert kind. */
+export interface AlertInput {
+  /** A kind id declared in this plugin's `alerts.kinds`. */
+  kind: string;
+  /**
+   * The dedupe identity within the kind, `^[A-Za-z0-9_.:/@+=-]{1,256}$`.
+   * Never rendered and never logged: the host keys the alert by a keyed hash
+   * of it.
+   */
+  key: string;
+  /** Values for the kind's declared slots: a string for `text` and `ref`, strings for `list`. */
+  slots?: Record<string, string | string[]>;
+  /** Default `normal`. `high` cards sort first; `low` never notifies the OS. */
+  priority?: "low" | "normal" | "high";
+  /** May only lower the kind's declared visibility. */
+  visibility?: AlertVisibility;
+  /** Card lifetime; the host clamps it to 1 minute – 7 days, default 24 hours. */
+  ttlMs?: number;
+}
+
+export type AlertResult =
+  | {
+      status: "raised";
+      alertId: string;
+      delivered: { card: boolean; osNotification: boolean; toast: boolean };
+    }
+  /** An open alert with this identity was updated in place. */
+  | { status: "refreshed"; alertId: string }
+  /** `kind` is not among this plugin's declared kinds. */
+  | { status: "kind_not_granted"; kind: string }
+  /** The user turned this kind off. */
+  | { status: "disabled_by_user" }
+  /** A plugin this kind inherits from is still installed and not revoked. */
+  | { status: "blocked_by_predecessor"; pluginId: string }
+  /** The user dismissed or accepted this identity within its lifetime. */
+  | { status: "closed" }
+  /** The kind was raised within its cooldown window. */
+  | { status: "cooldown" }
+  /** This plugin raised faster than the host's budget allows. */
+  | { status: "rate_limited" }
+  /** Names the field that failed validation. Nothing was delivered. */
+  | { status: "invalid"; field: string };
+
+/** Fill config key `to` from a retired predecessor's config key `from`, or with a constant `value`. */
+export type ConfigInheritDeclaration =
+  | { pluginId: string; to: string; from: string }
+  | { pluginId: string; to: string; value: unknown };
 
 // ─── Recommended-work proposals ──────────────────────────────────────────────
 //

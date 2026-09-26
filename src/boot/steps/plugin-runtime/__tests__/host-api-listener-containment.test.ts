@@ -110,6 +110,8 @@ function hostApiUnderTest(pluginDataDir: string): {
     shellOpenExternal: async () => undefined,
     approvalGate: {},
     routinesStore: {},
+    // Read at construction: every start registers the plugin's alert kinds.
+    getAlertsService: () => undefined,
   } as never);
   const api = factory(PLUGIN_ID, MANIFEST, pluginDataDir, incarnation, null, undefined, null);
   scope.bindGeneration(generationAccess(), GENERATION_ID);

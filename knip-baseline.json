@@ -704,11 +704,6 @@
     },
     {
       "type": "exports",
-      "file": "src/shared/plugin-config.ts",
-      "name": "PLUGIN_CONFIG_RESERVED_KEYS"
-    },
-    {
-      "type": "exports",
       "file": "src/shared/plugin-partition.ts",
       "name": "pluginPartitionHash"
     },

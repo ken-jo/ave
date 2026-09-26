@@ -1303,6 +1303,25 @@ export const HOSTAPI_PATH_CONTRACTS = {
     lifetime: "none",
     errors: [],
   },
+  // ─── Alerts ───────────────────────────────────────────────────────────────
+  // Last in the table so the method ids the goldens already record stay put.
+  // A kind id, a key and typed slot values out, a discriminated envelope back.
+  // The card and its prompt are rendered by the host from the declaration, so
+  // nothing the plugin sends is executable and nothing outlives the call.
+  raiseAlert: {
+    params: ["input"],
+    arguments: "plain-json",
+    result: "plain-json",
+    lifetime: "none",
+    errors: ["effect-boundary-denied"],
+  },
+  withdrawAlert: {
+    params: ["kind", "key"],
+    arguments: "plain-json",
+    result: "plain-json",
+    lifetime: "none",
+    errors: ["effect-boundary-denied"],
+  },
 } as const satisfies Record<string, HostApiPathContract>;
 
 /** The exact set of hostApi members the boundary carries. */
@@ -1354,6 +1373,8 @@ export const SERVICE_HOSTAPI_PATHS = [
   "hasRoutineBySource",
   "proposeWork",
   "withdrawWorkProposal",
+  "raiseAlert",
+  "withdrawAlert",
   "probePrivateHost",
   "resolveApiKey",
   "emitEvent",

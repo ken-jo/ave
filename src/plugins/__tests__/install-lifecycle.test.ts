@@ -15,6 +15,21 @@ describe("plugin install locks", () => {
     clearAppUpdateInstallRequested();
   });
 
+  it("reports contention for only the requested plugin from reservation through release", async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const locked = withPluginInstallLock("target", () => pending);
+    try {
+      expect(hasPluginInstallInFlight()).toBe(true);
+      expect(hasPluginInstallInFlight("target")).toBe(true);
+      expect(hasPluginInstallInFlight("unrelated")).toBe(false);
+    } finally {
+      release();
+      await locked;
+    }
+    expect(hasPluginInstallInFlight("target")).toBe(false);
+  });
+
   it("does not enter a plugin install lock callback after app update install starts", async () => {
     const install = vi.fn(async () => undefined);
     beginAppUpdateInstallRequest();

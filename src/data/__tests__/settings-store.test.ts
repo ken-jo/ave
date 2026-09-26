@@ -3656,3 +3656,26 @@ describe("vendor ids renamed to package names (nousResearch, v0)", () => {
     expect(readFileSync(secretsPath, "utf-8")).toBe(before);
   });
 });
+
+it("notifies only the written settings key after persistence and releases observers", async () => {
+  const userDataPath = mkdtempSync(join(tmpdir(), "settings-observer-"));
+  try {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const persistedValues: boolean[] = [];
+    const observer = vi.fn(() => {
+      const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+      persistedValues.push(reloaded.get("alerts").osNotificationsEnabled);
+    });
+    const other = vi.fn();
+    const unsubscribe = service.onChanged("alerts", observer);
+    service.onChanged("retiredPluginConfigs", other);
+    service.onChanged("alerts", () => { throw new Error("observer failed"); });
+    await service.set("alerts", { ...service.get("alerts"), osNotificationsEnabled: false });
+    expect(observer).toHaveBeenCalledTimes(1);
+    expect(persistedValues).toEqual([false]);
+    expect(other).not.toHaveBeenCalled();
+    unsubscribe();
+    await service.set("alerts", { ...service.get("alerts"), osNotificationsEnabled: true });
+    expect(observer).toHaveBeenCalledTimes(1);
+  } finally { await cleanupTmpDir(userDataPath); }
+});

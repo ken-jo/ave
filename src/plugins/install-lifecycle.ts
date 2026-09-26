@@ -761,8 +761,8 @@ async function waitForLifecycleGate(
   if (finalError) throw finalError;
 }
 
-export function hasPluginInstallInFlight(): boolean {
-  return pendingPluginInstallOperations > 0;
+export function hasPluginInstallInFlight(pluginId?: string): boolean {
+  return pluginId === undefined ? pendingPluginInstallOperations > 0 : inflightInstallLocks.has(pluginId);
 }
 
 function assertAppUpdateInstallNotRequested(): void {

@@ -1013,6 +1013,7 @@ function withProviderPresetsFrom(
 }
 
 export class SettingsService {
+  private readonly changeListeners = new Map<keyof AppSettings, Set<() => void>>();
   private readonly settingsPath: string;
   private readonly secretsPath: string;
   private readonly secretStore: SecretDocumentStore;
@@ -1113,6 +1114,17 @@ export class SettingsService {
   async set<K extends keyof AppSettings>(key: K, value: AppSettings[K]): Promise<void> {
     this.settings[key] = value;
     await this.commit();
+    for (const listener of this.changeListeners.get(key) ?? []) {
+      try { listener(); } catch (error) { log.warn({ error }, "settings change listener failed"); }
+    }
+  }
+
+  /** Observes durable writes through set; callbacks must not block the writer. */
+  onChanged(key: keyof AppSettings, listener: () => void): () => void {
+    let listeners = this.changeListeners.get(key);
+    if (!listeners) this.changeListeners.set(key, (listeners = new Set()));
+    listeners.add(listener);
+    return () => { listeners.delete(listener); };
   }
 
   async patch(

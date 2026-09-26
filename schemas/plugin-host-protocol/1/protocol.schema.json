@@ -30,6 +30,7 @@
           "ave/host/pickFolders",
           "ave/host/probePrivateHost",
           "ave/host/proposeWork",
+          "ave/host/raiseAlert",
           "ave/host/resizeFloatingPanel",
           "ave/host/resolveApiKey",
           "ave/host/resolveMappedDriveRoot",
@@ -47,6 +48,7 @@
           "ave/host/storage/writeEncrypted",
           "ave/host/storage/writeJson",
           "ave/host/triggerConversation",
+          "ave/host/withdrawAlert",
           "ave/host/withdrawWorkProposal"
         ]
       },
@@ -2371,6 +2373,264 @@
           ]
         }
       },
+      "ave/host/raiseAlert": {
+        "description": "Raise one alert of a kind declared in this plugin's `alerts` block.",
+        "errors": {
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
+          "properties": {
+            "code": {
+              "type": "integer"
+            },
+            "data": {
+              "properties": {
+                "code": {
+                  "enum": [
+                    "plugin-inactive",
+                    "path-unknown",
+                    "path-not-dispatchable",
+                    "path-not-implemented",
+                    "argument-marshalling-rejected",
+                    "result-marshalling-rejected",
+                    "payload-too-large",
+                    "subscription-unknown",
+                    "effect-boundary-denied",
+                    "manifest-integrity-violation",
+                    "detached-operation",
+                    "plugin-storage",
+                    "plugin-storage-encryption-unavailable",
+                    "host-internal"
+                  ]
+                },
+                "detail": {
+                  "type": "object"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "name"
+              ],
+              "type": "object"
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "data"
+          ],
+          "type": "object"
+        },
+        "params": {
+          "properties": {
+            "input": {
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "priority": {
+                  "enum": [
+                    "low",
+                    "normal",
+                    "high"
+                  ],
+                  "type": "string"
+                },
+                "slots": {
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      }
+                    ]
+                  },
+                  "type": "object"
+                },
+                "ttlMs": {
+                  "type": "number"
+                },
+                "visibility": {
+                  "$ref": "#/$defs/types/AlertVisibility"
+                }
+              },
+              "required": [
+                "kind",
+                "key"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "input"
+          ],
+          "type": "object"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "properties": {
+                "alertId": {
+                  "type": "string"
+                },
+                "delivered": {
+                  "properties": {
+                    "card": {
+                      "type": "boolean"
+                    },
+                    "osNotification": {
+                      "type": "boolean"
+                    },
+                    "toast": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "card",
+                    "osNotification",
+                    "toast"
+                  ],
+                  "type": "object"
+                },
+                "status": {
+                  "const": "raised",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "alertId",
+                "delivered"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "alertId": {
+                  "type": "string"
+                },
+                "status": {
+                  "const": "refreshed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "alertId"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "type": "string"
+                },
+                "status": {
+                  "const": "kind_not_granted",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "status": {
+                  "const": "disabled_by_user",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "pluginId": {
+                  "type": "string"
+                },
+                "status": {
+                  "const": "blocked_by_predecessor",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "pluginId"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "status": {
+                  "const": "closed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "status": {
+                  "const": "cooldown",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "status": {
+                  "const": "rate_limited",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "field": {
+                  "type": "string"
+                },
+                "status": {
+                  "const": "invalid",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "field"
+              ],
+              "type": "object"
+            }
+          ]
+        }
+      },
       "ave/host/resizeFloatingPanel": {
         "description": "Change one of this plugin's dock slots to a new height.",
         "errors": {
@@ -3765,6 +4025,7 @@
                   "type": "string"
                 },
                 "priority": {
+                  "deprecated": true,
                   "enum": [
                     "low",
                     "normal",
@@ -3785,6 +4046,7 @@
                   "type": "string"
                 },
                 "visibility": {
+                  "deprecated": true,
                   "enum": [
                     "silent",
                     "summary-only",
@@ -3819,7 +4081,9 @@
                 "invalid_source",
                 "duplicate",
                 "rate_limited",
-                "loop_unavailable"
+                "loop_unavailable",
+                "source_not_declared",
+                "suggestion_limit"
               ],
               "type": "string"
             },
@@ -3832,6 +4096,77 @@
             "source"
           ],
           "type": "object"
+        }
+      },
+      "ave/host/withdrawAlert": {
+        "description": "Withdraw this plugin's open alert for `(kind, key)` because its condition no longer holds. Scoped to the caller; resolves `false` when no such alert is open.",
+        "errors": {
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
+          "properties": {
+            "code": {
+              "type": "integer"
+            },
+            "data": {
+              "properties": {
+                "code": {
+                  "enum": [
+                    "plugin-inactive",
+                    "path-unknown",
+                    "path-not-dispatchable",
+                    "path-not-implemented",
+                    "argument-marshalling-rejected",
+                    "result-marshalling-rejected",
+                    "payload-too-large",
+                    "subscription-unknown",
+                    "effect-boundary-denied",
+                    "manifest-integrity-violation",
+                    "detached-operation",
+                    "plugin-storage",
+                    "plugin-storage-encryption-unavailable",
+                    "host-internal"
+                  ]
+                },
+                "detail": {
+                  "type": "object"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "name"
+              ],
+              "type": "object"
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "data"
+          ],
+          "type": "object"
+        },
+        "params": {
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "key"
+          ],
+          "type": "object"
+        },
+        "result": {
+          "type": "boolean"
         }
       },
       "ave/host/withdrawWorkProposal": {
@@ -4268,6 +4603,204 @@
       }
     },
     "types": {
+      "AlertInheritDeclaration": {
+        "properties": {
+          "enabled": {
+            "$ref": "#/$defs/types/AlertInheritRule"
+          },
+          "osNotification": {
+            "$ref": "#/$defs/types/AlertInheritRule"
+          },
+          "pluginId": {
+            "type": "string"
+          },
+          "sourceId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pluginId",
+          "sourceId",
+          "enabled"
+        ],
+        "type": "object"
+      },
+      "AlertInheritRule": {
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "listed": {
+            "enum": [
+              "enabled",
+              "disabled"
+            ],
+            "type": "string"
+          },
+          "masterKey": {
+            "type": "string"
+          },
+          "values": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "key",
+          "listed",
+          "values"
+        ],
+        "type": "object"
+      },
+      "AlertKindDeclaration": {
+        "properties": {
+          "actionLabel": {
+            "$ref": "#/$defs/types/AlertLocaleText"
+          },
+          "defaultEnabled": {
+            "type": "boolean"
+          },
+          "description": {
+            "$ref": "#/$defs/types/AlertLocaleText"
+          },
+          "id": {
+            "type": "string"
+          },
+          "inherits": {
+            "items": {
+              "$ref": "#/$defs/types/AlertInheritDeclaration"
+            },
+            "type": "array"
+          },
+          "label": {
+            "$ref": "#/$defs/types/AlertLocaleText"
+          },
+          "osNotification": {
+            "properties": {
+              "body": {
+                "$ref": "#/$defs/types/AlertLocaleText"
+              },
+              "bypassFocusGate": {
+                "type": "boolean"
+              },
+              "defaultEnabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "defaultEnabled",
+              "body"
+            ],
+            "type": "object"
+          },
+          "prompt": {
+            "$ref": "#/$defs/types/AlertLocaleText"
+          },
+          "slots": {
+            "additionalProperties": {
+              "$ref": "#/$defs/types/AlertSlotDeclaration"
+            },
+            "type": "object"
+          },
+          "summary": {
+            "$ref": "#/$defs/types/AlertLocaleText"
+          },
+          "visibility": {
+            "$ref": "#/$defs/types/AlertVisibility"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "defaultEnabled",
+          "visibility",
+          "summary",
+          "prompt"
+        ],
+        "type": "object"
+      },
+      "AlertLocaleText": {
+        "properties": {
+          "en": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "en"
+        ],
+        "type": "object"
+      },
+      "AlertSlotDeclaration": {
+        "anyOf": [
+          {
+            "properties": {
+              "kind": {
+                "const": "text",
+                "type": "string"
+              },
+              "maxLength": {
+                "type": "number"
+              },
+              "optional": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "kind",
+              "maxLength"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "list",
+                "type": "string"
+              },
+              "maxItems": {
+                "type": "number"
+              },
+              "maxLength": {
+                "type": "number"
+              },
+              "optional": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "kind",
+              "maxItems",
+              "maxLength"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "ref",
+                "type": "string"
+              },
+              "optional": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "AlertVisibility": {
+        "enum": [
+          "user-visible",
+          "summary-only",
+          "silent"
+        ],
+        "type": "string"
+      },
       "AudioCaptureDevice": {
         "properties": {
           "deviceId": {
@@ -4336,6 +4869,46 @@
           "value"
         ],
         "type": "object"
+      },
+      "ConfigInheritDeclaration": {
+        "anyOf": [
+          {
+            "properties": {
+              "from": {
+                "type": "string"
+              },
+              "pluginId": {
+                "type": "string"
+              },
+              "to": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "pluginId",
+              "to",
+              "from"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "pluginId": {
+                "type": "string"
+              },
+              "to": {
+                "type": "string"
+              },
+              "value": {}
+            },
+            "required": [
+              "pluginId",
+              "to",
+              "value"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "DependencySpec": {
         "properties": {
@@ -4465,6 +5038,30 @@
         },
         "required": [
           "pluginId"
+        ],
+        "type": "object"
+      },
+      "PluginAlertsDeclaration": {
+        "properties": {
+          "kinds": {
+            "items": {
+              "$ref": "#/$defs/types/AlertKindDeclaration"
+            },
+            "type": "array"
+          },
+          "reasoning": {
+            "type": "string"
+          },
+          "suggestions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "reasoning",
+          "kinds"
         ],
         "type": "object"
       },
@@ -4876,6 +5473,9 @@
       },
       "PluginManifest": {
         "properties": {
+          "alerts": {
+            "$ref": "#/$defs/types/PluginAlertsDeclaration"
+          },
           "auth": {
             "$ref": "#/$defs/types/PluginAuthSpec"
           },
@@ -4888,6 +5488,12 @@
           "config": {
             "additionalProperties": {},
             "type": "object"
+          },
+          "configInherits": {
+            "items": {
+              "$ref": "#/$defs/types/ConfigInheritDeclaration"
+            },
+            "type": "array"
           },
           "configSchema": {
             "$ref": "#/$defs/types/PluginConfigSchema"
@@ -4992,6 +5598,7 @@
             "type": "object"
           },
           "notificationEvents": {
+            "deprecated": true,
             "items": {
               "properties": {
                 "bodyField": {

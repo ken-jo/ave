@@ -237,6 +237,12 @@ export function createGoldenHost(overrides: GoldenHostOverrides = {}): GoldenHos
     hasRoutineBySource: async () => false,
     proposeWork: async () => ({ status: "cap_reached" as const }),
     withdrawWorkProposal: async () => true,
+    raiseAlert: async () => ({
+      status: "raised" as const,
+      alertId: "golden-alert-id",
+      delivered: { card: true, osNotification: false, toast: false },
+    }),
+    withdrawAlert: async () => true,
     agentApproval: {
       request: async () => "allow-once" as const,
       respond: async () => undefined,

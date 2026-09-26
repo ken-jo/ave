@@ -9,6 +9,7 @@ interface Options {
     severity: StatusBarSeverity;
     message: string;
     ttlMs?: number;
+    sticky?: boolean;
     notification?: NotificationToastMeta;
   }) => string;
 }
@@ -29,6 +30,7 @@ export function useStatusBarNotifications({ api, pushToast }: Options): void {
         severity,
         message: `${sanitizeToastField(p.title, 64)}: ${sanitizeToastField(p.body, 80)}`,
         ttlMs: p.kind === "approval" ? 10_000 : 5_000,
+        ...(p.sticky === true ? { sticky: true } : {}),
         notification: { kind: p.kind, contextRef: p.contextRef },
       });
     });

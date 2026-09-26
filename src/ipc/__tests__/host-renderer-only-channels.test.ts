@@ -31,7 +31,7 @@ import type { IpcMainInvokeEvent } from "electron";
 import { hostFrameEvent, pluginShellFrameEvent } from "../../__tests__/test-helpers.js";
 
 const { CHANNELS } = await import("../../contract/app-contract.js");
-const { ROUTINES, WORK_BOARD } = await import("../../shared/ipc-channels.js");
+const { ALERTS, ROUTINES, WORK_BOARD } = await import("../../shared/ipc-channels.js");
 const { setIsPackaged } = await import("../../boot/dev-flags.js");
 const { UNAUTHORIZED_FRAME } = await import("../gated.js");
 
@@ -199,6 +199,13 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   // Work board items drive agent runs.
   ["work-board", WORK_BOARD.list, [{}]],
   ["work-board", WORK_BOARD.run, [{}]],
+  // Closing an alert card keeps its identity closed; the staged cards carry
+  // host-rendered prompts.
+  ["alerts", ALERTS.cardClosed, ["id", "dismissed"]],
+  ["alerts", ALERTS.listOpen, []],
+  ["alerts", ALERTS.listKinds, []],
+  ["alerts", ALERTS.setKind, ["@host:due-soon", { enabled: true }]],
+  ["alerts", ALERTS.setOsNotificationsEnabled, [false]],
   // Saved prompts are user-authored content.
   ["prompts", CHANNELS.prompts.list, []],
   ["prompts", CHANNELS.prompts.save, [{}]],
@@ -246,6 +253,7 @@ beforeEach(async () => {
     { registerUsageHandlers },
     { registerDevHandlers },
     { registerWindowHandlers },
+    { registerAlertsHandlers },
   ] = await Promise.all([
     import("../domains/chat.js"),
     import("../domains/settings.js"),
@@ -264,6 +272,7 @@ beforeEach(async () => {
     import("../domains/usage.js"),
     import("../domains/dev.js"),
     import("../domains/window.js"),
+    import("../domains/alerts.js"),
   ]);
   registerChatHandlers(deps);
   registerSettingsHandlers(deps);
@@ -282,6 +291,7 @@ beforeEach(async () => {
   registerUsageHandlers(deps);
   registerDevHandlers(deps);
   registerWindowHandlers(deps);
+  registerAlertsHandlers(deps);
 });
 
 describe("host-renderer-only IPC channels", () => {

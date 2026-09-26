@@ -1814,7 +1814,7 @@ function normalizeRetirementSuccessors(input: unknown): RetirementSuccessors | u
   return { plugins, hostKinds };
 }
 
-function normalizeRetiredPluginConfigRecord(input: unknown): RetiredPluginConfigRecord | undefined {
+export function normalizeRetiredPluginConfigRecord(input: unknown): RetiredPluginConfigRecord | undefined {
   if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
   const obj = input as Record<string, unknown>;
   if (typeof obj.enabled !== "boolean") return undefined;

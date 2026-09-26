@@ -1,3 +1,4 @@
+import type { PluginConfigRetention, PluginRetirementPort } from "./retired-config.js";
 import { rm } from "node:fs/promises";
 import path from "node:path";
 import type { SettingsService } from "../data/settings-store.js";
@@ -19,6 +20,7 @@ import { errorMessage } from "../shared/error-message.js";
 type WarnLogger = { warn: (message: string, ...args: unknown[]) => void };
 
 export interface PluginUninstallLifecycleDeps {
+  retirement?: PluginRetirementPort;
   pluginMarketplace: Pick<
     PluginMarketplaceService,
     "uninstall" | "getInstalledVersion"
@@ -152,8 +154,13 @@ async function cleanupRecordedPluginState(
     }
   };
 
-  await attemptPhase("config", () =>
-    deps.settingsService.deletePluginConfig(record.pluginId));
+  await attemptPhase("config", async () => {
+    if (record.retirement) {
+      if (!deps.retirement) throw new Error("Plugin retirement services are not wired");
+      await deps.retirement.writeIfAbsent(record.pluginId, record.retirement);
+    }
+    await deps.settingsService.deletePluginConfig(record.pluginId);
+  });
   await attemptPhase("secrets", () => {
     const current = journal.find(record.pluginId) ?? record;
     return deps.settingsService.deletePluginSecrets(
@@ -338,6 +345,7 @@ export async function ensurePluginStateReadyForInstall(
 export async function uninstallPluginWithLifecycle(
   pluginId: string,
   deps: PluginUninstallLifecycleDeps,
+  retain?: PluginConfigRetention,
 ): Promise<{ pluginId: string; uninstalled: true }> {
   const cleanupDeps = requirePluginStateCleanupDeps(deps);
   const journal = cleanupJournal(cleanupDeps);
@@ -411,7 +419,10 @@ export async function uninstallPluginWithLifecycle(
       cleanupDeps.listPluginAuthPartitionsService(canonicalPluginId);
     const installedVersion =
       await deps.pluginMarketplace.getInstalledVersion(installPluginId);
+    if (retain && !deps.retirement) throw new Error("Plugin retirement services are not wired");
+    const retirement = retain ? await deps.retirement!.capture(canonicalPluginId, retain) : undefined;
     const cleanupRecord = journal.prepare({
+      ...(retirement ? { retirement } : {}),
       pluginId: canonicalPluginId,
       installPluginId,
       secretKeys: [...secretKeys],

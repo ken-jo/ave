@@ -7,6 +7,8 @@
  * rather than restated, so one definition covers `plugin.json` and the
  * descriptor that copies it.
  */
+import type { RetirementSuccessors } from "../../shared/alerts-types.js";
+
 export const PACKAGE_KINDS = [
   "plugin",
   "mcp",
@@ -121,9 +123,21 @@ export interface Revocation {
   reason: string;
   at: string;
   action: "disable" | "uninstall";
+  /** Present only on an app-conditional retirement entry. */
+  successors?: RetirementSuccessors;
 }
 
 export interface RevocationsFile {
   schemaVersion: 1;
   revocations: Revocation[];
+}
+
+export interface ConditionalRevocation extends Revocation {
+  appVersions: string;
+  successors: RetirementSuccessors;
+}
+
+export interface ConditionalRevocationsFile {
+  schemaVersion: 1;
+  revocations: ConditionalRevocation[];
 }

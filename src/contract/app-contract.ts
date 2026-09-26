@@ -21,6 +21,7 @@ import {
   WORK_BOARD,
   SETTINGS,
   OVERLAY_V1,
+  ALERTS,
 } from "../shared/ipc-channels.js";
 
 // Re-export the pre-existing per-domain SOT groups so `src/contract/` is the
@@ -34,6 +35,7 @@ export {
   WORK_BOARD,
   SETTINGS,
   OVERLAY_V1,
+  ALERTS,
 };
 
 /**

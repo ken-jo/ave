@@ -6,6 +6,8 @@
  * revocations. For each row the version choice runs the six drops of §6.1 in
  * order and takes the highest remaining version as the candidate.
  */
+import { isDeepStrictEqual } from "node:util";
+import { effectiveRevocations } from "./effective-revocations.js";
 import { createHash } from "node:crypto";
 import { appVersionSatisfiesMin, compareSemver } from "../../shared/semver-compare.js";
 import type { SourceOrigin } from "../sources/registry.js";
@@ -95,7 +97,20 @@ export function versionExclusions(
 export function findRevocation<T extends Revocation>(kind: PackageKind, name: string, version: string, revocations: readonly T[]): T | undefined {
   // Ranges were parsed when the snapshot was validated; a failure here is a
   // snapshot that bypassed validation, which must not read as "not revoked".
-  return revocations.find((entry) => entry.kind === kind && entry.name === name && rangeIncludes(parseVersionRange(entry.versions), version));
+  const matches = revocations.filter((entry) => entry.kind === kind && entry.name === name && rangeIncludes(parseVersionRange(entry.versions), version));
+  // Removal wins over load blocking; successor metadata survives whichever rule supplies
+  // the action. Equal actions retain input order for the reported reason.
+  const strongest = matches.find((entry) => entry.action === "uninstall") ?? matches[0];
+  if (!strongest) return undefined;
+  let successors: Revocation["successors"];
+  for (const entry of matches) {
+    if (!entry.successors) continue;
+    if (successors && !isDeepStrictEqual(successors, entry.successors)) {
+      throw new Error("Conflicting plugin retirement entries");
+    }
+    successors = entry.successors;
+  }
+  return successors ? { ...strongest, successors } : strongest;
 }
 
 function isRevoked(kind: PackageKind, name: string, version: string, revocations: readonly Revocation[]): boolean {
@@ -152,7 +167,7 @@ export function aggregateCatalog(inputs: readonly AggregateInput[], context: Ver
         kind: pkg.kind,
         name: pkg.name,
         package: pkg,
-        choice: chooseVersion(sourceId, pkg, snapshot.revocations, context),
+        choice: chooseVersion(sourceId, pkg, effectiveRevocations(snapshot, context.appVersion), context),
       });
     }
   }

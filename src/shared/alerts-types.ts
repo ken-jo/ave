@@ -5,15 +5,18 @@
  * `AppSettings.alerts` holds the user's per-kind choices for the alert kinds
  * plugins declare, and `AppSettings.retiredPluginConfigs` holds the effective
  * config a retired (revoked) plugin left behind so its successors can inherit
- * the user's choices. Both keys land here ahead of the pipeline that reads
- * them: the settings store normalises and defaults them, nothing else touches
- * them yet. The design page `docs/design/plugin-alerts.md` owns the shapes.
+ * the user's choices. The settings store normalises and defaults them, and
+ * the alerts service (`src/alerts/service.ts`) is their only writer. The
+ * design page `docs/design/plugin-alerts.md` owns the shapes.
  */
+import type { AlertInheritRule, AlertKindDeclaration, AlertVisibility } from "../plugins/public-contract.js";
+import { isRecord } from "./is-record.js";
 import type { PluginConfigRecord } from "./plugin-config.js";
 
+export type { AlertInheritRule, AlertVisibility };
+
 /** The delivery levels a kind can declare; a plugin may only lower them at raise time. */
-const ALERT_VISIBILITIES =["user-visible", "summary-only", "silent"] as const;
-export type AlertVisibility = (typeof ALERT_VISIBILITIES)[number];
+const ALERT_VISIBILITIES = ["user-visible", "summary-only", "silent"] as const satisfies readonly AlertVisibility[];
 
 export function isAlertVisibility(value: unknown): value is AlertVisibility {
   return typeof value === "string" && (ALERT_VISIBILITIES as readonly string[]).includes(value);
@@ -25,6 +28,63 @@ export function isAlertVisibility(value: unknown): value is AlertVisibility {
  * with a plugin's kind.
  */
 export const ALERT_HOST_PLUGIN_ID = "@host";
+
+/**
+ * The package id no plugin may take. The alert pipeline mints the overlay
+ * source `overlay:<pluginId>--<kind>` and host kinds use `overlay:host--<kind>`,
+ * because a staged source admits no `@`; a plugin named `host` could otherwise
+ * mint a host kind's source.
+ */
+export const ALERT_RESERVED_PACKAGE_ID = "host";
+
+/**
+ * An alert card as main stages it: the renderer's overlay item for source
+ * kind `alert`. Built only from the kind's declared templates and sanitised
+ * slot values; `pendingPrompt` is the envelope an accept inserts.
+ */
+export interface AlertCard {
+  /** `alert:<alertId>`. */
+  id: string;
+  source: { kind: "alert"; pluginId: string; kindId: string; alertId: string };
+  title: string;
+  summary: string;
+  running: false;
+  primaryActionLabel: string;
+  pendingPrompt: string;
+  priority: "low" | "normal" | "high";
+  createdAt: string;
+}
+
+/** What the user did to an alert card. */
+export type AlertCardClosedReason = "accepted" | "dismissed";
+
+/** A registered kind and the host's current resolution for Settings. */
+export interface AlertKindRow {
+  kindKey: string;
+  pluginId: string;
+  pluginLabel: string;
+  reasoning: string;
+  declaration: AlertKindDeclaration;
+  choice: AlertKindChoice;
+  blockedByPredecessor: string | null;
+}
+
+/** Only user switches are writable; consent metadata is owned by the service. */
+export type AlertKindPatch = Partial<Pick<AlertKindChoice, "enabled" | "osNotification">>;
+
+export function isAlertKindPatch(value: unknown): value is AlertKindPatch {
+  return isRecord(value) && Object.entries(value).every(
+    ([key, entry]) => (key === "enabled" || key === "osNotification") && typeof entry === "boolean",
+  );
+}
+
+interface AlertSettingsError {
+  ok: false;
+  error: "invalid-arguments" | "kind-not-registered" | "no-alerts-service" | "unauthorized-frame";
+}
+
+export type SetAlertKindResult = AlertKindRow | AlertSettingsError;
+export type SetAlertOsNotificationsResult = { osNotificationsEnabled: boolean } | AlertSettingsError;
 
 /**
  * A settings key for one alert kind: `<pluginId>:<kind>` or `@host:<kind>`.
@@ -80,20 +140,6 @@ export interface AlertSettings {
   osNotificationsEnabled: boolean;
   /** Keyed by {@link isAlertKindKey}. Absent = not yet resolved. */
   kinds: Record<string, AlertKindChoice>;
-}
-
-/**
- * How a successor kind reads one toggle out of a retired plugin's config: the
- * list stored at `key` either names the disabled members (`listed:
- * "disabled"`) or the enabled ones (`listed: "enabled"`), and `values` are the
- * spellings — current and legacy — under which this kind appears in it.
- * `masterKey` names a boolean that, when false, turns the toggle off outright.
- */
-export interface AlertInheritRule {
-  key: string;
-  listed: "enabled" | "disabled";
-  values: string[];
-  masterKey?: string;
 }
 
 /** A plugin allowed to inherit from a retired record, as the retirement entry names it. */
