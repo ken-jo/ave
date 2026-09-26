@@ -100,6 +100,13 @@ import {
   type WireAudioCaptureHandle,
 } from "./host-api-wire.js";
 import { SubscriptionLedger } from "./subscription-ledger.js";
+import {
+  DISPATCH_IN_FLIGHT_MAX,
+  DISPATCH_SUBSCRIPTIONS_MAX,
+  DISPATCH_SUBSCRIPTION_KIND_MAX,
+  HostApiBudgets,
+  type HostApiBudgetAudit,
+} from "./host-api-budgets.js";
 import { errorMessage } from "../../shared/error-message.js";
 
 /** One inbound invocation, after its method and params have been checked. */
@@ -932,7 +939,7 @@ function startAudioCapturePath(hostApi: ServiceHostApi): HostApiPathHandler {
 
     let ended = false;
     let live = true;
-    const handleId = scope.open(() => {
+    const handleId = openOrUndo(scope, () => {
       live = false;
       // A capture that already ended must not be stopped again: `stop()` is
       // idempotent on this side, but releasing twice is not.
@@ -980,7 +987,7 @@ function attachFloatingPanelPath(hostApi: ServiceHostApi): HostApiPathHandler {
 
     let detached = false;
     let live = true;
-    const handleId = scope.open(() => {
+    const handleId = openOrUndo(scope, () => {
       live = false;
       // Releasing the handle IS the child's detach — the wire carries no
       // per-handle call channel, so `detach()` on the child side disposes the
@@ -1206,7 +1213,7 @@ function spawnWorkerPath(
 
     let exited = false;
     let live = true;
-    const handleId = scope.open(() => {
+    const handleId = openOrUndo(scope, () => {
       live = false;
       // A worker that already exited must not be stopped: `stop()` signals a pid,
       // and a pid that has been reaped can belong to something else by then.
@@ -1732,6 +1739,19 @@ function adoptOrUndo(
   }
 }
 
+/** Undo a resource created before its handle could be registered. */
+function openOrUndo(
+  scope: SubscriptionScope,
+  teardown: (reason: SubscriptionCloseReason) => void,
+): string {
+  try {
+    return scope.open(teardown);
+  } catch (error) {
+    try { teardown("peer-gone"); } catch { /* preserve the registration refusal */ }
+    throw error;
+  }
+}
+
 /**
  * The five dispatchable members of this group, bound to one incarnation.
  *
@@ -1844,6 +1864,8 @@ export function classifyHostApiError(error: unknown): HostApiWireError {
       name: error.name,
       message: error.message,
       ...(error.detail ? { detail: error.detail } : {}),
+      ...(error.code === "rate-limited" && typeof error.detail?.retryAfterMs === "number"
+        ? { retryAfterMs: error.detail.retryAfterMs } : {}),
     };
   }
   if (error instanceof EffectBoundaryDeniedError) {
@@ -1971,13 +1993,22 @@ export interface HostApiDispatcherOptions {
    * the plugin's own voice.
    */
   readonly reportUnknownField: (report: UnknownFieldReport) => void;
+  /** Host-owned, coalesced diagnostics. The callback must not include caller payloads. */
+  readonly reportBudgetAudit?: (entry: HostApiBudgetAudit) => void;
   /** Injectable so a handler can be exercised without the whole table. */
   readonly table?: Record<HostApiPath, HostApiPathHandler>;
+}
+
+class HostApiRateLimitError extends HostApiBoundaryError {
+  constructor(method: string, retryAfterMs: number, readonly bucket: string) {
+    super("rate-limited", "Host API rate limit exceeded.", { method, retryAfterMs });
+  }
 }
 
 /** Services one child's reverse channel for the life of one plugin incarnation. */
 export class HostApiDispatcher {
   private readonly table: Record<HostApiPath, HostApiPathHandler>;
+  private readonly budgets: HostApiBudgets;
   private readonly subscriptions = new SubscriptionLedger<HostSubscription>(
     "host-api-dispatcher",
   );
@@ -1989,11 +2020,14 @@ export class HostApiDispatcher {
    * not run on for nobody. An entry lives exactly as long as its request.
    */
   private readonly inFlight = new Map<string, AbortController>();
+  private readonly pendingSubscriptions = new Map<HostApiPath, number>();
+  private pendingSubscriptionCount = 0;
   private readonly reportedUnknownFields = new Set<string>();
   private unknownFieldsSuppressed = false;
 
   constructor(private readonly options: HostApiDispatcherOptions) {
     this.table = options.table ?? HOSTAPI_DISPATCH_TABLE;
+    this.budgets = new HostApiBudgets(options.pluginId, options.reportBudgetAudit ?? (() => {}));
   }
 
   /** Live host-side registrations. Zero after {@link childGone}. */
@@ -2004,6 +2038,7 @@ export class HostApiDispatcher {
   async handle(request: HostApiRequest): Promise<HostApiReply> {
     const { id } = request;
     const key = String(id);
+    const path = typeof request.method === "string" ? hostApiPathOf(request.method) : undefined;
     // Two live requests under one id would make a cancellation ambiguous and a
     // reply unmatchable, so the second is refused rather than let either win.
     if (this.inFlight.has(key)) {
@@ -2013,22 +2048,44 @@ export class HostApiDispatcher {
           "argument-marshalling-rejected",
           `[host-api-dispatcher] request id '${key}' is already in flight`,
         ),
+        path,
       );
+    }
+    if (path === "emitEvent" || path === "logEvent") {
+      if (this.budgets.take(path) > 0 || this.inFlight.size >= DISPATCH_IN_FLIGHT_MAX) {
+        this.budgets.deny(path, "rate-limited", path);
+        return { jsonrpc: "2.0", id, result: null };
+      }
+    } else {
+      if (this.inFlight.size >= DISPATCH_IN_FLIGHT_MAX) {
+        return this.errorReply(id, this.rateLimited(path, 100, "in-flight"), path);
+      }
+      if (path !== undefined) {
+        const retryAfterMs = this.budgets.take(path);
+        if (retryAfterMs > 0) {
+          return this.errorReply(id, this.rateLimited(path, retryAfterMs, path), path);
+        }
+      }
     }
     const controller = new AbortController();
     this.inFlight.set(key, controller);
+    let reservation: { active: boolean; release: () => void; consume: () => void } | undefined;
     try {
       const { handler, args } = this.resolve(request);
+      if (handler.contract.lifetime !== "none") {
+        reservation = this.reserveSubscription(handler.path);
+      }
       const value = await handler.invoke(
         { path: handler.path, args, signal: controller.signal },
-        this.scopeFor(handler.path),
+        this.scopeFor(handler.path, reservation),
       );
       // `null` for a `void` member, and for an absent value: JSON-RPC requires
       // `result`, and JSON has no `undefined` to put in it.
       return { jsonrpc: "2.0", id, result: this.checkResult(handler, value) ?? null };
     } catch (error) {
-      return this.errorReply(id, error);
+      return this.errorReply(id, error, path);
     } finally {
+      reservation?.release();
       this.inFlight.delete(key);
     }
   }
@@ -2043,6 +2100,10 @@ export class HostApiDispatcher {
    */
   handleNotification(notification: HostApiNotification): void {
     if (notification.method === HOST_PROTOCOL_NOTIFICATIONS.log) {
+      if (this.budgets.take("notifications/ave/log") > 0) {
+        this.budgets.deny("notifications/ave/log", "rate-limited", "logEvent");
+        return;
+      }
       // The message is the plugin's own text, passed through unchanged so an
       // isolated plugin's log line reads the same as an in-process one. Only
       // the attribution is the host's to add, and the owner does that.
@@ -2085,11 +2146,53 @@ export class HostApiDispatcher {
       controller.abort(new DOMException("[host-api-dispatcher] the child is gone", "AbortError"));
     }
     this.inFlight.clear();
-    return this.subscriptions.end("peer-gone");
+    this.budgets.end();
+    const closed = this.subscriptions.end("peer-gone");
+    this.pendingSubscriptions.clear();
+    this.pendingSubscriptionCount = 0;
+    return closed;
   }
 
-  private errorReply(id: JsonRpcRequestId, error: unknown): HostApiReply {
-    return { jsonrpc: "2.0", id, error: toHostApiRpcError(classifyHostApiError(error)) };
+  private errorReply(id: JsonRpcRequestId, error: unknown, path?: HostApiPath): HostApiReply {
+    const classified = classifyHostApiError(error);
+    this.budgets.deny(path ?? "<unknown>", classified.code,
+      error instanceof HostApiRateLimitError ? error.bucket : undefined);
+    return { jsonrpc: "2.0", id, error: toHostApiRpcError(classified) };
+  }
+
+  private rateLimited(path: HostApiPath | undefined, retryAfterMs: number, bucket: string): HostApiBoundaryError {
+    return new HostApiRateLimitError(path ?? "<unknown>", retryAfterMs, bucket);
+  }
+
+  private ensureSubscriptionCapacity(path: HostApiPath): void {
+    if (this.subscriptions.openCount + this.pendingSubscriptionCount >= DISPATCH_SUBSCRIPTIONS_MAX) {
+      throw this.rateLimited(path, 100, "subscriptions");
+    }
+    const kindMax = DISPATCH_SUBSCRIPTION_KIND_MAX[path];
+    if (kindMax !== undefined && this.subscriptions.countWhere((entry) => entry.path === path)
+      + (this.pendingSubscriptions.get(path) ?? 0) >= kindMax) {
+      throw this.rateLimited(path, 100, path);
+    }
+  }
+
+  private reserveSubscription(path: HostApiPath): { active: boolean; release: () => void; consume: () => void } {
+    this.ensureSubscriptionCapacity(path);
+    this.pendingSubscriptionCount += 1;
+    this.pendingSubscriptions.set(path, (this.pendingSubscriptions.get(path) ?? 0) + 1);
+    const reservation = {
+      active: true,
+      release: () => {
+        if (!reservation.active) return;
+        reservation.active = false;
+        if (this.subscriptions.isEnded) return;
+        this.pendingSubscriptionCount -= 1;
+        const count = (this.pendingSubscriptions.get(path) ?? 1) - 1;
+        if (count === 0) this.pendingSubscriptions.delete(path);
+        else this.pendingSubscriptions.set(path, count);
+      },
+      consume: () => reservation.release(),
+    };
+    return reservation;
   }
 
   private resolve(request: HostApiRequest): {
@@ -2178,7 +2281,10 @@ export class HostApiDispatcher {
     return value;
   }
 
-  private scopeFor(path: HostApiPath): SubscriptionScope {
+  private scopeFor(
+    path: HostApiPath,
+    reservation?: { active: boolean; consume: () => void },
+  ): SubscriptionScope {
     /**
      * The one place a host-side close becomes a message to the child.
      *
@@ -2209,9 +2315,16 @@ export class HostApiDispatcher {
     };
     return {
       adopt: (subscriptionId, teardown) => {
+        if (!reservation?.active) this.ensureSubscriptionCapacity(path);
         this.subscriptions.adopt(subscriptionId, { path, teardown }, release);
+        reservation?.consume();
       },
-      open: (teardown) => this.subscriptions.open({ path, teardown }, release),
+      open: (teardown) => {
+        if (!reservation?.active) this.ensureSubscriptionCapacity(path);
+        const subscriptionId = this.subscriptions.open({ path, teardown }, release);
+        reservation?.consume();
+        return subscriptionId;
+      },
       release: (subscriptionId) => this.subscriptions.close(subscriptionId, "revoked"),
       shutdown: (subscriptionId) => this.options.shutdownChild(subscriptionId),
       deliver: (subscriptionId, payload) => {

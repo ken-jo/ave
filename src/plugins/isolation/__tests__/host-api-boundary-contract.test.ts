@@ -9,7 +9,7 @@
  * in the field, because today each member is a direct function call that no test
  * was written to pin.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ENFORCEMENT_EXCLUSIONS,
   EffectBoundaryDeniedError,
@@ -38,7 +38,9 @@ import {
   type HostApiCall,
   type HostApiPathStatus,
   type UnknownFieldReport,
+  type SubscriptionScope,
 } from "../host-api-dispatcher.js";
+import { DISPATCH_SUBSCRIPTION_KIND_MAX, type HostApiBudgetAudit } from "../host-api-budgets.js";
 import {
   HostApiBoundaryError,
   UNIVERSAL_WIRE_ERROR_CODES,
@@ -46,6 +48,7 @@ import {
   decodeWireBinary,
   decodeWireBytes,
   encodeWireBytes,
+  fromHostApiRpcError,
   hostApiPathOf,
   inactiveHostApiMessage,
   reconstructWireError,
@@ -554,6 +557,19 @@ describe("the dispatcher refuses rather than defaults", () => {
 });
 
 describe("error identity survives the wire by code, never by message", () => {
+  it("rejects a rate-limited reply without a bounded retry delay", () => {
+    for (const retryAfterMs of [undefined, -1, 5001, 0.5]) {
+      const reply = {
+        code: -32000, message: "Host API rate limit exceeded.",
+        data: {
+          code: "rate-limited", name: "HostApiBoundaryError",
+          ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+        },
+      };
+      expect(() => fromHostApiRpcError(reply)).toThrow(/bounded retryAfterMs/u);
+    }
+  });
+
   it("classifies each host error class the boundary carries", () => {
     const cases: Array<[unknown, string]> = [
       [
@@ -675,5 +691,242 @@ describe("the shared byte codec, which three members would otherwise each write"
   it("refuses text where a member declared it delivers bytes", () => {
     expect(() => decodeWireBinary({ encoding: "utf8", data: "hi" }, "storage.read()"))
       .toThrow(/expected bytes/u);
+  });
+});
+
+describe("dispatcher resource budgets", () => {
+  it("refuses exhausted request buckets before invoking their handlers", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetch = vi.fn(async () => ({ status: 200 }));
+      const resolve = vi.fn(async (_call: HostApiCall, scope: SubscriptionScope) => ({
+        handleId: scope.open(() => {}),
+      }));
+      const read = vi.fn(async () => null);
+      const host = dispatcher({ table: {
+        ...HOSTAPI_DISPATCH_TABLE,
+        getSecret: defineHostApiPath("getSecret", read),
+        hostFetch: defineHostApiPath("hostFetch", fetch),
+        resolveApiKey: defineHostApiPath("resolveApiKey", resolve),
+      } });
+      for (let index = 0; index < 200; index += 1) {
+        expect(await host.handle(hostApiRequest("getSecret", ["sample"], `read-${index}`)))
+          .toHaveProperty("result");
+      }
+      expect(await host.handle(hostApiRequest("getSecret", ["sample"], "read-overflow")))
+        .toMatchObject({ error: { data: { code: "rate-limited", retryAfterMs: 20 } } });
+      expect(read).toHaveBeenCalledTimes(200);
+      for (let index = 0; index < 60; index += 1) {
+        expect(await host.handle(hostApiRequest("hostFetch", [], index))).toHaveProperty("result");
+      }
+      const fetchRefusal = await host.handle(hostApiRequest("hostFetch", [], "fetch-overflow"));
+      expect(fetchRefusal).toMatchObject({ error: { data: {
+        code: "rate-limited", retryAfterMs: 50, detail: { method: "hostFetch" },
+      } } });
+      expect(fetch).toHaveBeenCalledTimes(60);
+      if (!("error" in fetchRefusal)) throw new Error("expected a request refusal");
+      expect(reconstructWireError(fromHostApiRpcError(fetchRefusal.error)).retryAfterMs).toBe(50);
+      for (let index = 0; index < 30; index += 1) {
+        expect(await host.handle(hostApiRequest("resolveApiKey", [], `resolve-${index}`)))
+          .toHaveProperty("result");
+      }
+      const resolveRefusal = await host.handle(hostApiRequest("resolveApiKey", [], "resolve-overflow"));
+      expect(resolveRefusal).toMatchObject({ error: { data: {
+        code: "rate-limited", retryAfterMs: 100, detail: { method: "resolveApiKey" },
+      } } });
+      expect(resolve).toHaveBeenCalledTimes(30);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(await host.handle(hostApiRequest("resolveApiKey", [], "after-refill")))
+        .toHaveProperty("result");
+      expect(host.childGone()).toBe(31);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops and counts notification floods, then emits one aggregate", async () => {
+    vi.useFakeTimers();
+    try {
+      const logs = vi.fn();
+      const emits = vi.fn();
+      const logEvents = vi.fn();
+      const audits: HostApiBudgetAudit[] = [];
+      const host = dispatcher({
+        log: logs,
+        reportBudgetAudit: (entry) => audits.push(entry),
+        table: {
+          ...HOSTAPI_DISPATCH_TABLE,
+          emitEvent: defineHostApiPath("emitEvent", async () => { emits(); }),
+          logEvent: defineHostApiPath("logEvent", async () => { logEvents(); }),
+        },
+      });
+      for (let index = 0; index < 510; index += 1) {
+        host.handleNotification({
+          jsonrpc: "2.0", method: "notifications/ave/log",
+          params: { message: `line-${index}` },
+        });
+      }
+      expect(logs).toHaveBeenCalledTimes(500);
+      expect(await host.handle(hostApiRequest("logEvent", ["info", "dropped"], "log-overflow")))
+        .toHaveProperty("result", null);
+      expect(logEvents).not.toHaveBeenCalled();
+      for (let index = 0; index < 210; index += 1) {
+        expect(await host.handle(hostApiRequest("emitEvent", ["demo.event"], index)))
+          .toHaveProperty("result", null);
+      }
+      expect(emits).toHaveBeenCalledTimes(200);
+      expect(audits).toEqual(expect.arrayContaining([
+        expect.objectContaining({ method: "notifications/ave/log", count: 1, summary: false }),
+        expect.objectContaining({ method: "emitEvent", count: 1, summary: false }),
+      ]));
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(audits).toEqual(expect.arrayContaining([
+        expect.objectContaining({ method: "notifications/ave/log", count: 9, summary: true }),
+        expect.objectContaining({ method: "emitEvent", count: 9, summary: true }),
+      ]));
+      host.childGone();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("preserves service rate-limit verdicts as results", async () => {
+    const table = {
+      ...HOSTAPI_DISPATCH_TABLE,
+      raiseAlert: defineHostApiPath("raiseAlert", async () => ({ status: "rate_limited" })),
+      proposeWork: defineHostApiPath("proposeWork", async () => ({ status: "rate_limited" })),
+      triggerConversation: defineHostApiPath("triggerConversation", async () => ({
+        accepted: false, reason: "rate_limited", source: "sample",
+      })),
+    };
+    const host = dispatcher({ table });
+    expect(await host.handle(hostApiRequest("raiseAlert", [{}], 1)))
+      .toMatchObject({ result: { status: "rate_limited" } });
+    expect(await host.handle(hostApiRequest("proposeWork", [{}], 2)))
+      .toMatchObject({ result: { status: "rate_limited" } });
+    expect(await host.handle(hostApiRequest("triggerConversation", [{}], 3)))
+      .toMatchObject({ result: { accepted: false, reason: "rate_limited" } });
+    host.childGone();
+  });
+
+  it("pins the per-kind ceilings on every lifetime-bearing kind with one", () => {
+    expect(DISPATCH_SUBSCRIPTION_KIND_MAX).toEqual({
+      onEvent: 64,
+      "config.onChange": 16,
+      onPluginsChanged: 4,
+      spawnWorker: 8,
+      startAudioCapture: 2,
+      attachFloatingPanel: 1,
+      resolveApiKey: 32,
+    });
+  });
+
+  it("refuses the 65th in-flight call and lets cancellation free capacity", async () => {
+    let entered = 0;
+    const table = {
+      ...HOSTAPI_DISPATCH_TABLE,
+      hasRoutineBySource: defineHostApiPath("hasRoutineBySource", (call) => {
+        entered += 1;
+        return new Promise<boolean>((_resolve, reject) => {
+          call.signal.addEventListener("abort", () => reject(call.signal.reason), { once: true });
+        });
+      }),
+    };
+    const host = dispatcher({ table });
+    const pending = Array.from({ length: 64 }, (_, index) => host.handle({
+      ...request(), id: `in-flight-${index}`,
+    }));
+    expect(entered).toBe(64);
+    const refused = await host.handle({ ...request(), id: "overflow" });
+    if (!("error" in refused)) throw new Error("expected an in-flight refusal");
+    expect(refused.error.data).toMatchObject({
+      code: "rate-limited", retryAfterMs: 100,
+      detail: { method: "hasRoutineBySource" },
+    });
+    expect(refused.error.message).toBe("Host API rate limit exceeded.");
+    expect(entered).toBe(64);
+    host.handleNotification({
+      jsonrpc: "2.0", method: "notifications/cancelled",
+      params: { requestId: "in-flight-0" },
+    });
+    const cancelled = await pending[0];
+    expect(cancelled).toMatchObject({ error: { data: { code: "host-internal" } } });
+    const replacement = host.handle({ ...request(), id: "replacement" });
+    expect(entered).toBe(65);
+    expect(host.childGone()).toBe(0);
+    await Promise.all([...pending.slice(1), replacement]);
+  });
+
+  it("reserves per-kind capacity before asynchronous registrations and releases it", async () => {
+    let resolveOpen!: () => void;
+    const opening = new Promise<void>((resolve) => { resolveOpen = resolve; });
+    let started = 0;
+    let stopped = 0;
+    const table = {
+      ...HOSTAPI_DISPATCH_TABLE,
+      spawnWorker: defineHostApiPath("spawnWorker", async (_call, scope) => {
+        started += 1;
+        await opening;
+        return { handleId: scope.open(() => { stopped += 1; }) };
+      }),
+    };
+    const host = dispatcher({ table });
+    const pending = Array.from({ length: 8 }, (_, index) => host.handle({
+      ...request({ path: "spawnWorker" }), id: `worker-${index}`,
+    }));
+    expect(started).toBe(8);
+    const refused = await host.handle({ ...request({ path: "spawnWorker" }), id: "worker-overflow" });
+    expect(refused).toMatchObject({ error: { data: { code: "rate-limited" } } });
+    expect(started).toBe(8);
+    resolveOpen();
+    const opened = await Promise.all(pending);
+    expect(host.openSubscriptionCount).toBe(8);
+    const first = opened[0];
+    if (!("result" in first)) throw new Error("expected a worker handle");
+    host.handleNotification({
+      jsonrpc: "2.0", method: "notifications/ave/subscription/release",
+      params: { subscriptionId: (first.result as { handleId: string }).handleId },
+    });
+    expect(stopped).toBe(1);
+    expect(host.openSubscriptionCount).toBe(7);
+    expect(await host.handle({ ...request({ path: "spawnWorker" }), id: "worker-replacement" }))
+      .toHaveProperty("result");
+    expect(host.childGone()).toBe(8);
+    expect(stopped).toBe(9);
+  });
+
+  it("caps all subscriptions while release and shutdown remain usable", async () => {
+    vi.useFakeTimers();
+    try {
+      let shutdownScope: SubscriptionScope | undefined;
+      const shutdownChild = vi.fn(async () => {});
+      const table = {
+        ...HOSTAPI_DISPATCH_TABLE,
+        onShutdown: defineHostApiPath("onShutdown", async (call, scope) => {
+          shutdownScope = scope;
+          scope.adopt(String(call.args[0]), () => {});
+        }),
+      };
+      const host = dispatcher({ table, shutdownChild });
+      for (let index = 0; index < 256; index += 1) {
+        if (index === 190) await vi.advanceTimersByTimeAsync(2000);
+        const reply = await host.handle(hostApiRequest("onShutdown", [`shutdown-${index}`], index));
+        expect(reply, `registration ${index}`).toHaveProperty("result");
+      }
+      expect(host.openSubscriptionCount).toBe(256);
+      const refused = await host.handle(hostApiRequest("onShutdown", ["overflow"], "overflow"));
+      expect(refused).toMatchObject({ error: { data: { code: "rate-limited" } } });
+      await shutdownScope?.shutdown("shutdown-0");
+      expect(shutdownChild).toHaveBeenCalledWith("shutdown-0");
+      host.handleNotification({
+        jsonrpc: "2.0", method: "notifications/ave/subscription/release",
+        params: { subscriptionId: "shutdown-0" },
+      });
+      expect(await host.handle(hostApiRequest("onShutdown", ["replacement"], "replacement")))
+        .toHaveProperty("result");
+      expect(host.childGone()).toBe(256);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

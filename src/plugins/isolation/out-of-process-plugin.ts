@@ -1029,6 +1029,7 @@ export async function spawnConfinedPluginChild(
 
 export interface OutOfProcessPluginSpec {
   readonly manifest: PluginManifest;
+  readonly auditLog?: (level: "info" | "warn" | "error", message: string, data?: unknown) => void;
   /** The resolved, real entry path of the PLUGIN (not of the child runtime). */
   readonly entryPath: string;
   /**
@@ -1250,6 +1251,19 @@ export function createOutOfProcessPluginFactory(
           { pluginId, method: report.method, field: report.field },
           "ignored an undeclared params field",
         );
+      },
+      reportBudgetAudit: (entry) => {
+        try {
+          spec.auditLog?.("warn", entry.type, {
+            pluginId: entry.pluginId,
+            method: entry.method,
+            code: entry.code,
+            count: entry.count,
+            summary: entry.summary,
+            ...(entry.bucket === undefined ? {} : { bucket: entry.bucket }),
+          });
+        } catch { /* audit sink failure cannot alter a dispatcher result */ }
+        log.warn(entry, entry.type);
       },
       table,
       link: child.link,

@@ -447,6 +447,19 @@ const ERROR_TRIGGERS: Readonly<Record<Exclude<HostApiWireErrorCode, "protocol-ve
     },
     provoke: throughStub("onEvent"),
   },
+  "rate-limited": {
+    trigger: "the in-flight ceiling was exhausted before the host method ran",
+    provoke: async (session) => {
+      for (let index = 0; index < 220; index += 1) {
+        session.sendAsChild({
+          jsonrpc: "2.0", id: `budget-${index}`,
+          method: "ave/host/hasRoutineBySource", params: { source: "nightly" },
+        });
+      }
+      await settle();
+      return lastRequest(session.frames, "ave/host/hasRoutineBySource");
+    },
+  },
   "effect-boundary-denied": {
     trigger: "the effect boundary refused the call",
     overrides: {

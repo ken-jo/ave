@@ -207,7 +207,11 @@ function fakeHostApi(): PluginHostApi & {
 }
 
 /** A child served over paired streams, with the host's end of the link. */
-function pairedChild(): { child: ConfinedPluginChild; kill: (reason: string) => void } {
+function pairedChild(): {
+  child: ConfinedPluginChild;
+  kill: (reason: string) => void;
+  sendAsChild: (frame: Record<string, unknown>) => void;
+} {
   const hostToChild = new PassThrough();
   const childToHost = new PassThrough();
   const service = servePluginChild(hostToChild, childToHost);
@@ -224,6 +228,7 @@ function pairedChild(): { child: ConfinedPluginChild; kill: (reason: string) => 
       service.hostGone();
       for (const handler of goneHandlers) handler(reason);
     },
+    sendAsChild: (frame) => { childToHost.write(`${JSON.stringify(frame)}\n`); },
   };
 }
 
@@ -274,6 +279,40 @@ describe("the dispatch table, assembled from the four group factories", () => {
 });
 
 describe("the pilot, out of process", () => {
+  it("records bounded dispatcher refusals through the runtime audit sink", async () => {
+    const { dir, entryPath } = writePluginModule();
+    const auditLog = vi.fn();
+    const paired = pairedChild();
+    try {
+      const factory = createOutOfProcessPluginFactory({
+        manifest: MANIFEST,
+        entryPath,
+        connect: async () => paired.child,
+        auditLog,
+      });
+      const instance = await factory(hostContext(fakeHostApi()));
+      for (let index = 0; index < 220; index += 1) {
+        paired.sendAsChild({
+          jsonrpc: "2.0", id: `flood-${index}`,
+          method: "ave/host/hasRoutineBySource", params: { source: "nightly" },
+        });
+      }
+      for (let turn = 0; turn < 10 && auditLog.mock.calls.length === 0; turn += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      expect(auditLog).toHaveBeenCalledWith("warn", "plugin_rate_limited", expect.objectContaining({
+        pluginId: PLUGIN_ID,
+        method: "hasRoutineBySource",
+        code: "rate-limited",
+        count: 1,
+        summary: false,
+      }));
+      await instance.stop?.();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("invokes a declared tool end to end and returns the plugin's own value", async () => {
     const { dir, entryPath } = writePluginModule();
     const hostApi = fakeHostApi();

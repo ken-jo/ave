@@ -5073,7 +5073,11 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       // caller already applies. `bustCache` is irrelevant for the same reason —
       // a fresh process has an empty module registry, which is a stronger
       // cache-bust than a query parameter.
-      return createOutOfProcessPluginFactory({ manifest, entryPath: resolvedEntryPath });
+      return createOutOfProcessPluginFactory({
+        manifest,
+        entryPath: resolvedEntryPath,
+        auditLog: this.auditLog,
+      });
     }
     try {
       return await runPluginImportWithTimeout(

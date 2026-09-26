@@ -174,6 +174,22 @@ describe("the schema names what the host serves, and nothing else", () => {
     }
   });
 
+  it("requires a bounded retry delay for rate-limited replies", () => {
+    const base = {
+      code: -32000,
+      message: "Host API rate limit exceeded.",
+      data: { code: "rate-limited", name: "HostApiBoundaryError" },
+    };
+    expect(violations("rate-limited-valid", SCHEMA.$defs.error, {
+      ...base, data: { ...base.data, retryAfterMs: 100 },
+    })).toEqual([]);
+    for (const retryAfterMs of [undefined, -1, 5001, 0.5]) {
+      expect(violations("rate-limited-invalid", SCHEMA.$defs.error, {
+        ...base, data: { ...base.data, ...(retryAfterMs === undefined ? {} : { retryAfterMs }) },
+      }), String(retryAfterMs)).not.toEqual([]);
+    }
+  });
+
   it("advertises what construct advertises for a host with every optional member bound", () => {
     // `createGoldenHost` implements every member, optional ones included.
     const table = createBoundHostApiDispatchTable(createGoldenHost().api, { read: [], write: [] });

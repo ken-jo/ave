@@ -153,6 +153,7 @@ export interface HostApiRpcError {
     readonly code: HostApiWireErrorCode;
     readonly name: string;
     readonly detail?: Record<string, unknown>;
+    readonly retryAfterMs?: number;
   };
 }
 
@@ -171,6 +172,7 @@ export function toHostApiRpcError(wire: HostApiWireError): HostApiRpcError {
       code: wire.code,
       name: wire.name,
       ...(wire.detail !== undefined ? { detail: wire.detail } : {}),
+      ...(wire.retryAfterMs !== undefined ? { retryAfterMs: wire.retryAfterMs } : {}),
     },
   };
 }
@@ -199,10 +201,22 @@ export function fromHostApiRpcError(error: unknown): HostApiWireError {
       "[host-api-wire] a reply error carries no data.code",
     );
   }
+  if (data.code === "rate-limited" && (
+    !Number.isInteger(data.retryAfterMs)
+    || (data.retryAfterMs as number) < 0
+    || (data.retryAfterMs as number) > 5000
+  )) {
+    throw new HostApiBoundaryError(
+      "result-marshalling-rejected",
+      "[host-api-wire] a rate-limited reply carries no bounded retryAfterMs",
+    );
+  }
   return {
     code: data.code,
     name: data.name,
     message: candidate.message,
+    ...(typeof data.retryAfterMs === "number" && data.retryAfterMs >= 0
+      && data.retryAfterMs <= 5000 ? { retryAfterMs: data.retryAfterMs } : {}),
     ...(data.detail !== undefined ? { detail: data.detail } : {}),
   };
 }
@@ -548,6 +562,7 @@ export const HOST_API_WIRE_ERROR_CODES = [
   "result-marshalling-rejected",
   "payload-too-large",
   "subscription-unknown",
+  "rate-limited",
   // ── Host decisions the plugin is expected to branch on.
   "effect-boundary-denied",
   "manifest-integrity-violation",
@@ -578,6 +593,7 @@ export const UNIVERSAL_WIRE_ERROR_CODES: readonly HostApiWireErrorCode[] = [
   "argument-marshalling-rejected",
   "result-marshalling-rejected",
   "payload-too-large",
+  "rate-limited",
   "host-internal",
 ];
 
@@ -616,6 +632,7 @@ export interface HostApiWireError {
   readonly name: string;
   readonly message: string;
   readonly detail?: Record<string, unknown>;
+  readonly retryAfterMs?: number;
 }
 
 /**
@@ -641,12 +658,14 @@ export interface HostApiWireError {
 export class PluginHostApiError extends Error {
   readonly code: HostApiWireErrorCode;
   readonly detail: Record<string, unknown> | undefined;
+  readonly retryAfterMs: number | undefined;
 
   constructor(wire: HostApiWireError) {
     super(wire.message);
     this.name = wire.name;
     this.code = wire.code;
     this.detail = wire.detail;
+    this.retryAfterMs = wire.retryAfterMs;
   }
 }
 

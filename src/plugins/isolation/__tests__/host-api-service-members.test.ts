@@ -946,6 +946,24 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
     expect(worker.stopped()).toBe(1);
   });
 
+  it("stops a worker created after the child went away during spawn", async () => {
+    const worker = makeFakeWorker();
+    let completeSpawn!: (value: SpawnedPluginWorker) => void;
+    const spawn = new Promise<SpawnedPluginWorker>((resolve) => { completeSpawn = resolve; });
+    const harness = await createServiceHarness({ spawnWorker: async () => spawn });
+    const pending = harness.child.hostApi.spawnWorker!({ workerId: "indexer", command: "/bin/true" });
+    const reservationCount = () => (harness.host as unknown as { pendingSubscriptionCount: number })
+      .pendingSubscriptionCount;
+    expect(reservationCount()).toBe(1);
+    expect(harness.killChild()).toBe(0);
+    expect(reservationCount()).toBe(0);
+    completeSpawn(worker);
+    await expect(pending).rejects.toMatchObject({ code: "host-internal" });
+    expect(worker.stopped()).toBe(1);
+    expect(harness.host.openSubscriptionCount).toBe(0);
+    expect(reservationCount()).toBe(0);
+  });
+
   it("drops worker output produced after the handle was released", async () => {
     // A chunk arriving after the release is a routine race — the process is
     // still draining while `stop()` travels. `deliver` throws on an unknown
@@ -1513,9 +1531,8 @@ describe("attachFloatingPanel crosses as a receipt, and the detach reason surviv
     // back its own request cannot tell it was clamped.
     expect(handle.height).toBe(180);
 
-    const reply = await harness.host.handle(
-      harness.requests.find((request) => pathOfRequest(request) === "attachFloatingPanel")!,
-    );
+    const index = harness.requests.findIndex((request) => pathOfRequest(request) === "attachFloatingPanel");
+    const reply = harness.replies[index];
     expect("result" in reply).toBe(true);
     if (!("result" in reply)) return;
     // Nothing that could be a live panel — the same property `spawnWorker` and
