@@ -161,6 +161,7 @@ describe("the marshalling contract covers exactly the classified hostApi surface
       "void",
       "encoded",
       "handle",
+      "handle-or-denied",
       "child-local",
     ];
     const lifetimeValues: DisposerLifetime[] = [

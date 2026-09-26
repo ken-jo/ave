@@ -137,7 +137,8 @@ describe("the schema names what the host serves, and nothing else", () => {
   it("names what every registration and handle pushes, and nothing else does", () => {
     const outlivesReply = DISPATCHABLE.filter((path) =>
       HOSTAPI_PATH_CONTRACTS[path].arguments === "handler-registration"
-      || HOSTAPI_PATH_CONTRACTS[path].result === "handle");
+      || HOSTAPI_PATH_CONTRACTS[path].result === "handle"
+      || HOSTAPI_PATH_CONTRACTS[path].result === "handle-or-denied");
     expect(outlivesReply.length).toBeGreaterThan(0);
     expect(
       Object.entries(SCHEMA.$defs.methods).filter(([, entry]) => entry.events).map(([method]) => method).sort(),
