@@ -74,8 +74,9 @@ export interface OverlayCardProps {
 
   /** `app` = an MCP App's `ui/message` staged for user confirmation (no turn in flight). */
   kind?: "routine" | "plugin" | "app" | "host";
-  /** Host-formatted provenance for a plugin-originated card. */
-  pluginProvenance?: string;
+  /** Host-bound identity and resolved display name for a plugin card. */
+  pluginId?: string;
+  pluginDisplayName?: string;
 
   /**
    * A proposal is a question the user answers ONCE, so its card carries the
@@ -121,7 +122,8 @@ export function OverlayCard({
   expanded,
   onExpandedChange,
   kind = "routine",
-  pluginProvenance,
+  pluginId,
+  pluginDisplayName,
   dispositions,
 }: OverlayCardProps) {
   const { t } = useTranslation();
@@ -166,18 +168,39 @@ export function OverlayCard({
               )}
               <span className="truncate">{title}</span>
             </CardTitle>
-            <CardDescription className="mt-0.5 flex min-w-0 items-center gap-0.5 text-[11px]">
-              <span className="min-w-0 truncate" title={pluginProvenance}>
-                {running
-                  ? t("overlayCard.running")
-                  : kind === "host"
-                    ? t("alerts.builtInNotice")
-                  : kind === "plugin"
-                    ? pluginProvenance
-                    : kind === "app"
-                      ? t("overlayCard.appNotice")
-                      : t("overlayCard.routineDone")}
-              </span>
+            <CardDescription className="mt-0.5 flex min-w-0 items-start gap-0.5 text-[11px]">
+              {kind === "plugin" && pluginId ? (
+                <span className="min-w-0 flex-1" data-testid="plugin-provenance">
+                  <span
+                    className="block break-all font-medium tracking-tight text-foreground"
+                    role="group"
+                    aria-label={t("alerts.pluginIdOnly", { id: pluginId })}
+                    title={t("alerts.pluginIdOnly", { id: pluginId })}
+                    data-testid="plugin-provenance-id"
+                  >
+                    {t("alerts.pluginIdOnly", { id: pluginId })}
+                  </span>
+                  {pluginDisplayName && pluginDisplayName !== pluginId && (
+                    <span
+                      className="block min-w-0 truncate text-[10px] opacity-60"
+                      title={pluginDisplayName}
+                      data-testid="plugin-provenance-name"
+                    >
+                      {pluginDisplayName}
+                    </span>
+                  )}
+                </span>
+              ) : (
+                <span className="min-w-0 truncate">
+                  {running
+                    ? t("overlayCard.running")
+                    : kind === "host"
+                      ? t("alerts.builtInNotice")
+                      : kind === "app"
+                        ? t("overlayCard.appNotice")
+                        : t("overlayCard.routineDone")}
+                </span>
+              )}
               {!running && (
                 <>
                   <span className="shrink-0">·</span>

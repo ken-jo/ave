@@ -28,7 +28,6 @@ import { useOverlayContext } from "../context/OverlayContext.js";
 import { OverlayCard } from "./OverlayCard.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { FLOATING_LANE_ITEM_WIDTH } from "./FloatingRightLane.js";
-import { formatPluginProvenance } from "../../../shared/plugin-provenance.js";
 import type { OverlayCardPlacement } from "./chat-group-session-registry.js";
 import type { OnboardingProposalDisposition } from "../../../main/onboarding-proposal-store.js";
 
@@ -112,9 +111,9 @@ export function OverlayCardRegion({
   const next = () => setActiveIndex(Math.min(mine.length - 1, index + 1));
   const expanded = expandedCardIds.has(active.id);
   const onExpandedChange = (value: boolean) => setCardExpanded(active.id, value);
-  const pluginProvenance = active.source.kind === "plugin" || active.source.kind === "proposal"
+  const pluginId = active.source.kind === "plugin" || active.source.kind === "proposal"
     || (active.source.kind === "alert" && active.source.pluginId !== ALERT_HOST_PLUGIN_ID)
-    ? formatPluginProvenance(t, active.source.pluginId, active.pluginDisplayName ?? active.source.pluginId)
+    ? active.source.pluginId
     : undefined;
 
   if (active.source.kind === "routine") {
@@ -200,7 +199,8 @@ export function OverlayCardRegion({
               onNever: answer("never"),
             }}
             kind="plugin"
-            pluginProvenance={pluginProvenance}
+            pluginId={pluginId}
+            pluginDisplayName={active.pluginDisplayName}
           />
         </div>
       </div>
@@ -244,7 +244,8 @@ export function OverlayCardRegion({
             }}
             primaryActionLabel={active.primaryActionLabel ?? t("overlayCardRegion.confirm")}
             kind={kind}
-            pluginProvenance={pluginProvenance}
+            pluginId={pluginId}
+            pluginDisplayName={active.pluginDisplayName}
           />
         </div>
       </div>

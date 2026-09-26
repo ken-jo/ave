@@ -47,7 +47,7 @@ test("host deadline cards use built-in presentation and service-owned Settings",
     const card = page.getByTestId("routine-card");
     await expect(card).toContainText("Due soon: Prepare the weekly report");
     await expect(card).toContainText("Built-in notice");
-    await expect(card).not.toContainText("Plugin notice");
+    await expect(card.getByTestId("plugin-provenance-id")).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath("host-alert.png") });
     const settingsResult = await page.evaluate(async () => {
       const api = (window as unknown as { aveApi: AveApi }).aveApi;

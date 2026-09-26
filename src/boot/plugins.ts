@@ -12,6 +12,8 @@ import type { NotificationService } from "../main/notification-service.js";
 import { classifySubscription } from "../plugins/capabilities.js";
 import { type EventHandler, onEvent, offEvent } from "./types.js";
 import { createLogger } from "../lib/logger.js";
+import { t } from "../i18n/runtime.js";
+import { formatPluginNotificationTitle, resolvePluginDisplayName } from "../shared/plugin-provenance.js";
 const log = createLogger("ave");
 
 export interface EventCollector {
@@ -173,6 +175,7 @@ export function registerPluginNotifications(
 
   for (const { manifest } of pluginRuntime.listPluginManifests()) {
     const pluginId = manifest.id;
+    const pluginDisplayName = resolvePluginDisplayName(pluginId, manifest.name);
     const notificationEvents = Array.isArray(manifest.notificationEvents)
       ? manifest.notificationEvents
       : [];
@@ -243,7 +246,7 @@ export function registerPluginNotifications(
           return;
         }
         const resolvedTitle = titleField ? getFieldByPath(data, titleField) : "";
-        const title = resolvedTitle || event;
+        const title = formatPluginNotificationTitle(t, pluginId, pluginDisplayName, resolvedTitle || event);
         const body = bodyField ? getFieldByPath(data, bodyField) : "";
         // Route through NotificationService — inherits focus gate (#842
         // multi-window-aware), cooldown, truncation, sanitization, click
