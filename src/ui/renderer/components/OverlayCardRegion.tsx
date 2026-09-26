@@ -23,6 +23,7 @@
 //     confirm, and the host performs the accepted action itself.
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { ALERT_HOST_PLUGIN_ID } from "../../../shared/alerts-types.js";
 import { useOverlayContext } from "../context/OverlayContext.js";
 import { OverlayCard } from "./OverlayCard.js";
 import { useTranslation } from "../../../i18n/react.js";
@@ -204,7 +205,8 @@ export function OverlayCardRegion({
   // `pendingPrompt` that only a user CLICK turns into a chat turn; they differ solely in
   // provenance (the envelope in `pendingPrompt` and the badge below).
   if (active.source.kind === "plugin" || active.source.kind === "app" || active.source.kind === "alert") {
-    const kind = active.source.kind === "app" ? "app" : "plugin";
+    const kind = active.source.kind === "app" ? "app"
+      : active.source.kind === "alert" && active.source.pluginId === ALERT_HOST_PLUGIN_ID ? "host" : "plugin";
     const isAlert = active.source.kind === "alert";
     return (
       <div

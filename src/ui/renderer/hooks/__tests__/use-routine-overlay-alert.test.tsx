@@ -53,7 +53,7 @@ function setup(staged: OverlayItem[] | Promise<OverlayItem[]> = []) {
     }),
     alerts: {
       cardClosed: vi.fn(async () => ({ ok: true })),
-      openCards: vi.fn(async () => staged),
+      listOpen: vi.fn(async () => staged),
     },
   };
   const ask = vi.fn();
@@ -82,7 +82,7 @@ function setup(staged: OverlayItem[] | Promise<OverlayItem[]> = []) {
     insertImportedTriggerEntry,
     queueDismiss,
     reconnect: (snapshot: Promise<OverlayItem[]>) => hook.rerender({ activeApi: {
-      ...api, alerts: { ...api.alerts, openCards: vi.fn(async () => snapshot) },
+      ...api, alerts: { ...api.alerts, listOpen: vi.fn(async () => snapshot) },
     } }),
     show: (item: OverlayItem) => act(() => showOverlay?.(item)),
     mainDismiss: (id: string) => act(() => dismissOverlay?.(id)),
@@ -154,6 +154,14 @@ describe("useRoutineOverlay — alert cards", () => {
     expect(s.queueAdd).not.toHaveBeenCalled();
   });
 
+  it("records host provenance while retaining the staged turn and close acknowledgement", async () => {
+    const s = setup();
+    s.show({ ...ALERT, source: { kind: "alert", pluginId: "@host", kindId: "due-soon", alertId: "abc" } });
+    await act(async () => { await s.hook.result.current.handlePluginPrimaryAction("alert:abc", TILE); });
+    expect(s.insertImportedTriggerEntry).toHaveBeenCalledWith(expect.objectContaining({ source: "host:due-soon" }));
+    expect(s.ask).toHaveBeenCalledWith(ALERT.pendingPrompt, "trigger-import");
+    expect(s.api.alerts.cardClosed).toHaveBeenCalledWith("abc", "accepted");
+  });
   it("inserts a confirmed alert as the plugin's imported trigger and starts the tile's turn", async () => {
     const s = setup();
     s.show(ALERT);
@@ -207,7 +215,7 @@ describe("useRoutineOverlay — alert cards", () => {
     await act(async () => {
       await Promise.resolve();
     });
-    expect(s.api.alerts.openCards).toHaveBeenCalledTimes(1);
+    expect(s.api.alerts.listOpen).toHaveBeenCalledTimes(1);
     expect(s.queueAdd).toHaveBeenCalledWith(ALERT);
     await act(async () => {
       await s.hook.result.current.handlePluginPrimaryAction("alert:abc", TILE);

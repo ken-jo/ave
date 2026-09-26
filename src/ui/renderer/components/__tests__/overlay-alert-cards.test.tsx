@@ -12,6 +12,7 @@ import "../../../../../test/renderer/setup.js";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { createRef } from "react";
 import { describe, expect, it, vi } from "vitest";
+import { t } from "../../../../i18n/index.js";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { OverlayCardRegion } from "../OverlayCardRegion.js";
 import {
@@ -78,6 +79,12 @@ function mount(onPluginPrimaryAction = vi.fn(), onAlertDismiss = vi.fn()) {
 }
 
 describe("alert cards in the overlay queue", () => {
+  it("identifies a host alert as built-in rather than a plugin notice", () => {
+    const q = mount();
+    q.add({ ...alertItem("host"), source: { kind: "alert", pluginId: "@host", kindId: "due-soon", alertId: "host" } });
+    expect(screen.getByText(t("alerts.builtInNotice"))).toBeTruthy();
+    expect(screen.queryByText(t("overlayCard.pluginNotice"))).toBeNull();
+  });
   it.each(["urgent", "toString", "__proto__", 3, null])("ranks malformed priority %s as normal below high", (priority) => {
     const q = mount();
     q.add(alertItem("high", "high"));

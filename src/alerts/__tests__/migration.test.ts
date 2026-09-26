@@ -89,6 +89,55 @@ async function harness() {
 }
 
 describe("retirement inheritance and binding", () => {
+  it("inherits the declared host deadline once, preserves consent, and binds the successor's consuming declaration", async () => {
+    const h = await harness();
+    await h.service.registerHostKinds();
+    expect(await h.service.listKinds()).toMatchObject([
+      { kindKey: "@host:due-soon", choice: { enabled: false, seenByUser: false } },
+    ]);
+    const enabled = { key: "disabledDetectors", listed: "disabled" as const, values: ["work-item-due-soon"] };
+    h.put(retirement({
+      config: { disabledDetectors: [], osNotificationIntents: ["work-item-due-soon"], osNotificationsEnabled: true },
+      successors: {
+        // A pending successor retains the record so the later pass can actually read it.
+        plugins: [{ pluginId: PLUGIN }, { pluginId: "later" }],
+        hostKinds: [{ kind: "@host:due-soon", enabled,
+          osNotification: { key: "osNotificationIntents", listed: "enabled", values: ["work-item-due-soon"], masterKey: "osNotificationsEnabled" } }],
+      },
+    }), "vega-helper");
+    h.writes.length = 0;
+    await h.service.reconcileMigration();
+    expect(await h.service.listKinds()).toMatchObject([
+      { kindKey: "@host:due-soon", choice: { enabled: true, osNotification: true, seenByUser: false } },
+    ]);
+    expect(h.writes).toEqual(["choices"]);
+    expect(h.records["vega-helper"]!.consumedBy).toEqual([]);
+    await h.service.reconcileMigration();
+    expect(h.writes).toEqual(["choices"]);
+
+    await expect(h.service.setKind("@host:due-soon", { enabled: false, osNotification: false })).resolves.toMatchObject({
+      choice: { enabled: false, osNotification: false, seenByUser: true },
+    });
+    h.writes.length = 0;
+    await h.service.reconcileMigration();
+    expect(h.writes).toEqual([]);
+    await h.service.registerHostKinds();
+    expect(h.settings.kinds["@host:due-soon"]).toMatchObject({ enabled: false, osNotification: false, seenByUser: true });
+
+    // Host mappings have no consuming-version entry. Plugin successors bind
+    // the whole declaration they publish when they consume this same record.
+    await h.service.register(PLUGIN, manifest([], [{ pluginId: "vega-helper", to: "migrated", value: true }]));
+    expect(h.records["vega-helper"]!.consumedBy).toEqual([PLUGIN]);
+    expect(h.configs[PLUGIN]).toEqual({ migrated: true });
+    await h.service.register(PLUGIN, manifest([kind({
+      inherits: [{ pluginId: "vega-helper", sourceId: "trusted", enabled }],
+    })]));
+    expect(h.settings.kinds[KEY]!.enabled).toBe(false);
+    expect(h.warn).toHaveBeenCalledWith(expect.stringContaining("already consumed by an earlier registration"));
+    expect(h.records["vega-helper"]!.consumedBy).toEqual([PLUGIN]);
+    expect(h.settings.kinds["@host:due-soon"]!.enabled).toBe(false);
+  });
+
   it("drops an unpublished generation after its predecessor lookup resumes", async () => {
     const h = await harness();
     await h.service.register(PLUGIN, manifest([kind({ inherits: undefined })]));

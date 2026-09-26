@@ -12,7 +12,7 @@ test("an older alert snapshot cannot undo a live withdrawal or refresh", async (
       ipcMain.removeHandler(channel);
       // Hold the response to exercise the supported cross-channel ordering deterministically.
       ipcMain.handle(channel, () => new Promise((resolve) => { state.resolveAlertSnapshot = resolve; }));
-    }, ALERTS.openCards);
+    }, ALERTS.listOpen);
     await ctx.page.reload();
     await expect.poll(() => ctx.app.evaluate(() =>
       typeof (globalThis as unknown as { resolveAlertSnapshot?: unknown }).resolveAlertSnapshot,

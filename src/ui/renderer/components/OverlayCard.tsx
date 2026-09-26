@@ -73,7 +73,7 @@ export interface OverlayCardProps {
   onExpandedChange: (expanded: boolean) => void;
 
   /** `app` = an MCP App's `ui/message` staged for user confirmation (no turn in flight). */
-  kind?: "routine" | "plugin" | "app";
+  kind?: "routine" | "plugin" | "app" | "host";
 
   /**
    * A proposal is a question the user answers ONCE, so its card carries the
@@ -167,6 +167,8 @@ export function OverlayCard({
               <span>
                 {running
                   ? t("overlayCard.running")
+                  : kind === "host"
+                    ? t("alerts.builtInNotice")
                   : kind === "plugin"
                     ? t("overlayCard.pluginNotice")
                     : kind === "app"
@@ -324,7 +326,7 @@ export function OverlayCard({
               data-testid="overlay-card-primary-action"
               onClick={onPrimaryAction}
             >
-              {primaryActionLabel ?? (kind === "plugin" ? t("overlayCard.pluginPrimaryAction") : t("overlayCard.routinePrimaryAction"))}
+              {primaryActionLabel ?? (kind === "plugin" || kind === "host" ? t("overlayCard.pluginPrimaryAction") : t("overlayCard.routinePrimaryAction"))}
             </Button>
           </div>
         )}

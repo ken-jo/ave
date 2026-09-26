@@ -16,10 +16,10 @@ import type {
   AlertVisibility,
   PluginManifest,
 } from "../plugins/public-contract.js";
-import type { AlertCard, AlertCardClosedReason, AlertSettings } from "../shared/alerts-types.js";
-import { isAlertVisibility } from "../shared/alerts-types.js";
+import type { AlertCard, AlertCardClosedReason, AlertKindRow, AlertSettings, SetAlertKindResult, SetAlertOsNotificationsResult } from "../shared/alerts-types.js";
+import { ALERT_HOST_PLUGIN_ID, ALERT_RESERVED_PACKAGE_ID, isAlertKindKey, isAlertKindPatch, isAlertVisibility } from "../shared/alerts-types.js";
 import type { AuditEntry } from "../audit/audit-logger.js";
-import { t } from "../i18n/index.js";
+import { t, translate } from "../i18n/index.js";
 import { getDeclaredAlertKinds, getDeclaredConfigInherits } from "../plugins/runtime/manifest-validation.js";
 import { AlertMigration, type AlertMigrationPorts } from "./migration.js";
 import {
@@ -40,6 +40,7 @@ import {
   effectiveVisibility,
 } from "./gate.js";
 import { RegistrationLedger, alertKindKey, markPluginAbsent, resolveRegistration } from "./kinds.js";
+import { HOST_ALERT_KINDS } from "./host-kinds.js";
 
 const log = createLogger("alerts");
 
@@ -78,11 +79,15 @@ export interface AlertsServiceDeps {
   /** The host event bus. */
   emit: (type: "alert.raised" | "alert.withdrawn", payload: Record<string, unknown>) => void;
   audit: (entry: AuditEntry) => void;
+  /** Invalidate the renderer's kind list after registration or a settings write. */
+  kindsChanged?: () => void;
   now?: () => number;
 }
 
 interface Registration {
   kinds: ReadonlyMap<string, AlertKindDeclaration>;
+  pluginLabel: string;
+  reasoning: string;
 }
 
 function isPriority(value: unknown): value is AlertPriority {
@@ -154,12 +159,12 @@ export class AlertsService {
    * or load. Writes the missing entries of its declared kinds and escalates
    * entries whose declared visibility went up.
    */
-  register(pluginId: string, manifest: Pick<PluginManifest, "alerts" | "configInherits">, isReady: () => boolean = () => true): Promise<void> {
+  register(pluginId: string, manifest: Pick<PluginManifest, "alerts" | "configInherits" | "name">, isReady: () => boolean = () => true): Promise<void> {
     return this.prepareRegistration(pluginId, manifest, isReady).publish();
   }
 
   /** Keep candidate grants, choices and inheritance private until publication. */
-  prepareRegistration(pluginId: string, manifest: Pick<PluginManifest, "alerts" | "configInherits">, isReady: () => boolean = () => true): {
+  prepareRegistration(pluginId: string, manifest: Pick<PluginManifest, "alerts" | "configInherits" | "name">, isReady: () => boolean = () => true): {
     publish(): Promise<void>;
     unpublish(): void;
   } {
@@ -170,19 +175,25 @@ export class AlertsService {
     const isCurrent = () => this.registrations.get(pluginId) === registration && isReady();
     return {
       publish: () => {
-        registration ??= this.mutate(async () => { await loaded; return this.resolve(pluginId, kinds); });
+        registration ??= this.mutate(async () => {
+          await loaded;
+          const resolved = await this.resolve(pluginId, kinds);
+          return { ...resolved, pluginLabel: manifest.name ?? pluginId, reasoning: manifest.alerts?.reasoning ?? "" };
+        });
         this.registrations.set(pluginId, registration);
         return this.mutate(async () => {
           await registration;
           if (this.registrations.get(pluginId) !== registration) return;
           this.migration.register(pluginId, kinds, config, isCurrent);
           await this.migration.run();
+          this.deps.kindsChanged?.();
         });
       },
       unpublish: () => {
         if (registration && this.registrations.get(pluginId) === registration) {
           this.registrations.delete(pluginId);
           this.migration.forget(pluginId);
+          this.deps.kindsChanged?.();
         }
       },
     };
@@ -199,11 +210,79 @@ export class AlertsService {
     return this.mutate(async () => { await this.loaded(); await this.migration.run(); });
   }
 
-  private async resolve(pluginId: string, kinds: readonly AlertKindDeclaration[]): Promise<Registration> {
+  /** Host kinds are registered before the Work Board scanner can raise them. */
+  registerHostKinds(): Promise<void> {
+    return this.register(ALERT_HOST_PLUGIN_ID, {
+      alerts: { reasoning: translate("en", "be_alerts.reasoning"), kinds: [...HOST_ALERT_KINDS] },
+    });
+  }
+
+  private async resolve(pluginId: string, kinds: readonly AlertKindDeclaration[]): Promise<Pick<Registration, "kinds">> {
     const origin = this.ledger.register(pluginId);
     const next = resolveRegistration(this.deps.settings.get(), pluginId, kinds, origin);
     if (next) await this.deps.settings.set(next);
     return { kinds: new Map(kinds.map((kind) => [kind.id, kind])) };
+  }
+
+  private async kindRow(pluginId: string, registration: Registration, kind: AlertKindDeclaration): Promise<AlertKindRow> {
+    const predecessor = kind.inherits?.[0];
+    const blocked = predecessor && await this.deps.predecessorBlocks(predecessor.pluginId, predecessor.sourceId);
+    const kindKey = alertKindKey(pluginId, kind.id);
+    const host = pluginId === ALERT_HOST_PLUGIN_ID;
+    return structuredClone({
+      kindKey, pluginId,
+      pluginLabel: host ? translate(this.deps.locale(), "be_alerts.builtInLabel") : registration.pluginLabel,
+      reasoning: host ? translate(this.deps.locale(), "be_alerts.reasoning") : registration.reasoning,
+      declaration: kind,
+      choice: this.deps.settings.get().kinds[kindKey]!,
+      blockedByPredecessor: blocked ? predecessor.pluginId : null,
+    });
+  }
+
+  async listKinds(): Promise<AlertKindRow[]> {
+    await this.loaded();
+    const rows = await Promise.all([...this.registrations].map(async ([pluginId, pending]) => {
+      const registration = await pending;
+      return Promise.all([...registration.kinds.values()].map((kind) => this.kindRow(pluginId, registration, kind)));
+    }));
+    return rows.flat();
+  }
+
+  /** Calling setKind, including an empty patch, acknowledges the current declaration and clears its flags. */
+  async setKind(kindKey: unknown, patch: unknown): Promise<SetAlertKindResult> {
+    if (!isAlertKindKey(kindKey) || !isAlertKindPatch(patch)) return { ok: false, error: "invalid-arguments" };
+    const [pluginId, kindId] = kindKey.split(":") as [string, string];
+    const pending = this.registrations.get(pluginId);
+    if (!pending) return { ok: false, error: "kind-not-registered" };
+    const registration = await pending;
+    const kind = registration.kinds.get(kindId);
+    if (!kind) return { ok: false, error: "kind-not-registered" };
+    if (patch.osNotification === true && !kind.osNotification) return { ok: false, error: "invalid-arguments" };
+    const result = await this.mutate(async (): Promise<SetAlertKindResult> => {
+      // An uninstall or update while this call waited must not consent to a stale declaration.
+      if (this.registrations.get(pluginId) !== pending) return { ok: false, error: "kind-not-registered" };
+      const settings = this.deps.settings.get();
+      const existing = settings.kinds[kindKey]!;
+      const { repaired: _repaired, escalated: _escalated, ...choice } = existing;
+      await this.deps.settings.set({
+        ...settings,
+        kinds: {
+          ...settings.kinds,
+          [kindKey]: { ...choice, ...patch, visibility: kind.visibility, seenByUser: true },
+        },
+      });
+      return this.kindRow(pluginId, registration, kind);
+    });
+    if (!("error" in result)) this.deps.kindsChanged?.();
+    return result;
+  }
+
+  async setOsNotificationsEnabled(enabled: unknown): Promise<SetAlertOsNotificationsResult> {
+    if (typeof enabled !== "boolean") return { ok: false, error: "invalid-arguments" };
+    await this.loaded();
+    await this.mutate(() => this.deps.settings.set({ ...this.deps.settings.get(), osNotificationsEnabled: enabled }));
+    this.deps.kindsChanged?.();
+    return { osNotificationsEnabled: enabled };
   }
 
   async raise(pluginId: string, input: AlertInput): Promise<AlertResult> {
@@ -329,7 +408,7 @@ export class AlertsService {
   }
 
   /** Every staged card, for a window that appeared or reloaded after the alert was raised. */
-  openCards(): AlertCard[] {
+  listOpen(): AlertCard[] {
     return [...this.cards.values()];
   }
 
@@ -353,6 +432,7 @@ export class AlertsService {
       if (next) await this.deps.settings.set(next);
       await this.migration.run();
     });
+    this.deps.kindsChanged?.();
   }
 
   /** End every open alert past its lifetime. */
@@ -387,7 +467,7 @@ export class AlertsService {
       summary: rendered.summary,
       running: false,
       primaryActionLabel: rendered.actionLabel ?? t("be_pluginRuntime.overlayPrimaryActionLabel"),
-      pendingPrompt: formatPluginPendingPrompt(rendered.prompt, `overlay:${pluginId}--${kindId}`),
+      pendingPrompt: formatPluginPendingPrompt(rendered.prompt, `overlay:${pluginId === ALERT_HOST_PLUGIN_ID ? ALERT_RESERVED_PACKAGE_ID : pluginId}--${kindId}`),
       priority,
       createdAt: new Date(now).toISOString(),
     };

@@ -20,15 +20,19 @@ export const OVERLAY_V1 = {
 } as const;
 
 /**
- * Plugin alert cards (renderer → main). The cards themselves travel on
- * {@link OVERLAY_V1}; these report what the user did with one and let a
- * window that appeared late pull the cards already staged.
+ * Host-renderer alert Settings and card lifecycle. The cards travel on
+ * {@link OVERLAY_V1}; a window that appeared late can pull staged cards.
  */
 export const ALERTS = {
+  listKinds: "ave:alerts:list-kinds",
+  setKind: "ave:alerts:set-kind",
+  setOsNotificationsEnabled: "ave:alerts:set-os-notifications-enabled",
+  /** main → renderer: re-read registered kinds and alert settings. */
+  kindsChanged: "ave:alerts:kinds-changed",
   /** invoke `(alertId, "accepted" | "dismissed")`: the identity stays closed for its lifetime. */
   cardClosed: "ave:alerts:card-closed",
   /** invoke → every staged alert card. */
-  openCards: "ave:alerts:open-cards",
+  listOpen: "ave:alerts:list-open",
 } as const;
 
 export const ROUTINES = {

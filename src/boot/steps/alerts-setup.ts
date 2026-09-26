@@ -11,7 +11,7 @@ import { AlertsService } from "../../alerts/service.js";
 import { predecessorBlocks } from "../../alerts/gate.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { revocationRegistry } from "../../plugins/revocation/revocation-registry.js";
-import { OVERLAY_V1 } from "../../shared/ipc-channels.js";
+import { ALERTS, OVERLAY_V1 } from "../../shared/ipc-channels.js";
 import { getAveAppVersion } from "../../shared/app-version.js";
 import { getLocale } from "../../i18n/index.js";
 import { emitEvent, onEvent } from "../types.js";
@@ -120,8 +120,16 @@ export async function setupAlerts(ctx: BootContext): Promise<() => void> {
     notifications: notificationService,
     emit: emitEvent,
     audit: (entry) => bootAuditLogger.log(entry),
+    kindsChanged: () => {
+      try {
+        liveWindow()?.webContents.send(ALERTS.kindsChanged);
+      } catch (err) {
+        log.warn(`alert settings notification failed: ${errorMessage(err)}`);
+      }
+    },
   });
   await service.load();
+  await service.registerHostKinds();
   const handleMigrationChanged = () => {
     void service.reconcileMigration().catch((err: unknown) => log.warn(`alert inheritance failed: ${errorMessage(err)}`));
   };
