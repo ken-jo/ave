@@ -5,11 +5,11 @@
  * reaches it through `plugin.uninstalled`.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setupAlerts } from "../alerts-setup.js";
-import { emitEvent } from "../../types.js";
+import { emitEvent, onEvent } from "../../types.js";
 import { revocationRegistry } from "../../../plugins/revocation/revocation-registry.js";
 import { OVERLAY_V1 } from "../../../shared/ipc-channels.js";
 import type { AlertSettings } from "../../../shared/alerts-types.js";
@@ -80,6 +80,49 @@ afterEach(async () => {
 });
 
 describe("setupAlerts", () => {
+  it.each(["disable", "uninstall"] as const)("finishes every revoked card after a failed dismissal on a %s feed", async (action) => {
+    const { ctx, send } = context();
+    disposers.push(await setupAlerts(ctx));
+    const withdrawn: unknown[] = [];
+    disposers.push(onEvent("alert.withdrawn", (event) => { withdrawn.push(event); }));
+    await ctx.alertsService.register("fixturemail", {
+      alerts: { reasoning: "Mail.", kinds: [kinds[0], { ...kinds[0], id: "extra" }] },
+    } as never);
+    await ctx.alertsService.register("safeplugin", { alerts: { reasoning: "Mail.", kinds } } as never);
+    const first = await ctx.alertsService.raise("fixturemail", { kind: "reply", key: "one" });
+    const second = await ctx.alertsService.raise("fixturemail", { kind: "extra", key: "two" });
+    const safe = await ctx.alertsService.raise("safeplugin", { kind: "reply", key: "safe" });
+    expect([first.status, second.status, safe.status]).toEqual(["raised", "raised", "raised"]);
+    const ids = [first, second].map((result) => (result as { alertId: string }).alertId);
+    const safeId = (safe as { alertId: string }).alertId;
+    installed = ["fixturemail", "safeplugin"].map((name) => ({ name, version: "1.0.0", sourceId: "ave", originCommit: null }));
+    loaded = ["fixturemail", "safeplugin"];
+    send.mockClear();
+    send.mockImplementationOnce(() => { throw new Error("window destroyed during dismissal"); });
+    const rule = { sourceId: "ave", kind: "plugin" as const, name: "fixturemail", versions: "*", reason: "revoked", at: "2026-09-01", action };
+    revocationRegistry.replace([rule]);
+    await vi.waitFor(() => expect(ctx.alertsService.openCards().map((card) => card.source.alertId)).toEqual([safeId]));
+    expect(send.mock.calls).toEqual(ids.map((id) => [OVERLAY_V1.dismiss, `alert:${id}`]));
+    expect(withdrawn).toEqual(ids.map((alertId, index) => ({
+      pluginId: "fixturemail", kind: index === 0 ? "reply" : "extra", alertId, reason: "withdrawn",
+    })));
+    await ctx.alertsService.flush();
+    const persisted = JSON.parse(readFileSync(join(home, "alerts", "open.json"), "utf8"));
+    expect(persisted.open.map((entry: { alertId: string }) => entry.alertId)).toEqual([safeId]);
+    expect(persisted.closed).toEqual([]);
+    expect(settings.kinds["fixturemail:reply"]).toMatchObject({ enabled: true });
+    expect(settings.kinds["fixturemail:reply"]?.absentSinceAppVersion).toBeUndefined();
+
+    expect(revocationRegistry.replace([rule])).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await ctx.alertsService.pluginUninstalled("fixturemail");
+    expect(ctx.alertsService.openCards().map((card) => card.source.alertId)).toEqual([safeId]);
+    expect(withdrawn).toHaveLength(2);
+    expect(send).toHaveBeenCalledTimes(2);
+    expect((await ctx.alertsService.raise("safeplugin", { kind: "reply", key: "safe" })).status).toBe("refreshed");
+    await ctx.alertsService.flush();
+  });
+
   it("keeps a queued acceptance when the live window send throws once", async () => {
     const { ctx, send } = context();
     disposers.push(await setupAlerts(ctx));

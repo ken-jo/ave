@@ -27,7 +27,13 @@ const ALERT: OverlayItem = {
   createdAt: "2026-09-26T00:00:00.000Z",
 };
 
-function setup(staged: OverlayItem[] = []) {
+function pendingSnapshot() {
+  let resolve!: (cards: OverlayItem[]) => void;
+  const promise = new Promise<OverlayItem[]>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+function setup(staged: OverlayItem[] | Promise<OverlayItem[]> = []) {
   let showOverlay: ((item: OverlayItem) => void) | undefined;
   let dismissOverlay: ((id: string) => void) | undefined;
   const api = {
@@ -56,14 +62,14 @@ function setup(staged: OverlayItem[] = []) {
     read: vi.fn((id: string) => (id === TILE ? { ask, insertImportedTriggerEntry } : undefined)),
     readTiles: vi.fn(() => []),
   };
-  const hook = renderHook(() =>
+  const hook = renderHook(({ activeApi }) =>
     useRoutineOverlay({
-      api: api as never,
+      api: activeApi as never,
       t: ((key: string) => key) as never,
       locale: "en",
       registry: registry as never,
       onNavigateToSettings: vi.fn(),
-    }));
+    }), { initialProps: { activeApi: api } });
   const queueDismiss = vi.fn();
   hook.result.current.dismissRef.current = queueDismiss;
   const queueAdd = vi.fn();
@@ -75,12 +81,79 @@ function setup(staged: OverlayItem[] = []) {
     ask,
     insertImportedTriggerEntry,
     queueDismiss,
+    reconnect: (snapshot: Promise<OverlayItem[]>) => hook.rerender({ activeApi: {
+      ...api, alerts: { ...api.alerts, openCards: vi.fn(async () => snapshot) },
+    } }),
     show: (item: OverlayItem) => act(() => showOverlay?.(item)),
     mainDismiss: (id: string) => act(() => dismissOverlay?.(id)),
   };
 }
 
 describe("useRoutineOverlay — alert cards", () => {
+  it("does not resurrect a withdrawn card when an older snapshot arrives afterwards", async () => {
+    const snapshot = pendingSnapshot();
+    const s = setup(snapshot.promise);
+    s.mainDismiss(ALERT.id);
+    const untouched = { ...ALERT, id: "alert:other", source: { ...ALERT.source, alertId: "other" } } as OverlayItem;
+    await act(async () => { snapshot.resolve([ALERT, untouched]); await snapshot.promise; });
+    expect(s.queueAdd.mock.calls).toEqual([[untouched]]);
+    expect(s.queueDismiss).toHaveBeenCalledWith(ALERT.id);
+    await act(async () => { await s.hook.result.current.handlePluginPrimaryAction(ALERT.id, TILE); });
+    expect(s.ask).not.toHaveBeenCalled();
+    expect(s.insertImportedTriggerEntry).not.toHaveBeenCalled();
+  });
+
+  it("keeps a live refresh instead of overwriting it with an older snapshot", async () => {
+    const snapshot = pendingSnapshot();
+    const s = setup(snapshot.promise);
+    const refreshed = { ...ALERT, summary: "Updated summary", pendingPrompt: "Updated prompt" };
+    s.show(refreshed);
+    await act(async () => { snapshot.resolve([ALERT]); await snapshot.promise; });
+    expect(s.queueAdd.mock.calls).toEqual([[refreshed]]);
+    await act(async () => { await s.hook.result.current.handlePluginPrimaryAction(ALERT.id, TILE); });
+    expect(s.ask).toHaveBeenCalledWith(refreshed.pendingPrompt, "trigger-import");
+  });
+
+  it.each(["accepted", "dismissed"] as const)("does not restore a card the user %s while a new snapshot was pending", async (reason) => {
+    const s = setup([ALERT]);
+    await act(async () => { await Promise.resolve(); });
+    s.queueAdd.mockClear();
+    const snapshot = pendingSnapshot();
+    s.reconnect(snapshot.promise);
+    await act(async () => {
+      if (reason === "accepted") await s.hook.result.current.handlePluginPrimaryAction(ALERT.id, TILE);
+      else s.hook.result.current.handleAlertDismiss(ALERT.id);
+    });
+    expect(s.api.alerts.cardClosed).toHaveBeenCalledWith("abc", reason);
+    s.ask.mockClear();
+    s.insertImportedTriggerEntry.mockClear();
+    await act(async () => { snapshot.resolve([ALERT]); await snapshot.promise; });
+    expect(s.queueAdd).not.toHaveBeenCalled();
+    await act(async () => { await s.hook.result.current.handlePluginPrimaryAction(ALERT.id, TILE); });
+    expect(s.ask).not.toHaveBeenCalled();
+    expect(s.insertImportedTriggerEntry).not.toHaveBeenCalled();
+  });
+
+  it("allows a fresh show after withdrawal without reviving the withdrawn snapshot", async () => {
+    const snapshot = pendingSnapshot();
+    const s = setup(snapshot.promise);
+    s.mainDismiss(ALERT.id);
+    const reopened = { ...ALERT, pendingPrompt: "Reopened prompt" };
+    s.show(reopened);
+    await act(async () => { snapshot.resolve([ALERT]); await snapshot.promise; });
+    expect(s.queueAdd.mock.calls).toEqual([[reopened]]);
+    await act(async () => { await s.hook.result.current.handlePluginPrimaryAction(ALERT.id, TILE); });
+    expect(s.ask).toHaveBeenCalledWith(reopened.pendingPrompt, "trigger-import");
+  });
+
+  it("ignores a snapshot from a disposed subscription", async () => {
+    const snapshot = pendingSnapshot();
+    const s = setup(snapshot.promise);
+    s.hook.unmount();
+    await act(async () => { snapshot.resolve([ALERT]); await snapshot.promise; });
+    expect(s.queueAdd).not.toHaveBeenCalled();
+  });
+
   it("inserts a confirmed alert as the plugin's imported trigger and starts the tile's turn", async () => {
     const s = setup();
     s.show(ALERT);

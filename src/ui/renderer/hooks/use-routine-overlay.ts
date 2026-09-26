@@ -157,6 +157,8 @@ export function useRoutineOverlay({
   // handlePluginPrimaryAction can look up pendingPrompt by id without needing
   // to reach into OverlayContext (App.tsx is the parent of OverlayContextProvider).
   const overlayItemsRef = useRef<Map<string, OverlayItem>>(new Map());
+  /** Ids changed while the initial alert snapshot is pending. */
+  const alertSnapshotChangesRef = useRef<Set<string> | null>(null);
 
   // Overlay IPC subscriptions: main pushes plugin OverlayItems via OVERLAY_V1.show.
   useEffect(() => {
@@ -167,27 +169,40 @@ export function useRoutineOverlay({
       overlayItemsRef.current.set(item.id, item);
       addFireRef.current?.(item);
     };
-    const unsubShow = api.onOverlayShow(show);
+    const changedDuringPull = new Set<string>();
+    alertSnapshotChangesRef.current = changedDuringPull;
+    const finishPull = () => {
+      if (alertSnapshotChangesRef.current === changedDuringPull) alertSnapshotChangesRef.current = null;
+    };
+    const unsubShow = api.onOverlayShow((item) => {
+      alertSnapshotChangesRef.current?.add(item.id);
+      show(item);
+    });
     // Alert cards staged before this window was listening — at boot, or
-    // before a reload. Pulled after subscribing, so none falls between; a card
-    // that arrives both ways replaces itself by its alert id.
+    // before a reload. Subscribe to both changes first. A snapshot response
+    // can arrive after a newer push or user action, so those ids take precedence.
     let pulled = true;
-    if (api.alerts) {
-      void api.alerts.openCards().then((cards) => {
-        if (pulled) for (const card of cards) show(card);
-      }).catch((err) => {
-        console.warn("[ave] alerts openCards failed:", errorMessage(err));
-      });
-    }
     const unsubDismiss = typeof api.onOverlayDismiss === "function"
       ? api.onOverlayDismiss((id) => {
           // Main withdrew the card: it leaves the queue as well as the lookup,
           // so no one can confirm a card whose prompt main no longer stands by.
+          alertSnapshotChangesRef.current?.add(id);
           overlayItemsRef.current.delete(id);
           dismissRef.current?.(id);
         })
       : () => {};
-    return () => { pulled = false; unsubShow(); unsubDismiss(); };
+    if (api.alerts) {
+      void api.alerts.openCards().then((cards) => {
+        if (pulled) for (const card of cards) {
+          if (!changedDuringPull.has(card.id)) show(card);
+        }
+      }).catch((err) => {
+        console.warn("[ave] alerts openCards failed:", errorMessage(err));
+      }).finally(finishPull);
+    } else {
+      finishPull();
+    }
+    return () => { pulled = false; finishPull(); unsubShow(); unsubDismiss(); };
   }, [api]);
 
   // Insertion-overlay primary action handler (user confirm → main chat insert).
@@ -238,6 +253,7 @@ export function useRoutineOverlay({
       }
 
       // Clean up lookup ref
+      alertSnapshotChangesRef.current?.add(overlayItemId);
       overlayItemsRef.current.delete(overlayItemId);
 
       // Insert as imported_trigger entry — staged provenance preserved, NOT a plain
@@ -267,6 +283,7 @@ export function useRoutineOverlay({
   const handleAlertDismiss = useCallback(
     (overlayItemId: string) => {
       const item = overlayItemsRef.current.get(overlayItemId);
+      alertSnapshotChangesRef.current?.add(overlayItemId);
       overlayItemsRef.current.delete(overlayItemId);
       if (item?.source.kind === "alert") reportAlertClosed(item.source.alertId, "dismissed");
     },
