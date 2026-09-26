@@ -1008,6 +1008,7 @@ export type AveApi = {
   onOverlayDismiss: (handler: (id: string) => void) => () => void;
   /** Plugin alert cards: report the user's answer, and pull the cards staged before this window listened. */
   alerts?: {
+    removePredecessor: (kindKey: string) => Promise<import("../../shared/alerts-types.js").RemoveAlertPredecessorResult>;
     listKinds: () => Promise<import("../../shared/alerts-types.js").AlertKindRow[]>;
     setKind: (kindKey: string, patch: import("../../shared/alerts-types.js").AlertKindPatch) => Promise<import("../../shared/alerts-types.js").SetAlertKindResult>;
     setOsNotificationsEnabled: (enabled: boolean) => Promise<import("../../shared/alerts-types.js").SetAlertOsNotificationsResult>;

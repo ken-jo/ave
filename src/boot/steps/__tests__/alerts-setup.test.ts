@@ -259,7 +259,7 @@ describe("setupAlerts", () => {
     const rule = { sourceId: "ave", kind: "plugin" as const, name: "fixturemail", versions: "*", reason: "revoked", at: "2026-09-01", action };
     revocationRegistry.replace([rule]);
     await vi.waitFor(() => expect(ctx.alertsService.listOpen().map((card) => card.source.alertId)).toEqual([safeId]));
-    expect(send.mock.calls).toEqual(ids.map((id) => [OVERLAY_V1.dismiss, `alert:${id}`]));
+    expect(send.mock.calls).toEqual([...ids.map((id) => [OVERLAY_V1.dismiss, `alert:${id}`]), [ALERTS.kindsChanged]]);
     expect(withdrawn).toEqual(ids.map((alertId, index) => ({
       pluginId: "fixturemail", kind: index === 0 ? "reply" : "extra", alertId, reason: "withdrawn",
     })));

@@ -1305,6 +1305,8 @@ export function buildInternalApiSurface() {
   // Plugin alert cards: what the user did with one, and the cards staged
   // before this window was listening.
   alerts: {
+    removePredecessor: async (kindKey: string) =>
+      ipcRenderer.invoke(ALERTS.removePredecessor, kindKey) as Promise<import("../shared/alerts-types.js").RemoveAlertPredecessorResult>,
     listKinds: async () =>
       ipcRenderer.invoke(ALERTS.listKinds) as Promise<import("../shared/alerts-types.js").AlertKindRow[]>,
     setKind: async (kindKey: string, patch: import("../shared/alerts-types.js").AlertKindPatch) =>

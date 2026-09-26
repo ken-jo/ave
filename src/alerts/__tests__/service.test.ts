@@ -224,6 +224,15 @@ describe("grant and shape", () => {
 });
 
 describe("predecessor and toggle", () => {
+  it("refreshes predecessor presentation when the revocation feed changes", async () => {
+    const h = await registered();
+    h.changed.mockClear();
+    h.service.setRevokedPlugins(["retiredfixture"]);
+    expect(h.changed).toHaveBeenCalledOnce();
+    h.service.setRevokedPlugins([]);
+    expect(h.changed).toHaveBeenCalledTimes(2);
+  });
+
   it("refuses a raise revoked while predecessor lookup is pending, and allows a later unrevoked raise", async () => {
     const h = await registered();
     let release!: (value: boolean) => void;

@@ -31,6 +31,10 @@ import { useTranslation } from "../../../i18n/react.js";
 import { isReinstallFixableFailureKind } from "../../../shared/plugin-install-failure.js";
 import { errorMessage } from "../../../shared/error-message.js";
 
+import { useAlertKinds } from "../hooks/use-alert-kinds.js";
+import { PluginAlertsSection } from "./PluginAlertsSection.js";
+import { ALERT_HOST_PLUGIN_ID } from "../../../shared/alerts-types.js";
+
 type KV = { key: string; value: string };
 type BannerType = "error" | "success" | "warning";
 
@@ -125,7 +129,9 @@ function entriesToConfig(entries: KV[]): Record<string, unknown> {
   return sanitizePluginConfig(out);
 }
 
-export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
+export function PluginConfigTab({ api, initialPluginId }: { api?: AveApi; initialPluginId?: string | null } = {}) {
+  const alertsApi = api ?? (() => { try { return getApi(); } catch { return null; } })();
+  const alerts = useAlertKinds(alertsApi);
   const { t } = useTranslation();
   // Pull the dialog-wide "저장되었습니다" notifier so every successful
   // plugin-config write — manual key/value editor save, schema-form save,
@@ -134,6 +140,9 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
   const notifySaved = useNotifySaved();
   const [plugins, setPlugins] = useState<PluginCardSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  useEffect(() => { if (initialPluginId) setSelectedId(initialPluginId); }, [initialPluginId]);
+  const unseen = new Map<string, number>();
+  for (const row of alerts.rows) { if (!row.choice.seenByUser) unseen.set(row.pluginId, (unseen.get(row.pluginId) ?? 0) + 1); }
   const [uninstallTarget, setUninstallTarget] = useState<PluginCardSummary | null>(null);
   // Tools list is collapsed by default — plugins that declare many tools
   // would otherwise dominate the detail panel. Reset to collapsed on
@@ -657,6 +666,7 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
                   >
                     <div className="flex items-center gap-1 min-w-0">
                       <span className="min-w-0 line-clamp-1">{p.name}</span>
+                      {!!unseen.get(p.id) && <span data-testid={`alert-unseen:${p.id}`} aria-label={t("alerts.unseenCount", { count: unseen.get(p.id)! })} className="shrink-0 rounded-full bg-primary px-1.5 text-[10px] text-primary-foreground">{unseen.get(p.id)}</span>}
                     </div>
                     <div className="flex items-center gap-1 mt-0.5">
                       {p.loadStatus === "loaded" && (
@@ -1169,6 +1179,7 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
                     </div>
                   </>
                 )}
+                {alertsApi?.alerts && <PluginAlertsSection pluginId={selectedPlugin.id} rows={alerts.rows} api={alertsApi.alerts} osEnabled={alerts.osEnabled} refresh={alerts.refresh} />}
               </>
             ) : (
               <p className="text-xs text-muted-foreground">{t("pluginConfigTab.selectPluginHint")}</p>
@@ -1176,6 +1187,8 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
           </div>
         </div>
       )}
+      {alerts.failed && <div role="alert" className="text-xs text-destructive">{t("alerts.loadFailed")} <Button size="sm" variant="outline" onClick={() => void alerts.refresh()}>{t("alerts.retry")}</Button></div>}
+      {alertsApi?.alerts && alerts.loaded && <PluginAlertsSection pluginId={ALERT_HOST_PLUGIN_ID} rows={alerts.rows} api={alertsApi.alerts} osEnabled={alerts.osEnabled} refresh={alerts.refresh} />}
       {/* Performance section — the former standalone plugin-perf tab was
           merged here ("성능만 병합"); it renders as a section below the
           config content and pulls its own perf stats via the api. */}

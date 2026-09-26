@@ -236,6 +236,7 @@ export class AlertsService {
       declaration: kind,
       choice: this.deps.settings.get().kinds[kindKey]!,
       blockedByPredecessor: blocked ? predecessor.pluginId : null,
+      predecessor: null,
     });
   }
 
@@ -418,6 +419,7 @@ export class AlertsService {
     for (const pluginId of this.revokedPlugins) {
       for (const open of this.store.removePlugin(pluginId)) this.finish(open, "withdrawn");
     }
+    this.deps.kindsChanged?.();
   }
 
   /** An uninstalled plugin's cards go; its choices stay, marked absent, until they age out. */

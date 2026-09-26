@@ -58,6 +58,19 @@ export interface AlertCard {
 /** What the user did to an alert card. */
 export type AlertCardClosedReason = "accepted" | "dismissed";
 
+/** Main computes removal eligibility; the renderer never supplies these facts. */
+export interface AlertPredecessorState {
+  pluginId: string;
+  label: string;
+  locked: boolean;
+  restartRequired: boolean;
+  removable: boolean;
+}
+
+export type RemoveAlertPredecessorResult =
+  | { ok: true; value: import("./git-marketplace.js").UninstallResultView }
+  | { ok: false; error: "invalid-arguments" | "unauthorized-frame" | "no-alerts-service" | "predecessor-not-removable" | "predecessor-policy-locked" | "predecessor-removal-failed" };
+
 /** A registered kind and the host's current resolution for Settings. */
 export interface AlertKindRow {
   kindKey: string;
@@ -67,6 +80,7 @@ export interface AlertKindRow {
   declaration: AlertKindDeclaration;
   choice: AlertKindChoice;
   blockedByPredecessor: string | null;
+  predecessor: AlertPredecessorState | null;
 }
 
 /** Only user switches are writable; consent metadata is owned by the service. */

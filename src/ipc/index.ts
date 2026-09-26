@@ -156,7 +156,7 @@ export function registerIpcHandlers(
   registerSessionGoalHandlers(deps);
   registerAppHandlers(deps);
   registerWorkBoardHandlers(deps);
-  registerAlertsHandlers(deps);
+  registerAlertsHandlers(deps, gitMarketplace.getService);
   registerAttachHandlers(deps);
   registerPreviewHandlers(deps);
   registerWorkspaceHandlers(deps);

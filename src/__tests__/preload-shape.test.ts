@@ -83,6 +83,8 @@ describe("preload contextBridge world shape lock", () => {
   it("exposes alert Settings and tears down kind-change listeners without forwarding the event object", async () => {
     const alerts = (exposed.get("aveApi") as AveApi).alerts!;
     await alerts.listKinds();
+    await alerts.removePredecessor("fixturemail:reply");
+    expect(mockInvoke).toHaveBeenCalledWith(ALERTS.removePredecessor, "fixturemail:reply");
     await alerts.setKind("@host:due-soon", { enabled: true });
     await alerts.setOsNotificationsEnabled(false);
     await alerts.listOpen();
@@ -245,6 +247,7 @@ describe("preload contextBridge world shape lock", () => {
             "listKinds",
             "listOpen",
             "onKindsChanged",
+            "removePredecessor",
             "setKind",
             "setOsNotificationsEnabled",
           ],
