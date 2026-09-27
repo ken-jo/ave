@@ -2,6 +2,7 @@ export const PLUGIN_INSTALL_FAILURE_KINDS = [
   "manifest-validation-error",
   "incompatible-app-version",
   "incompatible-host-protocol",
+  "process-entry-unsupported",
   "sandbox-grant-outside-ceiling",
   "plugin-revoked",
   "untrusted-manifest-path",
@@ -48,6 +49,7 @@ export function isPluginInstallFailureKind(value: unknown): value is PluginInsta
 const REINSTALL_NOT_FIXABLE_KINDS: ReadonlySet<PluginInstallFailureKind> = new Set([
   "incompatible-app-version",
   "incompatible-host-protocol",
+  "process-entry-unsupported",
   "sandbox-grant-outside-ceiling",
   "plugin-revoked",
 ]);

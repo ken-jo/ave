@@ -101,6 +101,7 @@ import {
   uninstallPluginWithLifecycle,
 } from "../../plugins/uninstall-lifecycle.js";
 import { buildInstallFailureResult } from "../../shared/plugin-install-result.js";
+import { ProcessEntryUnsupportedError, PROCESS_ENTRY_UNSUPPORTED_CODE } from "../../plugins/process-entry-support.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { isPathWithin } from "../../plugins/plugin-storage-containment.js";
 import {
@@ -482,6 +483,9 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
           CHANNELS.plugins.installResult,
           buildInstallFailureResult(pluginId, err, "addPlugin failed"),
         );
+        if (err instanceof ProcessEntryUnsupportedError) {
+          return { ok: false, error: PROCESS_ENTRY_UNSUPPORTED_CODE } as const;
+        }
         throw err;
       }
     });

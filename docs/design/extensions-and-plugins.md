@@ -1610,6 +1610,7 @@ External documentation consulted for this page, all accessed 2026-09-27 (KST):
 
 ## Unverified in this document
 
+- Process-entry extension runtime support remains pending a protocol slice; this app classifies those manifests as extensions and refuses activation until that runtime exists.
 - The file format of the `hooks/` directory in the layout of source 5 (the page names
   the directory and a `hooks/hooks.json` file; the file's shape was not read). The
   importer therefore does not read it; if it is the `hooks.json` shape of §2.3, a later

@@ -594,6 +594,19 @@ describe("SourceSyncer", () => {
     }]);
   });
 
+  it("refuses a direct process extension without classifying it as an agent-plugin", async () => {
+    const { repo, name } = fixture();
+    repo.commit({ "plugin.json": `${JSON.stringify({
+      $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+      name: "process-kit", version: "1.0.0", description: "Process extension",
+      extensions: { "ai.agent-connector.ave": { process: { command: "node" }, tools: [], requires: { minAppVersion: "0.12.0" } } },
+    })}\n` }, "process package");
+    const { registry, syncer } = await setup();
+    await registry.add({ id: "process-src", origin: "direct", url: server.url(name), auth: { kind: "none" } });
+    expectFailed(await syncer.sync("process-src"), "process-entry-unsupported");
+    expect(await syncer.readSnapshot("process-src")).toBeNull();
+  });
+
   it("joins a sync that is already running for the same source", async () => {
     const { repo, name } = fixture();
     repo.commit({ "marketplace.2.json": index("acme", []) }, "first");

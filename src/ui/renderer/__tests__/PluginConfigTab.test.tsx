@@ -442,6 +442,23 @@ describe("PluginConfigTab", () => {
     ).toBeNull();
   });
 
+  it("shows a localized Doctor diagnosis for a process-entry extension", async () => {
+    const broken = {
+      id: "process-kit", name: "Process Kit", description: "Process extension",
+      sampleTools: [], capabilities: [], tools: [], loadStatus: "failed" as const,
+      installFailureKind: "process-entry-unsupported" as const,
+      installFailureMessage: "This app cannot run process-entry extensions yet.",
+    };
+    Object.defineProperty(window, "ave", {
+      value: { plugins: { cards: vi.fn().mockResolvedValue([broken]) }, pluginConfig: { get: mockGet, set: mockSet } },
+      writable: true, configurable: true,
+    });
+    render(<PluginConfigTab />);
+    await waitFor(() => expect(screen.getByText("프로세스 진입점 익스텐션을 실행할 수 없습니다")).toBeInTheDocument());
+    expect(screen.getByText("이 앱은 아직 프로세스 진입점이 있는 익스텐션을 실행할 수 없습니다.")).toBeInTheDocument();
+    expect(screen.getByText(/다시 설치해도 해결되지 않습니다/)).toBeInTheDocument();
+  });
+
   it("shows an unresolved warning without reinstalling when the app is too old", async () => {
     const broken = {
       id: "meeting",

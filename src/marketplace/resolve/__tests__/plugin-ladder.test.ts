@@ -275,6 +275,25 @@ describe("plugin artifact ladder (design §6.2)", () => {
     server.file(releasePath, null);
   });
 
+  it("stops a process extension at the staged manifest before trying another install rung", async () => {
+    const { repo, name } = fixture();
+    const zip = new AdmZip();
+    zip.addFile("plugin.json", Buffer.from(JSON.stringify({
+      name: "alpha", version: "1.0.0", description: "Process extension",
+      extensions: { "ai.agent-connector.ave": { process: { command: "node" }, tools: [], ...authority() } },
+    })));
+    const release = zip.toBuffer();
+    server.file(releasePath, release);
+    market(repo, { release: { repo: "acme/alpha", sha256: sha(release) } }, {
+      "plugins/alpha/plugin.json": pluginJson("alpha", "1.0.0"),
+      "plugins/alpha/dist/index.js": ENTRY_JS,
+    });
+    const { gate, syncer } = await open(name);
+    const error = await ladder(syncer, gate, planPluginInstall(await row(syncer))).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ code: "process-entry-unsupported", rungs: [{ rung: "release", outcome: "failed", code: "process-entry-unsupported" }] });
+    server.file(releasePath, null);
+  });
+
   it.each([
     ["capabilities", { capabilities: [] }],
     ["networkAccess", { networkAccess: undefined }],

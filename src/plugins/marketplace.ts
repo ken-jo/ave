@@ -50,6 +50,7 @@ import {
 } from "./plugin-removal-transaction.js";
 import type { PluginInstallReceipt } from "./plugin-install-receipt.js";
 import { flattenAgentPluginsManifest } from "./public-contract.js";
+import { assertProcessEntrySupported } from "./process-entry-support.js";
 import type { PluginRegistryEntry } from "./types.js";
 import { createLogger } from "../lib/logger.js";
 import { materializePluginContributions } from "./plugin-contributions.js";
@@ -825,6 +826,7 @@ export class PluginMarketplaceService {
             }
             await opts.assertManifest(manifestFile, pluginRoot);
             preparedDocument = JSON.parse(manifestRaw) as unknown;
+            assertProcessEntrySupported(preparedDocument);
             preparedManifest = flattenAgentPluginsManifest(preparedDocument);
             preparedReceiptRaw = await opts.prepareReceipt(pluginRoot, [...files]);
             return opts.activatePreparedArtifact({
@@ -967,7 +969,6 @@ export class PluginMarketplaceService {
     } catch {
       throw new Error(`[installLocal] could not read plugin.json in ${sourcePath}`);
     }
-
     const pluginId = typeof manifest.id === "string" ? manifest.id.trim() : "";
     if (!pluginId) {
       throw new Error("[installLocal] plugin.json must have a non-empty 'id' field");
@@ -1021,6 +1022,7 @@ export class PluginMarketplaceService {
     } catch {
       throw new Error(`[installLocal] could not read plugin.json in ${sourcePath}`);
     }
+    assertProcessEntrySupported(manifestDocument);
 
     const pluginId = typeof manifest.id === "string" ? manifest.id.trim() : "";
     if (!pluginId) {

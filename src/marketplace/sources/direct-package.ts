@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { parseFrontmatterBlock } from "../../main/skill-store.js";
 import { AVE_EXTENSION_NAMESPACE } from "../../plugins/public-contract.js";
 import { validatePluginManifestShape } from "../../plugins/agent-plugin-manifest.js";
+import { hasProcessEntry, PROCESS_ENTRY_UNSUPPORTED_CODE, PROCESS_ENTRY_UNSUPPORTED_MESSAGE } from "../../plugins/process-entry-support.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
 import { isPackageName, type PackageDescriptor } from "../catalog/types.js";
 import { validateDescriptorText, validateSynthesizedDescriptor } from "../catalog/validate.js";
@@ -113,6 +114,9 @@ async function fromPluginManifest(source: string, input: DirectReadInput): Promi
   }
   if (!isRecord(manifest) || typeof manifest.name !== "string" || typeof manifest.version !== "string") {
     return { ok: false, code: "SOURCE_INDEX_INVALID", error: "plugin.json needs a name and a version" };
+  }
+  if (hasProcessEntry(manifest)) {
+    return { ok: false, code: PROCESS_ENTRY_UNSUPPORTED_CODE, error: PROCESS_ENTRY_UNSUPPORTED_MESSAGE };
   }
   const ave = isRecord(manifest.extensions) ? manifest.extensions[AVE_EXTENSION_NAMESPACE] : undefined;
   if (!isRecord(ave) || (!Object.hasOwn(ave, "entry") && !Object.hasOwn(ave, "process"))) {
