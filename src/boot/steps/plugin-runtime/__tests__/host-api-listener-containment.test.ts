@@ -1,4 +1,4 @@
-import { createBootHostFixture } from "../../../../__tests__/support/host-runtime.js";
+import { createBootHostFixture, stationaryLeaseState } from "../../../../__tests__/support/host-runtime.js";
 /**
  * What happens to a `config.onChange` listener that THROWS, on the real host.
  *
@@ -98,7 +98,8 @@ function hostApiUnderTest(pluginDataDir: string): {
     hostClassifiesRiskEnabled: () => true,
     pluginShutdownHandlers: [],
     readAppPreference: () => undefined,
-    settingsService: { getPluginConfig: () => ({}) },
+    settingsService: {
+        ...stationaryLeaseState, getPluginConfig: () => ({}) },
     bootAuditLogger: { log: () => undefined },
     pluginRuntimeAuditLog: () => undefined,
     networkFetch: (() => { throw new Error("not used"); }) as unknown as typeof fetch,

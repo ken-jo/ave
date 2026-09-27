@@ -35,6 +35,7 @@ import type {
 } from "../plugin-host-generation.js";
 import type { ActivePluginGeneration } from "../plugin-generation-coordinator.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
+import { HOST_PROTOCOL_VERSIONS_SERVED } from "../isolation/host-api-wire.js";
 
 type GenerationCommitScope = <T>(operation: () => Promise<T>) => Promise<T>;
 
@@ -377,6 +378,20 @@ export function agentPluginsDocument(
   }
   top.extensions = { [AVE_EXTENSION_NAMESPACE]: ave };
   return top;
+}
+
+/** Backfill the served protocol for runtime fixtures while preserving explicit overrides. */
+export function servedAgentPluginsDocument(
+  manifest: Readonly<Record<string, unknown>> | PluginManifest,
+): Record<string, unknown> {
+  const requires = (manifest as Record<string, unknown>).requires;
+  if (requires !== undefined && (typeof requires !== "object" || requires === null || Array.isArray(requires))) {
+    return agentPluginsDocument(manifest);
+  }
+  return agentPluginsDocument({
+    ...manifest,
+    requires: { hostProtocol: HOST_PROTOCOL_VERSIONS_SERVED[0], ...requires },
+  });
 }
 
 /**

@@ -11,6 +11,13 @@ export const unavailableSecretEncryption: SecretEncryption = {
   decryptString: () => { throw new Error("test-encryption-unavailable"); },
 };
 
+/** Settings state with no writes for host tests that do not exercise invalidation. */
+export const stationaryLeaseState = {
+  getProviderConfigRevision: () => 0,
+  getSecretGeneration: (_key: string) => 0,
+  onLeaseStateChanged: (_listener: () => void) => () => {},
+};
+
 export function createBootHostFixture(overrides: Partial<BootHost> = {}): BootHost {
   const fetchUnavailable: typeof fetch = async () => { throw new Error("test-network-unavailable"); };
   return {

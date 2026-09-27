@@ -3,7 +3,8 @@
  *
  * Two concerns:
  *  1. `KNOWN_CAPABILITIES` — the closed set of capability strings the host
- *     ENFORCES at runtime (external-auth-consumer, host:overlay). The manifest
+ *     ENFORCES at runtime (external-auth-consumer, host:overlay,
+ *     secrets:raw-api-key). The manifest
  *     schema accepts any format-valid string (NOT an enum), so legacy/unknown
  *     capability strings on already-installed manifests still validate and load
  *     as harmless no-ops (see the reduction note on KNOWN_CAPABILITY_IDS below).
@@ -16,8 +17,8 @@
 /**
  * The closed set of capability strings the host ENFORCES at runtime.
  *
- * Capabilities reduction (Ph1/Ph2) narrowed this from a 12-string vocabulary to
- * the two the host actually gates on:
+ * Capabilities reduction removed unused and inferred entries from the former
+ * vocabulary. Credential export later added a distinct raw-secret gate:
  *  - 6 DEAD strings (lyra-mail-consumer, background-watcher, document-indexer,
  *    lifecycle-observer, routine-provider, worker-client) have zero read sites
  *    and were removed. They stay valid free-form manifest declarations, so an
