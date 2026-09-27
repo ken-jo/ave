@@ -23,6 +23,9 @@ import type { AgentSpawnEvent } from "../shared/subagent-events.js";
 import { createSkillLoadTool, type SkillLoadEvent, type SkillLoadToolDeps } from "../tools/skill-load.js";
 import { createSkillListTool } from "../tools/skill-list.js";
 import { createSkillReadTool } from "../tools/skill-read.js";
+import { createPluginStudioTools } from "../tools/plugin-studio.js";
+import { PluginStudioStore } from "../studio/store.js";
+import type { McpServerConfigDto } from "../mcp/types.js";
 import {
   createMcpResourceListTool,
   createMcpResourceReadTool,
@@ -40,6 +43,7 @@ import type { SkillStore } from "../main/skill-store.js";
 import type { SkillOverlay } from "../main/skill-overlay.js";
 import type { SkillApprovalsStore } from "../main/skill-approvals-store.js";
 import type { AgentProfileStore } from "../main/agent-profile-store.js";
+import type { PersonaPromptStore } from "../main/persona-prompt-store.js";
 import type { ApprovalGate } from "../permissions/approval-gate.js";
 import { IdleSchedulerService, type PowerMonitorLike } from "../main/idle-scheduler.js";
 import { createLogger } from "../lib/logger.js";
@@ -92,6 +96,7 @@ export interface WorkflowToolDeps {
   getAgentSendRuntime?: () => AgentSendRuntime | undefined;
   skillStore?: SkillStore;
   agentProfileStore?: AgentProfileStore;
+  personaPromptStore?: PersonaPromptStore;
   /** C2(c): per-session skill overlay registry. */
   skillOverlay?: SkillOverlay;
   /** C2(d): persistent skill-approval allowlist. */
@@ -122,6 +127,8 @@ export interface WorkflowToolDeps {
    * surface cannot reach `callTool`.
    */
   getMcpResourceAccess?: McpResourceAccessResolver;
+  getStudioMcpConfigs?: () => Promise<McpServerConfigDto[]>;
+  getStudioConnectorSummary?: (serverId: string) => Promise<{ digest: string; argsCount: number; envCount: number }>;
 }
 
 export function registerBuiltinTools(
@@ -131,6 +138,9 @@ export function registerBuiltinTools(
 ): void {
   const { networkFetch, singleHopNetworkFetch } = workflowDeps;
   const builtins: Tool[] = [
+    ...createPluginStudioTools(new PluginStudioStore(workflowDeps.getStudioConnectorSummary), { skillStore: workflowDeps.skillStore,
+      agentProfileStore: workflowDeps.agentProfileStore, personaPromptStore: workflowDeps.personaPromptStore,
+      routinesStore: workflowDeps.routinesStore, getMcpConfigs: workflowDeps.getStudioMcpConfigs }),
     createWebSearchTool(settingsService, networkFetch),
     // web_fetch guards every hop of a redirect chain, so it needs the transport
     // that returns a hop instead of throwing on it. Handed `net.fetch`, the

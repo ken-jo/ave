@@ -81,7 +81,7 @@ export function parsePackagePrompt(bytes: Buffer, path: string, basename: string
     return match ? [match[1]!] : [];
   });
   if (new Set(names).size !== names.length) fail(path, "duplicate frontmatter field");
-  for (const key of values.keys()) if (!["name", "description", "kind", "argumentHint"].includes(key)) fail(path, `unknown frontmatter field ${key}`);
+  for (const key of values.keys()) if (!["name", "description", "kind", "argumentHint", "ave-origin", "ave-authored-by"].includes(key)) fail(path, `unknown frontmatter field ${key}`);
   const name = requiredString(values.get("name"), path, "name", 63);
   requiredString(values.get("description"), path, "description", 500);
   if (name !== basename || !COMPONENT_NAME.test(name)) fail(path, "name must match the file name");

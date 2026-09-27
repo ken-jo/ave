@@ -325,6 +325,23 @@ export const CHANNELS = {
     deepLink: "marketplace:deep-link", // event main→renderer: a deep link waits in deepLinkTake
     bootInstallsApplied: "marketplace:boot-installs-applied", // event main→renderer: a notice waits in bootInstallsNotice
   },
+  pluginStudio: {
+    availableParts: "ave:plugin-studio:parts:list",
+    listDrafts: "ave:plugin-studio:drafts:list",
+    readDraft: "ave:plugin-studio:drafts:read",
+    writeDraft: "ave:plugin-studio:drafts:write",
+    validateDraft: "ave:plugin-studio:drafts:validate",
+    connectorCopyPreview: "ave:plugin-studio:connector-copy:preview",
+    confirmConnectorCopy: "ave:plugin-studio:connector-copy:confirm",
+    importPackage: "ave:plugin-studio:import",
+    reviewDraft: "ave:plugin-studio:drafts:review",
+    exportDraft: "ave:plugin-studio:export",
+    exportInstalled: "ave:plugin-studio:installed:export",
+    exportToCheckout: "ave:plugin-studio:checkout:write",
+    previewInstallFromFile: "ave:plugin-studio:file:preview",
+    previewInstallDraft: "ave:plugin-studio:drafts:install-preview",
+    installFromFile: "ave:plugin-studio:file:install",
+  },
   // Installed content packages of the git marketplace (blueprint P3): what the
   // settings pickers list and the catalogs of installed languages. Host-renderer only.
   marketplaceContent: {

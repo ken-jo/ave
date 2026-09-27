@@ -35,6 +35,11 @@ const BUNDLE_WORDING: Record<string, Partial<Record<"en" | "ko", string>>> = {
   "gitMarketplace.review.hookConfinement.sandboxed": { en: "this plugin's data directory", ko: "이 플러그인의 데이터 디렉터리" },
   "gitMarketplace.server.plugin": { en: "Plugin", ko: "플러그인" },
   "gitMarketplace.uninstall.removePluginData": { en: "plugin's data", ko: "플러그인의 데이터" },
+  "pluginStudio.title": { en: "Plugin Studio", ko: "플러그인 스튜디오" },
+  "pluginStudio.createTitle": { en: "a plugin", ko: "플러그인 만들기" },
+  "pluginStudio.name": { en: "Plugin name", ko: "플러그인 이름" },
+  "pluginStudio.import": { en: "plugin folder", ko: "플러그인 폴더" },
+  "pluginStudio.routineNotScheduled": { en: "this plugin", ko: "플러그인을 설치해도" },
 };
 
 const OLD_PACKAGE_WORD = /\bplugins?\b|플러그인/iu;

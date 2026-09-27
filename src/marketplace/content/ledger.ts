@@ -20,10 +20,10 @@ import type { OriginReader } from "../sources/retained.js";
 import { CONTENT_KINDS, type ContentKind } from "./rules.js";
 
 interface ContentOrigin {
-  sourceId: string;
-  sourceOrigin: SourceOrigin;
+  sourceId: string | null;
+  sourceOrigin: SourceOrigin | null;
   /** The snapshot commit the install plan was bound to (kept by snapshot pruning). */
-  commit: string;
+  commit: string | null;
   packagePath: string;
   version: string;
   /** Tree digest (design §6.4) of the installed files. */
@@ -75,15 +75,17 @@ function parse(text: string, path: string): LedgerEntry[] {
     const origin = entry.origin;
     if (!isRecord(origin)) return fail(`${at}.origin is not an object`);
     if (Object.keys(origin).some((key) => !ORIGIN_KEYS.has(key))) fail(`${at}.origin has an unknown field`);
-    if (typeof origin.sourceId !== "string" || origin.sourceId.length === 0
-      || !SOURCE_ORIGINS.has(origin.sourceOrigin as SourceOrigin)
-      || typeof origin.commit !== "string" || !/^[0-9a-f]{40}$/u.test(origin.commit)
+    if (!(origin.sourceId === null && origin.sourceOrigin === null && origin.commit === null)
+      && !(typeof origin.sourceId === "string" && origin.sourceId.length > 0
+        && SOURCE_ORIGINS.has(origin.sourceOrigin as SourceOrigin)
+        && typeof origin.commit === "string" && /^[0-9a-f]{40}$/u.test(origin.commit))
       || typeof origin.packagePath !== "string"
       || origin.version !== entry.version
       || typeof origin.contentSha256 !== "string" || !/^[0-9a-f]{64}$/u.test(origin.contentSha256)
       || typeof origin.installedAt !== "string") {
       fail(`${at}.origin is malformed`);
     }
+    if (origin.sourceId === null && entry.kind !== "agent-plugin") fail(`${at}.origin is only local for agent plugins`);
     const key = ledgerKey(entry.kind as ContentKind, entry.name as string);
     if (seen.has(key)) fail(`${key} is recorded twice`);
     seen.add(key);
@@ -145,5 +147,7 @@ export class ContentLedger {
 
 /** Origins of installed content packages, for snapshot retention (design §2.3) and revocations (§10.4). */
 export function contentLedgerOrigins(ledgerPath: string): OriginReader {
-  return async () => (await ContentLedger.open(ledgerPath)).list().map((entry) => ({ kind: entry.kind, name: entry.name, sourceId: entry.origin.sourceId, commit: entry.origin.commit }));
+  return async () => (await ContentLedger.open(ledgerPath)).list()
+    .filter((entry) => entry.origin.sourceId !== null && entry.origin.commit !== null)
+    .map((entry) => ({ kind: entry.kind, name: entry.name, sourceId: entry.origin.sourceId!, commit: entry.origin.commit! }));
 }

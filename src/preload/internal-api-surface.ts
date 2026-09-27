@@ -24,6 +24,7 @@ import { mcpApiSurface } from "./mcp-api-surface.js";
 import { buildTelegramConnectionApiSurface } from "./telegram-connection-api-surface.js";
 import { buildTailnetObserverApiSurface } from "./tailnet-observer-api-surface.js";
 import { buildGitMarketplaceApiSurface } from "./git-marketplace-api-surface.js";
+import { buildPluginStudioApiSurface } from "./plugin-studio-api-surface.js";
 import { buildGitRuntimeApiSurface } from "./git-runtime-api-surface.js";
 import { buildInstalledContentApiSurface } from "./installed-content-api-surface.js";
 import { buildTailnetSharingApiSurface } from "./tailnet-sharing-api-surface.js";
@@ -189,6 +190,7 @@ export function buildInternalApiSurface() {
   tailnetObserver: buildTailnetObserverApiSurface(),
   gitRuntime: buildGitRuntimeApiSurface(),
   gitMarketplace: buildGitMarketplaceApiSurface(),
+  pluginStudio: buildPluginStudioApiSurface(),
   installedContent: buildInstalledContentApiSurface(),
   telegramConnection: buildTelegramConnectionApiSurface(),
   awayAuthority: buildAwayAuthorityApiSurface(),

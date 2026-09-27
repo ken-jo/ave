@@ -61,6 +61,7 @@ import { registerUsageHandlers } from "./domains/usage.js";
 import { registerGitRuntimeHandlers } from "./domains/git-runtime.js";
 import { registerMarketplaceContentHandlers } from "./domains/marketplace-content.js";
 import { registerGitMarketplaceHandlers, type GitMarketplaceRegistration } from "./domains/git-marketplace.js";
+import { registerPluginStudioHandlers } from "./domains/plugin-studio.js";
 import { registerAuditHandlers } from "./domains/audit.js";
 import { registerDiagnosticsHandlers } from "./domains/diagnostics.js";
 import { registerPermissionsHandlers } from "./domains/permissions.js";
@@ -145,6 +146,7 @@ export function registerIpcHandlers(
   registerUsageHandlers(deps);
   registerGitRuntimeHandlers(deps);
   const installedContent = registerMarketplaceContentHandlers(deps);
+  registerPluginStudioHandlers(deps, installedContent);
   const gitMarketplace = registerGitMarketplaceHandlers(deps, installedContent);
   gitMarketplaceRegistration = gitMarketplace;
   registerAuditHandlers(deps);

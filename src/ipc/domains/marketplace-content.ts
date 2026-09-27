@@ -274,7 +274,8 @@ async function applyInMain(deps: IpcDeps, service: InstalledContentService, view
     deps.mcpManager.registerBundledCredentialSource("agent-plugin", {
       list: () => service.installedAgentPluginRuntime().flatMap((item) => Object.entries(item.content.components.mcpServers).map(([serverName, server]) => ({
         packageName: item.name, serverName, transport: server.transport,
-        ...(server.transport === "stdio" ? { command: server.command, apiKeyEnv: server.apiKeyEnv } : { url: server.url, apiKeyHeader: server.apiKeyHeader }),
+        ...(server.transport === "stdio" ? { command: server.command, args: server.args, env: server.env,
+          apiKeyEnv: server.apiKeyEnv } : { url: server.url, apiKeyHeader: server.apiKeyHeader }),
         ...(server.auth ? { auth: server.auth } : {}),
       }))),
       reconnect: async (packageName, serverName) => {

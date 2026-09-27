@@ -55,11 +55,14 @@ import { McpManager } from "../mcp-manager.js";
 import type { McpServerConfig } from "../types.js";
 import { observeFileHandleSyncs } from "../../__tests__/support/fsync-observer.js";
 import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
+import { previewStudioConnector } from "../../studio/connector.js";
+import { boundBundledCredential, bundledConfigId, bundledCredentialDeclaration, bundledCredentialKey } from "../bundled-credential.js";
+import { studioExportFiles } from "../../studio/package.js";
 
 const testDir = join(tmpdir(), `ave-mcp-test-${process.pid}`);
 const testConfigPath = join(testDir, "mcp-servers.json");
 
-async function makeManager() {
+async function makeManager(bundledSecrets?: { getSecret(key: string): string | null }) {
   const { McpGovernance } = await import("../mcp-governance.js");
   const { ToolRegistry } = await import("../../tools/registry.js");
   return new McpManager(
@@ -69,6 +72,9 @@ async function makeManager() {
     testConfigPath,
     undefined,
     { log: mockAuditLog } as never,
+    undefined,
+    undefined,
+    bundledSecrets as never,
   );
 }
 
@@ -88,6 +94,156 @@ afterAll(async () => {
 });
 
 describe("McpManager — getConfigs()", () => {
+  it("previews an installed plugin connector through the Studio projection", async () => {
+    const mgr = await makeManager();
+    const id = bundledConfigId({ kind: "agent-plugin", name: "team-kit" }, "sample");
+    mgr.registerBundledCredentialSource("agent-plugin", { list: () => [{ packageName: "team-kit", serverName: "sample",
+      transport: "stdio", command: "uvx", args: ["studio-sample==1.0.0"], env: { SAMPLE: "visible-env" },
+      auth: "api-key", apiKeyEnv: "SAMPLE_KEY" }], reconnect: async () => undefined });
+    const settings = await mgr.getConfigs();
+    expect(settings).toMatchObject([{ id, bundled: { kind: "agent-plugin", name: "team-kit", server: "sample" } }]);
+    expect(settings[0]).not.toHaveProperty("args");
+    expect(settings[0]).not.toHaveProperty("env");
+    const preview = await previewStudioConnector(mgr, id);
+    expect(preview.spec).toEqual(settings[0]);
+    expect(preview.args).toMatchObject([{ index: 0, value: "studio-sample==1.0.0" }]);
+    expect(preview.env).toMatchObject([{ name: "SAMPLE", value: "visible-env" }]);
+  });
+  it("keeps the settings DTO secret-free while Studio previews individual values without the stored key", async () => {
+    await writeFile(testConfigPath, JSON.stringify({ servers: [{ id: "sample", transport: "stdio", command: "node",
+      args: ["--visible-arg"], env: { SAMPLE: "visible-env" }, auth: "api-key", apiKeyEnv: "SAMPLE_KEY",
+      apiKey: "stored-key-sentinel" }] }));
+    const mgr = await makeManager();
+    const settings = await mgr.getConfigs();
+    expect(settings[0]).not.toHaveProperty("args");
+    expect(settings[0]).not.toHaveProperty("env");
+    expect(settings[0]).not.toHaveProperty("apiKey");
+    const preview = await previewStudioConnector(mgr, "sample");
+    expect(preview.spec).toEqual(settings[0]);
+    expect(preview.args).toMatchObject([{ index: 0, value: "--visible-arg" }]);
+    expect(preview.env).toMatchObject([{ name: "SAMPLE", value: "visible-env" }]);
+    expect(JSON.stringify(preview)).not.toContain("stored-key-sentinel");
+    await writeFile(testConfigPath, JSON.stringify({ servers: [{ id: "sample", transport: "stdio", command: "node",
+      args: ["stored-key-sentinel"], apiKey: "stored-key-sentinel" }] }));
+    await expect(previewStudioConnector(mgr, "sample")).rejects.toThrow("stored credential");
+    await writeFile(testConfigPath, JSON.stringify({ servers: [{ id: "sample", transport: "http", url: "https://example.invalid/mcp",
+      headers: { Authorization: "Bearer hidden" } }] }));
+    await expect(previewStudioConnector(mgr, "sample")).rejects.toThrow("custom headers");
+  });
+  it("compares decoded connector values with stored credentials before preview or write", async () => {
+    const mgr = await makeManager();
+    const keys = ["stored-\"-key", "stored-\\-key", "stored-\u2028-key", "stored-비밀-key"];
+    for (const key of keys) {
+      for (const [args, env] of [
+        [[], { VALUE: key }],
+        [[], { VALUE: `prefix-${key}-suffix` }],
+        [[`--token=${key}`], {}],
+      ] as const) {
+        await writeFile(testConfigPath, JSON.stringify({ servers: [{ id: "sample", transport: "stdio", command: "node",
+          args, env, auth: "api-key", apiKeyEnv: "SAMPLE_KEY", apiKey: key }] }));
+        await expect(previewStudioConnector(mgr, "sample")).rejects.toThrow("stored credential");
+        await expect(mgr.assertStudioConnectorWriteSafe("sample", { spec: { id: "sample", transport: "stdio", command: "node" },
+          args, env })).rejects.toThrow("stored credential");
+        expect((await mgr.getConfigs())[0]).not.toHaveProperty("apiKey");
+      }
+    }
+    const key = "stored-\"-key";
+    await writeFile(testConfigPath, JSON.stringify({ servers: [{ id: "sample", transport: "stdio", command: "node",
+      args: ["--visible"], env: { SAMPLE_KEY: key, VALUE: "visible" }, auth: "api-key", apiKeyEnv: "SAMPLE_KEY", apiKey: key }] }));
+    const preview = await previewStudioConnector(mgr, "sample");
+    expect(preview.env).toMatchObject([{ name: "VALUE", value: "visible" }]);
+    expect(preview.env).toHaveLength(1);
+    expect(preview.spec.auth).toBe("api-key");
+    await expect(mgr.assertStudioConnectorWriteSafe("sample", preview)).resolves.toBeUndefined();
+    await writeFile(testConfigPath, JSON.stringify({ servers: [{ id: "sample", transport: "stdio", command: `tool-${key}`,
+      auth: "api-key", apiKeyEnv: "SAMPLE_KEY", apiKey: key }] }));
+    await expect(previewStudioConnector(mgr, "sample")).rejects.toThrow("stored credential");
+    await writeFile(testConfigPath, JSON.stringify({ servers: [
+      { id: "other", transport: "stdio", command: "node", auth: "api-key", apiKeyEnv: "OTHER_KEY", apiKey: key },
+      { id: "sample", transport: "stdio", command: "node", args: [`--token=${key}`] },
+    ] }));
+    await expect(previewStudioConnector(mgr, "sample")).rejects.toThrow("stored credential");
+  });
+  it("keeps a bound package credential out of the Studio projection and export guard", async () => {
+    const ref = { kind: "agent-plugin" as const, name: "team-kit" };
+    const declaration = { packageName: "team-kit", serverName: "sample", transport: "stdio" as const,
+      command: "uvx", args: ["studio-sample==1.0.0"], env: { VALUE: "stored-\"-credential" },
+      auth: "api-key" as const, apiKeyEnv: "SAMPLE_KEY" };
+    const key = "stored-\"-credential";
+    const identity = bundledCredentialKey(ref, "sample");
+    const stored = boundBundledCredential(bundledCredentialDeclaration(declaration), key);
+    const mgr = await makeManager({ getSecret: (name) => name === identity ? stored : null });
+    mgr.registerBundledCredentialSource("agent-plugin", { list: () => [declaration], reconnect: async () => undefined });
+    const id = bundledConfigId(ref, "sample");
+    await expect(previewStudioConnector(mgr, id)).rejects.toThrow("stored credential");
+    expect(await mgr.getStudioStoredCredentialValues()).toContain(key);
+  });
+  it("refuses percent-encoded stored keys in URLs and environment values for user and package credentials", async () => {
+    const key = "stored/key?with=punct";
+    const encodedUrl = encodeURIComponent(key);
+    const encodedEnv = [...key].map((char) => `%${char.charCodeAt(0).toString(16)}`).join("");
+    const twice = encodeURIComponent(encodedEnv);
+    const thrice = encodeURIComponent(twice);
+    const mixed = [...key].map((char, index) => `%${index % 2 ? char.charCodeAt(0).toString(16).toUpperCase()
+      : char.charCodeAt(0).toString(16)}`).join("");
+    const ref = { kind: "agent-plugin" as const, name: "team-kit" };
+    const cases: Array<{ key: string; location: "url" | "env" | "args"; url: string;
+      env: Record<string, string>; args: string[]; refuse: boolean }> = [
+      { key, location: "url", url: `https://example.invalid/mcp?token=${encodedUrl}`, env: {}, args: [], refuse: true },
+      { key, location: "url", url: `https://example.invalid/mcp?token=${encodedEnv}&progress=100%`, env: {}, args: [], refuse: true },
+      { key, location: "url", url: `https://example.invalid/mcp?progress=100%&token=${encodedEnv}`, env: {}, args: [], refuse: true },
+      { key, location: "env", url: "", env: { VALUE: `prefix-${encodedEnv}-suffix` }, args: [], refuse: true },
+      { key, location: "env", url: "", env: { VALUE: `progress=100%;token=${encodedEnv}` }, args: [], refuse: true },
+      { key: "alpha beta", location: "url", url: "https://example.invalid/mcp?token=alpha+beta",
+        env: {}, args: [], refuse: true },
+      { key, location: "env", url: "", env: { VALUE: key.slice(0, Math.floor(key.length / 2)) },
+        args: [], refuse: false },
+    ];
+    for (const value of [`%ff${encodedEnv}`, `${encodedEnv}%ff`, `%zz${encodedEnv}`, `${encodedEnv}%zz`, twice, thrice, mixed]) {
+      cases.push({ key, location: "env", url: "", env: { VALUE: value }, args: [], refuse: true });
+      cases.push({ key, location: "args", url: "", env: {}, args: [`--token=${value}`], refuse: true });
+      cases.push({ key, location: "url", url: `https://example.invalid/mcp#token=${value}`, env: {}, args: [], refuse: true });
+    }
+    for (const owner of ["user", "package"] as const) for (const item of cases) {
+      const { location, url, env, args, refuse } = item;
+      const declaration = location === "url"
+        ? { packageName: ref.name, serverName: "sample", transport: "http" as const, url, auth: "api-key" as const, apiKeyHeader: "X-Key" }
+        : { packageName: ref.name, serverName: "sample", transport: "stdio" as const, command: "node", args, env,
+          auth: "api-key" as const, apiKeyEnv: "SAMPLE_KEY" };
+      const secrets = new Map<string, string>();
+      const mgr = await makeManager({ getSecret: (name: string) => secrets.get(name) ?? null,
+        setSecret: async (name: string, value: string) => { secrets.set(name, value); } } as never);
+      let id = "sample";
+      if (owner === "user") {
+        await writeFile(testConfigPath, JSON.stringify({ servers: [{ id, ...declaration }] }));
+        await mgr.setApiKey(id, item.key);
+      } else {
+        await writeFile(testConfigPath, JSON.stringify({ servers: [] }));
+        mgr.registerBundledCredentialSource("agent-plugin", { list: () => [declaration], reconnect: async () => undefined });
+        await mgr.setBundledApiKey(ref, "sample", item.key);
+        id = bundledConfigId(ref, "sample");
+      }
+      const copy = { spec: { id, ...(location === "url" ? { url } : {}) }, args, env };
+      const portable = location === "url" ? { type: "streamable-http", url }
+        : { type: "stdio", command: "uvx", args: ["studio-sample==1.0.0", ...args], env };
+      const files = [
+        { path: "plugin.json", data: Buffer.from(JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+          name: "team-kit", version: "1.0.0", description: "A team plugin" })) },
+        { path: "mcp.json", data: Buffer.from(JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+          mcpServers: { sample: portable } })) },
+      ];
+      if (refuse) {
+        await expect(previewStudioConnector(mgr, id)).rejects.toThrow("stored credential");
+        await expect(mgr.assertStudioConnectorWriteSafe(id, copy)).rejects.toThrow("stored credential");
+        expect(() => studioExportFiles(files, false, [item.key])).toThrow("stored credential");
+      } else {
+        await expect(previewStudioConnector(mgr, id)).resolves.toBeDefined();
+        await expect(mgr.assertStudioConnectorWriteSafe(id, copy)).resolves.toBeUndefined();
+        expect(() => studioExportFiles(files, false, [item.key])).not.toThrow();
+      }
+      expect(await mgr.getStudioStoredCredentialValues()).toContain(item.key);
+    }
+  });
   it("returns [] when config file does not exist", async () => {
     const mgr = await makeManager();
     const result = await mgr.getConfigs();

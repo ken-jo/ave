@@ -92,6 +92,11 @@ export function importLegacyHooks(value: unknown, sourcePath: string): { entries
           report("lost", label, `handler ${label} has invalid env`);
           return;
         }
+        if (handler.timeoutMs !== undefined && (typeof handler.timeoutMs !== "number"
+          || !Number.isInteger(handler.timeoutMs) || handler.timeoutMs <= 0)) {
+          report("lost", label, `handler ${label} needs a positive integer timeoutMs`);
+          return;
+        }
         const rawValues = [handler.command, ...handler.args, ...Object.values(rawEnv ?? {})] as string[];
         if (rawValues.some(hasForbiddenPlaceholder)) {
           report("lost", label, `handler ${label} uses an unsupported setting or placeholder`);
