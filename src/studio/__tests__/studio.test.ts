@@ -212,6 +212,22 @@ describe("Studio drafts and package projections", () => {
     expect(hooks.hooks.SessionStart).toEqual([{ hooks: [{ type: "command", command: "node", args: ["./server/hook.js"], timeoutMs: expect.any(Number) }] }]);
   });
 
+  it("refuses direct executable hooks in a draft whose files cannot retain execute permission", async () => {
+    const source = join(root, "direct-hook");
+    await put(source, "plugin.json", JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+      name: "team-kit", version: "1.0.0", description: "A team plugin" }));
+    await put(source, "server/run", "#!/bin/sh\nexit 0\n");
+    await put(source, "ai.agent-connector.ave/hooks.json", JSON.stringify({ version: 1, hooks: { SessionStart: [
+      { hooks: [{ type: "command", command: ["./server/run"] }] },
+    ] } }));
+    const store = new PluginStudioStore();
+    const imported = await store.importPackage(source);
+    expect(imported.errors).toContain("Studio drafts cannot prepare executable hook files; use node or bun for the script, or install the package from file");
+    expect(imported.draft.reviewed).toBeUndefined();
+    await expect(store.reviewDraft("team-kit", imported.treeDigest)).rejects.toThrow("cannot prepare executable hook files");
+    await expect(store.installableFiles("team-kit")).rejects.toThrow("must be reviewed");
+  });
+
   it("maps blocking hook names back in the optional export projection", async () => {
     const source = join(root, "blocking-hooks");
     await put(source, ".claude-plugin/plugin.json", JSON.stringify({ name: "team-kit", version: "1.0.0", description: "A team plugin",

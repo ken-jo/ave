@@ -142,6 +142,10 @@ function validateFiles(draft: StudioDraft, files: readonly { path: string; data:
   try {
     checkContentFiles("agent-plugin", files);
     components = deriveAgentPluginComponents(files, { name: draft.name });
+    if (components.hooks.some((hook) => hook.command[0]?.startsWith("./")
+      || hook.command[0]?.startsWith("${PLUGIN_ROOT}/"))) {
+      errors.push("Studio drafts cannot prepare executable hook files; use node or bun for the script, or install the package from file");
+    }
   } catch (error) { errors.push((error as Error).message); }
   if (draft.pendingHooks.length) errors.push("Imported hooks need adaptation before validation");
   for (const status of connectorStatuses) if (status.status !== "confirmed") {
