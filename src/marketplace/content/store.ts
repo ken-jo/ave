@@ -116,9 +116,9 @@ export interface ContentActivation {
    * the first-boot migration is recording an activation the settings already
    * hold (design §16.3), which leaves those settings as they are.
    */
-  activate(content: ParsedContent, entry: LedgerEntry, previous: LedgerEntry | null, adopt: boolean): Promise<void>;
+  activate(content: ParsedContent, entry: LedgerEntry, previous: LedgerEntry | null, adopt: boolean, dir?: string): Promise<void>;
   /** Before the ledger drops the package; a throw leaves it installed. `content` is null when its files no longer parse. */
-  deactivate(entry: LedgerEntry, content: ParsedContent | null): Promise<void>;
+  deactivate(entry: LedgerEntry, content: ParsedContent | null, dir?: string): Promise<void>;
 }
 
 export interface ContentStoreOptions {
@@ -263,7 +263,7 @@ export class ContentStore {
         await renameDirectory(files, dir);
         try {
           await this.ledger.put(entry);
-          await this.options.activation.activate(staged.content, entry, previous, options.adopt === true);
+          await this.options.activation.activate(staged.content, entry, previous, options.adopt === true, dir);
         } catch (error) {
           await undo([
             ["restore the ledger entry", () => (previous ? this.ledger.put(previous) : this.ledger.remove(entry.kind, entry.name))],
@@ -313,7 +313,7 @@ export class ContentStore {
       if (!entry) return null;
       assertNotRequiredByPolicy(policy, kind, name, entry.origin.sourceId, "uninstall");
       const loaded = await this.loadOne(entry);
-      await this.options.activation.deactivate(entry, "content" in loaded ? loaded.content : null);
+      await this.options.activation.deactivate(entry, "content" in loaded ? loaded.content : null, this.packageDir(entry));
       await this.ledger.remove(kind, name);
       await rm(join(this.options.root, kind, name), { recursive: true, force: true });
       return entry;

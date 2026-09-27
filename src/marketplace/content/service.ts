@@ -46,6 +46,11 @@ export interface InstalledAgentPlugin {
   content: Extract<ParsedContent, { kind: "agent-plugin" }>;
 }
 
+export interface InstalledAgentPluginRuntime extends InstalledAgentPlugin {
+  dir: string;
+  generationId: string;
+}
+
 export class InstalledContentService {
   private view: InstalledContentView = { themes: [], languages: [], fonts: [], routineTemplates: [], broken: [] };
   private catalogs = new Map<string, Record<string, string>>();
@@ -53,6 +58,7 @@ export class InstalledContentService {
   private served = new Map<string, ServedContentFile>();
   private instructions: InstalledInstruction[] = [];
   private agentPlugins: InstalledAgentPlugin[] = [];
+  private agentPluginRuntime: InstalledAgentPluginRuntime[] = [];
 
   /**
    * `assetToken` is the launch token asset URLs carry (see `contentAssetUrl`).
@@ -77,6 +83,7 @@ export class InstalledContentService {
     const served = new Map<string, ServedContentFile>();
     const instructions: InstalledInstruction[] = [];
     const agentPlugins: InstalledAgentPlugin[] = [];
+    const agentPluginRuntime: InstalledAgentPluginRuntime[] = [];
     const from = (item: LoadedContent) => ({ sourceId: item.entry.origin.sourceId, version: item.entry.version });
     const refuse = (item: LoadedContent, problem: string) => brokenViews.push({ kind: item.entry.kind, name: item.entry.name, problem });
 
@@ -143,6 +150,7 @@ export class InstalledContentService {
         instructions.push({ kind: content.kind, name: entry.name, dir });
       } else if (content.kind === "agent-plugin") {
         agentPlugins.push({ name: entry.name, version: entry.version, content });
+        agentPluginRuntime.push({ name: entry.name, version: entry.version, content, dir, generationId: entry.origin.contentSha256 });
         if (content.components.routineTemplates.length > 0) {
           const bytes = content.files.find((file) => file.path === "ai.agent-connector.ave/routines.json")?.data;
           if (!bytes) throw new Error(`installed agent plugin ${entry.name} is missing its routine templates`);
@@ -162,6 +170,7 @@ export class InstalledContentService {
     this.served = served;
     this.instructions = instructions;
     this.agentPlugins = agentPlugins;
+    this.agentPluginRuntime = agentPluginRuntime;
     return this.installed();
   }
 
@@ -176,6 +185,10 @@ export class InstalledContentService {
 
   installedAgentPlugins(): readonly InstalledAgentPlugin[] {
     return this.agentPlugins;
+  }
+
+  installedAgentPluginRuntime(): readonly InstalledAgentPluginRuntime[] {
+    return this.agentPluginRuntime;
   }
 
   /** The catalog of an installed language; throws for a locale no package provides. */

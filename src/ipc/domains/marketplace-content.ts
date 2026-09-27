@@ -18,6 +18,7 @@ import { DEFAULT_LOCALE, SUPPORTED_LOCALES, registerInstalledLocales, setInstall
 import { messages } from "../../i18n/messages/index.js";
 import { createLogger } from "../../lib/logger.js";
 import { InstalledContentService } from "../../marketplace/content/service.js";
+import { AgentPluginMcpRuntime } from "../../marketplace/content/agent-plugin-mcp-runtime.js";
 import { ContentStore, type ContentActivation } from "../../marketplace/content/store.js";
 import type { ParsedContent } from "../../marketplace/content/kinds.js";
 import type { LedgerEntry } from "../../marketplace/content/ledger.js";
@@ -86,7 +87,7 @@ export function legacyContentSettings(deps: IpcDeps): {
  * fails, never thrown: settings already changed, and undoing the ledger would
  * leave them describing a package that is not installed.
  */
-export function createContentActivation(deps: IpcDeps): ContentActivation {
+export function createContentActivation(deps: IpcDeps, mcpRuntime?: AgentPluginMcpRuntime): ContentActivation {
   const settings = deps.settingsService;
   const afterPersist = async (what: string, finishError: { message: string } | null, broadcast = false) => {
     if (finishError) log.warn({ err: finishError.message }, `${what}: settings saved, refresh failed`);
@@ -139,7 +140,12 @@ export function createContentActivation(deps: IpcDeps): ContentActivation {
   };
 
   return {
-    async activate(content: ParsedContent, entry: LedgerEntry, previous: LedgerEntry | null, adopt: boolean) {
+    async activate(content: ParsedContent, entry: LedgerEntry, previous: LedgerEntry | null, adopt: boolean, dir?: string) {
+      if (content.kind === "agent-plugin") {
+        if (!mcpRuntime || !dir) throw new Error("agent plugin MCP activation requires its installed directory and runtime");
+        await mcpRuntime.activate({ name: entry.name, version: entry.version, generationId: entry.origin.contentSha256, dir, content });
+        return;
+      }
       if (!previous && heldBySettings(content)) {
         // Adopting a legacy activation (design §16.3): the settings already describe it, so they stay as they are.
         if (adopt) return;
@@ -174,6 +180,11 @@ export function createContentActivation(deps: IpcDeps): ContentActivation {
       // Themes, languages, fonts, skills and agents are read from the loaded store; selecting one is the user's.
     },
     async deactivate(entry: LedgerEntry, content: ParsedContent | null) {
+      if (entry.kind === "agent-plugin") {
+        if (!mcpRuntime) throw new Error("agent plugin MCP deactivation requires its runtime");
+        await mcpRuntime.deactivate(entry.name);
+        return;
+      }
       const appearance = settings.get("appearance");
       const what = `deactivating ${entry.name}`;
       if (entry.kind === "provider") {
@@ -222,7 +233,7 @@ export interface InstalledContentRuntime {
 }
 
 /** Apply the loaded content to this process: locales, theme ids, and the skill and agent stores. */
-function applyInMain(deps: IpcDeps, service: InstalledContentService, view: InstalledContentView): void {
+async function applyInMain(deps: IpcDeps, service: InstalledContentService, view: InstalledContentView, mcpRuntime: AgentPluginMcpRuntime): Promise<void> {
   for (const broken of view.broken) log.warn(broken, "installed content package not applied");
   registerInstalledLocales(view.languages);
   setInstalledCatalogLoader(async (locale) => service.languageMessages(locale));
@@ -234,6 +245,7 @@ function applyInMain(deps: IpcDeps, service: InstalledContentService, view: Inst
   deps.skillStore?.setInstalledAgentPlugins(agentPlugins);
   deps.agentProfileStore?.setInstalledAgentPlugins(agentPlugins);
   deps.personaPromptStore?.setInstalledAgentPlugins(agentPlugins);
+  await mcpRuntime.sync(service.installedAgentPluginRuntime());
   broadcastPromptsUpdated(deps);
 }
 
@@ -243,23 +255,24 @@ function applyInMain(deps: IpcDeps, service: InstalledContentService, view: Inst
  * rather than stopping the app.
  */
 export async function loadInstalledContent(deps: IpcDeps, assetToken: string, root: string = contentPackagesRoot()): Promise<InstalledContentRuntime> {
+  const mcpRuntime = new AgentPluginMcpRuntime(deps.mcpManager);
   const store = await ContentStore.open({
     root,
     english: messages.en,
-    activation: createContentActivation(deps),
+    activation: createContentActivation(deps, mcpRuntime),
   });
   const service = new InstalledContentService(store, assetToken, (kind, name, version) => {
     const decision = revocationRegistry.evaluate(kind, name, version);
     return decision.kind === "block" ? `revoked by ${decision.sourceId}: ${decision.reason}` : null;
   });
-  applyInMain(deps, service, await service.reload());
+  await applyInMain(deps, service, await service.reload(), mcpRuntime);
   // Settings were read before the ledger: apply an installed language the user selected.
   await applyBootLocale(deps.settingsService);
   return {
     store,
     service,
     async reload() {
-      applyInMain(deps, service, await service.reload());
+      await applyInMain(deps, service, await service.reload(), mcpRuntime);
     },
   };
 }

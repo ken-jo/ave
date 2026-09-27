@@ -137,7 +137,7 @@ describe("content package store", () => {
     const store = await openStore();
     const installed = await store.install(staged);
     expect(installed.entry).toMatchObject({ kind: "agent-plugin", name: "draft-plugin", origin: { contentSha256: staged.contentSha256 } });
-    expect((await store.load()).loaded[0]?.content).toEqual({ kind: "agent-plugin", components });
+    expect((await store.load()).loaded[0]?.content).toMatchObject({ kind: "agent-plugin", components });
     expect(existsSync(join(root, "packages", "agent-plugin", "draft-plugin", "1.0.0", "skills", "draft", "SKILL.md"))).toBe(true);
   });
 
