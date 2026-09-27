@@ -11,9 +11,9 @@
  * migrated off hardcoded strings.
  */
 export const en = {
-  "formatIpcError.pluginsMissing": "This routine cannot run because none of its allowed plugins are installed. Reinstall them or remove the routine.",
-  "routinePanel.pluginsMissing": "Skipped: required plugins are not installed ({plugins}). Reinstall them or remove this routine.",
-  "routinePanel.pluginsPartlyMissing": "Needs attention: some allowed plugins are not installed ({plugins}). The routine ran with the remaining plugins.",
+  "formatIpcError.pluginsMissing": "This routine cannot run because none of its allowed extensions are installed. Reinstall them or remove the routine.",
+  "routinePanel.pluginsMissing": "Skipped: required extensions are not installed ({plugins}). Reinstall them or remove this routine.",
+  "routinePanel.pluginsPartlyMissing": "Needs attention: some allowed extensions are not installed ({plugins}). The routine ran with the remaining extensions.",
   // ── Common / shared ───────────────────────────────────────────────
   "common.cancel": "Cancel",
   "common.save": "Save",
@@ -36,10 +36,10 @@ export const en = {
   "mainDialog.updateRestartDetail": "Work in progress will end. Do you want to continue?",
   "mainDialog.attachTitle": "Select attachment files",
   "mainDialog.pluginPickFolderTitle": "Choose folders for {plugin}",
-  "mainDialog.installLocalPluginTitle": "Install local plugin (developer)",
+  "mainDialog.installLocalPluginTitle": "Install local extension (developer)",
   "mainDialog.installLocalPluginMessage": "Select the build folder that contains plugin.json",
   "mainDialog.unauthorizedFrame": "Unauthorized frame.",
-  "mainDialog.pluginDisableNotPermitted": "This plugin is managed by your organization and cannot be disabled.",
+  "mainDialog.pluginDisableNotPermitted": "This extension is managed by your organization and cannot be disabled.",
   "mainDialog.exportConversationTitle": "Export conversation",
   "mainDialog.deleteConversationMessage": "Delete this conversation?",
   "mainDialog.deleteConversationDetail": "The transcript and its checkpoints are removed from disk. This cannot be undone.",
@@ -110,7 +110,7 @@ export const en = {
   "startupTab.shutdownTimeoutLabel":
     "Time allowed for cleanup when quitting",
   "startupTab.shutdownTimeoutHelp":
-    "When you quit, Ave stops its routines, plugins, and background processes and saves your window layout before it closes. If that is not finished within this time, it closes anyway and whatever was still being written is abandoned. Raise it if a plugin needs longer to shut down; lower it if quitting feels slow.",
+    "When you quit, Ave stops its routines, extensions, and background processes and saves your window layout before it closes. If that is not finished within this time, it closes anyway and whatever was still being written is abandoned. Raise it if an extension needs longer to shut down; lower it if quitting feels slow.",
   "startupTab.shutdownTimeoutEnvForced":
     "The environment variable {envVar} is supplying this value right now, instead of the value saved here.",
   "startupTab.shutdownTimeoutSeconds": "{seconds} seconds",

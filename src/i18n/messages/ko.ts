@@ -6,9 +6,9 @@
 import type { SeedMessageKey } from "./en.js";
 
 export const ko: Record<SeedMessageKey, string> = {
-  "formatIpcError.pluginsMissing": "이 루틴에서 허용한 플러그인이 모두 설치되어 있지 않아 실행할 수 없습니다. 플러그인을 다시 설치하거나 루틴을 삭제해 주세요.",
-  "routinePanel.pluginsMissing": "필요한 플러그인이 설치되지 않아 실행을 건너뛰었습니다({plugins}). 플러그인을 다시 설치하거나 이 루틴을 삭제하세요.",
-  "routinePanel.pluginsPartlyMissing": "확인이 필요합니다. 허용한 플러그인 중 일부가 설치되지 않았습니다({plugins}). 설치된 나머지 플러그인으로 루틴을 실행했습니다.",
+  "formatIpcError.pluginsMissing": "이 루틴에서 허용한 익스텐션이 모두 설치되어 있지 않아 실행할 수 없습니다. 익스텐션을 다시 설치하거나 루틴을 삭제해 주세요.",
+  "routinePanel.pluginsMissing": "필요한 익스텐션이 설치되지 않아 실행을 건너뛰었습니다({plugins}). 익스텐션을 다시 설치하거나 이 루틴을 삭제하세요.",
+  "routinePanel.pluginsPartlyMissing": "확인이 필요합니다. 허용한 익스텐션 중 일부가 설치되지 않았습니다({plugins}). 설치된 나머지 익스텐션으로 루틴을 실행했습니다.",
   // ── Common / shared ───────────────────────────────────────────────
   "common.cancel": "취소",
   "common.save": "저장",
@@ -31,10 +31,10 @@ export const ko: Record<SeedMessageKey, string> = {
   "mainDialog.updateRestartDetail": "진행 중인 작업이 종료됩니다. 계속하시겠습니까?",
   "mainDialog.attachTitle": "첨부 파일 선택",
   "mainDialog.pluginPickFolderTitle": "{plugin}에서 사용할 폴더 선택",
-  "mainDialog.installLocalPluginTitle": "로컬 플러그인 설치 (개발자)",
+  "mainDialog.installLocalPluginTitle": "로컬 익스텐션 설치 (개발자)",
   "mainDialog.installLocalPluginMessage": "plugin.json이 포함된 빌드 폴더를 선택하세요",
   "mainDialog.unauthorizedFrame": "권한이 없는 프레임입니다.",
-  "mainDialog.pluginDisableNotPermitted": "이 플러그인은 조직에서 관리하므로 비활성화할 수 없습니다.",
+  "mainDialog.pluginDisableNotPermitted": "이 익스텐션은 조직에서 관리하므로 비활성화할 수 없습니다.",
   "mainDialog.exportConversationTitle": "대화 내보내기",
   "mainDialog.deleteConversationMessage": "이 대화를 삭제할까요?",
   "mainDialog.deleteConversationDetail": "대화 기록과 체크포인트가 디스크에서 제거됩니다. 되돌릴 수 없습니다.",
@@ -105,7 +105,7 @@ export const ko: Record<SeedMessageKey, string> = {
   "startupTab.shutdownTimeoutLabel":
     "종료 시 정리에 허용할 시간",
   "startupTab.shutdownTimeoutHelp":
-    "종료하면 Ave 는 루틴, 플러그인, 백그라운드 프로세스를 정지하고 창 배치를 저장한 뒤 닫힙니다. 이 시간 안에 끝나지 않으면 그대로 닫히며, 아직 기록 중이던 내용은 버려집니다. 종료가 오래 걸리는 플러그인이 있으면 늘리고, 종료가 느리게 느껴지면 줄이세요.",
+    "종료하면 Ave 는 루틴, 익스텐션, 백그라운드 프로세스를 정지하고 창 배치를 저장한 뒤 닫힙니다. 이 시간 안에 끝나지 않으면 그대로 닫히며, 아직 기록 중이던 내용은 버려집니다. 종료가 오래 걸리는 익스텐션이 있으면 늘리고, 종료가 느리게 느껴지면 줄이세요.",
   "startupTab.shutdownTimeoutEnvForced":
     "지금은 환경 변수 {envVar} 가 이 값을 지정하고 있어, 여기에 저장된 값 대신 사용됩니다.",
   "startupTab.shutdownTimeoutSeconds": "{seconds}초",
