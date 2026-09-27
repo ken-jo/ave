@@ -92,3 +92,15 @@ version from the design example. At publication:
 The explicit caller option lets publication select the actual release once and
 keeps the same checker usable by every source. Updating the app's own package
 version cannot move the deprecation threshold on later releases.
+
+## Protocol 2 release rollback
+
+The v0.12.0 app serves host protocol 2. Keep its installer release as a draft
+until the published extension replacements and packaged upgrade matrix pass the
+release checks in the [host protocol design](../design/plugin-hostapi-protocol.md).
+If those checks fail, leave the release as a draft and supersede it with a new
+tag. Never change the bytes behind the existing tag or its schema URL. Published
+extension artifacts stay available: older apps still select their older versions
+from the frozen legacy marketplace index. Promote the protocol-2 web schema
+alias only after the app draft is published, in the same change that marks the
+tag-named mirror copy published.
