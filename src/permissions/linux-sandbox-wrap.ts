@@ -1,4 +1,6 @@
-import { basename, isAbsolute, resolve } from "node:path";
+import { lstatSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { MAX_WALK_UP } from "./sensitive-paths.js";
 
 /** Only the option forms emitted by the pinned Linux wrapper are understood. */
 const BWRAP_OPTION_ARITY = {
@@ -59,6 +61,34 @@ function quoteShellWord(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
+/** Resolve symlinked prefixes, including when the mount target does not exist yet. */
+function mountIdentity(target: string): string {
+  const path = resolve(target);
+  let ancestor = path;
+  for (let depth = 0; depth <= MAX_WALK_UP; depth++) {
+    try {
+      return resolve(realpathSync.native(ancestor), relative(ancestor, path));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw new Error("Linux sandbox wrapper cannot establish mount identity", { cause: error });
+      }
+    }
+    let entry;
+    try {
+      entry = lstatSync(ancestor, { throwIfNoEntry: false });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw new Error("Linux sandbox wrapper cannot establish mount identity", { cause: error });
+      }
+    }
+    if (entry) throw new Error("Linux sandbox wrapper cannot establish mount identity");
+    const parent = dirname(ancestor);
+    if (parent === ancestor) break;
+    ancestor = parent;
+  }
+  throw new Error("Linux sandbox wrapper cannot establish mount identity");
+}
+
 /**
  * A read-denied directory is a writable tmpfs in the Linux wrapper. Its
  * write-deny bind is skipped because the host directory is hidden, leaving the
@@ -77,7 +107,7 @@ export function hardenLinuxSandboxWrap<T extends { readonly argv: string[]; read
   if (basename(words[0]?.value ?? "") !== "bwrap") {
     throw new Error("Linux sandbox wrapper does not invoke bubblewrap");
   }
-  const maskedDirectories = new Set<string>();
+  const maskedDirectories = new Map<string, string>();
   const finalMounts = new Map<string, "mask" | "write" | "read" | "special">();
   let index = 1;
   while (index < words.length && words[index]?.value !== "--") {
@@ -93,14 +123,15 @@ export function hardenLinuxSandboxWrap<T extends { readonly argv: string[]; read
       const target = words[index + arity]!.value;
       if (!isAbsolute(target)) throw new Error(`Linux sandbox wrapper has an invalid mount target: ${option}`);
       const path = resolve(target);
+      const identity = mountIdentity(path);
       if (option === "--bind" || option === "--ro-bind") {
         const source = words[index + 1]!.value;
         if (!isAbsolute(source) || (option === "--bind" && resolve(source) !== path)) {
           throw new Error(`Linux sandbox wrapper has an unsupported mount source: ${option}`);
         }
       }
-      if (option === "--tmpfs") maskedDirectories.add(path);
-      finalMounts.set(path, option === "--tmpfs" ? "mask" : option === "--bind" ? "write" : option === "--ro-bind" ? "read" : "special");
+      if (option === "--tmpfs") maskedDirectories.set(identity, path);
+      finalMounts.set(identity, option === "--tmpfs" ? "mask" : option === "--bind" ? "write" : option === "--ro-bind" ? "read" : "special");
     }
     index += arity + 1;
   }
@@ -108,11 +139,11 @@ export function hardenLinuxSandboxWrap<T extends { readonly argv: string[]; read
   if (words[separator]?.value !== "--" || separator + 4 !== words.length || words[separator + 2]?.value !== "-c") {
     throw new Error("Linux sandbox wrapper has no command separator");
   }
-  const remountTargets = [...maskedDirectories].filter((path) => {
-    const final = finalMounts.get(path);
+  const remountTargets = [...maskedDirectories].filter(([identity]) => {
+    const final = finalMounts.get(identity);
     if (final === "special") throw new Error("Linux sandbox wrapper replaces a mask with an unsupported mount");
     return final === "mask";
-  });
+  }).map(([, path]) => path);
   if (remountTargets.length === 0) return wrapped;
 
   const remounts = remountTargets
