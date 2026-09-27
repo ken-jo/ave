@@ -282,7 +282,9 @@ describe("installer smoke and packaging discipline", () => {
     expect(workflow).toContain("Smoke launch packaged app");
     expect(workflow).toContain("scripts/smoke-packaged-app.mjs --target");
     expect(workflow).toContain("xvfb-run -a");
-    expect(workflow).toContain("sudo apt-get update && sudo apt-get install -y fakeroot rpm xvfb");
+    expect(workflow).toContain("sudo apt-get update && sudo apt-get install -y fakeroot rpm xvfb dbus dbus-x11 gnome-keyring");
+    expect(workflow).toContain("dbus-run-session -- bash -euo pipefail -c");
+    expect(workflow).toContain("gnome-keyring-daemon --unlock --components=secrets");
     expect(workflow).toContain(
       "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0",
     );
@@ -300,6 +302,13 @@ describe("installer smoke and packaging discipline", () => {
     expect(smokeScript).toContain("win-unpacked");
     expect(smokeScript).toContain(".app");
     expect(smokeScript).toContain("AVE_HOME");
+    expect(smokeScript).toContain('process.platform === "win32" ? tmpdir() : "/tmp"');
+    expect(smokeScript).toContain("--password-store=gnome-libsecret");
+    expect(smokeScript).toContain("snapshotProductionLogs(env.AVE_HOME)");
+    expect(smokeScript).toContain("readProductionLogsSince(env.AVE_HOME, logSnapshot)");
+    expect(smokeScript).toContain("launchSucceeded({ ready, timedOut, code, signal })");
+    expect(smokeScript).toContain('runPackagedAppOnce(executable, timeoutMs, env, "first launch")');
+    expect(smokeScript).toContain('runPackagedAppOnce(executable, timeoutMs, env, "upgrade probe")');
     expect(smokeScript).toContain("assertPackagedFirstLaunchSeed");
     expect(smokeScript).toContain("assertUpgradeProbe");
     expect(smokeScript).toContain("expectedSeededMarkdownFiles");

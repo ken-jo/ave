@@ -26,6 +26,8 @@ const mainSource = readFileSync(resolve(process.cwd(), "src/main.ts"), "utf-8")
   .replace(/\r\n/g, "\n");
 const loggerSource = readFileSync(resolve(process.cwd(), "src/lib/logger.ts"), "utf-8")
   .replace(/\r\n/g, "\n");
+const execModeSource = readFileSync(resolve(process.cwd(), "src/main/exec-mode.ts"), "utf-8")
+  .replace(/\r\n/g, "\n");
 const windowSource = readFileSync(resolve(process.cwd(), "src/main/main-window.ts"), "utf-8")
   .replace(/\r\n/g, "\n");
 const bootSource = readFileSync(resolve(process.cwd(), "src/boot.ts"), "utf-8")
@@ -75,13 +77,22 @@ describe("main.ts — headless exec branch", () => {
 
   it("exits non-zero when bootstrap fails before the turn, keeping a more specific code", () => {
     expect(mainSource).toContain(
-      "if (execRequest !== null && process.exitCode === undefined) {",
+      "if (process.exitCode === undefined) {",
     );
-    const guard = mainSource.indexOf("if (execRequest !== null && process.exitCode === undefined) {");
+    const guard = mainSource.indexOf("if (process.exitCode === undefined) {");
     const bootstrapFailed = mainSource.indexOf('"bootstrap failed"');
     expect(bootstrapFailed).toBeGreaterThanOrEqual(0);
     expect(guard).toBeGreaterThan(bootstrapFailed);
-    expect(mainSource.slice(guard, guard + 200)).toContain("process.exitCode = EXEC_FAILURE_EXIT_CODE;");
+    expect(mainSource.slice(guard, guard + 200)).toContain(": EXEC_FAILURE_EXIT_CODE;");
+  });
+
+  it("exits non-zero after an interactive bootstrap failure without changing normal quits", () => {
+    const failure = mainSource.slice(mainSource.indexOf('"bootstrap failed"'), mainSource.indexOf("app.quit();", mainSource.indexOf('"bootstrap failed"')));
+    expect(failure).toContain("if (execRequest === null) guiBootstrapFailed = true;");
+    expect(failure).toContain("if (process.exitCode === undefined) {");
+    expect(failure).toContain("? GUI_BOOT_FAILURE_EXIT_CODE");
+    expect(mainSource).toContain("if (execRequest === null && !guiBootstrapFailed) return;");
+    expect(execModeSource).toMatch(/export const GUI_BOOT_FAILURE_EXIT_CODE = 1;/u);
   });
 
   it("runs after setServices and before the workspace is opened", () => {
