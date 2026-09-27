@@ -26,6 +26,9 @@ export function isPluginInstallFailureKind(value: unknown): value is PluginInsta
  *     reinstall fetches the same package speaking the same protocol, so the
  *     remedy is a plugin built for this app's protocol, or an app that serves
  *     the plugin's.
+ *   - `process-entry-unsupported` — this app has no process-entry runtime.
+ *     Reinstalling the same package cannot change that; use an extension
+ *     update with an entry point or update the app when process support ships.
  *   - `sandbox-grant-outside-ceiling` — reinstalling the version on disk keeps
  *     its declared filesystem grants and cannot restore a withdrawn approved
  *     directory. Change an eligible directory setting or approval, update to

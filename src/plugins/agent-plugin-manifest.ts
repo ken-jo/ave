@@ -1,15 +1,22 @@
 import manifestSchema from "../../schemas/plugin-manifest.schema.json" with { type: "json" };
+import type { ValidateFunction } from "ajv";
 import { isPackageName } from "../marketplace/catalog/types.js";
 import { createLogger } from "../lib/logger.js";
 import { parseStrictJson } from "../marketplace/catalog/strict-json.js";
 import { resolveAddFormats, resolveAjv } from "./config-schema.js";
 import { AGENT_PLUGINS_SCHEMA_URL, AVE_EXTENSION_NAMESPACE, foreignManifestTopLevelFields, type AgentPluginPackageManifest } from "./public-contract.js";
 
-const Ajv = resolveAjv();
-const ajv = new Ajv({ strict: true, strictRequired: false, allErrors: true, allowUnionTypes: true });
-resolveAddFormats()(ajv);
-const validate = ajv.compile(manifestSchema);
 const log = createLogger("agent-plugin-manifest");
+let compiledManifestValidator: ValidateFunction | undefined;
+
+function manifestValidator(): ValidateFunction {
+  if (compiledManifestValidator) return compiledManifestValidator;
+  const Ajv = resolveAjv();
+  const ajv = new Ajv({ strict: true, strictRequired: false, allErrors: true, allowUnionTypes: true });
+  resolveAddFormats()(ajv);
+  compiledManifestValidator = ajv.compile(manifestSchema);
+  return compiledManifestValidator;
+}
 
 export interface AgentPluginManifestIdentity {
   name?: string;
@@ -25,6 +32,7 @@ export function validatePluginManifestShape(bytes: Buffer | string): Record<stri
   const foreign = foreignManifestTopLevelFields(document);
   for (const key of foreign) log.warn(`plugin.json: ignoring unknown top-level field ${key}`);
   const known = Object.fromEntries(Object.entries(document).filter(([key]) => !foreign.includes(key)));
+  const validate = manifestValidator();
   if (!validate(known)) {
     const error = validate.errors?.[0];
     const field = error?.keyword === "additionalProperties" ? String(error.params.additionalProperty) : (error?.instancePath || "/");
