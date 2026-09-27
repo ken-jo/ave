@@ -1,7 +1,7 @@
 // AUTO-GENERATED — i18n migration. Source: src/main.ts. Do not edit by hand.
 export const en = {
   // createViewMenu / menu labels
-  "be_main.menuPlugins": "Plugins",
+  "be_main.menuPlugins": "Extensions",
   "be_main.menuHome": "Home",
   "be_main.menuSettings": "Settings...",
   "be_main.menuOpenAve": "Open Ave",
@@ -23,7 +23,7 @@ export const en = {
   // bootstrap status messages
   "be_main.bootstrapStatusPreparingRuntime": "Preparing runtime...",
   "be_main.bootstrapStatusLoadingSettingsAndMemory": "Loading user settings and memory...",
-  "be_main.bootstrapStatusVerifyingPluginIntegrity": "Verifying plugin integrity...",
+  "be_main.bootstrapStatusVerifyingPluginIntegrity": "Verifying extension integrity...",
   "be_main.bootstrapStatusSyncingMarketplace": "Syncing with marketplace...",
   "be_main.bootstrapStatusOpeningWorkspace": "Opening workspace...",
 
@@ -36,7 +36,7 @@ export const en = {
   "be_main.splashVersionLabel": "Version information",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
-  "be_main.menuPlugins": "플러그인",
+  "be_main.menuPlugins": "익스텐션",
   "be_main.menuHome": "홈",
   "be_main.menuSettings": "설정...",
   "be_main.menuOpenAve": "Ave 열기",
@@ -57,7 +57,7 @@ export const ko: Record<keyof typeof en, string> = {
 
   "be_main.bootstrapStatusPreparingRuntime": "런타임을 준비하는 중...",
   "be_main.bootstrapStatusLoadingSettingsAndMemory": "사용자 설정과 메모리를 불러오는 중...",
-  "be_main.bootstrapStatusVerifyingPluginIntegrity": "플러그인 무결성을 확인하는 중...",
+  "be_main.bootstrapStatusVerifyingPluginIntegrity": "익스텐션 무결성을 확인하는 중...",
   "be_main.bootstrapStatusSyncingMarketplace": "마켓플레이스와 동기화하는 중...",
   "be_main.bootstrapStatusOpeningWorkspace": "작업 화면을 여는 중...",
 

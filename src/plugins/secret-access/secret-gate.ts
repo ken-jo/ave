@@ -61,7 +61,7 @@ const OPENAI_COMPATIBLE = "openai-compatible";
  */
 export type SecretGateOutcome =
   | { kind: "allow"; via?: "own-namespace" }
-  | { kind: "deny"; tier: "tier-2"; reason: "not-allowlisted" }
+  | { kind: "deny"; tier: "tier-2"; reason: "not-allowlisted" | "provider-key-not-exportable" }
   | { kind: "deny"; tier: "tier-3"; reason: HostSecretGrantDenial }
   | { kind: "deny"; tier: "tier-4"; reason: "vendor-mismatch" };
 
@@ -86,6 +86,7 @@ export interface SecretGateSettings {
 
 export interface SecretGateInput {
   readonly pluginId: string;
+  readonly operation: "export" | "lease";
   /** The host-secret key being requested, verbatim. */
   readonly key: string;
   /** `manifest.hostSecrets.read[]`. */
@@ -191,6 +192,9 @@ export async function runSecretGate(input: SecretGateInput): Promise<SecretGateO
   // Tier 1 — own namespace.
   if (input.key.startsWith(`plugin.${input.pluginId}.`)) {
     return { kind: "allow", via: "own-namespace" };
+  }
+  if (input.operation === "export" && input.key.startsWith(LLM_API_KEY_PREFIX)) {
+    return { kind: "deny", tier: "tier-2", reason: "provider-key-not-exportable" };
   }
   // Tier 2 — manifest allowlist.
   if (!input.allowlist.includes(input.key)) {

@@ -22,8 +22,8 @@ describe("BootstrapStatusPill", () => {
   it("reports the install in progress with nothing to click", () => {
     renderPill({ phase: "start" });
     const pill = screen.getByTestId("bootstrap-status-pill");
-    expect(pill.textContent).toContain("플러그인 설치 중");
-    expect(pill.getAttribute("title")).toContain("매니지드 플러그인 설치 중");
+    expect(pill.textContent).toContain("익스텐션 설치 중");
+    expect(pill.getAttribute("title")).toContain("매니지드 익스텐션 설치 중");
     expect(pill.getAttribute("aria-disabled")).toBe("true");
   });
 
@@ -38,7 +38,7 @@ describe("BootstrapStatusPill", () => {
     expect((pill as HTMLButtonElement).disabled).toBe(false);
 
     fireEvent.focus(pill);
-    expect(screen.getByRole("tooltip").textContent).toContain("매니지드 플러그인 설치 중");
+    expect(screen.getByRole("tooltip").textContent).toContain("매니지드 익스텐션 설치 중");
 
     pill.click();
     expect(onRetry).not.toHaveBeenCalled();
@@ -52,7 +52,7 @@ describe("BootstrapStatusPill", () => {
     });
 
     const label = screen.getByTestId("bootstrap-status-pill").getAttribute("aria-label");
-    expect(label).toContain("플러그인 부트스트랩 다시 시도");
+    expect(label).toContain("익스텐션 부트스트랩 다시 시도");
     expect(label).toContain("meeting");
     expect(label).toContain("tarball 404");
   });
@@ -106,7 +106,7 @@ describe("BootstrapStatusPill", () => {
     );
 
     const pill = screen.getByTestId("bootstrap-status-pill");
-    expect(pill.textContent).toContain("플러그인 설치 실패");
+    expect(pill.textContent).toContain("익스텐션 설치 실패");
     expect(pill.getAttribute("title")).toContain("meeting");
     expect(pill.getAttribute("title")).toContain("tarball 404");
 
@@ -122,7 +122,7 @@ describe("BootstrapStatusPill", () => {
     });
 
     expect(screen.getByTestId("bootstrap-status-pill").getAttribute("title")).toContain(
-      "2개 플러그인 설치 실패",
+      "2개 익스텐션 설치 실패",
     );
   });
 

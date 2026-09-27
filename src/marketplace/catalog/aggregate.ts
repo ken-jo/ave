@@ -10,6 +10,7 @@ import { isDeepStrictEqual } from "node:util";
 import { effectiveRevocations } from "./effective-revocations.js";
 import { createHash } from "node:crypto";
 import { appVersionSatisfiesMin, compareSemver } from "../../shared/semver-compare.js";
+import { isServedHostProtocolVersion } from "../../plugins/isolation/host-api-wire.js";
 import type { SourceOrigin } from "../sources/registry.js";
 import type { CatalogPackage, SourceSnapshot } from "../sources/snapshot.js";
 import type { IndexVersion, PackageKind, Revocation } from "./types.js";
@@ -24,7 +25,7 @@ export interface VersionChoiceContext {
 }
 
 /** Why a version is not offered, in the order of §6.1. */
-export type VersionExclusion = "min_app_version" | "yanked" | "platform" | "prerelease" | "rollout" | "revoked";
+export type VersionExclusion = "min_app_version" | "host_protocol" | "yanked" | "platform" | "prerelease" | "rollout" | "revoked";
 
 /**
  * Why nothing is offered, when no version is held back by the app version
@@ -83,6 +84,7 @@ export function versionExclusions(
 ): VersionExclusion[] {
   const reasons: VersionExclusion[] = [];
   if (!appVersionSatisfiesMin(context.appVersion, version.minAppVersion)) reasons.push("min_app_version");
+  if (kind === "plugin" && !isServedHostProtocolVersion(version.hostProtocol)) reasons.push("host_protocol");
   if (version.yanked) reasons.push("yanked");
   if (version.platforms && !version.platforms.includes(context.platform as "darwin" | "win32" | "linux")) reasons.push("platform");
   if (isPrerelease(version.version) && !context.canaryOptIn) reasons.push("prerelease");

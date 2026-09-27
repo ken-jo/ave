@@ -108,6 +108,9 @@ export async function buildRealHostApi(
     host: createBootHostFixture(),
     projectRoot: "/tmp/ave-test/project",
     settingsService: {
+      getProviderConfigRevision: () => 0,
+      getSecretGeneration: () => 0,
+      onLeaseStateChanged: () => () => {},
       get: vi.fn((key: string) => {
         if (key === "llm") return { provider: "openai" };
         if (key === "pluginConfigs") return {};

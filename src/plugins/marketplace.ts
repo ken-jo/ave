@@ -597,6 +597,7 @@ export class PluginMarketplaceService {
       /** Replace an install bound to another source (or to none); the plugin's data is kept. */
       switchSource?: boolean;
       signal?: AbortSignal;
+      reviewedAppVersion?: string;
     },
   ): Promise<{ pluginId: string; installed: true; version: string; action: InstallAction; staged: StagedPluginArtifact }> {
     const activatePreparedArtifact = requirePreparedMarketplacePluginActivation(
@@ -636,10 +637,11 @@ export class PluginMarketplaceService {
             name: plan.name,
             version: plan.version,
             minAppVersion: plan.minAppVersion,
+            hostProtocol: plan.hostProtocol,
             authority: plan.authority,
           });
         },
-        prepareReceipt: (pluginRoot, files) => this.prepareGitInstallReceipt(pluginId, pluginRoot, staged, files),
+        prepareReceipt: (pluginRoot, files) => this.prepareGitInstallReceipt(pluginId, pluginRoot, staged, files, options.reviewedAppVersion),
         approvedPluginAccess: plan.authority.pluginAccess as PluginAccessSpec | undefined,
         activatePreparedArtifact,
         registryInstallSource: "user",
@@ -697,6 +699,7 @@ export class PluginMarketplaceService {
     pluginRoot: string,
     staged: StagedPluginArtifact,
     files: string[],
+    reviewedAppVersion?: string,
   ): Promise<string> {
     const manifestRaw = await readFile(resolve(pluginRoot, "plugin.json"), "utf-8");
     await materializePluginContributions(pluginRoot, flattenAgentPluginsManifest(JSON.parse(manifestRaw)));
@@ -705,6 +708,7 @@ export class PluginMarketplaceService {
       pluginId,
       version: plan.version,
       artifactSha256: staged.artifactSha256,
+      ...(reviewedAppVersion ? { reviewedAppVersion } : {}),
       git: {
         sourceId: plan.sourceId,
         sourceOrigin: plan.sourceOrigin,

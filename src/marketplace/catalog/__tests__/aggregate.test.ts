@@ -27,6 +27,10 @@ function pkg(versions: IndexVersion[], name = "alpha"): CatalogPackage {
   return { kind: "skill", name, path: `skills/${name}`, versions };
 }
 
+function plugin(versions: IndexVersion[]): CatalogPackage {
+  return { kind: "plugin", name: "alpha", path: "plugins/alpha", versions };
+}
+
 function revocation(versions: string, patch: Partial<Revocation> = {}): Revocation {
   return { kind: "skill", name: "alpha", versions, reason: "bad", at: AT, action: "disable", ...patch };
 }
@@ -42,6 +46,21 @@ function versionInBucket(below: boolean, threshold: number): string {
 }
 
 describe("chooseVersion (design §6.1)", () => {
+  it("offers only a served host protocol for code plugins", () => {
+    const current = version("1.0.0", { hostProtocol: "2" });
+    const retired = version("2.0.0", { hostProtocol: "1" });
+    const undeclared = version("3.0.0");
+    expect(versionExclusions("acme", "plugin", "alpha", retired, [], context())).toEqual(["host_protocol"]);
+    expect(versionExclusions("acme", "plugin", "alpha", undeclared, [], context())).toEqual(["host_protocol"]);
+    expect(versionExclusions("acme", "plugin", "alpha", current, [], context())).toEqual([]);
+    expect(chooseVersion("acme", plugin([retired, undeclared, current]), [], context())).toMatchObject({
+      state: "candidate", version: { version: "1.0.0" },
+    });
+    expect(chooseVersion("acme", plugin([retired, undeclared]), [], context())).toEqual({ state: "unavailable", reason: "withheld" });
+    expect(versionExclusions("acme", "skill", "alpha", undeclared, [], context())).toEqual([]);
+    expect(versionExclusions("acme", "agent-plugin", "alpha", undeclared, [], context())).toEqual([]);
+  });
+
   it("takes the highest version that survives every drop, whatever the listing order", () => {
     const choice = chooseVersion("acme", pkg([version("1.2.0"), version("1.10.0"), version("1.9.0")]), [], context());
     expect(choice).toEqual({ state: "candidate", version: expect.objectContaining({ version: "1.10.0" }) });

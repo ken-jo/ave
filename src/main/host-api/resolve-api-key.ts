@@ -61,10 +61,14 @@ export type ResolveApiKeyVendor =
   | "vertex"
   | "anthropic";
 
+export type CredentialIssuanceStage = "before-gate" | "after-gate" | "after-secret-read" | "before-reply";
+
 export type ResolveApiKeyResult =
   | {
       ok: true;
       vendor: string;
+      keyName: string;
+      source: "host-secret" | "plugin-own";
       bearer: () => string;
       baseUrl?: string;
       release: () => void;
@@ -83,6 +87,7 @@ export type ResolveApiKeyResult =
 export interface ResolveApiKeyRequest {
   purpose: ResolveApiKeyPurpose;
   vendor?: ResolveApiKeyVendor;
+  exposure?: "lease" | "raw";
   signal?: AbortSignal;
 }
 
@@ -106,6 +111,7 @@ export interface ResolveApiKeyDeps {
   /** The host-owned registry entry Tier 3 trusts; read only when Tier 3 runs. */
   readRegistryEntry: () => Promise<PluginRegistryTrust | undefined>;
   grantEvidence: HostSecretGrantEvidence;
+  _onCredentialIssuanceStageForTest?: (stage: CredentialIssuanceStage) => Promise<void> | void;
 }
 
 /**
@@ -125,7 +131,7 @@ const VENDOR_ALIAS_MAP: Record<string, string> = {
   vertex: "vertex-ai",
 };
 
-function normalizeVendor(v: string): string {
+export function normalizeVendor(v: string): string {
   return VENDOR_ALIAS_MAP[v] ?? v;
 }
 
@@ -156,6 +162,8 @@ function audit(deps: ResolveApiKeyDeps, level: "info" | "warn", message: string)
  */
 function makeSuccess(
   vendor: string,
+  keyName: string,
+  source: "host-secret" | "plugin-own",
   value: string,
   signal?: AbortSignal,
   baseUrl?: string,
@@ -177,6 +185,8 @@ function makeSuccess(
   const result: ResolveApiKeyResult & { ok: true } = {
     ok: true,
     vendor,
+    keyName,
+    source,
     bearer: () => {
       if (captured === null) {
         throw new Error("released");
@@ -282,11 +292,13 @@ export async function resolveApiKey(
       `resolveApiKey allow source=plugin-namespace vendor=${vendor} purpose=${request.purpose}`,
     );
     incrementHostSecretCounter("hostSecret_read", deps.pluginId, keyPrefix);
-    return makeSuccess(vendor, ownValue, mergedSignal);
+    return makeSuccess(vendor, ownNamespaceKey, "plugin-own", ownValue, mergedSignal);
   }
 
+  if (deps._onCredentialIssuanceStageForTest) await deps._onCredentialIssuanceStageForTest("before-gate");
   const gateOutcome = await runSecretGate({
     pluginId: deps.pluginId,
+    operation: "lease",
     key: llmKey,
     allowlist: deps.manifest.hostSecrets?.read ?? [],
     manifestSha256: deps.manifestSha256,
@@ -309,8 +321,10 @@ export async function resolveApiKey(
     // The precise reason lives in the audit log.
     return { ok: false, reason: "not-whitelisted" };
   }
+  if (deps._onCredentialIssuanceStageForTest) await deps._onCredentialIssuanceStageForTest("after-gate");
   // All four tiers passed — fetch the key from settings.
   const value = deps.settingsService.getSecret(llmKey);
+  if (deps._onCredentialIssuanceStageForTest) await deps._onCredentialIssuanceStageForTest("after-secret-read");
   if (typeof value !== "string" || value.length === 0) {
     audit(deps, "info", `resolveApiKey deny reason=no-host-vendor vendor=${vendor}`);
     incrementHostSecretCounter("hostSecret_denied", deps.pluginId, keyPrefix);
@@ -333,7 +347,26 @@ export async function resolveApiKey(
     };
     baseUrl = llmSettings?.vendors?.["azure-foundry"]?.baseUrl;
   }
-  return makeSuccess(vendor, value, mergedSignal, baseUrl);
+  return makeSuccess(vendor, llmKey, "host-secret", value, mergedSignal, baseUrl);
+}
+
+/** Resolve the two possible key identities before issuance crosses an await. */
+export function apiKeyIdentities(
+  request: ResolveApiKeyRequest,
+  pluginId: string,
+  settingsService: Pick<SettingsService, "get">,
+): readonly string[] {
+  const llm = settingsService.get("llm");
+  const active = typeof llm.provider === "string" ? llm.provider : "";
+  const requested = request.vendor ?? active;
+  const vendor = normalizeVendor(requested);
+  return [
+    `plugin.${pluginId}.llm.apiKey.${vendor}`,
+    hostSecretKeyForVendor(vendor, {
+      llmProvider: active,
+      marketplaceProviderPresetId: llm.marketplaceProviderPresetId,
+    }),
+  ];
 }
 
 /**

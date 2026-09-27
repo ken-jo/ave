@@ -42,7 +42,7 @@ import type { PluginCardSummary } from "../../src/ui/renderer/types.js";
 import { renderApp } from "./render-app.js";
 import { sidebarViewTestId } from "../../src/ui/renderer/components/Sidebar.js";
 import { toPluginDoctorViewKey, toPluginSettingsViewKey } from "../../src/ui/renderer/utils/plugin-doctor-view.js";
-import { agentPluginsDocument } from "../../src/plugins/__tests__/test-helpers.js";
+import { servedAgentPluginsDocument } from "../../src/plugins/__tests__/test-helpers.js";
 
 const STRAY_REGISTRY_PLUGIN = "stray-registry-plugin";
 const SWITCHED_OFF_PLUGIN = "switched-off-plugin";
@@ -65,7 +65,7 @@ describe("installed plugins boot refuses to run", () => {
     const manifestPath = join(pluginDir, "plugin.json");
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedAgentPluginsDocument({
         id,
         name: `Plugin ${id}`,
         version: "1.0.0",
@@ -102,7 +102,7 @@ describe("installed plugins boot refuses to run", () => {
     strayManifestPath = join(strayDir, "plugin.json");
     await writeFile(
       strayManifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedAgentPluginsDocument({
         id: STRAY_REGISTRY_PLUGIN,
         name: "Stray Registry Plugin",
         version: "1.0.0",
@@ -216,15 +216,15 @@ describe("installed plugins boot refuses to run", () => {
 
     (await screen.findByTestId(`plugin-config:row:${STRAY_REGISTRY_PLUGIN}`)).click();
     await waitFor(() =>
-      expect(screen.getByText("플러그인 레지스트리 항목 거부됨")).toBeTruthy(),
+      expect(screen.getByText("익스텐션 레지스트리 항목 거부됨")).toBeTruthy(),
     );
 
     (await screen.findByTestId(`plugin-config:row:${CRASHING_PLUGIN}`)).click();
     await waitFor(() =>
-      expect(screen.getByText("플러그인 로드 중 오류 발생")).toBeTruthy(),
+      expect(screen.getByText("익스텐션 로드 중 오류 발생")).toBeTruthy(),
     );
     // The two refusals never share a sentence: a single generic "failed to
     // load" panel would leave the user in the same dead end as no card.
-    expect(screen.queryByText("플러그인 레지스트리 항목 거부됨")).toBeNull();
+    expect(screen.queryByText("익스텐션 레지스트리 항목 거부됨")).toBeNull();
   });
 });

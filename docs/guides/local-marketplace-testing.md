@@ -46,7 +46,7 @@ commit in a clone whose remote it is) to publish a new version.
 2. Settings → Marketplace → Add → Add marketplace, and enter
    `http://127.0.0.1:<port>/my-marketplace`. The preview lists the packages
    per kind and any the app skipped, with the reason.
-3. Install from the catalog. Plugins show the rung that delivered them; MCP
+3. Install from the catalog. Extensions show the rung that delivered them; MCP
    servers report a connection warning when they were saved but did not
    connect.
 4. Publish a new version, press Refresh in Sources, and update from the

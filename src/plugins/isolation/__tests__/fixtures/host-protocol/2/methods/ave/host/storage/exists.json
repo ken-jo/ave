@@ -1,0 +1,15 @@
+{
+  "request": {
+    "id": 5,
+    "jsonrpc": "2.0",
+    "method": "ave/host/storage/exists",
+    "params": {
+      "relPath": "state.json"
+    }
+  },
+  "response": {
+    "id": 5,
+    "jsonrpc": "2.0",
+    "result": true
+  }
+}

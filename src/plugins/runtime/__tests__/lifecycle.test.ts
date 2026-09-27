@@ -15,7 +15,7 @@ import {
   makeTestPluginRuntime,
   TestPluginRuntime,
 } from "../../__tests__/test-helpers.js";
-import { agentPluginsDocument } from "../../__tests__/test-helpers.js";
+import { servedAgentPluginsDocument } from "../../__tests__/test-helpers.js";
 
 describe("PluginRuntime lifecycle — restartPlugin", () => {
   let testDir: string;
@@ -73,7 +73,7 @@ export default async function createPlugin() {
     );
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedAgentPluginsDocument({
         id: "lc-restart",
         name: "LC Restart",
         version: "1.0.0",
@@ -136,7 +136,7 @@ export default async function createPlugin() {
     );
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedAgentPluginsDocument({
         id: "lc-restart-remove-race",
         name: "Restart Remove Race",
         version: "1.0.0",
@@ -209,7 +209,7 @@ export default async function createPlugin() {
     );
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedAgentPluginsDocument({
         id: pluginId,
         name: "Restart Shutdown Cancel",
         version: "1.0.0",
@@ -273,7 +273,7 @@ export default async function createPlugin() {
     );
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedAgentPluginsDocument({
         id: "lc-restart-timeout",
         name: "Restart Timeout",
         version: "1.0.0",
@@ -324,7 +324,7 @@ export default async function createPlugin() {
     );
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedAgentPluginsDocument({
         id: "lc-stop-timeout",
         name: "Stop Timeout",
         version: "1.0.0",
@@ -385,7 +385,7 @@ export default async function createPlugin() {
     );
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedAgentPluginsDocument({
         id: "lc-bust",
         name: "LC Cache Bust",
         version: "1.0.0",
@@ -440,7 +440,7 @@ export default async function createPlugin() {
     );
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedAgentPluginsDocument({
         id: "lc-fail-manifest",
         name: "LC Fail Manifest",
         version: "1.0.0",
@@ -486,7 +486,7 @@ export default async function createPlugin() {
     );
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedAgentPluginsDocument({
         id: "lc-restartall",
         name: "LC RestartAll",
         version: "1.0.0",
@@ -528,7 +528,7 @@ export default async function createPlugin() {
     );
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedAgentPluginsDocument({
         id: "lc-disable",
         name: "LC Disable",
         version: "1.0.0",
@@ -583,7 +583,7 @@ export default async function createPlugin() {
     );
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedAgentPluginsDocument({
         id: pluginId,
         name: pluginId,
         version: "1.0.0",
@@ -617,7 +617,7 @@ export default async function createPlugin() {
     );
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedAgentPluginsDocument({
         id: pluginId,
         name: pluginId,
         version: "1.0.0",
@@ -752,7 +752,7 @@ export default async function createPlugin() {
     );
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedAgentPluginsDocument({
         id: pluginId,
         name: pluginId,
         version: "1.0.0",

@@ -11,8 +11,8 @@ examples in the session or owning feature state. Do not duplicate rules.
 ## Role, goal, and completion
 
 The Ave Electron host installs git marketplace packages. User data is stored
-only under `~/.ave/`. Plugins use a manifest, runtime handler, and HostApi
-contract vendored at an app release tag. Add no plugin-specific host branches.
+only under `~/.ave/`. Extensions use a manifest, runtime handler, and HostApi
+contract vendored at an app release tag. Add no extension-specific host branches.
 
 Resolve the user's request completely, within what is permitted. Completion
 means:
@@ -53,7 +53,7 @@ once the evidence answers the core request.
 
 | Information needed | Evidence to use first | What to avoid |
 |---|---|---|
-| Private/on-machine state: installed plugins, MCP, settings, sessions | The owning store under `~/.ave/`, or HostApi | Inferring existence or state from WebSearch |
+| Private/on-machine state: installed extensions, MCP, settings, sessions | The owning store under `~/.ave/`, or HostApi | Inferring existence or state from WebSearch |
 | Latest version of a marketplace package | The installed sources' synced snapshots under `~/.ave/marketplaces/` | Public search engines |
 | Ave internal issues and PRs | `gh -R former_org/<repo> ...` | WebSearch |
 | Public library and API information | Official documentation and WebSearch | Inferring currency from internal files alone |
@@ -78,15 +78,15 @@ sits at the root.
 | Chat sessions | `~/.ave/sessions/<sessionId>.jsonl` |
 | Routine state | `~/.ave/routine/routines.json`, `~/.ave/routine/sessions/<routineId>/<firedAt>.jsonl` |
 | MCP catalogue and installs | `~/.ave/mcp/servers.json`, `~/.ave/mcp/<slug>/` |
-| Plugin installs | `~/.ave/plugins/<pluginId>/` |
-| Plugin writable state | `~/.ave/plugins/<pluginId>/data/` |
+| Extension installs | `~/.ave/plugins/<pluginId>/` |
+| Extension writable state | `~/.ave/plugins/<pluginId>/data/` |
 
 - A domain's settings, sessions, cache, and state belong in the owning feature
   directory. Do not scatter a new feature's files across the `~/.ave/` root.
 - Use `openFeatureNamespace` for a new persisted namespace. Directories are
   `0o700` and files `0o600`; secrets must be encrypted at rest.
-- A plugin keeps writable state only in its own `pluginDataDir`,
-  `~/.ave/plugins/<pluginId>/data/`. The plugin root may be replaced on update.
+- An extension keeps writable state only in its own `pluginDataDir`,
+  `~/.ave/plugins/<pluginId>/data/`. The extension root may be replaced on update.
   Reach other domains, such as sessions and routines, through HostApi.
 - Follow each store's write contract. Append to the audit transcript, and do not
   treat a file its owning store rewrites — a session, for instance — as if it
@@ -95,7 +95,7 @@ sits at the root.
   released only by its holder. A `*.disabled/` directory is trust withheld until
   the user approves it. A `*.sig` is refreshed together with the file it signs.
 
-## MCP, plugins, and timeouts
+## MCP, extensions, and timeouts
 
 ### MCP
 
@@ -106,17 +106,17 @@ sits at the root.
   `src/shared/tool-timeout-policy.ts`. Do not route around the host ceiling
   through activity or server configuration.
 
-### Plugins
+### Extensions
 
 - `tools[]` in the current manifest holds MCP Tool objects carrying name,
   description, inputSchema, and UI metadata. Do not produce a legacy tool-name
   list or a `toolSchemas` shape.
-- Execute plugins through the runtime handler and HostApi. Vendor unchanged
+- Execute extensions through the runtime handler and HostApi. Vendor unchanged
   `public-contract.ts` and `plugin-manifest.schema.json` in `contract/` from an
   app release tag; record the tag and SHA-256 hashes in `contract/sources.json`.
   Set `requires.minAppVersion` to a release supporting every member used.
 - A tool name must satisfy `^[a-zA-Z_][a-zA-Z0-9_]*$`.
-- A plugin manifest does not decide its permission category. The host computes
+- An extension manifest does not decide its permission category. The host computes
   the effective risk category from per-call signals, and permission policy
   enforces it.
 - The single source of timeout values is `TOOL_TIMEOUT_POLICY` in

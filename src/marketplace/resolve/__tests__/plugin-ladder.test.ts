@@ -34,7 +34,7 @@ const ENTRY_JS = "export default {};\n";
 const authority = (patch: Partial<PluginAuthority> = {}): PluginAuthority => ({
   capabilities: ["notes:read"],
   networkAccess: { allowedDomains: ["api.example.com"] },
-  requires: { minAppVersion: "0.12.0" },
+  requires: { minAppVersion: "0.12.0", hostProtocol: "2" },
   ...patch,
 });
 
@@ -50,7 +50,7 @@ function pluginZip(name: string, version: string, auth: PluginAuthority = author
 }
 
 function descriptor(name: string, version: string, artifact: Record<string, unknown>, auth: PluginAuthority = authority()): string {
-  return `${JSON.stringify({ schemaVersion: 2, kind: "plugin", name, version, minAppVersion: "0.12.0", payload: { authority: auth, artifact } })}\n`;
+  return `${JSON.stringify({ schemaVersion: 2, kind: "plugin", name, version, minAppVersion: "0.12.0", hostProtocol: auth.requires?.hostProtocol, payload: { authority: auth, artifact } })}\n`;
 }
 
 const marketIndex = (packages: unknown[]) => `${JSON.stringify({ schemaVersion: 2, name: "acme", displayName: "Acme", packages })}\n`;
@@ -405,6 +405,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
                 version: "1.0.0",
                 commit: base,
                 minAppVersion: "0.12.0",
+                hostProtocol: "2",
                 // The index widens what the descriptor at `base` declares.
                 authority: authority({ capabilities: ["notes:read", "notes:write"] }),
                 artifact: { tree: "plugins/alpha" },

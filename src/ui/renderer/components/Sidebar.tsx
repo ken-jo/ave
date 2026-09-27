@@ -2415,6 +2415,8 @@ export function Sidebar({
               className="flex-1 min-h-0 [&_[data-radix-scroll-area-viewport]>div]:!block [&_[data-radix-scroll-area-viewport]>div]:!min-w-0"
             >
               <div className={`px-2 pt-0 pb-1 space-y-0.5 ${compact ? "flex flex-col items-center" : ""}`}>
+                {/* listPluginUiExtensions is sourced from the code-package runtime;
+                    this DTO has no catalog kind, and bundle packages do not enter it. */}
                 {hasPluginEntries ? (
                   <NavGroup
                     group="plugins"

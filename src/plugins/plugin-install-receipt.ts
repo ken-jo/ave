@@ -4,6 +4,7 @@ import { writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 import { PLUGIN_RUNTIME_DIR_NAMES } from "./plugin-storage-layout.js";
 import { createLogger } from "../lib/logger.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
+import { isSemver } from "../shared/semver-compare.js";
 
 const log = createLogger("plugin-install-receipt");
 
@@ -71,6 +72,7 @@ export interface SignedOrLocalInstallReceipt {
   signerKeyId: string | null;
   admission: PluginAdmissionRecord | null;
   installedAt: string;
+  reviewedAppVersion?: string;
   files: InstallReceiptFile[];
 }
 
@@ -90,6 +92,7 @@ export interface GitInstallReceipt {
   admission: null;
   git: GitInstallRecord;
   installedAt: string;
+  reviewedAppVersion?: string;
   files: InstallReceiptFile[];
 }
 
@@ -172,6 +175,7 @@ export async function buildInstallReceipt(
     admission?: PluginAdmissionRecord | null;
     files: string[];
     installedAt?: string;
+    reviewedAppVersion?: string;
   },
 ): Promise<{ receipt: SignedOrLocalInstallReceipt; raw: string }> {
   const receipt: SignedOrLocalInstallReceipt = {
@@ -183,6 +187,7 @@ export async function buildInstallReceipt(
     signerKeyId: input.signerKeyId,
     admission: input.admission ?? null,
     installedAt: input.installedAt ?? new Date().toISOString(),
+    ...(input.reviewedAppVersion ? { reviewedAppVersion: input.reviewedAppVersion } : {}),
     files: await hashReceiptFiles(pluginRoot, input.files),
   };
   return { receipt, raw: serializeInstallReceipt(receipt) };
@@ -197,6 +202,7 @@ export async function buildGitInstallReceipt(
     git: GitInstallRecord;
     files: string[];
     installedAt?: string;
+    reviewedAppVersion?: string;
   },
 ): Promise<{ receipt: GitInstallReceipt; raw: string }> {
   const problem = gitInstallRecordProblem(input.git);
@@ -212,6 +218,7 @@ export async function buildGitInstallReceipt(
     admission: null,
     git: input.git,
     installedAt: input.installedAt ?? new Date().toISOString(),
+    ...(input.reviewedAppVersion ? { reviewedAppVersion: input.reviewedAppVersion } : {}),
     files: await hashReceiptFiles(pluginRoot, input.files),
   };
   return { receipt, raw: serializeInstallReceipt(receipt) };
@@ -397,6 +404,10 @@ export async function verifyInstallReceiptRaw(
   if (receipt.pluginId !== pluginId) {
     return { ok: false, reason: `install receipt plugin mismatch: expected ${pluginId}, got ${receipt.pluginId}` };
   }
+  if (receipt.reviewedAppVersion !== undefined && (
+    typeof receipt.reviewedAppVersion !== "string"
+    || !isSemver(receipt.reviewedAppVersion)
+  )) return { ok: false, reason: "invalid reviewed app version in install receipt" };
 
   // marketplace receipts must carry a real signerKeyId.
   // The packaged-build gate for local-dev receipts lives in the caller
