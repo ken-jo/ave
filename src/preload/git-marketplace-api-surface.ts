@@ -50,7 +50,7 @@ export function buildGitMarketplaceApiSurface(): GitMarketplaceApi {
     packageDetail: (key) => call(channels.packageDetail, key),
     planInstall: (request) => call(channels.installPlan, request),
     planUpdate: (key) => call(channels.updatePlan, key),
-    executeInstall: (planId) => call(channels.installExecute, planId),
+    executeInstall: (planId, approvedMcpServers) => call(channels.installExecute, planId, approvedMcpServers),
     uninstall: (request) => call(channels.uninstall, request),
     previewDirectMcp: (request) => call(channels.directPreview, request),
     onSyncProgress: (listener) => subscribe(channels.syncProgress, parseSyncProgress, listener),

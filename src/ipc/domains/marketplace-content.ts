@@ -33,6 +33,7 @@ import { aveHome } from "../../shared/ave-home.js";
 import { setInstalledThemeIds } from "../../shared/plugin-theme-cache.js";
 import { DEFAULT_BUNDLE_ID } from "../../shared/theme-bundles.js";
 import { errorMessage } from "../../shared/error-message.js";
+import type { McpComponentConsent } from "../../shared/git-marketplace.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../gated.js";
 import type { IpcDeps } from "../types.js";
 import { broadcastSettingsSnapshot, mutateMarketplaceProviderPresets } from "./settings.js";
@@ -140,12 +141,13 @@ export function createContentActivation(deps: IpcDeps, mcpRuntime?: AgentPluginM
   };
 
   return {
-    async activate(content: ParsedContent, entry: LedgerEntry, previous: LedgerEntry | null, adopt: boolean, dir?: string) {
+    async activate(content: ParsedContent, entry: LedgerEntry, previous: LedgerEntry | null, adopt: boolean, dir?: string, approvedMcpServers: readonly McpComponentConsent[] = []) {
       if (content.kind === "agent-plugin") {
         if (!mcpRuntime || !dir) throw new Error("agent plugin MCP activation requires its installed directory and runtime");
-        await mcpRuntime.activate({ name: entry.name, version: entry.version, generationId: entry.origin.contentSha256, dir, content });
+        await mcpRuntime.activate({ name: entry.name, version: entry.version, generationId: entry.origin.contentSha256, dir, content }, approvedMcpServers);
         return;
       }
+      if (approvedMcpServers.length > 0) throw new Error("MCP component consent applies only to an agent plugin");
       if (!previous && heldBySettings(content)) {
         // Adopting a legacy activation (design §16.3): the settings already describe it, so they stay as they are.
         if (adopt) return;

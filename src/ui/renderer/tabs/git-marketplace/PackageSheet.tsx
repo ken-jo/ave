@@ -140,6 +140,7 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, onC
   const [trustRewrite, setTrustRewrite] = useState(false);
   const [switchConsent, setSwitchConsent] = useState(false);
   const [removeData, setRemoveData] = useState(false);
+  const [approvedMcpServers, setApprovedMcpServers] = useState<Record<string, boolean>>({});
   const [now, setNow] = useState(() => Date.now());
 
   const load = useCallback(async (key: PackageKeyView) => {
@@ -151,6 +152,7 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, onC
 
   const plan = useCallback(async (key: PackageKeyView, options: { update?: boolean; version?: string; switchSource?: boolean } = {}) => {
     setBusy(true);
+    setApprovedMcpServers({});
     try {
       const result = options.update
         ? await api.planUpdate(key)
@@ -168,6 +170,7 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, onC
     setTrustRewrite(false);
     setSwitchConsent(false);
     setRemoveData(false);
+    setApprovedMcpServers({});
     if (!target) return;
     void load(target.key);
     if (target.mode === "update") void plan(target.key, { update: true });
@@ -190,7 +193,12 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, onC
 
   const execute = async (reviewed: InstallPlanView | UpdatePlanView) => {
     setStage({ stage: "installing", plan: reviewed, progress: null });
-    const result = await api.executeInstall(reviewed.planId);
+    const selected = Object.entries(reviewed.components?.mcpServers ?? {})
+      .filter(([name]) => approvedMcpServers[name])
+      .map(([name, server]) => ({ name, digest: server.digest }));
+    const result = selected.length > 0
+      ? await api.executeInstall(reviewed.planId, selected)
+      : await api.executeInstall(reviewed.planId);
     if (result.ok) {
       setStage({ stage: "done", result: result.value });
       onChanged();
@@ -378,6 +386,26 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, onC
               {reviewPlan.components && (
                 <Section title={t("gitMarketplace.components.title")}>
                   <ComponentsList components={reviewPlan.components} />
+                </Section>
+              )}
+              {reviewPlan.key.kind === "agent-plugin" && reviewPlan.components && Object.keys(reviewPlan.components.mcpServers).length > 0 && (
+                <Section title={t("gitMarketplace.review.mcpConsentTitle")}>
+                  <p className="text-xs text-muted-foreground">{t("gitMarketplace.review.mcpConsentHelp")}</p>
+                  <div className="space-y-2 pt-2">
+                    {Object.entries(reviewPlan.components.mcpServers).map(([name, server]) => (
+                      <label key={name} className="flex items-start gap-2 text-xs" data-testid={`git-marketplace:mcp-consent:${name}`}>
+                        <Checkbox checked={approvedMcpServers[name] === true}
+                          onCheckedChange={(checked) => setApprovedMcpServers((current) => ({ ...current, [name]: checked === true }))} />
+                        <span className="space-y-1">
+                          <span className="block font-medium">{t("gitMarketplace.review.mcpConsent", { name })}</span>
+                          <code className="block break-all">{server.transport === "stdio" ? [server.command, ...(server.args ?? [])].join(" ") : server.url}</code>
+                          {server.transport === "stdio" && <span className="block">{t("gitMarketplace.review.mcpCwd", { cwd: server.cwd })}</span>}
+                          <span className="block">{t("gitMarketplace.review.mcpFingerprint", { digest: server.digest })}</span>
+                          {server.auth === "api-key" && <span className="block">{t("gitMarketplace.review.mcpCredential")}</span>}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
                 </Section>
               )}
               {reviewPlan.mcp && (

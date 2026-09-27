@@ -149,6 +149,28 @@ describe("GitMarketplaceTab search answers", () => {
 });
 
 describe("GitMarketplaceTab package sheet", () => {
+  it("passes only separately selected plugin servers with their reviewed digests", async () => {
+    const item = entry("team", "agent-plugin", "meeting-kit");
+    const components = { skills: [], prompts: [], agents: [], routineTemplates: [], hooks: [],
+      mcpServers: {
+        notes: { transport: "stdio" as const, command: "./server/run", cwd: "${PLUGIN_ROOT}", digest: "a".repeat(64) },
+        remote: { transport: "http" as const, url: "https://example.test/mcp", digest: "b".repeat(64) },
+      } };
+    const fake = fakeMarketplace({ sources: [team], entries: [item] });
+    fake.market.packageDetail.mockResolvedValue({ ok: true, value: detail(item, { components }) });
+    fake.market.planInstall.mockResolvedValue({ ok: true, value: installPlan(item, { components }) });
+    fake.market.executeInstall.mockResolvedValue({ ok: true, value: { key: item.key, version: "1.0.0", action: { action: "install" }, rungs: [], connectionWarning: null } });
+    renderTab(fake);
+    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:agent-plugin:meeting-kit")).getByTestId("git-marketplace:card:state"));
+    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    fireEvent.click(within(sheet).getByTestId("git-marketplace:plan"));
+    const review = await within(sheet).findByTestId("git-marketplace:review");
+    expect(review).toHaveTextContent("./server/run");
+    fireEvent.click(within(review).getByTestId("git-marketplace:mcp-consent:notes").querySelector('[role="checkbox"]')!);
+    fireEvent.click(within(sheet).getByTestId("git-marketplace:confirm"));
+    await waitFor(() => expect(fake.market.executeInstall).toHaveBeenCalledWith("plan-1", [{ name: "notes", digest: "a".repeat(64) }]));
+  });
+
   it("shows plugin components and their digest changes before an update", async () => {
     const item = entry("team", "agent-plugin", "writer-plugin", { state: { state: "update", from: "1.0.0", to: "1.1.0" } });
     const components = { skills: [{ name: "draft", hasScripts: false, digest: "a".repeat(64) }], mcpServers: {}, prompts: [], agents: [], routineTemplates: [], hooks: [] };

@@ -63,13 +63,41 @@ describe("installed agent plugin MCP publication", () => {
     const { item, dataDir } = packageFixture();
     const prepared = { published: false };
     const discard = vi.fn(async () => undefined);
+    const trust = new PluginMcpTrustStore();
+    let projection: Parameters<PluginMcpTrustStore["isApproved"]>[0] | undefined;
     const runtime = new AgentPluginMcpRuntime({
-      prepareBundledGeneration: vi.fn(async () => prepared),
+      prepareBundledGeneration: vi.fn(async (_owner, projections) => { projection = projections[0]; return prepared; }),
       publishBundledGeneration: () => { throw new Error("runtime approval not admitted by policy"); },
       discardBundledGeneration: discard,
       disconnectBundledGeneration: vi.fn(async () => undefined),
-    } as never, { trust: new PluginMcpTrustStore(), dataDirForPackage: async () => dataDir });
-    await expect(runtime.sync([item])).rejects.toThrow(/not admitted/u);
+    } as never, { trust, dataDirForPackage: async () => dataDir });
+    await expect(runtime.activate(item, [{ name: "notes", digest: "b".repeat(64) }])).rejects.toThrow(/not admitted/u);
     expect(discard).toHaveBeenCalledWith(prepared);
+    expect(projection && trust.isApproved(projection)).toBe(false);
+  });
+
+  it("requires the reviewed digest and does not transfer consent to a new version", async () => {
+    const { item, dataDir } = packageFixture();
+    const trustPath = join(dataDir, "approvals.json");
+    const trust = new PluginMcpTrustStore(trustPath);
+    const admissions: boolean[] = [];
+    let firstProjection: Parameters<PluginMcpTrustStore["isApproved"]>[0] | undefined;
+    const prepare = vi.fn(async (_owner, projections, store: PluginMcpTrustStore) => {
+      firstProjection ??= projections[0];
+      admissions.push(store.isApproved(projections[0]));
+      return { published: false };
+    });
+    const runtime = new AgentPluginMcpRuntime({
+      prepareBundledGeneration: prepare,
+      publishBundledGeneration: vi.fn(),
+      discardBundledGeneration: vi.fn(),
+      disconnectBundledGeneration: vi.fn(async () => undefined),
+    } as never, { trust, dataDirForPackage: async () => dataDir });
+    await expect(runtime.activate(item, [{ name: "notes", digest: "f".repeat(64) }])).rejects.toThrow(/does not match/u);
+    expect(prepare).not.toHaveBeenCalled();
+    await runtime.activate(item, [{ name: "notes", digest: "b".repeat(64) }]);
+    expect(firstProjection && new PluginMcpTrustStore(trustPath).isApproved(firstProjection)).toBe(true);
+    await runtime.activate({ ...item, version: "1.1.0", generationId: "c".repeat(64) });
+    expect(admissions).toEqual([true, false]);
   });
 });

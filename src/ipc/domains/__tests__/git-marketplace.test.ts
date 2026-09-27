@@ -247,9 +247,12 @@ describe("git marketplace IPC boundary", () => {
     await expect(invokeFileIpcHandler(handlers, channels.installPlan, { sourceId: "acme", kind: "plugin", name: "x", switchSource: "yes" })).resolves.toMatchObject(invalid);
     await expect(invokeFileIpcHandler(handlers, channels.sourcesSetEnabled, "acme", "true")).resolves.toMatchObject(invalid);
     await expect(invokeFileIpcHandler(handlers, channels.catalogList, { installedOnly: 1 })).resolves.toMatchObject(invalid);
+    await expect(invokeFileIpcHandler(handlers, channels.installExecute, "p1", [{ name: "notes", digest: "not-a-digest" }])).resolves.toMatchObject(invalid);
+    await expect(invokeFileIpcHandler(handlers, channels.installExecute, "p1", [{ name: "notes", digest: "a".repeat(64) }, { name: "notes", digest: "a".repeat(64) }])).resolves.toMatchObject(invalid);
     await expect(invokeFileIpcHandler(handlers, channels.directPreview, { serverJson: "{}", select: { package: -1 } })).resolves.toMatchObject(invalid);
     expect(service.previewSource).not.toHaveBeenCalled();
     expect(service.planInstall).not.toHaveBeenCalled();
+    expect(service.executeInstall).not.toHaveBeenCalled();
     expect(service.setEnabled).not.toHaveBeenCalled();
     expect(service.catalog).not.toHaveBeenCalled();
     expect(service.previewDirectMcp).not.toHaveBeenCalled();

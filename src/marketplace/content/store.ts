@@ -21,6 +21,7 @@ import { createLogger } from "../../lib/logger.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { assertNotRequiredByPolicy } from "../boot-installs/run.js";
 import type { PackageDescriptor } from "../catalog/types.js";
+import type { McpComponentConsent } from "../../shared/git-marketplace.js";
 import { MarketplaceError } from "../errors.js";
 import { DESCRIPTOR_NAME, readDescriptorAtVersion, type PackagePlan, type RepositoryAccess } from "../resolve/descriptor.js";
 import { classifyInstall, type InstallAction, type InstalledPackage } from "../resolve/identity.js";
@@ -116,7 +117,7 @@ export interface ContentActivation {
    * the first-boot migration is recording an activation the settings already
    * hold (design §16.3), which leaves those settings as they are.
    */
-  activate(content: ParsedContent, entry: LedgerEntry, previous: LedgerEntry | null, adopt: boolean, dir?: string): Promise<void>;
+  activate(content: ParsedContent, entry: LedgerEntry, previous: LedgerEntry | null, adopt: boolean, dir?: string, approvedMcpServers?: readonly McpComponentConsent[]): Promise<void>;
   /** Before the ledger drops the package; a throw leaves it installed. `content` is null when its files no longer parse. */
   deactivate(entry: LedgerEntry, content: ParsedContent | null, dir?: string): Promise<void>;
 }
@@ -221,7 +222,7 @@ export class ContentStore {
     return join(this.options.root, entry.kind, entry.name, entry.version);
   }
 
-  async install(staged: StagedContent, options: { switchSource?: boolean; adopt?: boolean } = {}): Promise<{ action: InstallAction; entry: LedgerEntry }> {
+  async install(staged: StagedContent, options: { switchSource?: boolean; adopt?: boolean; approvedMcpServers?: readonly McpComponentConsent[] } = {}): Promise<{ action: InstallAction; entry: LedgerEntry }> {
     return this.serialize(async () => {
       const { plan } = staged;
       const previous = this.ledger.get(plan.kind, plan.name) ?? null;
@@ -263,7 +264,7 @@ export class ContentStore {
         await renameDirectory(files, dir);
         try {
           await this.ledger.put(entry);
-          await this.options.activation.activate(staged.content, entry, previous, options.adopt === true, dir);
+          await this.options.activation.activate(staged.content, entry, previous, options.adopt === true, dir, options.approvedMcpServers);
         } catch (error) {
           await undo([
             ["restore the ledger entry", () => (previous ? this.ledger.put(previous) : this.ledger.remove(entry.kind, entry.name))],

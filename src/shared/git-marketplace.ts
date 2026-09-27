@@ -395,6 +395,12 @@ export interface SyncProgressView {
   state: "syncing" | "done" | "failed";
 }
 
+/** Consent for one exact reviewed server component; the installed tree must match its digest. */
+export interface McpComponentConsent {
+  name: string;
+  digest: string;
+}
+
 export interface GitMarketplaceApi {
   listSources(): Promise<GitMarketplaceResult<SourceView[]>>;
   previewSource(request: SourcePreviewRequest): Promise<GitMarketplaceResult<SourcePreviewView>>;
@@ -409,7 +415,7 @@ export interface GitMarketplaceApi {
   packageDetail(key: PackageKeyView): Promise<GitMarketplaceResult<PackageDetailView>>;
   planInstall(request: InstallPlanRequest): Promise<GitMarketplaceResult<InstallPlanView>>;
   planUpdate(key: PackageKeyView): Promise<GitMarketplaceResult<UpdatePlanView>>;
-  executeInstall(planId: string): Promise<GitMarketplaceResult<InstallResultView>>;
+  executeInstall(planId: string, approvedMcpServers?: readonly McpComponentConsent[]): Promise<GitMarketplaceResult<InstallResultView>>;
   uninstall(request: UninstallRequest): Promise<GitMarketplaceResult<UninstallResultView>>;
   previewDirectMcp(request: DirectMcpPreviewRequest): Promise<GitMarketplaceResult<DirectMcpPreviewView>>;
   onSyncProgress(listener: (progress: SyncProgressView) => void): () => void;

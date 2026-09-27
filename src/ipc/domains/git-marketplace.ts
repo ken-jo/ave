@@ -67,6 +67,7 @@ import {
   type InstallPlanRequest,
   type InstalledKeyView,
   type InstallProgressView,
+  type McpComponentConsent,
   type PackageKeyView,
   type SourceAddRequest,
   type SourcePreviewRequest,
@@ -380,6 +381,21 @@ function optionalFlag(value: unknown, what: string): boolean | undefined {
   return value;
 }
 
+function mcpComponentConsents(value: unknown): readonly McpComponentConsent[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 64) throw new InvalidRequest("approvedMcpServers must be an array of at most 64 entries");
+  const names = new Set<string>();
+  return value.map((item: unknown) => {
+    const consent = record(item, "an MCP server consent");
+    if (Object.keys(consent).some((key) => key !== "name" && key !== "digest")) throw new InvalidRequest("MCP server consent has an unknown field");
+    const name = text(consent.name, "MCP server name", 128);
+    const digest = text(consent.digest, "MCP server digest", 64);
+    if (!/^[a-f0-9]{64}$/u.test(digest) || names.has(name)) throw new InvalidRequest("MCP server consent has an invalid digest or repeated name");
+    names.add(name);
+    return { name, digest };
+  });
+}
+
 function packageKey(value: unknown): PackageKeyView {
   const key = record(value, "the package key");
   if (!isPackageKind(key.kind)) throw new InvalidRequest("kind is not a package kind");
@@ -549,7 +565,7 @@ export function registerGitMarketplaceHandlers(
   handle(channels.packageDetail, (service, [key]) => service.detail(packageKey(key)));
   handle(channels.installPlan, (service, [request]) => service.planInstall(planRequest(request)));
   handle(channels.updatePlan, (service, [key]) => service.planUpdate(packageKey(key)));
-  handle(channels.installExecute, (service, [planId]) => service.executeInstall(text(planId, "planId", 64)));
+  handle(channels.installExecute, (service, [planId, consents]) => service.executeInstall(text(planId, "planId", 64), mcpComponentConsents(consents)));
   handle(channels.uninstall, (service, [request]) => service.uninstall(uninstallRequest(request)));
   handle(channels.directPreview, (service, [request]) => service.previewDirectMcp(directMcpRequest(request)));
 

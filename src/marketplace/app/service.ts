@@ -29,6 +29,7 @@ import type {
   InstallProgressView,
   InstallResultView,
   McpRuntimeView,
+  McpComponentConsent,
   PackageDetailView,
   PackageKeyView,
   PackageUpdateView,
@@ -809,7 +810,7 @@ export class MarketplaceService implements RetirementEntryLookup {
     this.options.onInstallProgress?.({ planId, phase, rung, bytes: null, total: null });
   }
 
-  async executeInstall(planId: string): Promise<InstallResultView> {
+  async executeInstall(planId: string, approvedMcpServers: readonly McpComponentConsent[] = []): Promise<InstallResultView> {
     const held = this.plans.take(planId);
     // The gates must judge the new install by the source it is about to be bound to, not the one it leaves.
     const target = heldTarget(held);
@@ -817,14 +818,17 @@ export class MarketplaceService implements RetirementEntryLookup {
     this.pendingBindings.set(key, target);
     try {
       await this.feedRevocations();
-      return await this.runInstall(planId, held);
+      if (approvedMcpServers.length > 0 && (held.kind !== "content" || held.plan.kind !== "agent-plugin")) {
+        throw new Error("MCP component consent applies only to an agent plugin install");
+      }
+      return await this.runInstall(planId, held, approvedMcpServers);
     } finally {
       if (this.pendingBindings.get(key) === target) this.pendingBindings.delete(key);
       await this.refeedAfter(`${target.kind} ${target.name} install`);
     }
   }
 
-  private async runInstall(planId: string, held: HeldPlan): Promise<InstallResultView> {
+  private async runInstall(planId: string, held: HeldPlan, approvedMcpServers: readonly McpComponentConsent[]): Promise<InstallResultView> {
     this.progress(planId, "resolving");
     let result: InstallResultView;
     if (held.kind === "plugin") {
@@ -867,7 +871,7 @@ export class MarketplaceService implements RetirementEntryLookup {
         stageContentPackage(plan, access, { workRoot: this.options.workRoot, english: this.options.english }),
       );
       this.progress(planId, "installing");
-      const outcome = await this.options.installers.content.install(staged, { switchSource: held.switchSource, adopt: held.adopt });
+      const outcome = await this.options.installers.content.install(staged, { switchSource: held.switchSource, adopt: held.adopt, approvedMcpServers });
       result = { key: { sourceId: plan.sourceId, kind: plan.kind, name: plan.name }, version: plan.version, action: installActionView(outcome.action), rungs: [], connectionWarning: null };
     } else if (held.kind === "mcp") {
       const { plan } = held.resolved;

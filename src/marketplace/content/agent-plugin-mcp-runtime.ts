@@ -4,6 +4,7 @@ import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { resolveRuntimeMcp } from "../../mcp/agent-plugin-mcp.js";
 import type { McpManager } from "../../mcp/mcp-manager.js";
 import { PluginMcpTrustStore } from "../../mcp/plugin-mcp-projection.js";
+import type { McpComponentConsent } from "../../shared/git-marketplace.js";
 import type { InstalledAgentPluginRuntime } from "./service.js";
 
 type BundledManager = Pick<McpManager, "prepareBundledGeneration" | "publishBundledGeneration" | "discardBundledGeneration" | "disconnectBundledGeneration">;
@@ -55,14 +56,23 @@ export class AgentPluginMcpRuntime {
     this.active.delete(name);
   }
 
-  private async publishOne(item: InstalledAgentPluginRuntime): Promise<void> {
+  private async publishOne(item: InstalledAgentPluginRuntime, consents: readonly McpComponentConsent[] = []): Promise<void> {
     const pluginId = `agent-plugin/${item.name}`;
     const previous = this.active.get(item.name);
+    const selected = new Set<string>();
+    for (const consent of consents) {
+      const server = Object.hasOwn(item.content.components.mcpServers, consent.name)
+        ? item.content.components.mcpServers[consent.name] : undefined;
+      if (!server || server.digest !== consent.digest || selected.has(consent.name)) {
+        throw new Error(`agent plugin ${item.name} MCP consent does not match the installed component ${consent.name}`);
+      }
+      selected.add(consent.name);
+    }
     if (Object.keys(item.content.components.mcpServers).length === 0) {
       await this.removeOne(item.name);
       return;
     }
-    if (previous?.version === item.version && previous.generationId === item.generationId && previous.dir === item.dir) return;
+    if (consents.length === 0 && previous?.version === item.version && previous.generationId === item.generationId && previous.dir === item.dir) return;
     const activationId = randomUUID();
     const projections = resolveRuntimeMcp(item.content.components.mcpServers, {
       packageName: item.name,
@@ -72,18 +82,26 @@ export class AgentPluginMcpRuntime {
       activationId,
       generationId: item.generationId,
     });
-    const prepared = await this.manager.prepareBundledGeneration(
-      { pluginId, generationId: activationId }, projections, await this.trustStore(),
-    );
-    try { this.manager.publishBundledGeneration(prepared); }
-    catch (error) { await this.manager.discardBundledGeneration(prepared); throw error; }
+    const trust = await this.trustStore();
+    const newApprovals = projections.filter((projection) => selected.has(projection.owner.localId) && !trust.isApproved(projection));
+    try {
+      for (const projection of newApprovals) trust.approve(projection);
+      const prepared = await this.manager.prepareBundledGeneration(
+        { pluginId, generationId: activationId }, projections, trust,
+      );
+      try { this.manager.publishBundledGeneration(prepared); }
+      catch (error) { await this.manager.discardBundledGeneration(prepared); throw error; }
+    } catch (error) {
+      for (const projection of newApprovals) trust.revoke(projection);
+      throw error;
+    }
     this.active.set(item.name, { version: item.version, generationId: item.generationId, dir: item.dir, activationId });
     if (previous) await this.manager.disconnectBundledGeneration(pluginId, previous.activationId);
   }
 
   /** Called inside the content-store transaction so a refused publication rolls back the ledger. */
-  async activate(item: InstalledAgentPluginRuntime): Promise<void> {
-    await this.serialize(() => this.publishOne(item));
+  async activate(item: InstalledAgentPluginRuntime, consents: readonly McpComponentConsent[] = []): Promise<void> {
+    await this.serialize(() => this.publishOne(item, consents));
   }
 
   async deactivate(name: string): Promise<void> {
