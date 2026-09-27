@@ -58,12 +58,9 @@ import {
 } from "../main/managed-child-processes.js";
 import {
   isAsrtSandboxActive,
-  wrapWorkerCommand,
   cleanupAsrtSandboxAfterCommand,
-  getDefaultSensitiveReadDenyPaths,
-  getDefaultSensitiveWriteDenyPaths,
 } from "../permissions/asrt-sandbox.js";
-import { buildSandboxedChildEnv } from "../tools/safe-env.js";
+import { bundledWrappedEnv, wrapBundledCommand } from "../sandbox/wrap-bundled-command.js";
 import { terminateChildProcess } from "../tools/terminate-child-process.js";
 import { createSandboxProcessHome } from "../permissions/sandbox-process-home.js";
 import {
@@ -71,7 +68,6 @@ import {
   unmarkMcpServerWrapped,
   type McpWrappedOwner,
 } from "../permissions/sandbox-capability.js";
-import { shellQuote } from "../lib/shell-resolver.js";
 import { scrubShortError } from "../shared/dlp.js";
 import { t } from "../i18n/index.js";
 import { sleep } from "../shared/abortable-deadline.js";
@@ -2202,13 +2198,7 @@ class StdioTransport implements McpTransport {
     baseEnv: NodeJS.ProcessEnv,
   ): Promise<void> {
     if (process.platform === "win32") {
-      throw new Error(
-        "[mcp-client] ASRT-wrapped MCP stdio on Windows is disabled because " +
-          "ASRT 0.0.75 cannot apply per-server filesystem.allowRead/allowWrite " +
-          "grants per exec; only denyRead/denyWrite are supported. Keep MCP " +
-          "stdio fail-closed until a Windows session-grant/control-channel " +
-          "design lands.",
-      );
+      throw new Error("[mcp-client] ASRT-wrapped MCP stdio on Windows cannot apply allowRead/allowWrite grants per exec");
     }
 
     const sandboxHome = createSandboxProcessHome();
@@ -2219,48 +2209,16 @@ class StdioTransport implements McpTransport {
     // all — NEVER cwd / NEVER the real HOME / NEVER any pre-existing dir. The
     // fresh process HOME is the only host-created writable compatibility path.
     const sandboxRoot = this.config.sandboxRoot;
-    const allowWrite = [sandboxHome.path, ...(sandboxRoot ? [sandboxRoot] : []),
+    const allowWrite = [...(sandboxRoot ? [sandboxRoot] : []),
       ...(this.config.pluginDataDir ? [this.config.pluginDataDir] : [])];
-    // Runtime dirs the worker legitimately needs to READ to start (its own jail
-    // root + the system temp dir). HOME is NOT re-allowed for read.
-    const tmpDir = process.env.TMPDIR ?? process.env.TEMP ?? process.env.TMP;
-    const allowRead = [
-      sandboxHome.path,
-      ...(sandboxRoot ? [sandboxRoot] : []),
-      ...(tmpDir ? [tmpDir] : []),
-    ];
-    // denyRead is the per-command read deny-list. ASRT's wrapWithSandbox reads
-    // `customConfig?.filesystem?.denyRead ?? config.filesystem.denyRead` — a
-    // per-command denyRead REPLACES the shared boot-config floor, it does NOT
-    // union. So a wrapped worker that only restated the secrets dir would lose
-    // the boot-config sensitive-read floor. Restate the CENTRALIZED deny-list
-    // here ({@link getDefaultSensitiveReadDenyPaths}, the SAME SOT the boot
-    // config unions) so a wrapped worker can never read `~/.ave/secrets`,
-    // session/routine history, `~/.ssh`, `~/.aws`, etc. This is a DENY-LIST of
-    // known-sensitive subpaths, NOT a read-allow jail — ASRT's read model is
-    // deny-only (`allowRead` only re-allows nested regions inside a deny).
-    // Worker-needed dirs (its sandbox root, tmp) are re-allowed via `allowRead`
-    // above and are never on the deny-list.
-    // No userDataDir arg here — mcp-client does not import electron. The
-    // fallback per-platform derivation (XDG-aware on Linux) provides coverage.
-    const denyRead = getDefaultSensitiveReadDenyPaths();
-    // denyWrite is likewise per-command and replaces the shared boot array.
-    // Restate the centralized persistence-vector SOT so an authorized MCP
-    // sandboxRoot cannot write shell rc files, credential dirs, LaunchAgents, or
-    // cron-like re-exec hooks if a future config broadens allowWrite.
-    const denyWrite = getDefaultSensitiveWriteDenyPaths();
-
-    // Assemble the command string DEFENSIVELY: shell-quote the resolved binary
-    // and every arg so a path with spaces / metacharacters cannot mis-split or
-    // inject a second command. ASRT runs this string under a POSIX shell.
-    const cmdline = [spawnCommand.command, ...spawnCommand.args]
-      .map((part) => shellQuote(part))
-      .join(" ");
 
     let wrapped = false;
     try {
-      const { argv, env } = await wrapWorkerCommand(cmdline, {
-        filesystem: { allowWrite, allowRead, denyRead, denyWrite },
+      const { argv, env } = await wrapBundledCommand({
+        command: spawnCommand.command,
+        args: spawnCommand.args,
+        sandboxHome,
+        allowWrite,
       });
       wrapped = true;
 
@@ -2279,7 +2237,7 @@ class StdioTransport implements McpTransport {
         stdio: ["pipe", "pipe", "pipe"],
         shell: false,
         windowsHide: true,
-        env: this.buildWrappedStdioEnv(baseEnv, env, { ...sandboxHome.env }),
+        env: bundledWrappedEnv(baseEnv, env, { ...sandboxHome.env }),
         ...(this.config.cwd ? { cwd: this.config.cwd } : {}),
       });
 
@@ -2295,43 +2253,6 @@ class StdioTransport implements McpTransport {
       }
       throw err;
     }
-  }
-
-  /**
-   * Compose the WRAPPED worker's env per platform (the 3b
-   * cross-platform gotcha):
-   *   - mac/linux: ASRT bakes the proxy into the command string and returns
-   *     `env === process.env`; buildSandboxedChildEnv contributes only the
-   *     allow-listed proxy/CA keys ASRT actually CHANGED (none extra here), so we
-   *     keep the existing minimal/secret-stripped base env unchanged.
-   *   - win32: ASRT returns a proxy-CARRYING env (srt-win forwards the proxy
-   *     vars verbatim); buildSandboxedChildEnv extracts ONLY those allow-listed
-   *     proxy/CA keys so the Windows proxy set propagates while host secrets
-   *     stay stripped.
-   * In both cases the per-server base env (PATH/HOME/... + approved config.env +
-   * apiKey) is preserved and the allow-listed ASRT proxy keys are merged on top.
-   */
-  private buildWrappedStdioEnv(
-    baseEnv: NodeJS.ProcessEnv,
-    wrappedEnv: NodeJS.ProcessEnv,
-    sandboxHomeEnv: Record<string, string>,
-  ): NodeJS.ProcessEnv {
-    // buildSandboxedChildEnv (safe-env.ts) returns a safe-whitelist baseline PLUS
-    // ONLY the ASRT proxy/CA/SANDBOX_RUNTIME keys ASRT changed relative to
-    // process.env. The keys that are present in that composed env but NOT in the
-    // safe baseline are exactly the ASRT-injected proxy overlay — none on
-    // mac/linux (proxy baked into the command string), the proxy set on win32
-    // (srt-win forwards it via env). Overlay that proxy set onto our per-server
-    // base env so the worker keeps its approved config.env + apiKey AND egress.
-    const asrtComposed = buildSandboxedChildEnv(wrappedEnv);
-    const safeBaseline = buildSandboxedChildEnv(process.env);
-    const proxyOverlay: Record<string, string> = {};
-    for (const [key, value] of Object.entries(asrtComposed)) {
-      if (value === undefined) continue;
-      if (safeBaseline[key] === value) continue; // part of the static baseline, not an ASRT injection
-      proxyOverlay[key] = value;
-    }
-    return { ...baseEnv, ...proxyOverlay, ...sandboxHomeEnv };
   }
 
   /**

@@ -63,6 +63,7 @@ export interface HookConfigEntry {
   matcher?: string;
   /** argv form of the command (always ≥1 element; argv[0] is the program). */
   command: string[];
+  env?: Record<string, string>;
   /** Per-entry timeout, clamped to `DEFAULT_HOOK_TIMEOUT_MS` (decision (d)). */
   timeoutMs: number;
   /** Origin discriminant — distinguishes config entries from `.sh` entries. */
@@ -188,7 +189,7 @@ export function classifyCommand(argv: string[]): CommandClass {
  * entries (with a warning for the malformed case) so a broken config can never
  * silently flip behavior.
  */
-export function parseHookConfig(raw: unknown): ParsedHookConfig {
+export function parseHookConfig(raw: unknown, options: { bundled?: boolean } = {}): ParsedHookConfig {
   const entries: HookConfigEntry[] = [];
   const warnings: string[] = [];
   const errors: string[] = [];
@@ -290,6 +291,18 @@ export function parseHookConfig(raw: unknown): ParsedHookConfig {
           return;
         }
 
+        let env: Record<string, string> | undefined;
+        if (handler.env !== undefined && options.bundled === true) {
+          if (!isRecord(handler.env) || Object.entries(handler.env).some(([key, value]) =>
+            !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(key) || typeof value !== "string"
+            || /[\u0000-\u001f\u007f]/u.test(value)
+            || /^(?:AVE_HOOK_|PLUGIN_ROOT$|PLUGIN_DATA$|HOME$|PATH$|SANDBOX_)/u.test(key))) {
+            errors.push(`hooks.json: ${id} handler.env has an invalid or reserved value — rejected`);
+            return;
+          }
+          env = handler.env as Record<string, string>;
+        }
+
         // Decision (d): clamp timeoutMs to the hook ceiling.
         let timeoutMs = DEFAULT_HOOK_TIMEOUT_MS;
         if (handler.timeoutMs !== undefined) {
@@ -311,6 +324,7 @@ export function parseHookConfig(raw: unknown): ParsedHookConfig {
           event,
           ...(matcher !== undefined ? { matcher } : {}),
           command,
+          ...(env ? { env } : {}),
           timeoutMs,
           source: "config",
         });
