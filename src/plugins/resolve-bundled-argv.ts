@@ -19,6 +19,12 @@ export interface ResolvedBundledArgv {
   fingerprint: string;
 }
 
+interface ClassifiedArgv {
+  symbolic: string[];
+  anchorIndexes: number[];
+  dataIndexes: number[];
+}
+
 const CONTROL = /[\u0000-\u001f\u007f]/u;
 const DRIVE = /^[A-Za-z]:/u;
 
@@ -50,7 +56,7 @@ function containedDataPath(dataDir: string, suffix: string, label: string): stri
  * literal indexes. PLUGIN_DATA exists before this call; its contents are not
  * part of the package fingerprint because they may change at runtime.
  */
-export function resolveBundledArgv(input: BundledArgvInput): ResolvedBundledArgv {
+function classifyBundledArgv(input: Pick<BundledArgvInput, "argv" | "label" | "policy" | "launcherLiteralIndexes">): ClassifiedArgv {
   const { argv, label } = input;
   if (input.policy !== "hook" && input.policy !== "mcp") throw new Error(`${label} has an unknown executable policy`);
   if (argv.length === 0) throw new Error(`${label} has no executable`);
@@ -109,12 +115,22 @@ export function resolveBundledArgv(input: BundledArgvInput): ResolvedBundledArgv
     }
   }
 
-  const anchored = anchorBundledCommand(input.generationRoot, "plugin.json", symbolic, input.baseFingerprint, label, anchorIndexes);
+  return { symbolic, anchorIndexes, dataIndexes };
+}
+
+/** Validate the symbolic package hook command before it enters a descriptor. */
+export function validateSymbolicHookArgv(argv: readonly string[], label: string): void {
+  classifyBundledArgv({ argv, label, policy: "hook" });
+}
+
+export function resolveBundledArgv(input: BundledArgvInput): ResolvedBundledArgv {
+  const { symbolic, anchorIndexes, dataIndexes } = classifyBundledArgv(input);
+  const anchored = anchorBundledCommand(input.generationRoot, "plugin.json", symbolic, input.baseFingerprint, input.label, anchorIndexes);
   const resolved = [...anchored.command];
   for (const index of dataIndexes) {
     const token = symbolic[index]!;
     const suffix = token === "${PLUGIN_DATA}" ? "" : token.slice("${PLUGIN_DATA}/".length);
-    resolved[index] = containedDataPath(input.dataDir, suffix, `${label} token ${index}`);
+    resolved[index] = containedDataPath(input.dataDir, suffix, `${input.label} token ${index}`);
   }
   return { argv: Object.freeze(resolved), fingerprint: anchored.fingerprint };
 }

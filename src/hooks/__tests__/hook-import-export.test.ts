@@ -1,0 +1,89 @@
+import { describe, expect, it } from "vitest";
+import { clearedImportedHooks, exportLegacyHooks, importLegacyHooks } from "../hook-import-export.js";
+import type { HookEvent } from "../script-hook-types.js";
+
+const block = (handler: unknown) => [{ matcher: "read_*", hooks: [handler] }];
+const sourcePath = "hooks/hooks.json";
+
+describe("hook import and export review", () => {
+  it("maps every supported event and keeps each entry blocked for protocol review", () => {
+    const names = ["PreToolUse", "PostToolUse", "PermissionRequest", "UserPromptSubmit",
+      "PostToolUseFailure", "PermissionDenied", "SessionStart", "SessionEnd", "Notification", "Stop",
+      "PreCompact", "PostCompact", "SubagentStart", "SubagentStop"];
+    const source = { hooks: Object.fromEntries(names.map((name) => [name, block({ type: "command",
+      command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/server/hook.js", "${CLAUDE_PLUGIN_DATA}/state.json"],
+      env: { STATE: "${CLAUDE_PLUGIN_DATA}/state.json" }, timeoutMs: 1200 })])) };
+    const result = importLegacyHooks(source, sourcePath);
+    expect(result.entries).toHaveLength(names.length);
+    expect(result.entries[0]).toMatchObject({ sourcePath, event: "pre", matcher: "read_*", timeoutMs: 1200,
+      needsAdaptation: true,
+      command: ["node", "${PLUGIN_ROOT}/server/hook.js", "${PLUGIN_DATA}/state.json"],
+      env: { STATE: "${PLUGIN_DATA}/state.json" } });
+    expect(result.diagnostics.filter((item) => item.group === "needs your input")).toHaveLength(names.length);
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({ group: "needs your input", sourcePath,
+      entry: "PreToolUse[0].hooks[0]" }));
+    expect(() => clearedImportedHooks(result.entries)).toThrow(/needs adaptation/);
+    const cleared = result.entries.map((entry) => ({ ...entry, needsAdaptation: false }));
+    expect(Object.keys(clearedImportedHooks(cleared).hooks)).toEqual(names);
+  });
+
+  it.each([
+    ["UnknownEvent", { type: "command", command: "node", args: ["./hook.js"] }, /no equivalent/],
+    ["PreToolUse", { type: "prompt", command: "node", args: ["./hook.js"] }, /no command equivalent/],
+    ["PreToolUse", { type: "command", command: "node ./hook.js" }, /shell strings are unsupported/],
+    ["PreToolUse", { type: "command", command: "node", args: ["${user_config.token}"] }, /unsupported setting/],
+  ] as const)("drops unmappable entry %# with its reason", (event, handler, reason) => {
+    const result = importLegacyHooks({ hooks: { [event]: block(handler) } }, sourcePath);
+    expect(result.entries).toEqual([]);
+    expect(result.diagnostics[0]?.sourcePath).toBe(sourcePath);
+    expect(result.diagnostics[0]?.message).toMatch(reason);
+  });
+
+  it.each(["constructor", "toString", "__proto__"])("drops inherited event name %s with a named diagnostic", (event) => {
+    const source = JSON.parse(JSON.stringify({ hooks: { [event]: block({ type: "command", command: "node", args: ["./hook.js"] }) } }));
+    const result = importLegacyHooks(source, sourcePath);
+    expect(result.entries).toEqual([]);
+    expect(result.diagnostics).toContainEqual({ group: "lost", sourcePath, entry: event,
+      message: `event ${event} has no equivalent` });
+  });
+
+  it.each(["constructor", "toString", "__proto__"])("rejects inherited event name %s during publication and export", (name) => {
+    const event = name as HookEvent;
+    expect(() => clearedImportedHooks([{ sourcePath, event, command: ["node", "./hook.js"], needsAdaptation: false }]))
+      .toThrow("unsupported event");
+    expect(() => exportLegacyHooks([{ id: "one", event, source: "config", command: ["node", "./hook.js"], timeoutMs: 1200 }]))
+      .toThrow("cannot be exported");
+  });
+
+  it.each([0, -1, 0.5, 1.5])("rejects imported timeoutMs %s after review with the native diagnostic", (timeoutMs) => {
+    const result = importLegacyHooks({ hooks: { PreToolUse: block({ type: "command", command: "node",
+      args: ["./hook.js"], timeoutMs }) } }, sourcePath);
+    expect(result.entries).toEqual([expect.objectContaining({ timeoutMs, needsAdaptation: true })]);
+    expect(() => clearedImportedHooks(result.entries.map((entry) => ({ ...entry, needsAdaptation: false }))))
+      .toThrow(/handler\.timeoutMs must be a positive integer/);
+  });
+
+  it("locates each rejected and review-required handler in its source file", () => {
+    const path = "declared/hooks/extra.json";
+    const result = importLegacyHooks({ hooks: { PreToolUse: [{ matcher: "read_*", hooks: [
+      { type: "prompt", prompt: "inspect" },
+      { type: "command", command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/server/hook.js"], timeoutMs: 1500 },
+    ] }] } }, path);
+    expect(result.entries).toEqual([expect.objectContaining({ sourcePath: path, event: "pre",
+      matcher: "read_*", command: ["node", "${PLUGIN_ROOT}/server/hook.js"], timeoutMs: 1500,
+      needsAdaptation: true })]);
+    expect(result.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ group: "lost", sourcePath: path, entry: "PreToolUse[0].hooks[0]" }),
+      expect.objectContaining({ group: "needs your input", sourcePath: path, entry: "PreToolUse[0].hooks[1]" }),
+    ]));
+    expect(() => importLegacyHooks({}, "")).toThrow("source path");
+  });
+
+  it("exports names, argv, placeholders, and the protocol notice", () => {
+    const result = exportLegacyHooks([{ id: "one", event: "pre", source: "config", timeoutMs: 1200,
+      command: ["node", "${PLUGIN_ROOT}/server/hook.js"], env: { STATE: "${PLUGIN_DATA}/state.json" } }]);
+    expect(result.hooks.PreToolUse).toMatchObject([{ hooks: [{ command: "node",
+      args: ["${CLAUDE_PLUGIN_ROOT}/server/hook.js"], env: { STATE: "${CLAUDE_PLUGIN_DATA}/state.json" } }] }]);
+    expect(result.notice).toMatch(/Stdin payload.*decision output.*matcher semantics/);
+  });
+});

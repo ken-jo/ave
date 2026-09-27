@@ -16,6 +16,44 @@ const packageFiles = (): AgentPluginFile[] => [
 ];
 
 describe("agent-plugin component authority", () => {
+  const withHook = (handler: Record<string, unknown>, event = "PreToolUse") => [
+    ...packageFiles(),
+    data("server/hook.js", "process.stdout.write('{}')"),
+    data("ai.agent-connector.ave/hooks.json", JSON.stringify({ version: 1, hooks: { [event]: [{ matcher: "read_*", hooks: [handler] }] } })),
+  ];
+
+  it("derives a hook digest from symbolic argv, env, timeout, and referenced code", () => {
+    const files = withHook({ type: "command", command: ["node", "${PLUGIN_ROOT}/server/hook.js", "${PLUGIN_DATA}/state.json", "literal with spaces"],
+      env: { STATE: "${PLUGIN_DATA}/state.json" }, timeoutMs: 1200 });
+    const [hook] = deriveAgentPluginComponents(files).hooks;
+    expect(hook).toMatchObject({ event: "pre", matcher: "read_*", timeoutMs: 1200,
+      command: ["node", "${PLUGIN_ROOT}/server/hook.js", "${PLUGIN_DATA}/state.json", "literal with spaces"],
+      env: { STATE: "${PLUGIN_DATA}/state.json" } });
+    const changed = deriveAgentPluginComponents(files.map((file) => file.path === "server/hook.js" ? data(file.path, "changed") : file));
+    expect(changed.hooks[0]?.digest).not.toBe(hook.digest);
+  });
+
+  it.each([
+    [{ type: "command", command: "node ./server/hook.js" }, "PreToolUse", /argv command/],
+    [{ type: "command", command: ["npx", "./server/hook.js"] }, "PreToolUse", /hook executable/],
+    [{ type: "command", command: ["node", "${PLUGIN_ROOT}/../hook.js"] }, "PreToolUse", /contained relative path/],
+    [{ type: "command", command: ["node", "./server/hook.js", "${PLUGIN_DATA}/../state"] }, "PreToolUse", /contained relative path/],
+    [{ type: "command", command: ["node", "./server/hook.js", "tmp/state"] }, "PreToolUse", /undeclared path/],
+    [{ type: "command", command: ["node", "./server/hook.js", "${OTHER}/state"] }, "PreToolUse", /undeclared path/],
+    [{ type: "command", command: ["node", "./missing.js"] }, "PreToolUse", /missing package file/],
+    [{ type: "command", command: ["node", "./server/hook.js"], env: { PATH: "override" } }, "PreToolUse", /invalid or reserved/],
+    [{ type: "command", command: ["node", "./server/hook.js"] }, "UnknownEvent", /unknown event/],
+  ] as const)("rejects unsafe or unmappable hook entry %#", (handler, event, reason) => {
+    expect(() => deriveAgentPluginComponents(withHook(handler, event))).toThrow(reason);
+  });
+  it.each(["constructor", "toString", "__proto__"])("rejects inherited hook event name %s in a package", (event) => {
+    expect(() => deriveAgentPluginComponents(withHook({ type: "command", command: ["node", "./server/hook.js"] }, event)))
+      .toThrow(event === "__proto__" ? /key __proto__ is not allowed/ : /unknown event/);
+  });
+  it.each([0.5, 1.5])("rejects fractional hook timeoutMs %s before deriving components", (timeoutMs) => {
+    expect(() => deriveAgentPluginComponents(withHook({ type: "command", command: ["node", "./server/hook.js"], timeoutMs })))
+      .toThrow(/handler\.timeoutMs must be a positive integer/);
+  });
   it("derives stable digests from bytes and refuses a descriptor mismatch", () => {
     const files = packageFiles();
     const components = deriveAgentPluginComponents(files);

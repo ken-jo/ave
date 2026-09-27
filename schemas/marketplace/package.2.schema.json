@@ -1029,6 +1029,10 @@
                 "type": "integer",
                 "minimum": 1
               },
+              "env": {
+                "type": "object",
+                "additionalProperties": { "type": "string" }
+              },
               "digest": {
                 "$ref": "#/definitions/sha256"
               }

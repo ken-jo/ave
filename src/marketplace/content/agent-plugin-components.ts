@@ -11,11 +11,14 @@ import { parseAgentPluginManifest, type AgentPluginManifestIdentity } from "../.
 import type { AgentPluginRoutineTemplate } from "../../shared/agent-plugin-routine-template.js";
 import type { RoutineSchedule, RoutineRepeat } from "../../shared/routines-types.js";
 import { isValidCronExpression } from "../../routines/cron-evaluator.js";
+import { parseHookConfig } from "../../hooks/hook-config.js";
+import { validateSymbolicHookArgv } from "../../plugins/resolve-bundled-argv.js";
 import { MAX_CRON_EXPR_LENGTH, MAX_FUTURE_OFFSET_MS, MIN_INTERVAL_MS } from "../../main/routines-store.js";
 
 export interface AgentPluginFile {
   path: string;
   data: Buffer;
+  executable?: boolean;
 }
 
 const COMPONENT_NAME = /^[a-z][a-z0-9-]{0,62}$/u;
@@ -63,10 +66,10 @@ function packageFileReferences(value: unknown, files: ReadonlyMap<string, Buffer
   }
 }
 
-function mcpDigest(server: unknown, files: ReadonlyMap<string, Buffer>): string {
+function mcpDigest(server: unknown, files: ReadonlyMap<string, Buffer>, executable: ReadonlySet<string> = new Set()): string {
   const referenced = new Set<string>();
   packageFileReferences(server, files, referenced);
-  const fileTokens = [...referenced].sort().map((path) => `${path}\0${sha256Hex(files.get(path)!)}`);
+  const fileTokens = [...referenced].sort().map((path) => `${path}\0${executable.has(path) ? "x" : "-"}\0${sha256Hex(files.get(path)!)}`);
   return sha256Hex(`${canonicalStringify(server)}\n${fileTokens.join("\n")}`);
 }
 
@@ -172,9 +175,54 @@ function routineTemplates(bytes: Buffer): AgentPluginComponents["routineTemplate
   }));
 }
 
+function hookComponents(bytes: Buffer, files: ReadonlyMap<string, Buffer>, executable: ReadonlySet<string>): AgentPluginComponents["hooks"] {
+  const path = "ai.agent-connector.ave/hooks.json";
+  const document = json(bytes, path);
+  if (Object.keys(document).some((key) => !["version", "hooks"].includes(key)) || (document.version !== undefined && document.version !== 1)) {
+    fail(path, "needs version 1 and a hooks object");
+  }
+  const groups = record(document.hooks, path);
+  for (const [event, blocks] of Object.entries(groups)) {
+    if (!Array.isArray(blocks)) fail(path, `${event} must be an array`);
+    for (const block of blocks) {
+      const item = record(block, path);
+      if (Object.keys(item).some((key) => !["matcher", "hooks"].includes(key)) || !Array.isArray(item.hooks)) {
+        fail(path, `${event} has an invalid matcher block`);
+      }
+      for (const handler of item.hooks) {
+        const entry = record(handler, path);
+        if (Object.keys(entry).some((key) => !["type", "command", "env", "timeoutMs"].includes(key))
+          || !Array.isArray(entry.command) || !entry.command.every((part: unknown) => typeof part === "string")) {
+          fail(path, `${event} requires argv command handlers`);
+        }
+      }
+    }
+  }
+  const parsed = parseHookConfig(document, { bundled: true });
+  if (parsed.errors.length || parsed.warnings.length) fail(path, [...parsed.errors, ...parsed.warnings].join("; "));
+  return parsed.entries.map((entry) => {
+    try { validateSymbolicHookArgv([...entry.command, ...Object.values(entry.env ?? {})], `${path} ${entry.id}`); }
+    catch (error) { fail(path, (error as Error).message); }
+    for (const token of [...entry.command, ...Object.values(entry.env ?? {})]) {
+      const name = token.startsWith("./") ? token.slice(2)
+        : token.startsWith("${PLUGIN_ROOT}/") ? token.slice("${PLUGIN_ROOT}/".length) : null;
+      if (name !== null && !files.has(name)) fail(path, `${entry.id} references missing package file ${name}`);
+    }
+    return {
+      event: entry.event,
+      ...(entry.matcher ? { matcher: entry.matcher } : {}),
+      command: entry.command,
+      ...(entry.env ? { env: entry.env } : {}),
+      timeoutMs: entry.timeoutMs,
+      digest: mcpDigest({ event: entry.event, matcher: entry.matcher ?? null, command: entry.command, env: entry.env ?? null, timeoutMs: entry.timeoutMs }, files, executable),
+    };
+  });
+}
+
 /** Read only package bytes. Installation roots and activation ids never enter a digest. */
 export function deriveAgentPluginComponents(files: readonly AgentPluginFile[], expected: AgentPluginManifestIdentity = {}): AgentPluginComponents {
   const map = new Map(files.map((file) => [file.path, file.data]));
+  const executable = new Set(files.filter((file) => file.executable === true).map((file) => file.path));
   if (map.size !== files.length) fail("plugin.json", "duplicate package path");
   const manifestBytes = map.get("plugin.json");
   if (!manifestBytes) fail("plugin.json", "is missing");
@@ -230,14 +278,15 @@ export function deriveAgentPluginComponents(files: readonly AgentPluginFile[], e
       const commandPath = server.command.slice(2);
       if (!commandPath.startsWith("server/") || !map.has(commandPath)) fail("mcp.json", `server ${name} command must name a package file under server/`);
     }
-    mcpServers[name] = { ...server, digest: mcpDigest(server, map) };
+    mcpServers[name] = { ...server, digest: mcpDigest(server, map, executable) };
   }
   const routineBytes = map.get("ai.agent-connector.ave/routines.json");
+  const hookBytes = map.get("ai.agent-connector.ave/hooks.json");
   return {
     skills, mcpServers,
     ...(Object.keys(auth).length > 0 ? { mcpAuth: auth } : {}),
     prompts, agents,
     routineTemplates: routineBytes ? routineTemplates(routineBytes) : [],
-    hooks: [],
+    hooks: hookBytes ? hookComponents(hookBytes, map, executable) : [],
   };
 }

@@ -21,7 +21,7 @@ import { createLogger } from "../../lib/logger.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { assertNotRequiredByPolicy } from "../boot-installs/run.js";
 import type { PackageDescriptor } from "../catalog/types.js";
-import type { McpComponentConsent } from "../../shared/git-marketplace.js";
+import type { ComponentConsent } from "../../shared/git-marketplace.js";
 import { MarketplaceError } from "../errors.js";
 import { DESCRIPTOR_NAME, readDescriptorAtVersion, type PackagePlan, type RepositoryAccess } from "../resolve/descriptor.js";
 import { classifyInstall, type InstallAction, type InstalledPackage } from "../resolve/identity.js";
@@ -60,7 +60,7 @@ function asDataPlan(plan: PackagePlan): DataContentPlan {
 }
 
 function digestOf(files: readonly ContentFile[]): string {
-  return treeDigest(files.map((file) => ({ ...file, executable: false })));
+  return treeDigest(files.map((file) => ({ ...file, executable: file.executable === true })));
 }
 
 /**
@@ -86,7 +86,7 @@ export async function stageContentPackage(plan: PackagePlan, access: RepositoryA
     const files: ContentFile[] = [];
     for (const file of exported) {
       if (file.path === DESCRIPTOR_NAME) continue;
-      files.push({ path: file.path, data: await readFile(join(dest, ...file.path.split("/"))) });
+      files.push({ path: file.path, data: await readFile(join(dest, ...file.path.split("/"))), executable: file.executable });
     }
     checkContentFiles(dataPlan.kind, files);
     const content = parseContent(dataPlan.kind, files, {
@@ -117,7 +117,7 @@ export interface ContentActivation {
    * the first-boot migration is recording an activation the settings already
    * hold (design §16.3), which leaves those settings as they are.
    */
-  activate(content: ParsedContent, entry: LedgerEntry, previous: LedgerEntry | null, adopt: boolean, dir?: string, approvedMcpServers?: readonly McpComponentConsent[]): Promise<void>;
+  activate(content: ParsedContent, entry: LedgerEntry, previous: LedgerEntry | null, adopt: boolean, dir?: string, componentConsents?: readonly ComponentConsent[]): Promise<void>;
   /** Before the ledger drops the package; a throw leaves it installed. `content` is null when its files no longer parse. */
   deactivate(entry: LedgerEntry, content: ParsedContent | null, dir?: string): Promise<void>;
 }
@@ -179,7 +179,7 @@ async function readInstalledFiles(dir: string): Promise<ContentFile[]> {
       const path = prefix ? `${prefix}/${entry.name}` : entry.name;
       const full = join(current, entry.name);
       if (entry.isDirectory()) await walk(full, path);
-      else if (entry.isFile()) files.push({ path, data: await readFile(full) });
+      else if (entry.isFile()) files.push({ path, data: await readFile(full), executable: ((await lstat(full)).mode & 0o111) !== 0 });
       else throw new Error(`${path} is not a regular file`);
     }
   };
@@ -222,7 +222,7 @@ export class ContentStore {
     return join(this.options.root, entry.kind, entry.name, entry.version);
   }
 
-  async install(staged: StagedContent, options: { switchSource?: boolean; adopt?: boolean; approvedMcpServers?: readonly McpComponentConsent[] } = {}): Promise<{ action: InstallAction; entry: LedgerEntry }> {
+  async install(staged: StagedContent, options: { switchSource?: boolean; adopt?: boolean; componentConsents?: readonly ComponentConsent[] } = {}): Promise<{ action: InstallAction; entry: LedgerEntry }> {
     return this.serialize(async () => {
       const { plan } = staged;
       const previous = this.ledger.get(plan.kind, plan.name) ?? null;
@@ -253,7 +253,7 @@ export class ContentStore {
         for (const file of staged.files) {
           const target = join(files, ...file.path.split("/"));
           await mkdir(dirname(target), { recursive: true });
-          await writeFile(target, file.data);
+          await writeFile(target, file.data, { mode: file.executable === true ? 0o700 : 0o600 });
         }
         await mkdir(dirname(dir), { recursive: true });
         // Reinstalling the same version: the live directory steps aside and comes back on failure.
@@ -264,7 +264,7 @@ export class ContentStore {
         await renameDirectory(files, dir);
         try {
           await this.ledger.put(entry);
-          await this.options.activation.activate(staged.content, entry, previous, options.adopt === true, dir, options.approvedMcpServers);
+          await this.options.activation.activate(staged.content, entry, previous, options.adopt === true, dir, options.componentConsents);
         } catch (error) {
           await undo([
             ["restore the ledger entry", () => (previous ? this.ledger.put(previous) : this.ledger.remove(entry.kind, entry.name))],

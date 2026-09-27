@@ -12,6 +12,7 @@ import { useTranslation } from "../../../../i18n/react.js";
 import { cn } from "../../../../lib/utils.js";
 import type {
   AuthorityView,
+  ComponentConsent,
   GitMarketplaceApi,
   GitMarketplaceErrorCode,
   InstallPlanView,
@@ -141,6 +142,7 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, onC
   const [switchConsent, setSwitchConsent] = useState(false);
   const [removeData, setRemoveData] = useState(false);
   const [approvedMcpServers, setApprovedMcpServers] = useState<Record<string, boolean>>({});
+  const [approvedHooks, setApprovedHooks] = useState<Record<number, boolean>>({});
   const [now, setNow] = useState(() => Date.now());
 
   const load = useCallback(async (key: PackageKeyView) => {
@@ -153,6 +155,7 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, onC
   const plan = useCallback(async (key: PackageKeyView, options: { update?: boolean; version?: string; switchSource?: boolean } = {}) => {
     setBusy(true);
     setApprovedMcpServers({});
+    setApprovedHooks({});
     try {
       const result = options.update
         ? await api.planUpdate(key)
@@ -193,9 +196,11 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, onC
 
   const execute = async (reviewed: InstallPlanView | UpdatePlanView) => {
     setStage({ stage: "installing", plan: reviewed, progress: null });
-    const selected = Object.entries(reviewed.components?.mcpServers ?? {})
+    const selected: ComponentConsent[] = Object.entries(reviewed.components?.mcpServers ?? {})
       .filter(([name]) => approvedMcpServers[name])
       .map(([name, server]) => ({ name, digest: server.digest }));
+    selected.push(...(reviewed.components?.hooks ?? []).flatMap((hook, index) =>
+      approvedHooks[index] ? [{ kind: "hook" as const, index, digest: hook.digest }] : []));
     const result = selected.length > 0
       ? await api.executeInstall(reviewed.planId, selected)
       : await api.executeInstall(reviewed.planId);
@@ -402,6 +407,27 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, onC
                           {server.transport === "stdio" && <span className="block">{t("gitMarketplace.review.mcpCwd", { cwd: server.cwd })}</span>}
                           <span className="block">{t("gitMarketplace.review.mcpFingerprint", { digest: server.digest })}</span>
                           {server.auth === "api-key" && <span className="block">{t("gitMarketplace.review.mcpCredential")}</span>}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </Section>
+              )}
+              {reviewPlan.key.kind === "agent-plugin" && reviewPlan.components && reviewPlan.components.hooks.length > 0 && (
+                <Section title={t("gitMarketplace.review.hookConsentTitle")}>
+                  <p className="text-xs text-muted-foreground">{t("gitMarketplace.review.hookConsentHelp")}</p>
+                  <p className="text-xs text-muted-foreground">{t(`gitMarketplace.review.hookConfinement.${reviewPlan.hookConfinement}`)}</p>
+                  <div className="space-y-2 pt-2">
+                    {reviewPlan.components.hooks.map((hook, index) => (
+                      <label key={index} className="flex items-start gap-2 text-xs" data-testid={`git-marketplace:hook-consent:${index}`}>
+                        <Checkbox checked={approvedHooks[index] === true} disabled={reviewPlan.hookConfinement === "unavailable"}
+                          onCheckedChange={(checked) => setApprovedHooks((current) => ({ ...current, [index]: checked === true }))} />
+                        <span className="space-y-1">
+                          <span className="block font-medium">{t("gitMarketplace.review.hookConsent", { event: hook.event })}</span>
+                          <code className="block break-all">{hook.command.join(" ")}</code>
+                          {hook.matcher && <span className="block">{hook.matcher}</span>}
+                          <span className="block">{t("gitMarketplace.review.hookTimeout", { timeout: hook.timeoutMs })}</span>
+                          <span className="block">{t("gitMarketplace.review.mcpFingerprint", { digest: hook.digest })}</span>
                         </span>
                       </label>
                     ))}

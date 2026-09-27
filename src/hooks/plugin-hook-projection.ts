@@ -2,12 +2,13 @@ import { createHash } from "node:crypto";
 import { parseHookConfig, type HookConfigEntry } from "./hook-config.js";
 import type { PluginHookOwner } from "./hook-registry.js";
 import type { ActivePluginGeneration } from "../plugins/plugin-generation-coordinator.js";
-import { anchorBundledCommand } from "../plugins/plugin-bundled-command.js";
+import { resolveBundledArgv } from "../plugins/resolve-bundled-argv.js";
 import { PluginContributionTrustStore } from "../plugins/plugin-contribution-trust.js";
 
 export interface PreparedPluginHookProjection {
   owner: PluginHookOwner;
   entries: readonly HookConfigEntry[];
+  confinement: { kind: "bundled"; dataDir: string; generationRoot: string };
 }
 
 /** Exact-version/fingerprint trust records. Records never transfer to a new version. */
@@ -35,6 +36,7 @@ export class PluginHookTrustStore {
 export function preparePluginHookGeneration(
   generation: ActivePluginGeneration,
   payloadRoot: string,
+  dataDir: string,
 ): readonly PreparedPluginHookProjection[] {
   const projections: PreparedPluginHookProjection[] = [];
   for (const contribution of generation.contributions) {
@@ -48,22 +50,26 @@ export function preparePluginHookGeneration(
     } catch (error) {
       throw new Error(`plugin Hook '${contribution.localId}' is not valid JSON: ${(error as Error).message}`);
     }
-    const parsed = parseHookConfig(raw);
-    if (parsed.errors.length > 0) {
-      throw new Error(`plugin Hook '${contribution.localId}' is invalid: ${parsed.errors.join("; ")}`);
+    const parsed = parseHookConfig(raw, { bundled: true });
+    if (parsed.errors.length > 0 || parsed.warnings.length > 0) {
+      throw new Error(`plugin Hook '${contribution.localId}' is invalid: ${[...parsed.errors, ...parsed.warnings].join("; ")}`);
     }
     const anchoredEntries: HookConfigEntry[] = [];
     const commandFingerprints: string[] = [];
     for (const entry of parsed.entries) {
-      const anchored = anchorBundledCommand(
-        payloadRoot,
-        contribution.path,
-        entry.command,
-        contribution.fingerprint,
-        `plugin Hook '${contribution.localId}'`,
-      );
-      commandFingerprints.push(anchored.fingerprint);
-      anchoredEntries.push(Object.freeze({ ...entry, command: [...anchored.command] }));
+      const envEntries = Object.entries(entry.env ?? {});
+      const resolved = resolveBundledArgv({
+        generationRoot: payloadRoot,
+        dataDir,
+        argv: [...entry.command, ...envEntries.map(([, value]) => value)],
+        baseFingerprint: contribution.fingerprint,
+        label: `plugin Hook '${contribution.localId}'`,
+        policy: "hook",
+      });
+      commandFingerprints.push(resolved.fingerprint);
+      anchoredEntries.push(Object.freeze({ ...entry, command: [...resolved.argv.slice(0, entry.command.length)],
+        ...(entry.env ? { env: Object.fromEntries(envEntries.map(([key], index) => [key, resolved.argv[entry.command.length + index]!])) } : {}),
+      }));
     }
     const owner: PluginHookOwner = Object.freeze({
       pluginId: generation.pluginId,
@@ -75,7 +81,9 @@ export function preparePluginHookGeneration(
         ? contribution.fingerprint
         : createHash("sha256").update(commandFingerprints.sort().join("\0")).digest("hex"),
     });
-    projections.push(Object.freeze({ owner, entries: Object.freeze(anchoredEntries) }));
+    projections.push(Object.freeze({ owner, entries: Object.freeze(anchoredEntries),
+      confinement: Object.freeze({ kind: "bundled", dataDir, generationRoot: payloadRoot }),
+    }));
   }
   return Object.freeze(projections);
 }

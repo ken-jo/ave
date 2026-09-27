@@ -590,6 +590,7 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
             hooks: await preparePluginHookGeneration(
               preparationView,
               payloadRoot,
+              resolve(runtime.pluginRoot, "data"),
             ),
             mcpServers: await preparePluginMcpGeneration(
               preparationView,

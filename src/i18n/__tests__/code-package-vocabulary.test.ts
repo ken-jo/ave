@@ -31,6 +31,8 @@ const BUNDLE_WORDING: Record<string, Partial<Record<"en" | "ko", string>>> = {
   "gitMarketplace.kind.agentPlugin": { en: "Plugins", ko: "플러그인" },
   "gitMarketplace.review.mcpConsentTitle": { en: "Plugin server consent", ko: "플러그인 서버 실행 승인" },
   "gitMarketplace.review.mcpConsentHelp": { ko: "플러그인 데이터 디렉터리" },
+  "gitMarketplace.review.hookConsentTitle": { en: "Plugin hook consent", ko: "플러그인 훅 실행 승인" },
+  "gitMarketplace.review.hookConfinement.sandboxed": { en: "this plugin's data directory", ko: "이 플러그인의 데이터 디렉터리" },
   "gitMarketplace.server.plugin": { en: "Plugin", ko: "플러그인" },
   "gitMarketplace.uninstall.removePluginData": { en: "plugin's data", ko: "플러그인의 데이터" },
 };

@@ -198,6 +198,42 @@ describe("GitMarketplaceTab package sheet", () => {
     await waitFor(() => expect(fake.market.executeInstall).toHaveBeenCalledWith("plan-1", [{ name: "notes", digest: "a".repeat(64) }]));
   });
 
+  it("sends only selected hook generations with their reviewed digests", async () => {
+    const item = entry("team", "agent-plugin", "hook-kit");
+    const components = { skills: [], prompts: [], agents: [], routineTemplates: [], mcpServers: {},
+      hooks: [{ event: "pre", command: ["node", "${PLUGIN_ROOT}/server/hook.js"], timeoutMs: 1200, digest: "a".repeat(64) }] };
+    const fake = fakeMarketplace({ sources: [team], entries: [item] });
+    fake.market.packageDetail.mockResolvedValue({ ok: true, value: detail(item, { components }) });
+    fake.market.planInstall.mockResolvedValue({ ok: true, value: installPlan(item, { components }) });
+    fake.market.executeInstall.mockResolvedValue({ ok: true, value: { key: item.key, version: "1.0.0", action: { action: "install" }, rungs: [], connectionWarning: null } });
+    renderTab(fake);
+    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:agent-plugin:hook-kit")).getByTestId("git-marketplace:card:state"));
+    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    fireEvent.click(within(sheet).getByTestId("git-marketplace:plan"));
+    const review = await within(sheet).findByTestId("git-marketplace:review");
+    expect(review).toHaveTextContent("운영체제 격리가 없습니다");
+    expect(review).toHaveTextContent("${PLUGIN_ROOT}/server/hook.js");
+    fireEvent.click(within(review).getByTestId("git-marketplace:hook-consent:0").querySelector('[role="checkbox"]')!);
+    fireEvent.click(within(sheet).getByTestId("git-marketplace:confirm"));
+    await waitFor(() => expect(fake.market.executeInstall).toHaveBeenCalledWith("plan-1", [{ kind: "hook", index: 0, digest: "a".repeat(64) }]));
+  });
+
+  it("states the active hook confinement and refuses consent when unavailable", async () => {
+    const item = entry("team", "agent-plugin", "hook-kit");
+    const components = { skills: [], prompts: [], agents: [], routineTemplates: [], mcpServers: {},
+      hooks: [{ event: "pre", command: ["./hook"], timeoutMs: 1200, digest: "a".repeat(64) }] };
+    const fake = fakeMarketplace({ sources: [team], entries: [item] });
+    fake.market.packageDetail.mockResolvedValue({ ok: true, value: detail(item, { components }) });
+    fake.market.planInstall.mockResolvedValue({ ok: true, value: installPlan(item, { components, hookConfinement: "unavailable" }) });
+    renderTab(fake);
+    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:agent-plugin:hook-kit")).getByTestId("git-marketplace:card:state"));
+    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    fireEvent.click(within(sheet).getByTestId("git-marketplace:plan"));
+    const review = await within(sheet).findByTestId("git-marketplace:review");
+    expect(review).toHaveTextContent("Windows 운영체제 샌드박스가 켜져 있는 동안 훅을 실행할 수 없습니다");
+    expect(within(review).getByTestId("git-marketplace:hook-consent:0").querySelector('[role="checkbox"]')).toBeDisabled();
+  });
+
   it("shows plugin components and their digest changes before an update", async () => {
     const item = entry("team", "agent-plugin", "writer-plugin", { state: { state: "update", from: "1.0.0", to: "1.1.0" } });
     const components = { skills: [{ name: "draft", hasScripts: false, digest: "a".repeat(64) }], mcpServers: {}, prompts: [], agents: [], routineTemplates: [], hooks: [] };
