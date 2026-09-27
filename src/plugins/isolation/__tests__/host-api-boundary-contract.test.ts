@@ -701,6 +701,9 @@ describe("dispatcher resource budgets", () => {
     try {
       const fetch = vi.fn(async () => ({ status: 200 }));
       const resolve = vi.fn(async (_call: HostApiCall, scope: SubscriptionScope) => ({
+        ok: true,
+        exposure: "lease",
+        vendor: "openai",
         handleId: scope.open(() => {}),
       }));
       const read = vi.fn(async () => null);

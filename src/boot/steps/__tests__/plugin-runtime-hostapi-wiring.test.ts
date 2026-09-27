@@ -28,6 +28,9 @@ import { HOSTAPI_DISPATCH_TABLE, HostApiDispatcher, createServiceHostApiPaths } 
 import { startPluginChildRuntime } from "../../../plugins/isolation/plugin-child-runtime.js";
 import type { PluginHostApi } from "../../../plugins/types.js";
 import { runWithEffectGateContext } from "../../../permissions/effect-enforcement.js";
+import { SettingsService } from "../../../data/settings-store.js";
+import { PermissionManager } from "../../../permissions/permission-manager.js";
+import type { CredentialIssuanceStage } from "../../../main/host-api/resolve-api-key.js";
 
 const tmpDirs = createTmpDirTracker();
 
@@ -234,6 +237,11 @@ async function initAndGetFactory(
   bootAuditLogger: { log: ReturnType<typeof vi.fn> } = { log: vi.fn() },
   networkFetch: typeof fetch = vi.fn(async () => new Response(null)) as unknown as typeof fetch,
   approvalGate: unknown = { requestAndWait: vi.fn() },
+  options: {
+    permissionManager?: PermissionManager;
+    onCredentialIssuanceStage?: (stage: CredentialIssuanceStage) => Promise<void> | void;
+    getAuthPartition?: (partition: string) => unknown;
+  } = {},
 ): Promise<CreateHostApi> {
   runtimeTestState.capturedRuntimeOptions = null;
   // Honour a caller-supplied logger; only default when none was given. The
@@ -241,9 +249,15 @@ async function initAndGetFactory(
   // that do not pass one can still read the sink.
   lastBootAuditLogger = bootAuditLogger;
   await initPluginRuntime({
-    host: createBootHostFixture({ desktop: createDesktopHostFixture({ getAppWindows: () => runtimeTestState.browserWindows as never[] }) }),
+    host: createBootHostFixture({ desktop: createDesktopHostFixture({
+      getAppWindows: () => runtimeTestState.browserWindows as never[],
+      ...(options.getAuthPartition ? { getAuthPartition: options.getAuthPartition as never } : {}),
+    }) }),
     projectRoot: "/tmp/ave-test/project",
     settingsService: settingsService as never,
+    ...(options.onCredentialIssuanceStage
+      ? { _onCredentialIssuanceStageForTest: options.onCredentialIssuanceStage }
+      : {}),
     memoryManager: {} as never,
     toolRegistry: {
       unregisterByPlugin: vi.fn(),
@@ -262,6 +276,7 @@ async function initAndGetFactory(
     clearAuthPartitionService: vi.fn(async () => {}),
     shellOpenExternal: vi.fn(),
     approvalGate: approvalGate as never,
+    ...(options.permissionManager ? { permissionManager: options.permissionManager } : {}),
     routinesStore: { list: () => [] } as never,
     // This harness has no Work Board; the proposal verbs are not exercised here.
     getWorkBoardStore: () => undefined,
@@ -807,6 +822,60 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
       .resolves.toEqual({ ok: false, reason: "stale-authorization" });
   });
 
+  it.each(
+    (["before-gate", "after-gate", "after-secret-read", "before-reply"] as const)
+      .flatMap((stage) => (["rotate", "revoke", "endpoint-switch", "retire"] as const)
+        .map((change) => ({ stage, change }))),
+  )("fences issuance at $stage after $change", async ({ stage, change }) => {
+    const root = tmpDirs.track(mkdtempSync("/tmp/ave-lease-stage-"));
+    const settings = new SettingsService({
+      userDataPath: root,
+      encryption: {
+        isEncryptionAvailable: () => true,
+        getSelectedStorageBackend: () => "external_key",
+        encryptString: (value: string) => Buffer.from(value),
+        decryptString: (value: Buffer) => value.toString(),
+      },
+    });
+    await settings.patch({ llm: { provider: "openai", vendors: { openai: { baseUrl: "https://api.openai.com" } } } } as never);
+    await settings.setSecret("llm.apiKey.openai", "synthetic-secret");
+    const permissionManager = new PermissionManager(join(root, "permissions.json"));
+    const disposers: Array<() => void> = [];
+    let active = true;
+    let reached = 0;
+    const createHostApi = await initAndGetFactory(settings, undefined, undefined, undefined, {
+      permissionManager,
+      onCredentialIssuanceStage: async (at) => {
+        if (at !== stage) return;
+        reached += 1;
+        if (change === "rotate") await settings.setSecret("llm.apiKey.openai", "rotated-secret");
+        else if (change === "revoke") permissionManager.revokePluginAccess("meeting", "test withdrawal");
+        else if (change === "endpoint-switch") {
+          await settings.patch({ llm: { vendors: { openai: { baseUrl: "https://replacement.example.test" } } } } as never);
+        } else {
+          active = false;
+          for (const dispose of disposers) dispose();
+        }
+      },
+    });
+    const { manifest, manifestSha256 } = granted(
+      "meeting", "llm.apiKey.openai", ["api.openai.com", "replacement.example.test"],
+    );
+    const api = createHostApi(
+      "meeting", manifest, tmpDirs.track(mkdtempSync("/tmp/ave-lease-stage-plugin-")),
+      {
+        registerDisposer: (dispose: () => void) => { disposers.push(dispose); },
+        trackOperation: <T>(operation: Promise<T>) => operation,
+        isActive: () => active,
+        isLifecycleHookActive: () => false,
+      },
+      "meeting", { installSource: "user", manifestSha256, origin: OFFICIAL_ORIGIN },
+    );
+    const result = await api.resolveApiKey({ purpose: "llm", vendor: "openai" });
+    expect(reached).toBe(1);
+    expect(result).toEqual({ ok: false, reason: "stale-authorization" });
+  });
+
   it("denies unsupported sources and a host endpoint that has not been configured", async () => {
     const settings = makeSettingsService(new Map());
     settings.get.mockImplementation((key: string) => {
@@ -1117,6 +1186,54 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     await api.hostFetch("https://api.openai.com/v1/models", { headers: { Authorization: "Bearer plugin-owned" } });
     expect(new Headers(((transport as ReturnType<typeof vi.fn>).mock.calls[1]?.[1] as RequestInit).headers)
       .get("authorization")).toBe("Bearer plugin-owned");
+  });
+
+  it.each(
+    [false, true].flatMap((lease) => [false, true].flatMap((partition) =>
+      [false, true].map((callerCookie) => ({ lease, partition, callerCookie })))),
+  )("applies the cookie matrix with lease=$lease partition=$partition callerCookie=$callerCookie", async ({
+    lease, partition, callerCookie,
+  }) => {
+    const settings = makeSettingsService(new Map());
+    settings.getSecret.mockImplementation((key: string) =>
+      key === "plugin.plugin-a.llm.apiKey.openai" ? "synthetic-secret" : undefined);
+    const transport = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response(null));
+    const getAuthPartition = vi.fn(() => ({ cookies: { get: vi.fn(async () => [
+      { name: "SID", value: "host-cookie", domain: "api.openai.com", path: "/" },
+    ]) } }));
+    const createHostApi = await initAndGetFactory(
+      settings, undefined, transport as unknown as typeof fetch, undefined, { getAuthPartition },
+    );
+    const api = createHostApi(
+      "plugin-a",
+      {
+        id: "plugin-a", config: {}, capabilities: ["external-auth-consumer"],
+        networkAccess: {
+          allowedDomains: ["api.openai.com"],
+          ...(partition ? { authCookiePartition: "main" } : {}),
+        },
+      },
+      tmpDirs.track(mkdtempSync("/tmp/ave-lease-cookie-matrix-")), activeIncarnation(), "plugin-a",
+    );
+    const resolved = lease ? await api.resolveApiKey({ purpose: "llm", vendor: "openai" }) : null;
+    if (lease && (!resolved?.ok || resolved.exposure !== "lease")) throw new Error("expected lease");
+    const init = {
+      ...(lease && resolved?.ok && resolved.exposure === "lease" ? { auth: { lease: resolved.leaseId } } : {}),
+      ...(callerCookie ? { headers: { Cookie: "caller-cookie" } } : {}),
+    };
+    const pendingFetch = api.hostFetch("https://api.openai.com/v1/models", init);
+    if (lease && callerCookie) await expect(pendingFetch).rejects.toMatchObject({ code: "credential-conflict" });
+    else if (partition && callerCookie) await expect(pendingFetch).rejects.toThrow(/must not send its own Cookie/);
+    else await expect(pendingFetch).resolves.toBeInstanceOf(Response);
+    const refused = callerCookie && (lease || partition);
+    expect(transport).toHaveBeenCalledTimes(refused ? 0 : 1);
+    expect(getAuthPartition).toHaveBeenCalledTimes(partition && !callerCookie ? 1 : 0);
+    if (refused) return;
+    const networkInit = transport.mock.calls[0]?.[1] as RequestInit & { auth?: unknown };
+    const headers = new Headers(networkInit.headers);
+    expect(networkInit.auth).toBeUndefined();
+    expect(headers.get("authorization")).toBe(lease ? "Bearer synthetic-secret" : null);
+    expect(headers.get("cookie")).toBe(partition ? "SID=host-cookie" : callerCookie ? "caller-cookie" : null);
   });
 
   it("audits a lease revoked after response headers but before body consumption", async () => {

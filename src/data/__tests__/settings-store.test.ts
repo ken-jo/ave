@@ -846,15 +846,29 @@ describe("SettingsService marketplace defaults", () => {
     const realSave = (settings: unknown) => (SettingsService.prototype as unknown as Internals).saveSettings.call(service, settings);
     let entry: Promise<void> | undefined;
     let issuing: ReturnType<typeof registry.reserve> | undefined;
+    let releaseSave!: () => void;
+    let saveEntered!: () => void;
+    const heldSave = new Promise<void>((resolve) => { releaseSave = resolve; });
+    const atSave = new Promise<void>((resolve) => { saveEntered = resolve; });
     vi.spyOn(service as unknown as Internals, "saveSettings").mockImplementationOnce(async (settings) => {
       // The entry for the new address starts during the move, then fails.
       entry = service.setSecret(key, "entered-for-elsewhere");
       entry.catch(() => undefined);
       issuing = registry.reserve("fixture", incarnation, [key], permission.signal, "lease");
+      saveEntered();
+      await heldSave;
       await realSave(settings);
     });
 
-    await service.installMarketplaceProviderPreset({ ...preset, baseUrl: "https://elsewhere.example/v1" });
+    const moving = service.installMarketplaceProviderPreset({ ...preset, baseUrl: "https://elsewhere.example/v1" });
+    await atSave;
+    try {
+      expect(service.getSecret(key)).toBeNull();
+      expect(closed).toHaveBeenCalledWith("revoked");
+    } finally {
+      releaseSave();
+    }
+    await moving;
     await expect(entry).rejects.toThrow("keychain locked");
 
     // The key kept for the entry is the old address's: it is not handed out.

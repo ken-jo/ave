@@ -23,11 +23,12 @@ describe("settings persistence", () => {
     const incarnation = {};
     const permission = new AbortController();
     const issue = () => {
+      const origin = new URL(service.get("llm").vendors.openai?.baseUrl ?? "").origin;
       const reservation = registry.reserve("fixture", incarnation, [key], permission.signal, "lease");
       if (!reservation) throw new Error("reservation missing");
       const result = registry.register(reservation, {
         key, vendor: "openai", secret: "synthetic-secret", scheme: "bearer",
-        audience: () => true, permissionSignal: permission.signal,
+        audience: (url) => url.origin === origin, permissionSignal: permission.signal,
       });
       if (!result || result.exposure !== "lease") throw new Error("lease missing");
       return result;
@@ -61,6 +62,9 @@ describe("settings persistence", () => {
       await writing;
       expect(closedDuring).not.toHaveBeenCalled();
       expect(registry.beginUse(during.leaseId, "fixture", incarnation).headersFor(new URL("https://b.example.test"), 0).get("authorization")).toBe("Bearer synthetic-secret");
+      expect(() => registry.beginUse(during.leaseId, "fixture", incarnation)
+        .headersFor(new URL("https://a.example.test"), 0))
+        .toThrowError(expect.objectContaining({ code: "lease-audience-denied" }));
     }
   });
   it("lets an existing reader finish the previous complete settings while publishing the next version", async () => {

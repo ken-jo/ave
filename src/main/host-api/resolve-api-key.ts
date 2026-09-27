@@ -61,6 +61,8 @@ export type ResolveApiKeyVendor =
   | "vertex"
   | "anthropic";
 
+export type CredentialIssuanceStage = "before-gate" | "after-gate" | "after-secret-read" | "before-reply";
+
 export type ResolveApiKeyResult =
   | {
       ok: true;
@@ -109,6 +111,7 @@ export interface ResolveApiKeyDeps {
   /** The host-owned registry entry Tier 3 trusts; read only when Tier 3 runs. */
   readRegistryEntry: () => Promise<PluginRegistryTrust | undefined>;
   grantEvidence: HostSecretGrantEvidence;
+  _onCredentialIssuanceStageForTest?: (stage: CredentialIssuanceStage) => Promise<void> | void;
 }
 
 /**
@@ -292,6 +295,7 @@ export async function resolveApiKey(
     return makeSuccess(vendor, ownNamespaceKey, "plugin-own", ownValue, mergedSignal);
   }
 
+  if (deps._onCredentialIssuanceStageForTest) await deps._onCredentialIssuanceStageForTest("before-gate");
   const gateOutcome = await runSecretGate({
     pluginId: deps.pluginId,
     operation: "lease",
@@ -317,8 +321,10 @@ export async function resolveApiKey(
     // The precise reason lives in the audit log.
     return { ok: false, reason: "not-whitelisted" };
   }
+  if (deps._onCredentialIssuanceStageForTest) await deps._onCredentialIssuanceStageForTest("after-gate");
   // All four tiers passed — fetch the key from settings.
   const value = deps.settingsService.getSecret(llmKey);
+  if (deps._onCredentialIssuanceStageForTest) await deps._onCredentialIssuanceStageForTest("after-secret-read");
   if (typeof value !== "string" || value.length === 0) {
     audit(deps, "info", `resolveApiKey deny reason=no-host-vendor vendor=${vendor}`);
     incrementHostSecretCounter("hostSecret_denied", deps.pluginId, keyPrefix);

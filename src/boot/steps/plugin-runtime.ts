@@ -130,6 +130,9 @@ export interface InitPluginRuntimeInput {
   host: BootHost;
   projectRoot: string;
   settingsService: SettingsService;
+  _onCredentialIssuanceStageForTest?: (
+    stage: import("../../main/host-api/resolve-api-key.js").CredentialIssuanceStage,
+  ) => Promise<void> | void;
   memoryManager: MemoryManager;
   toolRegistry: ToolRegistry;
   pythonPath: string | undefined;
@@ -468,6 +471,9 @@ export async function initPluginRuntime(
     pluginShutdownHandlers,
     readAppPreference,
     settingsService,
+    ...(input._onCredentialIssuanceStageForTest
+      ? { _onCredentialIssuanceStageForTest: input._onCredentialIssuanceStageForTest }
+      : {}),
     bootAuditLogger,
     leaseDenialAudit,
     pluginRuntimeAuditLog,

@@ -96,6 +96,7 @@ import {
   resolveApiKey as resolveApiKeyImpl,
   apiKeyIdentities,
   normalizeVendor,
+  type CredentialIssuanceStage,
   type ResolveApiKeyPurpose,
   type ResolveApiKeyVendor,
 } from "../../../main/host-api/resolve-api-key.js";
@@ -257,6 +258,7 @@ export interface CreateHostApiFactoryDeps {
   settingsService: SettingsService;
   bootAuditLogger: AuditLogger;
   leaseDenialAudit?: LeaseDenialAudit;
+  _onCredentialIssuanceStageForTest?: (stage: CredentialIssuanceStage) => Promise<void> | void;
   /**
    * The very callback handed to `new PluginRuntime({ auditLog })`, narrowed to
    * what the storage rejection sink needs. Reused (rather than re-derived from
@@ -856,6 +858,9 @@ export function createHostApiFactory(
             auditLogger: bootAuditLogger,
             readRegistryEntry,
             grantEvidence: hostSecretGrantEvidence,
+            ...(deps._onCredentialIssuanceStageForTest
+              ? { _onCredentialIssuanceStageForTest: deps._onCredentialIssuanceStageForTest }
+              : {}),
             // Bind the permission revoke signal for the issuing request.
             ...(permissionManager
               ? {
@@ -902,6 +907,7 @@ export function createHostApiFactory(
         if (!hostIncarnation.isActive()) {
           reservation.finish(); result.release(); return { ok: false, reason: "stale-authorization" };
         }
+        if (deps._onCredentialIssuanceStageForTest) await deps._onCredentialIssuanceStageForTest("before-reply");
         const registered = credentialRegistry.register(reservation, {
           key: result.keyName,
           vendor: result.vendor,
