@@ -112,7 +112,7 @@ async function setup(options: { appWindows?: ReturnType<typeof makeWindow>[] } =
     auditLogger: {
       log: vi.fn(),
     },
-    refreshPluginNotifications: vi.fn(),
+    refreshPluginEventBridge: vi.fn(),
     pluginPaths: { cacheRoot: join(cleanupRoot, ".cache") },
     clearAuthPartitionService: vi.fn(async () => undefined),
     listPluginAuthPartitionsService: vi.fn((pluginId: string) => [

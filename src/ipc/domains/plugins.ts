@@ -302,7 +302,7 @@ export function pluginLifecycleServices(deps: IpcDeps) {
     pluginRuntime,
     pluginMarketplace,
     settingsService,
-    refreshPluginNotifications,
+    refreshPluginEventBridge,
     pluginPaths,
     clearAuthPartitionService,
     listPluginAuthPartitionsService,
@@ -334,7 +334,7 @@ export function pluginLifecycleServices(deps: IpcDeps) {
       ...cleanupServices,
       drainPluginInstallLockOperationsService:
         drainPluginInstallLockOperations,
-      refreshPluginNotifications,
+      refreshPluginEventBridge,
       emitHostEvent,
       log,
     });
@@ -349,7 +349,7 @@ export function pluginLifecycleServices(deps: IpcDeps) {
       retirement,
       drainPluginInstallLockOperationsService:
         drainPluginInstallLockOperations,
-      refreshPluginNotifications,
+      refreshPluginEventBridge,
       emitHostEvent,
       log,
     }, retain);
@@ -362,7 +362,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     pluginMarketplace,
     settingsService,
     auditLogger,
-    refreshPluginNotifications,
+    refreshPluginEventBridge,
     getMainWindow,
     getAppWindows,
   } = deps;
@@ -472,7 +472,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
           throw new Error(`atomic local install committed without active runtime: ${result.pluginId}`);
         }
         emitHostEvent("plugin.installed", { pluginId: result.pluginId, source: "local-dev" });
-        refreshPluginNotifications?.();
+        refreshPluginEventBridge?.();
         broadcastPluginLifecycleEvent(CHANNELS.plugins.installResult, {
           slug: result.pluginId,
           success: true,

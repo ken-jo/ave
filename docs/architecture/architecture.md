@@ -778,11 +778,10 @@ migration rules; the generic settings patch cannot author alert choices.
 must declare their suggestion sources and receive at most one acceptance per
 source per 30 days. The transition exception for extensions without alerts and the
 legacy trigger visibility/priority fields end in the next minor release.
-`notificationEvents` works through the alerts release, warns once per extension
-when declared alongside alert kinds, and is flagged by the repository checker
-for packages requiring the alerts release or later. Retirement removes its
-bridge/type and drops the field with a warning only in the follow-on release,
-after its remaining official consumer migrates. See the
+From 0.13.0, the host drops an installed manifest's `notificationEvents` field
+before strict validation and warns once per extension. It no longer registers
+OS notifications from that field. New packages requiring the alerts release or
+later are refused by the repository checker when they declare it. See the
 [overlay contract](../references/overlay-trigger.md) for sources and delivery.
 
 Scheduled LLM routines with non-empty explicit extension allow-lists use installed

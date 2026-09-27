@@ -216,10 +216,6 @@ vi.mock("../tools.js", () => ({
   wireIdleScheduler: vi.fn(async () => ({ stop: vi.fn() })),
 }));
 
-vi.mock("../plugins.js", () => ({
-  registerPluginNotifications: vi.fn(() => h.disposer()),
-}));
-
 // Captures the dep bag each uninstall-lifecycle entry point receives FROM
 // bootstrap(). These are the real closures boot.ts builds; the module behind
 // them is stubbed so boot stays hermetic, but the arguments are production's.
@@ -779,7 +775,7 @@ describe("bootstrap() integration lock", () => {
         "pythonPath",
         "pythonRuntime",
         "refreshActiveLlmWildcard",
-        "refreshPluginNotifications",
+        "refreshPluginEventBridge",
         "refreshSandboxNetworkConfig",
         "registerPluginEventBridge",
         "releaseChatGroupLoop",
@@ -872,7 +868,7 @@ describe("bootstrap() integration lock", () => {
     expect(typeof services.startRoutinesScheduler).toBe("function");
     expect(typeof services.startWorkBoardDueSoon).toBe("function");
     expect(typeof services.registerPluginEventBridge).toBe("function");
-    expect(typeof services.refreshPluginNotifications).toBe("function");
+    expect(typeof services.refreshPluginEventBridge).toBe("function");
   });
 
   it("wires the core, conversation, and plugin-runtime seams into the graph", () => {

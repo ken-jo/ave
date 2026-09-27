@@ -240,7 +240,6 @@ export class BootContext {
   declare workBoardReporter: WorkBoardReporter;
 
   // ── Plugin IPC bridges (mutable disposers) ─────────────────────────────────
-  declare disposePluginNotifications: () => void;
   declare disposePluginEventBridge: () => void;
   declare pluginEventBridgeWindow: BrowserWindow | null;
   declare replacePluginEventBridge: (win: BrowserWindow | null) => void;
@@ -354,7 +353,6 @@ const BOOT_CONTEXT_FIELDS = [
   "memoryMaintenanceCoordinator",
   "workBoardEngine",
   "workBoardReporter",
-  "disposePluginNotifications",
   "disposePluginEventBridge",
   "pluginEventBridgeWindow",
   "replacePluginEventBridge",

@@ -6,12 +6,11 @@ import { requireDesktopHost } from "./host-runtime.js";
  * The key set here is a LOCKED contract: it must match the C3 bootstrap
  * integration snapshot exactly (same names, same construction). This module owns
  * the deferred lifecycle closures main.ts drives after boot
- * (`startRoutinesScheduler`, `startWorkBoardDueSoon`, `refreshPluginNotifications`,
+ * (`startRoutinesScheduler`, `startWorkBoardDueSoon`, `refreshPluginEventBridge`,
  * `registerPluginEventBridge`, `shutdown`) — they read + mutate the context so
- * the plugin-notification / event-bridge disposers and the due-soon timer stay
+ * the event-bridge disposer and the due-soon timer stay
  * live across window recreation and are torn down deterministically on quit.
  */
-import { registerPluginNotifications } from "./plugins.js";
 import {
   forgetTrackedPluginAuthPartitions as forgetPluginAuthPartitionsService,
   getTrackedPluginAuthPartitions as listPluginAuthPartitionsService,
@@ -113,10 +112,7 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
     startRoutinesScheduler: () => ctx.routinesScheduler.start(),
     startWorkBoardDueSoon: ctx.startWorkBoardDueSoon,
     startAlerts: () => ctx.alertsService.start(),
-    refreshPluginNotifications: () => {
-      ctx.disposePluginNotifications();
-      ctx.disposePluginNotifications = registerPluginNotifications(ctx.pluginRuntime, ctx.pluginEventBridgeWindow, ctx.notificationService, ctx.bootAuditLogger, ctx.host.desktop?.notificationSupported() ?? false,
-      );
+    refreshPluginEventBridge: () => {
       ctx.replacePluginEventBridge(ctx.pluginEventBridgeWindow);
     },
     registerPluginEventBridge: ctx.replacePluginEventBridge,
@@ -143,7 +139,6 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
 
         // Direct callers bypass the app-level plugin-shutdown phase.
         attempt(disposeActiveLlmWildcard);
-        attempt(() => ctx.disposePluginNotifications());
         attempt(() => ctx.disposePluginEventBridge());
         attempt(() => ctx.autoUpdaterStop?.());
         attempt(() => ctx.telemetry?.stop());

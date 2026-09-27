@@ -4,7 +4,7 @@
  * Covers strict manifest rules:
  *   1) removed keyword routing is rejected
  *   2) removed schema maps are rejected
- *   3) notificationEvents.event ⊂ eventSubscriptions (soft warn)
+ *   3) retired notification declarations are dropped before strict validation
  *   4) ui[] kind-specific required fields (hard fail-load)
  *   5) AJV unknown-property rejection (additionalProperties:false at root,
  *      in the host schema) — guards against silent acceptance of removed/typo'd fields
@@ -158,7 +158,7 @@ describe("runtime manifest validation hardening", () => {
     );
   });
 
-  it("3) notificationEvents.event not in eventSubscriptions → soft warn, plugin still loads", async () => {
+  it("3) retired notification declarations drop with a warning and the plugin still loads", async () => {
     await writePlugin("p-notif", {
       tools: ["pnotif_hello", "pnotif_bad", "pnotif_good"],
       eventSubscriptions: ["meeting.started"],
@@ -176,11 +176,10 @@ describe("runtime manifest validation hardening", () => {
       cap.restore();
     }
     expect(runtime.listPluginIds()).toContain("p-notif");
+    expect(runtime.listPluginManifests()[0]?.manifest).not.toHaveProperty("notificationEvents");
     expect(
       cap.warns.some((w) =>
-        /Plugin manifest 'p-notif': notificationEvents\[0\]\.event 'meeting\.ghost' not declared in eventSubscriptions/.test(
-          w,
-        ),
+        /ignoring retired field\(s\) notificationEvents/.test(w),
       ),
     ).toBe(true);
   });

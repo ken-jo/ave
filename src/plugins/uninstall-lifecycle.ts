@@ -44,7 +44,7 @@ export interface PluginUninstallLifecycleDeps {
   listPluginAuthPartitionsService: (pluginId: string) => string[];
   forgetPluginAuthPartitionsService: (pluginId: string) => void | Promise<void>;
   drainPluginInstallLockOperationsService: (pluginId: string) => Promise<void>;
-  refreshPluginNotifications?: () => void;
+  refreshPluginEventBridge?: () => void;
   emitHostEvent?: (type: "plugin.uninstalled", payload: { pluginId: string }) => void;
   log?: WarnLogger;
 }
@@ -300,7 +300,7 @@ export async function recoverPendingPluginUninstallCleanups(
       deps.emitHostEvent?.("plugin.uninstalled", {
         pluginId: record.pluginId,
       });
-      deps.refreshPluginNotifications?.();
+      deps.refreshPluginEventBridge?.();
     } catch (error) {
       unresolved.push(record.pluginId);
       deps.log?.warn(
@@ -338,7 +338,7 @@ export async function ensurePluginStateReadyForInstall(
   );
   if (outcome === "completed") {
     deps.emitHostEvent?.("plugin.uninstalled", { pluginId: record.pluginId });
-    deps.refreshPluginNotifications?.();
+    deps.refreshPluginEventBridge?.();
   }
 }
 
@@ -397,7 +397,7 @@ export async function uninstallPluginWithLifecycle(
         deps.emitHostEvent?.("plugin.uninstalled", {
           pluginId: pendingCleanup.pluginId,
         });
-        deps.refreshPluginNotifications?.();
+        deps.refreshPluginEventBridge?.();
         return {
           pluginId: pendingCleanup.pluginId,
           uninstalled: true as const,
@@ -490,7 +490,7 @@ export async function uninstallPluginWithLifecycle(
     }
     if (cleanupCompleted) {
       deps.emitHostEvent?.("plugin.uninstalled", { pluginId: canonicalPluginId });
-      deps.refreshPluginNotifications?.();
+      deps.refreshPluginEventBridge?.();
     }
 
     if (postCommitErrors.length > 0) {

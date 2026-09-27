@@ -344,7 +344,6 @@ describe("parsePluginJson — alert declarations at load", () => {
       entry: { type: "string" },
       tools: { type: "array" },
       alerts: { type: "object" },
-      notificationEvents: { type: "array" },
       emittedEvents: { type: "array" },
     },
     namespaceRequired: ["entry", "tools"],
@@ -364,7 +363,7 @@ describe("parsePluginJson — alert declarations at load", () => {
     expect(String(vi.mocked(console.warn).mock.calls.flat().join(" "))).toMatch(/fixturemail.*alerts declaration rejected/);
   });
 
-  it("warns once per plugin that declares both alerts and notificationEvents", async () => {
+  it("drops a retired notification declaration and warns once with alerts", async () => {
     const warn = vi.mocked(console.warn);
     const write = pluginManifestWriter({ id: "fixturedeprecated", name: "Fixture Deprecated" }, () => workDir);
     const extra = {
@@ -372,20 +371,24 @@ describe("parsePluginJson — alert declarations at load", () => {
       emittedEvents: ["fixture.reply.detected"],
       notificationEvents: [{ event: "fixture.reply.detected" }],
     };
-    await parsePluginJson(await write(extra), makeValidator());
-    await parsePluginJson(await write(extra), makeValidator());
-    const deprecations = warn.mock.calls.filter((call) => String(call.join(" ")).includes("deprecated notificationEvents"));
-    expect(deprecations).toHaveLength(1);
+    const validator = await buildManifestValidator();
+    const first = await parsePluginJson(await write(extra), validator);
+    const second = await parsePluginJson(await write(extra), validator);
+    expect(first).not.toHaveProperty("notificationEvents");
+    expect(second).not.toHaveProperty("notificationEvents");
+    const retirementWarnings = warn.mock.calls.filter((call) => String(call.join(" ")).includes("ignoring retired field(s) notificationEvents"));
+    expect(retirementWarnings).toHaveLength(1);
   });
 
-  it("does not warn for notificationEvents without alerts", async () => {
+  it("drops a malformed retired notification declaration without alerts", async () => {
     const warn = vi.mocked(console.warn);
     const write = pluginManifestWriter({ id: "fixturelegacy", name: "Fixture Legacy" }, () => workDir);
-    await parsePluginJson(
-      await write({ emittedEvents: ["fixture.done"], notificationEvents: [{ event: "fixture.done" }] }),
-      makeValidator(),
+    const manifest = await parsePluginJson(
+      await write({ notificationEvents: "malformed legacy field" }),
+      await buildManifestValidator(),
     );
-    expect(warn.mock.calls.some((call) => String(call.join(" ")).includes("deprecated notificationEvents"))).toBe(false);
+    expect(manifest).not.toHaveProperty("notificationEvents");
+    expect(warn.mock.calls.some((call) => String(call.join(" ")).includes("ignoring retired field(s) notificationEvents"))).toBe(true);
   });
 });
 

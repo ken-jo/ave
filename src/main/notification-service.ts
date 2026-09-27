@@ -43,9 +43,8 @@ export type NotificationKind =
 /**
  * Closed enumeration of valid `NotificationKind` values. Exported so IPC
  * handlers can validate untrusted renderer payloads without re-listing the
- * kinds inline. `plugin` was added in #841 when manifest-driven plugin
- * notifications were routed through this service to inherit cooldown,
- * truncation, sanitization, click-restore, and structured audit.
+ * kinds inline. The `plugin` kind remains available to explicit plugin
+ * notification requests.
  */
 export const NOTIFICATION_KINDS: ReadonlySet<NotificationKind> = new Set([
   "turn-end",
@@ -73,13 +72,9 @@ export interface FireOptions {
   /** Approval defaults true; rest default false. */
   urgent?: boolean;
   /**
-   * #843 — opt out of the focus-suppression gate. When true, the OS
-   * notification fires regardless of focus state (critical surfaces like
-   * `meeting.starting-soon` / `approval.deadline-imminent` / `incident.page`).
-   * Defaults false. Routed through from `plugin.json` manifest's
-   * `notificationEvents[i].bypassFocusGate`. Independent of `urgent` —
-   * a critical notification can be focus-bypassed without being marked urgent
-   * (silent: !urgent still applies).
+   * Opt out of the focus-suppression gate. When true, the OS notification
+   * fires regardless of focus state. Independent of `urgent`, so a cue can
+   * bypass focus without requesting sound (silent: !urgent still applies).
    */
   bypassFocusGate?: boolean;
   /**
@@ -116,7 +111,7 @@ const ELLIPSIS = "…";
  *   - approval : 2 s  (coalesce micro-bursts only)
  *   - routine  : 0    (rare — always fire)
  *   - ask-user : 0    (rare — user expects every one)
- *   - plugin   : 5 s  (#841 — protects against runaway plugin emit loops)
+ *   - plugin   : 5 s  (protects against repeated explicit plugin requests)
  *   - alert    : 5 s  (a declared plugin alert, fired only after the host
  *                      accepted it; same guard as `plugin`)
  *   - system   : 0    (rare boot/config upgrade cues)
@@ -129,11 +124,8 @@ const COOLDOWN_MS_BY_KIND: Record<NotificationKind, number> = {
   approval: 2_000,
   routine: 0,
   "ask-user": 0,
-  // #841 — plugin notifications inherit a 5s cooldown. Lower than turn-end
-  // because plugin events span many distinct surfaces across loaded
-  // plugins and a per-kind cooldown that's too aggressive would
-  // coalesce legitimate independent alerts. Still tight enough to defang a
-  // buggy plugin emitting 30 events/sec from blasting toasts.
+  // Explicit plugin notifications retain a 5s cooldown. It is lower than
+  // turn-end so unrelated plugin requests are not coalesced for long.
   plugin: 5_000,
   alert: 5_000,
   system: 0,
@@ -329,12 +321,9 @@ export class NotificationService {
     // can detect spam in field telemetry. routine and ask-user have a 0 ms
     // cooldown (always fire).
     //
-    // #843 — `bypassFocusGate` is an opt-in *manifest* signal that the event
-    // is a critical alert (e.g. meeting.starting-soon). It must escape BOTH
-    // the focus gate AND the per-kind cooldown — otherwise a plugin emitting
-    // routine notifications in the prior 5s window would silently suppress
-    // an unrelated critical alert that the manifest explicitly marked as
-    // "must be delivered". The cooldown still updates `lastFiredAt` so that
+    // `bypassFocusGate` is an opt-in signal that the event
+    // is a critical alert. It must escape BOTH the focus gate AND the
+    // per-kind cooldown. The cooldown still updates `lastFiredAt` so that
     // the *next* non-bypass fire is correctly throttled relative to this
     // bypass event (i.e. bypass consumes the slot, it does not pretend the
     // fire never happened).
@@ -368,10 +357,10 @@ export class NotificationService {
     const cleanTitle = capTitle(opts.title);
     const truncatedBody = truncateBody(opts.body);
     const truncatedPlainBody = truncateBody(stripMarkdown(opts.body));
-    // #843 — `bypassFocusGate` is a manifest signal that the event is
+    // `bypassFocusGate` signals that the event is
     // critical enough to escape the focus + cooldown gates. A silent (non-
     // urgent) OS notification on top of that is contradictory: the user
-    // would see a quiet popup for an alert the plugin author flagged as
+    // would see a quiet popup for an alert the caller flagged as
     // "must reach the user even with another window focused". Promote
     // `urgent` to `true` automatically when `bypassFocusGate` is set,
     // unless the caller has explicitly opted out by passing `urgent: false`.
