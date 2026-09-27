@@ -680,6 +680,7 @@ describe("installer smoke and packaging discipline", () => {
       "bun run check:import-cycles",
       "node scripts/check-generated-assets.mjs",
       "bun run check:plugin-host-protocol-schema",
+      "bun run check:plugin-host-protocol-mirror",
       "bun run check:i18n-catalog",
       "bun run check:i18n-barrels",
       "node scripts/check-no-tls-bypass.mjs",
@@ -690,7 +691,7 @@ describe("installer smoke and packaging discipline", () => {
       "bun run check:source-text-safe",
     ]);
 
-    // Of those eleven, the five that a later command in the same composite
+    // Of those twelve, the six that a later command in the same composite
     // compiles behind. ci.yml's comment states this number; this is where it
     // comes from.
     const lastCompile = commands.reduce(
@@ -705,9 +706,19 @@ describe("installer smoke and packaging discipline", () => {
       "bun run check:import-cycles",
       "node scripts/check-generated-assets.mjs",
       "bun run check:plugin-host-protocol-schema",
+      "bun run check:plugin-host-protocol-mirror",
       "bun run check:i18n-catalog",
       "bun run check:i18n-barrels",
     ]);
+  });
+
+  it("runs the protocol mirror gate and refreshes the release candidate", () => {
+    expect(packageScripts["check:plugin-host-protocol-mirror"]).toBe(
+      "node scripts/check-plugin-host-protocol-mirror.mjs",
+    );
+    expect(readRepoFile("scripts/release.mjs")).toContain(
+      'run("node", ["scripts/sync-plugin-host-protocol-mirror.mjs"]);',
+    );
   });
 
   it("keeps the composite that orders a hygiene scan first out of CI", () => {
