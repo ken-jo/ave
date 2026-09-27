@@ -310,9 +310,9 @@ export function parseHookConfig(raw: unknown, options: { bundled?: boolean } = {
             warnings.push(
               `hooks.json: ${id} handler.timeoutMs is not a finite number — defaulting to ${DEFAULT_HOOK_TIMEOUT_MS}ms`,
             );
-          } else if (handler.timeoutMs <= 0) {
+          } else if (handler.timeoutMs <= 0 || !Number.isInteger(handler.timeoutMs)) {
             warnings.push(
-              `hooks.json: ${id} handler.timeoutMs must be > 0 — defaulting to ${DEFAULT_HOOK_TIMEOUT_MS}ms`,
+              `hooks.json: ${id} handler.timeoutMs must be a positive integer — defaulting to ${DEFAULT_HOOK_TIMEOUT_MS}ms`,
             );
           } else {
             timeoutMs = Math.min(handler.timeoutMs, DEFAULT_HOOK_TIMEOUT_MS);

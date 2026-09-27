@@ -50,6 +50,10 @@ describe("agent-plugin component authority", () => {
     expect(() => deriveAgentPluginComponents(withHook({ type: "command", command: ["node", "./server/hook.js"] }, event)))
       .toThrow(event === "__proto__" ? /key __proto__ is not allowed/ : /unknown event/);
   });
+  it.each([0.5, 1.5])("rejects fractional hook timeoutMs %s before deriving components", (timeoutMs) => {
+    expect(() => deriveAgentPluginComponents(withHook({ type: "command", command: ["node", "./server/hook.js"], timeoutMs })))
+      .toThrow(/handler\.timeoutMs must be a positive integer/);
+  });
   it("derives stable digests from bytes and refuses a descriptor mismatch", () => {
     const files = packageFiles();
     const components = deriveAgentPluginComponents(files);

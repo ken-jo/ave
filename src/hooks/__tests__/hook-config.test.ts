@@ -268,6 +268,12 @@ describe("parseHookConfig — timeoutMs clamp (decision d)", () => {
       expect(r.entries[0].timeoutMs).toBe(DEFAULT_HOOK_TIMEOUT_MS);
     }
   });
+
+  it.each([0, -1, 0.5, 1.5])("warns about timeoutMs %s using the positive-integer diagnostic", (timeoutMs) => {
+    const result = parseHookConfig({ hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "./a.sh", timeoutMs }] }] } });
+    expect(result.entries[0].timeoutMs).toBe(DEFAULT_HOOK_TIMEOUT_MS);
+    expect(result.warnings).toContain(`hooks.json: PreToolUse#0.0 handler.timeoutMs must be a positive integer — defaulting to ${DEFAULT_HOOK_TIMEOUT_MS}ms`);
+  });
 });
 
 describe("command classification helpers", () => {
