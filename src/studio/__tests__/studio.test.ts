@@ -8,6 +8,8 @@ import { readLocalAgentPlugin, studioExportFiles, studioZip } from "../package.j
 import { lintStudioFiles } from "../lint.js";
 import { stageLocalAgentPlugin } from "../../marketplace/content/store.js";
 import { parseFrontmatter } from "../../main/skill-store.js";
+import { PersonaPromptStore } from "../../main/persona-prompt-store.js";
+import { deriveAgentPluginComponents } from "../../marketplace/content/agent-plugin-components.js";
 
 const originalHome = process.env.AVE_HOME;
 let root: string;
@@ -77,6 +79,50 @@ describe("Studio drafts and package projections", () => {
     const importedStore = new PluginStudioStore();
     await importedStore.importPackage(archive);
     expect(await importedStore.packageFiles("team-kit")).toEqual(files);
+  });
+
+  it("preserves long prompt fields through the installed consumer when authored or edited after import", async () => {
+    const description = "Review the supplied patch for correctness and maintainability, and report only actionable defects with concrete examples and suggested corrections.";
+    const argumentHint = "Provide the revision range to inspect together with the target platform, reproduction steps, and any constraints that reviewers must preserve.";
+    expect(description.length).toBeGreaterThan(140);
+    expect(argumentHint.length).toBeGreaterThan(140);
+    const header = `---\nname: review\ndescription: ${description}\nkind: template\nargumentHint: ${argumentHint}\n---\n`;
+    const promptPath = "ai.agent-connector.ave/prompts/review.md";
+    const installedPrompt = async (store: PluginStudioStore) => {
+      const files = await store.packageFiles("team-kit");
+      const prompts = new PersonaPromptStore({ userDir: join(root, "user-prompts") });
+      prompts.setInstalledAgentPlugins([{ name: "team-kit", version: "1.0.0",
+        content: { files, components: deriveAgentPluginComponents(files) } }] as never);
+      return { prompt: prompts.listTemplates()[0]!, text: files.find((file) => file.path === promptPath)!.data.toString() };
+    };
+    const authored = new PluginStudioStore();
+    await authored.writeDraft({ name: "team-kit", version: "1.0.0", description: "A team plugin",
+      files: [{ path: promptPath, text: `${header}Review {args}\n` }] });
+    const first = await installedPrompt(authored);
+    expect(first.prompt).toMatchObject({ description, argumentHint });
+    expect(first.text).toContain(`description: ${description}\nkind: template\nargumentHint: ${argumentHint}\n`);
+
+    const source = join(root, "imported-prompt");
+    await put(source, "plugin.json", JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+      name: "team-kit", version: "1.0.0", description: "A team plugin" }));
+    await put(source, promptPath, `${header}Review {args}\n`);
+    process.env.AVE_HOME = join(root, "imported-home");
+    const imported = new PluginStudioStore();
+    await imported.importPackage(source);
+    await imported.writeDraft({ name: "team-kit", files: [{ path: promptPath, text: `${header}Review updated {args}\n` }] });
+    const edited = await installedPrompt(imported);
+    expect(edited.prompt).toMatchObject({ description, argumentHint });
+    expect(edited.text).toContain(`description: ${description}\nkind: template\nargumentHint: ${argumentHint}\n`);
+  });
+
+  it("rejects prompt fields that the installed flat reader would truncate", async () => {
+    const store = new PluginStudioStore();
+    for (const indicator of ["|", ">-"]) {
+      await expect(store.writeDraft({ name: "team-kit", version: "1.0.0", description: "A team plugin",
+        files: [{ path: "ai.agent-connector.ave/prompts/review.md",
+          text: `---\nname: review\ndescription: ${indicator}\n  First line\n  second line\nkind: template\n---\nReview.\n` }] }))
+        .rejects.toThrow("single-line frontmatter fields");
+    }
   });
 
   it("reimports canonical files once with or without a compatibility projection", async () => {

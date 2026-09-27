@@ -100,6 +100,9 @@ function json(data: Buffer, path: string): Record<string, unknown> {
 }
 
 function promptFile(name: string, content: string, description: string, argumentHint?: string): Buffer {
+  if (/[\r\n]/u.test(description) || (argumentHint !== undefined && /[\r\n]/u.test(argumentHint))) {
+    throw new Error(`Imported prompt ${name} needs single-line description and argument hint`);
+  }
   const body = content.replaceAll("$ARGUMENTS", "{args}");
   return Buffer.from(`---\nname: ${name}\ndescription: ${JSON.stringify(description)}\nkind: template\n${argumentHint ? `argumentHint: ${JSON.stringify(argumentHint)}\n` : ""}---\n${body}\n`);
 }

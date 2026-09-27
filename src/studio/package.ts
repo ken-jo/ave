@@ -101,7 +101,7 @@ function assertNoStoredCredentials(files: readonly AgentPluginFile[], storedCred
   for (const file of files) {
     const text = file.data.toString("utf8");
     for (const credential of storedCredentials) {
-      if (credential && (file.data.includes(Buffer.from(credential)) || text.includes(credential))) {
+      if (credential && (file.data.includes(Buffer.from(credential)) || containsStoredCredential(text, credential))) {
         throw new Error(`Studio cannot export a stored credential in ${file.path}`);
       }
     }

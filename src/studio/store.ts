@@ -1,6 +1,6 @@
 import { readdir, readFile, rm } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { parse as parseYaml } from "yaml";
 import { openFeatureNamespace, writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
 import { isPackageName } from "../marketplace/catalog/types.js";
 import { checkContentFiles, contentFileProblem } from "../marketplace/content/rules.js";
@@ -115,17 +115,40 @@ function authoredText(path: string, text: string, author: "model" | "user"): Buf
   if (!front) throw new Error(`Studio authored file ${path} needs frontmatter`);
   const fields: unknown = parseYaml(front[1]!);
   if (!object(fields)) throw new Error(`Studio authored file ${path} has invalid frontmatter`);
+  const separator = front[0].includes("\r\n") ? "\r\n" : "\n";
+  const lines = front[1]!.split(/\r?\n/u);
   if (path.startsWith("skills/")) {
     const metadata = fields.metadata === undefined ? {} : fields.metadata;
     if (!object(metadata) || Object.values(metadata).some((value) => typeof value !== "string")) {
       throw new Error(`Studio skill ${path} needs string metadata`);
     }
-    fields.metadata = { ...metadata, "ave-origin": "studio", "ave-authored-by": author };
+    const metadataIndex = lines.findIndex((line) => /^metadata:\s*$/u.test(line));
+    if (fields.metadata !== undefined && metadataIndex < 0) {
+      throw new Error(`Studio skill ${path} needs block-style metadata for authorship`);
+    }
+    if (metadataIndex < 0) lines.push("metadata:", "  ave-origin: studio", `  ave-authored-by: ${author}`);
+    else {
+      let end = metadataIndex + 1;
+      while (end < lines.length && (lines[end]!.trim() === "" || /^\s/u.test(lines[end]!))) end++;
+      const children = lines.slice(metadataIndex + 1, end).filter((line) => !/^\s+ave-(?:origin|authored-by):/u.test(line));
+      lines.splice(metadataIndex + 1, end - metadataIndex - 1, ...children,
+        "  ave-origin: studio", `  ave-authored-by: ${author}`);
+    }
   } else {
-    fields["ave-origin"] = "studio";
-    fields["ave-authored-by"] = author;
+    if (lines.some((line) => /^\s+\S/u.test(line))) {
+      throw new Error(`Studio prompt ${path} needs single-line frontmatter fields`);
+    }
+    for (const key of ["name", "description", "kind", "argumentHint"]) {
+      const value = fields[key];
+      if (value !== undefined && (typeof value !== "string" || /[\r\n]/u.test(value))) {
+        throw new Error(`Studio prompt ${path} needs a single-line ${key}`);
+      }
+    }
+    const kept = lines.filter((line) => !/^ave-(?:origin|authored-by):/u.test(line));
+    lines.splice(0, lines.length, ...kept, "ave-origin: studio", `ave-authored-by: ${author}`);
   }
-  return Buffer.from(`---\n${stringifyYaml(fields).trimEnd()}\n---\n${text.slice(front[0].length)}`);
+  const start = /^---\r?\n/u.exec(text)![0].length;
+  return Buffer.from(`${text.slice(0, start)}${lines.join(separator)}${text.slice(start + front[1]!.length)}`);
 }
 
 function portableProvenance(value: unknown): boolean {

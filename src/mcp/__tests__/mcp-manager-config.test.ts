@@ -57,6 +57,7 @@ import { observeFileHandleSyncs } from "../../__tests__/support/fsync-observer.j
 import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
 import { previewStudioConnector } from "../../studio/connector.js";
 import { boundBundledCredential, bundledConfigId, bundledCredentialDeclaration, bundledCredentialKey } from "../bundled-credential.js";
+import { studioExportFiles } from "../../studio/package.js";
 
 const testDir = join(tmpdir(), `ave-mcp-test-${process.pid}`);
 const testConfigPath = join(testDir, "mcp-servers.json");
@@ -176,6 +177,47 @@ describe("McpManager — getConfigs()", () => {
     const id = bundledConfigId(ref, "sample");
     await expect(previewStudioConnector(mgr, id)).rejects.toThrow("stored credential");
     expect(await mgr.getStudioStoredCredentialValues()).toContain(key);
+  });
+  it("refuses percent-encoded stored keys in URLs and environment values for user and package credentials", async () => {
+    const key = "stored/key?with=punct";
+    const encodedUrl = encodeURIComponent(key);
+    const encodedEnv = [...key].map((char) => `%${char.charCodeAt(0).toString(16)}`).join("");
+    const ref = { kind: "agent-plugin" as const, name: "team-kit" };
+    for (const owner of ["user", "package"] as const) for (const location of ["url", "env"] as const) {
+      const transport = location === "url" ? "http" : "stdio";
+      const url = `https://example.invalid/mcp?token=${encodedUrl}`;
+      const env = { VALUE: `prefix-${encodedEnv}-suffix` };
+      const declaration = location === "url"
+        ? { packageName: ref.name, serverName: "sample", transport, url, auth: "api-key" as const, apiKeyHeader: "X-Key" }
+        : { packageName: ref.name, serverName: "sample", transport, command: "node", env,
+          auth: "api-key" as const, apiKeyEnv: "SAMPLE_KEY" };
+      const secrets = new Map<string, string>();
+      const mgr = await makeManager({ getSecret: (name) => secrets.get(name) ?? null,
+        setSecret: async (name: string, value: string) => { secrets.set(name, value); } } as never);
+      let id = "sample";
+      if (owner === "user") {
+        await writeFile(testConfigPath, JSON.stringify({ servers: [{ id, ...declaration }] }));
+        await mgr.setApiKey(id, key);
+      } else {
+        await writeFile(testConfigPath, JSON.stringify({ servers: [] }));
+        mgr.registerBundledCredentialSource("agent-plugin", { list: () => [declaration], reconnect: async () => undefined });
+        await mgr.setBundledApiKey(ref, "sample", key);
+        id = bundledConfigId(ref, "sample");
+      }
+      await expect(previewStudioConnector(mgr, id)).rejects.toThrow("stored credential");
+      await expect(mgr.assertStudioConnectorWriteSafe(id, { spec: { id, ...(location === "url" ? { url } : {}) },
+        args: [], env: location === "env" ? env : {} })).rejects.toThrow("stored credential");
+      const portable = location === "url" ? { type: "streamable-http", url }
+        : { type: "stdio", command: "uvx", args: ["studio-sample==1.0.0"], env };
+      const files = [
+        { path: "plugin.json", data: Buffer.from(JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+          name: "team-kit", version: "1.0.0", description: "A team plugin" })) },
+        { path: "mcp.json", data: Buffer.from(JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+          mcpServers: { sample: portable } })) },
+      ];
+      expect(() => studioExportFiles(files, false, [key])).toThrow("stored credential");
+      expect(await mgr.getStudioStoredCredentialValues()).toContain(key);
+    }
   });
   it("returns [] when config file does not exist", async () => {
     const mgr = await makeManager();
