@@ -303,7 +303,7 @@ describe("PluginConfigTab", () => {
         expectRepairPlanned("agent-hub");
         expect(cards).toHaveBeenCalledTimes(2);
         expect(
-          screen.getByText("Agent Hub: 진단 완료 — 로컬 복구 불가, 아직 실행할 수 없습니다."),
+          screen.getByText("Agent Hub: 진단 완료 — 플러그인을 아직 실행할 수 없습니다."),
         ).toBeInTheDocument();
       });
       expect(screen.queryByText("Agent Hub 복구 완료")).toBeNull();
@@ -389,7 +389,7 @@ describe("PluginConfigTab", () => {
     });
     expect(screen.queryByText("Agent Hub 복구 완료")).toBeNull();
     expect(
-      screen.queryByText("Agent Hub: 진단 완료 — 로컬 복구 불가, 아직 실행할 수 없습니다."),
+      screen.queryByText("Agent Hub: 진단 완료 — 플러그인을 아직 실행할 수 없습니다."),
     ).toBeNull();
     expect(screen.getByTestId("plugin-config:banner")).toHaveClass("text-destructive");
   });
@@ -438,7 +438,7 @@ describe("PluginConfigTab", () => {
       expect(screen.getByTestId("plugin-config:banner")).toHaveClass("text-success");
     });
     expect(
-      screen.queryByText("Meeting: 진단 완료 — 로컬 복구 불가, 아직 실행할 수 없습니다."),
+      screen.queryByText("Meeting: 진단 완료 — 플러그인을 아직 실행할 수 없습니다."),
     ).toBeNull();
   });
 
@@ -479,7 +479,7 @@ describe("PluginConfigTab", () => {
       expect(market.planInstall).not.toHaveBeenCalled();
       expect(cards).toHaveBeenCalledTimes(2);
       expect(
-        screen.getByText("Meeting: 진단 완료 — 로컬 복구 불가, 아직 실행할 수 없습니다."),
+        screen.getByText("Meeting: 진단 완료 — 플러그인을 아직 실행할 수 없습니다."),
       ).toBeInTheDocument();
       expect(screen.getByTestId("plugin-config:banner")).toHaveClass("text-warning");
     });
@@ -523,6 +523,46 @@ describe("PluginConfigTab", () => {
     await waitFor(() => {
       expect(market.planInstall).not.toHaveBeenCalled();
       expect(cards).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("shows a sandbox ceiling diagnosis with update and remove actions without reinstalling", async () => {
+    const broken = {
+      id: "meeting",
+      name: "Meeting",
+      description: "Plugin filesystem grant is outside approved directories.",
+      sampleTools: [],
+      capabilities: [],
+      tools: [],
+      installAliases: ["ave-plugin-meeting"],
+      installFailureKind: "sandbox-grant-outside-ceiling" as const,
+      installFailureMessage: "sandbox-grant-outside-ceiling",
+      loadStatus: "failed" as const,
+    };
+    const cards = vi.fn().mockResolvedValue([broken]);
+    Object.defineProperty(window, "ave", {
+      value: {
+        plugins: { cards },
+        pluginConfig: { get: mockGet, set: mockSet },
+      },
+      writable: true,
+      configurable: true,
+    });
+
+    render(<PluginConfigTab />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("plugin-config:doctor-panel:meeting")).toBeInTheDocument();
+    });
+    expect(screen.getByText("파일 접근 범위 초과")).toBeInTheDocument();
+    expect(screen.getByText(/요청 범위를 줄인 새 버전으로 업데이트하거나 제거하세요/)).toBeInTheDocument();
+    expect(screen.getByTestId("plugin-config:doctor-remove:meeting")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("plugin-config:doctor:meeting"));
+    await waitFor(() => {
+      expect(cards).toHaveBeenCalledTimes(2);
+      expect(market.planInstall).not.toHaveBeenCalled();
+      expect(screen.getByTestId("plugin-config:banner")).toHaveClass("text-warning");
     });
   });
 

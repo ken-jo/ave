@@ -221,8 +221,8 @@ describe("MarketplaceService", () => {
     const publish = (version: string) =>
       repo.commit(
         {
-          "marketplace.json": text({
-            schemaVersion: 1,
+          "marketplace.2.json": text({
+            schemaVersion: 2,
             name: indexName,
             displayName: "Acme Tools",
             packages: [

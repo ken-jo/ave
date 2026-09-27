@@ -588,6 +588,8 @@ export interface PluginManifest {
    * listed in `suggestions`.
    */
   alerts?: PluginAlertsDeclaration;
+  /** Reviewed filesystem reach for a confined plugin child. */
+  sandbox?: PluginSandboxDeclaration;
   /**
    * Config keys this plugin fills from a retired predecessor's saved config,
    * once, when the retirement names this plugin as a successor. A target key
@@ -761,6 +763,15 @@ export interface PluginOnboardingSpec {
 export interface PluginContributionDeclaration {
   id: string;
   path: string;
+}
+
+export type PluginSandboxGrant =
+  | { kind: "hostDirectory"; segments: ["runtime"] | ["certs"]; why: string }
+  | { kind: "userChosenDirectory"; configKey: string; why: string };
+
+export interface PluginSandboxDeclaration {
+  read?: PluginSandboxGrant[];
+  write?: Extract<PluginSandboxGrant, { kind: "userChosenDirectory" }>[];
 }
 
 /**

@@ -7311,6 +7311,9 @@
           "requires": {
             "$ref": "#/$defs/types/RequiresSpec"
           },
+          "sandbox": {
+            "$ref": "#/$defs/types/PluginSandboxDeclaration"
+          },
           "skills": {
             "items": {
               "$ref": "#/$defs/types/PluginContributionDeclaration"
@@ -7475,6 +7478,103 @@
           }
         },
         "type": "object"
+      },
+      "PluginSandboxDeclaration": {
+        "properties": {
+          "read": {
+            "items": {
+              "$ref": "#/$defs/types/PluginSandboxGrant"
+            },
+            "type": "array"
+          },
+          "write": {
+            "items": {
+              "properties": {
+                "configKey": {
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "userChosenDirectory",
+                  "type": "string"
+                },
+                "why": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "configKey",
+                "why"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "PluginSandboxGrant": {
+        "anyOf": [
+          {
+            "properties": {
+              "kind": {
+                "const": "hostDirectory",
+                "type": "string"
+              },
+              "segments": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "const": "runtime",
+                      "type": "string"
+                    },
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  {
+                    "items": {
+                      "const": "certs",
+                      "type": "string"
+                    },
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                ]
+              },
+              "why": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "segments",
+              "why"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "configKey": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "userChosenDirectory",
+                "type": "string"
+              },
+              "why": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "configKey",
+              "why"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "PluginShutdownParams": {
         "properties": {

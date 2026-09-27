@@ -213,7 +213,7 @@ describe("resolveMcpPackage", () => {
     repos.push(repo);
     repo.commit(
       {
-        "marketplace.json": `${JSON.stringify({ schemaVersion: 1, name: "acme", displayName: "Acme", packages: [{ kind: "mcp", name: "notes", path: "mcp/notes" }] })}\n`,
+        "marketplace.2.json": `${JSON.stringify({ schemaVersion: 2, name: "acme", displayName: "Acme", packages: [{ kind: "mcp", name: "notes", path: "mcp/notes" }] })}\n`,
         ...files,
       },
       "publish",
@@ -221,7 +221,7 @@ describe("resolveMcpPackage", () => {
     if (executable.length > 0) {
       repo.commitEntries(
         Object.entries(files).map(([path, content]) => ({ path, mode: executable.includes(path) ? "100755" : "100644", content })).concat([
-          { path: "marketplace.json", mode: "100644", content: `${JSON.stringify({ schemaVersion: 1, name: "acme", displayName: "Acme", packages: [{ kind: "mcp", name: "notes", path: "mcp/notes" }] })}\n` },
+          { path: "marketplace.2.json", mode: "100644", content: `${JSON.stringify({ schemaVersion: 2, name: "acme", displayName: "Acme", packages: [{ kind: "mcp", name: "notes", path: "mcp/notes" }] })}\n` },
         ]),
         "modes",
       );
@@ -249,7 +249,7 @@ describe("resolveMcpPackage", () => {
   }
 
   const descriptor = (payload: Record<string, unknown>) =>
-    `${JSON.stringify({ schemaVersion: 1, kind: "mcp", name: "notes", version: "1.0.0", minAppVersion: "0.12.0", payload })}\n`;
+    `${JSON.stringify({ schemaVersion: 2, kind: "mcp", name: "notes", version: "1.0.0", minAppVersion: "0.12.0", payload })}\n`;
 
   it("uses the descriptor's own pinned spec and fills tokens into the MCP config", async () => {
     const resolved = await resolveFrom({

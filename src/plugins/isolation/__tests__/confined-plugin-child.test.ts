@@ -119,6 +119,7 @@ import type { DelegatedWorkerConfinement } from "../host-api-dispatcher.js";
 import {
   createOutOfProcessPluginFactory,
   derivePluginChildEnvelope,
+  PluginSandboxGrantError,
 } from "../out-of-process-plugin.js";
 import {
   initializeAsrtSandbox,
@@ -140,6 +141,19 @@ const PLUGIN_ID = "vega-helper";
  * case drives the production table rather than a fixture that stands in for it.
  */
 const WIDENED_PLUGIN_ID = "local-indexer";
+const CANDIDATE_MANIFEST: PluginManifest = {
+  id: PLUGIN_ID,
+  name: "Vega Helper",
+  version: "1.0.0",
+  entry: "index.js",
+  description: "Exercises declared filesystem authority",
+  tools: [],
+  sandbox: {
+    read: [{ kind: "hostDirectory", segments: ["certs"], why: "Read the trust anchor" }],
+    write: [{ kind: "userChosenDirectory", configKey: "workspace", why: "Store project data" }],
+  },
+  configSchema: { properties: { workspace: { type: "string" } } },
+};
 const SECRET_TEXT = "the-host-secret-the-child-must-not-read";
 /** The bytes the host-owned trust-anchor file holds, so "the child read it" is checkable. */
 const CA_TEXT = "-----BEGIN CERTIFICATE-----\nthe-corporate-trust-anchor\n";
@@ -767,6 +781,54 @@ afterEach(async () => {
  * "the user authorised this directory" rather than a copy of it.
  */
 describe("the host decides how far a plugin child reaches", () => {
+  it("lets a declared block replace a legacy table row, including an empty block", () => {
+    const fx = fixture!;
+    const envelope = derivePluginChildEnvelope({
+      pluginId: WIDENED_PLUGIN_ID,
+      sandbox: {},
+      pluginRoot: fx.pluginRoot,
+      pluginDataDir: fx.pluginDataDir,
+      configValue: () => fx.userRoot,
+    });
+    expect(envelope.read).toEqual(baseEnvelope(fx).read);
+    expect(envelope.write).toEqual(baseEnvelope(fx).write);
+  });
+
+  it("derives a new candidate from its declared authority and live approved root", () => {
+    const fx = fixture!;
+    const envelope = derivePluginChildEnvelope({
+      pluginId: CANDIDATE_MANIFEST.id,
+      sandbox: CANDIDATE_MANIFEST.sandbox,
+      pluginRoot: fx.pluginRoot,
+      pluginDataDir: fx.pluginDataDir,
+      configValue: (key) => key === "workspace" ? fx.userRoot : undefined,
+    });
+    expect(envelope.read).toEqual([...baseEnvelope(fx).read, join(fx.aveHome, "certs"), fx.userRoot]);
+    expect(envelope.write).toEqual([...baseEnvelope(fx).write, fx.userRoot]);
+    const rejected = () => derivePluginChildEnvelope({
+      pluginId: CANDIDATE_MANIFEST.id,
+      sandbox: CANDIDATE_MANIFEST.sandbox,
+      pluginRoot: fx.pluginRoot,
+      pluginDataDir: fx.pluginDataDir,
+      configValue: (key) => key === "workspace" ? fx.userRootSibling : undefined,
+    });
+    expect(rejected).toThrow(PluginSandboxGrantError);
+    expect(rejected).toThrow(/no workspace root the user approved covers it/);
+  });
+
+  it("keeps a declared read-only chosen directory out of the write jail", () => {
+    const fx = fixture!;
+    const envelope = derivePluginChildEnvelope({
+      pluginId: CANDIDATE_MANIFEST.id,
+      sandbox: { read: [{ kind: "userChosenDirectory", configKey: "workspace", why: "Read project data" }] },
+      pluginRoot: fx.pluginRoot,
+      pluginDataDir: fx.pluginDataDir,
+      configValue: (key) => key === "workspace" ? fx.userRoot : undefined,
+    });
+    expect(envelope.read).toContain(fx.userRoot);
+    expect(envelope.write).not.toContain(fx.userRoot);
+  });
+
   /** `PLUGIN_ID` has no row in the table, so it gets the unwidened envelope. */
   it("gives a plugin with no host decision exactly its own two directories", () => {
     const fx = fixture!;
@@ -968,7 +1030,7 @@ describe("the host decides how far a plugin child reaches", () => {
           pluginDataDir: fx.pluginDataDir,
           configValue: (key) => (key === "workspace" ? spelling : undefined),
         }),
-      ).toThrow(/the host's own table grants a plugin READ/);
+      ).toThrow(/host-owned catalog directory/);
     }
   });
 
@@ -1291,8 +1353,8 @@ describe("the confined child, against the real sandbox", () => {
       // box reached it, so the channel ran between this app's sandbox and
       // whatever else used the same runtime. It is now `~/.ave/sandbox/tmp`,
       // and ASRT's default write paths are on the deny floor — measured, with
-      // `~/.npm/_logs` present on the machine and refused `EPERM` rather than
-      // missing. What remains is narrower and still real: the root is one
+      // `~/.npm/_logs` present on the machine and refused by the OS rather
+      // than missing. What remains is narrower and still real: the root is one
       // directory for ALL of this app's confined children, so the two below
       // still meet in it.
       // Written against `tmpdir()` rather than a literal so it asks the same
@@ -1345,21 +1407,21 @@ describe("the confined child, against the real sandbox", () => {
       //
       // BOTH get an existence control, because a write to a missing directory
       // also fails — `ENOENT` — and a case that accepted any failure would go
-      // green on a machine that simply never made the directory. Only `EPERM`
-      // beside a directory that IS there says "refused". The two controls
-      // differ in kind: the temp root the host CREATES (see
-      // `ASRT_DEFAULT_TEMP_ROOT`), so the measurement is taken everywhere; the
-      // npm cache it cannot create without inventing state that is not the
-      // machine's, so that one is measured only where it is already present.
+      // green on a machine that simply never made the directory. `EPERM` on
+      // macOS or `EROFS` on Linux beside a directory that IS there says
+      // "refused". The host creates `ASRT_DEFAULT_TEMP_ROOT`, so that check
+      // always runs. The host does not create the npm cache, so that check runs
+      // only if it is already present.
       expect(existsSync(ASRT_DEFAULT_TEMP_ROOT)).toBe(true);
       expect(report.writeAsrtDefaultTemp.ok, JSON.stringify(report.writeAsrtDefaultTemp)).toBe(false);
-      expect(report.writeAsrtDefaultTemp.code).toBe("EPERM");
+      const deniedWriteCode = process.platform === "linux" ? "EROFS" : "EPERM";
+      expect(report.writeAsrtDefaultTemp.code).toBe(deniedWriteCode);
       if (report.asrtDefaultNpmLogsExists.value === "yes") {
         expect(
           report.writeAsrtDefaultNpmLogs.ok,
           JSON.stringify(report.writeAsrtDefaultNpmLogs),
         ).toBe(false);
-        expect(report.writeAsrtDefaultNpmLogs.code).toBe("EPERM");
+        expect(report.writeAsrtDefaultNpmLogs.code).toBe(deniedWriteCode);
       }
 
       // Nothing the host DID NOT widen this plugin with is reachable — the
@@ -1442,7 +1504,31 @@ describe("the confined child, against the real sandbox", () => {
  */
 describe("a child the host widened reaches exactly what the host widened it with", () => {
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
-    "opens the corporate CA and the user's chosen root, and nothing beside them",
+    "confines a new candidate to its declared trust anchor and approved directory",
+    async () => {
+      if (!(await sandboxCasesRun())) return;
+      const fx = fixture!;
+      const envelope = derivePluginChildEnvelope({
+        pluginId: CANDIDATE_MANIFEST.id,
+        sandbox: CANDIDATE_MANIFEST.sandbox,
+        pluginRoot: fx.pluginRoot,
+        pluginDataDir: fx.pluginDataDir,
+        configValue: (key) => key === "workspace" ? fx.userRoot : undefined,
+      });
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+      const report = await runProbe(fx, envelope);
+      expect(report.readCa).toMatchObject({ ok: true, value: CA_TEXT });
+      expect(report.writeUserRoot.ok).toBe(true);
+      expect(report.writeCa.ok).toBe(false);
+      expect(report.writeUserRootSibling.ok).toBe(false);
+      expect(report.readSecret.ok).toBe(false);
+      expect(report.writeOutside.ok).toBe(false);
+    },
+    60_000,
+  );
+
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "keeps an old sandbox-less indexer bundle's table grants without opening adjacent paths",
     async () => {
       if (!(await sandboxCasesRun())) return;
       const fx = fixture!;
@@ -1903,6 +1989,19 @@ export const createPlugin = async (context) => {
           fields: Object.keys(worker).sort(),
         };
       },
+      probe_worker_chosen: async () => {
+        const worker = await api.spawnWorker({
+          workerId: "chosen",
+          command: "/usr/bin/true",
+          allowWritePaths: [api.config.get("workspace")],
+        });
+        return { pid: worker.pid };
+      },
+      probe_worker_sibling: async () => await attempt(() => api.spawnWorker({
+        workerId: "sibling",
+        command: "/usr/bin/true",
+        allowWritePaths: [${JSON.stringify(fx.userRootSibling)}],
+      })),
       probe_config: async () => api.config.get("watched") ?? null,
     },
   };
@@ -1922,7 +2021,7 @@ export const createPlugin = async (context) => {
         onStderr: () => undefined,
         onExit: () => undefined,
       }));
-      const configValues = new Map<string, unknown>([["watched", "before"]]);
+      const configValues = new Map<string, unknown>([["watched", "before"], ["workspace", fx.userRoot]]);
       const configListeners = new Set<(value: unknown) => void>();
       const hostApi = {
         // The four-tier gate, standing in for its verdict: one key granted, one
@@ -1959,13 +2058,16 @@ export const createPlugin = async (context) => {
           version: "0.10.14",
           entry: "plugin.mjs",
           description: "the lossy members, confined",
-          configSchema: { type: "object", properties: { watched: { type: "string" } } },
+          configSchema: { type: "object", properties: { watched: { type: "string" }, workspace: { type: "string" } } },
+          sandbox: CANDIDATE_MANIFEST.sandbox,
           tools: [
             "probe_credentials",
             "probe_lease",
             "probe_fetch",
             "probe_worker_escape",
             "probe_worker_allowed",
+            "probe_worker_chosen",
+            "probe_worker_sibling",
             "probe_config",
           ].map((name) => ({
             name,
@@ -1984,7 +2086,7 @@ export const createPlugin = async (context) => {
         pluginDataDir: fx.pluginDataDir,
         userHome: homedir(),
         aveHome: aveHome(),
-        config: { watched: "before" },
+        config: { watched: "before", workspace: fx.userRoot },
         log: () => undefined,
         hostApi,
       } as PluginRuntimeContext);
@@ -2061,6 +2163,17 @@ export const createPlugin = async (context) => {
           "socketPath",
           "stop",
         ]);
+
+        const chosen = (await instance.handlers.probe_worker_chosen!()) as { pid: number };
+        expect(chosen.pid).toBe(31337);
+        expect(spawnWorker).toHaveBeenCalledTimes(2);
+        expect(spawnWorker).toHaveBeenLastCalledWith(expect.objectContaining({
+          allowWritePaths: [fx.userRoot],
+        }));
+        const sibling = (await instance.handlers.probe_worker_sibling!()) as { ok: boolean; message: string };
+        expect(sibling.ok).toBe(false);
+        expect(sibling.message).toMatch(/outside the plugin's own confinement/);
+        expect(spawnWorker).toHaveBeenCalledTimes(2);
 
         // ── config.get, re-pushed ──────────────────────────────────────────
         await expect(instance.handlers.probe_config!()).resolves.toBe("before");

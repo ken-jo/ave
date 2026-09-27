@@ -166,7 +166,7 @@ function stagedManifest(plan: PluginInstallPlan, zipBuffer: Buffer, deps: Ladder
     throw stop("MANIFEST_MISMATCH", `${plan.name}@${plan.version}: plugin.json does not parse: ${(error as Error).message}`, error);
   }
   try {
-    assertGitInstallManifest(document, { name: plan.name, version: plan.version, minAppVersion: plan.minAppVersion, authority: plan.authority });
+    assertGitInstallManifest(document, { name: plan.name, version: plan.version, minAppVersion: plan.minAppVersion, hostProtocol: plan.hostProtocol, authority: plan.authority });
   } catch (error) {
     // PACKAGE_COMPAT_UNDECLARED or MANIFEST_MISMATCH; either stops the ladder.
     throw stop(isMarketplaceError(error) ? error.code : "MANIFEST_MISMATCH", (error as Error).message, error);
