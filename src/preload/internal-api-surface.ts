@@ -1,6 +1,7 @@
 // The internal renderer API is intentionally assembled in one typed surface.
 import { ipcRenderer } from "electron";
 import {
+  ALERTS,
   CHANNELS,
   MARKETPLACE,
   OVERLAY_V1,
@@ -1299,6 +1300,28 @@ export function buildInternalApiSurface() {
     const listener = (_e: unknown, id: string) => handler(id);
     ipcRenderer.on(OVERLAY_V1.dismiss, listener);
     return () => ipcRenderer.removeListener(OVERLAY_V1.dismiss, listener);
+  },
+
+  // Plugin alert cards: what the user did with one, and the cards staged
+  // before this window was listening.
+  alerts: {
+    removePredecessor: async (kindKey: string) =>
+      ipcRenderer.invoke(ALERTS.removePredecessor, kindKey) as Promise<import("../shared/alerts-types.js").RemoveAlertPredecessorResult>,
+    listKinds: async () =>
+      ipcRenderer.invoke(ALERTS.listKinds) as Promise<import("../shared/alerts-types.js").AlertKindRow[]>,
+    setKind: async (kindKey: string, patch: import("../shared/alerts-types.js").AlertKindPatch) =>
+      ipcRenderer.invoke(ALERTS.setKind, kindKey, patch) as Promise<import("../shared/alerts-types.js").SetAlertKindResult>,
+    setOsNotificationsEnabled: async (enabled: boolean) =>
+      ipcRenderer.invoke(ALERTS.setOsNotificationsEnabled, enabled) as Promise<import("../shared/alerts-types.js").SetAlertOsNotificationsResult>,
+    onKindsChanged: (handler: () => void) => {
+      const listener = () => handler();
+      ipcRenderer.on(ALERTS.kindsChanged, listener);
+      return () => ipcRenderer.removeListener(ALERTS.kindsChanged, listener);
+    },
+    cardClosed: async (alertId: string, reason: "accepted" | "dismissed") =>
+      ipcRenderer.invoke(ALERTS.cardClosed, alertId, reason) as Promise<{ ok: boolean; error?: string }>,
+    listOpen: async () =>
+      ipcRenderer.invoke(ALERTS.listOpen) as Promise<import("../shared/alerts-types.js").AlertCard[]>,
   },
 
   // session_tasks — assistant's current-turn checklist

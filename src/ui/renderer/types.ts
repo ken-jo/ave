@@ -374,7 +374,7 @@ export type AskUserQuestionResponse = {
 };
 
 /** Which surface raised an in-app toast / OS notification. */
-type NotificationKind = "turn-end" | "routine" | "ask-user" | "approval" | "plugin" | "system";
+type NotificationKind = "turn-end" | "routine" | "ask-user" | "approval" | "plugin" | "alert" | "system";
 
 /** What the notification points back at, so a click can land on its source. */
 type NotificationContextRef = {
@@ -389,6 +389,8 @@ export type NotificationToastPayload = {
   title: string;
   body: string;
   contextRef?: NotificationContextRef;
+  /** Stays until the user dismisses it (a `high` priority alert). */
+  sticky?: true;
 };
 
 /** An overlay trigger began running — main → renderer, before any item is shown. */
@@ -1004,6 +1006,16 @@ export type AveApi = {
   onOverlayShow: (handler: (item: import("./context/OverlayContext.js").OverlayItem) => void) => () => void;
   onOverlayUpdate: (handler: (id: string, patch: Partial<import("./context/OverlayContext.js").OverlayItem>) => void) => () => void;
   onOverlayDismiss: (handler: (id: string) => void) => () => void;
+  /** Plugin alert cards: report the user's answer, and pull the cards staged before this window listened. */
+  alerts?: {
+    removePredecessor: (kindKey: string) => Promise<import("../../shared/alerts-types.js").RemoveAlertPredecessorResult>;
+    listKinds: () => Promise<import("../../shared/alerts-types.js").AlertKindRow[]>;
+    setKind: (kindKey: string, patch: import("../../shared/alerts-types.js").AlertKindPatch) => Promise<import("../../shared/alerts-types.js").SetAlertKindResult>;
+    setOsNotificationsEnabled: (enabled: boolean) => Promise<import("../../shared/alerts-types.js").SetAlertOsNotificationsResult>;
+    onKindsChanged: (handler: () => void) => () => void;
+    cardClosed: (alertId: string, reason: import("../../shared/alerts-types.js").AlertCardClosedReason) => Promise<{ ok: boolean; error?: string }>;
+    listOpen: () => Promise<import("../../shared/alerts-types.js").AlertCard[]>;
+  };
   // Routine session history
   listRoutineSessions: (
     routineId: string,

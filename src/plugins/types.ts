@@ -4,7 +4,7 @@ export * from "./public-contract.js";
 
 /**
  * Host-private persistence and marketplace DTOs. These are intentionally kept
- * outside `public-contract.ts` so they cannot enter the generated SDK surface.
+ * outside `public-contract.ts` so they cannot enter the vendored public surface.
  */
 
 /**

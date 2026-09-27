@@ -457,6 +457,18 @@ export class PluginMarketplaceService {
     return authority;
   }
 
+  /** Read even a disabled or refused-load install without depending on runtime state. */
+  async getInstalledConfigManifest(pluginId: string): Promise<{ manifest: PluginManifest; enabled: boolean; sourceId: string | null } | null> {
+    const entry = await this.getRawRegistryEntry(pluginId);
+    if (!entry || entry.pendingUpdate) return null;
+    const manifestPath = isAbsolute(entry.manifestPath)
+      ? entry.manifestPath
+      : resolve(dirname(this.registryPath), entry.manifestPath);
+    const manifest = flattenAgentPluginsManifest(JSON.parse(await readFile(manifestPath, "utf8")));
+    if (manifest.id !== pluginId) throw new Error("Installed plugin manifest identity mismatch");
+    return { manifest, enabled: entry.enabled !== false, sourceId: entry.origin?.sourceId ?? null };
+  }
+
   private mergeBundleRefs(
     bundleRefs: string[] | undefined,
     bundleRootId: string | null,
@@ -700,6 +712,7 @@ export class PluginMarketplaceService {
         packagePath: plan.packagePath,
         rung: staged.rung,
         rungs: staged.rungs,
+        authoritySha256: sha256Hex(canonicalJSON(plan.authority)),
       },
       files,
     })).raw;

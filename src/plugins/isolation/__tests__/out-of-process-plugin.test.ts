@@ -15,6 +15,22 @@
  * wiring and calls it protection.
  */
 import { describe, expect, it, vi } from "vitest";
+
+/** What the host transport warned, for the cases that assert a notification was dropped. */
+const transportWarnings = vi.hoisted(() => [] as unknown[][]);
+vi.mock("../../../lib/logger.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../lib/logger.js")>();
+  return {
+    ...actual,
+    createLogger: (name: string) => {
+      const logger = actual.createLogger(name);
+      if (name !== "plugin-child-transport") return logger;
+      return Object.assign(Object.create(logger) as typeof logger, {
+        warn: (...args: unknown[]) => void transportWarnings.push(args),
+      });
+    },
+  };
+});
 import { PassThrough } from "node:stream";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,7 +43,15 @@ import {
   type ConfinedPluginChild,
 } from "../out-of-process-plugin.js";
 import type { ChildLink } from "../plugin-child-transport.js";
-import { HOSTAPI_PATH_CONTRACTS, type HostApiPath } from "../host-api-wire.js";
+import {
+  FRAME_BYTES_MAX,
+  HOSTAPI_PATH_CONTRACTS,
+  IncompatibleHostProtocolError,
+  type HostApiPath,
+} from "../host-api-wire.js";
+import { PLUGIN_INSTANCE_METHODS } from "../plugin-instance-wire.js";
+import { StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
+import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 
 const PLUGIN_ID = "vega-helper";
 const EMPTY_SCHEMA = { type: "object", properties: {} } as const;
@@ -183,7 +207,11 @@ function fakeHostApi(): PluginHostApi & {
 }
 
 /** A child served over paired streams, with the host's end of the link. */
-function pairedChild(): { child: ConfinedPluginChild; kill: (reason: string) => void } {
+function pairedChild(): {
+  child: ConfinedPluginChild;
+  kill: (reason: string) => void;
+  sendAsChild: (frame: Record<string, unknown>) => void;
+} {
   const hostToChild = new PassThrough();
   const childToHost = new PassThrough();
   const service = servePluginChild(hostToChild, childToHost);
@@ -200,6 +228,7 @@ function pairedChild(): { child: ConfinedPluginChild; kill: (reason: string) => 
       service.hostGone();
       for (const handler of goneHandlers) handler(reason);
     },
+    sendAsChild: (frame) => { childToHost.write(`${JSON.stringify(frame)}\n`); },
   };
 }
 
@@ -250,6 +279,40 @@ describe("the dispatch table, assembled from the four group factories", () => {
 });
 
 describe("the pilot, out of process", () => {
+  it("records bounded dispatcher refusals through the runtime audit sink", async () => {
+    const { dir, entryPath } = writePluginModule();
+    const auditLog = vi.fn();
+    const paired = pairedChild();
+    try {
+      const factory = createOutOfProcessPluginFactory({
+        manifest: MANIFEST,
+        entryPath,
+        connect: async () => paired.child,
+        auditLog,
+      });
+      const instance = await factory(hostContext(fakeHostApi()));
+      for (let index = 0; index < 220; index += 1) {
+        paired.sendAsChild({
+          jsonrpc: "2.0", id: `flood-${index}`,
+          method: "ave/host/hasRoutineBySource", params: { source: "nightly" },
+        });
+      }
+      for (let turn = 0; turn < 10 && auditLog.mock.calls.length === 0; turn += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      expect(auditLog).toHaveBeenCalledWith("warn", "plugin_rate_limited", expect.objectContaining({
+        pluginId: PLUGIN_ID,
+        method: "hasRoutineBySource",
+        code: "rate-limited",
+        count: 1,
+        summary: false,
+      }));
+      await instance.stop?.();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("invokes a declared tool end to end and returns the plugin's own value", async () => {
     const { dir, entryPath } = writePluginModule();
     const hostApi = fakeHostApi();
@@ -313,10 +376,12 @@ describe("the pilot, out of process", () => {
       // The bound instance, not a fresh one: the effect recorder and the effect
       // gate wrap THIS object in production, so a boundary bound to any other
       // would record nothing.
-      // `{}` and not `undefined`: `callLlm`'s handler always passes an options
-      // object, because the wire carries the three declared option fields
-      // individually and rebuilds them host-side.
-      expect(hostApi.callLlm).toHaveBeenCalledWith("say hello", {});
+      // An options object and not `undefined`: `callLlm`'s handler always
+      // rebuilds one host-side from the declared fields, and it always carries
+      // the request's own cancellation signal, which the wire never does.
+      expect(hostApi.callLlm).toHaveBeenCalledWith("say hello", {
+        signal: expect.any(AbortSignal),
+      });
       await instance.stop?.();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -541,6 +606,469 @@ describe("the host keeps the child's config snapshot current", () => {
       await instance.stop?.();
       expect(() => hostApi.setHostConfig("domains", ["after-stop"])).not.toThrow();
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("a message too large to frame fails its call, not the channel", () => {
+  // Past `FRAME_BYTES_MAX` (about 44 MB) but plain JSON, which no byte-payload
+  // limit reaches. Before the writer checked the bound, each of these ended the
+  // channel at the other end's reader and took every pending call with it.
+  const MiB = 1024 * 1024;
+  const TOOLS = ["big_result", "read_big_file", "write_big_json", "echo", "events_seen", "log_big"];
+  const MODULE = `export const createPlugin = async (context) => {
+  const refusal = (error) => ({ name: error.name, code: error.code ?? null });
+  const seen = [];
+  context.hostApi.onEvent("board.changed", (data) => seen.push(data));
+  return {
+    handlers: {
+      events_seen: async () => ({ seen }),
+      // A log line the child cannot frame. context.log never throws in-process.
+      log_big: async () => {
+        context.log("a large log line", { blob: "x".repeat(46 * ${MiB}) });
+        return { logged: true };
+      },
+      // Crosses twice — text content and raw result — so about 46 MB.
+      big_result: async () => "x".repeat(23 * ${MiB}),
+      read_big_file: async () => {
+        try {
+          return { length: (await context.hostApi.storage.readText("big.txt")).length };
+        } catch (error) {
+          return refusal(error);
+        }
+      },
+      write_big_json: async () => {
+        try {
+          await context.hostApi.storage.writeJson("big.json", { blob: "x".repeat(46 * ${MiB}) });
+          return { written: true };
+        } catch (error) {
+          return refusal(error);
+        }
+      },
+      echo: async (payload) => ({ echoed: payload ?? null }),
+    },
+  };
+};
+`;
+
+  async function construct(hostApi: PluginHostApi) {
+    const dir = mkdtempSync(join(tmpdir(), "oop-plugin-oversize-"));
+    const entryPath = join(dir, "plugin.mjs");
+    writeFileSync(entryPath, MODULE, "utf-8");
+    const { child } = pairedChild();
+    const terminate = vi.fn(child.link.terminate);
+    const factory = createOutOfProcessPluginFactory({
+      manifest: {
+        ...MANIFEST,
+        tools: TOOLS.map((name) => ({ name, description: name, inputSchema: EMPTY_SCHEMA })),
+      },
+      entryPath,
+      connect: async () => ({ link: { ...child.link, terminate } }),
+    });
+    const instance = await factory(hostContext(hostApi));
+    return { dir, instance, terminate };
+  }
+
+  it("drops a host notification too large to frame, names it in the host log, and delivers the next", async () => {
+    const hostApi = fakeHostApi();
+    const { dir, instance, terminate } = await construct(hostApi);
+    try {
+      await vi.waitFor(() => expect(hostApi.onEvent).toHaveBeenCalledWith("board.changed", expect.any(Function)));
+      const deliver = vi.mocked(hostApi.onEvent).mock.calls.find(([type]) => type === "board.changed")![1];
+      transportWarnings.length = 0;
+      // The host's event bus calls this like any listener; it must not throw.
+      expect(() => deliver({ blob: "x".repeat(46 * MiB) })).not.toThrow();
+      deliver({ small: true });
+      await vi.waitFor(async () =>
+        expect(await instance.handlers.events_seen!()).toEqual({ seen: [{ small: true }] }));
+      expect(transportWarnings).toHaveLength(1);
+      expect(transportWarnings[0]![0]).toMatchObject({
+        pluginId: PLUGIN_ID,
+        method: "notifications/ave/subscription",
+        subscriptionId: expect.any(String),
+        byteLength: expect.any(Number),
+        limit: FRAME_BYTES_MAX,
+      });
+      expect(terminate).not.toHaveBeenCalled();
+      await instance.stop?.();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("drops a plugin's log line too large to frame without throwing into the plugin", async () => {
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const { dir, instance, terminate } = await construct(fakeHostApi());
+    try {
+      await expect(instance.handlers.log_big!()).resolves.toEqual({ logged: true });
+      const reported = stderr.mock.calls
+        .map(([chunk]) => String(chunk))
+        .filter((line) => line.startsWith("[plugin-child] dropped a notification too large to frame"));
+      expect(reported).toHaveLength(1);
+      expect(JSON.parse(reported[0]!.slice(reported[0]!.indexOf("{")))).toMatchObject({
+        pluginId: PLUGIN_ID,
+        method: "notifications/ave/log",
+        limit: FRAME_BYTES_MAX,
+      });
+      await expect(instance.handlers.echo!()).resolves.toEqual({ echoed: null });
+      expect(terminate).not.toHaveBeenCalled();
+      await instance.stop?.();
+    } finally {
+      stderr.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a tool result too large to frame, and the plugin keeps serving", async () => {
+    const { dir, instance, terminate } = await construct(fakeHostApi());
+    try {
+      await expect(instance.handlers.big_result!()).rejects.toMatchObject({
+        boundaryCode: "payload-too-large",
+      });
+      await expect(instance.handlers.echo!({ still: "alive" })).resolves.toEqual({
+        echoed: { still: "alive" },
+      });
+      expect(terminate).not.toHaveBeenCalled();
+      await instance.stop?.();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a host reply too large to frame to the plugin that asked, and the plugin keeps serving", async () => {
+    const hostApi = fakeHostApi();
+    vi.mocked(hostApi.storage.readText).mockResolvedValue("x".repeat(46 * MiB));
+    const { dir, instance, terminate } = await construct(hostApi);
+    try {
+      await expect(instance.handlers.read_big_file!()).resolves.toEqual({
+        name: "HostApiBoundaryError",
+        code: "payload-too-large",
+      });
+      await expect(instance.handlers.echo!()).resolves.toEqual({ echoed: null });
+      expect(terminate).not.toHaveBeenCalled();
+      await instance.stop?.();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a plugin's request too large to frame before it is written", async () => {
+    const hostApi = fakeHostApi();
+    const { dir, instance, terminate } = await construct(hostApi);
+    try {
+      await expect(instance.handlers.write_big_json!()).resolves.toEqual({
+        name: "HostApiBoundaryError",
+        code: "payload-too-large",
+      });
+      expect(hostApi.storage.writeJson).not.toHaveBeenCalled();
+      await expect(instance.handlers.echo!()).resolves.toEqual({ echoed: null });
+      expect(terminate).not.toHaveBeenCalled();
+      await instance.stop?.();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a host request too large to frame to the host caller", async () => {
+    const { dir, instance, terminate } = await construct(fakeHostApi());
+    try {
+      await expect(instance.handlers.echo!({ blob: "x".repeat(46 * MiB) })).rejects.toMatchObject({
+        name: "HostApiBoundaryError",
+        code: "payload-too-large",
+      });
+      await expect(instance.handlers.echo!()).resolves.toEqual({ echoed: null });
+      expect(terminate).not.toHaveBeenCalled();
+      await instance.stop?.();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/** Write `source` as a plugin module and return where it is. */
+function writeModule(prefix: string, source: string): { dir: string; entryPath: string } {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  const entryPath = join(dir, "plugin.mjs");
+  writeFileSync(entryPath, source, "utf-8");
+  return { dir, entryPath };
+}
+
+/** Every frame the host writes to `link`, decoded as the child decodes it. */
+function hostFrames(link: ChildLink): Array<Record<string, unknown>> {
+  const frames: Array<Record<string, unknown>> = [];
+  const decoder = new StdioFrameDecoder(FRAME_BYTES_MAX);
+  link.output.on("data", (chunk: Buffer) => frames.push(...decoder.push(chunk)));
+  return frames;
+}
+
+/**
+ * A child written by hand: it answers `construct` with `result` and nothing
+ * else, which is how a plugin that speaks the protocol itself would answer.
+ */
+function scriptedChild(result: Record<string, unknown>): {
+  child: ConfinedPluginChild;
+  terminated: () => string | undefined;
+} {
+  const hostToChild = new PassThrough();
+  const childToHost = new PassThrough();
+  const decoder = new StdioFrameDecoder(FRAME_BYTES_MAX);
+  hostToChild.on("data", (chunk: Buffer) => {
+    for (const frame of decoder.push(chunk)) {
+      if (frame.method === PLUGIN_INSTANCE_METHODS.construct) {
+        childToHost.write(`${JSON.stringify({ jsonrpc: "2.0", id: frame.id, result })}\n`);
+      }
+    }
+  });
+  let terminated: string | undefined;
+  return {
+    child: {
+      link: {
+        input: childToHost,
+        output: hostToChild,
+        terminate: (reason) => {
+          terminated = reason;
+        },
+        onGone: () => undefined,
+      },
+    },
+    terminated: () => terminated,
+  };
+}
+
+const CONSTRUCTED = {
+  implementedToolNames: [],
+  servesUiResources: false,
+  lifecycleHooks: [],
+} as const;
+
+describe("construct negotiates the host protocol", () => {
+  it("refuses a declared version this host does not serve, before anything is spawned", async () => {
+    const connect = vi.fn(async () => pairedChild().child);
+    const factory = createOutOfProcessPluginFactory({
+      manifest: { ...MANIFEST, requires: { hostProtocol: "2" } },
+      entryPath: join(tmpdir(), "never-imported.mjs"),
+      connect,
+    });
+    const refused = factory(hostContext(fakeHostApi()));
+    await expect(refused).rejects.toBeInstanceOf(IncompatibleHostProtocolError);
+    await expect(refused).rejects.toMatchObject({ detail: { declared: "2" } });
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it("speaks the declared version, and advertises the members the bound table implements", async () => {
+    const { dir, entryPath } = writePluginModule();
+    const { child } = pairedChild();
+    const sent = hostFrames(child.link);
+    // A host build without the optional `hostFetch` member.
+    const hostApi = fakeHostApi();
+    delete (hostApi as { hostFetch?: unknown }).hostFetch;
+    try {
+      const factory = createOutOfProcessPluginFactory({
+        manifest: { ...MANIFEST, requires: { hostProtocol: "1" } },
+        entryPath,
+        connect: async () => child,
+      });
+      const instance = await factory(hostContext(hostApi));
+      const construct = sent.find((frame) => frame.method === PLUGIN_INSTANCE_METHODS.construct);
+      const { hostProtocol } = construct?.params as {
+        hostProtocol: { version: string; capabilities: string[] };
+      };
+      expect(hostProtocol.version).toBe("1");
+      // Read off the table the dispatcher serves: advertised is answered, and
+      // a member this build lacks is not advertised.
+      expect(hostProtocol.capabilities).toContain("ave/host/callLlm");
+      expect(hostProtocol.capabilities).not.toContain("ave/host/hostFetch");
+      // Child-local members never cross, so they are not capabilities.
+      expect(hostProtocol.capabilities).not.toContain("ave/host/config/get");
+      expect(hostProtocol.capabilities).toEqual([...hostProtocol.capabilities].sort());
+      await instance.stop?.();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a child that requires a method this host did not advertise, and ends it", async () => {
+    const hostApi = fakeHostApi();
+    delete (hostApi as { hostFetch?: unknown }).hostFetch;
+    const { child, terminated } = scriptedChild({
+      ...CONSTRUCTED,
+      pluginProtocol: { requires: ["ave/host/callLlm", "ave/host/hostFetch"] },
+    });
+    const factory = createOutOfProcessPluginFactory({
+      manifest: MANIFEST,
+      entryPath: join(tmpdir(), "never-imported.mjs"),
+      connect: async () => child,
+    });
+    const refused = factory(hostContext(hostApi));
+    await expect(refused).rejects.toBeInstanceOf(IncompatibleHostProtocolError);
+    await expect(refused).rejects.toMatchObject({
+      detail: { missingCapabilities: ["ave/host/hostFetch"] },
+    });
+    expect(terminated()).toMatch(/startup failed/);
+  });
+
+  it("accepts the same requirement from a host that serves it", async () => {
+    const { child, terminated } = scriptedChild({
+      ...CONSTRUCTED,
+      pluginProtocol: { requires: ["ave/host/hostFetch"] },
+    });
+    const factory = createOutOfProcessPluginFactory({
+      manifest: MANIFEST,
+      entryPath: join(tmpdir(), "never-imported.mjs"),
+      connect: async () => child,
+    });
+    const instance = await factory(hostContext(fakeHostApi()));
+    expect(terminated()).toBeUndefined();
+    expect(typeof instance.stop).toBe("function");
+  });
+
+  it("fails a construct reply with no pluginProtocol, rather than reading it as requiring nothing", async () => {
+    const { child, terminated } = scriptedChild({ ...CONSTRUCTED });
+    const factory = createOutOfProcessPluginFactory({
+      manifest: MANIFEST,
+      entryPath: join(tmpdir(), "never-imported.mjs"),
+      connect: async () => child,
+    });
+    await expect(factory(hostContext(fakeHostApi()))).rejects.toThrow(
+      /construct answered no pluginProtocol\.requires list/,
+    );
+    expect(terminated()).toMatch(/startup failed/);
+  });
+});
+
+describe("a ui:// card is MCP resources/read", () => {
+  const CARD = "ui://vega-helper/card";
+
+  it("reads the card through the child's MCP server when the manifest declares it", async () => {
+    const { dir, entryPath } = writeModule(
+      "oop-plugin-card-",
+      "export const createPlugin = async () => ({\n"
+        + "  handlers: {},\n"
+        + "  readUiResource: async (uri) => `<p>${uri}</p>`,\n"
+        + "});\n",
+    );
+    const { child } = pairedChild();
+    const sent = hostFrames(child.link);
+    try {
+      const factory = createOutOfProcessPluginFactory({
+        manifest: { ...MANIFEST, uiResources: [{ uri: CARD }] },
+        entryPath,
+        connect: async () => child,
+      });
+      const instance = await factory(hostContext(fakeHostApi()));
+      await expect(instance.readUiResource?.(CARD)).resolves.toBe(`<p>${CARD}</p>`);
+      expect(sent.some((frame) => frame.method === "resources/read")).toBe(true);
+      await instance.stop?.();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("offers no read when the manifest declares no card, even if the plugin has the hook", async () => {
+    const { dir, entryPath } = writeModule(
+      "oop-plugin-nocard-",
+      "export const createPlugin = async () => ({\n"
+        + "  handlers: {},\n"
+        + "  readUiResource: async (uri) => `<p>${uri}</p>`,\n"
+        + "});\n",
+    );
+    const { child } = pairedChild();
+    try {
+      const factory = createOutOfProcessPluginFactory({
+        manifest: MANIFEST,
+        entryPath,
+        connect: async () => child,
+      });
+      const instance = await factory(hostContext(fakeHostApi()));
+      // The child's server would refuse the read, so the host is not handed a
+      // hook that can only fail.
+      expect(instance.readUiResource).toBeUndefined();
+      await instance.stop?.();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("onShutdown runs through ave/instance/shutdown", () => {
+  /** A plugin whose shutdown handler finishes only when `pilot_echo` releases it. */
+  const HELD_SHUTDOWN = `export const createPlugin = async (context) => {
+  let release;
+  const released = new Promise((resolve) => { release = resolve; });
+  context.hostApi.onShutdown(async () => { await released; });
+  return { handlers: { pilot_echo: async () => { release(); return {}; } } };
+};
+`;
+
+  async function constructHeld(): Promise<{
+    dir: string;
+    instance: Awaited<ReturnType<ReturnType<typeof createOutOfProcessPluginFactory>>>;
+    runShutdown: () => Promise<void>;
+    terminate: ReturnType<typeof vi.fn>;
+  }> {
+    const { dir, entryPath } = writeModule("oop-plugin-shutdown-", HELD_SHUTDOWN);
+    const { child } = pairedChild();
+    const terminate = vi.fn(child.link.terminate);
+    const hostApi = fakeHostApi();
+    const factory = createOutOfProcessPluginFactory({
+      manifest: MANIFEST,
+      entryPath,
+      connect: async () => ({ link: { ...child.link, terminate } }),
+    });
+    const instance = await factory(hostContext(hostApi));
+    await vi.waitFor(() => expect(hostApi.onShutdown).toHaveBeenCalledTimes(1));
+    const handler = vi.mocked(hostApi.onShutdown).mock.calls[0]![0];
+    return { dir, instance, runShutdown: async () => await handler(), terminate };
+  }
+
+  it("makes the host wait for the plugin's handler to finish", async () => {
+    const { dir, instance, runShutdown } = await constructHeld();
+    try {
+      let finished = false;
+      const shutdown = runShutdown().then(() => {
+        finished = true;
+      });
+      for (let turn = 0; turn < 10; turn += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      expect(finished).toBe(false);
+      await instance.handlers.pilot_echo!({});
+      await shutdown;
+      expect(finished).toBe(true);
+      await instance.stop?.();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("kills the child whose handler overruns the shutdown bound, after the runner's timeout", async () => {
+    const { dir, instance, runShutdown, terminate } = await constructHeld();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { pluginShutdownHandlerMs, pluginShutdownKillGraceMs } = TOOL_TIMEOUT_POLICY;
+      let settled = false;
+      const shutdown = runShutdown().finally(() => {
+        settled = true;
+      });
+      const outcome = expect(shutdown).rejects.toThrow(
+        `exceeded ${String(pluginShutdownHandlerMs + pluginShutdownKillGraceMs)}ms`,
+      );
+      // The host's shutdown runner times the handler out at this bound. The
+      // child must still be alive and the request still open here, or the
+      // transport's error would race the runner's for the report.
+      await vi.advanceTimersByTimeAsync(pluginShutdownHandlerMs);
+      expect(settled).toBe(false);
+      expect(terminate).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(pluginShutdownKillGraceMs);
+      await outcome;
+      expect(terminate).toHaveBeenCalledTimes(1);
+      // The transport is closed with it, so nothing else waits on this child.
+      await expect(instance.handlers.pilot_echo!({})).rejects.toThrow(
+        /'ave\/instance\/shutdown' timed out/,
+      );
+    } finally {
+      vi.useRealTimers();
       rmSync(dir, { recursive: true, force: true });
     }
   });

@@ -18,7 +18,7 @@ const SURFACES = {
 };
 
 function descriptor(kind: string, name: string, payload: Record<string, unknown>, patch: Record<string, unknown> = {}) {
-  return { schemaVersion: 1, kind, name, version: "1.0.0", minAppVersion: "0.12.0", payload, ...patch };
+  return { schemaVersion: 2, kind, name, version: "1.0.0", minAppVersion: "0.12.0", payload, ...patch };
 }
 
 function version(patch: Record<string, unknown> = {}) {
@@ -29,9 +29,9 @@ function version(patch: Record<string, unknown> = {}) {
 function validFiles(): Map<string, unknown> {
   return new Map<string, unknown>([
     [
-      "marketplace.json",
+      "marketplace.2.json",
       {
-        schemaVersion: 1,
+        schemaVersion: 2,
         name: "ave",
         displayName: "Ave Official",
         packages: [
@@ -74,28 +74,85 @@ function tree(files: Map<string, unknown>): RepositoryTree {
   };
 }
 
-const OFFICIAL = { sourceId: "ave", official: true };
+const OFFICIAL = { sourceId: "ave", official: true, alertsReleaseVersion: "0.13.0" };
 
 function check(files: Map<string, unknown>) {
   return checkMarketplaceRepository(tree(files), OFFICIAL);
 }
 
 function index(files: Map<string, unknown>) {
-  return files.get("marketplace.json") as { packages: Array<Record<string, unknown>>; name: string };
+  return files.get("marketplace.2.json") as { packages: Array<Record<string, unknown>>; name: string };
 }
 
 describe("checkMarketplaceRepository", () => {
+  it("keeps the legacy file closed and limited to pre-cutover versions", () => {
+    const files = validFiles();
+    const current = index(files);
+    const old = version({ version: "0.9.0", minAppVersion: "0.11.0" });
+    const skill = current.packages.find((entry) => entry.name === "review")!;
+    (skill.versions as unknown[]).push(old);
+    files.set("marketplace.json", {
+      schemaVersion: 1, name: "ave", displayName: "Ave Official",
+      packages: [{ kind: "skill", name: "review", path: "skills/review", versions: [old] }],
+    });
+    expect(check(files)).toEqual([]);
+    (old as Record<string, unknown>).hostProtocol = "2";
+    expect(check(files)).toEqual([expect.objectContaining({ subject: "marketplace.json", message: expect.stringContaining("marketplace.json") })]);
+    delete (old as Record<string, unknown>).hostProtocol;
+    (old as Record<string, unknown>).minAppVersion = "0.12.0";
+    expect(check(files)).toEqual([expect.objectContaining({ subject: "marketplace.json", message: expect.stringContaining("belongs only in format 2") })]);
+  });
+  it("checks the optional conditional policy and rejects an invalid successor mapping", () => {
+    const files = validFiles();
+    const entry = { kind: "plugin", name: "alpha", versions: "*", appVersions: "0.12.0", reason: "Replaced", at: AT,
+      action: "uninstall", successors: { plugins: [], hostKinds: [] } };
+    files.set("policy/revocations-by-app.json", { schemaVersion: 1, revocations: [entry] });
+    expect(check(files)).toEqual([]);
+    files.set("policy/revocations-by-app.json", { schemaVersion: 1, revocations: [{ ...entry, successors: { plugins: [{ pluginId: "alpha", anySource: false }], hostKinds: [] } }] });
+    expect(check(files)).toEqual([expect.objectContaining({ subject: "policy/revocations-by-app.json" })]);
+    for (const pluginId of ["constructor", "prototype", "__proto__"]) {
+      files.set("policy/revocations-by-app.json", { schemaVersion: 1, revocations: [{ ...entry, successors: { plugins: [{ pluginId }], hostKinds: [] } }] });
+      expect(check(files)).toEqual([expect.objectContaining({ subject: "policy/revocations-by-app.json" })]);
+    }
+  });
+
   it("accepts a repository the app would accept", () => {
     expect(check(validFiles())).toEqual([]);
   });
 
   it("refuses a missing or invalid index outright", () => {
     const files = validFiles();
-    files.delete("marketplace.json");
-    expect(check(files)).toEqual([{ subject: "marketplace.json", message: "is missing" }]);
+    files.delete("marketplace.2.json");
+    expect(check(files)).toEqual([{ subject: "marketplace.2.json", message: "is missing" }]);
     const renamed = validFiles();
     index(renamed).name = "other";
-    expect(check(renamed)).toEqual([{ subject: "marketplace.json", message: expect.stringContaining('must be named "ave"') }]);
+    expect(check(renamed)).toEqual([{ subject: "marketplace.2.json", message: expect.stringContaining('must be named "ave"') }]);
+  });
+
+  it("refuses a plugin named host, the id the host's own alert sources use", () => {
+    const files = validFiles();
+    const plugin = index(files).packages[0]!;
+    plugin.name = "host";
+    plugin.path = "plugins/host";
+    files.delete("plugins/alpha/ave-package.json");
+    files.delete("plugins/alpha/source/package.json");
+    files.set("plugins/host/ave-package.json", descriptor("plugin", "host", { authority: authority(), artifact: artifact() }));
+    expect(check(files)).toEqual([
+      { subject: "plugin/host", message: "the plugin name host is reserved for the host" },
+      { subject: "plugins/host/ave-package.json", message: "no index entry points at this package" },
+    ]);
+  });
+
+  it("allows host as the name of a package that is not a plugin", () => {
+    const files = validFiles();
+    const skill = index(files).packages[3]!;
+    skill.name = "host";
+    skill.path = "skills/host";
+    files.delete("skills/review/ave-package.json");
+    files.delete("skills/review/SKILL.md");
+    files.set("skills/host/ave-package.json", descriptor("skill", "host", { entry: "SKILL.md" }));
+    files.set("skills/host/SKILL.md", "---\nname: host\ndescription: Review a change.\n---\nRead the diff first.\n");
+    expect(check(files)).toEqual([]);
   });
 
   it("reports a descriptor the index copy disagrees with", () => {
@@ -191,5 +248,63 @@ describe("checkMarketplaceRepository", () => {
       { subject: "agents/orphan/ave-package.json", message: "no index entry points at this package" },
       { subject: "policy/revocations.json", message: expect.stringContaining("revocations.json") },
     ]);
+  });
+});
+
+describe("notification declaration deprecation", () => {
+  function pluginDocument(notificationEvents: unknown = []) {
+    return { name: "alpha", version: "1.0.0", extensions: { "ai.agent-connector.ave": { ...authority(), notificationEvents } } };
+  }
+  function treeFiles(document: unknown) {
+    const files = validFiles();
+    files.delete("plugins/alpha/source/package.json");
+    files.set("plugins/alpha/plugin.json", document);
+    return files;
+  }
+
+  it.each([undefined, "", "unknown", "0.12", "0.012.0", "0.12.0-beta.1", "0.12.0+build"])("refuses an unset or non-stable alerts release version: %s", (alertsReleaseVersion) => {
+    const options = { ...OFFICIAL, alertsReleaseVersion } as Parameters<typeof checkMarketplaceRepository>[1];
+    expect(checkMarketplaceRepository(tree(validFiles()), options)).toEqual([
+      { subject: "alertsReleaseVersion", message: expect.stringContaining("Set alertsReleaseVersion") },
+    ]);
+  });
+
+  it.each(["0.12.0", "0.11.9"])("flags a legacy tree declaration at or above release %s", (alertsReleaseVersion) => {
+    expect(checkMarketplaceRepository(tree(treeFiles(pluginDocument())), { ...OFFICIAL, alertsReleaseVersion })).toEqual([
+      { subject: "plugin/alpha", message: expect.stringContaining("notificationEvents is deprecated for minAppVersion 0.12.0") },
+    ]);
+  });
+
+  it("keeps older legacy plugins valid during the transition", () => {
+    expect(check(treeFiles(pluginDocument([{ event: "alpha.ready" }])))).toEqual([]);
+  });
+
+  it("uses the descriptor minimum even if the manifest tries to claim an older minimum", () => {
+    const document = pluginDocument(null);
+    document.extensions["ai.agent-connector.ave"].requires.minAppVersion = "0.1.0";
+    const problems = checkMarketplaceRepository(tree(treeFiles(document)), { ...OFFICIAL, alertsReleaseVersion: "0.12.0" });
+    expect(problems).toContainEqual({ subject: "plugin/alpha", message: expect.stringContaining("notificationEvents is deprecated") });
+  });
+
+  it("checks release-only manifests, including retained yanked versions", () => {
+    const files = validFiles();
+    const versions = index(files).packages[0]!.versions as Array<Record<string, unknown>>;
+    versions.push(version({ version: "0.9.0", authority: authority(), artifact: artifact(), yanked: { reason: "Retained pin", at: AT } }));
+    const old = { ...pluginDocument(), version: "0.9.0" };
+    const problems = checkMarketplaceRepository(tree(files), { ...OFFICIAL, alertsReleaseVersion: "0.12.0", releasedManifests: new Map([["alpha@1.0.0", pluginDocument()], ["alpha@0.9.0", old]]) });
+    expect(problems).toContainEqual({ subject: "plugin/alpha", message: expect.stringContaining("the released plugin.json of 1.0.0: notificationEvents is deprecated") });
+    expect(problems).toContainEqual({ subject: "plugin/alpha", message: expect.stringContaining("the released plugin.json of 0.9.0: notificationEvents is deprecated") });
+  });
+
+  it("requires a manifest for an eligible release-only descriptor instead of silently skipping the check", () => {
+    expect(checkMarketplaceRepository(tree(validFiles()), { ...OFFICIAL, alertsReleaseVersion: "0.12.0" })).toEqual([
+      { subject: "plugin/alpha", message: expect.stringContaining("Supply releasedManifests for alpha@1.0.0") },
+    ]);
+  });
+
+  it("accepts an eligible manifest without the deprecated field", () => {
+    const document = { name: "alpha", version: "1.0.0", extensions: { "ai.agent-connector.ave": authority() } };
+    expect(checkMarketplaceRepository(tree(treeFiles(document)), { ...OFFICIAL, alertsReleaseVersion: "0.12.0" })).toEqual([]);
+    expect(checkMarketplaceRepository(tree(validFiles()), { ...OFFICIAL, alertsReleaseVersion: "0.12.0", releasedManifests: new Map([["alpha@1.0.0", document]]) })).toEqual([]);
   });
 });

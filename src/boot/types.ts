@@ -252,6 +252,8 @@ export interface AppServices {
     | import("../engine/subagent-runner.js").SubAgentRunner | undefined;
   /** Work board persistence (~/.ave/work-board/board.json) — backs the work-board IPC domain. */
   workBoardStore?: import("../main/work-board-store.js").WorkBoardStore;
+  /** Plugin alerts pipeline — backs `hostApi.raiseAlert` and the alerts IPC domain. */
+  alertsService?: import("../alerts/service.js").AlertsService;
   /**
    * Work board agent-orchestration engine — owns the plan→approve→execute run
    * for one item. Wired after the SubAgentRunner exists at boot; reached by the
@@ -319,6 +321,12 @@ export interface AppServices {
    * wired plugin bus. The interval is cleared in `shutdown()`.
    */
   startWorkBoardDueSoon?: () => void;
+  /**
+   * Deferred alerts expiry sweep. main.ts calls this beside
+   * startWorkBoardDueSoon, once IPC and plugins are up; the timer stops in
+   * `shutdown()`.
+   */
+  startAlerts?: () => void;
   /**
    * Issue #260 — system-level notification service. Auto-fires desktop
    * notifications at lifecycle points (turn-end / routine / ask-user /

@@ -1,3 +1,4 @@
+import { readPluginRegistry } from "./plugins/registry.js";
 import { requireDesktopHost, type BootHost } from "./boot/host-runtime.js";
 import { configureHostResources } from "./main/host-resources.js";
 /**
@@ -49,6 +50,7 @@ import { resolvePluginPaths } from "./plugins/plugin-paths.js";
 import { StarredStore } from "./data/starred-store.js";
 import { FeedbackStore } from "./data/feedback-store.js";
 import { forgetTrackedPluginAuthPartitions, getTrackedPluginAuthPartitions } from "./main/plugin-auth-partition-tracker.js";
+import { createPluginRetirementPort } from "./plugins/retired-config.js";
 import { recoverPendingPluginUninstallCleanups } from "./plugins/uninstall-lifecycle.js";
 import { drainPluginInstallLockOperations } from "./plugins/install-lifecycle.js";
 import { registerShutdownHook, configureAppShutdownHost } from "./main/app-shutdown.js";
@@ -89,6 +91,7 @@ import { assembleAppServices } from "./boot/assemble-services.js";
 import { setupNetworkFetch } from "./boot/steps/network-fetch-setup.js";
 import { setupAuditAndNotification } from "./boot/steps/audit-notification.js";
 import { setupWorkBoard } from "./boot/steps/work-board-setup.js";
+import { setupAlerts } from "./boot/steps/alerts-setup.js";
 import { setupWorkflowStores } from "./boot/steps/workflow-stores.js";
 import { setupMarketplace } from "./boot/steps/marketplace-setup.js";
 import { wireReviewerAndPermissions } from "./boot/steps/reviewer-permission-wiring.js";
@@ -534,6 +537,7 @@ export async function bootstrap(
   // triggers after boot reads the same registry. Local files only; the
   // marketplace feeds it again after each sync.
   await feedRevocationsFromSnapshots({
+    appVersion: getAveAppVersion(),
     home: aveHome(),
     pluginRegistryPath: resolvePluginPaths().registryPath,
     bootAuditLogger: ctx.bootAuditLogger,
@@ -645,6 +649,9 @@ export async function bootstrap(
     // Recommended-work channel target for `hostApi.proposeWork`. Read lazily:
     // setupWorkBoard() runs below this call, and plugins only start after it.
     getWorkBoardStore: () => ctx.workBoardStore,
+    // Alerts channel for `hostApi.raiseAlert`, read lazily for the same reason:
+    // setupAlerts() runs below this call, before plugins start.
+    getAlertsService: () => ctx.alertsService,
     onPluginUiRevisionChange: (pluginId) => {
       host.desktop?.revokePluginWebviews(pluginId, (appSessionId) =>
         ctx.revokePluginOperationSession?.(appSessionId),
@@ -667,12 +674,18 @@ export async function bootstrap(
   // (subAgentRunner, askUserQuestionGate) hop through closures so the
   // ConversationLoop / BrowserWindow are available before the tool fires.
   // (routinesStore is constructed above — it must exist before initPluginRuntime.)
-  const routinesScheduler = new RoutinesScheduler(routinesStore);
+  const routinesScheduler = new RoutinesScheduler(routinesStore, async () => {
+    const registry = await readPluginRegistry(pluginPaths.registryPath);
+    return registry.plugins.map((entry) => pluginRuntime.resolvePluginId(entry.id));
+  });
   ctx.routinesScheduler = routinesScheduler;
 
   await setupWorkBoard(ctx);
   await setupWorkflowStores(ctx, workspaceSessionStores);
   await setupMarketplace(ctx);
+  // Before cleanup replay and plugin startup: uninstall events must reach the
+  // alerts service, and declared kinds must register before their first raise.
+  await setupAlerts(ctx);
   // ONE cleanup service set for every boot entry point into
   // plugins/uninstall-lifecycle. It used to be hand-spelled per call site, and
   // `emitHostEvent` — optional on the dep interface, so its absence type-checks
@@ -701,6 +714,12 @@ export async function bootstrap(
     await recoverPendingPluginUninstallCleanups({
       pluginMarketplace: ctx.pluginMarketplace,
       ...pluginStateCleanupDeps,
+      retirement: createPluginRetirementPort({
+        settings: settingsService,
+        marketplace: ctx.pluginMarketplace,
+        wildcard: () => pluginRuntime.getWildcardConfigOverride(),
+        appVersion: getAveAppVersion,
+      }),
     });
   if (unresolvedUninstallCleanups.length > 0) {
     ctx.bootAuditLogger.log({

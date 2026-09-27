@@ -9,15 +9,15 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 
 /**
  * Validates all JSON test-fixture files matching the manifest glob pattern
- * against schemas/plugin.schema.json using the same AJV instance as the
+ * against schemas/plugin-manifest.schema.json using the same AJV instance as the
  * production runtime (buildManifestValidator). Collects all failures before
  * throwing so CI surfaces every broken fixture in one pass.
  *
  * This runs BEFORE any test file, catching schema drift introduced alongside
  * a schema change without requiring every test to opt in.
  *
- * Fails closed if the SDK schema cannot be resolved. The host does not keep an
- * app-local schema copy.
+ * Fails closed if the host-owned schema cannot be resolved. Plugins vendor
+ * the schema unchanged at an app release tag.
  */
 async function validateJsonFixtures(): Promise<void> {
   const validate = await buildManifestValidator();

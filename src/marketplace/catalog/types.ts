@@ -7,6 +7,9 @@
  * rather than restated, so one definition covers `plugin.json` and the
  * descriptor that copies it.
  */
+import type { RetirementSuccessors } from "../../shared/alerts-types.js";
+import type { PluginSandboxDeclaration } from "../../plugins/public-contract.js";
+
 export const PACKAGE_KINDS = [
   "plugin",
   "mcp",
@@ -36,7 +39,7 @@ interface MarketplaceOwner {
 }
 
 export interface MarketplaceIndex {
-  schemaVersion: 1;
+  schemaVersion: 2;
   name: string;
   displayName: string;
   description?: string;
@@ -61,6 +64,7 @@ export interface IndexVersion {
   version: string;
   commit: string;
   minAppVersion: string;
+  hostProtocol?: string;
   platforms?: Platform[];
   authority?: PluginAuthority;
   artifact?: PluginArtifactPins;
@@ -79,8 +83,9 @@ export interface PluginAuthority {
   hostSecrets?: { read: string[] };
   pluginAccess?: unknown;
   auth?: unknown;
-  requires?: { capabilities?: string[]; minAppVersion: string };
+  requires?: { capabilities?: string[]; minAppVersion: string; hostProtocol?: string };
   dependencies?: unknown[];
+  sandbox?: PluginSandboxDeclaration;
 }
 
 export interface PluginArtifactPins {
@@ -97,11 +102,12 @@ export interface PluginArtifactPins {
 }
 
 export interface PackageDescriptor {
-  schemaVersion: 1;
+  schemaVersion: 2;
   kind: PackageKind;
   name: string;
   version: string;
   minAppVersion: string;
+  hostProtocol?: string;
   displayName?: string;
   description?: string;
   author?: { name: string; url?: string; email?: string };
@@ -121,9 +127,21 @@ export interface Revocation {
   reason: string;
   at: string;
   action: "disable" | "uninstall";
+  /** Present only on an app-conditional retirement entry. */
+  successors?: RetirementSuccessors;
 }
 
 export interface RevocationsFile {
   schemaVersion: 1;
   revocations: Revocation[];
+}
+
+export interface ConditionalRevocation extends Revocation {
+  appVersions: string;
+  successors: RetirementSuccessors;
+}
+
+export interface ConditionalRevocationsFile {
+  schemaVersion: 1;
+  revocations: ConditionalRevocation[];
 }

@@ -16,6 +16,8 @@
  * imports preload successfully).
  */
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import { ALERTS } from "../shared/ipc-channels.js";
+import type { AveApi } from "../ui/renderer/types.js";
 
 const exposed = new Map<string, unknown>();
 const mockInvoke = vi.fn();
@@ -78,6 +80,26 @@ beforeAll(async () => {
 });
 
 describe("preload contextBridge world shape lock", () => {
+  it("exposes alert Settings and tears down kind-change listeners without forwarding the event object", async () => {
+    const alerts = (exposed.get("aveApi") as AveApi).alerts!;
+    await alerts.listKinds();
+    await alerts.removePredecessor("fixturemail:reply");
+    expect(mockInvoke).toHaveBeenCalledWith(ALERTS.removePredecessor, "fixturemail:reply");
+    await alerts.setKind("@host:due-soon", { enabled: true });
+    await alerts.setOsNotificationsEnabled(false);
+    await alerts.listOpen();
+    expect(mockInvoke).toHaveBeenCalledWith(ALERTS.listKinds);
+    expect(mockInvoke).toHaveBeenCalledWith(ALERTS.setKind, "@host:due-soon", { enabled: true });
+    expect(mockInvoke).toHaveBeenCalledWith(ALERTS.setOsNotificationsEnabled, false);
+    expect(mockInvoke).toHaveBeenCalledWith(ALERTS.listOpen);
+    const handler = vi.fn();
+    const dispose = alerts.onKindsChanged(handler);
+    const listener = mockOn.mock.calls.findLast(([channel]) => channel === ALERTS.kindsChanged)![1];
+    listener({ sender: "not forwarded" });
+    expect(handler).toHaveBeenCalledWith();
+    dispose();
+    expect(mockRemoveListener).toHaveBeenCalledWith(ALERTS.kindsChanged, listener);
+  });
   it("exposes the expected set of worlds", () => {
     expect([...exposed.keys()].sort()).toMatchInlineSnapshot(`
       [
@@ -220,6 +242,15 @@ describe("preload contextBridge world shape lock", () => {
           "acpSubscriptionVerify": "function",
           "addRoutine": "function",
           "addWorkBoardItem": "function",
+          "alerts": [
+            "cardClosed",
+            "listKinds",
+            "listOpen",
+            "onKindsChanged",
+            "removePredecessor",
+            "setKind",
+            "setOsNotificationsEnabled",
+          ],
           "applyClaudeDesktopMcpImport": "function",
           "approval": [
             "listPending",

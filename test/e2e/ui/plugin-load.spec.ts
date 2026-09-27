@@ -15,7 +15,6 @@ import { captureCommandMenus, capturedCommandMenus } from './command-menu.js';
 const PLUGIN_VIEW_KEYS = [
   'plugin:local-indexer:local-indexer-control',
   'plugin:meeting:meeting-control',
-  'plugin:vega-helper:detector-control',
 ] as const;
 
 test('plugins with UI views appear in the command menu', async ({ app, mainWindow }) => {

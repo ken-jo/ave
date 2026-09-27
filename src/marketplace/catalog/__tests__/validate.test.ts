@@ -32,7 +32,7 @@ const PAYLOADS: Record<string, () => Record<string, unknown>> = {
 
 function descriptor(kind: string, patch: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     kind,
     name: `sample-${kind}`,
     version: "1.2.0",
@@ -80,7 +80,7 @@ describe("validateDescriptorText", () => {
 
   it.each([
     ["unknown root key", { extra: 1 }],
-    ["wrong schemaVersion", { schemaVersion: 2 }],
+    ["wrong schemaVersion", { schemaVersion: 1 }],
     ["unknown kind", { kind: "widget" }],
     ["name with double hyphen", { name: "a--b" }],
     ["name starting with a digit", { name: "1abc" }],
@@ -113,6 +113,14 @@ describe("validateDescriptorText", () => {
 
   describe("plugin rules", () => {
     const withPayload = (payload: Record<string, unknown>) => descriptor("plugin", { payload });
+
+    it("refuses the plugin name host in a direct source and in a repository", () => {
+      for (const direct of [true, false]) {
+        const result = checkDescriptor(descriptor("plugin", { name: "host" }), direct);
+        expect(result).toEqual({ ok: false, error: "ave-package.json: the plugin name host is reserved for the host" });
+      }
+      expect(checkDescriptor(descriptor("skill", { name: "host" })).ok).toBe(true);
+    });
 
     it("requires authority.requires.minAppVersion equal to minAppVersion", () => {
       const mismatch = authority();
@@ -202,7 +210,7 @@ describe("validateDescriptorText", () => {
 });
 
 function index(packages: unknown[], patch: Record<string, unknown> = {}): string {
-  return JSON.stringify({ schemaVersion: 1, name: "acme", displayName: "Acme", packages, ...patch });
+  return JSON.stringify({ schemaVersion: 2, name: "acme", displayName: "Acme", packages, ...patch });
 }
 
 const version = (v: string, patch: Record<string, unknown> = {}) => ({
@@ -234,9 +242,9 @@ describe("validateIndexText", () => {
   it.each([
     ["unparseable JSON", "{"],
     ["an unknown root key", index([], { extra: 1 })],
-    ["a wrong schemaVersion", index([], { schemaVersion: 2 })],
+    ["a wrong schemaVersion", index([], { schemaVersion: 1 })],
     ["duplicate root keys", index([]).replace('"name":"acme"', '"name":"acme","name":"other"')],
-    ["a packages object", JSON.stringify({ schemaVersion: 1, name: "acme", displayName: "Acme", packages: {} })],
+    ["a packages object", JSON.stringify({ schemaVersion: 2, name: "acme", displayName: "Acme", packages: {} })],
   ])("rejects the whole index for %s", (_label, text) => {
     expect(validateIndexText(text, context).ok).toBe(false);
   });
@@ -283,7 +291,7 @@ describe("validateIndexText", () => {
     expect(result.ok && result.value.diagnostics).toHaveLength(4);
   });
 
-  it("counts an invalid entry as a claimant too", () => {
+  it("counts an invalid name claimant but leaves its path available", () => {
     const result = validateIndexText(
       index([
         { kind: "skill", name: "alpha", path: "skills/alpha" },
@@ -293,7 +301,21 @@ describe("validateIndexText", () => {
       ]),
       context,
     );
-    expect(result.ok && result.value.index.packages).toEqual([]);
+    expect(result.ok && result.value.index.packages.map((entry) => entry.name)).toEqual(["beta"]);
+  });
+
+  it.each([
+    ["an unknown field", { kind: "skill", name: "invalid-package", path: "skills/shared", unknown: true }],
+    ["a latest version without versions", { kind: "skill", name: "invalid-package", path: "skills/shared", latest: "1.0.0" }],
+  ])("does not let a package with %s claim a valid package path", (_label, invalid) => {
+    const result = validateIndexText(index([
+      invalid,
+      { kind: "skill", name: "valid-package", path: "skills/shared" },
+    ]), context);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.index.packages.map((entry) => entry.name)).toEqual(["valid-package"]);
+    expect(result.value.diagnostics).toHaveLength(1);
   });
 });
 

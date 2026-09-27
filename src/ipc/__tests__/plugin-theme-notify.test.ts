@@ -219,7 +219,7 @@ describe("validateThemePayload", () => {
 
   // The validator and the token producer have to agree on value shapes. When
   // they drifted, the seven derived color-mix tokens were dropped from every
-  // payload and plugin panels silently kept the SDK's dark-theme fallbacks —
+  // payload and plugin panels silently kept their dark-theme fallbacks —
   // visible as a dark chip in a light shell, with nothing logged anywhere.
   it("keeps every token every compiled bundle produces", () => {
     // An installed theme is held to the same token table, so its tokens take the same shapes.

@@ -241,11 +241,10 @@ export function ThemeProvider({
   }, [activeBundle, effectiveBundleId]);
 
   // Propagate bundle tokens to plugin webviews whenever active bundle changes.
-  // Font stack is NOT broadcast — SDK v5+ removed the `fonts` channel from
-  // `AveHostThemeEvent` (marked `@deprecated No longer emitted by the host`),
+  // Font stack is NOT broadcast — `AveHostThemeEvent` has no `fonts` channel,
   // and the plugin webview body letterform is unified via the static
   // `plugin-ui-shell.html` mirror of `HOST_FONT_STACK` instead. Re-introducing
-  // a `fonts.family` payload here would be dead code that the SDK ignores.
+  // a `fonts.family` payload here would be dead code that plugins cannot use.
   useEffect(() => {
     if (!api) return;
     if (activeBundle.id !== effectiveBundleId) return;

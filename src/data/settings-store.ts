@@ -20,6 +20,7 @@ import {
   sanitizePluginConfigPluginId,
   type PluginConfigRecord,
 } from "../shared/plugin-config.js";
+import type { AlertSettings, RetiredPluginConfigRecord } from "../shared/alerts-types.js";
 import {
   isMarketplaceEligibleLLMVendor,
   LLM_VENDORS,
@@ -91,6 +92,8 @@ import {
   normalizeWebView,
   preserveInstalledProviderPresetMetadata,
   sanitizeStoredPluginConfigs,
+  normalizeAlertSettings,
+  normalizeRetiredPluginConfigs,
   isActiveViewKey,
   isCloseBehavior,
   normalizeTelemetry,
@@ -517,6 +520,19 @@ export interface AppSettings {
   plugins: PluginSettings;
 
   pluginConfigs: Record<string, PluginConfigRecord>;
+  /**
+   * The user's per-kind choices for the alert kinds plugins declare, plus the
+   * master OS-notification switch. Written only by the alerts service, never
+   * through `patch()`: a generic settings patch and the service's own
+   * write-back must not race. Shapes in `src/shared/alerts-types.ts`.
+   */
+  alerts: AlertSettings;
+  /**
+   * The effective config a retired (revoked) plugin left behind, keyed by
+   * plugin id, so its successors can inherit the user's choices. Written by
+   * the retirement paths, never through `patch()`.
+   */
+  retiredPluginConfigs: Record<string, RetiredPluginConfigRecord>;
   /** Experimental feature flags. All default false. */
   features?: FeatureFlags;
   /**
@@ -954,6 +970,13 @@ export interface SettingsServiceOptions {
    * stored value takes precedence — this field is ignored.
    */
   systemLocale?: string;
+  /**
+   * The running app version. The load drops alert kind entries whose plugin
+   * has been absent for two minor releases (see `normalizeAlertSettings`).
+   * Absent, a pre-release build, or anything but a stable `X.Y.Z` release —
+   * the resolver's `"unknown"` included — drops nothing.
+   */
+  appVersion?: string;
 }
 
 
@@ -990,6 +1013,7 @@ function withProviderPresetsFrom(
 }
 
 export class SettingsService {
+  private readonly changeListeners = new Map<keyof AppSettings, Set<() => void>>();
   private readonly settingsPath: string;
   private readonly secretsPath: string;
   private readonly secretStore: SecretDocumentStore;
@@ -1031,7 +1055,7 @@ export class SettingsService {
       policy: options.secretPolicy ?? "packaged",
       encryption: options.encryption,
     });
-    const { settings: loaded, writeBack: needsWriteBack } = this.loadSettings();
+    const { settings: loaded, writeBack: needsWriteBack } = this.loadSettings(options.appVersion);
     this.settings = loaded;
     this.saved = structuredClone(loaded);
     // Migration write-back (appearance v2, one-time markers): persist so the
@@ -1090,12 +1114,24 @@ export class SettingsService {
   async set<K extends keyof AppSettings>(key: K, value: AppSettings[K]): Promise<void> {
     this.settings[key] = value;
     await this.commit();
+    for (const listener of this.changeListeners.get(key) ?? []) {
+      try { listener(); } catch (error) { log.warn({ error }, "settings change listener failed"); }
+    }
+  }
+
+  /** Observes durable writes through set; callbacks must not block the writer. */
+  onChanged(key: keyof AppSettings, listener: () => void): () => void {
+    let listeners = this.changeListeners.get(key);
+    if (!listeners) this.changeListeners.set(key, (listeners = new Set()));
+    listeners.add(listener);
+    return () => { listeners.delete(listener); };
   }
 
   async patch(
     partial: Partial<Omit<
       AppSettings,
-      "llm" | "chat" | "marketplace" | "shortcuts" | "telemetry" | "appliedMigrations"
+      | "llm" | "chat" | "marketplace" | "shortcuts" | "telemetry" | "appliedMigrations"
+      | "alerts" | "retiredPluginConfigs"
     >> & {
       marketplace?: Partial<MarketplaceSettings>;
       llm?: LLMSettingsPatch;
@@ -1773,7 +1809,7 @@ export class SettingsService {
 
   // --- private helpers ---
 
-  private loadSettings(): { settings: AppSettings; writeBack: boolean } {
+  private loadSettings(appVersion: string | undefined): { settings: AppSettings; writeBack: boolean } {
     if (!existsSync(this.settingsPath)) {
       const defaults = structuredClone(DEFAULT_SETTINGS);
       // Fresh installs stay English-first while non-English language packs move
@@ -1908,6 +1944,8 @@ export class SettingsService {
         shortcuts: normalizeShortcuts(parsed.shortcuts, DEFAULT_SETTINGS.shortcuts),
         plugins: {},
         pluginConfigs: { ...DEFAULT_SETTINGS.pluginConfigs, ...pluginConfigs },
+        alerts: normalizeAlertSettings(parsed.alerts, appVersion),
+        retiredPluginConfigs: normalizeRetiredPluginConfigs(parsed.retiredPluginConfigs),
         features: { ...DEFAULT_SETTINGS.features, ...normalizedFeatures },
         appliedMigrations,
       };

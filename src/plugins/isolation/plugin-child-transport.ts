@@ -2,10 +2,10 @@
  * The host end of one plugin child's pipes
  * (`docs/blueprints/plugin-process-isolation.md` §5.2).
  *
- * It owns exactly one thing: turning a pair of streams into the two contracts
- * that run over them — outbound requests (MCP `tools/call` and the five
- * lifecycle methods of `plugin-instance-wire.ts`) and inbound hostApi traffic,
- * which it hands to a {@link HostApiDispatcher}.
+ * It owns exactly one thing: turning a pair of streams into the two halves of
+ * the protocol that run over them — outbound requests (MCP `tools/call` and the
+ * five lifecycle methods of `plugin-instance-wire.ts`) and inbound `ave/host/*`
+ * traffic, which it hands to a {@link HostApiDispatcher}.
  *
  * STREAM-INJECTED, not process-owning. The spawn, the ASRT wrap and the
  * managed-child registration live in `out-of-process-plugin.ts`; this class
@@ -22,6 +22,7 @@
  */
 import type { Readable, Writable } from "node:stream";
 import { randomUUID } from "node:crypto";
+import { createLogger } from "../../lib/logger.js";
 import {
   classifyMultiplexedMessage,
   FramedMessageStream,
@@ -33,11 +34,16 @@ import {
   type HostApiDispatcherOptions,
 } from "./host-api-dispatcher.js";
 import type { HostApiNotification, HostApiRequest } from "./host-api-wire.js";
+import { PLUGIN_INSTANCE_METHODS } from "./plugin-instance-wire.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+
+const log = createLogger("plugin-child-transport");
 
 /** A JSON-RPC error as it arrives from the child. */
 interface JsonRpcErrorBody {
   readonly code: number;
   readonly message: string;
+  readonly data?: { readonly code?: unknown };
 }
 
 /**
@@ -46,15 +52,19 @@ interface JsonRpcErrorBody {
  * The code is kept because the child distinguishes "the plugin is not
  * constructed yet" from "your method does not exist" from "the handler threw",
  * and collapsing all three into one message would leave the host unable to tell
- * a protocol mistake from a plugin bug.
+ * a protocol mistake from a plugin bug. `boundaryCode` is the boundary's own
+ * refusal code when the error carries one (`payload-too-large` for a result
+ * too large to frame), so a caller can tell a refused call from a failed one.
  */
 class PluginChildRequestError extends Error {
   readonly code: number;
+  readonly boundaryCode: string | undefined;
 
   constructor(method: string, body: JsonRpcErrorBody) {
     super(`[plugin-child-transport] ${method}: ${body.message}`);
     this.name = "PluginChildRequestError";
     this.code = body.code;
+    this.boundaryCode = typeof body.data?.code === "string" ? body.data.code : undefined;
   }
 }
 
@@ -84,7 +94,7 @@ export interface ChildLink {
 }
 
 export interface PluginChildTransportOptions
-  extends Omit<HostApiDispatcherOptions, "notifications"> {
+  extends Omit<HostApiDispatcherOptions, "notifications" | "shutdownChild"> {
   readonly link: ChildLink;
 }
 
@@ -93,6 +103,7 @@ export class PluginChildTransport {
   private readonly pending = new PendingCallTable<unknown>();
   private readonly dispatcher: HostApiDispatcher;
   private readonly link: ChildLink;
+  private readonly pluginId: string;
   private closedReason: string | undefined;
 
   constructor(options: PluginChildTransportOptions) {
@@ -102,11 +113,34 @@ export class PluginChildTransport {
       notifications: {
         deliver: (notification) => this.sendToChild(notification),
       },
+      // Bounded by the per-handler limit the host's shutdown runner applies,
+      // and enforced here as that runner cannot: a child whose handler
+      // overruns it is killed by the request deadline. The deadline sits a
+      // grace past the runner's, so the runner reports the overrun first and
+      // the kill follows it.
+      shutdownChild: async (subscriptionId) => {
+        await this.request(
+          PLUGIN_INSTANCE_METHODS.shutdown,
+          { subscriptionId },
+          TOOL_TIMEOUT_POLICY.pluginShutdownHandlerMs + TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs,
+        );
+      },
     });
+    this.pluginId = options.pluginId;
     this.stream = new FramedMessageStream(
       options.link.input,
       options.link.output,
       (message) => this.route(message),
+      // A child that broke the framing is killed like one that stopped
+      // answering: nothing it writes after an unbounded line can be trusted to
+      // start on a line boundary.
+      (reason) => this.close(`[plugin-child-transport] ${reason}`),
+      (dropped) => {
+        log.warn(
+          { pluginId: options.pluginId, ...dropped },
+          "dropped a notification too large to frame",
+        );
+      },
     );
   }
 
@@ -144,7 +178,13 @@ export class PluginChildTransport {
       // confined process running plugin code that nothing is waiting for.
       this.close(`[plugin-child-transport] '${method}' timed out after ${String(timeoutMs)}ms`);
     });
-    this.stream.send({ jsonrpc: "2.0", id, method, params });
+    try {
+      this.stream.send({ jsonrpc: "2.0", id, method, params });
+    } catch (error) {
+      // Refused before it was written (a request too large to frame), so no
+      // reply will ever come for it.
+      this.pending.fail(id, error as Error);
+    }
     return await settled;
   }
 
@@ -163,6 +203,15 @@ export class PluginChildTransport {
   close(reason: string): void {
     if (this.closedReason !== undefined) return;
     this.closedReason = reason;
+    // A frame cut off by the close is dropped with the channel. Said here,
+    // quietly, so a child that died mid-write is distinguishable from one that
+    // went away between messages.
+    if (this.stream.pendingBytes > 0) {
+      log.debug(
+        { pluginId: this.pluginId, pendingBytes: this.stream.pendingBytes },
+        "channel closed with a partial frame unread",
+      );
+    }
     this.link.terminate(reason);
     this.pending.rejectAll(reason);
     this.dispatcher.childGone();
@@ -170,7 +219,7 @@ export class PluginChildTransport {
 
   private route(message: MultiplexedMessage): void {
     switch (classifyMultiplexedMessage(message)) {
-      case "rpc-response": {
+      case "response": {
         const id = String(message.id);
         if (message.error !== undefined) {
           this.pending.fail(
@@ -182,12 +231,12 @@ export class PluginChildTransport {
         this.pending.settle(id, message.result);
         return;
       }
-      case "host-api-request":
+      case "host-request":
         void this.dispatcher
           .handle(message as unknown as HostApiRequest)
           .then((reply) => this.stream.send(reply));
         return;
-      case "host-api-notification":
+      case "notification":
         this.dispatcher.handleNotification(message as unknown as HostApiNotification);
         return;
       default:

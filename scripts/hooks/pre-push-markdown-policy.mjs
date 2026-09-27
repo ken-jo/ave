@@ -1,38 +1,12 @@
-const sensitiveMarkdownBasenames = new Set([
-  "agents.md",
-  "claude.md",
-  "contributing.md",
-  "security.md",
-]);
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
-const sensitiveMarkdownFiles = new Set([
-  ".github/pull_request_template.md",
-  "docs/development/release-process.md",
-]);
-
-const sensitiveMarkdownPrefixes = [
-  ".github/pull_request_template/",
-  ".github/workflows/",
-  "resources/",
-  "docs/architecture/",
-  "docs/blueprints/",
-  "docs/security/",
-  "docs/ko/architecture/",
-];
-
-const reviewOnlyMarkdownFiles = new Set([
-  "readme.md",
-  "changelog.md",
-  "code_of_conduct.md",
-  "todo.md",
-]);
-
-const reviewOnlyMarkdownPrefixes = [
-  ".github/issue_template/",
-  "docs/guides/",
-  "docs/ko/guides/",
-  "docs/research/",
-];
+// The inventory records every literal reference to a tracked document.
+// Only consumers of document bytes require the full test and build gate.
+const { consumed } = JSON.parse(readFileSync(
+  fileURLToPath(new URL("./documentation-references.json", import.meta.url)), "utf8"
+));
+const consumedDocuments = new Set(consumed);
 
 export function isCanonicalGitPath(relativePath) {
   if (typeof relativePath !== "string" || relativePath.length === 0) return false;
@@ -43,20 +17,27 @@ export function isCanonicalGitPath(relativePath) {
   );
 }
 
-export function isSensitiveMarkdownPath(relativePath) {
+export function isDocumentationPath(relativePath) {
   if (!isCanonicalGitPath(relativePath)) return false;
-  const normalized = relativePath.toLowerCase();
-  if (!normalized.endsWith(".md")) return false;
-  const basename = normalized.slice(normalized.lastIndexOf("/") + 1);
-  return sensitiveMarkdownBasenames.has(basename) ||
-    sensitiveMarkdownFiles.has(normalized) ||
-    sensitiveMarkdownPrefixes.some((prefix) => normalized.startsWith(prefix));
+  if (!/\.(?:md|html)$/i.test(relativePath)) return false;
+  if (relativePath.includes("/") && !relativePath.startsWith("docs/")) return false;
+  return !consumedDocuments.has(relativePath);
 }
 
-export function isReviewOnlyDocumentationPath(relativePath) {
-  if (!isCanonicalGitPath(relativePath) || isSensitiveMarkdownPath(relativePath)) return false;
-  const normalized = relativePath.toLowerCase();
-  if (!normalized.endsWith(".md")) return false;
-  return reviewOnlyMarkdownFiles.has(normalized) ||
-    reviewOnlyMarkdownPrefixes.some((prefix) => normalized.startsWith(prefix));
+export function classifyDocumentationChanges(entries) {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return { docsOnly: false, reason: "no changed files were resolved" };
+  }
+  for (const entry of entries) {
+    if (!/^[AM]$/.test(entry.status) || !isCanonicalGitPath(entry.path) ||
+        entry.newMode !== "100644" ||
+        (entry.status === "A" && entry.oldMode !== "000000") ||
+        (entry.status === "M" && entry.oldMode !== "100644")) {
+      return { docsOnly: false, reason: "change status, mode, or path requires full checks" };
+    }
+    if (!isDocumentationPath(entry.path)) {
+      return { docsOnly: false, reason: `${entry.path} requires full checks` };
+    }
+  }
+  return { docsOnly: true, reason: `${entries.length} documentation file(s) changed` };
 }

@@ -184,25 +184,9 @@ async function sendChatMessage(page: Page, text: string): Promise<void> {
   await page.locator('[data-testid="composer-send-button"]').first().click();
 }
 
-/**
- * Push one plugin overlay card through the REAL main→renderer channel.
- *
- * The `vega-helper-*` docs keys are host-rendered overlay cards, not plugin
- * panels. In production the plugin calls `hostApi.triggerConversation(spec)`
- * and the host builds an `OverlayItem` and sends it on `ave:overlay:show`
- * (src/boot/steps/plugin-runtime/host-api-factory.ts). Firing the plugin's own
- * detector needs a live lyra-mail / meeting signal, so this composes the SAME
- * item the host would compose and sends it on the SAME channel from the main
- * process — the technique `chat-app-update` already uses for `ave:update:state`.
- * Everything downstream is the real thing: OverlayContext queues it,
- * OverlayCardRegion renders the real OverlayCard, and the primary action runs
- * the real imported-trigger insert.
- *
- * `intent` is the plugin's overlay source tag (`vega_helper.alert.<intent>`
- * → `overlay:<intent>`); the host derives the card title from it when the spec
- * carries no explicit title, which is what the published images show.
- */
-async function pushPluginOverlay(
+/** Capture a host alert card through the production overlay channel.
+ * Delivery and acknowledgement are exercised by the seeded alert E2E fixture. */
+async function pushAlertOverlay(
   app: ElectronApplication,
   page: Page,
   spec: { intent: string; summary: string; prompt: string },
@@ -212,15 +196,17 @@ async function pushPluginOverlay(
     if (!win) return;
     win.webContents.send('ave:overlay:show', item);
   }, {
-    id: `plugin:vega-helper:${spec.intent}`,
-    source: { kind: 'plugin', pluginId: 'vega-helper', eventId: spec.intent },
+    id: `alert:capture-${spec.intent}`,
+    source: { kind: 'alert', pluginId: 'alert-fixture', kindId: spec.intent, alertId: `capture-${spec.intent}` },
+    pluginDisplayName: 'Alert fixture',
     title: spec.intent,
     summary: spec.summary,
     running: false,
+    priority: 'normal',
     // The ko string `be_pluginRuntime.overlayPrimaryActionLabel` resolves to.
     primaryActionLabel: '확인하기',
     pendingPrompt:
-      `<imported-from-proactive source="overlay:${spec.intent}">
+      `<imported-from-proactive source="overlay:alert-fixture--${spec.intent}">
 ${spec.prompt}
 </imported-from-proactive>`,
     createdAt: new Date().toISOString(),
@@ -619,7 +605,7 @@ function fabricatedMeetingPrep(): string {
 }
 
 /**
- * Fabricated vega-helper alerts.
+ * Declared alert presentation scenarios.
  *
  * The published images for these keys carry a real organiser, real attendee
  * addresses and, on one, an opaque calendar event id. Everything below is
@@ -627,21 +613,21 @@ function fabricatedMeetingPrep(): string {
  * reserved by RFC 2606 and can never resolve to anyone, and the names are role
  * labels rather than person names.
  */
-const WA_CONFLICT_SUMMARY = [
+const ALERT_CONFLICT_SUMMARY = [
   '새 일정이 기존 일정과 겹칩니다.',
   '- 새 일정: 분기 데모 리허설 (14:00~15:00)',
   '- 겹치는 일정 (1개):',
   '  - 문서화 스프린트 점검 (14:30~15:30)',
 ].join('\n');
 
-const WA_PREP_SUMMARY = [
+const ALERT_PREP_SUMMARY = [
   '약 15분 후 일정이 시작됩니다.',
   '- 제목: 분기 데모 리허설',
   '- 주최자: 데모 진행자 (demo-host@example.invalid)',
   '- 장소: 온라인',
 ].join('\n');
 
-const WA_SUMMARY_SUMMARY = [
+const ALERT_MEETING_SUMMARY = [
   '미팅이 방금 종료되었습니다.',
   '- 제목: 분기 데모 리허설',
   '- 주요 내용:',
@@ -1679,37 +1665,23 @@ export const scenarios: Record<string, ScenarioEntry> = {
     skip: 'Requires real STT audio pipeline streaming chunks — explicitly called out as infeasible to seed.',
   },
 
-  // ---- vega-helper ------------------------------------------------
-  // These six keys are NOT plugin-panel screens — they are host-rendered
-  // overlay cards emitted when a vega-helper detector fires
-  // (vega_helper.alert.<intent>, see the plugin's notificationEvents +
-  // decision/*-detector.ts). The DETECTOR still needs real external signals
-  // (lyra-mail email.new / calendar.event.conflict.detected /
-  // meeting.summary.created) and the plugin ships no dev trigger to synthesize
-  // them — but the detector is not what these images show. What they show is
-  // the host's own card, and the host builds it in one place from one IPC
-  // message, so `pushPluginOverlay` sends that exact message on that exact
-  // channel and everything downstream is the production path: OverlayContext,
-  // OverlayCardRegion, the real OverlayCard, and the real imported-trigger
-  // insert behind the primary action. The `-2` keys click that button for real.
-  // (The plugin's own detector-toggle panel is a separate surface, captured
-  // under chat-plugin-panel.)
-  'vega-helper-conflict': {
-    topic: 'vega-helper',
+  // Host alert cards and their accepted prompts.
+  'alert-conflict': {
+    topic: 'alerts',
     // Card plus chat, without the dead space the default viewport leaves.
     captureViewport: { width: 1440, height: 820 },
     uiLocale: 'ko',
     steps: async ({ app, page }) => {
       await openWorkMode(page);
-      await pushPluginOverlay(app, page, {
+      await pushAlertOverlay(app, page, {
         intent: 'calendar-conflict-prep',
-        summary: WA_CONFLICT_SUMMARY,
-        prompt: WA_CONFLICT_SUMMARY,
+        summary: ALERT_CONFLICT_SUMMARY,
+        prompt: ALERT_CONFLICT_SUMMARY,
       });
     },
   },
-  'vega-helper-conflict-2': {
-    topic: 'vega-helper',
+  'alert-conflict-2': {
+    topic: 'alerts',
     // Taller than its siblings: this reply carries both event detail blocks, and
     // a shorter frame scrolls the imported-trigger bubble — the thing that shows
     // the card's prompt became a chat turn — off the top.
@@ -1753,10 +1725,10 @@ export const scenarios: Record<string, ScenarioEntry> = {
     },
     steps: async ({ app, page }) => {
       await openWorkMode(page);
-      await pushPluginOverlay(app, page, {
+      await pushAlertOverlay(app, page, {
         intent: 'calendar-conflict-prep',
-        summary: WA_CONFLICT_SUMMARY,
-        prompt: WA_CONFLICT_SUMMARY,
+        summary: ALERT_CONFLICT_SUMMARY,
+        prompt: ALERT_CONFLICT_SUMMARY,
       });
       // The published image for this key is the state AFTER the card's primary
       // action: the staged prompt lands in chat as an imported trigger and the
@@ -1768,22 +1740,22 @@ export const scenarios: Record<string, ScenarioEntry> = {
       });
     },
   },
-  'vega-helper-reminder': {
-    topic: 'vega-helper',
+  'alert-reminder': {
+    topic: 'alerts',
     // Card plus chat, without the dead space the default viewport leaves.
     captureViewport: { width: 1440, height: 820 },
     uiLocale: 'ko',
     steps: async ({ app, page }) => {
       await openWorkMode(page);
-      await pushPluginOverlay(app, page, {
+      await pushAlertOverlay(app, page, {
         intent: 'calendar-event-prep',
-        summary: WA_PREP_SUMMARY,
-        prompt: WA_PREP_SUMMARY,
+        summary: ALERT_PREP_SUMMARY,
+        prompt: ALERT_PREP_SUMMARY,
       });
     },
   },
-  'vega-helper-reminder-2': {
-    topic: 'vega-helper',
+  'alert-reminder-2': {
+    topic: 'alerts',
     // Card plus chat, without the dead space the default viewport leaves.
     captureViewport: { width: 1440, height: 820 },
     uiLocale: 'ko',
@@ -1810,10 +1782,10 @@ export const scenarios: Record<string, ScenarioEntry> = {
     },
     steps: async ({ app, page }) => {
       await openWorkMode(page);
-      await pushPluginOverlay(app, page, {
+      await pushAlertOverlay(app, page, {
         intent: 'calendar-event-prep',
-        summary: WA_PREP_SUMMARY,
-        prompt: WA_PREP_SUMMARY,
+        summary: ALERT_PREP_SUMMARY,
+        prompt: ALERT_PREP_SUMMARY,
       });
       await page.locator('[data-testid="overlay-card-primary-action"]').first().click();
       await page.locator('[data-testid="assistant-message-body"]').last().waitFor({
@@ -1822,22 +1794,22 @@ export const scenarios: Record<string, ScenarioEntry> = {
       });
     },
   },
-  'vega-helper-meeting-end-trigger': {
-    topic: 'vega-helper',
+  'alert-meeting-end-trigger': {
+    topic: 'alerts',
     // Card plus chat, without the dead space the default viewport leaves.
     captureViewport: { width: 1440, height: 820 },
     uiLocale: 'ko',
     steps: async ({ app, page }) => {
       await openWorkMode(page);
-      await pushPluginOverlay(app, page, {
+      await pushAlertOverlay(app, page, {
         intent: 'meeting-summary',
-        summary: WA_SUMMARY_SUMMARY,
-        prompt: WA_SUMMARY_SUMMARY,
+        summary: ALERT_MEETING_SUMMARY,
+        prompt: ALERT_MEETING_SUMMARY,
       });
     },
   },
-  'vega-helper-meeting-end-trigger-2': {
-    topic: 'vega-helper',
+  'alert-meeting-end-trigger-2': {
+    topic: 'alerts',
     // Card plus chat, without the dead space the default viewport leaves.
     captureViewport: { width: 1440, height: 820 },
     uiLocale: 'ko',
@@ -1864,10 +1836,10 @@ export const scenarios: Record<string, ScenarioEntry> = {
     },
     steps: async ({ app, page }) => {
       await openWorkMode(page);
-      await pushPluginOverlay(app, page, {
+      await pushAlertOverlay(app, page, {
         intent: 'meeting-summary',
-        summary: WA_SUMMARY_SUMMARY,
-        prompt: WA_SUMMARY_SUMMARY,
+        summary: ALERT_MEETING_SUMMARY,
+        prompt: ALERT_MEETING_SUMMARY,
       });
       await page.locator('[data-testid="overlay-card-primary-action"]').first().click();
       await page.locator('[data-testid="assistant-message-body"]').last().waitFor({

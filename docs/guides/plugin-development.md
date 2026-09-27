@@ -18,8 +18,9 @@ host APIs or tool execution.
 
 Every plugin package needs a `plugin.json` manifest. The Host owns the canonical
 shape in `schemas/plugin-manifest.schema.json` and the complete TypeScript/JSDoc
-authoring contract in `src/plugins/public-contract.ts`. `@ave/plugin-sdk`
-publishes generated mirrors of those two Host files.
+authoring contract in `src/plugins/public-contract.ts`. Vendor both files
+unchanged into `contract/` at an app release tag, and record their hashes in
+`contract/sources.json`.
 
 The manifest should include:
 
@@ -30,6 +31,13 @@ The manifest should include:
 - required capabilities;
 - settings schema if configurable;
 - `requires.minAppVersion`, which a marketplace install requires.
+
+A JavaScript plugin leaves `requires.hostProtocol` out: the host's own runtime
+speaks the plugin protocol for it. A plugin that declares one (a positive integer
+written as a string, such as `"1"`) is refused with `incompatible-host-protocol`
+by an app that does not serve that version, and an app whose schema predates the
+field rejects the manifest outright, so its `minAppVersion` must name a release
+that knows the field.
 
 `tools[]` is the only callable surface. The retired `uiTool`, `uiTools`,
 `uiAction`, `uiActions`, top-level `operationGovernance`, and top-level
@@ -63,6 +71,20 @@ as:
 
 The caller plugin identity is bound by the host factory. Plugins must not pass
 or spoof another plugin id.
+
+A JavaScript plugin reaches the bridge through the `PluginHostApi` object it is
+handed. Underneath, each member is a JSON-RPC `ave/host/*` request on the
+plugin's own stdio, and `schemas/plugin-host-protocol/1/protocol.schema.json`
+describes every method, notification and error code of that channel. The file is
+generated from the host's own sources at each app release, so it describes what
+the host actually serves. To validate a frame, compile a method's `params`,
+`result`, `errors` or `events` sub-schema (for example
+`#/$defs/methods/ave~1host~1storage~1read/params`), not the method entry, which
+groups them under names that are not JSON Schema keywords; with Ajv, set
+`allowUnionTypes: true`, because a field that takes more than one type (a
+request id, a nullable value) is a type array. The host does not yet admit a
+plugin that speaks the protocol without its JavaScript runtime; every plugin
+today is a JavaScript `entry`.
 
 ## UI Plugins
 

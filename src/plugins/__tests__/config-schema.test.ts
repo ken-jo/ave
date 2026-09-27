@@ -34,7 +34,7 @@ import type { PluginConfigSchema } from "../types.js";
 import { agentPluginsDocument, aveSchemaProperties } from "./test-helpers.js";
 
 // Host-owned manifest schema SOT (ph2) — resolved relative to this test file
-// so it works regardless of cwd and no longer depends on the SDK package.
+// so it works regardless of cwd and reads the host schema directly.
 const SCHEMA_PATH = fileURLToPath(
   new URL("../../../schemas/plugin-manifest.schema.json", import.meta.url),
 );
@@ -157,7 +157,7 @@ describe("US-B1 — host plugin.schema.json declares configSchema", () => {
 
 // #885 v6.1.0 — the "toolSchemas authority metadata" describe block (per-tool
 // `category` + `toolSchemas.pathFields` declared via the legacy `toolSchemas`
-// map) was removed here: the SDK's pure Tool[] schema collapse now rejects
+// map) was removed here: the host's pure Tool[] schema now rejects
 // `toolSchemas` and per-tool `category` outright (additionalProperties), and
 // the host already stopped reading them in #885 Phase R. Current authority
 // metadata is `tool._meta["ave/pathFields"]` — covered by

@@ -11,7 +11,8 @@
  * The manifest schema keeps `requires.minAppVersion` optional for local
  * development installs; this rule is the install plan's, not the schema's.
  */
-import { AVE_EXTENSION_NAMESPACE } from "../../plugins/public-contract.js";
+import { AVE_EXTENSION_NAMESPACE, flattenAgentPluginsManifest } from "../../plugins/public-contract.js";
+import { sandboxDeclarationProblem } from "../../plugins/sandbox-authority.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import type { PluginAuthority } from "../catalog/types.js";
 import { MarketplaceError } from "../errors.js";
@@ -25,12 +26,14 @@ export const PLUGIN_AUTHORITY_FIELDS = [
   "auth",
   "requires",
   "dependencies",
+  "sandbox",
 ] as const satisfies ReadonlyArray<keyof PluginAuthority>;
 
 export interface ExpectedPlugin {
   name: string;
   version: string;
   minAppVersion: string;
+  hostProtocol?: string;
   authority: PluginAuthority;
 }
 
@@ -69,6 +72,8 @@ export function gitInstallManifestMismatches(document: unknown, expected: Expect
   const extensions = document.extensions;
   const ave = isRecord(extensions) ? extensions[AVE_EXTENSION_NAMESPACE] : undefined;
   if (!isRecord(ave)) return [...problems, `extensions["${AVE_EXTENSION_NAMESPACE}"] is missing`];
+  const sandboxProblem = sandboxDeclarationProblem(flattenAgentPluginsManifest(document));
+  if (sandboxProblem) problems.push(sandboxProblem);
   if (Object.prototype.hasOwnProperty.call(ave, "installPolicy")) {
     problems.push("installPolicy is no longer supported: no package is installed or locked by its own manifest");
   }
@@ -81,6 +86,10 @@ export function gitInstallManifestMismatches(document: unknown, expected: Expect
     problems.push(COMPAT_UNDECLARED);
   } else if (minAppVersion !== expected.minAppVersion) {
     problems.push(`requires.minAppVersion is "${minAppVersion}", the descriptor says "${expected.minAppVersion}"`);
+  }
+  const hostProtocol = isRecord(requires) ? requires.hostProtocol : undefined;
+  if (hostProtocol !== expected.hostProtocol) {
+    problems.push(`requires.hostProtocol differs from the descriptor's hostProtocol`);
   }
   for (const field of PLUGIN_AUTHORITY_FIELDS) {
     if (!sameField(ave, expected.authority, field)) problems.push(`${field} differs from the descriptor's authority`);

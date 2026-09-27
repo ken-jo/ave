@@ -226,6 +226,7 @@ vi.mock("../plugins.js", () => ({
 vi.mock("../../plugins/uninstall-lifecycle.js", () => ({
   recoverPendingPluginUninstallCleanups: vi.fn(async (deps: unknown) => {
     h.captured["recoverCleanupDeps"] = deps;
+    h.rec("uninstallCleanupReplay");
     return [] as string[];
   }),
 }));
@@ -236,6 +237,7 @@ vi.mock("../steps/plugin-runtime.js", () => ({
     return {
       pluginRuntime: {
         listPluginIds: vi.fn(() => [] as string[]),
+        resolvePluginId: vi.fn((pluginId: string) => pluginId),
         getPluginManifest: vi.fn(() => null),
         setWildcardConfigOverride: vi.fn(),
         clearWildcardConfigOverride: vi.fn(),
@@ -252,6 +254,7 @@ vi.mock("../steps/plugin-runtime.js", () => ({
       },
       runPluginShutdownHandlers: vi.fn(async () => {}),
       pluginPaths: {
+        registryPath: "/tmp/ave-boot-test/plugins/registry.json",
         pluginsRoot: "/tmp/ave-boot-test/plugins",
         cacheRoot: "/tmp/ave-boot-test/plugins/.cache",
       },
@@ -324,6 +327,14 @@ vi.mock("../steps/watcher-telemetry-collector.js", () => ({
   startWatcherTelemetryCollector: vi.fn(() => ({ stop: vi.fn() })),
 }));
 
+vi.mock("../steps/alerts-setup.js", () => ({
+  setupAlerts: vi.fn(async (ctx: { alertsService: unknown }) => {
+    h.rec("alertsSetup");
+    ctx.alertsService = { start: vi.fn(), stop: vi.fn() };
+    return () => {};
+  }),
+}));
+
 vi.mock("../steps/work-board-migration.js", () => ({
   migrateAgentHubBoardToWorkBoard: vi.fn(async () => false),
 }));
@@ -390,11 +401,21 @@ vi.mock("../../main/routines-store.js", () => ({
 }));
 vi.mock("../../main/routines-scheduler.js", () => ({
   RoutinesScheduler: class {
+    constructor(_store: unknown, getInstalledPluginIds: () => Promise<readonly string[]>) {
+      h.captured["routineInstalledPluginIds"] = getInstalledPluginIds;
+    }
     onLlmSession = vi.fn();
     onNotification = vi.fn();
     start = vi.fn();
     stop = vi.fn();
   },
+}));
+vi.mock("../../plugins/registry.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../plugins/registry.js")>(),
+  readPluginRegistry: vi.fn(async () => ({ plugins: [
+    { id: "updating-plugin", pendingUpdate: { transactionId: "update" } },
+    { id: "disabled-plugin", enabled: false },
+  ] })),
 }));
 vi.mock("../../main/work-board-store.js", () => ({
   WorkBoardStore: class {
@@ -438,7 +459,8 @@ vi.mock("../../main/agent-profile-store.js", () => ({
 }));
 vi.mock("../../main/persona-prompt-store.js", () => ({ PersonaPromptStore: class {},
 }));
-vi.mock("../../main/storage/feature-namespace.js", () => ({
+vi.mock("../../main/storage/feature-namespace.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../main/storage/feature-namespace.js")>(),
   openFeatureNamespace: vi.fn(() => ({ dir: "/tmp/ave-boot-test/work-board",
   })),
 }));
@@ -657,12 +679,68 @@ describe("bootstrap() integration lock", () => {
     else process.env["AVE_SANDBOX_ENABLED"] = savedSandboxEnv;
   });
 
+  it("reads installed routine plugins from the live registry including pending updates and disabled entries", async () => {
+    const getIds = h.captured["routineInstalledPluginIds"] as () => Promise<readonly string[]>;
+    expect(await getIds()).toEqual(["updating-plugin", "disabled-plugin"]);
+    const { readPluginRegistry } = await import("../../plugins/registry.js");
+    expect(readPluginRegistry).toHaveBeenLastCalledWith("/tmp/ave-boot-test/plugins/registry.json");
+    vi.mocked(readPluginRegistry).mockResolvedValueOnce({ version: 1, plugins: [] });
+    expect(await getIds()).toEqual([]);
+  });
+
+  it("dispatches a routine whose canonical plugin ID differs from its registry install ID", async () => {
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { RoutinesStore } = await vi.importActual<typeof import("../../main/routines-store.js")>("../../main/routines-store.js");
+    const { RoutinesScheduler } = await vi.importActual<typeof import("../../main/routines-scheduler.js")>("../../main/routines-scheduler.js");
+    const { readPluginRegistry } = await import("../../plugins/registry.js");
+    const dir = await mkdtemp(join(tmpdir(), "ave-routine-alias-"));
+    try {
+      const store = new RoutinesStore(join(dir, "routines.json"));
+      const routine = await store.add({
+        trigger: "schedule",
+        execution: "llm-session",
+        prePrompt: "Use the installed plugin",
+        schedule: { at: new Date(Date.now() - 1000).toISOString() },
+        scope: {
+          pluginIds: { mode: "allow", ids: ["manifest-fresh"] },
+          forcedPluginIds: [],
+          directories: [],
+        },
+      });
+      vi.mocked(readPluginRegistry).mockResolvedValueOnce({
+        version: 1,
+        plugins: [{ id: "catalog-fresh", manifestPath: join(dir, "plugin.json") }],
+      });
+      vi.mocked(services.pluginRuntime.resolvePluginId).mockImplementationOnce((id) => {
+        expect(id).toBe("catalog-fresh");
+        return "manifest-fresh";
+      });
+      const getIds = h.captured["routineInstalledPluginIds"] as () => Promise<readonly string[]>;
+      const scheduler = new RoutinesScheduler(store, getIds);
+      const fired = vi.fn();
+      scheduler.onLlmSession(fired);
+      await scheduler.checkAndFire();
+      expect(fired).toHaveBeenCalledOnce();
+      const persisted = new RoutinesStore(join(dir, "routines.json"));
+      await persisted.load();
+      const record = persisted.list().find((entry) => entry.id === routine.id);
+      expect(record).toMatchObject({ id: routine.id, lastFiredAt: expect.any(String) });
+      expect(record?.lastSkippedReason).toBeUndefined();
+      expect(record?.needsAttention).toBeUndefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("assembles the exact AppServices key set (C18 must not drop/rename a service)", () => {
     expect(Object.keys(services).sort()).toMatchInlineSnapshot(`
       [
         "a2aRemoteRuntime",
         "agentProfileStore",
         "agentsDocMergeService",
+        "alertsService",
         "approvalGate",
         "askUserQuestionGate",
         "auditLogger",
@@ -725,6 +803,7 @@ describe("bootstrap() integration lock", () => {
         "singleHopNetworkFetch",
         "skillStore",
         "starredStore",
+        "startAlerts",
         "startRoutinesScheduler",
         "startWorkBoardDueSoon",
         "systemPromptBuilder",
@@ -757,6 +836,10 @@ describe("bootstrap() integration lock", () => {
     assertBefore("conversationLoop", "subAgentRunner");
     assertBefore("lifecycleBound", "retirementsRecovered");
     assertBefore("retirementsRecovered", "startPlugins");
+    // Plugins register their alert kinds as they start, and a boot-time
+    // uninstall replay must find the alerts pipeline listening.
+    assertBefore("alertsSetup", "uninstallCleanupReplay");
+    assertBefore("alertsSetup", "startPlugins");
   });
 
   // ── plugin-state cleanup dep bag ────────────────────────────────────────

@@ -628,8 +628,10 @@ export function App() {
   );
   const {
     addFireRef,
+    dismissRef,
     runningRoutines,
     handlePluginPrimaryAction,
+    handleAlertDismiss,
     handleRoutineAcknowledge,
     handleProposalAnswer,
   } = useRoutineOverlay({
@@ -1471,6 +1473,7 @@ export function App() {
         onPluginPrimaryAction={(id, actionChatGroupId) => {
           void handlePluginPrimaryAction(id, actionChatGroupId);
         }}
+        onAlertDismiss={handleAlertDismiss}
         onRoutineAcknowledge={handleRoutineAcknowledge}
         onProposalAnswer={(id, disposition, actionChatGroupId) => {
           void handleProposalAnswer(id, disposition, actionChatGroupId);
@@ -1760,6 +1763,7 @@ export function App() {
           <OverlayContextProvider
             onOpenSession={handleOpenRoutineSession}
             addFireRef={addFireRef}
+            dismissRef={dismissRef}
             runningRoutines={runningRoutines}
             onQueueChange={setOverlayQueue}
           >

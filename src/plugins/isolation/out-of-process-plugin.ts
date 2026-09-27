@@ -28,8 +28,7 @@
  * projection — is untouched and cannot tell the difference, which is exactly
  * why the five plugins that are not the pilot keep loading as they did.
  */
-import { randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import { createLogger } from "../../lib/logger.js";
 import { mainDir } from "../../main/main-paths.js";
@@ -52,6 +51,7 @@ import {
   resolvePluginWorkerRunRoot,
 } from "../plugin-storage-layout.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
+import { terminateChildProcess } from "../../tools/terminate-child-process.js";
 // The allowlist is READ where it is declared rather than mirrored here. It is
 // the host's answer to "which preferences may a plugin see", and a second copy
 // of that list would be a second answer to a security question.
@@ -68,6 +68,7 @@ import {
   isSensitivePath,
 } from "../../permissions/sensitive-paths.js";
 import { aveHome } from "../../shared/ave-home.js";
+import { HOST_DIRECTORY_CATALOG } from "../sandbox-authority.js";
 import type {
   PluginHostApi,
   PluginManifest,
@@ -76,22 +77,29 @@ import type {
   RuntimePlugin,
   RuntimePluginFactory,
 } from "../types.js";
+import type { PluginSandboxDeclaration } from "../public-contract.js";
 import {
   HOSTAPI_DISPATCH_TABLE,
   createConfigSubscriptionHostApiPaths,
   createInteractionHostApiPaths,
   createServiceHostApiPaths,
+  hostProtocolCapabilities,
   createStorageHostApiPaths,
   type DelegatedWorkerConfinement,
   type HostApiPathHandler,
 } from "./host-api-dispatcher.js";
-import { HOST_API_WIRE_VERSION, type HostApiPath } from "./host-api-wire.js";
+import {
+  HOST_PROTOCOL_NOTIFICATIONS,
+  IncompatibleHostProtocolError,
+  NEWEST_HOST_PROTOCOL_VERSION,
+  isServedHostProtocolVersion,
+  type HostApiPath,
+  type HostProtocolVersion,
+} from "./host-api-wire.js";
 import {
   PLUGIN_INSTANCE_METHODS,
-  PLUGIN_INSTANCE_WIRE_VERSION,
   type PluginConstructParams,
   type PluginConstructResult,
-  type ReadUiResourceResult,
 } from "./plugin-instance-wire.js";
 import {
   PluginChildTransport,
@@ -238,7 +246,7 @@ function resolvePluginChildEntryPath(): string {
  *
  *  KEEPING A READ GRANT FROM BECOMING A WRITE GRANT IS DONE BY SUBTRACTING THE
  *  ROWS, not by reasoning about their shape. {@link ceilingSubtractions} puts
- *  the directory every `hostDirectory` row in this table resolves to into the
+ *  directory every host catalog entry resolves to into the
  *  set a `userChosenDirectory` value is refused for naming, and the comparison
  *  is canonical on both sides.
  *
@@ -272,47 +280,9 @@ type PluginEnvelopeGrant =
     };
 
 /**
- * Which plugin's child gets which extra reach.
- *
- * A HOST-OWNED TABLE, and every word of that matters. It is not the manifest,
- * because a manifest field would let the plugin assert its own envelope — the
- * one party that must not have a say. It is not an environment variable or a
- * settings key either, because the SHAPE of a plugin's reach would then change
- * under a user with no record of it. A plugin's child reaches further when a
- * reviewed commit adds a row here, which means the widening is visible in a
- * diff and revertable by a revert — the same discipline the routing SOT
- * (`out-of-process-plugins.ts`) applies to the boundary itself.
- *
- * A `userChosenDirectory` row is not an exception to that. What the row decides
- * is that this plugin may hold ONE directory named by that key at all; which
- * directory it turns out to be is the user's, bounded by their own approvals.
- *
- * Said precisely, because the value and the bound are different questions:
- * `config.get` merges the plugin's own `manifest.config` and `configSchema`
- * defaults under the user's saved setting, and `config.set` is a member the
- * plugin holds — so the plugin CAN put any value there. Moving the CEILING that
- * value is checked against is a different reach, and it is
- * {@link resolveUserChosenDirectory} that has to deny it, which is why that
- * function owns the whole safety argument and why its ceiling is compared in
- * canonical form. The reaches that were tried and refused are the ones
- * `confined-plugin-child.test.ts` names: the filesystem root, a sensitive path
- * under an approved root, this plugin's bundle and a neighbour's, a bundle root
- * that is a symlink, a directory a `hostDirectory` row granted READ, the same
- * directory once the row's target is moved onto another volume, and a link
- * planted inside the plugin's own data directory. A reach nobody has tried is
- * not covered by that list.
- *
- * An entry is INERT until the plugin is actually routed out-of-process: nothing
- * reads this table for an in-process plugin, which still loads in main with no
- * confinement of its own. The one entry here is no longer inert —
- * `local-indexer` is in `OUT_OF_PROCESS_PLUGIN_IDS` — which is what makes this
- * table the only place where a routed plugin's write list is wider than
- * `pluginDataDir`, and why the routing SOT's outcome list says so explicitly
- * rather than describing every routed child as holding two paths.
- *
- * `local-indexer`'s row is derived from what its worker spawn actually asks for
- * (`allowReadPaths: [pythonExecutable, workerScriptPath, corpCaPath?]`,
- * `allowWritePaths: [indexRoot, workspace]`), not from what it might want.
+ * Legacy grants for an installed bundle with no sandbox declaration. A
+ * declared block, including an empty one, takes precedence. The table stays
+ * until that bundle declares the same reviewed grants in its manifest.
  */
 const PLUGIN_ENVELOPE_GRANTS: ReadonlyMap<string, readonly PluginEnvelopeGrant[]> = new Map([
   [
@@ -372,23 +342,33 @@ const PLUGIN_ENVELOPE_GRANTS: ReadonlyMap<string, readonly PluginEnvelopeGrant[]
  */
 export interface PluginChildEnvelopeInputs {
   readonly pluginId: string;
+  readonly sandbox?: PluginSandboxDeclaration;
   /** The plugin's immutable runtime root; the child reads its code from here. */
   readonly pluginRoot: string;
   /** `~/.ave/plugins/<id>/data`. */
   readonly pluginDataDir: string;
   readonly configValue: (key: string) => unknown;
+  readonly onUserChosenDirectory?: (path: string) => void;
 }
 
 /**
  * Refuse a widening, and say which grant asked for what.
  *
- * A plain `Error` rather than a boundary error: this runs on the SPAWN path, so
- * a refusal here fails the plugin's construction — there is no child yet to
+ * An `Error` subtype rather than a boundary error: this runs on the SPAWN path,
+ * so a refusal here fails the plugin's construction — there is no child yet to
  * answer, and a plugin whose declared envelope cannot be honoured must not load
- * with a quietly smaller one.
+ * with a quietly smaller one. The subtype lets the Doctor avoid reinstalling
+ * the same manifest after this refusal.
  */
+export class PluginSandboxGrantError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PluginSandboxGrantError";
+  }
+}
+
 function rejectEnvelopeGrant(pluginId: string, configKey: string, detail: string): never {
-  throw new Error(
+  throw new PluginSandboxGrantError(
     `[out-of-process-plugin] ${pluginId}: cannot widen the child's envelope for `
       + `config key '${configKey}': ${detail}`,
   );
@@ -406,7 +386,16 @@ function rejectEnvelopeGrant(pluginId: string, configKey: string, detail: string
 function hostGrantDirectory(
   grant: Extract<PluginEnvelopeGrant, { kind: "hostDirectory" }>,
 ): string {
-  return join(aveHome(), ...grant.segments);
+  const name = grant.segments.length === 1 ? grant.segments[0] : undefined;
+  const catalog = name && Object.hasOwn(HOST_DIRECTORY_CATALOG, name)
+    ? HOST_DIRECTORY_CATALOG[name as keyof typeof HOST_DIRECTORY_CATALOG]
+    : undefined;
+  if (!catalog) throw new PluginSandboxGrantError("host directory is outside the closed catalog");
+  const directory = join(aveHome(), ...catalog.segments);
+  if (isSensitivePath(directory, "read") && !catalog.piercesDenyFloor) {
+    throw new PluginSandboxGrantError("host directory cannot pierce the sensitive deny floor");
+  }
+  return directory;
 }
 
 /**
@@ -482,29 +471,21 @@ function ceilingSubtractions(
       root: inputs.pluginRoot,
       detail: "resolves inside the plugin's own bundle root",
     },
-    // Every directory a `hostDirectory` row resolves to — the WHOLE table's,
+    // Every directory the closed host catalog resolves to — the whole catalog,
     // not this plugin's alone, because what is being excluded is the class
     // "somewhere the host handed a plugin child READ" and a value that names a
     // neighbour's granted directory raises the same question as one that names
-    // its own. The rows are enumerated rather than covered by the `aveHome()`
+    // its own. The entries are enumerated rather than covered by the `aveHome()`
     // entry above: a row is a LEXICAL join onto the home, the caller compares
     // in canonical form, and a granted directory that is itself a symlink out
     // of the home therefore has a canonical form the home entry does not
     // contain. Moving a multi-gigabyte interpreter tree to another volume and
     // linking it back is the ordinary reason for that to be true on a real
     // machine.
-    ...[...PLUGIN_ENVELOPE_GRANTS.values()].flatMap((grants) =>
-      grants.flatMap((grant) =>
-        grant.kind === "hostDirectory"
-          ? [
-              {
-                root: hostGrantDirectory(grant),
-                detail: "resolves inside a directory the host's own table grants a plugin READ",
-              },
-            ]
-          : [],
-      ),
-    ),
+    ...Object.values(HOST_DIRECTORY_CATALOG).map((grant) => ({
+      root: join(aveHome(), ...grant.segments),
+      detail: "resolves inside a host-owned catalog directory",
+    })),
   ];
 }
 
@@ -583,7 +564,7 @@ function ceilingSubtractions(
  * returns the process cwd and `~/.ave` — are deliberately not unioned in here.
  * They are where the app happens to be running and where the host keeps its own
  * state; neither is a directory the user chose for a plugin, and including them
- * would widen every plugin with a row here by accident rather than by decision.
+ * would widen every plugin with a chosen-directory grant by accident.
  * `~/.ave` is more than left out: {@link ceilingSubtractions} takes it away
  * even when the user has approved it explicitly.
  */
@@ -664,6 +645,43 @@ function resolveUserChosenDirectory(
   return target;
 }
 
+/** Bind a running grant to the path and filesystem object granted at spawn. */
+export function capturePluginSandboxGrant(path: string): {
+  path: string;
+  canonicalPath: string;
+  identity?: { dev: number; ino: number };
+} {
+  const canonicalPath = caseFoldForMatch(canonicalizePathForMatch(path));
+  const entry = statSync(path, { throwIfNoEntry: false });
+  return {
+    path,
+    canonicalPath,
+    ...(entry ? { identity: { dev: entry.dev, ino: entry.ino } } : {}),
+  };
+}
+
+/** Recheck the original kernel grant and the current approved roots. */
+export function isPluginSandboxGrantCovered(
+  grant: ReturnType<typeof capturePluginSandboxGrant>,
+  pluginRoot: string,
+  pluginDataDir: string,
+): boolean {
+  try {
+    if (caseFoldForMatch(canonicalizePathForMatch(grant.path)) !== grant.canonicalPath) return false;
+    const entry = statSync(grant.path, { throwIfNoEntry: false });
+    if (grant.identity && (!entry || entry.dev !== grant.identity.dev || entry.ino !== grant.identity.ino)) return false;
+    if (!grant.identity && entry) grant.identity = { dev: entry.dev, ino: entry.ino };
+    return resolveUserChosenDirectory({
+      pluginId: "sandbox-grant",
+      pluginRoot,
+      pluginDataDir,
+      configValue: () => grant.path,
+    }, { kind: "userChosenDirectory", configKey: "directory", why: "approved directory" }) !== undefined;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The paths the PLUGIN owns, plus whatever the host decided it also reaches.
  *
@@ -716,7 +734,13 @@ export function derivePluginChildEnvelope(
   const workerRunRoot = resolvePluginWorkerRunRoot(inputs.pluginDataDir);
   const read = [inputs.pluginRoot, inputs.pluginDataDir, socketDir, workerRunRoot];
   const write = [inputs.pluginDataDir, socketDir];
-  for (const grant of PLUGIN_ENVELOPE_GRANTS.get(inputs.pluginId) ?? []) {
+  const grants: Array<{ grant: PluginEnvelopeGrant; access: "read" | "write" }> = inputs.sandbox === undefined
+    ? (PLUGIN_ENVELOPE_GRANTS.get(inputs.pluginId) ?? []).map((grant) => ({ grant, access: grant.kind === "hostDirectory" ? "read" : "write" }))
+    : [
+        ...(inputs.sandbox.read ?? []).map((grant) => ({ grant, access: "read" as const })),
+        ...(inputs.sandbox.write ?? []).map((grant) => ({ grant, access: "write" as const })),
+      ];
+  for (const { grant, access } of grants) {
     if (grant.kind === "hostDirectory") {
       const directory = hostGrantDirectory(grant);
       read.push(directory);
@@ -729,14 +753,15 @@ export function derivePluginChildEnvelope(
     }
     const chosen = resolveUserChosenDirectory(inputs, grant);
     if (chosen === undefined) continue;
+    inputs.onUserChosenDirectory?.(chosen);
     // Read as well as write: the plugin has to list and re-open what it wrote.
     // This is also the only thing that keeps `read` a superset of `write` —
     // `DelegatedWorkerConfinement` documents that relation as maintained here
     // rather than enforced anywhere.
     read.push(chosen);
-    write.push(chosen);
+    if (access === "write") write.push(chosen);
     log.info(
-      `[${inputs.pluginId}] envelope widened: write ${chosen} `
+      `[${inputs.pluginId}] envelope widened: ${access} ${chosen} `
         + `(config '${grant.configKey}') — ${grant.why}`,
     );
   }
@@ -758,6 +783,7 @@ export interface ConfinedPluginChildSpec {
    * in `out-of-process-plugins.ts`.
    */
   readonly envelope: DelegatedWorkerConfinement;
+  readonly assertStillValid?: () => void;
   /**
    * Where this child may bind a Unix-domain socket, as
    * {@link resolvePluginSocketDir} derived it from the plugin's data directory.
@@ -788,6 +814,7 @@ export interface ConfinedPluginChildSpec {
  */
 export interface ConfinedPluginChild {
   readonly link: ChildLink;
+  readonly waitForExit?: () => Promise<void>;
 }
 
 /**
@@ -845,7 +872,7 @@ export interface ConfinedPluginChild {
  *    this child serves — and it is what makes "cannot read another plugin's data
  *    directory" true rather than aspirational. A `hostDirectory` grant in
  *    {@link PLUGIN_ENVELOPE_GRANTS} DOES widen the floor, deliberately, for the
- *    one plugin whose row names it.
+ *    plugin whose declaration or legacy row names it.
  *
  * On Windows ASRT 0.0.75 supports no per-exec allow grants at all — passing any
  * makes `wrapWorkerCommand` throw — so the wrap carries the deny floor alone
@@ -858,6 +885,7 @@ export interface ConfinedPluginChild {
 export async function spawnConfinedPluginChild(
   spec: ConfinedPluginChildSpec,
 ): Promise<ConfinedPluginChild> {
+  spec.assertStillValid?.();
   const sandboxHome = createSandboxProcessHome();
   const socketDir = spec.socketDir;
   const workerRunRoot = spec.workerRunRoot;
@@ -983,6 +1011,7 @@ export async function spawnConfinedPluginChild(
         // them. Set ONLY on the wrapped path — an unwrapped spawn never marks.
         markPluginChildConfined(spec.pluginId);
       },
+      assertStillValid: spec.assertStillValid,
     });
     if (!child.stdin || !child.stdout) {
       child.kill("SIGKILL");
@@ -994,14 +1023,20 @@ export async function spawnConfinedPluginChild(
     child.stderr?.on("data", (chunk: Buffer) => {
       log.debug(`[${spec.pluginId}] ${chunk.toString("utf-8").trimEnd()}`);
     });
+    const exited = new Promise<void>((resolve) => {
+      child.once("exit", () => resolve());
+      child.once("close", () => resolve());
+    });
     child.once("exit", releaseSandboxState);
     return {
+      waitForExit: () => exited,
       link: {
         input: child.stdout,
         output: child.stdin,
         terminate: (reason) => {
           log.debug(`[${spec.pluginId}] terminating child: ${reason}`);
-          child.kill("SIGTERM");
+          const forceTimer = terminateChildProcess(child, 3_000);
+          child.once("exit", () => clearTimeout(forceTimer));
         },
         onGone: (handler) => {
           child.once("exit", (code, signal) =>
@@ -1024,6 +1059,7 @@ export async function spawnConfinedPluginChild(
 
 export interface OutOfProcessPluginSpec {
   readonly manifest: PluginManifest;
+  readonly auditLog?: (level: "info" | "warn" | "error", message: string, data?: unknown) => void;
   /** The resolved, real entry path of the PLUGIN (not of the child runtime). */
   readonly entryPath: string;
   /**
@@ -1033,6 +1069,10 @@ export interface OutOfProcessPluginSpec {
   readonly connect?: (spec: ConfinedPluginChildSpec) => Promise<ConfinedPluginChild>;
   /** Defaults to the emitted `plugin-child-main.js` under the runtime asset dir. */
   readonly childEntryPath?: string;
+  readonly registerSandboxEnvelope?: (paths: readonly string[], pluginRoot: string, pluginDataDir: string) => {
+    assertCurrent(): void;
+    dispose(): void;
+  };
 }
 
 /**
@@ -1111,6 +1151,57 @@ function readToolResult(pluginId: string, toolName: string, result: unknown): un
 }
 
 /**
+ * The host protocol version this plugin's connection speaks (§3.2).
+ *
+ * Its declared `requires.hostProtocol`, or — for a plugin that declares none —
+ * the newest this host serves: the host-shipped runtime speaks for a JS plugin,
+ * so there is nothing to negotiate. A declared version this host does not
+ * serve is refused, never downgraded.
+ */
+function connectionHostProtocol(manifest: PluginManifest): HostProtocolVersion {
+  const declared = manifest.requires?.hostProtocol;
+  if (declared === undefined) return NEWEST_HOST_PROTOCOL_VERSION;
+  if (!isServedHostProtocolVersion(declared)) {
+    throw new IncompatibleHostProtocolError(manifest.id, { declared });
+  }
+  return declared;
+}
+
+/**
+ * Refuse a child whose `construct` reply names a method it cannot run without
+ * that this connection did not advertise (§3.2). A reply with no
+ * `pluginProtocol` is a child that does not speak this protocol version, and
+ * fails as one rather than being read as "requires nothing".
+ */
+function requireServedCapabilities(
+  pluginId: string,
+  construction: PluginConstructResult,
+  capabilities: readonly string[],
+): void {
+  const requires: unknown = construction.pluginProtocol?.requires;
+  if (!Array.isArray(requires) || !requires.every((entry) => typeof entry === "string")) {
+    throw new Error(
+      `[out-of-process-plugin] ${pluginId}: construct answered no pluginProtocol.requires list`,
+    );
+  }
+  const served = new Set(capabilities);
+  const missing = requires.filter((method) => !served.has(method));
+  if (missing.length > 0) {
+    throw new IncompatibleHostProtocolError(pluginId, { missingCapabilities: missing });
+  }
+}
+
+/** The card's HTML out of an MCP `resources/read` result, or a clear failure. */
+function readUiResourceHtml(pluginId: string, uri: string, result: unknown): string {
+  const contents = (result as { contents?: unknown } | undefined)?.contents;
+  const first = Array.isArray(contents) ? (contents[0] as { text?: unknown } | undefined) : undefined;
+  if (typeof first?.text !== "string") {
+    throw new Error(`[out-of-process-plugin] ${pluginId}: resources/read('${uri}') returned no html`);
+  }
+  return first.text;
+}
+
+/**
  * Build the factory the lifecycle calls in place of the in-process one.
  *
  * The returned factory does the whole of the boundary's setup — spawn,
@@ -1127,34 +1218,55 @@ export function createOutOfProcessPluginFactory(
   const pluginId = spec.manifest.id;
 
   return async (context: PluginRuntimeContext): Promise<RuntimePlugin> => {
-    // Minted per factory call, which is per incarnation. Its job (§2.4) is that
-    // the child is told which incarnation it serves and a message naming a
-    // different one is refused; a fresh id per construction is exactly that.
-    const generationId = randomUUID();
+    // Refused before anything is spawned. `runtime/index.ts` refuses the same
+    // manifest at every load path; this is the spawn path's own copy of the
+    // rule, so a factory reached any other way cannot start a child that would
+    // be told a version it does not speak.
+    const hostProtocolVersion = connectionHostProtocol(spec.manifest);
+    // No generation id crosses: each factory call spawns its own child, so the
+    // connection IS the incarnation (§2.4), and the pipe closing when the
+    // incarnation retires is what pins it.
     const hostApi = context.hostApi as unknown as DispatchableHostApi;
     // Derived ONCE, here, and then held: the spawn wraps the child with it and
     // the dispatch table checks delegated workers against it, so the two cannot
     // be looking at different answers to the same question. Deriving it before
     // the spawn is also what makes a refused widening fail construction rather
     // than produce a child confined more narrowly than the host decided.
+    const chosenPaths: string[] = [];
     const envelope = derivePluginChildEnvelope({
       pluginId,
+      ...(spec.manifest.sandbox === undefined ? {} : { sandbox: spec.manifest.sandbox }),
       pluginRoot: context.pluginRoot,
       pluginDataDir: context.pluginDataDir,
       configValue: (key) => hostApi.config.get(key),
+      onUserChosenDirectory: (path) => chosenPaths.push(path),
     });
-    const child = await connect({
+    const registration = spec.registerSandboxEnvelope?.(chosenPaths, context.pluginRoot, context.pluginDataDir);
+    let child: ConfinedPluginChild | undefined;
+    try {
+      child = await connect({
       pluginId,
       envelope,
+      assertStillValid: () => registration?.assertCurrent(),
       socketDir: resolvePluginSocketDir(context.pluginDataDir),
       workerRunRoot: resolvePluginWorkerRunRoot(context.pluginDataDir),
       childEntryPath,
-    });
+      });
+      registration?.assertCurrent();
+    } catch (error) {
+      child?.link.terminate("sandbox grant changed during spawn");
+      await child?.waitForExit?.();
+      registration?.dispose();
+      throw error;
+    }
+    if (!child) throw new Error(`[out-of-process-plugin] ${pluginId}: child connection missing`);
 
     let live = true;
+    // ONE table: the dispatcher serves it and `construct` advertises it, so
+    // what the child is told it may call is what the host will answer.
+    const table = createBoundHostApiDispatchTable(hostApi, envelope);
     const transport = new PluginChildTransport({
       pluginId,
-      generationId,
       // The boundary's own liveness, not a second authority. The authoritative
       // check is still `enforceActiveHostApi` on the object below, which throws
       // on every member once the incarnation deactivates — and which the child
@@ -1173,7 +1285,36 @@ export function createOutOfProcessPluginFactory(
         }
         log.info({ pluginId }, message);
       },
-      table: createBoundHostApiDispatchTable(hostApi, envelope),
+      // The host's own voice about the connection, not the plugin's: a params
+      // field the member does not declare is accepted and ignored (§3.3), and
+      // named here once per (method, field) so a protocol skew is visible.
+      reportUnknownField: (report) => {
+        if (report.kind === "suppressed") {
+          log.warn(
+            { pluginId, limit: report.limit },
+            "further undeclared params fields suppressed for this connection",
+          );
+          return;
+        }
+        log.warn(
+          { pluginId, method: report.method, field: report.field },
+          "ignored an undeclared params field",
+        );
+      },
+      reportBudgetAudit: (entry) => {
+        try {
+          spec.auditLog?.("warn", entry.type, {
+            pluginId: entry.pluginId,
+            method: entry.method,
+            code: entry.code,
+            count: entry.count,
+            summary: entry.summary,
+            ...(entry.bucket === undefined ? {} : { bucket: entry.bucket }),
+          });
+        } catch { /* audit sink failure cannot alter a dispatcher result */ }
+        log.warn(entry, entry.type);
+      },
+      table,
       link: child.link,
     });
     transport.start();
@@ -1212,6 +1353,8 @@ export function createOutOfProcessPluginFactory(
       live = false;
       stopHostWatchers();
       transport.close(reason);
+      if (child.waitForExit) void child.waitForExit().finally(() => registration?.dispose());
+      else registration?.dispose();
     };
 
     try {
@@ -1221,11 +1364,9 @@ export function createOutOfProcessPluginFactory(
       // plugin ever subscribed to `onPluginsChanged`.
       hostWatchers.push(hostApi.onPluginsChanged(() => {
         transport.sendToChild({
-          wire: HOST_API_WIRE_VERSION,
-          pluginId,
-          generationId,
-          kind: "installed-plugins",
-          pluginIds: hostApi.getInstalledPluginIds(),
+          jsonrpc: "2.0",
+          method: HOST_PROTOCOL_NOTIFICATIONS.installedPluginsSnapshot,
+          params: { pluginIds: hostApi.getInstalledPluginIds() },
         });
       }));
 
@@ -1258,12 +1399,9 @@ export function createOutOfProcessPluginFactory(
           if (value !== undefined) values[key] = value;
         }
         transport.sendToChild({
-          wire: HOST_API_WIRE_VERSION,
-          pluginId,
-          generationId,
-          kind: "config-snapshot",
-          keys: configKeys,
-          values,
+          jsonrpc: "2.0",
+          method: HOST_PROTOCOL_NOTIFICATIONS.configSnapshot,
+          params: { keys: configKeys, values },
         });
       }));
       /**
@@ -1308,12 +1446,9 @@ export function createOutOfProcessPluginFactory(
         // is; it is here so the two stay one decision rather than two.
         if (!snapshot) return;
         transport.sendToChild({
-          wire: HOST_API_WIRE_VERSION,
-          pluginId,
-          generationId,
-          kind: "preference-snapshot",
-          keys: snapshot.keys,
-          values: snapshot.values,
+          jsonrpc: "2.0",
+          method: HOST_PROTOCOL_NOTIFICATIONS.preferencesSnapshot,
+          params: { keys: snapshot.keys, values: snapshot.values },
         });
       };
 
@@ -1344,7 +1479,6 @@ export function createOutOfProcessPluginFactory(
         // two would only ever disagree in the case that matters.
         userHome: context.userHome,
         aveHome: context.aveHome,
-        generationId,
         installedPluginIds: hostApi.getInstalledPluginIds(),
         ...(context.config !== undefined ? { config: context.config } : {}),
         // Omitted entirely when the host implements no reader, which is what lets
@@ -1352,7 +1486,10 @@ export function createOutOfProcessPluginFactory(
         ...(constructionPreferences ? { appPreferences: constructionPreferences } : {}),
       };
       const constructParams: PluginConstructParams = {
-        wire: PLUGIN_INSTANCE_WIRE_VERSION,
+        hostProtocol: {
+          version: hostProtocolVersion,
+          capabilities: hostProtocolCapabilities(table),
+        },
         manifest: spec.manifest,
         context: childContext,
         entryPath: spec.entryPath,
@@ -1369,12 +1506,13 @@ export function createOutOfProcessPluginFactory(
         // under a confinement nobody is watching.
         TOOL_TIMEOUT_POLICY.pluginImportMs + TOOL_TIMEOUT_POLICY.pluginFactoryMs,
       )) as PluginConstructResult;
+      requireServedCapabilities(pluginId, construction, constructParams.hostProtocol.capabilities);
 
       /**
        * The seed above was read BEFORE the child could receive anything, so this
        * re-push closes the window between the two.
        *
-       * A `preference-snapshot` sent while the child is still constructing is
+       * A preferences snapshot sent while the child is still constructing is
        * DROPPED: the child routes notifications through a runtime it assigns only
        * after the plugin module has imported and its factory has run
        * (`plugin-child-main.ts`). The two watchers above survive that: neither
@@ -1440,6 +1578,11 @@ export function createOutOfProcessPluginFactory(
             // rejection on a `void` member the plugin never awaits.
             live = false;
             transport.close(`[out-of-process-plugin] ${pluginId}: stopped`);
+            try {
+              await child.waitForExit?.();
+            } finally {
+              registration?.dispose();
+            }
           }
         },
       };
@@ -1454,17 +1597,12 @@ export function createOutOfProcessPluginFactory(
         };
       }
       if (construction.servesUiResources) {
-        instance.readUiResource = async (uri: string) => {
-          const result = (await transport.request(PLUGIN_INSTANCE_METHODS.readUiResource, {
-            uri,
-          })) as ReadUiResourceResult;
-          if (typeof result?.html !== "string") {
-            throw new Error(
-              `[out-of-process-plugin] ${pluginId}: readUiResource('${uri}') returned no html`,
-            );
-          }
-          return result.html;
-        };
+        // MCP `resources/read`, which the child's server answers with the
+        // card's HTML — the same verb a plugin in any language serves its card
+        // with. The host's own provider still applies the manifest's policy to
+        // what comes back; this is only the content.
+        instance.readUiResource = async (uri: string) =>
+          readUiResourceHtml(pluginId, uri, await transport.request("resources/read", { uri }));
       }
       return instance;
     } catch (error) {

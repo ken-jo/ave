@@ -18,6 +18,7 @@ import type { BrowserWindow } from "electron";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { aveHome } from "../../shared/ave-home.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { registerBootPluginShutdown, registerShutdownHook } from "../../main/app-shutdown.js";
 import { onEvent as onHostEvent } from "../types.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
@@ -168,7 +169,7 @@ export interface InitPluginRuntimeInput {
     opts: import("../../main/auth-partition-viewer-service.js").OpenAuthPartitionViewerOptions,
   ) => Promise<void>;
   /**
-   * SDK 5.6.0 — wipe-partition surface used by plugin `clearAuthPartition`
+   * HostApi wipe-partition surface used by plugin `clearAuthPartition`
    * to delete cookies / storage / cache / HTTP-auth from one of the
    * plugin's own `persist:plugin-auth:<pluginId>[:<sub>]` partitions
    * after a user-triggered sign-out. Production wiring is
@@ -214,6 +215,12 @@ export interface InitPluginRuntimeInput {
    * time a proposal can arrive.
    */
   getWorkBoardStore: () => import("../../main/work-board-store.js").WorkBoardStore | undefined;
+  /**
+   * Alerts service — backs `hostApi.raiseAlert` / `withdrawAlert` and
+   * registers each plugin's declared kinds at start. Late-bound like the Work
+   * Board store: `setupAlerts` runs after this step and before plugins start.
+   */
+  getAlertsService: () => import("../../alerts/service.js").AlertsService | undefined;
   /** Production defers activation until Skill/Hook/MCP lifecycle wiring exists. */
   deferStart?: boolean;
   /**
@@ -278,6 +285,7 @@ export async function initPluginRuntime(
     permissionManager,
     routinesStore,
     getWorkBoardStore,
+    getAlertsService,
   } = input;
 
   // §B3 — host public preference reader, shared across all per-plugin HostApi
@@ -301,7 +309,6 @@ export async function initPluginRuntime(
     if (pluginShutdownRan) return pluginShutdownPromise ?? Promise.resolve();
     if (pluginShutdownHandlers.length === 0) return Promise.resolve();
     pluginShutdownRan = true;
-    const SHUTDOWN_TIMEOUT_MS = 5000;
     pluginShutdownPromise = (async () => {
       await Promise.allSettled(
         pluginShutdownHandlers.map(async ({ pluginId, handler }) => {
@@ -313,7 +320,7 @@ export async function initPluginRuntime(
                 timer = setTimeout(() => reject(new Error(`shutdown handler timeout [plugin:${pluginId}]`,
                       ),
                     ),
-                  SHUTDOWN_TIMEOUT_MS,
+                  TOOL_TIMEOUT_POLICY.pluginShutdownHandlerMs,
                 );
               }),
             ]);
@@ -474,9 +481,11 @@ export async function initPluginRuntime(
     permissionManager,
     routinesStore,
     getWorkBoardStore,
+    getAlertsService,
   });
   const { preparePluginStart, onDisable, onActiveStateChange, onEnable } =
     createLifecycleCallbacks({
+      getAlertsService,
       getAppWindows: () => input.host.desktop?.getAppWindows() ?? [],
       lateBinding,
       getMainWindow,

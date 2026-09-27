@@ -295,7 +295,7 @@ export async function seedRealPlugins(
     if (!REAL_PYTHON_CAPTURES || !pythonBlock) {
       delete seededManifest.python;
     }
-    // Drop manifest fields the host's current SDK schema does not yet accept
+    // Drop manifest fields the host's current schema does not yet accept
     // (e.g. `onboarding`, ahead of the host schema on some plugins). They are
     // orthogonal to UI capture; leaving them would fail manifest validation at
     // load and the plugin would never render. Remove here so the panel mounts.

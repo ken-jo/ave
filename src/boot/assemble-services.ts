@@ -84,6 +84,7 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
     routinesStore: ctx.routinesStore,
     routinesScheduler: ctx.routinesScheduler,
     workBoardStore: ctx.workBoardStore,
+    alertsService: ctx.alertsService,
     workBoardEngine: ctx.workBoardEngine,
     workBoardReport: ctx.workBoardReporter,
     sessionTasksStore: ctx.sessionTasksStore,
@@ -111,6 +112,7 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
     listPluginAuthPartitionsService,
     startRoutinesScheduler: () => ctx.routinesScheduler.start(),
     startWorkBoardDueSoon: ctx.startWorkBoardDueSoon,
+    startAlerts: () => ctx.alertsService.start(),
     refreshPluginNotifications: () => {
       ctx.disposePluginNotifications();
       ctx.disposePluginNotifications = registerPluginNotifications(ctx.pluginRuntime, ctx.pluginEventBridgeWindow, ctx.notificationService, ctx.bootAuditLogger, ctx.host.desktop?.notificationSupported() ?? false,
@@ -153,6 +155,7 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
         attempt(() => ctx.a2aRemoteRuntime?.dispose());
         attempt(() => ctx.routinesScheduler.stop());
         if (ctx.dueSoonTimer) attempt(() => clearInterval(ctx.dueSoonTimer));
+        attempt(() => ctx.alertsService.stop());
 
         attempt(() => ctx.conversationLoop.abortCurrentTurn(new Error("application shutdown"),
           ),

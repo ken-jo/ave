@@ -105,3 +105,17 @@ describe("settings persistence", () => {
     expect(saved.pluginConfigs).toMatchObject({ sample: { mode: "fast" }, other: { mode: "slow" } });
   });
 });
+
+it("does not publish a settings change before its write succeeds", async () => {
+  const observer = vi.fn();
+  service.onChanged("retiredPluginConfigs", observer);
+  const save = vi.spyOn(service as unknown as { saveSettings(settings: unknown): Promise<void> }, "saveSettings");
+  let fail!: (error: Error) => void;
+  save.mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }));
+  const writing = service.set("retiredPluginConfigs", {});
+  await vi.waitFor(() => expect(fail).toBeTypeOf("function"));
+  expect(observer).not.toHaveBeenCalled();
+  fail(new Error("disk full"));
+  await expect(writing).rejects.toThrow("disk full");
+  expect(observer).not.toHaveBeenCalled();
+});

@@ -68,6 +68,7 @@ import { registerWindowHandlers } from "./domains/window.js";
 import { registerRoutineHandlers } from "./domains/routines.js";
 import { registerSessionTasksHandlers } from "./domains/session-tasks.js";
 import { registerSessionGoalHandlers } from "./domains/session-goal.js";
+import { registerAlertsHandlers } from "./domains/alerts.js";
 import { registerAppHandlers } from "./domains/app.js";
 import { registerWorkBoardHandlers } from "./domains/work-board.js";
 import { registerAttachHandlers } from "./domains/attach.js";
@@ -155,6 +156,7 @@ export function registerIpcHandlers(
   registerSessionGoalHandlers(deps);
   registerAppHandlers(deps);
   registerWorkBoardHandlers(deps);
+  registerAlertsHandlers(deps, gitMarketplace.getService);
   registerAttachHandlers(deps);
   registerPreviewHandlers(deps);
   registerWorkspaceHandlers(deps);

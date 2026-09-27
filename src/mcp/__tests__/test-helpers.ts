@@ -130,7 +130,8 @@ export class FakeChildProcess extends EventEmitter {
 export function nextFramedMessage(
   stream: PassThrough,
 ): Promise<Record<string, unknown>> {
-  const decoder = new StdioFrameDecoder();
+  // Bounded far above any reply a test frames; the bound has its own cases.
+  const decoder = new StdioFrameDecoder(1024 * 1024);
   return new Promise((resolve) => {
     const onData = (chunk: Buffer) => {
       const messages = decoder.push(chunk);

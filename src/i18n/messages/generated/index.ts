@@ -6,8 +6,9 @@
  * objects) and merges the English default catalog here. Non-English generated
  * catalogs are language-pack chunks under `../generated-locales/`.
  *
- * Fragments: 171
+ * Fragments: 173
  */
+import { en as en_alerts } from "./alerts.js";
 import { en as en_app } from "./app.js";
 import { en as en_appearanceTab } from "./appearanceTab.js";
 import { en as en_approvalAttribution } from "./approvalAttribution.js";
@@ -137,6 +138,7 @@ import { en as en_remoteA2aActionButton } from "./remoteA2aActionButton.js";
 import { en as en_remoteSurfacesTab } from "./remoteSurfacesTab.js";
 import { en as en_rolesTab } from "./rolesTab.js";
 import { en as en_routinePanel } from "./routinePanel.js";
+import { en as en_sandboxAuthority } from "./sandboxAuthority.js";
 import { en as en_savedToast } from "./savedToast.js";
 import { en as en_sessionGoalPanel } from "./sessionGoalPanel.js";
 import { en as en_sessionResumeDivider } from "./sessionResumeDivider.js";
@@ -181,6 +183,7 @@ import { en as en_workBoard } from "./workBoard.js";
 import { en as en_workGroup } from "./workGroup.js";
 
 export const generatedEn: Record<string, string> = {
+  ...en_alerts,
   ...en_app,
   ...en_appearanceTab,
   ...en_approvalAttribution,
@@ -310,6 +313,7 @@ export const generatedEn: Record<string, string> = {
   ...en_remoteSurfacesTab,
   ...en_rolesTab,
   ...en_routinePanel,
+  ...en_sandboxAuthority,
   ...en_savedToast,
   ...en_sessionGoalPanel,
   ...en_sessionResumeDivider,

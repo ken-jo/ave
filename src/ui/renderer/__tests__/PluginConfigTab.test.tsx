@@ -303,7 +303,7 @@ describe("PluginConfigTab", () => {
         expectRepairPlanned("agent-hub");
         expect(cards).toHaveBeenCalledTimes(2);
         expect(
-          screen.getByText("Agent Hub: 진단 완료 — 로컬 복구 불가, 아직 실행할 수 없습니다."),
+          screen.getByText("Agent Hub: 진단 완료 — 플러그인을 아직 실행할 수 없습니다."),
         ).toBeInTheDocument();
       });
       expect(screen.queryByText("Agent Hub 복구 완료")).toBeNull();
@@ -389,7 +389,7 @@ describe("PluginConfigTab", () => {
     });
     expect(screen.queryByText("Agent Hub 복구 완료")).toBeNull();
     expect(
-      screen.queryByText("Agent Hub: 진단 완료 — 로컬 복구 불가, 아직 실행할 수 없습니다."),
+      screen.queryByText("Agent Hub: 진단 완료 — 플러그인을 아직 실행할 수 없습니다."),
     ).toBeNull();
     expect(screen.getByTestId("plugin-config:banner")).toHaveClass("text-destructive");
   });
@@ -438,7 +438,7 @@ describe("PluginConfigTab", () => {
       expect(screen.getByTestId("plugin-config:banner")).toHaveClass("text-success");
     });
     expect(
-      screen.queryByText("Meeting: 진단 완료 — 로컬 복구 불가, 아직 실행할 수 없습니다."),
+      screen.queryByText("Meeting: 진단 완료 — 플러그인을 아직 실행할 수 없습니다."),
     ).toBeNull();
   });
 
@@ -479,8 +479,89 @@ describe("PluginConfigTab", () => {
       expect(market.planInstall).not.toHaveBeenCalled();
       expect(cards).toHaveBeenCalledTimes(2);
       expect(
-        screen.getByText("Meeting: 진단 완료 — 로컬 복구 불가, 아직 실행할 수 없습니다."),
+        screen.getByText("Meeting: 진단 완료 — 플러그인을 아직 실행할 수 없습니다."),
       ).toBeInTheDocument();
+      expect(screen.getByTestId("plugin-config:banner")).toHaveClass("text-warning");
+    });
+  });
+
+  it("names a host protocol mismatch, and does not reinstall for it", async () => {
+    const broken = {
+      id: "meeting",
+      name: "Meeting",
+      description: "Plugin could not be loaded.",
+      sampleTools: [],
+      capabilities: [],
+      tools: [],
+      installAliases: ["ave-plugin-meeting"],
+      installFailureKind: "incompatible-host-protocol" as const,
+      installFailureMessage: "plugin 'meeting' speaks host protocol 2; this app serves 1",
+      loadStatus: "failed" as const,
+    };
+    const cards = vi.fn().mockResolvedValue([broken]);
+    Object.defineProperty(window, "ave", {
+      value: {
+        plugins: { cards },
+        pluginConfig: { get: mockGet, set: mockSet },
+      },
+      writable: true,
+      configurable: true,
+    });
+
+    render(<PluginConfigTab />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("plugin-config:doctor-panel:meeting")).toBeInTheDocument();
+    });
+    // Its own diagnosis, not "update the app": a newer app may have dropped
+    // the version rather than lacking it.
+    expect(screen.getByText("다른 Ave 프로토콜용 플러그인")).toBeInTheDocument();
+    expect(screen.queryByText("앱 업데이트 필요")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("plugin-config:doctor:meeting"));
+
+    await waitFor(() => {
+      expect(market.planInstall).not.toHaveBeenCalled();
+      expect(cards).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("shows a sandbox ceiling diagnosis with update and remove actions without reinstalling", async () => {
+    const broken = {
+      id: "meeting",
+      name: "Meeting",
+      description: "Plugin filesystem grant is outside approved directories.",
+      sampleTools: [],
+      capabilities: [],
+      tools: [],
+      installAliases: ["ave-plugin-meeting"],
+      installFailureKind: "sandbox-grant-outside-ceiling" as const,
+      installFailureMessage: "sandbox-grant-outside-ceiling",
+      loadStatus: "failed" as const,
+    };
+    const cards = vi.fn().mockResolvedValue([broken]);
+    Object.defineProperty(window, "ave", {
+      value: {
+        plugins: { cards },
+        pluginConfig: { get: mockGet, set: mockSet },
+      },
+      writable: true,
+      configurable: true,
+    });
+
+    render(<PluginConfigTab />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("plugin-config:doctor-panel:meeting")).toBeInTheDocument();
+    });
+    expect(screen.getByText("파일 접근 범위 초과")).toBeInTheDocument();
+    expect(screen.getByText(/요청 범위를 줄인 새 버전으로 업데이트하거나 제거하세요/)).toBeInTheDocument();
+    expect(screen.getByTestId("plugin-config:doctor-remove:meeting")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("plugin-config:doctor:meeting"));
+    await waitFor(() => {
+      expect(cards).toHaveBeenCalledTimes(2);
+      expect(market.planInstall).not.toHaveBeenCalled();
       expect(screen.getByTestId("plugin-config:banner")).toHaveClass("text-warning");
     });
   });
@@ -1243,4 +1324,31 @@ describe("PluginConfigSchemaForm — values prop sync", () => {
       expect(region.value).toBe("westus");
     });
   });
+});
+
+it("opens a requested plugin under the existing anchor and updates its unseen badge", async () => {
+  const cards = [
+    { id: "other", name: "Other", description: "Other plugin", sampleTools: [], capabilities: [], tools: [], loadStatus: "loaded" as const },
+    { id: "meeting", name: "Meeting", description: "Meeting plugin", sampleTools: [], capabilities: [], tools: [], loadStatus: "loaded" as const },
+  ];
+  mockCards.mockResolvedValueOnce(cards);
+  const row: import("../../../shared/alerts-types.js").AlertKindRow = {
+    kindKey: "meeting:summary", pluginId: "meeting", pluginLabel: "Meeting", reasoning: "Review completed meetings.",
+    declaration: { id: "summary", label: { en: "Meeting summary" }, defaultEnabled: false, visibility: "user-visible", summary: { en: "Review meeting" }, prompt: { en: "Review meeting" } },
+    choice: { enabled: false, osNotification: false, visibility: "user-visible", seenByUser: false }, blockedByPredecessor: null, predecessor: null,
+  };
+  let changed = () => {};
+  setRendererApi({
+    gitMarketplace: market,
+    getSettings: async () => ({ alerts: { osNotificationsEnabled: false } }),
+    alerts: { listKinds: async () => [{ ...row, choice: { ...row.choice } }], onKindsChanged: (callback: () => void) => { changed = callback; return () => {}; } },
+  });
+  render(<PluginConfigTab initialPluginId="meeting" />);
+  const section = await screen.findByTestId("plugin-alerts:meeting");
+  expect(section.closest("[data-settings-section]")).toHaveAttribute("data-settings-section", "plugin-config-installed");
+  expect(screen.getByTestId("alert-unseen:meeting")).toHaveTextContent("1");
+  expect(screen.queryByTestId("alert-unseen:other")).toBeNull();
+  row.choice.seenByUser = true;
+  act(changed);
+  await waitFor(() => expect(screen.queryByTestId("alert-unseen:meeting")).toBeNull());
 });

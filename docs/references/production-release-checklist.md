@@ -35,6 +35,12 @@ bun run release
 # Output: release/Ave-<version>-<platform>-<arch>...
 ```
 
+`bun run release` regenerates `schemas/plugin-host-protocol/1/protocol.schema.json`
+after the bump, because its `$id` carries the app version. A release change
+that bumps `package.json` by hand runs `bun run generate:plugin-host-protocol-schema`
+and commits the result; otherwise `bun run build` fails at
+`check:plugin-host-protocol-schema`.
+
 For local installer builds without a version bump:
 
 ```bash

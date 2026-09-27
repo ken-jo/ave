@@ -1,5 +1,10 @@
 # Ave ⇄ MCP 2026-07-28 RC Alignment — Design
 
+> **Plugin contract instructions superseded:** SDK schema and release steps below
+> describe the earlier plan. Plugins now vendor the host's contract files at an
+> app release tag and set `requires.minAppVersion` for new members. Follow
+> [marketplace design §5.6](../design/multi-source-git-marketplace.md#56-plugin-contract-for-authors).
+
 > **2026-07-09 scope narrowing (maintainer):** the **plugin-contract axis of #885 is NO LONGER driven by
 > this document.** #885 is narrowed to "borrow the MCP `Tool` **object** shape + MCP **isolation parity**"
 > and is owned by [`plugin-contract-v6-design.md`](./plugin-contract-v6-design.md); the full stateless
@@ -246,17 +251,20 @@ staged invocation path (`tools/invocation-authorization.ts` and
 `tools/invocation-execution.ts`) — a focused effort of its own.
 
 **`untrusted-stdio-isolation` (4) — experimental serving core DONE; spawner/sandbox/artifact
-gated.** `stdio-framing.ts` (`frameMessage` + `StdioFrameDecoder`, byte-accurate
-Content-Length) + `experimental/stdio-server-loop.ts` (`StdioServerLoop`) implement the
+gated.** `stdio-framing.ts` (`frameMessage` + `StdioFrameDecoder`, newline-delimited,
+one JSON-RPC message per line) + `experimental/stdio-server-loop.ts` (`StdioServerLoop`) implement the
 subprocess-side serving core: read framed JSON-RPC → dispatch to the SAME
 `PluginMcpServer` → write framed response (tested over in-memory paired streams; a
 thrown handler → -32603, loop survives). Remaining (gated above this loop): the
 subprocess spawner + OS sandbox (bubblewrap/sandbox-exec) + the signed
 spawnable-artifact format (§6 open decision) + installed-plugin migration.
-That Content-Length framing is Ave's own host↔plugin-child wire. External stdio MCP
-servers (MCP settings, imported configs, marketplace installs) are spoken to by
-`mcp-client.ts`'s `StdioTransport` with the spec's newline-delimited framing: one
-JSON-RPC message per line, no embedded newlines.
+The host↔plugin-child wire frames the way the MCP `2026-07-28` stdio binding does: one
+JSON-RPC message per line, no embedded newlines, so a plugin built on a stock MCP server
+library frames like the host-shipped reference runtime
+(`docs/design/plugin-hostapi-protocol.md` §2.3). External stdio MCP servers (MCP
+settings, imported configs, marketplace installs) are spoken to by `mcp-client.ts`'s
+`StdioTransport`, which applies the same framing with its own line parser because it is
+the external boundary.
 
 **`hooks-on-mcp-calls` (6) — category + per-request identity DONE.** Beyond the
 transitive category, the executor now threads `tool.mcpServerId`/`tool.pluginId`

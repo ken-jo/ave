@@ -65,15 +65,16 @@
  *    than the objection, because one plugin's admission depended on which
  *    thing each platform proves.
  *  - Anything at all, on a machine where the sandbox backend cannot
- *    initialize — for the five cases that need a live one. Where
+ *    initialize — for the cases that need a live one. Where
  *    `asrtCanInitialize()` answers false they return before measuring. That is
  *    not a hypothetical machine: the Linux runner that runs the whole suite on
  *    every pull request has no bubblewrap — nothing in `.github/` or `scripts/`
  *    installs it and ASRT vendors only seccomp and srt-win — so on that runner
- *    those five return without spawning anything. To see what that looks like,
+ *    those cases return without spawning anything. To see what that looks like,
  *    make `asrtCanInitialize()` return false and run this file: on darwin/arm64
- *    all 28 cases pass in milliseconds, with no skip mark and no warning, where
- *    the five take hundreds of milliseconds each when the backend is there.
+ *    all 36 cases that run there pass in about a second, with no skip mark and
+ *    no warning, where the 13 that need the backend take hundreds of
+ *    milliseconds each when it is there.
  *    `sandboxCasesRun()` below is what stops that from being invisible: an
  *    environment that is SUPPOSED to run them sets
  *    `AVE_REQUIRE_SANDBOX_CASES=1` and gets a failure instead of a silent
@@ -84,12 +85,13 @@
  *    The OTHER 23 cases need no sandbox: they drive `derivePluginChildEnvelope`
  *    directly, or they drive the spawn's refusal paths, which run ahead of the
  *    wrap. Measured with `asrtCanInitialize()` forced false on darwin/arm64:
- *    23 passed and 5 failed under `AVE_REQUIRE_SANDBOX_CASES=1`. So the
+ *    23 passed and 13 failed under `AVE_REQUIRE_SANDBOX_CASES=1`. So the
  *    envelope decisions this file pins keep being measured on a machine that
  *    cannot sandbox; what stops being measured there is the kernel half.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -101,6 +103,7 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   resolvePluginSocketDir,
   resolvePluginWorkerRunRoot,
@@ -116,6 +119,7 @@ import type { DelegatedWorkerConfinement } from "../host-api-dispatcher.js";
 import {
   createOutOfProcessPluginFactory,
   derivePluginChildEnvelope,
+  PluginSandboxGrantError,
 } from "../out-of-process-plugin.js";
 import {
   initializeAsrtSandbox,
@@ -127,6 +131,9 @@ import { isPluginChildConfined } from "../../../permissions/sandbox-capability.j
 import { connect } from "node:net";
 import { createServer } from "node:http";
 import { spawnConfinedPluginChild } from "../out-of-process-plugin.js";
+import type { ChildLink } from "../plugin-child-transport.js";
+import { flattenAgentPluginsManifest } from "../../public-contract.js";
+import { createGoldenHost } from "./host-protocol-golden-host.js";
 
 const PLUGIN_ID = "vega-helper";
 /**
@@ -134,6 +141,19 @@ const PLUGIN_ID = "vega-helper";
  * case drives the production table rather than a fixture that stands in for it.
  */
 const WIDENED_PLUGIN_ID = "local-indexer";
+const CANDIDATE_MANIFEST: PluginManifest = {
+  id: PLUGIN_ID,
+  name: "Vega Helper",
+  version: "1.0.0",
+  entry: "index.js",
+  description: "Exercises declared filesystem authority",
+  tools: [],
+  sandbox: {
+    read: [{ kind: "hostDirectory", segments: ["certs"], why: "Read the trust anchor" }],
+    write: [{ kind: "userChosenDirectory", configKey: "workspace", why: "Store project data" }],
+  },
+  configSchema: { properties: { workspace: { type: "string" } } },
+};
 const SECRET_TEXT = "the-host-secret-the-child-must-not-read";
 /** The bytes the host-owned trust-anchor file holds, so "the child read it" is checkable. */
 const CA_TEXT = "-----BEGIN CERTIFICATE-----\nthe-corporate-trust-anchor\n";
@@ -166,7 +186,7 @@ const ASRT_DEFAULT_TEMP_ROOT = "/tmp/claude";
  * It is ALSO how these cases pass without measuring anything, which is not a
  * theoretical concern: the Linux runner that runs the whole suite on every pull
  * request has no bubblewrap, so `asrtCanInitialize()` is false there and the
- * five cases that call this return immediately — no skip mark, no warning,
+ * cases that call this return immediately — no skip mark, no warning,
  * green. Every case that calls it is an `it.runIf` spawning a real child; the
  * file's other 23 cases do not call it and keep measuring there.
  *
@@ -761,6 +781,54 @@ afterEach(async () => {
  * "the user authorised this directory" rather than a copy of it.
  */
 describe("the host decides how far a plugin child reaches", () => {
+  it("lets a declared block replace a legacy table row, including an empty block", () => {
+    const fx = fixture!;
+    const envelope = derivePluginChildEnvelope({
+      pluginId: WIDENED_PLUGIN_ID,
+      sandbox: {},
+      pluginRoot: fx.pluginRoot,
+      pluginDataDir: fx.pluginDataDir,
+      configValue: () => fx.userRoot,
+    });
+    expect(envelope.read).toEqual(baseEnvelope(fx).read);
+    expect(envelope.write).toEqual(baseEnvelope(fx).write);
+  });
+
+  it("derives a new candidate from its declared authority and live approved root", () => {
+    const fx = fixture!;
+    const envelope = derivePluginChildEnvelope({
+      pluginId: CANDIDATE_MANIFEST.id,
+      sandbox: CANDIDATE_MANIFEST.sandbox,
+      pluginRoot: fx.pluginRoot,
+      pluginDataDir: fx.pluginDataDir,
+      configValue: (key) => key === "workspace" ? fx.userRoot : undefined,
+    });
+    expect(envelope.read).toEqual([...baseEnvelope(fx).read, join(fx.aveHome, "certs"), fx.userRoot]);
+    expect(envelope.write).toEqual([...baseEnvelope(fx).write, fx.userRoot]);
+    const rejected = () => derivePluginChildEnvelope({
+      pluginId: CANDIDATE_MANIFEST.id,
+      sandbox: CANDIDATE_MANIFEST.sandbox,
+      pluginRoot: fx.pluginRoot,
+      pluginDataDir: fx.pluginDataDir,
+      configValue: (key) => key === "workspace" ? fx.userRootSibling : undefined,
+    });
+    expect(rejected).toThrow(PluginSandboxGrantError);
+    expect(rejected).toThrow(/no workspace root the user approved covers it/);
+  });
+
+  it("keeps a declared read-only chosen directory out of the write jail", () => {
+    const fx = fixture!;
+    const envelope = derivePluginChildEnvelope({
+      pluginId: CANDIDATE_MANIFEST.id,
+      sandbox: { read: [{ kind: "userChosenDirectory", configKey: "workspace", why: "Read project data" }] },
+      pluginRoot: fx.pluginRoot,
+      pluginDataDir: fx.pluginDataDir,
+      configValue: (key) => key === "workspace" ? fx.userRoot : undefined,
+    });
+    expect(envelope.read).toContain(fx.userRoot);
+    expect(envelope.write).not.toContain(fx.userRoot);
+  });
+
   /** `PLUGIN_ID` has no row in the table, so it gets the unwidened envelope. */
   it("gives a plugin with no host decision exactly its own two directories", () => {
     const fx = fixture!;
@@ -962,7 +1030,7 @@ describe("the host decides how far a plugin child reaches", () => {
           pluginDataDir: fx.pluginDataDir,
           configValue: (key) => (key === "workspace" ? spelling : undefined),
         }),
-      ).toThrow(/the host's own table grants a plugin READ/);
+      ).toThrow(/host-owned catalog directory/);
     }
   });
 
@@ -1285,8 +1353,8 @@ describe("the confined child, against the real sandbox", () => {
       // box reached it, so the channel ran between this app's sandbox and
       // whatever else used the same runtime. It is now `~/.ave/sandbox/tmp`,
       // and ASRT's default write paths are on the deny floor — measured, with
-      // `~/.npm/_logs` present on the machine and refused `EPERM` rather than
-      // missing. What remains is narrower and still real: the root is one
+      // `~/.npm/_logs` present on the machine and refused by the OS rather
+      // than missing. What remains is narrower and still real: the root is one
       // directory for ALL of this app's confined children, so the two below
       // still meet in it.
       // Written against `tmpdir()` rather than a literal so it asks the same
@@ -1339,21 +1407,21 @@ describe("the confined child, against the real sandbox", () => {
       //
       // BOTH get an existence control, because a write to a missing directory
       // also fails — `ENOENT` — and a case that accepted any failure would go
-      // green on a machine that simply never made the directory. Only `EPERM`
-      // beside a directory that IS there says "refused". The two controls
-      // differ in kind: the temp root the host CREATES (see
-      // `ASRT_DEFAULT_TEMP_ROOT`), so the measurement is taken everywhere; the
-      // npm cache it cannot create without inventing state that is not the
-      // machine's, so that one is measured only where it is already present.
+      // green on a machine that simply never made the directory. `EPERM` on
+      // macOS or `EROFS` on Linux beside a directory that IS there says
+      // "refused". The host creates `ASRT_DEFAULT_TEMP_ROOT`, so that check
+      // always runs. The host does not create the npm cache, so that check runs
+      // only if it is already present.
       expect(existsSync(ASRT_DEFAULT_TEMP_ROOT)).toBe(true);
       expect(report.writeAsrtDefaultTemp.ok, JSON.stringify(report.writeAsrtDefaultTemp)).toBe(false);
-      expect(report.writeAsrtDefaultTemp.code).toBe("EPERM");
+      const deniedWriteCode = process.platform === "linux" ? "EROFS" : "EPERM";
+      expect(report.writeAsrtDefaultTemp.code).toBe(deniedWriteCode);
       if (report.asrtDefaultNpmLogsExists.value === "yes") {
         expect(
           report.writeAsrtDefaultNpmLogs.ok,
           JSON.stringify(report.writeAsrtDefaultNpmLogs),
         ).toBe(false);
-        expect(report.writeAsrtDefaultNpmLogs.code).toBe("EPERM");
+        expect(report.writeAsrtDefaultNpmLogs.code).toBe(deniedWriteCode);
       }
 
       // Nothing the host DID NOT widen this plugin with is reachable — the
@@ -1436,7 +1504,31 @@ describe("the confined child, against the real sandbox", () => {
  */
 describe("a child the host widened reaches exactly what the host widened it with", () => {
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
-    "opens the corporate CA and the user's chosen root, and nothing beside them",
+    "confines a new candidate to its declared trust anchor and approved directory",
+    async () => {
+      if (!(await sandboxCasesRun())) return;
+      const fx = fixture!;
+      const envelope = derivePluginChildEnvelope({
+        pluginId: CANDIDATE_MANIFEST.id,
+        sandbox: CANDIDATE_MANIFEST.sandbox,
+        pluginRoot: fx.pluginRoot,
+        pluginDataDir: fx.pluginDataDir,
+        configValue: (key) => key === "workspace" ? fx.userRoot : undefined,
+      });
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+      const report = await runProbe(fx, envelope);
+      expect(report.readCa).toMatchObject({ ok: true, value: CA_TEXT });
+      expect(report.writeUserRoot.ok).toBe(true);
+      expect(report.writeCa.ok).toBe(false);
+      expect(report.writeUserRootSibling.ok).toBe(false);
+      expect(report.readSecret.ok).toBe(false);
+      expect(report.writeOutside.ok).toBe(false);
+    },
+    60_000,
+  );
+
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "keeps an old sandbox-less indexer bundle's table grants without opening adjacent paths",
     async () => {
       if (!(await sandboxCasesRun())) return;
       const fx = fixture!;
@@ -1596,6 +1688,235 @@ export const createPlugin = async (context) => ({
 });
 
 /**
+ * The host protocol's process rules, and one golden conversation, against a
+ * REAL confined child (plugin-hostapi-protocol.md §2.5, §9.4).
+ *
+ * `host-protocol-golden.test.ts` pins the frames over paired streams, which
+ * proves nothing about the process: that the child leaves when the host does,
+ * that nothing but protocol reaches its stdout, and that the bundle which ships
+ * speaks the same conversation the in-memory runtime recorded. Those three
+ * need the bundled entry running in its sandbox.
+ */
+describe("the host protocol, spoken by a real confined child", () => {
+  const MEETING_GOLDEN = fileURLToPath(
+    new URL("./fixtures/host-protocol/1/plugins/meeting/", import.meta.url),
+  );
+
+  /** The plugin's own tool results in a recorded transcript, by tool name. */
+  function recordedToolResults(transcript: string): Record<string, unknown> {
+    const calls = new Map<unknown, string>();
+    const results: Record<string, unknown> = {};
+    for (const line of transcript.trim().split("\n")) {
+      const { from, frame } = JSON.parse(line) as {
+        from: string;
+        frame: { id?: unknown; method?: string; params?: { name?: string }; result?: { _meta?: Record<string, unknown> } };
+      };
+      if (from === "host" && frame.method === "tools/call") calls.set(frame.id, frame.params!.name!);
+      else if (from === "child" && calls.has(frame.id) && frame.result) {
+        results[calls.get(frame.id)!] = frame.result._meta?.["ave/rawResult"];
+      }
+    }
+    return results;
+  }
+
+  function contextFor(fx: Fixture, plugin: InstalledPlugin, hostApi: PluginHostApi): PluginRuntimeContext {
+    return {
+      pluginId: plugin.pluginId,
+      pluginSocketDir: resolvePluginSocketDir(plugin.pluginDataDir),
+      pluginRoot: plugin.pluginRoot,
+      hostRoot: fx.hostRoot,
+      pluginDataDir: plugin.pluginDataDir,
+      userHome: homedir(),
+      aveHome: aveHome(),
+      config: {},
+      log: () => undefined,
+      hostApi,
+    };
+  }
+
+  /** A one-tool plugin whose code is `body`, installed where a real one lives. */
+  function installOneToolPlugin(fx: Fixture, pluginId: string, body: string): {
+    readonly plugin: InstalledPlugin;
+    readonly entryPath: string;
+    readonly manifest: PluginManifest;
+  } {
+    const plugin = installPlugin(fx, pluginId);
+    const entryPath = join(plugin.pluginRoot, "entry.mjs");
+    writeFileSync(entryPath, body, "utf-8");
+    return {
+      plugin,
+      entryPath,
+      manifest: {
+        id: pluginId,
+        name: pluginId,
+        version: "1.0.0",
+        entry: "entry.mjs",
+        description: "a child the protocol's process rules are measured on",
+        tools: [{ name: "speak", description: "speak", inputSchema: { type: "object", properties: {} } }],
+      },
+    };
+  }
+
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "runs the meeting golden fixture and answers exactly as its recorded transcript does",
+    async () => {
+      if (!(await sandboxCasesRun())) return;
+      const fx = fixture!;
+      const plugin = installPlugin(fx, "meeting");
+      const childOutDir = childBundleDir(CHILD_BUNDLE_CACHE);
+      const childEntryPath = await buildChildEntry(CHILD_BUNDLE_CACHE);
+      // Copied into the plugin's own root, which is where an installed entry
+      // lives and what the child's read grant covers.
+      const entryPath = join(plugin.pluginRoot, "entry.mjs");
+      copyFileSync(join(MEETING_GOLDEN, "entry.mjs"), entryPath);
+      const manifest = flattenAgentPluginsManifest(
+        JSON.parse(readFileSync(join(MEETING_GOLDEN, "plugin.json"), "utf-8")),
+      );
+
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+      const host = createGoldenHost();
+      const factory = createOutOfProcessPluginFactory({ manifest, entryPath, childEntryPath });
+      const instance = await factory(contextFor(fx, plugin, host.api));
+      try {
+        const exercised = await instance.handlers.exercise_host!();
+        // Pushed down the same pipe the next call travels, so the child has
+        // delivered every one of them before it runs `report_host`.
+        host.fireAll();
+        const reported = await instance.handlers.report_host!();
+        expect({ exercise_host: exercised, report_host: reported }).toEqual(
+          recordedToolResults(readFileSync(join(MEETING_GOLDEN, "expected.jsonl"), "utf-8")),
+        );
+      } finally {
+        await instance.stop?.();
+        rmSync(childOutDir, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
+
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "exits within five seconds of its stdin closing, with no request from the host",
+    async () => {
+      if (!(await sandboxCasesRun())) return;
+      const fx = fixture!;
+      const childOutDir = childBundleDir(CHILD_BUNDLE_CACHE);
+      const childEntryPath = await buildChildEntry(CHILD_BUNDLE_CACHE);
+      const { plugin, entryPath, manifest } = installOneToolPlugin(
+        fx,
+        "stdinprobe",
+        // A timer, as a plugin with a watcher or a poll loop holds one: without
+        // it the event loop drains when stdin ends and the child leaves whether
+        // or not it implements the rule, which would make this case prove nothing.
+        `export const createPlugin = async () => {
+  setInterval(() => undefined, 1_000);
+  return { handlers: { speak: async () => "spoke" } };
+};
+`,
+      );
+
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+      let link: ChildLink | undefined;
+      const factory = createOutOfProcessPluginFactory({
+        manifest,
+        entryPath,
+        childEntryPath,
+        connect: async (spec) => {
+          const child = await spawnConfinedPluginChild(spec);
+          link = child.link;
+          return child;
+        },
+      });
+      const instance = await factory(contextFor(fx, plugin, createGoldenHost().api));
+      try {
+        await expect(instance.handlers.speak!()).resolves.toBe("spoke");
+        const gone = new Promise<string>((resolve) => link!.onGone(resolve));
+        // The host dying looks like this from the child: its stdin ends. No
+        // `stop`, no signal — a host that crashed sends neither.
+        link!.output.end();
+        const outcome = await Promise.race([
+          gone.then(() => "exited"),
+          new Promise<string>((resolve) => setTimeout(() => resolve("still running"), 5_000)),
+        ]);
+        expect(outcome).toBe("exited");
+      } finally {
+        await instance.stop?.();
+        rmSync(childOutDir, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
+
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "puts nothing on stdout but protocol frames, whatever the plugin prints",
+    async () => {
+      if (!(await sandboxCasesRun())) return;
+      const fx = fixture!;
+      const childOutDir = childBundleDir(CHILD_BUNDLE_CACHE);
+      const childEntryPath = await buildChildEntry(CHILD_BUNDLE_CACHE);
+      // Both ways a plugin reaches stdout, at import, in the factory and in a
+      // tool: a stray line anywhere joins the next frame's line and takes that
+      // frame with it.
+      const { plugin, entryPath, manifest } = installOneToolPlugin(
+        fx,
+        "stdoutprobe",
+        `console.log("printed at import");
+process.stdout.write("written at import\\n");
+export const createPlugin = async () => {
+  console.log("printed in the factory");
+  return {
+    handlers: {
+      speak: async () => {
+        console.log("printed in a tool");
+        process.stdout.write("written in a tool, with no newline");
+        return "spoke";
+      },
+    },
+  };
+};
+`,
+      );
+
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+      let stdout = "";
+      const factory = createOutOfProcessPluginFactory({
+        manifest,
+        entryPath,
+        childEntryPath,
+        connect: async (spec) => {
+          const child = await spawnConfinedPluginChild(spec);
+          child.link.input.on("data", (chunk: Buffer) => {
+            stdout += chunk.toString("utf-8");
+          });
+          return child;
+        },
+      });
+      const instance = await factory(contextFor(fx, plugin, createGoldenHost().api));
+      try {
+        // Bounded: a stray line that swallowed the reply would otherwise hang
+        // the call until the case times out, and say nothing about why.
+        const spoke = await Promise.race([
+          instance.handlers.speak!(),
+          new Promise((resolve) => setTimeout(() => resolve("no reply: a frame was lost"), 10_000)),
+        ]);
+        expect(spoke).toBe("spoke");
+      } finally {
+        await instance.stop?.();
+        rmSync(childOutDir, { recursive: true, force: true });
+      }
+      const lines = stdout.split("\n");
+      // The stream ends on a newline, so the last element is the empty tail.
+      expect(lines.at(-1)).toBe("");
+      const frames = lines.slice(0, -1);
+      expect(frames.length).toBeGreaterThan(0);
+      for (const line of frames) {
+        expect(JSON.parse(line), line).toMatchObject({ jsonrpc: "2.0" });
+      }
+    },
+    120_000,
+  );
+});
+
+/**
  * The members §3.2 calls lossy or stateful, exercised by a REAL confined child.
  *
  * `host-api-service-members.test.ts` drives the same members across a real
@@ -1668,6 +1989,19 @@ export const createPlugin = async (context) => {
           fields: Object.keys(worker).sort(),
         };
       },
+      probe_worker_chosen: async () => {
+        const worker = await api.spawnWorker({
+          workerId: "chosen",
+          command: "/usr/bin/true",
+          allowWritePaths: [api.config.get("workspace")],
+        });
+        return { pid: worker.pid };
+      },
+      probe_worker_sibling: async () => await attempt(() => api.spawnWorker({
+        workerId: "sibling",
+        command: "/usr/bin/true",
+        allowWritePaths: [${JSON.stringify(fx.userRootSibling)}],
+      })),
       probe_config: async () => api.config.get("watched") ?? null,
     },
   };
@@ -1687,7 +2021,7 @@ export const createPlugin = async (context) => {
         onStderr: () => undefined,
         onExit: () => undefined,
       }));
-      const configValues = new Map<string, unknown>([["watched", "before"]]);
+      const configValues = new Map<string, unknown>([["watched", "before"], ["workspace", fx.userRoot]]);
       const configListeners = new Set<(value: unknown) => void>();
       const hostApi = {
         // The four-tier gate, standing in for its verdict: one key granted, one
@@ -1724,13 +2058,16 @@ export const createPlugin = async (context) => {
           version: "0.10.14",
           entry: "plugin.mjs",
           description: "the lossy members, confined",
-          configSchema: { type: "object", properties: { watched: { type: "string" } } },
+          configSchema: { type: "object", properties: { watched: { type: "string" }, workspace: { type: "string" } } },
+          sandbox: CANDIDATE_MANIFEST.sandbox,
           tools: [
             "probe_credentials",
             "probe_lease",
             "probe_fetch",
             "probe_worker_escape",
             "probe_worker_allowed",
+            "probe_worker_chosen",
+            "probe_worker_sibling",
             "probe_config",
           ].map((name) => ({
             name,
@@ -1749,7 +2086,7 @@ export const createPlugin = async (context) => {
         pluginDataDir: fx.pluginDataDir,
         userHome: homedir(),
         aveHome: aveHome(),
-        config: { watched: "before" },
+        config: { watched: "before", workspace: fx.userRoot },
         log: () => undefined,
         hostApi,
       } as PluginRuntimeContext);
@@ -1826,6 +2163,17 @@ export const createPlugin = async (context) => {
           "socketPath",
           "stop",
         ]);
+
+        const chosen = (await instance.handlers.probe_worker_chosen!()) as { pid: number };
+        expect(chosen.pid).toBe(31337);
+        expect(spawnWorker).toHaveBeenCalledTimes(2);
+        expect(spawnWorker).toHaveBeenLastCalledWith(expect.objectContaining({
+          allowWritePaths: [fx.userRoot],
+        }));
+        const sibling = (await instance.handlers.probe_worker_sibling!()) as { ok: boolean; message: string };
+        expect(sibling.ok).toBe(false);
+        expect(sibling.message).toMatch(/outside the plugin's own confinement/);
+        expect(spawnWorker).toHaveBeenCalledTimes(2);
 
         // ── config.get, re-pushed ──────────────────────────────────────────
         await expect(instance.handlers.probe_config!()).resolves.toBe("before");

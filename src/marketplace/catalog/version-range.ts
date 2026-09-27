@@ -9,10 +9,7 @@
  * Precedence is the host's `compareSemver`, so a pre-release sorts below its
  * release exactly as it does everywhere else.
  */
-import { compareSemver } from "../../shared/semver-compare.js";
-
-const SEMVER_RE =
-  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/u;
+import { compareSemver, isSemver } from "../../shared/semver-compare.js";
 
 type Operator = ">=" | ">" | "<=" | "<" | "=";
 
@@ -22,10 +19,6 @@ interface Comparator {
 }
 
 export type VersionRange = ReadonlyArray<ReadonlyArray<Comparator>>;
-
-function isSemver(value: string): boolean {
-  return value.length <= 128 && SEMVER_RE.test(value);
-}
 
 /** Parse a range, or throw with the reason. `*` is an alternative with no comparators. */
 export function parseVersionRange(text: string): VersionRange {

@@ -8,6 +8,8 @@
  *     (reinstall-fixable) plus the underlying field detail, and
  *   - a too-new `requires.minAppVersion` → `incompatible-app-version`
  *     (NOT reinstall-fixable — a reinstall re-fetches the same too-new package).
+ *   - a `requires.hostProtocol` this app does not serve → `incompatible-host-protocol`
+ *     (NOT reinstall-fixable, and refused before the plugin's code runs).
  *   - a version its bound source revoked → `plugin-revoked` with that source's
  *     reason (design §10.4); other plugins still load.
  */
@@ -37,7 +39,7 @@ describe("PluginRuntime Doctor load-failure classification", () => {
       id: "p-prev6",
       tools: ["p_prev6_ping"],
       entrySource: makeTestPluginEntrySource({ p_prev6_ping: JSON.stringify("hi") }),
-      // Unknown top-level property rejected by the current SDK schema — this is
+      // Unknown top-level property rejected by the current host schema — this is
       // the shape a manifest shipped before #885 Phase R now fails validation on.
       manifest: { startupTools: [] },
     });
@@ -109,6 +111,38 @@ describe("PluginRuntime Doctor load-failure classification", () => {
     const card = runtime.listPluginCards().find((candidate) => candidate.id === "p-appver");
     expect(card?.loadStatus).toBe("failed");
     expect(card?.installFailureKind).toBe("incompatible-app-version");
+  });
+
+  it("refuses a host protocol version this app does not serve, before the plugin's code runs", async () => {
+    fixture = await makeTestPluginRuntimeFixture();
+    const refused = await writeTestPlugin(fixture, {
+      id: "p-protocol",
+      tools: ["p_protocol_ping"],
+      // Importing this entry throws, so a gate that ran after the import would
+      // report a load crash instead of the refusal.
+      entrySource: "throw new Error('the entry of a refused plugin was imported');\n",
+      manifest: { requires: { capabilities: [], hostProtocol: "2" } },
+    });
+    const served = await writeTestPlugin(fixture, {
+      id: "p-protocol-served",
+      tools: ["p_protocol_served_ping"],
+      entrySource: makeTestPluginEntrySource({ p_protocol_served_ping: JSON.stringify("hi") }),
+      manifest: { requires: { capabilities: [], hostProtocol: "1" } },
+    });
+    await writeTestPluginRegistry(fixture, [
+      { id: "p-protocol", manifestPath: refused.manifestPath, enabled: true },
+      { id: "p-protocol-served", manifestPath: served.manifestPath, enabled: true },
+    ]);
+
+    const runtime = makeTestPluginRuntime(fixture);
+    await runtime.startAll();
+
+    const card = runtime.listPluginCards().find((candidate) => candidate.id === "p-protocol");
+    expect(card?.loadStatus).toBe("failed");
+    expect(card?.installFailureKind).toBe("incompatible-host-protocol");
+    expect(card?.installFailureMessage).toMatch(/speaks host protocol 2; this app serves 1/);
+    const kept = runtime.listPluginCards().find((candidate) => candidate.id === "p-protocol-served");
+    expect(kept?.loadStatus).not.toBe("failed");
   });
 
   it("refuses to load a version its bound source revoked, with the source's reason, and loads the rest", async () => {

@@ -26,7 +26,7 @@
  *
  * WHAT STAYS AT THE CALL SITES, and why: audit-log lines, counter increments,
  * and the shape of the returned value. `getSecret` answers with `string | null`
- * for one named key; `resolveApiKey` answers with the SDK's discriminated union
+ * for one named key; `resolveApiKey` answers with the public contract's discriminated union
  * plus a bearer/release lifetime. Those are wrappers around this decision, not
  * part of it. The `via` / `tier` / `reason` discriminators exist so each caller
  * can render its own audit vocabulary from ONE verdict — see `grantAuditSource`

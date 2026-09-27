@@ -1,5 +1,9 @@
 # Plugin Contract v6 — Final Consistency Report (#885 initial design vs achieved)
 
+> Historical report of the 0.5.x migration. Its SDK package references describe
+> that period; current authoring uses [the app release tag contract](../design/multi-source-git-marketplace.md#56-plugin-contract-for-authors)
+> and `requires.minAppVersion`.
+
 Status: Final report, written 2026-07-10 after host 0.5.1 + the 0.5.2 host-side contract-reduction wave. Korean summary at the end (한국어 요약).
 
 > 2026-07-23 amendment: composite domain tools add the signed, Tool-local

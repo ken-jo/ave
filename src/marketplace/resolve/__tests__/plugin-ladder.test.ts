@@ -50,10 +50,10 @@ function pluginZip(name: string, version: string, auth: PluginAuthority = author
 }
 
 function descriptor(name: string, version: string, artifact: Record<string, unknown>, auth: PluginAuthority = authority()): string {
-  return `${JSON.stringify({ schemaVersion: 1, kind: "plugin", name, version, minAppVersion: "0.12.0", payload: { authority: auth, artifact } })}\n`;
+  return `${JSON.stringify({ schemaVersion: 2, kind: "plugin", name, version, minAppVersion: "0.12.0", payload: { authority: auth, artifact } })}\n`;
 }
 
-const marketIndex = (packages: unknown[]) => `${JSON.stringify({ schemaVersion: 1, name: "acme", displayName: "Acme", packages })}\n`;
+const marketIndex = (packages: unknown[]) => `${JSON.stringify({ schemaVersion: 2, name: "acme", displayName: "Acme", packages })}\n`;
 
 describe("plugin artifact ladder (design §6.2)", () => {
   let serverRoot: string;
@@ -157,7 +157,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
   function market(repo: FixtureRepo, artifact: Record<string, unknown>, extra: Record<string, string> = {}, auth?: PluginAuthority): string {
     return repo.commit(
       {
-        "marketplace.json": marketIndex([{ kind: "plugin", name: "alpha", path: "plugins/alpha" }]),
+        "marketplace.2.json": marketIndex([{ kind: "plugin", name: "alpha", path: "plugins/alpha" }]),
         "plugins/alpha/ave-package.json": descriptor("alpha", "1.0.0", artifact, auth),
         ...extra,
       },
@@ -376,7 +376,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
     );
     repo.commit(
       {
-        "marketplace.json": marketIndex([
+        "marketplace.2.json": marketIndex([
           {
             kind: "plugin",
             name: "alpha",

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { hostGitExecutable } from "../../__tests__/fixtures/git-runner.js";
+import { gitFixtureEnv } from "../../../__tests__/support/git-fixture-env.mjs";
 import {
   parseNullConfigList,
   readCopiedCredentialConfig,
@@ -93,7 +94,9 @@ describe("generated global config", () => {
     expect(text).not.toContain("sslVerify");
     // git reads back exactly what was copied, including the quoted value.
     const { execFileSync } = await import("node:child_process");
-    const readBack = execFileSync(git.path, ["config", "--file", output, "--null", "--list"], { encoding: "utf8" });
+    const readBack = execFileSync(git.path, ["config", "--file", output, "--null", "--list"], {
+      encoding: "utf8", env: gitFixtureEnv(dir),
+    });
     expect(selectCopiedEntries(parseNullConfigList(readBack))).toEqual(entries);
   });
 
@@ -119,7 +122,9 @@ describe("generated global config", () => {
     await writeGeneratedGlobalConfig(output, entries);
     const git = await hostGitExecutable();
     const { execFileSync } = await import("node:child_process");
-    const readBack = execFileSync(git.path, ["config", "--file", output, "--null", "--list"], { encoding: "utf8" });
+    const readBack = execFileSync(git.path, ["config", "--file", output, "--null", "--list"], {
+      encoding: "utf8", env: gitFixtureEnv(dir),
+    });
     expect(parseNullConfigList(readBack)).toEqual(entries);
   });
 });

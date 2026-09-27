@@ -1,0 +1,23 @@
+{
+  "request": {
+    "id": "hand-built",
+    "jsonrpc": "2.0",
+    "method": "ave/host/getSecret",
+    "params": {
+      "key": "service.token"
+    }
+  },
+  "response": {
+    "error": {
+      "code": -32000,
+      "data": {
+        "code": "plugin-inactive",
+        "name": "HostApiBoundaryError"
+      },
+      "message": "[plugin:golden-invoker] hostApi.getSecret: plugin instance is no longer active"
+    },
+    "id": "hand-built",
+    "jsonrpc": "2.0"
+  },
+  "trigger": "a request that arrives after the host stopped the incarnation"
+}

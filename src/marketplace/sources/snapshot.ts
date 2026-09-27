@@ -5,10 +5,8 @@
  * The snapshot is everything the catalog needs without touching git again:
  * the marketplace identity, each package with its versions, the source's own
  * revocations and the per-package diagnostics. What is read:
- *   - marketplace sources: `marketplace.json`, or, without it, the
- *     conventional layout (`<kind dir>/<name>/ave-package.json`, one level
- *     deep); a package the index lists without `versions` is read from its
- *     descriptor at this commit;
+ *   - marketplace sources: `marketplace.2.json`; a package the index lists
+ *     without `versions` is read from its descriptor at this commit;
  *   - direct sources: the one package at the subdir (or root), from its
  *     descriptor or synthesized from its own file (direct-package.ts);
  *   - every source: `policy/revocations.json` when present.
@@ -16,7 +14,7 @@
  * index or revocations file rejects the whole commit, so the caller keeps its
  * previous pin.
  */
-import { assertRepoPath, type BareRepo } from "../git/repo.js";
+import type { BareRepo } from "../git/repo.js";
 import type { GitRemote } from "../git/run-git.js";
 import type {
   IndexVersion,
@@ -27,7 +25,8 @@ import type {
   PluginAuthority,
   Revocation,
 } from "../catalog/types.js";
-import { validateDescriptorText, validateIndexText, validateRevocationsText, type CatalogDiagnostic } from "../catalog/validate.js";
+import type { ConditionalRevocation } from "../catalog/types.js";
+import { validateConditionalRevocationsText, validateDescriptorText, validateIndexText, validateRevocationsText, type CatalogDiagnostic } from "../catalog/validate.js";
 import { isMarketplaceError, type MarketplaceErrorCode } from "../errors.js";
 import { DIRECT_FILES, readDirectPackage } from "./direct-package.js";
 import type { ResolvedSource } from "./registry.js";
@@ -48,6 +47,9 @@ export interface CatalogPackage {
 }
 
 export interface SourceSnapshot {
+  /** Absent on snapshots written before conditional policies. */
+  formatVersion?: 1 | 2;
+  conditionalRevocations?: ConditionalRevocation[];
   sourceId: string;
   commit: string;
   fetchedAt: string;
@@ -67,22 +69,9 @@ const SNAPSHOT_FILE_LIMITS = {
   revocations: 1024 * 1024,
 } as const;
 
-const INDEX_PATH = "marketplace.json";
+const INDEX_PATH = "marketplace.2.json";
 const REVOCATIONS_PATH = "policy/revocations.json";
 const DESCRIPTOR_NAME = "ave-package.json";
-
-/** Conventional layout directories and the kind each one holds (§3.3). */
-const CONVENTIONAL_DIRS: ReadonlyArray<readonly [string, PackageKind]> = [
-  ["plugins", "plugin"],
-  ["mcp", "mcp"],
-  ["skills", "skill"],
-  ["agents", "agent"],
-  ["themes", "theme"],
-  ["fonts", "font"],
-  ["languages", "language"],
-  ["providers", "provider"],
-  ["messaging", "messaging-connection"],
-];
 
 class Rejection extends Error {
   constructor(
@@ -106,6 +95,7 @@ function packageFromDescriptor(descriptor: PackageDescriptor, path: string, comm
     version: descriptor.version,
     commit,
     minAppVersion: descriptor.minAppVersion,
+    ...(descriptor.hostProtocol ? { hostProtocol: descriptor.hostProtocol } : {}),
     ...(descriptor.platforms ? { platforms: descriptor.platforms } : {}),
     ...(plugin ? { authority: plugin.authority, artifact: plugin.artifact } : {}),
     publishedAt,
@@ -227,41 +217,6 @@ export class SnapshotBuilder {
     };
   }
 
-  private async fromConventionalLayout(diagnostics: CatalogDiagnostic[]): Promise<CatalogPackage[]> {
-    const wanted: Array<{ path: string; kind: PackageKind; subject: string }> = [];
-    for (const [dir, kind] of CONVENTIONAL_DIRS) {
-      for (const entry of await this.repo.lsTree(this.commit, dir, true)) {
-        const segments = entry.path.split("/");
-        if (segments.length === 3 && segments[2] === DESCRIPTOR_NAME && entry.type === "blob") {
-          const path = `${dir}/${segments[1]}`;
-          try {
-            assertRepoPath(path);
-          } catch (error) {
-            // One unusable directory name drops that package, not the source.
-            diagnostics.push({ subject: path, message: (error as Error).message });
-            continue;
-          }
-          wanted.push({ path, kind, subject: path });
-        }
-      }
-    }
-    if (wanted.length === 0) {
-      throw new Rejection("SOURCE_NOT_A_MARKETPLACE", "no marketplace.json and no package descriptor in the conventional directories");
-    }
-    const read = await this.descriptors(wanted, diagnostics);
-    const publishedAt = await this.repo.commitTime(this.commit);
-    const kindOf = new Map(wanted.map((item) => [item.path, item.kind]));
-    const packages: CatalogPackage[] = [];
-    for (const { path, descriptor } of read) {
-      if (descriptor.kind !== kindOf.get(path)) {
-        diagnostics.push({ subject: path, message: `declares kind ${descriptor.kind} inside ${path.split("/")[0]}/` });
-        continue;
-      }
-      packages.push(packageFromDescriptor(descriptor, path, this.commit, publishedAt));
-    }
-    return packages;
-  }
-
   /** The one package at the source's path (design §8.1): a descriptor, or one synthesized from the package's own file. */
   private async fromDirect(): Promise<CatalogPackage[]> {
     const path = this.source.subdir ?? "";
@@ -298,13 +253,20 @@ export class SnapshotBuilder {
         const only = packages[0]!;
         identity = { name: this.source.id, displayName: this.source.label ?? only.displayName ?? only.name };
       } else {
-        packages = await this.fromConventionalLayout(diagnostics);
-        identity = { name: this.source.id, displayName: this.source.label ?? this.source.id };
+        throw new Rejection("SOURCE_NOT_A_MARKETPLACE", `no ${INDEX_PATH}`);
       }
       const revocations = await this.revocations();
+      const conditionalPath = "policy/revocations-by-app.json";
+      // ensureBlobs ignores absent paths; the sibling is never required.
+      await this.ensure([conditionalPath]);
+      const conditionalText = await this.read(conditionalPath, SNAPSHOT_FILE_LIMITS.revocations);
+      const conditional = conditionalText === null ? null : validateConditionalRevocationsText(conditionalText);
+      if (conditional && !conditional.ok) throw new Rejection("SOURCE_INDEX_INVALID", conditional.error);
       return {
         ok: true,
         snapshot: {
+          formatVersion: 2,
+          conditionalRevocations: conditional?.value.revocations ?? [],
           sourceId: this.source.id,
           commit: this.commit,
           fetchedAt,

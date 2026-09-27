@@ -1,32 +1,25 @@
 /**
- * The FORWARD direction of the boundary: the six host→plugin entry points
- * (`docs/blueprints/plugin-process-isolation.md` §2.1).
+ * The FORWARD direction of the boundary: what the host calls on a plugin
+ * instance (`docs/blueprints/plugin-process-isolation.md` §2.1).
  *
- * `host-api-wire.ts` is the reverse channel — the 38 members a plugin calls on
+ * `host-api-wire.ts` is the reverse channel — the members a plugin calls on
  * the host. This is the other half: what the HOST calls on the plugin. They are
  * separate contracts with separate failure modes, which is why they are
  * separate modules and not one file called "the wire".
  *
- * Only FIVE of the six travel as methods declared here. The sixth —
- * `instance.handlers[tool](payload)` — travels as MCP `tools/call`, because the
- * child already serves a `PluginMcpServer` and inventing a second verb for the
- * one entry point that already has a protocol would mean two ways to invoke a
- * tool that could disagree about payloads, errors, and results.
+ * Five travel as methods declared here. The rest travel as MCP, because the
+ * child already serves a `PluginMcpServer` and a second verb for an entry point
+ * that already has a protocol would be two ways to reach it that could
+ * disagree: `instance.handlers[tool](payload)` is `tools/call`, and
+ * `instance.readUiResource(uri)` is `resources/read`, which is how a plugin in
+ * any language serves its card with a stock MCP server library.
  *
  * ELECTRON-FREE BY CONSTRUCTION, for the same reason `host-api-wire.ts` is: the
  * child imports this, and the child is a plain Node process.
  */
 import type { PluginManifest } from "../types.js";
 import type { PluginChildContext } from "./plugin-child-runtime.js";
-
-/**
- * Wire format revision for the forward direction.
- *
- * Versioned INDEPENDENTLY of {@link HOST_API_WIRE_VERSION}: the two contracts
- * change for different reasons — a new hostApi member is not a new lifecycle
- * entry point — and a shared number would force a lockstep neither side needs.
- */
-export const PLUGIN_INSTANCE_WIRE_VERSION = 1;
+import type { HostProtocolVersion } from "./host-api-wire.js";
 
 /**
  * The JSON-RPC methods the child answers besides MCP's own.
@@ -41,7 +34,13 @@ export const PLUGIN_INSTANCE_METHODS = {
   start: "ave/instance/start",
   onPublished: "ave/instance/onPublished",
   stop: "ave/instance/stop",
-  readUiResource: "ave/instance/readUiResource",
+  /**
+   * Run one handler the plugin registered with `hostApi.onShutdown`, and
+   * answer when it has settled. A request rather than a notification because
+   * the host AWAITS a shutdown handler, as it does in-process — and it bounds
+   * the wait, which in-process it cannot enforce.
+   */
+  shutdown: "ave/instance/shutdown",
 } as const;
 
 /** One of the five. */
@@ -63,7 +62,23 @@ export function isPluginInstanceMethod(method: string): method is PluginInstance
  * host never checked.
  */
 export interface PluginConstructParams {
-  readonly wire: typeof PLUGIN_INSTANCE_WIRE_VERSION;
+  /**
+   * The host protocol version this connection speaks (§3.2). One version for
+   * both directions: the lifecycle methods and the reverse channel release
+   * together, so they are versioned together. The child refuses a version its
+   * runtime does not serve, which is what makes a stale bundle fail loudly
+   * instead of answering a version it does not speak.
+   */
+  readonly hostProtocol: {
+    readonly version: HostProtocolVersion;
+    /**
+     * Every `ave/host/*` method this host serves on this connection (§3.2),
+     * derived from the dispatcher's BOUND table, so a member this host build
+     * lacks is not advertised. Method names, not feature flags, so the list
+     * cannot drift from what is actually served.
+     */
+    readonly capabilities: readonly string[];
+  };
   readonly manifest: PluginManifest;
   readonly context: PluginChildContext;
   /** Absolute path of the plugin entry module the child imports. */
@@ -82,24 +97,25 @@ export interface PluginConstructParams {
 
 /** What `construct` answers. */
 export interface PluginConstructResult {
-  readonly wire: typeof PLUGIN_INSTANCE_WIRE_VERSION;
   /** The subset of `declaredToolNames` the instance exposes a handler for. */
   readonly implementedToolNames: readonly string[];
-  /** Whether the instance implements the optional `readUiResource`. */
+  /** Whether the instance serves its declared `ui://` cards over `resources/read`. */
   readonly servesUiResources: boolean;
   /** Which of `start` / `onPublished` / `stop` the instance implements. */
   readonly lifecycleHooks: readonly PluginLifecycleHookName[];
+  /**
+   * The `ave/host/*` methods the plugin will not run without (§3.2). The host
+   * refuses the load with `incompatible-host-protocol` when one is missing
+   * from the `capabilities` it sent, rather than letting the plugin start and
+   * fail on its first call.
+   */
+  readonly pluginProtocol: { readonly requires: readonly string[] };
 }
 
 /** The optional lifecycle hooks a `RuntimePlugin` may implement. */
 export type PluginLifecycleHookName = "start" | "onPublished" | "stop";
 
-/** What `readUiResource` carries. */
-export interface ReadUiResourceParams {
-  readonly uri: string;
-}
-
-/** What `readUiResource` answers. */
-export interface ReadUiResourceResult {
-  readonly html: string;
+/** What `shutdown` carries: which `onShutdown` registration to run. */
+export interface PluginShutdownParams {
+  readonly subscriptionId: string;
 }

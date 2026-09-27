@@ -624,9 +624,10 @@ Key boundaries:
 
 - The complete plugin-author TypeScript contract and its JSDoc are Host-owned in
   `src/plugins/public-contract.ts`. `src/plugins/types.ts` re-exports that
-  surface and adds Host-private registry/marketplace DTOs. The SDK copies the
-  public module mechanically and adds no declarations, documentation, aliases,
-  or validation policy.
+  surface and adds Host-private registry/marketplace DTOs. Plugin repositories
+  vendor the public module and `schemas/plugin-manifest.schema.json` unchanged
+  at an app release tag, recorded in `contract/sources.json`. A plugin using a
+  new contract member sets `requires.minAppVersion` to a supporting app release.
 - plugin code cannot invent its own identity when calling HostApi;
 - installed plugin assets are loaded through host-approved URLs;
 - plugin tools must declare schemas (pure MCP `Tool` objects); per-tool category
@@ -729,6 +730,69 @@ Key boundaries:
   carries no bytes and closes only when the host process is gone — so a
   long-lived worker treats EOF on stdin as the order to exit; that, not the
   shutdown sweep, is what keeps workers from outliving a crashed or killed host.
+
+### Plugin alerts and scheduled routines
+
+The [alerts design](../design/plugin-alerts.md) defines the complete alerts
+release; partial rollout builds expose only their implemented portions. Plugins
+own signal detection and declare localized templates and bounded slots in
+`alerts.kinds`. The host owns consent and delivery through `raiseAlert` and
+`withdrawAlert`, with no plugin-specific delivery branches. A malformed block
+grants no kinds. Durable work proposals retain their separate contract.
+
+The pipeline checks grant, input shape, predecessor, user toggle, open/closed
+identity, cooldown and rate before accepting and delivering an alert. A
+predecessor from the declared source, or without a source binding, blocks while
+loaded, or installed and not revoked; revocation without unloading does not
+immediately lift the block. Only accepted alerts consume delivery budgets.
+Effective visibility can only decrease: a user-visible alert stages a card,
+a summary-only alert delivers a notification cue without a model prompt, and a
+silent alert writes audit and an event. OS delivery requires the declaration,
+user OS toggle and master switch, respects focus unless bypass is declared,
+and never occurs for low priority. One OS cue replaces, rather than duplicates,
+an in-app toast.
+
+Identity uses an installation-secret HMAC. Raw keys and slot text are excluded
+from audit, events and `alerts/open.json`. The persistent table retains identity
+and lifecycle metadata, not rendered cards: after restart a plugin must re-raise
+an open identity to redraw it, returning `refreshed`. A late renderer can obtain
+cards already staged in the current process. Host-only `alert.*` events carry
+no slots and reach only the originating plugin or a subscriber with an explicit
+grant naming it. Reference slots remain in the wrapped prompt footer, never on
+the card; OS text is static.
+
+Accepting a card closes its identity and inserts the pending prompt into the
+selected conversation with the `plugin-emitted` staged origin. Tool permission
+and force-ask gates remain intact. The host-renderer-only alert IPC owns card
+closure and staged-card queries. `setupAlerts` runs after marketplace setup and
+before boot uninstall-cleanup replay so it observes lifecycle events, and the
+service is available before plugins start.
+
+All official kinds are opt-in, including the successors of new-mail and
+meeting-summary OS notifications. A new kind first encountered during an update
+starts off. A visibility increase disables the kind until the user consents.
+Eligible predecessor choices transfer through retained configuration under the
+migration rules; the generic settings patch cannot author alert choices.
+
+`triggerConversation` survives for setup suggestions. Plugins declaring alerts
+must declare their suggestion sources and receive at most one acceptance per
+source per 30 days. The transition exception for plugins without alerts and the
+legacy trigger visibility/priority fields end in the next minor release.
+`notificationEvents` works through the alerts release, warns once per plugin
+when declared alongside alert kinds, and is flagged by the repository checker
+for packages requiring the alerts release or later. Retirement removes its
+bridge/type and drops the field with a warning only in the follow-on release,
+after its remaining official consumer migrates. See the
+[overlay contract](../references/overlay-trigger.md) for sources and delivery.
+
+Scheduled LLM routines with non-empty explicit plugin allow-lists use installed
+registry rows, including pending updates, to detect missing plugins. With none
+installed, the occurrence is skipped with `plugins-missing`; a one-shot remains
+pending and a repeating schedule advances without a fabricated result. With
+some missing, the routine runs and records the missing IDs as `needsAttention`.
+The routine panel shows either state and offers removal. Installed-but-unloaded
+plugins are not missing; runtime scope and headless permission gates still decide
+which tools may run.
 
 ## Main-process composition and boot readiness
 

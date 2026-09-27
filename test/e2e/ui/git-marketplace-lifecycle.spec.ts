@@ -52,6 +52,8 @@ const SOURCE_ID = 'harbor-tools';
 /** Below any version the app reports, the development build's included. */
 const MIN_APP_VERSION = '0.1.0';
 const AUTHORITY = { capabilities: [], requires: { minAppVersion: MIN_APP_VERSION } };
+const READ_GRANT = { kind: 'hostDirectory' as const, segments: ['certs'], why: 'Read certificate bundles' };
+const WRITE_GRANT = { kind: 'userChosenDirectory' as const, configKey: 'workspace', why: 'Store project data' };
 const SURFACES = {
   'surface-sunken': '228 30% 97%',
   surface: '0 0% 100%',
@@ -145,18 +147,26 @@ type Entry = { path: string; mode: string; content: string };
 
 /** A package's `ave-package.json`. */
 const descriptorText = (kind: PackageKind, name: string, version: string, payload: Record<string, unknown>) =>
-  jsonText({ schemaVersion: 1, kind, name, version, minAppVersion: MIN_APP_VERSION, payload });
+  jsonText({ schemaVersion: 2, kind, name, version, minAppVersion: MIN_APP_VERSION, payload });
 
 /** The whole repository tree at `version`: every package publishes that version. */
 function marketplaceTree(version: string): Entry[] {
   const file = (path: string, content: string, mode = '100644'): Entry => ({ path, mode, content });
+  const pluginAuthority = {
+    ...AUTHORITY,
+    sandbox: {
+      read: [READ_GRANT],
+      ...(version === '1.0.0' ? {} : { write: [WRITE_GRANT] }),
+    },
+  };
   const plugin = agentPluginsDocument({
     id: 'harbor-panel',
     name: 'Harbor Panel',
     version,
     description: 'A plugin the marketplace E2E installs.',
     entry: 'dist/index.js',
-    ...AUTHORITY,
+    ...pluginAuthority,
+    configSchema: { properties: { workspace: { type: 'string' } } },
     tools: [
       {
         name: 'harbor_panel_ping',
@@ -167,14 +177,14 @@ function marketplaceTree(version: string): Entry[] {
   });
   return [
     file('README.md', 'A marketplace the Ave end-to-end test serves.\n'),
-    file('marketplace.json', jsonText({
-      schemaVersion: 1,
+    file('marketplace.2.json', jsonText({
+      schemaVersion: 2,
       name: SOURCE_ID,
       displayName: 'Harbor Tools',
       packages: PACKAGES.map(([kind, name, path]) => ({ kind, name, path })),
     })),
 
-    file('plugins/harbor-panel/ave-package.json', descriptorText('plugin', 'harbor-panel', version, { authority: AUTHORITY, artifact: { tree: 'plugins/harbor-panel' } })),
+    file('plugins/harbor-panel/ave-package.json', descriptorText('plugin', 'harbor-panel', version, { authority: pluginAuthority, artifact: { tree: 'plugins/harbor-panel' } })),
     file('plugins/harbor-panel/plugin.json', jsonText(plugin)),
     file('plugins/harbor-panel/dist/index.js', 'export default function createPlugin() {\n  return { handlers: { harbor_panel_ping: async () => "pong" }, start() {}, stop() {} };\n}\n'),
 
@@ -309,8 +319,17 @@ test.describe('git marketplace lifecycle', () => {
 
     // Install every kind.
     for (const key of keys) {
-      const plan = await call<InstallPlanView>(mainWindow, { method: 'planInstall', args: [key] });
+      let plan = await call<InstallPlanView>(mainWindow, { method: 'planInstall', args: [key] });
       expect(plan, key.name).toMatchObject({ version: '1.0.0', action: { action: 'install' }, runsCode: key.kind === 'plugin' || key.kind === 'mcp' });
+      if (key.kind === 'plugin') {
+        expect(plan.authority?.filesystem).toEqual([{ access: 'read', target: 'certs', why: READ_GRANT.why }]);
+        await settings.getByTestId(`git-marketplace:card:${key.sourceId}:${key.kind}:${key.name}`).getByTestId('git-marketplace:card:state').click();
+        const sheet = await mainWindow.getByTestId('git-marketplace:sheet');
+        await sheet.getByTestId('git-marketplace:plan').click();
+        await expect(sheet.getByTestId('git-marketplace:review')).toContainText(`read: certs — ${READ_GRANT.why}`);
+        await sheet.getByTestId('git-marketplace:sheet:close').click();
+        plan = await call<InstallPlanView>(mainWindow, { method: 'planInstall', args: [key] });
+      }
       const result = await call<InstallResultView>(mainWindow, { method: 'executeInstall', args: [plan.planId] });
       expect(result, key.name).toMatchObject({ key, version: '1.0.0', action: { action: 'install' }, connectionWarning: null });
       if (key.kind === 'plugin') expect(result.rungs.find((rung) => rung.outcome === 'used')?.rung).toBe('tree');
@@ -338,9 +357,21 @@ test.describe('git marketplace lifecycle', () => {
     expect(await installed()).toEqual(keys.map((key) => `${key.kind}/${key.name}@${JSON.stringify({ state: 'update', from: '1.0.0', to: '1.1.0' })}`).sort());
     for (const key of keys) {
       const plan = await call<UpdatePlanView>(mainWindow, { method: 'planUpdate', args: [key] });
-      expect(plan, key.name).toMatchObject({ from: '1.0.0', version: '1.1.0', action: { action: 'replace', direction: 'upgrade' }, needsConfirmation: false });
-      const result = await call<InstallResultView>(mainWindow, { method: 'executeInstall', args: [plan.planId] });
-      expect(result, key.name).toMatchObject({ key, version: '1.1.0', connectionWarning: null });
+      expect(plan, key.name).toMatchObject({ from: '1.0.0', version: '1.1.0', action: { action: 'replace', direction: 'upgrade' }, needsConfirmation: key.kind === 'plugin' });
+      if (key.kind === 'plugin') {
+        expect(plan.authorityDelta?.added.filesystem).toEqual([{ access: 'write', target: 'config.workspace', why: WRITE_GRANT.why }]);
+        const updateSettings = await openInlineSettings(app, mainWindow, 'marketplace');
+        await updateSettings.getByTestId(`git-marketplace:card:${key.sourceId}:${key.kind}:${key.name}`).getByTestId('git-marketplace:card:state').click();
+        const sheet = await mainWindow.getByTestId('git-marketplace:sheet');
+        await expect(sheet.getByTestId('git-marketplace:review')).toContainText(`write: config.workspace — ${WRITE_GRANT.why}`);
+        await sheet.getByTestId('git-marketplace:confirm').click();
+        await expect(sheet.getByTestId('git-marketplace:done')).toBeVisible({ timeout: 60_000 });
+        await sheet.getByTestId('git-marketplace:sheet:close').click();
+        await closeInlineSettings(app, updateSettings);
+      } else {
+        const result = await call<InstallResultView>(mainWindow, { method: 'executeInstall', args: [plan.planId] });
+        expect(result, key.name).toMatchObject({ key, version: '1.1.0', connectionWarning: null });
+      }
     }
     expect(await installed()).toEqual(keys.map((key) => `${key.kind}/${key.name}@${JSON.stringify({ state: 'installed', version: '1.1.0' })}`).sort());
     const updated = await installedContent(mainWindow);

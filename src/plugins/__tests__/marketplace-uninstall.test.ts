@@ -46,6 +46,26 @@ describe("PluginMarketplaceService uninstall()", () => {
     return { service: new TestPluginMarketplaceService(paths) };
   }
 
+  it("reads effective-config inputs from a disabled installed manifest without a runtime", async () => {
+    const pluginId = "retired-fixture";
+    await mkdir(join(installedDir, pluginId), { recursive: true });
+    await writeFile(join(installedDir, pluginId, "plugin.json"), JSON.stringify({
+      name: pluginId, version: "1.0.0", extensions: { "ai.agent-connector.ave": {
+        config: { choice: true }, configSchema: { properties: { defaultChoice: { type: "boolean", default: true } } },
+      } },
+    }));
+    await writeFile(registryPath, JSON.stringify({ version: 1, plugins: [
+      { id: pluginId, manifestPath: pluginId + "/plugin.json", enabled: false, installSource: "user" },
+    ] }));
+    const { service } = makeService();
+    expect(await service.getInstalledConfigManifest(pluginId)).toMatchObject({
+      enabled: false, sourceId: null, manifest: { id: pluginId, config: { choice: true }, configSchema: { properties: { defaultChoice: { default: true } } } },
+    });
+    await rm(join(installedDir, pluginId, "plugin.json"));
+    await expect(service.getInstalledConfigManifest(pluginId)).rejects.toThrow();
+    expect(await service.getInstalledConfigManifest("absent-fixture")).toBeNull();
+  });
+
   it("stages the live directory and every owned recovery path during direct uninstall", async () => {
     const pluginId = "owned-direct";
     const installDir = join(installedDir, pluginId);

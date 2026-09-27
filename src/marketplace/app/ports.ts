@@ -3,6 +3,7 @@
  * composition implements these over the plugin lifecycle, the content store
  * and the MCP manager; the service only plans, stages and dispatches.
  */
+import type { PluginConfigRetention } from "../../plugins/retired-config.js";
 import type { PackageKind, PluginAuthority } from "../catalog/types.js";
 import type { StagedContent } from "../content/store.js";
 import type { McpRuntimeSpec } from "../../plugins/types.js";
@@ -23,7 +24,8 @@ export interface PluginInstallerPort {
     plan: PluginInstallPlan,
     options: { switchSource: boolean; stage: (plan: PluginInstallPlan) => Promise<StagedPluginArtifact>; signal?: AbortSignal },
   ): Promise<{ action: InstallAction; staged: StagedPluginArtifact }>;
-  uninstall(name: string): Promise<void>;
+  retire(name: string, retain: PluginConfigRetention): Promise<void>;
+  uninstall(name: string, retain?: PluginConfigRetention): Promise<void>;
 }
 
 export interface ContentInstallerPort {

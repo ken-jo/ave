@@ -113,7 +113,6 @@ Key IPC domains live under `src/ipc/domains/*.ts`. Representative channels inclu
 
 - Bun.
 - Node.js `>=22.4`.
-- Git submodules, including `packages/plugin-sdk` (`ave-plugin-sdk`).
 
 Clone and install:
 

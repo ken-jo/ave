@@ -8,7 +8,7 @@
  *   - host-secret grant (Tier-3, design §10.3) refusal → reason="not-whitelisted"
  *   - vendor cross-check (Tier-4) deny — runs AFTER Tier-3 (cycle 1 MEDIUM)
  *   - success path: bearer + release() lifetime, signal-bound release
- *   - vendor alias normalization (SDK "anthropic" → host "claude")
+ *   - vendor alias normalization (public "anthropic" → host "claude")
  *   - azure-foundry baseUrl resolution
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
@@ -365,7 +365,7 @@ describe("resolveApiKey — Tier-4 vendor mismatch", () => {
     // `reason=not-whitelisted ... (manifest)` for a plain manifest-allowlist
     // miss with no whitelist involvement, while `getSecret` logged
     // `reason=not-allowlisted`. An operator pivoting on either token saw half
-    // the traffic. The SDK-facing `reason` stays `not-whitelisted` — that enum
+    // the traffic. The public `reason` stays `not-whitelisted` — that enum
     // is the plugin contract and is deliberately unchanged.
     const manifest = manifestFor("p", []);
     const manifestSha256 = manifestSha(manifest);
@@ -422,7 +422,7 @@ describe("resolveApiKey — Tier-4 vendor mismatch", () => {
     // `hostSecretKeyForVendor` which key holds the ACTIVE provider's
     // credential, which under an active preset is the preset key. That key is
     // absent from this manifest, so the verdict is a Tier-2 allowlist miss
-    // (`not-whitelisted`, the SDK's slot for it) rather than a Tier-4
+    // (`not-whitelisted`, the public contract's slot for it) rather than a Tier-4
     // vendor mismatch.
     expect(settingsService.getSecret).not.toHaveBeenCalledWith(genericKey);
     expect(result.ok).toBe(false);
@@ -488,7 +488,7 @@ describe("resolveApiKey — vendor alias normalization (cycle 1 CRITICAL)", () =
   it("SDK vendor='anthropic' resolves against host activeProvider='claude'", async () => {
     const manifest = manifestFor(GRANTED, ["llm.apiKey.claude"]);
     const result = await resolveApiKey(
-      { purpose: "llm", vendor: "anthropic" }, // SDK enum name
+      { purpose: "llm", vendor: "anthropic" }, // public contract name
       {
         pluginId: GRANTED,
         manifest,
@@ -529,7 +529,7 @@ describe("resolveApiKey — vendor alias normalization (cycle 1 CRITICAL)", () =
   });
 
   it("vendor cross-check uses normalized host vendor name", async () => {
-    // SDK 'azure-openai' → 'azure-foundry'. activeProvider = 'azure-foundry' →
+    // Public 'azure-openai' → host 'azure-foundry'. activeProvider = 'azure-foundry' →
     // should match (no mismatch). Conversely if activeProvider is anything
     // else, vendor-mismatch fires under the normalized name.
     const manifest = manifestFor(GRANTED, ["llm.apiKey.azure-foundry"]);
@@ -583,7 +583,7 @@ describe("resolveApiKey — permission revoke fires release() on outstanding bea
       expect(result.bearer()).toBe("sk-host");
       // PermissionManager.revokePluginAccess(...) would fire this:
       revokeController.abort(new Error("permission-revoked: deny-rule-added"));
-      // The bearer is released → next read throws per SDK contract.
+      // The bearer is released → next read throws per the public contract.
       expect(() => result.bearer()).toThrow("released");
     }
   });

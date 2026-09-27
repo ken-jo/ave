@@ -82,6 +82,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "invalid-dynamic-menu": "formatIpcError.invalidPayload",
   "invalid-params": "formatIpcError.invalidParams",
   "invalid-input": "formatIpcError.invalidInput",
+  "invalid-arguments": "formatIpcError.invalidInput",
   "invalid-answer": "formatIpcError.invalidInput",
   "invalid-proposal-key": "formatIpcError.invalidInput",
   "invalid-disposition": "formatIpcError.invalidValue",
@@ -216,6 +217,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "memory-consolidation-service-unavailable": "rolesTab.errorLongTermMemoryConsolidationUnavailable",
   "memory-consolidation-failed": "rolesTab.errorLongTermMemoryConsolidationFailed",
   "routine-not-found": "formatIpcError.routineNotFound",
+  "plugins-missing": "formatIpcError.pluginsMissing",
   "no-user-message": "formatIpcError.noUserMessage",
   "last-message-not-user": "formatIpcError.lastMessageNotUser",
   "no-scheduler": "formatIpcError.noScheduler",
@@ -327,6 +329,11 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "invalid-tool-name": "formatIpcError.invalidToolName",
   "tool-call-failed": "formatIpcError.toolCallFailed",
   "notification-unavailable": "formatIpcError.notificationUnavailable",
+  "no-alerts-service": "formatIpcError.notificationUnavailable",
+  "kind-not-registered": "alerts.kindNotRegistered",
+  "predecessor-not-removable": "alerts.predecessorNotRemovable",
+  "predecessor-policy-locked": "alerts.predecessorPolicyLocked",
+  "predecessor-removal-failed": "alerts.predecessorRemovalFailed",
 
   // ── Misc IO / system ──
   "no-window": "formatIpcError.noWindow",

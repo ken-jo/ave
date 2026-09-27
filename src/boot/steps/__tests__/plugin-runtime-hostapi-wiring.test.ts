@@ -249,6 +249,7 @@ async function initAndGetFactory(
     routinesStore: { list: () => [] } as never,
     // This harness has no Work Board; the proposal verbs are not exercised here.
     getWorkBoardStore: () => undefined,
+    getAlertsService: () => undefined,
   });
   const createHostApi = (
     runtimeTestState.capturedRuntimeOptions as {
@@ -931,7 +932,7 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
 
   it("audits a capability-denied emit from the production HostApi emit closure", async () => {
     // Producer is the real `createHostApi` captured out of initPluginRuntime —
-    // the same closure the plugin's SDK code calls. `capabilities` is present
+    // the same closure the plugin's runtime handler calls. `capabilities` is present
     // and deliberately does NOT authorize: emit authorization is inferred from
     // `emittedEvents`.
     const bootAuditLogger = { log: vi.fn() };

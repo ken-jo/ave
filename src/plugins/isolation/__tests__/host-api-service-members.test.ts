@@ -41,7 +41,6 @@ import {
   PluginHostApiError,
   SERVICE_HOSTAPI_PATHS,
   WIRE_BYTES_MAX,
-  type HostApiChannel,
   type HostApiNotification,
   type HostApiReply,
   type HostApiRequest,
@@ -52,9 +51,13 @@ import {
   startPluginChildRuntime,
   type PluginChildRuntime,
 } from "../plugin-child-runtime.js";
+import {
+  argsOfRequest,
+  directHostApiChannel,
+  pathOfRequest,
+} from "../../../__tests__/support/host-protocol-wire.js";
 
 const PLUGIN_ID = "com.example.service";
-const GENERATION = "gen-3";
 const PLUGIN_ROOT = "/plugins/service";
 const PLUGIN_DATA_DIR = "/plugins/service/data";
 /**
@@ -167,18 +170,17 @@ async function createServiceHarness(
   let host!: HostApiDispatcher;
   let child!: PluginChildRuntime;
 
-  const channel: HostApiChannel = {
-    call: async (request) => {
-      requests.push(request);
-      const reply = await host.handle(request);
-      replies.push(reply);
-      return reply;
+  const channel = directHostApiChannel(
+    {
+      handle: async (request) => {
+        const reply = await host.handle(request);
+        replies.push(reply);
+        return reply;
+      },
+      handleNotification: (notification) => host.handleNotification(notification),
     },
-    notify: (notification) => {
-      notifications.push(notification);
-      host.handleNotification(notification);
-    },
-  };
+    { requests, notifications },
+  );
 
   const api = hostApi as PluginHostApi;
   const hostLogs: { message: string; meta?: unknown }[] = [];
@@ -187,8 +189,10 @@ async function createServiceHarness(
     // test that discards could not tell the difference.
     log: (message, meta) => hostLogs.push({ message, meta }),
     pluginId: PLUGIN_ID,
-    generationId: GENERATION,
     isActive: () => true,
+    reportUnknownField: () => {},
+    // `ave/instance/shutdown`, answered by the child runtime itself.
+    shutdownChild: (subscriptionId) => child.runShutdownHandler(subscriptionId),
     notifications: {
       deliver: (notification) => {
         pushed.push(notification);
@@ -216,7 +220,6 @@ async function createServiceHarness(
       userHome: "/Users/example",
       aveHome: "/Users/example/.ave",
       installedPluginIds: [],
-      generationId: GENERATION,
     },
     channel,
     loadFactory: async () => (runtimeContext) => {
@@ -243,9 +246,9 @@ async function createServiceHarness(
 
 /** The wire form of one request's Nth argument. */
 function wireArg<T>(harness: ServiceHarness, path: string, index: number): T {
-  const request = harness.requests.find((candidate) => candidate.path === path);
+  const request = harness.requests.find((candidate) => pathOfRequest(candidate) === path);
   expect(request, `no '${path}' request was sent`).toBeDefined();
-  return request!.args[index] as T;
+  return argsOfRequest(request!)[index] as T;
 }
 
 /** Let queued microtasks and the notification hop settle. */
@@ -259,16 +262,17 @@ const settle = () => new Promise((resolve) => setImmediate(resolve));
  * cannot tell what actually happened from the log.
  */
 function detachedLog(harness: ServiceHarness): { message: string; meta?: unknown } {
-  const logs = harness.notifications.filter(
-    (notification) => notification.kind === "log",
+  const logs = harness.notifications.flatMap((notification) =>
+    notification.method === "notifications/ave/log" ? [notification.params] : [],
   );
   expect(logs).toHaveLength(1);
-  return logs[0] as unknown as { message: string; meta?: unknown };
+  return logs[0];
 }
 
 describe("this group implements exactly the members left after the other three", () => {
   it("binds every service-reaching member, and only against a real hostApi", () => {
-    const bound = createServiceHostApiPaths({} as PluginHostApi, CONFINEMENT);
+    const optional = { resolveApiKey: () => {}, hostFetch: () => {}, spawnWorker: () => {} };
+    const bound = createServiceHostApiPaths(optional as unknown as PluginHostApi, CONFINEMENT);
     expect(Object.keys(bound).sort()).toEqual([...SERVICE_HOSTAPI_PATHS].sort());
     for (const path of SERVICE_HOSTAPI_PATHS) {
       expect(bound[path].status).toBe("implemented");
@@ -280,14 +284,26 @@ describe("this group implements exactly the members left after the other three",
     }
   });
 
-  it("declares an abort-bearing member as lifetime-bearing", () => {
-    // The three members that take an `AbortSignal` reach the shared abort
-    // registry through `SubscriptionScope`, and only a lifetime-bearing member
-    // is handed one. A `lifetime: "none"` here would not merely mislabel the
-    // member — it would leave the handler with no way to open the channel its
-    // `encoded` arguments promise, which is how a second registry gets written.
+  it("decides an optional member at bind time, so construct never advertises one it lacks", () => {
+    // `hostProtocol.capabilities` is read off the bound table (§3.2). A member
+    // bound unconditionally and refused per call would be advertised by a
+    // host that then answers path-not-implemented.
+    const bound = createServiceHostApiPaths({} as PluginHostApi, CONFINEMENT);
+    const unbound = SERVICE_HOSTAPI_PATHS.filter((path) => bound[path].status === "unimplemented");
+    expect(unbound.sort()).toEqual(["hostFetch", "resolveApiKey", "spawnWorker"]);
+  });
+
+  it("cancels an abort-bearing member per request, so only the lease outlives its reply", () => {
+    // The three members that take an `AbortSignal` are cancelled through the
+    // dispatcher's per-request controller, which ends with the reply — so a
+    // signal alone opens no lifetime. `resolveApiKey` keeps one because its
+    // LEASE outlives the reply, not because of its signal. Each still declares
+    // `encoded`, because the signal is taken off the arguments before they
+    // cross.
+    expect(HOSTAPI_PATH_CONTRACTS.hostFetch.lifetime).toBe("none");
+    expect(HOSTAPI_PATH_CONTRACTS.callLlm.lifetime).toBe("none");
+    expect(HOSTAPI_PATH_CONTRACTS.resolveApiKey.lifetime).toBe("child-disposable");
     for (const path of ["hostFetch", "callLlm", "resolveApiKey"] as const) {
-      expect(HOSTAPI_PATH_CONTRACTS[path].lifetime, path).toBe("child-disposable");
       expect(HOSTAPI_PATH_CONTRACTS[path].arguments, path).toBe("encoded");
     }
   });
@@ -394,7 +410,7 @@ describe("hostFetch carries bytes a text codec would corrupt", () => {
     const original = harness.host.handle.bind(harness.host);
     vi.spyOn(harness.host, "handle").mockImplementation(async (request) => {
       const result = await original(request);
-      if (result.ok) reply = result.value;
+      if ("result" in result) reply = result.result;
       return result;
     });
     const response = await harness.child.hostApi.hostFetch!("https://example.test/a");
@@ -581,20 +597,23 @@ describe("hostFetch carries bytes a text codec would corrupt", () => {
   });
 });
 
-describe("callLlm carries plain data plus an abort channel", () => {
+describe("callLlm carries plain data, and a signal cancels the request", () => {
   it("returns the host's string and forwards the declared options", async () => {
     const callLlm = vi.fn(async () => "an answer");
     const harness = await createServiceHarness({ callLlm });
     await expect(
       harness.child.hostApi.callLlm("hello", { maxTokens: 32, systemPrompt: "be terse" }),
     ).resolves.toBe("an answer");
+    // The host's per-request signal rides along whether or not the plugin
+    // passed one: the request is cancellable either way.
     expect(callLlm).toHaveBeenCalledWith("hello", {
       maxTokens: 32,
       systemPrompt: "be terse",
+      signal: expect.any(AbortSignal),
     });
   });
 
-  it("replaces the signal with a channel id on the wire and a real signal at the host", async () => {
+  it("leaves the signal off the wire and hands the host a real signal of its own", async () => {
     let hostSignal: AbortSignal | undefined;
     const harness = await createServiceHarness({
       callLlm: async (_prompt, opts) => {
@@ -604,10 +623,10 @@ describe("callLlm carries plain data plus an abort channel", () => {
     });
     const controller = new AbortController();
     await harness.child.hostApi.callLlm("hi", { signal: controller.signal });
-    const wire = wireArg<{ signalChannelId?: string }>(harness, "callLlm", 1);
-    expect(typeof wire.signalChannelId).toBe("string");
-    // An `AbortSignal` cannot cross; what the host holds is its OWN controller,
-    // wired to the id the child allocated.
+    const wire = wireArg<Record<string, unknown>>(harness, "callLlm", 1);
+    expect(wire).toEqual({});
+    // An `AbortSignal` cannot cross; what the host holds is its OWN controller
+    // for this request, which the child's cancellation names by request id.
     expect(hostSignal).toBeInstanceOf(AbortSignal);
     expect(hostSignal).not.toBe(controller.signal);
   });
@@ -750,7 +769,7 @@ describe("resolveApiKey crosses as a lease, not as two closures", () => {
     expect(resolveApiKey).not.toHaveBeenCalled();
   });
 
-  it("carries the signal as a channel id", async () => {
+  it("leaves the signal off the wire and cancels by request instead", async () => {
     let hostSignal: AbortSignal | undefined;
     const harness = await createServiceHarness({
       resolveApiKey: async (opts) => {
@@ -760,8 +779,9 @@ describe("resolveApiKey crosses as a lease, not as two closures", () => {
     });
     const controller = new AbortController();
     await harness.child.hostApi.resolveApiKey!({ purpose: "llm", signal: controller.signal });
-    expect(typeof wireArg<{ signalChannelId?: string }>(harness, "resolveApiKey", 0)
-      .signalChannelId).toBe("string");
+    expect(wireArg<Record<string, unknown>>(harness, "resolveApiKey", 0)).toEqual({
+      purpose: "llm",
+    });
     expect(hostSignal).toBeInstanceOf(AbortSignal);
     expect(harness.host.openSubscriptionCount).toBe(0);
   });
@@ -791,7 +811,7 @@ describe("context.log reaches the host and is not merely sent", () => {
     harness.pluginContext.log("sent and received are different claims");
     await settle();
 
-    const sent = harness.notifications.filter((n) => n.kind === "log");
+    const sent = harness.notifications.filter((n) => n.method === "notifications/ave/log");
     expect(sent).toHaveLength(1);
     expect(harness.hostLogs).toHaveLength(sent.length);
   });
@@ -868,11 +888,11 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
     // a `ChildProcess`, which is the security improvement over the in-process
     // handle rather than merely a port of it.
     const reply = await harness.host.handle(
-      harness.requests.find((request) => request.path === "spawnWorker")!,
+      harness.requests.find((request) => pathOfRequest(request) === "spawnWorker")!,
     );
-    expect(reply.ok).toBe(true);
-    if (!reply.ok) return;
-    expect(Object.keys(reply.value as object).sort()).toEqual([
+    expect("result" in reply).toBe(true);
+    if (!("result" in reply)) return;
+    expect(Object.keys(reply.result as object).sort()).toEqual([
       "handleId",
       "pid",
       "socketPath",
@@ -924,6 +944,24 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
     await harness.child.hostApi.spawnWorker!({ workerId: "indexer", command: "/bin/true" });
     expect(harness.killChild()).toBe(1);
     expect(worker.stopped()).toBe(1);
+  });
+
+  it("stops a worker created after the child went away during spawn", async () => {
+    const worker = makeFakeWorker();
+    let completeSpawn!: (value: SpawnedPluginWorker) => void;
+    const spawn = new Promise<SpawnedPluginWorker>((resolve) => { completeSpawn = resolve; });
+    const harness = await createServiceHarness({ spawnWorker: async () => spawn });
+    const pending = harness.child.hostApi.spawnWorker!({ workerId: "indexer", command: "/bin/true" });
+    const reservationCount = () => (harness.host as unknown as { pendingSubscriptionCount: number })
+      .pendingSubscriptionCount;
+    expect(reservationCount()).toBe(1);
+    expect(harness.killChild()).toBe(0);
+    expect(reservationCount()).toBe(0);
+    completeSpawn(worker);
+    await expect(pending).rejects.toMatchObject({ code: "host-internal" });
+    expect(worker.stopped()).toBe(1);
+    expect(harness.host.openSubscriptionCount).toBe(0);
+    expect(reservationCount()).toBe(0);
   });
 
   it("drops worker output produced after the handle was released", async () => {
@@ -1036,21 +1074,20 @@ describe("logEvent crosses as plain data", () => {
 
 /** The `handleId` the host allocated for the first call to `path`. */
 function handleIdOf(harness: ServiceHarness, path: string): string {
-  const index = harness.requests.findIndex((request) => request.path === path);
+  const index = harness.requests.findIndex((request) => pathOfRequest(request) === path);
   expect(index, `no '${path}' request was sent`).toBeGreaterThanOrEqual(0);
   const reply = harness.replies[index];
-  expect(reply?.ok, `'${path}' did not succeed`).toBe(true);
-  return (reply as { value: { handleId: string } }).value.handleId;
+  expect(reply !== undefined && "result" in reply, `'${path}' did not succeed`).toBe(true);
+  return (reply as { result: { handleId: string } }).result.handleId;
 }
 
-/** Every `subscription-closed` the host pushed at the child. */
+/** Every subscription-closed notification the host pushed at the child. */
 function closures(harness: ServiceHarness): { subscriptionId: string; reason: string }[] {
-  return harness.pushed
-    .filter((notification) => notification.kind === "subscription-closed")
-    .map((notification) => {
-      const closed = notification as unknown as { subscriptionId: string; reason: string };
-      return { subscriptionId: closed.subscriptionId, reason: closed.reason };
-    });
+  return harness.pushed.flatMap((notification) =>
+    notification.method === "notifications/ave/subscription/closed"
+      ? [{ ...notification.params }]
+      : [],
+  );
 }
 
 describe("a delegated worker cannot reach further than the plugin process itself", () => {
@@ -1282,32 +1319,30 @@ describe("a host-side revocation reaches the child", () => {
     expect(closures(harness)).toEqual([]);
   });
 
-  it("says nothing about an abort channel, which the child has no entry for", async () => {
+  it("says nothing about a cancellable request, which the child holds no registration for", async () => {
     const controller = new AbortController();
     const harness = await createServiceHarness({ callLlm: async () => "answered" });
     await harness.child.hostApi.callLlm("hello", { signal: controller.signal });
     await settle();
-    // The call settled, so the host released its own controller — bookkeeping
-    // the child registered nothing for, and a close it would report as an
-    // unknown subscription.
+    // The call settled, so the host dropped its per-request controller —
+    // bookkeeping the child registered nothing for, and a close it would report
+    // as an unknown subscription.
     expect(closures(harness)).toEqual([]);
     expect(harness.host.openSubscriptionCount).toBe(0);
   });
 
-  it("refuses to cancel a subscription through the abort mechanism", async () => {
-    // The two registration kinds share one ledger. Without the guard an `abort`
-    // naming a worker handle would stop the worker through the cancellation
-    // path — and would bounce a close back at the child that sent it.
+  it("refuses to cancel a subscription through the cancellation mechanism", async () => {
+    // A cancellation names a REQUEST. One naming a worker handle's id must not
+    // stop the worker through the cancellation path — nor bounce a close back
+    // at the child that sent it.
     const worker = makeFakeWorker();
     const harness = await createServiceHarness({ spawnWorker: async () => worker });
     await harness.child.hostApi.spawnWorker!({ workerId: "indexer", command: "/bin/true" });
     const handleId = handleIdOf(harness, "spawnWorker");
     harness.host.handleNotification({
-      wire: 1,
-      pluginId: PLUGIN_ID,
-      generationId: GENERATION,
-      kind: "abort",
-      subscriptionId: handleId,
+      jsonrpc: "2.0",
+      method: "notifications/cancelled",
+      params: { requestId: handleId, reason: "not a request" },
     });
     await settle();
     expect(harness.host.openSubscriptionCount).toBe(1);
@@ -1334,12 +1369,12 @@ describe("a revoked key lease stops being spendable in the child", () => {
 
     const handleId = handleIdOf(harness, "resolveApiKey");
     harness.child.deliver({
-      wire: 1,
-      pluginId: PLUGIN_ID,
-      generationId: GENERATION,
-      kind: "subscription-closed",
-      subscriptionId: handleId,
-      reason: "revoked",
+      jsonrpc: "2.0",
+      method: "notifications/ave/subscription/closed",
+      params: {
+        subscriptionId: handleId,
+        reason: "revoked",
+      },
     });
 
     // The credential is a mutable closure variable precisely so this can drop
@@ -1432,13 +1467,13 @@ describe("startAudioCapture crosses as an id, and the PCM survives the wire", ()
     expect(handle.opened).toEqual({ microphone: true, systemAudio: false });
 
     const reply = await harness.host.handle(
-      harness.requests.find((request) => request.path === "startAudioCapture")!,
+      harness.requests.find((request) => pathOfRequest(request) === "startAudioCapture")!,
     );
-    expect(reply.ok).toBe(true);
-    if (!reply.ok) return;
+    expect("result" in reply).toBe(true);
+    if (!("result" in reply)) return;
     // Nothing that could be a live capture — no MediaStream, no AudioContext,
     // no function. The same property `spawnWorker` has.
-    expect(Object.keys(reply.value as object).sort()).toEqual([
+    expect(Object.keys(reply.result as object).sort()).toEqual([
       "captureId",
       "handleId",
       "opened",
@@ -1496,14 +1531,13 @@ describe("attachFloatingPanel crosses as a receipt, and the detach reason surviv
     // back its own request cannot tell it was clamped.
     expect(handle.height).toBe(180);
 
-    const reply = await harness.host.handle(
-      harness.requests.find((request) => request.path === "attachFloatingPanel")!,
-    );
-    expect(reply.ok).toBe(true);
-    if (!reply.ok) return;
+    const index = harness.requests.findIndex((request) => pathOfRequest(request) === "attachFloatingPanel");
+    const reply = harness.replies[index];
+    expect("result" in reply).toBe(true);
+    if (!("result" in reply)) return;
     // Nothing that could be a live panel — the same property `spawnWorker` and
     // `startAudioCapture` have.
-    for (const value of Object.values(reply.value as Record<string, unknown>)) {
+    for (const value of Object.values(reply.result as Record<string, unknown>)) {
       expect(typeof value).not.toBe("function");
     }
   });
@@ -1521,7 +1555,9 @@ describe("attachFloatingPanel crosses as a receipt, and the detach reason surviv
     // is wired to one.
     expect(await handle.resize(900)).toBe(300);
     expect(handle.height).toBe(300);
-    expect(harness.requests.some((request) => request.path === "resizeFloatingPanel")).toBe(true);
+    expect(
+      harness.requests.some((request) => pathOfRequest(request) === "resizeFloatingPanel"),
+    ).toBe(true);
   });
 
   it("detaches the host-side slot when the child releases its receipt", async () => {

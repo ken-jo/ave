@@ -309,6 +309,10 @@ describe("installer smoke and packaging discipline", () => {
     const execute = workflow.slice(workflow.indexOf("  e2e:"));
 
     expect(stage).toContain("secrets.AVE_REPO_READ_TOKEN");
+    expect(stage).toContain("path: stage-policy");
+    expect(stage).toContain("ref: ${{ github.workflow_sha }}");
+    expect(stage).toContain('bash stage-policy/scripts/check-e2e-archive-tree.sh "$repo" "$actual"');
+    expect(stage).not.toContain("ls-files -s");
     expect(stage).toContain("git -C \"$repo\" archive");
     expect(stage).toContain("manifest.tsv");
     expect(stage).toContain("artifact-digest");
@@ -617,10 +621,13 @@ describe("installer smoke and packaging discipline", () => {
     // gates by the list above, but each can still fail ci.yml's build step and
     // skip the suite behind it. They stay because each reads either the
     // sources being compiled or the bytes the build itself just wrote, and a
-    // local `bun run build` is where that drift has to surface. Pinned as an
-    // exact list so a check added to `build` fails here and has to be argued
-    // for, and so the count in ci.yml's comment beside the trailing gates
-    // cannot drift away from the composite it describes.
+    // local `bun run build` is where that drift has to surface. The protocol
+    // schema check is the first kind: it regenerates from the contract and
+    // wire sources the build compiles, and compares against the copy
+    // committed beside them. Pinned as an exact list so a check added to
+    // `build` fails here and has to be argued for, and so the count in
+    // ci.yml's comment beside the trailing gates cannot drift away from the
+    // composite it describes.
     const commands = (packageScripts["build"] as string)
       .split("&&")
       .map((part) => part.trim());
@@ -630,6 +637,7 @@ describe("installer smoke and packaging discipline", () => {
     expect(assertions).toEqual([
       "bun run check:import-cycles",
       "node scripts/check-generated-assets.mjs",
+      "bun run check:plugin-host-protocol-schema",
       "bun run check:i18n-catalog",
       "bun run check:i18n-barrels",
       "node scripts/check-no-tls-bypass.mjs",
@@ -640,7 +648,7 @@ describe("installer smoke and packaging discipline", () => {
       "bun run check:source-text-safe",
     ]);
 
-    // Of those ten, the four that a later command in the same composite
+    // Of those eleven, the five that a later command in the same composite
     // compiles behind. ci.yml's comment states this number; this is where it
     // comes from.
     const lastCompile = commands.reduce(
@@ -654,6 +662,7 @@ describe("installer smoke and packaging discipline", () => {
     ).toEqual([
       "bun run check:import-cycles",
       "node scripts/check-generated-assets.mjs",
+      "bun run check:plugin-host-protocol-schema",
       "bun run check:i18n-catalog",
       "bun run check:i18n-barrels",
     ]);
@@ -853,11 +862,9 @@ describe("installer smoke and packaging discipline", () => {
     expect(claude).toContain("duplicates no");
 
     for (const guidance of [agents, contributing, pullRequestTemplate]) {
-      expect(guidance).toContain("review-only Markdown");
-      expect(guidance).toMatch(/runtime/i);
-      expect(guidance).toMatch(/instruction/i);
-      expect(guidance).toMatch(/workflow/i);
-      expect(guidance).toMatch(/sensitive/i);
+      expect(guidance).toMatch(/documentation/i);
+      expect(guidance).toMatch(/consum/i);
+      expect(guidance).toMatch(/pre-push/i);
     }
 
     expect(agents).toContain("openFeatureNamespace");
@@ -878,8 +885,8 @@ describe("installer smoke and packaging discipline", () => {
     expect(agents).toContain("degrades non-brickingly when unavailable");
     expect(agents).toContain("relaxation/effect-boundary coupling");
     expect(agents).toContain("No Fallback Code");
-    expect(agents).toContain("plugin manifest field updates its schema and SDK");
-    expect(agents).toContain("HostApi change bumps every plugin dependency pin");
+    expect(agents).toContain("plugin manifest field updates its host schema and public");
+    expect(agents).toContain("HostApi change updates the host protocol and all");
     expect(agents).toContain("UI edits start with `grep` before editing");
     expect(agents).toContain("app shells `*Window`");
     expect(agents).toContain("bodies `*Content`, and modals `*Dialog`");
