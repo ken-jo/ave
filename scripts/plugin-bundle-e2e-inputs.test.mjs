@@ -6,13 +6,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { gitFixtureEnv } from "../src/__tests__/support/git-fixture-env.mjs";
 import {
   requireFullSha,
   verifyPluginBundleE2EInputs,
 } from "./plugin-bundle-e2e-inputs.mjs";
 
 function git(root, ...args) {
-  return execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
+  return execFileSync("git", ["-C", root, ...args], { encoding: "utf8", env: gitFixtureEnv(root) }).trim();
 }
 
 function makeRepo(root, files) {

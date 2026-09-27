@@ -9,6 +9,7 @@ import {
   isDocumentationPath,
 } from "../../scripts/hooks/pre-push-markdown-policy.mjs";
 import { checkPushedDocumentation } from "../../scripts/hooks/pre-push-document-safety.mjs";
+import { packagedDocumentInputs } from "../../scripts/lib/document-consumer-guard.mjs";
 import { gitFixtureEnv } from "../../src/__tests__/support/git-fixture-env.mjs";
 
 const root = resolve(import.meta.dirname, "../..");
@@ -24,7 +25,7 @@ const fixtureGit = (repo: string, args: string[], source = process.env) =>
     encoding: "utf8", env: gitFixtureEnv(repo, source),
   });
 const fixtureCli = (repo: string, cli: string, base: string, source = process.env) =>
-  execFileSync("node", [cli, base], {
+  execFileSync("node", [cli, base, "HEAD", "pull_request"], {
     cwd: repo, encoding: "utf8", env: gitFixtureEnv(repo, source),
   });
 const modified = (path: string) => ({ status: "M", path, oldMode: "100644", newMode: "100644" });
@@ -98,6 +99,8 @@ describe("documentation impact policy", () => {
     expect(registryTest).toContain('"README.md"');
     expect(registryTest).toContain("readFile(resolve(repoRoot, relativePath)");
     referenced.add("README.md");
+    const packaged = packagedDocumentInputs(JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")), root);
+    for (const path of packaged) referenced.add(path);
     const all = [...inventory.consumed, ...inventory.referencedOnly];
     expect(all).toEqual([...new Set(all)]);
     expect(inventory.consumed).toEqual([...inventory.consumed].sort());
@@ -129,7 +132,9 @@ describe("documentation impact policy", () => {
       rmSync(join(repo, "docs", "example.md"));
       runGit("commit", "-qam", "remove docs");
       expect(fixtureCli(repo, cli, base)).toBe("docs_only=false\n");
-      expect(spawnSync("node", [cli, "0".repeat(40)], { cwd: repo, env: gitFixtureEnv(repo) }).status).not.toBe(0);
+      expect(spawnSync("node", [cli, "0".repeat(40), "HEAD", "pull_request"], {
+        cwd: repo, env: gitFixtureEnv(repo),
+      }).status).not.toBe(0);
       if (process.platform !== "win32") {
         writeFileSync(join(repo, "source.txt"), "source\n");
         writeFileSync(join(repo, "other.txt"), "other\n");
@@ -267,6 +272,49 @@ describe("documentation impact policy", () => {
           expect(step).toContain("if: steps.docs-impact.outputs.docs_only != 'true'");
         }
       }
+    }
+  });
+
+  it("runs the full CI suite for pushes and fails closed on missing PR bases", () => {
+    const repo = mkdtempSync(join(tmpdir(), "docs-ci-event-"));
+    const cli = resolve(root, "scripts/hooks/classify-docs-diff.mjs");
+    try {
+      fixtureGit(repo, ["init", "-q"]);
+      fixtureGit(repo, ["config", "user.name", "Fixture"]);
+      fixtureGit(repo, ["config", "user.email", "fixture@example.invalid"]);
+      mkdirSync(join(repo, "docs"));
+      writeFileSync(join(repo, "docs", "guide.md"), "base\n");
+      fixtureGit(repo, ["add", "."]);
+      fixtureGit(repo, ["commit", "-qm", "base"]);
+      const base = fixtureGit(repo, ["rev-parse", "HEAD"]).trim();
+      writeFileSync(join(repo, "docs", "guide.md"), "updated\n");
+      fixtureGit(repo, ["commit", "-qam", "docs"]);
+      const classify = (event: string, baseSha: string) => execFileSync("node", [cli, baseSha, "HEAD", event], {
+        cwd: repo, encoding: "utf8", env: gitFixtureEnv(repo),
+      });
+      expect(classify("pull_request", base)).toBe("docs_only=true\n");
+      expect(classify("push", base)).toBe("docs_only=false\n");
+      expect(classify("push", "0".repeat(40))).toBe("docs_only=false\n");
+      expect(execFileSync("node", [cli, base], {
+        cwd: repo, encoding: "utf8", env: gitFixtureEnv(repo),
+      })).toBe("docs_only=false\n");
+      expect(spawnSync("node", [cli, "0".repeat(40), "HEAD", "pull_request"], {
+        cwd: repo, env: gitFixtureEnv(repo),
+      }).status).not.toBe(0);
+      fixtureGit(repo, ["checkout", "-q", "--orphan", "rewritten"]);
+      writeFileSync(join(repo, "docs", "guide.md"), "force-pushed docs\n");
+      fixtureGit(repo, ["add", "docs/guide.md"]);
+      fixtureGit(repo, ["commit", "-qm", "rewritten docs"]);
+      expect(spawnSync("git", ["-C", repo, "merge-base", "--is-ancestor", base, "HEAD"], {
+        env: gitFixtureEnv(repo),
+      }).status).not.toBe(0);
+      expect(classify("push", base)).toBe("docs_only=false\n");
+      expect(classify("pull_request", base)).toBe("docs_only=true\n");
+      const workflow = readFileSync(resolve(root, ".github/workflows/ci.yml"), "utf8");
+      expect(workflow.match(/EVENT_NAME: \$\{\{ github\.event_name \}\}/g)).toHaveLength(3);
+      expect(workflow.match(/classify-docs-diff\.mjs "\$BASE_SHA" HEAD "\$EVENT_NAME"/g)).toHaveLength(3);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
     }
   });
 

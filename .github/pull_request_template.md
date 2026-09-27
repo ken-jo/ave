@@ -31,6 +31,7 @@
 
 - [ ] Targeted checks run while iterating (commands/results below):
 - [ ] Pre-push full gate passed, or the hook accepted unconsumed documentation or an eligible test-only change with its targeted checks:
+- [ ] Documents read by native code, non-Node subprocesses, or `openAsBlob` are registered in `scripts/hooks/documentation-references.json`; every `main` push runs the full app suite in CI:
 - [ ] Targeted changed-flow Playwright check, when UI behavior changed:
 - [ ] Full E2E is delegated to CI/release unless explicitly required locally:
 - [ ] Installer or packaged-app smoke, when packaging behavior changed:

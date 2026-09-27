@@ -48,8 +48,11 @@ hook is the sole local full gate: it runs `bun run typecheck`, the full
 `bun run test`, and `bun run build` once. Documentation prose with no such
 consumer skips those expensive gates after diff and policy checks. Eligible
 test-only pushes run typecheck and targeted Vitest in the hook; CI still runs
-full checks. Renames, deletes, and mixed changes run the full gate. Do not
-duplicate the trio around a successful push. If a check fails, fix it and rerun
+full checks. Renames, deletes, and mixed changes run the full gate. Register
+documents read by native or non-Node processes, or through `openAsBlob`, in
+`scripts/hooks/documentation-references.json`; the read guard cannot see them.
+Every `main` push runs the full app suite in CI as a backstop. Do not duplicate
+the trio around a successful push. If a check fails, fix it and rerun
 only the failed or invalidated checks before pushing again. Full Playwright E2E runs in CI/release
 validation; UI changes require the targeted local flow check above. Never
 bypass hooks with `--no-verify` or a hook-skip environment variable.

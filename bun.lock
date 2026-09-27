@@ -61,6 +61,7 @@
         "@vitest/coverage-v8": "^5.0.0",
         "@xterm/addon-fit": "^0.11.0",
         "@xterm/xterm": "^6.0.0",
+        "app-builder-lib": "26.15.3",
         "baseline-browser-mapping": "^2.10.27",
         "caniuse-lite": "^1.0.30001792",
         "class-variance-authority": "^0.7.1",

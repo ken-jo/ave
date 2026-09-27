@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { assertElectronNodeVitestRuntime } from "../../scripts/assert-electron-node-vitest.mjs";
 import { normalizeElectronNodeRuntime } from "../../scripts/normalize-electron-node-runtime.mjs";
+import { guardedNodeOptions } from "../../scripts/lib/document-consumer-node-options.mjs";
 import {
   applyElectronVitestResult,
   createElectronVitestInvocation,
@@ -121,7 +122,7 @@ describe("Electron Node-mode Vitest runner", () => {
           ELECTRON_RUN_AS_NODE: "1",
           KEEP: "yes",
           AVE_TEST_NODE_EXEC_PATH: "C:/runtime/node.exe",
-          NODE_OPTIONS: "--trace-warnings",
+          NODE_OPTIONS: guardedNodeOptions("--trace-warnings"),
         },
         shell: false,
         stdio: "inherit",
@@ -272,6 +273,7 @@ describe("Electron Node-mode Vitest runner", () => {
           ELECTRON_RUN_AS_NODE: "1",
           KEEP: "yes",
           AVE_TEST_NODE_EXEC_PATH: "C:/runtime/node.exe",
+          NODE_OPTIONS: guardedNodeOptions(),
         },
         shell: false,
       }),

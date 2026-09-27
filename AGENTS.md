@@ -255,6 +255,9 @@ Use the smallest check that can disprove the current change while iterating:
   document inventory may skip expensive gates; still run diff/path/policy
   checks. Runtime resources, site content, workflows, consumed documents,
   deletes, renames, and mixed changes get the relevant checks.
+- Register documents read by native code, non-Node subprocesses, or `openAsBlob`
+  in `scripts/hooks/documentation-references.json`; the read guard cannot see
+  those accesses. CI runs the full suite on every push to `main` as a backstop.
 - Types or isolated logic: affected unit test file(s) and the narrowest useful
   typecheck. Do not run overlapping broad suites after every small edit.
 - Cross-module or shared contract: targeted tests for each changed boundary,
