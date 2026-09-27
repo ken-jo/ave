@@ -24,6 +24,8 @@ import { createSkillLoadTool, type SkillLoadEvent, type SkillLoadToolDeps } from
 import { createSkillListTool } from "../tools/skill-list.js";
 import { createSkillReadTool } from "../tools/skill-read.js";
 import { createPluginStudioTools } from "../tools/plugin-studio.js";
+import { PluginStudioStore } from "../studio/store.js";
+import type { McpServerConfigDto } from "../mcp/types.js";
 import {
   createMcpResourceListTool,
   createMcpResourceReadTool,
@@ -125,6 +127,8 @@ export interface WorkflowToolDeps {
    * surface cannot reach `callTool`.
    */
   getMcpResourceAccess?: McpResourceAccessResolver;
+  getStudioMcpConfigs?: () => Promise<McpServerConfigDto[]>;
+  getStudioConnectorSummary?: (serverId: string) => Promise<{ digest: string; argsCount: number; envCount: number }>;
 }
 
 export function registerBuiltinTools(
@@ -134,8 +138,9 @@ export function registerBuiltinTools(
 ): void {
   const { networkFetch, singleHopNetworkFetch } = workflowDeps;
   const builtins: Tool[] = [
-    ...createPluginStudioTools(undefined, { skillStore: workflowDeps.skillStore, agentProfileStore: workflowDeps.agentProfileStore,
-      personaPromptStore: workflowDeps.personaPromptStore, routinesStore: workflowDeps.routinesStore }),
+    ...createPluginStudioTools(new PluginStudioStore(workflowDeps.getStudioConnectorSummary), { skillStore: workflowDeps.skillStore,
+      agentProfileStore: workflowDeps.agentProfileStore, personaPromptStore: workflowDeps.personaPromptStore,
+      routinesStore: workflowDeps.routinesStore, getMcpConfigs: workflowDeps.getStudioMcpConfigs }),
     createWebSearchTool(settingsService, networkFetch),
     // web_fetch guards every hop of a redirect chain, so it needs the transport
     // that returns a hop instead of throwing on it. Handed `net.fetch`, the

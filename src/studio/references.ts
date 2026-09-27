@@ -5,6 +5,7 @@ import type { AgentProfileStore } from "../main/agent-profile-store.js";
 import type { PersonaPromptStore } from "../main/persona-prompt-store.js";
 import type { RoutinesStore } from "../main/routines-store.js";
 import type { McpManager } from "../mcp/mcp-manager.js";
+import type { McpServerConfigDto } from "../mcp/types.js";
 import type { StudioAvailableParts, StudioOrigin, StudioWriteRequest } from "../shared/plugin-studio.js";
 
 const COMPONENT = /^[a-z][a-z0-9-]{0,62}$/u;
@@ -15,17 +16,22 @@ export interface StudioReferenceSources {
   personaPromptStore?: PersonaPromptStore;
   routinesStore?: RoutinesStore;
   mcpManager?: McpManager;
+  getMcpConfigs?: () => Promise<McpServerConfigDto[]>;
+}
+
+async function configuredConnectors(sources: StudioReferenceSources): Promise<McpServerConfigDto[]> {
+  return sources.getMcpConfigs?.() ?? sources.mcpManager?.getConfigs() ?? [];
 }
 
 export async function listStudioParts(sources: StudioReferenceSources): Promise<StudioAvailableParts> {
   const [skills, agents, prompts, connectors] = await Promise.all([
     sources.skillStore?.list() ?? [], sources.agentProfileStore?.list() ?? [],
-    sources.personaPromptStore?.list() ?? [], sources.mcpManager?.getConfigs() ?? [],
+    sources.personaPromptStore?.list() ?? [], configuredConnectors(sources),
   ]);
   return {
     skills: skills.filter((item) => COMPONENT.test(item.name)).map(({ name, description }) => ({ name, description })),
     routines: (sources.routinesStore?.list() ?? []).map((item) => ({ name: item.id, description: item.title ?? item.id })),
-    connectors: connectors.filter((item) => !item.bundled).map((item) => ({ name: item.id, description: item.transport })),
+    connectors: connectors.map((item) => ({ name: item.id, description: item.transport })),
     prompts: prompts.filter((item) => COMPONENT.test(item.id)).map((item) => ({ name: item.id, description: item.description })),
     agents: agents.filter((item) => COMPONENT.test(item.name)).map(({ name, description }) => ({ name, description })),
   };
@@ -97,7 +103,11 @@ export async function resolveStudioReferences(input: StudioWriteRequest, sources
         templates.push(template);
         break;
       }
-      case "connector": throw new Error("Connector reference requires a confirmed secret-free projection");
+      case "connector": {
+        const connector = (await configuredConnectors(sources)).find((item) => item.id === reference.name);
+        if (!connector) throw new Error(`Connector ${reference.name} is not available`);
+        break;
+      }
       default: throw new Error("Studio reference kind is unsupported");
     }
   }

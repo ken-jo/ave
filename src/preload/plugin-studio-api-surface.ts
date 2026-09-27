@@ -17,6 +17,8 @@ export function buildPluginStudioApiSurface(): PluginStudioApi {
     readDraft: (name) => call(channels.readDraft, name),
     writeDraft: (request) => call(channels.writeDraft, request),
     validateDraft: (name) => call(channels.validateDraft, name),
+    connectorCopyPreview: (serverId) => call(channels.connectorCopyPreview, serverId),
+    confirmConnectorCopy: (name, serverId, confirmation) => call(channels.confirmConnectorCopy, name, serverId, confirmation),
     importPackage: () => call(channels.importPackage),
     reviewDraft: (name, treeDigest) => call(channels.reviewDraft, name, treeDigest),
     exportDraft: (name, projection) => call(channels.exportDraft, name, projection),

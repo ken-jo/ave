@@ -28,6 +28,7 @@ import { createLogger } from "../lib/logger.js";
 import { aveHome } from "../shared/ave-home.js";
 import { MAX_SERVER_ID_LEN } from "../shared/mcp-app-partition.js";
 import { t } from "../i18n/index.js";
+import { studioConnectorSpecDigest } from "../studio/connector-digest.js";
 import type { PluginMcpOwner, PluginMcpTrustStore, PreparedPluginMcpProjection } from "./plugin-mcp-projection.js";
 import type { PluginRuntimeGenerationAccess } from "../plugins/plugin-host-generation.js";
 import { errorMessage } from "../shared/error-message.js";
@@ -43,6 +44,8 @@ interface BundledCredentialDeclaration {
   auth?: "api-key";
   apiKeyEnv?: string;
   apiKeyHeader?: string;
+  args?: string[];
+  env?: Record<string, string>;
 }
 
 export interface BundledCredentialSource {
@@ -842,6 +845,34 @@ export class McpManager {
       }
     }
     return [...configs.map((config) => this.toConfigDto(config)), ...bundled];
+  }
+
+  /** A Studio-only read. Existing MCP settings projections keep arguments and environment values write-only. */
+  async getStudioConnectorSource(serverId: string): Promise<{ spec: McpServerConfigDto; args: string[]; env: Record<string, string> }> {
+    const config = (await this.loadFromConfig()).find((item) => item.id === serverId);
+    if (!config) {
+      const ref = this.bundledCredentialRefForConfigId(serverId);
+      const declaration = ref && this.bundledCredentialSources.get(ref.packageRef.kind)?.list().find((item) =>
+        item.packageName === ref.packageRef.name && item.serverName === ref.server);
+      const spec = declaration && (await this.getConfigs()).find((item) => item.id === serverId);
+      if (!declaration || !spec) throw new Error(`Configured connector ${serverId} does not exist`);
+      return { spec, args: [...(declaration.args ?? [])], env: { ...(declaration.env ?? {}) } };
+    }
+    if (config.transport !== "stdio" && config.transport !== "http") throw new Error("Connector transport is not portable");
+    if (config.apiKey && config.auth !== "api-key") throw new Error("Connector stored credential needs an API key declaration");
+    if (config.headers && Object.keys(config.headers).length) throw new Error("Connector custom headers cannot be copied by Studio");
+    const spec = this.toConfigDto(config);
+    const args = config.transport === "stdio" ? [...(config.args ?? [])] : [];
+    const env = config.transport === "stdio" ? { ...(config.env ?? {}) } : {};
+    if (config.apiKey && JSON.stringify({ spec, args, env }).includes(config.apiKey)) {
+      throw new Error("Connector arguments or environment contain its stored credential");
+    }
+    return { spec, args, env };
+  }
+
+  async getStudioConnectorSummary(serverId: string): Promise<{ digest: string; argsCount: number; envCount: number }> {
+    const { spec, args, env } = await this.getStudioConnectorSource(serverId);
+    return { digest: studioConnectorSpecDigest(spec, args, env), argsCount: args.length, envCount: Object.keys(env).length };
   }
 
   getConfigPath(): string {

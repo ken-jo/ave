@@ -528,6 +528,8 @@ describe("preload contextBridge world shape lock", () => {
           "pluginShellUrl": "string",
           "pluginStudio": [
             "availableParts",
+            "confirmConnectorCopy",
+            "connectorCopyPreview",
             "exportDraft",
             "exportToCheckout",
             "importPackage",

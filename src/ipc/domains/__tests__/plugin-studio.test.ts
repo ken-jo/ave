@@ -6,6 +6,7 @@ import { CHANNELS } from "../../../contract/app-contract.js";
 import { hostFrameEvent, pluginShellFrameEvent } from "../../../__tests__/test-helpers.js";
 import { ContentStore } from "../../../marketplace/content/store.js";
 import { PluginStudioStore } from "../../../studio/store.js";
+import { previewStudioConnector } from "../../../studio/connector.js";
 
 const { handlers } = vi.hoisted(() => ({ handlers: new Map<string, (...args: unknown[]) => Promise<unknown>>() }));
 vi.mock("electron", () => ({
@@ -61,5 +62,27 @@ describe("plugin Studio IPC", () => {
     expect(reload).toHaveBeenCalledOnce();
     const replay = await invoke(CHANNELS.pluginStudio.installFromFile, hostFrameEvent(), previewResult.value.previewId, []);
     expect(replay).toMatchObject({ ok: false });
+  });
+
+  it("keeps the connector value projection in the host renderer and rejects stale confirmations", async () => {
+    const manager = { getStudioConnectorSource: vi.fn(async () => ({ spec: { id: "sample", transport: "stdio" as const,
+      command: "node", auth: "api-key" as const, apiKeyEnv: "SAMPLE_KEY" }, args: ["--visible-arg"], env: { SAMPLE: "visible-env" } })),
+      getConfigs: vi.fn(async () => [{ id: "sample", transport: "stdio" as const, command: "node", auth: "api-key" as const, apiKeyEnv: "SAMPLE_KEY" }]),
+      getStudioConnectorSummary: vi.fn(async () => ({ digest: (await previewStudioConnector(manager as never, "sample")).specDigest, argsCount: 1, envCount: 1 })) };
+    registerPluginStudioHandlers({ auditLogger: { log: vi.fn() }, mcpManager: manager } as never,
+      async () => ({ store: content, reload } as never));
+    const draft = await invoke(CHANNELS.pluginStudio.writeDraft, hostFrameEvent(), { name: "team-kit", version: "1.0.0",
+      description: "A team plugin", references: [{ kind: "connector", name: "sample" }] });
+    expect(draft).toMatchObject({ ok: true });
+    expect(await invoke(CHANNELS.pluginStudio.connectorCopyPreview, pluginShellFrameEvent(), "sample"))
+      .toEqual({ ok: false, error: "unauthorized-frame" });
+    const response = await invoke(CHANNELS.pluginStudio.connectorCopyPreview, hostFrameEvent(), "sample") as { ok: boolean; value: Awaited<ReturnType<typeof previewStudioConnector>> };
+    expect(response.ok).toBe(true);
+    expect(response.value.args).toMatchObject([{ value: "--visible-arg" }]);
+    expect(response.value.env).toMatchObject([{ value: "visible-env" }]);
+    expect(JSON.stringify(response.value)).not.toContain("stored-key-sentinel");
+    const stale = await invoke(CHANNELS.pluginStudio.confirmConnectorCopy, hostFrameEvent(), "team-kit", "sample",
+      { specDigest: "0".repeat(64), args: [], env: [] });
+    expect(stale).toMatchObject({ ok: false, code: "connector-changed" });
   });
 });

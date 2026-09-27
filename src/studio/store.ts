@@ -6,11 +6,13 @@ import { checkContentFiles, contentFileProblem } from "../marketplace/content/ru
 import { deriveAgentPluginComponents } from "../marketplace/content/agent-plugin-components.js";
 import { treeDigest } from "../marketplace/resolve/plugin-ladder.js";
 import { parseStrictJson } from "../marketplace/catalog/strict-json.js";
-import { AGENT_PLUGINS_SCHEMA_URL } from "../plugins/public-contract.js";
-import type { StudioDraft, StudioDraftView, StudioOrigin, StudioPart, StudioWriteRequest } from "../shared/plugin-studio.js";
+import { AGENT_PLUGINS_SCHEMA_URL, AVE_EXTENSION_NAMESPACE } from "../plugins/public-contract.js";
+import type { StudioConnectorConfirmation, StudioConnectorCopyPreview, StudioConnectorStatus, StudioDraft, StudioDraftView, StudioOrigin, StudioPart, StudioWriteRequest } from "../shared/plugin-studio.js";
+import { exportPortableMcp, parsePortableMcp, projectPortableMcp, type BundledMcpAuth } from "../mcp/portable-mcp.js";
 import { lintStudioFiles } from "./lint.js";
 import { importStudioArchive } from "./import.js";
 import { studioFileText } from "./package.js";
+import { portableStudioConnector, verifyStudioConnectorPreview } from "./connector.js";
 
 const namespace = openFeatureNamespace("studio");
 const MAX_FILES = 256;
@@ -101,6 +103,25 @@ function provenance(parts: readonly StudioPart[]): Buffer {
   return Buffer.from(`${JSON.stringify({ version: 1, parts: safe }, null, 2)}\n`);
 }
 
+function portableProvenance(value: unknown): boolean {
+  if (!object(value) || value.version !== 1 || !Array.isArray(value.parts)
+    || Object.keys(value).some((key) => key !== "version" && key !== "parts")) return false;
+  return value.parts.every((part: unknown) => {
+    if (!object(part) || typeof part.path !== "string" || !object(part.origin)
+      || Object.keys(part).some((key) => key !== "path" && key !== "origin")) return false;
+    const origin = part.origin;
+    if (origin.kind === "typed" || origin.kind === "conversation") return Object.keys(origin).length === 1;
+    if (origin.kind === "user-store") return typeof origin.name === "string"
+      && ["skills", "prompts", "agents"].includes(String(origin.store))
+      && Object.keys(origin).every((key) => ["kind", "store", "name"].includes(key));
+    if (origin.kind === "copied") return object(origin.from) && typeof origin.from.kind === "string"
+      && typeof origin.from.name === "string" && (origin.from.version === undefined || typeof origin.from.version === "string")
+      && Object.keys(origin.from).every((key) => ["kind", "name", "version"].includes(key))
+      && Object.keys(origin).every((key) => key === "kind" || key === "from");
+    return false;
+  });
+}
+
 async function persist(name: string, draft: StudioDraft): Promise<void> {
   const dir = await namespace.childDir(name);
   await writeFileAtomicAtPath(join(dir, "draft.json"), `${JSON.stringify(draft, null, 2)}\n`);
@@ -111,7 +132,7 @@ async function putFile(name: string, path: string, data: Buffer): Promise<void> 
   await writeFileAtomicAtPath(join(dir, "package", ...filePath(path).split("/")), data);
 }
 
-function validateFiles(draft: StudioDraft, files: readonly { path: string; data: Buffer }[]): Pick<StudioDraftView, "components" | "errors" | "lint"> {
+function validateFiles(draft: StudioDraft, files: readonly { path: string; data: Buffer }[], connectorStatuses: StudioConnectorStatus[]): Pick<StudioDraftView, "components" | "errors" | "lint"> {
   const errors: string[] = [];
   let components: StudioDraftView["components"] = null;
   try {
@@ -119,11 +140,30 @@ function validateFiles(draft: StudioDraft, files: readonly { path: string; data:
     components = deriveAgentPluginComponents(files, { name: draft.name });
   } catch (error) { errors.push((error as Error).message); }
   if (draft.pendingHooks.length) errors.push("Imported hooks need adaptation before validation");
+  for (const status of connectorStatuses) if (status.status !== "confirmed") {
+    errors.push(`Connector ${status.serverId} needs current value confirmation`);
+  }
   const lint = lintStudioFiles(files);
   return { components, errors, lint };
 }
 
 export class PluginStudioStore {
+  constructor(private readonly connectorSummary?: (serverId: string) => Promise<{ digest: string; argsCount: number; envCount: number }>) {}
+
+  private async connectorStatuses(draft: StudioDraft): Promise<StudioConnectorStatus[]> {
+    return Promise.all((draft.connectorCopies ?? []).map(async (copy) => {
+      const confirmedArgs = Object.keys(copy.confirmedArgs).length;
+      const confirmedEnv = Object.keys(copy.confirmedEnv).length;
+      const current = this.connectorSummary ? await this.connectorSummary(copy.serverId).catch(() => null) : null;
+      let status: StudioConnectorStatus["status"] = "needs-confirmation";
+      if (copy.specDigest && confirmedArgs === copy.argsCount && confirmedEnv === copy.envCount) {
+        status = current?.digest === copy.specDigest ? "confirmed" : "stale";
+      }
+      return { serverId: copy.serverId, argsCount: current?.argsCount ?? copy.argsCount, envCount: current?.envCount ?? copy.envCount,
+        confirmedArgs, confirmedEnv, status };
+    }));
+  }
+
   async listDrafts(): Promise<StudioDraft[]> {
     const entries = await readdir(namespace.dir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return [];
@@ -141,9 +181,10 @@ export class PluginStudioStore {
     const draft = await readDraftRecord(name);
     if (!draft) throw new Error(`Studio draft ${name} does not exist`);
     const files = await readPackageFiles(name);
-    const checked = validateFiles(draft, files);
+    const connectorStatuses = await this.connectorStatuses(draft);
+    const checked = validateFiles(draft, files, connectorStatuses);
     return { draft, files: files.map(({ path, data }) => ({ path, text: studioFileText(data) })),
-      treeDigest: digest(files), diagnostics: draft.diagnostics, ...checked };
+      treeDigest: digest(files), diagnostics: draft.diagnostics, connectorStatuses, ...checked };
   }
 
   async writeDraft(input: StudioWriteRequest, sessionId?: string, copiedFiles: readonly { path: string; data: Buffer; origin: StudioOrigin }[] = []): Promise<StudioDraftView> {
@@ -151,6 +192,11 @@ export class PluginStudioStore {
     const old = await readDraftRecord(name);
     const now = new Date().toISOString();
     const draft: StudioDraft = old ?? { version: 1, name, createdAt: now, updatedAt: now, parts: [], diagnostics: [], pendingHooks: [] };
+    for (const reference of input.references ?? []) if (reference.kind === "connector") {
+      if (!draft.connectorCopies?.some((copy) => copy.serverId === reference.name)) {
+        (draft.connectorCopies ??= []).push({ serverId: reference.name, confirmedArgs: {}, confirmedEnv: {}, argsCount: 0, envCount: 0 });
+      }
+    }
     const before = old ? digest(await readPackageFiles(name)) : null;
     const packageDir = join(namespace.dir, name, "package");
     for (const path of input.removePaths ?? []) {
@@ -175,6 +221,7 @@ export class PluginStudioStore {
       if (!authoredText && !(sessionId === undefined && part.path === "mcp.json")) {
         throw new Error(`Studio cannot author ${part.path}`);
       }
+      if (part.path === "mcp.json" && draft.connectorCopies?.length) throw new Error("Confirm selected connectors before editing mcp.json");
       if (part.path === "plugin.json" || part.path === "ai.agent-connector.ave/provenance.json") throw new Error(`${part.path} is managed by Studio`);
       await putFile(name, part.path, Buffer.from(part.text));
       const origin = sessionId ? { kind: "conversation" as const, sessionId } : { kind: "typed" as const };
@@ -217,6 +264,93 @@ export class PluginStudioStore {
     return this.readDraft(name);
   }
 
+  async confirmConnectorCopy(name: string, serverId: string, preview: StudioConnectorCopyPreview,
+    confirmation: StudioConnectorConfirmation): Promise<StudioDraftView> {
+    const draft = await readDraftRecord(name);
+    const copy = draft?.connectorCopies?.find((item) => item.serverId === serverId);
+    if (!draft || !copy) throw new Error(`Connector ${serverId} is not selected in this draft`);
+    if (preview.serverId !== serverId || confirmation.specDigest !== preview.specDigest
+      || !Array.isArray(confirmation.args) || !Array.isArray(confirmation.env)) {
+      throw new Error("Connector preview changed before confirmation");
+    }
+    verifyStudioConnectorPreview(preview);
+    if (!this.connectorSummary) throw new Error("Connector source is unavailable for confirmation");
+    const current = await this.connectorSummary(serverId);
+    if (current.digest !== preview.specDigest || current.argsCount !== preview.args.length || current.envCount !== preview.env.length) {
+      throw new Error("Connector source changed before confirmation");
+    }
+    const confirmedArgs: Record<string, string> = {};
+    for (const item of confirmation.args) {
+      const expected = preview.args.find((entry) => entry.index === item.index);
+      if (!expected || expected.digest !== item.digest || Object.hasOwn(confirmedArgs, String(item.index))) {
+        throw new Error("Connector argument confirmation is invalid or stale");
+      }
+      confirmedArgs[String(item.index)] = item.digest;
+    }
+    const confirmedEnv: Record<string, string> = {};
+    for (const item of confirmation.env) {
+      const expected = preview.env.find((entry) => entry.name === item.name);
+      if (!expected || expected.digest !== item.digest || Object.hasOwn(confirmedEnv, item.name)) {
+        throw new Error("Connector environment confirmation is invalid or stale");
+      }
+      confirmedEnv[item.name] = item.digest;
+    }
+    const complete = confirmation.args.length === preview.args.length && confirmation.env.length === preview.env.length;
+    const packageDir = join(namespace.dir, draft.name, "package");
+    const manifest = parseStrictJson((await readFile(join(packageDir, "plugin.json"))).toString("utf8"));
+    if (!object(manifest)) throw new Error("Studio plugin.json must be an object");
+    const extensions = manifest.extensions === undefined ? {} : manifest.extensions;
+    if (!object(extensions)) throw new Error("Studio extensions must be an object");
+    const own = extensions[AVE_EXTENSION_NAMESPACE] === undefined ? {} : extensions[AVE_EXTENSION_NAMESPACE];
+    if (!object(own)) throw new Error("Studio extension namespace must be an object");
+    const existingAuth = own.mcpAuth === undefined ? {} : own.mcpAuth;
+    if (!object(existingAuth)) throw new Error("Studio mcpAuth must be an object");
+    const auth = Object.assign(Object.create(null) as BundledMcpAuth, existingAuth);
+    const existingMcp = await readFile(join(packageDir, "mcp.json")).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    const existingServers = existingMcp ? parsePortableMcp(existingMcp).mcpServers : {};
+    if (!copy.specDigest && Object.hasOwn(existingServers, serverId)) throw new Error(`mcp.json already declares ${serverId}`);
+    const servers = Object.assign(Object.create(null) as typeof existingServers, existingServers);
+    delete servers[serverId];
+    delete auth[serverId];
+    if (complete) {
+      const portable = portableStudioConnector(preview);
+      servers[serverId] = exportPortableMcp({ [serverId]: portable.server }).mcpServers[serverId]!;
+      if (portable.auth) auth[serverId] = portable.auth;
+    }
+    const document = { ...exportPortableMcp({}), mcpServers: servers };
+    if (Object.keys(servers).length) projectPortableMcp(parsePortableMcp(JSON.stringify(document)), auth);
+    else if (Object.keys(auth).length) throw new Error("mcpAuth names a server without mcp.json");
+
+    copy.specDigest = preview.specDigest;
+    copy.confirmedArgs = confirmedArgs;
+    copy.confirmedEnv = confirmedEnv;
+    copy.argsCount = preview.args.length;
+    copy.envCount = preview.env.length;
+    if (Object.keys(servers).length) {
+      await putFile(name, "mcp.json", Buffer.from(`${JSON.stringify(document, null, 2)}\n`));
+      draft.parts = draft.parts.filter((part) => part.path !== "mcp.json");
+      draft.parts.push({ path: "mcp.json", origin: { kind: "copied", from: { kind: "connector", name: serverId } } });
+    } else {
+      await rm(join(packageDir, "mcp.json"), { force: true });
+      draft.parts = draft.parts.filter((part) => part.path !== "mcp.json");
+    }
+    if (Object.keys(auth).length) own.mcpAuth = auth;
+    else delete own.mcpAuth;
+    if (Object.keys(own).length) extensions[AVE_EXTENSION_NAMESPACE] = own;
+    else delete extensions[AVE_EXTENSION_NAMESPACE];
+    if (Object.keys(extensions).length) manifest.extensions = extensions;
+    else delete manifest.extensions;
+    await putFile(name, "plugin.json", Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`));
+    await putFile(name, "ai.agent-connector.ave/provenance.json", provenance(draft.parts));
+    delete draft.reviewed;
+    draft.updatedAt = new Date().toISOString();
+    await persist(name, draft);
+    return this.readDraft(name);
+  }
+
   async importPackage(path: string): Promise<StudioDraftView> {
     const imported = await importStudioArchive(path);
     const name = draftName(imported.name);
@@ -226,9 +360,7 @@ export class PluginStudioStore {
     const suppliedProvenance = imported.files.find((file) => file.path === "ai.agent-connector.ave/provenance.json");
     if (suppliedProvenance) {
       const declared = parseStrictJson(suppliedProvenance.data.toString("utf8"));
-      if (!object(declared) || declared.version !== 1 || !Array.isArray(declared.parts)
-        || declared.parts.some((part: unknown) => !object(part) || typeof part.path !== "string" || !object(part.origin)
-          || Object.hasOwn(part.origin, "sessionId") || Object.hasOwn(part.origin, "path"))) {
+      if (!portableProvenance(declared)) {
         throw new Error("Imported provenance contains private or malformed fields");
       }
     }
@@ -270,7 +402,8 @@ export class PluginStudioStore {
   }
 
   async packageFiles(name: string): Promise<Array<{ path: string; data: Buffer }>> {
-    await this.readDraft(name);
+    const view = await this.readDraft(name);
+    if (view.errors.length) throw new Error(`Studio draft has validation errors: ${view.errors.join("; ")}`);
     return readPackageFiles(name);
   }
 }

@@ -7,6 +7,11 @@ const TEXT_RULES: ReadonlyArray<{ pattern: RegExp; message: string }> = [
   { pattern: /\b(?:send|upload|post|email)\b[^\n]{0,100}(?:https?:\/\/[^\s)]+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,})/giu, message: "Requests sending content to an address" },
 ];
 
+export function studioConnectorWarning(value: string): string | undefined {
+  return value.length >= 24 && /^[A-Za-z0-9+/=_-]+$/u.test(value) && new Set(value).size >= 12
+    ? "Possible embedded credential" : undefined;
+}
+
 /** Findings are advisory and always include the exact matching text. */
 export function lintStudioFiles(files: readonly { path: string; data: Buffer }[]): StudioLintFinding[] {
   const findings: StudioLintFinding[] = [];
@@ -33,9 +38,8 @@ export function lintStudioFiles(files: readonly { path: string; data: Buffer }[]
       const servers = (value as { mcpServers?: Record<string, { args?: string[]; env?: Record<string, string> }> }).mcpServers ?? {};
       for (const [name, server] of Object.entries(servers)) {
         for (const token of [...(server.args ?? []), ...Object.values(server.env ?? {})]) {
-          if (token.length >= 24 && /^[A-Za-z0-9+/=_-]+$/u.test(token) && new Set(token).size >= 12) {
-            findings.push({ path: `mcp.json:${name}`, matched: token, message: "Possible embedded credential" });
-          }
+          const warning = studioConnectorWarning(token);
+          if (warning) findings.push({ path: `mcp.json:${name}`, matched: token, message: warning });
         }
       }
     }

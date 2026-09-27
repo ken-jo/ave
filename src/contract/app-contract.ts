@@ -331,6 +331,8 @@ export const CHANNELS = {
     readDraft: "ave:plugin-studio:drafts:read",
     writeDraft: "ave:plugin-studio:drafts:write",
     validateDraft: "ave:plugin-studio:drafts:validate",
+    connectorCopyPreview: "ave:plugin-studio:connector-copy:preview",
+    confirmConnectorCopy: "ave:plugin-studio:connector-copy:confirm",
     importPackage: "ave:plugin-studio:import",
     reviewDraft: "ave:plugin-studio:drafts:review",
     exportDraft: "ave:plugin-studio:export",

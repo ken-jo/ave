@@ -6,10 +6,11 @@ import { CHANNELS } from "../../contract/app-contract.js";
 import { stageLocalAgentPlugin } from "../../marketplace/content/store.js";
 import { deriveAgentPluginComponents } from "../../marketplace/content/agent-plugin-components.js";
 import { compareSemver } from "../../shared/semver-compare.js";
-import type { StudioLocalPreview, StudioResult, StudioWriteRequest } from "../../shared/plugin-studio.js";
+import type { StudioConnectorConfirmation, StudioLocalPreview, StudioResult, StudioWriteRequest } from "../../shared/plugin-studio.js";
 import { PluginStudioStore } from "../../studio/store.js";
 import { readLocalAgentPlugin, studioExportFiles, studioFileText, studioZip } from "../../studio/package.js";
 import { listStudioParts, resolveStudioReferences } from "../../studio/references.js";
+import { previewStudioConnector } from "../../studio/connector.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../gated.js";
 import type { IpcDeps } from "../types.js";
 import type { InstalledContentRuntime } from "./marketplace-content.js";
@@ -37,13 +38,17 @@ function writeRequest(value: unknown): StudioWriteRequest {
 
 function result<T>(run: () => Promise<T>): Promise<StudioResult<T>> {
   return run().then((value) => ({ ok: true as const, value }), (error: unknown) => ({ ok: false as const,
-    code: error instanceof Error && /invalid|must|missing|changed|review|exceed|unsupported|cannot|needs|does not|conflict/i.test(error.message) ? "invalid-request" as const : "unavailable" as const,
+    code: error instanceof Error && /Connector (?:source|preview) changed before confirmation/u.test(error.message) ? "connector-changed" as const
+      : error instanceof Error && /invalid|must|missing|changed|review|exceed|unsupported|cannot|needs|does not|conflict/i.test(error.message) ? "invalid-request" as const : "unavailable" as const,
     message: error instanceof Error ? error.message : "Studio operation failed" }));
 }
 
 /** One host-renderer domain for draft operations and local package review. */
 export function registerPluginStudioHandlers(deps: IpcDeps, content: () => Promise<InstalledContentRuntime | null>): void {
-  const store = new PluginStudioStore();
+  const store = new PluginStudioStore((serverId) => {
+    if (!deps.mcpManager) throw new Error("Connector manager is unavailable");
+    return deps.mcpManager.getStudioConnectorSummary(serverId);
+  });
   const pending = new Map<string, PendingInstall>();
   const channels = CHANNELS.pluginStudio;
   const sources = { skillStore: deps.skillStore, agentProfileStore: deps.agentProfileStore,
@@ -75,6 +80,19 @@ export function registerPluginStudioHandlers(deps: IpcDeps, content: () => Promi
     return store.writeDraft(request, undefined, await resolveStudioReferences(request, sources));
   });
   handle(channels.validateDraft, (name) => store.readDraft(string(name, "name")));
+  handle(channels.connectorCopyPreview, (serverId) => {
+    if (!deps.mcpManager) throw new Error("Connector manager is unavailable");
+    return previewStudioConnector(deps.mcpManager, string(serverId, "serverId"));
+  });
+  handle(channels.confirmConnectorCopy, async (name, serverId, rawConfirmation) => {
+    if (!deps.mcpManager) throw new Error("Connector manager is unavailable");
+    if (!rawConfirmation || typeof rawConfirmation !== "object" || Array.isArray(rawConfirmation)) {
+      throw new Error("Connector confirmation is invalid");
+    }
+    const confirmation = rawConfirmation as StudioConnectorConfirmation;
+    const id = string(serverId, "serverId");
+    return store.confirmConnectorCopy(string(name, "name"), id, await previewStudioConnector(deps.mcpManager, id), confirmation);
+  });
   handle(channels.importPackage, async () => {
     const selection = await dialog.showOpenDialog({ properties: ["openFile", "openDirectory"], filters: [{ name: "Plugin package", extensions: ["zip"] }] });
     if (selection.canceled || !selection.filePaths[0]) return null;

@@ -386,6 +386,8 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:permissions:user-approval-record",
         "ave:permissions:user-approval-revoke",
         "ave:plugin-studio:checkout:write",
+        "ave:plugin-studio:connector-copy:confirm",
+        "ave:plugin-studio:connector-copy:preview",
         "ave:plugin-studio:drafts:install-preview",
         "ave:plugin-studio:drafts:list",
         "ave:plugin-studio:drafts:read",

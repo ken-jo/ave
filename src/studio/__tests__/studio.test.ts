@@ -78,6 +78,15 @@ describe("Studio drafts and package projections", () => {
     }
   });
 
+  it("rejects nested machine-local fields in imported provenance", async () => {
+    const source = join(root, "private-provenance");
+    await put(source, "plugin.json", JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+      name: "team-kit", version: "1.0.0", description: "A team plugin" }));
+    await put(source, "ai.agent-connector.ave/provenance.json", JSON.stringify({ version: 1, parts: [{ path: "plugin.json",
+      origin: { kind: "copied", from: { kind: "package", name: "team-kit", privatePath: "/home/synthetic/private" } } }] }));
+    await expect(new PluginStudioStore().importPackage(source)).rejects.toThrow("private or malformed");
+  });
+
   it("synthesizes a legacy manifest, commands, agents and MCP transport while reporting losses", async () => {
     const source = join(root, "legacy");
     await put(source, ".claude-plugin/plugin.json", JSON.stringify({ name: "team-kit", commands: ["special"], agents: ["agents"],

@@ -55,6 +55,8 @@ import { McpManager } from "../mcp-manager.js";
 import type { McpServerConfig } from "../types.js";
 import { observeFileHandleSyncs } from "../../__tests__/support/fsync-observer.js";
 import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
+import { previewStudioConnector } from "../../studio/connector.js";
+import { bundledConfigId } from "../bundled-credential.js";
 
 const testDir = join(tmpdir(), `ave-mcp-test-${process.pid}`);
 const testConfigPath = join(testDir, "mcp-servers.json");
@@ -88,6 +90,42 @@ afterAll(async () => {
 });
 
 describe("McpManager — getConfigs()", () => {
+  it("previews an installed plugin connector through the Studio projection", async () => {
+    const mgr = await makeManager();
+    const id = bundledConfigId({ kind: "agent-plugin", name: "team-kit" }, "sample");
+    mgr.registerBundledCredentialSource("agent-plugin", { list: () => [{ packageName: "team-kit", serverName: "sample",
+      transport: "stdio", command: "uvx", args: ["studio-sample==1.0.0"], env: { SAMPLE: "visible-env" },
+      auth: "api-key", apiKeyEnv: "SAMPLE_KEY" }], reconnect: async () => undefined });
+    const settings = await mgr.getConfigs();
+    expect(settings).toMatchObject([{ id, bundled: { kind: "agent-plugin", name: "team-kit", server: "sample" } }]);
+    expect(settings[0]).not.toHaveProperty("args");
+    expect(settings[0]).not.toHaveProperty("env");
+    const preview = await previewStudioConnector(mgr, id);
+    expect(preview.spec).toEqual(settings[0]);
+    expect(preview.args).toMatchObject([{ index: 0, value: "studio-sample==1.0.0" }]);
+    expect(preview.env).toMatchObject([{ name: "SAMPLE", value: "visible-env" }]);
+  });
+  it("keeps the settings DTO secret-free while Studio previews individual values without the stored key", async () => {
+    await writeFile(testConfigPath, JSON.stringify({ servers: [{ id: "sample", transport: "stdio", command: "node",
+      args: ["--visible-arg"], env: { SAMPLE: "visible-env" }, auth: "api-key", apiKeyEnv: "SAMPLE_KEY",
+      apiKey: "stored-key-sentinel" }] }));
+    const mgr = await makeManager();
+    const settings = await mgr.getConfigs();
+    expect(settings[0]).not.toHaveProperty("args");
+    expect(settings[0]).not.toHaveProperty("env");
+    expect(settings[0]).not.toHaveProperty("apiKey");
+    const preview = await previewStudioConnector(mgr, "sample");
+    expect(preview.spec).toEqual(settings[0]);
+    expect(preview.args).toMatchObject([{ index: 0, value: "--visible-arg" }]);
+    expect(preview.env).toMatchObject([{ name: "SAMPLE", value: "visible-env" }]);
+    expect(JSON.stringify(preview)).not.toContain("stored-key-sentinel");
+    await writeFile(testConfigPath, JSON.stringify({ servers: [{ id: "sample", transport: "stdio", command: "node",
+      args: ["stored-key-sentinel"], apiKey: "stored-key-sentinel" }] }));
+    await expect(previewStudioConnector(mgr, "sample")).rejects.toThrow("stored credential");
+    await writeFile(testConfigPath, JSON.stringify({ servers: [{ id: "sample", transport: "http", url: "https://example.invalid/mcp",
+      headers: { Authorization: "Bearer hidden" } }] }));
+    await expect(previewStudioConnector(mgr, "sample")).rejects.toThrow("custom headers");
+  });
   it("returns [] when config file does not exist", async () => {
     const mgr = await makeManager();
     const result = await mgr.getConfigs();

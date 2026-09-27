@@ -5,9 +5,18 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from "../../../../components/ui/input.js";
 import { Textarea } from "../../../../components/ui/textarea.js";
 import { useTranslation } from "../../../../i18n/react.js";
-import type { PluginStudioApi, StudioAvailableParts, StudioDraft, StudioDraftView, StudioLocalPreview, StudioDiagnostic } from "../../../../shared/plugin-studio.js";
+import type { TranslateFn } from "../../../../i18n/translate.js";
+import type { PluginStudioApi, StudioAvailableParts, StudioDraft, StudioDraftView, StudioLocalPreview, StudioDiagnostic, StudioConnectorCopyPreview, StudioErrorCode } from "../../../../shared/plugin-studio.js";
 
 const COMPONENT = /^[a-z][a-z0-9-]{0,62}$/u;
+
+function studioErrorText(t: TranslateFn, code: StudioErrorCode): string {
+  switch (code) {
+    case "invalid-request": return t("pluginStudio.invalidRequest");
+    case "unavailable": return t("pluginStudio.unavailable");
+    case "connector-changed": return t("pluginStudio.connectorChanged");
+  }
+}
 
 function DiagnosticGroup({ title, diagnostics }: { title: string; diagnostics: StudioDiagnostic[] }) {
   if (!diagnostics.length) return null;
@@ -28,7 +37,7 @@ export function LocalPluginPackageSheet({ api, preview, onClose, onInstalled }: 
     const selected = Object.entries(preview.components.mcpServers).filter(([name]) => approved[name]).map(([name, server]) => ({ name, digest: server.digest }));
     const result = await api.installFromFile(preview.previewId, selected);
     setBusy(false);
-    if (!result.ok) { setFailure(result.message); return; }
+    if (!result.ok) { setFailure(studioErrorText(t, result.code)); return; }
     onInstalled();
     onClose();
   };
@@ -69,6 +78,8 @@ export function PluginStudioView({ api, onInstalled }: { api: PluginStudioApi; o
   const [promptName, setPromptName] = useState("");
   const [promptBody, setPromptBody] = useState("");
   const [selected, setSelected] = useState<Record<string, boolean>>({});
+  const [connectorPreviews, setConnectorPreviews] = useState<Record<string, StudioConnectorCopyPreview>>({});
+  const [connectorConfirmed, setConnectorConfirmed] = useState<Record<string, boolean>>({});
   const [confirmed, setConfirmed] = useState(false);
   const [projection, setProjection] = useState(false);
   const [reviewVersion, setReviewVersion] = useState("");
@@ -82,8 +93,8 @@ export function PluginStudioView({ api, onInstalled }: { api: PluginStudioApi; o
 
   const refresh = async () => {
     const [listed, parts] = await Promise.all([api.listDrafts(), api.availableParts()]);
-    if (listed.ok) setDrafts(listed.value); else setFailure(listed.message);
-    if (parts.ok) setAvailable(parts.value); else setFailure(parts.message);
+    if (listed.ok) setDrafts(listed.value); else setFailure(studioErrorText(t, listed.code));
+    if (parts.ok) setAvailable(parts.value); else setFailure(studioErrorText(t, parts.code));
   };
   const showView = (next: StudioDraftView) => {
     setView(next); setConfirmed(false); setAdaptedHooksConfirmed(false);
@@ -94,12 +105,31 @@ export function PluginStudioView({ api, onInstalled }: { api: PluginStudioApi; o
     setReviewDescription(typeof fields.description === "string" ? fields.description : "");
     setFileEdits(Object.fromEntries(next.files.filter((file) => file.text !== null).map((file) => [file.path, file.text!])))
     setHookCommands(next.draft.pendingHooks.map((hook) => JSON.stringify(hook.command)));
+    setConnectorPreviews({});
+    setConnectorConfirmed({});
+    void Promise.all((next.draft.connectorCopies ?? []).map(async (copy) => {
+      const result = await api.connectorCopyPreview(copy.serverId);
+      return { copy, result };
+    })).then((results) => {
+      const previews: Record<string, StudioConnectorCopyPreview> = {};
+      const checked: Record<string, boolean> = {};
+      for (const { copy, result } of results) {
+        if (!result.ok) { setFailure(studioErrorText(t, result.code)); continue; }
+        const preview = result.value;
+        previews[copy.serverId] = preview;
+        if (copy.specDigest !== preview.specDigest) continue;
+        for (const item of preview.args) checked[`arg:${copy.serverId}:${item.index}`] = copy.confirmedArgs[String(item.index)] === item.digest;
+        for (const item of preview.env) checked[`env:${copy.serverId}:${item.name}`] = copy.confirmedEnv[item.name] === item.digest;
+      }
+      setConnectorPreviews(previews);
+      setConnectorConfirmed(checked);
+    });
   };
   useEffect(() => { void refresh(); }, [api]);
   const open = async (draftName: string) => {
     const result = await api.readDraft(draftName);
     if (result.ok) { showView(result.value); setFailure(""); }
-    else setFailure(result.message);
+    else setFailure(studioErrorText(t, result.code));
   };
   const create = async () => {
     setFailure(""); setBusy(true);
@@ -119,27 +149,27 @@ export function PluginStudioView({ api, onInstalled }: { api: PluginStudioApi; o
     const result = await api.writeDraft({ name, version, description, files, references });
     setBusy(false);
     if (result.ok) { showView(result.value); void refresh(); }
-    else setFailure(result.message);
+    else setFailure(studioErrorText(t, result.code));
   };
   const importPackage = async () => {
     const result = await api.importPackage();
     if (result.ok && result.value) { showView(result.value); void refresh(); }
-    else if (!result.ok) setFailure(result.message);
+    else if (!result.ok) setFailure(studioErrorText(t, result.code));
   };
   const installFile = async () => {
     const result = await api.previewInstallFromFile();
     if (result.ok && result.value) setPreview(result.value);
-    else if (!result.ok) setFailure(result.message);
+    else if (!result.ok) setFailure(studioErrorText(t, result.code));
   };
   const installDraft = async () => {
     if (!view || view.errors.length) return;
     const result = await api.previewInstallDraft(view.draft.name);
-    if (result.ok) setPreview(result.value); else setFailure(result.message);
+    if (result.ok) setPreview(result.value); else setFailure(studioErrorText(t, result.code));
   };
   const markReviewed = async () => {
     if (!view || !confirmed) return;
     const result = await api.reviewDraft(view.draft.name, view.treeDigest);
-    if (result.ok) showView(result.value); else setFailure(result.message);
+    if (result.ok) showView(result.value); else setFailure(studioErrorText(t, result.code));
   };
   const saveReviewEdits = async () => {
     if (!view) return;
@@ -153,20 +183,32 @@ export function PluginStudioView({ api, onInstalled }: { api: PluginStudioApi; o
       && fileEdits[file.path] !== file.text).map((file) => ({ path: file.path, text: fileEdits[file.path] ?? "" }));
     const result = await api.writeDraft({ name: view.draft.name, version: reviewVersion, description: reviewDescription, files,
       ...(adaptedHooks ? { adaptedHooks } : {}) });
-    if (result.ok) { showView(result.value); setFailure(""); } else setFailure(result.message);
+    if (result.ok) { showView(result.value); setFailure(""); } else setFailure(studioErrorText(t, result.code));
+  };
+  const confirmConnector = async (serverId: string) => {
+    if (!view) return;
+    const preview = connectorPreviews[serverId];
+    if (!preview) return;
+    const result = await api.confirmConnectorCopy(view.draft.name, serverId, {
+      specDigest: preview.specDigest,
+      args: preview.args.filter((item) => connectorConfirmed[`arg:${serverId}:${item.index}`]).map(({ index, digest }) => ({ index, digest })),
+      env: preview.env.filter((item) => connectorConfirmed[`env:${serverId}:${item.name}`]).map(({ name, digest }) => ({ name, digest })),
+    });
+    if (result.ok) { showView(result.value); setFailure(""); }
+    else setFailure(studioErrorText(t, result.code));
   };
   const share = async () => {
     if (!view) return;
     const result = await api.exportDraft(view.draft.name, projection);
-    if (!result.ok) setFailure(result.message);
+    if (!result.ok) setFailure(studioErrorText(t, result.code));
   };
   const shareCheckout = async () => {
     if (!view) return;
     const result = await api.exportToCheckout(view.draft.name);
     if (result.ok && result.value) setCheckoutSteps([result.value.path, ...result.value.steps]);
-    else if (!result.ok) setFailure(result.message);
+    else if (!result.ok) setFailure(studioErrorText(t, result.code));
   };
-  const reviewed = view?.draft.reviewed?.treeDigest === view?.treeDigest;
+  const reviewed = view?.draft.reviewed?.treeDigest === view?.treeDigest && (view?.errors.length ?? 1) === 0;
   return <div className="mt-3 space-y-4" data-testid="plugin-studio">
     <div className="flex flex-wrap gap-2">
       <Button size="sm" variant="outline" onClick={() => void importPackage()} data-testid="plugin-studio:import">{t("pluginStudio.import")}</Button>
@@ -178,6 +220,31 @@ export function PluginStudioView({ api, onInstalled }: { api: PluginStudioApi; o
       <DiagnosticGroup title={t("pluginStudio.lost")} diagnostics={view.diagnostics.filter((item) => item.group === "lost")} />
       <DiagnosticGroup title={t("pluginStudio.rewritten")} diagnostics={view.diagnostics.filter((item) => item.group === "rewritten")} />
       <DiagnosticGroup title={t("pluginStudio.needsInput")} diagnostics={view.diagnostics.filter((item) => item.group === "needs-input")} />
+      {view.connectorStatuses.map((status) => {
+        const connector = connectorPreviews[status.serverId];
+        return <section key={status.serverId} className="space-y-2 rounded-md border p-3 text-xs" data-testid={`plugin-studio:connector:${status.serverId}`}>
+          <h4 className="text-sm font-semibold">{t("pluginStudio.confirmConnector", { name: status.serverId })}</h4>
+          <p>{t("pluginStudio.connectorStatus", { status: status.status === "confirmed" ? t("pluginStudio.connectorConfirmed")
+            : status.status === "stale" ? t("pluginStudio.connectorStale") : t("pluginStudio.connectorPending"),
+            confirmed: status.confirmedArgs + status.confirmedEnv, total: status.argsCount + status.envCount })}</p>
+          {connector && <>
+            <pre className="overflow-auto whitespace-pre-wrap break-all rounded bg-muted p-2">{JSON.stringify(connector.spec, null, 2)}</pre>
+            {connector.args.map((item) => <label key={`arg:${item.index}`} className="flex items-start gap-2">
+              <Checkbox data-testid={`plugin-studio:confirm-arg:${status.serverId}:${item.index}`}
+                checked={connectorConfirmed[`arg:${status.serverId}:${item.index}`] === true}
+                onCheckedChange={(value) => setConnectorConfirmed((current) => ({ ...current, [`arg:${status.serverId}:${item.index}`]: value === true }))} />
+              <span><code>args[{item.index}] = {item.value}</code>{item.warning && <span className="block text-warning">{item.warning}</span>}</span>
+            </label>)}
+            {connector.env.map((item) => <label key={`env:${item.name}`} className="flex items-start gap-2">
+              <Checkbox data-testid={`plugin-studio:confirm-env:${status.serverId}:${item.name}`}
+                checked={connectorConfirmed[`env:${status.serverId}:${item.name}`] === true}
+                onCheckedChange={(value) => setConnectorConfirmed((current) => ({ ...current, [`env:${status.serverId}:${item.name}`]: value === true }))} />
+              <span><code>env.{item.name} = {item.value}</code>{item.warning && <span className="block text-warning">{item.warning}</span>}</span>
+            </label>)}
+            <Button size="sm" variant="outline" onClick={() => void confirmConnector(status.serverId)} data-testid={`plugin-studio:confirm-connector:${status.serverId}`}>{t("pluginStudio.saveConnectorConfirmation")}</Button>
+          </>}
+        </section>;
+      })}
       {view.errors.map((error, index) => <p key={index} className="text-xs text-destructive">{error}</p>)}
       <div className="grid gap-2 sm:grid-cols-2"><Input value={reviewVersion} onChange={(event) => setReviewVersion(event.target.value)} aria-label={t("pluginStudio.version")} /><Input value={reviewDescription} onChange={(event) => setReviewDescription(event.target.value)} aria-label={t("pluginStudio.description")} /></div>
       {view.draft.pendingHooks.map((hook, index) => <div key={index} className="space-y-1 rounded border p-2 text-xs"><strong>{hook.event}</strong><p>{t("pluginStudio.hookAdaptation")}</p><Textarea value={hookCommands[index] ?? ""} onChange={(event) => setHookCommands((current) => current.map((value, i) => i === index ? event.target.value : value))} aria-label={`${hook.event} argv`} /></div>)}
@@ -199,7 +266,7 @@ export function PluginStudioView({ api, onInstalled }: { api: PluginStudioApi; o
       <h3 className="text-sm font-semibold">{t("pluginStudio.createTitle")}</h3>
       <div className="grid gap-2 sm:grid-cols-2"><Input value={name} onChange={(event) => setName(event.target.value)} placeholder={t("pluginStudio.name")} aria-label={t("pluginStudio.name")} data-testid="plugin-studio:name" /><Input value={version} onChange={(event) => setVersion(event.target.value)} placeholder={t("pluginStudio.version")} aria-label={t("pluginStudio.version")} data-testid="plugin-studio:version" /></div>
       <Input value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("pluginStudio.description")} aria-label={t("pluginStudio.description")} data-testid="plugin-studio:description" />
-      {available && <div className="grid gap-2 sm:grid-cols-2">{(["skills", "routines", "connectors", "prompts", "agents"] as const).map((group) => <fieldset key={group} className="rounded border p-2"><legend className="px-1 text-xs font-semibold">{t(`pluginStudio.${group}`)}</legend>{available[group].map((item) => <label key={item.name} className="flex items-center gap-2 text-xs"><Checkbox checked={selected[`${group.slice(0, -1)}:${item.name}`] === true} disabled={group === "connectors"} onCheckedChange={(value) => setSelected((current) => ({ ...current, [`${group.slice(0, -1)}:${item.name}`]: value === true }))} />{item.name} · {item.description}</label>)}{group === "connectors" && <p className="text-xs text-muted-foreground">{t("pluginStudio.connectorUnavailable")}</p>}</fieldset>)}</div>}
+      {available && <div className="grid gap-2 sm:grid-cols-2">{(["skills", "routines", "connectors", "prompts", "agents"] as const).map((group) => <fieldset key={group} className="rounded border p-2"><legend className="px-1 text-xs font-semibold">{t(`pluginStudio.${group}`)}</legend>{available[group].map((item) => <label key={item.name} className="flex items-center gap-2 text-xs"><Checkbox data-testid={`plugin-studio:select:${group.slice(0, -1)}:${item.name}`} checked={selected[`${group.slice(0, -1)}:${item.name}`] === true} onCheckedChange={(value) => setSelected((current) => ({ ...current, [`${group.slice(0, -1)}:${item.name}`]: value === true }))} />{item.name} · {item.description}</label>)}</fieldset>)}</div>}
       <div className="grid gap-2 sm:grid-cols-2"><Input value={skillName} onChange={(event) => setSkillName(event.target.value)} placeholder={t("pluginStudio.newSkillName")} aria-label={t("pluginStudio.newSkillName")} /><Input value={promptName} onChange={(event) => setPromptName(event.target.value)} placeholder={t("pluginStudio.newPromptName")} aria-label={t("pluginStudio.newPromptName")} /><Textarea value={skillBody} onChange={(event) => setSkillBody(event.target.value)} placeholder={t("pluginStudio.newSkillBody")} aria-label={t("pluginStudio.newSkillBody")} /><Textarea value={promptBody} onChange={(event) => setPromptBody(event.target.value)} placeholder={t("pluginStudio.newPromptBody")} aria-label={t("pluginStudio.newPromptBody")} /></div>
       <Button disabled={busy} onClick={() => void create()} data-testid="plugin-studio:create">{t("pluginStudio.create")}</Button>
       {drafts.length > 0 && <section className="space-y-1"><h3 className="text-sm font-semibold">{t("pluginStudio.drafts")}</h3>{drafts.map((draft) => <Button key={draft.name} size="sm" variant="ghost" onClick={() => void open(draft.name)}>{draft.name}</Button>)}</section>}

@@ -138,6 +138,11 @@ export async function setupWorkflowStores(
     },
     networkFetch,
     singleHopNetworkFetch,
+    getStudioMcpConfigs: () => ctx.mcpManager ? ctx.mcpManager.getConfigs() : Promise.resolve([]),
+    getStudioConnectorSummary: (serverId: string) => {
+      if (!ctx.mcpManager) throw new Error("Connector manager is unavailable");
+      return ctx.mcpManager.getStudioConnectorSummary(serverId);
+    },
     // Resolved lazily: `ctx.mcpManager` is assigned by the MCP boot step, which runs
     // AFTER this one. Between the two, this returns undefined and the tools say so
     // rather than reporting a generic failure — the tools are registered either way,
