@@ -58,7 +58,7 @@ export function importLegacyHooks(value: unknown, sourcePath: string): { entries
     return { entries, diagnostics };
   }
   for (const [sourceEvent, blocks] of Object.entries(groups)) {
-    const event = EVENT_TO_INTERNAL[sourceEvent];
+    const event = Object.hasOwn(EVENT_TO_INTERNAL, sourceEvent) ? EVENT_TO_INTERNAL[sourceEvent] : undefined;
     if (!event) {
       report("lost", sourceEvent, `event ${sourceEvent} has no equivalent`);
       continue;
@@ -118,12 +118,12 @@ export function clearedImportedHooks(entries: readonly (Omit<ImportedHookEntry, 
   const hooks: Record<string, unknown[]> = {};
   for (const [index, entry] of entries.entries()) {
     if (entry.needsAdaptation !== false) throw new Error(`hook ${index} still needs adaptation`);
-    const event = INTERNAL_TO_EVENT[entry.event];
+    const event = Object.hasOwn(INTERNAL_TO_EVENT, entry.event) ? INTERNAL_TO_EVENT[entry.event] : undefined;
     if (!event) throw new Error(`hook ${index} has an unsupported event`);
     validateSymbolicHookArgv([...entry.command, ...Object.values(entry.env ?? {})], `hook ${index}`);
     (hooks[event] ??= []).push({ ...(entry.matcher ? { matcher: entry.matcher } : {}), hooks: [{ type: "command",
       command: entry.command, ...(entry.env ? { env: entry.env } : {}),
-      ...(entry.timeoutMs ? { timeoutMs: entry.timeoutMs } : {}) }] });
+      ...(entry.timeoutMs !== undefined ? { timeoutMs: entry.timeoutMs } : {}) }] });
   }
   const document = { version: 1 as const, hooks };
   const parsed = parseHookConfig(document, { bundled: true });
@@ -139,7 +139,7 @@ export function exportLegacyHooks(entries: readonly HookConfigEntry[]): { hooks:
   const back = (value: string) => value.replaceAll("${PLUGIN_ROOT}", "${CLAUDE_PLUGIN_ROOT}")
     .replaceAll("${PLUGIN_DATA}", "${CLAUDE_PLUGIN_DATA}");
   for (const entry of entries) {
-    const event = INTERNAL_TO_EVENT[entry.event];
+    const event = Object.hasOwn(INTERNAL_TO_EVENT, entry.event) ? INTERNAL_TO_EVENT[entry.event] : undefined;
     if (!event) throw new Error(`hook event ${entry.event} cannot be exported`);
     const [command, ...args] = entry.command;
     if (!command) throw new Error(`hook ${entry.id} has no executable`);

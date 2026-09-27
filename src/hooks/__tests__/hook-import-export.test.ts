@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { clearedImportedHooks, exportLegacyHooks, importLegacyHooks } from "../hook-import-export.js";
+import type { HookEvent } from "../script-hook-types.js";
 
 const block = (handler: unknown) => [{ matcher: "read_*", hooks: [handler] }];
 const sourcePath = "hooks/hooks.json";
@@ -36,6 +37,30 @@ describe("hook import and export review", () => {
     expect(result.entries).toEqual([]);
     expect(result.diagnostics[0]?.sourcePath).toBe(sourcePath);
     expect(result.diagnostics[0]?.message).toMatch(reason);
+  });
+
+  it.each(["constructor", "toString", "__proto__"])("drops inherited event name %s with a named diagnostic", (event) => {
+    const source = JSON.parse(JSON.stringify({ hooks: { [event]: block({ type: "command", command: "node", args: ["./hook.js"] }) } }));
+    const result = importLegacyHooks(source, sourcePath);
+    expect(result.entries).toEqual([]);
+    expect(result.diagnostics).toContainEqual({ group: "lost", sourcePath, entry: event,
+      message: `event ${event} has no equivalent` });
+  });
+
+  it.each(["constructor", "toString", "__proto__"])("rejects inherited event name %s during publication and export", (name) => {
+    const event = name as HookEvent;
+    expect(() => clearedImportedHooks([{ sourcePath, event, command: ["node", "./hook.js"], needsAdaptation: false }]))
+      .toThrow("unsupported event");
+    expect(() => exportLegacyHooks([{ id: "one", event, source: "config", command: ["node", "./hook.js"], timeoutMs: 1200 }]))
+      .toThrow("cannot be exported");
+  });
+
+  it.each([0, -1])("rejects imported timeoutMs %i after review with the native diagnostic", (timeoutMs) => {
+    const result = importLegacyHooks({ hooks: { PreToolUse: block({ type: "command", command: "node",
+      args: ["./hook.js"], timeoutMs }) } }, sourcePath);
+    expect(result.entries).toEqual([expect.objectContaining({ timeoutMs, needsAdaptation: true })]);
+    expect(() => clearedImportedHooks(result.entries.map((entry) => ({ ...entry, needsAdaptation: false }))))
+      .toThrow(/handler\.timeoutMs must be > 0/);
   });
 
   it("locates each rejected and review-required handler in its source file", () => {

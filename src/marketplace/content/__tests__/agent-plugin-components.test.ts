@@ -46,6 +46,10 @@ describe("agent-plugin component authority", () => {
   ] as const)("rejects unsafe or unmappable hook entry %#", (handler, event, reason) => {
     expect(() => deriveAgentPluginComponents(withHook(handler, event))).toThrow(reason);
   });
+  it.each(["constructor", "toString", "__proto__"])("rejects inherited hook event name %s in a package", (event) => {
+    expect(() => deriveAgentPluginComponents(withHook({ type: "command", command: ["node", "./server/hook.js"] }, event)))
+      .toThrow(event === "__proto__" ? /key __proto__ is not allowed/ : /unknown event/);
+  });
   it("derives stable digests from bytes and refuses a descriptor mismatch", () => {
     const files = packageFiles();
     const components = deriveAgentPluginComponents(files);

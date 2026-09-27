@@ -214,7 +214,7 @@ export function parseHookConfig(raw: unknown, options: { bundled?: boolean } = {
   }
 
   for (const [eventKey, group] of Object.entries(hooksByEvent)) {
-    const event = EVENT_KEY_TO_TYPE[eventKey];
+    const event = Object.hasOwn(EVENT_KEY_TO_TYPE, eventKey) ? EVENT_KEY_TO_TYPE[eventKey] : undefined;
     if (!event) {
       // Decision (b): unknown event → ignored + warned, never silently active.
       warnings.push(`hooks.json: unknown event "${eventKey}" — entry ignored`);
