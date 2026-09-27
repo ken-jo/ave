@@ -56,6 +56,7 @@ import { TOOL_NAME_PATTERN, isValidToolName } from "../../tools/types.js";
 import { canonicalJSON } from "../secret-access/canonical-json.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { sandboxDeclarationProblem } from "../sandbox-authority.js";
+import { HOST_PROTOCOL_VERSIONS_SERVED } from "../isolation/host-api-wire.js";
 
 // Re-exported here so manifest/plugin-loading consumers can import the
 // minAppVersion gate error + IPC code alongside the other manifest contracts.
@@ -1357,7 +1358,7 @@ export async function parsePluginJson(
         fail(
           "requires.hostProtocol",
           "must be a positive integer written as a string, with no leading zeros — manifest_schema",
-          `"requires": { "hostProtocol": "1" }`,
+          `"requires": { "hostProtocol": "${HOST_PROTOCOL_VERSIONS_SERVED[0]}" }`,
         );
       }
     }
