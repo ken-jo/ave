@@ -374,6 +374,8 @@ export interface SecretDocumentStoreOptions {
   path: string;
   policy: SecretPolicy;
   encryption: SecretEncryption;
+  /** Runs synchronously after changed entries become readable, before lock release. */
+  onCommittedSecretsChanged?: (keys: readonly string[]) => void;
   platform?: NodeJS.Platform;
   runtime?: Partial<SecretStoreRuntime>;
 }
@@ -386,6 +388,7 @@ export class SecretDocumentStore {
   private readonly externalKey: boolean;
   private readonly platform: NodeJS.Platform;
   private readonly runtime: SecretStoreRuntime;
+  private readonly onCommittedSecretsChanged?: (keys: readonly string[]) => void;
 
   constructor(options: SecretDocumentStoreOptions) {
     this.path = resolve(options.path);
@@ -395,6 +398,7 @@ export class SecretDocumentStore {
     this.policy = this.externalKey ? "packaged" : options.policy;
     this.platform = options.platform ?? process.platform;
     this.runtime = { ...DEFAULT_RUNTIME, ...options.runtime };
+    this.onCommittedSecretsChanged = options.onCommittedSecretsChanged;
   }
 
   get(key: string): string | null {
@@ -656,6 +660,13 @@ export class SecretDocumentStore {
                 error,
               });
             }
+            const changedKeys = new Set([...Object.keys(state.document.entries), ...Object.keys(document.entries)]);
+            const changed = [...changedKeys].filter((key) => {
+              const beforeEntry = state.document.entries[key];
+              const afterEntry = document.entries[key];
+              return beforeEntry?.encoding !== afterEntry?.encoding || beforeEntry?.value !== afterEntry?.value;
+            });
+            if (changed.length > 0) this.onCommittedSecretsChanged?.(changed);
           }
           return {
             value,

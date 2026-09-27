@@ -6,6 +6,7 @@ import { unavailableSecretEncryption } from "../../__tests__/support/host-runtim
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { SettingsService, settingsFilePath } from "../settings-store.js";
 import { CredentialLeaseRegistry } from "../../plugins/secret-access/credential-lease-registry.js";
+import { evaluateHostFetch, runHostFetchHops } from "../../main/host-fetch-guard.js";
 
 let root: string;
 let service: SettingsService;
@@ -17,6 +18,96 @@ beforeEach(async () => {
 afterEach(async () => cleanupTmpDir(root));
 
 describe("settings persistence", () => {
+  it.each(["rotate", "delete", "bulk-delete"] as const)("fences a secret %s before the file lock returns", async (change) => {
+    const key = change === "bulk-delete" ? "plugin.fixture.token" : "llm.apiKey.openai";
+    const store = new SettingsService({
+      userDataPath: root,
+      encryption: {
+        isEncryptionAvailable: () => true,
+        getSelectedStorageBackend: () => "external_key",
+        encryptString: (value: string) => Buffer.from(value),
+        decryptString: (value: Buffer) => value.toString(),
+      },
+    });
+    await store.setSecret(key, "synthetic-old-key");
+    const registry = new CredentialLeaseRegistry(store);
+    const incarnation = {};
+    const permissionSignal = new AbortController().signal;
+    const reservation = registry.reserve("fixture", incarnation, [key], permissionSignal, "lease");
+    if (!reservation) throw new Error("reservation missing");
+    const lease = registry.register(reservation, {
+      key, vendor: "openai", secret: store.getSecret(key)!, scheme: "bearer",
+      audience: (url) => url.origin === "https://api.example.test", permissionSignal,
+    });
+    if (!lease || lease.exposure !== "lease") throw new Error("lease missing");
+    const use = registry.beginUse(lease.leaseId, "fixture", incarnation);
+    const secretStore = (store as unknown as { secretStore: { runtime: { lock: (path: string, callback: () => Promise<unknown>) => Promise<unknown> } } }).secretStore;
+    const realLock = secretStore.runtime.lock;
+    let signalVisible!: () => void;
+    let releaseLock!: () => void;
+    const visible = new Promise<void>((resolve) => { signalVisible = resolve; });
+    const held = new Promise<void>((resolve) => { releaseLock = resolve; });
+    vi.spyOn(secretStore.runtime, "lock").mockImplementationOnce((path, callback) => realLock(path, async () => {
+      const result = await callback();
+      signalVisible();
+      await held;
+      return result;
+    }));
+    const changing = change === "rotate" ? store.setSecret(key, "synthetic-new-key")
+      : change === "delete" ? store.deleteSecret(key)
+        : store.deletePluginSecrets("fixture", ["token"]);
+    try {
+      await visible;
+      expect(store.getSecret(key)).toBe(change === "rotate" ? "synthetic-new-key" : null);
+      const first = await evaluateHostFetch({
+        pluginId: "fixture", rawUrl: "https://api.example.test/v1", allowedDomains: ["api.example.test"],
+        ensurePublicUrl: async (rawUrl) => new URL(rawUrl),
+      });
+      if (!first.ok) throw new Error(first.message);
+      const transport = vi.fn(async () => new Response(null));
+      await expect(runHostFetchHops({
+        pluginId: "fixture", first, init: {}, transport: transport as typeof fetch,
+        allowedDomains: ["api.example.test"], allowPrivateNetworks: false, credentialUse: use,
+      })).rejects.toMatchObject({ code: "lease-unavailable" });
+      expect(transport).not.toHaveBeenCalled();
+    } finally {
+      releaseLock();
+      await changing;
+    }
+  });
+
+  it.each(["install", "update", "uninstall"] as const)("advances the configuration revision before a preset %s save completes", async (change) => {
+    const store = new SettingsService({
+      userDataPath: root,
+      encryption: {
+        isEncryptionAvailable: () => true,
+        getSelectedStorageBackend: () => "external_key",
+        encryptString: (value: string) => Buffer.from(value),
+        decryptString: (value: Buffer) => value.toString(),
+      },
+    });
+    const preset = {
+      providerId: "fixture-router", label: "Fixture Router", baseUrl: "https://router.example.test/v1",
+      defaultModel: "fixture", modelOptions: ["fixture"], requiresApiKey: true,
+    };
+    if (change !== "install") await store.installMarketplaceProviderPreset(preset);
+    const before = store.getProviderConfigRevision();
+    const save = vi.spyOn(store as unknown as { saveSettings(settings: unknown): Promise<void> }, "saveSettings");
+    const realSave = (settings: unknown) => (SettingsService.prototype as unknown as { saveSettings(settings: unknown): Promise<void> }).saveSettings.call(store, settings);
+    let releaseSave!: () => void;
+    const held = new Promise<void>((resolve) => { releaseSave = resolve; });
+    save.mockImplementationOnce(async (settings) => { await held; await realSave(settings); });
+    const changing = change === "uninstall" ? store.uninstallMarketplaceProviderPreset(preset.providerId)
+      : store.installMarketplaceProviderPreset(change === "update"
+        ? { ...preset, baseUrl: "https://other.example.test/v1" } : preset);
+    try {
+      expect(store.getProviderConfigRevision()).toBeGreaterThan(before);
+    } finally {
+      releaseSave();
+      await changing;
+    }
+  });
+
   it.each(["rollback", "commit"] as const)("fences leases across a visible endpoint change and %s", async (outcome) => {
     const key = "llm.apiKey.openai";
     const registry = new CredentialLeaseRegistry(service);

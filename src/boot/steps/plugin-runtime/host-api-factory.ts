@@ -876,7 +876,8 @@ export function createHostApiFactory(
         }
         let secret: string;
         try { secret = result.bearer(); } catch {
-          reservation.finish(); result.release(); return { ok: false, reason: "stale-authorization" };
+          reservation.finish(); result.release();
+          return { ok: false, reason: request.signal?.aborted ? "aborted" : "stale-authorization" };
         }
         const llm = settingsService.get("llm");
         const configuredBaseUrl = (llm.vendors as Record<string, { baseUrl?: string } | undefined> | undefined)?.[result.vendor]?.baseUrl;
@@ -891,6 +892,9 @@ export function createHostApiFactory(
           reservation.finish(); result.release(); return { ok: false, reason: "endpoint-unavailable" };
         }
         const allowedDomains = manifest.networkAccess?.allowedDomains ?? [];
+        if (request.exposure === "lease" && result.source === "plugin-own" && allowedDomains.length === 0) {
+          reservation.finish(); result.release(); return { ok: false, reason: "audience-not-allowlisted" };
+        }
         let origin: string | undefined;
         try {
           if (baseUrl) {
@@ -920,7 +924,8 @@ export function createHostApiFactory(
             : (url) => urlHostMatchesAllowList(url.hostname, allowedDomains),
         });
         result.release();
-        return registered ? bindApiKeyResult(registered) : { ok: false, reason: "stale-authorization" };
+        return registered ? bindApiKeyResult(registered)
+          : { ok: false, reason: request.signal?.aborted ? "aborted" : "stale-authorization" };
         } catch (error) {
           reservation.finish();
           throw error;

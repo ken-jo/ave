@@ -1077,6 +1077,10 @@ export class SettingsService {
       path: this.secretsPath,
       policy: options.secretPolicy ?? "packaged",
       encryption: options.encryption,
+      onCommittedSecretsChanged: (keys) => {
+        // Fence leases at the file swap; awaited callers can resume only after lock release.
+        for (const key of keys) this.secretStateChanged(key);
+      },
     });
     const { settings: loaded, writeBack: needsWriteBack } = this.loadSettings(options.appVersion);
     this.settings = loaded;
@@ -1560,6 +1564,7 @@ export class SettingsService {
       { inferInstalledFromCustom: false },
     );
     this.settings.llm = prunedLlm.llm;
+    this.providerConfigChanged();
     await this.commitPresetKeyInvalidation(previousSettings, providerPresetSecretInvalidationIds);
     return this.getAll();
   }
@@ -1766,6 +1771,7 @@ export class SettingsService {
     }
     this.withheldSecretKeys.delete(key);
     if (this.reenteredSecretKeys.has(key)) this.writtenReentries.add(key);
+    // Bookkeeping can change readability after the store's file-swap notification.
     this.secretStateChanged(key);
   }
 

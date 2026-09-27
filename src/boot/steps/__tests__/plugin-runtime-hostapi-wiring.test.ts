@@ -876,6 +876,116 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     expect(result).toEqual({ ok: false, reason: "stale-authorization" });
   });
 
+  it("fences issuance when a provider preset is installed after the secret read", async () => {
+    const root = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-lease-preset-install-")));
+    const settings = new SettingsService({
+      userDataPath: root,
+      encryption: {
+        isEncryptionAvailable: () => true,
+        getSelectedStorageBackend: () => "external_key",
+        encryptString: (value: string) => Buffer.from(value),
+        decryptString: (value: Buffer) => value.toString(),
+      },
+    });
+    await settings.setSecret("llm.apiKey.openai", "synthetic-key");
+    const preset = {
+      providerId: "fixture-router", label: "Fixture Router", baseUrl: "https://router.example.test/v1",
+      defaultModel: "fixture", modelOptions: ["fixture"], requiresApiKey: true,
+    };
+    const createHostApi = await initAndGetFactory(settings, undefined, undefined, undefined, {
+      onCredentialIssuanceStage: async (stage) => {
+        if (stage === "after-secret-read") await settings.installMarketplaceProviderPreset(preset);
+      },
+    });
+    const { manifest, manifestSha256 } = granted("meeting", "llm.apiKey.openai");
+    const api = createHostApi(
+      "meeting", manifest, root, activeIncarnation(), "meeting",
+      { installSource: "user", manifestSha256, origin: OFFICIAL_ORIGIN },
+    );
+    expect(await api.resolveApiKey({ purpose: "llm", vendor: "openai" }))
+      .toEqual({ ok: false, reason: "stale-authorization" });
+  });
+
+  it.each(["update", "uninstall"] as const)("closes a lease when a provider preset is %s", async (change) => {
+    const root = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-lease-preset-change-")));
+    const settings = new SettingsService({
+      userDataPath: root,
+      encryption: {
+        isEncryptionAvailable: () => true,
+        getSelectedStorageBackend: () => "external_key",
+        encryptString: (value: string) => Buffer.from(value),
+        decryptString: (value: Buffer) => value.toString(),
+      },
+    });
+    await settings.setSecret("llm.apiKey.openai", "synthetic-key");
+    const preset = {
+      providerId: "fixture-router", label: "Fixture Router", baseUrl: "https://router.example.test/v1",
+      defaultModel: "fixture", modelOptions: ["fixture"], requiresApiKey: true,
+    };
+    await settings.installMarketplaceProviderPreset(preset);
+    const transport = vi.fn(async () => new Response(null));
+    const createHostApi = await initAndGetFactory(settings, undefined, transport as typeof fetch);
+    const { manifest, manifestSha256 } = granted("meeting", "llm.apiKey.openai");
+    manifest.capabilities = ["external-auth-consumer"];
+    const api = createHostApi(
+      "meeting", manifest, root, activeIncarnation(), "meeting",
+      { installSource: "user", manifestSha256, origin: OFFICIAL_ORIGIN },
+    );
+    const lease = await api.resolveApiKey({ purpose: "llm", vendor: "openai" });
+    if (!lease.ok || lease.exposure !== "lease") throw new Error("lease missing");
+    const closed = vi.fn();
+    lease.onClosed(closed);
+    if (change === "update") await settings.installMarketplaceProviderPreset({ ...preset, baseUrl: "https://other.example.test/v1" });
+    else await settings.uninstallMarketplaceProviderPreset(preset.providerId);
+    expect(closed).toHaveBeenCalledWith("revoked");
+    await expect(api.hostFetch("https://api.openai.com/v1/models", { auth: { lease: lease.leaseId } }))
+      .rejects.toMatchObject({ code: "lease-unavailable" });
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  it("reports caller cancellation during issuance as aborted", async () => {
+    const root = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-lease-abort-")));
+    const settings = new SettingsService({
+      userDataPath: root,
+      encryption: {
+        isEncryptionAvailable: () => true,
+        getSelectedStorageBackend: () => "external_key",
+        encryptString: (value: string) => Buffer.from(value),
+        decryptString: (value: Buffer) => value.toString(),
+      },
+    });
+    await settings.setSecret("llm.apiKey.openai", "synthetic-key");
+    const controller = new AbortController();
+    const createHostApi = await initAndGetFactory(settings, undefined, undefined, undefined, {
+      onCredentialIssuanceStage: (stage) => { if (stage === "after-gate") controller.abort(); },
+    });
+    const { manifest, manifestSha256 } = granted("meeting", "llm.apiKey.openai");
+    const api = createHostApi(
+      "meeting", manifest, root, activeIncarnation(), "meeting",
+      { installSource: "user", manifestSha256, origin: OFFICIAL_ORIGIN },
+    );
+    expect(await api.resolveApiKey({ purpose: "llm", vendor: "openai", signal: controller.signal } as never))
+      .toEqual({ ok: false, reason: "aborted" });
+  });
+
+  it("refuses an own key when the plugin audience is empty", async () => {
+    const root = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-lease-empty-audience-")));
+    const settings = new SettingsService({
+      userDataPath: root,
+      encryption: {
+        isEncryptionAvailable: () => true,
+        getSelectedStorageBackend: () => "external_key",
+        encryptString: (value: string) => Buffer.from(value),
+        decryptString: (value: Buffer) => value.toString(),
+      },
+    });
+    await settings.setSecret("plugin.plugin-a.llm.apiKey.openai", "synthetic-key");
+    const createHostApi = await initAndGetFactory(settings);
+    const api = createHostApi("plugin-a", { id: "plugin-a", networkAccess: { allowedDomains: [] } }, root, activeIncarnation(), "plugin-a");
+    expect(await api.resolveApiKey({ purpose: "llm", vendor: "openai" }))
+      .toEqual({ ok: false, reason: "audience-not-allowlisted" });
+  });
+
   it("denies unsupported sources and a host endpoint that has not been configured", async () => {
     const settings = makeSettingsService(new Map());
     settings.get.mockImplementation((key: string) => {
@@ -1048,7 +1158,7 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     const createHostApi = await initAndGetFactory(settings);
     const api = createHostApi(
       "plugin-a",
-      { id: "plugin-a", config: {} },
+      { id: "plugin-a", config: {}, networkAccess: { allowedDomains: ["api.openai.com"] } },
       tmpDirs.track(mkdtempSync("/tmp/ave-issued-capabilities-")),
       {
         registerDisposer: (dispose) => disposers.push(dispose),
