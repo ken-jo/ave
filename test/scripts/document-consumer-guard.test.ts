@@ -1,6 +1,7 @@
-import { copyFileSync, globSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync } from "node:fs";
+import { copyFileSync, existsSync, globSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -12,9 +13,78 @@ import {
   packagedDocumentInputs,
   DocumentDependencyPlugin,
 } from "../../scripts/lib/document-consumer-guard.mjs";
+import { gitFixtureEnv } from "../../src/__tests__/support/git-fixture-env.mjs";
 
 const root = resolve(import.meta.dirname, "../..");
 const guide = resolve(root, "docs", "guides", "getting-started.md");
+const require = createRequire(import.meta.url);
+
+function trackedPackageFixture() {
+  const directory = mkdtempSync(join(tmpdir(), "document-package-"));
+  const documents = [
+    "docs/guide.md", "docs/other.md", "docs/release/guide.md", "docs/coverage/guide.md",
+    "docs/dist/guide.md", "docs/node_modules/guide.md", "docs/mac/x64.md",
+    "docs/win/x64.md", "docs/linux/x64.md",
+  ];
+  for (const path of documents) {
+    mkdirSync(resolve(directory, path, ".."), { recursive: true });
+    writeFileSync(resolve(directory, path), `SOURCE:${path}\n`);
+  }
+  mkdirSync(resolve(directory, "resources"));
+  mkdirSync(resolve(directory, "dist"));
+  writeFileSync(resolve(directory, "dist/app.js"), "void 0;\n");
+  writeFileSync(resolve(directory, "package.json"), '{"name":"document-package","version":"1.0.0"}\n');
+  symlinkSync("../docs/guide.md", resolve(directory, "resources/alias.md"));
+  symlinkSync("alias.md", resolve(directory, "resources/alias-chain.md"));
+  symlinkSync("../docs", resolve(directory, "resources/doc-link"));
+  symlinkSync("doc-link", resolve(directory, "resources/doc-link-chain"));
+  symlinkSync("../dist/app.js", resolve(directory, "resources/code-alias.md"));
+  const git = (...args: string[]) => {
+    const result = spawnSync("git", ["-C", directory, ...args], {
+      env: gitFixtureEnv(directory), encoding: "utf8",
+    });
+    if (result.status !== 0) throw new Error(result.stderr);
+  };
+  git("init", "--quiet");
+  git("add", "--all", "--force");
+  return directory;
+}
+
+async function copiedBuilderDocuments(directory: string, build: Record<string, unknown>, destination: string) {
+  const { getFileMatchers, getMainFileMatchers, copyFiles } = require("app-builder-lib/out/fileMatcher.js");
+  const copied = new Set<string>();
+  for (const platform of ["mac", "win", "linux"]) {
+    const arch = "x64";
+    const macroExpander = (value: string) => value.replace(/\$\{(arch|os|platform)\}/g, (_, name) =>
+      name === "arch" ? arch : platform);
+    for (const field of ["files", "extraFiles", "extraResources"]) {
+      const target = resolve(destination, platform, field);
+      const options = {
+        defaultSrc: directory, macroExpander, customBuildOptions: build[platform] ?? {},
+        globalOutDir: resolve(directory, "release"),
+      };
+      const matchers = field === "files"
+        ? getMainFileMatchers(directory, target, macroExpander, options.customBuildOptions, {
+          info: { config: build, projectDir: directory, buildResourcesDir: "build",
+            isPrepackedAppAsar: false, debugLogger: { isEnabled: false } },
+        }, options.globalOutDir, false)
+        : getFileMatchers(build, field, target, options);
+      await copyFiles(matchers, undefined, false);
+      const visit = (path: string) => {
+        for (const name of readdirSync(path)) {
+          const entry = resolve(path, name);
+          if (statSync(entry).isDirectory()) visit(entry);
+          else {
+            const value = readFileSync(entry, "utf8");
+            if (value.startsWith("SOURCE:")) copied.add(value.slice("SOURCE:".length).trim());
+          }
+        }
+      };
+      if (existsSync(target)) visit(target);
+    }
+  }
+  return [...copied].sort();
+}
 
 describe("documentation consumer guard", () => {
   it("rejects reads assembled from path segments", async () => {
@@ -112,6 +182,89 @@ describe("documentation consumer guard", () => {
     expect(() => assertPackagedDocumentInputs({ build: {
       files, extraResources: [{ from: "../outside-documents", filter: ["*.md"] }],
     } }, root)).toThrow(/source leaves the repository/);
+  });
+
+  it.skipIf(process.platform === "win32")("includes tracked documents under nested output names and through symlinks", () => {
+    const directory = trackedPackageFixture();
+    try {
+      for (const name of ["release", "coverage", "dist", "node_modules"]) {
+        const path = `docs/${name}/guide.md`;
+        const build = { files: ["dist/**/*"], extraResources: [{ from: path, to: "guide.md" }] };
+        expect(packagedDocumentInputs({ build }, directory)).toContain(path);
+        expect(() => assertPackagedDocumentInputs({ build }, directory)).toThrow(/document-consumer/);
+      }
+      for (const from of ["resources/alias.md", "resources/alias-chain.md", "resources/doc-link", "resources/doc-link-chain"]) {
+        const build = { files: ["dist/**/*"], extraResources: [{ from, to: "linked" }] };
+        expect(packagedDocumentInputs({ build }, directory)).toContain("docs/guide.md");
+        expect(() => assertPackagedDocumentInputs({ build }, directory)).toThrow(/document-consumer/);
+      }
+      expect(packagedDocumentInputs({ build: {
+        files: ["dist/**/*"], extraResources: [{ from: "resources/code-alias.md", to: "code.md" }],
+      } }, directory)).not.toContain("docs/guide.md");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("refuses external and unresolved tracked package symlinks", () => {
+    for (const target of [guide, "../docs/missing.md"]) {
+      const directory = trackedPackageFixture();
+      try {
+        symlinkSync(target, resolve(directory, "resources/unsafe.md"));
+        const staged = spawnSync("git", ["-C", directory, "add", "resources/unsafe.md"], {
+          env: gitFixtureEnv(directory), encoding: "utf8",
+        });
+        expect(staged.status).toBe(0);
+        expect(() => packagedDocumentInputs({ build: { files: ["dist/**/*"] } }, directory))
+          .toThrow(/document-consumer/);
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("covers copied builder documents across package fields and platform overrides", async () => {
+    const directory = trackedPackageFixture();
+    const destination = mkdtempSync(join(tmpdir(), "document-builder-oracle-"));
+    try {
+      const cases: Array<{ name: string; build: Record<string, unknown> }> = [];
+      for (const field of ["files", "extraFiles", "extraResources"]) {
+        for (const placement of ["root", "mac", "win", "linux"]) {
+          const pattern = { from: "docs", filter: ["*.md"] };
+          const build = placement === "root"
+            ? { files: field === "files" ? ["dist/**/*", pattern] : ["dist/**/*"],
+              ...(field === "files" ? {} : { [field]: [pattern] }) }
+            : { files: ["dist/**/*"], [placement]: { [field]: [pattern] } };
+          cases.push({ name: `${placement}.${field}`, build });
+        }
+      }
+      for (const name of ["release", "coverage", "dist", "node_modules"]) {
+        cases.push({ name: `nested.${name}`, build: {
+          files: ["dist/**/*"], extraResources: [{ from: `docs/${name}/guide.md`, to: "guide.md" }],
+        } });
+      }
+      cases.push(
+        { name: "alias.file", build: { files: ["dist/**/*"], extraResources: [{ from: "resources/alias.md", to: "alias.md" }] } },
+        { name: "alias.chain", build: { files: ["dist/**/*"], extraResources: [{ from: "resources/alias-chain.md", to: "alias.md" }] } },
+        { name: "alias.directory", build: { files: ["dist/**/*"], extraResources: [{ from: "resources/doc-link", to: "linked" }] } },
+        { name: "alias.directory-chain", build: { files: ["dist/**/*"], extraResources: [{ from: "resources/doc-link-chain", to: "linked" }] } },
+        { name: "platform.macro", build: { files: ["dist/**/*"], extraResources: ["docs/${os}/${arch}.md"] } },
+        { name: "glob", build: { files: ["dist/**/*"], extraResources: ["docs/**/*.md"] } },
+        { name: "default.files", build: {} },
+        { name: "excluded.files", build: { files: ["docs/**/*.md", "!docs/**/*.md"] } },
+      );
+      for (const { name, build } of cases) {
+        const expected = await copiedBuilderDocuments(directory, build, resolve(destination, name));
+        const selected = packagedDocumentInputs({ build }, directory);
+        expect(selected, name).toEqual(expect.arrayContaining(expected));
+        if (name.startsWith("nested.")) expect(expected, name).toContain(`docs/${name.slice("nested.".length)}/guide.md`);
+        if (name.startsWith("alias.")) expect(expected, name).toContain("docs/guide.md");
+        if (name === "excluded.files") expect(expected).toEqual([]);
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+      rmSync(destination, { recursive: true, force: true });
+    }
   });
 
   it("rejects a document dependency from a site or renderer compilation", () => {

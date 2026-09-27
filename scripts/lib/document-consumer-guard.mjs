@@ -1,10 +1,12 @@
 import fs from "node:fs";
 import fsPromises from "node:fs/promises";
+import { spawnSync } from "node:child_process";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDocumentationPath } from "../hooks/pre-push-markdown-policy.mjs";
 import { guardedNodeOptions } from "./document-consumer-node-options.mjs";
+import { withoutGitContext } from "./git-process-environment.mjs";
 
 const DOCUMENT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const require = createRequire(import.meta.url);
@@ -15,8 +17,13 @@ const PACKAGE_ARCHES = {
   linux: ["x64", "arm64", "ia32", "armv7l"],
 };
 const PACKAGE_FIELDS = ["extraResources", "extraFiles", "files"];
-// These trees cannot enter the documentation-only Git classification.
-const IGNORED_SOURCE_DIRS = new Set([".git", "node_modules", "dist", ".next", "release", "release-fast", "coverage"]);
+function repositoryRelative(root, path) {
+  const result = relative(root, path);
+  if (result === ".." || result.startsWith(`..${sep}`) || isAbsolute(result)) {
+    throw new Error(`[document-consumer] package source leaves the repository`);
+  }
+  return result.split(sep).join("/");
+}
 
 function repositoryPaths(input, root = DOCUMENT_ROOT) {
   let path = input;
@@ -67,17 +74,67 @@ function assertAllowedDocumentCopy(input, root = DOCUMENT_ROOT) {
 }
 
 function sourceDocuments(root) {
-  const result = [];
-  const visit = (directory) => {
-    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-      if (entry.isDirectory() && IGNORED_SOURCE_DIRS.has(entry.name)) continue;
-      const path = resolve(directory, entry.name);
-      if (entry.isDirectory()) visit(path);
-      else if (entry.isFile() && /\.(?:md|html)$/i.test(entry.name)) result.push(path);
+  const realRoot = fs.realpathSync(root);
+  const tracked = spawnSync("git", ["-C", root, "ls-files", "--stage", "-z", "--"], {
+    encoding: "buffer", env: withoutGitContext(), maxBuffer: 64 * 1024 * 1024,
+  });
+  if (tracked.error || tracked.status !== 0) {
+    throw new Error("[document-consumer] cannot enumerate tracked package sources");
+  }
+  const entries = new Map();
+  for (const record of new TextDecoder("utf-8", { fatal: true }).decode(tracked.stdout).split("\0")) {
+    if (!record) continue;
+    const match = /^([0-7]{6}) [0-9a-f]+ 0\t([\s\S]+)$/.exec(record);
+    if (!match) throw new Error("[document-consumer] unresolved tracked package source");
+    if (!["100644", "100755", "120000"].includes(match[1])) {
+      throw new Error(`[document-consumer] unsupported tracked package source: ${match[2]}`);
+    }
+    entries.set(match[2], match[1]);
+  }
+  const result = new Map();
+  const add = (source, target) => {
+    if (/\.(?:md|html)$/i.test(target)) result.set(source, target);
+  };
+  const resolvedTarget = (path) => {
+    let real;
+    try { real = fs.realpathSync(resolve(root, path)); }
+    catch { throw new Error(`[document-consumer] unresolved package symlink: ${path}`); }
+    return repositoryRelative(realRoot, real);
+  };
+  const expandDirectory = (alias, target, visited = new Set()) => {
+    if (visited.has(target)) throw new Error(`[document-consumer] cyclic package symlink: ${alias}`);
+    const nextVisited = new Set(visited).add(target);
+    const prefix = target ? `${target}/` : "";
+    for (const [path, mode] of entries) {
+      if (!path.startsWith(prefix)) continue;
+      const source = `${alias}/${path.slice(prefix.length)}`;
+      if (mode === "120000") {
+        const resolved = resolvedTarget(path);
+        const stat = fs.statSync(resolve(root, path));
+        if (stat.isDirectory()) expandDirectory(source, resolved, nextVisited);
+        else {
+          if (!entries.has(resolved)) throw new Error(`[document-consumer] untracked package symlink target: ${path}`);
+          add(source, resolved);
+        }
+      } else {
+        add(source, path);
+      }
     }
   };
-  visit(root);
-  return result;
+  for (const [path, mode] of entries) {
+    if (mode === "120000") {
+      const target = resolvedTarget(path);
+      const stat = fs.statSync(resolve(root, path));
+      if (stat.isDirectory()) expandDirectory(path, target);
+      else {
+        if (!entries.has(target)) throw new Error(`[document-consumer] untracked package symlink target: ${path}`);
+        add(path, target);
+      }
+    } else {
+      add(path, path);
+    }
+  }
+  return [...result].map(([source, target]) => ({ source: resolve(root, source), target }));
 }
 
 export function packagedDocumentInputs(packageJson, root = DOCUMENT_ROOT) {
@@ -98,7 +155,7 @@ export function packagedDocumentInputs(packageJson, root = DOCUMENT_ROOT) {
         });
         if (!matchers && field === "files") {
           // An omitted files list packages the application directory by default.
-          for (const path of documents) matched.add(relative(root, path).split(sep).join("/"));
+          for (const { target } of documents) matched.add(target);
           continue;
         }
         for (const matcher of matchers ?? []) {
@@ -115,9 +172,9 @@ export function packagedDocumentInputs(packageJson, root = DOCUMENT_ROOT) {
             matcher.prependPattern("**/*");
           }
           const filter = matcher.createFilter();
-          for (const path of documents) {
+          for (const { source: path, target } of documents) {
             if (fromStat.isFile()) {
-              if (path === matcher.from) matched.add(relative(root, path).split(sep).join("/"));
+              if (path === matcher.from) matched.add(target);
               continue;
             }
             const rel = relative(matcher.from, path);
@@ -128,7 +185,7 @@ export function packagedDocumentInputs(packageJson, root = DOCUMENT_ROOT) {
               const directory = resolve(matcher.from, ...segments.slice(0, i));
               if (!filter(directory, fs.statSync(directory))) { allowed = false; break; }
             }
-            if (allowed && filter(path, fs.statSync(path))) matched.add(relative(root, path).split(sep).join("/"));
+            if (allowed && filter(path, fs.statSync(path))) matched.add(target);
           }
         }
       }
