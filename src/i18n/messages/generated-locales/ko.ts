@@ -129,6 +129,7 @@ import { ko as ko_remoteA2aActionButton } from "../generated/remoteA2aActionButt
 import { ko as ko_remoteSurfacesTab } from "../generated/remoteSurfacesTab.js";
 import { ko as ko_rolesTab } from "../generated/rolesTab.js";
 import { ko as ko_routinePanel } from "../generated/routinePanel.js";
+import { ko as ko_sandboxAuthority } from "../generated/sandboxAuthority.js";
 import { ko as ko_savedToast } from "../generated/savedToast.js";
 import { ko as ko_sessionGoalPanel } from "../generated/sessionGoalPanel.js";
 import { ko as ko_sessionResumeDivider } from "../generated/sessionResumeDivider.js";
@@ -303,6 +304,7 @@ export const koMessages: Record<string, string> = {
   ...ko_remoteSurfacesTab,
   ...ko_rolesTab,
   ...ko_routinePanel,
+  ...ko_sandboxAuthority,
   ...ko_savedToast,
   ...ko_sessionGoalPanel,
   ...ko_sessionResumeDivider,

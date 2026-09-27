@@ -510,8 +510,8 @@ export function PluginConfigTab({ api, initialPluginId }: { api?: AveApi; initia
   const handleDoctorPlugin = useCallback(async (plugin: PluginCardSummary) => {
     setDoctoringId(plugin.id);
     try {
-      // Cause-aware Doctor. NOT-locally-fixable failures (catalog↔grant mismatch,
-      // app-version incompatibility) cannot be repaired by reinstalling — a
+      // Cause-aware Doctor. NOT-reinstall-fixable failures (sandbox grant outside
+      // its ceiling, app-version incompatibility) cannot be repaired by reinstalling — a
       // reinstall re-fetches the same broken/too-new package and re-fails. Refresh
       // the source of truth, but keep the outcome explicitly unresolved unless the
       // runtime now reports a loaded card.
@@ -837,6 +837,8 @@ export function PluginConfigTab({ api, initialPluginId }: { api?: AveApi; initia
                             ? t("pluginConfigTab.doctorIncompatibleAppTitle")
                             : selectedPlugin.installFailureKind === "incompatible-host-protocol"
                               ? t("pluginConfigTab.doctorIncompatibleProtocolTitle")
+                              : selectedPlugin.installFailureKind === "sandbox-grant-outside-ceiling"
+                                ? t("pluginConfigTab.doctorSandboxGrantTitle")
                               : selectedPlugin.installFailureKind === "manifest-validation-error"
                                 ? t("pluginConfigTab.doctorManifestValidationTitle")
                                 : selectedPlugin.installFailureKind === "plugin-revoked"
@@ -852,6 +854,8 @@ export function PluginConfigTab({ api, initialPluginId }: { api?: AveApi; initia
                             ? t("pluginConfigTab.doctorIncompatibleAppDescription")
                             : selectedPlugin.installFailureKind === "incompatible-host-protocol"
                               ? t("pluginConfigTab.doctorIncompatibleProtocolDescription")
+                              : selectedPlugin.installFailureKind === "sandbox-grant-outside-ceiling"
+                                ? t("pluginConfigTab.doctorSandboxGrantDescription")
                               : selectedPlugin.installFailureKind === "manifest-validation-error"
                                 ? t("pluginConfigTab.doctorManifestValidationDescription")
                                 : selectedPlugin.installFailureKind === "plugin-revoked"

@@ -1031,6 +1031,110 @@
                 "maxLength": 64
               },
               "description": "Top-level advertisement of UI slot names this plugin participates in. Marketplace metadata only — actual extension binding lives in `ui[].slot`. Kebab-case identifiers, ≤32 entries."
+            },
+            "sandbox": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "read": {
+                  "type": "array",
+                  "maxItems": 8,
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "segments",
+                          "why"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "hostDirectory"
+                          },
+                          "segments": {
+                            "enum": [
+                              [
+                                "runtime"
+                              ],
+                              [
+                                "certs"
+                              ]
+                            ]
+                          },
+                          "why": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 400,
+                            "not": {
+                              "pattern": "^\\s*$"
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "configKey",
+                          "why"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "userChosenDirectory"
+                          },
+                          "configKey": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128
+                          },
+                          "why": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 400,
+                            "not": {
+                              "pattern": "^\\s*$"
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                },
+                "write": {
+                  "type": "array",
+                  "maxItems": 8,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "kind",
+                      "configKey",
+                      "why"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "userChosenDirectory"
+                      },
+                      "configKey": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
+                      },
+                      "why": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 400,
+                        "not": {
+                          "pattern": "^\\s*$"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
             }
           }
         }

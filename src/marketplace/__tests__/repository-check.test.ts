@@ -18,7 +18,7 @@ const SURFACES = {
 };
 
 function descriptor(kind: string, name: string, payload: Record<string, unknown>, patch: Record<string, unknown> = {}) {
-  return { schemaVersion: 1, kind, name, version: "1.0.0", minAppVersion: "0.12.0", payload, ...patch };
+  return { schemaVersion: 2, kind, name, version: "1.0.0", minAppVersion: "0.12.0", payload, ...patch };
 }
 
 function version(patch: Record<string, unknown> = {}) {
@@ -29,9 +29,9 @@ function version(patch: Record<string, unknown> = {}) {
 function validFiles(): Map<string, unknown> {
   return new Map<string, unknown>([
     [
-      "marketplace.json",
+      "marketplace.2.json",
       {
-        schemaVersion: 1,
+        schemaVersion: 2,
         name: "ave",
         displayName: "Ave Official",
         packages: [
@@ -81,10 +81,27 @@ function check(files: Map<string, unknown>) {
 }
 
 function index(files: Map<string, unknown>) {
-  return files.get("marketplace.json") as { packages: Array<Record<string, unknown>>; name: string };
+  return files.get("marketplace.2.json") as { packages: Array<Record<string, unknown>>; name: string };
 }
 
 describe("checkMarketplaceRepository", () => {
+  it("keeps the legacy file closed and limited to pre-cutover versions", () => {
+    const files = validFiles();
+    const current = index(files);
+    const old = version({ version: "0.9.0", minAppVersion: "0.11.0" });
+    const skill = current.packages.find((entry) => entry.name === "review")!;
+    (skill.versions as unknown[]).push(old);
+    files.set("marketplace.json", {
+      schemaVersion: 1, name: "ave", displayName: "Ave Official",
+      packages: [{ kind: "skill", name: "review", path: "skills/review", versions: [old] }],
+    });
+    expect(check(files)).toEqual([]);
+    (old as Record<string, unknown>).hostProtocol = "2";
+    expect(check(files)).toEqual([expect.objectContaining({ subject: "marketplace.json", message: expect.stringContaining("marketplace.json") })]);
+    delete (old as Record<string, unknown>).hostProtocol;
+    (old as Record<string, unknown>).minAppVersion = "0.12.0";
+    expect(check(files)).toEqual([expect.objectContaining({ subject: "marketplace.json", message: expect.stringContaining("belongs only in format 2") })]);
+  });
   it("checks the optional conditional policy and rejects an invalid successor mapping", () => {
     const files = validFiles();
     const entry = { kind: "plugin", name: "alpha", versions: "*", appVersions: "0.12.0", reason: "Replaced", at: AT,
@@ -105,11 +122,11 @@ describe("checkMarketplaceRepository", () => {
 
   it("refuses a missing or invalid index outright", () => {
     const files = validFiles();
-    files.delete("marketplace.json");
-    expect(check(files)).toEqual([{ subject: "marketplace.json", message: "is missing" }]);
+    files.delete("marketplace.2.json");
+    expect(check(files)).toEqual([{ subject: "marketplace.2.json", message: "is missing" }]);
     const renamed = validFiles();
     index(renamed).name = "other";
-    expect(check(renamed)).toEqual([{ subject: "marketplace.json", message: expect.stringContaining('must be named "ave"') }]);
+    expect(check(renamed)).toEqual([{ subject: "marketplace.2.json", message: expect.stringContaining('must be named "ave"') }]);
   });
 
   it("refuses a plugin named host, the id the host's own alert sources use", () => {

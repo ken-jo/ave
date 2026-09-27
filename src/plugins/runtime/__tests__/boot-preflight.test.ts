@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { createNoopHostApiForTests, PluginRuntime } from "../../runtime.js";
 import { isReinstallFixableFailureKind } from "../../../shared/plugin-install-failure.js";
 import { OUT_OF_PROCESS_PLUGIN_IDS } from "../../isolation/out-of-process-plugins.js";
+import { PluginSandboxGrantError } from "../../isolation/out-of-process-plugin.js";
 import type { PluginManifest } from "../../types.js";
 import {
   bindTestPluginRuntimeGeneration,
@@ -275,6 +276,42 @@ describe("PluginRuntime boot preflight", () => {
     const card = runtime.listPluginCards().find((entry) => entry.id === isolatedId);
     expect(card?.installFailureKind).toBe("load-crash");
     expect(card?.installFailureMessage).toContain("permission denied");
+  });
+
+  it("classifies a refused sandbox grant so Doctor does not reinstall the same version", async () => {
+    const runtime = bindTestPluginRuntimeGeneration(new PluginRuntime({ encryption: unavailableSecretEncryption,
+      hostRoot,
+      pluginsRoot,
+      registryPath,
+      createHostApi: createNoopHostApiForTests,
+      installReceiptCacheRoot: join(root, "receipts"),
+    }));
+    const internals = runtime as unknown as {
+      verifyReceiptAndDevGuard(): Promise<{ ok: true }>;
+      readManifest(path: string): Promise<PluginManifest>;
+      importPluginFactoryForLifecycle(pluginId: string): Promise<() => Promise<{ handlers: Record<string, never>; start: () => Promise<void> }>>;
+    };
+    internals.verifyReceiptAndDevGuard = async () => ({ ok: true });
+    internals.readManifest = async (path) => manifests.get(path.split(/[\\/]/).at(-2)!)!;
+    internals.importPluginFactoryForLifecycle = async (pluginId) => async () => {
+      if (pluginId === "preflight-1") {
+        throw new PluginSandboxGrantError("declared workspace is outside the approved ceiling");
+      }
+      return { handlers: {}, start: async () => {} };
+    };
+
+    await expect(runtime.load()).resolves.toBeUndefined();
+
+    const card = runtime.listPluginCards().find((entry) => entry.id === "preflight-1");
+    expect(card?.loadStatus).toBe("failed");
+    expect(card?.installFailureKind).toBe("sandbox-grant-outside-ceiling");
+    expect(card?.installFailureMessage).toContain("outside the approved ceiling");
+    expect(isReinstallFixableFailureKind(card?.installFailureKind)).toBe(false);
+    expect(runtime.listPluginIds()).toContain("preflight-4");
+
+    await expect(runtime.addPlugin("preflight-1")).rejects.toThrow(/filesystem grant is outside approved directories/);
+    expect(runtime.listPluginCards().find((entry) => entry.id === "preflight-1")?.installFailureKind)
+      .toBe("sandbox-grant-outside-ceiling");
   });
 
   it("surfaces a registry row whose manifest path escapes the plugin root", async () => {

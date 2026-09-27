@@ -52,6 +52,8 @@ export interface GitInstallRecord {
   packagePath: string;
   rung: ArtifactRung;
   rungs: RungOutcome[];
+  /** Hash of the authority reviewed when this artifact was installed. */
+  authoritySha256?: string;
 }
 
 /**
@@ -231,7 +233,7 @@ function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): b
 /** Why a git install record is malformed, or null when it is well formed. */
 export function gitInstallRecordProblem(value: unknown): string | null {
   if (!isPlainRecord(value)) return "git record is not an object";
-  if (!hasOnlyKeys(value, ["sourceId", "sourceOrigin", "snapshotCommit", "versionCommit", "packagePath", "rung", "rungs"])) {
+  if (!hasOnlyKeys(value, ["sourceId", "sourceOrigin", "snapshotCommit", "versionCommit", "packagePath", "rung", "rungs", "authoritySha256"])) {
     return "git record has unknown fields";
   }
   if (typeof value.sourceId !== "string" || value.sourceId.length === 0) return "git record sourceId is invalid";
@@ -239,6 +241,7 @@ export function gitInstallRecordProblem(value: unknown): string | null {
   if (typeof value.snapshotCommit !== "string" || !COMMIT_HEX.test(value.snapshotCommit)) return "git record snapshotCommit is invalid";
   if (typeof value.versionCommit !== "string" || !COMMIT_HEX.test(value.versionCommit)) return "git record versionCommit is invalid";
   if (typeof value.packagePath !== "string") return "git record packagePath is invalid";
+  if (value.authoritySha256 !== undefined && (typeof value.authoritySha256 !== "string" || !SHA256_HEX.test(value.authoritySha256))) return "git record authoritySha256 is invalid";
   if (!(ARTIFACT_RUNGS as readonly unknown[]).includes(value.rung)) return "git record rung is invalid";
   const rungs = value.rungs;
   if (!Array.isArray(rungs) || rungs.length === 0 || rungs.length > ARTIFACT_RUNGS.length) return "git record rungs are invalid";

@@ -13,6 +13,7 @@ import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { globMatch } from "../lib/glob-matcher.js";
 import { llmRouteBaseUrls } from "../shared/llm-vendor-defaults.js";
 import { canonicalizePathForMatch, caseFoldForMatch, getConfiguredSessionReadPolicy, getRuntimeSensitiveKeyPaths, SENSITIVE_PATH_ENTRIES } from "./sensitive-paths.js";
+import { hardenLinuxSandboxWrap } from "./linux-sandbox-wrap.js";
 
 import type {
   SandboxRuntimeConfig,
@@ -435,6 +436,19 @@ export function buildPerCommandSandboxCustomConfig(
 export interface SandboxWrapResult {
   readonly argv: string[];
   readonly env: NodeJS.ProcessEnv;
+}
+
+function applyLinuxReadMaskWriteFloor(
+  wrapped: SandboxWrapResult,
+  cleanupAfterCommand: () => void,
+): SandboxWrapResult {
+  if (process.platform !== "linux") return wrapped;
+  try {
+    return hardenLinuxSandboxWrap(wrapped);
+  } catch (error) {
+    cleanupAfterCommand();
+    throw error;
+  }
 }
 
 /**
@@ -1245,7 +1259,7 @@ export async function wrapToolCommand(
     buildPerCommandSandboxCustomConfig(options.filesystem),
     options.abortSignal,
   );
-  return wrapped;
+  return applyLinuxReadMaskWriteFloor(wrapped, () => SandboxManager.cleanupAfterCommand());
 }
 
 
@@ -1355,7 +1369,7 @@ export async function wrapWorkerCommand(
     buildPerCommandSandboxCustomConfig(options.filesystem),
     options.abortSignal,
   );
-  return wrapped;
+  return applyLinuxReadMaskWriteFloor(wrapped, () => SandboxManager.cleanupAfterCommand());
 }
 
 /**

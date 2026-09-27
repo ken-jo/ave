@@ -712,6 +712,7 @@ export class PluginMarketplaceService {
         packagePath: plan.packagePath,
         rung: staged.rung,
         rungs: staged.rungs,
+        authoritySha256: sha256Hex(canonicalJSON(plan.authority)),
       },
       files,
     })).raw;

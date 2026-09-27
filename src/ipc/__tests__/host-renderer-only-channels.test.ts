@@ -120,6 +120,7 @@ function makeDeps(): never {
       onChange: vi.fn(),
     },
     pluginRuntime: {
+      retireSandboxGrantsOutsideCeiling: vi.fn(async () => []),
       getPluginManifest: vi.fn(() => null),
       getPluginRoot: vi.fn(() => null),
       getGenerationAccess: vi.fn(() => null),

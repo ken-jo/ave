@@ -67,7 +67,7 @@ function catalog(entries: CatalogEntryView[], sourceCount: number): CatalogView 
   return { entries, counts, sourceCount, syncedAt: "2026-09-24T00:00:00.000Z" };
 }
 
-function detail(item: CatalogEntryView, overrides: Partial<PackageDetailView> = {}): PackageDetailView {
+export function detail(item: CatalogEntryView, overrides: Partial<PackageDetailView> = {}): PackageDetailView {
   return {
     entry: item,
     provenance: {
@@ -79,7 +79,7 @@ function detail(item: CatalogEntryView, overrides: Partial<PackageDetailView> = 
       publishedAt: "2026-09-20T00:00:00.000Z",
     },
     compatibility: { minAppVersion: "1.0.0", appVersion: "2.0.0", compatible: true },
-    authority: { capabilities: [], networkHosts: ["api.example.com"], secrets: [], pluginAccess: [], dependencies: [] },
+    authority: { capabilities: [], networkHosts: ["api.example.com"], secrets: [], pluginAccess: [], dependencies: [], filesystem: [] },
     rungs: [{ rung: "release", declared: true, pinned: true, detail: `${item.key.name}.zip` }],
     versions: [
       { version: "1.0.0", commit: COMMIT_A, publishedAt: "2026-09-20T00:00:00.000Z", minAppVersion: "1.0.0", excluded: [], yankedReason: null, rolloutPercent: null, installed: false, candidate: true },
@@ -100,7 +100,7 @@ export function installPlan(item: CatalogEntryView, overrides: Partial<InstallPl
     versionCommit: COMMIT_A,
     action: { action: "install" },
     runsCode: item.runsCode,
-    authority: { capabilities: [], networkHosts: ["api.example.com"], secrets: [], pluginAccess: [], dependencies: [] },
+    authority: { capabilities: [], networkHosts: ["api.example.com"], secrets: [], pluginAccess: [], dependencies: [], filesystem: [] },
     rungs: [],
     mcp: null,
     ...overrides,
