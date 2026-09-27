@@ -3,6 +3,7 @@ import portableMcpSchema from "../../schemas/agent-plugins-mcp.schema.json" with
 import { isSafeMcpEnvironmentName, HTTP_HEADER_NAME_RE, MAX_NAME_LEN, RESERVED_HEADERS } from "./safe-names.js";
 import { parseStrictJson } from "../marketplace/catalog/strict-json.js";
 import type { AjvCtor } from "../plugins/config-schema.js";
+import { portableLauncherLiteralIndexes } from "./portable-launcher.js";
 
 interface PortableStdioServer {
   type: "stdio";
@@ -63,6 +64,13 @@ function validateServer(name: string, server: PortableMcpServer): void {
       throw new Error(`${label}.command must be one bare executable or a ./ package path without placeholders`);
     }
     if (server.command.startsWith("./")) relativePath(server.command.slice(2), `${label}.command`);
+    const launcherLiterals = new Set(portableLauncherLiteralIndexes(name, server.command, server.args ?? []));
+    for (const [index, arg] of (server.args ?? []).entries()) {
+      if (launcherLiterals.has(index + 1)) continue;
+      const prefix = ["${PLUGIN_ROOT}/", "${PLUGIN_DATA}/", "./"].find((candidate) => arg.startsWith(candidate));
+      if (prefix) relativePath(arg.slice(prefix.length), `${label}.args[${index}]`);
+      else if (arg.includes("${")) throw new Error(`${label}.args[${index}] has an unsupported placeholder`);
+    }
     for (const [key, value] of Object.entries(server.env ?? {})) {
       if (!isSafeMcpEnvironmentName(key) || value.includes("\0")) throw new Error(`${label}.env.${key} is not allowed`);
     }

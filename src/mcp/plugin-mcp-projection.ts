@@ -157,6 +157,17 @@ function buildProjection(
   return Object.freeze({ owner: Object.freeze(owner), serverId, config, approval: Object.freeze(approval) });
 }
 
+/** Build an approval from a host-resolved bundled configuration. */
+export function prepareBundledMcpProjection(
+  owner: PluginMcpOwner,
+  rawConfig: unknown,
+  pluginDataDir?: string,
+): PreparedPluginMcpProjection {
+  const projection = buildProjection(owner, parseStaticConfig(rawConfig, `bundled MCP '${owner.localId}'`));
+  if (pluginDataDir === undefined || projection.config.transport !== "stdio") return projection;
+  return Object.freeze({ ...projection, config: Object.freeze({ ...projection.config, pluginDataDir }) });
+}
+
 /** Static parse/fingerprint preparation. It performs no spawn, network, discovery, or registration. */
 export function preparePluginMcpGeneration(
   generation: ActivePluginGeneration,
