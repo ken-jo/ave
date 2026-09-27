@@ -309,6 +309,10 @@ describe("installer smoke and packaging discipline", () => {
     const execute = workflow.slice(workflow.indexOf("  e2e:"));
 
     expect(stage).toContain("secrets.AVE_REPO_READ_TOKEN");
+    expect(stage).toContain("path: stage-policy");
+    expect(stage).toContain("ref: ${{ github.workflow_sha }}");
+    expect(stage).toContain('bash stage-policy/scripts/check-e2e-archive-tree.sh "$repo" "$actual"');
+    expect(stage).not.toContain("ls-files -s");
     expect(stage).toContain("git -C \"$repo\" archive");
     expect(stage).toContain("manifest.tsv");
     expect(stage).toContain("artifact-digest");
