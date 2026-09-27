@@ -15,4 +15,19 @@ describe("Studio stored credential matching", () => {
     expect(containsStoredCredential("https://example.invalid/mcp?progress=100%&token=%41%7a", "Az")).toBe(true);
     expect(containsStoredCredential("https://example.invalid/mcp?progress=100%&bad=%zz", "Az")).toBe(false);
   });
+
+  it("matches adjacent invalid bytes and up to three percent layers in every string position", () => {
+    const key = "A1b2C3d4E5f6G7h8I9j0KLMN";
+    const encoded = [...Buffer.from(key)].map((byte, index) => {
+      const hex = byte.toString(16).padStart(2, "0");
+      return `%${index % 2 ? hex.toUpperCase() : hex.toLowerCase()}`;
+    }).join("");
+    const twice = encodeURIComponent(encoded);
+    const thrice = encodeURIComponent(twice);
+    for (const value of [`%ff${encoded}`, `${encoded}%ff`, `%zz${encoded}`, `${encoded}%zz`, twice, thrice]) {
+      expect(containsStoredCredential({ args: [`--token=${value}`], env: { TOKEN: value },
+        url: `https://example.invalid/mcp#token=${value}` }, key)).toBe(true);
+    }
+    expect(containsStoredCredential(`progress=100%;token=${encoded.slice(0, Math.floor(encoded.length / 2))}`, key)).toBe(false);
+  });
 });

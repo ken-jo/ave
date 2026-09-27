@@ -110,6 +110,35 @@ describe("Studio drafts and package projections", () => {
     }
   });
 
+  it("reapplies block and flow authorship without changing fields on later edits", async () => {
+    const variants = ["metadata: {}", "metadata: { owner: existing-owner }",
+      "metadata:\n  owner: existing-owner", "metadata:\n    owner: existing-owner"];
+    const header = (text: string) => /^---\n[\s\S]*?\n---\n/u.exec(text)![0];
+    for (const [index, metadata] of variants.entries()) {
+      const name = `team-edit-${index}`;
+      const path = "skills/review/SKILL.md";
+      const store = new PluginStudioStore();
+      const first = `---\nname: review\ndescription: Review work\n${metadata}\n---\nReview work.\n`;
+      await store.writeDraft({ name, version: "1.0.0", description: "A team plugin",
+        files: [{ path, text: first }] }, "model-session");
+      const read = async () => (await store.packageFiles(name)).find((file) => file.path === path)!.data.toString();
+      const initial = await read();
+      const sameAuthor = await store.writeDraft({ name, files: [{ path,
+        text: initial.replace("Review work.\n", "Review twice.\n") }] }, "model-session");
+      expect(sameAuthor.errors, metadata).toEqual([]);
+      const second = await read();
+      expect(header(second), metadata).toBe(header(initial));
+      const changedAuthor = await store.writeDraft({ name, files: [{ path,
+        text: second.replace("Review twice.\n", "Review again.\n") }] });
+      expect(changedAuthor.errors, metadata).toEqual([]);
+      const third = await read();
+      expect(header(third), metadata).toBe(header(second).replace("ave-authored-by: model", "ave-authored-by: user"));
+      expect(parseFrontmatter(third).fm.metadata).toMatchObject({ "ave-origin": "studio", "ave-authored-by": "user",
+        ...(index === 0 ? {} : { owner: "existing-owner" }) });
+      expect(deriveAgentPluginComponents(await store.packageFiles(name)).skills).toHaveLength(1);
+    }
+  });
+
   it("preserves long prompt fields through the installed consumer when authored or edited after import", async () => {
     const description = "Review the supplied patch for correctness and maintainability, and report only actionable defects with concrete examples and suggested corrections.";
     const argumentHint = "Provide the revision range to inspect together with the target platform, reproduction steps, and any constraints that reviewers must preserve.";

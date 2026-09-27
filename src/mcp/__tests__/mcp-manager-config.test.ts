@@ -182,18 +182,33 @@ describe("McpManager — getConfigs()", () => {
     const key = "stored/key?with=punct";
     const encodedUrl = encodeURIComponent(key);
     const encodedEnv = [...key].map((char) => `%${char.charCodeAt(0).toString(16)}`).join("");
+    const twice = encodeURIComponent(encodedEnv);
+    const thrice = encodeURIComponent(twice);
+    const mixed = [...key].map((char, index) => `%${index % 2 ? char.charCodeAt(0).toString(16).toUpperCase()
+      : char.charCodeAt(0).toString(16)}`).join("");
     const ref = { kind: "agent-plugin" as const, name: "team-kit" };
-    const cases = [
-      { location: "url", url: `https://example.invalid/mcp?token=${encodedUrl}`, env: {} },
-      { location: "url", url: `https://example.invalid/mcp?token=${encodedEnv}&progress=100%`, env: {} },
-      { location: "url", url: `https://example.invalid/mcp?progress=100%&token=${encodedEnv}`, env: {} },
-      { location: "env", url: "", env: { VALUE: `prefix-${encodedEnv}-suffix` } },
-      { location: "env", url: "", env: { VALUE: `progress=100%;token=${encodedEnv}` } },
-    ] as const;
-    for (const owner of ["user", "package"] as const) for (const { location, url, env } of cases) {
+    const cases: Array<{ key: string; location: "url" | "env" | "args"; url: string;
+      env: Record<string, string>; args: string[]; refuse: boolean }> = [
+      { key, location: "url", url: `https://example.invalid/mcp?token=${encodedUrl}`, env: {}, args: [], refuse: true },
+      { key, location: "url", url: `https://example.invalid/mcp?token=${encodedEnv}&progress=100%`, env: {}, args: [], refuse: true },
+      { key, location: "url", url: `https://example.invalid/mcp?progress=100%&token=${encodedEnv}`, env: {}, args: [], refuse: true },
+      { key, location: "env", url: "", env: { VALUE: `prefix-${encodedEnv}-suffix` }, args: [], refuse: true },
+      { key, location: "env", url: "", env: { VALUE: `progress=100%;token=${encodedEnv}` }, args: [], refuse: true },
+      { key: "alpha beta", location: "url", url: "https://example.invalid/mcp?token=alpha+beta",
+        env: {}, args: [], refuse: true },
+      { key, location: "env", url: "", env: { VALUE: key.slice(0, Math.floor(key.length / 2)) },
+        args: [], refuse: false },
+    ];
+    for (const value of [`%ff${encodedEnv}`, `${encodedEnv}%ff`, `%zz${encodedEnv}`, `${encodedEnv}%zz`, twice, thrice, mixed]) {
+      cases.push({ key, location: "env", url: "", env: { VALUE: value }, args: [], refuse: true });
+      cases.push({ key, location: "args", url: "", env: {}, args: [`--token=${value}`], refuse: true });
+      cases.push({ key, location: "url", url: `https://example.invalid/mcp#token=${value}`, env: {}, args: [], refuse: true });
+    }
+    for (const owner of ["user", "package"] as const) for (const item of cases) {
+      const { location, url, env, args, refuse } = item;
       const declaration = location === "url"
         ? { packageName: ref.name, serverName: "sample", transport: "http" as const, url, auth: "api-key" as const, apiKeyHeader: "X-Key" }
-        : { packageName: ref.name, serverName: "sample", transport: "stdio" as const, command: "node", env,
+        : { packageName: ref.name, serverName: "sample", transport: "stdio" as const, command: "node", args, env,
           auth: "api-key" as const, apiKeyEnv: "SAMPLE_KEY" };
       const secrets = new Map<string, string>();
       const mgr = await makeManager({ getSecret: (name: string) => secrets.get(name) ?? null,
@@ -201,26 +216,32 @@ describe("McpManager — getConfigs()", () => {
       let id = "sample";
       if (owner === "user") {
         await writeFile(testConfigPath, JSON.stringify({ servers: [{ id, ...declaration }] }));
-        await mgr.setApiKey(id, key);
+        await mgr.setApiKey(id, item.key);
       } else {
         await writeFile(testConfigPath, JSON.stringify({ servers: [] }));
         mgr.registerBundledCredentialSource("agent-plugin", { list: () => [declaration], reconnect: async () => undefined });
-        await mgr.setBundledApiKey(ref, "sample", key);
+        await mgr.setBundledApiKey(ref, "sample", item.key);
         id = bundledConfigId(ref, "sample");
       }
-      await expect(previewStudioConnector(mgr, id)).rejects.toThrow("stored credential");
-      await expect(mgr.assertStudioConnectorWriteSafe(id, { spec: { id, ...(location === "url" ? { url } : {}) },
-        args: [], env: location === "env" ? env : {} })).rejects.toThrow("stored credential");
+      const copy = { spec: { id, ...(location === "url" ? { url } : {}) }, args, env };
       const portable = location === "url" ? { type: "streamable-http", url }
-        : { type: "stdio", command: "uvx", args: ["studio-sample==1.0.0"], env };
+        : { type: "stdio", command: "uvx", args: ["studio-sample==1.0.0", ...args], env };
       const files = [
         { path: "plugin.json", data: Buffer.from(JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
           name: "team-kit", version: "1.0.0", description: "A team plugin" })) },
         { path: "mcp.json", data: Buffer.from(JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
           mcpServers: { sample: portable } })) },
       ];
-      expect(() => studioExportFiles(files, false, [key])).toThrow("stored credential");
-      expect(await mgr.getStudioStoredCredentialValues()).toContain(key);
+      if (refuse) {
+        await expect(previewStudioConnector(mgr, id)).rejects.toThrow("stored credential");
+        await expect(mgr.assertStudioConnectorWriteSafe(id, copy)).rejects.toThrow("stored credential");
+        expect(() => studioExportFiles(files, false, [item.key])).toThrow("stored credential");
+      } else {
+        await expect(previewStudioConnector(mgr, id)).resolves.toBeDefined();
+        await expect(mgr.assertStudioConnectorWriteSafe(id, copy)).resolves.toBeUndefined();
+        expect(() => studioExportFiles(files, false, [item.key])).not.toThrow();
+      }
+      expect(await mgr.getStudioStoredCredentialValues()).toContain(item.key);
     }
   });
   it("returns [] when config file does not exist", async () => {

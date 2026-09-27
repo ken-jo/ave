@@ -162,6 +162,19 @@ function checkAuthoredText(path: string, before: string, after: string, author: 
   }
 }
 
+function replaceBlockAuthorship(line: string, key: string, value: string): string {
+  const match = new RegExp(`^([ ]+${key}:[ \\t]*)([^ \\t#]+)([ \\t]*(?:#.*)?)$`, "u").exec(line);
+  if (!match) throw new Error(`Studio skill needs an editable ${key} value`);
+  return `${match[1]}${value}${match[3]}`;
+}
+
+function replaceFlowAuthorship(line: string, key: string, value: string): string {
+  const match = new RegExp(`([,{][ \\t]*${key}:[ \\t]*)([^,}]+)(?=[,}])`, "u").exec(line);
+  if (!match) throw new Error(`Studio skill needs an editable ${key} value`);
+  const trailing = /[ \t]*$/u.exec(match[2]!)![0];
+  return `${line.slice(0, match.index)}${match[1]}${value}${trailing}${line.slice(match.index + match[0].length)}`;
+}
+
 function authoredText(path: string, text: string, author: "model" | "user"): Buffer {
   const skill = /^skills\/[a-z][a-z0-9-]*\/SKILL\.md$/u.test(path);
   if (!skill && !/^xyz\.ave\/prompts\/[a-z][a-z0-9-]*\.md$/u.test(path)) return Buffer.from(text);
@@ -178,26 +191,42 @@ function authoredText(path: string, text: string, author: "model" | "user"): Buf
       throw new Error(`Studio skill ${path} needs string metadata`);
     }
     const metadataIndex = lines.findIndex((line) => /^metadata:\s*$/u.test(line));
+    const authorship = [["ave-origin", "studio"], ["ave-authored-by", author]] as const;
     if (metadataIndex >= 0) {
       let end = metadataIndex + 1;
       while (end < lines.length && (lines[end]!.trim() === "" || /^\s/u.test(lines[end]!))) end++;
-      const children = lines.slice(metadataIndex + 1, end).filter((line) => !/^\s+ave-(?:origin|authored-by):/u.test(line));
+      const children = lines.slice(metadataIndex + 1, end);
       const indentation = children.map((line) => /^( +)[a-zA-Z0-9_-]+\s*:/u.exec(line)?.[1]).find(Boolean)
         ?? fileIndentation;
-      lines.splice(metadataIndex + 1, end - metadataIndex - 1, ...children,
-        `${indentation}ave-origin: studio`, `${indentation}ave-authored-by: ${author}`);
-    } else if (fields.metadata === undefined) lines.push("metadata:", `${fileIndentation}ave-origin: studio`, `${fileIndentation}ave-authored-by: ${author}`);
+      for (const [key, value] of authorship) {
+        if (metadata[key] === value) continue;
+        if (metadata[key] === undefined) children.push(`${indentation}${key}: ${value}`);
+        else {
+          const index = children.findIndex((line) => new RegExp(`^[ ]+${key}:`, "u").test(line));
+          if (index < 0) throw new Error(`Studio skill ${path} needs editable ${key} metadata`);
+          children[index] = replaceBlockAuthorship(children[index]!, key, value);
+        }
+      }
+      lines.splice(metadataIndex + 1, end - metadataIndex - 1, ...children);
+    } else if (fields.metadata === undefined) lines.push("metadata:", ...authorship.map(([key, value]) => `${fileIndentation}${key}: ${value}`));
     else {
       const flowIndex = lines.findIndex((line) => /^metadata:\s*\{.*\}\s*$/u.test(line));
-      if (flowIndex < 0 || "ave-origin" in metadata || "ave-authored-by" in metadata) {
+      if (flowIndex < 0) {
         throw new Error(`Studio skill ${path} needs editable metadata for authorship`);
       }
-      const line = lines[flowIndex]!;
-      const close = line.lastIndexOf("}");
-      const spaces = /[ \t]*$/u.exec(line.slice(0, close))![0].length;
-      const position = close - spaces;
-      const hasEntries = line.slice(line.indexOf("{") + 1, position).trim().length > 0;
-      lines[flowIndex] = `${line.slice(0, position)}${hasEntries ? ", " : ""}ave-origin: studio, ave-authored-by: ${author}${line.slice(position)}`;
+      let line = lines[flowIndex]!;
+      for (const [key, value] of authorship) {
+        if (metadata[key] === value) continue;
+        if (metadata[key] !== undefined) line = replaceFlowAuthorship(line, key, value);
+        else {
+          const close = line.lastIndexOf("}");
+          const spaces = /[ \t]*$/u.exec(line.slice(0, close))![0].length;
+          const position = close - spaces;
+          const hasEntries = line.slice(line.indexOf("{") + 1, position).trim().length > 0;
+          line = `${line.slice(0, position)}${hasEntries ? ", " : ""}${key}: ${value}${line.slice(position)}`;
+        }
+      }
+      lines[flowIndex] = line;
     }
   } else {
     if (lines.some((line) => /^\s+\S/u.test(line))) {
