@@ -15,7 +15,7 @@ export const en = {
   "pluginConfigSchemaForm.selectPlaceholder": "Select…",
   "pluginConfigSchemaForm.enableLabel": "{label} enabled",
   "pluginConfigSchemaForm.arrayPlaceholder": "Comma-separated",
-  "pluginConfigSchemaForm.customPanelNote": "This plugin provides an additional settings panel ({exportName}) that will be auto-mounted via the UI Slot System (§9.3) in a future release.",
+  "pluginConfigSchemaForm.customPanelNote": "This extension provides an additional settings panel ({exportName}) that will be auto-mounted via the UI Slot System (§9.3) in a future release.",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "pluginConfigSchemaForm.errorMinLength": "최소 {minLength}자 이상이어야 합니다.",
@@ -33,5 +33,5 @@ export const ko: Record<keyof typeof en, string> = {
   "pluginConfigSchemaForm.selectPlaceholder": "선택…",
   "pluginConfigSchemaForm.enableLabel": "{label} 활성화",
   "pluginConfigSchemaForm.arrayPlaceholder": "쉼표로 구분",
-  "pluginConfigSchemaForm.customPanelNote": "이 플러그인은 추가 설정 패널 ({exportName}) 을 제공합니다. 향후 UI Slot System(§9.3) 을 통해 자동 마운트될 예정입니다.",
+  "pluginConfigSchemaForm.customPanelNote": "이 익스텐션은 추가 설정 패널 ({exportName}) 을 제공합니다. 향후 UI Slot System(§9.3) 을 통해 자동 마운트될 예정입니다.",
 };

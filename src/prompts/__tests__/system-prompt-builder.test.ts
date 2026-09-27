@@ -140,7 +140,7 @@ describe("SystemPromptBuilder — Conversation Continuity Guard", () => {
   it("prioritizes direct plugin tool calls over agent_spawn", () => {
     const builder = makeSystemPromptBuilder();
     const prompt = builder.build();
-    expect(prompt).toContain("플러그인 UI/업무보드 직접 조회");
+    expect(prompt).toContain("익스텐션 UI/업무보드 직접 조회");
     expect(prompt).toContain("agent_spawn 을 쓰지 마세요");
     expect(prompt).toContain("request_plugin");
     expect(prompt).toContain("해당 도구가 현재 보이면 직접 호출");
@@ -531,7 +531,7 @@ describe("SystemPromptBuilder — Requestable Plugin Catalog (Gate 1: session-sc
 
   it("lists an allow-listed DISABLED plugin as requestable", () => {
     const prompt = makeCatalogBuilder({ activatable: ["local-indexer"] }).build();
-    expect(prompt).toContain("사용 가능한 플러그인");
+    expect(prompt).toContain("사용 가능한 익스텐션");
     expect(prompt).toContain("local-indexer");
     expect(prompt).toContain("index_scan");
   });
@@ -539,7 +539,7 @@ describe("SystemPromptBuilder — Requestable Plugin Catalog (Gate 1: session-sc
   it("hides a disabled plugin when it is NOT allow-listed (main chat unchanged)", () => {
     const prompt = makeCatalogBuilder({}).build();
     // No requestable catalog section is emitted for a disabled, non-allow-listed card.
-    expect(prompt).not.toContain("사용 가능한 플러그인");
+    expect(prompt).not.toContain("사용 가능한 익스텐션");
     expect(prompt).not.toContain("local-indexer");
   });
 });

@@ -1,5 +1,7 @@
 # Plugin HostApi as a versioned protocol
 
+The code packages described here are called extensions in user-facing copy.
+
 Status: design, decided; the wire step (§9.4) is implemented on `main`; the Lease step
 (§9.1, §4.1, §9.5) was amended on 2026-09-27 with decisions 8-26 (§13), in two rounds
 of independent review. It follows

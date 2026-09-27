@@ -216,15 +216,15 @@ describe("installed plugins boot refuses to run", () => {
 
     (await screen.findByTestId(`plugin-config:row:${STRAY_REGISTRY_PLUGIN}`)).click();
     await waitFor(() =>
-      expect(screen.getByText("플러그인 레지스트리 항목 거부됨")).toBeTruthy(),
+      expect(screen.getByText("익스텐션 레지스트리 항목 거부됨")).toBeTruthy(),
     );
 
     (await screen.findByTestId(`plugin-config:row:${CRASHING_PLUGIN}`)).click();
     await waitFor(() =>
-      expect(screen.getByText("플러그인 로드 중 오류 발생")).toBeTruthy(),
+      expect(screen.getByText("익스텐션 로드 중 오류 발생")).toBeTruthy(),
     );
     // The two refusals never share a sentence: a single generic "failed to
     // load" panel would leave the user in the same dead end as no card.
-    expect(screen.queryByText("플러그인 레지스트리 항목 거부됨")).toBeNull();
+    expect(screen.queryByText("익스텐션 레지스트리 항목 거부됨")).toBeNull();
   });
 });

@@ -1,10 +1,10 @@
 // AUTO-GENERATED — i18n migration. Source: src/ui/renderer/tabs/GeneralTab.tsx. Do not edit by hand.
 export const en = {
   "generalTab.workspaceTitle": "Workspace",
-  "generalTab.workspaceDescription": "Installed plugins, tools, agents, skills, and roles count, plus marketplace status.",
+  "generalTab.workspaceDescription": "Installed extensions, tools, agents, skills, and roles count, plus marketplace status.",
   "generalTab.refreshStatsAriaLabel": "Refresh workspace statistics",
   "generalTab.statsGroupAriaLabel": "Workspace statistics cards",
-  "generalTab.statPlugins": "Plugins",
+  "generalTab.statPlugins": "Extensions",
   "generalTab.statTools": "Tools",
   "generalTab.statAgents": "Agents",
   "generalTab.statSkills": "Skills",
@@ -20,7 +20,7 @@ export const en = {
   "generalTab.systemBehaviorTitle": "System Behavior",
   "generalTab.systemBehaviorDescription": "Choose what happens when you click the window close button.",
   "generalTab.hideToTrayLabel": "Hide to tray (default)",
-  "generalTab.hideToTrayDescription": "Ave continues running in the system tray even after the window is closed. Routines, briefings, and plugin background tasks remain active.",
+  "generalTab.hideToTrayDescription": "Ave continues running in the system tray even after the window is closed. Routines, briefings, and extension background tasks remain active.",
   "generalTab.quitLabel": "Quit immediately",
   "generalTab.quitDescription": "Closing the window fully quits Ave, just like a regular app. Background tasks are also stopped.",
   "generalTab.systemInfoTitle": "System",
@@ -35,10 +35,10 @@ export const en = {
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "generalTab.workspaceTitle": "워크스페이스",
-  "generalTab.workspaceDescription": "설치된 플러그인, 도구, 에이전트, 스킬, 역할 개수와 마켓플레이스 상태입니다.",
+  "generalTab.workspaceDescription": "설치된 익스텐션, 도구, 에이전트, 스킬, 역할 개수와 마켓플레이스 상태입니다.",
   "generalTab.refreshStatsAriaLabel": "워크스페이스 통계 새로고침",
   "generalTab.statsGroupAriaLabel": "워크스페이스 통계 카드",
-  "generalTab.statPlugins": "플러그인",
+  "generalTab.statPlugins": "익스텐션",
   "generalTab.statTools": "도구",
   "generalTab.statAgents": "에이전트",
   "generalTab.statSkills": "스킬",
@@ -54,7 +54,7 @@ export const ko: Record<keyof typeof en, string> = {
   "generalTab.systemBehaviorTitle": "시스템 동작",
   "generalTab.systemBehaviorDescription": "창 닫기 버튼을 눌렀을 때의 동작을 선택합니다.",
   "generalTab.hideToTrayLabel": "트레이로 숨김 (기본)",
-  "generalTab.hideToTrayDescription": "창을 닫아도 Ave 가 시스템 트레이에서 계속 실행됩니다. 루틴, 브리핑, 플러그인 백그라운드 작업이 유지됩니다.",
+  "generalTab.hideToTrayDescription": "창을 닫아도 Ave 가 시스템 트레이에서 계속 실행됩니다. 루틴, 브리핑, 익스텐션 백그라운드 작업이 유지됩니다.",
   "generalTab.quitLabel": "즉시 종료",
   "generalTab.quitDescription": "창을 닫으면 일반 앱처럼 Ave 가 완전히 종료됩니다. 백그라운드 작업도 함께 중단됩니다.",
   "generalTab.systemInfoTitle": "시스템",

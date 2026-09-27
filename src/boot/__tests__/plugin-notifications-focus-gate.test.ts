@@ -118,7 +118,7 @@ describe("registerPluginNotifications — routed via NotificationService", () =>
     expect(notificationCtor).not.toHaveBeenCalled();
     expect(ns.calls.length).toBe(1);
     expect(ns.calls[0].kind).toBe("plugin");
-    expect(ns.calls[0].title).toBe("Plugin [agent-hub] · hello");
+    expect(ns.calls[0].title).toBe("Extension [agent-hub] · hello");
     expect(ns.calls[0].body).toBe("world");
     expect(ns.calls[0].bypassFocusGate).toBe(false);
     expect(audit.calls.length).toBe(0); // routing path doesn't audit; NS handles audit
@@ -148,7 +148,7 @@ describe("registerPluginNotifications — routed via NotificationService", () =>
     emitEvent("meeting.starting-soon", { other: "field" });
 
     expect(ns.calls.length).toBe(1);
-    expect(ns.calls[0].title).toBe("Plugin [test-plugin] · meeting.starting-soon");
+    expect(ns.calls[0].title).toBe("Extension [test-plugin] · meeting.starting-soon");
     dispose();
   });
 
@@ -165,7 +165,7 @@ describe("registerPluginNotifications — routed via NotificationService", () =>
 
     emitEvent("fixture.notice", { title: "Security notice" });
 
-    expect(ns.calls[0]?.title).toBe("Plugin [fixture-6] · Plugin lyra-mail Ave Lyra Mail · Security notice");
+    expect(ns.calls[0]?.title).toBe("Extension [fixture-6] · Plugin lyra-mail Ave Lyra Mail · Security notice");
     dispose();
   });
 
