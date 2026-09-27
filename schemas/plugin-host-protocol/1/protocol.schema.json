@@ -7290,12 +7290,6 @@
           "pluginAccess": {
             "$ref": "#/$defs/types/PluginAccessSpec"
           },
-          "prompts": {
-            "items": {
-              "$ref": "#/$defs/types/PluginContributionDeclaration"
-            },
-            "type": "array"
-          },
           "python": {
             "properties": {
               "interpreter": {
@@ -7316,12 +7310,6 @@
           },
           "requires": {
             "$ref": "#/$defs/types/RequiresSpec"
-          },
-          "routineTemplates": {
-            "items": {
-              "$ref": "#/$defs/types/PluginContributionDeclaration"
-            },
-            "type": "array"
           },
           "sandbox": {
             "$ref": "#/$defs/types/PluginSandboxDeclaration"

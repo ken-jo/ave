@@ -1,6 +1,6 @@
 {
   "name": "ave",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "private": true,
   "aveRelease": {
     "tagDistribution": "public",
@@ -44,7 +44,7 @@
     "build:plugin-preload": "webpack --config webpack.config.cjs --config-name pluginPreload",
     "build:floating-dock-preload": "webpack --config webpack.config.cjs --config-name floatingDockPreload",
     "build:icons": "node scripts/generate-ave-icons.cjs",
-    "build": "bun run check:import-cycles && node scripts/clean-dist.mjs && bun run build:icons && node scripts/check-generated-assets.mjs && bun run check:plugin-host-protocol-schema && bun run build:main && bun run check:i18n-catalog && bun run check:i18n-barrels && bun run build:webpack && bun run build:styles && node scripts/copy-build-assets.mjs && node scripts/check-no-tls-bypass.mjs && node scripts/check-opacity-tokens.mjs && node scripts/check-color-tokens.mjs && node scripts/check-shell-geometry-tokens.mjs && node scripts/check-no-inline-channels.mjs && bun run check:source-text-safe",
+    "build": "bun run check:import-cycles && node scripts/clean-dist.mjs && bun run build:icons && node scripts/check-generated-assets.mjs && bun run check:plugin-host-protocol-schema && bun run check:plugin-host-protocol-mirror && bun run build:main && bun run check:i18n-catalog && bun run check:i18n-barrels && bun run build:webpack && bun run build:styles && node scripts/copy-build-assets.mjs && node scripts/check-no-tls-bypass.mjs && node scripts/check-opacity-tokens.mjs && node scripts/check-color-tokens.mjs && node scripts/check-shell-geometry-tokens.mjs && node scripts/check-no-inline-channels.mjs && bun run check:source-text-safe",
     "typecheck": "tsc --noEmit",
     "start": "bun run build && node scripts/run-electron.mjs dist/src/main/main.js",
     "dev": "node scripts/run-electron-dev.mjs",
@@ -58,6 +58,7 @@
     "test:a2a-external": "bun scripts/run-a2a-external-smoke.ts",
     "check:i18n-catalog": "node --import tsx scripts/i18n-validate-catalog.ts",
     "check:plugin-host-protocol-schema": "node --import tsx scripts/generate-plugin-host-protocol-schema.ts --check",
+    "check:plugin-host-protocol-mirror": "node scripts/check-plugin-host-protocol-mirror.mjs",
     "generate:plugin-host-protocol-schema": "node --import tsx scripts/generate-plugin-host-protocol-schema.ts",
     "check:i18n-barrels": "node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/i18n-catalog-barrels.test.mjs && node scripts/check-i18n-catalog-barrels.mjs",
     "check:sunset-inventory": "node scripts/check-sunset-inventory.mjs",
