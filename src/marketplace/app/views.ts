@@ -13,14 +13,15 @@ import type {
   VersionView,
 } from "../../shared/git-marketplace.js";
 import { versionExclusions, type CatalogRow, type VersionChoiceContext } from "../catalog/aggregate.js";
-import type { PackageKind, PluginArtifactPins, PluginAuthority, Revocation } from "../catalog/types.js";
+import type { AgentPluginComponents, PackageKind, PluginArtifactPins, PluginAuthority, Revocation } from "../catalog/types.js";
 import type { MarketplaceErrorCode } from "../errors.js";
 import { updateFor, type InstallAction, type InstalledPackage } from "../resolve/identity.js";
 import type { RungOutcome } from "../../plugins/plugin-install-receipt.js";
 import type { SourceState } from "../sources/registry.js";
 
 /** Kinds whose packages run code on this computer (design §15.5). */
-export function runsCode(kind: PackageKind): boolean {
+export function runsCode(kind: PackageKind, components?: AgentPluginComponents): boolean {
+  if (kind === "agent-plugin") return components === undefined || Object.keys(components.mcpServers).length > 0 || components.hooks.length > 0;
   return kind === "plugin" || kind === "mcp";
 }
 
@@ -57,6 +58,9 @@ function record(value: unknown): Record<string, unknown> | null {
 /** The permissions a plugin asks for, read from the descriptor before any download (§15.2). */
 export function authorityView(authority: PluginAuthority): AuthorityView {
   const plugins = record(authority.pluginAccess)?.plugins;
+  const filesystem = (["read", "write"] as const).flatMap((access) =>
+    (authority.sandbox?.[access] ?? []).map((grant) =>
+      ({ access, target: grant.kind === "hostDirectory" ? grant.segments.join("/") : `config.${grant.configKey}`, why: grant.why })));
   return {
     capabilities: [...authority.capabilities],
     networkHosts: stringList(record(authority.networkAccess)?.allowedDomains),
@@ -71,27 +75,44 @@ export function authorityView(authority: PluginAuthority): AuthorityView {
       const id = record(item)?.pluginId;
       return typeof id === "string" ? [id] : [];
     }),
+    filesystem,
   };
 }
 
-function difference(next: readonly string[], previous: readonly string[]): string[] {
-  const seen = new Set(previous);
-  return next.filter((item) => !seen.has(item));
+function difference<T>(next: readonly T[], previous: readonly T[], key: (item: T) => string = (item) => String(item)): T[] {
+  const seen = new Set(previous.map(key));
+  return next.filter((item) => !seen.has(key(item)));
 }
 
 /** What an update adds and removes (design §15.6); null when nothing changes. */
 export function authorityDelta(previous: AuthorityView, next: AuthorityView): { added: AuthorityView; removed: AuthorityView } | null {
   const fields = ["capabilities", "networkHosts", "secrets", "pluginAccess", "dependencies"] as const;
-  const added = Object.fromEntries(fields.map((field) => [field, difference(next[field], previous[field])])) as unknown as AuthorityView;
-  const removed = Object.fromEntries(fields.map((field) => [field, difference(previous[field], next[field])])) as unknown as AuthorityView;
-  const changed = fields.some((field) => added[field].length > 0 || removed[field].length > 0);
+  const grantKey = (grant: AuthorityView["filesystem"][number]): string => `${grant.access}:${grant.target}`;
+  const added: AuthorityView = {
+    capabilities: difference(next.capabilities, previous.capabilities),
+    networkHosts: difference(next.networkHosts, previous.networkHosts),
+    secrets: difference(next.secrets, previous.secrets),
+    pluginAccess: difference(next.pluginAccess, previous.pluginAccess),
+    dependencies: difference(next.dependencies, previous.dependencies),
+    filesystem: difference(next.filesystem, previous.filesystem, grantKey),
+  };
+  const removed: AuthorityView = {
+    capabilities: difference(previous.capabilities, next.capabilities),
+    networkHosts: difference(previous.networkHosts, next.networkHosts),
+    secrets: difference(previous.secrets, next.secrets),
+    pluginAccess: difference(previous.pluginAccess, next.pluginAccess),
+    dependencies: difference(previous.dependencies, next.dependencies),
+    filesystem: difference(previous.filesystem, next.filesystem, grantKey),
+  };
+  const changed = fields.some((field) => added[field].length > 0 || removed[field].length > 0) ||
+    added.filesystem.length > 0 || removed.filesystem.length > 0;
   return changed ? { added, removed } : null;
 }
 
 /** An update that widens what the plugin may reach needs an explicit decision (§15.6). */
 export function widensAuthority(delta: { added: AuthorityView } | null): boolean {
   if (!delta) return false;
-  return delta.added.networkHosts.length > 0 || delta.added.secrets.length > 0 || delta.added.capabilities.length > 0 || delta.added.pluginAccess.length > 0;
+  return delta.added.networkHosts.length > 0 || delta.added.secrets.length > 0 || delta.added.capabilities.length > 0 || delta.added.pluginAccess.length > 0 || delta.added.filesystem.length > 0;
 }
 
 /** The ladder as the plan will walk it (§6.2): release → archive → tree. */

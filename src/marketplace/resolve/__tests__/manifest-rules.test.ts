@@ -31,11 +31,11 @@ describe("git-install manifest rules (design §5.3)", () => {
     expect(gitInstallManifestMismatches(manifest(), expected())).toEqual([]);
   });
 
-  it.each(PLUGIN_AUTHORITY_FIELDS.filter((field) => field !== "requires"))("stops on a different %s", (field) => {
+  it.each(PLUGIN_AUTHORITY_FIELDS.filter((field) => field !== "requires" && field !== "sandbox"))("stops on a different %s", (field) => {
     expect(gitInstallManifestMismatches(manifest({ [field]: ["changed"] }), expected())).toEqual([`${field} differs from the descriptor's authority`]);
   });
 
-  it.each(PLUGIN_AUTHORITY_FIELDS.filter((field) => field !== "requires" && field !== "capabilities"))(
+  it.each(PLUGIN_AUTHORITY_FIELDS.filter((field) => field !== "requires" && field !== "capabilities" && field !== "sandbox"))(
     "stops when the manifest adds %s the descriptor does not declare",
     (field) => {
       const narrower = expected();
@@ -43,6 +43,14 @@ describe("git-install manifest rules (design §5.3)", () => {
       expect(gitInstallManifestMismatches(manifest(), narrower)).toEqual([`${field} differs from the descriptor's authority`]);
     },
   );
+
+  it("holds a valid sandbox declaration equal to the reviewed authority", () => {
+    const sandbox = { read: [{ kind: "hostDirectory", segments: ["certs"], why: "Read a certificate bundle" }],
+      write: [{ kind: "userChosenDirectory", configKey: "workspace", why: "Store workspace data" }] } as const;
+    const document = manifest({ sandbox, configSchema: { properties: { workspace: { type: "string" } } } });
+    expect(gitInstallManifestMismatches(document, { ...expected(), authority: { ...authority(), sandbox: sandbox as unknown as PluginAuthority["sandbox"] } })).toEqual([]);
+    expect(gitInstallManifestMismatches(document, expected())).toEqual(["sandbox differs from the descriptor's authority"]);
+  });
 
   it("requires requires.minAppVersion and its equality with the descriptor", () => {
     expect(gitInstallManifestMismatches(manifest({ requires: { capabilities: ["llm.chat"] } }), expected())).toEqual([
@@ -88,5 +96,13 @@ describe("git-install manifest rules (design §5.3)", () => {
       expect((error as Error).message).toContain("alpha@1.2.0: capabilities differs");
     }
     expect(() => assertGitInstallManifest(manifest(), expected())).not.toThrow();
+  });
+
+  it("refuses a process extension before the install ladder can activate it", () => {
+    const document = manifest({ process: { command: "node" } });
+    delete (document.extensions as { "ai.agent-connector.ave": Record<string, unknown> })["ai.agent-connector.ave"].entry;
+    expect(() => assertGitInstallManifest(document, expected())).toThrow(
+      expect.objectContaining({ code: "process-entry-unsupported" }),
+    );
   });
 });

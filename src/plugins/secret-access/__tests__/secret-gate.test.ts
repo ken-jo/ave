@@ -44,6 +44,7 @@ function gate(overrides: Partial<SecretGateInput> & { activeProvider?: string } 
   }));
   const readRegistryEntry = vi.fn(async () => officialEntry);
   const input: SecretGateInput = {
+    operation: "lease",
     pluginId: "meeting",
     key: "llm.apiKey.openai",
     allowlist: ["llm.apiKey.openai"],
@@ -57,6 +58,12 @@ function gate(overrides: Partial<SecretGateInput> & { activeProvider?: string } 
 }
 
 describe("runSecretGate", () => {
+  it("refuses export of a host-provider key before provenance or settings reads", async () => {
+    const { outcome, readRegistryEntry, readSettings } = gate({ operation: "export" });
+    await expect(outcome).resolves.toEqual({ kind: "deny", tier: "tier-2", reason: "provider-key-not-exportable" });
+    expect(readRegistryEntry).not.toHaveBeenCalled();
+    expect(readSettings).not.toHaveBeenCalled();
+  });
   it("allows a granted official install of the pinned artifact for the active vendor", async () => {
     await expect(gate().outcome).resolves.toEqual({ kind: "allow" });
   });

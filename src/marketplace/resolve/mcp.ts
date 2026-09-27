@@ -33,7 +33,7 @@ import AdmZip from "adm-zip";
 import type { MarketplaceArtifactLimits } from "../../plugins/marketplace-artifact-limits.js";
 import type { McpRuntimeSpec } from "../../plugins/types.js";
 import type { McpServerConfig } from "../../mcp/types.js";
-import { ENV_NAME_RE, HTTP_HEADER_NAME_RE, MAX_NAME_LEN, RESERVED_ENV_NAMES, RESERVED_HEADERS } from "../../mcp/safe-names.js";
+import { HTTP_HEADER_NAME_RE, MAX_NAME_LEN, RESERVED_HEADERS, isSafeMcpEnvironmentName } from "../../mcp/safe-names.js";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { CatalogRow } from "../catalog/aggregate.js";
@@ -85,7 +85,6 @@ const DOCKER_HUB_HOSTS = new Set(["docker.io", "index.docker.io", "registry-1.do
  * home the launchers read their config from, proxies and CA bundles.
  * Matched case-insensitively (npm reads `npm_config_*` in any case).
  */
-const LAUNCHER_ENV = /^(?:NPM_CONFIG_|PNPM_|YARN_|BUN_|COREPACK_|UV_|PIP_|DOCKER_|NODE_|PYTHON(?!UNBUFFERED$|IOENCODING$|UTF8$)|DYLD_|LD_|XDG_CONFIG_HOME$|(?:HTTPS?|ALL|NO|FTP)_PROXY$|SSL_CERT_|REQUESTS_CA_BUNDLE$|CURL_CA_BUNDLE$)/iu;
 const DEFAULT_REGISTRIES: Record<string, string> = {
   npm: "https://registry.npmjs.org",
   pypi: "https://pypi.org",
@@ -167,8 +166,7 @@ function keyValues(list: unknown, what: string, nameOk: (name: string) => boolea
   return out;
 }
 
-const envNameOk = (name: string) =>
-  name.length <= MAX_NAME_LEN && ENV_NAME_RE.test(name) && !RESERVED_ENV_NAMES.has(name.toUpperCase()) && !LAUNCHER_ENV.test(name);
+const envNameOk = isSafeMcpEnvironmentName;
 const headerNameOk = (name: string) => name.length <= MAX_NAME_LEN && HTTP_HEADER_NAME_RE.test(name) && !RESERVED_HEADERS.has(name.toLowerCase());
 
 function packageRuntime(pkg: Record<string, unknown>): McpRuntimeSpec {

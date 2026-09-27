@@ -41,6 +41,7 @@ import {
 } from "../../shared/json-representable.js";
 import { RPC_METHOD_NOT_FOUND } from "../../mcp/protocol-constants.js";
 import type { PluginLifecycleEvent } from "../public-contract.js";
+import { randomBytes } from "node:crypto";
 
 // ───────────────────────────────────────────────────────────────────────────
 // The protocol this module is the vocabulary of
@@ -48,28 +49,14 @@ import type { PluginLifecycleEvent } from "../public-contract.js";
 // ───────────────────────────────────────────────────────────────────────────
 
 /**
- * The host protocol versions this build serves, oldest first.
- *
- * A SET, not a number: a breaking change adds a version beside the old one
- * rather than replacing it, which is what lets a plugin built against an older
- * version keep loading while the host moves on (§3.2). One constant for both
- * directions — the reverse channel and the lifecycle methods used to carry a
- * revision each, and two numbers that always move together are one number that
- * can disagree with itself.
+ * The one host protocol version this build serves. A breaking release replaces
+ * the previous version after its announced boundary (§3.2). The same value
+ * governs both directions of the connection.
  */
-export const HOST_PROTOCOL_VERSIONS_SERVED = ["1"] as const;
+export const HOST_PROTOCOL_VERSIONS_SERVED = ["2"] as const;
 
 /** One served version, as it travels: an integer written as a string. */
 export type HostProtocolVersion = (typeof HOST_PROTOCOL_VERSIONS_SERVED)[number];
-
-/**
- * The version the host speaks for a plugin that declares none.
- *
- * The host-shipped reference runtime speaks for a JS plugin, so such a plugin
- * has nothing to negotiate and gets the newest the runtime knows.
- */
-export const NEWEST_HOST_PROTOCOL_VERSION: HostProtocolVersion =
-  HOST_PROTOCOL_VERSIONS_SERVED[HOST_PROTOCOL_VERSIONS_SERVED.length - 1];
 
 /** Whether `value` names a version this build serves. */
 export function isServedHostProtocolVersion(value: unknown): value is HostProtocolVersion {
@@ -88,13 +75,16 @@ export class IncompatibleHostProtocolError extends Error {
   constructor(
     readonly pluginId: string,
     readonly detail:
-      | { readonly declared: string }
+      | { readonly declared: string | null }
       | { readonly missingCapabilities: readonly string[] },
   ) {
     super(
       "declared" in detail
-        ? `plugin '${pluginId}' speaks host protocol ${detail.declared}; this app serves `
-          + HOST_PROTOCOL_VERSIONS_SERVED.join(", ")
+        ? detail.declared === null
+          ? `plugin '${pluginId}' does not declare a host protocol; this app serves `
+            + HOST_PROTOCOL_VERSIONS_SERVED.join(", ")
+          : `plugin '${pluginId}' speaks host protocol ${detail.declared}; this app serves `
+            + HOST_PROTOCOL_VERSIONS_SERVED.join(", ")
         : `plugin '${pluginId}' requires host methods this app does not serve: `
           + detail.missingCapabilities.join(", "),
     );
@@ -153,6 +143,7 @@ export interface HostApiRpcError {
     readonly code: HostApiWireErrorCode;
     readonly name: string;
     readonly detail?: Record<string, unknown>;
+    readonly retryAfterMs?: number;
   };
 }
 
@@ -171,6 +162,7 @@ export function toHostApiRpcError(wire: HostApiWireError): HostApiRpcError {
       code: wire.code,
       name: wire.name,
       ...(wire.detail !== undefined ? { detail: wire.detail } : {}),
+      ...(wire.retryAfterMs !== undefined ? { retryAfterMs: wire.retryAfterMs } : {}),
     },
   };
 }
@@ -199,10 +191,22 @@ export function fromHostApiRpcError(error: unknown): HostApiWireError {
       "[host-api-wire] a reply error carries no data.code",
     );
   }
+  if (data.code === "rate-limited" && (
+    !Number.isInteger(data.retryAfterMs)
+    || (data.retryAfterMs as number) < 0
+    || (data.retryAfterMs as number) > 5000
+  )) {
+    throw new HostApiBoundaryError(
+      "result-marshalling-rejected",
+      "[host-api-wire] a rate-limited reply carries no bounded retryAfterMs",
+    );
+  }
   return {
     code: data.code,
     name: data.name,
     message: candidate.message,
+    ...(typeof data.retryAfterMs === "number" && data.retryAfterMs >= 0
+      && data.retryAfterMs <= 5000 ? { retryAfterMs: data.retryAfterMs } : {}),
     ...(data.detail !== undefined ? { detail: data.detail } : {}),
   };
 }
@@ -471,6 +475,7 @@ export type ResultMarshalling =
   | "void"
   | "encoded"
   | "handle"
+  | "handle-or-denied"
   | "child-local";
 
 /**
@@ -548,12 +553,16 @@ export const HOST_API_WIRE_ERROR_CODES = [
   "result-marshalling-rejected",
   "payload-too-large",
   "subscription-unknown",
+  "rate-limited",
   // ── Host decisions the plugin is expected to branch on.
   "effect-boundary-denied",
   "manifest-integrity-violation",
   "detached-operation",
   "plugin-storage",
   "plugin-storage-encryption-unavailable",
+  "lease-unavailable",
+  "lease-audience-denied",
+  "credential-conflict",
   // ── Anything the host threw that is none of the above. Deliberately last and
   //    deliberately opaque: a host internal is not a contract.
   "host-internal",
@@ -578,6 +587,7 @@ export const UNIVERSAL_WIRE_ERROR_CODES: readonly HostApiWireErrorCode[] = [
   "argument-marshalling-rejected",
   "result-marshalling-rejected",
   "payload-too-large",
+  "rate-limited",
   "host-internal",
 ];
 
@@ -616,6 +626,7 @@ export interface HostApiWireError {
   readonly name: string;
   readonly message: string;
   readonly detail?: Record<string, unknown>;
+  readonly retryAfterMs?: number;
 }
 
 /**
@@ -641,12 +652,14 @@ export interface HostApiWireError {
 export class PluginHostApiError extends Error {
   readonly code: HostApiWireErrorCode;
   readonly detail: Record<string, unknown> | undefined;
+  readonly retryAfterMs: number | undefined;
 
   constructor(wire: HostApiWireError) {
     super(wire.message);
     this.name = wire.name;
     this.code = wire.code;
     this.detail = wire.detail;
+    this.retryAfterMs = wire.retryAfterMs;
   }
 }
 
@@ -1031,14 +1044,12 @@ export const HOSTAPI_PATH_CONTRACTS = {
     lifetime: "none",
     errors: [],
   },
-  // `opts.signal` cancels the request instead of crossing; the reply is
-  // `{ ok, vendor, baseUrl?, key, leaseId }` and the child synthesises
-  // `bearer()` / `release()` around it. `release()` drops the child's copy AND
-  // sends the release, so the host can unwire its own.
+  // The host returns an opaque lease by default; a denied result has no handle.
+  // A reviewed raw request is the only branch whose reply carries key bytes.
   resolveApiKey: {
     params: ["opts"],
     arguments: "encoded",
-    result: "handle",
+    result: "handle-or-denied",
     lifetime: "child-disposable",
     errors: [],
   },
@@ -1116,7 +1127,7 @@ export const HOSTAPI_PATH_CONTRACTS = {
     arguments: "encoded",
     result: "encoded",
     lifetime: "none",
-    errors: ["effect-boundary-denied"],
+    errors: ["effect-boundary-denied", "lease-unavailable", "lease-audience-denied", "credential-conflict"],
   },
   // The host KEEPS OWNING the worker process — the sandbox grant machinery, the
   // wrapped-worker registry, the Windows holder-PID ACL lifecycle and the
@@ -1711,6 +1722,7 @@ const WIRE_REQUEST_INIT_FIELDS = [
   "redirect",
   "referrer",
   "referrerPolicy",
+  "auth",
 ] as const;
 
 /**
@@ -1719,6 +1731,7 @@ const WIRE_REQUEST_INIT_FIELDS = [
  * with `notifications/cancelled` instead (§3.5).
  */
 export interface WireRequestInit {
+  readonly auth?: { readonly lease: string };
   readonly method?: string;
   /** `Headers` flattened to entries; the form `new Headers()` accepts back. */
   readonly headers?: readonly (readonly [string, string])[];
@@ -1866,8 +1879,8 @@ export function decodeWireHttpResponse(value: unknown, label: string): Response 
  * `init.signal` is accepted and left behind: the caller cancels the request it
  * belongs to rather than sending the signal (§3.5).
  */
-export function encodeWireRequestInit(
-  init: RequestInit | undefined,
+function encodeWireRequestInit(
+  init: import("../public-contract.js").HostFetchInit | undefined,
   label: string,
 ): WireRequestInit | undefined {
   if (init === undefined) return undefined;
@@ -1883,10 +1896,11 @@ export function encodeWireRequestInit(
   }
   const wire: Record<string, unknown> = {};
   for (const key of WIRE_REQUEST_INIT_FIELDS) {
-    if (key === "headers" || key === "body" || key === "signal") continue;
+    if (key === "headers" || key === "body" || key === "signal" || key === "auth") continue;
     const value = (init as Record<string, unknown>)[key];
     if (value !== undefined) wire[key] = value;
   }
+  if (init.auth !== undefined) wire.auth = validateWireAuth(init.auth);
   if (init.headers !== undefined) {
     wire.headers = [...new Headers(init.headers).entries()].map(
       ([key, value]) => [key, value] as const,
@@ -1896,6 +1910,58 @@ export function encodeWireRequestInit(
     wire.body = encodeWireBytes(asWireBody(init.body, label), `${label}(body)`);
   }
   return wire as WireRequestInit;
+}
+
+/** Serialize multipart fields while counting the complete body before each allocation. */
+export async function encodeHostFetchInit(
+  init: import("../public-contract.js").HostFetchInit | undefined,
+  label: string,
+): Promise<WireRequestInit | undefined> {
+  if (!(init?.body instanceof FormData)) return encodeWireRequestInit(init, label);
+  const headers = new Headers(init.headers);
+  if (headers.has("content-type")) {
+    throw new HostApiBoundaryError("argument-marshalling-rejected", "Multipart content type conflicts with generated boundary.");
+  }
+  const boundary = `ave-${randomBytes(16).toString("hex")}`;
+  const encoder = new TextEncoder();
+  const pieces: Uint8Array[] = [];
+  let total = 0;
+  const append = (bytes: Uint8Array) => {
+    assertWithinWireBytesMax(total + bytes.byteLength, label);
+    total += bytes.byteLength;
+    pieces.push(bytes);
+  };
+  const quoted = (value: string) => value.replace(/\r|\n/g, " ").replace(/["\\]/g, "_");
+  for (const [name, value] of init.body) {
+    if (init.signal?.aborted) throw new HostApiBoundaryError("argument-marshalling-rejected", "Multipart upload was aborted.");
+    const file = typeof value === "string" ? null : value;
+    const nameBytes = encoder.encode(name);
+    if (nameBytes.byteLength > 255) throw new HostApiBoundaryError("payload-too-large", "Multipart field name is too long.");
+    const filename = file ? file.name : undefined;
+    if (filename && encoder.encode(filename).byteLength > 255) {
+      throw new HostApiBoundaryError("payload-too-large", "Multipart filename is too long.");
+    }
+    const header = `--${boundary}\r\nContent-Disposition: form-data; name="${quoted(name)}"`
+      + (filename !== undefined ? `; filename="${quoted(filename)}"` : "")
+      + `\r\n${file ? `Content-Type: ${file.type || "application/octet-stream"}\r\n` : ""}\r\n`;
+    append(encoder.encode(header));
+    if (file) {
+      assertWithinWireBytesMax(total + file.size, label);
+      append(new Uint8Array(await file.arrayBuffer()));
+      if (init.signal?.aborted) throw new HostApiBoundaryError("argument-marshalling-rejected", "Multipart upload was aborted.");
+    } else {
+      const bytes = encoder.encode(value as string);
+      if (bytes.byteLength > 8192) throw new HostApiBoundaryError("payload-too-large", "Multipart field is too large.");
+      append(bytes);
+    }
+    append(encoder.encode("\r\n"));
+  }
+  append(encoder.encode(`--${boundary}--\r\n`));
+  const body = new Uint8Array(total);
+  let offset = 0;
+  for (const piece of pieces) { body.set(piece, offset); offset += piece.byteLength; }
+  headers.set("content-type", `multipart/form-data; boundary=${boundary}`);
+  return encodeWireRequestInit({ ...init, headers, body }, label);
 }
 
 /**
@@ -1931,7 +1997,7 @@ export function decodeWireRequestInit(
   value: unknown,
   signal: AbortSignal,
   label: string,
-): RequestInit {
+): import("../public-contract.js").HostFetchInit {
   if (value === undefined || value === null) return { signal };
   if (typeof value !== "object") {
     throw new HostApiBoundaryError(
@@ -1952,17 +2018,33 @@ export function decodeWireRequestInit(
   }
   const init: Record<string, unknown> = {};
   for (const key of WIRE_REQUEST_INIT_FIELDS) {
-    if (key === "headers" || key === "body" || key === "signal") continue;
+    if (key === "headers" || key === "body" || key === "signal" || key === "auth") continue;
     const field = wire[key];
     if (field !== undefined) init[key] = field;
   }
+  if (Object.hasOwn(wire, "auth")) init.auth = validateWireAuth(wire.auth);
   if (wire.headers !== undefined) init.headers = new Headers(wire.headers.map(([k, v]) => [k, v]));
   // `decodeWireBytes`, not `decodeWireBinary`: a `utf8`-tagged body is a plugin
   // sending TEXT, and re-encoding it to bytes would be right only by accident —
   // `fetch` derives a different default `content-type` from the two branches.
   if (wire.body !== undefined) init.body = decodeWireBytes(wire.body, `${label}(body)`);
   init.signal = signal;
-  return init as RequestInit;
+  return init as import("../public-contract.js").HostFetchInit;
+}
+
+export function validateWireAuth(value: unknown): { lease: string } {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new HostApiBoundaryError("credential-conflict", "Credential selector is malformed.");
+  }
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== 1 || keys[0] !== "lease") {
+    throw new HostApiBoundaryError("credential-conflict", "Credential selector is malformed.");
+  }
+  const lease = (value as { lease?: unknown }).lease;
+  if (typeof lease !== "string" || lease.length === 0) {
+    throw new HostApiBoundaryError("credential-conflict", "Credential selector is malformed.");
+  }
+  return { lease };
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -1985,31 +2067,27 @@ export interface WireCallLlmOptions {
 export interface WireResolveApiKeyOptions {
   readonly purpose: "llm" | "stt" | "embedding" | "vision";
   readonly vendor?: "openai" | "azure-openai" | "vertex" | "anthropic";
+  readonly exposure?: "lease" | "raw";
 }
 
-/**
- * The reply behind the `handle` `resolveApiKey` declares.
- *
- * `handleId` names the LEASE, and it is present on both branches: the dispatcher
- * pins `handle` results to `{ handleId: string }`, and a denied resolve is still
- * a settled call that has to name itself. On the denied branch the host has
- * already closed the lease, so the id identifies the call and owns nothing.
- *
- * `key` is the raw credential. It crosses because the child stub's `bearer()`
- * has to return it — isolation does not shrink what a GRANTED plugin holds
- * (§3.2), it shrinks what an ungranted one can reach, and the gate that decides
- * granted runs host-side before this shape exists.
- */
+/** A success has one releasable id; a denial has none. Only raw carries key bytes. */
 export type WireApiKeyLease =
   | {
       readonly handleId: string;
       readonly ok: true;
+      readonly exposure: "lease";
+      readonly vendor: string;
+      readonly baseUrl?: string;
+    }
+  | {
+      readonly handleId: string;
+      readonly ok: true;
+      readonly exposure: "raw";
       readonly vendor: string;
       readonly baseUrl?: string;
       readonly key: string;
     }
   | {
-      readonly handleId: string;
       readonly ok: false;
       readonly reason: string;
     };

@@ -144,6 +144,11 @@ describe("MarketplaceService", () => {
       },
       content: {
         list: async () => store.list().map((entry) => ({ kind: entry.kind, name: entry.name, version: entry.version, sourceId: entry.origin.sourceId, originCommit: entry.origin.commit })),
+        installedComponents: async (name) => {
+          const content = (await store.load()).loaded.find((item) => item.entry.kind === "agent-plugin" && item.entry.name === name)?.content;
+          if (content?.kind !== "agent-plugin") throw new Error(`installed agent-plugin ${name} has no verified components`);
+          return content.components;
+        },
         install: async (staged, options) => {
           await duringContentInstall?.();
           return { action: (await store.install(staged, options)).action };
@@ -221,8 +226,8 @@ describe("MarketplaceService", () => {
     const publish = (version: string) =>
       repo.commit(
         {
-          "marketplace.json": text({
-            schemaVersion: 1,
+          "marketplace.2.json": text({
+            schemaVersion: 2,
             name: indexName,
             displayName: "Acme Tools",
             packages: [

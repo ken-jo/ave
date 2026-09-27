@@ -251,10 +251,13 @@ Keep task-specific inventories in issues rather than in this instruction file.
 
 Use the smallest check that can disprove the current change while iterating:
 
-- Review-only Markdown: only the pre-push hook's explicit allowlist may skip
-  expensive gates; still run diff/path/policy checks. A `.md` suffix alone does
-  not qualify; runtime/instruction/workflow/sensitive-contract Markdown and
-  mixed changes get relevant targeted checks plus the full pre-push gate.
+- Documentation-only changes: Markdown or HTML prose outside the consumed
+  document inventory may skip expensive gates; still run diff/path/policy
+  checks. Runtime resources, site content, workflows, consumed documents,
+  deletes, renames, and mixed changes get the relevant checks.
+- Register documents read by native code, non-Node subprocesses, or `openAsBlob`
+  in `scripts/hooks/documentation-references.json`; the read guard cannot see
+  those accesses. CI runs the full suite on every push to `main` as a backstop.
 - Types or isolated logic: affected unit test file(s) and the narrowest useful
   typecheck. Do not run overlapping broad suites after every small edit.
 - Cross-module or shared contract: targeted tests for each changed boundary,
@@ -265,12 +268,14 @@ Use the smallest check that can disprove the current change while iterating:
 - Packaging, permissions, IPC, sandbox, or release paths: add the focused
   security or packaged-app check required by the owning design.
 
-For code-bearing and runtime/instruction/workflow/sensitive-contract Markdown,
-pre-push runs `bun run typecheck`, full `bun run test`, and `bun run build`
-once. Only allowlisted review-only Markdown takes the static-policy path. Do not
+For production code and consumed documentation changes, pre-push runs
+`bun run typecheck`, full `bun run test`, and `bun run build` once. Documentation prose
+with no test or build consumer takes the static-policy path. Do not
 manually duplicate the full trio. After failure, rerun only failed or invalidated
 checks; the next push performs the complete gate. Full Playwright E2E belongs to
 CI/release; locally run only changed-flow specs unless the task requires more.
+An eligible test-only push uses the hook's targeted Vitest path; CI still runs
+its full checks for that change.
 
 ### CI job composition
 

@@ -16,7 +16,7 @@
  */
 import { messages } from "../i18n/messages/index.js";
 import type { IndexPackage, IndexVersion, PackageDescriptor, PluginArtifactPins, PluginAuthority } from "./catalog/types.js";
-import { validateConditionalRevocationsText, validateDescriptorText, validateIndexText, validateRevocationsText } from "./catalog/validate.js";
+import { validateConditionalRevocationsText, validateDescriptorText, validateIndexText, validateLegacyIndexText, validateRevocationsText } from "./catalog/validate.js";
 import { isDataContentKind, parseContent } from "./content/kinds.js";
 import { checkContentFiles, isContentKind } from "./content/rules.js";
 import { DESCRIPTOR_NAME, descriptorDiffersFromIndex, repoPath } from "./resolve/descriptor.js";
@@ -60,7 +60,8 @@ export interface RepositoryProblem {
   message: string;
 }
 
-const INDEX_PATH = "marketplace.json";
+const INDEX_PATH = "marketplace.2.json";
+const LEGACY_INDEX_PATH = "marketplace.json";
 const REVOCATIONS_PATH = "policy/revocations.json";
 /** Files a plugin's tree rung installs (design §6.2), besides the descriptor. */
 const TREE_TOP_LEVEL = new Set(["plugin.json", "dist", "assets"]);
@@ -99,6 +100,7 @@ function manifestMismatches(document: unknown, descriptor: PackageDescriptor): s
     name: descriptor.name,
     version: descriptor.version,
     minAppVersion: descriptor.minAppVersion,
+    hostProtocol: descriptor.hostProtocol,
     authority: payload.authority,
   });
 }
@@ -130,7 +132,7 @@ function checkReleasedManifests(entry: IndexPackage, released: ReadonlyMap<strin
       report(`a released plugin.json was supplied for ${key}, which the index does not list`);
       continue;
     }
-    const expected = { name: entry.name, version: version.version, minAppVersion: version.minAppVersion, authority: version.authority as PluginAuthority };
+    const expected = { name: entry.name, version: version.version, minAppVersion: version.minAppVersion, hostProtocol: version.hostProtocol, authority: version.authority as PluginAuthority };
     const held = version.yanked ? withoutLegacyFields(document) : document;
     for (const mismatch of gitInstallManifestMismatches(held, expected)) report(`the released plugin.json of ${version.version}: ${mismatch}`);
     checkNotificationDeprecation(held, version.minAppVersion, alertsReleaseVersion,
@@ -208,6 +210,8 @@ function checkContent(tree: RepositoryTree, entry: IndexPackage, descriptor: Pac
   if (!isDataContentKind(kind)) return;
   parseContent(kind, files, {
     name: descriptor.name,
+    version: descriptor.version,
+    minAppVersion: descriptor.minAppVersion,
     payload: descriptor.payload,
     english: messages.en,
     sourceOrigin: options.official ? "official" : "custom",
@@ -269,6 +273,29 @@ export function checkMarketplaceRepository(tree: RepositoryTree, options: Reposi
   if (!indexBytes) return [{ subject: INDEX_PATH, message: "is missing" }];
   const index = validateIndexText(indexBytes.toString("utf8"), { official: options.official, sourceId: options.sourceId });
   if (!index.ok) return [{ subject: INDEX_PATH, message: index.error }];
+  const legacyBytes = tree.read(LEGACY_INDEX_PATH);
+  if (legacyBytes) {
+    const legacy = validateLegacyIndexText(legacyBytes.toString("utf8"));
+    if (!legacy.ok) problems.push({ subject: LEGACY_INDEX_PATH, message: legacy.error });
+    else {
+      const legacyPackages = legacy.value.packages as Array<{ kind: string; name: string; versions?: Array<{ version: string; minAppVersion: string }> }>;
+      for (const item of legacyPackages) {
+        const current = index.value.index.packages.find((candidate) => candidate.kind === item.kind && candidate.name === item.name);
+        for (const version of item.versions ?? []) {
+          if (compareSemver(version.minAppVersion, "0.12.0") >= 0) {
+            problems.push({ subject: LEGACY_INDEX_PATH, message: `${item.name}@${version.version} belongs only in format 2` });
+          }
+          const copy = current?.versions?.find((candidate) => candidate.version === version.version);
+          if (!copy) {
+            problems.push({ subject: LEGACY_INDEX_PATH, message: `${item.name}@${version.version} is absent from format 2` });
+          } else if (copy.hostProtocol !== undefined || copy.authority?.sandbox !== undefined ||
+            canonicalStringify(version) !== canonicalStringify(copy)) {
+            problems.push({ subject: LEGACY_INDEX_PATH, message: `${item.name}@${version.version} changed across catalog formats` });
+          }
+        }
+      }
+    }
+  }
   for (const diagnostic of index.value.diagnostics) problems.push(diagnostic);
   for (const entry of index.value.index.packages) checkPackage(tree, entry, options, problems);
   // checkReleasedManifests consumes the keys of listed plugins; any other key names nothing to check against.

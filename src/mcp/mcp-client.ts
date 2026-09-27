@@ -2178,6 +2178,7 @@ class StdioTransport implements McpTransport {
       // Windows: 콘솔 창 생성 방지 (창이 뜨면 stdout 파이프 동작이 달라짐)
       windowsHide: true,
       env: baseEnv,
+      ...(this.config.cwd ? { cwd: this.config.cwd } : {}),
     });
 
     trackManagedChildProcess(this.process, { label: `mcp:${this.config.id}` });
@@ -2218,7 +2219,8 @@ class StdioTransport implements McpTransport {
     // all — NEVER cwd / NEVER the real HOME / NEVER any pre-existing dir. The
     // fresh process HOME is the only host-created writable compatibility path.
     const sandboxRoot = this.config.sandboxRoot;
-    const allowWrite = [sandboxHome.path, ...(sandboxRoot ? [sandboxRoot] : [])];
+    const allowWrite = [sandboxHome.path, ...(sandboxRoot ? [sandboxRoot] : []),
+      ...(this.config.pluginDataDir ? [this.config.pluginDataDir] : [])];
     // Runtime dirs the worker legitimately needs to READ to start (its own jail
     // root + the system temp dir). HOME is NOT re-allowed for read.
     const tmpDir = process.env.TMPDIR ?? process.env.TEMP ?? process.env.TMP;
@@ -2278,6 +2280,7 @@ class StdioTransport implements McpTransport {
         shell: false,
         windowsHide: true,
         env: this.buildWrappedStdioEnv(baseEnv, env, { ...sandboxHome.env }),
+        ...(this.config.cwd ? { cwd: this.config.cwd } : {}),
       });
 
       trackManagedChildProcess(this.process, { label: `mcp:${this.config.id}:asrt` });

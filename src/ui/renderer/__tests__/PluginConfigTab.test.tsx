@@ -3,6 +3,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act, render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import { PluginConfigTab } from "../tabs/PluginConfigTab.js";
 import { PluginConfigSchemaForm } from "../tabs/PluginConfigSchemaForm.js";
+import { takeUpdateReview } from "../tabs/git-marketplace/update-review-request.js";
 
 const mockCards = vi.fn(async () => [
   {
@@ -33,6 +34,7 @@ const mockUninstall = vi.fn(async () => ({
  */
 const market = {
   listCatalog: vi.fn(),
+  listSources: vi.fn(),
   planInstall: vi.fn(),
   executeInstall: vi.fn(),
 };
@@ -74,12 +76,14 @@ function setRendererApi(value: Record<string, unknown>): void {
 
 beforeEach(() => {
   market.listCatalog.mockReset();
+  market.listSources.mockReset();
   market.planInstall.mockReset();
   market.executeInstall.mockReset();
   market.listCatalog.mockResolvedValue({
     ok: true as const,
     value: { entries: [], counts: {}, sourceCount: 1, syncedAt: null },
   });
+  market.listSources.mockResolvedValue({ ok: true as const, value: [] });
   market.planInstall.mockResolvedValue({ ok: true as const, value: { planId: "plan-1" } });
   market.executeInstall.mockResolvedValue({
     ok: true as const,
@@ -303,7 +307,7 @@ describe("PluginConfigTab", () => {
         expectRepairPlanned("agent-hub");
         expect(cards).toHaveBeenCalledTimes(2);
         expect(
-          screen.getByText("Agent Hub: 진단 완료 — 로컬 복구 불가, 아직 실행할 수 없습니다."),
+          screen.getByText("Agent Hub: 진단 완료 — 익스텐션을 아직 실행할 수 없습니다."),
         ).toBeInTheDocument();
       });
       expect(screen.queryByText("Agent Hub 복구 완료")).toBeNull();
@@ -389,7 +393,7 @@ describe("PluginConfigTab", () => {
     });
     expect(screen.queryByText("Agent Hub 복구 완료")).toBeNull();
     expect(
-      screen.queryByText("Agent Hub: 진단 완료 — 로컬 복구 불가, 아직 실행할 수 없습니다."),
+      screen.queryByText("Agent Hub: 진단 완료 — 익스텐션을 아직 실행할 수 없습니다."),
     ).toBeNull();
     expect(screen.getByTestId("plugin-config:banner")).toHaveClass("text-destructive");
   });
@@ -438,8 +442,25 @@ describe("PluginConfigTab", () => {
       expect(screen.getByTestId("plugin-config:banner")).toHaveClass("text-success");
     });
     expect(
-      screen.queryByText("Meeting: 진단 완료 — 로컬 복구 불가, 아직 실행할 수 없습니다."),
+      screen.queryByText("Meeting: 진단 완료 — 익스텐션을 아직 실행할 수 없습니다."),
     ).toBeNull();
+  });
+
+  it("shows a localized Doctor diagnosis for a process-entry extension", async () => {
+    const broken = {
+      id: "process-kit", name: "Process Kit", description: "Process extension",
+      sampleTools: [], capabilities: [], tools: [], loadStatus: "failed" as const,
+      installFailureKind: "process-entry-unsupported" as const,
+      installFailureMessage: "This app cannot run process-entry extensions yet.",
+    };
+    Object.defineProperty(window, "ave", {
+      value: { plugins: { cards: vi.fn().mockResolvedValue([broken]) }, pluginConfig: { get: mockGet, set: mockSet } },
+      writable: true, configurable: true,
+    });
+    render(<PluginConfigTab />);
+    await waitFor(() => expect(screen.getByText("프로세스 진입점 익스텐션을 실행할 수 없습니다")).toBeInTheDocument());
+    expect(screen.getByText("이 앱은 아직 프로세스 진입점이 있는 익스텐션을 실행할 수 없습니다.")).toBeInTheDocument();
+    expect(screen.getByText(/다시 설치해도 해결되지 않습니다/)).toBeInTheDocument();
   });
 
   it("shows an unresolved warning without reinstalling when the app is too old", async () => {
@@ -479,13 +500,14 @@ describe("PluginConfigTab", () => {
       expect(market.planInstall).not.toHaveBeenCalled();
       expect(cards).toHaveBeenCalledTimes(2);
       expect(
-        screen.getByText("Meeting: 진단 완료 — 로컬 복구 불가, 아직 실행할 수 없습니다."),
+        screen.getByText("Meeting: 진단 완료 — 익스텐션을 아직 실행할 수 없습니다."),
       ).toBeInTheDocument();
       expect(screen.getByTestId("plugin-config:banner")).toHaveClass("text-warning");
     });
   });
 
   it("names a host protocol mismatch, and does not reinstall for it", async () => {
+    const navigate = vi.fn();
     const broken = {
       id: "meeting",
       name: "Meeting",
@@ -495,7 +517,82 @@ describe("PluginConfigTab", () => {
       tools: [],
       installAliases: ["ave-plugin-meeting"],
       installFailureKind: "incompatible-host-protocol" as const,
-      installFailureMessage: "plugin 'meeting' speaks host protocol 2; this app serves 1",
+      installFailureMessage: "plugin 'meeting' speaks host protocol 1; this app serves 2",
+      loadStatus: "failed" as const,
+    };
+    const cards = vi.fn().mockResolvedValue([broken]);
+    bind("meeting");
+    market.listCatalog.mockResolvedValue({ ok: true, value: {
+      entries: [{
+        key: { sourceId: "ave", kind: "plugin", name: "meeting" },
+        sourceOrigin: "official", sourceLabel: "Ave", displayName: "Meeting", description: "", keywords: [],
+        state: { state: "update", from: "1.0.0", to: "2.0.0" }, required: false, runsCode: true,
+      }], counts: {}, sourceCount: 1, syncedAt: null,
+    } });
+    Object.defineProperty(window, "ave", {
+      value: {
+        plugins: { cards },
+        pluginConfig: { get: mockGet, set: mockSet },
+      },
+      writable: true,
+      configurable: true,
+    });
+
+    render(<PluginConfigTab onNavigate={navigate} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("plugin-config:doctor-panel:meeting")).toBeInTheDocument();
+    });
+    // Its own diagnosis, not "update the app": a newer app may have dropped
+    // the version rather than lacking it.
+    expect(screen.getByText("다른 Ave 프로토콜용 익스텐션")).toBeInTheDocument();
+    expect(screen.queryByText("앱 업데이트 필요")).toBeNull();
+    expect(await screen.findByText(/마켓플레이스에서 2.0.0 버전 검토/)).toBeInTheDocument();
+    fireEvent.click(screen.getByText(/마켓플레이스에서 2.0.0 버전 검토/));
+    expect(navigate).toHaveBeenCalledWith("marketplace");
+    expect(takeUpdateReview()).toEqual({ kind: "package", key: { sourceId: "ave", kind: "plugin", name: "meeting" } });
+
+    fireEvent.click(screen.getByTestId("plugin-config:doctor:meeting"));
+
+    await waitFor(() => {
+      expect(market.planInstall).not.toHaveBeenCalled();
+      expect(cards).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("shows the installed source repository when no compatible catalog version exists", async () => {
+    bind("meeting");
+    market.listSources.mockResolvedValue({ ok: true, value: [{
+      id: "ave", label: "Plugin source", url: "https://example.invalid/plugins/meeting",
+    }] });
+    Object.defineProperty(window, "ave", {
+      value: {
+        plugins: { cards: vi.fn().mockResolvedValue([{
+          id: "meeting", name: "Meeting", description: "Needs update", sampleTools: [], capabilities: [], tools: [],
+          loadStatus: "failed", installFailureKind: "incompatible-host-protocol",
+        }]) },
+        pluginConfig: { get: mockGet, set: mockSet },
+      },
+      writable: true,
+      configurable: true,
+    });
+
+    render(<PluginConfigTab />);
+    expect(await screen.findByText("https://example.invalid/plugins/meeting")).toBeInTheDocument();
+    expect(screen.getByText(/Plugin source에서 호환 버전 확인/)).toBeInTheDocument();
+  });
+
+  it("shows a sandbox ceiling diagnosis with update and remove actions without reinstalling", async () => {
+    const broken = {
+      id: "meeting",
+      name: "Meeting",
+      description: "Plugin filesystem grant is outside approved directories.",
+      sampleTools: [],
+      capabilities: [],
+      tools: [],
+      installAliases: ["ave-plugin-meeting"],
+      installFailureKind: "sandbox-grant-outside-ceiling" as const,
+      installFailureMessage: "sandbox-grant-outside-ceiling",
       loadStatus: "failed" as const,
     };
     const cards = vi.fn().mockResolvedValue([broken]);
@@ -513,16 +610,15 @@ describe("PluginConfigTab", () => {
     await waitFor(() => {
       expect(screen.getByTestId("plugin-config:doctor-panel:meeting")).toBeInTheDocument();
     });
-    // Its own diagnosis, not "update the app": a newer app may have dropped
-    // the version rather than lacking it.
-    expect(screen.getByText("다른 Ave 프로토콜용 익스텐션")).toBeInTheDocument();
-    expect(screen.queryByText("앱 업데이트 필요")).toBeNull();
+    expect(screen.getByText("파일 접근 범위 초과")).toBeInTheDocument();
+    expect(screen.getByText(/요청 범위를 줄인 새 버전으로 업데이트하거나 제거하세요/)).toBeInTheDocument();
+    expect(screen.getByTestId("plugin-config:doctor-remove:meeting")).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("plugin-config:doctor:meeting"));
-
     await waitFor(() => {
-      expect(market.planInstall).not.toHaveBeenCalled();
       expect(cards).toHaveBeenCalledTimes(2);
+      expect(market.planInstall).not.toHaveBeenCalled();
+      expect(screen.getByTestId("plugin-config:banner")).toHaveClass("text-warning");
     });
   });
 

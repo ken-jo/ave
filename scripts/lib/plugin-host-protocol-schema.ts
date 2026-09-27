@@ -302,8 +302,16 @@ function errorSchema(
       code: { enum: [...codes] },
       name: { type: "string" },
       detail: { type: "object" },
+      retryAfterMs: { type: "integer", minimum: 0, maximum: 5000 },
     },
     required: ["code", "name"],
+    allOf: [{
+      if: { properties: { code: { const: "rate-limited" } }, required: ["code"] },
+      then: {
+        properties: { retryAfterMs: { type: "integer", minimum: 0, maximum: 5000 } },
+        required: ["retryAfterMs"],
+      },
+    }],
   };
   return {
     ...(description ? { description } : {}),
@@ -413,7 +421,7 @@ export function generateHostProtocolSchema(): { path: string; text: string } {
     // A registration or a handle outlives its reply, and what it pushes over
     // that lifetime is protocol too: a payload rename the schema did not see
     // would reach a plugin as its own bug.
-    const outlivesReply = registers || contract.result === "handle";
+    const outlivesReply = registers || contract.result === "handle" || contract.result === "handle-or-denied";
     const event = events.get(path);
     if (outlivesReply !== (event !== undefined)) {
       fail(
@@ -423,7 +431,7 @@ export function generateHostProtocolSchema(): { path: string; text: string } {
       );
     }
     const resultNeedsForm =
-      contract.result === "encoded" || (contract.result === "handle" && !registers);
+      contract.result === "encoded" || ((contract.result === "handle" || contract.result === "handle-or-denied") && !registers);
     if (resultNeedsForm !== (forms?.result !== undefined)) {
       fail(
         resultNeedsForm

@@ -11,7 +11,7 @@ import { makeMockAveApi } from "../../../../../../test/renderer/mock-ave-api.js"
 import type { AveApi } from "../../../types.js";
 import { GitMarketplaceTab } from "../GitMarketplaceTab.js";
 import { requestUpdateReview } from "../update-review-request.js";
-import { COMMIT_A, COMMIT_B, entry, fakeMarketplace, installPlan, source } from "./fixtures.js";
+import { COMMIT_A, COMMIT_B, detail, entry, fakeMarketplace, installPlan, source } from "./fixtures.js";
 
 function renderTab(fake: ReturnType<typeof fakeMarketplace>, overrides: Parameters<typeof makeMockAveApi>[0] = {}) {
   const { api } = makeMockAveApi(overrides);
@@ -162,6 +162,60 @@ describe("GitMarketplaceTab search answers", () => {
 });
 
 describe("GitMarketplaceTab package sheet", () => {
+  it("shows the localized process-entry refusal from the install result", async () => {
+    const item = entry("team", "plugin", "process-kit");
+    const fake = fakeMarketplace({ sources: [team], entries: [item] });
+    fake.market.packageDetail.mockResolvedValue({ ok: true, value: detail(item) });
+    fake.market.planInstall.mockResolvedValue({ ok: true, value: installPlan(item) });
+    fake.market.executeInstall.mockResolvedValue({ ok: false, code: "process-entry-unsupported", message: "This app cannot run process-entry extensions yet." });
+    renderTab(fake);
+    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:plugin:process-kit")).getByTestId("git-marketplace:card:state"));
+    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    fireEvent.click(within(sheet).getByTestId("git-marketplace:plan"));
+    fireEvent.click(await within(sheet).findByTestId("git-marketplace:confirm"));
+    expect(await within(sheet).findByText("이 앱은 아직 프로세스 진입점이 있는 익스텐션을 실행할 수 없습니다.")).toBeInTheDocument();
+  });
+
+  it("passes only separately selected plugin servers with their reviewed digests", async () => {
+    const item = entry("team", "agent-plugin", "meeting-kit");
+    const components = { skills: [], prompts: [], agents: [], routineTemplates: [], hooks: [],
+      mcpServers: {
+        notes: { transport: "stdio" as const, command: "./server/run", cwd: "${PLUGIN_ROOT}", digest: "a".repeat(64) },
+        remote: { transport: "http" as const, url: "https://example.test/mcp", digest: "b".repeat(64) },
+      } };
+    const fake = fakeMarketplace({ sources: [team], entries: [item] });
+    fake.market.packageDetail.mockResolvedValue({ ok: true, value: detail(item, { components }) });
+    fake.market.planInstall.mockResolvedValue({ ok: true, value: installPlan(item, { components }) });
+    fake.market.executeInstall.mockResolvedValue({ ok: true, value: { key: item.key, version: "1.0.0", action: { action: "install" }, rungs: [], connectionWarning: null } });
+    renderTab(fake);
+    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:agent-plugin:meeting-kit")).getByTestId("git-marketplace:card:state"));
+    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    fireEvent.click(within(sheet).getByTestId("git-marketplace:plan"));
+    const review = await within(sheet).findByTestId("git-marketplace:review");
+    expect(review).toHaveTextContent("./server/run");
+    fireEvent.click(within(review).getByTestId("git-marketplace:mcp-consent:notes").querySelector('[role="checkbox"]')!);
+    fireEvent.click(within(sheet).getByTestId("git-marketplace:confirm"));
+    await waitFor(() => expect(fake.market.executeInstall).toHaveBeenCalledWith("plan-1", [{ name: "notes", digest: "a".repeat(64) }]));
+  });
+
+  it("shows plugin components and their digest changes before an update", async () => {
+    const item = entry("team", "agent-plugin", "writer-plugin", { state: { state: "update", from: "1.0.0", to: "1.1.0" } });
+    const components = { skills: [{ name: "draft", hasScripts: false, digest: "a".repeat(64) }], mcpServers: {}, prompts: [], agents: [], routineTemplates: [], hooks: [] };
+    const fake = fakeMarketplace({ sources: [team], entries: [item] });
+    fake.market.packageDetail.mockResolvedValue({ ok: true, value: detail(item, { components }) });
+    fake.market.planUpdate.mockResolvedValue({ ok: true, value: {
+      ...installPlan(item, { components }), from: "1.0.0", commitRange: { from: COMMIT_A, to: COMMIT_B },
+      authorityDelta: null, componentsDelta: { added: [], removed: [], changed: [{ kind: "skill", name: "draft", digest: "b".repeat(64) }] },
+      historyRewritten: null, needsConfirmation: false,
+    } });
+    renderTab(fake);
+    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:agent-plugin:writer-plugin")).getByTestId("git-marketplace:card:state"));
+    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    const review = await within(sheet).findByTestId("git-marketplace:review");
+    expect(review).toHaveTextContent("스킬 · draft");
+    expect(review).toHaveTextContent("변경됨 · 스킬 · draft");
+  });
+
   it("reviews the plan and installs exactly the plan it showed", async () => {
     const calendar = entry("team", "plugin", "calendar");
     const fake = fakeMarketplace({ sources: [team], entries: [calendar] });
@@ -222,6 +276,21 @@ describe("GitMarketplaceTab package sheet", () => {
     expect(confirm).toBeEnabled();
   });
 
+  it("shows filesystem grants in the package and install review", async () => {
+    const item = entry("team", "plugin", "calendar");
+    const fake = fakeMarketplace({ sources: [team], entries: [item] });
+    const authority = { ...detail(item).authority!, filesystem: [{ access: "write" as const, target: "config.workspace", why: "Store project data" }] };
+    fake.market.packageDetail.mockResolvedValue({ ok: true, value: detail(item, { authority }) });
+    fake.market.planInstall.mockResolvedValue({ ok: true, value: installPlan(item, { authority }) });
+    renderTab(fake);
+    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:plugin:calendar")).getByTestId("git-marketplace:card:state"));
+    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    expect(await within(sheet).findByText("파일 접근: write: config.workspace — Store project data")).toBeInTheDocument();
+    fireEvent.click(within(sheet).getByTestId("git-marketplace:plan"));
+    await within(sheet).findByTestId("git-marketplace:review");
+    expect(within(sheet).getByText("파일 접근: write: config.workspace — Store project data")).toBeInTheDocument();
+  });
+
   it("opens an update on its plan and asks to trust rewritten history", async () => {
     const calendar = entry("team", "plugin", "calendar", { state: { state: "update", from: "1.0.0", to: "1.1.0" } });
     const fake = fakeMarketplace({ sources: [team], entries: [calendar] });
@@ -231,7 +300,7 @@ describe("GitMarketplaceTab package sheet", () => {
         ...installPlan(calendar, { version: "1.1.0", action: { action: "replace", direction: "upgrade", from: "1.0.0" }, versionCommit: COMMIT_B }),
         from: "1.0.0",
         commitRange: { from: COMMIT_A, to: COMMIT_B },
-        authorityDelta: { added: { capabilities: [], networkHosts: ["upload.example.com"], secrets: [], pluginAccess: [], dependencies: [] }, removed: { capabilities: [], networkHosts: [], secrets: [], pluginAccess: [], dependencies: [] } },
+        authorityDelta: { added: { capabilities: [], networkHosts: ["upload.example.com"], secrets: [], pluginAccess: [], dependencies: [], filesystem: [] }, removed: { capabilities: [], networkHosts: [], secrets: [], pluginAccess: [], dependencies: [], filesystem: [] } },
         historyRewritten: { pinned: COMMIT_A, candidate: COMMIT_B },
         needsConfirmation: true,
       },

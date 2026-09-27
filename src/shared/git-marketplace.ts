@@ -7,7 +7,8 @@
  * (`catalog/types.ts`, `errors.ts`), both free of imports, so the renderer
  * reads the same constants main validates against.
  */
-import { PACKAGE_KINDS, type PackageKind } from "../marketplace/catalog/types.js";
+import { PACKAGE_KINDS, type AgentPluginComponents, type PackageKind } from "../marketplace/catalog/types.js";
+import type { ComponentDelta } from "../marketplace/app/component-delta.js";
 import { MARKETPLACE_ERROR_CODES, type MarketplaceErrorCode } from "../marketplace/errors.js";
 import type { DirectDetectedFile } from "../marketplace/sources/direct-package.js";
 
@@ -177,7 +178,7 @@ export interface CatalogView {
 
 // ─── Detail, plans, installs ────────────────────────────────────────────────
 
-export type VersionExclusionView = "min_app_version" | "yanked" | "platform" | "prerelease" | "rollout" | "revoked";
+export type VersionExclusionView = "min_app_version" | "host_protocol" | "yanked" | "platform" | "prerelease" | "rollout" | "revoked";
 
 export interface VersionView {
   version: string;
@@ -198,6 +199,7 @@ export interface AuthorityView {
   secrets: string[];
   pluginAccess: string[];
   dependencies: string[];
+  filesystem: Array<{ access: "read" | "write"; target: string; why: string }>;
 }
 
 type RungKindView = "release" | "archive" | "tree";
@@ -238,6 +240,7 @@ export interface PackageDetailView {
   };
   compatibility: { minAppVersion: string | null; appVersion: string; compatible: boolean };
   authority: AuthorityView | null;
+  components: AgentPluginComponents | null;
   rungs: RungView[];
   versions: VersionView[];
 }
@@ -264,6 +267,7 @@ export interface InstallPlanView {
   action: InstallActionView;
   runsCode: boolean;
   authority: AuthorityView | null;
+  components: AgentPluginComponents | null;
   rungs: RungView[];
   mcp: McpRuntimeView | null;
 }
@@ -273,6 +277,7 @@ export interface UpdatePlanView extends InstallPlanView {
   /** `origin.commit` of the install to the plan's snapshot commit. */
   commitRange: { from: string | null; to: string };
   authorityDelta: { added: AuthorityView; removed: AuthorityView } | null;
+  componentsDelta: ComponentDelta | null;
   /** The source's history was rewritten and the new history is pending review (custom and direct only). */
   historyRewritten: { pinned: string | null; candidate: string } | null;
   /** New network hosts, secrets or capabilities, or rewritten history: the update needs an explicit decision. */
@@ -390,6 +395,12 @@ export interface SyncProgressView {
   state: "syncing" | "done" | "failed";
 }
 
+/** Consent for one exact reviewed server component; the installed tree must match its digest. */
+export interface McpComponentConsent {
+  name: string;
+  digest: string;
+}
+
 export interface GitMarketplaceApi {
   listSources(): Promise<GitMarketplaceResult<SourceView[]>>;
   previewSource(request: SourcePreviewRequest): Promise<GitMarketplaceResult<SourcePreviewView>>;
@@ -404,7 +415,7 @@ export interface GitMarketplaceApi {
   packageDetail(key: PackageKeyView): Promise<GitMarketplaceResult<PackageDetailView>>;
   planInstall(request: InstallPlanRequest): Promise<GitMarketplaceResult<InstallPlanView>>;
   planUpdate(key: PackageKeyView): Promise<GitMarketplaceResult<UpdatePlanView>>;
-  executeInstall(planId: string): Promise<GitMarketplaceResult<InstallResultView>>;
+  executeInstall(planId: string, approvedMcpServers?: readonly McpComponentConsent[]): Promise<GitMarketplaceResult<InstallResultView>>;
   uninstall(request: UninstallRequest): Promise<GitMarketplaceResult<UninstallResultView>>;
   previewDirectMcp(request: DirectMcpPreviewRequest): Promise<GitMarketplaceResult<DirectMcpPreviewView>>;
   onSyncProgress(listener: (progress: SyncProgressView) => void): () => void;

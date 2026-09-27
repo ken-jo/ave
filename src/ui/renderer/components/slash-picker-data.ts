@@ -5,6 +5,7 @@ import { t } from "../../../i18n/runtime.js";
 import type { QuickAction } from "./command-actions.js";
 import type { PluginEntry } from "../types.js";
 import type { RolePreset } from "../../../data/role-presets.js";
+import type { AgentPluginTemplatePrompt } from "../../../shared/agent-plugin-prompt.js";
 import type { NativeMenuRow } from "../hooks/use-native-context-menu.js";
 
 /** A single live MCP-server tool, namespaced by its server. */
@@ -63,10 +64,10 @@ export const SLASH_COMMANDS: SlashCommand[] = [
 ];
 
 /** The drill-down category model — one step per group, with a global search. */
-export type Category = "command" | "shortcut" | "plugin" | "mcp" | "mcp-prompts" | "skills";
+export type Category = "command" | "shortcut" | "plugin" | "mcp" | "mcp-prompts" | "plugin-prompts" | "skills";
 
 /** Stable category order for both the popover drill-down and the inline menu. */
-export const CATEGORY_ORDER: Category[] = ["command", "shortcut", "plugin", "mcp", "mcp-prompts", "skills"];
+export const CATEGORY_ORDER: Category[] = ["command", "shortcut", "plugin", "mcp", "plugin-prompts", "mcp-prompts", "skills"];
 
 export const CATEGORY_ICON: Record<Category, LucideIcon> = {
   command: Terminal,
@@ -74,6 +75,7 @@ export const CATEGORY_ICON: Record<Category, LucideIcon> = {
   plugin: Puzzle,
   mcp: Server,
   "mcp-prompts": MessageSquareText,
+  "plugin-prompts": MessageSquareText,
   skills: Sparkles,
 };
 
@@ -90,6 +92,8 @@ export function catLabel(category: Category): string {
       return t("slashPicker.catMcp");
     case "mcp-prompts":
       return t("slashPicker.catMcpPrompts");
+    case "plugin-prompts":
+      return t("slashPicker.catPluginPrompts");
     case "skills":
       return t("slashPicker.catSkills");
   }
@@ -177,11 +181,13 @@ export function buildComposerMenuSections(input: {
   plugins: PluginEntry[];
   mcpTools: McpToolEntry[];
   mcpPrompts: McpPromptEntry[];
+  pluginPrompts: AgentPluginTemplatePrompt[];
   skills: SkillEntry[];
   onSelectPersona: (id: string) => void;
   onInsert: (cmd: string) => void;
   onSelectPlugin: (viewKey: string) => void;
   onRunMcpPrompt: (prompt: McpPromptEntry) => void;
+  onRunPluginPrompt: (prompt: AgentPluginTemplatePrompt) => void;
 }): Array<{ items: NativeMenuRow[] }> {
   const categories: NativeMenuRow[] = [];
   const push = (category: Category, rows: NativeMenuRow[]): void => {
@@ -216,6 +222,12 @@ export function buildComposerMenuSections(input: {
     id: `mcp:${tool.serverId}:${tool.name}`,
     label: tool.name,
     onSelect: () => input.onInsert(`/${tool.name} `),
+  })));
+  push("plugin-prompts", input.pluginPrompts.map((prompt) => ({
+    id: `plugin-prompt:${prompt.id}`,
+    label: `${prompt.name} (${prompt.packageName})`,
+    sublabel: prompt.description,
+    onSelect: () => input.onRunPluginPrompt(prompt),
   })));
   push("mcp-prompts", input.mcpPrompts.map((prompt) => ({
     id: `mcp-prompt:${prompt.serverId}:${prompt.name}`,

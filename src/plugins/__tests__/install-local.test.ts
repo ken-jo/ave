@@ -99,6 +99,19 @@ describe("PluginMarketplaceService.installLocal", () => {
     expect(registry.plugins).toEqual([]);
   });
 
+  it("refuses a process-entry extension before local install changes the registry", async () => {
+    await writeFile(join(sourceDir, "plugin.json"), JSON.stringify({
+      $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+      name: "test-plugin", version: "1.2.3", description: "Process extension",
+      extensions: { "ai.agent-connector.ave": { process: { command: "node" }, tools: [] } },
+    }), "utf8");
+    const service = makeService();
+    await expect(service.installLocal(sourceDir, preparedActivationOptionsForTest))
+      .rejects.toMatchObject({ code: "process-entry-unsupported" });
+    expect(existsSync(join(pluginsDir, "test-plugin"))).toBe(false);
+    expect(JSON.parse(await readFile(registryPath, "utf8"))).toMatchObject({ plugins: [] });
+  });
+
   it("skips node_modules/electron, .git, and nested node_modules/electron during cp", async () => {
     // Keep this fixture inert because the canonical test runner itself uses
     // Electron's patched fs. The contract here is excluding the Electron tree,

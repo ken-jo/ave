@@ -46,6 +46,23 @@ export const AGENT_PLUGINS_SCHEMA_URL =
  */
 export const AVE_EXTENSION_NAMESPACE = "ai.agent-connector.ave";
 
+/** The non-executable branch of the portable manifest at a marketplace boundary. */
+export interface AgentPluginPackageManifest {
+  $schema: typeof AGENT_PLUGINS_SCHEMA_URL;
+  name: string;
+  version: string;
+  description: string;
+  extensions?: Record<string, unknown> & {
+    "ai.agent-connector.ave"?: {
+      displayName?: string;
+      icon?: string;
+      iconText?: string;
+      requires?: { minAppVersion: string };
+      mcpAuth?: Record<string, { auth: "api-key"; apiKeyEnv?: string; apiKeyHeader?: string }>;
+    };
+  };
+}
+
 /**
  * The top level Agent Plugins 1.0.0 defines. Anything else up there belongs to
  * no one, and the specification is explicit that a client reports and ignores
@@ -468,6 +485,10 @@ export interface PluginManifest {
   hooks?: PluginContributionDeclaration[];
   /** Plugin-owned declarative MCP server configuration files. Presence does not grant approval. */
   mcpServers?: PluginContributionDeclaration[];
+  /** Plugin-owned prompt files. Their text retains package-authored provenance. */
+  prompts?: PluginContributionDeclaration[];
+  /** Plugin-owned routine suggestion files. Installation never creates a routine. */
+  routineTemplates?: PluginContributionDeclaration[];
 
 
 
@@ -588,6 +609,8 @@ export interface PluginManifest {
    * listed in `suggestions`.
    */
   alerts?: PluginAlertsDeclaration;
+  /** Reviewed filesystem reach for a confined plugin child. */
+  sandbox?: PluginSandboxDeclaration;
   /**
    * Config keys this plugin fills from a retired predecessor's saved config,
    * once, when the retirement names this plugin as a successor. A target key
@@ -763,6 +786,15 @@ export interface PluginContributionDeclaration {
   path: string;
 }
 
+export type PluginSandboxGrant =
+  | { kind: "hostDirectory"; segments: ["runtime"] | ["certs"]; why: string }
+  | { kind: "userChosenDirectory"; configKey: string; why: string };
+
+export interface PluginSandboxDeclaration {
+  read?: PluginSandboxGrant[];
+  write?: Extract<PluginSandboxGrant, { kind: "userChosenDirectory" }>[];
+}
+
 /**
  * §9.2 — declarative settings schema. JSON Schema draft-07 subset
  * (the same dialect a tool's `inputSchema` uses) with one UI/storage hint:
@@ -902,9 +934,7 @@ export interface RequiresSpec {
   minAppVersion?: string;
   /**
    * The Ave host protocol version the plugin speaks — an integer written as a
-   * string (`"1"`). Absent: the host speaks its newest version for it, which is
-   * right for a JavaScript plugin because the host-shipped runtime speaks for
-   * it. A version the running app does not serve refuses the load with
+   * string (`"2"`). A missing declaration or a version the running app does not serve refuses the load with
    * `incompatible-host-protocol`. An older app whose schema lacks the field
    * rejects the manifest outright, so a plugin that declares it also sets
    * `minAppVersion` to the first release that knows it. @optional
@@ -1257,6 +1287,47 @@ export interface SpawnedPluginWorker {
  * Host API — 플러그인이 호스트 서비스에 접근하는 인터페이스.
  * 플러그인 제거 시 해당 플러그인이 등록한 모든 것이 자동 정리된다.
  */
+export interface ResolveApiKeyOptions {
+  purpose: "llm" | "stt" | "embedding" | "vision";
+  vendor?: "openai" | "azure-openai" | "vertex" | "anthropic";
+  exposure?: "lease" | "raw";
+  signal?: AbortSignal;
+}
+
+export interface ApiKeyLease {
+  readonly exposure: "lease";
+  readonly leaseId: string;
+  readonly vendor: string;
+  readonly baseUrl?: string;
+  release(): Promise<void>;
+  onClosed(listener: (reason: "revoked" | "peer-gone") => void): () => void;
+}
+
+export interface ApiKeyRaw {
+  readonly exposure: "raw";
+  readonly vendor: string;
+  readonly baseUrl?: string;
+  readonly key: string;
+  release(): Promise<void>;
+}
+
+export type ResolveApiKeyDenied = {
+  ok: false;
+  reason: "no-host-vendor" | "vendor-mismatch" | "not-whitelisted"
+    | "user-mode-plugin" | "aborted" | "user-endpoint-with-host-key"
+    | "raw-exposure-denied" | "audience-not-allowlisted" | "vendor-unsupported"
+    | "endpoint-unavailable" | "stale-authorization" | "lease-limit";
+};
+
+export type ResolveApiKeyResult =
+  | ({ ok: true } & ApiKeyLease)
+  | ({ ok: true } & ApiKeyRaw)
+  | ResolveApiKeyDenied;
+
+export interface HostFetchInit extends RequestInit {
+  auth?: { lease: string };
+}
+
 export interface PluginHostApi {
   /**
    * Sandboxed filesystem API scoped to this plugin's `pluginDataDir`. Plugins
@@ -1347,29 +1418,7 @@ export interface PluginHostApi {
    * gate and returns the `ResolveApiKeyResult` discriminated union. Callers
    * receive the same `ok: true | false` discriminator across supported releases.
    */
-  resolveApiKey?(opts: {
-    purpose: "llm" | "stt" | "embedding" | "vision";
-    vendor?: "openai" | "azure-openai" | "vertex" | "anthropic";
-    signal?: AbortSignal;
-  }): Promise<
-    | {
-        ok: true;
-        vendor: string;
-        bearer: () => string;
-        baseUrl?: string;
-        release: () => void;
-      }
-    | {
-        ok: false;
-        reason:
-          | "no-host-vendor"
-          | "vendor-mismatch"
-          | "not-whitelisted"
-          | "user-mode-plugin"
-          | "aborted"
-          | "user-endpoint-with-host-key";
-      }
-  >;
+  resolveApiKey?(opts: ResolveApiKeyOptions): Promise<ResolveApiKeyResult>;
 
   // ─── LLM 접근 (선제성 기능용) ────────────────────────────────────────
   /**
@@ -1399,7 +1448,7 @@ export interface PluginHostApi {
    * (`typeof hostApi.hostFetch === "function"`) and fail closed when absent;
    * do not replace this chokepoint with bare plugin fetch.
    */
-  hostFetch?(input: string | URL, init?: RequestInit): Promise<Response>;
+  hostFetch?(input: string | URL, init?: HostFetchInit): Promise<Response>;
 
   /**
    * Structured log event routed through AuditLogger.

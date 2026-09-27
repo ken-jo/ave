@@ -450,7 +450,9 @@ export function McpTab() {
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
-                          <span className="font-mono text-xs font-semibold line-clamp-1 min-w-0">{id}</span>
+                          <span className="font-mono text-xs font-semibold line-clamp-1 min-w-0">{cfg?.bundled
+                            ? `${t(cfg.bundled.kind === "agent-plugin" ? "gitMarketplace.server.plugin" : "gitMarketplace.server.extension")}: ${cfg.bundled.name}/${cfg.bundled.server}`
+                            : id}</span>
                           <Badge className={`text-[10px] px-1.5 py-0 ${STATUS_BADGE[status]}`}>
                             {getStatusLabel(status)}
                           </Badge>
@@ -513,7 +515,7 @@ export function McpTab() {
                             {t("mcpTab.killButton")}
                           </Button>
                         )}
-                        <Button
+                        {!cfg?.bundled && <Button
                           variant="outline"
                           size="sm"
                           className="h-6 text-xs px-2 text-destructive border-destructive/(--opacity-medium)"
@@ -521,7 +523,7 @@ export function McpTab() {
                           onClick={() => void handleRemove(id)}
                         >
                           {t("mcpTab.removeButton")}
-                        </Button>
+                        </Button>}
                       </div>
                     </div>
                     {credentialTargetId === id && (

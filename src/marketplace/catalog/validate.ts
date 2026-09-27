@@ -13,8 +13,10 @@
  */
 import type { ErrorObject, ValidateFunction } from "ajv";
 import manifestSchema from "../../../schemas/plugin-manifest.schema.json" with { type: "json" };
-import indexSchema from "../../../schemas/marketplace/index.schema.json" with { type: "json" };
-import packageSchema from "../../../schemas/marketplace/package.schema.json" with { type: "json" };
+import indexSchema from "../../../schemas/marketplace/index.2.schema.json" with { type: "json" };
+import packageSchema from "../../../schemas/marketplace/package.2.schema.json" with { type: "json" };
+import legacyIndexSchema from "../../../schemas/marketplace/index.schema.json" with { type: "json" };
+import legacyPackageSchema from "../../../schemas/marketplace/package.schema.json" with { type: "json" };
 import conditionalSchema from "../../../schemas/marketplace/revocations-by-app.schema.json" with { type: "json" };
 import type { SourceSnapshot } from "../sources/snapshot.js";
 import type { ConditionalRevocationsFile } from "./types.js";
@@ -42,8 +44,8 @@ export interface CatalogDiagnostic {
 
 export type Validation<T> = { ok: true; value: T } | { ok: false; error: string };
 
-const INDEX_ID = "https://sdk.former-site.invalid/schemas/marketplace/index.schema.json";
-const PACKAGE_ID = "https://sdk.former-site.invalid/schemas/marketplace/package.schema.json";
+const INDEX_ID = "https://sdk.former-site.invalid/schemas/marketplace/index.2.schema.json";
+const PACKAGE_ID = "https://sdk.former-site.invalid/schemas/marketplace/package.2.schema.json";
 const REVOCATIONS_ID = "https://sdk.former-site.invalid/schemas/marketplace/revocations.schema.json";
 
 interface Validators {
@@ -56,6 +58,25 @@ interface Validators {
 }
 
 let compiled: Validators | null = null;
+let legacyIndexValidator: ValidateFunction | null = null;
+
+/** Check the frozen file with its original closed format, independent of format 2. */
+export function validateLegacyIndexText(text: string): Validation<Record<string, unknown>> {
+  const parsed = parse(text);
+  if (!parsed.ok) return parsed;
+  if (!legacyIndexValidator) {
+    const AjvCtor = resolveAjv();
+    const ajv = new AjvCtor({ strict: true, strictRequired: false, allErrors: true, allowUnionTypes: true });
+    resolveAddFormats()(ajv);
+    ajv.addSchema(manifestSchema);
+    ajv.addSchema(legacyPackageSchema);
+    legacyIndexValidator = ajv.compile(legacyIndexSchema);
+  }
+  if (!legacyIndexValidator(parsed.value)) {
+    return { ok: false, error: `marketplace.json: ${describeErrors(legacyIndexValidator.errors)}` };
+  }
+  return { ok: true, value: parsed.value as Record<string, unknown> };
+}
 
 function validators(): Validators {
   if (compiled) return compiled;
@@ -63,6 +84,7 @@ function validators(): Validators {
   const ajv = new AjvCtor({ strict: true, strictRequired: false, allErrors: true, allowUnionTypes: true });
   resolveAddFormats()(ajv);
   ajv.addSchema(manifestSchema);
+  ajv.addSchema(legacyPackageSchema);
   ajv.addSchema(packageSchema);
   ajv.addSchema(indexSchema);
   ajv.addSchema(revocationsSchema);
@@ -141,9 +163,12 @@ function parse(text: string): Validation<unknown> {
 
 // ─── meaning rules shared by index versions and descriptors ─────────────
 
-function pluginRules(authority: PluginAuthority, artifact: PluginArtifactPins, minAppVersion: string, direct: boolean): string | null {
+function pluginRules(authority: PluginAuthority, artifact: PluginArtifactPins, minAppVersion: string, hostProtocol: string | undefined, direct: boolean): string | null {
   if (authority.requires?.minAppVersion !== minAppVersion) {
     return `authority.requires.minAppVersion (${authority.requires?.minAppVersion ?? "absent"}) must equal minAppVersion (${minAppVersion})`;
+  }
+  if (authority.requires?.hostProtocol !== hostProtocol) {
+    return "authority.requires.hostProtocol must equal hostProtocol";
   }
   const release = artifact.release;
   if (release && !release.url && !release.repo && !direct) {
@@ -200,6 +225,10 @@ function reservedPluginName(kind: string, name: string): string | null {
 function indexPackageRules(entry: IndexPackage): string | null {
   const reserved = reservedPluginName(entry.kind, entry.name);
   if (reserved) return reserved;
+  if ((entry.kind === "agent-plugin" && entry.path.startsWith("plugins/"))
+    || (entry.kind === "plugin" && entry.path.startsWith("agent-plugins/"))) {
+    return `${entry.kind} cannot use the other kind's package directory`;
+  }
   const versions = entry.versions;
   if (!versions) {
     return entry.latest ? "latest needs versions[]" : null;
@@ -217,10 +246,14 @@ function indexPackageRules(entry: IndexPackage): string | null {
   for (const version of versions) {
     if (entry.kind === "plugin") {
       if (!version.authority || !version.artifact) return `plugin version ${version.version} needs authority and artifact`;
-      const rule = pluginRules(version.authority, version.artifact, version.minAppVersion, false);
+      if (version.components !== undefined) return `version ${version.version}: components are for agent plugins only`;
+      const rule = pluginRules(version.authority, version.artifact, version.minAppVersion, version.hostProtocol, false);
       if (rule) return `version ${version.version}: ${rule}`;
-    } else if (version.authority || version.artifact) {
-      return `version ${version.version}: authority and artifact are for plugins only`;
+    } else if (entry.kind === "agent-plugin") {
+      if (!version.components) return `agent-plugin version ${version.version} needs components`;
+      if (version.authority || version.artifact || version.hostProtocol) return `agent-plugin version ${version.version} cannot declare extension authority`;
+    } else if (version.authority || version.artifact || version.components) {
+      return `version ${version.version}: authority, artifact and components require their matching kind`;
     }
   }
   return null;
@@ -249,9 +282,8 @@ export function validateIndexText(text: string, context: IndexContext): Validati
 
   const diagnostics: CatalogDiagnostic[] = [];
   const candidates: IndexPackage[] = [];
-  // Claims are counted over every entry, valid or not: a broken second entry
-  // for a name still means the author listed it twice, and the client cannot
-  // tell which one was meant.
+  // A broken entry still claims its name, since the author listed it twice.
+  // A path only becomes a claim after the entry passes both validation layers.
   const byName = new Map<string, number>();
   const byPath = new Map<string, number>();
   const claim = (counts: Map<string, number>, key: string) => counts.set(key, (counts.get(key) ?? 0) + 1);
@@ -259,7 +291,6 @@ export function validateIndexText(text: string, context: IndexContext): Validati
     const entry = raw as Partial<IndexPackage>;
     const subject = typeof entry.kind === "string" && typeof entry.name === "string" ? `${entry.kind}/${entry.name}` : `packages[${position}]`;
     if (typeof entry.kind === "string" && typeof entry.name === "string") claim(byName, `${entry.kind}/${entry.name}`);
-    if (typeof entry.path === "string") claim(byPath, entry.path);
     if (!indexPackage(raw)) {
       diagnostics.push({ subject, message: describeErrors(indexPackage.errors) });
       return;
@@ -269,6 +300,7 @@ export function validateIndexText(text: string, context: IndexContext): Validati
       diagnostics.push({ subject, message: rule });
       return;
     }
+    claim(byPath, (raw as IndexPackage).path);
     candidates.push(raw as IndexPackage);
   });
 
@@ -317,7 +349,7 @@ function validateDescriptorValue(document: unknown, context: DescriptorContext, 
   if (reserved) return { ok: false, error: `${file}: ${reserved}` };
   if (value.kind === "plugin") {
     const payload = value.payload as { authority: PluginAuthority; artifact: PluginArtifactPins };
-    const rule = pluginRules(payload.authority, payload.artifact, value.minAppVersion, context.direct);
+    const rule = pluginRules(payload.authority, payload.artifact, value.minAppVersion, value.hostProtocol, context.direct);
     if (rule) return { ok: false, error: `${file}: ${rule}` };
   }
   if (value.kind === "mcp") {

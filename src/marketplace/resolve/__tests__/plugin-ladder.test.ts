@@ -34,7 +34,7 @@ const ENTRY_JS = "export default {};\n";
 const authority = (patch: Partial<PluginAuthority> = {}): PluginAuthority => ({
   capabilities: ["notes:read"],
   networkAccess: { allowedDomains: ["api.example.com"] },
-  requires: { minAppVersion: "0.12.0" },
+  requires: { minAppVersion: "0.12.0", hostProtocol: "2" },
   ...patch,
 });
 
@@ -50,10 +50,10 @@ function pluginZip(name: string, version: string, auth: PluginAuthority = author
 }
 
 function descriptor(name: string, version: string, artifact: Record<string, unknown>, auth: PluginAuthority = authority()): string {
-  return `${JSON.stringify({ schemaVersion: 1, kind: "plugin", name, version, minAppVersion: "0.12.0", payload: { authority: auth, artifact } })}\n`;
+  return `${JSON.stringify({ schemaVersion: 2, kind: "plugin", name, version, minAppVersion: "0.12.0", hostProtocol: auth.requires?.hostProtocol, payload: { authority: auth, artifact } })}\n`;
 }
 
-const marketIndex = (packages: unknown[]) => `${JSON.stringify({ schemaVersion: 1, name: "acme", displayName: "Acme", packages })}\n`;
+const marketIndex = (packages: unknown[]) => `${JSON.stringify({ schemaVersion: 2, name: "acme", displayName: "Acme", packages })}\n`;
 
 describe("plugin artifact ladder (design §6.2)", () => {
   let serverRoot: string;
@@ -157,7 +157,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
   function market(repo: FixtureRepo, artifact: Record<string, unknown>, extra: Record<string, string> = {}, auth?: PluginAuthority): string {
     return repo.commit(
       {
-        "marketplace.json": marketIndex([{ kind: "plugin", name: "alpha", path: "plugins/alpha" }]),
+        "marketplace.2.json": marketIndex([{ kind: "plugin", name: "alpha", path: "plugins/alpha" }]),
         "plugins/alpha/ave-package.json": descriptor("alpha", "1.0.0", artifact, auth),
         ...extra,
       },
@@ -275,6 +275,25 @@ describe("plugin artifact ladder (design §6.2)", () => {
     server.file(releasePath, null);
   });
 
+  it("stops a process extension at the staged manifest before trying another install rung", async () => {
+    const { repo, name } = fixture();
+    const zip = new AdmZip();
+    zip.addFile("plugin.json", Buffer.from(JSON.stringify({
+      name: "alpha", version: "1.0.0", description: "Process extension",
+      extensions: { "ai.agent-connector.ave": { process: { command: "node" }, tools: [], ...authority() } },
+    })));
+    const release = zip.toBuffer();
+    server.file(releasePath, release);
+    market(repo, { release: { repo: "acme/alpha", sha256: sha(release) } }, {
+      "plugins/alpha/plugin.json": pluginJson("alpha", "1.0.0"),
+      "plugins/alpha/dist/index.js": ENTRY_JS,
+    });
+    const { gate, syncer } = await open(name);
+    const error = await ladder(syncer, gate, planPluginInstall(await row(syncer))).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ code: "process-entry-unsupported", rungs: [{ rung: "release", outcome: "failed", code: "process-entry-unsupported" }] });
+    server.file(releasePath, null);
+  });
+
   it.each([
     ["capabilities", { capabilities: [] }],
     ["networkAccess", { networkAccess: undefined }],
@@ -376,7 +395,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
     );
     repo.commit(
       {
-        "marketplace.json": marketIndex([
+        "marketplace.2.json": marketIndex([
           {
             kind: "plugin",
             name: "alpha",
@@ -386,6 +405,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
                 version: "1.0.0",
                 commit: base,
                 minAppVersion: "0.12.0",
+                hostProtocol: "2",
                 // The index widens what the descriptor at `base` declares.
                 authority: authority({ capabilities: ["notes:read", "notes:write"] }),
                 artifact: { tree: "plugins/alpha" },

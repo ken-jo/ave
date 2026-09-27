@@ -8,9 +8,13 @@
  * descriptor that copies it.
  */
 import type { RetirementSuccessors } from "../../shared/alerts-types.js";
+import type { PluginSandboxDeclaration } from "../../plugins/public-contract.js";
+import type { BundledMcpAuth, StaticBundledMcpServer } from "../../mcp/portable-mcp.js";
+import type { RoutineSchedule } from "../../shared/routines-types.js";
 
 export const PACKAGE_KINDS = [
   "plugin",
+  "agent-plugin",
   "mcp",
   "skill",
   "agent",
@@ -38,7 +42,7 @@ interface MarketplaceOwner {
 }
 
 export interface MarketplaceIndex {
-  schemaVersion: 1;
+  schemaVersion: 2;
   name: string;
   displayName: string;
   description?: string;
@@ -63,12 +67,27 @@ export interface IndexVersion {
   version: string;
   commit: string;
   minAppVersion: string;
+  hostProtocol?: string;
   platforms?: Platform[];
   authority?: PluginAuthority;
   artifact?: PluginArtifactPins;
+  components?: AgentPluginComponents;
   rollout?: { percent: number };
   yanked?: { reason: string; at: string };
   publishedAt: string;
+}
+
+export interface AgentPluginComponents {
+  skills: Array<{ name: string; hasScripts: boolean; digest: string }>;
+  mcpServers: Record<string, StaticBundledMcpServer & { digest: string }>;
+  mcpAuth?: BundledMcpAuth;
+  prompts: Array<{ name: string; kind: "template" | "persona"; digest: string }>;
+  agents: Array<{ name: string; digest: string }>;
+  routineTemplates: Array<{
+    id: string; title: string; trigger: "schedule" | "shutdown"; schedule?: RoutineSchedule;
+    execution: "llm-session" | "notification-only"; suggestedScope?: string[]; digest: string;
+  }>;
+  hooks: Array<{ event: string; matcher?: string; command: string[]; timeoutMs: number; digest: string }>;
 }
 
 /**
@@ -81,8 +100,9 @@ export interface PluginAuthority {
   hostSecrets?: { read: string[] };
   pluginAccess?: unknown;
   auth?: unknown;
-  requires?: { capabilities?: string[]; minAppVersion: string };
+  requires?: { capabilities?: string[]; minAppVersion: string; hostProtocol?: string };
   dependencies?: unknown[];
+  sandbox?: PluginSandboxDeclaration;
 }
 
 export interface PluginArtifactPins {
@@ -99,11 +119,12 @@ export interface PluginArtifactPins {
 }
 
 export interface PackageDescriptor {
-  schemaVersion: 1;
+  schemaVersion: 2;
   kind: PackageKind;
   name: string;
   version: string;
   minAppVersion: string;
+  hostProtocol?: string;
   displayName?: string;
   description?: string;
   author?: { name: string; url?: string; email?: string };

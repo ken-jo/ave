@@ -3,8 +3,6 @@
  * `t("…")` call so the used-keys gate proves it exists in the catalog.
  */
 import type { TranslateFn as Translate } from "../../../../i18n/translate.js";
-import type { Locale } from "../../../../i18n/locale.js";
-import { getLocale } from "../../../../i18n/runtime.js";
 import { packageVocabularyKind } from "../../../../shared/marketplace-package-sections.js";
 import type {
   GitMarketplaceErrorCode,
@@ -17,16 +15,15 @@ import type {
 } from "../../../../shared/git-marketplace.js";
 
 /** The kind tabs, in the order of design §15.1. */
-export const KIND_ORDER: readonly PackageKind[] = ["plugin", "mcp", "skill", "agent", "theme", "font", "language", "provider", "messaging-connection"];
+export const KIND_ORDER: readonly PackageKind[] = ["agent-plugin", "plugin", "mcp", "skill", "agent", "theme", "font", "language", "provider", "messaging-connection"];
 
-export function kindLabel(t: Translate, kind: PackageKind | "agent-plugin", locale: Locale = getLocale()): string {
+export function kindLabel(t: Translate, kind: PackageKind): string {
   switch (kind) {
     case "plugin":
     case "agent-plugin":
-      // The future kind has no catalog key until its schema slice lands.
       return packageVocabularyKind(kind) === "extension"
         ? t("gitMarketplace.kind.plugin")
-        : locale === "ko" ? "플러그인" : "Plugin";
+        : t("gitMarketplace.kind.agentPlugin");
     case "mcp": return t("gitMarketplace.kind.mcp");
     case "skill": return t("gitMarketplace.kind.skill");
     case "agent": return t("gitMarketplace.kind.agent");
@@ -80,6 +77,7 @@ export function sourceStatusLabel(t: Translate, status: SourceStatusView): strin
 export function exclusionLabel(t: Translate, reason: VersionExclusionView): string {
   switch (reason) {
     case "min_app_version": return t("gitMarketplace.version.needsApp");
+    case "host_protocol": return t("gitMarketplace.version.hostProtocol");
     case "yanked": return t("gitMarketplace.version.yanked");
     case "platform": return t("gitMarketplace.version.platform");
     case "prerelease": return t("gitMarketplace.version.prerelease");
@@ -113,6 +111,7 @@ export function failureText(t: Translate, failure: { code: GitMarketplaceErrorCo
     case "PACKAGE_ID_CONFLICT": return t("gitMarketplace.error.idConflict", { message: failure.message });
     case "PACKAGE_POLICY_BLOCKED": return t("gitMarketplace.error.policyBlocked", { message: failure.message });
     case "SOURCE_DISABLED": return t("gitMarketplace.error.sourceDisabled");
+    case "process-entry-unsupported": return t("formatIpcError.processEntryUnsupported");
     case "unavailable": return t("gitMarketplace.error.unavailable", { message: failure.message });
     default: return `${failure.code} · ${failure.message}`;
   }

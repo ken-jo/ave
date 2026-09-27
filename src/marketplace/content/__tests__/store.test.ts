@@ -22,6 +22,7 @@ import { SourceSyncer } from "../../sources/sync.js";
 import type { ParsedContent } from "../kinds.js";
 import { ContentLedger, contentLedgerOrigins, type LedgerEntry } from "../ledger.js";
 import { ContentStore, stageContentPackage, type ContentActivation } from "../store.js";
+import { deriveAgentPluginComponents } from "../agent-plugin-components.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
 const AT = "2026-09-23T00:00:00.000Z";
@@ -87,7 +88,7 @@ describe("content package store", () => {
     const repo = createFixtureRepo(serverRoot, name);
     repos.push(repo);
     const commit = (patch: Record<string, string | Buffer>) =>
-      repo.commit({ "marketplace.json": text({ schemaVersion: 1, name: "acme", displayName: "Acme", packages }), ...patch }, "publish");
+      repo.commit({ "marketplace.2.json": text({ schemaVersion: 2, name: "acme", displayName: "Acme", packages }), ...patch }, "publish");
     return { repo, name, commit, first: commit(files) };
   }
 
@@ -115,6 +116,30 @@ describe("content package store", () => {
   }
 
   const openStore = () => ContentStore.open({ root: join(root, "packages"), english: ENGLISH, activation, now: () => new Date(AT) });
+
+  it("installs an unchanged agent-plugin tree with its component authority and ledger digest", async () => {
+    const pluginJson = text({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "draft-plugin", version: "1.0.0", description: "Draft writing" });
+    const skill = "---\nname: draft\ndescription: Draft writing\n---\nWrite a draft.\n";
+    const files = [
+      { path: "plugin.json", data: Buffer.from(pluginJson) },
+      { path: "skills/draft/SKILL.md", data: Buffer.from(skill) },
+    ];
+    const components = deriveAgentPluginComponents(files);
+    const path = "agent-plugins/draft-plugin";
+    const { name } = market([{ kind: "agent-plugin", name: "draft-plugin", path }], {
+      [`${path}/ave-package.json`]: descriptor("agent-plugin", "draft-plugin", "1.0.0", { manifest: "plugin.json", components }),
+      [`${path}/plugin.json`]: pluginJson,
+      [`${path}/skills/draft/SKILL.md`]: skill,
+    });
+    const syncer = await open(name);
+    const [row] = await rows(syncer);
+    const staged = await stage(syncer, row!);
+    const store = await openStore();
+    const installed = await store.install(staged);
+    expect(installed.entry).toMatchObject({ kind: "agent-plugin", name: "draft-plugin", origin: { contentSha256: staged.contentSha256 } });
+    expect((await store.load()).loaded[0]?.content).toMatchObject({ kind: "agent-plugin", components });
+    expect(existsSync(join(root, "packages", "agent-plugin", "draft-plugin", "1.0.0", "skills", "draft", "SKILL.md"))).toBe(true);
+  });
 
   it("installs a theme, records its origin, reloads it from disk and uninstalls it", async () => {
     const { name, first } = market([{ kind: "theme", name: "harbor", path: "themes/harbor" }], {
@@ -332,7 +357,7 @@ describe("content package store", () => {
       "themes/harbor/theme.json": theme("Harbor"),
     });
     linked.repo.commitEntries([
-      { path: "marketplace.json", mode: "100644", content: text({ schemaVersion: 1, name: "acme", displayName: "Acme", packages: [{ kind: "theme", name: "harbor", path: "themes/harbor" }] }) },
+      { path: "marketplace.2.json", mode: "100644", content: text({ schemaVersion: 2, name: "acme", displayName: "Acme", packages: [{ kind: "theme", name: "harbor", path: "themes/harbor" }] }) },
       { path: "themes/harbor/ave-package.json", mode: "100644", content: descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }) },
       { path: "themes/harbor/theme.json", mode: "120000", content: "../../secret.json" },
     ], "link");

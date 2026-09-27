@@ -8,7 +8,8 @@
  * the version's commit, which must still name the planned package.
  */
 import type { CatalogRow } from "../catalog/aggregate.js";
-import type { IndexVersion, PackageDescriptor, PackageKind } from "../catalog/types.js";
+import type { AgentPluginComponents, IndexVersion, PackageDescriptor, PackageKind } from "../catalog/types.js";
+import { canonicalStringify } from "../../shared/canonical-json.js";
 import { validateDescriptorText } from "../catalog/validate.js";
 import { readDirectPackage } from "../sources/direct-package.js";
 import { MarketplaceError } from "../errors.js";
@@ -27,7 +28,9 @@ export interface PackagePlan {
   name: string;
   version: string;
   minAppVersion: string;
+  hostProtocol?: string;
   platforms?: IndexVersion["platforms"];
+  components?: AgentPluginComponents;
 }
 
 export interface RepositoryAccess {
@@ -77,7 +80,9 @@ export function planPackage(row: CatalogRow, version: IndexVersion): PackagePlan
     name: row.name,
     version: version.version,
     minAppVersion: version.minAppVersion,
+    ...(version.hostProtocol ? { hostProtocol: version.hostProtocol } : {}),
     ...(version.platforms ? { platforms: version.platforms } : {}),
+    ...(version.components ? { components: version.components } : {}),
   };
 }
 
@@ -115,7 +120,7 @@ export async function readDescriptorAtVersion(plan: PackagePlan, access: Reposit
 }
 
 /** The index's copy of a version, as far as every kind compares it with the descriptor. */
-export type IndexedVersionFields = Pick<PackagePlan, "kind" | "name" | "version" | "minAppVersion" | "platforms">;
+export type IndexedVersionFields = Pick<PackagePlan, "kind" | "name" | "version" | "minAppVersion" | "hostProtocol" | "platforms" | "components">;
 
 /** The fields in which `descriptor` says something other than the index's copy of its version; empty when they agree. */
 export function descriptorDiffersFromIndex(descriptor: PackageDescriptor, indexed: IndexedVersionFields): string[] {
@@ -124,6 +129,8 @@ export function descriptorDiffersFromIndex(descriptor: PackageDescriptor, indexe
     descriptor.name !== indexed.name && "name",
     descriptor.version !== indexed.version && "version",
     descriptor.minAppVersion !== indexed.minAppVersion && "minAppVersion",
+    descriptor.hostProtocol !== indexed.hostProtocol && "hostProtocol",
     JSON.stringify(descriptor.platforms ?? null) !== JSON.stringify(indexed.platforms ?? null) && "platforms",
+    descriptor.kind === "agent-plugin" && canonicalStringify(descriptor.payload.components) !== canonicalStringify(indexed.components) && "components",
   ].filter((field): field is string => typeof field === "string");
 }

@@ -693,7 +693,7 @@ export function SettingsContent({
           </TabsContent>
           <TabsContent value="audit" className={tabContentCls}><AuditTab /></TabsContent>
           <TabsContent value="mcp" className={tabContentCls}><McpTab /></TabsContent>
-          <TabsContent value="plugin-config" className={tabContentCls}><PluginConfigTab api={api} initialPluginId={pluginSettingsTarget} /></TabsContent>
+          <TabsContent value="plugin-config" className={tabContentCls}><PluginConfigTab api={api} initialPluginId={pluginSettingsTarget} onNavigate={handleTabValueChange} /></TabsContent>
           <TabsContent value="marketplace" className={tabContentCls}>
             <GitMarketplaceTab
               api={api}

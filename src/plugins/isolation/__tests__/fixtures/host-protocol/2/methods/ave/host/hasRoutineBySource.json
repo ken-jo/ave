@@ -1,0 +1,15 @@
+{
+  "request": {
+    "id": 15,
+    "jsonrpc": "2.0",
+    "method": "ave/host/hasRoutineBySource",
+    "params": {
+      "source": "golden:daily"
+    }
+  },
+  "response": {
+    "id": 15,
+    "jsonrpc": "2.0",
+    "result": false
+  }
+}

@@ -26,6 +26,7 @@ import { usePrefersReducedMotion } from "../hooks/use-prefers-reduced-motion.js"
 import type { ProjectErrorReporter } from "../hooks/use-add-project-folder.js";
 import type { ProjectIdentity } from "../../../shared/project-identity.js";
 import type { McpPromptEntry } from "./slash-picker-data.js";
+import type { AgentPluginTemplatePrompt } from "../../../shared/agent-plugin-prompt.js";
 
 import { subscriptionImageAttachmentLimitViolation, type SubscriptionRuntimeUiPolicy } from "../utils/subscription-runtime-ui-policy.js";
 import { supportsVision } from "../../../engine/llm/vendor-capabilities.js";
@@ -60,6 +61,7 @@ export interface ChatComposerDockProps {
   streaming: boolean;
   onInsertSlashCommand: (cmd: string) => void;
   onRunMcpPrompt: (prompt: McpPromptEntry) => void;
+  onRunPluginPrompt: (prompt: AgentPluginTemplatePrompt) => void;
   slashPickerOpen: boolean;
   onSlashPickerOpenChange: (open: boolean) => void;
   ringSlot: React.ReactNode;
@@ -263,6 +265,7 @@ export function ChatComposerDock({
   streaming,
   onInsertSlashCommand,
   onRunMcpPrompt,
+  onRunPluginPrompt,
   slashPickerOpen,
   onSlashPickerOpenChange,
   onImageAttachmentUnavailable,
@@ -502,6 +505,7 @@ export function ChatComposerDock({
           onSelectPlugin={onSelectPlugin}
           onInsertSlashCommand={onInsertSlashCommand}
           onRunMcpPrompt={onRunMcpPrompt}
+          onRunPluginPrompt={onRunPluginPrompt}
           slashPickerOpen={slashPickerOpen}
           onSlashPickerOpenChange={onSlashPickerOpenChange}
           attachDisabled={

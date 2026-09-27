@@ -50,6 +50,7 @@ import {
 } from "./plugin-removal-transaction.js";
 import type { PluginInstallReceipt } from "./plugin-install-receipt.js";
 import { flattenAgentPluginsManifest } from "./public-contract.js";
+import { assertProcessEntrySupported } from "./process-entry-support.js";
 import type { PluginRegistryEntry } from "./types.js";
 import { createLogger } from "../lib/logger.js";
 import { materializePluginContributions } from "./plugin-contributions.js";
@@ -596,6 +597,7 @@ export class PluginMarketplaceService {
       /** Replace an install bound to another source (or to none); the plugin's data is kept. */
       switchSource?: boolean;
       signal?: AbortSignal;
+      reviewedAppVersion?: string;
     },
   ): Promise<{ pluginId: string; installed: true; version: string; action: InstallAction; staged: StagedPluginArtifact }> {
     const activatePreparedArtifact = requirePreparedMarketplacePluginActivation(
@@ -635,10 +637,11 @@ export class PluginMarketplaceService {
             name: plan.name,
             version: plan.version,
             minAppVersion: plan.minAppVersion,
+            hostProtocol: plan.hostProtocol,
             authority: plan.authority,
           });
         },
-        prepareReceipt: (pluginRoot, files) => this.prepareGitInstallReceipt(pluginId, pluginRoot, staged, files),
+        prepareReceipt: (pluginRoot, files) => this.prepareGitInstallReceipt(pluginId, pluginRoot, staged, files, options.reviewedAppVersion),
         approvedPluginAccess: plan.authority.pluginAccess as PluginAccessSpec | undefined,
         activatePreparedArtifact,
         registryInstallSource: "user",
@@ -696,6 +699,7 @@ export class PluginMarketplaceService {
     pluginRoot: string,
     staged: StagedPluginArtifact,
     files: string[],
+    reviewedAppVersion?: string,
   ): Promise<string> {
     const manifestRaw = await readFile(resolve(pluginRoot, "plugin.json"), "utf-8");
     await materializePluginContributions(pluginRoot, flattenAgentPluginsManifest(JSON.parse(manifestRaw)));
@@ -704,6 +708,7 @@ export class PluginMarketplaceService {
       pluginId,
       version: plan.version,
       artifactSha256: staged.artifactSha256,
+      ...(reviewedAppVersion ? { reviewedAppVersion } : {}),
       git: {
         sourceId: plan.sourceId,
         sourceOrigin: plan.sourceOrigin,
@@ -712,6 +717,7 @@ export class PluginMarketplaceService {
         packagePath: plan.packagePath,
         rung: staged.rung,
         rungs: staged.rungs,
+        authoritySha256: sha256Hex(canonicalJSON(plan.authority)),
       },
       files,
     })).raw;
@@ -824,6 +830,7 @@ export class PluginMarketplaceService {
             }
             await opts.assertManifest(manifestFile, pluginRoot);
             preparedDocument = JSON.parse(manifestRaw) as unknown;
+            assertProcessEntrySupported(preparedDocument);
             preparedManifest = flattenAgentPluginsManifest(preparedDocument);
             preparedReceiptRaw = await opts.prepareReceipt(pluginRoot, [...files]);
             return opts.activatePreparedArtifact({
@@ -966,7 +973,6 @@ export class PluginMarketplaceService {
     } catch {
       throw new Error(`[installLocal] could not read plugin.json in ${sourcePath}`);
     }
-
     const pluginId = typeof manifest.id === "string" ? manifest.id.trim() : "";
     if (!pluginId) {
       throw new Error("[installLocal] plugin.json must have a non-empty 'id' field");
@@ -1020,6 +1026,7 @@ export class PluginMarketplaceService {
     } catch {
       throw new Error(`[installLocal] could not read plugin.json in ${sourcePath}`);
     }
+    assertProcessEntrySupported(manifestDocument);
 
     const pluginId = typeof manifest.id === "string" ? manifest.id.trim() : "";
     if (!pluginId) {

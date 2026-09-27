@@ -41,17 +41,20 @@ import { type PluginDeploymentGuard, PluginDeploymentDeniedError, assertDisableA
 import { pluginArtifactGenerationId } from "../plugin-artifact-identity.js";
 import { HostApiGenerationScope } from "../plugin-host-effect-scope.js";
 import { canonicalJSON } from "../secret-access/canonical-json.js";
+import { manifestAuthority } from "../../marketplace/resolve/manifest-rules.js";
+import { waitForPluginWorkersStopped } from "../../permissions/worker-spawn.js";
 import { materializePluginGenerationRoot, removeRetainedPluginGeneration } from "../plugin-contributions.js";
 import { appVersionSatisfiesMin } from "../../shared/semver-compare.js";
 import { getAveAppVersion } from "../../shared/app-version.js";
 import type { PluginInstallFailureKind } from "../../shared/plugin-install-failure.js";
+import { ProcessEntryUnsupportedError } from "../process-entry-support.js";
 import { revocationRegistry } from "../revocation/revocation-registry.js";
 import { isPluginRuntimeDetachedOperationError, PluginRuntimeDetachedOperationError } from "./detached-operation.js";
 import { ensurePluginDataDir, resolvePluginDataDir, resolveEntryPath, buildPluginContext, resolveRealEntryPath } from "./sandbox.js";
 import { buildImportUrl, buildMethodMap, importPluginFactory, declaredAppVisibleToolMethods } from "./plugin-loader.js";
 import { withPluginInstallLock, hasExclusivePluginLifecycleMutation, isPluginInstallLockHeld, withAllPluginInstallLocks, withResolvedPluginInstallLocks } from "../install-lifecycle.js";
 import { isOutOfProcessPlugin } from "../isolation/out-of-process-plugins.js";
-import { createOutOfProcessPluginFactory } from "../isolation/out-of-process-plugin.js";
+import { capturePluginSandboxGrant, createOutOfProcessPluginFactory, isPluginSandboxGrantCovered, PluginSandboxGrantError } from "../isolation/out-of-process-plugin.js";
 import {
   HOST_PROTOCOL_VERSIONS_SERVED,
   IncompatibleHostProtocolError,
@@ -274,6 +277,7 @@ export interface PluginRuntimeOptions {
   deploymentGuard?: PluginDeploymentGuard;
   installReceiptCacheRoot?: string;
   auditLog?: (level: "info" | "warn" | "error", message: string, data?: unknown) => void;
+  onMalformedCredentialSelector?: (pluginId: string) => void;
   /**
    * Fires when a plugin's tear-down path runs (`restartPlugin` stop phase,
    * `restartAll` stop phase per plugin, `disable`, `removePlugin`,
@@ -1566,6 +1570,17 @@ export async function verifyPluginIntegrity(
     return { ok: false, reason: receiptResult.reason };
   }
   const { installSource, signerKeyId, artifactSha256 } = receiptResult.receipt;
+  if (receiptResult.receipt.installSource === "git") {
+    const document: unknown = JSON.parse(await readFile(resolve(pluginRoot, "plugin.json"), "utf8"));
+    const authority = manifestAuthority(document);
+    const expected = receiptResult.receipt.git.authoritySha256;
+    if (expected && (!authority || sha256Hex(canonicalJSON(authority)) !== expected)) {
+      return { ok: false, reason: "plugin authority differs from install review" };
+    }
+    if (!expected && authority?.sandbox !== undefined) {
+      return { ok: false, reason: "sandbox authority has no install review evidence" };
+    }
+  }
   if (installSource === "local-dev" && !isDevModeUnlocked()) {
     return {
       ok: false,
@@ -1666,6 +1681,7 @@ abstract class PluginRuntimeState {
   protected readonly deploymentGuard?: PluginDeploymentGuard;
   protected readonly installReceiptCacheRoot?: string;
   protected readonly auditLog?: (level: "info" | "warn" | "error", message: string, data?: unknown) => void;
+  protected readonly onMalformedCredentialSelector?: (pluginId: string) => void;
   protected readonly onDisable?: (pluginId: string) => void;
   protected readonly onPluginUiRevisionChange?: (pluginId: string) => void;
   protected readonly onEnable?: (pluginId: string) => void;
@@ -1675,6 +1691,49 @@ abstract class PluginRuntimeState {
   ) => Promise<void> | void;
   protected readonly preparePluginStart?: (context: PluginStartPreparationContext) => PluginStartPreparationReturn;
   protected plugins = new Map<string, LoadedPlugin>();
+  private readonly sandboxEnvelopes = new Map<string, Set<{
+    grants: ReturnType<typeof capturePluginSandboxGrant>[];
+    pluginRoot: string;
+    pluginDataDir: string;
+    active: boolean;
+    settled: Promise<void>;
+    resolveSettled: () => void;
+  }>>();
+
+  protected registerSandboxEnvelope(pluginId: string, paths: readonly string[], pluginRoot: string, pluginDataDir: string): {
+    assertCurrent(): void;
+    dispose(): void;
+  } {
+    let resolveSettled!: () => void;
+    const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
+    const record = { grants: paths.map(capturePluginSandboxGrant), pluginRoot, pluginDataDir, active: true, settled, resolveSettled };
+    const entries = this.sandboxEnvelopes.get(pluginId) ?? new Set<typeof record>();
+    entries.add(record);
+    this.sandboxEnvelopes.set(pluginId, entries);
+    return {
+      assertCurrent: () => {
+        if (!record.active || record.grants.some((grant) => !isPluginSandboxGrantCovered(grant, pluginRoot, pluginDataDir))) {
+          throw new Error("sandbox-grant-outside-ceiling");
+        }
+      },
+      dispose: () => {
+        entries.delete(record);
+        if (entries.size === 0) this.sandboxEnvelopes.delete(pluginId);
+        record.resolveSettled();
+      },
+    };
+  }
+
+  protected sandboxGrantWithdrawals(): Array<{ pluginId: string; settled: Promise<void[]> }> {
+    const affected: Array<{ pluginId: string; settled: Promise<void[]> }> = [];
+    for (const [pluginId, entries] of this.sandboxEnvelopes) {
+      if (![...entries].some((entry) => !entry.active || entry.grants.some((grant) =>
+        !isPluginSandboxGrantCovered(grant, entry.pluginRoot, entry.pluginDataDir)))) continue;
+      for (const entry of entries) entry.active = false;
+      affected.push({ pluginId, settled: Promise.all([...entries].map((entry) => entry.settled)) });
+    }
+    return affected;
+  }
   protected methodMap = new Map<string, { pluginId: string; handler: PluginToolHandler }>();
   protected readonly perf = new PerfStatsTracker();
   protected disposers = new Map<string, Array<() => void>>();
@@ -1836,6 +1895,7 @@ abstract class PluginRuntimeState {
       ? resolve(options.installReceiptCacheRoot)
       : undefined;
     this.auditLog = options.auditLog;
+    this.onMalformedCredentialSelector = options.onMalformedCredentialSelector;
     this.onDisable = options.onDisable;
     this.onPluginUiRevisionChange = options.onPluginUiRevisionChange;
     this.onEnable = options.onEnable;
@@ -2744,7 +2804,8 @@ abstract class PluginRuntimeState {
     pluginId: string,
     plugin: LoadedPlugin,
     context: string,
-  ): Promise<void> {
+    awaitDefinitiveStop = false,
+  ): Promise<boolean> {
     this.markFailed(pluginId);
     plugin.deactivateHostApi?.();
     for (const method of plugin.methods.keys()) {
@@ -2753,12 +2814,20 @@ abstract class PluginRuntimeState {
     this.plugins.delete(pluginId);
     this.runPluginDisposers(pluginId, context);
     this.onDisable?.(pluginId);
-    await this.stopAfterStartFailure(
-      pluginId,
-      plugin.instance,
-      plugin.lifecycleHookScope,
-    );
-    await this.drainPluginHostApiOperations(pluginId, plugin);
+    let stopped: boolean;
+    if (awaitDefinitiveStop) {
+      try {
+        await this.runPluginLifecycleHook(plugin.lifecycleHookScope, () => plugin.instance.stop?.());
+        stopped = true;
+      } catch (error) {
+        this.quarantinePluginLifecycle(pluginId, (error as Error).message);
+        stopped = false;
+      }
+    } else {
+      stopped = await this.stopAfterStartFailure(pluginId, plugin.instance, plugin.lifecycleHookScope);
+    }
+    const drained = await this.drainPluginHostApiOperations(pluginId, plugin);
+    return stopped && drained;
   }
 
   protected runPluginDisposers(pluginId: string, context: string): void {
@@ -2906,9 +2975,8 @@ abstract class PluginRuntimeState {
    * Host protocol gate (LOAD boundary), the sibling of
    * {@link markIncompatibleAppVersion} and run beside it on every load path.
    * Returns `true` and marks the plugin failed when `requires.hostProtocol`
-   * names a version this app does not serve (plugin-hostapi-protocol.md §3.2);
-   * `false` when the field is absent, which the host answers with its newest
-   * version, or served.
+   * is missing or names a version this app does not serve
+   * (plugin-hostapi-protocol.md §3.2).
    *
    * A distinct refusal from `incompatible-app-version`, so the Doctor can say
    * "this plugin was built for a different protocol" rather than "update the
@@ -2916,10 +2984,10 @@ abstract class PluginRuntimeState {
    */
   protected markIncompatibleHostProtocol(manifest: PluginManifest): boolean {
     const declared = manifest.requires?.hostProtocol;
-    if (declared === undefined || isServedHostProtocolVersion(declared)) return false;
+    if (isServedHostProtocolVersion(declared)) return false;
     this.refuseIncompatibleHostProtocol(
       manifest,
-      new IncompatibleHostProtocolError(manifest.id, { declared }),
+      new IncompatibleHostProtocolError(manifest.id, { declared: declared ?? null }),
     );
     return true;
   }
@@ -2941,6 +3009,17 @@ abstract class PluginRuntimeState {
       // NOT locally reinstall-fixable — the same package speaks the same
       // protocol after a reinstall.
       kind: "incompatible-host-protocol",
+      displayName: manifest.name ?? manifest.id,
+    });
+  }
+
+  /** Report a filesystem grant the host cannot give this plugin incarnation. */
+  protected refuseSandboxGrant(manifest: PluginManifest, error: PluginSandboxGrantError): void {
+    log.error(`${manifest.id} rejected — ${error.message}`);
+    this.markLoadRefused(manifest.id, {
+      summary: "Plugin filesystem grant is outside approved directories.",
+      reason: error.message,
+      kind: "sandbox-grant-outside-ceiling",
       displayName: manifest.name ?? manifest.id,
     });
   }
@@ -3964,6 +4043,8 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       // is the same refusal as an unserved declared version, and says so.
       if (err instanceof IncompatibleHostProtocolError) {
         this.refuseIncompatibleHostProtocol(manifest, err);
+      } else if (err instanceof PluginSandboxGrantError) {
+        this.refuseSandboxGrant(manifest, err);
       } else {
         this.markFailed(manifest.id);
       }
@@ -5073,7 +5154,16 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       // caller already applies. `bustCache` is irrelevant for the same reason —
       // a fresh process has an empty module registry, which is a stronger
       // cache-bust than a query parameter.
-      return createOutOfProcessPluginFactory({ manifest, entryPath: resolvedEntryPath });
+      return createOutOfProcessPluginFactory({
+        manifest,
+        entryPath: resolvedEntryPath,
+        auditLog: this.auditLog,
+        registerSandboxEnvelope: (paths, pluginRoot, pluginDataDir) =>
+          this.registerSandboxEnvelope(manifest.id, paths, pluginRoot, pluginDataDir),
+        ...(this.onMalformedCredentialSelector
+          ? { onMalformedCredentialSelector: this.onMalformedCredentialSelector }
+          : {}),
+      });
     }
     try {
       return await runPluginImportWithTimeout(
@@ -5299,9 +5389,9 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
         this.markLoadRefused(plan.pluginIdHint, {
           summary: "Plugin manifest could not be loaded.",
           reason: (err as Error).message,
-          ...(reason === "manifest_schema"
-            ? { kind: "manifest-validation-error" as const }
-            : {}),
+          ...(err instanceof ProcessEntryUnsupportedError
+            ? { kind: "process-entry-unsupported" as const }
+            : reason === "manifest_schema" ? { kind: "manifest-validation-error" as const } : {}),
         });
       }
       return;
@@ -5346,8 +5436,8 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     if (this.markIncompatibleAppVersion(manifest)) {
       return;
     }
-    // Host protocol gate. Same LOAD-boundary shape: a plugin built for a
-    // protocol this app does not serve is skipped before anything spawns.
+    // Host protocol gate. Undeclared and unserved code is skipped before any
+    // factory activates.
     if (this.markIncompatibleHostProtocol(manifest)) {
       return;
     }
@@ -5467,6 +5557,8 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       });
       if (err instanceof IncompatibleHostProtocolError) {
         this.refuseIncompatibleHostProtocol(manifest, err);
+      } else if (err instanceof PluginSandboxGrantError) {
+        this.refuseSandboxGrant(manifest, err);
       } else {
         this.markFailed(manifest.id);
       }
@@ -5938,6 +6030,14 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
   ): Promise<RestartPluginResult> {
     const canonicalPluginId = this.resolveKnownPluginId(pluginId);
     this.assertPluginLifecycleAvailable(canonicalPluginId);
+    if (!this.plugins.has(canonicalPluginId)
+      && this.loadFailureInfo.get(canonicalPluginId)?.installFailureKind === "sandbox-grant-outside-ceiling") {
+      try {
+        return (await this.addPlugin(canonicalPluginId)) === "preparing" ? "deferred" : "started";
+      } catch {
+        return "failed";
+      }
+    }
     if (
       hasExclusivePluginLifecycleMutation()
       && !isPluginInstallLockHeld(canonicalPluginId)
@@ -6427,6 +6527,63 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
 // ---------------------------------------------------------------------------
 
 export class PluginRuntime extends PluginRuntimeLifecycle {
+  private readonly pendingSandboxRetirements = new Map<string, Promise<void>>();
+
+  /** Retire incarnations whose reviewed path grants exceed the live approved roots. */
+  async retireSandboxGrantsOutsideCeiling(): Promise<string[]> {
+    const affected = this.sandboxGrantWithdrawals();
+    const outcomes = await Promise.allSettled(affected.map(({ pluginId, settled }) => {
+      let retirement = this.pendingSandboxRetirements.get(pluginId);
+      if (!retirement) {
+        retirement = Promise.resolve().then(() => this.retireSandboxGrantIncarnation(pluginId, settled));
+        this.pendingSandboxRetirements.set(pluginId, retirement);
+        void retirement.finally(() => {
+          if (this.pendingSandboxRetirements.get(pluginId) === retirement) {
+            this.pendingSandboxRetirements.delete(pluginId);
+          }
+        }).catch(() => {});
+      }
+      return retirement;
+    }));
+    const errors = outcomes.flatMap((outcome) => outcome.status === "rejected" ? [outcome.reason] : []);
+    if (errors.length > 0) throw new AggregateError(errors, "sandbox grant retirement failed");
+    return affected.map(({ pluginId }) => pluginId);
+  }
+
+  private async retireSandboxGrantIncarnation(pluginId: string, settled: Promise<void[]>): Promise<void> {
+    this.cancelPendingRestart(pluginId);
+    this.beginPluginLifecycleOperation(pluginId);
+    const plugin = this.plugins.get(pluginId);
+    const errors: unknown[] = [];
+    if (plugin) {
+      try {
+        errors.push(...(plugin.hostEffects?.retire() ?? []));
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        if (!await this.failClosedLoadedPlugin(pluginId, plugin, "sandbox ceiling withdrawal", true)) {
+          errors.push(new Error("sandbox grant incarnation did not stop cleanly"));
+        }
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    try {
+      await waitForPluginWorkersStopped(pluginId);
+    } catch (error) {
+      errors.push(error);
+    }
+    await settled;
+    this.markLoadRefused(pluginId, {
+      summary: "Plugin filesystem grant is outside approved directories.",
+      reason: "sandbox-grant-outside-ceiling",
+      kind: "sandbox-grant-outside-ceiling",
+      displayName: plugin?.manifest.name ?? this.knownPluginManifests.get(pluginId)?.name ?? pluginId,
+    });
+    if (errors.length > 0) throw new AggregateError(errors, "sandbox grant retirement failed");
+  }
+
   /** Release a same-plugin lifecycle lock held by dependency preparation. */
   cancelPendingRestart(pluginId: string): void {
     const canonicalPluginId = this.resolveKnownPluginId(pluginId);

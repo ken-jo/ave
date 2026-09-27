@@ -256,6 +256,7 @@ export async function resolvePersonaRolePrompt(
         id: prompt.id,
         name: prompt.name,
         systemPromptAdd: prompt.systemPromptAdd,
+        ...(prompt.origin ? { origin: prompt.origin } : {}),
       },
     };
   } catch {

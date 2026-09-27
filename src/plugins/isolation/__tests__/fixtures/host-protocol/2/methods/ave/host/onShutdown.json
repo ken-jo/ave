@@ -1,0 +1,15 @@
+{
+  "request": {
+    "id": 23,
+    "jsonrpc": "2.0",
+    "method": "ave/host/onShutdown",
+    "params": {
+      "handler": "<uuid-1>"
+    }
+  },
+  "response": {
+    "id": 23,
+    "jsonrpc": "2.0",
+    "result": null
+  }
+}

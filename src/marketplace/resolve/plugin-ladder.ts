@@ -36,6 +36,7 @@ import type { ArtifactCache } from "./artifact-cache.js";
 import { candidateVersion, DESCRIPTOR_NAME, planPackage, readDescriptorAtVersion, repoPath, type PackagePlan, type RepositoryAccess } from "./descriptor.js";
 import { downloadBounded } from "./download.js";
 import { assertGitInstallManifest } from "./manifest-rules.js";
+import { PROCESS_ENTRY_UNSUPPORTED_CODE, PROCESS_ENTRY_UNSUPPORTED_MESSAGE } from "../../plugins/process-entry-support.js";
 
 export interface PluginInstallPlan extends PackagePlan {
   kind: "plugin";
@@ -152,7 +153,9 @@ async function assertDescriptorAtVersion(plan: PluginInstallPlan, deps: LadderDe
 /** Read and check plugin.json from a zip that passed the preflight. */
 function stagedManifest(plan: PluginInstallPlan, zipBuffer: Buffer, deps: LadderDeps, rungs: readonly RungOutcome[], rung: ArtifactRung): unknown {
   const stop = (code: MarketplaceErrorCode, message: string, cause: unknown) =>
-    new LadderError(code, message, [...rungs, { rung, outcome: "failed", code, message: code === "PACKAGE_COMPAT_UNDECLARED" ? "plugin.json does not declare requires.minAppVersion" : "plugin.json differs from the descriptor" }], { cause });
+    new LadderError(code, message, [...rungs, { rung, outcome: "failed", code, message: code === PROCESS_ENTRY_UNSUPPORTED_CODE
+      ? PROCESS_ENTRY_UNSUPPORTED_MESSAGE
+      : code === "PACKAGE_COMPAT_UNDECLARED" ? "plugin.json does not declare requires.minAppVersion" : "plugin.json differs from the descriptor" }], { cause });
   let text: string;
   try {
     text = deps.zip.readRequiredRootTextFiles(plan.name, zipBuffer, [{ filename: "plugin.json", maxBytes: MANIFEST_LIMIT, packageLabel: "plugin" }])["plugin.json"]!;
@@ -166,7 +169,7 @@ function stagedManifest(plan: PluginInstallPlan, zipBuffer: Buffer, deps: Ladder
     throw stop("MANIFEST_MISMATCH", `${plan.name}@${plan.version}: plugin.json does not parse: ${(error as Error).message}`, error);
   }
   try {
-    assertGitInstallManifest(document, { name: plan.name, version: plan.version, minAppVersion: plan.minAppVersion, authority: plan.authority });
+    assertGitInstallManifest(document, { name: plan.name, version: plan.version, minAppVersion: plan.minAppVersion, hostProtocol: plan.hostProtocol, authority: plan.authority });
   } catch (error) {
     // PACKAGE_COMPAT_UNDECLARED or MANIFEST_MISMATCH; either stops the ladder.
     throw stop(isMarketplaceError(error) ? error.code : "MANIFEST_MISMATCH", (error as Error).message, error);

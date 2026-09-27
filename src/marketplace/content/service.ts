@@ -19,7 +19,10 @@ import {
   type InstalledThemeView,
 } from "../../shared/installed-content.js";
 import type { ContentKind } from "./rules.js";
+import type { ParsedContent } from "./kinds.js";
 import type { ContentStore, LoadedContent } from "./store.js";
+import { parseAgentPluginRoutineTemplates } from "./agent-plugin-components.js";
+import type { AgentPluginRoutineTemplate } from "../../shared/agent-plugin-routine-template.js";
 
 const IMAGE_TYPES: Readonly<Record<string, string>> = { ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp" };
 const FONT_TYPES: Readonly<Record<string, string>> = { woff2: "font/woff2", woff: "font/woff", truetype: "font/ttf", opentype: "font/otf" };
@@ -36,12 +39,26 @@ export interface InstalledInstruction {
   dir: string;
 }
 
+/** A verified package snapshot used to publish inert instructions in main. */
+export interface InstalledAgentPlugin {
+  name: string;
+  version: string;
+  content: Extract<ParsedContent, { kind: "agent-plugin" }>;
+}
+
+export interface InstalledAgentPluginRuntime extends InstalledAgentPlugin {
+  dir: string;
+  generationId: string;
+}
+
 export class InstalledContentService {
-  private view: InstalledContentView = { themes: [], languages: [], fonts: [], broken: [] };
+  private view: InstalledContentView = { themes: [], languages: [], fonts: [], routineTemplates: [], broken: [] };
   private catalogs = new Map<string, Record<string, string>>();
   /** `<kind>/<name>/<path>` → the file and its type, for the asset scheme. */
   private served = new Map<string, ServedContentFile>();
   private instructions: InstalledInstruction[] = [];
+  private agentPlugins: InstalledAgentPlugin[] = [];
+  private agentPluginRuntime: InstalledAgentPluginRuntime[] = [];
 
   /**
    * `assetToken` is the launch token asset URLs carry (see `contentAssetUrl`).
@@ -60,10 +77,13 @@ export class InstalledContentService {
     const themes: InstalledThemeView[] = [];
     const languages: InstalledLanguageView[] = [];
     const fonts: InstalledFontView[] = [];
+    const routineTemplates: AgentPluginRoutineTemplate[] = [];
     const brokenViews: BrokenContentView[] = broken.map(({ entry, problem }) => ({ kind: entry.kind, name: entry.name, problem }));
     const catalogs = new Map<string, Record<string, string>>();
     const served = new Map<string, ServedContentFile>();
     const instructions: InstalledInstruction[] = [];
+    const agentPlugins: InstalledAgentPlugin[] = [];
+    const agentPluginRuntime: InstalledAgentPluginRuntime[] = [];
     const from = (item: LoadedContent) => ({ sourceId: item.entry.origin.sourceId, version: item.entry.version });
     const refuse = (item: LoadedContent, problem: string) => brokenViews.push({ kind: item.entry.kind, name: item.entry.name, problem });
 
@@ -128,13 +148,29 @@ export class InstalledContentService {
         });
       } else if (content.kind === "skill" || content.kind === "agent") {
         instructions.push({ kind: content.kind, name: entry.name, dir });
+      } else if (content.kind === "agent-plugin") {
+        agentPlugins.push({ name: entry.name, version: entry.version, content });
+        agentPluginRuntime.push({ name: entry.name, version: entry.version, content, dir, generationId: entry.origin.contentSha256 });
+        if (content.components.routineTemplates.length > 0) {
+          const bytes = content.files.find((file) => file.path === "ai.agent-connector.ave/routines.json")?.data;
+          if (!bytes) throw new Error(`installed agent plugin ${entry.name} is missing its routine templates`);
+          const parsed = parseAgentPluginRoutineTemplates(bytes);
+          if (parsed.length !== content.components.routineTemplates.length) {
+            throw new Error(`installed agent plugin ${entry.name} has inconsistent routine templates`);
+          }
+          routineTemplates.push(...parsed.map((template) => ({
+            ...template, packageName: entry.name, version: entry.version,
+          })));
+        }
       }
       // Providers and messaging connections take effect through settings (their activation).
     }
-    this.view = { themes, languages, fonts, broken: brokenViews };
+    this.view = { themes, languages, fonts, routineTemplates, broken: brokenViews };
     this.catalogs = catalogs;
     this.served = served;
     this.instructions = instructions;
+    this.agentPlugins = agentPlugins;
+    this.agentPluginRuntime = agentPluginRuntime;
     return this.installed();
   }
 
@@ -145,6 +181,14 @@ export class InstalledContentService {
   /** Installed skills and agent profiles, for the skill and agent stores in main. */
   installedInstructions(): InstalledInstruction[] {
     return this.instructions.map((item) => ({ ...item }));
+  }
+
+  installedAgentPlugins(): readonly InstalledAgentPlugin[] {
+    return this.agentPlugins;
+  }
+
+  installedAgentPluginRuntime(): readonly InstalledAgentPluginRuntime[] {
+    return this.agentPluginRuntime;
   }
 
   /** The catalog of an installed language; throws for a locale no package provides. */

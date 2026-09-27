@@ -40,6 +40,7 @@ import { SOURCE_ID_RE } from "../../marketplace/sources/official.js";
 import { toolVisibility } from "./tool-visibility.js";
 import { createLogger } from "../../lib/logger.js";
 import { normalizeAllowedHosts } from "../../main/host-allow-list.js";
+import { assertProcessEntrySupported } from "../process-entry-support.js";
 import {
   HOST_SECRET_READ_MAX_ITEMS,
   findHostSecretReadListViolation,
@@ -55,6 +56,8 @@ import { resolveAddFormats, resolveAjv } from "../config-schema.js";
 import { TOOL_NAME_PATTERN, isValidToolName } from "../../tools/types.js";
 import { canonicalJSON } from "../secret-access/canonical-json.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
+import { sandboxDeclarationProblem } from "../sandbox-authority.js";
+import { HOST_PROTOCOL_VERSIONS_SERVED } from "../isolation/host-api-wire.js";
 
 // Re-exported here so manifest/plugin-loading consumers can import the
 // minAppVersion gate error + IPC code alongside the other manifest contracts.
@@ -916,6 +919,7 @@ export async function parsePluginJson(
       `"version": "1.0.0"`,
     );
   }
+  assertProcessEntrySupported(doc);
   if (typeof parsed.entry !== "string" || parsed.entry.length === 0) {
     fail(
       "entry",
@@ -966,6 +970,11 @@ export async function parsePluginJson(
   // rejected). From here on all tool checks read `manifest.tools: Tool[]` —
   // never `parsed.tools`.
   const manifest = materializeManifest(parsed);
+
+  const sandboxProblem = sandboxDeclarationProblem(manifest);
+  if (sandboxProblem) {
+    fail("sandbox", `${sandboxProblem} — manifest_schema`, `"sandbox": { "read": [] }`);
+  }
 
   // Contribution paths and owner-local IDs are security-bearing cross-field
   // contracts that JSON Schema alone cannot normalize or collision-check.
@@ -1351,7 +1360,7 @@ export async function parsePluginJson(
         fail(
           "requires.hostProtocol",
           "must be a positive integer written as a string, with no leading zeros — manifest_schema",
-          `"requires": { "hostProtocol": "1" }`,
+          `"requires": { "hostProtocol": "${HOST_PROTOCOL_VERSIONS_SERVED[0]}" }`,
         );
       }
     }

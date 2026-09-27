@@ -5,6 +5,9 @@ import { resolve } from "node:path";
 import type { ScriptHookManager } from "../hooks/script-hook-manager.js";
 import { PluginHookTrustStore, preparePluginHookGeneration } from "../hooks/plugin-hook-projection.js";
 import type { SkillStore } from "../main/skill-store.js";
+import type { PersonaPromptStore } from "../main/persona-prompt-store.js";
+import { parseAgentPluginRoutineTemplates } from "../marketplace/content/agent-plugin-components.js";
+import type { AgentPluginRoutineTemplate } from "../shared/agent-plugin-routine-template.js";
 import type { McpManager, PreparedBundledMcpGeneration } from "../mcp/mcp-manager.js";
 import type { PluginLoopbackManager } from "../mcp/plugin-loopback-manager.js";
 import { PluginMcpTrustStore, preparePluginMcpGeneration } from "../mcp/plugin-mcp-projection.js";
@@ -79,6 +82,26 @@ function activeGenerationSnapshot(
   });
 }
 
+function extensionRoutineTemplates(
+  generation: ActivePluginGeneration,
+): AgentPluginRoutineTemplate[] {
+  const templates: AgentPluginRoutineTemplate[] = [];
+  const ids = new Set<string>();
+  for (const contribution of generation.contributions) {
+    if (contribution.kind !== "routineTemplate") continue;
+    const file = contribution.files[0];
+    if (!file || contribution.files.length !== 1) {
+      throw new Error(`extension routine declaration ${contribution.localId} has no single file`);
+    }
+    for (const template of parseAgentPluginRoutineTemplates(Buffer.from(file.content), contribution.path)) {
+      if (ids.has(template.id)) throw new Error(`duplicate extension routine template ${generation.pluginId}:${template.id}`);
+      ids.add(template.id);
+      templates.push({ ...template, packageName: generation.pluginId, version: generation.pluginVersion, sourceKind: "extension" });
+    }
+  }
+  return templates;
+}
+
 export interface PluginBundleLifecycleHandler extends PluginRuntimeGenerationLifecycle {
   activate(pluginId: string): Promise<void>;
   deactivate(pluginId: string): Promise<void>;
@@ -98,6 +121,8 @@ export interface PluginBundleLifecycleDeps {
   >;
   receiptCacheRoot: string;
   skillStore: SkillStore;
+  personaPromptStore: PersonaPromptStore;
+  onContributionsUpdated: () => void;
   hookManager: ScriptHookManager;
   mcpManager: McpManager;
   loopbackManager: Pick<PluginLoopbackManager,
@@ -150,6 +175,12 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
     }
     if (typeof deps.revokeOperationGeneration !== "function") {
       throw new Error("PluginBundleLifecycle requires exact operation-generation revocation");
+    }
+    if (!deps.personaPromptStore || typeof deps.personaPromptStore.preparePluginGeneration !== "function") {
+      throw new Error("PluginBundleLifecycle requires the prompt generation store");
+    }
+    if (typeof deps.onContributionsUpdated !== "function") {
+      throw new Error("PluginBundleLifecycle requires contribution update notification");
     }
     this.hookTrust = deps.hookTrust ?? new PluginHookTrustStore(
       resolve(deps.receiptCacheRoot, "plugin-contribution-trust", "hooks.json"),
@@ -217,6 +248,10 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
   getActive(pluginId: string): ActivePluginGenerationSnapshot | undefined {
     const generation = this.coordinator.getActive(pluginId);
     return generation ? activeGenerationSnapshot(generation) : undefined;
+  }
+
+  listRoutineTemplates(): AgentPluginRoutineTemplate[] {
+    return this.coordinator.listActive().flatMap(extensionRoutineTemplates);
   }
 
   isExactAdmitted(pluginId: string, generationId: string): boolean {
@@ -562,6 +597,8 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
             ),
           }),
         };
+        // Validate cross-file template IDs before committing a generation.
+        extensionRoutineTemplates(candidate);
         candidate.state.runtime.hostEffects?.bindGeneration(
           this,
           candidate.generationId,
@@ -575,6 +612,7 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
           );
         const preparedSkills =
           this.deps.skillStore.preparePluginGeneration(candidate);
+        const preparedPrompts = this.deps.personaPromptStore.preparePluginGeneration(candidate);
         const preparedHooks =
           this.deps.hookManager.preparePluginGeneration(
             candidate.state.hooks,
@@ -593,6 +631,7 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
           candidate,
           preparedRuntime,
           preparedSkills,
+          preparedPrompts,
           preparedHooks,
           preparedLoopback,
         };
@@ -619,6 +658,7 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
       candidate,
       preparedRuntime,
       preparedSkills,
+      preparedPrompts,
       preparedHooks,
       preparedLoopback,
     } = prepared;
@@ -638,10 +678,12 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
           this.deps.loopbackManager.publishGeneration(preparedLoopback);
           preparedRuntime.publish();
           preparedSkills.publish();
+          preparedPrompts.publish();
           preparedHooks.publish();
         },
       );
       published = commitScope ? await commitScope(publish) : await publish();
+      this.deps.onContributionsUpdated();
     } catch (error) {
       const activeGenerationId = this.coordinator.getActive(pluginId)?.generationId;
       if (activeGenerationId === candidate.generationId) {
@@ -807,6 +849,7 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
       active.generationId,
     );
     const preparedSkills = this.deps.skillStore.preparePluginRemoval(pluginId, active.generationId);
+    const preparedPrompts = this.deps.personaPromptStore.preparePluginRemoval(pluginId);
     const preparedHooks = this.deps.hookManager.preparePluginGeneration(
       [],
       this.hookTrust,
@@ -825,10 +868,12 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
           this.deps.loopbackManager.publishGeneration(preparedLoopback);
           preparedRuntime.publish();
           preparedSkills.publish();
+          preparedPrompts.publish();
           preparedHooks.publish();
         },
       );
       published = commitScope ? await commitScope(publish) : await publish();
+      this.deps.onContributionsUpdated();
     } catch (error) {
       if (isCommittedPluginGenerationPublicationError(error)) {
         const retirement = this.trackRetirement(error.transition.retired);

@@ -492,7 +492,7 @@ export type AveApi = {
     handler: (event: SubscriptionRuntimeStatusUpdatedEvent) => void,
   ) => () => void;
   listPersonaPromptSummaries: () => Promise<{ prompts: Array<Pick<RolePreset, "id" | "name">> }>;
-  listPersonaPrompts: () => Promise<{ prompts: RolePreset[] }>;
+  listPersonaPrompts: () => Promise<{ prompts: RolePreset[]; templates: import("../../shared/agent-plugin-prompt.js").AgentPluginTemplatePrompt[] }>;
   savePersonaPrompt: (prompt: { id: string; name: string; systemPromptAdd: string }) => Promise<
     | { ok: true; prompt: RolePreset }
     | { ok: false; error: string }

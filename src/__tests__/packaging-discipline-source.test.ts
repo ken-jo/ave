@@ -242,6 +242,39 @@ function workflowFileNames(): string[] {
 }
 
 describe("installer smoke and packaging discipline", () => {
+  it("requires the audio runtime in Linux installer dependencies", () => {
+    const packageJson = JSON.parse(readRepoFile("package.json")) as {
+      build?: {
+        deb?: { depends?: string[] };
+        rpm?: { depends?: string[] };
+      };
+    };
+
+    expect(packageJson.build?.deb?.depends).toEqual([
+      "libgtk-3-0",
+      "libnotify4",
+      "libnss3",
+      "libxss1",
+      "libxtst6",
+      "xdg-utils",
+      "libatspi2.0-0",
+      "libuuid1",
+      "libsecret-1-0",
+      "libasound2t64 | libasound2",
+    ]);
+    expect(packageJson.build?.rpm?.depends).toEqual([
+      "gtk3",
+      "libnotify",
+      "nss",
+      "libXScrnSaver",
+      "(libXtst or libXtst6)",
+      "xdg-utils",
+      "at-spi2-core",
+      "(libuuid or libuuid1)",
+      "alsa-lib",
+    ]);
+  });
+
   it("smoke-launches the packaged app before uploading installer artifacts", () => {
     const workflow = readRepoFile(".github/workflows/build-installers.yml");
     const smokeScript = readRepoFile("scripts/smoke-packaged-app.mjs");
@@ -249,7 +282,9 @@ describe("installer smoke and packaging discipline", () => {
     expect(workflow).toContain("Smoke launch packaged app");
     expect(workflow).toContain("scripts/smoke-packaged-app.mjs --target");
     expect(workflow).toContain("xvfb-run -a");
-    expect(workflow).toContain("sudo apt-get update && sudo apt-get install -y fakeroot rpm xvfb");
+    expect(workflow).toContain("sudo apt-get update && sudo apt-get install -y fakeroot rpm xvfb dbus dbus-x11 gnome-keyring");
+    expect(workflow).toContain("dbus-run-session -- bash -euo pipefail -c");
+    expect(workflow).toContain("gnome-keyring-daemon --unlock --components=secrets");
     expect(workflow).toContain(
       "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0",
     );
@@ -267,6 +302,13 @@ describe("installer smoke and packaging discipline", () => {
     expect(smokeScript).toContain("win-unpacked");
     expect(smokeScript).toContain(".app");
     expect(smokeScript).toContain("AVE_HOME");
+    expect(smokeScript).toContain('process.platform === "win32" ? tmpdir() : "/tmp"');
+    expect(smokeScript).toContain("--password-store=gnome-libsecret");
+    expect(smokeScript).toContain("snapshotProductionLogs(env.AVE_HOME)");
+    expect(smokeScript).toContain("readProductionLogsSince(env.AVE_HOME, logSnapshot)");
+    expect(smokeScript).toContain("launchSucceeded({ ready, timedOut, code, signal })");
+    expect(smokeScript).toContain('runPackagedAppOnce(executable, timeoutMs, env, "first launch")');
+    expect(smokeScript).toContain('runPackagedAppOnce(executable, timeoutMs, env, "upgrade probe")');
     expect(smokeScript).toContain("assertPackagedFirstLaunchSeed");
     expect(smokeScript).toContain("assertUpgradeProbe");
     expect(smokeScript).toContain("expectedSeededMarkdownFiles");
@@ -309,6 +351,10 @@ describe("installer smoke and packaging discipline", () => {
     const execute = workflow.slice(workflow.indexOf("  e2e:"));
 
     expect(stage).toContain("secrets.AVE_REPO_READ_TOKEN");
+    expect(stage).toContain("path: stage-policy");
+    expect(stage).toContain("ref: ${{ github.workflow_sha }}");
+    expect(stage).toContain('bash stage-policy/scripts/check-e2e-archive-tree.sh "$repo" "$actual"');
+    expect(stage).not.toContain("ls-files -s");
     expect(stage).toContain("git -C \"$repo\" archive");
     expect(stage).toContain("manifest.tsv");
     expect(stage).toContain("artifact-digest");
@@ -858,11 +904,9 @@ describe("installer smoke and packaging discipline", () => {
     expect(claude).toContain("duplicates no");
 
     for (const guidance of [agents, contributing, pullRequestTemplate]) {
-      expect(guidance).toContain("review-only Markdown");
-      expect(guidance).toMatch(/runtime/i);
-      expect(guidance).toMatch(/instruction/i);
-      expect(guidance).toMatch(/workflow/i);
-      expect(guidance).toMatch(/sensitive/i);
+      expect(guidance).toMatch(/documentation/i);
+      expect(guidance).toMatch(/consum/i);
+      expect(guidance).toMatch(/pre-push/i);
     }
 
     expect(agents).toContain("openFeatureNamespace");

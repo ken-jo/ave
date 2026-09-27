@@ -41,6 +41,7 @@ import { configureHostResources } from "./main/host-resources.js";
  * HostApi manufactured in `steps/plugin-runtime.ts`.
  */
 import type { BrowserWindow } from "electron";
+import { CHANNELS } from "./contract/app-contract.js";
 import { resolve } from "node:path";
 import { sweepOrphanUninstallDirs } from "./plugins/orphan-uninstall-sweeper.js";
 import { preparePluginRegistryForBoot } from "./plugins/plugin-boot-recovery.js";
@@ -808,6 +809,11 @@ export async function bootstrap(
     pluginRuntime,
     receiptCacheRoot: pluginPaths.cacheRoot,
     skillStore: ctx.skillStore,
+    personaPromptStore: ctx.personaPromptStore,
+    onContributionsUpdated: () => {
+      const win = getMainWindow();
+      if (win && !win.isDestroyed()) win.webContents.send(CHANNELS.prompts.updated);
+    },
     hookManager: ctx.scriptHookManager,
     mcpManager: ctx.mcpManager,
     loopbackManager: ctx.pluginLoopbackManager,

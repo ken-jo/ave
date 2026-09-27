@@ -14,6 +14,9 @@ export interface McpGovernancePolicy {
 
   servers: McpServerApproval[];
 
+  /** Stable fingerprint approvals for bundled servers whose runtime ids change. */
+  bundledServers?: Array<{ package: string; server: string; fingerprint: string }>;
+
   globalRules: McpGlobalRules;
 }
 
@@ -28,6 +31,9 @@ export interface McpServerApproval {
   approvedBy?: string;
 
   approvedAt?: string;
+  /** Required for every host-owned runtime approval. Managed entries omit it. */
+  provenance?: "user" | "policy-fingerprint";
+  bundled?: { package: string; server: string; fingerprint: string };
   revokedAt?: string;
 
 
@@ -92,6 +98,8 @@ export interface McpGlobalRules {
   allowedUrlPatterns: string[];
 
   policyRefreshIntervalMs: number;
+  /** Existing policies without this field continue to admit user approvals. */
+  allowUserApprovedServers?: boolean;
   /**
    * Admin gate for per-server `allowPrivateNetworks`. If not `true`, any
    * `http` server config that opts into private-network access is rejected
@@ -145,6 +153,10 @@ export interface McpStdioServerConfig extends McpServerConfigBase {
   args?: string[];
 
   env?: Record<string, string>;
+  /** Validated working directory for a bundled server. */
+  cwd?: string;
+  /** Host-owned, package-stable writable directory for a bundled server. */
+  pluginDataDir?: string;
   /** Safe env var name that receives apiKey at process launch. */
   apiKeyEnv?: string;
   /**
@@ -224,8 +236,8 @@ type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K>
  */
 export type McpServerConfigDto = DistributiveOmit<
   McpServerConfig,
-  "apiKey" | "headers" | "env" | "args" | "sandboxRoot"
->;
+  "apiKey" | "headers" | "env" | "args" | "sandboxRoot" | "cwd" | "pluginDataDir"
+> & { bundled?: { kind: "plugin" | "agent-plugin"; name: string; server: string } };
 
 /**
  * MCP Apps spec `McpUiToolVisibility` — WHO may call a tool.

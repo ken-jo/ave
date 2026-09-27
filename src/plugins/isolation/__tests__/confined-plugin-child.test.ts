@@ -119,6 +119,7 @@ import type { DelegatedWorkerConfinement } from "../host-api-dispatcher.js";
 import {
   createOutOfProcessPluginFactory,
   derivePluginChildEnvelope,
+  PluginSandboxGrantError,
 } from "../out-of-process-plugin.js";
 import {
   initializeAsrtSandbox,
@@ -135,11 +136,31 @@ import { flattenAgentPluginsManifest } from "../../public-contract.js";
 import { createGoldenHost } from "./host-protocol-golden-host.js";
 
 const PLUGIN_ID = "vega-helper";
-/**
- * The one plugin `PLUGIN_ENVELOPE_GRANTS` carries a row for, so the widening
- * case drives the production table rather than a fixture that stands in for it.
- */
 const WIDENED_PLUGIN_ID = "local-indexer";
+const WIDENED_SANDBOX: NonNullable<PluginManifest["sandbox"]> = {
+  read: [
+    { kind: "hostDirectory", segments: ["runtime"], why: "Read host runtime" },
+    { kind: "hostDirectory", segments: ["certs"], why: "Read trust anchors" },
+  ],
+  write: [
+    { kind: "userChosenDirectory", configKey: "indexStorageRoot", why: "Store index data" },
+    { kind: "userChosenDirectory", configKey: "workspace", why: "Use the approved workspace" },
+  ],
+};
+const CANDIDATE_MANIFEST: PluginManifest = {
+  id: PLUGIN_ID,
+  name: "Vega Helper",
+  version: "1.0.0",
+  entry: "index.js",
+  requires: { hostProtocol: "2" },
+  description: "Exercises declared filesystem authority",
+  tools: [],
+  sandbox: {
+    read: [{ kind: "hostDirectory", segments: ["certs"], why: "Read the trust anchor" }],
+    write: [{ kind: "userChosenDirectory", configKey: "workspace", why: "Store project data" }],
+  },
+  configSchema: { properties: { workspace: { type: "string" } } },
+};
 const SECRET_TEXT = "the-host-secret-the-child-must-not-read";
 /** The bytes the host-owned trust-anchor file holds, so "the child read it" is checkable. */
 const CA_TEXT = "-----BEGIN CERTIFICATE-----\nthe-corporate-trust-anchor\n";
@@ -516,8 +537,7 @@ interface ProbeReport {
 
 /**
  * The envelope an UNWIDENED plugin gets: its own two directories and nothing
- * else, as `derivePluginChildEnvelope` produces for a plugin with no row in
- * `PLUGIN_ENVELOPE_GRANTS`.
+ * else, as `derivePluginChildEnvelope` produces without declared grants.
  */
 /**
  * The socket directory every confined child gets, in the BASE envelope.
@@ -586,7 +606,7 @@ async function runProbe(
  * Spawned through the same production spawn, and through the same production
  * derivation, with a different `pluginRoot` and `pluginDataDir` — so the only
  * thing the two children share is what ASRT gives every wrap. The second
- * plugin's id carries no row in `PLUGIN_ENVELOPE_GRANTS`, so its envelope is
+ * plugin has no declared filesystem grants, so its envelope is
  * its own two directories and the difference between the two children is
  * exactly those directories. That is the whole question: the routing SOT's
  * write jail is per-plugin, but the default write paths ASRT merges are not, so
@@ -767,7 +787,62 @@ afterEach(async () => {
  * "the user authorised this directory" rather than a copy of it.
  */
 describe("the host decides how far a plugin child reaches", () => {
-  /** `PLUGIN_ID` has no row in the table, so it gets the unwidened envelope. */
+  it("keeps empty and undeclared sandbox authority at the base envelope", () => {
+    const fx = fixture!;
+    const envelope = derivePluginChildEnvelope({
+      pluginId: WIDENED_PLUGIN_ID,
+      sandbox: {},
+      pluginRoot: fx.pluginRoot,
+      pluginDataDir: fx.pluginDataDir,
+      configValue: () => fx.userRoot,
+    });
+    expect(envelope.read).toEqual(baseEnvelope(fx).read);
+    expect(envelope.write).toEqual(baseEnvelope(fx).write);
+    const undeclared = derivePluginChildEnvelope({
+      pluginId: WIDENED_PLUGIN_ID,
+      pluginRoot: fx.pluginRoot,
+      pluginDataDir: fx.pluginDataDir,
+      configValue: () => fx.userRoot,
+    });
+    expect(undeclared).toEqual(baseEnvelope(fx));
+  });
+
+  it("derives a new candidate from its declared authority and live approved root", () => {
+    const fx = fixture!;
+    const envelope = derivePluginChildEnvelope({
+      pluginId: CANDIDATE_MANIFEST.id,
+      sandbox: CANDIDATE_MANIFEST.sandbox,
+      pluginRoot: fx.pluginRoot,
+      pluginDataDir: fx.pluginDataDir,
+      configValue: (key) => key === "workspace" ? fx.userRoot : undefined,
+    });
+    expect(envelope.read).toEqual([...baseEnvelope(fx).read, join(fx.aveHome, "certs"), fx.userRoot]);
+    expect(envelope.write).toEqual([...baseEnvelope(fx).write, fx.userRoot]);
+    const rejected = () => derivePluginChildEnvelope({
+      pluginId: CANDIDATE_MANIFEST.id,
+      sandbox: CANDIDATE_MANIFEST.sandbox,
+      pluginRoot: fx.pluginRoot,
+      pluginDataDir: fx.pluginDataDir,
+      configValue: (key) => key === "workspace" ? fx.userRootSibling : undefined,
+    });
+    expect(rejected).toThrow(PluginSandboxGrantError);
+    expect(rejected).toThrow(/no workspace root the user approved covers it/);
+  });
+
+  it("keeps a declared read-only chosen directory out of the write jail", () => {
+    const fx = fixture!;
+    const envelope = derivePluginChildEnvelope({
+      pluginId: CANDIDATE_MANIFEST.id,
+      sandbox: { read: [{ kind: "userChosenDirectory", configKey: "workspace", why: "Read project data" }] },
+      pluginRoot: fx.pluginRoot,
+      pluginDataDir: fx.pluginDataDir,
+      configValue: (key) => key === "workspace" ? fx.userRoot : undefined,
+    });
+    expect(envelope.read).toContain(fx.userRoot);
+    expect(envelope.write).not.toContain(fx.userRoot);
+  });
+
+  /** `PLUGIN_ID` declares no filesystem grants, so it gets the base envelope. */
   it("gives a plugin with no host decision exactly its own two directories", () => {
     const fx = fixture!;
     expect(
@@ -783,10 +858,11 @@ describe("the host decides how far a plugin child reaches", () => {
     });
   });
 
-  it("adds the host-owned directories its row names, to READ only", () => {
+  it("adds declared host directories to READ only", () => {
     const fx = fixture!;
     const envelope = derivePluginChildEnvelope({
       pluginId: WIDENED_PLUGIN_ID,
+      sandbox: WIDENED_SANDBOX,
       pluginRoot: fx.pluginRoot,
       pluginDataDir: fx.pluginDataDir,
       configValue: () => undefined,
@@ -799,10 +875,8 @@ describe("the host decides how far a plugin child reaches", () => {
       join(fx.aveHome, "runtime"),
       join(fx.aveHome, "certs"),
     ]);
-    // The row itself contributes to READ only. That is all this case shows —
-    // its config keys are unset, so it cannot also show that no OTHER grant
-    // puts the same directory into `write`. The case that does is `refuses a
-    // chosen directory naming a host root the row grants READ`.
+    // Host directories contribute to READ only. Its config key is unset here;
+    // the case below also checks that another grant cannot turn it writable.
     expect(envelope.write).toEqual([fx.pluginDataDir, socketDirOf(fx)]);
   });
 
@@ -810,6 +884,7 @@ describe("the host decides how far a plugin child reaches", () => {
     const fx = fixture!;
     const envelope = derivePluginChildEnvelope({
       pluginId: WIDENED_PLUGIN_ID,
+      sandbox: WIDENED_SANDBOX,
       pluginRoot: fx.pluginRoot,
       pluginDataDir: fx.pluginDataDir,
       configValue: (key) => (key === "indexStorageRoot" ? fx.userRoot : undefined),
@@ -826,6 +901,7 @@ describe("the host decides how far a plugin child reaches", () => {
     expect(() =>
       derivePluginChildEnvelope({
         pluginId: WIDENED_PLUGIN_ID,
+        sandbox: WIDENED_SANDBOX,
         pluginRoot: fx.pluginRoot,
         pluginDataDir: fx.pluginDataDir,
         configValue: (key) => (key === "indexStorageRoot" ? fx.userRootSibling : undefined),
@@ -838,9 +914,10 @@ describe("the host decides how far a plugin child reaches", () => {
     expect(() =>
       derivePluginChildEnvelope({
         pluginId: WIDENED_PLUGIN_ID,
+        sandbox: WIDENED_SANDBOX,
         pluginRoot: fx.pluginRoot,
         pluginDataDir: fx.pluginDataDir,
-        configValue: (key) => (key === "workspace" ? "/" : undefined),
+        configValue: (key) => (key === "indexStorageRoot" ? "/" : undefined),
       }),
     ).toThrow(/no workspace root the user approved covers it/);
   });
@@ -855,6 +932,7 @@ describe("the host decides how far a plugin child reaches", () => {
     expect(() =>
       derivePluginChildEnvelope({
         pluginId: WIDENED_PLUGIN_ID,
+        sandbox: WIDENED_SANDBOX,
         pluginRoot: fx.pluginRoot,
         pluginDataDir: fx.pluginDataDir,
         configValue: (key) =>
@@ -870,6 +948,7 @@ describe("the host decides how far a plugin child reaches", () => {
     const inside = join(fx.pluginDataDir, "index");
     const envelope = derivePluginChildEnvelope({
       pluginId: WIDENED_PLUGIN_ID,
+      sandbox: WIDENED_SANDBOX,
       pluginRoot: fx.pluginRoot,
       pluginDataDir: fx.pluginDataDir,
       configValue: (key) => (key === "indexStorageRoot" ? inside : undefined),
@@ -891,9 +970,10 @@ describe("the host decides how far a plugin child reaches", () => {
     expect(() =>
       derivePluginChildEnvelope({
         pluginId: WIDENED_PLUGIN_ID,
+        sandbox: WIDENED_SANDBOX,
         pluginRoot: fx.pluginRoot,
         pluginDataDir: fx.pluginDataDir,
-        configValue: (key) => (key === "workspace" ? join(fx.pluginRoot, "dist") : undefined),
+        configValue: (key) => (key === "indexStorageRoot" ? join(fx.pluginRoot, "dist") : undefined),
       }),
     ).toThrow(/resolves inside the directory that holds every installed plugin's bundle/);
   });
@@ -912,18 +992,19 @@ describe("the host decides how far a plugin child reaches", () => {
     expect(() =>
       derivePluginChildEnvelope({
         pluginId: WIDENED_PLUGIN_ID,
+        sandbox: WIDENED_SANDBOX,
         pluginRoot: fx.pluginRoot,
         pluginDataDir: fx.pluginDataDir,
-        configValue: (key) => (key === "workspace" ? join(fx.pluginRoot, "dist") : undefined),
+        configValue: (key) => (key === "indexStorageRoot" ? join(fx.pluginRoot, "dist") : undefined),
       }),
     ).toThrow(/resolves inside the directory that holds every installed plugin's bundle/);
   });
 
-  it("refuses a chosen directory naming a host root the row grants READ", () => {
-    // THE HALF THE OWN-ROOT SUBTRACTION DOES NOT REACH. A `hostDirectory` row
+  it("refuses a chosen directory naming a declared read-only host root", () => {
+    // THE HALF THE OWN-ROOT SUBTRACTION DOES NOT REACH. A `hostDirectory` grant
     // resolves under `~/.ave` and carries READ; a `userChosenDirectory` value
     // carries WRITE. Both land in the SAME envelope, so a value naming the
-    // host root the row already granted turns the host's own READ decision
+    // host root the declaration already granted turns the host's own READ decision
     // into a write grant — and `~/.ave/runtime` is not on the deny floor, so
     // nothing earlier in the derivation refuses it. What is under it is the
     // interpreter this plugin's own worker is about to execute.
@@ -932,24 +1013,25 @@ describe("the host decides how far a plugin child reaches", () => {
     expect(() =>
       derivePluginChildEnvelope({
         pluginId: WIDENED_PLUGIN_ID,
+        sandbox: WIDENED_SANDBOX,
         pluginRoot: fx.pluginRoot,
         pluginDataDir: fx.pluginDataDir,
         configValue: (key) =>
-          key === "workspace" ? join(fx.hostRuntimeDir, "python-envs") : undefined,
+          key === "indexStorageRoot" ? join(fx.hostRuntimeDir, "python-envs") : undefined,
       }),
     ).toThrow(/resolves inside the host's own storage namespace/);
   });
 
-  it("refuses a host root the row granted even when it links out of the host's home", () => {
+  it("refuses a declared host root even when it links out of the host's home", () => {
     // WHAT THE `~/.ave` SUBTRACTION ALONE DOES NOT REACH, and the reason the
-    // grant rows are enumerated. A `hostDirectory` row is a LEXICAL join onto
+    // declared host directories are enumerated. A `hostDirectory` grant is a LEXICAL join onto
     // `aveHome()`; the value it is compared against is canonical. Point the
     // granted directory at another volume — the ordinary operational reason
     // being that a multi-gigabyte interpreter tree does not belong on the boot
     // disk — and the two forms stop agreeing, so a home-shaped subtraction
-    // stops covering the row. Both spellings are asked because the plugin can
+    // stops covering the grant. Both spellings are asked because the plugin can
     // write either: the target's own path, and the link's, which is the one
-    // that is byte-identical to what the row itself joins.
+    // that is byte-identical to what the declaration itself joins.
     const fx = fixture!;
     const volume = join(fx.root, "volume");
     const movedRuntime = join(volume, "ave-runtime");
@@ -964,11 +1046,12 @@ describe("the host decides how far a plugin child reaches", () => {
       expect(() =>
         derivePluginChildEnvelope({
           pluginId: WIDENED_PLUGIN_ID,
+          sandbox: WIDENED_SANDBOX,
           pluginRoot: fx.pluginRoot,
           pluginDataDir: fx.pluginDataDir,
-          configValue: (key) => (key === "workspace" ? spelling : undefined),
+          configValue: (key) => (key === "indexStorageRoot" ? spelling : undefined),
         }),
-      ).toThrow(/the host's own table grants a plugin READ/);
+      ).toThrow(/host-owned catalog directory/);
     }
   });
 
@@ -990,9 +1073,10 @@ describe("the host decides how far a plugin child reaches", () => {
     expect(() =>
       derivePluginChildEnvelope({
         pluginId: WIDENED_PLUGIN_ID,
+        sandbox: WIDENED_SANDBOX,
         pluginRoot: linkedRoot,
         pluginDataDir: linkedDataDir,
-        configValue: (key) => (key === "workspace" ? join(elsewhere, "dist") : undefined),
+        configValue: (key) => (key === "indexStorageRoot" ? join(elsewhere, "dist") : undefined),
       }),
     ).toThrow(/resolves inside the plugin's own bundle root/);
   });
@@ -1010,9 +1094,10 @@ describe("the host decides how far a plugin child reaches", () => {
     expect(() =>
       derivePluginChildEnvelope({
         pluginId: WIDENED_PLUGIN_ID,
+        sandbox: WIDENED_SANDBOX,
         pluginRoot: fx.pluginRoot,
         pluginDataDir: fx.pluginDataDir,
-        configValue: (key) => (key === "workspace" ? fx.neighbourBundleDir : undefined),
+        configValue: (key) => (key === "indexStorageRoot" ? fx.neighbourBundleDir : undefined),
       }),
     ).toThrow(/resolves inside the directory that holds every installed plugin's bundle/);
   });
@@ -1027,6 +1112,7 @@ describe("the host decides how far a plugin child reaches", () => {
     const inside = join(fx.pluginDataDir, "index");
     const envelope = derivePluginChildEnvelope({
       pluginId: WIDENED_PLUGIN_ID,
+      sandbox: WIDENED_SANDBOX,
       pluginRoot: fx.pluginRoot,
       pluginDataDir: fx.pluginDataDir,
       configValue: (key) => (key === "indexStorageRoot" ? inside : undefined),
@@ -1043,6 +1129,7 @@ describe("the host decides how far a plugin child reaches", () => {
     const inside = join(fx.pluginDataDir, "index");
     const envelope = derivePluginChildEnvelope({
       pluginId: WIDENED_PLUGIN_ID,
+      sandbox: WIDENED_SANDBOX,
       pluginRoot: fx.pluginRoot,
       pluginDataDir: fx.pluginDataDir,
       configValue: (key) => (key === "indexStorageRoot" ? inside : undefined),
@@ -1062,6 +1149,7 @@ describe("the host decides how far a plugin child reaches", () => {
     expect(() =>
       derivePluginChildEnvelope({
         pluginId: WIDENED_PLUGIN_ID,
+        sandbox: WIDENED_SANDBOX,
         pluginRoot: fx.pluginRoot,
         pluginDataDir: fx.pluginDataDir,
         configValue: (key) => (key === "indexStorageRoot" ? link : undefined),
@@ -1081,6 +1169,7 @@ describe("the host decides how far a plugin child reaches", () => {
     symlinkSync(real, link);
     const envelope = derivePluginChildEnvelope({
       pluginId: WIDENED_PLUGIN_ID,
+      sandbox: WIDENED_SANDBOX,
       pluginRoot: fx.pluginRoot,
       pluginDataDir: fx.pluginDataDir,
       configValue: (key) => (key === "indexStorageRoot" ? link : undefined),
@@ -1093,6 +1182,7 @@ describe("the host decides how far a plugin child reaches", () => {
     expect(() =>
       derivePluginChildEnvelope({
         pluginId: WIDENED_PLUGIN_ID,
+        sandbox: WIDENED_SANDBOX,
         pluginRoot: fx.pluginRoot,
         pluginDataDir: fx.pluginDataDir,
         configValue: (key) => (key === "indexStorageRoot" ? "index" : undefined),
@@ -1105,6 +1195,7 @@ describe("the host decides how far a plugin child reaches", () => {
     expect(() =>
       derivePluginChildEnvelope({
         pluginId: WIDENED_PLUGIN_ID,
+        sandbox: WIDENED_SANDBOX,
         pluginRoot: fx.pluginRoot,
         pluginDataDir: fx.pluginDataDir,
         configValue: (key) => (key === "indexStorageRoot" ? 7 : undefined),
@@ -1118,6 +1209,7 @@ describe("the host decides how far a plugin child reaches", () => {
     const fx = fixture!;
     const envelope = derivePluginChildEnvelope({
       pluginId: WIDENED_PLUGIN_ID,
+      sandbox: WIDENED_SANDBOX,
       pluginRoot: fx.pluginRoot,
       pluginDataDir: fx.pluginDataDir,
       configValue: (key) => (key === "indexStorageRoot" ? "" : undefined),
@@ -1291,8 +1383,8 @@ describe("the confined child, against the real sandbox", () => {
       // box reached it, so the channel ran between this app's sandbox and
       // whatever else used the same runtime. It is now `~/.ave/sandbox/tmp`,
       // and ASRT's default write paths are on the deny floor — measured, with
-      // `~/.npm/_logs` present on the machine and refused `EPERM` rather than
-      // missing. What remains is narrower and still real: the root is one
+      // `~/.npm/_logs` present on the machine and refused by the OS rather
+      // than missing. What remains is narrower and still real: the root is one
       // directory for ALL of this app's confined children, so the two below
       // still meet in it.
       // Written against `tmpdir()` rather than a literal so it asks the same
@@ -1345,21 +1437,21 @@ describe("the confined child, against the real sandbox", () => {
       //
       // BOTH get an existence control, because a write to a missing directory
       // also fails — `ENOENT` — and a case that accepted any failure would go
-      // green on a machine that simply never made the directory. Only `EPERM`
-      // beside a directory that IS there says "refused". The two controls
-      // differ in kind: the temp root the host CREATES (see
-      // `ASRT_DEFAULT_TEMP_ROOT`), so the measurement is taken everywhere; the
-      // npm cache it cannot create without inventing state that is not the
-      // machine's, so that one is measured only where it is already present.
+      // green on a machine that simply never made the directory. `EPERM` on
+      // macOS or `EROFS` on Linux beside a directory that IS there says
+      // "refused". The host creates `ASRT_DEFAULT_TEMP_ROOT`, so that check
+      // always runs. The host does not create the npm cache, so that check runs
+      // only if it is already present.
       expect(existsSync(ASRT_DEFAULT_TEMP_ROOT)).toBe(true);
       expect(report.writeAsrtDefaultTemp.ok, JSON.stringify(report.writeAsrtDefaultTemp)).toBe(false);
-      expect(report.writeAsrtDefaultTemp.code).toBe("EPERM");
+      const deniedWriteCode = process.platform === "linux" ? "EROFS" : "EPERM";
+      expect(report.writeAsrtDefaultTemp.code).toBe(deniedWriteCode);
       if (report.asrtDefaultNpmLogsExists.value === "yes") {
         expect(
           report.writeAsrtDefaultNpmLogs.ok,
           JSON.stringify(report.writeAsrtDefaultNpmLogs),
         ).toBe(false);
-        expect(report.writeAsrtDefaultNpmLogs.code).toBe("EPERM");
+        expect(report.writeAsrtDefaultNpmLogs.code).toBe(deniedWriteCode);
       }
 
       // Nothing the host DID NOT widen this plugin with is reachable — the
@@ -1430,7 +1522,7 @@ describe("the confined child, against the real sandbox", () => {
 });
 
 /**
- * The widening, end to end: the host-owned table decides, the derivation
+ * The widening, end to end: the declared authority decides, the derivation
  * resolves, the wrap grants, and the kernel is asked.
  *
  * The point of running the WHOLE chain rather than handing the spawn a
@@ -1442,17 +1534,41 @@ describe("the confined child, against the real sandbox", () => {
  */
 describe("a child the host widened reaches exactly what the host widened it with", () => {
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
-    "opens the corporate CA and the user's chosen root, and nothing beside them",
+    "confines a new candidate to its declared trust anchor and approved directory",
+    async () => {
+      if (!(await sandboxCasesRun())) return;
+      const fx = fixture!;
+      const envelope = derivePluginChildEnvelope({
+        pluginId: CANDIDATE_MANIFEST.id,
+        sandbox: CANDIDATE_MANIFEST.sandbox,
+        pluginRoot: fx.pluginRoot,
+        pluginDataDir: fx.pluginDataDir,
+        configValue: (key) => key === "workspace" ? fx.userRoot : undefined,
+      });
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+      const report = await runProbe(fx, envelope);
+      expect(report.readCa).toMatchObject({ ok: true, value: CA_TEXT });
+      expect(report.writeUserRoot.ok).toBe(true);
+      expect(report.writeCa.ok).toBe(false);
+      expect(report.writeUserRootSibling.ok).toBe(false);
+      expect(report.readSecret.ok).toBe(false);
+      expect(report.writeOutside.ok).toBe(false);
+    },
+    60_000,
+  );
+
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "keeps a declared indexer's grants without opening adjacent paths",
     async () => {
       if (!(await sandboxCasesRun())) return;
       const fx = fixture!;
       const envelope = derivePluginChildEnvelope({
         pluginId: WIDENED_PLUGIN_ID,
+        sandbox: WIDENED_SANDBOX,
         pluginRoot: fx.pluginRoot,
         pluginDataDir: fx.pluginDataDir,
-        // `indexStorageRoot` is one of the two config keys the table names for
-        // this plugin; the value is admitted because the fixture's settings
-        // file lists it as a user-approved workspace root.
+        // The value is admitted because the fixture's settings file lists it
+        // as a user-approved workspace root.
         configValue: (key) =>
           key === "indexStorageRoot"
             ? fx.userRoot
@@ -1472,9 +1588,9 @@ describe("a child the host widened reaches exactly what the host widened it with
 
       // …and nothing beside them. The CA stays UNWRITABLE, and the honest
       // attribution is that the write-deny floor takes precedence over
-      // `allowWrite` — so this holds even for a row that mistakenly asked for
+      // `allowWrite` — so this holds even for a grant that mistakenly asked for
       // write, which is why it is asserted here rather than assumed. That a
-      // `hostDirectory` row grants READ ONLY is a property of the derivation
+      // `hostDirectory` grant is read-only is a property of the derivation
       // and is proven above, against the envelope it returns.
       expect(report.writeCa.ok, JSON.stringify(report.writeCa)).toBe(false);
       // The sibling shares the user root's name as a string prefix and is not
@@ -1554,6 +1670,7 @@ export const createPlugin = async (context) => ({
           name: "Vega Helper",
           version: "0.10.14",
           entry: "plugin.mjs",
+          requires: { hostProtocol: "2" },
           description: "the pilot, confined",
           tools: [
             {
@@ -1613,6 +1730,9 @@ export const createPlugin = async (context) => ({
  */
 describe("the host protocol, spoken by a real confined child", () => {
   const MEETING_GOLDEN = fileURLToPath(
+    new URL("./fixtures/host-protocol/2/plugins/meeting/", import.meta.url),
+  );
+  const MEETING_CODE = fileURLToPath(
     new URL("./fixtures/host-protocol/1/plugins/meeting/", import.meta.url),
   );
 
@@ -1665,6 +1785,7 @@ describe("the host protocol, spoken by a real confined child", () => {
         name: pluginId,
         version: "1.0.0",
         entry: "entry.mjs",
+        requires: { hostProtocol: "2" },
         description: "a child the protocol's process rules are measured on",
         tools: [{ name: "speak", description: "speak", inputSchema: { type: "object", properties: {} } }],
       },
@@ -1682,7 +1803,7 @@ describe("the host protocol, spoken by a real confined child", () => {
       // Copied into the plugin's own root, which is where an installed entry
       // lives and what the child's read grant covers.
       const entryPath = join(plugin.pluginRoot, "entry.mjs");
-      copyFileSync(join(MEETING_GOLDEN, "entry.mjs"), entryPath);
+      copyFileSync(join(MEETING_CODE, "entry.mjs"), entryPath);
       const manifest = flattenAgentPluginsManifest(
         JSON.parse(readFileSync(join(MEETING_GOLDEN, "plugin.json"), "utf-8")),
       );
@@ -1868,13 +1989,12 @@ export const createPlugin = async (context) => {
         denied: await api.getSecret("denied"),
         directRead: await attempt(() => readFileSync(${JSON.stringify(fx.secretFile)}, "utf-8")),
       }),
-      // A lease: two closures in the return value, neither of which crosses.
+      // A lease: only the opaque handle crosses into the child.
       probe_lease: async () => {
         const lease = await api.resolveApiKey({ purpose: "llm" });
-        const spent = lease.bearer();
-        lease.release();
-        const afterRelease = await attempt(() => lease.bearer());
-        return { ok: lease.ok, vendor: lease.vendor, spent, afterRelease };
+        const response = await api.hostFetch("https://example.invalid/lease", { auth: { lease: lease.leaseId } });
+        await lease.release();
+        return { ok: lease.ok, vendor: lease.vendor, exposure: lease.exposure, leaseId: lease.leaseId, status: response.status };
       },
       // A Response with a streaming body and bytes no text codec survives.
       probe_fetch: async () => {
@@ -1903,6 +2023,19 @@ export const createPlugin = async (context) => {
           fields: Object.keys(worker).sort(),
         };
       },
+      probe_worker_chosen: async () => {
+        const worker = await api.spawnWorker({
+          workerId: "chosen",
+          command: "/usr/bin/true",
+          allowWritePaths: [api.config.get("workspace")],
+        });
+        return { pid: worker.pid };
+      },
+      probe_worker_sibling: async () => await attempt(() => api.spawnWorker({
+        workerId: "sibling",
+        command: "/usr/bin/true",
+        allowWritePaths: [${JSON.stringify(fx.userRootSibling)}],
+      })),
       probe_config: async () => api.config.get("watched") ?? null,
     },
   };
@@ -1922,7 +2055,7 @@ export const createPlugin = async (context) => {
         onStderr: () => undefined,
         onExit: () => undefined,
       }));
-      const configValues = new Map<string, unknown>([["watched", "before"]]);
+      const configValues = new Map<string, unknown>([["watched", "before"], ["workspace", fx.userRoot]]);
       const configListeners = new Set<(value: unknown) => void>();
       const hostApi = {
         // The four-tier gate, standing in for its verdict: one key granted, one
@@ -1931,7 +2064,9 @@ export const createPlugin = async (context) => {
         resolveApiKey: async () => ({
           ok: true as const,
           vendor: "openai" as const,
-          bearer: () => "sk-lease-credential",
+          exposure: "lease" as const,
+          leaseId: "lease_confined_probe",
+          onClosed: () => () => undefined,
           release,
         }),
         hostFetch: async () =>
@@ -1958,14 +2093,18 @@ export const createPlugin = async (context) => {
           name: "Vega Helper",
           version: "0.10.14",
           entry: "plugin.mjs",
+          requires: { hostProtocol: "2" },
           description: "the lossy members, confined",
-          configSchema: { type: "object", properties: { watched: { type: "string" } } },
+          configSchema: { type: "object", properties: { watched: { type: "string" }, workspace: { type: "string" } } },
+          sandbox: CANDIDATE_MANIFEST.sandbox,
           tools: [
             "probe_credentials",
             "probe_lease",
             "probe_fetch",
             "probe_worker_escape",
             "probe_worker_allowed",
+            "probe_worker_chosen",
+            "probe_worker_sibling",
             "probe_config",
           ].map((name) => ({
             name,
@@ -1984,7 +2123,7 @@ export const createPlugin = async (context) => {
         pluginDataDir: fx.pluginDataDir,
         userHome: homedir(),
         aveHome: aveHome(),
-        config: { watched: "before" },
+        config: { watched: "before", workspace: fx.userRoot },
         log: () => undefined,
         hostApi,
       } as PluginRuntimeContext);
@@ -2010,14 +2149,12 @@ export const createPlugin = async (context) => {
         const lease = (await instance.handlers.probe_lease!()) as {
           ok: boolean;
           vendor: string;
-          spent: string;
-          afterRelease: { ok: boolean; message: string };
+          exposure: string;
+          leaseId: string;
+          status: number;
         };
-        expect(lease).toMatchObject({ ok: true, vendor: "openai", spent: "sk-lease-credential" });
-        // `release()` is a real release on BOTH sides: the child's copy is gone
-        // and the host's lease was told.
-        expect(lease.afterRelease.ok).toBe(false);
-        expect(lease.afterRelease.message).toMatch(/lease already released/);
+        expect(lease).toMatchObject({ ok: true, vendor: "openai", exposure: "lease", leaseId: "lease_confined_probe", status: 207 });
+        expect(JSON.stringify(lease)).not.toContain("sk-lease-credential");
         expect(release).toHaveBeenCalledTimes(1);
 
         // ── hostFetch ──────────────────────────────────────────────────────
@@ -2061,6 +2198,17 @@ export const createPlugin = async (context) => {
           "socketPath",
           "stop",
         ]);
+
+        const chosen = (await instance.handlers.probe_worker_chosen!()) as { pid: number };
+        expect(chosen.pid).toBe(31337);
+        expect(spawnWorker).toHaveBeenCalledTimes(2);
+        expect(spawnWorker).toHaveBeenLastCalledWith(expect.objectContaining({
+          allowWritePaths: [fx.userRoot],
+        }));
+        const sibling = (await instance.handlers.probe_worker_sibling!()) as { ok: boolean; message: string };
+        expect(sibling.ok).toBe(false);
+        expect(sibling.message).toMatch(/outside the plugin's own confinement/);
+        expect(spawnWorker).toHaveBeenCalledTimes(2);
 
         // ── config.get, re-pushed ──────────────────────────────────────────
         await expect(instance.handlers.probe_config!()).resolves.toBe("before");
@@ -2206,14 +2354,12 @@ export const createPlugin = async (context) => {
       // The transcription round: a lease, the Whisper egress, the summary.
       meeting_transcription_probe: async () => {
         const lease = await api.resolveApiKey({ purpose: "stt" });
-        const bearer = lease.bearer();
-        lease.release();
-        const afterRelease = await attempt(() => lease.bearer());
-        const response = await api.hostFetch("https://api.openai.com/v1/audio/transcriptions", { method: "POST" });
+        const response = await api.hostFetch("https://api.openai.com/v1/audio/transcriptions", { method: "POST", auth: { lease: lease.leaseId } });
+        await lease.release();
         return {
           vendor: lease.vendor,
-          bearer,
-          afterRelease,
+          exposure: lease.exposure,
+          leaseId: lease.leaseId,
           status: response.status,
           transcript: [...new Uint8Array(await response.arrayBuffer())],
           summary: await api.callLlm("summarise the meeting"),
@@ -2325,7 +2471,9 @@ export const createPlugin = async (context) => {
         resolveApiKey: async () => ({
           ok: true as const,
           vendor: "openai" as const,
-          bearer: () => "sk-stt-lease",
+          exposure: "lease" as const,
+          leaseId: "lease_transcription_probe",
+          onClosed: () => () => undefined,
           release,
         }),
         hostFetch: async () =>
@@ -2354,6 +2502,7 @@ export const createPlugin = async (context) => {
           name: "Ave Meeting",
           version: "0.5.42",
           entry: "plugin.mjs",
+          requires: { hostProtocol: "2" },
           description: "the recorder, confined",
           configSchema: {
             type: "object",
@@ -2423,16 +2572,15 @@ export const createPlugin = async (context) => {
         // ── resolveApiKey / hostFetch / callLlm ────────────────────────────
         const transcription = (await instance.handlers.meeting_transcription_probe!()) as {
           vendor: string;
-          bearer: string;
-          afterRelease: { ok: boolean; message: string };
+          exposure: string;
+          leaseId: string;
           status: number;
           transcript: number[];
           summary: string;
         };
         expect(transcription.vendor).toBe("openai");
-        expect(transcription.bearer).toBe("sk-stt-lease");
-        expect(transcription.afterRelease.ok).toBe(false);
-        expect(transcription.afterRelease.message).toMatch(/lease already released/);
+        expect(transcription.exposure).toBe("lease");
+        expect(transcription.leaseId).toBe("lease_transcription_probe");
         expect(release).toHaveBeenCalledTimes(1);
         expect(transcription.status).toBe(200);
         // A NUL, a lone continuation byte and a 0xFF: audio bytes no text codec
@@ -2986,6 +3134,7 @@ export default async function createPlugin(context) {
           name: "Ave Local Indexer",
           version: "0.5.40",
           entry: "plugin.mjs",
+          requires: { hostProtocol: "2" },
           description: "the indexer's host-supplied answers",
           tools: ["indexer_home_probe", "indexer_drive_probe"].map((name) => ({
             name,

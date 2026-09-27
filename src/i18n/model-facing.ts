@@ -10,7 +10,12 @@
  * model from outside this set.
  */
 const MODEL_FACING_PREFIXES = ["be_", "shellExecution."] as const;
-const MODEL_FACING_KEYS: ReadonlySet<string> = new Set(["routinePanel.naturalRoutinePrompt"]);
+const MODEL_FACING_KEYS: ReadonlySet<string> = new Set([
+  "routinePanel.naturalRoutinePrompt",
+  "pluginPromptOrigin.notDirectInput",
+  "pluginPromptOrigin.packageAuthored",
+  "pluginPromptOrigin.confirmBeforeAction",
+]);
 
 export function isModelFacingKey(key: string): boolean {
   return MODEL_FACING_KEYS.has(key) || MODEL_FACING_PREFIXES.some((prefix) => key.startsWith(prefix));

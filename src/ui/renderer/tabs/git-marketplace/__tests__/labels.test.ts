@@ -7,9 +7,9 @@ describe("package kind display vocabulary", () => {
     const codePackage = { kind: "plugin" } as const;
     const bundlePackage = { kind: "agent-plugin" } as const;
 
-    expect(kindLabel((key) => translate("en", key), codePackage.kind, "en")).toBe("Extensions");
-    expect(kindLabel((key) => translate("ko", key), codePackage.kind, "ko")).toBe("익스텐션");
-    expect(kindLabel((key) => translate("en", key), bundlePackage.kind, "en")).toBe("Plugin");
-    expect(kindLabel((key) => translate("ko", key), bundlePackage.kind, "ko")).toBe("플러그인");
+    expect(kindLabel((key) => translate("en", key), codePackage.kind)).toBe("Extensions");
+    expect(kindLabel((key) => translate("ko", key), codePackage.kind)).toBe("익스텐션");
+    expect(kindLabel((key) => translate("en", key), bundlePackage.kind)).toBe("Plugins");
+    expect(kindLabel((key) => translate("ko", key), bundlePackage.kind)).toBe("플러그인");
   });
 });

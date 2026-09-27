@@ -9,15 +9,16 @@ import "../../../../../test/renderer/setup.js";
  * rendered its raw kebab-case string at the user, in every locale.
  */
 import { describe, expect, it } from "vitest";
-import { generatedEn } from "../../../../i18n/messages/generated/index.js";
+import { loadLocaleMessages, messages } from "../../../../i18n/messages/index.js";
 import { STAGED_ORIGIN_KINDS } from "../../../../shared/staged-origins.js";
 import { isNonUserTrustOrigin, trustOriginLabel } from "../trust-origin-label.js";
 
 describe("trustOriginLabel", () => {
-  it("labels every registered staged origin through the table", () => {
-    const catalog = generatedEn as Record<string, string>;
+  it("labels every registered staged origin through the table in both compiled locales", async () => {
+    const korean = await loadLocaleMessages("ko");
     for (const kind of STAGED_ORIGIN_KINDS) {
-      expect(catalog[kind.labelKey], `missing i18n key ${kind.labelKey}`).toBeTypeOf("string");
+      expect(messages.en[kind.labelKey], `missing English i18n key ${kind.labelKey}`).toBeTypeOf("string");
+      expect(korean[kind.labelKey], `missing Korean i18n key ${kind.labelKey}`).toBeTypeOf("string");
       const label = trustOriginLabel(kind.inputOrigin);
       expect(label.length).toBeGreaterThan(0);
       // The failure this guards: the raw origin string reaching the UI.

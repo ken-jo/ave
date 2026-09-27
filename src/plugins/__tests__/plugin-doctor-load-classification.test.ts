@@ -14,7 +14,7 @@
  *     reason (design §10.4); other plugins still load.
  */
 import { afterEach, describe, expect, it } from "vitest";
-import { rm } from "node:fs/promises";
+import { rm, writeFile } from "node:fs/promises";
 import {
   makeTestPluginEntrySource,
   makeTestPluginRuntime,
@@ -24,6 +24,18 @@ import {
   type TestPluginRuntimeFixture,
 } from "./test-helpers.js";
 import { revocationRegistry } from "../revocation/revocation-registry.js";
+import { isReinstallFixableFailureKind } from "../../shared/plugin-install-failure.js";
+
+async function writeProcessEntry(fixture: TestPluginRuntimeFixture): Promise<string> {
+  const { manifestPath } = await writeTestPlugin(fixture, { id: "process-kit", tools: [] });
+  await writeFile(manifestPath, JSON.stringify({
+    $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+    name: "process-kit", version: "1.0.0", description: "Process extension",
+    extensions: { "ai.agent-connector.ave": { process: { command: "node" }, tools: [] } },
+  }), "utf8");
+  await writeTestPluginRegistry(fixture, [{ id: "process-kit", manifestPath, enabled: true }]);
+  return manifestPath;
+}
 
 describe("PluginRuntime Doctor load-failure classification", () => {
   let fixture: TestPluginRuntimeFixture;
@@ -31,6 +43,25 @@ describe("PluginRuntime Doctor load-failure classification", () => {
   afterEach(async () => {
     revocationRegistry.resetForTesting();
     if (fixture) await rm(fixture.rootDir, { recursive: true, force: true });
+  });
+
+  it("keeps a process extension failed at boot with a stable Doctor diagnosis", async () => {
+    fixture = await makeTestPluginRuntimeFixture();
+    await writeProcessEntry(fixture);
+    const runtime = makeTestPluginRuntime(fixture);
+    await runtime.startAll();
+    const card = runtime.listPluginCards().find((candidate) => candidate.id === "process-kit");
+    expect(card).toMatchObject({ loadStatus: "failed", installFailureKind: "process-entry-unsupported" });
+    expect(card?.installFailureMessage).toContain("cannot run process-entry extensions yet");
+    expect(isReinstallFixableFailureKind(card?.installFailureKind)).toBe(false);
+  });
+
+  it("refuses an added process extension before it starts", async () => {
+    fixture = await makeTestPluginRuntimeFixture();
+    await writeProcessEntry(fixture);
+    const runtime = makeTestPluginRuntime(fixture);
+    await expect(runtime.addPlugin("process-kit")).rejects.toMatchObject({ code: "process-entry-unsupported" });
+    expect(runtime.listPluginIds()).not.toContain("process-kit");
   });
 
   it("classifies a schema-invalid (pre-v6) on-disk manifest as reinstall-fixable", async () => {
@@ -113,7 +144,7 @@ describe("PluginRuntime Doctor load-failure classification", () => {
     expect(card?.installFailureKind).toBe("incompatible-app-version");
   });
 
-  it("refuses a host protocol version this app does not serve, before the plugin's code runs", async () => {
+  it("refuses old and undeclared host protocols before plugin code runs", async () => {
     fixture = await makeTestPluginRuntimeFixture();
     const refused = await writeTestPlugin(fixture, {
       id: "p-protocol",
@@ -121,16 +152,23 @@ describe("PluginRuntime Doctor load-failure classification", () => {
       // Importing this entry throws, so a gate that ran after the import would
       // report a load crash instead of the refusal.
       entrySource: "throw new Error('the entry of a refused plugin was imported');\n",
-      manifest: { requires: { capabilities: [], hostProtocol: "2" } },
+      manifest: { requires: { capabilities: [], hostProtocol: "1" } },
+    });
+    const undeclared = await writeTestPlugin(fixture, {
+      id: "p-protocol-undeclared",
+      tools: ["p_protocol_undeclared_ping"],
+      entrySource: "throw new Error('the entry of an undeclared plugin was imported');\n",
+      manifest: { requires: { capabilities: [], hostProtocol: undefined } },
     });
     const served = await writeTestPlugin(fixture, {
       id: "p-protocol-served",
       tools: ["p_protocol_served_ping"],
       entrySource: makeTestPluginEntrySource({ p_protocol_served_ping: JSON.stringify("hi") }),
-      manifest: { requires: { capabilities: [], hostProtocol: "1" } },
+      manifest: { requires: { capabilities: [], hostProtocol: "2" } },
     });
     await writeTestPluginRegistry(fixture, [
       { id: "p-protocol", manifestPath: refused.manifestPath, enabled: true },
+      { id: "p-protocol-undeclared", manifestPath: undeclared.manifestPath, enabled: true },
       { id: "p-protocol-served", manifestPath: served.manifestPath, enabled: true },
     ]);
 
@@ -140,9 +178,31 @@ describe("PluginRuntime Doctor load-failure classification", () => {
     const card = runtime.listPluginCards().find((candidate) => candidate.id === "p-protocol");
     expect(card?.loadStatus).toBe("failed");
     expect(card?.installFailureKind).toBe("incompatible-host-protocol");
-    expect(card?.installFailureMessage).toMatch(/speaks host protocol 2; this app serves 1/);
+    expect(card?.installFailureMessage).toMatch(/speaks host protocol 1; this app serves 2/);
+    const missing = runtime.listPluginCards().find((candidate) => candidate.id === "p-protocol-undeclared");
+    expect(missing?.installFailureKind).toBe("incompatible-host-protocol");
+    expect(missing?.installFailureMessage).toMatch(/does not declare a host protocol; this app serves 2/);
     const kept = runtime.listPluginCards().find((candidate) => candidate.id === "p-protocol-served");
     expect(kept?.loadStatus).not.toBe("failed");
+  });
+
+  it("refuses an undeclared protocol on the targeted add path before activation", async () => {
+    fixture = await makeTestPluginRuntimeFixture();
+    await writeTestPluginRegistry(fixture, []);
+    const runtime = makeTestPluginRuntime(fixture);
+    await runtime.startAll();
+    const { manifestPath } = await writeTestPlugin(fixture, {
+      id: "p-late-protocol",
+      tools: ["p_late_protocol_ping"],
+      entrySource: "throw new Error('the targeted entry was imported');\n",
+      manifest: { requires: { hostProtocol: undefined } },
+    });
+    await writeTestPluginRegistry(fixture, [{ id: "p-late-protocol", manifestPath, enabled: true }]);
+
+    await expect(runtime.addPlugin("p-late-protocol")).rejects.toThrow(/does not declare a host protocol/);
+    const card = runtime.listPluginCards().find((candidate) => candidate.id === "p-late-protocol");
+    expect(card?.loadStatus).toBe("failed");
+    expect(card?.installFailureKind).toBe("incompatible-host-protocol");
   });
 
   it("refuses to load a version its bound source revoked, with the source's reason, and loads the rest", async () => {

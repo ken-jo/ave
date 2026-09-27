@@ -10,6 +10,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parsePluginJson } from "../manifest-validation.js";
+import { HOST_PROTOCOL_VERSIONS_SERVED } from "../../isolation/host-api-wire.js";
 import {
   permissiveManifestValidatorFactory,
   pluginManifestWriter,
@@ -108,17 +109,26 @@ describe("manifest requires.hostProtocol validator", () => {
   );
 
   it("accepts a positive integer written as a string", async () => {
-    const path = await writeManifest({ requires: { capabilities: [], hostProtocol: "1" } });
+    const version = HOST_PROTOCOL_VERSIONS_SERVED[0];
+    const path = await writeManifest({ requires: { capabilities: [], hostProtocol: version } });
     const parsed = await parsePluginJson(path, makeValidator());
-    expect(parsed.requires?.hostProtocol).toBe("1");
+    expect(parsed.requires?.hostProtocol).toBe(version);
   });
 
   it("accepts a version this app does not serve, which the load gate refuses instead", async () => {
     // The format is the manifest's business; whether this app serves it is the
     // runtime's, so a well-formed future version parses.
-    const path = await writeManifest({ requires: { capabilities: [], hostProtocol: "2" } });
+    const futureVersion = String(Math.max(...HOST_PROTOCOL_VERSIONS_SERVED.map(Number)) + 1);
+    const path = await writeManifest({ requires: { capabilities: [], hostProtocol: futureVersion } });
     const parsed = await parsePluginJson(path, makeValidator());
-    expect(parsed.requires?.hostProtocol).toBe("2");
+    expect(parsed.requires?.hostProtocol).toBe(futureVersion);
+  });
+
+  it("suggests a served protocol version when the value is malformed", async () => {
+    const path = await writeManifest({ requires: { capabilities: [], hostProtocol: "02" } });
+    await expect(parsePluginJson(path, makeValidator())).rejects.toThrow(
+      `Example: "requires": { "hostProtocol": "${HOST_PROTOCOL_VERSIONS_SERVED[0]}" }`,
+    );
   });
 
   for (const bad of ["0", "01", "1.0", "v1", "", "1\n"]) {

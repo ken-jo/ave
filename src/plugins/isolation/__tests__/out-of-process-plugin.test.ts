@@ -61,6 +61,7 @@ const MANIFEST: PluginManifest = {
   name: "Vega Helper",
   version: "0.10.14",
   entry: "dist/hostPlugin.js",
+  requires: { hostProtocol: "2" },
   description: "the pilot plugin, served out of process",
   tools: [
     { name: "pilot_echo", description: "echo a payload back", inputSchema: EMPTY_SCHEMA },
@@ -207,7 +208,11 @@ function fakeHostApi(): PluginHostApi & {
 }
 
 /** A child served over paired streams, with the host's end of the link. */
-function pairedChild(): { child: ConfinedPluginChild; kill: (reason: string) => void } {
+function pairedChild(): {
+  child: ConfinedPluginChild;
+  kill: (reason: string) => void;
+  sendAsChild: (frame: Record<string, unknown>) => void;
+} {
   const hostToChild = new PassThrough();
   const childToHost = new PassThrough();
   const service = servePluginChild(hostToChild, childToHost);
@@ -224,6 +229,7 @@ function pairedChild(): { child: ConfinedPluginChild; kill: (reason: string) => 
       service.hostGone();
       for (const handler of goneHandlers) handler(reason);
     },
+    sendAsChild: (frame) => { childToHost.write(`${JSON.stringify(frame)}\n`); },
   };
 }
 
@@ -274,6 +280,40 @@ describe("the dispatch table, assembled from the four group factories", () => {
 });
 
 describe("the pilot, out of process", () => {
+  it("records bounded dispatcher refusals through the runtime audit sink", async () => {
+    const { dir, entryPath } = writePluginModule();
+    const auditLog = vi.fn();
+    const paired = pairedChild();
+    try {
+      const factory = createOutOfProcessPluginFactory({
+        manifest: MANIFEST,
+        entryPath,
+        connect: async () => paired.child,
+        auditLog,
+      });
+      const instance = await factory(hostContext(fakeHostApi()));
+      for (let index = 0; index < 220; index += 1) {
+        paired.sendAsChild({
+          jsonrpc: "2.0", id: `flood-${index}`,
+          method: "ave/host/hasRoutineBySource", params: { source: "nightly" },
+        });
+      }
+      for (let turn = 0; turn < 10 && auditLog.mock.calls.length === 0; turn += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      expect(auditLog).toHaveBeenCalledWith("warn", "plugin_rate_limited", expect.objectContaining({
+        pluginId: PLUGIN_ID,
+        method: "hasRoutineBySource",
+        code: "rate-limited",
+        count: 1,
+        summary: false,
+      }));
+      await instance.stop?.();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("invokes a declared tool end to end and returns the plugin's own value", async () => {
     const { dir, entryPath } = writePluginModule();
     const hostApi = fakeHostApi();
@@ -804,16 +844,29 @@ const CONSTRUCTED = {
 } as const;
 
 describe("construct negotiates the host protocol", () => {
+  it("refuses an undeclared protocol before connecting a child", async () => {
+    const connect = vi.fn(async () => pairedChild().child);
+    const factory = createOutOfProcessPluginFactory({
+      manifest: { ...MANIFEST, requires: undefined },
+      entryPath: join(tmpdir(), "never-imported.mjs"),
+      connect,
+    });
+    await expect(factory(hostContext(fakeHostApi()))).rejects.toMatchObject({
+      detail: { declared: null },
+    });
+    expect(connect).not.toHaveBeenCalled();
+  });
+
   it("refuses a declared version this host does not serve, before anything is spawned", async () => {
     const connect = vi.fn(async () => pairedChild().child);
     const factory = createOutOfProcessPluginFactory({
-      manifest: { ...MANIFEST, requires: { hostProtocol: "2" } },
+      manifest: { ...MANIFEST, requires: { hostProtocol: "1" } },
       entryPath: join(tmpdir(), "never-imported.mjs"),
       connect,
     });
     const refused = factory(hostContext(fakeHostApi()));
     await expect(refused).rejects.toBeInstanceOf(IncompatibleHostProtocolError);
-    await expect(refused).rejects.toMatchObject({ detail: { declared: "2" } });
+    await expect(refused).rejects.toMatchObject({ detail: { declared: "1" } });
     expect(connect).not.toHaveBeenCalled();
   });
 
@@ -826,7 +879,7 @@ describe("construct negotiates the host protocol", () => {
     delete (hostApi as { hostFetch?: unknown }).hostFetch;
     try {
       const factory = createOutOfProcessPluginFactory({
-        manifest: { ...MANIFEST, requires: { hostProtocol: "1" } },
+        manifest: { ...MANIFEST, requires: { hostProtocol: "2" } },
         entryPath,
         connect: async () => child,
       });
@@ -835,7 +888,7 @@ describe("construct negotiates the host protocol", () => {
       const { hostProtocol } = construct?.params as {
         hostProtocol: { version: string; capabilities: string[] };
       };
-      expect(hostProtocol.version).toBe("1");
+      expect(hostProtocol.version).toBe("2");
       // Read off the table the dispatcher serves: advertised is answered, and
       // a member this build lacks is not advertised.
       expect(hostProtocol.capabilities).toContain("ave/host/callLlm");

@@ -62,12 +62,12 @@ export function entry(sourceId: string | null, kind: PackageKind, name: string, 
 }
 
 function catalog(entries: CatalogEntryView[], sourceCount: number): CatalogView {
-  const counts = { plugin: 0, mcp: 0, skill: 0, agent: 0, theme: 0, font: 0, language: 0, provider: 0, "messaging-connection": 0 } satisfies Record<PackageKind, number>;
+  const counts = { "agent-plugin": 0, plugin: 0, mcp: 0, skill: 0, agent: 0, theme: 0, font: 0, language: 0, provider: 0, "messaging-connection": 0 } satisfies Record<PackageKind, number>;
   for (const item of entries) counts[item.key.kind] += 1;
   return { entries, counts, sourceCount, syncedAt: "2026-09-24T00:00:00.000Z" };
 }
 
-function detail(item: CatalogEntryView, overrides: Partial<PackageDetailView> = {}): PackageDetailView {
+export function detail(item: CatalogEntryView, overrides: Partial<PackageDetailView> = {}): PackageDetailView {
   return {
     entry: item,
     provenance: {
@@ -79,7 +79,8 @@ function detail(item: CatalogEntryView, overrides: Partial<PackageDetailView> = 
       publishedAt: "2026-09-20T00:00:00.000Z",
     },
     compatibility: { minAppVersion: "1.0.0", appVersion: "2.0.0", compatible: true },
-    authority: { capabilities: [], networkHosts: ["api.example.com"], secrets: [], pluginAccess: [], dependencies: [] },
+    authority: { capabilities: [], networkHosts: ["api.example.com"], secrets: [], pluginAccess: [], dependencies: [], filesystem: [] },
+    components: null,
     rungs: [{ rung: "release", declared: true, pinned: true, detail: `${item.key.name}.zip` }],
     versions: [
       { version: "1.0.0", commit: COMMIT_A, publishedAt: "2026-09-20T00:00:00.000Z", minAppVersion: "1.0.0", excluded: [], yankedReason: null, rolloutPercent: null, installed: false, candidate: true },
@@ -100,7 +101,8 @@ export function installPlan(item: CatalogEntryView, overrides: Partial<InstallPl
     versionCommit: COMMIT_A,
     action: { action: "install" },
     runsCode: item.runsCode,
-    authority: { capabilities: [], networkHosts: ["api.example.com"], secrets: [], pluginAccess: [], dependencies: [] },
+    authority: { capabilities: [], networkHosts: ["api.example.com"], secrets: [], pluginAccess: [], dependencies: [], filesystem: [] },
+    components: null,
     rungs: [],
     mcp: null,
     ...overrides,

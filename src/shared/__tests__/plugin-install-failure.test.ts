@@ -52,6 +52,16 @@ describe("isReinstallFixableFailureKind", () => {
     expect(isReinstallFixableFailureKind("incompatible-host-protocol")).toBe(false);
   });
 
+  it("classifies an unsupported process entry as NOT reinstall-fixable", () => {
+    expect(isReinstallFixableFailureKind("process-entry-unsupported")).toBe(false);
+  });
+
+  it("classifies a sandbox grant outside the ceiling as NOT reinstall-fixable", () => {
+    // Doctor reinstalls the version on disk, which preserves its declared
+    // grants. A narrower plugin update or a changed approval is a separate action.
+    expect(isReinstallFixableFailureKind("sandbox-grant-outside-ceiling")).toBe(false);
+  });
+
   it("classifies a marketplace revocation block as NOT reinstall-fixable", () => {
     // A reinstall either re-fetches the same blocked version (the install
     // path enforces the same revocation registry) or is a genuine upgrade,
@@ -75,6 +85,8 @@ describe("isReinstallFixableFailureKind", () => {
     expect(notFixable).toEqual([
       "incompatible-app-version",
       "incompatible-host-protocol",
+      "process-entry-unsupported",
+      "sandbox-grant-outside-ceiling",
       "plugin-revoked",
     ]);
   });

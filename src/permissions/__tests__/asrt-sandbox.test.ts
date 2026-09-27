@@ -31,6 +31,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFi
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { shellQuote } from "../../lib/shell-resolver.js";
+import { gitFixtureEnv } from "../../__tests__/support/git-fixture-env.mjs";
 
 vi.mock("node:os", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:os")>();
@@ -237,11 +238,7 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
       // This fixture owns both parts inside the admitted root, so it tests the
       // disposable home without depending on the enclosing checkout layout.
       const cwd = mkdtempSync(join(tmpdir(), "asrt-git-"));
-      const gitEnv = Object.fromEntries(
-        Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")),
-      );
-      gitEnv.GIT_CONFIG_NOSYSTEM = "1";
-      gitEnv.GIT_CONFIG_GLOBAL = "/dev/null";
+      const gitEnv = gitFixtureEnv(cwd);
       try {
         execFileSync("git", ["init", "--quiet"], { cwd, env: gitEnv });
         execFileSync("git", [

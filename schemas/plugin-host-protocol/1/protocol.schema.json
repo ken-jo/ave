@@ -61,6 +61,32 @@
           "type": "integer"
         },
         "data": {
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "code": {
+                    "const": "rate-limited"
+                  }
+                },
+                "required": [
+                  "code"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "retryAfterMs": {
+                    "maximum": 5000,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "retryAfterMs"
+                ]
+              }
+            }
+          ],
           "properties": {
             "code": {
               "enum": [
@@ -73,6 +99,7 @@
                 "result-marshalling-rejected",
                 "payload-too-large",
                 "subscription-unknown",
+                "rate-limited",
                 "effect-boundary-denied",
                 "manifest-integrity-violation",
                 "detached-operation",
@@ -86,6 +113,11 @@
             },
             "name": {
               "type": "string"
+            },
+            "retryAfterMs": {
+              "maximum": 5000,
+              "minimum": 0,
+              "type": "integer"
             }
           },
           "required": [
@@ -116,6 +148,7 @@
         "result-marshalling-rejected",
         "payload-too-large",
         "subscription-unknown",
+        "rate-limited",
         "effect-boundary-denied",
         "manifest-integrity-violation",
         "detached-operation",
@@ -128,12 +161,38 @@
       "ave/host/agentApproval/request": {
         "description": "Request an approval via the §8 ApprovalGate on behalf of this plugin.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -145,6 +204,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -158,6 +218,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -220,12 +285,38 @@
       "ave/host/agentApproval/respond": {
         "description": "Resolve a pending ApprovalGate entry from the main process.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises none of its own.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises none of its own.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -237,6 +328,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -250,6 +342,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -304,12 +401,38 @@
       "ave/host/attachFloatingPanel": {
         "description": "Attach one of this plugin's declared `floating` surfaces to the host's floating dock — the single always-on-top window the host owns.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -321,6 +444,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -334,6 +458,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -399,12 +528,38 @@
       "ave/host/authRedirect/close": {
         "description": "Release the listener. Idempotent.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -416,6 +571,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -429,6 +585,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -474,12 +635,38 @@
       "ave/host/authRedirect/open": {
         "description": "Bind the listener. Rejects when this plugin already has one open.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -491,6 +678,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -504,6 +692,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -546,12 +739,38 @@
       "ave/host/authRedirect/wait": {
         "description": "Resolve with the redirect's query parameters, or reject on timeout or close. Resolves immediately when the redirect has already arrived.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises none of its own.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises none of its own.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -563,6 +782,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -576,6 +796,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -627,12 +852,38 @@
       "ave/host/callLlm": {
         "description": "호스트 LLM 프로바이더를 통한 텍스트 생성. 플러그인이 직접 LLM 키를 관리하지 않고도 인텔리전트 기능 구현 가능. LLM이 준비되지 않은 경우 에러를 던진다.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -644,6 +895,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -657,6 +909,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -697,12 +954,38 @@
       "ave/host/clearAuthPartition": {
         "description": "Wipe all credential state (cookies, storage, cache, HTTP-auth, NTLM/ Kerberos credentials) from a `persist:plugin-auth:<pluginId>[:<sub>]` partition. Use after a user-triggered sign-out so subsequent `openAuthWindow` calls against the same partition cannot silently SSO via residual IdP cookies — without this, plugin \"sign out\" only clears the plugin's in-memory + on-disk shadow state while the host Chromium keeps the federated session alive.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -714,6 +997,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -727,6 +1011,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -764,12 +1053,38 @@
       "ave/host/config/onChange": {
         "description": "Subscribe to changes for a single key. Returns an `unsubscribe()` disposer. The subscription is scoped to the caller's pluginId — a change in plugin A cannot fire plugin B's listener.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises none of its own.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises none of its own.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -781,6 +1096,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -794,6 +1110,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -869,12 +1190,38 @@
       "ave/host/config/set": {
         "description": "Persist a config key. Triggers a plugin reload so the new value is visible to the plugin on next handler invocation.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises none of its own.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises none of its own.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -886,6 +1233,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -899,6 +1247,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -939,12 +1292,38 @@
       },
       "ave/host/emitEvent": {
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises none of its own.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises none of its own.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -956,6 +1335,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -969,6 +1349,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -1007,12 +1392,38 @@
       "ave/host/getAuthPartitionCookies": {
         "description": "Read the session cookies the host holds for this plugin in its auth partition, scoped to the given request URLs. The counterpart to `networkAccess.authCookiePartition` for flows that `hostFetch` cannot cover — chiefly a browser/page-automation flow that must inject the session into a separate browser context.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises none of its own.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises none of its own.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -1024,6 +1435,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -1037,6 +1449,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -1107,12 +1524,38 @@
       "ave/host/getSecret": {
         "description": "Read an allow-listed secret.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises none of its own.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises none of its own.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -1124,6 +1567,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -1137,6 +1581,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -1177,12 +1626,38 @@
       "ave/host/hasRoutineBySource": {
         "description": "Idempotency SOT query for suggestion-derived routines. Resolves `true` iff a persisted routine carries an exactly-matching {@link RoutineRecord.source} marker.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises none of its own.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises none of its own.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -1194,6 +1669,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -1207,6 +1683,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -1244,12 +1725,38 @@
       "ave/host/hostFetch": {
         "description": "Host-mediated outbound HTTPS through Electron's `net` (Chromium network stack). Unlike a plugin's own Node `fetch`/undici, this honors the OS proxy resolution INCLUDING PAC/WPAD auto-config and the OS trust store on every platform — so a plugin whose Node libraries can't be configured for the corporate proxy/CA (e.g. MSAL) can still reach the network on a TLS-inspecting corporate network. Capability-gated (external-auth-consumer) + SSRF-validated + audited host-side.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -1261,6 +1768,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -1274,6 +1782,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -1314,12 +1827,38 @@
       "ave/host/listAudioInputDevices": {
         "description": "Microphones the user could pick. Labels are empty until microphone access has been granted at least once — the browser's rule, not this host's, and an empty label means \"not yet permitted\", never \"no device\".",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises none of its own.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises none of its own.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -1331,6 +1870,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -1344,6 +1884,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -1377,12 +1922,38 @@
       "ave/host/logEvent": {
         "description": "Structured log event routed through AuditLogger. Automatically tagged with `plugin:${pluginId}` context (sessionId = \"plugin\").",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises none of its own.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises none of its own.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -1394,6 +1965,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -1407,6 +1979,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -1454,12 +2031,38 @@
       "ave/host/onEvent": {
         "description": "Subscribes to a host event. Returns an `unsubscribe()` disposer so callers (and PluginRuntime.onDisable) can clean up handlers deterministically.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises none of its own.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises none of its own.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -1471,6 +2074,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -1484,6 +2088,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -1533,12 +2142,38 @@
       "ave/host/onPluginsChanged": {
         "description": "Subscribe to plugin install / uninstall events. Returns an `unsubscribe()` disposer (also cleared automatically on plugin disable).",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises none of its own.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises none of its own.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -1550,6 +2185,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -1563,6 +2199,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -1613,12 +2254,38 @@
       "ave/host/onShutdown": {
         "description": "Register a handler fired before app shutdown (Electron `before-quit`). Host enforces a 5s timeout on each handler; slow handlers are logged but do not block quit.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises none of its own.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises none of its own.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -1630,6 +2297,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -1643,6 +2311,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -1685,12 +2358,38 @@
       "ave/host/openAuthPartitionViewer": {
         "description": "Open a hardened viewer BrowserWindow that loads `url` inside the caller plugin's `persist:plugin-auth:<pluginId>` partition. The existing cookies in that partition (typically deposited by an earlier `openAuthWindow` IdP flow) make the load silent-SSO — no re-login.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -1702,6 +2401,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -1715,6 +2415,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -1763,12 +2468,38 @@
       "ave/host/openAuthWindow": {
         "description": "Electron BrowserWindow로 외부 포털 로그인 페이지를 띄우고, 사용자가 직접 로그인 완료한 시점(`completionUrlPatterns` 매칭)의 쿠키를 수집.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -1780,6 +2511,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -1793,6 +2525,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -1949,12 +2686,38 @@
       "ave/host/openExternalUrl": {
         "description": "§B3 — Open an arbitrary external URL routed through the host's webView preference policy (`settings.webView.preferredFlow`): - `\"in-app\"` → host opens a lightweight BrowserWindow (no cookieHosts / completionUrlPatterns enforcement; this is *not* `openAuthWindow`). - `\"system-browser\"` → host shells out to the OS default browser via Electron's `shell.openExternal`.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -1966,6 +2729,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -1979,6 +2743,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -2016,12 +2785,38 @@
       "ave/host/pickFolders": {
         "description": "Ask the user which folders the plugin should work on.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises none of its own.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises none of its own.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -2033,6 +2828,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -2046,6 +2842,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -2091,12 +2892,38 @@
       "ave/host/probePrivateHost": {
         "description": "Probe whether the OS resolver knows a host that only exists on a PRIVATE network (corporate intranet / VPN / lab subnet). Resolves `true` when `dns.lookup(host)` succeeds before the deadline, `false` on `ENOTFOUND` or timeout — on-corp DNS resolves the private host, off-corp DNS returns `ENOTFOUND`, and the async asymmetry is the signal.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises none of its own.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises none of its own.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -2108,6 +2935,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -2121,6 +2949,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -2166,12 +2999,38 @@
       "ave/host/proposeWork": {
         "description": "Post or refresh this plugin's recommended-work proposal for ONE declared kind. The host persists it beside the Work Board and draws it as a card at the top of that board; the card's start button runs the HOST's own plan → approve → execute sequence over a work item the host composes.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -2183,6 +3042,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -2196,6 +3056,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -2376,12 +3241,38 @@
       "ave/host/raiseAlert": {
         "description": "Raise one alert of a kind declared in this plugin's `alerts` block.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -2393,6 +3284,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -2406,6 +3298,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -2634,12 +3531,38 @@
       "ave/host/resizeFloatingPanel": {
         "description": "Change one of this plugin's dock slots to a new height.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -2651,6 +3574,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -2664,6 +3588,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -2705,12 +3634,38 @@
       "ave/host/resolveApiKey": {
         "description": "Host-managed LLM key resolver. Optional on older app releases; plugins guard with `typeof hostApi.resolveApiKey === \"function\"` unless their `requires.minAppVersion` guarantees a supporting release.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises none of its own.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises none of its own.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -2722,6 +3677,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -2735,6 +3691,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -2776,12 +3737,38 @@
       "ave/host/resolveMappedDriveRoot": {
         "description": "The UNC path behind a Windows mapped drive (`\"Z:\"` → `\"\\\\\\\\server\\\\share\"`), or `null` when the drive has no UNC backing.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises none of its own.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises none of its own.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -2793,6 +3780,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -2806,6 +3794,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -2846,12 +3839,38 @@
       "ave/host/spawnWorker": {
         "description": "Spawn a long-lived plugin worker, host-mediated and (when the OS-tool ASRT sandbox gate is ON) ASRT-wrapped. macOS/Linux workers use a bind-mounted Unix-domain-socket (UDS) control channel; Windows workers keep TCP control but run under srt-win with a worker-lifetime holder PID ACL grant.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -2863,6 +3882,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -2876,6 +3896,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -3030,12 +4055,38 @@
       "ave/host/startAudioCapture": {
         "description": "Begin capturing audio. The HOST owns the capture — the renderer, the worklet and the loopback wiring are first-party code — and the plugin receives PCM as data.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -3047,6 +4098,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -3060,6 +4112,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -3168,12 +4225,38 @@
       "ave/host/storage/exists": {
         "description": "Test whether the path exists.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises plugin-storage.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises plugin-storage.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -3185,6 +4268,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -3198,6 +4282,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -3235,12 +4324,38 @@
       "ave/host/storage/list": {
         "description": "List entries in `relPath` (directories included). Empty for missing dir.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises plugin-storage.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises plugin-storage.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -3252,6 +4367,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -3265,6 +4381,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -3302,12 +4423,38 @@
       "ave/host/storage/mkdir": {
         "description": "Ensure a directory exists (recursive mkdir).",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises plugin-storage, effect-boundary-denied.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises plugin-storage, effect-boundary-denied.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -3319,6 +4466,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -3332,6 +4480,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -3369,12 +4522,38 @@
       "ave/host/storage/read": {
         "description": "Read raw bytes; throws ENOENT if the file does not exist.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises plugin-storage.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises plugin-storage.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -3386,6 +4565,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -3399,6 +4579,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -3436,12 +4621,38 @@
       "ave/host/storage/readEncrypted": {
         "description": "Read the ciphertext previously written by {@link writeEncrypted} at `relPath` and return the decrypted UTF-8 plaintext. Throws ENOENT if the file does not exist (same contract as {@link readText}); throws {@link PluginStorageEncryptionUnavailableError} if host encryption is unavailable — it never returns raw ciphertext or a plaintext guess.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises plugin-storage, plugin-storage-encryption-unavailable.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises plugin-storage, plugin-storage-encryption-unavailable.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -3453,6 +4664,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -3466,6 +4678,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -3503,12 +4720,38 @@
       "ave/host/storage/readJson": {
         "description": "Read + parse JSON; returns `null` on missing file, throws on bad JSON.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises plugin-storage.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises plugin-storage.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -3520,6 +4763,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -3533,6 +4777,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -3577,12 +4826,38 @@
       "ave/host/storage/readText": {
         "description": "Read text; throws ENOENT if the file does not exist.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises plugin-storage.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises plugin-storage.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -3594,6 +4869,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -3607,6 +4883,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -3657,12 +4938,38 @@
       "ave/host/storage/rm": {
         "description": "Remove a file or directory tree; missing paths are ignored.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises plugin-storage, effect-boundary-denied.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises plugin-storage, effect-boundary-denied.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -3674,6 +4981,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -3687,6 +4995,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -3732,12 +5045,38 @@
       "ave/host/storage/write": {
         "description": "Write bytes / text; ensures parent directories exist.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises plugin-storage, effect-boundary-denied.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises plugin-storage, effect-boundary-denied.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -3749,6 +5088,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -3762,6 +5102,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -3816,12 +5161,38 @@
       "ave/host/storage/writeEncrypted": {
         "description": "Encrypt `plaintext` with the host's configured encryption provider and write the ciphertext bytes to `relPath`, inside the same sandboxed `pluginDataDir` root as every other method — identical absolute-path / lexical `..` / symlink-escape rejection applies. Parent directories are created as needed.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises plugin-storage, plugin-storage-encryption-unavailable, effect-boundary-denied.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises plugin-storage, plugin-storage-encryption-unavailable, effect-boundary-denied.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -3833,6 +5204,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -3846,6 +5218,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -3887,12 +5264,38 @@
       "ave/host/storage/writeJson": {
         "description": "Stringify + write JSON; ensures parent directories exist.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises plugin-storage, effect-boundary-denied.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises plugin-storage, effect-boundary-denied.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -3904,6 +5307,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -3917,6 +5321,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -3961,12 +5370,38 @@
       "ave/host/triggerConversation": {
         "description": "Overlay trigger — ask the host to stage a plugin-authored suggestion in the overlay. The plugin does not start a conversation turn; only a user's overlay confirmation imports the prompt into the normal chat loop.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -3978,6 +5413,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -3991,6 +5427,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -4101,12 +5542,38 @@
       "ave/host/withdrawAlert": {
         "description": "Withdraw this plugin's open alert for `(kind, key)` because its condition no longer holds. Scoped to the caller; resolves `false` when no such alert is open.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -4118,6 +5585,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -4131,6 +5599,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -4172,12 +5645,38 @@
       "ave/host/withdrawWorkProposal": {
         "description": "Retract this plugin's own proposal because the condition it described no longer holds — the mail was answered, the index was rescanned.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
           "properties": {
             "code": {
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -4189,6 +5688,7 @@
                     "result-marshalling-rejected",
                     "payload-too-large",
                     "subscription-unknown",
+                    "rate-limited",
                     "effect-boundary-denied",
                     "manifest-integrity-violation",
                     "detached-operation",
@@ -4202,6 +5702,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -4247,6 +5752,32 @@
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -4260,6 +5791,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -4292,6 +5828,32 @@
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -4303,6 +5865,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -4335,6 +5902,32 @@
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -4346,6 +5939,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -4378,6 +5976,32 @@
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -4389,6 +6013,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -4421,6 +6050,32 @@
               "type": "integer"
             },
             "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -4432,6 +6087,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
@@ -5630,6 +7290,12 @@
           "pluginAccess": {
             "$ref": "#/$defs/types/PluginAccessSpec"
           },
+          "prompts": {
+            "items": {
+              "$ref": "#/$defs/types/PluginContributionDeclaration"
+            },
+            "type": "array"
+          },
           "python": {
             "properties": {
               "interpreter": {
@@ -5650,6 +7316,15 @@
           },
           "requires": {
             "$ref": "#/$defs/types/RequiresSpec"
+          },
+          "routineTemplates": {
+            "items": {
+              "$ref": "#/$defs/types/PluginContributionDeclaration"
+            },
+            "type": "array"
+          },
+          "sandbox": {
+            "$ref": "#/$defs/types/PluginSandboxDeclaration"
           },
           "skills": {
             "items": {
@@ -5815,6 +7490,103 @@
           }
         },
         "type": "object"
+      },
+      "PluginSandboxDeclaration": {
+        "properties": {
+          "read": {
+            "items": {
+              "$ref": "#/$defs/types/PluginSandboxGrant"
+            },
+            "type": "array"
+          },
+          "write": {
+            "items": {
+              "properties": {
+                "configKey": {
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "userChosenDirectory",
+                  "type": "string"
+                },
+                "why": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "configKey",
+                "why"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "PluginSandboxGrant": {
+        "anyOf": [
+          {
+            "properties": {
+              "kind": {
+                "const": "hostDirectory",
+                "type": "string"
+              },
+              "segments": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "const": "runtime",
+                      "type": "string"
+                    },
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  {
+                    "items": {
+                      "const": "certs",
+                      "type": "string"
+                    },
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                ]
+              },
+              "why": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "segments",
+              "why"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "configKey": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "userChosenDirectory",
+                "type": "string"
+              },
+              "why": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "configKey",
+              "why"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "PluginShutdownParams": {
         "properties": {
@@ -6539,8 +8311,8 @@
       }
     }
   },
-  "$id": "https://former-site.invalid/schemas/plugin-host-protocol/1/v0.10.0/protocol.schema.json",
+  "$id": "https://former-site.invalid/schemas/plugin-host-protocol/1/v0.11.0/protocol.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Generated by scripts/generate-plugin-host-protocol-schema.ts from ave 0.10.0; do not edit. Each method names its params, its result and the errors it may reply with, and a method whose registration or handle outlives the reply names the payload of every notifications/ave/subscription frame for it under events; each notification names its params. docs/design/plugin-hostapi-protocol.md describes the protocol.",
+  "description": "Generated by scripts/generate-plugin-host-protocol-schema.ts from ave 0.11.0; do not edit. Each method names its params, its result and the errors it may reply with, and a method whose registration or handle outlives the reply names the payload of every notifications/ave/subscription frame for it under events; each notification names its params. docs/design/plugin-hostapi-protocol.md describes the protocol.",
   "title": "Ave plugin host protocol 1"
 }

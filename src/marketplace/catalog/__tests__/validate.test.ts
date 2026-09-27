@@ -20,6 +20,7 @@ const authority = () => ({
 
 const PAYLOADS: Record<string, () => Record<string, unknown>> = {
   plugin: () => ({ authority: authority(), artifact: { release: { repo: "acme/alpha", sha256: SHA }, tree: "plugins/alpha/build" } }),
+  "agent-plugin": () => ({ manifest: "plugin.json", components: { skills: [], mcpServers: {}, prompts: [], agents: [], routineTemplates: [], hooks: [] } }),
   mcp: () => ({ server: { transport: "stdio", command: "npx", args: ["-y", "@acme/mcp"], env: { ACME_MODE: "ro" }, auth: "api-key", apiKeyEnv: "ACME_KEY" } }),
   skill: () => ({ entry: "SKILL.md" }),
   agent: () => ({ entry: "AGENTS.md" }),
@@ -32,7 +33,7 @@ const PAYLOADS: Record<string, () => Record<string, unknown>> = {
 
 function descriptor(kind: string, patch: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     kind,
     name: `sample-${kind}`,
     version: "1.2.0",
@@ -80,7 +81,7 @@ describe("validateDescriptorText", () => {
 
   it.each([
     ["unknown root key", { extra: 1 }],
-    ["wrong schemaVersion", { schemaVersion: 2 }],
+    ["wrong schemaVersion", { schemaVersion: 1 }],
     ["unknown kind", { kind: "widget" }],
     ["name with double hyphen", { name: "a--b" }],
     ["name starting with a digit", { name: "1abc" }],
@@ -210,7 +211,7 @@ describe("validateDescriptorText", () => {
 });
 
 function index(packages: unknown[], patch: Record<string, unknown> = {}): string {
-  return JSON.stringify({ schemaVersion: 1, name: "acme", displayName: "Acme", packages, ...patch });
+  return JSON.stringify({ schemaVersion: 2, name: "acme", displayName: "Acme", packages, ...patch });
 }
 
 const version = (v: string, patch: Record<string, unknown> = {}) => ({
@@ -227,6 +228,23 @@ const pluginVersion = (v: string, patch: Record<string, unknown> = {}) =>
 describe("validateIndexText", () => {
   const context = { sourceId: "acme", official: false };
 
+  it("accepts only format-2 agent-plugin components and keeps invalid path claimants isolated", () => {
+    expect(checkDescriptor(descriptor("agent-plugin")).ok).toBe(true);
+    expect(checkDescriptor(descriptor("agent-plugin", { hostProtocol: "1" })).ok).toBe(false);
+    expect(checkDescriptor(descriptor("agent-plugin", { payload: { manifest: "plugin.json", components: { skills: [], mcpServers: {}, prompts: [], agents: [], routineTemplates: [], hooks: [], unexpected: true } } })).ok).toBe(false);
+    const components = PAYLOADS["agent-plugin"]!().components;
+    const result = validateIndexText(index([
+      { kind: "agent-plugin", name: "invalid-plugin", path: "skills/shared", versions: [version("1.0.0")] },
+      { kind: "agent-plugin", name: "unknown-plugin", path: "skills/shared", versions: [version("1.0.0", { components, extra: 1 })] },
+      { kind: "skill", name: "valid-skill", path: "skills/shared" },
+      { kind: "agent-plugin", name: "valid-plugin", path: "agent-plugins/valid", versions: [version("1.0.0", { components })] },
+    ]), context);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.index.packages.map((entry) => entry.name)).toEqual(["valid-skill", "valid-plugin"]);
+    expect(result.value.diagnostics).toHaveLength(2);
+  });
+
   it("accepts an index with path-only entries and entries with versions", () => {
     const result = validateIndexText(
       index([
@@ -242,9 +260,9 @@ describe("validateIndexText", () => {
   it.each([
     ["unparseable JSON", "{"],
     ["an unknown root key", index([], { extra: 1 })],
-    ["a wrong schemaVersion", index([], { schemaVersion: 2 })],
+    ["a wrong schemaVersion", index([], { schemaVersion: 1 })],
     ["duplicate root keys", index([]).replace('"name":"acme"', '"name":"acme","name":"other"')],
-    ["a packages object", JSON.stringify({ schemaVersion: 1, name: "acme", displayName: "Acme", packages: {} })],
+    ["a packages object", JSON.stringify({ schemaVersion: 2, name: "acme", displayName: "Acme", packages: {} })],
   ])("rejects the whole index for %s", (_label, text) => {
     expect(validateIndexText(text, context).ok).toBe(false);
   });
@@ -291,7 +309,7 @@ describe("validateIndexText", () => {
     expect(result.ok && result.value.diagnostics).toHaveLength(4);
   });
 
-  it("counts an invalid entry as a claimant too", () => {
+  it("counts an invalid name claimant but leaves its path available", () => {
     const result = validateIndexText(
       index([
         { kind: "skill", name: "alpha", path: "skills/alpha" },
@@ -301,7 +319,21 @@ describe("validateIndexText", () => {
       ]),
       context,
     );
-    expect(result.ok && result.value.index.packages).toEqual([]);
+    expect(result.ok && result.value.index.packages.map((entry) => entry.name)).toEqual(["beta"]);
+  });
+
+  it.each([
+    ["an unknown field", { kind: "skill", name: "invalid-package", path: "skills/shared", unknown: true }],
+    ["a latest version without versions", { kind: "skill", name: "invalid-package", path: "skills/shared", latest: "1.0.0" }],
+  ])("does not let a package with %s claim a valid package path", (_label, invalid) => {
+    const result = validateIndexText(index([
+      invalid,
+      { kind: "skill", name: "valid-package", path: "skills/shared" },
+    ]), context);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.index.packages.map((entry) => entry.name)).toEqual(["valid-package"]);
+    expect(result.value.diagnostics).toHaveLength(1);
   });
 });
 

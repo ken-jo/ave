@@ -39,6 +39,7 @@ export async function setupMcp(ctx: BootContext): Promise<void> {
     // time (BootContext has no windowManager; it is the module-level singleton
     // in app-state, set at main.ts after window creation).
     createMcpServerDisconnectedSink(),
+    ctx.settingsService,
   );
   try {
     const configs = await mcpManager.loadFromConfig();
@@ -50,11 +51,9 @@ export async function setupMcp(ctx: BootContext): Promise<void> {
     log.warn("boot: MCP initialization failed (non-fatal): %s", (err as Error).message);
   }
   mcpGovernance.startPolicyRefresh((revokedIds) => {
-    for (const serverId of revokedIds) {
-      void mcpManager.killSwitch(serverId).catch((err) => {
-        log.error({ serverId, err }, "boot: revoked MCP server kill failed");
-      });
-    }
+    void mcpManager.handlePolicyWithdrawal(revokedIds).catch((err) => {
+      log.error({ err }, "boot: MCP policy withdrawal failed");
+    });
   });
 
   ctx.mcpGovernance = mcpGovernance;

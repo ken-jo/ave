@@ -177,6 +177,7 @@ const MANIFEST = {
   id: PLUGIN_ID,
   name: "Vega Helper",
   version: "0.10.14",
+  requires: { hostProtocol: "2" },
   entry: "plugin.mjs",
   description: "reports what crossed the boundary",
   tools: [

@@ -24,6 +24,8 @@ import type {
 } from "../../../../shared/git-marketplace.js";
 import { actionLabel, exclusionLabel, failureText, kindLabel, originLabel, shortSha, stateLabel } from "./labels.js";
 import { McpRuntimeSummary } from "./McpRuntimeSummary.js";
+import { componentInventory } from "../../../../marketplace/app/component-delta.js";
+import type { AgentPluginComponents } from "../../../../marketplace/catalog/types.js";
 
 import type { AveApi } from "../../types.js";
 import { InstalledPluginAlerts } from "./InstalledPluginAlerts.js";
@@ -79,6 +81,7 @@ function AuthorityList({ authority, sign }: { authority: AuthorityView; sign?: "
   const { t } = useTranslation();
   const rows: string[] = [
     ...authority.networkHosts.map((host) => t("gitMarketplace.authority.network", { host })),
+    ...authority.filesystem.map((grant) => t("gitMarketplace.authority.filesystem", { grant: `${grant.access}: ${grant.target} — ${grant.why}` })),
     ...authority.secrets.map((secret) => t("gitMarketplace.authority.secret", { secret })),
     ...authority.capabilities.map((capability) => t("gitMarketplace.authority.capability", { capability })),
     ...authority.pluginAccess.map((plugin) => t("gitMarketplace.authority.pluginAccess", { plugin })),
@@ -116,6 +119,18 @@ function RungList({ rungs }: { rungs: RungView[] }) {
   );
 }
 
+function ComponentsList({ components }: { components: AgentPluginComponents }) {
+  const { t } = useTranslation();
+  const items = componentInventory(components);
+  if (items.length === 0) return <p className="text-muted-foreground">{t("gitMarketplace.components.none")}</p>;
+  return <ul className="space-y-0.5">{items.map((item) => (
+    <li key={`${item.kind}:${item.name}`}>
+      {t(`gitMarketplace.components.${item.kind}`)} · <span className="font-mono">{item.name}</span>
+      {" · "}<code className="text-xs text-muted-foreground" title={item.digest}>{item.digest.slice(0, 12)}</code>
+    </li>
+  ))}</ul>;
+}
+
 export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, onClose, onChanged }: PackageSheetProps) {
   const { t, locale } = useTranslation();
   const [detail, setDetail] = useState<PackageDetailView | null>(null);
@@ -125,6 +140,7 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, onC
   const [trustRewrite, setTrustRewrite] = useState(false);
   const [switchConsent, setSwitchConsent] = useState(false);
   const [removeData, setRemoveData] = useState(false);
+  const [approvedMcpServers, setApprovedMcpServers] = useState<Record<string, boolean>>({});
   const [now, setNow] = useState(() => Date.now());
 
   const load = useCallback(async (key: PackageKeyView) => {
@@ -136,6 +152,7 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, onC
 
   const plan = useCallback(async (key: PackageKeyView, options: { update?: boolean; version?: string; switchSource?: boolean } = {}) => {
     setBusy(true);
+    setApprovedMcpServers({});
     try {
       const result = options.update
         ? await api.planUpdate(key)
@@ -153,6 +170,7 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, onC
     setTrustRewrite(false);
     setSwitchConsent(false);
     setRemoveData(false);
+    setApprovedMcpServers({});
     if (!target) return;
     void load(target.key);
     if (target.mode === "update") void plan(target.key, { update: true });
@@ -175,7 +193,12 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, onC
 
   const execute = async (reviewed: InstallPlanView | UpdatePlanView) => {
     setStage({ stage: "installing", plan: reviewed, progress: null });
-    const result = await api.executeInstall(reviewed.planId);
+    const selected = Object.entries(reviewed.components?.mcpServers ?? {})
+      .filter(([name]) => approvedMcpServers[name])
+      .map(([name, server]) => ({ name, digest: server.digest }));
+    const result = selected.length > 0
+      ? await api.executeInstall(reviewed.planId, selected)
+      : await api.executeInstall(reviewed.planId);
     if (result.ok) {
       setStage({ stage: "done", result: result.value });
       onChanged();
@@ -189,7 +212,7 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, onC
     if (!target) return;
     setBusy(true);
     try {
-      const result = await api.uninstall({ ...target.key, ...(target.key.kind === "mcp" ? { removeData } : {}) });
+      const result = await api.uninstall({ ...target.key, ...(target.key.kind === "mcp" || target.key.kind === "agent-plugin" ? { removeData } : {}) });
       if (result.ok) {
         onChanged();
         onClose();
@@ -272,6 +295,11 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, onC
                   <AuthorityList authority={detail.authority} />
                 </Section>
               )}
+              {detail.components && (
+                <Section title={t("gitMarketplace.components.title")}>
+                  <ComponentsList components={detail.components} />
+                </Section>
+              )}
               {detail.entry.sourceOrigin === "official" && (
                 <Section title={t("gitMarketplace.detail.badge")}>
                   <p className="text-muted-foreground">{t("gitMarketplace.detail.badgeOfficial")}</p>
@@ -337,11 +365,47 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, onC
                       <AuthorityList authority={reviewPlan.authorityDelta.removed} sign="-" />
                     </Section>
                   )}
+                  {reviewPlan.componentsDelta && (
+                    <Section title={t("gitMarketplace.review.componentChanges")}>
+                      <ul className="space-y-0.5">
+                        {(["added", "removed", "changed"] as const).flatMap((change) => reviewPlan.componentsDelta![change].map((item) => (
+                          <li key={`${change}:${item.kind}:${item.name}`}>
+                            {t(`gitMarketplace.components.${change}`)} · {t(`gitMarketplace.components.${item.kind}`)} · <span className="font-mono">{item.name}</span>
+                          </li>
+                        )))}
+                      </ul>
+                    </Section>
+                  )}
                 </>
               )}
               {!isUpdatePlan(reviewPlan) && reviewPlan.authority && (
                 <Section title={t("gitMarketplace.detail.permissions")}>
                   <AuthorityList authority={reviewPlan.authority} />
+                </Section>
+              )}
+              {reviewPlan.components && (
+                <Section title={t("gitMarketplace.components.title")}>
+                  <ComponentsList components={reviewPlan.components} />
+                </Section>
+              )}
+              {reviewPlan.key.kind === "agent-plugin" && reviewPlan.components && Object.keys(reviewPlan.components.mcpServers).length > 0 && (
+                <Section title={t("gitMarketplace.review.mcpConsentTitle")}>
+                  <p className="text-xs text-muted-foreground">{t("gitMarketplace.review.mcpConsentHelp")}</p>
+                  <div className="space-y-2 pt-2">
+                    {Object.entries(reviewPlan.components.mcpServers).map(([name, server]) => (
+                      <label key={name} className="flex items-start gap-2 text-xs" data-testid={`git-marketplace:mcp-consent:${name}`}>
+                        <Checkbox checked={approvedMcpServers[name] === true}
+                          onCheckedChange={(checked) => setApprovedMcpServers((current) => ({ ...current, [name]: checked === true }))} />
+                        <span className="space-y-1">
+                          <span className="block font-medium">{t("gitMarketplace.review.mcpConsent", { name })}</span>
+                          <code className="block break-all">{server.transport === "stdio" ? [server.command, ...(server.args ?? [])].join(" ") : server.url}</code>
+                          {server.transport === "stdio" && <span className="block">{t("gitMarketplace.review.mcpCwd", { cwd: server.cwd })}</span>}
+                          <span className="block">{t("gitMarketplace.review.mcpFingerprint", { digest: server.digest })}</span>
+                          {server.auth === "api-key" && <span className="block">{t("gitMarketplace.review.mcpCredential")}</span>}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
                 </Section>
               )}
               {reviewPlan.mcp && (
@@ -426,10 +490,10 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, onC
         <DialogFooter className="flex-wrap gap-2">
           {stage.stage === "detail" && target && state && !entry?.required && installedHere && (
             <div className="mr-auto flex items-center gap-2">
-              {target.key.kind === "mcp" && (
+              {(target.key.kind === "mcp" || target.key.kind === "agent-plugin") && (
                 <label className="flex items-center gap-1.5 text-xs">
                   <Checkbox checked={removeData} onCheckedChange={(checked) => setRemoveData(checked === true)} />
-                  {t("gitMarketplace.uninstall.removeData")}
+                  {t(target.key.kind === "agent-plugin" ? "gitMarketplace.uninstall.removePluginData" : "gitMarketplace.uninstall.removeData")}
                 </label>
               )}
               <Button variant="outline" size="sm" disabled={busy} onClick={() => void uninstall()} data-testid="git-marketplace:uninstall">

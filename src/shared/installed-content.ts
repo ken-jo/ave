@@ -13,6 +13,7 @@
  */
 import { HOST_FONT_STACK } from "./host-font-stack.js";
 import type { ThemeSurfaces, ThemeTokens } from "./theme-tokens.js";
+import type { AgentPluginRoutineTemplate } from "./agent-plugin-routine-template.js";
 
 export const CONTENT_ASSET_SCHEME = "ave-content";
 
@@ -96,6 +97,7 @@ export interface InstalledContentView {
   themes: InstalledThemeView[];
   languages: InstalledLanguageView[];
   fonts: InstalledFontView[];
+  routineTemplates: AgentPluginRoutineTemplate[];
   broken: BrokenContentView[];
 }
 
@@ -138,7 +140,7 @@ export function parseInstalledContentResult(value: unknown): InstalledContentRes
   if (value.ok === false) return typeof value.error === "string" ? { ok: false, error: value.error } : null;
   const content = value.content;
   if (value.ok !== true || !isRecord(content)) return null;
-  const lists = ["themes", "languages", "fonts", "broken"] as const;
+  const lists = ["themes", "languages", "fonts", "routineTemplates", "broken"] as const;
   if (!lists.every((key) => Array.isArray(content[key]))) return null;
   return { ok: true, content: content as unknown as InstalledContentView };
 }

@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { withoutGitContext } from "./lib/git-process-environment.mjs";
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -26,11 +27,11 @@ export function requireFullSha(label, value) {
 }
 
 function git(repoRoot, ...args) {
-  return execFileSync("git", ["-C", repoRoot, ...args], { encoding: "utf8" }).trim();
+  return execFileSync("git", ["-C", repoRoot, ...args], { encoding: "utf8", env: withoutGitContext() }).trim();
 }
 
 function gitBytes(repoRoot, ...args) {
-  return execFileSync("git", ["-C", repoRoot, ...args]);
+  return execFileSync("git", ["-C", repoRoot, ...args], { env: withoutGitContext() });
 }
 
 function requireCheckout(label, repoRoot, expectedSha) {
