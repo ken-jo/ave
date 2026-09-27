@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { directHostFetchTransport } from "../../__tests__/support/host-fetch-transport.js";
 import { evaluateHostFetch, runHostFetchHops } from "../../main/host-fetch-guard.js";
 import type { HostFetchTransport } from "../../main/host-fetch-guard.js";
 import { CredentialLeaseRegistry } from "../../plugins/secret-access/credential-lease-registry.js";
@@ -58,7 +59,7 @@ async function expectNoSend(use: ReturnType<CredentialLeaseRegistry["beginUse"]>
   if (!first.ok) throw new Error(first.message);
   const transport = vi.fn(async () => new Response(null));
   await expect(runHostFetchHops({
-    pluginId: "fixture", first, init: {}, transport: transport as typeof fetch,
+    pluginId: "fixture", first, init: {}, transport: directHostFetchTransport(transport as typeof fetch),
     allowedDomains: ["api.example.test"], allowPrivateNetworks: false, credentialUse: use,
   })).rejects.toMatchObject({ code: "lease-unavailable" });
   expect(transport).not.toHaveBeenCalled();
@@ -254,12 +255,12 @@ it("does not reread the secret document for every response chunk", async () => {
   let remaining = 128;
   const response = await runHostFetchHops({
     pluginId: "fixture", first, init: {},
-    transport: (async () => new Response(new ReadableStream({
+    transport: directHostFetchTransport((async () => new Response(new ReadableStream({
       pull(controller) {
         if (remaining-- > 0) controller.enqueue(new Uint8Array([65]));
         else controller.close();
       },
-    }))) as typeof fetch,
+    }))) as typeof fetch),
     allowedDomains: ["api.example.test"], allowPrivateNetworks: false, credentialUse: use,
   });
   expect((await response.arrayBuffer()).byteLength).toBe(128);

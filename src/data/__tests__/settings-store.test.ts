@@ -639,15 +639,27 @@ describe("SettingsService marketplace defaults", () => {
     await service.installMarketplaceProviderPreset(preset);
     await service.setSecret(key, "entered-for-future");
     const secrets = (service as unknown as { secretStore: { deleteMany(keys: string[]): Promise<number> } }).secretStore;
+    let markFirstDeletionStarted!: () => void;
+    const firstDeletionStarted = new Promise<void>((resolve) => { markFirstDeletionStarted = resolve; });
+    let rejectFirstDeletion!: (error: Error) => void;
     const deleteMany = vi.spyOn(secrets, "deleteMany")
       // The first move's deletion fails last, so the second move rolls back first.
-      .mockImplementationOnce(() => new Promise((_, reject) => setTimeout(() => reject(new Error("keychain locked")), 30)))
+      .mockImplementationOnce(() => {
+        markFirstDeletionStarted();
+        return new Promise((_, reject) => { rejectFirstDeletion = reject; });
+      })
       .mockImplementationOnce(() => Promise.reject(new Error("keychain locked")));
 
     const first = service.installMarketplaceProviderPreset({ ...preset, baseUrl: "https://second.example/v1" });
+    const firstRejected = expect(first).rejects.toThrow("keychain locked");
+    await firstDeletionStarted;
     const second = service.installMarketplaceProviderPreset({ ...preset, baseUrl: "https://third.example/v1" });
-    await expect(second).rejects.toThrow("keychain locked");
-    await expect(first).rejects.toThrow("keychain locked");
+    try {
+      await expect(second).rejects.toThrow("keychain locked");
+    } finally {
+      rejectFirstDeletion(new Error("keychain locked"));
+      await firstRejected;
+    }
 
     // Neither the second address (never the key's) nor any other is paired
     // with the key: it is withheld wherever the preset points.

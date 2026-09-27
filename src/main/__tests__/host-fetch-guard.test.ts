@@ -11,6 +11,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { REDIRECT_STATUSES } from "../host-fetch-guard.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { CredentialLeaseRegistry } from "../../plugins/secret-access/credential-lease-registry.js";
+import { directHostFetchTransport } from "../../__tests__/support/host-fetch-transport.js";
 
 // ─── dns mock — configurable per test via `lookupMock` ──────────────
 const lookupMock = vi.fn<
@@ -406,7 +407,7 @@ function publicDns(): void {
  */
 function scriptedTransport(responses: Response[]) {
   const calls: Array<{ url: string; method: string; headers: Record<string, string> }> = [];
-  const transport = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+  const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const headers = new Headers(init?.headers as HeadersInit | undefined);
     calls.push({
       url: String(input),
@@ -417,6 +418,7 @@ function scriptedTransport(responses: Response[]) {
     if (!next) throw new Error("scripted transport ran out of responses");
     return next;
   }) as unknown as typeof fetch;
+  const transport = directHostFetchTransport(fetchImpl);
   return { transport, calls };
 }
 
@@ -480,6 +482,16 @@ function registeredCredentialUse() {
     revoke: () => { revision += 1; for (const listener of listeners) listener(); },
   };
 }
+
+it("refuses a credential use when the transport has no handoff contract", async () => {
+  publicDns();
+  const lease = registeredCredentialUse();
+  const transport = vi.fn(async () => new Response(null)) as unknown as typeof fetch;
+  const { options } = hopOptions(await firstAllow("https://api.example.com/a"), {}, transport);
+  await expect(runHostFetchHops({ ...options, credentialUse: lease.use }))
+    .rejects.toThrow("hostFetch internal error: credential transport lacks sendWithHandoff");
+  expect(transport).not.toHaveBeenCalled();
+});
 
 describe("runHostFetchHops — hop deadline", () => {
   /** A server that accepts the connection and then says nothing, ever. */
@@ -545,7 +557,7 @@ describe("runHostFetchHops — redirect policy", () => {
       lease.revoke();
       return redirect(302, "https://api.example.com/next");
     }) as unknown as typeof fetch;
-    const { options } = hopOptions(await firstAllow("https://api.example.com/a"), { redirect: "follow" }, transport);
+    const { options } = hopOptions(await firstAllow("https://api.example.com/a"), { redirect: "follow" }, directHostFetchTransport(transport));
     await expect(runHostFetchHops({ ...options, credentialUse: lease.use }))
       .rejects.toMatchObject({ code: "lease-unavailable" });
     expect(transport).toHaveBeenCalledOnce();

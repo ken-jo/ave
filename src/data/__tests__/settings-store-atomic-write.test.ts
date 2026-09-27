@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
+import { directHostFetchTransport } from "../../__tests__/support/host-fetch-transport.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { SettingsService, settingsFilePath } from "../settings-store.js";
 import { CredentialLeaseRegistry } from "../../plugins/secret-access/credential-lease-registry.js";
@@ -68,7 +69,7 @@ describe("settings persistence", () => {
       if (!first.ok) throw new Error(first.message);
       const transport = vi.fn(async () => new Response(null));
       await expect(runHostFetchHops({
-        pluginId: "fixture", first, init: {}, transport: transport as typeof fetch,
+        pluginId: "fixture", first, init: {}, transport: directHostFetchTransport(transport as typeof fetch),
         allowedDomains: ["api.example.test"], allowPrivateNetworks: false, credentialUse: use,
       })).rejects.toMatchObject({ code: "lease-unavailable" });
       expect(transport).not.toHaveBeenCalled();

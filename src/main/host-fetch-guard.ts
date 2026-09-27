@@ -388,6 +388,8 @@ export async function runHostFetchHops(options: HostFetchHopOptions): Promise<Re
   let url = first.url;
   let method = first.method;
   let body = init.body;
+  const handoffTransport = "sendWithHandoff" in transport && typeof transport.sendWithHandoff === "function"
+    ? transport : null;
   // Attach the vault's session cookies for THIS hop's URL. Set (or cleared)
   // fresh every hop so a followed redirect gets exactly what its own origin
   // scopes to — never the previous hop's. An empty header string means "no
@@ -420,6 +422,9 @@ export async function runHostFetchHops(options: HostFetchHopOptions): Promise<Re
     return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
   };
   try {
+  if (credentialUse && handoffTransport === null) {
+    throw new Error("hostFetch internal error: credential transport lacks sendWithHandoff");
+  }
   await applyInjectedCookie(url);
   for (let hop = 0; ; hop++) {
     credentialUse?.assertLive(hop === 0 ? "after-await" : "redirect");
@@ -459,9 +464,9 @@ export async function runHostFetchHops(options: HostFetchHopOptions): Promise<Re
         credentialUse?.assertLive("before-send");
         handedOff = true;
       };
-      response = "sendWithHandoff" in transport && typeof transport.sendWithHandoff === "function"
-        ? await transport.sendWithHandoff(url.toString(), transportInit, beforeSend)
-        : await (beforeSend(), transport(url.toString(), transportInit));
+      response = handoffTransport
+        ? await handoffTransport.sendWithHandoff(url.toString(), transportInit, beforeSend)
+        : await transport(url.toString(), transportInit);
     } catch (error) {
       // A cross-process observation can abort the active use while the
       // transport is waiting for a body chunk. Preserve the lease error axis.
