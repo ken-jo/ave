@@ -18,7 +18,7 @@ beforeEach(async () => {
 afterEach(async () => cleanupTmpDir(root));
 
 describe("settings persistence", () => {
-  it.each(["rotate", "delete", "bulk-delete"] as const)("fences a secret %s before the file lock returns", async (change) => {
+  it.each(["rotate", "same-value", "delete", "bulk-delete"] as const)("fences a secret %s before the file lock returns", async (change) => {
     const key = change === "bulk-delete" ? "plugin.fixture.token" : "llm.apiKey.openai";
     const store = new SettingsService({
       userDataPath: root,
@@ -54,11 +54,13 @@ describe("settings persistence", () => {
       return result;
     }));
     const changing = change === "rotate" ? store.setSecret(key, "synthetic-new-key")
+      : change === "same-value" ? store.setSecret(key, "synthetic-old-key")
       : change === "delete" ? store.deleteSecret(key)
         : store.deletePluginSecrets("fixture", ["token"]);
     try {
       await visible;
-      expect(store.getSecret(key)).toBe(change === "rotate" ? "synthetic-new-key" : null);
+      expect(store.getSecret(key)).toBe(change === "rotate" ? "synthetic-new-key"
+        : change === "same-value" ? "synthetic-old-key" : null);
       const first = await evaluateHostFetch({
         pluginId: "fixture", rawUrl: "https://api.example.test/v1", allowedDomains: ["api.example.test"],
         ensurePublicUrl: async (rawUrl) => new URL(rawUrl),

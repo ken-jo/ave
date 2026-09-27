@@ -21,6 +21,7 @@ export class CredentialLeaseError extends Error {
 export interface LeaseStateSource {
   getProviderConfigRevision(): number;
   getSecretGeneration(key: string): number;
+  isSecretIdentityUsable?(): boolean;
   onLeaseStateChanged(listener: () => void): () => void;
 }
 
@@ -105,7 +106,8 @@ export class CredentialLeaseRegistry {
       && snapshot.permissionSignal === permissionSignal
       && snapshot.permissionEpoch === this.getPermissionEpoch(reservation.pluginId)
       && snapshot.providerConfigRevision === this.state.getProviderConfigRevision()
-      && snapshot.secretGenerations.get(key) === this.state.getSecretGeneration(key);
+      && snapshot.secretGenerations.get(key) === this.state.getSecretGeneration(key)
+      && this.state.isSecretIdentityUsable?.() !== false;
   }
 
   register(
@@ -213,7 +215,8 @@ export class CredentialLeaseRegistry {
       && !this.retired.has(registration.incarnation)
       && registration.snapshot.permissionEpoch === this.getPermissionEpoch(registration.pluginId)
       && registration.snapshot.providerConfigRevision === this.state.getProviderConfigRevision()
-      && registration.snapshot.secretGenerations.get(registration.key) === this.state.getSecretGeneration(registration.key);
+      && registration.snapshot.secretGenerations.get(registration.key) === this.state.getSecretGeneration(registration.key)
+      && this.state.isSecretIdentityUsable?.() !== false;
   }
 
   beginUse(id: string, pluginId: string, incarnation: object): {

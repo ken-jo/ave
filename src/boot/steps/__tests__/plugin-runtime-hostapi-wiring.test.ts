@@ -1,4 +1,5 @@
 import { createBootHostFixture, createDesktopHostFixture } from "../../../__tests__/support/host-runtime.js";
+import { directHostFetchTransport } from "../../../__tests__/support/host-fetch-transport.js";
 /**
  * C1 gap-lock — initPluginRuntime HostApi factory: config get/set + emitEvent
  * / onEvent capability wiring.
@@ -269,7 +270,7 @@ async function initAndGetFactory(
     pythonPath: undefined,
     bootAuditLogger: lastBootAuditLogger as never,
     mainWindow: {} as never,
-    networkFetch,
+    networkFetch: directHostFetchTransport(networkFetch),
     openAuthWindowService: vi.fn(),
     openLinkWindowService: vi.fn(),
     openAuthPartitionViewerService: vi.fn(),

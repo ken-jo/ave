@@ -28,7 +28,7 @@ import type {
   AudioCaptureRequest,
 } from "../../../plugins/public-contract.js";
 import { FloatingDock } from "../../../main/floating-dock.js";
-import { CREDENTIAL_HEADERS, evaluateHostFetch, runHostFetchHops } from "../../../main/host-fetch-guard.js";
+import { CREDENTIAL_HEADERS, evaluateHostFetch, runHostFetchHops, type HostFetchTransport } from "../../../main/host-fetch-guard.js";
 import {
   partitionCookieHeaderForUrl,
   partitionCookiesForUrl,
@@ -266,7 +266,7 @@ export interface CreateHostApiFactoryDeps {
    * same refusal on the webview-bridge path land as one record shape.
    */
   pluginRuntimeAuditLog: PluginStorageAuditLog;
-  networkFetch: typeof fetch;
+  networkFetch: HostFetchTransport;
   /**
    * The main window captured at boot. Only a FALLBACK — read
    * {@link CreateHostApiFactoryDeps.getMainWindow} instead wherever the host

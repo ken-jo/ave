@@ -276,6 +276,11 @@ export const CREDENTIAL_HEADERS = [
   "ocp-apim-subscription-key",
 ] as const;
 
+/** The callback runs synchronously at the first header-emitting operation. */
+export type HostFetchTransport = typeof fetch & {
+  sendWithHandoff(input: string, init: RequestInit, beforeSend: () => void): Promise<Response>;
+};
+
 export interface HostFetchHopOptions {
   /** The plugin whose manifest governs every hop. */
   pluginId: string;
@@ -289,7 +294,7 @@ export interface HostFetchHopOptions {
    * A transport that followed on its own would move requests past this gate,
    * which is the exact failure this loop exists to close.
    */
-  transport: typeof fetch;
+  transport: HostFetchTransport | typeof fetch;
   /** `manifest.networkAccess.allowedDomains`, same list every hop. */
   allowedDomains: string[];
   /** `manifest.networkAccess.allowPrivateNetworks`, same flag every hop. */
@@ -400,7 +405,6 @@ export async function runHostFetchHops(options: HostFetchHopOptions): Promise<Re
     const body = new ReadableStream<Uint8Array>({
       async pull(controller) {
         try {
-          credentialUse.assertLive("after-await");
           const next = await reader.read();
           credentialUse.assertLive("after-await");
           if (next.done) { credentialUse.finish(); controller.close(); }
@@ -429,8 +433,11 @@ export async function runHostFetchHops(options: HostFetchHopOptions): Promise<Re
     const hopDeadline = new AbortController();
     const hopTimer = setTimeout(() => hopDeadline.abort(), TOOL_TIMEOUT_POLICY.pluginFetchResponseCeilingMs);
     let response: Response;
+    // The first header-emitting operation was attempted; wire delivery is not
+    // inferred from this flag. It only selects the error stage after abort.
+    let handedOff = false;
     try {
-      response = await transport(url.toString(), {
+      const transportInit: RequestInit = {
         ...init,
         headers,
         body,
@@ -445,7 +452,21 @@ export async function runHostFetchHops(options: HostFetchHopOptions): Promise<Re
         // The transport ignores this by contract; pinned so a call site reads
         // true and a future fetch-shaped transport fails toward NOT following.
         redirect: "manual",
-      });
+      };
+      // A transport with a deferred body must recheck at the first write/end.
+      // Plain fetch-shaped test transports hand off at their synchronous call.
+      const beforeSend = (): void => {
+        credentialUse?.assertLive("before-send");
+        handedOff = true;
+      };
+      response = "sendWithHandoff" in transport && typeof transport.sendWithHandoff === "function"
+        ? await transport.sendWithHandoff(url.toString(), transportInit, beforeSend)
+        : await (beforeSend(), transport(url.toString(), transportInit));
+    } catch (error) {
+      // A cross-process observation can abort the active use while the
+      // transport is waiting for a body chunk. Preserve the lease error axis.
+      if (credentialUse?.signal.aborted) credentialUse.assertLive(handedOff ? "after-await" : "before-send");
+      throw error;
     } finally {
       clearTimeout(hopTimer);
     }

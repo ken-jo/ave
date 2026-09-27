@@ -1,5 +1,6 @@
 import type { BootHost, DesktopHostCapabilities } from "../../boot/host-runtime.js";
 import type { SecretEncryption } from "../../data/secret-document-store.js";
+import { directHostFetchTransport } from "./host-fetch-transport.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -19,7 +20,7 @@ export function createBootHostFixture(overrides: Partial<BootHost> = {}): BootHo
     isPackaged: false,
     encryption: unavailableSecretEncryption,
     networkFetch: fetchUnavailable,
-    singleHopNetworkFetch: fetchUnavailable,
+    singleHopNetworkFetch: directHostFetchTransport(fetchUnavailable),
     llmFetch: fetchUnavailable,
     exit: () => { throw new Error("test-host-exit"); },
     close: async () => {},

@@ -67,7 +67,7 @@ import {
   type ShortcutSettingsPatch,
 } from "../shared/shortcuts.js";
 import { createLogger } from "../lib/logger.js";
-import { SecretDocumentStore, type SecretEncryption, type SecretPolicy } from "./secret-document-store.js";
+import { SecretDocumentStore, type SecretDocumentIdentity, type SecretEncryption, type SecretPolicy } from "./secret-document-store.js";
 import { DEFAULT_SETTINGS } from "./settings-defaults.js";
 import {
   appearanceMigration,
@@ -1017,12 +1017,14 @@ export class SettingsService {
   private providerConfigRevision = 0;
   private readonly secretGenerations = new Map<string, number>();
   private observedSecretFingerprint: string | null | "unreadable" | undefined;
+  private observedSecretMutation: number | null = null;
+  private secretMutationRegressed = false;
   private readonly leaseStateListeners = new Set<() => void>();
 
   getProviderConfigRevision(): number { return this.providerConfigRevision; }
   getSecretGeneration(key: string): number {
-    // Every issuance/use samples the shared file. A second host or a direct
-    // edit cannot leave an old lease bound only to this process's counters.
+    // Every issuance/use samples shared file identity. Unchanged metadata
+    // reuses its verified bytes; another writer's replacement forces a read.
     const fingerprint = this.readSecretFingerprint();
     if (this.observedSecretFingerprint === undefined) {
       this.observedSecretFingerprint = fingerprint;
@@ -1034,8 +1036,20 @@ export class SettingsService {
     return this.secretGenerations.get(key)!;
   }
   private readSecretFingerprint(): string | null | "unreadable" {
-    try { return this.secretStore.fingerprint(); } catch { return "unreadable"; }
+    try { return this.identityFingerprint(this.secretStore.identity()); } catch { return "unreadable"; }
   }
+  private identityFingerprint(identity: SecretDocumentIdentity | null): string | null | "unreadable" {
+    const mutation = identity?.mutation ?? null;
+    // A previously observed writer counter cannot disappear or move backwards.
+    if (this.observedSecretMutation !== null && (mutation === null || mutation < this.observedSecretMutation)) {
+      this.secretMutationRegressed = true;
+      return "unreadable";
+    }
+    if (this.secretMutationRegressed) return "unreadable";
+    if (mutation !== null) this.observedSecretMutation = mutation;
+    return identity === null ? null : `${mutation ?? "legacy"}:${identity.fingerprint}`;
+  }
+  isSecretIdentityUsable(): boolean { return this.observedSecretFingerprint !== "unreadable"; }
   onLeaseStateChanged(listener: () => void): () => void {
     this.leaseStateListeners.add(listener);
     return () => { this.leaseStateListeners.delete(listener); };
@@ -1101,10 +1115,14 @@ export class SettingsService {
       onCommittedSecretsChanged: (keys, before, after) => {
         // Fence leases at the file swap; awaited callers can resume only after lock release.
         const changed = new Set(keys);
-        if (this.observedSecretFingerprint !== undefined && this.observedSecretFingerprint !== before) {
+        if (this.observedSecretMutation !== null
+          && (before?.mutation === null || before?.mutation === undefined
+            || before.mutation < this.observedSecretMutation)) this.secretMutationRegressed = true;
+        if (this.observedSecretFingerprint !== undefined
+          && this.observedSecretFingerprint !== (before === null ? null : `${before.mutation ?? "legacy"}:${before.fingerprint}`)) {
           for (const key of this.secretGenerations.keys()) changed.add(key);
         }
-        this.observedSecretFingerprint = after;
+        this.observedSecretFingerprint = this.identityFingerprint(after);
         this.secretStatesChanged(changed);
       },
     });

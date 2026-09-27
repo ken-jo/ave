@@ -1,4 +1,5 @@
 import type { BootHost } from "./host-runtime.js";
+import type { HostFetchTransport } from "../main/host-fetch-guard.js";
 /**
  * BootContext — the accumulator threaded through the boot pipeline (C18).
  *
@@ -109,7 +110,7 @@ export class BootContext {
 
   // ── Network fetch surface (setupNetworkFetch) ──────────────────────────────
   declare networkFetch: typeof fetch;
-  declare singleHopNetworkFetch: typeof fetch;
+  declare singleHopNetworkFetch: HostFetchTransport;
   declare llmFetch: typeof fetch;
 
   // ── Home docs seed ─────────────────────────────────────────────────────────

@@ -1,4 +1,5 @@
 import type { BootHost } from "../host-runtime.js";
+import type { HostFetchTransport } from "../../main/host-fetch-guard.js";
 /**
  * Boot §4.2 Step 3-5 — Plugin runtime + HostApi factory.
  *
@@ -144,7 +145,7 @@ export interface InitPluginRuntimeInput {
    * trust store). Backs the capability-gated `hostApi.hostFetch`. Eager (exists
    * at boot) so it needs no late binding, unlike the LLM caller.
    */
-  networkFetch: typeof fetch;
+  networkFetch: HostFetchTransport;
   getMainWindow?: () => BrowserWindow | null;
   openAuthWindowService: (
     parent: BrowserWindow,
