@@ -1,5 +1,5 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -71,7 +71,7 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow
     const options = wrap.mock.calls[0]?.[1] as { filesystem: { allowWrite: string[]; denyRead: string[]; denyWrite: string[] } };
     expect(options.filesystem.allowWrite).toContain(dataDir);
     expect(options.filesystem.allowWrite).not.toContain(generationRoot);
-    expect(options.filesystem.denyRead.some((path) => path.endsWith("/.ssh"))).toBe(true);
+    expect(options.filesystem.denyRead).toContain(join(homedir(), ".ssh"));
     expect(options.filesystem.denyWrite.length).toBeGreaterThan(0);
   });
 
