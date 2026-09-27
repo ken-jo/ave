@@ -26,7 +26,7 @@ describe("agent-plugin component authority", () => {
     expect(components.routineTemplates).toMatchObject([{ id: "daily" }]);
     expect(components.mcpServers.editor).toMatchObject({ command: "./server/editor", cwd: "${PLUGIN_ROOT}" });
     const context = { name: "writer-plugin", version: "1.0.0", payload: { manifest: "plugin.json", components }, english: {}, sourceOrigin: "custom" as const, unknownMessageKeys: "refuse" as const };
-    expect(parseContent("agent-plugin", files, context)).toEqual({ kind: "agent-plugin", components });
+    expect(parseContent("agent-plugin", files, context)).toEqual({ kind: "agent-plugin", components, files });
     expect(() => parseContent("agent-plugin", files, { ...context, payload: { ...context.payload, components: { ...components, agents: [] } } }))
       .toThrow("agent-plugin components differ from the package tree");
   });
@@ -40,5 +40,15 @@ describe("agent-plugin component authority", () => {
     expect(changed.prompts).toEqual(original.prompts);
     expect(changed.agents).toEqual(original.agents);
     expect(changed.routineTemplates).toEqual(original.routineTemplates);
+  });
+
+  it("holds bundled instruction bodies to the host limits", () => {
+    const files = packageFiles();
+    const oversizedSkill = files.map((file) => file.path === "skills/draft/SKILL.md"
+      ? data(file.path, `---\nname: draft\ndescription: Write a draft\n---\n${"x".repeat(8193)}`) : file);
+    expect(() => deriveAgentPluginComponents(oversizedSkill)).toThrow("invalid SKILL.md");
+    const oversizedAgent = files.map((file) => file.path === "ai.agent-connector.ave/agents/review/AGENTS.md"
+      ? data(file.path, `---\nname: review\ndescription: Review drafts\n---\n${"x".repeat(16385)}`) : file);
+    expect(() => deriveAgentPluginComponents(oversizedAgent)).toThrow("invalid agent name or body");
   });
 });

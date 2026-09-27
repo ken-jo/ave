@@ -229,6 +229,9 @@ function applyInMain(deps: IpcDeps, service: InstalledContentService, view: Inst
   const instructions = service.installedInstructions();
   deps.skillStore?.setInstalledPackages(instructions.filter((item) => item.kind === "skill"));
   deps.agentProfileStore?.setInstalledPackages(instructions.filter((item) => item.kind === "agent"));
+  const agentPlugins = service.installedAgentPlugins();
+  deps.skillStore?.setInstalledAgentPlugins(agentPlugins);
+  deps.agentProfileStore?.setInstalledAgentPlugins(agentPlugins);
 }
 
 /**

@@ -147,7 +147,8 @@ export function deriveAgentPluginComponents(files: readonly AgentPluginFile[], e
     if (!entry) fail(root, "SKILL.md is missing");
     try {
       const parsed = parseFrontmatter(entry.toString("utf8"));
-      if (parsed.fm.name !== name || !parsed.fm.description || !parsed.body.trim()) fail(root, "invalid SKILL.md frontmatter or body");
+      if (parsed.fm.name !== name || !parsed.fm.description || !parsed.body.trim()
+        || Buffer.byteLength(parsed.body.trim(), "utf8") > 8 * 1024) fail(root, "invalid SKILL.md frontmatter or body");
     } catch (error) {
       fail(root, `invalid SKILL.md: ${(error as Error).message}`);
     }
@@ -163,7 +164,8 @@ export function deriveAgentPluginComponents(files: readonly AgentPluginFile[], e
       let parsed: ReturnType<typeof parseAgentFrontmatter>;
       try { parsed = parseAgentFrontmatter(file.data.toString("utf8")); }
       catch (error) { fail(file.path, `invalid frontmatter: ${(error as Error).message}`); }
-      if (parsed.fm.name !== agentMatch[1] || !parsed.body.trim()) fail(file.path, "invalid agent name or body");
+      if (parsed.fm.name !== agentMatch[1] || !parsed.body.trim()
+        || Buffer.byteLength(parsed.body.trim(), "utf8") > 16 * 1024) fail(file.path, "invalid agent name or body");
       agents.push({ name: agentMatch[1]!, digest: sha256Hex(file.data) });
     }
   }

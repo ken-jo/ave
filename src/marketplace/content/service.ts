@@ -19,6 +19,7 @@ import {
   type InstalledThemeView,
 } from "../../shared/installed-content.js";
 import type { ContentKind } from "./rules.js";
+import type { ParsedContent } from "./kinds.js";
 import type { ContentStore, LoadedContent } from "./store.js";
 
 const IMAGE_TYPES: Readonly<Record<string, string>> = { ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp" };
@@ -36,12 +37,20 @@ export interface InstalledInstruction {
   dir: string;
 }
 
+/** A verified package snapshot used to publish inert instructions in main. */
+export interface InstalledAgentPlugin {
+  name: string;
+  version: string;
+  content: Extract<ParsedContent, { kind: "agent-plugin" }>;
+}
+
 export class InstalledContentService {
   private view: InstalledContentView = { themes: [], languages: [], fonts: [], broken: [] };
   private catalogs = new Map<string, Record<string, string>>();
   /** `<kind>/<name>/<path>` → the file and its type, for the asset scheme. */
   private served = new Map<string, ServedContentFile>();
   private instructions: InstalledInstruction[] = [];
+  private agentPlugins: InstalledAgentPlugin[] = [];
 
   /**
    * `assetToken` is the launch token asset URLs carry (see `contentAssetUrl`).
@@ -64,6 +73,7 @@ export class InstalledContentService {
     const catalogs = new Map<string, Record<string, string>>();
     const served = new Map<string, ServedContentFile>();
     const instructions: InstalledInstruction[] = [];
+    const agentPlugins: InstalledAgentPlugin[] = [];
     const from = (item: LoadedContent) => ({ sourceId: item.entry.origin.sourceId, version: item.entry.version });
     const refuse = (item: LoadedContent, problem: string) => brokenViews.push({ kind: item.entry.kind, name: item.entry.name, problem });
 
@@ -128,6 +138,8 @@ export class InstalledContentService {
         });
       } else if (content.kind === "skill" || content.kind === "agent") {
         instructions.push({ kind: content.kind, name: entry.name, dir });
+      } else if (content.kind === "agent-plugin") {
+        agentPlugins.push({ name: entry.name, version: entry.version, content });
       }
       // Providers and messaging connections take effect through settings (their activation).
     }
@@ -135,6 +147,7 @@ export class InstalledContentService {
     this.catalogs = catalogs;
     this.served = served;
     this.instructions = instructions;
+    this.agentPlugins = agentPlugins;
     return this.installed();
   }
 
@@ -145,6 +158,10 @@ export class InstalledContentService {
   /** Installed skills and agent profiles, for the skill and agent stores in main. */
   installedInstructions(): InstalledInstruction[] {
     return this.instructions.map((item) => ({ ...item }));
+  }
+
+  installedAgentPlugins(): readonly InstalledAgentPlugin[] {
+    return this.agentPlugins;
   }
 
   /** The catalog of an installed language; throws for a locale no package provides. */

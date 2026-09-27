@@ -32,8 +32,10 @@ import type { IpcDeps } from "../types.js";
 import { getLocale, isInstalledLocale, registerInstalledLocales, setInstalledCatalogLoader, setLocale, translate } from "../../i18n/index.js";
 import { loadLocaleMessages, messages as catalogs } from "../../i18n/messages/index.js";
 import type { ParsedContent } from "../../marketplace/content/kinds.js";
+import { deriveAgentPluginComponents } from "../../marketplace/content/agent-plugin-components.js";
 import { ContentStore, type StagedContent } from "../../marketplace/content/store.js";
 import type { PackagePlan } from "../../marketplace/resolve/descriptor.js";
+import { EMPTY_MARKETPLACE_POLICY } from "../../marketplace/sources/policy.js";
 import { treeDigest } from "../../marketplace/resolve/plugin-ladder.js";
 import { setInstalledThemeIds } from "../../shared/plugin-theme-cache.js";
 import { loadInstalledContent, registerMarketplaceContentHandlers } from "../domains/marketplace-content.js";
@@ -118,7 +120,7 @@ describe("loadInstalledContent", () => {
   });
 
   /** Install `content` from `files` the way the install path does, without a git source. */
-  async function install(kind: "language" | "skill", name: string, files: Record<string, unknown>, content: ParsedContent, into?: ContentStore) {
+  async function install(kind: "language" | "skill" | "agent-plugin", name: string, files: Record<string, unknown>, content: ParsedContent, into?: ContentStore) {
     const list = Object.entries(files).map(([path, value]) => ({ path, data: Buffer.from(typeof value === "string" ? value : JSON.stringify(value)) }));
     const plan = { sourceId: "acme", sourceOrigin: "custom", snapshotCommit: "a".repeat(40), versionCommit: "a".repeat(40), packagePath: `${kind}s/${name}`, kind, name, version: "1.0.0", minAppVersion: "0.12.0" } as PackagePlan;
     const staged = { plan, files: list, contentSha256: treeDigest(list.map((file) => ({ ...file, executable: false }))), content } as StagedContent;
@@ -149,16 +151,44 @@ describe("loadInstalledContent", () => {
   });
 
   it("hands installed skills and agents to their stores, and reload applies an install made after load", async () => {
-    const skillStore = { setInstalledPackages: vi.fn(), userSkillFile: async () => null };
-    const agentProfileStore = { setInstalledPackages: vi.fn() };
+    const skillStore = { setInstalledPackages: vi.fn(), setInstalledAgentPlugins: vi.fn(), userSkillFile: async () => null };
+    const agentProfileStore = { setInstalledPackages: vi.fn(), setInstalledAgentPlugins: vi.fn() };
     const deps = { settingsService: { get: () => ({ language: "en" }) }, skillStore, agentProfileStore } as unknown as IpcDeps;
     const loaded = await loadInstalledContent(deps, TOKEN, root);
     expect(skillStore.setInstalledPackages).toHaveBeenLastCalledWith([]);
     expect(agentProfileStore.setInstalledPackages).toHaveBeenLastCalledWith([]);
+    expect(skillStore.setInstalledAgentPlugins).toHaveBeenLastCalledWith([]);
+    expect(agentProfileStore.setInstalledAgentPlugins).toHaveBeenLastCalledWith([]);
 
     await install("skill", "review", { "SKILL.md": "---\nname: review\ndescription: Reviews.\n---\nReview the change.\n" }, { kind: "skill", name: "review", description: "Reviews." }, loaded.store);
     await loaded.reload();
     expect(skillStore.setInstalledPackages).toHaveBeenLastCalledWith([{ kind: "skill", name: "review", dir: expect.stringContaining("review") }]);
     expect(agentProfileStore.setInstalledPackages).toHaveBeenLastCalledWith([]);
+  });
+
+  it("publishes verified agent plugin instructions on reload and removes them on uninstall", async () => {
+    const skillStore = { setInstalledPackages: vi.fn(), setInstalledAgentPlugins: vi.fn() };
+    const agentProfileStore = { setInstalledPackages: vi.fn(), setInstalledAgentPlugins: vi.fn() };
+    const deps = { settingsService: { get: () => ({ language: "en" }) }, skillStore, agentProfileStore } as unknown as IpcDeps;
+    const loaded = await loadInstalledContent(deps, TOKEN, root);
+    const files = {
+      "plugin.json": JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "writer-plugin", version: "1.0.0", description: "Writing tools" }),
+      "skills/draft/SKILL.md": "---\nname: draft\ndescription: Draft text\n---\nDraft the text.",
+      "ai.agent-connector.ave/agents/review/AGENTS.md": "---\nname: review\ndescription: Review text\n---\nReview the text.",
+    };
+    const bytes = Object.entries(files).map(([path, value]) => ({ path, data: Buffer.from(value) }));
+    const components = deriveAgentPluginComponents(bytes);
+    await install("agent-plugin", "writer-plugin", files, { kind: "agent-plugin", components, files: bytes }, loaded.store);
+    await loaded.reload();
+    expect(skillStore.setInstalledAgentPlugins).toHaveBeenLastCalledWith([
+      expect.objectContaining({ name: "writer-plugin", version: "1.0.0", content: expect.objectContaining({ components }) }),
+    ]);
+    expect(agentProfileStore.setInstalledAgentPlugins).toHaveBeenLastCalledWith([
+      expect.objectContaining({ name: "writer-plugin" }),
+    ]);
+    await loaded.store.uninstall("agent-plugin", "writer-plugin", EMPTY_MARKETPLACE_POLICY);
+    await loaded.reload();
+    expect(skillStore.setInstalledAgentPlugins).toHaveBeenLastCalledWith([]);
+    expect(agentProfileStore.setInstalledAgentPlugins).toHaveBeenLastCalledWith([]);
   });
 });

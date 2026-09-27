@@ -95,6 +95,8 @@ interface InstructionContent {
 interface AgentPluginContent {
   kind: "agent-plugin";
   components: AgentPluginComponents;
+  /** Verified package bytes retained for main-process component publication. */
+  files: readonly ContentFile[];
 }
 
 export type ParsedContent = ThemeContent | LanguageContent | FontContent | ProviderContent | MessagingConnectionContent | InstructionContent | AgentPluginContent;
@@ -476,7 +478,7 @@ export function parseContent(kind: DataContentKind, files: readonly ContentFile[
       if (context.payload !== null && canonicalStringify(context.payload.components) !== canonicalStringify(components)) {
         throw new MarketplaceError("MANIFEST_MISMATCH", "agent-plugin components differ from the package tree");
       }
-      return { kind, components };
+      return { kind, components, files: files.map(({ path, data }) => ({ path, data: Buffer.from(data) })) };
     }
     case "skill":
     case "agent":
