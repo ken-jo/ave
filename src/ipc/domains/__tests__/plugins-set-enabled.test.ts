@@ -104,7 +104,7 @@ async function setup() {
       setSecret,
     },
     auditLogger: { log: vi.fn() },
-    refreshPluginNotifications: vi.fn(),
+    refreshPluginEventBridge: vi.fn(),
     getMainWindow: vi.fn(() => appWindows[0]),
     getAppWindows: vi.fn(() => appWindows),
     pluginBundleLifecycle,

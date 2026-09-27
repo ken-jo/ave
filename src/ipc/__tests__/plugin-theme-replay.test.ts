@@ -148,7 +148,7 @@ function createDeps(pluginRoot: string): {
     auditLogger: { log: vi.fn() },
     postTurnHookChain: {},
     revokePluginOperationSession: vi.fn(),
-    refreshPluginNotifications: vi.fn(),
+    refreshPluginEventBridge: vi.fn(),
     notificationService: {},
     getMainWindow: () => null,
     getAppWindows: () => [],

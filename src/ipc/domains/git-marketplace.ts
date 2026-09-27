@@ -147,7 +147,7 @@ function pluginInstaller(deps: IpcDeps): PluginInstallerPort {
           throw new Error(`atomic git install committed without active runtime: ${result.pluginId}`);
         }
         emitHostEvent("plugin.installed", { pluginId: result.pluginId, source: "marketplace" });
-        deps.refreshPluginNotifications?.();
+        deps.refreshPluginEventBridge?.();
         return { action: result.action, staged: result.staged };
       });
     },

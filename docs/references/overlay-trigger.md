@@ -91,13 +91,11 @@ An accepted prompt retains the `plugin-emitted` staged origin and the
 All resulting tool calls retain the ordinary permission and force-ask gates;
 clicking a card does not approve its tools.
 
-`notificationEvents` remains functional through the alerts release. A manifest
-that declares it alongside `alerts.kinds` receives one load warning per plugin.
-The repository checker reports it when the matching descriptor or index
-version's `minAppVersion` is at or above the configured alerts-release version.
-Removal belongs to the next minor release: drop the field with a warning,
-remove its registration bridge and contract type, after `local-indexer` has
-published alert kinds. There is no unconditional legacy load warning.
+From 0.13.0, an installed manifest's `notificationEvents` field is dropped with
+one warning per plugin before strict validation. It no longer registers OS
+notifications. The repository checker refuses a new declaration when the
+matching descriptor or index version's `minAppVersion` is at or above the
+configured alerts-release version. The alert contract replaces that path.
 
 New-mail and meeting-summary OS notifications become opt-in when their plugins
 migrate. Users enable the relevant kinds and OS toggles in plugin settings;

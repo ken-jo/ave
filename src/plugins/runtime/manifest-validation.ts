@@ -96,16 +96,12 @@ export function formatUnknownErrorMessage(err: unknown): string {
 }
 
 /**
- * Ave extension fields the manifest no longer has (design §5.3). Every
- * official plugin installed before the git marketplace carries them, so an
- * installed manifest that still has one loads: the field is dropped before
- * validation and one warning per plugin is logged, until the next update
- * replaces the manifest. A git install refuses them (manifest-rules.ts).
+ * Extension fields the current manifest no longer has. An installed manifest
+ * from an earlier release may still carry one, so drop it before validation
+ * and warn once per plugin. New packages must omit retired fields.
  */
-const RETIRED_EXTENSION_FIELDS = ["installPolicy", "publisher"] as const;
+const RETIRED_EXTENSION_FIELDS = ["installPolicy", "publisher", "notificationEvents"] as const;
 const retiredFieldsWarned = new Set<string>();
-/** Plugins already warned for declaring both `alerts` and `notificationEvents`. */
-const alertsDeprecationWarned = new Set<string>();
 
 function dropRetiredExtensionFields(doc: unknown, parsed: PluginManifest, pid: string, path: string): void {
   const extensions = typeof doc === "object" && doc !== null ? (doc as { extensions?: unknown }).extensions : undefined;
@@ -140,10 +136,8 @@ export function getDeclaredEmittedEvents(manifest: Pick<PluginManifest, "emitted
  * user approved (its canonical hash is pinned into the registry at install).
  *
  * FAIL-CLOSED AND ALL-OR-NOTHING. A malformed block returns the EMPTY list
- * rather than the entries that happened to parse. `notificationEvents`
- * degrades per entry with a warn, which is right for a cosmetic OS
- * notification and wrong here: a partially-honoured consent declaration would
- * grant slots the user never read a label for.
+ * rather than the entries that happened to parse. A partially-honoured consent
+ * declaration would grant slots the user never read a label for.
  */
 export function getDeclaredWorkProposalKinds(
   manifest: Pick<PluginManifest, "workProposals">,
@@ -1383,38 +1377,6 @@ export async function parsePluginJson(
   // does not fail the load: the block grants nothing, as `workProposals`.
   getDeclaredAlertKinds(parsed, pid);
   getDeclaredConfigInherits(parsed, pid);
-  const notifEvents = Array.isArray(parsed.notificationEvents) ? parsed.notificationEvents : [];
-  if (parsed.alerts !== undefined && notifEvents.length > 0 && !alertsDeprecationWarned.has(pid)) {
-    alertsDeprecationWarned.add(pid);
-    log.warn(
-      `Plugin manifest '${pid}': declares both alerts and the deprecated notificationEvents — move each notification to an alert kind; notificationEvents keeps working until the release that retires it`,
-    );
-  }
-
-  // notificationEvents[i].event must resolve to an event the plugin actually
-  // knows about: one it SUBSCRIBES to (eventSubscriptions → received via
-  // hostApi.onEvent) OR one it EMITS itself (emittedEvents → the plugin is the
-  // source, so it needs no subscription). A self-emitted notification event is
-  // legitimate and must NOT warn — restricting eventSubscriptions to the bare
-  // host broadcast is a deliberate hardening, so requiring a self-emitted event
-  // to also be subscribed would force a contract violation. Soft-warn only when
-  // the event is in NEITHER set (a dangling reference the plugin can't service).
-  const subs = Array.isArray(parsed.eventSubscriptions) ? parsed.eventSubscriptions : [];
-  const knownTypes = new Set([
-    ...subs.map((s) =>
-      typeof s === "string" ? s : (s as { type: string }).type,
-    ),
-    ...getDeclaredEmittedEvents(parsed as PluginManifest),
-  ]);
-  for (let i = 0; i < notifEvents.length; i += 1) {
-    const e = notifEvents[i]?.event;
-    if (typeof e === "string" && !knownTypes.has(e)) {
-      log.warn(
-        `Plugin manifest '${pid}': notificationEvents[${i}].event '${e}' not declared in eventSubscriptions or emittedEvents — OS notification will still fire, but the plugin neither subscribes to nor emits this event, so it cannot service it via hostApi.onEvent`,
-      );
-    }
-  }
-
   documentSha256ByManifest.set(manifest, authoredSha256);
   return manifest;
 }

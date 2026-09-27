@@ -7401,30 +7401,6 @@
             ],
             "type": "object"
           },
-          "notificationEvents": {
-            "deprecated": true,
-            "items": {
-              "properties": {
-                "bodyField": {
-                  "type": "string"
-                },
-                "bypassFocusGate": {
-                  "type": "boolean"
-                },
-                "event": {
-                  "type": "string"
-                },
-                "titleField": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "event"
-              ],
-              "type": "object"
-            },
-            "type": "array"
-          },
           "onboarding": {
             "$ref": "#/$defs/types/PluginOnboardingSpec"
           },

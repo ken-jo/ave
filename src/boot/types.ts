@@ -272,8 +272,8 @@ export interface AppServices {
   skillStore?: import("../main/skill-store.js").SkillStore;
   agentProfileStore?: import("../main/agent-profile-store.js").AgentProfileStore;
   personaPromptStore?: import("../main/persona-prompt-store.js").PersonaPromptStore;
-  /** Rebuild OS notification handlers after plugin install or removal. */
-  refreshPluginNotifications?: () => void;
+  /** Rebuild plugin event bridge subscriptions after install or removal. */
+  refreshPluginEventBridge?: () => void;
   /** SoT — canonical plugin install/cache paths. */
   pluginPaths?: ReturnType<typeof import("../plugins/plugin-paths.js").resolvePluginPaths>;
   /** Host-owned wipe for persistent plugin auth sessions. */

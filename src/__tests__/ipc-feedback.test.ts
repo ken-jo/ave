@@ -52,7 +52,7 @@ function makeServices(overrides: Record<string, unknown> = {}) {
     pluginMarketplace: { list: vi.fn(() => []), install: vi.fn(), uninstall: vi.fn() },
     memoryManager: { listMemoryEntries: vi.fn(() => []), saveMemory: vi.fn(), deleteMemory: vi.fn(), searchMemoryEntries: vi.fn(() => []), getMemoryContext: vi.fn(() => ""), getUserPreferences: vi.fn(() => ""), updateUserPreferences: vi.fn(), saveSession: vi.fn() },
     approvalGate: null,
-    refreshPluginNotifications: vi.fn(),
+    refreshPluginEventBridge: vi.fn(),
     mcpManager: { listServers: vi.fn(() => []), killSwitch: vi.fn() },
     ...overrides,
   };

@@ -65,7 +65,7 @@ function makeDeps(pluginId: string, cacheRoot: string, uninstallError?: Error) {
       drainPluginInstallLockOperations,
     ),
     emitHostEvent: vi.fn(),
-    refreshPluginNotifications: vi.fn(),
+    refreshPluginEventBridge: vi.fn(),
     log: { warn: vi.fn() },
   };
 }

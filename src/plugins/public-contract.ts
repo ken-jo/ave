@@ -554,20 +554,6 @@ export interface PluginManifest {
 
 
   /**
-   * Deprecated: declare the alert as a kind in `alerts` and raise it through
-   * the host alert pipeline instead. The host warns at load when a manifest
-   * declares both; the field keeps working until the release that retires it.
-   *
-   * @deprecated
-   */
-  notificationEvents?: Array<{
-    event: string;
-    titleField?: string;
-    bodyField?: string;
-    bypassFocusGate?: boolean;
-  }>;
-
-  /**
    * Recommended-work channel declaration — which KINDS of work proposal this
    * plugin may post to the host's Work Board via
    * {@link PluginHostApi.proposeWork}.

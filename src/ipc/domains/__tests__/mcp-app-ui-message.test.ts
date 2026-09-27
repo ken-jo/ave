@@ -73,7 +73,7 @@ async function setup(opts?: { queueGuidance?: () => string; sessionId?: string }
     settingsService: { get: vi.fn(() => ({})) },
     auditLogger: { log: vi.fn() },
     pluginMarketplace: { list: vi.fn(async () => []) },
-    refreshPluginNotifications: vi.fn(),
+    refreshPluginEventBridge: vi.fn(),
     conversationLoop,
     findLoopBySessionId: vi.fn((sessionId: string) => {
       if (sessionId === primarySession) return conversationLoop;

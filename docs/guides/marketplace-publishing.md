@@ -119,9 +119,10 @@ fails the check. Keep this value fixed across later app releases; the
 [release checklist](../development/release-process.md#alerts-release-publication)
 owns its publication-time selection. Supply `releasedManifests` when checking
 release artifacts, including release-only packages whose minimum app version is
-at or above that threshold. The checker reports `notificationEvents` on eligible
-tree and supplied release manifests; older declarations keep their transition
-window. This publication check does not remove legacy runtime support.
+at or above that threshold. The checker refuses `notificationEvents` on eligible
+tree and supplied release manifests, including an empty declaration. Older
+published artifacts retain their historical threshold treatment; an installed
+manifest carrying the field loads after the host drops it with a warning.
 
 ## Linking To A Package
 

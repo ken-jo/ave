@@ -703,33 +703,6 @@
                 ]
               }
             },
-            "notificationEvents": {
-              "type": "array",
-              "description": "Deprecated: declare the alert as a kind in `alerts` instead. The host warns at load when a manifest declares both; the field keeps working until the release that retires it.",
-              "items": {
-                "type": "object",
-                "required": [
-                  "event"
-                ],
-                "additionalProperties": false,
-                "properties": {
-                  "event": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "titleField": {
-                    "type": "string"
-                  },
-                  "bodyField": {
-                    "type": "string"
-                  },
-                  "bypassFocusGate": {
-                    "type": "boolean",
-                    "description": "When true, this event bypasses the host focus-gate AND cooldown-gate suppression and always fires an OS-level notification regardless of Ave window focus state or recent prior emits from the same plugin. The host additionally promotes urgent=true for bypass events (sound + critical urgency) unless the caller explicitly opts out. Use for critical flows (meeting capture, security alerts) where the user must be notified out-of-band. Refs former_org/ave#843."
-                  }
-                }
-              }
-            },
             "dependencies": {
               "type": "array",
               "description": "Plugin dependencies that should be installed or considered with this plugin. This is not a delivery mode.",
@@ -1263,7 +1236,6 @@
                 "workProposals": false,
                 "alerts": false,
                 "configInherits": false,
-                "notificationEvents": false,
                 "dependencies": false,
                 "pluginAccess": false,
                 "llmKeySource": false,

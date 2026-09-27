@@ -81,13 +81,16 @@ version from the design example. At publication:
    manifests and supplied release manifests against the matching descriptor or
    index minimum version. An eligible release-only package without manifest
    evidence fails the check. A `notificationEvents` declaration at or above the
-   threshold is reported even when its array is empty. Older packages retain
-   the compatibility window.
+   threshold is refused even when its array is empty. Older package artifacts
+   retain their historical threshold treatment.
 4. Include the new-mail and meeting-summary opt-in loss in the release notes.
-   Confirm the remaining official notification consumer has migrated before the
-   following minor release retires `notificationEvents`, its bridge and contract
-   type. That removal must drop the field with a warning rather than refuse the
-   whole installed manifest.
+   The 0.13.0 installer draft must remain unpublished until `local-indexer` has
+   published a version on the alert contract. Confirm the published artifact's
+   manifest declares `alerts.kinds` and `requires.hostProtocol: "2"`, and record
+   its version and tag in the release evidence before publishing the installer.
+   The host then drops
+   `notificationEvents` from installed manifests with one warning per extension,
+   before strict validation, rather than refusing the whole installed manifest.
 
 The explicit caller option lets publication select the actual release once and
 keeps the same checker usable by every source. Updating the app's own package

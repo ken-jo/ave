@@ -114,11 +114,11 @@ function withoutLegacyFields(document: unknown): unknown {
   return { ...document, extensions: { ...extensions, [AVE_EXTENSION_NAMESPACE]: rest } };
 }
 
-function checkNotificationDeprecation(document: unknown, minAppVersion: string, alertsReleaseVersion: string, report: (message: string) => void): void {
+function checkRetiredNotificationDeclaration(document: unknown, minAppVersion: string, alertsReleaseVersion: string, report: (message: string) => void): void {
   const extensions = isRecord(document) ? document.extensions : undefined;
   const ave = isRecord(extensions) ? extensions[AVE_EXTENSION_NAMESPACE] : undefined;
   if (isRecord(ave) && Object.hasOwn(ave, "notificationEvents") && compareSemver(minAppVersion, alertsReleaseVersion) >= 0) {
-    report(`notificationEvents is deprecated for minAppVersion ${minAppVersion} at or above the alerts release ${alertsReleaseVersion}; declare alerts kinds instead`);
+    report(`notificationEvents is retired for minAppVersion ${minAppVersion} at or above the alerts release ${alertsReleaseVersion}; declare alerts kinds instead`);
   }
 }
 
@@ -135,7 +135,7 @@ function checkReleasedManifests(entry: IndexPackage, released: ReadonlyMap<strin
     const expected = { name: entry.name, version: version.version, minAppVersion: version.minAppVersion, hostProtocol: version.hostProtocol, authority: version.authority as PluginAuthority };
     const held = version.yanked ? withoutLegacyFields(document) : document;
     for (const mismatch of gitInstallManifestMismatches(held, expected)) report(`the released plugin.json of ${version.version}: ${mismatch}`);
-    checkNotificationDeprecation(held, version.minAppVersion, alertsReleaseVersion,
+    checkRetiredNotificationDeclaration(held, version.minAppVersion, alertsReleaseVersion,
       (message) => report(`the released plugin.json of ${version.version}: ${message}`));
   }
 }
@@ -174,7 +174,7 @@ function checkPlugin(
     return;
   }
   for (const mismatch of manifestMismatches(document, descriptor)) report(`${manifestPath}: ${mismatch}`);
-  checkNotificationDeprecation(document, descriptor.minAppVersion, options.alertsReleaseVersion,
+  checkRetiredNotificationDeclaration(document, descriptor.minAppVersion, options.alertsReleaseVersion,
     (message) => report(`${manifestPath}: ${message}`));
 }
 

@@ -159,7 +159,7 @@ const SERVICE_KEYS: (string | symbol)[] = [
   "skillStore",
   "agentProfileStore",
   "personaPromptStore",
-  "refreshPluginNotifications",
+  "refreshPluginEventBridge",
   "pluginPaths",
   "clearAuthPartitionService",
   "listPluginAuthPartitionsService",

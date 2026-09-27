@@ -302,7 +302,7 @@ export function pluginLifecycleServices(deps: IpcDeps) {
     pluginRuntime,
     pluginMarketplace,
     settingsService,
-    refreshPluginNotifications,
+    refreshPluginEventBridge,
     pluginPaths,
     clearAuthPartitionService,
     listPluginAuthPartitionsService,
@@ -334,7 +334,7 @@ export function pluginLifecycleServices(deps: IpcDeps) {
       ...cleanupServices,
       drainPluginInstallLockOperationsService:
         drainPluginInstallLockOperations,
-      refreshPluginNotifications,
+      refreshPluginEventBridge,
       emitHostEvent,
       log,
     });
@@ -349,7 +349,7 @@ export function pluginLifecycleServices(deps: IpcDeps) {
       retirement,
       drainPluginInstallLockOperationsService:
         drainPluginInstallLockOperations,
-      refreshPluginNotifications,
+      refreshPluginEventBridge,
       emitHostEvent,
       log,
     }, retain);
@@ -362,7 +362,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     pluginMarketplace,
     settingsService,
     auditLogger,
-    refreshPluginNotifications,
+    refreshPluginEventBridge,
     getMainWindow,
     getAppWindows,
   } = deps;
@@ -472,7 +472,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
           throw new Error(`atomic local install committed without active runtime: ${result.pluginId}`);
         }
         emitHostEvent("plugin.installed", { pluginId: result.pluginId, source: "local-dev" });
-        refreshPluginNotifications?.();
+        refreshPluginEventBridge?.();
         broadcastPluginLifecycleEvent(CHANNELS.plugins.installResult, {
           slug: result.pluginId,
           success: true,
@@ -1247,8 +1247,8 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     //    the app's own words), so a card cannot dress its popup up as a host alert
     //    ("Ave 보안 경고: 다시 로그인하세요") and phish the user.
     //  · DELIVERY POLICY — no `bypassFocusGate`, no `urgent`. `bypassFocusGate` is an
-    //    opt-in *manifest* signal (notification-service.ts / boot/plugins.ts): reviewable
-    //    ahead of time and covered by `manifestSha256`. An untrusted iframe may ask for
+    //    opt-in *manifest* signal (an alerts kind's `osNotification`, src/alerts/service.ts):
+    //    reviewable ahead of time and covered by `manifestSha256`. An untrusted iframe may ask for
     //    attention; it does not get to rule that its alert outranks the focus gate, nor
     //    to skip the per-kind cooldown that keeps one app from starving every other
     //    plugin's real alerts. `urgent` is not passed either, so the kind's default
