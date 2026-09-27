@@ -137,6 +137,8 @@ export const en = {
   "gitMarketplace.review.mcpCwd": "Working directory: {cwd}",
   "gitMarketplace.review.mcpFingerprint": "Fingerprint: {digest}",
   "gitMarketplace.review.mcpCredential": "A credential you enter is stored in the host secret store and supplied only to this server.",
+  "gitMarketplace.server.plugin": "Plugin",
+  "gitMarketplace.server.extension": "Extension",
   "gitMarketplace.review.reviewUpdate": "Review update",
   "gitMarketplace.review.reviewSwitch": "Review switch",
   "gitMarketplace.review.keep": "Keep {version}",
@@ -152,6 +154,7 @@ export const en = {
 
   "gitMarketplace.uninstall.button": "Uninstall",
   "gitMarketplace.uninstall.removeData": "Also remove its data",
+  "gitMarketplace.uninstall.removePluginData": "Also remove this plugin's data and stored server credentials",
 
   "gitMarketplace.mcp.asksFor": "Asks you for",
   "gitMarketplace.mcp.secret": "secret",
@@ -434,6 +437,8 @@ export const ko: Record<keyof typeof en, string> = {
   "gitMarketplace.review.mcpCwd": "작업 디렉터리: {cwd}",
   "gitMarketplace.review.mcpFingerprint": "지문: {digest}",
   "gitMarketplace.review.mcpCredential": "입력한 자격 증명은 호스트의 비밀 저장소에 보관되며 이 서버에만 전달됩니다.",
+  "gitMarketplace.server.plugin": "플러그인",
+  "gitMarketplace.server.extension": "익스텐션",
   "gitMarketplace.review.reviewUpdate": "업데이트 검토",
   "gitMarketplace.review.reviewSwitch": "전환 검토",
   "gitMarketplace.review.keep": "{version} 유지",
@@ -449,6 +454,7 @@ export const ko: Record<keyof typeof en, string> = {
 
   "gitMarketplace.uninstall.button": "제거",
   "gitMarketplace.uninstall.removeData": "데이터도 함께 삭제",
+  "gitMarketplace.uninstall.removePluginData": "이 플러그인의 데이터와 저장된 서버 자격 증명도 함께 삭제",
 
   "gitMarketplace.mcp.asksFor": "입력 요청",
   "gitMarketplace.mcp.secret": "비밀",

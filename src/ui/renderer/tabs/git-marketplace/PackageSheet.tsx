@@ -212,7 +212,7 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, onC
     if (!target) return;
     setBusy(true);
     try {
-      const result = await api.uninstall({ ...target.key, ...(target.key.kind === "mcp" ? { removeData } : {}) });
+      const result = await api.uninstall({ ...target.key, ...(target.key.kind === "mcp" || target.key.kind === "agent-plugin" ? { removeData } : {}) });
       if (result.ok) {
         onChanged();
         onClose();
@@ -490,10 +490,10 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, onC
         <DialogFooter className="flex-wrap gap-2">
           {stage.stage === "detail" && target && state && !entry?.required && installedHere && (
             <div className="mr-auto flex items-center gap-2">
-              {target.key.kind === "mcp" && (
+              {(target.key.kind === "mcp" || target.key.kind === "agent-plugin") && (
                 <label className="flex items-center gap-1.5 text-xs">
                   <Checkbox checked={removeData} onCheckedChange={(checked) => setRemoveData(checked === true)} />
-                  {t("gitMarketplace.uninstall.removeData")}
+                  {t(target.key.kind === "agent-plugin" ? "gitMarketplace.uninstall.removePluginData" : "gitMarketplace.uninstall.removeData")}
                 </label>
               )}
               <Button variant="outline" size="sm" disabled={busy} onClick={() => void uninstall()} data-testid="git-marketplace:uninstall">

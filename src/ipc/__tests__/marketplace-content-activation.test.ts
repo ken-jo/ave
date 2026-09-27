@@ -4,7 +4,7 @@
  * install uses, and removing a selected theme, language or font returns its
  * setting to the default.
  */
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -26,13 +26,15 @@ vi.mock("electron", () => ({
 }));
 
 import { SettingsService } from "../../data/settings-store.js";
+import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
+import { bundledCredentialKey } from "../../mcp/bundled-credential.js";
 import type { ParsedContent } from "../../marketplace/content/kinds.js";
 import type { LedgerEntry } from "../../marketplace/content/ledger.js";
 import { installedFontStack } from "../../shared/installed-content.js";
 import { DEFAULT_BUNDLE_ID } from "../../shared/theme-bundles.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import type { IpcDeps } from "../types.js";
-import { createContentActivation, legacyContentSettings } from "../domains/marketplace-content.js";
+import { createContentActivation, legacyContentSettings, removeAgentPluginData } from "../domains/marketplace-content.js";
 
 const entry = (kind: LedgerEntry["kind"], name: string): LedgerEntry => ({
   kind,
@@ -79,6 +81,25 @@ describe("createContentActivation", () => {
 
   afterEach(async () => {
     await cleanupTmpDir(userDataPath);
+  });
+
+  it("removes package data and bundled credentials only when explicitly requested", async () => {
+    const savedHome = process.env.AVE_HOME;
+    process.env.AVE_HOME = join(userDataPath, "isolated-home");
+    try {
+      const dataDir = await openFeatureNamespace("agent-plugin-data").childDir("meeting-kit");
+      writeFileSync(join(dataDir, "marker"), "retained");
+      const key = bundledCredentialKey({ kind: "agent-plugin", name: "meeting-kit" }, "notes");
+      await settingsService.setSecret(key, "private-value");
+      expect(existsSync(join(dataDir, "marker"))).toBe(true);
+      expect(settingsService.getSecret(key)).toBe("private-value");
+      await removeAgentPluginData(settingsService, "meeting-kit", ["notes"]);
+      expect(existsSync(dataDir)).toBe(false);
+      expect(settingsService.getSecret(key)).toBeNull();
+    } finally {
+      if (savedHome === undefined) delete process.env.AVE_HOME;
+      else process.env.AVE_HOME = savedHome;
+    }
   });
 
   it("installs and removes a provider preset through the settings preset path", async () => {

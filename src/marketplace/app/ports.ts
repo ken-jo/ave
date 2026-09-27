@@ -35,7 +35,7 @@ export interface ContentInstallerPort {
   installedComponents(name: string): Promise<AgentPluginComponents>;
   /** `adopt`: record an activation the settings already hold (the first-boot migration, design §16.3). */
   install(staged: StagedContent, options: { switchSource: boolean; adopt: boolean; approvedMcpServers?: readonly McpComponentConsent[] }): Promise<{ action: InstallAction }>;
-  uninstall(kind: PackageKind, name: string): Promise<void>;
+  uninstall(kind: PackageKind, name: string, options?: { removeData: boolean }): Promise<void>;
 }
 
 export interface McpInstallerPort {

@@ -31,9 +31,43 @@ import { t } from "../i18n/index.js";
 import type { PluginMcpOwner, PluginMcpTrustStore, PreparedPluginMcpProjection } from "./plugin-mcp-projection.js";
 import type { PluginRuntimeGenerationAccess } from "../plugins/plugin-host-generation.js";
 import { errorMessage } from "../shared/error-message.js";
+import { bundledConfigId, bundledCredentialKey, parseBundledConfigId, type BundledPackageRef } from "./bundled-credential.js";
 const log = createLogger("mcp-manager");
 
+interface BundledCredentialDeclaration {
+  packageName: string;
+  serverName: string;
+  transport: "stdio" | "http";
+  command?: string;
+  url?: string;
+  auth?: "api-key";
+  apiKeyEnv?: string;
+  apiKeyHeader?: string;
+}
+
+export interface BundledCredentialSource {
+  list(): readonly BundledCredentialDeclaration[];
+  reconnect(packageName: string, serverName: string): Promise<void>;
+}
+
+export interface BundledSecretStore {
+  getSecret(key: string): string | null;
+  setSecret(key: string, value: string): Promise<void>;
+  deleteSecret(key: string): Promise<void>;
+}
+
 const DEFAULT_CONFIG_PATH = join(aveHome(), "mcp", "servers.json");
+
+function validatedApiKey(value: string): string {
+  if (typeof value !== "string") throw new Error("MCP credential must be text");
+  if (/[\r\n\x00-\x08\x0B-\x1F\x7F]/u.test(value)) {
+    throw new Error(`[mcp-manager] ${t("be_mcpManager.apiKeyControlChars")}`);
+  }
+  const trimmed = value.trim();
+  if (!trimmed) throw new Error(`[mcp-manager] ${t("be_mcpManager.apiKeyEmpty")}`);
+  if (trimmed.length > 4096) throw new Error(`[mcp-manager] ${t("be_mcpManager.apiKeyTooLong")}`);
+  return trimmed;
+}
 
 interface PreparedBundledMcpRecord {
   projection: PreparedPluginMcpProjection;
@@ -52,7 +86,7 @@ export interface BundledMcpDegradedState {
   readonly pluginId: string;
   readonly generationId: string;
   readonly localId: string;
-  readonly code: "connection_failed" | "blocked-by-policy";
+  readonly code: "connection_failed" | "blocked-by-policy" | "credential_required";
   readonly message: string;
   readonly retryable: boolean;
   readonly lastAttemptAt: string;
@@ -74,6 +108,7 @@ export interface PreparedBundledMcpGeneration {
 export class McpManager {
   private clients = new Map<string, McpClient>();
   private bundledOwners = new Map<string, PluginMcpOwner>();
+  private readonly bundledCredentialSources = new Map<BundledPackageRef["kind"], BundledCredentialSource>();
   private activeBundledServerIds = new Set<string>();
   private bundledDegraded = new Map<string, readonly BundledMcpDegradedState[]>();
   private readonly bundledBaseTools = new WeakMap<Tool, Tool>();
@@ -129,6 +164,7 @@ export class McpManager {
      * per-server partition. Omitted ⇒ teardown proceeds without a UI signal.
      */
     private readonly onServerDisconnected?: (serverId: string) => void,
+    private readonly bundledSecrets?: BundledSecretStore,
   ) {
     this.configPath = configPath ?? DEFAULT_CONFIG_PATH;
     this.configLockPath = `${this.configPath}.guard`;
@@ -136,6 +172,28 @@ export class McpManager {
 
   setPluginGenerationAccess(access: PluginRuntimeGenerationAccess): void {
     this.generationAccess = access;
+  }
+
+  registerBundledCredentialSource(kind: BundledPackageRef["kind"], source: BundledCredentialSource): void {
+    this.bundledCredentialSources.set(kind, source);
+  }
+
+  private packageRefFromApproval(packageId: string): BundledPackageRef {
+    const separator = packageId.indexOf("/");
+    const kind = packageId.slice(0, separator);
+    const name = packageId.slice(separator + 1);
+    if ((kind !== "plugin" && kind !== "agent-plugin") || !name) {
+      throw new Error("bundled MCP approval has an invalid package identity");
+    }
+    return { kind, name };
+  }
+
+  bundledCredentialRefForConfigId(id: string): { packageRef: BundledPackageRef; server: string } | null {
+    const owner = this.bundledOwners.get(id);
+    if (owner && this.activeBundledServerIds.has(id)) {
+      return { packageRef: this.packageRefFromApproval(owner.pluginId.startsWith("agent-plugin/") ? owner.pluginId : `plugin/${owner.pluginId}`), server: owner.localId };
+    }
+    return parseBundledConfigId(id);
   }
 
   bundledServerIdsForPlugin(pluginId: string): readonly string[] {
@@ -335,6 +393,20 @@ export class McpManager {
             retryable: false, lastAttemptAt: new Date().toISOString() }));
           continue;
         }
+        let credential: string | null = null;
+        if (projection.config.auth === "api-key") {
+          if (!this.bundledSecrets) throw new Error("bundled MCP credential store is unavailable");
+          const bundled = projection.approval.bundled;
+          if (!bundled) throw new Error("bundled MCP approval is missing its package identity");
+          const packageRef = this.packageRefFromApproval(bundled.package);
+          credential = this.bundledSecrets.getSecret(bundledCredentialKey(packageRef, bundled.server));
+          if (!credential) {
+            degraded.push(Object.freeze({ pluginId: owner.pluginId, generationId: owner.generationId,
+              localId: projection.owner.localId, code: "credential_required", message: "credential required",
+              retryable: true, lastAttemptAt: new Date().toISOString() }));
+            continue;
+          }
+        }
         const existing = this.clients.get(projection.serverId);
         if (existing && this.activeBundledServerIds.has(projection.serverId)) {
           const baseTools = this.bundledToolSnapshots.get(projection.serverId);
@@ -349,8 +421,8 @@ export class McpManager {
         const scopedGovernance = this.governance.scopedRuntimeApproval(projection.approval);
         const stagingRegistry = new ToolRegistry();
         const connectConfig = projection.config.transport === "stdio"
-          ? { ...projection.config, sandboxRoot: await this.ensureStdioSandboxRoot(projection.serverId) }
-          : projection.config;
+          ? { ...projection.config, ...(credential ? { apiKey: credential } : {}), sandboxRoot: await this.ensureStdioSandboxRoot(projection.serverId) }
+          : { ...projection.config, ...(credential ? { apiKey: credential } : {}) };
         const client = new McpClient(
           connectConfig,
           scopedGovernance,
@@ -745,7 +817,27 @@ export class McpManager {
   /** 설정 파일의 현재 서버 목록 반환 (renderer-safe DTO) */
   async getConfigs(): Promise<McpServerConfigDto[]> {
     const configs = await this.loadFromConfig();
-    return configs.map((config) => this.toConfigDto(config));
+    const bundled: McpServerConfigDto[] = [];
+    for (const [kind, source] of this.bundledCredentialSources) {
+      for (const declaration of source.list()) {
+        const packageRef = { kind, name: declaration.packageName };
+        const runtimeId = [...this.bundledOwners].find(([serverId, owner]) =>
+          this.activeBundledServerIds.has(serverId) && owner.pluginId === `${kind}/${declaration.packageName}`
+          && owner.localId === declaration.serverName)?.[0];
+        const id = runtimeId ?? bundledConfigId(packageRef, declaration.serverName);
+        const identity = { kind, name: declaration.packageName, server: declaration.serverName };
+        if (declaration.transport === "stdio") {
+          if (!declaration.command) throw new Error("bundled MCP stdio declaration has no command");
+          bundled.push({ id, transport: "stdio", command: declaration.command, auth: declaration.auth,
+            apiKeyEnv: declaration.apiKeyEnv, bundled: identity });
+        } else {
+          if (!declaration.url) throw new Error("bundled MCP HTTP declaration has no URL");
+          bundled.push({ id, transport: "http", url: declaration.url, auth: declaration.auth,
+            apiKeyHeader: declaration.apiKeyHeader, bundled: identity });
+        }
+      }
+    }
+    return [...configs.map((config) => this.toConfigDto(config)), ...bundled];
   }
 
   getConfigPath(): string {
@@ -820,23 +912,49 @@ export class McpManager {
     });
   }
 
+  async setBundledApiKey(packageRef: BundledPackageRef, serverName: string, value: string): Promise<{ connected: boolean; warning?: string }> {
+    const source = this.bundledCredentialSources.get(packageRef.kind);
+    const declarations = source?.list().filter((entry) => entry.packageName === packageRef.name && entry.serverName === serverName) ?? [];
+    if (declarations.length !== 1 || declarations[0]?.auth !== "api-key"
+      || (declarations[0].transport === "stdio" && !declarations[0].apiKeyEnv)
+      || (declarations[0].transport === "http" && !declarations[0].apiKeyHeader)) {
+      throw new Error("bundled MCP server has no valid credential declaration");
+    }
+    if (!this.bundledSecrets) throw new Error("bundled MCP credential store is unavailable");
+    await this.bundledSecrets.setSecret(bundledCredentialKey(packageRef, serverName), validatedApiKey(value));
+    for (const [serverId, owner] of this.bundledOwners) {
+      if (this.activeBundledServerIds.has(serverId)
+        && owner.pluginId === `${packageRef.kind}/${packageRef.name}` && owner.localId === serverName) {
+        await this.disconnectBundledServer(serverId);
+      }
+    }
+    try { await source!.reconnect(packageRef.name, serverName); }
+    catch (error) { return { connected: false, warning: scrubSecrets(errorMessage(error)) }; }
+    const connected = [...this.bundledOwners].some(([serverId, owner]) => this.activeBundledServerIds.has(serverId)
+      && owner.pluginId === `${packageRef.kind}/${packageRef.name}` && owner.localId === serverName);
+    return connected ? { connected: true } : { connected: false, warning: "server did not connect" };
+  }
+
+  /** Remove an obsolete declaration's value before update preparation; restore it if the install rolls back. */
+  async stageBundledCredentialDrop(packageRef: BundledPackageRef, serverName: string): Promise<() => Promise<void>> {
+    if (!this.bundledSecrets) throw new Error("bundled MCP credential store is unavailable");
+    const key = bundledCredentialKey(packageRef, serverName);
+    const previous = this.bundledSecrets.getSecret(key);
+    if (previous === null) return async () => undefined;
+    await this.bundledSecrets.deleteSecret(key);
+    return () => this.bundledSecrets!.setSecret(key, previous);
+  }
+
   async setApiKey(serverId: string, apiKey: string): Promise<{ connected: boolean; warning?: string }> {
     const id = serverId.trim();
     if (!id) {
       throw new Error(`[mcp-manager] ${t("be_mcpManager.serverIdBlank")}`);
     }
+    if (this.bundledOwners.has(id) || id.startsWith("bundled:")) {
+      throw new Error("bundled MCP credentials require setBundledApiKey");
+    }
 
-    // HIGH: apiKey 값 자체 CR/LF + control char 검증 (raw 값 기준 — trim 전에 검사)
-    if (/[\r\n\x00-\x08\x0B-\x1F\x7F]/.test(apiKey)) {
-      throw new Error(`[mcp-manager] ${t("be_mcpManager.apiKeyControlChars")}`);
-    }
-    const trimmedKey = apiKey.trim();
-    if (trimmedKey.length === 0) {
-      throw new Error(`[mcp-manager] ${t("be_mcpManager.apiKeyEmpty")}`);
-    }
-    if (trimmedKey.length > 4096) {
-      throw new Error(`[mcp-manager] ${t("be_mcpManager.apiKeyTooLong")}`);
-    }
+    const trimmedKey = validatedApiKey(apiKey);
 
     let updatedConfig: McpServerConfig | undefined;
 

@@ -186,11 +186,16 @@ function contentInstaller(content: () => Promise<InstalledContentRuntime | null>
       await loaded.reload();
       return { action };
     },
-    uninstall: async (kind, name) => {
+    uninstall: async (kind, name, options) => {
       if (kind === "plugin" || kind === "mcp") throw new Error(`${kind} ${name} is not a content package`);
       const loaded = await runtime();
+      const installed = options?.removeData && kind === "agent-plugin" ? (await loaded.store.load()).loaded : [];
+      const content = installed.find((item) => item.entry.kind === "agent-plugin" && item.entry.name === name)?.content;
       await loaded.store.uninstall(kind, name, policy);
       await loaded.reload();
+      if (options?.removeData && kind === "agent-plugin") {
+        await loaded.removeAgentPluginData(name, content?.kind === "agent-plugin" ? Object.keys(content.components.mcpServers) : []);
+      }
     },
   };
 }

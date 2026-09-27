@@ -910,6 +910,9 @@ export class MarketplaceService implements RetirementEntryLookup {
   }
 
   async uninstall(request: UninstallRequest, options?: { retain: { reason: PluginConfigRetention["reason"] } }): Promise<UninstallResultView> {
+    if (request.removeData === true && request.kind !== "mcp" && request.kind !== "agent-plugin") {
+      throw new Error("removeData applies only to server or agent plugin packages");
+    }
     assertNotRequiredByPolicy(this.options.policy, request.kind, request.name, request.sourceId, "uninstall");
     const installed = await this.installed(request.kind, request.name);
     if (!installed || installed.sourceId !== request.sourceId) {
@@ -926,7 +929,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       }
       await this.options.installers.plugin.uninstall(request.name, retain);
     } else if (request.kind === "mcp") ({ keptDataDir } = await this.options.installers.mcp.uninstall(request.name, { removeData: request.removeData === true }));
-    else await this.options.installers.content.uninstall(request.kind, request.name);
+    else await this.options.installers.content.uninstall(request.kind, request.name, { removeData: request.removeData === true });
     await this.refeedAfter(`${request.kind} ${request.name} uninstall`);
     this.options.onCatalogChanged?.();
     return { key: { sourceId: request.sourceId, kind: request.kind, name: request.name }, keptDataDir };

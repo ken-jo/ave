@@ -237,7 +237,7 @@ type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K>
 export type McpServerConfigDto = DistributiveOmit<
   McpServerConfig,
   "apiKey" | "headers" | "env" | "args" | "sandboxRoot" | "cwd" | "pluginDataDir"
->;
+> & { bundled?: { kind: "plugin" | "agent-plugin"; name: string; server: string } };
 
 /**
  * MCP Apps spec `McpUiToolVisibility` — WHO may call a tool.

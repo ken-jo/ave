@@ -100,4 +100,37 @@ describe("installed agent plugin MCP publication", () => {
     await runtime.activate({ ...item, version: "1.1.0", generationId: "c".repeat(64) });
     expect(admissions).toEqual([true, false]);
   });
+
+  it("drops a key when its declaration changes and restores it if publication fails", async () => {
+    const { item, dataDir } = packageFixture();
+    const withCredential = (version: string, envName: string, digest: string): InstalledAgentPluginRuntime => ({
+      ...item, version, generationId: digest,
+      content: { ...item.content, components: { ...item.content.components, mcpServers: {
+        notes: { transport: "stdio", command: "./server/run", cwd: "${PLUGIN_ROOT}", auth: "api-key", apiKeyEnv: envName, digest },
+      } } },
+    });
+    let saved: string | null = "private-value";
+    let refusePublication = false;
+    const stageDrop = vi.fn(async () => {
+      const prior = saved;
+      saved = null;
+      return async () => { saved = prior; };
+    });
+    const manager = {
+      prepareBundledGeneration: vi.fn(async () => ({ published: false })),
+      publishBundledGeneration: vi.fn(() => { if (refusePublication) throw new Error("publication refused"); }),
+      discardBundledGeneration: vi.fn(async () => undefined),
+      disconnectBundledGeneration: vi.fn(async () => undefined),
+      stageBundledCredentialDrop: stageDrop,
+    };
+    const runtime = new AgentPluginMcpRuntime(manager as never, { trust: new PluginMcpTrustStore(), dataDirForPackage: async () => dataDir });
+    await runtime.activate(withCredential("1.0.0", "FIRST_TOKEN", "a".repeat(64)));
+    refusePublication = true;
+    await expect(runtime.activate(withCredential("1.1.0", "SECOND_TOKEN", "b".repeat(64)))).rejects.toThrow(/publication refused/u);
+    expect(saved).toBe("private-value");
+    refusePublication = false;
+    await runtime.activate(withCredential("1.1.0", "SECOND_TOKEN", "b".repeat(64)));
+    expect(saved).toBeNull();
+    expect(stageDrop).toHaveBeenCalledWith({ kind: "agent-plugin", name: "meeting-kit" }, "notes");
+  });
 });

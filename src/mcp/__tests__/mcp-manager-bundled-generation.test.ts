@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,13 +8,14 @@ import { ToolRegistry } from "../../tools/registry.js";
 import type { ActivePluginGeneration } from "../../plugins/plugin-generation-coordinator.js";
 
 const disconnect = vi.fn(async () => undefined);
+const constructedConfigs: Array<Record<string, unknown>> = [];
 vi.mock("../mcp-client.js", () => ({
   McpClient: class {
     constructor(
       private readonly config: { id: string },
       _governance: unknown,
       private readonly registry: ToolRegistry,
-    ) {}
+    ) { constructedConfigs.push(config); }
     async connect() {
       this.registry.register(createDynamicTool({
         name: "mcp_orion_api_orion_read",
@@ -38,7 +39,9 @@ vi.mock("../mcp-client.js", () => ({
 
 import { McpManager } from "../mcp-manager.js";
 import { McpGovernance } from "../mcp-governance.js";
-import { PluginMcpTrustStore, preparePluginMcpGeneration } from "../plugin-mcp-projection.js";
+import { PluginMcpTrustStore, prepareBundledMcpProjection, preparePluginMcpGeneration } from "../plugin-mcp-projection.js";
+import { SecretDocumentStore } from "../../data/secret-document-store.js";
+import { bundledCredentialKey } from "../bundled-credential.js";
 import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
 
 const root = mkdtempSync(join(tmpdir(), "ave-mcp-generation-"));
@@ -72,9 +75,61 @@ afterAll(async () => rm(root, { recursive: true, force: true }));
 beforeEach(() => {
   disconnect.mockReset();
   disconnect.mockResolvedValue(undefined);
+  constructedConfigs.length = 0;
 });
 
 describe("McpManager bundled generation", () => {
+  it("stores a bundled key under packaged encryption and injects it only into a connection", async () => {
+    const secretPath = join(root, "bundled-secrets.json");
+    const encryption = {
+      isEncryptionAvailable: () => true,
+      getSelectedStorageBackend: () => "keychain",
+      encryptString: (value: string) => Buffer.from(`sealed:${value}`),
+      decryptString: (value: Buffer) => value.toString().slice("sealed:".length),
+    };
+    const document = new SecretDocumentStore({ path: secretPath, policy: "packaged", encryption });
+    const secrets = { getSecret: (key: string) => document.get(key), setSecret: (key: string, value: string) => document.set(key, value),
+      deleteSecret: (key: string) => document.delete(key) };
+    const manager = new McpManager(new McpGovernance(join(root, "policy-credential.json")), new ToolRegistry(),
+      unusedNetworkFetch, join(root, "servers-credential.json"), undefined, undefined, undefined, undefined, secrets);
+    const projection = prepareBundledMcpProjection({ pluginId: "agent-plugin/meeting-kit", pluginVersion: "1.0.0",
+      generationId: "a".repeat(64), activationId: "run-1", localId: "notes", fingerprint: "b".repeat(64) },
+    { transport: "http", url: "https://example.test/mcp", auth: "api-key", apiKeyHeader: "X-Token" });
+    const trust = new PluginMcpTrustStore();
+    trust.approve(projection);
+    const owner = { pluginId: "agent-plugin/meeting-kit", generationId: "run-1" };
+    const missing = await manager.prepareBundledGeneration(owner, [projection], trust);
+    expect(missing.degraded).toMatchObject([{ code: "credential_required" }]);
+    expect(constructedConfigs).toHaveLength(0);
+    await manager.discardBundledGeneration(missing);
+    manager.registerBundledCredentialSource("agent-plugin", {
+      list: () => [{ packageName: "meeting-kit", serverName: "notes", transport: "http", url: "https://example.test/mcp",
+        auth: "api-key", apiKeyHeader: "X-Token" }],
+      reconnect: async () => {
+        const prepared = await manager.prepareBundledGeneration(owner, [projection], trust);
+        manager.publishBundledGeneration(prepared);
+      },
+    });
+    expect(await manager.setBundledApiKey({ kind: "agent-plugin", name: "meeting-kit" }, "notes", " private-value ")).toEqual({ connected: true });
+    expect(constructedConfigs.at(-1)?.apiKey).toBe("private-value");
+    expect(JSON.stringify(projection)).not.toContain("private-value");
+    expect(JSON.stringify(await manager.getConfigs())).not.toContain("private-value");
+    expect(readFileSync(secretPath, "utf8")).not.toContain("private-value");
+    const key = bundledCredentialKey({ kind: "agent-plugin", name: "meeting-kit" }, "notes");
+    const reopened = new SecretDocumentStore({ path: secretPath, policy: "packaged", encryption });
+    expect(reopened.get(key)).toBe("private-value");
+    const restarted = new McpManager(new McpGovernance(join(root, "policy-credential-restart.json")), new ToolRegistry(),
+      unusedNetworkFetch, join(root, "servers-credential-restart.json"), undefined, undefined, undefined, undefined,
+      { getSecret: (name) => reopened.get(name), setSecret: (name, value) => reopened.set(name, value), deleteSecret: (name) => reopened.delete(name) });
+    const successor = prepareBundledMcpProjection({ ...projection.owner, activationId: "run-2" },
+      { transport: "http", url: "https://example.test/mcp", auth: "api-key", apiKeyHeader: "X-Token" });
+    expect(trust.isApproved(successor)).toBe(true);
+    const resumed = await restarted.prepareBundledGeneration({ pluginId: owner.pluginId, generationId: "run-2" }, [successor], trust);
+    expect(constructedConfigs.at(-1)?.apiKey).toBe("private-value");
+    await restarted.discardBundledGeneration(resumed);
+    await expect(manager.setApiKey(projection.serverId, "another-value")).rejects.toThrow(/setBundledApiKey/u);
+  });
+
   it("prepares hidden, atomically swaps stable tools, and exact-gates stale calls", async () => {
     const registry = new ToolRegistry();
     const manager = new McpManager(

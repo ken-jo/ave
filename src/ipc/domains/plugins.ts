@@ -994,7 +994,10 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     if (!checkSetApiKeyRateLimit(String(serverId))) {
       throw new Error("Rate limit exceeded: ave:mcp:config:set-api-key (5/min per server)");
     }
-    return deps.mcpManager.setApiKey(serverId, apiKey);
+    const bundled = deps.mcpManager.bundledCredentialRefForConfigId(serverId);
+    return bundled
+      ? deps.mcpManager.setBundledApiKey(bundled.packageRef, bundled.server, apiKey)
+      : deps.mcpManager.setApiKey(serverId, apiKey);
   });
   ipcMain.handle(CHANNELS.mcp.configRemove, async (e, serverId: string) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.mcp.configRemove, e); return UNAUTHORIZED_FRAME; }

@@ -39,6 +39,7 @@ export async function setupMcp(ctx: BootContext): Promise<void> {
     // time (BootContext has no windowManager; it is the module-level singleton
     // in app-state, set at main.ts after window creation).
     createMcpServerDisconnectedSink(),
+    ctx.settingsService,
   );
   try {
     const configs = await mcpManager.loadFromConfig();

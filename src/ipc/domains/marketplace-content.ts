@@ -12,6 +12,7 @@
  */
 import { ipcMain, protocol } from "electron";
 import { randomBytes } from "node:crypto";
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { DEFAULT_LOCALE, SUPPORTED_LOCALES, registerInstalledLocales, setInstalledCatalogLoader } from "../../i18n/index.js";
@@ -38,6 +39,8 @@ import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } fro
 import type { IpcDeps } from "../types.js";
 import { broadcastSettingsSnapshot, mutateMarketplaceProviderPresets } from "./settings.js";
 import { broadcastPromptsUpdated } from "./prompts.js";
+import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
+import { bundledCredentialKey } from "../../mcp/bundled-credential.js";
 
 const log = createLogger("marketplace-content");
 
@@ -232,6 +235,17 @@ export interface InstalledContentRuntime {
   service: InstalledContentPort;
   /** Re-read the store and apply it in main again. */
   reload(): Promise<void>;
+  removeAgentPluginData(name: string, serverNames: readonly string[]): Promise<void>;
+}
+
+export async function removeAgentPluginData(settings: Pick<IpcDeps["settingsService"], "deleteSecret">, name: string, serverNames: readonly string[]): Promise<void> {
+  if (!/^[a-z][a-z0-9-]*$/u.test(name)) throw new Error("invalid agent plugin package name");
+  const operations = serverNames.map((server) => settings.deleteSecret(
+    bundledCredentialKey({ kind: "agent-plugin", name }, server)));
+  operations.push(rm(join(openFeatureNamespace("agent-plugin-data").dir, name), { recursive: true, force: true }));
+  const results = await Promise.allSettled(operations);
+  const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+  if (failures.length > 0) throw new AggregateError(failures.map((result) => result.reason), "agent plugin data removal failed");
 }
 
 /** Apply the loaded content to this process: locales, theme ids, and the skill and agent stores. */
@@ -247,6 +261,20 @@ async function applyInMain(deps: IpcDeps, service: InstalledContentService, view
   deps.skillStore?.setInstalledAgentPlugins(agentPlugins);
   deps.agentProfileStore?.setInstalledAgentPlugins(agentPlugins);
   deps.personaPromptStore?.setInstalledAgentPlugins(agentPlugins);
+  if (service.installedAgentPluginRuntime().some((item) => Object.keys(item.content.components.mcpServers).length > 0)) {
+    deps.mcpManager.registerBundledCredentialSource("agent-plugin", {
+      list: () => service.installedAgentPluginRuntime().flatMap((item) => Object.entries(item.content.components.mcpServers).map(([serverName, server]) => ({
+        packageName: item.name, serverName, transport: server.transport,
+        ...(server.transport === "stdio" ? { command: server.command, apiKeyEnv: server.apiKeyEnv } : { url: server.url, apiKeyHeader: server.apiKeyHeader }),
+        ...(server.auth ? { auth: server.auth } : {}),
+      }))),
+      reconnect: async (packageName, serverName) => {
+        const item = service.installedAgentPluginRuntime().find((installed) => installed.name === packageName);
+        if (!item || !Object.hasOwn(item.content.components.mcpServers, serverName)) throw new Error("bundled MCP component is no longer installed");
+        await mcpRuntime.reconnect(item);
+      },
+    });
+  }
   await mcpRuntime.sync(service.installedAgentPluginRuntime());
   broadcastPromptsUpdated(deps);
 }
@@ -275,6 +303,9 @@ export async function loadInstalledContent(deps: IpcDeps, assetToken: string, ro
     service,
     async reload() {
       await applyInMain(deps, service, await service.reload(), mcpRuntime);
+    },
+    async removeAgentPluginData(name, serverNames) {
+      await removeAgentPluginData(deps.settingsService, name, serverNames);
     },
   };
 }

@@ -7,13 +7,20 @@ import { PluginMcpTrustStore } from "../../mcp/plugin-mcp-projection.js";
 import type { McpComponentConsent } from "../../shared/git-marketplace.js";
 import type { InstalledAgentPluginRuntime } from "./service.js";
 
-type BundledManager = Pick<McpManager, "prepareBundledGeneration" | "publishBundledGeneration" | "discardBundledGeneration" | "disconnectBundledGeneration">;
+type BundledManager = Pick<McpManager, "prepareBundledGeneration" | "publishBundledGeneration" | "discardBundledGeneration" | "disconnectBundledGeneration" | "stageBundledCredentialDrop">;
 
 interface ActivePackage {
   version: string;
   generationId: string;
   dir: string;
   activationId: string;
+  credentialDeclarations: Readonly<Record<string, string>>;
+}
+
+function credentialDeclarations(item: InstalledAgentPluginRuntime): Record<string, string> {
+  return Object.fromEntries(Object.entries(item.content.components.mcpServers)
+    .filter(([, server]) => server.auth === "api-key")
+    .map(([name, server]) => [name, JSON.stringify([server.auth, server.transport === "stdio" ? server.apiKeyEnv : server.apiKeyHeader])]));
 }
 
 export interface AgentPluginMcpRuntimeOptions {
@@ -56,9 +63,31 @@ export class AgentPluginMcpRuntime {
     this.active.delete(name);
   }
 
-  private async publishOne(item: InstalledAgentPluginRuntime, consents: readonly McpComponentConsent[] = []): Promise<void> {
+  private async stageChangedCredentials(name: string, previous: ActivePackage | undefined, next: Readonly<Record<string, string>>): Promise<() => Promise<void>> {
+    const restores: Array<() => Promise<void>> = [];
+    const restore = async () => {
+      const results = await Promise.allSettled(restores.reverse().map((run) => run()));
+      const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+      if (failures.length > 0) throw new AggregateError(failures.map((result) => result.reason), "bundled credential rollback failed");
+    };
+    try {
+      for (const [serverName, declaration] of Object.entries(previous?.credentialDeclarations ?? {})) {
+        if (next[serverName] !== declaration) {
+          restores.push(await this.manager.stageBundledCredentialDrop({ kind: "agent-plugin", name }, serverName));
+        }
+      }
+    } catch (error) {
+      try { await restore(); }
+      catch (restoreError) { throw new AggregateError([error, restoreError], "bundled credential staging rollback failed"); }
+      throw error;
+    }
+    return restore;
+  }
+
+  private async publishOne(item: InstalledAgentPluginRuntime, consents: readonly McpComponentConsent[] = [], force = false): Promise<void> {
     const pluginId = `agent-plugin/${item.name}`;
     const previous = this.active.get(item.name);
+    const nextCredentials = credentialDeclarations(item);
     const selected = new Set<string>();
     for (const consent of consents) {
       const server = Object.hasOwn(item.content.components.mcpServers, consent.name)
@@ -69,11 +98,14 @@ export class AgentPluginMcpRuntime {
       selected.add(consent.name);
     }
     if (Object.keys(item.content.components.mcpServers).length === 0) {
-      await this.removeOne(item.name);
+      const restoreCredentials = await this.stageChangedCredentials(item.name, previous, nextCredentials);
+      try { await this.removeOne(item.name); }
+      catch (error) { await restoreCredentials(); throw error; }
       return;
     }
-    if (consents.length === 0 && previous?.version === item.version && previous.generationId === item.generationId && previous.dir === item.dir) return;
-    const activationId = randomUUID();
+    const sameGeneration = previous?.version === item.version && previous.generationId === item.generationId && previous.dir === item.dir;
+    if (!force && consents.length === 0 && sameGeneration) return;
+    const activationId = force && sameGeneration ? previous.activationId : randomUUID();
     const projections = resolveRuntimeMcp(item.content.components.mcpServers, {
       packageName: item.name,
       version: item.version,
@@ -84,6 +116,7 @@ export class AgentPluginMcpRuntime {
     });
     const trust = await this.trustStore();
     const newApprovals = projections.filter((projection) => selected.has(projection.owner.localId) && !trust.isApproved(projection));
+    const restoreCredentials = await this.stageChangedCredentials(item.name, previous, nextCredentials);
     try {
       for (const projection of newApprovals) trust.approve(projection);
       const prepared = await this.manager.prepareBundledGeneration(
@@ -92,11 +125,16 @@ export class AgentPluginMcpRuntime {
       try { this.manager.publishBundledGeneration(prepared); }
       catch (error) { await this.manager.discardBundledGeneration(prepared); throw error; }
     } catch (error) {
-      for (const projection of newApprovals) trust.revoke(projection);
+      const rollbackErrors: unknown[] = [];
+      for (const projection of newApprovals) {
+        try { trust.revoke(projection); } catch (rollbackError) { rollbackErrors.push(rollbackError); }
+      }
+      try { await restoreCredentials(); } catch (rollbackError) { rollbackErrors.push(rollbackError); }
+      if (rollbackErrors.length > 0) throw new AggregateError([error, ...rollbackErrors], "agent plugin MCP activation rollback failed");
       throw error;
     }
-    this.active.set(item.name, { version: item.version, generationId: item.generationId, dir: item.dir, activationId });
-    if (previous) await this.manager.disconnectBundledGeneration(pluginId, previous.activationId);
+    this.active.set(item.name, { version: item.version, generationId: item.generationId, dir: item.dir, activationId, credentialDeclarations: nextCredentials });
+    if (previous && previous.activationId !== activationId) await this.manager.disconnectBundledGeneration(pluginId, previous.activationId);
   }
 
   /** Called inside the content-store transaction so a refused publication rolls back the ledger. */
@@ -106,6 +144,10 @@ export class AgentPluginMcpRuntime {
 
   async deactivate(name: string): Promise<void> {
     await this.serialize(() => this.removeOne(name));
+  }
+
+  async reconnect(item: InstalledAgentPluginRuntime): Promise<void> {
+    await this.serialize(() => this.publishOne(item, [], true));
   }
 
   async sync(packages: readonly InstalledAgentPluginRuntime[]): Promise<void> {
