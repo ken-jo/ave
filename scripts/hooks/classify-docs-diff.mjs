@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
+import { withoutGitContext } from "../lib/git-process-environment.mjs";
 import { classifyDocumentationChanges } from "./pre-push-markdown-policy.mjs";
 
 const base = process.argv[2];
@@ -11,7 +12,7 @@ if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(base ?? "") ||
 
 const result = spawnSync("git", [
   "diff", "--no-renames", "--raw", "-z", `${base}..${head}`, "--",
-], { encoding: "buffer" });
+], { encoding: "buffer", env: withoutGitContext() });
 if (result.error || result.status !== 0) {
   throw new Error("could not compare documentation changes with the base");
 }

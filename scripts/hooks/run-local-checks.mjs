@@ -17,6 +17,7 @@
 import { existsSync } from "node:fs";
 import { parsePrePushUpdates, readPrePushInput } from "./pre-push-ref-updates.mjs";
 import { checkPushedDocumentation } from "./pre-push-document-safety.mjs";
+import { withoutGitContext } from "../lib/git-process-environment.mjs";
 import { basename, join, resolve } from "node:path";
 import { TextDecoder } from "node:util";
 
@@ -129,9 +130,9 @@ function captureOptional(cmd, args, cwd) {
   return (result.stdout || "").trim();
 }
 
-function run(cmd, args, cwd) {
+function run(cmd, args, cwd, env = process.env) {
   console.log("");
-  runCommand(cmd, args, { cwd, label: `checks ${basename(cwd)}` });
+  runCommand(cmd, args, { cwd, env, label: `checks ${basename(cwd)}` });
 }
 
 function available(...candidates) {
@@ -642,7 +643,8 @@ function runPackageScripts(dir, scriptNames, checkLabel) {
   }
   const packageManager = getPackageManager(dir);
   for (const scriptName of scriptNames) {
-    run(packageManager, ["run", scriptName], dir);
+    run(packageManager, ["run", scriptName], dir,
+      scriptName === "test" ? withoutGitContext() : process.env);
   }
 }
 
@@ -703,7 +705,7 @@ function runAppTargetedVitestChecks(dir, testFiles, supportTestFiles = []) {
   run(bun, ["run", "check:test-duplicates", "--", "--fail-on-duplicates"], dir);
   ensureAppTestRuntimeAbi(dir);
   const vitestArgs = targetTestFiles.map((file) => `./${file}`);
-  run(bun, ["run", "test:vitest", "--", "run", ...vitestArgs], dir);
+  run(bun, ["run", "test:vitest", "--", "run", ...vitestArgs], dir, withoutGitContext());
 }
 
 function runAppCommentOnlyChecks(dir) {

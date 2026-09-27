@@ -1,7 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -9,13 +9,24 @@ import {
   isDocumentationPath,
 } from "../../scripts/hooks/pre-push-markdown-policy.mjs";
 import { checkPushedDocumentation } from "../../scripts/hooks/pre-push-document-safety.mjs";
+import { gitFixtureEnv } from "../../src/__tests__/support/git-fixture-env.mjs";
 
 const root = resolve(import.meta.dirname, "../..");
 const inventory = JSON.parse(readFileSync(resolve(root, "scripts/hooks/documentation-references.json"), "utf8")) as {
   consumed: string[];
   referencedOnly: string[];
 };
-const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" });
+const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], {
+  encoding: "utf8", env: gitFixtureEnv(root),
+});
+const fixtureGit = (repo: string, args: string[], source = process.env) =>
+  execFileSync("git", ["-C", repo, ...args], {
+    encoding: "utf8", env: gitFixtureEnv(repo, source),
+  });
+const fixtureCli = (repo: string, cli: string, base: string, source = process.env) =>
+  execFileSync("node", [cli, base], {
+    cwd: repo, encoding: "utf8", env: gitFixtureEnv(repo, source),
+  });
 const modified = (path: string) => ({ status: "M", path, oldMode: "100644", newMode: "100644" });
 
 describe("documentation impact policy", () => {
@@ -102,7 +113,7 @@ describe("documentation impact policy", () => {
   it("uses the same policy for the Git diff command", () => {
     const repo = mkdtempSync(join(tmpdir(), "docs-impact-"));
     const cli = resolve(root, "scripts/hooks/classify-docs-diff.mjs");
-    const runGit = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+    const runGit = (...args: string[]) => fixtureGit(repo, args);
     try {
       runGit("init", "-q");
       runGit("config", "user.name", "Test Author");
@@ -114,11 +125,11 @@ describe("documentation impact policy", () => {
       const base = runGit("rev-parse", "HEAD").trim();
       writeFileSync(join(repo, "docs", "example.md"), "documentation\n");
       runGit("commit", "-qam", "docs");
-      expect(execFileSync("node", [cli, base], { cwd: repo, encoding: "utf8" })).toBe("docs_only=true\n");
+      expect(fixtureCli(repo, cli, base)).toBe("docs_only=true\n");
       rmSync(join(repo, "docs", "example.md"));
       runGit("commit", "-qam", "remove docs");
-      expect(execFileSync("node", [cli, base], { cwd: repo, encoding: "utf8" })).toBe("docs_only=false\n");
-      expect(spawnSync("node", [cli, "0".repeat(40)], { cwd: repo }).status).not.toBe(0);
+      expect(fixtureCli(repo, cli, base)).toBe("docs_only=false\n");
+      expect(spawnSync("node", [cli, "0".repeat(40)], { cwd: repo, env: gitFixtureEnv(repo) }).status).not.toBe(0);
       if (process.platform !== "win32") {
         writeFileSync(join(repo, "source.txt"), "source\n");
         writeFileSync(join(repo, "other.txt"), "other\n");
@@ -129,16 +140,16 @@ describe("documentation impact policy", () => {
         symlinkSync("../source.txt", join(repo, "docs", "link.md"));
         runGit("add", "docs/link.md");
         runGit("commit", "-qm", "link added");
-        expect(execFileSync("node", [cli, ordinaryBase], { cwd: repo, encoding: "utf8" })).toBe("docs_only=false\n");
+        expect(fixtureCli(repo, cli, ordinaryBase)).toBe("docs_only=false\n");
         const linkBase = runGit("rev-parse", "HEAD").trim();
         rmSync(join(repo, "docs", "link.md"));
         symlinkSync("../other.txt", join(repo, "docs", "link.md"));
         runGit("commit", "-qam", "link retargeted");
-        expect(execFileSync("node", [cli, linkBase], { cwd: repo, encoding: "utf8" })).toBe("docs_only=false\n");
+        expect(fixtureCli(repo, cli, linkBase)).toBe("docs_only=false\n");
         const executableBase = runGit("rev-parse", "HEAD").trim();
         chmodSync(join(repo, "docs", "example.md"), 0o755);
         runGit("commit", "-qam", "mode changed");
-        expect(execFileSync("node", [cli, executableBase], { cwd: repo, encoding: "utf8" })).toBe("docs_only=false\n");
+        expect(fixtureCli(repo, cli, executableBase)).toBe("docs_only=false\n");
       }
     } finally {
       rmSync(repo, { recursive: true, force: true });
@@ -147,7 +158,7 @@ describe("documentation impact policy", () => {
 
   it("checks committed documentation even with an empty index", () => {
     const repo = mkdtempSync(join(tmpdir(), "pushed-doc-safety-"));
-    const runGit = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+    const runGit = (...args: string[]) => fixtureGit(repo, args);
     try {
       runGit("init", "-q");
       runGit("config", "user.name", "Test Author");
@@ -170,6 +181,68 @@ describe("documentation impact policy", () => {
         .toThrow(/merge marker|pushed diff failed/);
     } finally {
       rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps hook Git overrides away from fixture refs, index, and config", () => {
+    const directory = mkdtempSync(join(tmpdir(), "git-fixture-isolation-"));
+    const sentinel = join(directory, "sentinel");
+    const fixture = join(directory, "fixture");
+    mkdirSync(sentinel);
+    mkdirSync(fixture);
+    try {
+      fixtureGit(sentinel, ["init", "-q"]);
+      fixtureGit(sentinel, ["config", "user.name", "Sentinel"]);
+      fixtureGit(sentinel, ["config", "user.email", "sentinel@example.invalid"]);
+      writeFileSync(join(sentinel, "sentinel.txt"), "keep\n");
+      fixtureGit(sentinel, ["add", "."]);
+      fixtureGit(sentinel, ["commit", "-qm", "sentinel"]);
+      fixtureGit(sentinel, ["branch", "secondary"]);
+      fixtureGit(sentinel, ["tag", "pinned"]);
+      const refsRoot = join(sentinel, ".git", "refs");
+      const refs = (directory: string): Array<[string, Buffer]> =>
+        readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+          const path = join(directory, entry.name);
+          return entry.isDirectory() ? refs(path) : [[relative(refsRoot, path), readFileSync(path)]];
+        });
+      const metadata = () => ({
+        refs: refs(refsRoot),
+        index: readFileSync(join(sentinel, ".git", "index")),
+        config: readFileSync(join(sentinel, ".git", "config")),
+      });
+      const before = metadata();
+      const poisoned = {
+        ...process.env,
+        GIT_DIR: join(sentinel, ".git"),
+        GIT_COMMON_DIR: join(sentinel, ".git"),
+        GIT_WORK_TREE: sentinel,
+        GIT_INDEX_FILE: join(sentinel, ".git", "index"),
+        GIT_OBJECT_DIRECTORY: join(sentinel, ".git", "objects"),
+        GIT_ALTERNATE_OBJECT_DIRECTORIES: join(sentinel, ".git", "objects"),
+        GIT_CONFIG_GLOBAL: join(sentinel, ".git", "config"),
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "core.bare",
+        GIT_CONFIG_VALUE_0: "true",
+        GIT_PREFIX: "poison/",
+      };
+      try {
+        fixtureGit(fixture, ["init", "-q"], poisoned);
+        fixtureGit(fixture, ["config", "user.name", "Fixture"], poisoned);
+        fixtureGit(fixture, ["config", "user.email", "fixture@example.invalid"], poisoned);
+        mkdirSync(join(fixture, "docs"));
+        writeFileSync(join(fixture, "docs", "guide.md"), "base\n");
+        fixtureGit(fixture, ["add", "."], poisoned);
+        fixtureGit(fixture, ["commit", "-qm", "base"], poisoned);
+        const base = fixtureGit(fixture, ["rev-parse", "HEAD"], poisoned).trim();
+        writeFileSync(join(fixture, "docs", "guide.md"), "updated\n");
+        fixtureGit(fixture, ["commit", "-qam", "docs"], poisoned);
+        expect(fixtureCli(fixture, resolve(root, "scripts/hooks/classify-docs-diff.mjs"), base, poisoned))
+          .toBe("docs_only=true\n");
+      } finally {
+        expect(metadata()).toEqual(before);
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 
@@ -208,6 +281,26 @@ describe("documentation impact policy", () => {
     );
     expect(hook).toContain('run(commands.git, ["diff", "--cached", "--check"], repoRoot)');
     expect(hook).toContain("mergeMarkers.test(stagedContent)");
+  });
+
+  it("removes hook Git context before full and targeted test runners", () => {
+    const hook = readFileSync(resolve(root, "scripts/hooks/run-local-checks.mjs"), "utf8");
+    expect(hook).toContain('scriptName === "test" ? withoutGitContext() : process.env');
+    expect(hook).toContain('"run", ...vitestArgs], dir, withoutGitContext()');
+    const source = {
+      PATH: process.env.PATH,
+      GIT_DIR: "/sentinel/.git",
+      GIT_WORK_TREE: "/sentinel",
+      GIT_INDEX_FILE: "/sentinel/index",
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "core.bare",
+      GIT_CONFIG_VALUE_0: "true",
+    };
+    const env = gitFixtureEnv(resolve(tmpdir(), "git-fixture-home"), source);
+    expect(Object.keys(env).filter((name) => name.startsWith("GIT_"))).toEqual([
+      "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL",
+    ]);
+    expect(env.HOME).toBe(resolve(tmpdir(), "git-fixture-home"));
   });
 
   it("keeps the documentation-wide policy gate on the fast path", () => {
