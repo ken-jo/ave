@@ -47,6 +47,7 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow
 
   it("denies a blocking event when wrapping fails before spawn", async () => {
     sandboxActive = true;
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     wrap.mockRejectedValueOnce(new Error("wrap failed"));
     const result = await runOneHookScript(runnable(), payload);
     expect(result).toMatchObject({ decision: "deny", reason: expect.stringContaining("sandbox unavailable") });
@@ -63,6 +64,7 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow
   it("passes the data-only write grant and sensitive deny floors to the wrapper", async () => {
     writeFileSync(script, "process.stdout.write(JSON.stringify({action:'allow',reason:'wrapped'}))");
     sandboxActive = true;
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     wrap.mockResolvedValueOnce({ argv: ["node", script], env: {} });
     const result = await runOneHookScript(runnable(), payload);
     expect(result.decision).toBe("allow");

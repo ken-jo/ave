@@ -13,6 +13,8 @@ const EVENT_TO_INTERNAL: Readonly<Record<string, HookEvent>> = {
 const INTERNAL_TO_EVENT = Object.fromEntries(Object.entries(EVENT_TO_INTERNAL).map(([external, internal]) => [internal, external]));
 
 export interface ImportedHookEntry {
+  /** The source file containing this handler, retained for studio review. */
+  sourcePath: string;
   event: HookEvent;
   matcher?: string;
   command: string[];
@@ -23,6 +25,7 @@ export interface ImportedHookEntry {
 
 export interface HookImportDiagnostic {
   group: "lost" | "rewritten" | "needs your input";
+  sourcePath: string;
   entry: string;
   message: string;
 }
@@ -41,20 +44,27 @@ function hasForbiddenPlaceholder(value: string): boolean {
   return /\$\{user_config\.|\$\{CLAUDE_/u.test(rewritten);
 }
 
-/** Convert supported event names and exec-form handlers into review-only entries. */
-export function importLegacyHooks(value: unknown): { entries: ImportedHookEntry[]; diagnostics: HookImportDiagnostic[] } {
+/** Convert one source file's supported events and exec-form handlers into review-only entries. */
+export function importLegacyHooks(value: unknown, sourcePath: string): { entries: ImportedHookEntry[]; diagnostics: HookImportDiagnostic[] } {
+  if (!sourcePath.trim()) throw new Error("hook import requires a source path");
   const entries: ImportedHookEntry[] = [];
   const diagnostics: HookImportDiagnostic[] = [];
+  const report = (group: HookImportDiagnostic["group"], entry: string, message: string): void => {
+    diagnostics.push({ group, sourcePath, entry, message });
+  };
   const groups = record(record(value)?.hooks);
-  if (!groups) return { entries, diagnostics: [{ group: "lost", entry: "hooks", message: "hooks must be an object" }] };
+  if (!groups) {
+    report("lost", "hooks", "hooks must be an object");
+    return { entries, diagnostics };
+  }
   for (const [sourceEvent, blocks] of Object.entries(groups)) {
     const event = EVENT_TO_INTERNAL[sourceEvent];
     if (!event) {
-      diagnostics.push({ group: "lost", entry: sourceEvent, message: `event ${sourceEvent} has no equivalent` });
+      report("lost", sourceEvent, `event ${sourceEvent} has no equivalent`);
       continue;
     }
     if (!Array.isArray(blocks)) {
-      diagnostics.push({ group: "lost", entry: sourceEvent, message: `event ${sourceEvent} needs an array` });
+      report("lost", sourceEvent, `event ${sourceEvent} needs an array`);
       continue;
     }
     blocks.forEach((rawBlock, blockIndex) => {
@@ -62,41 +72,40 @@ export function importLegacyHooks(value: unknown): { entries: ImportedHookEntry[
       const handlers = block?.hooks;
       const matcher = block?.matcher;
       if (!block || !Array.isArray(handlers) || (matcher !== undefined && typeof matcher !== "string")) {
-        diagnostics.push({ group: "lost", entry: `${sourceEvent}[${blockIndex}]`, message: "invalid matcher block" });
+        report("lost", `${sourceEvent}[${blockIndex}]`, "invalid matcher block");
         return;
       }
       handlers.forEach((rawHandler, handlerIndex) => {
         const label = `${sourceEvent}[${blockIndex}].hooks[${handlerIndex}]`;
         const handler = record(rawHandler);
         if (!handler || handler.type !== "command") {
-          diagnostics.push({ group: "lost", entry: label, message: `handler ${label} has no command equivalent` });
+          report("lost", label, `handler ${label} has no command equivalent`);
           return;
         }
         if (typeof handler.command !== "string" || !Array.isArray(handler.args)
           || !handler.args.every((part: unknown) => typeof part === "string")) {
-          diagnostics.push({ group: "lost", entry: label, message: `handler ${label} needs exec-form command and args; shell strings are unsupported` });
+          report("lost", label, `handler ${label} needs exec-form command and args; shell strings are unsupported`);
           return;
         }
         const rawEnv = handler.env === undefined ? undefined : record(handler.env);
         if (handler.env !== undefined && (!rawEnv || !Object.values(rawEnv).every((part) => typeof part === "string"))) {
-          diagnostics.push({ group: "lost", entry: label, message: `handler ${label} has invalid env` });
+          report("lost", label, `handler ${label} has invalid env`);
           return;
         }
         const rawValues = [handler.command, ...handler.args, ...Object.values(rawEnv ?? {})] as string[];
         if (rawValues.some(hasForbiddenPlaceholder)) {
-          diagnostics.push({ group: "lost", entry: label, message: `handler ${label} uses an unsupported setting or placeholder` });
+          report("lost", label, `handler ${label} uses an unsupported setting or placeholder`);
           return;
         }
         const command = [handler.command, ...handler.args].map(rewritePlaceholder);
         const env = rawEnv ? Object.fromEntries(Object.entries(rawEnv).map(([key, part]) => [key, rewritePlaceholder(part as string)])) : undefined;
-        entries.push({ event, ...(matcher ? { matcher } : {}), command,
+        entries.push({ sourcePath, event, ...(matcher ? { matcher } : {}), command,
           ...(env ? { env } : {}),
           ...(typeof handler.timeoutMs === "number" ? { timeoutMs: handler.timeoutMs } : {}),
           needsAdaptation: true });
-        diagnostics.push({ group: "needs your input", entry: label,
-          message: "Review stdin, decision output, matcher meaning, and argv before clearing adaptation" });
+        report("needs your input", label, "Review stdin, decision output, matcher meaning, and argv before clearing adaptation");
         if (event !== sourceEvent || rawValues.some((part) => part !== rewritePlaceholder(part))) {
-          diagnostics.push({ group: "rewritten", entry: label, message: `event or placeholder rewritten for ${label}` });
+          report("rewritten", label, `event or placeholder rewritten for ${label}`);
         }
       });
     });
