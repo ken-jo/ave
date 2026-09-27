@@ -55,12 +55,12 @@ describe("hook import and export review", () => {
       .toThrow("cannot be exported");
   });
 
-  it.each([0, -1, 0.5, 1.5])("rejects imported timeoutMs %s after review with the native diagnostic", (timeoutMs) => {
+  it.each([0, -1, 0.5, 1.5])("drops imported timeoutMs %s before review", (timeoutMs) => {
     const result = importLegacyHooks({ hooks: { PreToolUse: block({ type: "command", command: "node",
       args: ["./hook.js"], timeoutMs }) } }, sourcePath);
-    expect(result.entries).toEqual([expect.objectContaining({ timeoutMs, needsAdaptation: true })]);
-    expect(() => clearedImportedHooks(result.entries.map((entry) => ({ ...entry, needsAdaptation: false }))))
-      .toThrow(/handler\.timeoutMs must be a positive integer/);
+    expect(result.entries).toEqual([]);
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({ group: "lost", sourcePath,
+      message: expect.stringContaining("positive integer timeoutMs") }));
   });
 
   it("locates each rejected and review-required handler in its source file", () => {

@@ -50,3 +50,25 @@ test("form to review to local package install", async ({ app, mainWindow, userDa
   expect(JSON.stringify(manifest)).not.toContain("stored-key-value");
   await closeInlineSettings(app, page);
 });
+
+test("imported hooks appear as review-only needs-input items", async ({ app, mainWindow, userDataDir, t }) => {
+  const source = join(userDataDir, "legacy-hook-package");
+  await mkdir(join(source, ".claude-plugin"), { recursive: true });
+  await mkdir(join(source, "server"), { recursive: true });
+  await writeFile(join(source, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "hook-review", version: "1.0.0",
+    description: "A hook import", hooks: { SessionStart: [{ hooks: [{ type: "command", command: "node",
+      args: ["./server/hook.js"] }] }] } }));
+  await writeFile(join(source, "server", "hook.js"), "process.stdout.write('ready');\n");
+  await app.evaluate(({ dialog }, path) => {
+    Object.assign(dialog, { showOpenDialog: async () => ({ canceled: false, filePaths: [path] }) });
+  }, source);
+  const page = await openInlineSettings(app, mainWindow, "marketplace");
+  await page.getByTestId("git-marketplace:add-menu").click();
+  await page.getByRole("menuitem", { name: t("pluginStudio.createTitle") }).click();
+  await page.getByTestId("plugin-studio:import").click();
+  await expect(page.getByTestId("plugin-studio:pending-hook:0")).toContainText(t("pluginStudio.needsAdaptation"));
+  await expect(page.getByTestId("plugin-studio:review")).toContainText(t("pluginStudio.needsInput"));
+  await expect(page.getByTestId("plugin-studio:review")).toContainText("hooks.SessionStart[0].hooks[0]");
+  await expect(page.getByTestId("plugin-studio:install")).toBeDisabled();
+  await closeInlineSettings(app, page);
+});

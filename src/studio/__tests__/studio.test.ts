@@ -6,6 +6,7 @@ import { PluginStudioStore } from "../store.js";
 import { importStudioArchive, importStudioPackage } from "../import.js";
 import { readLocalAgentPlugin, studioExportFiles, studioZip } from "../package.js";
 import { lintStudioFiles } from "../lint.js";
+import { stageLocalAgentPlugin } from "../../marketplace/content/store.js";
 
 const originalHome = process.env.AVE_HOME;
 let root: string;
@@ -143,6 +144,29 @@ describe("Studio drafts and package projections", () => {
     expect(result.diagnostics.filter((item) => item.group === "needs-input")).toHaveLength(2);
   });
 
+  it("refuses inherited hook names and invalid timeouts through the shared importer", async () => {
+    const source = join(root, "rejected-hooks");
+    const handler = (timeoutMs?: number) => [{ hooks: [{ type: "command", command: "node", args: ["./server/hook.js"],
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}) }] }];
+    const hooks = Object.fromEntries([
+      ["constructor", handler()], ["SessionStart", handler(0)],
+      ["SessionEnd", handler(0.5)], ["Stop", handler(1200)],
+    ]);
+    await put(source, ".claude-plugin/plugin.json", JSON.stringify({ name: "team-kit", version: "1.0.0",
+      description: "A team plugin", hooks }));
+    await put(source, "server/hook.js", "process.stdout.write('ready');\n");
+    const result = await importStudioPackage(source);
+    expect(result.pendingHooks).toMatchObject([{ event: "Stop", sourcePath: "inline 0", needsAdaptation: true }]);
+    expect(result.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ group: "lost", path: "hooks.constructor", message: expect.stringContaining("no equivalent") }),
+      expect.objectContaining({ group: "lost", path: "hooks.SessionStart[0].hooks[0]", message: expect.stringContaining("positive integer timeoutMs") }),
+      expect.objectContaining({ group: "lost", path: "hooks.SessionEnd[0].hooks[0]", message: expect.stringContaining("positive integer timeoutMs") }),
+      expect.objectContaining({ group: "needs-input", path: "hooks.Stop[0].hooks[0]" }),
+    ]));
+    await put(source, "hooks/hooks.json", JSON.stringify({ hooks: Object.fromEntries([["__proto__", handler()]]) }));
+    await expect(importStudioPackage(source)).rejects.toThrow("the key __proto__ is not allowed");
+  });
+
   it("recognizes the alternate overlay but never reads its hooks directory", async () => {
     const source = join(root, "overlay");
     await put(source, ".codex-plugin/plugin.json", JSON.stringify({ name: "team-kit", version: "1.0.0", description: "A team plugin" }));
@@ -172,34 +196,62 @@ describe("Studio drafts and package projections", () => {
   it("keeps imported hooks out of the package until adaptation is cleared", async () => {
     const source = join(root, "hooks-source");
     await put(source, ".claude-plugin/plugin.json", JSON.stringify({ name: "team-kit", version: "1.0.0", description: "A team plugin",
-      hooks: { SessionStart: [{ hooks: [{ type: "command", command: "node", args: ["./hook.js"] }] }] } }));
+      hooks: { SessionStart: [{ hooks: [{ type: "command", command: "node", args: ["./server/hook.js"] }] }] } }));
+    await put(source, "server/hook.js", "process.stdout.write('ready');\n");
     const store = new PluginStudioStore();
     const imported = await store.importPackage(source);
     expect(imported.draft.pendingHooks).toHaveLength(1);
     expect(imported.files.map((file) => file.path)).not.toContain("ai.agent-connector.ave/hooks.json");
     expect(imported.errors).toContain("Imported hooks need adaptation before validation");
-    const adapted = await store.writeDraft({ name: "team-kit", adaptedHooks: [{ index: 0, command: ["node", "./hook.js"] }] });
+    const adapted = await store.writeDraft({ name: "team-kit", adaptedHooks: [{ index: 0, command: ["node", "./server/hook.js"] }] });
     expect(adapted.draft.pendingHooks).toEqual([]);
     expect(adapted.files.map((file) => file.path)).toContain("ai.agent-connector.ave/hooks.json");
     expect(adapted.errors).toEqual([]);
     const projection = studioExportFiles(await store.packageFiles("team-kit"), true);
     const hooks = JSON.parse(projection.find((file) => file.path === "hooks/hooks.json")!.data.toString()) as { hooks: Record<string, unknown> };
-    expect(hooks.hooks.SessionStart).toEqual([{ hooks: [{ type: "command", command: "node", args: ["./hook.js"] }] }]);
+    expect(hooks.hooks.SessionStart).toEqual([{ hooks: [{ type: "command", command: "node", args: ["./server/hook.js"], timeoutMs: expect.any(Number) }] }]);
   });
 
   it("maps blocking hook names back in the optional export projection", async () => {
     const source = join(root, "blocking-hooks");
     await put(source, ".claude-plugin/plugin.json", JSON.stringify({ name: "team-kit", version: "1.0.0", description: "A team plugin",
-      hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "node", args: ["./hook.js"] }] }],
-        PostToolUse: [{ hooks: [{ type: "command", command: "node", args: ["./hook.js"] }] }],
-        PermissionRequest: [{ hooks: [{ type: "command", command: "node", args: ["./hook.js"] }] }] } }));
+      hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "node", args: ["./server/hook.js"] }] }],
+        PostToolUse: [{ hooks: [{ type: "command", command: "node", args: ["./server/hook.js"] }] }],
+        PermissionRequest: [{ hooks: [{ type: "command", command: "node", args: ["./server/hook.js"] }] }] } }));
+    await put(source, "server/hook.js", "process.stdout.write('ready');\n");
     const store = new PluginStudioStore();
     const imported = await store.importPackage(source);
     expect(imported.draft.pendingHooks.map((item) => item.event)).toEqual(["pre", "post", "perm"]);
-    await store.writeDraft({ name: "team-kit", adaptedHooks: [0, 1, 2].map((index) => ({ index, command: ["node", "./hook.js"] })) });
+    await store.writeDraft({ name: "team-kit", adaptedHooks: [0, 1, 2].map((index) => ({ index, command: ["node", "./server/hook.js"] })) });
     const projection = studioExportFiles(await store.packageFiles("team-kit"), true);
     const hooks = JSON.parse(projection.find((file) => file.path === "hooks/hooks.json")!.data.toString()) as { hooks: Record<string, unknown> };
     expect(Object.keys(hooks.hooks)).toEqual(["PreToolUse", "PostToolUse", "PermissionRequest"]);
+  });
+
+  it("keeps executable hook bytes and their digest through installed package exports", async () => {
+    const files = [
+      { path: "plugin.json", data: Buffer.from(JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+        name: "team-kit", version: "1.0.0", description: "A team plugin" })) },
+      { path: "server/run", data: Buffer.from("#!/bin/sh\nexit 0\n"), executable: true },
+      { path: "ai.agent-connector.ave/hooks.json", data: Buffer.from(JSON.stringify({ version: 1, hooks: { SessionStart: [
+        { hooks: [{ type: "command", command: ["./server/run"] }] },
+      ] } })) },
+    ];
+    const projected = studioExportFiles(files, true);
+    const archive = join(root, "executable-hook.zip");
+    await writeFile(archive, studioZip(projected));
+    const fromZip = await readLocalAgentPlugin(archive);
+    expect(fromZip.files.find((file) => file.path === "server/run")?.executable).toBe(true);
+    expect(stageLocalAgentPlugin(fromZip.files).contentSha256).toBe(fromZip.treeDigest);
+    const directory = join(root, "executable-hook");
+    for (const file of projected) {
+      const full = join(directory, file.path);
+      await mkdir(join(full, ".."), { recursive: true });
+      await writeFile(full, file.data, { mode: file.executable === true ? 0o755 : 0o644 });
+    }
+    const fromDirectory = await readLocalAgentPlugin(directory);
+    expect(fromDirectory.files.find((file) => file.path === "server/run")?.executable).toBe(true);
+    expect(fromDirectory.treeDigest).toBe(fromZip.treeDigest);
   });
 
   it("rejects unknown layouts and package links without importing outside bytes", async () => {

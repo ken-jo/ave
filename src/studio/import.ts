@@ -6,11 +6,12 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 import { AGENT_PLUGINS_SCHEMA_URL } from "../plugins/public-contract.js";
 import { parseStrictJson } from "../marketplace/catalog/strict-json.js";
 import type { StudioDiagnostic } from "../shared/plugin-studio.js";
+import { importLegacyHooks, type ImportedHookEntry } from "../hooks/hook-import-export.js";
 
 export interface ImportedStudioPackage {
   files: Array<{ path: string; data: Buffer }>;
   diagnostics: StudioDiagnostic[];
-  pendingHooks: Array<{ event: string; matcher?: string; command: string[]; timeoutMs?: number; needsAdaptation: true }>;
+  pendingHooks: ImportedHookEntry[];
   name: string;
   version?: string;
   description?: string;
@@ -177,12 +178,14 @@ function convertMcp(name: string, raw: unknown, diagnostics: StudioDiagnostic[])
   return result;
 }
 
-async function mergedDefinition(root: string, paths: readonly string[], declared: unknown, label: string, diagnostics: StudioDiagnostic[]): Promise<Record<string, unknown>> {
-  const merged: Record<string, unknown> = {};
+async function mergedDefinition(root: string, paths: readonly string[], declared: unknown, label: string,
+  diagnostics: StudioDiagnostic[], sources?: Map<string, string>): Promise<Record<string, unknown>> {
+  const merged: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   const merge = (value: Record<string, unknown>, from: string): void => {
     for (const [name, definition] of Object.entries(value)) {
       if (Object.hasOwn(merged, name)) diagnostics.push(diagnostic("rewritten", `${label}.${name}`, `Definition from ${from} replaced an earlier one`));
       merged[name] = definition;
+      sources?.set(name, from);
     }
   };
   for (const path of paths) {
@@ -316,6 +319,7 @@ export async function importStudioPackage(root: string): Promise<ImportedStudioP
       addFile(files, `ai.agent-connector.ave/agents/${agentName}/AGENTS.md`, Buffer.from(text), diagnostics);
     }
   }
+  for (const file of await filesBelow(root, "server")) addFile(files, file.path, file.data, diagnostics);
   const servers = await mergedDefinition(root, [".mcp.json"], manifest.mcpServers, "mcpServers", diagnostics);
   const converted: Record<string, unknown> = {};
   for (const [serverName, definition] of Object.entries(servers)) {
@@ -327,34 +331,15 @@ export async function importStudioPackage(root: string): Promise<ImportedStudioP
   if (Object.keys(converted).length) files.set("mcp.json", Buffer.from(`${JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json", mcpServers: converted }, null, 2)}\n`));
   const isFirstLayout = await regularFile(root, ".claude-plugin/plugin.json") !== null;
   if (isFirstLayout) {
-    const hooks = await mergedDefinition(root, ["hooks/hooks.json"], manifest.hooks, "hooks", diagnostics);
+    const hookSources = new Map<string, string>();
+    const hooks = await mergedDefinition(root, ["hooks/hooks.json"], manifest.hooks, "hooks", diagnostics, hookSources);
     for (const [event, raw] of Object.entries(hooks)) {
-      const mapped = ({ PreToolUse: "pre", PostToolUse: "post", PermissionRequest: "perm" } as Record<string, string>)[event] ?? event;
-      if (!["pre", "post", "perm", "UserPromptSubmit", "PostToolUseFailure", "PermissionDenied", "SessionStart", "SessionEnd", "Notification", "Stop", "PreCompact", "PostCompact", "SubagentStart", "SubagentStop"].includes(mapped)) {
-        diagnostics.push(diagnostic("lost", `hooks.${event}`, "Event has no equivalent"));
-        continue;
-      }
-      const blocks = Array.isArray(raw) ? raw : [raw];
-      for (const [index, value] of blocks.entries()) {
-        const block = object(value, `hooks.${event}[${index}]`);
-        const handlers = Array.isArray(block.hooks) ? block.hooks : [block];
-        for (const [handlerIndex, handler] of handlers.entries()) {
-          const entry = object(handler, `hooks.${event}[${index}].hooks[${handlerIndex}]`);
-          const at = `hooks.${event}[${index}].hooks[${handlerIndex}]`;
-          if (entry.type !== "command" || typeof entry.command !== "string" || !Array.isArray(entry.args) || entry.args.some((arg) => typeof arg !== "string")) {
-            diagnostics.push(diagnostic("lost", at, "Hook requires command plus args in exec form"));
-            continue;
-          }
-          const command = [entry.command, ...entry.args as string[]].map(translatePlaceholder);
-          if (command.some((part) => part.includes("${user_config."))) {
-            diagnostics.push(diagnostic("lost", at, "User config placeholder is unsupported"));
-            continue;
-          }
-          pendingHooks.push({ event: mapped, ...(typeof block.matcher === "string" ? { matcher: block.matcher } : {}), command,
-            ...(typeof entry.timeoutMs === "number" ? { timeoutMs: entry.timeoutMs } : {}), needsAdaptation: true });
-          diagnostics.push(diagnostic("needs-input", at, "Review host input, output and matcher behavior before adding this hook"));
-        }
-      }
+      const converted = importLegacyHooks({ hooks: { [event]: raw } }, hookSources.get(event) ?? "hooks/hooks.json");
+      pendingHooks.push(...converted.entries);
+      diagnostics.push(...converted.diagnostics.map((item) => diagnostic(
+        item.group === "needs your input" ? "needs-input" : item.group,
+        `hooks.${item.entry}`, `${item.sourcePath}: ${item.message}`,
+      )));
     }
   }
   return { files: [...files].map(([path, data]) => ({ path, data })), diagnostics, pendingHooks, name, ...(version ? { version } : {}), ...(description ? { description } : {}) };

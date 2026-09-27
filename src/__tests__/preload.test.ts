@@ -132,10 +132,12 @@ describe("preload — plugin webview asset URLs", () => {
     await studio["readDraft"]!("team-kit");
     await studio["writeDraft"]!({ name: "team-kit" });
     await studio["previewInstallFromFile"]!();
+    await studio["exportInstalled"]!("team-kit", true);
     expect(mockInvoke).toHaveBeenCalledWith(CHANNELS.pluginStudio.listDrafts);
     expect(mockInvoke).toHaveBeenCalledWith(CHANNELS.pluginStudio.readDraft, "team-kit");
     expect(mockInvoke).toHaveBeenCalledWith(CHANNELS.pluginStudio.writeDraft, { name: "team-kit" });
     expect(mockInvoke).toHaveBeenCalledWith(CHANNELS.pluginStudio.previewInstallFromFile);
+    expect(mockInvoke).toHaveBeenCalledWith(CHANNELS.pluginStudio.exportInstalled, "team-kit", true);
   });
 
   it("exposes pluginShellUrl as a file:// string under dist/src/", async () => {

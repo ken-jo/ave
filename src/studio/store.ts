@@ -13,6 +13,7 @@ import { lintStudioFiles } from "./lint.js";
 import { importStudioArchive } from "./import.js";
 import { studioFileText } from "./package.js";
 import { portableStudioConnector, verifyStudioConnectorPreview } from "./connector.js";
+import { clearedImportedHooks } from "../hooks/hook-import-export.js";
 
 const namespace = openFeatureNamespace("studio");
 const MAX_FILES = 256;
@@ -264,17 +265,15 @@ export class PluginStudioStore {
         || new Set(input.adaptedHooks.map((item) => item.index)).size !== draft.pendingHooks.length) {
         throw new Error("Every imported hook needs an adaptation decision");
       }
-      const grouped: Record<string, Array<{ matcher?: string; hooks: Array<{ type: "command"; command: string[]; timeoutMs?: number }> }>> = {};
-      for (const item of input.adaptedHooks) {
+      const cleared = input.adaptedHooks.map((item) => {
         const hook = draft.pendingHooks[item.index];
         if (!hook || !Array.isArray(item.command) || !item.command.length
-          || item.command.some((part) => typeof part !== "string" || !part || part.includes("${user_config."))) {
+          || item.command.some((part) => typeof part !== "string" || !part)) {
           throw new Error("Imported hook adaptation is invalid");
         }
-        (grouped[hook.event] ??= []).push({ ...(hook.matcher ? { matcher: hook.matcher } : {}), hooks: [{ type: "command", command: item.command,
-          ...(hook.timeoutMs ? { timeoutMs: hook.timeoutMs } : {}) }] });
-      }
-      await putFile(name, "ai.agent-connector.ave/hooks.json", Buffer.from(`${JSON.stringify({ version: 1, hooks: grouped }, null, 2)}\n`));
+        return { ...hook, command: item.command, needsAdaptation: false as const };
+      });
+      await putFile(name, "ai.agent-connector.ave/hooks.json", Buffer.from(`${JSON.stringify(clearedImportedHooks(cleared), null, 2)}\n`));
       draft.parts.push({ path: "ai.agent-connector.ave/hooks.json", origin: sessionId ? { kind: "conversation", sessionId } : { kind: "typed" } });
       draft.pendingHooks = [];
       draft.diagnostics = draft.diagnostics.filter((item) => !(item.group === "needs-input" && item.path.startsWith("hooks.")));

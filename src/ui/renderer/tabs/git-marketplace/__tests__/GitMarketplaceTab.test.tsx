@@ -115,6 +115,22 @@ describe("GitMarketplaceTab browse", () => {
     await waitFor(() => expect(fake.market.uninstall).toHaveBeenCalledWith({ sourceId: null, kind: "mcp", name: "weather", removeData: false }));
   });
 
+  it("offers both installed plugin export projections", async () => {
+    const item = entry(null, "agent-plugin", "hook-kit", { state: { state: "unbound", version: "1.0.0" },
+      sourceOrigin: null, sourceLabel: null });
+    const fake = fakeMarketplace({ entries: [item] });
+    const { api } = renderTab(fake);
+    const exportInstalled = vi.fn(async () => ({ ok: true as const, value: null }));
+    Object.assign(api, { pluginStudio: { exportInstalled } });
+    fireEvent.click(screen.getByTestId("git-marketplace:installed"));
+    const card = await screen.findByTestId("git-marketplace:card:unbound:agent-plugin:hook-kit");
+    const trigger = within(card).getByTestId("plugin-studio:export-installed:hook-kit");
+    fireEvent.pointerDown(trigger, { button: 0 });
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "호환 파일 포함" }));
+    await waitFor(() => expect(exportInstalled).toHaveBeenCalledWith("hook-kit", true));
+  });
+
   it("opens on the kind another settings tab asked for", async () => {
     const fake = fakeMarketplace({ sources: [team], entries: [entry("team", "skill", "proofread"), entry("team", "theme", "dusk")] });
     const { api } = makeMockAveApi();

@@ -9,6 +9,8 @@ import type { PackageDescriptor } from "../marketplace/catalog/types.js";
 import { parsePortableMcp } from "../mcp/portable-mcp.js";
 import { treeDigest } from "../marketplace/resolve/plugin-ladder.js";
 import type { AgentPluginFile } from "../marketplace/content/agent-plugin-components.js";
+import { parseHookConfig } from "../hooks/hook-config.js";
+import { exportLegacyHooks } from "../hooks/hook-import-export.js";
 
 const MAX_FILES = 257;
 const MAX_BYTES = 8 * 1024 * 1024 + 256 * 1024;
@@ -84,18 +86,11 @@ function projection(files: readonly AgentPluginFile[]): AgentPluginFile[] {
   }
   const hooks = map.get("ai.agent-connector.ave/hooks.json");
   if (hooks) {
-    const document = parseStrictJson(hooks.toString("utf8")) as { hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ type: string; command: string[]; timeoutMs?: number }> }>> };
-    const mapped: Record<string, unknown> = {};
-    const eventNames: Record<string, string> = { pre: "PreToolUse", post: "PostToolUse", perm: "PermissionRequest" };
-    for (const [event, blocks] of Object.entries(document.hooks)) {
-      mapped[eventNames[event] ?? event] = blocks.map((block) => ({
-        ...(block.matcher ? { matcher: block.matcher } : {}),
-        hooks: block.hooks.map((handler) => ({ type: handler.type, command: handler.command[0], args: handler.command.slice(1),
-          ...(handler.timeoutMs !== undefined ? { timeoutMs: handler.timeoutMs } : {}) })),
-      }));
-    }
-    projected.push({ path: "hooks/hooks.json", data: pretty({ hooks: mapped }) });
-    projected.push({ path: "hooks/PROTOCOL.md", data: Buffer.from("Hook input, output and matcher behavior must be adapted for the receiving host.\n") });
+    const parsed = parseHookConfig(parseStrictJson(hooks.toString("utf8")), { bundled: true });
+    if (parsed.errors.length || parsed.warnings.length) throw new Error(`Studio hook export is invalid: ${[...parsed.errors, ...parsed.warnings].join("; ")}`);
+    const legacy = exportLegacyHooks(parsed.entries);
+    projected.push({ path: "hooks/hooks.json", data: pretty({ hooks: legacy.hooks }) });
+    projected.push({ path: "hooks/PROTOCOL.md", data: Buffer.from(`${legacy.notice}\n`) });
   }
   return projected;
 }
@@ -110,7 +105,7 @@ export function studioExportFiles(files: readonly AgentPluginFile[], legacyProje
 
 export function studioZip(files: readonly AgentPluginFile[]): Buffer {
   const zip = new AdmZip();
-  for (const file of files) zip.addFile(safePath(file.path), file.data);
+  for (const file of files) zip.addFile(safePath(file.path), file.data, "", file.executable === true ? 0o755 : 0o644);
   return zip.toBuffer();
 }
 
@@ -123,8 +118,10 @@ async function fromDirectory(root: string): Promise<AgentPluginFile[]> {
       if (entry.isSymbolicLink()) throw new Error(`Symbolic link in package: ${path}`);
       if (entry.isDirectory()) await walk(join(dir, entry.name), path);
       else if (entry.isFile()) {
-        const data = await readFile(join(dir, entry.name));
-        files.push({ path, data });
+        const full = join(dir, entry.name);
+        const data = await readFile(full);
+        const executable = ((await lstat(full)).mode & 0o111) !== 0;
+        files.push({ path, data, ...(executable ? { executable } : {}) });
         size += data.length;
         if (files.length > MAX_FILES || size > MAX_BYTES) throw new Error("Package exceeds file or byte limit");
       } else throw new Error(`Non-file package entry: ${path}`);
@@ -155,7 +152,8 @@ export async function readLocalAgentPlugin(path: string): Promise<{ files: Agent
       const data = entry.getData();
       size += data.length;
       if (all.length >= MAX_FILES || size > MAX_BYTES) throw new Error("Archive exceeds file or byte limit");
-      all.push({ path: entryPath, data });
+      const executable = (entry.attr >>> 16 & 0o111) !== 0;
+      all.push({ path: entryPath, data, ...(executable ? { executable } : {}) });
     }
   } else throw new Error("Select a package directory or zip file");
   const descriptorBytes = all.find((file) => file.path === "ave-package.json")?.data;
@@ -170,5 +168,5 @@ export async function readLocalAgentPlugin(path: string): Promise<{ files: Agent
   if (descriptor.kind !== "agent-plugin") throw new Error("Selected file is not an agent plugin");
   const components = deriveAgentPluginComponents(files, { name: descriptor.name, version: descriptor.version, minAppVersion: descriptor.minAppVersion });
   if (JSON.stringify(descriptor.payload.components) !== JSON.stringify(components)) throw new Error("Package descriptor components differ from the files");
-  return { files, descriptor, treeDigest: treeDigest(files.map((file) => ({ ...file, executable: false }))) };
+  return { files, descriptor, treeDigest: treeDigest(files.map((file) => ({ ...file, executable: file.executable === true }))) };
 }

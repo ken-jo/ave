@@ -531,6 +531,7 @@ describe("preload contextBridge world shape lock", () => {
             "confirmConnectorCopy",
             "connectorCopyPreview",
             "exportDraft",
+            "exportInstalled",
             "exportToCheckout",
             "importPackage",
             "installFromFile",

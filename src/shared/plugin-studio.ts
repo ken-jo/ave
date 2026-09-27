@@ -1,5 +1,7 @@
 import type { AgentPluginComponents } from "../marketplace/catalog/types.js";
 import type { McpServerConfigDto } from "../mcp/types.js";
+import type { ImportedHookEntry } from "../hooks/hook-import-export.js";
+import type { ComponentConsent } from "./git-marketplace.js";
 
 export type StudioOrigin =
   | { kind: "copied"; from: { kind: string; name: string; version?: string } }
@@ -24,7 +26,7 @@ export interface StudioDraft {
   writeState?: "pending";
   sharedAt?: string;
   diagnostics: StudioDiagnostic[];
-  pendingHooks: Array<{ event: string; matcher?: string; command: string[]; timeoutMs?: number; needsAdaptation: true }>;
+  pendingHooks: ImportedHookEntry[];
   connectorCopies?: StudioConnectorCopy[];
 }
 interface StudioConnectorCopy {
@@ -89,6 +91,7 @@ export interface StudioLocalPreview {
   description: string;
   files: Array<{ path: string; text: string | null }>;
   components: AgentPluginComponents;
+  hookConfinement: "sandboxed" | "user-permissions" | "unavailable";
   treeDigest: string;
   expiresAt: string;
 }
@@ -113,8 +116,9 @@ export interface PluginStudioApi {
   importPackage(): Promise<StudioResult<StudioDraftView | null>>;
   reviewDraft(name: string, treeDigest: string): Promise<StudioResult<StudioDraftView>>;
   exportDraft(name: string, projection: boolean): Promise<StudioResult<string | null>>;
+  exportInstalled(name: string, projection: boolean): Promise<StudioResult<string | null>>;
   exportToCheckout(name: string): Promise<StudioResult<{ path: string; steps: string[] } | null>>;
   previewInstallFromFile(): Promise<StudioResult<StudioLocalPreview | null>>;
   previewInstallDraft(name: string): Promise<StudioResult<StudioLocalPreview>>;
-  installFromFile(previewId: string, approvedMcpServers: Array<{ name: string; digest: string }>): Promise<StudioResult<{ name: string; version: string; sourceId: null }>>;
+  installFromFile(previewId: string, componentConsents: ComponentConsent[]): Promise<StudioResult<{ name: string; version: string; sourceId: null }>>;
 }

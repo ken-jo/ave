@@ -336,6 +336,7 @@ export const CHANNELS = {
     importPackage: "ave:plugin-studio:import",
     reviewDraft: "ave:plugin-studio:drafts:review",
     exportDraft: "ave:plugin-studio:export",
+    exportInstalled: "ave:plugin-studio:installed:export",
     exportToCheckout: "ave:plugin-studio:checkout:write",
     previewInstallFromFile: "ave:plugin-studio:file:preview",
     previewInstallDraft: "ave:plugin-studio:drafts:install-preview",

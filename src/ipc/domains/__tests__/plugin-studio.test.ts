@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import AdmZip from "adm-zip";
+import { dialog } from "electron";
 import { CHANNELS } from "../../../contract/app-contract.js";
 import { hostFrameEvent, pluginShellFrameEvent } from "../../../__tests__/test-helpers.js";
-import { ContentStore } from "../../../marketplace/content/store.js";
+import { ContentStore, type ContentActivation } from "../../../marketplace/content/store.js";
 import { PluginStudioStore } from "../../../studio/store.js";
 import { previewStudioConnector } from "../../../studio/connector.js";
 
@@ -20,14 +22,16 @@ const originalHome = process.env.AVE_HOME;
 let root: string;
 let content: ContentStore;
 let reload: ReturnType<typeof vi.fn>;
+let activate: ContentActivation["activate"];
 
 beforeEach(async () => {
   handlers.clear();
   root = await mkdtemp(join(tmpdir(), "ave-studio-ipc-"));
   process.env.AVE_HOME = join(root, "home");
   reload = vi.fn(async () => undefined);
+  activate = vi.fn(async () => undefined);
   content = await ContentStore.open({ root: join(root, "packages"), english: {}, activation: {
-    activate: vi.fn(async () => undefined), deactivate: vi.fn(async () => undefined),
+    activate, deactivate: vi.fn(async () => undefined),
   } });
   registerPluginStudioHandlers({ auditLogger: { log: vi.fn() } } as never, async () => ({ store: content, reload } as never));
 });
@@ -87,5 +91,41 @@ describe("plugin Studio IPC", () => {
     const stale = await invoke(CHANNELS.pluginStudio.confirmConnectorCopy, hostFrameEvent(), "team-kit", "sample",
       { specDigest: "0".repeat(64), args: [], env: [] });
     expect(stale).toMatchObject({ ok: false, code: "connector-changed" });
+  });
+
+  it("passes only exact reviewed hook consent into a source-free install", async () => {
+    const source = join(root, "legacy-hooks");
+    await mkdir(join(source, ".claude-plugin"), { recursive: true });
+    await mkdir(join(source, "server"), { recursive: true });
+    await writeFile(join(source, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "team-kit", version: "1.0.0",
+      description: "A team plugin", hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "node",
+        args: ["./server/hook.js"] }] }] } }));
+    await writeFile(join(source, "server", "hook.js"), "process.stdout.write('ready');\n");
+    const studio = new PluginStudioStore();
+    await studio.importPackage(source);
+    const adapted = await studio.writeDraft({ name: "team-kit", adaptedHooks: [{ index: 0, command: ["node", "./server/hook.js"] }] });
+    expect(adapted.errors).toEqual([]);
+    await studio.reviewDraft("team-kit", adapted.treeDigest);
+    const first = await invoke(CHANNELS.pluginStudio.previewInstallDraft, hostFrameEvent(), "team-kit") as { ok: true; value: { previewId: string;
+      components: { hooks: Array<{ digest: string }> }; hookConfinement: string } };
+    expect(first.ok).toBe(true);
+    expect(first.value.components.hooks).toHaveLength(1);
+    expect(first.value.hookConfinement).toMatch(/sandboxed|user-permissions|unavailable/);
+    expect(await invoke(CHANNELS.pluginStudio.installFromFile, hostFrameEvent(), first.value.previewId,
+      [{ kind: "hook", index: 0, digest: "0".repeat(64) }])).toMatchObject({ ok: false, code: "invalid-request" });
+    const second = await invoke(CHANNELS.pluginStudio.previewInstallDraft, hostFrameEvent(), "team-kit") as typeof first;
+    const consent = { kind: "hook", index: 0, digest: second.value.components.hooks[0]!.digest };
+    expect(await invoke(CHANNELS.pluginStudio.installFromFile, hostFrameEvent(), second.value.previewId, [consent]))
+      .toMatchObject({ ok: true, value: { name: "team-kit", sourceId: null } });
+    expect(activate).toHaveBeenCalledWith(expect.objectContaining({ kind: "agent-plugin" }), expect.anything(), null, false,
+      expect.any(String), [consent]);
+    const zipPath = join(root, "installed-export.zip");
+    vi.mocked(dialog.showSaveDialog).mockResolvedValueOnce({ canceled: false, filePath: zipPath } as never);
+    expect(await invoke(CHANNELS.pluginStudio.exportInstalled, hostFrameEvent(), "team-kit", true))
+      .toEqual({ ok: true, value: zipPath });
+    const zip = new AdmZip(await readFile(zipPath));
+    const legacy = JSON.parse(zip.getEntry("hooks/hooks.json")!.getData().toString("utf8")) as { hooks: Record<string, unknown> };
+    expect(Object.keys(legacy.hooks)).toEqual(["PreToolUse"]);
+    expect(zip.getEntry("hooks/PROTOCOL.md")!.getData().toString("utf8")).toContain("Stdin payload");
   });
 });

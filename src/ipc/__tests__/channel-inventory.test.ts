@@ -398,6 +398,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:plugin-studio:file:install",
         "ave:plugin-studio:file:preview",
         "ave:plugin-studio:import",
+        "ave:plugin-studio:installed:export",
         "ave:plugin-studio:parts:list",
         "ave:plugin:call-tool",
         "ave:plugin:config:get",

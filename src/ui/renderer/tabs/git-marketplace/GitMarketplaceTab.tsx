@@ -72,7 +72,8 @@ function stateTone(entry: CatalogEntryView): string {
   }
 }
 
-function PackageCard({ entry, onOpen, onUninstallUnbound }: { entry: CatalogEntryView; onOpen: () => void; onUninstallUnbound: () => void }) {
+function PackageCard({ entry, onOpen, onUninstallUnbound, onExport }: { entry: CatalogEntryView; onOpen: () => void;
+  onUninstallUnbound: () => void; onExport: (projection: boolean) => void }) {
   const { t } = useTranslation();
   const initials = entry.displayName.replace(/[^A-Za-z0-9가-힣]/gu, "").slice(0, 2) || entry.key.kind.slice(0, 2);
   const bound = entry.key.sourceId !== null;
@@ -98,6 +99,12 @@ function PackageCard({ entry, onOpen, onUninstallUnbound }: { entry: CatalogEntr
         )}
         {!bound && entry.key.kind === "agent-plugin" && <Badge variant="outline" className="h-5 px-1.5 text-[10px]">{t("pluginStudio.createdHere")}</Badge>}
         <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{kindLabel(t, entry.key.kind)}</Badge>
+        {entry.key.kind === "agent-plugin" && ["installed", "unbound", "update", "installed-elsewhere", "source-removed"].includes(entry.state.state)
+          && <DropdownMenu><DropdownMenuTrigger asChild><Button size="sm" variant="outline" className="h-6 px-2 text-[11px]"
+            data-testid={`plugin-studio:export-installed:${entry.key.name}`}>{t("pluginStudio.exportInstalled")}</Button></DropdownMenuTrigger>
+            <DropdownMenuContent><DropdownMenuItem onSelect={() => onExport(false)}>{t("pluginStudio.exportPortable")}</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => onExport(true)}>{t("pluginStudio.exportCompatible")}</DropdownMenuItem></DropdownMenuContent>
+          </DropdownMenu>}
         {entry.required ? (
           <span className="ml-auto rounded px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground" title={t("gitMarketplace.state.requiredHint")}>
             {t("gitMarketplace.state.required")}
@@ -308,6 +315,10 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
     if (result.ok && result.value) setLocalPreview(result.value);
     else if (!result.ok) setFailure({ code: "unavailable", message: result.message });
   };
+  const exportInstalled = async (name: string, projection: boolean) => {
+    const result = await api.pluginStudio.exportInstalled(name, projection);
+    if (!result.ok) setFailure({ code: "unavailable", message: result.message });
+  };
 
   return (
     <div className="space-y-2" data-testid="git-marketplace">
@@ -486,6 +497,7 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
                     entry={entry}
                     onOpen={() => entry.key.sourceId !== null && setSheet({ key: { ...entry.key, sourceId: entry.key.sourceId }, mode: entry.state.state === "update" ? "update" : "detail" })}
                     onUninstallUnbound={() => void uninstallUnbound(entry)}
+                    onExport={(projection) => void exportInstalled(entry.key.name, projection)}
                   />
                 ))}
               </div>

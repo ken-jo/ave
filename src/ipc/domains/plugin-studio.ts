@@ -6,6 +6,8 @@ import { CHANNELS } from "../../contract/app-contract.js";
 import { stageLocalAgentPlugin } from "../../marketplace/content/store.js";
 import { deriveAgentPluginComponents } from "../../marketplace/content/agent-plugin-components.js";
 import { compareSemver } from "../../shared/semver-compare.js";
+import { isAsrtSandboxActive } from "../../permissions/asrt-sandbox.js";
+import type { ComponentConsent } from "../../shared/git-marketplace.js";
 import type { StudioConnectorConfirmation, StudioLocalPreview, StudioResult, StudioWriteRequest } from "../../shared/plugin-studio.js";
 import { PluginStudioStore } from "../../studio/store.js";
 import { readLocalAgentPlugin, studioExportFiles, studioFileText, studioZip } from "../../studio/package.js";
@@ -70,7 +72,17 @@ export function registerPluginStudioHandlers(deps: IpcDeps, content: () => Promi
     pending.set(previewId, { files, digest: staged.contentSha256, expires });
     return { previewId, name: staged.plan.name, version: staged.plan.version, description: manifest.description,
       files: files.map(({ path, data }) => ({ path, text: studioFileText(data) })),
-      components: deriveAgentPluginComponents(files), treeDigest: staged.contentSha256, expiresAt: new Date(expires).toISOString() };
+      components: deriveAgentPluginComponents(files),
+      hookConfinement: isAsrtSandboxActive()
+        ? process.platform === "win32" ? "unavailable" : "sandboxed" : "user-permissions",
+      treeDigest: staged.contentSha256, expiresAt: new Date(expires).toISOString() };
+  };
+  const saveExport = async (files: Files): Promise<string | null> => {
+    const manifest = JSON.parse(files.find((file) => file.path === "plugin.json")!.data.toString("utf8")) as { name: string; version: string };
+    const selection = await dialog.showSaveDialog({ defaultPath: `${manifest.name}-${manifest.version}.zip`, filters: [{ name: "Plugin package", extensions: ["zip"] }] });
+    if (selection.canceled || !selection.filePath) return null;
+    await writeFile(selection.filePath, studioZip(files), { flag: "wx" });
+    return selection.filePath;
   };
   handle(channels.listDrafts, () => store.listDrafts());
   handle(channels.availableParts, () => listStudioParts(sources));
@@ -101,13 +113,21 @@ export function registerPluginStudioHandlers(deps: IpcDeps, content: () => Promi
   handle(channels.reviewDraft, (name, digest) => store.reviewDraft(string(name, "name"), string(digest, "digest")));
   handle(channels.exportDraft, async (name, legacyProjection) => {
     if (typeof legacyProjection !== "boolean") throw new Error("Projection choice is invalid");
-    const files = studioExportFiles(await store.reviewedFiles(string(name, "name")), legacyProjection);
-    const manifest = JSON.parse(files.find((file) => file.path === "plugin.json")!.data.toString("utf8")) as { name: string; version: string };
-    const selection = await dialog.showSaveDialog({ defaultPath: `${manifest.name}-${manifest.version}.zip`, filters: [{ name: "Plugin package", extensions: ["zip"] }] });
-    if (selection.canceled || !selection.filePath) return null;
-    await writeFile(selection.filePath, studioZip(files), { flag: "wx" });
+    const path = await saveExport(studioExportFiles(await store.reviewedFiles(string(name, "name")), legacyProjection));
+    if (!path) return null;
     await store.markShared(string(name, "name"));
-    return selection.filePath;
+    return path;
+  });
+  handle(channels.exportInstalled, async (name, legacyProjection) => {
+    const installedName = string(name, "name");
+    if (typeof legacyProjection !== "boolean") throw new Error("Projection choice is invalid");
+    const runtime = await content();
+    if (!runtime) throw new Error("Installed content is unavailable");
+    const loaded = await runtime.store.load();
+    const item = loaded.loaded.find(({ entry, content: entryContent }) => entry.kind === "agent-plugin"
+      && entry.name === installedName && entryContent.kind === "agent-plugin");
+    if (!item || item.content.kind !== "agent-plugin") throw new Error(`Installed plugin ${installedName} is unavailable`);
+    return saveExport(studioExportFiles(item.content.files, legacyProjection));
   });
   handle(channels.exportToCheckout, async (name) => {
     const draftName = string(name, "name");
@@ -149,7 +169,7 @@ export function registerPluginStudioHandlers(deps: IpcDeps, content: () => Promi
     const selected = pending.get(previewId);
     pending.delete(previewId);
     if (!selected || selected.expires < Date.now()) throw new Error("Install preview expired; review the package again");
-    if (!Array.isArray(rawApprovals)) throw new Error("MCP approvals are invalid");
+    if (!Array.isArray(rawApprovals)) throw new Error("Component approvals are invalid");
     const staged = stageLocalAgentPlugin(selected.files);
     if (staged.contentSha256 !== selected.digest) throw new Error("Package changed since install preview");
     const runtime = await content();
@@ -158,13 +178,29 @@ export function registerPluginStudioHandlers(deps: IpcDeps, content: () => Promi
     if (installed?.sourceId === null && installed.version && compareSemver(staged.plan.version, installed.version) <= 0) {
       throw new Error("A local plugin update needs a higher version");
     }
-    const allowed = staged.content.kind === "agent-plugin" ? staged.content.components.mcpServers : {};
-    const approvedMcpServers = rawApprovals.map((item) => {
-      if (!item || typeof item !== "object" || typeof item.name !== "string" || typeof item.digest !== "string"
-        || allowed[item.name]?.digest !== item.digest) throw new Error("MCP approval does not match the reviewed package");
+    if (staged.content.kind !== "agent-plugin") throw new Error("Local install is not an agent plugin");
+    const components = staged.content.components;
+    const seenMcp = new Set<string>();
+    const seenHooks = new Set<number>();
+    const componentConsents: ComponentConsent[] = rawApprovals.map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("Component approval is invalid");
+      if ("kind" in item) {
+        if (item.kind !== "hook" || !Number.isInteger(item.index) || typeof item.digest !== "string"
+          || components.hooks[item.index]?.digest !== item.digest || seenHooks.has(item.index)
+          || (isAsrtSandboxActive() && process.platform === "win32")) {
+          throw new Error("Hook approval does not match the reviewed package or available confinement");
+        }
+        seenHooks.add(item.index);
+        return { kind: "hook", index: item.index, digest: item.digest };
+      }
+      if (typeof item.name !== "string" || typeof item.digest !== "string"
+        || components.mcpServers[item.name]?.digest !== item.digest || seenMcp.has(item.name)) {
+        throw new Error("MCP approval does not match the reviewed package");
+      }
+      seenMcp.add(item.name);
       return { name: item.name, digest: item.digest };
     });
-    await runtime.store.install(staged, { approvedMcpServers });
+    await runtime.store.install(staged, { componentConsents });
     await runtime.reload();
     return { name: staged.plan.name, version: staged.plan.version, sourceId: null };
   });

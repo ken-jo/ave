@@ -7,6 +7,7 @@ import { Textarea } from "../../../../components/ui/textarea.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import type { TranslateFn } from "../../../../i18n/translate.js";
 import type { PluginStudioApi, StudioAvailableParts, StudioDraft, StudioDraftView, StudioLocalPreview, StudioDiagnostic, StudioConnectorCopyPreview, StudioErrorCode } from "../../../../shared/plugin-studio.js";
+import type { ComponentConsent } from "../../../../shared/git-marketplace.js";
 
 const COMPONENT = /^[a-z][a-z0-9-]{0,62}$/u;
 
@@ -28,13 +29,17 @@ export function LocalPluginPackageSheet({ api, preview, onClose, onInstalled }: 
 }) {
   const { t } = useTranslation();
   const [approved, setApproved] = useState<Record<string, boolean>>({});
+  const [approvedHooks, setApprovedHooks] = useState<Record<number, boolean>>({});
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState("");
-  useEffect(() => { setApproved({}); setFailure(""); }, [preview]);
+  useEffect(() => { setApproved({}); setApprovedHooks({}); setFailure(""); }, [preview]);
   const install = async () => {
     if (!preview) return;
     setBusy(true);
-    const selected = Object.entries(preview.components.mcpServers).filter(([name]) => approved[name]).map(([name, server]) => ({ name, digest: server.digest }));
+    const selected: ComponentConsent[] = Object.entries(preview.components.mcpServers)
+      .filter(([name]) => approved[name]).map(([name, server]) => ({ name, digest: server.digest }));
+    selected.push(...preview.components.hooks.flatMap((hook, index) => approvedHooks[index]
+      ? [{ kind: "hook" as const, index, digest: hook.digest }] : []));
     const result = await api.installFromFile(preview.previewId, selected);
     setBusy(false);
     if (!result.ok) { setFailure(studioErrorText(t, result.code)); return; }
@@ -55,7 +60,21 @@ export function LocalPluginPackageSheet({ api, preview, onClose, onInstalled }: 
           <Checkbox checked={approved[name] === true} onCheckedChange={(checked) => setApproved((current) => ({ ...current, [name]: checked === true }))} />
           <span className="text-xs"><strong>{name}</strong> · {server.transport === "stdio" ? `${server.command} ${(server.args ?? []).join(" ")}` : server.url}<br />{t("pluginStudio.mcpConsent")}</span>
         </label>)}
-        {preview.files.some((file) => file.path === "ai.agent-connector.ave/hooks.json") && <p className="text-xs text-muted-foreground">{t("pluginStudio.hooksNotLoaded")}</p>}
+        {preview.components.hooks.length > 0 && <section className="space-y-2 rounded-md border p-3">
+          <h4 className="font-semibold">{t("gitMarketplace.review.hookConsentTitle")}</h4>
+          <p className="text-xs text-muted-foreground">{t("gitMarketplace.review.hookConsentHelp")}</p>
+          <p className="text-xs text-muted-foreground">{t(`gitMarketplace.review.hookConfinement.${preview.hookConfinement}`)}</p>
+          {preview.components.hooks.map((hook, index) => <label key={index} className="flex items-start gap-2" data-testid={`plugin-studio:hook-consent:${index}`}>
+            <Checkbox checked={approvedHooks[index] === true} disabled={preview.hookConfinement === "unavailable"}
+              onCheckedChange={(checked) => setApprovedHooks((current) => ({ ...current, [index]: checked === true }))} />
+            <span className="text-xs"><strong>{t("gitMarketplace.review.hookConsent", { event: hook.event })}</strong>
+              <code className="block break-all">{JSON.stringify(hook.command)}</code>
+              {hook.matcher && <span className="block">{hook.matcher}</span>}
+              <span className="block">{t("gitMarketplace.review.hookTimeout", { timeout: hook.timeoutMs })}</span>
+              <span className="block">{t("gitMarketplace.review.mcpFingerprint", { digest: hook.digest })}</span>
+            </span>
+          </label>)}
+        </section>}
         {preview.components.routineTemplates.length > 0 && <p className="text-xs text-muted-foreground">{t("pluginStudio.routineNotScheduled")}</p>}
         {failure && <p className="text-destructive" role="alert">{failure}</p>}
         <div className="flex justify-end gap-2"><Button variant="outline" onClick={onClose}>{t("common.cancel")}</Button><Button disabled={busy} onClick={() => void install()} data-testid="plugin-studio:install-confirm">{t("pluginStudio.install")}</Button></div>
@@ -248,7 +267,7 @@ export function PluginStudioView({ api, onInstalled }: { api: PluginStudioApi; o
       })}
       {view.errors.map((error, index) => <p key={index} className="text-xs text-destructive">{error}</p>)}
       <div className="grid gap-2 sm:grid-cols-2"><Input value={reviewVersion} onChange={(event) => setReviewVersion(event.target.value)} aria-label={t("pluginStudio.version")} /><Input value={reviewDescription} onChange={(event) => setReviewDescription(event.target.value)} aria-label={t("pluginStudio.description")} /></div>
-      {view.draft.pendingHooks.map((hook, index) => <div key={index} className="space-y-1 rounded border p-2 text-xs"><strong>{hook.event}</strong><p>{t("pluginStudio.hookAdaptation")}</p><Textarea value={hookCommands[index] ?? ""} onChange={(event) => setHookCommands((current) => current.map((value, i) => i === index ? event.target.value : value))} aria-label={`${hook.event} argv`} /></div>)}
+      {view.draft.pendingHooks.map((hook, index) => <div key={index} className="space-y-1 rounded border p-2 text-xs" data-testid={`plugin-studio:pending-hook:${index}`}><strong>{hook.event} · {t("pluginStudio.needsAdaptation")}</strong><p>{hook.sourcePath}</p><p>{t("pluginStudio.hookAdaptation")}</p><Textarea value={hookCommands[index] ?? ""} onChange={(event) => setHookCommands((current) => current.map((value, i) => i === index ? event.target.value : value))} aria-label={`${hook.event} argv`} /></div>)}
       {view.draft.pendingHooks.length > 0 && <label className="flex items-center gap-2 text-xs"><Checkbox checked={adaptedHooksConfirmed} onCheckedChange={(value) => setAdaptedHooksConfirmed(value === true)} />{t("pluginStudio.hooksConfirmed")}</label>}
       <Button size="sm" variant="outline" onClick={() => void saveReviewEdits()} data-testid="plugin-studio:save-review">{t("pluginStudio.saveReview")}</Button>
       {view.lint.length > 0 && <section className="rounded-md border p-3"><h4 className="text-sm font-semibold">{t("pluginStudio.lintTitle")}</h4><p className="text-xs text-muted-foreground">{t("pluginStudio.lintAdvisory")}</p><ul className="list-disc pl-5 text-xs">{view.lint.map((item, index) => <li key={index}>{item.path}: {item.message} · <code>{item.matched}</code></li>)}</ul></section>}
@@ -268,6 +287,7 @@ export function PluginStudioView({ api, onInstalled }: { api: PluginStudioApi; o
       <div className="grid gap-2 sm:grid-cols-2"><Input value={name} onChange={(event) => setName(event.target.value)} placeholder={t("pluginStudio.name")} aria-label={t("pluginStudio.name")} data-testid="plugin-studio:name" /><Input value={version} onChange={(event) => setVersion(event.target.value)} placeholder={t("pluginStudio.version")} aria-label={t("pluginStudio.version")} data-testid="plugin-studio:version" /></div>
       <Input value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("pluginStudio.description")} aria-label={t("pluginStudio.description")} data-testid="plugin-studio:description" />
       {available && <div className="grid gap-2 sm:grid-cols-2">{(["skills", "routines", "connectors", "prompts", "agents"] as const).map((group) => <fieldset key={group} className="rounded border p-2"><legend className="px-1 text-xs font-semibold">{t(`pluginStudio.${group}`)}</legend>{available[group].map((item) => <label key={item.name} className="flex items-center gap-2 text-xs"><Checkbox data-testid={`plugin-studio:select:${group.slice(0, -1)}:${item.name}`} checked={selected[`${group.slice(0, -1)}:${item.name}`] === true} onCheckedChange={(value) => setSelected((current) => ({ ...current, [`${group.slice(0, -1)}:${item.name}`]: value === true }))} />{item.name} · {item.description}</label>)}</fieldset>)}</div>}
+      <p className="text-xs text-muted-foreground">{t("pluginStudio.hooksNotComposable")}</p>
       <div className="grid gap-2 sm:grid-cols-2"><Input value={skillName} onChange={(event) => setSkillName(event.target.value)} placeholder={t("pluginStudio.newSkillName")} aria-label={t("pluginStudio.newSkillName")} /><Input value={promptName} onChange={(event) => setPromptName(event.target.value)} placeholder={t("pluginStudio.newPromptName")} aria-label={t("pluginStudio.newPromptName")} /><Textarea value={skillBody} onChange={(event) => setSkillBody(event.target.value)} placeholder={t("pluginStudio.newSkillBody")} aria-label={t("pluginStudio.newSkillBody")} /><Textarea value={promptBody} onChange={(event) => setPromptBody(event.target.value)} placeholder={t("pluginStudio.newPromptBody")} aria-label={t("pluginStudio.newPromptBody")} /></div>
       <Button disabled={busy} onClick={() => void create()} data-testid="plugin-studio:create">{t("pluginStudio.create")}</Button>
       {drafts.length > 0 && <section className="space-y-1"><h3 className="text-sm font-semibold">{t("pluginStudio.drafts")}</h3>{drafts.map((draft) => <Button key={draft.name} size="sm" variant="ghost" onClick={() => void open(draft.name)}>{draft.name}</Button>)}</section>}

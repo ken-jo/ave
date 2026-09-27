@@ -22,9 +22,10 @@ export function buildPluginStudioApiSurface(): PluginStudioApi {
     importPackage: () => call(channels.importPackage),
     reviewDraft: (name, treeDigest) => call(channels.reviewDraft, name, treeDigest),
     exportDraft: (name, projection) => call(channels.exportDraft, name, projection),
+    exportInstalled: (name, projection) => call(channels.exportInstalled, name, projection),
     exportToCheckout: (name) => call(channels.exportToCheckout, name),
     previewInstallFromFile: () => call(channels.previewInstallFromFile),
     previewInstallDraft: (name) => call(channels.previewInstallDraft, name),
-    installFromFile: (previewId, approvedMcpServers) => call(channels.installFromFile, previewId, approvedMcpServers),
+    installFromFile: (previewId, componentConsents) => call(channels.installFromFile, previewId, componentConsents),
   } satisfies PluginStudioApi);
 }
