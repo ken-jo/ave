@@ -21,6 +21,8 @@ import {
 import type { ContentKind } from "./rules.js";
 import type { ParsedContent } from "./kinds.js";
 import type { ContentStore, LoadedContent } from "./store.js";
+import { parseAgentPluginRoutineTemplates } from "./agent-plugin-components.js";
+import type { AgentPluginRoutineTemplate } from "../../shared/agent-plugin-routine-template.js";
 
 const IMAGE_TYPES: Readonly<Record<string, string>> = { ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp" };
 const FONT_TYPES: Readonly<Record<string, string>> = { woff2: "font/woff2", woff: "font/woff", truetype: "font/ttf", opentype: "font/otf" };
@@ -45,7 +47,7 @@ export interface InstalledAgentPlugin {
 }
 
 export class InstalledContentService {
-  private view: InstalledContentView = { themes: [], languages: [], fonts: [], broken: [] };
+  private view: InstalledContentView = { themes: [], languages: [], fonts: [], routineTemplates: [], broken: [] };
   private catalogs = new Map<string, Record<string, string>>();
   /** `<kind>/<name>/<path>` → the file and its type, for the asset scheme. */
   private served = new Map<string, ServedContentFile>();
@@ -69,6 +71,7 @@ export class InstalledContentService {
     const themes: InstalledThemeView[] = [];
     const languages: InstalledLanguageView[] = [];
     const fonts: InstalledFontView[] = [];
+    const routineTemplates: AgentPluginRoutineTemplate[] = [];
     const brokenViews: BrokenContentView[] = broken.map(({ entry, problem }) => ({ kind: entry.kind, name: entry.name, problem }));
     const catalogs = new Map<string, Record<string, string>>();
     const served = new Map<string, ServedContentFile>();
@@ -140,10 +143,21 @@ export class InstalledContentService {
         instructions.push({ kind: content.kind, name: entry.name, dir });
       } else if (content.kind === "agent-plugin") {
         agentPlugins.push({ name: entry.name, version: entry.version, content });
+        if (content.components.routineTemplates.length > 0) {
+          const bytes = content.files.find((file) => file.path === "ai.agent-connector.ave/routines.json")?.data;
+          if (!bytes) throw new Error(`installed agent plugin ${entry.name} is missing its routine templates`);
+          const parsed = parseAgentPluginRoutineTemplates(bytes);
+          if (parsed.length !== content.components.routineTemplates.length) {
+            throw new Error(`installed agent plugin ${entry.name} has inconsistent routine templates`);
+          }
+          routineTemplates.push(...parsed.map((template) => ({
+            ...template, packageName: entry.name, version: entry.version,
+          })));
+        }
       }
       // Providers and messaging connections take effect through settings (their activation).
     }
-    this.view = { themes, languages, fonts, broken: brokenViews };
+    this.view = { themes, languages, fonts, routineTemplates, broken: brokenViews };
     this.catalogs = catalogs;
     this.served = served;
     this.instructions = instructions;

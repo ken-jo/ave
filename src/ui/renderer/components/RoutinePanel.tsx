@@ -28,6 +28,8 @@ import { MAX_PERSISTED_ROUTINES, MAX_LLM_SESSION_ROUTINES } from "../../../share
 import { isValidCronExpression } from "../../../routines/cron-evaluator.js";
 import { formatMediumDateTime, formatRelativeSessionTime } from "../../../shared/format-time.js";
 import type { RoutineRunRow } from "../../../shared/session-lookup.js";
+import { agentPluginRoutineSource, type AgentPluginRoutineTemplate } from "../../../shared/agent-plugin-routine-template.js";
+import { useInstalledContent } from "../installed-content.js";
 
 /**
  * A run row as this panel holds it: the shared conversation row, with the
@@ -67,13 +69,14 @@ function ExecutionBadge({ execution }: { execution: RoutineExecution }) {
 
 interface RoutineRowProps {
   routine: RoutineRecord;
+  installedTemplateSources: ReadonlySet<string>;
   onDismiss: (id: string) => void;
   onRemove: (id: string) => void;
   onTriggerNow: (id: string) => void;
   recentlyFired: boolean;
 }
 
-function describeSchedule(routine: RoutineRecord): string {
+function describeSchedule(routine: Pick<RoutineRecord, "schedule" | "trigger">): string {
   const s = routine.schedule;
   if (!s) return routine.trigger === "shutdown" ? t("routinePanel.onShutdown") : t("routinePanel.noSchedule");
   const repeatKind = s.repeat?.kind;
@@ -95,7 +98,8 @@ function describeSchedule(routine: RoutineRecord): string {
   return atStr || t("routinePanel.scheduleOnce");
 }
 
-function RoutineRow({ routine, onDismiss, onRemove, onTriggerNow, recentlyFired }: RoutineRowProps) {
+function RoutineRow({ routine, installedTemplateSources, onDismiss, onRemove, onTriggerNow, recentlyFired }: RoutineRowProps) {
+  const templateSource = routine.source?.startsWith("agent-plugin:") ? routine.source : null;
   return (
     <div
       className={`rounded-lg border bg-background p-3 shadow-sm transition-shadow hover:shadow-md ${recentlyFired ? "border-warning/(--opacity-strong) bg-warning/(--opacity-subtle)" : ""}`}
@@ -110,6 +114,13 @@ function RoutineRow({ routine, onDismiss, onRemove, onTriggerNow, recentlyFired 
           <div className="mt-0.5 text-[11px] text-muted-foreground">
             {describeSchedule(routine)}
           </div>
+          {templateSource && (
+            <p className="mt-0.5 text-[11px] text-muted-foreground">
+              {installedTemplateSources.has(templateSource)
+                ? t("routinePanel.createdFromPluginTemplate", { plugin: templateSource.split(":")[1]! })
+                : t("routinePanel.templateNoLongerInstalled")}
+            </p>
+          )}
           {routine.needsAttention && (
             <p className="mt-1 break-words text-xs text-warning" role="status">
               {t(routine.lastSkippedReason === "plugins-missing"
@@ -207,30 +218,33 @@ interface AddRoutineModalProps {
   api: AveApi;
   onClose: () => void;
   onAdded: () => void;
+  template?: AgentPluginRoutineTemplate;
 }
 
 // Exported for renderer tests — the modal owns the button → scope-payload
 // mapping that we want to lock down (empty selection MUST
 // map to `{ mode: "deny-all" }`, not "inherit" / "allow all").
-export function AddRoutineModal({ api, onClose, onAdded }: AddRoutineModalProps) {
-  const [tab, setTab] = useState<InputTab>("form");
-  const [execution, setExecution] = useState<RoutineExecution>("llm-session");
-  const [title, setTitle] = useState("");
-  const [prePrompt, setPrePrompt] = useState("");
-  const [notificationTitle, setNotificationTitle] = useState("");
-  const [notificationBody, setNotificationBody] = useState("");
+export function AddRoutineModal({ api, onClose, onAdded, template }: AddRoutineModalProps) {
+  const [tab, setTab] = useState<InputTab>(template?.schedule?.repeat?.kind === "cron" ? "cron" : "form");
+  const [trigger, setTrigger] = useState<"schedule" | "shutdown">(template?.trigger ?? "schedule");
+  const [execution, setExecution] = useState<RoutineExecution>(template?.execution ?? "llm-session");
+  const [title, setTitle] = useState(template?.title ?? "");
+  const [prePrompt, setPrePrompt] = useState(template?.prePrompt ?? "");
+  const [notificationTitle, setNotificationTitle] = useState(template?.notificationTitle ?? "");
+  const [notificationBody, setNotificationBody] = useState(template?.notificationBody ?? "");
   const [pluginCards, setPluginCards] = useState<PluginCardSummary[]>([]);
   const [allowedPluginIds, setAllowedPluginIds] = useState<string[]>([]);
   const [pluginScopeError, setPluginScopeError] = useState("");
 
   // Form tab fields
-  const [atDate, setAtDate] = useState("");
-  const [atTime, setAtTime] = useState("09:00");
-  const [repeatKind, setRepeatKind] = useState<RepeatKind>("none");
-  const [intervalMinutes, setIntervalMinutes] = useState("60");
+  const initialAt = template?.schedule?.at ? new Date(template.schedule.at) : null;
+  const [atDate, setAtDate] = useState(initialAt ? `${initialAt.getFullYear()}-${String(initialAt.getMonth() + 1).padStart(2, "0")}-${String(initialAt.getDate()).padStart(2, "0")}` : "");
+  const [atTime, setAtTime] = useState(initialAt ? `${String(initialAt.getHours()).padStart(2, "0")}:${String(initialAt.getMinutes()).padStart(2, "0")}` : "09:00");
+  const [repeatKind, setRepeatKind] = useState<RepeatKind>(template?.schedule?.repeat?.kind ?? "none");
+  const [intervalMinutes, setIntervalMinutes] = useState(template?.schedule?.repeat?.kind === "interval" ? String(template.schedule.repeat.intervalMs / 60_000) : "60");
 
   // Cron tab
-  const [cronExpression, setCronExpression] = useState("0 9 * * 1-5");
+  const [cronExpression, setCronExpression] = useState(template?.schedule?.repeat?.kind === "cron" ? template.schedule.repeat.expression : "0 9 * * 1-5");
   const [cronError, setCronError] = useState("");
 
   // Natural language tab
@@ -287,7 +301,7 @@ export function AddRoutineModal({ api, onClose, onAdded }: AddRoutineModalProps)
       }
       return { at, repeat };
     }
-    if (tab === "cron") {
+    if (trigger === "schedule" && tab === "cron") {
       const expr = cronExpression.trim();
       if (!expr) return null;
       // Client-side cron validation — reject invalid expressions before IPC.
@@ -314,8 +328,8 @@ export function AddRoutineModal({ api, onClose, onAdded }: AddRoutineModalProps)
       setCronError("");
     }
 
-    const schedule = buildSchedulePayload();
-    if (!schedule) {
+    const schedule = trigger === "schedule" ? buildSchedulePayload() : undefined;
+    if (trigger === "schedule" && !schedule) {
       setError(t("routinePanel.errorInvalidSchedule"));
       return;
     }
@@ -331,9 +345,10 @@ export function AddRoutineModal({ api, onClose, onAdded }: AddRoutineModalProps)
     }
 
     const input: AddRoutineInput = {
-      trigger: "schedule",
+      trigger,
       execution,
-      schedule: schedule as RoutineSchedule,
+      ...(schedule ? { schedule: schedule as RoutineSchedule } : {}),
+      ...(template ? { source: agentPluginRoutineSource(template) } : {}),
       ...(title.trim() ? { title: title.trim() } : {}),
       ...(execution === "llm-session"
         ? {
@@ -406,8 +421,22 @@ export function AddRoutineModal({ api, onClose, onAdded }: AddRoutineModalProps)
           </DialogClose>
         </DialogHeader>
 
+        {template?.suggestedScope && (
+          <p className="mb-3 text-xs text-muted-foreground" data-testid="routine-template-scope-suggestion">
+            {t("routinePanel.templateSuggestedScope", { plugins: template.suggestedScope.pluginIds.join(", ") })}
+          </p>
+        )}
+
+        <Label className="mb-3 space-y-1">
+          <div className="text-xs font-medium text-muted-foreground">{t("routinePanel.triggerLabel")}</div>
+          <NativeSelect value={trigger} onChange={(event) => { setTrigger(event.target.value as "schedule" | "shutdown"); if (event.target.value === "shutdown") setTab("form"); }}>
+            <NativeSelectOption value="schedule">{t("routinePanel.triggerSchedule")}</NativeSelectOption>
+            <NativeSelectOption value="shutdown">{t("routinePanel.onShutdown")}</NativeSelectOption>
+          </NativeSelect>
+        </Label>
+
         {/* Tab selector for the three routine input styles. */}
-        <div className="mb-4 flex gap-1 rounded-md border p-1 bg-muted/(--opacity-muted)" role="tablist">
+        {trigger === "schedule" && <div className="mb-4 flex gap-1 rounded-md border p-1 bg-muted/(--opacity-muted)" role="tablist">
           {(["form", "cron", "natural"] as InputTab[]).map((tabKey) => (
             <button
               key={tabKey}
@@ -422,7 +451,7 @@ export function AddRoutineModal({ api, onClose, onAdded }: AddRoutineModalProps)
               {tabKey === "form" ? t("routinePanel.tabForm") : tabKey === "cron" ? t("routinePanel.tabCron") : t("routinePanel.tabNatural")}
             </button>
           ))}
-        </div>
+        </div>}
 
         {/* Shared: execution mode + title */}
         {tab !== "natural" && (
@@ -446,7 +475,7 @@ export function AddRoutineModal({ api, onClose, onAdded }: AddRoutineModalProps)
         )}
 
         {/* Form tab */}
-        {tab === "form" && (
+        {trigger === "schedule" && tab === "form" && (
           <div className="space-y-3">
             <div className="grid gap-3 sm:grid-cols-2">
               <Label className="space-y-1">
@@ -485,7 +514,7 @@ export function AddRoutineModal({ api, onClose, onAdded }: AddRoutineModalProps)
         )}
 
         {/* Cron tab */}
-        {tab === "cron" && (
+        {trigger === "schedule" && tab === "cron" && (
           <div className="space-y-3">
             <Label className="space-y-1">
               <div className="text-xs font-medium text-muted-foreground">
@@ -514,7 +543,7 @@ export function AddRoutineModal({ api, onClose, onAdded }: AddRoutineModalProps)
         )}
 
         {/* Natural language tab */}
-        {tab === "natural" && (
+        {trigger === "schedule" && tab === "natural" && (
           <div className="space-y-3">
             <Label className="space-y-1">
               <div className="text-xs font-medium text-muted-foreground">
@@ -647,11 +676,14 @@ export function AddRoutineModal({ api, onClose, onAdded }: AddRoutineModalProps)
 // ─── Main Panel ───────────────────────────────────────────────────────────────
 
 export function RoutinePanel({ api, onOpenSession }: RoutinePanelProps) {
+  const templates = useInstalledContent().routineTemplates;
+  const installedTemplateSources = useMemo(() => new Set(templates.map(agentPluginRoutineSource)), [templates]);
   const [routines, setRoutines] = useState<RoutineRecord[]>([]);
   const [routineSessions, setRoutineSessions] = useState<RoutineRunListRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [recentlyFired, setRecentlyFired] = useState<string[]>([]);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [selectedTemplate, setSelectedTemplate] = useState<AgentPluginRoutineTemplate | null>(null);
   const mountedRef = useRef(true);
   useEffect(() => () => { mountedRef.current = false; }, []);
 
@@ -733,7 +765,7 @@ export function RoutinePanel({ api, onOpenSession }: RoutinePanelProps) {
       label: t("routinePanel.addRoutineButton"),
       icon: <Plus className="h-4 w-4" />,
       disabled: totalCapReached,
-      onSelect: () => setShowAddModal(true),
+      onSelect: () => { setSelectedTemplate(null); setShowAddModal(true); },
     },
     {
       id: "routine-refresh",
@@ -764,6 +796,30 @@ export function RoutinePanel({ api, onOpenSession }: RoutinePanelProps) {
           </div>
         </div>
         <div className="flex min-h-0 flex-1 flex-col gap-3">
+          {templates.length > 0 && (
+            <section className="rounded-lg border bg-muted/(--opacity-light) p-3" data-testid="routine-template-list">
+              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t("routinePanel.pluginTemplatesHeading")}</h3>
+              <ScrollArea className="max-h-52">
+                <div className="space-y-2">
+                  {templates.map((template) => (
+                    <div key={agentPluginRoutineSource(template)} className="rounded-md border bg-background p-3" data-testid="routine-template-row">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <div className="text-sm font-semibold">{template.title} <span className="font-normal text-muted-foreground">({template.packageName})</span></div>
+                          <p className="text-xs text-muted-foreground">{template.description}</p>
+                          <p className="text-xs text-muted-foreground">{describeSchedule(template)}</p>
+                        </div>
+                        <Button size="sm" variant="outline" disabled={totalCapReached} onClick={() => { setSelectedTemplate(template); setShowAddModal(true); }}>
+                          {t("routinePanel.createFromTemplate")}
+                        </Button>
+                      </div>
+                      {template.prePrompt && <pre className="mt-2 whitespace-pre-wrap break-words text-xs">{template.prePrompt}</pre>}
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+            </section>
+          )}
           <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(240px,0.72fr)]">
             <section className="flex min-h-0 flex-col gap-2 rounded-lg border bg-muted/(--opacity-light) shadow-sm" data-testid="routine-list-section">
               <div className="flex items-center justify-between rounded-t-lg border-b bg-muted/(--opacity-medium) px-3 py-2">
@@ -785,6 +841,7 @@ export function RoutinePanel({ api, onOpenSession }: RoutinePanelProps) {
                       <RoutineRow
                         key={r.id}
                         routine={r}
+                        installedTemplateSources={installedTemplateSources}
                         onDismiss={(id) => void handleDismiss(id)}
                         onRemove={(id) => void handleRemove(id)}
                         onTriggerNow={(id) => void handleTriggerNow(id)}
@@ -829,10 +886,13 @@ export function RoutinePanel({ api, onOpenSession }: RoutinePanelProps) {
 
       {showAddModal && (
         <AddRoutineModal
+          key={selectedTemplate ? agentPluginRoutineSource(selectedTemplate) : "manual"}
           api={api}
-          onClose={() => setShowAddModal(false)}
+          template={selectedTemplate ?? undefined}
+          onClose={() => { setShowAddModal(false); setSelectedTemplate(null); }}
           onAdded={() => {
             setShowAddModal(false);
+            setSelectedTemplate(null);
             void refresh();
           }}
         />

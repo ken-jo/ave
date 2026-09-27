@@ -10,6 +10,7 @@
 import type { RetirementSuccessors } from "../../shared/alerts-types.js";
 import type { PluginSandboxDeclaration } from "../../plugins/public-contract.js";
 import type { BundledMcpAuth, StaticBundledMcpServer } from "../../mcp/portable-mcp.js";
+import type { RoutineSchedule } from "../../shared/routines-types.js";
 
 export const PACKAGE_KINDS = [
   "plugin",
@@ -83,7 +84,7 @@ export interface AgentPluginComponents {
   prompts: Array<{ name: string; kind: "template" | "persona"; digest: string }>;
   agents: Array<{ name: string; digest: string }>;
   routineTemplates: Array<{
-    id: string; title: string; trigger: "schedule" | "shutdown"; schedule?: string;
+    id: string; title: string; trigger: "schedule" | "shutdown"; schedule?: RoutineSchedule;
     execution: "llm-session" | "notification-only"; suggestedScope?: string[]; digest: string;
   }>;
   hooks: Array<{ event: string; matcher?: string; command: string[]; timeoutMs: number; digest: string }>;

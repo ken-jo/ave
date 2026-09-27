@@ -40,7 +40,7 @@ const harbor: InstalledThemeView = {
   version: "1.0.0",
 };
 
-const view = (patch: Partial<InstalledContentView> = {}): InstalledContentView => ({ themes: [], languages: [], fonts: [], broken: [], ...patch });
+const view = (patch: Partial<InstalledContentView> = {}): InstalledContentView => ({ themes: [], languages: [], fonts: [], routineTemplates: [], broken: [], ...patch });
 
 function bridge(content: InstalledContentView, messages: Record<string, Record<string, string>> = {}): InstalledContentApi {
   return {

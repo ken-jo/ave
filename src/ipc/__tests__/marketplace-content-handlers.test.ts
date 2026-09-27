@@ -41,7 +41,7 @@ import { setInstalledThemeIds } from "../../shared/plugin-theme-cache.js";
 import { loadInstalledContent, registerMarketplaceContentHandlers } from "../domains/marketplace-content.js";
 
 const TOKEN = "t0123456789abcdef0123456789abcdef";
-const content = { themes: [], languages: [], fonts: [], broken: [] };
+const content = { themes: [], languages: [], fonts: [], routineTemplates: [], broken: [] };
 const port = {
   installed: () => content,
   languageMessages: (locale: string) => {
@@ -146,7 +146,7 @@ describe("loadInstalledContent", () => {
 
   it("lists nothing and applies nothing for an empty store", async () => {
     const { service } = await loadInstalledContent({ settingsService: { get: () => ({ language: "en" }) }, getAppWindows: () => [] } as unknown as IpcDeps, TOKEN, root);
-    expect(service.installed()).toEqual({ themes: [], languages: [], fonts: [], broken: [] });
+    expect(service.installed()).toEqual({ themes: [], languages: [], fonts: [], routineTemplates: [], broken: [] });
     expect(isInstalledLocale("fr")).toBe(false);
   });
 

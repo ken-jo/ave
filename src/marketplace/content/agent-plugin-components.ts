@@ -8,6 +8,10 @@ import type { AgentPluginComponents } from "../catalog/types.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
 import { MarketplaceError } from "../errors.js";
 import { parseAgentPluginManifest, type AgentPluginManifestIdentity } from "../../plugins/agent-plugin-manifest.js";
+import type { AgentPluginRoutineTemplate } from "../../shared/agent-plugin-routine-template.js";
+import type { RoutineSchedule, RoutineRepeat } from "../../shared/routines-types.js";
+import { isValidCronExpression } from "../../routines/cron-evaluator.js";
+import { MAX_CRON_EXPR_LENGTH, MAX_FUTURE_OFFSET_MS, MIN_INTERVAL_MS } from "../../main/routines-store.js";
 
 export interface AgentPluginFile {
   path: string;
@@ -85,7 +89,35 @@ function prompt(bytes: Buffer, path: string, basename: string): { kind: "templat
   return { name, kind };
 }
 
-function routineTemplates(bytes: Buffer): AgentPluginComponents["routineTemplates"] {
+function routineSchedule(value: unknown, path: string): RoutineSchedule {
+  const schedule = record(value, path);
+  if (Object.keys(schedule).some((key) => !["at", "repeat"].includes(key))) fail(path, "unknown schedule field");
+  const at = schedule.at;
+  if (at !== undefined && (typeof at !== "string" || !Number.isFinite(Date.parse(at)))) fail(path, "invalid schedule.at");
+  let repeat: RoutineRepeat | undefined;
+  if (schedule.repeat !== undefined) {
+    const value = record(schedule.repeat, path);
+    const kind = value.kind;
+    if (kind === "cron") {
+      if (Object.keys(value).some((key) => !["kind", "expression"].includes(key))
+        || typeof value.expression !== "string" || value.expression.length > MAX_CRON_EXPR_LENGTH
+        || !isValidCronExpression(value.expression)) fail(path, "invalid cron repeat");
+      repeat = { kind, expression: value.expression as string };
+    } else if (kind === "interval") {
+      if (Object.keys(value).some((key) => !["kind", "intervalMs"].includes(key))
+        || typeof value.intervalMs !== "number" || !Number.isFinite(value.intervalMs)
+        || value.intervalMs < MIN_INTERVAL_MS || value.intervalMs > MAX_FUTURE_OFFSET_MS) fail(path, "invalid interval repeat");
+      repeat = { kind, intervalMs: value.intervalMs as number };
+    } else if (kind === "none" || kind === "daily" || kind === "weekly" || kind === "monthly") {
+      if (Object.keys(value).some((key) => key !== "kind")) fail(path, "unknown repeat field");
+      repeat = { kind };
+    } else fail(path, "invalid repeat kind");
+  }
+  if (repeat?.kind !== "cron" && at === undefined) fail(path, "non-cron schedule needs at");
+  return { ...(at !== undefined ? { at: at as string } : {}), ...(repeat ? { repeat } : {}) };
+}
+
+export function parseAgentPluginRoutineTemplates(bytes: Buffer): Array<Omit<AgentPluginRoutineTemplate, "packageName" | "version">> {
   const path = "ai.agent-connector.ave/routines.json";
   const document = json(bytes, path);
   if (Object.keys(document).some((key) => !["version", "templates"].includes(key))) fail(path, "unknown root field");
@@ -102,25 +134,44 @@ function routineTemplates(bytes: Buffer): AgentPluginComponents["routineTemplate
     if (!COMPONENT_NAME.test(id) || ids.has(id)) fail(path, `invalid or repeated id ${id}`);
     ids.add(id);
     const title = requiredString(entry.title, path, "title");
-    requiredString(entry.description, path, "description", 1000);
+    const description = requiredString(entry.description, path, "description", 1000);
     if (entry.trigger !== "schedule" && entry.trigger !== "shutdown") fail(path, "invalid trigger");
     if (entry.execution !== "llm-session" && entry.execution !== "notification-only") fail(path, "invalid execution");
-    if (entry.schedule !== undefined && typeof entry.schedule !== "string") fail(path, "schedule must be a string");
-    for (const field of ["prePrompt", "notificationTitle", "notificationBody"] as const) {
-      if (entry[field] !== undefined) requiredString(entry[field], path, field, field === "prePrompt" ? 8192 : 500);
+    const schedule = entry.schedule === undefined ? undefined : routineSchedule(entry.schedule, path);
+    if (entry.prePrompt !== undefined && (typeof entry.prePrompt !== "string" || !entry.prePrompt.trim()
+      || Buffer.byteLength(entry.prePrompt, "utf8") > 8192 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(entry.prePrompt))) {
+      fail(path, "invalid prePrompt");
     }
-    if (entry.trigger === "schedule" && entry.schedule === undefined) fail(path, "a scheduled template needs schedule");
+    if (entry.notificationTitle !== undefined) requiredString(entry.notificationTitle, path, "notificationTitle", 500);
+    if (entry.notificationBody !== undefined && (typeof entry.notificationBody !== "string"
+      || Buffer.byteLength(entry.notificationBody, "utf8") > 500 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(entry.notificationBody))) {
+      fail(path, "invalid notificationBody");
+    }
+    if (entry.trigger === "schedule" && !schedule) fail(path, "a scheduled template needs schedule");
+    if (entry.trigger === "shutdown" && schedule) fail(path, "a shutdown template cannot have schedule");
+    if (entry.execution === "llm-session" && entry.prePrompt === undefined) fail(path, "an LLM template needs prePrompt");
+    if (entry.execution === "notification-only" && entry.notificationTitle === undefined) fail(path, "a notification template needs notificationTitle");
     const scope = entry.suggestedScope === undefined ? undefined : record(entry.suggestedScope, path);
     if (scope && (Object.keys(scope).some((key) => key !== "pluginIds") || !Array.isArray(scope.pluginIds)
-      || !scope.pluginIds.every((item) => typeof item === "string"))) fail(path, "invalid suggestedScope");
-    const digest = sha256Hex(canonicalStringify(entry));
+      || !scope.pluginIds.every((item) => typeof item === "string" && /^[a-z][a-z0-9-]*$/u.test(item)))) fail(path, "invalid suggestedScope");
     return {
-      id, title, trigger: entry.trigger, execution: entry.execution,
-      ...(entry.schedule !== undefined ? { schedule: entry.schedule as string } : {}),
-      ...(scope ? { suggestedScope: scope.pluginIds as string[] } : {}),
-      digest,
+      id, title, description, trigger: entry.trigger, execution: entry.execution,
+      ...(schedule ? { schedule } : {}),
+      ...(entry.prePrompt !== undefined ? { prePrompt: entry.prePrompt as string } : {}),
+      ...(entry.notificationTitle !== undefined ? { notificationTitle: entry.notificationTitle as string } : {}),
+      ...(entry.notificationBody !== undefined ? { notificationBody: entry.notificationBody as string } : {}),
+      ...(scope ? { suggestedScope: { pluginIds: scope.pluginIds as string[] } } : {}),
     };
   });
+}
+
+function routineTemplates(bytes: Buffer): AgentPluginComponents["routineTemplates"] {
+  return parseAgentPluginRoutineTemplates(bytes).map((template) => ({
+    id: template.id, title: template.title, trigger: template.trigger, execution: template.execution,
+    ...(template.schedule ? { schedule: template.schedule } : {}),
+    ...(template.suggestedScope ? { suggestedScope: template.suggestedScope.pluginIds } : {}),
+    digest: sha256Hex(canonicalStringify(template)),
+  }));
 }
 
 /** Read only package bytes. Installation roots and activation ids never enter a digest. */

@@ -22,7 +22,7 @@ import {
 import type { GitMarketplaceApi } from "../../shared/git-marketplace.js";
 import { setInstalledThemeBundles, type ThemeBundle } from "./theme/bundles/index.js";
 
-const EMPTY: InstalledContentView = Object.freeze({ themes: [], languages: [], fonts: [], broken: [] }) as unknown as InstalledContentView;
+const EMPTY: InstalledContentView = Object.freeze({ themes: [], languages: [], fonts: [], routineTemplates: [], broken: [] }) as unknown as InstalledContentView;
 const FONT_STYLE_ID = "ave-installed-fonts";
 
 let current: InstalledContentView = EMPTY;
