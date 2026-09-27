@@ -242,6 +242,39 @@ function workflowFileNames(): string[] {
 }
 
 describe("installer smoke and packaging discipline", () => {
+  it("requires the audio runtime in Linux installer dependencies", () => {
+    const packageJson = JSON.parse(readRepoFile("package.json")) as {
+      build?: {
+        deb?: { depends?: string[] };
+        rpm?: { depends?: string[] };
+      };
+    };
+
+    expect(packageJson.build?.deb?.depends).toEqual([
+      "libgtk-3-0",
+      "libnotify4",
+      "libnss3",
+      "libxss1",
+      "libxtst6",
+      "xdg-utils",
+      "libatspi2.0-0",
+      "libuuid1",
+      "libsecret-1-0",
+      "libasound2t64 | libasound2",
+    ]);
+    expect(packageJson.build?.rpm?.depends).toEqual([
+      "gtk3",
+      "libnotify",
+      "nss",
+      "libXScrnSaver",
+      "(libXtst or libXtst6)",
+      "xdg-utils",
+      "at-spi2-core",
+      "(libuuid or libuuid1)",
+      "alsa-lib",
+    ]);
+  });
+
   it("smoke-launches the packaged app before uploading installer artifacts", () => {
     const workflow = readRepoFile(".github/workflows/build-installers.yml");
     const smokeScript = readRepoFile("scripts/smoke-packaged-app.mjs");
