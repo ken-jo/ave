@@ -61,14 +61,13 @@ const PLUGIN_ID = "com.example.service";
 const PLUGIN_ROOT = "/plugins/service";
 const PLUGIN_DATA_DIR = "/plugins/service/data";
 /**
- * A host-widened root, standing in for the kind of grant
- * `PLUGIN_ENVELOPE_GRANTS` produces (a host-owned directory under `~/.ave`).
+ * A host-widened root, standing in for a declared host directory grant.
  *
  * READ-only, which is the shape `derivePluginChildEnvelope` produces for a
  * `hostDirectory` row: it pushes the directory into `read` alone, and a
  * `userChosenDirectory` value naming it back is refused by the entry
- * `ceilingSubtractions` carries for that row — one per `hostDirectory` row in
- * the table. NOT by the `aveHome()` entry: a row is a lexical join onto the
+ * `ceilingSubtractions` carries for that grant. NOT by the `aveHome()` entry:
+ * a host directory is a lexical join onto the
  * home and the containment question is asked on the canonical form, so a
  * granted directory that links out of the home escapes that entry.
  * `confined-plugin-child.test.ts` drives the production derivation for that

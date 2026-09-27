@@ -177,7 +177,7 @@ export interface CatalogView {
 
 // ─── Detail, plans, installs ────────────────────────────────────────────────
 
-export type VersionExclusionView = "min_app_version" | "yanked" | "platform" | "prerelease" | "rollout" | "revoked";
+export type VersionExclusionView = "min_app_version" | "host_protocol" | "yanked" | "platform" | "prerelease" | "rollout" | "revoked";
 
 export interface VersionView {
   version: string;

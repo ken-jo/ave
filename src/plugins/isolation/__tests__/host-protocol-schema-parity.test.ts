@@ -1,7 +1,7 @@
 /**
  * The published host protocol schema, held to the host that serves it.
  *
- * `schemas/plugin-host-protocol/1/protocol.schema.json` is generated from the
+ * `schemas/plugin-host-protocol/2/protocol.schema.json` is generated from the
  * contract table and the wire types, and `check:plugin-host-protocol-schema`
  * holds the committed file to that output. Neither proves the output is RIGHT.
  * This does, two ways:
@@ -9,7 +9,7 @@
  *  - parity: the schema names exactly the methods, notifications, error codes
  *    and capabilities the running dispatcher does — read from the same tables
  *    the host routes with, not from a list kept here;
- *  - the goldens: every frame under `fixtures/host-protocol/1/`, each recorded
+ *  - the goldens: every frame under `fixtures/host-protocol/2/`, each recorded
  *    against the real child runtime, validates against it. A wire form the
  *    generator guessed wrong fails here, on a frame that really crossed.
  *
@@ -54,7 +54,7 @@ type Frame = Record<string, unknown>;
 
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 const SCHEMA = JSON.parse(
-  readFileSync(join(REPO_ROOT, "schemas/plugin-host-protocol/1/protocol.schema.json"), "utf-8"),
+  readFileSync(join(REPO_ROOT, "schemas/plugin-host-protocol/2/protocol.schema.json"), "utf-8"),
 ) as {
   $id: string;
   $defs: {
@@ -66,7 +66,7 @@ const SCHEMA = JSON.parse(
     types: Record<string, JsonSchema>;
   };
 };
-const GOLDEN_ROOT = fileURLToPath(new URL("./fixtures/host-protocol/1/", import.meta.url));
+const GOLDEN_ROOT = fileURLToPath(new URL("./fixtures/host-protocol/2/", import.meta.url));
 
 const Ajv2020 = (Ajv2020Module as unknown as { default?: unknown }).default ?? Ajv2020Module;
 // Configured the way the plugin guide tells a consumer to: strict, with union
@@ -123,7 +123,7 @@ describe("the schema names what the host serves, and nothing else", () => {
       version: string;
     };
     expect(SCHEMA.$id).toBe(
-      `https://former-site.invalid/schemas/plugin-host-protocol/1/v${version}/protocol.schema.json`,
+      `https://former-site.invalid/schemas/plugin-host-protocol/2/v${version}/protocol.schema.json`,
     );
   });
 
@@ -330,7 +330,7 @@ describe("every golden frame is valid under the schema", () => {
 describe("the generator writes the same bytes on every checkout", () => {
   it("reads CRLF sources to exactly what it reads LF sources to, and to the committed file", () => {
     const committed = readFileSync(
-      join(REPO_ROOT, "schemas/plugin-host-protocol/1/protocol.schema.json"),
+      join(REPO_ROOT, "schemas/plugin-host-protocol/2/protocol.schema.json"),
       "utf-8",
     );
     const fromLf = generateHostProtocolSchema().text;
@@ -408,7 +408,7 @@ describe("the command line always reports an outcome", () => {
       symlinkSync(join(REPO_ROOT, "scripts"), linked, "junction");
       const result = runCli(linked, ["--check"]);
       expect(result.stdout).toBe(
-        `${HOST_PROTOCOL_SCHEMA_LABEL} schemas/plugin-host-protocol/1/protocol.schema.json matches its sources\n`,
+        `${HOST_PROTOCOL_SCHEMA_LABEL} schemas/plugin-host-protocol/2/protocol.schema.json matches its sources\n`,
       );
       expect(result.status, result.stderr).toBe(0);
     } finally {

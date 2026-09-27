@@ -1,0 +1,19 @@
+{
+  "request": {
+    "id": 7,
+    "jsonrpc": "2.0",
+    "method": "ave/host/storage/writeJson",
+    "params": {
+      "indent": 2,
+      "relPath": "state.json",
+      "value": {
+        "cursor": 3
+      }
+    }
+  },
+  "response": {
+    "id": 7,
+    "jsonrpc": "2.0",
+    "result": null
+  }
+}

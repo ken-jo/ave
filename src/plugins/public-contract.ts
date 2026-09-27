@@ -913,9 +913,7 @@ export interface RequiresSpec {
   minAppVersion?: string;
   /**
    * The Ave host protocol version the plugin speaks — an integer written as a
-   * string (`"1"`). Absent: the host speaks its newest version for it, which is
-   * right for a JavaScript plugin because the host-shipped runtime speaks for
-   * it. A version the running app does not serve refuses the load with
+   * string (`"2"`). A missing declaration or a version the running app does not serve refuses the load with
    * `incompatible-host-protocol`. An older app whose schema lacks the field
    * rejects the manifest outright, so a plugin that declares it also sets
    * `minAppVersion` to the first release that knows it. @optional

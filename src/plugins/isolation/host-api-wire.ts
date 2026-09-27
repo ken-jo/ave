@@ -49,28 +49,14 @@ import { randomBytes } from "node:crypto";
 // ───────────────────────────────────────────────────────────────────────────
 
 /**
- * The host protocol versions this build serves, oldest first.
- *
- * A SET, not a number: a breaking change adds a version beside the old one
- * rather than replacing it, which is what lets a plugin built against an older
- * version keep loading while the host moves on (§3.2). One constant for both
- * directions — the reverse channel and the lifecycle methods used to carry a
- * revision each, and two numbers that always move together are one number that
- * can disagree with itself.
+ * The one host protocol version this build serves. A breaking release replaces
+ * the previous version after its announced boundary (§3.2). The same value
+ * governs both directions of the connection.
  */
-export const HOST_PROTOCOL_VERSIONS_SERVED = ["1"] as const;
+export const HOST_PROTOCOL_VERSIONS_SERVED = ["2"] as const;
 
 /** One served version, as it travels: an integer written as a string. */
 export type HostProtocolVersion = (typeof HOST_PROTOCOL_VERSIONS_SERVED)[number];
-
-/**
- * The version the host speaks for a plugin that declares none.
- *
- * The host-shipped reference runtime speaks for a JS plugin, so such a plugin
- * has nothing to negotiate and gets the newest the runtime knows.
- */
-export const NEWEST_HOST_PROTOCOL_VERSION: HostProtocolVersion =
-  HOST_PROTOCOL_VERSIONS_SERVED[HOST_PROTOCOL_VERSIONS_SERVED.length - 1];
 
 /** Whether `value` names a version this build serves. */
 export function isServedHostProtocolVersion(value: unknown): value is HostProtocolVersion {
@@ -89,13 +75,16 @@ export class IncompatibleHostProtocolError extends Error {
   constructor(
     readonly pluginId: string,
     readonly detail:
-      | { readonly declared: string }
+      | { readonly declared: string | null }
       | { readonly missingCapabilities: readonly string[] },
   ) {
     super(
       "declared" in detail
-        ? `plugin '${pluginId}' speaks host protocol ${detail.declared}; this app serves `
-          + HOST_PROTOCOL_VERSIONS_SERVED.join(", ")
+        ? detail.declared === null
+          ? `plugin '${pluginId}' does not declare a host protocol; this app serves `
+            + HOST_PROTOCOL_VERSIONS_SERVED.join(", ")
+          : `plugin '${pluginId}' speaks host protocol ${detail.declared}; this app serves `
+            + HOST_PROTOCOL_VERSIONS_SERVED.join(", ")
         : `plugin '${pluginId}' requires host methods this app does not serve: `
           + detail.missingCapabilities.join(", "),
     );

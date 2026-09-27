@@ -105,9 +105,6 @@
                 "detached-operation",
                 "plugin-storage",
                 "plugin-storage-encryption-unavailable",
-                "lease-unavailable",
-                "lease-audience-denied",
-                "credential-conflict",
                 "host-internal"
               ]
             },
@@ -157,9 +154,6 @@
         "detached-operation",
         "plugin-storage",
         "plugin-storage-encryption-unavailable",
-        "lease-unavailable",
-        "lease-audience-denied",
-        "credential-conflict",
         "host-internal"
       ]
     },
@@ -216,9 +210,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -343,9 +334,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -462,9 +450,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -592,9 +577,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -702,9 +684,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -809,9 +788,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -925,9 +901,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -1030,9 +1003,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -1132,9 +1102,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -1272,9 +1239,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -1377,9 +1341,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -1480,9 +1441,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -1615,9 +1573,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -1720,9 +1675,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -1773,7 +1725,7 @@
       "ave/host/hostFetch": {
         "description": "Host-mediated outbound HTTPS through Electron's `net` (Chromium network stack). Unlike a plugin's own Node `fetch`/undici, this honors the OS proxy resolution INCLUDING PAC/WPAD auto-config and the OS trust store on every platform — so a plugin whose Node libraries can't be configured for the corporate proxy/CA (e.g. MSAL) can still reach the network on a TLS-inspecting corporate network. Capability-gated (external-auth-consumer) + SSRF-validated + audited host-side.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied, lease-unavailable, lease-audience-denied, credential-conflict.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
           "properties": {
             "code": {
               "type": "integer"
@@ -1822,9 +1774,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -1927,9 +1876,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -2025,9 +1971,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -2137,9 +2080,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -2251,9 +2191,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -2366,9 +2303,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -2473,9 +2407,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -2586,9 +2517,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -2807,9 +2735,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -2909,9 +2834,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -3019,9 +2941,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -3129,9 +3048,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -3374,9 +3290,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -3667,9 +3580,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -3773,9 +3683,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -3879,9 +3786,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -3984,9 +3888,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -4203,9 +4104,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -4376,9 +4274,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -4478,9 +4373,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -4580,9 +4472,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -4682,9 +4571,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -4784,9 +4670,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -4886,9 +4769,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -4995,9 +4875,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -5110,9 +4987,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -5220,9 +5094,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -5339,9 +5210,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -5445,9 +5313,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -5554,9 +5419,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -5729,9 +5591,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -5835,9 +5694,6 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
-                    "lease-unavailable",
-                    "lease-audience-denied",
-                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -8062,38 +7918,6 @@
               "baseUrl": {
                 "type": "string"
               },
-              "exposure": {
-                "const": "lease",
-                "type": "string"
-              },
-              "handleId": {
-                "type": "string"
-              },
-              "ok": {
-                "const": true,
-                "type": "boolean"
-              },
-              "vendor": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "handleId",
-              "ok",
-              "exposure",
-              "vendor"
-            ],
-            "type": "object"
-          },
-          {
-            "properties": {
-              "baseUrl": {
-                "type": "string"
-              },
-              "exposure": {
-                "const": "raw",
-                "type": "string"
-              },
               "handleId": {
                 "type": "string"
               },
@@ -8111,7 +7935,6 @@
             "required": [
               "handleId",
               "ok",
-              "exposure",
               "vendor",
               "key"
             ],
@@ -8119,6 +7942,9 @@
           },
           {
             "properties": {
+              "handleId": {
+                "type": "string"
+              },
               "ok": {
                 "const": false,
                 "type": "boolean"
@@ -8128,6 +7954,7 @@
               }
             },
             "required": [
+              "handleId",
               "ok",
               "reason"
             ],
@@ -8248,17 +8075,6 @@
       },
       "WireRequestInit": {
         "properties": {
-          "auth": {
-            "properties": {
-              "lease": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "lease"
-            ],
-            "type": "object"
-          },
           "body": {
             "$ref": "#/$defs/types/WireBytes"
           },
@@ -8305,13 +8121,6 @@
       },
       "WireResolveApiKeyOptions": {
         "properties": {
-          "exposure": {
-            "enum": [
-              "lease",
-              "raw"
-            ],
-            "type": "string"
-          },
           "purpose": {
             "enum": [
               "llm",

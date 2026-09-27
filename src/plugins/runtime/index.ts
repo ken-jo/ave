@@ -2974,9 +2974,8 @@ abstract class PluginRuntimeState {
    * Host protocol gate (LOAD boundary), the sibling of
    * {@link markIncompatibleAppVersion} and run beside it on every load path.
    * Returns `true` and marks the plugin failed when `requires.hostProtocol`
-   * names a version this app does not serve (plugin-hostapi-protocol.md §3.2);
-   * `false` when the field is absent, which the host answers with its newest
-   * version, or served.
+   * is missing or names a version this app does not serve
+   * (plugin-hostapi-protocol.md §3.2).
    *
    * A distinct refusal from `incompatible-app-version`, so the Doctor can say
    * "this plugin was built for a different protocol" rather than "update the
@@ -2984,10 +2983,10 @@ abstract class PluginRuntimeState {
    */
   protected markIncompatibleHostProtocol(manifest: PluginManifest): boolean {
     const declared = manifest.requires?.hostProtocol;
-    if (declared === undefined || isServedHostProtocolVersion(declared)) return false;
+    if (isServedHostProtocolVersion(declared)) return false;
     this.refuseIncompatibleHostProtocol(
       manifest,
-      new IncompatibleHostProtocolError(manifest.id, { declared }),
+      new IncompatibleHostProtocolError(manifest.id, { declared: declared ?? null }),
     );
     return true;
   }
@@ -5436,8 +5435,8 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     if (this.markIncompatibleAppVersion(manifest)) {
       return;
     }
-    // Host protocol gate. Same LOAD-boundary shape: a plugin built for a
-    // protocol this app does not serve is skipped before anything spawns.
+    // Host protocol gate. Undeclared and unserved code is skipped before any
+    // factory activates.
     if (this.markIncompatibleHostProtocol(manifest)) {
       return;
     }

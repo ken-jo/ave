@@ -622,7 +622,7 @@ export type ServiceHostApi = Pick<
  * the type: there was no way for the host to decide that one plugin's child
  * reaches further, so a plugin whose legitimate work lives outside those two
  * directories could not be isolated at all. Widening is a host decision
- * (`PLUGIN_ENVELOPE_GRANTS`), and it belongs in the value, not in a second
+ * (the manifest's declared sandbox authority), and it belongs in the value, not in a second
  * check bolted onto the delegation path — widen the child and the delegated
  * worker composes with no further change, because both lists come from one
  * derivation.

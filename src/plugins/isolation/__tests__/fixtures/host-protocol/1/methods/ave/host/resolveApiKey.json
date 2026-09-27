@@ -15,8 +15,8 @@
     "jsonrpc": "2.0",
     "result": {
       "baseUrl": "https://api.example.com/v1",
-      "exposure": "lease",
-      "handleId": "lease_golden",
+      "handleId": "<uuid-1>",
+      "key": "sk-golden-bearer",
       "ok": true,
       "vendor": "openai"
     }

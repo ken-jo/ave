@@ -1,0 +1,13 @@
+{
+  "request": {
+    "id": "<uuid-1>",
+    "jsonrpc": "2.0",
+    "method": "ave/instance/onPublished",
+    "params": {}
+  },
+  "response": {
+    "id": "<uuid-1>",
+    "jsonrpc": "2.0",
+    "result": null
+  }
+}
