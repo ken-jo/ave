@@ -8,11 +8,23 @@
  * this pins all three outcomes against fixtures.
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { scanSourceTextSafety } from "../../scripts/check-source-text-safe.mjs";
+
+test("rejects unregistered document reads in this check and spawned Node checks", () => {
+  const guide = resolve(import.meta.dirname, "../../docs/guides/getting-started.md");
+  assert.throws(() => readFileSync(guide, "utf8"), /document-consumer/);
+  const child = spawnSync(process.execPath, ["-e", "require('node:fs').readFileSync(process.argv[1])", guide], {
+    encoding: "utf8",
+    env: process.env,
+  });
+  assert.notEqual(child.status, 0);
+  assert.match(child.stderr, /document-consumer/);
+});
 
 function fixtureRoot() {
   const root = mkdtempSync(join(tmpdir(), "ave-text-safe-"));

@@ -2,7 +2,7 @@ name: Playwright E2E (Electron)
 
 # The dispatch/schedule workflow is always loaded from the trusted default
 # branch. Private-repository credentials exist only in stage-inputs, which
-# performs Git operations and archives tracked files but never executes source.
+# performs Git operations and archives tracked files but never executes candidate source.
 on:
   repository_dispatch:
     types: [host-e2e]
@@ -28,6 +28,13 @@ jobs:
     env:
       HOST_SHA: ${{ github.event.client_payload.host_ref || github.sha }}
     steps:
+      - name: Checkout trusted archive policy
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: stage-policy
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
       - name: Checkout exact ave input
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -86,10 +93,7 @@ jobs:
             git -C "$repo" merge-base --is-ancestor \
               "$actual" \
               refs/remotes/origin/main
-            if git -C "$repo" ls-files -s | grep -q '^120000 '; then
-              echo "::error::$repo contains a symbolic-link entry"
-              exit 1
-            fi
+            bash stage-policy/scripts/check-e2e-archive-tree.sh "$repo" "$actual"
             git -C "$repo" archive \
               --format=tar \
               --prefix="$repo/" \

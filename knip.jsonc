@@ -58,6 +58,9 @@
   "vitest": {
     "config": "vitest.analysis.config.ts"
   },
+  // The declaration supplies test TypeScript types for a Node test helper.
+  // The runtime import names its .mjs sibling, so the file graph misses it.
+  "ignoreFiles": ["src/__tests__/support/git-fixture-env.d.mts"],
   "ignoreDependencies": [
     // Invoked as a BINARY from an argv array the pre-push hook builds at runtime
     // (`bun x electron-rebuild -f --only better-sqlite3`, scripts/hooks/run-local-checks.mjs),

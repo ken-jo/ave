@@ -13,6 +13,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { gitFixtureEnv } from "../../../__tests__/support/git-fixture-env.mjs";
 
 interface SeenRequest {
   method: string;
@@ -41,7 +42,7 @@ export interface GitHttpServerOptions {
 }
 
 function hostGitEnv(): NodeJS.ProcessEnv {
-  return { PATH: process.env.PATH, HOME: process.env.HOME, LC_ALL: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
+  return { ...gitFixtureEnv(join(tmpdir(), `ave-git-http-${process.pid}`)), LC_ALL: "C" };
 }
 
 /**

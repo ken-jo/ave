@@ -309,6 +309,10 @@ describe("installer smoke and packaging discipline", () => {
     const execute = workflow.slice(workflow.indexOf("  e2e:"));
 
     expect(stage).toContain("secrets.AVE_REPO_READ_TOKEN");
+    expect(stage).toContain("path: stage-policy");
+    expect(stage).toContain("ref: ${{ github.workflow_sha }}");
+    expect(stage).toContain('bash stage-policy/scripts/check-e2e-archive-tree.sh "$repo" "$actual"');
+    expect(stage).not.toContain("ls-files -s");
     expect(stage).toContain("git -C \"$repo\" archive");
     expect(stage).toContain("manifest.tsv");
     expect(stage).toContain("artifact-digest");
@@ -858,11 +862,9 @@ describe("installer smoke and packaging discipline", () => {
     expect(claude).toContain("duplicates no");
 
     for (const guidance of [agents, contributing, pullRequestTemplate]) {
-      expect(guidance).toContain("review-only Markdown");
-      expect(guidance).toMatch(/runtime/i);
-      expect(guidance).toMatch(/instruction/i);
-      expect(guidance).toMatch(/workflow/i);
-      expect(guidance).toMatch(/sensitive/i);
+      expect(guidance).toMatch(/documentation/i);
+      expect(guidance).toMatch(/consum/i);
+      expect(guidance).toMatch(/pre-push/i);
     }
 
     expect(agents).toContain("openFeatureNamespace");

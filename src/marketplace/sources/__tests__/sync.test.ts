@@ -20,6 +20,7 @@ import type { PolicyLoad } from "../policy.js";
 import { SourceRegistry } from "../registry.js";
 import { SourceSyncer, shouldSyncSource, type SyncResult } from "../sync.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { gitFixtureEnv } from "../../../__tests__/support/git-fixture-env.mjs";
 
 const AT = "2026-09-23T00:00:00.000Z";
 const OTHER_COMMIT = "c".repeat(40);
@@ -35,7 +36,7 @@ const revocations = (entries: unknown[]) => `${JSON.stringify({ schemaVersion: 1
 function workGit(repo: FixtureRepo, args: string[]): string {
   return execFileSync("git", args, {
     cwd: repo.work,
-    env: { PATH: process.env.PATH, HOME: process.env.HOME, LC_ALL: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
+    env: { ...gitFixtureEnv(repo.work), LC_ALL: "C" },
     encoding: "utf8",
   }).trim();
 }
