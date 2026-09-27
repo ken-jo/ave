@@ -60,6 +60,9 @@ export const EXEC_AUTHORIZATION_REQUIRED_EXIT_CODE = 77;
 /** Exit code for a turn that failed, or a boot that never reached the turn. */
 export const EXEC_FAILURE_EXIT_CODE = 1;
 
+/** Exit code when an interactive launch fails before boot completes. */
+export const GUI_BOOT_FAILURE_EXIT_CODE = 1;
+
 /**
  * Stop reasons that mean the turn did not deliver an answer. `round-cap`,
  * `max_tokens` and `interrupted` are deliberately absent: each returns the

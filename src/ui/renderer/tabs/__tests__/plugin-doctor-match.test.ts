@@ -7,6 +7,7 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   findPluginDoctorEntry,
+  findPluginProtocolUpdatePath,
   getPluginDoctorInstallKey,
   repairPluginFromMarketplace,
 } from "../plugin-doctor-match.js";
@@ -64,6 +65,26 @@ describe("findPluginDoctorEntry", () => {
   it("returns null for a plugin bound to no source", () => {
     const unbound = entry("weather", { state: "unbound", version: "1.0.0" }, { key: { sourceId: null, kind: "plugin", name: "weather" } });
     expect(findPluginDoctorEntry(card({ id: "weather" }), [unbound])).toBeNull();
+  });
+});
+
+describe("findPluginProtocolUpdatePath", () => {
+  it("selects the newest eligible version from the installed plugin's own source", () => {
+    const entries = [
+      entry("weather", { state: "installed-elsewhere", sourceId: "ave", version: "1.0.0" }, { key: { sourceId: "other", kind: "plugin", name: "weather" } }),
+      entry("weather", { state: "update", from: "1.0.0", to: "2.0.0" }),
+    ];
+    expect(findPluginProtocolUpdatePath(card({ id: "weather" }), entries, [])).toEqual({
+      kind: "catalog", key: { sourceId: "ave", kind: "plugin", name: "weather" }, version: "2.0.0", from: "1.0.0",
+    });
+  });
+
+  it("names the installed source repository when no eligible version is published", () => {
+    const installed = entry("weather", { state: "unavailable" });
+    expect(findPluginProtocolUpdatePath(card({ id: "weather" }), [installed], [
+      { id: "ave", label: "Source", url: "https://example.invalid/weather" } as never,
+    ])).toEqual({ kind: "repository", sourceLabel: "Source", url: "https://example.invalid/weather" });
+    expect(findPluginProtocolUpdatePath(card({ id: "weather" }), [installed], [])).toEqual({ kind: "unavailable" });
   });
 });
 

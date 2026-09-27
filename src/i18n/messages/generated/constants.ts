@@ -2,7 +2,7 @@
 export const en = {
   // SOURCE_BADGE
   "constants.sourceBadgeBuiltin": "Built-in",
-  "constants.sourceBadgePlugin": "Plugin",
+  "constants.sourceBadgePlugin": "Extension",
 
   // WEB_PROVIDERS placeholders
   "constants.webProviderDuckDuckGoPlaceholder": "No key required",
@@ -35,7 +35,7 @@ export const en = {
 export const ko: Record<keyof typeof en, string> = {
   // SOURCE_BADGE
   "constants.sourceBadgeBuiltin": "내장",
-  "constants.sourceBadgePlugin": "플러그인",
+  "constants.sourceBadgePlugin": "익스텐션",
 
   // WEB_PROVIDERS placeholders
   "constants.webProviderDuckDuckGoPlaceholder": "키 불필요",

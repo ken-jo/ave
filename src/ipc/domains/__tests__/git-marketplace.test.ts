@@ -201,6 +201,17 @@ describe("git marketplace IPC boundary", () => {
     expect(service.executeInstall).not.toHaveBeenCalled();
   });
 
+  it("passes reviewed authority and validated MCP consent through one install request", async () => {
+    const executeInstall = vi.fn(async () => ({ installed: true }));
+    await setup({ executeInstall });
+    const consents = [{ name: "notes", digest: "a".repeat(64) }];
+    await expect(invokeFileIpcHandler(handlers, channels.installExecute, "p1", consents))
+      .resolves.toEqual({ ok: true, value: { installed: true } });
+    expect(executeInstall).toHaveBeenLastCalledWith("p1", consents, true);
+    await invokeFileIpcHandler(handlers, channels.installExecute, "p2");
+    expect(executeInstall).toHaveBeenLastCalledWith("p2", [], true);
+  });
+
   it("answers a marketplace failure with its code, and an unexpected one as unavailable", async () => {
     await setup({ listSources: vi.fn(async () => { throw new Error("disk gone"); }) });
     await expect(invokeFileIpcHandler(handlers, channels.installExecute, "p1")).resolves.toEqual({

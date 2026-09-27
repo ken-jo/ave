@@ -1,7 +1,7 @@
 // AUTO-GENERATED — i18n migration. Source: src/ui/renderer/utils/trust-origin-label.ts. Do not edit by hand.
 export const en = {
   "trustOriginLabel.userKeyboard": "Direct user input",
-  "trustOriginLabel.pluginEmitted": "Plugin generated",
+  "trustOriginLabel.pluginEmitted": "Extension generated",
   "trustOriginLabel.mcpPromptEmitted": "MCP server prompt",
   "trustOriginLabel.appEmitted": "MCP app generated",
   "trustOriginLabel.llmToolArg": "Model generated argument",
@@ -13,7 +13,7 @@ export const en = {
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "trustOriginLabel.userKeyboard": "사용자 직접 입력",
-  "trustOriginLabel.pluginEmitted": "플러그인 생성",
+  "trustOriginLabel.pluginEmitted": "익스텐션 생성",
   "trustOriginLabel.mcpPromptEmitted": "MCP 서버 프롬프트",
   "trustOriginLabel.appEmitted": "MCP 앱 생성",
   "trustOriginLabel.llmToolArg": "모델 생성 인자",

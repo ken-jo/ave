@@ -1,5 +1,7 @@
 # Plugin Process Isolation — Design And Staged Plan
 
+The code packages described here are called extensions in user-facing copy.
+
 Status: Stages 1-8 shipped — the five first-party plugins run in a confined child
 process (`src/plugins/isolation/out-of-process-plugins.ts`). Stage 9 (third-party
 admission) and Stage 10 (removing the in-process loader) are not implemented; their

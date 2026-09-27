@@ -242,6 +242,39 @@ function workflowFileNames(): string[] {
 }
 
 describe("installer smoke and packaging discipline", () => {
+  it("requires the audio runtime in Linux installer dependencies", () => {
+    const packageJson = JSON.parse(readRepoFile("package.json")) as {
+      build?: {
+        deb?: { depends?: string[] };
+        rpm?: { depends?: string[] };
+      };
+    };
+
+    expect(packageJson.build?.deb?.depends).toEqual([
+      "libgtk-3-0",
+      "libnotify4",
+      "libnss3",
+      "libxss1",
+      "libxtst6",
+      "xdg-utils",
+      "libatspi2.0-0",
+      "libuuid1",
+      "libsecret-1-0",
+      "libasound2t64 | libasound2",
+    ]);
+    expect(packageJson.build?.rpm?.depends).toEqual([
+      "gtk3",
+      "libnotify",
+      "nss",
+      "libXScrnSaver",
+      "(libXtst or libXtst6)",
+      "xdg-utils",
+      "at-spi2-core",
+      "(libuuid or libuuid1)",
+      "alsa-lib",
+    ]);
+  });
+
   it("smoke-launches the packaged app before uploading installer artifacts", () => {
     const workflow = readRepoFile(".github/workflows/build-installers.yml");
     const smokeScript = readRepoFile("scripts/smoke-packaged-app.mjs");
@@ -249,7 +282,9 @@ describe("installer smoke and packaging discipline", () => {
     expect(workflow).toContain("Smoke launch packaged app");
     expect(workflow).toContain("scripts/smoke-packaged-app.mjs --target");
     expect(workflow).toContain("xvfb-run -a");
-    expect(workflow).toContain("sudo apt-get update && sudo apt-get install -y fakeroot rpm xvfb");
+    expect(workflow).toContain("sudo apt-get update && sudo apt-get install -y fakeroot rpm xvfb dbus dbus-x11 gnome-keyring");
+    expect(workflow).toContain("dbus-run-session -- bash -euo pipefail -c");
+    expect(workflow).toContain("gnome-keyring-daemon --unlock --components=secrets");
     expect(workflow).toContain(
       "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0",
     );
@@ -267,6 +302,13 @@ describe("installer smoke and packaging discipline", () => {
     expect(smokeScript).toContain("win-unpacked");
     expect(smokeScript).toContain(".app");
     expect(smokeScript).toContain("AVE_HOME");
+    expect(smokeScript).toContain('process.platform === "win32" ? tmpdir() : "/tmp"');
+    expect(smokeScript).toContain("--password-store=gnome-libsecret");
+    expect(smokeScript).toContain("snapshotProductionLogs(env.AVE_HOME)");
+    expect(smokeScript).toContain("readProductionLogsSince(env.AVE_HOME, logSnapshot)");
+    expect(smokeScript).toContain("launchSucceeded({ ready, timedOut, code, signal })");
+    expect(smokeScript).toContain('runPackagedAppOnce(executable, timeoutMs, env, "first launch")');
+    expect(smokeScript).toContain('runPackagedAppOnce(executable, timeoutMs, env, "upgrade probe")');
     expect(smokeScript).toContain("assertPackagedFirstLaunchSeed");
     expect(smokeScript).toContain("assertUpgradeProbe");
     expect(smokeScript).toContain("expectedSeededMarkdownFiles");
@@ -638,6 +680,7 @@ describe("installer smoke and packaging discipline", () => {
       "bun run check:import-cycles",
       "node scripts/check-generated-assets.mjs",
       "bun run check:plugin-host-protocol-schema",
+      "bun run check:plugin-host-protocol-mirror",
       "bun run check:i18n-catalog",
       "bun run check:i18n-barrels",
       "node scripts/check-no-tls-bypass.mjs",
@@ -648,7 +691,7 @@ describe("installer smoke and packaging discipline", () => {
       "bun run check:source-text-safe",
     ]);
 
-    // Of those eleven, the five that a later command in the same composite
+    // Of those twelve, the six that a later command in the same composite
     // compiles behind. ci.yml's comment states this number; this is where it
     // comes from.
     const lastCompile = commands.reduce(
@@ -663,9 +706,19 @@ describe("installer smoke and packaging discipline", () => {
       "bun run check:import-cycles",
       "node scripts/check-generated-assets.mjs",
       "bun run check:plugin-host-protocol-schema",
+      "bun run check:plugin-host-protocol-mirror",
       "bun run check:i18n-catalog",
       "bun run check:i18n-barrels",
     ]);
+  });
+
+  it("runs the protocol mirror gate and refreshes the release candidate", () => {
+    expect(packageScripts["check:plugin-host-protocol-mirror"]).toBe(
+      "node scripts/check-plugin-host-protocol-mirror.mjs",
+    );
+    expect(readRepoFile("scripts/release.mjs")).toContain(
+      'run("node", ["scripts/sync-plugin-host-protocol-mirror.mjs"]);',
+    );
   });
 
   it("keeps the composite that orders a hygiene scan first out of CI", () => {

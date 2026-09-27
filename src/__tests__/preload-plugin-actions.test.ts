@@ -59,7 +59,7 @@ describe("preload plugin action normalization", () => {
       // preload resolves i18n at the English default — it has no settings
       // context to switch language, and this suite re-imports it via
       // resetModules so the runtime locale is the default.
-      message: "Plugin action result is invalid.",
+      message: "Extension action result is invalid.",
     });
   });
 

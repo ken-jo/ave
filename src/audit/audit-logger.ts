@@ -294,7 +294,7 @@ export interface AuditEntry {
 
   timestamp: string;
   sessionId: string;
-  type: "turn" | "tool_call" | "approval" | "warn" | "error" | "mcp_connect" | "mcp_apikey_set" | "kill_switch" | "dlp" | "info" | "diagnostics-export";
+  type: "turn" | "tool_call" | "approval" | "warn" | "error" | "mcp_connect" | "mcp_apikey_set" | "kill_switch" | "dlp" | "info" | "diagnostics-export" | "plugin_hostapi_denied";
   /** DLP hit payload — populated when type === "dlp" */
   dlp?: {
     byKind: Record<string, number>;

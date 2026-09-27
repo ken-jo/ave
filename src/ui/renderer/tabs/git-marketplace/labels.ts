@@ -3,6 +3,7 @@
  * `t("…")` call so the used-keys gate proves it exists in the catalog.
  */
 import type { TranslateFn as Translate } from "../../../../i18n/translate.js";
+import { packageVocabularyKind } from "../../../../shared/marketplace-package-sections.js";
 import type {
   GitMarketplaceErrorCode,
   InstallActionView,
@@ -18,8 +19,11 @@ export const KIND_ORDER: readonly PackageKind[] = ["agent-plugin", "plugin", "mc
 
 export function kindLabel(t: Translate, kind: PackageKind): string {
   switch (kind) {
-    case "agent-plugin": return t("gitMarketplace.kind.agentPlugin");
-    case "plugin": return t("gitMarketplace.kind.plugin");
+    case "plugin":
+    case "agent-plugin":
+      return packageVocabularyKind(kind) === "extension"
+        ? t("gitMarketplace.kind.plugin")
+        : t("gitMarketplace.kind.agentPlugin");
     case "mcp": return t("gitMarketplace.kind.mcp");
     case "skill": return t("gitMarketplace.kind.skill");
     case "agent": return t("gitMarketplace.kind.agent");
@@ -73,6 +77,7 @@ export function sourceStatusLabel(t: Translate, status: SourceStatusView): strin
 export function exclusionLabel(t: Translate, reason: VersionExclusionView): string {
   switch (reason) {
     case "min_app_version": return t("gitMarketplace.version.needsApp");
+    case "host_protocol": return t("gitMarketplace.version.hostProtocol");
     case "yanked": return t("gitMarketplace.version.yanked");
     case "platform": return t("gitMarketplace.version.platform");
     case "prerelease": return t("gitMarketplace.version.prerelease");

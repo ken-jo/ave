@@ -8,7 +8,7 @@ import { net } from "electron";
 import { Readable } from "node:stream";
 import { createSafeLlmFetch } from "../../main/safe-llm-fetch.js";
 import type { BootHost } from "../host-runtime.js";
-import { REDIRECT_STATUSES } from "../../main/host-fetch-guard.js";
+import { REDIRECT_STATUSES, type HostFetchTransport } from "../../main/host-fetch-guard.js";
 
 export function createDesktopNetworkFetch(): Pick<BootHost, "networkFetch" | "singleHopNetworkFetch" | "llmFetch"> {
   const electronNetFetch = net.fetch.bind(net);
@@ -60,8 +60,8 @@ export function createDesktopNetworkFetch(): Pick<BootHost, "networkFetch" | "si
  * method/headers/body pass through, and an aborted signal rejects with
  * AbortError.
  */
-function createSingleHopFetch(): typeof fetch {
-  return (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+function createSingleHopFetch(): HostFetchTransport {
+  const send = async (input: Parameters<typeof fetch>[0], init: RequestInit = {}, beforeSend: () => void = () => {}): Promise<Response> => {
     const url =
       input instanceof URL ? input.toString()
       : typeof input === "string" ? input
@@ -77,6 +77,16 @@ function createSingleHopFetch(): typeof fetch {
         fn(value);
       };
       const request = net.request({ url, method, redirect: "manual" });
+      let handoffStarted = false;
+      const handoff = (sendHeaders: () => void): void => {
+        try {
+          if (!handoffStarted) { beforeSend(); handoffStarted = true; }
+          sendHeaders();
+        } catch (error) {
+          request.abort();
+          throw error;
+        }
+      };
       const requestHeaders = new Headers((init?.headers as HeadersInit | undefined) ?? {});
       requestHeaders.forEach((value, key) => request.setHeader(key, value));
       const signal = init?.signal ?? undefined;
@@ -130,26 +140,26 @@ function createSingleHopFetch(): typeof fetch {
       request.on("error", (error) => settle(reject, error));
       const body = init?.body ?? null;
       if (body === null) {
-        request.end();
+        handoff(() => request.end());
       } else if (typeof body === "string") {
-        request.end(Buffer.from(body));
+        handoff(() => request.end(Buffer.from(body)));
       } else if (body instanceof Uint8Array) {
-        request.end(Buffer.from(body));
+        handoff(() => request.end(Buffer.from(body)));
       } else if (body instanceof ArrayBuffer) {
-        request.end(Buffer.from(body));
+        handoff(() => request.end(Buffer.from(body)));
       } else if (body instanceof URLSearchParams) {
         requestHeaders.has("content-type")
           || request.setHeader("content-type", "application/x-www-form-urlencoded;charset=UTF-8");
-        request.end(Buffer.from(body.toString()));
+        handoff(() => request.end(Buffer.from(body.toString())));
       } else if (typeof (body as ReadableStream).getReader === "function") {
         void (async () => {
           const reader = (body as ReadableStream<Uint8Array>).getReader();
           for (;;) {
             const { done, value } = await reader.read();
             if (done) break;
-            request.write(Buffer.from(value));
+            handoff(() => request.write(Buffer.from(value)));
           }
-          request.end();
+          handoff(() => request.end());
         })().catch((error: unknown) => {
           request.abort();
           settle(reject, error instanceof Error ? error : new Error(String(error)));
@@ -164,5 +174,8 @@ function createSingleHopFetch(): typeof fetch {
         );
       }
     });
-  }) as typeof fetch;
+  };
+  const fetchImpl = ((input, init) => send(input, init)) as HostFetchTransport;
+  fetchImpl.sendWithHandoff = (input, init, beforeSend) => send(input, init, beforeSend);
+  return fetchImpl;
 }

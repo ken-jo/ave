@@ -19,7 +19,10 @@ import { PluginUninstallDialog } from "../dialogs/PluginUninstallDialog.js";
 import {
   getPluginDoctorInstallKey,
   repairPluginFromMarketplace,
+  resolvePluginProtocolUpdatePath,
+  type PluginProtocolUpdatePath,
 } from "./plugin-doctor-match.js";
+import { requestUpdateReview } from "./git-marketplace/update-review-request.js";
 import { PluginConfigSchemaForm } from "./PluginConfigSchemaForm.js";
 import { PluginPerfTab } from "./PluginPerfTab.js";
 import { DEFAULT_TOAST_TTL_MS } from "../constants.js";
@@ -129,7 +132,7 @@ function entriesToConfig(entries: KV[]): Record<string, unknown> {
   return sanitizePluginConfig(out);
 }
 
-export function PluginConfigTab({ api, initialPluginId }: { api?: AveApi; initialPluginId?: string | null } = {}) {
+export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: AveApi; initialPluginId?: string | null; onNavigate?: (tab: string) => void } = {}) {
   const alertsApi = api ?? (() => { try { return getApi(); } catch { return null; } })();
   const alerts = useAlertKinds(alertsApi);
   const { t } = useTranslation();
@@ -175,6 +178,7 @@ export function PluginConfigTab({ api, initialPluginId }: { api?: AveApi; initia
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [doctoringId, setDoctoringId] = useState<string | null>(null);
+  const [protocolUpdatePath, setProtocolUpdatePath] = useState<PluginProtocolUpdatePath | null>(null);
   const [banner, setBanner] = useState<{ type: BannerType; msg: string } | null>(null);
   const bannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showBanner = useCallback((type: BannerType, msg: string) => {
@@ -431,6 +435,16 @@ export function PluginConfigTab({ api, initialPluginId }: { api?: AveApi; initia
   }, [selectedId, entries, showBanner, notifySaved, t]);
 
   const selectedPlugin = plugins.find((p) => p.id === selectedId);
+  useEffect(() => {
+    let current = true;
+    setProtocolUpdatePath(null);
+    if (selectedPlugin?.loadStatus === "failed" && selectedPlugin.installFailureKind === "incompatible-host-protocol") {
+      void resolvePluginProtocolUpdatePath((api ?? getApi()).gitMarketplace, selectedPlugin)
+        .then((path) => { if (current) setProtocolUpdatePath(path); })
+        .catch(() => { if (current) setProtocolUpdatePath({ kind: "unavailable" }); });
+    }
+    return () => { current = false; };
+  }, [api, selectedId, selectedPlugin?.loadStatus, selectedPlugin?.installFailureKind]);
   const selectedPluginActive = selectedPlugin
     ? (selectedPlugin.active ?? selectedPlugin.loadStatus !== "disabled")
     : false;
@@ -885,6 +899,33 @@ export function PluginConfigTab({ api, initialPluginId }: { api?: AveApi; initia
                             </p>
                           </div>
                         ) : null}
+                        {selectedPlugin.installFailureKind === "incompatible-host-protocol" && protocolUpdatePath && (
+                          <div className="mt-2 text-xs" data-testid={`plugin-config:protocol-update:${selectedPlugin.id}`}>
+                            {protocolUpdatePath.kind === "catalog" ? (
+                              <Button size="sm" variant="outline" onClick={() => {
+                                requestUpdateReview([{
+                                  key: protocolUpdatePath.key,
+                                  displayName: selectedPlugin.name,
+                                  from: protocolUpdatePath.from,
+                                  to: protocolUpdatePath.version,
+                                }]);
+                                onNavigate?.("marketplace");
+                              }}>
+                                {t("pluginConfigTab.protocolUpdateCatalog", { version: protocolUpdatePath.version })}
+                              </Button>
+                            ) : protocolUpdatePath.kind === "repository" ? (
+                              <div>
+                                <p>{t("pluginConfigTab.protocolUpdateRepository", { source: protocolUpdatePath.sourceLabel })}</p>
+                                <p className="break-all font-mono">{protocolUpdatePath.url}</p>
+                                {protocolUpdatePath.url.startsWith("https://") && (
+                                  <Button size="sm" variant="outline" onClick={() => void getApi().openExternalUrl(protocolUpdatePath.url)}>
+                                    {t("pluginConfigTab.protocolOpenRepository")}
+                                  </Button>
+                                )}
+                              </div>
+                            ) : <p>{t("pluginConfigTab.protocolUpdateUnavailable")}</p>}
+                          </div>
+                        )}
                       </div>
                       <div className="flex shrink-0 items-center gap-2">
                         <Button

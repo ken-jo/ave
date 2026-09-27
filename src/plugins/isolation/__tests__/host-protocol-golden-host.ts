@@ -159,10 +159,12 @@ export function createGoldenHost(overrides: GoldenHostOverrides = {}): GoldenHos
     getSecret: async () => "the-stored-secret",
     resolveApiKey: async () => ({
       ok: true as const,
+      exposure: "lease" as const,
+      leaseId: "lease_golden",
       vendor: "openai",
-      bearer: () => "sk-golden-bearer",
       baseUrl: "https://api.example.com/v1",
-      release: () => undefined,
+      onClosed: () => () => {},
+      release: async () => {},
     }),
     callLlm: async () => "the host answered",
     hostFetch: async () =>

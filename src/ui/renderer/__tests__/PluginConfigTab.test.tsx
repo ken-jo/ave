@@ -3,6 +3,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act, render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import { PluginConfigTab } from "../tabs/PluginConfigTab.js";
 import { PluginConfigSchemaForm } from "../tabs/PluginConfigSchemaForm.js";
+import { takeUpdateReview } from "../tabs/git-marketplace/update-review-request.js";
 
 const mockCards = vi.fn(async () => [
   {
@@ -33,6 +34,7 @@ const mockUninstall = vi.fn(async () => ({
  */
 const market = {
   listCatalog: vi.fn(),
+  listSources: vi.fn(),
   planInstall: vi.fn(),
   executeInstall: vi.fn(),
 };
@@ -74,12 +76,14 @@ function setRendererApi(value: Record<string, unknown>): void {
 
 beforeEach(() => {
   market.listCatalog.mockReset();
+  market.listSources.mockReset();
   market.planInstall.mockReset();
   market.executeInstall.mockReset();
   market.listCatalog.mockResolvedValue({
     ok: true as const,
     value: { entries: [], counts: {}, sourceCount: 1, syncedAt: null },
   });
+  market.listSources.mockResolvedValue({ ok: true as const, value: [] });
   market.planInstall.mockResolvedValue({ ok: true as const, value: { planId: "plan-1" } });
   market.executeInstall.mockResolvedValue({
     ok: true as const,
@@ -303,7 +307,7 @@ describe("PluginConfigTab", () => {
         expectRepairPlanned("agent-hub");
         expect(cards).toHaveBeenCalledTimes(2);
         expect(
-          screen.getByText("Agent Hub: 진단 완료 — 플러그인을 아직 실행할 수 없습니다."),
+          screen.getByText("Agent Hub: 진단 완료 — 익스텐션을 아직 실행할 수 없습니다."),
         ).toBeInTheDocument();
       });
       expect(screen.queryByText("Agent Hub 복구 완료")).toBeNull();
@@ -341,7 +345,7 @@ describe("PluginConfigTab", () => {
     await waitFor(() => {
       expect(
         screen.getByText(
-          "Agent Hub: 이 플러그인에 연결된 마켓플레이스 소스가 없어 재설치할 수 없습니다. 제거하거나 설정 → 마켓플레이스에서 다시 설치하세요.",
+          "Agent Hub: 이 익스텐션에 연결된 마켓플레이스 소스가 없어 재설치할 수 없습니다. 제거하거나 설정 → 마켓플레이스에서 다시 설치하세요.",
         ),
       ).toBeInTheDocument();
     });
@@ -389,7 +393,7 @@ describe("PluginConfigTab", () => {
     });
     expect(screen.queryByText("Agent Hub 복구 완료")).toBeNull();
     expect(
-      screen.queryByText("Agent Hub: 진단 완료 — 플러그인을 아직 실행할 수 없습니다."),
+      screen.queryByText("Agent Hub: 진단 완료 — 익스텐션을 아직 실행할 수 없습니다."),
     ).toBeNull();
     expect(screen.getByTestId("plugin-config:banner")).toHaveClass("text-destructive");
   });
@@ -438,7 +442,7 @@ describe("PluginConfigTab", () => {
       expect(screen.getByTestId("plugin-config:banner")).toHaveClass("text-success");
     });
     expect(
-      screen.queryByText("Meeting: 진단 완료 — 플러그인을 아직 실행할 수 없습니다."),
+      screen.queryByText("Meeting: 진단 완료 — 익스텐션을 아직 실행할 수 없습니다."),
     ).toBeNull();
   });
 
@@ -496,13 +500,14 @@ describe("PluginConfigTab", () => {
       expect(market.planInstall).not.toHaveBeenCalled();
       expect(cards).toHaveBeenCalledTimes(2);
       expect(
-        screen.getByText("Meeting: 진단 완료 — 플러그인을 아직 실행할 수 없습니다."),
+        screen.getByText("Meeting: 진단 완료 — 익스텐션을 아직 실행할 수 없습니다."),
       ).toBeInTheDocument();
       expect(screen.getByTestId("plugin-config:banner")).toHaveClass("text-warning");
     });
   });
 
   it("names a host protocol mismatch, and does not reinstall for it", async () => {
+    const navigate = vi.fn();
     const broken = {
       id: "meeting",
       name: "Meeting",
@@ -512,10 +517,18 @@ describe("PluginConfigTab", () => {
       tools: [],
       installAliases: ["ave-plugin-meeting"],
       installFailureKind: "incompatible-host-protocol" as const,
-      installFailureMessage: "plugin 'meeting' speaks host protocol 2; this app serves 1",
+      installFailureMessage: "plugin 'meeting' speaks host protocol 1; this app serves 2",
       loadStatus: "failed" as const,
     };
     const cards = vi.fn().mockResolvedValue([broken]);
+    bind("meeting");
+    market.listCatalog.mockResolvedValue({ ok: true, value: {
+      entries: [{
+        key: { sourceId: "ave", kind: "plugin", name: "meeting" },
+        sourceOrigin: "official", sourceLabel: "Ave", displayName: "Meeting", description: "", keywords: [],
+        state: { state: "update", from: "1.0.0", to: "2.0.0" }, required: false, runsCode: true,
+      }], counts: {}, sourceCount: 1, syncedAt: null,
+    } });
     Object.defineProperty(window, "ave", {
       value: {
         plugins: { cards },
@@ -525,15 +538,19 @@ describe("PluginConfigTab", () => {
       configurable: true,
     });
 
-    render(<PluginConfigTab />);
+    render(<PluginConfigTab onNavigate={navigate} />);
 
     await waitFor(() => {
       expect(screen.getByTestId("plugin-config:doctor-panel:meeting")).toBeInTheDocument();
     });
     // Its own diagnosis, not "update the app": a newer app may have dropped
     // the version rather than lacking it.
-    expect(screen.getByText("다른 Ave 프로토콜용 플러그인")).toBeInTheDocument();
+    expect(screen.getByText("다른 Ave 프로토콜용 익스텐션")).toBeInTheDocument();
     expect(screen.queryByText("앱 업데이트 필요")).toBeNull();
+    expect(await screen.findByText(/마켓플레이스에서 2.0.0 버전 검토/)).toBeInTheDocument();
+    fireEvent.click(screen.getByText(/마켓플레이스에서 2.0.0 버전 검토/));
+    expect(navigate).toHaveBeenCalledWith("marketplace");
+    expect(takeUpdateReview()).toEqual({ kind: "package", key: { sourceId: "ave", kind: "plugin", name: "meeting" } });
 
     fireEvent.click(screen.getByTestId("plugin-config:doctor:meeting"));
 
@@ -541,6 +558,28 @@ describe("PluginConfigTab", () => {
       expect(market.planInstall).not.toHaveBeenCalled();
       expect(cards).toHaveBeenCalledTimes(2);
     });
+  });
+
+  it("shows the installed source repository when no compatible catalog version exists", async () => {
+    bind("meeting");
+    market.listSources.mockResolvedValue({ ok: true, value: [{
+      id: "ave", label: "Plugin source", url: "https://example.invalid/plugins/meeting",
+    }] });
+    Object.defineProperty(window, "ave", {
+      value: {
+        plugins: { cards: vi.fn().mockResolvedValue([{
+          id: "meeting", name: "Meeting", description: "Needs update", sampleTools: [], capabilities: [], tools: [],
+          loadStatus: "failed", installFailureKind: "incompatible-host-protocol",
+        }]) },
+        pluginConfig: { get: mockGet, set: mockSet },
+      },
+      writable: true,
+      configurable: true,
+    });
+
+    render(<PluginConfigTab />);
+    expect(await screen.findByText("https://example.invalid/plugins/meeting")).toBeInTheDocument();
+    expect(screen.getByText(/Plugin source에서 호환 버전 확인/)).toBeInTheDocument();
   });
 
   it("shows a sandbox ceiling diagnosis with update and remove actions without reinstalling", async () => {
@@ -616,7 +655,7 @@ describe("PluginConfigTab", () => {
     await waitFor(() => {
       expect(screen.getByTestId("plugin-config:doctor-panel:meeting")).toBeInTheDocument();
     });
-    expect(screen.getByText("플러그인 manifest 검증 실패")).toBeInTheDocument();
+    expect(screen.getByText("익스텐션 manifest 검증 실패")).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("plugin-config:doctor:meeting"));
 
@@ -702,7 +741,7 @@ describe("PluginConfigTab", () => {
     await waitFor(() => {
       expect(screen.getByTestId("plugin-config:doctor-panel:lyra-mail")).toBeInTheDocument();
     });
-    expect(screen.getByText("플러그인 manifest 검증 실패")).toBeInTheDocument();
+    expect(screen.getByText("익스텐션 manifest 검증 실패")).toBeInTheDocument();
     expect(screen.getByText("상세 오류")).toBeInTheDocument();
     expect(screen.getByText(/unknown property: 'startupTools'/)).toBeInTheDocument();
   });
@@ -909,7 +948,7 @@ describe("PluginConfigTab", () => {
     });
     expect(screen.getAllByText("의존성 설치 중 (최초 1회)...").length).toBeGreaterThan(0);
     expect(screen.getByText("40%")).toBeInTheDocument();
-    expect(screen.getByText("준비가 끝나면 플러그인이 자동으로 로드됩니다.")).toBeInTheDocument();
+    expect(screen.getByText("준비가 끝나면 익스텐션이 자동으로 로드됩니다.")).toBeInTheDocument();
   });
 
 });

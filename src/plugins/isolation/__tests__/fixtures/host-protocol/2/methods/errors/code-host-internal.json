@@ -1,0 +1,26 @@
+{
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "ave/host/getSecret",
+    "params": {
+      "key": "service.token"
+    }
+  },
+  "response": {
+    "error": {
+      "code": -32000,
+      "data": {
+        "code": "host-internal",
+        "detail": {
+          "kind": "other"
+        },
+        "name": "Error"
+      },
+      "message": "Host request failed."
+    },
+    "id": 1,
+    "jsonrpc": "2.0"
+  },
+  "trigger": "a host implementation that threw something outside the closed set"
+}
