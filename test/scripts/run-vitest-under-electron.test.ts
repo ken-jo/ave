@@ -1,13 +1,14 @@
 import { EventEmitter } from "node:events";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 
 import { assertElectronNodeVitestRuntime } from "../../scripts/assert-electron-node-vitest.mjs";
 import { normalizeElectronNodeRuntime } from "../../scripts/normalize-electron-node-runtime.mjs";
-import { guardedNodeOptions } from "../../scripts/lib/document-consumer-node-options.mjs";
+import { documentGuardImportArgument, guardedNodeOptions } from "../../scripts/lib/document-consumer-node-options.mjs";
 import {
   applyElectronVitestResult,
   createElectronVitestInvocation,
@@ -24,6 +25,42 @@ class FakeChild extends EventEmitter {
 }
 
 describe("Electron Node-mode Vitest runner", () => {
+  it("passes file URLs to worker preloads", async () => {
+    const configUrl = new URL("../../vitest.analysis.config.ts", import.meta.url);
+    const analysisConfig = (await import(configUrl.href)).default as { test: { execArgv: string[] } };
+    const preloads = analysisConfig.test.execArgv.filter((argument) => argument.startsWith("--import="));
+    expect(preloads).toContain(documentGuardImportArgument());
+    for (const argument of preloads) {
+      expect(argument).toMatch(/^--import=file:\/\//);
+      expect(fileURLToPath(argument.slice("--import=".length))).toBeTruthy();
+    }
+  });
+
+  it("preserves a preload path with spaces through NODE_OPTIONS", () => {
+    const directory = mkdtempSync(join(tmpdir(), "ave preload space "));
+    try {
+      const preloadPath = join(directory, "guard #1.mjs");
+      writeFileSync(preloadPath, 'process.env.AVE_PRELOAD_SPACE_TEST = "loaded";\n');
+      const argument = documentGuardImportArgument(preloadPath);
+      expect(argument).toBe(`--import=${pathToFileURL(preloadPath).href}`);
+      expect(argument).not.toContain(" ");
+      expect(fileURLToPath(argument.slice("--import=".length))).toBe(preloadPath);
+      const options = guardedNodeOptions("--trace-warnings", preloadPath);
+      expect(options).toBe(`--trace-warnings ${argument}`);
+      const child = spawnSync(process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath, [
+        "-e", "process.stdout.write(process.env.AVE_PRELOAD_SPACE_TEST ?? '')",
+      ], {
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", NODE_OPTIONS: options },
+        encoding: "utf8",
+      });
+      expect(child.error).toBeUndefined();
+      expect(child.status).toBe(0);
+      expect(child.stdout).toBe("loaded");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("locks both test entrypoints to the runtime guard", () => {
     const vitestConfig = readFileSync(
       new URL("../../vitest.config.ts", import.meta.url),
