@@ -1350,8 +1350,8 @@ describe("the confined child, against the real sandbox", () => {
       // box reached it, so the channel ran between this app's sandbox and
       // whatever else used the same runtime. It is now `~/.ave/sandbox/tmp`,
       // and ASRT's default write paths are on the deny floor — measured, with
-      // `~/.npm/_logs` present on the machine and refused `EPERM` rather than
-      // missing. What remains is narrower and still real: the root is one
+      // `~/.npm/_logs` present on the machine and refused by the OS rather
+      // than missing. What remains is narrower and still real: the root is one
       // directory for ALL of this app's confined children, so the two below
       // still meet in it.
       // Written against `tmpdir()` rather than a literal so it asks the same
@@ -1404,21 +1404,21 @@ describe("the confined child, against the real sandbox", () => {
       //
       // BOTH get an existence control, because a write to a missing directory
       // also fails — `ENOENT` — and a case that accepted any failure would go
-      // green on a machine that simply never made the directory. Only `EPERM`
-      // beside a directory that IS there says "refused". The two controls
-      // differ in kind: the temp root the host CREATES (see
-      // `ASRT_DEFAULT_TEMP_ROOT`), so the measurement is taken everywhere; the
-      // npm cache it cannot create without inventing state that is not the
-      // machine's, so that one is measured only where it is already present.
+      // green on a machine that simply never made the directory. `EPERM` on
+      // macOS or `EROFS` on Linux beside a directory that IS there says
+      // "refused". The host creates `ASRT_DEFAULT_TEMP_ROOT`, so that check
+      // always runs. The host does not create the npm cache, so that check runs
+      // only if it is already present.
       expect(existsSync(ASRT_DEFAULT_TEMP_ROOT)).toBe(true);
       expect(report.writeAsrtDefaultTemp.ok, JSON.stringify(report.writeAsrtDefaultTemp)).toBe(false);
-      expect(report.writeAsrtDefaultTemp.code).toBe("EPERM");
+      const deniedWriteCode = process.platform === "linux" ? "EROFS" : "EPERM";
+      expect(report.writeAsrtDefaultTemp.code).toBe(deniedWriteCode);
       if (report.asrtDefaultNpmLogsExists.value === "yes") {
         expect(
           report.writeAsrtDefaultNpmLogs.ok,
           JSON.stringify(report.writeAsrtDefaultNpmLogs),
         ).toBe(false);
-        expect(report.writeAsrtDefaultNpmLogs.code).toBe("EPERM");
+        expect(report.writeAsrtDefaultNpmLogs.code).toBe(deniedWriteCode);
       }
 
       // Nothing the host DID NOT widen this plugin with is reachable — the
