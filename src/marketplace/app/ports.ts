@@ -22,7 +22,7 @@ export interface PluginInstallerPort {
   installedAuthority(name: string): Promise<PluginAuthority | null>;
   install(
     plan: PluginInstallPlan,
-    options: { switchSource: boolean; stage: (plan: PluginInstallPlan) => Promise<StagedPluginArtifact>; signal?: AbortSignal },
+    options: { switchSource: boolean; stage: (plan: PluginInstallPlan) => Promise<StagedPluginArtifact>; signal?: AbortSignal; reviewedAppVersion?: string },
   ): Promise<{ action: InstallAction; staged: StagedPluginArtifact }>;
   retire(name: string, retain: PluginConfigRetention): Promise<void>;
   uninstall(name: string, retain?: PluginConfigRetention): Promise<void>;

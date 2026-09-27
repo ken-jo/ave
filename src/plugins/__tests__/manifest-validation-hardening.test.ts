@@ -18,7 +18,7 @@ import {
   pureTool,
   TestPluginRuntime as PluginRuntime,
 } from "./test-helpers.js";
-import { agentPluginsDocument } from "./test-helpers.js";
+import { servedAgentPluginsDocument } from "./test-helpers.js";
 
 describe("runtime manifest validation hardening", () => {
   let testDir: string;
@@ -75,7 +75,7 @@ describe("runtime manifest validation hardening", () => {
     };
     await writeFile(
       join(pluginDir, "plugin.json"),
-      JSON.stringify(agentPluginsDocument(manifest)),
+      JSON.stringify(servedAgentPluginsDocument(manifest)),
       "utf-8");
     await mkdir(join(testDir, "plugins"), { recursive: true });
     await writeFile(

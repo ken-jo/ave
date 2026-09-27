@@ -99,6 +99,7 @@ import {
   type WireFloatingPanelHandle,
   type WireAudioCaptureHandle,
 } from "./host-api-wire.js";
+import { CredentialLeaseError } from "../secret-access/credential-lease-registry.js";
 import { SubscriptionLedger } from "./subscription-ledger.js";
 import {
   DISPATCH_IN_FLIGHT_MAX,
@@ -107,7 +108,6 @@ import {
   HostApiBudgets,
   type HostApiBudgetAudit,
 } from "./host-api-budgets.js";
-import { errorMessage } from "../../shared/error-message.js";
 
 /** One inbound invocation, after its method and params have been checked. */
 export interface HostApiCall {
@@ -622,7 +622,7 @@ export type ServiceHostApi = Pick<
  * the type: there was no way for the host to decide that one plugin's child
  * reaches further, so a plugin whose legitimate work lives outside those two
  * directories could not be isolated at all. Widening is a host decision
- * (`PLUGIN_ENVELOPE_GRANTS`), and it belongs in the value, not in a second
+ * (the manifest's declared sandbox authority), and it belongs in the value, not in a second
  * check bolted onto the delegation path — widen the child and the delegated
  * worker composes with no further change, because both lists come from one
  * derivation.
@@ -749,21 +749,7 @@ function getSecretPath(hostApi: ServiceHostApi): HostApiPathHandler {
   );
 }
 
-/**
- * `resolveApiKey(opts) → { ok, vendor, bearer(), baseUrl?, release() }`.
- *
- * Two functions in the return value, so what crosses is the lease: `bearer()`
- * becomes the key the child closes over, and `release()` becomes the
- * subscription the child ends. `bindApiKeyResult` (host-api-factory) has
- * already wrapped the result so `bearer()` re-checks liveness and `release()`
- * is idempotent and registered with the incarnation — this handler reads the
- * key through that wrapper rather than around it.
- *
- * The lease is opened BEFORE the resolve so a child that dies mid-resolve still
- * has a registration to release; `closed` catches the case where that release
- * ran while the resolve was in flight, and drops the credential the host was
- * about to hand to a process that no longer exists.
- */
+/** The registry has issued the id before this handler adopts it for child release. */
 /**
  * `getAuthPartitionCookies(opts) → Array<{ url, cookies }>`.
  *
@@ -799,45 +785,38 @@ function resolveApiKeyPath(hostApi: ServiceHostApi): HostApiPathHandler {
     ) {
       rejectArgument(call.path, `unknown vendor '${String(vendor)}'`);
     }
-    let lease: { release: () => void } | undefined;
-    let closed = false;
-    const handleId = scope.open(() => {
-      closed = true;
-      lease?.release();
-    });
-    try {
+    if (wire.exposure !== undefined && wire.exposure !== "lease" && wire.exposure !== "raw") {
+      rejectArgument(call.path, "unknown credential exposure");
+    }
       const result = await hostApi.resolveApiKey!({
         purpose,
         ...(vendor !== undefined ? { vendor } : {}),
+        ...(wire.exposure !== undefined ? { exposure: wire.exposure } : {}),
         signal: call.signal,
       });
       if (!result.ok) {
-        // A denied resolve owns nothing, so the registration ends immediately.
-        // The id still crosses because a `handle` result is pinned to
-        // `{ handleId: string }` and a settled call has to name itself.
-        scope.release(handleId);
-        return { handleId, ok: false, reason: result.reason } satisfies WireApiKeyLease;
+        return { ok: false, reason: result.reason } satisfies WireApiKeyLease;
       }
-      if (closed) {
-        result.release();
-        throw new HostApiBoundaryError(
-          "plugin-inactive",
-          `[host-api-dispatcher] '${call.path}': the child released the lease before it resolved`,
-          { path: call.path },
-        );
+      const handleId = result.exposure === "lease" ? result.leaseId
+        : (result as typeof result & { handleId: string }).handleId;
+      try {
+        scope.adopt(handleId, () => { void result.release(); });
+      } catch {
+        void result.release();
+        throw new HostApiBoundaryError("plugin-inactive", "Plugin connection ended before credential adoption.");
       }
-      lease = result;
-      return {
-        handleId,
-        ok: true,
-        vendor: result.vendor,
+      const onClosed = result.exposure === "lease" ? result.onClosed
+        : (result as typeof result & { onClosed?: (listener: () => void) => () => void }).onClosed;
+      onClosed?.(() => { scope.release(handleId); });
+      if (result.exposure === "raw") return {
+        handleId, ok: true, exposure: "raw", vendor: result.vendor,
         ...(result.baseUrl !== undefined ? { baseUrl: result.baseUrl } : {}),
-        key: result.bearer(),
+        key: result.key,
       } satisfies WireApiKeyLease;
-    } catch (error) {
-      scope.release(handleId);
-      throw error;
-    }
+      return {
+        handleId, ok: true, exposure: "lease", vendor: result.vendor,
+        ...(result.baseUrl !== undefined ? { baseUrl: result.baseUrl } : {}),
+      } satisfies WireApiKeyLease;
   });
 }
 
@@ -861,10 +840,21 @@ function resolveApiKeyPath(hostApi: ServiceHostApi): HostApiPathHandler {
  * a NUL, or high bytes survives base64 and does not survive a `text()` round
  * trip, and the corruption reads as success.
  */
-function hostFetchPath(hostApi: ServiceHostApi): HostApiPathHandler {
+function hostFetchPath(
+  hostApi: ServiceHostApi,
+  onMalformedCredentialSelector?: () => void,
+): HostApiPathHandler {
   return defineHostApiPath("hostFetch", async (call) => {
     const input = requireString(call, 0, "input");
-    const init = decodeWireRequestInit(call.args[1], call.signal, `${call.path}(init)`);
+    let init: ReturnType<typeof decodeWireRequestInit>;
+    try {
+      init = decodeWireRequestInit(call.args[1], call.signal, `${call.path}(init)`);
+    } catch (error) {
+      if (error instanceof HostApiBoundaryError && error.code === "credential-conflict") {
+        onMalformedCredentialSelector?.();
+      }
+      throw error;
+    }
     const response = await hostApi.hostFetch!(input, init);
     // Drained here, while the request is still in flight: a cancellation that
     // lands between the headers and the body aborts the read too, rather than
@@ -1368,6 +1358,7 @@ export function createServiceHostApiPaths(
    * default this exists to remove.
    */
   confinement: DelegatedWorkerConfinement,
+  onMalformedCredentialSelector?: () => void,
 ): Record<ServiceHostApiPath, HostApiPathHandler> {
   return {
     getSecret: getSecretPath(hostApi),
@@ -1383,7 +1374,8 @@ export function createServiceHostApiPaths(
     emitEvent: emitEventPath(hostApi),
     logEvent: logEventPath(hostApi),
     callLlm: callLlmPath(hostApi),
-    hostFetch: bindOptional("hostFetch", hostApi.hostFetch, () => hostFetchPath(hostApi)),
+    hostFetch: bindOptional("hostFetch", hostApi.hostFetch, () =>
+      hostFetchPath(hostApi, onMalformedCredentialSelector)),
     spawnWorker: bindOptional("spawnWorker", hostApi.spawnWorker, () =>
       spawnWorkerPath(hostApi, confinement)),
     resolveMappedDriveRoot: resolveMappedDriveRootPath(hostApi),
@@ -1858,6 +1850,9 @@ export function createConfigSubscriptionHostApiPaths(
  * identity has to be named explicitly on the way out or it is gone.
  */
 export function classifyHostApiError(error: unknown): HostApiWireError {
+  if (error instanceof CredentialLeaseError) {
+    return { code: error.code, name: error.name, message: error.message, detail: error.detail };
+  }
   if (error instanceof HostApiBoundaryError) {
     return {
       code: error.code,
@@ -1921,8 +1916,20 @@ export function classifyHostApiError(error: unknown): HostApiWireError {
   return {
     code: "host-internal",
     name: error instanceof Error ? error.name : "Error",
-    message: errorMessage(error),
+    message: "Host request failed.",
+    detail: { kind: transportFailureKind(error) },
   };
+}
+
+function transportFailureKind(error: unknown): "dns" | "tls" | "connect" | "timeout" | "aborted" | "other" {
+  if (!(error instanceof Error)) return "other";
+  const code = (error as Error & { code?: unknown }).code;
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN") return "dns";
+  if (code === "CERT_HAS_EXPIRED" || code === "UNABLE_TO_VERIFY_LEAF_SIGNATURE") return "tls";
+  if (code === "ECONNREFUSED" || code === "ECONNRESET") return "connect";
+  if (code === "ETIMEDOUT") return "timeout";
+  if (error.name === "AbortError") return "aborted";
+  return "other";
 }
 
 /** Distinct undeclared params fields reported per connection before the rest are suppressed. */
@@ -2271,6 +2278,14 @@ export class HostApiDispatcher {
         `[host-api-dispatcher] '${handler.path}' must resolve { handleId: string }`,
       );
     }
+    if (result === "handle-or-denied" && (
+      value === null || typeof value !== "object"
+      || ((value as { ok?: unknown }).ok === true && !isHandle(value))
+      || ((value as { ok?: unknown }).ok === false && Object.hasOwn(value, "handleId"))
+      || ((value as { ok?: unknown }).ok !== true && (value as { ok?: unknown }).ok !== false)
+    )) {
+      throw new HostApiBoundaryError("result-marshalling-rejected", "Credential resolve result has an invalid handle.");
+    }
     const nonJson = describeNonJson(value, `${handler.path}(result)`);
     if (nonJson) {
       throw new HostApiBoundaryError(
@@ -2307,11 +2322,18 @@ export class HostApiDispatcher {
     ) => {
       subscription.teardown(reason);
       if (reason !== "revoked") return;
-      this.options.notifications.deliver({
-        jsonrpc: "2.0",
-        method: HOST_PROTOCOL_NOTIFICATIONS.subscriptionClosed,
-        params: { subscriptionId, reason },
-      });
+      const deliver = () => {
+        if (this.subscriptions.isEnded) return;
+        this.options.notifications.deliver({
+          jsonrpc: "2.0",
+          method: HOST_PROTOCOL_NOTIFICATIONS.subscriptionClosed,
+          params: { subscriptionId, reason },
+        });
+      };
+      // A lease can be revoked between registration and the resolve reply.
+      // The reply writer runs in the caller's continuation; queue closure behind it.
+      if (path === "resolveApiKey") setImmediate(deliver);
+      else deliver();
     };
     return {
       adopt: (subscriptionId, teardown) => {

@@ -17,6 +17,7 @@ vi.mock("electron", () => ({
 }));
 
 import { SettingsService, type SystemSettings } from "../settings-store.js";
+import { CredentialLeaseRegistry } from "../../plugins/secret-access/credential-lease-registry.js";
 import { DEFAULT_SETTINGS } from "../settings-defaults.js";
 import {
   LOG_RETENTION_DAYS,
@@ -638,15 +639,27 @@ describe("SettingsService marketplace defaults", () => {
     await service.installMarketplaceProviderPreset(preset);
     await service.setSecret(key, "entered-for-future");
     const secrets = (service as unknown as { secretStore: { deleteMany(keys: string[]): Promise<number> } }).secretStore;
+    let markFirstDeletionStarted!: () => void;
+    const firstDeletionStarted = new Promise<void>((resolve) => { markFirstDeletionStarted = resolve; });
+    let rejectFirstDeletion!: (error: Error) => void;
     const deleteMany = vi.spyOn(secrets, "deleteMany")
       // The first move's deletion fails last, so the second move rolls back first.
-      .mockImplementationOnce(() => new Promise((_, reject) => setTimeout(() => reject(new Error("keychain locked")), 30)))
+      .mockImplementationOnce(() => {
+        markFirstDeletionStarted();
+        return new Promise((_, reject) => { rejectFirstDeletion = reject; });
+      })
       .mockImplementationOnce(() => Promise.reject(new Error("keychain locked")));
 
     const first = service.installMarketplaceProviderPreset({ ...preset, baseUrl: "https://second.example/v1" });
+    const firstRejected = expect(first).rejects.toThrow("keychain locked");
+    await firstDeletionStarted;
     const second = service.installMarketplaceProviderPreset({ ...preset, baseUrl: "https://third.example/v1" });
-    await expect(second).rejects.toThrow("keychain locked");
-    await expect(first).rejects.toThrow("keychain locked");
+    try {
+      await expect(second).rejects.toThrow("keychain locked");
+    } finally {
+      rejectFirstDeletion(new Error("keychain locked"));
+      await firstRejected;
+    }
 
     // Neither the second address (never the key's) nor any other is paired
     // with the key: it is withheld wherever the preset points.
@@ -824,6 +837,18 @@ describe("SettingsService marketplace defaults", () => {
     const key = marketplaceProviderPresetSecretKey("future-router");
     await service.installMarketplaceProviderPreset(preset);
     await service.setSecret(key, "entered-for-future");
+    const registry = new CredentialLeaseRegistry(service);
+    const incarnation = {};
+    const permission = new AbortController();
+    const previous = registry.reserve("fixture", incarnation, [key], permission.signal, "lease");
+    if (!previous) throw new Error("reservation missing");
+    const lease = registry.register(previous, {
+      key, vendor: "openai-compatible", secret: "entered-for-future", scheme: "bearer",
+      audience: () => true, permissionSignal: permission.signal,
+    });
+    if (!lease || lease.exposure !== "lease") throw new Error("lease missing");
+    const closed = vi.fn();
+    lease.onClosed(closed);
     const secrets = (service as unknown as { secretStore: { set(key: string, value: string): Promise<void> } }).secretStore;
     // The entry's write fails only after the move's deletion has run.
     vi.spyOn(secrets, "set").mockImplementationOnce(
@@ -832,18 +857,40 @@ describe("SettingsService marketplace defaults", () => {
     type Internals = { saveSettings(settings: unknown): Promise<void> };
     const realSave = (settings: unknown) => (SettingsService.prototype as unknown as Internals).saveSettings.call(service, settings);
     let entry: Promise<void> | undefined;
+    let issuing: ReturnType<typeof registry.reserve> | undefined;
+    let releaseSave!: () => void;
+    let saveEntered!: () => void;
+    const heldSave = new Promise<void>((resolve) => { releaseSave = resolve; });
+    const atSave = new Promise<void>((resolve) => { saveEntered = resolve; });
     vi.spyOn(service as unknown as Internals, "saveSettings").mockImplementationOnce(async (settings) => {
       // The entry for the new address starts during the move, then fails.
       entry = service.setSecret(key, "entered-for-elsewhere");
       entry.catch(() => undefined);
+      issuing = registry.reserve("fixture", incarnation, [key], permission.signal, "lease");
+      saveEntered();
+      await heldSave;
       await realSave(settings);
     });
 
-    await service.installMarketplaceProviderPreset({ ...preset, baseUrl: "https://elsewhere.example/v1" });
+    const moving = service.installMarketplaceProviderPreset({ ...preset, baseUrl: "https://elsewhere.example/v1" });
+    await atSave;
+    try {
+      expect(service.getSecret(key)).toBeNull();
+      expect(closed).toHaveBeenCalledWith("revoked");
+    } finally {
+      releaseSave();
+    }
+    await moving;
     await expect(entry).rejects.toThrow("keychain locked");
 
     // The key kept for the entry is the old address's: it is not handed out.
     expect(service.getSecret(key)).toBeNull();
+    expect(closed).toHaveBeenCalledWith("revoked");
+    if (!issuing) throw new Error("issuing reservation missing");
+    expect(registry.register(issuing, {
+      key, vendor: "openai-compatible", secret: "entered-for-elsewhere", scheme: "bearer",
+      audience: () => true, permissionSignal: permission.signal,
+    })).toBeNull();
   });
 
   it("deletes a key entered next to an earlier address when a later move lands", async () => {

@@ -11,6 +11,11 @@
  * migrated off hardcoded strings.
  */
 export const en = {
+  "pluginConfigTab.protocolUpdateCatalog": "Update required: review version {version} in the marketplace",
+  "pluginConfigTab.protocolUpdateRepository": "Update required: get a compatible release from {source}",
+  "pluginConfigTab.protocolOpenRepository": "Open plugin repository",
+  "pluginConfigTab.protocolUpdateUnavailable": "Update required: contact the plugin publisher for a compatible release.",
+  "gitMarketplace.version.hostProtocol": "Requires a different plugin protocol",
   "formatIpcError.pluginsMissing": "This routine cannot run because none of its allowed plugins are installed. Reinstall them or remove the routine.",
   "routinePanel.pluginsMissing": "Skipped: required plugins are not installed ({plugins}). Reinstall them or remove this routine.",
   "routinePanel.pluginsPartlyMissing": "Needs attention: some allowed plugins are not installed ({plugins}). The routine ran with the remaining plugins.",

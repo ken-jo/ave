@@ -72,6 +72,7 @@ export function sourceStatusLabel(t: Translate, status: SourceStatusView): strin
 export function exclusionLabel(t: Translate, reason: VersionExclusionView): string {
   switch (reason) {
     case "min_app_version": return t("gitMarketplace.version.needsApp");
+    case "host_protocol": return t("gitMarketplace.version.hostProtocol");
     case "yanked": return t("gitMarketplace.version.yanked");
     case "platform": return t("gitMarketplace.version.platform");
     case "prerelease": return t("gitMarketplace.version.prerelease");

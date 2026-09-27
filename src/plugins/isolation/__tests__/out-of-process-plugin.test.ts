@@ -61,6 +61,7 @@ const MANIFEST: PluginManifest = {
   name: "Vega Helper",
   version: "0.10.14",
   entry: "dist/hostPlugin.js",
+  requires: { hostProtocol: "2" },
   description: "the pilot plugin, served out of process",
   tools: [
     { name: "pilot_echo", description: "echo a payload back", inputSchema: EMPTY_SCHEMA },
@@ -843,16 +844,29 @@ const CONSTRUCTED = {
 } as const;
 
 describe("construct negotiates the host protocol", () => {
+  it("refuses an undeclared protocol before connecting a child", async () => {
+    const connect = vi.fn(async () => pairedChild().child);
+    const factory = createOutOfProcessPluginFactory({
+      manifest: { ...MANIFEST, requires: undefined },
+      entryPath: join(tmpdir(), "never-imported.mjs"),
+      connect,
+    });
+    await expect(factory(hostContext(fakeHostApi()))).rejects.toMatchObject({
+      detail: { declared: null },
+    });
+    expect(connect).not.toHaveBeenCalled();
+  });
+
   it("refuses a declared version this host does not serve, before anything is spawned", async () => {
     const connect = vi.fn(async () => pairedChild().child);
     const factory = createOutOfProcessPluginFactory({
-      manifest: { ...MANIFEST, requires: { hostProtocol: "2" } },
+      manifest: { ...MANIFEST, requires: { hostProtocol: "1" } },
       entryPath: join(tmpdir(), "never-imported.mjs"),
       connect,
     });
     const refused = factory(hostContext(fakeHostApi()));
     await expect(refused).rejects.toBeInstanceOf(IncompatibleHostProtocolError);
-    await expect(refused).rejects.toMatchObject({ detail: { declared: "2" } });
+    await expect(refused).rejects.toMatchObject({ detail: { declared: "1" } });
     expect(connect).not.toHaveBeenCalled();
   });
 
@@ -865,7 +879,7 @@ describe("construct negotiates the host protocol", () => {
     delete (hostApi as { hostFetch?: unknown }).hostFetch;
     try {
       const factory = createOutOfProcessPluginFactory({
-        manifest: { ...MANIFEST, requires: { hostProtocol: "1" } },
+        manifest: { ...MANIFEST, requires: { hostProtocol: "2" } },
         entryPath,
         connect: async () => child,
       });
@@ -874,7 +888,7 @@ describe("construct negotiates the host protocol", () => {
       const { hostProtocol } = construct?.params as {
         hostProtocol: { version: string; capabilities: string[] };
       };
-      expect(hostProtocol.version).toBe("1");
+      expect(hostProtocol.version).toBe("2");
       // Read off the table the dispatcher serves: advertised is answered, and
       // a member this build lacks is not advertised.
       expect(hostProtocol.capabilities).toContain("ave/host/callLlm");
