@@ -187,6 +187,8 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   // call it would be minting its own plugin binding.
   ["plugins", CHANNELS.pluginBridge.registerWebview, [{ webContentsId: 1, pluginId: "p", entryUrl: "file:///x" }]],
   ["plugins", CHANNELS.host.pluginThemeNotify, [{}]],
+  // Draft bytes, local package selection and installation stay in the host renderer.
+  ...Object.values(CHANNELS.pluginStudio).map((channel): readonly [string, string, unknown[]] => ["plugin-studio", channel, []]),
   // Side chat runs arbitrary tools on a second loop.
   ["sidechat", CHANNELS.sidechat.send, [{ input: "x" }]],
   // Routines and the session tasks list.
@@ -256,6 +258,7 @@ beforeEach(async () => {
     { registerDevHandlers },
     { registerWindowHandlers },
     { registerAlertsHandlers },
+    { registerPluginStudioHandlers },
   ] = await Promise.all([
     import("../domains/chat.js"),
     import("../domains/settings.js"),
@@ -275,6 +278,7 @@ beforeEach(async () => {
     import("../domains/dev.js"),
     import("../domains/window.js"),
     import("../domains/alerts.js"),
+    import("../domains/plugin-studio.js"),
   ]);
   registerChatHandlers(deps);
   registerSettingsHandlers(deps);
@@ -294,6 +298,7 @@ beforeEach(async () => {
   registerDevHandlers(deps);
   registerWindowHandlers(deps);
   registerAlertsHandlers(deps, async () => ({} as never));
+  registerPluginStudioHandlers(deps, async () => null);
 });
 
 describe("host-renderer-only IPC channels", () => {

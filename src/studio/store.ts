@@ -1,0 +1,276 @@
+import { readdir, readFile, rm } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
+import { openFeatureNamespace, writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
+import { isPackageName } from "../marketplace/catalog/types.js";
+import { checkContentFiles, contentFileProblem } from "../marketplace/content/rules.js";
+import { deriveAgentPluginComponents } from "../marketplace/content/agent-plugin-components.js";
+import { treeDigest } from "../marketplace/resolve/plugin-ladder.js";
+import { parseStrictJson } from "../marketplace/catalog/strict-json.js";
+import { AGENT_PLUGINS_SCHEMA_URL } from "../plugins/public-contract.js";
+import type { StudioDraft, StudioDraftView, StudioOrigin, StudioPart, StudioWriteRequest } from "../shared/plugin-studio.js";
+import { lintStudioFiles } from "./lint.js";
+import { importStudioArchive } from "./import.js";
+import { studioFileText } from "./package.js";
+
+const namespace = openFeatureNamespace("studio");
+const MAX_FILES = 256;
+const MAX_BYTES = 8 * 1024 * 1024;
+
+function draftName(name: string): string {
+  if (!isPackageName(name)) throw new Error("Studio draft name must be a package name");
+  return name;
+}
+
+function filePath(path: string): string {
+  if (path === "ave-package.json") throw new Error(`${path} is a sharing descriptor`);
+  if (path.split("/").some((part) => !part || part === "." || part === "..") || path.includes("\\") || path.includes("\0") || contentFileProblem("agent-plugin", path)) {
+    throw new Error(`Invalid Studio package path: ${path}`);
+  }
+  return path;
+}
+
+function object(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function parseDraft(value: unknown, name: string): StudioDraft {
+  if (!object(value) || value.version !== 1 || value.name !== name || !Array.isArray(value.parts)
+    || typeof value.createdAt !== "string" || typeof value.updatedAt !== "string"
+    || !Array.isArray(value.diagnostics) || !Array.isArray(value.pendingHooks)) {
+    throw new Error(`Studio draft ${name} is malformed`);
+  }
+  if (value.reviewed !== undefined && (!object(value.reviewed) || !/^[a-f0-9]{64}$/u.test(String(value.reviewed.treeDigest)) || typeof value.reviewed.at !== "string")) {
+    throw new Error(`Studio draft ${name} has invalid review metadata`);
+  }
+  return value as unknown as StudioDraft;
+}
+
+async function readDraftRecord(name: string): Promise<StudioDraft | null> {
+  const path = join(namespace.dir, draftName(name), "draft.json");
+  let bytes: Buffer;
+  try { bytes = await readFile(path); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  return parseDraft(parseStrictJson(bytes.toString("utf8")), name);
+}
+
+async function readPackageFiles(name: string): Promise<Array<{ path: string; data: Buffer }>> {
+  const root = join(namespace.dir, draftName(name), "package");
+  const files: Array<{ path: string; data: Buffer }> = [];
+  let size = 0;
+  const walk = async (dir: string, prefix: string): Promise<void> => {
+    const entries = await readdir(dir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    });
+    for (const entry of entries) {
+      const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const full = join(dir, entry.name);
+      if (entry.isSymbolicLink()) throw new Error(`Studio package contains a symbolic link: ${path}`);
+      if (entry.isDirectory()) await walk(full, path);
+      else if (entry.isFile()) {
+        filePath(path);
+        const data = await readFile(full);
+        files.push({ path, data });
+        size += data.length;
+        if (files.length > MAX_FILES || size > MAX_BYTES) throw new Error("Studio package exceeds its limits");
+      } else throw new Error(`Studio package contains a non-file: ${path}`);
+    }
+  };
+  await walk(root, "");
+  return files.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+function digest(files: readonly { path: string; data: Buffer }[]): string {
+  return treeDigest(files.map((file) => ({ ...file, executable: false })));
+}
+
+function portableOrigin(origin: StudioOrigin, path: string): Record<string, unknown> {
+  if (origin.kind === "conversation") return { kind: "conversation" };
+  if (origin.kind === "user-store") {
+    const store = path.startsWith("skills/") ? "skills" : path.startsWith("ai.agent-connector.ave/agents/") ? "agents" : "prompts";
+    return { kind: "user-store", store, name: basename(dirname(path)) === "prompts" ? basename(path, ".md") : basename(dirname(path)) };
+  }
+  return origin;
+}
+
+function provenance(parts: readonly StudioPart[]): Buffer {
+  const safe = parts.map(({ path, origin }) => ({ path, origin: portableOrigin(origin, path) }));
+  return Buffer.from(`${JSON.stringify({ version: 1, parts: safe }, null, 2)}\n`);
+}
+
+async function persist(name: string, draft: StudioDraft): Promise<void> {
+  const dir = await namespace.childDir(name);
+  await writeFileAtomicAtPath(join(dir, "draft.json"), `${JSON.stringify(draft, null, 2)}\n`);
+}
+
+async function putFile(name: string, path: string, data: Buffer): Promise<void> {
+  const dir = await namespace.childDir(name);
+  await writeFileAtomicAtPath(join(dir, "package", ...filePath(path).split("/")), data);
+}
+
+function validateFiles(draft: StudioDraft, files: readonly { path: string; data: Buffer }[]): Pick<StudioDraftView, "components" | "errors" | "lint"> {
+  const errors: string[] = [];
+  let components: StudioDraftView["components"] = null;
+  try {
+    checkContentFiles("agent-plugin", files);
+    components = deriveAgentPluginComponents(files, { name: draft.name });
+  } catch (error) { errors.push((error as Error).message); }
+  if (draft.pendingHooks.length) errors.push("Imported hooks need adaptation before validation");
+  const lint = lintStudioFiles(files);
+  return { components, errors, lint };
+}
+
+export class PluginStudioStore {
+  async listDrafts(): Promise<StudioDraft[]> {
+    const entries = await readdir(namespace.dir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    });
+    const drafts: StudioDraft[] = [];
+    for (const entry of entries) if (entry.isDirectory() && isPackageName(entry.name)) {
+      const draft = await readDraftRecord(entry.name);
+      if (draft) drafts.push(draft);
+    }
+    return drafts.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  async readDraft(name: string): Promise<StudioDraftView> {
+    const draft = await readDraftRecord(name);
+    if (!draft) throw new Error(`Studio draft ${name} does not exist`);
+    const files = await readPackageFiles(name);
+    const checked = validateFiles(draft, files);
+    return { draft, files: files.map(({ path, data }) => ({ path, text: studioFileText(data) })),
+      treeDigest: digest(files), diagnostics: draft.diagnostics, ...checked };
+  }
+
+  async writeDraft(input: StudioWriteRequest, sessionId?: string, copiedFiles: readonly { path: string; data: Buffer; origin: StudioOrigin }[] = []): Promise<StudioDraftView> {
+    const name = draftName(input.name);
+    const old = await readDraftRecord(name);
+    const now = new Date().toISOString();
+    const draft: StudioDraft = old ?? { version: 1, name, createdAt: now, updatedAt: now, parts: [], diagnostics: [], pendingHooks: [] };
+    const before = old ? digest(await readPackageFiles(name)) : null;
+    const packageDir = join(namespace.dir, name, "package");
+    for (const path of input.removePaths ?? []) {
+      filePath(path);
+      await rm(join(packageDir, ...path.split("/")), { force: true });
+      draft.parts = draft.parts.filter((part) => part.path !== path);
+    }
+    const manifestPath = join(packageDir, "plugin.json");
+    const existingManifest: unknown = old ? parseStrictJson((await readFile(manifestPath)).toString("utf8")) : {};
+    if (!object(existingManifest)) throw new Error("Studio plugin.json must be an object");
+    const manifest = { ...existingManifest, $schema: AGENT_PLUGINS_SCHEMA_URL, name,
+      ...(input.version !== undefined ? { version: input.version } : {}),
+      ...(input.description !== undefined ? { description: input.description } : {}) };
+    if (input.version?.trim()) draft.diagnostics = draft.diagnostics.filter((item) => item.path !== "plugin.json.version");
+    if (input.description?.trim()) draft.diagnostics = draft.diagnostics.filter((item) => item.path !== "plugin.json.description");
+    await putFile(name, "plugin.json", Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`));
+    for (const part of input.files ?? []) {
+      filePath(part.path);
+      const authoredText = /^skills\/[a-z][a-z0-9-]*\/SKILL\.md$/u.test(part.path)
+        || /^xyz\.ave\/prompts\/[a-z][a-z0-9-]*\.md$/u.test(part.path)
+        || part.path === "ai.agent-connector.ave/routines.json";
+      if (!authoredText && !(sessionId === undefined && part.path === "mcp.json")) {
+        throw new Error(`Studio cannot author ${part.path}`);
+      }
+      if (part.path === "plugin.json" || part.path === "ai.agent-connector.ave/provenance.json") throw new Error(`${part.path} is managed by Studio`);
+      await putFile(name, part.path, Buffer.from(part.text));
+      const origin = sessionId ? { kind: "conversation" as const, sessionId } : { kind: "typed" as const };
+      draft.parts = draft.parts.filter((oldPart) => oldPart.path !== part.path);
+      draft.parts.push({ path: part.path, origin });
+    }
+    for (const part of copiedFiles) {
+      filePath(part.path);
+      if (part.path === "plugin.json" || part.path === "ai.agent-connector.ave/provenance.json") throw new Error(`${part.path} is managed by Studio`);
+      await putFile(name, part.path, part.data);
+      draft.parts = draft.parts.filter((oldPart) => oldPart.path !== part.path);
+      draft.parts.push({ path: part.path, origin: part.origin });
+    }
+    if (input.adaptedHooks !== undefined) {
+      if (!Array.isArray(input.adaptedHooks) || input.adaptedHooks.length !== draft.pendingHooks.length
+        || new Set(input.adaptedHooks.map((item) => item.index)).size !== draft.pendingHooks.length) {
+        throw new Error("Every imported hook needs an adaptation decision");
+      }
+      const grouped: Record<string, Array<{ matcher?: string; hooks: Array<{ type: "command"; command: string[]; timeoutMs?: number }> }>> = {};
+      for (const item of input.adaptedHooks) {
+        const hook = draft.pendingHooks[item.index];
+        if (!hook || !Array.isArray(item.command) || !item.command.length
+          || item.command.some((part) => typeof part !== "string" || !part || part.includes("${user_config."))) {
+          throw new Error("Imported hook adaptation is invalid");
+        }
+        (grouped[hook.event] ??= []).push({ ...(hook.matcher ? { matcher: hook.matcher } : {}), hooks: [{ type: "command", command: item.command,
+          ...(hook.timeoutMs ? { timeoutMs: hook.timeoutMs } : {}) }] });
+      }
+      await putFile(name, "ai.agent-connector.ave/hooks.json", Buffer.from(`${JSON.stringify({ version: 1, hooks: grouped }, null, 2)}\n`));
+      draft.parts.push({ path: "ai.agent-connector.ave/hooks.json", origin: sessionId ? { kind: "conversation", sessionId } : { kind: "typed" } });
+      draft.pendingHooks = [];
+      draft.diagnostics = draft.diagnostics.filter((item) => !(item.group === "needs-input" && item.path.startsWith("hooks.")));
+    }
+    draft.parts.sort((a, b) => a.path.localeCompare(b.path));
+    await putFile(name, "ai.agent-connector.ave/provenance.json", provenance(draft.parts));
+    const after = digest(await readPackageFiles(name));
+    if (before !== after) delete draft.reviewed;
+    draft.updatedAt = now;
+    await persist(name, draft);
+    return this.readDraft(name);
+  }
+
+  async importPackage(path: string): Promise<StudioDraftView> {
+    const imported = await importStudioArchive(path);
+    const name = draftName(imported.name);
+    if (await readDraftRecord(name)) throw new Error(`Studio draft ${name} already exists`);
+    const now = new Date().toISOString();
+    const draft: StudioDraft = { version: 1, name, createdAt: now, updatedAt: now, parts: [], diagnostics: imported.diagnostics, pendingHooks: imported.pendingHooks };
+    const suppliedProvenance = imported.files.find((file) => file.path === "ai.agent-connector.ave/provenance.json");
+    if (suppliedProvenance) {
+      const declared = parseStrictJson(suppliedProvenance.data.toString("utf8"));
+      if (!object(declared) || declared.version !== 1 || !Array.isArray(declared.parts)
+        || declared.parts.some((part: unknown) => !object(part) || typeof part.path !== "string" || !object(part.origin)
+          || Object.hasOwn(part.origin, "sessionId") || Object.hasOwn(part.origin, "path"))) {
+        throw new Error("Imported provenance contains private or malformed fields");
+      }
+    }
+    for (const file of imported.files) {
+      filePath(file.path);
+      await putFile(name, file.path, file.data);
+      if (file.path !== "plugin.json" && file.path !== "ai.agent-connector.ave/provenance.json") {
+        draft.parts.push({ path: file.path, origin: { kind: "copied", from: { kind: "package", name, ...(imported.version ? { version: imported.version } : {}) } } });
+      }
+    }
+    if (!suppliedProvenance) await putFile(name, "ai.agent-connector.ave/provenance.json", provenance(draft.parts));
+    await persist(name, draft);
+    return this.readDraft(name);
+  }
+
+  async reviewDraft(name: string, treeDigest: string): Promise<StudioDraftView> {
+    const view = await this.readDraft(name);
+    if (view.errors.length) throw new Error(`Studio draft has validation errors: ${view.errors.join("; ")}`);
+    if (view.treeDigest !== treeDigest) throw new Error("Studio draft changed since review opened");
+    view.draft.reviewed = { treeDigest, at: new Date().toISOString() };
+    await persist(name, view.draft);
+    return this.readDraft(name);
+  }
+
+  async reviewedFiles(name: string): Promise<Array<{ path: string; data: Buffer }>> {
+    const view = await this.readDraft(name);
+    if (!view.draft.reviewed || view.draft.reviewed.treeDigest !== view.treeDigest || view.errors.length) {
+      throw new Error("Studio draft must be reviewed at its current tree digest");
+    }
+    return readPackageFiles(name);
+  }
+
+  async markShared(name: string): Promise<void> {
+    await this.reviewedFiles(name);
+    const draft = await readDraftRecord(name);
+    if (!draft) throw new Error(`Studio draft ${name} does not exist`);
+    draft.sharedAt = new Date().toISOString();
+    await persist(name, draft);
+  }
+
+  async packageFiles(name: string): Promise<Array<{ path: string; data: Buffer }>> {
+    await this.readDraft(name);
+    return readPackageFiles(name);
+  }
+}

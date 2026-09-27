@@ -26,6 +26,7 @@ import { MarketplaceError } from "../errors.js";
 import { DESCRIPTOR_NAME, readDescriptorAtVersion, type PackagePlan, type RepositoryAccess } from "../resolve/descriptor.js";
 import { classifyInstall, type InstallAction, type InstalledPackage } from "../resolve/identity.js";
 import { treeDigest } from "../resolve/plugin-ladder.js";
+import { deriveAgentPluginComponents } from "./agent-plugin-components.js";
 import type { MarketplacePolicy } from "../sources/policy.js";
 import { isDataContentKind, parseContent, type ContentFile, type DataContentKind, type ParsedContent } from "./kinds.js";
 import { ContentLedger, type LedgerEntry } from "./ledger.js";
@@ -37,12 +38,38 @@ interface DataContentPlan extends PackagePlan {
   kind: DataContentKind;
 }
 
+interface LocalContentPlan {
+  kind: "agent-plugin";
+  name: string;
+  version: string;
+  sourceId: null;
+  sourceOrigin: null;
+  snapshotCommit: null;
+  packagePath: string;
+}
+
 export interface StagedContent {
-  plan: DataContentPlan;
+  plan: DataContentPlan | LocalContentPlan;
   files: ContentFile[];
   /** Tree digest (design §6.4) of `files`. */
   contentSha256: string;
   content: ParsedContent;
+}
+
+/** Stage bytes selected from a local directory or archive under the same content rules. */
+export function stageLocalAgentPlugin(files: readonly ContentFile[]): StagedContent {
+  checkContentFiles("agent-plugin", files);
+  const manifest = files.find((file) => file.path === "plugin.json");
+  if (!manifest) throw new MarketplaceError("CONTENT_RULE_VIOLATION", "plugin.json is missing");
+  const parsed = JSON.parse(manifest.data.toString("utf8")) as { name: string; version: string };
+  const components = deriveAgentPluginComponents(files, { name: parsed.name, version: parsed.version });
+  const content: ParsedContent = { kind: "agent-plugin", components, files: files.map((file) => ({ path: file.path, data: Buffer.from(file.data) })) };
+  return {
+    plan: { kind: "agent-plugin", name: parsed.name, version: parsed.version, sourceId: null,
+      sourceOrigin: null, snapshotCommit: null, packagePath: "" },
+    files: files.map((file) => ({ path: file.path, data: Buffer.from(file.data) })),
+    contentSha256: digestOf(files), content,
+  };
 }
 
 export interface StageOptions {
@@ -349,7 +376,7 @@ export class ContentStore {
         version: entry.version,
         payload: null,
         english: this.options.english,
-        sourceOrigin: entry.origin.sourceOrigin,
+        sourceOrigin: entry.origin.sourceOrigin === null ? "direct" : entry.origin.sourceOrigin,
         unknownMessageKeys: "ignore",
       });
       return { entry, content, dir };

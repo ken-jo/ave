@@ -23,6 +23,7 @@ import type { AgentSpawnEvent } from "../shared/subagent-events.js";
 import { createSkillLoadTool, type SkillLoadEvent, type SkillLoadToolDeps } from "../tools/skill-load.js";
 import { createSkillListTool } from "../tools/skill-list.js";
 import { createSkillReadTool } from "../tools/skill-read.js";
+import { createPluginStudioTools } from "../tools/plugin-studio.js";
 import {
   createMcpResourceListTool,
   createMcpResourceReadTool,
@@ -40,6 +41,7 @@ import type { SkillStore } from "../main/skill-store.js";
 import type { SkillOverlay } from "../main/skill-overlay.js";
 import type { SkillApprovalsStore } from "../main/skill-approvals-store.js";
 import type { AgentProfileStore } from "../main/agent-profile-store.js";
+import type { PersonaPromptStore } from "../main/persona-prompt-store.js";
 import type { ApprovalGate } from "../permissions/approval-gate.js";
 import { IdleSchedulerService, type PowerMonitorLike } from "../main/idle-scheduler.js";
 import { createLogger } from "../lib/logger.js";
@@ -92,6 +94,7 @@ export interface WorkflowToolDeps {
   getAgentSendRuntime?: () => AgentSendRuntime | undefined;
   skillStore?: SkillStore;
   agentProfileStore?: AgentProfileStore;
+  personaPromptStore?: PersonaPromptStore;
   /** C2(c): per-session skill overlay registry. */
   skillOverlay?: SkillOverlay;
   /** C2(d): persistent skill-approval allowlist. */
@@ -131,6 +134,8 @@ export function registerBuiltinTools(
 ): void {
   const { networkFetch, singleHopNetworkFetch } = workflowDeps;
   const builtins: Tool[] = [
+    ...createPluginStudioTools(undefined, { skillStore: workflowDeps.skillStore, agentProfileStore: workflowDeps.agentProfileStore,
+      personaPromptStore: workflowDeps.personaPromptStore, routinesStore: workflowDeps.routinesStore }),
     createWebSearchTool(settingsService, networkFetch),
     // web_fetch guards every hop of a redirect chain, so it needs the transport
     // that returns a hop instead of throwing on it. Handed `net.fetch`, the

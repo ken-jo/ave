@@ -33,10 +33,12 @@ import { DirectInstallView } from "./DirectInstallView.js";
 import { GitRuntimeCard } from "./GitRuntimeCard.js";
 import { KIND_ORDER, failureText, kindLabel, originLabel, relativeTime, stateLabel } from "./labels.js";
 import { PackageSheet } from "./PackageSheet.js";
+import { LocalPluginPackageSheet, PluginStudioView } from "./PluginStudioView.js";
+import type { StudioLocalPreview } from "../../../../shared/plugin-studio.js";
 import { SourcesView } from "./SourcesView.js";
 import { onUpdateReview, takeUpdateReview } from "./update-review-request.js";
 
-type View = "browse" | "sources" | "direct";
+type View = "browse" | "sources" | "direct" | "studio";
 
 const REVOKED_NOTICE_KEYS = {
   uninstalled: "gitMarketplace.boot.revoked.uninstalled",
@@ -94,6 +96,7 @@ function PackageCard({ entry, onOpen, onUninstallUnbound }: { entry: CatalogEntr
             {entry.sourceOrigin === "official" ? originLabel(t, "official") : entry.sourceLabel}
           </Badge>
         )}
+        {!bound && entry.key.kind === "agent-plugin" && <Badge variant="outline" className="h-5 px-1.5 text-[10px]">{t("pluginStudio.createdHere")}</Badge>}
         <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{kindLabel(t, entry.key.kind)}</Badge>
         {entry.required ? (
           <span className="ml-auto rounded px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground" title={t("gitMarketplace.state.requiredHint")}>
@@ -125,6 +128,7 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
   const [installedOnly, setInstalledOnly] = useState(false);
   const [query, setQuery] = useState("");
   const [sheet, setSheet] = useState<{ key: PackageKeyView; mode: "detail" | "update" } | null>(null);
+  const [localPreview, setLocalPreview] = useState<StudioLocalPreview | null>(null);
   const [addOpen, setAddOpen] = useState<"marketplace" | "direct" | null>(null);
   const [addInput, setAddInput] = useState("");
   const [notice, setNotice] = useState<BootInstallNoticeView | null>(null);
@@ -299,13 +303,19 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
     }
   };
 
+  const openLocalFile = async () => {
+    const result = await api.pluginStudio.previewInstallFromFile();
+    if (result.ok && result.value) setLocalPreview(result.value);
+    else if (!result.ok) setFailure({ code: "unavailable", message: result.message });
+  };
+
   return (
     <div className="space-y-2" data-testid="git-marketplace">
       <SettingsPageHeader title={t("gitMarketplace.title")} description={t("gitMarketplace.description")} />
 
       <SettingsSection
         data-settings-section="marketplace-inventory"
-        title={view === "sources" ? t("gitMarketplace.sources.title") : view === "direct" ? t("gitMarketplace.direct.title") : undefined}
+        title={view === "sources" ? t("gitMarketplace.sources.title") : view === "direct" ? t("gitMarketplace.direct.title") : view === "studio" ? t("pluginStudio.title") : undefined}
       >
         <div className="flex flex-wrap items-center gap-2">
           {view === "browse" ? (
@@ -329,6 +339,8 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
               <DropdownMenuItem onSelect={() => setAddOpen("marketplace")}>{t("gitMarketplace.addMarketplace")}</DropdownMenuItem>
               <DropdownMenuItem onSelect={() => setAddOpen("direct")}>{t("gitMarketplace.addFromGit")}</DropdownMenuItem>
               <DropdownMenuItem onSelect={() => setView("direct")}>{t("gitMarketplace.addMcp")}</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setView("studio")}>{t("pluginStudio.createTitle")}</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => void openLocalFile()}>{t("pluginStudio.installFile")}</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -505,7 +517,10 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
             />
           </div>
         )}
+        {view === "studio" && <PluginStudioView api={api.pluginStudio} onInstalled={() => void loadCatalog()} />}
       </SettingsSection>
+
+      <LocalPluginPackageSheet api={api.pluginStudio} preview={localPreview} onClose={() => setLocalPreview(null)} onInstalled={() => void loadCatalog()} />
 
       <SettingsSection data-settings-section="marketplace-maintenance" title={t("gitMarketplace.maintenance.title")} description={t("gitMarketplace.maintenance.description")}>
         <GitRuntimeCard api={api} />

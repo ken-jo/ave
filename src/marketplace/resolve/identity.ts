@@ -41,7 +41,7 @@ export type InstallAction =
   | { action: "switch"; fromSource: string | null; from: string | null };
 
 /** What installing `plan` over `installed` is; another source without `switchSource` is PACKAGE_ID_CONFLICT. */
-export function classifyInstall(plan: PackagePlan, installed: InstalledPackage | null, options: { switchSource?: boolean } = {}): InstallAction {
+export function classifyInstall(plan: Pick<PackagePlan, "kind" | "name" | "version"> & { sourceId: string | null }, installed: InstalledPackage | null, options: { switchSource?: boolean } = {}): InstallAction {
   if (!installed) return { action: "install" };
   if (installed.kind !== plan.kind || installed.name !== plan.name) {
     throw new Error(`installed ${installed.kind} ${installed.name} is not ${plan.kind} ${plan.name}`);

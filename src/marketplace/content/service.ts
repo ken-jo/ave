@@ -84,12 +84,15 @@ export class InstalledContentService {
     const instructions: InstalledInstruction[] = [];
     const agentPlugins: InstalledAgentPlugin[] = [];
     const agentPluginRuntime: InstalledAgentPluginRuntime[] = [];
-    const from = (item: LoadedContent) => ({ sourceId: item.entry.origin.sourceId, version: item.entry.version });
+    const from = (item: LoadedContent) => {
+      if (item.entry.origin.sourceId === null) throw new Error(`${item.entry.kind} ${item.entry.name} has no catalog source`);
+      return { sourceId: item.entry.origin.sourceId, version: item.entry.version };
+    };
     const refuse = (item: LoadedContent, problem: string) => brokenViews.push({ kind: item.entry.kind, name: item.entry.name, problem });
 
     for (const item of loaded) {
       const { content, entry, dir } = item;
-      const revocation = this.revoked(entry.kind, entry.name, entry.version);
+      const revocation = entry.origin.sourceId === null ? null : this.revoked(entry.kind, entry.name, entry.version);
       if (revocation !== null) {
         refuse(item, revocation);
         continue;

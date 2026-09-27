@@ -7,7 +7,7 @@
  * relying on `window.location.href`, which can be a splash-phase data: URL.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MAIN_CHAT_GROUP_ID } from "../contract/app-contract.js";
+import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../contract/app-contract.js";
 
 const exposed = new Map<string, unknown>();
 const mockInvoke = vi.fn();
@@ -122,6 +122,20 @@ describe("preload — plugin webview asset URLs", () => {
     // path points to a wrong directory (e.g. dist/main/ instead of dist/src/).
     // __dirname is `src/` at test-time or `dist/src/` in production builds.
     expect(url as string).toMatch(/\/(dist\/)?src\/plugin-preload\.cjs$/i);
+  });
+
+  it("bridges the private Studio domain through its declared channels", async () => {
+    mockInvoke.mockResolvedValue({ ok: true, value: [] });
+    const api = await loadAveApi();
+    const studio = api["pluginStudio"] as Record<string, (...args: unknown[]) => Promise<unknown>>;
+    await studio["listDrafts"]!();
+    await studio["readDraft"]!("team-kit");
+    await studio["writeDraft"]!({ name: "team-kit" });
+    await studio["previewInstallFromFile"]!();
+    expect(mockInvoke).toHaveBeenCalledWith(CHANNELS.pluginStudio.listDrafts);
+    expect(mockInvoke).toHaveBeenCalledWith(CHANNELS.pluginStudio.readDraft, "team-kit");
+    expect(mockInvoke).toHaveBeenCalledWith(CHANNELS.pluginStudio.writeDraft, { name: "team-kit" });
+    expect(mockInvoke).toHaveBeenCalledWith(CHANNELS.pluginStudio.previewInstallFromFile);
   });
 
   it("exposes pluginShellUrl as a file:// string under dist/src/", async () => {

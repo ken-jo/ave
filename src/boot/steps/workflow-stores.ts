@@ -97,6 +97,7 @@ export async function setupWorkflowStores(
     sessionGoalStore,
     skillStore,
     agentProfileStore,
+    personaPromptStore,
     skillOverlay,
     skillApprovalsStore,
     getAskUserQuestionGate: () => askUserQuestionGate,
