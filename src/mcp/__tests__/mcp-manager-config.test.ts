@@ -183,16 +183,20 @@ describe("McpManager — getConfigs()", () => {
     const encodedUrl = encodeURIComponent(key);
     const encodedEnv = [...key].map((char) => `%${char.charCodeAt(0).toString(16)}`).join("");
     const ref = { kind: "agent-plugin" as const, name: "team-kit" };
-    for (const owner of ["user", "package"] as const) for (const location of ["url", "env"] as const) {
-      const transport = location === "url" ? "http" : "stdio";
-      const url = `https://example.invalid/mcp?token=${encodedUrl}`;
-      const env = { VALUE: `prefix-${encodedEnv}-suffix` };
+    const cases = [
+      { location: "url", url: `https://example.invalid/mcp?token=${encodedUrl}`, env: {} },
+      { location: "url", url: `https://example.invalid/mcp?token=${encodedEnv}&progress=100%`, env: {} },
+      { location: "url", url: `https://example.invalid/mcp?progress=100%&token=${encodedEnv}`, env: {} },
+      { location: "env", url: "", env: { VALUE: `prefix-${encodedEnv}-suffix` } },
+      { location: "env", url: "", env: { VALUE: `progress=100%;token=${encodedEnv}` } },
+    ] as const;
+    for (const owner of ["user", "package"] as const) for (const { location, url, env } of cases) {
       const declaration = location === "url"
-        ? { packageName: ref.name, serverName: "sample", transport, url, auth: "api-key" as const, apiKeyHeader: "X-Key" }
-        : { packageName: ref.name, serverName: "sample", transport, command: "node", env,
+        ? { packageName: ref.name, serverName: "sample", transport: "http" as const, url, auth: "api-key" as const, apiKeyHeader: "X-Key" }
+        : { packageName: ref.name, serverName: "sample", transport: "stdio" as const, command: "node", env,
           auth: "api-key" as const, apiKeyEnv: "SAMPLE_KEY" };
       const secrets = new Map<string, string>();
-      const mgr = await makeManager({ getSecret: (name) => secrets.get(name) ?? null,
+      const mgr = await makeManager({ getSecret: (name: string) => secrets.get(name) ?? null,
         setSecret: async (name: string, value: string) => { secrets.set(name, value); } } as never);
       let id = "sample";
       if (owner === "user") {

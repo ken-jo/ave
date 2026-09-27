@@ -1,10 +1,12 @@
 import { readdir, readFile, rm } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { parse as parseYaml } from "yaml";
 import { openFeatureNamespace, writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
 import { isPackageName } from "../marketplace/catalog/types.js";
 import { checkContentFiles, contentFileProblem } from "../marketplace/content/rules.js";
-import { deriveAgentPluginComponents } from "../marketplace/content/agent-plugin-components.js";
+import { deriveAgentPluginComponents, parsePackagePrompt } from "../marketplace/content/agent-plugin-components.js";
+import { parseFrontmatter, parseFrontmatterBlock } from "../main/skill-store.js";
 import { treeDigest } from "../marketplace/resolve/plugin-ladder.js";
 import { parseStrictJson } from "../marketplace/catalog/strict-json.js";
 import { AGENT_PLUGINS_SCHEMA_URL, AVE_EXTENSION_NAMESPACE } from "../plugins/public-contract.js";
@@ -108,31 +110,94 @@ function provenance(parts: readonly StudioPart[]): Buffer {
   return Buffer.from(`${JSON.stringify({ version: 1, parts: safe }, null, 2)}\n`);
 }
 
+function withoutAuthorship(fields: Record<string, unknown>, nested: boolean): Record<string, unknown> {
+  const rest = { ...fields };
+  if (nested && object(rest.metadata)) {
+    const metadata = { ...rest.metadata };
+    delete metadata["ave-origin"];
+    delete metadata["ave-authored-by"];
+    if (Object.keys(metadata).length) rest.metadata = metadata;
+    else delete rest.metadata;
+  } else {
+    delete rest["ave-origin"];
+    delete rest["ave-authored-by"];
+  }
+  return rest;
+}
+
+function checkAuthoredText(path: string, before: string, after: string, author: "model" | "user", skill: boolean): void {
+  try {
+    if (skill) {
+      const original = parseFrontmatter(before);
+      const updated = parseFrontmatter(after);
+      const originalBlock = /^---\r?\n([\s\S]*?)\r?\n---/u.exec(before)![1]!;
+      const updatedBlock = /^---\r?\n([\s\S]*?)\r?\n---/u.exec(after)![1]!;
+      const originalFields: unknown = parseYaml(originalBlock);
+      const updatedFields: unknown = parseYaml(updatedBlock);
+      if (!object(originalFields) || !object(updatedFields)
+        || !isDeepStrictEqual(withoutAuthorship(originalFields, true), withoutAuthorship(updatedFields, true))
+        || !isDeepStrictEqual(withoutAuthorship({ ...original.fm }, true), withoutAuthorship({ ...updated.fm }, true))
+        || original.body !== updated.body || updated.fm.metadata?.["ave-origin"] !== "studio"
+        || updated.fm.metadata?.["ave-authored-by"] !== author) {
+        throw new Error("skill fields changed");
+      }
+      const name = path.split("/")[1]!;
+      const manifest = Buffer.from(JSON.stringify({ $schema: AGENT_PLUGINS_SCHEMA_URL,
+        name: "studio-check", version: "1.0.0", description: "Studio check" }));
+      const components = deriveAgentPluginComponents([{ path: "plugin.json", data: manifest },
+        { path, data: Buffer.from(after) }]);
+      if (components.skills.length !== 1 || components.skills[0]!.name !== name) throw new Error("skill component changed");
+    } else {
+      const original = parseFrontmatterBlock(before);
+      const updated = parseFrontmatterBlock(after);
+      const kept = (fields: ReadonlyMap<string, string>) => [...fields].filter(([key]) => key !== "ave-origin" && key !== "ave-authored-by");
+      if (!isDeepStrictEqual(kept(original.fields), kept(updated.fields)) || original.body !== updated.body
+        || updated.fields.get("ave-origin") !== "studio" || updated.fields.get("ave-authored-by") !== author) {
+        throw new Error("prompt fields changed");
+      }
+      parsePackagePrompt(Buffer.from(after), path, basename(path, ".md"));
+    }
+  } catch (error) {
+    throw new Error(`Studio authored file ${path} would change installed frontmatter: ${(error as Error).message.split("\n")[0]}`);
+  }
+}
+
 function authoredText(path: string, text: string, author: "model" | "user"): Buffer {
-  if (!/^skills\/[a-z][a-z0-9-]*\/SKILL\.md$/u.test(path)
-    && !/^xyz\.ave\/prompts\/[a-z][a-z0-9-]*\.md$/u.test(path)) return Buffer.from(text);
+  const skill = /^skills\/[a-z][a-z0-9-]*\/SKILL\.md$/u.test(path);
+  if (!skill && !/^xyz\.ave\/prompts\/[a-z][a-z0-9-]*\.md$/u.test(path)) return Buffer.from(text);
   const front = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/u.exec(text);
   if (!front) throw new Error(`Studio authored file ${path} needs frontmatter`);
   const fields: unknown = parseYaml(front[1]!);
   if (!object(fields)) throw new Error(`Studio authored file ${path} has invalid frontmatter`);
   const separator = front[0].includes("\r\n") ? "\r\n" : "\n";
   const lines = front[1]!.split(/\r?\n/u);
-  if (path.startsWith("skills/")) {
+  const fileIndentation = lines.map((line) => /^( +)\S/u.exec(line)?.[1]).find(Boolean) ?? "  ";
+  if (skill) {
     const metadata = fields.metadata === undefined ? {} : fields.metadata;
     if (!object(metadata) || Object.values(metadata).some((value) => typeof value !== "string")) {
       throw new Error(`Studio skill ${path} needs string metadata`);
     }
     const metadataIndex = lines.findIndex((line) => /^metadata:\s*$/u.test(line));
-    if (fields.metadata !== undefined && metadataIndex < 0) {
-      throw new Error(`Studio skill ${path} needs block-style metadata for authorship`);
-    }
-    if (metadataIndex < 0) lines.push("metadata:", "  ave-origin: studio", `  ave-authored-by: ${author}`);
-    else {
+    if (metadataIndex >= 0) {
       let end = metadataIndex + 1;
       while (end < lines.length && (lines[end]!.trim() === "" || /^\s/u.test(lines[end]!))) end++;
       const children = lines.slice(metadataIndex + 1, end).filter((line) => !/^\s+ave-(?:origin|authored-by):/u.test(line));
+      const indentation = children.map((line) => /^( +)[a-zA-Z0-9_-]+\s*:/u.exec(line)?.[1]).find(Boolean)
+        ?? fileIndentation;
       lines.splice(metadataIndex + 1, end - metadataIndex - 1, ...children,
-        "  ave-origin: studio", `  ave-authored-by: ${author}`);
+        `${indentation}ave-origin: studio`, `${indentation}ave-authored-by: ${author}`);
+    } else if (fields.metadata === undefined) lines.push("metadata:", `${fileIndentation}ave-origin: studio`, `${fileIndentation}ave-authored-by: ${author}`);
+    else {
+      const flowIndex = lines.findIndex((line) => /^metadata:\s*\{.*\}\s*$/u.test(line));
+      if (flowIndex < 0 || "ave-origin" in metadata || "ave-authored-by" in metadata) {
+        throw new Error(`Studio skill ${path} needs editable metadata for authorship`);
+      }
+      const line = lines[flowIndex]!;
+      const close = line.lastIndexOf("}");
+      const spaces = /[ \t]*$/u.exec(line.slice(0, close))![0].length;
+      const position = close - spaces;
+      const hasEntries = line.slice(line.indexOf("{") + 1, position).trim().length > 0;
+      lines[flowIndex] = `${line.slice(0, position)}${hasEntries ? ", " : ""}ave-origin: studio, ave-authored-by: ${author}${line.slice(position)}`;
     }
   } else {
     if (lines.some((line) => /^\s+\S/u.test(line))) {
@@ -148,7 +213,9 @@ function authoredText(path: string, text: string, author: "model" | "user"): Buf
     lines.splice(0, lines.length, ...kept, "ave-origin: studio", `ave-authored-by: ${author}`);
   }
   const start = /^---\r?\n/u.exec(text)![0].length;
-  return Buffer.from(`${text.slice(0, start)}${lines.join(separator)}${text.slice(start + front[1]!.length)}`);
+  const updated = `${text.slice(0, start)}${lines.join(separator)}${text.slice(start + front[1]!.length)}`;
+  checkAuthoredText(path, text, updated, author, skill);
+  return Buffer.from(updated);
 }
 
 function portableProvenance(value: unknown): boolean {

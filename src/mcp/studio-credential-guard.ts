@@ -1,8 +1,18 @@
-/** Compare raw and URL percent forms before a connector value can leave Studio. */
+/** Decode valid percent runs independently so unrelated malformed text cannot hide a credential. */
+function tolerantPercentDecode(value: string): string {
+  return value.replace(/(?:%[0-9a-fA-F]{2})+/gu, (run) => {
+    try { return decodeURIComponent(run); }
+    catch { return run; }
+  });
+}
+
 function stringContainsCredential(value: string, credential: string): boolean {
-  if (value.includes(credential) || value.includes(encodeURIComponent(credential))) return true;
-  try { return decodeURIComponent(value).includes(credential); }
-  catch { return false; }
+  if (value.includes(credential) || tolerantPercentDecode(value).includes(credential)) return true;
+  try {
+    const url = new URL(value);
+    return [...url.searchParams.values()].some((part) => part.includes(credential)
+      || tolerantPercentDecode(part).includes(credential));
+  } catch { return false; }
 }
 
 export function containsStoredCredential(value: unknown, credential: string): boolean {

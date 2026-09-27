@@ -81,6 +81,35 @@ describe("Studio drafts and package projections", () => {
     expect(await importedStore.packageFiles("team-kit")).toEqual(files);
   });
 
+  it("keeps skill metadata values and indentation readable after authorship insertion", async () => {
+    const variants = [
+      { label: "two", metadata: "metadata:\n  owner: existing-owner\n", ending: "\n" },
+      { label: "four", metadata: "metadata:\n    owner: existing-owner\n", ending: "\n" },
+      { label: "flow", metadata: "metadata: {}\n", ending: "\n" },
+      { label: "missing", metadata: "", ending: "\n" },
+      { label: "crlf", metadata: "metadata:\r\n    owner: existing-owner\r\n", ending: "\r\n" },
+    ] as const;
+    for (const [index, item] of variants.entries()) {
+      const name = `team-kit-${index}`;
+      const text = `---${item.ending}name: review${item.ending}description: Review work${item.ending}${item.metadata}---${item.ending}Review work.${item.ending}`;
+      const store = new PluginStudioStore();
+      const view = await store.writeDraft({ name, version: "1.0.0", description: "A team plugin",
+        files: [{ path: "skills/review/SKILL.md", text }] });
+      expect(view.errors, item.label).toEqual([]);
+      const files = await store.packageFiles(name);
+      const saved = files.find((file) => file.path === "skills/review/SKILL.md")!.data.toString();
+      expect(parseFrontmatter(saved).fm.metadata, item.label).toMatchObject({
+        ...(item.label === "flow" || item.label === "missing" ? {} : { owner: "existing-owner" }),
+        "ave-origin": "studio", "ave-authored-by": "user",
+      });
+      expect(deriveAgentPluginComponents(files).skills).toHaveLength(1);
+      if (item.label === "four" || item.label === "crlf") expect(saved).toContain(`    ave-origin: studio${item.ending}`);
+      if (item.label === "crlf") expect(saved.replaceAll("\r\n", "")).not.toContain("\n");
+      const reviewed = await store.reviewDraft(name, view.treeDigest);
+      expect(reviewed.reviewStatus).toBe("reviewed");
+    }
+  });
+
   it("preserves long prompt fields through the installed consumer when authored or edited after import", async () => {
     const description = "Review the supplied patch for correctness and maintainability, and report only actionable defects with concrete examples and suggested corrections.";
     const argumentHint = "Provide the revision range to inspect together with the target platform, reproduction steps, and any constraints that reviewers must preserve.";
