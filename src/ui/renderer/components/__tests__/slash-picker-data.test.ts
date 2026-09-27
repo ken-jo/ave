@@ -24,6 +24,7 @@ const mcpPrompts: McpPromptEntry[] = [
   { name: "triage", serverId: "github", description: "Sort inbound issues", arguments: [] },
   { name: "standup", serverId: "linear", title: "Daily standup", arguments: [] },
 ];
+const pluginPrompt = { id: "agent-plugin:writer-plugin:draft", packageName: "writer-plugin", version: "1.0.0", name: "draft", description: "Draft a note", body: "Draft {args}" };
 
 const skills: SkillEntry[] = [
   { name: "deep-research", description: "Fan-out web research" },
@@ -42,11 +43,13 @@ const bare = {
   plugins: [],
   mcpTools: [],
   mcpPrompts: [],
+  pluginPrompts: [],
   skills: [],
   onSelectPersona: () => {},
   onInsert: () => {},
   onSelectPlugin: () => {},
   onRunMcpPrompt: () => {},
+  onRunPluginPrompt: () => {},
 };
 
 describe("slash-picker-data — category model (mcp tools, mcp prompts, skills)", () => {
@@ -56,6 +59,7 @@ describe("slash-picker-data — category model (mcp tools, mcp prompts, skills)"
       "shortcut",
       "plugin",
       "mcp",
+      "plugin-prompts",
       "mcp-prompts",
       "skills",
     ]);
@@ -64,6 +68,7 @@ describe("slash-picker-data — category model (mcp tools, mcp prompts, skills)"
   it("maps the mcp + skills categories to their spec icons", () => {
     expect(CATEGORY_ICON.mcp).toBe(Server);
     expect(CATEGORY_ICON["mcp-prompts"]).toBe(MessageSquareText);
+    expect(CATEGORY_ICON["plugin-prompts"]).toBe(MessageSquareText);
     expect(CATEGORY_ICON.skills).toBe(Sparkles);
   });
 
@@ -73,6 +78,7 @@ describe("slash-picker-data — category model (mcp tools, mcp prompts, skills)"
     // `catLabel` switches exhaustively, so a category added without its case
     // would return undefined here.
     expect(catLabel("mcp-prompts").length).toBeGreaterThan(0);
+    expect(catLabel("plugin-prompts").length).toBeGreaterThan(0);
   });
 
   it("filters MCP tools by name or server id", () => {
@@ -91,12 +97,21 @@ describe("slash-picker-data — category model (mcp tools, mcp prompts, skills)"
     // The deleted panel drew two lines per row. A native menu keeps the second
     // one in `sublabel`, so dropping it here would silently cost the user every
     // description while every other assertion still passed.
-    const sections = buildComposerMenuSections({ ...bare, mcpTools, mcpPrompts, skills });
+    const sections = buildComposerMenuSections({ ...bare, mcpTools, mcpPrompts, pluginPrompts: [pluginPrompt], skills });
     const rows = new Map(sections.flatMap((s) => s.items).map((row) => [row.id, row]));
     expect(rows.get("category:mcp-prompts")!.submenu!.map((r) => r.sublabel))
       .toEqual(["Sort inbound issues", undefined]);
     expect(rows.get("category:skills")!.submenu!.map((r) => r.sublabel))
       .toEqual(["Fan-out web research", "Review the current diff"]);
+    expect(rows.get("category:plugin-prompts")!.submenu![0]!.sublabel).toBe("Draft a note");
+  });
+
+  it("runs a package prompt from its own menu row", () => {
+    const selected: string[] = [];
+    const sections = buildComposerMenuSections({ ...bare, pluginPrompts: [pluginPrompt], onRunPluginPrompt: (prompt) => selected.push(prompt.id) });
+    const row = sections[0]!.items.find((item) => item.id === "category:plugin-prompts")!.submenu![0]!;
+    void row.onSelect?.();
+    expect(selected).toEqual([pluginPrompt.id]);
   });
 
   it("leaves out a category with nothing in it rather than drawing an empty submenu", () => {
@@ -120,6 +135,7 @@ describe("slash-picker-data — category model (mcp tools, mcp prompts, skills)"
       plugins: [{ viewKey: "plugin:meeting:panel", label: "미팅 열기" }],
       mcpTools,
       mcpPrompts,
+      pluginPrompts: [pluginPrompt],
       skills,
     });
     // One section: no flat block above the divider any more.
@@ -130,6 +146,7 @@ describe("slash-picker-data — category model (mcp tools, mcp prompts, skills)"
       "category:command",
       "category:plugin",
       "category:mcp",
+      "category:plugin-prompts",
       "category:mcp-prompts",
       "category:skills",
     ]);

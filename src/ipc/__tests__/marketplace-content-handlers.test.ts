@@ -136,7 +136,7 @@ describe("loadInstalledContent", () => {
     await install("language", "french", { "language.json": language, "messages.json": messages }, { kind: "language", ...language, messages, missingKeys: [] });
     const settingsService = { get: () => ({ language: "fr" }) };
 
-    const { service } = await loadInstalledContent({ settingsService } as unknown as IpcDeps, TOKEN, root);
+    const { service } = await loadInstalledContent({ settingsService, getAppWindows: () => [] } as unknown as IpcDeps, TOKEN, root);
     expect(service.installed().languages.map((item) => item.locale)).toEqual(["fr"]);
     expect(isInstalledLocale("fr")).toBe(true);
     expect(await loadLocaleMessages("fr")).toMatchObject(messages);
@@ -145,7 +145,7 @@ describe("loadInstalledContent", () => {
   });
 
   it("lists nothing and applies nothing for an empty store", async () => {
-    const { service } = await loadInstalledContent({ settingsService: { get: () => ({ language: "en" }) } } as unknown as IpcDeps, TOKEN, root);
+    const { service } = await loadInstalledContent({ settingsService: { get: () => ({ language: "en" }) }, getAppWindows: () => [] } as unknown as IpcDeps, TOKEN, root);
     expect(service.installed()).toEqual({ themes: [], languages: [], fonts: [], broken: [] });
     expect(isInstalledLocale("fr")).toBe(false);
   });
@@ -153,7 +153,7 @@ describe("loadInstalledContent", () => {
   it("hands installed skills and agents to their stores, and reload applies an install made after load", async () => {
     const skillStore = { setInstalledPackages: vi.fn(), setInstalledAgentPlugins: vi.fn(), userSkillFile: async () => null };
     const agentProfileStore = { setInstalledPackages: vi.fn(), setInstalledAgentPlugins: vi.fn() };
-    const deps = { settingsService: { get: () => ({ language: "en" }) }, skillStore, agentProfileStore } as unknown as IpcDeps;
+    const deps = { settingsService: { get: () => ({ language: "en" }) }, skillStore, agentProfileStore, getAppWindows: () => [] } as unknown as IpcDeps;
     const loaded = await loadInstalledContent(deps, TOKEN, root);
     expect(skillStore.setInstalledPackages).toHaveBeenLastCalledWith([]);
     expect(agentProfileStore.setInstalledPackages).toHaveBeenLastCalledWith([]);
@@ -169,7 +169,8 @@ describe("loadInstalledContent", () => {
   it("publishes verified agent plugin instructions on reload and removes them on uninstall", async () => {
     const skillStore = { setInstalledPackages: vi.fn(), setInstalledAgentPlugins: vi.fn() };
     const agentProfileStore = { setInstalledPackages: vi.fn(), setInstalledAgentPlugins: vi.fn() };
-    const deps = { settingsService: { get: () => ({ language: "en" }) }, skillStore, agentProfileStore } as unknown as IpcDeps;
+    const personaPromptStore = { setInstalledAgentPlugins: vi.fn() };
+    const deps = { settingsService: { get: () => ({ language: "en" }) }, skillStore, agentProfileStore, personaPromptStore, getAppWindows: () => [] } as unknown as IpcDeps;
     const loaded = await loadInstalledContent(deps, TOKEN, root);
     const files = {
       "plugin.json": JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "writer-plugin", version: "1.0.0", description: "Writing tools" }),
@@ -186,9 +187,13 @@ describe("loadInstalledContent", () => {
     expect(agentProfileStore.setInstalledAgentPlugins).toHaveBeenLastCalledWith([
       expect.objectContaining({ name: "writer-plugin" }),
     ]);
+    expect(personaPromptStore.setInstalledAgentPlugins).toHaveBeenLastCalledWith([
+      expect.objectContaining({ name: "writer-plugin" }),
+    ]);
     await loaded.store.uninstall("agent-plugin", "writer-plugin", EMPTY_MARKETPLACE_POLICY);
     await loaded.reload();
     expect(skillStore.setInstalledAgentPlugins).toHaveBeenLastCalledWith([]);
     expect(agentProfileStore.setInstalledAgentPlugins).toHaveBeenLastCalledWith([]);
+    expect(personaPromptStore.setInstalledAgentPlugins).toHaveBeenLastCalledWith([]);
   });
 });

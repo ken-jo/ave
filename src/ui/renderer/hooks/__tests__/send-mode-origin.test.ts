@@ -11,7 +11,7 @@ import { describe, it, expect } from "vitest";
 
 import { SEND_MODE_ORIGIN, type SendMode } from "../use-send-message.js";
 
-const STAGED_MODES: SendMode[] = ["trigger-import", "app-message", "mcp-prompt"];
+const STAGED_MODES: SendMode[] = ["trigger-import", "app-message", "mcp-prompt", "plugin-prompt"];
 
 describe("SEND_MODE_ORIGIN", () => {
   it("maps only the default mode to user-keyboard", () => {
@@ -34,5 +34,9 @@ describe("SEND_MODE_ORIGIN", () => {
 
   it("routes the MCP prompt mode to the mcp-prompt-emitted origin", () => {
     expect(SEND_MODE_ORIGIN["mcp-prompt"]).toBe("mcp-prompt-emitted");
+  });
+
+  it("routes package templates to their own staged origin", () => {
+    expect(SEND_MODE_ORIGIN["plugin-prompt"]).toBe("plugin-prompt-emitted");
   });
 });

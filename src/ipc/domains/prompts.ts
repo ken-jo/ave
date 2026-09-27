@@ -28,7 +28,7 @@ function normalizePromptPatch(value: unknown): {
   };
 }
 
-function broadcastPromptsUpdated(deps: IpcDeps): void {
+export function broadcastPromptsUpdated(deps: IpcDeps): void {
   for (const win of deps.getAppWindows?.() ?? [deps.getMainWindow()]) {
     if (!win || win.isDestroyed()) continue;
     win.webContents.send(PROMPTS_UPDATED);
@@ -47,8 +47,9 @@ export function registerPromptHandlers(deps: IpcDeps): void {
       id: prompt.id,
       name: prompt.name,
       systemPromptAdd: prompt.systemPromptAdd,
+      ...(prompt.origin ? { origin: prompt.origin } : {}),
     }));
-    return { prompts };
+    return { prompts, templates: personaPromptStore?.listTemplates() ?? [] };
   });
 
   ipcMain.handle(CHANNELS.prompts.listSummaries, async (event) => {

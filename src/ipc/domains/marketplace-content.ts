@@ -35,6 +35,7 @@ import { errorMessage } from "../../shared/error-message.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../gated.js";
 import type { IpcDeps } from "../types.js";
 import { broadcastSettingsSnapshot, mutateMarketplaceProviderPresets } from "./settings.js";
+import { broadcastPromptsUpdated } from "./prompts.js";
 
 const log = createLogger("marketplace-content");
 
@@ -232,6 +233,8 @@ function applyInMain(deps: IpcDeps, service: InstalledContentService, view: Inst
   const agentPlugins = service.installedAgentPlugins();
   deps.skillStore?.setInstalledAgentPlugins(agentPlugins);
   deps.agentProfileStore?.setInstalledAgentPlugins(agentPlugins);
+  deps.personaPromptStore?.setInstalledAgentPlugins(agentPlugins);
+  broadcastPromptsUpdated(deps);
 }
 
 /**

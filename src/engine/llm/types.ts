@@ -145,7 +145,7 @@ export interface MessageMeta {
    * message. Stores only prompt-store identity metadata; retry/edit-resend
    * re-resolves the current prompt body from `PersonaPromptStore`.
    */
-  activePersonaPrompt?: { id: string; name: string };
+  activePersonaPrompt?: { id: string; name: string; origin?: { kind: "agent-plugin"; package: string; version: string } };
 
 
 
