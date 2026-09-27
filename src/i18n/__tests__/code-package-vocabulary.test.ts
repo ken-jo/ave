@@ -8,6 +8,9 @@ const TECHNICAL_LITERALS: Record<string, readonly string[]> = {
   "routinePanel.pluginsPartlyMissing": ["{plugins}"],
   "mainDialog.pluginPickFolderTitle": ["{plugin}"],
   "mainDialog.installLocalPluginMessage": ["plugin.json"],
+  "approvalAttribution.pluginRequest": ["{plugin}"],
+  "gitMarketplace.authority.pluginAccess": ["{plugin}"],
+  "workBoard.proposalSourceLabel": ["{plugin}"],
   "be_systemPromptBuilder.toolSchemasSourceNote": ["plugin:<id>"],
   "be_systemPromptBuilder.toolCatalogGroupingNote": ["plugin:<id>"],
   "defaultTourScenarios.meetingSummaryStep3Body": ["~/.ave/plugins/"],
@@ -32,5 +35,20 @@ describe("code package vocabulary in built-in catalogs", () => {
     }
 
     expect(stale).toEqual([]);
+  });
+
+  it("preserves the interpolation slot supplied by package-name callers", async () => {
+    const catalogs = await loadAllLocaleMessages();
+    const keys = [
+      "approvalAttribution.pluginRequest",
+      "gitMarketplace.authority.pluginAccess",
+      "workBoard.proposalSourceLabel",
+    ];
+
+    for (const catalog of Object.values(catalogs)) {
+      for (const key of keys) {
+        expect(catalog[key]).toContain("{plugin}");
+      }
+    }
   });
 });

@@ -341,7 +341,7 @@ describe("PluginConfigTab", () => {
     await waitFor(() => {
       expect(
         screen.getByText(
-          "Agent Hub: 이 플러그인에 연결된 마켓플레이스 소스가 없어 재설치할 수 없습니다. 제거하거나 설정 → 마켓플레이스에서 다시 설치하세요.",
+          "Agent Hub: 이 익스텐션에 연결된 마켓플레이스 소스가 없어 재설치할 수 없습니다. 제거하거나 설정 → 마켓플레이스에서 다시 설치하세요.",
         ),
       ).toBeInTheDocument();
     });
@@ -515,7 +515,7 @@ describe("PluginConfigTab", () => {
     });
     // Its own diagnosis, not "update the app": a newer app may have dropped
     // the version rather than lacking it.
-    expect(screen.getByText("다른 Ave 프로토콜용 플러그인")).toBeInTheDocument();
+    expect(screen.getByText("다른 Ave 프로토콜용 익스텐션")).toBeInTheDocument();
     expect(screen.queryByText("앱 업데이트 필요")).toBeNull();
 
     fireEvent.click(screen.getByTestId("plugin-config:doctor:meeting"));
@@ -559,7 +559,7 @@ describe("PluginConfigTab", () => {
     await waitFor(() => {
       expect(screen.getByTestId("plugin-config:doctor-panel:meeting")).toBeInTheDocument();
     });
-    expect(screen.getByText("플러그인 manifest 검증 실패")).toBeInTheDocument();
+    expect(screen.getByText("익스텐션 manifest 검증 실패")).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("plugin-config:doctor:meeting"));
 
@@ -645,7 +645,7 @@ describe("PluginConfigTab", () => {
     await waitFor(() => {
       expect(screen.getByTestId("plugin-config:doctor-panel:lyra-mail")).toBeInTheDocument();
     });
-    expect(screen.getByText("플러그인 manifest 검증 실패")).toBeInTheDocument();
+    expect(screen.getByText("익스텐션 manifest 검증 실패")).toBeInTheDocument();
     expect(screen.getByText("상세 오류")).toBeInTheDocument();
     expect(screen.getByText(/unknown property: 'startupTools'/)).toBeInTheDocument();
   });
@@ -852,7 +852,7 @@ describe("PluginConfigTab", () => {
     });
     expect(screen.getAllByText("의존성 설치 중 (최초 1회)...").length).toBeGreaterThan(0);
     expect(screen.getByText("40%")).toBeInTheDocument();
-    expect(screen.getByText("준비가 끝나면 플러그인이 자동으로 로드됩니다.")).toBeInTheDocument();
+    expect(screen.getByText("준비가 끝나면 익스텐션이 자동으로 로드됩니다.")).toBeInTheDocument();
   });
 
 });

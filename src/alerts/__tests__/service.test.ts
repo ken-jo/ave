@@ -296,8 +296,8 @@ describe("an accepted alert", () => {
     expect(h.shown[0]?.summary).toContain("fixturecalendar");
     expect(h.shown[1]?.summary).toContain("fixturemail");
     expect(h.fired.map(({ title }) => title)).toEqual([
-      "Plugin [fixturemail] · Mail tools · Mail needing a reply",
-      "Plugin [fixturecalendar] · Mail tools · Mail needing a reply",
+      "Extension [fixturemail] · Mail tools · Mail needing a reply",
+      "Extension [fixturecalendar] · Mail tools · Mail needing a reply",
     ]);
   });
 
@@ -306,7 +306,7 @@ describe("an accepted alert", () => {
     await h.service.register("fixturemail", { ...manifest([KINDS[0]!]), name: "Ave" });
     await h.service.raise("fixturemail", reply());
     expect(h.shown[0]?.pluginDisplayName).toBe("Ave");
-    expect(h.fired[0]?.title).toBe("Plugin [fixturemail] · Ave · Mail needing a reply");
+    expect(h.fired[0]?.title).toBe("Extension [fixturemail] · Ave · Mail needing a reply");
   });
 
   it("neutralizes a repeated identity label in a notification title", async () => {
@@ -317,7 +317,7 @@ describe("an accepted alert", () => {
     });
     await h.service.raise("fixture-6", reply());
     expect(h.shown[0]?.pluginDisplayName).toBe("Plugin: lyra-mail · Ave Lyra Mail");
-    expect(h.fired[0]?.title).toBe("Plugin [fixture-6] · Plugin lyra-mail Ave Lyra Mail · Security notice");
+    expect(h.fired[0]?.title).toBe("Extension [fixture-6] · Plugin lyra-mail Ave Lyra Mail · Security notice");
   });
 
   it("does not let a display name or kind title create another bracketed id field", async () => {
@@ -327,7 +327,7 @@ describe("an accepted alert", () => {
       name: "Plugin [lyra-mail] · Ave Lyra Mail",
     });
     await h.service.raise("fixture-6", reply());
-    expect(h.fired[0]?.title).toBe("Plugin [fixture-6] · Plugin lyra-mail Ave Lyra Mail · Plugin another Security notice");
+    expect(h.fired[0]?.title).toBe("Extension [fixture-6] · Plugin lyra-mail Ave Lyra Mail · Plugin another Security notice");
   });
 
   it("keeps the full maximum-length plugin id in a capped notification title", async () => {
@@ -343,7 +343,7 @@ describe("an accepted alert", () => {
     await h.service.register("fixturemail", { ...manifest([KINDS[0]!]), name: "Mail\u202e tools" });
     await h.service.raise("fixturemail", reply());
     expect(h.shown[0]?.pluginDisplayName).toBe("Mail tools");
-    expect(h.fired[0]?.title).toBe("Plugin [fixturemail] · Mail tools · Mail needing a reply");
+    expect(h.fired[0]?.title).toBe("Extension [fixturemail] · Mail tools · Mail needing a reply");
   });
 
   it("falls back to the plugin id when its installed manifest has no name", async () => {
@@ -353,8 +353,8 @@ describe("an accepted alert", () => {
     await h.service.raise("fixturecalendar", reply("calendar"));
     expect(h.shown[0]?.pluginDisplayName).toBe("fixturemail");
     expect(h.shown[1]?.pluginDisplayName).toBe("fixturecalendar");
-    expect(h.fired[0]?.title).toBe("Plugin [fixturemail] · Mail needing a reply");
-    expect(h.fired[1]?.title).toBe("Plugin [fixturecalendar] · Mail needing a reply");
+    expect(h.fired[0]?.title).toBe("Extension [fixturemail] · Mail needing a reply");
+    expect(h.fired[1]?.title).toBe("Extension [fixturecalendar] · Mail needing a reply");
   });
 
   it("completes queued acceptance when the current window send fails once", async () => {
@@ -602,8 +602,8 @@ describe("visibility and cues", () => {
     await h.service.raise("fixturemail", { kind: "digest", key: "mail" });
     await h.service.raise("fixturecalendar", { kind: "digest", key: "calendar" });
     expect(h.fired.map(({ title }) => title)).toEqual([
-      "Plugin [fixturemail] · Mail tools · New mail",
-      "Plugin [fixturecalendar] · Mail tools · New mail",
+      "Extension [fixturemail] · Mail tools · New mail",
+      "Extension [fixturecalendar] · Mail tools · New mail",
     ]);
   });
 
@@ -614,7 +614,7 @@ describe("visibility and cues", () => {
     expect(await h.service.raise("fixturemail", { kind: "digest", key: "d" })).toMatchObject({ delivered: { card: false, toast: true, osNotification: false } });
     expect(await h.service.raise("fixturemail", { kind: "quiet", key: "q" })).toMatchObject({ delivered: { card: false, toast: false, osNotification: false } });
     expect(h.shown).toHaveLength(1);
-    expect(h.fired).toEqual([{ kind: "alert", title: "Plugin [fixturemail] · New mail", body: "New mail arrived." }]);
+    expect(h.fired).toEqual([{ kind: "alert", title: "Extension [fixturemail] · New mail", body: "New mail arrived." }]);
     expect(h.events.map((event) => event.payload.visibility)).toEqual(["user-visible", "summary-only", "silent"]);
   });
 
@@ -628,7 +628,7 @@ describe("visibility and cues", () => {
   it("notifies the OS for an unfocused window when the kind and both switches allow it", async () => {
     const h = await registered();
     expect(await h.service.raise("fixturemail", reply())).toMatchObject({ delivered: { osNotification: true } });
-    expect(h.fired).toEqual([{ kind: "alert", title: "Plugin [fixturemail] · Mail needing a reply", body: "A mail needs your reply." }]);
+    expect(h.fired).toEqual([{ kind: "alert", title: "Extension [fixturemail] · Mail needing a reply", body: "A mail needs your reply." }]);
   });
 
   it("never notifies the OS for a low priority alert", async () => {
@@ -668,7 +668,7 @@ describe("visibility and cues", () => {
     await h.service.raise("fixturemail", reply());
     expect(h.fired).toEqual([]);
     expect(await h.service.raise("fixturemail", { kind: "urgent", key: "u" })).toMatchObject({ delivered: { osNotification: true } });
-    expect(h.fired).toEqual([{ kind: "alert", title: "Plugin [fixturemail] · Meeting starting", body: "A meeting is starting.", bypassFocusGate: true }]);
+    expect(h.fired).toEqual([{ kind: "alert", title: "Extension [fixturemail] · Meeting starting", body: "A meeting is starting.", bypassFocusGate: true }]);
   });
 
   it("gives one cue at most: the OS notification replaces the toast when both would fire", async () => {
@@ -676,7 +676,7 @@ describe("visibility and cues", () => {
     h.focused.value = true;
     expect(await h.service.raise("fixturemail", { kind: "loudsummary", key: "l" }))
       .toMatchObject({ delivered: { toast: false, osNotification: true } });
-    expect(h.fired).toEqual([{ kind: "alert", title: "Plugin [fixturemail] · Urgent mail", body: "Urgent mail arrived.", bypassFocusGate: true }]);
+    expect(h.fired).toEqual([{ kind: "alert", title: "Extension [fixturemail] · Urgent mail", body: "Urgent mail arrived.", bypassFocusGate: true }]);
   });
 
   it("fires nothing for a refusal", async () => {

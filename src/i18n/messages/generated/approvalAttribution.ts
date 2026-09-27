@@ -4,7 +4,7 @@ export const en = {
   "approvalAttribution.unattributed": "No conversation (host request)",
   "approvalAttribution.headlessSession": "Conversation not open in any tile",
   "approvalAttribution.hostRequest": "Host request",
-  "approvalAttribution.pluginRequest": "Extension request · {extension}",
+  "approvalAttribution.pluginRequest": "Extension request · {plugin}",
   "approvalAttribution.paneConversation": "This pane's conversation: {title}",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
@@ -12,6 +12,6 @@ export const ko: Record<keyof typeof en, string> = {
   "approvalAttribution.unattributed": "대화 없음 (호스트 요청)",
   "approvalAttribution.headlessSession": "어느 타일에도 열려 있지 않은 대화",
   "approvalAttribution.hostRequest": "호스트 요청",
-  "approvalAttribution.pluginRequest": "익스텐션 요청 · {extension}",
+  "approvalAttribution.pluginRequest": "익스텐션 요청 · {plugin}",
   "approvalAttribution.paneConversation": "이 패널의 대화 {title}",
 };

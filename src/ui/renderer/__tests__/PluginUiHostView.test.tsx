@@ -60,7 +60,7 @@ describe("PluginUiHostView — loading state", () => {
   it("shows error message when view is null", () => {
     stubAveApi();
     const { getByText } = render(<PluginUiHostView view={null} />);
-    expect(getByText("플러그인 뷰를 찾을 수 없습니다.")).toBeTruthy();
+    expect(getByText("익스텐션 뷰를 찾을 수 없습니다.")).toBeTruthy();
   });
 
   it("holds the loading overlay, not the not-found error, while the plugin prepares", () => {
@@ -70,7 +70,7 @@ describe("PluginUiHostView — loading state", () => {
     stubAveApi();
     const { getByText, queryByText } = render(<PluginUiHostView view={null} preparing />);
     expect(getByText("로딩 중...")).toBeTruthy();
-    expect(queryByText("플러그인 뷰를 찾을 수 없습니다.")).toBeNull();
+    expect(queryByText("익스텐션 뷰를 찾을 수 없습니다.")).toBeNull();
   });
 
   it("does NOT show loading overlay when view.entryUrl is missing", () => {
@@ -101,7 +101,7 @@ describe("PluginUiHostView — loading state", () => {
   it("shows asset URL error message when pluginShellUrl is missing", () => {
     stubAveApi("", "file:///preload.cjs");
     const { getByText } = render(<PluginUiHostView view={makeView()} />);
-    expect(getByText(/Plugin webview 자산 URL을 aveApi에서 찾을 수 없습니다/)).toBeTruthy();
+    expect(getByText(/Extension webview 자산 URL을 aveApi에서 찾을 수 없습니다/)).toBeTruthy();
   });
 
   it("names the plugin nowhere — the pane's frame does that", () => {
@@ -126,7 +126,7 @@ describe("PluginUiHostView — loading state", () => {
       <PluginUiHostView view={makeView()} authError="플러그인 로그인 실패 code: non-corp-network" />,
     );
     expect(getByText("플러그인 로그인 실패 code: non-corp-network")).toBeTruthy();
-    expect(getByText(/Plugin webview 자산 URL을 aveApi에서 찾을 수 없습니다/)).toBeTruthy();
+    expect(getByText(/Extension webview 자산 URL을 aveApi에서 찾을 수 없습니다/)).toBeTruthy();
   });
 
   it("leaves app-level navigation to the shared toolbar", () => {

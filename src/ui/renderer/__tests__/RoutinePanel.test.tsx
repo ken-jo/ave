@@ -2,7 +2,7 @@
  * RoutinePanel button label / payload mapping lock.
  *
  * Asserts the contract surfaced by the panel: when the user clicks the
- * "선택 해제 (플러그인 사용 안 함)" button or leaves the plugin list empty,
+ * "선택 해제 (익스텐션 사용 안 함)" button or leaves the plugin list empty,
  * the resulting `addRoutine` payload uses `{ mode: "deny-all" }` per
  * spec §3 Layer 4 (RoutinePluginScope discriminated union). Catches a
  * regression the panel already had once: the label said "전체 허용" while the
@@ -89,9 +89,9 @@ describe("RoutinePanel scope payload mapping", () => {
     fireEvent.click(checkbox); // selected
     expect(checkbox.getAttribute("aria-checked")).toBe("true");
 
-    // Click the "선택 해제 (플러그인 사용 안 함)" button — clears selection.
+    // Click the "선택 해제 (익스텐션 사용 안 함)" button — clears selection.
     const clearBtn = getByTestId("routine-clear-allowed-plugins");
-    expect(clearBtn.textContent).toContain("플러그인 사용 안 함");
+    expect(clearBtn.textContent).toContain("익스텐션 사용 안 함");
     fireEvent.click(clearBtn);
 
     // Submit. The "등록" button is the second one in the modal (first is 취소).

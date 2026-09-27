@@ -76,7 +76,7 @@ export const en = {
   "gitMarketplace.authority.network": "Network: {host}",
   "gitMarketplace.authority.secret": "Reads the secret {secret}",
   "gitMarketplace.authority.capability": "Capability: {capability}",
-  "gitMarketplace.authority.pluginAccess": "Uses the extension {extension}",
+  "gitMarketplace.authority.pluginAccess": "Uses the extension {plugin}",
   "gitMarketplace.authority.dependency": "Needs the extension {dependency}",
   "gitMarketplace.authority.none": "Asks for no permissions.",
 
@@ -354,7 +354,7 @@ export const ko: Record<keyof typeof en, string> = {
   "gitMarketplace.authority.network": "네트워크: {host}",
   "gitMarketplace.authority.secret": "비밀 값 {secret} 읽기",
   "gitMarketplace.authority.capability": "기능: {capability}",
-  "gitMarketplace.authority.pluginAccess": "익스텐션 {extension} 사용",
+  "gitMarketplace.authority.pluginAccess": "익스텐션 {plugin} 사용",
   "gitMarketplace.authority.dependency": "익스텐션 {dependency} 필요",
   "gitMarketplace.authority.none": "요청하는 권한이 없습니다.",
 
