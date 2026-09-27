@@ -302,8 +302,16 @@ function errorSchema(
       code: { enum: [...codes] },
       name: { type: "string" },
       detail: { type: "object" },
+      retryAfterMs: { type: "integer", minimum: 0, maximum: 5000 },
     },
     required: ["code", "name"],
+    allOf: [{
+      if: { properties: { code: { const: "rate-limited" } }, required: ["code"] },
+      then: {
+        properties: { retryAfterMs: { type: "integer", minimum: 0, maximum: 5000 } },
+        required: ["retryAfterMs"],
+      },
+    }],
   };
   return {
     ...(description ? { description } : {}),
