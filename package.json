@@ -37,10 +37,10 @@
   "scripts": {
     "postinstall": "node scripts/fetch-uv.mjs && node scripts/register-ave-protocol.mjs && node scripts/hooks/install.mjs",
     "build:main": "node scripts/build-main-esbuild.mjs",
-    "build:webpack": "webpack --config webpack.config.cjs",
-    "build:renderer": "webpack --config webpack.config.cjs --config-name renderer",
+    "build:webpack": "node --import ./scripts/lib/document-consumer-guard.mjs ./node_modules/webpack/bin/webpack.js --config webpack.config.cjs",
+    "build:renderer": "node --import ./scripts/lib/document-consumer-guard.mjs ./node_modules/webpack/bin/webpack.js --config webpack.config.cjs --config-name renderer",
     "build:styles": "tailwindcss --input src/styles.css --output dist/src/styles.css --minify",
-    "build:preload": "webpack --config webpack.config.cjs --config-name preload",
+    "build:preload": "node --import ./scripts/lib/document-consumer-guard.mjs ./node_modules/webpack/bin/webpack.js --config webpack.config.cjs --config-name preload",
     "build:plugin-preload": "webpack --config webpack.config.cjs --config-name pluginPreload",
     "build:floating-dock-preload": "webpack --config webpack.config.cjs --config-name floatingDockPreload",
     "build:icons": "node scripts/generate-ave-icons.cjs",

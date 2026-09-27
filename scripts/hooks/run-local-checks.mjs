@@ -16,6 +16,7 @@
 
 import { existsSync } from "node:fs";
 import { parsePrePushUpdates, readPrePushInput } from "./pre-push-ref-updates.mjs";
+import { checkPushedDocumentation } from "./pre-push-document-safety.mjs";
 import { basename, join, resolve } from "node:path";
 import { TextDecoder } from "node:util";
 
@@ -410,7 +411,7 @@ function decodeUtf8Strict(output) {
 function getChangedEntries(repoRoot, baseSha, localSha) {
   const result = spawnSync(
     commands.git,
-    ["diff", "--no-renames", "--name-status", "-z", `${baseSha}..${localSha}`, "--"],
+    ["diff", "--no-renames", "--raw", "-z", `${baseSha}..${localSha}`, "--"],
     {
       cwd: repoRoot,
       stdio: ["ignore", "pipe", "pipe"],
@@ -426,12 +427,13 @@ function getChangedEntries(repoRoot, baseSha, localSha) {
 
   const entries = [];
   for (let index = 0; index < fields.length; ) {
-    const status = fields[index++];
-    if (!/^[A-Z][0-9]*$/.test(status)) return null;
+    const raw = /^:([0-7]{6}) ([0-7]{6}) [0-9a-f]+ [0-9a-f]+ ([A-Z][0-9]*)$/i.exec(fields[index++]);
+    if (!raw) return null;
+    const [, oldMode, newMode, status] = raw;
     const pathCount = /^[RC]/.test(status) ? 2 : 1;
     if (index + pathCount > fields.length) return null;
     for (let pathIndex = 0; pathIndex < pathCount; pathIndex += 1) {
-      entries.push({ status, path: fields[index++] });
+      entries.push({ oldMode, newMode, status, path: fields[index++] });
     }
   }
   return entries;
@@ -538,12 +540,14 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteName, remoteLocat
       reason: targetedTestsReason || documentation.reason,
     };
   }
-  return documentation;
+  return { ...documentation, pushedEntries: changedEntries };
 }
 
 // ---------------------------------------------------------------------------
 // Staged safety scan (merge markers, TLS-verification bypass)
 // ---------------------------------------------------------------------------
+
+const mergeMarkers = /^(<<<<<<< |=======|>>>>>>> )/m;
 
 function getStagedFiles(repoRoot) {
   const output = capture(
@@ -573,8 +577,6 @@ function runStagedSafetyChecks(repoRoot) {
   run(commands.git, ["diff", "--cached", "--check"], repoRoot);
   const files = getStagedFiles(repoRoot);
   const violations = [];
-  const mergeMarkers = /^(<<<<<<< |=======|>>>>>>> )/m;
-
   for (const relativePath of files) {
     const stagedContent = getStagedFileContent(repoRoot, relativePath);
     if (!stagedContent || stagedContent.includes(String.fromCharCode(0))) continue;
@@ -741,6 +743,9 @@ if (stage === "pre-commit") {
       ? classifyPrePushChanges(repoRoot, prePushUpdates, remote, remoteLocation)
       : { docsOnly: false };
   if (classification.docsOnly) {
+    checkPushedDocumentation(repoRoot, classification.pushedEntries);
+    run(commands.node, ["--test", "test/scripts/check-asrt-version-claims.test.mjs"], repoRoot);
+    run(commands.node, ["scripts/check-asrt-version-claims.mjs"], repoRoot);
     console.log(
       `[checks] docs-only pre-push: skipping lint/typecheck/test/build (${classification.reason})`
     );

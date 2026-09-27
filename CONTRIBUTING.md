@@ -42,14 +42,15 @@ standalone Node in place; that would replace the binary used by Electron.
 Direct `bunx vitest` and `bun test` invocations fail fast by design; use the
 canonical wrapper command above for both full and targeted tests.
 
-Use the smallest affected checks while iterating. For code-bearing changes and
+Use the smallest affected checks while iterating. For production code changes and
 documentation consumed by runtime, tests, build, or workflows, the pre-push
 hook is the sole local full gate: it runs `bun run typecheck`, the full
 `bun run test`, and `bun run build` once. Documentation prose with no such
-consumer skips those expensive gates after diff and policy checks. Renames,
-deletes, and mixed changes still run the full gate. Do not duplicate the trio around a
-successful push. If a check fails, fix it and rerun only the failed or
-invalidated checks before pushing again. Full Playwright E2E runs in CI/release
+consumer skips those expensive gates after diff and policy checks. Eligible
+test-only pushes run typecheck and targeted Vitest in the hook; CI still runs
+full checks. Renames, deletes, and mixed changes run the full gate. Do not
+duplicate the trio around a successful push. If a check fails, fix it and rerun
+only the failed or invalidated checks before pushing again. Full Playwright E2E runs in CI/release
 validation; UI changes require the targeted local flow check above. Never
 bypass hooks with `--no-verify` or a hook-skip environment variable.
 

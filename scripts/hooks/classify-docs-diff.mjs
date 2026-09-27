@@ -10,7 +10,7 @@ if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(base ?? "") ||
 }
 
 const result = spawnSync("git", [
-  "diff", "--no-renames", "--name-status", "-z", `${base}..${head}`, "--",
+  "diff", "--no-renames", "--raw", "-z", `${base}..${head}`, "--",
 ], { encoding: "buffer" });
 if (result.error || result.status !== 0) {
   throw new Error("could not compare documentation changes with the base");
@@ -23,7 +23,9 @@ fields.pop();
 if (fields.length % 2 !== 0) throw new Error("invalid Git diff entries");
 const entries = [];
 for (let i = 0; i < fields.length; i += 2) {
-  entries.push({ status: fields[i], path: fields[i + 1] });
+  const raw = /^:([0-7]{6}) ([0-7]{6}) [0-9a-f]+ [0-9a-f]+ ([A-Z][0-9]*)$/i.exec(fields[i]);
+  if (!raw) throw new Error("invalid Git diff status or modes");
+  entries.push({ oldMode: raw[1], newMode: raw[2], status: raw[3], path: fields[i + 1] });
 }
 const classification = classifyDocumentationChanges(entries);
 process.stdout.write(`docs_only=${classification.docsOnly}\n`);

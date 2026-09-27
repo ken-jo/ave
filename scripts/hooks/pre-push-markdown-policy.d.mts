@@ -1,5 +1,5 @@
 export function isCanonicalGitPath(relativePath: string): boolean;
 export function isDocumentationPath(relativePath: string): boolean;
 export function classifyDocumentationChanges(
-  entries: { status: string; path: string }[],
+  entries: { status: string; path: string; oldMode: string; newMode: string }[],
 ): { docsOnly: boolean; reason: string };

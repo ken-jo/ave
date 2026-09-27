@@ -1,9 +1,10 @@
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 // The inventory records every literal reference to a tracked document.
 // Only consumers of document bytes require the full test and build gate.
 const { consumed } = JSON.parse(readFileSync(
-  new URL("./documentation-references.json", import.meta.url), "utf8"
+  fileURLToPath(new URL("./documentation-references.json", import.meta.url)), "utf8"
 ));
 const consumedDocuments = new Set(consumed);
 
@@ -28,8 +29,11 @@ export function classifyDocumentationChanges(entries) {
     return { docsOnly: false, reason: "no changed files were resolved" };
   }
   for (const entry of entries) {
-    if (!/^[AM]$/.test(entry.status) || !isCanonicalGitPath(entry.path)) {
-      return { docsOnly: false, reason: "change status or path requires full checks" };
+    if (!/^[AM]$/.test(entry.status) || !isCanonicalGitPath(entry.path) ||
+        entry.newMode !== "100644" ||
+        (entry.status === "A" && entry.oldMode !== "000000") ||
+        (entry.status === "M" && entry.oldMode !== "100644")) {
+      return { docsOnly: false, reason: "change status, mode, or path requires full checks" };
     }
     if (!isDocumentationPath(entry.path)) {
       return { docsOnly: false, reason: `${entry.path} requires full checks` };

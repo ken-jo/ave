@@ -29,6 +29,15 @@ const tsRule = {
   },
 };
 
+class DocumentInputPlugin {
+  apply(compiler) {
+    compiler.hooks.afterCompile.tapPromise("DocumentInputPlugin", async (compilation) => {
+      const { assertBundledDocumentInputs } = await import("./scripts/lib/document-consumer-guard.mjs");
+      assertBundledDocumentInputs(compilation.fileDependencies);
+    });
+  }
+}
+
 const base = {
   mode: isProduction ? "production" : "development",
   context: rootDir,
@@ -41,6 +50,7 @@ const base = {
   module: {
     rules: [tsRule],
   },
+  plugins: [new DocumentInputPlugin()],
   resolve: {
     extensions,
     extensionAlias,
