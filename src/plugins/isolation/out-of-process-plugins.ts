@@ -257,15 +257,11 @@
  *    (`out-of-process-plugin.ts`, `spawnConfinedPluginChild`) — PLUS the
  *    default write paths ASRT merges into every wrap it builds. "Two" is a fact
  *    about SOME of the plugins listed here rather than about the spawn: the
- *    spawn grants the child's `envelope.write`, and for an id with no row in
- *    `PLUGIN_ENVELOPE_GRANTS` that list is `pluginDataDir` alone. That is
- *    `vega-helper` and `lyra-mail`. It is NOT `local-indexer`, which is the
- *    one id that holds a row, and the outcomes below are read against it with
- *    that difference in mind: its write list is `pluginDataDir` plus whichever
- *    of `indexStorageRoot` and `workspace` the user has pointed outside it, and
- *    its read list additionally carries `~/.ave/runtime` (the provisioned
- *    Python) and `~/.ave/certs` (the corporate CA, which the deny floor
- *    otherwise covers). Neither addition changes WHICH outcomes exist — (b)
+ *    spawn grants the child's `envelope.write`, which starts with
+ *    `pluginDataDir` and expands only through declared sandbox grants bounded
+ *    by approved roots. A declared host directory can likewise expand the
+ *    read list without expanding the write list. Neither addition changes
+ *    WHICH outcomes exist — (b)
  *    still refuses everything outside the grants — only where the line between
  *    (a) and (b) falls for that one plugin. A future admission that also holds
  *    a row has to be read the same way rather than against the two-path

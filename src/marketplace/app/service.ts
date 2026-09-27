@@ -17,6 +17,7 @@ import { randomBytes } from "node:crypto";
 import { renameDirectory } from "../../lib/transient-fs-lock-retry.js";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import { appVersionSatisfiesMin } from "../../shared/semver-compare.js";
+import { getAveAppVersion } from "../../shared/app-version.js";
 import type {
   BootInstallNoticeView,
   CatalogEntryView,
@@ -800,7 +801,7 @@ export class MarketplaceService implements RetirementEntryLookup {
     this.options.onInstallProgress?.({ planId, phase, rung, bytes: null, total: null });
   }
 
-  async executeInstall(planId: string): Promise<InstallResultView> {
+  async executeInstall(planId: string, reviewedAuthority = false): Promise<InstallResultView> {
     const held = this.plans.take(planId);
     // The gates must judge the new install by the source it is about to be bound to, not the one it leaves.
     const target = heldTarget(held);
@@ -808,20 +809,21 @@ export class MarketplaceService implements RetirementEntryLookup {
     this.pendingBindings.set(key, target);
     try {
       await this.feedRevocations();
-      return await this.runInstall(planId, held);
+      return await this.runInstall(planId, held, reviewedAuthority);
     } finally {
       if (this.pendingBindings.get(key) === target) this.pendingBindings.delete(key);
       await this.refeedAfter(`${target.kind} ${target.name} install`);
     }
   }
 
-  private async runInstall(planId: string, held: HeldPlan): Promise<InstallResultView> {
+  private async runInstall(planId: string, held: HeldPlan, reviewedAuthority: boolean): Promise<InstallResultView> {
     this.progress(planId, "resolving");
     let result: InstallResultView;
     if (held.kind === "plugin") {
       const { plan } = held;
       const outcome = await this.options.installers.plugin.install(plan, {
         switchSource: held.switchSource,
+        ...(reviewedAuthority ? { reviewedAppVersion: getAveAppVersion() } : {}),
         stage: (staged) =>
           this.options.syncer.withRepository(plan.sourceId, ({ source, repo, remote }) => {
             this.progress(planId, "downloading");
@@ -1008,7 +1010,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       installed: (kind, name) => this.installed(kind, name),
       install: async (row, options) => {
         const plan = await this.planInstall({ sourceId: row.sourceId, kind: row.kind, name: row.name, ...(options.switchSource ? { switchSource: true } : {}) });
-        await this.executeInstall(plan.planId);
+        await this.executeInstall(plan.planId, options.required);
       },
       applied,
       now: () => this.now(),

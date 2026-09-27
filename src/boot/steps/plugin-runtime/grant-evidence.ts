@@ -19,6 +19,7 @@ export interface GrantEvidenceReader {
   officialPins(plugin: string, version: string): Promise<readonly string[]>;
   /** `artifactSha256` of `pluginId`'s verified install receipt; null when it has none or it does not verify. */
   receiptArtifactSha256(pluginId: string): Promise<string | null>;
+  receiptReviewedAppVersion?(pluginId: string): Promise<string | null>;
 }
 
 export function grantEvidenceReader(input: {
@@ -35,6 +36,14 @@ export function grantEvidenceReader(input: {
       if (manifestPath === null) return null;
       const receipt = await verifyInstallReceipt(input.paths.cacheRoot, pluginId, dirname(manifestPath));
       return receipt.ok ? receipt.receipt.artifactSha256 : null;
+    },
+    receiptReviewedAppVersion: async (pluginId) => {
+      const entry = (await readPluginRegistry(input.paths.registryPath)).plugins.find((item) => item.id === pluginId);
+      if (!entry) return null;
+      const manifestPath = resolveTrustedRegistryManifestPath(entry.manifestPath, input.paths.pluginsRoot);
+      if (manifestPath === null) return null;
+      const receipt = await verifyInstallReceipt(input.paths.cacheRoot, pluginId, dirname(manifestPath));
+      return receipt.ok ? receipt.receipt.reviewedAppVersion ?? null : null;
     },
   };
 }

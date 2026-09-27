@@ -138,6 +138,7 @@ function pluginInstaller(deps: IpcDeps): PluginInstallerPort {
         const result = await pluginMarketplace.installGitPlugin(plan, {
           stage: options.stage,
           switchSource: options.switchSource,
+          ...(options.reviewedAppVersion ? { reviewedAppVersion: options.reviewedAppVersion } : {}),
           ...(options.signal ? { signal: options.signal } : {}),
           activatePreparedArtifact: (prepared) => pluginRuntime.activatePreparedArtifact<string>(prepared),
         });
@@ -543,7 +544,7 @@ export function registerGitMarketplaceHandlers(
   handle(channels.packageDetail, (service, [key]) => service.detail(packageKey(key)));
   handle(channels.installPlan, (service, [request]) => service.planInstall(planRequest(request)));
   handle(channels.updatePlan, (service, [key]) => service.planUpdate(packageKey(key)));
-  handle(channels.installExecute, (service, [planId]) => service.executeInstall(text(planId, "planId", 64)));
+  handle(channels.installExecute, (service, [planId]) => service.executeInstall(text(planId, "planId", 64), true));
   handle(channels.uninstall, (service, [request]) => service.uninstall(uninstallRequest(request)));
   handle(channels.directPreview, (service, [request]) => service.previewDirectMcp(directMcpRequest(request)));
 

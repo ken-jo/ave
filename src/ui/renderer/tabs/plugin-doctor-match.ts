@@ -4,6 +4,7 @@ import type {
   GitMarketplaceResult,
   InstallResultView,
   PackageKeyView,
+  SourceView,
 } from "../../../shared/git-marketplace.js";
 import type { PluginCardSummary } from "../types.js";
 
@@ -25,9 +26,43 @@ export function findPluginDoctorEntry(
   plugin: PluginCardSummary,
   entries: readonly CatalogEntryView[],
 ): (CatalogEntryView & { key: PackageKeyView }) | null {
-  const entry = entries.find((item) => item.key.kind === "plugin" && item.key.name === plugin.id);
+  const entry = entries.find((item) => item.key.kind === "plugin" && item.key.name === plugin.id
+    && item.state.state !== "installed-elsewhere" && item.state.state !== "unbound" && item.state.state !== "source-removed");
   if (!entry || entry.key.sourceId === null) return null;
   return { ...entry, key: { ...entry.key, sourceId: entry.key.sourceId } };
+}
+
+export type PluginProtocolUpdatePath =
+  | { kind: "catalog"; key: PackageKeyView; version: string; from: string }
+  | { kind: "repository"; url: string; sourceLabel: string }
+  | { kind: "unavailable" };
+
+/** Resolve a refused plugin through its installed source, never another source of the same name. */
+export function findPluginProtocolUpdatePath(
+  plugin: PluginCardSummary,
+  entries: readonly CatalogEntryView[],
+  sources: readonly SourceView[],
+): PluginProtocolUpdatePath {
+  const entry = findPluginDoctorEntry(plugin, entries);
+  if (!entry) return { kind: "unavailable" };
+  if (entry.state.state === "update") {
+    return { kind: "catalog", key: entry.key, version: entry.state.to, from: entry.state.from };
+  }
+  const source = sources.find((candidate) => candidate.id === entry.key.sourceId);
+  return source ? { kind: "repository", url: source.url, sourceLabel: source.label } : { kind: "unavailable" };
+}
+
+export async function resolvePluginProtocolUpdatePath(
+  market: Pick<GitMarketplaceApi, "listCatalog" | "listSources">,
+  plugin: PluginCardSummary,
+): Promise<PluginProtocolUpdatePath> {
+  const catalog = await market.listCatalog({ kind: "plugin", installedOnly: true });
+  if (!catalog.ok) return { kind: "unavailable" };
+  const entry = findPluginDoctorEntry(plugin, catalog.value.entries);
+  if (!entry) return { kind: "unavailable" };
+  if (entry.state.state === "update") return findPluginProtocolUpdatePath(plugin, catalog.value.entries, []);
+  const sources = await market.listSources();
+  return findPluginProtocolUpdatePath(plugin, catalog.value.entries, sources.ok ? sources.value : []);
 }
 
 /** The version on disk, when the entry's state carries one that can be read. */

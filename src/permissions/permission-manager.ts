@@ -515,6 +515,11 @@ export class PermissionManager {
    * un-aborted signal.
    */
   private readonly pluginAbortControllers = new Map<string, AbortController>();
+  private readonly pluginRevokeEpochs = new Map<string, number>();
+
+  getPluginRevokeEpoch(pluginId: string): number {
+    return this.pluginRevokeEpochs.get(pluginId) ?? 0;
+  }
 
   constructor(permissionsFilePath?: string) {
     this.permissionsFilePath =
@@ -815,6 +820,7 @@ export class PermissionManager {
    * surface `signal.reason` see a structured, human-readable cause.
    */
   revokePluginAccess(pluginId: string, reason: string): void {
+    this.pluginRevokeEpochs.set(pluginId, this.getPluginRevokeEpoch(pluginId) + 1);
     const controller = this.pluginAbortControllers.get(pluginId);
     if (!controller) return;
     try {

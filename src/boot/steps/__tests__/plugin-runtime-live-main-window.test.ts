@@ -1,5 +1,6 @@
 import { createAlertMigrationPorts } from "../../../__tests__/support/alert-migration.js";
 import { createBootHostFixture, createDesktopHostFixture } from "../../../__tests__/support/host-runtime.js";
+import { directHostFetchTransport } from "../../../__tests__/support/host-fetch-transport.js";
 /**
  * HostApi window targeting — a host→renderer send must go to the CURRENT main
  * window, not the one captured at boot.
@@ -175,6 +176,9 @@ async function overlayHostApi(input: {
         return undefined;
       }),
       getSecret: vi.fn(() => undefined),
+      getProviderConfigRevision: () => 0,
+      getSecretGeneration: () => 0,
+      onLeaseStateChanged: () => () => {},
       getPluginConfig: vi.fn(() => ({})),
       setPluginConfig: vi.fn(async () => {}),
     } as never,
@@ -190,7 +194,7 @@ async function overlayHostApi(input: {
     bootAuditLogger: { log: vi.fn() } as never,
     mainWindow: input.bootWindow as never,
     ...(input.getMainWindow ? { getMainWindow: input.getMainWindow as never } : {}),
-    networkFetch: vi.fn() as unknown as typeof fetch,
+    networkFetch: directHostFetchTransport(vi.fn() as unknown as typeof fetch),
     openAuthWindowService: vi.fn(),
     openLinkWindowService: vi.fn(),
     openAuthPartitionViewerService: vi.fn(),

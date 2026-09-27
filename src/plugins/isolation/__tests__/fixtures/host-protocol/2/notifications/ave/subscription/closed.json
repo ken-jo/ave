@@ -1,0 +1,11 @@
+{
+  "frame": {
+    "jsonrpc": "2.0",
+    "method": "notifications/ave/subscription/closed",
+    "params": {
+      "reason": "revoked",
+      "subscriptionId": "<uuid-1>"
+    }
+  },
+  "from": "host"
+}

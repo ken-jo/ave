@@ -24,7 +24,7 @@ import {
 import { createNoopHostApiForTests, PluginRuntime } from "../../runtime.js";
 import type { PluginManifest } from "../../types.js";
 import { canonicalJSON } from "../../secret-access/canonical-json.js";
-import { agentPluginsDocument } from "../../__tests__/test-helpers.js";
+import { servedAgentPluginsDocument } from "../../__tests__/test-helpers.js";
 import { settleMacrotask as nextTurn } from "../../../__tests__/test-helpers.js";
 import { unavailableSecretEncryption } from "../../../__tests__/support/host-runtime.js";
 
@@ -113,7 +113,7 @@ describe("PluginRuntime capability dependencies use active generations", () => {
       "utf8",
     );
     const manifestPath = join(pluginDir, "plugin.json");
-    await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf8");
+    await writeFile(manifestPath, JSON.stringify(servedAgentPluginsDocument(manifest)), "utf8");
     return {
       id: options.id,
       pluginDir,
@@ -297,7 +297,7 @@ describe("PluginRuntime capability dependencies use active generations", () => {
       }],
     };
     await mkdir(pluginRoot, { recursive: true });
-    await writeFile(join(pluginRoot, "plugin.json"), JSON.stringify(agentPluginsDocument(manifest)), "utf8");
+    await writeFile(join(pluginRoot, "plugin.json"), JSON.stringify(servedAgentPluginsDocument(manifest)), "utf8");
     await writeFile(
       join(pluginRoot, "entry.mjs"),
       `export default async function createPlugin() {
@@ -323,7 +323,7 @@ describe("PluginRuntime capability dependencies use active generations", () => {
       registryEntry: {
         installSource: "user",
         manifestSha256: createHash("sha256")
-          .update(canonicalJSON(agentPluginsDocument(manifest)))
+          .update(canonicalJSON(servedAgentPluginsDocument(manifest)))
           .digest("hex"),
       },
       toolName,
@@ -365,7 +365,7 @@ describe("PluginRuntime capability dependencies use active generations", () => {
       }],
     };
     await mkdir(pluginRoot, { recursive: true });
-    await writeFile(join(pluginRoot, "plugin.json"), JSON.stringify(agentPluginsDocument(manifest)), "utf8");
+    await writeFile(join(pluginRoot, "plugin.json"), JSON.stringify(servedAgentPluginsDocument(manifest)), "utf8");
     await writeFile(
       join(pluginRoot, "entry.mjs"),
       `export default async function createPlugin() {
@@ -395,7 +395,7 @@ describe("PluginRuntime capability dependencies use active generations", () => {
       registryEntry: {
         installSource: "user",
         manifestSha256: createHash("sha256")
-          .update(canonicalJSON(agentPluginsDocument(manifest)))
+          .update(canonicalJSON(servedAgentPluginsDocument(manifest)))
           .digest("hex"),
       },
       toolName,
@@ -1114,7 +1114,7 @@ export default async function createPlugin() {
     delete replacementManifest.capabilities;
     await writeFile(
       provider.manifestPath,
-      JSON.stringify(agentPluginsDocument(replacementManifest)),
+      JSON.stringify(servedAgentPluginsDocument(replacementManifest)),
       "utf8",
     );
 
@@ -1146,7 +1146,7 @@ export default async function createPlugin() {
     delete replacementManifest.capabilities;
     await writeFile(
       firstProvider.manifestPath,
-      JSON.stringify(agentPluginsDocument(replacementManifest)),
+      JSON.stringify(servedAgentPluginsDocument(replacementManifest)),
       "utf8",
     );
 
@@ -1177,7 +1177,7 @@ export default async function createPlugin() {
     await mkdir(stagingRoot, { recursive: true });
     await writeFile(
       join(stagingRoot, "plugin.json"),
-      JSON.stringify(agentPluginsDocument(replacementManifest)),
+      JSON.stringify(servedAgentPluginsDocument(replacementManifest)),
       "utf8");
     await writeFile(
       join(stagingRoot, "entry.mjs"),
@@ -1197,7 +1197,7 @@ export default async function createPlugin() {
       registryEntry: {
         installSource: "user",
         manifestSha256: createHash("sha256")
-          .update(canonicalJSON(agentPluginsDocument(replacementManifest)))
+          .update(canonicalJSON(servedAgentPluginsDocument(replacementManifest)))
           .digest("hex"),
       },
       durableCommit,

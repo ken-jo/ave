@@ -62,6 +62,7 @@ describe("git install receipts (schema v4)", () => {
 
   it("round-trips through verification and reaches the load gate as a git install", async () => {
     const { receipt, raw } = await built();
+    expect(receipt.reviewedAppVersion).toBeUndefined();
     expect(receipt).toMatchObject({ schemaVersion: 4, installSource: "git", signerKeyId: null, admission: null, artifactSha256: DIGEST, git: record() });
     await expect(verifyInstallReceiptRaw(raw, "alpha", pluginRoot)).resolves.toEqual({ ok: true, receipt });
 
@@ -96,6 +97,23 @@ describe("git install receipts (schema v4)", () => {
       ok: false,
       reason: "sandbox authority has no install review evidence",
     });
+  });
+
+  it("records the reviewed app version only when the caller supplies consent evidence", async () => {
+    const { receipt, raw } = await buildGitInstallReceipt(pluginRoot, {
+      pluginId: "alpha", version: "1.0.0", artifactSha256: DIGEST,
+      git: record(), files: ["plugin.json", "dist/index.js"], reviewedAppVersion: "0.12.0",
+    });
+    expect(receipt.reviewedAppVersion).toBe("0.12.0");
+    await expect(verifyInstallReceiptRaw(raw, "alpha", pluginRoot)).resolves.toEqual({ ok: true, receipt });
+  });
+
+  it("rejects malformed review versions in a receipt", async () => {
+    const { raw } = await built();
+    const receipt = JSON.parse(raw) as Record<string, unknown>;
+    receipt.reviewedAppVersion = "0.12.0 forged";
+    await expect(verifyInstallReceiptRaw(JSON.stringify(receipt), "alpha", pluginRoot))
+      .resolves.toMatchObject({ ok: false, reason: "invalid reviewed app version in install receipt" });
   });
 
   it("still writes v3 for signed and local installs", async () => {

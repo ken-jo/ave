@@ -23,6 +23,11 @@ import { canonicalJSON } from "../secret-access/canonical-json.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
 
+function servedPluginDocument(manifest: Record<string, unknown>): Record<string, unknown> {
+  const requires = manifest.requires as Record<string, unknown> | undefined;
+  return agentPluginsDocument({ ...manifest, requires: { hostProtocol: "2", ...requires } });
+}
+
 function makeGenerationBoundRuntime(
   options: Omit<ConstructorParameters<typeof PluginRuntime>[0], "createHostApi" | "encryption">
     & Partial<Pick<ConstructorParameters<typeof PluginRuntime>[0], "createHostApi" | "encryption">>,
@@ -399,7 +404,7 @@ describe("PluginRuntime.disable", () => {
       description: "Test plugin fixture.",
     };
     const manifestPath = join(pluginDir, "plugin.json");
-    await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
+    await writeFile(manifestPath, JSON.stringify(servedPluginDocument(manifest)), "utf-8");
     await writeTestPluginRegistry({ registryPath }, [
       { id: pluginId, manifestPath, enabled: true },
     ]);
@@ -434,7 +439,7 @@ describe("PluginRuntime.disable", () => {
       description: "Test fixture.",
     };
     const manifestPath = join(pluginDir, "plugin.json");
-    await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
+    await writeFile(manifestPath, JSON.stringify(servedPluginDocument(manifest)), "utf-8");
     await writeTestPluginRegistry({ registryPath }, [
       { id: "bad-plugin", manifestPath, enabled: true },
     ]);
@@ -472,7 +477,7 @@ describe("PluginRuntime.disable", () => {
       description: "Test fixture.",
     };
     const manifestPath = join(pluginDir, "plugin.json");
-    await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
+    await writeFile(manifestPath, JSON.stringify(servedPluginDocument(manifest)), "utf-8");
     await writeTestPluginRegistry({ registryPath }, [
       { id: "bad-leading-digit", manifestPath, enabled: true },
     ]);
@@ -510,7 +515,7 @@ describe("PluginRuntime.disable", () => {
       description: "Test fixture.",
     };
     const manifestPath = join(pluginDir, "plugin.json");
-    await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
+    await writeFile(manifestPath, JSON.stringify(servedPluginDocument(manifest)), "utf-8");
     await writeTestPluginRegistry({ registryPath }, [
       { id: "bad-hyphen", manifestPath, enabled: true },
     ]);
@@ -553,7 +558,7 @@ describe("PluginRuntime.disable", () => {
       ],
     };
     const manifestPath = join(pluginDir, "plugin.json");
-    await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
+    await writeFile(manifestPath, JSON.stringify(servedPluginDocument(manifest)), "utf-8");
     await writeTestPluginRegistry({ registryPath }, [
       { id: "no-description", manifestPath, enabled: true },
     ]);
@@ -597,7 +602,7 @@ describe("PluginRuntime.disable", () => {
       description: "",
     };
     const manifestPath = join(pluginDir, "plugin.json");
-    await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
+    await writeFile(manifestPath, JSON.stringify(servedPluginDocument(manifest)), "utf-8");
     await writeTestPluginRegistry({ registryPath }, [
       { id: "empty-description", manifestPath, enabled: true },
     ]);
@@ -637,7 +642,7 @@ describe("PluginRuntime.disable", () => {
     const manifestPath = join(pluginDir, "plugin.json");
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedPluginDocument({
         id: "ui-actions",
         name: "ui-actions",
         version: "1.0.0",
@@ -709,7 +714,7 @@ describe("PluginRuntime.disable", () => {
     const manifestPath = join(pluginDir, "plugin.json");
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedPluginDocument({
         id: "ui-only-method",
         name: "ui-only-method",
         version: "1.0.0",
@@ -761,7 +766,7 @@ describe("PluginRuntime.disable", () => {
     const manifestPath = join(pluginDir, "plugin.json");
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedPluginDocument({
         id: "meta-plugin",
         name: "meta-plugin",
         version: "1.0.0",
@@ -802,7 +807,7 @@ describe("PluginRuntime.disable", () => {
     await mkdir(pluginDir, { recursive: true });
     await writeFile(join(pluginDir, "entry.mjs"), "export default async function createPlugin() { return { handlers: { pin_ping: async () => \"pong\" } }; }\n", "utf-8");
     const manifestPath = join(pluginDir, "plugin.json");
-    await writeFile(manifestPath, JSON.stringify(agentPluginsDocument({
+    await writeFile(manifestPath, JSON.stringify(servedPluginDocument({
       id: "pin-plugin",
       name: "pin-plugin",
       version: "1.0.0",
@@ -840,7 +845,7 @@ describe("PluginRuntime.disable", () => {
     await mkdir(pluginDir, { recursive: true });
     await writeFile(join(pluginDir, "entry.mjs"), "export default async function createPlugin() { return { handlers: { legacy_ping: async () => \"pong\" } }; }\n", "utf-8");
     const manifestPath = join(pluginDir, "plugin.json");
-    await writeFile(manifestPath, JSON.stringify(agentPluginsDocument({
+    await writeFile(manifestPath, JSON.stringify(servedPluginDocument({
       id: "legacy-pin",
       name: "legacy-pin",
       version: "1.0.0",
@@ -885,7 +890,7 @@ describe("PluginRuntime.disable", () => {
       const manifestPath = join(pluginDir, "plugin.json");
       await writeFile(
         manifestPath,
-        JSON.stringify(agentPluginsDocument({
+        JSON.stringify(servedPluginDocument({
           id: "calltool-plugin",
           name: "calltool-plugin",
           version: "1.0.0",
@@ -954,7 +959,7 @@ describe("PluginRuntime.disable", () => {
       const manifestPath = join(pluginDir, "plugin.json");
       await writeFile(
         manifestPath,
-        JSON.stringify(agentPluginsDocument({
+        JSON.stringify(servedPluginDocument({
           id: "calltool-delegate",
           name: "calltool-delegate",
           version: "1.0.0",
@@ -1032,7 +1037,7 @@ describe("PluginRuntime.disable", () => {
       const manifestPath = join(pluginDir, "plugin.json");
       await writeFile(
         manifestPath,
-        JSON.stringify(agentPluginsDocument({
+        JSON.stringify(servedPluginDocument({
           id,
           name: id,
           version: "1.0.0",
@@ -1216,7 +1221,7 @@ describe("PluginRuntime.disable", () => {
         ],
         ...extraManifest,
       };
-      await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
+      await writeFile(manifestPath, JSON.stringify(servedPluginDocument(manifest)), "utf-8");
       return manifestPath;
     };
 
@@ -1440,7 +1445,7 @@ describe("PluginRuntime.disable", () => {
     const providerManifestPath = join(providerDir, "plugin.json");
     await writeFile(
       providerManifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedPluginDocument({
         id: "cap-provider",
         name: "cap-provider",
         version: "1.0.0",
@@ -1475,7 +1480,7 @@ describe("PluginRuntime.disable", () => {
     const consumerManifestPath = join(consumerDir, "plugin.json");
     await writeFile(
       consumerManifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedPluginDocument({
         id: "needs-calendar",
         name: "needs-calendar",
         version: "1.0.0",
@@ -1559,7 +1564,7 @@ describe("PluginRuntime registry trusted-path", () => {
     const manifestPath = join(pluginDir, "plugin.json");
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedPluginDocument({
         id,
         name: id,
         version: "1.0.0",
@@ -1711,7 +1716,7 @@ export default async function createPlugin(ctx) {
       description: "Test fixture.",
     };
     const manifestPath = join(pluginDir, "plugin.json");
-    await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
+    await writeFile(manifestPath, JSON.stringify(servedPluginDocument(manifest)), "utf-8");
     return manifestPath;
   }
 
@@ -1751,7 +1756,7 @@ export default async function createPlugin() {
       description: "Start failure fixture.",
     };
     const manifestPath = join(pluginDir, "plugin.json");
-    await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
+    await writeFile(manifestPath, JSON.stringify(servedPluginDocument(manifest)), "utf-8");
     return { manifestPath, stoppedPath };
   }
 
@@ -1794,7 +1799,7 @@ export default async function createPlugin({ hostApi }) {
       description: "Start failure fixture.",
     };
     const manifestPath = join(pluginDir, "plugin.json");
-    await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
+    await writeFile(manifestPath, JSON.stringify(servedPluginDocument(manifest)), "utf-8");
     return { manifestPath, stoppedPath };
   }
 
@@ -1883,7 +1888,7 @@ export default async function createPlugin({ hostApi }) {
     const manifestPath = join(pluginDir, "plugin.json");
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedPluginDocument({
         id,
         name: id,
         version: "1.0.0",
@@ -1991,11 +1996,11 @@ export default async function createPlugin({ hostApi }) {
     const slowManifestPath = join(slowDir, "plugin.json");
     await writeFile(
       timedManifestPath,
-      JSON.stringify(agentPluginsDocument(manifestFor(timedId, "p_start_timeout_revoked_ping", 30))),
+      JSON.stringify(servedPluginDocument(manifestFor(timedId, "p_start_timeout_revoked_ping", 30))),
       "utf-8");
     await writeFile(
       slowManifestPath,
-      JSON.stringify(agentPluginsDocument(manifestFor(slowId, "p_start_slow_peer_ping", 1_000))),
+      JSON.stringify(servedPluginDocument(manifestFor(slowId, "p_start_slow_peer_ping", 1_000))),
       "utf-8");
     await writeFile(
       registryPath,
@@ -2358,7 +2363,7 @@ export default async function createPlugin({ hostApi }) {
     const consumerPath = await writePlugin("p-calendar-consumer");
     const consumerManifest = JSON.parse(await readFile(consumerPath, "utf-8"));
     patchAveFields(consumerManifest, {
-      requires: { capabilities: ["calendar-source"] },
+      requires: { hostProtocol: "2", capabilities: ["calendar-source"] },
     });
     await writeFile(consumerPath, JSON.stringify(consumerManifest), "utf-8");
     await writeFile(
@@ -2823,7 +2828,7 @@ export default async function createPlugin() {
       );
       await writeFile(
         staleManifestPath,
-        JSON.stringify(agentPluginsDocument({
+        JSON.stringify(servedPluginDocument({
           id: pluginId,
           name: pluginId,
           version: "1.0.0",
@@ -2886,7 +2891,7 @@ export default async function createPlugin() {
       );
       await writeFile(
         freshManifestPath,
-        JSON.stringify(agentPluginsDocument({
+        JSON.stringify(servedPluginDocument({
           id: pluginId,
           name: pluginId,
           version: "1.0.1",
@@ -2986,7 +2991,7 @@ export default async function createPlugin() {
     const manifestPath = join(pluginDir, "plugin.json");
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedPluginDocument({
         id: pluginId,
         name: pluginId,
         version: "1.0.0",
@@ -3303,7 +3308,7 @@ export default async function createPlugin() {
       tools: ["bad.tool"],
     };
     const manifestPath = join(pluginDir, "plugin.json");
-    await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(badManifest)), "utf-8");
+    await writeFile(manifestPath, JSON.stringify(servedPluginDocument(badManifest)), "utf-8");
     await writeFile(
       registryPath,
       JSON.stringify({
@@ -3341,7 +3346,7 @@ export default async function createPlugin() { return {}; }`,
     const manifestPath = join(pluginDir, "plugin.json");
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedPluginDocument({
         id: "p-broken-entry",
         name: "Broken Entry",
         version: "1.0.0",
@@ -3396,7 +3401,7 @@ export default async function createPlugin() {
     );
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedPluginDocument({
         id: "p-update",
         name: "Update",
         version: "1.0.0",
@@ -3451,7 +3456,7 @@ export default async function createPlugin() {
     // Update manifest.entry to point to the new entry file.
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedPluginDocument({
         id: "p-update",
         name: "Update",
         version: "2.0.0",
@@ -3513,7 +3518,7 @@ export default async function createPlugin() {
       const manifestPath = join(pluginDir, "plugin.json");
       await writeFile(
         manifestPath,
-        JSON.stringify(agentPluginsDocument({
+        JSON.stringify(servedPluginDocument({
           id: pluginId,
           name: "Update Schema",
           version,

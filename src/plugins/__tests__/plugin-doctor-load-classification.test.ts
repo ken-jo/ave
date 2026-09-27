@@ -113,7 +113,7 @@ describe("PluginRuntime Doctor load-failure classification", () => {
     expect(card?.installFailureKind).toBe("incompatible-app-version");
   });
 
-  it("refuses a host protocol version this app does not serve, before the plugin's code runs", async () => {
+  it("refuses old and undeclared host protocols before plugin code runs", async () => {
     fixture = await makeTestPluginRuntimeFixture();
     const refused = await writeTestPlugin(fixture, {
       id: "p-protocol",
@@ -121,16 +121,23 @@ describe("PluginRuntime Doctor load-failure classification", () => {
       // Importing this entry throws, so a gate that ran after the import would
       // report a load crash instead of the refusal.
       entrySource: "throw new Error('the entry of a refused plugin was imported');\n",
-      manifest: { requires: { capabilities: [], hostProtocol: "2" } },
+      manifest: { requires: { capabilities: [], hostProtocol: "1" } },
+    });
+    const undeclared = await writeTestPlugin(fixture, {
+      id: "p-protocol-undeclared",
+      tools: ["p_protocol_undeclared_ping"],
+      entrySource: "throw new Error('the entry of an undeclared plugin was imported');\n",
+      manifest: { requires: { capabilities: [], hostProtocol: undefined } },
     });
     const served = await writeTestPlugin(fixture, {
       id: "p-protocol-served",
       tools: ["p_protocol_served_ping"],
       entrySource: makeTestPluginEntrySource({ p_protocol_served_ping: JSON.stringify("hi") }),
-      manifest: { requires: { capabilities: [], hostProtocol: "1" } },
+      manifest: { requires: { capabilities: [], hostProtocol: "2" } },
     });
     await writeTestPluginRegistry(fixture, [
       { id: "p-protocol", manifestPath: refused.manifestPath, enabled: true },
+      { id: "p-protocol-undeclared", manifestPath: undeclared.manifestPath, enabled: true },
       { id: "p-protocol-served", manifestPath: served.manifestPath, enabled: true },
     ]);
 
@@ -140,9 +147,31 @@ describe("PluginRuntime Doctor load-failure classification", () => {
     const card = runtime.listPluginCards().find((candidate) => candidate.id === "p-protocol");
     expect(card?.loadStatus).toBe("failed");
     expect(card?.installFailureKind).toBe("incompatible-host-protocol");
-    expect(card?.installFailureMessage).toMatch(/speaks host protocol 2; this app serves 1/);
+    expect(card?.installFailureMessage).toMatch(/speaks host protocol 1; this app serves 2/);
+    const missing = runtime.listPluginCards().find((candidate) => candidate.id === "p-protocol-undeclared");
+    expect(missing?.installFailureKind).toBe("incompatible-host-protocol");
+    expect(missing?.installFailureMessage).toMatch(/does not declare a host protocol; this app serves 2/);
     const kept = runtime.listPluginCards().find((candidate) => candidate.id === "p-protocol-served");
     expect(kept?.loadStatus).not.toBe("failed");
+  });
+
+  it("refuses an undeclared protocol on the targeted add path before activation", async () => {
+    fixture = await makeTestPluginRuntimeFixture();
+    await writeTestPluginRegistry(fixture, []);
+    const runtime = makeTestPluginRuntime(fixture);
+    await runtime.startAll();
+    const { manifestPath } = await writeTestPlugin(fixture, {
+      id: "p-late-protocol",
+      tools: ["p_late_protocol_ping"],
+      entrySource: "throw new Error('the targeted entry was imported');\n",
+      manifest: { requires: { hostProtocol: undefined } },
+    });
+    await writeTestPluginRegistry(fixture, [{ id: "p-late-protocol", manifestPath, enabled: true }]);
+
+    await expect(runtime.addPlugin("p-late-protocol")).rejects.toThrow(/does not declare a host protocol/);
+    const card = runtime.listPluginCards().find((candidate) => candidate.id === "p-late-protocol");
+    expect(card?.loadStatus).toBe("failed");
+    expect(card?.installFailureKind).toBe("incompatible-host-protocol");
   });
 
   it("refuses to load a version its bound source revoked, with the source's reason, and loads the rest", async () => {
