@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox } from "../../../permissions/asrt-sandbox.js";
@@ -57,81 +57,98 @@ afterEach(async () => {
 });
 
 describe("real sandbox ceiling withdrawal", () => {
-  it.runIf(process.platform === "darwin" || process.platform === "linux")(
-    "retires a confined child and a delegated worker holding the withdrawn directory",
-    async () => {
-      if (!(await asrtCanInitialize())) {
-        if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw new Error("ASRT sandbox cannot initialize");
-        return;
-      }
-      root = mkdtempSync(join(process.platform === "darwin" ? "/private/tmp" : tmpdir(), "ave-sr-"));
-      previousHome = process.env.AVE_HOME;
-      const home = join(root, "home");
-      process.env.AVE_HOME = home;
-      const approved = join(root, "approved");
-      const pluginRoot = join(home, "plugins", PLUGIN_ID);
-      const dataDir = join(pluginRoot, "data");
-      mkdirSync(dataDir, { recursive: true });
-      mkdirSync(approved, { recursive: true });
-      const settingsPath = join(home, "settings.json");
-      writeFileSync(settingsPath, JSON.stringify({ permissions: { additionalDirectories: [approved] } }));
-      const childFile = join(approved, "child.txt");
-      const workerFile = join(approved, "worker.txt");
-      const childEntryPath = join(pluginRoot, "entry.mjs");
-      const workerEntryPath = join(pluginRoot, "worker.cjs");
-      writeFileSync(childEntryPath, `import fs from "node:fs"; const fd = fs.openSync(${JSON.stringify(childFile)}, "a"); fs.writeSync(fd, "ready\\n"); setInterval(() => fs.writeSync(fd, "tick\\n"), 20);`);
-      writeFileSync(workerEntryPath, `const fs = require("node:fs"); const fd = fs.openSync(${JSON.stringify(workerFile)}, "a"); fs.writeSync(fd, "ready\\n"); setInterval(() => fs.writeSync(fd, "tick\\n"), 20);`);
-      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
-      const subject = new RunningSandboxRuntime({
-        hostRoot: root,
-        manifestPaths: [],
-        encryption: unavailableSecretEncryption,
-        createHostApi: createNoopHostApiForTests,
-      });
-      const declaration = { write: [{ kind: "userChosenDirectory" as const, configKey: "workspace", why: "Store project data" }] };
-      const chosenPaths: string[] = [];
-      const envelope = derivePluginChildEnvelope({
-        pluginId: PLUGIN_ID,
-        sandbox: declaration,
-        pluginRoot,
-        pluginDataDir: dataDir,
-        configValue: () => approved,
-        onUserChosenDirectory: (path) => chosenPaths.push(path),
-      });
-      const registration = subject.register(chosenPaths[0]!, pluginRoot, dataDir);
-      child = await spawnConfinedPluginChild({
-        pluginId: PLUGIN_ID,
-        envelope,
-        socketDir: resolvePluginSocketDir(dataDir),
-        workerRunRoot: resolvePluginWorkerRunRoot(dataDir),
-        childEntryPath,
-        assertStillValid: registration.assertCurrent,
-      });
-      worker = await spawnWorker({
-        pluginId: PLUGIN_ID,
-        workerId: "hold",
-        command: process.execPath,
-        args: [workerEntryPath],
-        env: { ELECTRON_RUN_AS_NODE: "1" },
-        allowReadPaths: [workerEntryPath, approved],
-        allowWritePaths: [approved],
-      });
-      const workerExited = new Promise<void>((resolve) => worker!.onExit(() => resolve()));
-      await Promise.all([waitForFile(childFile), waitForFile(workerFile)]);
-      subject.attach(async () => {
-        child!.link.terminate("approved root withdrawn");
-        await child!.waitForExit?.();
-        registration.dispose();
-      }, () => worker!.stop());
-      writeFileSync(settingsPath, JSON.stringify({ permissions: { additionalDirectories: [] } }));
-      expect(registration.assertCurrent).toThrow(/sandbox-grant-outside-ceiling/);
-      expect(await subject.retireSandboxGrantsOutsideCeiling()).toEqual([PLUGIN_ID]);
-      await workerExited;
-      expect(subject.failureKind()).toBe("sandbox-grant-outside-ceiling");
-      const afterRetirement = [readFileSync(childFile, "utf8"), readFileSync(workerFile, "utf8")];
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      expect([readFileSync(childFile, "utf8"), readFileSync(workerFile, "utf8")]).toEqual(afterRetirement);
-    },
-    60_000,
-  );
+  for (const retarget of [false, true]) {
+    it.runIf(process.platform === "darwin" || process.platform === "linux")(
+      retarget
+        ? "retires a child and worker with open files after their granted directory is retargeted"
+        : "retires a confined child and a delegated worker holding the withdrawn directory",
+      async () => {
+        if (!(await asrtCanInitialize())) {
+          if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw new Error("ASRT sandbox cannot initialize");
+          return;
+        }
+        root = mkdtempSync(join(process.platform === "darwin" ? "/private/tmp" : tmpdir(), "ave-sr-"));
+        previousHome = process.env.AVE_HOME;
+        const home = join(root, "home");
+        process.env.AVE_HOME = home;
+        const approved = join(root, "approved");
+        const other = join(root, "other");
+        const chosen = retarget ? join(approved, "index") : approved;
+        const held = join(approved, "held");
+        const pluginRoot = join(home, "plugins", PLUGIN_ID);
+        const dataDir = join(pluginRoot, "data");
+        mkdirSync(dataDir, { recursive: true });
+        mkdirSync(chosen, { recursive: true });
+        if (retarget) mkdirSync(other, { recursive: true });
+        const settingsPath = join(home, "settings.json");
+        writeFileSync(settingsPath, JSON.stringify({ permissions: { additionalDirectories: retarget ? [approved, other] : [approved] } }));
+        const childFile = join(chosen, "child.txt");
+        const workerFile = join(chosen, "worker.txt");
+        const childEntryPath = join(pluginRoot, "entry.mjs");
+        const workerEntryPath = join(pluginRoot, "worker.cjs");
+        writeFileSync(childEntryPath, `import fs from "node:fs"; const fd = fs.openSync(${JSON.stringify(childFile)}, "a"); fs.writeSync(fd, "ready\\n"); setInterval(() => fs.writeSync(fd, "tick\\n"), 20);`);
+        writeFileSync(workerEntryPath, `const fs = require("node:fs"); const fd = fs.openSync(${JSON.stringify(workerFile)}, "a"); fs.writeSync(fd, "ready\\n"); setInterval(() => fs.writeSync(fd, "tick\\n"), 20);`);
+        await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+        const subject = new RunningSandboxRuntime({
+          hostRoot: root,
+          manifestPaths: [],
+          encryption: unavailableSecretEncryption,
+          createHostApi: createNoopHostApiForTests,
+        });
+        const declaration = { write: [{ kind: "userChosenDirectory" as const, configKey: "workspace", why: "Store project data" }] };
+        const chosenPaths: string[] = [];
+        const envelope = derivePluginChildEnvelope({
+          pluginId: PLUGIN_ID,
+          sandbox: declaration,
+          pluginRoot,
+          pluginDataDir: dataDir,
+          configValue: () => chosen,
+          onUserChosenDirectory: (path) => chosenPaths.push(path),
+        });
+        const registration = subject.register(chosenPaths[0]!, pluginRoot, dataDir);
+        child = await spawnConfinedPluginChild({
+          pluginId: PLUGIN_ID,
+          envelope,
+          socketDir: resolvePluginSocketDir(dataDir),
+          workerRunRoot: resolvePluginWorkerRunRoot(dataDir),
+          childEntryPath,
+          assertStillValid: registration.assertCurrent,
+        });
+        worker = await spawnWorker({
+          pluginId: PLUGIN_ID,
+          workerId: "hold",
+          command: process.execPath,
+          args: [workerEntryPath],
+          env: { ELECTRON_RUN_AS_NODE: "1" },
+          allowReadPaths: [workerEntryPath, chosen],
+          allowWritePaths: [chosen],
+        });
+        const workerExited = new Promise<void>((resolve) => worker!.onExit(() => resolve()));
+        await Promise.all([waitForFile(childFile), waitForFile(workerFile)]);
+        subject.attach(async () => {
+          child!.link.terminate("approved root withdrawn");
+          await child!.waitForExit?.();
+          registration.dispose();
+        }, () => worker!.stop());
+        if (retarget) {
+          renameSync(chosen, held);
+          symlinkSync(other, chosen, "dir");
+          const heldFiles = [join(held, "child.txt"), join(held, "worker.txt")];
+          const openSizes = heldFiles.map((path) => readFileSync(path).length);
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          heldFiles.forEach((path, index) => expect(readFileSync(path).length).toBeGreaterThan(openSizes[index]!));
+        }
+        writeFileSync(settingsPath, JSON.stringify({ permissions: { additionalDirectories: retarget ? [other] : [] } }));
+        expect(registration.assertCurrent).toThrow(/sandbox-grant-outside-ceiling/);
+        expect(await subject.retireSandboxGrantsOutsideCeiling()).toEqual([PLUGIN_ID]);
+        await workerExited;
+        expect(subject.failureKind()).toBe("sandbox-grant-outside-ceiling");
+        const stoppedFiles = retarget ? [join(held, "child.txt"), join(held, "worker.txt")] : [childFile, workerFile];
+        const afterRetirement = stoppedFiles.map((path) => readFileSync(path, "utf8"));
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(stoppedFiles.map((path) => readFileSync(path, "utf8"))).toEqual(afterRetirement);
+      },
+      60_000,
+    );
+  }
 });

@@ -28,7 +28,7 @@
  * projection — is untouched and cannot tell the difference, which is exactly
  * why the five plugins that are not the pilot keep loading as they did.
  */
-import { mkdirSync } from "node:fs";
+import { mkdirSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import { createLogger } from "../../lib/logger.js";
 import { mainDir } from "../../main/main-paths.js";
@@ -637,14 +637,37 @@ function resolveUserChosenDirectory(
   return target;
 }
 
-/** Recheck one running grant against the current approved roots. */
-export function isPluginSandboxGrantCovered(path: string, pluginRoot: string, pluginDataDir: string): boolean {
+/** Bind a running grant to the path and filesystem object granted at spawn. */
+export function capturePluginSandboxGrant(path: string): {
+  path: string;
+  canonicalPath: string;
+  identity?: { dev: number; ino: number };
+} {
+  const canonicalPath = caseFoldForMatch(canonicalizePathForMatch(path));
+  const entry = statSync(path, { throwIfNoEntry: false });
+  return {
+    path,
+    canonicalPath,
+    ...(entry ? { identity: { dev: entry.dev, ino: entry.ino } } : {}),
+  };
+}
+
+/** Recheck the original kernel grant and the current approved roots. */
+export function isPluginSandboxGrantCovered(
+  grant: ReturnType<typeof capturePluginSandboxGrant>,
+  pluginRoot: string,
+  pluginDataDir: string,
+): boolean {
   try {
+    if (caseFoldForMatch(canonicalizePathForMatch(grant.path)) !== grant.canonicalPath) return false;
+    const entry = statSync(grant.path, { throwIfNoEntry: false });
+    if (grant.identity && (!entry || entry.dev !== grant.identity.dev || entry.ino !== grant.identity.ino)) return false;
+    if (!grant.identity && entry) grant.identity = { dev: entry.dev, ino: entry.ino };
     return resolveUserChosenDirectory({
       pluginId: "sandbox-grant",
       pluginRoot,
       pluginDataDir,
-      configValue: () => path,
+      configValue: () => grant.path,
     }, { kind: "userChosenDirectory", configKey: "directory", why: "approved directory" }) !== undefined;
   } catch {
     return false;

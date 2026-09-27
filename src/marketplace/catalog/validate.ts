@@ -274,9 +274,8 @@ export function validateIndexText(text: string, context: IndexContext): Validati
 
   const diagnostics: CatalogDiagnostic[] = [];
   const candidates: IndexPackage[] = [];
-  // Claims are counted over every entry, valid or not: a broken second entry
-  // for a name still means the author listed it twice, and the client cannot
-  // tell which one was meant.
+  // A broken entry still claims its name, since the author listed it twice.
+  // A path only becomes a claim after the entry passes both validation layers.
   const byName = new Map<string, number>();
   const byPath = new Map<string, number>();
   const claim = (counts: Map<string, number>, key: string) => counts.set(key, (counts.get(key) ?? 0) + 1);
@@ -284,7 +283,6 @@ export function validateIndexText(text: string, context: IndexContext): Validati
     const entry = raw as Partial<IndexPackage>;
     const subject = typeof entry.kind === "string" && typeof entry.name === "string" ? `${entry.kind}/${entry.name}` : `packages[${position}]`;
     if (typeof entry.kind === "string" && typeof entry.name === "string") claim(byName, `${entry.kind}/${entry.name}`);
-    if (typeof entry.path === "string") claim(byPath, entry.path);
     if (!indexPackage(raw)) {
       diagnostics.push({ subject, message: describeErrors(indexPackage.errors) });
       return;
@@ -294,6 +292,7 @@ export function validateIndexText(text: string, context: IndexContext): Validati
       diagnostics.push({ subject, message: rule });
       return;
     }
+    claim(byPath, (raw as IndexPackage).path);
     candidates.push(raw as IndexPackage);
   });
 

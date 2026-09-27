@@ -32,7 +32,7 @@ export function sandboxDeclarationProblem(manifest: Pick<PluginManifest, "config
         if (access === "write") return `${location}: hostDirectory is read only`;
         if (Object.keys(entry).some((key) => !["kind", "segments", "why"].includes(key))) return `${location} has an unknown field`;
         if (!Array.isArray(entry.segments) || entry.segments.length !== 1 ||
-            typeof entry.segments[0] !== "string" || !(entry.segments[0] in HOST_DIRECTORY_CATALOG)) {
+            typeof entry.segments[0] !== "string" || !Object.hasOwn(HOST_DIRECTORY_CATALOG, entry.segments[0])) {
           return `${location}.segments does not name a host directory`;
         }
         continue;

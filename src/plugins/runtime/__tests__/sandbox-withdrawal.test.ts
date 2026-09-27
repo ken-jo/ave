@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PluginRuntime, createNoopHostApiForTests } from "../../runtime.js";
@@ -17,25 +17,25 @@ function setApproved(directories: string[]): void {
 }
 
 class WithdrawalRuntime extends PluginRuntime {
-  register(path: string, pluginRoot: string, pluginDataDir: string) {
-    return this.registerSandboxEnvelope(PLUGIN_ID, [path], pluginRoot, pluginDataDir);
+  register(path: string, pluginRoot: string, pluginDataDir: string, pluginId = PLUGIN_ID) {
+    return this.registerSandboxEnvelope(pluginId, [path], pluginRoot, pluginDataDir);
   }
 
-  attach(stop: () => Promise<void>, retire: () => Error[] = () => []): void {
-    this.plugins.set(PLUGIN_ID, {
-      manifest: { id: PLUGIN_ID, name: "Sandbox Candidate", version: "1.0.0", entry: "index.js", description: "test", tools: [] },
+  attach(stop: () => Promise<void>, retire: () => Error[] = () => [], pluginId = PLUGIN_ID): void {
+    this.plugins.set(pluginId, {
+      manifest: { id: pluginId, name: "Sandbox Candidate", version: "1.0.0", entry: "index.js", description: "test", tools: [] },
       instance: { handlers: {}, stop },
       methods: new Map(),
       hostEffects: { retire },
     } as never);
   }
 
-  failureKind(): string | undefined {
-    return this.loadFailureInfo.get(PLUGIN_ID)?.installFailureKind;
+  failureKind(pluginId = PLUGIN_ID): string | undefined {
+    return this.loadFailureInfo.get(pluginId)?.installFailureKind;
   }
 
-  running(): boolean {
-    return this.plugins.has(PLUGIN_ID);
+  running(pluginId = PLUGIN_ID): boolean {
+    return this.plugins.has(pluginId);
   }
 }
 
@@ -102,6 +102,27 @@ describe("approved-directory withdrawal", () => {
     grant.dispose();
   });
 
+  it("retires a replaced directory even when its path remains under an approved root", async () => {
+    const approved = join(root, "approved");
+    const chosen = join(approved, "index");
+    const pluginRoot = join(root, "home", "plugins", PLUGIN_ID);
+    const dataDir = join(pluginRoot, "data");
+    mkdirSync(approved, { recursive: true });
+    mkdirSync(dataDir, { recursive: true });
+    setApproved([approved]);
+    const subject = runtime();
+    const grant = subject.register(chosen, pluginRoot, dataDir);
+    expect(grant.assertCurrent).not.toThrow();
+    mkdirSync(chosen);
+    expect(grant.assertCurrent).not.toThrow();
+    renameSync(chosen, join(approved, "held"));
+    mkdirSync(chosen);
+    expect(grant.assertCurrent).toThrow(/sandbox-grant-outside-ceiling/);
+    const retirement = subject.retireSandboxGrantsOutsideCeiling();
+    grant.dispose();
+    expect(await retirement).toEqual([PLUGIN_ID]);
+  });
+
   it("waits for incarnation retirement and reports the withdrawn grant", async () => {
     const approved = join(root, "approved");
     const chosen = join(approved, "index");
@@ -143,6 +164,34 @@ describe("approved-directory withdrawal", () => {
     expect(nextSpawn).not.toThrow();
   });
 
+  it("keeps an in-flight retirement discoverable until the incarnation stops", async () => {
+    const approved = join(root, "approved");
+    const pluginRoot = join(root, "home", "plugins", PLUGIN_ID);
+    const dataDir = join(pluginRoot, "data");
+    mkdirSync(approved, { recursive: true });
+    mkdirSync(dataDir, { recursive: true });
+    setApproved([approved]);
+    const subject = runtime();
+    const grant = subject.register(approved, pluginRoot, dataDir);
+    let release!: () => void;
+    const stopped = new Promise<void>((resolve) => { release = resolve; });
+    const stop = vi.fn(async () => { await stopped; grant.dispose(); });
+    subject.attach(stop);
+    setApproved([]);
+    const first = subject.retireSandboxGrantsOutsideCeiling();
+    await vi.waitFor(() => expect(stop).toHaveBeenCalledOnce());
+    let secondFinished = false;
+    const second = subject.retireSandboxGrantsOutsideCeiling().then((value) => {
+      secondFinished = true;
+      return value;
+    });
+    await Promise.resolve();
+    expect(secondFinished).toBe(false);
+    release();
+    expect(await Promise.all([first, second])).toEqual([[PLUGIN_ID], [PLUGIN_ID]]);
+    expect(stop).toHaveBeenCalledOnce();
+  });
+
   it("still stops the incarnation when effect retirement reports an error", async () => {
     const approved = join(root, "approved");
     const pluginRoot = join(root, "home", "plugins", PLUGIN_ID);
@@ -159,5 +208,31 @@ describe("approved-directory withdrawal", () => {
     expect(stop).toHaveBeenCalledOnce();
     expect(subject.running()).toBe(false);
     expect(subject.failureKind()).toBe("sandbox-grant-outside-ceiling");
+  });
+
+  it("retires every affected plugin even when an earlier cleanup fails", async () => {
+    const approved = join(root, "approved");
+    mkdirSync(approved, { recursive: true });
+    setApproved([approved]);
+    const subject = runtime();
+    const stops = [vi.fn(), vi.fn()];
+    for (const [index, pluginId] of ["first-plugin", "second-plugin"].entries()) {
+      const pluginRoot = join(root, "home", "plugins", pluginId);
+      const dataDir = join(pluginRoot, "data");
+      mkdirSync(dataDir, { recursive: true });
+      const grant = subject.register(approved, pluginRoot, dataDir, pluginId);
+      subject.attach(async () => {
+        stops[index]!();
+        grant.dispose();
+      }, () => index === 0 ? [new Error("effect cleanup failed")] : [], pluginId);
+    }
+    setApproved([]);
+    await expect(subject.retireSandboxGrantsOutsideCeiling()).rejects.toThrow(/sandbox grant retirement failed/);
+    expect(stops[0]).toHaveBeenCalledOnce();
+    expect(stops[1]).toHaveBeenCalledOnce();
+    expect(subject.running("first-plugin")).toBe(false);
+    expect(subject.running("second-plugin")).toBe(false);
+    expect(subject.failureKind("second-plugin")).toBe("sandbox-grant-outside-ceiling");
+    expect(await subject.retireSandboxGrantsOutsideCeiling()).toEqual([]);
   });
 });

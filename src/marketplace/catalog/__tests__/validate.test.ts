@@ -291,7 +291,7 @@ describe("validateIndexText", () => {
     expect(result.ok && result.value.diagnostics).toHaveLength(4);
   });
 
-  it("counts an invalid entry as a claimant too", () => {
+  it("counts an invalid name claimant but leaves its path available", () => {
     const result = validateIndexText(
       index([
         { kind: "skill", name: "alpha", path: "skills/alpha" },
@@ -301,7 +301,21 @@ describe("validateIndexText", () => {
       ]),
       context,
     );
-    expect(result.ok && result.value.index.packages).toEqual([]);
+    expect(result.ok && result.value.index.packages.map((entry) => entry.name)).toEqual(["beta"]);
+  });
+
+  it.each([
+    ["an unknown field", { kind: "skill", name: "invalid-package", path: "skills/shared", unknown: true }],
+    ["a latest version without versions", { kind: "skill", name: "invalid-package", path: "skills/shared", latest: "1.0.0" }],
+  ])("does not let a package with %s claim a valid package path", (_label, invalid) => {
+    const result = validateIndexText(index([
+      invalid,
+      { kind: "skill", name: "valid-package", path: "skills/shared" },
+    ]), context);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.index.packages.map((entry) => entry.name)).toEqual(["valid-package"]);
+    expect(result.value.diagnostics).toHaveLength(1);
   });
 });
 

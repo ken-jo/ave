@@ -42,4 +42,9 @@ describe("sandbox declaration validation", () => {
     const path = await write({ configSchema, sandbox: { write: [chosen] } });
     await expect(parsePluginJson(path, (() => true) as unknown as ValidateFunction)).rejects.toThrow(/string config key|declared config key/);
   });
+
+  it.each(["__proto__", "constructor", "toString"])("refuses inherited catalog name %s with a permissive validator", async (name) => {
+    const path = await write({ sandbox: { read: [{ kind: "hostDirectory", segments: [name], why: "Read host data" }] } });
+    await expect(parsePluginJson(path, (() => true) as unknown as ValidateFunction)).rejects.toThrow(/does not name a host directory/);
+  });
 });
