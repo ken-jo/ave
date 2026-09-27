@@ -157,6 +157,22 @@ describe("marketplace changes", () => {
     resetInstalledContentForTests();
     expect(off).toHaveBeenCalledTimes(1);
   });
+
+  it("reloads installed templates when extension contributions change", async () => {
+    const api = bridge(view());
+    let changed: () => void = () => undefined;
+    const off = vi.fn();
+    await ensureInstalledContent({ installedContent: api, onPersonaPromptsUpdated: (listener) => ((changed = listener), off) });
+    vi.mocked(api.installed).mockResolvedValue({ ok: true, content: view({ routineTemplates: [{
+      id: "daily", title: "Daily review", description: "Review", trigger: "shutdown",
+      execution: "notification-only", notificationTitle: "Review", packageName: "orion-api",
+      version: "1.0.0", sourceKind: "extension",
+    }] }) });
+    changed();
+    await waitFor(() => expect(api.installed).toHaveBeenCalledTimes(2));
+    resetInstalledContentForTests();
+    expect(off).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("installed fonts", () => {

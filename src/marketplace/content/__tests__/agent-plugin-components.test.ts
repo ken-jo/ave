@@ -42,6 +42,23 @@ describe("agent-plugin component authority", () => {
     expect(changed.routineTemplates).toEqual(original.routineTemplates);
   });
 
+  it.each([
+    "server/my script.mjs",
+    "server/검토 도구.mjs",
+    'server/notes "draft".mjs',
+  ])("includes the complete referenced path %s in the MCP digest", (path) => {
+    const base = packageFiles().filter((file) => file.path !== "mcp.json");
+    const manifest = data("mcp.json", JSON.stringify({
+      $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+      mcpServers: { editor: { type: "stdio", command: "node", args: [`${"${PLUGIN_ROOT}"}/${path}`] } },
+    }));
+    const files = [...base, manifest, data(path, "before")];
+    const before = deriveAgentPluginComponents(files);
+    const after = deriveAgentPluginComponents(files.map((file) => file.path === path ? data(path, "after") : file));
+    expect(after.mcpServers.editor?.digest).not.toBe(before.mcpServers.editor?.digest);
+    expect(after.prompts).toEqual(before.prompts);
+  });
+
   it("holds bundled instruction bodies to the host limits", () => {
     const files = packageFiles();
     const oversizedSkill = files.map((file) => file.path === "skills/draft/SKILL.md"

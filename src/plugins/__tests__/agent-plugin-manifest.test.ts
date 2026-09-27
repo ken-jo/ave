@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseAgentPluginManifest } from "../agent-plugin-manifest.js";
+import { parseAgentPluginManifest, validatePluginManifestShape } from "../agent-plugin-manifest.js";
 import manifestSchema from "../../../schemas/plugin-manifest.schema.json" with { type: "json" };
 import { resolveAddFormats, resolveAjv } from "../config-schema.js";
 
@@ -17,6 +17,18 @@ describe("agent-plugin manifest branches", () => {
     expect(valid(namespace({ process: { command: "./bin/worker", args: [] }, tools: [] }))).toBe(true);
     expect(valid(namespace({ requires: { minAppVersion: "0.12.0" }, mcpAuth: { editor: { auth: "api-key", apiKeyEnv: "EDITOR_KEY" } } }))).toBe(true);
     expect(parseAgentPluginManifest(JSON.stringify(MARKET))).toMatchObject(MARKET);
+  });
+
+  it("admits prompt and routine declarations on an entry extension only", () => {
+    const contributions = {
+      prompts: [{ id: "draft", path: "prompts/draft.md" }],
+      routineTemplates: [{ id: "daily", path: "routines/templates.json" }],
+    };
+    const extension = namespace({ entry: "dist/index.js", tools: [], ...contributions });
+    expect(valid(extension)).toBe(true);
+    expect(validatePluginManifestShape(JSON.stringify(extension))).toEqual(extension);
+    expect(valid(namespace(contributions))).toBe(false);
+    expect(valid(namespace({ entry: "dist/index.js", tools: [], prompts: [{ id: "draft", path: "prompts/draft.md", extra: true }] }))).toBe(false);
   });
 
   it("refuses malformed markers, mixed branches and extension authority in a component-only plugin", () => {

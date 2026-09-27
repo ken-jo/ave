@@ -8,8 +8,10 @@ export interface AgentPluginRoutineTemplate extends Omit<AddRoutineInput, "scope
   title: string;
   description: string;
   suggestedScope?: { pluginIds: string[] };
+  /** Entry-extension templates use a separate source namespace from agent plugins. */
+  sourceKind?: "extension";
 }
 
-export function agentPluginRoutineSource(template: Pick<AgentPluginRoutineTemplate, "packageName" | "id">): string {
-  return `agent-plugin:${template.packageName}:${template.id}`;
+export function packageRoutineSource(template: Pick<AgentPluginRoutineTemplate, "packageName" | "id" | "sourceKind">): string {
+  return `${template.sourceKind === "extension" ? "extension" : "agent-plugin"}:${template.packageName}:${template.id}`;
 }

@@ -38,7 +38,7 @@ import type { McpComponentConsent } from "../../shared/git-marketplace.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../gated.js";
 import type { IpcDeps } from "../types.js";
 import { broadcastSettingsSnapshot, mutateMarketplaceProviderPresets } from "./settings.js";
-import { broadcastPromptsUpdated } from "./prompts.js";
+import { broadcastPromptsUpdated } from "../prompt-broadcast.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { bundledCredentialKey } from "../../mcp/bundled-credential.js";
 
@@ -340,7 +340,12 @@ export function registerMarketplaceContentHandlers(
     }
     const runtime = await loaded();
     if (!runtime) return { ok: false, error: "installed-content-unavailable" };
-    return { ok: true, content: runtime.service.installed() };
+    if (!deps.pluginBundleLifecycle) throw new Error("installed content requires the extension generation lifecycle");
+    const content = runtime.service.installed();
+    return { ok: true, content: {
+      ...content,
+      routineTemplates: [...content.routineTemplates, ...deps.pluginBundleLifecycle.listRoutineTemplates()],
+    } };
   });
 
   ipcMain.handle(CHANNELS.marketplaceContent.languageMessages, async (event, locale: unknown) => {

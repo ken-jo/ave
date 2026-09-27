@@ -51,6 +51,9 @@ const port = {
   servedFile: () => null,
 };
 const runtime = (service: typeof port) => ({ store: {} as ContentStore, service, reload: async () => {}, removeAgentPluginData: async () => {} });
+const installedDeps = (templates: unknown[] = []) => ({
+  pluginBundleLifecycle: { listRoutineTemplates: () => templates },
+} as unknown as IpcDeps);
 
 type SchemeHandler = (request: { url: string; headers: Headers; referrer: string }) => Promise<Response>;
 const assetRequest = (url: string) => ({ url, headers: new Headers({ origin: "null" }), referrer: "" });
@@ -67,7 +70,7 @@ describe("registerMarketplaceContentHandlers", () => {
 
   it("registers the scheme handler up front and loads once, on the first request", async () => {
     const load = vi.fn(async () => runtime(port));
-    registerMarketplaceContentHandlers({} as IpcDeps, TOKEN, load);
+    registerMarketplaceContentHandlers(installedDeps(), TOKEN, load);
     schemeHandler();
     expect(load).not.toHaveBeenCalled();
 
@@ -80,10 +83,19 @@ describe("registerMarketplaceContentHandlers", () => {
     expect(load).toHaveBeenCalledTimes(1);
   });
 
+  it("includes active extension routine templates in the installed view", async () => {
+    const template = { id: "daily", title: "Daily review", packageName: "orion-api", version: "1.0.0", sourceKind: "extension" };
+    registerMarketplaceContentHandlers(installedDeps([template]), TOKEN, async () => runtime(port));
+    await expect(electron.handlers.get(CHANNELS.marketplaceContent.installed)!({})).resolves.toMatchObject({
+      ok: true, content: { routineTemplates: [template] },
+    });
+    expect(content.routineTemplates).toEqual([]);
+  });
+
   it("serves an asset request through the same load, even before the renderer asks", async () => {
     const servedFile = vi.fn(() => null);
     const load = vi.fn(async () => runtime({ ...port, servedFile }));
-    registerMarketplaceContentHandlers({} as IpcDeps, TOKEN, load);
+    registerMarketplaceContentHandlers(installedDeps(), TOKEN, load);
     const response = await schemeHandler()(assetRequest(`ave-content://${TOKEN}/font/harbor-serif/files/a.woff2`));
     expect(response.status).toBe(404);
     expect(servedFile).toHaveBeenCalledWith("font", "harbor-serif", "files/a.woff2");

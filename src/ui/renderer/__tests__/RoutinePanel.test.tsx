@@ -15,7 +15,7 @@ import { AddRoutineModal, RoutinePanel } from "../components/RoutinePanel.js";
 import type { AveApi, PluginCardSummary } from "../types.js";
 import type { AddRoutineInput, RoutineRecord } from "../../../shared/routines-types.js";
 import type { AgentPluginRoutineTemplate } from "../../../shared/agent-plugin-routine-template.js";
-import { agentPluginRoutineSource } from "../../../shared/agent-plugin-routine-template.js";
+import { packageRoutineSource } from "../../../shared/agent-plugin-routine-template.js";
 import { MAX_ROUTINE_SOURCE_LENGTH } from "../../../shared/routines-types.js";
 import { applyInstalledContent, resetInstalledContentForTests } from "../installed-content.js";
 import type { InstalledContentApi, InstalledContentView } from "../../../shared/installed-content.js";
@@ -55,7 +55,9 @@ function validFutureDate(): string {
 
 describe("RoutinePanel scope payload mapping", () => {
   it("fits the longest package and template names in the persisted source field", () => {
-    expect(agentPluginRoutineSource({ packageName: "a".repeat(63), id: "b".repeat(63) })).toHaveLength(MAX_ROUTINE_SOURCE_LENGTH);
+    expect(packageRoutineSource({ packageName: "a".repeat(63), id: "b".repeat(63) })).toHaveLength(MAX_ROUTINE_SOURCE_LENGTH);
+    expect(packageRoutineSource({ packageName: "writer-extension", id: "daily", sourceKind: "extension" }))
+      .toBe("extension:writer-extension:daily");
   });
 
   it("prefills a plugin template while keeping suggested scope unselected", async () => {

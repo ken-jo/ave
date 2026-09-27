@@ -485,6 +485,10 @@ export interface PluginManifest {
   hooks?: PluginContributionDeclaration[];
   /** Plugin-owned declarative MCP server configuration files. Presence does not grant approval. */
   mcpServers?: PluginContributionDeclaration[];
+  /** Plugin-owned prompt files. Their text retains package-authored provenance. */
+  prompts?: PluginContributionDeclaration[];
+  /** Plugin-owned routine suggestion files. Installation never creates a routine. */
+  routineTemplates?: PluginContributionDeclaration[];
 
 
 

@@ -108,7 +108,7 @@ function envelopePatterns(fenceTag: string, sourceBody: string): {
 const OVERLAY_SOURCE_BODY = "overlay:[a-z][a-z0-9-]*";
 const APP_SOURCE_BODY = "app:[A-Za-z0-9][A-Za-z0-9._-]{0,127}";
 const MCP_PROMPT_SOURCE_BODY = "mcp-prompt:[A-Za-z0-9][A-Za-z0-9._-]{0,127}";
-const PLUGIN_PROMPT_SOURCE_BODY = "plugin-prompt:[a-z][a-z0-9-]{0,62}:[a-z][a-z0-9-]{0,62}";
+const PLUGIN_PROMPT_SOURCE_BODY = "plugin-prompt:(?:extension:)?[a-z][a-z0-9-]{0,62}:[a-z][a-z0-9-]{0,62}";
 
 const overlayEnvelope = envelopePatterns("imported-from-proactive", OVERLAY_SOURCE_BODY);
 const appEnvelope = envelopePatterns("app-message", APP_SOURCE_BODY);

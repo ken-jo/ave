@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PluginMcpTrustStore } from "../../../mcp/plugin-mcp-projection.js";
+import { boundBundledCredential, bundledCredentialDeclaration, readBoundBundledCredential } from "../../../mcp/bundled-credential.js";
 import type { InstalledAgentPluginRuntime } from "../service.js";
 import { AgentPluginMcpRuntime } from "../agent-plugin-mcp-runtime.js";
 
@@ -34,7 +35,8 @@ describe("installed agent plugin MCP publication", () => {
     const publish = vi.fn();
     const disconnect = vi.fn(async () => undefined);
     const manager = { prepareBundledGeneration: prepare, publishBundledGeneration: publish,
-      discardBundledGeneration: vi.fn(), disconnectBundledGeneration: disconnect };
+      discardBundledGeneration: vi.fn(), disconnectBundledGeneration: disconnect,
+      stageBundledCredentialDrop: vi.fn(async () => async () => undefined) };
     const runtime = new AgentPluginMcpRuntime(manager as never, {
       trust: new PluginMcpTrustStore(), dataDirForPackage: async () => dataDir,
     });
@@ -70,6 +72,7 @@ describe("installed agent plugin MCP publication", () => {
       publishBundledGeneration: () => { throw new Error("runtime approval not admitted by policy"); },
       discardBundledGeneration: discard,
       disconnectBundledGeneration: vi.fn(async () => undefined),
+      stageBundledCredentialDrop: vi.fn(async () => async () => undefined),
     } as never, { trust, dataDirForPackage: async () => dataDir });
     await expect(runtime.activate(item, [{ name: "notes", digest: "b".repeat(64) }])).rejects.toThrow(/not admitted/u);
     expect(discard).toHaveBeenCalledWith(prepared);
@@ -92,6 +95,7 @@ describe("installed agent plugin MCP publication", () => {
       publishBundledGeneration: vi.fn(),
       discardBundledGeneration: vi.fn(),
       disconnectBundledGeneration: vi.fn(async () => undefined),
+      stageBundledCredentialDrop: vi.fn(async () => async () => undefined),
     } as never, { trust, dataDirForPackage: async () => dataDir });
     await expect(runtime.activate(item, [{ name: "notes", digest: "f".repeat(64) }])).rejects.toThrow(/does not match/u);
     expect(prepare).not.toHaveBeenCalled();
@@ -109,9 +113,12 @@ describe("installed agent plugin MCP publication", () => {
         notes: { transport: "stdio", command: "./server/run", cwd: "${PLUGIN_ROOT}", auth: "api-key", apiKeyEnv: envName, digest },
       } } },
     });
-    let saved: string | null = "private-value";
+    let saved: string | null = null;
     let refusePublication = false;
-    const stageDrop = vi.fn(async () => {
+    const stageDrop = vi.fn(async (_packageRef, _serverName, declaration?: string) => {
+      if (saved === null || (declaration && readBoundBundledCredential(saved)?.declaration === declaration)) {
+        return async () => undefined;
+      }
       const prior = saved;
       saved = null;
       return async () => { saved = prior; };
@@ -125,12 +132,51 @@ describe("installed agent plugin MCP publication", () => {
     };
     const runtime = new AgentPluginMcpRuntime(manager as never, { trust: new PluginMcpTrustStore(), dataDirForPackage: async () => dataDir });
     await runtime.activate(withCredential("1.0.0", "FIRST_TOKEN", "a".repeat(64)));
+    saved = boundBundledCredential(bundledCredentialDeclaration({ transport: "stdio", auth: "api-key", apiKeyEnv: "FIRST_TOKEN" }), "private-value");
     refusePublication = true;
     await expect(runtime.activate(withCredential("1.1.0", "SECOND_TOKEN", "b".repeat(64)))).rejects.toThrow(/publication refused/u);
-    expect(saved).toBe("private-value");
+    expect(readBoundBundledCredential(saved)?.secret).toBe("private-value");
     refusePublication = false;
     await runtime.activate(withCredential("1.1.0", "SECOND_TOKEN", "b".repeat(64)));
     expect(saved).toBeNull();
-    expect(stageDrop).toHaveBeenCalledWith({ kind: "agent-plugin", name: "meeting-kit" }, "notes");
+    expect(stageDrop).toHaveBeenCalledWith({ kind: "agent-plugin", name: "meeting-kit" }, "notes",
+      bundledCredentialDeclaration({ transport: "stdio", auth: "api-key", apiKeyEnv: "SECOND_TOKEN" }));
+  });
+
+  it("invalidates a changed credential after disable and retains a matching replacement after re-enable", async () => {
+    const { item, dataDir } = packageFixture();
+    const withCredential = (version: string, envName: string, digest: string): InstalledAgentPluginRuntime => ({
+      ...item, version, generationId: digest,
+      content: { ...item.content, components: { ...item.content.components, mcpServers: {
+        notes: { transport: "stdio", command: "./server/run", cwd: "${PLUGIN_ROOT}", auth: "api-key", apiKeyEnv: envName, digest },
+      } } },
+    });
+    const first = bundledCredentialDeclaration({ transport: "stdio", auth: "api-key", apiKeyEnv: "FIRST_TOKEN" });
+    const second = bundledCredentialDeclaration({ transport: "stdio", auth: "api-key", apiKeyEnv: "SECOND_TOKEN" });
+    let saved: string | null = null;
+    const stageDrop = vi.fn(async (_packageRef: unknown, _server: string, expected?: string) => {
+      if (saved === null || (expected && readBoundBundledCredential(saved)?.declaration === expected)) return async () => undefined;
+      const prior = saved;
+      saved = null;
+      return async () => { saved = prior; };
+    });
+    const manager = {
+      prepareBundledGeneration: vi.fn(async () => ({ published: false })),
+      publishBundledGeneration: vi.fn(),
+      discardBundledGeneration: vi.fn(),
+      disconnectBundledGeneration: vi.fn(async () => undefined),
+      stageBundledCredentialDrop: stageDrop,
+    };
+    const runtime = new AgentPluginMcpRuntime(manager as never, { trust: new PluginMcpTrustStore(), dataDirForPackage: async () => dataDir });
+    await runtime.activate(withCredential("1.0.0", "FIRST_TOKEN", "a".repeat(64)));
+    saved = boundBundledCredential(first, "private-value");
+    await runtime.deactivate(item.name);
+    await runtime.activate(withCredential("1.1.0", "SECOND_TOKEN", "b".repeat(64)));
+    expect(saved).toBeNull();
+    expect(stageDrop).toHaveBeenCalledWith({ kind: "agent-plugin", name: item.name }, "notes", second);
+    saved = boundBundledCredential(second, "replacement-value");
+    await runtime.deactivate(item.name);
+    await runtime.activate(withCredential("1.1.0", "SECOND_TOKEN", "b".repeat(64)));
+    expect(readBoundBundledCredential(saved)?.secret).toBe("replacement-value");
   });
 });

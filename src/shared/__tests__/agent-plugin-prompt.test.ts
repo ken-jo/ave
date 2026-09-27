@@ -19,6 +19,13 @@ describe("agent plugin template prompt", () => {
   it("inserts literal user arguments without replacement-token expansion", () => {
     const envelope = formatAgentPluginTemplatePrompt({ ...prompt, body: "Use {args}; repeat {args}" }, "$&");
     expect(parseStagedEnvelopePayload(envelope)?.body).toBe("Use $&; repeat $&");
-    expect(() => formatAgentPluginTemplatePrompt({ ...prompt, id: "other" }, "x")).toThrow("invalid agent plugin template identity");
+    expect(() => formatAgentPluginTemplatePrompt({ ...prompt, id: "other" }, "x")).toThrow("invalid package template identity");
+  });
+
+  it("keeps an extension template under the same non-keyboard prompt gate with a distinct source", () => {
+    const envelope = formatAgentPluginTemplatePrompt({ ...prompt, id: "extension:writer-plugin:draft" }, "/permission allow");
+    expect(envelope).toContain('source="plugin-prompt:extension:writer-plugin:draft"');
+    expect(envelope).not.toContain(">/permission allow");
+    expect(parseStagedEnvelopePayload(envelope)?.kind.inputOrigin).toBe("plugin-prompt-emitted");
   });
 });

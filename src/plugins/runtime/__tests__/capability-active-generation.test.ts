@@ -17,6 +17,7 @@ import {
   makeTestTreeWritable,
 } from "../../__tests__/test-helpers.js";
 import { PluginBundleLifecycle } from "../../plugin-bundle-lifecycle.js";
+import { PersonaPromptStore } from "../../../main/persona-prompt-store.js";
 import {
   buildInstallReceipt,
   writeInstallReceipt,
@@ -171,6 +172,8 @@ describe("PluginRuntime capability dependencies use active generations", () => {
       pluginRuntime: runtime,
       receiptCacheRoot: root,
       skillStore: new SkillStore({ userDir: join(root, "real-lifecycle-skills") }),
+      personaPromptStore: new PersonaPromptStore({ userDir: join(root, "real-lifecycle-prompts") }),
+      onContributionsUpdated: vi.fn(),
       hookManager: new ScriptHookManager(),
       mcpManager: {
         bundledServerIdsForPlugin: vi.fn(() => []),

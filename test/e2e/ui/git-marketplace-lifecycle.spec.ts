@@ -194,6 +194,8 @@ function marketplaceTree(version: string): Entry[] {
     description: 'A plugin the marketplace E2E installs.',
     entry: 'dist/index.js',
     ...pluginAuthority,
+    prompts: [{ id: 'panel_draft', path: 'assets/prompts/panel-draft.md' }],
+    routineTemplates: [{ id: 'panel_daily', path: 'assets/routines/templates.json' }],
     configSchema: { properties: { workspace: { type: 'string' } } },
     tools: [
       {
@@ -215,6 +217,12 @@ function marketplaceTree(version: string): Entry[] {
     file('plugins/harbor-panel/ave-package.json', descriptorText('plugin', 'harbor-panel', version, { authority: pluginAuthority, artifact: { tree: 'plugins/harbor-panel' } })),
     file('plugins/harbor-panel/plugin.json', jsonText(plugin)),
     file('plugins/harbor-panel/dist/index.js', 'export default function createPlugin() {\n  return { handlers: { harbor_panel_ping: async () => "pong" }, start() {}, stop() {} };\n}\n'),
+    file('plugins/harbor-panel/assets/prompts/panel-draft.md', `---\nname: panel-draft\ndescription: Draft panel notes (${version}).\nkind: template\n---\nDraft panel notes from {args}.\n`),
+    file('plugins/harbor-panel/assets/routines/templates.json', jsonText({ version: 1, templates: [{
+      id: 'panel-daily', title: `Daily panel notes (${version})`, description: 'Prepare panel notes.',
+      trigger: 'schedule', schedule: { repeat: { kind: 'cron', expression: '0 9 * * *' } },
+      execution: 'llm-session', prePrompt: `Prepare panel notes for ${version}.`,
+    }] })),
 
     file(`${agentRoot}/ave-package.json`, descriptorText('agent-plugin', 'harbor-kit', version, { manifest: 'plugin.json', components: agentComponents })),
     ...agentFiles,
@@ -391,7 +399,10 @@ test.describe('git marketplace lifecycle', () => {
     expect(content.content.themes.map((theme) => theme.id)).toContain('harbor');
     expect(content.content.languages.map((language) => language.locale)).toContain('fr');
     expect(content.content.fonts.map((font) => font.family)).toContain('Harbor Sans');
-    expect(content.content.routineTemplates).toMatchObject([{ packageName: 'harbor-kit', id: 'harbor-daily' }]);
+    expect(content.content.routineTemplates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ packageName: 'harbor-kit', id: 'harbor-daily' }),
+      expect.objectContaining({ packageName: 'harbor-panel', id: 'panel-daily', sourceKind: 'extension' }),
+    ]));
     await closeInlineSettings(app, settings);
     const menu = await commandMenuIds(app, mainWindow);
     // Governance registers the server's tool under the policy's prefix.
@@ -399,6 +410,7 @@ test.describe('git marketplace lifecycle', () => {
     expect(menu).toContain('skill:harbor-review');
     expect(menu).toContain('skill:agent-plugin:harbor-kit:harbor-check');
     expect(menu).toContain('plugin-prompt:agent-plugin:harbor-kit:harbor-draft');
+    expect(menu).toContain('plugin-prompt:extension:harbor-panel:panel-draft');
     expect(menu.some((id) => id.includes('harbor_kit_ping'))).toBe(true);
 
     // Publish 1.1.0 and update every kind to it.
@@ -438,6 +450,7 @@ test.describe('git marketplace lifecycle', () => {
     const updated = await installedContent(mainWindow);
     expect(updated.ok && updated.content.themes.find((theme) => theme.id === 'harbor')?.description).toBe('Harbor light (1.1.0).');
     expect(updated.ok && updated.content.routineTemplates.find((template) => template.packageName === 'harbor-kit')?.version).toBe('1.1.0');
+    expect(updated.ok && updated.content.routineTemplates.find((template) => template.packageName === 'harbor-panel')?.version).toBe('1.1.0');
 
     // Remove the source through the tab: its packages stay installed, bound to it.
     const again = await openInlineSettings(app, mainWindow, 'marketplace');

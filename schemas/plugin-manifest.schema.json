@@ -246,6 +246,22 @@
                 "$ref": "#/definitions/pluginContributionDeclaration"
               }
             },
+            "prompts": {
+              "type": "array",
+              "description": "Plugin-owned prompt files. Their text retains package-authored provenance.",
+              "maxItems": 64,
+              "items": {
+                "$ref": "#/definitions/pluginContributionDeclaration"
+              }
+            },
+            "routineTemplates": {
+              "type": "array",
+              "description": "Plugin-owned routine suggestion files. Installation never creates a routine.",
+              "maxItems": 64,
+              "items": {
+                "$ref": "#/definitions/pluginContributionDeclaration"
+              }
+            },
             "capabilities": {
               "type": "array",
               "description": "Free-form capability declarations (format-validated, NOT a closed enum). The host ENFORCES only two at runtime — 'external-auth-consumer' and 'host:overlay' (see src/plugins/capabilities.ts KNOWN_CAPABILITY_IDS). Every other string is a harmless self-declaration (strings on already-installed manifests that the host no longer reads). Kept free-form — rather than an enum — so an installed manifest declaring a removed capability still validates and loads instead of being rejected at schema validation. Emit authorization for event-source namespaces (email/calendar/meeting/index) is inferred from emittedEvents, not from a capability here. The pattern is format hygiene only (blocks uppercase/whitespace/garbage), not a vocabulary.",
@@ -1235,6 +1251,8 @@
                 "skills": false,
                 "hooks": false,
                 "mcpServers": false,
+                "prompts": false,
+                "routineTemplates": false,
                 "capabilities": false,
                 "networkAccess": false,
                 "eventSubscriptions": false,

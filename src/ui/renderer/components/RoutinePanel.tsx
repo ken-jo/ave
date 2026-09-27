@@ -28,7 +28,7 @@ import { MAX_PERSISTED_ROUTINES, MAX_LLM_SESSION_ROUTINES } from "../../../share
 import { isValidCronExpression } from "../../../routines/cron-evaluator.js";
 import { formatMediumDateTime, formatRelativeSessionTime } from "../../../shared/format-time.js";
 import type { RoutineRunRow } from "../../../shared/session-lookup.js";
-import { agentPluginRoutineSource, type AgentPluginRoutineTemplate } from "../../../shared/agent-plugin-routine-template.js";
+import { packageRoutineSource, type AgentPluginRoutineTemplate } from "../../../shared/agent-plugin-routine-template.js";
 import { useInstalledContent } from "../installed-content.js";
 
 /**
@@ -99,7 +99,7 @@ function describeSchedule(routine: Pick<RoutineRecord, "schedule" | "trigger">):
 }
 
 function RoutineRow({ routine, installedTemplateSources, onDismiss, onRemove, onTriggerNow, recentlyFired }: RoutineRowProps) {
-  const templateSource = routine.source?.startsWith("agent-plugin:") ? routine.source : null;
+  const templateSource = routine.source?.startsWith("agent-plugin:") || routine.source?.startsWith("extension:") ? routine.source : null;
   return (
     <div
       className={`rounded-lg border bg-background p-3 shadow-sm transition-shadow hover:shadow-md ${recentlyFired ? "border-warning/(--opacity-strong) bg-warning/(--opacity-subtle)" : ""}`}
@@ -117,7 +117,8 @@ function RoutineRow({ routine, installedTemplateSources, onDismiss, onRemove, on
           {templateSource && (
             <p className="mt-0.5 text-[11px] text-muted-foreground">
               {installedTemplateSources.has(templateSource)
-                ? t("routinePanel.createdFromPluginTemplate", { plugin: templateSource.split(":")[1]! })
+                ? t(templateSource.startsWith("extension:") ? "routinePanel.createdFromExtensionTemplate" : "routinePanel.createdFromPluginTemplate",
+                  { plugin: templateSource.split(":")[1]! })
                 : t("routinePanel.templateNoLongerInstalled")}
             </p>
           )}
@@ -348,7 +349,7 @@ export function AddRoutineModal({ api, onClose, onAdded, template }: AddRoutineM
       trigger,
       execution,
       ...(schedule ? { schedule: schedule as RoutineSchedule } : {}),
-      ...(template ? { source: agentPluginRoutineSource(template) } : {}),
+      ...(template ? { source: packageRoutineSource(template) } : {}),
       ...(title.trim() ? { title: title.trim() } : {}),
       ...(execution === "llm-session"
         ? {
@@ -677,7 +678,7 @@ export function AddRoutineModal({ api, onClose, onAdded, template }: AddRoutineM
 
 export function RoutinePanel({ api, onOpenSession }: RoutinePanelProps) {
   const templates = useInstalledContent().routineTemplates;
-  const installedTemplateSources = useMemo(() => new Set(templates.map(agentPluginRoutineSource)), [templates]);
+  const installedTemplateSources = useMemo(() => new Set(templates.map(packageRoutineSource)), [templates]);
   const [routines, setRoutines] = useState<RoutineRecord[]>([]);
   const [routineSessions, setRoutineSessions] = useState<RoutineRunListRow[]>([]);
   const [loading, setLoading] = useState(false);
@@ -802,7 +803,7 @@ export function RoutinePanel({ api, onOpenSession }: RoutinePanelProps) {
               <ScrollArea className="max-h-52">
                 <div className="space-y-2">
                   {templates.map((template) => (
-                    <div key={agentPluginRoutineSource(template)} className="rounded-md border bg-background p-3" data-testid="routine-template-row">
+                    <div key={packageRoutineSource(template)} className="rounded-md border bg-background p-3" data-testid="routine-template-row">
                       <div className="flex items-start justify-between gap-2">
                         <div>
                           <div className="text-sm font-semibold">{template.title} <span className="font-normal text-muted-foreground">({template.packageName})</span></div>
@@ -886,7 +887,7 @@ export function RoutinePanel({ api, onOpenSession }: RoutinePanelProps) {
 
       {showAddModal && (
         <AddRoutineModal
-          key={selectedTemplate ? agentPluginRoutineSource(selectedTemplate) : "manual"}
+          key={selectedTemplate ? packageRoutineSource(selectedTemplate) : "manual"}
           api={api}
           template={selectedTemplate ?? undefined}
           onClose={() => { setShowAddModal(false); setSelectedTemplate(null); }}

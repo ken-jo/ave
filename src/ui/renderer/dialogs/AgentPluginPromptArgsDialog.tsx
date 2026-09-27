@@ -20,7 +20,8 @@ export function AgentPluginPromptArgsDialog({ prompt, onCancel, onSubmit }: {
       <DialogContent size="md" data-testid="agent-plugin-prompt-args-dialog">
         <DialogHeader>
           <DialogTitle>{t("agentPluginPrompt.argsTitle", { name: prompt.name })}</DialogTitle>
-          <DialogDescription>{t("agentPluginPrompt.argsDescription", { package: prompt.packageName })}</DialogDescription>
+          <DialogDescription>{t(prompt.id.startsWith("extension:")
+            ? "agentPluginPrompt.extensionArgsDescription" : "agentPluginPrompt.argsDescription", { package: prompt.packageName })}</DialogDescription>
         </DialogHeader>
         <form onSubmit={(event) => { event.preventDefault(); onSubmit(prompt, args); }} className="space-y-4">
           <div className="space-y-2">

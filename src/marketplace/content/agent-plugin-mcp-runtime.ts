@@ -4,6 +4,7 @@ import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { resolveRuntimeMcp } from "../../mcp/agent-plugin-mcp.js";
 import type { McpManager } from "../../mcp/mcp-manager.js";
 import { PluginMcpTrustStore } from "../../mcp/plugin-mcp-projection.js";
+import { bundledCredentialDeclaration } from "../../mcp/bundled-credential.js";
 import type { McpComponentConsent } from "../../shared/git-marketplace.js";
 import type { InstalledAgentPluginRuntime } from "./service.js";
 
@@ -20,7 +21,7 @@ interface ActivePackage {
 function credentialDeclarations(item: InstalledAgentPluginRuntime): Record<string, string> {
   return Object.fromEntries(Object.entries(item.content.components.mcpServers)
     .filter(([, server]) => server.auth === "api-key")
-    .map(([name, server]) => [name, JSON.stringify([server.auth, server.transport === "stdio" ? server.apiKeyEnv : server.apiKeyHeader])]));
+    .map(([name, server]) => [name, bundledCredentialDeclaration(server)]));
 }
 
 export interface AgentPluginMcpRuntimeOptions {
@@ -63,7 +64,7 @@ export class AgentPluginMcpRuntime {
     this.active.delete(name);
   }
 
-  private async stageChangedCredentials(name: string, previous: ActivePackage | undefined, next: Readonly<Record<string, string>>): Promise<() => Promise<void>> {
+  private async stageChangedCredentials(name: string, previous: ActivePackage | undefined, next: Readonly<Record<string, string>>, serverNames: readonly string[]): Promise<() => Promise<void>> {
     const restores: Array<() => Promise<void>> = [];
     const restore = async () => {
       const results = await Promise.allSettled(restores.reverse().map((run) => run()));
@@ -71,10 +72,8 @@ export class AgentPluginMcpRuntime {
       if (failures.length > 0) throw new AggregateError(failures.map((result) => result.reason), "bundled credential rollback failed");
     };
     try {
-      for (const [serverName, declaration] of Object.entries(previous?.credentialDeclarations ?? {})) {
-        if (next[serverName] !== declaration) {
-          restores.push(await this.manager.stageBundledCredentialDrop({ kind: "agent-plugin", name }, serverName));
-        }
+      for (const serverName of new Set([...Object.keys(previous?.credentialDeclarations ?? {}), ...serverNames])) {
+        restores.push(await this.manager.stageBundledCredentialDrop({ kind: "agent-plugin", name }, serverName, next[serverName]));
       }
     } catch (error) {
       try { await restore(); }
@@ -98,7 +97,7 @@ export class AgentPluginMcpRuntime {
       selected.add(consent.name);
     }
     if (Object.keys(item.content.components.mcpServers).length === 0) {
-      const restoreCredentials = await this.stageChangedCredentials(item.name, previous, nextCredentials);
+      const restoreCredentials = await this.stageChangedCredentials(item.name, previous, nextCredentials, []);
       try { await this.removeOne(item.name); }
       catch (error) { await restoreCredentials(); throw error; }
       return;
@@ -116,7 +115,7 @@ export class AgentPluginMcpRuntime {
     });
     const trust = await this.trustStore();
     const newApprovals = projections.filter((projection) => selected.has(projection.owner.localId) && !trust.isApproved(projection));
-    const restoreCredentials = await this.stageChangedCredentials(item.name, previous, nextCredentials);
+    const restoreCredentials = await this.stageChangedCredentials(item.name, previous, nextCredentials, Object.keys(item.content.components.mcpServers));
     try {
       for (const projection of newApprovals) trust.approve(projection);
       const prepared = await this.manager.prepareBundledGeneration(

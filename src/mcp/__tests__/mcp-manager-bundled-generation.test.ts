@@ -41,7 +41,7 @@ import { McpManager } from "../mcp-manager.js";
 import { McpGovernance } from "../mcp-governance.js";
 import { PluginMcpTrustStore, prepareBundledMcpProjection, preparePluginMcpGeneration } from "../plugin-mcp-projection.js";
 import { SecretDocumentStore } from "../../data/secret-document-store.js";
-import { bundledCredentialKey } from "../bundled-credential.js";
+import { bundledCredentialDeclaration, bundledCredentialKey, readBoundBundledCredential } from "../bundled-credential.js";
 import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
 
 const root = mkdtempSync(join(tmpdir(), "ave-mcp-generation-"));
@@ -117,7 +117,10 @@ describe("McpManager bundled generation", () => {
     expect(readFileSync(secretPath, "utf8")).not.toContain("private-value");
     const key = bundledCredentialKey({ kind: "agent-plugin", name: "meeting-kit" }, "notes");
     const reopened = new SecretDocumentStore({ path: secretPath, policy: "packaged", encryption });
-    expect(reopened.get(key)).toBe("private-value");
+    expect(readBoundBundledCredential(reopened.get(key))).toEqual({
+      declaration: bundledCredentialDeclaration({ transport: "http", auth: "api-key", apiKeyHeader: "X-Token" }),
+      secret: "private-value",
+    });
     const restarted = new McpManager(new McpGovernance(join(root, "policy-credential-restart.json")), new ToolRegistry(),
       unusedNetworkFetch, join(root, "servers-credential-restart.json"), undefined, undefined, undefined, undefined,
       { getSecret: (name) => reopened.get(name), setSecret: (name, value) => reopened.set(name, value), deleteSecret: async (name) => { await reopened.delete(name); } });
@@ -127,6 +130,26 @@ describe("McpManager bundled generation", () => {
     const resumed = await restarted.prepareBundledGeneration({ pluginId: owner.pluginId, generationId: "run-2" }, [successor], trust);
     expect(constructedConfigs.at(-1)?.apiKey).toBe("private-value");
     await restarted.discardBundledGeneration(resumed);
+    const changed = prepareBundledMcpProjection({ ...projection.owner, activationId: "run-3", fingerprint: "c".repeat(64) },
+      { transport: "http", url: "https://example.test/mcp", auth: "api-key", apiKeyHeader: "X-New-Token" });
+    trust.approve(changed);
+    const beforeChanged = constructedConfigs.length;
+    const missingAfterChange = await restarted.prepareBundledGeneration({ pluginId: owner.pluginId, generationId: "run-3" }, [changed], trust);
+    expect(missingAfterChange.degraded).toMatchObject([{ code: "credential_required" }]);
+    expect(constructedConfigs).toHaveLength(beforeChanged);
+    await restarted.discardBundledGeneration(missingAfterChange);
+    await restarted.stageBundledCredentialDrop({ kind: "agent-plugin", name: "meeting-kit" }, "notes",
+      bundledCredentialDeclaration({ transport: "http", auth: "api-key", apiKeyHeader: "X-New-Token" }));
+    expect(reopened.get(key)).toBeNull();
+    restarted.registerBundledCredentialSource("agent-plugin", {
+      list: () => [{ packageName: "meeting-kit", serverName: "notes", transport: "http", url: "https://example.test/mcp",
+        auth: "api-key", apiKeyHeader: "X-New-Token" }],
+      reconnect: async () => undefined,
+    });
+    await restarted.setBundledApiKey({ kind: "agent-plugin", name: "meeting-kit" }, "notes", "replacement-value");
+    const replacement = await restarted.prepareBundledGeneration({ pluginId: owner.pluginId, generationId: "run-3" }, [changed], trust);
+    expect(constructedConfigs.at(-1)?.apiKey).toBe("replacement-value");
+    await restarted.discardBundledGeneration(replacement);
     await expect(manager.setApiKey(projection.serverId, "another-value")).rejects.toThrow(/setBundledApiKey/u);
   });
 

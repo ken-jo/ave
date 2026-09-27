@@ -53,10 +53,9 @@ function fileDigest(files: readonly AgentPluginFile[]): string {
 
 function packageFileReferences(value: unknown, files: ReadonlyMap<string, Buffer>, referenced: Set<string>): void {
   if (typeof value === "string") {
-    for (const match of value.matchAll(/(?:\$\{PLUGIN_ROOT\}\/|\.\/)([A-Za-z0-9._/-]+)/gu)) {
-      const path = match[1]!;
-      if (files.has(path)) referenced.add(path);
-    }
+    const path = value.startsWith("${PLUGIN_ROOT}/") ? value.slice("${PLUGIN_ROOT}/".length)
+      : value.startsWith("./") ? value.slice(2) : null;
+    if (path !== null && files.has(path)) referenced.add(path);
   } else if (Array.isArray(value)) {
     for (const part of value) packageFileReferences(part, files, referenced);
   } else if (typeof value === "object" && value !== null) {
@@ -71,7 +70,7 @@ function mcpDigest(server: unknown, files: ReadonlyMap<string, Buffer>): string 
   return sha256Hex(`${canonicalStringify(server)}\n${fileTokens.join("\n")}`);
 }
 
-function prompt(bytes: Buffer, path: string, basename: string): { kind: "template" | "persona"; name: string } {
+export function parsePackagePrompt(bytes: Buffer, path: string, basename: string): { kind: "template" | "persona"; name: string } {
   const { fields, block, body } = parseFrontmatterBlock(bytes.toString("utf8"));
   const values = new Map(fields);
   const names = block.split(/\r?\n/u).flatMap((line) => {
@@ -117,8 +116,7 @@ function routineSchedule(value: unknown, path: string): RoutineSchedule {
   return { ...(at !== undefined ? { at: at as string } : {}), ...(repeat ? { repeat } : {}) };
 }
 
-export function parseAgentPluginRoutineTemplates(bytes: Buffer): Array<Omit<AgentPluginRoutineTemplate, "packageName" | "version">> {
-  const path = "ai.agent-connector.ave/routines.json";
+export function parseAgentPluginRoutineTemplates(bytes: Buffer, path = "ai.agent-connector.ave/routines.json"): Array<Omit<AgentPluginRoutineTemplate, "packageName" | "version">> {
   const document = json(bytes, path);
   if (Object.keys(document).some((key) => !["version", "templates"].includes(key))) fail(path, "unknown root field");
   if (document.version !== 1 || !Array.isArray(document.templates) || document.templates.length > 8) {
@@ -209,7 +207,7 @@ export function deriveAgentPluginComponents(files: readonly AgentPluginFile[], e
   const agents: AgentPluginComponents["agents"] = [];
   for (const file of files) {
     const promptMatch = PROMPT_PATH.exec(file.path);
-    if (promptMatch) prompts.push({ ...prompt(file.data, file.path, promptMatch[1]!), digest: sha256Hex(file.data) });
+    if (promptMatch) prompts.push({ ...parsePackagePrompt(file.data, file.path, promptMatch[1]!), digest: sha256Hex(file.data) });
     const agentMatch = AGENT_PATH.exec(file.path);
     if (agentMatch) {
       let parsed: ReturnType<typeof parseAgentFrontmatter>;

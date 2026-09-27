@@ -2,6 +2,7 @@ import { ipcMain } from "electron";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../gated.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
+import { broadcastPromptsUpdated } from "../prompt-broadcast.js";
 
 const PROMPTS_UPDATED = CHANNELS.prompts.updated;
 
@@ -26,13 +27,6 @@ function normalizePromptPatch(value: unknown): {
     ...(typeof raw.description === "string" ? { description: raw.description } : {}),
     systemPromptAdd: raw.systemPromptAdd,
   };
-}
-
-export function broadcastPromptsUpdated(deps: IpcDeps): void {
-  for (const win of deps.getAppWindows?.() ?? [deps.getMainWindow()]) {
-    if (!win || win.isDestroyed()) continue;
-    win.webContents.send(PROMPTS_UPDATED);
-  }
 }
 
 export function registerPromptHandlers(deps: IpcDeps): void {

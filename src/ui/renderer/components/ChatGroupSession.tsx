@@ -581,7 +581,8 @@ export function ChatGroupSession({
       const envelope = formatAgentPluginTemplatePrompt(prompt, args);
       await handleAskRef.current?.(envelope, "plugin-prompt");
     } catch {
-      pushTileNotice({ severity: "error", message: t("agentPluginPrompt.failed"), ttlMs: 10000 });
+      pushTileNotice({ severity: "error", message: t(prompt.id.startsWith("extension:")
+        ? "agentPluginPrompt.extensionFailed" : "agentPluginPrompt.failed"), ttlMs: 10000 });
     }
   }, [handleAskRef, pushTileNotice, t]);
 
