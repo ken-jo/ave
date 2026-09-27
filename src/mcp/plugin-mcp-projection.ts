@@ -70,7 +70,7 @@ function assertStringRecord(value: unknown, label: string): asserts value is Rec
 function parseStaticConfig(raw: unknown, label: string): Omit<McpServerConfig, "id"> {
   assertRecord(raw, label);
   const allowed = new Set([
-    "transport", "command", "args", "env", "url", "oauth", "headers", "auth", "apiKeyEnv", "apiKeyHeader",
+    "transport", "command", "args", "env", "cwd", "url", "oauth", "headers", "auth", "apiKeyEnv", "apiKeyHeader",
   ]);
   const unknown = Object.keys(raw).filter((key) => !allowed.has(key));
   if (unknown.length > 0) throw new Error(`${label} contains unsupported fields: ${unknown.join(", ")}`);
@@ -84,6 +84,7 @@ function parseStaticConfig(raw: unknown, label: string): Omit<McpServerConfig, "
     assertString(raw.command, `${label}.command`);
     if (raw.args !== undefined) assertStringArray(raw.args, `${label}.args`);
     if (raw.env !== undefined) assertStringRecord(raw.env, `${label}.env`);
+    if (raw.cwd !== undefined) assertString(raw.cwd, `${label}.cwd`);
     if (raw.apiKeyEnv !== undefined) assertString(raw.apiKeyEnv, `${label}.apiKeyEnv`);
     if (raw.url !== undefined || raw.headers !== undefined || raw.apiKeyHeader !== undefined || raw.oauth !== undefined) {
       throw new Error(`${label} mixes stdio and HTTP fields`);
@@ -97,7 +98,7 @@ function parseStaticConfig(raw: unknown, label: string): Omit<McpServerConfig, "
     }
     if (raw.headers !== undefined) assertStringRecord(raw.headers, `${label}.headers`);
     if (raw.apiKeyHeader !== undefined) assertString(raw.apiKeyHeader, `${label}.apiKeyHeader`);
-    if (raw.command !== undefined || raw.args !== undefined || raw.env !== undefined || raw.apiKeyEnv !== undefined) {
+    if (raw.command !== undefined || raw.args !== undefined || raw.env !== undefined || raw.cwd !== undefined || raw.apiKeyEnv !== undefined) {
       throw new Error(`${label} mixes HTTP and stdio fields`);
     }
     if (raw.oauth !== undefined) assertRecord(raw.oauth, `${label}.oauth`);
@@ -137,6 +138,9 @@ function buildProjection(
     id: serverId,
     name: `${owner.pluginId}:${owner.localId}`,
     status: "approved",
+    provenance: "user",
+    bundled: { package: owner.pluginId.startsWith("agent-plugin/") ? owner.pluginId : `plugin/${owner.pluginId}`,
+      server: owner.localId, fingerprint: owner.fingerprint },
     transport: config.transport,
     ...(config.transport === "stdio" ? { allowedCommands: [config.command] } : { allowedUrls: [new URL(config.url).hostname] }),
     requiredAuth,

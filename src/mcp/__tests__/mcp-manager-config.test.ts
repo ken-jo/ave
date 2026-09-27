@@ -123,6 +123,8 @@ describe("McpManager — getConfigs()", () => {
         apiKeyEnv: "OPENAI_API_KEY",
         args: ["--token=abc123", "--verbose"],
         env: { SECRET_TOKEN: "abc123", PATH: "/usr/bin" },
+        cwd: "/sealed/package",
+        pluginDataDir: "/private/data",
       },
     ];
     await writeFile(testConfigPath, JSON.stringify({ servers }), "utf-8");
@@ -137,6 +139,8 @@ describe("McpManager — getConfigs()", () => {
     expect(result[1]).not.toHaveProperty("apiKey");
     expect(result[1]).not.toHaveProperty("args");
     expect(result[1]).not.toHaveProperty("env");
+    expect(result[1]).not.toHaveProperty("cwd");
+    expect(result[1]).not.toHaveProperty("pluginDataDir");
     expect(result[1]).toHaveProperty("apiKeyEnv", "OPENAI_API_KEY");
     expect(result[0].id).toBe("http-srv");
     expect(result[1].id).toBe("stdio-srv");

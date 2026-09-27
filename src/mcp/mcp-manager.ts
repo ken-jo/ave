@@ -52,9 +52,9 @@ export interface BundledMcpDegradedState {
   readonly pluginId: string;
   readonly generationId: string;
   readonly localId: string;
-  readonly code: "connection_failed";
+  readonly code: "connection_failed" | "blocked-by-policy";
   readonly message: string;
-  readonly retryable: true;
+  readonly retryable: boolean;
   readonly lastAttemptAt: string;
 }
 
@@ -66,7 +66,7 @@ export interface PreparedBundledMcpGeneration {
   readonly records: readonly PreparedBundledMcpRecord[];
   readonly degraded: readonly BundledMcpDegradedState[];
   readonly registryReplacement: PreparedMcpRegistryReplacement;
-  readonly governancePublication: { publish(): void };
+  readonly governancePublication: { assertAdmitted(): void; publish(): void };
   readonly permissionPublication?: { publish(): void };
   published: boolean;
 }
@@ -255,10 +255,11 @@ export class McpManager {
     // always sets sandboxRoot" is established here (deny-by-default A.a). Any
     // value that rode in on `config` (e.g. a tampered servers.json) is dropped
     // and overwritten with the host-derived per-server root.
+    const { pluginDataDir: _untrustedDataDir, ...managedConfig } = config.transport === "stdio" ? config : { ...config, pluginDataDir: undefined };
     const connectConfig =
-      config.transport === "stdio"
-        ? { ...config, sandboxRoot: await this.ensureStdioSandboxRoot(config.id) }
-        : config;
+      managedConfig.transport === "stdio"
+        ? { ...managedConfig, sandboxRoot: await this.ensureStdioSandboxRoot(config.id) }
+        : managedConfig;
 
     const client = new McpClient(
       connectConfig,
@@ -313,7 +314,11 @@ export class McpManager {
     const records: PreparedBundledMcpRecord[] = [];
     const degraded: BundledMcpDegradedState[] = [];
     try {
-      for (const projection of projections) {
+      for (const inputProjection of projections) {
+        const policyApproval = this.governance.policyFingerprintApproval(inputProjection.approval);
+        const projection = policyApproval
+          ? { ...inputProjection, approval: policyApproval }
+          : inputProjection;
         if (!projection.owner.activationId) {
           throw new Error(`bundled MCP activation identity is missing for '${projection.serverId}'`);
         }
@@ -323,7 +328,13 @@ export class McpManager {
         ) {
           throw new Error(`bundled MCP owner mismatch for '${projection.serverId}'`);
         }
-        if (!trust.isApproved(projection)) continue;
+        if (!policyApproval && !trust.isApproved(projection)) continue;
+        if (!this.governance.isRuntimeApprovalAdmitted(projection.approval)) {
+          degraded.push(Object.freeze({ pluginId: owner.pluginId, generationId: owner.generationId,
+            localId: projection.owner.localId, code: "blocked-by-policy", message: "runtime approval not admitted by policy",
+            retryable: false, lastAttemptAt: new Date().toISOString() }));
+          continue;
+        }
         const existing = this.clients.get(projection.serverId);
         if (existing && this.activeBundledServerIds.has(projection.serverId)) {
           const baseTools = this.bundledToolSnapshots.get(projection.serverId);
@@ -439,6 +450,7 @@ export class McpManager {
   /** Synchronous half of the shared plugin generation publish point. */
   publishBundledGeneration(prepared: PreparedBundledMcpGeneration): void {
     if (prepared.published) return;
+    prepared.governancePublication.assertAdmitted();
     prepared.registryReplacement.publish();
     prepared.governancePublication.publish();
     prepared.permissionPublication?.publish();
@@ -534,6 +546,25 @@ export class McpManager {
       .map(([serverId]) => serverId);
     for (const serverId of ids) await this.disconnectBundledServer(serverId);
     this.bundledDegraded.delete(`${pluginId}\0${generationId}`);
+  }
+
+  /** Apply current governance withdrawals to live clients and their published tools. */
+  async handlePolicyWithdrawal(serverIds: readonly string[]): Promise<void> {
+    for (const serverId of serverIds) {
+      const owner = this.bundledOwners.get(serverId);
+      if (!owner) {
+        await this.killSwitch(serverId);
+        continue;
+      }
+      const key = `${owner.pluginId}\0${owner.activationId}`;
+      await this.disconnectBundledServer(serverId);
+      const remaining = (this.bundledDegraded.get(key) ?? []).filter((state) => state.localId !== owner.localId);
+      this.bundledDegraded.set(key, Object.freeze([...remaining, Object.freeze({
+        pluginId: owner.pluginId, generationId: owner.activationId, localId: owner.localId,
+        code: "blocked-by-policy" as const, message: "runtime approval not admitted by policy",
+        retryable: false, lastAttemptAt: new Date().toISOString(),
+      })]));
+    }
   }
 
   private async disconnectBundledServer(serverId: string): Promise<void> {
@@ -936,11 +967,11 @@ export class McpManager {
     // - headers: may contain bearer/session tokens
     // - env: may contain injected credentials
     // - args: may embed secrets on stdio command lines
-    // - sandboxRoot: host-derived filesystem-jail path; never a renderer concern
+    // - sandboxRoot, cwd and pluginDataDir: host-derived filesystem paths; never renderer concerns
     //   and never sourced from renderer input.
     const { apiKey: _apiKey, headers: _headers, env: _env, args: _args, ...rest } =
       config;
-    const { sandboxRoot: _sandboxRoot, ...safe } = rest as Record<string, unknown>;
+    const { sandboxRoot: _sandboxRoot, cwd: _cwd, pluginDataDir: _pluginDataDir, ...safe } = rest as Record<string, unknown>;
     return safe as McpServerConfigDto;
   }
 
