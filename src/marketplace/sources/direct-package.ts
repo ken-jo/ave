@@ -12,8 +12,12 @@
  * it, and any new commit is an update (`isSynthesizedVersion`).
  */
 import { parse as parseYaml } from "yaml";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { parseFrontmatterBlock } from "../../main/skill-store.js";
 import { AVE_EXTENSION_NAMESPACE } from "../../plugins/public-contract.js";
+import { validatePluginManifestShape } from "../../plugins/agent-plugin-manifest.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
 import { isPackageName, type PackageDescriptor } from "../catalog/types.js";
 import { validateDescriptorText, validateSynthesizedDescriptor } from "../catalog/validate.js";
@@ -21,6 +25,8 @@ import type { MarketplaceErrorCode } from "../errors.js";
 import { assertRepoPath, type BareRepo } from "../git/repo.js";
 import type { GitRemote } from "../git/run-git.js";
 import { manifestAuthority } from "../resolve/manifest-rules.js";
+import { deriveAgentPluginComponents } from "../content/agent-plugin-components.js";
+import { checkContentFiles, CONTENT_RULES } from "../content/rules.js";
 
 export const DIRECT_FILES = ["ave-package.json", "plugin.json", "SKILL.md", "AGENTS.md", "server.json"] as const;
 
@@ -98,10 +104,10 @@ function presentation(displayName: unknown, description: unknown): Pick<PackageD
 
 type Synthesis = { ok: true; descriptor: PackageDescriptor; versionSynthesized: boolean } | { ok: false; code: MarketplaceErrorCode; error: string };
 
-function fromPluginManifest(source: string, path: string): Synthesis {
+async function fromPluginManifest(source: string, input: DirectReadInput): Promise<Synthesis> {
   let manifest: unknown;
   try {
-    manifest = parseStrictJson(source);
+    manifest = validatePluginManifestShape(source);
   } catch (error) {
     return { ok: false, code: "SOURCE_INDEX_INVALID", error: `plugin.json does not parse: ${(error as Error).message}` };
   }
@@ -109,6 +115,32 @@ function fromPluginManifest(source: string, path: string): Synthesis {
     return { ok: false, code: "SOURCE_INDEX_INVALID", error: "plugin.json needs a name and a version" };
   }
   const ave = isRecord(manifest.extensions) ? manifest.extensions[AVE_EXTENSION_NAMESPACE] : undefined;
+  if (!isRecord(ave) || (!Object.hasOwn(ave, "entry") && !Object.hasOwn(ave, "process"))) {
+    if (typeof manifest.description !== "string" || !manifest.description.trim()) {
+      return { ok: false, code: "SOURCE_INDEX_INVALID", error: "plugin.json needs a description for direct install" };
+    }
+    const rule = CONTENT_RULES["agent-plugin"];
+    const dest = await mkdtemp(join(tmpdir(), "ave-agent-plugin-direct-"));
+    try {
+      const exported = await input.repo.exportPath(input.remote, input.commit, input.path, dest,
+        { maxFiles: rule.maxFiles + 1, maxBytes: rule.maxBytes + 256 * 1024 }, input.signal);
+      const files = await Promise.all(exported.filter((file) => file.path !== "ave-package.json")
+        .map(async (file) => ({ path: file.path, data: await readFile(join(dest, ...file.path.split("/"))) })));
+      checkContentFiles("agent-plugin", files);
+      const components = deriveAgentPluginComponents(files);
+      const requires = isRecord(ave) && isRecord(ave.requires) ? ave.requires : undefined;
+      return { ok: true, versionSynthesized: false, descriptor: {
+        schemaVersion: 2, kind: "agent-plugin", name: manifest.name, version: manifest.version,
+        minAppVersion: typeof requires?.minAppVersion === "string" ? requires.minAppVersion : "0.12.0",
+        ...presentation(isRecord(ave) ? ave.displayName : undefined, manifest.description),
+        payload: { manifest: "plugin.json", components },
+      } };
+    } catch (error) {
+      return { ok: false, code: "SOURCE_INDEX_INVALID", error: `agent-plugin tree is invalid: ${(error as Error).message}` };
+    } finally {
+      await rm(dest, { recursive: true, force: true });
+    }
+  }
   if (!isRecord(ave)) return { ok: false, code: "SOURCE_INDEX_INVALID", error: `plugin.json has no extensions["${AVE_EXTENSION_NAMESPACE}"]` };
   const minAppVersion = isRecord(ave.requires) ? ave.requires.minAppVersion : undefined;
   if (typeof minAppVersion !== "string") {
@@ -127,7 +159,7 @@ function fromPluginManifest(source: string, path: string): Synthesis {
       minAppVersion,
       ...(isRecord(ave.requires) && typeof ave.requires.hostProtocol === "string" ? { hostProtocol: ave.requires.hostProtocol } : {}),
       ...presentation(manifest.displayName, manifest.description),
-      payload: { authority, artifact: path ? { tree: path } : {} },
+      payload: { authority, artifact: input.path ? { tree: input.path } : {} },
     },
   };
 }
@@ -210,7 +242,7 @@ export async function readDirectPackage(input: DirectReadInput): Promise<DirectR
         : { ok: false, code: "SOURCE_INDEX_INVALID", error: checked.error };
     }
     const synthesized: Synthesis = file === "plugin.json"
-      ? fromPluginManifest(source, input.path)
+      ? await fromPluginManifest(source, input)
       : file === "SKILL.md"
         ? fromMarkdown("skill", file, source, placeName(input.path, input.remote), input.commit)
         : file === "AGENTS.md"

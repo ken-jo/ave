@@ -27,7 +27,7 @@ export interface PortableMcpDocument {
 
 export type BundledMcpAuth = Record<string, { auth: "api-key"; apiKeyEnv?: string; apiKeyHeader?: string }>;
 
-type StaticBundledMcpServer =
+export type StaticBundledMcpServer =
   | { transport: "stdio"; command: string; args?: string[]; env?: Record<string, string>; cwd: string; auth?: "api-key"; apiKeyEnv?: string }
   | { transport: "http"; url: string; headers?: Record<string, string>; auth?: "api-key"; apiKeyHeader?: string };
 

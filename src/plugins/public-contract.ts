@@ -46,6 +46,23 @@ export const AGENT_PLUGINS_SCHEMA_URL =
  */
 export const AVE_EXTENSION_NAMESPACE = "ai.agent-connector.ave";
 
+/** The non-executable branch of the portable manifest at a marketplace boundary. */
+export interface AgentPluginPackageManifest {
+  $schema: typeof AGENT_PLUGINS_SCHEMA_URL;
+  name: string;
+  version: string;
+  description: string;
+  extensions?: Record<string, unknown> & {
+    "ai.agent-connector.ave"?: {
+      displayName?: string;
+      icon?: string;
+      iconText?: string;
+      requires?: { minAppVersion: string };
+      mcpAuth?: Record<string, { auth: "api-key"; apiKeyEnv?: string; apiKeyHeader?: string }>;
+    };
+  };
+}
+
 /**
  * The top level Agent Plugins 1.0.0 defines. Anything else up there belongs to
  * no one, and the specification is explicit that a client reports and ignores

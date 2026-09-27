@@ -514,10 +514,11 @@ describe("SourceSyncer", () => {
   it("synthesizes a direct package from the first of plugin.json, SKILL.md, AGENTS.md and server.json (design §8.2)", async () => {
     const { repo, name } = fixture();
     const manifest = {
+      $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
       name: "tree-tool",
       version: "1.2.0",
       description: "Tools from a built tree",
-      extensions: { "ai.agent-connector.ave": { capabilities: ["host:overlay"], requires: { minAppVersion: "0.10.0" } } },
+      extensions: { "ai.agent-connector.ave": { entry: "dist/index.js", tools: [], capabilities: ["host:overlay"], requires: { minAppVersion: "0.10.0" } } },
     };
     const commit = repo.commit(
       {
@@ -547,7 +548,7 @@ describe("SourceSyncer", () => {
       kind: "plugin",
       name: "tree-tool",
       description: "Tools from a built tree",
-      versions: [{ version: "1.2.0", minAppVersion: "0.10.0", artifact: { tree: "plugins/tree-tool" }, authority: manifest.extensions["ai.agent-connector.ave"] }],
+      versions: [{ version: "1.2.0", minAppVersion: "0.10.0", artifact: { tree: "plugins/tree-tool" }, authority: { capabilities: ["host:overlay"], requires: { minAppVersion: "0.10.0" } } }],
     });
     expect(await only("skill-src")).toMatchObject({
       kind: "skill",
@@ -564,10 +565,10 @@ describe("SourceSyncer", () => {
 
   it("synthesizes a plugin at a direct source's root with the default tree rung, and refuses one without minAppVersion", async () => {
     const good = fixture();
-    const extensions = { "ai.agent-connector.ave": { capabilities: [], requires: { minAppVersion: "0.10.0" } } };
-    good.repo.commit({ "plugin.json": `${JSON.stringify({ name: "root-tool", version: "0.1.0", extensions })}\n` }, "root");
+    const extensions = { "ai.agent-connector.ave": { entry: "dist/index.js", tools: [], capabilities: [], requires: { minAppVersion: "0.10.0" } } };
+    good.repo.commit({ "plugin.json": `${JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "root-tool", version: "0.1.0", description: "Root tool", extensions })}\n` }, "root");
     const bad = fixture();
-    bad.repo.commit({ "plugin.json": `${JSON.stringify({ name: "loose", version: "0.1.0", extensions: { "ai.agent-connector.ave": { capabilities: [] } } })}\n` }, "root");
+    bad.repo.commit({ "plugin.json": `${JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "loose", version: "0.1.0", description: "Loose tool", extensions: { "ai.agent-connector.ave": { entry: "dist/index.js", tools: [], capabilities: [] } } })}\n` }, "root");
     const { registry, syncer } = await setup();
     await registry.add({ id: "good-src", origin: "direct", url: server.url(good.name), auth: { kind: "none" } });
     await registry.add({ id: "bad-src", origin: "direct", url: server.url(bad.name), auth: { kind: "none" } });
@@ -576,6 +577,21 @@ describe("SourceSyncer", () => {
     expect(await syncer.sync("good-src")).toMatchObject({ status: "ok", changed: false });
     expect((await syncer.readSnapshot("good-src"))!.packages).toMatchObject([{ kind: "plugin", name: "root-tool", path: "", versions: [{ artifact: {} }] }]);
     expectFailed(await syncer.sync("bad-src"), "PACKAGE_COMPAT_UNDECLARED");
+  });
+
+  it("detects a portable manifest without an executable marker as an agent-plugin", async () => {
+    const { repo, name } = fixture();
+    const manifest = { $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "writer-plugin", version: "1.0.0", description: "Writing tools" };
+    repo.commit({
+      "plugin.json": `${JSON.stringify(manifest)}\n`,
+      "skills/draft/SKILL.md": "---\nname: draft\ndescription: Write a draft\n---\nWrite a draft.\n",
+    }, "portable package");
+    const { registry, syncer } = await setup();
+    await registry.add({ id: "writer-src", origin: "direct", url: server.url(name), auth: { kind: "none" } });
+    expect(await syncer.sync("writer-src")).toMatchObject({ status: "ok" });
+    expect((await syncer.readSnapshot("writer-src"))!.packages).toMatchObject([{
+      kind: "agent-plugin", name: "writer-plugin", versions: [{ minAppVersion: "0.12.0", components: { skills: [{ name: "draft" }] } }],
+    }]);
   });
 
   it("joins a sync that is already running for the same source", async () => {

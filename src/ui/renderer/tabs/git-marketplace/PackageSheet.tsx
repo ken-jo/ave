@@ -24,6 +24,8 @@ import type {
 } from "../../../../shared/git-marketplace.js";
 import { actionLabel, exclusionLabel, failureText, kindLabel, originLabel, shortSha, stateLabel } from "./labels.js";
 import { McpRuntimeSummary } from "./McpRuntimeSummary.js";
+import { componentInventory } from "../../../../marketplace/app/component-delta.js";
+import type { AgentPluginComponents } from "../../../../marketplace/catalog/types.js";
 
 import type { AveApi } from "../../types.js";
 import { InstalledPluginAlerts } from "./InstalledPluginAlerts.js";
@@ -115,6 +117,18 @@ function RungList({ rungs }: { rungs: RungView[] }) {
       ))}
     </ol>
   );
+}
+
+function ComponentsList({ components }: { components: AgentPluginComponents }) {
+  const { t } = useTranslation();
+  const items = componentInventory(components);
+  if (items.length === 0) return <p className="text-muted-foreground">{t("gitMarketplace.components.none")}</p>;
+  return <ul className="space-y-0.5">{items.map((item) => (
+    <li key={`${item.kind}:${item.name}`}>
+      {t(`gitMarketplace.components.${item.kind}`)} · <span className="font-mono">{item.name}</span>
+      {" · "}<code className="text-xs text-muted-foreground" title={item.digest}>{item.digest.slice(0, 12)}</code>
+    </li>
+  ))}</ul>;
 }
 
 export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, onClose, onChanged }: PackageSheetProps) {
@@ -273,6 +287,11 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, onC
                   <AuthorityList authority={detail.authority} />
                 </Section>
               )}
+              {detail.components && (
+                <Section title={t("gitMarketplace.components.title")}>
+                  <ComponentsList components={detail.components} />
+                </Section>
+              )}
               {detail.entry.sourceOrigin === "official" && (
                 <Section title={t("gitMarketplace.detail.badge")}>
                   <p className="text-muted-foreground">{t("gitMarketplace.detail.badgeOfficial")}</p>
@@ -338,11 +357,27 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, onC
                       <AuthorityList authority={reviewPlan.authorityDelta.removed} sign="-" />
                     </Section>
                   )}
+                  {reviewPlan.componentsDelta && (
+                    <Section title={t("gitMarketplace.review.componentChanges")}>
+                      <ul className="space-y-0.5">
+                        {(["added", "removed", "changed"] as const).flatMap((change) => reviewPlan.componentsDelta![change].map((item) => (
+                          <li key={`${change}:${item.kind}:${item.name}`}>
+                            {t(`gitMarketplace.components.${change}`)} · {t(`gitMarketplace.components.${item.kind}`)} · <span className="font-mono">{item.name}</span>
+                          </li>
+                        )))}
+                      </ul>
+                    </Section>
+                  )}
                 </>
               )}
               {!isUpdatePlan(reviewPlan) && reviewPlan.authority && (
                 <Section title={t("gitMarketplace.detail.permissions")}>
                   <AuthorityList authority={reviewPlan.authority} />
+                </Section>
+              )}
+              {reviewPlan.components && (
+                <Section title={t("gitMarketplace.components.title")}>
+                  <ComponentsList components={reviewPlan.components} />
                 </Section>
               )}
               {reviewPlan.mcp && (

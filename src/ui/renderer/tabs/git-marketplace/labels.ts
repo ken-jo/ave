@@ -14,10 +14,11 @@ import type {
 } from "../../../../shared/git-marketplace.js";
 
 /** The kind tabs, in the order of design §15.1. */
-export const KIND_ORDER: readonly PackageKind[] = ["plugin", "mcp", "skill", "agent", "theme", "font", "language", "provider", "messaging-connection"];
+export const KIND_ORDER: readonly PackageKind[] = ["agent-plugin", "plugin", "mcp", "skill", "agent", "theme", "font", "language", "provider", "messaging-connection"];
 
 export function kindLabel(t: Translate, kind: PackageKind): string {
   switch (kind) {
+    case "agent-plugin": return t("gitMarketplace.kind.agentPlugin");
     case "plugin": return t("gitMarketplace.kind.plugin");
     case "mcp": return t("gitMarketplace.kind.mcp");
     case "skill": return t("gitMarketplace.kind.skill");

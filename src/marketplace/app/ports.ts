@@ -4,7 +4,7 @@
  * and the MCP manager; the service only plans, stages and dispatches.
  */
 import type { PluginConfigRetention } from "../../plugins/retired-config.js";
-import type { PackageKind, PluginAuthority } from "../catalog/types.js";
+import type { AgentPluginComponents, PackageKind, PluginAuthority } from "../catalog/types.js";
 import type { StagedContent } from "../content/store.js";
 import type { McpRuntimeSpec } from "../../plugins/types.js";
 import type { InstallAction, InstalledPackage } from "../resolve/identity.js";
@@ -30,6 +30,8 @@ export interface PluginInstallerPort {
 
 export interface ContentInstallerPort {
   list(): Promise<InstalledRecord[]>;
+  /** Read the installed tree's verified component inventory for update review. */
+  installedComponents(name: string): Promise<AgentPluginComponents>;
   /** `adopt`: record an activation the settings already hold (the first-boot migration, design §16.3). */
   install(staged: StagedContent, options: { switchSource: boolean; adopt: boolean }): Promise<{ action: InstallAction }>;
   uninstall(kind: PackageKind, name: string): Promise<void>;

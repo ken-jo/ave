@@ -225,6 +225,10 @@ function reservedPluginName(kind: string, name: string): string | null {
 function indexPackageRules(entry: IndexPackage): string | null {
   const reserved = reservedPluginName(entry.kind, entry.name);
   if (reserved) return reserved;
+  if ((entry.kind === "agent-plugin" && entry.path.startsWith("plugins/"))
+    || (entry.kind === "plugin" && entry.path.startsWith("agent-plugins/"))) {
+    return `${entry.kind} cannot use the other kind's package directory`;
+  }
   const versions = entry.versions;
   if (!versions) {
     return entry.latest ? "latest needs versions[]" : null;
@@ -242,10 +246,14 @@ function indexPackageRules(entry: IndexPackage): string | null {
   for (const version of versions) {
     if (entry.kind === "plugin") {
       if (!version.authority || !version.artifact) return `plugin version ${version.version} needs authority and artifact`;
+      if (version.components !== undefined) return `version ${version.version}: components are for agent plugins only`;
       const rule = pluginRules(version.authority, version.artifact, version.minAppVersion, version.hostProtocol, false);
       if (rule) return `version ${version.version}: ${rule}`;
-    } else if (version.authority || version.artifact) {
-      return `version ${version.version}: authority and artifact are for plugins only`;
+    } else if (entry.kind === "agent-plugin") {
+      if (!version.components) return `agent-plugin version ${version.version} needs components`;
+      if (version.authority || version.artifact || version.hostProtocol) return `agent-plugin version ${version.version} cannot declare extension authority`;
+    } else if (version.authority || version.artifact || version.components) {
+      return `version ${version.version}: authority, artifact and components require their matching kind`;
     }
   }
   return null;

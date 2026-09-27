@@ -173,6 +173,12 @@ function contentInstaller(content: () => Promise<InstalledContentRuntime | null>
         sourceId: entry.origin.sourceId,
         originCommit: entry.origin.commit,
       })),
+    installedComponents: async (name) => {
+      const { loaded } = await (await runtime()).store.load();
+      const content = loaded.find((item) => item.entry.kind === "agent-plugin" && item.entry.name === name)?.content;
+      if (content?.kind !== "agent-plugin") throw new Error(`installed agent-plugin ${name} has no verified components`);
+      return content.components;
+    },
     install: async (staged, options) => {
       const loaded = await runtime();
       const { action } = await loaded.store.install(staged, options);

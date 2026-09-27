@@ -90,6 +90,8 @@ export async function stageContentPackage(plan: PackagePlan, access: RepositoryA
     checkContentFiles(dataPlan.kind, files);
     const content = parseContent(dataPlan.kind, files, {
       name: dataPlan.name,
+      version: descriptor.version,
+      minAppVersion: descriptor.minAppVersion,
       payload: descriptor.payload,
       english: options.english,
       sourceOrigin: dataPlan.sourceOrigin,
@@ -343,6 +345,7 @@ export class ContentStore {
       // The descriptor is not installed; the digest ties these bytes to the ones checked against it at install.
       const content = parseContent(entry.kind, files, {
         name: entry.name,
+        version: entry.version,
         payload: null,
         english: this.options.english,
         sourceOrigin: entry.origin.sourceOrigin,

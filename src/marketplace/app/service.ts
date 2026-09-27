@@ -47,6 +47,7 @@ import { aggregateCatalog, findRevocation, versionExclusions, type CatalogRow, t
 import { PACKAGE_KINDS, type IndexVersion, type PackageKind, type PluginAuthority } from "../catalog/types.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
 import { stageContentPackage } from "../content/store.js";
+import { componentDelta } from "./component-delta.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { MarketplaceError } from "../errors.js";
 import { BareRepo } from "../git/repo.js";
@@ -440,7 +441,7 @@ export class MarketplaceService implements RetirementEntryLookup {
               owner: built.snapshot.marketplace.owner?.name ?? null,
             },
             counts,
-            codeRunning: built.snapshot.packages.filter((pkg) => runsCode(pkg.kind)).length,
+            codeRunning: built.snapshot.packages.filter((pkg) => runsCode(pkg.kind, pkg.versions[0]?.components)).length,
             diagnostics: built.snapshot.diagnostics.map((item) => `${item.subject}: ${item.message}`),
             credentialHelper,
             suggestedId,
@@ -470,7 +471,7 @@ export class MarketplaceService implements RetirementEntryLookup {
         description: descriptor.description ?? null,
         version: descriptor.version,
         versionSynthesized,
-        runsCode: runsCode(descriptor.kind),
+        runsCode: runsCode(descriptor.kind, descriptor.kind === "agent-plugin" ? descriptor.payload.components as IndexVersion["components"] : undefined),
         credentialHelper,
         suggestedId,
       };
@@ -558,7 +559,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       keywords: [...(row.package.keywords ?? [])],
       state: rowState(row, installed, rows, sources),
       required: lockedByPolicy(this.options.policy, row.kind, row.name, row.sourceId) !== undefined,
-      runsCode: runsCode(row.kind),
+      runsCode: runsCode(row.kind, (row.choice.state === "candidate" ? row.choice.version : row.package.versions[0])?.components),
     };
   }
 
@@ -679,6 +680,7 @@ export class MarketplaceService implements RetirementEntryLookup {
         compatible: shownVersion ? appVersionSatisfiesMin(context.appVersion, shownVersion.minAppVersion) : false,
       },
       authority: shownVersion?.authority ? authorityView(shownVersion.authority) : null,
+      components: shownVersion?.components ?? null,
       rungs:
         row.kind === "plugin" && shownVersion?.artifact
           ? rungViews(shownVersion.artifact, row.package.path, await this.treeDeclared(key.sourceId, shownVersion, row.package.path))
@@ -759,8 +761,9 @@ export class MarketplaceService implements RetirementEntryLookup {
       snapshotCommit: row.snapshotCommit,
       versionCommit: version.commit,
       action: installActionView(action),
-      runsCode: runsCode(row.kind),
+      runsCode: runsCode(row.kind, version.components),
       authority: version.authority ? authorityView(version.authority) : null,
+      components: version.components ?? null,
       rungs,
       mcp,
     };
@@ -780,17 +783,23 @@ export class MarketplaceService implements RetirementEntryLookup {
         : null;
     const plan = await this.planInstall(key);
     let delta: UpdatePlanView["authorityDelta"] = null;
+    let componentsDelta: UpdatePlanView["componentsDelta"] = null;
     if (key.kind === "plugin" && plan.authority) {
       const { row } = await this.row(key);
       const listed = row.package.versions.find((item) => item.version === installed.version)?.authority;
       const previous: PluginAuthority | null = listed ?? (await this.options.installers.plugin.installedAuthority(key.name));
       delta = authorityDelta(previous ? authorityView(previous) : authorityView({ capabilities: [] }), plan.authority);
     }
+    if (key.kind === "agent-plugin" && plan.components) {
+      const previous = await this.options.installers.content.installedComponents(key.name);
+      componentsDelta = componentDelta(previous, plan.components);
+    }
     return {
       ...plan,
       from: installed.version,
       commitRange: { from: installed.originCommit, to: plan.snapshotCommit },
       authorityDelta: delta,
+      componentsDelta,
       historyRewritten,
       needsConfirmation: widensAuthority(delta) || historyRewritten !== null,
     };

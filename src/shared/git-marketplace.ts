@@ -7,7 +7,8 @@
  * (`catalog/types.ts`, `errors.ts`), both free of imports, so the renderer
  * reads the same constants main validates against.
  */
-import { PACKAGE_KINDS, type PackageKind } from "../marketplace/catalog/types.js";
+import { PACKAGE_KINDS, type AgentPluginComponents, type PackageKind } from "../marketplace/catalog/types.js";
+import type { ComponentDelta } from "../marketplace/app/component-delta.js";
 import { MARKETPLACE_ERROR_CODES, type MarketplaceErrorCode } from "../marketplace/errors.js";
 import type { DirectDetectedFile } from "../marketplace/sources/direct-package.js";
 
@@ -239,6 +240,7 @@ export interface PackageDetailView {
   };
   compatibility: { minAppVersion: string | null; appVersion: string; compatible: boolean };
   authority: AuthorityView | null;
+  components: AgentPluginComponents | null;
   rungs: RungView[];
   versions: VersionView[];
 }
@@ -265,6 +267,7 @@ export interface InstallPlanView {
   action: InstallActionView;
   runsCode: boolean;
   authority: AuthorityView | null;
+  components: AgentPluginComponents | null;
   rungs: RungView[];
   mcp: McpRuntimeView | null;
 }
@@ -274,6 +277,7 @@ export interface UpdatePlanView extends InstallPlanView {
   /** `origin.commit` of the install to the plan's snapshot commit. */
   commitRange: { from: string | null; to: string };
   authorityDelta: { added: AuthorityView; removed: AuthorityView } | null;
+  componentsDelta: ComponentDelta | null;
   /** The source's history was rewritten and the new history is pending review (custom and direct only). */
   historyRewritten: { pinned: string | null; candidate: string } | null;
   /** New network hosts, secrets or capabilities, or rewritten history: the update needs an explicit decision. */

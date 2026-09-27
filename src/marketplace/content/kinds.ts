@@ -29,6 +29,8 @@ import { parseStrictJson } from "../catalog/strict-json.js";
 import { MarketplaceError } from "../errors.js";
 import type { SourceOrigin } from "../sources/registry.js";
 import type { ContentKind } from "./rules.js";
+import { deriveAgentPluginComponents } from "./agent-plugin-components.js";
+import type { AgentPluginComponents } from "../catalog/types.js";
 
 export interface ContentFile {
   /** Package-relative, `/`-separated. */
@@ -90,13 +92,19 @@ interface InstructionContent {
   description: string;
 }
 
-export type ParsedContent = ThemeContent | LanguageContent | FontContent | ProviderContent | MessagingConnectionContent | InstructionContent;
+interface AgentPluginContent {
+  kind: "agent-plugin";
+  components: AgentPluginComponents;
+}
+
+export type ParsedContent = ThemeContent | LanguageContent | FontContent | ProviderContent | MessagingConnectionContent | InstructionContent | AgentPluginContent;
 
 /** Every content kind has a data model; the name stays for the store's plan type. */
 export type DataContentKind = ParsedContent["kind"];
 
 export function isDataContentKind(kind: ContentKind): kind is DataContentKind {
   return (
+    kind === "agent-plugin" ||
     kind === "theme" ||
     kind === "language" ||
     kind === "font" ||
@@ -110,6 +118,9 @@ export function isDataContentKind(kind: ContentKind): kind is DataContentKind {
 export interface ContentContext {
   /** The package name. */
   name: string;
+  /** Required for an agent plugin so its manifest cannot claim another version. */
+  version?: string;
+  minAppVersion?: string;
   /** The descriptor's payload (already schema-checked); null when loading an installed package. */
   payload: Record<string, unknown> | null;
   /** The English catalog: the keys a language may translate and the placeholders each must keep. */
@@ -459,6 +470,14 @@ function instruction(kind: "skill" | "agent", files: Map<string, Buffer>, contex
 export function parseContent(kind: DataContentKind, files: readonly ContentFile[], context: ContentContext): ParsedContent {
   const map = fileMap(files);
   switch (kind) {
+    case "agent-plugin": {
+      if (!context.version) throw new MarketplaceError("MANIFEST_MISMATCH", "agent-plugin version is required to verify plugin.json");
+      const components = deriveAgentPluginComponents(files, { name: context.name, version: context.version, minAppVersion: context.minAppVersion });
+      if (context.payload !== null && canonicalStringify(context.payload.components) !== canonicalStringify(components)) {
+        throw new MarketplaceError("MANIFEST_MISMATCH", "agent-plugin components differ from the package tree");
+      }
+      return { kind, components };
+    }
     case "skill":
     case "agent":
       return instruction(kind, map, context);

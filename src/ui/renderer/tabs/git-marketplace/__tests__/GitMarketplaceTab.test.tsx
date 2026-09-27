@@ -149,6 +149,24 @@ describe("GitMarketplaceTab search answers", () => {
 });
 
 describe("GitMarketplaceTab package sheet", () => {
+  it("shows plugin components and their digest changes before an update", async () => {
+    const item = entry("team", "agent-plugin", "writer-plugin", { state: { state: "update", from: "1.0.0", to: "1.1.0" } });
+    const components = { skills: [{ name: "draft", hasScripts: false, digest: "a".repeat(64) }], mcpServers: {}, prompts: [], agents: [], routineTemplates: [], hooks: [] };
+    const fake = fakeMarketplace({ sources: [team], entries: [item] });
+    fake.market.packageDetail.mockResolvedValue({ ok: true, value: detail(item, { components }) });
+    fake.market.planUpdate.mockResolvedValue({ ok: true, value: {
+      ...installPlan(item, { components }), from: "1.0.0", commitRange: { from: COMMIT_A, to: COMMIT_B },
+      authorityDelta: null, componentsDelta: { added: [], removed: [], changed: [{ kind: "skill", name: "draft", digest: "b".repeat(64) }] },
+      historyRewritten: null, needsConfirmation: false,
+    } });
+    renderTab(fake);
+    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:agent-plugin:writer-plugin")).getByTestId("git-marketplace:card:state"));
+    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    const review = await within(sheet).findByTestId("git-marketplace:review");
+    expect(review).toHaveTextContent("스킬 · draft");
+    expect(review).toHaveTextContent("변경됨 · 스킬 · draft");
+  });
+
   it("reviews the plan and installs exactly the plan it showed", async () => {
     const calendar = entry("team", "plugin", "calendar");
     const fake = fakeMarketplace({ sources: [team], entries: [calendar] });

@@ -91,6 +91,7 @@ function packageFromDescriptor(descriptor: PackageDescriptor, path: string, comm
   const plugin = descriptor.kind === "plugin"
     ? (descriptor.payload as { authority: PluginAuthority; artifact: PluginArtifactPins })
     : null;
+  const agentComponents = descriptor.kind === "agent-plugin" ? descriptor.payload.components : undefined;
   const version: IndexVersion = {
     version: descriptor.version,
     commit,
@@ -98,6 +99,7 @@ function packageFromDescriptor(descriptor: PackageDescriptor, path: string, comm
     ...(descriptor.hostProtocol ? { hostProtocol: descriptor.hostProtocol } : {}),
     ...(descriptor.platforms ? { platforms: descriptor.platforms } : {}),
     ...(plugin ? { authority: plugin.authority, artifact: plugin.artifact } : {}),
+    ...(agentComponents ? { components: agentComponents as IndexVersion["components"] } : {}),
     publishedAt,
   };
   return {
