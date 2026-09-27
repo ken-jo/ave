@@ -1,0 +1,16 @@
+{
+  "request": {
+    "id": 39,
+    "jsonrpc": "2.0",
+    "method": "ave/host/resizeFloatingPanel",
+    "params": {
+      "height": 200,
+      "panelId": "panel-1"
+    }
+  },
+  "response": {
+    "id": 39,
+    "jsonrpc": "2.0",
+    "result": 200
+  }
+}

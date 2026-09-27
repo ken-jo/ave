@@ -9,6 +9,7 @@ import type { PluginRuntime, PluginToolInvocationDelegate,
 } from "../plugins/runtime.js";
 import type { PluginMarketplaceService } from "../plugins/marketplace.js";
 import type { SettingsService } from "../data/settings-store.js";
+import type { HostFetchTransport } from "../main/host-fetch-guard.js";
 import type { MemoryManager } from "../memory/memory-manager.js";
 import type { MemoryCaptureService } from "../memory/memory-capture-service.js";
 import type { InputClassifier } from "../core/input-classifier.js";
@@ -361,5 +362,5 @@ export interface AppServices {
    * guard re-validates every redirect target, which it can only do if the
    * transport hands the 3xx back instead of chasing it.
    */
-  singleHopNetworkFetch: typeof fetch;
+  singleHopNetworkFetch: HostFetchTransport;
 }

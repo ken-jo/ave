@@ -1,0 +1,16 @@
+{
+  "request": {
+    "id": 10,
+    "jsonrpc": "2.0",
+    "method": "ave/host/storage/writeEncrypted",
+    "params": {
+      "plaintext": "the token cache",
+      "relPath": "tokens/cache.bin"
+    }
+  },
+  "response": {
+    "id": 10,
+    "jsonrpc": "2.0",
+    "result": null
+  }
+}

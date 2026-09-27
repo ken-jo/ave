@@ -282,7 +282,7 @@ describe("config.set crosses as plain JSON and comes back as nothing", () => {
     // to prevent.
     const { hostApi, api } = await harness({ config: { theme: "dark" } });
     api.rejectSet(new Error("secret fields must be saved via hostApi.setSecret()"));
-    await expect(hostApi.config.set("theme", "light")).rejects.toThrow(/setSecret/u);
+    await expect(hostApi.config.set("theme", "light")).rejects.toThrow("Host request failed.");
     expect(hostApi.config.get("theme")).toBe("dark");
   });
 

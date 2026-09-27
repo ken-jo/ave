@@ -1,0 +1,30 @@
+{
+  "request": {
+    "id": 45,
+    "jsonrpc": "2.0",
+    "method": "ave/host/raiseAlert",
+    "params": {
+      "input": {
+        "key": "mail-1",
+        "kind": "mail-reply",
+        "priority": "high",
+        "slots": {
+          "subject": "Quarterly report"
+        }
+      }
+    }
+  },
+  "response": {
+    "id": 45,
+    "jsonrpc": "2.0",
+    "result": {
+      "alertId": "golden-alert-id",
+      "delivered": {
+        "card": true,
+        "osNotification": false,
+        "toast": false
+      },
+      "status": "raised"
+    }
+  }
+}

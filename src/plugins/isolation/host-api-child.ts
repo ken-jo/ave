@@ -9,7 +9,7 @@
  * The mirror of `host-api-dispatcher.ts`: where the host decodes, this encodes,
  * and where the host encodes, this reconstructs. A plugin holding one of these
  * stubs sees the signature `public-contract.ts` publishes — a real `Response`, a
- * real `SpawnedPluginWorker` handle, a `bearer()` it can call — built out of the
+ * real `SpawnedPluginWorker` handle, a credential lease it can release — built out of the
  * JSON that actually crossed.
  *
  * THREE STUBS DO SOMETHING; THE REST RELAY. `storage.read` decodes a tagged byte
@@ -29,11 +29,8 @@
  * security rule sitting in the least-trusted process, which is a place a plugin
  * can edit.
  *
- * TWO PLACES A CHECK IS DELIBERATELY DUPLICATED, both named where they happen:
- * `emitEvent`'s capability test (to preserve a synchronous throw the wire cannot
- * carry) and `bearer()`-after-`release()` (because the key is a child-local
- * copy). Neither is a substitute for the host's decision; both are re-decided
- * host-side.
+ * The `emitEvent` capability test is duplicated to preserve a synchronous
+ * throw that the wire cannot carry; the host still makes the authority decision.
  *
  * TRAILING OPTIONALS ARE OMITTED, NOT SENT AS `undefined`. `describeNonJson`
  * refuses `undefined` INSIDE an array — there it does not mean absent, it
@@ -78,7 +75,7 @@ import {
   decodeWireBinary,
   decodeWireHttpResponse,
   encodeWireBytes,
-  encodeWireRequestInit,
+  encodeHostFetchInit,
   type ConfigSubscriptionPath,
   type HostApiHandle,
   type HostApiPath,
@@ -183,7 +180,7 @@ export interface ServiceChildMemberDeps {
      * on its own, because it lives in the stub's closure rather than in the
      * entry.
      */
-    onRevoked?: () => void,
+    onRevoked?: (reason: "revoked" | "peer-gone") => void,
   ) => () => void;
   /**
    * `context.log`, so a failure with no caller left to throw at is still seen.
@@ -323,8 +320,8 @@ export function createServiceChildMembers(
      */
     hostFetch: async (...args) => {
       const input = args[0] as string | URL;
-      const init = args[1] as RequestInit | undefined;
-      const wire = encodeWireRequestInit(init, "hostFetch(init)");
+      const init = args[1] as import("../public-contract.js").HostFetchInit | undefined;
+      const wire = await encodeHostFetchInit(init, "hostFetch(init)");
       const reply = await call(
         "hostFetch",
         positional(String(input), wire),
@@ -333,64 +330,70 @@ export function createServiceChildMembers(
       return decodeWireHttpResponse(reply, "hostFetch(result)");
     },
 
-    /**
-     * `resolveApiKey` hands back a lease, not a key holder. `bearer()` reads a
-     * child-local copy and `release()` drops it AND ends the host registration,
-     * so the host can unwire its own — the two-sided lifetime the contract
-     * declares.
-     */
+    /** Adopt the host's registration so release and closure share its id. */
     resolveApiKey: async (...args) => {
       const opts = args[0] as {
         purpose: WireResolveApiKeyOptions["purpose"];
         vendor?: WireResolveApiKeyOptions["vendor"];
+        exposure?: WireResolveApiKeyOptions["exposure"];
         signal?: AbortSignal;
       };
       const wire: WireResolveApiKeyOptions = {
         purpose: opts.purpose,
         ...(opts.vendor !== undefined ? { vendor: opts.vendor } : {}),
+        ...(opts.exposure !== undefined ? { exposure: opts.exposure } : {}),
       };
-      const lease = requireHandle(
-        await call("resolveApiKey", [wire], opts?.signal),
-        "resolveApiKey",
-      ) as unknown as WireApiKeyLease;
+      const lease = await call("resolveApiKey", [wire], opts?.signal) as WireApiKeyLease;
       if (!lease.ok) return { ok: false as const, reason: lease.reason };
-      let key: string | undefined = lease.key;
+      const handle = requireHandle(lease, "resolveApiKey") as WireApiKeyLease & { ok: true };
+      let closedReason: "revoked" | "peer-gone" | undefined;
+      let released = false;
+      const listeners = new Set<(reason: "revoked" | "peer-gone") => void>();
       const dispose = deps.adoptSubscription(
         "resolveApiKey",
-        lease.handleId,
+        handle.handleId,
         // A lease carries no events. One arriving means the host is pushing
         // on a registration it has nothing to push for, which is reported
         // rather than ignored: silently dropping it would hide a real
         // disagreement about what this member's id means.
         () => {
           deps.report("hostApi.resolveApiKey: the host pushed an event on a lease", {
-            handleId: lease.handleId,
+            handleId: handle.handleId,
           });
         },
-        // The host revoked the lease. Drop the child's copy so a later
-        // `bearer()` cannot return a credential the host has already unwired.
-        // This is the whole reason the credential is held as a mutable
-        // closure variable rather than a constant.
-        () => {
-          key = undefined;
+        // A closure before adoption is replayed by the child runtime.
+        (reason) => {
+          closedReason = reason;
+          if (!released) for (const listener of listeners) listener(reason);
+          listeners.clear();
         },
       );
+      const release = async () => {
+        if (released) return;
+        released = true;
+        listeners.clear();
+        dispose();
+      };
+      if (handle.exposure === "raw") return {
+        ok: true as const,
+        exposure: "raw" as const,
+        vendor: handle.vendor,
+        ...(handle.baseUrl !== undefined ? { baseUrl: handle.baseUrl } : {}),
+        key: handle.key,
+        release,
+      };
       return {
         ok: true as const,
-        vendor: lease.vendor,
-        ...(lease.baseUrl !== undefined ? { baseUrl: lease.baseUrl } : {}),
-        bearer: () => {
-          if (key === undefined) {
-            throw new Error(
-              `[plugin:${pluginId}] hostApi.resolveApiKey().bearer: lease already released`,
-            );
-          }
-          return key;
+        exposure: "lease" as const,
+        leaseId: handle.handleId,
+        vendor: handle.vendor,
+        ...(handle.baseUrl !== undefined ? { baseUrl: handle.baseUrl } : {}),
+        onClosed: (listener: (reason: "revoked" | "peer-gone") => void) => {
+          if (closedReason) listener(closedReason);
+          else if (!released) listeners.add(listener);
+          return () => { listeners.delete(listener); };
         },
-        release: () => {
-          key = undefined;
-          dispose();
-        },
+        release,
       };
     },
 

@@ -26,7 +26,7 @@ import {
 import { getDeclaredEmittedEvents } from "../../plugins/runtime/manifest-validation.js";
 import { registerManifestEventSubscriptions } from "../plugins.js";
 import { mkdtempSync } from "node:fs";
-import { agentPluginsDocument } from "../../plugins/__tests__/test-helpers.js";
+import { servedAgentPluginsDocument } from "../../plugins/__tests__/test-helpers.js";
 
 describe("capabilities module namespace policy", () => {
   it("classifies private namespaces as 'private'", () => {
@@ -67,10 +67,10 @@ describe("capabilities module namespace policy", () => {
   });
 
   it("KNOWN_CAPABILITIES is the reduced host-ENFORCED set (Ph1/Ph2)", () => {
-    // After the capabilities reduction the enforced vocab is exactly the two
-    // strings the host gates on at runtime.
+    // Raw credential export adds a distinct capability to the host-enforced
+    // vocabulary; the lease operation remains under its existing gate.
     expect([...KNOWN_CAPABILITIES].sort()).toEqual(
-      ["external-auth-consumer", "host:overlay"].sort(),
+      ["external-auth-consumer", "host:overlay", "secrets:raw-api-key"].sort(),
     );
     // The 6 dead strings and the 4 event-source strings (now inferred from
     // emittedEvents) are all gone from the enforced vocab.
@@ -195,7 +195,7 @@ describe("registerManifestEventSubscriptions namespace gate", () => {
       eventSubscriptions,
       ...extra,
     };
-    await writeFile(join(pluginDir, "plugin.json"), JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
+    await writeFile(join(pluginDir, "plugin.json"), JSON.stringify(servedAgentPluginsDocument(manifest)), "utf-8");
     await mkdir(join(testDir, "plugins"), { recursive: true });
     await writeFile(
       registryPath,
@@ -342,7 +342,7 @@ describe("capability emit gate", () => {
       emittedEvents,
       ...extra,
     };
-    await writeFile(join(pluginDir, "plugin.json"), JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
+    await writeFile(join(pluginDir, "plugin.json"), JSON.stringify(servedAgentPluginsDocument(manifest)), "utf-8");
     await mkdir(join(testDir, "plugins"), { recursive: true });
     await writeFile(
       registryPath,

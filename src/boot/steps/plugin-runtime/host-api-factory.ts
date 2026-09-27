@@ -28,7 +28,7 @@ import type {
   AudioCaptureRequest,
 } from "../../../plugins/public-contract.js";
 import { FloatingDock } from "../../../main/floating-dock.js";
-import { evaluateHostFetch, runHostFetchHops } from "../../../main/host-fetch-guard.js";
+import { CREDENTIAL_HEADERS, evaluateHostFetch, runHostFetchHops, type HostFetchTransport } from "../../../main/host-fetch-guard.js";
 import {
   partitionCookieHeaderForUrl,
   partitionCookiesForUrl,
@@ -55,7 +55,9 @@ import { shouldBlockPluginSecretRead } from "../../../plugins/secret-shape.js";
 import {
   canEmitEvent,
   CAPABILITY_EXTERNAL_AUTH_CONSUMER,
+  CAPABILITY_RAW_API_KEY,
 } from "../../../plugins/capabilities.js";
+import { appVersionSatisfiesMin } from "../../../shared/semver-compare.js";
 import { auditPluginEmitDenial } from "../../../plugins/emit-denial-audit.js";
 import { getDeclaredEmittedEvents, manifestDocumentSha256 } from "../../../plugins/runtime/manifest-validation.js";
 import { canonicalJSON } from "../../../plugins/secret-access/canonical-json.js";
@@ -86,9 +88,15 @@ import { logPluginLifecycle, PluginPhase } from "../../../plugins/lifecycle-log.
 import { incrementHostSecretCounter, sanitizeKeyPrefix } from "../../../telemetry/host-secret-counters.js";
 import type { HostSecretGrantEvidence } from "../../../plugins/secret-access/grants.js";
 import { runSecretGate } from "../../../plugins/secret-access/secret-gate.js";
+import { CredentialLeaseRegistry, CredentialLeaseError, type CredentialScheme } from "../../../plugins/secret-access/credential-lease-registry.js";
+import { LeaseDenialAudit } from "../../../plugins/secret-access/lease-denial-audit.js";
+import { HostApiBoundaryError, validateWireAuth } from "../../../plugins/isolation/host-api-wire.js";
 import type { GrantEvidenceReader } from "./grant-evidence.js";
 import {
   resolveApiKey as resolveApiKeyImpl,
+  apiKeyIdentities,
+  normalizeVendor,
+  type CredentialIssuanceStage,
   type ResolveApiKeyPurpose,
   type ResolveApiKeyVendor,
 } from "../../../main/host-api/resolve-api-key.js";
@@ -249,6 +257,8 @@ export interface CreateHostApiFactoryDeps {
   readAppPreference: (pluginId: string, key: string) => unknown;
   settingsService: SettingsService;
   bootAuditLogger: AuditLogger;
+  leaseDenialAudit?: LeaseDenialAudit;
+  _onCredentialIssuanceStageForTest?: (stage: CredentialIssuanceStage) => Promise<void> | void;
   /**
    * The very callback handed to `new PluginRuntime({ auditLog })`, narrowed to
    * what the storage rejection sink needs. Reused (rather than re-derived from
@@ -256,7 +266,7 @@ export interface CreateHostApiFactoryDeps {
    * same refusal on the webview-bridge path land as one record shape.
    */
   pluginRuntimeAuditLog: PluginStorageAuditLog;
-  networkFetch: typeof fetch;
+  networkFetch: HostFetchTransport;
   /**
    * The main window captured at boot. Only a FALLBACK — read
    * {@link CreateHostApiFactoryDeps.getMainWindow} instead wherever the host
@@ -357,6 +367,11 @@ export function createHostApiFactory(
     getAlertsService,
     grantEvidence,
   } = deps;
+  const credentialRegistry = new CredentialLeaseRegistry(
+    settingsService,
+    (pluginId) => permissionManager?.getPluginRevokeEpoch(pluginId) ?? 0,
+  );
+  const leaseDenialAudit = deps.leaseDenialAudit ?? new LeaseDenialAudit(bootAuditLogger);
 
   /**
    * The window a host→renderer send (or a host-opened child window's parent)
@@ -426,6 +441,7 @@ export function createHostApiFactory(
       },
     };
     const hostIncarnation = incarnation;
+    hostIncarnation.registerDisposer(() => credentialRegistry.endIncarnation(hostIncarnation));
     const hostEffects = hostIncarnation.generationScope;
     const registerOwnedDisposer = (dispose: () => void): (() => void) => {
       let disposed = false;
@@ -500,20 +516,27 @@ export function createHostApiFactory(
     ): Awaited<ReturnType<NonNullable<PluginHostApi["resolveApiKey"]>>> => {
       if (!result.ok) return result;
       let released = false;
-      const release = () => {
+      const release = async () => {
         if (released) return;
         released = true;
-        result.release();
+        await result.release();
       };
-      hostIncarnation.registerDisposer(release);
-      return {
+      hostIncarnation.registerDisposer(() => { void release(); });
+      const bound = {
         ...result,
-        bearer: () => {
-          assertIssuedCapabilityActive("hostApi.resolveApiKey().bearer");
-          return result.bearer();
-        },
         release,
       };
+      if (result.exposure === "raw") {
+        const metadata = result as typeof result & {
+          handleId: string;
+          onClosed: (listener: (reason: "revoked" | "peer-gone") => void) => () => void;
+        };
+        Object.defineProperties(bound, {
+          handleId: { value: metadata.handleId },
+          onClosed: { value: metadata.onClosed },
+        });
+      }
+      return bound;
     };
     const bindWorkerHandle = (
       worker: Awaited<ReturnType<NonNullable<PluginHostApi["spawnWorker"]>>>,
@@ -784,19 +807,48 @@ export function createHostApiFactory(
         return registerOwnedDisposer(unsubscribe);
       },
       // Host implementation of the public contract's `resolveApiKey`.
-      // Returns the `ResolveApiKeyResult` discriminated union (bearer +
-      // release on success; typed reason on failure). Plugins read the
-      // key via `result.bearer()` and SHOULD call `result.release()` in a
-      // `finally` so the captured string has a deterministic lifetime.
+      // Returns an opaque host-owned lease by default. Only a reviewed raw
+      // exposure returns copied bytes.
       // All four tiers are evaluated in-line inside `resolveApiKeyImpl`;
       // the call here is a thin closure capture of pluginId + manifest +
       // manifestSha256 + the shared audit/settings services.
       resolveApiKey: async (opts) => {
+        const request = {
+          purpose: opts.purpose,
+          vendor: opts.vendor,
+          exposure: opts.exposure ?? "lease",
+          signal: opts.signal,
+        };
+        if (request.exposure !== "lease" && request.exposure !== "raw") {
+          throw new HostApiBoundaryError("argument-marshalling-rejected", "Unknown credential exposure.");
+        }
+        const activeVendor = settingsService.get("llm").provider;
+        const normalizedSource = normalizeVendor(request.vendor ?? activeVendor);
+        if (normalizedSource === "gemini" || normalizedSource === "vertex-ai") {
+          return { ok: false, reason: "vendor-unsupported" };
+        }
+        const permissionSignal = permissionManager?.getPluginRevokeSignal(pluginId) ?? new AbortController().signal;
+        const identities = apiKeyIdentities(request, pluginId, settingsService);
+        const reservation = credentialRegistry.reserve(
+          pluginId, hostIncarnation, identities, permissionSignal, request.exposure,
+        );
+        if (!reservation) return { ok: false, reason: "lease-limit" };
+        try {
+        if (request.exposure === "raw") {
+          const reviewedVersion = installPluginId === null ? null
+            : await grantEvidence.receiptReviewedAppVersion?.(installPluginId) ?? null;
+          if (!manifest.capabilities?.includes(CAPABILITY_RAW_API_KEY)
+            || !reviewedVersion || !appVersionSatisfiesMin(reviewedVersion, "0.12.0")) {
+            reservation.finish();
+            return { ok: false, reason: "raw-exposure-denied" };
+          }
+        }
         const result = await resolveApiKeyImpl(
           {
-            purpose: opts.purpose as ResolveApiKeyPurpose,
-            vendor: opts.vendor as ResolveApiKeyVendor | undefined,
-            signal: opts.signal,
+            purpose: request.purpose as ResolveApiKeyPurpose,
+            vendor: request.vendor as ResolveApiKeyVendor | undefined,
+            exposure: request.exposure,
+            signal: request.signal,
           },
           {
             pluginId,
@@ -806,10 +858,10 @@ export function createHostApiFactory(
             auditLogger: bootAuditLogger,
             readRegistryEntry,
             grantEvidence: hostSecretGrantEvidence,
-            // Bind the permission-manager revoke signal
-            // accessor so an in-flight bearer aborts when permissions
-            // change for this plugin. When permissionManager is not wired
-            // (test runtimes) the host-api falls back to caller-signal-only.
+            ...(deps._onCredentialIssuanceStageForTest
+              ? { _onCredentialIssuanceStageForTest: deps._onCredentialIssuanceStageForTest }
+              : {}),
+            // Bind the permission revoke signal for the issuing request.
             ...(permissionManager
               ? {
                   getPluginRevokeSignal: (id: string) =>
@@ -818,13 +870,66 @@ export function createHostApiFactory(
               : {}),
           },
         );
-        if (!hostIncarnation.isActive() && result.ok) {
-          result.release();
-          throw new Error(
-            `[plugin:${pluginId}] hostApi.resolveApiKey: plugin instance is no longer active`,
-          );
+        if (!result.ok) {
+          reservation.finish();
+          return result;
         }
-        return bindApiKeyResult(result);
+        let secret: string;
+        try { secret = result.bearer(); } catch {
+          reservation.finish(); result.release();
+          return { ok: false, reason: request.signal?.aborted ? "aborted" : "stale-authorization" };
+        }
+        const llm = settingsService.get("llm");
+        const configuredBaseUrl = (llm.vendors as Record<string, { baseUrl?: string } | undefined> | undefined)?.[result.vendor]?.baseUrl;
+        const defaultBaseUrl = result.vendor === "openai" ? "https://api.openai.com"
+          : result.vendor === "claude" ? "https://api.anthropic.com" : undefined;
+        const baseUrl = configuredBaseUrl || result.baseUrl || defaultBaseUrl;
+        const scheme: CredentialScheme | undefined = result.vendor === "openai" ? "bearer"
+          : result.vendor === "azure-foundry" ? "api-key"
+            : result.vendor === "claude" ? "x-api-key" : undefined;
+        if (!scheme) { reservation.finish(); result.release(); return { ok: false, reason: "vendor-unsupported" }; }
+        if (result.source === "host-secret" && !baseUrl) {
+          reservation.finish(); result.release(); return { ok: false, reason: "endpoint-unavailable" };
+        }
+        const allowedDomains = manifest.networkAccess?.allowedDomains ?? [];
+        if (request.exposure === "lease" && result.source === "plugin-own" && allowedDomains.length === 0) {
+          reservation.finish(); result.release(); return { ok: false, reason: "audience-not-allowlisted" };
+        }
+        let origin: string | undefined;
+        try {
+          if (baseUrl) {
+            const endpoint = new URL(baseUrl);
+            if (endpoint.protocol === "https:") origin = endpoint.origin;
+          }
+        } catch { /* invalid host endpoint is unavailable */ }
+        if (result.source === "host-secret" && !origin) {
+          reservation.finish(); result.release(); return { ok: false, reason: "endpoint-unavailable" };
+        }
+        if (result.source === "host-secret" && !urlHostMatchesAllowList(new URL(origin!).hostname, allowedDomains)) {
+          reservation.finish(); result.release(); return { ok: false, reason: "audience-not-allowlisted" };
+        }
+        if (!hostIncarnation.isActive()) {
+          reservation.finish(); result.release(); return { ok: false, reason: "stale-authorization" };
+        }
+        if (deps._onCredentialIssuanceStageForTest) await deps._onCredentialIssuanceStageForTest("before-reply");
+        const registered = credentialRegistry.register(reservation, {
+          key: result.keyName,
+          vendor: result.vendor,
+          ...(baseUrl ? { baseUrl } : {}),
+          secret,
+          scheme,
+          permissionSignal,
+          audience: result.source === "host-secret"
+            ? (url) => url.origin === origin
+            : (url) => urlHostMatchesAllowList(url.hostname, allowedDomains),
+        });
+        result.release();
+        return registered ? bindApiKeyResult(registered)
+          : { ok: false, reason: request.signal?.aborted ? "aborted" : "stale-authorization" };
+        } catch (error) {
+          reservation.finish();
+          throw error;
+        }
       },
       getSecret: async (key) => {
         // #893 Stage 2 — the four-tier secret access gate. The DECISION lives
@@ -857,6 +962,7 @@ export function createHostApiFactory(
         // which sits inside the plugin's writable surface.
         const outcome = await runSecretGate({
           pluginId,
+          operation: "export",
           key,
           allowlist: manifest.hostSecrets?.read ?? [],
           manifestSha256,
@@ -912,6 +1018,7 @@ export function createHostApiFactory(
         return lateBinding.llmCallerRef.fn(prompt, opts);
       },
       hostFetch: async (input, init) => {
+        try {
         // Capability-gated host-mediated egress through Electron net (Chromium
         // stack → OS proxy incl. PAC/WPAD + OS trust store), for plugins whose
         // Node libraries (e.g. MSAL) can't be configured for the corporate
@@ -947,6 +1054,16 @@ export function createHostApiFactory(
         // The host owns the verb here — non-forgeable. Default "GET" mirrors
         // `fetch`'s default when init.method is omitted/empty/non-string.
         const { method: rawVerb, ...restInit } = init ?? {};
+        const hasAuth = Object.hasOwn(restInit, "auth");
+        const auth = hasAuth ? validateWireAuth(restInit.auth) : undefined;
+        const { auth: _auth, ...liveInit } = restInit;
+        const callerHeaders = new Headers(liveInit.headers ?? {});
+        const transportInit = { ...liveInit, headers: callerHeaders };
+        if (auth) {
+          for (const header of CREDENTIAL_HEADERS) {
+            if (callerHeaders.has(header)) throw new CredentialLeaseError("credential-conflict", { header });
+          }
+        }
         const methodSnapshot =
           typeof rawVerb === "string" && rawVerb.length > 0 ? rawVerb.toUpperCase() : "GET";
         // hostFetch is the ONLY verb-derived chokepoint, so the generic recorder
@@ -1021,6 +1138,8 @@ export function createHostApiFactory(
           });
         }
         assertActiveHostApi(pluginId, hostIncarnation, "hostApi.hostFetch");
+        const credentialUse = auth ? credentialRegistry.beginUse(auth.lease, pluginId, hostIncarnation) : undefined;
+        credentialUse?.assertLive("after-await");
         // The host-observed effect for this egress was recorded above from the
         // SAME verb snapshot that drives `decision` and pins the wire below, so
         // the recorded effect == decision.effect == the wire verb (no divergence).
@@ -1057,7 +1176,7 @@ export function createHostApiFactory(
         let injectSessionCookie: ((target: URL) => Promise<string>) | undefined;
         if (typeof authCookieSub === "string" && authCookieSub.length > 0) {
           const pluginSentCookie = new Headers(
-            (restInit.headers as HeadersInit | undefined) ?? {},
+            (transportInit.headers as HeadersInit | undefined) ?? {},
           ).has("cookie");
           if (pluginSentCookie) {
             auditEgressDeny(
@@ -1075,11 +1194,12 @@ export function createHostApiFactory(
           injectSessionCookie = (target: URL) =>
             partitionCookieHeaderForUrl(partitionSession, target);
         }
-        return runHostFetchHops({
+        return await runHostFetchHops({
           pluginId,
           first: decision,
-          init: restInit,
+          init: transportInit,
           transport: networkFetch,
+          ...(credentialUse ? { credentialUse } : {}),
           allowedDomains: manifest.networkAccess?.allowedDomains ?? [],
           allowPrivateNetworks: manifest.networkAccess?.allowPrivateNetworks === true,
           ...(injectSessionCookie ? { injectSessionCookie } : {}),
@@ -1094,7 +1214,17 @@ export function createHostApiFactory(
             } catch { /* audit must not break host */ }
           },
           auditDeny: auditEgressDeny,
+          onResponseBodyError: (error) => {
+            if (error instanceof CredentialLeaseError) leaseDenialAudit.record(pluginId, "hostFetch", error);
+          },
         });
+        } catch (error) {
+          if (error instanceof CredentialLeaseError) leaseDenialAudit.record(pluginId, "hostFetch", error);
+          else if (error instanceof HostApiBoundaryError && error.code === "credential-conflict") {
+            leaseDenialAudit.record(pluginId, "hostFetch", { code: "credential-conflict" });
+          }
+          throw error;
+        }
       },
       logEvent: (level, message, data) => {
         try {

@@ -1,4 +1,4 @@
-import { createBootHostFixture, createDesktopHostFixture } from "../../../__tests__/support/host-runtime.js";
+import { createBootHostFixture, createDesktopHostFixture, stationaryLeaseState } from "../../../__tests__/support/host-runtime.js";
 /**
  * plugin-runtime.test.ts
  *
@@ -146,7 +146,7 @@ import { createHash } from "node:crypto";
 import { canonicalJSON } from "../../../plugins/secret-access/canonical-json.js";
 import { recordManifestDocument } from "../../../plugins/runtime/manifest-validation.js";
 import { agentPluginsDocument } from "../../../plugins/__tests__/test-helpers.js";
-import type { PluginManifest } from "../../../plugins/types.js";
+import type { PluginHostApi, PluginManifest } from "../../../plugins/types.js";
 
 /**
  * The pin an installer records for `manifest`: the digest of its plugin.json
@@ -402,6 +402,7 @@ describe("initPluginRuntime partition policy", () => {
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           if (key === "llm") return { provider: "openai" };
           if (key === "pluginConfigs") return {};
@@ -464,6 +465,7 @@ describe("initPluginRuntime partition policy", () => {
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           if (key === "llm") return { provider: "openai" };
           if (key === "pluginConfigs") return {};
@@ -553,6 +555,7 @@ describe("initPluginRuntime partition policy", () => {
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           if (key === "llm") return { provider: "openai" };
           if (key === "pluginConfigs") return {};
@@ -651,6 +654,7 @@ describe("initPluginRuntime HostApi factory", () => {
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           if (key === "llm") return { provider: "openai" };
           if (key === "pluginConfigs") return {};
@@ -853,6 +857,7 @@ describe("initPluginRuntime HostApi factory", () => {
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           if (key === "llm") return { provider: "openai" };
           if (key === "pluginConfigs") return {};
@@ -960,6 +965,7 @@ describe("initPluginRuntime HostApi factory", () => {
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           if (key === "llm") return { provider: "openai" };
           if (key === "pluginConfigs") return {};
@@ -1059,6 +1065,7 @@ describe("initPluginRuntime HostApi factory", () => {
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           if (key === "llm") return { provider: "openai" };
           if (key === "pluginConfigs") return {};
@@ -1123,6 +1130,7 @@ describe("initPluginRuntime HostApi factory", () => {
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           if (key === "llm") return { provider: "openai" };
           if (key === "pluginConfigs") return {};
@@ -1182,17 +1190,17 @@ describe("initPluginRuntime HostApi factory", () => {
     expect(evilApi).toHaveProperty("onEvent");
   });
 
-  // PR #894 review B6 — active-vendor cross-check in getSecret
-  it("B6 — getSecret denies non-active-vendor llm.apiKey.* even when allowlisted", async () => {
+  it("resolveApiKey denies a non-active vendor even when both keys are allowlisted", async () => {
     runtimeTestState.capturedRuntimeOptions = null;
     const bootAuditLogger = { log: vi.fn() };
 
     // `meeting` is in the app's grant table and installed from the official
-    // source as the pinned artifact, so Tier 3 lets the call through; B6
-    // exercises the Tier-4 active-vendor cross-check inside getSecret.
+    // source as the pinned artifact, so Tier 3 lets the call through and
+    // the lease gate reaches the active-vendor cross-check.
     const b6Manifest = {
       id: "meeting",
       config: {},
+      networkAccess: { allowedDomains: ["api.openai.com", "api.anthropic.com"] },
       hostSecrets: { read: ["llm.apiKey.openai", "llm.apiKey.claude"] },
     };
     runtimeTestState.readPluginRegistry.mockResolvedValueOnce({
@@ -1219,6 +1227,7 @@ describe("initPluginRuntime HostApi factory", () => {
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           // openai is the active vendor for this test
           if (key === "llm") return { provider: "openai" };
@@ -1266,7 +1275,7 @@ describe("initPluginRuntime HostApi factory", () => {
           },
           pluginDataDir: string,
         ) => {
-          getSecret: (key: string) => string | null;
+          resolveApiKey: NonNullable<PluginHostApi["resolveApiKey"]>;
         })
       | undefined;
     expect(createHostApi).toBeDefined();
@@ -1275,20 +1284,21 @@ describe("initPluginRuntime HostApi factory", () => {
     // The plugin allowlists BOTH vendors; without B6 it could read both.
     const api = invokeHostApiFactory(createHostApi!, "meeting", b6Manifest, pluginDataDir);
 
-    // Active vendor (openai) — allowed
-    expect(await api.getSecret("llm.apiKey.openai")).toBe("sk-openai");
+    // Active vendor (openai) receives an opaque lease.
+    const lease = await api.resolveApiKey({ purpose: "llm", vendor: "openai" });
+    expect(lease).toMatchObject({ ok: true, exposure: "lease" });
+    if (lease.ok) lease.release();
 
     // Non-active vendor (claude) — denied even though allowlisted
-    expect(await api.getSecret("llm.apiKey.claude")).toBeNull();
+    expect(await api.resolveApiKey({ purpose: "llm", vendor: "anthropic" }))
+      .toEqual({ ok: false, reason: "vendor-mismatch" });
 
-    // Audit captured the Tier-4 deny. `vendor-mismatch` is the ONE token both
-    // host APIs now emit for this tier; `getSecret` used to rename it to
-    // `non-active-vendor`, so an operator pivoting on either saw half the traffic.
+    // Audit captures the denied vendor and the Tier-4 reason.
     const denyAudit = bootAuditLogger.log.mock.calls.find((c) => {
       const input = (c[0] as { input?: string }).input ?? "";
       return (
         input.includes("vendor-mismatch") &&
-        input.includes("llm.apiKey.claude")
+        input.includes("vendor=claude")
       );
     });
     expect(denyAudit).toBeDefined();
@@ -1327,6 +1337,7 @@ describe("initPluginRuntime HostApi factory", () => {
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           if (key === "llm") {
             return {
@@ -1441,6 +1452,7 @@ describe("initPluginRuntime HostApi factory", () => {
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           if (key === "llm") {
             return {
@@ -1513,7 +1525,7 @@ describe("initPluginRuntime HostApi factory", () => {
     expect(bootAuditLogger.log).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "warn",
-        input: expect.stringContaining("not-in-grant-table"),
+        input: expect.stringContaining("provider-key-not-exportable"),
       }),
     );
   });
@@ -1529,6 +1541,7 @@ describe("initPluginRuntime HostApi factory", () => {
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           if (key === "llm") return { provider: "openai" };
           if (key === "pluginConfigs") return {};
@@ -1611,6 +1624,7 @@ describe("initPluginRuntime HostApi factory", () => {
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           if (key === "llm") return { provider: "openai" };
           if (key === "pluginConfigs") return {};
@@ -1700,6 +1714,7 @@ describe("initPluginRuntime HostApi factory", () => {
     const manifest = {
       id: "meeting",
       config: {},
+      networkAccess: { allowedDomains: ["api.openai.com"] },
       hostSecrets: { read: ["llm.apiKey.openai"] },
     };
     const manifestSha256 = pinDocument(manifest);
@@ -1721,6 +1736,7 @@ describe("initPluginRuntime HostApi factory", () => {
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           if (key === "llm") return { provider: "openai" };
           if (key === "marketplace") return { installedProviderPresets: [] };
@@ -1769,7 +1785,7 @@ describe("initPluginRuntime HostApi factory", () => {
           },
           pluginDataDir: string,
         ) => {
-          getSecret: (key: string) => string | null;
+          resolveApiKey: NonNullable<PluginHostApi["resolveApiKey"]>;
         })
       | undefined;
     expect(createHostApi).toBeDefined();
@@ -1780,7 +1796,9 @@ describe("initPluginRuntime HostApi factory", () => {
       manifest,
       tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-")),
     );
-    expect(await api.getSecret("llm.apiKey.openai")).toBe("sk-openai");
+    const lease = await api.resolveApiKey({ purpose: "llm", vendor: "openai" });
+    expect(lease).toMatchObject({ ok: true, exposure: "lease" });
+    if (lease.ok) lease.release();
 
     runtimeTestState.readPluginRegistry.mockRejectedValue(
       new Error("registry unavailable"),
@@ -1788,7 +1806,8 @@ describe("initPluginRuntime HostApi factory", () => {
     emitEvent("plugin.installed", { pluginId: "meeting" });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(await api.getSecret("llm.apiKey.openai")).toBeNull();
+    expect(await api.resolveApiKey({ purpose: "llm", vendor: "openai" }))
+      .toEqual({ ok: false, reason: "not-whitelisted" });
   });
 });
 
@@ -1817,6 +1836,7 @@ describe("hostApi.hasRoutineBySource — prefix-scoped idempotency probe", () =>
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           if (key === "llm") return { provider: "openai" };
           if (key === "pluginConfigs") return {};
@@ -1930,6 +1950,7 @@ describe("initPluginRuntime sandbox union ordering", () => {
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           if (key === "llm") return { provider: "openai" };
           if (key === "pluginConfigs") return {};

@@ -22,7 +22,7 @@ import {
   writeInstallReceipt,
 } from "../../plugin-install-receipt.js";
 import {
-  agentPluginsDocument,
+  servedAgentPluginsDocument,
   patchAveFields,
 } from "../../__tests__/test-helpers.js";
 
@@ -107,7 +107,7 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
     );
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedAgentPluginsDocument({
         id: "se-plugin",
         name: "SE Plugin",
         version: "1.0.0",
@@ -213,7 +213,7 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
     );
     await writeFile(
       providerManifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedAgentPluginsDocument({
         id: providerId,
         name: "Calendar provider",
         version: "1.0.0",
@@ -225,7 +225,7 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
       "utf-8");
     const consumerManifest = JSON.parse(await readFile(manifestPath, "utf-8"));
     patchAveFields(consumerManifest, {
-      requires: { capabilities: ["calendar-source"] },
+      requires: { hostProtocol: "2", capabilities: ["calendar-source"] },
     });
     await writeFile(manifestPath, JSON.stringify(consumerManifest), "utf-8");
     await writeFile(

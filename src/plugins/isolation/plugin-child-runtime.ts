@@ -134,7 +134,7 @@ interface ChildSubscription {
    * one that matters. Absent for a registration whose only state is the handler
    * itself, which the ledger drops on its own.
    */
-  readonly onRevoked?: () => void;
+  readonly onRevoked?: (reason: "revoked" | "peer-gone") => void;
 }
 
 /** What `deliver` did, so a dropped notification is reported rather than silent. */
@@ -196,7 +196,7 @@ export interface PluginChildRuntime {
      * must stop being spendable in the child, and the child cannot learn that
      * from an event because a revoked registration delivers none.
      */
-    onRevoked?: () => void,
+    onRevoked?: (reason: "revoked" | "peer-gone") => void,
   ): () => void;
   /** Host → child notification. */
   deliver(notification: HostApiNotification): NotificationOutcome;
@@ -362,6 +362,7 @@ export async function startPluginChildRuntime(
   const subscriptions = new SubscriptionLedger<ChildSubscription>(
     `plugin-child:${pluginId}`,
   );
+  const pendingLeaseClosures = new Map<string, "revoked" | "peer-gone">();
   const log = (message: string, meta?: unknown): void => {
     channel.notify({
       jsonrpc: "2.0",
@@ -377,7 +378,7 @@ export async function startPluginChildRuntime(
     // A host revocation is the one close the MEMBER has to act on: the ledger
     // dropping the entry releases the handler, but not whatever the stub closed
     // over on the plugin's behalf.
-    if (reason === "revoked") subscription.onRevoked?.();
+    if (reason === "revoked" || reason === "peer-gone") subscription.onRevoked?.(reason);
     // Only a child-initiated dispose owes the host a message. `revoked` came
     // FROM the host and `peer-gone` means there is no host to tell.
     if (reason !== "disposed") return;
@@ -406,13 +407,18 @@ export async function startPluginChildRuntime(
     path: HostApiPath,
     subscriptionId: string,
     handler: (payload: unknown) => void,
-    onRevoked?: () => void,
+    onRevoked?: (reason: "revoked" | "peer-gone") => void,
   ) => {
     subscriptions.adopt(
       subscriptionId,
       { path, handler, ...(onRevoked ? { onRevoked } : {}) },
       releaseChildSubscription,
     );
+    const pendingClosure = pendingLeaseClosures.get(subscriptionId);
+    if (pendingClosure) {
+      pendingLeaseClosures.delete(subscriptionId);
+      subscriptions.close(subscriptionId, pendingClosure);
+    }
     return () => {
       subscriptions.close(subscriptionId, "disposed");
     };
@@ -691,9 +697,13 @@ export async function startPluginChildRuntime(
         return "delivered";
       }
       if (notification.method === HOST_PROTOCOL_NOTIFICATIONS.subscriptionClosed) {
-        return subscriptions.close(notification.params.subscriptionId, notification.params.reason)
-          ? "closed"
-          : "unknown-subscription";
+        if (subscriptions.close(notification.params.subscriptionId, notification.params.reason)) return "closed";
+        if ((notification.params.subscriptionId.startsWith("lease_")
+          || notification.params.subscriptionId.startsWith("raw_")) && pendingLeaseClosures.size < 32) {
+          pendingLeaseClosures.set(notification.params.subscriptionId, notification.params.reason);
+          return "closed";
+        }
+        return "unknown-subscription";
       }
       if (notification.method !== HOST_PROTOCOL_NOTIFICATIONS.subscription) {
         return "unknown-subscription";

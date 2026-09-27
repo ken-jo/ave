@@ -1,0 +1,24 @@
+{
+  "request": {
+    "id": 19,
+    "jsonrpc": "2.0",
+    "method": "ave/host/resolveApiKey",
+    "params": {
+      "opts": {
+        "purpose": "llm",
+        "vendor": "openai"
+      }
+    }
+  },
+  "response": {
+    "id": 19,
+    "jsonrpc": "2.0",
+    "result": {
+      "baseUrl": "https://api.example.com/v1",
+      "exposure": "lease",
+      "handleId": "lease_golden",
+      "ok": true,
+      "vendor": "openai"
+    }
+  }
+}

@@ -77,7 +77,7 @@ import type {
   RuntimePlugin,
   RuntimePluginFactory,
 } from "../types.js";
-import type { PluginSandboxDeclaration } from "../public-contract.js";
+import type { PluginSandboxDeclaration, PluginSandboxGrant } from "../public-contract.js";
 import {
   HOSTAPI_DISPATCH_TABLE,
   createConfigSubscriptionHostApiPaths,
@@ -91,7 +91,6 @@ import {
 import {
   HOST_PROTOCOL_NOTIFICATIONS,
   IncompatibleHostProtocolError,
-  NEWEST_HOST_PROTOCOL_VERSION,
   isServedHostProtocolVersion,
   type HostApiPath,
   type HostProtocolVersion,
@@ -164,13 +163,14 @@ export function createBoundHostApiDispatchTable(
    * checking against something other than the jail.
    */
   confinement: DelegatedWorkerConfinement,
+  onMalformedCredentialSelector?: () => void,
 ): Record<HostApiPath, HostApiPathHandler> {
   return {
     ...HOSTAPI_DISPATCH_TABLE,
     ...createStorageHostApiPaths(hostApi),
     ...createConfigSubscriptionHostApiPaths(hostApi),
     ...createInteractionHostApiPaths(hostApi),
-    ...createServiceHostApiPaths(hostApi, confinement),
+    ...createServiceHostApiPaths(hostApi, confinement, onMalformedCredentialSelector),
   };
 }
 
@@ -265,72 +265,7 @@ function resolvePluginChildEntryPath(): string {
  *  child's use of the grant is a residual this does not close, and it is the
  *  same check-time/use-time residual the delegated-worker grant check carries.
  */
-type PluginEnvelopeGrant =
-  | {
-      readonly kind: "hostDirectory";
-      /** Path segments under `aveHome()`. */
-      readonly segments: readonly string[];
-      readonly why: string;
-    }
-  | {
-      readonly kind: "userChosenDirectory";
-      /** The `config.get` key the host reads the directory out of. */
-      readonly configKey: string;
-      readonly why: string;
-    };
-
-/**
- * Legacy grants for an installed bundle with no sandbox declaration. A
- * declared block, including an empty one, takes precedence. The table stays
- * until that bundle declares the same reviewed grants in its manifest.
- */
-const PLUGIN_ENVELOPE_GRANTS: ReadonlyMap<string, readonly PluginEnvelopeGrant[]> = new Map([
-  [
-    "local-indexer",
-    [
-      {
-        kind: "hostDirectory",
-        segments: ["runtime"],
-        why:
-          "the Python interpreter the indexer's worker executes. `PythonRuntimeBootstrapper` "
-          + "provisions it at `~/.ave/runtime/python-envs/<target>/venv/bin/python` and boot "
-          + "injects the path, so it is host-owned and the plugin merely names it back",
-      },
-      {
-        kind: "hostDirectory",
-        segments: ["certs"],
-        why:
-          "the subprocess trust bundle `corp-ca-runtime` writes to "
-          + "`~/.ave/certs/corp-ca.pem`. The worker points `SSL_CERT_FILE` at it so internal "
-          + "TLS verifies rather than being disabled. The bundle holds the platform roots AND "
-          + "the corporate certificate, because those variables REPLACE the trust set rather "
-          + "than add to it — a corporate-only file would make every public download fail. "
-          + "This path IS on the sensitive deny floor and the grant pierces it for this plugin "
-          + "alone; a root CA certificate is a trust anchor rather than a credential, which is "
-          + "what makes that a proportionate host decision",
-      },
-      {
-        kind: "userChosenDirectory",
-        configKey: "indexStorageRoot",
-        why:
-          "where the index itself is written. Unset, it defaults to `<pluginDataDir>/index`, "
-          + "which is already inside the envelope; a user who moves it onto another volume "
-          + "needs the grant to follow",
-      },
-      {
-        kind: "userChosenDirectory",
-        configKey: "workspace",
-        why:
-          "the worker's scratch + state directory. Unset, the plugin resolves it under its "
-          + "own data directory — a SIBLING of the default index root rather than a child of "
-          + "it — so both defaults are already inside the envelope and this grant only has an "
-          + "effect once the user names a directory outside. The host requires an absolute "
-          + "value for this key even though the plugin accepts a relative one; see "
-          + "{@link resolveUserChosenDirectory} for why the host cannot resolve one",
-      },
-    ],
-  ],
-]);
+type PluginEnvelopeGrant = PluginSandboxGrant;
 
 /**
  * What the derivation needs that it cannot read for itself.
@@ -734,12 +669,10 @@ export function derivePluginChildEnvelope(
   const workerRunRoot = resolvePluginWorkerRunRoot(inputs.pluginDataDir);
   const read = [inputs.pluginRoot, inputs.pluginDataDir, socketDir, workerRunRoot];
   const write = [inputs.pluginDataDir, socketDir];
-  const grants: Array<{ grant: PluginEnvelopeGrant; access: "read" | "write" }> = inputs.sandbox === undefined
-    ? (PLUGIN_ENVELOPE_GRANTS.get(inputs.pluginId) ?? []).map((grant) => ({ grant, access: grant.kind === "hostDirectory" ? "read" : "write" }))
-    : [
-        ...(inputs.sandbox.read ?? []).map((grant) => ({ grant, access: "read" as const })),
-        ...(inputs.sandbox.write ?? []).map((grant) => ({ grant, access: "write" as const })),
-      ];
+  const grants: Array<{ grant: PluginEnvelopeGrant; access: "read" | "write" }> = [
+    ...(inputs.sandbox?.read ?? []).map((grant) => ({ grant, access: "read" as const })),
+    ...(inputs.sandbox?.write ?? []).map((grant) => ({ grant, access: "write" as const })),
+  ];
   for (const { grant, access } of grants) {
     if (grant.kind === "hostDirectory") {
       const directory = hostGrantDirectory(grant);
@@ -871,8 +804,7 @@ export interface ConfinedPluginChild {
  *    a widening of the floor; it is the floor's own carve-out for the one plugin
  *    this child serves — and it is what makes "cannot read another plugin's data
  *    directory" true rather than aspirational. A `hostDirectory` grant in
- *    {@link PLUGIN_ENVELOPE_GRANTS} DOES widen the floor, deliberately, for the
- *    plugin whose declaration or legacy row names it.
+ *    A declared `hostDirectory` grant widens the floor for that plugin.
  *
  * On Windows ASRT 0.0.75 supports no per-exec allow grants at all — passing any
  * makes `wrapWorkerCommand` throw — so the wrap carries the deny floor alone
@@ -1073,6 +1005,7 @@ export interface OutOfProcessPluginSpec {
     assertCurrent(): void;
     dispose(): void;
   };
+  readonly onMalformedCredentialSelector?: (pluginId: string) => void;
 }
 
 /**
@@ -1153,16 +1086,14 @@ function readToolResult(pluginId: string, toolName: string, result: unknown): un
 /**
  * The host protocol version this plugin's connection speaks (§3.2).
  *
- * Its declared `requires.hostProtocol`, or — for a plugin that declares none —
- * the newest this host serves: the host-shipped runtime speaks for a JS plugin,
- * so there is nothing to negotiate. A declared version this host does not
- * serve is refused, never downgraded.
+ * Its declared, served `requires.hostProtocol`. Omission and unserved versions
+ * fail before activation on the runtime loader's two paths; this check also
+ * protects a direct connection from bypassing that gate.
  */
 function connectionHostProtocol(manifest: PluginManifest): HostProtocolVersion {
   const declared = manifest.requires?.hostProtocol;
-  if (declared === undefined) return NEWEST_HOST_PROTOCOL_VERSION;
   if (!isServedHostProtocolVersion(declared)) {
-    throw new IncompatibleHostProtocolError(manifest.id, { declared });
+    throw new IncompatibleHostProtocolError(manifest.id, { declared: declared ?? null });
   }
   return declared;
 }
@@ -1264,7 +1195,13 @@ export function createOutOfProcessPluginFactory(
     let live = true;
     // ONE table: the dispatcher serves it and `construct` advertises it, so
     // what the child is told it may call is what the host will answer.
-    const table = createBoundHostApiDispatchTable(hostApi, envelope);
+    const table = createBoundHostApiDispatchTable(
+      hostApi,
+      envelope,
+      spec.onMalformedCredentialSelector
+        ? () => spec.onMalformedCredentialSelector?.(pluginId)
+        : undefined,
+    );
     const transport = new PluginChildTransport({
       pluginId,
       // The boundary's own liveness, not a second authority. The authoritative

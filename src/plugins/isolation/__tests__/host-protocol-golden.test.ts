@@ -9,7 +9,7 @@
  * transcript is a function of the plugin module, and a transcript that changes
  * is the wire that changed (plugin-hostapi-protocol.md §10.1).
  *
- * Three kinds, under `fixtures/host-protocol/1/`:
+ * Three kinds, under `fixtures/host-protocol/2/`:
  *
  *  - `methods/<method>.json`: the request one call puts on the wire and the
  *    reply it gets, for every `ave/host/*` and `ave/instance/*` method, and
@@ -35,6 +35,7 @@ import { StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
 import { EffectBoundaryDeniedError } from "../../../permissions/effect-enforcement.js";
 import { ManifestIntegrityError } from "../../../permissions/manifest-integrity.js";
 import { PluginRuntimeDetachedOperationError } from "../../runtime/detached-operation.js";
+import { CredentialLeaseError } from "../../secret-access/credential-lease-registry.js";
 import {
   PluginStorageEncryptionUnavailableError,
   PluginStorageError,
@@ -60,8 +61,9 @@ import {
   type GoldenHostOverrides,
 } from "./host-protocol-golden-host.js";
 
-const GOLDEN_ROOT = fileURLToPath(new URL("./fixtures/host-protocol/1/", import.meta.url));
-const INVOKER_ENTRY = join(GOLDEN_ROOT, "invoker.mjs");
+const GOLDEN_ROOT = fileURLToPath(new URL("./fixtures/host-protocol/2/", import.meta.url));
+const FIXTURE_CODE_ROOT = fileURLToPath(new URL("./fixtures/host-protocol/1/", import.meta.url));
+const INVOKER_ENTRY = join(FIXTURE_CODE_ROOT, "invoker.mjs");
 
 type Frame = Record<string, unknown>;
 
@@ -109,6 +111,7 @@ const INVOKER_MANIFEST: PluginManifest = {
   name: "Golden Invoker",
   version: "1.0.0",
   entry: "invoker.mjs",
+  requires: { hostProtocol: "2" },
   description: "calls one hostApi member per tool call, so each method's golden is one pair",
   tools: ["invoke_member", "invoke_cancelled", "write_log", "dispose_all"].map((name) => ({
     name,
@@ -121,8 +124,8 @@ let aveHomeRoot: string;
 let previousAveHome: string | undefined;
 
 beforeAll(() => {
-  // The envelope derivation reads `AVE_HOME` for the host-owned rows of the
-  // one plugin that has them; a recording must never resolve the real one.
+  // The envelope derivation reads `AVE_HOME` for declared host directories;
+  // a recording must never resolve the real one.
   previousAveHome = process.env.AVE_HOME;
   aveHomeRoot = mkdtempSync(join(tmpdir(), "host-protocol-golden-"));
   process.env.AVE_HOME = join(aveHomeRoot, ".ave");
@@ -219,6 +222,7 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
  * which the root's replacement alone would leave behind.
  */
 function goldenPath(text: string): string {
+  text = text.replaceAll(FIXTURE_CODE_ROOT, GOLDEN_ROOT);
   let out = "";
   let from = 0;
   for (let at = text.indexOf(GOLDEN_ROOT); at !== -1; at = text.indexOf(GOLDEN_ROOT, from)) {
@@ -469,6 +473,20 @@ const ERROR_TRIGGERS: Readonly<Record<Exclude<HostApiWireErrorCode, "protocol-ve
     },
     provoke: throughStub("openExternalUrl"),
   },
+  "credential-conflict": {
+    trigger: "a malformed credential selector",
+    provoke: byHand("ave/host/hostFetch", { input: "https://example.com", init: { auth: { token: "x" } } }),
+  },
+  "lease-unavailable": {
+    trigger: "a lease that is no longer live",
+    overrides: { hostFetch: throwing(() => new CredentialLeaseError("lease-unavailable", { stage: "before-send" })) },
+    provoke: throughStub("hostFetch"),
+  },
+  "lease-audience-denied": {
+    trigger: "a URL outside the credential audience",
+    overrides: { hostFetch: throwing(() => new CredentialLeaseError("lease-audience-denied", { origin: "https://example.com", hop: 0 })) },
+    provoke: throughStub("hostFetch"),
+  },
   "manifest-integrity-violation": {
     trigger: "the call broke the manifest's integrity pin",
     overrides: {
@@ -669,6 +687,14 @@ describe("a golden reads the same on every machine", () => {
 });
 
 describe("one conversation per installed plugin's surface", () => {
+  it.each(["meeting", "local-indexer"])("refuses an old %s bundle before its child connects", async (pluginId) => {
+    const dir = fileURLToPath(new URL(`./fixtures/host-protocol/1/plugins/${pluginId}/`, import.meta.url));
+    const manifest = flattenAgentPluginsManifest(JSON.parse(readFileSync(join(dir, "plugin.json"), "utf-8")));
+    const connect = () => { throw new Error("an old child was connected"); };
+    const factory = createOutOfProcessPluginFactory({ manifest, entryPath: join(dir, "entry.mjs"), connect });
+    await expect(factory(hostContext(manifest, createGoldenHost()))).rejects.toThrow(/does not declare a host protocol/);
+  });
+
   for (const [pluginId, survey] of Object.entries(PLUGIN_SURVEY)) {
     it(pluginId, async () => {
       const dir = join(GOLDEN_ROOT, "plugins", pluginId);
@@ -677,7 +703,8 @@ describe("one conversation per installed plugin's surface", () => {
       );
       expect(manifest.id).toBe(pluginId);
       const host = createGoldenHost();
-      const session = await openSession(manifest, join(dir, "entry.mjs"), host);
+      const codeRoot = pluginId === "local-indexer" ? GOLDEN_ROOT : FIXTURE_CODE_ROOT;
+      const session = await openSession(manifest, join(codeRoot, "plugins", pluginId, "entry.mjs"), host);
       const { instance, frames } = session;
 
       await instance.handlers.exercise_host!();

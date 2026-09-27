@@ -51,9 +51,9 @@ import { TEST_IDS, testIdSelector } from '../../../src/shared/test-ids.js';
  */
 
 const SOURCE_ID = 'harbor-tools';
-/** Below any version the app reports, the development build's included. */
-const MIN_APP_VERSION = '0.1.0';
-const AUTHORITY = { capabilities: [], requires: { minAppVersion: MIN_APP_VERSION } };
+/** The first release that knows the served host protocol. */
+const MIN_APP_VERSION = '0.11.0';
+const AUTHORITY = { capabilities: [], requires: { minAppVersion: MIN_APP_VERSION, hostProtocol: '2' } };
 const READ_GRANT = { kind: 'hostDirectory' as const, segments: ['certs'], why: 'Read certificate bundles' };
 const WRITE_GRANT = { kind: 'userChosenDirectory' as const, configKey: 'workspace', why: 'Store project data' };
 const SURFACES = {
@@ -150,7 +150,8 @@ type Entry = { path: string; mode: string; content: string };
 
 /** A package's `ave-package.json`. */
 const descriptorText = (kind: PackageKind, name: string, version: string, payload: Record<string, unknown>) =>
-  jsonText({ schemaVersion: 2, kind, name, version, minAppVersion: MIN_APP_VERSION, payload });
+  jsonText({ schemaVersion: 2, kind, name, version, minAppVersion: MIN_APP_VERSION,
+    ...(kind === 'plugin' ? { hostProtocol: '2' } : {}), payload });
 
 /** The whole repository tree at `version`: every package publishes that version. */
 function marketplaceTree(version: string): Entry[] {

@@ -3,6 +3,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act, render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import { PluginConfigTab } from "../tabs/PluginConfigTab.js";
 import { PluginConfigSchemaForm } from "../tabs/PluginConfigSchemaForm.js";
+import { takeUpdateReview } from "../tabs/git-marketplace/update-review-request.js";
 
 const mockCards = vi.fn(async () => [
   {
@@ -33,6 +34,7 @@ const mockUninstall = vi.fn(async () => ({
  */
 const market = {
   listCatalog: vi.fn(),
+  listSources: vi.fn(),
   planInstall: vi.fn(),
   executeInstall: vi.fn(),
 };
@@ -74,12 +76,14 @@ function setRendererApi(value: Record<string, unknown>): void {
 
 beforeEach(() => {
   market.listCatalog.mockReset();
+  market.listSources.mockReset();
   market.planInstall.mockReset();
   market.executeInstall.mockReset();
   market.listCatalog.mockResolvedValue({
     ok: true as const,
     value: { entries: [], counts: {}, sourceCount: 1, syncedAt: null },
   });
+  market.listSources.mockResolvedValue({ ok: true as const, value: [] });
   market.planInstall.mockResolvedValue({ ok: true as const, value: { planId: "plan-1" } });
   market.executeInstall.mockResolvedValue({
     ok: true as const,
@@ -503,6 +507,7 @@ describe("PluginConfigTab", () => {
   });
 
   it("names a host protocol mismatch, and does not reinstall for it", async () => {
+    const navigate = vi.fn();
     const broken = {
       id: "meeting",
       name: "Meeting",
@@ -512,10 +517,18 @@ describe("PluginConfigTab", () => {
       tools: [],
       installAliases: ["ave-plugin-meeting"],
       installFailureKind: "incompatible-host-protocol" as const,
-      installFailureMessage: "plugin 'meeting' speaks host protocol 2; this app serves 1",
+      installFailureMessage: "plugin 'meeting' speaks host protocol 1; this app serves 2",
       loadStatus: "failed" as const,
     };
     const cards = vi.fn().mockResolvedValue([broken]);
+    bind("meeting");
+    market.listCatalog.mockResolvedValue({ ok: true, value: {
+      entries: [{
+        key: { sourceId: "ave", kind: "plugin", name: "meeting" },
+        sourceOrigin: "official", sourceLabel: "Ave", displayName: "Meeting", description: "", keywords: [],
+        state: { state: "update", from: "1.0.0", to: "2.0.0" }, required: false, runsCode: true,
+      }], counts: {}, sourceCount: 1, syncedAt: null,
+    } });
     Object.defineProperty(window, "ave", {
       value: {
         plugins: { cards },
@@ -525,7 +538,7 @@ describe("PluginConfigTab", () => {
       configurable: true,
     });
 
-    render(<PluginConfigTab />);
+    render(<PluginConfigTab onNavigate={navigate} />);
 
     await waitFor(() => {
       expect(screen.getByTestId("plugin-config:doctor-panel:meeting")).toBeInTheDocument();
@@ -534,6 +547,10 @@ describe("PluginConfigTab", () => {
     // the version rather than lacking it.
     expect(screen.getByText("다른 Ave 프로토콜용 플러그인")).toBeInTheDocument();
     expect(screen.queryByText("앱 업데이트 필요")).toBeNull();
+    expect(await screen.findByText(/마켓플레이스에서 2.0.0 버전 검토/)).toBeInTheDocument();
+    fireEvent.click(screen.getByText(/마켓플레이스에서 2.0.0 버전 검토/));
+    expect(navigate).toHaveBeenCalledWith("marketplace");
+    expect(takeUpdateReview()).toEqual({ kind: "package", key: { sourceId: "ave", kind: "plugin", name: "meeting" } });
 
     fireEvent.click(screen.getByTestId("plugin-config:doctor:meeting"));
 
@@ -541,6 +558,28 @@ describe("PluginConfigTab", () => {
       expect(market.planInstall).not.toHaveBeenCalled();
       expect(cards).toHaveBeenCalledTimes(2);
     });
+  });
+
+  it("shows the installed source repository when no compatible catalog version exists", async () => {
+    bind("meeting");
+    market.listSources.mockResolvedValue({ ok: true, value: [{
+      id: "ave", label: "Plugin source", url: "https://example.invalid/plugins/meeting",
+    }] });
+    Object.defineProperty(window, "ave", {
+      value: {
+        plugins: { cards: vi.fn().mockResolvedValue([{
+          id: "meeting", name: "Meeting", description: "Needs update", sampleTools: [], capabilities: [], tools: [],
+          loadStatus: "failed", installFailureKind: "incompatible-host-protocol",
+        }]) },
+        pluginConfig: { get: mockGet, set: mockSet },
+      },
+      writable: true,
+      configurable: true,
+    });
+
+    render(<PluginConfigTab />);
+    expect(await screen.findByText("https://example.invalid/plugins/meeting")).toBeInTheDocument();
+    expect(screen.getByText(/Plugin source에서 호환 버전 확인/)).toBeInTheDocument();
   });
 
   it("shows a sandbox ceiling diagnosis with update and remove actions without reinstalling", async () => {
