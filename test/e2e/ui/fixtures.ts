@@ -3,9 +3,8 @@ import { _electron as electron, type ElectronApplication, type Page,
 import { test as base, expect } from "@playwright/test";
 import path from "node:path";
 import fs from "node:fs";
-import os from "node:os";
 import { fileURLToPath } from "node:url";
-import { execSync } from "node:child_process";
+import { hostGit } from "../../../src/marketplace/__tests__/fixtures/git-http-server.js";
 import {
   hashReceiptFiles,
   listFilesRecursive,
@@ -88,10 +87,7 @@ function resolveE2ePluginSourceRoot(repoRoot: string): string {
 
   const candidates = [path.resolve(repoRoot, "..")];
   try {
-    const output = execSync("git worktree list --porcelain", {
-      cwd: repoRoot,
-      stdio: ["ignore", "pipe", "ignore"],
-    }).toString();
+    const output = hostGit(["worktree", "list", "--porcelain"], repoRoot);
     for (const line of output.split("\n")) {
       if (!line.startsWith("worktree ")) continue;
       candidates.push(path.dirname(line.slice("worktree ".length).trim()));
@@ -345,7 +341,7 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
   seedLocale: ["en", { option: true }],
 
   userDataDir: async ({}, use) => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ave-e2e-"));
+    const dir = fs.mkdtempSync(path.join("/tmp", "ave-e2e-"));
     await use(dir);
     try {
       fs.rmSync(dir, { recursive: true, force: true });

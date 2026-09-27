@@ -50,7 +50,7 @@ const port = {
   },
   servedFile: () => null,
 };
-const runtime = (service: typeof port) => ({ store: {} as ContentStore, service, reload: async () => {} });
+const runtime = (service: typeof port) => ({ store: {} as ContentStore, service, reload: async () => {}, removeAgentPluginData: async () => {} });
 
 type SchemeHandler = (request: { url: string; headers: Headers; referrer: string }) => Promise<Response>;
 const assetRequest = (url: string) => ({ url, headers: new Headers({ origin: "null" }), referrer: "" });

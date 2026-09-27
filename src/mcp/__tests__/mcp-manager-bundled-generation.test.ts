@@ -83,13 +83,13 @@ describe("McpManager bundled generation", () => {
     const secretPath = join(root, "bundled-secrets.json");
     const encryption = {
       isEncryptionAvailable: () => true,
-      getSelectedStorageBackend: () => "keychain",
+      getSelectedStorageBackend: () => "kwallet" as const,
       encryptString: (value: string) => Buffer.from(`sealed:${value}`),
       decryptString: (value: Buffer) => value.toString().slice("sealed:".length),
     };
     const document = new SecretDocumentStore({ path: secretPath, policy: "packaged", encryption });
     const secrets = { getSecret: (key: string) => document.get(key), setSecret: (key: string, value: string) => document.set(key, value),
-      deleteSecret: (key: string) => document.delete(key) };
+      deleteSecret: async (key: string) => { await document.delete(key); } };
     const manager = new McpManager(new McpGovernance(join(root, "policy-credential.json")), new ToolRegistry(),
       unusedNetworkFetch, join(root, "servers-credential.json"), undefined, undefined, undefined, undefined, secrets);
     const projection = prepareBundledMcpProjection({ pluginId: "agent-plugin/meeting-kit", pluginVersion: "1.0.0",
@@ -120,7 +120,7 @@ describe("McpManager bundled generation", () => {
     expect(reopened.get(key)).toBe("private-value");
     const restarted = new McpManager(new McpGovernance(join(root, "policy-credential-restart.json")), new ToolRegistry(),
       unusedNetworkFetch, join(root, "servers-credential-restart.json"), undefined, undefined, undefined, undefined,
-      { getSecret: (name) => reopened.get(name), setSecret: (name, value) => reopened.set(name, value), deleteSecret: (name) => reopened.delete(name) });
+      { getSecret: (name) => reopened.get(name), setSecret: (name, value) => reopened.set(name, value), deleteSecret: async (name) => { await reopened.delete(name); } });
     const successor = prepareBundledMcpProjection({ ...projection.owner, activationId: "run-2" },
       { transport: "http", url: "https://example.test/mcp", auth: "api-key", apiKeyHeader: "X-Token" });
     expect(trust.isApproved(successor)).toBe(true);
