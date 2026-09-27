@@ -23,8 +23,26 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: ave
+          fetch-depth: 0
+      - name: Classify documentation impact
+        id: docs-impact
+        working-directory: ave
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if ! node scripts/hooks/classify-docs-diff.mjs "$BASE_SHA" >> "$GITHUB_OUTPUT"; then
+            echo 'docs_only=false' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Check documentation diff
+        if: steps.docs-impact.outputs.docs_only == 'true'
+        working-directory: ave
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: git diff --check "$BASE_SHA..HEAD"
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        if: steps.docs-impact.outputs.docs_only != 'true'
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
@@ -35,15 +53,18 @@ jobs:
       # better-sqlite3/node-pty. Exact-key only — a lockfile change (which pins
       # the Electron version) misses and rebuilds, so a stale ABI never leaks in.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           path: ave/node_modules
           key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock') }}
       - run: bun install --frozen-lockfile
+        if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
       # uv is fetched to resources/ (outside node_modules) by the postinstall,
       # which bun skips when node_modules is already satisfied from cache. Ensure
       # it explicitly — fetch-uv is idempotent (no-op when already present).
       - name: Ensure uv toolchain
+        if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: node scripts/fetch-uv.mjs
       # The steps above are preconditions, not gates: without a checkout, an
@@ -55,6 +76,7 @@ jobs:
       # after all of it, at the end of this job. The block above them says why
       # they are there and not above.
       - name: Typecheck
+        if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: bun run typecheck
       # `typecheck` covers production sources only — both tsconfigs exclude
@@ -63,17 +85,21 @@ jobs:
       # fully checked, existing ones may only improve. The self-test runs beside it
       # because a ratchet that silently stops comparing reports green forever.
       - name: Typecheck tests (baseline ratchet)
+        if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: bun run check:typecheck-tests:self-test && bun run check:typecheck-tests
       # Postinstall leaves native modules on Electron's ABI. The shared Vitest
       # runner uses ELECTRON_RUN_AS_NODE, so tests and the desktop runtime consume
       # that same binary without an in-place Node-ABI rebuild.
       - run: bun run build
+        if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
       - name: Remove root-level Bun binary shims before Vitest
+        if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: rm -f ajv pino
       - name: Run the suite and its coverage gate
+        if: steps.docs-impact.outputs.docs_only != 'true'
         # The suite resolves entirely from ave/src. Sibling slugs appear
         # only as fixtures or mocked installer inputs.
         #
@@ -106,6 +132,7 @@ jobs:
       # reverse ordering would only cost information: a red build-and-test says
       # the code failed either way.
       - name: Run release-tooling tests
+        if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: bun run test:ci-tooling && bun run test:a2a-p4-5:evidence
       # Repository hygiene: manifests, baseline ledgers, and the self-tests of
@@ -186,6 +213,7 @@ jobs:
       # gate and its self-test cost more than a pre-push budget allows — and
       # `check:test-coverage` above is CI-only for the same reason.
       - name: Core hygiene gates
+        if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: bun run check:gate-core && bun run test:knip-gate
       # The docs-site images are published publicly, and the batch that is there
@@ -196,6 +224,7 @@ jobs:
       # runs beside it because a gate nothing exercises reports green after it
       # has stopped comparing.
       - name: Screenshot provenance gate
+        if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: bun run check:screenshot-provenance:self-test && bun run check:screenshot-provenance
 
@@ -206,19 +235,35 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: ave
+          fetch-depth: 0
+      - name: Classify documentation impact
+        id: docs-impact
+        shell: bash
+        working-directory: ave
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if ! node scripts/hooks/classify-docs-diff.mjs "$BASE_SHA" >> "$GITHUB_OUTPUT"; then
+            echo 'docs_only=false' >> "$GITHUB_OUTPUT"
+          fi
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        if: steps.docs-impact.outputs.docs_only != 'true'
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
           restore-keys: ${{ runner.os }}-ci-bun-
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           path: ave/node_modules
           key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock') }}
       - run: bun install --frozen-lockfile
+        if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
       - name: Verify native background process ownership
+        if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: |
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1
@@ -230,9 +275,11 @@ jobs:
       # it: there the generator finds its sources through Windows path spellings
       # (drive letters, `\` separators), and must still produce the same bytes.
       - name: Plugin host protocol schema matches its sources
+        if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: bun run check:plugin-host-protocol-schema
       - name: Run Windows permission regressions
+        if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: >
           bun run test --
@@ -277,17 +324,31 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: ave
+          fetch-depth: 0
+      - name: Classify documentation impact
+        id: docs-impact
+        working-directory: ave
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if ! node scripts/hooks/classify-docs-diff.mjs "$BASE_SHA" >> "$GITHUB_OUTPUT"; then
+            echo 'docs_only=false' >> "$GITHUB_OUTPUT"
+          fi
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        if: steps.docs-impact.outputs.docs_only != 'true'
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
           restore-keys: ${{ runner.os }}-ci-bun-
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           path: ave/node_modules
           key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock') }}
       - run: bun install --frozen-lockfile
+        if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
       # The plugin-confinement cases need a LIVE sandbox, and the Linux job that
       # runs the whole suite has no bubblewrap — so there they return early and
@@ -297,6 +358,7 @@ jobs:
       # arrangement: if the sandbox cannot initialize here, the cases FAIL
       # instead of reporting a measurement they never took.
       - name: Run macOS permission regressions
+        if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         env:
           AVE_REQUIRE_SANDBOX_CASES: "1"

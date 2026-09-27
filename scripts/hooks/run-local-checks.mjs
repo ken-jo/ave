@@ -29,9 +29,8 @@ import {
   getMissingPackageScripts,
 } from "./app-typecheck-gate.mjs";
 import {
+  classifyDocumentationChanges,
   isCanonicalGitPath,
-  isReviewOnlyDocumentationPath,
-  isSensitiveMarkdownPath,
 } from "./pre-push-markdown-policy.mjs";
 import { selectCommentOnlyAveAppFiles } from "./pre-push-comment-policy.mjs";
 import { selectTargetedAveAppVitestFiles } from "./pre-push-test-policy.mjs";
@@ -503,14 +502,8 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteName, remoteLocat
   if (noncanonicalPath) {
     return { docsOnly: false, reason: "noncanonical Git path requires full checks" };
   }
-  const sensitiveMarkdownPath = [...changedFiles].find(isSensitiveMarkdownPath);
-  if (sensitiveMarkdownPath) {
-    return {
-      docsOnly: false,
-      reason: `sensitive Markdown ${sensitiveMarkdownPath} requires full checks`,
-    };
-  }
-  if ([...changedFiles].some((file) => !isReviewOnlyDocumentationPath(file))) {
+  const documentation = classifyDocumentationChanges(changedEntries);
+  if (!documentation.docsOnly) {
     if (commentOnlyEligible) {
       const commentSelection = selectCommentOnlyAveAppFiles(
         changedEntries,
@@ -542,10 +535,10 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteName, remoteLocat
     return {
       docsOnly: false,
       testOnly: false,
-      reason: targetedTestsReason || "non-review-only files changed",
+      reason: targetedTestsReason || documentation.reason,
     };
   }
-  return { docsOnly: true, reason: `${changedFiles.size} Markdown file(s) changed` };
+  return documentation;
 }
 
 // ---------------------------------------------------------------------------

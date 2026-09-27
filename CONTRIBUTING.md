@@ -43,11 +43,11 @@ Direct `bunx vitest` and `bun test` invocations fail fast by design; use the
 canonical wrapper command above for both full and targeted tests.
 
 Use the smallest affected checks while iterating. For code-bearing changes and
-runtime, instruction, workflow, or sensitive-contract Markdown, the pre-push
+documentation consumed by runtime, tests, build, or workflows, the pre-push
 hook is the sole local full gate: it runs `bun run typecheck`, the full
-`bun run test`, and `bun run build` once. Only Markdown accepted by the
-hook's explicit review-only Markdown allowlist may skip those expensive gates; a `.md`
-suffix alone does not qualify. Do not duplicate the full trio around a
+`bun run test`, and `bun run build` once. Documentation prose with no such
+consumer skips those expensive gates after diff and policy checks. Renames,
+deletes, and mixed changes still run the full gate. Do not duplicate the trio around a
 successful push. If a check fails, fix it and rerun only the failed or
 invalidated checks before pushing again. Full Playwright E2E runs in CI/release
 validation; UI changes require the targeted local flow check above. Never

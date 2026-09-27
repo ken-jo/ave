@@ -1,0 +1,35 @@
+{
+  "consumed": [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "CONTRIBUTING.md",
+    "README.md",
+    "docs/blueprints/a2a-subagent-messaging.md",
+    "docs/design/permission-review-scenario-board-v2.html",
+    "docs/ko/app-readme.md",
+    "docs/ko/guides/local-plugin-development.md",
+    "docs/ko/guides/windows-setup.md",
+    "docs/protocols/ave-a2a-exact-send-replay.md",
+    "docs/references/production-release-checklist.md"
+  ],
+  "referencedOnly": [
+    "docs/README.md",
+    "docs/architecture/architecture.md",
+    "docs/architecture/hook-runtime-expansion-design.md",
+    "docs/architecture/mcp-alignment-design.md",
+    "docs/architecture/permission-policy-design.md",
+    "docs/architecture/proposals/suggested-replies-ghost-text.md",
+    "docs/blueprints/composer-redesign-message-queue.md",
+    "docs/blueprints/plugin-process-isolation.md",
+    "docs/design/plugin-alerts.md",
+    "docs/design/plugin-hostapi-protocol.md",
+    "docs/design/tiled-chat-groups.md",
+    "docs/development/mcp-resources-policy.md",
+    "docs/development/screenshot-reshoot.md",
+    "docs/development/skill-loading-policy.md",
+    "docs/development/theme-system.md",
+    "docs/guides/plugin-development.md",
+    "docs/references/plugin-tool-schema-design.md",
+    "docs/research/sandbox-isolation.md"
+  ]
+}

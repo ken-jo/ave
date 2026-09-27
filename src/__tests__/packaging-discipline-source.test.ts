@@ -858,11 +858,9 @@ describe("installer smoke and packaging discipline", () => {
     expect(claude).toContain("duplicates no");
 
     for (const guidance of [agents, contributing, pullRequestTemplate]) {
-      expect(guidance).toContain("review-only Markdown");
-      expect(guidance).toMatch(/runtime/i);
-      expect(guidance).toMatch(/instruction/i);
-      expect(guidance).toMatch(/workflow/i);
-      expect(guidance).toMatch(/sensitive/i);
+      expect(guidance).toMatch(/documentation/i);
+      expect(guidance).toMatch(/consum/i);
+      expect(guidance).toMatch(/pre-push/i);
     }
 
     expect(agents).toContain("openFeatureNamespace");
