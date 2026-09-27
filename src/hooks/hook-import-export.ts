@@ -1,0 +1,143 @@
+import { parseHookConfig, type HookConfigEntry } from "./hook-config.js";
+import type { HookEvent } from "./script-hook-types.js";
+import { validateSymbolicHookArgv } from "../plugins/resolve-bundled-argv.js";
+
+const EVENT_TO_INTERNAL: Readonly<Record<string, HookEvent>> = {
+  PreToolUse: "pre", PostToolUse: "post", PermissionRequest: "perm",
+  UserPromptSubmit: "UserPromptSubmit", PostToolUseFailure: "PostToolUseFailure",
+  PermissionDenied: "PermissionDenied", SessionStart: "SessionStart",
+  SessionEnd: "SessionEnd", Notification: "Notification", Stop: "Stop",
+  PreCompact: "PreCompact", PostCompact: "PostCompact",
+  SubagentStart: "SubagentStart", SubagentStop: "SubagentStop",
+};
+const INTERNAL_TO_EVENT = Object.fromEntries(Object.entries(EVENT_TO_INTERNAL).map(([external, internal]) => [internal, external]));
+
+export interface ImportedHookEntry {
+  event: HookEvent;
+  matcher?: string;
+  command: string[];
+  env?: Record<string, string>;
+  timeoutMs?: number;
+  needsAdaptation: true;
+}
+
+export interface HookImportDiagnostic {
+  group: "lost" | "rewritten" | "needs your input";
+  entry: string;
+  message: string;
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function rewritePlaceholder(value: string): string {
+  return value.replaceAll("${CLAUDE_PLUGIN_ROOT}", "${PLUGIN_ROOT}")
+    .replaceAll("${CLAUDE_PLUGIN_DATA}", "${PLUGIN_DATA}");
+}
+
+function hasForbiddenPlaceholder(value: string): boolean {
+  const rewritten = rewritePlaceholder(value);
+  return /\$\{user_config\.|\$\{CLAUDE_/u.test(rewritten);
+}
+
+/** Convert supported event names and exec-form handlers into review-only entries. */
+export function importLegacyHooks(value: unknown): { entries: ImportedHookEntry[]; diagnostics: HookImportDiagnostic[] } {
+  const entries: ImportedHookEntry[] = [];
+  const diagnostics: HookImportDiagnostic[] = [];
+  const groups = record(record(value)?.hooks);
+  if (!groups) return { entries, diagnostics: [{ group: "lost", entry: "hooks", message: "hooks must be an object" }] };
+  for (const [sourceEvent, blocks] of Object.entries(groups)) {
+    const event = EVENT_TO_INTERNAL[sourceEvent];
+    if (!event) {
+      diagnostics.push({ group: "lost", entry: sourceEvent, message: `event ${sourceEvent} has no equivalent` });
+      continue;
+    }
+    if (!Array.isArray(blocks)) {
+      diagnostics.push({ group: "lost", entry: sourceEvent, message: `event ${sourceEvent} needs an array` });
+      continue;
+    }
+    blocks.forEach((rawBlock, blockIndex) => {
+      const block = record(rawBlock);
+      const handlers = block?.hooks;
+      const matcher = block?.matcher;
+      if (!block || !Array.isArray(handlers) || (matcher !== undefined && typeof matcher !== "string")) {
+        diagnostics.push({ group: "lost", entry: `${sourceEvent}[${blockIndex}]`, message: "invalid matcher block" });
+        return;
+      }
+      handlers.forEach((rawHandler, handlerIndex) => {
+        const label = `${sourceEvent}[${blockIndex}].hooks[${handlerIndex}]`;
+        const handler = record(rawHandler);
+        if (!handler || handler.type !== "command") {
+          diagnostics.push({ group: "lost", entry: label, message: `handler ${label} has no command equivalent` });
+          return;
+        }
+        if (typeof handler.command !== "string" || !Array.isArray(handler.args)
+          || !handler.args.every((part: unknown) => typeof part === "string")) {
+          diagnostics.push({ group: "lost", entry: label, message: `handler ${label} needs exec-form command and args; shell strings are unsupported` });
+          return;
+        }
+        const rawEnv = handler.env === undefined ? undefined : record(handler.env);
+        if (handler.env !== undefined && (!rawEnv || !Object.values(rawEnv).every((part) => typeof part === "string"))) {
+          diagnostics.push({ group: "lost", entry: label, message: `handler ${label} has invalid env` });
+          return;
+        }
+        const rawValues = [handler.command, ...handler.args, ...Object.values(rawEnv ?? {})] as string[];
+        if (rawValues.some(hasForbiddenPlaceholder)) {
+          diagnostics.push({ group: "lost", entry: label, message: `handler ${label} uses an unsupported setting or placeholder` });
+          return;
+        }
+        const command = [handler.command, ...handler.args].map(rewritePlaceholder);
+        const env = rawEnv ? Object.fromEntries(Object.entries(rawEnv).map(([key, part]) => [key, rewritePlaceholder(part as string)])) : undefined;
+        entries.push({ event, ...(matcher ? { matcher } : {}), command,
+          ...(env ? { env } : {}),
+          ...(typeof handler.timeoutMs === "number" ? { timeoutMs: handler.timeoutMs } : {}),
+          needsAdaptation: true });
+        diagnostics.push({ group: "needs your input", entry: label,
+          message: "Review stdin, decision output, matcher meaning, and argv before clearing adaptation" });
+        if (event !== sourceEvent || rawValues.some((part) => part !== rewritePlaceholder(part))) {
+          diagnostics.push({ group: "rewritten", entry: label, message: `event or placeholder rewritten for ${label}` });
+        }
+      });
+    });
+  }
+  return { entries, diagnostics };
+}
+
+/** Refuse publication until the user has reviewed each imported protocol boundary. */
+export function clearedImportedHooks(entries: readonly (Omit<ImportedHookEntry, "needsAdaptation"> & { needsAdaptation?: boolean })[]): { version: 1; hooks: Record<string, unknown[]> } {
+  const hooks: Record<string, unknown[]> = {};
+  for (const [index, entry] of entries.entries()) {
+    if (entry.needsAdaptation !== false) throw new Error(`hook ${index} still needs adaptation`);
+    const event = INTERNAL_TO_EVENT[entry.event];
+    if (!event) throw new Error(`hook ${index} has an unsupported event`);
+    validateSymbolicHookArgv([...entry.command, ...Object.values(entry.env ?? {})], `hook ${index}`);
+    (hooks[event] ??= []).push({ ...(entry.matcher ? { matcher: entry.matcher } : {}), hooks: [{ type: "command",
+      command: entry.command, ...(entry.env ? { env: entry.env } : {}),
+      ...(entry.timeoutMs ? { timeoutMs: entry.timeoutMs } : {}) }] });
+  }
+  const document = { version: 1 as const, hooks };
+  const parsed = parseHookConfig(document, { bundled: true });
+  if (parsed.errors.length || parsed.warnings.length || parsed.entries.length !== entries.length) {
+    throw new Error(`imported hooks are invalid: ${[...parsed.errors, ...parsed.warnings].join("; ")}`);
+  }
+  return document;
+}
+
+/** Project reviewed native entries for an optional adjacent legacy layout. */
+export function exportLegacyHooks(entries: readonly HookConfigEntry[]): { hooks: Record<string, unknown[]>; notice: string } {
+  const hooks: Record<string, unknown[]> = {};
+  const back = (value: string) => value.replaceAll("${PLUGIN_ROOT}", "${CLAUDE_PLUGIN_ROOT}")
+    .replaceAll("${PLUGIN_DATA}", "${CLAUDE_PLUGIN_DATA}");
+  for (const entry of entries) {
+    const event = INTERNAL_TO_EVENT[entry.event];
+    if (!event) throw new Error(`hook event ${entry.event} cannot be exported`);
+    const [command, ...args] = entry.command;
+    if (!command) throw new Error(`hook ${entry.id} has no executable`);
+    (hooks[event] ??= []).push({ ...(entry.matcher ? { matcher: entry.matcher } : {}), hooks: [{ type: "command",
+      command: back(command), args: args.map(back),
+      ...(entry.env ? { env: Object.fromEntries(Object.entries(entry.env).map(([key, value]) => [key, back(value)])) } : {}),
+      timeoutMs: entry.timeoutMs }] });
+  }
+  return { hooks, notice: "Event names and argv were mapped. Stdin payload, decision output, and matcher semantics remain specific to the exporting host; review and adapt each handler before running it." };
+}
