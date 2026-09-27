@@ -175,6 +175,10 @@ function marketplaceTree(version: string): Entry[] {
       $schema: 'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json',
       mcpServers: { notes: { type: 'stdio', command: 'node', args: ['${PLUGIN_ROOT}/server/index.mjs'], env: { HARBOR_VERSION: version } } },
     })),
+    file(`${agentRoot}/ai.agent-connector.ave/hooks.json`, jsonText({
+      version: 1, hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: ['node', '${PLUGIN_ROOT}/server/hook.mjs'] }] }] },
+    })),
+    file(`${agentRoot}/server/hook.mjs`, "process.stdout.write(JSON.stringify({ action: 'allow' }));\n"),
     file(`${agentRoot}/server/index.mjs`, MCP_SERVER.replaceAll('harbor-notes', 'harbor-kit').replaceAll('harbor_notes_ping', 'harbor_kit_ping')),
   ];
   const agentComponents = deriveAgentPluginComponents(agentFiles.map(({ path, content }) => ({
@@ -373,11 +377,14 @@ test.describe('git marketplace lifecycle', () => {
         expect(plan.components).toMatchObject({
           skills: [{ name: 'harbor-check' }], prompts: [{ name: 'harbor-draft' }],
           routineTemplates: [{ id: 'harbor-daily' }], mcpServers: { notes: { transport: 'stdio' } },
+          hooks: [{ event: 'pre' }],
         });
         await settings.getByTestId(`git-marketplace:card:${key.sourceId}:${key.kind}:${key.name}`).getByTestId('git-marketplace:card:state').click();
         const sheet = mainWindow.getByTestId('git-marketplace:sheet');
         await sheet.getByTestId('git-marketplace:plan').click();
         await sheet.getByTestId('git-marketplace:mcp-consent:notes').getByRole('checkbox').click();
+        await expect(sheet.getByTestId('git-marketplace:review')).toContainText('On this machine:');
+        await sheet.getByTestId('git-marketplace:hook-consent:0').getByRole('checkbox').click();
         await test.info().attach('agent-plugin-install-review', { body: await sheet.screenshot(), contentType: 'image/png' });
         await sheet.getByTestId('git-marketplace:confirm').click();
         await expect(sheet.getByTestId('git-marketplace:done')).toBeVisible({ timeout: 60_000 });
@@ -426,6 +433,9 @@ test.describe('git marketplace lifecycle', () => {
         await updateSettings.getByTestId(`git-marketplace:card:${key.sourceId}:${key.kind}:${key.name}`).getByTestId('git-marketplace:card:state').click();
         const sheet = mainWindow.getByTestId('git-marketplace:sheet');
         await sheet.getByTestId('git-marketplace:mcp-consent:notes').getByRole('checkbox').click();
+        const hookConsent = sheet.getByTestId('git-marketplace:hook-consent:0').getByRole('checkbox');
+        await expect(hookConsent).not.toBeChecked();
+        await hookConsent.click();
         await test.info().attach('agent-plugin-update-review', { body: await sheet.screenshot(), contentType: 'image/png' });
         await sheet.getByTestId('git-marketplace:confirm').click();
         await expect(sheet.getByTestId('git-marketplace:done')).toBeVisible({ timeout: 60_000 });
