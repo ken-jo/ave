@@ -104,3 +104,16 @@ extension artifacts stay available: older apps still select their older versions
 from the frozen legacy marketplace index. Promote the protocol-2 web schema
 alias only after the app draft is published, in the same change that marks the
 tag-named mirror copy published.
+
+## Between releases: the next protocol candidate
+
+Once a release is tagged, its protocol schema copy is frozen, and
+`check:plugin-host-protocol-mirror` refuses any change to the canonical schema
+that would alter it. The first change after the tag therefore bumps
+`package.json` to the next minor version. It regenerates the schema with
+`bun run generate:plugin-host-protocol-schema` and runs
+`node scripts/sync-plugin-host-protocol-mirror.mjs`, which records a new
+candidate copy with `publishedTag: null`. Later protocol changes refresh only
+that candidate. The previous release's copy keeps its recorded bytes until its
+own publication marks it published. The release PR then folds the changelog and
+regenerates the candidate once more at the final commit.

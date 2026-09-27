@@ -75,7 +75,7 @@ export function checkProtocolMirror(root) {
       candidateProtocols.add(entry.protocol);
       const canonical = join(root, "schemas/plugin-host-protocol", entry.protocol, "protocol.schema.json");
       if (!existsSync(canonical) || !bytes.equals(readFileSync(canonical))) {
-        fail(`${relative} differs from the current canonical schema`);
+        fail(`${relative} differs from the current canonical schema; after a version bump or a protocol change, run node scripts/sync-plugin-host-protocol-mirror.mjs`);
       }
     }
     copies.set(relative, entry);
