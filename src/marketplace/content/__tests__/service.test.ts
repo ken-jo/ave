@@ -25,6 +25,18 @@ function service(items: LoadedContent[], broken: BrokenContent[] = [], revoked: 
 }
 
 describe("InstalledContentService", () => {
+  it("publishes verified routine template fields and removes them on reload", async () => {
+    const bytes = Buffer.from(JSON.stringify({ version: 1, templates: [{ id: "daily", title: "Daily draft", description: "Write it",
+      trigger: "schedule", schedule: { repeat: { kind: "cron", expression: "0 9 * * *" } },
+      execution: "llm-session", prePrompt: "Write the full draft", suggestedScope: { pluginIds: ["writer-extension"] } }] }));
+    let items = [loaded("agent-plugin", "writer-plugin", { kind: "agent-plugin", files: [{ path: "ai.agent-connector.ave/routines.json", data: bytes }],
+      components: { skills: [], mcpServers: {}, prompts: [], agents: [], routineTemplates: [{ id: "daily", title: "Daily draft", trigger: "schedule", schedule: { repeat: { kind: "cron", expression: "0 9 * * *" } }, execution: "llm-session", digest: "a".repeat(64) }], hooks: [] } })];
+    const svc = new InstalledContentService({ load: async () => ({ loaded: items, broken: [] }) } as unknown as ContentStore, TOKEN, () => null);
+    expect((await svc.reload()).routineTemplates).toMatchObject([{ packageName: "writer-plugin", version: "1.0.0", id: "daily", prePrompt: "Write the full draft", suggestedScope: { pluginIds: ["writer-extension"] } }]);
+    items = [];
+    expect((await svc.reload()).routineTemplates).toEqual([]);
+  });
+
   it("builds the picker view, the catalogs and the files the asset scheme may serve", async () => {
     const svc = service([
       loaded("theme", "harbor", { kind: "theme", name: "Harbor", description: "d", shell: "light", highContrast: false, tokens: moonstoneBundle.tokens, surfaces: SURFACES, preview: "preview.webp", pair: "harbor-dark" }),

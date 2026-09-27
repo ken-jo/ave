@@ -40,6 +40,7 @@ import { SOURCE_ID_RE } from "../../marketplace/sources/official.js";
 import { toolVisibility } from "./tool-visibility.js";
 import { createLogger } from "../../lib/logger.js";
 import { normalizeAllowedHosts } from "../../main/host-allow-list.js";
+import { assertProcessEntrySupported } from "../process-entry-support.js";
 import {
   HOST_SECRET_READ_MAX_ITEMS,
   findHostSecretReadListViolation,
@@ -918,6 +919,7 @@ export async function parsePluginJson(
       `"version": "1.0.0"`,
     );
   }
+  assertProcessEntrySupported(doc);
   if (typeof parsed.entry !== "string" || parsed.entry.length === 0) {
     fail(
       "entry",

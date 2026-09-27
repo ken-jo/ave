@@ -11,7 +11,7 @@
 import type { PackageKind } from "../catalog/types.js";
 import { MarketplaceError } from "../errors.js";
 
-export const CONTENT_KINDS = ["skill", "agent", "theme", "font", "language", "provider", "messaging-connection"] as const satisfies readonly PackageKind[];
+export const CONTENT_KINDS = ["agent-plugin", "skill", "agent", "theme", "font", "language", "provider", "messaging-connection"] as const satisfies readonly PackageKind[];
 export type ContentKind = (typeof CONTENT_KINDS)[number];
 
 export function isContentKind(kind: PackageKind): kind is ContentKind {
@@ -23,7 +23,7 @@ interface ContentRule {
   maxFiles: number;
   extensions: readonly string[];
   /** The extensions a path allows when they depend on where it sits; `extensions` otherwise. */
-  extensionsAt?(path: string): readonly string[];
+  extensionsAt?(path: string): readonly string[] | null;
   /** Whether `path` (package-relative, `/`-separated) belongs in this kind's layout. */
   layout(path: string): boolean;
   /** The layout, for a refusal message. */
@@ -46,6 +46,20 @@ const SKILL_SCRIPTS = [".py", ".js", ".mjs", ".cjs", ".sh", ".pin", ...SKILL_TEX
 const SKILL_ASSETS = [...SKILL_TEXT, ...IMAGE, ".csv", ".tsv", ".pdf", ".hwp", ".hwpx", ".docx", ".xlsx", ".pptx"] as const;
 
 export const CONTENT_RULES: Readonly<Record<ContentKind, ContentRule>> = Object.freeze({
+  "agent-plugin": {
+    maxBytes: 8 * MB,
+    maxFiles: 256,
+    extensions: [".json", ".md"],
+    extensionsAt: (path) => path.startsWith("server/") || path.startsWith("skills/") ? null : [".json", ".md"],
+    layout: (path) => {
+      if (["plugin.json", "mcp.json", "README.md", "CHANGELOG.md", "LICENSE", "NOTICE"].includes(path)) return true;
+      if (path.startsWith("server/")) return path.length > "server/".length;
+      if (path.startsWith("ai.agent-connector.ave/")) return /\.(?:json|md)$/iu.test(path);
+      const match = /^skills\/([a-z][a-z0-9-]{0,62})\/(.+)$/u.exec(path);
+      return match !== null && contentFileProblem("skill", match[2]!) === null;
+    },
+    describe: "plugin.json, mcp.json, skills/, server/, ai.agent-connector.ave/, and package notes",
+  },
   skill: {
     maxBytes: 2 * MB,
     maxFiles: 64,
@@ -108,7 +122,8 @@ export function contentFileProblem(kind: ContentKind, path: string): string | nu
   const lower = path.toLowerCase();
   if (lower.endsWith(".svg") || lower.endsWith(".svgz")) return `SVG is not allowed: ${path}`;
   if (!rule.layout(path)) return `a ${kind} package holds ${rule.describe} only: ${path}`;
-  const extensions = rule.extensionsAt?.(path) ?? rule.extensions;
+  const extensions = rule.extensionsAt?.(path) ?? (rule.extensionsAt ? null : rule.extensions);
+  if (extensions === null) return null;
   if (!EXTENSIONLESS.has(path) && !extensions.some((ext) => lower.endsWith(ext))) {
     return `${path}: a ${kind} package allows ${extensions.join(" ")} files there`;
   }

@@ -2,14 +2,11 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://sdk.former-site.invalid/schemas/plugin.schema.json",
   "title": "Ave Plugin Manifest (Agent Plugins 1.0.0)",
-  "description": "Validates plugin.json for Ave plugins. The document shape is Agent Plugins 1.0.0 (agent-plugins.org): portable fields at the top level, every Ave-specific field under extensions[\"ai.agent-connector.ave\"]. This schema is stricter than the portable one — it requires `version`, `description` and the Ave namespace, which a plugin must carry to load on this host.",
+  "description": "Manifest shape for extensions and agent plugins. Runtime and marketplace boundaries apply their own required metadata.",
   "type": "object",
   "required": [
     "$schema",
-    "name",
-    "version",
-    "description",
-    "extensions"
+    "name"
   ],
   "additionalProperties": false,
   "properties": {
@@ -119,10 +116,6 @@
         "ai.agent-connector.ave": {
           "type": "object",
           "description": "Ave host manifest data. Agent Plugins 1.0.0 assigns no semantics to extension namespace contents; everything the Ave host requires to load, sandbox and govern a plugin lives here.",
-          "required": [
-            "entry",
-            "tools"
-          ],
           "additionalProperties": false,
           "properties": {
             "displayName": {
@@ -248,6 +241,22 @@
             "mcpServers": {
               "type": "array",
               "description": "Plugin-owned declarative MCP server configuration files. Declaration does not grant connection approval.",
+              "maxItems": 64,
+              "items": {
+                "$ref": "#/definitions/pluginContributionDeclaration"
+              }
+            },
+            "prompts": {
+              "type": "array",
+              "description": "Plugin-owned prompt files. Their text retains package-authored provenance.",
+              "maxItems": 64,
+              "items": {
+                "$ref": "#/definitions/pluginContributionDeclaration"
+              }
+            },
+            "routineTemplates": {
+              "type": "array",
+              "description": "Plugin-owned routine suggestion files. Installation never creates a routine.",
               "maxItems": 64,
               "items": {
                 "$ref": "#/definitions/pluginContributionDeclaration"
@@ -824,7 +833,7 @@
                   "not": {
                     "pattern": "[\\r\\n]"
                   },
-                  "description": "The Ave host protocol version the plugin speaks, an integer written as a string (\"1\"). The host refuses to load the plugin (incompatible-host-protocol) when the running app does not serve that version. Omit for a JavaScript plugin: the host speaks its newest version for it. An app whose schema predates this field rejects the manifest, so a plugin that declares it sets minAppVersion to the first release that knows it."
+                  "description": "The Ave host protocol version the extension speaks, an integer written as a string (\"2\"). A missing declaration or an unserved version refuses activation as incompatible-host-protocol. An app whose schema predates this field rejects the manifest, so an extension that declares it sets minAppVersion to the first release that knows it."
                 }
               },
               "additionalProperties": false
@@ -1135,8 +1144,154 @@
                   }
                 }
               }
+            },
+            "process": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "command"
+              ],
+              "properties": {
+                "command": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200,
+                  "pattern": "^(?:[A-Za-z][A-Za-z0-9._-]*|\\./(?:[^/\\\\]+/)*[^/\\\\]+)$",
+                  "not": {
+                    "pattern": "[\\r\\n]"
+                  }
+                },
+                "args": {
+                  "type": "array",
+                  "maxItems": 64,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 1000
+                  }
+                },
+                "env": {
+                  "type": "object",
+                  "maxProperties": 64,
+                  "propertyNames": {
+                    "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$",
+                    "not": {
+                      "pattern": "[\\r\\n]"
+                    }
+                  },
+                  "additionalProperties": {
+                    "type": "string",
+                    "maxLength": 4096
+                  }
+                }
+              }
+            },
+            "mcpAuth": {
+              "type": "object",
+              "maxProperties": 64,
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "auth"
+                ],
+                "properties": {
+                  "auth": {
+                    "const": "api-key"
+                  },
+                  "apiKeyEnv": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$",
+                    "not": {
+                      "pattern": "[\\r\\n]"
+                    }
+                  },
+                  "apiKeyHeader": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "pattern": "^[!#$%&'*+\\-.^_`|~0-9A-Za-z]+$",
+                    "not": {
+                      "pattern": "[\\r\\n]"
+                    }
+                  }
+                }
+              }
             }
-          }
+          },
+          "oneOf": [
+            {
+              "required": [
+                "entry",
+                "tools"
+              ],
+              "properties": {
+                "process": false,
+                "mcpAuth": false
+              }
+            },
+            {
+              "required": [
+                "process",
+                "tools"
+              ],
+              "properties": {
+                "entry": false,
+                "mcpAuth": false
+              }
+            },
+            {
+              "properties": {
+                "entry": false,
+                "process": false,
+                "tools": false,
+                "onboarding": false,
+                "config": false,
+                "ui": false,
+                "uiResources": false,
+                "skills": false,
+                "hooks": false,
+                "mcpServers": false,
+                "prompts": false,
+                "routineTemplates": false,
+                "capabilities": false,
+                "networkAccess": false,
+                "eventSubscriptions": false,
+                "emittedEvents": false,
+                "hostSecrets": false,
+                "startupTimeoutMs": false,
+                "auth": false,
+                "workProposals": false,
+                "alerts": false,
+                "configInherits": false,
+                "notificationEvents": false,
+                "dependencies": false,
+                "pluginAccess": false,
+                "llmKeySource": false,
+                "packageName": false,
+                "python": false,
+                "configSchema": false,
+                "uiSlots": false,
+                "sandbox": false,
+                "requires": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "minAppVersion"
+                  ],
+                  "properties": {
+                    "minAppVersion": {
+                      "type": "string",
+                      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+                      "not": {
+                        "pattern": "[\\r\\n]"
+                      },
+                      "description": "Minimum Ave app version (plain SemVer MAJOR.MINOR.PATCH, not a range) required to load this plugin. The host refuses to install (hard block before download) and refuses to activate (skips start(), surfaces a non-dismissable \"needs newer app\" state) when the running app is older. Omit for no minimum (compatible with all app versions)."
+                    }
+                  }
+                }
+              }
+            }
+          ]
         }
       },
       "additionalProperties": {

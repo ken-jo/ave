@@ -169,6 +169,9 @@ describe("StdioTransport ASRT wrap — gate OFF (default)", () => {
       transport: "stdio",
       command: "ave-mcp-fs",
       args: ["--root", "/tmp"],
+      cwd: "/tmp/package-generation",
+      pluginDataDir: "/tmp/plugin-data",
+      env: { PLUGIN_ROOT: "/tmp/package-generation", PLUGIN_DATA: "/tmp/plugin-data" },
       // Host would set this at connect time, but the gate is OFF so it is ignored.
       sandboxRoot: join(aveHome(), "mcp", "fs", "sandbox"),
     };
@@ -183,6 +186,8 @@ describe("StdioTransport ASRT wrap — gate OFF (default)", () => {
     const [cmd, args] = spawnMock.mock.calls[0];
     expect(cmd).toBe("ave-mcp-fs");
     expect(args).toEqual(["--root", "/tmp"]);
+    expect((spawnMock.mock.calls[0]![2] as { cwd: string; env: Record<string, string> }).cwd).toBe("/tmp/package-generation");
+    expect((spawnMock.mock.calls[0]![2] as { env: Record<string, string> }).env.PLUGIN_DATA).toBe("/tmp/plugin-data");
     // The server is NOT marked wrapped → reviewer stays none even gate-OFF.
     expect(isMcpServerWrapped("fs")).toBe(false);
     const cap = resolveReviewerSandboxCapability("mcp", "mcp_fs_read", "fs");
@@ -198,6 +203,7 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
   it("routes the spawn through wrapWorkerCommand with the FS jail + sensitive read deny-list", async () => {
     gateActive = true;
     const sandboxRoot = join(aveHome(), "mcp", "fs", "sandbox");
+    const pluginDataDir = join(aveHome(), "agent-plugin-data", "writer");
     const fake = new FakeChildProcess();
     fake.responses = handshakeResponses("fs");
     // ASRT (mac/linux shape): proxy baked into the command string, env=process.env.
@@ -216,6 +222,9 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
       command: "ave-mcp-fs",
       args: ["--root", "/tmp"],
       sandboxRoot,
+      cwd: "/tmp/package-generation",
+      pluginDataDir,
+      env: { PLUGIN_ROOT: "/tmp/package-generation", PLUGIN_DATA: pluginDataDir },
     };
     const client = new McpClient(config, gov, new ToolRegistry(), unusedNetworkFetch);
 
@@ -232,7 +241,7 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
     expect(cmdline).toContain("'--root'");
     expect(cmdline).toContain("'/tmp'");
     // Write-jail = the fresh process HOME + per-server sandbox root.
-    expect(options.filesystem.allowWrite).toEqual([SANDBOX_HOME, sandboxRoot]);
+    expect(options.filesystem.allowWrite).toEqual([SANDBOX_HOME, sandboxRoot, pluginDataDir]);
     expect(options.filesystem.allowRead).toContain(SANDBOX_HOME);
     // The root + tmp are re-allowed for read; HOME is never re-allowed wholesale.
     expect(options.filesystem.allowRead).toContain(sandboxRoot);
@@ -257,12 +266,14 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
     const [spawnedCmd, spawnedArgs, spawnOpts] = spawnMock.mock.calls[0] as [
       string,
       string[],
-      { stdio: unknown[]; shell: boolean },
+      { stdio: unknown[]; shell: boolean; cwd: string; env: Record<string, string> },
     ];
     expect(spawnedCmd).toBe("/bin/bash");
     expect(spawnedArgs[0]).toBe("-c");
     expect(spawnOpts.shell).toBe(false);
     expect(spawnOpts.stdio[0]).toBe("pipe"); // stdin must stay writable for framing
+    expect(spawnOpts.cwd).toBe("/tmp/package-generation");
+    expect(spawnOpts.env.PLUGIN_DATA).toBe(pluginDataDir);
 
     // The server is now marked wrapped → reviewer can report genuine asrt.
     expect(isMcpServerWrapped("fs")).toBe(true);

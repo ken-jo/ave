@@ -55,6 +55,15 @@ const fontFile = (patch: Record<string, unknown> = {}) =>
 const LICENSE: ContentFile = { path: "LICENSE", data: Buffer.from("SIL Open Font License 1.1\n") };
 
 describe("content file rules (design §5.4)", () => {
+  it("holds agent-plugin files to the portable and host component directories", () => {
+    for (const path of ["plugin.json", "mcp.json", "README.md", "LICENSE", "skills/draft/SKILL.md", "skills/draft/scripts/run.sh", "skills/draft/assets/form.pdf", "server/worker", "ai.agent-connector.ave/prompts/draft.md", "ai.agent-connector.ave/agents/reviewer/AGENTS.md", "ai.agent-connector.ave/routines.json"]) {
+      expect(contentFileProblem("agent-plugin", path), path).toBeNull();
+    }
+    for (const path of ["skills/draft/assets/run.py", "skills/draft/scripts/run.exe", "other/run.sh", "ai.agent-connector.ave/program.js", "server/icon.svg"]) {
+      expect(contentFileProblem("agent-plugin", path), path).not.toBeNull();
+    }
+  });
+
   it("allows each kind's layout and nothing else", () => {
     expect(contentFileProblem("theme", "theme.json")).toBeNull();
     expect(contentFileProblem("theme", "preview.webp")).toBeNull();

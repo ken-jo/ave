@@ -45,7 +45,7 @@ const THEMES = [
 const FRENCH = { ...FROM, name: "french", locale: "fr", nativeName: "Français", englishName: "French", missingKeys: [] };
 
 function install(content: Partial<InstalledContentView>) {
-  const view = { themes: [], languages: [], fonts: [], broken: [], ...content } as InstalledContentView;
+  const view = { themes: [], languages: [], fonts: [], routineTemplates: [], broken: [], ...content } as InstalledContentView;
   applyInstalledContent(view, { installed: vi.fn(), languageMessages: vi.fn() } as never);
 }
 

@@ -210,6 +210,8 @@ function checkContent(tree: RepositoryTree, entry: IndexPackage, descriptor: Pac
   if (!isDataContentKind(kind)) return;
   parseContent(kind, files, {
     name: descriptor.name,
+    version: descriptor.version,
+    minAppVersion: descriptor.minAppVersion,
     payload: descriptor.payload,
     english: messages.en,
     sourceOrigin: options.official ? "official" : "custom",

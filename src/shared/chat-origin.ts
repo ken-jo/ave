@@ -22,6 +22,8 @@ export type ChatInputOrigin =
    * envelope — see `shared/staged-origins.ts`.
    */
   | "mcp-prompt-emitted"
+  /** User-selected template whose text came from an installed agent plugin. */
+  | "plugin-prompt-emitted"
   | "llm-tool-arg"
   | "agent-message"
   | "file-content"
@@ -196,7 +198,7 @@ export function remoteControllerOriginOf(
  */
 export type StagedChatInputOrigin = Extract<
   ChatInputOrigin,
-  "plugin-emitted" | "app-emitted" | "mcp-prompt-emitted"
+  "plugin-emitted" | "app-emitted" | "mcp-prompt-emitted" | "plugin-prompt-emitted"
 >;
 
 export type ChatSendInputOrigin =

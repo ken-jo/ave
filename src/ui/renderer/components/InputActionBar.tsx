@@ -51,6 +51,7 @@ import type { AppSettings } from "../types.js";
 import type { RolePreset } from "../../../data/role-presets.js";
 import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
 import type { McpPromptEntry } from "./slash-picker-data.js";
+import type { AgentPluginTemplatePrompt } from "../../../shared/agent-plugin-prompt.js";
 import type { InputStatusRow } from "../hooks/use-input-status-row.js";
 import type { ExecutionMode, ExecutionModeDisplay } from "../../../shared/permission-mode.js";
 import { EXEC_MODE_OPTIONS } from "../constants.js";
@@ -64,6 +65,7 @@ export interface InputActionBarProps {
   onSelectPlugin: (viewKey: string) => void;
   onInsertSlashCommand: (cmd: string) => void;
   onRunMcpPrompt: (prompt: McpPromptEntry) => void;
+  onRunPluginPrompt: (prompt: AgentPluginTemplatePrompt) => void;
   slashPickerOpen: boolean;
   onSlashPickerOpenChange: (open: boolean) => void;
   // Leading — attachment picker (single unified button, no count badge —
@@ -139,6 +141,7 @@ export function InputActionBar({
   onSelectPlugin,
   onInsertSlashCommand,
   onRunMcpPrompt,
+  onRunPluginPrompt,
   slashPickerOpen,
   onSlashPickerOpenChange,
   onAttach,
@@ -175,6 +178,7 @@ export function InputActionBar({
           onSelectPlugin={onSelectPlugin}
           onInsert={onInsertSlashCommand}
           onRunMcpPrompt={onRunMcpPrompt}
+          onRunPluginPrompt={onRunPluginPrompt}
           open={slashPickerOpen}
           onOpenChange={onSlashPickerOpenChange}
         />

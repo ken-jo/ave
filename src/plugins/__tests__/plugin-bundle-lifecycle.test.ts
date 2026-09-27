@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
 import { SkillStore } from "../../main/skill-store.js";
+import { PersonaPromptStore } from "../../main/persona-prompt-store.js";
 import type { PluginManifest } from "../types.js";
 import {
   PluginBundleLifecycle,
@@ -41,17 +42,19 @@ function inertLoopbackManager() {
 }
 
 function makeLifecycle(
-  deps: Omit<PluginBundleLifecycleDeps, "loopbackManager" | "revokeOperationGeneration"> &
-    Partial<Pick<PluginBundleLifecycleDeps, "loopbackManager" | "revokeOperationGeneration">>,
+  deps: Omit<PluginBundleLifecycleDeps, "loopbackManager" | "revokeOperationGeneration" | "personaPromptStore" | "onContributionsUpdated"> &
+    Partial<Pick<PluginBundleLifecycleDeps, "loopbackManager" | "revokeOperationGeneration" | "personaPromptStore" | "onContributionsUpdated">>,
 ): PluginBundleLifecycle {
   return new PluginBundleLifecycle({
     loopbackManager: inertLoopbackManager() as never,
     revokeOperationGeneration: vi.fn(),
+    personaPromptStore: new PersonaPromptStore({ userDir: join(deps.receiptCacheRoot, "prompts") }),
+    onContributionsUpdated: vi.fn(),
     ...deps,
   });
 }
 
-async function fixture(hookContent = JSON.stringify({ hooks: { PreToolUse: [] } })) {
+async function fixture(hookContent = JSON.stringify({ hooks: { PreToolUse: [] } }), withContent = false) {
   const root = mkdtempSync(join(tmpdir(), "ave-bundle-life-"));
   roots.push(root);
   const pluginRoot = join(root, "plugin");
@@ -69,6 +72,21 @@ async function fixture(hookContent = JSON.stringify({ hooks: { PreToolUse: [] } 
     hooks: [{ id: "policy", path: "hooks/policy.json" }],
     mcpServers: [{ id: "orion", path: "mcp/orion.json" }],
   } as unknown as PluginManifest;
+  if (withContent) {
+    manifest.prompts = [
+      { id: "draft", path: "prompts/draft.md" },
+      { id: "review", path: "prompts/review.md" },
+    ];
+    manifest.routineTemplates = [{ id: "daily", path: "routines/templates.json" }];
+    await mkdir(join(pluginRoot, "prompts"), { recursive: true });
+    await mkdir(join(pluginRoot, "routines"), { recursive: true });
+    await writeFile(join(pluginRoot, "prompts", "draft.md"), "---\nname: draft\ndescription: Draft a report\nkind: template\n---\nDraft {args}\n", "utf8");
+    await writeFile(join(pluginRoot, "prompts", "review.md"), "---\nname: review\ndescription: Review a report\nkind: persona\n---\nReview carefully.\n", "utf8");
+    await writeFile(join(pluginRoot, "routines", "templates.json"), JSON.stringify({ version: 1, templates: [{
+      id: "daily", title: "Daily review", description: "Review reports", trigger: "schedule",
+      schedule: { repeat: { kind: "cron", expression: "0 9 * * *" } }, execution: "llm-session", prePrompt: "Review the report",
+    }] }), "utf8");
+  }
   await writeFile(join(pluginRoot, "plugin.json"), JSON.stringify(agentPluginsDocument(manifest)), "utf8");
   await writeFile(join(pluginRoot, "skills", "attendance", "SKILL.md"), "---\nname: attendance\ndescription: Attendance workflow\n---\nUse the ORION attendance API.", "utf8");
   await writeFile(join(pluginRoot, "hooks", "policy.json"), hookContent, "utf8");
@@ -80,6 +98,7 @@ async function fixture(hookContent = JSON.stringify({ hooks: { PreToolUse: [] } 
     "hooks/policy.json",
     "mcp/orion.json",
   ];
+  if (withContent) payloadFiles.push("prompts/draft.md", "prompts/review.md", "routines/templates.json");
   const files = await hashReceiptFiles(pluginRoot, payloadFiles);
   await writeFile(join(cacheRoot, "orion-api", "install-receipt.json"), JSON.stringify({
     schemaVersion: 2,
@@ -113,6 +132,49 @@ afterEach(async () => {
 });
 
 describe("PluginBundleLifecycle", () => {
+  it("publishes extension prompts and routine templates only while their generation is active", async () => {
+    const { root, pluginRoot, cacheRoot, manifest } = await fixture(undefined, true);
+    const personaPromptStore = new PersonaPromptStore({ userDir: join(root, "local-prompts") });
+    const onContributionsUpdated = vi.fn();
+    const lifecycle = makeLifecycle({
+      pluginRuntime: {
+        getPluginManifest: () => manifest,
+        getPluginRoot: () => pluginRoot,
+        getRuntimeGenerationProjection: () => runtimeProjection(manifest, pluginRoot),
+        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
+        prepareRuntimeRemoval: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
+        postPublishRuntimeGeneration: vi.fn(),
+        publishRuntimeGeneration: vi.fn(),
+        unpublishRuntimeGeneration: vi.fn(),
+        prepareRuntimeRetirement: vi.fn(() => []),
+      },
+      receiptCacheRoot: cacheRoot,
+      skillStore: new SkillStore({ userDir: join(root, "local-skills") }),
+      personaPromptStore,
+      onContributionsUpdated,
+      hookManager: new ScriptHookManager(),
+      mcpManager: {
+        bundledServerIdsForPlugin: vi.fn(() => []),
+        prepareBundledGeneration: vi.fn(async () => ({ records: [], predecessorServerIds: [], predecessorToolNames: [],
+          registryReplacement: { publish: vi.fn(), cancel: vi.fn(), replacementTools: [] }, published: false })),
+        publishBundledGeneration: vi.fn(),
+        discardBundledGeneration: vi.fn(async () => undefined),
+        retirePublishedMcpReplacement: vi.fn(async () => undefined),
+        disconnectBundledGeneration: vi.fn(async () => undefined),
+      } as never,
+    });
+    await lifecycle.activate(manifest.id);
+    expect(personaPromptStore.listTemplates()).toMatchObject([{ id: "extension:orion-api:draft", body: "Draft {args}" }]);
+    expect(await personaPromptStore.get("extension:orion-api:review")).toMatchObject({
+      systemPromptAdd: "Review carefully.", origin: { kind: "plugin", package: "orion-api" },
+    });
+    expect(lifecycle.listRoutineTemplates()).toMatchObject([{ id: "daily", packageName: "orion-api", sourceKind: "extension" }]);
+    await lifecycle.deactivate(manifest.id);
+    expect(personaPromptStore.listTemplates()).toEqual([]);
+    expect(await personaPromptStore.get("extension:orion-api:review")).toBeNull();
+    expect(lifecycle.listRoutineTemplates()).toEqual([]);
+    expect(onContributionsUpdated).toHaveBeenCalledTimes(2);
+  });
   it("rejects a missing receipt cache root with an explicit contract error", () => {
     expect(() => new PluginBundleLifecycle({ receiptCacheRoot: "" } as never)).toThrow(
       "PluginBundleLifecycle requires a non-empty receiptCacheRoot",
@@ -554,6 +616,8 @@ describe("PluginBundleLifecycle", () => {
       receiptCacheRoot: join(tmpdir(), "ave-deferred-completion-test"),
       loopbackManager: { prepareGeneration: vi.fn() },
       revokeOperationGeneration: vi.fn(),
+      personaPromptStore: new PersonaPromptStore({ userDir: join(tmpdir(), "ave-deferred-completion-test", "prompts") }),
+      onContributionsUpdated: vi.fn(),
     } as never);
     type SyntheticCommit = {
       result: undefined;

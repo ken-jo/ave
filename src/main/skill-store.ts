@@ -26,7 +26,8 @@ import { resolve, join, relative, isAbsolute, dirname, basename, sep } from "nod
 import { parse as parseYaml } from "yaml";
 import { createLogger } from "../lib/logger.js";
 import { aveHome } from "../shared/ave-home.js";
-import { PLUGIN_SKILL_SELECTOR_PATTERN } from "../shared/plugin-skill-selector.js";
+import { AGENT_PLUGIN_SKILL_SELECTOR_PATTERN, parseAgentPluginSkillSelector, PLUGIN_SKILL_SELECTOR_PATTERN } from "../shared/plugin-skill-selector.js";
+import type { InstalledAgentPlugin } from "../marketplace/content/service.js";
 import type { ActivePluginGeneration } from "../plugins/plugin-generation-coordinator.js";
 import type { MaterializedPluginContribution } from "../plugins/plugin-contributions.js";
 const log = createLogger("ave");
@@ -75,8 +76,9 @@ function boundedTriggers(triggers: readonly string[] | undefined): readonly stri
 // Built from the ONE selector pattern (src/shared/plugin-skill-selector.ts), so
 // the catalog, `skill_load`/`skill_read`, and the turn-scope gate cannot drift.
 const PLUGIN_SKILL_SELECTOR_ALLOWLIST = new RegExp(`^${PLUGIN_SKILL_SELECTOR_PATTERN}$`);
+const AGENT_PLUGIN_SKILL_SELECTOR_ALLOWLIST = new RegExp(`^${AGENT_PLUGIN_SKILL_SELECTOR_PATTERN}$`);
 export const SKILL_SELECTOR_ALLOWLIST = new RegExp(
-  `^(?:[a-zA-Z0-9_-]+|${PLUGIN_SKILL_SELECTOR_PATTERN})$`,
+  `^(?:[a-zA-Z0-9_-]+|${PLUGIN_SKILL_SELECTOR_PATTERN}|${AGENT_PLUGIN_SKILL_SELECTOR_PATTERN})$`,
 );
 
 /** C2(e): skills with a body larger than this are refused at load time. */
@@ -266,6 +268,7 @@ export interface LoadedSkill extends SkillComponentFields {
   /** Exact cache/approval identity for plugin-owned materialized bytes. */
   approvalKey?: string;
   pluginOwner?: PluginSkillOwner;
+  agentPluginOwner?: { packageName: string; version: string; digest: string };
   /**
    * Bundled files shipped next to SKILL.md (stage-3). Metadata only — contents
    * load on demand through `skill_read`. Always present; empty for flat skills.
@@ -469,6 +472,8 @@ export interface SkillStoreOptions {
 export class SkillStore {
   private readonly userDir: string;
   private pluginSkills = new Map<string, LoadedSkill>();
+  private agentPluginSkills = new Map<string, LoadedSkill>();
+  private agentPluginResources = new Map<string, ReadonlyMap<string, Buffer>>();
   /**
    * Skills installed as marketplace packages (design §2): name → the
    * installed package directory, which holds SKILL.md and its bundle. A
@@ -484,6 +489,63 @@ export class SkillStore {
   /** Replace the installed skill packages; the installed-content service calls this after each load. */
   setInstalledPackages(packages: ReadonlyArray<{ name: string; dir: string }>): void {
     this.packageDirs = new Map(packages.filter((item) => SKILL_NAME_ALLOWLIST.test(item.name)).map((item) => [item.name, item.dir]));
+  }
+
+  /** Publish skills from already-verified package bytes; this replaces the prior package snapshot. */
+  setInstalledAgentPlugins(packages: readonly InstalledAgentPlugin[]): void {
+    const next = new Map<string, LoadedSkill>();
+    const nextResources = new Map<string, ReadonlyMap<string, Buffer>>();
+    for (const { name: packageName, version, content } of packages) {
+      const files = new Map(content.files.map((file) => [file.path, file.data]));
+      for (const component of content.components.skills) {
+        const selector = `agent-plugin:${packageName}:${component.name}`;
+        const root = `skills/${component.name}/`;
+        const entry = files.get(`${root}SKILL.md`);
+        if (!entry) throw new Error(`installed agent plugin skill ${selector} is missing SKILL.md`);
+        const { fm, body } = parseFrontmatter(entry.toString("utf8"));
+        if (fm.name !== component.name || !fm.description || !body.trim()
+          || Buffer.byteLength(body.trim(), "utf8") > SKILL_MAX_BODY_BYTES) {
+          throw new Error(`installed agent plugin skill ${selector} has invalid frontmatter`);
+        }
+        const resources = new Map<string, Buffer>();
+        const refs: SkillResourceRef[] = [];
+        for (const [path, data] of files) {
+          if (!path.startsWith(root) || path === `${root}SKILL.md`) continue;
+          const resourcePath = path.slice(root.length);
+          if (!isSafeResourcePath(resourcePath) || data.length > SKILL_RESOURCE_MAX_BYTES || refs.length >= SKILL_RESOURCE_COUNT_CAP) continue;
+          resources.set(resourcePath, data);
+          refs.push(Object.freeze({ path: resourcePath, bytes: data.length }));
+        }
+        const owner = Object.freeze({ packageName, version, digest: component.digest });
+        if (next.has(selector)) throw new Error(`duplicate installed agent plugin skill ${selector}`);
+        next.set(selector, Object.freeze({
+          name: selector,
+          description: fm.description,
+          ...skillComponentFields(fm),
+          body: body.trim(),
+          filePath: `agent-plugin://${packageName}/${component.name}/SKILL.md`,
+          approvalKey: `${selector}|${version}|${component.digest}`,
+          agentPluginOwner: owner,
+          resources: Object.freeze(refs),
+        }));
+        nextResources.set(selector, resources);
+      }
+    }
+    this.agentPluginSkills = next;
+    this.agentPluginResources = nextResources;
+  }
+
+  readAgentPluginResource(selector: string, owner: NonNullable<LoadedSkill["agentPluginOwner"]>, path: string): SkillResourceContent | null {
+    assertSafeResourcePath(path);
+    const current = this.agentPluginSkills.get(selector)?.agentPluginOwner;
+    if (!current || current.packageName !== owner.packageName || current.version !== owner.version || current.digest !== owner.digest) {
+      throw new Error("skill package changed since load; call skill_load again");
+    }
+    const data = this.agentPluginResources.get(selector)?.get(path);
+    if (!data) return null;
+    const content = data.toString("utf8");
+    assertTextResource(content, path);
+    return { path, content, bytes: data.length };
   }
 
   /** The SKILL.md of an installed package, realpath-contained in its directory; null when absent or escaping. */
@@ -524,7 +586,7 @@ export class SkillStore {
       const skill = await this.loadPackageSkill(name, dir);
       if (skill) byName.set(name, skill);
     }
-    return [...byName.values(), ...this.pluginSkills.values()];
+    return [...byName.values(), ...this.pluginSkills.values(), ...this.agentPluginSkills.values()];
   }
 
   /**
@@ -565,10 +627,19 @@ export class SkillStore {
         triggers: skill.triggers,
         pluginOwner: skill.pluginOwner,
       })),
+      ...[...this.agentPluginSkills.values()].map((skill) => ({
+        name: skill.name,
+        description: skill.description,
+        triggers: skill.triggers,
+      })),
     ];
   }
 
   async load(name: string): Promise<LoadedSkill | null> {
+    if (AGENT_PLUGIN_SKILL_SELECTOR_ALLOWLIST.test(name)) {
+      const selector = parseAgentPluginSkillSelector(name);
+      return selector ? this.agentPluginSkills.get(name) ?? null : null;
+    }
     if (PLUGIN_SKILL_SELECTOR_ALLOWLIST.test(name)) {
       return this.pluginSkills.get(name) ?? null;
     }

@@ -111,6 +111,25 @@
           "if": {
             "properties": {
               "kind": {
+                "const": "agent-plugin"
+              }
+            },
+            "type": "object"
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/definitions/agentPluginPayload"
+              },
+              "hostProtocol": false
+            },
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
                 "const": "mcp"
               }
             },
@@ -256,6 +275,7 @@
     "kind": {
       "enum": [
         "plugin",
+        "agent-plugin",
         "mcp",
         "skill",
         "agent",
@@ -684,6 +704,352 @@
       "properties": {
         "entry": {
           "const": "connection.json"
+        }
+      }
+    },
+    "agentPluginComponents": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "skills",
+        "mcpServers",
+        "prompts",
+        "agents",
+        "routineTemplates",
+        "hooks"
+      ],
+      "properties": {
+        "skills": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "hasScripts",
+              "digest"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "hasScripts": {
+                "type": "boolean"
+              },
+              "digest": {
+                "$ref": "#/definitions/sha256"
+              }
+            }
+          }
+        },
+        "mcpServers": {
+          "type": "object",
+          "maxProperties": 64,
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "transport",
+                  "command",
+                  "cwd",
+                  "digest"
+                ],
+                "properties": {
+                  "transport": {
+                    "const": "stdio"
+                  },
+                  "command": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "args": {
+                    "type": "array",
+                    "maxItems": 64,
+                    "items": {
+                      "type": "string",
+                      "maxLength": 1000
+                    }
+                  },
+                  "env": {
+                    "type": "object",
+                    "maxProperties": 64,
+                    "propertyNames": {
+                      "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+                    },
+                    "additionalProperties": {
+                      "type": "string",
+                      "maxLength": 4096
+                    }
+                  },
+                  "cwd": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000
+                  },
+                  "auth": {
+                    "const": "api-key"
+                  },
+                  "apiKeyEnv": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "digest": {
+                    "$ref": "#/definitions/sha256"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "transport",
+                  "url",
+                  "digest"
+                ],
+                "properties": {
+                  "transport": {
+                    "const": "http"
+                  },
+                  "url": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2048
+                  },
+                  "headers": {
+                    "type": "object",
+                    "maxProperties": 64,
+                    "additionalProperties": {
+                      "type": "string",
+                      "maxLength": 4096
+                    }
+                  },
+                  "auth": {
+                    "const": "api-key"
+                  },
+                  "apiKeyHeader": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "digest": {
+                    "$ref": "#/definitions/sha256"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "mcpAuth": {
+          "type": "object",
+          "maxProperties": 64,
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "auth"
+            ],
+            "properties": {
+              "auth": {
+                "const": "api-key"
+              },
+              "apiKeyEnv": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "apiKeyHeader": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              }
+            }
+          }
+        },
+        "prompts": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "kind",
+              "digest"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "digest": {
+                "$ref": "#/definitions/sha256"
+              },
+              "kind": {
+                "enum": [
+                  "template",
+                  "persona"
+                ]
+              }
+            }
+          }
+        },
+        "agents": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "digest"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "digest": {
+                "$ref": "#/definitions/sha256"
+              }
+            }
+          }
+        },
+        "routineTemplates": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "title",
+              "trigger",
+              "execution",
+              "digest"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "trigger": {
+                "enum": [
+                  "schedule",
+                  "shutdown"
+                ]
+              },
+              "schedule": {
+                "type": "object",
+                "additionalProperties": false,
+                "anyOf": [
+                  { "required": ["at"] },
+                  { "required": ["repeat"] }
+                ],
+                "properties": {
+                  "at": { "type": "string", "format": "date-time" },
+                  "repeat": {
+                    "oneOf": [
+                      { "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "enum": ["none", "daily", "weekly", "monthly"] } } },
+                      { "type": "object", "additionalProperties": false, "required": ["kind", "intervalMs"], "properties": { "kind": { "const": "interval" }, "intervalMs": { "type": "number", "minimum": 60000 } } },
+                      { "type": "object", "additionalProperties": false, "required": ["kind", "expression"], "properties": { "kind": { "const": "cron" }, "expression": { "type": "string", "minLength": 1 } } }
+                    ]
+                  }
+                }
+              },
+              "execution": {
+                "enum": [
+                  "llm-session",
+                  "notification-only"
+                ]
+              },
+              "suggestedScope": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                }
+              },
+              "digest": {
+                "$ref": "#/definitions/sha256"
+              }
+            }
+          }
+        },
+        "hooks": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "event",
+              "command",
+              "timeoutMs",
+              "digest"
+            ],
+            "properties": {
+              "event": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "matcher": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              },
+              "command": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 64,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1000
+                }
+              },
+              "timeoutMs": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "digest": {
+                "$ref": "#/definitions/sha256"
+              }
+            }
+          }
+        }
+      }
+    },
+    "agentPluginPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manifest",
+        "components"
+      ],
+      "properties": {
+        "manifest": {
+          "const": "plugin.json"
+        },
+        "components": {
+          "$ref": "#/definitions/agentPluginComponents"
         }
       }
     }

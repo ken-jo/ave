@@ -22,12 +22,13 @@ import {
 import type { GitMarketplaceApi } from "../../shared/git-marketplace.js";
 import { setInstalledThemeBundles, type ThemeBundle } from "./theme/bundles/index.js";
 
-const EMPTY: InstalledContentView = Object.freeze({ themes: [], languages: [], fonts: [], broken: [] }) as unknown as InstalledContentView;
+const EMPTY: InstalledContentView = Object.freeze({ themes: [], languages: [], fonts: [], routineTemplates: [], broken: [] }) as unknown as InstalledContentView;
 const FONT_STYLE_ID = "ave-installed-fonts";
 
 let current: InstalledContentView = EMPTY;
 let pending: Promise<void> | null = null;
 let offCatalogChanged: (() => void) | null = null;
+let offPromptsUpdated: (() => void) | null = null;
 const listeners = new Set<() => void>();
 
 function themeBundle(view: InstalledContentView["themes"][number]): ThemeBundle {
@@ -91,7 +92,7 @@ export function applyInstalledContent(view: InstalledContentView, api: Installed
  * nothing installed, and the built-in themes and languages still apply.
  */
 export function ensureInstalledContent(
-  api: { installedContent?: InstalledContentApi; gitMarketplace?: Pick<GitMarketplaceApi, "onCatalogChanged"> } | null | undefined,
+  api: { installedContent?: InstalledContentApi; gitMarketplace?: Pick<GitMarketplaceApi, "onCatalogChanged">; onPersonaPromptsUpdated?: (handler: () => void) => () => void } | null | undefined,
 ): Promise<void> {
   if (pending) return pending;
   const bridge = api?.installedContent;
@@ -103,6 +104,7 @@ export function ensureInstalledContent(
   pending = read();
   // A package installed or removed in the marketplace changes what this window lists.
   offCatalogChanged = api?.gitMarketplace?.onCatalogChanged(() => void read()) ?? null;
+  offPromptsUpdated = api?.onPersonaPromptsUpdated?.(() => void read()) ?? null;
   return pending;
 }
 
@@ -123,6 +125,8 @@ export function resetInstalledContentForTests(): void {
   pending = null;
   offCatalogChanged?.();
   offCatalogChanged = null;
+  offPromptsUpdated?.();
+  offPromptsUpdated = null;
   setInstalledThemeBundles([]);
   registerInstalledLocales([]);
   setInstalledCatalogLoader(null);

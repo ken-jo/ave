@@ -12,9 +12,11 @@ import { SlashPicker } from "../SlashPicker.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 
 const originalAve = window.ave;
+const originalAveApi = window.aveApi;
 
 afterEach(() => {
   Object.defineProperty(window, "ave", { configurable: true, value: originalAve });
+  Object.defineProperty(window, "aveApi", { configurable: true, value: originalAveApi });
 });
 
 /**
@@ -68,6 +70,7 @@ function renderPicker(overrides: Partial<Parameters<typeof SlashPicker>[0]> = {}
     onSelectPlugin: vi.fn(),
     onInsert: vi.fn(),
     onRunMcpPrompt: vi.fn(),
+    onRunPluginPrompt: vi.fn(),
     open: false,
     onOpenChange: vi.fn(),
     ...overrides,
@@ -76,6 +79,20 @@ function renderPicker(overrides: Partial<Parameters<typeof SlashPicker>[0]> = {}
 }
 
 describe("SlashPicker", () => {
+  it("offers verified package prompts and dispatches the selected template", async () => {
+    const bridge = installMenuBridge();
+    const prompt = { id: "agent-plugin:writer-plugin:draft", packageName: "writer-plugin", version: "1.0.0", name: "draft", description: "Draft a note", body: "Draft {args}" };
+    (window as unknown as { aveApi: Record<string, unknown> }).aveApi.listPersonaPrompts = vi.fn(async () => ({ prompts: [], templates: [prompt] }));
+    const onRunPluginPrompt = vi.fn();
+    const { getByTestId } = renderPicker({ onRunPluginPrompt });
+    fireEvent.click(getByTestId(TEST_IDS.slashPickerTrigger));
+    await waitFor(() => expect(bridge.showDynamicMenu).toHaveBeenCalledOnce());
+    const payload = bridge.showDynamicMenu.mock.calls[0]![0] as DynamicNativeMenuPayload;
+    expect(payload.sections[0]!.items.map((item) => item.id)).toContain("category:plugin-prompts");
+    act(() => { bridge.fire({ requestId: payload.requestId, id: `plugin-prompt:${prompt.id}` }); });
+    expect(onRunPluginPrompt).toHaveBeenCalledExactlyOnceWith(prompt);
+  });
+
   it("opens with the submenus and nothing else — no flat block of view shortcuts", async () => {
     const bridge = installMenuBridge();
     const { getByTestId } = renderPicker({
@@ -178,6 +195,7 @@ describe("SlashPicker", () => {
           onSelectPlugin={vi.fn()}
           onInsert={vi.fn()}
           onRunMcpPrompt={vi.fn()}
+          onRunPluginPrompt={vi.fn()}
           open
           onOpenChange={onOpenChange}
         />
@@ -201,6 +219,7 @@ describe("SlashPicker", () => {
           onSelectPlugin={vi.fn()}
           onInsert={vi.fn()}
           onRunMcpPrompt={vi.fn()}
+          onRunPluginPrompt={vi.fn()}
           open
           onOpenChange={onOpenChange}
         />

@@ -12,6 +12,7 @@
  * development installs; this rule is the install plan's, not the schema's.
  */
 import { AVE_EXTENSION_NAMESPACE, flattenAgentPluginsManifest } from "../../plugins/public-contract.js";
+import { hasProcessEntry, PROCESS_ENTRY_UNSUPPORTED_CODE, PROCESS_ENTRY_UNSUPPORTED_MESSAGE } from "../../plugins/process-entry-support.js";
 import { sandboxDeclarationProblem } from "../../plugins/sandbox-authority.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import type { PluginAuthority } from "../catalog/types.js";
@@ -103,6 +104,7 @@ export function gitInstallManifestMismatches(document: unknown, expected: Expect
  * `MANIFEST_MISMATCH`.
  */
 export function assertGitInstallManifest(document: unknown, expected: ExpectedPlugin): void {
+  if (hasProcessEntry(document)) throw new MarketplaceError(PROCESS_ENTRY_UNSUPPORTED_CODE, PROCESS_ENTRY_UNSUPPORTED_MESSAGE);
   const problems = gitInstallManifestMismatches(document, expected);
   if (problems.includes(COMPAT_UNDECLARED)) {
     throw new MarketplaceError("PACKAGE_COMPAT_UNDECLARED", `plugin ${expected.name}@${expected.version}: ${problems.join("; ")}`);

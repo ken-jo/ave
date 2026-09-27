@@ -26,7 +26,7 @@ export const MAX_LLM_SESSION_ROUTINES = 10;
  * routines file. Enforced both at the `routine_schedule` tool boundary and in
  * `RoutinesStore.add` (the SOT).
  */
-export const MAX_ROUTINE_SOURCE_LENGTH = 128;
+export const MAX_ROUTINE_SOURCE_LENGTH = 140;
 
 export type RoutineExecution = "llm-session" | "notification-only";
 

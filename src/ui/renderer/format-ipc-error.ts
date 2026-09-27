@@ -6,6 +6,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   // ── Trust / intent gate ──
   "user-keyboard-required": "formatIpcError.userKeyboardRequired",
   "unauthorized": "formatIpcError.unauthorized",
+  "process-entry-unsupported": "formatIpcError.processEntryUnsupported",
   // "unauthorized-frame" lives below in the frame-trust gate section with a
 
   "missing-input-origin": "formatIpcError.missingInputOrigin",
@@ -16,6 +17,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   // all of them need a message rather than leaking the kebab-case code.
   "missing-app-envelope": "formatIpcError.missingAppEnvelope",
   "missing-mcp-prompt-envelope": "formatIpcError.missingMcpPromptEnvelope",
+  "missing-plugin-prompt-envelope": "formatIpcError.missingPluginPromptEnvelope",
   // The mirror case: the text CARRIES a staged envelope while the send claims a
   // non-staged origin.
   "origin-envelope-mismatch": "formatIpcError.originEnvelopeMismatch",

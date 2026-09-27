@@ -20,6 +20,7 @@ const authority = () => ({
 
 const PAYLOADS: Record<string, () => Record<string, unknown>> = {
   plugin: () => ({ authority: authority(), artifact: { release: { repo: "acme/alpha", sha256: SHA }, tree: "plugins/alpha/build" } }),
+  "agent-plugin": () => ({ manifest: "plugin.json", components: { skills: [], mcpServers: {}, prompts: [], agents: [], routineTemplates: [], hooks: [] } }),
   mcp: () => ({ server: { transport: "stdio", command: "npx", args: ["-y", "@acme/mcp"], env: { ACME_MODE: "ro" }, auth: "api-key", apiKeyEnv: "ACME_KEY" } }),
   skill: () => ({ entry: "SKILL.md" }),
   agent: () => ({ entry: "AGENTS.md" }),
@@ -226,6 +227,23 @@ const pluginVersion = (v: string, patch: Record<string, unknown> = {}) =>
 
 describe("validateIndexText", () => {
   const context = { sourceId: "acme", official: false };
+
+  it("accepts only format-2 agent-plugin components and keeps invalid path claimants isolated", () => {
+    expect(checkDescriptor(descriptor("agent-plugin")).ok).toBe(true);
+    expect(checkDescriptor(descriptor("agent-plugin", { hostProtocol: "1" })).ok).toBe(false);
+    expect(checkDescriptor(descriptor("agent-plugin", { payload: { manifest: "plugin.json", components: { skills: [], mcpServers: {}, prompts: [], agents: [], routineTemplates: [], hooks: [], unexpected: true } } })).ok).toBe(false);
+    const components = PAYLOADS["agent-plugin"]!().components;
+    const result = validateIndexText(index([
+      { kind: "agent-plugin", name: "invalid-plugin", path: "skills/shared", versions: [version("1.0.0")] },
+      { kind: "agent-plugin", name: "unknown-plugin", path: "skills/shared", versions: [version("1.0.0", { components, extra: 1 })] },
+      { kind: "skill", name: "valid-skill", path: "skills/shared" },
+      { kind: "agent-plugin", name: "valid-plugin", path: "agent-plugins/valid", versions: [version("1.0.0", { components })] },
+    ]), context);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.index.packages.map((entry) => entry.name)).toEqual(["valid-skill", "valid-plugin"]);
+    expect(result.value.diagnostics).toHaveLength(2);
+  });
 
   it("accepts an index with path-only entries and entries with versions", () => {
     const result = validateIndexText(

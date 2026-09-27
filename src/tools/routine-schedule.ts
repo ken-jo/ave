@@ -199,7 +199,7 @@ export function createRoutineScheduleTool(store: RoutinesStore): Tool {
         },
         source: {
           type: "string",
-          description: t("be_routineSchedule.sourceDescription"),
+          description: t("be_routineSchedule.templateSourceDescription"),
         },
       },
     },

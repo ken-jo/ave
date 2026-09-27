@@ -13,6 +13,7 @@ import { readFile, readdir, realpath } from "node:fs/promises";
 import { resolve, join, relative, isAbsolute } from "node:path";
 import type { Dirent } from "node:fs";
 import { createLogger } from "../lib/logger.js";
+import type { InstalledAgentPlugin } from "../marketplace/content/service.js";
 import { aveHome } from "../shared/ave-home.js";
 import {
   parseFrontmatterBlock,
@@ -73,6 +74,7 @@ export class AgentProfileStore {
   private readonly userDir: string;
   /** Agent profiles installed as marketplace packages: name → the package directory holding AGENTS.md. A user profile of the same name wins. */
   private packageDirs = new Map<string, string>();
+  private agentPluginProfiles = new Map<string, LoadedAgentProfile>();
 
   constructor(opts: AgentProfileStoreOptions = {}) {
     this.userDir = opts.userDir ?? USER_AGENTS_DIR;
@@ -81,6 +83,36 @@ export class AgentProfileStore {
   /** Replace the installed agent packages; the installed-content service calls this after each load. */
   setInstalledPackages(packages: ReadonlyArray<{ name: string; dir: string }>): void {
     this.packageDirs = new Map(packages.filter((item) => AGENT_NAME_ALLOWLIST.test(item.name)).map((item) => [item.name, item.dir]));
+  }
+
+  /** Replace profiles supplied by verified agent plugin package bytes. */
+  setInstalledAgentPlugins(packages: readonly InstalledAgentPlugin[]): void {
+    const next = new Map<string, LoadedAgentProfile>();
+    for (const { name: packageName, content } of packages) {
+      const files = new Map(content.files.map((file) => [file.path, file.data]));
+      for (const component of content.components.agents) {
+        const selector = `agent-plugin:${packageName}:${component.name}`;
+        const bytes = files.get(`ai.agent-connector.ave/agents/${component.name}/AGENTS.md`);
+        if (!bytes) throw new Error(`installed agent plugin profile ${selector} is missing AGENTS.md`);
+        const { fm, body } = parseAgentFrontmatter(bytes.toString("utf8"));
+        if (fm.name !== component.name || !body.trim()
+          || Buffer.byteLength(body.trim(), "utf8") > AGENT_PROFILE_MAX_BODY_BYTES) {
+          throw new Error(`installed agent plugin profile ${selector} has invalid frontmatter`);
+        }
+        if (next.has(selector)) throw new Error(`duplicate installed agent plugin profile ${selector}`);
+        next.set(selector, {
+          name: selector,
+          description: fm.description ?? "",
+          sourceTools: fm.tools?.filter((tool) => AGENT_NAME_ALLOWLIST.test(tool)) ?? [],
+          triggers: fm.triggers ?? [],
+          model: fm.model,
+          mode: fm.mode,
+          body: body.trim(),
+          filePath: `agent-plugin://${packageName}/${component.name}/AGENTS.md`,
+        });
+      }
+    }
+    this.agentPluginProfiles = next;
   }
 
   private async readProfile(realFile: string, baseName: string): Promise<LoadedAgentProfile | null> {
@@ -132,7 +164,7 @@ export class AgentProfileStore {
       const profile = await this.readPackageProfile(name, dir);
       if (profile) byName.set(name, profile);
     }
-    return [...byName.values()];
+    return [...byName.values(), ...this.agentPluginProfiles.values()];
   }
 
   /** The file of the user's own agent with this name, or null: an installed package of that name would never apply. */
@@ -202,6 +234,7 @@ export class AgentProfileStore {
   }
 
   async load(name: string): Promise<LoadedAgentProfile | null> {
+    if (name.startsWith("agent-plugin:")) return this.agentPluginProfiles.get(name) ?? null;
     if (!AGENT_NAME_ALLOWLIST.test(name)) return null;
     const all = await this.list();
     return all.find((a) => a.name === name) ?? null;

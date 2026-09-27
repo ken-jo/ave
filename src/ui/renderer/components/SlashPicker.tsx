@@ -24,6 +24,7 @@ import type { RolePreset } from "../../../data/role-presets.js";
 import { useTranslation } from "../../../i18n/react.js";
 
 import type { McpPromptEntry } from "./slash-picker-data.js";
+import type { AgentPluginTemplatePrompt } from "../../../shared/agent-plugin-prompt.js";
 import { buildComposerMenuSections } from "./slash-picker-data.js";
 import { loadSlashPickerRuntime } from "../hooks/use-slash-picker-runtime.js";
 import { useNativeMenu } from "../hooks/use-native-context-menu.js";
@@ -41,6 +42,7 @@ export interface SlashPickerProps {
   /** Insert a slash command at the caret; receives the trailing space e.g. "/help ". */
   onInsert: (cmd: string) => void;
   onRunMcpPrompt: (prompt: McpPromptEntry) => void;
+  onRunPluginPrompt: (prompt: AgentPluginTemplatePrompt) => void;
   /** Controlled open state — raised externally (e.g. Cmd/Ctrl+K). */
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -54,6 +56,7 @@ export function SlashPicker({
   onSelectPlugin,
   onInsert,
   onRunMcpPrompt,
+  onRunPluginPrompt,
   open,
   onOpenChange,
 }: SlashPickerProps) {
@@ -79,11 +82,13 @@ export function SlashPicker({
         plugins,
         mcpTools: runtime.mcpTools,
         mcpPrompts: runtime.mcpPrompts,
+        pluginPrompts: runtime.pluginPrompts,
         skills: runtime.skills,
         onSelectPersona,
         onInsert,
         onSelectPlugin,
         onRunMcpPrompt,
+        onRunPluginPrompt,
       });
       // The menu drops from the button's bottom-left, the way the panel did.
       const shown = await showMenu({ x: anchor.left, y: anchor.bottom }, sections);

@@ -316,7 +316,7 @@ describe("<ThemeProvider>", () => {
     await waitFor(() => expect(document.documentElement.getAttribute("data-theme-bundle")).toBe(DEFAULT_BUNDLE_ID));
 
     const nord = installed("nord", "dark");
-    const view = { themes: [{ ...nord, preview: null }], languages: [], fonts: [], broken: [] } as unknown as InstalledContentView;
+    const view = { themes: [{ ...nord, preview: null }], languages: [], fonts: [], routineTemplates: [], broken: [] } as unknown as InstalledContentView;
     act(() => {
       applyInstalledContent(view, { installed: vi.fn(), languageMessages: vi.fn() } as never);
     });

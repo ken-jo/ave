@@ -47,6 +47,7 @@ import { materializePluginGenerationRoot, removeRetainedPluginGeneration } from 
 import { appVersionSatisfiesMin } from "../../shared/semver-compare.js";
 import { getAveAppVersion } from "../../shared/app-version.js";
 import type { PluginInstallFailureKind } from "../../shared/plugin-install-failure.js";
+import { ProcessEntryUnsupportedError } from "../process-entry-support.js";
 import { revocationRegistry } from "../revocation/revocation-registry.js";
 import { isPluginRuntimeDetachedOperationError, PluginRuntimeDetachedOperationError } from "./detached-operation.js";
 import { ensurePluginDataDir, resolvePluginDataDir, resolveEntryPath, buildPluginContext, resolveRealEntryPath } from "./sandbox.js";
@@ -5388,9 +5389,9 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
         this.markLoadRefused(plan.pluginIdHint, {
           summary: "Plugin manifest could not be loaded.",
           reason: (err as Error).message,
-          ...(reason === "manifest_schema"
-            ? { kind: "manifest-validation-error" as const }
-            : {}),
+          ...(err instanceof ProcessEntryUnsupportedError
+            ? { kind: "process-entry-unsupported" as const }
+            : reason === "manifest_schema" ? { kind: "manifest-validation-error" as const } : {}),
         });
       }
       return;

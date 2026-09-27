@@ -58,6 +58,7 @@ describe("chooseVersion (design §6.1)", () => {
     });
     expect(chooseVersion("acme", plugin([retired, undeclared]), [], context())).toEqual({ state: "unavailable", reason: "withheld" });
     expect(versionExclusions("acme", "skill", "alpha", undeclared, [], context())).toEqual([]);
+    expect(versionExclusions("acme", "agent-plugin", "alpha", undeclared, [], context())).toEqual([]);
   });
 
   it("takes the highest version that survives every drop, whatever the listing order", () => {

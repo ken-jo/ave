@@ -13,14 +13,15 @@ import type {
   VersionView,
 } from "../../shared/git-marketplace.js";
 import { versionExclusions, type CatalogRow, type VersionChoiceContext } from "../catalog/aggregate.js";
-import type { PackageKind, PluginArtifactPins, PluginAuthority, Revocation } from "../catalog/types.js";
+import type { AgentPluginComponents, PackageKind, PluginArtifactPins, PluginAuthority, Revocation } from "../catalog/types.js";
 import type { MarketplaceErrorCode } from "../errors.js";
 import { updateFor, type InstallAction, type InstalledPackage } from "../resolve/identity.js";
 import type { RungOutcome } from "../../plugins/plugin-install-receipt.js";
 import type { SourceState } from "../sources/registry.js";
 
 /** Kinds whose packages run code on this computer (design §15.5). */
-export function runsCode(kind: PackageKind): boolean {
+export function runsCode(kind: PackageKind, components?: AgentPluginComponents): boolean {
+  if (kind === "agent-plugin") return components === undefined || Object.keys(components.mcpServers).length > 0 || components.hooks.length > 0;
   return kind === "plugin" || kind === "mcp";
 }
 

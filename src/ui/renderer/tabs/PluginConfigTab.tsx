@@ -515,7 +515,10 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
       showBanner("success", t("pluginConfigTab.successLocalInstall", { pluginId: result.pluginId }));
       void refreshPlugins();
     } catch (e) {
-      showBanner("error", errorMessage(e) || t("pluginConfigTab.errorLocalInstall"));
+      const message = errorMessage(e);
+      showBanner("error", message.includes("process-entry-unsupported")
+        ? t("formatIpcError.processEntryUnsupported")
+        : message || t("pluginConfigTab.errorLocalInstall"));
     } finally {
       setLocalInstalling(false);
     }
@@ -849,6 +852,8 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                         <p className="text-xs font-medium text-destructive">
                           {selectedPlugin.installFailureKind === "incompatible-app-version"
                             ? t("pluginConfigTab.doctorIncompatibleAppTitle")
+                            : selectedPlugin.installFailureKind === "process-entry-unsupported"
+                              ? t("pluginConfigTab.doctorProcessEntryTitle")
                             : selectedPlugin.installFailureKind === "incompatible-host-protocol"
                               ? t("pluginConfigTab.doctorIncompatibleProtocolTitle")
                               : selectedPlugin.installFailureKind === "sandbox-grant-outside-ceiling"
@@ -866,6 +871,8 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                         <p className="text-[11px] text-destructive/(--opacity-intense)">
                           {selectedPlugin.installFailureKind === "incompatible-app-version"
                             ? t("pluginConfigTab.doctorIncompatibleAppDescription")
+                            : selectedPlugin.installFailureKind === "process-entry-unsupported"
+                              ? t("pluginConfigTab.doctorProcessEntryDescription")
                             : selectedPlugin.installFailureKind === "incompatible-host-protocol"
                               ? t("pluginConfigTab.doctorIncompatibleProtocolDescription")
                               : selectedPlugin.installFailureKind === "sandbox-grant-outside-ceiling"
@@ -886,7 +893,9 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                               {t("pluginConfigTab.doctorFailureDetailLabel")}
                             </p>
                             <p className="mt-1 break-words font-mono text-[10.5px] leading-snug text-destructive/(--opacity-intense)">
-                              {selectedPlugin.installFailureMessage}
+                              {selectedPlugin.installFailureKind === "process-entry-unsupported"
+                                ? t("formatIpcError.processEntryUnsupported")
+                                : selectedPlugin.installFailureMessage}
                             </p>
                           </div>
                         ) : null}

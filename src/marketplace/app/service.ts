@@ -30,6 +30,7 @@ import type {
   InstallProgressView,
   InstallResultView,
   McpRuntimeView,
+  McpComponentConsent,
   PackageDetailView,
   PackageKeyView,
   PackageUpdateView,
@@ -48,6 +49,7 @@ import { aggregateCatalog, findRevocation, versionExclusions, type CatalogRow, t
 import { PACKAGE_KINDS, type IndexVersion, type PackageKind, type PluginAuthority } from "../catalog/types.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
 import { stageContentPackage } from "../content/store.js";
+import { componentDelta } from "./component-delta.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { MarketplaceError } from "../errors.js";
 import { BareRepo } from "../git/repo.js";
@@ -441,7 +443,7 @@ export class MarketplaceService implements RetirementEntryLookup {
               owner: built.snapshot.marketplace.owner?.name ?? null,
             },
             counts,
-            codeRunning: built.snapshot.packages.filter((pkg) => runsCode(pkg.kind)).length,
+            codeRunning: built.snapshot.packages.filter((pkg) => runsCode(pkg.kind, pkg.versions[0]?.components)).length,
             diagnostics: built.snapshot.diagnostics.map((item) => `${item.subject}: ${item.message}`),
             credentialHelper,
             suggestedId,
@@ -471,7 +473,7 @@ export class MarketplaceService implements RetirementEntryLookup {
         description: descriptor.description ?? null,
         version: descriptor.version,
         versionSynthesized,
-        runsCode: runsCode(descriptor.kind),
+        runsCode: runsCode(descriptor.kind, descriptor.kind === "agent-plugin" ? descriptor.payload.components as IndexVersion["components"] : undefined),
         credentialHelper,
         suggestedId,
       };
@@ -559,7 +561,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       keywords: [...(row.package.keywords ?? [])],
       state: rowState(row, installed, rows, sources),
       required: lockedByPolicy(this.options.policy, row.kind, row.name, row.sourceId) !== undefined,
-      runsCode: runsCode(row.kind),
+      runsCode: runsCode(row.kind, (row.choice.state === "candidate" ? row.choice.version : row.package.versions[0])?.components),
     };
   }
 
@@ -680,6 +682,7 @@ export class MarketplaceService implements RetirementEntryLookup {
         compatible: shownVersion ? appVersionSatisfiesMin(context.appVersion, shownVersion.minAppVersion) : false,
       },
       authority: shownVersion?.authority ? authorityView(shownVersion.authority) : null,
+      components: shownVersion?.components ?? null,
       rungs:
         row.kind === "plugin" && shownVersion?.artifact
           ? rungViews(shownVersion.artifact, row.package.path, await this.treeDeclared(key.sourceId, shownVersion, row.package.path))
@@ -760,8 +763,9 @@ export class MarketplaceService implements RetirementEntryLookup {
       snapshotCommit: row.snapshotCommit,
       versionCommit: version.commit,
       action: installActionView(action),
-      runsCode: runsCode(row.kind),
+      runsCode: runsCode(row.kind, version.components),
       authority: version.authority ? authorityView(version.authority) : null,
+      components: version.components ?? null,
       rungs,
       mcp,
     };
@@ -781,17 +785,23 @@ export class MarketplaceService implements RetirementEntryLookup {
         : null;
     const plan = await this.planInstall(key);
     let delta: UpdatePlanView["authorityDelta"] = null;
+    let componentsDelta: UpdatePlanView["componentsDelta"] = null;
     if (key.kind === "plugin" && plan.authority) {
       const { row } = await this.row(key);
       const listed = row.package.versions.find((item) => item.version === installed.version)?.authority;
       const previous: PluginAuthority | null = listed ?? (await this.options.installers.plugin.installedAuthority(key.name));
       delta = authorityDelta(previous ? authorityView(previous) : authorityView({ capabilities: [] }), plan.authority);
     }
+    if (key.kind === "agent-plugin" && plan.components) {
+      const previous = await this.options.installers.content.installedComponents(key.name);
+      componentsDelta = componentDelta(previous, plan.components);
+    }
     return {
       ...plan,
       from: installed.version,
       commitRange: { from: installed.originCommit, to: plan.snapshotCommit },
       authorityDelta: delta,
+      componentsDelta,
       historyRewritten,
       needsConfirmation: widensAuthority(delta) || historyRewritten !== null,
     };
@@ -801,7 +811,7 @@ export class MarketplaceService implements RetirementEntryLookup {
     this.options.onInstallProgress?.({ planId, phase, rung, bytes: null, total: null });
   }
 
-  async executeInstall(planId: string, reviewedAuthority = false): Promise<InstallResultView> {
+  async executeInstall(planId: string, approvedMcpServers: readonly McpComponentConsent[] = [], reviewedAuthority = false): Promise<InstallResultView> {
     const held = this.plans.take(planId);
     // The gates must judge the new install by the source it is about to be bound to, not the one it leaves.
     const target = heldTarget(held);
@@ -809,14 +819,17 @@ export class MarketplaceService implements RetirementEntryLookup {
     this.pendingBindings.set(key, target);
     try {
       await this.feedRevocations();
-      return await this.runInstall(planId, held, reviewedAuthority);
+      if (approvedMcpServers.length > 0 && (held.kind !== "content" || held.plan.kind !== "agent-plugin")) {
+        throw new Error("MCP component consent applies only to an agent plugin install");
+      }
+      return await this.runInstall(planId, held, approvedMcpServers, reviewedAuthority);
     } finally {
       if (this.pendingBindings.get(key) === target) this.pendingBindings.delete(key);
       await this.refeedAfter(`${target.kind} ${target.name} install`);
     }
   }
 
-  private async runInstall(planId: string, held: HeldPlan, reviewedAuthority: boolean): Promise<InstallResultView> {
+  private async runInstall(planId: string, held: HeldPlan, approvedMcpServers: readonly McpComponentConsent[], reviewedAuthority: boolean): Promise<InstallResultView> {
     this.progress(planId, "resolving");
     let result: InstallResultView;
     if (held.kind === "plugin") {
@@ -860,7 +873,7 @@ export class MarketplaceService implements RetirementEntryLookup {
         stageContentPackage(plan, access, { workRoot: this.options.workRoot, english: this.options.english }),
       );
       this.progress(planId, "installing");
-      const outcome = await this.options.installers.content.install(staged, { switchSource: held.switchSource, adopt: held.adopt });
+      const outcome = await this.options.installers.content.install(staged, { switchSource: held.switchSource, adopt: held.adopt, approvedMcpServers });
       result = { key: { sourceId: plan.sourceId, kind: plan.kind, name: plan.name }, version: plan.version, action: installActionView(outcome.action), rungs: [], connectionWarning: null };
     } else if (held.kind === "mcp") {
       const { plan } = held.resolved;
@@ -899,6 +912,9 @@ export class MarketplaceService implements RetirementEntryLookup {
   }
 
   async uninstall(request: UninstallRequest, options?: { retain: { reason: PluginConfigRetention["reason"] } }): Promise<UninstallResultView> {
+    if (request.removeData === true && request.kind !== "mcp" && request.kind !== "agent-plugin") {
+      throw new Error("removeData applies only to server or agent plugin packages");
+    }
     assertNotRequiredByPolicy(this.options.policy, request.kind, request.name, request.sourceId, "uninstall");
     const installed = await this.installed(request.kind, request.name);
     if (!installed || installed.sourceId !== request.sourceId) {
@@ -915,7 +931,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       }
       await this.options.installers.plugin.uninstall(request.name, retain);
     } else if (request.kind === "mcp") ({ keptDataDir } = await this.options.installers.mcp.uninstall(request.name, { removeData: request.removeData === true }));
-    else await this.options.installers.content.uninstall(request.kind, request.name);
+    else await this.options.installers.content.uninstall(request.kind, request.name, { removeData: request.removeData === true });
     await this.refeedAfter(`${request.kind} ${request.name} uninstall`);
     this.options.onCatalogChanged?.();
     return { key: { sourceId: request.sourceId, kind: request.kind, name: request.name }, keptDataDir };
@@ -1010,7 +1026,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       installed: (kind, name) => this.installed(kind, name),
       install: async (row, options) => {
         const plan = await this.planInstall({ sourceId: row.sourceId, kind: row.kind, name: row.name, ...(options.switchSource ? { switchSource: true } : {}) });
-        await this.executeInstall(plan.planId, options.required);
+        await this.executeInstall(plan.planId, [], options.required);
       },
       applied,
       now: () => this.now(),
