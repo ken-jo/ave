@@ -29,6 +29,7 @@ import { aveHome } from "../shared/ave-home.js";
 import { MAX_SERVER_ID_LEN } from "../shared/mcp-app-partition.js";
 import { t } from "../i18n/index.js";
 import { studioConnectorSpecDigest } from "../studio/connector-digest.js";
+import { containsStoredCredential } from "./studio-credential-guard.js";
 import type { PluginMcpOwner, PluginMcpTrustStore, PreparedPluginMcpProjection } from "./plugin-mcp-projection.js";
 import type { PluginRuntimeGenerationAccess } from "../plugins/plugin-host-generation.js";
 import { errorMessage } from "../shared/error-message.js";
@@ -856,7 +857,14 @@ export class McpManager {
         item.packageName === ref.packageRef.name && item.serverName === ref.server);
       const spec = declaration && (await this.getConfigs()).find((item) => item.id === serverId);
       if (!declaration || !spec) throw new Error(`Configured connector ${serverId} does not exist`);
-      return { spec, args: [...(declaration.args ?? [])], env: { ...(declaration.env ?? {}) } };
+      const args = [...(declaration.args ?? [])];
+      const env = { ...(declaration.env ?? {}) };
+      const credential = ref ? this.bundledStudioCredential(ref.packageRef, ref.server) : null;
+      if (credential && declaration.apiKeyEnv && env[declaration.apiKeyEnv] === credential) delete env[declaration.apiKeyEnv];
+      if ((await this.getStudioStoredCredentialValues()).some((key) => containsStoredCredential({ spec, args, env }, key))) {
+        throw new Error("Connector arguments or environment contain its stored credential");
+      }
+      return { spec, args, env };
     }
     if (config.transport !== "stdio" && config.transport !== "http") throw new Error("Connector transport is not portable");
     if (config.apiKey && config.auth !== "api-key") throw new Error("Connector stored credential needs an API key declaration");
@@ -864,10 +872,42 @@ export class McpManager {
     const spec = this.toConfigDto(config);
     const args = config.transport === "stdio" ? [...(config.args ?? [])] : [];
     const env = config.transport === "stdio" ? { ...(config.env ?? {}) } : {};
-    if (config.apiKey && JSON.stringify({ spec, args, env }).includes(config.apiKey)) {
+    if (config.apiKey && config.transport === "stdio" && config.apiKeyEnv && env[config.apiKeyEnv] === config.apiKey) {
+      delete env[config.apiKeyEnv];
+    }
+    if ((await this.getStudioStoredCredentialValues()).some((key) => containsStoredCredential({ spec, args, env }, key))) {
       throw new Error("Connector arguments or environment contain its stored credential");
     }
     return { spec, args, env };
+  }
+
+  private bundledStudioCredential(packageRef: BundledPackageRef, server: string): string | null {
+    const declaration = this.bundledCredentialSources.get(packageRef.kind)?.list().find((item) =>
+      item.packageName === packageRef.name && item.serverName === server);
+    if (!declaration || declaration.auth !== "api-key" || !this.bundledSecrets) return null;
+    const stored = this.bundledSecrets.getSecret(bundledCredentialKey(packageRef, server));
+    if (packageRef.kind !== "agent-plugin") return stored;
+    const bound = readBoundBundledCredential(stored);
+    return bound?.declaration === bundledCredentialDeclaration(declaration) ? bound.secret : null;
+  }
+
+  /** Main-only export guard input; no credential crosses the Studio IPC bridge. */
+  async getStudioStoredCredentialValues(): Promise<string[]> {
+    const keys = (await this.loadFromConfig()).flatMap((config) => config.apiKey ? [config.apiKey] : []);
+    for (const [kind, source] of this.bundledCredentialSources) for (const declaration of source.list()) {
+      const key = this.bundledStudioCredential({ kind, name: declaration.packageName }, declaration.serverName);
+      if (key) keys.push(key);
+    }
+    return [...new Set(keys)];
+  }
+
+  async assertStudioConnectorWriteSafe(serverId: string, value: unknown): Promise<void> {
+    const config = (await this.loadFromConfig()).find((item) => item.id === serverId);
+    const ref = config ? null : this.bundledCredentialRefForConfigId(serverId);
+    if (!config && !ref) throw new Error(`Configured connector ${serverId} does not exist`);
+    if ((await this.getStudioStoredCredentialValues()).some((credential) => containsStoredCredential(value, credential))) {
+      throw new Error("Connector copy contains its stored credential");
+    }
   }
 
   async getStudioConnectorSummary(serverId: string): Promise<{ digest: string; argsCount: number; envCount: number }> {

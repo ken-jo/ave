@@ -11,6 +11,7 @@ import { treeDigest } from "../marketplace/resolve/plugin-ladder.js";
 import type { AgentPluginFile } from "../marketplace/content/agent-plugin-components.js";
 import { parseHookConfig } from "../hooks/hook-config.js";
 import { exportLegacyHooks } from "../hooks/hook-import-export.js";
+import { containsStoredCredential } from "../mcp/studio-credential-guard.js";
 
 const MAX_FILES = 257;
 const MAX_BYTES = 8 * 1024 * 1024 + 256 * 1024;
@@ -95,12 +96,32 @@ function projection(files: readonly AgentPluginFile[]): AgentPluginFile[] {
   return projected;
 }
 
+function assertNoStoredCredentials(files: readonly AgentPluginFile[], storedCredentials: readonly string[]): void {
+  if (!storedCredentials.some(Boolean)) return;
+  for (const file of files) {
+    const text = file.data.toString("utf8");
+    for (const credential of storedCredentials) {
+      if (credential && (file.data.includes(Buffer.from(credential)) || text.includes(credential))) {
+        throw new Error(`Studio cannot export a stored credential in ${file.path}`);
+      }
+    }
+    if (!file.path.endsWith(".json")) continue;
+    const decoded = parseStrictJson(text);
+    if (storedCredentials.some((credential) => containsStoredCredential(decoded, credential))) {
+      throw new Error(`Studio cannot export a stored credential in ${file.path}`);
+    }
+  }
+}
+
 /** Exported files always include the canonical package and a checked descriptor. */
-export function studioExportFiles(files: readonly AgentPluginFile[], legacyProjection: boolean): AgentPluginFile[] {
+export function studioExportFiles(files: readonly AgentPluginFile[], legacyProjection: boolean,
+  storedCredentials: readonly string[]): AgentPluginFile[] {
   checkContentFiles("agent-plugin", files);
   const descriptor = studioDescriptor(files);
   const output = [...files, { path: "ave-package.json", data: pretty(descriptor) }];
-  return legacyProjection ? [...output, ...projection(files)] : output;
+  const exported = legacyProjection ? [...output, ...projection(files)] : output;
+  assertNoStoredCredentials(exported, storedCredentials);
+  return exported;
 }
 
 export function studioZip(files: readonly AgentPluginFile[]): Buffer {

@@ -119,7 +119,7 @@ describe("Studio interrupted draft update", () => {
       const manager = { getStudioConnectorSource: async () => ({ spec: { id: "sample", transport: "stdio" as const,
         command: "uvx" }, args: [arg], env: { SAMPLE: "visible-value" } }) };
       const preview = () => previewStudioConnector(manager as never, "sample");
-      const store = new PluginStudioStore(async () => ({ digest: (await preview()).specDigest, argsCount: 1, envCount: 1 }));
+      const store = new PluginStudioStore(async () => ({ digest: (await preview()).specDigest, argsCount: 1, envCount: 1 }), async () => {});
       await store.writeDraft({ name, version: "1.0.0", description: "A team plugin",
         references: [{ kind: "connector", name: "sample" }] });
       const first = await preview();

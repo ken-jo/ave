@@ -56,12 +56,12 @@ import type { McpServerConfig } from "../types.js";
 import { observeFileHandleSyncs } from "../../__tests__/support/fsync-observer.js";
 import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
 import { previewStudioConnector } from "../../studio/connector.js";
-import { bundledConfigId } from "../bundled-credential.js";
+import { boundBundledCredential, bundledConfigId, bundledCredentialDeclaration, bundledCredentialKey } from "../bundled-credential.js";
 
 const testDir = join(tmpdir(), `ave-mcp-test-${process.pid}`);
 const testConfigPath = join(testDir, "mcp-servers.json");
 
-async function makeManager() {
+async function makeManager(bundledSecrets?: { getSecret(key: string): string | null }) {
   const { McpGovernance } = await import("../mcp-governance.js");
   const { ToolRegistry } = await import("../../tools/registry.js");
   return new McpManager(
@@ -71,6 +71,9 @@ async function makeManager() {
     testConfigPath,
     undefined,
     { log: mockAuditLog } as never,
+    undefined,
+    undefined,
+    bundledSecrets as never,
   );
 }
 
@@ -125,6 +128,54 @@ describe("McpManager — getConfigs()", () => {
     await writeFile(testConfigPath, JSON.stringify({ servers: [{ id: "sample", transport: "http", url: "https://example.invalid/mcp",
       headers: { Authorization: "Bearer hidden" } }] }));
     await expect(previewStudioConnector(mgr, "sample")).rejects.toThrow("custom headers");
+  });
+  it("compares decoded connector values with stored credentials before preview or write", async () => {
+    const mgr = await makeManager();
+    const keys = ["stored-\"-key", "stored-\\-key", "stored-\u2028-key", "stored-비밀-key"];
+    for (const key of keys) {
+      for (const [args, env] of [
+        [[], { VALUE: key }],
+        [[], { VALUE: `prefix-${key}-suffix` }],
+        [[`--token=${key}`], {}],
+      ] as const) {
+        await writeFile(testConfigPath, JSON.stringify({ servers: [{ id: "sample", transport: "stdio", command: "node",
+          args, env, auth: "api-key", apiKeyEnv: "SAMPLE_KEY", apiKey: key }] }));
+        await expect(previewStudioConnector(mgr, "sample")).rejects.toThrow("stored credential");
+        await expect(mgr.assertStudioConnectorWriteSafe("sample", { spec: { id: "sample", transport: "stdio", command: "node" },
+          args, env })).rejects.toThrow("stored credential");
+        expect((await mgr.getConfigs())[0]).not.toHaveProperty("apiKey");
+      }
+    }
+    const key = "stored-\"-key";
+    await writeFile(testConfigPath, JSON.stringify({ servers: [{ id: "sample", transport: "stdio", command: "node",
+      args: ["--visible"], env: { SAMPLE_KEY: key, VALUE: "visible" }, auth: "api-key", apiKeyEnv: "SAMPLE_KEY", apiKey: key }] }));
+    const preview = await previewStudioConnector(mgr, "sample");
+    expect(preview.env).toMatchObject([{ name: "VALUE", value: "visible" }]);
+    expect(preview.env).toHaveLength(1);
+    expect(preview.spec.auth).toBe("api-key");
+    await expect(mgr.assertStudioConnectorWriteSafe("sample", preview)).resolves.toBeUndefined();
+    await writeFile(testConfigPath, JSON.stringify({ servers: [{ id: "sample", transport: "stdio", command: `tool-${key}`,
+      auth: "api-key", apiKeyEnv: "SAMPLE_KEY", apiKey: key }] }));
+    await expect(previewStudioConnector(mgr, "sample")).rejects.toThrow("stored credential");
+    await writeFile(testConfigPath, JSON.stringify({ servers: [
+      { id: "other", transport: "stdio", command: "node", auth: "api-key", apiKeyEnv: "OTHER_KEY", apiKey: key },
+      { id: "sample", transport: "stdio", command: "node", args: [`--token=${key}`] },
+    ] }));
+    await expect(previewStudioConnector(mgr, "sample")).rejects.toThrow("stored credential");
+  });
+  it("keeps a bound package credential out of the Studio projection and export guard", async () => {
+    const ref = { kind: "agent-plugin" as const, name: "team-kit" };
+    const declaration = { packageName: "team-kit", serverName: "sample", transport: "stdio" as const,
+      command: "uvx", args: ["studio-sample==1.0.0"], env: { VALUE: "stored-\"-credential" },
+      auth: "api-key" as const, apiKeyEnv: "SAMPLE_KEY" };
+    const key = "stored-\"-credential";
+    const identity = bundledCredentialKey(ref, "sample");
+    const stored = boundBundledCredential(bundledCredentialDeclaration(declaration), key);
+    const mgr = await makeManager({ getSecret: (name) => name === identity ? stored : null });
+    mgr.registerBundledCredentialSource("agent-plugin", { list: () => [declaration], reconnect: async () => undefined });
+    const id = bundledConfigId(ref, "sample");
+    await expect(previewStudioConnector(mgr, id)).rejects.toThrow("stored credential");
+    expect(await mgr.getStudioStoredCredentialValues()).toContain(key);
   });
   it("returns [] when config file does not exist", async () => {
     const mgr = await makeManager();

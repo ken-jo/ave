@@ -2,7 +2,7 @@ import { lstat, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import AdmZip from "adm-zip";
 import { tmpdir } from "node:os";
 import { writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { AGENT_PLUGINS_SCHEMA_URL } from "../plugins/public-contract.js";
 import { parseStrictJson } from "../marketplace/catalog/strict-json.js";
 import type { StudioDiagnostic } from "../shared/plugin-studio.js";
@@ -102,6 +102,22 @@ function json(data: Buffer, path: string): Record<string, unknown> {
 function promptFile(name: string, content: string, description: string, argumentHint?: string): Buffer {
   const body = content.replaceAll("$ARGUMENTS", "{args}");
   return Buffer.from(`---\nname: ${name}\ndescription: ${JSON.stringify(description)}\nkind: template\n${argumentHint ? `argumentHint: ${JSON.stringify(argumentHint)}\n` : ""}---\n${body}\n`);
+}
+
+function importedCommand(name: string, source: string, sourcePath: string, diagnostics: StudioDiagnostic[],
+  description?: string, argumentHint?: string): Buffer {
+  const front = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/u.exec(source);
+  const header: Record<string, string> = {};
+  for (const line of front?.[1]?.split(/\r?\n/u) ?? []) {
+    const match = /^([\w-]+):\s*(.*)$/u.exec(line);
+    if (match) header[match[1]!] = match[2]!;
+  }
+  for (const key of Object.keys(header)) if (!["description", "argument-hint"].includes(key)) {
+    diagnostics.push(diagnostic("lost", `${sourcePath}.${key}`, "Frontmatter field is not portable"));
+  }
+  const body = front ? source.slice(front[0].length) : source;
+  if (body.includes("$ARGUMENTS")) diagnostics.push(diagnostic("rewritten", sourcePath, "Argument placeholder became {args}"));
+  return promptFile(name, body, description ?? header.description ?? `Imported ${name}`, argumentHint ?? header["argument-hint"]);
 }
 
 function translatePlaceholder(value: string): string {
@@ -259,16 +275,17 @@ export async function importStudioPackage(root: string): Promise<ImportedStudioP
   const skillFiles: Array<{ path: string; data: Buffer; sourceRoot: string }> = [];
   for (const declared of skillPaths) {
     if (typeof declared !== "string") throw new Error("Skill declaration must be a path");
-    if (declared.endsWith("SKILL.md")) {
-      const data = await regularFile(root, declared);
-      if (data) skillFiles.push({ path: declared, data, sourceRoot: dirname(declared) });
-    } else skillFiles.push(...(await filesBelow(root, declared)).map((file) => ({ ...file, sourceRoot: declared })));
+    const sourceRoot = safeRelative(declared);
+    if (sourceRoot.endsWith("SKILL.md")) {
+      const data = await regularFile(root, sourceRoot);
+      if (data) skillFiles.push({ path: sourceRoot, data, sourceRoot: dirname(sourceRoot) });
+    } else skillFiles.push(...(await filesBelow(root, sourceRoot)).map((file) => ({ ...file, sourceRoot })));
   }
   const rootSkill = await regularFile(root, "SKILL.md");
   if (rootSkill) skillFiles.push({ path: "SKILL.md", data: rootSkill, sourceRoot: "" });
   for (const file of skillFiles) {
-    const relative = file.sourceRoot ? file.path.slice(file.sourceRoot.length).replace(/^\//u, "") : file.path;
-    const segments = relative.split("/");
+    const relativePath = file.sourceRoot ? relative(file.sourceRoot, file.path).split(sep).join("/") : file.path;
+    const segments = relativePath.split("/");
     const skillName = file.path === "SKILL.md" ? name : segments.length > 1 ? segments[0] : basename(file.sourceRoot);
     const suffix = file.path === "SKILL.md" ? "SKILL.md" : segments.length > 1 ? segments.slice(1).join("/") : segments[0];
     if (skillName && COMPONENT.test(skillName) && suffix) addFile(files, `skills/${skillName}/${suffix}`, file.data, diagnostics);
@@ -279,17 +296,7 @@ export async function importStudioPackage(root: string): Promise<ImportedStudioP
   for (const file of commands) {
     const promptName = basename(file.path, ".md");
     if (!COMPONENT.test(promptName)) { diagnostics.push(diagnostic("lost", file.path, "Command name is invalid")); continue; }
-    const source = file.data.toString("utf8");
-    const front = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/u.exec(source);
-    const header: Record<string, string> = {};
-    for (const line of front?.[1]?.split(/\r?\n/u) ?? []) {
-      const match = /^([\w-]+):\s*(.*)$/u.exec(line);
-      if (match) header[match[1]!] = match[2]!;
-    }
-    for (const key of Object.keys(header)) if (!["description", "argument-hint"].includes(key)) diagnostics.push(diagnostic("lost", `${file.path}.${key}`, "Frontmatter field is not portable"));
-    const body = front ? source.slice(front[0].length) : source;
-    if (body.includes("$ARGUMENTS")) diagnostics.push(diagnostic("rewritten", file.path, "Argument placeholder became {args}"));
-    addFile(files, `ai.agent-connector.ave/prompts/${promptName}.md`, promptFile(promptName, body, header.description ?? `Imported ${promptName}`, header["argument-hint"]), diagnostics);
+    addFile(files, `ai.agent-connector.ave/prompts/${promptName}.md`, importedCommand(promptName, file.data.toString("utf8"), file.path, diagnostics), diagnostics);
   }
   if (manifest.commands && typeof manifest.commands === "object" && !Array.isArray(manifest.commands)) {
     for (const [promptName, definition] of Object.entries(manifest.commands)) {
@@ -298,7 +305,10 @@ export async function importStudioPackage(root: string): Promise<ImportedStudioP
       const source = typeof entry.source === "string" ? await regularFile(root, entry.source) : null;
       const content = typeof entry.content === "string" ? entry.content : source?.toString("utf8");
       if (!content) { diagnostics.push(diagnostic("lost", `commands.${promptName}`, "Command has no source or content")); continue; }
-      addFile(files, `ai.agent-connector.ave/prompts/${promptName}.md`, promptFile(promptName, content, typeof entry.description === "string" ? entry.description : `Imported ${promptName}`), diagnostics);
+      addFile(files, `ai.agent-connector.ave/prompts/${promptName}.md`, importedCommand(promptName, content,
+        typeof entry.source === "string" ? safeRelative(entry.source) : `commands.${promptName}`,
+        diagnostics, typeof entry.description === "string" ? entry.description : undefined,
+        typeof entry.argumentHint === "string" ? entry.argumentHint : undefined), diagnostics);
     }
   }
   for (const file of await scanMarkdown(root, manifest.agents, "agents", false)) {
@@ -331,10 +341,29 @@ export async function importStudioPackage(root: string): Promise<ImportedStudioP
   if (Object.keys(converted).length) files.set("mcp.json", Buffer.from(`${JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json", mcpServers: converted }, null, 2)}\n`));
   const isFirstLayout = await regularFile(root, ".claude-plugin/plugin.json") !== null;
   if (isFirstLayout) {
-    const hookSources = new Map<string, string>();
-    const hooks = await mergedDefinition(root, ["hooks/hooks.json"], manifest.hooks, "hooks", diagnostics, hookSources);
-    for (const [event, raw] of Object.entries(hooks)) {
-      const converted = importLegacyHooks({ hooks: { [event]: raw } }, hookSources.get(event) ?? "hooks/hooks.json");
+    const sources: Array<{ value: Record<string, unknown>; path: string }> = [];
+    const seenPaths = new Set<string>();
+    const defaultHooks = await regularFile(root, "hooks/hooks.json");
+    if (defaultHooks) {
+      const parsed = json(defaultHooks, "hooks/hooks.json");
+      sources.push({ value: Object.hasOwn(parsed, "hooks") ? parsed : { hooks: parsed }, path: "hooks/hooks.json" });
+      seenPaths.add("hooks/hooks.json");
+    }
+    if (manifest.hooks !== undefined) {
+      for (const [index, declared] of (Array.isArray(manifest.hooks) ? manifest.hooks : [manifest.hooks]).entries()) {
+        if (typeof declared === "string") {
+          const path = safeRelative(declared);
+          if (seenPaths.has(path)) continue;
+          const data = await regularFile(root, path);
+          if (!data) throw new Error(`hooks declared file is missing: ${declared}`);
+          const parsed = json(data, path);
+          sources.push({ value: Object.hasOwn(parsed, "hooks") ? parsed : { hooks: parsed }, path });
+          seenPaths.add(path);
+        } else sources.push({ value: { hooks: object(declared, `hooks[${index}]`) }, path: `inline ${index}` });
+      }
+    }
+    for (const source of sources) {
+      const converted = importLegacyHooks(source.value, source.path);
       pendingHooks.push(...converted.entries);
       diagnostics.push(...converted.diagnostics.map((item) => diagnostic(
         item.group === "needs your input" ? "needs-input" : item.group,

@@ -26,6 +26,7 @@ let activate: ContentActivation["activate"];
 
 beforeEach(async () => {
   handlers.clear();
+  vi.clearAllMocks();
   root = await mkdtemp(join(tmpdir(), "ave-studio-ipc-"));
   process.env.AVE_HOME = join(root, "home");
   reload = vi.fn(async () => undefined);
@@ -33,7 +34,9 @@ beforeEach(async () => {
   content = await ContentStore.open({ root: join(root, "packages"), english: {}, activation: {
     activate, deactivate: vi.fn(async () => undefined),
   } });
-  registerPluginStudioHandlers({ auditLogger: { log: vi.fn() } } as never, async () => ({ store: content, reload } as never));
+  registerPluginStudioHandlers({ auditLogger: { log: vi.fn() }, mcpManager: {
+    getStudioStoredCredentialValues: async () => [],
+  } } as never, async () => ({ store: content, reload } as never));
 });
 afterEach(async () => {
   if (originalHome === undefined) delete process.env.AVE_HOME;
@@ -91,6 +94,21 @@ describe("plugin Studio IPC", () => {
     const stale = await invoke(CHANNELS.pluginStudio.confirmConnectorCopy, hostFrameEvent(), "team-kit", "sample",
       { specDigest: "0".repeat(64), args: [], env: [] });
     expect(stale).toMatchObject({ ok: false, code: "connector-changed" });
+  });
+
+  it("refuses a shared draft when decoded package JSON contains a stored credential", async () => {
+    const key = "stored-\"-credential";
+    registerPluginStudioHandlers({ auditLogger: { log: vi.fn() }, mcpManager: {
+      getStudioStoredCredentialValues: async () => [key],
+    } } as never, async () => ({ store: content, reload } as never));
+    const studio = new PluginStudioStore();
+    const draft = await studio.writeDraft({ name: "team-kit", version: "1.0.0", description: "A team plugin",
+      files: [{ path: "mcp.json", text: JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+        mcpServers: { sample: { type: "stdio", command: "uvx", args: ["studio-sample==1.0.0"], env: { VALUE: key } } } }) }] });
+    await studio.reviewDraft("team-kit", draft.treeDigest);
+    const exported = await invoke(CHANNELS.pluginStudio.exportDraft, hostFrameEvent(), "team-kit", false);
+    expect(exported).toMatchObject({ ok: false, code: "invalid-request" });
+    expect(dialog.showSaveDialog).not.toHaveBeenCalled();
   });
 
   it("passes only exact reviewed hook consent into a source-free install", async () => {

@@ -50,7 +50,14 @@ export function registerPluginStudioHandlers(deps: IpcDeps, content: () => Promi
   const store = new PluginStudioStore((serverId) => {
     if (!deps.mcpManager) throw new Error("Connector manager is unavailable");
     return deps.mcpManager.getStudioConnectorSummary(serverId);
+  }, (serverId, preview) => {
+    if (!deps.mcpManager) throw new Error("Connector manager is unavailable");
+    return deps.mcpManager.assertStudioConnectorWriteSafe(serverId, preview);
   });
+  const storedCredentials = (): Promise<string[]> => {
+    if (!deps.mcpManager) throw new Error("Connector manager is unavailable");
+    return deps.mcpManager.getStudioStoredCredentialValues();
+  };
   const pending = new Map<string, PendingInstall>();
   const channels = CHANNELS.pluginStudio;
   const sources = { skillStore: deps.skillStore, agentProfileStore: deps.agentProfileStore,
@@ -113,7 +120,8 @@ export function registerPluginStudioHandlers(deps: IpcDeps, content: () => Promi
   handle(channels.reviewDraft, (name, digest) => store.reviewDraft(string(name, "name"), string(digest, "digest")));
   handle(channels.exportDraft, async (name, legacyProjection) => {
     if (typeof legacyProjection !== "boolean") throw new Error("Projection choice is invalid");
-    const path = await saveExport(studioExportFiles(await store.reviewedFiles(string(name, "name")), legacyProjection));
+    const path = await saveExport(studioExportFiles(await store.reviewedFiles(string(name, "name")), legacyProjection,
+      await storedCredentials()));
     if (!path) return null;
     await store.markShared(string(name, "name"));
     return path;
@@ -127,11 +135,11 @@ export function registerPluginStudioHandlers(deps: IpcDeps, content: () => Promi
     const item = loaded.loaded.find(({ entry, content: entryContent }) => entry.kind === "agent-plugin"
       && entry.name === installedName && entryContent.kind === "agent-plugin");
     if (!item || item.content.kind !== "agent-plugin") throw new Error(`Installed plugin ${installedName} is unavailable`);
-    return saveExport(studioExportFiles(item.content.files, legacyProjection));
+    return saveExport(studioExportFiles(item.content.files, legacyProjection, await storedCredentials()));
   });
   handle(channels.exportToCheckout, async (name) => {
     const draftName = string(name, "name");
-    const files = studioExportFiles(await store.reviewedFiles(draftName), false);
+    const files = studioExportFiles(await store.reviewedFiles(draftName), false, await storedCredentials());
     const selection = await dialog.showOpenDialog({ properties: ["openDirectory"], title: "Choose a marketplace checkout" });
     if (selection.canceled || !selection.filePaths[0]) return null;
     const root = selection.filePaths[0];

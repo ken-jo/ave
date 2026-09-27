@@ -7,6 +7,7 @@ import { importStudioArchive, importStudioPackage } from "../import.js";
 import { readLocalAgentPlugin, studioExportFiles, studioZip } from "../package.js";
 import { lintStudioFiles } from "../lint.js";
 import { stageLocalAgentPlugin } from "../../marketplace/content/store.js";
+import { parseFrontmatter } from "../../main/skill-store.js";
 
 const originalHome = process.env.AVE_HOME;
 let root: string;
@@ -50,13 +51,41 @@ describe("Studio drafts and package projections", () => {
     await expect(store.reviewedFiles("team-kit")).rejects.toThrow("must be reviewed");
   });
 
+  it("keeps authored skill and prompt attribution across export and import", async () => {
+    const store = new PluginStudioStore();
+    await store.writeDraft({ name: "team-kit", version: "1.0.0", description: "A team plugin", files: [
+      { path: "skills/model/SKILL.md", text: "---\nname: model\ndescription: Model skill\n---\nModel work.\n" },
+      { path: "ai.agent-connector.ave/prompts/model.md", text: "---\nname: model\ndescription: Model prompt\nkind: template\n---\nModel prompt.\n" },
+    ] }, "synthetic-session");
+    await store.writeDraft({ name: "team-kit", files: [
+      { path: "skills/user/SKILL.md", text: "---\nname: user\ndescription: User skill\nmetadata:\n  custom: retained\n---\nUser work.\n" },
+      { path: "ai.agent-connector.ave/prompts/user.md", text: "---\nname: user\ndescription: User prompt\nkind: template\n---\nUser prompt.\n" },
+    ] });
+    const files = await store.packageFiles("team-kit");
+    for (const author of ["model", "user"] as const) {
+      const skill = files.find((file) => file.path === `skills/${author}/SKILL.md`)!.data.toString();
+      expect(parseFrontmatter(skill).fm.metadata).toMatchObject({ "ave-origin": "studio", "ave-authored-by": author });
+      const prompt = files.find((file) => file.path === `ai.agent-connector.ave/prompts/${author}.md`)!.data.toString();
+      expect(prompt).toContain("ave-origin: studio");
+      expect(prompt).toContain(`ave-authored-by: ${author}`);
+    }
+    expect(parseFrontmatter(files.find((file) => file.path === "skills/user/SKILL.md")!.data.toString()).fm.metadata)
+      .toMatchObject({ custom: "retained" });
+    const archive = join(root, "attributed.zip");
+    await writeFile(archive, studioZip(studioExportFiles(files, true, [])));
+    process.env.AVE_HOME = join(root, "reimported-home");
+    const importedStore = new PluginStudioStore();
+    await importedStore.importPackage(archive);
+    expect(await importedStore.packageFiles("team-kit")).toEqual(files);
+  });
+
   it("reimports canonical files once with or without a compatibility projection", async () => {
     const store = new PluginStudioStore();
     await store.writeDraft({ name: "team-kit", version: "1.0.0", description: "A team plugin",
       files: [{ path: "ai.agent-connector.ave/prompts/summary.md", text: "---\nname: summary\ndescription: Summarize\nkind: template\n---\nSummarize {args}\n" }] });
     const files = await store.packageFiles("team-kit");
     for (const projection of [false, true]) {
-      const output = studioExportFiles(files, projection);
+      const output = studioExportFiles(files, projection, []);
       const path = join(root, `team-kit-${projection}.zip`);
       await writeFile(path, studioZip(output));
       const read = await readLocalAgentPlugin(path);
@@ -86,6 +115,47 @@ describe("Studio drafts and package projections", () => {
     await put(source, "ai.agent-connector.ave/provenance.json", JSON.stringify({ version: 1, parts: [{ path: "plugin.json",
       origin: { kind: "copied", from: { kind: "package", name: "team-kit", privatePath: "/home/synthetic/private" } } }] }));
     await expect(new PluginStudioStore().importPackage(source)).rejects.toThrow("private or malformed");
+  });
+
+  it("rejects invalid imported bytes before creating a draft and permits a corrected retry", async () => {
+    const cases = [
+      { name: "oversize", path: "server/a.bin", data: Buffer.alloc(5 * 1024 * 1024),
+        extraPath: "ai.agent-connector.ave/b.json", extraData: Buffer.alloc(5 * 1024 * 1024), error: "at most" },
+      { name: "forbidden", path: "ai.agent-connector.ave/evil.svg", data: Buffer.from("<svg/>") , error: "Invalid Studio package path" },
+      { name: "prototype", path: "mcp.json", data: Buffer.from('{"$schema":"https://agent-plugins.org/schemas/1.0.0/mcp.schema.json","mcpServers":{"__proto__":{}}}'),
+        error: "__proto__" },
+    ];
+    for (const item of cases) {
+      const name = `kit-${item.name}`;
+      const source = join(root, item.name);
+      await put(source, "plugin.json", JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+        name, version: "1.0.0", description: "A team plugin" }));
+      const write = async (path: string, data: Buffer) => {
+        await mkdir(join(source, path, ".."), { recursive: true });
+        await writeFile(join(source, path), data);
+      };
+      await write(item.path, item.data);
+      if (item.extraPath && item.extraData) await write(item.extraPath, item.extraData);
+      const store = new PluginStudioStore();
+      await expect(store.importPackage(source)).rejects.toThrow(item.error);
+      await expect(stat(join(home, "studio", name))).rejects.toMatchObject({ code: "ENOENT" });
+      expect((await store.listDrafts()).find((draft) => draft.name === name)).toBeUndefined();
+      await rm(join(source, item.path));
+      if (item.extraPath) await rm(join(source, item.extraPath));
+      const retried = await store.importPackage(source);
+      expect(retried.draft.name).toBe(name);
+    }
+  });
+
+  it("counts generated provenance in the import limit before staging files", async () => {
+    const source = join(root, "provenance-limit");
+    const manifest = JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+      name: "team-kit", version: "1.0.0", description: "A team plugin" });
+    await put(source, "plugin.json", manifest);
+    await mkdir(join(source, "server"), { recursive: true });
+    await writeFile(join(source, "server", "big.bin"), Buffer.alloc(8 * 1024 * 1024 - Buffer.byteLength(manifest) - 16));
+    await expect(new PluginStudioStore().importPackage(source)).rejects.toThrow("at most");
+    await expect(stat(join(home, "studio", "team-kit"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("synthesizes a legacy manifest, commands, agents and MCP transport while reporting losses", async () => {
@@ -125,6 +195,35 @@ describe("Studio drafts and package projections", () => {
     expect(paths).not.toContain("ai.agent-connector.ave/agents/ignored/AGENTS.md");
   });
 
+  it("preserves names from normalized declared skill directories", async () => {
+    for (const [index, declaration] of ["./extra-skills", "extra-skills/", "nested/extra-skills"].entries()) {
+      const source = join(root, `declared-skill-${index}`);
+      await put(source, ".claude-plugin/plugin.json", JSON.stringify({ name: "team-kit", version: "1.0.0",
+        description: "A team plugin", skills: [declaration] }));
+      const prefix = declaration.replace(/^\.\//u, "").replace(/\/$/u, "");
+      await put(source, `${prefix}/extra/SKILL.md`, "---\nname: extra\ndescription: Extra\n---\nExtra.\n");
+      await put(source, `${prefix}/extra/references/example.md`, "Example\n");
+      const imported = await importStudioPackage(source);
+      expect(imported.files.map((file) => file.path)).toEqual(expect.arrayContaining([
+        "skills/extra/SKILL.md", "skills/extra/references/example.md",
+      ]));
+    }
+  });
+
+  it("maps declared command source frontmatter through the directory converter", async () => {
+    const source = join(root, "declared-command-source");
+    await put(source, ".claude-plugin/plugin.json", JSON.stringify({ name: "team-kit", version: "1.0.0",
+      description: "A team plugin", commands: { foo: { source: "custom/foo.md" } } }));
+    await put(source, "custom/foo.md", "---\ndescription: Original description\nargument-hint: input\nallowed-tools: Bash\n---\nUse $ARGUMENTS\n");
+    const result = await importStudioPackage(source);
+    const prompt = result.files.find((file) => file.path === "ai.agent-connector.ave/prompts/foo.md")!.data.toString();
+    expect(prompt).toContain("description: \"Original description\"");
+    expect(prompt).toContain("argumentHint: \"input\"");
+    expect(prompt).toContain("Use {args}");
+    expect(prompt).not.toContain("allowed-tools");
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({ group: "lost", path: "custom/foo.md.allowed-tools" }));
+  });
+
   it("merges declared server maps and marks imported hooks for adaptation", async () => {
     const source = join(root, "merged");
     await put(source, ".claude-plugin/plugin.json", JSON.stringify({ name: "team-kit", version: "1.0.0", description: "A team plugin",
@@ -142,6 +241,20 @@ describe("Studio drafts and package projections", () => {
     expect(result.pendingHooks).toMatchObject([{ event: "SessionStart", needsAdaptation: true }, { event: "pre", matcher: "write_*", needsAdaptation: true }]);
     expect(result.diagnostics.map((item) => item.path)).toEqual(expect.arrayContaining(["mcpServers.local", "mcpServers.local.oauth", "mcpServers.unsupported", "mcpServers.ambiguous", "hooks.UnknownEvent"]));
     expect(result.diagnostics.filter((item) => item.group === "needs-input")).toHaveLength(2);
+  });
+
+  it("merges default and inline hook handlers for the same event", async () => {
+    const source = join(root, "merged-hook-event");
+    const handler = (name: string) => [{ hooks: [{ type: "command", command: "node", args: [`./server/${name}.js`] }] }];
+    await put(source, ".claude-plugin/plugin.json", JSON.stringify({ name: "team-kit", version: "1.0.0",
+      description: "A team plugin", hooks: { SessionStart: handler("second") } }));
+    await put(source, "hooks/hooks.json", JSON.stringify({ hooks: { SessionStart: handler("first") } }));
+    const imported = await importStudioPackage(source);
+    expect(imported.pendingHooks).toMatchObject([
+      { event: "SessionStart", sourcePath: "hooks/hooks.json", command: ["node", "./server/first.js"] },
+      { event: "SessionStart", sourcePath: "inline 0", command: ["node", "./server/second.js"] },
+    ]);
+    expect(imported.diagnostics).not.toContainEqual(expect.objectContaining({ path: "hooks.SessionStart", message: expect.stringContaining("replaced") }));
   });
 
   it("refuses inherited hook names and invalid timeouts through the shared importer", async () => {
@@ -207,7 +320,7 @@ describe("Studio drafts and package projections", () => {
     expect(adapted.draft.pendingHooks).toEqual([]);
     expect(adapted.files.map((file) => file.path)).toContain("ai.agent-connector.ave/hooks.json");
     expect(adapted.errors).toEqual([]);
-    const projection = studioExportFiles(await store.packageFiles("team-kit"), true);
+    const projection = studioExportFiles(await store.packageFiles("team-kit"), true, []);
     const hooks = JSON.parse(projection.find((file) => file.path === "hooks/hooks.json")!.data.toString()) as { hooks: Record<string, unknown> };
     expect(hooks.hooks.SessionStart).toEqual([{ hooks: [{ type: "command", command: "node", args: ["./server/hook.js"], timeoutMs: expect.any(Number) }] }]);
   });
@@ -239,7 +352,7 @@ describe("Studio drafts and package projections", () => {
     const imported = await store.importPackage(source);
     expect(imported.draft.pendingHooks.map((item) => item.event)).toEqual(["pre", "post", "perm"]);
     await store.writeDraft({ name: "team-kit", adaptedHooks: [0, 1, 2].map((index) => ({ index, command: ["node", "./server/hook.js"] })) });
-    const projection = studioExportFiles(await store.packageFiles("team-kit"), true);
+    const projection = studioExportFiles(await store.packageFiles("team-kit"), true, []);
     const hooks = JSON.parse(projection.find((file) => file.path === "hooks/hooks.json")!.data.toString()) as { hooks: Record<string, unknown> };
     expect(Object.keys(hooks.hooks)).toEqual(["PreToolUse", "PostToolUse", "PermissionRequest"]);
   });
@@ -253,7 +366,7 @@ describe("Studio drafts and package projections", () => {
         { hooks: [{ type: "command", command: ["./server/run"] }] },
       ] } })) },
     ];
-    const projected = studioExportFiles(files, true);
+    const projected = studioExportFiles(files, true, []);
     const archive = join(root, "executable-hook.zip");
     await writeFile(archive, studioZip(projected));
     const fromZip = await readLocalAgentPlugin(archive);

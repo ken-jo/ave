@@ -8,6 +8,7 @@ import { studioExportFiles } from "../package.js";
 import { parseAgentPluginManifest } from "../../plugins/agent-plugin-manifest.js";
 import { listStudioParts, resolveStudioReferences } from "../references.js";
 import type { StudioConnectorCopyPreview } from "../../shared/plugin-studio.js";
+import { containsStoredCredential } from "../../mcp/studio-credential-guard.js";
 
 const originalHome = process.env.AVE_HOME;
 let root: string;
@@ -48,7 +49,7 @@ describe("Studio connector copying", () => {
       args: [{ ...preview.args[0]!, value: "${PLUGIN_ROOT}/server/config.json" }] })).toThrow("package-local files");
   });
   it("records exact-value digests and emits only after every item is confirmed", async () => {
-    const store = new PluginStudioStore(async () => ({ digest: (await currentPreview()).specDigest, argsCount: 1, envCount: 1 }));
+    const store = new PluginStudioStore(async () => ({ digest: (await currentPreview()).specDigest, argsCount: 1, envCount: 1 }), async () => {});
     const pending = await store.writeDraft({ name: "team-kit", version: "1.0.0", description: "A team plugin",
       references: [{ kind: "connector", name: "sample" }] });
     expect(pending.connectorStatuses).toMatchObject([{ status: "needs-confirmation", argsCount: 1, envCount: 1 }]);
@@ -76,7 +77,7 @@ describe("Studio connector copying", () => {
     expect(files.find((file) => file.path === "mcp.json")?.data.toString()).toContain(envValue);
     const manifest = parseAgentPluginManifest(files.find((file) => file.path === "plugin.json")!.data);
     expect(manifest.extensions?.["ai.agent-connector.ave"]?.mcpAuth).toEqual({ sample: { auth: "api-key", apiKeyEnv: "SAMPLE_KEY" } });
-    expect(studioExportFiles(files, false).map((file) => file.data.toString("utf8")).join("\n")).not.toContain(storedKey);
+    expect(studioExportFiles(files, false, [storedKey]).map((file) => file.data.toString("utf8")).join("\n")).not.toContain(storedKey);
     const reviewed = await store.reviewDraft("team-kit", complete.treeDigest);
     expect(reviewed.draft.reviewed).toBeDefined();
     await store.confirmConnectorCopy("team-kit", "sample", preview, { specDigest: preview.specDigest,
@@ -86,7 +87,7 @@ describe("Studio connector copying", () => {
   });
 
   it("invalidates a confirmed copy when the configured value changes", async () => {
-    const store = new PluginStudioStore(async () => ({ digest: (await currentPreview()).specDigest, argsCount: 1, envCount: 1 }));
+    const store = new PluginStudioStore(async () => ({ digest: (await currentPreview()).specDigest, argsCount: 1, envCount: 1 }), async () => {});
     await store.writeDraft({ name: "team-kit", version: "1.0.0", description: "A team plugin",
       references: [{ kind: "connector", name: "sample" }] });
     const preview = await currentPreview();
@@ -105,5 +106,36 @@ describe("Studio connector copying", () => {
     await expect(store.confirmConnectorCopy("team-kit", "sample", fresh, { specDigest: preview.specDigest,
       args: preview.args.map(({ index, digest }) => ({ index, digest })), env: preview.env.map(({ name, digest }) => ({ name, digest })) }))
       .rejects.toThrow("changed");
+  });
+
+  it("checks the raw stored value again in the writer and decoded export files", async () => {
+    const key = "stored-\"-credential";
+    argValue = `--token=${key}`;
+    const preview = await currentPreview();
+    const store = new PluginStudioStore(async () => ({ digest: preview.specDigest, argsCount: 1, envCount: 1 }),
+      async (_serverId, value) => {
+        if (containsStoredCredential(value, key)) throw new Error("Connector copy contains its stored credential");
+      });
+    await store.writeDraft({ name: "team-kit", version: "1.0.0", description: "A team plugin",
+      references: [{ kind: "connector", name: "sample" }] });
+    await expect(store.confirmConnectorCopy("team-kit", "sample", preview, { specDigest: preview.specDigest,
+      args: preview.args.map(({ index, digest }) => ({ index, digest })),
+      env: preview.env.map(({ name, digest }) => ({ name, digest })) })).rejects.toThrow("stored credential");
+    expect((await store.readDraft("team-kit")).files.map((file) => file.path)).not.toContain("mcp.json");
+
+    for (const credential of [key, "stored-\\-credential", "stored-\u2028-credential", "stored-비밀-credential"]) {
+      for (const location of ["env", "args"] as const) {
+        const files = [
+          { path: "plugin.json", data: Buffer.from(JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+            name: "team-kit", version: "1.0.0", description: "A team plugin" })) },
+          { path: "mcp.json", data: Buffer.from(JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+            mcpServers: { sample: { type: "stdio", command: "uvx", args: ["studio-sample==1.0.0",
+              ...(location === "args" ? [`--token=${credential}`] : [])],
+            ...(location === "env" ? { env: { VALUE: `prefix-${credential}` } } : {}) } } })) },
+        ];
+        if (credential === key) expect(files[1]!.data.toString()).not.toContain(credential);
+        expect(() => studioExportFiles(files, false, [credential])).toThrow("stored credential");
+      }
+    }
   });
 });

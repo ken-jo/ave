@@ -1,5 +1,6 @@
 import { readdir, readFile, rm } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { openFeatureNamespace, writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
 import { isPackageName } from "../marketplace/catalog/types.js";
 import { checkContentFiles, contentFileProblem } from "../marketplace/content/rules.js";
@@ -10,7 +11,7 @@ import { AGENT_PLUGINS_SCHEMA_URL, AVE_EXTENSION_NAMESPACE } from "../plugins/pu
 import type { StudioConnectorConfirmation, StudioConnectorCopyPreview, StudioConnectorStatus, StudioDraft, StudioDraftView, StudioOrigin, StudioPart, StudioWriteRequest } from "../shared/plugin-studio.js";
 import { exportPortableMcp, parsePortableMcp, projectPortableMcp, type BundledMcpAuth } from "../mcp/portable-mcp.js";
 import { lintStudioFiles } from "./lint.js";
-import { importStudioArchive } from "./import.js";
+import { importStudioArchive, type ImportedStudioPackage } from "./import.js";
 import { studioFileText } from "./package.js";
 import { portableStudioConnector, verifyStudioConnectorPreview } from "./connector.js";
 import { clearedImportedHooks } from "../hooks/hook-import-export.js";
@@ -107,6 +108,26 @@ function provenance(parts: readonly StudioPart[]): Buffer {
   return Buffer.from(`${JSON.stringify({ version: 1, parts: safe }, null, 2)}\n`);
 }
 
+function authoredText(path: string, text: string, author: "model" | "user"): Buffer {
+  if (!/^skills\/[a-z][a-z0-9-]*\/SKILL\.md$/u.test(path)
+    && !/^xyz\.ave\/prompts\/[a-z][a-z0-9-]*\.md$/u.test(path)) return Buffer.from(text);
+  const front = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/u.exec(text);
+  if (!front) throw new Error(`Studio authored file ${path} needs frontmatter`);
+  const fields: unknown = parseYaml(front[1]!);
+  if (!object(fields)) throw new Error(`Studio authored file ${path} has invalid frontmatter`);
+  if (path.startsWith("skills/")) {
+    const metadata = fields.metadata === undefined ? {} : fields.metadata;
+    if (!object(metadata) || Object.values(metadata).some((value) => typeof value !== "string")) {
+      throw new Error(`Studio skill ${path} needs string metadata`);
+    }
+    fields.metadata = { ...metadata, "ave-origin": "studio", "ave-authored-by": author };
+  } else {
+    fields["ave-origin"] = "studio";
+    fields["ave-authored-by"] = author;
+  }
+  return Buffer.from(`---\n${stringifyYaml(fields).trimEnd()}\n---\n${text.slice(front[0].length)}`);
+}
+
 function portableProvenance(value: unknown): boolean {
   if (!object(value) || value.version !== 1 || !Array.isArray(value.parts)
     || Object.keys(value).some((key) => key !== "version" && key !== "parts")) return false;
@@ -155,8 +176,28 @@ function validateFiles(draft: StudioDraft, files: readonly { path: string; data:
   return { components, errors, lint };
 }
 
+function preflightImport(imported: ImportedStudioPackage): void {
+  for (const file of imported.files) filePath(file.path);
+  checkContentFiles("agent-plugin", imported.files);
+  const manifestBytes = imported.files.find((file) => file.path === "plugin.json")?.data;
+  if (!manifestBytes) throw new Error("Imported plugin.json is missing");
+  const manifest = parseStrictJson(manifestBytes.toString("utf8"));
+  if (!object(manifest)) throw new Error("Imported plugin.json must be an object");
+  const mcp = imported.files.find((file) => file.path === "mcp.json");
+  if (mcp) parsePortableMcp(mcp.data);
+  const files = imported.files.map((file) => file.path === "plugin.json" && (manifest.version === undefined || manifest.description === undefined)
+    ? { path: file.path, data: Buffer.from(JSON.stringify({ ...manifest,
+      ...(manifest.version === undefined && imported.diagnostics.some((item) => item.path === "plugin.json.version" && item.group === "needs-input")
+        ? { version: "0.1.0" } : {}),
+      ...(manifest.description === undefined && imported.diagnostics.some((item) => item.path === "plugin.json.description" && item.group === "needs-input")
+        ? { description: "Pending description" } : {}),
+    })) } : file);
+  deriveAgentPluginComponents(files, { name: imported.name });
+}
+
 export class PluginStudioStore {
-  constructor(private readonly connectorSummary?: (serverId: string) => Promise<{ digest: string; argsCount: number; envCount: number }>) {}
+  constructor(private readonly connectorSummary?: (serverId: string) => Promise<{ digest: string; argsCount: number; envCount: number }>,
+    private readonly assertConnectorSafe?: (serverId: string, preview: StudioConnectorCopyPreview) => Promise<void>) {}
 
   private async connectorStatuses(draft: StudioDraft): Promise<StudioConnectorStatus[]> {
     return Promise.all((draft.connectorCopies ?? []).map(async (copy) => {
@@ -244,15 +285,15 @@ export class PluginStudioStore {
     await putFile(name, "plugin.json", Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`));
     for (const part of input.files ?? []) {
       filePath(part.path);
-      const authoredText = /^skills\/[a-z][a-z0-9-]*\/SKILL\.md$/u.test(part.path)
+      const authoredPath = /^skills\/[a-z][a-z0-9-]*\/SKILL\.md$/u.test(part.path)
         || /^xyz\.ave\/prompts\/[a-z][a-z0-9-]*\.md$/u.test(part.path)
         || part.path === "ai.agent-connector.ave/routines.json";
-      if (!authoredText && !(sessionId === undefined && part.path === "mcp.json")) {
+      if (!authoredPath && !(sessionId === undefined && part.path === "mcp.json")) {
         throw new Error(`Studio cannot author ${part.path}`);
       }
       if (part.path === "mcp.json" && draft.connectorCopies?.length) throw new Error("Confirm selected connectors before editing mcp.json");
       if (part.path === "plugin.json" || part.path === "ai.agent-connector.ave/provenance.json") throw new Error(`${part.path} is managed by Studio`);
-      await putFile(name, part.path, Buffer.from(part.text));
+      await putFile(name, part.path, authoredText(part.path, part.text, sessionId ? "model" : "user"));
       const origin = sessionId ? { kind: "conversation" as const, sessionId } : { kind: "typed" as const };
       draft.parts = draft.parts.filter((oldPart) => oldPart.path !== part.path);
       draft.parts.push({ path: part.path, origin });
@@ -307,6 +348,8 @@ export class PluginStudioStore {
     if (current.digest !== preview.specDigest || current.argsCount !== preview.args.length || current.envCount !== preview.env.length) {
       throw new Error("Connector source changed before confirmation");
     }
+    if (!this.assertConnectorSafe) throw new Error("Connector credential guard is unavailable");
+    await this.assertConnectorSafe(serverId, preview);
     const confirmedArgs: Record<string, string> = {};
     for (const item of confirmation.args) {
       const expected = preview.args.find((entry) => entry.index === item.index);
@@ -388,7 +431,8 @@ export class PluginStudioStore {
     const name = draftName(imported.name);
     if (await readDraftRecord(name)) throw new Error(`Studio draft ${name} already exists`);
     const now = new Date().toISOString();
-    const draft: StudioDraft = { version: 1, name, createdAt: now, updatedAt: now, parts: [], diagnostics: imported.diagnostics, pendingHooks: imported.pendingHooks };
+    const draft: StudioDraft = { version: 1, name, createdAt: now, updatedAt: now, parts: [], diagnostics: imported.diagnostics,
+      pendingHooks: imported.pendingHooks, writeState: "pending" };
     const suppliedProvenance = imported.files.find((file) => file.path === "ai.agent-connector.ave/provenance.json");
     if (suppliedProvenance) {
       const declared = parseStrictJson(suppliedProvenance.data.toString("utf8"));
@@ -396,14 +440,19 @@ export class PluginStudioStore {
         throw new Error("Imported provenance contains private or malformed fields");
       }
     }
+    draft.parts = imported.files.filter((file) => file.path !== "plugin.json" && file.path !== "ai.agent-connector.ave/provenance.json")
+      .map((file) => ({ path: file.path, origin: { kind: "copied", from: { kind: "package", name,
+        ...(imported.version ? { version: imported.version } : {}) } } }));
+    const generatedProvenance = suppliedProvenance ? null : provenance(draft.parts);
+    preflightImport({ ...imported, files: generatedProvenance
+      ? [...imported.files, { path: "ai.agent-connector.ave/provenance.json", data: generatedProvenance }] : imported.files });
+    // The pending marker is durable before package writes, as in draft updates.
+    await persist(name, draft);
     for (const file of imported.files) {
-      filePath(file.path);
       await putFile(name, file.path, file.data);
-      if (file.path !== "plugin.json" && file.path !== "ai.agent-connector.ave/provenance.json") {
-        draft.parts.push({ path: file.path, origin: { kind: "copied", from: { kind: "package", name, ...(imported.version ? { version: imported.version } : {}) } } });
-      }
     }
-    if (!suppliedProvenance) await putFile(name, "ai.agent-connector.ave/provenance.json", provenance(draft.parts));
+    if (generatedProvenance) await putFile(name, "ai.agent-connector.ave/provenance.json", generatedProvenance);
+    delete draft.writeState;
     await persist(name, draft);
     return this.readDraft(name);
   }

@@ -45,7 +45,7 @@ describe("Studio tool registry and executor surface", () => {
     const manager = { getStudioConnectorSource: async () => ({ spec: { id: "sample", transport: "stdio" as const,
       command: "uvx" }, args: [argValue], env: { SAMPLE: envValue } }) };
     const preview = await previewStudioConnector(manager as never, "sample");
-    const store = new PluginStudioStore(async () => ({ digest: preview.specDigest, argsCount: 1, envCount: 1 }));
+    const store = new PluginStudioStore(async () => ({ digest: preview.specDigest, argsCount: 1, envCount: 1 }), async () => {});
     const registry = new ToolRegistry();
     registry.registerBatch(createPluginStudioTools(store, { getMcpConfigs: async () => [preview.spec] }));
     const created = await registry.findByName("plugin_studio_draft")!.execute({ name: "team-kit", version: "1.0.0",
