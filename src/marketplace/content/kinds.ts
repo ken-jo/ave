@@ -36,6 +36,7 @@ export interface ContentFile {
   /** Package-relative, `/`-separated. */
   path: string;
   data: Buffer;
+  executable?: boolean;
 }
 
 interface ThemeContent {

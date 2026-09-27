@@ -20,6 +20,7 @@ import { messages } from "../../i18n/messages/index.js";
 import { createLogger } from "../../lib/logger.js";
 import { InstalledContentService } from "../../marketplace/content/service.js";
 import { AgentPluginMcpRuntime } from "../../marketplace/content/agent-plugin-mcp-runtime.js";
+import { AgentPluginHookRuntime } from "../../marketplace/content/agent-plugin-hook-runtime.js";
 import { ContentStore, type ContentActivation } from "../../marketplace/content/store.js";
 import type { ParsedContent } from "../../marketplace/content/kinds.js";
 import type { LedgerEntry } from "../../marketplace/content/ledger.js";
@@ -34,7 +35,7 @@ import { aveHome } from "../../shared/ave-home.js";
 import { setInstalledThemeIds } from "../../shared/plugin-theme-cache.js";
 import { DEFAULT_BUNDLE_ID } from "../../shared/theme-bundles.js";
 import { errorMessage } from "../../shared/error-message.js";
-import type { McpComponentConsent } from "../../shared/git-marketplace.js";
+import type { ComponentConsent, HookComponentConsent, McpComponentConsent } from "../../shared/git-marketplace.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../gated.js";
 import type { IpcDeps } from "../types.js";
 import { broadcastSettingsSnapshot, mutateMarketplaceProviderPresets } from "./settings.js";
@@ -91,7 +92,7 @@ export function legacyContentSettings(deps: IpcDeps): {
  * fails, never thrown: settings already changed, and undoing the ledger would
  * leave them describing a package that is not installed.
  */
-export function createContentActivation(deps: IpcDeps, mcpRuntime?: AgentPluginMcpRuntime): ContentActivation {
+export function createContentActivation(deps: IpcDeps, mcpRuntime?: AgentPluginMcpRuntime, hookRuntime?: AgentPluginHookRuntime): ContentActivation {
   const settings = deps.settingsService;
   const afterPersist = async (what: string, finishError: { message: string } | null, broadcast = false) => {
     if (finishError) log.warn({ err: finishError.message }, `${what}: settings saved, refresh failed`);
@@ -144,13 +145,20 @@ export function createContentActivation(deps: IpcDeps, mcpRuntime?: AgentPluginM
   };
 
   return {
-    async activate(content: ParsedContent, entry: LedgerEntry, previous: LedgerEntry | null, adopt: boolean, dir?: string, approvedMcpServers: readonly McpComponentConsent[] = []) {
+    async activate(content: ParsedContent, entry: LedgerEntry, previous: LedgerEntry | null, adopt: boolean, dir?: string, componentConsents: readonly ComponentConsent[] = []) {
       if (content.kind === "agent-plugin") {
         if (!mcpRuntime || !dir) throw new Error("agent plugin MCP activation requires its installed directory and runtime");
-        await mcpRuntime.activate({ name: entry.name, version: entry.version, generationId: entry.origin.contentSha256, dir, content }, approvedMcpServers);
+        if (content.components.hooks.length > 0 && !hookRuntime) throw new Error("agent plugin hook activation requires its hook runner");
+        const item = { name: entry.name, version: entry.version, generationId: entry.origin.contentSha256, dir, content };
+        const hookConsents = componentConsents.filter((consent): consent is HookComponentConsent => "kind" in consent && consent.kind === "hook");
+        const mcpConsents = componentConsents.filter((consent): consent is McpComponentConsent => !("kind" in consent));
+        if (hookConsents.length > 0 && !hookRuntime) throw new Error("hook consent requires the hook runner");
+        const rollbackHooks = hookRuntime ? await hookRuntime.activate(item, hookConsents) : async () => undefined;
+        try { await mcpRuntime.activate(item, mcpConsents); }
+        catch (error) { await rollbackHooks(); throw error; }
         return;
       }
-      if (approvedMcpServers.length > 0) throw new Error("MCP component consent applies only to an agent plugin");
+      if (componentConsents.length > 0) throw new Error("component consent applies only to an agent plugin");
       if (!previous && heldBySettings(content)) {
         // Adopting a legacy activation (design §16.3): the settings already describe it, so they stay as they are.
         if (adopt) return;
@@ -188,6 +196,7 @@ export function createContentActivation(deps: IpcDeps, mcpRuntime?: AgentPluginM
       if (entry.kind === "agent-plugin") {
         if (!mcpRuntime) throw new Error("agent plugin MCP deactivation requires its runtime");
         await mcpRuntime.deactivate(entry.name);
+        await hookRuntime?.deactivate(entry.name);
         return;
       }
       const appearance = settings.get("appearance");
@@ -249,7 +258,7 @@ export async function removeAgentPluginData(settings: Pick<IpcDeps["settingsServ
 }
 
 /** Apply the loaded content to this process: locales, theme ids, and the skill and agent stores. */
-async function applyInMain(deps: IpcDeps, service: InstalledContentService, view: InstalledContentView, mcpRuntime: AgentPluginMcpRuntime): Promise<void> {
+async function applyInMain(deps: IpcDeps, service: InstalledContentService, view: InstalledContentView, mcpRuntime: AgentPluginMcpRuntime, hookRuntime?: AgentPluginHookRuntime): Promise<void> {
   for (const broken of view.broken) log.warn(broken, "installed content package not applied");
   registerInstalledLocales(view.languages);
   setInstalledCatalogLoader(async (locale) => service.languageMessages(locale));
@@ -276,6 +285,10 @@ async function applyInMain(deps: IpcDeps, service: InstalledContentService, view
     });
   }
   await mcpRuntime.sync(service.installedAgentPluginRuntime());
+  if (service.installedAgentPluginRuntime().some((item) => item.content.components.hooks.length > 0) && !hookRuntime) {
+    throw new Error("installed agent plugin hooks require the hook runner");
+  }
+  await hookRuntime?.sync(service.installedAgentPluginRuntime());
   broadcastPromptsUpdated(deps);
 }
 
@@ -286,23 +299,24 @@ async function applyInMain(deps: IpcDeps, service: InstalledContentService, view
  */
 export async function loadInstalledContent(deps: IpcDeps, assetToken: string, root: string = contentPackagesRoot()): Promise<InstalledContentRuntime> {
   const mcpRuntime = new AgentPluginMcpRuntime(deps.mcpManager);
+  const hookRuntime = deps.scriptHookManager ? new AgentPluginHookRuntime(deps.scriptHookManager) : undefined;
   const store = await ContentStore.open({
     root,
     english: messages.en,
-    activation: createContentActivation(deps, mcpRuntime),
+    activation: createContentActivation(deps, mcpRuntime, hookRuntime),
   });
   const service = new InstalledContentService(store, assetToken, (kind, name, version) => {
     const decision = revocationRegistry.evaluate(kind, name, version);
     return decision.kind === "block" ? `revoked by ${decision.sourceId}: ${decision.reason}` : null;
   });
-  await applyInMain(deps, service, await service.reload(), mcpRuntime);
+  await applyInMain(deps, service, await service.reload(), mcpRuntime, hookRuntime);
   // Settings were read before the ledger: apply an installed language the user selected.
   await applyBootLocale(deps.settingsService);
   return {
     store,
     service,
     async reload() {
-      await applyInMain(deps, service, await service.reload(), mcpRuntime);
+      await applyInMain(deps, service, await service.reload(), mcpRuntime, hookRuntime);
     },
     async removeAgentPluginData(name, serverNames) {
       await removeAgentPluginData(deps.settingsService, name, serverNames);

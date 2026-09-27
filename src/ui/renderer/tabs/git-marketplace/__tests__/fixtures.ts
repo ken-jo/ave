@@ -103,6 +103,7 @@ export function installPlan(item: CatalogEntryView, overrides: Partial<InstallPl
     runsCode: item.runsCode,
     authority: { capabilities: [], networkHosts: ["api.example.com"], secrets: [], pluginAccess: [], dependencies: [], filesystem: [] },
     components: null,
+    hookConfinement: "user-permissions",
     rungs: [],
     mcp: null,
     ...overrides,

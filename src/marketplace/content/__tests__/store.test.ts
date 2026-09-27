@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -139,6 +140,39 @@ describe("content package store", () => {
     expect(installed.entry).toMatchObject({ kind: "agent-plugin", name: "draft-plugin", origin: { contentSha256: staged.contentSha256 } });
     expect((await store.load()).loaded[0]?.content).toMatchObject({ kind: "agent-plugin", components });
     expect(existsSync(join(root, "packages", "agent-plugin", "draft-plugin", "1.0.0", "skills", "draft", "SKILL.md"))).toBe(true);
+  });
+
+  it.runIf(process.platform !== "win32")("retains an executable package hook through staging and reload", async () => {
+    const packagePath = "agent-plugins/hook-plugin";
+    const pluginJson = text({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "hook-plugin", version: "1.0.0", description: "Event review" });
+    const hooksJson = text({ version: 1, hooks: { PreToolUse: [{ hooks: [{ type: "command", command: ["./server/hook.sh"] }] }] } });
+    const program = "#!/bin/sh\nprintf 'hook-ran\\n'\n";
+    const components = deriveAgentPluginComponents([
+      { path: "plugin.json", data: Buffer.from(pluginJson) },
+      { path: "ai.agent-connector.ave/hooks.json", data: Buffer.from(hooksJson) },
+      { path: "server/hook.sh", data: Buffer.from(program), executable: true },
+    ]);
+    const name = `content-${++counter}`;
+    const repo = createFixtureRepo(serverRoot, name);
+    repos.push(repo);
+    repo.commit({}, "seed");
+    repo.commitEntries([
+      { path: "marketplace.2.json", mode: "100644", content: text({ schemaVersion: 2, name: "acme", displayName: "Acme", packages: [{ kind: "agent-plugin", name: "hook-plugin", path: packagePath }] }) },
+      { path: `${packagePath}/ave-package.json`, mode: "100644", content: descriptor("agent-plugin", "hook-plugin", "1.0.0", { manifest: "plugin.json", components }) },
+      { path: `${packagePath}/plugin.json`, mode: "100644", content: pluginJson },
+      { path: `${packagePath}/ai.agent-connector.ave/hooks.json`, mode: "100644", content: hooksJson },
+      { path: `${packagePath}/server/hook.sh`, mode: "100755", content: program },
+    ], "publish");
+    const syncer = await open(name);
+    const [row] = await rows(syncer);
+    const staged = await stage(syncer, row!);
+    expect(staged.files.find((file) => file.path === "server/hook.sh")?.executable).toBe(true);
+    const store = await openStore();
+    await store.install(staged);
+    const installed = join(root, "packages", "agent-plugin", "hook-plugin", "1.0.0", "server", "hook.sh");
+    expect(statSync(installed).mode & 0o111).not.toBe(0);
+    expect(execFileSync(installed, { encoding: "utf8" })).toBe("hook-ran\n");
+    expect((await store.load()).loaded[0]?.content).toMatchObject({ kind: "agent-plugin", components });
   });
 
   it("installs a theme, records its origin, reloads it from disk and uninstalls it", async () => {

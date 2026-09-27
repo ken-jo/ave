@@ -268,6 +268,8 @@ export interface InstallPlanView {
   runsCode: boolean;
   authority: AuthorityView | null;
   components: AgentPluginComponents | null;
+  /** Confinement observed by the host when this review plan was issued. */
+  hookConfinement: "sandboxed" | "user-permissions" | "unavailable";
   rungs: RungView[];
   mcp: McpRuntimeView | null;
 }
@@ -401,6 +403,14 @@ export interface McpComponentConsent {
   digest: string;
 }
 
+export interface HookComponentConsent {
+  kind: "hook";
+  index: number;
+  digest: string;
+}
+
+export type ComponentConsent = McpComponentConsent | HookComponentConsent;
+
 export interface GitMarketplaceApi {
   listSources(): Promise<GitMarketplaceResult<SourceView[]>>;
   previewSource(request: SourcePreviewRequest): Promise<GitMarketplaceResult<SourcePreviewView>>;
@@ -415,7 +425,7 @@ export interface GitMarketplaceApi {
   packageDetail(key: PackageKeyView): Promise<GitMarketplaceResult<PackageDetailView>>;
   planInstall(request: InstallPlanRequest): Promise<GitMarketplaceResult<InstallPlanView>>;
   planUpdate(key: PackageKeyView): Promise<GitMarketplaceResult<UpdatePlanView>>;
-  executeInstall(planId: string, approvedMcpServers?: readonly McpComponentConsent[]): Promise<GitMarketplaceResult<InstallResultView>>;
+  executeInstall(planId: string, componentConsents?: readonly ComponentConsent[]): Promise<GitMarketplaceResult<InstallResultView>>;
   uninstall(request: UninstallRequest): Promise<GitMarketplaceResult<UninstallResultView>>;
   previewDirectMcp(request: DirectMcpPreviewRequest): Promise<GitMarketplaceResult<DirectMcpPreviewView>>;
   onSyncProgress(listener: (progress: SyncProgressView) => void): () => void;

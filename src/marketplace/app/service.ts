@@ -14,6 +14,7 @@ import { isDeepStrictEqual } from "node:util";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
+import { isAsrtSandboxActive } from "../../permissions/asrt-sandbox.js";
 import { renameDirectory } from "../../lib/transient-fs-lock-retry.js";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import { appVersionSatisfiesMin } from "../../shared/semver-compare.js";
@@ -29,7 +30,7 @@ import type {
   InstallProgressView,
   InstallResultView,
   McpRuntimeView,
-  McpComponentConsent,
+  ComponentConsent,
   PackageDetailView,
   PackageKeyView,
   PackageUpdateView,
@@ -765,6 +766,9 @@ export class MarketplaceService implements RetirementEntryLookup {
       runsCode: runsCode(row.kind, version.components),
       authority: version.authority ? authorityView(version.authority) : null,
       components: version.components ?? null,
+      hookConfinement: isAsrtSandboxActive()
+        ? process.platform === "win32" ? "unavailable" : "sandboxed"
+        : "user-permissions",
       rungs,
       mcp,
     };
@@ -810,7 +814,7 @@ export class MarketplaceService implements RetirementEntryLookup {
     this.options.onInstallProgress?.({ planId, phase, rung, bytes: null, total: null });
   }
 
-  async executeInstall(planId: string, approvedMcpServers: readonly McpComponentConsent[] = []): Promise<InstallResultView> {
+  async executeInstall(planId: string, componentConsents: readonly ComponentConsent[] = []): Promise<InstallResultView> {
     const held = this.plans.take(planId);
     // The gates must judge the new install by the source it is about to be bound to, not the one it leaves.
     const target = heldTarget(held);
@@ -818,17 +822,17 @@ export class MarketplaceService implements RetirementEntryLookup {
     this.pendingBindings.set(key, target);
     try {
       await this.feedRevocations();
-      if (approvedMcpServers.length > 0 && (held.kind !== "content" || held.plan.kind !== "agent-plugin")) {
-        throw new Error("MCP component consent applies only to an agent plugin install");
+      if (componentConsents.length > 0 && (held.kind !== "content" || held.plan.kind !== "agent-plugin")) {
+        throw new Error("component consent applies only to an agent plugin install");
       }
-      return await this.runInstall(planId, held, approvedMcpServers);
+      return await this.runInstall(planId, held, componentConsents);
     } finally {
       if (this.pendingBindings.get(key) === target) this.pendingBindings.delete(key);
       await this.refeedAfter(`${target.kind} ${target.name} install`);
     }
   }
 
-  private async runInstall(planId: string, held: HeldPlan, approvedMcpServers: readonly McpComponentConsent[]): Promise<InstallResultView> {
+  private async runInstall(planId: string, held: HeldPlan, componentConsents: readonly ComponentConsent[]): Promise<InstallResultView> {
     this.progress(planId, "resolving");
     let result: InstallResultView;
     if (held.kind === "plugin") {
@@ -871,7 +875,7 @@ export class MarketplaceService implements RetirementEntryLookup {
         stageContentPackage(plan, access, { workRoot: this.options.workRoot, english: this.options.english }),
       );
       this.progress(planId, "installing");
-      const outcome = await this.options.installers.content.install(staged, { switchSource: held.switchSource, adopt: held.adopt, approvedMcpServers });
+      const outcome = await this.options.installers.content.install(staged, { switchSource: held.switchSource, adopt: held.adopt, componentConsents });
       result = { key: { sourceId: plan.sourceId, kind: plan.kind, name: plan.name }, version: plan.version, action: installActionView(outcome.action), rungs: [], connectionWarning: null };
     } else if (held.kind === "mcp") {
       const { plan } = held.resolved;
