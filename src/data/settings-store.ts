@@ -1016,10 +1016,26 @@ export class SettingsService {
   private readonly changeListeners = new Map<keyof AppSettings, Set<() => void>>();
   private providerConfigRevision = 0;
   private readonly secretGenerations = new Map<string, number>();
+  private observedSecretFingerprint: string | null | "unreadable" | undefined;
   private readonly leaseStateListeners = new Set<() => void>();
 
   getProviderConfigRevision(): number { return this.providerConfigRevision; }
-  getSecretGeneration(key: string): number { return this.secretGenerations.get(key) ?? 0; }
+  getSecretGeneration(key: string): number {
+    // Every issuance/use samples the shared file. A second host or a direct
+    // edit cannot leave an old lease bound only to this process's counters.
+    const fingerprint = this.readSecretFingerprint();
+    if (this.observedSecretFingerprint === undefined) {
+      this.observedSecretFingerprint = fingerprint;
+    } else if (fingerprint !== this.observedSecretFingerprint) {
+      this.observedSecretFingerprint = fingerprint;
+      this.secretStatesChanged(this.secretGenerations.keys());
+    }
+    if (!this.secretGenerations.has(key)) this.secretGenerations.set(key, 0);
+    return this.secretGenerations.get(key)!;
+  }
+  private readSecretFingerprint(): string | null | "unreadable" {
+    try { return this.secretStore.fingerprint(); } catch { return "unreadable"; }
+  }
   onLeaseStateChanged(listener: () => void): () => void {
     this.leaseStateListeners.add(listener);
     return () => { this.leaseStateListeners.delete(listener); };
@@ -1034,7 +1050,12 @@ export class SettingsService {
     this.notifyLeaseState();
   }
   private secretStateChanged(key: string): void {
-    this.secretGenerations.set(key, this.getSecretGeneration(key) + 1);
+    this.secretStatesChanged([key]);
+  }
+  private secretStatesChanged(keys: Iterable<string>): void {
+    const changed = new Set(keys);
+    if (changed.size === 0) return;
+    for (const key of changed) this.secretGenerations.set(key, (this.secretGenerations.get(key) ?? 0) + 1);
     this.notifyLeaseState();
   }
   private readonly settingsPath: string;
@@ -1077,9 +1098,14 @@ export class SettingsService {
       path: this.secretsPath,
       policy: options.secretPolicy ?? "packaged",
       encryption: options.encryption,
-      onCommittedSecretsChanged: (keys) => {
+      onCommittedSecretsChanged: (keys, before, after) => {
         // Fence leases at the file swap; awaited callers can resume only after lock release.
-        for (const key of keys) this.secretStateChanged(key);
+        const changed = new Set(keys);
+        if (this.observedSecretFingerprint !== undefined && this.observedSecretFingerprint !== before) {
+          for (const key of this.secretGenerations.keys()) changed.add(key);
+        }
+        this.observedSecretFingerprint = after;
+        this.secretStatesChanged(changed);
       },
     });
     const { settings: loaded, writeBack: needsWriteBack } = this.loadSettings(options.appVersion);
@@ -1586,7 +1612,7 @@ export class SettingsService {
     const appliedSettings = this.getAll();
     const keys = providerIds.map(marketplaceProviderPresetSecretKey);
     for (const key of keys) this.invalidatingSecretKeys.set(key, (this.invalidatingSecretKeys.get(key) ?? 0) + 1);
-    for (const key of keys) this.secretStateChanged(key);
+    this.secretStatesChanged(keys);
     try {
       await this.commit();
       await this.deleteMarketplaceProviderPresetSecretsAtomically(
@@ -1604,8 +1630,8 @@ export class SettingsService {
           this.reenteredSecretKeys.delete(key);
           this.writtenReentries.delete(key);
         }
-        this.secretStateChanged(key);
       }
+      this.secretStatesChanged(keys);
     }
   }
 
@@ -1640,6 +1666,7 @@ export class SettingsService {
         !this.enteredForApplied(providerId, appliedSettings)
         && this.invalidatingSecretKeys.get(marketplaceProviderPresetSecretKey(providerId)) === 1
         && isDeepStrictEqual(presetIn(this.settings, providerId), presetIn(appliedSettings, providerId)));
+      const withheldKeys: string[] = [];
       for (const providerId of providerIds) {
         if (restorable.includes(providerId)) continue;
         const key = marketplaceProviderPresetSecretKey(providerId);
@@ -1650,14 +1677,15 @@ export class SettingsService {
           continue;
         }
         this.withheldSecretKeys.add(key);
-        this.secretStateChanged(key);
+        withheldKeys.push(key);
       }
+      this.secretStatesChanged(withheldKeys);
       // Until the old addresses are back on disk their keys are held back,
       // so nothing that runs when a failed rollback puts memory back on the
       // new addresses can pair them.
       const keys = restorable.map(marketplaceProviderPresetSecretKey);
       for (const key of keys) this.restoringSecretKeys.add(key);
-      for (const key of keys) this.secretStateChanged(key);
+      this.secretStatesChanged(keys);
       this.settings = restorable.length === providerIds.length && isDeepStrictEqual(this.settings, appliedSettings)
         ? previousSettings
         : withProviderPresetsFrom(this.settings, previousSettings, restorable);
@@ -1665,7 +1693,7 @@ export class SettingsService {
       await this.commit().then(
         () => {
           for (const key of keys) this.restoringSecretKeys.delete(key);
-          for (const key of keys) this.secretStateChanged(key);
+          this.secretStatesChanged(keys);
         },
         (rollbackErr: Error) => {
           log.warn(
@@ -1675,8 +1703,8 @@ export class SettingsService {
           for (const key of keys) {
             this.restoringSecretKeys.delete(key);
             this.withheldSecretKeys.add(key);
-            this.secretStateChanged(key);
           }
+          this.secretStatesChanged(keys);
         },
       );
       throw err;
@@ -1703,7 +1731,7 @@ export class SettingsService {
       .map(marketplaceProviderPresetSecretKey);
     if (keys.length === 0) return;
     await this.secretStore.deleteMany(keys);
-    for (const key of keys) this.secretStateChanged(key);
+    this.secretStatesChanged(keys);
   }
 
   async replaceLlm(llm: LLMSettings): Promise<AppSettings> {
@@ -1824,8 +1852,8 @@ export class SettingsService {
       await this.secretStore.deleteMany(keys);
       for (const key of keys) {
         this.withheldSecretKeys.delete(key);
-        this.secretStateChanged(key);
       }
+      this.secretStatesChanged(keys);
     } catch (err) {
       log.warn("withheld provider preset key deletion failed: %s", (err as Error).message);
     }
@@ -1848,7 +1876,7 @@ export class SettingsService {
       storageKeys.push(`plugin.${safePluginId}.${safeKey}`);
     }
     const deleted = await this.secretStore.deleteMany(storageKeys);
-    for (const key of storageKeys) this.secretStateChanged(key);
+    this.secretStatesChanged(storageKeys);
     return deleted;
   }
 

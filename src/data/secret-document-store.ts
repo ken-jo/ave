@@ -109,6 +109,10 @@ function contentDigest(bytes: Buffer): Buffer {
   return createHash("sha256").update(bytes).digest();
 }
 
+function documentFingerprint(content: string): string {
+  return createHash("sha256").update(content).digest("hex");
+}
+
 function readStableSecretFile(path: string): string {
   for (let attempt = 0; attempt < MAX_STABLE_READ_ATTEMPTS; attempt += 1) {
     let fd: number | undefined;
@@ -374,8 +378,8 @@ export interface SecretDocumentStoreOptions {
   path: string;
   policy: SecretPolicy;
   encryption: SecretEncryption;
-  /** Runs synchronously after changed entries become readable, before lock release. */
-  onCommittedSecretsChanged?: (keys: readonly string[]) => void;
+  /** Runs synchronously after an atomic replacement, before lock release. */
+  onCommittedSecretsChanged?: (keys: readonly string[], before: string | null, after: string) => void;
   platform?: NodeJS.Platform;
   runtime?: Partial<SecretStoreRuntime>;
 }
@@ -388,7 +392,7 @@ export class SecretDocumentStore {
   private readonly externalKey: boolean;
   private readonly platform: NodeJS.Platform;
   private readonly runtime: SecretStoreRuntime;
-  private readonly onCommittedSecretsChanged?: (keys: readonly string[]) => void;
+  private readonly onCommittedSecretsChanged?: (keys: readonly string[], before: string | null, after: string) => void;
 
   constructor(options: SecretDocumentStoreOptions) {
     this.path = resolve(options.path);
@@ -399,6 +403,12 @@ export class SecretDocumentStore {
     this.platform = options.platform ?? process.platform;
     this.runtime = { ...DEFAULT_RUNTIME, ...options.runtime };
     this.onCommittedSecretsChanged = options.onCommittedSecretsChanged;
+  }
+
+  /** Stable on-disk identity read by lease checks in every host process. */
+  fingerprint(): string | null {
+    if (!this.runtime.exists(this.path)) return null;
+    return documentFingerprint(this.runtime.read(this.path));
   }
 
   get(key: string): string | null {
@@ -666,7 +676,11 @@ export class SecretDocumentStore {
               const afterEntry = document.entries[key];
               return beforeEntry?.encoding !== afterEntry?.encoding || beforeEntry?.value !== afterEntry?.value;
             });
-            if (changed.length > 0) this.onCommittedSecretsChanged?.(changed);
+            this.onCommittedSecretsChanged?.(
+              changed,
+              state.raw === null ? null : documentFingerprint(state.raw),
+              documentFingerprint(intended),
+            );
           }
           return {
             value,
