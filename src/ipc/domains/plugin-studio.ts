@@ -143,7 +143,7 @@ export function registerPluginStudioHandlers(deps: IpcDeps, content: () => Promi
     const local = await readLocalAgentPlugin(selection.filePaths[0]);
     return preview(local.files);
   });
-  handle(channels.previewInstallDraft, async (name) => preview(await store.packageFiles(string(name, "name"))));
+  handle(channels.previewInstallDraft, async (name) => preview(await store.installableFiles(string(name, "name"))));
   handle(channels.installFromFile, async (rawId, rawApprovals) => {
     const previewId = string(rawId, "previewId");
     const selected = pending.get(previewId);

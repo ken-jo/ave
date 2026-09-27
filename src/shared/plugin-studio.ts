@@ -21,6 +21,7 @@ export interface StudioDraft {
   updatedAt: string;
   parts: StudioPart[];
   reviewed?: { treeDigest: string; at: string };
+  writeState?: "pending";
   sharedAt?: string;
   diagnostics: StudioDiagnostic[];
   pendingHooks: Array<{ event: string; matcher?: string; command: string[]; timeoutMs?: number; needsAdaptation: true }>;
@@ -58,6 +59,7 @@ export interface StudioDraftView {
   draft: StudioDraft;
   files: Array<{ path: string; text: string | null }>;
   treeDigest: string;
+  reviewStatus: "reviewed" | "needs-review";
   diagnostics: StudioDiagnostic[];
   lint: StudioLintFinding[];
   components: AgentPluginComponents | null;

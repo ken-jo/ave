@@ -44,6 +44,9 @@ function parseDraft(value: unknown, name: string): StudioDraft {
   if (value.reviewed !== undefined && (!object(value.reviewed) || !/^[a-f0-9]{64}$/u.test(String(value.reviewed.treeDigest)) || typeof value.reviewed.at !== "string")) {
     throw new Error(`Studio draft ${name} has invalid review metadata`);
   }
+  if (value.writeState !== undefined && value.writeState !== "pending") {
+    throw new Error(`Studio draft ${name} has invalid write state`);
+  }
   return value as unknown as StudioDraft;
 }
 
@@ -183,13 +186,25 @@ export class PluginStudioStore {
     const files = await readPackageFiles(name);
     const connectorStatuses = await this.connectorStatuses(draft);
     const checked = validateFiles(draft, files, connectorStatuses);
+    const treeDigest = digest(files);
+    const incomplete = draft.writeState === "pending"
+      || (draft.reviewed !== undefined && draft.reviewed.treeDigest !== treeDigest);
+    if (incomplete) checked.errors.push("Studio draft has an incomplete write; save it again before review");
+    const reviewStatus = draft.reviewed?.treeDigest === treeDigest && checked.errors.length === 0
+      ? "reviewed" as const : "needs-review" as const;
     return { draft, files: files.map(({ path, data }) => ({ path, text: studioFileText(data) })),
-      treeDigest: digest(files), diagnostics: draft.diagnostics, connectorStatuses, ...checked };
+      treeDigest, reviewStatus, diagnostics: draft.diagnostics, connectorStatuses, ...checked };
   }
 
   async writeDraft(input: StudioWriteRequest, sessionId?: string, copiedFiles: readonly { path: string; data: Buffer; origin: StudioOrigin }[] = []): Promise<StudioDraftView> {
     const name = draftName(input.name);
     const old = await readDraftRecord(name);
+    const wasPending = old?.writeState === "pending";
+    const suppliedMutation = input.version !== undefined || input.description !== undefined
+      || (input.files?.length ?? 0) > 0 || (input.removePaths?.length ?? 0) > 0
+      || (input.references?.length ?? 0) > 0 || input.adaptedHooks !== undefined || copiedFiles.length > 0;
+    if (wasPending && !suppliedMutation) throw new Error("Studio draft needs an update to repair its incomplete write");
+    if (old && !suppliedMutation) return this.readDraft(name);
     const now = new Date().toISOString();
     const draft: StudioDraft = old ?? { version: 1, name, createdAt: now, updatedAt: now, parts: [], diagnostics: [], pendingHooks: [] };
     for (const reference of input.references ?? []) if (reference.kind === "connector") {
@@ -198,6 +213,11 @@ export class PluginStudioStore {
       }
     }
     const before = old ? digest(await readPackageFiles(name)) : null;
+    // Persist the pending marker before changing package bytes. A crash at any later
+    // write leaves the draft unreadable as reviewed until a successful update repairs it.
+    draft.writeState = "pending";
+    delete draft.reviewed;
+    await persist(name, draft);
     const packageDir = join(namespace.dir, name, "package");
     for (const path of input.removePaths ?? []) {
       filePath(path);
@@ -205,7 +225,11 @@ export class PluginStudioStore {
       draft.parts = draft.parts.filter((part) => part.path !== path);
     }
     const manifestPath = join(packageDir, "plugin.json");
-    const existingManifest: unknown = old ? parseStrictJson((await readFile(manifestPath)).toString("utf8")) : {};
+    const manifestBytes = old ? await readFile(manifestPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT" && wasPending) return null;
+      throw error;
+    }) : null;
+    const existingManifest: unknown = manifestBytes ? parseStrictJson(manifestBytes.toString("utf8")) : {};
     if (!object(existingManifest)) throw new Error("Studio plugin.json must be an object");
     const manifest = { ...existingManifest, $schema: AGENT_PLUGINS_SCHEMA_URL, name,
       ...(input.version !== undefined ? { version: input.version } : {}),
@@ -259,6 +283,7 @@ export class PluginStudioStore {
     await putFile(name, "ai.agent-connector.ave/provenance.json", provenance(draft.parts));
     const after = digest(await readPackageFiles(name));
     if (before !== after) delete draft.reviewed;
+    delete draft.writeState;
     draft.updatedAt = now;
     await persist(name, draft);
     return this.readDraft(name);
@@ -324,6 +349,9 @@ export class PluginStudioStore {
     if (Object.keys(servers).length) projectPortableMcp(parsePortableMcp(JSON.stringify(document)), auth);
     else if (Object.keys(auth).length) throw new Error("mcpAuth names a server without mcp.json");
 
+    draft.writeState = "pending";
+    delete draft.reviewed;
+    await persist(name, draft);
     copy.specDigest = preview.specDigest;
     copy.confirmedArgs = confirmedArgs;
     copy.confirmedEnv = confirmedEnv;
@@ -346,6 +374,7 @@ export class PluginStudioStore {
     await putFile(name, "plugin.json", Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`));
     await putFile(name, "ai.agent-connector.ave/provenance.json", provenance(draft.parts));
     delete draft.reviewed;
+    delete draft.writeState;
     draft.updatedAt = new Date().toISOString();
     await persist(name, draft);
     return this.readDraft(name);
@@ -387,10 +416,17 @@ export class PluginStudioStore {
 
   async reviewedFiles(name: string): Promise<Array<{ path: string; data: Buffer }>> {
     const view = await this.readDraft(name);
+    if (view.draft.writeState === "pending" || (view.draft.reviewed && view.draft.reviewed.treeDigest !== view.treeDigest)) {
+      throw new Error("Studio draft has an incomplete write; save it again before review");
+    }
     if (!view.draft.reviewed || view.draft.reviewed.treeDigest !== view.treeDigest || view.errors.length) {
       throw new Error("Studio draft must be reviewed at its current tree digest");
     }
     return readPackageFiles(name);
+  }
+
+  async installableFiles(name: string): Promise<Array<{ path: string; data: Buffer }>> {
+    return this.reviewedFiles(name);
   }
 
   async markShared(name: string): Promise<void> {

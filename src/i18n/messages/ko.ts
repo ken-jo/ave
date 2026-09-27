@@ -44,6 +44,7 @@ export const ko: Record<SeedMessageKey, string> = {
   "pluginStudio.binaryFile": "바이너리 파일입니다. 설치 전에 확인하세요.",
   "pluginStudio.readConfirm": "위 스킬, 프롬프트, 루틴 템플릿을 모두 읽었습니다.",
   "pluginStudio.markReviewed": "검토 확인",
+  "pluginStudio.needsReview": "설치하거나 공유하려면 초안을 검토해야 합니다.",
   "pluginStudio.legacyProjection": "호환 파일도 포함",
   "pluginStudio.share": "ZIP으로 공유",
   "pluginStudio.import": "플러그인 폴더 가져오기…",

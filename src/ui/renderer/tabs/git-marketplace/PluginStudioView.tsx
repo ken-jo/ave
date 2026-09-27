@@ -162,7 +162,7 @@ export function PluginStudioView({ api, onInstalled }: { api: PluginStudioApi; o
     else if (!result.ok) setFailure(studioErrorText(t, result.code));
   };
   const installDraft = async () => {
-    if (!view || view.errors.length) return;
+    if (!view || view.reviewStatus !== "reviewed") return;
     const result = await api.previewInstallDraft(view.draft.name);
     if (result.ok) setPreview(result.value); else setFailure(studioErrorText(t, result.code));
   };
@@ -208,7 +208,7 @@ export function PluginStudioView({ api, onInstalled }: { api: PluginStudioApi; o
     if (result.ok && result.value) setCheckoutSteps([result.value.path, ...result.value.steps]);
     else if (!result.ok) setFailure(studioErrorText(t, result.code));
   };
-  const reviewed = view?.draft.reviewed?.treeDigest === view?.treeDigest && (view?.errors.length ?? 1) === 0;
+  const reviewed = view?.reviewStatus === "reviewed";
   return <div className="mt-3 space-y-4" data-testid="plugin-studio">
     <div className="flex flex-wrap gap-2">
       <Button size="sm" variant="outline" onClick={() => void importPackage()} data-testid="plugin-studio:import">{t("pluginStudio.import")}</Button>
@@ -217,6 +217,7 @@ export function PluginStudioView({ api, onInstalled }: { api: PluginStudioApi; o
     {failure && <p className="text-sm text-destructive" role="alert">{failure}</p>}
     {view ? <div className="space-y-3" data-testid="plugin-studio:review">
       <div className="flex items-center justify-between"><h3 className="text-base font-semibold">{t("pluginStudio.reviewTitle", { name: view.draft.name })}</h3><Button size="sm" variant="ghost" onClick={() => setView(null)}>{t("pluginStudio.back")}</Button></div>
+      {view.reviewStatus === "needs-review" && <p className="text-xs text-muted-foreground" data-testid="plugin-studio:review-status">{t("pluginStudio.needsReview")}</p>}
       <DiagnosticGroup title={t("pluginStudio.lost")} diagnostics={view.diagnostics.filter((item) => item.group === "lost")} />
       <DiagnosticGroup title={t("pluginStudio.rewritten")} diagnostics={view.diagnostics.filter((item) => item.group === "rewritten")} />
       <DiagnosticGroup title={t("pluginStudio.needsInput")} diagnostics={view.diagnostics.filter((item) => item.group === "needs-input")} />
@@ -254,7 +255,7 @@ export function PluginStudioView({ api, onInstalled }: { api: PluginStudioApi; o
       {view.files.map((file) => <section key={file.path} className="space-y-1 border-t pt-2"><h4 className="font-mono text-xs font-semibold">{file.path}</h4>{file.text !== null && (/^skills\/[a-z][a-z0-9-]*\/SKILL\.md$/u.test(file.path) || /^xyz\.ave\/prompts\/[a-z][a-z0-9-]*\.md$/u.test(file.path) || file.path === "ai.agent-connector.ave/routines.json" || file.path === "mcp.json")
         ? <Textarea className="min-h-28 font-mono text-xs" value={fileEdits[file.path] ?? ""} onChange={(event) => setFileEdits((current) => ({ ...current, [file.path]: event.target.value }))} aria-label={file.path} />
         : <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded bg-muted p-2 text-xs">{file.text ?? t("pluginStudio.binaryFile")}</pre>}</section>)}
-      <div className="flex flex-wrap items-center gap-3"><Button disabled={view.errors.length > 0} onClick={() => void installDraft()} data-testid="plugin-studio:install">{t("pluginStudio.install")}</Button>
+      <div className="flex flex-wrap items-center gap-3"><Button disabled={!reviewed} onClick={() => void installDraft()} data-testid="plugin-studio:install">{t("pluginStudio.install")}</Button>
         <label className="flex items-center gap-2 text-xs"><Checkbox checked={confirmed} onCheckedChange={(value) => setConfirmed(value === true)} />{t("pluginStudio.readConfirm")}</label>
         <Button size="sm" variant="outline" disabled={!confirmed || view.errors.length > 0 || reviewed} onClick={() => void markReviewed()} data-testid="plugin-studio:mark-reviewed">{t("pluginStudio.markReviewed")}</Button>
         <label className="flex items-center gap-2 text-xs"><Checkbox checked={projection} onCheckedChange={(value) => setProjection(value === true)} />{t("pluginStudio.legacyProjection")}</label>

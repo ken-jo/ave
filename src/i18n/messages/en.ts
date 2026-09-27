@@ -49,6 +49,7 @@ export const en = {
   "pluginStudio.binaryFile": "Binary file; inspect before installing.",
   "pluginStudio.readConfirm": "I read every skill, prompt and routine template above.",
   "pluginStudio.markReviewed": "Confirm review",
+  "pluginStudio.needsReview": "This draft needs review before installation or sharing.",
   "pluginStudio.legacyProjection": "Include compatibility projection",
   "pluginStudio.share": "Share as zip",
   "pluginStudio.import": "Import plugin folder…",

@@ -24,6 +24,9 @@ test("form to review to local package install", async ({ app, mainWindow, userDa
   await page.getByTestId("plugin-studio:confirm-env:sample-connector:STUDIO_SAMPLE").click();
   await page.getByTestId("plugin-studio:confirm-connector:sample-connector").click();
   await expect(page.getByTestId("plugin-studio:review")).toContainText("mcp.json");
+  await expect(page.getByTestId("plugin-studio:install")).toBeDisabled();
+  await page.getByText(t("pluginStudio.readConfirm")).click();
+  await page.getByTestId("plugin-studio:mark-reviewed").click();
   await expect(page.getByTestId("plugin-studio:install")).toBeEnabled();
   await expect(page.getByTestId("plugin-studio:review")).toContainText("plugin.json");
   await page.screenshot({ path: testInfo.outputPath("plugin-studio-review.png") });

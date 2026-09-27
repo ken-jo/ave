@@ -12,6 +12,7 @@ function modelView(view: StudioDraftView): Record<string, unknown> {
   return {
     draft: view.draft,
     treeDigest: view.treeDigest,
+    reviewStatus: view.reviewStatus,
     files: view.files.map((file) => ({ path: file.path, text: file.path === "mcp.json" ? null : file.text })),
     diagnostics: view.diagnostics,
     errors: view.errors.map((error) => error.includes("mcp.json") ? "Connector package validation failed; review it in Studio" : error),
@@ -42,7 +43,7 @@ export function createPluginStudioTools(store: PluginStudioStore = new PluginStu
         const sessionId = ctx.metadata?.sessionId;
         if (typeof sessionId !== "string" || !sessionId) throw new Error("Draft requires a conversation session");
         const view = await store.writeDraft(input, sessionId, await resolveStudioReferences(input, sources));
-        return { draft: view.draft, files: view.files.map((file) => file.path), diagnostics: view.diagnostics,
+        return { draft: view.draft, reviewStatus: view.reviewStatus, files: view.files.map((file) => file.path), diagnostics: view.diagnostics,
           errors: modelView(view).errors, connectorStatuses: view.connectorStatuses };
       }),
     }),
@@ -61,7 +62,7 @@ export function createPluginStudioTools(store: PluginStudioStore = new PluginStu
       execute: (raw) => answer(async () => {
         const view = await store.readDraft(String((raw as { name?: unknown })?.name ?? ""));
         const safe = modelView(view);
-        return { treeDigest: safe.treeDigest, diagnostics: safe.diagnostics, lint: safe.lint,
+        return { treeDigest: safe.treeDigest, reviewStatus: safe.reviewStatus, diagnostics: safe.diagnostics, lint: safe.lint,
           errors: safe.errors, components: safe.components, connectorStatuses: safe.connectorStatuses };
       }),
     }),

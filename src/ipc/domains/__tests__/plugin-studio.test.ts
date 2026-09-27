@@ -52,8 +52,11 @@ describe("plugin Studio IPC", () => {
 
   it("installs reviewed local bytes through the content store with no source binding", async () => {
     const studio = new PluginStudioStore();
-    await studio.writeDraft({ name: "team-kit", version: "1.0.0", description: "A team plugin",
+    const created = await studio.writeDraft({ name: "team-kit", version: "1.0.0", description: "A team plugin",
       files: [{ path: "skills/review/SKILL.md", text: "---\nname: review\ndescription: Review work\n---\nReview work.\n" }] });
+    expect(await invoke(CHANNELS.pluginStudio.previewInstallDraft, hostFrameEvent(), "team-kit"))
+      .toMatchObject({ ok: false, code: "invalid-request" });
+    await studio.reviewDraft("team-kit", created.treeDigest);
     const previewResult = await invoke(CHANNELS.pluginStudio.previewInstallDraft, hostFrameEvent(), "team-kit") as { ok: boolean; value: { previewId: string } };
     expect(previewResult.ok).toBe(true);
     const installed = await invoke(CHANNELS.pluginStudio.installFromFile, hostFrameEvent(), previewResult.value.previewId, []) as { ok: boolean; value: unknown };
