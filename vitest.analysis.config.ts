@@ -2,6 +2,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 import { electronNodeNormalizerArgument } from "./scripts/run-vitest-under-electron.mjs";
+import { documentGuardImportArgument } from "./scripts/lib/document-consumer-node-options.mjs";
 import { assertAllowedDocumentRead } from "./scripts/lib/document-consumer-guard.mjs";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -75,7 +76,7 @@ export default defineConfig({
       const major = parseInt(process.versions.node.split(".")[0], 10);
       return [
         electronNodeNormalizerArgument(),
-        `--import=${rootPath("scripts/lib/document-consumer-guard.mjs")}`,
+        documentGuardImportArgument(),
         ...(major >= 25 ? ["--no-experimental-webstorage"] : []),
       ];
     })(),

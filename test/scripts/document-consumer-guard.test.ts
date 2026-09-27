@@ -288,7 +288,7 @@ describe("documentation consumer guard", () => {
     const source = (path: string) => readFileSync(resolve(root, path), "utf8");
     expect(source("vitest.config.ts")).toContain('import "./scripts/lib/document-consumer-guard.mjs"');
     expect(source("vitest.analysis.config.ts")).toContain('name: "document-input-guard"');
-    expect(source("vitest.analysis.config.ts")).toContain('`--import=${rootPath("scripts/lib/document-consumer-guard.mjs")}`');
+    expect(source("vitest.analysis.config.ts")).toContain("documentGuardImportArgument(),");
     expect(source("scripts/build-main-esbuild.mjs")).toContain("assertBundledDocumentInputs(Object.keys(result.metafile.inputs)");
     expect(source("scripts/build-main-esbuild.mjs")).toContain("assertPackagedDocumentInputs(JSON.parse(");
     expect(source("package.json")).toContain("node --import ./scripts/lib/document-consumer-guard.mjs ./node_modules/webpack/bin/webpack.js");
