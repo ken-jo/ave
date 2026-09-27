@@ -91,6 +91,9 @@ function sourceDocuments(root) {
     }
     entries.set(match[2], match[1]);
   }
+  if (entries.size === 0) {
+    throw new Error("[document-consumer] tracked package source inventory is empty");
+  }
   const result = new Map();
   const add = (source, target) => {
     if (/\.(?:md|html)$/i.test(target)) result.set(source, target);

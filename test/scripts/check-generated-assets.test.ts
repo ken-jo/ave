@@ -288,15 +288,15 @@ describe("check-generated-assets", () => {
     expect(result.stdout).toContain("[generated-assets] OK");
   });
 
-  it("skips where there is no committed state to compare against", () => {
+  it("fails where there is no committed state to compare against", () => {
     const root = mkdtempSync(join(tmpdir(), "ave-generated-assets-bare-"));
     roots.push(root);
     writeManifest(root, ["build/installerIcon.ico"]);
 
     const result = run(root);
 
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain("[generated-assets] SKIP");
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("cannot verify the Git work tree");
   });
 });
 
