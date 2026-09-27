@@ -53,7 +53,7 @@ import { ensurePluginDataDir, resolvePluginDataDir, resolveEntryPath, buildPlugi
 import { buildImportUrl, buildMethodMap, importPluginFactory, declaredAppVisibleToolMethods } from "./plugin-loader.js";
 import { withPluginInstallLock, hasExclusivePluginLifecycleMutation, isPluginInstallLockHeld, withAllPluginInstallLocks, withResolvedPluginInstallLocks } from "../install-lifecycle.js";
 import { isOutOfProcessPlugin } from "../isolation/out-of-process-plugins.js";
-import { capturePluginSandboxGrant, createOutOfProcessPluginFactory, isPluginSandboxGrantCovered } from "../isolation/out-of-process-plugin.js";
+import { capturePluginSandboxGrant, createOutOfProcessPluginFactory, isPluginSandboxGrantCovered, PluginSandboxGrantError } from "../isolation/out-of-process-plugin.js";
 import {
   HOST_PROTOCOL_VERSIONS_SERVED,
   IncompatibleHostProtocolError,
@@ -3010,6 +3010,17 @@ abstract class PluginRuntimeState {
     });
   }
 
+  /** Report a filesystem grant the host cannot give this plugin incarnation. */
+  protected refuseSandboxGrant(manifest: PluginManifest, error: PluginSandboxGrantError): void {
+    log.error(`${manifest.id} rejected — ${error.message}`);
+    this.markLoadRefused(manifest.id, {
+      summary: "Plugin filesystem grant is outside approved directories.",
+      reason: error.message,
+      kind: "sandbox-grant-outside-ceiling",
+      displayName: manifest.name ?? manifest.id,
+    });
+  }
+
   /**
    * Plugin revocation gate (LOAD boundary). A plugin whose installed version
    * its bound source revoked (design §10.4) must not keep running — mirrors
@@ -4029,6 +4040,8 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       // is the same refusal as an unserved declared version, and says so.
       if (err instanceof IncompatibleHostProtocolError) {
         this.refuseIncompatibleHostProtocol(manifest, err);
+      } else if (err instanceof PluginSandboxGrantError) {
+        this.refuseSandboxGrant(manifest, err);
       } else {
         this.markFailed(manifest.id);
       }
@@ -5538,6 +5551,8 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       });
       if (err instanceof IncompatibleHostProtocolError) {
         this.refuseIncompatibleHostProtocol(manifest, err);
+      } else if (err instanceof PluginSandboxGrantError) {
+        this.refuseSandboxGrant(manifest, err);
       } else {
         this.markFailed(manifest.id);
       }

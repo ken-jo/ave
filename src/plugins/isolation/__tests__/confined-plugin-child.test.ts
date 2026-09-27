@@ -119,6 +119,7 @@ import type { DelegatedWorkerConfinement } from "../host-api-dispatcher.js";
 import {
   createOutOfProcessPluginFactory,
   derivePluginChildEnvelope,
+  PluginSandboxGrantError,
 } from "../out-of-process-plugin.js";
 import {
   initializeAsrtSandbox,
@@ -804,13 +805,15 @@ describe("the host decides how far a plugin child reaches", () => {
     });
     expect(envelope.read).toEqual([...baseEnvelope(fx).read, join(fx.aveHome, "certs"), fx.userRoot]);
     expect(envelope.write).toEqual([...baseEnvelope(fx).write, fx.userRoot]);
-    expect(() => derivePluginChildEnvelope({
+    const rejected = () => derivePluginChildEnvelope({
       pluginId: CANDIDATE_MANIFEST.id,
       sandbox: CANDIDATE_MANIFEST.sandbox,
       pluginRoot: fx.pluginRoot,
       pluginDataDir: fx.pluginDataDir,
       configValue: (key) => key === "workspace" ? fx.userRootSibling : undefined,
-    })).toThrow(/no workspace root the user approved covers it/);
+    });
+    expect(rejected).toThrow(PluginSandboxGrantError);
+    expect(rejected).toThrow(/no workspace root the user approved covers it/);
   });
 
   it("keeps a declared read-only chosen directory out of the write jail", () => {

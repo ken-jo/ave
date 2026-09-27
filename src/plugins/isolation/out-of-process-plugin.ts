@@ -354,13 +354,21 @@ export interface PluginChildEnvelopeInputs {
 /**
  * Refuse a widening, and say which grant asked for what.
  *
- * A plain `Error` rather than a boundary error: this runs on the SPAWN path, so
- * a refusal here fails the plugin's construction — there is no child yet to
+ * An `Error` subtype rather than a boundary error: this runs on the SPAWN path,
+ * so a refusal here fails the plugin's construction — there is no child yet to
  * answer, and a plugin whose declared envelope cannot be honoured must not load
- * with a quietly smaller one.
+ * with a quietly smaller one. The subtype lets the Doctor avoid reinstalling
+ * the same manifest after this refusal.
  */
+export class PluginSandboxGrantError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PluginSandboxGrantError";
+  }
+}
+
 function rejectEnvelopeGrant(pluginId: string, configKey: string, detail: string): never {
-  throw new Error(
+  throw new PluginSandboxGrantError(
     `[out-of-process-plugin] ${pluginId}: cannot widen the child's envelope for `
       + `config key '${configKey}': ${detail}`,
   );
@@ -382,10 +390,10 @@ function hostGrantDirectory(
   const catalog = name && Object.hasOwn(HOST_DIRECTORY_CATALOG, name)
     ? HOST_DIRECTORY_CATALOG[name as keyof typeof HOST_DIRECTORY_CATALOG]
     : undefined;
-  if (!catalog) throw new Error("host directory is outside the closed catalog");
+  if (!catalog) throw new PluginSandboxGrantError("host directory is outside the closed catalog");
   const directory = join(aveHome(), ...catalog.segments);
   if (isSensitivePath(directory, "read") && !catalog.piercesDenyFloor) {
-    throw new Error("host directory cannot pierce the sensitive deny floor");
+    throw new PluginSandboxGrantError("host directory cannot pierce the sensitive deny floor");
   }
   return directory;
 }
