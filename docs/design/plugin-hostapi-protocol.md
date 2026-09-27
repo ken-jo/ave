@@ -4,7 +4,8 @@ The code packages described here are called extensions in user-facing copy.
 
 Status: design, decided; the wire step (§9.4) is implemented on `main`; the Lease step
 (§9.1, §4.1, §9.5) was amended on 2026-09-27 with decisions 8-26 (§13), in two rounds
-of independent review. It follows
+of independent review, and shipped as v0.12.0; the Publication step has its
+implementation plan in §9.7 (2026-09-28, decisions 27-34) and targets 0.13.0. It follows
 the retirement of the `ave-plugin-sdk` repository: a plugin repository now vendors the
 contract (`public-contract.ts` and the manifest schema) from ave at a release tag and
 holds the copy to a recorded sha256 (`docs/design/multi-source-git-marketplace.md` §5.6;
@@ -26,7 +27,9 @@ documentation. The Lease amendment (§2.2, §3.2, §3.6, §4.1, §6.1, §6.3-6.4
 §9.5, decisions 8-20) cites ave at `f1a8d191e` (main, 2026-09-27, after the wire
 step), the official repository at `6a4d3b3`, `ave-plugin-orion` at `2f17388` and
 `ave-plugin-draco` at `d71fb95`; a citation in those sections without a repository name is
-ave at `f1a8d191e`.
+ave at `f1a8d191e`. The Publication plan (§9.7, and the §2.1, §6.1, §6.2, §10.2
+and §13 lines it amends) cites ave at `c73f59580` (main, 2026-09-28) and the
+official repository at `6a4d3b3`.
 
 ---
 
@@ -132,11 +135,14 @@ way to produce the process:
 "process": { "command": "./bin/plugin", "args": [] }   // any executable; speaks the protocol itself
 ```
 
-`process.command` follows the Agent Plugins stdio rule: a bare executable name or a
-`./`-relative path inside the plugin root, with `${PLUGIN_ROOT}` and `${PLUGIN_DATA}`
-expanded in `args` and `env` and both variables set in the child environment
+`process.command` follows the Agent Plugins stdio rule with one Ave narrowing: it is a
+`./`-relative or `${PLUGIN_ROOT}/`-anchored path inside the plugin root — never a bare
+executable name, because a marketplace plugin gets no `PATH` search (§7.3; decision 32,
+§9.7) — with `${PLUGIN_ROOT}` and `${PLUGIN_DATA}` expanded in `args` and `env` and both
+variables set in the child environment
 ([Agent Plugins §9.1](https://agent-plugins.org/specification)). `PLUGIN_DATA` is
-`pluginDataDir` (`public-contract.ts:2153`). A `process` entry is admitted only for an
+`pluginDataDir` (`public-contract.ts:2153`). The schema branch, the hardening rules and
+the spawn are the P3 slice of §9.7. A `process` entry is admitted only for an
 install whose artifact came through the release or archive rung of the plugin artifact
 ladder with a sha256 pin (marketplace design §6.2) — the same provenance a host-secret
 grant requires (§10.3). A tree-rung install, a direct install and a local development
@@ -1405,8 +1411,12 @@ is committed. Three facts bind the Lease step:
   file therefore changes one copy at most, the candidate. A protocol change on `main`
   while a candidate is open (E1 merged, E2 not yet) is refused by the check unless the
   candidate is regenerated in the same change, which is the same release-window freeze
-  §9.5 imposes; a protocol change that must ship after the freeze ships as the next
-  candidate. **(E2, the post-publication runbook step)** the `web`-only PR merged after
+  §9.5 imposes; regenerating the candidate is permitted **only while no tag carries its
+  bytes** — once the tag exists the canonical file is frozen on `main` until the next
+  version bump opens the next candidate, whatever `publishedTag` says, and that bump is
+  the first change after the tag (`docs/development/release-process.md`, "Between
+  releases"; §9.7, "The mirror freeze") — so a protocol change that must ship after the
+  freeze ships as the next candidate. **(E2, the post-publication runbook step)** the `web`-only PR merged after
   the app draft is published (§9.5 step 6) sets the entry's `publishedTag` and moves
   `alias` to that entry in the same commit, which is the explicit promotion mechanism;
   a candidate's copy cannot become the alias by deploying. The v0.11.0 release does
@@ -1426,7 +1436,7 @@ is committed. Three facts bind the Lease step:
 |---|---|---|---|
 | TypeScript types (`PluginHostApi` and friends) | none: the file itself | `public-contract.ts` | the vendored copy in the plugin repository's `contract/` (marketplace design §5.6), unchanged |
 | JS reference runtime (`plugin-child-main.js`) | host build | `src/plugins/isolation/*` | **inside the app**; a JS plugin never vendors it. The host runs it for every `entry` plugin (`out-of-process-plugin.ts:200-204`) |
-| Protocol-level TS client (JSON-RPC stubs) | host build | protocol schema | emitted beside the schema under `schemas/plugin-host-protocol/<version>/` and vendored with it; used by the conformance tests and by authors who want to speak the protocol from JS without the reference runtime |
+| Protocol-level TS client (JSON-RPC stubs) | host build | the committed protocol schema (§9.7 P1) | `schemas/plugin-host-protocol/<version>/protocol-client.ts`, emitted beside the schema, dependency-free, carrying the protocol version and no app version, gated by `check:plugin-host-protocol-client` and vendored with the schema; used by the conformance tests and by authors who want to speak the protocol from JS without the reference runtime |
 | Other languages | plugin author or community, from the schema | protocol schema | not Ave-maintained. The conformance suite (§10) is the guarantee, not a maintained SDK. An author pairs a stock MCP server library (tools, `ui://`) with a JSON-RPC library or this generated client for `ave/host/*` and `ave/instance/*`, which no MCP library speaks (§3.1). This is how MCP handles its own SDKs: at the protocol level, generated from `schema.ts` |
 
 ### 6.3 How this builds on the vendored contract
@@ -2203,6 +2213,708 @@ publication of each slice; in-process arm tests run for D while that arm exists;
 failed or unavailable verification is recorded as such and never replaced by a
 permission or lifecycle fallback that makes the test pass.
 
+### 9.7 The Publication step: implementation plan
+
+Scope is the "Publication" row of §9.1, shipping in app release **0.13.0**. Every
+citation in this section is ave at `c73f59580` (main, 2026-09-28: after the plugin
+studio, after **#2589**, `f00595d10`, which bumped `package.json` to `0.13.0` and opened
+the `2/v0.13.0` mirror candidate, and after **#2590**, which retired the manifest
+`notificationEvents` field and refreshed that candidate) unless a repository is named;
+the official repository is cited at its `main`, `6a4d3b3` (unchanged since the Lease
+amendment), and its plugin-repository companions at the commits §6.3 names. Nothing a
+plugin author sees changes for an existing `entry` plugin: no member, signature or
+manifest field of theirs moves. What Publication adds is a second
+way to consume the protocol (the TS client), a way to prove a plugin against it without
+the app (the validate CLI), and the runtime for the second way to produce the process
+(`process`). Admission — out of process by default, the adversarial fixture, the `git`
+prerequisites — is not in 0.13.0; what this step leaves ready for it is listed at the
+end.
+
+#### Facts this plan rests on
+
+Verified on 2026-09-28, each with the source that proves it.
+
+1. **The stock MCP server SDKs speak `2026-07-28`** (closes the UNVERIFIED item).
+   - Python: `mcp` **2.0.0** (2026-07-28) is the stable v2 line and "speaks the
+     2026-07-28 revision (stateless requests with no handshake, `server/discover`,
+     `subscriptions/listen`, multi-round-trip requests) and still serves every 2025-era
+     client from the same `MCPServer`"; `pip install mcp` resolves to 2.x. Its stdio
+     server "decides the protocol era from the client's opening request" (#3152, in
+     2.0.0rc1 and stable). Newest at the check: **2.2.0** (2026-09-07).
+     Sources: <https://github.com/modelcontextprotocol/python-sdk/releases> (tags
+     `v2.0.0`, `v2.0.0rc1`, `v2.2.0`), <https://py.sdk.modelcontextprotocol.io/v2/>.
+   - TypeScript: the **2.x** packages (`@modelcontextprotocol/server`, `client`, `core`,
+     `node` at 2.0.0 on 2026-07-27 and 2.1.0 on 2026-09-23) speak `2026-07-28`; the
+     `@modelcontextprotocol/sdk` **1.x** line (1.30.1, 2026-09-23) is the legacy line and
+     is what ave pins (`package.json:128`, `1.30.0`) for its own external MCP client.
+     Source: <https://github.com/modelcontextprotocol/typescript-sdk/releases>.
+   - Specification: servers **MUST** implement `server/discover`; every request carries
+     the protocol version in `_meta`; there is no `initialize` at `2026-07-28`
+     (<https://modelcontextprotocol.io/specification/2026-07-28/changelog> items 2-3,
+     <https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning>). A
+     client on stdio **SHOULD** send `server/discover` first against a server of unknown
+     era, which is what the validate CLI does (§10.2 item 2).
+   - Consequence for the design: no stock library speaks `ave/host/*` or
+     `ave/instance/*`, and every stock stdio driver owns the process's stdin and stdout.
+     So the Python smoke (P5) owns the stream itself — one newline-delimited JSON-RPC loop
+     that routes `ave/*` to its own handlers and hands each MCP request to the library's
+     in-memory server kernel one message at a time — and the host adds no shim of any
+     kind: the host speaks exactly what §2.5 and §3 already say, and the reference runtime
+     is unchanged.
+2. **`ts-json-schema-generator` 2.9.0 reads the three source files** (closes the second
+   UNVERIFIED item): it is the generator's engine in production
+   (`scripts/lib/plugin-host-protocol-schema.ts:25`, `:46`; `package.json:200`, with
+   TypeScript `^7.0.2` at `:203`), `check:plugin-host-protocol-schema` runs in `build`
+   (`package.json:47`) and `schemas/plugin-host-protocol/2/protocol.schema.json` is
+   committed and mirrored. The compiler-API fallback of §9.4 item 7 was not needed.
+3. **The schema compiles to TypeScript with `json-schema-to-typescript` 15.0.4.**
+   Reproduced against the committed protocol-2 schema: 57 `$defs.types`, 51 methods and
+   8 notifications compile to 47 exported declarations with no error; `type: object`
+   members with no properties become `unknown`, which is the right reading of them. This
+   is the one new dev dependency of this step (P1), never bundled.
+4. **Slice C of the extensions design left one refusal in seven places.** The marker
+   `hasProcessEntry` (`src/plugins/process-entry-support.ts:20-24`) and the code
+   `process-entry-unsupported` are raised at `manifest-validation.ts:916` (the hardening
+   pass, before the `entry` check at `:917`), `marketplace.ts:833` (the staged-zip
+   transaction, `installZipTransaction`, `:770`) and `:1029` (`installLocal`),
+   `manifest-rules.ts:107`, `direct-package.ts:118-120`, `plugin-ladder.ts:156-158`
+   (message text), and `runtime/index.ts:5392-5394` (Doctor kind). The code is in the
+   closed sets `PLUGIN_INSTALL_FAILURE_KINDS` (`src/shared/plugin-install-failure.ts:5`,
+   `:55`), `MARKETPLACE_ERROR_CODES` (`src/marketplace/errors.ts:37`), the IPC result
+   (`src/ipc/domains/plugins.ts:486-488`, `src/shared/plugin-install-result.ts:56-60`) and
+   the two locale catalogs (`src/i18n/messages/en.ts:75`, `ko.ts:70`; keys
+   `formatIpcError.processEntryUnsupported`, read by `format-ipc-error.ts:9` and
+   `tabs/git-marketplace/labels.ts:114`). The manifest schema does **not** know `process`:
+   `extensions["ai.agent-connector.ave"]` is closed (`schemas/plugin-manifest.schema.json:119`) and
+   has no `process` property, so decision 4's "in the schema from protocol `1`" did not
+   happen in the wire step; P3 adds it. The nine tests that pin the code are
+   `plugin-doctor-load-classification.test.ts:54`, `:63`, `install-local.test.ts:110`,
+   `plugin-ladder.test.ts:293`, `manifest-rules.test.ts:105`, `sync.test.ts:606`,
+   `plugin-install-failure.test.ts:56`, `:88` and
+   `hooks/status-bar/__tests__/install-result-payload.test.ts:104`.
+5. **The mirror.** `web/public/schemas/plugin-host-protocol/mirror.json` lists three
+   copies: `1/v0.11.0` published (`publishedTag: "v0.11.0"`, alias `1` → it),
+   `2/v0.12.0` with `publishedTag: null`, `generatedFrom: 87caad4fc` (the v0.12.0 tag's
+   bytes, awaiting its E2), and `2/v0.13.0` with `publishedTag: null`, `generatedFrom:
+   5ce7a0282` (#2589; refreshed by #2590). `package.json` is `0.13.0`, so the check
+   (`scripts/lib/plugin-host-protocol-mirror.mjs:48-137`) classifies `2/v0.13.0` as the
+   **candidate** (`:73`) and holds it byte-equal both to its recorded sha256 (`:69`) and
+   to the canonical `schemas/plugin-host-protocol/2/protocol.schema.json` (`:76-79`),
+   while `2/v0.12.0` is unpublished-and-superseded, held to its own hash only. There is
+   **no alias `2`** and no `2/protocol.schema.json` on the site yet, because E2 of the
+   Lease step waits for GitHub Actions.
+6. **The official repository and its drift scripts.** `tools/vendor.mjs` holds two
+   vendored directories, `contract/` and `tools/vendor/` (`:30`), each described by a
+   `sources.json` whose entries are copies (`from`) or bundles (`build`, built with
+   `bun build <entry> --target=node --format=esm` by a recorded bun version, `:77-91`);
+   `contract/sources.json` pins `v0.10.0` and two files; `tools/vendor/sources.json` pins
+   `8ccbbf3fe` and one bundle, `marketplace-check.js`, from
+   `src/marketplace/repository-check.ts` with bun `1.3.14`. Three plugins and the template
+   carry `scripts/validate-hostapi.mjs` (`plugins/{local-indexer,meeting,lyra-mail}/source`,
+   `templates/plugin`; `vega-helper` has only `validate-events.mjs`), wired as
+   `validate:hostapi` scripts and run by the shared workflow step "Manifest drift checks"
+   (`.github/workflows/validate.yml:111-118`), which runs whichever of `validate:events`
+   and `validate:hostapi` a plugin declares. The script cross-checks `emitEvent`/`onEvent`
+   names and `bridge.callTool`/`bridge.onEvent` targets against the manifest
+   (`plugins/meeting/source/scripts/validate-hostapi.mjs:4-17`); its first three checks
+   read a `permissions` list that is still in the manifest schema
+   (`schemas/plugin-manifest.schema.json:219`) but that the host does not enforce. `orion`
+   (`2f17388`) has `validate:events` and an Ajv `validate:manifest`, and its
+   `tools/contract.mjs` holds the inventory to exactly two files (`:18-30`); `git`
+   (`d71fb95`) has `check:manifest` and its own `tools/vendor.mjs` (release tag
+   required, `:18`, `:107`).
+7. **The confined-child suite already proves stdin-close exit for the reference
+   runtime** (`confined-plugin-child.test.ts:1833`, "exits within five seconds of its
+   stdin closing"). The process-entry variants are new work (P5).
+
+#### The mirror freeze, and when the 0.13.0 candidate appears
+
+The mirror check makes the canonical protocol schema **frozen on `main` from a tag
+until the next version bump**, and the bump is therefore the first change after the
+tag (`docs/development/release-process.md`, "Between releases: the next protocol
+candidate", added by #2589). Exactly what happened, and what it means for this plan:
+
+- **Between the v0.12.0 tag and #2589.** With `package.json` at `0.12.0` and `2/v0.12.0`
+  at `publishedTag: null`, that copy was the candidate, and the check refused any `main`
+  commit whose canonical schema differed from it (`plugin-host-protocol-mirror.mjs:73-79`).
+  Regenerating that candidate would have passed the check (`syncProtocolMirror`
+  overwrites an unpublished entry, `:154-163`) but would have put bytes behind
+  `…/2/v0.12.0/protocol.schema.json` that the v0.12.0 tag does not carry, which decision
+  6 forbids. The §6.1 sentence "refused unless the candidate is regenerated in the same
+  change" applies only while no tag carries the candidate's bytes, and is amended to say
+  so.
+- **The 0.13.0 candidate appeared on 2026-09-28 in #2589 (`f00595d10`), the first
+  change after the tag**, exactly as the convention says: `package.json` → `0.13.0`,
+  `bun run generate:plugin-host-protocol-schema` (new `$id`
+  `…/2/v0.13.0/protocol.schema.json`) and `node scripts/sync-plugin-host-protocol-mirror.mjs`,
+  which wrote `web/public/schemas/plugin-host-protocol/2/v0.13.0/protocol.schema.json`
+  and appended `{ protocol: "2", appVersion: "0.13.0", sha256: "c7ca0e2d…",
+  generatedFrom: "5ce7a0282", publishedTag: null }`. The check's stale-candidate error
+  now names that command (`:78`). #2590 then changed the protocol (retiring
+  `notificationEvents`) and refreshed the same candidate, which is the pattern every
+  0.13.0 protocol change follows; the cited tree `c73f59580` is the result.
+- **What the open candidate means for Publication.** A slice that changes the protocol
+  schema regenerates `2/v0.13.0` in the same PR; the check permits it and no tag
+  contradicts it. The only such change this plan makes is the construct `entryPath`
+  description (P3, decision 33). P1 adds a file beside the schema, P3 changes the
+  *manifest* schema (not versioned by protocol, not mirrored), P2 and P5 change no
+  schema. Because P1's client embeds no app version, it changes only when a method set
+  changes; a slice that regenerates the schema regenerates the client in the same PR and
+  the chain schema → mirror → client stays green.
+- **`2/v0.12.0` stays `publishedTag: null` until its E2.** From #2589 the check treats
+  it as an orphan — frozen against its own hash only (`:69`) — until Lease's E2 sets
+  `publishedTag: "v0.12.0"` and adds alias `2`. **That E2 and the 0.13.0 release
+  commute**: the only rule on `publishedTag` is equality with `v<appVersion>` (`:63`),
+  the alias rule reads only published copies (`:88-99`), and once 0.13.0 is published
+  too the alias must name the newest published copy (`:106-113`), so E2′ of 0.13.0 moves
+  alias `2` to `v0.13.0` whether or not the v0.12.0 promotion landed first.
+- **The release PR (E1′) does not bump again.** `scripts/release.mjs` bumps the patch
+  version unless `AVE_RELEASE_VERSION` names the version (`:106`), so E1′ runs it with
+  `AVE_RELEASE_VERSION=0.13.0`, regenerates the schema and the client and refreshes
+  the candidate once more at the final commit, as the convention's last sentence says.
+
+#### Slices
+
+Each slice is independently mergeable to `main`, coherent at its own boundary (a field,
+its schema, its producers and consumers, its enforcement and its tests travel together),
+and implementable in a separate checkout. Dependencies are stated; everything else may
+run in parallel.
+
+| Slice | Scope | Depends on | May run beside |
+|---|---|---|---|
+| **P0. Design** | this section; §2.1, §6.1, §6.2, §10.2, §13 and the UNVERIFIED list amended | — | everything |
+| **P1. Protocol TS client** | `schemas/plugin-host-protocol/<v>/protocol-client.ts` generated from the committed schema; `check:plugin-host-protocol-client` in `build`; parity test against the goldens | — | P2, P3 |
+| **P2. Validate CLI** | `src/plugins/validate/` (library, mock host moved out of `__tests__`, source-drift scan, CLI entry); `plugin:validate` script; the bundle-loads-in-bare-Node test | — (uses the existing golden host and factory seam) | P1, P3 |
+| **P3. `process` entry runtime** | manifest schema branch, public type, hardening, `resolveBundledArgv` policy `"process"`, spawn through `spawnConfinedChild`, `${PLUGIN_ROOT}`/`${PLUGIN_DATA}`, confinement refusal `process-entry-unconfined`, routing by manifest shape; the seven slice-C sites lose `process-entry-unsupported` and gain the two replacement codes; the construct `entryPath` description with the refreshed `2/v0.13.0` candidate (and the client, if P1 merged first) | — | P1, P2 |
+| **P4. `process` admission in the marketplace** | `process-entry-requires-pinned-artifact` at the ladder, the install plan, direct install, local install and the load gate; descriptor rules on `platforms` and pins; checker rules for the official repository | P3 | P5 |
+| **P5. Cross-language smoke** | Python fixture plugin with a `process` entry, its golden transcript, the real-confined-child run on macOS and Linux, the process-entry stdin-close and stdout-discipline checks, RSS and startup recorded | P3 | P4 |
+| **E1′. Release PR** | changelog, schema and client regenerated at the final commit, `2/v0.13.0` candidate refreshed (the version is already `0.13.0` since #2589) | P1-P5 merged | — |
+| **E2′. Post-tag runbook** | plugin repositories vendor the client and the CLI from tag `v0.13.0`; drift scripts retired; mirror promotion of `2/v0.13.0` | tag `v0.13.0` | — |
+
+PR order: P0 → {P1, P2, P3} in any order → {P4, P5} in any order → E1′ → tag → E2′.
+Each PR is based on `main` after the previous one it depends on merges, with `main` as
+its base branch (never a sibling slice), so a merged branch's deletion cannot close it.
+
+##### P1. The protocol TS client
+
+*Files.*
+
+- `scripts/lib/plugin-host-protocol-client.ts` (new): reads the **committed**
+  `schemas/plugin-host-protocol/<v>/protocol.schema.json` for the one served version
+  (`HOST_PROTOCOL_VERSIONS_SERVED`, `host-api-wire.ts:56`) — the file, not the TS
+  sources, so the client is provably a projection of the published artifact and any
+  language could do the same — and emits `schemas/plugin-host-protocol/<v>/protocol-client.ts`:
+  the `$defs.types` and every method's `params`/`result` compiled with
+  `json-schema-to-typescript` (fact 3; `bannerComment` replaced by the generator's own
+  header, `strictIndexSignatures`, `additionalProperties: false`), then a generated stub
+  section: `export const HOST_PROTOCOL_VERSION = "<v>"`, the `HostMethod`,
+  `InstanceMethod`, `HostNotification` and `HostProtocolErrorCode` unions from
+  `$defs.methods`, `$defs.notifications` and `$defs.errorCodes`, a
+  `HostClientTransport { request(method, params): Promise<unknown>; notify(method, params): void }`
+  interface the author implements over their own stream, and `createHostClient(transport)`
+  with one typed method per `ave/host/*` entry (named by the method's path segments,
+  `storage/read` → `storage.read`) plus `isHostNotification(frame)`. The file imports
+  nothing and embeds **no app version** (decision 28): its header names the protocol
+  version and the generator; a plugin repository pins it by sha256 from the tag like the
+  schema. Output is key-sorted and LF-normalised the way the schema generator's is
+  (`plugin-host-protocol-schema.ts:265-285`), so it is byte-stable across platforms.
+- `scripts/generate-plugin-host-protocol-client.ts` (new): the command line, the shape of
+  `generate-plugin-host-protocol-schema.ts:1-63` (write, or `--check` and byte-compare
+  with CRLF tolerance, `:46-52`; one outcome line; no entry-module guard).
+- `package.json`: `generate:plugin-host-protocol-client`,
+  `check:plugin-host-protocol-client`; `build` (`:47`) gains the check **after**
+  `check:plugin-host-protocol-mirror`, so the chain is schema → mirror → client and a
+  stale client is caught by the same gate that catches a stale schema; `release.mjs:112`
+  gains the regenerate call after the schema's. `json-schema-to-typescript` `15.0.4`
+  exact-pinned in `devDependencies`.
+- `src/__tests__/packaging-discipline-source.test.ts:679-692` and `:705-712`: the
+  assertion lists gain the new check in position; `:715-722` gains the `release.mjs`
+  line.
+- `knip.jsonc`: nothing — the generated file has an importer (the parity test) and the
+  script is named by `package.json`.
+- `docs/guides/plugin-development.md` ("HostApi Boundaries", `:60`): a paragraph on the
+  client and how a JS author who does not use the reference runtime pairs it with their
+  own stdio loop.
+
+*Tests (revert-to-fail target in parentheses).*
+
+- `src/plugins/isolation/__tests__/host-protocol-client-parity.test.ts` (new):
+  regenerating produces the committed bytes on this platform (a byte in the committed
+  file); `createHostClient` exposes exactly one method per `$defs.methods` `ave/host/*`
+  entry and nothing else, read from the schema, not from a list in the test (delete an
+  entry from the stub emitter); for every golden `methods/<method>.json`
+  (`fixtures/host-protocol/2/methods/`, walked with `goldenFiles`,
+  `host-protocol-golden-host.ts:283`), calling the stub with the golden `params` through
+  a recording transport yields the golden frame's `method` and `params` (change the
+  path→property mapping); `HostProtocolErrorCode` equals `HOST_API_WIRE_ERROR_CODES`
+  (`host-api-wire.ts:545`) (drop a code from the emitted union); the generated file
+  type-checks under the repository `tsconfig` because the test imports it — a compile
+  error in the emitted TypeScript fails `bun run typecheck`.
+
+*Gates.* `bun run typecheck`; `bun run test:vitest -- run src/plugins/isolation
+src/__tests__/packaging-discipline-source.test.ts`; `bun run build` (carries the new
+check); `check:knip:engine` against its baseline (`knip.jsonc:13`); naming gate; CI
+`build-and-test` and `naming-gate` green on the rollup.
+
+*Lock suites.* `packaging-discipline-source` **changes** (the two assertion lists and the
+release-helper assertion). `channel-inventory`, `host-renderer-only-channels`,
+`domain-exports`, `preload-shape`, `settings-store` **unchanged** — a generated file and
+a build check add no channel, bridge method, domain export or setting.
+
+##### P2. The validate CLI
+
+*Files.*
+
+- `src/plugins/validate/validate-plugin.ts` (new): `validatePluginDirectory(dir, options)`
+  returning a report of `{ check, ok, path?, message }` rows. Checks, in order:
+  1. **Manifest**: Ajv against the host-owned `schemas/plugin-manifest.schema.json`
+     (the import at `manifest-validation.ts:16`) and the hardening pass
+     (`parsePluginJson` and its callers in `manifest-validation.ts`), which after P3
+     accepts either entry kind; `requires.hostProtocol` must be in the CLI build's served
+     set (`isServedHostProtocolVersion`, `host-api-wire.ts:62`); `requires.minAppVersion`
+     must be ≥ `HOST_PROTOCOL_FIRST_APP_VERSION[hostProtocol]`, a new constant beside
+     `HOST_PROTOCOL_VERSIONS_SERVED` (`{ "2": "0.12.0" }`) that a test holds equal to the
+     lowest `appVersion` recorded for that protocol in `mirror.json` (decision 29); a
+     failure prints the JSON-pointer path (`#/extensions/ai.agent-connector.ave/requires/hostProtocol`).
+  2. **Protocol**: spawn the plugin and drive `server/discover` → `ave/instance/construct`
+     → `start` → `onPublished` → `tools/call` → `stop` against the mock host. The mock
+     host is `createGoldenHost` (`host-protocol-golden-host.ts:79`), **moved** to
+     `src/plugins/validate/mock-host.ts` with the tests importing the new path (the file
+     keeps `goldenFiles` in `__tests__`); the dispatcher and the dispatch table are the
+     production ones through `createOutOfProcessPluginFactory` (`out-of-process-plugin.ts:1144`)
+     with the `connect` seam (`:1001`, the substitution the goldens make), the child being
+     a plain `child_process.spawn` the CLI owns: `node <sibling>/ave-plugin-child-main.js`
+     for an `entry` plugin, or the expanded `process.command` with `PLUGIN_ROOT` and
+     `PLUGIN_DATA` (a temporary directory) for a `process` plugin. The CLI does **not**
+     confine the child (decision 30): it proves protocol conformance without the app;
+     confinement is proven by the host's own suite (§10.1 item 3). Asserted: every
+     stdout line is a JSON object frame terminated by `0x0A` and nothing else is written
+     to stdout (`protocol.framing`, `protocol.stdout-discipline`); `server/discover`
+     carries `_meta["io.modelcontextprotocol/protocolVersion"] = "2026-07-28"` and its
+     result lists exactly the manifest's tools (`discover.tools`); construct's
+     `pluginProtocol.requires` ⊆ the capabilities the mock host advertised
+     (`construct.requires`); an unknown `ave/host/*`-shaped request from the host side is
+     answered `-32601` (`protocol.unknown-method`); after `stop` the CLI closes stdin and
+     the process exits within 5 s (`protocol.stdin-close`, 1 s under `--fast` for tests).
+     `tools/call` is issued with `{}` for every declared tool whose `inputSchema` has no
+     `required` properties, and with the arguments from `--tool-args <file.json>` for the
+     others; a tool with no arguments available is reported `not exercised`, not failed
+     (decision 31).
+  3. **Source drift**: the checks the meeting script does today, ported from
+     `validate-hostapi.mjs:10-17` and `ui-bridge-usage.mjs` (official repository) into
+     `src/plugins/validate/source-drift.ts`: `emitEvent`/`onEvent` literals in
+     `src/**/*.ts` and `dist/**/*.js` against `emittedEvents`/`eventSubscriptions`
+     (`schemas/plugin-manifest.schema.json:417`, `:359`), `bridge.callTool` targets
+     against tools with `app` visibility, `bridge.onEvent` against bridged events. The
+     three `permissions` checks (`validate-hostapi.mjs:7-9`) are **not** ported: the host
+     enforces no `permissions` entry (fact 6), so a check on it would be a claim about
+     nothing.
+  4. Exit `0` when every row is `ok`, else `1`; rows to stdout as JSON lines, a summary
+     to stderr.
+- `src/plugins/validate/cli.ts` (new): argv → `validatePluginDirectory` → exit code. This
+  is the entry the official repository bundles as `tools/vendor/ave-plugin-validate.js`
+  (the `build` entry shape of `tools/vendor/sources.json`, fact 6), beside a second
+  bundle, `tools/vendor/ave-plugin-child-main.js` from
+  `src/plugins/isolation/plugin-child-main.ts` (the esbuild entry at
+  `scripts/build-main-esbuild.mjs:47`), which the CLI locates relative to its own
+  `import.meta.url` and which `--child-entry <path>` overrides.
+- `package.json`: `plugin:validate` = `node --import tsx src/plugins/validate/cli.ts
+  --child-entry src/plugins/isolation/plugin-child-main.ts` (the tsx invocation
+  `check:i18n-catalog` uses, `:59`), so the app repository can validate the five fixtures
+  and any local plugin without a build.
+- `knip.jsonc:36-51`: `src/plugins/validate/cli.ts` joins the entry list with the reason
+  the checker's line would have (bundled from a foreign repository, nothing imports it).
+- `docs/guides/plugin-development.md` ("Testing Checklist", `:168`): the CLI replaces the
+  "validate `plugin.json` with manifest tests" line (`:172`).
+
+The bundle reaches `electron` transitively (`host-api-dispatcher.ts` →
+`permissions/effect-enforcement.ts` → `approval-gate.ts` → `main/notification-service.ts`),
+exactly as the vendored checker already does (`repository-check.ts` →
+`marketplace/content/kinds.ts` → `main/skill-store.ts` → `lib/logger.ts` →
+`main/exec-mode.ts` → `approval-gate.ts`), and runs under bare Node for the same reason
+the checker does: the `electron` module resolves to its path string and nothing in the
+validate path calls into it. That is a fact about today's graph, not a promise, so the
+bundle test below executes the built file in a plain `node`.
+
+*Tests.*
+
+- `src/plugins/validate/__tests__/validate-plugin.test.ts` (new), each row against a
+  fixture: the five plugin fixtures under `fixtures/host-protocol/2/plugins/*` pass every
+  check (break the manifest of one); a fixture whose entry writes a bare line to stdout
+  fails `protocol.stdout-discipline` (remove the assertion); a fixture that ignores stdin
+  close fails `protocol.stdin-close` under `--fast` (remove the timer); `hostProtocol:
+  "1"` fails with the pointer path (remove the served-set check); `minAppVersion:
+  "0.11.0"` with `hostProtocol: "2"` fails (remove the first-version rule);
+  `pluginProtocol.requires` naming a method the mock host lacks fails `construct.requires`
+  (remove the subset check); an `emitEvent("x")` with no `emittedEvents` entry fails
+  `events.emit-undeclared` (remove the scan).
+- `src/plugins/isolation/__tests__/host-protocol-mirror-first-version.test.ts` (new, or a
+  case in `host-protocol-schema-parity.test.ts`): `HOST_PROTOCOL_FIRST_APP_VERSION["2"]`
+  equals the lowest `appVersion` for protocol `2` in `mirror.json` (edit the constant).
+- `test/scripts/validate-plugin-bundle.test.ts` (new): `bun build src/plugins/validate/cli.ts
+  --target=node --format=esm` and the child-main entry to a temporary directory, then run
+  the bundle with plain `node` on the `hello-world`-shaped fixture and on a broken one;
+  asserts exit codes and that the report names the failing check (make the entry import
+  something that calls `electron` at load).
+- The golden and confined-child tests still pass after the mock host moves (they are the
+  revert target for the move).
+
+*Gates.* `bun run typecheck`; `bun run test:vitest -- run src/plugins/validate
+src/plugins/isolation test/scripts/validate-plugin-bundle.test.ts`; `bun run build`;
+`check:knip:engine`; naming gate; CI rollup.
+
+*Lock suites.* `packaging-discipline-source` runs because `package.json` scripts change
+(a non-`build` script; its `build`-chain assertions are unchanged). `channel-inventory`,
+`host-renderer-only-channels`, `domain-exports`, `preload-shape`, `settings-store`
+**unchanged**.
+
+##### P3. The `process` entry: runtime
+
+*Files.*
+
+- `schemas/plugin-manifest.schema.json`: `extensions["ai.agent-connector.ave"]` (`:116-120`) gains
+  `process`: `{ command, args?, env? }`, closed; `command` is a string matching
+  `^(\./|\$\{PLUGIN_ROOT\}/)[^\u0000-\u001f]+$` — **inside the plugin root only**
+  (decision 32; §7.3 "no `PATH` search for a marketplace plugin" wins over §2.1's
+  "bare executable name", and §2.1 is amended); `args` ≤ 32 strings, `env` ≤ 16
+  string-valued keys, values and args either literals without `${` or tokens beginning
+  with `${PLUGIN_ROOT}/` or `${PLUGIN_DATA}` (the grammar `resolve-bundled-argv.ts:83-97`
+  already enforces). A `oneOf` on the namespace object makes `entry` and `process`
+  mutually exclusive and at least one present when `tools` is declared; the
+  "neither" branch stays what the extensions design defines for a `plugin`.
+- `src/plugins/public-contract.ts`: `PluginManifest.entry` (`:452`) becomes
+  `entry?: string` beside `process?: PluginProcessEntry`; the Agent Plugins projection
+  (`:55-63`) gains `process?`; a total `pluginEntryKind(manifest): "entry" | "process"`
+  that throws on a manifest with neither or both replaces every `manifest.entry` read
+  that assumed a string (the compiler finds them: `resolveRealEntryPath` at
+  `runtime/index.ts:3960`, the routing at `:5143-5167`, `direct-package.ts:122`, the
+  official checker).
+- `src/plugins/process-entry-support.ts` becomes `src/plugins/process-entry.ts`:
+  `hasProcessEntry` stays; `ProcessEntryUnsupportedError` and its code are deleted;
+  `ProcessEntryUnconfinedError` (`process-entry-unconfined`) and
+  `ProcessEntryRequiresPinnedArtifactError` (`process-entry-requires-pinned-artifact`)
+  are added, the second used by P4. `manifest-validation.ts:916` drops
+  `assertProcessEntrySupported`; `:917-923` becomes the exactly-one rule plus the
+  `process` shape checks, and `requires.hostProtocol` stays mandatory for both kinds (it
+  is for every code plugin since X).
+- `src/plugins/resolve-bundled-argv.ts:59-119`: policy `"process"` joins `"hook" | "mcp"`:
+  index 0 must be anchored (`anchorIndexes.includes(0)`), no launcher literals, `env`
+  values classified with the same token rules; `resolveBundledArgv` (`:126-136`) expands
+  `${PLUGIN_ROOT}` through `anchorBundledCommand` and `${PLUGIN_DATA}` through
+  `containedDataPath` (`:42-51`), so an escape through `..` or a symlink is refused before
+  spawn. The fingerprint it returns is unused for a process entry: the artifact hash in
+  the receipt already pins the bytes.
+- `src/plugins/isolation/out-of-process-plugin.ts`: `OutOfProcessPluginSpec` (`:992-1009`)
+  gains `launch: { kind: "entry"; entryPath } | { kind: "process"; command; args; env }`;
+  `ConfinedPluginChildSpec` (`:705-739`) carries it; `spawnConfinedPluginChild` (`:817`,
+  the one call at `:914-947`) spawns `command`/`args` with
+  `baseEnv: buildSafeChildEnv({ PLUGIN_ROOT, PLUGIN_DATA, ...env })` for a process launch
+  and keeps `process.execPath` + `ELECTRON_RUN_AS_NODE=1` for an entry launch;
+  `allowRead`/`allowWrite` are the envelope as today (`:931-932`; the plugin root is
+  already readable, `:670`). Before `connect` — beside `connectionHostProtocol` at
+  `:1156` — a process launch requires `isAsrtSandboxActive()`
+  (`permissions/asrt-sandbox.ts:477`) and `process.platform !== "win32"`, else
+  `ProcessEntryUnconfinedError` (the requirement of §2.2, §7.3; the deny floor and the
+  wrap stay owned by `spawnConfinedChild`, `permissions/confined-child.ts:15-21`, `:109`).
+  The construct params send `entryPath` = the resolved absolute command path for a
+  process launch (decision 33); the field's JSDoc at `plugin-instance-wire.ts:84-85` is
+  amended in this slice, which regenerates the schema and refreshes the open
+  `2/v0.13.0` candidate in the same PR (the description is in the schema bytes), and
+  updates the `construct` golden.
+- `src/plugins/runtime/index.ts`: `importPluginFactoryForLifecycle` (`:5143-5167`) routes
+  by manifest shape first — a `process` manifest is out of process regardless of the
+  census (`isOutOfProcessPlugin`, `:5150`), because it has no module the in-process arm
+  could import; this is a contract property, not a routing exception, and the census
+  stays frozen. `markIncompatibleHostProtocol`'s two call sites (`:3866`, `:5441`) gain a
+  sibling `markProcessEntryUnconfined` so every load path refuses without a factory call,
+  with the Doctor text "runs only under an OS sandbox that confines processes". The
+  Doctor kind mapping at `:5392-5394` maps the two new errors.
+- `src/shared/plugin-install-failure.ts:1-10`, `:52-58`: `process-entry-unsupported` is
+  replaced by `process-entry-unconfined` and `process-entry-requires-pinned-artifact`,
+  both not reinstall-fixable, with the comment block (`:29-31`) rewritten. `en.ts:75`,
+  `ko.ts:70`, `format-ipc-error.ts:9`, `labels.ts:114`, `plugin-install-result.ts:56-60`,
+  `ipc/domains/plugins.ts:486-488`: the same rename, two keys each. The marketplace
+  sites (`errors.ts:37`, `manifest-rules.ts:107`, `direct-package.ts:118-120`,
+  `plugin-ladder.ts:156-158`, `marketplace.ts:833`, `:1029`) are P4's: in P3 they compile
+  against the new error class with the pinned-artifact code and keep refusing every
+  process manifest, so no commit between P3 and P4 admits a process entry anywhere.
+- Documentation carried: §2.1 (this amendment), `docs/guides/plugin-development.md`
+  "Manifest Basics" (`:17`) gains the `process` form and its rules.
+
+*Tests.*
+
+- `src/plugins/runtime/__tests__/manifest-validation*.test.ts` (existing suites): a
+  `process` manifest with an anchored command passes; a bare command, an absolute path, a
+  `..` segment, a `${HOME}` token, `args` of 33, both `entry` and `process`, neither with
+  `tools` — each refused with the field path (remove the corresponding rule).
+- `src/plugins/__tests__/resolve-bundled-argv*.test.ts` (existing): policy `"process"`
+  expands `${PLUGIN_ROOT}/bin/x` and `${PLUGIN_DATA}/state` to contained absolute paths,
+  refuses a data symlink escape, refuses an unanchored command (revert each branch).
+- `out-of-process-plugin.test.ts` (paired streams): a process launch spec produces a
+  spawn with the expanded command and an env carrying `PLUGIN_ROOT`, `PLUGIN_DATA` and
+  the manifest's `env`, and no `ELECTRON_RUN_AS_NODE` (assert on the recorded spawn
+  spec); with the sandbox reported off the factory throws `process-entry-unconfined`
+  before any spawn and the spawn count stays zero (remove the check); on `win32` the
+  same (remove the platform clause).
+- `plugin-doctor-load-classification.test.ts:48-65`: the two process-entry cases become
+  "refused as `process-entry-unconfined` with the sandbox off" and "loads out of process
+  by shape with a routing census that does not name it" (the second uses the paired
+  streams seam); `install-local.test.ts:102-112`, `plugin-install-failure.test.ts:56`,
+  `:88`, `install-result-payload.test.ts:104` move to the new codes.
+- `confined-plugin-child.test.ts` (macOS and Linux CI jobs): a process launch whose
+  `bin/plugin` is a shell script that `exec`s the host's own `process.execPath` under
+  `ELECTRON_RUN_AS_NODE=1` on the invoker module reaches construct under the real wrap
+  and reads `PLUGIN_ROOT`/`PLUGIN_DATA` from its environment. This proves the spawn path
+  and the env only; a real non-JS interpreter is P5's job (remove the env or the launch
+  branch).
+
+*Gates.* `bun run typecheck`; `bun run test:vitest -- run src/plugins src/shared
+src/ipc/domains src/ui/renderer/hooks/status-bar`; `bun run build` (carries
+`check:i18n-catalog`, `check:i18n-barrels`); `src/i18n/__tests__/used-keys-exist.test.ts`;
+naming gate; CI rollup; the macOS and Linux jobs for the confined case.
+
+*Lock suites.* `channel-inventory`, `host-renderer-only-channels`, `domain-exports`,
+`preload-shape` **unchanged**: the refusal travels in the existing `installFailureKind`
+value of the plugin-status DTO and the existing install-result channel;
+`settings-store` **unchanged** (no setting); `packaging-discipline-source` **unchanged**
+(no script). The manifest schema and hardening tests, and the public-contract boundary
+tests, change and are named above.
+
+##### P4. The `process` entry: marketplace admission
+
+The rule (§2.1, §7.3): a `process` entry is admitted only for an install whose artifact
+came through the **release or archive rung with a sha256 pin**. Tree, direct and local
+installs are refused with `process-entry-requires-pinned-artifact`. It is decided from
+the same evidence the host-secret grant reads — the registry origin's `rung` and
+`artifactSha256` (`secret-access/grants.ts:93`, `:101`) — minus the official-only clause:
+decision 3 admits every source alike, and a custom source's pinned release is the same
+provenance as the official one's.
+
+*Files.*
+
+- `src/marketplace/resolve/plugin-ladder.ts:154-160` (`stagedManifest`): after the staged
+  `plugin.json` parses, a process manifest staged from the `tree` rung stops the ladder
+  with the new code (the tree rung is the last, so nothing is hidden); release and archive
+  are reached only with a pin (`:347-357`), so a staged process manifest from them is
+  pinned by construction. The message text at `:156-158` follows the code.
+- `src/marketplace/resolve/manifest-rules.ts:106-115`: the unconditional throw at `:107`
+  goes; `gitInstallManifestMismatches` (`:85-99`) adds two problems for a process
+  manifest: the descriptor version's `platforms` must be present and exclude `win32`
+  (so a Windows app never downloads what it cannot run, §6.1 step 3), and the plan's
+  artifact must declare a pinned `release` or `archive` (so the ladder cannot reach the
+  tree rung for it). Both are `MANIFEST_MISMATCH` problems, which stop the ladder.
+- `src/marketplace/sources/direct-package.ts:118-120`: the code becomes
+  `process-entry-requires-pinned-artifact` (a direct install has no pinned artifact by
+  construction, §8 of the marketplace design).
+- `src/plugins/marketplace.ts:833` (`installZipTransaction`, `:770`): the check becomes the
+  receipt rule — the transaction knows the rung it is committing; `:1029`
+  (`installLocal`) refuses with the new code.
+- `src/plugins/runtime/index.ts:5359-5397` (preflight): a process manifest loads only from
+  a `GitInstallReceipt` (`plugin-install-receipt.ts:85-95`, schema v4) whose `git.rung`
+  (`:54`) is `release` or `archive`; a v3 receipt, a legacy origin-less entry or a
+  hand-placed directory is refused with the new code before any spawn. This is what makes
+  the rule hold for a directory copied under `~/.ave/plugins` by hand.
+- `src/marketplace/errors.ts:37`: `process-entry-unsupported` → the new code.
+- `src/marketplace/repository-check.ts:267` (`checkMarketplaceRepository`): for a
+  `plugins/<name>/source/plugin.json` with `process`, every descriptor version entry must
+  carry `platforms` without `win32`, a pinned `release` or `archive`, and no `tree`; the
+  problem names the descriptor path. The official repository rebuilds
+  `tools/vendor/marketplace-check.js` from tag `v0.13.0` (E2′), and `tools/release.mjs
+  verify` (official, `validate.yml:55`) keeps holding the built `plugin.json` to the
+  descriptor as today.
+- **No new descriptor or index field** (decision 34). `marketplace.2.json` version
+  objects and `pluginAuthority` are closed (`schemas/marketplace/index.2.schema.json:113`,
+  `package.2.schema.json:415-418`) and a 0.12.0 app drops a package entry whole when
+  one of its versions fails a rule (`catalog/validate.ts:11-12`, `:255-256`; decision
+  24), so any new field would drop every
+  process-entry package — old versions included — from every 0.12.x client. The
+  information a sync needs is already there: `platforms` for the Windows refusal before
+  download, `artifact.release`/`archive` pins for the rung; the sandbox-off refusal on
+  macOS and Linux is pre-activation but post-download (`process-entry-unconfined`), which
+  is stated as the cost. A `runtime` field is the first candidate for catalog format 3,
+  if one is ever opened.
+- `en.ts`, `ko.ts`, `format-ipc-error.ts`, `labels.ts`: the key for the pinned-artifact
+  code, if P3 did not already add both.
+
+*Tests.*
+
+- `plugin-ladder.test.ts:293` and its neighbours: a process manifest inside a pinned
+  release zip is staged and installed; the same manifest reached through the tree rung
+  stops with `process-entry-requires-pinned-artifact` and the rung list shows
+  `release: skipped ARTIFACT_NOT_PINNED`, `tree: failed` (remove the tree clause).
+- `manifest-rules.test.ts:105`: the descriptor without `platforms`, with `win32`, or with
+  only `tree` is `MANIFEST_MISMATCH` naming the field; a descriptor with `platforms:
+  ["darwin","linux"]` and a pinned release passes (remove each problem).
+- `sync.test.ts:606`: a process-entry package with a pinned release syncs and is listed;
+  on a `win32` app it is excluded by `platforms` (assert the exclusion reason).
+- `runtime` preflight tests (the suite around `plugin-doctor-load-classification.test.ts`):
+  a process manifest with a v4 receipt at rung `release` loads; the same with rung
+  `tree`, with a v3 receipt, or with no receipt is refused with the new code and the
+  Doctor names it not reinstall-fixable (remove the receipt clause).
+- `src/marketplace/__tests__/repository-check.test.ts`: fixture repository with a
+  process-entry source and a tree-only descriptor → problem; with `win32` → problem; with
+  a pinned release and `platforms: ["darwin","linux"]` → clean (remove each rule).
+- `direct-package` and `install-local` tests: the new code (as P3 left them).
+
+*Gates.* `bun run typecheck`; `bun run test:vitest -- run src/marketplace src/plugins`;
+`bun run build`; naming gate; CI rollup. After merge, the official repository's
+`vendor.mjs verify --app <checkout>` against `main` proves the rebuilt checker's rules
+before E2′ pins them (development evidence, not the production pin, §6.3).
+
+*Lock suites.* `channel-inventory`, `host-renderer-only-channels`, `domain-exports`,
+`preload-shape`, `settings-store`, `packaging-discipline-source` **unchanged**; the
+marketplace DTO tests (`src/shared/git-marketplace.ts`) unchanged because no DTO grows.
+
+##### P5. The cross-language smoke
+
+*Files.*
+
+- `src/plugins/isolation/__tests__/fixtures/host-protocol/2/plugins/python-smoke/`:
+  `plugin.json` with `process: { command: "./bin/plugin", env: { PYTHONPATH:
+  "${PLUGIN_ROOT}/vendor" } }`, `requires: { hostProtocol: "2", minAppVersion: "0.13.0" }`,
+  one tool `echo` with an empty `inputSchema`, `eventSubscriptions` and `emittedEvents`
+  empty; `bin/plugin`, a `#!/bin/sh` script that `exec`s the interpreter recorded in
+  `bin/python-path` (written by the harness into its temporary copy of the fixture, never
+  committed) on `plugin.py`; `plugin.py`, ~150 lines: a newline-delimited JSON-RPC loop
+  over stdin that routes `ave/instance/*` to its own handlers (construct checks
+  `hostProtocol.version == "2"`, records the capabilities, answers
+  `implementedToolNames: ["echo"]`, `servesUiResources: false`, `lifecycleHooks:
+  ["start", "stop"]`, `pluginProtocol: { requires: ["storage/read", "storage/write"] }`;
+  start writes then reads one storage key through `ave/host/storage/write` and
+  `ave/host/storage/read` and emits one `notifications/ave/log`; stop answers and the
+  loop exits when stdin ends), settles `ave/host/*` replies against its own pending
+  table, and hands every other request — `server/discover`, `tools/call`,
+  `resources/read` — to the `mcp` 2.2.0 server kernel in memory, one message at a time,
+  so the stock library serves the MCP half at `2026-07-28` (per-request `_meta`,
+  `server/discover` from the tools it registered) while the plugin owns the pipes (fact
+  1). Anything the plugin logs goes to stderr. `expected.jsonl`: its golden transcript.
+  `README.md` in the fixture names the pinned `mcp` version and the interpreter rule.
+- `src/plugins/isolation/__tests__/python-smoke-harness.ts` (new): copies the fixture to a
+  temporary root, resolves the interpreter (`/usr/bin/python3` on the two CI images; the
+  first `python3` on `PATH` locally), installs `mcp==2.2.0` into `<root>/vendor` with that
+  interpreter's `pip --target` (or the app's bundled uv, `main/uv-runtime.ts:34`, with
+  `--python <that interpreter>`), writes `bin/python-path`, and records the interpreter
+  path and version, the wheel set and the elapsed provisioning time in the test output.
+  A missing interpreter, a failed install or a network refusal **fails** the test with
+  the missing prerequisite named; nothing is skipped (§9.6's discipline: an unavailable
+  verification is recorded as such).
+- `host-protocol-golden.test.ts`: a `process`-launch recording path — the child is a real
+  process on pipes (a Python process cannot run on in-memory streams), joined to the same
+  production factory through the `connect` seam; frames are compared after the same
+  canonicalisation. The transcript is a function of `plugin.py`, and a transcript that
+  changes is the wire that changed.
+- `confined-plugin-child.test.ts`: the smoke runs through the real confined spawn of P3
+  on macOS and Linux and passes the §10.1 items: construct/start/tools/call/stop over the
+  real wrap; **stdin-close exit** within 5 s with no host request (the process-entry
+  sibling of `:1833`); **stdout discipline**: a variant `bin/plugin` that prints a bare
+  line before its first frame is refused by the host's decoder as a dropped non-object
+  line and the harness asserts the frame count, and one that writes a `Content-Length`
+  header is refused as a contract violation. The run records `process.resourceUsage()`
+  peak RSS and spawn→construct wall time for the smoke and for the `meeting` fixture into
+  the test output, the measurement decision 7 asked the conformance suite to produce; it
+  is reported, not gated.
+- `.github/workflows/ci.yml`: the macOS (`:327`) and Linux jobs that already run
+  `confined-plugin-child.test.ts` by path (`:374-375`) gain a step that verifies
+  `/usr/bin/python3 -m pip --version` before vitest; no new required status (the file
+  joins the existing job's explicit list). The default `bun run test` in `build-and-test`
+  runs the golden path over pipes with the same provisioning, so a broken smoke fails
+  every push.
+- `knip.jsonc:47-50`: the fixture glob already covers `*.mjs` under
+  `fixtures/host-protocol/*/**`; `plugin.py` and `bin/*` are not JavaScript and need no
+  entry.
+
+*Tests (the smoke is the test).* Revert targets: delete `server/discover` handling in
+`plugin.py` → the CLI probe in P2's suite and the golden's first frame fail; make
+`plugin.py` ignore stdin end → the stdin-close case fails; print to stdout → the
+discipline case fails; remove the P3 `PLUGIN_ROOT` env → `plugin.py` cannot find its
+`vendor` and construct fails.
+
+*Gates.* `bun run typecheck`; `bun run test:vitest -- run src/plugins/isolation`
+locally (provisions once per run); `bun run build`; naming gate; CI rollup **plus** the
+macOS and Linux jobs green.
+
+*Lock suites.* All six **unchanged**: fixtures, a harness and a CI step add no channel,
+export, bridge method, setting or package script.
+
+##### E1′. The 0.13.0 release PR
+
+As Lease's E1 (§9.6), minus the bump #2589 already made: `scripts/release.mjs` with
+`AVE_RELEASE_VERSION=0.13.0` keeps the version, regenerates the schema and the client
+at the final commit and refreshes the `2/v0.13.0` candidate (the `2/v0.12.0` copy is
+untouched), and the PR carries the `CHANGELOG.md` entry ("`process` extensions run under
+the OS sandbox on macOS and Linux; a validate command for extension authors; the protocol
+client") and the `x-ave-app-version-range` note if §6.4 still wants one. It also
+carries the alerts gate the release process already imposes on the 0.13.0 draft
+(`docs/development/release-process.md`, "Include the new-mail and meeting-summary
+opt-in loss": the draft stays unpublished until `local-indexer` has published on the
+alert contract), which is not Publication's but is on the same draft. Gates: the full
+pre-push once; fresh CI on the rollup; `check:plugin-host-protocol-mirror` with exactly
+one candidate; packaged smoke per OS. Lock suites: `packaging-discipline-source` only for
+the version-carrying assertions it already has. Nothing in E1′ depends on tag `v0.13.0`
+existing.
+
+##### E2′. After the tag: plugin repositories and the mirror
+
+Gates on the published release, not inputs to creating the tag:
+
+1. **Official repository** (`ken-jo/agent-marketplace`): `node tools/vendor.mjs sync
+   contract --ref v0.13.0 --app <checkout>` adds
+   `schemas/plugin-host-protocol/2/protocol-client.ts` to `contract/sources.json` (beside
+   the schema Lease added) and refreshes the copies; `node tools/vendor.mjs sync
+   tools/vendor --ref v0.13.0 --app <checkout>` rebuilds `marketplace-check.js` and adds
+   the two new bundles, `ave-plugin-validate.js` and `ave-plugin-child-main.js`, with
+   the recorded bun version. Then, in the same PR, **the drift scripts are retired**:
+   `plugins/{local-indexer,meeting,lyra-mail}/source/scripts/validate-hostapi.mjs`,
+   `templates/plugin/scripts/validate-hostapi.mjs` and their `ui-bridge-usage.mjs`
+   helper are deleted, each `validate:hostapi` script becomes
+   `node ../../../tools/vendor/ave-plugin-validate.js .` (the template's path
+   adjusted), and the workflow step at `validate.yml:111-118` runs it for every plugin
+   directory unconditionally instead of only where a script exists — a plugin that
+   cannot be validated is a red run, not a skipped step. `validate:events` stays until
+   the CLI's event check has run green for one release, then follows. `tools/repo.mjs`
+   and `tools/index.mjs` need no change (no descriptor field).
+2. **`orion`** (`tools/contract.mjs:18-30`): the exact-count inventory grows to the schema
+   (Lease) plus the client and the validate bundle; its `validate:manifest` Ajv script
+   becomes the CLI. **`git`** (`tools/vendor.mjs`): the same two additions to its
+   `sources.json`; `check:manifest` becomes the CLI.
+3. **Mirror promotion**: a `web`-only PR sets `2/v0.13.0`'s `publishedTag: "v0.13.0"` and
+   points alias `2` at it (creating `2/protocol.schema.json` if Lease's E2 has not yet),
+   in one commit; the check holds the alias to the newest published copy. If Lease's E2 is
+   still pending, it lands independently and sets `2/v0.12.0`'s tag; order is immaterial.
+
+#### The §10.1 conformance items this step owns
+
+| Item | Owner | What Publication adds |
+|---|---|---|
+| 1. Schema ↔ dispatcher parity | Wire step (`host-protocol-schema-parity.test.ts:106-219`) | P1: the client held to the same schema and to the goldens |
+| 2. Golden fixtures | Wire step (`host-protocol-golden.test.ts`) | P5: a golden recorded over real pipes for a non-JS `process` plugin |
+| 3. Real confined child | Wire step (`confined-plugin-child.test.ts`; stdin-close at `:1833`) | P3: a process launch under the real wrap; P5: stdin-close and stdout discipline for a process entry |
+| 4. Adversarial fixture | **Admission** (not 0.13.0) | P3 leaves the launch path it will attack; P4 leaves the admission rule it must not bypass |
+| 5. Cross-language smoke | **Publication** | P5, passing 1-3 as read above |
+
+#### What Publication leaves ready for Admission
+
+- A launch path that is already out of process by manifest shape (P3), so "out of
+  process by default for every install" becomes a change to `importPluginFactoryForLifecycle`
+  (`runtime/index.ts:5150`) alone: route every `entry` plugin like a `process` one and
+  delete the census; the factory, the envelope and the dispatcher need nothing new.
+- The two refusal codes and their Doctor texts (P3, P4), which the adversarial fixture
+  will exercise from the marketplace side (a tree-rung process entry, a Windows install).
+- The validate CLI (P2), which is the harness the adversarial fixture is written against
+  first — its four escapes are `ave/host/*` and filesystem attempts a mock host records
+  — before it runs under the real wrap.
+- The `git` prerequisites of decision 22 are unchanged by this step and stay Admission's.
+
+#### Gates common to every slice
+
+`bun run typecheck`; the narrow `bun run test:vitest -- run <dirs>` named per slice while
+iterating, then the full `bun run test` and `bun run build` once in the pre-push hook that
+owns them (`scripts/hooks/run-local-checks.mjs:738-746`); `check:knip:engine` against its
+baseline where a file or script is added; `.github/scripts/naming-gate.sh origin/main
+HEAD` with GNU grep; CI `build-and-test` and `naming-gate` green on the check rollup
+before merge, and the macOS and Linux jobs for P3 and P5. No slice merges with a
+`test.skip`, a stub fixture or an unimplemented branch standing in for evidence.
+
 ---
 
 ## 10. Validation strategy
@@ -2229,13 +2941,17 @@ permission or lifecycle fallback that makes the test pass.
 
 ### 10.2 Validating without the app: the validate CLI
 
-`ave-plugin validate <dir>` is built from an ave entry as a `tools/vendor/` bundle:
+`node tools/vendor/ave-plugin-validate.js <dir>` is built from the ave entry
+`src/plugins/validate/cli.ts` as a `tools/vendor/` bundle, beside a second bundle of the
+reference runtime (`ave-plugin-child-main.js`) it spawns for `entry` plugins:
 `tools/vendor.mjs` already holds ave entries built with `bun build` by a recorded bun
 version, byte-reproducible and hash-checked like the contract copies (`vendor.mjs:5-11`;
 `tools/vendor/marketplace-check.js` is one today), so a plugin repository takes it with
-`vendor.mjs sync tools/vendor --ref <tag> --app <checkout>`. It replaces the per-plugin
+`vendor.mjs sync tools/vendor --ref <tag> --app <checkout>`. In the app repository the
+same code runs as `bun run plugin:validate <dir>`. It replaces the per-plugin
 drift scripts such as `plugins/meeting/source/scripts/validate-hostapi.mjs` in the
-official repository (which imports the vendored `@ave/plugin-contract`, `:27`). It:
+official repository (which imports the vendored `@ave/plugin-contract`, `:27`); the
+slice is §9.7 P2 and the retirement is §9.7 E2′. It:
 
 1. validates `plugin.json` against the manifest schema and the Ave `extensions` rules,
    including `requires.hostProtocol`;
@@ -2377,30 +3093,36 @@ What Ave should not adopt, and why:
 | 24 | **Catalog format 2.** `marketplace.json` (`schemaVersion: 1`) is frozen at X to pre-X versions and never gains a format-2 field; `marketplace.2.json` (`schemaVersion: 2`) carries every version with `hostProtocol` and `authority.sandbox`; descriptors gain `schemaVersion: 2`; an app ≥ X reads only the format-2 file and treats a source without it as not a marketplace; older apps read only the legacy file (§6.4). | The index root, version and authority objects are closed and a package is validated whole, so any new field in the shared file drops every version of that package from every older client, which would break the "old app keeps its old versions" promise the downgrade and rollback rows depend on. A presence-declared format is deterministic; a tolerant reader or a retry is not. |
 | 25 | **Approved-root withdrawal.** A resolved envelope has two inputs, manifest authority and the approved-directory ceiling; when either stops covering a running incarnation's grants the runtime retires that incarnation and its delegated workers before the change is acknowledged, marks `sandbox-grant-outside-ceiling`, and refuses a restart until the config or the ceiling changes; overlapping roots keep a grant; the boot reconciler runs before plugins load (§2.2). | The kernel envelope cannot narrow after spawn (`out-of-process-plugin.ts:682-687`) and root removal already revokes permission signals (`permission-manager.ts:1148-1155`), so an update-only rule would leave a child using a withdrawn root until its next restart. |
 | 26 | **Linearised issuance.** `issuing` starts before the first authorization await: resolve the key identity, capture `{ incarnation, permissionEpoch, secretGeneration(key), providerConfigRevision }`, reserve a registration slot, run the gate and reads, then compare-and-register in one synchronous section or deny `stale-authorization` and return the slot; the store gains generation hooks at every transition of the state the resolver can see — the in-memory provider-configuration mutation before its save, the rollback after a failed save, every change of secret readability, and the completion of a secret write or delete — never only on successful commits (§4.1.2). | Counters alone do not say which snapshot a lease represents; without a reservation, concurrent resolves can all observe 31 and exceed the cap; re-reading into a new epoch would silently launder a stale authorization; the store makes a configuration visible before it is saved and restores the saved one when the save fails (`settings-store.ts:1114-1116`, `:1978-1993`), so a post-commit counter would leave a lease bound to a rolled-back endpoint usable. |
+| 27 | **Publication slicing (§9.7).** P0 design; P1 client, P2 validate CLI and P3 `process` runtime independent of one another; P4 admission and P5 cross-language smoke after P3; E1′ the 0.13.0 release PR; E2′ the post-tag plugin-repository sync, drift-script retirement and alias promotion. A slice that changes the protocol schema refreshes the open `2/v0.13.0` candidate in the same PR; the only one that does is P3. | The mirror check freezes the canonical schema on `main` between a tag and the next bump, and #2589 made that bump the first change after v0.12.0 (§9.7); every other Publication deliverable fits beside the schema or in the manifest schema; three independent slices let three engineers start at once. |
+| 28 | **The TS client carries no app version** and is generated from the committed schema, not the TS sources; `json-schema-to-typescript` 15.0.4 is the one new dev dependency; the client is vendored by sha256 from the tag and not mirrored on the site. | A file that embedded the app version would change every release with no method change; the schema is the published artifact, so a client provably projected from it is one any language can reproduce; the mirror exists so `$id` resolves for editors, and a second web copy of the same bytes is the duplication decision 6 rejected. Rejected: a compiler-API type printer (a second projection of the sources with its own drift). |
+| 29 | **`HOST_PROTOCOL_FIRST_APP_VERSION`** (`{ "2": "0.12.0" }`) beside `HOST_PROTOCOL_VERSIONS_SERVED`, held by a test to the lowest `appVersion` recorded for that protocol in `mirror.json`; the validate CLI enforces `minAppVersion ≥` it. | §9.4 item 6 promised the rule to the validate CLI; a constant read from the mirror's history is derivable and gated, where a literal in the CLI would drift. |
+| 30 | **The validate CLI does not confine the child.** It spawns a plain process and proves protocol conformance; confinement is the host suite's (§10.1 item 3). | A validator that wrapped would need ASRT and the host's sandbox state on the author's machine; a green wrap there would prove nothing about the host's, and a red one would block authors on a substrate they do not ship. |
+| 31 | **`tools/call` in the validate CLI** is issued with `{}` for tools with no `required` input, from `--tool-args` for the rest, and reported `not exercised` otherwise, never failed. | A generic validator cannot invent meaningful arguments; a failure it cannot justify would train authors to ignore it. |
+| 32 | **`process.command` is inside the plugin root only** (`./` or `${PLUGIN_ROOT}/`); the schema pattern and the hardening refuse a bare name; §2.1's earlier "bare executable name" is withdrawn. | §7.3 already ruled out a `PATH` search for a marketplace plugin, and a `process` entry exists only as a marketplace plugin (§2.1); two rules for one field would leave the schema admitting what the runtime refuses. |
+| 33 | **Construct `entryPath` for a `process` launch** is the resolved absolute command path; the field stays required and its description is amended in P3 with the `2/v0.13.0` candidate refreshed in the same PR. | Making the field optional would be an additive change a `2` client tolerates (§3.3) but a second shape for one field with no consumer that needs it; the child ignores the value for a process launch, and the description change is the one protocol-schema edit Publication makes, which the open candidate permits (§9.7, mirror freeze). |
+| 34 | **No new descriptor or index field for `process` in 0.13.0.** Admission reads `platforms` (must exclude `win32`) and the pinned `release`/`archive` rung; the sandbox-off refusal on macOS and Linux is pre-activation but post-download. A `runtime` field is the first candidate for a catalog format 3. | Format-2 version and authority objects are closed and a package is dropped whole by a 0.12.x app when one version carries an unknown field (decision 24), which would remove every process-entry package, old versions included, from every 0.12.x client. |
 
 ### Owner decisions still open
 
 None. Decisions 8-11 and 22 record the owner's decisions of 2026-09-27; decisions
-12-21 and 23-26 are the designer's, made so the implementer decides no security or
+12-21, 23-26 and 27-34 are the designer's, made so the implementer decides no security or
 migration semantics, and each of the two review rounds' findings is either resolved
 above or rejected in the section it names; decision 5 names a role, not a person, so
-nothing waits on the owner.
+nothing waits on the owner. The owner delegated the Publication decisions (27-34) on
+2026-09-28.
 
 ---
 
 ## UNVERIFIED in this document
 
 - The RSS and wall-clock startup cost of one plugin child (§8). No measurement exists in
-  the checkout; the conformance suite is asked to produce it.
-- Whether `ts-json-schema-generator` 2.9.0 reads `public-contract.ts` and
-  `host-api-wire.ts`: it pins its own TypeScript `^5.9.3` while ave compiles with
-  TypeScript `^7.0.2` (`package.json:198`). Its `--functions hide` option and custom type
-  formatters cover function-typed members, but the generator avoids them by reading the
-  `Wire*` types for encoded and handle axes (§9.4 item 7). If the two files do not parse
-  under 5.9, the fallback is a compiler-API walker using the app's own TypeScript.
-- Whether the stock MCP server SDKs (Python, TypeScript) already speak `2026-07-28`
-  (`server/discover`, the per-request `_meta` version). The Publication cross-language
-  smoke and the validate CLI's `server/discover` probe (§10.2) both depend on it.
+  the checkout; the conformance suite is asked to produce it — §9.7 P5 records it for
+  the Python smoke and the `meeting` fixture in the confined-child run.
+- Resolved 2026-09-28 (§9.7, "Facts this plan rests on"): `ts-json-schema-generator`
+  2.9.0 is the generator's engine in production and the committed schema is its output;
+  the stock MCP server SDKs speak `2026-07-28` (`mcp` 2.0.0 stable on 2026-07-28, 2.2.0
+  current; the TypeScript 2.x packages), with the stdio drivers owning the pipes, so the
+  Python smoke owns its stream and hands the library one message at a time.
 - The real request rates behind §7.4. The 400 RPM batch setting is a configured
   input; resolve/fetch/release counts, retry amplification and concurrency under a
   scan, a caption pass and a meeting session have not been measured. The budgets are
