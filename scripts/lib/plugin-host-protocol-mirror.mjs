@@ -40,8 +40,18 @@ function readManifest(root) {
   return manifest;
 }
 
+function writeManifest(root, manifest) {
+  writeFileSync(join(root, MIRROR, "mirror.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+}
+
 function currentVersion(root) {
   return JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
+}
+
+function newestPublished(copies, protocol) {
+  return copies
+    .filter((entry) => entry.protocol === protocol && entry.publishedTag !== null)
+    .sort((a, b) => compareVersions(b.appVersion, a.appVersion))[0];
 }
 
 /** Check frozen copies, the live candidate, and aliases against the manifest. */
@@ -98,19 +108,20 @@ export function checkProtocolMirror(root) {
     expected.add(alias);
   }
 
-  // Without a candidate, the canonical file remains the latest published
-  // schema. Changing it would rewrite that release's contract.
+  // The alias names the newest published copy whether or not a candidate is
+  // open, so promotions of one protocol commute in either order. Without a
+  // candidate, the canonical file also remains the latest published schema:
+  // changing it would rewrite that release's contract. With one, the canonical
+  // file is the candidate, checked above.
   const publishedProtocols = new Set(manifest.copies
     .filter((entry) => entry.publishedTag !== null)
     .map((entry) => entry.protocol));
   for (const protocol of publishedProtocols) {
-    if (candidateProtocols.has(protocol)) continue;
-    const latest = manifest.copies
-      .filter((entry) => entry.protocol === protocol && entry.publishedTag !== null)
-      .sort((a, b) => compareVersions(b.appVersion, a.appVersion))[0];
+    const latest = newestPublished(manifest.copies, protocol);
     if (manifest.aliases[protocol] !== latest.publishedTag) {
       fail(`${protocol} alias must name the latest published copy`);
     }
+    if (candidateProtocols.has(protocol)) continue;
     const canonical = join(root, "schemas/plugin-host-protocol", protocol, "protocol.schema.json");
     if (!existsSync(canonical) ||
         !readFileSync(canonical).equals(readFileSync(join(mirrorRoot,
@@ -162,5 +173,31 @@ export function syncProtocolMirror(root, generatedFrom) {
     if (prior) Object.assign(prior, entry);
     else manifest.copies.push(entry);
   }
-  writeFileSync(join(mirrorRoot, "mirror.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+  writeManifest(root, manifest);
+}
+
+/**
+ * Mark one copy published after its app release is published, and point its
+ * protocol's alias at the newest published copy, which is not necessarily the
+ * one just promoted.
+ */
+export function publishProtocolMirror(root, target) {
+  const match = /^(\d+)\/(\d+\.\d+\.\d+)$/u.exec(target);
+  if (!match) fail(`--publish takes <protocol>/<version>, such as 2/0.13.0, not ${target}`);
+  const [, protocol, appVersion] = match;
+  checkProtocolMirror(root);
+  const manifest = readManifest(root);
+  const relative = copyPath(protocol, appVersion);
+  const entry = manifest.copies.find((copy) =>
+    copy.protocol === protocol && copy.appVersion === appVersion);
+  if (!entry) fail(`${relative} is not recorded in mirror.json`);
+  if (entry.publishedTag !== null) fail(`${relative} is already published`);
+  entry.publishedTag = `v${appVersion}`;
+  const latest = newestPublished(manifest.copies, protocol);
+  manifest.aliases[protocol] = latest.publishedTag;
+  const mirrorRoot = join(root, MIRROR);
+  copyFileSync(join(mirrorRoot, copyPath(protocol, latest.appVersion)),
+    join(mirrorRoot, protocol, "protocol.schema.json"));
+  writeManifest(root, manifest);
+  return `${protocol} alias names ${latest.publishedTag}`;
 }

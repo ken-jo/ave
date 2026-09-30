@@ -1423,7 +1423,7 @@ is committed. Three facts bind the Lease step:
   is — which is the explicit promotion mechanism; a candidate's copy cannot become the
   alias by deploying. The check enforces the newest-published rule whether or not the
   protocol has an open candidate, so two promotions of one protocol commute in either
-  order (§9.7 M1, decision 39). The v0.11.0 release does
+  order (`scripts/lib/plugin-host-protocol-mirror.mjs`; §9.7 M1, decision 39). The v0.11.0 release does
   not carry the mirror; E1 adds its `1/v0.11.0` copy and entry from the frozen
   canonical `1/` file with `publishedTag: "v0.11.0"` and the `1` alias naming it, so
   the first published `$id` still resolves. **Acceptance (E1):** a fixture with
@@ -2246,7 +2246,9 @@ that round `main` moved to `9c56ec148` (#2591, M1 implemented as specified below
 changed only the mirror scripts, their test and two documents, so every anchor outside
 `scripts/lib/plugin-host-protocol-mirror.mjs`, `scripts/sync-plugin-host-protocol-mirror.mjs`
 and `test/scripts/plugin-host-protocol-mirror.test.ts` reads the same at both commits,
-and the mirror anchors below are deliberately those of `c73f59580`, before M1.
+and the mirror anchors are split on purpose: fact 5 and "The mirror freeze" describe
+the checker as it is now and cite `9c56ec148`; the M1 subsection and decision 39 keep
+`c73f59580`'s, the tree M1 was specified and reviewed against.
 
 1. **The stock MCP server SDKs speak `2026-07-28`** (closes the UNVERIFIED item).
    - Python: `mcp` **2.0.0** (2026-07-28) is the stable v2 line and "speaks the
@@ -2342,16 +2344,22 @@ and the mirror anchors below are deliberately those of `c73f59580`, before M1.
    `generatedFrom: 5ce7a0282` (`git show f00595d10:web/public/schemas/plugin-host-protocol/mirror.json`),
    and **#2590** refreshed it after retiring `notificationEvents` to `sha256:
    d278eb4d…`, `generatedFrom: f00595d10` (`mirror.json:17-22` at `c73f59580`). The
-   first-round text conflated the two. `package.json` is `0.13.0`, so the check
-   (`scripts/lib/plugin-host-protocol-mirror.mjs:48-137`) classifies `2/v0.13.0` as the
-   **candidate** (`:73`) and holds it byte-equal both to its recorded sha256 (`:69`) and
-   to the canonical `schemas/plugin-host-protocol/2/protocol.schema.json` (`:76-79`),
-   while `2/v0.12.0` is unpublished-and-superseded, held to its own hash only. There is
-   **no alias `2`** and no `2/protocol.schema.json` on the site yet, because E2 of the
-   Lease step waits for GitHub Actions. The check's "alias must name the latest published
-   copy" rule (`:108-112`) is **skipped for a protocol with an open candidate** (the
-   `continue` at `:107`, inside the loop at `:106`), which is what M1 changes
-   (decision 39).
+   first-round text conflated the two; #2591 left `mirror.json` and every copy untouched.
+   `package.json` is `0.13.0`, so the check (`scripts/lib/plugin-host-protocol-mirror.mjs:58-148`
+   at `9c56ec148`) classifies `2/v0.13.0` as the **candidate** (`:83`) and holds it
+   byte-equal both to its recorded sha256 (`:79`) and to the canonical
+   `schemas/plugin-host-protocol/2/protocol.schema.json` (`:86-89`), while `2/v0.12.0` is
+   unpublished-and-superseded, held to its own hash only. There is **no alias `2`** and
+   no `2/protocol.schema.json` on the site yet, because E2 of the Lease step waits for
+   GitHub Actions. The "alias must name the latest published copy" rule (`:119-123`)
+   now runs **whether or not the protocol has an open candidate**; only the
+   canonical-equals-newest-published rule is candidate-gated (`:124-130`). At
+   `c73f59580` the first rule was skipped too (the `continue` at `:107`); removing that
+   skip was M1 (#2591; decision 39). Promotion is `node
+   scripts/sync-plugin-host-protocol-mirror.mjs --publish <protocol>/<version>`
+   (`scripts/sync-plugin-host-protocol-mirror.mjs:10-12` → `publishProtocolMirror`,
+   `plugin-host-protocol-mirror.mjs:184-203`), which sets the copy's `publishedTag` and
+   points the alias at the newest published copy.
 6. **The official repository, its drift scripts, and the monorepo wave.** At `main`
    `6a4d3b3`, `tools/vendor.mjs` holds two vendored directories, `contract/` and
    `tools/vendor/` (`:30`), each described by a `sources.json` whose entries are copies
@@ -2569,9 +2577,10 @@ candidate", added by #2589). Exactly what happened, and what it means for this p
 
 - **Between the v0.12.0 tag and #2589.** With `package.json` at `0.12.0` and `2/v0.12.0`
   at `publishedTag: null`, that copy was the candidate, and the check refused any `main`
-  commit whose canonical schema differed from it (`plugin-host-protocol-mirror.mjs:73-79`).
-  Regenerating that candidate would have passed the check (`syncProtocolMirror`
-  overwrites an unpublished entry, `:154-163`) but would have put bytes behind
+  commit whose canonical schema differed from it (`plugin-host-protocol-mirror.mjs:83-89`
+  at `9c56ec148`, unchanged in behaviour since the tag). Regenerating that candidate would
+  have passed the check (`syncProtocolMirror` overwrites an unpublished entry,
+  `:164-174`) but would have put bytes behind
   `…/2/v0.12.0/protocol.schema.json` that the v0.12.0 tag does not carry, which decision
   6 forbids. The §6.1 sentence "refused unless the candidate is regenerated in the same
   change" applies only while no tag carries the candidate's bytes, and is amended to say
@@ -2583,7 +2592,7 @@ candidate", added by #2589). Exactly what happened, and what it means for this p
   which wrote `web/public/schemas/plugin-host-protocol/2/v0.13.0/protocol.schema.json`
   and appended `{ protocol: "2", appVersion: "0.13.0", sha256: "c7ca0e2d…",
   generatedFrom: "5ce7a0282", publishedTag: null }`. The check's stale-candidate error
-  now names that command (`:78`). #2590 then changed the protocol (retiring
+  now names that command (`:88`). #2590 then changed the protocol (retiring
   `notificationEvents`) and refreshed the same candidate to `sha256: "d278eb4d…",
   generatedFrom: "f00595d10"` (fact 5), which is the pattern every 0.13.0 protocol
   change follows; the cited tree `c73f59580` is the result.
@@ -2601,14 +2610,15 @@ candidate", added by #2589). Exactly what happened, and what it means for this p
   whenever any `$defs.types`, method or notification changes, not only when a method set
   changes; the first-round "methods only" claim is withdrawn.
 - **`2/v0.12.0` stays `publishedTag: null` until its E2.** From #2589 the check treats
-  it as an orphan — frozen against its own hash only (`:69`) — until Lease's E2 sets
+  it as an orphan — frozen against its own hash only (`:79`) — until Lease's E2 sets
   `publishedTag: "v0.12.0"`. **That E2 and the 0.13.0 release commute only once M1 has
-  merged.** Today the alias rule reads only published copies (`:88-99`) and the
-  newest-published rule (`:108-112`) is skipped while a candidate is open (`:107`), so
-  after the v0.13.0 tag and the next bump (which opens a `2/v0.14.0` candidate) a late
-  Lease promotion following §9.5's old "promote the alias to its copy" wording would move
-  alias `2` **back** to `v0.12.0` and the check would not fail it; and without a
-  candidate, following that wording after a 0.13.0 promotion fails the check instead.
+  merged, and it now has.** At `c73f59580` the alias rule read only published copies
+  (`:88-99` there) and the newest-published rule (`:108-112` there) was skipped while a
+  candidate was open (`:107` there), so after the v0.13.0 tag and the next bump (which
+  opens a `2/v0.14.0` candidate) a late Lease promotion following §9.5's old "promote the
+  alias to its copy" wording would have moved alias `2` **back** to `v0.12.0` unnoticed;
+  and without a candidate, following that wording after a 0.13.0 promotion would have
+  failed the check instead.
   M1 (decision 39; merged as #2591, `9c56ec148`, on 2026-10-01) makes the rule
   order-independent — the alias for a protocol always names its newest published copy,
   candidate open or not, and a promotion of an older copy sets its `publishedTag` and
@@ -2633,7 +2643,7 @@ the mirror alias rule.
 |---|---|---|---|
 | **P0. Design** | this section; §2.1, §6.1, §6.2, §9.5, §9.6, §10.2, §13 and the UNVERIFIED list amended | — | everything |
 | **P1. Protocol TS client** | `schemas/plugin-host-protocol/<v>/protocol-client.ts` generated from the committed schema; `check:plugin-host-protocol-client` in `build` (byte-compare, a standalone compile of the client, and a separate host-equality compile of the type assertions); parity test against the goldens | — | M1, S1, P2, P3 |
-| **M1. Mirror alias rule** — **merged** 2026-10-01 as #2591 (`9c56ec148`) | `plugin-host-protocol-mirror.mjs`: the newest-published alias rule enforced with a candidate open; promotion helper picks the maximum published version; tests for both promotion orders | — | P1, S1, P2, P3; **prerequisite of Lease's E2 and of E2′ item 3** |
+| **M1. Mirror alias rule** — **done (#2591, `9c56ec148`)** | `plugin-host-protocol-mirror.mjs`: the newest-published alias rule enforced with a candidate open; promotion helper picks the maximum published version; tests for both promotion orders | — | P1, S1, P2, P3; **prerequisite of Lease's E2 and of E2′ item 3** |
 | **S1. Protocol-session seam** | `openPluginProtocolSession` extracted from the factory with an **explicit, pre-bound dispatch table** as its authority; a non-destructive validation channel (MCP requests, an unknown-method probe, the stop hook alone, stdin close with an observed exit) separate from the destructive `teardown`; the one producer of MCP request metadata in the transport and the goldens regenerated with it; `OutOfProcessPluginSpec.connect` deleted and its 28 consumer sites migrated; the observation-only `observeChild` seam on the production factory; the validation-only entry `openValidationSession` and the validation host (base-envelope authority) under `src/plugins/validate/`; the four goldens made self-contained; a type-level and an import-boundary gate | — | P1, M1 |
 | **P2. Validate CLI** | `src/plugins/validate/` (report library, source-drift scan, CLI entry, raw-stdout and stdin-close checks over the S1 channel), including the `process` arm over P3's `resolveProcessLaunch`; `plugin:validate` script with the source-mode child loader; the bundle-loads-in-bare-Node test with the post-wave recipe | S1; merges after P3 | P1, M1, P3 (development) |
 | **P3. `process` entry runtime** | manifest schema tightening, the exclusive public type (`EntryPluginManifest \| ProcessPluginManifest`) and the generator rule that projects it, hardening (paths, reserved environment names, `minAppVersion ≥ 0.13.0`), `resolveBundledArgv` policy `"process"`, launch union in the factory with the wrap-internal environment, `process-entry-unconfined`, the **provenance gate in `importPluginFactoryForLifecycle` on all four activation paths** with `verified.rung` and a stated error precedence, routing by manifest shape, the seven slice-C sites moved to the two replacement codes, the `PluginManifest` wire change with schema, candidate and client regenerated, the Linux confinement CI job | S1; merges after P1 | P1, M1, P2 (development) |
@@ -2650,8 +2660,8 @@ rebases onto `main` after the earlier one merges and integrates on its own side.
 order is chosen so that no slice carries a conditional: P1 precedes P3, so P3 always
 regenerates the client; P3 precedes P2, so P2 adds the CLI's `process` arm itself (the
 second round's "whichever of P2 and P3 merges second" rule is withdrawn); P2 precedes
-P5, whose fixture the CLI probes. M1 touches only the mirror scripts; it has already
-merged (#2591, `9c56ec148`), so the remaining order is S1 → P1 → P3 → P2 → P4 → P5 →
+P5, whose fixture the CLI probes. M1 touches only the mirror scripts; it is **done**
+(#2591, `9c56ec148`), so the remaining order is S1 → P1 → P3 → P2 → P4 → P5 →
 E1′, and both promotions it guards are unblocked. Each PR has
 `main` as its base branch (never a sibling slice), so a merged branch's deletion cannot
 close it.
@@ -2808,11 +2818,14 @@ a build check add no channel, bridge method, domain export or setting.
 
 ##### M1. The mirror alias rule
 
-**Status: merged** on 2026-10-01 as #2591 (`7df8a0133`, merge `9c56ec148`), which
+**Status: done (#2591, `9c56ec148`)** — merged on 2026-10-01 (`7df8a0133`), and it
 implements this slice as written — the rule without the candidate guard, `--publish
 <protocol>/<version>` refusing malformed, unrecorded and already-published targets, and
-both promotion orders under test. The anchors in this subsection are `c73f59580`'s,
-before it; the text is kept as the specification that change was reviewed against.
+both promotion orders under test; `docs/development/release-process.md` names the
+`--publish` command (`:108-114`, `:126-127`), and §6.1, §9.5 step 6 and the §9.6 E2 row
+carry the newest-published rule. The anchors in this subsection are `c73f59580`'s,
+before it; the text is kept as the specification that change was reviewed against, and
+fact 5 cites the result at `9c56ec148`.
 
 *Files.*
 
@@ -4190,7 +4203,7 @@ What Ave should not adopt, and why:
 | 24 | **Catalog format 2.** `marketplace.json` (`schemaVersion: 1`) is frozen at X to pre-X versions and never gains a format-2 field; `marketplace.2.json` (`schemaVersion: 2`) carries every version with `hostProtocol` and `authority.sandbox`; descriptors gain `schemaVersion: 2`; an app ≥ X reads only the format-2 file and treats a source without it as not a marketplace; older apps read only the legacy file (§6.4). | The index root, version and authority objects are closed and a package is validated whole, so any new field in the shared file drops every version of that package from every older client, which would break the "old app keeps its old versions" promise the downgrade and rollback rows depend on. A presence-declared format is deterministic; a tolerant reader or a retry is not. |
 | 25 | **Approved-root withdrawal.** A resolved envelope has two inputs, manifest authority and the approved-directory ceiling; when either stops covering a running incarnation's grants the runtime retires that incarnation and its delegated workers before the change is acknowledged, marks `sandbox-grant-outside-ceiling`, and refuses a restart until the config or the ceiling changes; overlapping roots keep a grant; the boot reconciler runs before plugins load (§2.2). | The kernel envelope cannot narrow after spawn (`out-of-process-plugin.ts:682-687`) and root removal already revokes permission signals (`permission-manager.ts:1148-1155`), so an update-only rule would leave a child using a withdrawn root until its next restart. |
 | 26 | **Linearised issuance.** `issuing` starts before the first authorization await: resolve the key identity, capture `{ incarnation, permissionEpoch, secretGeneration(key), providerConfigRevision }`, reserve a registration slot, run the gate and reads, then compare-and-register in one synchronous section or deny `stale-authorization` and return the slot; the store gains generation hooks at every transition of the state the resolver can see — the in-memory provider-configuration mutation before its save, the rollback after a failed save, every change of secret readability, and the completion of a secret write or delete — never only on successful commits (§4.1.2). | Counters alone do not say which snapshot a lease represents; without a reservation, concurrent resolves can all observe 31 and exceed the cap; re-reading into a new epoch would silently launder a stale authorization; the store makes a configuration visible before it is saved and restores the saved one when the save fails (`settings-store.ts:1114-1116`, `:1978-1993`), so a post-commit counter would leave a lease bound to a rolled-back endpoint usable. |
-| 27 | **Publication slicing (§9.7).** P0 design; P1 client, M1 mirror alias rule and S1 protocol-session seam independent of one another; P2 validate CLI and P3 `process` runtime after S1; P4 marketplace admission and P5 cross-language smoke after P3; E1′ the 0.13.0 release PR; E2′ the post-tag plugin-repository sync, drift-script retirement and alias promotion. **One fixed merge order**, P0 → S1 → P1 → M1 → P3 → P2 → P4 → P5 → E1′ (M1 merged first, as #2591 on 2026-10-01), with development parallel after S1; every shared file follows it (the later slice rebases and integrates). The one slice that changes the protocol schema is P3 (the `PluginManifest` wire change, decision 33), which refreshes the open `2/v0.13.0` candidate and the client in the same PR. | The mirror check freezes the canonical schema on `main` between a tag and the next bump, and #2589 made that bump the first change after v0.12.0 (§9.7). The first round let P2 and P3 start at once against one factory and they required incompatible behaviour of it (both reviews' P0); freezing the session interface in S1 first is what lets P2, P3 and P5 proceed in separate checkouts without inventing a bypass. The second round's "any order" beside an ordered file matrix was two orders (host re-review #24); a single order with P1 before P3 and P3 before P2 removes every conditional ("if P1 merged", "the second of P2 and P3"). |
+| 27 | **Publication slicing (§9.7).** P0 design; P1 client, M1 mirror alias rule and S1 protocol-session seam independent of one another; P2 validate CLI and P3 `process` runtime after S1; P4 marketplace admission and P5 cross-language smoke after P3; E1′ the 0.13.0 release PR; E2′ the post-tag plugin-repository sync, drift-script retirement and alias promotion. **One fixed merge order**, P0 → S1 → P1 → M1 → P3 → P2 → P4 → P5 → E1′ (M1 done: #2591, `9c56ec148`), with development parallel after S1; every shared file follows it (the later slice rebases and integrates). The one slice that changes the protocol schema is P3 (the `PluginManifest` wire change, decision 33), which refreshes the open `2/v0.13.0` candidate and the client in the same PR. | The mirror check freezes the canonical schema on `main` between a tag and the next bump, and #2589 made that bump the first change after v0.12.0 (§9.7). The first round let P2 and P3 start at once against one factory and they required incompatible behaviour of it (both reviews' P0); freezing the session interface in S1 first is what lets P2, P3 and P5 proceed in separate checkouts without inventing a bypass. The second round's "any order" beside an ordered file matrix was two orders (host re-review #24); a single order with P1 before P3 and P3 before P2 removes every conditional ("if P1 merged", "the second of P2 and P3"). |
 | 28 | **The TS client carries no app version** and is generated from the committed schema, not the TS sources; `json-schema-to-typescript` 15.0.4 is the one new dev dependency; the client is vendored by sha256 from the tag and not mirrored on the site. | A file that embedded the app version would change every release with no method change; the schema is the published artifact, so a client provably projected from it is one any language can reproduce; the mirror exists so `$id` resolves for editors, and a second web copy of the same bytes is the duplication decision 6 rejected. Rejected: a compiler-API type printer (a second projection of the sources with its own drift). |
 | 29 | **`HOST_PROTOCOL_FIRST_APP_VERSION`** (`{ "2": "0.12.0" }`) beside `HOST_PROTOCOL_VERSIONS_SERVED`, held by a test to the lowest `appVersion` recorded for that protocol in `mirror.json`; the validate CLI enforces `minAppVersion ≥` it. | §9.4 item 6 promised the rule to the validate CLI; a constant read from the mirror's history is derivable and gated, where a literal in the CLI would drift. |
 | 30 | **The validate CLI does not confine the child, and never reaches the production factory.** It spawns a plain process and attaches it through `openValidationSession` (`src/plugins/validate/validation-session.ts`, owned by the validate directory), the validation-only entry to the protocol-session layer `openPluginProtocolSession` that S1 extracts; the conformance goldens use the same entry. `createOutOfProcessPluginFactory` keeps admission and `spawnConfinedChild` with **no** substitution point and no bypass flag (`OutOfProcessPluginSpec.connect` is deleted; its only test seam is the observation-only `observeChild`, decision 43), and an import-boundary test proves nothing under `src/plugins/runtime/`, `src/boot/` or `src/main/` reaches `src/plugins/validate/`. The validator's authority is explicit: a table bound to the plugin's base envelope, with no declared grant applied (decision 43). Confinement is the host suite's (§10.1 item 3). | A validator that wrapped would need ASRT and the host's sandbox state on the author's machine, including Windows; a green wrap there would prove nothing about the host's, and a red one would block authors on a substrate they do not ship. One factory cannot both refuse every unconfined process launch and serve an unconfined validator; separating the session layer from admission and spawning lets each keep its rule. Rejected: an `unconfined` or `validationMode` flag on the factory (a bypass reachable from a runtime path). |
