@@ -3,7 +3,11 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { checkProtocolMirror, syncProtocolMirror } from "../../scripts/lib/plugin-host-protocol-mirror.mjs";
+import {
+  checkProtocolMirror,
+  publishProtocolMirror,
+  syncProtocolMirror,
+} from "../../scripts/lib/plugin-host-protocol-mirror.mjs";
 
 const roots: string[] = [];
 const commit = "a".repeat(40);
@@ -21,15 +25,21 @@ function schema(version: string, value: string): string {
   })}\n`;
 }
 
-function fixture() {
-  const root = mkdtempSync(join(tmpdir(), "protocol-mirror-"));
-  roots.push(root);
-  const base = "web/public/schemas/plugin-host-protocol";
-  const copies = [
+type Copy = readonly [appVersion: string, value: string, publishedTag: string | null];
+
+// The copy at `version` is the candidate; its value must be "candidate".
+function fixture(
+  copies: readonly Copy[] = [
     ["0.12.0", "published", "v0.12.0"],
     ["0.12.1", "orphan", null],
     ["0.12.2", "candidate", null],
-  ] as const;
+  ],
+  version = "0.12.2",
+  alias: string | null = "0.12.0",
+) {
+  const root = mkdtempSync(join(tmpdir(), "protocol-mirror-"));
+  roots.push(root);
+  const base = "web/public/schemas/plugin-host-protocol";
   const entries = copies.map(([appVersion, value, publishedTag]) => {
     const bytes = schema(appVersion, value);
     put(root, `${base}/2/v${appVersion}/protocol.schema.json`, bytes);
@@ -37,11 +47,30 @@ function fixture() {
       sha256: createHash("sha256").update(bytes).digest("hex"),
       generatedFrom: commit, publishedTag };
   });
-  put(root, "package.json", JSON.stringify({ version: "0.12.2" }));
-  put(root, "schemas/plugin-host-protocol/2/protocol.schema.json", schema("0.12.2", "candidate"));
-  put(root, `${base}/2/protocol.schema.json`, schema("0.12.0", "published"));
-  put(root, `${base}/mirror.json`, JSON.stringify({ copies: entries, aliases: { "2": "v0.12.0" } }));
+  put(root, "package.json", JSON.stringify({ version }));
+  put(root, "schemas/plugin-host-protocol/2/protocol.schema.json", schema(version, "candidate"));
+  put(root, `${base}/mirror.json`, JSON.stringify({ copies: entries, aliases: {} }));
+  if (alias) pointAlias(root, alias);
   return { root, base };
+}
+
+const mirrorBase = "web/public/schemas/plugin-host-protocol";
+
+function readMirror(root: string, relative: string): Buffer {
+  return readFileSync(join(root, mirrorBase, relative));
+}
+
+function readManifest(root: string) {
+  return JSON.parse(readMirror(root, "mirror.json").toString("utf8"));
+}
+
+// Write the alias by hand, the way a promotion PR could without the script.
+function pointAlias(root: string, appVersion: string): void {
+  const manifest = readManifest(root);
+  manifest.aliases["2"] = `v${appVersion}`;
+  put(root, `${mirrorBase}/mirror.json`, JSON.stringify(manifest));
+  put(root, `${mirrorBase}/2/protocol.schema.json`,
+    readMirror(root, `2/v${appVersion}/protocol.schema.json`).toString("utf8"));
 }
 
 afterEach(() => {
@@ -119,5 +148,93 @@ describe("host protocol web mirror", () => {
     expect(() => checkProtocolMirror(root)).toThrow(
       "frozen protocol 1/v0.11.0 canonical schema differs from published sha256",
     );
+  });
+});
+
+describe("host protocol mirror alias", () => {
+  const twoPublished: readonly Copy[] = [
+    ["0.12.0", "twelve", "v0.12.0"],
+    ["0.13.0", "thirteen", "v0.13.0"],
+    ["0.14.0", "candidate", null],
+  ];
+  const unpublished: readonly Copy[] = [
+    ["0.12.0", "twelve", null],
+    ["0.13.0", "thirteen", null],
+    ["0.14.0", "candidate", null],
+  ];
+
+  it("names the newest published copy while a candidate is open", () => {
+    const { root } = fixture(twoPublished, "0.14.0", "0.12.0");
+    expect(() => checkProtocolMirror(root)).toThrow("2 alias must name the latest published copy");
+    pointAlias(root, "0.13.0");
+    expect(checkProtocolMirror(root)).toContain("3 copies, 1 aliases, 1 candidate");
+  });
+
+  it.each([
+    ["an orphan", "0.13.0"],
+    ["the candidate", "0.14.0"],
+  ])("rejects an alias to %s while a candidate is open", (_, target) => {
+    const { root } = fixture([
+      ["0.12.0", "twelve", "v0.12.0"],
+      ["0.13.0", "orphan", null],
+      ["0.14.0", "candidate", null],
+    ], "0.14.0", "0.12.0");
+    expect(checkProtocolMirror(root)).toContain("3 copies, 1 aliases, 1 candidate");
+    pointAlias(root, target);
+    expect(() => checkProtocolMirror(root)).toThrow("2 alias does not name a published copy");
+  });
+
+  it("keeps the newer alias when an older copy is promoted second", () => {
+    const { root } = fixture(unpublished, "0.14.0", null);
+    const thirteen = readMirror(root, "2/v0.13.0/protocol.schema.json");
+    expect(publishProtocolMirror(root, "2/0.13.0")).toBe("2 alias names v0.13.0");
+    expect(checkProtocolMirror(root)).toContain("3 copies, 1 aliases, 1 candidate");
+    expect(publishProtocolMirror(root, "2/0.12.0")).toBe("2 alias names v0.13.0");
+    const manifest = readManifest(root);
+    expect(manifest.aliases).toEqual({ "2": "v0.13.0" });
+    expect(manifest.copies.map((entry: { publishedTag: string | null }) => entry.publishedTag))
+      .toEqual(["v0.12.0", "v0.13.0", null]);
+    expect(readMirror(root, "2/protocol.schema.json")).toEqual(thirteen);
+    expect(checkProtocolMirror(root)).toContain("3 copies, 1 aliases, 1 candidate");
+  });
+
+  it("moves the alias when a newer copy is promoted second", () => {
+    const { root } = fixture([
+      ["0.12.0", "twelve", null],
+      ["0.13.0", "candidate", null],
+    ], "0.13.0", null);
+    expect(publishProtocolMirror(root, "2/0.12.0")).toBe("2 alias names v0.12.0");
+    expect(checkProtocolMirror(root)).toContain("2 copies, 1 aliases, 1 candidate");
+    expect(publishProtocolMirror(root, "2/0.13.0")).toBe("2 alias names v0.13.0");
+    expect(readManifest(root).aliases).toEqual({ "2": "v0.13.0" });
+    expect(readMirror(root, "2/protocol.schema.json"))
+      .toEqual(readMirror(root, "2/v0.13.0/protocol.schema.json"));
+    expect(checkProtocolMirror(root)).toContain("2 copies, 1 aliases, 0 candidate");
+    pointAlias(root, "0.12.0");
+    expect(() => checkProtocolMirror(root)).toThrow("2 alias must name the latest published copy");
+  });
+
+  it.each([
+    ["2/v0.13.0", "--publish takes <protocol>/<version>, such as 2/0.13.0, not 2/v0.13.0"],
+    ["2", "--publish takes <protocol>/<version>, such as 2/0.13.0, not 2"],
+    ["2/0.15.0", "2/v0.15.0/protocol.schema.json is not recorded in mirror.json"],
+    ["3/0.13.0", "3/v0.13.0/protocol.schema.json is not recorded in mirror.json"],
+    ["2/0.12.0", "2/v0.12.0/protocol.schema.json is already published"],
+  ])("refuses to publish %s", (target, message) => {
+    const { root } = fixture([
+      ["0.12.0", "twelve", "v0.12.0"],
+      ["0.13.0", "thirteen", null],
+      ["0.14.0", "candidate", null],
+    ], "0.14.0", "0.12.0");
+    const manifest = readMirror(root, "mirror.json");
+    expect(() => publishProtocolMirror(root, target)).toThrow(message);
+    expect(readMirror(root, "mirror.json")).toEqual(manifest);
+  });
+
+  it("refuses to publish from a mirror that fails its check", () => {
+    const { root, base } = fixture(unpublished, "0.14.0", null);
+    put(root, `${base}/2/v0.13.0/protocol.schema.json`, schema("0.13.0", "edited"));
+    expect(() => publishProtocolMirror(root, "2/0.13.0")).toThrow("differs from recorded sha256");
+    expect(readManifest(root).copies[1].publishedTag).toBeNull();
   });
 });
