@@ -664,7 +664,12 @@ capability checks, the machine's marketplace policy, and host APIs. Extensions a
 every other package kind arrive through git marketplaces (`src/marketplace/`):
 the app syncs each source's repository, pins the commit it read, and installs
 only the bytes that commit names (release or archive by sha256, or the pinned
-tree). Every git remote and download a source names passes one network gate.
+tree). A source can also be a local folder: it is read in place through
+`FolderFs` (no git command, no download), pinned by a revision over the files
+it read, and installed from a copy captured when the install is planned. A
+folder is classified and judged by the policy before anything touches it; a
+folder on another computer is confirmed once per path, and links that leave
+the folder or name another computer are refused unread. Every git remote and download a source names passes one network gate.
 The gate applies the machine's policy, then checks the class of each address.
 Downloads and git over http(s) connect only to the addresses checked. git over
 ssh is checked before git runs, and ssh's own later lookup is not bound. A
@@ -675,7 +680,8 @@ marketplace call runs as one operation under the policy a refresh applied
 after it began. Lock order: a marketplace operation comes before any plugin
 lifecycle lock. Code that holds plugin locks and calls the marketplace enters
 one operation first and takes the plugin locks inside it. The [multi-source git marketplace design](../design/multi-source-git-marketplace.md)
-owns those contracts (network targets: its §7.4; refresh and lock order: §12).
+owns those contracts (network targets: its §7.4; local folders: §7.7; refresh,
+lock order and the folder policy keys: §12).
 
 Key boundaries:
 

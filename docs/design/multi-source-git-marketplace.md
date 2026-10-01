@@ -38,8 +38,8 @@
     service.staging.json              # the same, for a development staging base (§11)
     updates.json                      # the update scheduler's times and classifications (§7.3)
     <sourceId>/
-      repo.git/                       # bare partial clone (blob:none)
-      snapshots/<commit>.json         # validated snapshots (§2.2)
+      repo.git/                       # bare partial clone (blob:none); none for a folder source (§7.7)
+      snapshots/<pin>.json            # validated snapshots (§2.2), named by commit or folder revision
       state.json                      # pin, enabled, last sync outcome (§2.1)
   packages/
     <kind>/<name>/<version>/          # installed content packages
@@ -64,30 +64,38 @@ interface SourcesFile {
 interface SourceEntry {
   id: string;                 // ^[a-z0-9][a-z0-9-]{1,62}$, reserved names rejected (§5.1)
   origin: "custom" | "direct";
-  url: string;                // stored in normalized form (§7.1); http with `unencrypted` or a policy listing (§7.4; under slice D1 a folder has `path` instead, §18.4.4)
-  ref?: string;               // branch or tag; default = remote HEAD
-  subdir?: string;            // direct sources only: package path inside the repo
-  auth: { kind: "none" } | { kind: "token"; host: string } | { kind: "ssh" };
+  url?: string;               // a git source: stored in normalized form (§7.1); http with `unencrypted` or a policy listing (§7.4)
+  path?: string;              // a folder source instead of `url`: its canonical path (§7.7); exactly one of the two
+  ref?: string;               // git only: branch or tag; default = remote HEAD
+  subdir?: string;            // git direct sources only: package path inside the repo
+  auth: { kind: "none" } | { kind: "token"; host: string } | { kind: "ssh" };   // a folder: { kind: "none" }
   addedAt: string;            // ISO-8601
   label?: string;             // user-visible override of displayName
   acknowledged?: StoredConfirmations;  // confirmations the source holds (§7.4); absent = none
 }
 
 interface SourceState {       // marketplaces/<id>/state.json, every origin
-  pinnedCommit: string | null;   // 40-hex; null until the first successful sync
+  pinnedCommit: string | null;   // 40-hex for a git source, `local-<64 hex>` for a folder (§7.7); null until the first successful sync
   enabled: boolean;              // browsing and installing only (§7.3)
   lastSync?: { at: string; result: "ok" | ErrorCode; candidate?: string };
   pendingRewrite?: { candidate: string; seenAt: string };   // custom/direct awaiting review
   acknowledged?: StoredConfirmations;  // official and managed sources' confirmations (§7.4)
+  folder?: { dev: string; ino: string };  // a folder source: the directory's identity when it was added (§7.7)
 }
 
-interface StoredConfirmations {
-  url: string;                // the normalized address they were given for; another address holds none
-  warnings: SourceWarning[];  // each once
-}
+type StoredConfirmations =
+  | { url: string; warnings: SourceWarning[] }    // a git source: the normalized address they were given for
+  | { path: string; warnings: SourceWarning[] };  // a folder source: the canonical path they were given for
+  // another address or path holds none; each warning once
 
-type SourceWarning = "unencrypted" | "token-unencrypted" | "internal-network" | "this-computer" | "internal-downloads";
+type SourceWarning = "unencrypted" | "token-unencrypted" | "internal-network" | "this-computer" | "internal-downloads" | "network-folder";
 ```
+
+- A state's pin must fit its source: a folder source holds a folder revision
+  and no history rule (`pendingRewrite`, a `lastSync.candidate`), a git
+  source a commit and no `folder` identity. A state that does not fit reads
+  as `SOURCE_LOCAL_DATA_DAMAGED` `state-invalid`, and the registry refuses
+  to write one.
 
 - The official source comes from the build constant `OFFICIAL_MARKETPLACE`
   (`id: "ave"`, primary URL, optional mirror URLs, `auth`). Managed sources
@@ -179,7 +187,7 @@ origin?: {
   commit: string;
   packagePath: string;
   version: string;
-  rung: "release" | "archive" | "tree" | "legacy";   // "legacy": bound by the §16.3 migration, no digest yet
+  rung: "release" | "archive" | "tree" | "folder" | "legacy";   // "folder": a folder source (§7.7); "legacy": bound by the §16.3 migration, no digest yet
   artifactSha256: string | null;   // zip sha256 (release/archive), tree digest (§6.4), null for legacy
   installedAt: string;
 };
@@ -200,6 +208,12 @@ origin in `packages/ledger.json`.
   the source, the snapshot and version commits, the package path, the used
   rung and every rung outcome in ladder order. Signed and local installs keep
   writing v3 unchanged.
+- A folder install writes receipt schema v4 with `installSource: "folder"` and
+  a `folder` record `{ sourceId, sourceOrigin, revision, packagePath,
+  treeSha256, authoritySha256 }`, and the registry `origin` with `rung:
+  "folder"`, a `local-` commit and an origin other than `official`. It is
+  never a host-secret grant's install (§10.3) and never admits a `process`
+  entry (§7.7). Slice F adds the record's `consent` baseline (§18.7.3).
 
 ## 3. Marketplace repository layout
 
@@ -710,6 +724,9 @@ For a package row in one source snapshot:
 
 ### 6.2 Plugin artifact ladder
 
+This is the ladder of a git source. A folder source's plugin has one rung,
+`folder`, and never downloads (§7.7).
+
 ```
 plan = { snapshotCommit, versionCommit, rungs: [] }        // fixed at plan time
 for rung in [release, archive, tree]:
@@ -831,11 +848,13 @@ string:
   - credentials in the URL (`https://user:secret@…`, `https://token@…`):
     `credentials-in-url`. An ssh user name (`git@`) is not a credential
     (§18.3 #2);
-  - any other scheme (`file:`, `git:`, …): `scheme-unsupported`;
+  - any other scheme (`git:`, …): `scheme-unsupported`;
   - a query, fragment, whitespace, control character or backslash:
     `format`; dot and empty path segments.
 
-  With slice D1 a `file:` URL or a path is a local folder (§18.4.1).
+  A `file:` URL or a path never reaches this function: `normalizeSourceInput`
+  (`src/marketplace/net/source-input.ts`) sends it to the folder stages of
+  §7.7, and keeps `owner/repo` the GitHub shorthand.
 
 Policy allow/block matching (§12), reserved-name checks, token lookup and
 duplicate detection all use the normalized form. Repository identity in those
@@ -1202,6 +1221,120 @@ same normalized URL re-binds them. Official and managed sources cannot be
 removed. A removal waits for a running sync or accept of that source to
 finish, so no write of the old source lands after its directory is gone.
 
+### 7.7 Local folders
+
+A folder is a marketplace (its root holds `marketplace.2.json` or the
+conventional layout of §3.3) or one package (a direct source, §8). It is
+typed where an address is — *Add marketplace…* and *Install from Git URL…* —
+and goes through `sources:preview` and `sources:add`; no channel is its own
+(§13.1). The design and its reasoning are §18.4; this section is what is
+built.
+
+**Input** — `normalizeSourceInput(input, platform, home)` and the preview
+(`MarketplaceService.previewFolder`) run four stages. Stages 1–3 make no
+call on the path: a block or a confirmation ends the preview before a share
+is contacted.
+
+1. **Lexical parse.** A `file:` URL, and input starting with `/`, `~`, a
+   drive (`C:\`, `C:/`), `\\` or `//`, is a folder; anything else is a git
+   address (§7.1). `~` expands to the home directory the service is given.
+   `\\?\C:\…` and `\\?\UNC\server\share\…` lose their prefix, `.` and `..`
+   segments are applied lexically. Refused with `SOURCE_URL_REJECTED`, each
+   with what to enter instead: a relative path (`./x`, `C:foo`, `~user`,
+   `relative-path`), a Windows device path (`device-path`), a drive or UNC
+   path on macOS or Linux (`windows-path`), a `file:` URL naming another
+   computer there (`network-file-url`), a UNC path without its share
+   (`unc-without-share`), a `..` above the drive, share or `/`
+   (`outside-root`), and a branch, subfolder or sign-in given with a folder
+   (`folder-options`).
+2. **Network classification.** A UNC path is on another computer. A Windows
+   drive letter is classified by its current mapping, which the helper
+   `ave-path-kind.exe` (`native/windows-path-kind/`, launched by
+   `src/main/windows-path-kind-launcher.ts`) reads with `QueryDosDeviceW`: a
+   volume, CD-ROM or floppy is local, a `subst` drive is its target's drive
+   (followed a bounded number of times), and anything else — a redirector,
+   an unknown device, a failed query — is a network folder, with the server
+   when the mapping names one. On macOS `/Network/…` and on both macOS and
+   Linux `/net/<host>/…` are automount paths and network; any other path is
+   local: a mounted share was authenticated when it was mounted.
+3. **Policy, then consent.** `allowLocalSources` and the `path:` patterns
+   (§12) are applied to the lexical path first, so a blocked folder costs no
+   call at all, not even the drive's mapping. A network folder then needs
+   `network-folder`; without it the preview answers `{ type: "confirm" }`
+   and the dialog asks.
+4. **Resolution.** The path is walked component by component through
+   `FolderFs` (`lstat`, `readdir`, `readlink`; it has no `realpath`). Each
+   component takes its on-disk spelling — on Windows an 8.3 short name
+   (`PROGRA~1`) takes the long name of the entry with the same `dev` and
+   `ino` — and a link in the entered path is
+   followed by its text: a text that names a network location is refused as
+   `CONTENT_RULE_VIOLATION` `link-to-network` before anything touches it.
+   The policy is applied again to the canonical path. The preview carries the
+   canonical `path`, and `resolvedFrom` (what was typed) when they differ.
+
+**Reading** (`FolderTree`, `src/marketplace/sources/folder-tree.ts`; the
+rules are §18.4.5). Inside the folder a link is judged by its text before
+any call touches its target: one that leaves the folder is
+`link-outside-folder`, one naming another computer `link-to-network`, a
+loop or too many links `limit`; one that stays inside is read as a regular
+file holding its target's bytes. A file is opened without following a final
+link, its `fstat` must be the file `lstat` saw, and after each read the
+chain of directories from the root is checked again; a difference is
+`SOURCE_LOCAL_UNREADABLE` `changed-during-read`. A swap that is undone
+before that check is the stated residual of §18.4.5. `.git/`, `.DS_Store`,
+`._*`, `Thumbs.db` and `desktop.ini` are skipped unread; names are NFC, and
+two names equal after NFC or ignoring case are `case-collision`; a device, socket or FIFO is `special-file`;
+the executable bit is kept. No git command ever runs against a folder, and
+git's `file` transport stays `never` (§18.3 #5 and #6).
+
+**Revision and sync.** A folder's pin is its revision: `local-` and the
+sha256 over the files the snapshot read and one tree digest (§6.4) per
+package, so editing any file a package installs changes it. The snapshot is
+`snapshots/<revision>.json`. A read has no history rule, and only the
+version whose files are in the folder is offered. Every read — the
+background sync, a refresh, a plan — repeats stages 2–4 on the stored path:
+a policy now blocking it, or a network folder without its confirmation,
+fails the same way an add would. A stored path whose walk ends at another
+directory, or whose `dev`/`ino` changed since it was added, fails
+`SOURCE_LOCAL_UNREADABLE` `moved`, and the new target is not read. Any
+failure keeps the last good snapshot; its reason is stored in
+`lastSync.detail` like any sync's (§14) and the Sources row says it after a
+restart.
+
+**Identity.** Two folders are one source when their canonical paths are
+equal byte for byte or their directories report the same non-zero `dev`
+and `ino`; nothing is folded by platform, so a case-sensitive volume keeps
+`/Approved/Tools` and `/approved/tools` as two. A folder that is a source,
+or contains or lies inside one, is refused with `SOURCE_ID_TAKEN`.
+Confirmations are bound to the canonical path (§2.1).
+
+**Plan and install.** A plan reads the folder again (publishing a new
+snapshot when it changed) and copies the package into a capture under the
+work directory; the capture's digest must equal the snapshot's, or the plan
+fails `changed-during-read`. Execution installs only the capture, which is
+deleted when the plan executes, is replaced or expires. An edit made after
+the review therefore never reaches the install, and §18.8's `PLAN_EXPIRED`
+`folder-changed` has no case that raises it. For a plugin the ladder has one
+rung, `folder`: `plugin.json`, `dist/**` and `assets/**`. Declared release
+and archive rungs are not tried and nothing is downloaded. Other top-level
+entries (`src/`, `package.json`, `node_modules/`; the descriptor excepted)
+are left out and listed in the plan's `notInstalled`. A folder with no
+`plugin.json` fails `NO_INSTALLABLE_ARTIFACT` `folder-has-no-build`, and a
+`process` entry is refused with `process-entry-requires-pinned-artifact` at
+the rung and again by the installer (§18.4.9). Skills, agent plugins and MCP
+servers install from the capture the same way.
+
+**Direct folders.** A folder that is one package is a direct source. Its
+version is the descriptor's, or `0.0.0+t<digest12>` from its tree digest
+(§8.2). A reading rule its files break fails the preview with that reason,
+where a marketplace drops the one package with a diagnostic (§2.2). `allowDirectInstall: false` refuses it at the preview, the add and
+the plan (§12).
+
+The folder picker, *Reveal*, the folder badges and the folder rows'
+provenance are slice D2 (§18.4.8): until then the sheet does not list
+`notInstalled`, and a folder row shows its path where a git row shows its
+address.
+
 ## 8. Direct install (no marketplace manifest)
 
 ### 8.1 Inputs
@@ -1209,6 +1342,7 @@ finish, so no write of the old source lands after its directory is gone.
 | Input | Detection | Result |
 |---|---|---|
 | Git URL (+ optional subdir, ref) | first match at the path: `ave-package.json` → `plugin.json` (Agent Plugins) → `SKILL.md` → `AGENTS.md` → `server.json` | a `direct` source entry for that package |
+| Folder path (§7.7) | the same order, at the folder's root | a `direct` folder source for that package |
 | MCP: command / URL form | existing MCP tab form | MCP server entry (unchanged path) |
 | MCP: pasted `server.json` | MCP Registry schema | MCP server entry; npm/PyPI/OCI packages map to `npx`/`uvx`/`docker`; `remotes` map to `http` |
 | MCP: pasted client config | an `mcpServers` object (desktop client config or a project `.mcp.json`) | reuse `claude-desktop-import.ts` preview/apply |
@@ -1223,13 +1357,19 @@ finish, so no write of the old source lands after its directory is gone.
   usual flow is: tag, publish the release asset, then commit the pinned
   descriptor; the user's ref must include that later commit.
 - `SKILL.md` / `AGENTS.md` → `version` from front matter if present, else
-  `0.0.0+g<commit12>`; `minAppVersion` defaults to `0.0.0` for these
-  non-executing kinds.
+  `0.0.0+g<commit12>` in a git source and `0.0.0+t<digest12>` (the package's
+  tree digest, §6.4) in a folder; `minAppVersion` defaults to `0.0.0` for
+  these non-executing kinds.
 - `server.json` → `version` from the file; `minAppVersion` `0.0.0`.
 
 A direct package updates when its ref moves to a descendant commit that
 declares a higher version (or any new commit for synthesized `0.0.0+g…`
-versions), after the same update review as marketplace packages.
+versions), after the same update review as marketplace packages. A direct
+folder offers an update whenever its files change a synthesized version.
+
+`allowDirectInstall: false` (§12) refuses a direct source, git or folder,
+at the preview once the input is found to be one package, at the add, and
+at every plan from a direct source added before it.
 
 ## 9. Git runtime
 
@@ -1678,14 +1818,18 @@ files is a device-management action).
 ```jsonc
 // policy.json (system scope)
 "marketplaces": {
-  "allow": ["https://github.com/acme/*", "host:git.corp.example"],  // absent = no restriction
-  "block": ["host:git.example.org"],
+  "allow": ["https://github.com/acme/*", "host:git.corp.example", "path:/srv/ave/*"],  // absent = no restriction
+  "block": ["host:git.example.org", "path:/tmp/*"],
   "allowHttpHosts": ["git.corp.example"],                           // plain-http hosts that need no confirmation; default none
   "requireHttps": false,                                            // true: plain http is a policy block, allowHttpHosts excepted
   "blockPrivateNetworks": false,                                    // true: internal and this-computer targets are a policy block, policy-listed hosts excepted
   "allowDirectInstall": true,
+  "allowLocalSources": true,                                        // false: no folder is a source or a direct install
   "allowDisablingOfficial": false,
-  "additional": [{ "id": "corp", "url": "https://git.corp.example/ave/marketplace.git" }],
+  "additional": [
+    { "id": "corp", "url": "https://git.corp.example/ave/marketplace.git" },
+    { "id": "team-share", "path": "\\\\files.corp\\ave\\marketplace" }      // a folder: `path` instead of `url`
+  ],
   "defaultInstalls": [{ "kind": "plugin", "name": "wiki-search", "source": "corp" }],
   "requiredInstalls": [{ "kind": "plugin", "name": "orion-api", "source": "corp" }]
 },
@@ -1721,6 +1865,24 @@ files is a device-management action).
   only to the release that carries slice C and later.
 - Host fields (`host:` patterns, `allowHttpHosts`, `auth.host`) take no port;
   a token's `auth.host` must be the source's own host.
+- **Folders** (§7.7). `path:<folder>` matches that absolute folder,
+  `path:<prefix>*` every folder whose path starts with the text before the
+  `*` (end it with a separator, `path:/srv/ave/*`, to mean the folders below
+  one folder), and `path:*` every folder; a `*` anywhere else is rejected.
+  `/` and `\` are one separator and a drive letter matches in either case.
+  Both lists compare Unicode NFC forms. An `allow` pattern matches the
+  spelling written; a `block` pattern also ignores case, so no respelling
+  escapes it. `path:` patterns apply
+  only to folders and host or URL patterns only to git addresses, so an
+  `allow` list with no `path:` pattern admits no folder. A folder is judged
+  on its typed path before anything touches it, and again on its canonical
+  path after the walk (§7.7 stages 3–4).
+- `allowLocalSources` (default `true`): `false` refuses every folder, as a
+  source and as a direct install, with `local-sources-blocked`, before any
+  filesystem call — also a drive letter's mapping.
+- `allowDirectInstall` (default `true`): `false` refuses a direct source, git
+  or folder, at the preview, the add and every plan from one added earlier
+  (`direct-install-blocked`, §8.2).
 - The section is read exactly. An unknown key, a duplicate key, `null` where a
   list belongs, a pattern that does not parse, an `additional` source that the policy's own lists block, or
   an install entry naming a source that is neither official nor `additional`
@@ -1731,6 +1893,12 @@ files is a device-management action).
   `additional` source is itself a listing, so a plain-http one needs no
   `allowHttpHosts` entry; only under `requireHttps: true` does its host have
   to be in `allowHttpHosts`, or the section is invalid.
+- An `additional` entry with `path` instead of `url` is a managed folder. It
+  takes no `ref` or `auth`, its path is absolute (`~` names no home in a
+  system file) and read for the running platform, and it holds
+  `network-folder` through the entry. It makes the section invalid under
+  `allowLocalSources: false`, when the policy's own lists block it, and when
+  it is, contains or lies inside another `additional` folder.
 - `defaultInstalls` and `requiredInstalls` follow §10.2 and may name official
   and managed sources only. A key in both lists is treated as required.
 - **A policy change takes effect at the next operation, without a restart.**
@@ -1813,8 +1981,7 @@ files is a device-management action).
     invalid behaves as an invalid policy at start: official only, with
     `policy-invalid` shown. It recovers at the
     first operation after the file is fixed.
-- Later slices of §18 add `allowLocalSources`, `autoUpdate`, `path:` patterns
-  and `additional[].path` (§18.6).
+- `autoUpdate` (§18.6) belongs to slice F.
 
 ## 13. IPC contract
 
@@ -1854,8 +2021,11 @@ Events: `marketplace:sync-progress`, `marketplace:catalog-changed`,
 All channels are host-renderer only (`validateHostRendererSender`) and
 audited as today. `ave:git:runtime:install` also requires a live keyboard
 gesture: it downloads a binary the marketplace then runs. `planId` and `previewId` are single use and expire after 10
-minutes (`PLAN_EXPIRED`). Disposition of today's channels is in §16.2. The
-channels for folders and automatic updates, from later slices, are in §18.9.
+minutes (`PLAN_EXPIRED`). Disposition of today's channels is in §16.2.
+Folder sources add no channel: a folder is typed into `sources:preview` and
+added with `sources:add` (§13.1). The folder dialogs (`sources:pick-folder`,
+`sources:reveal`, slice D2) and the automatic-update channels (slice F) are
+in §18.9.
 
 ### 13.1 As built
 
@@ -1879,6 +2049,18 @@ wins:
   carry (§7.2 step 2). A direct install from a git folder goes through it with
   `subdir`. `acknowledge` holds only the warnings of §2.1, each once; *Add*
   stores exactly the preview's.
+- A folder goes through the same preview (§7.7). It takes no `ref`,
+  `subdir`, sign-in or token (`SOURCE_URL_REJECTED` `folder-options`); a
+  folder on another computer answers `{ type: "confirm"; warnings: [{
+  warning: "network-folder", host, address }] }` (`host` the server, `null`
+  when the drive's mapping names none). Every preview and `SourceView`
+  carries `transport: "git" | "folder"`; a folder's has `url: null` and its
+  canonical `path`, and a preview adds `resolvedFrom` (the typed input, when
+  the walk resolved a link) or `null`. A folder's `commit` and `pinnedCommit`
+  are its `local-` revision. `InstallPlan` carries `notInstalled` (a folder
+  plugin's top-level entries left out; empty otherwise), a `RungView` and the
+  install progress may name the `folder` rung, and a package's provenance
+  carries `repository` or `folder`, the other `null`.
 - `remove`, `set-enabled`, `accept-rewrite`, `set-token`, `delete-token` and
   `acknowledge` take positional arguments (`id`, `enabled`, `commit`, `host`,
   `token`, `warnings`), and `refresh` answers `SourceView[]`. `acknowledge`
@@ -1986,12 +2168,12 @@ subject in both catalogs.
 | `GIT_RUNTIME_MISSING` | no usable git | — | `gitMarketplace.error.gitMissing` |
 | `GIT_RUNTIME_TOO_OLD` | system git older than 2.45.1 in `system` mode | — | `.gitTooOld` |
 | `GIT_RUNTIME_INSTALL_FAILED` | managed download/verify/extract/smoke test failed | the phase: `checking`, `downloading`, `verifying`, `extracting`, `smoke-testing`, `installing` (the final move into place) — no fields | `.gitInstallFailed`, `.gitInstallFailed.<phase>` |
-| `SOURCE_URL_REJECTED` | the refusals of §18.3 #1–4 and #7, and unsupported input; no confirmation exists | from the normalizer: `credentials-in-url`, `helper-transport` (scheme), `scheme-unsupported` (scheme), `format` (query, fragment, whitespace, control character or backslash); from the gate, on the address a connection would use: `address-metadata` (host, address), `address-unroutable` (host, address), `catalog-this-computer` (source, host); from the deep link: `deep-link-path`. A download URL's own refusals carry none | `.urlRejected`, `.urlRejected.<reason>`; the two address reasons say "check the address" only for an address being typed or a source the user added, and otherwise (`.network`) name a VPN, proxy or hosts file and the administrator |
-| `SOURCE_POLICY_BLOCKED` | managed policy allow/block, `requireHttps`, `blockPrivateNetworks`, or an unreadable policy for a non-official target | `blocked-by-pattern` (target, pattern, policyPath), `not-in-allow-list` (target, policyPath), `https-required` (target, policyPath), `private-network-blocked` (target, address, policyPath), `policy-invalid` (error) | `gitMarketplace.policy.blocked`, `.blockedByPattern`, `.notInAllowList`, `.httpsRequired`, `.privateNetworkBlocked`, `.policyInvalid` |
-| `SOURCE_CONFIRMATION_REQUIRED` | a target needs a confirmation the source does not hold (§7.4): at a sync, plan or install, or a download that no source names | the warning: `unencrypted` (host), `token-unencrypted` (host), `internal-network` (host, address), `this-computer` (host, address), `internal-downloads` (source, host) | `.confirmationRequired`; with a reason, `gitMarketplace.warning.<warning>` (the confirmation's own question; `internalNetwork.proxyRange` for a `198.18.0.0/15` address) |
+| `SOURCE_URL_REJECTED` | the refusals of §18.3 #1–4 and #7, and unsupported input, a folder path included; no confirmation exists | from the normalizer: `credentials-in-url`, `helper-transport` (scheme), `scheme-unsupported` (scheme), `format` (query, fragment, whitespace, control character or backslash); from the gate, on the address a connection would use: `address-metadata` (host, address), `address-unroutable` (host, address), `catalog-this-computer` (source, host); from the deep link: `deep-link-path`; from a folder path (§7.7): `relative-path`, `device-path`, `windows-path`, `network-file-url`, `unc-without-share`, `outside-root`, `folder-options`. A download URL's own refusals carry none | `.urlRejected`, `.urlRejected.<reason>`; the two address reasons say "check the address" only for an address being typed or a source the user added, and otherwise (`.network`) name a VPN, proxy or hosts file and the administrator |
+| `SOURCE_POLICY_BLOCKED` | managed policy allow/block, `requireHttps`, `blockPrivateNetworks`, `allowLocalSources`, `allowDirectInstall`, or an unreadable policy for a non-official target | `blocked-by-pattern` (target, pattern, policyPath), `not-in-allow-list` (target, policyPath), `https-required` (target, policyPath), `private-network-blocked` (target, address, policyPath), `local-sources-blocked` (target, policyPath), `direct-install-blocked` (target, policyPath), `policy-invalid` (error) | `gitMarketplace.policy.blocked`, `.blockedByPattern`, `.notInAllowList`, `.httpsRequired`, `.privateNetworkBlocked`, `.localSourcesBlocked`, `.directInstallBlocked`, `.policyInvalid` |
+| `SOURCE_CONFIRMATION_REQUIRED` | a target needs a confirmation the source does not hold (§7.4): at a sync, plan or install, or a download that no source names | the warning: `unencrypted` (host), `token-unencrypted` (host), `internal-network` (host, address), `this-computer` (host, address), `internal-downloads` (source, host), `network-folder` (server, path: a folder on another computer, at a read of a folder source that does not hold it) | `.confirmationRequired`; with a reason, `gitMarketplace.warning.<warning>` (the confirmation's own question; `internalNetwork.proxyRange` for a `198.18.0.0/15` address; `networkFolder.unknownServer` when the drive's mapping names no server and `networkFolder.automount` on macOS and Linux) |
 | `SOURCE_NAME_RESERVED` | reserved id | — | `.nameReserved` |
 | `SOURCE_ID_INVALID` | id is not 2–63 lowercase letters, digits or `-`, or names no source | — | `.idInvalid` |
-| `SOURCE_ID_TAKEN` | id or repository already added | — | `.idTaken` |
+| `SOURCE_ID_TAKEN` | id or repository already added; a folder that is a source, or contains or lies inside one (§7.7) | — | `.idTaken` |
 | `SOURCE_AUTH_REQUIRED` | 401/403, ssh denied; a "repository not found" after Ave offered the stored token | `token` (host), `token-no-access` (host: the host answered "repository not found" to the stored token, which may lack access), `token-unencrypted` (host: the host wants sign-in over plain http and the source does not hold `token-unencrypted`, so no credential was offered), `ssh` (host) — from git's message; a download's refusal carries none, since its host need not be the token's | `.authRequired`, `.authRequired.token`, `.authRequired.tokenNoAccess`, `.authRequired.ssh`, each with the variants below; `.authRequired.tokenUnencrypted` with `.entry` and `.setToken` |
 | `SOURCE_SSH_HOST_UNKNOWN` | host key not in known_hosts, or different from it | `unknown` (host, port), `changed` (host, port) — `changed` when ssh prints "remote host identification has changed"; the sentence carries the `ssh-keyscan` or `ssh-keygen -R` command, which *Copy command* copies | `.sshHostUnknown`, `.sshHostUnknown.unknown`, `.sshHostUnknown.changed` |
 | `SOURCE_REF_NOT_FOUND` | branch or tag missing | `missing` (ref, repository, available) — after the fetch fails, `ls-remote` lists up to 10 branches, then tags | `.refNotFound`, `.refNotFound.missing` |
@@ -2002,6 +2184,7 @@ subject in both catalogs.
 | `SOURCE_DISABLED` | install or update requested from a hidden source (it still syncs for packages bound to it, §7.3) | — | `.sourceDisabled` |
 | `SOURCE_LOCAL_DATA_DAMAGED` | the source's downloaded copy cannot be used (§2.1); a Repair that could not move it aside or write the kept pin back | pin lost: `state-missing`, `state-invalid`, `state-unreadable`; pin kept: `snapshot-invalid`, `snapshot-unreadable`, `repository-damaged`; Repair: `repair-failed` (a pin was kept), `repair-failed-unpinned` (none to keep), `repair-write-failed` (sourceId) — a message names files relative to the source and an fs error by its code, never a home path; a sentence names the source as its row does (the official source by its origin's name, another by its label, the id only when no listed source is known) | `.localDataDamaged`, `.localDataDamaged.<reason>` |
 | `SOURCE_LIST_UNREADABLE` | `marketplaces/sources.json`, the list of sources the user added, cannot be read or is not in Ave's format; every source change is refused until the user fixes or deletes it (no repair: it is the user's data) | `unreadable` (fsCode), `invalid` — the message names the file and an fs error by its code, never a home path | `.listUnreadable`, `.listUnreadable.<reason>` |
+| `SOURCE_LOCAL_UNREADABLE` | a folder source, or a folder being added, cannot be read (§7.7); the last good snapshot stays served and the next read tries again | `not-found` (path), `permission` (path, message), `io` (path, message), `moved` (path, target: the stored path now leads elsewhere, which is not read), `not-a-directory` (path), `ambiguous-case` (path: two entries match the typed name ignoring case on a case-sensitive volume), `changed-during-read` (path) — `message` is the system's, scrubbed | `.localUnreadable`, `.localUnreadable.<reason>`; `notFound` with `.entry` (a folder being typed) and `.managed`, `moved` with `.managed` |
 | `PLAN_EXPIRED` | plan/preview id expired or reused, or made under another managed policy (§12) | `policy-changed` | `.planExpired`, `.planExpired.policyChanged` |
 | `PACKAGE_INCOMPATIBLE` | no version is offered to this installation: `minAppVersion` above the app version, another platform, a pre-release without canary, or a rollout that excludes it | `min_app_version` (name, version), `platform` (name, platform), `host_protocol` (name) — when the excluded version is known | `.incompatible`, `.incompatible.minAppVersion`, `.incompatible.platform`, `.incompatible.hostProtocol` |
 | `PACKAGE_COMPAT_UNDECLARED` | git-installed plugin without `requires.minAppVersion` | — | `.compatUndeclared` |
@@ -2014,8 +2197,8 @@ subject in both catalogs.
 | `MANIFEST_MISMATCH` | plugin.json vs descriptor | — | `.manifestMismatch` |
 | `process-entry-unconfined` | a `process` entry while the OS tool sandbox is off, or on Windows (§18.4.9) | — | `formatIpcError.processEntryUnconfined` |
 | `process-entry-requires-pinned-artifact` | a `process` entry not installed from a sha256-pinned release or archive artifact (§18.4.9) | — | `formatIpcError.processEntryRequiresPinnedArtifact` |
-| `NO_INSTALLABLE_ARTIFACT` | every rung skipped or failed (`SOURCE_AUTH_REQUIRED` instead when every failed rung needed sign-in) | — | `.noArtifact` |
-| `CONTENT_RULE_VIOLATION` | content kind file rules | — | `.contentRule` |
+| `NO_INSTALLABLE_ARTIFACT` | every rung skipped or failed (`SOURCE_AUTH_REQUIRED` instead when every failed rung needed sign-in) | `folder-has-no-build` (name: a folder plugin without `plugin.json`, §7.7) | `.noArtifact`, `.noArtifact.folderHasNoBuild` |
+| `CONTENT_RULE_VIOLATION` | content kind file rules; a folder's reading rules (§7.7) | `link-outside-folder` (path, target), `link-to-network` (path, target), `special-file` (path), `case-collision` (path), `limit` (path, limit) — `path` relative to the folder, `target` the link's own text | `.contentRule`, `.contentRule.<reason>` |
 | `invalid-request`, `unauthorized-frame`, `unavailable` | envelope only (§13.1) | — | `.invalidRequest`, `.unauthorizedFrame`, `.unavailable` |
 
 A failure is shown by `MarketplaceProblem` in one of three tones (§18.8):
@@ -2040,15 +2223,20 @@ reason belongs to `lastSync.result` (and drops it, keeping the code,
 otherwise), and `sourceStatus` copies it into the `unreachable` and
 `auth-required` views (§15.4).
 
-Later slices add `SOURCE_LOCAL_UNREADABLE` and the folder and update reasons
-§18.8 lists for situations this build does not yet distinguish. Each slice
-that adds a code or reason adds its sentences (§18.8, §18.10).
+A folder source's background read fails the same way: its
+`SOURCE_LOCAL_UNREADABLE` detail is stored in `lastSync.detail` and its row
+names the reason (*Folder not found*, *Folder unreadable*, *Folder moved*)
+with the sentence above. Later slices add the update reasons §18.8 lists
+for situations this build does not yet distinguish. Each slice that adds a
+code or reason adds its sentences (§18.8, §18.10).
 
 ## 15. UI specification
 
 The mockup shows every state below. Settings → Marketplace becomes the in-app
-store (the web store is gone). Later slices add folder rows (§18.4.8). The
-Updates card (§15.7.1) is built and lands in the release after 0.13.0.
+store (the web store is gone). A folder source's row shows its path where a
+git row shows its address (§15.4); the folder picker, *Reveal* and the folder
+badges and provenance rows are slice D2 (§18.4.8). The Updates card (§15.7.1)
+is built and lands in the release after 0.13.0.
 
 ### 15.1 Browse
 
@@ -2078,12 +2266,14 @@ Updates card (§15.7.1) is built and lands in the release after 0.13.0.
 
 ### 15.2 Package detail (sheet)
 
-Sections: overview; **Provenance** (source, repository, path, commit short SHA
-with the full SHA in a tooltip and a copy button, published date);
+Sections: overview; **Provenance** (source, repository — or the folder of a
+folder source — path, commit short SHA with the full SHA in a tooltip and a
+copy button, published date);
 **Compatibility** (`minAppVersion` and verdict); **Permissions** (from the
 descriptor's authority, before any download); **Delivery** (the rung list with
 the rung that will be used; a plain-http release or archive says
-"unencrypted download — verified by the pinned sha256"); **Versions** (history
+"unencrypted download — verified by the pinned sha256"; a folder plugin's one
+rung is "Built tree in the folder"); **Versions** (history
 with yanked and incompatible markers).
 
 A failed install that the source can allow (§14) offers *Allow…*. For a
@@ -2101,14 +2291,16 @@ failure shows every rung's reason and a copyable diagnostic.
 
 ### 15.4 Sources
 
-Table: source (label, URL, origin badge), pinned commit (short SHA with
-tooltip, relative time of last sync), package count, status (`Up to date`,
+Table: source (label, URL or a folder source's path, origin badge), pinned
+commit (short SHA with tooltip — a folder's revision without its `local-`
+prefix — relative time of last sync), package count, status (`Up to date`,
 `Syncing`, `Auth required`, `History rewritten — review`, and for any other
 failed sync a chip by its code: `Unreachable` only when the host was not
 reached, else `Repository not found`, `No marketplace found`, `Branch or tag
 not found`, `Marketplace index invalid`, `SSH host key not verified`,
 `Blocked by policy`, `Address refused`, `Needs your confirmation`, `Git
-unavailable`, or `Update failed` for any other code; each adds `— showing
+unavailable`, for a folder source `Folder not found`, `Folder moved` or
+`Folder unreadable`, or `Update failed` for any other code; each adds `— showing
 cached` while the pinned snapshot is served) with, under an unreachable or
 auth-required status, the failure's sentence from its stored detail (§14),
 enabled switch, overflow (Refresh, Set token, Remove). Official and managed
@@ -2136,8 +2328,11 @@ managed rows show a lock.
 
 ### 15.5 Add marketplace dialog
 
-Step 1: URL field (accepts `owner/repo`), optional ref, auth radio
-(None / Token / SSH). When the address needs confirmations (§7.2 step 2), a
+Step 1: URL field (accepts `owner/repo`, and a folder path or `file:` URL,
+§7.7), optional ref, auth radio (None / Token / SSH); a folder takes no ref
+or sign-in, and the refusal says so. A folder on another computer asks
+`network-folder` in the same confirm step. *Choose folder…* and showing the
+path a folder was resolved from are slice D2. When the address needs confirmations (§7.2 step 2), a
 confirm step comes before any traffic. It shows "Before Ave connects" and
 one question per warning, in the warning tone (*Cancel* / *Continue*).
 *Continue* previews again with them. Changing any field drops the
@@ -2388,7 +2583,8 @@ The tests of §18's slices are listed with each slice of §18.10.
 | No privileges | a custom package with the same name as a granted plugin gets no grant; a grant fails for a different artifact hash, for a tree-rung install and for a swapped manifest; a legacy entry keeps the grant only with a matching receipt hash; a source's revocation ignores other sources' packages; no package can block its own uninstall; a manifest carrying `installPolicy` is rejected at install |
 | Default and required installs | default: installed once through the ladder, never reinstalled after uninstall; required: reinstalled and updated at boot, uninstall and disable denied with `PACKAGE_REQUIRED_BY_POLICY`, becomes a user install when the entry is removed; both lists limited to official/managed sources; migration marks former admin installs as applied and unlocks unmatched entries |
 | Identity | reserved names, same `(kind, name)` across sources, `PACKAGE_ID_CONFLICT`, update binding, source switch keeps plugin data |
-| Direct install | each detection branch; `server.json` mapping for npm/pypi/oci/remote |
+| Direct install | each detection branch; `server.json` mapping for npm/pypi/oci/remote; `folder-direct.test.ts`: a direct folder's synthesized `0.0.0+t…` version, which changes with its files, and `allowDirectInstall: false` refusing it at the preview (a marketplace folder still previews), the add and the plan |
+| Local folders (§7.7) | `source-input.test.ts` under `path.posix` and `path.win32` rules: every accepted folder form normalizes and every refused form names its reason, and `a/b` stays the GitHub shorthand. With the recording volume of `fixtures/folder-fs.ts` (every call logged): `folder-consent.test.ts` — a UNC path answers `confirm` with no call at all and a share-mapped drive with only `queryDosDevice`, the same inputs under `allowLocalSources: false` are blocked with none, an acknowledged folder is read with no call outside the reader's own (no `realpath`), `/tmp → private/tmp` and a root that is itself a link resolve, an ancestor link to `\\attacker\share` is `link-to-network` with no call on it, a block found only on the canonical path ends the preview before a file is opened, a Windows 8.3 short name is spelled by its long name; `folder-real-fs.test.ts` on the machine's own filesystem (run on macOS and on Windows) — a network path answered before any call, a link inside (a junction on Windows) read and one leaving the folder refused unread, a directory reached twice a loop, and the volume's own case rule; `folder-tree.test.ts` — an inside link reads as a file, an outside link and a link chain or junction to a share stop at their text with no call on the target, a mapped network drive by its mapping, a loop, an `fstat` mismatch, an ancestor swap kept in place (`changed-during-read`, no outside byte in the package) and the stated residual of one undone before the recheck, the skip list, NFD/NFC and collisions, special files, a plugin's left-out entries; `folder-identity.test.ts` — a case-sensitive volume keeps two spellings as two sources, an `allow` `path:` admits only its spelling and a `block` every spelling, a case-insensitive volume and an aliased directory are one source by on-disk spelling and `dev`/`ino`, nesting is refused; `folder-sync.test.ts` — editing a `SKILL.md` changes the revision, no git command and no download run, only the folder's version is offered, a background `permission` failure keeps its reason through a reload and renders, a stored path now leading elsewhere is `moved` without reading the target; `folder-plan.test.ts` — a plugin file and a `SKILL.md` edited between plan and execute install the planned bytes, a declared release is never fetched, the executable bit survives, a `process` entry is refused with `process-entry-requires-pinned-artifact`, a folder with no `plugin.json` is `folder-has-no-build`, and the capture is deleted; `plugin-ladder.test.ts` — a git tree with `src/` still fails the tree rung; `policy.test.ts` — `allowLocalSources`, an `allow` list without `path:`, `path:` prefixes and Windows spellings, `path:` and git patterns kept apart, and `additional[].path` with its refusals; `registry.test.ts` — a folder entry and its identity round-trip, confirmations bound to the path, the pin paired with the transport, a managed folder holding `network-folder`; `windows-path-kind-launcher.test.ts` and, on Windows, `scripts/test-windows-path-kind.mjs` (CI step *Verify Windows folder classification*): `C:` maps to a volume, a `subst` drive (and a `subst` of one) to its target, and an unused or removed drive fails closed |
 | Service | `former-service.json` parsing, `movedTo` with and without `movedFrom`, reset on build-constant change, policy override, announcements parity, label fallback |
 | E2E | packaged dev build (loopback allowed by the dev flag) adds a local-HTTP git marketplace, installs one package of each kind, updates, removes the source; without the dev flag, the same kind of source asks for `unencrypted` and `this-computer` before the fixture server sees any request, and the preview, cards and Sources row show the badges |
 
@@ -2399,14 +2595,16 @@ The tests of §18's slices are listed with each slice of §18.10.
 > later slices after it. Where this section says 0.13.0, read the release that
 > carries the slice.
 > - Slice B (messages), slice C (target classes, warnings and connection
->   binding) and slice E (discovery and status) are built. §7, §12–§15 and
->   §17 describe them as built: §7.4 for the classes, outcomes and binding of
->   §18.2, §18.3 #1–4 and #7, and §18.5, §12 for `requireHttps`,
->   `blockPrivateNetworks` and the policy refresh of §18.6, and §7.3 and
->   §15.7.1 for the update scheduler, `updates.json` and the Updates card of
->   §18.7.1 and §18.9.
-> - The rest (folders, automatic apply and what its settings decide, slices
->   D1, D2 and F) is not built. Where this section and an earlier one
+>   binding), slice E (discovery and status) and slice D1 (folder sources:
+>   engine and consent) are built. §7, §12–§15 and §17 describe them as
+>   built: §7.4 for the classes, outcomes and binding of §18.2, §18.3 #1–4
+>   and #7, and §18.5, §12 for `requireHttps`, `blockPrivateNetworks` and the
+>   policy refresh of §18.6, §7.3 and §15.7.1 for the update scheduler,
+>   `updates.json` and the Updates card of §18.7.1 and §18.9, and §7.7, §8,
+>   §12, §13.1, §14 and §15 for the folders of §18.3 #5–6, §18.4 and the
+>   folder keys of §18.6.
+> - The rest (the folder dialogs and presentation, automatic apply and what
+>   its settings decide, slices D2 and F) is not built. Where this section and an earlier one
 >   disagree, the earlier section describes the build and this section the
 >   target.
 > - Each slice of §18.10 rewrites the owning section in the same change and
@@ -2427,9 +2625,9 @@ The tests of §18's slices are listed with each slice of §18.10.
 
 ### 18.2 Outcomes, and who chose the target
 
-> Built in slice C for git and downloads; §7.4 describes it as built. The
-> `network-folder` and `unencrypted-updates` warnings belong to slices D1 and
-> E.
+> Built in slice C for git and downloads; §7.4 describes it as built.
+> `network-folder` is built in slice D1 (§7.7); `unencrypted-updates`
+> belongs to slice F.
 
 | Outcome | Meaning | Who can change it | UI tone |
 |---|---|---|---|
@@ -2671,8 +2869,9 @@ blocks may not.
 
 ### 18.3 Hard refusals
 
-> #1–4 and #7 are built (slice C, §7.1, §7.4, §13.1). #5 and #6 belong to
-> slice D1, and #8 to the Publication plan.
+> #1–4 and #7 are built (slice C, §7.1, §7.4, §13.1), #5 and #6 in slice D1
+> (§7.7). #8 belongs to the Publication plan; a folder's `process` entry is
+> already refused (§18.4.9).
 
 Each is refused because no user decision makes it safe. Everything else is a
 warning (§18.2) or a policy decision (§18.6).
@@ -2703,6 +2902,19 @@ instead:
   `marketplace.2.json` (decision 11).
 
 ### 18.4 Local folders
+
+> Built in slice D1; §7.7 describes it as built, with these differences
+> from the text below:
+> - A plan captures the package (§18.4.2), so a folder edited after the
+>   review cannot reach the install, and `PLAN_EXPIRED` `folder-changed`
+>   (§18.8) has no case that raises it. A capture whose digest differs from
+>   the fresh snapshot fails the plan with `SOURCE_LOCAL_UNREADABLE`
+>   `changed-during-read`.
+> - The folder receipt is written without `consent` (§18.4.2); slice F adds
+>   it with §18.7.3's baseline.
+> - The folder picker, *Reveal*, the *Local folder* and *Network folder*
+>   badges, the folder rows and provenance of §18.4.8, and showing the plan's
+>   `notInstalled` are slice D2.
 
 A folder is a marketplace source (its root holds `marketplace.2.json` or the
 conventional layout of §3.3) or a direct package (§8).
@@ -3000,7 +3212,8 @@ states that a local directory source is refused like `installLocal`
   ineligible for `process` admission, under any later rule. Slice D1 refuses a
   `process` manifest from a folder at the ladder:
   - with `process-entry-unsupported` while that is the code on `main`;
-  - with `process-entry-requires-pinned-artifact` once P3 has merged.
+  - with `process-entry-requires-pinned-artifact` once P3 has merged — the
+    code it was built with, at the folder rung and again by the installer.
 
   Whichever of D1 and P4 merges second keeps that refusal on the folder path,
   so it never lapses between them.
@@ -3010,9 +3223,9 @@ states that a local directory source is refused like `installLocal`
 
 ### 18.5 Add flow, confirmations and badges
 
-> Built in slice C for git addresses (§7.2, §15.4, §15.5). The folder steps,
-> `network-folder`, `unencrypted-updates` and the *Network folder* and *Local
-> folder* badges belong to slices D1, D2 and E.
+> Built in slice C for git addresses (§7.2, §15.4, §15.5), and in slice D1
+> for the folder steps and `network-folder` (§7.7). The *Network folder* and
+> *Local folder* badges belong to slice D2, `unencrypted-updates` to slice F.
 
 1. The user enters an address or chooses a folder.
 2. `sources:preview` parses it (§7.1, §18.4.1 stages 1–2) and applies the
@@ -4148,6 +4361,9 @@ The E2E flows named below run in `test/e2e/ui/`.
     - a folder plugin with a declared release never calls `fetchImpl`;
     - a `process` manifest from a folder is refused with the code `main`
       has at merge time.
+
+    As built, the git case is in `plugin-ladder.test.ts` and the three
+    folder cases run through the service in `folder-plan.test.ts` (§17).
   - `policy.test.ts`: `allowLocalSources: false` blocks a folder; an `allow`
     list without `path:` blocks a folder; `path:/opt/a/*` admits `/opt/a/b`.
   - Windows CI: `native/windows-path-kind/` maps `C:` to a local volume and
