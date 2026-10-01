@@ -3466,32 +3466,41 @@ app logger, and one test per mode parses every stdout line as a report row.
   **`withholds-construct`** reads construct and never answers → under `--fast`,
   `protocol.construct` fails `timed out after 1000 ms` and the CLI exits 1 within 3 s —
   long before the 20 s cleanup deadline — with exactly one terminate, no live child or
-  open handle left, and a reply the fixture writes 2 s later ignored (stop passing
-  `signal` → the run lasts until the cleanup deadline, fails); **`slow-construct`**
-  answers construct after 10.5 s, run **without** `--fast` → `protocol.construct` fails
-  at 10 s with every later row but `protocol.teardown` `not exercised` (bound construct
-  at `pluginImportMs + pluginFactoryMs` again → construct passes at 10.5 s, fails). It
-  is the suite's one slow case, with a 20 s test timeout. **`ignores-sigterm`** answers
-  construct, installs a no-op `SIGTERM` handler and never answers start → under
-  `--fast`, `lifecycle.start` fails at 1 s, the link's `signalsSent` is exactly one
-  `SIGTERM` and, 3 s later, one `SIGKILL`, the child's exit is observed and
-  **`protocol.teardown` passes**; exit code 1 (let `--fast` cap the teardown wait → the
-  row fails before the SIGKILL, fails; use the helper's 2 s default → the SIGKILL timing
-  assertion fails). **Refused signals**, the case this row exists for, distinct from the
-  one above: `withholds-construct` and `withholds-start-reply`, each spawned by the test
-  and passed to `runProtocolChecksOnChild` with that one child instance's `kill`
-  replaced by Node's refusal path (emit `error` with `code: "EPERM"` synchronously,
-  return `false`), under `--fast` → the timeout row fails (`protocol.construct`, resp.
-  `lifecycle.start`), every later row but `protocol.teardown` is `not exercised`, and
-  `protocol.teardown` fails `child did not exit after termination` after 5 s with
-  `signalsSent` `SIGTERM` then `SIGKILL` and two `terminationFaults`, one per refusal;
-  and the CLI **returns**, exit code 1, within 1 s after that 5 s wait ends — 7 s from
-  the run's start for the construct case — although the child is still alive (host
-  re-review #32: an unexited child bounds the run, never holds it); the test's
-  `afterEach` kills the child by pid (skip the finalizer when the opener rejects → the
-  construct case has no `protocol.teardown` row, fails; report `protocol.teardown` as
-  `not exercised` after a timeout → both fail). `knip.jsonc:47-50` gains the
-  `fixtures/raw/*.mjs` glob beside the host-protocol one.
+  open handle left, and a reply the fixture writes 2 s later ignored, and the run's
+  `signal` is the one `openValidationSession` received (remove the finalizer → no
+  `protocol.teardown` row is reported, fails; the signal-specific
+  proof is S1's mid-construct cancellation test, because the finalizer alone would also
+  end this run); **`slow-construct`** answers construct after 10.5 s, run **without**
+  `--fast` → `protocol.construct` fails at 10 s with every later row but
+  `protocol.teardown` `not exercised` (bound construct at `pluginImportMs +
+  pluginFactoryMs` again → construct passes at 10.5 s, fails). It is the suite's one
+  slow case, with a 20 s test timeout. **`ignores-sigterm`** answers construct, installs
+  a no-op `SIGTERM` handler and never answers start → under `--fast`, `lifecycle.start`
+  fails at 1 s; **on macOS and Linux** the link's `signalsSent` is exactly one `SIGTERM`
+  and, 3 s later, one `SIGKILL`, the child's exit is observed and **`protocol.teardown`
+  passes**; exit code 1 (let `--fast` cap the teardown wait → the row fails before the
+  SIGKILL, fails; use the helper's 2 s default → the SIGKILL timing assertion fails).
+  **On Windows** Node's `kill("SIGTERM")` ends the process forcefully — "the process
+  will always be killed forcefully and abruptly"
+  (<https://nodejs.org/api/child_process.html#subprocesskillsignal>, checked 2026-10-01)
+  — so a handler cannot ignore it: the same case asserts exactly one `SIGTERM`, no
+  `SIGKILL`, the exit observed before the grace period ends and `protocol.teardown`
+  passed. The escalation is proven there by the scripted-link and injected-refusal
+  cases, which are cross-platform. **Refused signals**, the case this row exists for,
+  distinct from the one above: `withholds-construct` and `withholds-start-reply`, each
+  spawned by the test and passed to `runProtocolChecksOnChild` with that one child
+  instance's `kill` replaced by Node's refusal path (emit `error` with `code: "EPERM"`
+  synchronously, return `false`), under `--fast` → the timeout row fails
+  (`protocol.construct`, resp. `lifecycle.start`), every later row but
+  `protocol.teardown` is `not exercised`, and `protocol.teardown` fails `child did not
+  exit after termination` after 5 s with `signalsSent` `SIGTERM` then `SIGKILL` and two
+  `terminationFaults`, one per refusal; and the CLI **returns**, exit code 1, within 1 s
+  after that 5 s wait ends — 7 s from the run's start for the construct case — although
+  the child is still alive (host re-review #32: an unexited child bounds the run, never
+  holds it); the test's `afterEach` kills the child by pid (skip the finalizer when the
+  opener rejects → the construct case has no `protocol.teardown` row, fails; report
+  `protocol.teardown` as `not exercised` after a timeout → both fail).
+  `knip.jsonc:47-50` gains the `fixtures/raw/*.mjs` glob beside the host-protocol one.
 - The session-level rows: a recording link shows every `server/discover`, `tools/list`
   and `tools/call` frame carrying both `_meta` keys (replace the transport's producer
   with a pass-through → `protocol.request-meta` fails); a fixture whose manifest declares
