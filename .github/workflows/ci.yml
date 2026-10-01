@@ -288,6 +288,15 @@ jobs:
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -FailureFixture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/test-windows-job.mjs
+      # Folder sources classify a drive letter from its MS-DOS device mapping
+      # without opening the drive (design multi-source-git-marketplace.md §18.4.1).
+      - name: Verify Windows folder classification
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Helper path-kind
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/test-windows-path-kind.mjs
       # The tag build runs `bun run build` on Windows, and this check is part of
       # it: there the generator finds its sources through Windows path spellings
       # (drive letters, `\` separators), and must still produce the same bytes.
