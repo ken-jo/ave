@@ -496,8 +496,8 @@ describe("git marketplace IPC boundary", () => {
         const inside = await invokeFileIpcHandler(handlers, channels.sourcesAdd, { previewId: preview.value.previewId, id: "inner" });
         expect(inside).toMatchObject({ ok: false, code: "SOURCE_ID_TAKEN", detail: { reason: "folder-inside-source", path: "/m/inner", existingId: "team", existingPath: "/m" } });
         expect(sentences(inside)).toEqual({
-          en: "/m/inner lies inside /m, which is already added as team, so its packages are listed there already. Use team, or remove it and add the folder you want.",
-          ko: "/m/inner은(는) 이미 team(으)로 추가된 /m 안에 있어 그 패키지가 이미 그 소스에 나옵니다. team을(를) 쓰거나, 지운 뒤 원하는 폴더를 추가하세요.",
+          en: "Folder sources cannot overlap: /m/inner lies inside /m, which is already added as team. Use team, or remove it and add the folder you want.",
+          ko: "폴더 소스는 서로 겹칠 수 없습니다. /m/inner은(는) 이미 team(으)로 추가된 /m 안에 있습니다. team을(를) 쓰거나, 지운 뒤 원하는 폴더를 추가하세요.",
         });
         const again = (await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "/m", auth: "none" })) as { ok: true; value: { previewId: string } };
         const same = await invokeFileIpcHandler(handlers, channels.sourcesAdd, { previewId: again.value.previewId, id: "again" });

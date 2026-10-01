@@ -90,3 +90,95 @@ describe("allowDirectInstall: false (§12)", () => {
     harness.service.close();
   });
 });
+
+describe("a read failure inside a direct bundle keeps its own reason (§18.4.5, §18.8)", () => {
+  const INNER = "---\nname: inner\ndescription: inner skill\n---\nBody\n";
+  /** A direct agent-plugin bundle at C:\m whose skills link to `link`, with the classifier answering `Z:` as given. */
+  function bundle(link: string | null, z: "broken" | "network") {
+    const fs = new FakeVolume("win32", { drives: { "C:": "\\Device\\HarddiskVolume3", "Z:": "\\Device\\Mup\;LanmanRedirector\\files\\share" } })
+      .file("C:\\m\\plugin.json", JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "bundle", version: "1.0.0", description: "A bundle" }))
+      .file("C:\\m\\skills\\inner\\SKILL.md", INNER);
+    if (link) fs.link("C:\\m\\skills\\other", link);
+    const query = fs.queryDosDevice.bind(fs);
+    fs.queryDosDevice = async (drive) => {
+      if (drive === "Z:" && z === "broken") throw new Error("helper launch failed after an earlier successful classification");
+      return query(drive);
+    };
+    return fs;
+  }
+  const harnessOf = (fs: FakeVolume) => folderService({ root, folders: { fs, platform: "win32", limits: TEST_FOLDER_LIMITS }, home: "C:\\Users\\example" });
+
+  it("previews a bundle whose link needs a broken classifier as classifier-unavailable, not as an invalid index", async () => {
+    const harness = await harnessOf(bundle("Z:\\other", "broken"));
+    try {
+      await expect(harness.service.previewSource({ input: "C:\\m", auth: "none" })).rejects.toMatchObject({
+        code: "SOURCE_LOCAL_UNREADABLE",
+        detail: { reason: "classifier-unavailable", path: "Z:\\other" },
+      });
+    } finally {
+      harness.service.close();
+    }
+  });
+
+  it("previews a bundle linking to a share as link-to-network with its detail", async () => {
+    const harness = await harnessOf(bundle("Z:\\other", "network"));
+    try {
+      await expect(harness.service.previewSource({ input: "C:\\m", auth: "none" })).rejects.toMatchObject({
+        code: "CONTENT_RULE_VIOLATION",
+        detail: { reason: "link-to-network", path: "skills/other", target: "Z:\\other" },
+      });
+    } finally {
+      harness.service.close();
+    }
+  });
+
+  it("keeps classifier-unavailable as a sync's stored result when the bundle gains such a link", async () => {
+    const fs = bundle(null, "broken");
+    const harness = await harnessOf(fs);
+    try {
+      const preview = await harness.service.previewSource({ input: "C:\\m", auth: "none" });
+      if (preview.type === "confirm") throw new Error("a local drive needs no confirmation");
+      await harness.service.addSource({ previewId: preview.previewId, id: "bundle" });
+      fs.link("C:\\m\\skills\\other", "Z:\\other");
+      const result = await harness.syncer.sync("bundle");
+      expect(result).toMatchObject({ status: "failed", code: "SOURCE_LOCAL_UNREADABLE", detail: { reason: "classifier-unavailable", path: "Z:\\other" } });
+      expect((await harness.registry.readState("bundle")).lastSync).toMatchObject({
+        result: "SOURCE_LOCAL_UNREADABLE",
+        detail: { reason: "classifier-unavailable", path: "Z:\\other" },
+      });
+    } finally {
+      harness.service.close();
+    }
+  });
+
+  it.each([
+    ["a file the package installs", "C:\\team\\skills\\inner\\notes.md", "Z:\\notes.md"],
+    ["the package's descriptor", "C:\\team\\skills\\inner\\ave-package.json", "Z:\\ave-package.json"],
+  ])("fails a marketplace sync when %s links through a broken classifier, instead of dropping that package", async (_what, at, target) => {
+    const index = { schemaVersion: 2, name: "team", displayName: "Team", packages: [{ kind: "skill", name: "inner", path: "skills/inner" }] };
+    const descriptor = { schemaVersion: 2, kind: "skill", name: "inner", version: "1.0.0", minAppVersion: "0.12.0", payload: { entry: "SKILL.md" } };
+    const fs = new FakeVolume("win32", { drives: { "C:": "\\Device\\HarddiskVolume3" } })
+      .file("C:\\team\\marketplace.2.json", JSON.stringify(index))
+      .file("C:\\team\\skills\\inner\\ave-package.json", JSON.stringify(descriptor))
+      .file("C:\\team\\skills\\inner\\SKILL.md", INNER);
+    const harness = await harnessOf(fs);
+    try {
+      const preview = await harness.service.previewSource({ input: "C:\\team", auth: "none" });
+      if (preview.type === "confirm") throw new Error("a local drive needs no confirmation");
+      await harness.service.addSource({ previewId: preview.previewId, id: "team" });
+      if (at.endsWith("ave-package.json")) fs.remove(at);
+      fs.link(at, target);
+      fs.queryDosDevice = async (drive) => {
+        if (drive === "Z:") throw new Error("helper timed out");
+        return "\\Device\\HarddiskVolume3";
+      };
+      await expect(harness.syncer.sync("team")).resolves.toMatchObject({
+        status: "failed",
+        code: "SOURCE_LOCAL_UNREADABLE",
+        detail: { reason: "classifier-unavailable", path: target },
+      });
+    } finally {
+      harness.service.close();
+    }
+  });
+});

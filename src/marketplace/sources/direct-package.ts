@@ -132,11 +132,19 @@ async function fromPluginManifest(source: string, input: DirectReadInput): Promi
     const rule = CONTENT_RULES["agent-plugin"];
     const dest = await mkdtemp(join(tmpdir(), "ave-agent-plugin-direct-"));
     try {
+      // Reading the tree fails with its own reason (a folder's link rule, an
+      // unreadable folder, a broken classifier), which reaches the caller
+      // unchanged; only what the tree holds is this package's fault.
       const exported = await input.tree.exportPath(input.path, dest, { maxFiles: rule.maxFiles + 1, maxBytes: rule.maxBytes + 256 * 1024 });
       const files = await Promise.all(exported.filter((file) => file.path !== "ave-package.json")
         .map(async (file) => ({ path: file.path, data: await readFile(join(dest, ...file.path.split("/"))) })));
-      checkContentFiles("agent-plugin", files);
-      const components = deriveAgentPluginComponents(files);
+      let components: ReturnType<typeof deriveAgentPluginComponents>;
+      try {
+        checkContentFiles("agent-plugin", files);
+        components = deriveAgentPluginComponents(files);
+      } catch (error) {
+        return { ok: false, code: "SOURCE_INDEX_INVALID", error: `agent-plugin tree is invalid: ${(error as Error).message}` };
+      }
       const requires = isRecord(ave) && isRecord(ave.requires) ? ave.requires : undefined;
       return { ok: true, versionSynthesized: false, descriptor: {
         schemaVersion: 2, kind: "agent-plugin", name: manifest.name, version: manifest.version,
@@ -144,8 +152,6 @@ async function fromPluginManifest(source: string, input: DirectReadInput): Promi
         ...presentation(isRecord(ave) ? ave.displayName : undefined, manifest.description),
         payload: { manifest: "plugin.json", components },
       } };
-    } catch (error) {
-      return { ok: false, code: "SOURCE_INDEX_INVALID", error: `agent-plugin tree is invalid: ${(error as Error).message}` };
     } finally {
       await rm(dest, { recursive: true, force: true });
     }
