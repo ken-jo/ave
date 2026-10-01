@@ -34,15 +34,17 @@ export class TestPolicySource implements PolicySource {
   }
 
   async check(): Promise<PolicyUpdate | null> {
-    if (this.pending === null) return null;
+    // Every check is an observation, as in FilePolicySource: one that finds nothing still supersedes older reads.
     this.generation += 1;
+    if (this.pending === null) return null;
     return { load: this.pending, digest: `fixture-${this.generation}`, sequence: this.generation };
   }
 
-  apply(update: PolicyUpdate): void {
-    if (update.sequence < this.current.sequence) return;
+  apply(update: PolicyUpdate): boolean {
+    if (update.sequence < this.generation) return false;
     this.current = update;
     this.pending = null;
+    return true;
   }
 }
 

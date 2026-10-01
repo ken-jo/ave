@@ -626,6 +626,39 @@ describe("confirmations, badges and Allow… (§18.5)", () => {
     await waitFor(() => expect(fake.market.previewSource).toHaveBeenNthCalledWith(3, { input: "http://second.example/m", auth: "none", acknowledge: ["unencrypted"] }));
   });
 
+  it("starts a reopened dialog ready to check, though a check from before it closed is still on its way", async () => {
+    const fake = fakeMarketplace();
+    let answerFirst: (value: unknown) => void = () => {};
+    fake.market.previewSource
+      .mockImplementationOnce(() => new Promise((resolve) => (answerFirst = resolve)))
+      .mockResolvedValue({ ok: true, value: { type: "confirm", warnings: [{ warning: "unencrypted", host: "deep.example", address: null }] } });
+    const api = { gitMarketplace: fake.market, gitRuntime: fake.gitRuntime, updateSettings: vi.fn(async () => ({ ok: true })) } as unknown as Pick<AveApi, "gitMarketplace" | "gitRuntime" | "updateSettings">;
+    const dialog = (open: boolean, initialInput = "") => <AddSourceDialog api={api} open={open} initialInput={initialInput} onClose={vi.fn()} onAdded={vi.fn()} />;
+    const { rerender } = render(dialog(true));
+
+    await waitFor(() => expect(fake.gitRuntime.status).toHaveBeenCalled());
+    fireEvent.change(screen.getByTestId("git-marketplace:add:url"), { target: { value: "http://first.example/m" } });
+    await waitFor(() => expect(screen.getByTestId("git-marketplace:add:check")).toBeEnabled());
+    fireEvent.click(screen.getByTestId("git-marketplace:add:check"));
+    await waitFor(() => expect(screen.getByTestId("git-marketplace:add:check")).toBeDisabled());
+
+    // Closed while checking, then reopened from a link with another address.
+    rerender(dialog(false));
+    rerender(dialog(true, "http://deep.example/m"));
+    expect(await screen.findByTestId("git-marketplace:add:url")).toHaveValue("http://deep.example/m");
+    await waitFor(() => expect(screen.getByTestId("git-marketplace:add:check")).toBeEnabled());
+
+    // The old answer arrives: it belongs to the closed dialog, so it shows nothing and changes nothing.
+    answerFirst({ ok: true, value: { type: "confirm", warnings: [{ warning: "unencrypted", host: "first.example", address: null }] } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByTestId("git-marketplace:add:warnings")).toBeNull();
+    expect(screen.getByTestId("git-marketplace:add:check")).toBeEnabled();
+
+    fireEvent.click(screen.getByTestId("git-marketplace:add:check"));
+    expect(await screen.findByTestId("git-marketplace:add:warnings")).toHaveTextContent("deep.example");
+    expect(fake.market.previewSource).toHaveBeenNthCalledWith(2, { input: "http://deep.example/m", auth: "none" });
+  });
+
   it("asks before Set token… on an http source sends sign-in unencrypted, then opens Set token…", async () => {
     const fake = fakeMarketplace();
     const http = source({ id: "corp", url: "http://git.corp.example/m", auth: "token", tokenHost: "git.corp.example", acknowledged: ["unencrypted"], badges: ["unencrypted"] });

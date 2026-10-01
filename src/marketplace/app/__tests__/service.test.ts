@@ -1072,6 +1072,58 @@ describe("MarketplaceService", () => {
     expect(file.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
   });
 
+  it("keeps a strict policy when a permissive read under the lock finishes after the file went strict again (§12)", async () => {
+    const path = join(root, "ave-policy.json");
+    const write = (marketplaces: unknown) => writeFileSync(path, JSON.stringify({ version: 1, managed: true, marketplaces }));
+    write({ requireHttps: true });
+    const file = await FilePolicySource.open(path);
+    // Checks are counted; the one numbered `holdAt` completes its read, then waits until released.
+    let checks = 0;
+    let holdAt = 0;
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const waiters = new Map<number, () => void>();
+    const checked = (n: number) => new Promise<void>((resolve) => waiters.set(n, resolve));
+    const delayed: PolicySource = {
+      get load() {
+        return file.load;
+      },
+      get digest() {
+        return file.digest;
+      },
+      async check() {
+        const n = ++checks;
+        const update = await file.check();
+        waiters.get(n)?.();
+        if (n === holdAt) await held;
+        return update;
+      },
+      apply: (update) => file.apply(update),
+    };
+    await build(delayed);
+
+    // Permissive on disk: the older operation's first check sees the change, and its re-read under the
+    // exclusive lock reads `requireHttps: false`, then is held before it applies.
+    write({ requireHttps: false });
+    holdAt = checks + 2;
+    const reread = checked(holdAt);
+    const older = service.listSources();
+    await reread;
+
+    // Strict again before the held read applies. A newer operation looks at the file and finds the policy in force.
+    write({ requireHttps: true });
+    const look = checked(checks + 1);
+    const newer = service.listSources();
+    await look;
+
+    release();
+    await Promise.all([older, newer]);
+    expect(file.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
+    // The next operation agrees with the file on disk.
+    await service.listSources();
+    expect(file.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
+  });
+
   it("stores a token under its normalized host and refuses one that spans lines", async () => {
     await expect(service.setToken("GitHub.com", "ghp_x")).resolves.toEqual({ host: "github.com" });
     await expect(service.setToken("github.com", "a\nb")).rejects.toMatchObject({ code: "SOURCE_AUTH_REQUIRED" });

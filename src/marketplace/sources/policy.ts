@@ -334,7 +334,7 @@ export async function loadMarketplacePolicy(path: string = getAdminPolicyPath())
 export interface PolicyUpdate {
   readonly load: PolicyLoad;
   readonly digest: string;
-  /** When the read began, in the source's own order: an update never replaces one read after it. */
+  /** When the read began, in the source's own order: an update applies only if no check began after it. */
   readonly sequence: number;
 }
 
@@ -353,17 +353,24 @@ export interface PolicySource {
   readonly digest: string;
   /** Read the file again: the update when its content changed, else null. */
   check(): Promise<PolicyUpdate | null>;
-  /** Put an update in force, unless one read after it already is (policy generations only move forward). */
-  apply(update: PolicyUpdate): void;
+  /**
+   * Put an update in force, unless a check began after its read. That later
+   * check saw the file later: when it found a change it carries its own
+   * update, and when it found none the policy in force is already the file's.
+   * Either way the older read is superseded, so a read that finished late
+   * can never put a replaced policy back (§12). Returns whether it took effect.
+   */
+  apply(update: PolicyUpdate): boolean;
 }
 
 /** The system policy file as a {@link PolicySource}: compared by identity, change times and sha256 at each check. */
 export class FilePolicySource implements PolicySource {
-  private current: PolicyRead & { sequence: number };
+  private current: PolicyRead;
+  /** The number of the latest check begun, whatever it found: every look at the file is an observation. */
   private reads = 0;
 
   private constructor(private readonly path: string, first: PolicyRead) {
-    this.current = { ...first, sequence: 0 };
+    this.current = first;
   }
 
   static async open(path: string = getAdminPolicyPath()): Promise<FilePolicySource> {
@@ -394,10 +401,11 @@ export class FilePolicySource implements PolicySource {
     return { load: next.load, digest: next.digest, sequence };
   }
 
-  apply(update: PolicyUpdate): void {
-    // A read that began before the one in force is older: applying it would restore a replaced policy.
-    if (update.sequence < this.current.sequence) return;
+  apply(update: PolicyUpdate): boolean {
+    // Superseded: a check began after this read, so this read is not the latest look at the file.
+    if (update.sequence < this.reads) return false;
     // The next check reads the file again and records its identity and times.
-    this.current = { load: update.load, digest: update.digest, stat: "applied", sequence: update.sequence };
+    this.current = { load: update.load, digest: update.digest, stat: "applied" };
+    return true;
   }
 }

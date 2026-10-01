@@ -72,7 +72,10 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
   };
 
   useEffect(() => {
+    // Opening or closing starts over: a request still on its way belongs to the dialog as it was,
+    // so it can no longer clear `busy`, and nothing it started may keep the new dialog waiting.
     generation.current += 1;
+    setBusy(false);
     if (!open) return;
     setInput(initialInput);
     setRef("");
@@ -130,14 +133,16 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
 
   const add = async () => {
     if (!preview) return;
+    const mine = generation.current;
     setBusy(true);
     setFailure(null);
     try {
       const result = await api.gitMarketplace.addSource({ previewId: preview.previewId, ...(id.trim() ? { id: id.trim() } : {}) });
+      // The add happened either way, so the caller hears of it; a failure belongs to the dialog that asked.
       if (result.ok) onAdded(result.value, preview);
-      else setFailure(result);
+      else if (mine === generation.current) setFailure(result);
     } finally {
-      setBusy(false);
+      if (mine === generation.current) setBusy(false);
     }
   };
 

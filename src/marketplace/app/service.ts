@@ -320,7 +320,8 @@ export class MarketplaceService implements RetirementEntryLookup {
   }
 
   private applyPolicy(update: PolicyUpdate): void {
-    this.options.policy.apply(update);
+    // A check that began after this read supersedes it; the policy in force stays.
+    if (!this.options.policy.apply(update)) return;
     if (!update.load.ok) this.options.log.warn(`marketplace policy unreadable; only the official source is reachable: ${update.load.error}`);
     // Managed sources, blocks and required installs may all have changed.
     this.options.onCatalogChanged?.();

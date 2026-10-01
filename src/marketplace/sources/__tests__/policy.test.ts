@@ -212,6 +212,19 @@ describe("FilePolicySource (§18.6)", () => {
     expect(source.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
   });
 
+  it("lets a later check that found nothing new supersede an older read (§12)", async () => {
+    writePolicy({ requireHttps: true });
+    const source = await FilePolicySource.open(path);
+    writePolicy({ requireHttps: false });
+    const older = await source.check();
+    expect(older?.load).toMatchObject({ ok: true, policy: { requireHttps: false } });
+    // The file goes back to the policy in force; the next look finds nothing to apply.
+    writePolicy({ requireHttps: true });
+    expect(await source.check()).toBeNull();
+    expect(source.apply(older!)).toBe(false);
+    expect(source.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
+  });
+
   it("notices a rewrite that keeps the size and the modification time", async () => {
     const fixed = new Date(Date.UTC(2026, 0, 1));
     const first = JSON.stringify({ version: 1, marketplaces: { requireHttps: false } });
