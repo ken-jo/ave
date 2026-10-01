@@ -27,7 +27,6 @@ import { moonstoneBundle } from "../../../ui/renderer/theme/bundles/moonstone.js
 import { OFFICIAL_MARKETPLACE, type OfficialMarketplace } from "../../sources/official.js";
 import { EMPTY_MARKETPLACE_POLICY, FilePolicySource, type PolicyLoad, type PolicySource } from "../../sources/policy.js";
 import { AppliedDefaults } from "../../boot-installs/applied.js";
-import { startMarketplaceBackground, type BackgroundService } from "../background.js";
 import { normalizeSourceUrl } from "../../net/source-url.js";
 import { SourceRegistry } from "../../sources/registry.js";
 import { SourceSyncer } from "../../sources/sync.js";
@@ -37,6 +36,9 @@ import type { RetiredPluginConfigRecord } from "../../../shared/alerts-types.js"
 import type { InstallerPorts, PluginInstallerPort, TokenStore } from "../ports.js";
 import type { RevocationFeed } from "../revocations.js";
 import { MarketplaceService } from "../service.js";
+import { marketplaceEvents, startMarketplaceBackground, type BackgroundService } from "../background.js";
+import { emptyUpdateHistory, type UpdateHistory } from "../../updates/history.js";
+import type { SyncProgressView } from "../../../shared/git-marketplace.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
 
@@ -98,6 +100,20 @@ describe("MarketplaceService", () => {
   let helperAnswers: boolean;
   let pluginPort: PluginInstallerPort;
   let warnings: string[];
+  let progress: SyncProgressView[];
+  /** Calls into the revocation gates' feed, failed ones included. */
+  let feedCalls: number;
+  /** Holds the feed call with this number (1-based) until the test lets it go. */
+  let feedHold: { at: number; wait: () => Promise<void> } | null;
+  /** The app's shutdown as the IPC domain has it: the service's events pass `marketplaceEvents` over it. */
+  let shutdown: AbortController;
+  /** What reached the renderer, by kind, through that boundary. */
+  let sent: { syncProgress: number; installProgress: number; catalogChanged: number };
+  /** What the service itself sent, before the boundary: after an abort it sends nothing either. */
+  let emitted: { syncProgress: number; installProgress: number; catalogChanged: number };
+  /** Holds the next sync's pruning (its `retainedCommits` read), or the next content activation, until the test lets it go. */
+  let pruneHold: (() => Promise<void>) | null;
+  let activateHold: (() => Promise<void>) | null;
   /** Runs inside a content install, after the plan's first feed and before the store changes. */
   let duringContentInstall: (() => Promise<void>) | null;
 
@@ -129,6 +145,14 @@ describe("MarketplaceService", () => {
     feedFails = false;
     helperAnswers = false;
     warnings = [];
+    progress = [];
+    feedCalls = 0;
+    feedHold = null;
+    shutdown = new AbortController();
+    sent = { syncProgress: 0, installProgress: 0, catalogChanged: 0 };
+    emitted = { syncProgress: 0, installProgress: 0, catalogChanged: 0 };
+    pruneHold = null;
+    activateHold = null;
     duringContentInstall = null;
     await build();
   });
@@ -140,17 +164,55 @@ describe("MarketplaceService", () => {
     const gate = new NetworkGate({ policy, allowLoopback: true, transport: createPinnedFetch() });
     const marketplaces = join(root, "marketplaces");
     const registry = await SourceRegistry.open({ root: marketplaces, policy, now: () => now, ...(official ? { official } : {}) });
+    // Exactly as the IPC domain wires them, with counters for the broadcasts.
+    const events = marketplaceEvents(shutdown.signal, {
+      syncProgress: (item) => {
+        sent.syncProgress += 1;
+        progress.push(item);
+      },
+      installProgress: () => {
+        sent.installProgress += 1;
+      },
+      catalogChanged: () => {
+        sent.catalogChanged += 1;
+        catalogChanged += 1;
+      },
+    });
+    const takeHold = async (hold: "prune" | "activate") => {
+      const wait = hold === "prune" ? pruneHold : activateHold;
+      if (hold === "prune") pruneHold = null;
+      else activateHold = null;
+      if (wait) await wait();
+    };
     const syncer = new SourceSyncer({
       registry,
       gate,
       runner,
       root: marketplaces,
       now: () => now,
-      retainedCommits: async () => new Set(),
-      // As the app wires it: the raw callback a published snapshot fires, inside the sync's operation.
-      onCatalogChanged: (sourceId) => afterSourceSynced?.(sourceId),
+      retainedCommits: async () => {
+        await takeHold("prune");
+        return new Set();
+      },
+      // As the app wires it: the raw callback a published snapshot fires, inside the sync's operation,
+      // through the event boundary.
+      onCatalogChanged: (sourceId) => {
+        events.onCatalogChanged();
+        afterSourceSynced?.(sourceId);
+      },
     });
-    store = await ContentStore.open({ root: join(root, "packages"), english: {}, activation: { activate: async (_content, _entry, _previous, adopt) => void adopting.push(adopt), deactivate: async () => {} }, now: () => now });
+    store = await ContentStore.open({
+      root: join(root, "packages"),
+      english: {},
+      activation: {
+        activate: async (_content, _entry, _previous, adopt) => {
+          await takeHold("activate");
+          adopting.push(adopt);
+        },
+        deactivate: async () => {},
+      },
+      now: () => now,
+    });
     const artifacts = new PluginArtifactStore({
       installRoot: join(root, "mcp"),
       cacheRoot: join(root, "mcp", ".cache"),
@@ -207,12 +269,23 @@ describe("MarketplaceService", () => {
       mcpLimits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,
       english: {},
       onCatalogChanged: () => {
-        catalogChanged += 1;
+        emitted.catalogChanged += 1;
+        events.onCatalogChanged();
         afterCatalogChanged?.();
+      },
+      onSyncProgress: (item) => {
+        emitted.syncProgress += 1;
+        events.onSyncProgress(item);
+      },
+      onInstallProgress: (item) => {
+        emitted.installProgress += 1;
+        events.onInstallProgress(item);
       },
       now: () => now,
       revocations: {
         apply: async (feed) => {
+          feedCalls += 1;
+          if (feedHold && feedHold.at === feedCalls) await feedHold.wait();
           if (feedFails) throw new Error("revocation registry unwritable");
           feeds.push(feed);
         },
@@ -404,6 +477,42 @@ describe("MarketplaceService", () => {
     expect(second.report).toEqual({ installed: [], updated: [], switched: [], skipped: [], failed: [] });
     expect(second.notice).toBeNull();
     expect(store.list()).toEqual([]);
+  });
+
+  it("tells how far a discovery got: every source, some, or none because the computer is offline (§18.7.1)", async () => {
+    const { url } = market();
+    service.close();
+    await build(policyLoad({ additional: [{ id: "corp", url: normalizeSourceUrl(url), auth: { kind: "none" } }] }));
+    // corp syncs for real once, so that losing its state file later leaves it broken.
+    await service.refresh("corp");
+    const synced = { status: "ok" as const, pinnedCommit: "a".repeat(40), changed: false };
+    const offline = { status: "failed" as const, code: "SOURCE_UNREACHABLE" as const, message: "network is unreachable", detail: { reason: "offline" as const }, pinnedCommit: null };
+    const dns = { status: "failed" as const, code: "SOURCE_UNREACHABLE" as const, message: "could not resolve", detail: { reason: "dns" as const, host: "corp.example" }, pinnedCommit: null };
+    const sync = vi.spyOn(SourceSyncer.prototype, "sync");
+    try {
+      sync.mockImplementation(async () => synced);
+      const all = await service.discover();
+      expect(all.result).toBe("ok");
+      expect([...all.reached].sort()).toEqual(["corp", OFFICIAL_MARKETPLACE.id].sort());
+
+      sync.mockImplementation(async (id) => (id === "corp" ? dns : synced));
+      expect(await service.discover()).toEqual({ result: "partial", reached: [OFFICIAL_MARKETPLACE.id] });
+
+      sync.mockImplementation(async () => offline);
+      expect(await service.discover()).toEqual({ result: "offline", reached: [] });
+
+      // Offline only when every source says so: another failure makes it partial, with nothing reached.
+      sync.mockImplementation(async (id) => (id === "corp" ? dns : offline));
+      expect(await service.discover()).toEqual({ result: "partial", reached: [] });
+
+      // A broken source is not offline: every source that syncs being offline still leaves it partial, which shows the sources.
+      rmSync(join(root, "marketplaces", "corp", "state.json"));
+      expect((await service.listSources()).find((item) => item.id === "corp")!.status).toMatchObject({ state: "broken" });
+      sync.mockImplementation(async () => offline);
+      expect(await service.discover()).toEqual({ result: "partial", reached: [] });
+    } finally {
+      sync.mockRestore();
+    }
   });
 
   it("migrates existing installs once the official snapshot exists, once, and names what it unlocked", async () => {
@@ -1103,10 +1212,10 @@ describe("MarketplaceService", () => {
       const checkEntered = new Promise<void>((resolve) => (entered = resolve));
       const published: unknown[] = [];
       const scheduled: BackgroundService = {
-        enforceRevocations: () => service.enforceRevocations(),
+        enforceRevocations: (signal) => service.enforceRevocations(signal),
         takeRevocationNotice: () => service.takeRevocationNotice(),
-        refresh: () => service.refresh(),
-        applyBootInstalls: (defaults, applied) => service.applyBootInstalls(defaults, applied),
+        discover: (signal) => service.discover(signal),
+        applyBootInstalls: (defaults, applied, signal) => service.applyBootInstalls(defaults, applied, signal),
         updates: () => {
           entered();
           return service.updates();
@@ -1117,12 +1226,16 @@ describe("MarketplaceService", () => {
         appliedDefaults: () => AppliedDefaults.open(join(root, "packages", "default-installs.json")),
         defaults: [],
         settings: () => ({ updateNotices: true, updateCheckIntervalMs: 0 }),
+        history: { load: async () => ({ history: emptyUpdateHistory(), reset: false as const }), save: async () => {} },
         publishStatus: () => {},
         publishNotice: () => {},
-        publishUpdates: (updates) => void published.push(updates),
+        publishUpdates: (updates) => void published.push(...updates),
+        publishUpdateStatus: () => {},
+        onResume: () => () => {},
         log: { info: () => {}, warn: () => {} },
       });
       await background.started;
+      // The boot discovery reached corp, so an update it offered would be shown.
       expect(published).toEqual([]);
       publish("1.1.0");
 
@@ -1255,6 +1368,125 @@ describe("MarketplaceService", () => {
       expect(catalogChanged).toBe(1);
     });
 
+    /** The real update scheduler over the service, as the IPC domain starts it. */
+    function scheduler() {
+      return startMarketplaceBackground({
+        service: async () => service,
+        appliedDefaults: () => AppliedDefaults.open(join(root, "packages", "default-installs.json")),
+        defaults: [],
+        settings: () => ({ updateNotices: true, updateCheckIntervalMs: 0 }),
+        history: { load: async () => ({ history: emptyUpdateHistory(), reset: false as const }), save: async () => {} },
+        publishStatus: () => {},
+        publishNotice: () => {},
+        publishUpdates: () => {},
+        publishUpdateStatus: () => {},
+        onResume: () => () => {},
+        log: { info: () => {}, warn: () => {} },
+      });
+    }
+
+    it("starts no refresh and reads nothing for a Check now queued behind the boot's refresh when the scheduler stops (§18.6)", async () => {
+      const { held } = await start({});
+      const first = held.hold(1);
+      const background = scheduler();
+      // The boot pass's enforcement holds the first refresh.
+      await first.reached;
+      const discover = vi.spyOn(service, "discover");
+      const checked = background.checkNow();
+      // Check now's discovery waits for the refresh after the one running.
+      await vi.waitFor(() => expect(discover).toHaveBeenCalledOnce());
+      const listed = vi.spyOn(pluginPort, "list");
+      background.stop();
+      first.release();
+      await background.started;
+      // Check now still answers, with what the scheduler knew when it stopped.
+      await checked;
+      expect({ checks: held.checks(), listed: listed.mock.calls.length }).toEqual({ checks: 1, listed: 0 });
+    });
+
+    it.each([
+      ["discover", (signal: AbortSignal) => service.discover(signal)],
+      ["updates", (signal: AbortSignal) => service.updates(signal)],
+      ["enforceRevocations", (signal: AbortSignal) => service.enforceRevocations(signal)],
+      [
+        "applyBootInstalls",
+        async (signal: AbortSignal) =>
+          service.applyBootInstalls([], await AppliedDefaults.open(join(root, "packages", "default-installs.json")), signal),
+      ],
+    ] as const)("%s, cancelled while it waits for the policy, starts no refresh and never runs", async (_name, call) => {
+      const { held } = await start({});
+      const first = held.hold(1);
+      const running = service.listSources();
+      await first.reached;
+      const cancel = new AbortController();
+      const outcome = call(cancel.signal).then(
+        () => "ran",
+        (error: Error) => error.message,
+      );
+      cancel.abort(new Error("cancelled by its caller"));
+      first.release();
+      await running;
+      expect(await outcome).toBe("cancelled by its caller");
+      expect(held.checks()).toBe(1);
+    });
+
+    it("lists nothing installed for a recheck that waits for the policy when the scheduler stops (§18.6)", async () => {
+      const { held } = await start({});
+      const background = scheduler();
+      await background.started;
+      const next = held.hold(held.checks() + 1);
+      const rechecked = background.recheck();
+      // The recheck's own refresh is reading the policy.
+      await next.reached;
+      const listed = vi.spyOn(pluginPort, "list");
+      background.stop();
+      next.release();
+      await rechecked;
+      expect(listed).not.toHaveBeenCalled();
+    });
+
+    it("refuses a caller cancelled before it arrives without reading the policy", async () => {
+      const { held } = await start({});
+      const cancel = new AbortController();
+      cancel.abort(new Error("cancelled by its caller"));
+      await expect(service.discover(cancel.signal)).rejects.toThrow("cancelled by its caller");
+      expect(held.checks()).toBe(0);
+    });
+
+    it("still runs a queued refresh a live caller waits for when the caller that queued it is cancelled", async () => {
+      const { held } = await start({});
+      const first = held.hold(1);
+      const running = service.listSources();
+      await first.reached;
+      const cancel = new AbortController();
+      const cancelled = service.discover(cancel.signal).then(
+        () => "discovered",
+        (error: Error) => error.message,
+      );
+      const live = service.listSources();
+      cancel.abort(new Error("cancelled by its caller"));
+      first.release();
+      await running;
+      await expect(live).resolves.toBeInstanceOf(Array);
+      expect(await cancelled).toBe("cancelled by its caller");
+      expect(held.checks()).toBe(2);
+    });
+
+    it("applies a policy that became unreadable but says nothing of it once the boot that waits for it is stopped", async () => {
+      const { file, held } = await start({});
+      writeFileSync(policyPath(), "{ not the policy any more");
+      const first = held.hold(1);
+      const background = scheduler();
+      await first.reached;
+      background.stop();
+      const before = warnings.length;
+      first.release();
+      await background.started;
+      expect(warnings.slice(before)).toEqual([]);
+      // The change itself is not the caller's to cancel: the gate already restricts to the official source.
+      expect(file.load.ok).toBe(false);
+    });
+
     it.each([
       ["malformed", () => writeFileSync(policyPath(), "{ not the policy any more")],
       [
@@ -1323,5 +1555,187 @@ describe("MarketplaceService", () => {
     await expect(service.setToken("GitHub.com", "ghp_x")).resolves.toEqual({ host: "github.com" });
     await expect(service.setToken("github.com", "a\nb")).rejects.toMatchObject({ code: "SOURCE_AUTH_REQUIRED" });
     await expect(service.deleteToken("github.com")).resolves.toEqual({ host: "github.com" });
+  });
+
+  /**
+   * The update scheduler over this real service, stopped while a stage of the
+   * service waits — the wait then fulfilling or rejecting: the service sends no
+   * further progress and starts no further stage (sync, enforcement, the boot
+   * installs' catalog), and the scheduler publishes and writes nothing more.
+   */
+  const SERVICE_WAITS = [
+    ["the boot's enforcement of the revocations on disk", { feed: 1 }],
+    ["the discovery's sync", { sync: true }],
+    ["the discovery's enforcement", { feed: 2 }],
+    ["the boot installs' enforcement", { feed: 3 }],
+  ] as const;
+  const SERVICE_ROWS = SERVICE_WAITS.flatMap(([name, hold]) => (["fulfils", "rejects"] as const).map((ending) => [name, ending, hold] as const));
+
+  it.each(SERVICE_ROWS)("a stopped scheduler: stopped during %s, which then %s, the service does nothing more", async (_name, ending, hold) => {
+    let release: (() => void) | null = null;
+    let fail: ((error: Error) => void) | null = null;
+    const held = () =>
+      new Promise<void>((resolve, reject) => {
+        release = resolve;
+        fail = reject;
+      });
+    const synced = { status: "ok" as const, pinnedCommit: "a".repeat(40), changed: false };
+    let syncHeld = false;
+    const sync = vi.spyOn(SourceSyncer.prototype, "sync").mockImplementation(async () => {
+      if ("sync" in hold && !syncHeld) {
+        syncHeld = true;
+        await held();
+      }
+      return synced;
+    });
+    if ("feed" in hold) feedHold = { at: hold.feed, wait: held };
+    const rows = vi.spyOn(service as unknown as { rows: () => Promise<unknown> }, "rows");
+    let saves = 0;
+    const history = {
+      load: async () => ({ history: emptyUpdateHistory(), reset: false as const }),
+      save: async (_history: UpdateHistory) => {
+        saves += 1;
+      },
+    };
+    const input = {
+      service: async () => service,
+      appliedDefaults: () => AppliedDefaults.open(join(root, "packages", "default-installs.json")),
+      defaults: [],
+      settings: () => ({ updateNotices: true }),
+      history,
+      publishStatus: vi.fn(),
+      publishNotice: vi.fn(),
+      publishUpdates: vi.fn(),
+      publishUpdateStatus: vi.fn(),
+      onResume: () => () => {},
+      log: { info: vi.fn(), warn: vi.fn() },
+    };
+    const background = startMarketplaceBackground(input);
+    // The domain's shutdown hook: one abort closes the event boundary and stops the scheduler.
+    shutdown.signal.addEventListener("abort", () => background.stop(), { once: true });
+    try {
+      await vi.waitFor(() => expect(release).not.toBeNull());
+      const counts = () => ({
+        sent: { ...sent },
+        // The service's own stages stop on the signal: it sends nothing more, even before the boundary.
+        emitted: { syncProgress: emitted.syncProgress, installProgress: emitted.installProgress },
+        progress: progress.length,
+        syncs: sync.mock.calls.length,
+        feeds: feedCalls,
+        catalogReads: rows.mock.calls.length,
+        saves,
+        published: [input.publishStatus, input.publishNotice, input.publishUpdates, input.publishUpdateStatus].map((fn) => fn.mock.calls.length),
+        logged: input.log.info.mock.calls.length + input.log.warn.mock.calls.length,
+      });
+      const before = counts();
+      shutdown.abort();
+      if (ending === "fulfils") release!();
+      else fail!(new Error("shutdown closed the source"));
+      await background.started;
+      expect(counts()).toEqual(before);
+    } finally {
+      background.stop();
+      sync.mockRestore();
+      rows.mockRestore();
+    }
+  });
+
+  /**
+   * The same over the real syncer and installers, nothing substituted: the
+   * official source is a served fixture, its sync prunes for real, and the
+   * boot installs its default skill. Held inside, stopped, then let go: the
+   * sync and the install with its record finish, and none of the events they
+   * send — sync progress, install progress, catalog changes from the syncer,
+   * the service or the revocation sink — reaches the renderer.
+   */
+  const REAL_WAITS = [
+    ["the official sync's pruning", "prune"],
+    ["the boot's default content install", "activate"],
+  ] as const;
+  const REAL_ROWS = REAL_WAITS.flatMap(([name, hold]) => (["fulfils", "rejects"] as const).map((ending) => [name, ending, hold] as const));
+
+  it.each(REAL_ROWS)("a stopped scheduler over the real syncer: stopped during %s, which then %s, nothing reaches the renderer", async (_name, ending, hold) => {
+    const { url } = market("1.0.0", "ave");
+    service.close();
+    await build(policyLoad({}), { id: "ave", url, mirrors: [], auth: { kind: "none" } });
+    let release: (() => void) | null = null;
+    let fail: ((error: Error) => void) | null = null;
+    const held = () =>
+      new Promise<void>((resolve, reject) => {
+        release = resolve;
+        fail = reject;
+      });
+    if (hold === "prune") pruneHold = held;
+    else activateHold = held;
+    let saves = 0;
+    const appliedPath = join(root, "packages", "default-installs.json");
+    const input = {
+      service: async () => service,
+      appliedDefaults: () => AppliedDefaults.open(appliedPath),
+      defaults: [{ kind: "skill" as const, name: "review", source: "ave" }],
+      settings: () => ({ updateNotices: true }),
+      history: {
+        load: async () => ({ history: emptyUpdateHistory(), reset: false as const }),
+        save: async (_history: UpdateHistory) => {
+          saves += 1;
+        },
+      },
+      publishStatus: vi.fn(),
+      publishNotice: vi.fn(),
+      publishUpdates: vi.fn(),
+      publishUpdateStatus: vi.fn(),
+      onResume: () => () => {},
+      log: { info: vi.fn(), warn: vi.fn() },
+    };
+    const background = startMarketplaceBackground(input);
+    shutdown.signal.addEventListener("abort", () => background.stop(), { once: true });
+    try {
+      await vi.waitFor(() => expect(release).not.toBeNull(), { timeout: 20_000 });
+      const counts = () => ({
+        sent: { ...sent },
+        saves,
+        published: [input.publishStatus, input.publishNotice, input.publishUpdates, input.publishUpdateStatus].map((fn) => fn.mock.calls.length),
+      });
+      const before = counts();
+      shutdown.abort();
+      if (ending === "fulfils") release!();
+      else fail!(new Error("shutdown interrupted it"));
+      await background.started;
+      // Let the held work's own continuations run out.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(counts()).toEqual(before);
+      if (hold === "activate" && ending === "fulfils") {
+        // The install in progress finished, with its record.
+        expect(store.list().map((entry) => `${entry.kind}:${entry.name}`)).toEqual(["skill:review"]);
+        expect((await AppliedDefaults.open(appliedPath)).get({ kind: "skill", name: "review", source: "ave" })).toMatchObject({ result: "installed" });
+      }
+    } finally {
+      background.stop();
+    }
+  });
+
+  it("cancels an enforcement queued behind another when its signal aborts while it waits", async () => {
+    let releaseFirst: () => void = () => {};
+    feedHold = {
+      at: 1,
+      wait: () =>
+        new Promise<void>((resolve) => {
+          releaseFirst = resolve;
+        }),
+    };
+    const first = service.enforceRevocations();
+    await vi.waitFor(() => expect(feedCalls).toBe(1));
+    const scheduler = new AbortController();
+    const admitted = vi.spyOn(service as unknown as { enforceRevocationsNow: (signal?: AbortSignal) => Promise<void> }, "enforceRevocationsNow");
+    const queued = service.enforceRevocations(scheduler.signal);
+    // Admitted to its operation, it waits in the enforcement queue behind the first.
+    await vi.waitFor(() => expect(admitted).toHaveBeenCalledOnce());
+    const reason = new Error("the update scheduler has stopped");
+    scheduler.abort(reason);
+    releaseFirst();
+    await first;
+    await expect(queued).rejects.toBe(reason);
+    // Only the enforcement that had started fed the gates.
+    expect(feedCalls).toBe(1);
   });
 });

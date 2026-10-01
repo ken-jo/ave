@@ -320,11 +320,14 @@ export const CHANNELS = {
     deepLinkTake: "ave:marketplace:deep-link:take",
     bootInstallsNotice: "ave:marketplace:boot-installs:notice",
     bootInstallsDismiss: "ave:marketplace:boot-installs:dismiss",
+    updatesStatus: "ave:marketplace:updates:status",
+    updatesCheck: "ave:marketplace:updates:check",
     syncProgress: "marketplace:sync-progress", // event main→renderer (SyncProgressView)
     catalogChanged: "marketplace:catalog-changed", // event main→renderer
     installProgress: "marketplace:install-progress", // event main→renderer (InstallProgressView)
     deepLink: "marketplace:deep-link", // event main→renderer: a deep link waits in deepLinkTake
     bootInstallsApplied: "marketplace:boot-installs-applied", // event main→renderer: a notice waits in bootInstallsNotice
+    updateStatusChanged: "marketplace:update-status", // event main→renderer (UpdateStatusView)
   },
   pluginStudio: {
     availableParts: "ave:plugin-studio:parts:list",

@@ -229,6 +229,9 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   // Window controls act on the host BrowserWindow the shell is embedded in.
   ["window", CHANNELS.window.minimize, []],
   ["window", CHANNELS.window.openHtmlPreview, [{ html: "<p>x</p>" }]],
+  // The update scheduler's status and *Check now* (design §18.9): a check syncs every source.
+  ["git-marketplace", CHANNELS.gitMarketplace.updatesStatus, []],
+  ["git-marketplace", CHANNELS.gitMarketplace.updatesCheck, []],
 ];
 
 beforeEach(async () => {
@@ -259,6 +262,7 @@ beforeEach(async () => {
     { registerWindowHandlers },
     { registerAlertsHandlers },
     { registerPluginStudioHandlers },
+    { registerGitMarketplaceHandlers },
   ] = await Promise.all([
     import("../domains/chat.js"),
     import("../domains/settings.js"),
@@ -279,6 +283,7 @@ beforeEach(async () => {
     import("../domains/window.js"),
     import("../domains/alerts.js"),
     import("../domains/plugin-studio.js"),
+    import("../domains/git-marketplace.js"),
   ]);
   registerChatHandlers(deps);
   registerSettingsHandlers(deps);
@@ -299,6 +304,10 @@ beforeEach(async () => {
   registerWindowHandlers(deps);
   registerAlertsHandlers(deps, async () => ({} as never));
   registerPluginStudioHandlers(deps, async () => null);
+  // Its other channels build the marketplace on the first request; this table drives only the scheduler's.
+  registerGitMarketplaceHandlers(deps, async () => null, async () => {
+    throw new Error("the git marketplace is not built in this suite");
+  });
 });
 
 describe("host-renderer-only IPC channels", () => {

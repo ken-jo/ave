@@ -10,6 +10,8 @@
  */
 import { ipcMain, session } from "electron";
 import { CHANNELS } from "../../contract/app-contract.js";
+import { getMarketplaceLifetime } from "../../main/app-state.js";
+import { whileRunning } from "../../marketplace/app/background.js";
 import { GitRuntimeService, gitRuntimeRoot } from "../../marketplace/git/runtime-service.js";
 import { NetworkGate } from "../../marketplace/net/network-gate.js";
 import { createPinnedFetch } from "../../marketplace/net/pinned-fetch.js";
@@ -22,12 +24,20 @@ import type { IpcDeps } from "../types.js";
 
 type GitRuntimePort = Pick<GitRuntimeService, "status" | "install">;
 
-function createGitRuntimeService(deps: IpcDeps): GitRuntimeService {
-  const broadcast = (progress: GitRuntimeProgress) => {
+/**
+ * Where the runtime's install progress goes: every live window, while the
+ * marketplace's lifetime lasts (`shutdown`, shared with the marketplace
+ * domain). After shutdown an install still finishes, and says nothing.
+ */
+export function gitRuntimeProgressSender(deps: IpcDeps, shutdown: AbortSignal): (progress: GitRuntimeProgress) => void {
+  return whileRunning(shutdown)((progress: GitRuntimeProgress) => {
     for (const window of deps.getAppWindows?.() ?? [deps.getMainWindow()]) {
       if (window && !window.isDestroyed()) window.webContents.send(CHANNELS.gitRuntime.progress, progress);
     }
-  };
+  });
+}
+
+function createGitRuntimeService(deps: IpcDeps): GitRuntimeService {
   return new GitRuntimeService({
     runtimeRoot: gitRuntimeRoot(aveHome()),
     mode: () => deps.settingsService.get("marketplace").git?.mode ?? "auto",
@@ -37,7 +47,7 @@ function createGitRuntimeService(deps: IpcDeps): GitRuntimeService {
       const gate = new NetworkGate({ policy: await FilePolicySource.open(), allowLoopback: false, transport });
       return gate.fetch(url, { catalog: null, official: true, ...(signal ? { signal } : {}) });
     },
-    onProgress: broadcast,
+    onProgress: gitRuntimeProgressSender(deps, getMarketplaceLifetime().signal),
   });
 }
 

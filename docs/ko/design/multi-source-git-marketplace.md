@@ -38,6 +38,7 @@
     sources.json                      # custom and direct sources (§2.1)
     service.json                      # the service move accepted for this build constant (§11)
     service.staging.json              # the same, for a development staging base (§11)
+    updates.json                      # the update scheduler's times and classifications (§7.3)
     <sourceId>/
       repo.git/                       # bare partial clone (blob:none)
       snapshots/<commit>.json         # validated snapshots (§2.2)
@@ -836,14 +837,90 @@ tree 단계의 `artifactSha256`은 설치하는 모든 파일(디스크립터는
 
 ### 7.3 동기화
 
-부팅 직후(비차단), 실행 중 `marketplace.updateCheckIntervalMs`마다, 그리고
-수동으로 실행합니다. 설정은 키와 `0` = 주기 동기화 없음이라는 의미를 유지하지만,
-한 번의 틱이 이제 모든 소스를 fetch하므로 코드 기본값은 지금의 10분에서 6시간으로
-바뀌고, 저장된 값이 15분보다 작으면 읽을 때 15분으로 올립니다. 이 설정은 선택
-항목이고 기본으로 비어 있으므로 이관할 저장값은 없습니다. 0.13.0부터 이 틱은 §18.7.1의
-탐색이며 여전히 6시간마다 돌고, 자동 업데이트 적용 확인은 부팅 때와 하루 한 번 합니다. 소스는 켜져 있을 때 **또는** 그 소스에 묶인 설치
-패키지가 하나라도 있을 때 동기화하므로, 숨긴 소스에서 설치한 패키지에도 폐기와
-업데이트 알림이 계속 도착합니다.
+모든 소스의 동기화가 **탐색**입니다. 탐색은 가져온 폐기를 집행하고(§10.4) 설치된
+패키지의 업데이트를 계산합니다. 부팅 때(디스크에 이미 있는 폐기를 집행한 뒤, 기본·필수
+설치 전, §10.2), 기한이 되었을 때, *지금 확인*에서 돌고, 소스 하나의 *새로 고침*은 그
+소스만 동기화합니다. 스케줄러 하나(`src/marketplace/app/background.ts`)가 **기한 확인**을
+한 시간을 넘기지 않는 간격으로, `powerMonitor` `resume` 때, `marketplace` 설정을 쓴 뒤,
+*지금 확인*(`ave:marketplace:updates:check`)에서 실행합니다.
+
+- **탐색의 기한**: 실패한 시도(`partial`, `offline`, `error`) 뒤에는 `lastSuccessAt`과
+  관계없이 `lastAttemptAt`이 한 시간 지났을 때, 성공 뒤에는 `lastSuccessAt`이
+  `marketplace.updateCheckIntervalMs`만큼 지났을 때입니다. 설정은 키를 유지합니다.
+  비어 있으면 6시간, 저장값이 15분보다 작으면 15분으로 읽고, `0`이면 탐색은 부팅,
+  *지금 확인*, 실패 뒤 매시간 재시도, 적용 확인에서만 돕니다. 선택 항목이고 기본으로
+  비어 있으므로 이관할 저장값은 없습니다.
+- **적용 확인의 기한**: 부팅 때, *지금 확인*에서, 마지막 성공한 적용 확인 24시간 뒤이며,
+  실패한 탐색은 적용 확인도 같은 매시간 재시도에 묶습니다. 적용 확인은 언제나 새 탐색을
+  얻고(진행 중인 탐색에 합류하거나 새로 시작) 그 탐색의 업데이트만 분류합니다. 결과가
+  `ok`면 모두 분류하고 확인이 끝날 때 `applyCheckAt`을 쓰며, `partial`이면 닿은 소스의 업데이트만,
+  `offline`이나 `error`면 아무것도 분류하지 않습니다. 이 빌드는 모든 업데이트를
+  `manual`로 분류합니다. 자동 적용(§18.7.2–§18.7.4)이 구현되기 전에는 아무것도 스스로
+  적용되지 않으므로, 각 업데이트는 검토(§15.6)를 기다립니다.
+- **탐색 결과**: 모든 소스가 동기화되면 `ok`, 모든 소스가 `SOURCE_UNREACHABLE` 사유
+  `offline`으로 실패하면 `offline`, 그 밖에는 `partial`, 패스가 예외를 던지면 `error`입니다.
+  망가진 소스(§18.8)는 동기화하지 않고 오프라인도 아니어서 닿지 않은 것으로 세므로, 그런
+  소스가 있는 탐색은 `partial`이고 카드는 소스 화면으로 안내합니다. 탐색 시각과
+  `applyCheckAt`은 끝날 때 기록하므로, 느리게 실패한 탐색을 끝나자마자 다시 시도하지 않고
+  절전을 넘긴 확인이 끝나자마자 다시 기한이 되지도 않습니다.
+- **게시하는 것**은 마지막 탐색이 닿은 소스를 따릅니다. 닿은 소스의 업데이트는 분류하고,
+  닿지 않은 소스의 업데이트는 그 소스의 캐시된 스냅샷에서 온 것이므로 새로 분류하지
+  않습니다. 패키지가 같은 버전을 계속 제공하는 동안에만 이전 탐색이 보인 그대로
+  `stale`로 표시해 보이고, 그렇지 않으면 보이지 않습니다. 예외를 던진 탐색은 어느 소스에도
+  닿지 않은 것이므로 보이던 것은 모두 같은 방식으로 `stale`이 되고, 그 뒤 캐시된 버전은
+  탐색이 그 소스에 닿을 때까지 분류하지 않습니다.
+- **멈춘 스케줄러**(종료 때 `stop()`)는 더 아무것도 하지 않습니다. 생명주기 게이트 하나가
+  바깥으로 나가는 모든 효과를 맡습니다. 네 가지 게시(`publishStatus`, `publishNotice`,
+  `publishUpdates`, `publishUpdateStatus`), 스케줄러 밖의 상태를 읽거나 바꾸는 모든
+  호출(서비스 열기, `enforceRevocations`, `discover`, `takeRevocationNotice`, `updates`,
+  `applyBootInstalls`, 적용된 기본값 읽기, `updates.json` 읽기), `updates.json`의 모든
+  쓰기(읽을 수 없는 파일의 교체 포함 — 로더는 알리기만 하고 스케줄러가 씀), 기한 확인
+  타이머입니다. 멈춘 뒤 게이트는 게시를 버리고 작업을 거부하며, 진행 중이던 작업은 성공하든
+  거부되든 멈춤으로 끝나므로 어떤 후속 작업도 게시·기록·로그·새 작업을 하지 않습니다.
+  서비스는 `discover`, `enforceRevocations`, `applyBootInstalls`와 함께 게이트의 종료
+  신호를 받습니다. 신호가 중단되면 다음 단계(동기화, 집행, 부팅 설치의 카탈로그, 다음 부팅
+  설치, 다른 집행 뒤에 줄 서 있던 집행)를 시작하지 않고 동기화 진행도 보내지 않으며, 이미
+  시작한 단계는 끝납니다. 내부 후속 작업이 그래도 보내는 것은 경계 한 곳에서 막힙니다. IPC
+  도메인은 서비스, 동기화기, 폐기 싱크를 `marketplaceEvents`로 만들어, 그 바깥 콜백
+  (`onSyncProgress`, `onInstallProgress`, 서비스·동기화기·싱크의 `onCatalogChanged`)과
+  스케줄러의 게시 네 가지를 마켓플레이스 수명(`getMarketplaceLifetime`, 도메인·git 런타임·
+  딥링크가 공유) 위의 `whileRunning`에 통과시킵니다. 플러그인 포트가 설치 완료를 알리는
+  것(호스트 구독자에게 `plugin.installed`, 플러그인 브리지 새로 고침)도 같은 경계를 지나고,
+  git 런타임의 설치 진행(`git-runtime:progress`)도 그렇습니다. 마켓플레이스 딥링크는 수명이
+  끝나면 무엇을 붙잡거나 열거나 보내기 전에 거부됩니다. 종료 hook 하나
+  (`git-marketplace-events`, 도메인 등록 때 등록)가 그 수명을 중단하고 같은 단계에서
+  스케줄러를 멈춥니다. 동기화와 설치, 그 기록은 끝나지만 그것들이 보내는 것은 렌더러에도
+  호스트 구독자에게도 닿지 않습니다.
+  `updates.json` 로더는 쓰지도 로그를 남기지도 않고 리셋한 이유를 돌려주며, 스케줄러가
+  게이트를 거쳐 알립니다. *다시 시도*(`ave:bootstrap:retry`)와 *지금 확인*은 선언된 거부
+  응답으로 답합니다.
+
+스케줄러는 시각을 `~/.ave/marketplaces/updates.json`에 두므로 주기가 재시작과 절전을
+넘어 유지됩니다. 타이머는 기한 확인을 깨울 뿐이고, 기한 확인은 벽시계를 읽습니다.
+타이머는 unref 상태로, 확인할 때마다 다시 걸리고 종료 때 지워집니다. 멈춘 스케줄러는
+아무것도 시작하지 않습니다.
+
+```
+{ version: 1,
+  discovery: { lastAttemptAt, lastSuccessAt, result: "ok" | "partial" | "offline" | "error" } | null,
+  applyCheckAt: string | null,
+  packages: { "<sourceId>:<kind>:<name>": { to, state, attempts, lastError?: { code, detail?, at }, appliedAt? } } }
+```
+
+파일은 엄격하게 읽습니다. 중복이나 모르는 키, 다른 버전, 해석되지 않는 시각,
+§18.7.5의 여덟 상태 밖의 상태가 있으면 거부합니다. 읽을 수 없는 파일은 빈 파일로 바꾸고
+업데이트 카드가 그렇게 알립니다(`historyReset`, §15.7.1). 그 영향은 확인 시각뿐이고
+무엇이 적용되는지는 바뀌지 않습니다. `lastError.detail`의 사유가 코드에 속하지 않으면
+`state.json`(§14)처럼 detail만 버리고 코드는 유지합니다.
+
+설정 `marketplace.autoUpdate`(불리언, 비어 있으면 켬), `marketplace.autoUpdateSources`(소스
+ID 키), `marketplace.autoUpdatePackages`(`packageUpdateSkipKey` 키,
+`skippedPluginUpdates`처럼 정규화)는 값이 `"on"`이나 `"off"`이며 읽을 때 정규화합니다.
+잘못된 키나 값은 버리고, 두 맵 모두 프로토타입이 없습니다. 자동 적용(§18.7.2) 전에는
+아무것도 정하지 않습니다.
+
+소스는 켜져 있을 때 **또는** 그 소스에 묶인 설치 패키지가 하나라도 있을 때
+동기화하므로, 숨긴 소스에서 설치한 패키지에도 폐기와 업데이트 알림이 계속 도착합니다.
 
 ```
 fetch ref with --filter=blob:none (full commit history, no --depth, no tags except the ref)
@@ -1543,8 +1620,15 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
     - 그사이 도착한 모든 작업은 줄 서 있는 그 갱신 하나를 함께 씁니다. 그래서
       계속 겹치는 작업들 사이에서도 읽기는 한 번만 더 들고, 그 안에서 변경을
       봅니다.
+    - 호출자는 취소될 수 있습니다(업데이트 스케줄러의 호출은 종료 신호를
+      지닙니다). 취소된 호출자는 갱신을 시작하지 않습니다. 도착할 때 거부되고,
+      기다리는 동안 모든 호출자가 취소된 대기 갱신은 시작하지 않습니다. 살아 있는
+      호출자가 하나라도 있으면 갱신은 돕니다. 갱신이나 잠금을 기다리는 동안 취소된
+      호출자는 작업 본문에 들어가지 않습니다.
   - 형식이 잘못되었거나 읽을 수 없는 파일은, 한 번 읽었을 때와 똑같이 경고와 함께
-    닫힌 쪽으로 적용합니다.
+    닫힌 쪽으로 적용합니다. 변경은 누가 기다리든 적용하지만, 경고는 그 갱신을
+    기다리는 호출자가 살아 있을 때만 남기므로 종료 뒤에 끝난 갱신은 아무것도 말하지
+    않습니다.
   - 잠금 순서는 마켓플레이스 작업이 어떤 플러그인 수명 주기 잠금보다 먼저입니다.
     - 설치는 작업의 공유 잠금을 잡은 뒤 플러그인 잠금을 잡습니다.
     - 플러그인 잠금을 잡은 채 서비스를 부르는 코드는 이 순서를 뒤집습니다. 그러면
@@ -1557,8 +1641,9 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
     - 서비스는 카탈로그 변경을 작업 밖에서 알리므로, 그 알림이 시작하는 백그라운드
       업데이트 확인은 갱신과 공유 잠금을 거쳐 자기 작업에 들어갑니다.
     - 작업이 시작한 일이 작업이 끝난 뒤에도 돌고 있으면 그 일도 같은 길을 갑니다.
-    - 백그라운드 스케줄러(부팅 패스, 업데이트 확인, 주기 동기화)는 모든 진입을
-      자신이 시작된 컨텍스트, 곧 어떤 작업 밖에서 돌립니다. 어느 작업 안에서(스냅숏을
+    - 백그라운드 스케줄러(§7.3: 부팅 패스, 탐색, 적용 확인, 업데이트 목록)는 모든
+      진입(지금 확인, 재시도, 재확인, 설정 변경)과 재개, 기한 확인 타이머를 자신이
+      시작된 컨텍스트, 곧 어떤 작업 밖에서 돌립니다. 어느 작업 안에서(스냅숏을
       게시한 동기화, 설치) 확인을 요청하든, 그 작업이 아직 도는 중에 확인이 시작되더라도
       확인의 서비스 호출은 각각 자기 작업입니다.
   - 계획은 만들어질 때의 정책 다이제스트를 기록합니다. 다른 다이제스트 아래에서
@@ -1593,13 +1678,16 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
 | `ave:marketplace:announcements` | — | `MarketplaceAnnouncement[]` |
 | `ave:marketplace:content:installed` | — | `{ ok: true; content: InstalledContent } \| { ok: false; error: "installed-content-unavailable" }` (themes, languages, fonts, broken packages; §5.5) |
 | `ave:marketplace:content:language-messages` | `locale` | `{ ok: true; messages } \| { ok: false; error: "installed-content-unavailable" \| "language-not-installed" }` |
+| `ave:marketplace:updates:status` | — | `UpdateStatusView`(§13.1) |
+| `ave:marketplace:updates:check` | — | 적용 확인의 탐색과 분류가 끝날 때 `UpdateStatusView`(§7.3) |
 | `ave:git:runtime:status` | — | `GitRuntimeStatus` |
 | `ave:git:runtime:install` | — | `GitRuntimeStatus`(진행은 이벤트로) |
 
 이벤트: `marketplace:sync-progress`, `marketplace:catalog-changed`,
 `marketplace:install-progress`(`{ planId, rung, phase, bytes? }`),
-`marketplace:updates-available`(유지), `marketplace:boot-installs-applied`(기본·필수
-설치), `git-runtime:progress`.
+`marketplace:updates-available`(업데이트마다 상태 포함, §13.1),
+`marketplace:update-status`(바뀔 때 `UpdateStatusView`),
+`marketplace:boot-installs-applied`(기본·필수 설치), `git-runtime:progress`.
 
 모든 채널은 호스트 렌더러 전용(`validateHostRendererSender`)이고 지금처럼 감사
 로그를 남깁니다. `ave:git:runtime:install`은 여기에 더해 실시간 키보드 제스처를
@@ -1659,6 +1747,31 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
 - 계획은 쓰이거나, 만료되거나, 대체될 때까지 유효합니다. 같은 패키지를 다시
   계획하면 이전 계획은 버려집니다. 쓰이지 않은 계획과 미리보기는 다른 일이 없어도
   만료 시점에 버려지므로, 버려진 미리보기의 클론과 입력한 토큰이 남지 않습니다.
+- `updates:status`와 `updates:check`는 스케줄러가 답합니다(§7.3).
+
+  ```ts
+  interface UpdateStatusView {
+    discovery: { lastAttemptAt: string | null; lastSuccessAt: string | null;
+                 result: "ok" | "partial" | "offline" | "error" | null;
+                 nextAt: string };     // the earlier of the discovery and apply-check due times, not before now
+    applyCheckAt: string | null;
+    running: boolean;                  // a discovery or an apply check is in flight
+    historyReset: boolean;             // updates.json could not be read and was started again
+    packages: PackageUpdateView[];     // updates from the sources the last discovery reached, minus skipped versions,
+                                       // each with its state; an unreached source's only as shown before, `stale: true`
+  }
+  ```
+
+  패키지의 `state`는 §18.7.5의 여덟 가지 중 하나입니다(`UPDATE_PACKAGE_STATES`).
+  `stale: true`는 마지막 탐색이 소스에 닿지 못한 패키지를 표시하며, 그 상태는 새 분류가
+  아니라 이전 탐색의 것입니다(§7.3). 창이 로드되기 전과 격리된 E2E 실행에는 스케줄러가
+  없어서 둘 다 `unavailable`로 답하고, 그 메시지("update checks have not started")는
+  *세부 정보 복사* 뒤에 있습니다. `marketplace:update-status`는 같은 보기를 바뀔
+  때마다 보냅니다.
+- `marketplace:updates-available`은 `state`가 있는 `PackageUpdateView`를 보내며, 사용자가
+  필요한 상태만 담습니다(`updateNeedsUser`: `needs-review`, `manual`, `failed`,
+  `applied-not-running`, `approval-pending`). `manual`은 업데이트 알림이 켜져
+  있을 때만(`updateCheckEnabled`) 보냅니다. 건너뛴 버전은 main에서 뺍니다.
 - 마켓플레이스가 설치한 MCP 서버는 `packages/mcp-installs.json`에 기록됩니다.
   붙여넣은 서버는 소스 없이 기록되고, 기록된 서버만 여기서 업데이트·제거할 수
   있습니다. MCP 거버넌스 정책(Layer 1)은 계획할 때와 설치할 때 두 번
@@ -1752,8 +1865,8 @@ detail을 담고, 동기화기가 그것을 `state.json`의 `lastSync.detail`에
 ## 15. UI 명세
 
 목업은 아래 모든 상태를 보여 줍니다. 설정 → 마켓플레이스가 앱 안의 스토어가
-됩니다(웹 스토어는 없어짐). 이후 슬라이스가 폴더 행과 업데이트 카드를 더합니다
-(§18.4.8, §18.9).
+됩니다(웹 스토어는 없어짐). 이후 슬라이스가 폴더 행을 더합니다(§18.4.8).
+업데이트 카드(§15.7.1)는 구현됐고, 0.13.0 다음 릴리스에 들어갑니다.
 
 ### 15.1 둘러보기
 
@@ -1867,6 +1980,30 @@ release나 archive에는 "암호화되지 않은 다운로드 — 고정된 sha2
 Managed), `smoke-testing`을 포함한 §9.2 단계 진행이 붙은
 **Install Git (<크기>)**(이 플랫폼용 핀 고정 아카이브 크기, 23–66 MB), 오류와
 Retry가 있는 `failed` 상태.
+
+### 15.7.1 업데이트 카드
+
+설정 → 마켓플레이스 → 유지 관리에서 Git 런타임 카드 위에 있는 카드(`UpdatesCard.tsx`)로,
+`updates:status`를 읽은 뒤 `marketplace:update-status`를 따릅니다.
+
+- "시작할 때와 하루에 한 번 업데이트를 확인합니다 · 마지막 확인 <시각> · 다음 확인
+  <시각>"(마지막 확인은 마지막으로 성공한 탐색);
+- *지금 확인*(`updates:check`), 확인 중에는 비활성;
+- 마지막 결과가 `ok`가 아닐 때 그 결과: 오프라인("오프라인 — 마지막 확인 <시각>.
+  네트워크가 돌아오면 다시 확인합니다."), 일부(닿지 못한 소스가 있음, 행마다 이유가 있는
+  소스 화면으로 가는 *소스 보기*, §15.4), 끝내지 못한 확인; 그리고 잃어버린 `updates.json`;
+- 업데이트마다 버전 변화와 상태(§18.7.5); `manual`과 `needs-review` 행에는 업데이트
+  검토(§15.6)를 여는 *검토*가 있습니다. `stale` 행에는 "마지막 확인에서 소스에 연결하지
+  못해 이전 확인의 상태로 표시합니다."가 붙습니다. `ok` 확인 뒤 목록이 비면 "검토할
+  업데이트가 없습니다."라고 씁니다. 건너뛴 버전은 목록에서 빠지므로 "최신"이라고 하지
+  않습니다;
+- 스케줄러가 답하지 않으면 "지금은 업데이트를 확인할 수 없습니다. Ave를 다시 시작하고,
+  계속되면 세부 정보를 복사해 알려 주세요."라고 쓰며, main의 메시지는 가린 채(scrub)
+  *세부 정보 복사* 뒤에만 둡니다(§18.8).
+
+카드는 읽기 전용입니다. 자동 업데이트 스위치와 최근 자동 업데이트는 자동 적용과 함께
+옵니다(§18.9). 도구 모음 알약(`PluginUpdatesPill.tsx`)은 무엇을 받든 사용자가 필요한
+업데이트만 셉니다(`updateNeedsUser`, §13.1).
 
 ### 15.8 공지
 
@@ -2029,6 +2166,7 @@ Retry가 있는 `failed` 상태.
 | 버전 선택 | `minAppVersion`, 회수, 플랫폼, 프리릴리스 옵트인, 롤아웃 버킷, 소스별 폐기 표 테스트 |
 | 사다리 | 단계별 사용/건너뜀/실패 조합, authority 필드 하나라도 불일치하면 사다리 중단, 계획이 커밋에 묶임, 영수증에 단계 결과 기록 |
 | Git 런타임 | 버전 게이트용 가짜 `git` 바이너리(2.45.0 거부, 2.45.1 허용), 환경/플래그/전역 설정 계약, askpass 티켓의 호스트 바인딩, 로컬 픽스처 서버를 쓴 관리형 설치와 잘못된 해시 거부 |
+| 업데이트 스케줄러 | 가짜 시간(`background.test.ts`): 오프라인 탐색은 간격 뒤가 아니라 한 시간 뒤 재시도; 최근 성공 뒤 오프라인 *지금 확인*도 한 시간 뒤 재시도; 성공은 간격 동안 반복하지 않음; 적용 확인은 부팅 때와 마지막 확인 24시간 뒤; 정확히 24시간 경계에서도, 탐색과 위상이 어긋나도 적용 확인은 분류 전에 탐색; 기한이 된 적용 확인은 진행 중인 탐색에 합류하고, 그 탐색이 `partial`이면 닿은 소스만 분류하고 기한이 남음; 시계가 30시간 뛴 뒤 `resume`이 탐색을 실행; *지금 확인*은 탐색과 분류가 끝날 때 답함; 절전을 넘긴 성공한 확인은 끝난 시각으로 기록; 닿은 소스만 게시하고 닿지 않은 소스의 업데이트는 이전 탐색이 보인 그대로 `stale`로만, 상태와 `updates-available` 이벤트 모두에서; 예외를 던진 탐색은 보이던 것을 `stale`로 바꾸고 그 뒤 캐시된 것은 분류하지 않음; 부팅 패스·recheck·*지금 확인*·기한이 된 적용 확인의 어느 기다림에서 멈추든(그 기다림이 성공하든 거부되든) 더는 게시·기록·로그·새 작업·타이머가 없음(모든 기다림을 도는 표 하나; `service.test.ts`는 실제 서비스의 동기화와 집행에서, 그리고 실제 동기화기와 설치기의 정리(prune)와 부팅 콘텐츠 설치에서 붙잡고 같은 표를 돌려 더 이상의 진행·단계·게시·기록·경계를 지나는 어떤 이벤트도 없고 설치와 그 기록은 끝남을 확인; 다른 집행 뒤에 줄 선 집행은 신호가 중단되면 취소됨), 읽기가 끝나기 전에 멈추면 읽을 수 없는 파일은 그대로 두고 알리지도 않음; `git-marketplace.test.ts`: 멈춘 뒤 다시 시도와 지금 확인은 선언된 거부 응답으로 답하고, 종료 hook 뒤에 끝난 플러그인 설치는 `plugin.installed`나 브리지 새로 고침 없이 끝남; `git-runtime.test.ts`: 런타임 진행은 마켓플레이스 종료 hook에서 멈춤; `ave-deep-link.test.ts`: 수명이 끝나면 마켓플레이스 링크는 거부됨; 읽을 수 없는 `updates.json`은 `historyReset`을 켬. `history.test.ts`: 파일의 엄격한 모양과 기한 규칙. `service.test.ts`: `ok`, `partial`, `offline`, 그리고 망가진 소스와 나머지 모두 오프라인이면 `partial`. `PluginUpdatesPill.test.tsx`: 사용자가 필요한 상태만 셈. `GitMarketplaceTab.test.tsx`: 카드의 상태, "검토할 업데이트가 없습니다", `stale` 행, 답하지 않는 스케줄러를 자체 문장으로 쓰고 main의 메시지는 *세부 정보 복사* 뒤에만 |
 | 동기화 | 로컬 bare 저장소: 핀이 팁보다 한참 뒤인 fast-forward, 재작성(공식·관리는 거부, 커스텀은 검토), 잘못된 인덱스는 핀 유지, 미러 대체, 설치 패키지가 있는 숨긴 소스도 동기화 |
 | 네트워크 게이트 | 정규화 동치(scp/ssh/https, 대소문자, `.git`). `<helper>::` 전송과 URL 안의 자격 증명 거부. block이 allow보다 우선. `requireHttps`와 `blockPrivateNetworks`가 확인한 소스도 차단. 입력한 대상과 카탈로그가 지정한 대상의 주소 분류별 결과(`198.18.0.0/15`는 사내망, 등록된 호스트라도 메타데이터 거부, 다른 포트의 루프백 다운로드 거부, `internal-network`가 `internal-downloads`를 함축하지 않음, 등록이 `token-unencrypted`를 함축하지 않음). 차단된 호스트로의 리다이렉트 거부. 호스트 간 인증 헤더 없음 |
 | 연결 묶기(§7.4) | `pinned-fetch.test.ts`가 실제 로컬 서버로: 홉마다 조회 한 번, 검사한 답에만 연결, 메타데이터 답은 버림, PAC 종류별(`PROXY`의 http·https 대상, `HTTPS`, `SOCKS5`, `SOCKS4`, 모르는 종류는 `proxy`로 실패), `DIRECT`로 물러나지 않음, 메타데이터·라우팅 불가 리터럴 프록시는 조회 없이 거부, 이름에 대한 인증서 검사, TLS 연결마다(대상과 `HTTPS` 프록시) 검증과 호스트 이름을 직접 요청, 평문 http 요청에는 TLS 연결 없음. `network-gate.test.ts`: https 요청과 같은 호스트라도 http 홉에는 로그인 정보를 싣지 않음. `trusted-proxy.test.ts`가 프록시 경계를 고정. `run-git.test.ts`: 리터럴 프록시는 git 시작 전 거부(IPv4, IPv6, 매핑, NAT64), 호출마다 PAC 답 하나로 설정과 묶기가 같은 경로, `http.curloptResolve` 고정, 거부된 답만 남으면 git을 시작하지 않음, `token-unencrypted` 없는 http에는 자격 증명 없음(등록된 호스트의 저장 토큰 포함), 그리고 게이트 판정부터 끝까지: http 소스는 조회 전에 묻고, `unencrypted`가 있어야 검사한 주소로만 닿으며, `token-unencrypted`까지 있어야 로그인함. `ssh-preflight.test.ts`: git 전 사전 검사, 거부된 답 하나라도 실패, `proxyjump` 뒤에서는 조회 없음, 명시한 남는 위험 |
@@ -2043,15 +2181,16 @@ Retry가 있는 `failed` 상태.
 ## 18. 소스 수용, 로컬 폴더, 자동 업데이트 (0.13.0 이후)
 
 > 상태: 2026-10-01에 처음엔 앱 릴리스 0.13.0을 위해 **설계됨**. 0.13.0은
-> 슬라이스 B만 담아 출시됐고, 슬라이스 C는 다음 릴리스에, 그 뒤 슬라이스는 더
+> 슬라이스 B만 담아 출시됐고, 슬라이스 C와 E는 다음 릴리스에, 그 뒤 슬라이스는 더
 > 나중에 들어갑니다. 이 절이 0.13.0이라고 말하는 곳은 그 슬라이스를 담는 릴리스로
 > 읽으세요.
-> - 슬라이스 B(메시지)와 슬라이스 C(대상 분류, 경고, 연결 묶기)는 구현됐습니다.
->   §7, §12–§15, §17이 구현된 모습을 설명합니다. §18.2, §18.3 #1–4와 #7,
->   §18.5의 분류·결과·묶기는 §7.4가, §18.6의 `requireHttps`,
->   `blockPrivateNetworks`, 정책 갱신은 §12가 맡습니다.
-> - 나머지(폴더, 자동 업데이트와 그 설정, 슬라이스 D1–F)는 구현 전입니다. 이
->   절과 앞 절이 다르면 앞 절은 빌드를, 이 절은 목표를 설명합니다.
+> - 슬라이스 B(메시지), 슬라이스 C(대상 분류, 경고, 연결 묶기), 슬라이스 E(탐색과
+>   상태)는 구현됐습니다. §7, §12–§15, §17이 구현된 모습을 설명합니다. §18.2,
+>   §18.3 #1–4와 #7, §18.5의 분류·결과·묶기는 §7.4가, §18.6의 `requireHttps`,
+>   `blockPrivateNetworks`, 정책 갱신은 §12가, §18.7.1과 §18.9의 업데이트
+>   스케줄러, `updates.json`, 업데이트 카드는 §7.3과 §15.7.1이 맡습니다.
+> - 나머지(폴더, 자동 적용과 그 설정이 정하는 것, 슬라이스 D1, D2, F)는 구현
+>   전입니다. 이 절과 앞 절이 다르면 앞 절은 빌드를, 이 절은 목표를 설명합니다.
 > - §18.10의 각 슬라이스가 같은 변경에서 해당 절을 고쳐 쓰고 이 절을 가리키는
 >   문구를 지웁니다. 코드는 `e10c823e2` 기준으로 인용합니다.
 
@@ -2928,7 +3067,7 @@ argv에 있는 경로만 덮습니다(`plugin-bundled-command.ts:37-71`). 바뀌
   `approvalDigest: string | null`과 선택적 `carriedFrom: <generationId>`가 붙습니다. 로더는
   버전 2를 지금처럼 엄격하게(`:40-53`), 버전 3도 엄격하게 받고, 다른 버전은 지금처럼
   실패합니다. 다음 쓰기는 버전 3입니다.
-- **버전 2 기록 이관.** 0.13.0이 저장소를 처음 읽을 때 한 번 합니다(명시한 결정 39).
+- **버전 2 기록 이관.** 0.13.0 다음 릴리스가 저장소를 처음 읽을 때 한 번 합니다(명시한 결정 39).
   기록의 세대가 그 플러그인의 활성 세대이고, 지문이 그 설치된 세대의 선언에서 계산한
   지문과 같으면, `approvalDigest`를 설치된 바이트에서 계산합니다. 사용자가 승인했고 지금
   실행 중인 바이트이며, v2 식별이 이미 그것을 묶고 있습니다(세대 ID는 영수증이 덮는 모든
@@ -3271,7 +3410,7 @@ argv에 있는 경로만 덮습니다(`plugin-bundled-command.ts:37-71`). 바뀌
 | `process-entry-requires-pinned-artifact`(P3가 추가) | E | "이 익스텐션은 프로그램을 실행하므로, 마켓플레이스가 고정한 릴리스에서만 설치합니다." | "릴리스를 고정한 마켓플레이스에서 설치하세요." (Publication 계획 소유) |
 | `process-entry-unconfined`(P3가 추가) | E | Publication 계획 소유(런타임 거부) | Publication 계획 소유 |
 | `invalid-request` | E | "Ave가 이 버전이 이해하지 못하는 요청을 보냈습니다. 버그입니다." | *세부 정보 복사* |
-| `unavailable` | E | "마켓플레이스가 시작하거나 응답하지 못했습니다(<메시지>)." | "Ave를 다시 시작하고, 계속되면 *세부 정보 복사*." |
+| `unavailable` | E | "마켓플레이스가 시작하거나 응답하지 못했습니다." 모든 코드와 마찬가지로 main의 메시지는 보이지 않고, 가린 채 *세부 정보 복사* 뒤에 있습니다. 업데이트 카드는 대신 "지금은 업데이트를 확인할 수 없습니다."라고 씁니다(§15.7.1). | "Ave를 다시 시작하고, 계속되면 *세부 정보 복사*." |
 | `unauthorized-frame` | — | 보이지 않음: 감사 기록만 남고 표시할 응답 없음 | — |
 | 업데이트 `needs-review` | S | "<이름> <버전>이 설치된 버전보다 많은 것을 요청합니다:"와 `consentDelta`의 각 행. 코드가 아닌 파일만 바뀌었으면 "코드가 아닌 이 파일들만 바뀌었습니다:"와 목록. 이관된 승인은 "이전 Ave 버전의 승인을 확인해야 합니다." | *검토*; 코드 아닌 변경은 *업데이트 승인* |
 | 업데이트 `approval-pending` | S | "조직이 <이름>을 업데이트했고, 구성 요소 <n>개가 승인을 기다리며 실행되지 않습니다." | *검토* |
@@ -3314,11 +3453,16 @@ argv에 있는 경로만 덮습니다(`plugin-bundled-command.ts:37-71`). 바뀌
 | `ave:plugins:contribution-trust:list` | 바뀜 | — | 각 행에 `approvalDigest: string \| null`(§18.7.5) |
 | `ave:plugins:contribution-trust:set` | 바뀜 | `approved: true`면 검토한 행의 `generationId`와 `approvalDigest`도; 철회는 둘 다 받지 않음(§18.7.5) | 다르면 `error: "contribution-trust-review-stale"` |
 | `marketplace:update-status` | 새 이벤트 | — | 바뀔 때 `UpdateStatusView` |
-| `marketplace:updates-available` | 유지 | — | `PackageUpdateView`(`:351-356`)에 `state: "manual" \| "needs-review" \| "failed"`; 사용자가 필요한 업데이트만 |
+| `marketplace:updates-available` | 유지 | — | `PackageUpdateView`에 `state`: §18.7.5에서 사용자가 필요한 상태(`updateNeedsUser`: `manual`, `needs-review`, `failed`, `applied-not-running`, `approval-pending`); `manual`은 업데이트 알림이 켜져 있을 때만. E에서 구현(§13.1) |
 | 모든 채널 | 바뀜 | — | 실패 봉투에 `detail?`(§18.8) |
 
 타입(`SourceWarning`, `SourceWarningView`, `SourceView` 추가 필드, `UpdatePlanView.consentDelta`,
 `pendingApproval`과 `ReviewedComponentConsent`를 포함한 `UpdateStatusView`)은 원문 §18.9의 코드 블록과 같습니다.
+슬라이스 E는 `UpdateStatusView`의 `discovery`(`nextAt`은 탐색과 적용 확인 기한 중 이른
+쪽, 간격이 0이어도 매일의 적용 확인이 탐색함), `applyCheckAt`, `running`, `historyReset`,
+그리고 `key`, `displayName`, `from`, `to`, `state`가 있는 `packages`를 구현했고(§13.1),
+F가 `waitingSince`, `autoUpdate`, 패키지의 `reasons`, `failure`, `appliedAt`,
+`pendingApproval`을 더합니다.
 `pendingApproval`은 에이전트 플러그인의 `approval-pending` 항목에만 있습니다. 익스텐션의
 `approval-pending` 항목은 페이로드가 없고, 그 검토는 `ave:plugins:contribution-trust:list`와
 `:set`을 씁니다(§18.7.5).
@@ -3436,7 +3580,8 @@ D1 뒤에 D2; D1과 E 뒤에 F; G는 마지막입니다.
   확인 3시면 27시의 적용 확인은 3시간 전 성공이 있어도 스스로 탐색하고 25시 게시를 분류;
   탐색 중에 기한이 된 적용 확인은 합류하고 둘째 탐색을 시작하지 않으며, 그 탐색이
   `partial`이면 닿은 소스만 분류하고 `applyCheckAt`은 쓰지 않음; `updates:check`는 적용 큐가 기다리는 동안에도 탐색과 적용 확인이 끝나면
-  돌아옴.
+  돌아옴. E에는 적용 큐가 없으므로 E의 테스트는 적용 확인이 끝나기 전에 답하도록 되돌리면
+  실패하고, 큐 쪽 절반은 F의 `apply.test.ts`가 맡음.
 - **F**: 선언(`.mcp.json`)은 그대로 두고 `dist/server.js`나 그것이 불러오는 파일을 바꾸면
   승인 다이제스트가 바뀜; **간접 로드** — 승인된 `server.js`가 평가하는
   `skills/helper/assets/rules.txt`만 바꿔도 `needs-review`; **버전을 올린 완전한 릴리스**

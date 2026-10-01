@@ -80,6 +80,7 @@ import { projectRootKey } from "../shared/project-identity.js";
 import { clampLogRetentionDays } from "../shared/log-retention.js";
 import { isSemver, isTwoMinorReleasesBehind } from "../shared/semver-compare.js";
 import { SOURCE_ID_RE } from "../marketplace/sources/official.js";
+import { normalizeSkippedPluginUpdateKey } from "../shared/skipped-plugin-updates.js";
 import { createLogger } from "../lib/logger.js";
 import {
   STORED_FIELD,
@@ -99,6 +100,7 @@ import {
 import { DEFAULT_SETTINGS } from "./settings-defaults.js";
 import type {
   A2ARemoteSettings,
+  AutoUpdateSwitch,
   AppearanceSettings,
   AppearanceSettingsV1,
   ChatSettings,
@@ -955,7 +957,34 @@ export function normalizeMarketplace(input: unknown): MarketplaceSettings {
   merged.offlineCacheEnabled = typeof raw.offlineCacheEnabled === "boolean"
     ? raw.offlineCacheEnabled
     : DEFAULT_SETTINGS.marketplace.offlineCacheEnabled;
+  // Automatic-update switches (design §18.7.2, §18.9): unset means the default decides.
+  if (typeof raw.autoUpdate === "boolean") merged.autoUpdate = raw.autoUpdate;
+  else delete merged.autoUpdate;
+  const sources = autoUpdateSwitches(raw.autoUpdateSources, (id) => (SOURCE_ID_RE.test(id) ? id : null));
+  if (sources) merged.autoUpdateSources = sources;
+  else delete merged.autoUpdateSources;
+  const packages = autoUpdateSwitches(raw.autoUpdatePackages, normalizeSkippedPluginUpdateKey);
+  if (packages) merged.autoUpdatePackages = packages;
+  else delete merged.autoUpdatePackages;
   return merged;
+}
+
+/**
+ * A switch map keeps each entry whose key normalizes and whose value is
+ * `on` or `off`, in a null-prototype map; anything that is not a plain
+ * object is unset.
+ */
+function autoUpdateSwitches(
+  input: unknown,
+  normalizeKey: (key: string) => string | null,
+): Record<string, AutoUpdateSwitch> | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const switches = Object.create(null) as Record<string, AutoUpdateSwitch>;
+  for (const [rawKey, value] of Object.entries(input)) {
+    const key = normalizeKey(rawKey);
+    if (key !== null && (value === "on" || value === "off")) switches[key] = value;
+  }
+  return switches;
 }
 
 /**

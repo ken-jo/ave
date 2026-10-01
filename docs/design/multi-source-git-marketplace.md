@@ -36,6 +36,7 @@
     sources.json                      # custom and direct sources (§2.1)
     service.json                      # the service move accepted for this build constant (§11)
     service.staging.json              # the same, for a development staging base (§11)
+    updates.json                      # the update scheduler's times and classifications (§7.3)
     <sourceId>/
       repo.git/                       # bare partial clone (blob:none)
       snapshots/<commit>.json         # validated snapshots (§2.2)
@@ -885,16 +886,114 @@ port (§12).
 
 ### 7.3 Sync
 
-Triggered after boot (non-blocking), every `marketplace.updateCheckIntervalMs`
-while running, and manually. The setting keeps its key and its `0` = no
-periodic sync meaning, but a tick now fetches every source, so the code
-default changes from today's 10 minutes to 6 hours and a stored value below
-15 minutes is raised to 15 minutes when read. The setting is optional and
-unset by default, so no stored value needs migrating. From 0.13.0 this tick
-is the discovery of §18.7.1, still every 6 hours, and the automatic update
-apply check runs at boot and once a day. A source syncs while it is
-enabled **or** while any installed package is bound to it, so revocations and
-update notices keep reaching installed packages from a hidden source.
+A sync of every source is a **discovery**: it enforces the revocations it
+brought (§10.4) and computes the updates of the installed packages. It runs
+at boot, after the revocations already on disk are enforced and before the
+default and required installs (§10.2), when it is due, and on *Check now*; a
+source's own *Refresh* syncs that source only. One scheduler
+(`src/marketplace/app/background.ts`) runs a **due check** at most an hour
+apart, on `powerMonitor` `resume`, after a write of `marketplace` settings,
+and on *Check now* (`ave:marketplace:updates:check`):
+
+- **Discovery is due** after a failed attempt (`partial`, `offline` or
+  `error`) once `lastAttemptAt` is an hour old, whatever `lastSuccessAt`
+  says, and after a success once `lastSuccessAt` is
+  `marketplace.updateCheckIntervalMs` old. The setting keeps its key: unset
+  is 6 hours, a stored value below 15 minutes reads as 15 minutes, and `0`
+  leaves discovery to boot, *Check now*, the hourly retry after a failure,
+  and the apply check. It is optional and unset by default, so no stored
+  value needs migrating.
+- **The apply check is due** at boot, on *Check now*, and 24 hours after the
+  last successful one; a failed discovery holds it to the same hourly retry.
+  It always obtains a fresh discovery — it joins one in flight, or starts
+  one — and classifies only that discovery's updates: all of them when the
+  result is `ok`, and then `applyCheckAt` is written when the check ends;
+  those of the reached sources when `partial`; none when `offline` or
+  `error`. This build
+  classifies every update `manual`: nothing applies by itself until
+  automatic apply (§18.7.2–§18.7.4) is built, so each update waits for its
+  review (§15.6).
+- **A discovery's result** is `ok` when every source synced, `offline` when
+  every source failed `SOURCE_UNREACHABLE` reason `offline`, `partial`
+  otherwise, and `error` when the pass threw. A broken source (§18.8) is not
+  synced and is not offline: it counts as not reached, so a discovery with
+  one is `partial`, whose card leads to the Sources view. Its times, and
+  `applyCheckAt`, are taken when the pass ends, so a slow failure is not
+  retried the moment it ends, and a check that spans a sleep is not due
+  again the moment it ends.
+- **What is published** follows the sources the last discovery reached. An
+  update from a source it reached is classified; one from a source it did
+  not reach comes from that source's cached snapshot and is never classified
+  anew: it shows only as an earlier discovery showed it, marked `stale`,
+  while the package still offers that version, and not at all otherwise. A
+  discovery that throws reached no source: everything shown turns `stale`
+  the same way, and no version cached since is classified until a
+  discovery reaches its source.
+- **A stopped scheduler** (`stop()` at quit) does nothing more. One
+  lifecycle gate carries every outward effect: the four publications
+  (`publishStatus`, `publishNotice`, `publishUpdates`,
+  `publishUpdateStatus`); every call that reads or changes state outside
+  the scheduler (opening the service, `enforceRevocations`, `discover`,
+  `takeRevocationNotice`, `updates`, `applyBootInstalls`, reading the
+  applied defaults, loading `updates.json`); every write of `updates.json`,
+  the replacement of an unreadable file included, which the loader reports
+  and the scheduler writes; and the due-check timer. After a stop the gate
+  drops publications and refuses work, and work in flight ends in a stop
+  whether it fulfils or rejects, so no continuation publishes, writes, logs
+  or starts anything. The service receives the gate's shutdown signal with
+  `discover`, `enforceRevocations` and `applyBootInstalls`: once it aborts,
+  no further stage starts (a sync, an enforcement, the boot installs'
+  catalog, the next boot install, an enforcement still queued behind
+  another) and no sync progress is sent, while a stage already started
+  finishes. Whatever an internal continuation still sends is stopped at one
+  boundary: the IPC domain builds the service, the syncer and the
+  revocation sink with `marketplaceEvents`, which passes each of their
+  outward callbacks — `onSyncProgress`, `onInstallProgress`, and
+  `onCatalogChanged` of the service, the syncer and the sink — and the
+  scheduler's four publications through `whileRunning` over the
+  marketplace's lifetime (`getMarketplaceLifetime`, shared by the domain,
+  the git runtime and deep links). Its plugin port announces a landed
+  install (`plugin.installed` to the host's subscribers, the plugin bridge
+  refresh) through the same boundary, the git runtime's install progress
+  (`git-runtime:progress`) passes it too, and a marketplace deep link is
+  refused once it has ended, before anything is held, opened or sent. One
+  shutdown hook (`git-marketplace-events`, registered with the domain)
+  aborts that lifetime and stops the scheduler in the same step; a sync, an
+  install and their records still finish, but nothing they send reaches the
+  renderer or the host's subscribers. The loader of `updates.json` neither writes nor
+  logs; it returns why it reset, and the scheduler says so through the gate.
+  *Retry* (`ave:bootstrap:retry`) and *Check now* answer with their
+  declared refusals.
+
+The scheduler keeps its times in `~/.ave/marketplaces/updates.json`, so the
+cadence survives a restart and a sleep: the timer only wakes the due check,
+which reads the wall clock. The timer is unreferenced, re-armed after every
+check, and cleared on quit; a stopped scheduler starts nothing.
+
+```
+{ version: 1,
+  discovery: { lastAttemptAt, lastSuccessAt, result: "ok" | "partial" | "offline" | "error" } | null,
+  applyCheckAt: string | null,
+  packages: { "<sourceId>:<kind>:<name>": { to, state, attempts, lastError?: { code, detail?, at }, appliedAt? } } }
+```
+
+The file is read strictly: duplicate or unknown keys, another version, a
+time that does not parse, or a state outside §18.7.5's eight refuse it. One
+that cannot be read is replaced by an empty one and the Updates card says so
+(`historyReset`, §15.7.1); that moves only check times, never what applies. A
+`lastError.detail` whose reason does not belong to its code is dropped and
+the code kept, as in `state.json` (§14).
+
+The settings `marketplace.autoUpdate` (boolean, unset = on),
+`marketplace.autoUpdateSources` (keyed by source id) and
+`marketplace.autoUpdatePackages` (keyed by `packageUpdateSkipKey`, normalized
+like `skippedPluginUpdates`), each value `"on"` or `"off"`, are normalized
+when read: an invalid key or value is dropped, and both maps have no
+prototype. They decide nothing until automatic apply (§18.7.2).
+
+A source syncs while it is enabled **or** while any installed package is
+bound to it, so revocations and update notices keep reaching installed
+packages from a hidden source.
 
 ```
 fetch ref with --filter=blob:none (full commit history, no --depth, no tags except the ref)
@@ -1658,8 +1757,16 @@ files is a device-management action).
     - Every operation arriving meanwhile shares that one queued refresh.
       Operations that keep overlapping therefore cost one extra read
       between them, and they still see a change within it.
+    - A caller can be cancelled (the update scheduler's calls carry its
+      shutdown signal). A cancelled caller starts no refresh: it is refused
+      on arrival, and a queued refresh whose every caller was cancelled
+      while it waited does not start. One live caller is enough for it to
+      run. A caller cancelled while it waits for the refresh or the lock
+      never enters the operation body.
   - A malformed or unreadable file is applied fail-closed with its warning,
-    exactly as a single read would apply it.
+    exactly as a single read would apply it. The change applies whoever
+    waits for it; the warning is logged only while a caller that waits for
+    the refresh is live, so a refresh that ends after shutdown says nothing.
   - Lock order: a marketplace operation comes before any plugin lifecycle
     lock.
     - An install holds its operation's shared lock, then takes the plugin's
@@ -1676,9 +1783,10 @@ files is a device-management action).
       with a refresh and the shared lock.
     - Work an operation started that is still running after the operation
       ends does the same.
-    - The background scheduler (boot pass, update check, periodic sync)
-      runs every entry in the context it was started in, outside any
-      operation. Whatever asks for a check, from inside any operation (a
+    - The background scheduler (§7.3: the boot pass, discovery, the apply
+      check and the update list) runs every entry (Check now, Retry, a
+      recheck, a settings change), resume and its due-check timer in the
+      context it was started in, outside any operation. Whatever asks for a check, from inside any operation (a
       sync that published a snapshot, an install), the check's service
       calls are operations of their own. This holds even when the check
       starts while that operation still runs.
@@ -1715,13 +1823,16 @@ files is a device-management action).
 | `ave:marketplace:announcements` | — | `MarketplaceAnnouncement[]` |
 | `ave:marketplace:content:installed` | — | `{ ok: true; content: InstalledContent } \| { ok: false; error: "installed-content-unavailable" }` (themes, languages, fonts, broken packages; §5.5) |
 | `ave:marketplace:content:language-messages` | `locale` | `{ ok: true; messages } \| { ok: false; error: "installed-content-unavailable" \| "language-not-installed" }` |
+| `ave:marketplace:updates:status` | — | `UpdateStatusView` (§13.1) |
+| `ave:marketplace:updates:check` | — | `UpdateStatusView`, when the apply check's discovery and classification end (§7.3) |
 | `ave:git:runtime:status` | — | `GitRuntimeStatus` |
 | `ave:git:runtime:install` | — | `GitRuntimeStatus` (progress via event) |
 
 Events: `marketplace:sync-progress`, `marketplace:catalog-changed`,
 `marketplace:install-progress` (`{ planId, rung, phase, bytes? }`),
-`marketplace:updates-available` (kept), `marketplace:boot-installs-applied`
-(default and required installs),
+`marketplace:updates-available` (each update with its state, §13.1),
+`marketplace:update-status` (`UpdateStatusView` on change),
+`marketplace:boot-installs-applied` (default and required installs),
 `git-runtime:progress`.
 
 All channels are host-renderer only (`validateHostRendererSender`) and
@@ -1789,6 +1900,33 @@ wins:
   again drops its older plan. An unused plan or preview is dropped at expiry
   even if nothing else happens, so an abandoned preview's clone and typed token
   do not linger.
+- `updates:status` and `updates:check` answer from the scheduler (§7.3):
+
+  ```ts
+  interface UpdateStatusView {
+    discovery: { lastAttemptAt: string | null; lastSuccessAt: string | null;
+                 result: "ok" | "partial" | "offline" | "error" | null;
+                 nextAt: string };     // the earlier of the discovery and apply-check due times, not before now
+    applyCheckAt: string | null;
+    running: boolean;                  // a discovery or an apply check is in flight
+    historyReset: boolean;             // updates.json could not be read and was started again
+    packages: PackageUpdateView[];     // updates from the sources the last discovery reached, minus skipped versions,
+                                       // each with its state; an unreached source's only as shown before, `stale: true`
+  }
+  ```
+
+  A package's `state` is one of §18.7.5's eight (`UPDATE_PACKAGE_STATES`).
+  `stale: true` marks a package whose source the last discovery did not
+  reach: its state is an earlier discovery's, not a new classification
+  (§7.3). Before the window has loaded, and in an isolated E2E run, there
+  is no scheduler: both answer `unavailable`, whose message ("update checks
+  have not started") is behind *Copy details*.
+  `marketplace:update-status` carries the same view whenever it changes.
+- `marketplace:updates-available` carries `PackageUpdateView` with its
+  `state`, and only states that need the user (`updateNeedsUser`:
+  `needs-review`, `manual`, `failed`, `applied-not-running`,
+  `approval-pending`); `manual` only while update notices are on
+  (`updateCheckEnabled`). Skipped versions are left out in main.
 - Marketplace-installed MCP servers are recorded in
   `packages/mcp-installs.json`. A pasted server is recorded with no source, and
   only recorded servers can be updated or uninstalled here. The MCP governance
@@ -1893,8 +2031,8 @@ that adds a code or reason adds its sentences (§18.8, §18.10).
 ## 15. UI specification
 
 The mockup shows every state below. Settings → Marketplace becomes the in-app
-store (the web store is gone). Later slices add folder rows and the Updates
-card (§18.4.8, §18.9).
+store (the web store is gone). Later slices add folder rows (§18.4.8). The
+Updates card (§15.7.1) is built and lands in the release after 0.13.0.
 
 ### 15.1 Browse
 
@@ -2022,6 +2160,34 @@ the Add dialog: detected state (`System git 2.50.1`, `Managed git 2.53.0`,
 (Auto / System / Managed), **Install Git (<size>)** — the pinned archive's
 size for this platform, 23–66 MB — with the phase progress of §9.2 including
 `smoke-testing`, and a `failed` state with the error and Retry.
+
+### 15.7.1 Updates card
+
+A card in Settings → Marketplace → Maintenance, above the Git runtime card
+(`UpdatesCard.tsx`), read from `updates:status` and then
+`marketplace:update-status`:
+
+- "Checks for updates at start-up and once a day · last checked <time> ·
+  next <time>" (last checked is the last successful discovery);
+- *Check now* (`updates:check`), disabled while a check runs;
+- the last result when it was not `ok`: offline ("Offline — last checked
+  <time>. Ave checks again when the network is back."), partial (some
+  sources were not reached, with *Show sources*, where each row says why,
+  §15.4), or a check that could not finish; and a lost `updates.json`;
+- each update with its version change and its state (§18.7.5); `manual` and
+  `needs-review` rows offer *Review*, which opens the update review (§15.6).
+  A `stale` row adds "Source not reached in the last check — shown as an
+  earlier check left it." After an `ok` check with nothing listed, the card
+  reads "No updates to review." — never "up to date", since a skipped
+  version is left out of the list;
+- when the scheduler does not answer, "Update checks are not available
+  right now. Restart Ave; if it persists, use Copy details to report it.",
+  with main's message only behind *Copy details*, scrubbed (§18.8).
+
+The card is read-only: the automatic-update switches and the recent
+automatic updates arrive with automatic apply (§18.9). The toolbar pill
+(`PluginUpdatesPill.tsx`) counts only the updates that need the user
+(`updateNeedsUser`, §13.1), whatever else it is sent.
 
 ### 15.8 Announcements
 
@@ -2198,6 +2364,7 @@ The tests of §18's slices are listed with each slice of §18.10.
 | Version choice | table tests for `minAppVersion`, yank, platform, pre-release opt-in, rollout buckets, per-source revocations |
 | Ladder | each rung used/skipped/failed combination, mismatch of each authority field stops the ladder, plan binds commits, receipts carry rung outcomes |
 | Git runtime | fake `git` binaries for version gates (2.45.0 refused, 2.45.1 accepted); env/flag/global-config contract; askpass ticket host binding; managed install with a local fixture server and wrong-hash rejection |
+| Update scheduler | fake time (`background.test.ts`): an offline discovery retried an hour later, not an interval later; an offline *Check now* after a recent success retried an hour later; a success not repeated for the interval; the apply check at boot and 24 hours after the last; at exactly 24 hours, and phased apart from discovery, the apply check discovers before it classifies; a due apply check joins a discovery in flight and, after a partial one, classifies only the reached sources and stays due; `resume` after a 30-hour clock jump runs a discovery; *Check now* answers when its discovery and classification end; a successful check that spans a sleep is timed at its end; only reached sources are published, an unreached one's update only as an earlier discovery showed it, `stale`, in the status and the `updates-available` event; a discovery that throws turns what was shown stale and classifies nothing cached since; a stop at any wait of the boot pass, a recheck, *Check now* or a due apply check — the wait then fulfilling or rejecting — publishes, writes, logs, starts and arms nothing more (one table over every wait; `service.test.ts` runs it over the real service, held at its sync and its enforcements, and over the real syncer and installers, held in a sync's pruning and a boot content install, and finds no further progress, stage, publication, write or event of any kind through the boundary, while the install and its record finish; an enforcement queued behind another is cancelled when its signal aborts), and an unreadable file is left as it is, unreported, when the stop comes before its read ends; `git-marketplace.test.ts`: after the stop, Retry and Check now answer with their declared refusals, and a plugin install that lands after the shutdown hook finishes without `plugin.installed` or a bridge refresh; `git-runtime.test.ts`: runtime progress stops at the marketplace's shutdown hook; `ave-deep-link.test.ts`: a marketplace link is refused once the lifetime has ended; an unreadable `updates.json` sets `historyReset`. `history.test.ts`: the file's strict shape and the due rules. `service.test.ts`: `ok`, `partial` and `offline`, and a broken source with every other one offline is `partial`. `PluginUpdatesPill.test.tsx`: only states that need the user are counted. `GitMarketplaceTab.test.tsx`: the card's states, "No updates to review", a `stale` row, and an unanswered scheduler in its own words with main's message only behind *Copy details* |
 | Sync | local bare repos: fast-forward with the pin far behind the tip, rewrite (official and managed refuse, custom review), invalid index keeps pin, mirror fallback, a hidden source with installed packages still syncs |
 | Network gate | normalization equivalences (scp/ssh/https, case, `.git`); `<helper>::` transports and credentials in a URL refused; block beats allow; `requireHttps` and `blockPrivateNetworks` block acknowledged sources; each address class for entered and catalog-supplied targets (`198.18.0.0/15` is internal, metadata is refused for a listed host, a loopback download on another port is refused, `internal-network` does not imply `internal-downloads`, a listing never implies `token-unencrypted`); redirect to a blocked host refused; no auth header across hosts |
 | Connection binding (§7.4) | `pinned-fetch.test.ts` against real local servers: one lookup per hop, a connection to the checked answer only, a metadata answer dropped, each PAC kind (`PROXY` with an http and an https target, `HTTPS`, `SOCKS5`, `SOCKS4`, an unknown kind failing `proxy`), no fallback to `DIRECT`, literal metadata and unroutable proxies refused without a lookup, certificate checks against the name, every TLS connection (target and `HTTPS` proxy) asking for verification and the hostname itself, and no TLS connection for a plain http request; `network-gate.test.ts`: a sign-in never carried onto an http hop, even to the host the https request went to; `run-git.test.ts` also: literal proxies refused before git starts (IPv4, IPv6, mapped, NAT64), and one PAC answer per call configuring and binding the same route; `trusted-proxy.test.ts` pins the proxy boundary; `run-git.test.ts`: the `http.curloptResolve` pin, no git started when only refused answers remain, no credential over http without `token-unencrypted` (a stored token on a listed host included), and end to end from the gate's verdict: an http source asked for before any lookup, reached only at its checked address with `unencrypted`, signed in only with `token-unencrypted` too; `ssh-preflight.test.ts`: the preflight before git, any refused answer fails, no lookup behind `proxyjump`, and the stated residual |
@@ -2212,17 +2379,20 @@ The tests of §18's slices are listed with each slice of §18.10.
 ## 18. Source acceptance, local folders and automatic updates (after 0.13.0)
 
 > Status: **Designed** 2026-10-01, first for app release 0.13.0. 0.13.0
-> shipped with slice B only; slice C lands in the next release, and the later
-> slices after it. Where this section says 0.13.0, read the release that
+> shipped with slice B only; slices C and E land in the next release, and the
+> later slices after it. Where this section says 0.13.0, read the release that
 > carries the slice.
-> - Slice B (messages) and slice C (target classes, warnings and connection
->   binding) are built. §7, §12–§15 and §17 describe them as built: §7.4 for
->   the classes, outcomes and binding of §18.2, §18.3 #1–4 and #7, and §18.5,
->   and §12 for `requireHttps`, `blockPrivateNetworks` and the policy refresh
->   of §18.6.
-> - The rest (folders, automatic updates and their settings, slices D1–F) is
->   not built. Where this section and an earlier one disagree, the earlier
->   section describes the build and this section the target.
+> - Slice B (messages), slice C (target classes, warnings and connection
+>   binding) and slice E (discovery and status) are built. §7, §12–§15 and
+>   §17 describe them as built: §7.4 for the classes, outcomes and binding of
+>   §18.2, §18.3 #1–4 and #7, and §18.5, §12 for `requireHttps`,
+>   `blockPrivateNetworks` and the policy refresh of §18.6, and §7.3 and
+>   §15.7.1 for the update scheduler, `updates.json` and the Updates card of
+>   §18.7.1 and §18.9.
+> - The rest (folders, automatic apply and what its settings decide, slices
+>   D1, D2 and F) is not built. Where this section and an earlier one
+>   disagree, the earlier section describes the build and this section the
+>   target.
 > - Each slice of §18.10 rewrites the owning section in the same change and
 >   removes its pointer here. Code is cited at `e10c823e2`.
 
@@ -3259,7 +3429,7 @@ bundled server and hook.
   `carriedFrom: <generationId>`. The loader accepts version 2 strictly as
   today (`:40-53`) and version 3 strictly too; any other version fails as
   today. The next write is version 3.
-- **Migrating a version-2 record**, once, when 0.13.0 first loads the store
+- **Migrating a version-2 record**, once, when the release after 0.13.0 first loads the store
   (stated decision 39). If the record's generation is the active generation
   of its plugin, and its fingerprint equals the fingerprint computed from
   that installed generation's declaration, its `approvalDigest` is computed
@@ -3669,7 +3839,7 @@ the slice that adds the code or reason.
 | `process-entry-requires-pinned-artifact` (added by P3) | E | "This extension runs a program, which Ave installs only from a release pinned by its marketplace." | "Install it from a marketplace that pins its release." | owned by the Publication plan |
 | `process-entry-unconfined` (added by P3) | E | owned by the Publication plan (its runtime refusal) | owned by the Publication plan | owned by the Publication plan |
 | `invalid-request` | E | "Ave sent a request this version does not understand. This is a bug." | *Copy details* | "버그입니다." |
-| `unavailable` | E | "The marketplace could not start or answer (<message>)." | "Restart Ave; if it persists, *Copy details*." | today's |
+| `unavailable` | E | "The marketplace could not start or answer." Main's message is not shown, as for every code; it is behind *Copy details*, scrubbed. The Updates card says "Update checks are not available right now." instead (§15.7.1). | "Restart Ave; if it persists, *Copy details*." | "마켓플레이스가 시작하거나 응답하지 못했습니다." |
 | `unauthorized-frame` | — | never shown: audited, no displayable answer | — | — |
 | update `needs-review` | S | "<name> <version> asks for more than the installed version:" and each `consentDelta` row. When only non-code files changed: "Only these non-code files changed:" and the list. For a migrated approval: "Approval from an earlier Ave version must be confirmed." | *Review*; for non-code changes *Approve update* | "설치된 버전과 권한·구성이 다릅니다. 검토하세요." / "코드가 아닌 파일만 바뀌었습니다." |
 | update `approval-pending` | S | "<name> was updated by your organization; <n> components need your approval and are not running." | *Review* | "조직이 <이름>을 업데이트했고, 구성 요소 <n>개가 승인을 기다리며 실행되지 않습니다." |
@@ -3713,7 +3883,7 @@ precondition is **not** a setting: it is the source confirmation
 | `ave:plugins:contribution-trust:list` | changed | — | each row gains `approvalDigest: string \| null` (§18.7.5) |
 | `ave:plugins:contribution-trust:set` | changed | with `approved: true`, also `generationId` and `approvalDigest` from the reviewed row; a revoke takes neither (§18.7.5) | gains `error: "contribution-trust-review-stale"` on a mismatch |
 | `marketplace:update-status` | new event | — | `UpdateStatusView` on change |
-| `marketplace:updates-available` | kept | — | `PackageUpdateView` (`:351-356`) gains `state: "manual" \| "needs-review" \| "failed"`; only updates that need the user |
+| `marketplace:updates-available` | kept | — | `PackageUpdateView` gains `state`, a state of §18.7.5 that needs the user (`updateNeedsUser`: `manual`, `needs-review`, `failed`, `applied-not-running`, `approval-pending`); `manual` only while update notices are on. Built in E (§13.1) |
 | every channel | changed | — | failure envelope gains `detail?` (§18.8) |
 
 ```ts
@@ -3724,9 +3894,12 @@ interface SourceWarningView { warning: SourceWarning; host: string | null; addre
 //   transport: "git" | "folder"; path: string | null; acknowledged: SourceWarning[];
 //   autoUpdate: { effective: boolean; override: "on" | "off" | null; lockedByPolicy: boolean };
 // UpdatePlanView gains consentDelta: ConsentDelta (§18.7.3).
+// Slice E builds discovery, applyCheckAt, running, historyReset and packages with
+// key, displayName, from, to and state (§13.1); F adds waitingSince, autoUpdate,
+// and each package's reasons, failure, appliedAt and pendingApproval.
 interface UpdateStatusView {
   discovery: { lastAttemptAt: string | null; lastSuccessAt: string | null;
-               result: "ok" | "partial" | "offline" | "error" | null; nextAt: string | null }; // nextAt null when the interval is 0
+               result: "ok" | "partial" | "offline" | "error" | null; nextAt: string }; // the earlier of the discovery and apply-check due times; the daily apply check discovers even with interval 0
   applyCheckAt: string | null;
   running: boolean;
   historyReset: boolean;               // updates.json was unreadable
@@ -3999,7 +4172,9 @@ The E2E flows named below run in `test/e2e/ui/`.
       (revert: plain `setInterval`);
     - an all-offline discovery publishes `offline`;
     - `updates:check` resolves when its discovery and apply check end, while
-      the apply queue still waits (revert: join the apply);
+      the apply queue still waits (revert: join the apply). E builds no
+      apply queue: E's test fails when `updates:check` answers before its
+      apply check ends, and the queue half lands with F's `apply.test.ts`;
     - an unreadable `updates.json` sets `historyReset` and runs a
       discovery.
   - `settings-store.test.ts`: the new keys normalize, and invalid entries

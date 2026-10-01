@@ -1,8 +1,8 @@
 /**
  * Settings → Marketplace as the in-app store of the git marketplace
  * (design §15): browse every shown source's packages by kind, open a
- * package's sheet to review and install it, manage the sources, and install
- * without a marketplace.
+ * package's sheet to review and install it, manage the sources, install
+ * without a marketplace, and see when updates are checked (§18.9).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "../../../../components/ui/badge.js";
@@ -37,6 +37,7 @@ import { PackageSheet } from "./PackageSheet.js";
 import { LocalPluginPackageSheet, PluginStudioView } from "./PluginStudioView.js";
 import type { StudioLocalPreview } from "../../../../shared/plugin-studio.js";
 import { SourceBadges, SourcesView } from "./SourcesView.js";
+import { UpdatesCard } from "./UpdatesCard.js";
 import { onUpdateReview, takeUpdateReview } from "./update-review-request.js";
 
 type View = "browse" | "sources" | "direct" | "studio";
@@ -560,7 +561,17 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
       <LocalPluginPackageSheet api={api.pluginStudio} preview={localPreview} onClose={() => setLocalPreview(null)} onInstalled={() => void loadCatalog()} />
 
       <SettingsSection data-settings-section="marketplace-maintenance" title={t("gitMarketplace.maintenance.title")} description={t("gitMarketplace.maintenance.description")}>
-        <GitRuntimeCard api={api} />
+        <UpdatesCard
+          api={market}
+          onReview={(key) => {
+            setView("browse");
+            setSheet({ key, mode: "update" });
+          }}
+          onShowSources={() => setView("sources")}
+        />
+        <div className="mt-4 border-t pt-4">
+          <GitRuntimeCard api={api} />
+        </div>
         {flagsFailure !== null && (
           <MarketplaceProblem failure={{ code: "unavailable", message: flagsFailure }} subject={OTHER_SUBJECT} className="mt-4" testId="git-marketplace:maintenance:error" />
         )}

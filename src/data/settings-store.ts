@@ -890,6 +890,9 @@ export interface WebSearchSettings {
  * The git marketplace's settings (design §16.2). Sources, pins and tokens live
  * in `~/.ave/marketplaces` and the secret store, not here.
  */
+/** A source's or package's automatic-update switch (design §18.7.2). */
+export type AutoUpdateSwitch = "on" | "off";
+
 export interface MarketplaceSettings {
   /** Which git the git marketplace runs (design §9.1). Unset means `auto`. */
   git?: { mode: GitRuntimeMode };
@@ -930,6 +933,23 @@ export interface MarketplaceSettings {
    * equals the stored one; the next version surfaces again.
    */
   skippedPluginUpdates?: Record<string, string>;
+  /**
+   * The global automatic-update switch (design §18.7.2, §18.9). Unset means
+   * on; `false` turns automatic updates off. Normalized here; the switch
+   * decides nothing until automatic apply is built (§18.10 F).
+   */
+  autoUpdate?: boolean;
+  /**
+   * Per-source automatic-update switches, keyed by source id (`SOURCE_ID_RE`).
+   * An invalid id or value is dropped when read; the map is null-prototype.
+   */
+  autoUpdateSources?: Record<string, AutoUpdateSwitch>;
+  /**
+   * Per-package automatic-update switches, keyed like `skippedPluginUpdates`
+   * (`packageUpdateSkipKey`) and normalized with
+   * `normalizeSkippedPluginUpdateKey`; the map is null-prototype.
+   */
+  autoUpdatePackages?: Record<string, AutoUpdateSwitch>;
   /**
    * Marketplace-installed provider packages. Defaults stay tiny; installed ids
    * expand the provider picker without re-bundling every provider into the

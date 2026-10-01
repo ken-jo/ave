@@ -16,6 +16,7 @@ import type {
   PackageKind,
   SourceView,
   SyncProgressView,
+  UpdateStatusView,
 } from "../../../../../shared/git-marketplace.js";
 import type { GitRuntimeApi, GitRuntimeStatus } from "../../../../../shared/git-runtime.js";
 
@@ -134,10 +135,31 @@ export interface FakeMarketplace {
   deliverDeepLink(link: GitMarketplaceDeepLink): void;
   /** Hold a notice for `bootInstallNotice` and fire `onBootInstallsApplied`. */
   applyBootInstalls(notice: BootInstallNoticeView): void;
+  /** Push a scheduler status through `onUpdateStatus`, as `marketplace:update-status` does. */
+  emitUpdateStatus(status: UpdateStatusView): void;
+}
+
+/** A scheduler that has not run yet, due now. */
+export function updateStatus(overrides: Partial<UpdateStatusView> = {}): UpdateStatusView {
+  return {
+    discovery: { lastAttemptAt: null, lastSuccessAt: null, result: null, nextAt: "2026-10-01T00:00:00.000Z" },
+    applyCheckAt: null,
+    running: false,
+    historyReset: false,
+    packages: [],
+    ...overrides,
+  };
 }
 
 export function fakeMarketplace(
-  options: { sources?: SourceView[]; entries?: CatalogEntryView[]; git?: GitRuntimeStatus["state"]; deepLink?: GitMarketplaceDeepLink; bootNotice?: BootInstallNoticeView } = {},
+  options: {
+    sources?: SourceView[];
+    entries?: CatalogEntryView[];
+    git?: GitRuntimeStatus["state"];
+    deepLink?: GitMarketplaceDeepLink;
+    bootNotice?: BootInstallNoticeView;
+    updateStatus?: UpdateStatusView;
+  } = {},
 ): FakeMarketplace {
   const sources = options.sources ?? [];
   const entries = options.entries ?? [];
@@ -146,6 +168,8 @@ export function fakeMarketplace(
   const installListeners = new Set<(progress: InstallProgressView) => void>();
   const deepLinkListeners = new Set<() => void>();
   const bootListeners = new Set<() => void>();
+  const updateStatusListeners = new Set<(status: UpdateStatusView) => void>();
+  const heldStatus = options.updateStatus ?? updateStatus();
   let heldLink: GitMarketplaceDeepLink | null = options.deepLink ?? null;
   let heldNotice: BootInstallNoticeView | null = options.bootNotice ?? null;
   const subscribe = <T,>(set: Set<T>) => (listener: T) => {
@@ -192,6 +216,9 @@ export function fakeMarketplace(
       return ok(null);
     }),
     onBootInstallsApplied: vi.fn(subscribe(bootListeners)),
+    updateStatus: vi.fn(async () => ok(heldStatus)),
+    checkUpdates: vi.fn(async () => ok(heldStatus)),
+    onUpdateStatus: vi.fn(subscribe(updateStatusListeners)),
   };
   const gitRuntime = {
     status: vi.fn(async () => ({ ok: true as const, status: runtimeStatus(options.git ?? "ready") })),
@@ -212,5 +239,6 @@ export function fakeMarketplace(
       heldNotice = notice;
       bootListeners.forEach((listener) => listener());
     },
+    emitUpdateStatus: (status) => updateStatusListeners.forEach((listener) => listener(status)),
   };
 }

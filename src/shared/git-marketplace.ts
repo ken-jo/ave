@@ -389,12 +389,88 @@ export type GitMarketplaceDeepLink =
   /** The link named a folder, which no link may choose (§18.3 #7): the Add dialog opens empty and says why. */
   | { action: "add-refused"; reason: "deep-link-path" };
 
-/** An installed package whose bound source offers a newer version (`marketplace:updates-available`, design §7.3). */
+/**
+ * The state of one installed package's update (design §18.7.5): the eight
+ * members, exactly. A skipped version is no state: it is not shown.
+ */
+export const UPDATE_PACKAGE_STATES = [
+  "automatic",
+  "waiting",
+  "needs-review",
+  "manual",
+  "failed",
+  "applied",
+  "applied-not-running",
+  "approval-pending",
+] as const;
+export type UpdatePackageState = (typeof UPDATE_PACKAGE_STATES)[number];
+
+/**
+ * Whether an update in this state waits for the user, so the toolbar pill
+ * counts it (§18.7.5). `manual` reaches the pill only while update notices
+ * are on: main leaves it out of `marketplace:updates-available` otherwise.
+ */
+export function updateNeedsUser(state: UpdatePackageState): boolean {
+  switch (state) {
+    case "needs-review":
+    case "manual":
+    case "failed":
+    case "applied-not-running":
+    case "approval-pending":
+      return true;
+    case "automatic":
+    case "waiting":
+    case "applied":
+      return false;
+  }
+  const unhandled: never = state;
+  throw new Error(`unknown update state ${String(unhandled)}`);
+}
+
+/**
+ * An installed package whose bound source offers a newer version, and the
+ * state of that update (design §7.3, §18.7.5). `marketplace:updates-available`
+ * carries only the states that need the user ({@link updateNeedsUser}).
+ */
 export interface PackageUpdateView {
   key: PackageKeyView;
   displayName: string;
   from: string;
   to: string;
+  state: UpdatePackageState;
+  /**
+   * The last discovery did not reach this package's source: `state` is what
+   * an earlier discovery classified, kept as it was, not a new classification.
+   */
+  stale?: true;
+}
+
+/** An update as the service computes it, before the scheduler gives it a state. */
+export type PackageUpdateOffer = Omit<PackageUpdateView, "state" | "stale">;
+
+/** How the last discovery ended (§18.7.1): every source synced, some, none because offline, or it threw. */
+export type UpdateDiscoveryResult = "ok" | "partial" | "offline" | "error";
+
+/**
+ * What the update scheduler knows (`ave:marketplace:updates:status`,
+ * `marketplace:update-status`, design §18.7.1, §18.9). `historyReset`:
+ * `updates.json` could not be read and was started again, which moves only
+ * check times. Each package is an update from a source the last discovery
+ * reached, classified by it, minus the versions the user skipped; a source it
+ * did not reach keeps only what an earlier discovery showed, marked `stale`.
+ */
+export interface UpdateStatusView {
+  discovery: {
+    lastAttemptAt: string | null;
+    lastSuccessAt: string | null;
+    result: UpdateDiscoveryResult | null;
+    /** When the next due check runs a discovery: the earlier of the discovery and apply-check due times. */
+    nextAt: string;
+  };
+  applyCheckAt: string | null;
+  running: boolean;
+  historyReset: boolean;
+  packages: PackageUpdateView[];
 }
 
 /** What the boot pass installed, moved or migrated (design §10.2, §16.3), shown once until dismissed. */
@@ -496,6 +572,11 @@ export interface GitMarketplaceApi {
   dismissBootInstallNotice(): Promise<GitMarketplaceResult<null>>;
   /** The boot-install step published a notice: read it with `bootInstallNotice`. */
   onBootInstallsApplied(listener: () => void): () => void;
+  /** What the update scheduler knows (§18.7.1). */
+  updateStatus(): Promise<GitMarketplaceResult<UpdateStatusView>>;
+  /** *Check now*: joins a discovery in flight, and answers when that discovery and its apply check end. */
+  checkUpdates(): Promise<GitMarketplaceResult<UpdateStatusView>>;
+  onUpdateStatus(listener: (status: UpdateStatusView) => void): () => void;
 }
 
 // ─── Bridge checks ──────────────────────────────────────────────────────────
@@ -531,6 +612,33 @@ export function parseSyncProgress(value: unknown): SyncProgressView | null {
   return isRecord(value) && typeof value.sourceId === "string" && (value.state === "syncing" || value.state === "done" || value.state === "failed")
     ? { sourceId: value.sourceId, state: value.state }
     : null;
+}
+
+const DISCOVERY_RESULTS = new Set<string>(["ok", "partial", "offline", "error"]);
+
+function isTime(value: unknown): value is string {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+function isUpdatePackage(value: unknown): value is PackageUpdateView {
+  if (!isRecord(value) || !isRecord(value.key)) return false;
+  const { key } = value;
+  return typeof key.sourceId === "string" && isPackageKind(key.kind) && typeof key.name === "string"
+    && typeof value.displayName === "string" && typeof value.from === "string" && typeof value.to === "string"
+    && (UPDATE_PACKAGE_STATES as readonly unknown[]).includes(value.state)
+    && (value.stale === undefined || value.stale === true);
+}
+
+/** Shape check for a `marketplace:update-status` payload; anything else is dropped. */
+export function parseUpdateStatus(value: unknown): UpdateStatusView | null {
+  if (!isRecord(value) || !isRecord(value.discovery) || !Array.isArray(value.packages)) return null;
+  const { discovery } = value;
+  const timeOrNull = (item: unknown) => item === null || isTime(item);
+  if (!timeOrNull(discovery.lastAttemptAt) || !timeOrNull(discovery.lastSuccessAt) || !isTime(discovery.nextAt)) return null;
+  if (discovery.result !== null && !DISCOVERY_RESULTS.has(discovery.result as string)) return null;
+  if (!timeOrNull(value.applyCheckAt) || typeof value.running !== "boolean" || typeof value.historyReset !== "boolean") return null;
+  if (!value.packages.every(isUpdatePackage)) return null;
+  return value as unknown as UpdateStatusView;
 }
 
 export function parseInstallProgress(value: unknown): InstallProgressView | null {

@@ -71,15 +71,15 @@ describe("failure sentences (design §18.8)", () => {
     expect(ko).not.toBe(en);
     expect(en).not.toContain(code);
     expect(en).not.toMatch(UNRESOLVED_PLACEHOLDER);
-    // Main's English message is behind Copy details; only `unavailable` has nothing else to say.
-    if (code === "unavailable") expect(en).toContain(MESSAGE);
-    else expect(en).not.toContain(MESSAGE);
+    // Main's English message is behind Copy details, for every code.
+    expect(en).not.toContain(MESSAGE);
+    expect(ko).not.toContain(MESSAGE);
   });
 
-  it("names an unavailable marketplace's message scrubbed, and a policy's unreadable reason too", () => {
+  it("keeps an unavailable marketplace's message and a policy's unreadable reason out of the sentence", () => {
     const { en, ko } = render({ code: "unavailable", message: "fetch https://alice:verifier-secret@example.com/x failed; password=hunter2" });
     for (const text of [en, ko]) {
-      expect(text).toContain("https://[REDACTED:CREDENTIALS]@example.com/x");
+      expect(text).not.toContain("example.com");
       expect(text).not.toMatch(/verifier-secret|hunter2/u);
     }
     const policy = render({ code: "SOURCE_POLICY_BLOCKED", message: MESSAGE, detail: { reason: "policy-invalid", error: "token=s3cret is not a key" } });

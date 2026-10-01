@@ -35,7 +35,7 @@ import type {
   ComponentConsent,
   PackageDetailView,
   PackageKeyView,
-  PackageUpdateView,
+  PackageUpdateOffer,
   SourceAddRequest,
   SourcePreviewRequest,
   RevokedPackageView,
@@ -75,7 +75,8 @@ import { isReservedSourceId, OFFICIAL_MARKETPLACE, SOURCE_ID_RE, type SourceAuth
 import { EMPTY_MARKETPLACE_POLICY, type MarketplacePolicy, type PackageKey, type PolicySource, type PolicyUpdate } from "../sources/policy.js";
 import { confirmationsFor, type ResolvedSource, type SourceOrigin, type SourceRegistry, type SourceState } from "../sources/registry.js";
 import { SnapshotBuilder, type SourceSnapshot } from "../sources/snapshot.js";
-import { shouldSyncSource, type SourceSyncer } from "../sources/sync.js";
+import { shouldSyncSource, type SourceSyncer, type SyncResult } from "../sources/sync.js";
+import type { SyncDiscovery } from "../updates/history.js";
 import type { PluginConfigRetention } from "../../plugins/retired-config.js";
 import type { RetirementEntry, RetirementEntryLookup } from "./retirement-entry.js";
 import { effectiveRevocations } from "../catalog/effective-revocations.js";
@@ -283,8 +284,11 @@ export class MarketplaceService implements RetirementEntryLookup {
   private readonly inOperation = new AsyncLocalStorage<{ open: boolean }>();
   /** The policy refresh now reading or applying; refreshes run one at a time, in order (§12). */
   private refreshRunning: Promise<void> | null = null;
-  /** The one refresh waiting for the running one, shared by every operation that began meanwhile. */
-  private refreshQueued: Promise<void> | null = null;
+  /**
+   * The one refresh waiting for the running one, shared by every operation that began meanwhile, with
+   * the cancellation signal of each (none for a caller that cannot be cancelled).
+   */
+  private refreshQueued: { promise: Promise<void>; waiters: Array<AbortSignal | undefined> } | null = null;
 
   constructor(private readonly options: MarketplaceServiceOptions) {
     const now = () => (options.now?.() ?? new Date()).getTime();
@@ -314,11 +318,18 @@ export class MarketplaceService implements RetirementEntryLookup {
    * after this operation did, then run under the shared lock with the policy
    * that refresh left in force. A call made inside an operation, while it
    * runs, is part of it.
+   *
+   * `signal` cancels the caller (the update scheduler's shutdown). Cancelled
+   * before or while it waits, the operation starts no refresh of its own, and
+   * its body never starts; the call rejects with the signal's reason. A
+   * refresh another caller still waits for runs all the same.
    */
-  private async operation<T>(fn: () => Promise<T>): Promise<T> {
+  private async operation<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     if (this.inOperation.getStore()?.open) return fn();
-    await this.refreshPolicy();
+    await this.refreshPolicy(signal);
     return this.lock.shared(async () => {
+      // Cancelled while it waited for the policy or the lock.
+      signal?.throwIfAborted();
       const scope = { open: true };
       try {
         return await this.inOperation.run(scope, fn);
@@ -359,19 +370,35 @@ export class MarketplaceService implements RetirementEntryLookup {
    * the file too early, so the caller waits for the next one; every caller
    * arriving meanwhile shares that one, so overlapping operations cost one
    * extra read between them and still see a change within it.
+   *
+   * A cancelled caller starts no refresh: it is refused on arrival, and a
+   * queued refresh whose every caller was cancelled while it waited does not
+   * start. One live caller is enough for it to run.
    */
-  private refreshPolicy(): Promise<void> {
-    if (this.refreshQueued) return this.refreshQueued;
-    if (!this.refreshRunning) return this.startRefresh();
-    const queued = this.refreshRunning.then(() => this.startRefresh());
+  private refreshPolicy(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    if (this.refreshQueued) {
+      this.refreshQueued.waiters.push(signal);
+      return this.refreshQueued.promise;
+    }
+    if (!this.refreshRunning) return this.startRefresh([signal]);
+    const waiters = [signal];
+    const queued = {
+      waiters,
+      promise: this.refreshRunning.then(() => {
+        if (waiters.some((waiter) => !waiter?.aborted)) return this.startRefresh(waiters);
+        // Every caller was cancelled: nothing is read, and each refuses with its own reason when admitted.
+        if (this.refreshQueued === queued) this.refreshQueued = null;
+      }),
+    };
     this.refreshQueued = queued;
-    return queued;
+    return queued.promise;
   }
 
-  private startRefresh(): Promise<void> {
+  private startRefresh(waiters: ReadonlyArray<AbortSignal | undefined>): Promise<void> {
     // From here on this refresh is running: a caller arriving now must wait for a later one.
     this.refreshQueued = null;
-    const running = this.refreshOnce();
+    const running = this.refreshOnce(waiters);
     // The queue moves on whatever this refresh met; its own callers see its failure.
     const settled = running.then(
       () => undefined,
@@ -384,15 +411,22 @@ export class MarketplaceService implements RetirementEntryLookup {
     return running;
   }
 
-  private async refreshOnce(): Promise<void> {
+  private async refreshOnce(waiters: ReadonlyArray<AbortSignal | undefined>): Promise<void> {
     const update = await this.options.policy.check();
     if (!update) return;
-    await this.lock.exclusive(() => this.applyPolicy(update));
+    await this.lock.exclusive(() => this.applyPolicy(update, waiters));
   }
 
-  private applyPolicy(update: PolicyUpdate): void {
+  /**
+   * A changed policy always applies, whoever waits. What it says about an
+   * unreadable file is for the callers that wait: once each was cancelled
+   * (the app shuts down), it is not logged.
+   */
+  private applyPolicy(update: PolicyUpdate, waiters: ReadonlyArray<AbortSignal | undefined>): void {
     this.options.policy.apply(update);
-    if (!update.load.ok) this.options.log.warn(`marketplace policy unreadable; only the official source is reachable: ${update.load.error}`);
+    if (!update.load.ok && waiters.some((waiter) => !waiter?.aborted)) {
+      this.options.log.warn(`marketplace policy unreadable; only the official source is reachable: ${update.load.error}`);
+    }
     // Managed sources, blocks and required installs may all have changed.
     this.catalogChanged();
   }
@@ -464,13 +498,23 @@ export class MarketplaceService implements RetirementEntryLookup {
     return this.operation(() => Promise.all(this.registry.list().map((source) => this.sourceView(source))));
   }
 
-  private async syncOne(id: string): Promise<void> {
+  /**
+   * Sync one source. With `signal` (the update scheduler's shutdown), an
+   * aborted signal starts no sync, and a sync that ends after the abort
+   * sends no progress and rejects with the signal's reason: the fetch in
+   * progress finishes, nothing after it runs.
+   */
+  private async syncOne(id: string, signal?: AbortSignal): Promise<SyncResult> {
+    signal?.throwIfAborted();
     this.syncing.add(id);
     this.options.onSyncProgress?.({ sourceId: id, state: "syncing" });
     try {
       const result = await this.options.syncer.sync(id);
+      signal?.throwIfAborted();
       this.options.onSyncProgress?.({ sourceId: id, state: result.status === "ok" ? "done" : "failed" });
+      return result;
     } catch (error) {
+      if (signal?.aborted) throw signal.reason;
       this.options.onSyncProgress?.({ sourceId: id, state: "failed" });
       throw error;
     } finally {
@@ -505,26 +549,62 @@ export class MarketplaceService implements RetirementEntryLookup {
   }
 
   private async refreshNow(id?: string): Promise<SourceView[]> {
-    let ids: string[];
-    if (id !== undefined) {
-      ids = [this.source(id).id];
-    } else {
-      const bound = new Set((await this.installedAll()).map((item) => item.sourceId).filter((sourceId): sourceId is string => sourceId !== null));
-      ids = [];
-      for (const source of this.registry.list()) {
-        const read = await this.read(source);
-        // A broken source is listed with its problem; syncing it would only fail again.
-        if ("problem" in read) continue;
-        if (shouldSyncSource(this.registry, source, read.state, bound.has(source.id))) ids.push(source.id);
+    if (id !== undefined) await this.syncAndEnforce([this.source(id).id]);
+    else await this.syncAll();
+    return this.listSources();
+  }
+
+  /**
+   * The discovery of design §18.7.1: sync every source that syncs, enforce
+   * the revocations, and say how far it got. `ok` when every source synced;
+   * `offline` when every source failed SOURCE_UNREACHABLE reason `offline`;
+   * `partial` otherwise, with `reached` naming the sources that synced. A
+   * broken source (§18.8) is not synced and counts as not reached; it is not
+   * offline, so a discovery with one is never `offline` — the result that
+   * leads the user to Sources. A failure outside a sync result throws, as
+   * from {@link refresh}. `signal` is the scheduler's shutdown: once it
+   * aborts, no further stage starts and no progress is sent, and the call
+   * rejects with its reason.
+   */
+  async discover(signal?: AbortSignal): Promise<SyncDiscovery> {
+    return this.operation(() => this.discoverNow(signal), signal);
+  }
+
+  private async discoverNow(signal?: AbortSignal): Promise<SyncDiscovery> {
+    const { results, broken } = await this.syncAll(signal);
+    const reached = [...results].filter(([, result]) => result.status === "ok").map(([sourceId]) => sourceId);
+    const failed = [...results.values()].filter((result) => result.status === "failed");
+    if (failed.length === 0 && broken === 0) return { result: "ok", reached };
+    const offline = broken === 0 && failed.length > 0 && failed.length === results.size
+      && failed.every((result) => result.status === "failed" && result.code === "SOURCE_UNREACHABLE" && result.detail?.reason === "offline");
+    return { result: offline ? "offline" : "partial", reached };
+  }
+
+  /** Every source that is shown or has installed packages; a broken one is counted, not synced. */
+  private async syncAll(signal?: AbortSignal): Promise<{ results: Map<string, SyncResult>; broken: number }> {
+    const bound = new Set((await this.installedAll()).map((item) => item.sourceId).filter((sourceId): sourceId is string => sourceId !== null));
+    const ids: string[] = [];
+    let broken = 0;
+    for (const source of this.registry.list()) {
+      const read = await this.read(source);
+      // A broken source is listed with its problem; syncing it would only fail again.
+      if ("problem" in read) {
+        broken += 1;
+        continue;
       }
+      if (shouldSyncSource(this.registry, source, read.state, bound.has(source.id))) ids.push(source.id);
     }
+    return { results: await this.syncAndEnforce(ids, signal), broken };
+  }
+
+  private async syncAndEnforce(ids: readonly string[], signal?: AbortSignal): Promise<Map<string, SyncResult>> {
     // Every source finishes; a failure outside a sync result (a bug, an unreadable file) is reported after.
-    const settled = await Promise.allSettled(ids.map((sourceId) => this.syncOne(sourceId)));
+    const settled = await Promise.allSettled(ids.map((sourceId) => this.syncOne(sourceId, signal)));
     // A moved pin may carry new revocations; they take effect before anything else happens.
-    await this.enforceRevocations();
+    await this.enforceRevocations(signal);
     const failed = settled.find((item): item is PromiseRejectedResult => item.status === "rejected");
     if (failed) throw failed.reason;
-    return this.listSources();
+    return new Map(ids.map((sourceId, index) => [sourceId, (settled[index] as PromiseFulfilledResult<SyncResult>).value]));
   }
 
   async setEnabled(id: string, enabled: boolean): Promise<SourceView> {
@@ -1271,16 +1351,16 @@ export class MarketplaceService implements RetirementEntryLookup {
   // ─── boot and periodic work (§7.3, §10.2) ─────────────────────────────────
 
   /** Installed packages whose bound source offers a newer version, hidden sources included (§7.3). */
-  async updates(): Promise<PackageUpdateView[]> {
-    return this.operation(() => this.updatesNow());
+  async updates(signal?: AbortSignal): Promise<PackageUpdateOffer[]> {
+    return this.operation(() => this.updatesNow(), signal);
   }
 
-  private async updatesNow(): Promise<PackageUpdateView[]> {
+  private async updatesNow(): Promise<PackageUpdateOffer[]> {
     const installed = await this.installedAll();
     const bound = new Set(installed.map((item) => item.sourceId).filter((sourceId): sourceId is string => sourceId !== null));
     const { rows } = await this.rows(bound);
     const existing = new Set(this.registry.list().map((source) => source.id));
-    const updates: PackageUpdateView[] = [];
+    const updates: PackageUpdateOffer[] = [];
     for (const item of installed) {
       if (item.sourceId === null || item.version === null) continue;
       const state = updateFor({ ...item, version: item.version }, rows, existing);
@@ -1300,11 +1380,21 @@ export class MarketplaceService implements RetirementEntryLookup {
    * ladder, verification and receipt. Returns the report and the notice the
    * boot publishes (null when nothing changed).
    */
-  async applyBootInstalls(defaults: readonly PackageKey[], applied: AppliedDefaults): Promise<{ report: BootInstallReport; notice: BootInstallNoticeView | null }> {
-    return this.operation(() => this.applyBootInstallsNow(defaults, applied));
+  async applyBootInstalls(
+    defaults: readonly PackageKey[],
+    applied: AppliedDefaults,
+    signal?: AbortSignal,
+  ): Promise<{ report: BootInstallReport; notice: BootInstallNoticeView | null }> {
+    return this.operation(() => this.applyBootInstallsNow(defaults, applied, signal), signal);
   }
 
-  private async applyBootInstallsNow(defaults: readonly PackageKey[], applied: AppliedDefaults): Promise<{ report: BootInstallReport; notice: BootInstallNoticeView | null }> {
+  private async applyBootInstallsNow(
+    defaults: readonly PackageKey[],
+    applied: AppliedDefaults,
+    signal?: AbortSignal,
+  ): Promise<{ report: BootInstallReport; notice: BootInstallNoticeView | null }> {
+    // `signal` is the update scheduler's shutdown: each stage below starts only while it is not aborted.
+    signal?.throwIfAborted();
     // First: a former admin install it binds is recorded as applied, so the defaults below leave it be.
     const legacy = await runLegacyMigration({
       markerPath: this.options.legacyMigration.markerPath,
@@ -1321,7 +1411,8 @@ export class MarketplaceService implements RetirementEntryLookup {
         }),
       now: () => this.now(),
     });
-    await this.enforceRevocations();
+    await this.enforceRevocations(signal);
+    signal?.throwIfAborted();
     const revoked = this.revokedUnreported.splice(0);
     const { rows, snapshots, shown } = await this.rows();
     const synced = new Map<string, SourceOrigin>(shown.filter((source) => snapshots.has(source.id)).map((source) => [source.id, source.origin]));
@@ -1337,6 +1428,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       },
       applied,
       now: () => this.now(),
+      ...(signal ? { signal } : {}),
     });
     return { report, notice: bootInstallNoticeFrom(report, this.policy, legacy?.plugins ?? null, revoked) };
   }
@@ -1346,14 +1438,22 @@ export class MarketplaceService implements RetirementEntryLookup {
    * gates, remove what a gate cannot hold, and queue what that did for the
    * next notice ({@link takeRevocationNotice}). Each outcome is queued once a
    * session. Runs on every sync and before the boot pass syncs, so a
-   * revocation already on disk never waits for the network.
+   * revocation already on disk never waits for the network. With `signal`
+   * (the update scheduler's shutdown), an aborted signal starts nothing, also
+   * when it aborts while this enforcement waits behind another; an
+   * enforcement already started finishes.
    */
-  async enforceRevocations(): Promise<void> {
-    return this.operation(() => this.enforceRevocationsNow());
+  async enforceRevocations(signal?: AbortSignal): Promise<void> {
+    return this.operation(() => this.enforceRevocationsNow(signal), signal);
   }
 
-  private async enforceRevocationsNow(): Promise<void> {
-    const run = this.enforceTail.then(() => this.applyRevocations(), () => this.applyRevocations());
+  private async enforceRevocationsNow(signal?: AbortSignal): Promise<void> {
+    // Checked when its turn comes: an enforcement queued behind another is cancelled if the signal aborts while it waits.
+    const start = () => {
+      signal?.throwIfAborted();
+      return this.applyRevocations();
+    };
+    const run = this.enforceTail.then(start, start);
     this.enforceTail = run.catch(() => undefined);
     for (const item of await run) {
       const id = `${item.key.sourceId}/${item.key.kind}/${item.key.name}@${item.version}:${item.outcome}`;

@@ -23,7 +23,9 @@ const getMainWindow = vi.fn();
 const getServices = vi.fn();
 const setPendingAveUri = vi.fn();
 const setPendingGitMarketplaceLink = vi.fn();
+let lifetime = new AbortController();
 vi.mock("../app-state.js", () => ({
+  getMarketplaceLifetime: () => lifetime,
   getMainWindow: (...a: unknown[]) => getMainWindow(...a),
   getServices: (...a: unknown[]) => getServices(...a),
   setPendingAveUri: (...a: unknown[]) => setPendingAveUri(...a),
@@ -33,10 +35,25 @@ vi.mock("../app-state.js", () => ({
 beforeEach(() => {
   vi.clearAllMocks();
   electronApp.isPackaged = false;
+  lifetime = new AbortController();
 });
 
 describe("handleAveUri", () => {
   const link = "ave://install/plugin/calendar@ave";
+
+  it("refuses a git marketplace link once the marketplace's lifetime has ended: nothing is held, opened or sent", async () => {
+    getMainWindow.mockReturnValue({ isDestroyed: () => false });
+    getServices.mockReturnValue({});
+    lifetime.abort();
+
+    const { handleAveUri } = await import("../ave-deep-link.js");
+    await handleAveUri(link);
+
+    expect(setPendingGitMarketplaceLink).not.toHaveBeenCalled();
+    expect(setPendingAveUri).not.toHaveBeenCalled();
+    expect(activateInlineSettings).not.toHaveBeenCalled();
+    expect(sendToWindow).not.toHaveBeenCalled();
+  });
 
   it("holds a git marketplace link for the tab, opens it, and tells an open tab to take it", async () => {
     const win = { isDestroyed: () => false };

@@ -23,6 +23,8 @@ type PackageUpdate = {
   displayName: string;
   from: string;
   to: string;
+  /** The update's state (design §18.7.5); main sends only states that need the user. */
+  state: 'automatic' | 'waiting' | 'needs-review' | 'manual' | 'failed' | 'applied' | 'applied-not-running' | 'approval-pending';
 };
 
 const meeting: PackageUpdate = {
@@ -30,12 +32,14 @@ const meeting: PackageUpdate = {
   displayName: 'Ave Meeting',
   from: '1.0.0',
   to: '1.1.0',
+  state: 'manual',
 };
 const proofread: PackageUpdate = {
   key: { sourceId: 'ave', kind: 'skill', name: 'proofread' },
   displayName: 'Proofread',
   from: '0.2.0',
   to: '0.3.0',
+  state: 'manual',
 };
 
 async function injectUpdatesAvailable(app: ElectronApplication, updates: PackageUpdate[]): Promise<void> {
@@ -81,6 +85,16 @@ test.describe('update pill → review (design §15.6)', () => {
     await expect(mainWindow.getByTestId('git-marketplace:sheet')).toBeVisible({ timeout: 15_000 });
     await mainWindow.getByTestId('git-marketplace:sheet:close').click();
     await closeInlineSettings(app, mainWindow);
+  });
+
+  test('counts only the updates that need the user (design §18.7.5)', async ({ app, mainWindow }) => {
+    await injectUpdatesAvailable(app, [meeting, { ...proofread, state: 'applied' }]);
+    await expect(pill(mainWindow)).toBeVisible({ timeout: 10_000 });
+    await expect(pill(mainWindow)).toHaveAttribute('title', /Ave Meeting → 1\.1\.0/);
+    await expect(pill(mainWindow)).not.toHaveAttribute('title', /Proofread/);
+
+    await injectUpdatesAvailable(app, [{ ...meeting, state: 'waiting' }, { ...proofread, state: 'automatic' }]);
+    await expect(pill(mainWindow)).toHaveCount(0);
   });
 
   test('skip hides the pill and records the skipped versions', async ({ app, mainWindow }) => {
