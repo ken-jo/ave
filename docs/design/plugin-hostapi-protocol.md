@@ -3082,7 +3082,9 @@ every consumer the deletion of `connect` breaks is **migrated in S1** (fact 15).
   (fact 12). `goldenFiles` (`:283`) stays in `__tests__`. Its `getInstalledPluginIds`
   default is `[]` (the member excludes the caller, and a validated plugin is validated
   alone); the recorded neighbourhood the goldens pin is supplied through `overrides` by
-  a `__tests__` helper, so no recorded plugin id lands in the production host. The file also defines **the
+  a `__tests__` helper, so no recorded plugin id lands in the production host. Its
+  roots are synthetic and outside the vendor embedded-path rule (`/validation/user`,
+  `vendor.mjs:37-43`), because the CLI bundle carries them (P2). The file also defines **the
   validation host's authority**, `validationConfinement(pluginId, pluginRoot,
   pluginDataDir)` = `derivePluginChildEnvelope({ pluginId, pluginRoot, pluginDataDir,
   configValue })` **with no `sandbox` input** — the base envelope of fact 13 and nothing
@@ -3282,7 +3284,16 @@ test-only spec member add no channel, export, bridge method, setting or package 
      without the app; confinement is proven by the host's own suite (§10.1 item 3). Its
      authority is the validation host's base envelope (`validationConfinement`, S1); a
      manifest's `sandbox` grants are not applied and are reported `not exercised` in a
-     `sandbox.grants` row. Every step goes through the S1 session:
+     `sandbox.grants` row. For a `process` plugin the report also carries
+     `process.confinement` (the entry ran unconfined; the app runs it only under a
+     process-confining sandbox) and `process.provenance` (the sha256 pin is checked at
+     install, and a source directory has none), both `not exercised` and never passed,
+     and a `manifest.process` row for what `resolveProcessLaunch` refuses against the
+     files (a missing `${PLUGIN_ROOT}/` path, a non-file command, a symlink escape),
+     beside `manifest.entry` for an `entry` plugin. Construct's `entryPath` is derived
+     from the factory's `launch` union as the factory derives it (the resolved command for
+     a `process` launch, decision 33); `ValidationSessionInput.entryPath` stays as S1
+     froze it. Every step goes through the S1 session:
      `openValidationSession` performs `ave/instance/construct` first
      (`out-of-process-plugin.ts:1436-1446`) → `instance.start()` →
      `instance.onPublished()` → `channel.requestMcp("server/discover")` →
@@ -3407,9 +3418,8 @@ test-only spec member add no channel, export, bridge method, setting or package 
   cannot resolve.
 - `scripts/lib/stub-app-logger-hook.mjs` (new) — **source mode silences the host logger
   exactly as the bundle recipe does** (host re-review #27, cross-language re-review
-  round 3, finding 3). Loaded by `--import` before the entry, it calls
-  `module.register` with a resolve hook that, after the next resolver (tsx) has resolved a
-  specifier, replaces the module at `<checkout>/src/lib/logger.ts` with the same silent
+  round 3, finding 3). Loaded by `--import` before the entry, it registers a resolve hook
+  that, after the next resolver (tsx) has resolved a specifier, replaces the module at `<checkout>/src/lib/logger.ts` with the same silent
   `createLogger` the recipe substitutes (`bundle-app-marketplace.mjs:16-29` at
   `e53fb40a8`). Replacing the module is required, not a choice among equals: the app
   logger decides its destination when first imported (`logger.ts:70-99`), and its
@@ -3420,7 +3430,11 @@ test-only spec member add no channel, export, bridge method, setting or package 
   fails to build in bundle mode. The CLI writes its report through `process.stdout` and
   its summary to stderr; nothing else can reach stdout in either mode. The hook is passed
   to the source-mode child too, so the child's host modules are silenced as in the
-  child-main bundle and cannot touch the protocol stream. `knip.jsonc` gains the hook as
+  child-main bundle and cannot touch the protocol stream. The hook registers the same
+  kind of hook tsx does: `module.registerHooks` (in-thread) on Node 24.11.1+, 25.1+ and
+  26+, tsx 4.22's own gate, else `module.register`; with Node 26 deprecating
+  `module.register` (DEP0205) and tsx registering in-thread, a loader-thread hook beside
+  it was reproduced to leave a `.ts` entry silently unrun. `knip.jsonc` gains the hook as
   an entry (loaded by `--import`, nothing imports it).
 - `knip.jsonc:36-51`: `src/plugins/validate/cli.ts` joins the entry list with the reason
   the checker's line would have (bundled from a foreign repository, nothing imports it).
@@ -3528,7 +3542,11 @@ app logger, and one test per mode parses every stdout line as a report row.
   whose `bin/plugin` is a `#!/bin/sh` script that `exec`s `node` on a protocol script
   passes the manifest and protocol steps on macOS and Linux, receives the declared `env`
   pair and `PLUGIN_ROOT`/`PLUGIN_DATA`, and on `win32` is reported protocol `not
-  exercised` with the manifest step still run (remove the arm → the protocol row fails).
+  exercised` with the manifest step still run (remove the arm → the protocol row fails);
+  its `process.confinement` and `process.provenance` rows are `not exercised` (report
+  either as passed, or drop it → fails), and a missing `${PLUGIN_ROOT}/` path, a
+  directory as the command, a reserved `env` name and a command outside the root each
+  fail before any child is spawned.
 - `src/plugins/isolation/__tests__/host-protocol-mirror-first-version.test.ts` (new, or a
   case in `host-protocol-schema-parity.test.ts`): `HOST_PROTOCOL_FIRST_APP_VERSION["2"]`
   equals the lowest `appVersion` for protocol `2` in `mirror.json` (edit the constant).

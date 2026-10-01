@@ -364,11 +364,6 @@
     },
     {
       "type": "exports",
-      "file": "src/lib/logger.ts",
-      "name": "transport"
-    },
-    {
-      "type": "exports",
       "file": "src/main/a2a-remote-runtime.ts",
       "name": "A2A_REMOTE_ROUTE_CONTROL_SECRET_KEY"
     },
@@ -546,11 +541,6 @@
       "type": "exports",
       "file": "src/plugins/capabilities.ts",
       "name": "EVENT_NAMESPACE_CAPABILITY"
-    },
-    {
-      "type": "exports",
-      "file": "src/plugins/capabilities.ts",
-      "name": "PUBLIC_HOST_EVENT_TYPES"
     },
     {
       "type": "exports",

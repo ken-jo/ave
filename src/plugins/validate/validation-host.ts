@@ -64,7 +64,9 @@ type Listener<T> = (value: T) => void;
  * The host-side roots a validated plugin's context names. Fixed, so the
  * construct frame does not depend on the machine the validator runs on, and
  * none of them is read: the plugin's own root and data directory are the
- * caller's.
+ * caller's. Synthetic, and outside the plugin repositories' embedded-path rule
+ * (`tools/vendor.mjs` refuses a bundle that names a user, home or temporary
+ * directory): the validator is vendored as a bundle, and these strings are in it.
  */
 interface ValidationHostRoots {
   readonly hostRoot: string;
@@ -74,8 +76,8 @@ interface ValidationHostRoots {
 
 const VALIDATION_HOST_ROOTS: ValidationHostRoots = {
   hostRoot: "/app",
-  userHome: "/Users/example",
-  aveHome: "/Users/example/.ave",
+  userHome: "/validation/user",
+  aveHome: "/validation/user/.ave",
 };
 
 export interface ValidationHost {
@@ -215,7 +217,7 @@ export function createValidationHost(overrides: ValidationHostOverrides = {}): V
       wait: async () => ({ code: "the-auth-code", state: "the-state" }),
       close: async () => undefined,
     },
-    pickFolders: async () => ({ canceled: false, folders: ["/Users/example/Documents"] }),
+    pickFolders: async () => ({ canceled: false, folders: ["/validation/user/Documents"] }),
     resolveMappedDriveRoot: async () => "/Volumes/share",
     listAudioInputDevices: async () => [{ deviceId: "default", label: "Built-in Microphone" }],
     startAudioCapture: async () => {

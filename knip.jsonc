@@ -58,7 +58,19 @@
         // Plugin modules the host-protocol golden harness hands the child runtime
         // BY PATH, which imports them through `importPluginFactory` as it imports
         // an installed plugin's entry — nothing names them in an import.
-        "src/plugins/isolation/__tests__/fixtures/host-protocol/*/**/*.mjs"
+        "src/plugins/isolation/__tests__/fixtures/host-protocol/*/**/*.mjs",
+        // Child processes the validator's raw cases spawn BY PATH, as
+        // `node <script>`, and the protocol script the process fixture's
+        // launcher execs — nothing names them in an import.
+        "src/plugins/validate/__tests__/fixtures/raw/*.mjs",
+        "src/plugins/validate/__tests__/fixtures/process/*.mjs",
+        // The validate CLI: bundled by the plugin repositories as
+        // `tools/vendor/ave-plugin-validate.js` and run as `plugin:validate`;
+        // nothing imports it.
+        "src/plugins/validate/cli.ts",
+        // Loaded by `plugin:validate` with `--import`, in the CLI and its child;
+        // nothing imports it.
+        "scripts/lib/stub-app-logger-hook.mjs"
       ]
     },
     "web": {
