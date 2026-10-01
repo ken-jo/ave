@@ -1,9 +1,10 @@
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildManifestValidator } from "./src/plugins/runtime/manifest-validation.js";
+import { removeOwnedPluginTree } from "./src/plugins/plugin-removal-transaction.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -49,9 +50,22 @@ async function validateJsonFixtures(): Promise<void> {
  * avoid Windows 8.3 short-path (RUNNER~1) issues with os.tmpdir().
  * mkdtempSync() requires the parent directory to already exist.
  */
-export async function setup(): Promise<void> {
-  mkdirSync(join(homedir(), ".ave", "test-tmp"), { recursive: true });
+export async function setup(): Promise<() => Promise<void>> {
+  const testTmp = join(homedir(), ".ave", "test-tmp");
+  mkdirSync(testTmp, { recursive: true });
+  // The sandbox private roots (every confined process's HOME and temp
+  // directory) for a test with no AVE_HOME of its own, one directory per run
+  // (`sandboxPrivateBase` in asrt-sandbox.ts). Never `~/.ave/sandbox`: a
+  // running app's boot empties that, and a sweep from a test would empty a
+  // running app's. Short, for the socket-path limit some suites run into.
+  const sandboxBase = mkdtempSync(join(testTmp, "sbx-"));
+  process.env.AVE_TEST_SANDBOX_BASE = sandboxBase;
   await validateJsonFixtures();
+  return async () => {
+    // Takes back the modes a confined process may narrow inside its own
+    // directory, and follows no link out of the base.
+    await removeOwnedPluginTree(sandboxBase);
+  };
 }
 
 /** Recursively collect JSON files matching manifest/plugin/*-fixture naming under __tests__ dirs. */

@@ -33,6 +33,7 @@ export const DEVELOPMENT_ENV_POLICY = [
   // Removed from plugin path resolution; retained as a scrub/audit tombstone.
   { name: "AVE_PLUGINS_DIR", lifecycle: "tombstone", packaged: "scrub" },
   { name: "AVE_REQUIRE_SANDBOX_CASES", lifecycle: "active", packaged: "scrub" },
+  { name: "AVE_TEST_SANDBOX_BASE", lifecycle: "active", packaged: "scrub" },
   { name: "AVE_RESOURCE_ROOT", lifecycle: "active", packaged: "scrub" },
   // Kept the signed revocation feed offline; revocations now come from local snapshots.
   { name: "AVE_REVOCATION_OFFLINE", lifecycle: "tombstone", packaged: "scrub" },

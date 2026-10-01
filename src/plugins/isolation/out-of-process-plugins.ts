@@ -355,6 +355,12 @@
  *    both roots reach the profile as exact globs, because ASRT re-emits a
  *    literal deny after its allows whenever a broader grant contains it, with
  *    nothing carved out, which would take a process's own directory away too.
+ *    One residual, on macOS only: an approved WRITE grant on an ancestor of
+ *    `~/.ave` (a user-chosen directory, or a shell workspace containing it)
+ *    can write into other processes' temp directories and HOMEs, though not
+ *    read them. ASRT 0.0.75 carves exceptions out of read denies only. That
+ *    grant already reaches every plugin's data directory, so it is the trust
+ *    already given; on Linux the tmpfs masks hide the roots from it.
  *      READ is NOT a jail, and calling it one would be the same error facing
  *    the other way. ASRT's read model is deny-only (`asrt-sandbox.ts`,
  *    `getDefaultSensitiveReadDenyPaths`, which says so in its own header): a

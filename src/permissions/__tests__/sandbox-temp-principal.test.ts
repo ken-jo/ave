@@ -20,8 +20,8 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { join, sep } from "node:path";
 
 import {
   appOwnedSandboxHomeRoot,
@@ -256,4 +256,37 @@ describe("the private roots in a sandbox read deny", () => {
     },
     60_000,
   );
+});
+
+describe("the sandbox private roots in a test process", () => {
+  const realAve = join(homedir(), ".ave");
+
+  it("resolve under this run's directory in test-tmp when the test sets no AVE_HOME", () => {
+    delete process.env.AVE_HOME;
+    const base = process.env.AVE_TEST_SANDBOX_BASE;
+    expect(base, "vitest.globalSetup.ts sets the per-run base").toBeDefined();
+    expect(base!.startsWith(join(realAve, "test-tmp") + sep)).toBe(true);
+    expect(appOwnedSandboxTempRoot()).toBe(join(base!, "tmp"));
+    expect(appOwnedSandboxHomeRoot()).toBe(join(base!, "home"));
+  });
+
+  it("are refused, not defaulted to the real home, when the per-run directory is missing", () => {
+    delete process.env.AVE_HOME;
+    const base = process.env.AVE_TEST_SANDBOX_BASE;
+    delete process.env.AVE_TEST_SANDBOX_BASE;
+    try {
+      expect(() => appOwnedSandboxHomeRoot()).toThrow(/needs AVE_TEST_SANDBOX_BASE/);
+      expect(() => appOwnedSandboxTempRoot()).toThrow(/needs AVE_TEST_SANDBOX_BASE/);
+    } finally {
+      process.env.AVE_TEST_SANDBOX_BASE = base;
+    }
+  });
+
+  it("sweeps a root under test-tmp, which is the tests' own", async () => {
+    const root = join(process.env.AVE_TEST_SANDBOX_BASE!, "guard-case");
+    mkdirSync(join(root, "stale"), { recursive: true });
+    await sweepSandboxPrivateRoot(root, new Set());
+    expect(readdirSync(root)).toEqual([]);
+    rmSync(root, { recursive: true, force: true });
+  });
 });

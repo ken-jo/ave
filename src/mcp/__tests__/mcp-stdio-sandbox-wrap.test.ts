@@ -21,7 +21,7 @@
  *                 capability; an UNWRAPPED server stays `none` (no-leak).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { homedir } from "node:os";
 
 // ─── child_process mock ─────────────────────────────────────
@@ -79,6 +79,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
     sandboxTempPrincipalDirName: actual.sandboxTempPrincipalDirName,
     getDefaultSensitiveReadDenyPaths: actual.getDefaultSensitiveReadDenyPaths,
     getDefaultSensitiveWriteDenyPaths: actual.getDefaultSensitiveWriteDenyPaths,
+    appOwnedSandboxPrivateRoots: actual.appOwnedSandboxPrivateRoots,
   };
 });
 
@@ -88,6 +89,7 @@ import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.
 // Resolves to the mock export above (which delegates to the REAL impl via
 // vi.importActual), so the assertion checks the genuine deny-list.
 import {
+  appOwnedSandboxPrivateRoots,
   getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyPaths,
   sandboxTempPrincipalDirName,
@@ -268,8 +270,9 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
     // them, and ASRT's reads are deny-only.
     const sensitive = getDefaultSensitiveReadDenyPaths();
     expect(options.filesystem.denyRead).toEqual(sensitive);
-    expect(options.filesystem.denyRead).toContain(join(aveHome(), "sandbox", "tmp"));
-    expect(options.filesystem.denyRead).toContain(join(aveHome(), "sandbox", "home"));
+    const privateRoots = appOwnedSandboxPrivateRoots();
+    expect(privateRoots.map((root) => basename(root))).toEqual(["tmp", "home"]);
+    for (const root of privateRoots) expect(options.filesystem.denyRead).toContain(root);
     expect(options.filesystem.denyRead).toContain(join(aveHome(), "secrets"));
     expect(options.filesystem.denyRead).toContain(join(aveHome(), "sessions"));
     expect(options.filesystem.denyRead).toContain(join(homedir(), ".ssh"));

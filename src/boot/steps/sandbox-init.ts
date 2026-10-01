@@ -3,12 +3,14 @@
 
 
 import { lstat, readdir, realpath, unlink } from "node:fs/promises";
-import { join } from "node:path";
+import { realpathSync } from "node:fs";
+import { join, resolve, sep } from "node:path";
 
 import { createLogger } from "../../lib/logger.js";
 import type { BootContext } from "../context.js";
 import type { SandboxGateAction, SandboxGateReason } from "./sandbox-gate.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { defaultAveHome } from "../../shared/ave-home.js";
 import { removeOwnedPluginTree } from "../../plugins/plugin-removal-transaction.js";
 
 const log = createLogger("ave");
@@ -380,10 +382,14 @@ export async function sweepSandboxPrivateRoots(): Promise<void> {
   const { appOwnedSandboxHomeRoot, appOwnedSandboxTempRoot, sandboxTempPrincipalDirsInUse } =
     await import("../../permissions/asrt-sandbox.js");
   const { sandboxProcessHomesInUse } = await import("../../permissions/sandbox-process-home.js");
-  for (const [root, inUse] of [
+  const roots = [
     [appOwnedSandboxTempRoot(), sandboxTempPrincipalDirsInUse()],
     [appOwnedSandboxHomeRoot(), sandboxProcessHomesInUse()],
-  ] as const) {
+  ] as const;
+  // Ahead of the loop, and not caught by it: a test naming the real home must
+  // fail, with neither root touched.
+  for (const [root] of roots) refuseRealAveHomeUnderTest(root);
+  for (const [root, inUse] of roots) {
     await sweepSandboxPrivateRoot(root, inUse).catch((error: unknown) => {
       log.warn("boot: could not empty the sandbox root %s: %s", root, errorMessage(error));
     });
@@ -405,6 +411,7 @@ export async function sweepSandboxPrivateRoots(): Promise<void> {
  * confined process could have set inside its own directory.
  */
 export async function sweepSandboxPrivateRoot(root: string, inUse: ReadonlySet<string>): Promise<void> {
+  refuseRealAveHomeUnderTest(root);
   let entry;
   try {
     entry = await lstat(root);
@@ -417,8 +424,47 @@ export async function sweepSandboxPrivateRoot(root: string, inUse: ReadonlySet<s
     return;
   }
   const canonicalRoot = await realpath(root);
+  refuseRealAveHomeUnderTest(canonicalRoot);
   for (const name of await readdir(root)) {
     if (inUse.has(join(root, name)) || inUse.has(join(canonicalRoot, name))) continue;
     await removeOwnedPluginTree(join(root, name));
+  }
+}
+
+/**
+ * Under the test runner, refuse to sweep a root inside the developer's real
+ * `~/.ave` other than `test-tmp`. What is there belongs to a running app:
+ * the HOMEs and temp directories of its confined processes, which a sweep
+ * deletes. Tests resolve the roots to a per-run directory instead
+ * (`vitest.globalSetup.ts`); this is the stop for one that names the real
+ * home anyway.
+ */
+function refuseRealAveHomeUnderTest(root: string): void {
+  if (process.env.VITEST === undefined) return;
+  // Both spellings of each side: HOME may be reached through a link (`/tmp`
+  // is `/private/tmp` on macOS), and the root may be named either way.
+  const homes = spellings(defaultAveHome());
+  const paths = spellings(resolve(root));
+  // macOS and Windows file systems ignore case by default: `/Users/Me/.AVE`
+  // is the same directory.
+  const fold = (p: string) => (process.platform === "linux" ? p : p.toLowerCase());
+  const inside = (path: string, dir: string) => fold(path) === fold(dir) || fold(path).startsWith(fold(dir) + sep);
+  for (const real of homes) {
+    const sanctioned = join(real, "test-tmp");
+    for (const path of paths) {
+      if (inside(path, real) && !inside(path, sanctioned)) {
+        throw new Error(`sandbox: refusing to sweep ${root} from a test process; it is under the real ${real}`);
+      }
+    }
+  }
+}
+
+/** A path as given and, when it exists, as the file system resolves it. */
+function spellings(path: string): string[] {
+  try {
+    return [path, realpathSync.native(path)];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [path];
+    throw error;
   }
 }

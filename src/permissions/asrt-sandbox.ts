@@ -1439,7 +1439,32 @@ export async function wrapToolCommand(
  * Called once, before any wrap, so nothing observes it changing.
  */
 export function appOwnedSandboxTempRoot(): string {
-  return join(aveHome(), "sandbox", "tmp");
+  return join(sandboxPrivateBase(), "tmp");
+}
+
+/**
+ * The directory the sandbox private roots live in: `<AVE_HOME>/sandbox`.
+ *
+ * Under the test runner with no `AVE_HOME` of its own, it is the per-run
+ * directory `vitest.globalSetup.ts` makes instead. These roots hold every
+ * confined process's HOME and temp directory, and the boot sweep empties them,
+ * so a test resolving them to the developer's real `~/.ave` would put its
+ * directories where a running app's boot deletes them — and a test that swept
+ * would delete the running app's. A test process without that directory is
+ * refused rather than defaulted to the real one.
+ */
+function sandboxPrivateBase(): string {
+  if (process.env.VITEST !== undefined && process.env.AVE_HOME === undefined) {
+    const base = process.env.AVE_TEST_SANDBOX_BASE;
+    if (base === undefined || base === "") {
+      throw new Error(
+        "sandbox: a test process with no AVE_HOME needs AVE_TEST_SANDBOX_BASE, which vitest.globalSetup.ts sets, "
+          + "so no test resolves the real ~/.ave/sandbox",
+      );
+    }
+    return base;
+  }
+  return join(aveHome(), "sandbox");
 }
 
 /**
@@ -1453,7 +1478,7 @@ export function appOwnedSandboxTempRoot(): string {
  * wrap re-allows its own HOME alone.
  */
 export function appOwnedSandboxHomeRoot(): string {
-  return join(aveHome(), "sandbox", "home");
+  return join(sandboxPrivateBase(), "home");
 }
 
 /**
