@@ -165,6 +165,7 @@ export interface MarketplaceServiceOptions {
   mcpLimits: LadderDeps["limits"];
   english: Readonly<Record<string, string>>;
   onSyncProgress?: (progress: SyncProgressView) => void;
+  /** Called outside the operation that changed the catalog: work it starts enters an operation of its own. */
   onCatalogChanged?: () => void;
   onInstallProgress?: (progress: InstallProgressView) => void;
   /** The first-boot migration of existing installs (design §16.3), run before the boot installs. */
@@ -274,8 +275,12 @@ export class MarketplaceService implements RetirementEntryLookup {
   private readonly revokedQueued = new Set<string>();
   /** Operations share it; a policy change takes it alone (§18.6). */
   private readonly lock = new OperationLock();
-  /** Set while an operation runs, so its own nested calls neither re-check the policy nor take the lock again. */
-  private readonly inOperation = new AsyncLocalStorage<true>();
+  /**
+   * The operation the current call belongs to, so its own nested calls neither re-check the policy
+   * nor take the lock again. It is open only while that operation runs: work it left behind that
+   * outlives it finds it closed and enters an operation of its own.
+   */
+  private readonly inOperation = new AsyncLocalStorage<{ open: boolean }>();
   /** The policy refresh now reading or applying; refreshes run one at a time, in order (§12). */
   private refreshRunning: Promise<void> | null = null;
   /** The one refresh waiting for the running one, shared by every operation that began meanwhile. */
@@ -307,13 +312,42 @@ export class MarketplaceService implements RetirementEntryLookup {
   /**
    * Run one operation (§18.6): first wait for a policy refresh that began
    * after this operation did, then run under the shared lock with the policy
-   * that refresh left in force. A call made inside an operation runs as part
-   * of it.
+   * that refresh left in force. A call made inside an operation, while it
+   * runs, is part of it.
    */
   private async operation<T>(fn: () => Promise<T>): Promise<T> {
-    if (this.inOperation.getStore()) return fn();
+    if (this.inOperation.getStore()?.open) return fn();
     await this.refreshPolicy();
-    return this.lock.shared(() => this.inOperation.run(true, fn));
+    return this.lock.shared(async () => {
+      const scope = { open: true };
+      try {
+        return await this.inOperation.run(scope, fn);
+      } finally {
+        scope.open = false;
+      }
+    });
+  }
+
+  /**
+   * Run `fn` as one marketplace operation, so every service call it makes is
+   * part of that operation (§18.6 lock order). A caller that also takes plugin
+   * lifecycle locks enters here first and takes them inside: the marketplace
+   * operation always comes before any plugin lock. Taking a plugin lock first
+   * and then calling the service could wait for a policy change's exclusive
+   * lock while an install holds the shared lock and waits for that plugin lock.
+   */
+  async asOneOperation<T>(fn: () => Promise<T>): Promise<T> {
+    return this.operation(fn);
+  }
+
+  /**
+   * Tell the caller the catalog changed, outside this operation: what it starts
+   * (a background update check) is detached work and enters its own operation,
+   * with a fresh policy refresh and the shared lock.
+   */
+  private catalogChanged(): void {
+    const notify = this.options.onCatalogChanged;
+    if (notify) this.inOperation.exit(notify);
   }
 
   /**
@@ -360,7 +394,7 @@ export class MarketplaceService implements RetirementEntryLookup {
     this.options.policy.apply(update);
     if (!update.load.ok) this.options.log.warn(`marketplace policy unreadable; only the official source is reachable: ${update.load.error}`);
     // Managed sources, blocks and required installs may all have changed.
-    this.options.onCatalogChanged?.();
+    this.catalogChanged();
   }
 
   private source(id: string): ResolvedSource {
@@ -459,7 +493,7 @@ export class MarketplaceService implements RetirementEntryLookup {
   private async repairSourceNow(id: string): Promise<SourceView[]> {
     const source = this.source(id);
     await this.options.syncer.resetLocalData(source.id);
-    this.options.onCatalogChanged?.();
+    this.catalogChanged();
     await this.syncOne(source.id);
     await this.enforceRevocations();
     return this.listSources();
@@ -496,7 +530,7 @@ export class MarketplaceService implements RetirementEntryLookup {
   async setEnabled(id: string, enabled: boolean): Promise<SourceView> {
     return this.operation(async () => {
       await this.registry.setEnabled(id, enabled);
-      this.options.onCatalogChanged?.();
+      this.catalogChanged();
       return this.sourceView(this.source(id));
     });
   }
@@ -518,7 +552,7 @@ export class MarketplaceService implements RetirementEntryLookup {
     return this.operation(async () => {
       const source = this.source(id);
       await this.registry.acknowledge(source.id, warnings);
-      this.options.onCatalogChanged?.();
+      this.catalogChanged();
       await this.syncOne(source.id);
       await this.enforceRevocations();
       return this.sourceView(this.source(source.id));
@@ -537,7 +571,7 @@ export class MarketplaceService implements RetirementEntryLookup {
     }
     const orphaned = (await this.installedAll()).filter((item) => item.sourceId === id).map((item) => ({ sourceId: id, kind: item.kind, name: item.name }));
     await this.options.syncer.removeSource(id);
-    this.options.onCatalogChanged?.();
+    this.catalogChanged();
     return { orphanedPackages: orphaned };
   }
 
@@ -726,7 +760,7 @@ export class MarketplaceService implements RetirementEntryLookup {
         if (!isMissingPathError(error)) throw error;
       }
       await this.syncOne(id);
-      this.options.onCatalogChanged?.();
+      this.catalogChanged();
       return this.sourceView(this.source(id));
     } finally {
       this.options.previewTokens.delete(preview.sourceId);
@@ -1140,7 +1174,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       const { connectionWarning } = await this.options.installers.mcp.installUnbound(held.name, held.runtime);
       result = { key: { sourceId: null, kind: "mcp", name: held.name }, version: null, action: { action: "install" }, rungs: [], connectionWarning };
     }
-    this.options.onCatalogChanged?.();
+    this.catalogChanged();
     return result;
   }
 
@@ -1198,7 +1232,7 @@ export class MarketplaceService implements RetirementEntryLookup {
     } else if (request.kind === "mcp") ({ keptDataDir } = await this.options.installers.mcp.uninstall(request.name, { removeData: request.removeData === true }));
     else await this.options.installers.content.uninstall(request.kind, request.name, { removeData: request.removeData === true });
     await this.refeedAfter(`${request.kind} ${request.name} uninstall`);
-    this.options.onCatalogChanged?.();
+    this.catalogChanged();
     return { key: { sourceId: request.sourceId, kind: request.kind, name: request.name }, keptDataDir };
   }
 

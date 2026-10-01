@@ -81,6 +81,8 @@ describe("MarketplaceService", () => {
   let service: MarketplaceService;
   let store: ContentStore;
   let catalogChanged: number;
+  /** Run when the service reports a catalog change, as the background update check is started. */
+  let afterCatalogChanged: (() => void) | null;
   let legacyRuns: Array<(name: string) => OfficialPlugin | null>;
   let legacyReport: LegacyPluginReport;
   let legacyActivations: LegacyActivations;
@@ -112,6 +114,7 @@ describe("MarketplaceService", () => {
     root = mkdtempSync(join(tmpdir(), "ave-service-root-"));
     now = AT;
     catalogChanged = 0;
+    afterCatalogChanged = null;
     legacyRuns = [];
     legacyReport = { bound: [], unmanaged: [], lostGrants: [], failed: [] };
     legacyActivations = { themes: [], locales: [], providers: [] };
@@ -192,6 +195,7 @@ describe("MarketplaceService", () => {
       english: {},
       onCatalogChanged: () => {
         catalogChanged += 1;
+        afterCatalogChanged?.();
       },
       now: () => now,
       revocations: {
@@ -1027,9 +1031,68 @@ describe("MarketplaceService", () => {
     expect(await service.previewSource({ input: url, auth: "none" })).toMatchObject({ type: "marketplace" });
   });
 
+  /** The managed policy file the next two groups rewrite while operations run. */
+  const policyPath = () => join(root, "ave-policy.json");
+  const write = (marketplaces: unknown) => writeFileSync(policyPath(), JSON.stringify({ version: 1, managed: true, marketplaces }));
+
+  describe("work an operation leaves behind (§18.6)", () => {
+    const gate = () => {
+      let open: () => void = () => {};
+      const opened = new Promise<void>((resolve) => (open = resolve));
+      return { opened, open };
+    };
+
+    it("starts the work a catalog change asks for outside the operation, so it reads a policy changed meanwhile", async () => {
+      write({});
+      await build(await FilePolicySource.open(policyPath()));
+      const { url } = market();
+      // As the background update check does: started from the notice, run after the operation ended.
+      const later = gate();
+      let recheck: Promise<unknown> | null = null;
+      afterCatalogChanged = () => {
+        recheck ??= later.opened.then(() => service.previewSource({ input: url, auth: "none" }));
+      };
+      await addMarket(url);
+      expect(recheck).not.toBeNull();
+
+      write({ block: ["host:127.0.0.1"] });
+      later.open();
+      await expect(recheck).rejects.toMatchObject({ code: "SOURCE_POLICY_BLOCKED", detail: { reason: "blocked-by-pattern" } });
+    });
+
+    it("starts that work outside the operation even while the operation still runs", async () => {
+      write({});
+      await build(await FilePolicySource.open(policyPath()));
+      const { url } = market();
+      let recheck: Promise<unknown> | null = null;
+      afterCatalogChanged = () => {
+        if (recheck) return;
+        // Started at once, while the add that reported the change is still running.
+        write({ block: ["host:127.0.0.1"] });
+        recheck = service.previewSource({ input: url, auth: "none" });
+      };
+      await addMarket(url);
+      await expect(recheck).rejects.toMatchObject({ code: "SOURCE_POLICY_BLOCKED", detail: { reason: "blocked-by-pattern" } });
+    });
+
+    it("lets work started inside an operation, still running after it, enter an operation of its own", async () => {
+      write({});
+      await build(await FilePolicySource.open(policyPath()));
+      const { url } = market();
+      const later = gate();
+      let leftBehind: Promise<unknown> | null = null;
+      await service.asOneOperation(async () => {
+        // Not awaited: it outlives the operation that started it.
+        leftBehind = later.opened.then(() => service.previewSource({ input: url, auth: "none" }));
+      });
+
+      write({ block: ["host:127.0.0.1"] });
+      later.open();
+      await expect(leftBehind).rejects.toMatchObject({ code: "SOURCE_POLICY_BLOCKED", detail: { reason: "blocked-by-pattern" } });
+    });
+  });
+
   describe("policy refresh under overlapping operations (§12)", () => {
-    const policyPath = () => join(root, "ave-policy.json");
-    const write = (marketplaces: unknown) => writeFileSync(policyPath(), JSON.stringify({ version: 1, managed: true, marketplaces }));
 
     /** The policy file as the service's source; each check is numbered and can be held once it has read the file. */
     function heldPolicy(file: FilePolicySource) {

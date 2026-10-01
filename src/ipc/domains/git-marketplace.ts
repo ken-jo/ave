@@ -105,6 +105,7 @@ export type GitMarketplacePort = Pick<
   | "executeInstall"
   | "uninstall"
   | "getRetirementEntry"
+  | "asOneOperation"
   | "previewDirectMcp"
   | "updates"
   | "applyBootInstalls"

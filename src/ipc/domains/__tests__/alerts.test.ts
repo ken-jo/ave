@@ -101,6 +101,8 @@ describe("retaining predecessor removal", () => {
       catalog: vi.fn(async () => ({ entries: [entry] })),
       getRetirementEntry: vi.fn(async () => retirement),
       uninstall: vi.fn(async (request: unknown) => ({ key: request, keptDataDir: null })),
+      // Removal enters one marketplace operation before its plugin locks (lock order: alert-predecessor.test.ts).
+      asOneOperation: vi.fn(async <T,>(fn: () => Promise<T>) => fn()),
     };
     const deps = { pluginMarketplace: { listInstalledPackages: vi.fn(async () => installed) },
       pluginRuntime: { resolvePluginId: (id: string) => id, resolvePluginInstallIdIfKnown: (id: string) => id, getPluginManifest: vi.fn(), listPluginIds: vi.fn(() => ["retired-plugin"]) } };
