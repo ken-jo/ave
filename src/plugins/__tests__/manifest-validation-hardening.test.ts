@@ -18,7 +18,8 @@ import {
   pureTool,
   TestPluginRuntime as PluginRuntime,
 } from "./test-helpers.js";
-import { servedAgentPluginsDocument } from "./test-helpers.js";
+import { agentPluginsDocument, servedAgentPluginsDocument } from "./test-helpers.js";
+import { buildManifestValidator, parsePluginJson } from "../runtime/manifest-validation.js";
 
 describe("runtime manifest validation hardening", () => {
   let testDir: string;
@@ -360,5 +361,95 @@ describe("runtime manifest validation hardening", () => {
       cap.restore();
     }
     expect(runtime.listPluginIds()).not.toContain("p-author-long");
+  });
+});
+
+/**
+ * The `process` entry against the host's own schema (docs/design/plugin-hostapi-protocol.md
+ * §9.7 P3). The command's shape is the schema's; the argument, environment and
+ * version rules are the hardening's. Each refusal names the field to edit.
+ */
+describe("runtime manifest validation of a process entry", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "ave-process-manifest-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const PROCESS = {
+    command: "./bin/plugin",
+    args: ["${PLUGIN_ROOT}/vendor", "--x=1"],
+    env: { SMOKE_VENDOR_DIR: "${PLUGIN_ROOT}/vendor" },
+  };
+
+  async function parse(overrides: {
+    process?: unknown;
+    entry?: unknown;
+    requires?: Record<string, unknown>;
+  }): Promise<unknown> {
+    const manifest: Record<string, unknown> = {
+      id: "process-kit",
+      name: "Process Kit",
+      version: "1.0.0",
+      description: "A process entry fixture.",
+      tools: [pureTool("process_kit_ping")],
+      requires: overrides.requires ?? { minAppVersion: "0.13.0", hostProtocol: "2" },
+    };
+    if ("process" in overrides) manifest.process = overrides.process;
+    if ("entry" in overrides) manifest.entry = overrides.entry;
+    const path = join(dir, "plugin.json");
+    await writeFile(path, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
+    return parsePluginJson(path, await buildManifestValidator());
+  }
+
+  it("admits a process entry with root-anchored arguments, a declared variable and the version floor", async () => {
+    await expect(parse({ process: PROCESS })).resolves.toMatchObject({ process: PROCESS });
+  });
+
+  it.each([
+    ["a bare command", { ...PROCESS, command: "plugin" }],
+    ["an absolute command", { ...PROCESS, command: "/usr/bin/python3" }],
+    ["a command segment containing '='", { ...PROCESS, command: "./bin/a=b" }],
+  ])("refuses %s at the schema, naming the command", async (_name, process) => {
+    await expect(parse({ process })).rejects.toThrow(/\/extensions\/xyz\.ave\/process\/command must match pattern/u);
+  });
+
+  it.each([
+    ["a '..' segment in an argument", ["${PLUGIN_ROOT}/../outside"], /process\.args\[0\].*not a contained relative path/u],
+    ["a ${HOME} token in an argument", ["${HOME}/x"], /process\.args\[0\].*placeholder/u],
+    ["an argument literal that looks like a path", ["./vendor"], /process\.args\[0\].*looks like a path/u],
+  ])("refuses %s, naming the argument", async (_name, args, message) => {
+    await expect(parse({ process: { ...PROCESS, args } })).rejects.toThrow(message);
+  });
+
+  it.each(["BASH_ENV", "LD_PRELOAD", "NODE_OPTIONS", "PYTHONPATH", "PLUGIN_ROOT", "PLUGIN_DATA", "Path", "plugin_root"])(
+    "refuses %s as an environment name, naming it",
+    async (name) => {
+      await expect(parse({ process: { ...PROCESS, env: { [name]: "x" } } })).rejects.toThrow(
+        new RegExp(`extensions\\["xyz\\.ave"\\]\\.process\\.env\\.${name}'.*reserves`, "u"),
+      );
+    },
+  );
+
+  it("refuses a placeholder other than the two in an environment value", async () => {
+    await expect(parse({ process: { ...PROCESS, env: { SMOKE_VENDOR_DIR: "${HOME}/vendor" } } }))
+      .rejects.toThrow(/process\.env\.SMOKE_VENDOR_DIR.*placeholder/u);
+  });
+
+  it.each([
+    ["0.12.0", { minAppVersion: "0.12.0", hostProtocol: "2" }],
+    ["no minAppVersion", { hostProtocol: "2" }],
+  ])("refuses %s, naming requires.minAppVersion", async (_name, requires) => {
+    await expect(parse({ process: PROCESS, requires })).rejects.toThrow(/requires\.minAppVersion.*0\.13\.0 or newer/u);
+  });
+
+  it("refuses both entry and process", async () => {
+    await expect(parse({ process: PROCESS, entry: "dist/index.js" })).rejects.toThrow(/schema validation failed/u);
+  });
+
+  it("refuses neither entry nor process when the plugin declares tools", async () => {
+    await expect(parse({})).rejects.toThrow(/schema validation failed/u);
   });
 });

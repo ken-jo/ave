@@ -10,11 +10,15 @@
  *     (NOT reinstall-fixable — a reinstall re-fetches the same too-new package).
  *   - a `requires.hostProtocol` this app does not serve → `incompatible-host-protocol`
  *     (NOT reinstall-fixable, and refused before the plugin's code runs).
+ *   - a `process` entry without a pinned install → `process-entry-requires-pinned-artifact`
+ *     (NOT reinstall-fixable; every activation path is covered by
+ *     `process-entry-provenance-gate.test.ts`).
  *   - a version its bound source revoked → `plugin-revoked` with that source's
  *     reason (design §10.4); other plugins still load.
  */
 import { afterEach, describe, expect, it } from "vitest";
-import { rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import {
   makeTestPluginEntrySource,
   makeTestPluginRuntime,
@@ -28,10 +32,16 @@ import { isReinstallFixableFailureKind } from "../../shared/plugin-install-failu
 
 async function writeProcessEntry(fixture: TestPluginRuntimeFixture): Promise<string> {
   const { manifestPath } = await writeTestPlugin(fixture, { id: "process-kit", tools: [] });
+  await mkdir(join(dirname(manifestPath), "bin"), { recursive: true });
+  await writeFile(join(dirname(manifestPath), "bin", "plugin"), "#!/bin/sh\n", "utf8");
   await writeFile(manifestPath, JSON.stringify({
     $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
     name: "process-kit", version: "1.0.0", description: "Process extension",
-    extensions: { "ai.agent-connector.ave": { process: { command: "node" }, tools: [] } },
+    extensions: { "ai.agent-connector.ave": {
+      process: { command: "./bin/plugin" },
+      requires: { minAppVersion: "0.13.0", hostProtocol: "2" },
+      tools: [],
+    } },
   }), "utf8");
   await writeTestPluginRegistry(fixture, [{ id: "process-kit", manifestPath, enabled: true }]);
   return manifestPath;
@@ -45,22 +55,28 @@ describe("PluginRuntime Doctor load-failure classification", () => {
     if (fixture) await rm(fixture.rootDir, { recursive: true, force: true });
   });
 
-  it("keeps a process extension failed at boot with a stable Doctor diagnosis", async () => {
+  // No receipt cache root, so nothing is verified and the gate has no
+  // evidence: the unpinned refusal, which a reinstall cannot repair.
+  it("keeps an unpinned process extension failed at boot with a stable Doctor diagnosis", async () => {
     fixture = await makeTestPluginRuntimeFixture();
     await writeProcessEntry(fixture);
     const runtime = makeTestPluginRuntime(fixture);
     await runtime.startAll();
     const card = runtime.listPluginCards().find((candidate) => candidate.id === "process-kit");
-    expect(card).toMatchObject({ loadStatus: "failed", installFailureKind: "process-entry-unsupported" });
-    expect(card?.installFailureMessage).toContain("cannot run process-entry extensions yet");
+    expect(card).toMatchObject({ loadStatus: "failed", installFailureKind: "process-entry-requires-pinned-artifact" });
+    expect(card?.installFailureMessage).toContain("pinned by its sha256 hash");
+    expect(card?.installFailureMessage).toContain("Installation refused: this Ave version cannot yet install a supported copy");
     expect(isReinstallFixableFailureKind(card?.installFailureKind)).toBe(false);
+    expect(isReinstallFixableFailureKind("process-entry-unconfined")).toBe(false);
   });
 
-  it("refuses an added process extension before it starts", async () => {
+  it("refuses an added unpinned process extension before it starts", async () => {
     fixture = await makeTestPluginRuntimeFixture();
     await writeProcessEntry(fixture);
     const runtime = makeTestPluginRuntime(fixture);
-    await expect(runtime.addPlugin("process-kit")).rejects.toMatchObject({ code: "process-entry-unsupported" });
+    await expect(runtime.addPlugin("process-kit")).rejects.toThrow(/requires an install pinned by a release or archive artifact/);
+    expect(runtime.listPluginCards().find((candidate) => candidate.id === "process-kit"))
+      .toMatchObject({ installFailureKind: "process-entry-requires-pinned-artifact" });
     expect(runtime.listPluginIds()).not.toContain("process-kit");
   });
 

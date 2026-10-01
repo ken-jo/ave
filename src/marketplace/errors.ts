@@ -34,7 +34,8 @@ export const MARKETPLACE_ERROR_CODES = [
   "ARTIFACT_NOT_PINNED",
   "ARTIFACT_DIGEST_MISMATCH",
   "MANIFEST_MISMATCH",
-  "process-entry-unsupported",
+  "process-entry-unconfined",
+  "process-entry-requires-pinned-artifact",
   "NO_INSTALLABLE_ARTIFACT",
   "CONTENT_RULE_VIOLATION",
 ] as const;

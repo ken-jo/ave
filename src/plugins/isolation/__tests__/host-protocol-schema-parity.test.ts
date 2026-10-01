@@ -44,6 +44,7 @@ import { hostProtocolCapabilities } from "../host-api-dispatcher.js";
 import { createBoundHostApiDispatchTable } from "../bound-host-api-table.js";
 import { createValidationHost } from "../../validate/validation-host.js";
 import { goldenFiles } from "./host-protocol-golden-files.js";
+import { removeLinkOnly } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { ts } from "ts-json-schema-generator";
 import {
   HOST_PROTOCOL_SCHEMA_LABEL,
@@ -328,6 +329,48 @@ describe("every golden frame is valid under the schema", () => {
   });
 });
 
+describe("the manifest construct carries is exactly one of entry and process", () => {
+  const MANIFEST = { $ref: "#/$defs/types/PluginManifest" };
+  const base = {
+    id: "exclusive",
+    name: "Exclusive",
+    version: "1.0.0",
+    description: "declares one way to produce its process",
+    tools: [],
+    requires: { minAppVersion: "0.13.0", hostProtocol: "2" },
+  };
+  const process = { command: "./bin/plugin", args: ["--stdio"], env: { PLUGIN_LOG_LEVEL: "info" } };
+
+  it("validates the process-launch construct golden, request and reply", () => {
+    const { request, response } = JSON.parse(
+      readFileSync(join(GOLDEN_ROOT, "launches", "process", "construct.json"), "utf-8"),
+    ) as { request: Frame; response: Frame };
+    expect(request.method).toBe(PLUGIN_INSTANCE_METHODS.construct);
+    expect((request.params as { manifest: Frame }).manifest).toHaveProperty("process");
+    expect([...frameViolations("process-launch", request), ...frameViolations("process-launch", response, request)])
+      .toEqual([]);
+  });
+
+  it("validates a manifest with only entry, and one with only process", () => {
+    expect(violations("manifest", MANIFEST, { ...base, entry: "dist/index.js" })).toEqual([]);
+    expect(violations("manifest", MANIFEST, { ...base, process })).toEqual([]);
+  });
+
+  it("refuses a manifest with both, and one with neither", () => {
+    // Each is refused by the branch that would otherwise take it: a `false`
+    // member for both, a missing required key for neither.
+    expect(violations("manifest", MANIFEST, { ...base, entry: "dist/index.js", process })).toEqual(
+      expect.arrayContaining(["manifest/entry: boolean schema is false", "manifest/process: boolean schema is false"]),
+    );
+    expect(violations("manifest", MANIFEST, base)).toEqual(
+      expect.arrayContaining([
+        "manifest: must have required property 'entry'",
+        "manifest: must have required property 'process'",
+      ]),
+    );
+  });
+});
+
 describe("the generator writes the same bytes on every checkout", () => {
   it("reads CRLF sources to exactly what it reads LF sources to, and to the committed file", () => {
     const committed = readFileSync(
@@ -364,27 +407,6 @@ describe("the generator writes the same bytes on every checkout", () => {
   }, 120_000);
 });
 
-/**
- * Remove the link at `path`, and never what it points to.
- *
- * No step recurses, so no platform's reading of a Windows junction can walk
- * into the target, which is how a recursive `rmSync` of a directory holding a
- * junction deleted the real scripts/ tree. `unlinkSync` removes a symlink or
- * a junction and refuses a real directory. Where it refuses a junction too,
- * `rmdirSync` without `recursive` removes it: RemoveDirectory deletes a
- * junction's reparse point whatever its target holds. On anything else, a
- * directory that is not empty, it throws.
- */
-function removeLinkOnly(path: string): void {
-  try {
-    unlinkSync(path);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") return;
-    if (code !== "EPERM" && code !== "EISDIR") throw error;
-    rmdirSync(path);
-  }
-}
 
 describe("the command line always reports an outcome", () => {
   const nodeCommand = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;

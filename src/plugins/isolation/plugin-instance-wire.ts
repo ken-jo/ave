@@ -81,7 +81,11 @@ export interface PluginConstructParams {
   };
   readonly manifest: PluginManifest;
   readonly context: PluginChildContext;
-  /** Absolute path of the plugin entry module the child imports. */
+  /**
+   * For an `entry` plugin, the absolute path of the JS module the reference
+   * runtime imports. For a `process` plugin, the absolute, resolved path of its
+   * own executable — the process receiving this frame — which it may ignore.
+   */
   readonly entryPath: string;
   /**
    * The declared tool names whose handlers the instance MUST expose.

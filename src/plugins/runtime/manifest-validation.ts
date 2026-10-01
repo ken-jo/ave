@@ -40,7 +40,10 @@ import { SOURCE_ID_RE } from "../../marketplace/sources/official.js";
 import { toolVisibility } from "./tool-visibility.js";
 import { createLogger } from "../../lib/logger.js";
 import { normalizeAllowedHosts } from "../../main/host-allow-list.js";
-import { assertProcessEntrySupported } from "../process-entry-support.js";
+import { PROCESS_ENTRY_FIRST_APP_VERSION } from "../process-entry.js";
+import { checkProcessEntryArgument, checkProcessEntryEnvironmentValue } from "../resolve-bundled-argv.js";
+import { isSafeMcpEnvironmentName } from "../../mcp/safe-names.js";
+import { compareSemver } from "../../shared/semver-compare.js";
 import {
   HOST_SECRET_READ_MAX_ITEMS,
   findHostSecretReadListViolation,
@@ -669,6 +672,67 @@ export function manifestDocumentSha256(manifest: PluginManifest): string | null 
 }
 
 /**
+ * The `process` rules the manifest schema does not express (§9.7 P3, one
+ * source each): the reserved environment names, the path rules for `args` and
+ * `env` values, and the app-version floor. The command's own shape — inside
+ * the plugin root, no `=` — is the schema's `pattern`.
+ */
+function checkProcessEntryShape(
+  processRaw: unknown,
+  minAppVersion: unknown,
+  fail: (fieldPath: string, reason: string, example: string) => never,
+): void {
+  if (!isObject(processRaw)) {
+    fail("process", "must be an object with a 'command'", `"process": { "command": "./bin/plugin" }`);
+  }
+  const { args, env } = processRaw as { args?: unknown; env?: unknown };
+  if (args !== undefined) {
+    if (!Array.isArray(args)) fail("process.args", "must be an array of strings", `"args": ["--stdio"]`);
+    (args as unknown[]).forEach((value, index) => {
+      try {
+        checkProcessEntryArgument(value as string, `argument ${index}`);
+      } catch (error) {
+        fail(
+          `process.args[${index}]`,
+          `${errorMessage(error)}; a path is named as \${PLUGIN_ROOT}/<path> or \${PLUGIN_DATA}/<path>`,
+          `"args": ["\${PLUGIN_ROOT}/vendor", "--level=1"]`,
+        );
+      }
+    });
+  }
+  if (env !== undefined) {
+    if (!isObject(env)) fail("process.env", "must be an object of string values", `"env": { "VENDOR_DIR": "\${PLUGIN_ROOT}/vendor" }`);
+    for (const [name, value] of Object.entries(env as Record<string, unknown>)) {
+      if (!isSafeMcpEnvironmentName(name)) {
+        fail(
+          `process.env.${name}`,
+          "names a variable the host reserves (a loader, interpreter, launcher or proxy setting, or PLUGIN_ROOT/PLUGIN_DATA, in any letter case); "
+            + "set it from your launcher inside the plugin's own process instead",
+          `"env": { "VENDOR_DIR": "\${PLUGIN_ROOT}/vendor" }`,
+        );
+      }
+      try {
+        checkProcessEntryEnvironmentValue(value as string, `value of ${name}`);
+      } catch (error) {
+        fail(
+          `process.env.${name}`,
+          errorMessage(error),
+          `"env": { "VENDOR_DIR": "\${PLUGIN_ROOT}/vendor" }`,
+        );
+      }
+    }
+  }
+  if (typeof minAppVersion !== "string" || !STABLE_SEMVER_RE.test(minAppVersion)
+    || compareSemver(minAppVersion, PROCESS_ENTRY_FIRST_APP_VERSION) < 0) {
+    fail(
+      "requires.minAppVersion",
+      `a plugin with a 'process' entry must require Ave ${PROCESS_ENTRY_FIRST_APP_VERSION} or newer, the first release that runs one`,
+      `"requires": { "minAppVersion": "${PROCESS_ENTRY_FIRST_APP_VERSION}", "hostProtocol": "2" }`,
+    );
+  }
+}
+
+/**
  * Parse and fully validate a plugin.json manifest file.
  *
  * The file on disk is an Agent Plugins 1.0.0 document; every host consumer
@@ -913,13 +977,28 @@ export async function parsePluginJson(
       `"version": "1.0.0"`,
     );
   }
-  assertProcessEntrySupported(doc);
-  if (typeof parsed.entry !== "string" || parsed.entry.length === 0) {
+  // Exactly one way to produce the plugin's process. The schema's `oneOf`
+  // says the same; this is the loud, field-named copy for a validator that is
+  // more permissive than the host's own.
+  const hasEntry = (parsed as { entry?: unknown }).entry !== undefined;
+  const processRaw: unknown = (parsed as { process?: unknown }).process;
+  if (hasEntry && processRaw !== undefined) {
     fail(
-      "entry",
-      "must be a non-empty relative path to the plugin ESM entry",
-      `"entry": "dist/index.js"`,
+      "process",
+      "a plugin declares exactly one of 'entry' and 'process', not both",
+      `"process": { "command": "./bin/plugin" }`,
     );
+  }
+  if (processRaw === undefined) {
+    if (typeof parsed.entry !== "string" || parsed.entry.length === 0) {
+      fail(
+        "entry",
+        "must be a non-empty relative path to the plugin ESM entry, or declare 'process' instead",
+        `"entry": "dist/index.js"`,
+      );
+    }
+  } else {
+    checkProcessEntryShape(processRaw, (parsed as { requires?: { minAppVersion?: unknown } }).requires?.minAppVersion, fail);
   }
   if (!Array.isArray(parsed.tools)) {
     fail(

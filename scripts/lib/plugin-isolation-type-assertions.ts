@@ -42,7 +42,7 @@ export type OutOfProcessPluginSpecKeysAreExact = Expect<
     keyof OutOfProcessPluginSpec,
     | "manifest"
     | "auditLog"
-    | "entryPath"
+    | "launch"
     | "childEntryPath"
     | "registerSandboxEnvelope"
     | "onMalformedCredentialSelector"

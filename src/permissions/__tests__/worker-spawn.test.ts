@@ -330,6 +330,8 @@ describe("spawnWorker — gate ON (macOS)", () => {
     expect(options.filesystem.allowWrite).toContain(SANDBOX_HOME);
     expect(options.filesystem.allowRead).toContain(SANDBOX_HOME);
     expect(options.filesystem.allowWrite).toContain("/data/index");
+    // A plugin worker is plugin-owned code: its write roots are pinned.
+    expect((options.filesystem as { pinWriteRoots?: boolean }).pinWriteRoots).toBe(true);
     expect(options.filesystem.allowRead).toContain("/opt/worker");
     expect(options.filesystem.allowRead).toContain("/opt/scripts/embed.py");
     expect(options.allowUnixSocketPath).toBeUndefined();
@@ -396,6 +398,21 @@ describe("spawnWorker — gate ON (macOS)", () => {
 });
 
 // ─── Gate ON (linux) — registers the socketDir; FS-jail-only wrap ───
+
+describe("spawnWorker — a symlinked control dir", () => {
+  // `chmod` follows a link, so the refusal must come before the mode is forced:
+  // the other order would change the mode of whatever the link points at.
+  it("refuses it before forcing any mode, so the host never chmods a link target", async () => {
+    setProcessPlatform("darwin");
+    gateActive = true;
+    chmodSyncMock.mockClear();
+    lstatSyncMock.mockImplementationOnce(() => ({ isSymbolicLink: () => true }));
+    await expect(spawnWorker({ pluginId: "local-indexer", workerId: "embed", command: "/opt/worker" }))
+      .rejects.toThrow(/refusing symlinked control dir/);
+    expect(chmodSyncMock).not.toHaveBeenCalled();
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+  });
+});
 
 describe("spawnWorker — gate ON (linux)", () => {
   it("does not report plugin workers stopped until their process exits", async () => {

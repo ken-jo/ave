@@ -23,7 +23,10 @@ import {
   INCOMPATIBLE_APP_VERSION_CODE,
 } from "../../../../../plugins/public-contract.js";
 import { buildInstallFailureResult } from "../../../../../shared/plugin-install-result.js";
-import { ProcessEntryUnsupportedError } from "../../../../../plugins/process-entry-support.js";
+import {
+  ProcessEntryRequiresPinnedArtifactError,
+  ProcessEntryUnconfinedError,
+} from "../../../../../plugins/process-entry.js";
 import type { PluginInstallResultPayload } from "../../../../../contract/app-contract.js";
 import type { AveApi } from "../../../types.js";
 import { useStatusBarInstall } from "../use-status-bar-install.js";
@@ -99,10 +102,13 @@ describe("install-result payload", () => {
     expect(toastCopyFor(payload)).toContain("disk full");
   });
 
-  it("keeps the process-entry refusal typed and localizes the install toast", () => {
-    const payload = buildInstallFailureResult("process-kit", new ProcessEntryUnsupportedError(), "addPlugin failed");
-    expect(payload.error).toBe("process-entry-unsupported");
-    expect(toastCopyFor(payload)).toContain("이 앱은 아직 프로세스 진입점이 있는 익스텐션을 실행할 수 없습니다.");
+  it("keeps both process-entry refusals typed and localizes the install toast", () => {
+    const unpinned = buildInstallFailureResult("process-kit", new ProcessEntryRequiresPinnedArtifactError(), "addPlugin failed");
+    expect(unpinned.error).toBe("process-entry-requires-pinned-artifact");
+    expect(toastCopyFor(unpinned)).toContain("이 설치는 거부되었습니다. 이 버전의 Ave는 자체 프로그램을 실행하는 익스텐션의 지원되는 사본을 아직 설치할 수 없습니다");
+    const unconfined = buildInstallFailureResult("process-kit", new ProcessEntryUnconfinedError(), "addPlugin failed");
+    expect(unconfined.error).toBe("process-entry-unconfined");
+    expect(toastCopyFor(unconfined)).toContain("OS 도구 샌드박스 안에서만 실행합니다");
   });
 
   it("falls back to the caller's message when the failure carries no text", () => {

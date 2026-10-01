@@ -58,6 +58,7 @@ export interface AgentPluginPackageManifest {
       icon?: string;
       iconText?: string;
       requires?: { minAppVersion: string };
+      process?: PluginProcessEntry;
       mcpAuth?: Record<string, { auth: "api-key"; apiKeyEnv?: string; apiKeyHeader?: string }>;
     };
   };
@@ -432,13 +433,29 @@ export interface Tool {
 }
 
 /**
- * Declarative plugin metadata validated by the Host before plugin code loads.
+ * An executable that speaks the host protocol itself, in any language
+ * (docs/design/plugin-hostapi-protocol.md §2.1).
+ *
+ * `command` is a `./` or `${PLUGIN_ROOT}/` path inside the plugin root, never a
+ * bare name: a marketplace plugin gets no `PATH` search. `${PLUGIN_ROOT}/…` and
+ * `${PLUGIN_DATA}…` are expanded in `args` and `env`, and the host sets both
+ * variables in the process's environment.
+ */
+export interface PluginProcessEntry {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
+/**
+ * Declarative plugin metadata validated by the Host before plugin code loads,
+ * less the field that says how its process is produced.
  *
  * `tools` is the only callable surface. Legacy `uiTool`, `uiTools`, `uiAction`,
  * `uiActions`, top-level `operationGovernance`, and top-level `appAllowed`
  * declarations are invalid and rejected by the Host-owned manifest schema.
  */
-export interface PluginManifest {
+export interface PluginManifestFields {
 
   id: string;
   /**
@@ -449,7 +466,6 @@ export interface PluginManifest {
    */
   name?: string;
   version: string;
-  entry: string;
 
 
 
@@ -680,6 +696,32 @@ export interface PluginManifest {
   };
   /** Marketplace-only advertisement of UI slot names; bindings remain in `ui[].slot`. */
   uiSlots?: string[];
+}
+
+/** A plugin whose process is the host's reference runtime importing this JS module. */
+export interface EntryPluginManifest extends PluginManifestFields {
+  entry: string;
+  process?: never;
+}
+
+/** A plugin whose process is its own executable, speaking the protocol itself. */
+export interface ProcessPluginManifest extends PluginManifestFields {
+  process: PluginProcessEntry;
+  entry?: never;
+}
+
+/**
+ * A plugin manifest: exactly one of `entry` and `process`.
+ *
+ * A union rather than one interface with two optional fields, because that
+ * interface — and the wire schema projected from it — would accept both and
+ * neither (docs/design/plugin-hostapi-protocol.md decision 33).
+ */
+export type PluginManifest = EntryPluginManifest | ProcessPluginManifest;
+
+/** Which of the two ways to produce the plugin's process a manifest declares. */
+export function pluginEntryKind(manifest: PluginManifest): "entry" | "process" {
+  return manifest.process !== undefined ? "process" : "entry";
 }
 
 export interface PluginFirstTaskCopy {

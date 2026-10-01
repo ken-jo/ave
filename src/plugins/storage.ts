@@ -15,11 +15,12 @@
  * plugin-owned data.
  */
 import type { SecretEncryption } from "../data/secret-document-store.js";
-import { realpathSync } from "node:fs";
 import { lstat, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import {
   isPathWithin,
+  PluginDataRootError,
+  resolvePluginDataRoot,
   resolvePluginStoragePath,
   type PluginStorageRejectionLog,
 } from "./plugin-storage-containment.js";
@@ -104,6 +105,13 @@ export function createPluginStorageAuditSink(
  * with an audit record, while a root already absent at construction produced a
  * raw `ENOENT` from `realpathSync` — unclassified, unaudited, and carrying a
  * message about a path rather than about a plugin.
+ *
+ * The root goes through {@link resolvePluginDataRoot}, the one check every
+ * reader of it shares: ancestors are resolved, the root itself must be the real
+ * directory the host created. A handle is built per request, so without that a
+ * confined plugin that replaced its root with a link would get a handle whose
+ * canonical root IS the link's target, and every guard below would then compare
+ * against the wrong directory.
  */
 function canonicaliseDataRoot(
   pluginId: string,
@@ -111,8 +119,21 @@ function canonicaliseDataRoot(
   log?: PluginStorageRejectionLog,
 ): string {
   try {
-    return realpathSync(pluginDataDir);
+    return resolvePluginDataRoot(`plugin '${pluginId}'`, pluginDataDir);
   } catch (err) {
+    if (err instanceof PluginDataRootError) {
+      log?.(`storage: rejected a data root that is not the host's directory`, {
+        target: pluginDataDir,
+        root: pluginDataDir,
+        found: err.found,
+      });
+      throw new PluginStorageError(
+        `plugin data root is a ${err.found === "symlink" ? "symlink" : "non-directory"}, not the directory the host `
+          + "created — refusing to follow it",
+        pluginId,
+        pluginDataDir,
+      );
+    }
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     log?.(`storage: rejected operation against an absent data root`, {
       target: pluginDataDir,
@@ -129,7 +150,7 @@ function canonicaliseDataRoot(
 /**
  * Build a sandboxed `PluginStorage` instance pinned to `pluginDataDir`.
  *
- * The root is canonicalised via `realpathSync` once at construction; all
+ * The root is canonicalised by `resolvePluginDataRoot` once at construction; all
  * subsequent path checks compare against the canonical form.
  *
  * `pluginDataDir` NOT EXISTING is a supported outcome, not a caller error.

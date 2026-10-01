@@ -48,9 +48,13 @@ export const RESERVED_ENV_NAMES = new Set([
 /** Environment names that can redirect a launcher, loader, proxy, or trust store. */
 const LAUNCHER_ENV_NAME_RE = /^(?:NPM_CONFIG_|PNPM_|YARN_|BUN_|COREPACK_|UV_|PIP_|DOCKER_|NODE_|PYTHON(?!UNBUFFERED$|IOENCODING$|UTF8$)|DYLD_|LD_|XDG_CONFIG_HOME$|(?:HTTPS?|ALL|NO|FTP)_PROXY$|SSL_CERT_|REQUESTS_CA_BUNDLE$|CURL_CA_BUNDLE$)/iu;
 
+/** The variables the host sets for a plugin's process; a manifest may not declare them in any spelling. */
+const HOST_OWNED_PLUGIN_ENV_NAMES = new Set(["PLUGIN_ROOT", "PLUGIN_DATA"]);
+
 export function isSafeMcpEnvironmentName(name: string): boolean {
-  return name.length <= MAX_NAME_LEN && ENV_NAME_RE.test(name) && !RESERVED_ENV_NAMES.has(name.toUpperCase()) && !LAUNCHER_ENV_NAME_RE.test(name)
-    && name !== "PLUGIN_ROOT" && name !== "PLUGIN_DATA";
+  const upper = name.toUpperCase();
+  return name.length <= MAX_NAME_LEN && ENV_NAME_RE.test(name) && !RESERVED_ENV_NAMES.has(upper) && !LAUNCHER_ENV_NAME_RE.test(name)
+    && !HOST_OWNED_PLUGIN_ENV_NAMES.has(upper);
 }
 
 /**

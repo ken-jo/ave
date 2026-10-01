@@ -516,9 +516,11 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
       void refreshPlugins();
     } catch (e) {
       const message = errorMessage(e);
-      showBanner("error", message.includes("process-entry-unsupported")
-        ? t("formatIpcError.processEntryUnsupported")
-        : message || t("pluginConfigTab.errorLocalInstall"));
+      showBanner("error", message.includes("process-entry-requires-pinned-artifact")
+        ? t("formatIpcError.processEntryRequiresPinnedArtifact")
+        : message.includes("process-entry-unconfined")
+          ? t("formatIpcError.processEntryUnconfined")
+          : message || t("pluginConfigTab.errorLocalInstall"));
     } finally {
       setLocalInstalling(false);
     }
@@ -852,8 +854,10 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                         <p className="text-xs font-medium text-destructive">
                           {selectedPlugin.installFailureKind === "incompatible-app-version"
                             ? t("pluginConfigTab.doctorIncompatibleAppTitle")
-                            : selectedPlugin.installFailureKind === "process-entry-unsupported"
-                              ? t("pluginConfigTab.doctorProcessEntryTitle")
+                            : selectedPlugin.installFailureKind === "process-entry-unconfined"
+                              ? t("pluginConfigTab.doctorProcessEntryUnconfinedTitle")
+                            : selectedPlugin.installFailureKind === "process-entry-requires-pinned-artifact"
+                              ? t("pluginConfigTab.doctorProcessEntryUnpinnedTitle")
                             : selectedPlugin.installFailureKind === "incompatible-host-protocol"
                               ? t("pluginConfigTab.doctorIncompatibleProtocolTitle")
                               : selectedPlugin.installFailureKind === "sandbox-grant-outside-ceiling"
@@ -871,8 +875,10 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                         <p className="text-[11px] text-destructive/(--opacity-intense)">
                           {selectedPlugin.installFailureKind === "incompatible-app-version"
                             ? t("pluginConfigTab.doctorIncompatibleAppDescription")
-                            : selectedPlugin.installFailureKind === "process-entry-unsupported"
-                              ? t("pluginConfigTab.doctorProcessEntryDescription")
+                            : selectedPlugin.installFailureKind === "process-entry-unconfined"
+                              ? t("pluginConfigTab.doctorProcessEntryUnconfinedDescription")
+                            : selectedPlugin.installFailureKind === "process-entry-requires-pinned-artifact"
+                              ? t("pluginConfigTab.doctorProcessEntryUnpinnedDescription")
                             : selectedPlugin.installFailureKind === "incompatible-host-protocol"
                               ? t("pluginConfigTab.doctorIncompatibleProtocolDescription")
                               : selectedPlugin.installFailureKind === "sandbox-grant-outside-ceiling"
@@ -893,9 +899,11 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                               {t("pluginConfigTab.doctorFailureDetailLabel")}
                             </p>
                             <p className="mt-1 break-words font-mono text-[10.5px] leading-snug text-destructive/(--opacity-intense)">
-                              {selectedPlugin.installFailureKind === "process-entry-unsupported"
-                                ? t("formatIpcError.processEntryUnsupported")
-                                : selectedPlugin.installFailureMessage}
+                              {selectedPlugin.installFailureKind === "process-entry-unconfined"
+                                ? t("formatIpcError.processEntryUnconfined")
+                                : selectedPlugin.installFailureKind === "process-entry-requires-pinned-artifact"
+                                  ? t("formatIpcError.processEntryRequiresPinnedArtifact")
+                                  : selectedPlugin.installFailureMessage}
                             </p>
                           </div>
                         ) : null}

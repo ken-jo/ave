@@ -2,7 +2,8 @@ export const PLUGIN_INSTALL_FAILURE_KINDS = [
   "manifest-validation-error",
   "incompatible-app-version",
   "incompatible-host-protocol",
-  "process-entry-unsupported",
+  "process-entry-unconfined",
+  "process-entry-requires-pinned-artifact",
   "sandbox-grant-outside-ceiling",
   "plugin-revoked",
   "untrusted-manifest-path",
@@ -26,9 +27,15 @@ export function isPluginInstallFailureKind(value: unknown): value is PluginInsta
  *     reinstall fetches the same package speaking the same protocol, so the
  *     remedy is a plugin built for this app's protocol, or an app that serves
  *     the plugin's.
- *   - `process-entry-unsupported` — this app has no process-entry runtime.
- *     Reinstalling the same package cannot change that; use an extension
- *     update with an entry point or update the app when process support ships.
+ *   - `process-entry-unconfined` — the extension runs its own program, which
+ *     the host spawns only under a live OS sandbox that confines processes
+ *     (macOS or Linux, sandbox on). A reinstall changes neither the sandbox
+ *     setting nor the platform; the user turns the sandbox on instead.
+ *   - `process-entry-requires-pinned-artifact` — the extension runs its own
+ *     program and its install is not pinned by a release or archive artifact.
+ *     Reinstalling the same version from the same source yields the same
+ *     provenance, and no install path of this version yields a pinned one,
+ *     so the remedy is removing it, not a repair.
  *   - `sandbox-grant-outside-ceiling` — reinstalling the version on disk keeps
  *     its declared filesystem grants and cannot restore a withdrawn approved
  *     directory. Change an eligible directory setting or approval, update to
@@ -52,7 +59,8 @@ export function isPluginInstallFailureKind(value: unknown): value is PluginInsta
 const REINSTALL_NOT_FIXABLE_KINDS: ReadonlySet<PluginInstallFailureKind> = new Set([
   "incompatible-app-version",
   "incompatible-host-protocol",
-  "process-entry-unsupported",
+  "process-entry-unconfined",
+  "process-entry-requires-pinned-artifact",
   "sandbox-grant-outside-ceiling",
   "plugin-revoked",
 ]);

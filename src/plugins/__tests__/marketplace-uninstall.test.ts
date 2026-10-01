@@ -5,8 +5,10 @@
  * the registry moved underneath.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { _resetForTest, setIsPackaged } from "../../boot/dev-flags.js";
@@ -26,7 +28,7 @@ describe("PluginMarketplaceService uninstall()", () => {
 
   beforeEach(async () => {
     setIsPackaged(false);
-    testDir = await mkdtemp(join(process.cwd(), ".ave-marketplace-uninstall-"));
+    testDir = await mkdtemp(join(tmpdir(), "ave-marketplace-uninstall-"));
     installedDir = join(testDir, "plugins");
     registryPath = join(installedDir, "registry.json");
     cacheRoot = join(testDir, ".cache");
@@ -97,6 +99,40 @@ describe("PluginMarketplaceService uninstall()", () => {
     for (const dir of [installDir, recoveryDir, cleanupDir]) expect(existsSync(dir)).toBe(false);
     expect((JSON.parse(await readFile(registryPath, "utf-8")) as { plugins: unknown[] }).plugins).toEqual([]);
   });
+
+  // A confined plugin writes inside its data root, so it can take its owner's
+  // access away there: `chmod 000` on a directory, and on macOS the
+  // user-immutable flag. The uninstall must still remove the whole tree, and
+  // must not leave a committed transaction behind for boot to retry.
+  it.runIf(process.platform !== "win32")(
+    "removes a plugin whose data holds a directory it made unreadable or, on macOS, immutable",
+    async () => {
+      const pluginId = "locked-data";
+      const installDir = join(installedDir, pluginId);
+      const locked = join(installDir, "data", "locked");
+      const immutable = join(installDir, "data", "immutable");
+      await mkdir(join(locked, "deep"), { recursive: true });
+      await writeFile(join(locked, "deep", "state.bin"), "state");
+      await mkdir(immutable, { recursive: true });
+      await writeFile(join(immutable, "pinned.txt"), "pinned");
+      await writeFile(join(installDir, "plugin.json"), "{}");
+      await chmod(locked, 0o000);
+      if (process.platform === "darwin") {
+        execFileSync("/usr/bin/chflags", ["uchg", join(immutable, "pinned.txt")]);
+        execFileSync("/usr/bin/chflags", ["uchg", immutable]);
+      }
+      await writeFile(registryPath, JSON.stringify({
+        version: 1,
+        plugins: [{ id: pluginId, manifestPath: `${pluginId}/plugin.json`, installSource: "user" }],
+      }));
+      const { service } = makeService();
+
+      await expect(service.uninstall(pluginId)).resolves.toEqual({ pluginId, uninstalled: true });
+      expect(existsSync(installDir)).toBe(false);
+      const transactions = join(installedDir, "+transactions+", "removals");
+      expect(existsSync(transactions) ? await readdir(transactions) : []).toEqual([]);
+    },
+  );
 
   it("rejects a cross-wired registry row before it can remove another plugin directory", async () => {
     for (const id of ["owner-a", "owner-b"]) {

@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { anchorBundledCommand } from "../plugin-bundled-command.js";
-import { resolveBundledArgv } from "../resolve-bundled-argv.js";
+import { resolveBundledArgv, resolveProcessEntryEnvironmentValue } from "../resolve-bundled-argv.js";
 
 const roots: string[] = [];
 
@@ -82,4 +82,165 @@ describe("bundled argv resolution", () => {
       argv: ["node", "./server/run.js", "${PLUGIN_DATA}/outside/secret"],
     })).toThrow(/symlink/u);
   });
+});
+
+/**
+ * Policy `process` (docs/design/plugin-hostapi-protocol.md decision 37): the
+ * executable is a regular package file; an argument or value under
+ * `${PLUGIN_ROOT}/` may be a file OR a directory, must exist, and must stay
+ * inside the root; `${PLUGIN_DATA}` keeps the data rule, whose leaf may not
+ * exist yet.
+ */
+describe("bundled argv resolution for a process entry", () => {
+  function processFixture() {
+    const paths = fixture();
+    mkdirSync(join(paths.generationRoot, "bin"));
+    mkdirSync(join(paths.generationRoot, "vendor"));
+    writeFileSync(join(paths.generationRoot, "bin", "x"), "#!/bin/sh\n");
+    chmodSync(join(paths.generationRoot, "bin", "x"), 0o755);
+    return paths;
+  }
+  const resolveProcess = (generationRoot: string, dataDir: string, argv: string[]) =>
+    resolveBundledArgv({ generationRoot, dataDir, baseFingerprint: "", label: "process", policy: "process", argv });
+
+  it("expands a file, a directory and a not-yet-existing data path to contained absolute paths", () => {
+    const { generationRoot, dataDir } = processFixture();
+    const root = realpathSync(generationRoot);
+    const resolved = resolveProcess(generationRoot, dataDir, [
+      "${PLUGIN_ROOT}/bin/x",
+      "${PLUGIN_ROOT}/vendor",
+      "${PLUGIN_DATA}/state",
+      "--level=1",
+    ]);
+    expect(resolved.argv).toEqual([
+      join(root, "bin", "x"),
+      join(root, "vendor"),
+      join(realpathSync(dataDir), "state"),
+      "--level=1",
+    ]);
+    expect(resolveProcess(generationRoot, dataDir, ["./bin/x"]).argv).toEqual([join(root, "bin", "x")]);
+  });
+
+  it("expands environment values with the same two rules and passes other values through", () => {
+    const { generationRoot, dataDir } = processFixture();
+    expect(resolveProcessEntryEnvironmentValue(generationRoot, dataDir, "${PLUGIN_ROOT}/vendor", "env"))
+      .toBe(join(realpathSync(generationRoot), "vendor"));
+    expect(resolveProcessEntryEnvironmentValue(generationRoot, dataDir, "${PLUGIN_DATA}/cache", "env"))
+      .toBe(join(realpathSync(dataDir), "cache"));
+    expect(resolveProcessEntryEnvironmentValue(generationRoot, dataDir, "/opaque/value", "env")).toBe("/opaque/value");
+    expect(() => resolveProcessEntryEnvironmentValue(generationRoot, dataDir, "${HOME}/x", "env")).toThrow(/placeholder/u);
+    expect(() => resolveProcessEntryEnvironmentValue(generationRoot, dataDir, "${PLUGIN_ROOT}/nope", "env"))
+      .toThrow(/does not contain/u);
+  });
+
+  it("refuses a root path the package does not contain", () => {
+    const { generationRoot, dataDir } = processFixture();
+    expect(() => resolveProcess(generationRoot, dataDir, ["./bin/x", "${PLUGIN_ROOT}/nope"]))
+      .toThrow(/does not contain/u);
+  });
+
+  it("refuses a directory as the executable", () => {
+    const { generationRoot, dataDir } = processFixture();
+    expect(() => resolveProcess(generationRoot, dataDir, ["${PLUGIN_ROOT}/vendor"])).toThrow(/regular file/u);
+  });
+
+  it.each([
+    ["a bare executable name", ["node"]],
+    ["a data path as the executable", ["${PLUGIN_DATA}/x"]],
+    ["a literal argument that looks like a path", ["./bin/x", "./vendor"]],
+    ["another placeholder", ["./bin/x", "${HOME}/x"]],
+    ["an escaping root argument", ["./bin/x", "${PLUGIN_ROOT}/../outside"]],
+  ])("refuses %s", (_name, argv) => {
+    const { generationRoot, dataDir } = processFixture();
+    expect(() => resolveProcess(generationRoot, dataDir, argv)).toThrow();
+  });
+
+  it.runIf(process.platform !== "win32")("refuses a root symlink leaving the plugin root", () => {
+    const { root, generationRoot, dataDir } = processFixture();
+    symlinkSync(root, join(generationRoot, "vendor", "outside"));
+    expect(() => resolveProcess(generationRoot, dataDir, ["./bin/x", "${PLUGIN_ROOT}/vendor/outside"]))
+      .toThrow(/escapes PLUGIN_ROOT through a symlink/u);
+  });
+
+  it.runIf(process.platform !== "win32")("refuses a data symlink leaving the data directory", () => {
+    const { root, generationRoot, dataDir } = processFixture();
+    symlinkSync(root, join(dataDir, "outside"));
+    expect(() => resolveProcess(generationRoot, dataDir, ["./bin/x", "${PLUGIN_DATA}/outside/secret"]))
+      .toThrow(/passes through a symlink inside PLUGIN_DATA/u);
+  });
+
+  it.runIf(process.platform !== "win32")("refuses a dangling data symlink, whose target a write would create outside", () => {
+    const { root, generationRoot, dataDir } = processFixture();
+    mkdirSync(join(root, "outside"));
+    symlinkSync(join(root, "outside", "absent"), join(dataDir, "link"));
+    expect(() => resolveProcess(generationRoot, dataDir, ["./bin/x", "${PLUGIN_DATA}/link"]))
+      .toThrow(/passes through a symlink inside PLUGIN_DATA \('link'\)/u);
+    expect(() => resolveProcessEntryEnvironmentValue(generationRoot, dataDir, "${PLUGIN_DATA}/link", "env"))
+      .toThrow(/passes through a symlink inside PLUGIN_DATA \('link'\)/u);
+    // Below a dangling link too: the leaf is missing, the link is not.
+    expect(() => resolveProcess(generationRoot, dataDir, ["./bin/x", "${PLUGIN_DATA}/link/leaf"]))
+      .toThrow(/passes through a symlink inside PLUGIN_DATA \('link'\)/u);
+    expect(existsSync(join(root, "outside", "absent"))).toBe(false);
+  });
+
+  it.runIf(process.platform !== "win32")("refuses a data symlink that stays inside the data directory", () => {
+    const { generationRoot, dataDir } = processFixture();
+    mkdirSync(join(dataDir, "real"));
+    symlinkSync(join(dataDir, "real"), join(dataDir, "alias"));
+    expect(() => resolveProcess(generationRoot, dataDir, ["./bin/x", "${PLUGIN_DATA}/alias/state"]))
+      .toThrow(/passes through a symlink inside PLUGIN_DATA \('alias'\)/u);
+  });
+
+  it("accepts a data path whose leaf, and parents, do not exist yet", () => {
+    const { generationRoot, dataDir } = processFixture();
+    expect(resolveProcessEntryEnvironmentValue(generationRoot, dataDir, "${PLUGIN_DATA}/state/cache/db", "env"))
+      .toBe(join(realpathSync(dataDir), "state", "cache", "db"));
+  });
+
+  // The root's ancestors are trusted host paths and are resolved; the root
+  // itself must be the real directory the host created, and the components
+  // below it are walked. Every consumer shares the one rule: hook and MCP
+  // argv, process argv, and process env values.
+  it.runIf(process.platform !== "win32")(
+    "resolves a data root behind a linked ancestor, refuses a root replaced by a link, and refuses a link below it, for every consumer",
+    () => {
+      const { root, generationRoot } = processFixture();
+      const realParent = join(root, "volume");
+      const realData = join(realParent, "data");
+      mkdirSync(join(realData, "real"), { recursive: true });
+      symlinkSync(join(realData, "real"), join(realData, "alias"));
+      symlinkSync(realParent, join(root, "linked-ancestor"));
+      // A root the host created and a confined plugin then replaced: `rmdir`
+      // of the directory, a link to elsewhere in its place.
+      const takenOver = join(root, "taken-over", "data");
+      const outside = join(root, "outside");
+      mkdirSync(takenOver, { recursive: true });
+      mkdirSync(outside);
+      rmSync(takenOver, { recursive: true });
+      symlinkSync(outside, takenOver);
+      const consumers: Array<[string, (dataDir: string, token: string) => string]> = [
+        ["hook", (dataDir, token) => resolveBundledArgv({
+          generationRoot, dataDir, baseFingerprint: "", label: "hook", policy: "hook", argv: ["node", "./root.js", token],
+        }).argv[2]!],
+        ["mcp", (dataDir, token) => resolveBundledArgv({
+          generationRoot, dataDir, baseFingerprint: "", label: "mcp", policy: "mcp", argv: ["node", "./root.js", token],
+        }).argv[2]!],
+        ["process argument", (dataDir, token) => resolveProcess(generationRoot, dataDir, ["./bin/x", token]).argv[1]!],
+        ["process env", (dataDir, token) => resolveProcessEntryEnvironmentValue(generationRoot, dataDir, token, "env")],
+      ];
+      const resolvedData = realpathSync(realData);
+      const viaAncestor = join(root, "linked-ancestor", "data");
+      for (const [name, resolveToken] of consumers) {
+        expect(resolveToken(viaAncestor, "${PLUGIN_DATA}"), name).toBe(resolvedData);
+        expect(resolveToken(viaAncestor, "${PLUGIN_DATA}/state"), name).toBe(join(resolvedData, "state"));
+        expect(() => resolveToken(viaAncestor, "${PLUGIN_DATA}/alias/state"), name)
+          .toThrow(/passes through a symlink inside PLUGIN_DATA \('alias'\)/u);
+        for (const token of ["${PLUGIN_DATA}", "${PLUGIN_DATA}/state"]) {
+          expect(() => resolveToken(takenOver, token), `${name} ${token}`)
+            .toThrow(/the plugin data root .* is a symlink, not the directory the host created/u);
+        }
+      }
+      expect(readdirSync(outside)).toEqual([]);
+    },
+  );
 });

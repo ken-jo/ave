@@ -204,26 +204,82 @@ function hostApiSignatures(source: ts.SourceFile): Map<string, Signature[]> {
 }
 
 /**
- * `HostApiEventPayloads`, by path: each entry's type and its summary. The
+ * The declarations the generator reads as DATA tables rather than projecting
+ * as types. None is emitted under `$defs.types`, and in each `never` is a
+ * value of the table, not an exclusion, so {@link excludeNeverProperties}
+ * exempts exactly these names. Each reader takes its name from this list.
+ */
+export const TABLE_DECLARATIONS = ["HostApiEventPayloads"] as const;
+
+type TableDeclaration = (typeof TABLE_DECLARATIONS)[number];
+
+/** Where `never` means "pushes nothing": what each registration or handle pushes. */
+const EVENT_PAYLOADS_TABLE: TableDeclaration = "HostApiEventPayloads";
+
+/**
+ * The event payload table, by path: each entry's type and its summary. The
  * entries are property signatures whose names are the member paths, quoted
  * where the path is dotted.
  */
 function eventPayloads(
-  declaration: ts.Node | undefined,
+  named: ReadonlyMap<string, ts.Node>,
   source: ts.SourceFile,
 ): Map<string, { type: ts.TypeNode; description: string | undefined }> {
+  const declaration = named.get(EVENT_PAYLOADS_TABLE);
   if (!declaration || !ts.isInterfaceDeclaration(declaration)) {
-    fail("HostApiEventPayloads is not an interface in the wire sources");
+    fail(`${EVENT_PAYLOADS_TABLE} is not an interface in the wire sources`);
   }
   const found = new Map<string, { type: ts.TypeNode; description: string | undefined }>();
   for (const member of declaration.members) {
     if (!ts.isPropertySignature(member) || !member.type || !member.name
       || !(ts.isIdentifier(member.name) || ts.isStringLiteral(member.name))) {
-      fail(`a HostApiEventPayloads entry is not 'path: Type': ${member.getText(source)}`);
+      fail(`a ${EVENT_PAYLOADS_TABLE} entry is not 'path: Type': ${member.getText(source)}`);
     }
     found.set(member.name.text, { type: member.type, description: summaryOf(member) });
   }
   return found;
+}
+
+/**
+ * Make every property an emitted interface declares `never` a `false`
+ * subschema (docs/design/plugin-hostapi-protocol.md decision 33).
+ *
+ * `ts-json-schema-generator` drops a `never` property, so an exclusive union —
+ * `{ entry: string; process?: never } | { process: …; entry?: never }` — would
+ * project to two branches that each simply omit the other key and, with
+ * `additionalProperties: true`, accept a document carrying both. `false` is the
+ * same exclusion the manifest schema already writes for the same pair. The rule
+ * is read off the source, so it covers every such declaration rather than one
+ * named special case; a `never` property on an interface that is not emitted —
+ * unexported, or exported and never reached — is an error, not a silent skip.
+ * The one exemption is {@link TABLE_DECLARATIONS}: tables read as data.
+ */
+export function excludeNeverProperties(
+  named: ReadonlyMap<string, ts.Node>,
+  types: Record<string, unknown>,
+): void {
+  for (const [name, declaration] of named) {
+    if (!ts.isInterfaceDeclaration(declaration) || (TABLE_DECLARATIONS as readonly string[]).includes(name)) continue;
+    const excluded = declaration.members.flatMap((member) =>
+      ts.isPropertySignature(member)
+        && member.type?.kind === ts.SyntaxKind.NeverKeyword
+        && (ts.isIdentifier(member.name) || ts.isStringLiteral(member.name))
+        ? [member.name.text]
+        : []);
+    if (excluded.length === 0) continue;
+    const exported = declaration.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false;
+    const emitted = types[name] as { properties?: Record<string, unknown> } | undefined;
+    if (!exported || emitted === undefined) {
+      fail(
+        `'${name}' declares ${excluded.map((property) => `'${property}'`).join(", ")} as never but is not emitted `
+          + `(${exported ? "nothing on the wire reaches it" : "it is not exported"}), so the exclusion would be lost`,
+      );
+    }
+    if (!emitted.properties || typeof emitted.properties !== "object") {
+      fail(`'${name}' is emitted without a properties object, so its never members cannot be excluded`);
+    }
+    for (const property of excluded) emitted.properties[property] = false;
+  }
 }
 
 /**
@@ -388,12 +444,12 @@ export function generateHostProtocolSchema(): { path: string; text: string } {
   };
 
   const signatures = hostApiSignatures(sourceOf(PUBLIC_CONTRACT));
-  const events = eventPayloads(named.get("HostApiEventPayloads"), sourceOf(HOST_API_WIRE));
+  const events = eventPayloads(named, sourceOf(HOST_API_WIRE));
   const methods: Record<string, JsonSchema> = {};
   const capabilities: string[] = [];
 
   for (const path of events.keys()) {
-    if (!(path in HOSTAPI_PATH_CONTRACTS)) fail(`HostApiEventPayloads names '${path}', which is not a member`);
+    if (!(path in HOSTAPI_PATH_CONTRACTS)) fail(`${EVENT_PAYLOADS_TABLE} names '${path}', which is not a member`);
   }
 
   for (const path of Object.keys(HOSTAPI_PATH_CONTRACTS) as HostApiPath[]) {
@@ -426,7 +482,7 @@ export function generateHostProtocolSchema(): { path: string; text: string } {
     if (outlivesReply !== (event !== undefined)) {
       fail(
         outlivesReply
-          ? `'${path}' registers or returns a handle; name what it pushes in HostApiEventPayloads (never for nothing)`
+          ? `'${path}' registers or returns a handle; name what it pushes in ${EVENT_PAYLOADS_TABLE} (never for nothing)`
           : `'${path}' neither registers nor returns a handle, so it pushes nothing to name`,
       );
     }
@@ -545,6 +601,8 @@ export function generateHostProtocolSchema(): { path: string; text: string } {
   for (const method of Object.values(HOST_PROTOCOL_NOTIFICATIONS)) {
     if (!(method in notifications)) fail(`'${method}' has no shape in HostApiNotification`);
   }
+
+  excludeNeverProperties(named, types);
 
   const schema = {
     $schema: "https://json-schema.org/draft/2020-12/schema",

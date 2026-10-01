@@ -500,12 +500,14 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
     await mkdir(socketDir, { recursive: true, mode: 0o700 });
     // `mkdir({recursive,mode})` only applies `mode` to dirs it CREATES — a
     // pre-existing leaf (e.g. left by an older build under a looser umask) keeps
-    // its old mode. Force 0o700 unconditionally, and reject a symlinked socketDir
-    // (a same-user attacker pre-seeding the path can't redirect the bind/binds).
-    chmodSync(socketDir, 0o700);
+    // its old mode. Reject a symlinked socketDir (a same-user attacker
+    // pre-seeding the path can't redirect the bind/binds) FIRST, then force
+    // 0o700: `chmod` follows a link, so the other order would change the mode
+    // of whatever the link points at before refusing it.
     if (lstatSync(socketDir).isSymbolicLink()) {
       throw new Error(`[worker-spawn] refusing symlinked control dir: ${socketDir}`);
     }
+    chmodSync(socketDir, 0o700);
   } catch (err) {
     releaseWorkerReservation();
     throw err instanceof Error ? err : new Error(String(err));
@@ -564,6 +566,9 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
       grantMode: "allow-list",
       allowRead,
       allowWrite,
+      // A plugin worker is plugin-owned code: it may not remove or replace the
+      // host-created roots it writes into, its plugin's data root above all.
+      pinWriteRoots: true,
       baseEnv,
       extraEnv: { ...sandboxHome.env },
       stdio: WORKER_STDIO,

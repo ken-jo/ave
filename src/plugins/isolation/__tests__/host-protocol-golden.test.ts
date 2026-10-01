@@ -11,7 +11,7 @@
  * module, and a transcript that changes is the wire that changed
  * (plugin-hostapi-protocol.md §10.1).
  *
- * Three kinds, under `fixtures/host-protocol/2/`:
+ * Four kinds, under `fixtures/host-protocol/2/`:
  *
  *  - `methods/<method>.json`: the request one call puts on the wire and the
  *    reply it gets, for every `ave/host/*` and `ave/instance/*` method, and
@@ -19,6 +19,9 @@
  *  - `notifications/<name>.json`: one frame per notification kind (§3.4).
  *  - `plugins/<id>/expected.jsonl`: the whole conversation for one installed
  *    plugin's surface (§9.2), in the order it crossed.
+ *  - `launches/process/construct.json`: the construct pair for a plugin whose
+ *    process is its own executable (§9.7 P3, decision 33), beside the complete
+ *    plugin it was recorded from.
  *
  * Frames are compared after canonical key ordering and id normalisation: a
  * UUID becomes `<uuid-N>` by first appearance, so a transcript does not change
@@ -27,12 +30,13 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PassThrough, Writable, type Readable } from "node:stream";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { PluginManifest, RuntimePlugin } from "../../types.js";
 import { flattenAgentPluginsManifest } from "../../public-contract.js";
+import { resolveProcessLaunch } from "../../process-entry.js";
 import { StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
 import { EffectBoundaryDeniedError } from "../../../permissions/effect-enforcement.js";
 import { ManifestIntegrityError } from "../../../permissions/manifest-integrity.js";
@@ -654,6 +658,37 @@ describe("one frame per notification kind", () => {
         .map((method) => `${method.slice("notifications/".length)}.json`)
         .sort(),
     );
+  });
+});
+
+describe("a process launch's construct", () => {
+  it("carries the process manifest and the resolved command path", async () => {
+    const dir = join(GOLDEN_ROOT, "launches", "process");
+    const manifest = flattenAgentPluginsManifest(JSON.parse(readFileSync(join(dir, "plugin.json"), "utf-8")));
+    // The launch the factory would build from this directory: the command it
+    // resolves is the path construct names. The reference runtime stands in for
+    // the plugin's own program on the in-memory pair, so the golden pins what
+    // the HOST sends; a real executable on pipes is P5's recording path.
+    const dataDir = join(aveHomeRoot, "process-launch-data");
+    mkdirSync(dataDir, { recursive: true });
+    const launch = resolveProcessLaunch(manifest, dir, dataDir);
+    expect(launch.command).toBe(realpathSync(join(dir, "bin", "plugin.mjs")));
+    const entryPath = join(dir, "bin", "plugin.mjs");
+
+    const session = await openSession(manifest, entryPath, createRecordingHost());
+    const request = lastRequest(session.frames, PLUGIN_INSTANCE_METHODS.construct);
+    const response = await replyTo(session.frames, request);
+    await session.instance.stop?.();
+    await settle();
+
+    const params = request.frame.params as { entryPath: string; manifest: Record<string, unknown> };
+    expect(params.entryPath).toBe(entryPath);
+    expect(params.manifest).toHaveProperty("process");
+    expect(params.manifest).not.toHaveProperty("entry");
+    expect(response.frame).toHaveProperty("result");
+    await expect(
+      goldenJson({ request: request.frame, response: response.frame }),
+    ).toMatchFileSnapshot(join(dir, "construct.json"));
   });
 });
 

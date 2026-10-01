@@ -19,7 +19,7 @@
 import type { PluginAccessSpec, PluginManifest, PluginHostApi, PluginToolHandler, RuntimePlugin, RuntimePluginFactory, PluginAuthSpec, PluginConfigSchema, PluginOnboardingSpec, PluginUiExtension, PluginRegistryTrust } from "../types.js";
 import { classifySubscription } from "../capabilities.js";
 import { parsePluginJson, buildManifestValidator, getDeclaredEmittedEvents, recordManifestDocument } from "./manifest-validation.js";
-import { flattenAgentPluginsManifest } from "../public-contract.js";
+import { flattenAgentPluginsManifest, pluginEntryKind } from "../public-contract.js";
 import { isModelVisible } from "./tool-visibility.js";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, isAbsolute, resolve, basename } from "node:path";
@@ -34,7 +34,13 @@ import { readPluginRegistry, updatePluginRegistry } from "../registry.js";
 import { isTrustedRegistryManifestPath } from "../registry-manifest-trust.js";
 import { createLogger } from "../../lib/logger.js";
 import { isDevModeUnlocked } from "../../boot/dev-flags.js";
-import { verifyInstallReceipt, installReceiptPath } from "../plugin-install-receipt.js";
+import {
+  installReceiptPath,
+  verifyInstallReceipt,
+  verifyInstallReceiptRaw,
+  type ArtifactRung,
+  type PluginInstallReceipt,
+} from "../plugin-install-receipt.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readFile } from "node:fs/promises";
 import { type PluginDeploymentGuard, PluginDeploymentDeniedError, assertDisableAllowed } from "../deployment-guard.js";
@@ -47,7 +53,12 @@ import { materializePluginGenerationRoot, removeRetainedPluginGeneration } from 
 import { appVersionSatisfiesMin } from "../../shared/semver-compare.js";
 import { getAveAppVersion } from "../../shared/app-version.js";
 import type { PluginInstallFailureKind } from "../../shared/plugin-install-failure.js";
-import { ProcessEntryUnsupportedError } from "../process-entry-support.js";
+import {
+  assertProcessEntryAdmitted,
+  ProcessEntryRequiresPinnedArtifactError,
+  ProcessEntryUnconfinedError,
+  resolveProcessLaunch,
+} from "../process-entry.js";
 import { revocationRegistry } from "../revocation/revocation-registry.js";
 import { isPluginRuntimeDetachedOperationError, PluginRuntimeDetachedOperationError } from "./detached-operation.js";
 import { ensurePluginDataDir, resolvePluginDataDir, resolveEntryPath, buildPluginContext, resolveRealEntryPath } from "./sandbox.js";
@@ -1442,14 +1453,29 @@ export async function readEnabledManifestSnapshots(
 
 const BOOT_PREFLIGHT_CONCURRENCY = 4;
 
+/**
+ * What a lifecycle path hands the factory funnel: the JS module an `entry`
+ * plugin's runtime imports, or nothing more for a `process` plugin, whose launch
+ * is resolved against the context the lifecycle builds.
+ */
+type PluginFactorySource =
+  | { readonly kind: "entry"; readonly resolvedEntryPath: string }
+  | { readonly kind: "process" };
+
+/** What a verified install receipt proves about the bytes on disk. */
+export interface PluginIntegrityEvidence {
+  installSource: "marketplace" | "local-dev" | "git";
+  signerKeyId: string | null;
+  artifactSha256: string | null;
+  /** The git artifact ladder rung the bytes came through; `null` for any other install. */
+  rung: ArtifactRung | null;
+}
+
 export type PluginIntegrityCheckResult =
   | {
       ok: true;
-      verified?: {
-        installSource: "marketplace" | "local-dev" | "git";
-        signerKeyId: string | null;
-        artifactSha256: string | null;
-      };
+      /** Absent when nothing was verified (no receipt cache root). */
+      verified?: PluginIntegrityEvidence;
     }
   | {
       ok: false;
@@ -1569,7 +1595,7 @@ export async function verifyPluginIntegrity(
   if (!receiptResult.ok) {
     return { ok: false, reason: receiptResult.reason };
   }
-  const { installSource, signerKeyId, artifactSha256 } = receiptResult.receipt;
+  const { installSource } = receiptResult.receipt;
   if (receiptResult.receipt.installSource === "git") {
     const document: unknown = JSON.parse(await readFile(resolve(pluginRoot, "plugin.json"), "utf8"));
     const authority = manifestAuthority(document);
@@ -1589,7 +1615,17 @@ export async function verifyPluginIntegrity(
   }
   return {
     ok: true,
-    verified: { installSource, artifactSha256, signerKeyId },
+    verified: integrityEvidence(receiptResult.receipt),
+  };
+}
+
+/** The evidence a receipt that verified carries, for the audit and the process-entry gate. */
+function integrityEvidence(receipt: PluginInstallReceipt): PluginIntegrityEvidence {
+  return {
+    installSource: receipt.installSource,
+    artifactSha256: receipt.artifactSha256,
+    signerKeyId: receipt.signerKeyId,
+    rung: receipt.installSource === "git" ? receipt.git.rung : null,
   };
 }
 
@@ -2021,6 +2057,15 @@ abstract class PluginRuntimeState {
 
   protected resolveEntryPathForPlugin(pluginRoot: string, entry: string): string {
     return resolveEntryPath(pluginRoot, entry, this.hostRoot);
+  }
+
+  /** The factory source a manifest names in a generation; throws for an `entry` path outside it. */
+  protected pluginFactorySource(manifest: PluginManifest, generationRoot: string): PluginFactorySource {
+    if (manifest.process !== undefined) return { kind: "process" };
+    return {
+      kind: "entry",
+      resolvedEntryPath: resolveRealEntryPath(this.resolveEntryPathForPlugin(generationRoot, manifest.entry)),
+    };
   }
 
   protected ensureDataDir(pluginId: string, pluginRoot: string): string {
@@ -3013,6 +3058,43 @@ abstract class PluginRuntimeState {
     });
   }
 
+  /**
+   * A `process` entry with no live sandbox that confines processes, found at
+   * spawn. Siblings of {@link refuseIncompatibleHostProtocol}, so every load
+   * path leaves a card the Doctor names rather than a generic failure.
+   */
+  protected markProcessEntryUnconfined(manifest: PluginManifest, error: ProcessEntryUnconfinedError): void {
+    log.error(`${manifest.id} rejected — ${error.message}`);
+    this.auditLog?.("error", "plugin_process_entry_unconfined", {
+      pluginId: manifest.id,
+      platform: process.platform,
+    });
+    this.markLoadRefused(manifest.id, {
+      summary: "This extension runs only under an OS sandbox that confines processes.",
+      reason: error.message,
+      // NOT reinstall-fixable: neither the sandbox setting nor the platform
+      // changes with a reinstall.
+      kind: "process-entry-unconfined",
+      displayName: manifest.name ?? manifest.id,
+    });
+  }
+
+  /** A `process` entry whose install the provenance gate refused (decision 35). */
+  protected markProcessEntryUnpinned(
+    manifest: PluginManifest,
+    error: ProcessEntryRequiresPinnedArtifactError,
+  ): void {
+    log.error(`${manifest.id} rejected — ${error.message}`);
+    this.auditLog?.("error", "plugin_process_entry_unpinned", { pluginId: manifest.id });
+    this.markLoadRefused(manifest.id, {
+      summary: "This extension requires an install pinned by a release or archive artifact.",
+      reason: error.message,
+      // NOT reinstall-fixable: the same source yields the same provenance.
+      kind: "process-entry-requires-pinned-artifact",
+      displayName: manifest.name ?? manifest.id,
+    });
+  }
+
   /** Report a filesystem grant the host cannot give this plugin incarnation. */
   protected refuseSandboxGrant(manifest: PluginManifest, error: PluginSandboxGrantError): void {
     log.error(`${manifest.id} rejected — ${error.message}`);
@@ -3513,8 +3595,9 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
 
   protected abstract importPluginFactoryForLifecycle(
     pluginId: string,
-    resolvedEntryPath: string,
+    source: PluginFactorySource,
     manifest: PluginManifest,
+    verified: PluginIntegrityEvidence | undefined,
     bustCache?: boolean,
   ): Promise<RuntimePluginFactory | undefined>;
 
@@ -3835,12 +3918,16 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     const canCommit = () => opts.shouldCommit?.() ?? true;
     if (!canCommit()) return "cancelled";
     this.rememberPluginInstallAlias(manifest.id, plan.pluginIdHint);
+    // What this path verified, for the process-entry gate; `undefined` when
+    // there is no registry id to verify a receipt under.
+    let verified: PluginIntegrityEvidence | undefined;
     if (plan.pluginIdHint) {
       const integrityResult = await this.verifyReceiptAndDevGuard(
         plan.pluginIdHint,
         pluginRoot,
       );
       if (!canCommit()) return "cancelled";
+      if (integrityResult.ok) verified = integrityResult.verified;
       if (!integrityResult.ok) {
         // Keyed by the canonical manifest id — the caller already remembered
         // the manifest under it, so the registry-id key the receipt check uses
@@ -3938,9 +4025,9 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       activationId,
       plan.pluginIdHint ?? manifest.id,
     );
-    let entryPath: string;
+    let source: PluginFactorySource;
     try {
-      entryPath = this.resolveEntryPathForPlugin(runtimeRoot, manifest.entry);
+      source = this.pluginFactorySource(manifest, runtimeRoot);
     } catch (err) {
       if (!canCommit()) {
         await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
@@ -3957,14 +4044,14 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
       return "failed";
     }
-    const resolvedEntryPath = resolveRealEntryPath(entryPath);
 
     let createPlugin: RuntimePluginFactory | undefined;
     try {
       createPlugin = await this.importPluginFactoryForLifecycle(
         manifest.id,
-        resolvedEntryPath,
+        source,
         manifest,
+        verified,
         opts.cacheBust,
       );
     } catch (err) {
@@ -3977,7 +4064,11 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         pluginId: manifest.id,
         reason: (err as Error).message,
       });
-      this.markFailed(manifest.id);
+      if (err instanceof ProcessEntryRequiresPinnedArtifactError) {
+        this.markProcessEntryUnpinned(manifest, err);
+      } else {
+        this.markFailed(manifest.id);
+      }
       await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
       return "failed";
     }
@@ -4043,6 +4134,8 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       // is the same refusal as an unserved declared version, and says so.
       if (err instanceof IncompatibleHostProtocolError) {
         this.refuseIncompatibleHostProtocol(manifest, err);
+      } else if (err instanceof ProcessEntryUnconfinedError) {
+        this.markProcessEntryUnconfined(manifest, err);
       } else if (err instanceof PluginSandboxGrantError) {
         this.refuseSandboxGrant(manifest, err);
       } else {
@@ -4853,11 +4946,18 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     );
     let createPlugin: RuntimePluginFactory | undefined;
     try {
-      const entryPath = this.resolveEntryPathForPlugin(payloadRoot, manifest.entry);
+      // The staged receipt is verified against the payload it materialised the
+      // same way a cached one is, so this path hands the gate evidence of its
+      // own rather than trusting the installer's word for it (decision 35).
+      const staged = await verifyInstallReceiptRaw(input.receiptRaw, installId, payloadRoot);
+      if (!staged.ok) {
+        throw new Error(`prepared artifact '${manifest.id}' receipt does not verify against its payload: ${staged.reason}`);
+      }
       createPlugin = await this.importPluginFactoryForLifecycle(
         manifest.id,
-        resolveRealEntryPath(entryPath),
+        this.pluginFactorySource(manifest, payloadRoot),
         manifest,
+        integrityEvidence(staged.receipt),
         true,
       );
     } catch (error) {
@@ -5142,11 +5242,39 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
    */
   protected async importPluginFactoryForLifecycle(
     pluginId: string,
-    resolvedEntryPath: string,
+    source: PluginFactorySource,
     manifest: PluginManifest,
+    verified: PluginIntegrityEvidence | undefined,
     bustCache?: boolean,
   ): Promise<RuntimePluginFactory | undefined> {
     this.assertPluginLifecycleAvailable(pluginId);
+    // FIRST, before routing: a `process` manifest without pinned provenance is
+    // refused on every activation path before any factory exists (decision
+    // 35). Each caller passes the evidence IT verified, or `undefined`.
+    assertProcessEntryAdmitted(manifest, verified);
+    if (source.kind !== pluginEntryKind(manifest)) {
+      throw new Error(`plugin '${pluginId}' factory source is '${source.kind}' but its manifest declares '${pluginEntryKind(manifest)}'`);
+    }
+    const outOfProcess = {
+      manifest,
+      auditLog: this.auditLog,
+      registerSandboxEnvelope: (paths: readonly string[], pluginRoot: string, pluginDataDir: string) =>
+        this.registerSandboxEnvelope(manifest.id, paths, pluginRoot, pluginDataDir),
+      ...(this.onMalformedCredentialSelector
+        ? { onMalformedCredentialSelector: this.onMalformedCredentialSelector }
+        : {}),
+    };
+    if (source.kind === "process") {
+      // Out of process by manifest shape, regardless of the census: there is
+      // no module the in-process arm could import. A contract property, not a
+      // routing exception. The launch is resolved against the generation and
+      // data directory the context names, which exist by the time the
+      // lifecycle calls the factory.
+      return async (context) => createOutOfProcessPluginFactory({
+        ...outOfProcess,
+        launch: { kind: "process", ...resolveProcessLaunch(manifest, context.pluginRoot, context.pluginDataDir) },
+      })(context);
+    }
     if (isOutOfProcessPlugin(pluginId)) {
       // No import happens in main for this plugin, so there is no ESM
       // evaluation to bound and nothing to quarantine: the child performs the
@@ -5155,16 +5283,11 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       // a fresh process has an empty module registry, which is a stronger
       // cache-bust than a query parameter.
       return createOutOfProcessPluginFactory({
-        manifest,
-        entryPath: resolvedEntryPath,
-        auditLog: this.auditLog,
-        registerSandboxEnvelope: (paths, pluginRoot, pluginDataDir) =>
-          this.registerSandboxEnvelope(manifest.id, paths, pluginRoot, pluginDataDir),
-        ...(this.onMalformedCredentialSelector
-          ? { onMalformedCredentialSelector: this.onMalformedCredentialSelector }
-          : {}),
+        ...outOfProcess,
+        launch: { kind: "entry", entryPath: source.resolvedEntryPath },
       });
     }
+    const { resolvedEntryPath } = source;
     try {
       return await runPluginImportWithTimeout(
         () => importPluginFactory(resolvedEntryPath, bustCache),
@@ -5389,9 +5512,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
         this.markLoadRefused(plan.pluginIdHint, {
           summary: "Plugin manifest could not be loaded.",
           reason: (err as Error).message,
-          ...(err instanceof ProcessEntryUnsupportedError
-            ? { kind: "process-entry-unsupported" as const }
-            : reason === "manifest_schema" ? { kind: "manifest-validation-error" as const } : {}),
+          ...(reason === "manifest_schema" ? { kind: "manifest-validation-error" as const } : {}),
         });
       }
       return;
@@ -5477,9 +5598,9 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       activationId,
       plan.pluginIdHint ?? manifest.id,
     );
-    let entryPath: string;
+    let source: PluginFactorySource;
     try {
-      entryPath = this.resolveEntryPathForPlugin(runtimeRoot, manifest.entry);
+      source = this.pluginFactorySource(manifest, runtimeRoot);
     } catch (err) {
       const reason = (err as Error).message;
       logPluginLifecycle("error", { pluginId: manifest.id, phase: PluginPhase.LOAD_FAIL, err, reason: "entry_path" }, "entry path rejected");
@@ -5492,13 +5613,15 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
       return;
     }
-    const resolvedEntryPath = resolveRealEntryPath(entryPath);
     let createPlugin: RuntimePluginFactory | undefined;
     try {
       createPlugin = await this.importPluginFactoryForLifecycle(
         manifest.id,
-        resolvedEntryPath,
+        source,
         manifest,
+        // The preflight's own verification; absent when the row had no
+        // registry id and so nothing was verified.
+        outcome.integrityResult?.ok ? outcome.integrityResult.verified : undefined,
       );
     } catch (err) {
       logPluginLifecycle("error", { pluginId: manifest.id, phase: PluginPhase.LOAD_FAIL, err, reason: "import" }, "import failed");
@@ -5506,7 +5629,11 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
         pluginId: manifest.id,
         reason: (err as Error).message,
       });
-      this.markFailed(manifest.id);
+      if (err instanceof ProcessEntryRequiresPinnedArtifactError) {
+        this.markProcessEntryUnpinned(manifest, err);
+      } else {
+        this.markFailed(manifest.id);
+      }
       await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
       return;
     }
@@ -5557,6 +5684,8 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       });
       if (err instanceof IncompatibleHostProtocolError) {
         this.refuseIncompatibleHostProtocol(manifest, err);
+      } else if (err instanceof ProcessEntryUnconfinedError) {
+        this.markProcessEntryUnconfined(manifest, err);
       } else if (err instanceof PluginSandboxGrantError) {
         this.refuseSandboxGrant(manifest, err);
       } else {
@@ -6225,28 +6354,30 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       activationId,
       receiptPluginId ?? pluginId,
     );
-    let entryPath: string;
+    let source: PluginFactorySource;
     try {
-      entryPath = this.resolveEntryPathForPlugin(runtimeRoot, manifest.entry);
+      source = this.pluginFactorySource(manifest, runtimeRoot);
     } catch (error) {
       await this.removeUnpublishedRuntimeRoot(pluginId, runtimeRoot);
       logPluginLifecycle("error", { pluginId, phase: PluginPhase.RESTART_RELOAD_FAIL, err: error, reason: "entry_path" }, "entry path rejected during restart");
       return "failed";
     }
-    const resolvedEntryPath = resolveRealEntryPath(entryPath);
     // Cache-bust so restart imports the new bundle rather than memoized ESM.
     let createPlugin: RuntimePluginFactory | undefined;
     try {
       createPlugin = await this.importPluginFactoryForLifecycle(
         pluginId,
-        resolvedEntryPath,
+        source,
         manifest,
+        // Verified above only when there is a receipt id to verify under.
+        integrityResult.verified,
         true,
       );
       logPluginLifecycle("debug", { pluginId, phase: PluginPhase.RESTART_RELOAD_OK }, "module re-imported");
     } catch (err) {
       await this.removeUnpublishedRuntimeRoot(pluginId, runtimeRoot);
       logPluginLifecycle("error", { pluginId, phase: PluginPhase.RESTART_RELOAD_FAIL, err }, "module re-import failed");
+      if (opts.throwOnFailure) throw err;
       return "failed";
     }
 
@@ -7479,6 +7610,8 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
   getPluginEntryDir(pluginId: string): string | undefined {
     const plugin = this.plugins.get(pluginId);
     if (!plugin) return undefined;
+    // A `process` entry has no JS module for the dev watcher to follow.
+    if (plugin.manifest.process !== undefined) return undefined;
     try {
       const entryPath = this.resolveEntryPathForPlugin(plugin.pluginRoot, plugin.manifest.entry);
       return dirname(entryPath);

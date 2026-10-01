@@ -91,6 +91,8 @@
     "shadcn"
   ],
   "ignoreBinaries": [
+    // The system C compiler that builds the confined-child preload library.
+    "cc",
     // External Go toolchain for the explicit parser rebuild, pinned by go.mod.
     "go",
     // Windows ACL inspection from the ave-home privacy regression.
