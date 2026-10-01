@@ -436,10 +436,13 @@ test.describe('git marketplace lifecycle', () => {
         const updateSettings = await openInlineSettings(app, mainWindow, 'marketplace');
         await updateSettings.getByTestId(`git-marketplace:card:${key.sourceId}:${key.kind}:${key.name}`).getByTestId('git-marketplace:card:state').click();
         const sheet = mainWindow.getByTestId('git-marketplace:sheet');
-        await sheet.getByTestId('git-marketplace:mcp-consent:notes').getByRole('checkbox').click();
-        const hookConsent = sheet.getByTestId('git-marketplace:hook-consent:0').getByRole('checkbox');
-        await expect(hookConsent).not.toBeChecked();
-        await hookConsent.click();
+        // The server's launch changed (its env), so its approval is asked again (§18.7.3);
+        // the hook's files did not, so its approval carries and it is not listed.
+        await expect(sheet.getByTestId('git-marketplace:consent-row:mcpServer:notes')).toBeVisible();
+        await expect(sheet.getByTestId('git-marketplace:consent-row:hook:0')).toHaveCount(0);
+        const serverConsent = sheet.getByTestId('git-marketplace:consent-approve:mcpServer:notes');
+        await expect(serverConsent).not.toBeChecked();
+        await serverConsent.click();
         await test.info().attach('agent-plugin-update-review', { body: await sheet.screenshot(), contentType: 'image/png' });
         await sheet.getByTestId('git-marketplace:confirm').click();
         await expect(sheet.getByTestId('git-marketplace:done')).toBeVisible({ timeout: 60_000 });

@@ -558,6 +558,8 @@ export interface PackageUpdateView {
   failure?: { code: GitMarketplaceErrorCode; detail?: MarketplaceErrorDetail; message?: string; attempts: number };
   /** When an automatic or required update installed it. */
   appliedAt?: string;
+  /** An applied update's `origin.commit` before and after: *What changed* (§15.6). */
+  commitRange?: { from: string | null; to: string };
   /**
    * An agent plugin's `approval-pending` entry (§18.7.5): the installed
    * generation and the unapproved components, which *Review* approves through
@@ -609,7 +611,7 @@ export interface AutoUpdateSwitchView {
 }
 
 /** An update as the service computes it, before the scheduler gives it a state. */
-export type PackageUpdateOffer = Omit<PackageUpdateView, "state" | "stale" | "reasons" | "failure" | "appliedAt" | "pendingApproval" | "autoUpdate">;
+export type PackageUpdateOffer = Omit<PackageUpdateView, "state" | "stale" | "reasons" | "failure" | "appliedAt" | "commitRange" | "pendingApproval" | "autoUpdate">;
 
 /** How the last discovery ended (§18.7.1): every source synced, some, none because offline, or it threw. */
 export type UpdateDiscoveryResult = "ok" | "partial" | "offline" | "error";
@@ -871,6 +873,8 @@ function isUpdatePackage(value: unknown): value is PackageUpdateView {
     && (value.failure === undefined || (isRecord(value.failure) && typeof value.failure.code === "string" && ENVELOPE_CODES.has(value.failure.code)
       && typeof value.failure.attempts === "number"))
     && (value.appliedAt === undefined || isTime(value.appliedAt))
+    && (value.commitRange === undefined || (isRecord(value.commitRange) && (value.commitRange.from === null || typeof value.commitRange.from === "string")
+      && typeof value.commitRange.to === "string"))
     && (value.autoUpdate === undefined || isSwitchView(value.autoUpdate))
     && (value.pendingApproval === undefined || (isRecord(value.pendingApproval) && typeof value.pendingApproval.installId === "string"
       && Array.isArray(value.pendingApproval.consentDelta) && Array.isArray(value.pendingApproval.components)));

@@ -1089,13 +1089,13 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
     await idle(background);
     expect(h.service.applyUpdate).toHaveBeenCalledOnce();
     expect(vi.mocked(h.service.applyUpdate).mock.calls[0]![0]).toEqual({ key: offer("meeting", "2.0.0").key, from: "1.0.0", to: "2.0.0", required: false, switchSource: false });
-    expect(h.store.saved?.packages["ave:plugin:meeting"]).toEqual({ to: "2.0.0", from: "1.0.0", displayName: "meeting", state: "applied", attempts: 0, appliedAt: APPLIED_AT });
+    expect(h.store.saved?.packages["ave:plugin:meeting"]).toEqual({ to: "2.0.0", from: "1.0.0", displayName: "meeting", state: "applied", attempts: 0, appliedAt: APPLIED_AT, commits: { from: "a".repeat(40), to: "b".repeat(40) } });
     const notices = vi.mocked(h.input.publishNotice).mock.calls.map(([notice]) => notice.autoUpdated);
     expect(notices).toEqual([[{ key: offer("meeting", "2.0.0").key, displayName: "meeting", from: "1.0.0", to: "2.0.0", commitRange: { from: "a".repeat(40), to: "b".repeat(40) }, required: false, state: "applied" }]]);
     // Its offer is gone once installed; the applied entry stays in the view, and never reaches the pill.
     h.published.offers = [];
     await background.recheck();
-    expect(h.lastStatus().packages).toEqual([{ ...offer("meeting", "2.0.0"), state: "applied", appliedAt: APPLIED_AT }]);
+    expect(h.lastStatus().packages).toEqual([{ ...offer("meeting", "2.0.0"), state: "applied", appliedAt: APPLIED_AT, commitRange: { from: "a".repeat(40), to: "b".repeat(40) } }]);
     expect(vi.mocked(h.input.publishUpdates).mock.calls.flat(2).filter((update) => update.state === "applied")).toEqual([]);
     background.stop();
   });

@@ -35,6 +35,7 @@ import type { AgentPluginComponents } from "../../../../marketplace/catalog/type
 
 import type { AveApi } from "../../types.js";
 import { InstalledPluginAlerts } from "./InstalledPluginAlerts.js";
+import { UpdateConsentReview, updateConsents } from "./UpdateReview.js";
 
 type Stage =
   | { stage: "detail" }
@@ -164,6 +165,8 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
   const [removeData, setRemoveData] = useState(false);
   const [approvedMcpServers, setApprovedMcpServers] = useState<Record<string, boolean>>({});
   const [approvedHooks, setApprovedHooks] = useState<Record<number, boolean>>({});
+  /** An update review's approve boxes, by consent field (§18.7.3). */
+  const [approvedFields, setApprovedFields] = useState<Record<string, boolean>>({});
   const [now, setNow] = useState(() => Date.now());
 
   /**
@@ -227,6 +230,7 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
     setBusy(true);
     setApprovedMcpServers({});
     setApprovedHooks({});
+    setApprovedFields({});
     try {
       const result = options.update
         ? await api.planUpdate(key)
@@ -273,10 +277,11 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
 
   const execute = async (reviewed: InstallPlanView | UpdatePlanView) => {
     setStage({ stage: "installing", plan: reviewed, progress: null });
-    const selected: ComponentConsent[] = Object.entries(reviewed.components?.mcpServers ?? {})
+    // An update approves the components its review lists (§18.7.3); an install, the ones it shows.
+    const selected: ComponentConsent[] = isUpdatePlan(reviewed) ? updateConsents(reviewed, approvedFields) : Object.entries(reviewed.components?.mcpServers ?? {})
       .filter(([name]) => approvedMcpServers[name])
       .map(([name, server]) => ({ name, digest: server.digest }));
-    selected.push(...(reviewed.components?.hooks ?? []).flatMap((hook, index) =>
+    if (!isUpdatePlan(reviewed)) selected.push(...(reviewed.components?.hooks ?? []).flatMap((hook, index) =>
       approvedHooks[index] ? [{ kind: "hook" as const, index, digest: hook.digest }] : []));
     const result = selected.length > 0
       ? await api.executeInstall(reviewed.planId, selected)
@@ -514,6 +519,11 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
                       </ul>
                     </Section>
                   )}
+                  <UpdateConsentReview
+                    plan={reviewPlan}
+                    approved={approvedFields}
+                    onApprovedChange={(field, checked) => setApprovedFields((current) => ({ ...current, [field]: checked }))}
+                  />
                 </>
               )}
               {!isUpdatePlan(reviewPlan) && reviewPlan.authority && (
@@ -526,7 +536,7 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
                   <ComponentsList components={reviewPlan.components} />
                 </Section>
               )}
-              {reviewPlan.key.kind === "agent-plugin" && reviewPlan.components && Object.keys(reviewPlan.components.mcpServers).length > 0 && (
+              {!isUpdatePlan(reviewPlan) && reviewPlan.key.kind === "agent-plugin" && reviewPlan.components && Object.keys(reviewPlan.components.mcpServers).length > 0 && (
                 <Section title={t("gitMarketplace.review.mcpConsentTitle")}>
                   <p className="text-xs text-muted-foreground">{t("gitMarketplace.review.mcpConsentHelp")}</p>
                   <div className="space-y-2 pt-2">
@@ -546,7 +556,7 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
                   </div>
                 </Section>
               )}
-              {reviewPlan.key.kind === "agent-plugin" && reviewPlan.components && reviewPlan.components.hooks.length > 0 && (
+              {!isUpdatePlan(reviewPlan) && reviewPlan.key.kind === "agent-plugin" && reviewPlan.components && reviewPlan.components.hooks.length > 0 && (
                 <Section title={t("gitMarketplace.review.hookConsentTitle")}>
                   <p className="text-xs text-muted-foreground">{t("gitMarketplace.review.hookConsentHelp")}</p>
                   <p className="text-xs text-muted-foreground">{t(`gitMarketplace.review.hookConfinement.${reviewPlan.hookConfinement}`)}</p>
@@ -689,7 +699,7 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
                 {isUpdatePlan(reviewPlan) && reviewPlan.from ? t("gitMarketplace.review.keep", { version: reviewPlan.from }) : t("common.cancel")}
               </Button>
               <Button size="sm" disabled={confirmDisabled} onClick={() => void execute(reviewPlan)} data-testid="git-marketplace:confirm">
-                {actionLabel(t, reviewPlan.action)}
+                {isUpdatePlan(reviewPlan) && reviewPlan.codeFreeChange ? t("gitMarketplace.review.approveUpdate") : actionLabel(t, reviewPlan.action)}
               </Button>
             </>
           )}

@@ -26,7 +26,7 @@ function file(overrides: Record<string, unknown> = {}): string {
     applyCheckAt: T0,
     packages: {
       "ave:plugin:meeting": { to: "2.0.0", state: "failed", attempts: 2, lastError: { code: "SOURCE_UNREACHABLE", detail: { reason: "dns", host: "github.com" }, at: T1 } },
-      "acme:agent-plugin:notes": { to: "1.1.0", state: "applied", attempts: 0, appliedAt: T1, from: "1.0.0", displayName: "Notes" },
+      "acme:agent-plugin:notes": { to: "1.1.0", state: "applied", attempts: 0, appliedAt: T1, from: "1.0.0", displayName: "Notes", commits: { from: null, to: "c".repeat(40) } },
       "acme:plugin:stats": { to: "3.0.0", state: "failed", attempts: 1, lastError: { code: "unavailable", message: "EACCES: permission denied", at: T1 } },
     },
     ...overrides,
@@ -70,6 +70,8 @@ describe("parseUpdateHistory", () => {
     ["a key that is not source:kind:name", file({ packages: { "meeting": { to: "2.0.0", state: "manual", attempts: 0 } } })],
     ["a key with an unknown kind", file({ packages: { "ave:widget:meeting": { to: "2.0.0", state: "manual", attempts: 0 } } })],
     ["an applied entry without what the view shows of it", file({ packages: { "ave:plugin:meeting": { to: "2.0.0", state: "applied", attempts: 0, appliedAt: T1 } } })],
+    ["an applied entry without its commits", file({ packages: { "ave:plugin:meeting": { to: "2.0.0", state: "applied", attempts: 0, appliedAt: T1, from: "1.0.0", displayName: "meeting" } } })],
+    ["commits that are not commits", file({ packages: { "ave:plugin:meeting": { to: "2.0.0", state: "applied", attempts: 0, appliedAt: T1, from: "1.0.0", displayName: "meeting", commits: { from: "", to: "c" } } } })],
     ["a message that is not text", file({ packages: { "ave:plugin:meeting": { to: "2.0.0", state: "failed", attempts: 1, lastError: { code: "unavailable", message: 7, at: T1 } } } })],
     ["an unknown error code", file({ packages: { "ave:plugin:meeting": { to: "2.0.0", state: "failed", attempts: 1, lastError: { code: "NOPE", at: T1 } } } })],
     ["duplicate keys", '{"version":1,"version":1,"discovery":null,"applyCheckAt":null,"packages":{}}'],

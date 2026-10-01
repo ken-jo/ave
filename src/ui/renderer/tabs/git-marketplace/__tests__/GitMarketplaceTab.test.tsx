@@ -279,7 +279,7 @@ describe("GitMarketplaceTab package sheet", () => {
     fake.market.planUpdate.mockResolvedValue({ ok: true, value: {
       ...installPlan(item, { components }), from: "1.0.0", commitRange: { from: COMMIT_A, to: COMMIT_B },
       authorityDelta: null, componentsDelta: { added: [], removed: [], changed: [{ kind: "skill", name: "draft", digest: "b".repeat(64) }] },
-      historyRewritten: null, needsConfirmation: false,
+      historyRewritten: null, needsConfirmation: false, consentDelta: [], codeFreeChange: false, reviewComponents: [],
     } });
     renderTab(fake);
     fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:agent-plugin:writer-plugin")).getByTestId("git-marketplace:card:state"));
@@ -376,6 +376,9 @@ describe("GitMarketplaceTab package sheet", () => {
         authorityDelta: { added: { capabilities: [], networkHosts: ["upload.example.com"], secrets: [], pluginAccess: [], dependencies: [], filesystem: [] }, removed: { capabilities: [], networkHosts: [], secrets: [], pluginAccess: [], dependencies: [], filesystem: [] } },
         historyRewritten: { pinned: COMMIT_A, candidate: COMMIT_B },
         needsConfirmation: true,
+        consentDelta: [{ field: "authority.networkAccess", checkpoint: "catalog", before: [], after: ["upload.example.com"] }],
+        codeFreeChange: false,
+        reviewComponents: [],
       },
     });
     renderTab(fake);
@@ -884,8 +887,8 @@ describe("GitMarketplaceTab Updates card (design §18.9)", () => {
     const row = screen.getByTestId("git-marketplace:updates:row:team:plugin:meeting");
     expect(row).toHaveTextContent("1.0.0 → 1.1.0");
     expect(within(row).getByTestId("git-marketplace:updates:state")).toHaveTextContent("업데이트 가능");
-    // Read-only: no switch here decides whether updates apply.
-    expect(within(screen.getByTestId("git-marketplace:updates")).queryByRole("switch")).toBeNull();
+    // One switch decides whether packages update by themselves.
+    expect(within(screen.getByTestId("git-marketplace:updates")).getByTestId("git-marketplace:updates:automatic")).toHaveAttribute("aria-checked", "true");
 
     // The update review plans the update; that it opens is what this row owes.
     fake.market.planUpdate.mockImplementation(() => new Promise(() => {}));

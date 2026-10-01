@@ -71,6 +71,8 @@ export interface PackageUpdateRecord {
    */
   from?: string;
   displayName?: string;
+  /** `origin.commit` before and after the applied update: *What changed* (§15.6). */
+  commits?: { from: string | null; to: string };
 }
 
 export interface UpdateHistory {
@@ -135,7 +137,7 @@ function packageKey(key: string): void {
 }
 
 function packageRecord(value: unknown, what: string): PackageUpdateRecord {
-  const entry = object(value, what, ["to", "state", "attempts", "lastError", "appliedAt", "from", "displayName"]);
+  const entry = object(value, what, ["to", "state", "attempts", "lastError", "appliedAt", "from", "displayName", "commits"]);
   if (typeof entry.to !== "string" || entry.to.length === 0) invalid(`${what}.to is not a version`);
   if (typeof entry.state !== "string" || !STATES.has(entry.state)) invalid(`${what}.state is not an update state`);
   if (typeof entry.attempts !== "number" || !Number.isInteger(entry.attempts) || entry.attempts < 0) invalid(`${what}.attempts is not a count`);
@@ -156,9 +158,16 @@ function packageRecord(value: unknown, what: string): PackageUpdateRecord {
     if (typeof value !== "string" || value.length === 0) invalid(`${what}.${field} is not text`);
     record[field] = value;
   }
+  if (entry.commits !== undefined) {
+    const commits = object(entry.commits, `${what}.commits`, ["from", "to"]);
+    if (commits.from !== null && (typeof commits.from !== "string" || commits.from.length === 0)) invalid(`${what}.commits.from is not a commit`);
+    if (typeof commits.to !== "string" || commits.to.length === 0) invalid(`${what}.commits.to is not a commit`);
+    record.commits = { from: commits.from as string | null, to: commits.to };
+  }
   // An applied entry outlives its offer, so it carries what the view shows of it.
-  if ((record.state === "applied" || record.state === "applied-not-running" || record.state === "approval-pending") && (record.from === undefined || record.displayName === undefined)) {
-    invalid(`${what} is ${record.state} without from and displayName`);
+  if ((record.state === "applied" || record.state === "applied-not-running" || record.state === "approval-pending")
+    && (record.from === undefined || record.displayName === undefined || record.commits === undefined)) {
+    invalid(`${what} is ${record.state} without from, displayName and commits`);
   }
   return record;
 }

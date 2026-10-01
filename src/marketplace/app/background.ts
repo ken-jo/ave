@@ -381,6 +381,7 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
       to: record.to,
       state: record.state,
       ...(record.appliedAt ? { appliedAt: record.appliedAt } : {}),
+      ...(record.commits ? { commitRange: record.commits } : {}),
       ...(record.state === "approval-pending" && pending ? { pendingApproval: pending } : {}),
     };
   };
@@ -697,7 +698,7 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
         record = { ...base, state: "needs-review", attempts, ...(prior?.to === candidate.to && prior.lastError ? { lastError: prior.lastError } : {}) };
         break;
       default:
-        record = { ...base, state: outcome.state, attempts: 0, appliedAt: iso(now()) };
+        record = { ...base, state: outcome.state, attempts: 0, appliedAt: iso(now()), commits: candidate.commitRange };
         log.info(`marketplace updated ${item.id} ${candidate.from} -> ${candidate.to} automatically (${outcome.state})`);
     }
     await commit(() => {
