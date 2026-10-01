@@ -11,7 +11,7 @@ import { makeMockAveApi } from "../../../../../../test/renderer/mock-ave-api.js"
 import type { AveApi } from "../../../types.js";
 import { GitMarketplaceTab } from "../GitMarketplaceTab.js";
 import { requestUpdateReview } from "../update-review-request.js";
-import { COMMIT_A, COMMIT_B, detail, entry, fakeMarketplace, installPlan, source, updateStatus } from "./fixtures.js";
+import { COMMIT_A, COMMIT_B, detail, entry, fakeMarketplace, folderSource, installPlan, marketplacePreview, source, updateStatus } from "./fixtures.js";
 
 function renderTab(fake: ReturnType<typeof fakeMarketplace>, overrides: Parameters<typeof makeMockAveApi>[0] = {}) {
   const { api } = makeMockAveApi(overrides);
@@ -874,5 +874,80 @@ describe("GitMarketplaceTab Updates card (design §18.9)", () => {
     const row = await screen.findByTestId("git-marketplace:updates:row:team:plugin:meeting");
     expect(within(row).getByTestId("git-marketplace:updates:stale")).toHaveTextContent("마지막 확인에서 소스에 연결하지 못해 이전 확인의 상태로 표시합니다.");
     expect(within(screen.getByTestId("git-marketplace:updates:row:team:plugin:notes")).queryByTestId("git-marketplace:updates:stale")).toBeNull();
+  });
+});
+
+describe("Show <id> on a folder that overlaps a source (§18.8)", () => {
+  it("closes the Add dialog and opens Sources with that source's row marked", async () => {
+    const shared = folderSource({ id: "shared", path: "/m" });
+    const fake = fakeMarketplace({ sources: [official, team, shared] });
+    fake.market.previewSource.mockResolvedValue({
+      ok: true,
+      value: { ...marketplacePreview, transport: "folder", url: null, path: "/m/inner", badges: ["local-folder"], commit: `local-${"d".repeat(64)}`, suggestedId: "inner" },
+    });
+    fake.market.addSource.mockResolvedValue({ ok: false, code: "SOURCE_ID_TAKEN", message: "inside", detail: { reason: "folder-inside-source", path: "/m/inner", existingId: "shared", existingPath: "/m" } });
+    renderTab(fake);
+
+    const menu = await screen.findByTestId("git-marketplace:add-menu");
+    fireEvent.pointerDown(menu, { button: 0 });
+    fireEvent.click(menu);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "마켓플레이스 추가…" }));
+    fireEvent.change(await screen.findByTestId("git-marketplace:add:url"), { target: { value: "/m/inner" } });
+    fireEvent.click(screen.getByTestId("git-marketplace:add:check"));
+    fireEvent.click(await screen.findByTestId("git-marketplace:add:confirm"));
+    fireEvent.click(await screen.findByTestId("git-marketplace:add:error:show-source"));
+
+    await waitFor(() => expect(screen.queryByTestId("git-marketplace:add")).toBeNull());
+    const row = await screen.findByTestId("git-marketplace:source:shared");
+    expect(row).toHaveAttribute("aria-current", "true");
+    expect(screen.getByTestId("git-marketplace:source:team")).not.toHaveAttribute("aria-current");
+
+    // Leaving Sources drops the mark: coming back shows no stale highlight.
+    fireEvent.click(screen.getByTestId("git-marketplace:open-sources"));
+    fireEvent.click(await screen.findByTestId("git-marketplace:open-sources"));
+    expect(await screen.findByTestId("git-marketplace:source:shared")).not.toHaveAttribute("aria-current");
+  });
+});
+
+describe("a package from a folder (§18.4.8)", () => {
+  const market = folderSource({ id: "market", label: "My folder" });
+  const REVISION = `local-${"c".repeat(64)}`;
+  const DIGEST = "d".repeat(64);
+
+  it("names the folder, when it was read and its contents, offers only the version in the folder, and lists what the install leaves out", async () => {
+    const notes = entry("market", "plugin", "notes", { sourceBadges: ["local-folder"] });
+    const fake = fakeMarketplace({ sources: [market], entries: [notes] });
+    fake.market.packageDetail.mockResolvedValue({
+      ok: true,
+      value: detail(notes, {
+        provenance: { sourceLabel: "My folder", repository: null, folder: { path: "/Users/example/market", readAt: new Date(Date.now() - 4 * 60_000).toISOString(), contents: DIGEST }, path: "plugins/notes", snapshotCommit: REVISION, versionCommit: REVISION, publishedAt: null },
+        rungs: [{ rung: "folder", declared: true, pinned: false, detail: null, unencrypted: false }],
+        versions: [
+          { version: "1.1.0", commit: REVISION, publishedAt: "2026-09-30T00:00:00.000Z", minAppVersion: "1.0.0", excluded: [], yankedReason: null, rolloutPercent: null, installed: false, candidate: true },
+          { version: "1.0.0", commit: COMMIT_A, publishedAt: "2026-09-20T00:00:00.000Z", minAppVersion: "1.0.0", excluded: [], yankedReason: null, rolloutPercent: null, installed: false, candidate: false },
+        ],
+      }),
+    });
+    fake.market.planInstall.mockResolvedValue({ ok: true, value: installPlan(notes, { snapshotCommit: REVISION, versionCommit: REVISION, rungs: [{ rung: "folder", declared: true, pinned: false, detail: null, unencrypted: false }], notInstalled: ["node_modules/", "package.json", "src/"] }) });
+    renderTab(fake);
+
+    expect(await screen.findByTestId("git-marketplace:card:market:notes:badge:local-folder")).toHaveTextContent("로컬 폴더");
+    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:market:plugin:notes")).getByTestId("git-marketplace:card:state"));
+    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    expect(await within(sheet).findByTestId("git-marketplace:provenance:folder")).toHaveTextContent("/Users/example/market");
+    expect(within(sheet).getByTestId("git-marketplace:provenance:read")).toHaveTextContent("4분 전");
+    const contents = within(sheet).getByTestId("git-marketplace:provenance:contents");
+    expect(contents).toHaveTextContent("dddddddddddd");
+    expect(contents).toHaveAttribute("title", DIGEST);
+    expect(within(sheet).queryByText("저장소")).toBeNull();
+    expect(within(sheet).getByTestId("git-marketplace:versions:folder")).toHaveTextContent("폴더에 있는 버전만 설치할 수 있습니다.");
+    // The older listed version is history, not an offer.
+    expect(within(within(sheet).getByTestId("git-marketplace:version:1.0.0")).queryByRole("button")).toBeNull();
+    expect(within(sheet).getByText(/폴더의 빌드된 트리/)).not.toHaveTextContent("sha256");
+    expect(within(sheet).getByTestId("git-marketplace:delivery-help")).toHaveTextContent("아무것도 내려받거나 이 컴퓨터에서 빌드하지 않으며");
+
+    fireEvent.click(within(sheet).getByTestId("git-marketplace:plan"));
+    expect(await within(sheet).findByTestId("git-marketplace:review:not-installed")).toHaveTextContent("node_modules/, package.json, src/");
+    expect(within(sheet).getByTestId("git-marketplace:review")).toHaveTextContent("폴더 내용 ccccccc에 고정");
   });
 });

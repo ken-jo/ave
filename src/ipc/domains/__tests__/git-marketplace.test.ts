@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { latestBootstrapStatus } from "../../../boot/bootstrap-status.js";
 import { revocationRegistry, type RevocationRule } from "../../../plugins/revocation/revocation-registry.js";
-import { FakeVolume, TEST_FOLDER_LIMITS } from "../../../marketplace/__tests__/fixtures/folder-fs.js";
+import { FakeVolume, nodeFolders, TEST_FOLDER_LIMITS, writeFolderFiles } from "../../../marketplace/__tests__/fixtures/folder-fs.js";
 import { folderService } from "../../../marketplace/__tests__/fixtures/folder-service.js";
 import { policyLoad, policySource } from "../../../marketplace/__tests__/fixtures/policy.js";
 import { translate } from "../../../i18n/translate.js";
@@ -29,8 +29,17 @@ const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
 const resumeListeners = new Set<() => void>();
 
+/** The folder dialog and the file manager, as main calls them for *Choose folder…* and *Show in Finder* (§18.9). */
+const desktop = vi.hoisted(() => ({
+  showOpenDialog: vi.fn(async (..._args: unknown[]): Promise<{ canceled: boolean; filePaths: string[] }> => ({ canceled: true, filePaths: [] })),
+  showItemInFolder: vi.fn((_path: string) => undefined),
+}));
+
 vi.mock("electron", () => ({
   app: { getPath: () => "/tmp" },
+  BrowserWindow: { fromWebContents: () => null },
+  dialog: { showOpenDialog: desktop.showOpenDialog },
+  shell: { showItemInFolder: desktop.showItemInFolder },
   session: { defaultSession: { resolveProxy: async () => "DIRECT" } },
   powerMonitor: {
     on: vi.fn((event: string, listener: () => void) => {
@@ -127,6 +136,7 @@ async function setup(overrides: Record<string, unknown> = {}, window: unknown = 
     discover: vi.fn(async () => ({ result: "ok", reached: ["ave"] })),
     enforceRevocations: vi.fn(async () => {}),
     takeRevocationNotice: vi.fn(() => null),
+    revealFolder: vi.fn(async (): Promise<string | null> => null),
     applyBootInstalls: vi.fn(async () => ({
       report: { installed: [{ kind: "plugin", name: "meeting", source: "ave" }], updated: [], switched: [], skipped: [], failed: [] },
       notice: { forYou: [{ sourceId: "ave", kind: "plugin", name: "meeting" }], required: [], unmanaged: [], lostGrants: [], revoked: [] },
@@ -1253,5 +1263,106 @@ describe("revocationSink", () => {
     await revocationSink(async () => null, catalogChanged).apply({ rules: [rule], unreadable: [] });
     expect(catalogChanged).toHaveBeenCalledTimes(1);
     revocationRegistry.resetForTesting();
+  });
+});
+
+describe("folder dialogs (§18.9)", () => {
+  const PLUGIN_FRAME = "file:///app/plugin-ui-shell.html";
+
+  it("answers the chosen folder, null on cancel, and builds no marketplace for it", async () => {
+    const { create } = await setup();
+    desktop.showOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] });
+    await expect(invokeFileIpcHandler(handlers, channels.sourcesPickFolder)).resolves.toEqual({ ok: true, value: null });
+    desktop.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: ["/Users/example/market"] });
+    await expect(invokeFileIpcHandler(handlers, channels.sourcesPickFolder)).resolves.toEqual({ ok: true, value: { path: "/Users/example/market" } });
+    expect(desktop.showOpenDialog.mock.calls.at(-1)?.at(-1)).toMatchObject({ properties: ["openDirectory", "dontAddToRecent"] });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("refuses a plugin frame before any dialog opens or any folder is shown", async () => {
+    const { service } = await setup({ revealFolder: vi.fn(async () => "/Users/example/market") });
+    desktop.showOpenDialog.mockClear();
+    desktop.showItemInFolder.mockClear();
+    const refused = { ok: false, code: "unauthorized-frame", message: "unauthorized-frame" };
+    await expect(invokeAppIpcHandlerFromFrame(handlers, channels.sourcesPickFolder, PLUGIN_FRAME)).resolves.toEqual(refused);
+    await expect(invokeAppIpcHandlerFromFrame(handlers, channels.sourcesReveal, PLUGIN_FRAME, "team")).resolves.toEqual(refused);
+    expect(desktop.showOpenDialog).not.toHaveBeenCalled();
+    expect(desktop.showItemInFolder).not.toHaveBeenCalled();
+    expect(service.revealFolder).not.toHaveBeenCalled();
+  });
+
+  it("shows only a folder source's folder: a git source and an unknown id are refused and nothing opens", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ave-git-marketplace-reveal-"));
+    const folder = join(mkdtempSync(join(tmpdir(), "ave-git-marketplace-reveal-source-")), "market");
+    writeFolderFiles(folder, { "SKILL.md": "---\nname: note\ndescription: A note skill\n---\nWrite notes.\n" });
+    const harness = await folderService({ root, folders: nodeFolders() });
+    try {
+      const preview = await harness.service.previewSource({ input: folder, auth: "none" });
+      if (preview.type === "confirm") throw new Error("a local folder needs no confirmation");
+      const added = await harness.service.addSource({ previewId: preview.previewId, id: "notes" });
+      const git = (await harness.service.listSources()).find((item) => item.transport === "git")!;
+      handlers.clear();
+      const { registerGitMarketplaceHandlers } = await import("../git-marketplace.js");
+      registerGitMarketplaceHandlers(
+        { auditLogger: { log: vi.fn() }, getMainWindow: () => null, settingsService: { get: () => ({}) } } as never,
+        async () => null,
+        async () => ({ service: harness.service as never, close: async () => {} }),
+        async () => {},
+        root,
+        new AbortController(),
+      );
+      desktop.showItemInFolder.mockClear();
+
+      await expect(invokeFileIpcHandler(handlers, channels.sourcesReveal, git.id)).resolves.toMatchObject({ ok: false, code: "invalid-request" });
+      await expect(invokeFileIpcHandler(handlers, channels.sourcesReveal, "nowhere")).resolves.toMatchObject({ ok: false, code: "SOURCE_ID_INVALID" });
+      // Only an id crosses the bridge: a path is not a source.
+      await expect(invokeFileIpcHandler(handlers, channels.sourcesReveal, added.path)).resolves.toMatchObject({ ok: false });
+      expect(desktop.showItemInFolder).not.toHaveBeenCalled();
+
+      await expect(invokeFileIpcHandler(handlers, channels.sourcesReveal, "notes")).resolves.toEqual({ ok: true, value: null });
+      expect(desktop.showItemInFolder).toHaveBeenCalledExactlyOnceWith(added.path);
+    } finally {
+      harness.service.close();
+      rmSync(root, { recursive: true, force: true });
+      rmSync(join(folder, ".."), { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to show a folder on a drive whose classifier cannot run, with the reinstall advice and nothing opened", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ave-git-marketplace-reveal-"));
+    const volume = new FakeVolume("win32", { drives: { "C:": "\\Device\\HarddiskVolume3" } }).file("C:\\m\\SKILL.md", "---\nname: note\ndescription: d\n---\n");
+    const harness = await folderService({ root, folders: { fs: volume, platform: "win32", limits: TEST_FOLDER_LIMITS }, home: "C:\\Users\\example" });
+    try {
+      const preview = await harness.service.previewSource({ input: "C:\\m", auth: "none" });
+      if (preview.type === "confirm") throw new Error("a local drive needs no confirmation");
+      await harness.service.addSource({ previewId: preview.previewId, id: "notes" });
+      // The helper breaks after the add (a damaged install): the next reveal cannot classify the drive.
+      volume.queryDosDevice = async () => {
+        throw new Error("Windows folder classifier is missing: C:\\Ave\\resources\\windows-path-kind\\x64\\ave-path-kind.exe. Reinstall Ave.");
+      };
+      handlers.clear();
+      const { registerGitMarketplaceHandlers } = await import("../git-marketplace.js");
+      registerGitMarketplaceHandlers(
+        { auditLogger: { log: vi.fn() }, getMainWindow: () => null, settingsService: { get: () => ({}) } } as never,
+        async () => null,
+        async () => ({ service: harness.service as never, close: async () => {} }),
+        async () => {},
+        root,
+        new AbortController(),
+      );
+      desktop.showItemInFolder.mockClear();
+
+      const answer = await invokeFileIpcHandler(handlers, channels.sourcesReveal, "notes");
+      expect(answer).toMatchObject({ ok: false, code: "SOURCE_LOCAL_UNREADABLE", detail: { reason: "classifier-unavailable", path: "C:\\m" } });
+      expect(desktop.showItemInFolder).not.toHaveBeenCalled();
+      const parsed = parseGitMarketplaceResult(answer);
+      if (parsed.ok) throw new Error("expected a failure");
+      expect(failureText((key, vars) => translate("en", key, vars), parsed, ENTRY_SUBJECT)).toBe(
+        "Ave cannot tell whether C:\\m is on another computer because its folder classifier is missing or broken. Reinstall Ave.",
+      );
+    } finally {
+      harness.service.close();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

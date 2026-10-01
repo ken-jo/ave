@@ -123,6 +123,7 @@ export const ko: Record<SeedMessageKey, string> = {
   "mainDialog.updateRestartDetail": "진행 중인 작업이 종료됩니다. 계속하시겠습니까?",
   "mainDialog.attachTitle": "첨부 파일 선택",
   "mainDialog.pluginPickFolderTitle": "{plugin}에서 사용할 폴더 선택",
+  "mainDialog.marketplacePickFolderTitle": "마켓플레이스나 패키지 폴더 선택",
   "mainDialog.installLocalPluginTitle": "로컬 익스텐션 설치 (개발자)",
   "mainDialog.installLocalPluginMessage": "plugin.json이 포함된 빌드 폴더를 선택하세요",
   "mainDialog.unauthorizedFrame": "권한이 없는 프레임입니다.",

@@ -22,7 +22,7 @@
  * runs that boot pass again; `updates:status` and `updates:check` answer from
  * the scheduler.
  */
-import { app, ipcMain, powerMonitor, session, type IpcMainInvokeEvent } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, powerMonitor, session, shell, type IpcMainInvokeEvent } from "electron";
 import { mkdir, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -30,6 +30,7 @@ import { notifyBootstrapStatus } from "../../boot/bootstrap-status.js";
 import { isDevModeUnlocked, isE2eTestRuntime } from "../../boot/dev-flags.js";
 import { emitEvent as emitHostEvent } from "../../boot/types.js";
 import { CHANNELS } from "../../contract/app-contract.js";
+import { t } from "../../i18n/index.js";
 import { messages } from "../../i18n/messages/index.js";
 import { createMarketplaceLogger } from "../../marketplace/log.js";
 import { getBootInstallNotice, getMarketplaceLifetime, setBootInstallNotice, takePendingGitMarketplaceLink } from "../../main/app-state.js";
@@ -95,6 +96,7 @@ export type GitMarketplacePort = Pick<
   | "previewSource"
   | "addSource"
   | "acknowledgeSource"
+  | "revealFolder"
   | "removeSource"
   | "setEnabled"
   | "refresh"
@@ -642,6 +644,15 @@ export function registerGitMarketplaceHandlers(
     if (confirmed.length === 0) throw new InvalidRequest("warnings must name at least one confirmation");
     return service.acknowledgeSource(text(id, "id", 64), confirmed);
   });
+  // *Show in Finder / Explorer*: an id, never a path, and only a folder source's (§18.9).
+  handle(channels.sourcesReveal, async (service, [id]) => {
+    const path = await service.revealFolder(text(id, "id", 64));
+    if (path === null) throw new InvalidRequest("only a folder source has a folder to show");
+    // Straight to the shell, no call in between: revealFolder classified the path as its last
+    // step. A remap after that is the stated residual of design §7.7 (reveal boundary).
+    shell.showItemInFolder(path);
+    return null;
+  });
   handle(channels.sourcesRemove, (service, [id]) => service.removeSource(text(id, "id", 64)));
   handle(channels.sourcesSetEnabled, (service, [id, enabled]) => {
     if (typeof enabled !== "boolean") throw new InvalidRequest("enabled must be a boolean");
@@ -675,6 +686,26 @@ export function registerGitMarketplaceHandlers(
     });
   };
   handleHeld(channels.deepLinkTake, takePendingGitMarketplaceLink);
+
+  // *Choose folder…* (§18.9): main's own folder dialog, which needs no marketplace. The path it answers
+  // goes into the address field and through `sources:preview` like a typed one.
+  ipcMain.handle(channels.sourcesPickFolder, async (event: IpcMainInvokeEvent): Promise<GitMarketplaceResult<{ path: string } | null>> => {
+    if (!validateHostRendererSender(event)) {
+      auditUnauthorized(deps.auditLogger, channels.sourcesPickFolder, event);
+      return UNAUTHORIZED;
+    }
+    try {
+      const options = { title: t("mainDialog.marketplacePickFolderTitle"), properties: ["openDirectory" as const, "dontAddToRecent" as const] };
+      const parent = BrowserWindow.fromWebContents(event.sender);
+      const picked = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options);
+      const path = picked.filePaths[0];
+      return { ok: true, value: picked.canceled || !path ? null : { path } };
+    } catch (error) {
+      const message = scrubDiagnosticSecrets(errorMessage(error));
+      log.error({ err: message }, "git marketplace folder dialog failed");
+      return { ok: false, code: "unavailable", message };
+    }
+  });
   handleHeld(channels.bootInstallsNotice, getBootInstallNotice);
   handleHeld(channels.bootInstallsDismiss, () => {
     setBootInstallNotice(null);

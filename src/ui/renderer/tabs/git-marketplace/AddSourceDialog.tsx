@@ -6,6 +6,14 @@
  * that needs a warning (plain http, an internal network, this computer) is
  * asked about before Ave contacts it: *Continue* checks again carrying the
  * confirmations, and *Add* stores exactly those (§18.5).
+ *
+ * The address can be a folder (§18.4, §7.7): typed, or chosen with *Choose
+ * folder…* (main's folder dialog). A folder takes no branch, package folder
+ * or sign-in, so the form stops asking for them, and it needs no git, so a
+ * missing git does not block it. The preview names the folder Ave will
+ * read, the path it was resolved from when a link led there, its contents
+ * revision, and when its changes are picked up; a folder on another computer
+ * is asked about first, like an address.
  */
 import { useEffect, useRef, useState } from "react";
 import { Button } from "../../../../components/ui/button.js";
@@ -18,7 +26,7 @@ import { reservedPrefixIn } from "../../../../shared/dlp.js";
 import type { EnteredTargetWarningView, GitMarketplaceFailure, SourcePreviewRequest, SourcePreviewView, SourceView, SourceWarning } from "../../../../shared/git-marketplace.js";
 import type { AveApi } from "../../types.js";
 import { GitRuntimeCard } from "./GitRuntimeCard.js";
-import { ENTRY_SUBJECT, KIND_ORDER, kindLabel, reservedIdText, shortSha, warningText } from "./labels.js";
+import { ENTRY_SUBJECT, KIND_ORDER, kindLabel, looksLikeFolder, reservedIdText, shortSha, warningText } from "./labels.js";
 import { MarketplaceProblem } from "./MarketplaceProblem.js";
 import { SourceBadges } from "./SourcesView.js";
 
@@ -41,9 +49,11 @@ export interface AddSourceDialogProps {
   onCommitted: (source: SourceView) => void;
   /** The add this dialog shows finished: the caller closes the dialog and, for a single package, opens it. */
   onAdded: (source: SourceView, preview: SourcePreviewView) => void;
+  /** *Show <id>* on an add refused for duplicating source `id` (§18.8): the caller closes the dialog and shows that row. */
+  onShowSource: (id: string) => void;
 }
 
-export function AddSourceDialog({ api, open, direct = false, initialInput = "", initialFailure = null, onClose, onCommitted, onAdded }: AddSourceDialogProps) {
+export function AddSourceDialog({ api, open, direct = false, initialInput = "", initialFailure = null, onClose, onCommitted, onAdded, onShowSource }: AddSourceDialogProps) {
   const { t } = useTranslation();
   const [gitReady, setGitReady] = useState<boolean | null>(null);
   const [input, setInput] = useState("");
@@ -59,6 +69,10 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
   const [warnings, setWarnings] = useState<EnteredTargetWarningView[] | null>(null);
   /** What the user confirmed for the address as typed; a changed field asks again. */
   const [acknowledged, setAcknowledged] = useState<SourceWarning[]>([]);
+  /** The folder dialog could not open: main's text, for Copy details. */
+  const [pickFailure, setPickFailure] = useState<string | null>(null);
+  /** A folder takes no branch, package folder or sign-in, and needs no git (§18.4.1). */
+  const folder = looksLikeFolder(input);
 
   /**
    * Which fields an answer belongs to. A field edit, a newer check and reopening the
@@ -93,24 +107,29 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
     setFailure(initialFailure);
     setWarnings(null);
     setAcknowledged([]);
+    setPickFailure(null);
     setGitReady(null);
     void api.gitRuntime.status().then((result) => setGitReady(result.ok && result.status.state === "ready"));
   }, [open, api, initialInput, initialFailure]);
 
-  const check = async (acknowledge: readonly SourceWarning[] = acknowledged) => {
+  const check = async (acknowledge: readonly SourceWarning[] = acknowledged, address: string = input) => {
     const mine = ++generation.current;
     setBusy(true);
     setFailure(null);
+    setPickFailure(null);
     setWarnings(null);
     try {
-      const request: SourcePreviewRequest = {
-        input: input.trim(),
-        auth,
-        ...(ref.trim() ? { ref: ref.trim() } : {}),
-        ...(subdir.trim() ? { subdir: subdir.trim() } : {}),
-        ...(auth === "token" && token ? { token } : {}),
-        ...(acknowledge.length > 0 ? { acknowledge: [...acknowledge] } : {}),
-      };
+      // A folder is sent without the fields the form hides for it: they would only be refused.
+      const request: SourcePreviewRequest = looksLikeFolder(address)
+        ? { input: address.trim(), auth: "none", ...(acknowledge.length > 0 ? { acknowledge: [...acknowledge] } : {}) }
+        : {
+            input: address.trim(),
+            auth,
+            ...(ref.trim() ? { ref: ref.trim() } : {}),
+            ...(subdir.trim() ? { subdir: subdir.trim() } : {}),
+            ...(auth === "token" && token ? { token } : {}),
+            ...(acknowledge.length > 0 ? { acknowledge: [...acknowledge] } : {}),
+          };
       const result = await api.gitMarketplace.previewSource(request);
       if (mine !== generation.current) return;
       if (result.ok) {
@@ -127,6 +146,25 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
     } finally {
       if (mine === generation.current) setBusy(false);
     }
+  };
+
+  /**
+   * *Choose folder…*: main's folder dialog. The chosen folder replaces the
+   * address, as typing it would, and is checked at once; a cancel changes
+   * nothing.
+   */
+  const chooseFolder = async () => {
+    const mine = generation.current;
+    setPickFailure(null);
+    const picked = await api.gitMarketplace.pickFolder();
+    if (mine !== generation.current) return;
+    if (!picked.ok) {
+      setPickFailure(picked.message);
+      return;
+    }
+    if (picked.value === null) return;
+    edit(setInput)(picked.value.path);
+    void check([], picked.value.path);
   };
 
   /** *Continue* on the warnings: check again carrying them. */
@@ -155,9 +193,15 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
     }
   };
 
-  const step = gitReady === false ? 0 : preview ? 2 : 1;
+  // Git is the first step only for a git address: a folder is read without it (§18.4.3).
+  const step = gitReady === false && !folder && !preview ? 0 : preview ? 2 : 1;
   // An id using a reserved prefix (§18.8) is named as it is typed, with what to do, before Add is asked.
   const reservedId = reservedPrefixIn(id.trim());
+  const chooseFolderButton = (
+    <Button type="button" variant="outline" className="shrink-0" onClick={() => void chooseFolder()} disabled={busy} data-testid="git-marketplace:add:choose-folder">
+      {t("gitMarketplace.add.chooseFolder")}
+    </Button>
+  );
   const title = direct ? t("gitMarketplace.add.directTitle") : t("gitMarketplace.add.title");
 
   return (
@@ -175,31 +219,47 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
           </DialogDescription>
         </DialogHeader>
 
-        {step === 0 && <GitRuntimeCard api={api} compact onReady={() => setGitReady(true)} />}
+        {step === 0 && (
+          <div className="space-y-3">
+            <GitRuntimeCard api={api} compact onReady={() => setGitReady(true)} />
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 text-xs" data-testid="git-marketplace:add:folder-without-git">
+              <span className="min-w-0 text-muted-foreground">{t("gitMarketplace.add.folderWithoutGit")}</span>
+              {chooseFolderButton}
+            </div>
+          </div>
+        )}
 
         {step === 1 && (
           <div className="space-y-3">
             <div className="space-y-1">
               <Label htmlFor="git-marketplace-add-url">{t("gitMarketplace.add.address")}</Label>
-              <Input
-                id="git-marketplace-add-url"
-                value={input}
-                onChange={(event) => edit(setInput)(event.target.value)}
-                placeholder={t("gitMarketplace.add.addressPlaceholder")}
-                data-testid="git-marketplace:add:url"
-                autoFocus
-              />
+              <div className="flex gap-2">
+                <Input
+                  id="git-marketplace-add-url"
+                  className="min-w-0"
+                  value={input}
+                  onChange={(event) => edit(setInput)(event.target.value)}
+                  placeholder={t("gitMarketplace.add.addressPlaceholder")}
+                  data-testid="git-marketplace:add:url"
+                  autoFocus
+                />
+                {chooseFolderButton}
+              </div>
+              {folder && <p className="text-[11px] text-muted-foreground" data-testid="git-marketplace:add:folder-input">{t("gitMarketplace.add.folderInput")}</p>}
             </div>
-            {direct && (
+            {direct && !folder && (
               <div className="space-y-1">
                 <Label htmlFor="git-marketplace-add-subdir">{t("gitMarketplace.add.folder")}</Label>
                 <Input id="git-marketplace-add-subdir" className="font-mono" value={subdir} onChange={(event) => edit(setSubdir)(event.target.value)} placeholder="skills/proofread" />
               </div>
             )}
+            {!folder && (
             <div className="space-y-1">
               <Label htmlFor="git-marketplace-add-ref">{t("gitMarketplace.add.ref")}</Label>
               <Input id="git-marketplace-add-ref" className="font-mono" value={ref} onChange={(event) => edit(setRef)(event.target.value)} placeholder="main" />
             </div>
+            )}
+            {!folder && (
             <fieldset className="space-y-1">
               <legend className="text-sm font-medium">{t("gitMarketplace.add.signIn")}</legend>
               <div className="flex gap-3 text-sm">
@@ -214,6 +274,7 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
                 <Input type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder={t("gitMarketplace.add.tokenPlaceholder")} data-testid="git-marketplace:add:token" />
               )}
             </fieldset>
+            )}
             {warnings && (
               <MarketplaceProblem
                 tone="warning"
@@ -230,8 +291,20 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
           </div>
         )}
 
+        {pickFailure !== null && (
+          <MarketplaceProblem tone="error" text={t("gitMarketplace.add.pickFolderFailed")} details={pickFailure} testId="git-marketplace:add:pick-error" />
+        )}
+
         {step === 2 && preview && (
           <div className="space-y-3 text-sm" data-testid="git-marketplace:add:preview">
+            {preview.transport === "folder" && preview.path !== null && (
+              <div className="space-y-1" data-testid="git-marketplace:add:folder">
+                <p className="break-all font-mono text-xs">{t("gitMarketplace.add.folderPath", { path: preview.path })}</p>
+                {preview.resolvedFrom !== null && (
+                  <p className="break-all text-xs text-muted-foreground" data-testid="git-marketplace:add:resolved-from">{t("gitMarketplace.add.resolvedFrom", { input: preview.resolvedFrom })}</p>
+                )}
+              </div>
+            )}
             {preview.type === "marketplace" ? (
               <>
                 <p>
@@ -239,7 +312,9 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
                   {preview.marketplace.owner && <span className="text-muted-foreground"> · {t("gitMarketplace.add.owner", { owner: preview.marketplace.owner })}</span>}
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  {t("gitMarketplace.add.commit", { commit: shortSha(preview.commit) })}
+                  {preview.transport === "folder"
+                    ? t("gitMarketplace.add.folderContents", { revision: shortSha(preview.commit) })
+                    : t("gitMarketplace.add.commit", { commit: shortSha(preview.commit) })}
                   {preview.ref ? ` · ${preview.ref}` : ""}
                 </p>
                 <ul className="flex flex-wrap gap-1.5 text-xs">
@@ -265,7 +340,11 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
                   <span className="font-medium">{preview.displayName ?? preview.name}</span>
                 </p>
                 <p className="font-mono text-xs">{preview.version}</p>
-                {preview.versionSynthesized && <p className="text-xs text-muted-foreground">{t("gitMarketplace.direct.synthesized")}</p>}
+                {preview.versionSynthesized && (
+                  <p className="text-xs text-muted-foreground">
+                    {preview.transport === "folder" ? t("gitMarketplace.direct.synthesizedFolder") : t("gitMarketplace.direct.synthesized")}
+                  </p>
+                )}
                 <p className="text-xs">{preview.runsCode ? t("gitMarketplace.direct.runsCode") : t("gitMarketplace.direct.noCode")}</p>
               </>
             )}
@@ -274,6 +353,7 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
                 <SourceBadges badges={preview.badges} testId="git-marketplace:add:badge" />
               </div>
             )}
+            {preview.transport === "folder" && <p className="text-xs text-muted-foreground" data-testid="git-marketplace:add:folder-pickup">{t("gitMarketplace.add.folderPickup")}</p>}
             {preview.credentialHelper && <p className="text-xs text-muted-foreground">{t("gitMarketplace.add.credentialHelper")}</p>}
             <div className="space-y-1">
               <Label htmlFor="git-marketplace-add-id">{t("gitMarketplace.add.sourceName")}</Label>
@@ -297,7 +377,7 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
           </div>
         )}
 
-        {failure && <MarketplaceProblem failure={failure} subject={ENTRY_SUBJECT} testId="git-marketplace:add:error" />}
+        {failure && <MarketplaceProblem failure={failure} subject={ENTRY_SUBJECT} onShowSource={onShowSource} testId="git-marketplace:add:error" />}
 
         <DialogFooter className="gap-2">
           {step === 2 && (
@@ -307,7 +387,7 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
           )}
           <Button variant="ghost" onClick={onClose}>{t("common.cancel")}</Button>
           {step === 1 && (
-            <Button onClick={() => void check()} disabled={busy || warnings !== null || input.trim().length === 0 || gitReady === null} data-testid="git-marketplace:add:check">
+            <Button onClick={() => void check()} disabled={busy || warnings !== null || input.trim().length === 0 || (gitReady === null && !folder)} data-testid="git-marketplace:add:check">
               {busy ? t("gitMarketplace.add.checking") : t("gitMarketplace.add.check")}
             </Button>
           )}

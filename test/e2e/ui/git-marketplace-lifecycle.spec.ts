@@ -543,3 +543,92 @@ test.describe('git marketplace target confirmations (design §18.5)', () => {
     await closeInlineSettings(app, settings);
   });
 });
+
+test.describe('git marketplace folder source (design §18.4)', () => {
+  // A user's build: a folder needs no dev flag, and no git at all.
+  test.use({ seedRepositoryPlugins: false, devFlag: false });
+  test.setTimeout(120_000);
+
+  const FOLDER_ID = 'team-folder';
+  let parent: string;
+  let folder: string;
+  const descriptor = (version: string) => `${JSON.stringify({ schemaVersion: 2, kind: 'skill', name: 'folder-notes', version, minAppVersion: '0.12.0', payload: { entry: 'SKILL.md' } })}\n`;
+  const write = (files: Record<string, string>) => {
+    for (const [path, text] of Object.entries(files)) {
+      mkdirSync(join(folder, path, '..'), { recursive: true });
+      writeFileSync(join(folder, path), text);
+    }
+  };
+
+  test.beforeAll(() => {
+    // tmpdir is reached through a link on macOS (/var → /private/var): the preview says where it resolved.
+    parent = mkdtempSync(join(tmpdir(), 'ave-e2e-marketplace-folder-'));
+    folder = join(parent, 'team-market');
+    write({
+      'marketplace.2.json': `${JSON.stringify({ schemaVersion: 2, name: 'team-folder', displayName: 'Team Folder', packages: [{ kind: 'skill', name: 'folder-notes', path: 'skills/folder-notes' }] })}\n`,
+      'skills/folder-notes/ave-package.json': descriptor('1.0.0'),
+      'skills/folder-notes/SKILL.md': 'Write notes.\n',
+    });
+  });
+
+  test.afterAll(() => {
+    if (parent) rmSync(parent, { recursive: true, force: true });
+  });
+
+  test('adds a folder marketplace with Choose folder…, installs a skill, and offers the edited skill as an update after Refresh', async ({ app, mainWindow, t }) => {
+    // Main's folder dialog answers this folder; Show in Finder records what it was asked to show.
+    await app.evaluate(({ dialog, shell }, chosen) => {
+      (globalThis as { __revealed?: string[] }).__revealed = [];
+      dialog.showOpenDialog = (async () => ({ canceled: false, filePaths: [chosen] })) as typeof dialog.showOpenDialog;
+      shell.showItemInFolder = (path: string) => {
+        (globalThis as { __revealed?: string[] }).__revealed!.push(path);
+      };
+    }, folder);
+
+    const settings = await openInlineSettings(app, mainWindow, 'marketplace');
+    await settings.getByTestId('git-marketplace:add-menu').click();
+    await settings.getByRole('menuitem', { name: t('gitMarketplace.addMarketplace') }).click();
+    await settings.getByTestId('git-marketplace:add:choose-folder').click();
+    const preview = settings.getByTestId('git-marketplace:add:preview');
+    await expect(preview).toContainText('Team Folder', { timeout: 30_000 });
+    await expect(settings.getByTestId('git-marketplace:add:error')).toHaveCount(0);
+    await expect(settings.getByTestId('git-marketplace:add:folder-pickup')).toHaveText(t('gitMarketplace.add.folderPickup'));
+    await expect(settings.getByTestId('git-marketplace:add:badge:local-folder')).toHaveText(t('gitMarketplace.badge.localFolder'));
+    if (process.platform === 'darwin') await expect(settings.getByTestId('git-marketplace:add:resolved-from')).toContainText(folder);
+    await settings.getByTestId('git-marketplace:add:id').fill(FOLDER_ID);
+    await settings.getByTestId('git-marketplace:add:confirm').click();
+    await expect(settings.getByTestId('git-marketplace:add')).toHaveCount(0, { timeout: 30_000 });
+
+    const key = { sourceId: FOLDER_ID, kind: 'skill' as const, name: 'folder-notes' };
+    await expect(settings.getByTestId(`git-marketplace:card:${FOLDER_ID}:skill:folder-notes`)).toBeVisible();
+    await expect(settings.getByTestId(`git-marketplace:card:${FOLDER_ID}:folder-notes:badge:local-folder`)).toBeVisible();
+    const plan = await call<InstallPlanView>(mainWindow, { method: 'planInstall', args: [key] });
+    expect(plan).toMatchObject({ version: '1.0.0', snapshotCommit: expect.stringMatching(/^local-[0-9a-f]{64}$/u) });
+    await call<InstallResultView>(mainWindow, { method: 'executeInstall', args: [plan.planId] });
+
+    // Edit the skill in the folder; Refresh on its row reads it again.
+    write({ 'skills/folder-notes/SKILL.md': 'Write better notes.\n', 'skills/folder-notes/ave-package.json': descriptor('1.1.0') });
+    await settings.getByTestId('git-marketplace:open-sources').click();
+    const row = settings.getByTestId(`git-marketplace:source:${FOLDER_ID}`);
+    await expect(row.getByTestId(`git-marketplace:source:${FOLDER_ID}:folder`)).toContainText(t('gitMarketplace.sources.folderKind'));
+    await expect(row.getByTestId(`git-marketplace:source:${FOLDER_ID}:badge:local-folder`)).toBeVisible();
+    await row.getByRole('button', { name: t('gitMarketplace.sources.refresh') }).click();
+    await expect(row.getByRole('button', { name: t('gitMarketplace.sources.refresh') })).toBeEnabled({ timeout: 30_000 });
+
+    await row.getByTestId(`git-marketplace:source:${FOLDER_ID}:reveal`).click();
+    await expect.poll(() => app.evaluate(() => (globalThis as { __revealed?: string[] }).__revealed ?? [])).toHaveLength(1);
+    const [revealed] = await app.evaluate(() => (globalThis as { __revealed?: string[] }).__revealed ?? []);
+    const sources = await call<SourceView[]>(mainWindow, { method: 'listSources', args: [] });
+    expect(revealed).toBe(sources.find((item) => item.id === FOLDER_ID)?.path);
+
+    const installedNow = await call<CatalogView>(mainWindow, { method: 'listCatalog', args: [{ installedOnly: true }] });
+    expect(installedNow.entries.find((entry) => entry.key.name === 'folder-notes')?.state).toEqual({ state: 'update', from: '1.0.0', to: '1.1.0' });
+    // Back to the packages: the card offers the update.
+    await settings.getByTestId('git-marketplace:open-sources').click();
+    await expect(settings.getByTestId(`git-marketplace:card:${FOLDER_ID}:skill:folder-notes`).getByTestId('git-marketplace:card:state'))
+      .toHaveText(t('gitMarketplace.state.update', { version: '1.1.0' }), { timeout: 30_000 });
+    await test.info().attach('folder-source-update', { body: await settings.getByTestId('git-marketplace').screenshot(), contentType: 'image/png' });
+    await call(mainWindow, { method: 'uninstall', args: [key] });
+    await closeInlineSettings(app, settings);
+  });
+});

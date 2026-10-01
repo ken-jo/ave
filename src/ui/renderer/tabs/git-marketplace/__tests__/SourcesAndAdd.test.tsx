@@ -14,11 +14,11 @@ import { AddSourceDialog } from "../AddSourceDialog.js";
 import { DirectInstallView } from "../DirectInstallView.js";
 import { GitRuntimeCard } from "../GitRuntimeCard.js";
 import { SourcesView } from "../SourcesView.js";
-import { COMMIT_A, COMMIT_B, fakeMarketplace, source } from "./fixtures.js";
+import { COMMIT_B, fakeMarketplace, folderSource, marketplacePreview, source } from "./fixtures.js";
 
-function sourcesView(fake: ReturnType<typeof fakeMarketplace>, sources: SourceView[]) {
+function sourcesView(fake: ReturnType<typeof fakeMarketplace>, sources: SourceView[], highlightId: string | null = null) {
   const onChanged = vi.fn();
-  render(<SourcesView api={fake.market as unknown as GitMarketplaceApi} sources={sources} onChanged={onChanged} onAdd={vi.fn()} />);
+  render(<SourcesView api={fake.market as unknown as GitMarketplaceApi} sources={sources} onChanged={onChanged} onAdd={vi.fn()} highlightId={highlightId} />);
   return { onChanged };
 }
 
@@ -229,29 +229,12 @@ describe("SourcesView", () => {
 
 function addDialog(fake: ReturnType<typeof fakeMarketplace>, direct = false) {
   const onAdded = vi.fn();
+  const onShowSource = vi.fn();
   const api = { gitMarketplace: fake.market, gitRuntime: fake.gitRuntime, updateSettings: vi.fn(async () => ({ ok: true })) };
-  render(<AddSourceDialog api={api as unknown as Pick<AveApi, "gitMarketplace" | "gitRuntime" | "updateSettings">} open direct={direct} onClose={vi.fn()} onCommitted={vi.fn()} onAdded={onAdded} />);
-  return { onAdded };
+  render(<AddSourceDialog api={api as unknown as Pick<AveApi, "gitMarketplace" | "gitRuntime" | "updateSettings">} open direct={direct} onClose={vi.fn()} onCommitted={vi.fn()} onAdded={onAdded} onShowSource={onShowSource} />);
+  return { onAdded, onShowSource };
 }
 
-const marketplacePreview: MarketplacePreviewView = {
-  type: "marketplace",
-  previewId: "preview-1",
-  expiresAt: new Date(Date.now() + 600_000).toISOString(),
-  transport: "git",
-  url: "https://github.com/example/team.git",
-  path: null,
-  resolvedFrom: null,
-  badges: [],
-  ref: null,
-  commit: COMMIT_A,
-  marketplace: { name: "team", displayName: "Team tools", description: null, owner: "example" },
-  counts: { plugin: 2, skill: 3 },
-  codeRunning: 2,
-  diagnostics: ["plugins/broken: missing plugin.json"],
-  credentialHelper: false,
-  suggestedId: "team",
-};
 
 describe("AddSourceDialog", () => {
   it("previews what the repository holds before adding it under the chosen name", async () => {
@@ -688,7 +671,7 @@ describe("confirmations, badges and Allow… (§18.5)", () => {
       .mockImplementationOnce(() => new Promise((resolve) => (answerFirst = resolve)))
       .mockResolvedValue({ ok: true, value: { type: "confirm", warnings: [{ warning: "unencrypted", host: "deep.example", address: null }] } });
     const api = { gitMarketplace: fake.market, gitRuntime: fake.gitRuntime, updateSettings: vi.fn(async () => ({ ok: true })) } as unknown as Pick<AveApi, "gitMarketplace" | "gitRuntime" | "updateSettings">;
-    const dialog = (open: boolean, initialInput = "") => <AddSourceDialog api={api} open={open} initialInput={initialInput} onClose={vi.fn()} onCommitted={vi.fn()} onAdded={vi.fn()} />;
+    const dialog = (open: boolean, initialInput = "") => <AddSourceDialog api={api} open={open} initialInput={initialInput} onClose={vi.fn()} onCommitted={vi.fn()} onAdded={vi.fn()} onShowSource={vi.fn()} />;
     const { rerender } = render(dialog(true));
 
     await waitFor(() => expect(fake.gitRuntime.status).toHaveBeenCalled());
@@ -726,5 +709,266 @@ describe("confirmations, badges and Allow… (§18.5)", () => {
     await waitFor(() => expect(fake.market.acknowledgeSource).toHaveBeenCalledWith("corp", ["token-unencrypted"]));
     // Then the token dialog itself.
     expect(await screen.findByPlaceholderText("액세스 토큰 붙여넣기")).toBeInTheDocument();
+  });
+});
+
+describe("folder sources (§18.4.8)", () => {
+  const LONG_PATH = "/Users/example/Library/CloudStorage/Shared drives/Engineering/agents/team-marketplace";
+  const REVISION = `local-${"c".repeat(64)}`;
+  const folderPreview: MarketplacePreviewView = {
+    ...marketplacePreview,
+    transport: "folder",
+    url: null,
+    path: "/private/tmp/market",
+    resolvedFrom: "/tmp/market",
+    badges: ["local-folder"],
+    commit: REVISION,
+    credentialHelper: false,
+  };
+
+  it("shows a folder row: its path cut in the middle with the whole path in the tooltip, its contents revision, when it was read, its badge, and Show in Finder instead of Set token", async () => {
+    const fake = fakeMarketplace();
+    sourcesView(fake, [folderSource({ id: "team", path: LONG_PATH, pinnedCommit: REVISION })]);
+    const row = screen.getByTestId("git-marketplace:source:team");
+
+    const path = within(row).getByTestId("git-marketplace:source:team:path");
+    expect(path).toHaveAttribute("title", LONG_PATH);
+    expect(path.textContent).toContain("…");
+    expect(path.textContent!.startsWith("/Users/example")).toBe(true);
+    expect(path.textContent!.endsWith("team-marketplace")).toBe(true);
+    expect(within(row).getByTestId("git-marketplace:source:team:folder")).toHaveTextContent("폴더");
+    expect(row).toHaveTextContent("폴더 · ccccccc");
+    expect(row).toHaveTextContent(/읽음/);
+    expect(within(row).getByTestId("git-marketplace:source:team:badge:local-folder")).toHaveTextContent("로컬 폴더");
+    // One line high: a narrow Source column must not wrap a badge's label out of its pill.
+    expect(within(row).getByTestId("git-marketplace:source:team:badge:local-folder")).toHaveClass("h-5", "whitespace-nowrap");
+    expect(within(row).getByText("직접 추가")).toHaveClass("h-5", "whitespace-nowrap");
+    expect(within(row).queryByTestId("git-marketplace:source:team:set-token")).toBeNull();
+
+    fireEvent.click(within(row).getByTestId("git-marketplace:source:team:reveal"));
+    await waitFor(() => expect(fake.market.revealSource).toHaveBeenCalledWith("team"));
+  });
+
+  it("names the file manager of the platform it runs on", async () => {
+    const { revealLabel } = await import("../labels.js");
+    const { translate } = await import("../../../../../i18n/translate.js");
+    const t = ((key: string, vars?: Record<string, string | number>) => translate("en", key, vars)) as never;
+    expect(revealLabel(t, "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)")).toBe("Show in Finder");
+    expect(revealLabel(t, "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")).toBe("Show in Explorer");
+    expect(revealLabel(t, "Mozilla/5.0 (X11; Linux x86_64)")).toBe("Show in file manager");
+  });
+
+  it("says why a folder could not be shown, in the row's own words", async () => {
+    const fake = fakeMarketplace();
+    fake.market.revealSource.mockResolvedValue({ ok: false, code: "SOURCE_LOCAL_UNREADABLE", message: "ENOENT", detail: { reason: "not-found", path: "/Users/example/marketplaces/team" } });
+    sourcesView(fake, [folderSource({ id: "team" })]);
+    fireEvent.click(screen.getByTestId("git-marketplace:source:team:reveal"));
+    expect(await screen.findByText(/\/Users\/example\/marketplaces\/team 폴더가 없습니다/)).toBeInTheDocument();
+  });
+
+  it("shows a moved folder as moved while its cached contents are still served", () => {
+    const fake = fakeMarketplace();
+    sourcesView(fake, [folderSource({ id: "team", status: { state: "unreachable", code: "SOURCE_LOCAL_UNREADABLE", detail: { reason: "moved", path: "/Users/example/m", target: "/Volumes/other/m" }, cached: true } })]);
+    const row = screen.getByTestId("git-marketplace:source:team");
+    expect(row).toHaveTextContent("폴더가 옮겨짐 — 캐시 표시 중");
+    expect(screen.getByTestId("git-marketplace:source:team:status-detail")).toHaveTextContent("/Volumes/other/m");
+  });
+
+  it("says a folder recreated at the same path is no longer the one added, and does not call a failed read a read", () => {
+    const fake = fakeMarketplace();
+    sourcesView(fake, [folderSource({ id: "team", path: "/Users/example/m", status: { state: "unreachable", code: "SOURCE_LOCAL_UNREADABLE", detail: { reason: "moved", path: "/Users/example/m", target: "/Users/example/m" }, cached: true } })]);
+    const detail = screen.getByTestId("git-marketplace:source:team:status-detail");
+    expect(detail).toHaveTextContent("/Users/example/m은(는) 추가한 그 폴더가 아닙니다. 교체되었거나 다시 만들어졌으므로 읽지 않습니다.");
+    expect(detail).not.toHaveTextContent("가리키므로");
+    expect(screen.getByTestId("git-marketplace:source:team")).not.toHaveTextContent("읽음");
+  });
+
+  it("chooses a folder with main's dialog and checks it at once, asking no branch or sign-in, then shows where it was resolved from and when it is read", async () => {
+    const fake = fakeMarketplace();
+    fake.market.pickFolder.mockResolvedValue({ ok: true, value: { path: "/tmp/market" } });
+    fake.market.previewSource.mockResolvedValue({ ok: true, value: folderPreview });
+    addDialog(fake);
+
+    await waitFor(() => expect(fake.gitRuntime.status).toHaveBeenCalled());
+    // A branch typed for a git address is not sent with the folder that replaces it.
+    fireEvent.change(screen.getByTestId("git-marketplace:add:url"), { target: { value: "example/team" } });
+    fireEvent.change(screen.getByLabelText("브랜치 또는 태그(선택)"), { target: { value: "main" } });
+    fireEvent.click(screen.getByTestId("git-marketplace:add:choose-folder"));
+
+    await waitFor(() => expect(fake.market.previewSource).toHaveBeenCalledWith({ input: "/tmp/market", auth: "none" }));
+    const preview = await screen.findByTestId("git-marketplace:add:preview");
+    expect(within(preview).getByTestId("git-marketplace:add:folder")).toHaveTextContent("폴더 /private/tmp/market");
+    expect(within(preview).getByTestId("git-marketplace:add:resolved-from")).toHaveTextContent("입력한 경로는 /tmp/market입니다.");
+    expect(preview).toHaveTextContent("내용 ccccccc");
+    expect(within(preview).getByTestId("git-marketplace:add:folder-pickup")).toHaveTextContent("시작할 때, 몇 시간마다, 그리고 새로 고침할 때 반영됩니다.");
+    expect(within(preview).getByTestId("git-marketplace:add:badge:local-folder")).toHaveTextContent("로컬 폴더");
+  });
+
+  it("stops asking for a branch, package folder and sign-in once the address is a folder, and says why", async () => {
+    const fake = fakeMarketplace();
+    fake.market.previewSource.mockResolvedValue({ ok: true, value: folderPreview });
+    addDialog(fake, true);
+    await waitFor(() => expect(fake.gitRuntime.status).toHaveBeenCalled());
+    fireEvent.change(screen.getByLabelText("폴더(선택)"), { target: { value: "skills/x" } });
+
+    fireEvent.change(screen.getByTestId("git-marketplace:add:url"), { target: { value: "~/market" } });
+    expect(screen.getByTestId("git-marketplace:add:folder-input")).toHaveTextContent("폴더는 있는 그대로 읽으므로 브랜치, 패키지 폴더, 로그인을 받지 않습니다.");
+    expect(screen.queryByLabelText("폴더(선택)")).toBeNull();
+    expect(screen.queryByLabelText("브랜치 또는 태그(선택)")).toBeNull();
+    expect(screen.queryByTestId("git-marketplace:add:auth:token")).toBeNull();
+    fireEvent.click(screen.getByTestId("git-marketplace:add:check"));
+    await waitFor(() => expect(fake.market.previewSource).toHaveBeenCalledWith({ input: "~/market", auth: "none" }));
+  });
+
+  it("asks before reading a folder on another computer, then checks again carrying network-folder", async () => {
+    const fake = fakeMarketplace();
+    fake.market.previewSource
+      .mockResolvedValueOnce({ ok: true, value: { type: "confirm", warnings: [{ warning: "network-folder", host: "files.corp", address: "\\\\files.corp\\share\\m" }] } })
+      .mockResolvedValueOnce({ ok: true, value: { ...folderPreview, path: "\\\\files.corp\\share\\m", resolvedFrom: null, badges: ["network-folder"] } });
+    addDialog(fake);
+    await waitFor(() => expect(fake.gitRuntime.status).toHaveBeenCalled());
+    fireEvent.change(screen.getByTestId("git-marketplace:add:url"), { target: { value: "\\\\files.corp\\share\\m" } });
+    fireEvent.click(screen.getByTestId("git-marketplace:add:check"));
+
+    const warnings = await screen.findByTestId("git-marketplace:add:warnings");
+    expect(warnings).toHaveTextContent("Windows 계정으로 files.corp에 로그인합니다. 계속할까요?");
+    expect(screen.queryByTestId("git-marketplace:add:preview")).toBeNull();
+    fireEvent.click(screen.getByTestId("git-marketplace:add:warnings:continue"));
+    await waitFor(() => expect(fake.market.previewSource).toHaveBeenLastCalledWith({ input: "\\\\files.corp\\share\\m", auth: "none", acknowledge: ["network-folder"] }));
+    expect(await screen.findByTestId("git-marketplace:add:badge:network-folder")).toHaveTextContent("네트워크 폴더");
+  });
+
+  it("says a relative path cannot be read and points at Choose folder…", async () => {
+    const fake = fakeMarketplace();
+    fake.market.previewSource.mockResolvedValue({ ok: false, code: "SOURCE_URL_REJECTED", message: "relative", detail: { reason: "relative-path" } });
+    addDialog(fake);
+    await waitFor(() => expect(fake.gitRuntime.status).toHaveBeenCalled());
+    fireEvent.change(screen.getByTestId("git-marketplace:add:url"), { target: { value: "./market" } });
+    fireEvent.click(screen.getByTestId("git-marketplace:add:check"));
+    expect(await screen.findByTestId("git-marketplace:add:error")).toHaveTextContent("폴더 선택…을 쓰고");
+  });
+
+  describe("a folder classifier that cannot run (classifier-unavailable)", () => {
+    const CLASSIFIER = { ok: false as const, code: "SOURCE_LOCAL_UNREADABLE" as const, message: "Windows folder classifier is missing", detail: { reason: "classifier-unavailable" as const, path: "Z:\\m" } };
+    const ADVICE = "Ave의 폴더 분류 도구가 없거나 손상되어 Z:\\m이(가) 다른 컴퓨터에 있는지 알 수 없습니다. Ave를 다시 설치하세요.";
+
+    it("says to reinstall Ave on the preview", async () => {
+      const fake = fakeMarketplace();
+      fake.market.previewSource.mockResolvedValue(CLASSIFIER);
+      addDialog(fake);
+      await waitFor(() => expect(fake.gitRuntime.status).toHaveBeenCalled());
+      fireEvent.change(screen.getByTestId("git-marketplace:add:url"), { target: { value: "Z:\\m" } });
+      fireEvent.click(screen.getByTestId("git-marketplace:add:check"));
+      expect(await screen.findByTestId("git-marketplace:add:error")).toHaveTextContent(ADVICE);
+    });
+
+    it("says it on the row whose last read failed, and when Show in Finder is refused", async () => {
+      const fake = fakeMarketplace();
+      fake.market.revealSource.mockResolvedValue(CLASSIFIER);
+      sourcesView(fake, [folderSource({ id: "team", path: "Z:\\m", status: { state: "unreachable", code: "SOURCE_LOCAL_UNREADABLE", detail: CLASSIFIER.detail, cached: true } })]);
+      expect(screen.getByTestId("git-marketplace:source:team:status-detail")).toHaveTextContent(ADVICE);
+      fireEvent.click(screen.getByTestId("git-marketplace:source:team:reveal"));
+      await waitFor(() => expect(screen.getAllByText(ADVICE)).toHaveLength(2));
+    });
+  });
+
+  it.each([
+    ["network-folder-unconfirmed", "네트워크 폴더, 허용 안 됨", "허용하지 않았으므로 Ave가 읽지 않습니다"],
+    ["folder-unclassified", "위치 알 수 없음", "Ave를 다시 설치하세요"],
+  ] as const)("names a folder's %s badge in the warning tone, with what to do in its tooltip", (badge, label, advice) => {
+    sourcesView(fakeMarketplace(), [folderSource({ id: "team", badges: [badge] })]);
+    const shown = screen.getByTestId(`git-marketplace:source:team:badge:${badge}`);
+    expect(shown).toHaveTextContent(label);
+    expect(shown.getAttribute("title")).toContain(advice);
+    expect(shown).toHaveClass("text-warning");
+    // The row's own actions stay: only the badge says what is wrong.
+    expect(screen.getByTestId("git-marketplace:source:team:remove")).toBeInTheDocument();
+  });
+
+  describe("an add that duplicates or overlaps a source (§18.8 Show <id>)", () => {
+    async function refusedAdd(detail: Record<string, string> | undefined, input = "/m/inner") {
+      const fake = fakeMarketplace();
+      fake.market.previewSource.mockResolvedValue({ ok: true, value: input.startsWith("/") ? { ...folderPreview, path: input, resolvedFrom: null } : marketplacePreview });
+      fake.market.addSource.mockResolvedValue({ ok: false, code: "SOURCE_ID_TAKEN", message: "taken", ...(detail ? { detail } : {}) });
+      const { onShowSource } = addDialog(fake);
+      await waitFor(() => expect(fake.gitRuntime.status).toHaveBeenCalled());
+      fireEvent.change(screen.getByTestId("git-marketplace:add:url"), { target: { value: input } });
+      fireEvent.click(screen.getByTestId("git-marketplace:add:check"));
+      fireEvent.click(await screen.findByTestId("git-marketplace:add:confirm"));
+      return { error: await screen.findByTestId("git-marketplace:add:error"), onShowSource };
+    }
+
+    it.each([
+      [{ reason: "folder-already-added", path: "/m/inner", existingId: "team" }, "/m/inner은(는) 이미 team(으)로 추가되어 있습니다."],
+      [{ reason: "folder-inside-source", path: "/m/inner", existingId: "team", existingPath: "/m" }, "폴더 소스는 서로 겹칠 수 없습니다. /m/inner은(는) 이미 team(으)로 추가된 /m 안에 있습니다"],
+      [{ reason: "folder-contains-source", path: "/m/inner", existingId: "team", existingPath: "/m/inner/x" }, "폴더 소스는 서로 겹칠 수 없습니다. /m/inner은(는) 이미 team(으)로 추가된 /m/inner/x을(를) 담고 있습니다"],
+    ])("names the source and offers Show <id> for %o", async (detail, sentence) => {
+      const { error, onShowSource } = await refusedAdd(detail);
+      expect(error).toHaveTextContent(sentence);
+      const show = within(error).getByTestId("git-marketplace:add:error:show-source");
+      expect(show).toHaveTextContent("team 보기");
+      fireEvent.click(show);
+      expect(onShowSource).toHaveBeenCalledWith("team");
+    });
+
+    it("offers Show <id> for a repository that is already added", async () => {
+      const { error, onShowSource } = await refusedAdd({ reason: "repository-already-added", url: "https://github.com/acme/market.git", existingId: "team" }, "acme/market");
+      expect(error).toHaveTextContent("https://github.com/acme/market.git은(는) 이미 team(으)로 추가되어 있습니다.");
+      fireEvent.click(within(error).getByTestId("git-marketplace:add:error:show-source"));
+      expect(onShowSource).toHaveBeenCalledWith("team");
+    });
+
+    it("offers no Show for a taken id, which another id resolves", async () => {
+      const { error } = await refusedAdd(undefined);
+      expect(error).toHaveTextContent("다른 ID를 고르세요");
+      expect(within(error).queryByTestId("git-marketplace:add:error:show-source")).toBeNull();
+    });
+
+    it("marks the shown source's row and brings it into view", async () => {
+      const scrolled = vi.fn();
+      const original = Element.prototype.scrollIntoView;
+      Element.prototype.scrollIntoView = function (this: Element) { scrolled(this.getAttribute("data-testid")); } as typeof Element.prototype.scrollIntoView;
+      try {
+        sourcesView(fakeMarketplace(), [folderSource({ id: "other" }), folderSource({ id: "team" })], "team");
+        const row = screen.getByTestId("git-marketplace:source:team");
+        expect(row).toHaveAttribute("aria-current", "true");
+        expect(row.className).toContain("bg-accent");
+        expect(screen.getByTestId("git-marketplace:source:other")).not.toHaveAttribute("aria-current");
+        await waitFor(() => expect(scrolled).toHaveBeenCalledWith("git-marketplace:source:team"));
+      } finally {
+        Element.prototype.scrollIntoView = original;
+      }
+    });
+  });
+
+  it("lets a folder be added without installing git", async () => {
+    const fake = fakeMarketplace({ git: "missing" });
+    fake.market.pickFolder.mockResolvedValue({ ok: true, value: { path: "/Users/example/market" } });
+    fake.market.previewSource.mockResolvedValue({ ok: true, value: { ...folderPreview, path: "/Users/example/market", resolvedFrom: null } });
+    addDialog(fake);
+
+    expect(await screen.findByTestId("git-runtime:missing")).toBeInTheDocument();
+    expect(screen.getByTestId("git-marketplace:add:folder-without-git")).toHaveTextContent("폴더를 추가할 때는 git이 필요 없습니다.");
+    fireEvent.click(screen.getByTestId("git-marketplace:add:choose-folder"));
+    expect(await screen.findByTestId("git-marketplace:add:preview")).toBeInTheDocument();
+    expect(fake.gitRuntime.install).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("git-marketplace:add:resolved-from")).toBeNull();
+  });
+
+  it("changes nothing when the folder dialog is cancelled, and says so when it cannot open", async () => {
+    const fake = fakeMarketplace();
+    addDialog(fake);
+    await waitFor(() => expect(fake.gitRuntime.status).toHaveBeenCalled());
+    fireEvent.change(screen.getByTestId("git-marketplace:add:url"), { target: { value: "example/team" } });
+    fireEvent.click(screen.getByTestId("git-marketplace:add:choose-folder"));
+    await waitFor(() => expect(fake.market.pickFolder).toHaveBeenCalledTimes(1));
+    expect(screen.getByTestId("git-marketplace:add:url")).toHaveValue("example/team");
+    expect(fake.market.previewSource).not.toHaveBeenCalled();
+
+    fake.market.pickFolder.mockResolvedValue({ ok: false, code: "unavailable", message: "dialog failed" });
+    fireEvent.click(screen.getByTestId("git-marketplace:add:choose-folder"));
+    const problem = await screen.findByTestId("git-marketplace:add:pick-error");
+    expect(problem).toHaveTextContent("폴더 선택 창을 열 수 없습니다.");
+    expect(problem).not.toHaveTextContent("dialog failed");
   });
 });

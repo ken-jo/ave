@@ -62,7 +62,7 @@ import { ConfirmationRequiredError, MarketplaceError, isMarketplaceError, type E
 import { BareRepo, type ExportLimits } from "../git/repo.js";
 import type { GitCommands, GitRemote } from "../git/run-git.js";
 import type { CatalogSource, NetworkGate } from "../net/network-gate.js";
-import { classifyFolder, normalizeSourceInput, resolveFolderRoot, type FolderIdentity, type FolderRoot } from "../net/source-input.js";
+import { classifyFolder, normalizeSourceInput, resolveFolderRoot, type FolderIdentity, type FolderNetwork, type FolderRoot } from "../net/source-input.js";
 import { normalizeSourceHost, type NormalizedSourceUrl } from "../net/source-url.js";
 import { candidateVersion, planPackage, type PackagePlan, type RepositoryAccess } from "../resolve/descriptor.js";
 import { classifyInstall, updateFor, type InstalledPackage } from "../resolve/identity.js";
@@ -81,7 +81,7 @@ import { FolderTree } from "../sources/folder-tree.js";
 import { confirmationsFor, sourceIdentity, type GitSource, type ResolvedSource, type SourceOrigin, type SourceRegistry, type SourceState } from "../sources/registry.js";
 import { SnapshotBuilder, type SourceSnapshot } from "../sources/snapshot.js";
 import { gitAccess, GitTree, rootNameOf, StagedTree, stagedAccess } from "../sources/source-tree.js";
-import { shouldSyncSource, type SourceSyncer, type SyncResult } from "../sources/sync.js";
+import { openStoredFolder, shouldSyncSource, type SourceSyncer, type SyncResult } from "../sources/sync.js";
 import type { SyncDiscovery } from "../updates/history.js";
 import type { PluginConfigRetention } from "../../plugins/retired-config.js";
 import type { RetirementEntry, RetirementEntryLookup } from "./retirement-entry.js";
@@ -241,6 +241,9 @@ const GATED_KINDS: ReadonlySet<PackageKind> = new Set(["plugin", "skill", "agent
 
 const PREVIEW_ID_PREFIX = "preview-";
 
+/** How long a folder source's network class stands for its badge before it is asked again (§18.4.8). */
+const FOLDER_BADGE_TTL_MS = 60_000;
+
 function keyOf(kind: PackageKind, name: string): string {
   return `${kind}:${name}`;
 }
@@ -286,12 +289,18 @@ function acknowledgedOf(source: ResolvedSource, state: SourceState | null): Sour
 }
 
 /**
- * What a git source's row and cards show while it applies (§18.5): plain
- * http, and each confirmed class. A folder's badges are slice D2's.
+ * A folder's one badge (§18.4.8): on this computer, or on another one — which
+ * the source either holds `network-folder` for or does not, so the badge never
+ * claims a consent the source lacks.
  */
-function badgesOf(source: ResolvedSource, acknowledged: readonly SourceWarning[]): SourceBadge[] {
-  if (source.transport === "folder") return [];
-  return urlBadges(source.url, acknowledged);
+function folderBadge(network: FolderNetwork, acknowledged: readonly SourceWarning[]): SourceBadge {
+  if (!network.network) return "local-folder";
+  return acknowledged.includes("network-folder") ? "network-folder" : "network-folder-unconfirmed";
+}
+
+/** The folder classifier could not run (§18.4.1): a state of its own, never a guessed class. */
+function classifierUnavailable(error: unknown): boolean {
+  return isMarketplaceError(error) && error.code === "SOURCE_LOCAL_UNREADABLE" && error.detail?.reason === "classifier-unavailable";
 }
 
 function urlBadges(url: NormalizedSourceUrl, acknowledged: readonly SourceWarning[]): SourceBadge[] {
@@ -342,6 +351,12 @@ export class MarketplaceService implements RetirementEntryLookup {
   private readonly syncing = new Set<string>();
   /** Keys the handles of quarantined sources ({@link handleOf}): a handle cannot be derived from the id without it. */
   private readonly handleKey = randomBytes(32);
+  /**
+   * Each folder source's network class for its badge (§18.4.8), by path. A
+   * Windows drive letter's mapping is asked of the helper at most once per
+   * `FOLDER_BADGE_TTL_MS`; every read still classifies the folder itself.
+   */
+  private readonly folderClasses = new Map<string, { network: FolderNetwork; at: number }>();
   /**
    * Installs in flight, by `kind:name`, and the source each is moving to:
    * every feed judges them by that source, not the one they leave (§10.4).
@@ -610,8 +625,62 @@ export class MarketplaceService implements RetirementEntryLookup {
       canRemove: reviewable,
       diagnostics: (snapshot?.diagnostics ?? []).map((item) => `${item.subject}: ${item.message}`),
       acknowledged: acknowledgedOf(source, state),
-      badges: badgesOf(source, acknowledgedOf(source, state)),
+      badges: await this.badgesOf(source, acknowledgedOf(source, state)),
     };
+  }
+
+  /**
+   * What a source's row and cards show while it applies (§18.5): a git
+   * source's plain http and each confirmed class; a folder's *Local folder*
+   * or *Network folder* (§18.4.8). A classifier that cannot run marks only
+   * that folder (`folder-unclassified`), so the list, its other rows and
+   * every recovery control still show.
+   */
+  private async badgesOf(source: ResolvedSource, acknowledged: readonly SourceWarning[]): Promise<SourceBadge[]> {
+    if (source.transport === "git") return urlBadges(source.url, acknowledged);
+    try {
+      return [folderBadge(await this.folderClass(source.path), acknowledged)];
+    } catch (error) {
+      if (classifierUnavailable(error)) return ["folder-unclassified"];
+      throw error;
+    }
+  }
+
+  private async folderClass(path: string): Promise<FolderNetwork> {
+    const now = this.now().getTime();
+    const known = this.folderClasses.get(path);
+    if (known && now - known.at < FOLDER_BADGE_TTL_MS) return known.network;
+    const { fs, platform } = this.options.folders;
+    const network = await classifyFolder(path, platform, fs);
+    this.folderClasses.set(path, { network, at: now });
+    return network;
+  }
+
+  /**
+   * The folder *Show in Finder* opens (§18.4.8), by source id; null for a git
+   * source, which has no folder. The folder is judged exactly as a read
+   * judges it (`openStoredFolder`): the policy, its network class and the
+   * `network-folder` confirmation before anything touches it, the fenced
+   * walk, and the same canonical path and recorded identity — a directory
+   * recreated at the path is `moved`, as a refresh says.
+   *
+   * The shell takes a path string, so what it opens is whatever the path
+   * means when it acts. The last step here classifies the path again and
+   * checks the confirmation, so the caller hands it to the shell with no
+   * filesystem call in between. A drive remapped after that check, by a
+   * concurrent change on this computer, is not caught (§18.4.1, the residual
+   * beside the concurrent-swap one).
+   */
+  async revealFolder(id: string): Promise<string | null> {
+    return this.operation(async () => {
+      const source = this.source(id);
+      if (source.transport !== "folder") return null;
+      const { fs, platform } = this.options.folders;
+      await openStoredFolder(source, await this.registry.readState(source.id), { registry: this.registry, gate: this.options.gate, folders: this.options.folders });
+      const acknowledged = await this.registry.acknowledged(source);
+      this.options.gate.checkFolder(source.path, await classifyFolder(source.path, platform, fs), acknowledged);
+      return source.path;
+    });
   }
 
   async listSources(): Promise<SourceView[]> {
@@ -949,11 +1018,14 @@ export class MarketplaceService implements RetirementEntryLookup {
     // A policy block needs no classification: it ends the preview before any call at all.
     this.options.gate.checkFolderPolicy(path);
     let root: FolderRoot;
+    // The canonical path's class: what is read, and what the badge names.
+    let network: FolderNetwork;
     try {
       this.options.gate.checkFolder(path, await classifyFolder(path, platform, fs), confirmed);
       root = await resolveFolderRoot(path, platform, fs, networkConsented);
+      network = await classifyFolder(root.path, platform, fs);
       // A block, or a folder on another computer, found only now on the canonical path ends the preview (§18.4.1 stage 4).
-      this.options.gate.checkFolder(root.path, await classifyFolder(root.path, platform, fs), confirmed);
+      this.options.gate.checkFolder(root.path, network, confirmed);
     } catch (error) {
       if (error instanceof ConfirmationRequiredError) return { type: "confirm", warnings: uniqueWarnings(error.warnings) };
       throw error;
@@ -972,7 +1044,7 @@ export class MarketplaceService implements RetirementEntryLookup {
         url: null,
         path: root.path,
         resolvedFrom,
-        badges: [],
+        badges: [folderBadge(network, [...confirmed])],
         ref: null,
         commit: built.snapshot.commit,
         credentialHelper: false,
@@ -1001,7 +1073,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       url: null,
       path: root.path,
       resolvedFrom,
-      badges: [],
+      badges: [folderBadge(network, [...confirmed])],
       ref: null,
       subdir: null,
       commit: direct.snapshot.commit,
@@ -1110,7 +1182,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       if (this.registry.isQuarantined(source)) continue;
       if (!this.registry.isEnabled(source, read.state) && !bound?.has(source.id)) continue;
       shown.push(source);
-      badges.set(source.id, badgesOf(source, acknowledgedOf(source, read.state)));
+      badges.set(source.id, await this.badgesOf(source, acknowledgedOf(source, read.state)));
       if (read.snapshot) snapshots.set(source.id, read.snapshot);
     }
     const rows = aggregateCatalog(
@@ -1259,7 +1331,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       provenance: {
         sourceLabel: label,
         repository: source.transport === "git" ? source.url.url : null,
-        folder: source.transport === "folder" ? source.path : null,
+        folder: source.transport === "folder" ? { path: source.path, readAt: await this.folderReadAt(source.id, snapshot), contents: row.package.treeSha256 ?? null } : null,
         path: row.package.path,
         snapshotCommit: row.snapshotCommit,
         versionCommit: shownVersion?.commit ?? null,
@@ -1275,6 +1347,16 @@ export class MarketplaceService implements RetirementEntryLookup {
       rungs: row.kind === "plugin" && shownVersion?.artifact ? await this.pluginRungViews(source, shownVersion, row.package.path) : [],
       versions: versionViews(row, effectiveRevocations(snapshot, context.appVersion), context, installedHere),
     };
+  }
+
+  /**
+   * When the contents a folder package shows were last read (§18.4.8): the
+   * last read when it succeeded; after a failed one, when the snapshot still
+   * served was read.
+   */
+  private async folderReadAt(sourceId: string, snapshot: SourceSnapshot): Promise<string> {
+    const last = (await this.registry.readState(sourceId)).lastSync;
+    return last?.result === "ok" ? last.at : snapshot.fetchedAt;
   }
 
   // ─── plans and installs ─────────────────────────────────────────────────

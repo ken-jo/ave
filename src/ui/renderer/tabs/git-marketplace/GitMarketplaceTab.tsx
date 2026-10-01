@@ -145,6 +145,11 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
   const [addInput, setAddInput] = useState("");
   /** Why a deep link filled nothing in, for the Add dialog it opened. */
   const [addRefusal, setAddRefusal] = useState<GitMarketplaceFailure | null>(null);
+  /** The source *Show <id>* opened the Sources view on (§18.8); dropped when the view changes. */
+  const [shownSource, setShownSource] = useState<string | null>(null);
+  useEffect(() => {
+    if (view !== "sources") setShownSource(null);
+  }, [view]);
   const [notice, setNotice] = useState<BootInstallNoticeView | null>(null);
   const [updateCheckEnabled, setUpdateCheckEnabled] = useState(true);
   const [offlineCacheEnabled, setOfflineCacheEnabled] = useState(true);
@@ -541,6 +546,7 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
                 void loadCatalog();
               }}
               onAdd={() => setAddOpen("marketplace")}
+              highlightId={shownSource}
             />
           </div>
         )}
@@ -641,6 +647,13 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
           setAddInput("");
           setAddRefusal(null);
           onAdded(source, preview);
+        }}
+        onShowSource={(id) => {
+          setAddOpen(null);
+          setAddInput("");
+          setAddRefusal(null);
+          setView("sources");
+          setShownSource(id);
         }}
       />
       <PackageSheet

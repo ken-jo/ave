@@ -128,6 +128,7 @@ export const en = {
   "mainDialog.updateRestartDetail": "Work in progress will end. Do you want to continue?",
   "mainDialog.attachTitle": "Select attachment files",
   "mainDialog.pluginPickFolderTitle": "Choose folders for {plugin}",
+  "mainDialog.marketplacePickFolderTitle": "Choose a marketplace or package folder",
   "mainDialog.installLocalPluginTitle": "Install local extension (developer)",
   "mainDialog.installLocalPluginMessage": "Select the build folder that contains plugin.json",
   "mainDialog.unauthorizedFrame": "Unauthorized frame.",

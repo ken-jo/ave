@@ -27,7 +27,7 @@ import type {
   UpdatePlanView,
 } from "../../../../shared/git-marketplace.js";
 import { MarketplaceProblem } from "./MarketplaceProblem.js";
-import { actionLabel, allowableWarning, exclusionLabel, kindLabel, originLabel, OTHER_SUBJECT, shortSha, sourceSubject, stateLabel } from "./labels.js";
+import { actionLabel, allowableWarning, exclusionLabel, kindLabel, originLabel, OTHER_SUBJECT, relativeTime, shortSha, sourceSubject, stateLabel } from "./labels.js";
 import { McpRuntimeSummary } from "./McpRuntimeSummary.js";
 import { componentInventory } from "../../../../marketplace/app/component-delta.js";
 import type { AgentPluginComponents } from "../../../../marketplace/catalog/types.js";
@@ -119,7 +119,7 @@ function RungList({ rungs }: { rungs: RungView[] }) {
           {" · "}
           {!rung.declared
             ? t("gitMarketplace.rung.notDeclared")
-            : rung.rung !== "tree" && !rung.pinned
+            : rung.rung !== "tree" && rung.rung !== "folder" && !rung.pinned
               ? t("gitMarketplace.rung.notPinned")
               : rung.detail ?? t("gitMarketplace.rung.declared")}
           {rung.declared && rung.unencrypted && (
@@ -313,12 +313,32 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
                 <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-0.5 text-sm">
                   <dt className="text-muted-foreground">{t("gitMarketplace.detail.source")}</dt>
                   <dd>{detail.provenance.sourceLabel}</dd>
-                  <dt className="text-muted-foreground">{t("gitMarketplace.detail.repository")}</dt>
-                  <dd className="break-all font-mono text-xs">{detail.provenance.repository ?? detail.provenance.folder}</dd>
-                  <dt className="text-muted-foreground">{t("gitMarketplace.detail.path")}</dt>
-                  <dd className="font-mono text-xs">{detail.provenance.path || "/"}</dd>
-                  <dt className="text-muted-foreground">{t("gitMarketplace.detail.commit")}</dt>
-                  <dd><Sha commit={detail.provenance.versionCommit ?? detail.provenance.snapshotCommit} /></dd>
+                  {detail.provenance.folder === null ? (
+                    <>
+                      <dt className="text-muted-foreground">{t("gitMarketplace.detail.repository")}</dt>
+                      <dd className="break-all font-mono text-xs">{detail.provenance.repository}</dd>
+                      <dt className="text-muted-foreground">{t("gitMarketplace.detail.path")}</dt>
+                      <dd className="font-mono text-xs">{detail.provenance.path || "/"}</dd>
+                      <dt className="text-muted-foreground">{t("gitMarketplace.detail.commit")}</dt>
+                      <dd><Sha commit={detail.provenance.versionCommit ?? detail.provenance.snapshotCommit} /></dd>
+                    </>
+                  ) : (
+                    // A folder's provenance (§18.4.8): where it is read, when, and the digest of what this package installs.
+                    <>
+                      <dt className="text-muted-foreground">{t("gitMarketplace.detail.folder")}</dt>
+                      <dd className="break-all font-mono text-xs" data-testid="git-marketplace:provenance:folder">{detail.provenance.folder.path}</dd>
+                      <dt className="text-muted-foreground">{t("gitMarketplace.detail.path")}</dt>
+                      <dd className="font-mono text-xs">{detail.provenance.path || "/"}</dd>
+                      <dt className="text-muted-foreground">{t("gitMarketplace.detail.folderRead")}</dt>
+                      <dd title={new Date(detail.provenance.folder.readAt).toLocaleString(locale)} data-testid="git-marketplace:provenance:read">{relativeTime(detail.provenance.folder.readAt, locale)}</dd>
+                      {detail.provenance.folder.contents !== null && (
+                        <>
+                          <dt className="text-muted-foreground">{t("gitMarketplace.detail.contents")}</dt>
+                          <dd><code className="font-mono text-xs" title={detail.provenance.folder.contents} data-testid="git-marketplace:provenance:contents">{detail.provenance.folder.contents.slice(0, 12)}</code></dd>
+                        </>
+                      )}
+                    </>
+                  )}
                   {detail.provenance.publishedAt && (
                     <>
                       <dt className="text-muted-foreground">{t("gitMarketplace.detail.published")}</dt>
@@ -352,13 +372,19 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
               {detail.rungs.length > 0 && (
                 <Section title={t("gitMarketplace.detail.delivery")}>
                   <RungList rungs={detail.rungs} />
-                  <p className="mt-1 text-xs text-muted-foreground">{t("gitMarketplace.detail.deliveryHelp")}</p>
+                  <p className="mt-1 text-xs text-muted-foreground" data-testid="git-marketplace:delivery-help">
+                    {detail.provenance.folder !== null ? t("gitMarketplace.detail.deliveryHelpFolder") : t("gitMarketplace.detail.deliveryHelp")}
+                  </p>
                 </Section>
               )}
               <Section title={t("gitMarketplace.detail.versions")}>
+                {detail.provenance.folder !== null && (
+                  <p className="mb-1 text-xs text-muted-foreground" data-testid="git-marketplace:versions:folder">{t("gitMarketplace.detail.versionsFolder")}</p>
+                )}
                 <ul className="space-y-1">
                   {detail.versions.map((version) => {
-                    const choosable = !version.candidate && !version.installed
+                    // A folder holds one version, its own: no other is offered (§18.4.3).
+                    const choosable = detail.provenance.folder === null && !version.candidate && !version.installed
                       && version.excluded.every((reason) => reason === "rollout" || reason === "prerelease");
                     return (
                       <li key={version.version} className="flex flex-wrap items-center gap-1.5" data-testid={`git-marketplace:version:${version.version}`}>
@@ -389,7 +415,10 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
                 {actionLabel(t, reviewPlan.action)} · <span className="font-mono">{reviewPlan.displayName} {reviewPlan.version}</span>
               </p>
               <p className="text-xs text-muted-foreground">
-                {t("gitMarketplace.review.boundTo", { commit: shortSha(reviewPlan.versionCommit) })} ·{" "}
+                {/* A folder's pin is its contents revision (`local-…`, §18.4.3), not a commit. */}
+                {reviewPlan.versionCommit.startsWith("local-")
+                  ? t("gitMarketplace.review.boundToFolder", { revision: shortSha(reviewPlan.versionCommit) })
+                  : t("gitMarketplace.review.boundTo", { commit: shortSha(reviewPlan.versionCommit) })} ·{" "}
                 {t("gitMarketplace.review.expiresIn", { time: `${Math.floor(expiresIn / 60)}:${String(expiresIn % 60).padStart(2, "0")}` })}
               </p>
               {isUpdatePlan(reviewPlan) && (
@@ -481,6 +510,11 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
               {reviewPlan.rungs.length > 0 && (
                 <Section title={t("gitMarketplace.detail.delivery")}>
                   <RungList rungs={reviewPlan.rungs} />
+                  {reviewPlan.notInstalled.length > 0 && (
+                    <p className="mt-1 break-words text-xs text-muted-foreground" data-testid="git-marketplace:review:not-installed">
+                      {t("gitMarketplace.review.notInstalled", { entries: reviewPlan.notInstalled.join(", ") })}
+                    </p>
+                  )}
                 </Section>
               )}
               {isSwitch && reviewPlan.action.action === "switch" && (

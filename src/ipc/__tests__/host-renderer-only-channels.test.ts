@@ -232,6 +232,9 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   // The update scheduler's status and *Check now* (design §18.9): a check syncs every source.
   ["git-marketplace", CHANNELS.gitMarketplace.updatesStatus, []],
   ["git-marketplace", CHANNELS.gitMarketplace.updatesCheck, []],
+  // The folder dialogs (design §18.9): a native folder chooser, and a folder source opened in the file manager.
+  ["git-marketplace", CHANNELS.gitMarketplace.sourcesPickFolder, []],
+  ["git-marketplace", CHANNELS.gitMarketplace.sourcesReveal, ["team"]],
 ];
 
 beforeEach(async () => {
