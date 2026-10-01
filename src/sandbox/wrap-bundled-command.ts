@@ -3,8 +3,10 @@ import {
   getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyPaths,
   cleanupAsrtSandboxAfterCommand,
-  useAppOwnedSandboxTempRoot,
+  ensureSandboxTempPrincipalDir,
+  sandboxTempEnvLaunch,
   wrapWorkerCommand,
+  type SandboxTempPrincipal,
 } from "../permissions/asrt-sandbox.js";
 import { buildSandboxedChildEnv } from "../tools/safe-env.js";
 
@@ -13,6 +15,8 @@ export interface BundledWrapInput {
   args: readonly string[];
   sandboxHome: { path: string; env: Record<string, string> };
   allowWrite: readonly string[];
+  /** Whose temp directory the process gets: its plugin for a hook, its server for an MCP stdio server. */
+  tempPrincipal: SandboxTempPrincipal;
 }
 
 /** Apply the same sensitive-path floors and egress policy to bundled processes. */
@@ -21,16 +25,18 @@ export async function wrapBundledCommand(input: BundledWrapInput): Promise<{ arg
     throw new Error("ASRT-wrapped bundled processes on Windows cannot apply per-exec allowRead/allowWrite grants");
   }
   const tmpDir = process.env.TMPDIR ?? process.env.TEMP ?? process.env.TMP;
-  // ASRT writes `TMPDIR=<this root>` into the wrapped command line, so the
-  // child's temp directory is this root whatever environment it is given; it
-  // has to be granted, or every temp file the process makes fails. Ensured
-  // here, before the wrap, as `confined-child.ts` does for its children.
-  const sandboxTempRoot = useAppOwnedSandboxTempRoot();
-  const cmdline = [input.command, ...input.args].map(shellQuote).join(" ");
+  // The principal's own temp directory, set as its TMPDIR inside the wrap
+  // (ASRT's own assignment would otherwise name the shared root) and granted
+  // alone; the read floor denies the shared temp and HOME roots, so no other
+  // principal's temp files or HOME can be read either, and the process HOME
+  // re-allowed here is its own — as `confined-child.ts` does for its children.
+  const temp = ensureSandboxTempPrincipalDir(input.tempPrincipal);
+  const launch = sandboxTempEnvLaunch(temp.dir, input.command, input.args);
+  const cmdline = [launch.command, ...launch.args].map(shellQuote).join(" ");
   const result = await wrapWorkerCommand(cmdline, {
     filesystem: {
-      allowWrite: [sandboxTempRoot, input.sandboxHome.path, ...input.allowWrite],
-      allowRead: [sandboxTempRoot, input.sandboxHome.path, ...input.allowWrite, ...(tmpDir ? [tmpDir] : [])],
+      allowWrite: [temp.dir, input.sandboxHome.path, ...input.allowWrite],
+      allowRead: [temp.dir, input.sandboxHome.path, ...input.allowWrite, ...(tmpDir ? [tmpDir] : [])],
       denyRead: getDefaultSensitiveReadDenyPaths(),
       denyWrite: getDefaultSensitiveWriteDenyPaths(),
       // Bundled hooks and MCP stdio servers are plugin-owned (or third-party)

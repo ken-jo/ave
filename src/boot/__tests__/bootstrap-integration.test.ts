@@ -545,17 +545,33 @@ vi.mock("../../permissions/sandbox-capability.js", () => ({
   setSandboxRequestedAtBoot: vi.fn(),
   setSandboxBootOutcome: vi.fn(),
 }));
-vi.mock("../../permissions/asrt-sandbox.js", () => ({
-  initializeAsrtSandbox: vi.fn(async () => {}),
-  useAppOwnedSandboxTempRoot: vi.fn(() => "/tmp/ave-test-sandbox-tmp"),
-  checkAsrtDependencies: vi.fn(async () => ({ errors: [], warnings: [] })),
-  isAsrtLinuxRuntimeProbeError: vi.fn(() => false),
-  isAsrtSandboxActive: vi.fn(() => false),
-  updateAsrtSandboxConfig: vi.fn(async () => {}),
-  computeUnionAllowedDomains: vi.fn(() => []),
-  normalizeUnionForAsrt: vi.fn(() => []),
-  computeDynamicEndpointHosts: vi.fn(() => []),
-}));
+vi.mock("../../permissions/asrt-sandbox.js", async () => {
+  // The boot step sweeps both private roots and creates the HOME root, so they
+  // live under a directory this file owns in the OS temp dir — never the real
+  // AVE_HOME — whose parent can be created.
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { mkdirSync } = await import("node:fs");
+  const roots = join(tmpdir(), "ave-bootstrap-integration-sandbox");
+  return {
+    appOwnedSandboxTempRoot: vi.fn(() => join(roots, "tmp")),
+    appOwnedSandboxHomeRoot: vi.fn(() => join(roots, "home")),
+    sandboxTempPrincipalDirsInUse: () => new Set<string>(),
+    ensureSandboxPrivateRoot: (root: string) => {
+      mkdirSync(root, { recursive: true, mode: 0o700 });
+      return root;
+    },
+    initializeAsrtSandbox: vi.fn(async () => {}),
+    useAppOwnedSandboxTempRoot: vi.fn(() => "/tmp/ave-test-sandbox-tmp"),
+    checkAsrtDependencies: vi.fn(async () => ({ errors: [], warnings: [] })),
+    isAsrtLinuxRuntimeProbeError: vi.fn(() => false),
+    isAsrtSandboxActive: vi.fn(() => false),
+    updateAsrtSandboxConfig: vi.fn(async () => {}),
+    computeUnionAllowedDomains: vi.fn(() => []),
+    normalizeUnionForAsrt: vi.fn(() => []),
+    computeDynamicEndpointHosts: vi.fn(() => []),
+  };
+});
 vi.mock("../../permissions/permission-settings-store.js", () => ({
   readPermissionSettings: vi.fn(() => ({
     permissions: { additionalDirectories: [] },

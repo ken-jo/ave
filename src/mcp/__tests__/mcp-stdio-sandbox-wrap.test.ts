@@ -21,7 +21,7 @@
  *                 capability; an UNWRAPPED server stays `none` (no-leak).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { homedir } from "node:os";
 
 // ─── child_process mock ─────────────────────────────────────
@@ -69,9 +69,17 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
     wrapWorkerCommand: (command: string, options?: unknown) =>
       wrapWorkerCommandMock(command, options),
     cleanupAsrtSandboxAfterCommand: () => cleanupMock(),
-    useAppOwnedSandboxTempRoot: () => SANDBOX_TEMP_ROOT,
+    // The real naming and launcher; only the directory's creation is skipped,
+    // because the real one would make it under this file's AVE_HOME.
+    ensureSandboxTempPrincipalDir: (principal: { kind: "plugin" | "mcp"; id: string }) => ({
+      dir: join(SANDBOX_TEMP_ROOT, actual.sandboxTempPrincipalDirName(principal)),
+      root: SANDBOX_TEMP_ROOT,
+    }),
+    sandboxTempEnvLaunch: actual.sandboxTempEnvLaunch,
+    sandboxTempPrincipalDirName: actual.sandboxTempPrincipalDirName,
     getDefaultSensitiveReadDenyPaths: actual.getDefaultSensitiveReadDenyPaths,
     getDefaultSensitiveWriteDenyPaths: actual.getDefaultSensitiveWriteDenyPaths,
+    appOwnedSandboxPrivateRoots: actual.appOwnedSandboxPrivateRoots,
   };
 });
 
@@ -81,8 +89,10 @@ import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.
 // Resolves to the mock export above (which delegates to the REAL impl via
 // vi.importActual), so the assertion checks the genuine deny-list.
 import {
+  appOwnedSandboxPrivateRoots,
   getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyPaths,
+  sandboxTempPrincipalDirName,
 } from "../../permissions/asrt-sandbox.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import {
@@ -238,21 +248,31 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
       string,
       { filesystem: { allowWrite: string[]; allowRead: string[]; denyRead: string[]; denyWrite: string[] } },
     ];
-    // Command + args are shell-quoted (defensive against spaces/injection).
-    expect(cmdline).toContain("'ave-mcp-fs'");
-    expect(cmdline).toContain("'--root'");
-    expect(cmdline).toContain("'/tmp'");
-    // Write-jail = the fresh process HOME + per-server sandbox root.
-    // ASRT points TMPDIR at the app-owned temp root, so it is granted first.
-    expect(options.filesystem.allowWrite).toEqual([SANDBOX_TEMP_ROOT, SANDBOX_HOME, sandboxRoot, pluginDataDir]);
+    // The server's own temp directory, keyed by its server id, set as TMPDIR
+    // inside the wrap (ASRT's own assignment names the shared root), then the
+    // command + args, every token shell-quoted (defensive against spaces/injection).
+    const tempDir = join(SANDBOX_TEMP_ROOT, sandboxTempPrincipalDirName({ kind: "mcp", id: "fs" }));
+    expect(cmdline).toBe(
+      `'/usr/bin/env' 'TMPDIR=${tempDir}' 'TMP=${tempDir}' 'TEMP=${tempDir}' 'ave-mcp-fs' '--root' '/tmp'`,
+    );
+    // Write-jail = the server's temp directory + the fresh process HOME +
+    // per-server sandbox root. The shared temp root is not granted.
+    expect(options.filesystem.allowWrite).toEqual([tempDir, SANDBOX_HOME, sandboxRoot, pluginDataDir]);
+    expect(options.filesystem.allowRead).toContain(tempDir);
     expect(options.filesystem.allowRead).toContain(SANDBOX_HOME);
     // The root + tmp are re-allowed for read; HOME is never re-allowed wholesale.
     expect(options.filesystem.allowRead).toContain(sandboxRoot);
     // The worker wrap applies the CENTRALIZED sensitive read DENY-LIST (deny-list,
     // not a read-allow jail): secrets + session/routine history + standard
     // credential stores are all read-DENIED, not just `~/.ave/secrets`.
+    // The floor also read-denies the sandbox private roots — every other
+    // principal's temp directory and every other process's HOME are under
+    // them, and ASRT's reads are deny-only.
     const sensitive = getDefaultSensitiveReadDenyPaths();
     expect(options.filesystem.denyRead).toEqual(sensitive);
+    const privateRoots = appOwnedSandboxPrivateRoots();
+    expect(privateRoots.map((root) => basename(root))).toEqual(["tmp", "home"]);
+    for (const root of privateRoots) expect(options.filesystem.denyRead).toContain(root);
     expect(options.filesystem.denyRead).toContain(join(aveHome(), "secrets"));
     expect(options.filesystem.denyRead).toContain(join(aveHome(), "sessions"));
     expect(options.filesystem.denyRead).toContain(join(homedir(), ".ssh"));
@@ -291,7 +311,7 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
     expect(isMcpServerWrapped("fs")).toBe(false);
   });
 
-  it("absent sandboxRoot grants only the fresh process HOME and the sandbox temp root (never real HOME/cwd)", async () => {
+  it("absent sandboxRoot grants only the fresh process HOME and the server's temp directory (never real HOME/cwd)", async () => {
     gateActive = true;
     const fake = new FakeChildProcess();
     fake.responses = handshakeResponses("nojail");
@@ -319,9 +339,13 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
       string,
       { filesystem: { allowWrite: string[]; allowRead: string[]; denyRead: string[] } },
     ];
-    // Only host-created roots: the app-owned temp root ASRT points TMPDIR at,
-    // and the fresh process HOME. No real HOME / cwd ever re-allowed for write.
-    expect(options.filesystem.allowWrite).toEqual([SANDBOX_TEMP_ROOT, SANDBOX_HOME]);
+    // Only host-created roots: the server's own temp directory and the fresh
+    // process HOME. No real HOME / cwd / shared temp root ever granted write.
+    expect(options.filesystem.allowWrite).toEqual([
+      join(SANDBOX_TEMP_ROOT, sandboxTempPrincipalDirName({ kind: "mcp", id: "nojail" })),
+      SANDBOX_HOME,
+    ]);
+    expect(options.filesystem.allowWrite).not.toContain(SANDBOX_TEMP_ROOT);
     expect(options.filesystem.allowWrite).not.toContain(process.env.HOME);
     expect(options.filesystem.allowWrite).not.toContain(process.cwd());
 

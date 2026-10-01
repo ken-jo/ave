@@ -23,11 +23,13 @@
 import { spawn, type ChildProcess, type StdioOptions } from "node:child_process";
 
 import {
-  appOwnedSandboxTempRoot,
+  ensureSandboxTempPrincipalDir,
   getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyPaths,
   isAsrtSandboxActive,
+  sandboxTempEnvLaunch,
   wrapWorkerCommand,
+  type SandboxTempPrincipal,
 } from "./asrt-sandbox.js";
 import { buildSandboxedChildEnv } from "../tools/safe-env.js";
 import {
@@ -57,8 +59,16 @@ export interface ConfinedChildSpec {
   readonly allowRead?: readonly string[];
   readonly allowWrite?: readonly string[];
   /**
+   * Whose temp directory the child gets: the plugin it belongs to. Required
+   * under `allow-list`, where the wrap grants that directory alone and sets
+   * the child's `TMPDIR` to it; ignored under `deny-only`, where the sandbox
+   * HOME's own `TEMP`/`TMP` is already per process
+   * (`sandbox-process-home.ts`).
+   */
+  readonly tempPrincipal?: SandboxTempPrincipal;
+  /**
    * The child may write INSIDE each write root but not unlink, rename or
-   * replace the root itself, the sandbox temp root included. For a child whose
+   * replace the root itself, its temp directory included. For a child whose
    * write roots are directories the host created and keeps resolving — a
    * plugin's data root above all — so that the child cannot `rmdir` one and
    * leave a link in its place. Carried to the wrap as
@@ -144,9 +154,11 @@ async function resolveSpawnLine(
   if (!isAsrtSandboxActive()) {
     return { executable: spec.command, args: [...spec.args], wrappedEnv: {} };
   }
-  const { cmdline, binShell } = buildConfinedCommandLine(spec.command, spec.args);
+  const temp = spec.grantMode === "allow-list" ? ensureSandboxTempPrincipalDir(requireTempPrincipal(spec)) : undefined;
+  const launch = temp ? sandboxTempEnvLaunch(temp.dir, spec.command, spec.args) : spec;
+  const { cmdline, binShell } = buildConfinedCommandLine(launch.command, launch.args);
   const { argv, env } = await wrapWorkerCommand(cmdline, {
-    filesystem: buildFilesystemConfinement(spec),
+    filesystem: buildFilesystemConfinement(spec, temp),
     ...(binShell !== undefined ? { binShell } : {}),
   });
   spec.onWrapped?.();
@@ -157,13 +169,20 @@ async function resolveSpawnLine(
   return { executable, args, wrappedEnv: env };
 }
 
+function requireTempPrincipal(spec: ConfinedChildSpec): SandboxTempPrincipal {
+  if (spec.tempPrincipal === undefined) {
+    throw new Error(`[confined-child] ${spec.label}: an allow-list confinement needs the temp principal it belongs to`);
+  }
+  return spec.tempPrincipal;
+}
+
 /**
  * The filesystem section of the ASRT command.
  *
  * The deny floor is restated unconditionally in BOTH modes, because a
  * per-command array replaces the shared one rather than extending it.
  */
-function buildFilesystemConfinement(spec: ConfinedChildSpec): {
+function buildFilesystemConfinement(spec: ConfinedChildSpec, temp: { dir: string } | undefined): {
   allowRead?: string[];
   allowWrite?: string[];
   denyRead: string[];
@@ -175,19 +194,20 @@ function buildFilesystemConfinement(spec: ConfinedChildSpec): {
     denyWrite: getDefaultSensitiveWriteDenyPaths(),
   };
   if (spec.grantMode === "deny-only") return floor;
-  // The temp root is granted here for the same reason the deny floor is
+  if (temp === undefined) throw new Error(`[confined-child] ${spec.label}: an allow-list confinement was built without its temp directory`);
+  // The temp directory is granted here for the same reason the deny floor is
   // restated here: no caller should have to remember it, and one that forgot
-  // would produce a child whose `os.tmpdir()` names a directory it cannot write
-  // — which is a failure with no obvious cause, arriving inside whatever
-  // library happened to want a temp file. It used to need no grant because ASRT
-  // pointed `TMPDIR` at one of its OWN default write paths; moving the root
-  // under `~/.ave` is what makes the grant necessary, and is the same change
-  // that stops this app's confined children from sharing a directory with every
-  // other ASRT consumer on the machine.
+  // would produce a child whose `os.tmpdir()` names a directory it cannot
+  // write — a failure with no obvious cause, arriving inside whatever library
+  // wanted a temp file. It is the principal's OWN directory, read and write;
+  // the shared root above it is read-denied by the floor, with the sandbox
+  // HOME root beside it, and ASRT's reads are deny-only, so that deny is what
+  // keeps one plugin from reading another's temp files or HOME.
   return {
-    allowRead: [...(spec.allowRead ?? [])],
-    allowWrite: [appOwnedSandboxTempRoot(), ...(spec.allowWrite ?? [])],
-    ...floor,
+    allowRead: [temp.dir, ...(spec.allowRead ?? [])],
+    allowWrite: [temp.dir, ...(spec.allowWrite ?? [])],
+    denyRead: floor.denyRead,
+    denyWrite: floor.denyWrite,
     ...(spec.pinWriteRoots === true ? { pinWriteRoots: true } : {}),
   };
 }

@@ -16,7 +16,16 @@ import { join, resolve } from "node:path";
  * `homedir()` directly, otherwise the env override leaks past one feature.
  */
 export function aveHome(): string {
-  return resolve(process.env.AVE_HOME ?? join(homedir(), ".ave"));
+  return resolve(process.env.AVE_HOME ?? defaultAveHome());
+}
+
+/**
+ * The default root, `~/.ave`, whatever `AVE_HOME` says. For the few callers
+ * that must recognise the person's real data even while a test or an e2e run
+ * points `AVE_HOME` elsewhere (the sandbox sweep's test guard).
+ */
+export function defaultAveHome(): string {
+  return resolve(join(homedir(), ".ave"));
 }
 
 /**

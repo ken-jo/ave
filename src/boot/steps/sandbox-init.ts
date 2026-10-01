@@ -2,10 +2,16 @@
 
 
 
+import { lstat, readdir, realpath, unlink } from "node:fs/promises";
+import { realpathSync } from "node:fs";
+import { join, resolve, sep } from "node:path";
+
 import { createLogger } from "../../lib/logger.js";
 import type { BootContext } from "../context.js";
 import type { SandboxGateAction, SandboxGateReason } from "./sandbox-gate.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { defaultAveHome } from "../../shared/ave-home.js";
+import { removeOwnedPluginTree } from "../../plugins/plugin-removal-transaction.js";
 
 const log = createLogger("ave");
 
@@ -34,6 +40,8 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
   {
     const {
       initializeAsrtSandbox,
+      appOwnedSandboxHomeRoot,
+      ensureSandboxPrivateRoot,
       useAppOwnedSandboxTempRoot,
       checkAsrtDependencies,
       isAsrtLinuxRuntimeProbeError,
@@ -217,6 +225,17 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
           // from THIS process's environment at wrap time — a value published
           // after a wrap would apply to some children and not others, which is
           // the one shape a temp-root decision must not have.
+          // The principals' temp directories and the sandbox HOMEs are emptied
+          // first, while no confined process exists to use one — the plugins
+          // have not started. That is what removes the temp directory of a
+          // plugin uninstalled, or an MCP server dropped, since the last start,
+          // and every HOME a process that did not exit cleanly left behind.
+          // Anything THIS process created is kept, whatever started first.
+          await sweepSandboxPrivateRoots();
+          // Both roots exist before the first wrap: Linux's bwrap skips a read
+          // deny on a path that is not there, so a root created afterwards
+          // would be visible to every process wrapped before it.
+          ensureSandboxPrivateRoot(appOwnedSandboxHomeRoot());
           const sandboxTempRoot = useAppOwnedSandboxTempRoot();
           await initializeAsrtSandbox({
             allowedDomains: unionAllowedDomains,
@@ -350,5 +369,102 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
           "pre-exec ask (turn hostClassifiesRisk off) until the sandbox is active.",
       );
     }
+  }
+}
+
+/**
+ * Empty both sandbox private roots, each keeping the directories this process
+ * created in it: the principals' temp directories, and the sandbox HOMEs. A
+ * root that cannot be emptied is reported and left; the read floor still
+ * denies it.
+ */
+export async function sweepSandboxPrivateRoots(): Promise<void> {
+  const { appOwnedSandboxHomeRoot, appOwnedSandboxTempRoot, sandboxTempPrincipalDirsInUse } =
+    await import("../../permissions/asrt-sandbox.js");
+  const { sandboxProcessHomesInUse } = await import("../../permissions/sandbox-process-home.js");
+  const roots = [
+    [appOwnedSandboxTempRoot(), sandboxTempPrincipalDirsInUse()],
+    [appOwnedSandboxHomeRoot(), sandboxProcessHomesInUse()],
+  ] as const;
+  // Ahead of the loop, and not caught by it: a test naming the real home must
+  // fail, with neither root touched.
+  for (const [root] of roots) refuseRealAveHomeUnderTest(root);
+  for (const [root, inUse] of roots) {
+    await sweepSandboxPrivateRoot(root, inUse).catch((error: unknown) => {
+      log.warn("boot: could not empty the sandbox root %s: %s", root, errorMessage(error));
+    });
+  }
+}
+
+/**
+ * Remove everything under one of the sandbox private roots — the principals'
+ * temp directories, or the sandbox HOMEs — except what this process created
+ * (`inUse`), and whatever a version that still granted the temp root left in
+ * it.
+ *
+ * Run at boot, before any confined process exists, so nothing is using a
+ * directory it removes and nothing can change the tree while it is walked; the
+ * `inUse` set keeps that true even for a spawn that ran first. No link is
+ * followed: a root that is a link is unlinked, never listed; each entry is
+ * removed with {@link removeOwnedPluginTree}, which deletes a link rather than
+ * its target and takes back the modes and, on macOS, the user-immutable flags a
+ * confined process could have set inside its own directory.
+ */
+export async function sweepSandboxPrivateRoot(root: string, inUse: ReadonlySet<string>): Promise<void> {
+  refuseRealAveHomeUnderTest(root);
+  let entry;
+  try {
+    entry = await lstat(root);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (!entry.isDirectory()) {
+    await unlink(root);
+    return;
+  }
+  const canonicalRoot = await realpath(root);
+  refuseRealAveHomeUnderTest(canonicalRoot);
+  for (const name of await readdir(root)) {
+    if (inUse.has(join(root, name)) || inUse.has(join(canonicalRoot, name))) continue;
+    await removeOwnedPluginTree(join(root, name));
+  }
+}
+
+/**
+ * Under the test runner, refuse to sweep a root inside the developer's real
+ * `~/.ave` other than `test-tmp`. What is there belongs to a running app:
+ * the HOMEs and temp directories of its confined processes, which a sweep
+ * deletes. Tests resolve the roots to a per-run directory instead
+ * (`vitest.globalSetup.ts`); this is the stop for one that names the real
+ * home anyway.
+ */
+function refuseRealAveHomeUnderTest(root: string): void {
+  if (process.env.VITEST === undefined) return;
+  // Both spellings of each side: HOME may be reached through a link (`/tmp`
+  // is `/private/tmp` on macOS), and the root may be named either way.
+  const homes = spellings(defaultAveHome());
+  const paths = spellings(resolve(root));
+  // macOS and Windows file systems ignore case by default: `/Users/Me/.AVE`
+  // is the same directory.
+  const fold = (p: string) => (process.platform === "linux" ? p : p.toLowerCase());
+  const inside = (path: string, dir: string) => fold(path) === fold(dir) || fold(path).startsWith(fold(dir) + sep);
+  for (const real of homes) {
+    const sanctioned = join(real, "test-tmp");
+    for (const path of paths) {
+      if (inside(path, real) && !inside(path, sanctioned)) {
+        throw new Error(`sandbox: refusing to sweep ${root} from a test process; it is under the real ${real}`);
+      }
+    }
+  }
+}
+
+/** A path as given and, when it exists, as the file system resolves it. */
+function spellings(path: string): string[] {
+  try {
+    return [path, realpathSync.native(path)];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [path];
+    throw error;
   }
 }

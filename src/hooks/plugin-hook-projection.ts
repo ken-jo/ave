@@ -8,7 +8,7 @@ import { PluginContributionTrustStore } from "../plugins/plugin-contribution-tru
 export interface PreparedPluginHookProjection {
   owner: PluginHookOwner;
   entries: readonly HookConfigEntry[];
-  confinement: { kind: "bundled"; dataDir: string; generationRoot: string };
+  confinement: { kind: "bundled"; pluginId: string; dataDir: string; generationRoot: string };
 }
 
 /** Exact-version/fingerprint trust records. Records never transfer to a new version. */
@@ -82,7 +82,7 @@ export function preparePluginHookGeneration(
         : createHash("sha256").update(commandFingerprints.sort().join("\0")).digest("hex"),
     });
     projections.push(Object.freeze({ owner, entries: Object.freeze(anchoredEntries),
-      confinement: Object.freeze({ kind: "bundled", dataDir, generationRoot: payloadRoot }),
+      confinement: Object.freeze({ kind: "bundled", pluginId: generation.pluginId, dataDir, generationRoot: payloadRoot }),
     }));
   }
   return Object.freeze(projections);

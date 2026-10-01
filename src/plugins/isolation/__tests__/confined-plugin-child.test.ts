@@ -15,14 +15,14 @@
  *    assertion. "Its allow set" is larger than what `spawnConfinedPluginChild`
  *    grants — `envelope.write` plus the throwaway sandbox HOME, which for the
  *    unwidened pilot the probe below uses is its own data directory and that
- *    HOME: ASRT merges its OWN default write paths into every wrap, which
- *    include the temp root it also points the child's `TMPDIR` at. So this
- *    proves the child cannot reach the fixture paths; it does NOT prove the
- *    jail is what the spawn granted and nothing else, and the next bullet is
- *    the case that says so out loud.
- *  - The child CAN write, durably, to a path the spawn granted no part of: the
- *    temp root ASRT substitutes, which is one of the default write paths it
- *    merges.
+ *    HOME: the confinement primitive adds the plugin's own temp directory,
+ *    which it also sets as the child's `TMPDIR`. So this proves the child
+ *    cannot reach the fixture paths; it does NOT prove the jail is what the
+ *    spawn granted and nothing else, and the next bullet is the case that
+ *    says so out loud.
+ *  - The child CAN write, durably, to a path the spawn granted no part of: its
+ *    plugin's temp directory, which exists because the host created it before
+ *    the spawn — and a second plugin's child cannot read what it left there.
  *    Asserted here — with the host reading the bytes back — because the routing
  *    SOT and the blueprint both said the write jail was exactly two paths, and
  *    a sentence with no case behind it is how a false one survives review.
@@ -53,10 +53,6 @@
  *    the real userData dir, so the composition of the allow set is asserted
  *    separately and honestly as wiring rather than dressed up as a containment
  *    result.
- *  - That the temp root the child is given EXISTS. It usually will not: ASRT
- *    substitutes its own `TMPDIR` and creates nothing, so the meeting case
- *    below asserts what a child does when that path is absent rather than
- *    assuming the host's temp directory carried over.
  *  - EGRESS confinement. The macOS backend filters egress through a proxy
  *    rather than a namespace, so an internet probe would pass on an offline
  *    machine for the wrong reason. Loopback BIND is a separate question and it
@@ -71,8 +67,8 @@
  *    every pull request has no bubblewrap — ASRT vendors only seccomp and
  *    srt-win — so on that runner those cases return without spawning anything.
  *    To see what that looks like, make `asrtCanInitialize()` return false and
- *    run this file: on darwin/arm64 all 46 cases that run there pass, with no
- *    skip mark and no warning, where the 20 that need the backend take
+ *    run this file: on darwin/arm64 all 48 cases that run there pass, with no
+ *    skip mark and no warning, where the 22 that need the backend take
  *    hundreds of milliseconds each when it is there.
  *    `sandboxCasesRun()` below is what stops that from being invisible: an
  *    environment that is SUPPOSED to run them sets
@@ -86,7 +82,7 @@
  *    The OTHER 26 cases need no sandbox: they drive `derivePluginChildEnvelope`
  *    directly, or they drive the spawn's refusal paths, which run ahead of the
  *    wrap. Measured with `asrtCanInitialize()` forced false on darwin/arm64:
- *    26 passed and 20 failed under `AVE_REQUIRE_SANDBOX_CASES=1`. So the
+ *    26 passed and 22 failed under `AVE_REQUIRE_SANDBOX_CASES=1`. So the
  *    envelope decisions this file pins keep being measured on a machine that
  *    cannot sandbox; what stops being measured there is the kernel half.
  */
@@ -107,7 +103,7 @@ import {
 } from "node:fs";
 import type { Stats } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   resolvePluginSocketDir,
@@ -128,10 +124,14 @@ import {
   type ObservedPluginChild,
 } from "../out-of-process-plugin.js";
 import {
+  appOwnedSandboxHomeRoot,
   appOwnedSandboxTempRoot,
+  cleanupAsrtSandboxAfterCommand,
   initializeAsrtSandbox,
   isAsrtSandboxActive,
   resetAsrtSandbox,
+  sandboxTempPrincipalDirName,
+  type SandboxTempPrincipal,
 } from "../../../permissions/asrt-sandbox.js";
 import { asrtCanInitialize } from "../../../permissions/__tests__/test-helpers.js";
 import { isPluginChildConfined } from "../../../permissions/sandbox-capability.js";
@@ -145,7 +145,10 @@ import { createValidationHost } from "../../validate/validation-host.js";
 import { createRecordingHost } from "./host-protocol-recording-host.js";
 import { resolveProcessLaunch } from "../../process-entry.js";
 import { PLUGIN_INSTANCE_METHODS } from "../plugin-instance-wire.js";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { bundledWrappedEnv, wrapBundledCommand } from "../../../sandbox/wrap-bundled-command.js";
+import { createSandboxProcessHome } from "../../../permissions/sandbox-process-home.js";
+import { buildSafeChildEnv } from "../../../tools/safe-env.js";
 
 const PLUGIN_ID = "vega-helper";
 const WIDENED_PLUGIN_ID = "local-indexer";
@@ -180,8 +183,8 @@ const CA_TEXT = "-----BEGIN CERTIFICATE-----\nthe-corporate-trust-anchor\n";
 const LEGACY_SESSION_BYTES = "the session that predates pluginDataDir";
 /** Stands in for the plugin's own code: readable out of `pluginRoot`, never writable back into it. */
 const PLUGIN_CODE_BYTES = "the plugin's own code, which it may read and may not rewrite";
-/** What one child leaves in the shared temp root, so a second child reading it is a channel and not a coincidence. */
-const SHARED_TEMP_BYTES = "bytes one confined child left where another confined child can read them";
+/** What one child leaves in its own temp directory, so the host reading it back shows the write landed and lasted. */
+const OWN_TEMP_BYTES = "bytes one confined child left in its own temp directory";
 
 /**
  * ASRT's own default temp root — the one this app no longer uses, and now denies.
@@ -244,14 +247,10 @@ interface Fixture {
    */
   readonly hostRoot: string;
   /**
-   * The basename a child writes into the temp root ASRT substitutes.
-   *
-   * Unique per fixture because that root is SHARED — it is one of ASRT's own
-   * default write paths, so every confined child on the machine reaches the
-   * same directory and a fixed name would let two runs, or two plugins, collide
-   * in it. Which is the finding the case using this asserts.
+   * The basename a child writes into its plugin's temp directory, which the
+   * host then reads back and a second plugin's child is refused.
    */
-  readonly sharedTempName: string;
+  readonly ownTempName: string;
   /** `<AVE_HOME>/certs/corp-ca.pem` — host-owned AND on the read-deny floor. */
   readonly caFile: string;
   /** A directory the user approved, standing in for a chosen index root. */
@@ -281,10 +280,10 @@ interface Fixture {
 let fixture: Fixture | undefined;
 let previousAveHome: string | undefined;
 /**
- * ASRT reads this out of the HOST env when it builds the wrap, and it decides
- * the child's `TMPDIR`. One case sets it to reproduce the absent temp root an
- * ordinary machine has, so it is restored the same way `AVE_HOME` is — a case
- * that leaked it would hand the next case a temp root that does not exist.
+ * ASRT reads this out of the HOST env when it builds the wrap and writes it as
+ * `TMPDIR` ahead of the command, where the in-wrap assignment of the
+ * principal's directory overrides it. One case points it at an absent path to
+ * show the child never sees it, so it is restored the same way `AVE_HOME` is.
  */
 let previousSandboxTmpdir: string | undefined;
 
@@ -333,7 +332,7 @@ function makeFixture(): Fixture {
     pluginDataDir,
     outsideFile: join(root, "outside-the-jail.txt"),
     hostRoot,
-    sharedTempName: `${basename(root)}.txt`,
+    ownTempName: `${basename(root)}.txt`,
     caFile,
     userRoot,
     userRootSibling,
@@ -451,12 +450,11 @@ const report = {
   childHome: homedir(),
   writeChildHome: attempt(() => { writeFileSync(join(homedir(), "state.json"), "state"); return "written"; }),
   // The FOURTH answer, and the one that falsifies "the jail is what the spawn
-  // granted". ASRT merges its own default write paths into every wrap, and the
-  // temp root it substitutes is one of them — so this write is outside
-  // \`pluginDataDir\`, outside the substituted HOME, and DURABLE. The host reads
-  // the bytes back to show the last part.
+  // granted": the temp directory, granted by the confinement primitive rather
+  // than by the spawn — outside \`pluginDataDir\`, outside the substituted HOME,
+  // and DURABLE. The host reads the bytes back to show the last part.
   childTmpdir: tmpdir(),
-  writeChildTmpdir: attempt(() => { mkdirSync(tmpdir(), { recursive: true }); writeFileSync(join(tmpdir(), ${JSON.stringify(fx.sharedTempName)}), ${JSON.stringify(SHARED_TEMP_BYTES)}); return "written"; }),
+  writeChildTmpdir: attempt(() => { mkdirSync(tmpdir(), { recursive: true }); writeFileSync(join(tmpdir(), ${JSON.stringify(fx.ownTempName)}), ${JSON.stringify(OWN_TEMP_BYTES)}); return "written"; }),
   writeAsrtDefaultTemp: attempt(() => { writeFileSync(${JSON.stringify(join(ASRT_DEFAULT_TEMP_ROOT, "ave-confined-probe.txt"))}, "escaped"); return "written"; }),
   writeAsrtDefaultNpmLogs: attempt(() => { writeFileSync(${JSON.stringify(join(homedir(), ".npm", "_logs", "ave-confined-probe.txt"))}, "escaped"); return "written"; }),
   asrtDefaultNpmLogsExists: attempt(() => existsSync(${JSON.stringify(join(homedir(), ".npm", "_logs"))}) ? "yes" : "no"),
@@ -1384,60 +1382,45 @@ describe("the confined child, against the real sandbox", () => {
 
       // ── the FOURTH answer: outside both grants, and DURABLE ────────────
       //
-      // The write jail is NOT what the spawn names. The temp root is a third
-      // granted path, added by the confinement primitive rather than by this
-      // spawn — so this is a path in no grant this spawn made, that the child
-      // writes and the HOST then reads back. Asserted rather than described
-      // because "exactly two paths" survived two revisions of the routing SOT
-      // and the blueprint with no case able to contradict it.
+      // The write jail is NOT what the spawn names. The temp directory is a
+      // third granted path, added by the confinement primitive rather than by
+      // this spawn — so this is a path in no grant this spawn made, that the
+      // child writes and the HOST then reads back. Asserted rather than
+      // described because "exactly two paths" survived two revisions of the
+      // routing SOT and the blueprint with no case able to contradict it.
       //
-      // WHAT CHANGED, and what did not. The root used to be ASRT's own
-      // substituted temp dir, which is per-MACHINE: every ASRT consumer on the
-      // box reached it, so the channel ran between this app's sandbox and
-      // whatever else used the same runtime. It is now `~/.ave/sandbox/tmp`,
-      // and ASRT's default write paths are on the deny floor — measured, with
-      // `~/.npm/_logs` present on the machine and refused by the OS rather
-      // than missing. What remains is narrower and still real: the root is one
-      // directory for ALL of this app's confined children, so the two below
-      // still meet in it.
+      // WHAT IT IS NOW. It used to be ASRT's own `/tmp/claude`, shared with
+      // every ASRT consumer on the machine, and then `~/.ave/sandbox/tmp`,
+      // shared by every confined child of this app — two plugins met in it, and
+      // the second one read the first one's bytes. It is now this PLUGIN'S
+      // directory under that root, set as `TMPDIR` inside the wrap, with the
+      // root itself read-denied: the channel the second child below used is
+      // closed, which the per-principal cases in "the sandbox temp
+      // directories" assert for every kind of confined process.
       // Written against `tmpdir()` rather than a literal so it asks the same
       // question whichever backend is underneath.
-      const sharedTemp = join(report.childTmpdir, fx.sharedTempName);
-      // The shared root outlives the fixture, so this file is the one artefact
-      // `afterEach` cannot reclaim — and it lands in a directory every other
-      // confined child on the machine also reaches. The cleanup wraps every
-      // assertion that follows the write, so a failing one does not leave it
-      // there.
-      try {
-        expect(report.childTmpdir).not.toBe(report.childHome);
-        expect(report.childTmpdir.startsWith(fx.pluginDataDir)).toBe(false);
-        expect(report.childTmpdir.startsWith(report.childHome)).toBe(false);
-        expect(report.writeChildTmpdir.ok, JSON.stringify(report.writeChildTmpdir)).toBe(true);
-        // Durable, which is what separates this outcome from the `homedir()`
-        // one: the bytes are still there, read from the unconfined host.
-        expect(readFileSync(sharedTemp, "utf-8")).toBe(SHARED_TEMP_BYTES);
+      const ownTemp = join(report.childTmpdir, fx.ownTempName);
+      const ownTempDir = join(appOwnedSandboxTempRoot(), sandboxTempPrincipalDirName({ kind: "plugin", id: PLUGIN_ID }));
+      expect(realpathSync(report.childTmpdir), "the child's TMPDIR is not its plugin's temp directory")
+        .toBe(realpathSync(ownTempDir));
+      expect(report.childTmpdir).not.toBe(report.childHome);
+      expect(report.childTmpdir.startsWith(fx.pluginDataDir)).toBe(false);
+      expect(report.childTmpdir.startsWith(report.childHome)).toBe(false);
+      expect(report.writeChildTmpdir.ok, JSON.stringify(report.writeChildTmpdir)).toBe(true);
+      // Durable, which is what separates this outcome from the `homedir()`
+      // one: the bytes are still there, read from the unconfined host.
+      expect(readFileSync(ownTemp, "utf-8")).toBe(OWN_TEMP_BYTES);
 
-        // …and that path is SHARED. A second confined child, from a second
-        // plugin with its own `pluginRoot` and `pluginDataDir`, reads the first
-        // one's bytes. The per-plugin jail is per-plugin; the temp root is not,
-        // so two confined plugins have a write channel between them that
-        // neither manifest declares. Still a defect, and narrower than it was:
-        // the directory is now this app's rather than one shared with every
-        // ASRT consumer on the machine. Closing the rest needs a root per
-        // CHILD, and ASRT takes that value from the wrapping process's
-        // environment rather than from a per-command option — so it would mean
-        // mutating `process.env` around an `await` on the spawn path. The SOT's
-        // axis 6 carries that, with the reason it is not done in passing.
-        const crossPluginRead = await runCrossPluginReadProbe(
-          fx,
-          installPlugin(fx, "a-second-confined-plugin"),
-          sharedTemp,
-        );
-        expect(crossPluginRead.ok, JSON.stringify(crossPluginRead)).toBe(true);
-        expect(crossPluginRead.value).toBe(SHARED_TEMP_BYTES);
-      } finally {
-        rmSync(sharedTemp, { force: true });
-      }
+      // …and that path is NOT shared. A second confined child, from a second
+      // plugin with its own `pluginRoot` and `pluginDataDir`, cannot read the
+      // first one's bytes, which the host just read above.
+      const crossPluginRead = await runCrossPluginReadProbe(
+        fx,
+        installPlugin(fx, "a-second-confined-plugin"),
+        ownTemp,
+      );
+      expect(crossPluginRead.ok, JSON.stringify(crossPluginRead)).toBe(false);
+      expect(crossPluginRead.value).toBeUndefined();
 
       // ── ASRT's own default write paths, which are NOT ours ────────────
       //
@@ -2257,11 +2240,13 @@ export const createPlugin = async (context) => {
  *    plugin's own pre-flight guard and is denied. There is no wire form for
  *    `BrowserWindow`, `screen`, `session` or `ipcMain`, so this is not a
  *    marshalling gap but the boundary working as designed.
- *  - Its `createPlugin` sweeps `os.tmpdir()` unguarded — not behind a `try`,
- *    not deferred to a tool call, so it runs on every load — and the
- *    substituted temp root does not exist on an ordinary machine, so the
- *    plugin would not load at all, which is a different and worse failure than
- *    a degraded one.
+ *  - (No longer a refusal, recorded because it was one.) Its `createPlugin`
+ *    sweeps `os.tmpdir()` unguarded — not behind a `try`, not deferred to a
+ *    tool call, so it runs on every load — and the temp root ASRT substitutes
+ *    did not exist on an ordinary machine, so the plugin would not have loaded
+ *    at all. The host now creates the plugin's own temp directory before every
+ *    spawn and sets it as `TMPDIR` inside the wrap, and the case below asserts
+ *    the sweep succeeds.
  *  - The same activation body moves a session directory it once kept under
  *    `context.hostRoot` into `pluginDataDir`, per file and equally unguarded.
  *    `hostRoot` is outside the child's write jail, so on an install that still
@@ -2300,14 +2285,12 @@ export const createPlugin = async (context) => {
  *    that found an empty directory, and it is the READ half of the same axis
  *    measured in the same call — a path outside the plugin's own directories
  *    and off the sandbox's deny floor stays readable.
- *  - The temp root the sandbox substitutes. `CLAUDE_CODE_TMPDIR` is pointed at
- *    a path that does NOT exist, which is the state an ordinary machine is in:
- *    ASRT rewrites the child's `TMPDIR` to `/tmp/claude` when nothing names
- *    another, that path is on its default WRITE allow-list, and nothing
- *    creates it. Pointing it at an absent path INSIDE this child's own write
- *    jail reproduces that state on any machine — including one whose
- *    `/tmp/claude` happens to exist, which is the only reason the first
- *    measurement of this consequence read as green.
+ *  - The temp directory the child sees. `CLAUDE_CODE_TMPDIR` — what ASRT
+ *    writes as the child's `TMPDIR` — is pointed at a path that does NOT
+ *    exist, the state an ordinary machine was in with ASRT's `/tmp/claude`,
+ *    and inside this child's own write jail so only absence could fail it. The
+ *    child sees neither: its `TMPDIR` is its plugin's directory, assigned
+ *    inside the wrap and created by the host, so its unguarded sweep succeeds.
  */
 describe("a refused candidate's members, out of process and confined", () => {
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
@@ -2438,9 +2421,9 @@ export const createPlugin = async (context) => {
         tmpdir: tmpdir(),
         sweep: await attempt(() => readdirSync(tmpdir()).length),
         stage: await attempt(() => mkdtempSync(join(tmpdir(), "ave-meeting-upload-"))),
-        // The plugin does not do this, and that is the point: the path is
-        // inside the write jail, so creating it succeeds. Absence is the
-        // failure, not permission.
+        // The plugin does not do this: the directory is inside the write jail,
+        // so creating it succeeds — absence, not permission, was the old
+        // failure, and the host now removes it.
         create: await attempt(() => { mkdirSync(tmpdir(), { recursive: true }); return "made"; }),
       }),
     },
@@ -2540,12 +2523,13 @@ export const createPlugin = async (context) => {
         launch: { kind: "entry", entryPath },
         childEntryPath,
       });
-      // Reproduce, on THIS machine, the temp root an ordinary machine has:
-      // one the sandbox hands the child and that does not exist. It is placed
-      // inside `pluginDataDir` so it is WRITE-ALLOWED and merely absent, which
-      // is exactly `/tmp/claude`'s status — on ASRT's default write allow-list
-      // and created by nothing. Read by ASRT out of the HOST env while it
-      // builds the wrap, so it must be set before the spawn.
+      // The temp root ASRT itself would hand the child: read out of the HOST
+      // env while it builds the wrap, and here one that does not exist, inside
+      // `pluginDataDir` so it is write-allowed and merely absent — `/tmp/claude`'s
+      // status on an ordinary machine, where the plugin's unguarded sweep of
+      // `tmpdir()` used to stop it loading. The child must not see it: its
+      // `TMPDIR` is its plugin's own directory, assigned inside the wrap after
+      // ASRT's, and created by the host before the spawn.
       const absentSandboxTmp = join(plugin.pluginDataDir, "sandbox-tmp-that-is-absent");
       expect(existsSync(absentSandboxTmp)).toBe(false);
       process.env.CLAUDE_CODE_TMPDIR = absentSandboxTmp;
@@ -2677,32 +2661,26 @@ export const createPlugin = async (context) => {
           false,
         );
 
-        // ── the temp root the sandbox substitutes, and its absence ─────────
+        // ── the temp directory the child sees, whatever ASRT would hand it ─
         const temp = (await instance.handlers.meeting_tmpdir_probe!()) as {
           tmpdir: string;
           sweep: { ok: boolean; code?: string };
           stage: { ok: boolean; code?: string };
           create: { ok: boolean; code?: string };
         };
-        // The host's own temp directory is IRRELEVANT: the child never sees
-        // it. ASRT rewrites `TMPDIR` for any wrap that carries a write policy,
-        // and this spawn's does.
-        expect(temp.tmpdir).toBe(absentSandboxTmp);
+        // Neither the host's own temp directory nor the root ASRT was given:
+        // the plugin's directory, which the host created before the spawn.
+        expect(realpathSync(temp.tmpdir)).toBe(
+          realpathSync(join(appOwnedSandboxTempRoot(), sandboxTempPrincipalDirName({ kind: "plugin", id: "meeting" }))),
+        );
+        expect(temp.tmpdir).not.toBe(absentSandboxTmp);
+        expect(existsSync(absentSandboxTmp)).toBe(false);
         expect(temp.tmpdir).not.toBe(tmpdir());
-        // The sweep the plugin runs unguarded inside `createPlugin` — this
-        // `ENOENT` is what escapes it and stops the plugin loading at all.
-        expect(temp.sweep, JSON.stringify(temp.sweep)).toMatchObject({
-          ok: false,
-          code: "ENOENT",
-        });
-        // …and the upload staging, for the same reason.
-        expect(temp.stage, JSON.stringify(temp.stage)).toMatchObject({
-          ok: false,
-          code: "ENOENT",
-        });
-        // The failure axis is ABSENCE, not permission: the same path is
-        // writable the moment it exists. A jail denial would fail this too and
-        // would mean something entirely different about the fix.
+        // So the sweep the plugin runs unguarded inside `createPlugin`, and its
+        // upload staging, both succeed: the directory exists and is the
+        // plugin's to write.
+        expect(temp.sweep, JSON.stringify(temp.sweep)).toMatchObject({ ok: true });
+        expect(temp.stage, JSON.stringify(temp.stage)).toMatchObject({ ok: true });
         expect(temp.create, JSON.stringify(temp.create)).toMatchObject({ ok: true });
       } finally {
         await instance.stop?.();
@@ -3514,7 +3492,7 @@ process.stdin.on("end", () => process.exit(0));
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
       const result = await runOneHookScript(
         { id: "swap", hookType: "pre", source: "config", hookPath: script, command: ["/bin/sh", script],
-          confinement: { kind: "bundled", dataDir, generationRoot } },
+          confinement: { kind: "bundled", pluginId: "swap-plugin", dataDir, generationRoot } },
         { hookType: "pre", event: "pre", toolName: "read_file", source: "builtin", category: "read", input: {},
           sessionId: "root-swap", trustOrigin: "user-keyboard" },
         { timeoutMs: 10_000 },
@@ -3526,24 +3504,152 @@ process.stdin.on("end", () => process.exit(0));
   );
 });
 
-describe("a bundled hook's temp directory", () => {
-  // ASRT writes `TMPDIR=<app-owned temp root>` into the wrapped command, so a
-  // hook's temp files land there whatever environment it is given. The bundled
-  // wrap grants that root and pins it like its other write roots: the hook can
-  // write a temp file, and cannot rename or remove the root other children
-  // share.
+describe("the sandbox temp directories", () => {
+  // ASRT writes `TMPDIR=<shared root>` ahead of every wrapped command. Each
+  // confined process instead gets its principal's directory under that root —
+  // its plugin's, for a plugin child, worker or bundled hook; its own, for an
+  // MCP stdio server — set as `TMPDIR` inside the wrap, granted alone, with the
+  // root read-denied. ASRT reads are deny-only and `0o700` stops no process of
+  // the same user, so the grants are the whole of the isolation measured here.
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
-    "writes under $TMPDIR, and cannot rename or remove the temp root",
+    "no principal reaches another's temp files: two plugin children, a worker, a bundled hook and an MCP stdio wrap",
     async () => {
       if (!(await sandboxCasesRun())) return;
       const fx = fixture!;
-      // The root a fresh process publishes for this fixture's AVE_HOME. Set
-      // here because the module publishes it once per process, and an earlier
-      // case in this file published another fixture's.
-      const tempRoot = appOwnedSandboxTempRoot();
-      mkdirSync(tempRoot, { recursive: true, mode: 0o700 });
-      process.env.CLAUDE_CODE_TMPDIR = tempRoot;
-      const before = lstatSync(tempRoot);
+      // Short, for the worker's control-socket path to fit `sun_path`; every
+      // principal runs under it, so all of them share one temp root.
+      const home = mkdtempSync(join("/tmp", "lvt-"));
+      process.env.AVE_HOME = home;
+      try {
+        const root = appOwnedSandboxTempRoot();
+        const pluginA = installTempPlugin(home, "temp-a");
+        const pluginB = installTempPlugin(home, "temp-b");
+        const a: SandboxTempPrincipal = { kind: "plugin", id: "temp-a" };
+        const b: SandboxTempPrincipal = { kind: "plugin", id: "temp-b" };
+        const hook: SandboxTempPrincipal = { kind: "plugin", id: "temp-hook" };
+        // The plugin's own id, as an MCP server's: the kind keeps them apart.
+        const server: SandboxTempPrincipal = { kind: "mcp", id: "temp-a" };
+        await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+
+        const childA = await runTempProbe(fx, a, "child-a", [], (probe) => runPluginChildToExit(pluginA, probe));
+        expectOwnTemp(childA, a, "child-a");
+
+        const childB = await runTempProbe(fx, b, "child-b", [tempTarget(a, "child-a")],
+          (probe) => runPluginChildToExit(pluginB, probe));
+        expectOwnTemp(childB, b, "child-b");
+        expectTempRefused(childB, "child-b", [tempTarget(a, "child-a")]);
+
+        // The positive control for the refusals: a worker of plugin B shares
+        // B's directory, so the same reads and writes that fail across
+        // principals succeed within one.
+        const workerB = await runTempProbe(fx, b, "worker-b", [tempTarget(b, "child-b"), tempTarget(a, "child-a")],
+          async (probe) => {
+            const worker = await spawnWorker({
+              pluginId: "temp-b",
+              workerId: "w",
+              command: process.execPath,
+              args: [probe],
+              env: { ELECTRON_RUN_AS_NODE: "1" },
+            });
+            await new Promise<void>((resolve) => worker.onExit(() => resolve()));
+          });
+        expectOwnTemp(workerB, b, "worker-b");
+        expect(workerB.others[0]!.read.ok, JSON.stringify(workerB.others[0])).toBe(true);
+        expect(workerB.others[0]!.read.value).toBe("child-b");
+        expect(workerB.others[0]!.write.ok, JSON.stringify(workerB.others[0])).toBe(true);
+        expectTempRefused({ ...workerB, others: workerB.others.slice(1) }, "worker-b", [tempTarget(a, "child-a")]);
+
+        const hookRun = await runTempProbe(fx, hook, "hook", [tempTarget(b, "child-b"), tempTarget(a, "child-a")],
+          async (probe) => {
+            const dataDir = mkdtempSync(join(fx.root, "temp-hook-data-"));
+            const result = await runOneHookScript(
+              { id: "temp", hookType: "pre", source: "config", hookPath: probe,
+                command: ["/usr/bin/env", "ELECTRON_RUN_AS_NODE=1", process.execPath, probe],
+                confinement: { kind: "bundled", pluginId: "temp-hook", dataDir, generationRoot: dirname(probe) } },
+              { hookType: "pre", event: "pre", toolName: "read_file", source: "builtin", category: "read", input: {},
+                sessionId: "temp", trustOrigin: "user-keyboard" },
+              { timeoutMs: 10_000 },
+            );
+            expect(result.decision, result.reason).toBe("allow");
+          });
+        expectOwnTemp(hookRun, hook, "hook");
+        expectTempRefused(hookRun, "hook", [tempTarget(b, "child-b"), tempTarget(a, "child-a")]);
+
+        const serverRun = await runTempProbe(fx, server, "server", [tempTarget(a, "child-a"), tempTarget(hook, "hook")],
+          (probe) => runBundledWrapToExit(server, probe));
+        expectOwnTemp(serverRun, server, "server");
+        expectTempRefused(serverRun, "server", [tempTarget(a, "child-a"), tempTarget(hook, "hook")]);
+
+        // And back the other way: the first child, run again, reaches none of
+        // the principals that came after it.
+        const again = await runTempProbe(fx, a, "child-a-again",
+          [tempTarget(b, "child-b"), tempTarget(hook, "hook"), tempTarget(server, "server")],
+          (probe) => runPluginChildToExit(pluginA, probe));
+        expectOwnTemp(again, a, "child-a-again");
+        expectTempRefused(again, "child-a-again", [tempTarget(b, "child-b"), tempTarget(hook, "hook"), tempTarget(server, "server")]);
+        expect(readdirSync(root).sort()).toEqual([a, b, hook, server].map(sandboxTempPrincipalDirName).sort());
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
+
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "no confined process reads another's sandbox HOME: an MCP stdio wrap, a plugin child and a bundled hook",
+    async () => {
+      if (!(await sandboxCasesRun())) return;
+      const fx = fixture!;
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+      // A's HOME is kept for the whole case, so B and C try to read a file
+      // that is there; theirs are removed when they exit, as in production.
+      const homeA = createSandboxProcessHome();
+      const homeRoot = realpathSync(appOwnedSandboxHomeRoot());
+      try {
+        const server: SandboxTempPrincipal = { kind: "mcp", id: "home-a" };
+        const a = await runHomeProbe(fx, server, "home-a", [], homeRoot,
+          (probe) => runBundledWrapToExit(server, probe, homeA));
+        expectOwnHome(a, homeRoot, "home-a");
+        expect(a.home).toBe(homeA.path);
+        expect(readFileSync(join(homeA.path, "home-a"), "utf-8")).toBe("home-a");
+        const fileA = join(homeA.path, "home-a");
+
+        const pluginB = installPlugin(fx, "home-b");
+        const b = await runHomeProbe(fx, { kind: "plugin", id: "home-b" }, "home-b", [fileA], homeRoot,
+          (probe) => runPluginChildToExit(pluginB, probe));
+        expectOwnHome(b, homeRoot, "home-b");
+        expectHomeRefused(b, fileA);
+
+        const hookPrincipal: SandboxTempPrincipal = { kind: "plugin", id: "home-c" };
+        const c = await runHomeProbe(fx, hookPrincipal, "home-c", [fileA], homeRoot, async (probe) => {
+          const dataDir = mkdtempSync(join(fx.root, "home-hook-data-"));
+          const result = await runOneHookScript(
+            { id: "home", hookType: "pre", source: "config", hookPath: probe,
+              command: ["/usr/bin/env", "ELECTRON_RUN_AS_NODE=1", process.execPath, probe],
+              confinement: { kind: "bundled", pluginId: "home-c", dataDir, generationRoot: dirname(probe) } },
+            { hookType: "pre", event: "pre", toolName: "read_file", source: "builtin", category: "read", input: {},
+              sessionId: "home", trustOrigin: "user-keyboard" },
+            { timeoutMs: 10_000 },
+          );
+          expect(result.decision, result.reason).toBe("allow");
+        });
+        expectOwnHome(c, homeRoot, "home-c");
+        expectHomeRefused(c, fileA);
+        // The control for both refusals: the bytes were there all along.
+        expect(readFileSync(fileA, "utf-8")).toBe("home-a");
+      } finally {
+        homeA.cleanup();
+      }
+    },
+    120_000,
+  );
+
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "a bundled hook writes under its $TMPDIR, and cannot rename or remove that directory",
+    async () => {
+      if (!(await sandboxCasesRun())) return;
+      const fx = fixture!;
+      const tempDir = join(appOwnedSandboxTempRoot(), sandboxTempPrincipalDirName({ kind: "plugin", id: "tmp-plugin" }));
       const generationRoot = mkdtempSync(join(fx.root, "hook-generation-"));
       const dataDir = mkdtempSync(join(fx.root, "hook-data-"));
       const script = join(generationRoot, "tmp.sh");
@@ -3566,26 +3672,251 @@ describe("a bundled hook's temp directory", () => {
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
       const result = await runOneHookScript(
         { id: "tmp", hookType: "pre", source: "config", hookPath: script, command: ["/bin/sh", script],
-          confinement: { kind: "bundled", dataDir, generationRoot } },
+          confinement: { kind: "bundled", pluginId: "tmp-plugin", dataDir, generationRoot } },
         { hookType: "pre", event: "pre", toolName: "read_file", source: "builtin", category: "read", input: {},
           sessionId: "hook-tmp", trustOrigin: "user-keyboard" },
         { timeoutMs: 10_000 },
       );
       expect(result.decision, result.reason).toBe("allow");
+      const before = lstatSync(tempDir);
       const [wrote, entries, node_, renamed, removed, tmpdirSeen] = result.reason.split(" ");
-      expect(realpathSync(tmpdirSeen!), "the hook's TMPDIR is not the app-owned temp root").toBe(realpathSync(tempRoot));
+      expect(realpathSync(tmpdirSeen!), "the hook's TMPDIR is not its plugin's temp directory").toBe(realpathSync(tempDir));
       expect(wrote, "the hook could not write under its TMPDIR").toBe("0");
-      expect(entries, "the temp root was not empty, so rmdir would measure nothing").toBe("0");
+      expect(entries, "the temp directory was not empty, so rmdir would measure nothing").toBe("0");
       expect(node_, "Node did not run under the wrap, so the rename measured nothing").toBe("0");
-      expect(renamed, "the hook renamed the shared temp root").not.toBe("0");
-      expect(removed, "the hook removed the shared temp root").not.toBe("0");
-      const after = lstatSync(tempRoot);
+      expect(renamed, "the hook renamed its temp directory").not.toBe("0");
+      expect(removed, "the hook removed its temp directory").not.toBe("0");
+      const after = lstatSync(tempDir);
       expect(after.isDirectory()).toBe(true);
       expect(after.ino).toBe(before.ino);
     },
     120_000,
   );
 });
+
+/** A plugin installed under `home`, for the cases that need a short AVE_HOME. */
+function installTempPlugin(home: string, pluginId: string): InstalledPlugin {
+  const pluginRoot = join(home, "plugins", pluginId);
+  const pluginDataDir = join(pluginRoot, "data");
+  mkdirSync(pluginDataDir, { recursive: true, mode: 0o700 });
+  return { pluginId, pluginRoot, pluginDataDir };
+}
+
+/** A file another principal left in its temp directory, and that directory. */
+interface TempTarget {
+  readonly file: string;
+  readonly dir: string;
+  readonly marker: string;
+}
+
+function tempDirOf(principal: SandboxTempPrincipal): string {
+  return join(appOwnedSandboxTempRoot(), sandboxTempPrincipalDirName(principal));
+}
+
+function tempTarget(principal: SandboxTempPrincipal, marker: string): TempTarget {
+  return { file: join(tempDirOf(principal), marker), dir: tempDirOf(principal), marker };
+}
+
+interface TempProbeReport {
+  readonly tmpdir: string;
+  readonly writeOwn: ProbeAttempt;
+  readonly listRoot: ProbeAttempt & { readonly value?: string[] };
+  readonly others: ReadonlyArray<{ readonly read: ProbeAttempt; readonly write: ProbeAttempt }>;
+}
+
+/**
+ * Run one confined process that writes `<marker>` into its own `tmpdir()`,
+ * reads and writes into each `other` directory, lists the shared root, and
+ * leaves its report in its OWN temp directory — which the host reads from the
+ * principal's directory, so a process whose `TMPDIR` named anything else
+ * leaves no report where the host looks.
+ */
+async function runTempProbe(
+  fx: Fixture,
+  principal: SandboxTempPrincipal,
+  marker: string,
+  others: readonly TempTarget[],
+  run: (probe: string) => Promise<void>,
+): Promise<TempProbeReport> {
+  for (const other of others) {
+    // The control for every refusal below: the bytes are there for the host.
+    expect(readFileSync(other.file, "utf-8"), `${other.file} is not there to be refused`).toBe(other.marker);
+  }
+  const probe = join(fx.root, `temp-probe-${marker}.mjs`);
+  writeFileSync(
+    probe,
+    `import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+const p = ${JSON.stringify({ marker, others, root: appOwnedSandboxTempRoot() })};
+const attempt = (fn) => { try { return { ok: true, value: fn() }; } catch (error) { return { ok: false, code: error.code ?? error.name }; } };
+const own = tmpdir();
+const report = {
+  tmpdir: own,
+  writeOwn: attempt(() => { writeFileSync(join(own, p.marker), p.marker); return "written"; }),
+  others: p.others.map((other) => ({
+    read: attempt(() => readFileSync(other.file, "utf-8")),
+    write: attempt(() => { writeFileSync(join(other.dir, "planted-by-" + p.marker), "planted"); return "written"; }),
+  })),
+  listRoot: attempt(() => readdirSync(p.root)),
+};
+writeFileSync(join(own, "report-" + p.marker + ".json"), JSON.stringify(report));
+process.stdout.write(JSON.stringify({ action: "allow", reason: "probed" }));
+`,
+    "utf-8",
+  );
+  await run(probe);
+  const reportPath = join(tempDirOf(principal), `report-${marker}.json`);
+  expect(existsSync(reportPath), `${marker} left no report in its principal's temp directory`).toBe(true);
+  return JSON.parse(readFileSync(reportPath, "utf-8")) as TempProbeReport;
+}
+
+/** Its TMPDIR is its principal's directory, it can write there, and the bytes last. */
+function expectOwnTemp(report: TempProbeReport, principal: SandboxTempPrincipal, marker: string): void {
+  expect(realpathSync(report.tmpdir), `${marker}: TMPDIR is not its principal's directory`).toBe(realpathSync(tempDirOf(principal)));
+  expect(report.writeOwn.ok, `${marker}: ${JSON.stringify(report.writeOwn)}`).toBe(true);
+  expect(readFileSync(join(tempDirOf(principal), marker), "utf-8")).toBe(marker);
+  // The shared root is read-denied: refused on macOS; on Linux it is an empty
+  // tmpfs with only this principal's directory bound back into it.
+  if (report.listRoot.ok) {
+    expect(report.listRoot.value, `${marker}: listed other principals' directories`)
+      .toEqual([sandboxTempPrincipalDirName(principal)]);
+  }
+}
+
+/** Every other principal's file stayed unread, and nothing was planted beside it. */
+function expectTempRefused(report: TempProbeReport, marker: string, others: readonly TempTarget[]): void {
+  expect(report.others).toHaveLength(others.length);
+  others.forEach((other, index) => {
+    const attempt = report.others[index]!;
+    expect(attempt.read.ok, `read ${other.file}: ${JSON.stringify(attempt.read)}`).toBe(false);
+    expect(attempt.read.value).toBeUndefined();
+    expect(attempt.write.ok, `write beside ${other.file}: ${JSON.stringify(attempt.write)}`).toBe(false);
+    expect(existsSync(join(other.dir, `planted-by-${marker}`)), `${marker} planted a file beside ${other.file}`).toBe(false);
+  });
+}
+
+interface HomeProbeReport {
+  readonly home: string;
+  readonly writeOwn: ProbeAttempt;
+  readonly readOwn: ProbeAttempt;
+  readonly listRoot: ProbeAttempt & { readonly value?: string[] };
+  readonly others: readonly ProbeAttempt[];
+}
+
+/**
+ * Run one confined process that writes `<marker>` under its `$HOME`, reads it
+ * back, reads each of `others`, and lists the HOME root. Its HOME is removed
+ * when a plugin child or hook exits, so the report goes to its principal's
+ * temp directory, which lasts.
+ */
+async function runHomeProbe(
+  fx: Fixture,
+  principal: SandboxTempPrincipal,
+  marker: string,
+  others: readonly string[],
+  homeRoot: string,
+  run: (probe: string) => Promise<void>,
+): Promise<HomeProbeReport> {
+  const probe = join(fx.root, `home-probe-${marker}.mjs`);
+  writeFileSync(
+    probe,
+    `import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
+const p = ${JSON.stringify({ marker, others, homeRoot })};
+const attempt = (fn) => { try { return { ok: true, value: fn() }; } catch (error) { return { ok: false, code: error.code ?? error.name }; } };
+const home = homedir();
+const report = {
+  home,
+  writeOwn: attempt(() => { writeFileSync(join(home, p.marker), p.marker); return "written"; }),
+  readOwn: attempt(() => readFileSync(join(home, p.marker), "utf-8")),
+  others: p.others.map((file) => attempt(() => readFileSync(file, "utf-8"))),
+  listRoot: attempt(() => readdirSync(p.homeRoot)),
+};
+writeFileSync(join(tmpdir(), "home-report-" + p.marker + ".json"), JSON.stringify(report));
+process.stdout.write(JSON.stringify({ action: "allow", reason: "probed" }));
+`,
+    "utf-8",
+  );
+  await run(probe);
+  const reportPath = join(tempDirOf(principal), `home-report-${marker}.json`);
+  expect(existsSync(reportPath), `${marker} left no report in its principal's temp directory`).toBe(true);
+  return JSON.parse(readFileSync(reportPath, "utf-8")) as HomeProbeReport;
+}
+
+/** Its HOME is a host-made directory under the HOME root, its own to write and read. */
+function expectOwnHome(report: HomeProbeReport, homeRoot: string, marker: string): void {
+  expect(dirname(report.home), `${marker}: HOME is not under the sandbox HOME root`).toBe(homeRoot);
+  expect(report.writeOwn.ok, `${marker}: ${JSON.stringify(report.writeOwn)}`).toBe(true);
+  expect(report.readOwn.value, `${marker}: ${JSON.stringify(report.readOwn)}`).toBe(marker);
+  // The root is read-denied: refused on macOS; on Linux an empty tmpfs with
+  // only this process's HOME bound back into it.
+  if (report.listRoot.ok) {
+    expect(report.listRoot.value, `${marker}: listed other processes' HOMEs`).toEqual([basename(report.home)]);
+  }
+}
+
+function expectHomeRefused(report: HomeProbeReport, file: string): void {
+  expect(report.others[0]!.ok, `read ${file}: ${JSON.stringify(report.others[0])}`).toBe(false);
+  expect(report.others[0]!.value).toBeUndefined();
+}
+
+/** Run a plugin child whose entry is `entry`, and wait for it to exit. */
+async function runPluginChildToExit(plugin: InstalledPlugin, entry: string): Promise<void> {
+  const child = await spawnConfinedPluginChild({
+    pluginId: plugin.pluginId,
+    socketDir: resolvePluginSocketDir(plugin.pluginDataDir),
+    workerRunRoot: resolvePluginWorkerRunRoot(plugin.pluginDataDir),
+    envelope: derivePluginChildEnvelope({
+      pluginId: plugin.pluginId,
+      pluginRoot: plugin.pluginRoot,
+      pluginDataDir: plugin.pluginDataDir,
+      configValue: () => undefined,
+    }),
+    launch: { kind: "entry", childEntryPath: entry },
+  });
+  await new Promise<void>((resolve, reject) => {
+    child.link.input.on("data", () => undefined);
+    child.link.input.on("end", () => resolve());
+    child.link.input.on("error", reject);
+  });
+}
+
+/**
+ * Run `probe` the way an MCP stdio server is run: `wrapBundledCommand`, then
+ * spawn. A `home` the caller passes is the caller's to remove.
+ */
+async function runBundledWrapToExit(
+  principal: SandboxTempPrincipal,
+  probe: string,
+  home?: ReturnType<typeof createSandboxProcessHome>,
+): Promise<void> {
+  const sandboxHome = home ?? createSandboxProcessHome();
+  try {
+    const { argv, env } = await wrapBundledCommand({
+      command: process.execPath,
+      args: [probe],
+      sandboxHome,
+      allowWrite: [],
+      tempPrincipal: principal,
+    });
+    try {
+      const child = spawn(argv[0]!, argv.slice(1), {
+        stdio: ["ignore", "ignore", "ignore"],
+        env: bundledWrappedEnv(buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }), env, sandboxHome.env),
+      });
+      await new Promise<void>((resolve, reject) => {
+        child.once("exit", () => resolve());
+        child.once("error", reject);
+      });
+    } finally {
+      await cleanupAsrtSandboxAfterCommand();
+    }
+  } finally {
+    if (home === undefined) sandboxHome.cleanup();
+  }
+}
 
 /**
  * What plugin-owned code tries against its own data root, as a shell script.

@@ -96,7 +96,13 @@ const grantWindowsWorkerFilesystemAccessMock = vi.fn<
     release: grantReleaseMock,
   }),
 );
-vi.mock("../asrt-sandbox.js", () => ({
+vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
+  // The real launcher and naming; the directory itself is not created.
+  sandboxTempEnvLaunch: (await importOriginal<typeof import("../asrt-sandbox.js")>()).sandboxTempEnvLaunch,
+  ensureSandboxTempPrincipalDir: (principal: { kind: string; id: string }) => ({
+    dir: `/tmp/ave-test-sandbox-tmp/${principal.kind}-${Buffer.from(principal.id).toString("hex")}`,
+    root: "/tmp/ave-test-sandbox-tmp",
+  }),
   isAsrtSandboxActive: () => gateActive,
   wrapWorkerCommand: (command: string, options?: unknown) =>
     wrapWorkerCommandMock(command, options),
@@ -106,9 +112,14 @@ vi.mock("../asrt-sandbox.js", () => ({
   grantWindowsWorkerFilesystemAccess: (opts: unknown) =>
     grantWindowsWorkerFilesystemAccessMock(opts),
   // The host-secret read floor restated on the worker wrap (#1365 SOT).
-  getDefaultSensitiveReadDenyPaths: () => ["/home/u/.ave/secrets", "/home/u/.ssh"],
+  // With the sandbox private roots, as the real floor carries them on POSIX.
+  getDefaultSensitiveReadDenyPaths: () => [
+    "/home/u/.ave/secrets",
+    "/home/u/.ssh",
+    "/tmp/ave-test-sandbox-tmp",
+    "/home/u/.ave/sandbox/home",
+  ],
   // The persistence-vector write floor restated on the worker wrap (#1449 SOT).
-  appOwnedSandboxTempRoot: () => "/tmp/ave-test-sandbox-tmp",
   getDefaultSensitiveWriteDenyPaths: () => [
     "/home/u/.ave/secrets",
     "/home/u/.ssh",
@@ -322,11 +333,15 @@ describe("spawnWorker — gate ON (macOS)", () => {
       string,
       { filesystem: { allowWrite: string[]; allowRead: string[]; denyRead?: string[]; denyWrite?: string[] }; allowUnixSocketPath?: string; allowAllUnixSockets?: boolean },
     ];
-    // The confinement primitive prepends the temp root it grants every child,
-    // so the socket dir is the first path the CALLER contributed rather than
-    // the first path in the list.
+    // The confinement primitive prepends the temp directory of the worker's
+    // PLUGIN — the one its child and hooks get too — so the socket dir is the
+    // first path the CALLER contributed rather than the first in the list.
+    const pluginTempDir = `/tmp/ave-test-sandbox-tmp/plugin-${Buffer.from("local-indexer").toString("hex")}`;
     expect(options.filesystem.allowWrite).toContain(socketDir);
-    expect(options.filesystem.allowWrite[0]).toBe("/tmp/ave-test-sandbox-tmp");
+    expect(options.filesystem.allowWrite[0]).toBe(pluginTempDir);
+    expect(options.filesystem.allowWrite).not.toContain("/tmp/ave-test-sandbox-tmp");
+    expect(options.filesystem.denyRead).toContain("/tmp/ave-test-sandbox-tmp");
+    expect(cmdline.startsWith(`'/usr/bin/env' 'TMPDIR=${pluginTempDir}' `)).toBe(true);
     expect(options.filesystem.allowWrite).toContain(SANDBOX_HOME);
     expect(options.filesystem.allowRead).toContain(SANDBOX_HOME);
     expect(options.filesystem.allowWrite).toContain("/data/index");

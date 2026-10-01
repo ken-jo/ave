@@ -154,7 +154,8 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
     try {
       const child = await spawnConfinedChild({
         command: "/bin/cat", args: [ordinary, transcript], label: "session-read-confined-fixture",
-        grantMode: "allow-list", allowRead: [cwd, profile], allowWrite: [cwd], baseEnv: buildSafeChildEnv(),
+        grantMode: "allow-list", tempPrincipal: { kind: "plugin", id: "session-read-fixture" },
+        allowRead: [cwd, profile], allowWrite: [cwd], baseEnv: buildSafeChildEnv(),
         onWrapped: () => { wrapped = true; },
       });
       const output: Buffer[] = [];

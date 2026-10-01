@@ -60,6 +60,7 @@ import {
   buildSandboxConfig,
   getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyPaths,
+  appOwnedSandboxPrivateRoots,
   registerWorkerUnixSocketDir,
   unregisterWorkerUnixSocketDir,
 } from "../asrt-sandbox.js";
@@ -978,8 +979,12 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
   it("buildSandboxConfig unions the sensitive deny-list into filesystem.denyRead", () => {
     const config = buildSandboxConfig({ allowedDomains: [], strictAllowlist: true });
     const sensitive = getDefaultSensitiveReadDenyPaths();
+    const privateRoots = appOwnedSandboxPrivateRoots();
     for (const p of sensitive) {
-      expect(config.filesystem.denyRead).toContain(p);
+      // On macOS the sandbox private roots reach ASRT as exact globs, which it
+      // re-emits after the allows minus a wrap's own directory under them.
+      const spelled = process.platform === "darwin" && privateRoots.includes(p) ? `${p.slice(0, -1)}[${p.slice(-1)}]` : p;
+      expect(config.filesystem.denyRead).toContain(spelled);
     }
     // Secrets is part of the floor (the prior single-entry deny is subsumed).
     expect(config.filesystem.denyRead).toContain(join(FAKE_AVE_HOME, "secrets"));
