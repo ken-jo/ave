@@ -105,11 +105,13 @@ export class SourceSyncer {
     return BareRepo.init(this.options.runner, dir);
   }
 
+  /** The gate's verdict for one of the source's URLs, under the confirmations the source holds (§18.5). */
   private async remoteFor(source: ResolvedSource, url = source.url): Promise<GitRemote> {
-    const { allowHttp } = await this.options.gate.checkRemote(url, { official: source.origin === "official" });
+    const acknowledged = await this.options.registry.acknowledged(source);
+    const verdict = this.options.gate.checkRemote(url, { official: source.origin === "official", acknowledged });
     // A mirror on another host never gets the primary host's token.
     const useToken = source.auth.kind === "token" && source.auth.host === url.host;
-    return { url, sourceId: source.id, allowHttp, useToken };
+    return { url, sourceId: source.id, useToken, ...verdict };
   }
 
   /** Primary URL, then each mirror; the first to answer supplies the candidate. */

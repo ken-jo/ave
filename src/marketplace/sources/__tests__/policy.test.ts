@@ -1,9 +1,9 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { normalizeSourceUrl } from "../../net/source-url.js";
-import { EMPTY_MARKETPLACE_POLICY, isBlockedByPolicy, loadMarketplacePolicy, type MarketplacePolicy } from "../policy.js";
+import { EMPTY_MARKETPLACE_POLICY, FilePolicySource, isBlockedByPolicy, loadMarketplacePolicy, type MarketplacePolicy } from "../policy.js";
 
 let dir: string;
 let path: string;
@@ -78,6 +78,17 @@ describe("loadMarketplacePolicy", () => {
     expect(policy.allow).toBeNull();
     expect(policy.allowDirectInstall).toBe(true);
     expect(policy.allowDisablingOfficial).toBe(false);
+    expect(policy.requireHttps).toBe(false);
+    expect(policy.blockPrivateNetworks).toBe(false);
+  });
+
+  it("reads requireHttps and blockPrivateNetworks exactly (§18.6)", async () => {
+    expect(await loaded({ requireHttps: true, blockPrivateNetworks: false })).toMatchObject({ requireHttps: true, blockPrivateNetworks: false });
+    expect(await loaded({ requireHttps: false, blockPrivateNetworks: true })).toMatchObject({ requireHttps: false, blockPrivateNetworks: true });
+    expect(await rejected({ requireHttps: "yes" })).toContain("requireHttps: must be true or false");
+    expect(await rejected({ blockPrivateNetworks: 1 })).toContain("blockPrivateNetworks: must be true or false");
+    // A near miss is not one of them: the section is invalid, not unrestricted.
+    expect(await rejected({ requireHTTPS: true })).toContain("marketplaces.requireHTTPS: is not a known key");
   });
 
   it("gives an ssh additional source ssh auth and normalizes a token host", async () => {
@@ -100,7 +111,7 @@ describe("loadMarketplacePolicy", () => {
     ["a managed id used twice", { additional: [{ id: "corp", url: "https://git.corp.example/a" }, { id: "corp", url: "https://git.corp.example/b" }] }, "corp is used twice"],
     ["the same repository twice", { additional: [{ id: "one", url: "https://git.corp.example/a" }, { id: "two", url: "https://GIT.corp.example/a.git" }] }, "already a source"],
     ["the official repository as a managed source", { additional: [{ id: "corp", url: "ken-jo/agent-marketplace" }] }, "already a source"],
-    ["plain http without allowHttpHosts", { additional: [{ id: "corp", url: "http://git.corp.example/a" }] }, "allowHttpHosts"],
+    ["plain http under requireHttps without allowHttpHosts", { requireHttps: true, additional: [{ id: "corp", url: "http://git.corp.example/a" }] }, "requireHttps is true needs git.corp.example in allowHttpHosts"],
     ["a managed source its own policy blocks", { block: ["host:git.corp.example"], additional: [{ id: "corp", url: "https://git.corp.example/a" }] }, "blocked by this policy"],
     ["token auth on an ssh URL", { additional: [{ id: "corp", url: "ssh://git@git.corp.example/a", auth: { kind: "token", host: "git.corp.example" } }] }, "token auth needs an http(s) URL"],
     ["an unsafe ref", { additional: [{ id: "corp", url: "https://git.corp.example/a", ref: "main..evil" }] }, "is not a branch or tag name"],
@@ -113,6 +124,13 @@ describe("loadMarketplacePolicy", () => {
     ["an install listed twice", { requiredInstalls: [{ kind: "plugin", name: "wiki", source: "ave" }, { kind: "plugin", name: "wiki", source: "ave" }] }, "is listed twice"],
   ])("fails closed on %s", async (_label, section, message) => {
     expect(await rejected(section)).toContain(message);
+  });
+
+  it("takes an http additional source as its own listing, and under requireHttps with its host in allowHttpHosts (§18.2.2)", async () => {
+    const plain = await loaded({ requireHttps: false, additional: [{ id: "team-tools", url: "http://git.example.test/catalog" }] });
+    expect(plain.additional.map((spec) => spec.url.url)).toEqual(["http://git.example.test/catalog"]);
+    const excepted = await loaded({ requireHttps: true, allowHttpHosts: ["git.example.test"], additional: [{ id: "team-tools", url: "http://git.example.test/catalog" }] });
+    expect(excepted.additional).toHaveLength(1);
   });
 
   it("fails closed on duplicate keys and unparseable JSON", async () => {
@@ -151,5 +169,88 @@ describe("isBlockedByPolicy", () => {
     expect(isBlockedByPolicy(policy, normalizeSourceUrl("https://git.example.org/a/b"))).toBe(true);
     expect(isBlockedByPolicy(policy, normalizeSourceUrl("git@git.example.org:a/b"))).toBe(true);
     expect(isBlockedByPolicy(policy, normalizeSourceUrl("acme/market"))).toBe(false);
+  });
+});
+
+describe("FilePolicySource (§18.6)", () => {
+  it("reports a rewritten file once, and nothing while it is unchanged", async () => {
+    writePolicy({ requireHttps: false });
+    const source = await FilePolicySource.open(path);
+    expect(source.load).toMatchObject({ ok: true, policy: { requireHttps: false } });
+    expect(await source.check()).toBeNull();
+
+    writePolicy({ requireHttps: true, block: ["host:git.example.org"] });
+    const update = await source.check();
+    expect(update?.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
+    expect(update?.digest).not.toBe(source.digest);
+    source.apply(update!);
+    expect(source.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
+    expect(await source.check()).toBeNull();
+  });
+
+  it("goes invalid when the file breaks, and back when it is fixed", async () => {
+    writePolicy({});
+    const source = await FilePolicySource.open(path);
+    writeFileSync(path, "{ not json, and longer than before so the size differs");
+    const broken = await source.check();
+    expect(broken?.load.ok).toBe(false);
+    source.apply(broken!);
+    writePolicy({ blockPrivateNetworks: true });
+    const fixed = await source.check();
+    expect(fixed?.load).toMatchObject({ ok: true, policy: { blockPrivateNetworks: true } });
+  });
+
+  it("notices a rewrite that keeps the size and the modification time", async () => {
+    const fixed = new Date(Date.UTC(2026, 0, 1));
+    const first = JSON.stringify({ version: 1, marketplaces: { requireHttps: false } });
+    writeFileSync(path, first);
+    utimesSync(path, fixed, fixed);
+    const source = await FilePolicySource.open(path);
+    // Other content of the same length, with the modification time put back: only the status-change time moved.
+    const second = JSON.stringify({ version: 1, marketplaces: { requireHttps: true } }).padEnd(first.length, " ");
+    expect(second.length).toBe(first.length);
+    writeFileSync(path, second);
+    utimesSync(path, fixed, fixed);
+    expect(statSync(path).mtimeMs).toBe(fixed.getTime());
+    expect((await source.check())?.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
+  });
+
+  it("goes unreadable when the file can no longer be read, and back when it can (§12 fail closed)", async () => {
+    writePolicy({ requireHttps: false });
+    const source = await FilePolicySource.open(path);
+    // A directory where the file was: present, but not readable as a file, on every platform.
+    rmSync(path);
+    mkdirSync(path);
+    const gone = await source.check();
+    expect(gone?.load.ok).toBe(false);
+    expect(gone?.digest).toMatch(/^unreadable:/u);
+    source.apply(gone!);
+    expect(source.load.ok).toBe(false);
+    rmSync(path, { recursive: true });
+    writePolicy({ requireHttps: false });
+    const back = await source.check();
+    expect(back?.load).toMatchObject({ ok: true, policy: { requireHttps: false } });
+    source.apply(back!);
+    // A quiet check records the file as it stands, as between two operations.
+    expect(await source.check()).toBeNull();
+    // The reproduction: permissions taken away leave size and modification time alone.
+    if (process.platform !== "win32" && process.getuid?.() !== 0) {
+      chmodSync(path, 0o000);
+      try {
+        const denied = await source.check();
+        expect(denied?.load.ok).toBe(false);
+        expect(denied?.digest).toBe("unreadable:EACCES");
+      } finally {
+        chmodSync(path, 0o644);
+      }
+    }
+  });
+
+  it("names an absent file apart from an empty policy, and reads one that appears", async () => {
+    const source = await FilePolicySource.open(join(dir, "absent.json"));
+    expect(source.load).toMatchObject({ ok: true, policy: EMPTY_MARKETPLACE_POLICY });
+    expect(source.digest).toBe("absent");
+    writeFileSync(join(dir, "absent.json"), JSON.stringify({ version: 1, marketplaces: { requireHttps: true } }));
+    expect((await source.check())?.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
   });
 });

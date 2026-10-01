@@ -18,6 +18,7 @@ import { parseMarketplaceErrorDetail, scrubMarketplaceErrorDetail, type Marketpl
 import { scrubDiagnosticSecrets } from "../../shared/dlp.js";
 import { updateFor, type InstallAction, type InstalledPackage } from "../resolve/identity.js";
 import type { RungOutcome } from "../../plugins/plugin-install-receipt.js";
+import type { NormalizedSourceUrl } from "../net/source-url.js";
 import type { SourceState } from "../sources/registry.js";
 
 /** Kinds whose packages run code on this computer (design §15.5). */
@@ -117,7 +118,22 @@ export function widensAuthority(delta: { added: AuthorityView } | null): boolean
 }
 
 /** The ladder as the plan will walk it (§6.2): release → archive → tree. */
-export function rungViews(artifact: PluginArtifactPins, packagePath: string, treeDeclared: boolean): RungView[] {
+/** A download URL that is plain http; an unparsable one is not claimed to be. */
+function isHttpUrl(url: string): boolean {
+  try {
+    return new URL(url).protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The Delivery rows (§15.2). A plain-http release or archive is labelled: it
+ * is verified only by the sha256 the source pinned (§18.2.3). A release
+ * without `url` is served from the source's own origin, http for an http
+ * source.
+ */
+export function rungViews(artifact: PluginArtifactPins, packagePath: string, treeDeclared: boolean, sourceUrl: NormalizedSourceUrl): RungView[] {
   const release = artifact.release;
   const archive = artifact.archive;
   let archiveHost: string | null = null;
@@ -134,9 +150,11 @@ export function rungViews(artifact: PluginArtifactPins, packagePath: string, tre
       declared: release !== undefined,
       pinned: typeof release?.sha256 === "string",
       detail: release ? (release.asset ?? (release.url ? release.url.slice(release.url.lastIndexOf("/") + 1) : null)) : null,
+      unencrypted: release !== undefined && (release.url ? isHttpUrl(release.url) : sourceUrl.scheme === "http"),
     },
-    { rung: "archive", declared: archive !== undefined, pinned: typeof archive?.sha256 === "string", detail: archiveHost },
-    { rung: "tree", declared: treeDeclared, pinned: treeDeclared, detail: treeDeclared ? (artifact.tree ?? packagePath) : null },
+    { rung: "archive", declared: archive !== undefined, pinned: typeof archive?.sha256 === "string", detail: archiveHost, unencrypted: archive !== undefined && isHttpUrl(archive.url) },
+    // Read over the source's own git transport, which the source's badge describes.
+    { rung: "tree", declared: treeDeclared, pinned: treeDeclared, detail: treeDeclared ? (artifact.tree ?? packagePath) : null, unencrypted: false },
   ];
 }
 

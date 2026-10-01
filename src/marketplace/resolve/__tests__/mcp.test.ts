@@ -12,9 +12,10 @@ import {
   startGitHttpServer,
 } from "../../__tests__/fixtures/git-http-server.js";
 import { createTestGitRunner, type TestGitRunner } from "../../__tests__/fixtures/git-runner.js";
-import { policyLoad } from "../../__tests__/fixtures/policy.js";
+import { policySource } from "../../__tests__/fixtures/policy.js";
 import { aggregateCatalog } from "../../catalog/aggregate.js";
 import { NetworkGate } from "../../net/network-gate.js";
+import { createPinnedFetch } from "../../net/pinned-fetch.js";
 import { SourceRegistry } from "../../sources/registry.js";
 import { SourceSyncer } from "../../sources/sync.js";
 import { assertMcpRuntimePinned, mcpServerConfigFor, planMcpInstall, resolveMcpPackage, runtimeFromServerJson } from "../mcp.js";
@@ -226,8 +227,8 @@ describe("resolveMcpPackage", () => {
         "modes",
       );
     }
-    const policy = policyLoad({});
-    const gate = new NetworkGate({ policy, allowLoopback: true });
+    const policy = policySource({});
+    const gate = new NetworkGate({ policy, allowLoopback: true, transport: createPinnedFetch() });
     const marketplaces = mkdtempSync(join(root, "m-"));
     const registry = await SourceRegistry.open({ root: marketplaces, policy });
     await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });

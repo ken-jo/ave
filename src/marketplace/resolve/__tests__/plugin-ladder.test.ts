@@ -14,10 +14,13 @@ import {
   startGitHttpServer,
 } from "../../__tests__/fixtures/git-http-server.js";
 import { createTestGitRunner, type TestGitRunner } from "../../__tests__/fixtures/git-runner.js";
-import { policyLoad } from "../../__tests__/fixtures/policy.js";
+import { policyLoad, policySource } from "../../__tests__/fixtures/policy.js";
 import { aggregateCatalog, type CatalogRow } from "../../catalog/aggregate.js";
 import type { PluginAuthority } from "../../catalog/types.js";
-import { NetworkGate } from "../../net/network-gate.js";
+import type { AddressCheckedFetch } from "../../../core/network-guard.js";
+import { NetworkGate, type CatalogSource } from "../../net/network-gate.js";
+import { createPinnedFetch } from "../../net/pinned-fetch.js";
+import type { NormalizedSourceUrl } from "../../net/source-url.js";
 import { normalizeSourceUrl, parseSourcePattern } from "../../net/source-url.js";
 import { SourceRegistry } from "../../sources/registry.js";
 import { SourceSyncer } from "../../sources/sync.js";
@@ -69,6 +72,14 @@ function descriptor(name: string, version: string, artifact: Record<string, unkn
 
 const marketIndex = (packages: unknown[]) => `${JSON.stringify({ schemaVersion: 2, name: "acme", displayName: "Acme", packages })}\n`;
 
+
+/** The source as the gate judges its catalog's downloads: no confirmations held. */
+const catalogOf = (url: NormalizedSourceUrl): CatalogSource => ({ id: "acme", label: "acme", url, acknowledged: new Set() });
+
+/** Archive URLs must be https (schema); the loopback fixture speaks http, so the pinned transport is handed the http URL. */
+const pinned = createPinnedFetch();
+const loopbackTransport: AddressCheckedFetch = (url, init, select) => pinned(url.replace(/^https:\/\/127\.0\.0\.1:/u, "http://127.0.0.1:"), init, select);
+
 describe("plugin artifact ladder (design §6.2)", () => {
   let serverRoot: string;
   let server: GitHttpServer;
@@ -116,8 +127,8 @@ describe("plugin artifact ladder (design §6.2)", () => {
   }
 
   async function open(name: string, origin: "custom" | "direct" = "custom") {
-    const policy = policyLoad({});
-    const gate = new NetworkGate({ policy, allowLoopback: true });
+    const policy = policySource({});
+    const gate = new NetworkGate({ policy, allowLoopback: true, transport: loopbackTransport });
     const marketplaces = mkdtempSync(join(root, "marketplaces-"));
     const registry = await SourceRegistry.open({ root: marketplaces, policy });
     await registry.add({ id: "acme", origin, url: server.url(name), auth: { kind: "none" } });
@@ -154,8 +165,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
         sourceUrl: source.url,
         direct,
         gate,
-        // Archive URLs must be https (schema); the loopback fixture speaks http.
-        fetchImpl: ((input: string, init?: RequestInit) => fetch(input.replace(/^https:\/\/127\.0\.0\.1:/u, "http://127.0.0.1:"), init)) as typeof fetch,
+        catalog: catalogOf(source.url),
         sourceToken: null,
         tokenMissing: false,
         zip: store(),
@@ -606,7 +616,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
         sourceUrl: normalizeSourceUrl("https://github.com/acme/market"),
         direct: false,
         gate: fakeGate,
-        fetchImpl: fetch,
+        catalog: catalogOf(normalizeSourceUrl("https://github.com/acme/market")),
         sourceToken: "ghp_test",
         tokenMissing: false,
         zip: store(),
@@ -640,7 +650,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
           sourceUrl: normalizeSourceUrl("https://github.com/acme/market"),
           direct: false,
           gate: hiding,
-          fetchImpl: fetch,
+          catalog: catalogOf(normalizeSourceUrl("https://github.com/acme/market")),
           sourceToken: null,
           tokenMissing,
           zip: store(),
@@ -663,21 +673,20 @@ describe("plugin artifact ladder (design §6.2)", () => {
   });
 
   it("holds a token-fetched release asset to the policy for its github.com repository", async () => {
-    const gate = new NetworkGate({ policy: policyLoad({ block: [parseSourcePattern("https://github.com/evil/*")] }), allowLoopback: false });
-    await expect(gate.checkDownloadPolicy("https://github.com/evil/x/releases/download/v1.0.0/a.zip", { official: false }))
-      .rejects.toMatchObject({ code: "SOURCE_POLICY_BLOCKED" });
-    await expect(gate.checkDownloadPolicy("https://github.com/acme/x/releases/download/v1.0.0/a.zip", { official: false })).resolves.toBeUndefined();
+    const gate = new NetworkGate({ policy: policySource(policyLoad({ block: [parseSourcePattern("https://github.com/evil/*")] })), allowLoopback: false, transport: createPinnedFetch() });
+    expect(() => gate.checkDownloadPolicy("https://github.com/evil/x/releases/download/v1.0.0/a.zip", { official: false })).toThrow(expect.objectContaining({ code: "SOURCE_POLICY_BLOCKED" }));
+    expect(gate.checkDownloadPolicy("https://github.com/acme/x/releases/download/v1.0.0/a.zip", { official: false })).toBeUndefined();
   });
 
   it("needs an allow list to admit api.github.com for the token path, as design §6.2 says", async () => {
-    const fetchImpl = vi.fn();
-    const repositoryOnly = new NetworkGate({ policy: policyLoad({ allow: [parseSourcePattern("https://github.com/acme/*")] }), allowLoopback: false });
-    await expect(repositoryOnly.fetch("https://api.github.com/repos/acme/alpha/releases/tags/v1.0.0", { fetchImpl, official: false }))
+    const transport = vi.fn<AddressCheckedFetch>();
+    const repositoryOnly = new NetworkGate({ policy: policySource(policyLoad({ allow: [parseSourcePattern("https://github.com/acme/*")] })), allowLoopback: false, transport });
+    await expect(repositoryOnly.fetch("https://api.github.com/repos/acme/alpha/releases/tags/v1.0.0", { official: false, catalog: catalogOf(normalizeSourceUrl("https://github.com/acme/market")) }))
       .rejects.toMatchObject({ code: "SOURCE_POLICY_BLOCKED", message: expect.stringContaining("api.github.com") });
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(transport).not.toHaveBeenCalled();
 
-    const withApi = new NetworkGate({ policy: policyLoad({ allow: [parseSourcePattern("https://github.com/acme/*"), parseSourcePattern("host:api.github.com")] }), allowLoopback: false });
-    await expect(withApi.checkDownloadPolicy("https://api.github.com/repos/acme/alpha/releases/assets/42", { official: false })).resolves.toBeUndefined();
+    const withApi = new NetworkGate({ policy: policySource(policyLoad({ allow: [parseSourcePattern("https://github.com/acme/*"), parseSourcePattern("host:api.github.com")] })), allowLoopback: false, transport });
+    expect(withApi.checkDownloadPolicy("https://api.github.com/repos/acme/alpha/releases/assets/42", { official: false })).toBeUndefined();
   });
 
   it("builds an ssh source's release URL over https on the default port, and refuses . and .. repository segments", async () => {
@@ -702,7 +711,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
         sourceUrl: normalizeSourceUrl("ssh://git@git.acme.example:2222/acme/market.git"),
         direct: false,
         gate: fakeGate,
-        fetchImpl: fetch,
+        catalog: catalogOf(normalizeSourceUrl("ssh://git@git.acme.example:2222/acme/market.git")),
         sourceToken: null,
         tokenMissing: false,
         zip: store(),

@@ -4,7 +4,7 @@ import type { TranslationVars } from "../../../../../i18n/translate.js";
 import { MARKETPLACE_ERROR_CODES, MARKETPLACE_ERROR_DETAIL_FIELDS, MARKETPLACE_ERROR_REASONS } from "../../../../../marketplace/errors.js";
 import type { GitMarketplaceErrorCode, GitMarketplaceFailure, MarketplaceErrorDetail } from "../../../../../shared/git-marketplace.js";
 import type { SourceView } from "../../../../../shared/git-marketplace.js";
-import { ENTRY_SUBJECT, OTHER_SUBJECT, failureCommand, failureText, kindLabel, sourceStatusDetail, sourceStatusLabel, sourceSubject, type FailureSubject } from "../labels.js";
+import { ENTRY_SUBJECT, OTHER_SUBJECT, allowableWarning, allowRisk, failureCommand, failureText, kindLabel, sourceStatusDetail, sourceStatusLabel, sourceSubject, warningText, type FailureSubject } from "../labels.js";
 
 describe("package kind display vocabulary", () => {
   it("labels code packages as extensions and entry-free bundles as plugins", () => {
@@ -382,5 +382,46 @@ describe("a damaged copy's sentence names the source as its row does", () => {
     const custom = render({ ...failure, detail: { reason: "snapshot-invalid", sourceId: "team" } }, sourceSubject({ origin: "custom", label: "Team tools", auth: "none", tokenStored: false }));
     expect(custom.en).toContain("the Team tools source");
     expect(render(failure, OTHER_SUBJECT).en).toContain("the ave source");
+  });
+});
+
+describe("warning sentences (§18.5, §18.8)", () => {
+  const t = (locale: "en" | "ko") => (key: string, vars?: TranslationVars) => translate(locale, key, vars);
+
+  it("adds the proxy-tool note for an address in 198.18.0.0/15 only", () => {
+    const proxyRange = warningText(t("en"), { warning: "internal-network", host: "git.corp.example", address: "198.19.4.2" });
+    expect(proxyRange).toContain("Some proxy tools report every address in this range.");
+    expect(proxyRange).toContain("198.19.4.2");
+    expect(warningText(t("ko"), { warning: "internal-network", host: "git.corp.example", address: "198.18.0.1" })).toContain("일부 프록시 도구는");
+    expect(warningText(t("en"), { warning: "internal-network", host: "git.corp.example", address: "10.0.0.5" })).not.toContain("proxy tools");
+  });
+
+  it("ends every warning in Korean with the question or the condition to continue", () => {
+    for (const view of [
+      { warning: "unencrypted", host: "h.example", address: null },
+      { warning: "token-unencrypted", host: "h.example", address: null },
+      { warning: "internal-network", host: "h.example", address: "10.0.0.5" },
+      { warning: "this-computer", host: "localhost", address: "127.0.0.1" },
+    ] as const) {
+      expect(warningText(t("ko"), view), view.warning).toMatch(/계속할까요\?$/u);
+      expect(warningText(t("en"), view), view.warning).toContain(view.host);
+    }
+  });
+
+  it("names Allow… only for a failure a confirmation resolves", () => {
+    expect(allowableWarning({ code: "SOURCE_CONFIRMATION_REQUIRED", detail: { reason: "internal-downloads", source: "s", host: "h" } })).toBe("internal-downloads");
+    expect(allowableWarning({ code: "SOURCE_AUTH_REQUIRED", detail: { reason: "token-unencrypted", host: "h" } })).toBe("token-unencrypted");
+    expect(allowableWarning({ code: "SOURCE_AUTH_REQUIRED", detail: { reason: "token", host: "h" } })).toBeNull();
+    expect(allowableWarning({ code: "SOURCE_CONFIRMATION_REQUIRED" })).toBeNull();
+    expect(allowableWarning({ code: "SOURCE_URL_REJECTED", detail: { reason: "address-metadata", host: "h", address: "169.254.169.254" } })).toBeNull();
+  });
+
+  it("states the credential risk Allow… accepts for sign-in held back over http, in both locales (§18.2.2)", () => {
+    const held = { code: "SOURCE_AUTH_REQUIRED", detail: { reason: "token-unencrypted", host: "git.corp.example" } } as const;
+    expect(allowRisk(t("en"), held)).toBe("Your sign-in for git.corp.example would travel unencrypted, and anyone on the network path could copy it. Continue?");
+    expect(allowRisk(t("ko"), held)).toBe("git.corp.example 로그인 정보가 암호화되지 않은 채 전송되어 네트워크 경로에 있는 누구나 복사할 수 있습니다. 계속할까요?");
+    // A confirmation failure's own sentence is already its question.
+    expect(allowRisk(t("en"), { code: "SOURCE_CONFIRMATION_REQUIRED", detail: { reason: "internal-downloads", source: "s", host: "h" } })).toBeNull();
+    expect(allowRisk(t("en"), { code: "SOURCE_AUTH_REQUIRED", detail: { reason: "token", host: "h" } })).toBeNull();
   });
 });

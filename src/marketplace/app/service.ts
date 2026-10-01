@@ -10,6 +10,7 @@
  * what installs. Each kind's installer is a port the host composition
  * provides; the service plans, stages the bytes and dispatches.
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -38,8 +39,11 @@ import type {
   SourceAddRequest,
   SourcePreviewRequest,
   RevokedPackageView,
-  SourcePreviewView,
+  SourceBadge,
+  SourcePreviewResultView,
   SourceView,
+  SourceWarning,
+  SourceWarningView,
   SyncProgressView,
   UninstallRequest,
   UninstallResultView,
@@ -52,10 +56,10 @@ import { parseStrictJson } from "../catalog/strict-json.js";
 import { stageContentPackage } from "../content/store.js";
 import { componentDelta } from "./component-delta.js";
 import { errorMessage } from "../../shared/error-message.js";
-import { MarketplaceError, isMarketplaceError, type MarketplaceErrorDetail } from "../errors.js";
+import { ConfirmationRequiredError, MarketplaceError, isMarketplaceError, type EnteredTargetWarningView, type MarketplaceErrorDetail } from "../errors.js";
 import { BareRepo } from "../git/repo.js";
 import type { GitCommands, GitRemote } from "../git/run-git.js";
-import type { NetworkGate } from "../net/network-gate.js";
+import type { CatalogSource, NetworkGate } from "../net/network-gate.js";
 import { normalizeSourceHost, normalizeSourceUrl, type NormalizedSourceUrl } from "../net/source-url.js";
 import { candidateVersion, planPackage, type PackagePlan } from "../resolve/descriptor.js";
 import { classifyInstall, updateFor, type InstalledPackage } from "../resolve/identity.js";
@@ -68,14 +72,15 @@ import type { LegacyPluginReport, OfficialPlugin } from "../migration/legacy-plu
 import { runLegacyMigration } from "../migration/run.js";
 import { readDirectPackage } from "../sources/direct-package.js";
 import { isReservedSourceId, OFFICIAL_MARKETPLACE, SOURCE_ID_RE, type SourceAuth } from "../sources/official.js";
-import type { MarketplacePolicy, PackageKey } from "../sources/policy.js";
-import type { ResolvedSource, SourceOrigin, SourceRegistry, SourceState } from "../sources/registry.js";
+import { EMPTY_MARKETPLACE_POLICY, type MarketplacePolicy, type PackageKey, type PolicySource, type PolicyUpdate } from "../sources/policy.js";
+import { confirmationsFor, type ResolvedSource, type SourceOrigin, type SourceRegistry, type SourceState } from "../sources/registry.js";
 import { SnapshotBuilder, type SourceSnapshot } from "../sources/snapshot.js";
 import { shouldSyncSource, type SourceSyncer } from "../sources/sync.js";
 import type { PluginConfigRetention } from "../../plugins/retired-config.js";
 import type { RetirementEntry, RetirementEntryLookup } from "./retirement-entry.js";
 import { effectiveRevocations } from "../catalog/effective-revocations.js";
 import { revocationFeed, type BoundInstall, type RevocationFeed } from "./revocations.js";
+import { OperationLock } from "./operation-lock.js";
 import { Tickets } from "./tickets.js";
 import type { InstallerPorts, InstalledRecord, TokenStore } from "./ports.js";
 import {
@@ -94,11 +99,13 @@ import {
 
 type ContentPlan = PackagePlan & { kind: Exclude<PackageKind, "plugin" | "mcp"> };
 
-type HeldPlan =
+/** A plan, and the digest of the policy it was made under (§18.6): executed under another, it expires. */
+type HeldPlan = { policyDigest: string } & (
   | { kind: "plugin"; plan: PluginInstallPlan; switchSource: boolean }
   | { kind: "content"; plan: ContentPlan; switchSource: boolean; adopt: boolean }
   | { kind: "mcp"; resolved: ResolvedMcpServer; switchSource: boolean }
-  | { kind: "mcp-unbound"; name: string; runtime: McpRuntimeSpec };
+  | { kind: "mcp-unbound"; name: string; runtime: McpRuntimeSpec }
+);
 
 /** The package a held plan installs and the source it binds it to (none for a direct MCP server). */
 function heldTarget(held: HeldPlan): PendingBinding {
@@ -129,28 +136,36 @@ interface HeldPreview {
   token: string | null;
   origin: "custom" | "direct";
   suggestedId: string;
+  /** Exactly the confirmations the preview carried; *Add* stores them (§18.5). */
+  acknowledged: SourceWarning[];
 }
 
 export interface MarketplaceServiceOptions {
   registry: SourceRegistry;
   syncer: SourceSyncer;
-  /** The runner every repository uses, and whether an OS credential helper answers for a host. */
-  git: { commands: GitCommands; credentialHelperFor(host: string): Promise<boolean> };
+  /**
+   * The runner every repository uses, whether an OS credential helper answers
+   * for a host, and the address check of a remote without any git command
+   * (the preview's confirmation step, §18.5).
+   */
+  git: { commands: GitCommands; credentialHelperFor(host: string): Promise<boolean>; preflight(remote: GitRemote): Promise<void> };
   gate: NetworkGate;
   /** `~/.ave/marketplaces`. */
   root: string;
   /** Scratch directory for exports and preview clones. */
   workRoot: string;
-  policy: MarketplacePolicy;
+  /** Checked at the start of every operation; a change applies under the operation lock (§18.6). */
+  policy: PolicySource;
   tokens: TokenStore;
   /** Tokens typed into the add dialog, by preview source id; read by the askpass lookup. */
   previewTokens: Map<string, string>;
   versionContext: () => VersionChoiceContext;
   installers: InstallerPorts;
-  ladder: Pick<LadderDeps, "fetchImpl" | "zip" | "limits" | "artifacts">;
+  ladder: Pick<LadderDeps, "zip" | "limits" | "artifacts">;
   mcpLimits: LadderDeps["limits"];
   english: Readonly<Record<string, string>>;
   onSyncProgress?: (progress: SyncProgressView) => void;
+  /** Called outside the operation that changed the catalog: work it starts enters an operation of its own. */
   onCatalogChanged?: () => void;
   onInstallProgress?: (progress: InstallProgressView) => void;
   /** The first-boot migration of existing installs (design §16.3), run before the boot installs. */
@@ -215,6 +230,33 @@ function idFrom(raw: string): string | null {
   return SOURCE_ID_RE.test(id) && !isReservedSourceId(id) ? id : null;
 }
 
+/** The confirmations a source holds: its entry's (custom, direct) or its state's (official, managed), §18.5. */
+function acknowledgedOf(source: ResolvedSource, state: SourceState | null): SourceWarning[] {
+  return source.origin === "custom" || source.origin === "direct" ? [...(source.acknowledged ?? [])] : confirmationsFor(state?.acknowledged, source.url);
+}
+
+/** What the source's row and cards show while it applies (§18.5): plain http, and each confirmed class. */
+function badgesOf(url: NormalizedSourceUrl, acknowledged: readonly SourceWarning[]): SourceBadge[] {
+  const badges: SourceBadge[] = [];
+  if (url.scheme === "http") badges.push("unencrypted");
+  for (const warning of ["internal-network", "this-computer", "internal-downloads"] as const) {
+    if (acknowledged.includes(warning)) badges.push(warning);
+  }
+  return badges;
+}
+
+/** Each warning once, in the order first named. */
+function uniqueWarnings<T extends SourceWarningView>(views: readonly T[]): T[] {
+  const seen = new Set<SourceWarning>();
+  const unique: T[] = [];
+  for (const view of views) {
+    if (seen.has(view.warning)) continue;
+    seen.add(view.warning);
+    unique.push(view);
+  }
+  return unique;
+}
+
 export class MarketplaceService implements RetirementEntryLookup {
   private readonly plans: Tickets<HeldPlan>;
   private readonly previews: Tickets<HeldPreview>;
@@ -231,6 +273,18 @@ export class MarketplaceService implements RetirementEntryLookup {
   /** Revocations enforced but not yet reported, and every one queued this session. */
   private readonly revokedUnreported: RevokedPackageView[] = [];
   private readonly revokedQueued = new Set<string>();
+  /** Operations share it; a policy change takes it alone (§18.6). */
+  private readonly lock = new OperationLock();
+  /**
+   * The operation the current call belongs to, so its own nested calls neither re-check the policy
+   * nor take the lock again. It is open only while that operation runs: work it left behind that
+   * outlives it finds it closed and enters an operation of its own.
+   */
+  private readonly inOperation = new AsyncLocalStorage<{ open: boolean }>();
+  /** The policy refresh now reading or applying; refreshes run one at a time, in order (§12). */
+  private refreshRunning: Promise<void> | null = null;
+  /** The one refresh waiting for the running one, shared by every operation that began meanwhile. */
+  private refreshQueued: Promise<void> | null = null;
 
   constructor(private readonly options: MarketplaceServiceOptions) {
     const now = () => (options.now?.() ?? new Date()).getTime();
@@ -247,6 +301,100 @@ export class MarketplaceService implements RetirementEntryLookup {
 
   private get registry(): SourceRegistry {
     return this.options.registry;
+  }
+
+  /** The policy in force; an unreadable one restricts nothing here, the gate blocks every non-official target (§12). */
+  private get policy(): MarketplacePolicy {
+    const load = this.options.policy.load;
+    return load.ok ? load.policy : EMPTY_MARKETPLACE_POLICY;
+  }
+
+  /**
+   * Run one operation (§18.6): first wait for a policy refresh that began
+   * after this operation did, then run under the shared lock with the policy
+   * that refresh left in force. A call made inside an operation, while it
+   * runs, is part of it.
+   */
+  private async operation<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.inOperation.getStore()?.open) return fn();
+    await this.refreshPolicy();
+    return this.lock.shared(async () => {
+      const scope = { open: true };
+      try {
+        return await this.inOperation.run(scope, fn);
+      } finally {
+        scope.open = false;
+      }
+    });
+  }
+
+  /**
+   * Run `fn` as one marketplace operation, so every service call it makes is
+   * part of that operation (§18.6 lock order). A caller that also takes plugin
+   * lifecycle locks enters here first and takes them inside: the marketplace
+   * operation always comes before any plugin lock. Taking a plugin lock first
+   * and then calling the service could wait for a policy change's exclusive
+   * lock while an install holds the shared lock and waits for that plugin lock.
+   */
+  async asOneOperation<T>(fn: () => Promise<T>): Promise<T> {
+    return this.operation(fn);
+  }
+
+  /**
+   * Tell the caller the catalog changed, outside this operation: what it starts
+   * (a background update check) is detached work and enters its own operation,
+   * with a fresh policy refresh and the shared lock.
+   */
+  private catalogChanged(): void {
+    const notify = this.options.onCatalogChanged;
+    if (notify) this.inOperation.exit(notify);
+  }
+
+  /**
+   * A refresh that begins no earlier than now (§12). Refreshes run one at a
+   * time: each reads the file, compares it with the policy in force and, when
+   * it changed, applies it under the exclusive lock before the next begins, so
+   * the latest read is always the last applied and no read can finish out of
+   * order. A refresh already running began before this call and may have read
+   * the file too early, so the caller waits for the next one; every caller
+   * arriving meanwhile shares that one, so overlapping operations cost one
+   * extra read between them and still see a change within it.
+   */
+  private refreshPolicy(): Promise<void> {
+    if (this.refreshQueued) return this.refreshQueued;
+    if (!this.refreshRunning) return this.startRefresh();
+    const queued = this.refreshRunning.then(() => this.startRefresh());
+    this.refreshQueued = queued;
+    return queued;
+  }
+
+  private startRefresh(): Promise<void> {
+    // From here on this refresh is running: a caller arriving now must wait for a later one.
+    this.refreshQueued = null;
+    const running = this.refreshOnce();
+    // The queue moves on whatever this refresh met; its own callers see its failure.
+    const settled = running.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.refreshRunning = settled;
+    void settled.then(() => {
+      if (this.refreshRunning === settled) this.refreshRunning = null;
+    });
+    return running;
+  }
+
+  private async refreshOnce(): Promise<void> {
+    const update = await this.options.policy.check();
+    if (!update) return;
+    await this.lock.exclusive(() => this.applyPolicy(update));
+  }
+
+  private applyPolicy(update: PolicyUpdate): void {
+    this.options.policy.apply(update);
+    if (!update.load.ok) this.options.log.warn(`marketplace policy unreadable; only the official source is reachable: ${update.load.error}`);
+    // Managed sources, blocks and required installs may all have changed.
+    this.catalogChanged();
   }
 
   private source(id: string): ResolvedSource {
@@ -307,11 +455,13 @@ export class MarketplaceService implements RetirementEntryLookup {
       canDisable: this.registry.canDisable(source),
       canRemove: reviewable,
       diagnostics: (snapshot?.diagnostics ?? []).map((item) => `${item.subject}: ${item.message}`),
+      acknowledged: acknowledgedOf(source, state),
+      badges: badgesOf(source.url, acknowledgedOf(source, state)),
     };
   }
 
   async listSources(): Promise<SourceView[]> {
-    return Promise.all(this.registry.list().map((source) => this.sourceView(source)));
+    return this.operation(() => Promise.all(this.registry.list().map((source) => this.sourceView(source))));
   }
 
   private async syncOne(id: string): Promise<void> {
@@ -337,9 +487,13 @@ export class MarketplaceService implements RetirementEntryLookup {
    * shown on the source.
    */
   async repairSource(id: string): Promise<SourceView[]> {
+    return this.operation(() => this.repairSourceNow(id));
+  }
+
+  private async repairSourceNow(id: string): Promise<SourceView[]> {
     const source = this.source(id);
     await this.options.syncer.resetLocalData(source.id);
-    this.options.onCatalogChanged?.();
+    this.catalogChanged();
     await this.syncOne(source.id);
     await this.enforceRevocations();
     return this.listSources();
@@ -347,6 +501,10 @@ export class MarketplaceService implements RetirementEntryLookup {
 
   /** Sync one source, or every source that is shown or has installed packages (§7.3). */
   async refresh(id?: string): Promise<SourceView[]> {
+    return this.operation(() => this.refreshNow(id));
+  }
+
+  private async refreshNow(id?: string): Promise<SourceView[]> {
     let ids: string[];
     if (id !== undefined) {
       ids = [this.source(id).id];
@@ -370,26 +528,50 @@ export class MarketplaceService implements RetirementEntryLookup {
   }
 
   async setEnabled(id: string, enabled: boolean): Promise<SourceView> {
-    await this.registry.setEnabled(id, enabled);
-    this.options.onCatalogChanged?.();
-    return this.sourceView(this.source(id));
+    return this.operation(async () => {
+      await this.registry.setEnabled(id, enabled);
+      this.catalogChanged();
+      return this.sourceView(this.source(id));
+    });
   }
 
   async acceptRewrite(id: string, commit: string): Promise<SourceView> {
-    const result = await this.options.syncer.acceptRewrite(id, commit);
-    if (result.status === "failed") throw new MarketplaceError(result.code, result.message, result.detail ? { detail: result.detail } : undefined);
-    return this.sourceView(this.source(id));
+    return this.operation(async () => {
+      const result = await this.options.syncer.acceptRewrite(id, commit);
+      if (result.status === "failed") throw new MarketplaceError(result.code, result.message, result.detail ? { detail: result.detail } : undefined);
+      return this.sourceView(this.source(id));
+    });
+  }
+
+  /**
+   * *Allow…* (§18.5): the source takes the confirmations its target now
+   * needs, and syncs again under them. A sync that still fails is recorded
+   * and shown on the row like any other.
+   */
+  async acknowledgeSource(id: string, warnings: readonly SourceWarning[]): Promise<SourceView> {
+    return this.operation(async () => {
+      const source = this.source(id);
+      await this.registry.acknowledge(source.id, warnings);
+      this.catalogChanged();
+      await this.syncOne(source.id);
+      await this.enforceRevocations();
+      return this.sourceView(this.source(source.id));
+    });
   }
 
   /** Remove a custom or direct source; its installed packages stay and are listed (§7.6). */
   async removeSource(id: string): Promise<{ orphanedPackages: PackageKeyView[] }> {
+    return this.operation(() => this.removeSourceNow(id));
+  }
+
+  private async removeSourceNow(id: string): Promise<{ orphanedPackages: PackageKeyView[] }> {
     const source = this.source(id);
     if (source.origin === "official" || source.origin === "managed") {
       throw new MarketplaceError("SOURCE_POLICY_BLOCKED", `the ${source.origin} source ${id} cannot be removed`);
     }
     const orphaned = (await this.installedAll()).filter((item) => item.sourceId === id).map((item) => ({ sourceId: id, kind: item.kind, name: item.name }));
     await this.options.syncer.removeSource(id);
-    this.options.onCatalogChanged?.();
+    this.catalogChanged();
     return { orphanedPackages: orphaned };
   }
 
@@ -420,18 +602,50 @@ export class MarketplaceService implements RetirementEntryLookup {
     return `source-${randomBytes(3).toString("hex")}`;
   }
 
-  async previewSource(request: SourcePreviewRequest): Promise<SourcePreviewView> {
+  async previewSource(request: SourcePreviewRequest): Promise<SourcePreviewResultView> {
+    return this.operation(() => this.previewSourceNow(request));
+  }
+
+  /**
+   * Preview an address (§7.2, §18.5): refusals and policy first, then every
+   * warning the request does not carry is asked for — the lexical ones
+   * (plain http, sign-in over it, a literal address's class) before any
+   * lookup or git command, an address class found by the one lookup before
+   * any git command — and only then the repository is read.
+   */
+  private async previewSourceNow(request: SourcePreviewRequest): Promise<SourcePreviewResultView> {
     const url = normalizeSourceUrl(request.input);
     if (request.auth === "ssh" && url.scheme !== "ssh") throw new MarketplaceError("SOURCE_URL_REJECTED", "SSH sign-in needs an ssh:// or git@host:path address");
     if (request.auth !== "ssh" && url.scheme === "ssh") throw new MarketplaceError("SOURCE_URL_REJECTED", "an ssh address needs SSH sign-in");
     const auth: SourceAuth = request.auth === "token" ? { kind: "token", host: url.host } : { kind: request.auth };
     const subdir = request.subdir?.trim() ? request.subdir.trim().replace(/^\/+|\/+$/gu, "") : null;
     const ref = request.ref?.trim() ? request.ref.trim() : null;
+    const acknowledged = [...new Set(request.acknowledge ?? [])];
+    const held = new Set(acknowledged);
+    const askConfirmation = (warnings: readonly EnteredTargetWarningView[]): SourcePreviewResultView => ({ type: "confirm", warnings: uniqueWarnings(warnings) });
+    // Sign-in over plain http: a credential must not leave before the user accepts that (§18.2.2).
+    const lexical: EnteredTargetWarningView[] = url.scheme === "http" && auth.kind === "token" && !held.has("token-unencrypted")
+      ? [{ warning: "token-unencrypted", host: url.host, address: null }]
+      : [];
+    let verdict: ReturnType<NetworkGate["checkRemote"]>;
+    try {
+      verdict = this.options.gate.checkRemote(url, { official: false, acknowledged: held });
+    } catch (error) {
+      if (error instanceof ConfirmationRequiredError) return askConfirmation([...error.warnings, ...lexical]);
+      throw error;
+    }
+    if (lexical.length > 0) return askConfirmation(lexical);
     const sourceId = `${PREVIEW_ID_PREFIX}${randomBytes(9).toString("hex")}`;
-    const { allowHttp } = await this.options.gate.checkRemote(url, { official: false });
+    const remote: GitRemote = { url, sourceId, useToken: auth.kind === "token", ...verdict };
+    try {
+      // The address class a lookup finds is asked for before any git command runs.
+      await this.options.git.preflight(remote);
+    } catch (error) {
+      if (error instanceof ConfirmationRequiredError) return askConfirmation(error.warnings);
+      throw error;
+    }
     const token = request.auth === "token" && request.token ? request.token : null;
     if (token) this.options.previewTokens.set(sourceId, token);
-    const remote: GitRemote = { url, sourceId, allowHttp, useToken: auth.kind === "token" };
     const dir = join(this.options.root, ".previews", sourceId);
     const drop = async () => {
       this.options.previewTokens.delete(sourceId);
@@ -440,7 +654,8 @@ export class MarketplaceService implements RetirementEntryLookup {
     try {
       const repo = await BareRepo.init(this.options.git.commands, join(dir, "repo.git"));
       const commit = await repo.fetchRef(remote, ref ?? undefined, "candidate");
-      const credentialHelper = await this.options.git.credentialHelperFor(url.host);
+      // Over http without token-unencrypted the helper is switched off for every call, so it never answers (§7.4).
+      const credentialHelper = remote.credentialsAllowed && (await this.options.git.credentialHelperFor(url.host));
       const pathName = url.path.split("/").filter(Boolean).pop() ?? "";
       if (subdir === null) {
         const source: ResolvedSource = { id: sourceId, origin: "custom", url, mirrors: [], auth, ...(ref ? { ref } : {}) };
@@ -449,12 +664,13 @@ export class MarketplaceService implements RetirementEntryLookup {
           const counts: Partial<Record<PackageKind, number>> = {};
           for (const pkg of built.snapshot.packages) counts[pkg.kind] = (counts[pkg.kind] ?? 0) + 1;
           const suggestedId = this.freeId([idFrom(built.snapshot.marketplace.name), idFrom(pathName)]);
-          const held = this.previews.issue({ sourceId, dir, url, ref, subdir: null, auth, token, origin: "custom", suggestedId });
+          const held = this.previews.issue({ sourceId, dir, url, ref, subdir: null, auth, token, origin: "custom", suggestedId, acknowledged });
           return {
             type: "marketplace",
             previewId: held.id,
             expiresAt: held.expiresAt,
             url: url.url,
+            badges: badgesOf(url, acknowledged),
             ref,
             commit,
             marketplace: {
@@ -478,12 +694,13 @@ export class MarketplaceService implements RetirementEntryLookup {
       if (!read.ok) throw new MarketplaceError(read.code, read.error);
       const { descriptor, detectedFrom, versionSynthesized } = read.found;
       const suggestedId = this.freeId([idFrom(descriptor.name), idFrom(pathName)]);
-      const held = this.previews.issue({ sourceId, dir, url, ref, subdir, auth, token, origin: "direct", suggestedId });
+      const held = this.previews.issue({ sourceId, dir, url, ref, subdir, auth, token, origin: "direct", suggestedId, acknowledged });
       return {
         type: "package",
         previewId: held.id,
         expiresAt: held.expiresAt,
         url: url.url,
+        badges: badgesOf(url, acknowledged),
         ref,
         subdir,
         commit,
@@ -500,6 +717,12 @@ export class MarketplaceService implements RetirementEntryLookup {
       };
     } catch (error) {
       await drop();
+      // Found at the connection (the address's class changed since the preflight): asked for the same way.
+      if (error instanceof ConfirmationRequiredError) return askConfirmation(error.warnings);
+      // The host wants sign-in over plain http: asked for before any credential is sent (§18.2.2).
+      if (isMarketplaceError(error) && error.code === "SOURCE_AUTH_REQUIRED" && error.detail?.reason === "token-unencrypted") {
+        return askConfirmation([{ warning: "token-unencrypted", host: url.host, address: null }]);
+      }
       throw error;
     }
   }
@@ -509,8 +732,14 @@ export class MarketplaceService implements RetirementEntryLookup {
    * place and sync (§7.2 step 6): a repo.git without a state reads as lost.
    */
   async addSource(request: SourceAddRequest): Promise<SourceView> {
+    return this.operation(() => this.addSourceNow(request));
+  }
+
+  private async addSourceNow(request: SourceAddRequest): Promise<SourceView> {
     const preview = this.previews.take(request.previewId);
     try {
+      // The policy may have changed since the preview (§18.6).
+      this.options.gate.checkSourcePolicy(preview.url, { official: false });
       const id = request.id?.trim() || preview.suggestedId;
       await this.registry.add({
         id,
@@ -520,6 +749,7 @@ export class MarketplaceService implements RetirementEntryLookup {
         ...(preview.subdir ? { subdir: preview.subdir } : {}),
         auth: preview.auth,
         ...(request.label?.trim() ? { label: request.label.trim() } : {}),
+        acknowledged: preview.acknowledged,
       });
       if (preview.token && preview.auth.kind === "token") await this.options.tokens.set(preview.auth.host, preview.token);
       await this.registry.updateState(id, (state) => state);
@@ -530,7 +760,7 @@ export class MarketplaceService implements RetirementEntryLookup {
         if (!isMissingPathError(error)) throw error;
       }
       await this.syncOne(id);
-      this.options.onCatalogChanged?.();
+      this.catalogChanged();
       return this.sourceView(this.source(id));
     } finally {
       this.options.previewTokens.delete(preview.sourceId);
@@ -554,25 +784,27 @@ export class MarketplaceService implements RetirementEntryLookup {
    * one. `bound` adds hidden sources that installed packages are bound to: they
    * keep syncing, and their update notices keep reaching those packages (§7.3).
    */
-  private async rows(bound?: ReadonlySet<string>): Promise<{ rows: CatalogRow[]; snapshots: Map<string, SourceSnapshot>; shown: ResolvedSource[] }> {
+  private async rows(bound?: ReadonlySet<string>): Promise<{ rows: CatalogRow[]; snapshots: Map<string, SourceSnapshot>; shown: ResolvedSource[]; badges: Map<string, SourceBadge[]> }> {
     const shown: ResolvedSource[] = [];
     const snapshots = new Map<string, SourceSnapshot>();
+    const badges = new Map<string, SourceBadge[]>();
     for (const source of this.registry.list()) {
       const read = await this.read(source);
       // A source whose files cannot be read shows as broken in Sources and lists nothing.
       if ("problem" in read) continue;
       if (!this.registry.isEnabled(source, read.state) && !bound?.has(source.id)) continue;
       shown.push(source);
+      badges.set(source.id, badgesOf(source.url, acknowledgedOf(source, read.state)));
       if (read.snapshot) snapshots.set(source.id, read.snapshot);
     }
     const rows = aggregateCatalog(
       shown.filter((source) => snapshots.has(source.id)).map((source) => ({ sourceId: source.id, sourceOrigin: source.origin, snapshot: snapshots.get(source.id)! })),
       this.options.versionContext(),
     );
-    return { rows, snapshots, shown };
+    return { rows, snapshots, shown, badges };
   }
 
-  private entry(row: CatalogRow, installed: InstalledPackage | null, rows: readonly CatalogRow[], sources: ReadonlySet<string>, label: string): CatalogEntryView {
+  private entry(row: CatalogRow, installed: InstalledPackage | null, rows: readonly CatalogRow[], sources: ReadonlySet<string>, label: string, badges: readonly SourceBadge[]): CatalogEntryView {
     return {
       key: { sourceId: row.sourceId, kind: row.kind, name: row.name },
       sourceOrigin: row.sourceOrigin,
@@ -581,16 +813,21 @@ export class MarketplaceService implements RetirementEntryLookup {
       description: row.package.description ?? "",
       keywords: [...(row.package.keywords ?? [])],
       state: rowState(row, installed, rows, sources),
-      required: lockedByPolicy(this.options.policy, row.kind, row.name, row.sourceId) !== undefined,
+      required: lockedByPolicy(this.policy, row.kind, row.name, row.sourceId) !== undefined,
       runsCode: runsCode(row.kind, (row.choice.state === "candidate" ? row.choice.version : row.package.versions[0])?.components),
+      sourceBadges: [...badges],
     };
   }
 
   async catalog(query: CatalogQuery): Promise<CatalogView> {
+    return this.operation(() => this.catalogNow(query));
+  }
+
+  private async catalogNow(query: CatalogQuery): Promise<CatalogView> {
     const installedAll = await this.installedAll();
     // The Installed view reads hidden sources its packages are bound to, so their updates show (§7.3).
     const bound = query.installedOnly ? new Set(installedAll.flatMap((item) => (item.sourceId === null ? [] : [item.sourceId]))) : undefined;
-    const { rows, snapshots, shown } = await this.rows(bound);
+    const { rows, snapshots, shown, badges } = await this.rows(bound);
     const installed = new Map(installedAll.map((item) => [keyOf(item.kind, item.name), item]));
     const existing = new Set(this.registry.list().map((source) => source.id));
     const labels = new Map(shown.map((source) => [source.id, sourceLabel(source, snapshots.get(source.id) ?? null)]));
@@ -599,7 +836,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       (!query.sourceId || entry.key.sourceId === query.sourceId) &&
       (!text || [entry.key.name, entry.displayName, entry.description, ...entry.keywords].some((field) => field.toLowerCase().includes(text)));
 
-    let entries = rows.map((row) => this.entry(row, installed.get(keyOf(row.kind, row.name)) ?? null, rows, existing, labels.get(row.sourceId) ?? row.sourceId));
+    let entries = rows.map((row) => this.entry(row, installed.get(keyOf(row.kind, row.name)) ?? null, rows, existing, labels.get(row.sourceId) ?? row.sourceId, badges.get(row.sourceId) ?? []));
     if (query.installedOnly) {
       entries = entries.filter((entry) => {
         const item = installed.get(keyOf(entry.key.kind, entry.key.name));
@@ -620,6 +857,7 @@ export class MarketplaceService implements RetirementEntryLookup {
             state: { state: "unbound", version: item.version },
             required: false,
             runsCode: runsCode(item.kind),
+            sourceBadges: [],
           });
           continue;
         }
@@ -631,8 +869,9 @@ export class MarketplaceService implements RetirementEntryLookup {
           description: "",
           keywords: [],
           state: existing.has(item.sourceId) ? { state: "installed", version: item.version } : { state: "source-removed", version: item.version },
-          required: lockedByPolicy(this.options.policy, item.kind, item.name, item.sourceId) !== undefined,
+          required: lockedByPolicy(this.policy, item.kind, item.name, item.sourceId) !== undefined,
           runsCode: runsCode(item.kind),
+          sourceBadges: badges.get(item.sourceId) ?? [],
         });
       }
     }
@@ -654,17 +893,17 @@ export class MarketplaceService implements RetirementEntryLookup {
    * A plan from a hidden source, install or update, is refused
    * (SOURCE_DISABLED) until the source is shown again.
    */
-  private async row(key: PackageKeyView): Promise<{ row: CatalogRow; rows: CatalogRow[]; snapshot: SourceSnapshot; label: string }> {
+  private async row(key: PackageKeyView): Promise<{ row: CatalogRow; rows: CatalogRow[]; snapshot: SourceSnapshot; label: string; badges: SourceBadge[] }> {
     const installed = await this.installed(key.kind, key.name);
     const bound = installed?.sourceId === key.sourceId ? new Set([key.sourceId]) : undefined;
-    const { rows, snapshots, shown } = await this.rows(bound);
+    const { rows, snapshots, shown, badges } = await this.rows(bound);
     const row = rows.find((item) => item.sourceId === key.sourceId && item.kind === key.kind && item.name === key.name);
     const snapshot = snapshots.get(key.sourceId);
     const source = shown.find((item) => item.id === key.sourceId);
     if (!row || !snapshot || !source) {
       throw new MarketplaceError("PACKAGE_INCOMPATIBLE", `${key.sourceId} does not list ${key.kind} ${key.name}`);
     }
-    return { row, rows, snapshot, label: sourceLabel(source, snapshot) };
+    return { row, rows, snapshot, label: sourceLabel(source, snapshot), badges: badges.get(source.id) ?? [] };
   }
 
   private async installed(kind: PackageKind, name: string): Promise<InstalledRecord | null> {
@@ -681,14 +920,18 @@ export class MarketplaceService implements RetirementEntryLookup {
   }
 
   async detail(key: PackageKeyView): Promise<PackageDetailView> {
-    const { row, rows, snapshot, label } = await this.row(key);
+    return this.operation(() => this.detailNow(key));
+  }
+
+  private async detailNow(key: PackageKeyView): Promise<PackageDetailView> {
+    const { row, rows, snapshot, label, badges } = await this.row(key);
     const installed = await this.installed(key.kind, key.name);
     const existing = new Set(this.registry.list().map((source) => source.id));
     const context = this.options.versionContext();
     const shownVersion = row.choice.state === "candidate" ? row.choice.version : row.package.versions[0] ?? null;
     const installedHere = installed?.sourceId === key.sourceId ? installed.version : null;
     return {
-      entry: this.entry(row, installed, rows, existing, label),
+      entry: this.entry(row, installed, rows, existing, label, badges),
       provenance: {
         sourceLabel: label,
         repository: this.source(key.sourceId).url.url,
@@ -706,7 +949,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       components: shownVersion?.components ?? null,
       rungs:
         row.kind === "plugin" && shownVersion?.artifact
-          ? rungViews(shownVersion.artifact, row.package.path, await this.treeDeclared(key.sourceId, shownVersion, row.package.path))
+          ? rungViews(shownVersion.artifact, row.package.path, await this.treeDeclared(key.sourceId, shownVersion, row.package.path), this.source(key.sourceId).url)
           : [],
       versions: versionViews(row, effectiveRevocations(snapshot, context.appVersion), context, installedHere),
     };
@@ -743,7 +986,7 @@ export class MarketplaceService implements RetirementEntryLookup {
   }
 
   async planInstall(request: InstallPlanRequest): Promise<InstallPlanView> {
-    return this.plan(request, false);
+    return this.operation(() => this.plan(request, false));
   }
 
   /** `adopt` (content only): the install records an activation the settings already hold (§16.3). */
@@ -757,19 +1000,20 @@ export class MarketplaceService implements RetirementEntryLookup {
     const version = this.chosenVersion(row, snapshot, request.version);
     const installed = await this.installed(row.kind, row.name);
     const switchSource = request.switchSource === true;
-    const required = requiredByPolicy(this.options.policy, row.kind, row.name);
+    const required = requiredByPolicy(this.policy, row.kind, row.name);
     if (required && required.source !== row.sourceId && installed) {
       throw new MarketplaceError("PACKAGE_REQUIRED_BY_POLICY", `${row.kind} ${row.name} is required from ${required.source} by policy`);
     }
     const base = planPackage(row, version);
     const action = classifyInstall(base, installed, { switchSource });
+    const policyDigest = this.options.policy.digest;
     let held: HeldPlan;
     let mcp: McpRuntimeView | null = null;
     let rungs: InstallPlanView["rungs"] = [];
     if (row.kind === "plugin") {
       const plan = planPluginVersion(row, version);
-      held = { kind: "plugin", plan, switchSource };
-      rungs = rungViews(plan.artifact, plan.packagePath, await this.treeDeclared(row.sourceId, version, row.package.path));
+      held = { kind: "plugin", plan, switchSource, policyDigest };
+      rungs = rungViews(plan.artifact, plan.packagePath, await this.treeDeclared(row.sourceId, version, row.package.path), source.url);
     } else if (row.kind === "mcp") {
       const plan = { ...base, kind: "mcp" as const };
       // Resolved now so the review shows the command that will run.
@@ -777,10 +1021,10 @@ export class MarketplaceService implements RetirementEntryLookup {
         resolveMcpPackage(plan, { ...access, limits: this.options.mcpLimits, workRoot: this.options.workRoot }),
       );
       this.options.installers.mcp.admit(row.name, resolved.runtime);
-      held = { kind: "mcp", resolved, switchSource };
+      held = { kind: "mcp", resolved, switchSource, policyDigest };
       mcp = mcpRuntimeView(resolved.runtime);
     } else {
-      held = { kind: "content", plan: base as ContentPlan, switchSource, adopt };
+      held = { kind: "content", plan: base as ContentPlan, switchSource, adopt, policyDigest };
     }
     // One live plan per package: planning again (another version, a source switch) drops the older one and its files.
     const ticket = this.plans.issue(held, `${row.sourceId}:${row.kind}:${row.name}`);
@@ -806,6 +1050,10 @@ export class MarketplaceService implements RetirementEntryLookup {
 
   /** The update review (§15.6): commit range, authority delta, and rewritten history pending review. */
   async planUpdate(key: PackageKeyView): Promise<UpdatePlanView> {
+    return this.operation(() => this.planUpdateNow(key));
+  }
+
+  private async planUpdateNow(key: PackageKeyView): Promise<UpdatePlanView> {
     const installed = await this.installed(key.kind, key.name);
     if (!installed || installed.sourceId !== key.sourceId) {
       throw new MarketplaceError("PACKAGE_ID_CONFLICT", `${key.kind} ${key.name} is not installed from ${key.sourceId}`);
@@ -845,7 +1093,15 @@ export class MarketplaceService implements RetirementEntryLookup {
   }
 
   async executeInstall(planId: string, componentConsents: readonly ComponentConsent[] = [], reviewedAuthority = false): Promise<InstallResultView> {
+    return this.operation(() => this.executeInstallNow(planId, componentConsents, reviewedAuthority));
+  }
+
+  private async executeInstallNow(planId: string, componentConsents: readonly ComponentConsent[], reviewedAuthority: boolean): Promise<InstallResultView> {
     const held = this.plans.take(planId);
+    // Reviewed under another policy: what it allows may have changed, so the review reopens (§18.6).
+    if (held.policyDigest !== this.options.policy.digest) {
+      throw new MarketplaceError("PLAN_EXPIRED", `plan ${planId} was made under another marketplace policy`, { detail: { reason: "policy-changed" } });
+    }
     // The gates must judge the new install by the source it is about to be bound to, not the one it leaves.
     const target = heldTarget(held);
     const key = keyOf(target.kind, target.name);
@@ -871,7 +1127,7 @@ export class MarketplaceService implements RetirementEntryLookup {
         switchSource: held.switchSource,
         ...(reviewedAuthority ? { reviewedAppVersion: getAveAppVersion() } : {}),
         stage: (staged) =>
-          this.options.syncer.withRepository(plan.sourceId, ({ source, repo, remote }) => {
+          this.options.syncer.withRepository(plan.sourceId, async ({ source, repo, remote }) => {
             this.progress(planId, "downloading");
             return runPluginLadder(staged, {
               repo,
@@ -879,7 +1135,7 @@ export class MarketplaceService implements RetirementEntryLookup {
               direct: source.origin === "direct",
               sourceUrl: source.url,
               gate: this.options.gate,
-              fetchImpl: this.options.ladder.fetchImpl,
+              catalog: await this.catalogSource(source),
               sourceToken: this.tokenFor(source),
               tokenMissing: source.auth.kind === "token" && this.tokenFor(source) === null,
               zip: this.options.ladder.zip,
@@ -918,8 +1174,14 @@ export class MarketplaceService implements RetirementEntryLookup {
       const { connectionWarning } = await this.options.installers.mcp.installUnbound(held.name, held.runtime);
       result = { key: { sourceId: null, kind: "mcp", name: held.name }, version: null, action: { action: "install" }, rungs: [], connectionWarning };
     }
-    this.options.onCatalogChanged?.();
+    this.catalogChanged();
     return result;
+  }
+
+  /** The source as its catalog's downloads are judged (§18.2.3). */
+  private async catalogSource(source: ResolvedSource): Promise<CatalogSource> {
+    const snapshot = await this.options.syncer.readSnapshot(source.id);
+    return { id: source.id, label: sourceLabel(source, snapshot), url: source.url, acknowledged: await this.registry.acknowledged(source) };
   }
 
   /** The stored token a token-auth source's release downloads go through the REST API with (§6.2), or null. */
@@ -945,10 +1207,14 @@ export class MarketplaceService implements RetirementEntryLookup {
   }
 
   async uninstall(request: UninstallRequest, options?: { retain: { reason: PluginConfigRetention["reason"] } }): Promise<UninstallResultView> {
+    return this.operation(() => this.uninstallNow(request, options));
+  }
+
+  private async uninstallNow(request: UninstallRequest, options?: { retain: { reason: PluginConfigRetention["reason"] } }): Promise<UninstallResultView> {
     if (request.removeData === true && request.kind !== "mcp" && request.kind !== "agent-plugin") {
       throw new Error("removeData applies only to server or agent plugin packages");
     }
-    assertNotRequiredByPolicy(this.options.policy, request.kind, request.name, request.sourceId, "uninstall");
+    assertNotRequiredByPolicy(this.policy, request.kind, request.name, request.sourceId, "uninstall");
     const installed = await this.installed(request.kind, request.name);
     if (!installed || installed.sourceId !== request.sourceId) {
       const from = request.sourceId === null ? "without a source" : `from ${request.sourceId}`;
@@ -966,7 +1232,7 @@ export class MarketplaceService implements RetirementEntryLookup {
     } else if (request.kind === "mcp") ({ keptDataDir } = await this.options.installers.mcp.uninstall(request.name, { removeData: request.removeData === true }));
     else await this.options.installers.content.uninstall(request.kind, request.name, { removeData: request.removeData === true });
     await this.refeedAfter(`${request.kind} ${request.name} uninstall`);
-    this.options.onCatalogChanged?.();
+    this.catalogChanged();
     return { key: { sourceId: request.sourceId, kind: request.kind, name: request.name }, keptDataDir };
   }
 
@@ -988,7 +1254,7 @@ export class MarketplaceService implements RetirementEntryLookup {
     const runtime = runtimeFromServerJson(document, request.select);
     assertMcpRuntimePinned(name, runtime);
     this.options.installers.mcp.admit(name, runtime);
-    const ticket = this.plans.issue({ kind: "mcp-unbound", name, runtime }, `unbound:mcp:${name}`);
+    const ticket = this.plans.issue({ kind: "mcp-unbound", name, runtime, policyDigest: this.options.policy.digest }, `unbound:mcp:${name}`);
     return {
       planId: ticket.id,
       expiresAt: ticket.expiresAt,
@@ -1006,6 +1272,10 @@ export class MarketplaceService implements RetirementEntryLookup {
 
   /** Installed packages whose bound source offers a newer version, hidden sources included (§7.3). */
   async updates(): Promise<PackageUpdateView[]> {
+    return this.operation(() => this.updatesNow());
+  }
+
+  private async updatesNow(): Promise<PackageUpdateView[]> {
     const installed = await this.installedAll();
     const bound = new Set(installed.map((item) => item.sourceId).filter((sourceId): sourceId is string => sourceId !== null));
     const { rows } = await this.rows(bound);
@@ -1031,6 +1301,10 @@ export class MarketplaceService implements RetirementEntryLookup {
    * boot publishes (null when nothing changed).
    */
   async applyBootInstalls(defaults: readonly PackageKey[], applied: AppliedDefaults): Promise<{ report: BootInstallReport; notice: BootInstallNoticeView | null }> {
+    return this.operation(() => this.applyBootInstallsNow(defaults, applied));
+  }
+
+  private async applyBootInstallsNow(defaults: readonly PackageKey[], applied: AppliedDefaults): Promise<{ report: BootInstallReport; notice: BootInstallNoticeView | null }> {
     // First: a former admin install it binds is recorded as applied, so the defaults below leave it be.
     const legacy = await runLegacyMigration({
       markerPath: this.options.legacyMigration.markerPath,
@@ -1052,7 +1326,7 @@ export class MarketplaceService implements RetirementEntryLookup {
     const { rows, snapshots, shown } = await this.rows();
     const synced = new Map<string, SourceOrigin>(shown.filter((source) => snapshots.has(source.id)).map((source) => [source.id, source.origin]));
     const report = await runBootInstalls({
-      policy: this.options.policy,
+      policy: this.policy,
       defaults,
       rows,
       synced,
@@ -1064,7 +1338,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       applied,
       now: () => this.now(),
     });
-    return { report, notice: bootInstallNoticeFrom(report, this.options.policy, legacy?.plugins ?? null, revoked) };
+    return { report, notice: bootInstallNoticeFrom(report, this.policy, legacy?.plugins ?? null, revoked) };
   }
 
   /**
@@ -1075,6 +1349,10 @@ export class MarketplaceService implements RetirementEntryLookup {
    * revocation already on disk never waits for the network.
    */
   async enforceRevocations(): Promise<void> {
+    return this.operation(() => this.enforceRevocationsNow());
+  }
+
+  private async enforceRevocationsNow(): Promise<void> {
     const run = this.enforceTail.then(() => this.applyRevocations(), () => this.applyRevocations());
     this.enforceTail = run.catch(() => undefined);
     for (const item of await run) {
@@ -1157,7 +1435,7 @@ export class MarketplaceService implements RetirementEntryLookup {
             reason: "revoked", sourceId: record.sourceId, successors: revocation.successors!,
           });
         }
-        if (lockedByPolicy(this.options.policy, record.kind, record.name, record.sourceId)) {
+        if (lockedByPolicy(this.policy, record.kind, record.name, record.sourceId)) {
           report.push({ ...item, outcome: "required" });
           continue;
         }

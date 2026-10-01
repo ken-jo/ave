@@ -4,6 +4,7 @@
  * update list follows what is installed and skipped, and the periodic tick
  * syncs before it looks and publishes what its revocations removed.
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import { describe, expect, it, vi } from "vitest";
 import type { AppliedDefaults } from "../../boot-installs/applied.js";
 import type { BootInstallReport } from "../../boot-installs/run.js";
@@ -155,6 +156,30 @@ describe("startMarketplaceBackground", () => {
     await startMarketplaceBackground(input).started;
     expect(service.updates).not.toHaveBeenCalled();
     expect(input.publishUpdates).not.toHaveBeenCalled();
+  });
+
+  it("runs a check asked for from inside a caller's async context outside that context (§18.6)", async () => {
+    // Stands in for the service's operation context: whoever asks for a check, from wherever, the
+    // check's service calls must not inherit it.
+    const caller = new AsyncLocalStorage<string>();
+    const seen: Array<string | undefined> = [];
+    const { input } = harness({
+      service: {
+        refresh: vi.fn(async () => void seen.push(caller.getStore())),
+        updates: vi.fn(async () => {
+          seen.push(caller.getStore());
+          return [];
+        }),
+      },
+    });
+    const background = await caller.run("boot", async () => startMarketplaceBackground(input));
+    await background.started;
+    seen.length = 0;
+    await caller.run("operation", () => background.recheck());
+    await caller.run("operation", () => background.retryBootInstalls());
+    await caller.run("operation", () => background.settingsChanged());
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((store) => store === "boot")).toBe(true);
   });
 
   it("clears a sent list once notices are turned off, without looking up updates", async () => {

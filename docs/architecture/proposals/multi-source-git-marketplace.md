@@ -224,9 +224,9 @@ Rules:
   extraction (a generated `GIT_SSL_CAINFO` bundle; `schannel` on Windows).
 - **Hardened invocation** for every call: no prompts; an askpass helper that
   answers only for the host a single-use ticket names;
-  `GIT_ALLOW_PROTOCOL=https:ssh` (plain `http` only for hosts the managed policy
-  names; from 0.13.0 also for a source whose user accepted the http warning,
-  D11); `GIT_CONFIG_NOSYSTEM=1` and an Ave-generated global config that keeps
+  `GIT_ALLOW_PROTOCOL=https:ssh` (plain `http` only for a remote that passed the
+  network gate: a host the managed policy names, or a source whose user
+  accepted the http warning, D11); `GIT_CONFIG_NOSYSTEM=1` and an Ave-generated global config that keeps
   only credential helpers and TLS settings from the user's own; no redirects;
   no file protocol, submodules, hooks, fsmonitor or LFS; proxy from the PAC
   resolver.
@@ -245,7 +245,7 @@ Rules:
 | A source silently changing what a version means | Versions resolve to commits; a version's commit is recorded at install and in the index. Re-publishing a version at a different commit is rejected by CI and flagged by the client. |
 | History rewrite / rollback of a source | §9.2. |
 | A custom source impersonating the official one | Reserved names; official identity bound to the built-in URL list, re-checked on every load. The *Official* badge grants nothing else (§9.4). |
-| A source aiming git or downloads at internal services | One network gate for every target: URL normalization, policy allow/block, private-network refusal, no git redirects, HTTPS redirects re-checked, no auth header across hosts. From 0.13.0 (D11) a target the user entered is a warning, and a catalog-supplied one is judged separately: metadata and other-port loopback refused, other internal hosts confirmed per source (design §18.2, §18.3). Enforcement on the connected address applies to the transports Ave owns (downloads, git over http/https). For SSH it is a preflight check only: a DNS answer that changes before ssh's own lookup is not bound, and host-key verification is the trust anchor. A PAC proxy, local or remote, is trusted to enforce destination restrictions beyond its checked socket; an ssh `ProxyCommand` or `ProxyJump` is run by ssh and trusted like any user-configured program (design §18.2.4). |
+| A source aiming git or downloads at internal services | One network gate for every target: URL normalization, policy allow/block, `requireHttps` and `blockPrivateNetworks`, the class of each resolved address, no git redirects, download redirects re-checked, no auth header across hosts. A target the user entered is a warning confirmed once per source (plain http, internal network, this computer; D11). A catalog-supplied one is judged separately: other-port loopback refused, even for a policy-listed host, and other internal hosts confirmed per source (`internal-downloads`). Metadata and unroutable addresses are refused for every target (design §7.4). Enforcement on the connected address applies to the transports Ave owns (downloads, git over http/https). For SSH it is a preflight check only: a DNS answer that changes before ssh's own lookup is not bound, and host-key verification is the trust anchor. A PAC proxy, local or remote, is trusted to enforce destination restrictions beyond its checked socket; an ssh `ProxyCommand` or `ProxyJump` is run by ssh and trusted like any user-configured program (design §18.2.4). |
 | A custom source pushing banners | Only the service endpoint issues announcements; sources cannot. |
 | Dependency confusion across sources | Installed packages are bound to their source (§5). |
 | Malicious code in a custom source | Explicit consent when the source is added, per-install permission review (existing capability, network and plugin-access review), update review with a capability diff, and managed policy (§9.3). |
@@ -282,7 +282,11 @@ The existing system policy file (`/Library/Application Support/Ave/policy.json`,
 and block-list of source URLs/host patterns, the internal hosts allowed over
 plain `http`, pre-registered (managed) sources, whether direct installs are
 allowed, whether the official source may be disabled, and the organization's
-`defaultInstalls` and `requiredInstalls`. User settings cannot override it.
+`defaultInstalls` and `requiredInstalls`. `requireHttps` and
+`blockPrivateNetworks` make plain http and internal targets a block that no
+user confirmation passes. User settings cannot override it. The marketplace
+reads the file again at the start of each operation, so a change applies
+without a restart (design §12).
 The file is owned by the machine's administrator, which is why it — and not a
 git repository — is the only place that can lock a package.
 

@@ -23,10 +23,11 @@ import type {
   PackageKeyView,
   RungView,
   SourceView,
+  SourceWarning,
   UpdatePlanView,
 } from "../../../../shared/git-marketplace.js";
 import { MarketplaceProblem } from "./MarketplaceProblem.js";
-import { actionLabel, exclusionLabel, kindLabel, originLabel, OTHER_SUBJECT, shortSha, sourceSubject, stateLabel } from "./labels.js";
+import { actionLabel, allowableWarning, exclusionLabel, kindLabel, originLabel, OTHER_SUBJECT, shortSha, sourceSubject, stateLabel } from "./labels.js";
 import { McpRuntimeSummary } from "./McpRuntimeSummary.js";
 import { componentInventory } from "../../../../marketplace/app/component-delta.js";
 import type { AgentPluginComponents } from "../../../../marketplace/catalog/types.js";
@@ -52,6 +53,8 @@ export interface PackageSheetProps {
   /** Something was installed or removed: the catalog should be read again. */
   onChanged: () => void;
 }
+
+type PlanOptions = { update?: boolean; version?: string; switchSource?: boolean };
 
 function isUpdatePlan(plan: InstallPlanView | UpdatePlanView): plan is UpdatePlanView {
   return "commitRange" in plan;
@@ -119,6 +122,9 @@ function RungList({ rungs }: { rungs: RungView[] }) {
             : rung.rung !== "tree" && !rung.pinned
               ? t("gitMarketplace.rung.notPinned")
               : rung.detail ?? t("gitMarketplace.rung.declared")}
+          {rung.declared && rung.unencrypted && (
+            <span className="text-warning" data-testid={`git-marketplace:rung:${rung.rung}:unencrypted`}>{` · ${t("gitMarketplace.rung.unencrypted")}`}</span>
+          )}
         </li>
       ))}
     </ol>
@@ -159,7 +165,11 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
     else setLoadFailure(result);
   }, [api]);
 
-  const plan = useCallback(async (key: PackageKeyView, options: { update?: boolean; version?: string; switchSource?: boolean } = {}) => {
+  /** The last plan asked for, so a review can be asked again after *Allow…* or an expired plan. */
+  const [lastPlan, setLastPlan] = useState<{ key: PackageKeyView; options: PlanOptions } | null>(null);
+
+  const plan = useCallback(async (key: PackageKeyView, options: PlanOptions = {}) => {
+    setLastPlan({ key, options });
     setBusy(true);
     setApprovedMcpServers({});
     setApprovedHooks({});
@@ -218,6 +228,28 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
     } else {
       setStage({ stage: "failed", failure: result, plan: reviewed });
     }
+  };
+
+  /** Review again with a fresh plan (an expired one, or after *Allow…*). */
+  const replan = () => {
+    if (lastPlan) void plan(lastPlan.key, lastPlan.options);
+  };
+
+  /** *Allow…* on a download that needs a confirmation the source does not hold: confirm it for the source, then review again. */
+  const allow = async (warning: SourceWarning) => {
+    if (!source) return;
+    setBusy(true);
+    try {
+      const result = await api.acknowledgeSource(source.id, [warning]);
+      if (!result.ok) {
+        setStage({ stage: "failed", failure: result, plan: null });
+        return;
+      }
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+    replan();
   };
 
   const uninstall = async () => {
@@ -510,7 +542,20 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
           )}
 
           {stage.stage === "failed" && (
-            <MarketplaceProblem failure={stage.failure} subject={failureSubject} details={diagnostic} testId="git-marketplace:failed" />
+            <MarketplaceProblem
+              failure={stage.failure}
+              subject={failureSubject}
+              details={diagnostic}
+              testId="git-marketplace:failed"
+              {...(() => {
+                const warning = allowableWarning(stage.failure);
+                if (warning === null || !source) return {};
+                return {
+                  onAllow: () => void allow(warning),
+                  ...(warning === "internal-downloads" ? { allowLabel: t("gitMarketplace.action.allowInternalDownloads") } : {}),
+                };
+              })()}
+            />
           )}
         </div>
 
@@ -552,6 +597,11 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
           {(stage.stage === "done" || stage.stage === "failed") && (
             <Button size="sm" variant="outline" onClick={() => setStage({ stage: "detail" })}>
               {t("gitMarketplace.back")}
+            </Button>
+          )}
+          {stage.stage === "failed" && stage.failure.code === "PLAN_EXPIRED" && lastPlan && (
+            <Button size="sm" disabled={busy} onClick={replan} data-testid="git-marketplace:review-again">
+              {t("gitMarketplace.review.again")}
             </Button>
           )}
         </DialogFooter>

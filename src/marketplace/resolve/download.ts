@@ -1,21 +1,25 @@
 /**
- * Artifact downloads for the release and archive rungs (design §6.2, §7.4).
+ * Artifact downloads for the release and archive rungs (design §6.2, §7.4,
+ * §18.2.3).
  *
- * Every request goes through the network gate, so policy, the address guard
- * and the redirect rule apply to each hop, and `Authorization` never follows
- * a redirect to another origin. The body is read into memory under a byte
+ * Every request goes through the network gate over the pinned transport, so
+ * policy, the catalog-supplied target rules (judged against the source whose
+ * catalog named the URL) and the redirect rule apply to each hop, the
+ * address checked is the address connected to, and `Authorization` never
+ * follows a redirect to another origin. The body is read into memory under a byte
  * ceiling and a stall timeout; the ladder hashes the bytes before anything
  * else reads them.
  */
 import { MarketplaceError, isMarketplaceError } from "../errors.js";
-import type { NetworkGate } from "../net/network-gate.js";
+import type { CatalogSource, NetworkGate } from "../net/network-gate.js";
 import { stallGuarded } from "../net/stall-guard.js";
 
 const DOWNLOAD_STALL_MS = 60_000;
 
 export interface DownloadOptions {
   gate: NetworkGate;
-  fetchImpl: typeof fetch;
+  /** The source whose catalog named the URL. */
+  catalog: CatalogSource;
   official: boolean;
   maxBytes: number;
   headers?: Record<string, string>;
@@ -43,7 +47,7 @@ function statusError(url: string, status: number, tokenMissing: boolean): Market
 /** The gated response for `url`; a non-2xx status becomes the matching error code. */
 async function gatedGet(url: string, options: Omit<DownloadOptions, "maxBytes" | "stallMs">): Promise<Response> {
   const response = await options.gate.fetch(url, {
-    fetchImpl: options.fetchImpl,
+    catalog: options.catalog,
     official: options.official,
     ...(options.headers ? { headers: options.headers } : {}),
     ...(options.signal ? { signal: options.signal } : {}),

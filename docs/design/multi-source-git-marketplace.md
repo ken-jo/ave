@@ -2,9 +2,9 @@
 
 > Status: **Implemented** (2026-09-25); the public release and the server's
 > retirement remain. Where the shipped code differs from this
-> page, §13.1 and §16.4 say how. §18 designs the 0.13.0 change: plain http
-> and local folder sources, address warnings instead of refusals, and
-> automatic updates.
+> page, §13.1 and §16.4 say how. §18 designs the change that follows 0.13.0:
+> plain http and local folder sources, address warnings instead of refusals,
+> and automatic updates.
 > Architecture: [../architecture/proposals/multi-source-git-marketplace.md](../architecture/proposals/multi-source-git-marketplace.md) ·
 > Blueprint: [../blueprints/multi-source-git-marketplace.md](../blueprints/multi-source-git-marketplace.md) ·
 > Mockup: [multi-source-git-marketplace.html](./multi-source-git-marketplace.html) ·
@@ -63,12 +63,13 @@ interface SourcesFile {
 interface SourceEntry {
   id: string;                 // ^[a-z0-9][a-z0-9-]{1,62}$, reserved names rejected (§5.1)
   origin: "custom" | "direct";
-  url: string;                // stored in normalized form (§7.1); http only for policy-listed hosts (0.13.0: §18.2; a folder has `path` instead, §18.4.4)
+  url: string;                // stored in normalized form (§7.1); http with `unencrypted` or a policy listing (§7.4; under slice D1 a folder has `path` instead, §18.4.4)
   ref?: string;               // branch or tag; default = remote HEAD
   subdir?: string;            // direct sources only: package path inside the repo
   auth: { kind: "none" } | { kind: "token"; host: string } | { kind: "ssh" };
   addedAt: string;            // ISO-8601
   label?: string;             // user-visible override of displayName
+  acknowledged?: StoredConfirmations;  // confirmations the source holds (§7.4); absent = none
 }
 
 interface SourceState {       // marketplaces/<id>/state.json, every origin
@@ -76,7 +77,15 @@ interface SourceState {       // marketplaces/<id>/state.json, every origin
   enabled: boolean;              // browsing and installing only (§7.3)
   lastSync?: { at: string; result: "ok" | ErrorCode; candidate?: string };
   pendingRewrite?: { candidate: string; seenAt: string };   // custom/direct awaiting review
+  acknowledged?: StoredConfirmations;  // official and managed sources' confirmations (§7.4)
 }
+
+interface StoredConfirmations {
+  url: string;                // the normalized address they were given for; another address holds none
+  warnings: SourceWarning[];  // each once
+}
+
+type SourceWarning = "unencrypted" | "token-unencrypted" | "internal-network" | "this-computer" | "internal-downloads";
 ```
 
 - The official source comes from the build constant `OFFICIAL_MARKETPLACE`
@@ -812,9 +821,20 @@ string:
 - scp form `user@host:path` → `ssh://user@host/path`.
 - host: lowercase, IDNA to ASCII, default port removed.
 - path: percent-encoding normalized, trailing `/` and `.git` removed.
-- rejected: `file:`, `ext::`, any other scheme, credentials in the URL, query
-  and fragment. From 0.13.0 a `file:` URL or a path is a local folder
-  (§18.4.1), and the refusals are §18.3's.
+- `http://` is accepted here. The gate decides whether it needs a
+  confirmation or is blocked by policy (§7.4).
+- rejected with `SOURCE_URL_REJECTED` and a reason (§14), before any traffic:
+  - a `<helper>::` transport (`ext::`, `fd::`, `hg::https://…`):
+    `helper-transport`. `ext::` runs its text as a command, and any other
+    helper runs `git-remote-<helper>` from the search path (§18.3 #1);
+  - credentials in the URL (`https://user:secret@…`, `https://token@…`):
+    `credentials-in-url`. An ssh user name (`git@`) is not a credential
+    (§18.3 #2);
+  - any other scheme (`file:`, `git:`, …): `scheme-unsupported`;
+  - a query, fragment, whitespace, control character or backslash:
+    `format`; dot and empty path segments.
+
+  With slice D1 a `file:` URL or a path is a local folder (§18.4.1).
 
 Policy allow/block matching (§12), reserved-name checks, token lookup and
 duplicate detection all use the normalized form. Repository identity in those
@@ -823,28 +843,45 @@ port (§12).
 
 ### 7.2 Add (preview → confirm)
 
-1. **Normalize** the input (§7.1) and apply the network gate (§7.4). Plain
-   `http://` is accepted only for a host listed in
-   `marketplaces.allowHttpHosts`; dev/test builds may also allow loopback, as
-   `cloudAllowPrivateNetwork` does today. From 0.13.0 http and non-public
-   targets are warnings confirmed before any traffic (§18.2.2, §18.5).
-2. **Probe** with `git ls-remote`. Auth failure returns `SOURCE_AUTH_REQUIRED`
-   and the dialog asks for a token; an unknown SSH host key returns
-   `SOURCE_SSH_HOST_UNKNOWN`; a missing ref returns `SOURCE_REF_NOT_FOUND`.
+1. **Normalize** the input (§7.1) and apply the gate's refusals and the
+   managed policy (§7.4). A refusal or a policy block ends the preview.
+2. **Confirm before any traffic.** Some warnings are known from the address
+   alone: plain `http`, the class of a literal address, and token sign-in over
+   http (`token-unencrypted`). If the request's `acknowledge` lacks one, the
+   preview answers `{ type: "confirm", warnings }`. It runs no lookup and no
+   git command first.
+   The runner's preflight then resolves the host once (for an ssh remote,
+   the ssh preflight of §7.4). A class that needs a confirmation answers
+   `confirm` the same way, before any git command. The dialog's *Continue*
+   previews again with those warnings added to `acknowledge`.
 3. **Fetch** the ref into a temporary bare repo and read the root.
+   - An auth failure returns `SOURCE_AUTH_REQUIRED`, and the dialog asks for a
+     token. Over http without `token-unencrypted`, no credential is offered,
+     and the host's 401 answers `confirm` with `token-unencrypted` instead.
+   - An unknown SSH host key returns `SOURCE_SSH_HOST_UNKNOWN`.
+   - A missing ref returns `SOURCE_REF_NOT_FOUND`.
 4. **Classify**: marketplace (index or conventional layout) → preview; single
    package (descriptor, `plugin.json`, `SKILL.md`, `AGENTS.md`, `server.json`
    at the root or the given subdir) → direct-install preview; otherwise
    `SOURCE_NOT_A_MARKETPLACE`.
-5. **Preview** returns a `previewId` (single use, expires after 10 minutes;
-   the temporary repo is deleted on expiry or cancel), the resolved commit,
-   marketplace name and owner, package counts per kind, how many packages
-   execute code (plugins + MCP), and validation diagnostics.
-6. **Confirm** writes the entry, writes the source's `state.json`, then moves
-   the temporary repo into place and publishes the snapshot (a `repo.git`
-   without a state is read as lost state, §2.1). The id defaults to the index
-   `name`; a reserved or taken id (`SOURCE_ID_TAKEN`) makes the dialog ask for
-   another, and a malformed one is `SOURCE_ID_INVALID`.
+5. **Preview** returns:
+   - a `previewId` (single use, expires after 10 minutes; the temporary repo
+     is deleted on expiry or cancel);
+   - the resolved commit, marketplace name and owner;
+   - package counts per kind, and how many packages execute code (plugins +
+     MCP);
+   - validation diagnostics;
+   - `badges`: what the source will show once added (`unencrypted` for http,
+     and each address class confirmed).
+6. **Confirm** writes the entry with exactly the confirmations the preview
+   carried (`acknowledged`), writes the source's `state.json`, then moves the
+   temporary repo into place and publishes the snapshot. A `repo.git` without
+   a state is read as lost state (§2.1). The add checks the policy again: one
+   changed since the preview applies.
+   - The id defaults to the index `name`.
+   - A reserved or taken id (`SOURCE_ID_TAKEN`) makes the dialog ask for
+     another.
+   - A malformed id is `SOURCE_ID_INVALID`.
 
 ### 7.3 Sync
 
@@ -889,25 +926,165 @@ emit marketplace:catalog-changed
 
 ### 7.4 Network targets and policy
 
-Every network target the marketplace touches — git remotes, release and
-archive URLs, and the service endpoint — goes through one gate:
+One gate (`src/marketplace/net/network-gate.ts`) checks every git remote,
+release and archive URL, and the managed git archive. The service endpoint
+keeps its own rules (§11).
 
-1. normalize (§7.1; for `https` downloads, the same host/port/path rules:
-   canonical percent-encoding, and an empty, `.` or `..` segment is refused);
-2. apply managed policy `marketplaces.block`, then `marketplaces.allow` (when
-   present). For a download, an exact repository pattern also covers every
-   path beneath the repository (`…/acme/tools/releases/download/…`); for a
-   git remote it names that repository only, since a nested path is another
-   repository on hosts with subgroups;
-3. apply the private-network guard now in `cloud-marketplace-fetcher.ts`
-   (moved to a shared module when that file is deleted): loopback,
-   link-local, private and metadata addresses are refused unless the host is
-   policy-listed or a dev build allows loopback. A NAT64 address
-   (`64:ff9b::/96`) is judged by the IPv4 address it embeds. From 0.13.0 the
-   address classes and outcomes of §18.2 replace this step;
-4. git never follows redirects (`http.followRedirects=false`); HTTPS
-   downloads follow a redirect only after re-running this gate on the new
-   URL, and never forward auth headers to a different host.
+1. **Normalize** (§7.1). `https` and `http` downloads follow the same
+   host/port/path rules: canonical percent-encoding, and an empty, `.` or
+   `..` segment is refused.
+2. **Managed policy** (§12): `marketplaces.block`, then `marketplaces.allow`
+   (when present), then `requireHttps`.
+   - For a download, an exact repository pattern also covers every path
+     beneath the repository (`…/acme/tools/releases/download/…`).
+   - For a git remote it names that repository only, since a nested path is
+     another repository on hosts with subgroups.
+   - An unreadable policy blocks every target except the official source's.
+3. **Address class.** `classifyAddress` (`src/core/network-guard.ts`)
+   classifies a literal address, or each answer of the one lookup of
+   step 4:
+
+   | Class | Addresses |
+   |---|---|
+   | `public` | globally routable |
+   | `internal` | `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`, `100.64.0.0/10`, and `198.18.0.0/15` (fake-IP proxy tools answer every name from this block), minus the metadata addresses |
+   | `this-computer` | `127.0.0.0/8`, `0.0.0.0/8`, `::1`, `::` |
+   | `metadata` | `169.254.0.0/16`, `fe80::/10`, `fd00:ec2::254`, `100.100.100.200` |
+   | `unroutable` | every other special-purpose block (documentation, multicast, reserved, broadcast, protocol assignments) |
+
+   IPv4-mapped IPv6 and NAT64 (`64:ff9b::/96`) addresses take the class of
+   the IPv4 address they embed. The outcome then depends on who chose the
+   target:
+
+   - **Entered targets**: the address the user typed, the official build
+     constant, and a managed policy entry.
+     - `public` over https or ssh is accepted.
+     - `internal`, `this-computer` and plain `http` each need a confirmation
+       the source holds: `internal-network`, `this-computer` or `unencrypted`.
+       Without it the call fails `SOURCE_CONFIRMATION_REQUIRED`.
+     - A host the policy lists (`allowHttpHosts`, an `allow` pattern, an
+       `additional` source) needs none of the three.
+     - An unpackaged build started with `AVE_DEV=1` needs no confirmation
+       for `this-computer`, nor for http to a loopback literal or
+       `localhost`.
+   - **Catalog-supplied targets**: release and archive URLs, the derived
+     release URL of §6.2, and every redirect hop of a download.
+     - `public` is accepted over https and over http. Over http the
+       Delivery row says the download is unencrypted and verified by its
+       pinned sha256; a rung without a pin is skipped (§6.2).
+     - The source's own host inherits the source's confirmations. For
+       `this-computer` it must also be on the same port. An ssh source's
+       derived `https://<host>` counts as https on port 443.
+     - Another `this-computer` host or port is refused
+       (`catalog-this-computer`, §18.3 #4). This hard refusal comes before
+       every exemption: a policy that lists `127.0.0.1` for one source does
+       not let another catalog reach other services on this computer.
+     - Another `internal` host is accepted when the policy lists it, and
+       otherwise needs `internal-downloads`, which `internal-network` does not
+       imply.
+     - A download no source names (`catalog: null`) cannot hold a
+       confirmation, so plain http, or a hop to an internal address, fails
+       `SOURCE_CONFIRMATION_REQUIRED`.
+   - **Every target**:
+     - `metadata` and `unroutable` addresses are refused, policy-listed
+       hosts included (`address-metadata`, `address-unroutable`, §18.3 #3).
+     - `blockPrivateNetworks` makes `internal` and `this-computer` a policy
+       block (`private-network-blocked`), except for a policy-listed host.
+     - `requireHttps` makes plain http a policy block (`https-required`),
+       except for `allowHttpHosts`.
+     - No confirmation passes a policy block.
+
+4. **The check is bound to the connection.** The gate itself does not
+   resolve names. It hands an address policy to the transport, which
+   resolves the host once and connects only to answers that pass.
+   - **Downloads** go through the pinned transport
+     (`src/marketplace/net/pinned-fetch.ts`, through
+     `fetchAddressCheckedResponse`):
+     - Each hop makes one `dns.lookup(host, { all: true, verbatim: true })`.
+     - Refused and blocked answers are dropped. The transport connects to a
+       remaining answer by address, with TLS `servername` set to the host
+       name.
+     - If no answer is left, the hop fails with the refusal of the most
+       restrictive dropped class: metadata, unroutable, this-computer, then
+       internal.
+     - An answer that needs a confirmation the source lacks fails the hop.
+     - The trust store is Node's default CAs plus the system store, and
+       every TLS connection sets certificate verification itself, so an
+       inherited process-wide override that disables certificate
+       verification does not turn it off.
+     - The route is the first entry of the session's `resolveProxy(url)`,
+       never a silent fallback to `DIRECT`:
+
+       | PAC kind | What the transport does |
+       |---|---|
+       | `DIRECT` | connects to the checked answer |
+       | `PROXY` | sends an absolute-form request for http, `CONNECT` for https |
+       | `HTTPS` | opens TLS to the proxy, then works as `PROXY` |
+       | `SOCKS5` | uses the domain-name address type |
+       | `SOCKS` / `SOCKS4` | sends the target's checked IPv4 answer |
+
+     - The proxy's own address is checked: `metadata` and `unroutable` are
+       refused, and anything else is accepted, because the system
+       configuration chose it. A literal proxy address is its own one
+       answer, judged the same way (IPv4-mapped and NAT64 forms included).
+     - Any other PAC kind fails `SOURCE_UNREACHABLE` reason `proxy`.
+     - Beyond a proxy that resolves the target itself, the proxy is trusted.
+       `trusted-proxy.test.ts` pins that boundary.
+   - **git over http(s)**:
+     - Each call asks the PAC resolver once. git is configured with that
+       route (`http.proxy`), and the binding checks the same route, so a PAC
+       answer that changes between two questions cannot leave git on an
+       unchecked proxy.
+     - Each call resolves the host once and passes
+       `-c http.curloptResolve=<host>:<port>:<address>[,…]` with the answers
+       that remain.
+     - A proxy host is checked as for downloads and pinned the same way; a
+       literal proxy address is checked as its own one answer.
+     - A call whose answers are all refused starts no git.
+   - **git over ssh: a preflight check only.**
+     - `ssh -G [-p <port>] <user>@<host>`, run with the git call's
+       environment, prints the effective configuration.
+     - The printed `hostname` is resolved once. Any refused or blocked
+       answer refuses the call, because ssh may connect to any of them. A
+       class that needs a confirmation fails `SOURCE_CONFIRMATION_REQUIRED`.
+     - When `proxycommand` or `proxyjump` is set, the runner does not
+       resolve the target.
+     - ssh still runs as `ssh -o BatchMode=yes`, with no host pin.
+     - Residual: an answer that changes between the preflight and ssh's own
+       lookup is not bound. The host key is the trust anchor (§18.2.4).
+5. **Redirects.**
+   - git never follows them (`http.followRedirects=false`).
+   - A download follows a redirect only after steps 1–4 pass for the new
+     URL. It never carries `Authorization` or `Cookie` to a different
+     origin.
+
+**Credentials over http.** A source over plain http answers sign-in only
+when it holds `token-unencrypted`. No policy listing implies that
+confirmation.
+
+- Without it, askpass issues no ticket for the call, and every git call
+  carries `-c credential.helper=`. Neither a stored token nor an OS helper's
+  password is sent in the clear, and the preview does not show its note that
+  a credential helper answers for the host.
+- The resulting auth failure is `SOURCE_AUTH_REQUIRED` reason
+  `token-unencrypted`, and the Sources row offers *Allow…* for it.
+- `GIT_ALLOW_PROTOCOL` names `http` only for an http remote that passed the
+  gate.
+
+**Confirmations** are per class, never per resolved address. Each source
+stores its own `acknowledged` record (§2.1): in `SourceEntry` for custom and
+direct sources, in `SourceState` for official and managed ones. The record
+names the normalized source address (scheme, user, host, port and path) the
+confirmations were given for. A source whose address is another one holds
+none: a managed entry the administrator points elsewhere, or a hand-edited
+`sources.json`, never carries consent to the new service, also across a
+restart. A new *Allow…* replaces the old record.
+
+- A target can later need one the source lacks: a name now resolves to an
+  internal address, or a catalog names another internal host. The sync, plan
+  or install then fails `SOURCE_CONFIRMATION_REQUIRED`.
+- `sources:acknowledge` adds the confirmation and syncs again.
+- To withdraw one, remove the source and add it again.
 
 Icons and images are read from the git tree only; no package field makes the
 app fetch an arbitrary image URL.
@@ -1053,8 +1230,8 @@ Environment (both modes):
 - `GIT_ASKPASS=<Ave askpass helper>`, `SSH_ASKPASS_REQUIRE=never`,
   `GIT_SSH_COMMAND="ssh -o BatchMode=yes"` (an unknown host key fails fast
   with `SOURCE_SSH_HOST_UNKNOWN` instead of waiting for a prompt).
-- `GIT_ALLOW_PROTOCOL=https:ssh`, plus `http` only when the source's host is
-  in `marketplaces.allowHttpHosts`; `none` for a call that has no remote.
+- `GIT_ALLOW_PROTOCOL=https:ssh`, plus `http` only for an http remote that
+  passed the network gate (§7.4); `none` for a call that has no remote.
 - `GIT_LFS_SKIP_SMUDGE=1`.
 - `GIT_NO_LAZY_FETCH=1`: a missing object is an error, never a fetch the gate
   did not see. Blobs are fetched only by the explicit, gated `ensureBlobs`
@@ -1404,7 +1581,9 @@ files is a device-management action).
 "marketplaces": {
   "allow": ["https://github.com/acme/*", "host:git.corp.example"],  // absent = no restriction
   "block": ["host:git.example.org"],
-  "allowHttpHosts": ["git.corp.example"],                           // plain-http git hosts; default none
+  "allowHttpHosts": ["git.corp.example"],                           // plain-http hosts that need no confirmation; default none
+  "requireHttps": false,                                            // true: plain http is a policy block, allowHttpHosts excepted
+  "blockPrivateNetworks": false,                                    // true: internal and this-computer targets are a policy block, policy-listed hosts excepted
   "allowDirectInstall": true,
   "allowDisablingOfficial": false,
   "additional": [{ "id": "corp", "url": "https://git.corp.example/ave/marketplace.git" }],
@@ -1426,10 +1605,21 @@ files is a device-management action).
   repository; a URL ending in `*` matches every repository whose path starts
   with the text before it. A `*` anywhere else is rejected. `block` wins over
   `allow`.
-- Policy-listed hosts — those named by `allowHttpHosts`, by an `allow`
-  pattern, or by an `additional` source — may resolve to private (RFC 1918,
-  ULA) and CGNAT addresses (§7.4). Link-local and metadata addresses stay
-  refused even for them.
+- Policy-listed hosts are those named by `allowHttpHosts`, by an `allow`
+  pattern, or by an `additional` source. They need no `unencrypted`,
+  `internal-network` or `this-computer` confirmation (§7.4). Metadata and
+  unroutable addresses stay refused even for them, and a listing never
+  implies `token-unencrypted`: the policy authorizes the transport, not
+  sending the user's credentials over it.
+- `requireHttps` and `blockPrivateNetworks` apply to entered and
+  catalog-supplied targets, downloads and redirect hops included (§7.4).
+  `blockPrivateNetworks` is enforced on the connected address of a
+  direct connection on the transports Ave owns (downloads, git over
+  http/https). For ssh it is a preflight check only. Beyond a proxy that
+  resolves the target itself, the trusted proxy enforces it. Both turn back on
+  0.12's refusals as blocks that no confirmation passes. Apps up to and
+  including 0.13.0 read an unknown key as an invalid section, so deploy them
+  only to the release that carries slice C and later.
 - Host fields (`host:` patterns, `allowHttpHosts`, `auth.host`) take no port;
   a token's `auth.host` must be the source's own host.
 - The section is read exactly. An unknown key, a duplicate key, `null` where a
@@ -1438,19 +1628,78 @@ files is a device-management action).
   makes the whole section invalid; every non-official source is then
   `SOURCE_POLICY_BLOCKED` until the file is fixed. A typo must not fail open.
 - `additional` sources are pre-registered with origin `managed`: the user
-  cannot remove or hide them and their history rule is the official one.
+  cannot remove or hide them and their history rule is the official one. An
+  `additional` source is itself a listing, so a plain-http one needs no
+  `allowHttpHosts` entry; only under `requireHttps: true` does its host have
+  to be in `allowHttpHosts`, or the section is invalid.
 - `defaultInstalls` and `requiredInstalls` follow §10.2 and may name official
   and managed sources only. A key in both lists is treated as required.
-- 0.13.0 adds `requireHttps`, `blockPrivateNetworks`, `allowLocalSources`,
-  `autoUpdate`, `path:` patterns and `additional[].path` (§18.6).
+- **A policy change takes effect at the next operation, without a restart.**
+  - The service reads the policy through a `PolicySource`
+    (`FilePolicySource`, `src/marketplace/sources/policy.ts`). At the start
+    of every operation (preview, add, acknowledge, sync, plan, execute,
+    listing), it compares the file's size, modification and status-change
+    times, inode and device with the last read. A permission change or a
+    file renamed into place therefore counts as a change. When they differ,
+    it reads the file and compares the sha256 of the content.
+  - A changed policy is applied under the service's exclusive operation
+    lock. It takes effect in the gate, the registry's managed sources and
+    filters, and the installers at once, so no operation sees a mixed
+    policy.
+  - Refreshes run through one queue, one at a time. Each one reads the
+    file, compares it and, if it changed, applies it before the next one
+    begins. The latest read is therefore always the last applied, and no
+    read can finish out of order.
+  - Every operation waits for a refresh that began no earlier than the
+    operation itself, then runs under the policy that refresh left in
+    force.
+    - A refresh already running may have read the file too early. The
+      operation waits for the next refresh instead.
+    - Every operation arriving meanwhile shares that one queued refresh.
+      Operations that keep overlapping therefore cost one extra read
+      between them, and they still see a change within it.
+  - A malformed or unreadable file is applied fail-closed with its warning,
+    exactly as a single read would apply it.
+  - Lock order: a marketplace operation comes before any plugin lifecycle
+    lock.
+    - An install holds its operation's shared lock, then takes the plugin's
+      lock.
+    - Code that holds plugin locks and calls the service would invert that
+      order. It could wait for a policy change's exclusive lock while an
+      install holds the shared lock and waits for the same plugin lock.
+    - Such code (removing a retired predecessor from an alert) therefore
+      enters one operation first (`asOneOperation`). It takes the plugin
+      locks inside the operation, and re-checks authority under both.
+  - An operation owns its nested calls only while it runs.
+    - The service reports a catalog change outside the operation, so the
+      background update check it starts enters an operation of its own,
+      with a refresh and the shared lock.
+    - Work an operation started that is still running after the operation
+      ends does the same.
+    - The background scheduler (boot pass, update check, periodic sync)
+      runs every entry in the context it was started in, outside any
+      operation. Whatever asks for a check, from inside any operation (a
+      sync that published a snapshot, an install), the check's service
+      calls are operations of their own. This holds even when the check
+      starts while that operation still runs.
+  - A plan records the digest of the policy it was made under. Executing it
+    under another digest fails `PLAN_EXPIRED` reason `policy-changed`, and
+    the sheet offers *Review again*.
+  - A policy that becomes unreadable (a permission change included) or
+    invalid behaves as an invalid policy at start: official only, with
+    `policy-invalid` shown. It recovers at the
+    first operation after the file is fixed.
+- Later slices of §18 add `allowLocalSources`, `autoUpdate`, `path:` patterns
+  and `additional[].path` (§18.6).
 
 ## 13. IPC contract
 
 | Channel | Request | Response |
 |---|---|---|
 | `ave:marketplace:sources:list` | — | `SourceView[]` |
-| `ave:marketplace:sources:preview` | `{ input: string; ref?: string; token?: string }` | `SourcePreview \| DirectPackagePreview` |
+| `ave:marketplace:sources:preview` | `{ input: string; ref?: string; token?: string; acknowledge?: SourceWarning[] }` | `SourcePreview \| DirectPackagePreview \| { type: "confirm"; warnings }` |
 | `ave:marketplace:sources:add` | `{ previewId: string; id?: string }` | `SourceView` |
+| `ave:marketplace:sources:acknowledge` | `{ id; warnings: SourceWarning[] }` | `SourceView`, after a sync |
 | `ave:marketplace:sources:remove` | `{ id }` | `{ orphanedPackages: PackageKey[] }` |
 | `ave:marketplace:sources:set-enabled` | `{ id; enabled }` | `SourceView` |
 | `ave:marketplace:sources:refresh` | `{ id? }` | `SyncResult[]` |
@@ -1479,7 +1728,7 @@ All channels are host-renderer only (`validateHostRendererSender`) and
 audited as today. `ave:git:runtime:install` also requires a live keyboard
 gesture: it downloads a binary the marketplace then runs. `planId` and `previewId` are single use and expire after 10
 minutes (`PLAN_EXPIRED`). Disposition of today's channels is in §16.2. The
-0.13.0 channels are in §18.9.
+channels for folders and automatic updates, from later slices, are in §18.9.
 
 ### 13.1 As built
 
@@ -1497,11 +1746,21 @@ wins:
   declared types, and drops any other while keeping code and message.
   `message` is main's English text, shown only behind *Copy details*.
 - `sources:preview` takes `{ input; ref?; subdir?; auth: "none" | "token" |
-  "ssh"; token? }` and answers a marketplace preview or a direct-package
-  preview; a direct install from a git folder goes through it with `subdir`.
-  `remove`, `set-enabled`, `accept-rewrite`, `set-token` and `delete-token`
-  take positional arguments (`id`, `enabled`, `commit`, `host`, `token`), and
-  `refresh` answers `SourceView[]`.
+  "ssh"; token?; acknowledge? }`. It answers a marketplace preview, a
+  direct-package preview (each with `badges`), or `{ type: "confirm";
+  warnings }` when the address needs confirmations that `acknowledge` does not
+  carry (§7.2 step 2). A direct install from a git folder goes through it with
+  `subdir`. `acknowledge` holds only the warnings of §2.1, each once; *Add*
+  stores exactly the preview's.
+- `remove`, `set-enabled`, `accept-rewrite`, `set-token`, `delete-token` and
+  `acknowledge` take positional arguments (`id`, `enabled`, `commit`, `host`,
+  `token`, `warnings`), and `refresh` answers `SourceView[]`. `acknowledge`
+  (`acknowledgeSource` in the preload) adds confirmations to a source of any
+  origin and syncs it again. The IPC domain refuses an empty list or an
+  unknown warning as `invalid-request`.
+- `SourceView` carries `acknowledged` and `badges`, and a catalog entry
+  carries its source's badges as `sourceBadges` (§15.1). A `RungView`
+  carries `unencrypted` for a plain-http download (§15.2).
 - `catalog:list` answers `{ entries, counts, sourceCount, syncedAt }`.
   `uninstall` takes `{ sourceId | null; kind; name; removeData? }`:
   `sourceId: null` is a package bound to no source, and `removeData` applies to
@@ -1520,7 +1779,9 @@ wins:
 - Deep links open the confirming UI and nothing more.
   `ave://install|uninstall/<kind>/<name>@<source>` opens the package's sheet;
   `ave://marketplace/add?url=` opens the Add dialog with the address filled in
-  but unchecked. The legacy `ave://install/<slug>` links keep their parser;
+  but unchecked. A link whose address is a path or a `file:` URL is refused
+  (§18.3 #7): it is delivered as `{ action: "add-refused"; reason:
+  "deep-link-path" }`, and the dialog opens empty and says why. The legacy `ave://install/<slug>` links keep their parser;
   the two shapes never overlap.
 - Announcements reach the renderer on the existing pushed announcement event,
   not through a request channel.
@@ -1571,12 +1832,13 @@ subject in both catalogs.
 | `GIT_RUNTIME_MISSING` | no usable git | — | `gitMarketplace.error.gitMissing` |
 | `GIT_RUNTIME_TOO_OLD` | system git older than 2.45.1 in `system` mode | — | `.gitTooOld` |
 | `GIT_RUNTIME_INSTALL_FAILED` | managed download/verify/extract/smoke test failed | the phase: `checking`, `downloading`, `verifying`, `extracting`, `smoke-testing`, `installing` (the final move into place) — no fields | `.gitInstallFailed`, `.gitInstallFailed.<phase>` |
-| `SOURCE_URL_REJECTED` | scheme, credentials in URL, private-network target | `credentials-in-url`, `scheme-unsupported` (scheme), `format` (query, fragment, whitespace, control character or backslash) — from the normalizer; its other refusals, a download URL's and the network gate's carry none | `.urlRejected`, `.urlRejected.credentialsInUrl`, `.urlRejected.schemeUnsupported`, `.urlRejected.format` |
-| `SOURCE_POLICY_BLOCKED` | managed policy allow/block, or an unreadable policy for a non-official target | `blocked-by-pattern` (target, pattern, policyPath), `not-in-allow-list` (target, policyPath), `policy-invalid` (error) | `gitMarketplace.policy.blocked`, `.blockedByPattern`, `.notInAllowList`, `.policyInvalid` |
+| `SOURCE_URL_REJECTED` | the refusals of §18.3 #1–4 and #7, and unsupported input; no confirmation exists | from the normalizer: `credentials-in-url`, `helper-transport` (scheme), `scheme-unsupported` (scheme), `format` (query, fragment, whitespace, control character or backslash); from the gate, on the address a connection would use: `address-metadata` (host, address), `address-unroutable` (host, address), `catalog-this-computer` (source, host); from the deep link: `deep-link-path`. A download URL's own refusals carry none | `.urlRejected`, `.urlRejected.<reason>`; the two address reasons say "check the address" only for an address being typed or a source the user added, and otherwise (`.network`) name a VPN, proxy or hosts file and the administrator |
+| `SOURCE_POLICY_BLOCKED` | managed policy allow/block, `requireHttps`, `blockPrivateNetworks`, or an unreadable policy for a non-official target | `blocked-by-pattern` (target, pattern, policyPath), `not-in-allow-list` (target, policyPath), `https-required` (target, policyPath), `private-network-blocked` (target, address, policyPath), `policy-invalid` (error) | `gitMarketplace.policy.blocked`, `.blockedByPattern`, `.notInAllowList`, `.httpsRequired`, `.privateNetworkBlocked`, `.policyInvalid` |
+| `SOURCE_CONFIRMATION_REQUIRED` | a target needs a confirmation the source does not hold (§7.4): at a sync, plan or install, or a download that no source names | the warning: `unencrypted` (host), `token-unencrypted` (host), `internal-network` (host, address), `this-computer` (host, address), `internal-downloads` (source, host) | `.confirmationRequired`; with a reason, `gitMarketplace.warning.<warning>` (the confirmation's own question; `internalNetwork.proxyRange` for a `198.18.0.0/15` address) |
 | `SOURCE_NAME_RESERVED` | reserved id | — | `.nameReserved` |
 | `SOURCE_ID_INVALID` | id is not 2–63 lowercase letters, digits or `-`, or names no source | — | `.idInvalid` |
 | `SOURCE_ID_TAKEN` | id or repository already added | — | `.idTaken` |
-| `SOURCE_AUTH_REQUIRED` | 401/403, ssh denied; a "repository not found" after Ave offered the stored token | `token` (host), `token-no-access` (host: the host answered "repository not found" to the stored token, which may lack access), `ssh` (host) — from git's message; a download's refusal carries none, since its host need not be the token's | `.authRequired`, `.authRequired.token`, `.authRequired.tokenNoAccess`, `.authRequired.ssh`, each with the variants below |
+| `SOURCE_AUTH_REQUIRED` | 401/403, ssh denied; a "repository not found" after Ave offered the stored token | `token` (host), `token-no-access` (host: the host answered "repository not found" to the stored token, which may lack access), `token-unencrypted` (host: the host wants sign-in over plain http and the source does not hold `token-unencrypted`, so no credential was offered), `ssh` (host) — from git's message; a download's refusal carries none, since its host need not be the token's | `.authRequired`, `.authRequired.token`, `.authRequired.tokenNoAccess`, `.authRequired.ssh`, each with the variants below; `.authRequired.tokenUnencrypted` with `.entry` and `.setToken` |
 | `SOURCE_SSH_HOST_UNKNOWN` | host key not in known_hosts, or different from it | `unknown` (host, port), `changed` (host, port) — `changed` when ssh prints "remote host identification has changed"; the sentence carries the `ssh-keyscan` or `ssh-keygen -R` command, which *Copy command* copies | `.sshHostUnknown`, `.sshHostUnknown.unknown`, `.sshHostUnknown.changed` |
 | `SOURCE_REF_NOT_FOUND` | branch or tag missing | `missing` (ref, repository, available) — after the fetch fails, `ls-remote` lists up to 10 branches, then tags | `.refNotFound`, `.refNotFound.missing` |
 | `SOURCE_UNREACHABLE` | network, DNS, timeout, a host that reports no repository | `offline`, `dns`, `refused`, `timeout`, `http-status` (status), `tls`, `proxy` (proxy), `not-found` and `not-found-ssh` (the host answered "repository not found" without a token from Ave, which hosts also answer for a private repository, so neither is claimed) — each with host but `offline`; from git's message, the gate's resolver error, the run's own timeout, an unusable PAC entry, or a download's status | `.unreachable`, `.unreachable.<reason>` |
@@ -1586,7 +1848,7 @@ subject in both catalogs.
 | `SOURCE_DISABLED` | install or update requested from a hidden source (it still syncs for packages bound to it, §7.3) | — | `.sourceDisabled` |
 | `SOURCE_LOCAL_DATA_DAMAGED` | the source's downloaded copy cannot be used (§2.1); a Repair that could not move it aside or write the kept pin back | pin lost: `state-missing`, `state-invalid`, `state-unreadable`; pin kept: `snapshot-invalid`, `snapshot-unreadable`, `repository-damaged`; Repair: `repair-failed` (a pin was kept), `repair-failed-unpinned` (none to keep), `repair-write-failed` (sourceId) — a message names files relative to the source and an fs error by its code, never a home path; a sentence names the source as its row does (the official source by its origin's name, another by its label, the id only when no listed source is known) | `.localDataDamaged`, `.localDataDamaged.<reason>` |
 | `SOURCE_LIST_UNREADABLE` | `marketplaces/sources.json`, the list of sources the user added, cannot be read or is not in Ave's format; every source change is refused until the user fixes or deletes it (no repair: it is the user's data) | `unreadable` (fsCode), `invalid` — the message names the file and an fs error by its code, never a home path | `.listUnreadable`, `.listUnreadable.<reason>` |
-| `PLAN_EXPIRED` | plan/preview id expired or reused | — | `.planExpired` |
+| `PLAN_EXPIRED` | plan/preview id expired or reused, or made under another managed policy (§12) | `policy-changed` | `.planExpired`, `.planExpired.policyChanged` |
 | `PACKAGE_INCOMPATIBLE` | no version is offered to this installation: `minAppVersion` above the app version, another platform, a pre-release without canary, or a rollout that excludes it | `min_app_version` (name, version), `platform` (name, platform), `host_protocol` (name) — when the excluded version is known | `.incompatible`, `.incompatible.minAppVersion`, `.incompatible.platform`, `.incompatible.hostProtocol` |
 | `PACKAGE_COMPAT_UNDECLARED` | git-installed plugin without `requires.minAppVersion` | — | `.compatUndeclared` |
 | `PACKAGE_YANKED` / `PACKAGE_REVOKED` | every version is yanked or revoked (revoked when all are revoked) | — | `.yanked` / `.revoked` |
@@ -1604,7 +1866,12 @@ subject in both catalogs.
 
 A failure is shown by `MarketplaceProblem` in one of three tones (§18.8):
 policy (`SOURCE_POLICY_BLOCKED`, `PACKAGE_POLICY_BLOCKED`,
-`PACKAGE_REQUIRED_BY_POLICY`), warning, or error. A failure outside these
+`PACKAGE_REQUIRED_BY_POLICY`), warning, or error. The warning tone asks a
+question with *Cancel* and *Continue* (the Add dialog's confirm step). A
+failure the user can allow is `SOURCE_CONFIRMATION_REQUIRED` with a reason, or
+`SOURCE_AUTH_REQUIRED` `token-unencrypted`. It renders amber, with *Allow…*
+(*Allow internal downloads* for `internal-downloads`). The button calls
+`sources:acknowledge` with that warning (`allowableWarning`, `labels.ts`). A failure outside these
 codes (a settings write, a plugin file, a pasted MCP configuration) uses the
 error tone with its own sentence. Every message is scrubbed
 (`scrubDiagnosticSecrets`, `src/shared/dlp.ts`: URL userinfo, authorization
@@ -1619,15 +1886,15 @@ reason belongs to `lastSync.result` (and drops it, keeping the code,
 otherwise), and `sourceStatus` copies it into the `unreachable` and
 `auth-required` views (§15.4).
 
-0.13.0 adds `SOURCE_CONFIRMATION_REQUIRED` and `SOURCE_LOCAL_UNREADABLE`, and
-the reasons §18.8 lists for situations this build does not yet distinguish;
-each slice that adds a code or reason adds its sentences (§18.8, §18.10).
+Later slices add `SOURCE_LOCAL_UNREADABLE` and the folder and update reasons
+§18.8 lists for situations this build does not yet distinguish. Each slice
+that adds a code or reason adds its sentences (§18.8, §18.10).
 
 ## 15. UI specification
 
 The mockup shows every state below. Settings → Marketplace becomes the in-app
-store (the web store is gone). 0.13.0 adds folder rows, warning badges and
-the Updates card (§18.4.8, §18.5, §18.9).
+store (the web store is gone). Later slices add folder rows and the Updates
+card (§18.4.8, §18.9).
 
 ### 15.1 Browse
 
@@ -1642,7 +1909,7 @@ the Updates card (§18.4.8, §18.5, §18.9).
   `Installed`, `Update 1.4.2`, `Requires Ave 0.12`, `Yanked`,
   `Installed from <other source>`, `Source removed`, `Required by your
   organization` (no Uninstall or Disable control; the tooltip names the
-  policy file).
+  policy file). The card also shows its source's badges (§15.4).
 - Same name in two sources: two cards, each with its own badge. No merged row.
   Installing the second one is a source switch (`PACKAGE_ID_CONFLICT` explains
   it and offers the switch). The switch keeps the plugin's data directory, so
@@ -1661,8 +1928,16 @@ Sections: overview; **Provenance** (source, repository, path, commit short SHA
 with the full SHA in a tooltip and a copy button, published date);
 **Compatibility** (`minAppVersion` and verdict); **Permissions** (from the
 descriptor's authority, before any download); **Delivery** (the rung list with
-the rung that will be used); **Versions** (history with yanked and
-incompatible markers).
+the rung that will be used; a plain-http release or archive says
+"unencrypted download — verified by the pinned sha256"); **Versions** (history
+with yanked and incompatible markers).
+
+A failed install that the source can allow (§14) offers *Allow…*. For a
+catalog that names another internal host, the button is *Allow internal
+downloads*. For sign-in held back over http, the credential risk is stated
+beside the button. It calls `sources:acknowledge`, then plans again. A plan that
+expired because the policy changed (`PLAN_EXPIRED` `policy-changed`) offers
+*Review again*, which makes a fresh plan.
 
 ### 15.3 Install progress
 
@@ -1678,20 +1953,58 @@ tooltip, relative time of last sync), package count, status (`Up to date`,
 failed sync a chip by its code: `Unreachable` only when the host was not
 reached, else `Repository not found`, `No marketplace found`, `Branch or tag
 not found`, `Marketplace index invalid`, `SSH host key not verified`,
-`Blocked by policy`, `Address refused`, `Git unavailable`, or `Update failed`
-for any other code; each adds `— showing cached` while the pinned snapshot
-is served) with, under an unreachable or auth-required
-status, the failure's sentence from its stored detail (§14), enabled switch,
-overflow (Refresh, Set token, Remove). Official and managed rows have no Remove; the official switch is
-locked unless policy allows; managed rows show a lock.
+`Blocked by policy`, `Address refused`, `Needs your confirmation`, `Git
+unavailable`, or `Update failed` for any other code; each adds `— showing
+cached` while the pinned snapshot is served) with, under an unreachable or
+auth-required status, the failure's sentence from its stored detail (§14),
+enabled switch, overflow (Refresh, Set token, Remove). Official and managed
+rows have no Remove; the official switch is locked unless policy allows;
+managed rows show a lock.
+
+- **Badges** sit on the row and on its package cards. Each has a text label
+  and a tooltip, never colour alone:
+  - *Unencrypted (http)*, while the source is http;
+  - *Internal network*, *This computer* and *Internal downloads*, for each
+    confirmation held.
+
+  The http tooltip: "Anyone on the network path can read what this source
+  sends and change what it serves. Updates from it are not installed
+  automatically."
+- **Allow…** appears when the last sync failed for a confirmation the
+  source can hold (§14). It asks the warning's question, then calls
+  `sources:acknowledge` and syncs again. For sign-in held back over http
+  (`SOURCE_AUTH_REQUIRED` `token-unencrypted`) the question is the full
+  `token-unencrypted` warning, that the sign-in travels unencrypted and
+  anyone on the network path could copy it, as on *Set token…*
+  (`allowRisk`, `labels.ts`).
+- **Set token… on an http source** first asks for `token-unencrypted`, unless
+  the source already holds it.
 
 ### 15.5 Add marketplace dialog
 
 Step 1: URL field (accepts `owner/repo`), optional ref, auth radio
-(None / Token / SSH). Step 2 (preview): marketplace name, owner, commit, counts
-per kind, "N packages can run code on this computer" warning, a note when an
-OS credential helper will answer for this host, diagnostics, id field. Confirm
-button: **Add marketplace**. If the input is a single package, step 2 switches
+(None / Token / SSH). When the address needs confirmations (§7.2 step 2), a
+confirm step comes before any traffic. It shows "Before Ave connects" and
+one question per warning, in the warning tone (*Cancel* / *Continue*).
+*Continue* previews again with them. Changing any field drops the
+confirmations given. Each answer belongs to the fields as they were when it
+was asked: an edit, a newer check or reopening the dialog drops any answer
+still on its way, so a late warning for an earlier address is never shown or
+confirmed for the new one. Opening or closing the dialog also ends the wait
+for that answer, so a reopened dialog can check its address at once. An
+add that finishes after its dialog was closed, or reopened for another
+address, still refreshes the source lists, but it neither closes the dialog
+now showing nor opens a package sheet.
+
+Step 2 (preview):
+- marketplace name, owner, commit, and counts per kind;
+- the source's badges;
+- the warning "N packages can run code on this computer";
+- a note when an OS credential helper will answer for this host;
+- diagnostics;
+- the id field.
+
+Confirm button: **Add marketplace**. If the input is a single package, step 2 switches
 to the direct-install preview. If git is missing, a blocking step (§15.7)
 comes first.
 
@@ -1877,7 +2190,7 @@ Where the sections above and the shipped code differ, the code wins:
 
 ## 17. Test plan
 
-The 0.13.0 tests are listed with each slice of §18.10.
+The tests of §18's slices are listed with each slice of §18.10.
 
 | Layer | What proves it |
 |---|---|
@@ -1886,21 +2199,32 @@ The 0.13.0 tests are listed with each slice of §18.10.
 | Ladder | each rung used/skipped/failed combination, mismatch of each authority field stops the ladder, plan binds commits, receipts carry rung outcomes |
 | Git runtime | fake `git` binaries for version gates (2.45.0 refused, 2.45.1 accepted); env/flag/global-config contract; askpass ticket host binding; managed install with a local fixture server and wrong-hash rejection |
 | Sync | local bare repos: fast-forward with the pin far behind the tip, rewrite (official and managed refuse, custom review), invalid index keeps pin, mirror fallback, a hidden source with installed packages still syncs |
-| Network gate | normalization equivalences (scp/ssh/https, case, `.git`), block beats allow, private-network refusal, redirect to a blocked host refused, no auth header across hosts |
+| Network gate | normalization equivalences (scp/ssh/https, case, `.git`); `<helper>::` transports and credentials in a URL refused; block beats allow; `requireHttps` and `blockPrivateNetworks` block acknowledged sources; each address class for entered and catalog-supplied targets (`198.18.0.0/15` is internal, metadata is refused for a listed host, a loopback download on another port is refused, `internal-network` does not imply `internal-downloads`, a listing never implies `token-unencrypted`); redirect to a blocked host refused; no auth header across hosts |
+| Connection binding (§7.4) | `pinned-fetch.test.ts` against real local servers: one lookup per hop, a connection to the checked answer only, a metadata answer dropped, each PAC kind (`PROXY` with an http and an https target, `HTTPS`, `SOCKS5`, `SOCKS4`, an unknown kind failing `proxy`), no fallback to `DIRECT`, literal metadata and unroutable proxies refused without a lookup, certificate checks against the name, every TLS connection (target and `HTTPS` proxy) asking for verification and the hostname itself, and no TLS connection for a plain http request; `network-gate.test.ts`: a sign-in never carried onto an http hop, even to the host the https request went to; `run-git.test.ts` also: literal proxies refused before git starts (IPv4, IPv6, mapped, NAT64), and one PAC answer per call configuring and binding the same route; `trusted-proxy.test.ts` pins the proxy boundary; `run-git.test.ts`: the `http.curloptResolve` pin, no git started when only refused answers remain, no credential over http without `token-unencrypted` (a stored token on a listed host included), and end to end from the gate's verdict: an http source asked for before any lookup, reached only at its checked address with `unencrypted`, signed in only with `token-unencrypted` too; `ssh-preflight.test.ts`: the preflight before git, any refused answer fails, no lookup behind `proxyjump`, and the stated residual |
+| Confirmations and policy refresh | `service.test.ts`: a preview that needs a confirmation answers `confirm` with no git command and no lookup; *Add* stores exactly the carried confirmations; a host whose lookup finds an internal address asks, and *Allow…* syncs it; rewriting the policy file blocks the next preview and expires an existing plan with `policy-changed`; an invalid file, then a fixed one, goes official-only and back; with every refresh overlapping the next operation, each operation runs under the policy on disk (strict: no git preflight) and a malformed or unreadable file fails all of them closed with one warning; an operation that began after the file went strict again runs strict though an older refresh read it permissive; operations that keep arriving see a change within the one queued refresh; the update check a catalog change starts, and work left running after an operation, read a policy changed meanwhile; the real scheduler's update check, asked for by a sync's published snapshot while that sync's operation is still open, refreshes the policy itself and offers no update from a source the policy dropped meanwhile; `background.test.ts`: every scheduler entry runs outside the caller's async context; `alert-predecessor.test.ts`: predecessor removal and an install both finish when the policy changes while one holds the plugin locks and the other waits for one (real locks, bounded); `policy.test.ts`: a same-size same-mtime rewrite and a permission change are noticed, an http `additional` source is its own listing; `registry.test.ts`: confirmations are dropped when a managed entry or `sources.json` points the source at another address; `network-gate.test.ts`: listing `127.0.0.1` lets no other catalog reach another local port; UI: a late preview answer is dropped after an edit, a dialog reopened during a check can check at once, an earlier add that finishes leaves a dialog reopened for another address open (the lists still refresh), and Allow… for sign-in over http states the credential risk |
 | No privileges | a custom package with the same name as a granted plugin gets no grant; a grant fails for a different artifact hash, for a tree-rung install and for a swapped manifest; a legacy entry keeps the grant only with a matching receipt hash; a source's revocation ignores other sources' packages; no package can block its own uninstall; a manifest carrying `installPolicy` is rejected at install |
 | Default and required installs | default: installed once through the ladder, never reinstalled after uninstall; required: reinstalled and updated at boot, uninstall and disable denied with `PACKAGE_REQUIRED_BY_POLICY`, becomes a user install when the entry is removed; both lists limited to official/managed sources; migration marks former admin installs as applied and unlocks unmatched entries |
 | Identity | reserved names, same `(kind, name)` across sources, `PACKAGE_ID_CONFLICT`, update binding, source switch keeps plugin data |
 | Direct install | each detection branch; `server.json` mapping for npm/pypi/oci/remote |
 | Service | `former-service.json` parsing, `movedTo` with and without `movedFrom`, reset on build-constant change, policy override, announcements parity, label fallback |
-| E2E | packaged dev build (loopback allowed by the dev flag) adds a local-HTTP git marketplace, installs one package of each kind, updates, removes the source |
+| E2E | packaged dev build (loopback allowed by the dev flag) adds a local-HTTP git marketplace, installs one package of each kind, updates, removes the source; without the dev flag, the same kind of source asks for `unencrypted` and `this-computer` before the fixture server sees any request, and the preview, cards and Sources row show the badges |
 
-## 18. Source acceptance, local folders and automatic updates (0.13.0)
+## 18. Source acceptance, local folders and automatic updates (after 0.13.0)
 
-> Status: **Designed** 2026-10-01 for app release 0.13.0; not built. Where
-> this section and an earlier one disagree, the earlier section describes
-> 0.12.x and this section the 0.13.0 target. Each slice of §18.10 rewrites
-> the owning section in the same change and removes its pointer here. Code is
-> cited at `e10c823e2`.
+> Status: **Designed** 2026-10-01, first for app release 0.13.0. 0.13.0
+> shipped with slice B only; slice C lands in the next release, and the later
+> slices after it. Where this section says 0.13.0, read the release that
+> carries the slice.
+> - Slice B (messages) and slice C (target classes, warnings and connection
+>   binding) are built. §7, §12–§15 and §17 describe them as built: §7.4 for
+>   the classes, outcomes and binding of §18.2, §18.3 #1–4 and #7, and §18.5,
+>   and §12 for `requireHttps`, `blockPrivateNetworks` and the policy refresh
+>   of §18.6.
+> - The rest (folders, automatic updates and their settings, slices D1–F) is
+>   not built. Where this section and an earlier one disagree, the earlier
+>   section describes the build and this section the target.
+> - Each slice of §18.10 rewrites the owning section in the same change and
+>   removes its pointer here. Code is cited at `e10c823e2`.
 
 ### 18.1 Owner decisions (2026-09-28, closed)
 
@@ -1916,6 +2240,10 @@ The 0.13.0 tests are listed with each slice of §18.10.
 5. Administrators keep the strict behaviour through managed policy (§18.6).
 
 ### 18.2 Outcomes, and who chose the target
+
+> Built in slice C for git and downloads; §7.4 describes it as built. The
+> `network-folder` and `unencrypted-updates` warnings belong to slices D1 and
+> E.
 
 | Outcome | Meaning | Who can change it | UI tone |
 |---|---|---|---|
@@ -1950,10 +2278,11 @@ the embedded IPv4 address, as today.
 | `metadata` | `169.254.0.0/16`, `fe80::/10`, `fd00:ec2::254`, `100.100.100.200` |
 | `unroutable` | every other special-purpose block of `network-guard.ts:116-150` (documentation, multicast, reserved, broadcast, protocol assignments) |
 
-`fetchPublicHttpResponse` (`network-guard.ts:415`) gains an optional
-`addressPolicy(address, hop) => "allow" | NetworkGuardError` that replaces its
-three `allow*` axes for that call. Only the marketplace gate passes it; every
-other caller keeps today's behaviour.
+As built, a separate `fetchAddressCheckedResponse(url, { addressPolicy,
+fetchImpl })` takes `addressPolicy(address, hop) => "allow" |
+NetworkGuardError` in place of the three `allow*` axes. It shares the redirect
+loop with `fetchPublicHttpResponse`, whose signature is unchanged. Only the
+marketplace gate calls it; every other caller keeps today's behaviour.
 
 #### 18.2.2 Entered targets
 
@@ -2155,6 +2484,9 @@ blocks may not.
       test and §18.2.4 together.
 
 ### 18.3 Hard refusals
+
+> #1–4 and #7 are built (slice C, §7.1, §7.4, §13.1). #5 and #6 belong to
+> slice D1, and #8 to the Publication plan.
 
 Each is refused because no user decision makes it safe. Everything else is a
 warning (§18.2) or a policy decision (§18.6).
@@ -2492,6 +2824,10 @@ states that a local directory source is refused like `installLocal`
 
 ### 18.5 Add flow, confirmations and badges
 
+> Built in slice C for git addresses (§7.2, §15.4, §15.5). The folder steps,
+> `network-folder`, `unencrypted-updates` and the *Network folder* and *Local
+> folder* badges belong to slices D1, D2 and E.
+
 1. The user enters an address or chooses a folder.
 2. `sources:preview` parses it (§7.1, §18.4.1 stages 1–2) and applies the
    refusals (§18.3) and the policy (§18.6). A refusal or a policy block ends
@@ -2564,14 +2900,15 @@ states that a local directory source is refused like `installLocal`
   implies, and not removable. An `additional` folder under
   `allowLocalSources: false` makes the section invalid (§12).
 - User settings, confirmations and switches never override a policy block.
-- **When a policy change takes effect.** Today the policy is read once when
-  the service is built (`src/ipc/domains/git-marketplace.ts:252`), and the
-  service is cached (`:528-545`), so a change waits for a restart. From slice
-  C:
+- `requireHttps`, `blockPrivateNetworks` and the policy refresh below are
+  built (slice C, §12); the rest of this section is not.
+- **When a policy change takes effect.** Before slice C the policy was read
+  once when the service was built, and the service was cached, so a change
+  waited for a restart. Since slice C:
   - The service reads the policy through a `PolicySource`. At the start of
     every operation (preview, add, acknowledge, sync, discovery, plan,
-    execute), it compares the file's size, modification time and sha256 with
-    the last read.
+    execute), it compares the file with the last read (as built: identity,
+    times and sha256, §12).
   - A change builds a new policy and swaps it into the gate, the registry
     filters and the installers in one step, under the service's operation
     lock, so no operation sees a mixed policy.
@@ -2584,9 +2921,10 @@ states that a local directory source is refused like `installLocal`
     is fixed.
   - Discovery (§18.7.1) is an operation, so a source the new policy blocks is
     blocked within one discovery interval, without a restart.
-- **Rollout.** Apps before 0.13.0 read the section exactly and treat an unknown
-  key as an invalid section, which blocks every non-official source (§12).
-  Deploy these keys only to 0.13.0 and later.
+- **Rollout.** Apps up to and including 0.13.0 read the section exactly and
+  treat an unknown key as an invalid section, which blocks every non-official
+  source (§12). Deploy each key only to the release that carries its slice
+  and later.
 
 ### 18.7 Automatic updates
 

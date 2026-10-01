@@ -3,7 +3,10 @@
  * from, its pin, status and switch, with Refresh, Set token, Review (a
  * rewritten history) and Remove where the origin allows them. A source whose
  * downloaded copy is damaged offers Repair in place of Refresh and its
- * switch (§18.8), for every origin.
+ * switch (§18.8), for every origin. A source that needs a confirmation it
+ * does not hold (an address that changed class, sign-in over http) offers
+ * *Allow…*, which states the risk once more and syncs again (§18.5); its
+ * badges say what it was allowed.
  */
 import { useState } from "react";
 import { Badge } from "../../../../components/ui/badge.js";
@@ -14,8 +17,24 @@ import { Switch } from "../../../../components/ui/switch.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import { cn } from "../../../../lib/utils.js";
 import { scrubDiagnosticSecrets } from "../../../../shared/dlp.js";
-import type { GitMarketplaceApi, GitMarketplaceFailure, PackageKeyView, SourceView } from "../../../../shared/git-marketplace.js";
-import { kindLabel, originLabel, OTHER_SUBJECT, relativeTime, shortSha, sourceStatusDetail, sourceStatusLabel, sourceSubject, type FailureSubject } from "./labels.js";
+import type { GitMarketplaceApi, GitMarketplaceFailure, PackageKeyView, SourceBadge, SourceView, SourceWarning } from "../../../../shared/git-marketplace.js";
+import {
+  allowableWarning,
+  allowRisk,
+  badgeLabel,
+  badgeTooltip,
+  failureText,
+  kindLabel,
+  originLabel,
+  OTHER_SUBJECT,
+  relativeTime,
+  shortSha,
+  sourceStatusDetail,
+  sourceStatusLabel,
+  sourceSubject,
+  warningText,
+  type FailureSubject,
+} from "./labels.js";
 import { MarketplaceProblem } from "./MarketplaceProblem.js";
 
 export interface SourcesViewProps {
@@ -28,13 +47,44 @@ export interface SourcesViewProps {
 type Confirm =
   | { kind: "remove"; source: SourceView }
   | { kind: "rewrite"; source: SourceView; candidate: string }
-  | { kind: "token"; source: SourceView };
+  | { kind: "token"; source: SourceView }
+  /** *Allow…*: the risk once more, then the confirmation; `then: "token"` opens Set token… after it. */
+  | { kind: "allow"; source: SourceView; warning: SourceWarning; text: string; then: "token" | null };
+
+/** A source's badges (§18.5): text plus tooltip, never colour alone. */
+export function SourceBadges({ badges, testId }: { badges: readonly SourceBadge[]; testId?: string }) {
+  const { t } = useTranslation();
+  if (badges.length === 0) return null;
+  return (
+    <>
+      {badges.map((badge) => (
+        <Badge
+          key={badge}
+          variant="outline"
+          className={cn("h-5 px-1.5 text-[10px]", badge === "unencrypted" && "border-warning/(--opacity-medium) text-warning")}
+          title={badgeTooltip(t, badge)}
+          data-testid={testId ? `${testId}:${badge}` : undefined}
+        >
+          {badgeLabel(t, badge)}
+        </Badge>
+      ))}
+    </>
+  );
+}
+
+/** The confirmation a source's last sync asks for, when *Allow…* resolves it. */
+function statusAllowable(source: SourceView): SourceWarning | null {
+  const status = source.status;
+  if (status.state === "unreachable") return allowableWarning(status);
+  if (status.state === "auth-required") return allowableWarning({ code: "SOURCE_AUTH_REQUIRED", ...(status.detail ? { detail: status.detail } : {}) });
+  return null;
+}
 
 export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps) {
   const { t, locale } = useTranslation();
   const [busy, setBusy] = useState<string | null>(null);
   /** The last action's failure, with the source it acted on (none for Refresh all), so its sentence names only that row's actions. */
-  const [failure, setFailure] = useState<{ failure: GitMarketplaceFailure; subject: FailureSubject } | null>(null);
+  const [failure, setFailure] = useState<{ failure: GitMarketplaceFailure; subject: FailureSubject; source: SourceView | null } | null>(null);
   const [confirm, setConfirmState] = useState<Confirm | null>(null);
   const [token, setToken] = useState("");
   // A typed token belongs to the dialog it was typed in: opening or closing any dialog drops it, so a
@@ -45,6 +95,23 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
   };
   const [orphaned, setOrphaned] = useState<PackageKeyView[] | null>(null);
 
+  /** *Allow…* for a failure on `source`: the question names the risk accepted (`allowRisk`), else the failure's sentence is that question. */
+  const allowFor = (source: SourceView, failure: Pick<GitMarketplaceFailure, "code" | "detail">) => {
+    const warning = allowableWarning(failure);
+    if (warning === null) return;
+    const text = allowRisk(t, failure) ?? failureText(t, { ...failure, message: "" }, sourceSubject(source));
+    setConfirm({ kind: "allow", source, warning, text, then: null });
+  };
+
+  /** Set token…: an http source sends no sign-in until the user accepts that it travels unencrypted (§18.2.2). */
+  const openToken = (source: SourceView) => {
+    if (source.url.startsWith("http://") && !source.acknowledged.includes("token-unencrypted")) {
+      setConfirm({ kind: "allow", source, warning: "token-unencrypted", text: warningText(t, { warning: "token-unencrypted", host: source.tokenHost, address: null }), then: "token" });
+      return;
+    }
+    setConfirm({ kind: "token", source });
+  };
+
   const run = async <T,>(key: string, action: () => Promise<{ ok: true; value: T } | ({ ok: false } & GitMarketplaceFailure)>): Promise<T | null> => {
     setBusy(key);
     setFailure(null);
@@ -52,7 +119,7 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
       const result = await action();
       if (!result.ok) {
         const source = sources.find((candidate) => candidate.id === key);
-        setFailure({ failure: result, subject: source ? sourceSubject(source) : OTHER_SUBJECT });
+        setFailure({ failure: result, subject: source ? sourceSubject(source) : OTHER_SUBJECT, source: source ?? null });
         return null;
       }
       onChanged();
@@ -70,6 +137,12 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
       if (removed) setOrphaned(removed.orphanedPackages);
     } else if (confirm.kind === "rewrite") {
       await run(source.id, () => api.acceptRewrite(source.id, confirm.candidate));
+    } else if (confirm.kind === "allow") {
+      const allowed = await run(source.id, () => api.acknowledgeSource(source.id, [confirm.warning]));
+      if (allowed && confirm.then === "token") {
+        setConfirm({ kind: "token", source: allowed });
+        return;
+      }
     } else if (source.tokenHost && token) {
       await run(source.id, () => api.setToken(source.tokenHost!, token));
     }
@@ -87,7 +160,13 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
           <Button size="sm" onClick={onAdd}>{t("gitMarketplace.add.title")}</Button>
         </div>
       </div>
-      {failure && <MarketplaceProblem failure={failure.failure} subject={failure.subject} />}
+      {failure && (
+        <MarketplaceProblem
+          failure={failure.failure}
+          subject={failure.subject}
+          {...(failure.source ? { onAllow: () => allowFor(failure.source!, failure.failure) } : {})}
+        />
+      )}
       {orphaned && orphaned.length > 0 && (
         <p className="text-xs text-muted-foreground" data-testid="git-marketplace:sources:orphaned">
           {t("gitMarketplace.sources.orphaned", { packages: orphaned.map((key) => `${kindLabel(t, key.kind)} ${key.name}`).join(", ") })}
@@ -110,6 +189,7 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
               const status = source.status;
               const warn = status.state === "unreachable" || status.state === "auth-required" || status.state === "history-rewritten" || status.state === "broken";
               const statusDetail = sourceStatusDetail(t, source);
+              const allowable = statusAllowable(source);
               return (
                 <tr key={source.id} className="border-t align-top" data-testid={`git-marketplace:source:${source.id}`}>
                   <td className="px-3 py-2">
@@ -123,6 +203,7 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
                           <Badge variant="outline" className="h-5 px-1.5 text-[10px]">{originLabel(t, source.origin)}</Badge>
                         </>
                       )}
+                      <SourceBadges badges={source.badges} testId={`git-marketplace:source:${source.id}:badge`} />
                     </div>
                     <div className="break-all font-mono text-[11px] text-muted-foreground">
                       {source.url}
@@ -150,6 +231,18 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
                     )}
                     {statusDetail !== null && (
                       <p className="mt-0.5 max-w-xs break-words text-muted-foreground" data-testid={`git-marketplace:source:${source.id}:status-detail`}>{statusDetail}</p>
+                    )}
+                    {allowable !== null && (status.state === "unreachable" || status.state === "auth-required") && (
+                      <Button
+                        size="sm"
+                        variant="link"
+                        className="h-auto p-0 text-xs"
+                        disabled={busy !== null}
+                        onClick={() => allowFor(source, status.state === "unreachable" ? status : { code: "SOURCE_AUTH_REQUIRED", ...(status.detail ? { detail: status.detail } : {}) })}
+                        data-testid={`git-marketplace:source:${source.id}:allow`}
+                      >
+                        {t("gitMarketplace.action.allow")}
+                      </Button>
                     )}
                     {status.state === "history-rewritten" && status.reviewable && (
                       <Button size="sm" variant="link" className="h-auto p-0 pl-1 text-xs" onClick={() => setConfirm({ kind: "rewrite", source, candidate: status.candidate })}>
@@ -184,7 +277,7 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
                         </Button>
                       )}
                       {source.auth === "token" && source.tokenHost && (
-                        <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => setConfirm({ kind: "token", source })}>
+                        <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => openToken(source)} data-testid={`git-marketplace:source:${source.id}:set-token`}>
                           {t("gitMarketplace.sources.setToken")}
                         </Button>
                       )}
@@ -211,14 +304,18 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
                 ? t("gitMarketplace.sources.removeTitle", { source: confirm.source.label })
                 : confirm?.kind === "rewrite"
                   ? t("gitMarketplace.sources.rewriteTitle", { source: confirm.source.label })
-                  : t("gitMarketplace.sources.tokenTitle", { host: confirm?.source.tokenHost ?? "" })}
+                  : confirm?.kind === "allow"
+                    ? t("gitMarketplace.sources.allowTitle", { source: confirm.source.origin === "official" ? originLabel(t, "official") : confirm.source.label })
+                    : t("gitMarketplace.sources.tokenTitle", { host: confirm?.source.tokenHost ?? "" })}
             </DialogTitle>
             <DialogDescription>
               {confirm?.kind === "remove"
                 ? t("gitMarketplace.sources.removeBody")
                 : confirm?.kind === "rewrite"
                   ? t("gitMarketplace.sources.rewriteBody", { candidate: shortSha(confirm.candidate), pinned: confirm.source.pinnedCommit ? shortSha(confirm.source.pinnedCommit) : "—" })
-                  : t("gitMarketplace.sources.tokenBody")}
+                  : confirm?.kind === "allow"
+                    ? confirm.text
+                    : t("gitMarketplace.sources.tokenBody")}
             </DialogDescription>
           </DialogHeader>
           {confirm?.kind === "token" && (
@@ -237,7 +334,13 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
               onClick={() => void confirmAction()}
               data-testid="git-marketplace:sources:confirm"
             >
-              {confirm?.kind === "remove" ? t("gitMarketplace.sources.remove") : confirm?.kind === "rewrite" ? t("gitMarketplace.sources.acceptRewrite") : t("gitMarketplace.sources.saveToken")}
+              {confirm?.kind === "remove"
+                ? t("gitMarketplace.sources.remove")
+                : confirm?.kind === "rewrite"
+                  ? t("gitMarketplace.sources.acceptRewrite")
+                  : confirm?.kind === "allow"
+                    ? t("gitMarketplace.sources.allowConfirm")
+                    : t("gitMarketplace.sources.saveToken")}
             </Button>
           </DialogFooter>
         </DialogContent>

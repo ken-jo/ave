@@ -43,7 +43,8 @@ import {
   type OfficialMarketplace,
   type SourceAuth,
 } from "./official.js";
-import { EMPTY_MARKETPLACE_POLICY, type MarketplacePolicy, type PolicyLoad } from "./policy.js";
+import { EMPTY_MARKETPLACE_POLICY, type MarketplacePolicy, type PolicySource } from "./policy.js";
+import { isSourceWarning, type SourceWarning } from "./warnings.js";
 
 export type SourceOrigin = "official" | "managed" | "custom" | "direct";
 
@@ -58,6 +59,24 @@ interface SourceEntry {
   auth: SourceAuth;
   addedAt: string;
   label?: string;
+  /** The confirmations the source holds, for the address they were given at (design §18.5); absent is none. */
+  acknowledged?: StoredConfirmations;
+}
+
+/**
+ * Confirmations as stored: the warnings, and the normalized address (scheme,
+ * user, host, port and path) the user gave them for. A source whose address
+ * is no longer that one holds none: a managed entry or a hand-edited
+ * `sources.json` that points a source elsewhere never carries consent over.
+ */
+export interface StoredConfirmations {
+  url: string;
+  warnings: SourceWarning[];
+}
+
+/** The confirmations `stored` gives a source at `url`: its warnings when they were given for that address, else none. */
+export function confirmationsFor(stored: StoredConfirmations | undefined, url: NormalizedSourceUrl): SourceWarning[] {
+  return stored !== undefined && stored.url === url.url ? [...stored.warnings] : [];
 }
 
 export interface SourceState {
@@ -67,6 +86,8 @@ export interface SourceState {
   /** `detail` is why a failed sync failed, when it said (design §18.8). */
   lastSync?: { at: string; result: "ok" | MarketplaceErrorCode; detail?: MarketplaceErrorDetail; candidate?: string };
   pendingRewrite?: { candidate: string; seenAt: string };
+  /** Official and managed sources keep their confirmations here; custom and direct ones in `sources.json` (§18.5). */
+  acknowledged?: StoredConfirmations;
 }
 
 export interface ResolvedSource {
@@ -79,6 +100,8 @@ export interface ResolvedSource {
   subdir?: string;
   auth: SourceAuth;
   label?: string;
+  /** Custom and direct sources: the confirmations stored with the entry for this address; official and managed keep theirs in the state. */
+  acknowledged?: readonly SourceWarning[];
 }
 
 export interface RegistryDiagnostic {
@@ -94,11 +117,13 @@ export interface NewSource {
   subdir?: string;
   auth: SourceAuth;
   label?: string;
+  /** Exactly the confirmations the preview carried (§18.5 step 5). */
+  acknowledged?: readonly SourceWarning[];
 }
 
 const COMMIT_RE = /^[0-9a-f]{40}$/u;
-const ENTRY_KEYS = new Set(["id", "origin", "url", "ref", "subdir", "auth", "addedAt", "label"]);
-const STATE_KEYS = new Set(["pinnedCommit", "enabled", "lastSync", "pendingRewrite"]);
+const ENTRY_KEYS = new Set(["id", "origin", "url", "ref", "subdir", "auth", "addedAt", "label", "acknowledged"]);
+const STATE_KEYS = new Set(["pinnedCommit", "enabled", "lastSync", "pendingRewrite", "acknowledged"]);
 
 class RegistryShapeError extends Error {}
 
@@ -140,6 +165,25 @@ function checkAuth(value: unknown, url: NormalizedSourceUrl): SourceAuth {
   return { kind: "token", host };
 }
 
+/** Stored confirmations: a normalized address, and known warnings, each once. */
+function checkAcknowledged(value: unknown): StoredConfirmations {
+  shape(isRecord(value), "acknowledged must be an object");
+  knownKeys(value, new Set(["url", "warnings"]), "acknowledged");
+  shape(typeof value.url === "string", "acknowledged.url must be a string");
+  let url: NormalizedSourceUrl;
+  try {
+    url = normalizeSourceUrl(value.url as string);
+  } catch {
+    throw new RegistryShapeError("acknowledged.url is not a source address");
+  }
+  shape(url.url === value.url, "acknowledged.url is not in normalized form");
+  const warnings = value.warnings;
+  shape(Array.isArray(warnings), "acknowledged.warnings must be an array");
+  shape(warnings.every(isSourceWarning), "acknowledged holds an unknown confirmation");
+  shape(new Set(warnings).size === warnings.length, "acknowledged lists a confirmation twice");
+  return { url: url.url, warnings: [...(warnings as SourceWarning[])] };
+}
+
 function checkRef(ref: unknown): void {
   shape(isSourceRef(ref), "ref is not a branch or tag name");
 }
@@ -175,6 +219,7 @@ function checkEntry(raw: unknown): { entry: SourceEntry; url: NormalizedSourceUr
   const auth = checkAuth(raw.auth, url);
   shape(isIsoTime(raw.addedAt), "addedAt must be an ISO-8601 time");
   if (raw.label !== undefined) shape(isSourceLabel(raw.label), "label must be 1-100 printable characters");
+  if (raw.acknowledged !== undefined) checkAcknowledged(raw.acknowledged);
   return { entry: { ...(raw as unknown as SourceEntry), auth }, url };
 }
 
@@ -206,6 +251,7 @@ function checkState(raw: unknown): SourceState {
     shape(typeof pending.candidate === "string" && COMMIT_RE.test(pending.candidate), "pendingRewrite.candidate must be a commit id");
     shape(isIsoTime(pending.seenAt), "pendingRewrite.seenAt must be an ISO-8601 time");
   }
+  if (raw.acknowledged !== undefined) checkAcknowledged(raw.acknowledged);
   return state as unknown as SourceState;
 }
 
@@ -214,7 +260,8 @@ const FRESH_STATE: SourceState = Object.freeze({ pinnedCommit: null, enabled: tr
 export interface SourceRegistryOptions {
   /** `~/.ave/marketplaces`. */
   root: string;
-  policy: PolicyLoad;
+  /** Read when the sources are listed: a policy change adds or drops managed sources at the next operation (§18.6). */
+  policy: PolicySource;
   /** The build constant; tests substitute a fixture repository. */
   official?: OfficialMarketplace;
   now?: () => Date;
@@ -317,30 +364,45 @@ export class SourceRegistry {
   private fileProblem: { message: string; detail: MarketplaceErrorDetail<"SOURCE_LIST_UNREADABLE"> } | null = null;
   private loadDiagnostics: RegistryDiagnostic[] = [];
   private queue: Promise<unknown> = Promise.resolve();
-  private readonly policy: MarketplacePolicy;
-  private readonly builtIn: ResolvedSource[];
+  private readonly official: ResolvedSource;
+  /** The built-in sources under the policy digest they were built for. */
+  private builtFor: { digest: string; sources: ResolvedSource[] } | null = null;
 
   private constructor(private readonly options: SourceRegistryOptions) {
-    this.policy = options.policy.ok ? options.policy.policy : EMPTY_MARKETPLACE_POLICY;
     const constant = options.official ?? OFFICIAL_MARKETPLACE;
-    const official: ResolvedSource = {
+    this.official = {
       id: constant.id,
       origin: "official",
       url: normalizeSourceUrl(constant.url),
       mirrors: constant.mirrors.map((mirror) => normalizeSourceUrl(mirror)),
       auth: constant.auth,
     };
-    // An unreadable policy yields no managed sources; the gate blocks every non-official target then.
-    const managed = this.policy.additional.map((spec): ResolvedSource => ({
-      id: spec.id,
-      origin: "managed",
-      url: spec.url,
-      mirrors: [],
-      ...(spec.ref !== undefined ? { ref: spec.ref } : {}),
-      auth: spec.auth,
-      ...(spec.label !== undefined ? { label: spec.label } : {}),
-    }));
-    this.builtIn = [official, ...managed];
+  }
+
+  private get policy(): MarketplacePolicy {
+    const load = this.options.policy.load;
+    return load.ok ? load.policy : EMPTY_MARKETPLACE_POLICY;
+  }
+
+  /** Official, then the policy's managed sources, rebuilt when the policy in force changes. */
+  private get builtIn(): ResolvedSource[] {
+    const digest = this.options.policy.digest;
+    if (this.builtFor?.digest !== digest) {
+      // An unreadable policy yields no managed sources; the gate blocks every non-official target then.
+      const managed = this.policy.additional.map((spec): ResolvedSource => ({
+        id: spec.id,
+        origin: "managed",
+        url: spec.url,
+        mirrors: [],
+        ...(spec.ref !== undefined ? { ref: spec.ref } : {}),
+        auth: spec.auth,
+        ...(spec.label !== undefined ? { label: spec.label } : {}),
+      }));
+      this.builtFor = { digest, sources: [this.official, ...managed] };
+      // The ids a stored entry may use depend on the managed ones.
+      this.resolveStored();
+    }
+    return this.builtFor.sources;
   }
 
   static async open(options: SourceRegistryOptions): Promise<SourceRegistry> {
@@ -430,7 +492,7 @@ export class SourceRegistry {
 
   private resolveStored(): void {
     const diagnostics: RegistryDiagnostic[] = [];
-    const taken = new Map(this.builtIn.map((source) => [source.id, source.origin] as const));
+    const taken = new Map((this.builtFor?.sources ?? this.builtIn).map((source) => [source.id, source.origin] as const));
     const stored: ResolvedSource[] = [];
     const storedRaw = new Map<string, unknown>();
     for (const [position, raw] of this.rawEntries.entries()) {
@@ -464,6 +526,7 @@ export class SourceRegistry {
         ...(entry.subdir !== undefined ? { subdir: entry.subdir } : {}),
         auth: entry.auth,
         ...(entry.label !== undefined ? { label: entry.label } : {}),
+        acknowledged: confirmationsFor(entry.acknowledged, url),
       });
     }
     this.stored = stored;
@@ -536,6 +599,7 @@ export class SourceRegistry {
         auth: source.auth.kind === "token" ? { kind: "token", host: normalizeSourceHost(source.auth.host, source.auth.host) } : source.auth,
         addedAt: (this.options.now?.() ?? new Date()).toISOString(),
         ...(source.label !== undefined ? { label: source.label } : {}),
+        ...(source.acknowledged !== undefined && source.acknowledged.length > 0 ? { acknowledged: { url: url.url, warnings: [...source.acknowledged] } } : {}),
       };
       try {
         checkEntry(entry);
@@ -641,6 +705,38 @@ export class SourceRegistry {
         return;
       }
       await this.reclaim(trash);
+    });
+  }
+
+  /** The confirmations `source` holds: its entry's for custom and direct sources, its state's for official and managed ones (§18.5). */
+  async acknowledged(source: ResolvedSource): Promise<ReadonlySet<SourceWarning>> {
+    if (source.origin === "custom" || source.origin === "direct") return new Set(source.acknowledged ?? []);
+    return new Set(confirmationsFor((await this.readState(source.id)).acknowledged, source.url));
+  }
+
+  /**
+   * Add confirmations to a source (*Allow…*, §18.5): the entry of a custom or
+   * direct source, the state of an official or managed one. Confirmations
+   * only grow here; withdrawing one is removing the source.
+   */
+  async acknowledge(id: string, warnings: readonly SourceWarning[]): Promise<void> {
+    const source = this.get(id);
+    if (!source) throw new MarketplaceError("SOURCE_ID_INVALID", `no source named ${id}`);
+    if (source.origin === "official" || source.origin === "managed") {
+      // Confirmations given for another address are dropped, not merged.
+      await this.updateState(id, (state) => {
+        const merged = [...new Set([...confirmationsFor(state.acknowledged, source.url), ...warnings])];
+        return { ...state, acknowledged: { url: source.url.url, warnings: merged } };
+      });
+      return;
+    }
+    await this.exclusive(async () => {
+      this.assertWritable();
+      const raw = this.storedRaw.get(id);
+      if (!isRecord(raw)) throw new Error(`source ${id} has no stored entry`);
+      const current = raw.acknowledged === undefined ? [] : confirmationsFor(checkAcknowledged(raw.acknowledged), source.url);
+      const next = { ...raw, acknowledged: { url: source.url.url, warnings: [...new Set([...current, ...warnings])] } };
+      await this.writeSources(this.rawEntries.map((entry) => (entry === raw ? next : entry)));
     });
   }
 

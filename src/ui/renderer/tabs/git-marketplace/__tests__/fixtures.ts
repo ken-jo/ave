@@ -42,6 +42,8 @@ export function source(overrides: Partial<SourceView> & Pick<SourceView, "id">):
     canDisable: true,
     canRemove: true,
     diagnostics: [],
+    acknowledged: [],
+    badges: [],
     ...overrides,
   };
 }
@@ -57,6 +59,7 @@ export function entry(sourceId: string | null, kind: PackageKind, name: string, 
     state: { state: "install", version: "1.0.0" },
     required: false,
     runsCode: kind === "plugin" || kind === "mcp",
+    sourceBadges: [],
     ...overrides,
   };
 }
@@ -81,7 +84,7 @@ export function detail(item: CatalogEntryView, overrides: Partial<PackageDetailV
     compatibility: { minAppVersion: "1.0.0", appVersion: "2.0.0", compatible: true },
     authority: { capabilities: [], networkHosts: ["api.example.com"], secrets: [], pluginAccess: [], dependencies: [], filesystem: [] },
     components: null,
-    rungs: [{ rung: "release", declared: true, pinned: true, detail: `${item.key.name}.zip` }],
+    rungs: [{ rung: "release", declared: true, pinned: true, detail: `${item.key.name}.zip`, unencrypted: false }],
     versions: [
       { version: "1.0.0", commit: COMMIT_A, publishedAt: "2026-09-20T00:00:00.000Z", minAppVersion: "1.0.0", excluded: [], yankedReason: null, rolloutPercent: null, installed: false, candidate: true },
     ],
@@ -154,6 +157,7 @@ export function fakeMarketplace(
     listSources: vi.fn(async () => ok(sources)),
     previewSource: vi.fn(),
     addSource: vi.fn(),
+    acknowledgeSource: vi.fn(),
     removeSource: vi.fn(async () => ok({ orphanedPackages: [] })),
     setSourceEnabled: vi.fn(async (id: string) => ok(sources.find((item) => item.id === id))),
     refreshSources: vi.fn(async () => ok(sources)),

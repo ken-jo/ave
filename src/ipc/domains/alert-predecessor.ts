@@ -8,7 +8,7 @@ import { withResolvedPluginInstallLocks } from "../../plugins/install-lifecycle.
 import { createLogger } from "../../lib/logger.js";
 
 const log = createLogger("alert-predecessor");
-type Marketplace = Pick<GitMarketplacePort, "catalog" | "getRetirementEntry" | "uninstall">;
+type Marketplace = Pick<GitMarketplacePort, "catalog" | "getRetirementEntry" | "uninstall" | "asOneOperation">;
 
 /** Both the displayed action and the click resolve against main-owned state. */
 export class AlertPredecessorAccess {
@@ -58,7 +58,10 @@ export class AlertPredecessorAccess {
       const market = await this.marketplace();
       const predecessorId = row.blockedByPredecessor;
       if (!predecessorId) return { ok: false, error: "predecessor-not-removable" };
-      return await withResolvedPluginInstallLocks(() => [row.pluginId, predecessorId].flatMap((id) => {
+      // Lock order (§18.6): the marketplace operation first, the plugin locks inside it. Every service
+      // call below is part of this one operation, so none waits for a policy change while these
+      // plugin locks are held and an install, inside its own operation, waits for one of them.
+      return await market.asOneOperation(() => withResolvedPluginInstallLocks(() => [row.pluginId, predecessorId].flatMap((id) => {
         const canonical = this.deps.pluginRuntime.resolvePluginId(id);
         const installed = this.deps.pluginRuntime.resolvePluginInstallIdIfKnown(id);
         return [id, canonical, ...(installed ? [installed] : [])];
@@ -76,7 +79,7 @@ export class AlertPredecessorAccess {
         const value = await market.uninstall({ kind: "plugin", name: resolved.predecessor.name, sourceId: resolved.predecessor.sourceId },
           { retain: { reason: "superseded" } });
         return { ok: true, value };
-      });
+      }));
     } catch (error) {
       if (error instanceof MarketplaceError && error.code === "PACKAGE_REQUIRED_BY_POLICY") {
         return { ok: false, error: "predecessor-policy-locked" };

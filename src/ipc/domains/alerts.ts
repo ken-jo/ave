@@ -21,7 +21,7 @@ function isClosedReason(value: unknown): value is AlertCardClosedReason {
   return value === "accepted" || value === "dismissed";
 }
 
-export function registerAlertsHandlers(deps: IpcDeps, marketplace: () => Promise<Pick<GitMarketplacePort, "catalog" | "getRetirementEntry" | "uninstall">>): void {
+export function registerAlertsHandlers(deps: IpcDeps, marketplace: () => Promise<Pick<GitMarketplacePort, "catalog" | "getRetirementEntry" | "uninstall" | "asOneOperation">>): void {
   const { alertsService, auditLogger } = deps;
   const predecessors = new AlertPredecessorAccess(deps, marketplace);
 

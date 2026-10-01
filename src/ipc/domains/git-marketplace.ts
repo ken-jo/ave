@@ -49,7 +49,9 @@ import { migrateLegacyPlugins } from "../../marketplace/migration/legacy-plugins
 import { clearKeptArtifacts, createArtifactCache, resolveKeepArtifacts } from "../../marketplace/resolve/artifact-cache.js";
 import { gitRuntimeRoot } from "../../marketplace/git/runtime-service.js";
 import { NetworkGate } from "../../marketplace/net/network-gate.js";
-import { EMPTY_MARKETPLACE_POLICY, loadMarketplacePolicy, type MarketplacePolicy } from "../../marketplace/sources/policy.js";
+import { createPinnedFetch } from "../../marketplace/net/pinned-fetch.js";
+import { EMPTY_MARKETPLACE_POLICY, FilePolicySource, type MarketplacePolicy } from "../../marketplace/sources/policy.js";
+import { isSourceWarning, type SourceWarning } from "../../marketplace/sources/warnings.js";
 import { SourceRegistry } from "../../marketplace/sources/registry.js";
 import { pluginRegistryOrigins, retainedCommitsFrom } from "../../marketplace/sources/retained.js";
 import { SourceSyncer } from "../../marketplace/sources/sync.js";
@@ -88,6 +90,7 @@ export type GitMarketplacePort = Pick<
   | "listSources"
   | "previewSource"
   | "addSource"
+  | "acknowledgeSource"
   | "removeSource"
   | "setEnabled"
   | "refresh"
@@ -102,6 +105,7 @@ export type GitMarketplacePort = Pick<
   | "executeInstall"
   | "uninstall"
   | "getRetirementEntry"
+  | "asOneOperation"
   | "previewDirectMcp"
   | "updates"
   | "applyBootInstalls"
@@ -162,7 +166,7 @@ function pluginInstaller(deps: IpcDeps): PluginInstallerPort {
   };
 }
 
-function contentInstaller(content: () => Promise<InstalledContentRuntime | null>, policy: MarketplacePolicy): ContentInstallerPort {
+function contentInstaller(content: () => Promise<InstalledContentRuntime | null>, policy: () => MarketplacePolicy): ContentInstallerPort {
   const runtime = async () => {
     const loaded = await content();
     if (!loaded) throw new Error("installed content could not be loaded; see the log");
@@ -194,7 +198,7 @@ function contentInstaller(content: () => Promise<InstalledContentRuntime | null>
       const loaded = await runtime();
       const installed = options?.removeData && kind === "agent-plugin" ? (await loaded.store.load()).loaded : [];
       const content = installed.find((item) => item.entry.kind === "agent-plugin" && item.entry.name === name)?.content;
-      await loaded.store.uninstall(kind, name, policy);
+      await loaded.store.uninstall(kind, name, policy());
       await loaded.reload();
       if (options?.removeData && kind === "agent-plugin") {
         await loaded.removeAgentPluginData(name, content?.kind === "agent-plugin" ? Object.keys(content.components.mcpServers) : []);
@@ -251,12 +255,14 @@ async function createGitMarketplaceService(
   await mkdir(workRoot, { recursive: true });
   // Keeping may have been turned off while the app was not running (or by the environment).
   dropKeptArtifactsIfOff(deps, home);
-  const policyLoad = await loadMarketplacePolicy();
-  if (!policyLoad.ok) log.warn({ err: policyLoad.error }, "marketplace policy unreadable; only the official source is reachable");
-  const policy = policyLoad.ok ? policyLoad.policy : EMPTY_MARKETPLACE_POLICY;
+  // Re-read at the start of every operation; a change applies without a restart (§18.6).
+  const policy = await FilePolicySource.open();
+  if (!policy.load.ok) log.warn({ err: policy.load.error }, "marketplace policy unreadable; only the official source is reachable");
+  // Downloads resolve once per hop and connect to the checked address (§18.2.4).
+  const transport = createPinnedFetch({ resolveProxy: (url) => session.defaultSession.resolveProxy(url) });
   // A marketplace on this machine (an author's own checkout served over HTTP,
-  // the E2E fixture) is reachable only in an unpackaged build with AVE_DEV=1.
-  const gate = new NetworkGate({ policy: policyLoad, allowLoopback: isDevModeUnlocked() });
+  // the E2E fixture) needs no confirmation in an unpackaged build with AVE_DEV=1.
+  const gate = new NetworkGate({ policy, allowLoopback: isDevModeUnlocked(), transport });
   const tokens = settingsTokenStore(deps);
   // A token typed into the add dialog answers only that preview's prompts (design §9.3).
   const previewTokens = new Map<string, string>();
@@ -268,7 +274,7 @@ async function createGitMarketplaceService(
     corporateRootsPem: async () => (await ensureCorporateCa(readPersistedCorpCaConfigSync(app.getPath("userData")))).pem,
     resolveProxy: (url) => session.defaultSession.resolveProxy(url),
   });
-  const registry = await SourceRegistry.open({ root, policy: policyLoad });
+  const registry = await SourceRegistry.open({ root, policy });
 
   const broadcast = (channel: string, payload?: unknown) => broadcastTo(deps, channel, payload);
   const catalogChanged = () => {
@@ -286,7 +292,7 @@ async function createGitMarketplaceService(
   });
   const installers: InstallerPorts = {
     plugin: pluginInstaller(deps),
-    content: contentInstaller(content, policy),
+    content: contentInstaller(content, () => (policy.load.ok ? policy.load.policy : EMPTY_MARKETPLACE_POLICY)),
     mcp: new McpInstaller({
       recordsPath: mcpRecordsPath,
       dataRoot: join(home, "mcp-data"),
@@ -311,7 +317,7 @@ async function createGitMarketplaceService(
   const service = new MarketplaceService({
     registry,
     syncer,
-    git: { commands: git.commands, credentialHelperFor: (host) => git.credentialHelperFor(host) },
+    git: { commands: git.commands, credentialHelperFor: (host) => git.credentialHelperFor(host), preflight: (remote) => git.preflight(remote) },
     gate,
     root,
     workRoot,
@@ -326,7 +332,6 @@ async function createGitMarketplaceService(
     }),
     installers,
     ladder: {
-      fetchImpl: deps.singleHopNetworkFetch,
       zip: artifacts,
       limits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,
       artifacts: createArtifactCache({
@@ -425,13 +430,29 @@ function installedKey(value: unknown): InstalledKeyView {
   return { sourceId: key.sourceId === null ? null : text(key.sourceId, "sourceId", 64), kind: key.kind, name: text(key.name, "name", 64) };
 }
 
+/** A list of confirmations: known warnings, each once (§18.5). */
+function warnings(value: unknown, what: string): SourceWarning[] {
+  if (!Array.isArray(value) || value.length > 16 || !value.every(isSourceWarning) || new Set(value).size !== value.length) {
+    throw new InvalidRequest(`${what} must list known confirmations, each once`);
+  }
+  return value as SourceWarning[];
+}
+
 function previewRequest(value: unknown): SourcePreviewRequest {
   const request = record(value, "the preview request");
   if (request.auth !== "none" && request.auth !== "token" && request.auth !== "ssh") throw new InvalidRequest("auth must be none, token or ssh");
   const ref = optionalText(request.ref, "ref", 256);
   const subdir = optionalText(request.subdir, "subdir", 1024);
   const token = optionalText(request.token, "token", 4096);
-  return { input: text(request.input, "input", 2048), auth: request.auth, ...(ref ? { ref } : {}), ...(subdir ? { subdir } : {}), ...(token ? { token } : {}) };
+  const acknowledge = request.acknowledge === undefined ? undefined : warnings(request.acknowledge, "acknowledge");
+  return {
+    input: text(request.input, "input", 2048),
+    auth: request.auth,
+    ...(ref ? { ref } : {}),
+    ...(subdir ? { subdir } : {}),
+    ...(token ? { token } : {}),
+    ...(acknowledge && acknowledge.length > 0 ? { acknowledge } : {}),
+  };
 }
 
 function addRequest(value: unknown): SourceAddRequest {
@@ -571,6 +592,11 @@ export function registerGitMarketplaceHandlers(
   handle(channels.sourcesList, (service) => service.listSources());
   handle(channels.sourcesPreview, (service, [request]) => service.previewSource(previewRequest(request)));
   handle(channels.sourcesAdd, (service, [request]) => service.addSource(addRequest(request)));
+  handle(channels.sourcesAcknowledge, (service, [id, list]) => {
+    const confirmed = warnings(list, "warnings");
+    if (confirmed.length === 0) throw new InvalidRequest("warnings must name at least one confirmation");
+    return service.acknowledgeSource(text(id, "id", 64), confirmed);
+  });
   handle(channels.sourcesRemove, (service, [id]) => service.removeSource(text(id, "id", 64)));
   handle(channels.sourcesSetEnabled, (service, [id, enabled]) => {
     if (typeof enabled !== "boolean") throw new InvalidRequest("enabled must be a boolean");

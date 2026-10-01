@@ -6,15 +6,22 @@
  *   - environment built from scratch: the safe baseline plus `SSH_AUTH_SOCK`,
  *     `GIT_TERMINAL_PROMPT=0`, `GIT_CONFIG_NOSYSTEM=1`, the generated
  *     `GIT_CONFIG_GLOBAL`, `LC_ALL=C`, the askpass helper, ssh in batch mode,
- *     `GIT_ALLOW_PROTOCOL` (`https:ssh`, plus `http` only for policy-listed
- *     hosts; none for a call without a remote), `GIT_LFS_SKIP_SMUDGE=1` and `GIT_NO_LAZY_FETCH=1` (a missing
+ *     `GIT_ALLOW_PROTOCOL` (`https:ssh`, plus `http` only for a source the
+ *     gate accepted over http: listed, acknowledged or a dev build's loopback;
+ *     none for a call without a remote), `GIT_LFS_SKIP_SMUDGE=1` and `GIT_NO_LAZY_FETCH=1` (a missing
  *     object is an error, never a fetch the gate did not see), and `GIT_DIR`
  *     for a call on a repository (discovery stopped otherwise);
  *   - `-c` flags that turn off the file protocol, submodules, fsmonitor,
  *     hooks, redirects, LFS filters and automatic gc/maintenance (a pruned
  *     commit that an install still references could not be read again), set
  *     the proxy the OS resolves for the remote, and clear the user's credential
- *     helpers on a call that answers with a stored token;
+ *     helpers on a call that answers with a stored token, and on every http
+ *     call whose source does not hold `token-unencrypted` (design §18.2.2);
+ *   - the address the connection uses is the address that was checked
+ *     (§18.2.4): an http(s) call resolves the remote's host once, judges
+ *     every answer by the gate's address rule and pins the kept answers with
+ *     `http.curloptResolve` (and the proxy's own host when one is used); an
+ *     ssh call runs the `ssh -G` preflight (ssh-preflight.ts) instead;
  *   - a timeout, an abort signal and an output cap per call.
  *
  * A failure of a call that talks to a remote is classified into a
@@ -22,13 +29,19 @@
  * failure is a {@link GitCommandError} for the caller to interpret.
  */
 import type { ChildProcessByStdio } from "node:child_process";
+import { promises as dns } from "node:dns";
+import { isIP } from "node:net";
 import { delimiter, dirname } from "node:path";
 import type { Readable } from "node:stream";
 import { proxyUrlFromPacEntry } from "../../shared/pac-proxy.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
 import { forceKillManagedChildProcess, spawnManaged } from "../../main/managed-child-processes.js";
+import { selectAnswers, type AddressPolicy } from "../../core/network-guard.js";
 import { MarketplaceError, type MarketplaceErrorCode, type MarketplaceErrorDetail } from "../errors.js";
+import { mapGuardError } from "../net/network-gate.js";
+import { proxyAnswers } from "../net/pinned-fetch.js";
 import type { NormalizedSourceUrl } from "../net/source-url.js";
+import { readSshConfig, sshPreflight, type SshConfigReader } from "./ssh-preflight.js";
 import type { AskpassBroker } from "./askpass.js";
 import type { GitExecutable } from "./detect.js";
 
@@ -77,7 +90,7 @@ export class GitCommandError extends Error {
 export interface GitRemote {
   url: NormalizedSourceUrl;
   sourceId: string;
-  /** Plain http is allowed for this host by `marketplaces.allowHttpHosts`. */
+  /** Plain http is allowed for this remote: the gate accepted it (listed, acknowledged, or a dev build's loopback). */
   allowHttp: boolean;
   /**
    * The source declares token auth for this host. When a token is stored for
@@ -86,6 +99,15 @@ export interface GitRemote {
    * token in them. Without a stored token the helpers answer as usual.
    */
   useToken: boolean;
+  /**
+   * Credentials may answer for this remote (the gate's verdict): always over
+   * https and ssh; over http only when the source holds `token-unencrypted`.
+   * Without it an http call offers no token and clears the helpers, so no
+   * password crosses the network in the clear unannounced (§18.2.2).
+   */
+  credentialsAllowed: boolean;
+  /** The rule each answer of the remote host's one lookup is judged by (§18.2.4). */
+  addressPolicy: AddressPolicy;
 }
 
 export interface RunGitOptions {
@@ -124,6 +146,23 @@ export interface GitRunnerOptions {
   managedConfig?: Readonly<Record<string, string>>;
   /** Chromium's PAC resolution for a URL (`session.resolveProxy`). */
   resolveProxy?: (url: string) => Promise<string>;
+  /** The one lookup a remote call makes (§18.2.4); tests substitute a resolver fake. */
+  lookup?: (host: string) => Promise<readonly string[]>;
+  /** `ssh -G` for the ssh preflight; tests substitute a fake. */
+  readSshConfig?: SshConfigReader;
+}
+
+async function defaultLookup(host: string): Promise<readonly string[]> {
+  return (await dns.lookup(host, { all: true, verbatim: true })).map((answer) => answer.address);
+}
+
+function bareHost(host: string): string {
+  return host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+}
+
+/** One `http.curloptResolve` entry: `HOST:PORT:ADDRESS[,ADDRESS…]`, IPv6 addresses in brackets. */
+function curlResolveEntry(host: string, port: number, addresses: readonly string[]): string {
+  return `${bareHost(host)}:${port}:${addresses.map((address) => (isIP(address) === 6 ? `[${address}]` : address)).join(",")}`;
 }
 
 const REMOTE_FAILURES: ReadonlyArray<readonly [MarketplaceErrorCode, RegExp]> = [
@@ -185,13 +224,15 @@ function unreachableDetail(text: string, host: string): MarketplaceErrorDetail<"
  * since the answer is the same for both. A failure whose cause git does not
  * name carries no detail and reads as its code's reason-less sentence.
  */
-export function classifyRemoteFailure(stderr: string, credentialOffered: boolean, url: NormalizedSourceUrl, message: string): MarketplaceError {
+export function classifyRemoteFailure(stderr: string, credentialOffered: boolean, url: NormalizedSourceUrl, message: string, credentialsWithheld = false): MarketplaceError {
   const text = stderr.toLowerCase();
   const host = url.host;
   for (const [code, pattern] of REMOTE_FAILURES) {
     if (!pattern.test(text)) continue;
     switch (code) {
       case "SOURCE_AUTH_REQUIRED":
+        // Over http no credential was offered: the source must hold token-unencrypted first (§18.2.2).
+        if (credentialsWithheld) return new MarketplaceError(code, message, { detail: { reason: "token-unencrypted", host } });
         return new MarketplaceError(code, message, { detail: { reason: url.scheme === "ssh" ? "ssh" : "token", host } });
       case "SOURCE_SSH_HOST_UNKNOWN":
         return new MarketplaceError(code, message, { detail: { reason: HOST_KEY_CHANGED.test(text) ? "changed" : "unknown", host, port: sshPort(url) } });
@@ -224,14 +265,32 @@ export class GitRunner {
     return this.options.git;
   }
 
-  /** The `-c` flags every call carries, before the subcommand. */
-  /** The call answers with the stored token (see {@link GitRemote.useToken}). */
+  /** The call answers with the stored token (see {@link GitRemote.useToken}); never over http without `token-unencrypted`. */
   private offersToken(remote: GitRemote | undefined): remote is GitRemote {
-    return remote !== undefined && remote.useToken && this.options.askpass.hasToken(remote.url.host, remote.sourceId);
+    return remote !== undefined && remote.useToken && remote.credentialsAllowed && this.options.askpass.hasToken(remote.url.host, remote.sourceId);
   }
 
+  /** An http call whose source may not send credentials: no token, and the user's helpers are cleared. */
+  private withholdsCredentials(remote: GitRemote | undefined): boolean {
+    return remote !== undefined && remote.url.scheme === "http" && !remote.credentialsAllowed;
+  }
+
+  /**
+   * The address check of a remote without a git command: the lookup and the
+   * rule the next call against it binds to (the preview's confirmation step,
+   * §18.5). Throws what that call would.
+   */
+  async preflight(remote: GitRemote): Promise<void> {
+    await this.bindingArgs(remote, await this.proxyFor(remote), this.environment(remote));
+  }
+
+  /** The `-c` flags every call carries, before the subcommand, under the route the PAC resolver answers now. */
   async configArgs(remote: GitRemote | undefined): Promise<string[]> {
-    const proxy = await this.proxyFor(remote);
+    return this.configArgsFor(remote, await this.proxyFor(remote));
+  }
+
+  /** The `-c` flags for one call under one route: the same `proxy` its binding checked (§18.2.4). */
+  private configArgsFor(remote: GitRemote | undefined, proxy: string): string[] {
     return [
       "-c", "protocol.file.allow=never",
       "-c", "submodule.recurse=false",
@@ -245,7 +304,7 @@ export class GitRunner {
       "-c", "gc.auto=0",
       "-c", "maintenance.auto=false",
       // Read last, an empty value clears every helper configured before it.
-      ...(this.offersToken(remote) ? ["-c", "credential.helper="] : []),
+      ...(this.offersToken(remote) || this.withholdsCredentials(remote) ? ["-c", "credential.helper="] : []),
       ...Object.entries(this.options.managedConfig ?? {}).flatMap(([key, value]) => ["-c", `${key}=${value}`]),
     ];
   }
@@ -293,18 +352,70 @@ export class GitRunner {
     return proxy;
   }
 
+  private lookup(host: string): Promise<readonly string[]> {
+    return (this.options.lookup ?? defaultLookup)(host);
+  }
+
+  /**
+   * Bind the call to the addresses the gate's rule keeps (§18.2.4): one
+   * lookup of the remote's host, its kept answers pinned for curl, and the
+   * proxy's own host pinned and checked when one is used. Curl resolves the
+   * target itself only directly and through a SOCKS proxy (`socks4://`,
+   * `socks5://`); an http(s) proxy resolves it beyond its socket (trusted).
+   * An ssh remote gets the `ssh -G` preflight instead. Throws the refusal,
+   * block or confirmation before git starts.
+   */
+  private async bindingArgs(remote: GitRemote, proxy: string, env: Readonly<Record<string, string>>): Promise<string[]> {
+    const url = remote.url;
+    try {
+      if (url.scheme === "ssh") {
+        await sshPreflight(url, remote.addressPolicy, env, { readConfig: this.options.readSshConfig ?? readSshConfig, lookup: (host) => this.lookup(host) });
+        return [];
+      }
+      const entries: string[] = [];
+      const proxyUrl = proxy ? new URL(proxy) : null;
+      const curlResolvesTarget = proxyUrl === null || proxyUrl.protocol === "socks4:" || proxyUrl.protocol === "socks5:";
+      const host = bareHost(url.host);
+      if (curlResolvesTarget) {
+        const answers = isIP(host) !== 0 ? [host] : await this.lookup(host);
+        const kept = selectAnswers(answers, new URL(`${url.scheme}://${url.host}/`), remote.addressPolicy);
+        // A literal is the address itself: curl does not resolve it.
+        if (isIP(host) === 0) entries.push(curlResolveEntry(url.host, url.port ?? (url.scheme === "https" ? 443 : 80), kept));
+      }
+      if (proxyUrl !== null) {
+        const proxyHost = bareHost(proxyUrl.hostname);
+        // The system configuration chose the proxy: only metadata and unroutable answers are refused.
+        // A literal is its own one answer, judged the same way; curl does not resolve it, so it needs no pin.
+        const literal = isIP(proxyHost) !== 0;
+        const kept = proxyAnswers(proxyHost, literal ? [proxyHost] : await this.lookup(proxyHost));
+        if (!literal) {
+          const defaultProxyPort = proxyUrl.protocol === "https:" ? 443 : proxyUrl.protocol === "http:" ? 80 : 1080;
+          entries.push(curlResolveEntry(proxyHost, proxyUrl.port ? Number(proxyUrl.port) : defaultProxyPort, kept));
+        }
+      }
+      return entries.flatMap((entry) => ["-c", `http.curloptResolve=${entry}`]);
+    } catch (error) {
+      throw mapGuardError(error, url.host);
+    }
+  }
+
   async run(args: readonly string[], options: RunGitOptions): Promise<GitResult> {
     if (options.signal?.aborted) throw options.signal.reason ?? new Error("aborted");
     const remote = options.remote;
     const ticket = this.offersToken(remote) ? this.options.askpass.issueTicket({ host: remote.url.host, sourceId: remote.sourceId }) : null;
     try {
-      const argv = [...(await this.configArgs(remote)), ...args];
       const env = {
         ...this.environment(remote),
         ...(options.gitDir ? { GIT_DIR: options.gitDir } : { GIT_CEILING_DIRECTORIES: dirname(this.options.emptyDir) }),
         ...(ticket?.env ?? {}),
       };
-      return await this.spawnGit(args[0] ?? "git", argv, env, options, () => ticket?.credentialOffered() ?? false);
+      // One PAC answer per call: the route git is configured with is the route the binding checked.
+      const proxy = await this.proxyFor(remote);
+      const config = this.configArgsFor(remote, proxy);
+      const binding = remote ? await this.bindingArgs(remote, proxy, env) : [];
+      const argv = [...config, ...binding, ...args];
+      const withheld = this.withholdsCredentials(remote);
+      return await this.spawnGit(args[0] ?? "git", argv, env, options, () => ticket?.credentialOffered() ?? false, withheld);
     } finally {
       ticket?.revoke();
     }
@@ -316,6 +427,7 @@ export class GitRunner {
     env: Record<string, string>,
     options: RunGitOptions,
     credentialOffered: () => boolean,
+    credentialsWithheld: boolean,
   ): Promise<GitResult> {
     return new Promise<GitResult>((resolve, reject) => {
       // git runs its transport in a child (git-remote-https) that holds the
@@ -426,7 +538,7 @@ export class GitRunner {
             return;
           }
           if (options.remote) {
-            reject(classifyRemoteFailure(stderr, credentialOffered(), options.remote.url, `git ${command} failed: ${lastLine(stderr) || `exit ${code}`}`));
+            reject(classifyRemoteFailure(stderr, credentialOffered(), options.remote.url, `git ${command} failed: ${lastLine(stderr) || `exit ${code}`}`, credentialsWithheld));
             return;
           }
           reject(new GitCommandError(`git ${command} failed: ${lastLine(stderr) || `exit ${code}`}`, code, stderr));

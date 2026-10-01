@@ -12,6 +12,7 @@
  * renders its code's reason-less sentence.
  */
 import { scrubDiagnosticSecrets } from "../shared/dlp.js";
+import type { SourceWarningView } from "./sources/warnings.js";
 
 export const MARKETPLACE_ERROR_CODES = [
   "GIT_RUNTIME_MISSING",
@@ -19,6 +20,7 @@ export const MARKETPLACE_ERROR_CODES = [
   "GIT_RUNTIME_INSTALL_FAILED",
   "SOURCE_URL_REJECTED",
   "SOURCE_POLICY_BLOCKED",
+  "SOURCE_CONFIRMATION_REQUIRED",
   "SOURCE_NAME_RESERVED",
   "SOURCE_ID_INVALID",
   "SOURCE_ID_TAKEN",
@@ -77,15 +79,41 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
     "smoke-testing": {},
     installing: {},
   },
+  /**
+   * The address refusals of §18.3 #1–4 and #7: a `<helper>::` transport, a
+   * credential in the address, a metadata or unroutable address (entered or
+   * named by a catalog, on the address the connection would use), a
+   * catalog download to another service on this computer, and a folder in a
+   * deep link. None has a confirmation.
+   */
   SOURCE_URL_REJECTED: {
     "credentials-in-url": {},
+    "helper-transport": { scheme: "string" },
     "scheme-unsupported": { scheme: "string" },
     format: {},
+    "address-metadata": { host: "string", address: "string" },
+    "address-unroutable": { host: "string", address: "string" },
+    "catalog-this-computer": { source: "string", host: "string" },
+    "deep-link-path": {},
   },
   SOURCE_POLICY_BLOCKED: {
     "blocked-by-pattern": { target: "string", pattern: "string", policyPath: "string" },
     "not-in-allow-list": { target: "string", policyPath: "string" },
+    "https-required": { target: "string", policyPath: "string" },
+    "private-network-blocked": { target: "string", address: "string", policyPath: "string" },
     "policy-invalid": { error: "text" },
+  },
+  /**
+   * A target needs a confirmation the source does not hold (§18.2, §18.5):
+   * the reason is the warning, with the host (and the address it resolved
+   * to) or, for `internal-downloads`, the source whose catalog named the host.
+   */
+  SOURCE_CONFIRMATION_REQUIRED: {
+    unencrypted: { host: "string" },
+    "token-unencrypted": { host: "string" },
+    "internal-network": { host: "string", address: "string" },
+    "this-computer": { host: "string", address: "string" },
+    "internal-downloads": { source: "string", host: "string" },
   },
   /**
    * `token-no-access`: the host answered "repository not found" after Ave
@@ -94,6 +122,8 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
   SOURCE_AUTH_REQUIRED: {
     token: { host: "string" },
     "token-no-access": { host: "string" },
+    /** The host wants sign-in over plain http, and the source does not hold `token-unencrypted` (§18.2.2). */
+    "token-unencrypted": { host: "string" },
     ssh: { host: "string" },
   },
   SOURCE_SSH_HOST_UNKNOWN: {
@@ -148,6 +178,10 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
   SOURCE_LIST_UNREADABLE: {
     unreadable: { fsCode: "string" },
     invalid: {},
+  },
+  /** `policy-changed`: the plan was made under another managed policy (§18.6). */
+  PLAN_EXPIRED: {
+    "policy-changed": {},
   },
   PACKAGE_INCOMPATIBLE: {
     min_app_version: { name: "string", version: "string" },
@@ -230,6 +264,40 @@ export class MarketplaceError extends Error {
       throw new TypeError(`${JSON.stringify(options.detail)} is not a detail of ${code}`);
     }
     this.detail = options?.detail;
+  }
+}
+
+/** A warning an entered target (a source's own address) can need; `internal-downloads` is about other hosts a catalog names. */
+export type EnteredTargetWarningView = SourceWarningView & { warning: Exclude<SourceWarningView["warning"], "internal-downloads"> };
+
+/**
+ * SOURCE_CONFIRMATION_REQUIRED for a source's own address, with every warning
+ * it needs, so one confirmation step asks for all of them; `detail` is the
+ * first.
+ */
+export class ConfirmationRequiredError extends MarketplaceError {
+  constructor(
+    message: string,
+    readonly warnings: readonly EnteredTargetWarningView[],
+    options?: { cause?: unknown },
+  ) {
+    const first = warnings[0];
+    if (!first) throw new TypeError("a confirmation needs at least one warning");
+    super("SOURCE_CONFIRMATION_REQUIRED", message, { ...options, detail: confirmationDetail(first) });
+    this.name = "ConfirmationRequiredError";
+  }
+}
+
+/** The detail of one entered-target warning: the fields its sentence names. */
+function confirmationDetail(view: EnteredTargetWarningView): MarketplaceErrorDetail<"SOURCE_CONFIRMATION_REQUIRED"> {
+  const host = view.host ?? "";
+  switch (view.warning) {
+    case "unencrypted":
+    case "token-unencrypted":
+      return { reason: view.warning, host };
+    case "internal-network":
+    case "this-computer":
+      return { reason: view.warning, host, address: view.address ?? "" };
   }
 }
 

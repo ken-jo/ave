@@ -24,6 +24,7 @@ import type {
   InstallResultView,
   InstalledKeyView,
   PackageKind,
+  SourceView,
   UpdatePlanView,
 } from '../../../src/shared/git-marketplace.js';
 import type { McpGovernancePolicy } from '../../../src/mcp/types.js';
@@ -285,6 +286,7 @@ function marketplaceTree(version: string): Entry[] {
 }
 
 type Call =
+  | { method: 'listSources'; args: [] }
   | { method: 'listCatalog'; args: [{ installedOnly?: boolean; sourceId?: string }] }
   | { method: 'planInstall'; args: [{ sourceId: string; kind: PackageKind; name: string }] }
   | { method: 'planUpdate'; args: [{ sourceId: string; kind: PackageKind; name: string }] }
@@ -478,5 +480,66 @@ test.describe('git marketplace lifecycle', () => {
     }
     expect(await installed()).toEqual([]);
     await closeInlineSettings(app, again);
+  });
+});
+
+test.describe('git marketplace target confirmations (design §18.5)', () => {
+  // A user's build: no dev flag, so an http marketplace on this computer is asked about.
+  test.use({ seedRepositoryPlugins: false, devFlag: false });
+  test.setTimeout(120_000);
+
+  let served: string;
+  let server: GitHttpServer;
+  let repo: FixtureRepo;
+
+  test.beforeAll(async () => {
+    served = mkdtempSync(join(tmpdir(), 'ave-e2e-marketplace-http-'));
+    server = await startGitHttpServer({ root: served });
+    repo = createFixtureRepo(served, 'harbor-tools');
+    repo.commit({ 'README.md': 'A marketplace served over plain http on this computer.\n' }, 'start');
+    repo.commitEntries(marketplaceTree('1.0.0'), 'publish 1.0.0');
+  });
+
+  test.afterAll(async () => {
+    await server?.close();
+    if (repo) await removeFixtureRepo(repo);
+    if (served) rmSync(served, { recursive: true, force: true });
+  });
+
+  test('asks before adding an http marketplace on this computer, then shows its badge', async ({ app, mainWindow, t }) => {
+    const settings = await openInlineSettings(app, mainWindow, 'marketplace');
+    await settings.getByTestId('git-marketplace:add-menu').click();
+    await settings.getByRole('menuitem', { name: t('gitMarketplace.addMarketplace') }).click();
+    await settings.getByTestId('git-marketplace:add:url').fill(server.url('harbor-tools'));
+    await settings.getByTestId('git-marketplace:add:check').click();
+
+    // The confirmation comes before any request: the fixture has seen nothing.
+    const warnings = settings.getByTestId('git-marketplace:add:warnings');
+    await expect(warnings).toBeVisible({ timeout: 30_000 });
+    await expect(warnings).toContainText(t('gitMarketplace.warning.unencrypted', { host: '127.0.0.1' }));
+    await expect(warnings).toContainText(t('gitMarketplace.warning.thisComputer', { host: '127.0.0.1', address: '127.0.0.1' }));
+    expect(server.seen).toEqual([]);
+    await test.info().attach('http-source-confirmation', { body: await warnings.screenshot(), contentType: 'image/png' });
+
+    await settings.getByTestId('git-marketplace:add:warnings:continue').click();
+    const preview = settings.getByTestId('git-marketplace:add:preview');
+    await expect(preview).toContainText('Harbor Tools', { timeout: 60_000 });
+    await expect(settings.getByTestId('git-marketplace:add:badge:unencrypted')).toHaveText(t('gitMarketplace.badge.unencrypted'));
+    await expect(settings.getByTestId('git-marketplace:add:badge:this-computer')).toHaveText(t('gitMarketplace.badge.thisComputer'));
+    await settings.getByTestId('git-marketplace:add:confirm').click();
+    await expect(settings.getByTestId('git-marketplace:add')).toHaveCount(0, { timeout: 30_000 });
+
+    // The cards and the source's row carry the badge, with the risk in its tooltip.
+    const card = settings.getByTestId(`git-marketplace:card:${SOURCE_ID}:skill:harbor-review`);
+    await expect(card).toBeVisible();
+    await expect(settings.getByTestId(`git-marketplace:card:${SOURCE_ID}:harbor-review:badge:unencrypted`)).toHaveAttribute('title', t('gitMarketplace.badge.unencrypted.tooltip'));
+    await settings.getByTestId('git-marketplace:open-sources').click();
+    const badge = settings.getByTestId(`git-marketplace:source:${SOURCE_ID}:badge:unencrypted`);
+    await expect(badge).toHaveText(t('gitMarketplace.badge.unencrypted'));
+    await expect(settings.getByTestId(`git-marketplace:source:${SOURCE_ID}:badge:this-computer`)).toBeVisible();
+    await test.info().attach('http-source-badges', { body: await settings.getByTestId(`git-marketplace:source:${SOURCE_ID}`).screenshot(), contentType: 'image/png' });
+    const sources = await call<SourceView[]>(mainWindow, { method: 'listSources', args: [] });
+    expect(sources.find((item) => item.id === SOURCE_ID)?.acknowledged).toEqual(['unencrypted', 'this-computer']);
+    await closeInlineSettings(app, settings);
   });
 });

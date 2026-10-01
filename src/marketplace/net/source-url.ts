@@ -13,9 +13,10 @@
  *   - `user@host:path` (scp form) → `ssh://user@host/path`
  *   - `https://…`, `http://…`, `ssh://…`
  *
- * Rejected: every other scheme (`file:`, `git:`, `ext::`, …), credentials in
- * the URL (an ssh user name is not a credential), query and fragment, dot
- * and empty path segments, control characters and whitespace.
+ * Rejected: a `<helper>::` transport (`ext::`, `fd::`, `hg::…`; design
+ * §18.3 #1), every other scheme (`file:`, `git:`, …), credentials in the URL
+ * (an ssh user name is not a credential; #2), query and fragment, dot and
+ * empty path segments, control characters and whitespace.
  */
 import { scrubDiagnosticSecrets } from "../../shared/dlp.js";
 import { MarketplaceError, type MarketplaceErrorDetail } from "../errors.js";
@@ -196,9 +197,30 @@ export function normalizeDownloadPath(input: string, rawPath: string): string {
   return `/${normalizePathSegments(input, rawPath, false).join("/")}`;
 }
 
+/**
+ * git's `<helper>::<address>` form: `ext::` runs its text as a command, any
+ * other runs `git-remote-<helper>` from the search path (§18.3 #1).
+ */
+const HELPER_TRANSPORT = /^([A-Za-z][A-Za-z0-9+.-]*)::/u;
+
+/**
+ * Input that names a folder rather than a git address (§18.4.1 stage 1,
+ * lexically): a `file:` URL, an absolute, home, drive, UNC or relative path.
+ * A deep link never carries one (§18.3 #7).
+ */
+export function isFolderPathInput(input: string): boolean {
+  const text = input.trim();
+  return /^file:/iu.test(text)
+    || /^[/~\\]/u.test(text)
+    || /^[A-Za-z]:/u.test(text)
+    || /^\.\.?(?:[/\\]|$)/u.test(text);
+}
+
 export function normalizeSourceUrl(input: string): NormalizedSourceUrl {
   const trimmed = input.trim();
   if (!trimmed) reject(input, "empty");
+  const helper = HELPER_TRANSPORT.exec(trimmed);
+  if (helper) reject(input, `the ${helper[1]}:: transport runs a program`, { reason: "helper-transport", scheme: helper[1]!.toLowerCase() });
   if (/[\u0000- \u007f\\]/u.test(trimmed)) reject(input, "whitespace, control character or backslash", { reason: "format" });
   const parts = parseParts(input, trimmed);
   const path = `/${normalizePathSegments(input, parts.rawPath, true).join("/")}`;

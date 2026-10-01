@@ -13,9 +13,10 @@ import {
 } from "../../__tests__/fixtures/git-http-server.js";
 import { createTestGitRunner, type TestGitRunner } from "../../__tests__/fixtures/git-runner.js";
 import { descriptorText as descriptor, jsonText as text } from "../../__tests__/fixtures/package-files.js";
-import { policyLoad } from "../../__tests__/fixtures/policy.js";
+import { policySource } from "../../__tests__/fixtures/policy.js";
 import { aggregateCatalog, type CatalogRow } from "../../catalog/aggregate.js";
 import { NetworkGate } from "../../net/network-gate.js";
+import { createPinnedFetch } from "../../net/pinned-fetch.js";
 import { candidateVersion, planPackage } from "../../resolve/descriptor.js";
 import { EMPTY_MARKETPLACE_POLICY } from "../../sources/policy.js";
 import { SourceRegistry } from "../../sources/registry.js";
@@ -94,8 +95,8 @@ describe("content package store", () => {
   }
 
   async function open(repoName: string, sourceId = "acme") {
-    const policy = policyLoad({});
-    const gate = new NetworkGate({ policy, allowLoopback: true });
+    const policy = policySource({});
+    const gate = new NetworkGate({ policy, allowLoopback: true, transport: createPinnedFetch() });
     const marketplaces = mkdtempSync(join(root, "marketplaces-"));
     const registry = await SourceRegistry.open({ root: marketplaces, policy });
     await registry.add({ id: sourceId, origin: "custom", url: server.url(repoName), auth: { kind: "none" } });

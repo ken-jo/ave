@@ -3,9 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MarketplaceError } from "../../errors.js";
+import { NetworkGate } from "../../net/network-gate.js";
 import { normalizeSourceUrl } from "../../net/source-url.js";
 import { OFFICIAL_MARKETPLACE } from "../official.js";
-import { policyLoad as policy } from "../../__tests__/fixtures/policy.js";
+import { policyLoad as policy, policySource } from "../../__tests__/fixtures/policy.js";
 import type { PolicyLoad } from "../policy.js";
 import { SourceRegistry, type NewSource } from "../registry.js";
 
@@ -26,7 +27,7 @@ const CORP_POLICY = policy({
 });
 
 function open(load: PolicyLoad = policy()): Promise<SourceRegistry> {
-  return SourceRegistry.open({ root, policy: load, now: () => NOW });
+  return SourceRegistry.open({ root, policy: policySource(load), now: () => NOW });
 }
 
 const custom = (overrides: Partial<NewSource> = {}): NewSource => ({
@@ -306,5 +307,45 @@ describe("SourceRegistry state", () => {
     await loose.add(custom());
     await loose.setEnabled("acme", false);
     expect(await loose.readState("acme")).toEqual({ pinnedCommit: null, enabled: false });
+  });
+});
+
+describe("confirmations are bound to the source's address (§18.5)", () => {
+  const at = (url: string) => policy({ additional: [{ id: "team", url: normalizeSourceUrl(url), auth: { kind: "token", host: "git.example.test" } }] });
+
+  it("drops a managed source's confirmations when its policy entry moves to another address, also after a restart", async () => {
+    const moving = policySource(at("http://git.example.test:8000/old"));
+    const registry = await SourceRegistry.open({ root, policy: moving, now: () => NOW });
+    await registry.acknowledge("team", ["token-unencrypted", "internal-downloads"]);
+    expect([...(await registry.acknowledged(registry.get("team")!))]).toEqual(["token-unencrypted", "internal-downloads"]);
+
+    // The administrator points the same id at another service.
+    moving.change(at("http://git.example.test:9000/new"));
+    moving.apply((await moving.check())!);
+    const moved = registry.get("team")!;
+    expect(moved.url.url).toBe("http://git.example.test:9000/new");
+    const held = await registry.acknowledged(moved);
+    expect([...held]).toEqual([]);
+    // So the gate offers no credential over plain http to the new service.
+    const gate = new NetworkGate({ policy: moving, allowLoopback: false, transport: async () => new Response(null) });
+    expect(gate.checkRemote(moved.url, { official: false, acknowledged: held }).credentialsAllowed).toBe(false);
+
+    const reopened = await SourceRegistry.open({ root, policy: policySource(at("http://git.example.test:9000/new")), now: () => NOW });
+    expect([...(await reopened.acknowledged(reopened.get("team")!))]).toEqual([]);
+    // A confirmation given at the new address holds only what it gives.
+    await reopened.acknowledge("team", ["unencrypted"]);
+    expect([...(await reopened.acknowledged(reopened.get("team")!))]).toEqual(["unencrypted"]);
+  });
+
+  it("drops a custom source's confirmations when sources.json names another address", async () => {
+    const registry = await open();
+    await registry.add(custom({ url: "http://git.example.test:8000/a", acknowledged: ["unencrypted", "token-unencrypted"] }));
+    expect([...(await registry.acknowledged(registry.get("acme")!))]).toEqual(["unencrypted", "token-unencrypted"]);
+    const stored = JSON.parse(readFileSync(join(root, "sources.json"), "utf8")) as { sources: Array<Record<string, unknown>> };
+    expect(stored.sources[0]!.acknowledged).toEqual({ url: "http://git.example.test:8000/a", warnings: ["unencrypted", "token-unencrypted"] });
+    // Hand-edited to another port, the confirmations stay with the old address.
+    writeSources([{ ...stored.sources[0], url: "http://git.example.test:9000/a" }]);
+    const reopened = await open();
+    expect([...(await reopened.acknowledged(reopened.get("acme")!))]).toEqual([]);
   });
 });

@@ -67,7 +67,7 @@ describe("BareRepo", () => {
     second = repo.commit({ "plugins/alpha/dist/index.js": "export const v = 2;\n" }, "second");
     server = await startGitHttpServer({ root });
     t = await createTestGitRunner();
-    remote = { url: normalizeSourceUrl(server.url("market")), sourceId: "fixture", allowHttp: true, useToken: false };
+    remote = { url: normalizeSourceUrl(server.url("market")), sourceId: "fixture", allowHttp: true, useToken: false, credentialsAllowed: true, addressPolicy: () => "allow" };
   });
   afterAll(async () => {
     await t.cleanup();
@@ -255,7 +255,7 @@ describe("BareRepo", () => {
         [{ path: "plugins/evil/data/state.json", mode: "100644", content: "{}" }],
         "runtime dir",
       );
-      hostileRemote = { url: normalizeSourceUrl(server.url("hostile")), sourceId: "hostile", allowHttp: true, useToken: false };
+      hostileRemote = { url: normalizeSourceUrl(server.url("hostile")), sourceId: "hostile", allowHttp: true, useToken: false, credentialsAllowed: true, addressPolicy: () => "allow" };
       bare = await BareRepo.init(t.runner, localRepoDir());
       await bare.fetchRef(hostileRemote, undefined, "pin");
     });
