@@ -1227,10 +1227,11 @@ finish, so no write of the old source lands after its directory is gone.
 
 A folder is a marketplace (its root holds `marketplace.2.json` or the
 conventional layout of §3.3) or one package (a direct source, §8). It is
-typed where an address is — *Add marketplace…* and *Install from Git URL…* —
-and goes through `sources:preview` and `sources:add`; no channel is its own
-(§13.1). The design and its reasoning are §18.4; this section is what is
-built.
+typed where an address is — *Add marketplace…* and *Install from Git URL or
+folder…* — or chosen with *Choose folder…* (`sources:pick-folder`, main's
+folder dialog), and goes through `sources:preview` and `sources:add` like
+any address (§13.1). How it looks is §15.2, §15.4 and §15.5. The design and
+its reasoning are §18.4; this section is what is built.
 
 **Input** — `normalizeSourceInput(input, platform, home)` and the preview
 (`MarketplaceService.previewFolder`) run four stages. Stages 1–3 make no
@@ -1358,10 +1359,44 @@ version is the descriptor's, or `0.0.0+t<digest12>` from its tree digest
 where a marketplace drops the one package with a diagnostic (§2.2). `allowDirectInstall: false` refuses it at the preview, the add and
 the plan (§12).
 
-The folder picker, *Reveal*, the folder badges and the folder rows'
-provenance are slice D2 (§18.4.8): until then the sheet does not list
-`notInstalled`, and a folder row shows its path where a git row shows its
-address.
+**Show in Finder.** `sources:reveal` takes a source id, never a path, and
+answers only for a folder source (a git source or an unknown id is
+`invalid-request` or `SOURCE_ID_INVALID`). Before main asks the shell to
+show the folder, the stored path is judged exactly as a read judges it (one
+function, `openStoredFolder`): the policy, the drive's current mapping and
+the source's confirmations, then the fenced walk, the same canonical path
+and the recorded `dev`/`ino`. A drive that now maps to a share the source
+never confirmed is `SOURCE_CONFIRMATION_REQUIRED` `network-folder` with
+nothing on the share touched. A path that now leads to another folder, or a
+directory recreated at the same path, is `SOURCE_LOCAL_UNREADABLE` `moved`,
+as a refresh says. A drive whose folder classifier cannot run is
+`SOURCE_LOCAL_UNREADABLE` `classifier-unavailable` ("… Reinstall Ave.")
+with nothing shown. A folder that is gone is `not-found` rather than a
+silent no-op. The last step classifies the path again and checks the
+confirmation. Main then hands the path to the shell with no filesystem call
+in between.
+
+**Reveal boundary.** The shell takes a path string, not a handle. What it
+opens is whatever the path means when it acts. A drive remapped to a share
+after that last classification, by a concurrent change on this computer,
+can therefore be shown without `network-folder`. Like the concurrent
+replacement boundary of §18.4.5, this residual needs a concurrent local
+change. It is narrowed to the gap between one classification and one shell
+call, and it is stated, not defended.
+
+**Badges.** A folder source and its package cards carry one badge by the
+path's stage 2 class: *Local folder* (`local-folder`) or *Network folder*
+(`network-folder`). A path now on another computer that the source does not
+hold `network-folder` for carries *Network folder, not allowed*
+(`network-folder-unconfirmed`). Its tooltip says Ave does not read it until
+it is allowed, and never claims a consent the source lacks. A folder whose
+classifier cannot run carries *Location unknown* (`folder-unclassified`),
+with the reinstall sentence. Only that row and its cards are affected: the
+listing, the other rows and every recovery control still show. The class is
+computed in main and kept for a minute per path, so a listing does not query
+a drive's mapping once per row. A failure is not kept. A preview classifies
+its canonical path fresh, without that cache, and is badged only after the
+confirmations it needs.
 
 ## 8. Direct install (no marketplace manifest)
 
@@ -2024,6 +2059,8 @@ files is a device-management action).
 | `ave:marketplace:sources:refresh` | `{ id? }` | `SyncResult[]` |
 | `ave:marketplace:sources:accept-rewrite` | `{ id; commit }` | `SourceView` |
 | `ave:marketplace:sources:set-token` / `delete-token` | `{ host; token? }` | `{ ok: true }` |
+| `ave:marketplace:sources:pick-folder` | — | `{ path } \| null` (main's folder dialog; `null` when cancelled) |
+| `ave:marketplace:sources:reveal` | `id` (a folder source's; never a path) | `null`, after the shell shows the folder |
 | `ave:marketplace:catalog:list` | `{ kind?; sourceId?; query?; installedOnly? }` | `CatalogRow[]` |
 | `ave:marketplace:package:detail` | `PackageKey` | `PackageDetail` (versions, compatibility, provenance, authority, rung preview) |
 | `ave:marketplace:install:plan` | `PackageKey & { version? }` | `InstallPlan` (includes `snapshotCommit`, `versionCommit`) |
@@ -2050,10 +2087,10 @@ All channels are host-renderer only (`validateHostRendererSender`) and
 audited as today. `ave:git:runtime:install` also requires a live keyboard
 gesture: it downloads a binary the marketplace then runs. `planId` and `previewId` are single use and expire after 10
 minutes (`PLAN_EXPIRED`). Disposition of today's channels is in §16.2.
-Folder sources add no channel: a folder is typed into `sources:preview` and
-added with `sources:add` (§13.1). The folder dialogs (`sources:pick-folder`,
-`sources:reveal`, slice D2) and the automatic-update channels (slice F) are
-in §18.9.
+A folder is previewed and added through `sources:preview` and `sources:add`
+like any address; `sources:pick-folder` only fills the address in, and
+`sources:reveal` only shows a folder source (§7.7, §13.1). The
+automatic-update channels (slice F) are in §18.9.
 
 ### 13.1 As built
 
@@ -2109,7 +2146,19 @@ wins:
   are its `local-` revision. `InstallPlan` carries `notInstalled` (a folder
   plugin's top-level entries left out; empty otherwise), a `RungView` and the
   install progress may name the `folder` rung, and a package's provenance
-  carries `repository` or `folder`, the other `null`.
+  carries `repository` or `folder`, the other `null`. `folder` is `{ path;
+  readAt; contents }`: the canonical path, when the folder was last read
+  (the last successful sync, else the snapshot's `fetchedAt`), and the
+  package's tree digest (`null` for a package that has none).
+- `sources:pick-folder` (`pickFolder` in the preload) shows main's folder
+  dialog over the window that asked and answers `{ path }`, or `null` when
+  the user cancels; it reads nothing and builds no service. A dialog that
+  could not open is `unavailable`. `sources:reveal` (`revealSource`) takes a
+  source id and answers `null` once the shell was asked to show the folder;
+  a git source is `invalid-request`, and the folder is judged as a read
+  would judge it first (§7.7).
+- A folder's `badges` are `local-folder` or `network-folder` (§7.7), on the
+  preview, the `SourceView` and its catalog entries' `sourceBadges`.
 - `remove`, `set-enabled`, `accept-rewrite`, `set-token`, `delete-token` and
   `acknowledge` take positional arguments (`id`, `enabled`, `commit`, `host`,
   `token`, `warnings`), and `refresh` answers `SourceView[]`. `acknowledge`
@@ -2512,15 +2561,16 @@ code or reason adds its sentences (§18.8, §18.10).
 ## 15. UI specification
 
 The mockup shows every state below. Settings → Marketplace becomes the in-app
-store (the web store is gone). A folder source's row shows its path where a
-git row shows its address (§15.4); the folder picker, *Reveal* and the folder
-badges and provenance rows are slice D2 (§18.4.8). The Updates card (§15.7.1)
-is built and lands in the release after 0.13.0.
+store (the web store is gone). A folder source looks like a git source with
+its folder where the repository would be: its row (§15.4), its package's
+provenance and delivery (§15.2) and the add dialog (§15.5) say so. The
+folder UI and the Updates card (§15.7.1) are built and land in the release
+after v0.13.0.
 
 ### 15.1 Browse
 
 - Header: search field, **Sources** button, **Add** menu (Add marketplace…,
-  Install from Git URL…, Add MCP server…), source filter chips (All sources +
+  Install from Git URL or folder…, Add MCP server…), source filter chips (All sources +
   one per enabled source).
 - Kind tabs: Plugins, MCP, Skills, Agents, Themes, Fonts, Languages,
   Providers, Messaging — each with a count.
@@ -2555,6 +2605,23 @@ the rung that will be used; a plain-http release or archive says
 rung is "Built tree in the folder"); **Versions** (history
 with yanked and incompatible markers).
 
+A package from a folder:
+- **Provenance** rows *Folder* (folder glyph), *Path* (the canonical path),
+  *Read* (relative time, the absolute time in a tooltip) and *Contents* (the
+  first 12 characters of the tree digest, all of it in a tooltip), in place
+  of repository, path and commit.
+- **Versions** says "Only the version in the folder can be installed" and
+  offers no other version to install. A descriptor without a version shows
+  the synthesized `0.0.0+t<digest12>` (§8.2), and any change to its files is
+  an update.
+- **Delivery**'s help says the folder's built files install as they are,
+  nothing is downloaded or built, and a declared release is not used; the
+  folder rung shows no sha256 line.
+- The **review** names the folder's contents it is bound to ("Bound to the
+  folder's contents <revision 7>") instead of a commit, and lists the plan's
+  `notInstalled` entries: "Left out of the install (an extension from a
+  folder installs plugin.json, dist/ and assets/ only): …".
+
 A failed install that the source can allow (§14) offers *Allow…*. For a
 catalog that names another internal host, the button is *Allow internal
 downloads*. For sign-in held back over http, the credential risk is stated
@@ -2571,8 +2638,8 @@ failure shows every rung's reason and a copyable diagnostic.
 ### 15.4 Sources
 
 Table: source (label, URL or a folder source's path, origin badge), pinned
-commit (short SHA with tooltip — a folder's revision without its `local-`
-prefix — relative time of last sync), package count, status (`Up to date`,
+commit or contents (short SHA with tooltip, relative time of last sync),
+package count, status (`Up to date`,
 `Syncing`, `Auth required`, `History rewritten — review`, and for any other
 failed sync a chip by its code: `Unreachable` only when the host was not
 reached, else `Repository not found`, `No marketplace found`, `Branch or tag
@@ -2604,14 +2671,39 @@ managed rows show a lock.
   (`allowRisk`, `labels.ts`).
 - **Set token… on an http source** first asks for `token-unencrypted`, unless
   the source already holds it.
+- **A folder row** shows a folder glyph, "Folder" and the path, truncated in
+  the middle with the full path in a tooltip; the path wraps rather than
+  widening the table. The commit cell reads `folder · <revision 7>` (the
+  revision without its `local-` prefix), and "read <time>" while the status
+  is *Up to date* — never after a failed read. The badge is *Local folder*
+  or *Network folder*, with a tooltip saying the folder is read in place and
+  when changes are picked up. Its overflow has *Refresh*, *Show in Finder*
+  (macOS) / *Show in Explorer* (Windows) / *Show in file manager*
+  (`sources:reveal`), and *Remove*; it has no *Set token*. A folder that was
+  replaced or recreated at the same path says so ("<path> is no longer the
+  folder that was added …") rather than naming the path twice, and a
+  failed *Show in …* gives the failure's sentence on the row.
 
 ### 15.5 Add marketplace dialog
 
 Step 1: URL field (accepts `owner/repo`, and a folder path or `file:` URL,
-§7.7), optional ref, auth radio (None / Token / SSH); a folder takes no ref
-or sign-in, and the refusal says so. A folder on another computer asks
-`network-folder` in the same confirm step. *Choose folder…* and showing the
-path a folder was resolved from are slice D2. When the address needs confirmations (§7.2 step 2), a
+§7.7) with *Choose folder…* beside it, optional ref, auth radio (None /
+Token / SSH). *Choose folder…* opens main's folder dialog
+(`sources:pick-folder`), fills the field and checks it at once; cancelling
+changes nothing, and a dialog that could not open says to type the path
+instead. Input that looks like a folder hides the ref, package-folder and
+sign-in fields and says a folder is read as it is; a relative path is
+refused with a sentence that says to enter the full path or use *Choose
+folder…*. A folder needs no git: while git is missing, the git step offers
+*Choose folder…* ("Adding a folder does not need git") and a folder's
+address can still be checked. A folder on another computer asks
+`network-folder` in the same confirm step. A folder refused because it is,
+lies inside or contains a folder source already added (`SOURCE_ID_TAKEN`
+`folder-already-added`, `folder-inside-source`, `folder-contains-source`,
+§18.8) says which, and offers *Show <id>*: it closes the dialog, opens
+Sources and marks that source's row (background colour, brought into view)
+until the view changes. A taken id without such a source offers no button.
+When the address needs confirmations (§7.2 step 2), a
 confirm step comes before any traffic. It shows "Before Ave connects" and
 one question per warning, in the warning tone (*Cancel* / *Continue*).
 *Continue* previews again with them. Changing any field drops the
@@ -2631,6 +2723,14 @@ Step 2 (preview):
 - a note when an OS credential helper will answer for this host;
 - diagnostics;
 - the id field.
+
+For a folder the preview first shows *Folder <path>* (the canonical path),
+and when the walk followed a link, "You entered <input>. A link on that path
+leads here, so Ave reads this folder." It shows *Contents <revision 7>* in
+place of the commit and "Changes in this folder are picked up at start-up,
+every few hours and on Refresh." A direct folder without a version in its
+descriptor adds that the folder's contents name the version and any change
+to its files counts as an update.
 
 Confirm button: **Add marketplace**. If the input is a single package, step 2 switches
 to the direct-install preview. If git is missing, a blocking step (§15.7)
@@ -2864,6 +2964,7 @@ The tests of §18's slices are listed with each slice of §18.10.
 | Identity | reserved names, same `(kind, name)` across sources, `PACKAGE_ID_CONFLICT`, update binding, source switch keeps plugin data |
 | Direct install | each detection branch; `server.json` mapping for npm/pypi/oci/remote; `folder-direct.test.ts`: a direct folder's synthesized `0.0.0+t…` version, which changes with its files, and `allowDirectInstall: false` refusing it at the preview (a marketplace folder still previews), the add and the plan |
 | Local folders (§7.7) | `source-input.test.ts` under `path.posix` and `path.win32` rules: every accepted folder form normalizes and every refused form names its reason, and `a/b` stays the GitHub shorthand. With the recording volume of `fixtures/folder-fs.ts` (every call logged): `folder-consent.test.ts` — a UNC path answers `confirm` with no call at all and a share-mapped drive with only `queryDosDevice`, the same inputs under `allowLocalSources: false` are blocked with none, an acknowledged folder is read with no call outside the reader's own (no `realpath`), `/tmp → private/tmp` and a root that is itself a link resolve, an ancestor link to `\\attacker\share` is `link-to-network` with no call on it, a block found only on the canonical path ends the preview before a file is opened, a Windows 8.3 short name is spelled by its long name, a relative link onto an automount path is `link-to-network` (confirmed or not) with no call under it, another spelling of an automount path, components after a local link that reach one, and a canonical path holding the automount roots each answer `confirm` before it is touched, a drive with no mapping warns and a classifier that cannot run is `classifier-unavailable`; `git-marketplace.test.ts` (IPC) carries `classifier-unavailable` and the `folder-*` reasons of `SOURCE_ID_TAKEN` across the envelope and renders them in English and Korean; `folder-real-fs.test.ts` on the machine's own filesystem (run on macOS and on Windows) — a network path answered before any call, a link inside (a junction on Windows) read and one leaving the folder refused unread, a directory reached twice a loop, the volume's own case rule, a link into `.git` refused with nothing beneath it touched, and a hard link read as a regular file; `folder-tree.test.ts` — an inside link reads as a file, an outside link and a link chain or junction to a share stop at their text with no call on the target, a mapped network drive by its mapping, a loop, an `fstat` mismatch, an ancestor swap kept in place (`changed-during-read`, no outside byte in the package) and the stated residual of one undone before the recheck, the skip list, a link into a skipped entry (also as `.GIT` or an 8.3 alias) as `link-to-skipped` and an index path naming one as absent, an automount path beneath an unconfirmed root stopped before it is touched, a relative link from a confirmed share to another server as `link-to-network`, NFD/NFC and collisions, special files, a plugin's left-out entries; `folder-identity.test.ts` — a case-sensitive volume keeps two spellings as two sources, an `allow` `path:` admits only its spelling and a `block` every spelling, a case-insensitive volume and an aliased directory are one source by on-disk spelling and `dev`/`ino`, nesting is refused, by path and through an alias in both orders; `folder-sync.test.ts` — editing a `SKILL.md` changes the revision, no git command and no download run, only the folder's version is offered, a background `permission` failure keeps its reason through a reload and renders, a stored path now leading elsewhere is `moved` without reading the target, a broken classifier is `classifier-unavailable` with nothing read and renders as reinstall advice after a reload; `folder-plan.test.ts` — a plugin file and a `SKILL.md` edited between plan and execute install the planned bytes, a declared release is never fetched, the executable bit survives, a `process` entry is refused with `process-entry-requires-pinned-artifact`, a folder with no `plugin.json` is `folder-has-no-build`, and the capture is deleted; `plugin-ladder.test.ts` — a git tree with `src/` still fails the tree rung; `policy.test.ts` — `allowLocalSources`, an `allow` list without `path:`, `path:` prefixes and Windows spellings, `path:` and git patterns kept apart, and `additional[].path` with its refusals; `registry.test.ts` — a folder entry and its identity (with its ancestors) round-trip, confirmations bound to the path and dropped for any other spelling of it, the pin paired with the transport, a managed folder holding `network-folder`; `windows-path-kind-launcher.test.ts` (exit 1 is "no mapping"; a missing, unstartable, timed-out or off-protocol helper rejects with its cause and what to do) and, on Windows, `scripts/test-windows-path-kind.mjs` (CI step *Verify Windows folder classification*): `C:` maps to a volume, a `subst` drive (and a `subst` of one) to its target, and an unused or removed drive fails closed |
+| Folder UI (§7.7, §15) | `folder-view.test.ts` with the same volumes — *Local folder* on a folder's preview, row and package cards and *Network folder* on an acknowledged share, the provenance `{ path, readAt, contents }`, `revealFolder` answering a folder's path, `null` for git and `SOURCE_ID_INVALID` for an unknown id, a deleted folder `not-found`, a path relinked elsewhere `moved`, and a drive remapped to a share refused with only `queryDosDevice` called; a classifier that cannot run marking only its row and cards `folder-unclassified` (and asked again once it runs), a share the source never allowed `network-folder-unconfirmed`, a directory recreated at the path `moved` on reveal as on refresh, and a remap during reveal's walk refused by its last classification; `git-marketplace.test.ts` (IPC) — `pick-folder` `null` on cancel and `{ path }` on choose without building the service, both channels refused to a plugin frame, `reveal` refusing a git source and an unknown id before the shell is asked, and a drive whose classifier cannot run with `classifier-unavailable` and the reinstall sentence, nothing shown; `SourcesAndAdd.test.tsx` — the folder row (path, `folder · rev`, read time, *Show in …* per platform, no *Set token*), the moved and replaced sentences, *Choose folder…* with `resolvedFrom`, a cancelled and a failed picker, the folder hiding ref and sign-in, the `network-folder` question, the relative-path sentence, a folder added while git is missing, `classifier-unavailable` on the preview, the row status and a failed *Show in …*, the three overlap sentences and `repository-already-added` each with *Show <id>* and none for a bare taken id, the marked row brought into view; `GitMarketplaceTab.test.tsx` — a folder package's badge, provenance, versions note, delivery help, `notInstalled` and the folder-bound review, *Show <id>* closing the dialog and marking the row on Sources until the view changes; E2E (`git-marketplace-lifecycle.spec.ts`, folder dialog and shell stubbed in main) — add a folder marketplace through *Choose folder…*, install a skill, edit it, *Refresh*, *Show in Finder* gets the source's path, and the catalog offers the update |
 | Service | `former-service.json` parsing, `movedTo` with and without `movedFrom`, reset on build-constant change, policy override, announcements parity, label fallback |
 | E2E | packaged dev build (loopback allowed by the dev flag) adds a local-HTTP git marketplace, installs one package of each kind, updates, removes the source; without the dev flag, the same kind of source asks for `unencrypted` and `this-computer` before the fixture server sees any request, and the preview, cards and Sources row show the badges |
 
@@ -2874,16 +2975,17 @@ The tests of §18's slices are listed with each slice of §18.10.
 > later slices after it. Where this section says 0.13.0, read the release that
 > carries the slice.
 > - Slice B (messages), slice C (target classes, warnings and connection
->   binding), slice E (discovery and status) and slice D1 (folder sources:
->   engine and consent) are built. §7, §12–§15 and §17 describe them as
+>   binding), slice E (discovery and status), slice D1 (folder sources:
+>   engine and consent) and slice D2 (folder sources: dialogs and
+>   presentation) are built. §7, §12–§15 and §17 describe them as
 >   built: §7.4 for the classes, outcomes and binding of §18.2, §18.3 #1–4
 >   and #7, and §18.5, §12 for `requireHttps`, `blockPrivateNetworks` and the
 >   policy refresh of §18.6, §7.3 and §15.7.1 for the update scheduler,
 >   `updates.json` and the Updates card of §18.7.1 and §18.9, and §7.7, §8,
->   §12, §13.1, §14 and §15 for the folders of §18.3 #5–6, §18.4 and the
->   folder keys of §18.6.
-> - The rest (the folder dialogs and presentation, automatic apply and what
->   its settings decide, slices D2 and F) is not built. Where this section and an earlier one
+>   §12, §13, §13.1, §14 and §15 for the folders of §18.3 #5–6, §18.4, the
+>   folder keys of §18.6 and the folder channels of §18.9.
+> - The rest (automatic apply and what its settings decide, slice F) is not
+>   built. Where this section and an earlier one
 >   disagree, the earlier section describes the build and this section the
 >   target.
 > - Each slice of §18.10 rewrites the owning section in the same change and
@@ -3191,9 +3293,9 @@ instead:
 >   `changed-during-read`.
 > - The folder receipt is written without `consent` (§18.4.2); slice F adds
 >   it with §18.7.3's baseline.
-> - The folder picker, *Reveal*, the *Local folder* and *Network folder*
->   badges, the folder rows and provenance of §18.4.8, and showing the plan's
->   `notInstalled` are slice D2.
+> - §18.4.8 is built as §15.2, §15.4 and §15.5 describe it. *Show in
+>   Finder* re-checks the stored path as a read would before the shell is
+>   asked (§7.7), and the review lists the plan's `notInstalled`.
 
 A folder is a marketplace source (its root holds `marketplace.2.json` or the
 conventional layout of §3.3) or a direct package (§8).
@@ -3450,6 +3552,8 @@ recording fake.
   Windows, where Node's open follows reparse points, the same window can make
   Ave contact a UNC server. This residual needs a concurrent local writer
   in a folder the user chose as a source, and it is stated, not defended.
+  *Show in Finder* has the same kind of boundary between its last
+  classification and the shell call (§7.7, reveal boundary).
 - Skipped silently at any depth, never read, digested or installed: `.git/`,
   `.DS_Store`, `._*`, `Thumbs.db`, `desktop.ini`, compared ignoring case. The
   rule holds for every path the reader follows, not only for names it
@@ -3557,9 +3661,10 @@ states that a local directory source is refused like `installLocal`
 
 ### 18.5 Add flow, confirmations and badges
 
-> Built in slice C for git addresses (§7.2, §15.4, §15.5), and in slice D1
-> for the folder steps and `network-folder` (§7.7). The *Network folder* and
-> *Local folder* badges belong to slice D2, `unencrypted-updates` to slice F.
+> Built in slice C for git addresses (§7.2, §15.4, §15.5), in slice D1
+> for the folder steps and `network-folder` (§7.7), and in slice D2 for
+> *Choose folder…* and the *Network folder* and *Local folder* badges (§7.7,
+> §15.4, §15.5). `unencrypted-updates` belongs to slice F.
 
 1. The user enters an address or chooses a folder.
 2. `sources:preview` parses it (§7.1, §18.4.1 stages 1–2) and applies the
@@ -4394,8 +4499,8 @@ the slice that adds the code or reason.
 | · `holds-credential` | E | "This id looks like a password or token, so it cannot be used." | "Choose another id." | "이 ID는 비밀번호나 토큰처럼 보여 쓸 수 없습니다." |
 | · `stored-id-holds-credential` | E | "This source's id looks like a password or token, so Ave does not sync it or offer its packages." | "Remove the source and add it again with another id." (the row offers only Remove) | "이 소스의 ID가 비밀번호나 토큰처럼 보여 Ave가 동기화하거나 패키지를 제공하지 않습니다." |
 | `SOURCE_ID_TAKEN` | E | "<id> is taken" | "Choose another id." | "다른 소스가 이미 쓰는 ID입니다." |
-| · `repository-already-added` | E | "<url> is already added as <id>" | "Use <id>, or remove it" (before adding the repository again); *Show <id>* (slice D2) | "<url>은(는) 이미 <id>(으)로 추가되어 있습니다." |
-| · `folder-already-added`, `folder-inside-source`, `folder-contains-source` | E | "<path> is already added as <id>" / "<path> lies inside <existing path>, which is already added as <id>" / "<path> contains <existing path>, which is already added as <id>" | "Use <id>, or remove it" (and add the folder you want, or one that does not contain it); *Show <id>* (slice D2) | "이미 <id>(으)로 추가된 폴더와 겹칩니다. <id>을(를) 쓰거나 지우세요." |
+| · `repository-already-added` | E | "<url> is already added as <id>" | "Use <id>, or remove it" (before adding the repository again); *Show <id>* | "<url>은(는) 이미 <id>(으)로 추가되어 있습니다." |
+| · `folder-already-added`, `folder-inside-source`, `folder-contains-source` | E | "<path> is already added as <id>" / "<path> lies inside <existing path>, which is already added as <id>" / "<path> contains <existing path>, which is already added as <id>" | "Use <id>, or remove it" (and add the folder you want, or one that does not contain it); *Show <id>* | "이미 <id>(으)로 추가된 폴더와 겹칩니다. <id>을(를) 쓰거나 지우세요." |
 | `GIT_RUNTIME_MISSING`, `GIT_RUNTIME_TOO_OLD` | E | today's sentences | *Install Git* | today's |
 | `GIT_RUNTIME_INSTALL_FAILED` · `<phase>` | E | "Installing git failed while <phase> (<reason>)." | *Retry*; "If your network blocks GitHub downloads, install git yourself and choose *System*." | "git 설치가 <단계>에서 실패했습니다." |
 | `PLAN_EXPIRED` · `expired`, `replaced`, `folder-changed`, `policy-changed`, `package-changed` | E | today's; for a folder "The folder changed while you were reviewing."; for policy "Your organization's policy changed while you were reviewing."; for `package-changed` (an approval of §18.7.5 whose reviewed generation or approval digest no longer matches) "This package changed since you reviewed it. Review it again." | the review reopens with a fresh plan, or with the installed generation for `package-changed` | today's; "검토하는 사이 조직 정책이 바뀌었습니다."; "검토한 뒤 패키지가 바뀌었습니다. 다시 검토하세요." |
