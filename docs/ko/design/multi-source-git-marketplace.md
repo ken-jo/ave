@@ -2049,7 +2049,10 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
 문장으로 오류 톤을 씁니다. 모든 메시지는 `scrubDiagnosticSecrets`(`src/shared/dlp.ts`:
 URL userinfo, authorization·토큰 값, 자격 증명 도우미 줄)로 지워집니다. main이 봉투에
 넣기 전에, 정규화기가 거부한 주소를 되풀이하기 전에, 그리고 *세부 정보 복사*가 복사하기
-전에 `MarketplaceProblem`이 다시 지웁니다.
+전에 `MarketplaceProblem`이 다시 지웁니다. detail도 경계를 넘거나 저장될 때마다 필드별로
+같은 방식으로 지웁니다. 진단 텍스트와, detail이 담은 모든 소스 주소(`url`, 정책 차단의
+`target`, 없는 ref의 `repository`)가 대상입니다. 정규화는 ssh 계정 이름을 남기고, 붙여넣은
+토큰이 그 자리에 들어갈 수 있기 때문입니다. 경로, 호스트, id 등 코드가 만든 식별자는 그대로 둡니다.
 
 백그라운드 동기화의 실패는 `sources:list`로 소스 화면에 닿습니다. `SyncResult`가
 detail을 담고, 동기화기가 그것을 `state.json`의 `lastSync.detail`에 저장하고, 상태

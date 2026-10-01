@@ -57,9 +57,11 @@ export type MarketplaceErrorCode = (typeof MARKETPLACE_ERROR_CODES)[number];
 /**
  * A detail field's type. `string` is a structured identifier the code built
  * (a host, a ref, a rule, a path); `text` is diagnostic text from elsewhere
- * (a parser's or a proxy configuration's own words), which may quote a
- * secret and is scrubbed wherever a detail leaves main or is stored
- * ({@link scrubMarketplaceErrorDetail}).
+ * (a parser's or a proxy configuration's own words), or a source address as
+ * entered, whose ssh account name normalization keeps and a pasted token can
+ * fill. Either may quote a secret, so `text` is scrubbed wherever a detail
+ * leaves main or is stored ({@link scrubMarketplaceErrorDetail}), and again
+ * where the renderer puts it in a sentence.
  */
 type DetailFieldKind = "string" | "text" | "number" | "string[]";
 
@@ -112,14 +114,14 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
     "folder-options": {},
   },
   SOURCE_POLICY_BLOCKED: {
-    "blocked-by-pattern": { target: "string", pattern: "string", policyPath: "string" },
-    "not-in-allow-list": { target: "string", policyPath: "string" },
-    "https-required": { target: "string", policyPath: "string" },
-    "private-network-blocked": { target: "string", address: "string", policyPath: "string" },
+    "blocked-by-pattern": { target: "text", pattern: "string", policyPath: "string" },
+    "not-in-allow-list": { target: "text", policyPath: "string" },
+    "https-required": { target: "text", policyPath: "string" },
+    "private-network-blocked": { target: "text", address: "string", policyPath: "string" },
     /** `allowLocalSources: false`: no folder is a source or a direct install (§18.6). */
-    "local-sources-blocked": { target: "string", policyPath: "string" },
+    "local-sources-blocked": { target: "text", policyPath: "string" },
     /** `allowDirectInstall: false`: packages install from marketplaces only (§12). */
-    "direct-install-blocked": { target: "string", policyPath: "string" },
+    "direct-install-blocked": { target: "text", policyPath: "string" },
     "policy-invalid": { error: "text" },
   },
   /**
@@ -152,7 +154,7 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
     changed: { host: "string", port: "number" },
   },
   SOURCE_REF_NOT_FOUND: {
-    missing: { ref: "string", repository: "string", available: "string[]" },
+    missing: { ref: "string", repository: "text", available: "string[]" },
   },
   /**
    * `not-found` and `not-found-ssh`: the host answered "repository not
@@ -217,7 +219,7 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
    * id alone has no detail: choosing another id resolves it.
    */
   SOURCE_ID_TAKEN: {
-    "repository-already-added": { url: "string", existingId: "string" },
+    "repository-already-added": { url: "text", existingId: "string" },
     "folder-already-added": { path: "string", existingId: "string" },
     "folder-inside-source": { path: "string", existingId: "string", existingPath: "string" },
     "folder-contains-source": { path: "string", existingId: "string", existingPath: "string" },

@@ -2239,7 +2239,12 @@ error tone with its own sentence. Every message is scrubbed
 (`scrubDiagnosticSecrets`, `src/shared/dlp.ts`: URL userinfo, authorization
 and token values, credential-helper lines) by main before it enters the
 envelope, by the normalizer before it echoes a refused address, and again by
-`MarketplaceProblem` before *Copy details* copies it.
+`MarketplaceProblem` before *Copy details* copies it. A detail is scrubbed the
+same way wherever it crosses or is stored, field by field: its diagnostic
+text, and every source address it names (`url`, a policy block's `target`, a
+missing ref's `repository`), since normalization keeps an ssh account name
+and a pasted token fits there. Paths, hosts, ids and the other identifiers
+the code built are kept as they are.
 
 A background sync's failure reaches the Sources view through `sources:list`:
 `SyncResult` carries the detail, the syncer stores it in

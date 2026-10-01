@@ -406,13 +406,13 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
       const detail = parseMarketplaceErrorDetail(code, failure.detail);
       if (!detail) return t("gitMarketplace.policy.blocked");
       switch (detail.reason) {
-        case "blocked-by-pattern": return t("gitMarketplace.policy.blockedByPattern", { target: detail.target, pattern: detail.pattern, policyPath: detail.policyPath });
-        case "not-in-allow-list": return t("gitMarketplace.policy.notInAllowList", { target: detail.target, policyPath: detail.policyPath });
-        case "https-required": return t("gitMarketplace.policy.httpsRequired", { target: detail.target, policyPath: detail.policyPath });
+        case "blocked-by-pattern": return t("gitMarketplace.policy.blockedByPattern", { target: scrubDiagnosticSecrets(detail.target), pattern: detail.pattern, policyPath: detail.policyPath });
+        case "not-in-allow-list": return t("gitMarketplace.policy.notInAllowList", { target: scrubDiagnosticSecrets(detail.target), policyPath: detail.policyPath });
+        case "https-required": return t("gitMarketplace.policy.httpsRequired", { target: scrubDiagnosticSecrets(detail.target), policyPath: detail.policyPath });
         case "private-network-blocked":
-          return t("gitMarketplace.policy.privateNetworkBlocked", { target: detail.target, address: detail.address, policyPath: detail.policyPath });
-        case "local-sources-blocked": return t("gitMarketplace.policy.localSourcesBlocked", { target: detail.target, policyPath: detail.policyPath });
-        case "direct-install-blocked": return t("gitMarketplace.policy.directInstallBlocked", { target: detail.target, policyPath: detail.policyPath });
+          return t("gitMarketplace.policy.privateNetworkBlocked", { target: scrubDiagnosticSecrets(detail.target), address: detail.address, policyPath: detail.policyPath });
+        case "local-sources-blocked": return t("gitMarketplace.policy.localSourcesBlocked", { target: scrubDiagnosticSecrets(detail.target), policyPath: detail.policyPath });
+        case "direct-install-blocked": return t("gitMarketplace.policy.directInstallBlocked", { target: scrubDiagnosticSecrets(detail.target), policyPath: detail.policyPath });
         case "policy-invalid": return t("gitMarketplace.policy.policyInvalid", { error: scrubDiagnosticSecrets(detail.error) });
       }
       return unhandled(detail);
@@ -439,7 +439,7 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
       const detail = parseMarketplaceErrorDetail(code, failure.detail);
       if (!detail) return t("gitMarketplace.error.idTaken");
       switch (detail.reason) {
-        case "repository-already-added": return t("gitMarketplace.error.idTaken.repositoryAlreadyAdded", { url: detail.url, id: detail.existingId });
+        case "repository-already-added": return t("gitMarketplace.error.idTaken.repositoryAlreadyAdded", { url: scrubDiagnosticSecrets(detail.url), id: detail.existingId });
         case "folder-already-added": return t("gitMarketplace.error.idTaken.folderAlreadyAdded", { path: detail.path, id: detail.existingId });
         case "folder-inside-source":
           return t("gitMarketplace.error.idTaken.folderInsideSource", { path: detail.path, id: detail.existingId, existingPath: detail.existingPath });
@@ -596,7 +596,7 @@ function refNotFoundText(t: Translate, detail: MarketplaceErrorDetail<"SOURCE_RE
   }
   switch (detail.reason) {
     case "missing": {
-      const vars = { ref: detail.ref, repository: detail.repository, available: detail.available.length > 0 ? detail.available.join(", ") : "—" };
+      const vars = { ref: detail.ref, repository: scrubDiagnosticSecrets(detail.repository), available: detail.available.length > 0 ? detail.available.join(", ") : "—" };
       switch (audience) {
         case "entry": return t("gitMarketplace.error.refNotFound.missing", vars);
         case "custom": return t("gitMarketplace.error.refNotFound.missing.custom", vars);

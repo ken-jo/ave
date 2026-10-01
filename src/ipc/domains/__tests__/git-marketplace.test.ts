@@ -20,6 +20,7 @@ import { latestBootstrapStatus } from "../../../boot/bootstrap-status.js";
 import { revocationRegistry, type RevocationRule } from "../../../plugins/revocation/revocation-registry.js";
 import { FakeVolume, TEST_FOLDER_LIMITS } from "../../../marketplace/__tests__/fixtures/folder-fs.js";
 import { folderService } from "../../../marketplace/__tests__/fixtures/folder-service.js";
+import { policyLoad, policySource } from "../../../marketplace/__tests__/fixtures/policy.js";
 import { translate } from "../../../i18n/translate.js";
 import { ENTRY_SUBJECT, failureText } from "../../../ui/renderer/tabs/git-marketplace/labels.js";
 
@@ -527,6 +528,37 @@ describe("git marketplace IPC boundary", () => {
           en: "ssh://git@github.com/Acme/Market is already added as acme. Use acme, or remove it before adding this repository again.",
           ko: "ssh://git@github.com/Acme/Market은(는) 이미 acme(으)로 추가되어 있습니다. acme을(를) 쓰거나, 지운 뒤 이 저장소를 다시 추가하세요.",
         });
+      } finally {
+        harness.service.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("masks a token pasted as the ssh account of an address a refusal names, in the envelope and both sentences", async () => {
+      // Built here, never written out whole: normalization keeps an ssh account name, and this one is token-shaped.
+      const token = `ghp_${"a".repeat(36)}`;
+      const pasted = `ssh://${token}@github.com/acme/market`;
+      const root = mkdtempSync(join(tmpdir(), "ave-ipc-repository-"));
+      const harness = await folderService({ root, folders: { fs: new FakeVolume("linux"), platform: "linux", limits: TEST_FOLDER_LIMITS } });
+      const gate = new NetworkGate({ policy: policySource(policyLoad({ allowDirectInstall: false })), allowLoopback: false, transport: createPinnedFetch() });
+      try {
+        await harness.registry.add({ id: "acme", origin: "custom", url: "https://github.com/acme/market", auth: { kind: "none" } });
+        await setup({
+          addSource: vi.fn(() => harness.registry.add({ id: "acme-ssh", origin: "custom", url: pasted, auth: { kind: "ssh" } })),
+          previewSource: vi.fn(async () => gate.checkDirectInstall(normalizeSourceUrl(pasted).url)),
+        });
+        const duplicate = await invokeFileIpcHandler(handlers, channels.sourcesAdd, { previewId: "p", id: "acme-ssh" });
+        expect(duplicate).toMatchObject({ ok: false, code: "SOURCE_ID_TAKEN", detail: { reason: "repository-already-added", url: "ssh://[REDACTED:TOKEN]@github.com/acme/market", existingId: "acme" } });
+        const direct = await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: pasted, auth: "ssh" });
+        expect(direct).toMatchObject({ ok: false, code: "SOURCE_POLICY_BLOCKED", detail: { reason: "direct-install-blocked", target: "ssh://[REDACTED:TOKEN]@github.com/acme/market" } });
+        for (const answer of [duplicate, direct]) {
+          expect(JSON.stringify(answer)).not.toContain(token);
+          const { en, ko } = sentences(answer);
+          // The renderer scrubs a text field again before a sentence, so the marker may name the userinfo it now sees.
+          expect(en).toMatch(/ssh:\/\/\[REDACTED:[A-Z]+\]@github\.com\/acme\/market/u);
+          expect(ko).toMatch(/ssh:\/\/\[REDACTED:[A-Z]+\]@github\.com\/acme\/market/u);
+          expect(`${en}\n${ko}`).not.toContain(token);
+        }
       } finally {
         harness.service.close();
         rmSync(root, { recursive: true, force: true });
