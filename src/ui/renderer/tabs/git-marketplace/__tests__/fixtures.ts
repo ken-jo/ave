@@ -23,11 +23,14 @@ import type { GitRuntimeApi, GitRuntimeStatus } from "../../../../../shared/git-
 export const COMMIT_A = "a".repeat(40);
 export const COMMIT_B = "b".repeat(40);
 
-export function source(overrides: Partial<SourceView> & Pick<SourceView, "id">): SourceView {
+/** A git source row; folder rows are slice D2's. */
+export function source(overrides: Partial<Extract<SourceView, { transport: "git" }>> & Pick<SourceView, "id">): SourceView {
   return {
     origin: "custom",
     label: overrides.id,
+    transport: "git",
     url: `https://github.com/example/${overrides.id}.git`,
+    path: null,
     ref: null,
     subdir: null,
     mirrors: 0,
@@ -77,6 +80,7 @@ export function detail(item: CatalogEntryView, overrides: Partial<PackageDetailV
     provenance: {
       sourceLabel: item.sourceLabel ?? "—",
       repository: "https://github.com/example/market.git",
+      folder: null,
       path: `plugins/${item.key.name}`,
       snapshotCommit: COMMIT_A,
       versionCommit: COMMIT_A,
@@ -109,6 +113,7 @@ export function installPlan(item: CatalogEntryView, overrides: Partial<InstallPl
     components: null,
     hookConfinement: "user-permissions",
     rungs: [],
+    notInstalled: [],
     mcp: null,
     ...overrides,
   };

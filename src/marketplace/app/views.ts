@@ -158,6 +158,14 @@ export function rungViews(artifact: PluginArtifactPins, packagePath: string, tre
   ];
 }
 
+/**
+ * A folder source's one rung (§18.4.2): the built tree in the folder,
+ * read in place; nothing is pinned or downloaded.
+ */
+export function folderRungView(packagePath: string): RungView {
+  return { rung: "folder", declared: true, pinned: false, detail: packagePath === "" ? null : packagePath, unencrypted: false };
+}
+
 export function rungOutcomeViews(outcomes: readonly RungOutcome[]): RungOutcomeView[] {
   return outcomes.map((item) => ({ ...item }));
 }

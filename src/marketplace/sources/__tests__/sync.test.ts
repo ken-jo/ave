@@ -25,6 +25,7 @@ import { SourceSyncer, shouldSyncSource, type SyncResult } from "../sync.js";
 import { sourceStatus } from "../../app/views.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { gitFixtureEnv } from "../../../__tests__/support/git-fixture-env.mjs";
+import { nodeFolders } from "../../__tests__/fixtures/folder-fs.js";
 
 const AT = "2026-09-23T00:00:00.000Z";
 const OTHER_COMMIT = "c".repeat(40);
@@ -105,6 +106,7 @@ describe("SourceSyncer", () => {
     const registry = await SourceRegistry.open({ root, policy, ...(options.official ? { official: options.official } : {}) });
     const changed: string[] = [];
     const syncer = new SourceSyncer({
+      folders: nodeFolders(),
       registry,
       gate: new NetworkGate({ policy, allowLoopback: true, transport: createPinnedFetch() }),
       runner: git.runner,
@@ -510,7 +512,7 @@ describe("SourceSyncer", () => {
     const base = repo.commit({ "marketplace.2.json": index("corp", []) }, "base");
     const pinned = repo.commit({ "README.md": "v2\n" }, "second");
     const policy = policyWith({
-      additional: [{ id: "corp", url: normalizeSourceUrl(server.url(name)), auth: { kind: "none" } }],
+      additional: [{ transport: "git", id: "corp", url: normalizeSourceUrl(server.url(name)), auth: { kind: "none" } }],
     });
     const { registry, syncer } = await setup({ policy });
     expect(await syncer.sync("corp")).toMatchObject({ status: "ok", pinnedCommit: pinned });
@@ -641,6 +643,7 @@ describe("SourceSyncer", () => {
     await registry.add({ id: "acme", origin: "custom", url: "https://1.1.1.1/acme/market", auth: { kind: "none" } });
     const broken: PolicyLoad = { ok: false, error: '/fixture/ave-policy.json: duplicate key "https://alice:detail-canary@example.com/x"', path: FIXTURE_POLICY_PATH };
     const syncer = new SourceSyncer({
+      folders: nodeFolders(),
       registry,
       gate: new NetworkGate({ policy: policySource(broken), allowLoopback: true, transport: createPinnedFetch() }),
       runner: git.runner,

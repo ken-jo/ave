@@ -12,7 +12,7 @@
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
-import { rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { isAsrtSandboxActive } from "../../permissions/asrt-sandbox.js";
@@ -57,14 +57,15 @@ import { stageContentPackage } from "../content/store.js";
 import { componentDelta } from "./component-delta.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { ConfirmationRequiredError, MarketplaceError, isMarketplaceError, type EnteredTargetWarningView, type MarketplaceErrorDetail } from "../errors.js";
-import { BareRepo } from "../git/repo.js";
+import { BareRepo, type ExportLimits } from "../git/repo.js";
 import type { GitCommands, GitRemote } from "../git/run-git.js";
 import type { CatalogSource, NetworkGate } from "../net/network-gate.js";
-import { normalizeSourceHost, normalizeSourceUrl, type NormalizedSourceUrl } from "../net/source-url.js";
-import { candidateVersion, planPackage, type PackagePlan } from "../resolve/descriptor.js";
+import { classifyFolder, normalizeSourceInput, resolveFolderRoot } from "../net/source-input.js";
+import { normalizeSourceHost, type NormalizedSourceUrl } from "../net/source-url.js";
+import { candidateVersion, planPackage, type PackagePlan, type RepositoryAccess } from "../resolve/descriptor.js";
 import { classifyInstall, updateFor, type InstalledPackage } from "../resolve/identity.js";
 import { assertMcpRuntimePinned, resolveMcpPackage, runtimeFromServerJson, type ResolvedMcpServer } from "../resolve/mcp.js";
-import { planPluginVersion, runPluginLadder, type LadderDeps, type PluginInstallPlan } from "../resolve/plugin-ladder.js";
+import { planPluginVersion, runFolderRung, runPluginLadder, type LadderDeps, type PluginInstallPlan } from "../resolve/plugin-ladder.js";
 import type { AppliedDefaults } from "../boot-installs/applied.js";
 import { assertNotRequiredByPolicy, bootInstallNoticeFrom, lockedByPolicy, requiredByPolicy, runBootInstalls, type BootInstallReport } from "../boot-installs/run.js";
 import type { LegacyContentKind, LegacyContentReport } from "../migration/legacy-content.js";
@@ -73,8 +74,11 @@ import { runLegacyMigration } from "../migration/run.js";
 import { readDirectPackage } from "../sources/direct-package.js";
 import { isReservedSourceId, OFFICIAL_MARKETPLACE, SOURCE_ID_RE, type SourceAuth } from "../sources/official.js";
 import { EMPTY_MARKETPLACE_POLICY, type MarketplacePolicy, type PackageKey, type PolicySource, type PolicyUpdate } from "../sources/policy.js";
-import { confirmationsFor, type ResolvedSource, type SourceOrigin, type SourceRegistry, type SourceState } from "../sources/registry.js";
+import type { FolderFs } from "../sources/folder-fs.js";
+import { FolderTree } from "../sources/folder-tree.js";
+import { confirmationsFor, sourceIdentity, type GitSource, type ResolvedSource, type SourceOrigin, type SourceRegistry, type SourceState } from "../sources/registry.js";
 import { SnapshotBuilder, type SourceSnapshot } from "../sources/snapshot.js";
+import { gitAccess, GitTree, rootNameOf, StagedTree, stagedAccess } from "../sources/source-tree.js";
 import { shouldSyncSource, type SourceSyncer, type SyncResult } from "../sources/sync.js";
 import type { SyncDiscovery } from "../updates/history.js";
 import type { PluginConfigRetention } from "../../plugins/retired-config.js";
@@ -91,6 +95,7 @@ import {
   installActionView,
   rowState,
   rungOutcomeViews,
+  folderRungView,
   rungViews,
   runsCode,
   sourceStatus,
@@ -100,8 +105,22 @@ import {
 
 type ContentPlan = PackagePlan & { kind: Exclude<PackageKind, "plugin" | "mcp"> };
 
-/** A plan, and the digest of the policy it was made under (§18.6): executed under another, it expires. */
-type HeldPlan = { policyDigest: string } & (
+/**
+ * A folder package the plan captured (§18.4.2): its staging directory under
+ * `workRoot`, read at execution through `access`, and what the folder holds
+ * that is not installed. Removed when the plan is used or dropped.
+ */
+interface CapturedFolder {
+  dir: string;
+  access: RepositoryAccess;
+  notInstalled: string[];
+}
+
+/**
+ * A plan, and the digest of the policy it was made under (§18.6): executed
+ * under another, it expires. `folder` is set for a plan from a folder source.
+ */
+type HeldPlan = { policyDigest: string; folder: CapturedFolder | null } & (
   | { kind: "plugin"; plan: PluginInstallPlan; switchSource: boolean }
   | { kind: "content"; plan: ContentPlan; switchSource: boolean; adopt: boolean }
   | { kind: "mcp"; resolved: ResolvedMcpServer; switchSource: boolean }
@@ -127,19 +146,26 @@ type PendingBinding = Omit<BoundInstall, "sourceId"> & { sourceId: string | null
 /** An installed version its own source revokes. */
 type RevokedInstall = { record: InstalledRecord & { sourceId: string }; revocation: RevocationFeed["rules"][number] };
 
-interface HeldPreview {
+type HeldPreview = {
   sourceId: string;
-  dir: string;
-  url: NormalizedSourceUrl;
-  ref: string | null;
-  subdir: string | null;
-  auth: SourceAuth;
-  token: string | null;
   origin: "custom" | "direct";
   suggestedId: string;
   /** Exactly the confirmations the preview carried; *Add* stores them (§18.5). */
   acknowledged: SourceWarning[];
-}
+} & (
+  | {
+    transport: "git";
+    /** The preview's scratch clone. */
+    dir: string;
+    url: NormalizedSourceUrl;
+    ref: string | null;
+    subdir: string | null;
+    auth: SourceAuth;
+    token: string | null;
+  }
+  /** A folder is read in place: nothing is copied for a preview (§18.4.2). */
+  | { transport: "folder"; path: string; dev: bigint; ino: bigint }
+);
 
 export interface MarketplaceServiceOptions {
   registry: SourceRegistry;
@@ -164,6 +190,12 @@ export interface MarketplaceServiceOptions {
   installers: InstallerPorts;
   ladder: Pick<LadderDeps, "zip" | "limits" | "artifacts">;
   mcpLimits: LadderDeps["limits"];
+  /**
+   * How folders are read (§18.4): every filesystem call through `fs`, paths
+   * read for `platform`, `~` expanded to `home`, and the ceiling on one
+   * package's files and bytes.
+   */
+  folders: { fs: FolderFs; platform: NodeJS.Platform; home: string; limits: ExportLimits };
   english: Readonly<Record<string, string>>;
   onSyncProgress?: (progress: SyncProgressView) => void;
   /** Called outside the operation that changed the catalog: work it starts enters an operation of its own. */
@@ -231,19 +263,53 @@ function idFrom(raw: string): string | null {
   return SOURCE_ID_RE.test(id) && !isReservedSourceId(id) ? id : null;
 }
 
-/** The confirmations a source holds: its entry's (custom, direct) or its state's (official, managed), §18.5. */
+/**
+ * The confirmations a source holds: its entry's (custom, direct) or its
+ * state's (official, managed), §18.5. A managed folder holds
+ * `network-folder` through its policy entry (§18.6).
+ */
 function acknowledgedOf(source: ResolvedSource, state: SourceState | null): SourceWarning[] {
-  return source.origin === "custom" || source.origin === "direct" ? [...(source.acknowledged ?? [])] : confirmationsFor(state?.acknowledged, source.url);
+  if (source.transport === "folder" && source.origin === "managed") return ["network-folder"];
+  return source.origin === "custom" || source.origin === "direct" ? [...(source.acknowledged ?? [])] : confirmationsFor(state?.acknowledged, sourceIdentity(source));
 }
 
-/** What the source's row and cards show while it applies (§18.5): plain http, and each confirmed class. */
-function badgesOf(url: NormalizedSourceUrl, acknowledged: readonly SourceWarning[]): SourceBadge[] {
+/**
+ * What a git source's row and cards show while it applies (§18.5): plain
+ * http, and each confirmed class. A folder's badges are slice D2's.
+ */
+function badgesOf(source: ResolvedSource, acknowledged: readonly SourceWarning[]): SourceBadge[] {
+  if (source.transport === "folder") return [];
+  return urlBadges(source.url, acknowledged);
+}
+
+function urlBadges(url: NormalizedSourceUrl, acknowledged: readonly SourceWarning[]): SourceBadge[] {
   const badges: SourceBadge[] = [];
   if (url.scheme === "http") badges.push("unencrypted");
   for (const warning of ["internal-network", "this-computer", "internal-downloads"] as const) {
     if (acknowledged.includes(warning)) badges.push(warning);
   }
   return badges;
+}
+
+/** The parts of a marketplace preview that come from its snapshot (§7.2 step 4). */
+function marketplacePreview(snapshot: SourceSnapshot, held: { id: string; expiresAt: string }, suggestedId: string) {
+  const counts: Partial<Record<PackageKind, number>> = {};
+  for (const pkg of snapshot.packages) counts[pkg.kind] = (counts[pkg.kind] ?? 0) + 1;
+  return {
+    type: "marketplace" as const,
+    previewId: held.id,
+    expiresAt: held.expiresAt,
+    marketplace: {
+      name: snapshot.marketplace.name,
+      displayName: snapshot.marketplace.displayName,
+      description: snapshot.marketplace.description ?? null,
+      owner: snapshot.marketplace.owner?.name ?? null,
+    },
+    counts,
+    codeRunning: snapshot.packages.filter((pkg) => runsCode(pkg.kind, pkg.versions[0]?.components)).length,
+    diagnostics: snapshot.diagnostics.map((item) => `${item.subject}: ${item.message}`),
+    suggestedId,
+  };
 }
 
 /** Each warning once, in the order first named. */
@@ -292,10 +358,13 @@ export class MarketplaceService implements RetirementEntryLookup {
 
   constructor(private readonly options: MarketplaceServiceOptions) {
     const now = () => (options.now?.() ?? new Date()).getTime();
-    this.plans = new Tickets<HeldPlan>("install plan", now);
+    // An abandoned folder plan's captured copy is removed when it expires or is replaced (§18.4.2).
+    this.plans = new Tickets<HeldPlan>("install plan", now, undefined, (held) => {
+      if (held.folder) void rm(held.folder.dir, { recursive: true, force: true });
+    });
     this.previews = new Tickets<HeldPreview>("marketplace preview", now, undefined, (preview) => {
       options.previewTokens.delete(preview.sourceId);
-      void rm(preview.dir, { recursive: true, force: true });
+      if (preview.transport === "git") void rm(preview.dir, { recursive: true, force: true });
     });
   }
 
@@ -462,14 +531,15 @@ export class MarketplaceService implements RetirementEntryLookup {
     const snapshot = "problem" in read ? null : read.snapshot;
     const reviewable = source.origin === "custom" || source.origin === "direct";
     const tokenHost = source.auth.kind === "token" ? source.auth.host : null;
+    const git = source.transport === "git" ? source : null;
     return {
       id: source.id,
       origin: source.origin,
       label: sourceLabel(source, snapshot),
-      url: source.url.url,
-      ref: source.ref ?? null,
-      subdir: source.subdir ?? null,
-      mirrors: source.mirrors.length,
+      ...(source.transport === "git" ? { transport: "git" as const, url: source.url.url, path: null } : { transport: "folder" as const, url: null, path: source.path }),
+      ref: git?.ref ?? null,
+      subdir: git?.subdir ?? null,
+      mirrors: git ? git.mirrors.length : 0,
       auth: source.auth.kind,
       tokenHost,
       tokenStored: tokenHost !== null && this.options.tokens.has(tokenHost),
@@ -490,7 +560,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       canRemove: reviewable,
       diagnostics: (snapshot?.diagnostics ?? []).map((item) => `${item.subject}: ${item.message}`),
       acknowledged: acknowledgedOf(source, state),
-      badges: badgesOf(source.url, acknowledgedOf(source, state)),
+      badges: badgesOf(source, acknowledgedOf(source, state)),
     };
   }
 
@@ -694,7 +764,10 @@ export class MarketplaceService implements RetirementEntryLookup {
    * any git command — and only then the repository is read.
    */
   private async previewSourceNow(request: SourcePreviewRequest): Promise<SourcePreviewResultView> {
-    const url = normalizeSourceUrl(request.input);
+    const { platform, home } = this.options.folders;
+    const input = normalizeSourceInput(request.input, platform, home);
+    if (input.kind === "folder") return this.previewFolder(request, input.path, input.input);
+    const url = input.url;
     if (request.auth === "ssh" && url.scheme !== "ssh") throw new MarketplaceError("SOURCE_URL_REJECTED", "SSH sign-in needs an ssh:// or git@host:path address");
     if (request.auth !== "ssh" && url.scheme === "ssh") throw new MarketplaceError("SOURCE_URL_REJECTED", "an ssh address needs SSH sign-in");
     const auth: SourceAuth = request.auth === "token" ? { kind: "token", host: url.host } : { kind: request.auth };
@@ -737,50 +810,44 @@ export class MarketplaceService implements RetirementEntryLookup {
       // Over http without token-unencrypted the helper is switched off for every call, so it never answers (§7.4).
       const credentialHelper = remote.credentialsAllowed && (await this.options.git.credentialHelperFor(url.host));
       const pathName = url.path.split("/").filter(Boolean).pop() ?? "";
+      const tree = new GitTree(repo, remote, commit);
       if (subdir === null) {
-        const source: ResolvedSource = { id: sourceId, origin: "custom", url, mirrors: [], auth, ...(ref ? { ref } : {}) };
-        const built = await new SnapshotBuilder(repo, remote, source, commit).build(this.now().toISOString());
+        const built = await new SnapshotBuilder(tree, { id: sourceId, origin: "custom", rootName: rootNameOf(url.path) }).build(this.now().toISOString());
         if (built.ok) {
-          const counts: Partial<Record<PackageKind, number>> = {};
-          for (const pkg of built.snapshot.packages) counts[pkg.kind] = (counts[pkg.kind] ?? 0) + 1;
           const suggestedId = this.freeId([idFrom(built.snapshot.marketplace.name), idFrom(pathName)]);
-          const held = this.previews.issue({ sourceId, dir, url, ref, subdir: null, auth, token, origin: "custom", suggestedId, acknowledged });
+          const held = this.previews.issue({ transport: "git", sourceId, dir, url, ref, subdir: null, auth, token, origin: "custom", suggestedId, acknowledged });
           return {
-            type: "marketplace",
-            previewId: held.id,
-            expiresAt: held.expiresAt,
+            ...marketplacePreview(built.snapshot, held, suggestedId),
+            transport: "git",
             url: url.url,
-            badges: badgesOf(url, acknowledged),
+            path: null,
+            resolvedFrom: null,
+            badges: urlBadges(url, acknowledged),
             ref,
             commit,
-            marketplace: {
-              name: built.snapshot.marketplace.name,
-              displayName: built.snapshot.marketplace.displayName,
-              description: built.snapshot.marketplace.description ?? null,
-              owner: built.snapshot.marketplace.owner?.name ?? null,
-            },
-            counts,
-            codeRunning: built.snapshot.packages.filter((pkg) => runsCode(pkg.kind, pkg.versions[0]?.components)).length,
-            diagnostics: built.snapshot.diagnostics.map((item) => `${item.subject}: ${item.message}`),
             credentialHelper,
-            suggestedId,
           };
         }
         if (built.code !== "SOURCE_NOT_A_MARKETPLACE") throw new MarketplaceError(built.code, built.message, built.detail ? { detail: built.detail } : undefined);
       }
       // A single package at the root or the given folder: a direct source (§7.2 step 4, §8.1).
-      const read = await readDirectPackage({ repo, remote, commit, path: subdir ?? "" });
+      const read = await readDirectPackage({ tree, path: subdir ?? "", rootName: rootNameOf(url.path) });
       if (!read) throw new MarketplaceError("SOURCE_NOT_A_MARKETPLACE", `no marketplace and no package at ${subdir ?? "the repository root"}`);
       if (!read.ok) throw new MarketplaceError(read.code, read.error);
+      // `allowDirectInstall: false`: packages install from marketplaces only (§12).
+      this.options.gate.checkDirectInstall(url.url);
       const { descriptor, detectedFrom, versionSynthesized } = read.found;
       const suggestedId = this.freeId([idFrom(descriptor.name), idFrom(pathName)]);
-      const held = this.previews.issue({ sourceId, dir, url, ref, subdir, auth, token, origin: "direct", suggestedId, acknowledged });
+      const held = this.previews.issue({ transport: "git", sourceId, dir, url, ref, subdir, auth, token, origin: "direct", suggestedId, acknowledged });
       return {
         type: "package",
         previewId: held.id,
         expiresAt: held.expiresAt,
+        transport: "git",
         url: url.url,
-        badges: badgesOf(url, acknowledged),
+        path: null,
+        resolvedFrom: null,
+        badges: urlBadges(url, acknowledged),
         ref,
         subdir,
         commit,
@@ -808,8 +875,95 @@ export class MarketplaceService implements RetirementEntryLookup {
   }
 
   /**
+   * Preview a folder (§18.4.1): stage 1 already ran. A folder takes no ref,
+   * subdir or sign-in. Stage 2 classifies it without touching it; stage 3
+   * applies the policy and asks for `network-folder` — a block or a
+   * confirmation ends here with no filesystem call on the path. Only then
+   * stage 4 walks it, the policy is applied to the canonical path, and the
+   * folder is read in place: a marketplace, or a direct package (§18.4.7).
+   */
+  private async previewFolder(request: SourcePreviewRequest, path: string, typed: string): Promise<SourcePreviewResultView> {
+    const { fs, platform, limits } = this.options.folders;
+    if (request.ref?.trim() || request.subdir?.trim() || request.auth !== "none" || request.token) {
+      throw new MarketplaceError("SOURCE_URL_REJECTED", "a folder has no branch, folder field or sign-in", { detail: { reason: "folder-options" } });
+    }
+    const acknowledged = [...new Set(request.acknowledge ?? [])];
+    // A policy block needs no classification: it ends the preview before any call at all.
+    this.options.gate.checkFolderPolicy(path);
+    const network = await classifyFolder(path, platform, fs);
+    try {
+      this.options.gate.checkFolder(path, network, new Set(acknowledged));
+    } catch (error) {
+      if (error instanceof ConfirmationRequiredError) return { type: "confirm", warnings: uniqueWarnings(error.warnings) };
+      throw error;
+    }
+    const root = await resolveFolderRoot(path, platform, fs);
+    // A block found only now, on the canonical path, ends the add (§18.4.1 stage 4).
+    this.options.gate.checkFolderPolicy(root.path);
+    const resolvedFrom = root.path === path ? null : typed;
+    const sourceId = `${PREVIEW_ID_PREFIX}${randomBytes(9).toString("hex")}`;
+    const rootName = rootNameOf(root.path);
+    const tree = new FolderTree({ fs, platform, root, readAt: this.now().toISOString(), limits });
+    const built = await new SnapshotBuilder(tree, { id: sourceId, origin: "custom", rootName }).build(this.now().toISOString());
+    if (built.ok) {
+      const suggestedId = this.freeId([idFrom(built.snapshot.marketplace.name), idFrom(rootName)]);
+      const held = this.previews.issue({ transport: "folder", sourceId, path: root.path, dev: root.dev, ino: root.ino, origin: "custom", suggestedId, acknowledged });
+      return {
+        ...marketplacePreview(built.snapshot, held, suggestedId),
+        transport: "folder",
+        url: null,
+        path: root.path,
+        resolvedFrom,
+        badges: [],
+        ref: null,
+        commit: built.snapshot.commit,
+        credentialHelper: false,
+      };
+    }
+    if (built.code !== "SOURCE_NOT_A_MARKETPLACE") throw new MarketplaceError(built.code, built.message, built.detail ? { detail: built.detail } : undefined);
+    const read = await readDirectPackage({ tree, path: "", rootName });
+    if (!read) throw new MarketplaceError("SOURCE_NOT_A_MARKETPLACE", `no marketplace and no package in ${root.path}`);
+    if (!read.ok) throw new MarketplaceError(read.code, read.error);
+    // A direct folder install is refused by `allowDirectInstall: false` too (§18.4.7).
+    this.options.gate.checkDirectInstall(root.path);
+    // The folder is its one package: a reading rule it breaks fails the preview with its reason,
+    // where a marketplace's snapshot would drop that package with a diagnostic (§2.2).
+    await tree.packageAt("", read.found.descriptor.kind);
+    // The direct read's revision: the same files a sync of the added source reads.
+    const direct = await new SnapshotBuilder(tree, { id: sourceId, origin: "direct", rootName }).build(this.now().toISOString());
+    if (!direct.ok) throw new MarketplaceError(direct.code, direct.message, direct.detail ? { detail: direct.detail } : undefined);
+    const { descriptor, detectedFrom, versionSynthesized } = read.found;
+    const suggestedId = this.freeId([idFrom(descriptor.name), idFrom(rootName)]);
+    const held = this.previews.issue({ transport: "folder", sourceId, path: root.path, dev: root.dev, ino: root.ino, origin: "direct", suggestedId, acknowledged });
+    return {
+      type: "package",
+      previewId: held.id,
+      expiresAt: held.expiresAt,
+      transport: "folder",
+      url: null,
+      path: root.path,
+      resolvedFrom,
+      badges: [],
+      ref: null,
+      subdir: null,
+      commit: direct.snapshot.commit,
+      detectedFrom,
+      kind: descriptor.kind,
+      name: descriptor.name,
+      displayName: descriptor.displayName ?? null,
+      description: descriptor.description ?? null,
+      version: descriptor.version,
+      versionSynthesized,
+      runsCode: runsCode(descriptor.kind, descriptor.kind === "agent-plugin" ? descriptor.payload.components as IndexVersion["components"] : undefined),
+      credentialHelper: false,
+      suggestedId,
+    };
+  }
+
+  /**
    * Write the entry, then the state, then move the preview's repository into
    * place and sync (§7.2 step 6): a repo.git without a state reads as lost.
+   * A folder is written with its identity and read (§18.4).
    */
   async addSource(request: SourceAddRequest): Promise<SourceView> {
     return this.operation(() => this.addSourceNow(request));
@@ -817,9 +971,11 @@ export class MarketplaceService implements RetirementEntryLookup {
 
   private async addSourceNow(request: SourceAddRequest): Promise<SourceView> {
     const preview = this.previews.take(request.previewId);
+    if (preview.transport === "folder") return this.addFolderNow(request, preview);
     try {
       // The policy may have changed since the preview (§18.6).
       this.options.gate.checkSourcePolicy(preview.url, { official: false });
+      if (preview.origin === "direct") this.options.gate.checkDirectInstall(preview.url.url);
       const id = request.id?.trim() || preview.suggestedId;
       await this.registry.add({
         id,
@@ -848,6 +1004,25 @@ export class MarketplaceService implements RetirementEntryLookup {
     }
   }
 
+  /** *Add* for a folder preview: the policy again (it may have changed, §18.6), the identity checks, the entry, then a read. */
+  private async addFolderNow(request: SourceAddRequest, preview: HeldPreview & { transport: "folder" }): Promise<SourceView> {
+    this.options.gate.checkFolderPolicy(preview.path);
+    if (preview.origin === "direct") this.options.gate.checkDirectInstall(preview.path);
+    const id = request.id?.trim() || preview.suggestedId;
+    await this.registry.addFolder({
+      id,
+      origin: preview.origin,
+      path: preview.path,
+      dev: preview.dev,
+      ino: preview.ino,
+      ...(request.label?.trim() ? { label: request.label.trim() } : {}),
+      acknowledged: preview.acknowledged,
+    });
+    await this.syncOne(id);
+    this.catalogChanged();
+    return this.sourceView(this.source(id));
+  }
+
   // ─── catalog ──────────────────────────────────────────────────────────────
 
   private async installedAll(): Promise<InstalledRecord[]> {
@@ -874,7 +1049,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       if ("problem" in read) continue;
       if (!this.registry.isEnabled(source, read.state) && !bound?.has(source.id)) continue;
       shown.push(source);
-      badges.set(source.id, badgesOf(source.url, acknowledgedOf(source, read.state)));
+      badges.set(source.id, badgesOf(source, acknowledgedOf(source, read.state)));
       if (read.snapshot) snapshots.set(source.id, read.snapshot);
     }
     const rows = aggregateCatalog(
@@ -990,6 +1165,12 @@ export class MarketplaceService implements RetirementEntryLookup {
     return (await this.installedAll()).find((item) => item.kind === kind && item.name === name) ?? null;
   }
 
+  /** The rungs a plugin version would be tried on: a git source's ladder, or a folder's one rung (§18.4.2). */
+  private async pluginRungViews(source: ResolvedSource, version: IndexVersion, packagePath: string): Promise<InstallPlanView["rungs"]> {
+    if (source.transport === "folder") return [folderRungView(packagePath)];
+    return rungViews(version.artifact!, packagePath, await this.treeDeclared(source.id, version, packagePath), source.url);
+  }
+
   /** Whether the tree rung is declared: `artifact.tree`, or a plugin.json in the package directory (§6.2). */
   private async treeDeclared(sourceId: string, version: IndexVersion, packagePath: string): Promise<boolean> {
     if (version.artifact?.tree !== undefined) return true;
@@ -1010,11 +1191,13 @@ export class MarketplaceService implements RetirementEntryLookup {
     const context = this.options.versionContext();
     const shownVersion = row.choice.state === "candidate" ? row.choice.version : row.package.versions[0] ?? null;
     const installedHere = installed?.sourceId === key.sourceId ? installed.version : null;
+    const source = this.source(key.sourceId);
     return {
       entry: this.entry(row, installed, rows, existing, label, badges),
       provenance: {
         sourceLabel: label,
-        repository: this.source(key.sourceId).url.url,
+        repository: source.transport === "git" ? source.url.url : null,
+        folder: source.transport === "folder" ? source.path : null,
         path: row.package.path,
         snapshotCommit: row.snapshotCommit,
         versionCommit: shownVersion?.commit ?? null,
@@ -1027,10 +1210,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       },
       authority: shownVersion?.authority ? authorityView(shownVersion.authority) : null,
       components: shownVersion?.components ?? null,
-      rungs:
-        row.kind === "plugin" && shownVersion?.artifact
-          ? rungViews(shownVersion.artifact, row.package.path, await this.treeDeclared(key.sourceId, shownVersion, row.package.path), this.source(key.sourceId).url)
-          : [],
+      rungs: row.kind === "plugin" && shownVersion?.artifact ? await this.pluginRungViews(source, shownVersion, row.package.path) : [],
       versions: versionViews(row, effectiveRevocations(snapshot, context.appVersion), context, installedHere),
     };
   }
@@ -1061,8 +1241,27 @@ export class MarketplaceService implements RetirementEntryLookup {
     return version;
   }
 
-  private repositoryAccess<T>(sourceId: string, fn: (access: { repo: BareRepo; remote: GitRemote; direct: boolean }) => Promise<T>): Promise<T> {
-    return this.options.syncer.withRepository(sourceId, ({ source, repo, remote }) => fn({ repo, remote, direct: source.origin === "direct" }));
+  private repositoryAccess<T>(sourceId: string, fn: (access: RepositoryAccess) => Promise<T>): Promise<T> {
+    return this.options.syncer.withRepository(sourceId, ({ source, repo, remote }) => fn(gitAccess(repo, remote, source.origin === "direct")));
+  }
+
+  /**
+   * Read the folder again and copy one package into a staging directory under
+   * `workRoot` for a plan (§18.4.2). Execution reads only this copy.
+   */
+  private async captureFolder(sourceId: string, kind: PackageKind, name: string): Promise<{ captured: CapturedFolder; revision: string }> {
+    const dir = await mkdtemp(join(this.options.workRoot, "folder-plan-"));
+    try {
+      const { source, snapshot, capture } = await this.options.syncer.captureFolderPackage(sourceId, { kind, name }, dir);
+      const tree = new StagedTree(dir, snapshot.commit, snapshot.fetchedAt, capture.executable);
+      return {
+        captured: { dir, access: stagedAccess(tree, source.origin === "direct", rootNameOf(source.path)), notInstalled: capture.notInstalled },
+        revision: snapshot.commit,
+      };
+    } catch (error) {
+      await rm(dir, { recursive: true, force: true });
+      throw error;
+    }
   }
 
   async planInstall(request: InstallPlanRequest): Promise<InstallPlanView> {
@@ -1071,11 +1270,31 @@ export class MarketplaceService implements RetirementEntryLookup {
 
   /** `adopt` (content only): the install records an activation the settings already hold (§16.3). */
   private async plan(request: InstallPlanRequest, adopt: boolean): Promise<InstallPlanView> {
+    const planned = this.source(request.sourceId);
+    // A folder package is captured first, from a fresh read; the row then comes from that read's snapshot (§18.4.2).
+    const folder = planned.transport === "folder" ? await this.captureFolder(planned.id, request.kind, request.name) : null;
+    try {
+      return await this.planFrom(request, adopt, folder);
+    } catch (error) {
+      if (folder) await rm(folder.captured.dir, { recursive: true, force: true });
+      throw error;
+    }
+  }
+
+  private async planFrom(request: InstallPlanRequest, adopt: boolean, folder: { captured: CapturedFolder; revision: string } | null): Promise<InstallPlanView> {
     const { row, snapshot } = await this.row(request);
     // Refused at the plan, before the review asks to confirm, not at execution (§7.3).
     const source = this.source(row.sourceId);
     if (!this.registry.isEnabled(source, await this.registry.readState(source.id))) {
       throw new MarketplaceError("SOURCE_DISABLED", `source ${source.id} is hidden; show it again to install or update from it`);
+    }
+    // `allowDirectInstall: false` refuses installs from a direct source added before it (§12, §18.4.7).
+    if (source.origin === "direct") this.options.gate.checkDirectInstall(source.transport === "git" ? source.url.url : source.path);
+    // Another read published between the capture and now: what was captured is not what the row lists.
+    if (folder && row.snapshotCommit !== folder.revision) {
+      throw new MarketplaceError("SOURCE_LOCAL_UNREADABLE", `${row.name} changed while it was read`, {
+        detail: { reason: "changed-during-read", path: source.transport === "folder" ? source.path : row.sourceId },
+      });
     }
     const version = this.chosenVersion(row, snapshot, request.version);
     const installed = await this.installed(row.kind, row.name);
@@ -1087,24 +1306,24 @@ export class MarketplaceService implements RetirementEntryLookup {
     const base = planPackage(row, version);
     const action = classifyInstall(base, installed, { switchSource });
     const policyDigest = this.options.policy.digest;
+    const captured = folder?.captured ?? null;
     let held: HeldPlan;
     let mcp: McpRuntimeView | null = null;
     let rungs: InstallPlanView["rungs"] = [];
     if (row.kind === "plugin") {
       const plan = planPluginVersion(row, version);
-      held = { kind: "plugin", plan, switchSource, policyDigest };
-      rungs = rungViews(plan.artifact, plan.packagePath, await this.treeDeclared(row.sourceId, version, row.package.path), source.url);
+      held = { kind: "plugin", plan, switchSource, policyDigest, folder: captured };
+      rungs = await this.pluginRungViews(source, version, row.package.path);
     } else if (row.kind === "mcp") {
       const plan = { ...base, kind: "mcp" as const };
       // Resolved now so the review shows the command that will run.
-      const resolved = await this.repositoryAccess(row.sourceId, (access) =>
-        resolveMcpPackage(plan, { ...access, limits: this.options.mcpLimits, workRoot: this.options.workRoot }),
-      );
+      const resolve = (access: RepositoryAccess) => resolveMcpPackage(plan, { ...access, limits: this.options.mcpLimits, workRoot: this.options.workRoot });
+      const resolved = captured ? await resolve(captured.access) : await this.repositoryAccess(row.sourceId, resolve);
       this.options.installers.mcp.admit(row.name, resolved.runtime);
-      held = { kind: "mcp", resolved, switchSource, policyDigest };
+      held = { kind: "mcp", resolved, switchSource, policyDigest, folder: captured };
       mcp = mcpRuntimeView(resolved.runtime);
     } else {
-      held = { kind: "content", plan: base as ContentPlan, switchSource, adopt, policyDigest };
+      held = { kind: "content", plan: base as ContentPlan, switchSource, adopt, policyDigest, folder: captured };
     }
     // One live plan per package: planning again (another version, a source switch) drops the older one and its files.
     const ticket = this.plans.issue(held, `${row.sourceId}:${row.kind}:${row.name}`);
@@ -1125,6 +1344,7 @@ export class MarketplaceService implements RetirementEntryLookup {
         : "user-permissions",
       rungs,
       mcp,
+      notInstalled: captured?.notInstalled ?? [],
     };
   }
 
@@ -1178,6 +1398,15 @@ export class MarketplaceService implements RetirementEntryLookup {
 
   private async executeInstallNow(planId: string, componentConsents: readonly ComponentConsent[], reviewedAuthority: boolean): Promise<InstallResultView> {
     const held = this.plans.take(planId);
+    try {
+      return await this.executeHeld(planId, held, componentConsents, reviewedAuthority);
+    } finally {
+      // A folder plan's captured copy is used once (§18.4.2).
+      if (held.folder) await rm(held.folder.dir, { recursive: true, force: true });
+    }
+  }
+
+  private async executeHeld(planId: string, held: HeldPlan, componentConsents: readonly ComponentConsent[], reviewedAuthority: boolean): Promise<InstallResultView> {
     // Reviewed under another policy: what it allows may have changed, so the review reopens (§18.6).
     if (held.policyDigest !== this.options.policy.digest) {
       throw new MarketplaceError("PLAN_EXPIRED", `plan ${planId} was made under another marketplace policy`, { detail: { reason: "policy-changed" } });
@@ -1201,7 +1430,32 @@ export class MarketplaceService implements RetirementEntryLookup {
   private async runInstall(planId: string, held: HeldPlan, componentConsents: readonly ComponentConsent[], reviewedAuthority: boolean): Promise<InstallResultView> {
     this.progress(planId, "resolving");
     let result: InstallResultView;
-    if (held.kind === "plugin") {
+    if (held.kind === "plugin" && held.folder) {
+      const { plan } = held;
+      const folder = held.folder;
+      const outcome = await this.options.installers.plugin.install(plan, {
+        switchSource: held.switchSource,
+        ...(reviewedAuthority ? { reviewedAppVersion: getAveAppVersion() } : {}),
+        // The folder rung installs the copy the plan captured; nothing is downloaded (§18.4.2).
+        stage: async (staged) => {
+          const artifact = await runFolderRung(staged, {
+            ...folder.access,
+            zip: this.options.ladder.zip,
+            limits: this.options.ladder.limits,
+            workRoot: this.options.workRoot,
+          }, folder.notInstalled);
+          this.progress(planId, "installing", artifact.rung);
+          return artifact;
+        },
+      });
+      result = {
+        key: { sourceId: plan.sourceId, kind: "plugin", name: plan.name },
+        version: plan.version,
+        action: installActionView(outcome.action),
+        rungs: rungOutcomeViews(outcome.staged.rungs),
+        connectionWarning: null,
+      };
+    } else if (held.kind === "plugin") {
       const { plan } = held;
       const outcome = await this.options.installers.plugin.install(plan, {
         switchSource: held.switchSource,
@@ -1210,9 +1464,9 @@ export class MarketplaceService implements RetirementEntryLookup {
           this.options.syncer.withRepository(plan.sourceId, async ({ source, repo, remote }) => {
             this.progress(planId, "downloading");
             return runPluginLadder(staged, {
+              ...gitAccess(repo, remote, source.origin === "direct"),
               repo,
               remote,
-              direct: source.origin === "direct",
               sourceUrl: source.url,
               gate: this.options.gate,
               catalog: await this.catalogSource(source),
@@ -1238,9 +1492,8 @@ export class MarketplaceService implements RetirementEntryLookup {
     } else if (held.kind === "content") {
       const { plan } = held;
       this.progress(planId, "downloading");
-      const staged = await this.repositoryAccess(plan.sourceId, (access) =>
-        stageContentPackage(plan, access, { workRoot: this.options.workRoot, english: this.options.english }),
-      );
+      const stage = (access: RepositoryAccess) => stageContentPackage(plan, access, { workRoot: this.options.workRoot, english: this.options.english });
+      const staged = held.folder ? await stage(held.folder.access) : await this.repositoryAccess(plan.sourceId, stage);
       this.progress(planId, "installing");
       const outcome = await this.options.installers.content.install(staged, { switchSource: held.switchSource, adopt: held.adopt, componentConsents });
       result = { key: { sourceId: plan.sourceId, kind: plan.kind, name: plan.name }, version: plan.version, action: installActionView(outcome.action), rungs: [], connectionWarning: null };
@@ -1258,8 +1511,8 @@ export class MarketplaceService implements RetirementEntryLookup {
     return result;
   }
 
-  /** The source as its catalog's downloads are judged (§18.2.3). */
-  private async catalogSource(source: ResolvedSource): Promise<CatalogSource> {
+  /** The source as its catalog's downloads are judged (§18.2.3); only a git source downloads. */
+  private async catalogSource(source: GitSource): Promise<CatalogSource> {
     const snapshot = await this.options.syncer.readSnapshot(source.id);
     return { id: source.id, label: sourceLabel(source, snapshot), url: source.url, acknowledged: await this.registry.acknowledged(source) };
   }
@@ -1334,7 +1587,7 @@ export class MarketplaceService implements RetirementEntryLookup {
     const runtime = runtimeFromServerJson(document, request.select);
     assertMcpRuntimePinned(name, runtime);
     this.options.installers.mcp.admit(name, runtime);
-    const ticket = this.plans.issue({ kind: "mcp-unbound", name, runtime, policyDigest: this.options.policy.digest }, `unbound:mcp:${name}`);
+    const ticket = this.plans.issue({ kind: "mcp-unbound", name, runtime, policyDigest: this.options.policy.digest, folder: null }, `unbound:mcp:${name}`);
     return {
       planId: ticket.id,
       expiresAt: ticket.expiresAt,

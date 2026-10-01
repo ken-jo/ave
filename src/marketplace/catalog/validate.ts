@@ -57,6 +57,9 @@ interface Validators {
   snapshot: ValidateFunction;
 }
 
+/** A cached snapshot's pin: a commit, or a folder source's `local-<sha256>` revision (§18.4.3). */
+const SNAPSHOT_PIN = { anyOf: [{ $ref: PACKAGE_ID + "#/definitions/commit" }, { type: "string", pattern: "^local-[0-9a-f]{64}$" }] };
+
 let compiled: Validators | null = null;
 let legacyIndexValidator: ValidateFunction | null = null;
 
@@ -106,7 +109,8 @@ function validators(): Validators {
       properties: {
         formatVersion: { const: 2 },
         sourceId: { $ref: PACKAGE_ID + "#/definitions/sourceId" },
-        commit: { $ref: PACKAGE_ID + "#/definitions/commit" },
+        // A folder source's pin is its revision (§18.4.3); only a cached snapshot names one, never an index.
+        commit: SNAPSHOT_PIN,
         fetchedAt: { type: "string", format: "date-time" },
         marketplace: {
           type: "object", additionalProperties: false, required: ["name", "displayName"],
@@ -120,6 +124,7 @@ function validators(): Validators {
               [key, { $ref: INDEX_ID + "#/definitions/indexPackage/properties/" + key }])),
             // Direct sources can install a package from the repository root.
             path: { anyOf: [{ const: "" }, { $ref: PACKAGE_ID + "#/definitions/repoPath" }] },
+            treeSha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
             versions: {
               ...indexSchema.definitions.indexPackage.properties.versions,
               items: {
@@ -127,6 +132,7 @@ function validators(): Validators {
                 properties: {
                   ...Object.fromEntries(Object.keys(indexSchema.definitions.indexVersion.properties).map((key) =>
                     [key, { $ref: INDEX_ID + "#/definitions/indexVersion/properties/" + key }])),
+                  commit: SNAPSHOT_PIN,
                   // An implicit tree install synthesized at the root has no artifact pins.
                   artifact: { anyOf: [{ type: "object", maxProperties: 0 }, { $ref: PACKAGE_ID + "#/definitions/pluginArtifactPins" }] },
                 },

@@ -17,6 +17,7 @@ import { parseStrictJson } from "../catalog/strict-json.js";
 import { isPackageName } from "../catalog/types.js";
 import type { SourceOrigin } from "../sources/registry.js";
 import type { OriginReader } from "../sources/retained.js";
+import { isSourcePin } from "../sources/source-tree.js";
 import { CONTENT_KINDS, type ContentKind } from "./rules.js";
 
 interface ContentOrigin {
@@ -78,7 +79,7 @@ function parse(text: string, path: string): LedgerEntry[] {
     if (!(origin.sourceId === null && origin.sourceOrigin === null && origin.commit === null)
       && !(typeof origin.sourceId === "string" && origin.sourceId.length > 0
         && SOURCE_ORIGINS.has(origin.sourceOrigin as SourceOrigin)
-        && typeof origin.commit === "string" && /^[0-9a-f]{40}$/u.test(origin.commit))
+        && isSourcePin(origin.commit))
       || typeof origin.packagePath !== "string"
       || origin.version !== entry.version
       || typeof origin.contentSha256 !== "string" || !/^[0-9a-f]{64}$/u.test(origin.contentSha256)

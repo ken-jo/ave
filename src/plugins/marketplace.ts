@@ -29,7 +29,9 @@ import {
 } from "./marketplace-update-recovery.js";
 import { PLUGIN_RUNTIME_DIR_NAMES, carryPluginDataDir, pluginPayloadCopyFilter } from "./plugin-storage-layout.js";
 import {
+  buildFolderInstallReceipt,
   buildGitInstallReceipt,
+  FOLDER_RUNG,
   installReceiptPath,
   listFilesRecursive,
   restoreInstallReceiptRaw,
@@ -145,9 +147,16 @@ type InstallReceiptValidation = {
   receipt?: PluginInstallReceipt;
 };
 
-/** Where a git install came from, as its registry entry records it (design §10.3 reads it). */
+/**
+ * Where a git or folder install came from, as its registry entry records it
+ * (design §10.3 reads it). A folder install's commit is its revision and its
+ * rung `folder` (§18.4.2, §18.4.3).
+ */
 function gitInstallOrigin(staged: StagedPluginArtifact): PluginRegistryEntryOrigin {
   const { plan } = staged;
+  if (staged.rung === FOLDER_RUNG && plan.snapshotCommit !== plan.versionCommit) {
+    throw new Error(`plugin ${plan.name}: a folder plan reads one revision, not ${plan.snapshotCommit} and ${plan.versionCommit}`);
+  }
   return {
     sourceId: plan.sourceId,
     sourceOrigin: plan.sourceOrigin,
@@ -184,6 +193,8 @@ function cleanupJournalAfterCommit(entry: PluginRegistryEntry): PluginRegistryEn
  */
 function assertStagedArtifactPinned(staged: StagedPluginArtifact): void {
   const { plan, rung } = staged;
+  // A folder install never qualifies (§18.4.9); the folder rung refused it already.
+  if (rung === FOLDER_RUNG) throw new ProcessEntryRequiresPinnedArtifactError();
   if (rung !== "release" && rung !== "archive") return;
   const pin = plan.artifact[rung]?.sha256?.toLowerCase();
   if (pin !== staged.artifactSha256) {
@@ -726,6 +737,23 @@ export class PluginMarketplaceService {
     const manifestRaw = await readFile(resolve(pluginRoot, "plugin.json"), "utf-8");
     await materializePluginContributions(pluginRoot, flattenAgentPluginsManifest(JSON.parse(manifestRaw)));
     const { plan } = staged;
+    if (staged.rung === FOLDER_RUNG) {
+      if (plan.sourceOrigin === "official") throw new Error(`plugin ${pluginId}: the official source is never a folder`);
+      return (await buildFolderInstallReceipt(pluginRoot, {
+        pluginId,
+        version: plan.version,
+        ...(reviewedAppVersion ? { reviewedAppVersion } : {}),
+        folder: {
+          sourceId: plan.sourceId,
+          sourceOrigin: plan.sourceOrigin,
+          revision: plan.versionCommit,
+          packagePath: plan.packagePath,
+          treeSha256: staged.artifactSha256,
+          authoritySha256: sha256Hex(canonicalJSON(plan.authority)),
+        },
+        files,
+      })).raw;
+    }
     return (await buildGitInstallReceipt(pluginRoot, {
       pluginId,
       version: plan.version,

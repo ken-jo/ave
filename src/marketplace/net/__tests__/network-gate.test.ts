@@ -181,7 +181,7 @@ describe("NetworkGate.checkRemote", () => {
   it("needs no confirmation for a listed host but token-unencrypted, which is never implied", () => {
     const load = policy({ allowHttpHosts: new Set(["10.0.0.5"]), allow: [parseSourcePattern("host:10.0.0.5")] });
     expect(gate(load).checkRemote(remote("http://10.0.0.5/ave/market"), OTHER)).toMatchObject({ allowHttp: true, credentialsAllowed: false });
-    const managed = policy({ additional: [{ id: "corp", url: remote("https://192.168.1.20/ave/market"), auth: { kind: "none" } }] });
+    const managed = policy({ additional: [{ transport: "git", id: "corp", url: remote("https://192.168.1.20/ave/market"), auth: { kind: "none" } }] });
     expect(code(() => gate(managed).checkRemote(remote("https://192.168.1.20/ave/market"), OTHER))).toBe("passed");
   });
 

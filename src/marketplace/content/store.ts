@@ -91,7 +91,8 @@ function digestOf(files: readonly ContentFile[]): string {
 }
 
 /**
- * Read `plan`'s package at its version commit: the descriptor must match
+ * Read `plan`'s package at its version's revision (a commit, or the copy a
+ * folder plan captured): the descriptor must match
  * the index (MANIFEST_MISMATCH), every file must fit the kind's rules and
  * the entry files must parse (CONTENT_RULE_VIOLATION).
  */
@@ -102,13 +103,10 @@ export async function stageContentPackage(plan: PackagePlan, access: RepositoryA
   await mkdir(options.workRoot, { recursive: true });
   const dest = await mkdtemp(join(options.workRoot, "content-"));
   try {
-    const exported = await access.repo.exportPath(
-      access.remote,
-      dataPlan.versionCommit,
+    const exported = await access.treeAt(dataPlan.versionCommit).exportPath(
       dataPlan.packagePath,
       dest,
       { maxFiles: rule.maxFiles + 1, maxBytes: rule.maxBytes + DESCRIPTOR_ALLOWANCE_BYTES },
-      access.signal,
     );
     const files: ContentFile[] = [];
     for (const file of exported) {

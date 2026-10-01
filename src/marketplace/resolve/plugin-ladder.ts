@@ -17,6 +17,10 @@
  * downloaded, and a downloaded one that the rung used is kept.
  * The tree rung packs the exported files into a zip too, so every rung goes
  * through the same zip preflight and the same install pipeline.
+ *
+ * A folder source has one rung instead, `folder` (§18.4.2,
+ * {@link runFolderRung}): it never downloads, installs the built tree the plan
+ * captured, and lists what the folder holds but does not install.
  */
 import AdmZip from "adm-zip";
 import { createHash } from "node:crypto";
@@ -24,17 +28,21 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { MarketplaceArtifactLimits } from "../../plugins/marketplace-artifact-limits.js";
 import type { RequiredMarketplaceRootTextFile } from "../../plugins/plugin-artifact-store.js";
-import { ARTIFACT_RUNGS, type ArtifactRung, type RungOutcome } from "../../plugins/plugin-install-receipt.js";
+import { ARTIFACT_RUNGS, FOLDER_RUNG, type PluginRung, type RungOutcome } from "../../plugins/plugin-install-receipt.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import type { CatalogRow } from "../catalog/aggregate.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
 import type { IndexVersion, PluginArtifactPins, PluginAuthority } from "../catalog/types.js";
 import { MarketplaceError, isMarketplaceError, type MarketplaceErrorCode, type MarketplaceErrorDetail } from "../errors.js";
+import type { BareRepo } from "../git/repo.js";
+import type { GitRemote } from "../git/run-git.js";
 import type { CatalogSource, NetworkGate } from "../net/network-gate.js";
 import type { NormalizedSourceUrl } from "../net/source-url.js";
+import { isFolderRevision, packageInstalls } from "../sources/source-tree.js";
 import type { ArtifactCache } from "./artifact-cache.js";
 import { candidateVersion, DESCRIPTOR_NAME, planPackage, readDescriptorAtVersion, repoPath, type PackagePlan, type RepositoryAccess } from "./descriptor.js";
 import { downloadBounded } from "./download.js";
+import { treeDigest } from "./tree-digest.js";
 import { assertGitInstallManifest, expectedPluginOf } from "./manifest-rules.js";
 import {
   hasProcessEntry,
@@ -51,12 +59,14 @@ export interface PluginInstallPlan extends PackagePlan {
 export interface StagedPluginArtifact {
   plan: PluginInstallPlan;
   zipBuffer: Buffer;
-  /** Zip sha256 (release, archive) or tree digest (tree). */
+  /** Zip sha256 (release, archive) or tree digest (tree, folder). */
   artifactSha256: string;
-  rung: ArtifactRung;
+  rung: PluginRung;
   rungs: RungOutcome[];
   /** The staged plugin.json document, already checked against the descriptor. */
   manifestDocument: unknown;
+  /** Top-level entries of a folder package that are not installed (§18.4.2); empty for a git source. */
+  notInstalled: string[];
 }
 
 /** The part of the artifact store the ladder uses: the zip preflight and a bounded root read. */
@@ -64,7 +74,18 @@ interface ZipInspector {
   readRequiredRootTextFiles(slug: string, zipBuffer: Buffer, requests: readonly RequiredMarketplaceRootTextFile[]): Readonly<Record<string, string>>;
 }
 
-export interface LadderDeps extends RepositoryAccess {
+/** What the folder rung reads: the captured copy, the zip preflight and the limits. */
+export interface FolderLadderDeps extends RepositoryAccess {
+  zip: ZipInspector;
+  limits: Readonly<MarketplaceArtifactLimits>;
+  /** Scratch directory for the export; removed before the rung returns. */
+  workRoot: string;
+}
+
+export interface LadderDeps extends FolderLadderDeps {
+  /** The source's bare partial clone and the remote its blobs come from. */
+  repo: BareRepo;
+  remote: GitRemote;
   /** The source URL: release assets without `url` live on its host. */
   sourceUrl: NormalizedSourceUrl;
   gate: NetworkGate;
@@ -74,10 +95,6 @@ export interface LadderDeps extends RepositoryAccess {
   sourceToken: string | null;
   /** The source uses token auth and no token is stored for its host: a hidden (404) release asset needs sign-in. */
   tokenMissing: boolean;
-  zip: ZipInspector;
-  limits: Readonly<MarketplaceArtifactLimits>;
-  /** Scratch directory for the tree export; removed before the ladder returns. */
-  workRoot: string;
   /** Pinned zips kept from earlier downloads, by digest. */
   artifacts: ArtifactCache;
 }
@@ -121,18 +138,7 @@ function sha256(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-/**
- * Tree digest (design §6.4): sha256 over `"<mode> <sha256(file)> <path>\n"`
- * for every installed file, sorted by path bytes.
- */
-export function treeDigest(files: ReadonlyArray<{ path: string; data: Buffer; executable: boolean }>): string {
-  const lines = files
-    .map((file) => ({ key: Buffer.from(file.path, "utf8"), line: `${file.executable ? "100755" : "100644"} ${sha256(file.data)} ${file.path}\n` }))
-    .sort((a, b) => Buffer.compare(a.key, b.key));
-  const hash = createHash("sha256");
-  for (const { line } of lines) hash.update(line, "utf8");
-  return hash.digest("hex");
-}
+export { treeDigest };
 
 function same(a: unknown, b: unknown): boolean {
   return (a === undefined) === (b === undefined) && (a === undefined || canonicalStringify(a) === canonicalStringify(b));
@@ -142,7 +148,7 @@ function same(a: unknown, b: unknown): boolean {
  * The descriptor at the version's commit must say what the index copy says:
  * that commit is what the plan is bound to, and the index is only a copy.
  */
-async function assertDescriptorAtVersion(plan: PluginInstallPlan, deps: LadderDeps): Promise<void> {
+async function assertDescriptorAtVersion(plan: PluginInstallPlan, deps: RepositoryAccess): Promise<void> {
   const descriptor = await readDescriptorAtVersion(plan, deps);
   const payload = descriptor.payload as { authority?: unknown; artifact?: unknown };
   const differs = [!same(payload.authority, plan.authority) && "authority", !same(payload.artifact, plan.artifact) && "artifact"]
@@ -156,7 +162,7 @@ async function assertDescriptorAtVersion(plan: PluginInstallPlan, deps: LadderDe
 }
 
 /** Read and check plugin.json from a zip that passed the preflight. */
-function stagedManifest(plan: PluginInstallPlan, zipBuffer: Buffer, deps: LadderDeps, rungs: readonly RungOutcome[], rung: ArtifactRung): unknown {
+function stagedManifest(plan: PluginInstallPlan, zipBuffer: Buffer, deps: FolderLadderDeps, rungs: readonly RungOutcome[], rung: PluginRung): unknown {
   const stop = (code: MarketplaceErrorCode, message: string, cause?: unknown) =>
     new LadderError(code, message, [...rungs, { rung, outcome: "failed", code, message: code === PROCESS_ENTRY_REQUIRES_PINNED_ARTIFACT_CODE
       ? PROCESS_ENTRY_REQUIRES_PINNED_ARTIFACT_MESSAGE
@@ -183,6 +189,14 @@ function stagedManifest(plan: PluginInstallPlan, zipBuffer: Buffer, deps: Ladder
     throw stop(
       PROCESS_ENTRY_REQUIRES_PINNED_ARTIFACT_CODE,
       `${plan.name}@${plan.version}: a direct source serves a process entry, which is installed only from a marketplace release or archive pinned by sha256`,
+    );
+  }
+  // A folder install is categorically ineligible (§18.4.9): its bytes came
+  // from no pinned release or archive, under any later admission rule.
+  if (rung === FOLDER_RUNG && hasProcessEntry(document)) {
+    throw stop(
+      PROCESS_ENTRY_REQUIRES_PINNED_ARTIFACT_CODE,
+      `${plan.name}@${plan.version}: a folder serves a process entry, which is installed only from a marketplace release or archive pinned by sha256`,
     );
   }
   // Defence in depth behind the declared-pin rule: the tree rung is the last,
@@ -364,6 +378,7 @@ function failureCode(error: unknown): MarketplaceErrorCode {
 
 /** Run the ladder for `plan`: the first rung that yields a verified, matching artifact wins. */
 export async function runPluginLadder(plan: PluginInstallPlan, deps: LadderDeps): Promise<StagedPluginArtifact> {
+  if (isFolderRevision(plan.versionCommit)) throw new Error(`${plan.name}@${plan.version} is a folder package; it installs through the folder rung`);
   await assertDescriptorAtVersion(plan, deps);
   const rungs: RungOutcome[] = [];
   /** The first rung that failed for want of a confirmation the source can give (*Allow…*, §18.2.3). */
@@ -420,7 +435,7 @@ export async function runPluginLadder(plan: PluginInstallPlan, deps: LadderDeps)
     }
     rungs.push({ rung, outcome: "used" });
     if (pinned !== undefined && !kept) await deps.artifacts.keep(bytes.artifactSha256, bytes.zipBuffer);
-    return { plan, zipBuffer: bytes.zipBuffer, artifactSha256: bytes.artifactSha256, rung, rungs, manifestDocument };
+    return { plan, zipBuffer: bytes.zipBuffer, artifactSha256: bytes.artifactSha256, rung, rungs, manifestDocument, notInstalled: [] };
   }
   const summary = rungs.map((item) => `${item.rung}: ${item.outcome === "failed" ? `${item.code} (${item.message})` : item.outcome === "skipped" ? `skipped (${item.reason})` : "used"}`);
   // A download that needs the source's confirmation is the failure the user can act on: *Allow…* and install again.
@@ -434,4 +449,67 @@ export async function runPluginLadder(plan: PluginInstallPlan, deps: LadderDeps)
   const failed = rungs.filter((item) => item.outcome === "failed");
   const code = failed.length > 0 && failed.every((item) => item.code === "SOURCE_AUTH_REQUIRED") ? "SOURCE_AUTH_REQUIRED" : "NO_INSTALLABLE_ARTIFACT";
   throw new LadderError(code, `${plan.name}@${plan.version}: no rung produced an installable artifact — ${summary.join("; ")}`, rungs);
+}
+
+/**
+ * The folder rung (§18.4.2): the plugin's built tree — `plugin.json`,
+ * `dist/**` and `assets/**` — from the copy the plan captured. Declared
+ * `release` and `archive` rungs are not tried, nothing is downloaded, and
+ * other top-level entries are listed as not installed. A folder with no
+ * `plugin.json` has nothing built to install.
+ */
+export async function runFolderRung(plan: PluginInstallPlan, deps: FolderLadderDeps, notInstalled: readonly string[]): Promise<StagedPluginArtifact> {
+  if (!isFolderRevision(plan.versionCommit)) throw new Error(`${plan.name}@${plan.version} is not a folder package`);
+  await assertDescriptorAtVersion(plan, deps);
+  deps.signal?.throwIfAborted();
+  const tree = deps.treeAt(plan.versionCommit);
+  const fail = (code: MarketplaceErrorCode, message: string, detail?: MarketplaceErrorDetail, cause?: unknown): LadderError =>
+    new LadderError(code, message, [{ rung: FOLDER_RUNG, outcome: "failed", code, message }], {
+      ...(detail ? { detail } : {}),
+      ...(cause === undefined ? {} : { cause }),
+    });
+  if ((await tree.readFile(repoPath(plan.packagePath, "plugin.json"), MANIFEST_LIMIT)) === null) {
+    throw fail(
+      "NO_INSTALLABLE_ARTIFACT",
+      `${plan.name}@${plan.version}: the folder has no plugin.json — build the plugin into dist/, or add the git repository instead`,
+      { reason: "folder-has-no-build", name: plan.name },
+    );
+  }
+  const dest = await mkdtemp(join(deps.workRoot, "folder-"));
+  let bytes: RungBytes;
+  try {
+    let exported;
+    try {
+      exported = await tree.exportPath(plan.packagePath, dest, { maxFiles: deps.limits.maxEntryCount, maxBytes: deps.limits.maxTotalUncompressedBytes });
+    } catch (error) {
+      throw fail(failureCode(error), (error as Error).message, isMarketplaceError(error) ? error.detail : undefined, error);
+    }
+    const files: Array<{ path: string; data: Buffer; executable: boolean }> = [];
+    for (const file of exported) {
+      const [top, ...rest] = file.path.split("/");
+      if (!packageInstalls("plugin", top!, rest.length > 0)) continue;
+      files.push({ path: file.path, data: await readFile(join(dest, ...file.path.split("/"))), executable: file.executable });
+    }
+    const zip = new AdmZip();
+    for (const file of files) zip.addFile(file.path, file.data, "", file.executable ? 0o755 : 0o644);
+    bytes = { zipBuffer: zip.toBuffer(), artifactSha256: treeDigest(files) };
+  } finally {
+    await rm(dest, { recursive: true, force: true });
+  }
+  let manifestDocument: unknown;
+  try {
+    manifestDocument = stagedManifest(plan, bytes.zipBuffer, deps, [], FOLDER_RUNG);
+  } catch (error) {
+    if (!(error instanceof VerificationFailure)) throw error;
+    throw fail(error.code, error.message, undefined, error);
+  }
+  return {
+    plan,
+    zipBuffer: bytes.zipBuffer,
+    artifactSha256: bytes.artifactSha256,
+    rung: FOLDER_RUNG,
+    rungs: [{ rung: FOLDER_RUNG, outcome: "used" }],
+    manifestDocument,
+    notInstalled: [...notInstalled],
+  };
 }

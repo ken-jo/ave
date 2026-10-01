@@ -12,11 +12,14 @@
  *   - `internal-network`: the source's own server is on an internal network;
  *   - `this-computer`: the source's own server is this computer;
  *   - `internal-downloads`: the source's catalog may name other internal hosts
- *     to download from; `internal-network` does not imply it.
+ *     to download from; `internal-network` does not imply it;
+ *   - `network-folder`: the source is a folder on another computer, so
+ *     reading it signs in to that server as the user (§18.4.6); a managed
+ *     folder source holds it through its policy entry.
  *
  * Free of imports, so the renderer reads the same list main validates.
  */
-const SOURCE_WARNINGS = ["unencrypted", "token-unencrypted", "internal-network", "this-computer", "internal-downloads"] as const;
+const SOURCE_WARNINGS = ["unencrypted", "token-unencrypted", "internal-network", "this-computer", "internal-downloads", "network-folder"] as const;
 
 export type SourceWarning = (typeof SOURCE_WARNINGS)[number];
 
@@ -24,7 +27,12 @@ export function isSourceWarning(value: unknown): value is SourceWarning {
   return typeof value === "string" && (SOURCE_WARNINGS as readonly string[]).includes(value);
 }
 
-/** One warning a target needs: the host and address it was found at, when one applies. */
+/**
+ * One warning a target needs: the host and address it was found at, when one
+ * applies. For `network-folder` the host is the server the folder lives on
+ * (null when the drive's mapping names none) and the address is the folder's
+ * path.
+ */
 export interface SourceWarningView {
   warning: SourceWarning;
   host: string | null;

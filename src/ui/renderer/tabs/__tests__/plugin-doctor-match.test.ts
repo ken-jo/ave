@@ -83,8 +83,12 @@ describe("findPluginProtocolUpdatePath", () => {
   it("names the installed source repository when no eligible version is published", () => {
     const installed = entry("weather", { state: "unavailable" });
     expect(findPluginProtocolUpdatePath(card({ id: "weather" }), [installed], [
-      { id: "ave", label: "Source", url: "https://example.invalid/weather" } as never,
+      { id: "ave", label: "Source", transport: "git", url: "https://example.invalid/weather", path: null } as never,
     ])).toEqual({ kind: "repository", sourceLabel: "Source", url: "https://example.invalid/weather" });
+    // A folder source is updated where it lives: its path is named.
+    expect(findPluginProtocolUpdatePath(card({ id: "weather" }), [installed], [
+      { id: "ave", label: "Folder", transport: "folder", url: null, path: "/opt/acme/market" } as never,
+    ])).toEqual({ kind: "repository", sourceLabel: "Folder", url: "/opt/acme/market" });
     expect(findPluginProtocolUpdatePath(card({ id: "weather" }), [installed], [])).toEqual({ kind: "unavailable" });
   });
 });

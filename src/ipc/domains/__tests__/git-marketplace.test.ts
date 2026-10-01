@@ -615,7 +615,7 @@ describe("git marketplace IPC boundary", () => {
   it("passes only known confirmations, each once, to a preview and to Allow… (§18.5)", async () => {
     const { service } = await setup();
     const invalid = { ok: false, code: "invalid-request" };
-    await expect(invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "http://x.example/m", auth: "none", acknowledge: ["network-folder"] })).resolves.toMatchObject(invalid);
+    await expect(invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "http://x.example/m", auth: "none", acknowledge: ["not-a-warning"] })).resolves.toMatchObject(invalid);
     await expect(invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "http://x.example/m", auth: "none", acknowledge: ["unencrypted", "unencrypted"] })).resolves.toMatchObject(invalid);
     await expect(invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "http://x.example/m", auth: "none", acknowledge: "unencrypted" })).resolves.toMatchObject(invalid);
     expect(service.previewSource).not.toHaveBeenCalled();

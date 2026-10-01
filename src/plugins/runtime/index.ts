@@ -38,9 +38,9 @@ import {
   installReceiptPath,
   verifyInstallReceipt,
   verifyInstallReceiptRaw,
-  type ArtifactRung,
   type GitInstallRecord,
   type PluginInstallReceipt,
+  type PluginRung,
 } from "../plugin-install-receipt.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readFile } from "node:fs/promises";
@@ -1465,11 +1465,11 @@ type PluginFactorySource =
 
 /** What a verified install receipt proves about the bytes on disk. */
 export interface PluginIntegrityEvidence {
-  installSource: "marketplace" | "local-dev" | "git";
+  installSource: "marketplace" | "local-dev" | "git" | "folder";
   signerKeyId: string | null;
   artifactSha256: string | null;
-  /** The git artifact ladder rung the bytes came through; `null` for any other install. */
-  rung: ArtifactRung | null;
+  /** The ladder rung the bytes came through (a folder install's is `folder`); `null` for any other install. */
+  rung: PluginRung | null;
   /** The kind of git source the install came from; `null` for any other install. */
   sourceOrigin: GitInstallRecord["sourceOrigin"] | null;
 }
@@ -1599,10 +1599,12 @@ export async function verifyPluginIntegrity(
     return { ok: false, reason: receiptResult.reason };
   }
   const { installSource } = receiptResult.receipt;
-  if (receiptResult.receipt.installSource === "git") {
+  if (receiptResult.receipt.installSource === "git" || receiptResult.receipt.installSource === "folder") {
     const document: unknown = JSON.parse(await readFile(resolve(pluginRoot, "plugin.json"), "utf8"));
     const authority = manifestAuthority(document);
-    const expected = receiptResult.receipt.git.authoritySha256;
+    const expected = receiptResult.receipt.installSource === "git"
+      ? receiptResult.receipt.git.authoritySha256
+      : receiptResult.receipt.folder.authoritySha256;
     if (expected && (!authority || sha256Hex(canonicalJSON(authority)) !== expected)) {
       return { ok: false, reason: "plugin authority differs from install review" };
     }
@@ -1628,7 +1630,7 @@ function integrityEvidence(receipt: PluginInstallReceipt): PluginIntegrityEviden
     installSource: receipt.installSource,
     artifactSha256: receipt.artifactSha256,
     signerKeyId: receipt.signerKeyId,
-    rung: receipt.installSource === "git" ? receipt.git.rung : null,
+    rung: receipt.installSource === "git" ? receipt.git.rung : receipt.installSource === "folder" ? "folder" : null,
     sourceOrigin: receipt.installSource === "git" ? receipt.git.sourceOrigin : null,
   };
 }

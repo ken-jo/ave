@@ -72,6 +72,7 @@ function staged(forPlan: PluginInstallPlan, document = pluginDocument(forPlan.ve
     zipBuffer,
     artifactSha256: createHash("sha256").update(zipBuffer).digest("hex"),
     rung: "archive",
+    notInstalled: [],
     rungs: [
       { rung: "release", outcome: "skipped", reason: "NOT_DECLARED" },
       { rung: "archive", outcome: "used" },
@@ -235,6 +236,7 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
         zipBuffer,
         artifactSha256: digest,
         rung,
+        notInstalled: [],
         rungs: rung === "release"
           ? [{ rung: "release", outcome: "used" }]
           : [

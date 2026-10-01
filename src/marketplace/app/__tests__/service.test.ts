@@ -40,6 +40,7 @@ import { marketplaceEvents, startMarketplaceBackground, type BackgroundService }
 import { emptyUpdateHistory, type UpdateHistory } from "../../updates/history.js";
 import type { SyncProgressView } from "../../../shared/git-marketplace.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { nodeFolders } from "../../__tests__/fixtures/folder-fs.js";
 
 
 /** The preview's id; a confirmation step here is a test failure. */
@@ -185,6 +186,7 @@ describe("MarketplaceService", () => {
       if (wait) await wait();
     };
     const syncer = new SourceSyncer({
+      folders: nodeFolders(),
       registry,
       gate,
       runner,
@@ -267,6 +269,7 @@ describe("MarketplaceService", () => {
       installers,
       ladder: { zip: artifacts, limits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS, artifacts: NO_ARTIFACT_CACHE },
       mcpLimits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,
+      folders: { ...nodeFolders(), home: root },
       english: {},
       onCatalogChanged: () => {
         emitted.catalogChanged += 1;
@@ -455,7 +458,7 @@ describe("MarketplaceService", () => {
   it("applies a default install from a managed source through the plan, once", async () => {
     const { url } = market();
     service.close();
-    await build(policyLoad({ additional: [{ id: "corp", url: normalizeSourceUrl(url), auth: { kind: "none" } }] }));
+    await build(policyLoad({ additional: [{ transport: "git", id: "corp", url: normalizeSourceUrl(url), auth: { kind: "none" } }] }));
     await service.refresh();
     const applied = await AppliedDefaults.open(join(root, "packages", "default-installs.json"));
     const defaults = [
@@ -482,7 +485,7 @@ describe("MarketplaceService", () => {
   it("tells how far a discovery got: every source, some, or none because the computer is offline (§18.7.1)", async () => {
     const { url } = market();
     service.close();
-    await build(policyLoad({ additional: [{ id: "corp", url: normalizeSourceUrl(url), auth: { kind: "none" } }] }));
+    await build(policyLoad({ additional: [{ transport: "git", id: "corp", url: normalizeSourceUrl(url), auth: { kind: "none" } }] }));
     // corp syncs for real once, so that losing its state file later leaves it broken.
     await service.refresh("corp");
     const synced = { status: "ok" as const, pinnedCommit: "a".repeat(40), changed: false };
@@ -1200,7 +1203,7 @@ describe("MarketplaceService", () => {
     it("runs the update check a sync's snapshot starts as its own operation, though it starts before that sync ends and outlives it", async () => {
       const { url, publish } = market();
       service.close();
-      const corp = { id: "corp", url: normalizeSourceUrl(url), auth: { kind: "none" as const } };
+      const corp = { transport: "git" as const, id: "corp", url: normalizeSourceUrl(url), auth: { kind: "none" as const } };
       const policy = policySource(policyLoad({ additional: [corp] }));
       await build(policy);
       await service.refresh();

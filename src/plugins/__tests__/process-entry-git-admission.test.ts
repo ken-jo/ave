@@ -49,6 +49,8 @@ import {
   makeTestPluginRuntime,
   TestPluginMarketplaceService,
 } from "./test-helpers.js";
+import { nodeFolders } from "../../marketplace/__tests__/fixtures/folder-fs.js";
+import { gitAccess } from "../../marketplace/sources/source-tree.js";
 
 const AT = "2026-10-01T00:00:00.000Z";
 const INSTALLATION = "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b";
@@ -134,7 +136,7 @@ describe("a process entry from a pinned git release (§9.7 P4)", () => {
     await mkdir(marketplaces, { recursive: true });
     const registry = await SourceRegistry.open({ root: marketplaces, policy });
     await registry.add({ id: "acme", origin, url: server.url(repoName), auth: { kind: "none" } });
-    const syncer = new SourceSyncer({ registry, gate, runner: git.runner, root: marketplaces, now: () => new Date(AT), retainedCommits: async () => new Set() });
+    const syncer = new SourceSyncer({ registry, gate, runner: git.runner, root: marketplaces, now: () => new Date(AT), retainedCommits: async () => new Set(), folders: nodeFolders() });
     expect(await syncer.sync("acme")).toMatchObject({ status: "ok" });
     const snapshot = (await syncer.readSnapshot("acme"))!;
     const [row] = aggregateCatalog([{ sourceId: "acme", sourceOrigin: origin, snapshot }], {
@@ -148,10 +150,10 @@ describe("a process entry from a pinned git release (§9.7 P4)", () => {
     await mkdir(workRoot, { recursive: true });
     const stage = (forPlan: PluginInstallPlan) => syncer.withRepository("acme", ({ repo: bare, remote, source }) =>
       runPluginLadder(forPlan, {
+        ...gitAccess(bare, remote, source.origin === "direct"),
         repo: bare,
         remote,
         sourceUrl: source.url,
-        direct: source.origin === "direct",
         gate,
         catalog: { id: "acme", label: "acme", url: source.url, acknowledged: new Set() },
         sourceToken: null,

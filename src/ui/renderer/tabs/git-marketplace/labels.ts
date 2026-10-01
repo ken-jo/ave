@@ -125,6 +125,12 @@ function failedSyncLabel(t: Translate, code: Extract<SourceStatusView, { state: 
     case "SOURCE_CONFIRMATION_REQUIRED": return t("gitMarketplace.sources.status.confirmationRequired");
     case "SOURCE_URL_REJECTED": return t("gitMarketplace.sources.status.addressRefused");
     case "SOURCE_LOCAL_DATA_DAMAGED": return t("gitMarketplace.sources.status.broken");
+    case "SOURCE_LOCAL_UNREADABLE": {
+      const reason = parseMarketplaceErrorDetail(code, detail)?.reason;
+      if (reason === "not-found") return t("gitMarketplace.sources.status.folderNotFound");
+      if (reason === "moved") return t("gitMarketplace.sources.status.folderMoved");
+      return t("gitMarketplace.sources.status.folderUnreadable");
+    }
     case "GIT_RUNTIME_MISSING":
     case "GIT_RUNTIME_TOO_OLD":
     case "GIT_RUNTIME_INSTALL_FAILED":
@@ -385,6 +391,14 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
             : t("gitMarketplace.error.urlRejected.addressUnroutable.network", { host: detail.host, address: detail.address });
         case "catalog-this-computer":
           return t("gitMarketplace.error.urlRejected.catalogThisComputer", { source: sourceName(t, subject, detail.source), host: detail.host });
+        // The folder forms Ave cannot read (§18.3, §18.4.1 stage 1): each says what to enter instead.
+        case "relative-path": return t("gitMarketplace.error.urlRejected.relativePath");
+        case "device-path": return t("gitMarketplace.error.urlRejected.devicePath");
+        case "windows-path": return t("gitMarketplace.error.urlRejected.windowsPath");
+        case "network-file-url": return t("gitMarketplace.error.urlRejected.networkFileUrl");
+        case "unc-without-share": return t("gitMarketplace.error.urlRejected.uncWithoutShare");
+        case "outside-root": return t("gitMarketplace.error.urlRejected.outsideRoot");
+        case "folder-options": return t("gitMarketplace.error.urlRejected.folderOptions");
       }
       return unhandled(detail);
     }
@@ -397,6 +411,8 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
         case "https-required": return t("gitMarketplace.policy.httpsRequired", { target: detail.target, policyPath: detail.policyPath });
         case "private-network-blocked":
           return t("gitMarketplace.policy.privateNetworkBlocked", { target: detail.target, address: detail.address, policyPath: detail.policyPath });
+        case "local-sources-blocked": return t("gitMarketplace.policy.localSourcesBlocked", { target: detail.target, policyPath: detail.policyPath });
+        case "direct-install-blocked": return t("gitMarketplace.policy.directInstallBlocked", { target: detail.target, policyPath: detail.policyPath });
         case "policy-invalid": return t("gitMarketplace.policy.policyInvalid", { error: scrubDiagnosticSecrets(detail.error) });
       }
       return unhandled(detail);
@@ -412,6 +428,8 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
           return warningText(t, { warning: detail.reason, host: detail.host, address: "address" in detail ? detail.address : null });
         case "internal-downloads":
           return t("gitMarketplace.warning.internalDownloads", { source: sourceName(t, subject, detail.source), host: detail.host });
+        case "network-folder":
+          return warningText(t, { warning: "network-folder", host: detail.server === "" ? null : detail.server, address: detail.path });
       }
       return unhandled(detail);
     }
@@ -461,6 +479,32 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
       }
       return unhandled(detail);
     }
+    case "SOURCE_LOCAL_UNREADABLE": {
+      const detail = parseMarketplaceErrorDetail(code, failure.detail);
+      if (!detail) return t("gitMarketplace.error.localUnreadable");
+      switch (detail.reason) {
+        // Only who added the folder can remove it and add another; an organization's folder is the administrator's.
+        case "not-found":
+          switch (audience) {
+            case "entry": return t("gitMarketplace.error.localUnreadable.notFound.entry", { path: detail.path });
+            case "custom": return t("gitMarketplace.error.localUnreadable.notFound", { path: detail.path });
+            case "managed":
+            case "owned":
+              return t("gitMarketplace.error.localUnreadable.notFound.managed", { path: detail.path });
+          }
+          return unhandled(audience);
+        case "permission": return t("gitMarketplace.error.localUnreadable.permission", { path: detail.path, message: scrubDiagnosticSecrets(detail.message) });
+        case "io": return t("gitMarketplace.error.localUnreadable.io", { path: detail.path, message: scrubDiagnosticSecrets(detail.message) });
+        case "moved":
+          return audience === "entry" || audience === "custom"
+            ? t("gitMarketplace.error.localUnreadable.moved", { path: detail.path, target: detail.target })
+            : t("gitMarketplace.error.localUnreadable.moved.managed", { path: detail.path, target: detail.target });
+        case "not-a-directory": return t("gitMarketplace.error.localUnreadable.notADirectory", { path: detail.path });
+        case "ambiguous-case": return t("gitMarketplace.error.localUnreadable.ambiguousCase", { path: detail.path });
+        case "changed-during-read": return t("gitMarketplace.error.localUnreadable.changedDuringRead", { path: detail.path });
+      }
+      return unhandled(detail);
+    }
     case "SOURCE_LIST_UNREADABLE": {
       const detail = parseMarketplaceErrorDetail(code, failure.detail);
       if (!detail) return t("gitMarketplace.error.listUnreadable");
@@ -499,8 +543,26 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
     case "MANIFEST_MISMATCH": return t("gitMarketplace.error.manifestMismatch");
     case "process-entry-unconfined": return t("formatIpcError.processEntryUnconfined");
     case "process-entry-requires-pinned-artifact": return t("formatIpcError.processEntryRequiresPinnedArtifact");
-    case "NO_INSTALLABLE_ARTIFACT": return t("gitMarketplace.error.noArtifact");
-    case "CONTENT_RULE_VIOLATION": return t("gitMarketplace.error.contentRule");
+    case "NO_INSTALLABLE_ARTIFACT": {
+      const detail = parseMarketplaceErrorDetail(code, failure.detail);
+      if (!detail) return t("gitMarketplace.error.noArtifact");
+      switch (detail.reason) {
+        case "folder-has-no-build": return t("gitMarketplace.error.noArtifact.folderHasNoBuild", { name: detail.name });
+      }
+      return unhandled(detail.reason);
+    }
+    case "CONTENT_RULE_VIOLATION": {
+      const detail = parseMarketplaceErrorDetail(code, failure.detail);
+      if (!detail) return t("gitMarketplace.error.contentRule");
+      switch (detail.reason) {
+        case "link-outside-folder": return t("gitMarketplace.error.contentRule.linkOutsideFolder", { path: detail.path, target: scrubDiagnosticSecrets(detail.target) });
+        case "link-to-network": return t("gitMarketplace.error.contentRule.linkToNetwork", { path: detail.path, target: scrubDiagnosticSecrets(detail.target) });
+        case "special-file": return t("gitMarketplace.error.contentRule.specialFile", { path: detail.path });
+        case "case-collision": return t("gitMarketplace.error.contentRule.caseCollision", { path: detail.path });
+        case "limit": return t("gitMarketplace.error.contentRule.limit", { path: detail.path, limit: scrubDiagnosticSecrets(detail.limit) });
+      }
+      return unhandled(detail);
+    }
     case "invalid-request": return t("gitMarketplace.error.invalidRequest");
     case "unauthorized-frame": return t("gitMarketplace.error.unauthorizedFrame");
     case "unavailable": return t("gitMarketplace.error.unavailable");
@@ -703,8 +765,23 @@ export function warningText(t: Translate, view: EnteredTargetWarningView): strin
         ? t("gitMarketplace.warning.internalNetwork.proxyRange", { host, address })
         : t("gitMarketplace.warning.internalNetwork", { host, address });
     case "this-computer": return t("gitMarketplace.warning.thisComputer", { host, address });
+    case "network-folder": return networkFolderText(t, view.host, address);
   }
   return unhandled(view.warning);
+}
+
+/**
+ * `network-folder` (§18.4.6): a Windows share or mapped drive is read
+ * signed in as the user, to the server the path or the drive's mapping names
+ * (or an unnamed server when the mapping names none); an automount path on
+ * macOS or Linux is read from the server it names.
+ */
+function networkFolderText(t: Translate, server: string | null, path: string): string {
+  const windows = path.startsWith("\\") || /^[A-Za-z]:/u.test(path);
+  if (!windows) return t("gitMarketplace.warning.networkFolder.automount", { server: server ?? "", path });
+  return server === null || server === ""
+    ? t("gitMarketplace.warning.networkFolder.unknownServer", { path })
+    : t("gitMarketplace.warning.networkFolder", { server, path });
 }
 
 /** A source badge's text (§18.5). */
@@ -757,8 +834,9 @@ function unhandled(value: never): never {
   throw new Error(`no sentence for ${JSON.stringify(value)}`);
 }
 
+/** The first seven hex digits of a commit, or of a folder's revision without its `local-` prefix (§18.4.3). */
 export function shortSha(commit: string): string {
-  return commit.slice(0, 7);
+  return commit.replace(/^local-/u, "").slice(0, 7);
 }
 
 /** `62 MB`, `1.1 MB`, `640 KB`. */

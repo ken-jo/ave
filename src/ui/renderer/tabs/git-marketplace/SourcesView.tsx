@@ -105,7 +105,7 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
 
   /** Set token…: an http source sends no sign-in until the user accepts that it travels unencrypted (§18.2.2). */
   const openToken = (source: SourceView) => {
-    if (source.url.startsWith("http://") && !source.acknowledged.includes("token-unencrypted")) {
+    if (source.url?.startsWith("http://") && !source.acknowledged.includes("token-unencrypted")) {
       setConfirm({ kind: "allow", source, warning: "token-unencrypted", text: warningText(t, { warning: "token-unencrypted", host: source.tokenHost, address: null }), then: "token" });
       return;
     }
@@ -206,7 +206,7 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
                       <SourceBadges badges={source.badges} testId={`git-marketplace:source:${source.id}:badge`} />
                     </div>
                     <div className="break-all font-mono text-[11px] text-muted-foreground">
-                      {source.url}
+                      {source.transport === "git" ? source.url : source.path}
                       {source.subdir ? ` · ${source.subdir}` : ""}
                       {source.mirrors > 0 ? ` · ${t("gitMarketplace.sources.mirrors", { count: source.mirrors })}` : ""}
                     </div>

@@ -24,6 +24,7 @@
  */
 import { app, ipcMain, powerMonitor, session, type IpcMainInvokeEvent } from "electron";
 import { mkdir, rm } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { notifyBootstrapStatus } from "../../boot/bootstrap-status.js";
 import { isDevModeUnlocked, isE2eTestRuntime } from "../../boot/dev-flags.js";
@@ -34,6 +35,7 @@ import { createLogger } from "../../lib/logger.js";
 import { getBootInstallNotice, getMarketplaceLifetime, setBootInstallNotice, takePendingGitMarketplaceLink } from "../../main/app-state.js";
 import { ensureCorporateCa } from "../../main/corp-ca-runtime.js";
 import { readPersistedCorpCaConfigSync } from "../../main/persisted-corp-ca.js";
+import { queryDosDevice } from "../../main/windows-path-kind-launcher.js";
 import { marketplaceEvents, startMarketplaceBackground, whileRunning, type MarketplaceBackground } from "../../marketplace/app/background.js";
 import { revocationRegistry } from "../../plugins/revocation/revocation-registry.js";
 import type { RevocationFeed } from "../../marketplace/app/revocations.js";
@@ -53,6 +55,7 @@ import { gitRuntimeRoot } from "../../marketplace/git/runtime-service.js";
 import { updateHistoryStore } from "../../marketplace/updates/history.js";
 import { NetworkGate } from "../../marketplace/net/network-gate.js";
 import { createPinnedFetch } from "../../marketplace/net/pinned-fetch.js";
+import { createNodeFolderFs } from "../../marketplace/sources/folder-fs.js";
 import { EMPTY_MARKETPLACE_POLICY, FilePolicySource, type MarketplacePolicy } from "../../marketplace/sources/policy.js";
 import { isSourceWarning, type SourceWarning } from "../../marketplace/sources/warnings.js";
 import { SourceRegistry } from "../../marketplace/sources/registry.js";
@@ -286,6 +289,13 @@ async function createGitMarketplaceService(
     resolveProxy: (url) => session.defaultSession.resolveProxy(url),
   });
   const registry = await SourceRegistry.open({ root, policy });
+  // Folder sources (§18.4): every filesystem call through one interface; on
+  // Windows a drive letter is classified by native/windows-path-kind/.
+  const folders = {
+    fs: createNodeFolderFs({ platform: process.platform, queryDosDevice }),
+    platform: process.platform,
+    limits: { maxFiles: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS.maxEntryCount, maxBytes: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS.maxTotalUncompressedBytes },
+  };
 
   // Every event of the service, the syncer and the revocation sink leaves through these, closed at shutdown.
   const events = marketplaceEvents(shutdown, {
@@ -327,6 +337,7 @@ async function createGitMarketplaceService(
       mcpInstallOrigins(mcpRecordsPath),
     ]),
     onCatalogChanged: events.onCatalogChanged,
+    folders,
   });
   const { id: installationId } = await loadInstallationId(join(home, "installation-id"));
   const service = new MarketplaceService({
@@ -357,6 +368,7 @@ async function createGitMarketplaceService(
       }),
     },
     mcpLimits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,
+    folders: { ...folders, home: homedir() },
     english: messages.en,
     onSyncProgress: events.onSyncProgress,
     onCatalogChanged: events.onCatalogChanged,

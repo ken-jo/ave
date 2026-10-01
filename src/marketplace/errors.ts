@@ -34,6 +34,7 @@ export const MARKETPLACE_ERROR_CODES = [
   "SOURCE_DISABLED",
   "SOURCE_LOCAL_DATA_DAMAGED",
   "SOURCE_LIST_UNREADABLE",
+  "SOURCE_LOCAL_UNREADABLE",
   "PLAN_EXPIRED",
   "PACKAGE_INCOMPATIBLE",
   "PACKAGE_COMPAT_UNDECLARED",
@@ -85,6 +86,13 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
    * named by a catalog, on the address the connection would use), a
    * catalog download to another service on this computer, and a folder in a
    * deep link. None has a confirmation.
+   *
+   * The folder forms Ave cannot read (§18.3, §18.4.1 stage 1), each with
+   * what to enter instead: a relative path (`./x`, `C:foo`, `~user`), a
+   * Windows device path, a drive or UNC path on macOS or Linux, a `file:`
+   * URL naming another computer there, a UNC path without its share, a `..`
+   * that climbs above the drive, share or `/`, and a branch, folder field or
+   * sign-in given with a folder, which has none of them.
    */
   SOURCE_URL_REJECTED: {
     "credentials-in-url": {},
@@ -95,12 +103,23 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
     "address-unroutable": { host: "string", address: "string" },
     "catalog-this-computer": { source: "string", host: "string" },
     "deep-link-path": {},
+    "relative-path": {},
+    "device-path": {},
+    "windows-path": {},
+    "network-file-url": {},
+    "unc-without-share": {},
+    "outside-root": {},
+    "folder-options": {},
   },
   SOURCE_POLICY_BLOCKED: {
     "blocked-by-pattern": { target: "string", pattern: "string", policyPath: "string" },
     "not-in-allow-list": { target: "string", policyPath: "string" },
     "https-required": { target: "string", policyPath: "string" },
     "private-network-blocked": { target: "string", address: "string", policyPath: "string" },
+    /** `allowLocalSources: false`: no folder is a source or a direct install (§18.6). */
+    "local-sources-blocked": { target: "string", policyPath: "string" },
+    /** `allowDirectInstall: false`: packages install from marketplaces only (§12). */
+    "direct-install-blocked": { target: "string", policyPath: "string" },
     "policy-invalid": { error: "text" },
   },
   /**
@@ -114,6 +133,8 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
     "internal-network": { host: "string", address: "string" },
     "this-computer": { host: "string", address: "string" },
     "internal-downloads": { source: "string", host: "string" },
+    /** A folder on another computer (§18.4.1 stage 2): the server, empty when the drive's mapping names none, and the folder. */
+    "network-folder": { server: "string", path: "string" },
   },
   /**
    * `token-no-access`: the host answered "repository not found" after Ave
@@ -178,6 +199,40 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
   SOURCE_LIST_UNREADABLE: {
     unreadable: { fsCode: "string" },
     invalid: {},
+  },
+  /**
+   * A folder source, or a folder being added, cannot be read (§18.4): gone
+   * (`not-found`), refused by the system (`permission`, `io`, with the
+   * system's message), now pointing elsewhere than the folder that was
+   * added (`moved`), not a folder, spelled ambiguously on a case-sensitive
+   * volume, or changed while it was read. The last good snapshot stays
+   * served, and the next read tries again.
+   */
+  SOURCE_LOCAL_UNREADABLE: {
+    "not-found": { path: "string" },
+    permission: { path: "string", message: "text" },
+    io: { path: "string", message: "text" },
+    moved: { path: "string", target: "string" },
+    "not-a-directory": { path: "string" },
+    "ambiguous-case": { path: "string" },
+    "changed-during-read": { path: "string" },
+  },
+  /**
+   * A folder's file breaks a reading rule (§18.4.5, §5.4, §5.5): a link that
+   * leaves the folder or names another computer (never followed), a device,
+   * socket or FIFO, two names equal after NFC or ignoring case, or a limit.
+   * `path` is relative to the folder; `target` is the link's own text.
+   */
+  CONTENT_RULE_VIOLATION: {
+    "link-outside-folder": { path: "string", target: "text" },
+    "link-to-network": { path: "string", target: "text" },
+    "special-file": { path: "string" },
+    "case-collision": { path: "string" },
+    limit: { path: "string", limit: "text" },
+  },
+  /** A folder plugin without a built tree (`plugin.json` and `dist/`, §18.4.2). */
+  NO_INSTALLABLE_ARTIFACT: {
+    "folder-has-no-build": { name: "string" },
   },
   /** `policy-changed`: the plan was made under another managed policy (§18.6). */
   PLAN_EXPIRED: {
@@ -298,6 +353,8 @@ function confirmationDetail(view: EnteredTargetWarningView): MarketplaceErrorDet
     case "internal-network":
     case "this-computer":
       return { reason: view.warning, host, address: view.address ?? "" };
+    case "network-folder":
+      return { reason: view.warning, server: host, path: view.address ?? "" };
   }
 }
 

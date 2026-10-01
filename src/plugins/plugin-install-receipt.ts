@@ -33,11 +33,19 @@ export interface PluginAdmissionRecord {
 export const ARTIFACT_RUNGS = ["release", "archive", "tree"] as const;
 export type ArtifactRung = (typeof ARTIFACT_RUNGS)[number];
 
-/** What happened on one rung; every rung appears once, in ladder order. */
+/**
+ * A folder source's one rung (§18.4.2): the built tree in the folder. It
+ * never downloads, and an install through it never qualifies for a
+ * host-secret grant or a `process` entry.
+ */
+export const FOLDER_RUNG = "folder";
+export type PluginRung = ArtifactRung | typeof FOLDER_RUNG;
+
+/** What happened on one rung; every rung appears once, in ladder order (a folder install has only `folder`). */
 export type RungOutcome =
-  | { rung: ArtifactRung; outcome: "used" }
-  | { rung: ArtifactRung; outcome: "skipped"; reason: "NOT_DECLARED" | "ARTIFACT_NOT_PINNED" }
-  | { rung: ArtifactRung; outcome: "failed"; code: string; message: string };
+  | { rung: PluginRung; outcome: "used" }
+  | { rung: PluginRung; outcome: "skipped"; reason: "NOT_DECLARED" | "ARTIFACT_NOT_PINNED" }
+  | { rung: PluginRung; outcome: "failed"; code: string; message: string };
 
 /**
  * Where a git install came from: the source, the two commits the plan was
@@ -55,6 +63,27 @@ export interface GitInstallRecord {
   rungs: RungOutcome[];
   /** Hash of the authority reviewed when this artifact was installed. */
   authoritySha256?: string;
+}
+
+/**
+ * Where a folder install came from (§18.4.2): the source, the folder's
+ * revision the plan captured, the package path, and the digests of what was
+ * installed and of the authority reviewed. Its bytes came from no pinned
+ * release, so it is categorically ineligible for a `process` entry or a
+ * host-secret grant.
+ */
+export interface FolderInstallRecord {
+  sourceId: string;
+  /** Folder sources are added by the user or provisioned by the policy; the official source is never a folder. */
+  sourceOrigin: "managed" | "custom" | "direct";
+  /** `local-<sha256>` (§18.4.3). */
+  revision: string;
+  /** Package directory in the folder; "" is the root of a direct source. */
+  packagePath: string;
+  /** Tree digest (§6.4) of the installed files; equal to the receipt's `artifactSha256`. */
+  treeSha256: string;
+  /** Hash of the authority reviewed when this artifact was installed. */
+  authoritySha256: string;
 }
 
 /**
@@ -96,7 +125,22 @@ export interface GitInstallReceipt {
   files: InstallReceiptFile[];
 }
 
-export type PluginInstallReceipt = SignedOrLocalInstallReceipt | GitInstallReceipt;
+/** Schema v4 for a folder install (§18.4.2): no signer, no admission, the tree digest, and the `folder` record. */
+export interface FolderInstallReceipt {
+  schemaVersion: 4;
+  pluginId: string;
+  version: string;
+  installSource: "folder";
+  artifactSha256: string;
+  signerKeyId: null;
+  admission: null;
+  folder: FolderInstallRecord;
+  installedAt: string;
+  reviewedAppVersion?: string;
+  files: InstallReceiptFile[];
+}
+
+export type PluginInstallReceipt = SignedOrLocalInstallReceipt | GitInstallReceipt | FolderInstallReceipt;
 
 /**
  * On-disk shape of receipts written before schema v3. Normalised by
@@ -224,9 +268,56 @@ export async function buildGitInstallReceipt(
   return { receipt, raw: serializeInstallReceipt(receipt) };
 }
 
+export async function buildFolderInstallReceipt(
+  pluginRoot: string,
+  input: {
+    pluginId: string;
+    version: string;
+    folder: FolderInstallRecord;
+    files: string[];
+    installedAt?: string;
+    reviewedAppVersion?: string;
+  },
+): Promise<{ receipt: FolderInstallReceipt; raw: string }> {
+  const problem = folderInstallRecordProblem(input.folder);
+  if (problem) throw new Error(`folder install receipt for ${input.pluginId}: ${problem}`);
+  const receipt: FolderInstallReceipt = {
+    schemaVersion: 4,
+    pluginId: input.pluginId,
+    version: input.version,
+    installSource: "folder",
+    artifactSha256: input.folder.treeSha256,
+    signerKeyId: null,
+    admission: null,
+    folder: input.folder,
+    installedAt: input.installedAt ?? new Date().toISOString(),
+    ...(input.reviewedAppVersion ? { reviewedAppVersion: input.reviewedAppVersion } : {}),
+    files: await hashReceiptFiles(pluginRoot, input.files),
+  };
+  return { receipt, raw: serializeInstallReceipt(receipt) };
+}
+
 const SHA256_HEX = /^[a-f0-9]{64}$/;
 const COMMIT_HEX = /^[a-f0-9]{40}$/;
+const FOLDER_REVISION = /^local-[a-f0-9]{64}$/;
 const SOURCE_ORIGINS = new Set(["official", "managed", "custom", "direct"]);
+const FOLDER_SOURCE_ORIGINS = new Set(["managed", "custom", "direct"]);
+
+/** Why a folder install record is malformed, or null when it is well formed. */
+function folderInstallRecordProblem(value: unknown): string | null {
+  if (!isPlainRecord(value)) return "folder record is not an object";
+  if (!hasOnlyKeys(value, ["sourceId", "sourceOrigin", "revision", "packagePath", "treeSha256", "authoritySha256"])) {
+    return "folder record has unknown fields";
+  }
+  if (typeof value.sourceId !== "string" || value.sourceId.length === 0) return "folder record sourceId is invalid";
+  if (typeof value.sourceOrigin !== "string" || !FOLDER_SOURCE_ORIGINS.has(value.sourceOrigin)) return "folder record sourceOrigin is invalid";
+  // A folder's pin is its revision; a 40-hex commit here is not one (§18.4.3).
+  if (typeof value.revision !== "string" || !FOLDER_REVISION.test(value.revision)) return "folder record revision is invalid";
+  if (typeof value.packagePath !== "string") return "folder record packagePath is invalid";
+  if (typeof value.treeSha256 !== "string" || !SHA256_HEX.test(value.treeSha256)) return "folder record treeSha256 is invalid";
+  if (typeof value.authoritySha256 !== "string" || !SHA256_HEX.test(value.authoritySha256)) return "folder record authoritySha256 is invalid";
+  return null;
+}
 const RUNG_SKIP_REASONS = new Set(["NOT_DECLARED", "ARTIFACT_NOT_PINNED"]);
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -383,6 +474,20 @@ export async function verifyInstallReceiptRaw(
       schemaVersion: 3,
       admission: "admission" in stored ? stored.admission : null,
     };
+  } else if (candidate.schemaVersion === 4 && candidate.installSource === "folder") {
+    const stored = candidate as unknown as FolderInstallReceipt;
+    if (!hasOnlyKeys(candidate, ["schemaVersion", "pluginId", "version", "installSource", "artifactSha256", "signerKeyId", "admission", "folder", "installedAt", "reviewedAppVersion", "files"])) {
+      return { ok: false, reason: "folder receipt has unknown fields" };
+    }
+    if (stored.signerKeyId !== null || stored.admission !== null) {
+      return { ok: false, reason: "folder receipt must not carry a signer or an admission" };
+    }
+    const problem = folderInstallRecordProblem(stored.folder);
+    if (problem) return { ok: false, reason: `folder receipt: ${problem}` };
+    if (stored.artifactSha256 !== stored.folder.treeSha256) {
+      return { ok: false, reason: "folder receipt artifactSha256 is not its tree digest" };
+    }
+    receipt = stored;
   } else if (candidate.schemaVersion === 4) {
     const stored = candidate as unknown as GitInstallReceipt;
     if (stored.installSource !== "git") {

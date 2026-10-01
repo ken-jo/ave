@@ -13,14 +13,17 @@ import { canonicalStringify } from "../../shared/canonical-json.js";
 import { validateDescriptorText } from "../catalog/validate.js";
 import { readDirectPackage } from "../sources/direct-package.js";
 import { MarketplaceError } from "../errors.js";
-import type { BareRepo } from "../git/repo.js";
-import type { GitRemote } from "../git/run-git.js";
 import type { SourceOrigin } from "../sources/registry.js";
+import type { RepositoryAccess } from "../sources/source-tree.js";
+
+export type { RepositoryAccess };
 
 export interface PackagePlan {
   sourceId: string;
   sourceOrigin: SourceOrigin;
+  /** The source's pin the catalog row came from: a commit, or a folder source's revision (§18.4.3). */
   snapshotCommit: string;
+  /** The version's own commit; a folder source's only version is at its revision. */
   versionCommit: string;
   /** Package directory in the repository; "" is the root of a direct source. */
   packagePath: string;
@@ -31,14 +34,6 @@ export interface PackagePlan {
   hostProtocol?: string;
   platforms?: IndexVersion["platforms"];
   components?: AgentPluginComponents;
-}
-
-export interface RepositoryAccess {
-  repo: BareRepo;
-  /** Remote for blobs the partial clone does not hold yet. */
-  remote: GitRemote;
-  direct: boolean;
-  signal?: AbortSignal;
 }
 
 export const DESCRIPTOR_NAME = "ave-package.json";
@@ -103,14 +98,15 @@ export async function readDescriptorAtVersion(plan: PackagePlan, access: Reposit
   const path = repoPath(plan.packagePath, DESCRIPTOR_NAME);
   const fail = (why: string) => new MarketplaceError("MANIFEST_MISMATCH", `${plan.kind} ${plan.name}@${plan.version} at ${plan.versionCommit}: ${why}`);
   let descriptor: PackageDescriptor;
+  const tree = access.treeAt(plan.versionCommit);
   if (access.direct) {
-    const read = await readDirectPackage({ repo: access.repo, remote: access.remote, commit: plan.versionCommit, path: plan.packagePath, ...(access.signal ? { signal: access.signal } : {}) });
+    const read = await readDirectPackage({ tree, path: plan.packagePath, rootName: access.rootName });
     if (!read) throw fail(`no package file at ${plan.packagePath || "the repository root"}`);
     if (!read.ok) throw fail(read.error);
     descriptor = read.found.descriptor;
   } else {
-    await access.repo.ensureBlobs(access.remote, plan.versionCommit, [path], access.signal);
-    const bytes = await access.repo.readFile(plan.versionCommit, path, DESCRIPTOR_LIMIT);
+    await tree.ensure([path]);
+    const bytes = await tree.readFile(path, DESCRIPTOR_LIMIT);
     if (!bytes) throw fail(`${path} is missing`);
     const checked = validateDescriptorText(bytes.toString("utf8"), { direct: false });
     if (!checked.ok) throw fail(`${path} is invalid: ${checked.error}`);

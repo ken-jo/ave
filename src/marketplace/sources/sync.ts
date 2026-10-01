@@ -13,6 +13,14 @@
  * answers supplies the candidate, under the same history rule. Offline, the
  * snapshot at the pin keeps being served (`readSnapshot`); nothing falls back
  * to another source.
+ *
+ * A folder source (§18.4) is read in place instead, and no git command runs
+ * against it (§18.3 #6): stages 2–4 again from the stored path (a drive
+ * remapped to a share, or a component replaced by a link, is caught before
+ * the read), the snapshot built over a `FolderTree`, and its revision
+ * `local-<sha256>` as the pin. There is no history rule: every read is the
+ * folder's current state. A read that fails keeps the last good snapshot
+ * served, and the next read tries again.
  */
 import { validateCachedSnapshotText } from "../catalog/validate.js";
 import { effectiveRevocations } from "../catalog/effective-revocations.js";
@@ -23,12 +31,17 @@ import { isMissingPathError } from "../../lib/atomic-file.js";
 import { writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
 import { MarketplaceError, isMarketplaceError, scrubMarketplaceErrorDetail, type MarketplaceErrorCode, type MarketplaceErrorDetail } from "../errors.js";
-import { BareRepo } from "../git/repo.js";
+import { BareRepo, type ExportLimits } from "../git/repo.js";
 import { LocalRepositoryDamagedError, type GitCommands, type GitRemote } from "../git/run-git.js";
 import type { NetworkGate } from "../net/network-gate.js";
+import { classifyFolder, folderMoved, resolveFolderRoot } from "../net/source-input.js";
 import { errorMessage } from "../../shared/error-message.js";
-import { fsErrorCode, readSourceState, type ResolvedSource, type SourceRegistry, type SourceState } from "./registry.js";
-import { pinnedArtifactSha256s, SnapshotBuilder, type SourceSnapshot } from "./snapshot.js";
+import type { PackageKind } from "../catalog/types.js";
+import type { FolderFs } from "./folder-fs.js";
+import { FolderTree, type FolderCapture } from "./folder-tree.js";
+import { fsErrorCode, readSourceState, type FolderSource, type GitSource, type ResolvedSource, type SourceRegistry, type SourceState } from "./registry.js";
+import { pinnedArtifactSha256s, SnapshotBuilder, type SnapshotSubject, type SourceSnapshot } from "./snapshot.js";
+import { GitTree, rootNameOf } from "./source-tree.js";
 
 export interface SourceSyncOptions {
   registry: SourceRegistry;
@@ -41,6 +54,12 @@ export interface SourceSyncOptions {
   retainedCommits: (sourceId: string) => Promise<ReadonlySet<string>>;
   /** Called after a snapshot is published, including a same-pin rebuild. */
   onCatalogChanged?: (sourceId: string) => void;
+  /**
+   * How folder sources are read (§18.4.5): every filesystem call through
+   * `fs`, paths read for `platform`, and the ceiling on one package's files
+   * and bytes (§5.4).
+   */
+  folders: { fs: FolderFs; platform: NodeJS.Platform; limits: ExportLimits };
 }
 
 export type SyncResult =
@@ -48,7 +67,8 @@ export type SyncResult =
   /** `detail` says why when the failure did (design §18.8); it is persisted with the code. */
   | { status: "failed"; code: MarketplaceErrorCode; message: string; detail?: MarketplaceErrorDetail; pinnedCommit: string | null };
 
-const SNAPSHOT_FILE = /^[0-9a-f]{40}\.json$/u;
+/** A snapshot is named by its pin: a commit, or a folder's revision (§18.4.3). */
+const SNAPSHOT_FILE = /^(?:[0-9a-f]{40}|local-[0-9a-f]{64})\.json$/u;
 const CANDIDATE_REF = "candidate";
 
 /** A source syncs while it is shown, or while an installed package is still bound to it (§7.3). */
@@ -106,7 +126,7 @@ export class SourceSyncer {
   }
 
   /** The gate's verdict for one of the source's URLs, under the confirmations the source holds (§18.5). */
-  private async remoteFor(source: ResolvedSource, url = source.url): Promise<GitRemote> {
+  private async remoteFor(source: GitSource, url = source.url): Promise<GitRemote> {
     const acknowledged = await this.options.registry.acknowledged(source);
     const verdict = this.options.gate.checkRemote(url, { official: source.origin === "official", acknowledged });
     // A mirror on another host never gets the primary host's token.
@@ -115,7 +135,7 @@ export class SourceSyncer {
   }
 
   /** Primary URL, then each mirror; the first to answer supplies the candidate. */
-  private async fetchCandidate(repo: BareRepo, source: ResolvedSource, signal?: AbortSignal): Promise<{ candidate: string; remote: GitRemote }> {
+  private async fetchCandidate(repo: BareRepo, source: GitSource, signal?: AbortSignal): Promise<{ candidate: string; remote: GitRemote }> {
     let firstError: MarketplaceError | null = null;
     for (const url of [source.url, ...source.mirrors]) {
       try {
@@ -153,12 +173,19 @@ export class SourceSyncer {
   private async publish(
     repo: BareRepo,
     remote: GitRemote,
-    source: ResolvedSource,
+    source: GitSource,
     commit: string,
     previousPin: string | null,
     signal?: AbortSignal,
   ): Promise<SyncResult> {
-    const built = await new SnapshotBuilder(repo, remote, source, commit, signal).build(this.now());
+    const subject: SnapshotSubject = {
+      id: source.id,
+      origin: source.origin,
+      ...(source.label !== undefined ? { label: source.label } : {}),
+      ...(source.subdir !== undefined ? { subdir: source.subdir } : {}),
+      rootName: rootNameOf(remote.url.path),
+    };
+    const built = await new SnapshotBuilder(new GitTree(repo, remote, commit, signal), subject).build(this.now());
     if (!built.ok) return this.recordFailure(source, built, commit);
     await writeFileAtomicAtPath(this.snapshotPath(source.id, commit), `${JSON.stringify(built.snapshot)}\n`);
     await this.options.registry.updateState(source.id, (current) => {
@@ -170,12 +197,70 @@ export class SourceSyncer {
     return { status: "ok", pinnedCommit: commit, changed: true };
   }
 
+  /**
+   * Stages 2–4 of §18.4.1 for a stored folder, before anything reads it:
+   * network classification, the policy and `network-folder`, then the walk.
+   * A walk that ends at another path, or at a directory whose recorded
+   * identity differs, is `moved`, and the new target is never read
+   * (§18.4.4). The canonical path is judged by the policy again.
+   */
+  private async openFolder(source: FolderSource, state: SourceState): Promise<FolderTree> {
+    const { fs, platform, limits } = this.options.folders;
+    this.options.gate.checkFolderPolicy(source.path);
+    const network = await classifyFolder(source.path, platform, fs);
+    this.options.gate.checkFolder(source.path, network, await this.options.registry.acknowledged(source));
+    const root = await resolveFolderRoot(source.path, platform, fs);
+    if (root.path !== source.path) throw folderMoved(source.path, root.path);
+    const recorded = state.folder;
+    const known = recorded !== undefined && recorded.dev !== "0" && recorded.ino !== "0" && root.dev !== 0n && root.ino !== 0n;
+    if (known && (recorded.dev !== root.dev.toString() || recorded.ino !== root.ino.toString())) throw folderMoved(source.path, root.path);
+    this.options.gate.checkFolderPolicy(root.path);
+    return new FolderTree({ fs, platform, root, readAt: this.now(), limits });
+  }
+
+  /**
+   * One read of a folder source: the snapshot over its current files, written
+   * and pinned when its revision is new (or its snapshot is gone), and the
+   * folder's identity recorded. The tree is returned so a plan captures from
+   * the same read (§18.4.2).
+   */
+  private async readFolder(source: FolderSource, signal?: AbortSignal): Promise<{ result: SyncResult; tree: FolderTree | null; snapshot: SourceSnapshot | null }> {
+    const state = await this.options.registry.updateState(source.id, (current) => current);
+    const pin = state.pinnedCommit;
+    let tree: FolderTree;
+    try {
+      tree = await this.openFolder(source, state);
+    } catch (error) {
+      if (!isMarketplaceError(error)) throw error;
+      return { result: await this.recordFailure(source, error), tree: null, snapshot: null };
+    }
+    signal?.throwIfAborted();
+    const subject: SnapshotSubject = {
+      id: source.id,
+      origin: source.origin,
+      ...(source.label !== undefined ? { label: source.label } : {}),
+      rootName: rootNameOf(tree.root.path),
+    };
+    const built = await new SnapshotBuilder(tree, subject).build(this.now());
+    if (!built.ok) return { result: await this.recordFailure(source, built), tree: null, snapshot: null };
+    signal?.throwIfAborted();
+    const revision = built.snapshot.commit;
+    const identity = { dev: tree.root.dev.toString(), ino: tree.root.ino.toString() };
+    const reusable = revision === pin && (await this.hasReusableSnapshot(source.id, revision));
+    if (!reusable) await writeFileAtomicAtPath(this.snapshotPath(source.id, revision), `${JSON.stringify(built.snapshot)}\n`);
+    await this.options.registry.updateState(source.id, (current) => ({ ...current, pinnedCommit: revision, folder: identity, lastSync: { at: this.now(), result: "ok" } }));
+    if (reusable) return { result: { status: "ok", pinnedCommit: revision, changed: false }, tree, snapshot: built.snapshot };
+    await this.prune(source.id, revision, pin);
+    this.options.onCatalogChanged?.(source.id);
+    return { result: { status: "ok", pinnedCommit: revision, changed: true }, tree, snapshot: built.snapshot };
+  }
+
   /** Keep the pin, the previous pin and every commit an installed package still references. */
   private async prune(id: string, pin: string, previousPin: string | null): Promise<void> {
     const keep = new Set([pin, ...(previousPin ? [previousPin] : []), ...(await this.options.retainedCommits(id))]);
     const dir = join(this.sourceDir(id), "snapshots");
     for (const name of await readdir(dir)) {
-      if (SNAPSHOT_FILE.test(name) && !keep.has(name.slice(0, 40))) await rm(join(dir, name), { force: true });
+      if (SNAPSHOT_FILE.test(name) && !keep.has(name.slice(0, -".json".length))) await rm(join(dir, name), { force: true });
     }
   }
 
@@ -208,6 +293,7 @@ export class SourceSyncer {
 
   private async runOnce(id: string, signal?: AbortSignal): Promise<SyncResult> {
     const source = this.source(id);
+    if (source.transport === "folder") return (await this.readFolder(source, signal)).result;
     // Written before the repository exists, so a state file that goes missing
     // later is noticed instead of read as a fresh, unpinned source.
     const state = await this.options.registry.updateState(id, (current) => current);
@@ -300,6 +386,8 @@ export class SourceSyncer {
       if (source.origin !== "custom" && source.origin !== "direct") {
         throw new Error(`the ${source.origin} source ${id} never accepts rewritten history`);
       }
+      // A folder has no history rule (§18.4.3): nothing is ever pending for it.
+      if (source.transport === "folder") throw new MarketplaceError("PLAN_EXPIRED", `the folder source ${id} has no rewritten history to accept`);
       const state = await this.options.registry.readState(id);
       try {
         const repo = await this.openRepo(id);
@@ -329,9 +417,10 @@ export class SourceSyncer {
    * source syncs for the packages bound to it, but installs and updates from
    * it are refused with SOURCE_DISABLED until it is shown again (§14).
    */
-  withRepository<T>(id: string, fn: (context: { source: ResolvedSource; repo: BareRepo; remote: GitRemote }) => Promise<T>): Promise<T> {
+  withRepository<T>(id: string, fn: (context: { source: GitSource; repo: BareRepo; remote: GitRemote }) => Promise<T>): Promise<T> {
     return this.withSourceLock(id, async () => {
       const source = this.source(id);
+      if (source.transport !== "git") throw new Error(`source ${id} is a folder; it has no repository`);
       if (!this.options.registry.isEnabled(source, await this.options.registry.readState(id))) {
         throw new MarketplaceError("SOURCE_DISABLED", `source ${id} is hidden; show it again to install or update from it`);
       }
@@ -343,6 +432,46 @@ export class SourceSyncer {
         if (error instanceof LocalRepositoryDamagedError) throw repositoryDamaged(id, error);
         throw error;
       }
+    });
+  }
+
+  /**
+   * Capture one package of a folder source for an install plan (§18.4.2),
+   * under the source lock: the folder is read again (stages 2–4, a fresh
+   * snapshot, published when its revision is new), then the package's files
+   * are copied from that same read into `dest`. The copy's tree digest must
+   * be the one the snapshot recorded, so a package that changed during the
+   * read is never captured. A read that fails is recorded on the source and
+   * thrown. Execution installs the copy and never reads the folder again.
+   */
+  captureFolderPackage(
+    id: string,
+    wanted: { kind: PackageKind; name: string },
+    dest: string,
+  ): Promise<{ source: FolderSource; snapshot: SourceSnapshot; capture: FolderCapture; path: string }> {
+    return this.withSourceLock(id, async () => {
+      const source = this.source(id);
+      if (source.transport !== "folder") throw new Error(`source ${id} is not a folder`);
+      if (!this.options.registry.isEnabled(source, await this.options.registry.readState(id))) {
+        throw new MarketplaceError("SOURCE_DISABLED", `source ${id} is hidden; show it again to install or update from it`);
+      }
+      const read = await this.readFolder(source);
+      if (read.result.status === "failed") {
+        const { code, message, detail } = read.result;
+        throw new MarketplaceError(code, message, detail ? { detail } : undefined);
+      }
+      const { tree, snapshot } = read;
+      if (!tree || !snapshot) throw new Error(`folder source ${id} was read without a tree`);
+      const pkg = snapshot.packages.find((item) => item.kind === wanted.kind && item.name === wanted.name);
+      if (!pkg) throw new MarketplaceError("PACKAGE_INCOMPATIBLE", `${id} no longer lists ${wanted.kind} ${wanted.name}`);
+      if (pkg.treeSha256 === undefined) throw new Error(`folder package ${wanted.name} of ${id} has no tree digest`);
+      const capture = await tree.capture(pkg.path, pkg.kind, dest);
+      if (capture.treeSha256 !== pkg.treeSha256) {
+        throw new MarketplaceError("SOURCE_LOCAL_UNREADABLE", `${pkg.path || "the folder"} changed while it was read`, {
+          detail: { reason: "changed-during-read", path: source.path },
+        });
+      }
+      return { source, snapshot, capture, path: pkg.path };
     });
   }
 
