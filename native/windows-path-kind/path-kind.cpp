@@ -7,8 +7,11 @@
 // network drive's server is never contacted. The caller decides what the
 // mapping means; this helper does nothing else.
 //
-// Exit codes: 0 mapping printed; 1 the call failed (an unknown drive among
-// them), with the Windows error on stderr; 2 the argument is not `X:`.
+// Exit codes: 0 mapping printed; 1 the OS has no mapping for the drive (the
+// call failed, an unknown drive among them, or answered nothing), with the
+// Windows error on stderr; 2 the argument is not `X:`; 3 the mapping could
+// not be written. Only 1 is an answer about the drive: the caller treats any
+// other failure as a broken helper, never as a classification.
 #include <windows.h>
 
 #include <cstdio>
@@ -64,7 +67,7 @@ int wmain(int argc, wchar_t** argv) {
   }
   if (!write_utf8(mapping)) {
     std::fputs("could not write the mapping\n", stderr);
-    return 1;
+    return 3;
   }
   return 0;
 }

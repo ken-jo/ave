@@ -10,9 +10,9 @@ import { FolderTree } from "../folder-tree.js";
 
 const AT = "2026-10-02T00:00:00.000Z";
 
-async function treeOf(volume: FakeVolume, path: string): Promise<FolderTree> {
-  const root = await resolveFolderRoot(path, volume.platform, volume);
-  return new FolderTree({ fs: volume, platform: volume.platform, root, readAt: AT, limits: TEST_FOLDER_LIMITS });
+async function treeOf(volume: FakeVolume, path: string, networkConsented = false): Promise<FolderTree> {
+  const root = await resolveFolderRoot(path, volume.platform, volume, networkConsented);
+  return new FolderTree({ fs: volume, platform: volume.platform, root, readAt: AT, limits: TEST_FOLDER_LIMITS, networkConsented });
 }
 
 const text = (files: Array<{ path: string; data: Buffer }>) => Object.fromEntries(files.map((file) => [file.path, file.data.toString("utf8")]));
@@ -177,5 +177,63 @@ describe("names and skipped entries (§18.4.5)", () => {
     expect(pkg.notInstalled).toEqual(["node_modules/", "package.json", "src/"]);
     // What is not installed is never read.
     expect(plugin.paths("open").some((path) => path.includes("/src/") || path.includes("node_modules"))).toBe(false);
+  });
+});
+
+describe("a link into a skipped entry (§18.4.5)", () => {
+  /** Calls that would read or list beneath `.git`: an lstat of the typed component is how its spelling is learned. */
+  const beneath = (volume: FakeVolume, dir: string) => volume.calls.filter((call) => call.path.startsWith(dir) && call.op !== "lstat");
+
+  it("refuses a link whose target lies in .git as link-to-skipped, and never opens or lists anything there", async () => {
+    const volume = new FakeVolume("linux").file("/m/SKILL.md", "skill\n").file("/m/.git/config", "PRIVATE CONFIG\n").link("/m/config.md", ".git/config");
+    const tree = await treeOf(volume, "/m");
+    const error = await failure(tree.packageAt("", "skill"));
+    expect(error).toMatchObject({ code: "CONTENT_RULE_VIOLATION", detail: { reason: "link-to-skipped", path: "config.md", target: ".git" } });
+    expect(beneath(volume, "/m/.git")).toEqual([]);
+    expect(JSON.stringify(error)).not.toContain("PRIVATE CONFIG");
+  });
+
+  it("knows the skipped entry under another spelling: a case variant, a Windows 8.3 alias", async () => {
+    const insensitive = new FakeVolume("darwin", { caseSensitive: false })
+      .file("/m/SKILL.md", "skill\n")
+      .file("/m/.git/config", "PRIVATE CONFIG\n")
+      .link("/m/config.md", ".GIT/config");
+    expect(await failure((await treeOf(insensitive, "/m")).packageAt("", "skill"))).toMatchObject({ detail: { reason: "link-to-skipped", path: "config.md" } });
+    expect(beneath(insensitive, "/m/.git").concat(beneath(insensitive, "/m/.GIT"))).toEqual([]);
+
+    const short = new FakeVolume("win32", { drives: { "C:": "\\Device\\HarddiskVolume3" } })
+      .file("C:\\m\\SKILL.md", "skill\n")
+      .file("C:\\m\\.git\\config", "PRIVATE CONFIG\n")
+      .shortName("C:\\m\\GIT~1", "C:\\m\\.git")
+      .link("C:\\m\\config.md", "GIT~1\\config");
+    expect(await failure((await treeOf(short, "C:\\m")).packageAt("", "skill"))).toMatchObject({ detail: { reason: "link-to-skipped", path: "config.md", target: ".git" } });
+    expect(short.calls.filter((call) => /\\(?:\.git|GIT~1)\\/iu.test(call.path))).toEqual([]);
+  });
+
+  it("finds nothing at a path that names a skipped entry: an index cannot point into .git either", async () => {
+    const volume = new FakeVolume("linux").file("/m/marketplace.2.json", "{}").file("/m/.git/config", "PRIVATE CONFIG\n");
+    const tree = await treeOf(volume, "/m");
+    await expect(tree.readFile(".git/config", 1024)).resolves.toBeNull();
+    expect(beneath(volume, "/m/.git")).toEqual([]);
+  });
+});
+
+describe("paths on another computer beneath the root (§18.4.1 stage 4)", () => {
+  it("stops before touching an automount path under an unconfirmed root", async () => {
+    const volume = new FakeVolume("linux").file("/SKILL.md", "skill\n").file("/net/files/m/notes.md", "remote\n");
+    const tree = await treeOf(volume, "/");
+    const error = await failure(tree.packageAt("", "skill"));
+    expect(error).toMatchObject({ code: "SOURCE_CONFIRMATION_REQUIRED", detail: { reason: "network-folder", path: "/" } });
+    expect(volume.calls.filter((call) => call.path.startsWith("/net"))).toEqual([]);
+  });
+
+  it("refuses a relative link from a confirmed share to another server as link-to-network, with no call on that server", async () => {
+    const volume = new FakeVolume("linux")
+      .file("/net/files/m/SKILL.md", "skill\n")
+      .file("/net/other/notes.md", "other server\n")
+      .link("/net/files/m/notes.md", "../../other/notes.md");
+    const tree = await treeOf(volume, "/net/files/m", true);
+    expect(await failure(tree.packageAt("", "skill"))).toMatchObject({ detail: { reason: "link-to-network", path: "notes.md", target: "../../other/notes.md" } });
+    expect(volume.calls.filter((call) => call.path.startsWith("/net/other"))).toEqual([]);
   });
 });

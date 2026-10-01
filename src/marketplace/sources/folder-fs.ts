@@ -45,9 +45,11 @@ export interface FolderFs {
   /**
    * The current MS-DOS device mapping of a drive letter (`"Z:"` →
    * `\Device\Mup\…`), read without opening anything on the drive
-   * (§18.4.1 stage 2). Windows only; it throws elsewhere and on failure.
+   * (§18.4.1 stage 2), or null when the OS has no mapping for it. Windows
+   * only; it throws elsewhere, and when the lookup itself cannot run or
+   * answers outside its protocol: that is a broken install, not a drive.
    */
-  queryDosDevice(drive: string): Promise<string>;
+  queryDosDevice(drive: string): Promise<string | null>;
 }
 
 function kindOf(stats: { isSymbolicLink(): boolean; isDirectory(): boolean; isFile(): boolean }): FolderEntryKind {
@@ -75,7 +77,7 @@ const READ_CHUNK = 64 * 1024;
  * The real filesystem. `queryDosDevice` is the Windows helper
  * (`native/windows-path-kind/`), supplied by the composition root.
  */
-export function createNodeFolderFs(options: { platform: NodeJS.Platform; queryDosDevice: (drive: string) => Promise<string> }): FolderFs {
+export function createNodeFolderFs(options: { platform: NodeJS.Platform; queryDosDevice: (drive: string) => Promise<string | null> }): FolderFs {
   const executable = (mode: bigint) => options.platform !== "win32" && (mode & 0o111n) !== 0n;
   const stat = (info: BigIntStats): FolderStat => ({
     kind: kindOf(info),

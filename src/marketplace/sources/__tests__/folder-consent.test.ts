@@ -121,3 +121,76 @@ describe("root resolution follows the entered path's own links (§18.4.1 stage 4
     expect(volume.paths("open")).toEqual([]);
   });
 });
+
+describe("a network location the walk reaches is classified before it is touched (§18.4.1 stage 4)", () => {
+  /** Every call on a path under an automount root, in any spelling. */
+  const onNetwork = (volume: FakeVolume) => volume.calls.filter((call) => /^\/(?:network|net)(?:\/|$)/iu.test(call.path));
+
+  it("refuses a relative link from a local path onto an automount path as link-to-network, confirmed or not", async () => {
+    for (const acknowledge of [[], ["network-folder"]] as Array<Array<"network-folder">>) {
+      const volume = new FakeVolume("darwin").file("/Network/Servers/remote/share/m/SKILL.md", SKILL).link("/local", "Network/Servers/remote/share/m");
+      const error = await refused(preview(volume, "/local", { acknowledge }));
+      expect(error).toMatchObject({ code: "CONTENT_RULE_VIOLATION", detail: { reason: "link-to-network", path: "/local", target: "Network/Servers/remote/share/m" } });
+      expect(onNetwork(volume)).toEqual([]);
+    }
+  });
+
+  it("asks for network-folder on another spelling of an automount path before any call, and reads the on-disk spelling once confirmed", async () => {
+    const volume = () => new FakeVolume("darwin", { caseSensitive: false }).file("/Network/Servers/remote/share/m/SKILL.md", SKILL);
+    const asked = volume();
+    expect(await preview(asked, "/network/Servers/remote/share/m")).toEqual({
+      type: "confirm",
+      warnings: [{ warning: "network-folder", host: "remote", address: "/network/Servers/remote/share/m" }],
+    });
+    expect(asked.calls).toEqual([]);
+    const confirmed = volume();
+    await expect(preview(confirmed, "/network/Servers/remote/share/m", { acknowledge: ["network-folder"] })).resolves.toMatchObject({
+      type: "package",
+      path: "/Network/Servers/remote/share/m",
+    });
+  });
+
+  it("asks for network-folder when components after a local link reach an automount path, before touching it", async () => {
+    const volume = () => new FakeVolume("linux").file("/net/files/m/SKILL.md", SKILL).link("/local", "/");
+    const asked = volume();
+    expect(await preview(asked, "/local/net/files/m")).toEqual({
+      type: "confirm",
+      warnings: [{ warning: "network-folder", host: null, address: "/local/net/files/m" }],
+    });
+    expect(onNetwork(asked)).toEqual([]);
+    const confirmed = volume();
+    await expect(preview(confirmed, "/local/net/files/m", { acknowledge: ["network-folder"] })).resolves.toMatchObject({
+      type: "package",
+      path: "/net/files/m",
+      resolvedFrom: "/local/net/files/m",
+    });
+  });
+
+  it("asks for network-folder when the canonical path holds the automount roots, before reading it", async () => {
+    const volume = new FakeVolume("linux").file("/SKILL.md", SKILL).file("/net/files/m/notes.md", "remote\n").link("/local", "/");
+    expect(await preview(volume, "/local")).toEqual({ type: "confirm", warnings: [{ warning: "network-folder", host: null, address: "/" }] });
+    expect(onNetwork(volume)).toEqual([]);
+    expect(volume.paths("open")).toEqual([]);
+  });
+});
+
+describe("the Windows drive classifier (§18.4.1 stage 2)", () => {
+  it("treats a drive the OS has no mapping for as a network folder: a wrong guess only warns", async () => {
+    const volume = windowsVolume().file("Q:\\m\\SKILL.md", SKILL);
+    expect(await preview(volume, "Q:\\m")).toEqual({ type: "confirm", warnings: [{ warning: "network-folder", host: null, address: "Q:\\m" }] });
+    expect(volume.calls).toEqual([{ op: "queryDosDevice", path: "Q:" }]);
+  });
+
+  it("fails with the classifier's own cause when it cannot run, never guessing a network folder", async () => {
+    const volume = windowsVolume().file("C:\\m\\SKILL.md", SKILL);
+    volume.queryDosDevice = async () => {
+      throw new Error("Windows folder classifier is missing: ave-path-kind.exe. Reinstall Ave.");
+    };
+    const outcome = await preview(volume, "C:\\m").then(
+      (answer) => ({ answer }),
+      (error: unknown) => ({ error }),
+    );
+    expect(outcome).toEqual({ error: new Error("Windows folder classifier is missing: ave-path-kind.exe. Reinstall Ave.") });
+    expect(volume.calls).toEqual([]);
+  });
+});

@@ -39,7 +39,7 @@ import { errorMessage } from "../../shared/error-message.js";
 import type { PackageKind } from "../catalog/types.js";
 import type { FolderFs } from "./folder-fs.js";
 import { FolderTree, type FolderCapture } from "./folder-tree.js";
-import { fsErrorCode, readSourceState, type FolderSource, type GitSource, type ResolvedSource, type SourceRegistry, type SourceState } from "./registry.js";
+import { folderIdentityState, fsErrorCode, readSourceState, type FolderSource, type GitSource, type ResolvedSource, type SourceRegistry, type SourceState } from "./registry.js";
 import { pinnedArtifactSha256s, SnapshotBuilder, type SnapshotSubject, type SourceSnapshot } from "./snapshot.js";
 import { GitTree, rootNameOf } from "./source-tree.js";
 
@@ -199,23 +199,27 @@ export class SourceSyncer {
 
   /**
    * Stages 2–4 of §18.4.1 for a stored folder, before anything reads it:
-   * network classification, the policy and `network-folder`, then the walk.
-   * A walk that ends at another path, or at a directory whose recorded
-   * identity differs, is `moved`, and the new target is never read
-   * (§18.4.4). The canonical path is judged by the policy again.
+   * network classification, the policy and `network-folder`, then the walk,
+   * fenced as the read is: a path on another computer without the
+   * confirmation is never touched. A walk that ends at another path, or at a
+   * directory whose recorded identity differs, is `moved`, and the new
+   * target is never read (§18.4.4). The canonical path is judged by the
+   * policy again.
    */
   private async openFolder(source: FolderSource, state: SourceState): Promise<FolderTree> {
     const { fs, platform, limits } = this.options.folders;
     this.options.gate.checkFolderPolicy(source.path);
     const network = await classifyFolder(source.path, platform, fs);
-    this.options.gate.checkFolder(source.path, network, await this.options.registry.acknowledged(source));
-    const root = await resolveFolderRoot(source.path, platform, fs);
+    const acknowledged = await this.options.registry.acknowledged(source);
+    this.options.gate.checkFolder(source.path, network, acknowledged);
+    const networkConsented = acknowledged.has("network-folder");
+    const root = await resolveFolderRoot(source.path, platform, fs, networkConsented);
     if (root.path !== source.path) throw folderMoved(source.path, root.path);
     const recorded = state.folder;
     const known = recorded !== undefined && recorded.dev !== "0" && recorded.ino !== "0" && root.dev !== 0n && root.ino !== 0n;
     if (known && (recorded.dev !== root.dev.toString() || recorded.ino !== root.ino.toString())) throw folderMoved(source.path, root.path);
     this.options.gate.checkFolderPolicy(root.path);
-    return new FolderTree({ fs, platform, root, readAt: this.now(), limits });
+    return new FolderTree({ fs, platform, root, readAt: this.now(), limits, networkConsented });
   }
 
   /**
@@ -245,7 +249,7 @@ export class SourceSyncer {
     if (!built.ok) return { result: await this.recordFailure(source, built), tree: null, snapshot: null };
     signal?.throwIfAborted();
     const revision = built.snapshot.commit;
-    const identity = { dev: tree.root.dev.toString(), ino: tree.root.ino.toString() };
+    const identity = folderIdentityState(tree.root);
     const reusable = revision === pin && (await this.hasReusableSnapshot(source.id, revision));
     if (!reusable) await writeFileAtomicAtPath(this.snapshotPath(source.id, revision), `${JSON.stringify(built.snapshot)}\n`);
     await this.options.registry.updateState(source.id, (current) => ({ ...current, pinnedCommit: revision, folder: identity, lastSync: { at: this.now(), result: "ok" } }));

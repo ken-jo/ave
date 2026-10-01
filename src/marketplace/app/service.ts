@@ -60,7 +60,7 @@ import { ConfirmationRequiredError, MarketplaceError, isMarketplaceError, type E
 import { BareRepo, type ExportLimits } from "../git/repo.js";
 import type { GitCommands, GitRemote } from "../git/run-git.js";
 import type { CatalogSource, NetworkGate } from "../net/network-gate.js";
-import { classifyFolder, normalizeSourceInput, resolveFolderRoot } from "../net/source-input.js";
+import { classifyFolder, normalizeSourceInput, resolveFolderRoot, type FolderIdentity, type FolderRoot } from "../net/source-input.js";
 import { normalizeSourceHost, type NormalizedSourceUrl } from "../net/source-url.js";
 import { candidateVersion, planPackage, type PackagePlan, type RepositoryAccess } from "../resolve/descriptor.js";
 import { classifyInstall, updateFor, type InstalledPackage } from "../resolve/identity.js";
@@ -164,7 +164,7 @@ type HeldPreview = {
     token: string | null;
   }
   /** A folder is read in place: nothing is copied for a preview (§18.4.2). */
-  | { transport: "folder"; path: string; dev: bigint; ino: bigint }
+  | { transport: "folder"; path: string; dev: bigint; ino: bigint; ancestors: FolderIdentity[] }
 );
 
 export interface MarketplaceServiceOptions {
@@ -879,8 +879,10 @@ export class MarketplaceService implements RetirementEntryLookup {
    * subdir or sign-in. Stage 2 classifies it without touching it; stage 3
    * applies the policy and asks for `network-folder` — a block or a
    * confirmation ends here with no filesystem call on the path. Only then
-   * stage 4 walks it, the policy is applied to the canonical path, and the
-   * folder is read in place: a marketplace, or a direct package (§18.4.7).
+   * stage 4 walks it, fenced: a path on another computer the walk reaches
+   * asks for `network-folder` before it is touched. The canonical path is
+   * judged again, policy and network both, and the folder is read in place
+   * (fenced the same way): a marketplace, or a direct package (§18.4.7).
    */
   private async previewFolder(request: SourcePreviewRequest, path: string, typed: string): Promise<SourcePreviewResultView> {
     const { fs, platform, limits } = this.options.folders;
@@ -888,26 +890,28 @@ export class MarketplaceService implements RetirementEntryLookup {
       throw new MarketplaceError("SOURCE_URL_REJECTED", "a folder has no branch, folder field or sign-in", { detail: { reason: "folder-options" } });
     }
     const acknowledged = [...new Set(request.acknowledge ?? [])];
+    const confirmed = new Set(acknowledged);
+    const networkConsented = confirmed.has("network-folder");
     // A policy block needs no classification: it ends the preview before any call at all.
     this.options.gate.checkFolderPolicy(path);
-    const network = await classifyFolder(path, platform, fs);
+    let root: FolderRoot;
     try {
-      this.options.gate.checkFolder(path, network, new Set(acknowledged));
+      this.options.gate.checkFolder(path, await classifyFolder(path, platform, fs), confirmed);
+      root = await resolveFolderRoot(path, platform, fs, networkConsented);
+      // A block, or a folder on another computer, found only now on the canonical path ends the preview (§18.4.1 stage 4).
+      this.options.gate.checkFolder(root.path, await classifyFolder(root.path, platform, fs), confirmed);
     } catch (error) {
       if (error instanceof ConfirmationRequiredError) return { type: "confirm", warnings: uniqueWarnings(error.warnings) };
       throw error;
     }
-    const root = await resolveFolderRoot(path, platform, fs);
-    // A block found only now, on the canonical path, ends the add (§18.4.1 stage 4).
-    this.options.gate.checkFolderPolicy(root.path);
     const resolvedFrom = root.path === path ? null : typed;
     const sourceId = `${PREVIEW_ID_PREFIX}${randomBytes(9).toString("hex")}`;
     const rootName = rootNameOf(root.path);
-    const tree = new FolderTree({ fs, platform, root, readAt: this.now().toISOString(), limits });
+    const tree = new FolderTree({ fs, platform, root, readAt: this.now().toISOString(), limits, networkConsented });
     const built = await new SnapshotBuilder(tree, { id: sourceId, origin: "custom", rootName }).build(this.now().toISOString());
     if (built.ok) {
       const suggestedId = this.freeId([idFrom(built.snapshot.marketplace.name), idFrom(rootName)]);
-      const held = this.previews.issue({ transport: "folder", sourceId, path: root.path, dev: root.dev, ino: root.ino, origin: "custom", suggestedId, acknowledged });
+      const held = this.previews.issue({ transport: "folder", sourceId, path: root.path, dev: root.dev, ino: root.ino, ancestors: root.ancestors, origin: "custom", suggestedId, acknowledged });
       return {
         ...marketplacePreview(built.snapshot, held, suggestedId),
         transport: "folder",
@@ -934,7 +938,7 @@ export class MarketplaceService implements RetirementEntryLookup {
     if (!direct.ok) throw new MarketplaceError(direct.code, direct.message, direct.detail ? { detail: direct.detail } : undefined);
     const { descriptor, detectedFrom, versionSynthesized } = read.found;
     const suggestedId = this.freeId([idFrom(descriptor.name), idFrom(rootName)]);
-    const held = this.previews.issue({ transport: "folder", sourceId, path: root.path, dev: root.dev, ino: root.ino, origin: "direct", suggestedId, acknowledged });
+    const held = this.previews.issue({ transport: "folder", sourceId, path: root.path, dev: root.dev, ino: root.ino, ancestors: root.ancestors, origin: "direct", suggestedId, acknowledged });
     return {
       type: "package",
       previewId: held.id,
@@ -1015,6 +1019,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       path: preview.path,
       dev: preview.dev,
       ino: preview.ino,
+      ancestors: preview.ancestors,
       ...(request.label?.trim() ? { label: request.label.trim() } : {}),
       acknowledged: preview.acknowledged,
     });

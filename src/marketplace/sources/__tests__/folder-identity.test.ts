@@ -113,6 +113,25 @@ describe("a case-insensitive volume", () => {
   });
 });
 
+describe("nesting through an alias, judged by dev and ino", () => {
+  const volume = () => new FakeVolume("darwin")
+    .file("/m/SKILL.md", SKILL("outer"))
+    .file("/m/child/SKILL.md", SKILL("inner"))
+    .alias("/Volumes/alias", "/m");
+
+  it("refuses a folder whose ancestor, reached by another path, is a source", async () => {
+    const outcomes = await added(volume(), ["/m", "/Volumes/alias/child"]);
+    expect(outcomes[0]).toMatchObject({ id: "folder-1", path: "/m" });
+    expect(outcomes[1]!.error).toMatch(/^SOURCE_ID_TAKEN: this folder lies inside folder-1/u);
+  });
+
+  it("refuses a folder that is among a source's recorded ancestors, reached by another path", async () => {
+    const outcomes = await added(volume(), ["/Volumes/alias/child", "/m"]);
+    expect(outcomes[0]).toMatchObject({ id: "folder-1", path: "/Volumes/alias/child" });
+    expect(outcomes[1]!.error).toMatch(/^SOURCE_ID_TAKEN: this folder contains folder-1/u);
+  });
+});
+
 describe("folderRelation", () => {
   it("compares canonical paths component by component, byte for byte", () => {
     expect(folderRelation("/a/b", "/a/b", "linux")).toBe("same");

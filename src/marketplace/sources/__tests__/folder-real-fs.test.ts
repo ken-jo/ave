@@ -6,13 +6,15 @@
  * fakes prove the same with every case spelled out; this file proves the real
  * `FolderFs` behaves as the fakes assume.
  */
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmdirSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, realpathSync, rmdirSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { marketplaceRefusal, nodeFolders, writeFolderFiles } from "../../__tests__/fixtures/folder-fs.js";
 import { folderService } from "../../__tests__/fixtures/folder-service.js";
+import { resolveFolderRoot } from "../../net/source-input.js";
 import type { FolderFs } from "../folder-fs.js";
+import { FolderTree } from "../folder-tree.js";
 
 const SKILL = "---\nname: note\ndescription: A note skill\n---\nWrite notes.\n";
 const AUTHORITY = { capabilities: ["notes:read"], requires: { minAppVersion: "0.12.0", hostProtocol: "2" } };
@@ -113,5 +115,27 @@ describe(`folders on this machine (${process.platform})`, () => {
     } else {
       await expect(previewOf(typed)).rejects.toMatchObject({ code: "SOURCE_LOCAL_UNREADABLE", detail: { reason: "not-found" } });
     }
+  });
+
+  it("refuses a link into .git as link-to-skipped, with no call on anything beneath it", async () => {
+    const market = join(scratch, "market");
+    writeFolderFiles(market, { "SKILL.md": SKILL, ".git/config": "PRIVATE CONFIG\n" });
+    linkDirectory(join(market, "docs"), join(market, ".git"));
+    const error = await marketplaceRefusal(previewOf(market));
+    expect(error).toMatchObject({ code: "CONTENT_RULE_VIOLATION", detail: { reason: "link-to-skipped", path: "docs", target: ".git" } });
+    expect(calls.filter((path) => path.startsWith(`${join(market, ".git")}${sep}`))).toEqual([]);
+    expect(JSON.stringify(error)).not.toContain("PRIVATE CONFIG");
+  });
+
+  it("reads a hard link as the regular file it is: it names a file, never a directory or another volume (§18.4.5)", async () => {
+    const market = join(scratch, "market");
+    writeFolderFiles(market, { "SKILL.md": SKILL });
+    writeFolderFiles(scratch, { "elsewhere.md": "SHARED BYTES\n" });
+    linkSync(join(scratch, "elsewhere.md"), join(market, "notes.md"));
+    const { fs, platform, limits } = recorded();
+    const root = await resolveFolderRoot(market, platform, fs, false);
+    const tree = new FolderTree({ fs, platform, root, readAt: new Date().toISOString(), limits, networkConsented: false });
+    const files = (await tree.packageAt("", "skill")).files.map((file) => [file.path, file.data.toString("utf8")]);
+    expect(Object.fromEntries(files)).toEqual({ "SKILL.md": SKILL, "notes.md": "SHARED BYTES\n" });
   });
 });

@@ -3,19 +3,26 @@
  * builder reads it like a commit, and an install plan captures one package's
  * bytes from it into its staging directory.
  *
- * Every call goes through {@link FolderFs}. Beneath the canonical root
- * (stage 4's result) the rules are:
+ * Every call goes through {@link FolderFs}, fenced (`fenceFolderFs`): without
+ * the `network-folder` confirmation a path on another computer stops the
+ * read before it is touched. Beneath the canonical root (stage 4's result)
+ * the rules are:
  *
  *   - directories are walked and regular files read; a device, socket or
  *     FIFO fails the package (`special-file`);
  *   - a link (a junction too) is never followed by the OS. Its text is read
  *     and judged before anything touches its target: text naming a network
- *     location is `link-to-network`; otherwise it is resolved lexically
- *     against the link's directory, and text leaving the root is
- *     `link-outside-folder`; inside, the walk continues at the target, with
- *     the same rule for every link it meets. A directory reached twice, or
- *     more than 40 links in one resolution, is a loop. The installed copy
- *     holds the target's bytes as a regular file;
+ *     location, or resolving lexically against the link's directory to one,
+ *     is `link-to-network`; text leaving the root is `link-outside-folder`;
+ *     inside, the walk continues at the target, with the same rule for
+ *     every link it meets. A directory reached twice, or more than 40 links
+ *     in one resolution, is a loop. The installed copy holds the target's
+ *     bytes as a regular file;
+ *   - every component a path names is matched to its entry in the parent's
+ *     listing, the one with its identity when the spelling differs (case,
+ *     a Windows 8.3 or trailing-dot alias). A skipped entry (below) is
+ *     never reached: a path naming one is absent, and a link whose target
+ *     passes through one is `link-to-skipped`;
  *   - a file is opened without following its last component where the OS
  *     can, and `fstat` must report the identity the walk's `lstat` saw;
  *   - each directory's identity is recorded when it is first reached, and
@@ -39,9 +46,11 @@ import type { PackageKind } from "../catalog/types.js";
 import { MarketplaceError } from "../errors.js";
 import type { ExportedFile, ExportLimits } from "../git/repo.js";
 import {
+  fenceFolderFs,
   folderUnreadable,
   isNetworkLinkText,
   joinFolderPath,
+  linkLeavesForNetwork,
   MAX_LINKS_PER_RESOLUTION,
   resolveLinkText,
   splitFolderPath,
@@ -52,9 +61,15 @@ import { treeDigest } from "../resolve/tree-digest.js";
 import type { FolderFs, FolderStat } from "./folder-fs.js";
 import { packageInstalls, type SourceTree } from "./source-tree.js";
 
-/** Never read, digested or installed, at any depth (§18.4.5). */
+/** Never read, digested or installed, at any depth (§18.4.5); on-disk names, compared ignoring case as a case-insensitive volume would. */
 function isSkippedFolderEntry(name: string): boolean {
-  return name === ".git" || name === ".DS_Store" || name.startsWith("._") || name === "Thumbs.db" || name === "desktop.ini";
+  const lower = name.toLowerCase();
+  return lower === ".git" || lower === ".ds_store" || name.startsWith("._") || lower === "thumbs.db" || lower === "desktop.ini";
+}
+
+/** NFC and case folded: a typed name's candidates in a listing. */
+function folded(name: string): string {
+  return name.normalize("NFC").toLowerCase();
 }
 
 /** Top-level files a package's readers open beside what it installs: the descriptor and the files a direct source is detected from. */
@@ -99,6 +114,8 @@ export interface FolderTreeOptions {
   readAt: string;
   /** The ceiling on one package's files and bytes while reading it (§5.4). */
   limits: ExportLimits;
+  /** The source holds `network-folder`: without it, any path on another computer stops the read (§18.4.1). */
+  networkConsented: boolean;
 }
 
 function sha256(bytes: Buffer): string {
@@ -116,8 +133,13 @@ export class FolderTree implements SourceTree {
   /** The identity of every directory this read reached, by canonical path beneath the root ("" is the root). */
   private readonly dirs = new Map<string, FolderStat>();
   private readonly rootSplit: { root: string; segments: string[] };
+  /** Every call this read makes, fenced against paths on another computer. */
+  private readonly fs: FolderFs;
+  /** Directory listings by absolute path, kept for the read: they only spell what a path names. */
+  private readonly listings = new Map<string, Promise<string[]>>();
 
   constructor(private readonly options: FolderTreeOptions) {
+    this.fs = fenceFolderFs(options.fs, options.platform, { consented: options.networkConsented, address: options.root.path });
     this.rootSplit = splitFolderPath(options.root.path, options.platform);
     this.dirs.set("", { kind: "directory", dev: options.root.dev, ino: options.root.ino, size: 0, executable: false });
   }
@@ -142,7 +164,7 @@ export class FolderTree implements SourceTree {
   private async lstat(segments: readonly string[]): Promise<FolderStat | null> {
     const at = this.abs(segments);
     try {
-      return await this.options.fs.lstat(at);
+      return await this.fs.lstat(at);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ENOENT" || code === "ENOTDIR") return null;
@@ -165,22 +187,72 @@ export class FolderTree implements SourceTree {
     if (seen.dev !== stat.dev || seen.ino !== stat.ino) throw this.changed(segments, `${key} was replaced during the read`);
   }
 
+  /** The directory's names, listed once per read unless `fresh` asks again (a name not yet listed, an enumeration). */
+  private list(segments: readonly string[], fresh = false): Promise<string[]> {
+    const at = this.abs(segments);
+    let listing = fresh ? undefined : this.listings.get(at);
+    if (!listing) {
+      listing = this.fs.readdir(at).catch((error: unknown) => {
+        throw folderUnreadable(at, error);
+      });
+      this.listings.set(at, listing);
+    }
+    return listing;
+  }
+
   /**
-   * Follow `path` (beneath the root, `/`-separated) component by component.
-   * Links are judged by their text: network → `link-to-network`, outside
+   * The entry of directory `parent` that `name` reached as `stat`: `name`
+   * itself when listed, else the listed entry with the same identity
+   * (a case variant on a case-insensitive volume, an 8.3 or trailing-dot
+   * alias on Windows), case variants tried first. Null when no listed entry
+   * is it, or identities cannot tell (zero) and more or fewer than one entry
+   * matches ignoring case: the name is then treated as absent.
+   */
+  private async onDisk(parent: readonly string[], name: string, stat: FolderStat): Promise<string | null> {
+    let names = await this.list(parent);
+    if (names.includes(name)) return name;
+    names = await this.list(parent, true);
+    if (names.includes(name)) return name;
+    const wanted = folded(name);
+    const likely = names.filter((entry) => folded(entry) === wanted);
+    if (stat.ino === 0n) return likely.length === 1 ? likely[0]! : null;
+    for (const entry of [...likely, ...names.filter((other) => !likely.includes(other))]) {
+      const other = await this.lstat([...parent, entry]);
+      if (other && other.dev === stat.dev && other.ino === stat.ino) return entry;
+    }
+    return null;
+  }
+
+  /**
+   * Follow `path` (beneath the root, `/`-separated) component by component,
+   * each one spelled as its parent lists it. Links are judged by their text
+   * and the target it resolves to: network → `link-to-network`, outside
    * the root → `link-outside-folder`, neither touching the target; inside,
-   * the walk continues at the target. Null when nothing is there.
+   * the walk continues at the target. A skipped entry is never reached:
+   * `path` naming one is absent (null), a link's target through one is
+   * `link-to-skipped`. Null when nothing is there.
    */
   private async resolve(path: string): Promise<Resolved | null> {
     let stack: string[] = [];
-    let queue = path.split("/").filter((segment) => segment !== "");
+    // `linked`: the component came from a link's text, not from `path`.
+    let queue = path.split("/").filter((segment) => segment !== "").map((name) => ({ name, linked: null as string | null }));
     let links = 0;
     let stat: FolderStat = this.dirs.get("")!;
     while (queue.length > 0) {
-      const name = queue.shift()!;
+      const { name: typed, linked } = queue.shift()!;
+      const found = await this.lstat([...stack, typed]);
+      if (!found) return null;
+      const name = await this.onDisk(stack, typed, found);
+      if (name === null) return null;
+      if (isSkippedFolderEntry(name)) {
+        if (linked === null) return null;
+        const shown = linked;
+        throw new MarketplaceError("CONTENT_RULE_VIOLATION", `${shown} links into ${[...stack, name].join("/")}, which is never read`, {
+          detail: { reason: "link-to-skipped", path: shown, target: [...stack, name].join("/") },
+        });
+      }
       const segments = [...stack, name];
-      const entry = await this.lstat(segments);
-      if (!entry) return null;
+      const entry = found;
       if (entry.kind === "link") {
         links += 1;
         const shown = segments.join("/");
@@ -190,12 +262,16 @@ export class FolderTree implements SourceTree {
           });
         }
         const text = await this.readlink(segments);
-        if (await isNetworkLinkText(text, this.options.platform, this.options.fs)) {
+        const linkDir = this.abs(stack);
+        const target = resolveLinkText(linkDir, text, this.options.platform);
+        if (
+          (await isNetworkLinkText(text, this.options.platform, this.fs)) ||
+          (target !== null && (await linkLeavesForNetwork(linkDir, target, this.options.platform, this.fs)))
+        ) {
           throw new MarketplaceError("CONTENT_RULE_VIOLATION", `${shown} links to a network location (${text})`, {
             detail: { reason: "link-to-network", path: shown, target: text },
           });
         }
-        const target = resolveLinkText(this.abs(stack), text, this.options.platform);
         const within = target === null ? null : this.inside(target);
         if (within === null) {
           throw new MarketplaceError("CONTENT_RULE_VIOLATION", `${shown} links outside the folder (${text})`, {
@@ -203,7 +279,7 @@ export class FolderTree implements SourceTree {
           });
         }
         stack = [];
-        queue = [...within, ...queue];
+        queue = [...within.map((segment) => ({ name: segment, linked: shown })), ...queue];
         stat = this.dirs.get("")!;
         continue;
       }
@@ -221,7 +297,7 @@ export class FolderTree implements SourceTree {
   private async readlink(segments: readonly string[]): Promise<string> {
     const at = this.abs(segments);
     try {
-      return await this.options.fs.readlink(at);
+      return await this.fs.readlink(at);
     } catch (error) {
       throw folderUnreadable(at, error);
     }
@@ -234,7 +310,7 @@ export class FolderTree implements SourceTree {
    */
   private async readRegular(segments: readonly string[], seen: FolderStat, maxBytes: number, shown: string, limit = `${maxBytes} bytes per file`): Promise<Buffer> {
     const at = this.abs(segments);
-    const fs = this.options.fs;
+    const fs = this.fs;
     let handle;
     try {
       handle = await fs.open(at);
@@ -421,12 +497,7 @@ export class FolderTree implements SourceTree {
         });
       }
       visited.add(key);
-      let names: string[];
-      try {
-        names = await this.options.fs.readdir(this.abs(segments));
-      } catch (error) {
-        throw folderUnreadable(this.abs(segments), error);
-      }
+      const names = await this.list(segments, true);
       for (const name of [...names].sort()) {
         if (isSkippedFolderEntry(name)) continue;
         const childSegments = [...segments, name];

@@ -557,6 +557,7 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
       switch (detail.reason) {
         case "link-outside-folder": return t("gitMarketplace.error.contentRule.linkOutsideFolder", { path: detail.path, target: scrubDiagnosticSecrets(detail.target) });
         case "link-to-network": return t("gitMarketplace.error.contentRule.linkToNetwork", { path: detail.path, target: scrubDiagnosticSecrets(detail.target) });
+        case "link-to-skipped": return t("gitMarketplace.error.contentRule.linkToSkipped", { path: detail.path, target: detail.target });
         case "special-file": return t("gitMarketplace.error.contentRule.specialFile", { path: detail.path });
         case "case-collision": return t("gitMarketplace.error.contentRule.caseCollision", { path: detail.path });
         case "limit": return t("gitMarketplace.error.contentRule.limit", { path: detail.path, limit: scrubDiagnosticSecrets(detail.limit) });

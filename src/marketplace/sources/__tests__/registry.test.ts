@@ -8,7 +8,7 @@ import { normalizeSourceUrl } from "../../net/source-url.js";
 import { OFFICIAL_MARKETPLACE } from "../official.js";
 import { policyLoad as policy, policySource } from "../../__tests__/fixtures/policy.js";
 import type { PolicyLoad } from "../policy.js";
-import { SourceRegistry, type GitSource, type NewFolderSource, type NewSource, type ResolvedSource } from "../registry.js";
+import { confirmationsFor, SourceRegistry, type GitSource, type NewFolderSource, type NewSource, type ResolvedSource } from "../registry.js";
 
 let root: string;
 const NOW = new Date("2026-09-23T08:00:00.000Z");
@@ -358,7 +358,7 @@ describe("confirmations are bound to the source's address (§18.5)", () => {
 
 describe("folder sources in the registry (§18.4.3, §18.4.4, §18.5)", () => {
   const LOCAL = `local-${"b".repeat(64)}`;
-  const folder = (overrides: Partial<NewFolderSource> = {}): NewFolderSource => ({ id: "team", origin: "custom", path: "/srv/team", dev: 7n, ino: 42n, ...overrides });
+  const folder = (overrides: Partial<NewFolderSource> = {}): NewFolderSource => ({ id: "team", origin: "custom", path: "/srv/team", dev: 7n, ino: 42n, ancestors: [{ dev: 7n, ino: 2n }, { dev: 7n, ino: 30n }], ...overrides });
 
   it("stores a folder entry with its path and the confirmations bound to that path, and its identity in the state", async () => {
     const registry = await open(policy(), "linux");
@@ -368,7 +368,11 @@ describe("folder sources in the registry (§18.4.3, §18.4.4, §18.5)", () => {
     expect(file.sources).toEqual([
       { id: "team", origin: "custom", path: "/srv/team", auth: { kind: "none" }, addedAt: NOW.toISOString(), label: "Team", acknowledged: { path: "/srv/team", warnings: ["network-folder"] } },
     ]);
-    expect(await registry.readState("team")).toEqual({ pinnedCommit: null, enabled: true, folder: { dev: "7", ino: "42" } });
+    expect(await registry.readState("team")).toEqual({
+      pinnedCommit: null,
+      enabled: true,
+      folder: { dev: "7", ino: "42", ancestors: [{ dev: "7", ino: "2" }, { dev: "7", ino: "30" }] },
+    });
     const reopened = await open(policy(), "linux");
     expect(reopened.get("team")).toEqual(added);
     expect([...(await reopened.acknowledged(reopened.get("team")!))]).toEqual(["network-folder"]);
@@ -380,6 +384,17 @@ describe("folder sources in the registry (§18.4.3, §18.4.4, §18.5)", () => {
     const registry = await open(policy(), "linux");
     expect(registry.get("team")).toMatchObject({ transport: "folder", acknowledged: [] });
     expect(registry.diagnostics()).toEqual([]);
+  });
+
+  it.each([
+    ["/srv/Team", "/srv/team"],
+    ["/srv/team", "/srv/team/"],
+    ["/srv/Caf\u00e9", "/srv/Cafe\u0301"],
+    ["C:\\Program Files\\m", "C:\\PROGRA~1\\m"],
+    ["C:\\m", "X:\\m"],
+    ["Z:\\m", "\\\\server\\share\\m"],
+  ])("holds no confirmation given under %s for %s: another spelling is another path", (given, now) => {
+    expect(confirmationsFor({ path: given, warnings: ["network-folder"] }, { path: now })).toEqual([]);
   });
 
   it("refuses a folder entry that carries git fields, and an acknowledged url on a folder", async () => {
@@ -397,11 +412,15 @@ describe("folder sources in the registry (§18.4.3, §18.4.4, §18.5)", () => {
     const registry = await open(policy(), "linux");
     await registry.addFolder(folder());
     await registry.add(custom());
-    await registry.writeState("team", { pinnedCommit: LOCAL, enabled: true, folder: { dev: "7", ino: "42" } });
+    await registry.writeState("team", { pinnedCommit: LOCAL, enabled: true, folder: { dev: "7", ino: "42", ancestors: [] } });
     expect((await registry.readState("team")).pinnedCommit).toBe(LOCAL);
     expect(await code(registry.writeState("team", { pinnedCommit: COMMIT_A, enabled: true }))).toContain("a folder source's pin must be a folder revision");
     expect(await code(registry.writeState("acme", { pinnedCommit: LOCAL, enabled: true }))).toContain("a git source's pin must be a commit id");
-    expect(await code(registry.writeState("acme", { pinnedCommit: COMMIT_A, enabled: true, folder: { dev: "1", ino: "2" } }))).toContain("a git source has no folder identity");
+    expect(await code(registry.writeState("acme", { pinnedCommit: COMMIT_A, enabled: true, folder: { dev: "1", ino: "2", ancestors: [] } }))).toContain("a git source has no folder identity");
+    // A folder identity without the directories above it is not one this version wrote.
+    mkdirSync(join(root, "team"), { recursive: true });
+    writeFileSync(join(root, "team", "state.json"), JSON.stringify({ pinnedCommit: LOCAL, enabled: true, folder: { dev: "7", ino: "42" } }));
+    await expect(registry.readState("team")).rejects.toMatchObject({ code: "SOURCE_LOCAL_DATA_DAMAGED", detail: { reason: "state-invalid", sourceId: "team" } });
 
     // A state written by hand with the wrong pairing reads as damaged, not as a pin.
     mkdirSync(join(root, "acme"), { recursive: true });

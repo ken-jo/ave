@@ -35,7 +35,7 @@ describe("Windows folder classifier launcher", () => {
 
   it("fails clearly without the asset, off Windows, or for anything but a drive, and never runs a command", async () => {
     mocks.existsSync.mockReturnValue(false);
-    await expect(queryDosDevice("C:")).rejects.toThrow("classifier is missing");
+    await expect(queryDosDevice("C:")).rejects.toThrow(/classifier is missing: .*ave-path-kind\.exe\. Ave cannot tell .* Reinstall Ave/u);
     mocks.existsSync.mockReturnValue(true);
     await expect(queryDosDevice("C:\\x")).rejects.toThrow("not a drive letter");
     await expect(queryDosDevice("\\\\server\\share")).rejects.toThrow("not a drive letter");
@@ -44,12 +44,26 @@ describe("Windows folder classifier launcher", () => {
     expect(mocks.execFile).not.toHaveBeenCalled();
   });
 
-  it("rejects a failed lookup and an answer that is not one line", async () => {
-    mocks.execFile.mockImplementationOnce((_f: string, _a: string[], _o: unknown, callback: Callback) => callback(new Error("exit 1"), "", "QueryDosDeviceW failed: 2\n"));
-    await expect(queryDosDevice("Q:")).rejects.toThrow("QueryDosDeviceW failed: 2");
+  it("answers null when the OS has no mapping for the drive (exit 1), the one failure that is about the drive", async () => {
+    mocks.execFile.mockImplementationOnce((_f: string, _a: string[], _o: unknown, callback: Callback) =>
+      callback(Object.assign(new Error("Command failed"), { code: 1 }), "", "QueryDosDeviceW failed: 2\n"));
+    await expect(queryDosDevice("Q:")).resolves.toBeNull();
+  });
+
+  it("rejects a broken helper with its cause and what to do, never as an answer about the drive", async () => {
+    const fail = (error: Error & { code?: number | string | null; killed?: boolean }, stdout = "", stderr = "") =>
+      mocks.execFile.mockImplementationOnce((_f: string, _a: string[], _o: unknown, callback: Callback) => callback(error, stdout, stderr));
+    fail(Object.assign(new Error("spawn EACCES"), { code: "EACCES" }));
+    await expect(queryDosDevice("Q:")).rejects.toThrow(/classifier failed for Q:: spawn EACCES\. Reinstall Ave/u);
+    fail(Object.assign(new Error("Command failed"), { code: 2 }), "", "usage: ave-path-kind.exe X:\n");
+    await expect(queryDosDevice("Q:")).rejects.toThrow("usage: ave-path-kind.exe X:");
+    fail(Object.assign(new Error("Command failed"), { code: 3 }), "", "could not write the mapping\n");
+    await expect(queryDosDevice("Q:")).rejects.toThrow("could not write the mapping");
+    fail(Object.assign(new Error("Command failed"), { code: null, killed: true }));
+    await expect(queryDosDevice("Q:")).rejects.toThrow("did not answer within 5000 ms");
     mocks.execFile.mockImplementationOnce((_f: string, _a: string[], _o: unknown, callback: Callback) => callback(null, "", ""));
-    await expect(queryDosDevice("Q:")).rejects.toThrow("answered");
+    await expect(queryDosDevice("Q:")).rejects.toThrow("not one mapping");
     mocks.execFile.mockImplementationOnce((_f: string, _a: string[], _o: unknown, callback: Callback) => callback(null, "a\nb\n", ""));
-    await expect(queryDosDevice("Q:")).rejects.toThrow("answered");
+    await expect(queryDosDevice("Q:")).rejects.toThrow("not one mapping");
   });
 });

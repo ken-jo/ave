@@ -32,7 +32,7 @@ export function nodeFolders(platform: NodeJS.Platform = process.platform) {
   return {
     fs: createNodeFolderFs({
       platform,
-      queryDosDevice: async (drive: string) => {
+      queryDosDevice: async (drive: string): Promise<string | null> => {
         if (drive.toUpperCase() === tempDrive) return "\\Device\\HarddiskVolume1";
         throw new Error(`no drive mapping in tests: ${drive}`);
       },
@@ -286,10 +286,9 @@ export class FakeVolume implements FolderFs {
     this.record("close", handle.path);
   }
 
-  async queryDosDevice(drive: string): Promise<string> {
+  /** A drive the volume was given no mapping for has none: the OS's answer for an unknown drive. */
+  async queryDosDevice(drive: string): Promise<string | null> {
     this.record("queryDosDevice", drive);
-    const mapping = this.drives[drive.toUpperCase()];
-    if (mapping === undefined) throw new Error(`no mapping for ${drive}`);
-    return mapping;
+    return this.drives[drive.toUpperCase()] ?? null;
   }
 }

@@ -226,6 +226,7 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
   CONTENT_RULE_VIOLATION: {
     "link-outside-folder": { path: "string", target: "text" },
     "link-to-network": { path: "string", target: "text" },
+    "link-to-skipped": { path: "string", target: "string" },
     "special-file": { path: "string" },
     "case-collision": { path: "string" },
     limit: { path: "string", limit: "text" },

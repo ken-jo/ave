@@ -128,11 +128,19 @@ describe("stage 2: network classification without touching the path", () => {
     expect(await classifyFolder("/net/nas/export/m", "linux", posix)).toEqual({ network: true, server: "nas" });
     expect(await classifyFolder("/Network/Servers/nas/m", "darwin", posix)).toEqual({ network: true, server: "nas" });
     expect(await classifyFolder("/Volumes/share/m", "darwin", posix)).toEqual({ network: false });
+    // macOS volumes ignore case by default: any spelling of an automount root reaches it.
+    expect(await classifyFolder("/network/servers/nas/m", "darwin", posix)).toEqual({ network: true, server: "nas" });
+    expect(await classifyFolder("/NET/nas/m", "darwin", posix)).toEqual({ network: true, server: "nas" });
+    expect(await classifyFolder("/NET/nas/m", "linux", posix)).toEqual({ network: false });
+    // An automount root itself, and `/`, which holds them.
+    expect(await classifyFolder("/net", "linux", posix)).toEqual({ network: true, server: null });
+    expect(await classifyFolder("/", "linux", posix)).toEqual({ network: true, server: null });
+    expect(await classifyFolder("/", "darwin", posix)).toEqual({ network: true, server: null });
     expect(volume.calls).toEqual([]);
     expect(posix.calls).toEqual([]);
   });
 
-  it("classifies a drive letter by its MS-DOS device mapping only, failing toward network", async () => {
+  it("classifies a drive letter by its MS-DOS device mapping only, a drive without one as network", async () => {
     const volume = new FakeVolume("win32", {
       drives: {
         "C:": "\\Device\\HarddiskVolume3",
@@ -154,12 +162,21 @@ describe("stage 2: network classification without touching the path", () => {
     expect(await classifyFolder("Z:\\m", "win32", volume)).toEqual({ network: true, server: "files.corp" });
     expect(await classifyFolder("W:\\m", "win32", volume)).toEqual({ network: true, server: "dav.corp" });
     expect(await classifyFolder("U:\\m", "win32", volume)).toEqual({ network: true, server: "nas.corp" });
-    // An unknown drive, or a failed call, is a network folder: a wrong guess only warns.
+    // A drive the OS has no mapping for is a network folder: a wrong guess only warns.
     expect(await classifyFolder("Q:\\m", "win32", volume)).toEqual({ network: true, server: null });
     expect(await classifyDosDeviceMapping("\\Device\\Unknown7", volume)).toEqual({ network: true, server: null });
     // Only the drive letters were asked about; no path was touched.
     expect(volume.calls.every((call) => call.op === "queryDosDevice")).toBe(true);
     expect(volume.paths("queryDosDevice")).toEqual(["C:", "D:", "S:", "C:", "T:", "Z:", "R:", "Z:", "Z:", "W:", "U:", "Q:"]);
+  });
+
+  it("surfaces a classifier that cannot run instead of classifying the drive", async () => {
+    const volume = new FakeVolume("win32");
+    volume.queryDosDevice = async () => {
+      throw new Error("Windows folder classifier is missing");
+    };
+    await expect(classifyFolder("C:\\m", "win32", volume)).rejects.toThrow("Windows folder classifier is missing");
+    await expect(isNetworkLinkText("Z:\\x", "win32", volume)).rejects.toThrow("Windows folder classifier is missing");
   });
 
   it("judges a link's text for a network location before anything resolves it (§18.4.5 rule 1)", async () => {

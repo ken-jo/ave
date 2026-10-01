@@ -8,7 +8,8 @@
  *   2. network classification — still no file access: a UNC path is
  *      `network`, a drive letter is classified from its MS-DOS device
  *      mapping (`QueryDosDeviceW`, which opens nothing on the drive), an
- *      automount path is `network` lexically;
+ *      automount path is `network` lexically (folded on macOS, whose
+ *      volumes ignore case), and so is `/`, which holds the automount roots;
  *   3. policy, then consent — the caller's (the gate, §18.6, §18.5): a
  *      block ends here, and a network folder without `network-folder`
  *      answers `confirm` before any filesystem call on the path;
@@ -22,11 +23,17 @@
  * Stages 1–3 make no filesystem call on the path: contacting a UNC server is
  * exactly what consent and policy must come before. The only call stage 2
  * makes is `queryDosDevice`, on the drive letter, never on the path.
+ *
+ * Stage 4 and the folder reader call the filesystem only through
+ * {@link fenceFolderFs}: every path is classified before the call, so a
+ * spelling recovered from disk, a component reached after a local link, or
+ * an entry beneath the root that lies on another computer stops the read
+ * with the `network-folder` confirmation instead of contacting it.
  */
 import { fileURLToPath } from "node:url";
 import { scrubDiagnosticSecrets } from "../../shared/dlp.js";
 import { errorMessage } from "../../shared/error-message.js";
-import { MarketplaceError, type MarketplaceErrorDetail } from "../errors.js";
+import { ConfirmationRequiredError, MarketplaceError, type MarketplaceErrorDetail } from "../errors.js";
 import type { FolderFs, FolderStat } from "../sources/folder-fs.js";
 import { isFolderPathInput, normalizeSourceUrl, type NormalizedSourceUrl } from "./source-url.js";
 
@@ -38,11 +45,21 @@ export type SourceInput =
 /** Where a folder lives as stage 2 sees it; `server` is null when a drive's mapping names none. */
 export type FolderNetwork = { network: false } | { network: true; server: string | null };
 
-/** The canonical root stage 4 found: on-disk spelling, no link among its components, and its identity. */
-export interface FolderRoot {
-  path: string;
+/** A directory's identity: `dev` and `ino`, zero where the filesystem reports none. */
+export interface FolderIdentity {
   dev: bigint;
   ino: bigint;
+}
+
+/**
+ * The canonical root stage 4 found: on-disk spelling, no link among its
+ * components, its identity, and the identities of the directories above it
+ * (from the volume root down to its parent), which tell a source nested in
+ * another through an alias (§18.4.4).
+ */
+export interface FolderRoot extends FolderIdentity {
+  path: string;
+  ancestors: FolderIdentity[];
 }
 
 /** More links than this in one resolution is a loop (§18.4.5 rule 4). */
@@ -190,25 +207,52 @@ export function joinFolderPath(split: SplitPath, platform: NodeJS.Platform): str
 const MAX_SUBST_DEPTH = 8;
 
 /**
- * Stage 2 (§18.4.1): whether reading `path` contacts another computer. On
- * Windows the only call is `queryDosDevice` on the drive letter; anything
- * but a local volume's mapping, a failed call included, is `network`.
+ * Stage 2 (§18.4.1): whether reading the folder `path` contacts another
+ * computer. On Windows the only call is `queryDosDevice` on the drive
+ * letter; anything but a local volume's mapping, a drive the OS has no
+ * mapping for included, is `network`. On macOS and Linux `/` is `network`
+ * too: reading it reaches the automount roots beneath it.
  */
 export async function classifyFolder(path: string, platform: NodeJS.Platform, fs: FolderFs): Promise<FolderNetwork> {
-  if (platform === "win32") {
-    if (path.startsWith("\\\\")) return { network: true, server: path.slice(2).split("\\")[0] ?? null };
-    return classifyDrive(path.slice(0, 2).toUpperCase(), fs, 0);
-  }
-  return classifyAutomount(path, platform);
+  const at = await networkLocation(path, platform, fs);
+  if (at !== null) return { network: true, server: at.server };
+  if (platform !== "win32" && path === "/") return { network: true, server: null };
+  return { network: false };
 }
 
-async function classifyDrive(drive: string, fs: FolderFs, depth: number): Promise<FolderNetwork> {
-  let mapping: string;
-  try {
-    mapping = await fs.queryDosDevice(drive);
-  } catch {
-    return { network: true, server: null };
+/**
+ * A network location a path lies on: `key` is equal for two paths on the
+ * same share, drive or automounted server, and `server` names the computer
+ * when the path or the drive's mapping does.
+ */
+interface NetworkLocation {
+  key: string;
+  server: string | null;
+}
+
+/** Where reading `path` itself contacts another computer, or null when it does not. */
+async function networkLocation(path: string, platform: NodeJS.Platform, fs: FolderFs): Promise<NetworkLocation | null> {
+  if (platform === "win32") {
+    if (path.startsWith("\\\\")) {
+      const [server = "", share = ""] = path.slice(2).split("\\");
+      return { key: `\\\\${server}\\${share}`.toLowerCase(), server: server === "" ? null : server };
+    }
+    const drive = path.slice(0, 2).toUpperCase();
+    const network = await classifyDrive(drive, fs, 0);
+    return network.network ? { key: drive, server: network.server } : null;
   }
+  return automountLocation(path, platform);
+}
+
+/**
+ * A drive letter's class from its mapping. The helper answers null when the
+ * OS has no mapping for the drive, which is `network` (a wrong guess only
+ * warns); a helper that cannot run or answers outside its protocol throws,
+ * and that failure is the caller's, never a classification.
+ */
+async function classifyDrive(drive: string, fs: FolderFs, depth: number): Promise<FolderNetwork> {
+  const mapping = await fs.queryDosDevice(drive);
+  if (mapping === null) return { network: true, server: null };
   return classifyDosDeviceMapping(mapping, fs, depth);
 }
 
@@ -236,13 +280,22 @@ function serverOfMapping(mapping: string): string | null {
   return server ? server.replace(/@(?:SSL)?(?:@?\d+)?$/iu, "") || null : null;
 }
 
-/** macOS and Linux: an automount path reaches another computer; a mounted share was authenticated when mounted. */
-function classifyAutomount(path: string, platform: NodeJS.Platform): FolderNetwork {
-  if (platform === "darwin" && /^\/Network(?:\/|$)/u.test(path)) {
-    return { network: true, server: /^\/Network\/Servers\/([^/]+)/u.exec(path)?.[1] ?? null };
+/**
+ * macOS and Linux: a path under an automount root (`/net`, and `/Network` on
+ * macOS) reaches another computer; a mounted share was authenticated when
+ * mounted. macOS volumes ignore case by default, so its names are compared
+ * folded: `/network/…` reaches `/Network/…`.
+ */
+function automountLocation(path: string, platform: NodeJS.Platform): NetworkLocation | null {
+  const fold = (name: string) => (platform === "darwin" ? folded(name) : name);
+  const [first, second, third] = path.split("/").filter(Boolean);
+  if (first === undefined) return null;
+  if (platform === "darwin" && fold(first) === "network") {
+    if (second !== undefined && fold(second) === "servers" && third !== undefined) return { key: `/network/servers/${fold(third)}`, server: third };
+    return { key: "/network", server: null };
   }
-  const net = /^\/net\/([^/]+)/u.exec(path);
-  return net ? { network: true, server: net[1]! } : { network: false };
+  if (fold(first) !== "net") return null;
+  return second === undefined ? { key: "/net", server: null } : { key: `/net/${fold(second)}`, server: second };
 }
 
 /**
@@ -255,7 +308,64 @@ export async function isNetworkLinkText(text: string, platform: NodeJS.Platform,
   if (extendedDrive) return platform === "win32" ? (await classifyDrive(extendedDrive[1]!.toUpperCase(), fs, 0)).network : true;
   if (/^[\\/]{2}/u.test(text) || /^\\\?\?\\/u.test(text)) return true;
   if (platform === "win32") return DRIVE_ANY.test(text) ? (await classifyDrive(text.slice(0, 2).toUpperCase(), fs, 0)).network : false;
-  return text.startsWith("/") && classifyAutomount(text, platform).network;
+  return text.startsWith("/") && automountLocation(text, platform) !== null;
+}
+
+/**
+ * §18.4.5 rule 1 for a link whose text passed {@link isNetworkLinkText}:
+ * whether its resolved `target` lies on a network location other than the
+ * link's own directory. Relative text can name one (`Network/Servers/…`
+ * from `/`, `../../other` under `/net/host`); a link that stays on its own
+ * share or drive does not leave.
+ */
+export async function linkLeavesForNetwork(linkDir: string, target: string, platform: NodeJS.Platform, fs: FolderFs): Promise<boolean> {
+  const to = await networkLocation(target, platform, fs);
+  if (to === null) return false;
+  const from = await networkLocation(linkDir, platform, fs);
+  return from === null || from.key !== to.key;
+}
+
+/**
+ * `fs` with every call on a path judged first (§18.4.1 stage 4, §18.4.5): a
+ * path on another computer, without the `network-folder` confirmation for
+ * `address` (the folder being read), is SOURCE_CONFIRMATION_REQUIRED before
+ * the call. Whatever leads there — a spelling recovered from disk, a
+ * component after a local link, an entry beneath the root — stops here.
+ * With the confirmation `fs` is returned as it is; links to other network
+ * locations are still refused by rule 1. A drive's class is asked once per
+ * fence.
+ */
+export function fenceFolderFs(fs: FolderFs, platform: NodeJS.Platform, consent: { consented: boolean; address: string }): FolderFs {
+  if (consent.consented) return fs;
+  const drives = new Map<string, Promise<string | null>>();
+  const classifier: FolderFs = {
+    ...fs,
+    queryDosDevice: (drive) => {
+      let answer = drives.get(drive);
+      if (!answer) {
+        answer = fs.queryDosDevice(drive);
+        drives.set(drive, answer);
+      }
+      return answer;
+    },
+  };
+  const check = async (path: string): Promise<void> => {
+    const at = await networkLocation(path, platform, classifier);
+    if (at === null) return;
+    throw new ConfirmationRequiredError(`${path} is on another computer; reading ${consent.address} needs the network-folder confirmation`, [
+      { warning: "network-folder", host: at.server, address: consent.address },
+    ]);
+  };
+  return {
+    ...classifier,
+    lstat: async (path) => (await check(path), fs.lstat(path)),
+    readlink: async (path) => (await check(path), fs.readlink(path)),
+    readdir: async (path) => (await check(path), fs.readdir(path)),
+    open: async (path) => (await check(path), fs.open(path)),
+    fstat: (handle) => fs.fstat(handle),
+    read: (handle, maxBytes) => fs.read(handle, maxBytes),
+    close: (handle) => fs.close(handle),
+  };
 }
 
 /**
@@ -350,7 +460,9 @@ async function shortNameSpelling(entries: readonly string[], name: string, at: s
   let alias: FolderStat;
   try {
     alias = await fs.lstat(at);
-  } catch {
+  } catch (error) {
+    // A refusal (the network fence) is the caller's; only the OS's "not there" means no alias.
+    if (error instanceof MarketplaceError) throw error;
     return null;
   }
   if (alias.ino === 0n) return null;
@@ -359,7 +471,8 @@ async function shortNameSpelling(entries: readonly string[], name: string, at: s
     let stat: FolderStat;
     try {
       stat = await fs.lstat(`${parent}${entry}`);
-    } catch {
+    } catch (error) {
+      if (error instanceof MarketplaceError) throw error;
       continue;
     }
     if (stat.dev === alias.dev && stat.ino === alias.ino) return entry;
@@ -372,14 +485,18 @@ const INDEX_FILES = new Set(["marketplace.2.json", "marketplace.json"]);
 /**
  * Stage 4 (§18.4.1): walk `path` (stage 1's output, after stage 3 passed)
  * with `lstat` from its root, reading each directory to learn the
- * component's spelling on disk. A link among the components is root
- * resolution: its text is checked for a network location (refused as
- * `link-to-network`, its target never touched), then resolved against the
- * link's directory, and the walk continues there. The result is a
- * directory; a regular `marketplace.2.json` or `marketplace.json` resolves
- * to the directory holding it.
+ * component's spelling on disk. Every call goes through
+ * {@link fenceFolderFs}: without `networkConsented`, a path on another
+ * computer is the `network-folder` confirmation before it is touched. A
+ * link among the components is root resolution: its text, and the target
+ * it resolves to against the link's directory, are checked for a network
+ * location (refused as `link-to-network`, the target never touched), and
+ * the walk continues at the target. The result is a directory; a regular
+ * `marketplace.2.json` or `marketplace.json` resolves to the directory
+ * holding it.
  */
-export async function resolveFolderRoot(path: string, platform: NodeJS.Platform, fs: FolderFs): Promise<FolderRoot> {
+export async function resolveFolderRoot(path: string, platform: NodeJS.Platform, unfenced: FolderFs, networkConsented: boolean): Promise<FolderRoot> {
+  const fs = fenceFolderFs(unfenced, platform, { consented: networkConsented, address: path });
   const start = splitFolderPath(path, platform);
   let current: SplitPath = { root: start.root, segments: [] };
   let queue = [...start.segments];
@@ -393,6 +510,8 @@ export async function resolveFolderRoot(path: string, platform: NodeJS.Platform,
   };
   let last = await lstatAt(joinFolderPath(current, platform));
   if (last.kind !== "directory") throw unreadable("not-a-directory", path, `${current.root} is not a directory`);
+  /** The identities of `current` and every directory above it, from its root down. */
+  let chain: FolderIdentity[] = [last];
   while (queue.length > 0) {
     const name = queue.shift()!;
     const dir = joinFolderPath(current, platform);
@@ -415,26 +534,29 @@ export async function resolveFolderRoot(path: string, platform: NodeJS.Platform,
       } catch (error) {
         throw folderUnreadable(path, error);
       }
-      if (await isNetworkLinkText(text, platform, fs)) {
+      const target = resolveLinkText(dir, text, platform);
+      if ((await isNetworkLinkText(text, platform, fs)) || (target !== null && (await linkLeavesForNetwork(dir, target, platform, fs)))) {
         throw new MarketplaceError("CONTENT_RULE_VIOLATION", `${candidate} links to a network location (${text})`, {
           detail: { reason: "link-to-network", path: candidate, target: text },
         });
       }
-      const target = resolveLinkText(dir, text, platform);
       if (target === null) throw unreadable("io", path, `${candidate} links to ${text}, which names no folder here`);
       const split = splitFolderPath(target, platform);
       current = { root: split.root, segments: [] };
       queue = [...split.segments, ...queue];
       last = await lstatAt(joinFolderPath(current, platform));
+      chain = [last];
       continue;
     }
     if (entry.kind === "directory") {
       current = next;
       last = entry;
+      chain = [...chain, entry];
       continue;
     }
     if (entry.kind === "file" && queue.length === 0 && INDEX_FILES.has(spelled)) break;
     throw unreadable("not-a-directory", path, `${candidate} is not a folder`);
   }
-  return { path: joinFolderPath(current, platform), dev: last.dev, ino: last.ino };
+  const identity = ({ dev, ino }: FolderIdentity): FolderIdentity => ({ dev, ino });
+  return { path: joinFolderPath(current, platform), dev: last.dev, ino: last.ino, ancestors: chain.slice(0, -1).map(identity) };
 }

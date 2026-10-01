@@ -38,7 +38,7 @@ import {
   type MarketplaceErrorDetail,
 } from "../errors.js";
 import { assertRepoPath } from "../git/repo.js";
-import { normalizeFolderPath, splitFolderPath } from "../net/source-input.js";
+import { normalizeFolderPath, splitFolderPath, type FolderIdentity } from "../net/source-input.js";
 import { normalizeSourceHost, normalizeSourceUrl, sameSourceRepository, type NormalizedSourceUrl } from "../net/source-url.js";
 import {
   OFFICIAL_MARKETPLACE,
@@ -110,9 +110,23 @@ export interface SourceState {
   /**
    * A folder source's directory identity (`dev`, `ino` as decimal text) when
    * it was last read (§18.4.4): a later walk that ends at another directory
-   * is `moved`. Zero where the filesystem reports none.
+   * is `moved`. `ancestors` are the directories above it, from the volume
+   * root down, so a folder added later through an alias is known to contain
+   * it. Zero where the filesystem reports none.
    */
-  folder?: { dev: string; ino: string };
+  folder?: StoredFolderIdentity & { ancestors: StoredFolderIdentity[] };
+}
+
+/** A directory identity as `state.json` stores it: decimal text. */
+interface StoredFolderIdentity {
+  dev: string;
+  ino: string;
+}
+
+/** The `folder` state of a root stage 4 found (§18.4.4). */
+export function folderIdentityState(root: FolderIdentity & { ancestors: readonly FolderIdentity[] }): NonNullable<SourceState["folder"]> {
+  const stored = ({ dev, ino }: FolderIdentity): StoredFolderIdentity => ({ dev: dev.toString(), ino: ino.toString() });
+  return { ...stored(root), ancestors: root.ancestors.map(stored) };
 }
 
 interface SourceBase {
@@ -165,13 +179,14 @@ export interface NewSource {
   acknowledged?: readonly SourceWarning[];
 }
 
-/** A folder being added: its canonical path and the identity stage 4 found (§18.4.4). */
+/** A folder being added: its canonical path and the identities stage 4 found (§18.4.4). */
 export interface NewFolderSource {
   id: string;
   origin: "custom" | "direct";
   path: string;
   dev: bigint;
   ino: bigint;
+  ancestors: readonly FolderIdentity[];
   label?: string;
   acknowledged?: readonly SourceWarning[];
 }
@@ -351,8 +366,13 @@ function checkState(raw: unknown, platform: NodeJS.Platform): SourceState {
   if (raw.folder !== undefined) {
     const folder = raw.folder;
     shape(isRecord(folder), "folder must be an object");
-    knownKeys(folder, new Set(["dev", "ino"]), "folder");
-    shape(typeof folder.dev === "string" && DECIMAL.test(folder.dev) && typeof folder.ino === "string" && DECIMAL.test(folder.ino), "folder.dev and folder.ino must be decimal text");
+    knownKeys(folder, new Set(["dev", "ino", "ancestors"]), "folder");
+    const identity = (value: unknown) => isRecord(value) && typeof value.dev === "string" && DECIMAL.test(value.dev) && typeof value.ino === "string" && DECIMAL.test(value.ino);
+    shape(identity(folder), "folder.dev and folder.ino must be decimal text");
+    shape(
+      Array.isArray(folder.ancestors) && folder.ancestors.every((ancestor) => identity(ancestor) && Object.keys(ancestor as object).length === 2),
+      "folder.ancestors must list each directory above the folder as decimal dev and ino",
+    );
   }
   return state as unknown as SourceState;
 }
@@ -725,25 +745,30 @@ export class SourceRegistry {
 
   /**
    * The id and identity checks for a folder (§18.4.4), without writing
-   * anything: a folder that is already a source — the same canonical path,
-   * or the same non-zero `dev`/`ino` recorded at its last read — or that
-   * contains or lies inside one is SOURCE_ID_TAKEN naming that source. No
-   * platform-wide case folding: the walk's on-disk spelling and the
-   * identity decide.
+   * anything: a folder that is already a source, or that contains or lies
+   * inside one, is SOURCE_ID_TAKEN naming that source. Paths decide first
+   * (the walk's on-disk spelling, no platform-wide case folding); then the
+   * non-zero identities recorded at the source's last read, which see
+   * through an alias (another drive letter, a share, a firmlink): the same
+   * directory, one of the new folder's ancestors, or the new folder among
+   * the source's ancestors.
    */
   async checkNewFolder(source: NewFolderSource): Promise<void> {
     this.checkNewId(source.id);
+    const known = (identity: { dev: string; ino: string }) => identity.dev !== "0" && identity.ino !== "0";
+    const sameAs = (identity: { dev: string; ino: string }) => (other: FolderIdentity) => known(identity) && identity.dev === other.dev.toString() && identity.ino === other.ino.toString();
     for (const existing of this.list()) {
       if (existing.transport !== "folder") continue;
-      const relation = folderRelation(source.path, existing.path, this.platform);
+      let relation = folderRelation(source.path, existing.path, this.platform);
+      const recorded = relation === null ? (await this.readState(existing.id)).folder : undefined;
+      if (recorded) {
+        if (sameAs(recorded)(source)) relation = "same";
+        else if (source.ancestors.some(sameAs(recorded))) relation = "inside";
+        else if (recorded.ancestors.some((ancestor) => sameAs(ancestor)(source))) relation = "contains";
+      }
       if (relation !== null) {
         const how = relation === "same" ? "is already added as" : relation === "inside" ? "lies inside" : "contains";
         throw new MarketplaceError("SOURCE_ID_TAKEN", `this folder ${how} ${existing.id}`);
-      }
-      if (source.dev === 0n || source.ino === 0n) continue;
-      const identity = (await this.readState(existing.id)).folder;
-      if (identity && identity.dev === source.dev.toString() && identity.ino === source.ino.toString()) {
-        throw new MarketplaceError("SOURCE_ID_TAKEN", `this folder is already added as ${existing.id}`);
       }
     }
   }
@@ -815,7 +840,7 @@ export class SourceRegistry {
       await this.writeSources([...this.rawEntries, entry]);
       const added = this.get(source.id);
       if (added?.transport !== "folder") throw new Error(`folder source ${source.id} was written but does not resolve`);
-      await this.writeState(source.id, { pinnedCommit: null, enabled: true, folder: { dev: source.dev.toString(), ino: source.ino.toString() } });
+      await this.writeState(source.id, { pinnedCommit: null, enabled: true, folder: folderIdentityState(source) });
       return added;
     });
   }
