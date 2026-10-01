@@ -43,6 +43,7 @@ import { createSandboxProcessHome } from "../../permissions/sandbox-process-home
 import {
   cleanupAsrtSandboxAfterCommand,
   isAsrtSandboxActive,
+  protectedReadDenyCovering,
   registerWorkerUnixSocketDir,
   unregisterWorkerUnixSocketDir,
 } from "../../permissions/asrt-sandbox.js";
@@ -63,7 +64,7 @@ import {
   isSensitivePath,
 } from "../../permissions/sensitive-paths.js";
 import { aveHome } from "../../shared/ave-home.js";
-import { HOST_DIRECTORY_CATALOG } from "../sandbox-authority.js";
+import { HOST_DIRECTORY_CATALOG, hostDirectoryFloorPierces } from "../sandbox-authority.js";
 import type {
   PluginManifest,
   PluginRuntimeContext,
@@ -441,6 +442,19 @@ function resolveUserChosenDirectory(
       inputs.pluginId,
       grant.configKey,
       `'${target}' matches the sensitive-path rule '${sensitive}'`,
+    );
+  }
+  // The host guard above pins only the per-platform DEFAULT user data
+  // locations. The sandbox floor denies the exact one the host runs with
+  // (`--user-data-dir`, XDG_CONFIG_HOME) and any trusted custom deny, and a
+  // grant under either would re-open it: the read half everywhere, the write
+  // half too on Linux, where bubblewrap binds the root over the deny's mask.
+  const floorDeny = protectedReadDenyCovering(target);
+  if (floorDeny !== undefined) {
+    rejectEnvelopeGrant(
+      inputs.pluginId,
+      grant.configKey,
+      `'${target}' lies under the sandbox read-deny floor entry '${floorDeny}'`,
     );
   }
   const ownWritableRoot = caseFoldForMatch(canonicalizePathForMatch(inputs.pluginDataDir));
@@ -920,6 +934,9 @@ export async function spawnConfinedPluginChild(
       tempPrincipal: { kind: "plugin", id: spec.pluginId },
       allowRead: [...spec.envelope.read, sandboxHome.path],
       allowWrite: [...spec.envelope.write, sandboxHome.path],
+      // The envelope names a floor-piercing host directory only when the
+      // plugin's reviewed declaration asked for it.
+      floorPierces: spec.envelope.read.filter((path) => hostDirectoryFloorPierces().includes(path)),
       // The data root above all: the host keeps resolving it, so a child that
       // could swap it for a link would steer the next storage handle or spawn.
       pinWriteRoots: true,

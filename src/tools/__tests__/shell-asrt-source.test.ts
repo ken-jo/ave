@@ -17,7 +17,10 @@ function expectShellDialectContracts(section: string): void {
   expect(section).toContain('hostShellPlan.mode === "blocked"');
   expect(section).toContain('hostShellPlan.mode === "asrt"');
   expect(section).toContain("shell: false");
-  expect(section).toContain("const { allowRead, denyRead } = getBuiltinShellReadPolicy(");
+  expect(section).toContain("const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy(");
+  // The saved-session read is the one pierce of the protected floor a shell
+  // holds; the wrap withholds it unless the shell names it.
+  expect(section).toContain("    floorPierces,\n  };");
   expect(section).toContain("denyWrite: getDefaultSensitiveWriteDenyPaths()");
 }
 

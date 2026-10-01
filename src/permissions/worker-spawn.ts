@@ -127,6 +127,13 @@ export interface SpawnWorkerSpec {
    * future contract may discover it another way).
    */
   readonly udsArgName?: string | { readonly env: string };
+  /**
+   * The reads, among {@link allowReadPaths}, this worker may hold inside the
+   * protected read floor: its plugin's declared `hostDirectory` that pierces
+   * it. Set by the host from the plugin's reviewed declaration, never by the
+   * plugin. Absent, none.
+   */
+  readonly floorPierces?: readonly string[];
 }
 
 const activeWrappedWorkerKeys = new Set<string>();
@@ -571,6 +578,7 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
       // A plugin worker is plugin-owned code: it may not remove or replace the
       // host-created roots it writes into, its plugin's data root above all.
       pinWriteRoots: true,
+      ...(spec.floorPierces !== undefined ? { floorPierces: spec.floorPierces } : {}),
       baseEnv,
       extraEnv: { ...sandboxHome.env },
       stdio: WORKER_STDIO,
