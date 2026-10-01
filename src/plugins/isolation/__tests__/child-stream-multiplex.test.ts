@@ -83,6 +83,7 @@ describe("the host, reading a child that breaks the bound", () => {
       output: new PassThrough(),
       terminate: (reason) => void terminated.push(reason),
       onGone: () => undefined,
+      onFault: () => undefined,
     };
     const transport = new PluginChildTransport({
       pluginId: "boundprobe",

@@ -40,6 +40,8 @@
         "scripts/hooks/run-local-checks.mjs",
         // Launched by the release builder after schema generation.
         "scripts/sync-plugin-host-protocol-mirror.mjs",
+        // Types-only assertions compiled by `typecheck`; nothing imports them.
+        "scripts/lib/plugin-isolation-type-assertions.ts",
         // Loaded through the local @ave/shell-parser-runtime package exports.
         "resources/shell-parser/wasm_exec.cjs",
         // Explicit parser rebuild entry documented in tools/shell-parser/README.md.

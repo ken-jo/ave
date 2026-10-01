@@ -1,33 +1,39 @@
 /**
- * The host a golden transcript is recorded against.
+ * The host a plugin is validated against, and the authority it grants
+ * (`docs/design/plugin-hostapi-protocol.md` §9.7, S1).
  *
- * Every member answers the same value every time, and nothing it pushes happens
- * unless the recording asks for it, so a transcript is a function of the plugin
- * module alone. The ONE seam is this object: the dispatcher, the dispatch
- * table, the transport and the child runtime on either side of it are the
- * production ones, so a transcript that changes is the wire that changed.
+ * Every member answers the same value every time, and nothing it pushes
+ * happens unless the caller asks for it, so a conversation recorded against it
+ * is a function of the plugin module alone. It serves the REAL dispatch table
+ * through `validation-session.ts`: the dispatcher, the transport and the child
+ * runtime on either side are the production ones, and only the answers behind
+ * the table are recorded rather than live.
  *
- * Shared by `host-protocol-golden.test.ts`, which records over paired streams,
- * and `confined-plugin-child.test.ts`, which runs a fixture through a real
- * confined child — the second is only evidence about the first if both talk to
- * the same host. `host-protocol-schema-parity.test.ts` reads the recordings
- * through {@link goldenFiles}, so it walks the same files the recorder wrote.
+ * Shared by the validator and by the conformance suites — the golden
+ * transcripts, the schema parity check and the confined-child run of a golden
+ * fixture — so that each is evidence about the others: they all talk to the
+ * same host.
+ *
+ * ITS AUTHORITY IS THE BASE ENVELOPE. {@link validationConfinement} grants the
+ * plugin its own root and data directory and nothing else: the validator has
+ * no user approvals to consult and must not read the user's settings, so a
+ * declared `sandbox` grant is not applied here.
  */
-import { readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
 import type {
   AudioCaptureEnd,
   AudioCaptureFrame,
   PluginHostApi,
   PluginLifecycleEvent,
   SpawnedPluginWorker,
-} from "../../public-contract.js";
+} from "../public-contract.js";
+import type { DelegatedWorkerConfinement } from "../isolation/host-api-dispatcher.js";
+import { derivePluginChildEnvelope } from "../isolation/out-of-process-plugin.js";
 
 /**
- * Members the recording replaces, by dotted hostApi path. `undefined` removes
+ * Members the caller replaces, by dotted hostApi path. `undefined` removes
  * one, which is how a host build without an optional member is spelled.
  */
-export type GoldenHostOverrides = Readonly<
+export type ValidationHostOverrides = Readonly<
   Record<string, ((...args: never[]) => unknown) | undefined>
 >;
 
@@ -41,7 +47,10 @@ const INITIAL_CONFIG: ReadonlyArray<readonly [string, unknown]> = [
   ["region", "north"],
 ];
 
-/** What each host-side registration is handed when the recording fires it. */
+/**
+ * What each host-side registration is handed when the caller fires it. The
+ * values are part of every recorded transcript, so they do not change.
+ */
 const FIRED_EVENT_DATA = { fired: "by the golden host" } as const;
 const FIRED_PLUGINS_CHANGE: PluginLifecycleEvent = {
   type: "installed",
@@ -51,9 +60,28 @@ const FIRED_PLUGINS_CHANGE: PluginLifecycleEvent = {
 
 type Listener<T> = (value: T) => void;
 
-export interface GoldenHost {
+/**
+ * The host-side roots a validated plugin's context names. Fixed, so the
+ * construct frame does not depend on the machine the validator runs on, and
+ * none of them is read: the plugin's own root and data directory are the
+ * caller's.
+ */
+interface ValidationHostRoots {
+  readonly hostRoot: string;
+  readonly userHome: string;
+  readonly aveHome: string;
+}
+
+const VALIDATION_HOST_ROOTS: ValidationHostRoots = {
+  hostRoot: "/app",
+  userHome: "/Users/example",
+  aveHome: "/Users/example/.ave",
+};
+
+export interface ValidationHost {
   /** The object the dispatch table binds. */
   readonly api: PluginHostApi;
+  readonly roots: ValidationHostRoots;
   /**
    * Fire every host-side registration once, in registration order: each event
    * listener, each plugins-changed listener, each worker's stdout, stderr and
@@ -72,11 +100,11 @@ export interface GoldenHost {
 }
 
 /**
- * Build the golden host. `overrides` replaces members by path — a missing
- * member is spelled `undefined`, a failing one throws — so an error golden is
+ * Build the validation host. `overrides` replaces members by path — a missing
+ * member is spelled `undefined`, a failing one throws — so an error case is
  * the same host with one answer changed.
  */
-export function createGoldenHost(overrides: GoldenHostOverrides = {}): GoldenHost {
+export function createValidationHost(overrides: ValidationHostOverrides = {}): ValidationHost {
   const logged: Array<readonly [string, string, unknown]> = [];
   const emitted: Array<readonly [string, unknown]> = [];
   const config = new Map<string, unknown>(INITIAL_CONFIG);
@@ -92,7 +120,7 @@ export function createGoldenHost(overrides: GoldenHostOverrides = {}): GoldenHos
     return () => void listeners.delete(listener);
   };
 
-  const fakeWorker = (spec: { workerId: string }): SpawnedPluginWorker => {
+  const scriptedWorker = (spec: { workerId: string }): SpawnedPluginWorker => {
     const stdout: Array<Listener<string>> = [];
     const stderr: Array<Listener<string>> = [];
     const exit: Array<Listener<{ code: number | null; signal: NodeJS.Signals | null }>> = [];
@@ -153,7 +181,10 @@ export function createGoldenHost(overrides: GoldenHostOverrides = {}): GoldenHos
     emitEvent: (type: string, data?: unknown) => void emitted.push([type, data]),
     onEvent: (_type: string, handler: Listener<unknown>) =>
       register(eventListeners, handler, () => handler(FIRED_EVENT_DATA)),
-    getInstalledPluginIds: () => ["orion-api", "local-indexer", "meeting", "lyra-mail", "vega-helper"],
+    // The member excludes the caller, and a validated plugin is validated
+    // alone: no other plugin is installed beside it. A recording that needs a
+    // neighbourhood supplies one through `overrides`.
+    getInstalledPluginIds: () => [],
     onPluginsChanged: (handler: Listener<PluginLifecycleEvent>) =>
       register(pluginsChangedListeners, handler, () => handler(FIRED_PLUGINS_CHANGE)),
     getSecret: async () => "the-stored-secret",
@@ -172,7 +203,7 @@ export function createGoldenHost(overrides: GoldenHostOverrides = {}): GoldenHos
     logEvent: (level: string, message: string, data?: unknown) =>
       void logged.push([level, message, data]),
     onShutdown: (handler: () => void | Promise<void>) => void shutdownHandlers.push(handler),
-    spawnWorker: async (spec: { workerId: string }) => fakeWorker(spec),
+    spawnWorker: async (spec: { workerId: string }) => scriptedWorker(spec),
     openAuthWindow: async (options: { returnFinalUrl?: boolean }) => {
       const cookies = [{ name: "session", value: "cookie-value", domain: "login.example.com" }];
       return options.returnFinalUrl
@@ -258,12 +289,13 @@ export function createGoldenHost(overrides: GoldenHostOverrides = {}): GoldenHos
       owner = owner[segment] as Record<string, unknown>;
     }
     const member = segments.at(-1)!;
-    if (!(member in owner)) throw new Error(`the golden host has no member '${path}'`);
+    if (!(member in owner)) throw new Error(`the validation host has no member '${path}'`);
     owner[member] = replacement;
   }
 
   return {
     api,
+    roots: VALIDATION_HOST_ROOTS,
     logged,
     emitted,
     fireAll: () => {
@@ -276,20 +308,29 @@ export function createGoldenHost(overrides: GoldenHostOverrides = {}): GoldenHos
 }
 
 /**
- * Every golden file under `dir`, relative to it and `/`-separated on every
- * platform: the names are built from segments rather than by `relative`, which
- * answers with `\` on Windows.
+ * The validation host's authority: the base envelope and nothing else.
+ *
+ * `derivePluginChildEnvelope` with NO `sandbox` input — the plugin's own root
+ * and data directory, its socket directory and its worker run root. No
+ * `hostDirectory` grant and no `userChosenDirectory` grant: the validator has
+ * no user approvals to consult and must not read `~/.ave/settings.json`. A
+ * delegated worker that asks for more is refused by the same `spawnWorker`
+ * check production applies, and a declared grant is reported as not
+ * exercised rather than as passed.
  */
-export function goldenFiles(dir: string): string[] {
-  const out: string[] = [];
-  const walk = (current: string, prefix: string): void => {
-    for (const name of readdirSync(current)) {
-      const full = join(current, name);
-      const named = `${prefix}${name}`;
-      if (statSync(full).isDirectory()) walk(full, `${named}/`);
-      else out.push(named);
-    }
-  };
-  walk(dir, "");
-  return out.sort();
+export function validationConfinement(
+  pluginId: string,
+  pluginRoot: string,
+  pluginDataDir: string,
+): DelegatedWorkerConfinement {
+  return derivePluginChildEnvelope({
+    pluginId,
+    pluginRoot,
+    pluginDataDir,
+    // Only a `userChosenDirectory` grant reads config, and with no `sandbox`
+    // input there is none — so a read here is a broken contract, not a value.
+    configValue: (key) => {
+      throw new Error(`[validation-host] the base envelope reads no config, asked for '${key}'`);
+    },
+  });
 }

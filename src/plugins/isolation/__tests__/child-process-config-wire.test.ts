@@ -59,11 +59,10 @@ import { join } from "node:path";
 import { buildChildEntry, childBundleDir, repositoryRoot } from "./child-entry-bundle.js";
 import { aveHome } from "../../../shared/ave-home.js";
 import type { PluginHostApi, PluginManifest, PluginRuntimeContext, RuntimePlugin } from "../../types.js";
-import {
-  createOutOfProcessPluginFactory,
-  type ConfinedPluginChild,
-  type ConfinedPluginChildSpec,
-} from "../out-of-process-plugin.js";
+import { derivePluginChildEnvelope } from "../out-of-process-plugin.js";
+import { createBoundHostApiDispatchTable } from "../bound-host-api-table.js";
+import { openPluginProtocolSession } from "../plugin-protocol-session.js";
+import type { ChildLink } from "../plugin-child-transport.js";
 import { SECRET_REDACTED_SENTINEL } from "../host-api-wire.js";
 import {
   emitPluginConfigChange,
@@ -195,8 +194,8 @@ const MANIFEST = {
 } as PluginManifest;
 
 /** Spawn the bundled child as a plain Node process and hand back its pipes. */
-async function connectPlainChild(spec: ConfinedPluginChildSpec): Promise<ConfinedPluginChild> {
-  const child = spawn(process.execPath, [spec.childEntryPath], {
+function spawnPlainChild(childEntryPath: string): ChildLink {
+  const child = spawn(process.execPath, [childEntryPath], {
     stdio: ["pipe", "pipe", "pipe"],
     // The production spawn sets this for the same reason: under the test runner
     // `process.execPath` is the Electron binary, and this is what makes it
@@ -210,18 +209,62 @@ async function connectPlainChild(spec: ConfinedPluginChildSpec): Promise<Confine
     child.kill("SIGKILL");
     throw new Error("the spawned child has no pipes");
   }
+  // The production link's split: an `error` from a process that has a pid is
+  // a fault on a live child, and only an exit or a spawn that produced no
+  // process is gone.
+  const hasProcess = (): boolean => typeof child.pid === "number" && child.pid > 0;
   return {
-    link: {
-      input: child.stdout,
-      output: child.stdin,
-      terminate: () => child.kill("SIGTERM"),
-      onGone: (handler) => {
-        child.once("exit", (code, signal) =>
-          handler(`child exited code=${String(code)} signal=${String(signal)}`),
-        );
-        child.once("error", (error: Error) => handler(`child error: ${error.message}`));
-      },
+    input: child.stdout,
+    output: child.stdin,
+    terminate: () => child.kill("SIGTERM"),
+    onGone: (handler) => {
+      child.once("exit", (code, signal) =>
+        handler(`child exited code=${String(code)} signal=${String(signal)}`),
+      );
+      child.on("error", (error: Error) => {
+        if (!hasProcess()) handler(`child error: ${error.message}`);
+      });
     },
+    onFault: (handler) => {
+      child.on("error", (error: Error) => {
+        if (hasProcess()) handler(`child fault: ${error.message}`);
+      });
+    },
+  };
+}
+
+/**
+ * The protocol session over an unconfined real child, with the table bound to
+ * the envelope production derives for the case's own roots. These cases prove
+ * config marshalling across a real process, not confinement, so the child is
+ * spawned plainly and the session is opened the way the factory opens it once
+ * its child exists. Shaped like a `RuntimePluginFactory` so each case reads
+ * as the factory case it replaces.
+ */
+function plainSessionFactory(spec: {
+  readonly manifest: PluginManifest;
+  readonly entryPath: string;
+  readonly childEntryPath: string;
+}): (context: PluginRuntimeContext) => Promise<RuntimePlugin> {
+  return async (context) => {
+    const envelope = derivePluginChildEnvelope({
+      pluginId: spec.manifest.id,
+      pluginRoot: context.pluginRoot,
+      pluginDataDir: context.pluginDataDir,
+      configValue: (key) => context.hostApi.config.get(key),
+    });
+    const session = await openPluginProtocolSession({
+      pluginId: spec.manifest.id,
+      manifest: spec.manifest,
+      hostProtocolVersion: "2",
+      link: spawnPlainChild(spec.childEntryPath),
+      context,
+      entryPath: spec.entryPath,
+      table: createBoundHostApiDispatchTable(context.hostApi, envelope),
+      // `afterEach` reaps whatever is still running.
+      onClosed: async () => undefined,
+    });
+    return session.instance;
   };
 }
 
@@ -349,11 +392,10 @@ describe("the config values a plugin reads, across a real child process", () => 
       mkdirSync(pluginDataDir, { recursive: true });
       const { service } = fakeSettingsService("in-app");
       const { hostApi, subscribedKeys } = hostApiFor(service);
-      const factory = createOutOfProcessPluginFactory({
+      const factory = plainSessionFactory({
         manifest: MANIFEST,
         entryPath: writePluginEntry(root),
         childEntryPath: await buildChildEntry(CHILD_BUNDLE_CACHE),
-        connect: connectPlainChild,
       });
       const instance = await factory({
         pluginId: PLUGIN_ID,
@@ -431,11 +473,10 @@ describe("the config values a plugin reads, across a real child process", () => 
       mkdirSync(pluginDataDir, { recursive: true });
       const { service, set } = fakeSettingsService("in-app");
       const { hostApi } = hostApiFor(service);
-      const factory = createOutOfProcessPluginFactory({
+      const factory = plainSessionFactory({
         manifest: MANIFEST,
         entryPath: writePluginEntry(root),
         childEntryPath: await buildChildEntry(CHILD_BUNDLE_CACHE),
-        connect: connectPlainChild,
       });
       const instance = await factory({
         pluginId: PLUGIN_ID,
@@ -501,13 +542,12 @@ describe("the config values a plugin reads, across a real child process", () => 
       mkdirSync(pluginDataDir, { recursive: true });
       const { service, set } = fakeSettingsService("in-app");
       const { hostApi } = hostApiFor(service);
-      const factory = createOutOfProcessPluginFactory({
+      const factory = plainSessionFactory({
         manifest: MANIFEST,
         // The plugin module sleeps at import, so the child spends this long
         // with no runtime to route a host notification through.
         entryPath: writePluginEntry(root, CONSTRUCT_WINDOW_MS),
         childEntryPath: await buildChildEntry(CHILD_BUNDLE_CACHE),
-        connect: connectPlainChild,
       });
       const constructing = factory({
         pluginId: PLUGIN_ID,
@@ -555,11 +595,10 @@ describe("the config values a plugin reads, across a real child process", () => 
       // `construct` resolves — so this fails the step that runs AFTER the child
       // is alive and its module has been imported.
       const { hostApi, configWatchers } = hostApiFor(service, { throwOnPreferenceSnapshot: 2 });
-      const factory = createOutOfProcessPluginFactory({
+      const factory = plainSessionFactory({
         manifest: MANIFEST,
         entryPath: writePluginEntry(root),
         childEntryPath: await buildChildEntry(CHILD_BUNDLE_CACHE),
-        connect: connectPlainChild,
       });
       const before = new Set(spawnedChildren);
 

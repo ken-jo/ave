@@ -9,12 +9,25 @@
  * above the two `PassThrough`s is production code, including the dispatch table
  * assembled from the four group factories.
  *
+ * The protocol cases open the session the factory opens once its child
+ * exists — `openPluginProtocolSession` over the paired link, with a table
+ * bound to a literal envelope — so no spawn is involved. The two refusals the
+ * factory makes BEFORE any spawn are exercised on the factory itself, with the
+ * module where confinement begins recording its calls.
+ *
  * What the confinement half is worth is NOT provable here, and is deliberately
  * not claimed here — `confined-plugin-child.test.ts` spawns a real process for
  * that, because a test that asserts "we called `spawnConfinedChild`" proves
  * wiring and calls it protection.
  */
 import { describe, expect, it, vi } from "vitest";
+
+/** Every spawn the factory asked for; the refusal cases expect none. */
+const spawnConfinedChild = vi.hoisted(() => vi.fn());
+vi.mock("../../../permissions/confined-child.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../permissions/confined-child.js")>()),
+  spawnConfinedChild,
+}));
 
 /** What the host transport warned, for the cases that assert a notification was dropped. */
 const transportWarnings = vi.hoisted(() => [] as unknown[][]);
@@ -35,13 +48,16 @@ import { PassThrough } from "node:stream";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { PluginHostApi, PluginManifest, PluginRuntimeContext } from "../../types.js";
+import type {
+  PluginHostApi,
+  PluginManifest,
+  PluginRuntimeContext,
+  RuntimePlugin,
+} from "../../types.js";
 import { servePluginChild } from "../plugin-child-main.js";
-import {
-  createBoundHostApiDispatchTable,
-  createOutOfProcessPluginFactory,
-  type ConfinedPluginChild,
-} from "../out-of-process-plugin.js";
+import { createOutOfProcessPluginFactory } from "../out-of-process-plugin.js";
+import { createBoundHostApiDispatchTable } from "../bound-host-api-table.js";
+import { openPluginProtocolSession } from "../plugin-protocol-session.js";
 import type { ChildLink } from "../plugin-child-transport.js";
 import {
   FRAME_BYTES_MAX,
@@ -209,7 +225,7 @@ function fakeHostApi(): PluginHostApi & {
 
 /** A child served over paired streams, with the host's end of the link. */
 function pairedChild(): {
-  child: ConfinedPluginChild;
+  child: { link: ChildLink };
   kill: (reason: string) => void;
   sendAsChild: (frame: Record<string, unknown>) => void;
 } {
@@ -222,6 +238,8 @@ function pairedChild(): {
     output: hostToChild,
     terminate: () => service.hostGone(),
     onGone: (handler) => goneHandlers.push(handler),
+    // No process, so nothing can fault.
+    onFault: () => undefined,
   };
   return {
     child: { link },
@@ -258,6 +276,34 @@ const CONFINEMENT = {
   write: ["/plugins/vega-helper/data"],
 };
 
+/**
+ * What the factory does once its child exists: open the protocol session over
+ * the child's link, with a table bound to the context's hostApi and to
+ * {@link CONFINEMENT}. Shaped like a `RuntimePluginFactory` so a case reads
+ * the same as the factory case it replaces.
+ */
+function sessionFactory(spec: {
+  readonly manifest: PluginManifest;
+  readonly entryPath: string;
+  readonly link: ChildLink;
+  readonly auditLog?: (level: "info" | "warn" | "error", message: string, data?: unknown) => void;
+}): (context: PluginRuntimeContext) => Promise<RuntimePlugin> {
+  return async (context) => {
+    const session = await openPluginProtocolSession({
+      pluginId: spec.manifest.id,
+      manifest: spec.manifest,
+      hostProtocolVersion: "2",
+      link: spec.link,
+      context,
+      entryPath: spec.entryPath,
+      table: createBoundHostApiDispatchTable(context.hostApi, CONFINEMENT),
+      ...(spec.auditLog ? { auditLog: spec.auditLog } : {}),
+      onClosed: async () => undefined,
+    });
+    return session.instance;
+  };
+}
+
 describe("the dispatch table, assembled from the four group factories", () => {
   it("binds every member the contract says the host answers", () => {
     const table = createBoundHostApiDispatchTable(fakeHostApi(), CONFINEMENT);
@@ -285,10 +331,10 @@ describe("the pilot, out of process", () => {
     const auditLog = vi.fn();
     const paired = pairedChild();
     try {
-      const factory = createOutOfProcessPluginFactory({
+      const factory = sessionFactory({
         manifest: MANIFEST,
         entryPath,
-        connect: async () => paired.child,
+        link: paired.child.link,
         auditLog,
       });
       const instance = await factory(hostContext(fakeHostApi()));
@@ -319,10 +365,10 @@ describe("the pilot, out of process", () => {
     const hostApi = fakeHostApi();
     const { child } = pairedChild();
     try {
-      const factory = createOutOfProcessPluginFactory({
+      const factory = sessionFactory({
         manifest: MANIFEST,
         entryPath,
-        connect: async () => child,
+        link: child.link,
       });
       const instance = await factory(hostContext(hostApi));
 
@@ -365,10 +411,10 @@ describe("the pilot, out of process", () => {
     const hostApi = fakeHostApi();
     const { child } = pairedChild();
     try {
-      const factory = createOutOfProcessPluginFactory({
+      const factory = sessionFactory({
         manifest: MANIFEST,
         entryPath,
-        connect: async () => child,
+        link: child.link,
       });
       const instance = await factory(hostContext(hostApi));
       await expect(instance.handlers.pilot_reach_host!()).resolves.toBe(
@@ -394,10 +440,10 @@ describe("the pilot, out of process", () => {
     const hostApi = fakeHostApi();
     const { child } = pairedChild();
     try {
-      const factory = createOutOfProcessPluginFactory({
+      const factory = sessionFactory({
         manifest: MANIFEST,
         entryPath,
-        connect: async () => child,
+        link: child.link,
       });
       const instance = await factory(hostContext(hostApi));
       await instance.start?.();
@@ -419,10 +465,10 @@ describe("the pilot, out of process", () => {
     );
     const { child } = pairedChild();
     try {
-      const factory = createOutOfProcessPluginFactory({
+      const factory = sessionFactory({
         manifest: MANIFEST,
         entryPath,
-        connect: async () => child,
+        link: child.link,
       });
       const instance = await factory(hostContext(fakeHostApi()));
       expect(instance.start).toBeUndefined();
@@ -441,10 +487,10 @@ describe("the pilot, out of process", () => {
     const { dir, entryPath } = writePluginModule();
     const { child } = pairedChild();
     try {
-      const factory = createOutOfProcessPluginFactory({
+      const factory = sessionFactory({
         manifest: MANIFEST,
         entryPath,
-        connect: async () => child,
+        link: child.link,
       });
       const instance = await factory(hostContext(fakeHostApi()));
       await expect(instance.handlers.pilot_throw!()).rejects.toThrow(
@@ -471,10 +517,10 @@ describe("a child that dies is a failed plugin, never a hung host", () => {
     );
     const { child, kill } = pairedChild();
     try {
-      const factory = createOutOfProcessPluginFactory({
+      const factory = sessionFactory({
         manifest: MANIFEST,
         entryPath,
-        connect: async () => child,
+        link: child.link,
       });
       const instance = await factory(hostContext(fakeHostApi()));
       const inFlight = instance.handlers.pilot_echo!({});
@@ -491,10 +537,10 @@ describe("a child that dies is a failed plugin, never a hung host", () => {
     writeFileSync(entryPath, "export const notAFactory = 1;\n", "utf-8");
     const { child } = pairedChild();
     try {
-      const factory = createOutOfProcessPluginFactory({
+      const factory = sessionFactory({
         manifest: MANIFEST,
         entryPath,
-        connect: async () => child,
+        link: child.link,
       });
       await expect(factory(hostContext(fakeHostApi()))).rejects.toThrow(
         /exports no plugin factory/,
@@ -511,10 +557,10 @@ describe("a child that dies is a failed plugin, never a hung host", () => {
     // nobody left to answer it.
     const output = new PassThrough();
     output.once("data", () => kill("child exited during startup"));
-    const factory = createOutOfProcessPluginFactory({
+    const factory = sessionFactory({
       manifest: MANIFEST,
       entryPath: join(tmpdir(), "never-imported.mjs"),
-      connect: async () => ({ link: { ...child.link, output } }),
+      link: { ...child.link, output },
     });
     await expect(factory(hostContext(fakeHostApi()))).rejects.toThrow(
       /child exited during startup/,
@@ -530,10 +576,10 @@ describe("a child that dies is a failed plugin, never a hung host", () => {
     );
     const { child, kill } = pairedChild();
     try {
-      const factory = createOutOfProcessPluginFactory({
+      const factory = sessionFactory({
         manifest: MANIFEST,
         entryPath,
-        connect: async () => child,
+        link: child.link,
       });
       const instance = await factory(hostContext(hostApi));
       // The plugin subscribed in its factory body; the round trip that opens
@@ -563,13 +609,13 @@ describe("the host keeps the child's config snapshot current", () => {
     try {
       const hostApi = fakeHostApi();
       const { child } = pairedChild();
-      const factory = createOutOfProcessPluginFactory({
+      const factory = sessionFactory({
         manifest: {
           ...MANIFEST,
           configSchema: { type: "object", properties: { domains: { type: "array" } } },
         } as PluginManifest,
         entryPath,
-        connect: async () => child,
+        link: child.link,
       });
       const instance = await factory(hostContext(hostApi));
       const before = (await instance.handlers.pilot_echo!()) as {
@@ -597,10 +643,10 @@ describe("the host keeps the child's config snapshot current", () => {
     try {
       const hostApi = fakeHostApi();
       const { child } = pairedChild();
-      const factory = createOutOfProcessPluginFactory({
+      const factory = sessionFactory({
         manifest: MANIFEST,
         entryPath,
-        connect: async () => child,
+        link: child.link,
       });
       const instance = await factory(hostContext(hostApi));
       expect(hostApi.config.onChange).toHaveBeenCalledWith("*", expect.any(Function));
@@ -659,13 +705,13 @@ describe("a message too large to frame fails its call, not the channel", () => {
     writeFileSync(entryPath, MODULE, "utf-8");
     const { child } = pairedChild();
     const terminate = vi.fn(child.link.terminate);
-    const factory = createOutOfProcessPluginFactory({
+    const factory = sessionFactory({
       manifest: {
         ...MANIFEST,
         tools: TOOLS.map((name) => ({ name, description: name, inputSchema: EMPTY_SCHEMA })),
       },
       entryPath,
-      connect: async () => ({ link: { ...child.link, terminate } }),
+      link: { ...child.link, terminate },
     });
     const instance = await factory(hostContext(hostApi));
     return { dir, instance, terminate };
@@ -808,7 +854,7 @@ function hostFrames(link: ChildLink): Array<Record<string, unknown>> {
  * else, which is how a plugin that speaks the protocol itself would answer.
  */
 function scriptedChild(result: Record<string, unknown>): {
-  child: ConfinedPluginChild;
+  child: { link: ChildLink };
   terminated: () => string | undefined;
 } {
   const hostToChild = new PassThrough();
@@ -831,6 +877,7 @@ function scriptedChild(result: Record<string, unknown>): {
           terminated = reason;
         },
         onGone: () => undefined,
+        onFault: () => undefined,
       },
     },
     terminated: () => terminated,
@@ -843,31 +890,52 @@ const CONSTRUCTED = {
   lifecycleHooks: [],
 } as const;
 
+/**
+ * Real, writable roots for the refusal cases, so a factory that skipped its
+ * protocol check would get as far as the spawn — and be recorded there —
+ * instead of failing earlier on a root it cannot create.
+ */
+function spawnableRoots(): { context: Partial<PluginRuntimeContext>; remove: () => void } {
+  const root = mkdtempSync(join(tmpdir(), "oop-plugin-refusal-"));
+  return {
+    context: { pluginRoot: root, pluginDataDir: join(root, "data"), pluginSocketDir: join(root, "data", "sockets") },
+    remove: () => rmSync(root, { recursive: true, force: true }),
+  };
+}
+
 describe("construct negotiates the host protocol", () => {
-  it("refuses an undeclared protocol before connecting a child", async () => {
-    const connect = vi.fn(async () => pairedChild().child);
-    const factory = createOutOfProcessPluginFactory({
-      manifest: { ...MANIFEST, requires: undefined },
-      entryPath: join(tmpdir(), "never-imported.mjs"),
-      connect,
-    });
-    await expect(factory(hostContext(fakeHostApi()))).rejects.toMatchObject({
-      detail: { declared: null },
-    });
-    expect(connect).not.toHaveBeenCalled();
+  it("refuses an undeclared protocol before spawning a child", async () => {
+    const roots = spawnableRoots();
+    spawnConfinedChild.mockClear();
+    try {
+      const factory = createOutOfProcessPluginFactory({
+        manifest: { ...MANIFEST, requires: undefined },
+        entryPath: join(tmpdir(), "never-imported.mjs"),
+      });
+      await expect(factory(hostContext(fakeHostApi(), roots.context))).rejects.toMatchObject({
+        detail: { declared: null },
+      });
+      expect(spawnConfinedChild).not.toHaveBeenCalled();
+    } finally {
+      roots.remove();
+    }
   });
 
   it("refuses a declared version this host does not serve, before anything is spawned", async () => {
-    const connect = vi.fn(async () => pairedChild().child);
-    const factory = createOutOfProcessPluginFactory({
-      manifest: { ...MANIFEST, requires: { hostProtocol: "1" } },
-      entryPath: join(tmpdir(), "never-imported.mjs"),
-      connect,
-    });
-    const refused = factory(hostContext(fakeHostApi()));
-    await expect(refused).rejects.toBeInstanceOf(IncompatibleHostProtocolError);
-    await expect(refused).rejects.toMatchObject({ detail: { declared: "1" } });
-    expect(connect).not.toHaveBeenCalled();
+    const roots = spawnableRoots();
+    spawnConfinedChild.mockClear();
+    try {
+      const factory = createOutOfProcessPluginFactory({
+        manifest: { ...MANIFEST, requires: { hostProtocol: "1" } },
+        entryPath: join(tmpdir(), "never-imported.mjs"),
+      });
+      const refused = factory(hostContext(fakeHostApi(), roots.context));
+      await expect(refused).rejects.toBeInstanceOf(IncompatibleHostProtocolError);
+      await expect(refused).rejects.toMatchObject({ detail: { declared: "1" } });
+      expect(spawnConfinedChild).not.toHaveBeenCalled();
+    } finally {
+      roots.remove();
+    }
   });
 
   it("speaks the declared version, and advertises the members the bound table implements", async () => {
@@ -878,10 +946,10 @@ describe("construct negotiates the host protocol", () => {
     const hostApi = fakeHostApi();
     delete (hostApi as { hostFetch?: unknown }).hostFetch;
     try {
-      const factory = createOutOfProcessPluginFactory({
+      const factory = sessionFactory({
         manifest: { ...MANIFEST, requires: { hostProtocol: "2" } },
         entryPath,
-        connect: async () => child,
+        link: child.link,
       });
       const instance = await factory(hostContext(hostApi));
       const construct = sent.find((frame) => frame.method === PLUGIN_INSTANCE_METHODS.construct);
@@ -909,10 +977,10 @@ describe("construct negotiates the host protocol", () => {
       ...CONSTRUCTED,
       pluginProtocol: { requires: ["ave/host/callLlm", "ave/host/hostFetch"] },
     });
-    const factory = createOutOfProcessPluginFactory({
+    const factory = sessionFactory({
       manifest: MANIFEST,
       entryPath: join(tmpdir(), "never-imported.mjs"),
-      connect: async () => child,
+      link: child.link,
     });
     const refused = factory(hostContext(hostApi));
     await expect(refused).rejects.toBeInstanceOf(IncompatibleHostProtocolError);
@@ -927,10 +995,10 @@ describe("construct negotiates the host protocol", () => {
       ...CONSTRUCTED,
       pluginProtocol: { requires: ["ave/host/hostFetch"] },
     });
-    const factory = createOutOfProcessPluginFactory({
+    const factory = sessionFactory({
       manifest: MANIFEST,
       entryPath: join(tmpdir(), "never-imported.mjs"),
-      connect: async () => child,
+      link: child.link,
     });
     const instance = await factory(hostContext(fakeHostApi()));
     expect(terminated()).toBeUndefined();
@@ -939,10 +1007,10 @@ describe("construct negotiates the host protocol", () => {
 
   it("fails a construct reply with no pluginProtocol, rather than reading it as requiring nothing", async () => {
     const { child, terminated } = scriptedChild({ ...CONSTRUCTED });
-    const factory = createOutOfProcessPluginFactory({
+    const factory = sessionFactory({
       manifest: MANIFEST,
       entryPath: join(tmpdir(), "never-imported.mjs"),
-      connect: async () => child,
+      link: child.link,
     });
     await expect(factory(hostContext(fakeHostApi()))).rejects.toThrow(
       /construct answered no pluginProtocol\.requires list/,
@@ -965,10 +1033,10 @@ describe("a ui:// card is MCP resources/read", () => {
     const { child } = pairedChild();
     const sent = hostFrames(child.link);
     try {
-      const factory = createOutOfProcessPluginFactory({
+      const factory = sessionFactory({
         manifest: { ...MANIFEST, uiResources: [{ uri: CARD }] },
         entryPath,
-        connect: async () => child,
+        link: child.link,
       });
       const instance = await factory(hostContext(fakeHostApi()));
       await expect(instance.readUiResource?.(CARD)).resolves.toBe(`<p>${CARD}</p>`);
@@ -989,10 +1057,10 @@ describe("a ui:// card is MCP resources/read", () => {
     );
     const { child } = pairedChild();
     try {
-      const factory = createOutOfProcessPluginFactory({
+      const factory = sessionFactory({
         manifest: MANIFEST,
         entryPath,
-        connect: async () => child,
+        link: child.link,
       });
       const instance = await factory(hostContext(fakeHostApi()));
       // The child's server would refuse the read, so the host is not handed a
@@ -1017,7 +1085,7 @@ describe("onShutdown runs through ave/instance/shutdown", () => {
 
   async function constructHeld(): Promise<{
     dir: string;
-    instance: Awaited<ReturnType<ReturnType<typeof createOutOfProcessPluginFactory>>>;
+    instance: RuntimePlugin;
     runShutdown: () => Promise<void>;
     terminate: ReturnType<typeof vi.fn>;
   }> {
@@ -1025,10 +1093,10 @@ describe("onShutdown runs through ave/instance/shutdown", () => {
     const { child } = pairedChild();
     const terminate = vi.fn(child.link.terminate);
     const hostApi = fakeHostApi();
-    const factory = createOutOfProcessPluginFactory({
+    const factory = sessionFactory({
       manifest: MANIFEST,
       entryPath,
-      connect: async () => ({ link: { ...child.link, terminate } }),
+      link: { ...child.link, terminate },
     });
     const instance = await factory(hostContext(hostApi));
     await vi.waitFor(() => expect(hostApi.onShutdown).toHaveBeenCalledTimes(1));
