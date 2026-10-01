@@ -1842,7 +1842,7 @@ export async function spawnWithSandbox(
   // preserves protected denies while admitting scoped work and saved history.
   const sandboxWritePaths = [...writePaths, homePath];
   const { allowRead, denyRead } = getBuiltinShellReadPolicy(
-    [resolvedCwd, ...sandboxWritePaths, ...preparedShellExecutableReadPaths(prepared)], home,
+    [resolvedCwd, ...sandboxWritePaths, ...preparedShellExecutableReadPaths(prepared)], home, homePath,
   );
   const filesystem = {
     allowWrite: sandboxWritePaths,
@@ -2903,7 +2903,7 @@ async function spawnPowerShellWithSandbox(
 
   const home = process.env["HOME"];
   const sandboxWritePaths = [...writePaths, sandboxHome.path];
-  const { allowRead, denyRead } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths], home);
+  const { allowRead, denyRead } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths], home, sandboxHome.path);
   const filesystem = {
     allowWrite: sandboxWritePaths,
     allowRead,

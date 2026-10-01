@@ -15,6 +15,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -23,14 +24,27 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  appOwnedSandboxHomeRoot,
+  appOwnedSandboxPrivateRoots,
   appOwnedSandboxTempRoot,
+  buildPerCommandSandboxCustomConfig,
+  ensureSandboxPrivateRoot,
   ensureSandboxTempPrincipalDir,
+  getDefaultSensitiveReadDenyPaths,
+  getDefaultSensitiveWriteDenyPaths,
+  initializeAsrtSandbox,
+  isAsrtSandboxActive,
+  resetAsrtSandbox,
+  wrapWorkerCommand,
+  sandboxTempPrincipalDirsInUse,
   sandboxTempEnvLaunch,
   sandboxTempPrincipalDirName,
   type SandboxTempPrincipal,
 } from "../asrt-sandbox.js";
-import { sweepSandboxTempRoot } from "../../boot/steps/sandbox-init.js";
+import { sweepSandboxPrivateRoot } from "../../boot/steps/sandbox-init.js";
 import { makeTestTreeWritable } from "../../plugins/__tests__/test-helpers.js";
+import { createSandboxProcessHome } from "../sandbox-process-home.js";
+import { asrtCanInitialize } from "./test-helpers.js";
 
 let home: string;
 let previousAveHome: string | undefined;
@@ -42,6 +56,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  if (isAsrtSandboxActive()) await resetAsrtSandbox();
   if (previousAveHome === undefined) delete process.env.AVE_HOME;
   else process.env.AVE_HOME = previousAveHome;
   await makeTestTreeWritable(home);
@@ -127,7 +142,22 @@ describe("the launcher that sets a principal's temp directory", () => {
   });
 });
 
-describe("emptying the sandbox temp root at boot", () => {
+describe("emptying a sandbox private root at boot", () => {
+  it.skipIf(process.platform === "win32")("keeps what this process created, by either spelling of the root", async () => {
+    const { dir: kept, root } = ensureSandboxTempPrincipalDir({ kind: "plugin", id: "kept" });
+    const { dir: stale } = ensureSandboxTempPrincipalDir({ kind: "plugin", id: "stale" });
+    // The production set: every directory this process handed to a wrap.
+    expect(sandboxTempPrincipalDirsInUse().has(kept)).toBe(true);
+    await sweepSandboxPrivateRoot(root, new Set([kept]));
+    expect(existsSync(kept)).toBe(true);
+    expect(existsSync(stale)).toBe(false);
+    // A HOME is recorded by its canonical path, which differs from the lexical
+    // one wherever the root sits under a link (macOS `/var` → `/private/var`).
+    const canonicalKept = join(realpathSync(root), sandboxTempPrincipalDirName({ kind: "plugin", id: "kept" }));
+    await sweepSandboxPrivateRoot(root, new Set([canonicalKept]));
+    expect(existsSync(kept)).toBe(true);
+  });
+
   it.skipIf(process.platform === "win32")("removes every principal's directory, whatever it made unreadable, and follows no link", async () => {
     const { dir, root } = ensureSandboxTempPrincipalDir({ kind: "plugin", id: "p" });
     const { dir: other } = ensureSandboxTempPrincipalDir({ kind: "mcp", id: "s" });
@@ -144,7 +174,7 @@ describe("emptying the sandbox temp root at boot", () => {
     // A link left at the top of the root, by a version that still granted it.
     symlinkSync(outside, join(root, "plugin-6c696e6b"));
 
-    await sweepSandboxTempRoot(root);
+    await sweepSandboxPrivateRoot(root, new Set());
     expect(readdirSync(root)).toEqual([]);
     expect(readFileSync(join(outside, "kept"), "utf-8")).toBe("kept");
   });
@@ -155,13 +185,75 @@ describe("emptying the sandbox temp root at boot", () => {
     const root = appOwnedSandboxTempRoot();
     mkdirSync(join(root, ".."), { recursive: true });
     symlinkSync(outside, root);
-    await sweepSandboxTempRoot(root);
+    await sweepSandboxPrivateRoot(root, new Set());
     expect(existsSync(root)).toBe(false);
     expect(readFileSync(join(outside, "kept"), "utf-8")).toBe("kept");
   });
 
   it("does nothing when there is no root yet", async () => {
-    await sweepSandboxTempRoot(appOwnedSandboxTempRoot());
+    await sweepSandboxPrivateRoot(appOwnedSandboxTempRoot(), new Set());
     expect(existsSync(appOwnedSandboxTempRoot())).toBe(false);
   });
+});
+
+describe("the private roots in a sandbox read deny", () => {
+  it.runIf(process.platform === "darwin")(
+    "names each root exactly, as a glob, at its real path, and leaves every other deny as written",
+    () => {
+      for (const root of appOwnedSandboxPrivateRoots()) ensureSandboxPrivateRoot(root);
+      const floor = getDefaultSensitiveReadDenyPaths();
+      const denyRead = buildPerCommandSandboxCustomConfig({ denyRead: floor })!.filesystem!.denyRead;
+      const tempRoot = realpathSync(appOwnedSandboxTempRoot());
+      const homeRoot = realpathSync(appOwnedSandboxHomeRoot());
+      // A one-character class: the same path, which ASRT re-emits after its
+      // allows minus the ones inside it, rather than a literal re-emitted bare.
+      expect(denyRead).toContain(`${tempRoot.slice(0, -1)}[p]`);
+      expect(denyRead).toContain(`${homeRoot.slice(0, -1)}[e]`);
+      expect(denyRead).not.toContain(appOwnedSandboxTempRoot());
+      expect(denyRead).not.toContain(appOwnedSandboxHomeRoot());
+      const others = floor.filter((path) => !appOwnedSandboxPrivateRoots().includes(path));
+      expect(denyRead.filter((path) => !/\[[pe]\]$/.test(path))).toEqual(others);
+    },
+  );
+
+  it.runIf(process.platform === "linux")("keeps each root literal on Linux, where a deny is a tmpfs mask", () => {
+    const floor = getDefaultSensitiveReadDenyPaths();
+    expect(buildPerCommandSandboxCustomConfig({ denyRead: floor })!.filesystem!.denyRead).toEqual(floor);
+  });
+
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "keeps a wrap's own HOME readable when it is also granted a directory above the roots",
+    async () => {
+      if (!(await asrtCanInitialize())) {
+        if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw new Error("ASRT cannot initialize on this machine");
+        return;
+      }
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+      const own = createSandboxProcessHome();
+      const other = createSandboxProcessHome();
+      try {
+        writeFileSync(join(own.path, "own"), "own");
+        writeFileSync(join(other.path, "other"), "other");
+        // `home` holds AVE_HOME, as a workspace at the user's HOME holds
+        // `~/.ave`: an ancestor of both private roots.
+        const { argv, env } = await wrapWorkerCommand(
+          `/bin/cat '${join(own.path, "own")}'; echo; /bin/cat '${join(other.path, "other")}' 2>/dev/null || echo refused`,
+          {
+            filesystem: {
+              allowRead: [home, own.path],
+              allowWrite: [own.path],
+              denyRead: getDefaultSensitiveReadDenyPaths(),
+              denyWrite: getDefaultSensitiveWriteDenyPaths(),
+            },
+          },
+        );
+        const out = execFileSync(argv[0]!, argv.slice(1), { env: { ...env }, encoding: "utf-8" });
+        expect(out.trim().split("\n")).toEqual(["own", "refused"]);
+      } finally {
+        own.cleanup();
+        other.cleanup();
+      }
+    },
+    60_000,
+  );
 });

@@ -10,10 +10,34 @@ import { basename, dirname, join, win32 } from "node:path";
 
 import { createLogger } from "../lib/logger.js";
 import { errorMessage } from "../shared/error-message.js";
+import { appOwnedSandboxHomeRoot, ensureSandboxPrivateRoot } from "./asrt-sandbox.js";
 
 const log = createLogger("sandbox-process-home");
 const SANDBOX_HOME_PREFIX = "ave-sandbox-home-";
 const CLEANUP_RETRY_DELAYS_MS = [50, 250, 1_000] as const;
+
+/** The sandbox HOMEs this process created and has not yet removed. */
+const liveHomes = new Set<string>();
+
+/**
+ * The sandbox HOMEs this process created and has not yet removed. The boot
+ * sweep keeps them: a HOME a process started during this boot is using is
+ * never removed, whatever order boot and the first spawn run in.
+ */
+export function sandboxProcessHomesInUse(): ReadonlySet<string> {
+  return liveHomes;
+}
+
+/**
+ * Where a sandbox HOME is created: the app-owned root on macOS and Linux,
+ * which the sandbox read floor denies to every other confined process
+ * (`appOwnedSandboxHomeRoot`); the host temp directory on Windows, unchanged,
+ * where a confined process reaches a path only through an ACL grant.
+ */
+function sandboxHomeParent(platform: NodeJS.Platform): string {
+  if (platform === "win32") return realpathSync.native(tmpdir());
+  return realpathSync.native(ensureSandboxPrivateRoot(appOwnedSandboxHomeRoot()));
+}
 
 export interface SandboxProcessHome {
   readonly path: string;
@@ -111,20 +135,24 @@ function createProfileDirectories(env: Readonly<Record<string, string>>): void {
  * costs the user their data on the next start. Temp is the case where vanishing
  * at exit is the contract rather than the defect.
  *
- * Without it, `os.tmpdir()` in a confined child names the root ASRT
- * substitutes, which is SHARED: it is one of ASRT's own default write paths, so
- * every confined process on the machine reaches the same directory — two
- * plugins, or a plugin and a worker, meeting in a place neither one's manifest
- * mentions. Every caller of this module already grants `home.path` for writing,
- * so a temp root beneath it needs no new grant; that uniformity is what makes
- * this a property of confinement rather than a favour done for one caller.
+ * On Windows that temp root is `TEMP`/`TMP` here. On macOS and Linux ASRT
+ * writes its own `TMPDIR=` inside the sandbox, so the temp directory is set
+ * there instead: per principal (`sandboxTempEnvLaunch`, `asrt-sandbox.ts`), or
+ * by the shell tool's own bootstrap. Every caller of this module already
+ * grants `home.path` for writing, so a temp root beneath it needs no new grant.
+ *
+ * WHERE IT LIVES. On macOS and Linux, under the app-owned
+ * `<AVE_HOME>/sandbox/home`, which the sandbox read floor denies: every
+ * caller re-allows its own HOME, so no confined process can list the root or
+ * read another one's HOME. Under the host temp directory, where it used to be,
+ * nothing denied it.
  */
 export function createSandboxProcessHome(
   platform: NodeJS.Platform = process.platform,
   removeHome: typeof rmSync = rmSync,
 ): SandboxProcessHome {
-  const tempRoot = realpathSync.native(tmpdir());
-  const createdPath = mkdtempSync(join(tempRoot, SANDBOX_HOME_PREFIX));
+  const parentRoot = sandboxHomeParent(platform);
+  const createdPath = mkdtempSync(join(parentRoot, SANDBOX_HOME_PREFIX));
   let homePath = createdPath;
   let env: Readonly<Record<string, string>>;
   try {
@@ -133,7 +161,7 @@ export function createSandboxProcessHome(
     }
     homePath = realpathSync.native(createdPath);
     if (
-      dirname(homePath) !== tempRoot ||
+      dirname(homePath) !== parentRoot ||
       !basename(homePath).startsWith(SANDBOX_HOME_PREFIX)
     ) {
       throw new Error(`refusing unsafe sandbox process HOME: ${homePath}`);
@@ -143,7 +171,7 @@ export function createSandboxProcessHome(
     createProfileDirectories(env);
   } catch (err) {
     if (
-      dirname(createdPath) === tempRoot &&
+      dirname(createdPath) === parentRoot &&
       basename(createdPath).startsWith(SANDBOX_HOME_PREFIX)
     ) {
       try {
@@ -155,6 +183,7 @@ export function createSandboxProcessHome(
     throw err;
   }
 
+  liveHomes.add(homePath);
   let cleaned = false;
   let failedAttempts = 0;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -162,6 +191,7 @@ export function createSandboxProcessHome(
     try {
       removeHome(homePath, { recursive: true, force: true });
       cleaned = true;
+      liveHomes.delete(homePath);
       failedAttempts = 0;
     } catch (err) {
       failedAttempts += 1;
@@ -185,7 +215,7 @@ export function createSandboxProcessHome(
     cleanup(): void {
       if (cleaned) return;
       if (
-        dirname(homePath) !== tempRoot ||
+        dirname(homePath) !== parentRoot ||
         !basename(homePath).startsWith(SANDBOX_HOME_PREFIX)
       ) {
         log.error({ homePath }, "sandbox process HOME cleanup refused unsafe path");

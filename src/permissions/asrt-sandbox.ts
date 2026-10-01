@@ -480,6 +480,48 @@ function pinnedWriteRootDenies(writeRoots: readonly string[]): string[] {
   return denies;
 }
 
+/**
+ * The read denies as handed to ASRT, with each sandbox private root
+ * ({@link appOwnedSandboxPrivateRoots}) spelled so a wrap keeps its own
+ * directory under it on macOS.
+ *
+ * Seatbelt is last-match-wins. ASRT emits the denies, then the allows, then
+ * re-emits after the allows every literal deny that sits strictly inside some
+ * literal allow — with no carve-outs. A wrap whose reads include any ancestor
+ * of a private root (a workspace at HOME, the host temp directory above an
+ * `AVE_HOME` there) therefore lost its own HOME and temp directory: measured,
+ * a bundled wrap's read-back of its own HOME failed with EPERM. A glob deny is
+ * always re-emitted late, minus each allow inside it, so the root is spelled as
+ * a one-character class naming the same path (`…/hom[e]`, `…/tm[p]`). The
+ * root and every other directory under it stay denied, and the wrap's own
+ * directory stays readable whatever else it is granted.
+ *
+ * The root is canonicalised first: ASRT resolves only a glob's static prefix,
+ * and keeps the pattern unresolved when that prefix is a link leaving its
+ * boundary, which would leave a deny that never matches the real path. Linux
+ * keeps the literal: a deny there is a tmpfs mask with the allows inside it
+ * bound back, whatever their order, while a glob is expanded once per wrap.
+ */
+function asrtReadDenyPaths(denyRead: readonly string[]): string[] {
+  if (process.platform !== "darwin") return [...denyRead];
+  const roots = new Set(appOwnedSandboxPrivateRoots());
+  return denyRead.map((path) => (roots.has(path) ? exactSeatbeltDenyGlob(path) : path));
+}
+
+function exactSeatbeltDenyGlob(root: string): string {
+  let real = root;
+  try {
+    real = realpathSync(root);
+  } catch (error) {
+    // Not created yet: nothing is under it to read, and the deny still names it.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  if (/[*?[\]]/.test(real)) {
+    throw new Error(`sandbox: ${real} contains glob characters; the read deny cannot name it exactly`);
+  }
+  return `${real.slice(0, -1)}[${real.slice(-1)}]`;
+}
+
 export function buildPerCommandSandboxCustomConfig(
   filesystem: PerCommandFilesystem | undefined,
 ): Partial<SandboxRuntimeConfig> | undefined {
@@ -491,7 +533,7 @@ export function buildPerCommandSandboxCustomConfig(
     );
   }
   const fs: Partial<FilesystemConfig> = {};
-  if (filesystem.denyRead !== undefined) fs.denyRead = [...filesystem.denyRead];
+  if (filesystem.denyRead !== undefined) fs.denyRead = asrtReadDenyPaths(filesystem.denyRead);
   if (filesystem.allowWrite !== undefined) fs.allowWrite = [...filesystem.allowWrite];
   if (filesystem.denyWrite !== undefined) {
     fs.denyWrite = [
@@ -616,10 +658,22 @@ export function isAsrtSandboxActive(): boolean {
  *   changes correctly. When absent (e.g. the mcp-client wrap path), falls
  *   back to a per-platform os.homedir()-derived path so there is always SOME
  *   coverage. Do NOT supply this from untrusted sources.
+ * PLUS, on macOS and Linux, the two roots that hold every confined process's
+ * private directories ({@link appOwnedSandboxPrivateRoots}): the per-principal
+ * temp directories and the per-process sandbox HOMEs. They are read-denied
+ * here, in the floor every wrap restates, because ASRT's reads are deny-only
+ * and `0o700` stops no process of the same user — without the deny any
+ * confined process could list them and read every other one's files. Each
+ * wrap re-allows its OWN directory (`allowRead` is re-allowed inside a
+ * covering deny). Not in the WRITE floor: a write deny takes precedence over
+ * `allowWrite` and would take the process's own directory away. Windows keeps
+ * its deny-only floor unchanged; its sandbox HOME is a per-process directory
+ * under the host temp directory reached through ACL grants.
+ *
  * @returns deduped, order-stable absolute paths to deny reads of.
  */
 export function getDefaultSensitiveReadDenyPaths(userDataDir?: string): string[] {
-  return getDefaultSensitiveDenyPaths(userDataDir);
+  return [...getDefaultSensitiveDenyPaths(userDataDir), ...appOwnedSandboxPrivateRoots()];
 }
 
 /**
@@ -651,18 +705,33 @@ export function getBuiltinShellSessionReadPolicy(userDataDir = _baseTrustedSetti
   });
 }
 
-/** Compose invocation reads without duplicating a grant above the HOME deny. */
-export function getBuiltinShellReadPolicy(readPaths: readonly string[], hostHome: string | undefined): {
+/**
+ * Compose invocation reads without duplicating a grant above the HOME deny.
+ *
+ * `sandboxHome` is the invocation's own sandbox HOME. The sandbox private
+ * roots are read-denied like the rest of the floor, and a read grant under
+ * them is dropped — a working directory there must not reopen another
+ * process's HOME — except the invocation's own HOME and what is inside it.
+ */
+export function getBuiltinShellReadPolicy(
+  readPaths: readonly string[],
+  hostHome: string | undefined,
+  sandboxHome?: string,
+): {
   readonly allowRead: readonly string[];
   readonly denyRead: readonly string[];
 } {
   const sessions = getBuiltinShellSessionReadPolicy();
+  const privateRoots = appOwnedSandboxPrivateRoots();
+  const ownHome = sandboxHome === undefined ? undefined : canonicalizePathForMatch(sandboxHome);
   const home = hostHome ? caseFoldForMatch(canonicalizePathForMatch(hostHome)) : undefined;
   const allowRead = [...readPaths, ...sessions.allowRead].filter((path) => {
     const resolved = canonicalizePathForMatch(path);
     // An explicit working directory must not reopen protected user data or a
     // custom deny when removing a broader ancestor changes native rule order.
     if (sessions.denyRead.some((denied) => readDenyCoversPath(denied, resolved))) return false;
+    const insideOwnHome = ownHome !== undefined && (resolved === ownHome || resolved.startsWith(`${ownHome}/`));
+    if (!insideOwnHome && privateRoots.some((root) => readDenyCoversPath(root, resolved))) return false;
     if (home === undefined) return true;
     const canonical = caseFoldForMatch(resolved);
     if (canonical === home) return true;
@@ -675,7 +744,7 @@ export function getBuiltinShellReadPolicy(readPaths: readonly string[], hostHome
   });
   return Object.freeze({
     allowRead: Object.freeze(allowRead),
-    denyRead: Object.freeze([...sessions.denyRead, ...(hostHome ? [hostHome] : [])]),
+    denyRead: Object.freeze([...sessions.denyRead, ...privateRoots, ...(hostHome ? [hostHome] : [])]),
   });
 }
 
@@ -799,12 +868,16 @@ function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readableP
  * stamp path (see {@link initializeAsrtSandbox}); non-existent paths are harmless
  * to list (ASRT/bwrap skip them). No "allow if not found" branch (No-Fallback).
  *
- * @param userDataDir  forwarded to {@link getDefaultSensitiveReadDenyPaths}.
+ * The read half is the sensitive table's projection, NOT
+ * {@link getDefaultSensitiveReadDenyPaths}: that one also denies the sandbox
+ * private roots, which every confined process WRITES its own directory under.
+ *
+ * @param userDataDir  forwarded to the sensitive table's projection.
  * @returns deduped, order-stable absolute paths to deny writes of.
  */
 export function getDefaultSensitiveWriteDenyPaths(userDataDir?: string): string[] {
   const home = homedir();
-  const readDeny = getDefaultSensitiveReadDenyPaths(userDataDir);
+  const readDeny = getDefaultSensitiveDenyPaths(userDataDir);
   const writePersistence = [
     // ── POSIX shell startup files — a write here re-executes on the next shell ──
     join(home, ".zshenv"),
@@ -956,7 +1029,7 @@ export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): San
     }
   }
   const filesystem: FilesystemConfig = {
-    denyRead: denyReadUnion,
+    denyRead: asrtReadDenyPaths(denyReadUnion),
     allowWrite: [...(trustedSettings.allowWrite ?? [])],
     denyWrite: denyWriteUnion,
     ...(trustedSettings.allowRead !== undefined
@@ -1369,6 +1442,45 @@ export function appOwnedSandboxTempRoot(): string {
   return join(aveHome(), "sandbox", "tmp");
 }
 
+/**
+ * Where every confined process's throwaway sandbox HOME is created on macOS
+ * and Linux (`sandbox-process-home.ts`), one `mkdtemp` directory each.
+ *
+ * App-owned, beside the temp root, rather than under the host's temp
+ * directory: there, nothing denied reading it, so any confined process could
+ * list the host temp directory and read another one's HOME. Under this root
+ * the read floor denies it ({@link getDefaultSensitiveReadDenyPaths}) and each
+ * wrap re-allows its own HOME alone.
+ */
+export function appOwnedSandboxHomeRoot(): string {
+  return join(aveHome(), "sandbox", "home");
+}
+
+/**
+ * The roots of the confined processes' private directories, read-denied by
+ * the floor on macOS and Linux. Empty on Windows, whose floor is unchanged.
+ */
+export function appOwnedSandboxPrivateRoots(): string[] {
+  if (process.platform === "win32") return [];
+  return [appOwnedSandboxTempRoot(), appOwnedSandboxHomeRoot()];
+}
+
+/**
+ * Create a sandbox private root `0o700` if it is absent, and refuse one that is
+ * not a real directory. Its ancestors may be links (`AVE_HOME` may be one);
+ * the root itself is the host's, and every directory a wrap grants is made
+ * inside it, so a link here would put them somewhere the read floor does not
+ * name.
+ */
+export function ensureSandboxPrivateRoot(root: string): string {
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  const entry = lstatSync(root);
+  if (!entry.isDirectory()) {
+    throw new Error(`sandbox: ${root} is not a directory the host created; refusing to create sandbox directories in it`);
+  }
+  return root;
+}
+
 let appOwnedTempRootReady = false;
 
 /**
@@ -1413,13 +1525,25 @@ export function sandboxTempPrincipalDirName(principal: SandboxTempPrincipal): st
   return `${principal.kind}-${bytes.toString("hex")}`;
 }
 
+const createdSandboxTempPrincipalDirs = new Set<string>();
+
+/**
+ * The principal temp directories this process has handed to a wrap. The boot
+ * sweep keeps them: a directory a process started during this boot is using is
+ * never removed, whatever order boot and the first wrap run in.
+ */
+export function sandboxTempPrincipalDirsInUse(): ReadonlySet<string> {
+  return createdSandboxTempPrincipalDirs;
+}
+
 /**
  * Create (or take back) a principal's temp directory and return it with the
  * root it sits in.
  *
  * A wrap that uses it grants read and write on `dir` alone, sets
- * `TMPDIR`/`TMP`/`TEMP` to it inside the wrap ({@link sandboxTempEnvLaunch}),
- * and denies reading `root`. ASRT reads are deny-only, so without that deny
+ * `TMPDIR`/`TMP`/`TEMP` to it inside the wrap ({@link sandboxTempEnvLaunch});
+ * the read floor denies `root` ({@link getDefaultSensitiveReadDenyPaths}).
+ * ASRT reads are deny-only, so without that deny
  * every confined process could list the root and read every other
  * principal's files in it; the deny is what makes the directory private, and
  * `0o700` adds nothing against a process of the same user.
@@ -1430,9 +1554,8 @@ export function sandboxTempPrincipalDirName(principal: SandboxTempPrincipal): st
  * the boot sweep before any wrap.
  */
 export function ensureSandboxTempPrincipalDir(principal: SandboxTempPrincipal): { readonly dir: string; readonly root: string } {
-  const root = appOwnedSandboxTempRoot();
+  const root = ensureSandboxPrivateRoot(appOwnedSandboxTempRoot());
   const dir = join(root, sandboxTempPrincipalDirName(principal));
-  mkdirSync(root, { recursive: true, mode: 0o700 });
   try {
     mkdirSync(dir, { mode: 0o700 });
   } catch (error) {
@@ -1444,6 +1567,7 @@ export function ensureSandboxTempPrincipalDir(principal: SandboxTempPrincipal): 
   }
   // A principal may have narrowed its own directory's mode; the host decides it.
   if ((entry.mode & 0o7777) !== 0o700) chmodSync(dir, 0o700);
+  createdSandboxTempPrincipalDirs.add(dir);
   return { dir, root };
 }
 

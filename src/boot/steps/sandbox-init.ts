@@ -2,7 +2,7 @@
 
 
 
-import { lstat, readdir, unlink } from "node:fs/promises";
+import { lstat, readdir, realpath, unlink } from "node:fs/promises";
 import { join } from "node:path";
 
 import { createLogger } from "../../lib/logger.js";
@@ -38,7 +38,8 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
   {
     const {
       initializeAsrtSandbox,
-      appOwnedSandboxTempRoot,
+      appOwnedSandboxHomeRoot,
+      ensureSandboxPrivateRoot,
       useAppOwnedSandboxTempRoot,
       checkAsrtDependencies,
       isAsrtLinuxRuntimeProbeError,
@@ -222,13 +223,17 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
           // from THIS process's environment at wrap time — a value published
           // after a wrap would apply to some children and not others, which is
           // the one shape a temp-root decision must not have.
-          // The principals' temp directories are emptied first, while no
-          // confined process exists to use one — the plugins have not started.
-          // That is what removes the directory of a plugin uninstalled, or an
-          // MCP server dropped, since the last start.
-          await sweepSandboxTempRoot(appOwnedSandboxTempRoot()).catch((error: unknown) => {
-            log.warn("boot: could not empty the sandbox temp root: %s", errorMessage(error));
-          });
+          // The principals' temp directories and the sandbox HOMEs are emptied
+          // first, while no confined process exists to use one — the plugins
+          // have not started. That is what removes the temp directory of a
+          // plugin uninstalled, or an MCP server dropped, since the last start,
+          // and every HOME a process that did not exit cleanly left behind.
+          // Anything THIS process created is kept, whatever started first.
+          await sweepSandboxPrivateRoots();
+          // Both roots exist before the first wrap: Linux's bwrap skips a read
+          // deny on a path that is not there, so a root created afterwards
+          // would be visible to every process wrapped before it.
+          ensureSandboxPrivateRoot(appOwnedSandboxHomeRoot());
           const sandboxTempRoot = useAppOwnedSandboxTempRoot();
           await initializeAsrtSandbox({
             allowedDomains: unionAllowedDomains,
@@ -366,17 +371,40 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
 }
 
 /**
- * Remove everything under the sandbox temp root: the temp directories of every
- * principal, and whatever a version that still granted the root left in it.
+ * Empty both sandbox private roots, each keeping the directories this process
+ * created in it: the principals' temp directories, and the sandbox HOMEs. A
+ * root that cannot be emptied is reported and left; the read floor still
+ * denies it.
+ */
+export async function sweepSandboxPrivateRoots(): Promise<void> {
+  const { appOwnedSandboxHomeRoot, appOwnedSandboxTempRoot, sandboxTempPrincipalDirsInUse } =
+    await import("../../permissions/asrt-sandbox.js");
+  const { sandboxProcessHomesInUse } = await import("../../permissions/sandbox-process-home.js");
+  for (const [root, inUse] of [
+    [appOwnedSandboxTempRoot(), sandboxTempPrincipalDirsInUse()],
+    [appOwnedSandboxHomeRoot(), sandboxProcessHomesInUse()],
+  ] as const) {
+    await sweepSandboxPrivateRoot(root, inUse).catch((error: unknown) => {
+      log.warn("boot: could not empty the sandbox root %s: %s", root, errorMessage(error));
+    });
+  }
+}
+
+/**
+ * Remove everything under one of the sandbox private roots — the principals'
+ * temp directories, or the sandbox HOMEs — except what this process created
+ * (`inUse`), and whatever a version that still granted the temp root left in
+ * it.
  *
  * Run at boot, before any confined process exists, so nothing is using a
- * directory it removes and nothing can change the tree while it is walked. No
- * link is followed: a root that is a link is unlinked, never listed; each entry
- * is removed with {@link removeOwnedPluginTree}, which deletes a link rather
- * than its target and takes back the modes and, on macOS, the user-immutable
- * flags a confined process could have set inside its own directory.
+ * directory it removes and nothing can change the tree while it is walked; the
+ * `inUse` set keeps that true even for a spawn that ran first. No link is
+ * followed: a root that is a link is unlinked, never listed; each entry is
+ * removed with {@link removeOwnedPluginTree}, which deletes a link rather than
+ * its target and takes back the modes and, on macOS, the user-immutable flags a
+ * confined process could have set inside its own directory.
  */
-export async function sweepSandboxTempRoot(root: string): Promise<void> {
+export async function sweepSandboxPrivateRoot(root: string, inUse: ReadonlySet<string>): Promise<void> {
   let entry;
   try {
     entry = await lstat(root);
@@ -388,5 +416,9 @@ export async function sweepSandboxTempRoot(root: string): Promise<void> {
     await unlink(root);
     return;
   }
-  for (const name of await readdir(root)) await removeOwnedPluginTree(join(root, name));
+  const canonicalRoot = await realpath(root);
+  for (const name of await readdir(root)) {
+    if (inUse.has(join(root, name)) || inUse.has(join(canonicalRoot, name))) continue;
+    await removeOwnedPluginTree(join(root, name));
+  }
 }

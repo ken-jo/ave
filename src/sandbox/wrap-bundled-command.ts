@@ -27,8 +27,9 @@ export async function wrapBundledCommand(input: BundledWrapInput): Promise<{ arg
   const tmpDir = process.env.TMPDIR ?? process.env.TEMP ?? process.env.TMP;
   // The principal's own temp directory, set as its TMPDIR inside the wrap
   // (ASRT's own assignment would otherwise name the shared root) and granted
-  // alone, with the shared root read-denied so no other principal's temp
-  // files can be read either — as `confined-child.ts` does for its children.
+  // alone; the read floor denies the shared temp and HOME roots, so no other
+  // principal's temp files or HOME can be read either, and the process HOME
+  // re-allowed here is its own — as `confined-child.ts` does for its children.
   const temp = ensureSandboxTempPrincipalDir(input.tempPrincipal);
   const launch = sandboxTempEnvLaunch(temp.dir, input.command, input.args);
   const cmdline = [launch.command, ...launch.args].map(shellQuote).join(" ");
@@ -36,7 +37,7 @@ export async function wrapBundledCommand(input: BundledWrapInput): Promise<{ arg
     filesystem: {
       allowWrite: [temp.dir, input.sandboxHome.path, ...input.allowWrite],
       allowRead: [temp.dir, input.sandboxHome.path, ...input.allowWrite, ...(tmpDir ? [tmpDir] : [])],
-      denyRead: [...getDefaultSensitiveReadDenyPaths(), temp.root],
+      denyRead: getDefaultSensitiveReadDenyPaths(),
       denyWrite: getDefaultSensitiveWriteDenyPaths(),
       // Bundled hooks and MCP stdio servers are plugin-owned (or third-party)
       // code, and every root they write into is one the host created: a

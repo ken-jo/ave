@@ -67,8 +67,8 @@
  *    every pull request has no bubblewrap — ASRT vendors only seccomp and
  *    srt-win — so on that runner those cases return without spawning anything.
  *    To see what that looks like, make `asrtCanInitialize()` return false and
- *    run this file: on darwin/arm64 all 47 cases that run there pass, with no
- *    skip mark and no warning, where the 21 that need the backend take
+ *    run this file: on darwin/arm64 all 48 cases that run there pass, with no
+ *    skip mark and no warning, where the 22 that need the backend take
  *    hundreds of milliseconds each when it is there.
  *    `sandboxCasesRun()` below is what stops that from being invisible: an
  *    environment that is SUPPOSED to run them sets
@@ -82,7 +82,7 @@
  *    The OTHER 26 cases need no sandbox: they drive `derivePluginChildEnvelope`
  *    directly, or they drive the spawn's refusal paths, which run ahead of the
  *    wrap. Measured with `asrtCanInitialize()` forced false on darwin/arm64:
- *    26 passed and 21 failed under `AVE_REQUIRE_SANDBOX_CASES=1`. So the
+ *    26 passed and 22 failed under `AVE_REQUIRE_SANDBOX_CASES=1`. So the
  *    envelope decisions this file pins keep being measured on a machine that
  *    cannot sandbox; what stops being measured there is the kernel half.
  */
@@ -124,6 +124,7 @@ import {
   type ObservedPluginChild,
 } from "../out-of-process-plugin.js";
 import {
+  appOwnedSandboxHomeRoot,
   appOwnedSandboxTempRoot,
   cleanupAsrtSandboxAfterCommand,
   initializeAsrtSandbox,
@@ -3595,6 +3596,55 @@ describe("the sandbox temp directories", () => {
   );
 
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "no confined process reads another's sandbox HOME: an MCP stdio wrap, a plugin child and a bundled hook",
+    async () => {
+      if (!(await sandboxCasesRun())) return;
+      const fx = fixture!;
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+      // A's HOME is kept for the whole case, so B and C try to read a file
+      // that is there; theirs are removed when they exit, as in production.
+      const homeA = createSandboxProcessHome();
+      const homeRoot = realpathSync(appOwnedSandboxHomeRoot());
+      try {
+        const server: SandboxTempPrincipal = { kind: "mcp", id: "home-a" };
+        const a = await runHomeProbe(fx, server, "home-a", [], homeRoot,
+          (probe) => runBundledWrapToExit(server, probe, homeA));
+        expectOwnHome(a, homeRoot, "home-a");
+        expect(a.home).toBe(homeA.path);
+        expect(readFileSync(join(homeA.path, "home-a"), "utf-8")).toBe("home-a");
+        const fileA = join(homeA.path, "home-a");
+
+        const pluginB = installPlugin(fx, "home-b");
+        const b = await runHomeProbe(fx, { kind: "plugin", id: "home-b" }, "home-b", [fileA], homeRoot,
+          (probe) => runPluginChildToExit(pluginB, probe));
+        expectOwnHome(b, homeRoot, "home-b");
+        expectHomeRefused(b, fileA);
+
+        const hookPrincipal: SandboxTempPrincipal = { kind: "plugin", id: "home-c" };
+        const c = await runHomeProbe(fx, hookPrincipal, "home-c", [fileA], homeRoot, async (probe) => {
+          const dataDir = mkdtempSync(join(fx.root, "home-hook-data-"));
+          const result = await runOneHookScript(
+            { id: "home", hookType: "pre", source: "config", hookPath: probe,
+              command: ["/usr/bin/env", "ELECTRON_RUN_AS_NODE=1", process.execPath, probe],
+              confinement: { kind: "bundled", pluginId: "home-c", dataDir, generationRoot: dirname(probe) } },
+            { hookType: "pre", event: "pre", toolName: "read_file", source: "builtin", category: "read", input: {},
+              sessionId: "home", trustOrigin: "user-keyboard" },
+            { timeoutMs: 10_000 },
+          );
+          expect(result.decision, result.reason).toBe("allow");
+        });
+        expectOwnHome(c, homeRoot, "home-c");
+        expectHomeRefused(c, fileA);
+        // The control for both refusals: the bytes were there all along.
+        expect(readFileSync(fileA, "utf-8")).toBe("home-a");
+      } finally {
+        homeA.cleanup();
+      }
+    },
+    120_000,
+  );
+
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
     "a bundled hook writes under its $TMPDIR, and cannot rename or remove that directory",
     async () => {
       if (!(await sandboxCasesRun())) return;
@@ -3746,6 +3796,72 @@ function expectTempRefused(report: TempProbeReport, marker: string, others: read
   });
 }
 
+interface HomeProbeReport {
+  readonly home: string;
+  readonly writeOwn: ProbeAttempt;
+  readonly readOwn: ProbeAttempt;
+  readonly listRoot: ProbeAttempt & { readonly value?: string[] };
+  readonly others: readonly ProbeAttempt[];
+}
+
+/**
+ * Run one confined process that writes `<marker>` under its `$HOME`, reads it
+ * back, reads each of `others`, and lists the HOME root. Its HOME is removed
+ * when a plugin child or hook exits, so the report goes to its principal's
+ * temp directory, which lasts.
+ */
+async function runHomeProbe(
+  fx: Fixture,
+  principal: SandboxTempPrincipal,
+  marker: string,
+  others: readonly string[],
+  homeRoot: string,
+  run: (probe: string) => Promise<void>,
+): Promise<HomeProbeReport> {
+  const probe = join(fx.root, `home-probe-${marker}.mjs`);
+  writeFileSync(
+    probe,
+    `import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
+const p = ${JSON.stringify({ marker, others, homeRoot })};
+const attempt = (fn) => { try { return { ok: true, value: fn() }; } catch (error) { return { ok: false, code: error.code ?? error.name }; } };
+const home = homedir();
+const report = {
+  home,
+  writeOwn: attempt(() => { writeFileSync(join(home, p.marker), p.marker); return "written"; }),
+  readOwn: attempt(() => readFileSync(join(home, p.marker), "utf-8")),
+  others: p.others.map((file) => attempt(() => readFileSync(file, "utf-8"))),
+  listRoot: attempt(() => readdirSync(p.homeRoot)),
+};
+writeFileSync(join(tmpdir(), "home-report-" + p.marker + ".json"), JSON.stringify(report));
+process.stdout.write(JSON.stringify({ action: "allow", reason: "probed" }));
+`,
+    "utf-8",
+  );
+  await run(probe);
+  const reportPath = join(tempDirOf(principal), `home-report-${marker}.json`);
+  expect(existsSync(reportPath), `${marker} left no report in its principal's temp directory`).toBe(true);
+  return JSON.parse(readFileSync(reportPath, "utf-8")) as HomeProbeReport;
+}
+
+/** Its HOME is a host-made directory under the HOME root, its own to write and read. */
+function expectOwnHome(report: HomeProbeReport, homeRoot: string, marker: string): void {
+  expect(dirname(report.home), `${marker}: HOME is not under the sandbox HOME root`).toBe(homeRoot);
+  expect(report.writeOwn.ok, `${marker}: ${JSON.stringify(report.writeOwn)}`).toBe(true);
+  expect(report.readOwn.value, `${marker}: ${JSON.stringify(report.readOwn)}`).toBe(marker);
+  // The root is read-denied: refused on macOS; on Linux an empty tmpfs with
+  // only this process's HOME bound back into it.
+  if (report.listRoot.ok) {
+    expect(report.listRoot.value, `${marker}: listed other processes' HOMEs`).toEqual([basename(report.home)]);
+  }
+}
+
+function expectHomeRefused(report: HomeProbeReport, file: string): void {
+  expect(report.others[0]!.ok, `read ${file}: ${JSON.stringify(report.others[0])}`).toBe(false);
+  expect(report.others[0]!.value).toBeUndefined();
+}
+
 /** Run a plugin child whose entry is `entry`, and wait for it to exit. */
 async function runPluginChildToExit(plugin: InstalledPlugin, entry: string): Promise<void> {
   const child = await spawnConfinedPluginChild({
@@ -3767,9 +3883,16 @@ async function runPluginChildToExit(plugin: InstalledPlugin, entry: string): Pro
   });
 }
 
-/** Run `probe` the way an MCP stdio server is run: `wrapBundledCommand`, then spawn. */
-async function runBundledWrapToExit(principal: SandboxTempPrincipal, probe: string): Promise<void> {
-  const sandboxHome = createSandboxProcessHome();
+/**
+ * Run `probe` the way an MCP stdio server is run: `wrapBundledCommand`, then
+ * spawn. A `home` the caller passes is the caller's to remove.
+ */
+async function runBundledWrapToExit(
+  principal: SandboxTempPrincipal,
+  probe: string,
+  home?: ReturnType<typeof createSandboxProcessHome>,
+): Promise<void> {
+  const sandboxHome = home ?? createSandboxProcessHome();
   try {
     const { argv, env } = await wrapBundledCommand({
       command: process.execPath,
@@ -3791,7 +3914,7 @@ async function runBundledWrapToExit(principal: SandboxTempPrincipal, probe: stri
       await cleanupAsrtSandboxAfterCommand();
     }
   } finally {
-    sandboxHome.cleanup();
+    if (home === undefined) sandboxHome.cleanup();
   }
 }
 

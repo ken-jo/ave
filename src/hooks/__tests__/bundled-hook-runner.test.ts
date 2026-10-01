@@ -26,6 +26,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async (original) => {
 });
 
 import { runOneHookScript } from "../script-hook-runner.js";
+import { appOwnedSandboxPrivateRoots } from "../../permissions/asrt-sandbox.js";
 
 const root = mkdtempSync(join(tmpdir(), "ave-bundled-hook-runner-"));
 const generationRoot = join(root, "generation");
@@ -82,7 +83,7 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow
     expect(cmdline.startsWith(`'/usr/bin/env' 'TMPDIR=${tempDir}' 'TMP=${tempDir}' 'TEMP=${tempDir}' 'node' `)).toBe(true);
     expect(options.filesystem.allowWrite).toContain(tempDir);
     expect(options.filesystem.allowWrite).not.toContain(SANDBOX_TEMP_ROOT);
-    expect(options.filesystem.denyRead).toContain(SANDBOX_TEMP_ROOT);
+    expect(options.filesystem.denyRead).toEqual(expect.arrayContaining(appOwnedSandboxPrivateRoots()));
     expect(options.filesystem.denyRead).toContain(join(homedir(), ".ssh"));
     expect(options.filesystem.denyWrite.length).toBeGreaterThan(0);
   });

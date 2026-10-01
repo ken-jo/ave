@@ -112,7 +112,13 @@ vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
   grantWindowsWorkerFilesystemAccess: (opts: unknown) =>
     grantWindowsWorkerFilesystemAccessMock(opts),
   // The host-secret read floor restated on the worker wrap (#1365 SOT).
-  getDefaultSensitiveReadDenyPaths: () => ["/home/u/.ave/secrets", "/home/u/.ssh"],
+  // With the sandbox private roots, as the real floor carries them on POSIX.
+  getDefaultSensitiveReadDenyPaths: () => [
+    "/home/u/.ave/secrets",
+    "/home/u/.ssh",
+    "/tmp/ave-test-sandbox-tmp",
+    "/home/u/.ave/sandbox/home",
+  ],
   // The persistence-vector write floor restated on the worker wrap (#1449 SOT).
   getDefaultSensitiveWriteDenyPaths: () => [
     "/home/u/.ave/secrets",

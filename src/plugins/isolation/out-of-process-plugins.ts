@@ -346,7 +346,15 @@
  *    .test.ts` ("the sandbox temp directories"): two plugin children, a
  *    worker, a bundled hook and an MCP stdio wrap each write their own
  *    directory and neither read nor write another's, while a worker reads and
- *    writes its own plugin's.
+ *    writes its own plugin's. The throwaway HOMEs are the same shape one
+ *    directory over: under the host temp directory nothing denied them, so a
+ *    confined process could list that directory and read another one's HOME.
+ *    They are made under `~/.ave/sandbox/home`, read-denied beside the temp
+ *    root, and each wrap re-allows only its own — asserted for an MCP stdio
+ *    wrap, a plugin child and a bundled hook in the same describe. On macOS
+ *    both roots reach the profile as exact globs, because ASRT re-emits a
+ *    literal deny after its allows whenever a broader grant contains it, with
+ *    nothing carved out, which would take a process's own directory away too.
  *      READ is NOT a jail, and calling it one would be the same error facing
  *    the other way. ASRT's read model is deny-only (`asrt-sandbox.ts`,
  *    `getDefaultSensitiveReadDenyPaths`, which says so in its own header): a

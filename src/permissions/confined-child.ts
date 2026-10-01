@@ -182,7 +182,7 @@ function requireTempPrincipal(spec: ConfinedChildSpec): SandboxTempPrincipal {
  * The deny floor is restated unconditionally in BOTH modes, because a
  * per-command array replaces the shared one rather than extending it.
  */
-function buildFilesystemConfinement(spec: ConfinedChildSpec, temp: { dir: string; root: string } | undefined): {
+function buildFilesystemConfinement(spec: ConfinedChildSpec, temp: { dir: string } | undefined): {
   allowRead?: string[];
   allowWrite?: string[];
   denyRead: string[];
@@ -199,14 +199,14 @@ function buildFilesystemConfinement(spec: ConfinedChildSpec, temp: { dir: string
   // restated here: no caller should have to remember it, and one that forgot
   // would produce a child whose `os.tmpdir()` names a directory it cannot
   // write — a failure with no obvious cause, arriving inside whatever library
-  // wanted a temp file. It is the principal's OWN directory, read and write,
-  // and the shared root above it is read-denied: every other principal's
-  // directory sits under that root, and ASRT's reads are deny-only, so the
-  // deny is what keeps one plugin from reading another's temp files.
+  // wanted a temp file. It is the principal's OWN directory, read and write;
+  // the shared root above it is read-denied by the floor, with the sandbox
+  // HOME root beside it, and ASRT's reads are deny-only, so that deny is what
+  // keeps one plugin from reading another's temp files or HOME.
   return {
     allowRead: [temp.dir, ...(spec.allowRead ?? [])],
     allowWrite: [temp.dir, ...(spec.allowWrite ?? [])],
-    denyRead: [...floor.denyRead, temp.root],
+    denyRead: floor.denyRead,
     denyWrite: floor.denyWrite,
     ...(spec.pinWriteRoots === true ? { pinWriteRoots: true } : {}),
   };

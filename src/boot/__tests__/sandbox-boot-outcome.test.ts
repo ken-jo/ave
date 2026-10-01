@@ -34,14 +34,28 @@ vi.mock("../../lib/logger.js", () => ({
   createLogger: vi.fn(() => h.logger),
 }));
 
-vi.mock("../../permissions/asrt-sandbox.js", () => ({
-  initializeAsrtSandbox: h.initialize,
-  // A root that never exists, so the boot sweep of it has nothing to remove.
-  appOwnedSandboxTempRoot: () => "/nonexistent-ave-test/sandbox/tmp",
-  useAppOwnedSandboxTempRoot: () => "/tmp/ave-test-sandbox-tmp",
-  checkAsrtDependencies: h.checkDeps,
-  isAsrtLinuxRuntimeProbeError: h.isProbeError,
-}));
+vi.mock("../../permissions/asrt-sandbox.js", async () => {
+  // The boot step sweeps both private roots and creates the HOME root, so they
+  // live under a directory this file owns in the OS temp dir — never the real
+  // AVE_HOME — whose parent can be created.
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { mkdirSync } = await import("node:fs");
+  const roots = join(tmpdir(), "ave-sandbox-boot-outcome-sandbox");
+  return {
+    appOwnedSandboxTempRoot: () => join(roots, "tmp"),
+    appOwnedSandboxHomeRoot: () => join(roots, "home"),
+    sandboxTempPrincipalDirsInUse: () => new Set<string>(),
+    ensureSandboxPrivateRoot: (root: string) => {
+      mkdirSync(root, { recursive: true, mode: 0o700 });
+      return root;
+    },
+    initializeAsrtSandbox: h.initialize,
+    useAppOwnedSandboxTempRoot: () => "/tmp/ave-test-sandbox-tmp",
+    checkAsrtDependencies: h.checkDeps,
+    isAsrtLinuxRuntimeProbeError: h.isProbeError,
+  };
+});
 
 import { initSandboxGate } from "../steps/sandbox-init.js";
 import {

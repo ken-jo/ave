@@ -263,10 +263,13 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
     // The worker wrap applies the CENTRALIZED sensitive read DENY-LIST (deny-list,
     // not a read-allow jail): secrets + session/routine history + standard
     // credential stores are all read-DENIED, not just `~/.ave/secrets`.
-    // The shared temp root is read-denied on top: it holds every other
-    // principal's temp directory, and ASRT's reads are deny-only.
+    // The floor also read-denies the sandbox private roots — every other
+    // principal's temp directory and every other process's HOME are under
+    // them, and ASRT's reads are deny-only.
     const sensitive = getDefaultSensitiveReadDenyPaths();
-    expect(options.filesystem.denyRead).toEqual([...sensitive, SANDBOX_TEMP_ROOT]);
+    expect(options.filesystem.denyRead).toEqual(sensitive);
+    expect(options.filesystem.denyRead).toContain(join(aveHome(), "sandbox", "tmp"));
+    expect(options.filesystem.denyRead).toContain(join(aveHome(), "sandbox", "home"));
     expect(options.filesystem.denyRead).toContain(join(aveHome(), "secrets"));
     expect(options.filesystem.denyRead).toContain(join(aveHome(), "sessions"));
     expect(options.filesystem.denyRead).toContain(join(homedir(), ".ssh"));

@@ -30,6 +30,7 @@ const admissionMock = vi.fn();
 const sandboxActiveMock = vi.fn<() => boolean>();
 
 const TEMP_ROOT = "/home/u/.ave/sandbox/tmp";
+const HOME_ROOT = "/home/u/.ave/sandbox/home";
 const PRINCIPAL = { kind: "plugin", id: "x" } as const;
 // The principal's own directory, as the real `ensureSandboxTempPrincipalDir`
 // names it; named here so the cases can say which entry is the caller's.
@@ -45,7 +46,9 @@ vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
   isAsrtSandboxActive: () => sandboxActiveMock(),
   wrapWorkerCommand: (command: string, options?: unknown) =>
     wrapWorkerCommandMock(command, options),
-  getDefaultSensitiveReadDenyPaths: () => ["/home/u/.ave/secrets", "/home/u/.ssh"],
+  // The floor carries the sandbox private roots, as the real one does on
+  // macOS and Linux; the primitive's own directories are re-allowed under it.
+  getDefaultSensitiveReadDenyPaths: () => ["/home/u/.ave/secrets", "/home/u/.ssh", TEMP_ROOT, HOME_ROOT],
   getDefaultSensitiveWriteDenyPaths: () => ["/home/u/.ave/secrets", "/home/u/.bashrc"],
 }));
 vi.mock("../../main/managed-child-processes.js", () => ({
@@ -132,8 +135,9 @@ describe("spawnConfinedChild", () => {
     expect(fs.allowWrite).toEqual([TEMP_DIR]);
     expect(fs.allowRead).toEqual([TEMP_DIR]);
     // Every other principal's directory is under the root, and ASRT's reads
-    // are deny-only: without this deny the child could read them all.
-    expect(fs.denyRead).toContain(TEMP_ROOT);
+    // are deny-only: the floor's deny of it, restated whole, is what keeps the
+    // child from reading them all.
+    expect(fs.denyRead).toEqual(["/home/u/.ave/secrets", "/home/u/.ssh", TEMP_ROOT, HOME_ROOT]);
     expect(fs.allowWrite).not.toContain(TEMP_ROOT);
   });
 
