@@ -577,7 +577,8 @@ export class MarketplaceService implements RetirementEntryLookup {
     try {
       const repo = await BareRepo.init(this.options.git.commands, join(dir, "repo.git"));
       const commit = await repo.fetchRef(remote, ref ?? undefined, "candidate");
-      const credentialHelper = await this.options.git.credentialHelperFor(url.host);
+      // Over http without token-unencrypted the helper is switched off for every call, so it never answers (§7.4).
+      const credentialHelper = remote.credentialsAllowed && (await this.options.git.credentialHelperFor(url.host));
       const pathName = url.path.split("/").filter(Boolean).pop() ?? "";
       if (subdir === null) {
         const source: ResolvedSource = { id: sourceId, origin: "custom", url, mirrors: [], auth, ...(ref ? { ref } : {}) };

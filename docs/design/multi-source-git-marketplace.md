@@ -1048,7 +1048,8 @@ confirmation.
 
 - Without it, askpass issues no ticket for the call, and every git call
   carries `-c credential.helper=`. Neither a stored token nor an OS helper's
-  password is sent in the clear.
+  password is sent in the clear, and the preview does not show its note that
+  a credential helper answers for the host.
 - The resulting auth failure is `SOURCE_AUTH_REQUIRED` reason
   `token-unencrypted`, and the Sources row offers *Allow…* for it.
 - `GIT_ALLOW_PROTOCOL` names `http` only for an http remote that passed the

@@ -984,7 +984,8 @@ release·archive URL, 관리 git 아카이브를 검사합니다. 서비스 엔�
 
 - 없으면 askpass가 그 호출에 티켓을 발급하지 않고, 모든 git 호출에
   `-c credential.helper=`가 붙습니다. 저장된 토큰도 OS 도우미의 비밀번호도
-  평문으로 나가지 않습니다.
+  평문으로 나가지 않고, 미리보기는 자격 증명 도우미가 이 호스트에 응답한다는
+  안내를 보여 주지 않습니다.
 - 그 결과의 인증 실패는 `SOURCE_AUTH_REQUIRED` 사유 `token-unencrypted`이고,
   소스 행이 *허용…*을 제시합니다.
 - `GIT_ALLOW_PROTOCOL`은 게이트를 통과한 http 원격에만 `http`를 넣습니다.

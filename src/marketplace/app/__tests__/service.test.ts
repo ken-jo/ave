@@ -89,6 +89,8 @@ describe("MarketplaceService", () => {
   let adopting: boolean[];
   let feeds: RevocationFeed[];
   let feedFails: boolean;
+  /** Whether an OS credential helper answers for a host (the preview's note, §9.3). */
+  let helperAnswers: boolean;
   let pluginPort: PluginInstallerPort;
   let warnings: string[];
   /** Runs inside a content install, after the plan's first feed and before the store changes. */
@@ -118,6 +120,7 @@ describe("MarketplaceService", () => {
     adopting = [];
     feeds = [];
     feedFails = false;
+    helperAnswers = false;
     warnings = [];
     duringContentInstall = null;
     await build();
@@ -175,7 +178,7 @@ describe("MarketplaceService", () => {
     service = new MarketplaceService({
       registry,
       syncer,
-      git: { commands: runner, credentialHelperFor: async () => false, preflight: (remote) => runner.preflight(remote) },
+      git: { commands: runner, credentialHelperFor: async () => helperAnswers, preflight: (remote) => runner.preflight(remote) },
       gate,
       root: marketplaces,
       workRoot: mkdtempSync(join(root, "work-")),
@@ -957,8 +960,12 @@ describe("MarketplaceService", () => {
       expect(lookups).toEqual([]);
       expect(server.seen).toEqual([]);
 
+      // A helper is configured for the host, but over http without token-unencrypted it is never asked (§7.4).
+      helperAnswers = true;
       const preview = await service.previewSource({ input: named, auth: "none", acknowledge: ["unencrypted"] });
-      expect(preview).toMatchObject({ type: "marketplace", badges: ["unencrypted"] });
+      expect(preview).toMatchObject({ type: "marketplace", badges: ["unencrypted"], credentialHelper: false });
+      const withSignIn = await service.previewSource({ input: named, auth: "none", acknowledge: ["unencrypted", "token-unencrypted"] });
+      expect(withSignIn).toMatchObject({ type: "marketplace", credentialHelper: true });
       const added = await service.addSource({ previewId: previewIdOf(preview) });
       expect(added).toMatchObject({ acknowledged: ["unencrypted"], badges: ["unencrypted"], status: { state: "up-to-date" } });
       const stored = JSON.parse(readFileSync(join(root, "marketplaces", "sources.json"), "utf8")) as { sources: Array<{ id: string; acknowledged?: string[] }> };
