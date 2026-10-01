@@ -622,7 +622,7 @@ export class MarketplaceService implements RetirementEntryLookup {
     const ref = request.ref?.trim() ? request.ref.trim() : null;
     const acknowledged = [...new Set(request.acknowledge ?? [])];
     const held = new Set(acknowledged);
-    const confirm = (warnings: readonly EnteredTargetWarningView[]): SourcePreviewResultView => ({ type: "confirm", warnings: uniqueWarnings(warnings) });
+    const askConfirmation = (warnings: readonly EnteredTargetWarningView[]): SourcePreviewResultView => ({ type: "confirm", warnings: uniqueWarnings(warnings) });
     // Sign-in over plain http: a credential must not leave before the user accepts that (§18.2.2).
     const lexical: EnteredTargetWarningView[] = url.scheme === "http" && auth.kind === "token" && !held.has("token-unencrypted")
       ? [{ warning: "token-unencrypted", host: url.host, address: null }]
@@ -631,17 +631,17 @@ export class MarketplaceService implements RetirementEntryLookup {
     try {
       verdict = this.options.gate.checkRemote(url, { official: false, acknowledged: held });
     } catch (error) {
-      if (error instanceof ConfirmationRequiredError) return confirm([...error.warnings, ...lexical]);
+      if (error instanceof ConfirmationRequiredError) return askConfirmation([...error.warnings, ...lexical]);
       throw error;
     }
-    if (lexical.length > 0) return confirm(lexical);
+    if (lexical.length > 0) return askConfirmation(lexical);
     const sourceId = `${PREVIEW_ID_PREFIX}${randomBytes(9).toString("hex")}`;
     const remote: GitRemote = { url, sourceId, useToken: auth.kind === "token", ...verdict };
     try {
       // The address class a lookup finds is asked for before any git command runs.
       await this.options.git.preflight(remote);
     } catch (error) {
-      if (error instanceof ConfirmationRequiredError) return confirm(error.warnings);
+      if (error instanceof ConfirmationRequiredError) return askConfirmation(error.warnings);
       throw error;
     }
     const token = request.auth === "token" && request.token ? request.token : null;
@@ -718,10 +718,10 @@ export class MarketplaceService implements RetirementEntryLookup {
     } catch (error) {
       await drop();
       // Found at the connection (the address's class changed since the preflight): asked for the same way.
-      if (error instanceof ConfirmationRequiredError) return confirm(error.warnings);
+      if (error instanceof ConfirmationRequiredError) return askConfirmation(error.warnings);
       // The host wants sign-in over plain http: asked for before any credential is sent (§18.2.2).
       if (isMarketplaceError(error) && error.code === "SOURCE_AUTH_REQUIRED" && error.detail?.reason === "token-unencrypted") {
-        return confirm([{ warning: "token-unencrypted", host: url.host, address: null }]);
+        return askConfirmation([{ warning: "token-unencrypted", host: url.host, address: null }]);
       }
       throw error;
     }
