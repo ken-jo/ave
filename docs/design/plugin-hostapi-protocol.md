@@ -3008,7 +3008,8 @@ every consumer the deletion of `connect` breaks is **migrated in S1** (fact 15).
     `terminating`). `close` sets `closedReason` and `terminating` **before** it calls
     `link.terminate`, because Node emits the `error` of a refused `kill()` (`EPERM`)
     synchronously, inside the call (`ChildProcess.prototype.kill`,
-    <https://github.com/nodejs/node/blob/v24.9.0/lib/internal/child_process.js#L493-L518>,
+    <https://github.com/nodejs/node/blob/31c6e70759bae3cb5d1af77a4dc1a3fd1726a244/lib/internal/child_process.js#L493-L518>,
+    the `v24.9.0` tag's commit, where the refused-signal `emit('error')` is `:511-512`,
     checked 2026-10-01): that fault re-enters the transport while `terminate` is still
     on the stack. `fault` is then: after an observed exit, nothing; with no sequence
     active (and so no `closedReason` either), `close(reason)`, which starts it; with a
@@ -3018,9 +3019,9 @@ every consumer the deletion of `connect` breaks is **migrated in S1** (fact 15).
     SIGTERM is followed by the link's SIGKILL after the grace period. If SIGKILL is
     refused too, its fault is recorded the same way and nothing further happens:
     `exited` stays unsettled, no signal is retried, and the owner sees an unexited child
-    through its own bound — the CLI's `protocol.teardown` wait expires and reports it
-    with the recorded faults (P2), production's `stop` is left awaiting the exit as
-    today, whose helper also makes exactly one SIGKILL attempt
+    through its own bound — the CLI's link records the same faults itself and its
+    always-reported `protocol.teardown` row fails with them (P2), production's `stop` is
+    left awaiting the exit as today, whose helper also makes exactly one SIGKILL attempt
     (`terminate-child-process.ts:22-30`) — and through the `warn` diagnostic. The
     production adapter (`out-of-process-plugin.ts:973-982`) and the plain adapter
     `child-process-config-wire.test.ts:218-222` (and the validate CLI's link, P2) both
@@ -3250,12 +3251,12 @@ test-only spec member add no channel, export, bridge method, setting or package 
      failure prints the JSON-pointer path (`#/extensions/ai.agent-connector.ave/requires/hostProtocol`).
   2. **Protocol**: `runProtocolChecks(launch, manifest, options)` spawns a
      `ValidationLaunch = { command, args, env }` with a plain `child_process.spawn` the
-     CLI owns, wraps its pipes in a `ChildLink` (`exit` and a pid-less `error` →
-     `onGone`, any other `error` → `onFault`, S1), and attaches it to
-     `openValidationSession` with `createValidationHost` (S1). The launch is built per
-     entry kind: `process.execPath [...childExecArgs]
-     <sibling>/ave-plugin-child-main.js <entry>` for an `entry` plugin (P2); for a
-     `process` plugin, the command, args and environment from P3's
+     CLI owns, wraps its pipes in the CLI's `ChildLink` (`exit` and a pid-less `error` →
+     `onGone`, any other `error` → `onFault`, S1; its recording and its termination
+     sequence below), and attaches it to `openValidationSession` with
+     `createValidationHost` (S1). The launch is built per entry kind: `process.execPath
+     [...childExecArgs] <sibling>/ave-plugin-child-main.js <entry>` for an `entry`
+     plugin (P2); for a `process` plugin, the command, args and environment from P3's
      `resolveProcessLaunch` (`process-entry.ts`: the resolved command and args under
      policy `"process"`, the declared `env` pairs, then `PLUGIN_ROOT` and `PLUGIN_DATA`
      = a temporary directory). P2 merges after P3 (the one merge order), so it ships
@@ -3301,11 +3302,8 @@ test-only spec member add no channel, export, bridge method, setting or package 
      `protocol.unknown-method`; each `tools/call` `globalCeilingMs`, the ceiling plugin
      tools inherit → `tools.call:<name>`; the stop hook `pluginStartupDefaultMs`
      (production's bound, `:1496-1507`) → `lifecycle.stop`; `closeInput` → `exited` 5 s
-     → `protocol.stdin-close`; and the final `teardown`, whose `onClosed` waits for the
-     child's exit, 5 s → `protocol.teardown`, failed `child did not exit after
-     termination` with the recorded `terminationFaults` when a refused SIGKILL left it
-     running (S1). `--fast` caps every bound at 1 s. Cancellation is one
-     `AbortController` per run, created before the session and passed to
+     → `protocol.stdin-close`. `--fast` caps every bound above at 1 s. Cancellation is
+     one `AbortController` per run, created before the session and passed to
      `openValidationSession` as `signal` (S1), so it exists while construct is still
      pending (host re-review #29). On expiry the helper records that row as failed with
      `timed out after <n> ms` and aborts the controller with `validation deadline:
@@ -3313,17 +3311,40 @@ test-only spec member add no channel, export, bridge method, setting or package 
      child is terminated and every pending call rejects — before construct completes as
      after it. Each later row is reported `not exercised: <row> timed out`, and the exit
      code is 1. No awaited operation in the CLI is unbounded, and the abort is its only
-     cancellation. Asserted: every stdout line is a JSON object terminated by `0x0A` and
-     nothing else is written to stdout, checked on the **raw bytes** the CLI tees beside
-     the decoder (fact 11), so a bare `ready` line or a `Content-Length:` header fails
-     `protocol.stdout-discipline` even though `StdioFrameDecoder` would have dropped it
-     (the decoder is not changed; production stays tolerant, decision 40); every MCP
-     request frame the CLI sent carries the two required `_meta` keys (the transport's
-     producer, S1; checked on the recorded host-side frames, so a regression in the
-     producer fails `protocol.request-meta` rather than passing silently against a
-     tolerant runtime); `server/discover` lists `2026-07-28` in `supportedVersions` and
-     advertises `capabilities.tools` when the manifest declares tools
-     (`discover.capabilities`); `tools/list` returns exactly the manifest's tools
+     cancellation. **Cleanup is unconditional and owned by the CLI** (cross-language
+     re-review round 6, finding 1): `runProtocolChecks` spawns the child and hands it to
+     `runProtocolChecksOnChild(child, manifest, options)`, whose `finally` runs on every
+     path — including an opener that rejects (a refused protocol before any frame, a
+     construct timeout or abort, a spawn failure), where no session exists. It acts
+     through what the CLI holds before any session does: the run's `AbortController`
+     (aborted, so a live session tears down) and **the CLI's link**, which records from
+     spawn onward, independent of the session, the observed exit (`exitObserved`), every
+     `onFault` reason (`terminationFaults`) and each signal it sent (`signalsSent`). Its
+     `terminate` is `terminateChildProcess(child, VALIDATION_KILL_GRACE_MS)` with
+     `VALIDATION_KILL_GRACE_MS = 3_000`, production's grace
+     (`out-of-process-plugin.ts:970`; the helper's 2 s default,
+     `terminate-child-process.ts:14`, is not used), and it starts its sequence at most
+     once, so the transport's `close` and the finalizer cannot start two. The finalizer
+     calls `link.terminate("validation finished")` unless the exit was already observed
+     (a no-op when a sequence has started), then waits for `exitObserved` for
+     `VALIDATION_TEARDOWN_WAIT_MS = 5_000` — the 3 s grace plus 2 s for the SIGKILL and
+     its `exit` event — and reports **`protocol.teardown`**: passed on an observed exit,
+     else failed `child did not exit after termination` with `terminationFaults` and
+     `signalsSent`. That row is **always reported**, exempt from the `not exercised`
+     rule, and **not capped by `--fast`**, because a 1 s wait would end before the
+     escalation it reports on (finding 2). The S1 session exposes no diagnostic accessor
+     for this; `terminationFaults` on the transport stays internal (logged), and the CLI
+     reads its own link. Asserted: every stdout line is a JSON object terminated by
+     `0x0A` and nothing else is written to stdout, checked on the **raw bytes** the CLI
+     tees beside the decoder (fact 11), so a bare `ready` line or a `Content-Length:`
+     header fails `protocol.stdout-discipline` even though `StdioFrameDecoder` would
+     have dropped it (the decoder is not changed; production stays tolerant, decision
+     40); every MCP request frame the CLI sent carries the two required `_meta` keys
+     (the transport's producer, S1; checked on the recorded host-side frames, so a
+     regression in the producer fails `protocol.request-meta` rather than passing
+     silently against a tolerant runtime); `server/discover` lists `2026-07-28` in
+     `supportedVersions` and advertises `capabilities.tools` when the manifest declares
+     tools (`discover.capabilities`); `tools/list` returns exactly the manifest's tools
      (`tools.list`); construct's `pluginProtocol.requires` ⊆ the capabilities the
      validation host advertised (`construct.requires`); the unknown-method probe is
      answered `-32601` (`protocol.unknown-method`); after the stop hook the CLI **closes
@@ -3426,31 +3447,51 @@ app logger, and one test per mode parses every stdout line as a report row.
   `src/plugins/validate/__tests__/fixtures/raw/`, each a plain `.mjs` script that speaks
   just enough protocol on its own stdin/stdout to reach its case (an `entry` fixture run
   by the reference runtime cannot produce these behaviours, fact 12), handed to
-  `runProtocolChecks` **directly** as a `ValidationLaunch` of `process.execPath <script>`
-  with a minimal manifest — below the manifest step, so the cases need neither P3 nor a
-  `process` manifest and run on every platform: `ignores-stdin-close` keeps a timer
-  alive and ignores `end` → `protocol.stdin-close` fails under `--fast` and the harness
-  asserts the failure was recorded **before** the kill (remove the timer, or make the CLI
-  terminate instead of closing stdin); `bare-stdout-line` prints `ready\n` before its first
-  frame → `protocol.stdout-discipline` fails while the same bytes fed through
-  `StdioFrameDecoder` still yield every frame (remove the raw check); `content-length-header`
-  frames one reply with a `Content-Length:` header → fails the same row (same revert);
-  **`withholds-start-reply`** answers construct and then never answers
-  `ave/instance/start` → under `--fast`, `lifecycle.start` fails `timed out after 1000
-  ms` within 5 s of the run, the recording link sees exactly one terminate, every later
-  row is `not exercised` and the exit code is 1 (remove the bound → the case hangs until
-  the test's own timeout and fails); **`withholds-tool-reply`** answers through
-  `tools/list` and never answers `tools/call` → `tools.call:echo` fails the same way
-  (same revert); **`withholds-construct`** reads construct and never answers → under
-  `--fast`, `protocol.construct` fails `timed out after 1000 ms` and the CLI exits 1
-  within 3 s — long before the 20 s cleanup deadline — with exactly one terminate, no
-  live child or open handle left, and a reply the fixture writes 2 s later ignored (stop
-  passing `signal` → the run lasts until the cleanup deadline, fails);
-  **`slow-construct`** answers construct after 10.5 s, run **without** `--fast` →
-  `protocol.construct` fails at 10 s with every later row `not exercised` (bound
-  construct at `pluginImportMs + pluginFactoryMs` again → construct passes at 10.5 s,
-  fails). It is the suite's one slow case, with a 20 s test timeout.
-  `knip.jsonc:47-50` gains the `fixtures/raw/*.mjs` glob beside the host-protocol one.
+  `runProtocolChecks` **directly** as a `ValidationLaunch` of `process.execPath
+  <script>` with a minimal manifest — below the manifest step, so the cases need neither
+  P3 nor a `process` manifest and run on every platform: `ignores-stdin-close` keeps a
+  timer alive and ignores `end` → `protocol.stdin-close` fails under `--fast` and the
+  harness asserts the failure was recorded **before** the kill (remove the timer, or
+  make the CLI terminate instead of closing stdin); `bare-stdout-line` prints `ready\n`
+  before its first frame → `protocol.stdout-discipline` fails while the same bytes fed
+  through `StdioFrameDecoder` still yield every frame (remove the raw check);
+  `content-length-header` frames one reply with a `Content-Length:` header → fails the
+  same row (same revert); **`withholds-start-reply`** answers construct and then never
+  answers `ave/instance/start` → under `--fast`, `lifecycle.start` fails `timed out
+  after 1000 ms` within 5 s of the run, the recording link sees exactly one terminate,
+  every later row except `protocol.teardown` is `not exercised`, `protocol.teardown`
+  passes and the exit code is 1 (remove the bound → the case hangs until the test's own
+  timeout and fails); **`withholds-tool-reply`** answers through `tools/list` and never
+  answers `tools/call` → `tools.call:echo` fails the same way (same revert);
+  **`withholds-construct`** reads construct and never answers → under `--fast`,
+  `protocol.construct` fails `timed out after 1000 ms` and the CLI exits 1 within 3 s —
+  long before the 20 s cleanup deadline — with exactly one terminate, no live child or
+  open handle left, and a reply the fixture writes 2 s later ignored (stop passing
+  `signal` → the run lasts until the cleanup deadline, fails); **`slow-construct`**
+  answers construct after 10.5 s, run **without** `--fast` → `protocol.construct` fails
+  at 10 s with every later row but `protocol.teardown` `not exercised` (bound construct
+  at `pluginImportMs + pluginFactoryMs` again → construct passes at 10.5 s, fails). It
+  is the suite's one slow case, with a 20 s test timeout. **`ignores-sigterm`** answers
+  construct, installs a no-op `SIGTERM` handler and never answers start → under
+  `--fast`, `lifecycle.start` fails at 1 s, the link's `signalsSent` is exactly one
+  `SIGTERM` and, 3 s later, one `SIGKILL`, the child's exit is observed and
+  **`protocol.teardown` passes**; exit code 1 (let `--fast` cap the teardown wait → the
+  row fails before the SIGKILL, fails; use the helper's 2 s default → the SIGKILL timing
+  assertion fails). **Refused signals**, the case this row exists for, distinct from the
+  one above: `withholds-construct` and `withholds-start-reply`, each spawned by the test
+  and passed to `runProtocolChecksOnChild` with that one child instance's `kill`
+  replaced by Node's refusal path (emit `error` with `code: "EPERM"` synchronously,
+  return `false`), under `--fast` → the timeout row fails (`protocol.construct`, resp.
+  `lifecycle.start`), every later row but `protocol.teardown` is `not exercised`, and
+  `protocol.teardown` fails `child did not exit after termination` after 5 s with
+  `signalsSent` `SIGTERM` then `SIGKILL` and two `terminationFaults`, one per refusal;
+  and the CLI **returns**, exit code 1, within 1 s after that 5 s wait ends — 7 s from
+  the run's start for the construct case — although the child is still alive (host
+  re-review #32: an unexited child bounds the run, never holds it); the test's
+  `afterEach` kills the child by pid (skip the finalizer when the opener rejects → the
+  construct case has no `protocol.teardown` row, fails; report `protocol.teardown` as
+  `not exercised` after a timeout → both fail). `knip.jsonc:47-50` gains the
+  `fixtures/raw/*.mjs` glob beside the host-protocol one.
 - The session-level rows: a recording link shows every `server/discover`, `tools/list`
   and `tools/call` frame carrying both `_meta` keys (replace the transport's producer
   with a pass-through → `protocol.request-meta` fails); a fixture whose manifest declares
@@ -4448,7 +4489,7 @@ What Ave should not adopt, and why:
 | 44 | **One producer of MCP request metadata on the plugin-child channel.** `PluginChildTransport.requestMcp` stamps `_meta` with `io.modelcontextprotocol/protocolVersion: "2026-07-28"` and `io.modelcontextprotocol/clientCapabilities: {}` on `server/discover`, `tools/list`, `tools/call` and `resources/read`, and refuses a caller `_meta`; `request` takes `ave/instance/*` only and `ave/*` frames carry no MCP `_meta`. `clientInfo` is omitted. The reference runtime's tolerance of a missing version is unchanged; the Python fixture rejects a request missing either required key with `-32602`, and the validate CLI checks the host-side frames. Landed in S1 with the goldens regenerated. | MCP `2026-07-28` makes both keys required on every request and a request without them malformed (fact 16); the factory sent neither on `tools/call` or `resources/read`, and a tolerant runtime hid it. `{}` is truthful: the host serves no server-to-client MCP request on these pipes (`plugin-child-transport.ts:242-247`). `clientInfo` is a SHOULD, display-only and self-reported; an app version in every MCP frame would move every golden at each release. Rejected: making the reference runtime strict in 0.13.0 (it also serves the in-process loopback, whose internal caller it tolerates by design, `plugin-mcp-server.ts:233-237`, and a behaviour change for every installed plugin is not Publication's); stamping in the session instead of the transport (two call sites, and the validator's requests would need a third). |
 | 45 | **Vendored bundles use the official repository's post-wave recipe, and the host logger is silent in them by intent.** `ave-plugin-validate.js` and `ave-plugin-child-main.js` are `tools/vendor/` `build` entries with `logger: "stub-app-logger"`, built by `bundle-app-marketplace.mjs` via `buildAtRef`; `orion` and `git` adopt the same recipe byte-for-byte; ave's bundle test runs that recipe from a fixture copy that names its commit. Source mode (`npm run plugin:validate`) applies the same substitution through `scripts/lib/stub-app-logger-hook.mjs`, a resolve hook loaded in the CLI and its child, and each mode's test parses every stdout line as a report row. | At the wave `vendor.mjs` refuses any other logger recipe (`:92`), so the pre-wave plain `bun build` the second round named could not be vendored (cross-language re-review 7). The app logger writes to stdout outside a headless run (`logger.ts:70-99`) and the CLI's stdout is its report; the child's diagnostics that matter cross as `notifications/ave/log`. Reproduced 2026-10-01: the recipe builds `plugin-child-main.ts` at `c73f59580` with no `pino` and no embedded path (fact 17). In source mode neither `LOG_LEVEL` nor rebinding `process.stdout.write` is enough: the logger's test-mode path calls `console.log` whenever `VITEST` or `NODE_ENV=test` is set (`logger.ts:37-38`, `:223-259`) and its pretty stream defaults to stdout (`:93-99`), so only replacing the module covers both (host re-review #27, cross-language re-review round 3, new 3). Rejected: a source-mode-only flag in the logger (a second silencing mechanism that the bundles would not exercise). |
 | 46 | **The Python smoke provisions one interpreter in one tree.** Every uv call runs with `UV_PYTHON_INSTALL_DIR`, `UV_PYTHON_BIN_DIR`, `UV_PYTHON_INSTALL_BIN=0` and `UV_CACHE_DIR` under `node_modules/.cache/ave-python-smoke`, discovery is `--managed-python`, every job that runs the smoke ensures uv with `scripts/fetch-uv.mjs` before it, and CI supplies the interpreter through `AVE_SMOKE_PYTHON` from `actions/setup-python`. The launcher is tested by running `bin/plugin` under `env -i` and checking the imported `mcp` comes from `<root>/vendor`. | `--install-dir` alone does not tell a later `find` where to look, default discovery falls through to `PATH`, and from uv 0.8.0 an install links an executable into the user's `PATH` (fact 17; cross-language re-review 6). The confinement jobs had no uv step and a cache hit skips the postinstall (re-review 5). A preflight that sets `PYTHONPATH` itself cannot fail when the launcher forgets to (re-review 9). |
-| 47 | **Every call the validate CLI awaits is bounded, by `runProtocolChecks`, from `TOOL_TIMEOUT_POLICY`, and cancelled through one `AbortSignal`.** Construct `pluginFactoryMs`, the runtime's activation bound (the session's 20 s `pluginImportMs + pluginFactoryMs` stays as the transport's cleanup deadline, not a validation bound); `start` the manifest's `startupTimeoutMs` clamped to `pluginStartupMaxMs`, else `pluginStartupDefaultMs`; `onPublished` the same value as validator-only policy, since the runtime does not bound it; `server/discover`, `tools/list` and the unknown-method probe `mcpRequestDefaultMs`; each `tools/call` `globalCeilingMs`; the stop hook `pluginStartupDefaultMs`; `closeInput` → `exited` 5 s; the final `teardown`'s wait for exit 5 s (`protocol.teardown`, which also reports a child a refused SIGKILL left running); `--fast` caps each at 1 s. Expiry fails that row with `timed out after <n> ms` and aborts the run's controller, which the session (given it as `signal` before construct) turns into `teardown`; every later row is `not exercised` and the exit code is 1. | The CLI drives the session directly, so the runtime's owners (`runStartWithTimeout`, `src/plugins/runtime/index.ts:1242-1256`; the executor ceiling, `src/tools/executor-ceiling.ts:56-76`) never run, and the transport sets no timer for a call without a deadline (`plugin-child-transport.ts:159-165`, `child-stream-multiplex.ts:287-290`): a child that answers construct and then goes silent would hang the CLI and CI (host re-review #26). Reusing the production values keeps a plugin that passes validation inside the bounds the app will apply: activation bounds the whole child construct, import included, by `runPluginFactoryWithTimeout` at `pluginFactoryMs` (`runtime/index.ts:1215-1227`, `:4007`, `:4912`, `:5528`, `:6282`, `:5151-5154`), so the round-3 bound of import plus factory would have passed a plugin the app refuses (host re-review #30). `onPublished` is awaited unbounded (`runtime/index.ts:3437`); its bound is labelled the validator's own policy rather than parity. Rejected: a single CLI-wide timeout (it would report no row and could not tell a slow `start` from a hung tool); bounds inside the session (the runtime owns production bounds, and a second owner there would race it). |
+| 47 | **Every call the validate CLI awaits is bounded, by `runProtocolChecks`, from `TOOL_TIMEOUT_POLICY`, and cancelled through one `AbortSignal`.** Construct `pluginFactoryMs`, the runtime's activation bound (the session's 20 s `pluginImportMs + pluginFactoryMs` stays as the transport's cleanup deadline, not a validation bound); `start` the manifest's `startupTimeoutMs` clamped to `pluginStartupMaxMs`, else `pluginStartupDefaultMs`; `onPublished` the same value as validator-only policy, since the runtime does not bound it; `server/discover`, `tools/list` and the unknown-method probe `mcpRequestDefaultMs`; each `tools/call` `globalCeilingMs`; the stop hook `pluginStartupDefaultMs`; `closeInput` → `exited` 5 s; `--fast` caps each of these at 1 s. A CLI-owned `finally` always runs — also when an opener rejects and no session exists — through the run's `AbortController` and the CLI's link, which records the exit, faults and signals from spawn; it starts the link's one termination sequence (`VALIDATION_KILL_GRACE_MS` 3 s, production's) unless the child already exited and waits `VALIDATION_TEARDOWN_WAIT_MS` 5 s for the exit; `protocol.teardown` is always reported, never `not exercised` and never capped by `--fast`. Expiry fails that row with `timed out after <n> ms` and aborts the run's controller, which the session (given it as `signal` before construct) turns into `teardown`; every later row is `not exercised` and the exit code is 1. | The CLI drives the session directly, so the runtime's owners (`runStartWithTimeout`, `src/plugins/runtime/index.ts:1242-1256`; the executor ceiling, `src/tools/executor-ceiling.ts:56-76`) never run, and the transport sets no timer for a call without a deadline (`plugin-child-transport.ts:159-165`, `child-stream-multiplex.ts:287-290`): a child that answers construct and then goes silent would hang the CLI and CI (host re-review #26). Reusing the production values keeps a plugin that passes validation inside the bounds the app will apply: activation bounds the whole child construct, import included, by `runPluginFactoryWithTimeout` at `pluginFactoryMs` (`runtime/index.ts:1215-1227`, `:4007`, `:4912`, `:5528`, `:6282`, `:5151-5154`), so the round-3 bound of import plus factory would have passed a plugin the app refuses (host re-review #30). `onPublished` is awaited unbounded (`runtime/index.ts:3437`); its bound is labelled the validator's own policy rather than parity. Rejected: a single CLI-wide timeout (it would report no row and could not tell a slow `start` from a hung tool); bounds inside the session (the runtime owns production bounds, and a second owner there would race it). |
 
 ### Owner decisions still open
 
