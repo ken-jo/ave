@@ -1819,7 +1819,7 @@ The 0.13.0 tests are listed with each slice of §18.10.
 > this section and an earlier one disagree, the earlier section describes
 > 0.12.x and this section the 0.13.0 target. Each slice of §18.10 rewrites
 > the owning section in the same change and removes its pointer here. Code is
-> cited at `9c56ec148`.
+> cited at `e10c823e2`.
 
 ### 18.1 Owner decisions (2026-09-28, closed)
 
@@ -1955,47 +1955,118 @@ may not.
   so a company root installed in the OS store keeps working (§9.2). Electron
   44 ships Node 24.20.0, which has both. Each redirect hop is a new
   connection with its own lookup and checks.
+- **Proxies are trusted.** When the system configuration routes a
+  connection through a proxy — an http(s) or SOCKS proxy from PAC, local or
+  remote, or an ssh `ProxyCommand` or `ProxyJump` — Ave checks only the
+  proxy's own address, connects only to the proxy, and **trusts the proxy to
+  enforce destination restrictions**. Ave does not see the address the
+  proxy connects to. A proxy on this computer (`PROXY 127.0.0.1:8080`, a
+  `ProxyCommand` that runs `nc`) connects from this computer, so a
+  catalog-chosen name it resolves to loopback or to the metadata endpoint
+  reaches those targets. The refusals and blocks that depend on the
+  resolved address (§18.3 #3 and #4, `blockPrivateNetworks`) hold for
+  direct connections and for proxies that resolve locally, and not beyond a
+  proxy that resolves the target itself. This is the stated boundary.
 - **Proxies for downloads.** The route comes from the session's
-  `resolveProxy(url)`, the resolver git already uses (`run-git.ts:199-211`),
-  and only its first entry is used: a fallback to `DIRECT` is never taken
-  silently.
-  - `DIRECT`: pinned as above.
-  - `PROXY host:port`: the proxy host is resolved and checked the same way
-    (`metadata` and `unroutable` refused, `internal` and `this-computer`
-    accepted because the system configuration chose them), and the transport
-    connects to it with `CONNECT` for https and an absolute-form request for
-    http.
-  - Any other kind fails `SOURCE_UNREACHABLE` reason `proxy`, as git does
-    (`run-git.ts:210`).
-  - Through a proxy, this computer connects only to the proxy. Loopback and
-    link-local addresses are relative to the host that connects, so this
-    computer's services and its metadata endpoint are out of reach on that
-    route. The target is resolved by the proxy under the proxy's own policy;
-    that is the stated boundary.
+  `resolveProxy(url)`, the resolver git already uses (`run-git.ts:199-211`).
+  Only its first entry is used: a fallback to `DIRECT` is never taken
+  silently. The proxy host is resolved and checked as above (`metadata` and
+  `unroutable` refused; `internal` and `this-computer` accepted, because the
+  system configuration chose them). The transport supports the kinds the
+  host already maps for subprocesses (`PROXY`, `HTTPS`, `SOCKS5`,
+  `src/shared/pac-proxy.ts:14-16`), plus `SOCKS`/`SOCKS4`, which git already
+  accepts (`run-git.ts:205-208`):
+
+  | PAC kind | Connection Ave makes and checks | Target resolution | TLS to an https target |
+  |---|---|---|---|
+  | `DIRECT` | the target's checked answer, pinned | this computer, checked | end to end, `servername` = target host |
+  | `PROXY host:port` | TCP to the checked proxy address; `CONNECT host:port` for https, an absolute-form request for http | the proxy (trusted) | inside the `CONNECT` tunnel, `servername` = target host, verified with the same CA set |
+  | `HTTPS host:port` | TLS to the checked proxy address (`servername` = proxy host, same CA set), then as `PROXY` inside it | the proxy (trusted) | a second TLS session inside the tunnel, `servername` = target host |
+  | `SOCKS5 host:port` | TCP to the checked proxy address; SOCKS5 `CONNECT` with the domain-name address type | the proxy (trusted) | inside the tunnel, `servername` = target host |
+  | `SOCKS host:port`, `SOCKS4 host:port` | TCP to the checked proxy address; SOCKS4 `CONNECT` carrying the target's checked IPv4 answer (SOCKS4 carries only an IPv4 address) | this computer, checked and pinned; no IPv4 answer → `SOURCE_UNREACHABLE` reason `dns` | inside the tunnel, `servername` = target host |
+
+  Any other kind (one only Chromium's own stack speaks, such as `QUIC`) fails
+  `SOURCE_UNREACHABLE` reason `proxy`, with the PAC entry in the detail. The
+  0.12 download transport reached those through Chromium; the message says
+  what to ask IT for. git refuses the kinds it cannot map in the same way
+  (`run-git.ts:210`).
 - **git over http(s).** `run-git.ts:156-171` adds
   `-c http.curloptResolve=<host>:<port>:<address>[,<address>…]`, listing the
   answers that remain after the check. libcurl uses that entry instead of its
   own lookup. `http.followRedirects=false` (`:162`) already keeps every request
-  on that host. With an http proxy from `proxyFor`, a second entry pins the
-  proxy host, checked as for downloads. For a `socks4://` proxy, curl resolves
-  the target locally, and the first entry pins it.
-- **git over ssh.** `GIT_SSH_COMMAND` (`run-git.ts:184`) becomes
-  `ssh -o BatchMode=yes -o HostName=<address> -o HostKeyAlias=<host> -o CheckHostIP=no`.
-  `<address>` is the first remaining answer. `HostKeyAlias` keeps the
-  known-hosts check on the host name (§9.2). A `ProxyJump` or `ProxyCommand`
-  in the user's ssh configuration makes this computer connect to that jump
-  host instead, which is the same boundary as a proxy.
+  on that host. With a proxy from `proxyFor`, a second entry pins the proxy
+  host, checked as for downloads. When curl resolves the target itself
+  (a SOCKS proxy without remote resolution), the first entry pins it.
+  Otherwise the proxy resolves it under the trusted-proxy rule.
+- **git over ssh** keeps the user's ssh trust identity. The runner reads the
+  effective configuration with `ssh -G [-p <port>] [<user>@]<host>`, run with
+  the same environment as the git call. That command prints the
+  configuration after evaluating `Host` and `Match` blocks (ssh(1), `-G`).
+  It uses `hostname`, `port`, `hostkeyalias`, `proxycommand` and
+  `proxyjump`. OpenSSH looks up and saves host keys under `HostKeyAlias`
+  verbatim when one is set, and otherwise under the effective host name with
+  the port appended as `[host]:port` when the port is not 22. It validates a
+  host certificate's principals against `HostKeyAlias` when set, otherwise
+  against the bare host name (`sshconnect.c`, `get_hostfile_hostname_ipaddr`
+  and `check_host_key`; ssh_config(5) `HostKeyAlias`). Pinning sets
+  `-o HostName=<address>` and must not change either identity:
+  - **`proxycommand` or `proxyjump` set**: no pin. The trusted-proxy rule
+    applies, and the jump host or command connects.
+  - **A user `HostKeyAlias`**: pin `HostName` only. The user's alias keeps
+    deciding both identities.
+  - **No alias, port 22**: pin with `-o HostKeyAlias=<effective hostname>`.
+    `[host]:22` is written as plain `host`, so the known-hosts name and the
+    certificate principal are the same as unpinned.
+  - **No alias, any other port**: no pin. The known-hosts name would be
+    `[host]:port` while the certificate principal is `host`, and no single
+    alias preserves both. This connection is checked at preflight only, and
+    a rebinding of an ssh host on a non-default port is the stated residual.
+  - **Any pin** is accepted only when a second `ssh -G` with the pin options
+    prints the same values as the first for every key except `hostname`
+    (and `hostkeyalias` in the port-22 case). Otherwise, for example when a
+    `Match host` block sees the address, there is no pin.
+  - `CheckHostIP` is not passed. With a numeric `HostName`, OpenSSH skips its
+    address check, because the host name already is the address.
+
+  ssh's own resolution of an unpinned host is not checked again at connect
+  time; the preflight check of §18.2.2 still applies.
 - **Tests** (slice C), each with a resolver fake that answers a public
   address to the first lookup and `169.254.169.254` or `127.0.0.1` to any
   later one:
-  - `pinned-fetch.test.ts`: the request goes to the first answer, and the
-    lookup runs exactly once per hop (revert: pass the hostname to the
-    transport). An answer set of public plus metadata connects only to the
-    public answer. A PAC result `PROXY p:8080; DIRECT` never connects
-    directly.
+  - `pinned-fetch.test.ts`:
+    - the request goes to the first answer, and the lookup runs exactly once
+      per hop (revert: pass the hostname to the transport);
+    - an answer set of public plus metadata connects only to the public
+      answer;
+    - `PROXY p:8080; DIRECT` never connects directly;
+    - one acceptance case per PAC kind against local proxy fixtures:
+      `PROXY` with an http and an https target, `HTTPS` (TLS to the proxy,
+      then TLS to the target), `SOCKS5` (the request carries the domain name
+      type), `SOCKS4` (the request carries the checked IPv4 answer), and an
+      unknown kind failing `proxy`.
+  - `trusted-proxy.test.ts`, which demonstrates the documented boundary: a
+    loopback `PROXY` fixture configured through PAC, and a catalog download
+    whose host the fixture resolves to `127.0.0.1`. Ave checks and connects
+    only to the proxy address, the fixture reaches its loopback target, and
+    the test asserts exactly that. It pins documented behaviour rather than
+    a guard, so a change to the boundary changes this test and §18.2.4
+    together.
   - `run-git.test.ts`: argv carries `http.curloptResolve` with the
     first-lookup address, and the runner performs no second lookup (revert:
-    drop the option). The ssh command carries `HostName` and `HostKeyAlias`.
+    drop the option).
+  - `ssh-pin.test.ts`, with a loopback `sshd` fixture holding a host key and
+    a host certificate, a temporary `known_hosts`, and a temporary
+    `ssh -F` config:
+    - on port 2222 with a `[localhost]:2222` known-hosts entry, there is no
+      pin, and the connection is accepted on that entry (revert: force an
+      alias, and the entry is no longer selected);
+    - a configured `HostKeyAlias fixture-alias` with a `fixture-alias`
+      entry is pinned with the alias preserved and accepted;
+    - an `@cert-authority fixture-alias` entry and a certificate whose
+      principal is `fixture-alias` are pinned and validated;
+    - a `ProxyCommand` config is not pinned;
+    - the port-22 alias rule is asserted on `ssh -G` output, since the
+      fixture cannot bind port 22.
 
 ### 18.3 Hard refusals
 
@@ -2006,8 +2077,8 @@ warning (§18.2) or a policy decision (§18.6).
 |---|---|---|
 | 1 | `ext::` and every other `<helper>::` transport | `ext::` runs its text as a command; `<helper>::` runs `git-remote-<helper>` from the search path. An address becomes code execution. git itself defaults `ext` to `never`; `GIT_ALLOW_PROTOCOL` stays an allow-list (`run-git.ts:187`) |
 | 2 | Credentials in a URL (`https://user:secret@…`, `https://token@…`) | the secret lands in `sources.json`, the Sources view, logs, audit records, backups and git's command line, which other local users can read in the process list. Ave has the encrypted token store (§2.1). An ssh user name (`git@`) is not a credential |
-| 3 | `metadata` addresses, for every target, policy-listed hosts included, enforced on the connected address (§18.2.4) | a cloud instance's metadata service hands credentials to any local request. No git server lives there, and a name that resolved elsewhere when the user confirmed it can resolve there at the next connection |
-| 4 | Catalog-supplied `this-computer` targets other than the source's own host and port, enforced on the connected address (§18.2.4) | a third-party catalog makes the app send requests to local services (development servers, other apps' control endpoints) that trust any local caller |
+| 3 | `metadata` addresses, for every target, policy-listed hosts included, enforced on the connected address of a direct connection; beyond a proxy that resolves the target itself, the trusted proxy enforces it (§18.2.4) | a cloud instance's metadata service hands credentials to any local request. No git server lives there, and a name that resolved elsewhere when the user confirmed it can resolve there at the next connection |
+| 4 | Catalog-supplied `this-computer` targets other than the source's own host and port, enforced on the connected address of a direct connection; beyond a proxy that resolves the target itself, the trusted proxy enforces it (§18.2.4) | a third-party catalog makes the app send requests to local services (development servers, other apps' control endpoints) that trust any local caller |
 | 5 | Reading through a link that leaves a local folder or names a network location (§18.4.5) | a folder that is someone else's checkout links `skills/x/notes.md` to `~/.ssh/id_ed25519`, and the install copies the key into a package the model reads. On Windows a link to `\\server\share` sends the user's network credentials to that server |
 | 6 | Any git command against a local folder; git's `file` transport stays `never` (`run-git.ts:158`) | git reads a checkout's own configuration, alternates and hooks; settings such as `core.fsmonitor` run programs |
 | 7 | A folder path in a deep link | a web page picks a UNC share (credentials sent on preview) or a planted folder such as Downloads. The Add dialog opens empty and says why |
@@ -2083,8 +2154,21 @@ UNC server is exactly what consent and policy must come before.
    - A `network` folder needs `network-folder` (§18.2.2). Without it, preview
      answers `{ type: "confirm" }` (§18.5) and nothing is touched.
 4. **Resolution**, only after stage 3 passes. It walks the path component by
-   component with `lstat` and never calls `realpath`. A link or junction is
-   handled by §18.4.5's link rule, which reads only the link's text. The walk
+   component with `lstat` and never calls `realpath`. While it establishes
+   the root, a link or junction among the entered path's own components —
+   an ancestor such as macOS's `/tmp → /private/tmp`, or the root itself —
+   is handled by **root resolution**, not by package containment:
+   - its text is read with `readlink` and classified as in §18.4.5 rule 1;
+     network text is refused as `link-to-network`, and the target is never
+     touched;
+   - any other text is resolved lexically against the link's directory, and
+     the walk continues there, with the same rule for every link it meets
+     and the loop limit of §18.4.5 rule 4. No containment applies here: the
+     user consented to this path, and the local link is part of where that
+     path lives.
+
+   Package containment (§18.4.5 rule 2) applies only **beneath** the
+   canonical root once it is established. The walk
    records each component's on-disk spelling from a `readdir` of its parent:
    the entry equal in bytes if one exists, otherwise the single entry equal
    ignoring case. Several such entries fail with `SOURCE_LOCAL_UNREADABLE`
@@ -2214,17 +2298,25 @@ recording fake.
 
   The installed copy holds the target's bytes as a regular file. For the
   index or a revocations file, a refused link fails the whole read.
-- **Opening a file** uses `O_NOFOLLOW` on macOS and Linux. After the open,
-  `fstat` must report the `dev`/`ino` that the walk's `lstat` saw; a mismatch
-  fails the read with `SOURCE_LOCAL_UNREADABLE` reason `changed-during-read`,
-  and the bytes are discarded.
-- **Concurrent replacement boundary.** A process that can write the folder
-  can swap a checked component for a link between the check and the open.
-  The `fstat` comparison detects a swapped file before its bytes are used, so
-  an outside file never reaches a package. It cannot undo the access itself:
-  on Windows, where Node's open follows reparse points, such a race can make
-  Ave contact a UNC server. That race needs local write access to the folder
-  during the read; it is stated, not defended.
+- **Opening a file** uses `O_NOFOLLOW` on macOS and Linux, which protects
+  only the final component. After the open, `fstat` must report the
+  `dev`/`ino` that the walk's `lstat` saw.
+- **Detecting persistent swaps.** The walk records each directory's
+  `dev`/`ino` when it enumerates it. After each file is read, it re-`lstat`s
+  the directory chain from the canonical root to that file's directory and
+  compares every entry; it compares the `fstat` of the file as well. Any
+  mismatch fails the read with `SOURCE_LOCAL_UNREADABLE` reason
+  `changed-during-read`, and the bytes are discarded. A swap that is still in
+  place when the file has been read is therefore caught.
+- **Concurrent replacement boundary, every platform.** Node has no portable
+  traversal anchored to held directory handles (`openat`), and this design
+  does not promise one. A process with write access to the source tree that
+  replaces an intermediate directory with a link and restores it between
+  the walk's checks can redirect a read. The bytes captured are bytes of a
+  file the user could already read, and they can reach the package. On
+  Windows, where Node's open follows reparse points, the same window can make
+  Ave contact a UNC server. This residual needs a concurrent local writer
+  in a folder the user chose as a source, and it is stated, not defended.
 - Skipped silently at any depth, never read, digested or installed: `.git/`,
   `.DS_Store`, `._*`, `Thumbs.db`, `desktop.ini`.
 - Names are normalized to NFC (the form git stores). Two names equal after NFC,
@@ -2284,10 +2376,12 @@ A synthesized version (§8.2) is `0.0.0+t<digest12>`.
 `plugin-hostapi-protocol.md` §2.1, on `main`, admits a `process` entry only
 for an install whose artifact came through a sha256-pinned `release` or
 `archive` rung, recorded in the receipt. Its implementation is the
-Publication plan (§9.7 of that page). That plan is **not on `main`**: it is
-commit `f38c5700d` on branch `docs/publication-plan`. Of its slices, M1 has
-merged (#2591, `9c56ec148`), and P3 (the `process` runtime and its codes) and
-P4 (marketplace admission) have not. This design does not relax the rule.
+Publication plan, §9.7 of that page (`plugin-hostapi-protocol.md:2222`, on
+`main` since #2592). Of its slices (`:2645-2650`), M1 has merged (#2591), S1
+and P1 are being built, and P3 (the `process` runtime and its codes,
+`:3557`) and P4 (marketplace admission, `:3871`) are unbuilt. P4 already
+states that a local directory source is refused like `installLocal`
+(`:3887-3889`). This design does not relax the rule.
 
 - **Codes over time.**
   - Today `main` refuses every `process` entry with
@@ -2358,8 +2452,10 @@ P4 (marketplace admission) have not. This design does not relax the rule.
 ```
 
 - `requireHttps` and `blockPrivateNetworks` apply to entered and
-  catalog-supplied targets, downloads and redirect hops included, on the
-  connected address (§18.2.4). They restore 0.12's refusals as blocks no
+  catalog-supplied targets, downloads and redirect hops included.
+  `blockPrivateNetworks` is enforced on the connected address of a direct
+  connection; beyond a proxy that resolves the target itself, the trusted
+  proxy enforces it (§18.2.4). They restore 0.12's refusals as blocks no
   confirmation passes.
 - **`path:` patterns.** `path:<folder>` matches that folder,
   `path:<prefix>*` every folder under the prefix, and `path:*` every folder;
@@ -3200,7 +3296,7 @@ Then D1 after C, and D2 after D1; F after D1 and E; G last.
 - D1 and D2 are each independently mergeable. D1 accepts folder input through
   the existing preview channel, with its consent, policy and refusals
   complete. D2 only adds the dialogs and presentation.
-- The Publication plan (`f38c5700d`, unmerged; §18.4.9) touches `errors.ts`,
+- The Publication plan (`plugin-hostapi-protocol.md` §9.7; P3 and P4 unbuilt; §18.4.9) touches `errors.ts`,
   `labels.ts`, `plugin-ladder.ts`, `direct-package.ts` and
   `plugins/marketplace.ts`:
   - whichever of B and P3 merges second makes `failureText` cover the
@@ -3229,7 +3325,8 @@ The E2E flows named below run in `test/e2e/ui/`.
     `parseGitMarketplaceResult`; an unknown one is dropped, with code and
     message kept.
   - `sync.test.ts` and `views.test.ts`: a background sync failing with
-    `SOURCE_LOCAL_UNREADABLE` reason `permission` persists the detail. After
+    `SOURCE_UNREACHABLE` reason `dns` (an existing code) persists the detail
+    with its host. After
     the registry is reopened from disk, `sources:list` carries it, and
     `SourcesAndAdd.test.tsx` shows the localized sentence (revert: persist
     only the code).
@@ -3289,7 +3386,13 @@ The E2E flows named below run in `test/e2e/ui/`.
     - under `allowLocalSources: false`, the same input is blocked with zero
       recorded calls;
     - after `acknowledge`, the walk records `lstat` calls and never a
-      `realpath`.
+      `realpath`;
+    - root resolution: `/tmp/market` with the ancestor link
+      `/tmp → private/tmp` resolves to `/private/tmp/market`; a root that is
+      itself a link (`~/m → /opt/m`) resolves to `/opt/m`; an ancestor link
+      whose text is `\\server\share` is refused as `link-to-network` with no
+      call on the server path (revert: apply package containment to the
+      root).
   - `folder-tree.test.ts`, with the recording fake:
     - an inside link installs as a regular file;
     - an outside link is `link-outside-folder`, with no call on its target;
@@ -3298,6 +3401,13 @@ The E2E flows named below run in `test/e2e/ui/`.
       `link-to-network`, with no recorded call on any `\\attacker` path
       (revert: `realpath` inside links);
     - an `fstat` identity mismatch is `changed-during-read`;
+    - **ancestor swap**: the fake replaces `root/d` with a link to an
+      outside directory after `root/d` is enumerated and before
+      `root/d/file` is opened, and keeps it replaced. The re-`lstat` of the
+      parent chain reports `changed-during-read`, and no byte of the outside
+      file reaches the package (revert: drop the parent-chain recheck). The
+      same swap restored before the recheck is recorded as the documented
+      residual: the test asserts the read completes and names the case;
     - `.git/` and `.DS_Store` are skipped;
     - NFD digests as NFC, and NFC-equal names are refused.
   - `folder-identity.test.ts`, with a fake case-sensitive volume holding
@@ -3310,7 +3420,10 @@ The E2E flows named below run in `test/e2e/ui/`.
     With a fake case-insensitive volume, the two spellings are one source
     through equal `dev`/`ino` (revert: platform case folding). Nesting is
     refused.
-  - `folder-sync.test.ts`: editing a `SKILL.md` changes the revision
+  - `folder-sync.test.ts`: a background read failing
+    `SOURCE_LOCAL_UNREADABLE` reason `permission` persists that detail through
+    slice B's path and renders after a reload (the folder case moved from B).
+    Editing a `SKILL.md` changes the revision
     (revert: drop package digests), and the git runner records zero calls
     for a folder source.
   - `folder-plan.test.ts`: a file changed between plan and execute installs
@@ -3495,7 +3608,7 @@ The E2E flows named below run in `test/e2e/ui/`.
 | 10 | A folder's pin is a content revision covering every package digest; no history rule; only the folder's version installs (§18.4.3) | §7.3 needs a pin; an edit to a skill must count; a folder has no history and no other version |
 | 11 | No source type for a lone `marketplace.json` URL; such an address gets a message (§18.3) | Ave reads descriptors, content, icons and revocations from the tree, which a lone index cannot carry |
 | 12 | `git://` unsupported, with a message (§18.3) | The PAC proxy cannot route it; the same repository is served over https or ssh |
-| 13 | Links inside a folder followed by text, component by component; links outside or to a network location refused without touching the target; OS metadata skipped; names NFC (§18.4.5) | Following by text is the only way to refuse a UNC target before contacting it; failing names the file instead of leaving it silently missing; Finder files would otherwise break skills; NFC matches git |
+| 13 | Beneath the canonical root, links are followed by text, component by component; links outside or to a network location are refused without touching the target; while the root itself is resolved, local ancestor and root links are followed after the same network check; persistent swaps are detected by re-checking the directory chain; OS metadata skipped; names NFC (§18.4.1, §18.4.5) | Following by text is the only way to refuse a UNC target before contacting it; containment protects the package, not the user's own path to the folder; a swap-and-restore race by a concurrent local writer is a stated residual, since Node offers no portable handle-anchored traversal |
 | 14 | A folder source never downloads: one `folder` rung; extra top-level entries ignored and listed (§18.4.2) | A folder's declared pin lives in files anyone who can write the folder changes without trace, so it is not commit provenance; folder receipts stay ineligible for `process` admission; a developer's checkout always holds sources |
 | 15 | Folder identity is the canonical path or equal `dev`/`ino`; no platform case folding; `allow` matches with exact case, `block` without (§18.4.4, §18.6) | Case sensitivity is per volume, not per platform; when it is unknown, the conservative result admits less and blocks more |
 | 16 | Discovery (sync and revocations) every 6 hours; the update apply check at boot and once a day, obtaining its own discovery when the last is older than a day; one scheduler (§18.7.1) | The owner's cadence is for updates; revocations ride the same fetch and 0.12 already delivers them within 6 hours, so a 24-hour discovery would keep a revoked package running four times as long; a daily check must not wait on a longer interval |
@@ -3520,5 +3633,5 @@ The E2E flows named below run in `test/e2e/ui/`.
 | 35 | The `process` admission rule is not relaxed; folder receipts are categorically ineligible; the codes follow the Publication plan as it merges (§18.4.9) | It belongs to `plugin-hostapi-protocol.md` |
 | 36 | The switches live in settings; the http precondition is a source confirmation only main records (§18.9) | Main must enforce the http precondition; a settings write cannot |
 | 37 | Eight slices; B first; C and E in parallel; D1 after C; F after D1 and E (§18.10) | Each is coherent at its boundary; the first folder-accepting slice carries its own consent; F needs the folder contracts |
-| 38 | Address-dependent refusals and blocks bound to the connection: pinned download transport, `http.curloptResolve`, ssh `HostName` with `HostKeyAlias`; through a proxy only the proxy is connected (§18.2.4) | A separate earlier lookup lets DNS rebinding pass a hard refusal; loopback and link-local are relative to the connecting host |
+| 38 | Address-dependent refusals and blocks bound to the connection where this computer resolves: pinned download transport for every supported PAC kind, `http.curloptResolve`, ssh `HostName` pinned only when `ssh -G` shows the trust identity is unchanged; a configured proxy, local or remote, and an ssh `ProxyCommand` or `ProxyJump` are trusted to enforce destination restrictions (§18.2.4) | A separate earlier lookup lets DNS rebinding pass a hard refusal; changing ssh trust identity would be worse than the residual; Ave cannot see where a proxy connects, so the boundary is stated rather than implied |
 | 39 | A version-2 approval whose generation is active and whose fingerprint matches the installed declaration gets its approval digest from the installed bytes; any other gets `null` and its package's first update needs review (§18.7.3) | Those are the bytes the user approved and is running, already bound by the v2 identity; anything else cannot be shown equal |
