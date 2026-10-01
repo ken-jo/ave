@@ -216,6 +216,17 @@ export function ThemeProvider({
     };
   }, [api, effectiveBundleId, resolveBundle]);
 
+  // An installed theme updated in place keeps its id, so the effect above does
+  // not run again: take the registry's new bundle for the theme that shows, or
+  // its old tokens stay on :root until it is selected again. Removal is not
+  // handled here — uninstalling the selected theme resets the setting.
+  useEffect(() => {
+    const bundle = findBundle(effectiveBundleId);
+    if (!bundle) return;
+    // A reload rebuilds every bundle object: keep the shown one when nothing in it changed.
+    setActiveBundle((shown) => (shown.id === bundle.id && JSON.stringify(shown) !== JSON.stringify(bundle) ? bundle : shown));
+  }, [installedThemes, effectiveBundleId]);
+
   // A theme installed after this window started — the first-boot migration
   // adopting the selected theme's package (design §16.3) — was replaced by the
   // default above; once it arrives, the persisted selection applies again.

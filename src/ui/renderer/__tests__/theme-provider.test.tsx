@@ -27,6 +27,7 @@ import {
 import { moonstoneBundle } from "../theme/bundles/moonstone.js";
 import { applyInstalledContent, resetInstalledContentForTests } from "../installed-content.js";
 import type { InstalledContentView } from "../../../shared/installed-content.js";
+import { THEME_SURFACE_NAMES } from "../../../shared/theme-tokens.js";
 import { makeMockAveApi, MOCK_DEFAULT_SETTINGS } from "../../../../test/renderer/mock-ave-api.js";
 
 /** Every theme but Moonstone and Gallery is an installed package; these stand in for the ones used below. */
@@ -325,6 +326,44 @@ describe("<ThemeProvider>", () => {
       expect(observed).toBe("nord");
       expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("nord");
     });
+  });
+
+  it("applies the selected theme's new tokens when its package is updated, without selecting it again", async () => {
+    // Updating the active theme in the marketplace reloads the installed content under the same id.
+    const content = (bundle: ThemeBundle) =>
+      ({ themes: [{ ...bundle, preview: null }], languages: [], fonts: [], routineTemplates: [], broken: [] }) as unknown as InstalledContentView;
+    const bridge = { installed: vi.fn(), languageMessages: vi.fn() } as never;
+    // An installed package carries surfaces: its tokens are written on :root inline.
+    const surfaces = Object.fromEntries(THEME_SURFACE_NAMES.map((name) => [name, "228 20% 10%"])) as ThemeBundle["surfaces"];
+    const before = { ...installed("nord", "dark", { "muted-foreground": "227 6% 71%" }), surfaces };
+    const after = { ...installed("nord", "dark", { "muted-foreground": "227 6% 78%" }), surfaces };
+    setInstalledThemeBundles([before]);
+    const { api } = makeMockAveApi({ settings: { ...MOCK_DEFAULT_SETTINGS, appearance: { schemaVersion: 2, bundleId: "nord" } } });
+    act(() => {
+      applyInstalledContent(content(before), bridge);
+    });
+
+    render(
+      <ThemeProvider api={api as never}>
+        <Probe onValue={() => undefined} />
+      </ThemeProvider>,
+    );
+    const root = document.documentElement;
+    await waitFor(() => {
+      expect(root.getAttribute("data-theme-bundle")).toBe("nord");
+      expect(root.style.getPropertyValue("--muted-foreground")).toBe("227 6% 71%");
+    });
+
+    act(() => {
+      applyInstalledContent(content(after), bridge);
+    });
+
+    await waitFor(() => {
+      expect(root.style.getPropertyValue("--muted-foreground")).toBe("227 6% 78%");
+      // Plugin webviews get the new tokens too.
+      expect(api.notifyPluginTheme).toHaveBeenLastCalledWith(expect.objectContaining({ bundleId: "nord", tokens: bundleToPluginTokens(after) }));
+    });
+    expect(root.getAttribute("data-theme-bundle")).toBe("nord");
   });
 
   it("useTheme throws when called outside the provider", () => {
