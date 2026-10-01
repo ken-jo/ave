@@ -14,6 +14,8 @@ import { globMatch } from "../lib/glob-matcher.js";
 import { llmRouteBaseUrls } from "../shared/llm-vendor-defaults.js";
 import { canonicalizePathForMatch, caseFoldForMatch, getConfiguredSessionReadPolicy, getRuntimeSensitiveKeyPaths, SENSITIVE_PATH_ENTRIES } from "./sensitive-paths.js";
 import { hardenLinuxSandboxWrap } from "./linux-sandbox-wrap.js";
+import { createLogger } from "../lib/logger.js";
+import { hostDirectoryFloorPierces } from "../plugins/sandbox-authority.js";
 
 import type {
   SandboxRuntimeConfig,
@@ -22,6 +24,8 @@ import type {
   WindowsConfig,
   SandboxAskCallback,
 } from "@anthropic-ai/sandbox-runtime";
+
+const log = createLogger("asrt-sandbox");
 
 /**
  * The loopback PERMIT port range srt-win's egress proxy binds on Windows.
@@ -283,6 +287,15 @@ export interface PerCommandFilesystem {
    * shared floor rather than extending it.
    */
   readonly pinWriteRoots?: boolean;
+  /**
+   * Reads this wrap may hold inside the protected read floor, each one also
+   * named in `allowRead`. Without it every `allowRead` entry under the floor
+   * is withheld. Only two composers set it: the builtin shell, for the
+   * configured saved-session root, and a plugin's child and workers, for a
+   * declared `hostDirectory` that pierces the floor (`certs`). Anything else
+   * is refused (see {@link readGrantsOutsideReadDenies}).
+   */
+  readonly floorPierces?: readonly string[];
 }
 
 export interface WindowsWorkerFilesystemGrant {
@@ -533,15 +546,22 @@ export function buildPerCommandSandboxCustomConfig(
     );
   }
   const fs: Partial<FilesystemConfig> = {};
-  if (filesystem.denyRead !== undefined) fs.denyRead = asrtReadDenyPaths(filesystem.denyRead);
-  if (filesystem.allowWrite !== undefined) fs.allowWrite = [...filesystem.allowWrite];
+  const floor = getProtectedReadDenyPaths();
+  // A per-command deny REPLACES the shared one, so the trusted custom denies
+  // are restated here once for every wrap rather than by each composer.
+  if (filesystem.denyRead !== undefined) {
+    fs.denyRead = asrtReadDenyPaths([...new Set([...filesystem.denyRead, ...(_baseTrustedSettings?.denyRead ?? [])])]);
+  }
+  if (filesystem.allowWrite !== undefined) fs.allowWrite = writeRootsOutsideReadDenies(filesystem.allowWrite, floor);
   if (filesystem.denyWrite !== undefined) {
     fs.denyWrite = [
       ...filesystem.denyWrite,
       ...(filesystem.pinWriteRoots === true ? pinnedWriteRootDenies(filesystem.allowWrite ?? []) : []),
     ];
   }
-  if (filesystem.allowRead !== undefined) fs.allowRead = [...filesystem.allowRead];
+  if (filesystem.allowRead !== undefined) {
+    fs.allowRead = readGrantsOutsideReadDenies(filesystem.allowRead, floor, filesystem.floorPierces ?? []);
+  }
   if (Object.keys(fs).length === 0) return undefined;
   return { filesystem: fs as FilesystemConfig };
 }
@@ -655,9 +675,12 @@ export function isAsrtSandboxActive(): boolean {
  * @param userDataDir  The REAL `app.getPath("userData")` from a trusted
  *   main-process caller (boot.ts). When provided, this EXACT path is denied
  *   and handles `--user-data-dir`, XDG_CONFIG_HOME, and future productName
- *   changes correctly. When absent (e.g. the mcp-client wrap path), falls
- *   back to a per-platform os.homedir()-derived path so there is always SOME
- *   coverage. Do NOT supply this from untrusted sources.
+ *   changes correctly. When absent, the path the sandbox was configured with
+ *   is used, so a wrap restating this floor (plugin children, workers, bundled
+ *   hooks, MCP stdio, the terminal) denies the same directory the shared
+ *   config does; before configuration it falls back to a per-platform
+ *   os.homedir()-derived path so there is always SOME coverage. Do NOT supply
+ *   this from untrusted sources.
  * PLUS, on macOS and Linux, the two roots that hold every confined process's
  * private directories ({@link appOwnedSandboxPrivateRoots}): the per-principal
  * temp directories and the per-process sandbox HOMEs. They are read-denied
@@ -672,7 +695,7 @@ export function isAsrtSandboxActive(): boolean {
  *
  * @returns deduped, order-stable absolute paths to deny reads of.
  */
-export function getDefaultSensitiveReadDenyPaths(userDataDir?: string): string[] {
+export function getDefaultSensitiveReadDenyPaths(userDataDir = _baseTrustedSettings?.userDataDir): string[] {
   return [...getDefaultSensitiveDenyPaths(userDataDir), ...appOwnedSandboxPrivateRoots()];
 }
 
@@ -720,6 +743,8 @@ export function getBuiltinShellReadPolicy(
 ): {
   readonly allowRead: readonly string[];
   readonly denyRead: readonly string[];
+  /** The saved-session grant, the one read the shell holds inside the floor. */
+  readonly floorPierces: readonly string[];
 } {
   const sessions = getBuiltinShellSessionReadPolicy();
   const privateRoots = appOwnedSandboxPrivateRoots();
@@ -745,6 +770,99 @@ export function getBuiltinShellReadPolicy(
   return Object.freeze({
     allowRead: Object.freeze(allowRead),
     denyRead: Object.freeze([...sessions.denyRead, ...privateRoots, ...(hostHome ? [hostHome] : [])]),
+    floorPierces: sessions.allowRead,
+  });
+}
+
+/**
+ * The protected read-deny floor every wrap is held to: the sensitive paths,
+ * the exact user data directory the sandbox was configured with, and the
+ * trusted custom denies. Two things restated with it are not part of it: a
+ * shell's whole-HOME deny, and the sandbox private roots
+ * ({@link appOwnedSandboxPrivateRoots}), under which every wrap is granted its
+ * own temp directory and HOME by design.
+ */
+function getProtectedReadDenyPaths(
+  userDataDir = _baseTrustedSettings?.userDataDir,
+  customDenies = _baseTrustedSettings?.denyRead,
+): readonly string[] {
+  return [...getDefaultSensitiveDenyPaths(userDataDir), ...(customDenies ?? [])];
+}
+
+/**
+ * The protected read deny covering `path`, if any. A plugin's chosen directory
+ * is refused when one does: its read half would re-allow the deny on every
+ * platform, and on Linux its write half would too.
+ */
+export function protectedReadDenyCovering(path: string, floor: readonly string[] = getProtectedReadDenyPaths()): string | undefined {
+  const resolved = canonicalizePathForMatch(path);
+  return floor.find((denied) => readDenyCoversPath(denied, resolved));
+}
+
+/**
+ * Keep write roots from reopening reads the floor denies. Seatbelt keeps a
+ * write grant write-only, but bubblewrap grants a write by binding the host
+ * directory read-write over the deny's tmpfs mask, which exposes everything
+ * under it. So on Linux a write root covered by the floor is not granted, for
+ * every wrap: the user's shell, plugin children and workers, bundled hooks,
+ * MCP stdio servers and the terminal all reach ASRT through
+ * {@link buildPerCommandSandboxCustomConfig}, and the shared config through
+ * {@link buildSandboxConfig}. macOS keeps the root, since the grant stays
+ * write-only there. A shell's whole-HOME deny is not part of the floor:
+ * working trees under HOME stay writable because they are read-granted too.
+ */
+function writeRootsOutsideReadDenies(roots: readonly string[], floor: readonly string[]): string[] {
+  if (process.platform !== "linux") return [...roots];
+  return withholdUnder(roots, floor, [], "write root");
+}
+
+/**
+ * The only reads a wrap may ask to hold inside the floor: the configured
+ * saved-session root and a host directory catalog row that pierces the floor.
+ * A ceiling, not a grant — each wrap names its own in `floorPierces`.
+ */
+function floorPierceCeiling(): string[] {
+  return [...getConfiguredSessionReadPolicy().allowRead, ...hostDirectoryFloorPierces()]
+    .map((path) => canonicalizePathForMatch(path));
+}
+
+/**
+ * An `allowRead` entry re-allows inside a covering deny on both platforms, so
+ * one under the floor re-opens it. It is not granted unless it lies inside one
+ * of this wrap's own `floorPierces`. A wrap's own temp directory and HOME sit
+ * under the private roots, which are not floor. A pierce outside the ceiling
+ * is a composer bug and fails the wrap.
+ */
+function readGrantsOutsideReadDenies(
+  grants: readonly string[],
+  floor: readonly string[],
+  floorPierces: readonly string[],
+): string[] {
+  const ceiling = floorPierceCeiling();
+  for (const pierce of floorPierces) {
+    if (!ceiling.includes(canonicalizePathForMatch(pierce))) {
+      throw new Error(`sandbox: ${pierce} is not a read the host lets re-open the protected floor`);
+    }
+  }
+  return withholdUnder(grants, floor, floorPierces, "read grant");
+}
+
+function withholdUnder(
+  paths: readonly string[],
+  floor: readonly string[],
+  pierces: readonly string[],
+  kind: string,
+): string[] {
+  const canonicalPierces = pierces.map((pierce) => canonicalizePathForMatch(pierce));
+  return paths.filter((path) => {
+    const resolved = canonicalizePathForMatch(path);
+    const denied = floor.find((deny) => readDenyCoversPath(deny, resolved));
+    if (denied === undefined) return true;
+    if (canonicalPierces.some((pierce) => resolved === pierce || resolved.startsWith(`${pierce}/`))) return true;
+    // Withheld silently, a later EACCES/EROFS/ENOENT in the child would have no
+    // visible cause.
+    log.debug({ path, deny: denied }, `sandbox: ${kind} withheld under the protected read floor`);
+    return false;
   });
 }
 
@@ -875,7 +993,7 @@ function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readableP
  * @param userDataDir  forwarded to the sensitive table's projection.
  * @returns deduped, order-stable absolute paths to deny writes of.
  */
-export function getDefaultSensitiveWriteDenyPaths(userDataDir?: string): string[] {
+export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSettings?.userDataDir): string[] {
   const home = homedir();
   const readDeny = getDefaultSensitiveDenyPaths(userDataDir);
   const writePersistence = [
@@ -1028,12 +1146,13 @@ export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): San
       denyWriteUnion.push(p);
     }
   }
+  const sharedFloor = getProtectedReadDenyPaths(trustedSettings.userDataDir, trustedSettings.denyRead);
   const filesystem: FilesystemConfig = {
     denyRead: asrtReadDenyPaths(denyReadUnion),
-    allowWrite: [...(trustedSettings.allowWrite ?? [])],
+    allowWrite: writeRootsOutsideReadDenies(trustedSettings.allowWrite ?? [], sharedFloor),
     denyWrite: denyWriteUnion,
     ...(trustedSettings.allowRead !== undefined
-      ? { allowRead: [...trustedSettings.allowRead] }
+      ? { allowRead: readGrantsOutsideReadDenies(trustedSettings.allowRead, sharedFloor, []) }
       : {}),
   };
 

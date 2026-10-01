@@ -1,10 +1,32 @@
-import type { PluginManifest } from "./public-contract.js";
+import { join } from "node:path";
+import { aveHome } from "../shared/ave-home.js";
+import type { PluginManifest, PluginSandboxDeclaration } from "./public-contract.js";
 
 /** Host-owned subtrees that a reviewed declaration may name. */
 export const HOST_DIRECTORY_CATALOG = {
   runtime: { segments: ["runtime"], piercesDenyFloor: false },
   certs: { segments: ["certs"], piercesDenyFloor: true },
 } as const;
+
+/**
+ * Every catalog directory a read grant may open inside the sandbox read floor.
+ * Not a grant: the ceiling a wrap's own `floorPierces` must stay within.
+ */
+export function hostDirectoryFloorPierces(): string[] {
+  return Object.values(HOST_DIRECTORY_CATALOG)
+    .filter((row) => row.piercesDenyFloor)
+    .map((row) => join(aveHome(), ...row.segments));
+}
+
+/** The floor pierces a plugin's reviewed declaration asked for, and no others. */
+export function declaredHostDirectoryFloorPierces(sandbox: PluginSandboxDeclaration | undefined): string[] {
+  return (sandbox?.read ?? []).flatMap((grant) => {
+    if (grant.kind !== "hostDirectory") return [];
+    const name = grant.segments[0];
+    const row = Object.hasOwn(HOST_DIRECTORY_CATALOG, name) ? HOST_DIRECTORY_CATALOG[name] : undefined;
+    return row?.piercesDenyFloor === true ? [join(aveHome(), ...row.segments)] : [];
+  });
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

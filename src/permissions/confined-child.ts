@@ -76,6 +76,12 @@ export interface ConfinedChildSpec {
    * every wrap of plugin-owned code pins its roots.
    */
   readonly pinWriteRoots?: boolean;
+  /**
+   * The reads, among `allowRead`, this child may hold inside the protected
+   * read floor: a plugin's declared `hostDirectory` that pierces it. Carried
+   * to the wrap as `PerCommandFilesystem.floorPierces`; absent, none.
+   */
+  readonly floorPierces?: readonly string[];
   /** Secret-stripped base environment the child starts from. */
   readonly baseEnv: NodeJS.ProcessEnv;
   /** Overlaid last — the sandbox process HOME, which must win. */
@@ -188,6 +194,7 @@ function buildFilesystemConfinement(spec: ConfinedChildSpec, temp: { dir: string
   denyRead: string[];
   denyWrite: string[];
   pinWriteRoots?: boolean;
+  floorPierces?: readonly string[];
 } {
   const floor = {
     denyRead: getDefaultSensitiveReadDenyPaths(),
@@ -209,6 +216,7 @@ function buildFilesystemConfinement(spec: ConfinedChildSpec, temp: { dir: string
     denyRead: floor.denyRead,
     denyWrite: floor.denyWrite,
     ...(spec.pinWriteRoots === true ? { pinWriteRoots: true } : {}),
+    ...(spec.floorPierces !== undefined ? { floorPierces: spec.floorPierces } : {}),
   };
 }
 

@@ -40,7 +40,10 @@ const lstatSyncMock = vi.fn<(path: unknown) => { isSymbolicLink: () => boolean }
 vi.mock("node:fs/promises", () => ({
   mkdir: (path: unknown, opts?: unknown) => mkdirMock(path, opts),
 }));
-vi.mock("node:fs", () => ({
+vi.mock("node:fs", async (importOriginal) => ({
+  // The real module underneath: the sandbox module's logger reaches for more
+  // of it than the cases below steer.
+  ...await importOriginal<typeof import("node:fs")>(),
   unlinkSync: (path: unknown) => unlinkSyncMock(path),
   rmdirSync: (path: unknown) => rmdirSyncMock(path),
   chmodSync: (path: unknown, mode: unknown) => chmodSyncMock(path, mode),

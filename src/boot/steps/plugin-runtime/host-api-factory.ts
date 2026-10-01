@@ -105,6 +105,7 @@ import {
   verifyApprovalResponder,
 } from "../../../permissions/agent-action-requester.js";
 import { spawnWorker } from "../../../permissions/worker-spawn.js";
+import { declaredHostDirectoryFloorPierces } from "../../../plugins/sandbox-authority.js";
 import { approvalIssuerRegistry, auditApprovalViolation } from "./approval-gating.js";
 import { routeExternalUrl } from "./external-url.js";
 import {
@@ -1264,7 +1265,13 @@ export function createHostApiFactory(
       // Tool.workerId; a plugin-self-claimed worker id is advisory only (#885 v6
       // removed the manifest field — normalize drops any legacy `workerId`).
       spawnWorker: async (workerSpec) => {
-        const worker = await spawnWorker({ ...workerSpec, pluginId });
+        const worker = await spawnWorker({
+          ...workerSpec,
+          pluginId,
+          // Host-decided, from the reviewed declaration: the plugin's spec
+          // cannot name a read inside the protected floor for its worker.
+          floorPierces: declaredHostDirectoryFloorPierces(manifest.sandbox),
+        });
         if (!hostIncarnation.isActive()) {
           worker.stop();
           throw new Error(

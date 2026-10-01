@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { aveHome } from "../../../shared/ave-home.js";
 import { createHash } from "node:crypto";
 import { PassThrough } from "node:stream";
 
@@ -1133,6 +1134,40 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     unsubscribe();
     api.emitEvent("plugin-a.updated", { value: 8 });
     expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives a worker only the floor pierces its plugin's reviewed declaration asked for", async () => {
+    // The plugin's own spec cannot name a read inside the protected floor;
+    // the host decides from the manifest's `hostDirectory` grants.
+    runtimeTestState.spawnWorker.mockResolvedValue({
+      socketPath: null, pid: 7, stop: vi.fn(), onStdout: vi.fn(), onStderr: vi.fn(), onExit: vi.fn(),
+    });
+    const createHostApi = await initAndGetFactory(makeSettingsService(new Map()));
+    const lifecycle = {
+      registerDisposer: () => {},
+      trackOperation: <T>(operation: Promise<T>) => operation,
+      isActive: () => true,
+      isLifecycleHookActive: () => false,
+    };
+    const spawnFor = async (sandbox?: unknown) => {
+      runtimeTestState.spawnWorker.mockClear();
+      const api = createHostApi(
+        "plugin-a",
+        { id: "plugin-a", config: {}, ...(sandbox ? { sandbox } : {}) } as never,
+        tmpDirs.track(mkdtempSync("/tmp/ave-worker-pierces-")),
+        lifecycle,
+        "plugin-a",
+      );
+      await api.spawnWorker({ workerId: "w", command: "node", floorPierces: ["/"] } as never);
+      return (runtimeTestState.spawnWorker.mock.calls[0]?.[0] as { floorPierces?: string[] }).floorPierces;
+    };
+    expect(await spawnFor()).toEqual([]);
+    expect(await spawnFor({
+      read: [
+        { kind: "hostDirectory", segments: ["runtime"], why: "runtime" },
+        { kind: "hostDirectory", segments: ["certs"], why: "trust anchors" },
+      ],
+    })).toEqual([join(aveHome(), "certs")]);
   });
 
   it("releases returned API-key and worker capabilities when the incarnation is disposed", async () => {
