@@ -485,7 +485,10 @@ process rooted in a retired payload); an approval with `allowedCommands: [comman
 package. The approval is registered only after the user has approved that exact
 fingerprint in the package sheet, recorded in the `mcpServer` trust store whose records
 never transfer across versions (`src/plugins/plugin-contribution-trust.ts:5`, `:21-28`);
-an update re-asks. Preparation is the manager's bundled path: a scoped governance view
+an update re-asks. From 0.13.0 an update re-asks only for a server whose approval digest
+changed or cannot be determined; the approval digest covers the declaration, the files its
+command names and the package's executable files, and an unchanged one keeps its approval
+into the new generation (marketplace design §18.7.3, decision 18 here). Preparation is the manager's bundled path: a scoped governance view
 is built from the projection's approval and the candidate is connected before its
 approvals are published atomically (`src/mcp/mcp-manager.ts:338-351`;
 `src/mcp/mcp-governance.ts:421-427`, `:451-475`). Governance is asked again at connect

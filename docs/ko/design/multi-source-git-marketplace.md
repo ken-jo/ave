@@ -1,7 +1,9 @@
 # 멀티 소스 Git 마켓플레이스 — 설계서
 
 > 상태: **구현됨** (2026-09-25). 공개 릴리스와 서버 종료가 남았습니다.
-> 출시된 코드가 이 문서와 다른 곳은 §13.1과 §16.4에 적었습니다. 영어 원문
+> 출시된 코드가 이 문서와 다른 곳은 §13.1과 §16.4에 적었습니다. §18은 0.13.0
+> 변경(평문 http와 로컬 폴더 소스, 거부 대신 주소 경고, 자동 업데이트)을
+> 설계합니다. 영어 원문
 > [../../design/multi-source-git-marketplace.md](../../design/multi-source-git-marketplace.md)이
 > 기준이고, 이 문서는 그 한국어 미러입니다. 코드 블록과 스키마는 원문과 같습니다.
 > 내용이 다르면 영어 원문을 따릅니다.
@@ -22,7 +24,7 @@
 | **마켓플레이스 저장소** | 루트에 `marketplace.json`이 있거나 관례 레이아웃(§3.3)을 따르는 소스. |
 | **패키지** | 설치 단위 하나: `plugin`, `mcp`, `skill`, `agent`, `theme`, `font`, `language`, `provider`, `messaging-connection`. |
 | **디스크립터** | 패키지 디렉터리의 `ave-package.json`: 종류, 이름, 버전, 최소 앱 버전, 선언된 권한(authority), 페이로드. |
-| **핀(Pin)** | 소스를 현재 읽고 있는 커밋 SHA. |
+| **핀(Pin)** | 소스를 현재 읽고 있는 커밋 SHA. 로컬 폴더 소스는 내용 리비전(§18.4.3). |
 | **스냅숏** | 한 소스의 한 핀에서 파싱·검증한 카탈로그. 불변. |
 | **설치 계획** | 한 패키지 버전에 대해 리졸버가 할 일. 스냅숏 커밋 하나에 묶임: 아티팩트 단계, 파일, 런처, 필요한 동의. |
 | **단계(Rung)** | 플러그인 아티팩트 사다리의 한 단계: `release`, `archive`, `tree`. |
@@ -62,7 +64,7 @@ interface SourcesFile {
 interface SourceEntry {
   id: string;                 // ^[a-z0-9][a-z0-9-]{1,62}$, reserved names rejected (§5.1)
   origin: "custom" | "direct";
-  url: string;                // stored in normalized form (§7.1); http only for policy-listed hosts
+  url: string;                // stored in normalized form (§7.1); http only for policy-listed hosts (0.13.0: §18.2; a folder has `path` instead, §18.4.4)
   ref?: string;               // branch or tag; default = remote HEAD
   subdir?: string;            // direct sources only: package path inside the repo
   auth: { kind: "none" } | { kind: "token"; host: string } | { kind: "ssh" };
@@ -748,6 +750,7 @@ tree 단계의 `artifactSha256`은 설치하는 모든 파일(디스크립터는
 - 호스트: 소문자, IDNA를 ASCII로, 기본 포트 제거.
 - 경로: 퍼센트 인코딩 정규화, 끝의 `/`와 `.git` 제거.
 - 거부: `file:`, `ext::`, 그 밖의 스킴, URL 안의 자격 증명, 쿼리, 프래그먼트.
+  0.13.0부터 `file:` URL이나 경로는 로컬 폴더이고(§18.4.1), 거부는 §18.3을 따릅니다.
 
 정책 allow/block 매칭(§12), 예약 이름 검사, 토큰 조회, 중복 감지는 모두 정규화된
 형태를 씁니다. 이 비교에서 저장소의 동일성은 호스트와 대소문자를 무시한 경로이며,
@@ -758,6 +761,7 @@ tree 단계의 `artifactSha256`은 설치하는 모든 파일(디스크립터는
 1. 입력을 **정규화**하고(§7.1) 네트워크 게이트(§7.4)를 적용합니다. 평문
    `http://`는 `marketplaces.allowHttpHosts`에 있는 호스트만 받습니다. 개발·테스트
    빌드는 지금의 `cloudAllowPrivateNetwork`처럼 루프백도 허용할 수 있습니다.
+   0.13.0부터 http와 비공개 대상은 트래픽 전에 확인하는 경고입니다(§18.2.2, §18.5).
 2. `git ls-remote`로 **탐색**합니다. 인증 실패는 `SOURCE_AUTH_REQUIRED`이고
    대화상자가 토큰을 묻습니다. 모르는 SSH 호스트 키는 `SOURCE_SSH_HOST_UNKNOWN`,
    없는 ref는 `SOURCE_REF_NOT_FOUND`입니다.
@@ -780,7 +784,8 @@ tree 단계의 `artifactSha256`은 설치하는 모든 파일(디스크립터는
 수동으로 실행합니다. 설정은 키와 `0` = 주기 동기화 없음이라는 의미를 유지하지만,
 한 번의 틱이 이제 모든 소스를 fetch하므로 코드 기본값은 지금의 10분에서 6시간으로
 바뀌고, 저장된 값이 15분보다 작으면 읽을 때 15분으로 올립니다. 이 설정은 선택
-항목이고 기본으로 비어 있으므로 이관할 저장값은 없습니다. 소스는 켜져 있을 때 **또는** 그 소스에 묶인 설치
+항목이고 기본으로 비어 있으므로 이관할 저장값은 없습니다. 0.13.0부터 이 틱은 §18.7.1의
+탐색이며 여전히 6시간마다 돌고, 자동 업데이트 적용 확인은 부팅 때와 하루 한 번 합니다. 소스는 켜져 있을 때 **또는** 그 소스에 묶인 설치
 패키지가 하나라도 있을 때 동기화하므로, 숨긴 소스에서 설치한 패키지에도 폐기와
 업데이트 알림이 계속 도착합니다.
 
@@ -824,7 +829,8 @@ emit marketplace:catalog-changed
 3. 지금 `cloud-marketplace-fetcher.ts`에 있는 사설망 가드 적용(그 파일을 지울 때
    공용 모듈로 이동): 루프백, 링크 로컬, 사설, 메타데이터 주소는 정책에 등록된
    호스트이거나 개발 빌드가 루프백을 허용할 때가 아니면 거부. NAT64 주소
-   (`64:ff9b::/96`)는 안에 담긴 IPv4 주소로 판단;
+   (`64:ff9b::/96`)는 안에 담긴 IPv4 주소로 판단. 0.13.0부터는 §18.2의 주소 분류와
+   결과가 이 단계를 대신함;
 4. git은 리다이렉트를 따라가지 않습니다(`http.followRedirects=false`). HTTPS
    다운로드는 새 URL에 이 게이트를 다시 적용한 뒤에만 리다이렉트를 따르고,
    다른 호스트로 인증 헤더를 넘기지 않습니다.
@@ -1318,6 +1324,8 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
   수 없고, 이력 규칙은 공식 소스와 같습니다.
 - `defaultInstalls`와 `requiredInstalls`는 §10.2를 따르며 공식·관리 소스만 지정할
   수 있습니다. 두 목록에 모두 있는 키는 필수로 취급합니다.
+- 0.13.0은 `requireHttps`, `blockPrivateNetworks`, `allowLocalSources`,
+  `autoUpdate`, `path:` 패턴, `additional[].path`를 더합니다(§18.6).
 
 ## 13. IPC 계약
 
@@ -1352,7 +1360,8 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
 모든 채널은 호스트 렌더러 전용(`validateHostRendererSender`)이고 지금처럼 감사
 로그를 남깁니다. `ave:git:runtime:install`은 여기에 더해 실시간 키보드 제스처를
 요구합니다. 마켓플레이스가 실행할 바이너리를 내려받기 때문입니다. `planId`와 `previewId`는 1회용이고 10분 뒤 만료됩니다
-(`PLAN_EXPIRED`). 현재 채널의 처리는 §16.2에 있습니다.
+(`PLAN_EXPIRED`). 현재 채널의 처리는 §16.2에 있습니다. 0.13.0 채널과 봉투의
+`detail`은 §18.9에 있습니다.
 
 ### 13.1 구현 결과
 
@@ -1431,10 +1440,14 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
 | `NO_INSTALLABLE_ARTIFACT` | 모든 단계가 건너뛰어졌거나 실패(실패한 단계가 모두 로그인을 요구했으면 대신 `SOURCE_AUTH_REQUIRED`) | `marketplace.error.noArtifact` |
 | `CONTENT_RULE_VIOLATION` | 콘텐츠 종류 파일 규칙 위반 | `marketplace.error.contentRule` |
 
+0.13.0은 `SOURCE_CONFIRMATION_REQUIRED`와 `SOURCE_LOCAL_UNREADABLE`, 모든 코드의
+사유를 담은 `detail`, 모든 코드와 사유의 문장을 더합니다(§18.8).
+
 ## 15. UI 명세
 
 목업은 아래 모든 상태를 보여 줍니다. 설정 → 마켓플레이스가 앱 안의 스토어가
-됩니다(웹 스토어는 없어짐).
+됩니다(웹 스토어는 없어짐). 0.13.0은 폴더 행, 경고 배지, 업데이트 카드를 더합니다
+(§18.4.8, §18.5, §18.9).
 
 ### 15.1 둘러보기
 
@@ -1656,6 +1669,8 @@ Retry가 있는 `failed` 상태.
 
 ## 17. 테스트 계획
 
+0.13.0 테스트는 §18.10의 슬라이스마다 적었습니다.
+
 | 계층 | 무엇으로 증명하는가 |
 |---|---|
 | 스키마 | 모든 종류의 픽스처 세트: 정상, 규칙별 위반, 알 수 없는 키. `installPolicy`가 있는 매니페스트는 설치와 인덱스 CI에서 필드 이름과 함께 거부, 필드가 있는 legacy 설치본은 경고 한 번과 함께 로드 |
@@ -1670,3 +1685,1143 @@ Retry가 있는 `failed` 상태.
 | 직접 설치 | 감지 분기별, npm/pypi/oci/remote에 대한 `server.json` 대응 |
 | 서비스 | `former-service.json` 파싱, `movedFrom` 있을 때와 없을 때의 `movedTo`, 빌드 상수 변경 시 초기화, 정책 우선, 공지 동등성, 라벨 대체 |
 | E2E | 패키징된 개발 빌드(개발 플래그로 루프백 허용)에서 로컬 HTTP git 마켓플레이스를 추가하고, 종류별로 하나씩 설치하고, 업데이트하고, 소스를 제거 |
+
+## 18. 소스 수용, 로컬 폴더, 자동 업데이트 (0.13.0)
+
+> 상태: 앱 릴리스 0.13.0을 위해 2026-10-01에 **설계됨**, 아직 구현 전. 이 절과
+> 앞 절이 다르면 앞 절은 0.12.x를, 이 절은 0.13.0 목표를 설명합니다. §18.10의 각
+> 슬라이스가 같은 변경에서 해당 절을 고쳐 쓰고 이 절을 가리키는 문구를 지웁니다.
+> 코드는 `9c56ec148` 기준으로 인용합니다.
+
+### 18.1 소유자 결정 (2026-09-28, 확정)
+
+1. 평문 `http://` git 소스와 로컬 폴더를 마켓플레이스로도, 단일 패키지로도
+   받습니다. 마켓플레이스를 올리는 평범한 방법 때문에 사용자가 "왜 안 되지?"를
+   묻게 두지 않습니다.
+2. 주소 가드는 거부 대신 경고합니다. 사용자가 어떤 결정을 해도 안전해지지 않는
+   대상만 거부로 남습니다(§18.3).
+3. 설치한 패키지는 자동으로 업데이트합니다. 앱은 부팅 때와 하루 한 번 업데이트를
+   확인합니다.
+4. 동의는 우회하지 않습니다: 실행하는 것이나 접근 범위를 바꾸는 업데이트는 사용자를
+   기다립니다.
+5. 관리자는 관리 정책으로 엄격한 동작을 유지합니다(§18.6).
+
+### 18.2 결과, 그리고 대상을 누가 골랐는가
+
+| 결과 | 의미 | 바꿀 수 있는 주체 | UI 톤 |
+|---|---|---|---|
+| **수용** | 진행 | — | 없음 |
+| **경고** | 한 번 확인한 뒤 진행. 확인은 소스에 저장되고, 적용되는 동안 배지로 보임(§18.5) | 사용자 | 주황; *계속* / *취소* |
+| **거부** | 절대 하지 않음; 확인 경로 없음(§18.3) | 앱 릴리스 | 빨강; *계속* 없음 |
+| **정책 차단** | 시스템 정책 파일이 금지(§18.6) | 관리자 | 자물쇠 아이콘, "조직에서 설정함"; *계속* 없음 |
+
+- **입력한** 대상: 사용자가 입력하거나 붙여 넣거나 고른 것(추가 대화상자,
+  *Git URL이나 폴더에서 설치…*, 대화상자에 표시된 뒤의 딥 링크), 그리고 공식 소스의
+  빌드 상수와 관리 소스의 정책 항목.
+- **카탈로그가 지정한** 대상: 마켓플레이스 파일이 지정한 것 — `artifact.release.url`,
+  `artifact.archive.url`, §6.2의 파생 릴리스 URL — 과 다운로드의 모든 리다이렉트 홉.
+  제3자가 썼고, 사용자는 요청 전에 보지 못합니다.
+
+#### 18.2.1 주소 분류
+
+새 함수 `classifyAddress(address)`를 `src/core/network-guard.ts`의
+`isGloballyRoutableAddress`(`:257`) 옆에서 내보내 각 주소를 분류합니다. 여러 주소로
+해석되는 이름은 경고에 대해서는 가장 엄격한 분류를 따르고, 어느 응답에 연결해도
+되는지는 §18.2.4의 규칙을 따릅니다. IPv4 매핑 IPv6와 NAT64(`64:ff9b::/96`)는 지금처럼
+안에 담긴 IPv4 주소의 분류를 따릅니다.
+
+| 분류 | 주소 |
+|---|---|
+| `public` | `isGloballyRoutableAddress`가 참 |
+| `internal` | `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`, `100.64.0.0/10`, `198.18.0.0/15`(fake-IP 프록시 도구가 모든 이름을 이 범위로 응답) — 아래 두 메타데이터 주소 제외 |
+| `this-computer` | `127.0.0.0/8`, `::1`, `0.0.0.0/8`, `::` |
+| `metadata` | `169.254.0.0/16`, `fe80::/10`, `fd00:ec2::254`, `100.100.100.200` |
+| `unroutable` | `network-guard.ts:116-150`의 나머지 특수 용도 범위(문서용, 멀티캐스트, 예약, 브로드캐스트, 프로토콜 할당) |
+
+`fetchPublicHttpResponse`(`network-guard.ts:415`)는 선택적
+`addressPolicy(address, hop) => "allow" | NetworkGuardError`를 받아, 그 호출에서는 세
+개의 `allow*` 축을 대신합니다. 마켓플레이스 게이트만 이것을 넘기고, 다른 호출자는
+지금 동작을 유지합니다.
+
+#### 18.2.2 입력한 대상
+
+| 대상 | 결과 |
+|---|---|
+| `https`나 `ssh`, `public` | 수용 |
+| `internal` | 경고 `internal-network` |
+| `this-computer` | 경고 `this-computer` |
+| 스킴 `http` | 주소 분류에 더해 경고 `unencrypted` |
+| 토큰 로그인이 있거나, 그 호스트에 응답하는 OS 자격 증명 헬퍼가 있는 `http`(§9.3) | 추가로 경고 `token-unencrypted` |
+| 네트워크 폴더(§18.4.1 3단계) | 경고 `network-folder` |
+| `metadata`, `unroutable` | 거부(§18.3) |
+
+- 정책에 등재된 호스트(`allowHttpHosts`, `allow` 패턴, `additional` 소스; §12)는
+  `unencrypted`, `internal-network`, `this-computer` 경고 없이 받습니다. `metadata`는
+  §12대로 그 호스트에도 거부합니다. **`token-unencrypted`는 등재로 생기지 않습니다**:
+  정책은 전송 방식을 허락할 뿐, 사용자의 자격 증명을 그 위로 보내는 것까지 허락하지
+  않습니다.
+- `AVE_DEV=1`로 시작한 패키징 전 빌드는 `this-computer`와 그곳으로의 평문 http를
+  경고 없이 받으므로(§16.4) E2E 픽스처는 소스 자체에 대한 확인이 필요 없습니다.
+  `unencrypted-updates`(§18.7.2)는 면제하지 않습니다.
+- **http 위 자격 증명**: 관리 소스를 포함한 모든 출처에 같은 규칙입니다.
+  - askpass(§9.3)는 소스가 `token-unencrypted`를 가질 때만 `http` 원격에 응답합니다.
+  - 그것이 없는 `http` 원격의 모든 호출은 `-c credential.helper=`를 달아, OS 헬퍼가
+    저장된 비밀번호를 평문으로 보내지 않게 합니다.
+  - 그것이 없는 http 소스의 저장된 토큰은 쓰지 않습니다. 동기화는
+    `SOURCE_AUTH_REQUIRED` 사유 `token-unencrypted`로 실패하고, 행은 그 경고의
+    *허용…*을 보여 줍니다.
+  - http 소스의 *토큰 설정*은 토큰을 저장하기 전에 `token-unencrypted`를 묻습니다.
+  - 401로 응답하는 http 소스의 미리보기는 자격 증명을 보내기 전에
+    `token-unencrypted`를 묻습니다.
+
+#### 18.2.3 카탈로그가 지정한 대상
+
+| 대상 | 결과 |
+|---|---|
+| `public`, `https` | 수용 |
+| `public`, `http` | 수용; 전달 행(§15.2)에 "암호화되지 않은 다운로드 — 고정된 sha256으로 검증"을 표시. 핀은 소스 자신의 전송으로 소스에서 오고, 핀 없는 단계는 건너뜀(§6.2) |
+| 소스 자신의 호스트(정규화한 같은 호스트; `this-computer`는 같은 포트까지; ssh 소스의 파생 `https://<host>` 포함) | 소스의 확인을 물려받음 |
+| `internal`, 다른 호스트 | 소스가 `internal-downloads`를 가질 때만 수용. 없으면 그 단계는 호스트를 명시한 `SOURCE_CONFIRMATION_REQUIRED`로 실패하고, 소스 행이 *사내망 다운로드 허용*을 보여 줌. `internal-network`로 생기지 **않음**: 한 소스가 예상한 사내 서버라는 확인은 그 카탈로그가 지정할 다른 호스트에 대해 아무것도 말하지 않음 |
+| `this-computer`, 다른 호스트나 포트 | 거부(§18.3 #4) |
+| `metadata`, `unroutable` | 거부(§18.3) |
+
+단계 의미는 그대로입니다(§6.2): 실패한 단계는 기록되고 사다리는 다음으로 넘어갑니다.
+
+#### 18.2.4 검사를 연결에 묶기
+
+해석된 주소에 따라 정해지는 거부와 정책 차단(§18.3 #3·#4, `blockPrivateNetworks`)은
+연결이 실제로 쓰는 주소에 적용합니다. 지금은 그렇지 않습니다:
+`ensurePublicHttpUrl`이 해석한 뒤 `fetchPublicHttpResponse`가 호스트 이름을 Chromium
+전송에 넘기고(`network-guard.ts:435-455`, `boot/steps/desktop-network-fetch.ts:79`),
+git은 원격을 스스로 해석합니다. 그래서 검사에는 공개 주소를, 연결에는 루프백이나
+메타데이터 주소를 응답하는 이름이 통과합니다. 경고는 권고이므로 추가 시점 검사로
+충분하지만, 거부와 정책 차단은 그렇지 않습니다.
+
+- **연결마다 조회 한 번.** 마켓플레이스 연결은 호스트를
+  `dns.lookup(host, { all: true, verbatim: true })`로 한 번 해석하고, 모든 응답을
+  분류해 거부나 정책 차단이 금지하는 응답을 버린 뒤, 남은 응답에만 연결합니다. 남은
+  응답이 없으면 버린 것 중 가장 엄격한 분류의 거부입니다. 남은 응답의 분류에 소스가
+  갖지 않은 확인이 필요하면 `SOURCE_CONFIRMATION_REQUIRED`(§18.5)입니다.
+- **http 다운로드**(`MarketplaceNetworkGate.fetch`, `network-gate.ts:138-172`).
+  Chromium 전송에는 해석과 연결 사이에 끼어들 지점이 없으므로, 마켓플레이스 다운로드는
+  새 고정 전송 `src/marketplace/net/pinned-fetch.ts`로 옮깁니다. 호스트에 이미 있는
+  고정 연결 패턴 `createA2AStrictTransport`(`src/api/a2a-remote-transport.ts:74-232`)를
+  따릅니다. 한 번 해석하고 모든 응답을 검사하며(`:102-106`), 고른 응답만 돌려주고 두
+  번째 호출은 실패시키는 `lookup`으로 연결하고(`:135-142`), SNI와 인증서 검사에는
+  호스트 이름을 유지합니다(`servername`, `:131`). 신뢰 저장소는
+  `tls.getCACertificates("default")`와 `tls.getCACertificates("system")`을 합친 것이라,
+  OS 저장소에 설치한 회사 루트 인증서가 계속 동작합니다(§9.2). Electron 44가 싣는
+  Node 24.20.0에 둘 다 있습니다. 리다이렉트 홉마다 새 연결이고, 조회와 검사도 새로
+  합니다.
+- **다운로드의 프록시.** 경로는 세션의 `resolveProxy(url)`로 정하며, git이 이미 쓰는
+  해석기입니다(`run-git.ts:199-211`). 첫 항목만 쓰고, `DIRECT`로의 대체는 조용히
+  일어나지 않습니다.
+  - `DIRECT`: 위처럼 고정.
+  - `PROXY host:port`: 프록시 호스트도 같은 방식으로 해석·검사하고(`metadata`와
+    `unroutable`은 거부, `internal`과 `this-computer`는 시스템 설정이 고른 것이므로
+    수용), https는 `CONNECT`, http는 absolute-form 요청으로 연결합니다.
+  - 그 밖의 종류는 git처럼(`run-git.ts:210`) `SOURCE_UNREACHABLE` 사유 `proxy`로
+    실패합니다.
+  - 프록시를 거치면 이 컴퓨터는 프록시에만 연결합니다. 루프백과 링크 로컬 주소는
+    연결하는 호스트를 기준으로 하므로, 그 경로로는 이 컴퓨터의 서비스와 메타데이터
+    엔드포인트에 닿지 않습니다. 대상은 프록시가 자기 정책으로 해석하며, 이것이
+    명시한 경계입니다.
+- **http(s) 위 git.** `run-git.ts:156-171`에
+  `-c http.curloptResolve=<host>:<port>:<address>[,<address>…]`를 더해 검사 뒤 남은
+  응답을 나열합니다. libcurl은 자기 조회 대신 이 항목을 씁니다.
+  `http.followRedirects=false`(`:162`)가 이미 모든 요청을 그 호스트에 묶습니다.
+  `proxyFor`의 http 프록시가 있으면 두 번째 항목이 프록시 호스트를 고정하며, 검사는
+  다운로드와 같습니다. `socks4://` 프록시는 curl이 대상을 로컬에서 해석하므로 첫
+  항목이 그것을 고정합니다.
+- **ssh 위 git.** `GIT_SSH_COMMAND`(`run-git.ts:184`)는
+  `ssh -o BatchMode=yes -o HostName=<address> -o HostKeyAlias=<host> -o CheckHostIP=no`가
+  됩니다. `<address>`는 남은 응답 중 첫 번째입니다. `HostKeyAlias`가 known-hosts
+  검사를 호스트 이름에 묶어 둡니다(§9.2). 사용자 ssh 설정의 `ProxyJump`나
+  `ProxyCommand`는 이 컴퓨터가 그 점프 호스트에 연결하게 하며, 이는 프록시와 같은
+  경계입니다.
+- **테스트**(슬라이스 C). 각 테스트의 해석기 가짜는 첫 조회에 공개 주소를, 이후
+  조회에 `169.254.169.254`나 `127.0.0.1`을 응답합니다.
+  - `pinned-fetch.test.ts`: 요청은 첫 응답으로 가고, 조회는 홉마다 정확히 한 번
+    돕니다(되돌림: 호스트 이름을 전송에 넘김). 공개 + 메타데이터 응답 묶음은 공개
+    주소에만 연결합니다. PAC 결과 `PROXY p:8080; DIRECT`는 직접 연결하지 않습니다.
+  - `run-git.test.ts`: argv에 첫 조회 주소의 `http.curloptResolve`가 있고, 러너는 두
+    번째 조회를 하지 않습니다(되돌림: 옵션 제거). ssh 명령에는 `HostName`과
+    `HostKeyAlias`가 있습니다.
+
+### 18.3 남는 거부
+
+사용자가 어떤 결정을 해도 안전해지지 않으므로 거부합니다. 나머지는 경고(§18.2)나
+정책 결정(§18.6)입니다.
+
+| # | 거부 | 막는 공격 |
+|---|---|---|
+| 1 | `ext::`와 다른 모든 `<helper>::` 전송 | `ext::`는 그 텍스트를 명령으로 실행하고, `<helper>::`는 검색 경로의 `git-remote-<helper>`를 실행합니다. 주소가 코드 실행이 됩니다. git 자체도 `ext`의 기본값이 `never`이고, `GIT_ALLOW_PROTOCOL`은 허용 목록으로 남습니다(`run-git.ts:187`) |
+| 2 | URL 안의 자격 증명(`https://user:secret@…`, `https://token@…`) | 비밀이 `sources.json`, 소스 보기, 로그, 감사 기록, 백업, 그리고 다른 로컬 사용자가 프로세스 목록에서 읽을 수 있는 git 명령줄에 남습니다. Ave에는 암호화된 토큰 저장소가 있습니다(§2.1). ssh 사용자 이름(`git@`)은 자격 증명이 아닙니다 |
+| 3 | 모든 대상의 `metadata` 주소(정책 등재 호스트 포함), 연결 주소에 적용(§18.2.4) | 클라우드 인스턴스의 메타데이터 서비스는 로컬 요청에 자격 증명을 내줍니다. 그곳에 git 서버는 없고, 사용자가 확인할 때 다른 곳을 가리키던 이름이 다음 연결 때 그곳으로 해석될 수 있습니다 |
+| 4 | 소스 자신의 호스트·포트가 아닌, 카탈로그가 지정한 `this-computer` 대상, 연결 주소에 적용(§18.2.4) | 제3자 카탈로그가 앱을 시켜, 로컬 호출자를 모두 믿는 로컬 서비스(개발 서버, 다른 앱의 제어 엔드포인트)에 요청하게 합니다 |
+| 5 | 로컬 폴더를 벗어나거나 네트워크 위치를 가리키는 링크를 따라 읽기(§18.4.5) | 남의 체크아웃인 폴더가 `skills/x/notes.md`를 `~/.ssh/id_ed25519`로 링크하면 설치가 키를 모델이 읽는 패키지로 복사합니다. Windows에서는 `\\server\share`로의 링크가 사용자 네트워크 자격 증명을 그 서버로 보냅니다 |
+| 6 | 로컬 폴더에 대한 모든 git 명령; git의 `file` 전송은 `never` 유지(`run-git.ts:158`) | git은 체크아웃 자신의 설정, alternates, 훅을 읽고, `core.fsmonitor` 같은 설정은 프로그램을 실행합니다 |
+| 7 | 딥 링크 안의 폴더 경로 | 웹 페이지가 UNC 공유(미리보기에서 자격 증명 전송)나 다운로드 폴더 같은 심어 둔 폴더를 고릅니다. 추가 대화상자는 비어서 열리고 이유를 알립니다 |
+| 8 | sha256으로 고정된 release·archive가 아닌 곳에서 온 `process` 엔트리 | `plugin-hostapi-protocol.md` §2.1과 그 Publication 계획 소유; 표를 완결하려고 적음(§18.4.9) |
+
+보안상의 거부는 아니지만 지원하지 않는 것들입니다. 각 메시지는 대신 입력할 것을
+알려 줍니다:
+
+- `git://`: PAC 프록시가 라우팅할 수 없고, 같은 저장소를 https나 ssh로 제공합니다.
+- 다른 모든 스킴; 쿼리나 프래그먼트; 공백이나 제어 문자.
+- 상대 경로: 데스크톱 앱에는 작업 디렉터리가 없고, `owner/repo`는 GitHub 축약형으로
+  남습니다.
+- Windows 장치 경로(`\\.\…`, `\\?\GLOBALROOT\…`, `\\?\Volume{…}\…`).
+- macOS·Linux의 `file://host/…` URL.
+- `unroutable` 주소.
+- 경로가 `marketplace.json`이나 `marketplace.2.json`으로 끝나는 `http(s)` 주소(결정 11).
+
+### 18.4 로컬 폴더
+
+폴더는 마켓플레이스 소스(루트에 `marketplace.2.json`이나 §3.3의 관례 배치가 있음)이거나
+단일 패키지(§8)입니다.
+
+#### 18.4.1 입력, 분류, 동의, 그다음 해석
+
+`src/marketplace/net/source-input.ts`의 새 `normalizeSourceInput(input, platform)`이
+폴더인지 git 주소인지 정하고, `normalizeSourceUrl`(`source-url.ts:195`)은 git 주소를
+계속 맡습니다. 폴더는 네 단계를 거칩니다. **1–3단계는 경로에 파일 시스템 호출을 하지
+않습니다**: `stat`, `lstat`, `realpath`, `readlink`, `open`, `readdir` 모두 없습니다. 동의와
+정책이 앞서야 하는 것이 바로 UNC 서버 접속입니다.
+
+1. **어휘 분석.** 문자열 작업만 합니다.
+   - `file:` URL은 실행 중인 플랫폼 기준 `fileURLToPath`로 바꿉니다(`file:///C:/m`;
+     Windows에서 `file://server/share/m` → `\\server\share\m`). macOS와 Linux에서
+     호스트가 비어 있지 않고 `localhost`도 아니면 거부합니다.
+   - `/`, `~`, 드라이브(`C:\`, `C:/`), `\\`, `//`로 시작하는 입력은 폴더입니다. `~`는
+     `os.homedir()`로 펼칩니다.
+   - `\\?\C:\…` → `C:\…`. `\\?\UNC\server\share\…`와 `//server/share/…` →
+     `\\server\share\…`.
+   - macOS나 Linux의 드라이브·UNC 형식은 Windows 경로로 거부합니다. `C:foo`(드라이브
+     상대), `./`, `../`는 상대 경로로 거부합니다.
+   - `.`과 `..` 구간은 어휘적으로 지웁니다. 드라이브, 공유, `/` 위로 올라가는 `..`는
+     거부합니다.
+   - 그 밖의 입력은 git 주소입니다(§7.1).
+2. **네트워크 분류.** 여전히 파일 접근이 없습니다.
+   - Windows UNC(`\\server\share\…`)는 `network`입니다.
+   - Windows 드라이브 문자는 `QueryDosDeviceW("X:")`로 분류합니다. 이 함수는 이 로그온
+     세션의 객체 관리자 MS-DOS 장치 이름 공간에서 드라이브 문자의 현재 매핑을 읽을
+     뿐, 드라이브에서 아무것도 열지 않습니다. 매핑이 `\Device\HarddiskVolume<n>`,
+     `\Device\CdRom<n>`, `\Device\Floppy<n>`이거나, 경로가 이 규칙으로 다시 로컬인
+     `\??\<path>`(`subst` 드라이브)일 때만 로컬입니다. 그 밖 — `\Device\Mup\…`,
+     `\Device\LanmanRedirector\…`, `\Device\WebDavRedirector\…`, `\??\UNC\…`, 모르는
+     장치, 실패한 호출 — 은 `network`입니다. 여기서 잘못 짚으면 경고가 날 뿐, 거부가
+     되지는 않습니다.
+   - `GetDriveTypeW`는 드라이브 루트 경로를 받으므로 쓰지 않습니다.
+   - macOS와 Linux에서 자동 마운트 경로(`/net/<host>/…`, macOS의 `/Network/…`)는
+     어휘적으로 `network`입니다. 그 밖의 경로는 로컬입니다: 이미 마운트된 공유는
+     마운트할 때 인증했고, 읽어도 새 자격 증명을 보내지 않습니다.
+   - 호출은 기존 Windows 도우미 계열(`native/windows-job/`,
+     `src/main/windows-job-launcher.ts`처럼 실행)의 작은 네이티브 도우미
+     `native/windows-path-kind/`를 거칩니다. 이 도우미는 매핑을 출력할 뿐 다른 일은
+     하지 않습니다. 슬라이스 D1이 도우미와 빌드 단계, Windows CI 실행을 더합니다.
+3. **정책, 그다음 동의.**
+   - `allowLocalSources`, `block`, §18.6의 `path:` 패턴을 어휘 경로에 적용합니다.
+     차단이면 여기서 끝납니다.
+   - `network` 폴더에는 `network-folder`(§18.2.2)가 필요합니다. 없으면 미리보기는
+     `{ type: "confirm" }`(§18.5)으로 응답하고 아무것도 건드리지 않습니다.
+4. **해석.** 3단계를 통과한 뒤에만 합니다. 경로를 구성 요소마다 `lstat`으로 걸어가며
+   `realpath`는 부르지 않습니다. 링크나 정션은 링크 텍스트만 읽는 §18.4.5의 링크 규칙을
+   따릅니다. 걸어가며 각 구성 요소의 디스크 표기를 부모의 `readdir`에서 기록합니다:
+   바이트가 같은 항목이 있으면 그것, 없으면 대소문자만 무시하고 같은 항목이 하나일 때
+   그것입니다. 그런 항목이 여럿이면 `SOURCE_LOCAL_UNREADABLE` 사유 `ambiguous-case`로
+   실패합니다. 결과는 디렉터리여야 하고, `marketplace.2.json`이나 `marketplace.json`이라는
+   일반 파일은 그 디렉터리로 바꿉니다. 3단계의 정책을 이 **정식 경로**에 다시 적용하고,
+   이제야 드러난 차단이면 추가가 끝납니다. 저장하는 `path`는 정식 경로이고, 입력과
+   다르면 대화상자가 "<입력>에서 해석됨"을 보여 줍니다.
+
+저장된 폴더를 나중에 읽을 때(동기화, 계획, 새로 고침)마다 저장된 경로에서 2–4단계를
+되풀이하므로, 공유로 다시 매핑된 드라이브 문자나 링크로 바뀐 구성 요소를 읽기 전에
+잡습니다.
+
+#### 18.4.2 읽기 모델: 제자리 읽기, 계획이 바이트를 확보
+
+폴더 소스는 **제자리에서** 읽습니다. 추가하거나 읽을 때 아무것도 복사하지 않습니다.
+부팅 때와 탐색마다(§18.7.1), *새로 고침* 때, 마켓플레이스 보기를 열 때(소스당 1분에
+최대 한 번) 읽습니다. 파일 감시는 없습니다: 네트워크 공유와 큰 체크아웃에서는 믿을 수
+없습니다.
+
+- 스냅숏 빌더와 검증은 git의 것(§2.2, §4)을 `BareRepo`와 새 `FolderTree`가 구현하는
+  `SourceTree` 인터페이스 위에서 씁니다.
+- **계획이 바이트를 확보합니다.** 폴더 패키지의 설치나 업데이트를 계획할 때 소스를
+  다시 읽은 뒤 패키지를 `workRoot` 아래 계획의 스테이징 디렉터리로 복사하고 다이제스트를
+  계산합니다(§6.4). 실행은 그 사본을 설치하고 폴더를 다시 읽지 않으므로, 검토한 것이
+  설치됩니다. 버려진 계획의 사본은 만료 때 지웁니다(§13.1).
+- **폴더 소스는 내려받지 않습니다.** 모든 종류를 폴더의 파일에서 설치합니다. 플러그인의
+  사다리는 단계가 하나, `folder`입니다: `plugin.json`, `dist/**`, `assets/**`를 §6.2처럼
+  디스크립터와 비교합니다.
+  - 선언된 `release`나 `archive` 단계는 시도하지 않습니다.
+  - 폴더에 `plugin.json`이 없는 플러그인은 `NO_INSTALLABLE_ARTIFACT` 사유
+    `folder-has-no-build`("플러그인을 `dist/`로 빌드하거나 git 저장소를 대신 추가하세요")로
+    실패합니다.
+  - 다른 최상위 항목(`src/`, `package.json`, `node_modules/`)은 무시하고 계획에 설치하지
+    않는 항목으로 나열합니다. git 트리 단계는 더 엄격한 규칙을 유지합니다(§6.2).
+- 폴더 플러그인은 `installSource: "folder"`인 영수증 스키마 v4와 `folder` 기록
+  `{ sourceId, sourceOrigin, revision, packagePath, treeSha256, authoritySha256, consent }`를
+  씁니다(`plugin-install-receipt.ts:86-100`에 유니언 멤버 추가; `consent`는 §18.7.3의
+  기준선). 레지스트리 `origin.rung`은 `"folder"`입니다(`src/plugins/registry.ts:304-315`).
+  호스트 비밀 부여(§10.3 조건 2)나 `process` 엔트리(§18.4.9)의 자격이 되지 않습니다.
+
+#### 18.4.3 리비전, 이력, 버전
+
+§7.3의 핀은 커밋이고, 폴더의 핀은 **리비전**입니다: 스냅숏이 읽은 모든 파일(인덱스나
+§3.3의 디스크립터, `policy/revocations.json`, 앱 조건부 폐기 파일)에 대해
+`"<sha256(file)> <path>\n"` 줄을 경로 바이트 순으로 정렬하고, 패키지마다
+`"<tree digest> <package path>/"` 줄 하나(트리 다이제스트(§6.4)는 그 패키지가 설치할
+파일을 덮음)를 더한 것의 hex sha256 앞에 `local-`을 붙입니다. 설치되는 파일을 하나라도
+고치면 리비전이 바뀝니다.
+
+- 리비전은 핀을 저장하는 모든 곳에 들어갑니다: `state.json`의 `pinnedCommit`,
+  `snapshots/<revision>.json`, 레지스트리와 원장의 `origin.commit`, 계획
+  `snapshotCommit`, 보존(§2.1). 40자리 hex 검사(`registry.ts:87`, `sync.ts:49`,
+  `src/plugins/registry.ts:304-315`의 레지스트리 출처 검사)는 폴더 소스에만
+  `^local-[0-9a-f]{64}$`를 받고, 폴더 소스는 40자리 hex 값을 거부합니다.
+- 이력 규칙이 없습니다: 읽을 때마다 폴더의 현재 상태입니다. `pendingRewrite`와
+  `SOURCE_HISTORY_REWRITTEN`은 해당하지 않습니다.
+- 폴더에 파일이 있는 버전만 설치할 수 있습니다. 인덱스의 다른 `versions[]` 항목은
+  이력으로 보일 뿐 제공하지 않고, 그 `commit` 값은 검사하지 않습니다. 폴더의 버전은
+  인덱스 사본과 같아야 합니다(§6.2).
+- git 체크아웃은 **작업 트리**로 읽습니다. `.git`은 읽지도 설치하지도 않고, git 명령도
+  돌리지 않습니다(§18.3 #6). 커밋하지 않은 수정도 포함되며, 반복 작업하는 작성자가
+  기대하는 동작입니다.
+
+#### 18.4.4 식별과 중복
+
+- 두 폴더 소스는 정식 경로(§18.4.1 4단계)가 바이트 단위로 같거나, 두 디렉터리가
+  `fs.stat`(`bigint: true`)에서 같은 0 아닌 `dev`와 `ino`(Windows는 볼륨 일련번호와 파일
+  인덱스)를 보고하면 같습니다. 플랫폼 단위 대소문자 접기는 없습니다: 대소문자를 구분하는
+  볼륨에서 `/Approved/Tools`와 `/approved/tools`는 다른 폴더이고 다른 소스로 남으며,
+  구분하지 않는 볼륨에서는 걸어가며 얻은 디스크 표기와 같은 `dev`/`ino`가 둘을 하나로
+  만듭니다. 매핑된 드라이브와 그 UNC 경로도 이렇게 잡힙니다.
+- `stat`이 `dev`나 `ino`를 0으로 보고하면(일부 네트워크 파일 시스템) 정식 경로만으로
+  정합니다. 그러면 한 폴더의 두 표기가 두 소스가 되어 패키지가 두 번 보일 수 있지만,
+  새로 허용되는 것은 없습니다.
+- 이미 소스인 폴더, 또는 소스를 포함하거나 소스 안에 있는 폴더는 그 소스를 명시한
+  `SOURCE_ID_TAKEN`으로 거부합니다: 중첩되면 패키지가 두 번 나열됩니다.
+- 폴더 소스와 git 소스는 폴더가 그 저장소의 체크아웃이더라도 같은 소스가 아닙니다. 같은
+  `(kind, name)`은 카드 두 장으로 보이고(§15.1), 두 번째를 설치하면 소스 전환입니다.
+- `SourceEntry`(`registry.ts:39-49`)에 `url`과 배타적인 `path?: string`(슬라이스 D1)과
+  `acknowledged?: SourceWarning[]`(§18.5, 슬라이스 C)를 더합니다. `ENTRY_KEYS`
+  (`registry.ts:88`)도 슬라이스마다 각각을 더합니다.
+- 폴더 항목은 `auth: { kind: "none" }`이고 `ref`가 없습니다. 걸어간 결과가 더 이상 같은
+  디렉터리에 닿지 않는 저장 `path`(구성 요소가 링크로 바뀌었거나 `dev`/`ino`가 바뀜)는
+  `SOURCE_LOCAL_UNREADABLE` 사유 `moved`로 다루고, 새 대상은 읽지 않습니다.
+
+#### 18.4.5 파일 읽기
+
+`FolderTree`와 해석 걸음은 링크 규칙 하나를 함께 씁니다. 모든 파일 시스템 호출은
+`FolderFs` 인터페이스(`lstat`, `readlink`, `readdir`, `open`, `fstat`, `read`,
+`queryDosDevice`)를 거치며, 테스트는 이것을 호출을 기록하는 가짜로 바꿉니다.
+
+- 디렉터리는 걸어가고 일반 파일은 읽습니다. 장치, 소켓, FIFO는 패키지를 실패시킵니다:
+  `CONTENT_RULE_VIOLATION` 사유 `special-file`.
+- **심볼릭 링크나 정션**은 OS가 따라가게 두지 않습니다. `readlink`로 텍스트만 읽고, 어떤
+  호출이 대상을 건드리기 전에 텍스트로 판단합니다:
+  1. 네트워크 위치를 가리키는 텍스트는 텍스트만으로 거부합니다: `\\…`, `//…`,
+     `\??\UNC\…`, `\\?\UNC\…`, 장치 경로, 2단계가 `network`로 분류하는 드라이브 문자,
+     자동 마운트 경로. `CONTENT_RULE_VIOLATION` 사유 `link-to-network`가 링크를
+     명시합니다. 네트워크 폴더 소스 안에서도 같습니다: 사용자는 그 공유에 동의했지,
+     그 링크가 가리키는 서버들에 동의하지 않았습니다.
+  2. 아니면 텍스트를 링크 자신의 디렉터리에 대해 **어휘적으로** 해석합니다. 소스 루트
+     밖이면 사유 `link-outside-folder`이고 대상은 건드리지 않습니다.
+  3. 루트 안이면 대상에서 구성 요소마다 계속 걸어가며, 만나는 모든 링크에 같은 규칙을
+     적용합니다. 그래서 `root/a → root/b → \\attacker\share` 사슬은 `b`의 텍스트에서
+     멈추고, 서버를 부르는 호출은 없습니다.
+  4. 두 번 닿은 디렉터리, 또는 한 해석에서 링크 40개 초과는 고리로 보고 패키지를
+     실패시킵니다.
+
+  설치된 사본은 대상의 바이트를 일반 파일로 담습니다. 인덱스나 폐기 파일에서 링크가
+  거부되면 읽기 전체가 실패합니다.
+- **파일 열기**는 macOS와 Linux에서 `O_NOFOLLOW`를 씁니다. 연 뒤 `fstat`이 걸음의
+  `lstat`이 본 `dev`/`ino`를 보고해야 하고, 다르면 `SOURCE_LOCAL_UNREADABLE` 사유
+  `changed-during-read`로 읽기가 실패하고 바이트는 버립니다.
+- **동시 교체 경계.** 폴더에 쓸 수 있는 프로세스는 검사와 열기 사이에 검사한 구성
+  요소를 링크로 바꿀 수 있습니다. `fstat` 비교가 바뀐 파일을 바이트를 쓰기 전에 잡으므로,
+  폴더 밖 파일이 패키지에 들어가지는 않습니다. 접근 자체는 되돌리지 못합니다: Node의
+  열기가 리파스 포인트를 따라가는 Windows에서는 이런 경합으로 Ave가 UNC 서버에 접속할
+  수 있습니다. 이 경합에는 읽는 동안 폴더에 대한 로컬 쓰기 권한이 필요하며, 막지 않고
+  명시해 둡니다.
+- 어느 깊이에서든 조용히 건너뛰고, 읽거나 다이제스트하거나 설치하지 않음: `.git/`,
+  `.DS_Store`, `._*`, `Thumbs.db`, `desktop.ini`.
+- 이름은 NFC(git이 저장하는 형식)로 정규화합니다. NFC로 같아지거나 대소문자만 다른
+  두 이름은 패키지를 실패시킵니다(§5.5).
+- 실행 비트는 macOS와 Linux에서 `lstat`에서 가져옵니다. Windows에는 없으므로 그곳에서는
+  모든 파일이 `100644`입니다.
+- §5.4의 한도를 읽으면서 적용하고, 처음 넘는 한도에서 읽기를 멈춥니다.
+- 패키지를 git에 게시할 때 저장소 검사는 여전히 링크를 거부하고, 미리보기 진단이
+  그렇게 알립니다.
+
+#### 18.4.6 Windows
+
+- 드라이브와 UNC 경로를 받습니다. 정션은 링크입니다(§18.4.5).
+- 네트워크 폴더를 읽으면 사용자로서 그 서버에 로그인합니다: 입력 대상 경고
+  `network-folder`(§18.2.2)는 "이 폴더를 읽으려고 Windows 계정으로 <서버>에
+  로그인합니다"라고 말합니다. 서버 이름은 UNC 경로나 드라이브의 `QueryDosDeviceW`
+  매핑에서 얻습니다.
+- 잠긴 파일, 내려받을 수 없는 클라우드 저장소 자리 표시자, 권한 오류는
+  `SOURCE_LOCAL_UNREADABLE` 사유 `io`와 OS 메시지로 읽기를 실패시킵니다. 마지막 정상
+  스냅숏을 제공하고(§7.5) 다음 읽기에서 다시 시도합니다.
+- 저장 경로에는 `\\?\`를 붙이지 않습니다. 긴 경로 접두사는 Node가 붙입니다.
+- 바이트는 있는 그대로 읽습니다: CRLF 체크아웃은 CRLF 파일을 설치합니다.
+
+#### 18.4.7 폴더에서 직접 설치
+
+*Git URL이나 폴더에서 설치…*(§15.1)는 폴더 경로나 *폴더 선택…*을 받습니다. 감지는
+폴더 루트에서 §8.1대로 합니다. 결과는 `path`를 가진 `direct` 소스이고, 패키지
+다이제스트가 바뀌면 업데이트됩니다(§18.7.6). 합성 버전(§8.2)은
+`0.0.0+t<digest12>`입니다.
+
+- 플러그인 스튜디오의 *파일에서 설치*(`plugin-studio.ts:168-175`)는 zip이나 폴더의
+  일회성, 소스 없는 설치로 남습니다(결정 30).
+- 개발 전용 로컬 플러그인 설치(`plugins.ts:449-453`, `isDevModeUnlocked` 뒤)는
+  그대로입니다.
+- 정책 `allowDirectInstall: false`(§12)나 `allowLocalSources: false`(§18.6)는 이것을
+  거부합니다.
+
+#### 18.4.8 폴더 소스의 모습
+
+- **소스**(§15.4):
+  - 폴더 아이콘과 "폴더" 라벨;
+  - 가운데를 줄인 경로, 전체 경로는 툴팁;
+  - `folder · <revision 7>`와 "<시각>에 읽음";
+  - 상태 *최신*, *폴더 없음*, *폴더를 읽을 수 없음*, *폴더 이동됨*;
+  - 더보기 *새로 고침*, *Finder에서 보기* / *탐색기에서 보기* / *파일 관리자에서 보기*,
+    *제거*. *토큰 설정* 없음.
+- **패키지 시트**(§15.2): 출처 "폴더 <경로>, <시각>에 읽음, 내용 <digest12>"; 버전
+  "폴더에 있는 버전만 설치할 수 있습니다".
+- **추가 대화상자**(§15.5): 주소 칸이 경로를 받고 *폴더 선택…*이 있습니다. 미리보기는
+  "이 폴더의 변경은 시작할 때, 몇 시간마다, 새로 고침할 때 반영됩니다"라고 말합니다.
+
+#### 18.4.9 `process` 엔트리, http 소스, 폴더
+
+`main`의 `plugin-hostapi-protocol.md` §2.1은 sha256으로 고정된 `release`나 `archive`
+단계로 온 산출물을 영수증에 기록한 설치에만 `process` 엔트리를 허용합니다. 그 구현은
+Publication 계획(그 문서의 §9.7)입니다. 그 계획은 **`main`에 없습니다**: 브랜치
+`docs/publication-plan`의 커밋 `f38c5700d`입니다. 그 슬라이스 중 M1은 병합되었고(#2591,
+`9c56ec148`), P3(`process` 런타임과 그 코드)와 P4(마켓플레이스 허용)는 병합되지
+않았습니다. 이 설계는 그 규칙을 완화하지 않습니다.
+
+- **시간에 따른 코드.**
+  - 오늘 `main`은 모든 `process` 엔트리를 `process-entry-unsupported`로 거부합니다
+    (`src/marketplace/errors.ts:37`, `src/plugins/process-entry-support.ts:3`).
+  - P3는 그 코드를 `process-entry-unconfined`와 `process-entry-requires-pinned-artifact`로
+    바꿉니다.
+  - §18.8은 셋 모두의 문장을 담고, 슬라이스 B는 병합할 때 `main`에 있는 것을 싣습니다.
+- **폴더 소스와 폴더 직접 설치**는 release·archive 단계를 쓰지 않습니다(§18.4.2). 그
+  영수증(`installSource: "folder"`)은 나중의 어떤 규칙에서도 `process` 허용 자격이 원천적으로
+  없습니다. 슬라이스 D1은 폴더의 `process` 매니페스트를 사다리에서 거부합니다:
+  - `main`의 코드가 `process-entry-unsupported`인 동안에는 그것으로;
+  - P3가 병합된 뒤에는 `process-entry-requires-pinned-artifact`로.
+
+  D1과 P4 중 나중에 병합하는 쪽이 폴더 경로의 거부를 유지하므로, 둘 사이에서 거부가
+  빠지는 일은 없습니다.
+- **http 소스**: 규칙은 적힌 그대로입니다. 네트워크 공격자는 핀과 산출물을 함께 바꿀 수
+  있으므로, http 소스의 패키지는 사용자가 `unencrypted-updates`를 받아들이기 전까지
+  자동으로 업데이트하지 않습니다(§18.7.2).
+
+### 18.5 추가 흐름, 확인, 배지
+
+1. 사용자가 주소를 입력하거나 폴더를 고릅니다.
+2. `sources:preview`가 분석하고(§7.1, §18.4.1 1–2단계) 거부(§18.3)와 정책(§18.6)을
+   적용합니다. 거부나 정책 차단이면 여기서 끝납니다.
+3. 대상을 분류합니다(§18.2.1, §18.4.1 2단계). 요청의 `acknowledge`에 없는 경고가 필요하면
+   미리보기는 `{ type: "confirm", warnings }`로 응답하고 **git 명령, DNS에 따른 연결,
+   폴더에 대한 파일 시스템 호출을 하나도 하지 않습니다**. *계속*은 `acknowledge`를 담아
+   미리보기를 다시 합니다.
+4. 미리보기가 가져오거나 해석해 읽고(§7.2, §18.4.1 4단계, §18.4) 분류합니다. 경고는
+   배지로 보입니다.
+5. *추가*는 미리보기가 담고 있던 확인을 그대로 저장합니다.
+
+- **저장**: custom·direct 소스는 `SourceEntry.acknowledged`, official·managed 소스는
+  `SourceState.acknowledged`(`STATE_KEYS`, `registry.ts:89`). 값: `unencrypted`,
+  `token-unencrypted`, `internal-network`, `this-computer`, `internal-downloads`,
+  `network-folder`, `unencrypted-updates`.
+- **분류가 바뀐 대상**(이름이 이제 사내 주소로 해석되거나, 드라이브 문자가 이제 공유로
+  매핑됨)은 동기화·설치·업데이트를 `SOURCE_CONFIRMATION_REQUIRED`로 실패시킵니다. 행에
+  *허용…*이 보이고, 이것이 `sources:acknowledge`를 부른 뒤 다시 동기화합니다. 확인은
+  주소가 아니라 분류 단위입니다.
+- **배지**는 소스 행과 그 패키지 카드에 텍스트와 툴팁으로 붙고, 색만으로 표시하지
+  않습니다(§15.9): *암호화 안 됨(http)*, *사내망*, *이 컴퓨터*, *사내망 다운로드*,
+  *네트워크 폴더*, *로컬 폴더*. http 툴팁: "네트워크 경로의 누구나 이 소스가 보내는
+  것을 읽고 제공하는 것을 바꿀 수 있습니다. 이 소스의 업데이트는 자동으로 설치하지
+  않습니다."
+- 확인을 거두거나 주소를 바꾸려면 소스를 제거하고 다시 추가합니다.
+
+### 18.6 관리 정책 추가 항목
+
+```jsonc
+"marketplaces": {
+  "requireHttps": false,          // true: plain http is a policy block (allowHttpHosts excepted)
+  "blockPrivateNetworks": false,  // true: internal and this-computer targets are a policy block (policy-listed hosts excepted)
+  "allowLocalSources": true,      // false: folder sources and folder installs are a policy block
+  "autoUpdate": "user",           // "user" | "on" | "off" (§18.7.2)
+  "allow": ["https://github.com/acme/*", "host:git.corp.example", "path:/opt/acme/marketplaces/*"],
+  "block": ["path:/tmp/*"],
+  "additional": [{ "id": "acme-local", "path": "/opt/acme/marketplaces/tools" }]
+}
+```
+
+- `requireHttps`와 `blockPrivateNetworks`는 입력한 대상과 카탈로그가 지정한 대상,
+  다운로드와 리다이렉트 홉까지 연결 주소에 적용합니다(§18.2.4). 0.12의 거부를 어떤
+  확인으로도 통과할 수 없는 차단으로 되살립니다.
+- **`path:` 패턴.** `path:<folder>`는 그 폴더, `path:<prefix>*`는 접두사 아래 모든 폴더,
+  `path:*`는 모든 폴더와 맞습니다. `/`와 `\`는 같습니다.
+  - 3단계에서 어휘 경로와, 4단계에서 정식 경로와 다시 비교합니다(§18.4.1). 규칙을 쓸
+    때는 볼륨이 대소문자를 구분하는지 알 수 없으므로 대소문자 규칙은 보수적입니다:
+    `allow` 패턴은 대소문자까지 정확히 같을 때만 맞고, `block` 패턴은 대소문자를
+    무시하고 맞습니다. 그래서 차단은 모든 표기를 덮고, 허용은 관리자가 쓴 표기만
+    받아들이며, 대소문자를 구분하지 않는 볼륨에서는 걸음이 그 표기를 디스크에서
+    되찾습니다.
+  - `path:` 패턴은 폴더에만, `host:`와 URL 패턴은 git 소스에만 적용합니다.
+  - `allow`가 있으면 폴더는 그 `path:` 항목 중 하나와 맞아야 하므로, 기존 허용 목록은
+    관리자가 항목을 더할 때까지 폴더를 막습니다(§12처럼 닫힌 쪽으로 실패).
+- `additional[]`은 프로비저닝한 폴더에 `url` 대신 `path`를 받습니다: 출처 `managed`,
+  정책 항목이 `network-folder`를 뜻하므로 그 밖의 경고 없음, 제거 불가.
+  `allowLocalSources: false`인데 `additional` 폴더가 있으면 그 절은 무효입니다(§12).
+- 사용자 설정, 확인, 스위치는 정책 차단을 넘지 못합니다.
+- **정책 변경이 적용되는 때.** 지금은 서비스를 만들 때 정책을 한 번 읽고
+  (`src/ipc/domains/git-marketplace.ts:252`), 서비스를 캐시하므로(`:528-545`) 변경이
+  재시작을 기다립니다. 슬라이스 C부터:
+  - 서비스는 `PolicySource`를 거쳐 정책을 읽습니다. 모든 작업(미리보기, 추가, 확인,
+    동기화, 탐색, 계획, 실행)을 시작할 때 파일의 크기, 수정 시각, sha256을 지난 읽기와
+    비교합니다.
+  - 바뀌었으면 새 정책을 만들어 게이트, 레지스트리 필터, 설치기에 서비스의 작업 잠금
+    아래에서 한 번에 바꿔 넣으므로, 어떤 작업도 섞인 정책을 보지 않습니다.
+  - 계획은 만들어질 때의 정책 다이제스트를 기록합니다. 다른 다이제스트에서 실행하면
+    `PLAN_EXPIRED` 사유 `policy-changed`로 실패하고, 새 계획으로 검토를 다시 엽니다.
+  - 읽을 수 없거나 무효가 된 정책은 지금의 무효 정책처럼 동작합니다
+    (`git-marketplace.ts:252-254`): 공식만, `policy-invalid` 표시. 파일을 고친 뒤 첫
+    작업에서 회복합니다.
+  - 탐색(§18.7.1)도 작업이므로, 새 정책이 막는 소스는 재시작 없이 한 탐색 간격 안에
+    막힙니다.
+- **배포.** 0.13.0 이전 앱은 이 절을 정확히 읽고 모르는 키가 있으면 절 전체를 무효로
+  보아, 공식이 아닌 모든 소스를 막습니다(§12). 이 키는 0.13.0 이상에만 배포합니다.
+
+### 18.7 자동 업데이트
+
+#### 18.7.1 스케줄러 하나, 기한 규칙 둘
+
+백그라운드 틱(`background.ts:156-170`)이 유일한 스케줄러로 남습니다. 부팅 때(부팅
+패스 직후, `background.ts:154`), 한 시간마다, `powerMonitor` `resume` 때, *지금 확인*
+때, 설정이 바뀔 때 **기한 확인**을 돌리고, 기한이 된 것을 시작합니다:
+
+```
+discovery (due: interval rule below)
+  sync every source that syncs (§7.3; a folder source is read, §18.4.2)
+  enforce revocations (§10.4)                    -- always, whatever the settings
+  compute updates (updateFor, identity.ts:79); publish notices and status
+  if the apply check is due: classify each update (§18.7.2, §18.7.3)
+     automatic -> enqueue for the apply queue (§18.7.4)
+apply queue (separate, one package at a time, waits for idle)
+```
+
+- **탐색의 기한**은 마지막 *성공*이 `updateCheckIntervalMs`보다 오래되었고, **그리고**
+  지난 한 시간 동안 시작한 시도가 없을 때입니다.
+  - 그래서 실패하거나 오프라인이었던 탐색은 간격 전체가 아니라 다음 한 시간 기한
+    확인에서 다시 시도합니다.
+  - `updateCheckIntervalMs`는 키, 6시간 기본값(`background.ts:23`), `0`(부팅과 *지금
+    확인*만), 15분 하한(`background.ts:25-32`)을 유지합니다.
+- **적용 확인의 기한**은 부팅, *지금 확인*, 그리고 마지막으로 성공한 적용 확인이 24시간
+  이상 지났을 때입니다. 업데이트에 대한 소유자의 "부팅 때와 하루 한 번"입니다. 다음에
+  성공하는 탐색에 얹혀 돕니다.
+- **탐색을 6시간으로 두는 이유.** 폐기는 인덱스와 같은 fetch로 옵니다(§10.4). 0.12는
+  실행 중인 앱에 6시간 안에 전달하는데, 탐색을 24시간 업데이트 주기로 늘리면 폐기된
+  패키지가 네 배 오래 실행됩니다. 탐색은 소스당 fetch 한 번이고, 아무것도 적용하지
+  않습니다.
+- **탐색은 적용을 기다리지 않습니다.** 적용 큐는 별도 작업자입니다. 큐가 유휴를
+  기다리는 동안에도 패스의 탐색은 끝나고, 시각을 기록하고, 상태를 게시합니다(§18.7.4).
+  `updates:check`는 그 탐색이 끝나면 돌아오고, 큐에 든 업데이트는 그때 `waiting`으로
+  보입니다. 다음 탐색은 큐의 항목을 자기 결과로 바꾸고, 이미 적용 중인 패키지는
+  건드리지 않습니다.
+- **시간 보장.** 앱이 실행 중이고 깨어 있고 소스에 닿는 동안, 그곳에 게시된 폐기나
+  업데이트는 `updateCheckIntervalMs` + 1시간(기본 7시간) 안에 발견됩니다. 잠든 동안은
+  `resume`에서 따라잡습니다. 자동 대상 업데이트는 발견 뒤 첫 적용 확인에서 적용되므로,
+  24시간과 유휴 대기(상한 있음, §18.7.4) 안입니다. 예외:
+  - `updateCheckIntervalMs: 0` — 탐색과 적용은 부팅과 *지금 확인* 때만;
+  - 오프라인 — 한 시간마다 다시 시도;
+  - 실패하는 소스 — 그 패키지는 기다리고 나머지는 진행.
+- **기억**: `~/.ave/marketplaces/updates.json`:
+
+  ```
+  { version: 1,
+    discovery: { lastAttemptAt, lastSuccessAt, result: "ok" | "partial" | "offline" } | null,
+    applyCheckAt: string | null,
+    packages: { "<sourceId>:<kind>:<name>": { to, attempts, lastError?: { code, detail?, at }, appliedAt? } } }
+  ```
+
+  읽을 수 없는 파일은 빈 파일로 바꾸고 업데이트 카드가 그렇게 알립니다. 그 영향은
+  시점과 재시도 횟수뿐이고, 무엇이 적용되는지는 바뀌지 않습니다.
+
+#### 18.7.2 기본값과 스위치
+
+업데이트는 모든 **전제 조건**이 맞을 때만 자동 적용합니다:
+
+- 패키지가 켜져 있음(사용자나 폐기로 꺼지지 않음);
+- 소스가 보임(숨긴 소스도 동기화하지만, 그곳에서의 설치는 `SOURCE_DISABLED`,
+  `service.ts:725-727`);
+- 업그레이드임: 다운그레이드도, 소스 전환도 아님;
+- 소스에 대기 중인 이력 재작성이 없음(§7.3);
+- 건너뛴 버전이 아님(`skippedPluginUpdates`, `skipped-plugin-updates.ts:95-103`);
+- 적용 확인 세 번 연속 실패하지 않음(§18.7.5);
+- 평문 http로 닿는 소스는 `unencrypted-updates`를 가짐(네트워크 공격자가 새 핀을 담은
+  새 커밋을 제공할 수 있고, 그것을 무인으로 적용하면 사용자 행동 없이 그들의 코드가
+  실행됨).
+
+그다음, 설정된 것 중 첫 번째가 정합니다:
+
+1. 정책 `autoUpdate`: `"off"`나 `"on"`;
+2. 패키지 스위치 `marketplace.autoUpdatePackages[<key>]`(`"on"`/`"off"`; 키 =
+   `packageUpdateSkipKey`, `skipped-plugin-updates.ts:87`);
+3. 소스 스위치 `marketplace.autoUpdateSources[<sourceId>]`;
+4. 전역 스위치 `marketplace.autoUpdate`(`false` = 끔);
+5. 출처별 기본값:
+
+| 소스 | 기본값 |
+|---|---|
+| official | 켬 |
+| managed(`additional`) | 켬; 정책 `autoUpdate`가 잠글 수 있음 |
+| custom, https나 ssh | 켬 |
+| http의 custom이나 direct | 사용자가 켜고 `unencrypted-updates`를 받아들일 때까지 **끔** |
+| direct(git) | 켬 |
+| 폴더(custom이나 direct) | 켬: 작성자의 수정이 손 갈 일 없이 앱에 닿음 |
+
+§18.7.3이 실행하는 것이나 접근 범위를 바꾸는 모든 업데이트를 붙잡으므로 기본값을
+넓게 둡니다. 스스로 적용되는 업데이트는 설치된 버전이 이미 쓸 권한이 있던 텍스트와
+데이터만 바꿉니다.
+
+**`requiredInstalls`(§10.2)**는 적용 확인마다 부팅 설치기 경로
+(`boot-installs/run.ts:132-155`)로 `required: true`(`service.ts:1031-1033`)를 달아
+업데이트합니다. 정책이 사용자의 동의를 대신하는 곳은 여기뿐입니다. 정확히는:
+
+| 규칙 | 필수 설치 |
+|---|---|
+| 전역·소스·패키지 스위치; 건너뛴 버전 | 무시: 적용하지 않음 |
+| 정책 소스로의 소스 전환 | 지금처럼 허용(`run.ts:136`) |
+| 동의 지문의 권한 필드(§18.7.3) | 정책이 승인: 지금처럼 `reviewedAuthority = true` |
+| MCP 서버와 훅 | 정책이 승인하지 **않음**. 이어가기(§18.7.3)가 바뀌지 않은 것의 승인을 유지하고, 새로 생겼거나 바뀐 것은 승인 없이 설치되어 첫 사용 때 사용자에게 물음. 지금의 필수 설치와 같음(구성 요소 동의를 넘기지 않음) |
+| 폐기 | 필수: 폐기된 버전은 설치하지 않음 |
+| 호환성(`row.choice.state === "candidate"`, `run.ts:150-153`)과 다운그레이드 금지(`updateFor`) | 필수 |
+| 유휴 게이트(§18.7.4) | 부팅 뒤에는 필수; 부팅 패스는 첫 턴이 시작되기 전에 돎 |
+| 세 번 실패 후 중단 | 해당 없음: 실패하는 필수 설치는 적용 확인마다 다시 시도하고 `failed`로 보임 |
+
+#### 18.7.3 동의: 절대 자동 적용하지 않는 것
+
+업데이트는 **동의 지문**이 설치된 **기준선**과 같을 때만 자동 적용합니다. 좁아지는
+것을 포함해 어떤 차이든 업데이트를 `needs-review`로 만듭니다.
+
+**지문.** `src/marketplace/updates/consent.ts`의 새 `consentFingerprint(kind, subject)`는
+타입이 있는 기록을 돌려주고, 이것을 키를 정렬한 정규 JSON으로 직렬화합니다:
+
+| 종류 | 필드 |
+|---|---|
+| `plugin`(익스텐션) | `minAppVersion`; `hostProtocol`; 모든 `PluginAuthority` 필드(`capabilities`, `networkAccess`, `hostSecrets`, `pluginAccess`, `auth`, `requires.capabilities`, `dependencies`, `sandbox`); 엔트리 형태(`entry`나 `process`); 번들 기여 종류의 집합; 로컬 ID별 모든 번들 MCP 서버와 훅의 **승인 다이제스트** |
+| `agent-plugin` | `minAppVersion`; `hostProtocol`; 있는 구성 요소 종류의 집합; 이름별 모든 MCP 서버와 로컬 ID별 모든 훅의 승인 다이제스트; `mcpAuth`(`extensions-and-plugins.md` §5.2, 결정 18) |
+| `mcp` | 해석된 런타임 명세(§5.2): 전송, 명령, 인자, 환경 이름과 고정 값, URL, 로그인 필드, docker 옵션, 버전을 포함한 패키지나 이미지 |
+| `provider` | `minAppVersion`, `providerId`, `baseUrl` |
+| `messaging-connection` | `minAppVersion`, `connection.json` 전체 |
+| `skill`, `agent`, `theme`, `font`, `language` | `minAppVersion` |
+
+- 소유자의 목록입니다: 새롭거나 바뀐 권한과 부여(권한 필드), 바뀐 MCP 서버나 훅,
+  `sandbox`, 프로토콜이나 `minAppVersion` 변경, 새 구성 요소 종류.
+- `mcp` 패키지는 버전이 명령의 일부이므로 모든 `mcp` 업데이트는 검토가 필요합니다.
+- 바뀐 스킬, 프롬프트, 에이전트 프로필, 루틴 템플릿은 자동 적용합니다:
+  `extensions-and-plugins.md` 결정 18이 별도 동의 없이 활성화하고, 루틴 템플릿은 아무것도
+  만들지 않습니다. 실행 파일을 싣는 스킬은 그 패키지의 모든 서버와 훅의 클로저에
+  들어가므로(아래), 그 파일을 바꾸는 것은 텍스트 변경이 아닙니다.
+
+**승인 다이제스트.** 선언만이 아니라 실행되는 것을 덮습니다. 정적 지문
+(`plugin-contributions.ts:249-271`)은 선언된 디스크립터 파일만 해시하므로, 그 파일을 두고
+그것이 가리키는 `server.js`를 바꾸면 같다고 나옵니다. 번들 MCP 서버와 훅마다
+`src/plugins/contribution-approval-digest.ts`의 새
+`approvalDigest(component, generationRoot)`는 다음 정규 JSON의 sha256입니다:
+
+```
+{ declaration: <static fingerprint, plugin-contributions.ts:269-271>,
+  anchored:    <the identities anchorBundledCommand hashes:
+                "<argv index>\0<relative path>\0<sha256(file)>", sorted
+                (plugin-bundled-command.ts:53-71)>,
+  closure:     { kind: "package",  treeSha256 }       // local code
+             | { kind: "launcher", spec, treeSha256 } // pinned runtime package
+             | { kind: "remote" } }                   // url transport; nothing local runs
+```
+
+- **`package` 클로저.** 선언된 비실행 구성 요소의 파일 — 프롬프트 Markdown, 에이전트
+  프로필, 루틴 템플릿, 테마·글꼴·언어 파일, 스킬의 `scripts/` 밖에 있고 실행 비트가
+  없는 스킬 파일 — 을 **뺀** 모든 페이로드 파일에 대한 트리 다이제스트(§6.4, 영수증의
+  `artifactSha256`과 세대 ID 뒤의 알고리즘)입니다. 나머지 — `dist/**`, `node_modules/**`,
+  벤더 코드, 스크립트, 설정 JSON — 는 서버가 무엇이든 불러올 수 있으므로 클로저에
+  들어갑니다. 호스트가 이미 해시하는 의존 클로저(영수증이 덮는 페이로드)에서 어떤
+  서버나 훅도 실행할 수 없는 파일만 뺀 것입니다.
+- **`launcher` 클로저.** `npx`, `bunx`, `uvx`, `pipx run`, `docker run`의 명세는 변하지 않는
+  산출물을 가리킵니다: 정확한 버전의 npm·PyPI(`name@1.2.3`, `name==1.2.3`), 또는
+  `@sha256:` 다이제스트의 OCI 이미지. 고정된 로컬 파일의 `package` 다이제스트도
+  포함합니다.
+- **정할 수 없음.** 실행 클로저를 정할 수 없으면 승인 다이제스트는 `null`입니다.
+  변하지 않는 핀이 없는 런처 명세(`npx foo`, `foo@latest`, 이미지 태그),
+  `anchorBundledCommand` 실패, 이 목록에 없는 명령 종류가 그렇습니다. `null`은 무엇과도
+  같지 않습니다: 그 구성 요소는 이어가기가 없고, 업데이트마다 다시 묻고, 지문이 늘
+  달라서 업데이트는 검토가 필요합니다. 닫힌 쪽으로 실패합니다.
+- 결과로, 명시해 둡니다: MCP 서버나 훅을 싣는 익스텐션은 코드가 바뀔 때마다 검토가
+  필요합니다. 스킬이나 프롬프트 텍스트만 바꾸는 업데이트는 여전히 스스로 적용됩니다.
+
+**기준선 저장.** 기준선은 사용자가 받아들인 지문이며, 설치와 함께 저장합니다. 새로
+가져온 카탈로그 메타데이터에서 끌어내지 않습니다. `planUpdate`는 설치된 버전에 대한
+현재 카탈로그의 사본을 우선하던 것(`service.ts:795-797`)을 그만두고 기준선을 읽습니다.
+
+| 종류 | 저장 위치 |
+|---|---|
+| `plugin` | 영수증의 `git`이나 `folder` 기록에 `consent` 추가(`plugin-install-receipt.ts:86-100`); 선택 필드라 기존 영수증도 유효 |
+| 콘텐츠 종류 | `LedgerEntry.origin.consent`(`content/ledger.ts:22-48`; `ORIGIN_KEYS`에 선택 필드 `consent` 추가) |
+| `mcp` | `~/.ave/packages/mcp-installs.json`의 기록(`app/mcp-installer.ts:38-62`)에 `consent` 추가 |
+
+**기존 설치**(저장된 기준선 없음)는 카탈로그가 아니라 설치된 것에서 계산합니다:
+
+- `plugin`: 영수증이 덮는 `plugin.json`과 페이로드.
+- 콘텐츠: 설치된 패키지 디렉터리. `minAppVersion`은 보존된
+  `snapshots/<origin.commit>.json`에 있는 설치 버전의 인덱스 행에서 가져옵니다. 사용자가
+  설치할 때의 카탈로그이고, 스냅숏 보존(§2.1)이 남겨 둡니다. 설치 자체는
+  `ave-package.json`을 버립니다(`content/store.ts:114-128`).
+- `mcp`: 기록된 런타임 명세.
+
+계산할 수 없는 필드 — 스냅숏이 없거나, 설치 뒤 폴더가 바뀐 폴더 설치 — 는
+`unknown`입니다. `unknown`은 무엇과도 같지 않으므로 첫 업데이트는 검토가 필요하고, 그것을
+적용하면 완전한 기준선이 저장됩니다. 성공한 설치나 업데이트는 자동이든, 검토했든,
+필수든 영수증이나 원장 항목과 같은 트랜잭션에서 새 기준선을 씁니다.
+
+**두 검사 지점과 차이.**
+
+- **첫째, 카탈로그.** 버전의 인덱스 사본이 담는 필드는 *카탈로그에서 보이는* 필드입니다
+  (§2.2). 카탈로그에서 보이는 차이는 다운로드 없이 업데이트를 `needs-review`로 둡니다.
+  카탈로그가 담지 않는 필드는 `pending`이며, 결코 "같음"이 아닙니다.
+- **둘째, 스테이징된 바이트.** 첫째에서 차이가 없을 때만, 활성화 전에 돕니다.
+  `installGitPlugin`은 `assertManifest`(`plugins/marketplace.ts:635-643`) 옆에서 도는
+  `assertConsent` 콜백을 받습니다. 콜백은 스테이징된 트리에서 승인 다이제스트까지 포함한
+  전체 지문을 계산하고, `activatePreparedArtifact` 전에 `UpdateNeedsReviewError`를
+  던집니다. 콘텐츠는 원장을 쓰기 전에 스테이징된 패키지로 같은 검사를 합니다. 아무것도
+  활성화하지 않고, 스테이징된 파일은 버립니다.
+- **차이.** 타입이 있는
+  `ConsentDelta = Array<{ field: ConsentField; checkpoint: "catalog" | "staged"; before: Json | "unknown"; after: Json | "pending" }>`
+  이며, `ConsentField`는 위 표의 모든 행을 이름으로 가리킵니다. 예를 들면
+  `authority.networkAccess`, `entryForm`, `mcpServer:<localId>`, `hook:<localId>`,
+  `mcpRuntime`, `connection`입니다. `UpdatePlanView`에 `consentDelta`를 더합니다. 검토는
+  항목마다 행 하나를 그립니다: 필드의 지역화 라벨, 이전과 이후, 그리고 `mcpServer:`와
+  `hook:` 행에는 명령과 클로저 종류를 담은 승인 체크 상자. 기존 `authorityDelta`와
+  `componentsDelta`(`service.ts:799-810`)는 이것의 투영이 됩니다.
+- **검토가 바이트를 묶습니다.** 차이에 `staged` 항목이 있으면 `planUpdate`는 폴더 계획처럼
+  (§18.4.2) 산출물을 내려받고 검증해 계획에 스테이징하고, 모든 `after` 값을 계산합니다.
+  계획은 스테이징된 다이제스트를 기록하고, `executeInstall`은 바로 그 스테이징된 바이트를
+  설치하며 다시 내려받지 않습니다. 그래서 승인은 설치되는 바이트를 덮습니다. 만료된
+  계획(§13.1)은 새 검토를 뜻합니다.
+- **익스텐션 구성 요소.** 지금 `executeInstall`은 에이전트 플러그인이 아닌 것의 구성 요소
+  동의를 거부합니다(`service.ts:826-827`). 슬라이스 F부터 `plugin`에도 번들 로컬 ID로
+  받고, 플러그인 설치기는 그것을 `PluginBundleLifecycle`에 넘겨 새 세대의 `mcpTrust`와
+  `hookTrust`에 승인합니다.
+
+**승인 이어가기.** 지금 신뢰 저장소는 정확한 세대를 키로 쓰고 "승인은 세대를 넘어가지
+않습니다"(`plugin-contribution-trust.ts:7-13`, `:31`). 그래서 업데이트마다 모든 번들
+서버와 훅을 다시 묻습니다.
+
+- **스키마.** 신뢰 파일은 `{ version: 2 }`에서 `{ version: 3 }`이 됩니다. 각 기록에
+  `approvalDigest: string | null`과 선택적 `carriedFrom: <generationId>`가 붙습니다.
+  - 로더는 버전 2를 지금처럼 엄격하게 받고(`:40-53`) 각 기록을
+    `approvalDigest: null`로 읽으므로, 0.13.0 이전 기록은 아무것도 이어 가지 않습니다.
+    버전 3도 엄격하게 받습니다.
+  - 다음 쓰기는 버전 3입니다. 다른 버전의 파일은 지금처럼 실패합니다.
+- **준비.** 플러그인 P의 새 세대 G′를 준비할 때, 활성 세대 G가 같은 플러그인 ID와 로컬
+  ID, 그리고 c′의 것과 같은 null 아닌 `approvalDigest`를 가진 승인 기록을 갖고 있으면
+  구성 요소 c′를 이어 갑니다. 이어 가는 구성 요소는 `carriedFrom: G`인 G′의 **임시**
+  승인을 받습니다. MCP 허용이 준비 중에 일어나므로(`agent-plugin-mcp-runtime.ts:117-125`)
+  준비 전에 씁니다. 새 승인과 같은 목록에 들어갑니다.
+- **게시.** 수명 주기의 직렬화 아래에서, 활성 세대가 바뀌기 전에 임시 기록마다 다시
+  검증합니다: G가 아직 활성이고 원래 기록이 아직 승인되어 있어야 하므로, 그 사이의
+  철회는 되살아나지 않습니다. 검증에 실패한 기록은 철회하고, 그 구성 요소는 승인 없이
+  게시됩니다.
+- **실패.** 준비나 게시가 실패하면 모든 임시 기록을 새 승인을 이미 철회하는 경로로
+  철회합니다(`agent-plugin-mcp-runtime.ts:126-133`; 훅 런타임은
+  `agent-plugin-hook-runtime.ts:134-139`). 저장소는 시도 전과 정확히 같아집니다.
+- **두 경로 모두 구현합니다:**
+  - 익스텐션: `PluginBundleLifecycle`(`plugin-bundle-lifecycle.ts:136-190`, `hookTrust`와
+    `mcpTrust` 소유)에서, `plugin-mcp-projection.ts`와 `plugin-hook-projection.ts`로;
+  - 에이전트 플러그인: `AgentPluginMcpRuntime.publishOne`
+    (`agent-plugin-mcp-runtime.ts:86-137`)과 `AgentPluginHookRuntime`
+    (`agent-plugin-hook-runtime.ts:101-145`)에서.
+- 자동이든, 검토했든, 필수든 모든 업데이트에 적용합니다. 정책 지문 승인은 그대로입니다.
+
+#### 18.7.4 턴을 끊지 않고 적용하기
+
+- **유휴 게이트.** 자동 업데이트는 `ConversationActivityCoordinator.isBusy()`가 거짓일
+  때만 시작합니다(`conversation-activity-coordinator.ts:97-100`). 전환 허용, 세션 전환,
+  활성 턴, 세션 변경이 모두 없다는 뜻입니다.
+  - 지금은 끝난 턴만 알립니다(`:112-115`). 변경 완료(`:123-129`)와 전환 허용
+    해제(`:150-152`)는 아무것도 알리지 않습니다. 슬라이스 F가 `onIdle(listener)`를 더해,
+    네 조건 중 어느 것에서든 `isBusy()`가 거짓이 될 때마다 부릅니다.
+  - 큐는 먼저 구독한 뒤 `isBusy()`를 다시 확인하므로, 확인과 구독 사이의 유휴 순간을
+    놓치지 않습니다.
+  - 게이트는 패키지마다 읽습니다. 패키지를 적용하는 동안 시작한 턴은 막지 않고, 적용은
+    대화 리스를 쥐지 않습니다.
+- **상한 있는 대기.** 유휴를 30분 기다린 큐는 "업데이트 <n>개가 대화가 멈추기를
+  기다립니다" 알림을 *지금 적용*과 함께 게시합니다. *지금 적용*은 사용자의 결정이며
+  유휴 게이트만 건너뛰고, 아래의 리스는 진행 중인 호출을 계속 보호합니다. 그 밖에는
+  큐가 계속 기다립니다. 종료하면 큐는 버려지고, 첫 턴 전에 도는 다음 부팅 패스가
+  적용합니다.
+- **익스텐션은 업데이트가 적용되는 순간 다시 시작합니다.**
+  - 새 세대는 검증된 스테이징 트리에서 준비·시작하고(`activatePreparedArtifact`,
+    `runtime/index.ts:4789`) 게시합니다.
+  - 이전 세대는 인스턴스 리스가 풀리고(`withPluginInstanceLease`,
+    `runtime/index.ts:3255-3262`) HostApi 작업이 비워진 뒤(10초, `runtime/index.ts:1636`,
+    `:2135-2150`) 물러납니다.
+  - 게시 뒤에 시작한 루틴이나 하위 에이전트의 호출은 같은 권한으로 새 세대에서 돕니다.
+- **에이전트 플러그인의 MCP 서버와 훅.** 지금 `publishOne`은 대체를 게시한 직후 이전
+  세대를 끊고(`agent-plugin-mcp-runtime.ts:135-136`, `mcp-manager.ts:622-627`, `:650-656`을
+  거쳐), 콘텐츠 저장소는 이어서 이전 버전 디렉터리를 지웁니다(`content/store.ts:306-307`).
+  이전 세대에서 진행 중인 호출이 끊깁니다. 슬라이스 F부터:
+  - 큐는 현재 세대가 정확한 세대 리스 — 모든 번들 MCP 호출이 잡는 리스
+    (`withBundledLease`, `mcp-manager.ts:1326-1340`) — 를 하나도 쥐지 않을 때만 에이전트
+    플러그인을 적용합니다. 아니면 업데이트는 `waiting`으로 남습니다.
+  - 그 확인과 게시 사이에 시작한 호출은 리스를 유지합니다. 이전 세대는 그 리스가 비워진
+    뒤에만, 호출 자신의 도구 시간 제한을 상한으로 끊습니다. 이것이 `:136`의 즉시 끊기를
+    대신합니다.
+  - 에이전트 플러그인 훅 실행도 같은 정확한 세대 리스를 잡습니다.
+  - 이전 버전 디렉터리는 그 물러남 뒤에만 지우므로, 실행 중인 서버나 훅이 파일을 잃지
+    않습니다.
+- **원자적이고, 커밋 뒤 결과가 정해져 있음.** 패키지마다 자기 트랜잭션이고, 패스는
+  전부 아니면 전무가 아닙니다. 플러그인은 `installGitPlugin`과 `installZipTransaction`
+  (`plugins/marketplace.ts:592`, `:770`)을, 콘텐츠는 §5.5의 설치를 거칩니다.
+
+  | 실패 | 위치 | 이후 설치된 것 | 업데이트 상태 | 시도로 셈 |
+  |---|---|---|---|---|
+  | 커밋 전 | 다운로드, 검증, 둘째 검사 지점, 준비, 영수증 쓰기(`plugins/marketplace.ts:862-878`, `:894`); 원장 트랜잭션 안의 콘텐츠 활성화 | 이전 버전이 계속 실행; 영수증, 레지스트리 항목, 원장 복원 | 코드와 detail을 담은 `failed` | 예 |
+  | 영속 커밋 뒤의 게시 | `CommittedPluginGenerationPublicationError`(`committed-generation-publication-error.ts:4-27`), 일부러 되돌리지 않음(`plugins/marketplace.ts:899-900`) | **새** 버전이 커밋됨. `outcome.state: "active"`면 활성 세대, `"inactive"`면 설치되었지만 실행 안 됨 | `applied`, 행에 런타임의 저하 상태("설치됨, 실행 안 됨 — Ave를 다시 시작하세요"); 새 기준선 저장 | 아니요; 다시 설치할 것이 없고, 회복은 런타임 몫(다음 부팅이 커밋된 세대를 활성화) |
+  | 물러남이나 정리 | 이전 세대 물러남(`PluginRetirementJournal`), 이전 콘텐츠 디렉터리(`content/store.ts:306-307`) | 새 버전, 활성 | `applied`; 실패는 로그 | 아니요; 플러그인 물러남은 부팅 때 저널에서 이어서 하고(`recoverRetirements`, `plugin-bundle-lifecycle.ts:280-297`), 슬라이스 F는 어떤 원장 항목도 가리키지 않는 콘텐츠 버전 디렉터리를 지우는 부팅 정리를 더함 |
+
+  표시하는 설치 버전은 늘 커밋된 영수증이나 원장 항목에서 오며, 시도의 목표 버전에서
+  오지 않습니다.
+- **순서**: 플러그인은 의존 순서(`dependency-resolver.ts`)로, 나머지는 키 순으로, 한 번에
+  하나씩.
+
+#### 18.7.5 상태, 실패, 오프라인, 건너뛰기, 폐기
+
+| 상태 | 의미 | 표시 |
+|---|---|---|
+| `automatic` | 이번 적용 확인에서 적용 | 실행 중엔 업데이트 카드, 끝나면 알림 |
+| `waiting` | 자동, 유휴나 에이전트 플러그인의 호출을 기다림(§18.7.4) | 업데이트 카드, 패키지 행; 30분 뒤 *지금 적용*이 있는 알림 |
+| `needs-review` | 지문이 다르거나 필드가 `unknown`(§18.7.3) | 알약, 업데이트 카드, 행, *검토* |
+| `manual` | 자동 업데이트가 꺼져 있음 | 알약(업데이트 알림이 켜져 있을 때), 행, *업데이트* |
+| `failed` | 마지막 시도가 커밋 전에 실패: `code`, `detail`, `attempts` | 알약, 업데이트 카드, 행, *다시 시도*, *자세히* |
+| `skipped` | 사용자가 이 버전을 건너뜀 | 더 새 버전이 나올 때까지 어디에도 없음 |
+
+- **오프라인**: 모든 소스가 `SOURCE_UNREACHABLE` 사유 `offline`으로 실패하면 탐색 결과는
+  `offline`이고 아무것도 적용하지 않으며, 카드는 "오프라인 — 마지막 확인 <시각>"을
+  보여 줍니다. 다음 한 시간 기한 확인에서 다시 시도합니다(§18.7.1).
+- **소스 실패**: 그 패키지는 이번 패스에서 빠집니다. 소스 행은 detail을 담은 상태를
+  보여 주고(§18.8), 패키지 행은 "소스에 닿을 수 없음 — 설치된 버전을 보여 줍니다"라고
+  말합니다.
+- **커밋 전 업데이트 실패**: 이전 버전이 남습니다. 상태는 코드, detail, 시도 횟수를 담은
+  `failed`이고 다음 적용 확인에서 다시 시도합니다. 한 버전이 적용 확인 세 번 실패하면,
+  더 새 버전이나 *다시 시도* 전까지 그 버전의 자동 시도를 멈춥니다. 필수 설치는
+  예외입니다(§18.7.2). 커밋 뒤의 실패는 §18.7.4의 표를 따릅니다.
+- **적용됨**: 알림(§15.1)의 "자동으로 업데이트됨" 아래에 버전과 *바뀐 점*(§15.6의 커밋
+  범위)으로 한 번 나열합니다. `BootInstallNoticeView`(`shared/git-marketplace.ts:373-384`)에
+  `autoUpdated`를 더합니다.
+- **알약**(`PluginUpdatesPill.tsx`)은 사용자가 필요한 업데이트만 셉니다:
+  `needs-review`, `failed`, 그리고 업데이트 알림이 켜져 있을 때 `manual`.
+  `updateCheckEnabled`는 의미(알림이 렌더러에 닿는지)를 유지하고 자동 업데이트를
+  켜고 끄지 않습니다.
+- **건너뛰기**: 건너뛴 버전은 적용하지도 보이지도 않고, 다음 버전은 그렇습니다.
+- **롤백**: 나열된 이전 버전을 손으로 설치하면(§16.2) 떠난 버전을 건너뜀으로 기록해,
+  다음 패스가 롤백을 되돌리지 않습니다.
+- **폐기**는 설정과 무관하게 모든 탐색에서 업데이트보다 먼저 적용합니다. 업데이트는
+  폐기된 버전을 목표로 삼지 않습니다(§6.1 6단계). 폐기로 꺼진 패키지는 자동으로
+  업데이트하지 않고, 그 알림이 한 번 클릭으로 검토에 들어가는 업데이트를 제안합니다.
+
+#### 18.7.6 폴더 소스
+
+폴더 패키지는 소스의 리비전이 바뀌었고 트리 다이제스트가 설치된 `artifactSha256`(플러그인)
+이나 `contentSha256`(콘텐츠)과 다를 때 업데이트가 있습니다.
+
+- 선언 버전이 높으면 업그레이드입니다.
+- 같으면 **새로 고침**이고, 업그레이드처럼 적용합니다.
+- 낮으면 다운그레이드이고, 손으로만 제공합니다.
+
+기본은 켬(§18.7.2)이고 동의(§18.7.3)는 그대로 적용합니다.
+
+### 18.8 메시지: 모든 거부, 경고, 실패
+
+지금 `failureText`(`labels.ts:103-118`)는 아홉 개 코드에만 문장이 있고, 나머지는
+`CODE · <main의 영어 메시지>`를 출력합니다(`:116`). 0.13.0부터:
+
+- `MarketplaceError`(`errors.ts:44-53`)에 선택적 `detail`을 더합니다: 코드별 유니언으로,
+  `reason`과 문장에 필요한 값(호스트, 주소, 경로, 패턴, ref, 버전)을 담습니다. 봉투는
+  `{ ok: false, code, message, detail? }`가 되고(`shared/git-marketplace.ts:393`),
+  `parseGitMarketplaceResult`(`:456`)는 그 코드에 아는 `reason`의 `detail`만 남기고
+  나머지는 버립니다.
+- **소스 상태도 detail을 담습니다.** 백그라운드 동기화의 실패는 실패한 봉투가 아니라
+  성공한 `sources:list`로 UI에 닿기 때문입니다:
+  - `SyncResult`의 실패 변형에 `detail?`을 더합니다;
+  - `recordFailure`(`sources/sync.ts:129-133`)가 그것을 `SourceState.lastSync.detail`
+    (`sources/registry.ts:56`)에 영속합니다;
+  - 상태 검증기는 사유가 그 코드에 속할 때만 `detail`을 받고, 아니면 코드는 두고
+    detail만 버립니다;
+  - `sourceStatus`(`app/views.ts:169-179`)가 그것을 `unreachable`과 `auth-required` 보기에
+    복사합니다.
+- `failureText`는 `GitMarketplaceErrorCode`와 각 사유에 대해 빠짐없어집니다(`never`
+  검사, `default` 없음). 모든 코드에는 `detail`이 없을 때(이전 상태 파일, 버린 detail)
+  쓰는 사유 없는 문장도 있습니다. 테스트가 `MARKETPLACE_ERROR_CODES`와 모든 사유를
+  나열해, 카탈로그 문장이 없는 것이 있으면 실패합니다. main의 영어 `message`는
+  *세부 정보 복사* 뒤에만 보입니다.
+- 컴포넌트 하나, `MarketplaceProblem`이 세 톤을 그립니다: **정책**(자물쇠, "조직에서
+  설정함", 규칙, 정책 파일 경로, *계속* 없음), **경고**(주황, 위험, *계속* / *취소*),
+  **오류**(빨강, 일어난 일, 조치).
+- 키: `gitMarketplace.error.<code>.<reason>`, `gitMarketplace.warning.<warning>`,
+  `gitMarketplace.policy.<reason>`, `gitMarketplace.action.<action>`. 기존
+  `gitMarketplace.error.policyBlocked`는 MCP 거버넌스 문장(`PACKAGE_POLICY_BLOCKED`)으로
+  남고, 소스 정책 차단은 `gitMarketplace.policy.*`를 써서 둘이 섞이지 않습니다.
+- 한국어는 카탈로그의 격식체(`-습니다`, `-하세요`)를 씁니다. 경고는 질문("계속할까요?")
+  으로 끝납니다. 정책 문장은 사용자가 아니라 조직을 원인으로 적습니다("조직 정책이 …").
+
+분류: **P** 정책 차단, **W** 경고, **R** 거부, **E** 고칠 수 있는 오류, **S** 상태.
+모든 행은 일어난 일, 이유, 다음 조치를 담습니다. 정확한 영어·한국어 문장은 코드나
+사유를 더하는 슬라이스에서 i18n 생성기(§15.9)로 씁니다. 영어 문장의 방향은 원문
+표를 따릅니다.
+
+| 코드 · 사유 | 분류 | 일어난 일과 이유(한국어 방향) | 다음 조치 |
+|---|---|---|---|
+| `SOURCE_POLICY_BLOCKED` · `blocked-by-pattern` | P | "조직 정책이 <대상>을 차단합니다(규칙 `<pattern>`)." | "관리자에게 문의하세요. 규칙은 <정책 경로>에 있습니다." |
+| · `not-in-allow-list` | P | "조직 정책이 허용한 소스만 쓸 수 있고, <대상>은 목록에 없습니다." | 위와 같음 |
+| · `https-required` | P | "조직 정책상 https만 쓸 수 있습니다." | "https 주소를 쓰거나 관리자에게 호스트 등재를 요청하세요." |
+| · `private-network-blocked` | P | "조직 정책이 사내망과 이 컴퓨터의 소스를 막습니다." | 위와 같음 |
+| · `local-sources-blocked` | P | "조직 정책이 폴더 소스를 허용하지 않습니다." | 위와 같음 |
+| · `direct-install-blocked` | P | "조직 정책상 마켓플레이스를 거쳐서만 설치할 수 있습니다." | 위와 같음 |
+| · `policy-invalid` | P | "조직의 마켓플레이스 정책을 읽을 수 없어(<오류>) 공식 마켓플레이스만 동작합니다." | "관리자에게 <정책 경로> 수정을 요청하세요." |
+| `PACKAGE_POLICY_BLOCKED` | P | 지금 문장(MCP 거버넌스) | "관리자에게 문의하세요." |
+| `PACKAGE_REQUIRED_BY_POLICY` | P | "조직이 <이름>을 필수로 지정해 제거하거나 끌 수 없습니다." | — |
+| `SOURCE_CONFIRMATION_REQUIRED` · `unencrypted` | W | "<호스트>는 http를 씁니다: 연결이 암호화되지 않아 네트워크 경로의 누구나 내려받는 것을 보고 바꿀 수 있습니다." | "계속할까요?" |
+| · `token-unencrypted` | W | "<호스트>의 로그인 정보가 암호화되지 않은 채 전송되어 경로의 누구나 복사할 수 있습니다." | "계속할까요?" |
+| · `internal-network` | W | "<호스트>는 사내망 주소(<주소>)입니다. 이 소스의 서버만 허용하며, 마켓플레이스가 다른 사내 호스트에서 내려받게 하는 것은 따로 묻습니다." `198.18.0.0/15`이면 "일부 프록시 도구는 모든 주소를 이 범위로 보고합니다"를 덧붙임 | "조직 내부 소스가 맞을 때만 계속하세요." |
+| · `this-computer` | W | "<호스트>는 이 컴퓨터(<주소>)입니다." | "직접 실행한 서버일 때만 계속하세요." |
+| · `internal-downloads` | W | "<소스>가 다른 사내 주소 <호스트>에서 내려받게 합니다. 사내 호스트를 지정할 수 있는 마켓플레이스는 Ave를 통해 사내망 장비(예: 공유기 설정 페이지)로 요청을 보낼 수 있고, 나중에 검사가 실패해도 이미 보낸 요청은 되돌릴 수 없습니다. 허용할까요?" | *사내망 다운로드 허용* |
+| · `network-folder` | W | "이 폴더를 읽으려고 Windows 계정으로 <서버>에 로그인합니다." | "계속할까요?" |
+| · `unencrypted-updates` | W | "<소스>의 업데이트는 http로 옵니다. 네트워크 경로의 누구나 자기 코드로 바꿀 수 있고, 그 코드는 묻지 않고 설치됩니다." | "그래도 자동 업데이트를 켤까요?" |
+| `SOURCE_URL_REJECTED` · `credentials-in-url` | R | "주소에 비밀번호나 토큰이 있습니다. Ave는 주소에 비밀을 저장하지 않습니다." | "빼고 추가한 뒤 *토큰 설정*을 쓰세요." |
+| · `helper-transport` | R | "`<scheme>::` 주소는 가져오려고 프로그램을 실행하므로 쓸 수 없습니다." | "https나 ssh 주소를 쓰세요." |
+| · `scheme-unsupported` | R | "Ave는 `<scheme>:` 주소를 읽지 않습니다." | "같은 저장소의 https나 ssh 주소를 쓰세요." |
+| · `format` | R | "주소에 `?…`, `#…`, 공백이나 제어 문자가 있습니다." | "지우세요." |
+| · `relative-path` | R | "여기서는 상대 경로를 읽을 수 없습니다." | "전체 경로를 입력하거나 *폴더 선택…*을 쓰세요." |
+| · `device-path`, `windows-path`, `network-file-url` | R | 형태와, 그것이 폴더가 아닌 이유 | "폴더의 일반 경로를 입력하세요." |
+| · `index-file-url` | R | "Ave는 마켓플레이스를 marketplace.json 한 파일이 아니라 저장소나 폴더로 읽습니다." | "저장소 주소를 입력하세요." |
+| · `address-metadata` | R | "<호스트>가 link-local 또는 클라우드 메타데이터 주소 <주소>로 해석됩니다. 그곳에 마켓플레이스는 없고, 요청하면 이 컴퓨터의 자격 증명이 노출될 수 있어 연결하지 않습니다." | "주소와 네트워크 설정을 확인하세요." |
+| · `address-unroutable` | R | "<주소>는 어느 네트워크에서도 닿을 수 없습니다." | "주소를 확인하세요." |
+| · `catalog-this-computer` | R | "<소스>가 다운로드를 이 컴퓨터(<호스트>)로 향하게 합니다. 마켓플레이스가 이 컴퓨터의 서비스로 요청을 보내게 할 수는 없습니다." | "마켓플레이스 소유자에게 알리세요." |
+| · `deep-link-path` | R | "링크로는 이 컴퓨터의 폴더를 고를 수 없습니다." | "폴더를 직접 고르세요." |
+| `CONTENT_RULE_VIOLATION` · `link-outside-folder` | R | "<경로>가 폴더 밖(<대상>)을 가리킵니다. Ave는 폴더 안의 파일만 설치합니다." | "링크 대신 파일을 폴더 안으로 복사하세요." |
+| · `link-to-network` | R | "<경로>가 네트워크 위치(<대상>)를 가리킵니다. Ave는 다른 컴퓨터를 가리키는 링크를 따라가지 않습니다." | "링크 대신 파일을 폴더 안으로 복사하세요." |
+| · `special-file`, `case-collision`, `extension`, `limit` | R | 경로와 규칙(§5.4, §5.5) | "<경로>를 지우거나 이름을 바꾸세요." |
+| `SOURCE_AUTH_REQUIRED` · `token` | E | "<호스트>에 로그인해야 합니다." | *토큰 설정*; GitHub는 "Contents 읽기 권한이 있는 fine-grained 토큰" |
+| · `token-unencrypted` | E | "<호스트>에 로그인해야 하는데, 이 소스는 http를 씁니다." | *허용…*(`token-unencrypted`) 후 *토큰 설정* |
+| · `ssh` | E | "<호스트>가 SSH 키를 거부했습니다." | "키를 불러오거나(`ssh-add`) <호스트> 계정에 추가하세요." |
+| `SOURCE_SSH_HOST_UNKNOWN` · `unknown` | E | "이 컴퓨터는 <호스트>에 SSH로 연결한 적이 없어 키를 확인할 수 없습니다." | "공개된 지문과 비교한 뒤 `ssh-keyscan -p <port> <host> >> ~/.ssh/known_hosts`를 실행하세요(Windows: `%USERPROFILE%\.ssh\known_hosts`)." *명령 복사* |
+| · `changed` | E | "<호스트>의 SSH 키가 바뀌었습니다. 서버 재설치일 수도, 연결을 가로채는 누군가일 수도 있습니다." | "서버 관리자에게 확인한 뒤 `ssh-keygen -R <host>`." |
+| `SOURCE_REF_NOT_FOUND` | E | "`<ref>`는 <저장소>의 브랜치나 태그가 아닙니다." | "있는 것: <최대 10개>. 기본 브랜치는 칸을 비우세요." |
+| `SOURCE_UNREACHABLE` · `offline` | E | "이 컴퓨터는 오프라인입니다." | "네트워크가 돌아오면 다시 시도합니다." |
+| · `dns` | E | "<호스트>를 찾을 수 없습니다." | "주소나 VPN을 확인하세요." |
+| · `refused`, `timeout`, `http-status` | E | "<호스트>가 응답하지 않았습니다(<세부>)." | *다시 시도* |
+| · `tls` | E | "<호스트>의 인증서를 믿을 수 없습니다. 회사 네트워크는 트래픽을 다시 서명하는 경우가 많습니다." | "IT에 네트워크 루트 인증서를 시스템 저장소에 설치해 달라고 요청하세요. Ave가 읽습니다(§9.2)." |
+| · `proxy` | E | "시스템 프록시 설정이 <호스트>에 Ave가 쓸 수 없는 <종류>를 고릅니다." | "IT에 HTTP 프록시나 <호스트>로의 직접 경로를 요청하세요." |
+| `SOURCE_LOCAL_UNREADABLE` · `not-found` | E | "폴더 <경로>가 없습니다: 옮겨졌거나 이름이 바뀌었거나 드라이브가 연결되지 않았습니다." | "드라이브를 연결하거나, 소스를 제거하고 폴더를 다시 추가하세요." |
+| · `permission`, `io` | E | "<경로>를 읽을 수 없습니다(<시스템 메시지>)." | "폴더 권한을 확인하세요. 다음 읽기에서 다시 시도합니다." |
+| · `moved` | E | "<경로>가 이제 <새 경로>를 가리킵니다." | "소스를 제거하고 원하는 폴더를 추가하세요." |
+| · `not-a-directory` | E | "<경로>는 폴더가 아닙니다." | "폴더를 고르세요." |
+| · `ambiguous-case` | E | "<경로>에 대소문자만 다른 폴더가 여럿 있습니다." | "정확한 대소문자로 경로를 입력하세요." |
+| · `changed-during-read` | E | "Ave가 읽는 동안 <경로>의 파일이 바뀌었습니다." | "다음 읽기 때 다시 시도합니다." |
+| `SOURCE_NOT_A_MARKETPLACE` · `nothing-found` | E | "<위치>에서 marketplace.2.json도, 패키지 폴더도, 단일 패키지도 찾지 못했습니다." | "주소와 브랜치, 저장소 안의 패키지라면 폴더 칸을 확인하세요." |
+| · `other-app-plugin` | E | "다른 앱용 플러그인입니다(`.claude-plugin/`나 `.codex-plugin/`)." | "플러그인 스튜디오의 *플러그인 가져오기*를 쓰세요(`extensions-and-plugins.md` §2.4)." |
+| `SOURCE_INDEX_INVALID` | E | "<소스>의 인덱스가 올바르지 않습니다(<파일>: <문제>). 마지막 정상 버전을 계속 씁니다." | "마켓플레이스 소유자에게 알리세요." *세부 정보 복사* |
+| `SOURCE_HISTORY_REWRITTEN` | E | 공식·관리: "<소스>의 이력이 다시 쓰여 마지막 정상 버전을 유지합니다." 커스텀·직접: "…새 이력을 검토한 뒤 쓰세요." | 커스텀·직접: *검토* |
+| `SOURCE_DISABLED` | E | 지금 문장 | *소스 보이기* |
+| `SOURCE_NAME_RESERVED`, `SOURCE_ID_INVALID` | E | "<id>는 예약되었거나 올바른 ID가 아닙니다(소문자·숫자·`-` 2–63자)." | "다른 ID를 고르세요." |
+| `SOURCE_ID_TAKEN` | E | "<저장소나 폴더>는 이미 <id>로 추가되어 있습니다" 또는 "<id>는 이미 쓰입니다" | *<id> 보기* 또는 "다른 ID를 고르세요." |
+| `GIT_RUNTIME_MISSING`, `GIT_RUNTIME_TOO_OLD` | E | 지금 문장 | *Git 설치* |
+| `GIT_RUNTIME_INSTALL_FAILED` · `<phase>` | E | "git 설치가 <단계>에서 실패했습니다(<이유>)." | *다시 시도*; "네트워크가 GitHub 다운로드를 막으면 git을 직접 설치하고 *시스템*을 고르세요." |
+| `PLAN_EXPIRED` · `expired`, `replaced`, `folder-changed`, `policy-changed` | E | 지금 문장; 폴더는 "검토하는 동안 폴더가 바뀌었습니다.", 정책은 "검토하는 사이 조직 정책이 바뀌었습니다." | 새 계획으로 검토를 다시 엶 |
+| `PACKAGE_INCOMPATIBLE` · `min_app_version` / `platform` / `prerelease` / `rollout` / `host_protocol` | E | "<이름>에는 Ave <버전>이 필요합니다" / "<OS>용이 없습니다" / "사전 릴리스만 있습니다" / "단계적으로 배포 중이며 나중에 제안됩니다" / "더 새 플러그인 프로토콜이 필요합니다" | *Ave 업데이트* / — / "업데이트에서 사전 릴리스를 켜세요" / — / *Ave 업데이트* |
+| `PACKAGE_COMPAT_UNDECLARED` | E | "플러그인이 필요한 Ave 버전(`requires.minAppVersion`)을 선언하지 않았습니다." | "작성자에게 선언을 요청하세요." |
+| `PACKAGE_YANKED`, `PACKAGE_REVOKED` | E | "<소스>가 철회했습니다: <이유>." | "다른 버전을 고르거나 제거하세요." |
+| `PACKAGE_ID_CONFLICT` | E | "<이름>은 <다른 소스>에서 설치되어 있습니다." | *<소스>로 전환*(데이터 유지, §15.1) |
+| `ARTIFACT_NOT_PINNED` | S | 단계 목록: "마켓플레이스가 이 다운로드를 고정하지 않아 건너뛰었습니다." | — |
+| `ARTIFACT_DIGEST_MISMATCH` | E | "<호스트>에서 받은 파일이 마켓플레이스가 고정한 파일이 아니어서 아무것도 설치하지 않았습니다." | "나중에 다시 시도하고, 계속되면 소유자에게 알리세요." |
+| `MANIFEST_MISMATCH` · `<field>` | E | "패키지 파일이 마켓플레이스 항목(<필드>)과 달라 아무것도 설치하지 않았습니다." | "마켓플레이스 소유자에게 알리세요." *세부 정보 복사* |
+| `NO_INSTALLABLE_ARTIFACT` · `rungs`, `folder-has-no-build` | E | "<이름>에 쓸 수 있는 다운로드가 없습니다:"와 단계별 문장; 폴더는 "폴더에 빌드된 플러그인(`plugin.json`과 `dist/`)이 없습니다." | 첫 단계의 조치; 폴더는 "`dist/`로 빌드하거나 git 저장소를 대신 추가하세요." |
+| `process-entry-unsupported`(오늘 `main`, `errors.ts:37`; P3가 제거) | E | 지금 문장(`labels.ts:114`, `formatIpcError.processEntryUnsupported`): 이 버전은 별도 프로세스를 띄우는 플러그인을 실행하지 않음 | "별도 프로세스가 없는 버전을 쓰거나 Ave 업데이트를 기다리세요." |
+| `process-entry-requires-pinned-artifact`(P3가 추가) | E | "이 익스텐션은 프로그램을 실행하므로, 마켓플레이스가 고정한 릴리스에서만 설치합니다." | "릴리스를 고정한 마켓플레이스에서 설치하세요." (Publication 계획 소유) |
+| `process-entry-unconfined`(P3가 추가) | E | Publication 계획 소유(런타임 거부) | Publication 계획 소유 |
+| `invalid-request` | E | "Ave가 이 버전이 이해하지 못하는 요청을 보냈습니다. 버그입니다." | *세부 정보 복사* |
+| `unavailable` | E | "마켓플레이스가 시작하거나 응답하지 못했습니다(<메시지>)." | "Ave를 다시 시작하고, 계속되면 *세부 정보 복사*." |
+| `unauthorized-frame` | — | 보이지 않음: 감사 기록만 남고 표시할 응답 없음 | — |
+| 업데이트 `needs-review` | S | "<이름> <버전>이 설치된 버전보다 많은 것을 요청합니다:"와 `consentDelta`의 각 행 | *검토* |
+| 업데이트 `waiting` | S | "대화가 멈추면 적용합니다." 30분 뒤 "업데이트 <n>개가 대화가 멈추기를 기다립니다." | 30분 뒤 *지금 적용* |
+| 업데이트 `failed` | S | 실패 문장과 "<n>/3회 시도" | *다시 시도*, *자세히* |
+| 업데이트 적용됨, 실행 안 됨 | S | "<이름> <버전>을 설치했지만 시작하지 못했습니다." | "Ave를 다시 시작하세요." |
+| 탐색 `offline` | S | "오프라인 — 마지막 확인 <시각>." | "네트워크가 돌아오면 다시 확인합니다." |
+
+### 18.9 설정, IPC, preload, 잠금 스위트, UI
+
+**설정** — `MarketplaceSettings`(`settings-store.ts:893-959`), `normalizeMarketplace`
+(`settings-normalization.ts:921`):
+
+| 키 | 타입 | 기본값 | 비고 |
+|---|---|---|---|
+| `autoUpdate` | `boolean` | 비어 있음 = `true` | 전역 스위치 |
+| `autoUpdateSources` | `Record<sourceId, "on" \| "off">` | 비어 있음 | 잘못된 ID(`SOURCE_ID_RE`)나 값은 정규화기가 버림; null 프로토타입 맵 |
+| `autoUpdatePackages` | `Record<string, "on" \| "off">` | 비어 있음 | `packageUpdateSkipKey`가 키, `normalizeSkippedPluginUpdateKey`로 정규화 |
+| `updateCheckIntervalMs` | `number` | 비어 있음 = 6시간 | 그대로: 탐색 간격(§18.7.1); `0`과 15분 하한 그대로. 24시간 적용 주기는 설정이 아님 |
+| `updateCheckEnabled`, `skippedPluginUpdates` | — | — | 그대로 |
+
+렌더러는 기존 설정 채널로 이것들을 씁니다. http 전제 조건은 설정이 **아닙니다**: main만
+기록하는 소스 확인 `unencrypted-updates`입니다.
+
+**IPC와 preload** — 새 채널은 모두 호스트 렌더러 전용(`validateHostRendererSender`)이고
+감사합니다(§13).
+
+| 채널 | 변경 | 요청 | 응답 |
+|---|---|---|---|
+| `ave:marketplace:sources:preview` | 바뀜 | `SourcePreviewRequest`(`shared/git-marketplace.ts:73-82`)에 `acknowledge?: SourceWarning[]`; `input`이 폴더도 받음 | 유니언에 `{ type: "confirm"; warnings: SourceWarningView[] }` |
+| `ave:marketplace:sources:list` | 바뀜 | — | `SourceStatusView`의 `unreachable`과 `auth-required`에 `detail?`(§18.8) |
+| `ave:marketplace:sources:acknowledge` | 새 | `(id, warnings: SourceWarning[])` | 동기화 뒤의 `SourceView` |
+| `ave:marketplace:sources:pick-folder` | 새 | `()`; main이 폴더 대화상자를 띄움 | `{ path } \| null` |
+| `ave:marketplace:sources:reveal` | 새 | `(id)`; 폴더 소스만 — 경로가 아니라 ID | `null` |
+| `ave:marketplace:updates:status` | 새 | `()` | `UpdateStatusView` |
+| `ave:marketplace:updates:check` | 새 | `()`; 진행 중인 탐색에 합류 | 그 탐색이 끝날 때 `UpdateStatusView`(§18.7.1) |
+| `ave:marketplace:updates:apply-now` | 새 | `()`; 큐의 유휴 게이트를 건너뜀(§18.7.4) | `UpdateStatusView` |
+| `ave:marketplace:install:execute` | 바뀜 | `plugin`도 구성 요소 동의를 받음(§18.7.3) | — |
+| `marketplace:update-status` | 새 이벤트 | — | 바뀔 때 `UpdateStatusView` |
+| `marketplace:updates-available` | 유지 | — | `PackageUpdateView`(`:351-356`)에 `state: "manual" \| "needs-review" \| "failed"`; 사용자가 필요한 업데이트만 |
+| 모든 채널 | 바뀜 | — | 실패 봉투에 `detail?`(§18.8) |
+
+타입(`SourceWarning`, `SourceWarningView`, `SourceView` 추가 필드, `UpdatePlanView.consentDelta`,
+`UpdateStatusView`)은 원문 §18.9의 코드 블록과 같습니다.
+
+`CHANNELS.gitMarketplace`(`app-contract.ts:302-327`)에 `sourcesAcknowledge`,
+`sourcesPickFolder`, `sourcesReveal`, `updatesStatus`, `updatesCheck`, `updatesApplyNow`,
+`updateStatusChanged`를 더합니다. `GitMarketplaceApi`(`shared/git-marketplace.ts:414-448`)와
+그 preload 표면(`git-marketplace-api-surface.ts:38-64`)에 `acknowledgeSource`, `pickFolder`,
+`revealSource`, `updateStatus`, `checkUpdates`, `applyUpdatesNow`, `onUpdateStatus`를
+더합니다. `onMarketplaceUpdatesAvailable`(`internal-api-surface.ts:589-593`)은 이름을
+유지합니다.
+
+**잠금 스위트**
+
+| 스위트 | 슬라이스 | 변경 |
+|---|---|---|
+| `src/data/__tests__/settings-store.test.ts` | E | 새 키 셋과 정규화; `updateCheckIntervalMs` 그대로 |
+| `src/ipc/__tests__/channel-inventory.test.ts` | C, D1, D2, E, F | C `sources:acknowledge`; D2 `sources:pick-folder`, `sources:reveal`; E `updates:status`, `updates:check`, `marketplace:update-status`; F `updates:apply-now`. D1은 채널을 더하지 않고, 스위트를 돌려 그것을 증명 |
+| `src/ipc/__tests__/host-renderer-only-channels.test.ts` | C, D2, E, F | 새 invoke 채널마다 |
+| `src/__tests__/preload-shape.test.ts` | C, D2, E, F | `gitMarketplace` 멤버 목록 |
+| `src/ipc/__tests__/domain-exports.test.ts` | 없음 | 핸들러는 기존 `src/ipc/domains/git-marketplace.ts` 내보내기에 들어감; 런타임 내보내기를 얻는 도메인 없음 |
+
+**UI**
+
+- **업데이트 카드**(설정 → 마켓플레이스, §15.7의 Git 런타임 카드 옆):
+  - "패키지를 자동으로 업데이트", 정책 값이 있으면 정책 문구와 함께 잠김;
+  - "시작할 때와 하루 한 번 업데이트 확인 · 마지막 확인 <시각> · 다음 <시각>";
+  - *지금 확인*, 업데이트가 기다리는 동안 *지금 적용*;
+  - 사용자가 필요한 업데이트와 그 조치;
+  - 최근 자동 업데이트와 *바뀐 점*.
+- **소스 행**: 배지(§18.5); *허용…*; detail을 담은 상태(§18.8); *자동 업데이트* 선택
+  (*기본(켬)* / *켬* / *끔*). http 소스에서 켜면 `unencrypted-updates`를 먼저 보여
+  줍니다. 폴더 행은 §18.4.8대로.
+- **설치됨 행**: 업데이트 상태(§18.7.5)와 *자동 업데이트* 선택.
+- **추가 대화상자**: *폴더 선택…*, 트래픽이나 폴더 접근 전의 확인 단계(§18.5),
+  미리보기의 배지.
+- **업데이트 검토**: `consentDelta` 항목마다 행 하나; 바뀌었거나 새로 생긴 MCP 서버와
+  훅의 승인 상자, 익스텐션 포함(§18.7.3).
+- **패키지 시트**: 폴더 출처; http와 사내망 전달 라벨.
+- **문제 표시**: `MarketplaceProblem`(§18.8). 목업은 슬라이스 G에서 이 상태들을 더합니다.
+
+### 18.10 전달
+
+각 슬라이스는 강제·테스트·메시지 키를 함께 담아 `main`에 독립적으로 병합됩니다. 경고와
+거부 없이 새 입력을 받는 슬라이스는 없고, 중간 커밋을 녹색으로 두려고 대체 경로를 더하는
+슬라이스도 없습니다. 각 슬라이스는 만든 것에 대해 해당 절(§7, §12, §13, §14, §15, §17)을
+고쳐 쓰고 §18을 가리키는 문구를 지웁니다.
+
+| 슬라이스 | 범위 | 선행 | 병렬 가능 | 잠금 스위트 |
+|---|---|---|---|---|
+| **A. 설계** | 이 절; §1–§17의 안내 문구; 아키텍처 제안서(결정 D11, D12, §8, §9.1); `extensions-and-plugins.md` §3.2 문장; 한국어 미러 | — | — | 없음 |
+| **B. 메시지** | 오류 `detail`, 봉투, `detail`의 소스 상태 경로(`SyncResult`, `lastSync.detail`, 검증기, `sourceStatus`), 사유 없는 문장을 포함한 빠짐없는 `failureText`, `MarketplaceProblem`, 기존 모든 코드·사유의 문장, git 실패 분류(호스트 키 변경, 나열된 ref, 닿지 않는 이유) | A | Publication 계획의 P3 | 없음 |
+| **C. 대상 분류, 경고, 연결 묶기(git과 다운로드)** | `classifyAddress`, `addressPolicy`, 고정 다운로드 전송과 git 주소 고정(§18.2.4), 게이트 판정, 미리보기 확인, `acknowledged`, `sources:acknowledge`, `internal-downloads`를 포함한 카탈로그 규칙, http 위 자격 증명, 정책 `requireHttps`·`blockPrivateNetworks`, `PolicySource`와 정책 새로 읽기(§18.6), 거부 #1–4와 #7, 추가 대화상자 확인, 배지, *허용…* | B | E | channel-inventory, host-renderer-only-channels, preload-shape |
+| **D1. 폴더 소스: 엔진과 동의** | 네 단계의 `source-input.ts`, `native/windows-path-kind/`와 그 CI 실행, `FolderFs`, `SourceTree`와 `FolderTree`, 레지스트리 `path`, 리비전, 모든 종류의 폴더 읽기·스냅숏·계획 확보·설치, `folder` 단계와 영수증, 폴더 직접 설치, 정책 `path:`·`allowLocalSources`·`additional[].path`, `SOURCE_LOCAL_UNREADABLE`, `network-folder` 경고와 그 키, 거부 #5–6, 폴더 경로의 `process` 거부(§18.4.9) | C(확인 흐름과 `acknowledged`) | E | channel-inventory(변경 없음을 단언) |
+| **D2. 폴더 소스: UI** | `sources:pick-folder`, `sources:reveal`, *폴더 선택…*, 폴더 행과 출처 | D1 | E, F | channel-inventory, host-renderer-only-channels, preload-shape |
+| **E. 탐색과 상태** | 기한 규칙, 한 시간 기한 확인과 resume, 시도·성공 시각, `updates.json`, `UpdateStatusView`, `updates:status` / `updates:check` / `marketplace:update-status`, 설정 키, 읽기 전용 업데이트 카드, 알약 필터 | B | C, D1, D2 | settings-store, channel-inventory, host-renderer-only-channels, preload-shape |
+| **F. 자동 적용** | `consentFingerprint`, 승인 다이제스트, 기준선 저장과 기존 설치의 계산, `ConsentDelta`와 검토의 바이트 묶기, 익스텐션 구성 요소 동의, 신뢰 저장소 v3와 두 경로의 이어가기, 두 검사 지점, `onIdle`과 상한 있는 대기를 갖춘 적용 큐, `updates:apply-now`, 에이전트 플러그인 리스 비우기, 커밋 뒤 결과와 콘텐츠 디렉터리 정리, 전제 조건과 결정 순서, 필수 설치 규칙, 실패 횟수, 롤백 시 건너뛰기, `autoUpdated` 알림, 스위치, `unencrypted-updates` | C, D1, E | D2 | channel-inventory, host-renderer-only-channels, preload-shape |
+| **G. 문서와 목업** | `web/app/docs/marketplace/*`(ko, en)의 폴더·경고·자동 업데이트; 목업 상태; 남은 안내 문구 정리 | D2, F | — | 없음 |
+
+**순서.** A, 그다음 B. 그다음 C와 E를 각자의 체크아웃에서 병렬로. 그다음 C 뒤에 D1,
+D1 뒤에 D2; D1과 E 뒤에 F; G는 마지막입니다.
+
+- C와 E 중 나중에 병합하는 쪽이 `shared/git-marketplace.ts`, `app-contract.ts`, preload
+  표면, 잠금 스냅숏의 문자적 충돌을 리베이스로 풉니다.
+- D1과 D2는 각각 독립적으로 병합할 수 있습니다. D1은 기존 미리보기 채널로 폴더 입력을
+  받으며 동의, 정책, 거부를 모두 갖춥니다. D2는 대화상자와 표시만 더합니다.
+- Publication 계획(`f38c5700d`, 미병합; §18.4.9)은 `errors.ts`, `labels.ts`,
+  `plugin-ladder.ts`, `direct-package.ts`, `plugins/marketplace.ts`를 건드립니다:
+  - B와 P3 중 나중에 병합하는 쪽이 그때 있는 `process` 코드를 `failureText`에 넣고;
+  - D1과 P4 중 나중에 병합하는 쪽이 폴더 거부를 유지합니다.
+
+**모든 슬라이스의 게이트**:
+
+- `bun run typecheck`;
+- 대상 Vitest 디렉터리(`bun run test:vitest -- run <dirs>`);
+- 위에 적은 잠금 스위트;
+- 키가 바뀌면 `bun run check:i18n-catalog`;
+- GNU grep으로 돌린 naming 게이트;
+- 게시할 때 한 번, pre-push 훅의 전체 `bun run test`와 `bun run build`.
+
+아래 E2E 흐름은 `test/e2e/ui/`에서 돕니다.
+
+**되돌리면 실패하는 테스트**는 원문 §18.10의 목록과 같습니다. 테스트 이름, 픽스처,
+되돌림 대상은 원문을 따릅니다. 이번 개정에서 더한 것의 요지:
+
+- **B**: 백그라운드 동기화 실패의 detail이 레지스트리를 디스크에서 다시 연 뒤에도
+  `sources:list`에 남고 지역화 문장으로 보임(되돌림: 코드만 영속).
+- **C**: DNS 재바인딩 사례(첫 조회는 공개, 이후는 메타데이터·루프백)에서 연결은 첫 응답으로만
+  감; `internal-network`만 가진 소스는 다른 사내 호스트 다운로드에 실패; 관리 http 소스의
+  저장 토큰도 `token-unencrypted` 없이는 askpass를 받지 못함; 실행 중 정책 파일을 바꾸면
+  다음 미리보기가 막히고 기존 계획은 `policy-changed`로 만료.
+- **D1**: 호출 기록 가짜로, UNC와 `\Device\Mup\…` 드라이브의 미리보기가
+  `queryDosDevice` 말고는 호출 0개로 `confirm`을 응답; `allowLocalSources: false`도 호출
+  0개로 차단; `root/a → root/b → \\attacker\share` 사슬과 조상의 정션이 `\\attacker`
+  경로 호출 없이 `link-to-network`; 대소문자를 구분하는 가짜 볼륨에서 두 표기는 두 소스이고
+  `allow`는 정확한 표기만, `block`은 모든 표기.
+- **D2**: E2E는 폴더 마켓플레이스 추가, 스킬 설치, 수정, *새로 고침* 뒤 행이 업데이트를
+  제안하는 데까지. 자동 적용은 F의 E2E.
+- **E**: 오프라인 탐색은 간격 뒤가 아니라 다음 한 시간 기한 확인에서 재시도; 성공한 탐색은
+  6시간 동안 반복하지 않음; 적용 확인은 부팅 때와 24시간 뒤; `updates:check`는 적용 큐가
+  기다리는 동안에도 탐색이 끝나면 돌아옴.
+- **F**: 선언(`.mcp.json`)은 그대로 두고 `dist/server.js`나 그것이 불러오는 파일을
+  바꾸면 승인 다이제스트가 바뀌어 검토가 필요하고 승인은 이어지지 않음; 스킬 텍스트만
+  바꾸면 이어짐; 핀 없는 런처는 `null`; 0.12의 실제 버전 2 신뢰 파일이 읽히고 다음 쓰기는
+  버전 3; 게시 실패 때 임시 승인이 철회되어 저장소가 시도 전과 같음; 이전 세대에서 진행
+  중인 MCP 호출이 끝난 뒤에야 끊김; 턴 없는 세션 변경이 끝나면 적용됨; 커밋 뒤 게시
+  실패는 `applied-not-running`이고 시도로 세지 않음; 필수 설치는 바뀐 권한을 스위치가
+  꺼져 있어도 적용하지만 바뀐 MCP 서버는 승인하지 않음; 전용 E2E
+  `git-marketplace-auto-update.spec.ts`는 `isE2eTestRuntime()`일 때만 읽는
+  `AVE_E2E_MARKETPLACE_SCHEDULER=1`로 실제 스케줄러를 띄우고, `unencrypted-updates`를
+  확인한 뒤 *지금 확인*으로 실제 설치와 IPC 상태를 단언(상태 이벤트를 흉내 내지 않음).
+
+### 18.11 결정
+
+결정 1–38의 표는 원문 §18.11과 같습니다. 요지:
+
+| # | 결정 요지 |
+|---|---|
+| 1–4 | 네 가지 결과, 입력·카탈로그 대상 표 분리, 주소 분류를 `network-guard.ts` 한 곳에서, 트래픽이나 폴더 접근 전 한 번 확인, 분류 단위 저장 |
+| 5–7 | 카탈로그 http 다운로드는 sha256 핀으로 수용; 다른 사내 호스트는 `internal-downloads` 확인(`internal-network`로 생기지 않음, 경고가 공격을 설명); 다른 포트의 루프백은 거부 |
+| 8–15 | 폴더에 git 명령 없음, 작업 트리로 읽음, 제자리 읽기와 계획의 바이트 확보, 리비전 핀, 단일 `marketplace.json` URL과 `git://` 미지원, 텍스트로 따라가는 링크 규칙, 폴더 소스는 내려받지 않음(`folder` 단계), 정식 경로나 `dev`/`ino` 식별과 보수적 대소문자 규칙 |
+| 16–17 | 탐색(동기화·폐기)은 6시간, 업데이트 적용 확인은 부팅 때와 하루 한 번; 시도·성공 시각 분리, 실패·오프라인은 한 시간마다 재시도, 탐색은 적용 큐를 기다리지 않음 |
+| 18–28 | 모든 출처 기본 켬(http는 `unencrypted-updates` 전까지 끔), 결정 순서, 동의 지문과 `unknown` 필드는 검토, `mcp`는 항상 검토, 텍스트 구성 요소는 자동, 승인 다이제스트(선언·고정 파일·실행 클로저, 정할 수 없으면 `null`)와 임시 이어가기, 두 검사 지점과 바이트를 묶는 검토, `onIdle`과 30분 상한, 에이전트 플러그인 리스, 필수 설치는 권한만 정책이 승인, 롤백 시 건너뛰기, 커밋 전 실패만 세는 세 번 중단 |
+| 29–38 | 오류와 소스 상태의 `detail`, 빠짐없는 문장, 스튜디오 *파일에서 설치*는 그대로, 정책 키와 작업마다 정책 다시 읽기, http 자격 증명은 등재로 생기지 않음, 딥 링크 폴더 거부, 파일 호출 전 `QueryDosDeviceW`로 네트워크 폴더 분류, `process` 규칙 비완화, 스위치는 설정·http 전제는 main, 슬라이스 순서(D1은 C 뒤, F는 D1·E 뒤), 주소에 따른 거부를 연결에 묶기 |
