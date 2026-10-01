@@ -208,6 +208,16 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
    * volume, or changed while it was read. The last good snapshot stays
    * served, and the next read tries again.
    */
+  /**
+   * A folder that overlaps a folder source (§18.4.4): the same directory, one
+   * inside it, or one containing it, by path or through an alias. A new id
+   * cannot resolve these; the sentence says which source and what to do.
+   */
+  SOURCE_ID_TAKEN: {
+    "folder-already-added": { path: "string", existingId: "string" },
+    "folder-inside-source": { path: "string", existingId: "string", existingPath: "string" },
+    "folder-contains-source": { path: "string", existingId: "string", existingPath: "string" },
+  },
   SOURCE_LOCAL_UNREADABLE: {
     "not-found": { path: "string" },
     permission: { path: "string", message: "text" },
@@ -216,6 +226,8 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
     "not-a-directory": { path: "string" },
     "ambiguous-case": { path: "string" },
     "changed-during-read": { path: "string" },
+    /** The Windows folder classifier is missing or broken (§18.4.1 stage 2): Ave cannot tell whether `path` is on another computer. */
+    "classifier-unavailable": { path: "string" },
   },
   /**
    * A folder's file breaks a reading rule (§18.4.5, §5.4, §5.5): a link that

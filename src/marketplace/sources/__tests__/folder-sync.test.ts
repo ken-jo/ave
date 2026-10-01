@@ -122,6 +122,35 @@ describe("folder source reads", () => {
     expect(reloaded.gitCalls).toEqual([]);
   });
 
+  it("keeps a sync's broken-classifier failure as classifier-unavailable, read nothing, and renders reinstall advice after a reload", async () => {
+    const volume = new FakeVolume("win32", { drives: { "C:": "\\Device\\HarddiskVolume3" } })
+      .file("C:\\team\\marketplace.2.json", index([{ kind: "skill", name: "alpha", path: "skills/alpha" }]))
+      .file("C:\\team\\skills\\alpha\\ave-package.json", skill("alpha"))
+      .file("C:\\team\\skills\\alpha\\SKILL.md", "Write alpha.\n");
+    const folders = { fs: volume, platform: "win32" as const, limits: TEST_FOLDER_LIMITS };
+    const first = await folderService({ root, folders, home: "C:\\Users\\example" });
+    const preview = await first.service.previewSource({ input: "C:\\team", auth: "none" });
+    if (preview.type === "confirm") throw new Error("a local drive needs no confirmation");
+    await first.service.addSource({ previewId: preview.previewId, id: "team" });
+
+    volume.queryDosDevice = async () => {
+      throw new Error("the Windows folder classifier failed for C:: spawn EACCES. Reinstall Ave.");
+    };
+    const before = volume.calls.length;
+    const failed = await first.syncer.sync("team");
+    expect(failed).toMatchObject({ status: "failed", code: "SOURCE_LOCAL_UNREADABLE", detail: { reason: "classifier-unavailable", path: "C:\\team" } });
+    expect(volume.calls.slice(before)).toEqual([]);
+    first.service.close();
+
+    const reloaded = await folderService({ root, folders, home: "C:\\Users\\example" });
+    const [, row] = await reloaded.service.listSources();
+    expect(row).toMatchObject({ status: { state: "unreachable", code: "SOURCE_LOCAL_UNREADABLE", detail: { reason: "classifier-unavailable", path: "C:\\team" } } });
+    expect(sourceStatusDetail((key, vars) => translate("ko", key, vars), row!)).toBe(
+      "Ave의 폴더 분류 도구가 없거나 손상되어 C:\\team이(가) 다른 컴퓨터에 있는지 알 수 없습니다. Ave를 다시 설치하세요.",
+    );
+    reloaded.service.close();
+  });
+
   it("refuses to read a stored folder whose path now leads elsewhere, as moved, without reading the new target", async () => {
     const volume = new FakeVolume("linux").file("/srv/team/SKILL.md", "---\nname: note\ndescription: Note\n---\nBody.\n").file("/srv/other/SKILL.md", "---\nname: other\ndescription: Other\n---\nOTHER.\n");
     const folders = { fs: volume, platform: "linux" as const, limits: TEST_FOLDER_LIMITS };

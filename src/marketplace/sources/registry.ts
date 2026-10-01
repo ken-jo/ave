@@ -766,10 +766,7 @@ export class SourceRegistry {
         else if (source.ancestors.some(sameAs(recorded))) relation = "inside";
         else if (recorded.ancestors.some((ancestor) => sameAs(ancestor)(source))) relation = "contains";
       }
-      if (relation !== null) {
-        const how = relation === "same" ? "is already added as" : relation === "inside" ? "lies inside" : "contains";
-        throw new MarketplaceError("SOURCE_ID_TAKEN", `this folder ${how} ${existing.id}`);
-      }
+      if (relation !== null) throw folderOverlap(source.path, existing, relation);
     }
   }
 
@@ -1046,4 +1043,26 @@ export function folderRelation(path: string, other: string, platform: NodeJS.Pla
   for (let index = 0; index < shared; index += 1) if (a.segments[index] !== b.segments[index]) return null;
   if (a.segments.length === b.segments.length) return "same";
   return a.segments.length > b.segments.length ? "inside" : "contains";
+}
+
+/**
+ * SOURCE_ID_TAKEN for a folder that overlaps the folder source `existing`
+ * (§18.4.4): its reason names the relation, and its detail the source, so
+ * the sentence can say what to do. Another id would not help.
+ */
+function folderOverlap(path: string, existing: FolderSource, relation: "same" | "inside" | "contains"): MarketplaceError {
+  switch (relation) {
+    case "same":
+      return new MarketplaceError("SOURCE_ID_TAKEN", `this folder is already added as ${existing.id}`, {
+        detail: { reason: "folder-already-added", path, existingId: existing.id },
+      });
+    case "inside":
+      return new MarketplaceError("SOURCE_ID_TAKEN", `this folder lies inside ${existing.id} (${existing.path})`, {
+        detail: { reason: "folder-inside-source", path, existingId: existing.id, existingPath: existing.path },
+      });
+    case "contains":
+      return new MarketplaceError("SOURCE_ID_TAKEN", `this folder contains ${existing.id} (${existing.path})`, {
+        detail: { reason: "folder-contains-source", path, existingId: existing.id, existingPath: existing.path },
+      });
+  }
 }

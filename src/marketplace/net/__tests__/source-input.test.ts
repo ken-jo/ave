@@ -164,7 +164,7 @@ describe("stage 2: network classification without touching the path", () => {
     expect(await classifyFolder("U:\\m", "win32", volume)).toEqual({ network: true, server: "nas.corp" });
     // A drive the OS has no mapping for is a network folder: a wrong guess only warns.
     expect(await classifyFolder("Q:\\m", "win32", volume)).toEqual({ network: true, server: null });
-    expect(await classifyDosDeviceMapping("\\Device\\Unknown7", volume)).toEqual({ network: true, server: null });
+    expect(await classifyDosDeviceMapping("\\Device\\Unknown7", volume, 0, "Q:\\m")).toEqual({ network: true, server: null });
     // Only the drive letters were asked about; no path was touched.
     expect(volume.calls.every((call) => call.op === "queryDosDevice")).toBe(true);
     expect(volume.paths("queryDosDevice")).toEqual(["C:", "D:", "S:", "C:", "T:", "Z:", "R:", "Z:", "Z:", "W:", "U:", "Q:"]);
@@ -175,8 +175,12 @@ describe("stage 2: network classification without touching the path", () => {
     volume.queryDosDevice = async () => {
       throw new Error("Windows folder classifier is missing");
     };
-    await expect(classifyFolder("C:\\m", "win32", volume)).rejects.toThrow("Windows folder classifier is missing");
-    await expect(isNetworkLinkText("Z:\\x", "win32", volume)).rejects.toThrow("Windows folder classifier is missing");
+    await expect(classifyFolder("C:\\m", "win32", volume)).rejects.toMatchObject({
+      code: "SOURCE_LOCAL_UNREADABLE",
+      message: "cannot classify C:\\m: Windows folder classifier is missing",
+      detail: { reason: "classifier-unavailable", path: "C:\\m" },
+    });
+    await expect(isNetworkLinkText("Z:\\x", "win32", volume)).rejects.toMatchObject({ detail: { reason: "classifier-unavailable", path: "Z:\\x" } });
   });
 
   it("judges a link's text for a network location before anything resolves it (§18.4.5 rule 1)", async () => {

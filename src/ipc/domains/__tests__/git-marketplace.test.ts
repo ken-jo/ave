@@ -18,6 +18,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { latestBootstrapStatus } from "../../../boot/bootstrap-status.js";
 import { revocationRegistry, type RevocationRule } from "../../../plugins/revocation/revocation-registry.js";
+import { FakeVolume, TEST_FOLDER_LIMITS } from "../../../marketplace/__tests__/fixtures/folder-fs.js";
+import { folderService } from "../../../marketplace/__tests__/fixtures/folder-service.js";
+import { translate } from "../../../i18n/translate.js";
+import { ENTRY_SUBJECT, failureText } from "../../../ui/renderer/tabs/git-marketplace/labels.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
@@ -440,6 +444,71 @@ describe("git marketplace IPC boundary", () => {
     const answer = await invokeFileIpcHandler(handlers, channels.sourcesRefresh);
     expect(answer).toEqual({ ok: false, code: "SOURCE_UNREACHABLE", message: "git fetch failed: Could not resolve host", detail });
     expect(parseGitMarketplaceResult(answer)).toEqual(answer);
+  });
+
+  describe("folder refusals the renderer turns into advice (§18.4, §18.8)", () => {
+    /** The renderer's sentence for an envelope, in both catalogs. */
+    const sentences = (answer: unknown) => {
+      const parsed = parseGitMarketplaceResult(answer);
+      if (parsed.ok) throw new Error("expected a failure");
+      return {
+        en: failureText((key, vars) => translate("en", key, vars), parsed, ENTRY_SUBJECT),
+        ko: failureText((key, vars) => translate("ko", key, vars), parsed, ENTRY_SUBJECT),
+      };
+    };
+
+    it("answers a drive whose classifier cannot run with classifier-unavailable, rendered as reinstall advice", async () => {
+      const root = mkdtempSync(join(tmpdir(), "ave-ipc-folder-"));
+      const volume = new FakeVolume("win32").file("C:\\m\\SKILL.md", "---\nname: note\ndescription: d\n---\n");
+      volume.queryDosDevice = async () => {
+        throw new Error("Windows folder classifier is missing: C:\\Ave\\resources\\windows-path-kind\\x64\\ave-path-kind.exe. Reinstall Ave.");
+      };
+      const harness = await folderService({ root, folders: { fs: volume, platform: "win32", limits: TEST_FOLDER_LIMITS }, home: "C:\\Users\\example" });
+      try {
+        await setup({ previewSource: vi.fn((request: never) => harness.service.previewSource(request)) });
+        const answer = await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "C:\\m", auth: "none" });
+        expect(answer).toMatchObject({ ok: false, code: "SOURCE_LOCAL_UNREADABLE", detail: { reason: "classifier-unavailable", path: "C:\\m" } });
+        expect((answer as { message: string }).message).toContain("classifier is missing");
+        expect(sentences(answer)).toEqual({
+          en: "Ave cannot tell whether C:\\m is on another computer because its folder classifier is missing or broken. Reinstall Ave.",
+          ko: "Ave의 폴더 분류 도구가 없거나 손상되어 C:\\m이(가) 다른 컴퓨터에 있는지 알 수 없습니다. Ave를 다시 설치하세요.",
+        });
+      } finally {
+        harness.service.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("answers a folder overlapping a source with the relation and the source, rendered as what to do instead of another id", async () => {
+      const root = mkdtempSync(join(tmpdir(), "ave-ipc-folder-"));
+      const skill = "---\nname: note\ndescription: d\n---\n";
+      const volume = new FakeVolume("linux").file("/m/SKILL.md", skill).file("/m/inner/SKILL.md", skill);
+      const harness = await folderService({ root, folders: { fs: volume, platform: "linux", limits: TEST_FOLDER_LIMITS } });
+      try {
+        const outer = await harness.service.previewSource({ input: "/m", auth: "none" });
+        if (outer.type === "confirm") throw new Error("unexpected confirmation");
+        await harness.service.addSource({ previewId: outer.previewId, id: "team" });
+        await setup({
+          previewSource: vi.fn((request: never) => harness.service.previewSource(request)),
+          addSource: vi.fn((request: never) => harness.service.addSource(request)),
+        });
+        const preview = (await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "/m/inner", auth: "none" })) as { ok: true; value: { previewId: string } };
+        const inside = await invokeFileIpcHandler(handlers, channels.sourcesAdd, { previewId: preview.value.previewId, id: "inner" });
+        expect(inside).toMatchObject({ ok: false, code: "SOURCE_ID_TAKEN", detail: { reason: "folder-inside-source", path: "/m/inner", existingId: "team", existingPath: "/m" } });
+        expect(sentences(inside)).toEqual({
+          en: "/m/inner lies inside /m, which is already added as team, so its packages are listed there already. Use team, or remove it and add the folder you want.",
+          ko: "/m/inner은(는) 이미 team(으)로 추가된 /m 안에 있어 그 패키지가 이미 그 소스에 나옵니다. team을(를) 쓰거나, 지운 뒤 원하는 폴더를 추가하세요.",
+        });
+        const again = (await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "/m", auth: "none" })) as { ok: true; value: { previewId: string } };
+        const same = await invokeFileIpcHandler(handlers, channels.sourcesAdd, { previewId: again.value.previewId, id: "again" });
+        expect(same).toMatchObject({ ok: false, code: "SOURCE_ID_TAKEN", detail: { reason: "folder-already-added", path: "/m", existingId: "team" } });
+        expect(sentences(same).en).toBe("/m is already added as team. Use team, or remove it before adding this folder again.");
+        expect(sentences(same).ko).toBe("/m은(는) 이미 team(으)로 추가되어 있습니다. team을(를) 쓰거나, 지운 뒤 이 폴더를 다시 추가하세요.");
+      } finally {
+        harness.service.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
   });
 
   it("repairs through the refresh channel with the repair intent, and keeps a failed repair's code and detail", async () => {

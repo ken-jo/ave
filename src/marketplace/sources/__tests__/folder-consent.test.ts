@@ -181,16 +181,17 @@ describe("the Windows drive classifier (§18.4.1 stage 2)", () => {
     expect(volume.calls).toEqual([{ op: "queryDosDevice", path: "Q:" }]);
   });
 
-  it("fails with the classifier's own cause when it cannot run, never guessing a network folder", async () => {
+  it("fails as classifier-unavailable when the classifier cannot run, never guessing a network folder", async () => {
     const volume = windowsVolume().file("C:\\m\\SKILL.md", SKILL);
     volume.queryDosDevice = async () => {
       throw new Error("Windows folder classifier is missing: ave-path-kind.exe. Reinstall Ave.");
     };
-    const outcome = await preview(volume, "C:\\m").then(
-      (answer) => ({ answer }),
-      (error: unknown) => ({ error }),
-    );
-    expect(outcome).toEqual({ error: new Error("Windows folder classifier is missing: ave-path-kind.exe. Reinstall Ave.") });
+    const error = await refused(preview(volume, "C:\\m"));
+    expect(error).toMatchObject({
+      code: "SOURCE_LOCAL_UNREADABLE",
+      message: "cannot classify C:\\m: Windows folder classifier is missing: ave-path-kind.exe. Reinstall Ave.",
+      detail: { reason: "classifier-unavailable", path: "C:\\m" },
+    });
     expect(volume.calls).toEqual([]);
   });
 });

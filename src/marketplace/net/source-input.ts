@@ -238,22 +238,32 @@ async function networkLocation(path: string, platform: NodeJS.Platform, fs: Fold
       return { key: `\\\\${server}\\${share}`.toLowerCase(), server: server === "" ? null : server };
     }
     const drive = path.slice(0, 2).toUpperCase();
-    const network = await classifyDrive(drive, fs, 0);
+    const network = await classifyDrive(drive, fs, 0, path);
     return network.network ? { key: drive, server: network.server } : null;
   }
   return automountLocation(path, platform);
 }
 
 /**
- * A drive letter's class from its mapping. The helper answers null when the
- * OS has no mapping for the drive, which is `network` (a wrong guess only
- * warns); a helper that cannot run or answers outside its protocol throws,
- * and that failure is the caller's, never a classification.
+ * A drive letter's class from its mapping, for `subject` (the path or link
+ * text being judged). The helper answers null when the OS has no mapping for
+ * the drive, which is `network` (a wrong guess only warns). A helper that
+ * cannot run or answers outside its protocol is never a classification: it
+ * is SOURCE_LOCAL_UNREADABLE `classifier-unavailable`, whose sentence says to
+ * reinstall Ave; the helper's own words stay in the message.
  */
-async function classifyDrive(drive: string, fs: FolderFs, depth: number): Promise<FolderNetwork> {
-  const mapping = await fs.queryDosDevice(drive);
+async function classifyDrive(drive: string, fs: FolderFs, depth: number, subject: string): Promise<FolderNetwork> {
+  let mapping: string | null;
+  try {
+    mapping = await fs.queryDosDevice(drive);
+  } catch (error) {
+    throw new MarketplaceError("SOURCE_LOCAL_UNREADABLE", `cannot classify ${subject}: ${errorMessage(error)}`, {
+      cause: error,
+      detail: { reason: "classifier-unavailable", path: subject },
+    });
+  }
   if (mapping === null) return { network: true, server: null };
-  return classifyDosDeviceMapping(mapping, fs, depth);
+  return classifyDosDeviceMapping(mapping, fs, depth, subject);
 }
 
 /**
@@ -262,10 +272,10 @@ async function classifyDrive(drive: string, fs: FolderFs, depth: number): Promis
  * Everything else names a redirector or an unknown device and is `network`,
  * with the server when the mapping names one.
  */
-export async function classifyDosDeviceMapping(mapping: string, fs: FolderFs, depth = 0): Promise<FolderNetwork> {
+export async function classifyDosDeviceMapping(mapping: string, fs: FolderFs, depth: number, subject: string): Promise<FolderNetwork> {
   if (/^\\Device\\(?:HarddiskVolume|CdRom|Floppy)\d+$/iu.test(mapping)) return { network: false };
   const subst = /^\\\?\?\\([A-Za-z]:)(?:\\.*)?$/su.exec(mapping);
-  if (subst) return depth >= MAX_SUBST_DEPTH ? { network: true, server: null } : classifyDrive(subst[1]!.toUpperCase(), fs, depth + 1);
+  if (subst) return depth >= MAX_SUBST_DEPTH ? { network: true, server: null } : classifyDrive(subst[1]!.toUpperCase(), fs, depth + 1, subject);
   return { network: true, server: serverOfMapping(mapping) };
 }
 
@@ -305,9 +315,9 @@ function automountLocation(path: string, platform: NodeJS.Platform): NetworkLoca
  */
 export async function isNetworkLinkText(text: string, platform: NodeJS.Platform, fs: FolderFs): Promise<boolean> {
   const extendedDrive = /^(?:[\\/]{2}\?|\\\?\?)[\\/]([A-Za-z]:)(?:[\\/]|$)/u.exec(text);
-  if (extendedDrive) return platform === "win32" ? (await classifyDrive(extendedDrive[1]!.toUpperCase(), fs, 0)).network : true;
+  if (extendedDrive) return platform === "win32" ? (await classifyDrive(extendedDrive[1]!.toUpperCase(), fs, 0, text)).network : true;
   if (/^[\\/]{2}/u.test(text) || /^\\\?\?\\/u.test(text)) return true;
-  if (platform === "win32") return DRIVE_ANY.test(text) ? (await classifyDrive(text.slice(0, 2).toUpperCase(), fs, 0)).network : false;
+  if (platform === "win32") return DRIVE_ANY.test(text) ? (await classifyDrive(text.slice(0, 2).toUpperCase(), fs, 0, text)).network : false;
   return text.startsWith("/") && automountLocation(text, platform) !== null;
 }
 

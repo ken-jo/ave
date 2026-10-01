@@ -435,7 +435,18 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
     }
     case "SOURCE_NAME_RESERVED": return t("gitMarketplace.error.nameReserved");
     case "SOURCE_ID_INVALID": return t("gitMarketplace.error.idInvalid");
-    case "SOURCE_ID_TAKEN": return t("gitMarketplace.error.idTaken");
+    case "SOURCE_ID_TAKEN": {
+      const detail = parseMarketplaceErrorDetail(code, failure.detail);
+      if (!detail) return t("gitMarketplace.error.idTaken");
+      switch (detail.reason) {
+        case "folder-already-added": return t("gitMarketplace.error.idTaken.folderAlreadyAdded", { path: detail.path, id: detail.existingId });
+        case "folder-inside-source":
+          return t("gitMarketplace.error.idTaken.folderInsideSource", { path: detail.path, id: detail.existingId, existingPath: detail.existingPath });
+        case "folder-contains-source":
+          return t("gitMarketplace.error.idTaken.folderContainsSource", { path: detail.path, id: detail.existingId, existingPath: detail.existingPath });
+      }
+      return unhandled(detail);
+    }
     case "SOURCE_AUTH_REQUIRED": return authRequiredText(t, parseMarketplaceErrorDetail(code, failure.detail), subject);
     case "SOURCE_SSH_HOST_UNKNOWN": {
       const detail = parseMarketplaceErrorDetail(code, failure.detail);
@@ -502,6 +513,7 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
         case "not-a-directory": return t("gitMarketplace.error.localUnreadable.notADirectory", { path: detail.path });
         case "ambiguous-case": return t("gitMarketplace.error.localUnreadable.ambiguousCase", { path: detail.path });
         case "changed-during-read": return t("gitMarketplace.error.localUnreadable.changedDuringRead", { path: detail.path });
+        case "classifier-unavailable": return t("gitMarketplace.error.localUnreadable.classifierUnavailable", { path: detail.path });
       }
       return unhandled(detail);
     }
