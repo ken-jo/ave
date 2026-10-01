@@ -3122,8 +3122,10 @@ revision.
   the canonical path decides. Two spellings of one folder are then treated as
   two sources, which can list a package twice but admits nothing new.
 - A folder that is already a source, or that contains or lies inside one, is
-  refused with `SOURCE_ID_TAKEN` naming that source: nesting would list
-  packages twice. Paths decide first; then identities, which see through an
+  refused with `SOURCE_ID_TAKEN` naming that source: folder sources may not
+  overlap, since nesting can list a package twice (whether it does depends
+  on what the outer index lists, so the sentence says only that they
+  overlap). Paths decide first; then identities, which see through an
   alias (a second drive letter or share for one directory, a firmlink, a
   bind mount). Stage 4 records the `dev`/`ino` of the folder and of every
   directory above it on the canonical path, and each read stores them in
@@ -3237,7 +3239,10 @@ recording fake.
 *Install from Git URL or folder…* (§15.1) takes a folder path or *Choose
 folder…*. Detection is §8.1's, at the folder root. The result is a `direct`
 source with a `path`; it updates when the package's digest changes (§18.7.6).
-A synthesized version (§8.2) is `0.0.0+t<digest12>`.
+A synthesized version (§8.2) is `0.0.0+t<digest12>`. Reading the bundle's
+files keeps a failure's own reason (a link rule of §18.4.5, an unreadable
+folder, `classifier-unavailable`); only a tree that breaks the package's
+content rules is `SOURCE_INDEX_INVALID`.
 
 - The plugin studio's *Install from file* (`plugin-studio.ts:168-175`) stays a
   one-time, source-less install of a zip or folder (decision 30).
