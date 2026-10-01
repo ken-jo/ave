@@ -1,0 +1,9 @@
+{
+  "extends": "../tsconfig.json",
+  "include": [],
+  "files": ["lib/plugin-host-protocol-client-assertions.ts"],
+  "compilerOptions": {
+    "noEmit": true,
+    "incremental": false
+  }
+}

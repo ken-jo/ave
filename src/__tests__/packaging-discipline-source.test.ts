@@ -681,6 +681,7 @@ describe("installer smoke and packaging discipline", () => {
       "node scripts/check-generated-assets.mjs",
       "bun run check:plugin-host-protocol-schema",
       "bun run check:plugin-host-protocol-mirror",
+      "bun run check:plugin-host-protocol-client",
       "bun run check:i18n-catalog",
       "bun run check:i18n-barrels",
       "node scripts/check-no-tls-bypass.mjs",
@@ -691,7 +692,7 @@ describe("installer smoke and packaging discipline", () => {
       "bun run check:source-text-safe",
     ]);
 
-    // Of those twelve, the six that a later command in the same composite
+    // Of those thirteen, the seven that a later command in the same composite
     // compiles behind. ci.yml's comment states this number; this is where it
     // comes from.
     const lastCompile = commands.reduce(
@@ -707,6 +708,7 @@ describe("installer smoke and packaging discipline", () => {
       "node scripts/check-generated-assets.mjs",
       "bun run check:plugin-host-protocol-schema",
       "bun run check:plugin-host-protocol-mirror",
+      "bun run check:plugin-host-protocol-client",
       "bun run check:i18n-catalog",
       "bun run check:i18n-barrels",
     ]);
@@ -719,6 +721,24 @@ describe("installer smoke and packaging discipline", () => {
     expect(readRepoFile("scripts/release.mjs")).toContain(
       'run("node", ["scripts/sync-plugin-host-protocol-mirror.mjs"]);',
     );
+  });
+
+  it("checks the protocol client after the mirror and regenerates it after the schema on release", () => {
+    expect(packageScripts["check:plugin-host-protocol-client"]).toBe(
+      "node --import tsx scripts/generate-plugin-host-protocol-client.ts --check",
+    );
+    expect(packageScripts["generate:plugin-host-protocol-client"]).toBe(
+      "node --import tsx scripts/generate-plugin-host-protocol-client.ts",
+    );
+    // The client is a projection of the committed schema, so it regenerates
+    // after the schema does, and before the build that checks both.
+    const release = readRepoFile("scripts/release.mjs");
+    const schema = release.indexOf('run("bun", ["run", "generate:plugin-host-protocol-schema"]);');
+    const client = release.indexOf('run("bun", ["run", "generate:plugin-host-protocol-client"]);');
+    const build = release.indexOf('"scripts/build-installers.mjs"');
+    expect(schema).toBeGreaterThan(-1);
+    expect(client).toBeGreaterThan(schema);
+    expect(build).toBeGreaterThan(client);
   });
 
   it("keeps the composite that orders a hygiene scan first out of CI", () => {
