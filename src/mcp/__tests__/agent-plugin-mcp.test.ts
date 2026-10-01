@@ -23,7 +23,7 @@ function fixture(command: string, args: string[] = [], cwd?: string) {
   const parsed = parsePortableMcp(JSON.stringify({ $schema: SCHEMA, mcpServers: { local: { type: "stdio", command, args, ...(cwd ? { cwd } : {}) } } }));
   const projected = projectPortableMcp(parsed);
   const staticServers = { local: { ...projected.local!, digest: "a".repeat(64) } } as AgentPluginComponents["mcpServers"];
-  return { staticServers, generationRoot, dataDir, activation: { packageName: "kit", version: "1.0.0", generationRoot, dataDir, activationId: "run-a", generationId: "tree-a" } };
+  return { staticServers, generationRoot, dataDir, activation: { packageName: "kit", version: "1.0.0", generationRoot, dataDir, activationId: "run-a", generationId: "tree-a", approvalDigests: { local: "c".repeat(64) } } };
 }
 
 describe("agent plugin MCP runtime resolution", () => {
@@ -62,5 +62,12 @@ describe("agent plugin MCP runtime resolution", () => {
     expect(snapshot).not.toContain(item.dataDir);
     expect(snapshot).not.toContain("run-a");
     expect(projection.config.transport === "stdio" && projection.config.cwd).toBe(realpathSync(item.dataDir));
+  });
+
+  it("carries the server's approval digest and refuses an activation that has none", () => {
+    const item = fixture("node", ["./server/run"]);
+    expect(resolveRuntimeMcp(item.staticServers, item.activation)[0]!.approvalDigest).toBe("c".repeat(64));
+    expect(resolveRuntimeMcp(item.staticServers, { ...item.activation, approvalDigests: { local: null } })[0]!.approvalDigest).toBeNull();
+    expect(() => resolveRuntimeMcp(item.staticServers, { ...item.activation, approvalDigests: {} })).toThrow(/has no approval digest/u);
   });
 });

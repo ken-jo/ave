@@ -13,6 +13,8 @@ export interface AgentPluginMcpActivation {
   dataDir: string;
   activationId: string;
   generationId: string;
+  /** Each server's approval digest, by name (design §18.7.3, `agentPluginComponentDigests`). */
+  approvalDigests: Readonly<Record<string, string | null>>;
 }
 
 const CONTROL = /[\u0000-\u001f\u007f]/u;
@@ -57,6 +59,8 @@ export function resolveRuntimeMcp(
 ): readonly PreparedPluginMcpProjection[] {
   const projections: PreparedPluginMcpProjection[] = [];
   for (const [localId, server] of Object.entries(staticServers)) {
+    if (!Object.hasOwn(activation.approvalDigests, localId)) throw new Error(`agent plugin ${activation.packageName} MCP ${localId} has no approval digest`);
+    const approvalDigest = activation.approvalDigests[localId]!;
     const owner = {
       pluginId: `agent-plugin/${activation.packageName}`,
       pluginVersion: activation.version,
@@ -67,7 +71,7 @@ export function resolveRuntimeMcp(
     };
     if (server.transport === "http") {
       const { digest: _digest, ...config } = server;
-      projections.push(prepareBundledMcpProjection(owner, config));
+      projections.push(prepareBundledMcpProjection(owner, config, approvalDigest));
       continue;
     }
     const label = `agent plugin ${activation.packageName} MCP ${localId}`;
@@ -91,7 +95,7 @@ export function resolveRuntimeMcp(
       cwd: resolveValue(server.cwd, activation, `${label}.cwd`, true),
       env: { ...env, PLUGIN_ROOT: realpathSync(activation.generationRoot), PLUGIN_DATA: realpathSync(activation.dataDir) },
     };
-    projections.push(prepareBundledMcpProjection({ ...owner, fingerprint: resolved.fingerprint }, config, realpathSync(activation.dataDir)));
+    projections.push(prepareBundledMcpProjection({ ...owner, fingerprint: resolved.fingerprint }, config, approvalDigest, realpathSync(activation.dataDir)));
   }
   return Object.freeze(projections);
 }

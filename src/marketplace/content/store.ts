@@ -1,13 +1,16 @@
 /**
- * Content package store (design §2, §5.4).
+ * Content package store (design §2, §5.4, §18.7.4).
  *
  * Staging reads the package directory at the version commit, holds every
  * file to the kind's rules and parses the entry files. Installing writes the
- * files to `packages/<kind>/<name>/<version>/`, records the ledger entry and
- * then activates the content; a failed activation puts the previous state
- * back. Loading re-reads each installed package from disk under the same
- * rules and the recorded digest, so a package whose files changed after
- * install is listed as broken and never applied.
+ * files to a directory of their own, `packages/<kind>/<name>/.installs/<installId>/`,
+ * records the ledger entry and then activates the content; a failed
+ * activation puts the previous state back. Nothing a running generation
+ * uses is moved or overwritten: the replaced install's directory is removed
+ * only once its activation has retired, and a boot sweep removes what a
+ * quit or a failed removal left. Loading re-reads each installed package
+ * from disk under the same rules and the recorded digest, so a package whose
+ * files changed after install is listed as broken and never applied.
  *
  * Identity follows the plugin rules (design §15.1): `(kind, name)` is bound
  * to the source it came from, and replacing it from another source is an
@@ -16,7 +19,6 @@
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { renameDirectory } from "../../lib/transient-fs-lock-retry.js";
 import { createMarketplaceLogger } from "../log.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { assertNotRequiredByPolicy } from "../boot-installs/run.js";
@@ -29,8 +31,9 @@ import { treeDigest } from "../resolve/plugin-ladder.js";
 import { deriveAgentPluginComponents } from "./agent-plugin-components.js";
 import type { MarketplacePolicy } from "../sources/policy.js";
 import { isDataContentKind, parseContent, type ContentFile, type DataContentKind, type ParsedContent } from "./kinds.js";
-import { ContentLedger, type LedgerEntry } from "./ledger.js";
-import { CONTENT_RULES, DESCRIPTOR_ALLOWANCE_BYTES, checkContentFiles, isContentKind, type ContentKind } from "./rules.js";
+import { ContentLedger, installPayloadDir, type LedgerEntry } from "./ledger.js";
+import { agentPluginConsent, contentConsent, type ConsentFingerprint } from "../updates/consent.js";
+import { CONTENT_KINDS, CONTENT_RULES, DESCRIPTOR_ALLOWANCE_BYTES, checkContentFiles, isContentKind, type ContentKind } from "./rules.js";
 
 const log = createMarketplaceLogger("marketplace-content-store");
 
@@ -54,6 +57,17 @@ export interface StagedContent {
   /** Tree digest (design §6.4) of `files`. */
   contentSha256: string;
   content: ParsedContent;
+  /** The descriptor's `minAppVersion` and `hostProtocol`; null for a local agent plugin, which has no descriptor. */
+  minAppVersion: string | null;
+  hostProtocol: string | null;
+}
+
+/** The consent fingerprint of staged content (§18.7.3): what installing it asks the user to accept. */
+export function stagedConsent(staged: StagedContent): ConsentFingerprint {
+  if (staged.content.kind === "agent-plugin") {
+    return agentPluginConsent({ minAppVersion: staged.minAppVersion, hostProtocol: staged.hostProtocol, components: staged.content.components, files: staged.files });
+  }
+  return contentConsent(staged.plan.kind as Exclude<ContentKind, "agent-plugin">, staged.minAppVersion, staged.files);
 }
 
 /** Stage bytes selected from a local directory or archive under the same content rules. */
@@ -68,7 +82,7 @@ export function stageLocalAgentPlugin(files: readonly ContentFile[]): StagedCont
     plan: { kind: "agent-plugin", name: parsed.name, version: parsed.version, sourceId: null,
       sourceOrigin: null, snapshotCommit: null, packagePath: "" },
     files: files.map((file) => ({ path: file.path, data: Buffer.from(file.data) })),
-    contentSha256: digestOf(files), content,
+    contentSha256: digestOf(files), content, minAppVersion: null, hostProtocol: null,
   };
 }
 
@@ -123,7 +137,7 @@ export async function stageContentPackage(plan: PackagePlan, access: RepositoryA
       sourceOrigin: dataPlan.sourceOrigin,
       unknownMessageKeys: "ignore",
     });
-    return { plan: dataPlan, files, contentSha256: digestOf(files), content };
+    return { plan: dataPlan, files, contentSha256: digestOf(files), content, minAppVersion: descriptor.minAppVersion, hostProtocol: descriptor.hostProtocol ?? null };
   } finally {
     await rm(dest, { recursive: true, force: true });
   }
@@ -142,7 +156,7 @@ export interface ContentActivation {
    * the first-boot migration is recording an activation the settings already
    * hold (design §16.3), which leaves those settings as they are.
    */
-  activate(content: ParsedContent, entry: LedgerEntry, previous: LedgerEntry | null, adopt: boolean, dir?: string, componentConsents?: readonly ComponentConsent[]): Promise<void>;
+  activate(content: ParsedContent, entry: LedgerEntry, previous: LedgerEntry | null, adopt: boolean, dir?: string, componentConsents?: readonly ComponentConsent[]): Promise<{ retired: Promise<void> }>;
   /** Before the ledger drops the package; a throw leaves it installed. `content` is null when its files no longer parse. */
   deactivate(entry: LedgerEntry, content: ParsedContent | null, dir?: string): Promise<void>;
 }
@@ -242,17 +256,34 @@ export class ContentStore {
     return entry ? { kind, name, version: entry.version, sourceId: entry.origin.sourceId } : null;
   }
 
-  packageDir(entry: Pick<LedgerEntry, "kind" | "name" | "version">): string {
+  /**
+   * Where an installed entry's files are: its own install directory, or a
+   * legacy install's `<version>/` directory.
+   */
+  packageDir(entry: Pick<LedgerEntry, "kind" | "name" | "version" | "origin">): string {
+    if (entry.origin.payloadDir !== undefined) return join(this.options.root, ...entry.origin.payloadDir.split("/"));
     if (!SAFE_VERSION.test(entry.version)) throw new Error(`unsafe version ${entry.version}`);
     return join(this.options.root, entry.kind, entry.name, entry.version);
   }
 
-  async install(staged: StagedContent, options: { switchSource?: boolean; adopt?: boolean; componentConsents?: readonly ComponentConsent[] } = {}): Promise<{ action: InstallAction; entry: LedgerEntry }> {
+  /**
+   * Install `staged` into a directory of its own. `assertConsent` is
+   * checkpoint two of an automatic update (§18.7.3): it sees the staged
+   * consent fingerprint before anything is written, and a throw installs
+   * nothing.
+   */
+  async install(
+    staged: StagedContent,
+    options: { switchSource?: boolean; adopt?: boolean; componentConsents?: readonly ComponentConsent[]; assertConsent?: (consent: ConsentFingerprint) => void } = {},
+  ): Promise<{ action: InstallAction; entry: LedgerEntry }> {
     return this.serialize(async () => {
       const { plan } = staged;
       const previous = this.ledger.get(plan.kind, plan.name) ?? null;
       const action = classifyInstall(plan, this.installed(plan.kind, plan.name), options);
+      const consent = stagedConsent(staged);
+      options.assertConsent?.(consent);
       await this.assertClaimFree(staged);
+      const installId = randomUUID();
       const entry: LedgerEntry = {
         kind: plan.kind,
         name: plan.name,
@@ -265,49 +296,85 @@ export class ContentStore {
           version: plan.version,
           contentSha256: staged.contentSha256,
           installedAt: (this.options.now?.() ?? new Date()).toISOString(),
+          installId,
+          payloadDir: installPayloadDir(plan.kind, plan.name, installId),
+          consent,
         },
       };
+      // A directory no install has used: nothing that runs is moved or overwritten.
       const dir = this.packageDir(entry);
-      const scratch = join(this.options.root, ".staging", randomUUID());
-      const files = join(scratch, "files");
-      const displaced = join(scratch, "displaced");
-      let displacedDir = false;
-      // The previous version's files stay in the scratch directory until they are back in place.
-      let keepScratch = false;
       try {
         for (const file of staged.files) {
-          const target = join(files, ...file.path.split("/"));
+          const target = join(dir, ...file.path.split("/"));
           await mkdir(dirname(target), { recursive: true });
           await writeFile(target, file.data, { mode: file.executable === true ? 0o700 : 0o600 });
         }
-        await mkdir(dirname(dir), { recursive: true });
-        // Reinstalling the same version: the live directory steps aside and comes back on failure.
-        if (await lstat(dir).then(() => true, () => false)) {
-          await renameDirectory(dir, displaced);
-          displacedDir = true;
-        }
-        await renameDirectory(files, dir);
+        await this.ledger.put(entry);
+        let activated: { retired: Promise<void> };
         try {
-          await this.ledger.put(entry);
-          await this.options.activation.activate(staged.content, entry, previous, options.adopt === true, dir, options.componentConsents);
+          activated = await this.options.activation.activate(staged.content, entry, previous, options.adopt === true, dir, options.componentConsents);
         } catch (error) {
-          await undo([
-            ["restore the ledger entry", () => (previous ? this.ledger.put(previous) : this.ledger.remove(entry.kind, entry.name))],
-            ["remove the new files", () => rm(dir, { recursive: true, force: true })],
-          ]);
-          if (displacedDir && !(await undo([["restore the previous files", () => renameDirectory(displaced, dir)]]))) {
-            keepScratch = true;
-            log.error({ kept: displaced }, "content install rollback kept the previous files in its scratch directory");
-          }
+          await undo([["restore the ledger entry", () => (previous ? this.ledger.put(previous) : this.ledger.remove(entry.kind, entry.name))]]);
           throw error;
         }
-        if (previous && previous.version !== entry.version) {
-          await rm(this.packageDir(previous), { recursive: true, force: true });
-        }
+        if (previous) this.removeWhenRetired(previous, activated.retired);
         return { action, entry };
-      } finally {
-        if (!keepScratch) await rm(scratch, { recursive: true, force: true });
+      } catch (error) {
+        await undo([["remove the new files", () => rm(dir, { recursive: true, force: true })]]);
+        throw error;
       }
+    });
+  }
+
+  /**
+   * Remove exactly the replaced install's own directory once its activation
+   * has retired, outside the store's serialization. A removal that fails, or
+   * a quit before it, is the boot sweep's.
+   */
+  private removeWhenRetired(previous: LedgerEntry, retired: Promise<void>): void {
+    const dir = this.packageDir(previous);
+    void retired
+      .then(async () => {
+        // A same-version legacy reinstall leaves nothing to remove twice; a directory a live entry names is never removed.
+        const current = this.ledger.get(previous.kind, previous.name);
+        if (current && this.packageDir(current) === dir) return;
+        await rm(dir, { recursive: true, force: true });
+      })
+      .catch((error: unknown) => log.warn({ dir, err: errorMessage(error) }, "the replaced package's files stay until the next start"));
+  }
+
+  /**
+   * The boot sweep (§18.7.4): remove every `.installs/<installId>/` no
+   * ledger entry names, and every `<version>/` no legacy ledger entry names.
+   * Runs before anything is activated.
+   */
+  async sweep(): Promise<string[]> {
+    return this.serialize(async () => {
+      const removed: string[] = [];
+      const named = new Set(this.ledger.list().map((entry) => this.packageDir(entry)));
+      const entries = async (dir: string) => readdir(dir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return [];
+        throw error;
+      });
+      for (const kind of await entries(this.options.root)) {
+        if (!kind.isDirectory() || !(CONTENT_KINDS as readonly string[]).includes(kind.name)) continue;
+        for (const name of await entries(join(this.options.root, kind.name))) {
+          if (!name.isDirectory()) continue;
+          const packageRoot = join(this.options.root, kind.name, name.name);
+          for (const child of await entries(packageRoot)) {
+            if (!child.isDirectory()) continue;
+            const candidates = child.name === ".installs"
+              ? (await entries(join(packageRoot, ".installs"))).filter((item) => item.isDirectory()).map((item) => join(packageRoot, ".installs", item.name))
+              : SAFE_VERSION.test(child.name) ? [join(packageRoot, child.name)] : [];
+            for (const candidate of candidates) {
+              if (named.has(candidate)) continue;
+              await rm(candidate, { recursive: true, force: true });
+              removed.push(candidate);
+            }
+          }
+        }
+      }
+      return removed;
     });
   }
 

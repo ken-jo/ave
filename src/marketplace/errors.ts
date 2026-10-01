@@ -285,9 +285,14 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
   NO_INSTALLABLE_ARTIFACT: {
     "folder-has-no-build": { name: "string" },
   },
-  /** `policy-changed`: the plan was made under another managed policy (§18.6). */
+  /**
+   * `policy-changed`: the plan was made under another managed policy (§18.6).
+   * `package-changed`: an approval of an installed package's components named
+   * a generation, or digests, that are no longer installed (§18.7.5).
+   */
   PLAN_EXPIRED: {
     "policy-changed": {},
+    "package-changed": {},
   },
   PACKAGE_INCOMPATIBLE: {
     min_app_version: { name: "string", version: "string" },

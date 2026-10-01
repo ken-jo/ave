@@ -1,7 +1,11 @@
 import type { ActivePluginGeneration } from "../plugins/plugin-generation-coordinator.js";
 import type { McpServerApproval, McpServerConfig } from "./types.js";
 import { anchorBundledCommand } from "../plugins/plugin-bundled-command.js";
-import { PluginContributionTrustStore } from "../plugins/plugin-contribution-trust.js";
+import {
+  PluginContributionTrustStore,
+  type PluginContributionTrustRecord,
+  type ProjectionTrust,
+} from "../plugins/plugin-contribution-trust.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 
 export interface PluginMcpOwner {
@@ -19,22 +23,37 @@ export interface PreparedPluginMcpProjection {
   serverId: string;
   config: McpServerConfig;
   approval: McpServerApproval;
+  /** What an approval of this server covers (design §18.7.3); null when it cannot be determined. */
+  approvalDigest: string | null;
 }
 
-/** Exact static-descriptor approval. A new generation may restore identical bytes. */
-export class PluginMcpTrustStore {
+/**
+ * Exact-generation static-descriptor approval. A new generation's server is
+ * approved explicitly or carried forward by its approval digest (design
+ * §18.7.3).
+ */
+export class PluginMcpTrustStore implements ProjectionTrust<PreparedPluginMcpProjection> {
   private readonly store: PluginContributionTrustStore;
 
   constructor(path?: string) {
     this.store = new PluginContributionTrustStore("mcpServer", path);
   }
 
-  approve(projection: PreparedPluginMcpProjection): void {
-    this.store.approve(projection.owner);
+  approve(projection: PreparedPluginMcpProjection, carriedFrom?: string): void {
+    this.store.approve(projection.owner, projection.approvalDigest, carriedFrom);
   }
 
   isApproved(projection: PreparedPluginMcpProjection): boolean {
     return this.store.isApproved(projection.owner);
+  }
+
+  record(projection: PreparedPluginMcpProjection): Readonly<PluginContributionTrustRecord> | undefined {
+    return this.store.record(projection.owner);
+  }
+
+  /** Give an approval of this exact generation the digest of its running bytes, when it has none (version-2 migration). */
+  recordDigest(projection: PreparedPluginMcpProjection): void {
+    this.store.recordDigest(projection.owner, projection.approvalDigest);
   }
 
   revoke(projection: PreparedPluginMcpProjection): void {
@@ -113,6 +132,7 @@ function safePrefix(owner: PluginMcpOwner): string {
 function buildProjection(
   owner: PluginMcpOwner,
   configWithoutId: Omit<McpServerConfig, "id">,
+  approvalDigest: string | null,
 ): PreparedPluginMcpProjection {
   // HTTP connections are content-addressed and may be reused across runtime
   // activations. A stdio client is a child process rooted in one immutable
@@ -154,16 +174,17 @@ function buildProjection(
     connectionTimeoutMs: 30_000,
     maxConcurrentRequests: 4,
   };
-  return Object.freeze({ owner: Object.freeze(owner), serverId, config, approval: Object.freeze(approval) });
+  return Object.freeze({ owner: Object.freeze(owner), serverId, config, approval: Object.freeze(approval), approvalDigest });
 }
 
 /** Build an approval from a host-resolved bundled configuration. */
 export function prepareBundledMcpProjection(
   owner: PluginMcpOwner,
   rawConfig: unknown,
+  approvalDigest: string | null,
   pluginDataDir?: string,
 ): PreparedPluginMcpProjection {
-  const projection = buildProjection(owner, parseStaticConfig(rawConfig, `bundled MCP '${owner.localId}'`));
+  const projection = buildProjection(owner, parseStaticConfig(rawConfig, `bundled MCP '${owner.localId}'`), approvalDigest);
   if (pluginDataDir === undefined || projection.config.transport !== "stdio") return projection;
   return Object.freeze({ ...projection, config: Object.freeze({ ...projection.config, pluginDataDir }) });
 }
@@ -172,6 +193,8 @@ export function prepareBundledMcpProjection(
 export function preparePluginMcpGeneration(
   generation: ActivePluginGeneration,
   payloadRoot: string,
+  /** Each server's approval digest, by local id (`extensionComponentDigests`). */
+  approvalDigests: ReadonlyMap<string, string | null>,
 ): readonly PreparedPluginMcpProjection[] {
   const projections: PreparedPluginMcpProjection[] = [];
   for (const contribution of generation.contributions) {
@@ -203,6 +226,7 @@ export function preparePluginMcpGeneration(
         args: anchored.command.slice(1),
       });
     }
+    if (!approvalDigests.has(contribution.localId)) throw new Error(`plugin MCP '${contribution.localId}' has no approval digest`);
     projections.push(buildProjection({
       pluginId: generation.pluginId,
       pluginVersion: generation.pluginVersion,
@@ -210,7 +234,7 @@ export function preparePluginMcpGeneration(
       generationId: generation.artifactGenerationId,
       localId: contribution.localId,
       fingerprint,
-    }, preparedConfig));
+    }, preparedConfig, approvalDigests.get(contribution.localId)!));
   }
   return Object.freeze(projections);
 }

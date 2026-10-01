@@ -603,8 +603,9 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
       if (!detail) return t("gitMarketplace.error.planExpired");
       switch (detail.reason) {
         case "policy-changed": return t("gitMarketplace.error.planExpired.policyChanged");
+        case "package-changed": return t("gitMarketplace.error.planExpired.packageChanged");
       }
-      return unhandled(detail.reason);
+      return unhandled(detail);
     }
     case "PACKAGE_INCOMPATIBLE": {
       const detail = parseMarketplaceErrorDetail(code, failure.detail);

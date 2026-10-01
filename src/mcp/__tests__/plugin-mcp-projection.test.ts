@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -23,7 +24,13 @@ vi.mock("../mcp-client.js", () => ({
 
 import { McpManager } from "../mcp-manager.js";
 import { McpGovernance } from "../mcp-governance.js";
-import { PluginMcpTrustStore, preparePluginMcpGeneration } from "../plugin-mcp-projection.js";
+import { PluginMcpTrustStore, preparePluginMcpGeneration as prepareWithDigests } from "../plugin-mcp-projection.js";
+
+/** Prepare with an approval digest per server that follows its fingerprint, as `extensionComponentDigests` gives for changed bytes. */
+function preparePluginMcpGeneration(generation: ActivePluginGeneration, root: string) {
+  return prepareWithDigests(generation, root, new Map(generation.contributions.map((contribution) =>
+    [contribution.localId, createHash("sha256").update(`digest:${contribution.fingerprint}`).digest("hex")])));
+}
 import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
 
 function generation(version = "1.0.0", generationId = "g1", fingerprint = "a".repeat(64)): ActivePluginGeneration {

@@ -153,15 +153,17 @@ export function createContentActivation(deps: IpcDeps, mcpRuntime?: AgentPluginM
         const hookConsents = componentConsents.filter((consent): consent is HookComponentConsent => "kind" in consent && consent.kind === "hook");
         const mcpConsents = componentConsents.filter((consent): consent is McpComponentConsent => !("kind" in consent));
         if (hookConsents.length > 0 && !hookRuntime) throw new Error("hook consent requires the hook runner");
-        const rollbackHooks = hookRuntime ? await hookRuntime.activate(item, hookConsents) : async () => undefined;
-        try { await mcpRuntime.activate(item, mcpConsents); }
-        catch (error) { await rollbackHooks(); throw error; }
-        return;
+        const hooks = hookRuntime ? await hookRuntime.activate(item, hookConsents) : { rollback: async () => undefined, retired: Promise.resolve() };
+        let servers: { retired: Promise<void> };
+        try { servers = await mcpRuntime.activate(item, mcpConsents); }
+        catch (error) { await hooks.rollback(); throw error; }
+        // The replaced install's files go once both its hooks and its servers have drained (§18.7.4).
+        return { retired: Promise.all([hooks.retired, servers.retired]).then(() => undefined) };
       }
       if (componentConsents.length > 0) throw new Error("component consent applies only to an agent plugin");
       if (!previous && heldBySettings(content)) {
         // Adopting a legacy activation (design §16.3): the settings already describe it, so they stay as they are.
-        if (adopt) return;
+        if (adopt) return { retired: Promise.resolve() };
         throw new MarketplaceError("PACKAGE_ID_CONFLICT", "settings already hold this id from another install; remove it there first");
       }
       if (!previous && (content.kind === "skill" || content.kind === "agent")) {
@@ -191,6 +193,8 @@ export function createContentActivation(deps: IpcDeps, mcpRuntime?: AgentPluginM
         await afterPersist(`activating ${entry.name}`, null, true);
       }
       // Themes, languages, fonts, skills and agents are read from the loaded store; selecting one is the user's.
+      // Nothing of theirs keeps running from the replaced install's files once the store is reloaded.
+      return { retired: Promise.resolve() };
     },
     async deactivate(entry: LedgerEntry, content: ParsedContent | null) {
       if (entry.kind === "agent-plugin") {
@@ -306,6 +310,9 @@ export async function loadInstalledContent(deps: IpcDeps, assetToken: string, ro
     english: messages.en,
     activation: createContentActivation(deps, mcpRuntime, hookRuntime),
   });
+  // Install directories a quit or a failed removal left behind (§18.7.4); nothing runs from them yet.
+  const swept = await store.sweep();
+  if (swept.length > 0) log.info({ count: swept.length }, "removed install directories no installed package names");
   const service = new InstalledContentService(store, assetToken, (kind, name, version) => {
     const decision = revocationRegistry.evaluate(kind, name, version);
     return decision.kind === "block" ? `revoked by ${decision.sourceId}: ${decision.reason}` : null;

@@ -6,6 +6,7 @@
  *         ave:notification:clicked
  */
 import { createPluginRetirementPort, type PluginConfigRetention } from "../../plugins/retired-config.js";
+import { ContributionTrustReviewStaleError } from "../../plugins/plugin-contribution-trust.js";
 import { getAveAppVersion } from "../../shared/app-version.js";
 import { dialog, ipcMain, webContents } from "electron";
 import { t } from "../../i18n/index.js";
@@ -581,19 +582,31 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     ) {
       return { ok: false, error: "invalid-contribution-trust-request" };
     }
+    // An approval names the reviewed artifact generation and the approval digest the row showed (design §18.7.5);
+    // a revoke only narrows trust and takes neither.
+    const generationId = value.generationId;
+    const approvalDigest = value.approvalDigest;
+    const sha256 = /^[a-f0-9]{64}$/u;
+    if (approved
+      ? typeof generationId !== "string" || !sha256.test(generationId) || !(approvalDigest === null || (typeof approvalDigest === "string" && sha256.test(approvalDigest)))
+      : generationId !== undefined || approvalDigest !== undefined) {
+      return { ok: false, error: "invalid-contribution-trust-request" };
+    }
     const lifecycle = deps.pluginBundleLifecycle;
     if (!lifecycle) return { ok: false, error: "plugin-bundle-lifecycle-unavailable" };
     try {
+      const binding = approved ? { generationId: generationId as string, approvalDigest: approvalDigest as string | null } : null;
       if (kind === "hook") {
-        if (approved) await lifecycle.approveHook(pluginId, localId);
+        if (binding) await lifecycle.approveHook(pluginId, localId, binding);
         else await lifecycle.revokeHook(pluginId, localId);
-      } else if (approved) {
-        await lifecycle.approveMcpServer(pluginId, localId);
+      } else if (binding) {
+        await lifecycle.approveMcpServer(pluginId, localId, binding);
       } else {
         await lifecycle.revokeMcpServer(pluginId, localId);
       }
       return { ok: true, pluginId, localId, kind, approved };
     } catch (error) {
+      if (error instanceof ContributionTrustReviewStaleError) return { ok: false, error: "contribution-trust-review-stale", message: errMessage(error) };
       return { ok: false, error: "contribution-trust-update-failed", message: errMessage(error) };
     }
   });

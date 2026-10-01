@@ -531,6 +531,8 @@ export function buildInternalApiSurface() {
     localId: string;
     kind: "hook" | "mcpServer";
     approved: boolean;
+    generationId?: string;
+    approvalDigest?: string | null;
   }) => ipcRenderer.invoke(CHANNELS.plugins.contributionTrustSet, input),
   callPluginMethod: async (
     method: string,

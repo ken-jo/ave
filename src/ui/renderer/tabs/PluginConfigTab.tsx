@@ -221,13 +221,21 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
     const key = `${row.kind}:${row.localId}`;
     setTrustUpdating(key);
     try {
+      // An approval binds to the generation and digest this row showed (design §18.7.5).
       const result = await getApi().setPluginContributionTrust({
         pluginId: row.pluginId,
         localId: row.localId,
         kind: row.kind,
         approved,
+        ...(approved ? { generationId: row.generationId, approvalDigest: row.approvalDigest } : {}),
       });
       if (!result.ok) {
+        if (result.error === "contribution-trust-review-stale") {
+          // The package changed since this list was read: say so, and show what is installed now.
+          showBanner("error", t("gitMarketplace.error.planExpired.packageChanged"));
+          await refreshContributionTrust(row.pluginId);
+          return;
+        }
         showBanner("error", result.message ?? t("pluginConfigTab.contributionTrustError"));
         return;
       }

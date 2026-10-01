@@ -222,7 +222,7 @@ describe("createContentActivation", () => {
     // A legacy theme id names no compiled bundle any more: the package of that name takes it.
     const nord = { kind: "theme", name: "Nord", description: "Arctic.", shell: "dark", highContrast: false, tokens: {}, surfaces: {} } as unknown as ParsedContent;
     await settingsService.patch({ marketplace: { installedThemeBundleIds: ["nord"] } });
-    await expect(activation.activate(nord, entry("theme", "nord"), null, false)).resolves.toBeUndefined();
+    await expect(activation.activate(nord, entry("theme", "nord"), null, false)).resolves.toEqual({ retired: expect.any(Promise) });
   });
 
   it("reads the legacy activations for the first-boot migration, and drops only the theme ids and locales it was given", async () => {
@@ -289,7 +289,7 @@ describe("createContentActivation", () => {
     vi.mocked(deps.conversationLoop.refreshProvider).mockImplementation(() => {
       throw new Error("refresh boom");
     });
-    await expect(activation.activate({ kind: "provider", preset }, entry("provider", "harbor-llm"), null, false)).resolves.toBeUndefined();
+    await expect(activation.activate({ kind: "provider", preset }, entry("provider", "harbor-llm"), null, false)).resolves.toEqual({ retired: expect.any(Promise) });
     expect(settingsService.get("marketplace").installedProviderPresets).toEqual([preset]);
     await expect(activation.deactivate(entry("provider", "harbor-llm"), null)).resolves.toBeUndefined();
     expect(settingsService.get("marketplace").installedProviderPresets).toEqual([]);
@@ -305,7 +305,7 @@ describe("createContentActivation", () => {
       throw new Error("window gone");
     });
     deps.getAppWindows = windows as unknown as IpcDeps["getAppWindows"];
-    await expect(activation.activate({ kind: "messaging-connection", connection }, entry("messaging-connection", "harbor-chat"), null, false)).resolves.toBeUndefined();
+    await expect(activation.activate({ kind: "messaging-connection", connection }, entry("messaging-connection", "harbor-chat"), null, false)).resolves.toEqual({ retired: expect.any(Promise) });
     expect(windows).toHaveBeenCalled();
     expect(settingsService.get("marketplace").installedMessagingConnections).toEqual([connection]);
   });

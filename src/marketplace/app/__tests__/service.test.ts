@@ -210,6 +210,7 @@ describe("MarketplaceService", () => {
         activate: async (_content, _entry, _previous, adopt) => {
           await takeHold("activate");
           adopting.push(adopt);
+          return { retired: Promise.resolve() };
         },
         deactivate: async () => {},
       },

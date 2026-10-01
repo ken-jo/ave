@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -50,11 +50,14 @@ describe("content package store", () => {
   let counter = 0;
   let activated: Array<{ op: "activate" | "deactivate"; key: string; content: ParsedContent | null; previous?: string | null; adopt?: boolean }>;
   let failActivation: boolean;
+  /** What the activations report as their predecessor's retirement. */
+  let retirement: Promise<void>;
 
   const activation: ContentActivation = {
     async activate(content, entry, previous, adopt) {
       if (failActivation) throw new Error("settings write failed");
       activated.push({ op: "activate", key: `${entry.kind}:${entry.name}@${entry.version}`, content, previous: previous ? previous.version : null, adopt });
+      return { retired: retirement };
     },
     async deactivate(entry, content) {
       activated.push({ op: "deactivate", key: `${entry.kind}:${entry.name}@${entry.version}`, content });
@@ -77,6 +80,7 @@ describe("content package store", () => {
     root = mkdtempSync(join(tmpdir(), "ave-content-root-"));
     activated = [];
     failActivation = false;
+    retirement = Promise.resolve();
   });
 
   afterEach(async () => {
@@ -120,6 +124,11 @@ describe("content package store", () => {
   }
 
   const openStore = () => ContentStore.open({ root: join(root, "packages"), english: ENGLISH, activation, now: () => new Date(AT) });
+  /** The install directories a package has. */
+  const installs = (kind: string, name: string): string[] => {
+    const dir = join(root, "packages", kind, name, ".installs");
+    return existsSync(dir) ? readdirSync(dir).sort() : [];
+  };
 
   it("installs an unchanged agent-plugin tree with its component authority and ledger digest", async () => {
     const pluginJson = text({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "draft-plugin", version: "1.0.0", description: "Draft writing" });
@@ -142,7 +151,7 @@ describe("content package store", () => {
     const installed = await store.install(staged);
     expect(installed.entry).toMatchObject({ kind: "agent-plugin", name: "draft-plugin", origin: { contentSha256: staged.contentSha256 } });
     expect((await store.load()).loaded[0]?.content).toMatchObject({ kind: "agent-plugin", components });
-    expect(existsSync(join(root, "packages", "agent-plugin", "draft-plugin", "1.0.0", "skills", "draft", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(store.packageDir(installed.entry), "skills", "draft", "SKILL.md"))).toBe(true);
   });
 
   it.runIf(process.platform !== "win32")("retains an executable package hook through staging and reload", async () => {
@@ -171,8 +180,8 @@ describe("content package store", () => {
     const staged = await stage(syncer, row!);
     expect(staged.files.find((file) => file.path === "server/hook.sh")?.executable).toBe(true);
     const store = await openStore();
-    await store.install(staged);
-    const installed = join(root, "packages", "agent-plugin", "hook-plugin", "1.0.0", "server", "hook.sh");
+    const { entry } = await store.install(staged);
+    const installed = join(store.packageDir(entry), "server", "hook.sh");
     expect(statSync(installed).mode & 0o111).not.toBe(0);
     expect(execFileSync(installed, { encoding: "utf8" })).toBe("hook-ran\n");
     expect((await store.load()).loaded[0]?.content).toMatchObject({ kind: "agent-plugin", components });
@@ -189,15 +198,23 @@ describe("content package store", () => {
     const store = await openStore();
     const { action, entry } = await store.install(staged);
     expect(action).toEqual({ action: "install" });
+    const installId = entry.origin.installId!;
+    expect(installId).toMatch(/^[0-9a-f-]{36}$/u);
     expect(entry).toEqual({
       kind: "theme",
       name: "harbor",
       version: "1.0.0",
-      origin: { sourceId: "acme", sourceOrigin: "custom", commit: first, packagePath: "themes/harbor", version: "1.0.0", contentSha256: staged.contentSha256, installedAt: AT },
+      origin: {
+        sourceId: "acme", sourceOrigin: "custom", commit: first, packagePath: "themes/harbor", version: "1.0.0", contentSha256: staged.contentSha256, installedAt: AT,
+        installId, payloadDir: `theme/harbor/.installs/${installId}`,
+        // The consent baseline an automatic update is compared with (§18.7.3).
+        consent: { kind: "theme", fields: { minAppVersion: staged.minAppVersion }, unknown: [] },
+      },
     });
-    // The descriptor is read at the version commit and never installed.
-    expect(existsSync(join(root, "packages", "theme", "harbor", "1.0.0", "theme.json"))).toBe(true);
-    expect(existsSync(join(root, "packages", "theme", "harbor", "1.0.0", "ave-package.json"))).toBe(false);
+    // Each install has a directory of its own; the descriptor is read at the version commit and never installed.
+    expect(store.packageDir(entry)).toBe(join(root, "packages", "theme", "harbor", ".installs", installId));
+    expect(existsSync(join(store.packageDir(entry), "theme.json"))).toBe(true);
+    expect(existsSync(join(store.packageDir(entry), "ave-package.json"))).toBe(false);
     expect(activated.map((call) => [call.key, call.adopt])).toEqual([["theme:harbor@1.0.0", false]]);
 
     const reopened = await openStore();
@@ -228,16 +245,23 @@ describe("content package store", () => {
     });
     const syncer = await open(name);
     const store = await openStore();
-    await store.install(await stage(syncer, (await rows(syncer))[0]!));
+    const first = await store.install(await stage(syncer, (await rows(syncer))[0]!));
     commit({
       "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.1.0", { entry: "theme.json" }),
       "themes/harbor/theme.json": theme("Harbor Two"),
     });
-    const { action } = await store.install(await stage(syncer, (await rows(syncer))[0]!));
+    // The replaced activation is still draining: its directory stays until it has retired.
+    let retire!: () => void;
+    retirement = new Promise<void>((resolve) => { retire = resolve; });
+    const { action, entry } = await store.install(await stage(syncer, (await rows(syncer))[0]!));
     expect(action).toEqual({ action: "replace", direction: "upgrade", from: "1.0.0" });
     // Activation is told what the install replaces.
     expect(activated.map((call) => call.previous)).toEqual([null, "1.0.0"]);
-    expect(existsSync(join(root, "packages", "theme", "harbor", "1.0.0"))).toBe(false);
+    expect(existsSync(join(store.packageDir(first.entry), "theme.json"))).toBe(true);
+    expect(installs("theme", "harbor")).toEqual([first.entry.origin.installId, entry.origin.installId].sort());
+    retire();
+    await vi.waitFor(() => expect(existsSync(store.packageDir(first.entry))).toBe(false));
+    expect(installs("theme", "harbor")).toEqual([entry.origin.installId]);
     expect((await store.load()).loaded[0]!.content).toMatchObject({ name: "Harbor Two" });
   });
 
@@ -253,7 +277,7 @@ describe("content package store", () => {
     failActivation = true;
     await expect(store.install(await stage(syncer, (await rows(syncer))[0]!))).rejects.toThrow("settings write failed");
     expect(store.list()).toEqual([first.entry]);
-    expect(existsSync(join(root, "packages", "theme", "harbor", "1.1.0"))).toBe(false);
+    expect(installs("theme", "harbor")).toEqual([first.entry.origin.installId]);
     expect((await (await openStore()).load()).loaded.map((item) => item.entry)).toEqual([first.entry]);
   });
 
@@ -267,7 +291,7 @@ describe("content package store", () => {
     failActivation = true;
     await expect(store.install(await stage(syncer, (await rows(syncer))[0]!))).rejects.toThrow("settings write failed");
     expect(store.list()).toEqual([]);
-    expect(existsSync(join(root, "packages", "theme", "harbor", "1.0.0"))).toBe(false);
+    expect(installs("theme", "harbor")).toEqual([]);
     expect(JSON.parse(readFileSync(join(root, "packages", "ledger.json"), "utf8"))).toEqual({ version: 1, packages: [] });
   });
 
@@ -285,7 +309,8 @@ describe("content package store", () => {
     const { loaded, broken } = await (await openStore()).load();
     expect(broken).toEqual([]);
     expect(loaded.map((item) => item.entry)).toEqual([first.entry]);
-    expect(readdirSync(join(root, "packages", ".staging"))).toEqual([]);
+    // The live directory was never moved: the failed reinstall's own directory is all that went.
+    expect(installs("theme", "harbor")).toEqual([first.entry.origin.installId]);
   });
 
   it("rethrows the activation error when the rollback's own ledger write fails too", async () => {
@@ -295,7 +320,7 @@ describe("content package store", () => {
     });
     const syncer = await open(name);
     const store = await openStore();
-    await store.install(await stage(syncer, (await rows(syncer))[0]!));
+    const first = await store.install(await stage(syncer, (await rows(syncer))[0]!));
     commit({ "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.1.0", { entry: "theme.json" }) });
     const staged = await stage(syncer, (await rows(syncer))[0]!);
     // The first put records the new entry; the rollback's put of the previous one fails.
@@ -313,7 +338,7 @@ describe("content package store", () => {
     }
     expect(calls).toBe(2);
     // The new version's files are still removed.
-    expect(existsSync(join(root, "packages", "theme", "harbor", "1.1.0"))).toBe(false);
+    expect(installs("theme", "harbor")).toEqual([first.entry.origin.installId]);
   });
 
   it("keeps a language whose keys the app catalog no longer has, applying only the keys it still has", async () => {
@@ -409,14 +434,105 @@ describe("content package store", () => {
     });
     const syncer = await open(name);
     const store = await openStore();
-    await store.install(await stage(syncer, (await rows(syncer))[0]!));
-    writeFileSync(join(root, "packages", "theme", "harbor", "1.0.0", "theme.json"), theme("Tampered"));
+    const { entry } = await store.install(await stage(syncer, (await rows(syncer))[0]!));
+    writeFileSync(join(store.packageDir(entry), "theme.json"), theme("Tampered"));
     const { loaded, broken } = await store.load();
     expect(loaded).toEqual([]);
     expect(broken).toEqual([{ entry: expect.objectContaining({ name: "harbor" }) as LedgerEntry, problem: "the installed files changed after install" }]);
     // Uninstall still works, and tells activation the content is unreadable.
     await store.uninstall("theme", "harbor", EMPTY_MARKETPLACE_POLICY);
     expect(activated.at(-1)).toMatchObject({ op: "deactivate", content: null });
+  });
+
+  /** Turn the installed entry into a pre-F legacy install: `<version>/`, no install id, no consent baseline. */
+  function makeLegacy(entry: LedgerEntry): LedgerEntry {
+    const { installId: _installId, payloadDir: _payloadDir, consent: _consent, ...origin } = entry.origin;
+    const legacy = { ...entry, origin };
+    renameSync(join(root, "packages", ...entry.origin.payloadDir!.split("/")), join(root, "packages", entry.kind, entry.name, entry.version));
+    writeFileSync(join(root, "packages", "ledger.json"), text({ version: 1, packages: [legacy] }));
+    return legacy;
+  }
+
+  it("loads a legacy install from its version directory, and an update moves it to an install directory of its own", async () => {
+    const { name, commit } = market([{ kind: "theme", name: "harbor", path: "themes/harbor" }], {
+      "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }),
+      "themes/harbor/theme.json": theme("Harbor"),
+    });
+    const syncer = await open(name);
+    const legacy = makeLegacy((await (await openStore()).install(await stage(syncer, (await rows(syncer))[0]!))).entry);
+    const store = await openStore();
+    expect(store.packageDir(legacy)).toBe(join(root, "packages", "theme", "harbor", "1.0.0"));
+    expect((await store.load()).loaded.map((item) => item.entry)).toEqual([legacy]);
+
+    // Refreshing the same version writes a new install directory; the legacy one goes once the old activation retired.
+    const refreshed = await store.install(await stage(syncer, (await rows(syncer))[0]!));
+    expect(refreshed.entry.origin.payloadDir).toBe(`theme/harbor/.installs/${refreshed.entry.origin.installId}`);
+    await vi.waitFor(() => expect(existsSync(join(root, "packages", "theme", "harbor", "1.0.0"))).toBe(false));
+    commit({
+      "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.1.0", { entry: "theme.json" }),
+      "themes/harbor/theme.json": theme("Harbor Two"),
+    });
+    const updated = await store.install(await stage(syncer, (await rows(syncer))[0]!));
+    await vi.waitFor(() => expect(installs("theme", "harbor")).toEqual([updated.entry.origin.installId]));
+    expect((await (await openStore()).load()).loaded[0]!.content).toMatchObject({ name: "Harbor Two" });
+  });
+
+  it("a boot sweep removes only the install directories no entry names", async () => {
+    const { name, commit } = market([{ kind: "theme", name: "harbor", path: "themes/harbor" }], {
+      "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }),
+      "themes/harbor/theme.json": theme("Harbor"),
+    });
+    const syncer = await open(name);
+    const store = await openStore();
+    const first = await store.install(await stage(syncer, (await rows(syncer))[0]!));
+    commit({ "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.1.0", { entry: "theme.json" }) });
+    // The app quits before the replaced activation retires: its directory is left behind.
+    retirement = new Promise<void>(() => undefined);
+    const second = await store.install(await stage(syncer, (await rows(syncer))[0]!));
+    // So are a stray legacy version directory and an install interrupted before its ledger write.
+    mkdirSync(join(root, "packages", "theme", "harbor", "0.9.0"), { recursive: true });
+    mkdirSync(join(root, "packages", "theme", "harbor", ".installs", "00000000-0000-4000-8000-000000000000"), { recursive: true });
+    expect(installs("theme", "harbor")).toHaveLength(3);
+
+    const reopened = await openStore();
+    const removed = await reopened.sweep();
+    expect(removed.sort()).toEqual([
+      reopened.packageDir(first.entry),
+      join(root, "packages", "theme", "harbor", ".installs", "00000000-0000-4000-8000-000000000000"),
+      join(root, "packages", "theme", "harbor", "0.9.0"),
+    ].sort());
+    expect(installs("theme", "harbor")).toEqual([second.entry.origin.installId]);
+    expect((await reopened.load()).loaded.map((item) => item.entry)).toEqual([second.entry]);
+    expect(await reopened.sweep()).toEqual([]);
+  });
+
+  it("a legacy install's version directory survives the sweep", async () => {
+    const { name } = market([{ kind: "theme", name: "harbor", path: "themes/harbor" }], {
+      "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }),
+      "themes/harbor/theme.json": theme("Harbor"),
+    });
+    const syncer = await open(name);
+    const legacy = makeLegacy((await (await openStore()).install(await stage(syncer, (await rows(syncer))[0]!))).entry);
+    const store = await openStore();
+    expect(await store.sweep()).toEqual([]);
+    expect((await store.load()).loaded.map((item) => item.entry)).toEqual([legacy]);
+  });
+
+  it("checkpoint two: a consent assertion that throws installs nothing", async () => {
+    const { name } = market([{ kind: "theme", name: "harbor", path: "themes/harbor" }], {
+      "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }),
+      "themes/harbor/theme.json": theme("Harbor"),
+    });
+    const syncer = await open(name);
+    const store = await openStore();
+    const seen: unknown[] = [];
+    await expect(store.install(await stage(syncer, (await rows(syncer))[0]!), {
+      assertConsent: (consent) => { seen.push(consent); throw new Error("needs review"); },
+    })).rejects.toThrow("needs review");
+    expect(seen).toEqual([expect.objectContaining({ kind: "theme" })]);
+    expect(store.list()).toEqual([]);
+    expect(installs("theme", "harbor")).toEqual([]);
+    expect(activated).toEqual([]);
   });
 
   it("refuses to open over a ledger it cannot read", async () => {
@@ -446,6 +562,10 @@ describe("content package store", () => {
       ["an origin version other than the entry's", [entry({ origin: origin({ version: "1.1.0" }) })], "packages[0].origin is malformed"],
       ["an unknown entry field", [entry({ pinned: true })], "packages[0] has an unknown field"],
       ["an unknown origin field", [entry({ origin: origin({ signer: "x" }) })], "packages[0].origin has an unknown field"],
+      ["an install id without its directory", [entry({ origin: origin({ installId: "00000000-0000-4000-8000-000000000000" }) })], "packages[0].origin names an install directory only in part"],
+      ["an install directory that is not the install's", [entry({ origin: origin({ installId: "00000000-0000-4000-8000-000000000000", payloadDir: "theme/other/.installs/00000000-0000-4000-8000-000000000000" }) })], "packages[0].origin.payloadDir is not its install directory"],
+      ["an install directory that escapes", [entry({ origin: origin({ installId: "../../x", payloadDir: "theme/harbor/.installs/../../x" }) })], "packages[0].origin.payloadDir is not its install directory"],
+      ["a consent baseline of another kind", [entry({ origin: origin({ consent: { kind: "font", fields: { minAppVersion: null }, unknown: ["minAppVersion"] } }) })], "packages[0].origin.consent is not a theme fingerprint"],
     ])("refuses %s", async (_label, packages, message) => {
       const dir = join(root, "packages");
       mkdirSync(dir);

@@ -123,6 +123,8 @@ export class McpManager {
     PendingBundledCandidateCleanup
   >();
   private generationAccess: PluginRuntimeGenerationAccess | undefined;
+  /** Lease sources by owner-id prefix (`agent-plugin/`), consulted before the plugin lifecycle. */
+  private readonly generationLeaseSources = new Map<string, (pluginId: string, activationId: string) => Promise<{ release(): void }>>();
   private readonly configPath: string;
   private readonly configLockPath: string;
   /** Serialises all config read-modify-write ops to prevent TOCTOU races */
@@ -176,6 +178,38 @@ export class McpManager {
 
   setPluginGenerationAccess(access: PluginRuntimeGenerationAccess): void {
     this.generationAccess = access;
+  }
+
+  /**
+   * Route the generation leases of bundled servers whose owner id starts
+   * with `prefix` to `acquireExact` instead of the plugin lifecycle (design
+   * §18.7.4): agent plugins own their activations, which the plugin
+   * lifecycle's coordinator does not know.
+   */
+  registerGenerationLeaseSource(prefix: string, acquireExact: (pluginId: string, activationId: string) => Promise<{ release(): void }>): void {
+    if (!prefix || this.generationLeaseSources.has(prefix)) throw new Error(`bundled MCP lease source ${prefix} is already registered`);
+    this.generationLeaseSources.set(prefix, acquireExact);
+  }
+
+  /**
+   * The one acquisition of a bundled server's generation lease: the source
+   * registered for the longest prefix of the owner's id, else the plugin
+   * lifecycle. Both a registered tool's `execute` and every other bundled
+   * call ({@link withBundledLease}) take their lease here.
+   */
+  private async acquireOwnerLease(owner: { pluginId: string; activationId: string }): Promise<{ release(): void }> {
+    let source: ((pluginId: string, activationId: string) => Promise<{ release(): void }>) | undefined;
+    let matched = -1;
+    for (const [prefix, acquire] of this.generationLeaseSources) {
+      if (owner.pluginId.startsWith(prefix) && prefix.length > matched) {
+        source = acquire;
+        matched = prefix.length;
+      }
+    }
+    if (source) return source(owner.pluginId, owner.activationId);
+    const access = this.generationAccess;
+    if (!access) throw new Error("plugin generation access is not configured for bundled MCP");
+    return access.acquireExact(owner.pluginId, owner.activationId);
   }
 
   registerBundledCredentialSource(kind: BundledPackageRef["kind"], source: BundledCredentialSource): void {
@@ -1306,12 +1340,7 @@ export class McpManager {
         generationId: owner.activationId,
       }),
       execute: async (...args: Parameters<Tool["execute"]>) => {
-        const access = this.generationAccess;
-        if (!access) throw new Error("plugin generation access is not configured for bundled MCP");
-        const lease = await access.acquireExact(
-          owner.pluginId,
-          owner.activationId,
-        );
+        const lease = await this.acquireOwnerLease(owner);
         try {
           return await execute(...args);
         } finally {
@@ -1326,12 +1355,7 @@ export class McpManager {
   private async withBundledLease<T>(serverId: string, operation: () => Promise<T>): Promise<T> {
     const owner = this.bundledOwners.get(serverId);
     if (!owner) return operation();
-    const access = this.generationAccess;
-    if (!access) throw new Error("plugin generation access is not configured for bundled MCP");
-    const lease = await access.acquireExact(
-      owner.pluginId,
-      owner.activationId,
-    );
+    const lease = await this.acquireOwnerLease(owner);
     try {
       return await operation();
     } finally {

@@ -194,6 +194,29 @@ describe("PluginConfigTab", () => {
     expect(listPluginContributionTrust).toHaveBeenCalledWith("meeting");
   });
 
+  it("approves a bundled component bound to the reviewed generation, and says so when the package changed since", async () => {
+    const row = {
+      kind: "mcpServer" as const, pluginId: "meeting", pluginVersion: "1.0.0", generationId: "a".repeat(64),
+      localId: "notes", fingerprint: "b".repeat(64), approvalDigest: "c".repeat(64), status: "approval_required" as const,
+    };
+    const listPluginContributionTrust = vi.fn(async () => ({ ok: true as const, rows: [row] }));
+    const setPluginContributionTrust = vi.fn(async () => ({ ok: false as const, error: "contribution-trust-review-stale", message: "meeting:notes changed since it was reviewed" }));
+    setRendererApi({ listPluginContributionTrust, setPluginContributionTrust });
+
+    render(<PluginConfigTab />);
+    const trust = await screen.findByTestId("plugin-config:contribution-trust:meeting");
+    fireEvent.click(within(trust).getByRole("button", { name: "승인" }));
+
+    await waitFor(() => expect(setPluginContributionTrust).toHaveBeenCalledWith({
+      pluginId: "meeting", localId: "notes", kind: "mcpServer", approved: true,
+      generationId: "a".repeat(64), approvalDigest: "c".repeat(64),
+    }));
+    // The review is stale: say what happened, and show what is installed now.
+    expect(await screen.findByText("검토한 뒤 이 패키지가 바뀌었습니다. 다시 검토하세요.")).toBeInTheDocument();
+    expect(screen.queryByText("meeting:notes changed since it was reviewed")).toBeNull();
+    await waitFor(() => expect(listPluginContributionTrust).toHaveBeenCalledTimes(2));
+  });
+
   it("surfaces thrown contribution trust IPC failures", async () => {
     setRendererApi({
       listPluginContributionTrust: vi.fn(async () => {
