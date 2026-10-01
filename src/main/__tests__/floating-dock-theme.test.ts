@@ -14,7 +14,7 @@ import { emitEvent } from "../../boot/types.js";
 import { recordValidatedTheme, resetLastThemePayloadForTests } from "../../shared/plugin-theme-cache.js";
 
 const { windows, rendererListeners, invoke } = vi.hoisted(() => ({
-  windows: [] as Array<{ send: ReturnType<typeof vi.fn>; fire(event: string): void }>,
+  windows: [] as Array<{ send: ReturnType<typeof vi.fn>; fire(event: string): void; args: string[] }>,
   /** The dock renderer's `ipcRenderer.on` listeners: what main's `webContents.send` reaches. */
   rendererListeners: new Map<string, Set<(event: unknown, payload: unknown) => void>>(),
   invoke: vi.fn(),
@@ -25,8 +25,8 @@ vi.mock("electron", () => {
     #handlers = new Map<string, () => void>();
     // Delivered as Electron delivers it: to the renderer's listeners, behind an event object.
     webContents = { id: 7, send: vi.fn((channel: string, payload: unknown) => rendererListeners.get(channel)?.forEach((listener) => listener({ sender: "ipc-event" }, payload))) };
-    constructor() {
-      windows.push({ send: this.webContents.send, fire: (event) => this.#handlers.get(event)?.() });
+    constructor(options: { webPreferences?: { additionalArguments?: string[] } }) {
+      windows.push({ send: this.webContents.send, fire: (event) => this.#handlers.get(event)?.(), args: options.webPreferences?.additionalArguments ?? [] });
     }
     setAlwaysOnTop() {}
     setVisibleOnAllWorkspaces() {}
@@ -128,13 +128,20 @@ describe("the dock window paints the host theme main sends (real preload, host t
 
   let preloadBridge: unknown = null;
   /** The dock window as it opens: its preload's bridge, then its script. */
-  async function openWindow() {
+  async function openWindow(args: string[]) {
     document.documentElement.removeAttribute("style");
     document.body.innerHTML = html.slice(html.indexOf("<body"), html.lastIndexOf("</body>")).replace(/^<body[^>]*>/u, "").replace(/<script[\s\S]*?<\/script>/gu, "");
     // Imported once (it exposes the bridge at load); each window gets that bridge.
     const w = window as unknown as Record<string, unknown>;
     if (!preloadBridge) {
-      await import("../../floating-dock-preload.js");
+      // The sandboxed preload reads its asset URLs from the arguments main gave the window.
+      const argv = process.argv;
+      process.argv = [...argv, ...args];
+      try {
+        await import("../../floating-dock-preload.js");
+      } finally {
+        process.argv = argv;
+      }
       preloadBridge = w.aveDock;
     }
     w.aveDock = preloadBridge;
@@ -154,7 +161,7 @@ describe("the dock window paints the host theme main sends (real preload, host t
     publish({ bundleId: "moonstone", shell: "dark", tokens: THEME.tokens });
 
     dock.show(BOUNDS);
-    await openWindow();
+    await openWindow(windows[0]!.args);
     expect(bg()).toBe(""); // the stylesheet's fallback until the window is ready
     windows[0]!.fire("ready-to-show");
     expect(bg()).toBe("hsl(210, 40%, 12%)");
@@ -162,13 +169,17 @@ describe("the dock window paints the host theme main sends (real preload, host t
     publish({ bundleId: "moonstone", shell: "dark", tokens: NEXT.tokens });
     expect(bg()).toBe("hsl(210, 40%, 18%)");
     expect(invoke).not.toHaveBeenCalled();
+    // The asset URLs main resolved reach the bridge (the preload resolves nothing itself).
+    const bridge = (window as unknown as { aveDock: { pluginShellUrl: string; pluginPreloadUrl: string } }).aveDock;
+    expect(bridge.pluginShellUrl).toBe("file:///assets/plugin-ui-shell.html");
+    expect(bridge.pluginPreloadUrl).toBe("file:///assets/plugin-preload.cjs");
   });
 
   it("stays in the stylesheet's colours when no theme has been published", async () => {
     const { ElectronFloatingDockSurface, hostDockThemeSource } = await import("../floating-dock-surface.js");
     const dock = new ElectronFloatingDockSurface(hostDockThemeSource);
     dock.show(BOUNDS);
-    await openWindow();
+    await openWindow(windows[0]!.args);
     windows[0]!.fire("ready-to-show");
     expect(bg()).toBe("");
     expect(invoke).not.toHaveBeenCalled();

@@ -18,6 +18,7 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { ALERTS } from "../shared/ipc-channels.js";
 import type { AveApi } from "../ui/renderer/types.js";
+import { dockAssetArgs } from "../shared/floating-dock-args.js";
 
 const exposed = new Map<string, unknown>();
 const mockInvoke = vi.fn();
@@ -690,7 +691,14 @@ describe("floating dock preload world shape lock", () => {
   // guard refuses a non-plugin frame).
   it("exposes only aveDock with the dock's API, and forwards each theme without the event object", async () => {
     const before = new Set(exposed.keys());
-    await import("../floating-dock-preload.js");
+    // Main passes the asset URLs; the sandboxed preload cannot resolve files itself.
+    const argv = process.argv;
+    process.argv = [...argv, ...dockAssetArgs({ pluginShellUrl: "file:///app/plugin-ui-shell.html", pluginPreloadUrl: "file:///app/plugin-preload.cjs" })];
+    try {
+      await import("../floating-dock-preload.js");
+    } finally {
+      process.argv = argv;
+    }
     const added = [...exposed.keys()].filter((key) => !before.has(key));
     expect(added).toEqual(["aveDock"]);
     const dock = exposed.get("aveDock") as Record<string, unknown> & { onTheme(handler: (theme: unknown) => void): () => void };
@@ -710,6 +718,9 @@ describe("floating dock preload world shape lock", () => {
         "requestClose": "function",
       }
     `);
+
+    expect(dock.pluginShellUrl).toBe("file:///app/plugin-ui-shell.html");
+    expect(dock.pluginPreloadUrl).toBe("file:///app/plugin-preload.cjs");
 
     const handler = vi.fn();
     const dispose = dock.onTheme(handler);

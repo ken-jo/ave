@@ -285,6 +285,14 @@ Plugin UI code runs inside host-created shells. The host resolves plugin asset
 URLs, applies theme tokens, and passes a bridge. Plugin code can request host
 operations only through declared capabilities and HostApi methods.
 
+A preload that runs in a sandboxed frame can require only `electron` and the
+Node modules `events`, `timers` and `url`. The sandboxed frames are the floating
+dock window and plugin and MCP app webviews. Anything such a preload would
+resolve from disk, such as the dock's plugin shell and preload URLs, is resolved
+by main and passed as window arguments. The `build` composite's
+`check-sandboxed-preloads` reads every built preload against the sandbox mode of
+the frames that run it, and it fails on an unclassified preload.
+
 Every surface that copies theme values follows the theme the host renderer has
 applied, including a theme updated in place under the same id. Plugin webviews
 receive `host.theme.changed` and can query the replay cache through the plugin-only

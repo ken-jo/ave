@@ -25,6 +25,8 @@ import { CHANNELS } from "../contract/app-contract.js";
 import { createLogger } from "../lib/logger.js";
 import { onEvent } from "../boot/types.js";
 import { getLastThemePayload } from "../shared/plugin-theme-cache.js";
+import { dockAssetArgs } from "../shared/floating-dock-args.js";
+import { pathToFileURL } from "node:url";
 import type {
   DockActivity,
   DockBounds,
@@ -137,6 +139,11 @@ export class ElectronFloatingDockSurface implements FloatingDockSurface {
         // `.cjs` because this package is `type: "module"` and a `.js` preload
         // would load as ESM, while the preload needs `require("electron")`.
         preload: runtimeAssetPath("floating-dock-preload.cjs"),
+        // The sandboxed preload cannot resolve files itself (no `node:path`).
+        additionalArguments: dockAssetArgs({
+          pluginShellUrl: pathToFileURL(runtimeAssetPath("plugin-ui-shell.html")).toString(),
+          pluginPreloadUrl: pathToFileURL(runtimeAssetPath("plugin-preload.cjs")).toString(),
+        }),
         contextIsolation: true,
         nodeIntegration: false,
         // The dock hosts plugin `<webview>` guests, so its own renderer runs

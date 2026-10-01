@@ -689,10 +689,11 @@ describe("installer smoke and packaging discipline", () => {
       "node scripts/check-color-tokens.mjs",
       "node scripts/check-shell-geometry-tokens.mjs",
       "node scripts/check-no-inline-channels.mjs",
+      "node scripts/check-sandboxed-preloads.mjs",
       "bun run check:source-text-safe",
     ]);
 
-    // Of those thirteen, the seven that a later command in the same composite
+    // Of those fourteen, the seven that a later command in the same composite
     // compiles behind. ci.yml's comment states this number; this is where it
     // comes from.
     const lastCompile = commands.reduce(
