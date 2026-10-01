@@ -9,6 +9,7 @@ import {
   approvalDigest,
   changedPayloadFiles,
   extensionComponentDigests,
+  extensionDeclarationPaths,
   launcherSpec,
   payloadTreeSha256,
 } from "../contribution-approval-digest.js";
@@ -73,9 +74,24 @@ describe("approvalDigest", () => {
       stagedDelta(pluginConsent(withServer.document, withServer.files), pluginConsent(released.document, released.files)),
       withServer.files,
       released.files,
+      new Set(extensionDeclarationPaths(released.document)),
     );
     expect(delta).toEqual([expect.objectContaining({ field: "mcpServer:notes", changedFiles: { code: [], nonCode: ["skills/helper/SKILL.md"] } })]);
     expect(isCodeFreeChange(delta)).toBe(true);
+  });
+
+  it("a changed server declaration is code, though it is JSON: the review shows the server, never the one-row form", () => {
+    const before = extension();
+    const after = extension({ version: "1.0.1", mcp: { transport: "stdio", command: "node", args: ["dist/server.js"], env: { MODE: "upload" } } });
+    expect(extensionDeclarationPaths(after.document)).toEqual([".mcp.json"]);
+    const delta = withChangedFiles(
+      stagedDelta(pluginConsent(before.document, before.files), pluginConsent(after.document, after.files)),
+      before.files,
+      after.files,
+      new Set(extensionDeclarationPaths(after.document)),
+    );
+    expect(delta).toEqual([expect.objectContaining({ field: "mcpServer:notes", changedFiles: { code: [".mcp.json"], nonCode: [] } })]);
+    expect(isCodeFreeChange(delta)).toBe(false);
   });
 
   it("the version bump alone changes nothing: plugin.json is normalized for its top-level version only", () => {
@@ -85,9 +101,9 @@ describe("approvalDigest", () => {
 
   it("any other plugin.json field changes the digest and lists plugin.json as code", () => {
     expect(digestOf({ description: "Notes, renamed" })).not.toBe(digestOf());
-    const changed = changedPayloadFiles(extension().files, extension({ description: "Notes, renamed" }).files);
+    const changed = changedPayloadFiles(extension().files, extension({ description: "Notes, renamed" }).files, new Set());
     expect(changed).toEqual({ code: ["plugin.json"], nonCode: [] });
-    expect(changedPayloadFiles(extension().files, extension({ version: "9.9.9" }).files)).toEqual({ code: [], nonCode: [] });
+    expect(changedPayloadFiles(extension().files, extension({ version: "9.9.9" }).files, new Set())).toEqual({ code: [], nonCode: [] });
   });
 
   it("an unpinned launcher or image tag is null and never carries", () => {

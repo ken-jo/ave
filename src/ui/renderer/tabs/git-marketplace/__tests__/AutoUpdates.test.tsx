@@ -230,6 +230,7 @@ describe("the update review's consent rows (§18.7.3)", () => {
       consentDelta: [
         { field: "authority.capabilities", checkpoint: "catalog", before: ["notes:read"], after: ["notes:read", "notes:write"] },
         { field: "hook:audit", checkpoint: "staged", before: null, after: "d".repeat(64) },
+        { field: "authority.networkAccess", checkpoint: "catalog", before: null, after: { allowedDomains: ["upload.example.com"], reasoning: "Uploads drafts." } },
       ],
       reviewComponents: [{ kind: "extension", field: "hook:audit", consent: hookConsent }],
     }) });
@@ -239,6 +240,7 @@ describe("the update review's consent rows (§18.7.3)", () => {
     expect(within(sheet).getByTestId("git-marketplace:consent-row:authority.capabilities")).toHaveTextContent("권한notes:read → notes:read, notes:write");
     expect(within(sheet).getByTestId("git-marketplace:consent-row:hook:audit")).toHaveTextContent("없음 → dddddddddddd");
     expect(within(sheet).queryByTestId("git-marketplace:consent-approve:authority.capabilities")).toBeNull();
+    expect(within(sheet).getByTestId("git-marketplace:consent-row:authority.networkAccess")).toHaveTextContent("allowedDomains: upload.example.com · reasoning: Uploads drafts.");
 
     fireEvent.click(within(sheet).getByTestId("git-marketplace:consent-approve:hook:audit"));
     fireEvent.click(within(sheet).getByTestId("git-marketplace:confirm"));

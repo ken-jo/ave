@@ -100,13 +100,25 @@ export function payloadTreeSha256(files: readonly PayloadFile[]): string {
 
 const NON_CODE_EXTENSIONS = new Set([".md", ".markdown", ".txt", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".json"]);
 
+/** The files that declare an agent plugin's MCP servers and hooks. */
+export const AGENT_PLUGIN_DECLARATION_PATHS: readonly string[] = ["mcp.json", "ai.agent-connector.ave/hooks.json"];
+
+/** The files an extension's `plugin.json` names as the declarations of its bundled hooks and MCP servers. */
+export function extensionDeclarationPaths(manifestDocument: unknown): string[] {
+  return resolvePluginContributionDeclarations(flattenAgentPluginsManifest(manifestDocument))
+    .filter((declaration) => declaration.kind === "hook" || declaration.kind === "mcpServer")
+    .map((declaration) => declaration.path);
+}
+
 /**
  * The package paths whose bytes differ between two payloads, under the same
  * normalization as {@link payloadTreeSha256}. `plugin.json` is listed only
- * when something other than its version differs, and then always as code.
+ * when something other than its version differs, and then always as code;
+ * so is every file in `declaring`, the declarations of the package's servers
+ * and hooks, whose change changes what runs whatever its extension.
  * The split is for display only: it never decides whether an update applies.
  */
-export function changedPayloadFiles(before: readonly PayloadFile[], after: readonly PayloadFile[]): { code: string[]; nonCode: string[] } {
+export function changedPayloadFiles(before: readonly PayloadFile[], after: readonly PayloadFile[], declaring: ReadonlySet<string>): { code: string[]; nonCode: string[] } {
   const digests = (files: readonly PayloadFile[]) => new Map(files.map((file) => [file.path, `${file.executable === true ? "x" : "-"}${sha256(comparedBytes(file))}`]));
   const left = digests(before);
   const right = digests(after);
@@ -115,7 +127,7 @@ export function changedPayloadFiles(before: readonly PayloadFile[], after: reado
   const nonCode: string[] = [];
   for (const path of changed) {
     const extension = posix.extname(path).toLowerCase();
-    if (path !== "plugin.json" && NON_CODE_EXTENSIONS.has(extension)) nonCode.push(path);
+    if (path !== "plugin.json" && !declaring.has(path) && NON_CODE_EXTENSIONS.has(extension)) nonCode.push(path);
     else code.push(path);
   }
   return { code, nonCode };

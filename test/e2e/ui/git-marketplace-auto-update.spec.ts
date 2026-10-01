@@ -45,7 +45,7 @@ function marketplaceTree(version: string): Entry[] {
   const file = (path: string, content: string): Entry => ({ path, mode: '100644', content });
   const authority = {
     capabilities: [],
-    ...(version === '1.0.0' ? {} : { networkAccess: ['upload.example.com'] }),
+    ...(version === '1.0.0' ? {} : { networkAccess: { allowedDomains: ['upload.example.com'], reasoning: 'Uploads drafts.' } }),
     requires: { minAppVersion: MIN_APP_VERSION, hostProtocol: '2' },
   };
   const plugin = agentPluginsDocument({

@@ -62,13 +62,15 @@ function consentFieldLabel(t: Translate, field: string): string {
 
 const DIGEST = /^[a-f0-9]{64}$/u;
 
-/** A fingerprint value as one line: digests shortened, lists joined, nothing as "none". */
+/** A fingerprint value as one line: digests shortened, lists joined, records as their fields, nothing as "none". */
 function consentValue(t: Translate, value: ConsentJson | "unknown"): string {
   if (value === "unknown") return t("gitMarketplace.consent.unknown");
   if (value === null) return t("gitMarketplace.consent.none");
   if (typeof value === "string") return DIGEST.test(value) ? value.slice(0, 12) : value;
-  if (Array.isArray(value)) return value.length === 0 ? t("gitMarketplace.consent.none") : value.map((item) => (typeof item === "string" ? item : JSON.stringify(item))).join(", ");
-  return JSON.stringify(value);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return value.length === 0 ? t("gitMarketplace.consent.none") : value.map((item) => consentValue(t, item)).join(", ");
+  const fields = Object.entries(value);
+  return fields.length === 0 ? t("gitMarketplace.consent.none") : fields.map(([key, item]) => `${key}: ${consentValue(t, item)}`).join(" · ");
 }
 
 function DeltaRow({ entry, approve }: { entry: ConsentDeltaEntry; approve?: { checked: boolean; onChange: (checked: boolean) => void; disabled?: boolean } }) {

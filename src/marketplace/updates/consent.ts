@@ -280,9 +280,9 @@ function isComponentField(field: string): boolean {
  * review"). The same list serves every component: each one's digest covers
  * the whole tree.
  */
-export function withChangedFiles(delta: ConsentDelta, installed: readonly PayloadFile[], staged: readonly PayloadFile[]): ConsentDelta {
+export function withChangedFiles(delta: ConsentDelta, installed: readonly PayloadFile[], staged: readonly PayloadFile[], declaring: ReadonlySet<string>): ConsentDelta {
   if (!delta.some((entry) => isComponentField(entry.field))) return delta;
-  const changedFiles = changedPayloadFiles(installed, staged);
+  const changedFiles = changedPayloadFiles(installed, staged, declaring);
   return delta.map((entry) => isComponentField(entry.field) && entry.before !== "unknown" && entry.before !== null && entry.after !== null
     ? { ...entry, changedFiles }
     : entry);

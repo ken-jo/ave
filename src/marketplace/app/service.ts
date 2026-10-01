@@ -54,7 +54,7 @@ import type {
   ConsentDelta,
 } from "../../shared/git-marketplace.js";
 import type { McpRuntimeSpec } from "../../plugins/types.js";
-import type { PayloadFile } from "../../plugins/contribution-approval-digest.js";
+import { AGENT_PLUGIN_DECLARATION_PATHS, extensionDeclarationPaths, type PayloadFile } from "../../plugins/contribution-approval-digest.js";
 import { packageUpdateSkipKey } from "../../shared/skipped-plugin-updates.js";
 import { aggregateCatalog, findRevocation, versionExclusions, type CatalogRow, type VersionChoiceContext } from "../catalog/aggregate.js";
 import { PACKAGE_KINDS, type AgentPluginComponents, type IndexVersion, type PackageKind, type PluginAuthority } from "../catalog/types.js";
@@ -168,6 +168,14 @@ type PendingBinding = Omit<BoundInstall, "sourceId"> & { sourceId: string | null
  * the previous receipt's for an automatic update, none otherwise — and, for
  * an automatic update, checkpoint two.
  */
+/** What staging an update for its review read: its fingerprint, files, components and the files that declare its servers and hooks. */
+interface StagedReview {
+  consent: ConsentFingerprint;
+  files: PayloadFile[] | null;
+  components: AgentPluginComponents | null;
+  declaring: ReadonlySet<string>;
+}
+
 interface InstallReview {
   reviewedAppVersion: string | null;
   assertConsent?: (consent: ConsentFingerprint) => void;
@@ -1692,7 +1700,7 @@ export class MarketplaceService implements RetirementEntryLookup {
     const catalog = catalogDelta(baseline.consent, version);
     const staged = await this.stageForReview(this.plans.peek(plan.planId), plan.planId);
     let consentDelta = staged ? stagedDelta(baseline.consent, staged.consent, catalog) : catalog;
-    if (staged?.files && baseline.files) consentDelta = withChangedFiles(consentDelta, baseline.files, staged.files);
+    if (staged?.files && baseline.files) consentDelta = withChangedFiles(consentDelta, baseline.files, staged.files, staged.declaring);
     let delta: UpdatePlanView["authorityDelta"] = null;
     let componentsDelta: UpdatePlanView["componentsDelta"] = null;
     if (key.kind === "plugin" && plan.authority) {
@@ -1726,20 +1734,26 @@ export class MarketplaceService implements RetirementEntryLookup {
    * Kinds whose fingerprint the catalog carries whole are not staged. Returns
    * the staged fingerprint, files and (agent plugin) components.
    */
-  private async stageForReview(held: HeldPlan, planId: string): Promise<{ consent: ConsentFingerprint; files: PayloadFile[] | null; components: AgentPluginComponents | null } | null> {
+  private async stageForReview(held: HeldPlan, planId: string): Promise<StagedReview | null> {
     if (held.kind === "plugin") {
       const artifact = await this.stagePlugin(null, held, held.plan);
       held.staged = artifact;
       const files = this.options.installers.plugin.stagedFiles(artifact);
-      return { consent: pluginConsent(artifact.manifestDocument, files), files, components: null };
+      return { consent: pluginConsent(artifact.manifestDocument, files), files, components: null, declaring: new Set(extensionDeclarationPaths(artifact.manifestDocument)) };
     }
     if (held.kind === "content") {
       if (CATALOG_COMPLETE_KINDS.has(held.plan.kind)) return null;
       const staged = await this.stageContent(planId, held, false);
       held.staged = staged;
-      return { consent: stagedConsent(staged), files: staged.files.map((file) => ({ path: file.path, data: file.data })), components: staged.content.kind === "agent-plugin" ? staged.content.components : null };
+      const components = staged.content.kind === "agent-plugin" ? staged.content.components : null;
+      return {
+        consent: stagedConsent(staged),
+        files: staged.files.map((file) => ({ path: file.path, data: file.data })),
+        components,
+        declaring: new Set(components ? AGENT_PLUGIN_DECLARATION_PATHS : []),
+      };
     }
-    if (held.kind === "mcp") return { consent: mcpConsent(held.resolved.runtime), files: null, components: null };
+    if (held.kind === "mcp") return { consent: mcpConsent(held.resolved.runtime), files: null, components: null, declaring: new Set() };
     return null;
   }
 
