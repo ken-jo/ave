@@ -53,14 +53,15 @@ vi.mock("../../../main/plugin-auth-partition-tracker.js", () => ({
 
 vi.mock("../../../i18n/index.js", () => ({ t: vi.fn((key: string) => key) }));
 vi.mock("../../../lib/logger.js", () => ({
-  createLogger: vi.fn(() => ({ warn: vi.fn() })),
+  createLogger: vi.fn(() => ({ warn: vi.fn(), info: vi.fn() })),
 }));
 
 import { setupAuditAndNotification } from "../audit-notification.js";
+import { createDesktopHostFixture } from "../../../__tests__/support/host-runtime.js";
 
-function makeContext(): BootContext {
+function makeContext(host = createBootHostFixture()): BootContext {
   return {
-    host: createBootHostFixture(),
+    host,
     getMainWindow: () => null,
     aveHomeDocUpgradeMarkers: [],
     settingsService: {
@@ -110,5 +111,39 @@ describe("setupAuditAndNotification audit lifecycle", () => {
     expect(h.log.mock.invocationCallOrder[0]).toBeLessThan(
       h.flush.mock.invocationCallOrder[0],
     );
+  });
+});
+
+describe("setupAuditAndNotification OS notification presenter", () => {
+  // Electron registers the Windows per-user Start Menu shortcut and toast
+  // activator CLSID when its presenter is created. The packaged NSIS smoke
+  // requires both after the first launch, so boot must create the presenter
+  // instead of waiting for the first notification.
+  it("initialises the desktop notification presenter once during boot", async () => {
+    const initializeNotificationPresenter = vi.fn(() => true);
+    const desktop = createDesktopHostFixture({ initializeNotificationPresenter });
+    const ctx = makeContext(createBootHostFixture({ desktop }));
+
+    await setupAuditAndNotification(ctx);
+
+    expect(initializeNotificationPresenter).toHaveBeenCalledOnce();
+  });
+
+  it("initialises the presenter even when OS notifications are unsupported", async () => {
+    const initializeNotificationPresenter = vi.fn(() => false);
+    const desktop = createDesktopHostFixture({ initializeNotificationPresenter });
+
+    await setupAuditAndNotification(makeContext(createBootHostFixture({ desktop })));
+
+    expect(initializeNotificationPresenter).toHaveBeenCalledOnce();
+  });
+
+  it("boots a host without a desktop surface", async () => {
+    const ctx = makeContext();
+
+    await setupAuditAndNotification(ctx);
+
+    expect(ctx.host.desktop).toBeUndefined();
+    expect(ctx.notificationService).toBeDefined();
   });
 });

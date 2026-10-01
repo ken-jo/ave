@@ -51,7 +51,9 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
           void run().finally(() => app.quit());
         });
       },
-      notificationSupported: () => Notification.isSupported(),
+      // `isSupported()` creates Electron's notification presenter; see the
+      // contract on `DesktopHostCapabilities.initializeNotificationPresenter`.
+      initializeNotificationPresenter: () => Notification.isSupported(),
       notificationOptions: {
         isReady: () => app.isReady(),
         isAnyWindowFocused: () => BrowserWindow.getAllWindows().some((window) => !window.isDestroyed() && window.isFocused()),

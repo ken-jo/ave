@@ -49,7 +49,7 @@ export function createDesktopHostFixture(overrides: Partial<DesktopHostCapabilit
     installPluginPartition: () => {},
     revokePluginWebviews: unavailable,
     onBootShutdown: () => {},
-    notificationSupported: () => false,
+    initializeNotificationPresenter: () => false,
     notificationOptions: { isReady: () => false, isAnyWindowFocused: () => false, notificationActivationRegistration: null },
     powerMonitor: { getSystemIdleTime: () => 0, on: () => {}, removeAllListeners: () => {} },
     createAudioCaptureSurface: unavailable,
