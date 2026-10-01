@@ -2211,47 +2211,60 @@ Publication 계획(그 문서의 §9.7)입니다. 그 계획은 **`main`에 없�
 때, 설정이 바뀔 때 **기한 확인**을 돌리고, 기한이 된 것을 시작합니다:
 
 ```
-discovery (due: interval rule below)
+discovery (due: rule below)
   sync every source that syncs (§7.3; a folder source is read, §18.4.2)
   enforce revocations (§10.4)                    -- always, whatever the settings
   compute updates (updateFor, identity.ts:79); publish notices and status
-  if the apply check is due: classify each update (§18.7.2, §18.7.3)
+apply check (due: rule below)
+  if the last successful discovery is older than 24 hours: run a discovery first
+  classify each update (§18.7.2, §18.7.3)
      automatic -> enqueue for the apply queue (§18.7.4)
 apply queue (separate, one package at a time, waits for idle)
 ```
 
-- **탐색의 기한**은 마지막 *성공*이 `updateCheckIntervalMs`보다 오래되었고, **그리고**
-  지난 한 시간 동안 시작한 시도가 없을 때입니다.
-  - 그래서 실패하거나 오프라인이었던 탐색은 간격 전체가 아니라 다음 한 시간 기한
-    확인에서 다시 시도합니다.
-  - `updateCheckIntervalMs`는 키, 6시간 기본값(`background.ts:23`), `0`(부팅과 *지금
-    확인*만), 15분 하한(`background.ts:25-32`)을 유지합니다.
-- **적용 확인의 기한**은 부팅, *지금 확인*, 그리고 마지막으로 성공한 적용 확인이 24시간
-  이상 지났을 때입니다. 업데이트에 대한 소유자의 "부팅 때와 하루 한 번"입니다. 다음에
-  성공하는 탐색에 얹혀 돕니다.
+- **탐색의 기한**은 두 갈래 중 하나입니다:
+  - **시도가 실패한 뒤**(마지막 결과가 `offline`이나 `partial`이거나 시도가 예외를
+    던짐): `lastSuccessAt`과 무관하게 `lastAttemptAt`이 1시간 이상 지났을 때. 그래서
+    *지금 확인*이 시작한 것까지 포함해 실패하거나 오프라인이었던 시도는 다음 한 시간
+    기한 확인에서 다시 합니다;
+  - **시도가 성공한 뒤**: `lastSuccessAt`이 `updateCheckIntervalMs` 이상 지났을 때.
+
+  `updateCheckIntervalMs`는 키, 6시간 기본값(`background.ts:23`), `0`(부팅과 *지금
+  확인*만), 15분 하한, 상한이 없다는 점(`background.ts:25-32`)을 유지합니다. `0`이어도
+  실패한 시도 갈래는 탐색이 성공할 때까지 한 시간마다 다시 시도합니다.
+- **적용 확인의 기한**은 부팅, *지금 확인*, 그리고 마지막으로 성공한 적용
+  확인(`applyCheckAt`)이 24시간 이상 지났을 때입니다. 업데이트에 대한 소유자의 "부팅 때와
+  하루 한 번"입니다. 기한이 된 적용 확인은 다음 예정 탐색을 기다리지 않습니다: 마지막
+  성공 탐색이 24시간보다 오래되었으면(예: `updateCheckIntervalMs`가 48시간) 먼저 스스로
+  탐색을 돌립니다. 그 탐색이 실패하면 적용 확인은 기한인 채로 남아, 실패한 시도의 한 시간
+  갈래와 함께 다시 시도합니다. `applyCheckAt`은 적용 확인이 모든 업데이트를 분류했을
+  때만 씁니다.
 - **탐색을 6시간으로 두는 이유.** 폐기는 인덱스와 같은 fetch로 옵니다(§10.4). 0.12는
   실행 중인 앱에 6시간 안에 전달하는데, 탐색을 24시간 업데이트 주기로 늘리면 폐기된
   패키지가 네 배 오래 실행됩니다. 탐색은 소스당 fetch 한 번이고, 아무것도 적용하지
   않습니다.
 - **탐색은 적용을 기다리지 않습니다.** 적용 큐는 별도 작업자입니다. 큐가 유휴를
-  기다리는 동안에도 패스의 탐색은 끝나고, 시각을 기록하고, 상태를 게시합니다(§18.7.4).
-  `updates:check`는 그 탐색이 끝나면 돌아오고, 큐에 든 업데이트는 그때 `waiting`으로
-  보입니다. 다음 탐색은 큐의 항목을 자기 결과로 바꾸고, 이미 적용 중인 패키지는
-  건드리지 않습니다.
+  기다리는 동안에도 탐색은 끝나고, 시각을 기록하고, 상태를 게시합니다(§18.7.4).
+  `updates:check`는 그 탐색과 적용 확인이 끝나면 돌아오고, 큐에 든 업데이트는 그때
+  `waiting`으로 보입니다. 다음 적용 확인은 큐의 항목을 자기 결과로 바꾸고, 이미 적용
+  중인 패키지는 건드리지 않습니다.
 - **시간 보장.** 앱이 실행 중이고 깨어 있고 소스에 닿는 동안, 그곳에 게시된 폐기나
   업데이트는 `updateCheckIntervalMs` + 1시간(기본 7시간) 안에 발견됩니다. 잠든 동안은
-  `resume`에서 따라잡습니다. 자동 대상 업데이트는 발견 뒤 첫 적용 확인에서 적용되므로,
-  24시간과 유휴 대기(상한 있음, §18.7.4) 안입니다. 예외:
-  - `updateCheckIntervalMs: 0` — 탐색과 적용은 부팅과 *지금 확인* 때만;
-  - 오프라인 — 한 시간마다 다시 시도;
+  `resume`에서 따라잡습니다. 자동 대상 업데이트는 게시 뒤 24시간과 한 시간 기한 확인
+  하나 안에 분류되고, 대화가 다음에 유휴일 때 적용됩니다. **유휴 대기에는 상한이
+  없습니다**: 30분 뒤 사용자에게 알리고 바로 적용할 수 있게 하는데(§18.7.4), 이는 한도가
+  아니라 단계 올림입니다. 예외:
+  - `updateCheckIntervalMs: 0` — 예정 탐색은 부팅과 *지금 확인* 때만, 실패 뒤에는 한
+    시간마다 재시도; 매일 적용 확인은 여전히 돌고 자기 탐색을 얻음;
+  - 오프라인 — 한 시간마다 재시도;
   - 실패하는 소스 — 그 패키지는 기다리고 나머지는 진행.
 - **기억**: `~/.ave/marketplaces/updates.json`:
 
   ```
   { version: 1,
-    discovery: { lastAttemptAt, lastSuccessAt, result: "ok" | "partial" | "offline" } | null,
+    discovery: { lastAttemptAt, lastSuccessAt, result: "ok" | "partial" | "offline" | "error" } | null,
     applyCheckAt: string | null,
-    packages: { "<sourceId>:<kind>:<name>": { to, attempts, lastError?: { code, detail?, at }, appliedAt? } } }
+    packages: { "<sourceId>:<kind>:<name>": { to, state, attempts, lastError?: { code, detail?, at }, appliedAt? } } }
   ```
 
   읽을 수 없는 파일은 빈 파일로 바꾸고 업데이트 카드가 그렇게 알립니다. 그 영향은
@@ -2267,7 +2280,10 @@ apply queue (separate, one package at a time, waits for idle)
 - 업그레이드임: 다운그레이드도, 소스 전환도 아님;
 - 소스에 대기 중인 이력 재작성이 없음(§7.3);
 - 건너뛴 버전이 아님(`skippedPluginUpdates`, `skipped-plugin-updates.ts:95-103`);
-- 적용 확인 세 번 연속 실패하지 않음(§18.7.5);
+- 적용 시도 세 번 연속 실패하지 않음(§18.7.5);
+- **실행 중인 세대에서 승인된 모든 MCP 서버와 훅이 승인을 유지함**: 각각 이어지거나
+  (§18.7.3) 새 버전에서 빠짐. 아니면 업데이트는 `needs-review`입니다. 이것은 불변식입니다:
+  자동 업데이트는 전에 승인된 구성 요소를 승인 없는 상태로 남기지 않습니다;
 - 평문 http로 닿는 소스는 `unencrypted-updates`를 가짐(네트워크 공격자가 새 핀을 담은
   새 커밋을 제공할 수 있고, 그것을 무인으로 적용하면 사용자 행동 없이 그들의 코드가
   실행됨).
@@ -2291,23 +2307,27 @@ apply queue (separate, one package at a time, waits for idle)
 | 폴더(custom이나 direct) | 켬: 작성자의 수정이 손 갈 일 없이 앱에 닿음 |
 
 §18.7.3이 실행하는 것이나 접근 범위를 바꾸는 모든 업데이트를 붙잡으므로 기본값을
-넓게 둡니다. 스스로 적용되는 업데이트는 설치된 버전이 이미 쓸 권한이 있던 텍스트와
-데이터만 바꿉니다.
+넓게 둡니다. 스스로 적용되는 업데이트는 로컬 실행 구성 요소가 없는 패키지만 바꾸거나,
+실행 구성 요소가 닿을 수 있는 것을 하나도 바꾸지 않습니다.
 
-**`requiredInstalls`(§10.2)**는 적용 확인마다 부팅 설치기 경로
-(`boot-installs/run.ts:132-155`)로 `required: true`(`service.ts:1031-1033`)를 달아
-업데이트합니다. 정책이 사용자의 동의를 대신하는 곳은 여기뿐입니다. 정확히는:
+**`requiredInstalls`(§10.2)**는 적용 확인마다 `required: true`(`service.ts:1031-1033`)를
+달아 자동 업데이트와 같은 적용 큐로 업데이트하므로, 부팅 때도 그것들처럼 유휴를
+기다립니다. 정책이 사용자의 동의를 대신하는 곳은 여기뿐입니다. 정확히는:
 
 | 규칙 | 필수 설치 |
 |---|---|
 | 전역·소스·패키지 스위치; 건너뛴 버전 | 무시: 적용하지 않음 |
 | 정책 소스로의 소스 전환 | 지금처럼 허용(`run.ts:136`) |
 | 동의 지문의 권한 필드(§18.7.3) | 정책이 승인: 지금처럼 `reviewedAuthority = true` |
-| MCP 서버와 훅 | 정책이 승인하지 **않음**. 이어가기(§18.7.3)가 바뀌지 않은 것의 승인을 유지하고, 새로 생겼거나 바뀐 것은 승인 없이 설치되어 첫 사용 때 사용자에게 물음. 지금의 필수 설치와 같음(구성 요소 동의를 넘기지 않음) |
+| MCP 서버와 훅 | 정책이 승인하지 **않음**. 이어가기(§18.7.3)가 바뀌지 않은 것의 승인을 유지함. 새로 생겼거나 바뀐 것은 승인 없이 설치됨: 매니저는 승인 없는 투영을 게시하지 않으므로(`mcp-manager.ts:393`) 실행되지 않고, 패키지는 `approval-pending`(§18.7.5)이 되어 설치 직후 알림과 *검토*가 뜸. 위의 승인 유지 불변식은 필수 설치가 넘는 유일한 전제 조건이고, `approval-pending`이 그 예외를 눈에 보이게 함 |
 | 폐기 | 필수: 폐기된 버전은 설치하지 않음 |
 | 호환성(`row.choice.state === "candidate"`, `run.ts:150-153`)과 다운그레이드 금지(`updateFor`) | 필수 |
-| 유휴 게이트(§18.7.4) | 부팅 뒤에는 필수; 부팅 패스는 첫 턴이 시작되기 전에 돎 |
+| 유휴 게이트(§18.7.4) | 부팅 때도 필수 |
 | 세 번 실패 후 중단 | 해당 없음: 실패하는 필수 설치는 적용 확인마다 다시 시도하고 `failed`로 보임 |
+
+아직 없는 패키지의 첫 설치(새 기본 설치나 필수 설치, §10.2)는 지금의 부팅 경로
+(`service.ts:1004-1039`)를 유지합니다: 실행 중인 세대를 바꾸지 않으므로 턴을 끊을 수
+없습니다.
 
 #### 18.7.3 동의: 절대 자동 적용하지 않는 것
 
@@ -2319,7 +2339,7 @@ apply queue (separate, one package at a time, waits for idle)
 
 | 종류 | 필드 |
 |---|---|
-| `plugin`(익스텐션) | `minAppVersion`; `hostProtocol`; 모든 `PluginAuthority` 필드(`capabilities`, `networkAccess`, `hostSecrets`, `pluginAccess`, `auth`, `requires.capabilities`, `dependencies`, `sandbox`); 엔트리 형태(`entry`나 `process`); 번들 기여 종류의 집합; 로컬 ID별 모든 번들 MCP 서버와 훅의 **승인 다이제스트** |
+| `plugin`(익스텐션) | `minAppVersion`; `hostProtocol`; 모든 `PluginAuthority` 필드(`capabilities`, `networkAccess`, `hostSecrets`, `pluginAccess`, `auth`, `requires.capabilities`, `dependencies`, `sandbox`); 엔트리 형태(`entry`나 `process`); 번들 기여 종류의 집합; 로컬 ID별 모든 번들 MCP 서버와 훅의 **승인 다이제스트**; `process` 엔트리는 아래의 패키지 다이제스트 |
 | `agent-plugin` | `minAppVersion`; `hostProtocol`; 있는 구성 요소 종류의 집합; 이름별 모든 MCP 서버와 로컬 ID별 모든 훅의 승인 다이제스트; `mcpAuth`(`extensions-and-plugins.md` §5.2, 결정 18) |
 | `mcp` | 해석된 런타임 명세(§5.2): 전송, 명령, 인자, 환경 이름과 고정 값, URL, 로그인 필드, docker 옵션, 버전을 포함한 패키지나 이미지 |
 | `provider` | `minAppVersion`, `providerId`, `baseUrl` |
@@ -2329,15 +2349,21 @@ apply queue (separate, one package at a time, waits for idle)
 - 소유자의 목록입니다: 새롭거나 바뀐 권한과 부여(권한 필드), 바뀐 MCP 서버나 훅,
   `sandbox`, 프로토콜이나 `minAppVersion` 변경, 새 구성 요소 종류.
 - `mcp` 패키지는 버전이 명령의 일부이므로 모든 `mcp` 업데이트는 검토가 필요합니다.
-- 바뀐 스킬, 프롬프트, 에이전트 프로필, 루틴 템플릿은 자동 적용합니다:
-  `extensions-and-plugins.md` 결정 18이 별도 동의 없이 활성화하고, 루틴 템플릿은 아무것도
-  만들지 않습니다. 실행 파일을 싣는 스킬은 그 패키지의 모든 서버와 훅의 클로저에
-  들어가므로(아래), 그 파일을 바꾸는 것은 텍스트 변경이 아닙니다.
+- **로컬 실행 구성 요소**: stdio MCP 서버, 명령 훅, `process` 엔트리. 이것이 없는
+  패키지 — 스킬, 프롬프트, 에이전트 프로필, 루틴 템플릿, 원격 MCP 서버, 코드가 선언된
+  권한 아래 프로세스 내 엔트리로만 도는 익스텐션 — 는 바뀐 텍스트와 데이터를 자동
+  적용합니다: `extensions-and-plugins.md` 결정 18이 별도 동의 없이 활성화하고, 루틴
+  템플릿은 아무것도 만들지 않습니다.
+- 로컬 실행 구성 요소가 **하나라도** 있는 패키지는 파일이 **어떻게** 바뀌든 검토가
+  필요합니다(아래). 검토는 건너뛰지 않고 싸게 만듭니다(§18.7.3 "차이").
 
-**승인 다이제스트.** 선언만이 아니라 실행되는 것을 덮습니다. 정적 지문
-(`plugin-contributions.ts:249-271`)은 선언된 디스크립터 파일만 해시하므로, 그 파일을 두고
-그것이 가리키는 `server.js`를 바꾸면 같다고 나옵니다. 번들 MCP 서버와 훅마다
-`src/plugins/contribution-approval-digest.ts`의 새
+**승인 다이제스트.** 실행되는 것과 그것이 읽을 수 있는 모든 것을 덮습니다. 정적
+지문(`plugin-contributions.ts:249-271`)은 선언된 디스크립터 파일만 해시하고, 고정 지문은
+argv에 있는 경로만 덮습니다(`plugin-bundled-command.ts:37-71`). 바뀌지 않은 서버가 패키지의
+다른 파일을 읽어 평가하는 것을 막는 런타임 경계는 없습니다: 승인된 `server.js`는
+`skills/helper/assets/rules.txt`를 평가할 수 있고, 콘텐츠 규칙은 그런 자원을 허용합니다
+(`content/rules.ts:45-69`). 그래서 확장자, 위치, 실행 비트로 빼는 패키지 파일은 없습니다.
+번들 MCP 서버와 훅마다 `src/plugins/contribution-approval-digest.ts`의 새
 `approvalDigest(component, generationRoot)`는 다음 정규 JSON의 sha256입니다:
 
 ```
@@ -2350,24 +2376,27 @@ apply queue (separate, one package at a time, waits for idle)
              | { kind: "remote" } }                   // url transport; nothing local runs
 ```
 
-- **`package` 클로저.** 선언된 비실행 구성 요소의 파일 — 프롬프트 Markdown, 에이전트
-  프로필, 루틴 템플릿, 테마·글꼴·언어 파일, 스킬의 `scripts/` 밖에 있고 실행 비트가
-  없는 스킬 파일 — 을 **뺀** 모든 페이로드 파일에 대한 트리 다이제스트(§6.4, 영수증의
-  `artifactSha256`과 세대 ID 뒤의 알고리즘)입니다. 나머지 — `dist/**`, `node_modules/**`,
-  벤더 코드, 스크립트, 설정 JSON — 는 서버가 무엇이든 불러올 수 있으므로 클로저에
-  들어갑니다. 호스트가 이미 해시하는 의존 클로저(영수증이 덮는 페이로드)에서 어떤
-  서버나 훅도 실행할 수 없는 파일만 뺀 것입니다.
+- **`treeSha256`**은 패키지에 설치된 **모든** 페이로드 파일에 대한 트리 다이제스트(§6.4,
+  영수증의 `artifactSha256` 뒤의 알고리즘)이며, **정규화는 정확히 하나**입니다:
+  `plugin.json`을 해시하기 전에 최상위 `version` 필드를 지웁니다(파일을 파싱해 필드를
+  지우고 나머지를 키를 정렬한 정규 JSON으로 직렬화). 다른 정규화 필드는 없습니다. 릴리스는
+  그 필드를 바꿔야 하고(`plugins/marketplace.ts:635-642`), 그 필드는 실행되는 것을 아무것도
+  바꾸지 않습니다. 콘텐츠 패키지는 디스크립터 `ave-package.json`이 설치되지 않으므로
+  (`content/store.ts:114-128`) 정규화가 필요 없습니다.
 - **`launcher` 클로저.** `npx`, `bunx`, `uvx`, `pipx run`, `docker run`의 명세는 변하지 않는
   산출물을 가리킵니다: 정확한 버전의 npm·PyPI(`name@1.2.3`, `name==1.2.3`), 또는
-  `@sha256:` 다이제스트의 OCI 이미지. 고정된 로컬 파일의 `package` 다이제스트도
-  포함합니다.
+  `@sha256:` 다이제스트의 OCI 이미지. 패키지 파일을 여전히 읽을 수 있으므로
+  `treeSha256`도 위처럼 포함합니다.
+- **`remote`**: 로컬 실행 구성 요소가 없는 패키지의 url 전송 구성 요소. 로컬 구성 요소도
+  있는 패키지의 원격 구성 요소도 `remote`로 남습니다: 로컬에서 아무것도 실행하지 않고,
+  로컬 구성 요소의 다이제스트가 이미 트리를 덮습니다.
 - **정할 수 없음.** 실행 클로저를 정할 수 없으면 승인 다이제스트는 `null`입니다.
   변하지 않는 핀이 없는 런처 명세(`npx foo`, `foo@latest`, 이미지 태그),
   `anchorBundledCommand` 실패, 이 목록에 없는 명령 종류가 그렇습니다. `null`은 무엇과도
   같지 않습니다: 그 구성 요소는 이어가기가 없고, 업데이트마다 다시 묻고, 지문이 늘
   달라서 업데이트는 검토가 필요합니다. 닫힌 쪽으로 실패합니다.
-- 결과로, 명시해 둡니다: MCP 서버나 훅을 싣는 익스텐션은 코드가 바뀔 때마다 검토가
-  필요합니다. 스킬이나 프롬프트 텍스트만 바꾸는 업데이트는 여전히 스스로 적용됩니다.
+- `process` 엔트리는 같은 `treeSha256`으로 익스텐션 지문에 들어가므로, `process`
+  익스텐션은 어떤 변경이든 검토가 필요합니다.
 
 **기준선 저장.** 기준선은 사용자가 받아들인 지문이며, 설치와 함께 저장합니다. 새로
 가져온 카탈로그 메타데이터에서 끌어내지 않습니다. `planUpdate`는 설치된 버전에 대한
@@ -2403,20 +2432,31 @@ apply queue (separate, one package at a time, waits for idle)
   `assertConsent` 콜백을 받습니다. 콜백은 스테이징된 트리에서 승인 다이제스트까지 포함한
   전체 지문을 계산하고, `activatePreparedArtifact` 전에 `UpdateNeedsReviewError`를
   던집니다. 콘텐츠는 원장을 쓰기 전에 스테이징된 패키지로 같은 검사를 합니다. 아무것도
-  활성화하지 않고, 스테이징된 파일은 버립니다.
+  활성화하지 않고, 스테이징된 파일은 버립니다. 패스가 `UpdateNeedsReviewError`를 직접
+  잡아(`installZipTransaction`은 그것을 다시 던짐, `plugins/marketplace.ts:831-836`,
+  `:862-878`) `needs-review`를 기록합니다. 동의 보류는 실패가 아니며 시도로 세지 않습니다.
+- **수동 검토는 늘 스테이징합니다.** 차이에 `pending` 필드가 하나라도 있는 모든 수동
+  검토는, 첫째 지점이 무엇을 찾았든, 승인을 내놓기 **전에** 폴더 계획처럼(§18.4.2)
+  산출물을 내려받고 검증해 계획에 스테이징하고 전체 지문을 계산합니다. 그래서 카탈로그에서
+  보이는 권한과 번들 훅을 함께 더하는 업데이트는 둘 다 보여 줍니다. 계획은 스테이징된
+  다이제스트를 기록하고, `executeInstall`은 바로 그 바이트를 설치하며 다시 내려받지
+  않으므로, 승인은 설치되는 바이트를 덮습니다. 만료된 계획(§13.1)은 새 검토를 뜻합니다.
 - **차이.** 타입이 있는
-  `ConsentDelta = Array<{ field: ConsentField; checkpoint: "catalog" | "staged"; before: Json | "unknown"; after: Json | "pending" }>`
+  `ConsentDelta = Array<{ field: ConsentField; checkpoint: "catalog" | "staged"; before: Json | "unknown"; after: Json; changedFiles?: { code: string[]; nonCode: string[] } }>`
   이며, `ConsentField`는 위 표의 모든 행을 이름으로 가리킵니다. 예를 들면
   `authority.networkAccess`, `entryForm`, `mcpServer:<localId>`, `hook:<localId>`,
-  `mcpRuntime`, `connection`입니다. `UpdatePlanView`에 `consentDelta`를 더합니다. 검토는
-  항목마다 행 하나를 그립니다: 필드의 지역화 라벨, 이전과 이후, 그리고 `mcpServer:`와
-  `hook:` 행에는 명령과 클로저 종류를 담은 승인 체크 상자. 기존 `authorityDelta`와
+  `mcpRuntime`, `connection`입니다. 스테이징 뒤에는 `after`가 pending인 항목이 없습니다.
+  `UpdatePlanView`에 `consentDelta`를 더합니다. 기존 `authorityDelta`와
   `componentsDelta`(`service.ts:799-810`)는 이것의 투영이 됩니다.
-- **검토가 바이트를 묶습니다.** 차이에 `staged` 항목이 있으면 `planUpdate`는 폴더 계획처럼
-  (§18.4.2) 산출물을 내려받고 검증해 계획에 스테이징하고, 모든 `after` 값을 계산합니다.
-  계획은 스테이징된 다이제스트를 기록하고, `executeInstall`은 바로 그 스테이징된 바이트를
-  설치하며 다시 내려받지 않습니다. 그래서 승인은 설치되는 바이트를 덮습니다. 만료된
-  계획(§13.1)은 새 검토를 뜻합니다.
+- **코드 없는 변경의 싼 검토.** `changedFiles`는 바뀐 승인 다이제스트에 대해 바이트가 다른
+  패키지 경로를 나열합니다. 렌더러는 표시만을 위해 나눕니다: `nonCode`는 Markdown, 일반
+  텍스트, 이미지, `plugin.json` 밖의 JSON이고 `code`는 나머지입니다. 다른 필드가 승인
+  다이제스트뿐이고(`minAppVersion`은 그대로) 모든 `changedFiles.code`가 비어 있으면, 검토는
+  "코드가 아닌 이 파일들만 바뀌었습니다:"와 목록의 한 행, 그리고 *업데이트 승인* 동작 하나를
+  보여 줍니다. 그 동작은 패키지의 바뀐 구성 요소를 한 번에 모두 승인합니다. 이 구분은
+  자격을 정하지 않고 검토를 줄일 뿐입니다.
+- **그 밖에는** 검토가 항목마다 행 하나를 그립니다: 필드의 지역화 라벨, 이전과 이후, 그리고
+  `mcpServer:`와 `hook:` 행에는 명령, 클로저 종류, 바뀐 파일을 담은 승인 체크 상자.
 - **익스텐션 구성 요소.** 지금 `executeInstall`은 에이전트 플러그인이 아닌 것의 구성 요소
   동의를 거부합니다(`service.ts:826-827`). 슬라이스 F부터 `plugin`에도 번들 로컬 ID로
   받고, 플러그인 설치기는 그것을 `PluginBundleLifecycle`에 넘겨 새 세대의 `mcpTrust`와
@@ -2427,11 +2467,16 @@ apply queue (separate, one package at a time, waits for idle)
 서버와 훅을 다시 묻습니다.
 
 - **스키마.** 신뢰 파일은 `{ version: 2 }`에서 `{ version: 3 }`이 됩니다. 각 기록에
-  `approvalDigest: string | null`과 선택적 `carriedFrom: <generationId>`가 붙습니다.
-  - 로더는 버전 2를 지금처럼 엄격하게 받고(`:40-53`) 각 기록을
-    `approvalDigest: null`로 읽으므로, 0.13.0 이전 기록은 아무것도 이어 가지 않습니다.
-    버전 3도 엄격하게 받습니다.
-  - 다음 쓰기는 버전 3입니다. 다른 버전의 파일은 지금처럼 실패합니다.
+  `approvalDigest: string | null`과 선택적 `carriedFrom: <generationId>`가 붙습니다. 로더는
+  버전 2를 지금처럼 엄격하게(`:40-53`), 버전 3도 엄격하게 받고, 다른 버전은 지금처럼
+  실패합니다. 다음 쓰기는 버전 3입니다.
+- **버전 2 기록 이관.** 0.13.0이 저장소를 처음 읽을 때 한 번 합니다(명시한 결정 39).
+  기록의 세대가 그 플러그인의 활성 세대이고, 지문이 그 설치된 세대의 선언에서 계산한
+  지문과 같으면, `approvalDigest`를 설치된 바이트에서 계산합니다. 사용자가 승인했고 지금
+  실행 중인 바이트이며, v2 식별이 이미 그것을 묶고 있습니다(세대 ID는 영수증이 덮는 모든
+  바이트를 확정함). 그 밖의 v2 기록은 `approvalDigest: null`입니다. null 기록은 이어질 수
+  없으므로, §18.7.2의 전제 조건에 따라 그 패키지의 첫 업데이트는 "이전 Ave 버전의 승인을
+  확인해야 합니다"라는 이유의 명시적인 일회성 `needs-review`입니다.
 - **준비.** 플러그인 P의 새 세대 G′를 준비할 때, 활성 세대 G가 같은 플러그인 ID와 로컬
   ID, 그리고 c′의 것과 같은 null 아닌 `approvalDigest`를 가진 승인 기록을 갖고 있으면
   구성 요소 c′를 이어 갑니다. 이어 가는 구성 요소는 `carriedFrom: G`인 G′의 **임시**
@@ -2439,8 +2484,8 @@ apply queue (separate, one package at a time, waits for idle)
   준비 전에 씁니다. 새 승인과 같은 목록에 들어갑니다.
 - **게시.** 수명 주기의 직렬화 아래에서, 활성 세대가 바뀌기 전에 임시 기록마다 다시
   검증합니다: G가 아직 활성이고 원래 기록이 아직 승인되어 있어야 하므로, 그 사이의
-  철회는 되살아나지 않습니다. 검증에 실패한 기록은 철회하고, 그 구성 요소는 승인 없이
-  게시됩니다.
+  철회는 되살아나지 않습니다. 검증에 실패한 기록은 철회하고 게시를 포기하며, 자동
+  업데이트는 `needs-review`가 되어 §18.7.2의 불변식이 지켜집니다.
 - **실패.** 준비나 게시가 실패하면 모든 임시 기록을 새 승인을 이미 철회하는 경로로
   철회합니다(`agent-plugin-mcp-runtime.ts:126-133`; 훅 런타임은
   `agent-plugin-hook-runtime.ts:134-139`). 저장소는 시도 전과 정확히 같아집니다.
@@ -2454,9 +2499,12 @@ apply queue (separate, one package at a time, waits for idle)
 
 #### 18.7.4 턴을 끊지 않고 적용하기
 
-- **유휴 게이트.** 자동 업데이트는 `ConversationActivityCoordinator.isBusy()`가 거짓일
-  때만 시작합니다(`conversation-activity-coordinator.ts:97-100`). 전환 허용, 세션 전환,
-  활성 턴, 세션 변경이 모두 없다는 뜻입니다.
+- **부팅을 포함한 유휴 게이트.** 자동·필수 업데이트는
+  `ConversationActivityCoordinator.isBusy()`가 거짓일 때만 시작합니다
+  (`conversation-activity-coordinator.ts:97-100`). 전환 허용, 세션 전환, 활성 턴, 세션
+  변경이 모두 없다는 뜻입니다. 게이트는 부팅 때도 다른 때와 똑같이 적용합니다. 시작 순서에
+  기대지 않습니다: 메인 인터페이스가 `startBackground()`보다 먼저 로드되고, 그 호출은
+  기다리지 않습니다(`main.ts:514-538`). 실행 직후에는 보통 게이트가 바로 통과합니다.
   - 지금은 끝난 턴만 알립니다(`:112-115`). 변경 완료(`:123-129`)와 전환 허용
     해제(`:150-152`)는 아무것도 알리지 않습니다. 슬라이스 F가 `onIdle(listener)`를 더해,
     네 조건 중 어느 것에서든 `isBusy()`가 거짓이 될 때마다 부릅니다.
@@ -2464,11 +2512,11 @@ apply queue (separate, one package at a time, waits for idle)
     놓치지 않습니다.
   - 게이트는 패키지마다 읽습니다. 패키지를 적용하는 동안 시작한 턴은 막지 않고, 적용은
     대화 리스를 쥐지 않습니다.
-- **상한 있는 대기.** 유휴를 30분 기다린 큐는 "업데이트 <n>개가 대화가 멈추기를
-  기다립니다" 알림을 *지금 적용*과 함께 게시합니다. *지금 적용*은 사용자의 결정이며
-  유휴 게이트만 건너뛰고, 아래의 리스는 진행 중인 호출을 계속 보호합니다. 그 밖에는
-  큐가 계속 기다립니다. 종료하면 큐는 버려지고, 첫 턴 전에 도는 다음 부팅 패스가
-  적용합니다.
+- **상한이 아니라 단계 올림.** 유휴를 30분 기다린 큐는 "업데이트 <n>개가 대화가 멈추기를
+  기다립니다" 알림을 *지금 적용*과 함께 게시합니다. *지금 적용*은 사용자의 결정이며 유휴
+  게이트만 건너뛰고, 아래의 리스는 진행 중인 호출을 계속 보호합니다. 그것이 없으면 큐는
+  얼마가 걸리든 계속 기다립니다. 종료하면 큐는 버려지고, 다음 부팅의 적용 확인이 다시
+  분류합니다.
 - **익스텐션은 업데이트가 적용되는 순간 다시 시작합니다.**
   - 새 세대는 검증된 스테이징 트리에서 준비·시작하고(`activatePreparedArtifact`,
     `runtime/index.ts:4789`) 게시합니다.
@@ -2476,28 +2524,56 @@ apply queue (separate, one package at a time, waits for idle)
     `runtime/index.ts:3255-3262`) HostApi 작업이 비워진 뒤(10초, `runtime/index.ts:1636`,
     `:2135-2150`) 물러납니다.
   - 게시 뒤에 시작한 루틴이나 하위 에이전트의 호출은 같은 권한으로 새 세대에서 돕니다.
-- **에이전트 플러그인의 MCP 서버와 훅.** 지금 `publishOne`은 대체를 게시한 직후 이전
-  세대를 끊고(`agent-plugin-mcp-runtime.ts:135-136`, `mcp-manager.ts:622-627`, `:650-656`을
-  거쳐), 콘텐츠 저장소는 이어서 이전 버전 디렉터리를 지웁니다(`content/store.ts:306-307`).
-  이전 세대에서 진행 중인 호출이 끊깁니다. 슬라이스 F부터:
-  - 큐는 현재 세대가 정확한 세대 리스 — 모든 번들 MCP 호출이 잡는 리스
-    (`withBundledLease`, `mcp-manager.ts:1326-1340`) — 를 하나도 쥐지 않을 때만 에이전트
-    플러그인을 적용합니다. 아니면 업데이트는 `waiting`으로 남습니다.
-  - 그 확인과 게시 사이에 시작한 호출은 리스를 유지합니다. 이전 세대는 그 리스가 비워진
-    뒤에만, 호출 자신의 도구 시간 제한을 상한으로 끊습니다. 이것이 `:136`의 즉시 끊기를
-    대신합니다.
-  - 에이전트 플러그인 훅 실행도 같은 정확한 세대 리스를 잡습니다.
-  - 이전 버전 디렉터리는 그 물러남 뒤에만 지우므로, 실행 중인 서버나 훅이 파일을 잃지
-    않습니다.
-- **원자적이고, 커밋 뒤 결과가 정해져 있음.** 패키지마다 자기 트랜잭션이고, 패스는
-  전부 아니면 전무가 아닙니다. 플러그인은 `installGitPlugin`과 `installZipTransaction`
-  (`plugins/marketplace.ts:592`, `:770`)을, 콘텐츠는 §5.5의 설치를 거칩니다.
+- **에이전트 플러그인의 MCP 서버와 훅.**
+  - **지금.** `publishOne`은 대체를 게시한 직후 이전 세대를 끊습니다
+    (`agent-plugin-mcp-runtime.ts:135-136`, `mcp-manager.ts:622-627`, `:650-656`을 거쳐). 번들
+    MCP 호출은 `withBundledLease`(`mcp-manager.ts:1326-1340`)를 잡지만, 그것은 부팅이
+    `PluginBundleLifecycle`에 연결한 `generationAccess`(`boot.ts:824`)에 묻고, 그 조정자에는
+    에이전트 플러그인 세대가 없어 거부됩니다(`plugin-generation-coordinator.ts:212-217`).
+    훅은 이미 `agent-plugin/` 소유자를 훅 런타임 자신의 리스 원천으로 보내고
+    (`script-hook-manager.ts:169-172`, `:542-546`), 그 원천은 활성화마다 리스를 세고
+    비웁니다(`agent-plugin-hook-runtime.ts:31-39`, `:61-63`).
+  - **소유자.** 슬라이스 F가 MCP에 같은 모양을 줍니다:
+    - 훅 매니저의 것을 따라 `McpManager.registerGenerationLeaseSource(prefix, acquireExact)`를
+      더하고, `withBundledLease`는 등록된 접두사 중 가장 긴 것으로 소유자를 보내며, 없으면
+      `generationAccess`로 갑니다.
+    - `AgentPluginMcpRuntime`이 `agent-plugin/`을 등록하고 자기 리스를 소유합니다: 훅
+      런타임처럼 활성화별 개수와 비우기 대기자.
+    - **허용은 게시 때 닫힙니다.** 이전 활성화는 서버를 게시 해제하기 전에 물러난 것으로
+      표시되고, 물러난 활성화의 `acquireExact`는 훅 런타임처럼
+      (`agent-plugin-hook-runtime.ts:34`) 예외를 던집니다. 그래서 새 호출은 새 세대로
+      갑니다.
+    - `waitForDrain(activationId)`는 개수가 0이 되면 끝납니다.
+  - **물러남.** 이전 세대는 비워진 뒤에만 끊으며, `:136`의 즉시 끊기를 대신합니다. 비우기는
+    각 호출의 도구 시간 제한을 상한으로 합니다. 큐도 현재 활성화가 리스를 하나도 쥐지 않을
+    때만 에이전트 플러그인을 적용하고, 아니면 업데이트는 `waiting`으로 남습니다.
+  - **페이로드 디렉터리는 세대 주소를 씁니다.** 지금은 같은 버전 재설치 — 모든 폴더 새로
+    고침이 그렇습니다 — 가 활성화 전에 실행 중인 버전 디렉터리를 옆으로 옮기고
+    (`content/store.ts:247-249`, `:286-294`) 스크래치 디렉터리와 함께 지웁니다
+    (`:306-310`). 그러면 이전 세대의 서버나 훅이 실행 중에 경로를 잃습니다. 슬라이스
+    F부터:
+    - 모든 설치는 새 디렉터리 `<root>/<kind>/<name>/<version>/<installId>/`에 쓰고,
+      `LedgerEntry.origin`에 `payloadDir`를 더합니다. `payloadDir`가 없는 항목은 이전
+      설치이며 `<version>/` 경로를 유지합니다;
+    - 살아 있는 세대가 쓰는 것은 옮기거나 덮어쓰지 않습니다;
+    - `activation.activate`는 `{ retired: Promise<void> }`를 돌려주고, 저장소는 그 약속이
+      끝나면 직렬화 밖에서 이전 디렉터리를 지웁니다;
+    - 지우기가 실패하거나 그 전에 종료하면 §18.7.4 표의 부팅 정리가 치웁니다.
 
-  | 실패 | 위치 | 이후 설치된 것 | 업데이트 상태 | 시도로 셈 |
+    에이전트 플러그인 런타임은 이미 디렉터리가 바뀌면 새 세대로 보므로
+    (`agent-plugin-mcp-runtime.ts:105`) 모든 설치가 새 세대입니다.
+- **원자적이고, 결과가 정해져 있음.** 패키지마다 자기 트랜잭션이고, 패스는 전부 아니면
+  전무가 아닙니다. 플러그인은 `installGitPlugin`과 `installZipTransaction`
+  (`plugins/marketplace.ts:592`, `:770`)을, 콘텐츠는 §5.5의 설치를 거칩니다. 패스가 그
+  호출이 던지는 것을 분류합니다:
+
+  | 결과 | 위치 | 이후 설치된 것 | 업데이트 상태 | 시도로 셈 |
   |---|---|---|---|---|
-  | 커밋 전 | 다운로드, 검증, 둘째 검사 지점, 준비, 영수증 쓰기(`plugins/marketplace.ts:862-878`, `:894`); 원장 트랜잭션 안의 콘텐츠 활성화 | 이전 버전이 계속 실행; 영수증, 레지스트리 항목, 원장 복원 | 코드와 detail을 담은 `failed` | 예 |
-  | 영속 커밋 뒤의 게시 | `CommittedPluginGenerationPublicationError`(`committed-generation-publication-error.ts:4-27`), 일부러 되돌리지 않음(`plugins/marketplace.ts:899-900`) | **새** 버전이 커밋됨. `outcome.state: "active"`면 활성 세대, `"inactive"`면 설치되었지만 실행 안 됨 | `applied`, 행에 런타임의 저하 상태("설치됨, 실행 안 됨 — Ave를 다시 시작하세요"); 새 기준선 저장 | 아니요; 다시 설치할 것이 없고, 회복은 런타임 몫(다음 부팅이 커밋된 세대를 활성화) |
-  | 물러남이나 정리 | 이전 세대 물러남(`PluginRetirementJournal`), 이전 콘텐츠 디렉터리(`content/store.ts:306-307`) | 새 버전, 활성 | `applied`; 실패는 로그 | 아니요; 플러그인 물러남은 부팅 때 저널에서 이어서 하고(`recoverRetirements`, `plugin-bundle-lifecycle.ts:280-297`), 슬라이스 F는 어떤 원장 항목도 가리키지 않는 콘텐츠 버전 디렉터리를 지우는 부팅 정리를 더함 |
+  | 동의 보류 | 둘째 검사 지점의 `UpdateNeedsReviewError`, 또는 재검증에 실패한 이어진 승인 | 이전 버전, 그대로 | `needs-review` | 아니요 |
+  | 커밋 전 실패 | 다운로드, 검증, 준비, 영수증 쓰기(`plugins/marketplace.ts:862-878`, `:894`); 원장 트랜잭션 안의 콘텐츠 활성화 | 이전 버전이 계속 실행; 영수증, 레지스트리 항목, 원장 복원 | 코드와 detail을 담은 `failed` | 예 |
+  | 영속 커밋 뒤의 게시 실패 | `CommittedPluginGenerationPublicationError`(`committed-generation-publication-error.ts:4-27`), 일부러 되돌리지 않음(`plugins/marketplace.ts:899-900`) | **새** 버전이 커밋됨. `outcome.state: "active"`면 활성 세대, `"inactive"`면 설치되었지만 실행 안 됨 | `"active"` → `applied`; `"inactive"` → `applied-not-running`. 새 기준선 저장 | 아니요; 다시 설치할 것이 없고, 회복은 런타임 몫(다음 부팅이 커밋된 세대를 활성화) |
+  | 물러남이나 정리 실패 | 이전 세대 물러남(`PluginRetirementJournal`), 이전 콘텐츠 디렉터리 | 새 버전, 활성 | `applied`; 실패는 로그 | 아니요; 플러그인 물러남은 부팅 때 저널에서 이어서 하고(`recoverRetirements`, `plugin-bundle-lifecycle.ts:280-297`), 슬라이스 F는 어떤 원장 항목도 가리키지 않는 콘텐츠 페이로드 디렉터리를 지우는 부팅 정리를 더함 |
+  | 성공 | — | 새 버전, 활성 | `applied`, 또는 구성 요소를 승인 없이 남긴 필수 설치는 `approval-pending`(§18.7.2) | — |
 
   표시하는 설치 버전은 늘 커밋된 영수증이나 원장 항목에서 오며, 시도의 목표 버전에서
   오지 않습니다.
@@ -2506,33 +2582,52 @@ apply queue (separate, one package at a time, waits for idle)
 
 #### 18.7.5 상태, 실패, 오프라인, 건너뛰기, 폐기
 
+아래 상태는 모두 `UpdateStatusView.packages[].state`(§18.9)의 멤버이며, 표와 타입은 같은
+여덟 개를 나열합니다.
+
 | 상태 | 의미 | 표시 |
 |---|---|---|
-| `automatic` | 이번 적용 확인에서 적용 | 실행 중엔 업데이트 카드, 끝나면 알림 |
-| `waiting` | 자동, 유휴나 에이전트 플러그인의 호출을 기다림(§18.7.4) | 업데이트 카드, 패키지 행; 30분 뒤 *지금 적용*이 있는 알림 |
-| `needs-review` | 지문이 다르거나 필드가 `unknown`(§18.7.3) | 알약, 업데이트 카드, 행, *검토* |
+| `automatic` | 이번 적용 확인에서 적용 | 실행 중 업데이트 카드 |
+| `waiting` | 자동이나 필수, 유휴나 에이전트 플러그인의 호출을 기다림(§18.7.4) | 업데이트 카드, 패키지 행; 30분 뒤 *지금 적용*이 있는 알림 |
+| `needs-review` | 지문이 다르거나, 필드가 `unknown`이거나, 전에 승인된 구성 요소가 승인을 잃게 되거나, 둘째 검사 지점이 보류함(§18.7.3) | 알약, 업데이트 카드, 행, *검토* |
 | `manual` | 자동 업데이트가 꺼져 있음 | 알약(업데이트 알림이 켜져 있을 때), 행, *업데이트* |
 | `failed` | 마지막 시도가 커밋 전에 실패: `code`, `detail`, `attempts` | 알약, 업데이트 카드, 행, *다시 시도*, *자세히* |
-| `skipped` | 사용자가 이 버전을 건너뜀 | 더 새 버전이 나올 때까지 어디에도 없음 |
+| `applied` | 자동이나 필수 업데이트가 설치함 | 알림의 "자동으로 업데이트됨", 카드의 최근 목록 |
+| `applied-not-running` | 커밋되었지만 세대가 시작하지 못함(§18.7.4) | 알약, 행 "설치됨, 실행 안 됨 — Ave를 다시 시작하세요" |
+| `approval-pending` | 필수 업데이트가 MCP 서버나 훅을 승인 없이 설치해 그 구성 요소가 실행되지 않음(§18.7.2) | 알약, 행, 설치 직후 "조직이 <이름>을 업데이트했고 구성 요소 <n>개가 승인을 기다립니다" 알림과 *검토* |
 
+`skipped`는 보기의 상태가 아닙니다: 건너뛴 버전은 적용하지도 보이지도 않고, 다음 버전은
+그렇습니다.
+
+- **`approval-pending`의 검토**는 기존 승인 화면을 다시 씁니다:
+  - **익스텐션**: *검토*는 `PluginConfigTab.tsx`에서 플러그인의 신뢰 행을 엽니다. 그 탭은
+    `ave:plugins:contribution-trust:list`로 나열하고 `ave:plugins:contribution-trust:set`으로
+    승인합니다(`ipc/domains/plugins.ts:541-589`, preload `internal-api-surface.ts:527-534`).
+  - **에이전트 플러그인**: *검토*는 업데이트 검토(§15.6)를 구성 요소 모드로 열어, 승인 없는
+    구성 요소의 `consentDelta` 행을 보여 줍니다. 승인 동작은 새 채널
+    `ave:marketplace:components:approve` `(key, consents)`를 부릅니다. 핸들러는
+    `ipc/domains/git-marketplace.ts`에 있고, 서비스가 콘텐츠 설치기로 넘기면 설치기가 설치된
+    세대에 그 동의를 담아 `AgentPluginMcpRuntime.activate`와 `AgentPluginHookRuntime.activate`를
+    부릅니다(`agent-plugin-mcp-runtime.ts:139-142`, `agent-plugin-hook-runtime.ts:144-146`). 그
+    메서드들은 이미 자기 직렬화 아래에서 승인하고 게시합니다.
+  - 설치된 세대에 승인 없는 구성 요소가 없어지면 상태가 풀립니다.
 - **오프라인**: 모든 소스가 `SOURCE_UNREACHABLE` 사유 `offline`으로 실패하면 탐색 결과는
-  `offline`이고 아무것도 적용하지 않으며, 카드는 "오프라인 — 마지막 확인 <시각>"을
-  보여 줍니다. 다음 한 시간 기한 확인에서 다시 시도합니다(§18.7.1).
+  `offline`이고 아무것도 적용하지 않으며, 카드는 "오프라인 — 마지막 확인 <시각>"을 보여
+  줍니다. 다음 한 시간 기한 확인에서 다시 시도합니다(§18.7.1).
 - **소스 실패**: 그 패키지는 이번 패스에서 빠집니다. 소스 행은 detail을 담은 상태를
   보여 주고(§18.8), 패키지 행은 "소스에 닿을 수 없음 — 설치된 버전을 보여 줍니다"라고
   말합니다.
 - **커밋 전 업데이트 실패**: 이전 버전이 남습니다. 상태는 코드, detail, 시도 횟수를 담은
-  `failed`이고 다음 적용 확인에서 다시 시도합니다. 한 버전이 적용 확인 세 번 실패하면,
-  더 새 버전이나 *다시 시도* 전까지 그 버전의 자동 시도를 멈춥니다. 필수 설치는
-  예외입니다(§18.7.2). 커밋 뒤의 실패는 §18.7.4의 표를 따릅니다.
+  `failed`이고 다음 적용 확인에서 다시 시도합니다. 한 버전이 세 번 실패하면 더 새 버전이나
+  *다시 시도* 전까지 그 버전의 자동 시도를 멈춥니다. 필수 설치는 예외입니다(§18.7.2). 동의
+  보류와 커밋 뒤의 실패는 시도가 아닙니다(§18.7.4 표).
 - **적용됨**: 알림(§15.1)의 "자동으로 업데이트됨" 아래에 버전과 *바뀐 점*(§15.6의 커밋
   범위)으로 한 번 나열합니다. `BootInstallNoticeView`(`shared/git-marketplace.ts:373-384`)에
   `autoUpdated`를 더합니다.
-- **알약**(`PluginUpdatesPill.tsx`)은 사용자가 필요한 업데이트만 셉니다:
-  `needs-review`, `failed`, 그리고 업데이트 알림이 켜져 있을 때 `manual`.
-  `updateCheckEnabled`는 의미(알림이 렌더러에 닿는지)를 유지하고 자동 업데이트를
+- **알약**(`PluginUpdatesPill.tsx`)은 사용자가 필요한 업데이트만 셉니다: `needs-review`,
+  `failed`, `applied-not-running`, `approval-pending`, 그리고 업데이트 알림이 켜져 있을 때
+  `manual`. `updateCheckEnabled`는 의미(알림이 렌더러에 닿는지)를 유지하고 자동 업데이트를
   켜고 끄지 않습니다.
-- **건너뛰기**: 건너뛴 버전은 적용하지도 보이지도 않고, 다음 버전은 그렇습니다.
 - **롤백**: 나열된 이전 버전을 손으로 설치하면(§16.2) 떠난 버전을 건너뜀으로 기록해,
   다음 패스가 롤백을 되돌리지 않습니다.
 - **폐기**는 설정과 무관하게 모든 탐색에서 업데이트보다 먼저 적용합니다. 업데이트는
@@ -2662,10 +2757,11 @@ apply queue (separate, one package at a time, waits for idle)
 | `invalid-request` | E | "Ave가 이 버전이 이해하지 못하는 요청을 보냈습니다. 버그입니다." | *세부 정보 복사* |
 | `unavailable` | E | "마켓플레이스가 시작하거나 응답하지 못했습니다(<메시지>)." | "Ave를 다시 시작하고, 계속되면 *세부 정보 복사*." |
 | `unauthorized-frame` | — | 보이지 않음: 감사 기록만 남고 표시할 응답 없음 | — |
-| 업데이트 `needs-review` | S | "<이름> <버전>이 설치된 버전보다 많은 것을 요청합니다:"와 `consentDelta`의 각 행 | *검토* |
-| 업데이트 `waiting` | S | "대화가 멈추면 적용합니다." 30분 뒤 "업데이트 <n>개가 대화가 멈추기를 기다립니다." | 30분 뒤 *지금 적용* |
+| 업데이트 `needs-review` | S | "<이름> <버전>이 설치된 버전보다 많은 것을 요청합니다:"와 `consentDelta`의 각 행. 코드가 아닌 파일만 바뀌었으면 "코드가 아닌 이 파일들만 바뀌었습니다:"와 목록. 이관된 승인은 "이전 Ave 버전의 승인을 확인해야 합니다." | *검토*; 코드 아닌 변경은 *업데이트 승인* |
+| 업데이트 `approval-pending` | S | "조직이 <이름>을 업데이트했고, 구성 요소 <n>개가 승인을 기다리며 실행되지 않습니다." | *검토* |
+| 업데이트 `waiting` | S | "대화가 멈추면 적용합니다." 30분 뒤 단계 올림으로 "업데이트 <n>개가 대화가 멈추기를 기다립니다." | 30분 뒤 *지금 적용* |
 | 업데이트 `failed` | S | 실패 문장과 "<n>/3회 시도" | *다시 시도*, *자세히* |
-| 업데이트 적용됨, 실행 안 됨 | S | "<이름> <버전>을 설치했지만 시작하지 못했습니다." | "Ave를 다시 시작하세요." |
+| 업데이트 `applied-not-running` | S | "<이름> <버전>을 설치했지만 시작하지 못했습니다." | "Ave를 다시 시작하세요." |
 | 탐색 `offline` | S | "오프라인 — 마지막 확인 <시각>." | "네트워크가 돌아오면 다시 확인합니다." |
 
 ### 18.9 설정, IPC, preload, 잠금 스위트, UI
@@ -2695,9 +2791,10 @@ apply queue (separate, one package at a time, waits for idle)
 | `ave:marketplace:sources:pick-folder` | 새 | `()`; main이 폴더 대화상자를 띄움 | `{ path } \| null` |
 | `ave:marketplace:sources:reveal` | 새 | `(id)`; 폴더 소스만 — 경로가 아니라 ID | `null` |
 | `ave:marketplace:updates:status` | 새 | `()` | `UpdateStatusView` |
-| `ave:marketplace:updates:check` | 새 | `()`; 진행 중인 탐색에 합류 | 그 탐색이 끝날 때 `UpdateStatusView`(§18.7.1) |
+| `ave:marketplace:updates:check` | 새 | `()`; 진행 중인 탐색에 합류 | 그 탐색과 적용 확인이 끝날 때 `UpdateStatusView`(§18.7.1) |
 | `ave:marketplace:updates:apply-now` | 새 | `()`; 큐의 유휴 게이트를 건너뜀(§18.7.4) | `UpdateStatusView` |
 | `ave:marketplace:install:execute` | 바뀜 | `plugin`도 구성 요소 동의를 받음(§18.7.3) | — |
+| `ave:marketplace:components:approve` | 새 | `(key: PackageKeyView, consents: ComponentConsent[])`; `approval-pending`인 에이전트 플러그인(§18.7.5) | `UpdateStatusView` |
 | `marketplace:update-status` | 새 이벤트 | — | 바뀔 때 `UpdateStatusView` |
 | `marketplace:updates-available` | 유지 | — | `PackageUpdateView`(`:351-356`)에 `state: "manual" \| "needs-review" \| "failed"`; 사용자가 필요한 업데이트만 |
 | 모든 채널 | 바뀜 | — | 실패 봉투에 `detail?`(§18.8) |
@@ -2707,9 +2804,9 @@ apply queue (separate, one package at a time, waits for idle)
 
 `CHANNELS.gitMarketplace`(`app-contract.ts:302-327`)에 `sourcesAcknowledge`,
 `sourcesPickFolder`, `sourcesReveal`, `updatesStatus`, `updatesCheck`, `updatesApplyNow`,
-`updateStatusChanged`를 더합니다. `GitMarketplaceApi`(`shared/git-marketplace.ts:414-448`)와
+`componentsApprove`, `updateStatusChanged`를 더합니다. `GitMarketplaceApi`(`shared/git-marketplace.ts:414-448`)와
 그 preload 표면(`git-marketplace-api-surface.ts:38-64`)에 `acknowledgeSource`, `pickFolder`,
-`revealSource`, `updateStatus`, `checkUpdates`, `applyUpdatesNow`, `onUpdateStatus`를
+`revealSource`, `updateStatus`, `checkUpdates`, `applyUpdatesNow`, `approveComponents`, `onUpdateStatus`를
 더합니다. `onMarketplaceUpdatesAvailable`(`internal-api-surface.ts:589-593`)은 이름을
 유지합니다.
 
@@ -2718,7 +2815,7 @@ apply queue (separate, one package at a time, waits for idle)
 | 스위트 | 슬라이스 | 변경 |
 |---|---|---|
 | `src/data/__tests__/settings-store.test.ts` | E | 새 키 셋과 정규화; `updateCheckIntervalMs` 그대로 |
-| `src/ipc/__tests__/channel-inventory.test.ts` | C, D1, D2, E, F | C `sources:acknowledge`; D2 `sources:pick-folder`, `sources:reveal`; E `updates:status`, `updates:check`, `marketplace:update-status`; F `updates:apply-now`. D1은 채널을 더하지 않고, 스위트를 돌려 그것을 증명 |
+| `src/ipc/__tests__/channel-inventory.test.ts` | C, D1, D2, E, F | C `sources:acknowledge`; D2 `sources:pick-folder`, `sources:reveal`; E `updates:status`, `updates:check`, `marketplace:update-status`; F `updates:apply-now`, `components:approve`. D1은 채널을 더하지 않고, 스위트를 돌려 그것을 증명 |
 | `src/ipc/__tests__/host-renderer-only-channels.test.ts` | C, D2, E, F | 새 invoke 채널마다 |
 | `src/__tests__/preload-shape.test.ts` | C, D2, E, F | `gitMarketplace` 멤버 목록 |
 | `src/ipc/__tests__/domain-exports.test.ts` | 없음 | 핸들러는 기존 `src/ipc/domains/git-marketplace.ts` 내보내기에 들어감; 런타임 내보내기를 얻는 도메인 없음 |
@@ -2738,7 +2835,8 @@ apply queue (separate, one package at a time, waits for idle)
 - **추가 대화상자**: *폴더 선택…*, 트래픽이나 폴더 접근 전의 확인 단계(§18.5),
   미리보기의 배지.
 - **업데이트 검토**: `consentDelta` 항목마다 행 하나; 바뀌었거나 새로 생긴 MCP 서버와
-  훅의 승인 상자, 익스텐션 포함(§18.7.3).
+  훅의 승인 상자, 익스텐션 포함; 코드 아닌 파일만 바뀌었을 때 한 행의 *업데이트 승인*
+  형태(§18.7.3); `approval-pending` 에이전트 플러그인을 위한 구성 요소 모드(§18.7.5).
 - **패키지 시트**: 폴더 출처; http와 사내망 전달 라벨.
 - **문제 표시**: `MarketplaceProblem`(§18.8). 목업은 슬라이스 G에서 이 상태들을 더합니다.
 
@@ -2757,7 +2855,7 @@ apply queue (separate, one package at a time, waits for idle)
 | **D1. 폴더 소스: 엔진과 동의** | 네 단계의 `source-input.ts`, `native/windows-path-kind/`와 그 CI 실행, `FolderFs`, `SourceTree`와 `FolderTree`, 레지스트리 `path`, 리비전, 모든 종류의 폴더 읽기·스냅숏·계획 확보·설치, `folder` 단계와 영수증, 폴더 직접 설치, 정책 `path:`·`allowLocalSources`·`additional[].path`, `SOURCE_LOCAL_UNREADABLE`, `network-folder` 경고와 그 키, 거부 #5–6, 폴더 경로의 `process` 거부(§18.4.9) | C(확인 흐름과 `acknowledged`) | E | channel-inventory(변경 없음을 단언) |
 | **D2. 폴더 소스: UI** | `sources:pick-folder`, `sources:reveal`, *폴더 선택…*, 폴더 행과 출처 | D1 | E, F | channel-inventory, host-renderer-only-channels, preload-shape |
 | **E. 탐색과 상태** | 기한 규칙, 한 시간 기한 확인과 resume, 시도·성공 시각, `updates.json`, `UpdateStatusView`, `updates:status` / `updates:check` / `marketplace:update-status`, 설정 키, 읽기 전용 업데이트 카드, 알약 필터 | B | C, D1, D2 | settings-store, channel-inventory, host-renderer-only-channels, preload-shape |
-| **F. 자동 적용** | `consentFingerprint`, 승인 다이제스트, 기준선 저장과 기존 설치의 계산, `ConsentDelta`와 검토의 바이트 묶기, 익스텐션 구성 요소 동의, 신뢰 저장소 v3와 두 경로의 이어가기, 두 검사 지점, `onIdle`과 상한 있는 대기를 갖춘 적용 큐, `updates:apply-now`, 에이전트 플러그인 리스 비우기, 커밋 뒤 결과와 콘텐츠 디렉터리 정리, 전제 조건과 결정 순서, 필수 설치 규칙, 실패 횟수, 롤백 시 건너뛰기, `autoUpdated` 알림, 스위치, `unencrypted-updates` | C, D1, E | D2 | channel-inventory, host-renderer-only-channels, preload-shape |
+| **F. 자동 적용** | `consentFingerprint`, 승인 다이제스트, 기준선 저장과 기존 설치의 계산, `ConsentDelta`와 검토의 바이트 묶기, 익스텐션 구성 요소 동의, 신뢰 저장소 v3와 두 경로의 이어가기, 두 검사 지점, v2 기록 이관, 승인 유지 전제 조건, `onIdle`과 30분 단계 올림을 갖춘 적용 큐, 부팅 때의 유휴 게이트, `updates:apply-now`, 에이전트 플러그인 MCP 리스 원천과 비우기, 세대 주소 페이로드 디렉터리, 결과 분류(동의 보류, 실패, 커밋 뒤)와 콘텐츠 디렉터리 정리, `approval-pending`과 `components:approve`, 코드 아닌 변경의 싼 검토, 전제 조건과 결정 순서, 필수 설치 규칙, 실패 횟수, 롤백 시 건너뛰기, `autoUpdated` 알림, 스위치, `unencrypted-updates` | C, D1, E | D2 | channel-inventory, host-renderer-only-channels, preload-shape |
 | **G. 문서와 목업** | `web/app/docs/marketplace/*`(ko, en)의 폴더·경고·자동 업데이트; 목업 상태; 남은 안내 문구 정리 | D2, F | — | 없음 |
 
 **순서.** A, 그다음 B. 그다음 C와 E를 각자의 체크아웃에서 병렬로. 그다음 C 뒤에 D1,
@@ -2799,29 +2897,42 @@ D1 뒤에 D2; D1과 E 뒤에 F; G는 마지막입니다.
   `allow`는 정확한 표기만, `block`은 모든 표기.
 - **D2**: E2E는 폴더 마켓플레이스 추가, 스킬 설치, 수정, *새로 고침* 뒤 행이 업데이트를
   제안하는 데까지. 자동 적용은 F의 E2E.
-- **E**: 오프라인 탐색은 간격 뒤가 아니라 다음 한 시간 기한 확인에서 재시도; 성공한 탐색은
-  6시간 동안 반복하지 않음; 적용 확인은 부팅 때와 24시간 뒤; `updates:check`는 적용 큐가
-  기다리는 동안에도 탐색이 끝나면 돌아옴.
-- **F**: 선언(`.mcp.json`)은 그대로 두고 `dist/server.js`나 그것이 불러오는 파일을
-  바꾸면 승인 다이제스트가 바뀌어 검토가 필요하고 승인은 이어지지 않음; 스킬 텍스트만
-  바꾸면 이어짐; 핀 없는 런처는 `null`; 0.12의 실제 버전 2 신뢰 파일이 읽히고 다음 쓰기는
-  버전 3; 게시 실패 때 임시 승인이 철회되어 저장소가 시도 전과 같음; 이전 세대에서 진행
-  중인 MCP 호출이 끝난 뒤에야 끊김; 턴 없는 세션 변경이 끝나면 적용됨; 커밋 뒤 게시
-  실패는 `applied-not-running`이고 시도로 세지 않음; 필수 설치는 바뀐 권한을 스위치가
-  꺼져 있어도 적용하지만 바뀐 MCP 서버는 승인하지 않음; 전용 E2E
-  `git-marketplace-auto-update.spec.ts`는 `isE2eTestRuntime()`일 때만 읽는
-  `AVE_E2E_MARKETPLACE_SCHEDULER=1`로 실제 스케줄러를 띄우고, `unencrypted-updates`를
-  확인한 뒤 *지금 확인*으로 실제 설치와 IPC 상태를 단언(상태 이벤트를 흉내 내지 않음).
+- **E**: 오프라인 탐색은 간격 뒤가 아니라 다음 한 시간 기한 확인에서 재시도하고, 0시 성공·1시
+  오프라인 *지금 확인* 뒤에도 2시에 재시도(`lastSuccessAt`에 묶지 않음); 성공한 탐색은 6시간
+  동안 반복하지 않음; 적용 확인은 부팅 때와 24시간 뒤이며, 간격이 48시간이면 24시에 스스로
+  탐색을 먼저 돌림; `updates:check`는 적용 큐가 기다리는 동안에도 탐색과 적용 확인이 끝나면
+  돌아옴.
+- **F**: 선언(`.mcp.json`)은 그대로 두고 `dist/server.js`나 그것이 불러오는 파일을 바꾸면
+  승인 다이제스트가 바뀜; **간접 로드** — 승인된 `server.js`가 평가하는
+  `skills/helper/assets/rules.txt`만 바꿔도 `needs-review`; **버전을 올린 완전한 릴리스**
+  (`plugin.json` `version`과 `SKILL.md` 하나)는 로컬 실행 구성 요소가 없는 패키지에서 자동
+  적용되고, stdio MCP가 있는 패키지에서는 "코드가 아닌 파일만 바뀜" 한 행과 *업데이트 승인*
+  한 번의 검토; `plugin.json`의 다른 필드 변경은 다이제스트를 바꿈; 핀 없는 런처는 `null`;
+  0.12의 실제 버전 2 신뢰 파일에서 활성 세대이고 선언 지문이 같은 기록은 설치된 바이트로
+  다이제스트를 얻어 이어지고 나머지는 `null`; 승인 유지 불변식 — 지문은 같지만 승인된
+  구성 요소가 이어지지 못하면 자동이 아니라 `needs-review`; 실제 `McpManager`를 거쳐
+  `agent-plugin/` 소유자의 리스가 런타임 원천에서 오고, **같은 버전의 동시 폴더 새로 고침**
+  중 이전 활성화의 MCP 호출이 결과와 함께 끝나며 이전 페이로드 디렉터리는 비워진 뒤에야
+  지워짐; 한 버전의 두 설치는 `payloadDir` 두 개; 턴 없는 세션 변경과 부팅 때 이미 도는
+  턴 모두 큐를 기다리게 함; 둘째 검사 지점의 보류가 세 번 이어져도 `needs-review`이고 시도
+  0회; 커밋 뒤 게시 실패는 `applied`나 `applied-not-running`이고 시도로 세지 않으며, 패스가
+  쓰는 모든 상태가 보기의 유니언 멤버; 카탈로그 권한과 번들 훅을 함께 더한 업데이트의 수동
+  검토는 승인 전에 스테이징해 둘 다 보여 줌; 필수 설치는 바뀐 권한을 스위치가 꺼져 있어도
+  적용하고, 바뀐 MCP 서버는 승인 없이 두어 `approval-pending`; `components:approve`가 그
+  상태를 풂; 전용 E2E `git-marketplace-auto-update.spec.ts`는 `isE2eTestRuntime()`일 때만
+  읽는 `AVE_E2E_MARKETPLACE_SCHEDULER=1`로 실제 스케줄러를 띄우고, `unencrypted-updates`를
+  확인한 뒤 *지금 확인*으로 실제 설치와 IPC 상태(`applied`)를 단언(상태 이벤트를 흉내 내지
+  않음).
 
 ### 18.11 결정
 
-결정 1–38의 표는 원문 §18.11과 같습니다. 요지:
+결정 1–39의 표는 원문 §18.11과 같습니다. 요지:
 
 | # | 결정 요지 |
 |---|---|
 | 1–4 | 네 가지 결과, 입력·카탈로그 대상 표 분리, 주소 분류를 `network-guard.ts` 한 곳에서, 트래픽이나 폴더 접근 전 한 번 확인, 분류 단위 저장 |
 | 5–7 | 카탈로그 http 다운로드는 sha256 핀으로 수용; 다른 사내 호스트는 `internal-downloads` 확인(`internal-network`로 생기지 않음, 경고가 공격을 설명); 다른 포트의 루프백은 거부 |
 | 8–15 | 폴더에 git 명령 없음, 작업 트리로 읽음, 제자리 읽기와 계획의 바이트 확보, 리비전 핀, 단일 `marketplace.json` URL과 `git://` 미지원, 텍스트로 따라가는 링크 규칙, 폴더 소스는 내려받지 않음(`folder` 단계), 정식 경로나 `dev`/`ino` 식별과 보수적 대소문자 규칙 |
-| 16–17 | 탐색(동기화·폐기)은 6시간, 업데이트 적용 확인은 부팅 때와 하루 한 번; 시도·성공 시각 분리, 실패·오프라인은 한 시간마다 재시도, 탐색은 적용 큐를 기다리지 않음 |
-| 18–28 | 모든 출처 기본 켬(http는 `unencrypted-updates` 전까지 끔), 결정 순서, 동의 지문과 `unknown` 필드는 검토, `mcp`는 항상 검토, 텍스트 구성 요소는 자동, 승인 다이제스트(선언·고정 파일·실행 클로저, 정할 수 없으면 `null`)와 임시 이어가기, 두 검사 지점과 바이트를 묶는 검토, `onIdle`과 30분 상한, 에이전트 플러그인 리스, 필수 설치는 권한만 정책이 승인, 롤백 시 건너뛰기, 커밋 전 실패만 세는 세 번 중단 |
-| 29–38 | 오류와 소스 상태의 `detail`, 빠짐없는 문장, 스튜디오 *파일에서 설치*는 그대로, 정책 키와 작업마다 정책 다시 읽기, http 자격 증명은 등재로 생기지 않음, 딥 링크 폴더 거부, 파일 호출 전 `QueryDosDeviceW`로 네트워크 폴더 분류, `process` 규칙 비완화, 스위치는 설정·http 전제는 main, 슬라이스 순서(D1은 C 뒤, F는 D1·E 뒤), 주소에 따른 거부를 연결에 묶기 |
+| 16–17 | 탐색(동기화·폐기)은 6시간, 업데이트 적용 확인은 부팅 때와 하루 한 번이며 마지막 탐색이 하루보다 오래면 스스로 탐색; 실패 뒤에는 `lastAttemptAt`에서 한 시간마다, 성공 뒤에는 `lastSuccessAt`에서 간격만큼; 탐색은 적용 큐를 기다리지 않음 |
+| 18–28 | 모든 출처 기본 켬(http는 `unencrypted-updates` 전까지 끔), 결정 순서, 동의 지문·`unknown` 필드·승인을 잃는 구성 요소는 검토, `mcp`는 항상 검토, 로컬 실행 구성 요소가 없는 패키지만 텍스트·데이터 자동 적용, 승인 다이제스트는 선언·고정 파일·**패키지 전체**(`plugin.json` `version`만 정규화)이고 정할 수 없으면 `null`, 코드 없는 변경은 한 번의 승인으로 싸게 검토, 두 검사 지점과 늘 스테이징하는 수동 검토, 부팅 포함 `onIdle`과 30분 단계 올림, 에이전트 플러그인 MCP 리스 원천과 세대 주소 디렉터리, 필수 설치는 권한만 정책이 승인하고 승인 없는 구성 요소는 `approval-pending`, 롤백 시 건너뛰기, 동의 보류·커밋 뒤 실패는 시도가 아님 |
+| 29–39 | 오류와 소스 상태의 `detail`, 빠짐없는 문장, 스튜디오 *파일에서 설치*는 그대로, 정책 키와 작업마다 정책 다시 읽기, http 자격 증명은 등재로 생기지 않음, 딥 링크 폴더 거부, 파일 호출 전 `QueryDosDeviceW`로 네트워크 폴더 분류, `process` 규칙 비완화, 스위치는 설정·http 전제는 main, 슬라이스 순서(D1은 C 뒤, F는 D1·E 뒤), 주소에 따른 거부를 연결에 묶기, 버전 2 승인 이관(활성 세대이고 선언 지문이 같으면 설치된 바이트로 다이제스트, 아니면 첫 업데이트 검토) |
