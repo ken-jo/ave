@@ -23,6 +23,8 @@ import { runtimeAssetPath } from "./main-paths.js";
 import { pluginPartitionName } from "../shared/plugin-partition.js";
 import { CHANNELS } from "../contract/app-contract.js";
 import { createLogger } from "../lib/logger.js";
+import { onEvent } from "../boot/types.js";
+import { getLastThemePayload } from "../shared/plugin-theme-cache.js";
 import type {
   DockActivity,
   DockBounds,
@@ -49,7 +51,20 @@ export interface ElectronFloatingDockSurfaceDeps {
    * its window loads; every later theme reaches it through this.
    */
   onThemeChanged(listener: (theme: unknown) => void): () => void;
+  /** The theme current now — the host renderer's last validated one — or null before the first. */
+  currentTheme(): unknown;
 }
+
+/**
+ * The host's theme feed, the one plugin webviews get: the validated
+ * `host.theme.changed` broadcast and the replay cache behind it. Main pushes
+ * both to the dock, so the dock asks nothing through the plugin-only
+ * `getTheme`, whose guard rightly refuses a non-plugin frame.
+ */
+export const hostDockThemeSource: ElectronFloatingDockSurfaceDeps = {
+  onThemeChanged: (listener) => onEvent("host.theme.changed", listener),
+  currentTheme: getLastThemePayload,
+};
 
 export class ElectronFloatingDockSurface implements FloatingDockSurface {
   #window: BrowserWindow | null = null;
@@ -57,10 +72,12 @@ export class ElectronFloatingDockSurface implements FloatingDockSurface {
   /** Queued while the renderer is still loading; flushed on ready-to-show. */
   #pending: Array<{ channel: string; payload: unknown }> = [];
   #ready = false;
+  readonly #currentTheme: () => unknown;
 
   constructor(deps: ElectronFloatingDockSurfaceDeps) {
+    this.#currentTheme = deps.currentTheme;
     // The surface lives as long as the app, so this subscription is never undone.
-    // No window: nothing to repaint, and the next one asks `getTheme` itself.
+    // No window: nothing to repaint, and the next one is sent the current theme on opening.
     deps.onThemeChanged((theme) => this.#post(CHANNELS.dock.theme, theme));
     // Registered ONCE, in the constructor, not per window: `show()` runs again
     // every time the dock comes back and per-window registration would stack a
@@ -133,6 +150,10 @@ export class ElectronFloatingDockSurface implements FloatingDockSurface {
       },
     });
     this.#window = win;
+    // The theme current now goes first, queued with anything later until the
+    // window is ready, so the chrome paints in it from the first frame it shows.
+    const opening = this.#currentTheme();
+    if (opening !== null) this.#post(CHANNELS.dock.theme, opening);
 
     // Above full-screen applications where the platform supports it. The
     // "floating" level is ignored elsewhere and `alwaysOnTop` still applies.

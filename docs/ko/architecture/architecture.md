@@ -2331,6 +2331,7 @@ DLP 통계는 audit NDJSON에서 `type = "dlp"` 엔트리만 집계한다.
 - **CSP + toolbar shell**: main IPC handler 는 renderer payload 를 그대로 로드하지 않고 `src/shared/render-html-preview.ts` 의 CSP-first host shell 로 재구성한 뒤 `data:` URL 로 로드한다. host shell 은 상단 toolbar 와 JavaScript 허용 토글만 소유하고, LLM HTML 은 sandboxed `iframe srcdoc` 안에 넣는다. 토글은 iframe sandbox 의 `allow-scripts` 와 CSP 문서를 재로딩할 뿐 parent/window 권한을 열지 않는다.
 - **테마 토큰 주입**: renderer 는 현재 `--background`, `--foreground`, `--primary`, `--muted`, `--border` 등 Ave theme token 을 preview payload 에 싣고, shell 은 같은 token 을 host toolbar 와 iframe 문서 앞부분에 주입한다.
 - **효과**: 악성 플러그인 HTML 이 외부 서버로 데이터를 유출하거나 원격 스크립트를 로드하는 것을 OS 네트워크 계층에서 차단한다.
+- **테마는 스냅샷**: 열린 preview 는 만들어질 때의 테마를 유지하고, 새 preview 는 현재 테마를 쓴다. LLM HTML 은 opaque-origin sandbox 의 `iframe srcdoc` 별도 문서이고 스크립트가 꺼진 경우가 많다. 그래서 iframe 요소에 변수를 설정해 상속시키거나 parent 가 내부 DOM 에 접근하는 방식은 통하지 않는다. 실시간 갱신에는 문서 안의 메시지 수신기가 필요한데, scripts-disabled 경로에서는 그것이 동작하지 않는다. preview 를 다시 로드하면 문서 상태를 잃는다.
 
 ### 6.6.6 Playwright-Electron E2E 테스트 인프라 (E4 PR #135)
 
@@ -2418,6 +2419,16 @@ ThemeProvider.tsx (renderer)
   임의 CSS 주입 차단 (자세한 검증은 `validateThemePayload`)
 - registry 외 webContents 로 누출 없음 — `pluginWebviewRegistry` 등록된
   webContentsId 만 순회
+
+**호스트 소유 표면**: 같은 ID 의 테마가 제자리에서 갱신된 경우를 포함해, 테마 값을
+복사하는 모든 표면은 호스트 렌더러가 적용한 테마를 따른다.
+- 플로팅 독은 plugin 전용 `getTheme` 를 묻지 않는다. 그 guard 는 plugin frame 만
+  통과시킨다. 대신 main 이 창을 열 때 캐시된 테마를 보내고, 이후의 `host.theme.changed`
+  를 `ave:dock:theme` 로 전달한다 (`hostDockThemeSource`,
+  `src/main/floating-dock-surface.ts`).
+- MCP 앱 카드는 `:root` 에 이미 쓰인 테마(`appliedBundle` / `appliedRevision`)로
+  host context 를 만든다. 그래서 앱은 한 테마의 shell 과 다른 테마의 토큰을 함께 받지 않는다.
+- HTML preview 는 스냅샷이다 (§6.6.5).
 
 **초기 상태 — pull-on-load (1차 메커니즘)**: plugin-ui-shell 이 plugin 모듈
 dynamic-import 직전에 `await window.avePlugin.getTheme()` 으로 호스트의 캐시된

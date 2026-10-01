@@ -468,6 +468,15 @@ describe("plugin theme IPC handlers", () => {
     __resetLastThemePayloadForTests();
   });
 
+  it("keeps the plugin getTheme query to plugin frames: the floating dock is refused and is sent its theme by main instead", () => {
+    registerHandlersWithPlugin(1701);
+    recordValidatedTheme({ bundleId: "midnight", shell: "dark", tokens: { "--ave-bg": "#0d0d12" } });
+    const getTheme = getRegisteredHandler("ave:plugin:get-theme");
+    expect(getTheme(pluginEvent(1701))).toEqual({ ok: true, theme: { bundleId: "midnight", shell: "dark", tokens: { "--ave-bg": "#0d0d12" } } });
+    // The dock's own document is not a plugin frame (floating-dock-theme.test.ts covers what main sends it).
+    expect(getTheme({ sender: { id: 77 }, senderFrame: { url: "file:///tmp/ave/floating-dock-window.html" } })).toBe(UNAUTHORIZED_FRAME);
+  });
+
   it("publishes host.theme.changed through the production theme-notify IPC handler", () => {
     fromIdSpy.mockReturnValue({
       send: sendSpy,

@@ -121,7 +121,12 @@ export function ThemeProvider({
   // a user toggle that happened in the meantime.
   const userTouchedRef = useRef(false);
   const mountedRef = useRef(true);
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  // Set on every mount, not only at creation: StrictMode unmounts and remounts
+  // once, and a ref left false would drop the settings hydrate and broadcasts.
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   const applySettingsAppearance = useCallback(
     (settings: AppSettings, options: { skipIfUserTouched?: boolean } = {}) => {
@@ -258,12 +263,13 @@ export function ThemeProvider({
 
   // Apply bundle to DOM on every active bundle change, then tell the consumers
   // that copy theme values: their effects run after this one has written :root.
-  const [appliedRevision, setAppliedRevision] = useState(0);
+  // Revision 0 is the first bundle, which this effect writes in the same commit.
+  const [applied, setApplied] = useState<{ bundle: ThemeBundle; revision: number }>(() => ({ bundle: activeBundle, revision: 0 }));
   useEffect(() => {
     if (typeof document === "undefined") return;
     if (activeBundle.id !== effectiveBundleId) return;
     applyBundleToDocument(activeBundle);
-    setAppliedRevision((revision) => revision + 1);
+    setApplied((previous) => ({ bundle: activeBundle, revision: previous.revision + 1 }));
   }, [activeBundle, effectiveBundleId]);
 
   // Propagate bundle tokens to plugin webviews whenever active bundle changes.
@@ -350,9 +356,10 @@ export function ThemeProvider({
       followSystem,
       canFollowSystem: systemPair !== null,
       setFollowSystem,
-      appliedRevision,
+      appliedRevision: applied.revision,
+      appliedBundle: applied.bundle,
     }),
-    [bundleId, effectiveBundleId, setBundle, resolved, followSystem, systemPair, setFollowSystem, appliedRevision],
+    [bundleId, effectiveBundleId, setBundle, resolved, followSystem, systemPair, setFollowSystem, applied],
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;

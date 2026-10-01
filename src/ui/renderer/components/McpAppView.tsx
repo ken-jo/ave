@@ -135,10 +135,11 @@ export function McpAppView({
   // light default bundle — which only happens in isolation, since the app root always
   // mounts a real ThemeProvider.
   const themeCtx = useOptionalTheme();
-  const resolved = themeCtx?.resolved ?? "light";
-  const effectiveBundleId = themeCtx?.effectiveBundleId ?? DEFAULT_BUNDLE_ID;
-  // Changes when the applied theme's values change — also for the same theme
-  // updated in place, which leaves `resolved` and `effectiveBundleId` as they were.
+  // The theme `:root` holds and its revision: shell and tokens both come from
+  // it, and only once it is written. `resolved` and `effectiveBundleId` change
+  // before the write, so a context built from them would pair the old shell
+  // with the new tokens (or the new with :root's old values) for a render.
+  const appliedBundle = themeCtx?.appliedBundle ?? findBundle(DEFAULT_BUNDLE_ID);
   const appliedRevision = themeCtx?.appliedRevision ?? 0;
 
   // ── The card's ORIGIN session — the `onmessage` session binding ───────────────
@@ -307,8 +308,7 @@ export function McpAppView({
   // always-resident default bundle, and if even that is missing (never in practice)
   // emit no style variables rather than throw.
   const buildHostContext = useCallback(() => {
-    const activeBundle = findBundle(effectiveBundleId) ?? findBundle(DEFAULT_BUNDLE_ID);
-    const tokens: Record<string, string> = activeBundle ? { ...bundleToPluginTokens(activeBundle) } : {};
+    const tokens: Record<string, string> = appliedBundle ? { ...bundleToPluginTokens(appliedBundle) } : {};
 
     // `bundleToPluginTokens` never carries `--ave-font-family` — ThemeProvider
     // writes it directly onto `document.documentElement.style`, decoupled from the
@@ -327,15 +327,13 @@ export function McpAppView({
     // `displayMode` is this MOUNT's mode, which never changes — a mount cannot report a
     // presentation it is not in (a mode change moves the card to the other mount instead).
     return buildMcpAppHostContext({
-      shell: resolved,
+      shell: appliedBundle?.shell ?? "light",
       tokens,
       locale,
       timeZone,
       displayMode: mountDisplayMode,
     });
-    // appliedRevision: the registry's bundle under the same id has new tokens.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolved, effectiveBundleId, appliedRevision, locale, timeZone, mountDisplayMode]);
+  }, [appliedBundle, locale, timeZone, mountDisplayMode]);
 
   // Hold the latest builder in a ref so the ref-callback bridge lifecycle
   // (`attachWebview`, keyed only on [payload, bundle]) can seed the initial context
@@ -469,8 +467,11 @@ export function McpAppView({
     }
   }, [payload, bundle, handleResize, getDisplayMode, applyDisplayMode]);
 
-  // Push host-context updates to a mounted bridge when the theme shell, active bundle,
-  // its applied values (`appliedRevision`), or locale changes. `setHostContext` auto-diffs and only notifies the view of changed
+  // Push host-context updates to a mounted bridge when a theme has been written to
+  // :root (`appliedRevision` — another theme, the other side of a pair, or the same
+  // theme updated in place) or the locale changes. Keyed on the revision alone, not on
+  // `resolved`/`effectiveBundleId`, which change before the write: the app never sees a
+  // shell and tokens from two themes. `setHostContext` auto-diffs and only notifies the view of changed
   // fields (no-op on the mount pass, which matches the seed). `displayMode` is NOT in
   // here: this mount's mode is fixed for its lifetime, so there is no mode update to push
   // — a mode change moves the card to the OTHER mount, whose seed carries the new mode.
@@ -478,7 +479,7 @@ export function McpAppView({
     const current = bridgeRef.current;
     if (!current) return;
     current.bridge.setHostContext(buildHostContextRef.current());
-  }, [resolved, effectiveBundleId, appliedRevision, locale]);
+  }, [appliedRevision, locale]);
 
   return (
     <div className="mt-2 overflow-hidden rounded border bg-background">

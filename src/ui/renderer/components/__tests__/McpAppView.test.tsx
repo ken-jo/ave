@@ -287,6 +287,73 @@ describe("McpAppView — standard McpUiHostContext wiring (P0)", () => {
     ));
     expect(createMcpAppBridgeMock).toHaveBeenCalledTimes(1);
   });
+
+  /** What an app is told, beside what :root holds at that moment. */
+  type Seen = { shell: string; background: string; root: string };
+  const seen = (context: { theme?: string; styles?: { variables?: Record<string, string> } }): Seen => ({
+    shell: context.theme ?? "",
+    background: context.styles?.variables?.["--color-background-primary"] ?? "",
+    root: document.documentElement.style.getPropertyValue("--background"),
+  });
+  const pairedThemes = () => {
+    const bright = installedTheme("harbor-light", "light", { background: "210 40% 92%" });
+    const dark = installedTheme("harbor-dark", "dark", { background: "210 40% 12%" });
+    act(() => { applyInstalledContent(installedThemeContent([bright, dark]), NO_LANGUAGE_BRIDGE); });
+    return { bright, dark };
+  };
+  const BRIGHT: Seen = { shell: "light", background: "hsl(210, 40%, 92%)", root: "210 40% 92%" };
+  const DARK: Seen = { shell: "dark", background: "hsl(210, 40%, 12%)", root: "210 40% 12%" };
+
+  it("tells a mounted app about a switched theme only once :root holds it, shell and tokens from that one theme", async () => {
+    const { bright, dark } = pairedThemes();
+    const { api } = makeMockAveApi({ settings: { appearance: { schemaVersion: 2, bundleId: bright.id } } });
+    const view = render(
+      <ThemeProvider api={api as never} initialBundleId={bright.id}>
+        <ThemeToggleButton toBundleId={dark.id} />
+        <McpAppView payload={payload("sample")} />
+      </ThemeProvider>,
+    );
+    await waitFor(() => expect(createMcpAppBridgeMock).toHaveBeenCalledTimes(1));
+    await act(async () => {});
+    const appBridge = createMcpAppBridgeMock.mock.results[0]!.value.bridge as { setHostContext: ReturnType<typeof vi.fn> };
+    const told: Seen[] = [];
+    appBridge.setHostContext.mockImplementation((context: never) => { told.push(seen(context)); });
+
+    await act(async () => { fireEvent.click(view.getByTestId("theme-toggle")); });
+
+    // One push, after the write: never the old shell with the new tokens, nor the new pair over the old :root.
+    expect(told).toEqual([DARK]);
+  });
+
+  it("seeds an app that mounts while a switch is on its way with the theme :root holds, then sends the new one", async () => {
+    const { bright, dark } = pairedThemes();
+    const { api } = makeMockAveApi({ settings: { appearance: { schemaVersion: 2, bundleId: bright.id } } });
+    let release: (resource: { proxyUrl: string; html: string }) => void = () => undefined;
+    readUiResource.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    const seeds: Seen[] = [];
+    const told: Seen[] = [];
+    createMcpAppBridgeMock.mockImplementation((...args: unknown[]) => {
+      seeds.push(seen(args[3] as never));
+      return { bridge: { setHostContext: vi.fn((context: never) => { told.push(seen(context)); }) }, transport: { close: vi.fn() }, connected: Promise.resolve() };
+    });
+    const view = render(
+      <ThemeProvider api={api as never} initialBundleId={bright.id}>
+        <ThemeToggleButton toBundleId={dark.id} />
+        <McpAppView payload={payload("sample")} />
+      </ThemeProvider>,
+    );
+    await act(async () => {});
+    expect(createMcpAppBridgeMock).not.toHaveBeenCalled();
+
+    // The app's resource arrives in the same batch as the switch: it mounts before the new theme is written.
+    await act(async () => {
+      release({ proxyUrl: "ave-mcp-app://73616d706c65/proxy.html?t=tok-sample", html: "<html><body>card</body></html>" });
+      fireEvent.click(view.getByTestId("theme-toggle"));
+    });
+
+    expect(seeds).toEqual([BRIGHT]);
+    expect(told).toEqual([DARK]);
+  });
 });
 
 describe("McpAppView — app-driven resize + open-link adapters (P1a)", () => {

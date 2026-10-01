@@ -27,6 +27,8 @@
  * checks its form, and a theme that is neither compiled in nor installed
  * falls back to the default bundle when it is resolved.
  */
+import type { ThemeBundle } from "./bundles/types.js";
+
 export type UnvalidatedBundleId = string;
 
 /** Derived shell color scheme from the active bundle. */
@@ -69,4 +71,11 @@ export interface ThemeContextValue {
    * this in its effect reads the new values, never the ones being replaced.
    */
   appliedRevision: number;
+  /**
+   * The theme whose values `:root` holds, set with `appliedRevision`. A
+   * consumer that copies a theme's shell and tokens takes both from this, so
+   * it never pairs one theme's shell with another's tokens while a switch is
+   * on its way (`resolved` and `effectiveBundleId` change before the write).
+   */
+  appliedBundle: ThemeBundle;
 }

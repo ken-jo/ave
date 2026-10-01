@@ -285,6 +285,21 @@ Plugin UI code runs inside host-created shells. The host resolves plugin asset
 URLs, applies theme tokens, and passes a bridge. Plugin code can request host
 operations only through declared capabilities and HostApi methods.
 
+Every surface that copies theme values follows the theme the host renderer has
+applied, including a theme updated in place under the same id. Plugin webviews
+receive `host.theme.changed` and can query the replay cache through the plugin-only
+`getTheme`, whose guard admits plugin frames only. The floating dock never asks.
+Main sends it the cached theme when its window opens and forwards each later
+`host.theme.changed` on `ave:dock:theme`. MCP app cards build their host context
+from the theme already written to `:root` (`appliedBundle` / `appliedRevision`),
+so an app never receives one theme's shell with another theme's tokens. An open
+HTML preview is a snapshot: it keeps the theme it was created with, and the next
+preview uses the current theme. Its LLM HTML runs in an opaque-origin sandboxed
+`iframe srcdoc`, often with scripts disabled. The host cannot restyle that document
+by setting variables on the frame or by reaching into it. Live updates would need
+a message receiver inside the document, which the scripts-disabled path cannot
+run. Reloading the preview would discard the document's state.
+
 MCP servers are treated as external tool providers. Their tools are normalized
 into the same registry and are subject to the same permission and audit
 requirements as other tools.

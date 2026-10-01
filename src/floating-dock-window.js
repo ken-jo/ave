@@ -18,8 +18,6 @@
  */
 
 const dock = window.aveDock;
-/** Set once a pushed theme has painted: the opening `getTheme` answer is older than it. */
-let themePushed = false;
 
 const els = {
   activity: document.getElementById("activity"),
@@ -45,12 +43,10 @@ if (!dock) {
 function main() {
   els.close.addEventListener("click", () => dock.requestClose());
 
-  applyTheme();
-  // Every later theme — another theme, or the same one updated in place.
-  dock.onTheme((theme) => {
-    themePushed = true;
-    paintTheme(theme);
-  });
+  // Main sends the theme current when the window opens, then every later one —
+  // another theme, or the same one updated in place. Before the host has
+  // published any theme nothing arrives, and the stylesheet's fallbacks apply.
+  dock.onTheme(paintTheme);
 
   dock.onActivity((activity) => {
     if (!activity || typeof activity.summary !== "string") {
@@ -100,18 +96,6 @@ function main() {
 
 function slotElementId(panelId) {
   return `slot-${panelId}`;
-}
-
-async function applyTheme() {
-  try {
-    const theme = await dock.getTheme();
-    if (themePushed) return;
-    paintTheme(theme);
-  } catch {
-    // The stylesheet's fallbacks already cover this. A dock that refused to
-    // paint because the theme was not ready would be worse than one in
-    // default colours.
-  }
 }
 
 function paintTheme(theme) {
