@@ -32,7 +32,7 @@ describe("app update install intent source contract", () => {
     const beforeQuitStart = source.indexOf('app.once("before-quit"');
     const beforeQuitHandler = source.slice(
       beforeQuitStart,
-      source.indexOf("notificationSupported:", beforeQuitStart),
+      source.indexOf("initializeNotificationPresenter:", beforeQuitStart),
     );
     expect(beforeQuitHandler).toContain(
       "if (isAppUpdateInstallRequested() || isAppShutdownStarted() || !needed()) return;",
