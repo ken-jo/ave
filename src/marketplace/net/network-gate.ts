@@ -26,7 +26,7 @@ import {
   resolvesToLoopbackOnly,
 } from "../../core/network-guard.js";
 import { MarketplaceError } from "../errors.js";
-import { isBlockedByPolicy, type MarketplacePolicy, type PolicyLoad } from "../sources/policy.js";
+import { policyBlock, type MarketplacePolicy, type PolicyLoad } from "../sources/policy.js";
 import { normalizeDownloadPath, normalizeSourceHost, type NormalizedSourceUrl, type PatternTarget } from "./source-url.js";
 
 export interface NetworkGateOptions {
@@ -79,23 +79,33 @@ function bareHost(host: string): string {
 
 export class NetworkGate {
   private readonly policy: MarketplacePolicy | null;
-  private readonly policyError: string | null;
+  private readonly policyPath: string;
   private readonly listedHosts: ReadonlySet<string>;
 
   constructor(private readonly options: NetworkGateOptions) {
     this.policy = options.policy.ok ? options.policy.policy : null;
-    this.policyError = options.policy.ok ? null : options.policy.error;
+    this.policyPath = options.policy.path;
     this.listedHosts = this.policy ? hostListedBy(this.policy) : new Set();
   }
 
   /** Steps 2–3 for one normalized target. Returns whether plain http is permitted for it. */
   private async checkPolicyAndScheme(url: NormalizedSourceUrl, subject: GateSubject, target: PatternTarget): Promise<{ allowHttp: boolean }> {
-    if (!this.policy) {
+    const load = this.options.policy;
+    if (!load.ok) {
       if (!subject.official) {
-        throw new MarketplaceError("SOURCE_POLICY_BLOCKED", `the managed marketplace policy is invalid: ${this.policyError}`);
+        throw new MarketplaceError("SOURCE_POLICY_BLOCKED", `the managed marketplace policy is invalid: ${load.error}`, {
+          detail: { reason: "policy-invalid", error: load.error },
+        });
       }
-    } else if (isBlockedByPolicy(this.policy, url, target)) {
-      throw new MarketplaceError("SOURCE_POLICY_BLOCKED", `blocked by managed policy: ${url.url}`);
+    } else {
+      const block = policyBlock(load.policy, url, target);
+      if (block) {
+        throw new MarketplaceError("SOURCE_POLICY_BLOCKED", `blocked by managed policy: ${url.url}`, {
+          detail: block.reason === "blocked-by-pattern"
+            ? { reason: block.reason, target: url.url, pattern: block.pattern, policyPath: this.policyPath }
+            : { reason: block.reason, target: url.url, policyPath: this.policyPath },
+        });
+      }
     }
     if (url.scheme !== "http") return { allowHttp: false };
     if (this.policy?.allowHttpHosts.has(url.host)) return { allowHttp: true };
@@ -172,10 +182,18 @@ export class NetworkGate {
   }
 }
 
+/** `getaddrinfo` failures: the name has no address, or no resolver answered. */
+const DNS_ERROR_CODES: ReadonlySet<string> = new Set(["ENOTFOUND", "EAI_AGAIN", "EAI_NONAME", "EAI_FAIL", "ENODATA"]);
+
 function mapGuardError(error: unknown, host: string): MarketplaceError {
   if (error instanceof MarketplaceError) return error;
   if (error instanceof NetworkGuardError && /non-public address/u.test(error.message)) {
     return new MarketplaceError("SOURCE_URL_REJECTED", `${host}: ${error.message}`, { cause: error });
   }
-  return new MarketplaceError("SOURCE_UNREACHABLE", `${host}: ${(error as Error).message}`, { cause: error });
+  const code = (error as NodeJS.ErrnoException).code;
+  const resolved = code !== undefined && DNS_ERROR_CODES.has(code);
+  return new MarketplaceError("SOURCE_UNREACHABLE", `${host}: ${(error as Error).message}`, {
+    cause: error,
+    ...(resolved ? { detail: { reason: "dns", host } } : {}),
+  });
 }

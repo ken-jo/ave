@@ -17,7 +17,8 @@
  * the URL (an ssh user name is not a credential), query and fragment, dot
  * and empty path segments, control characters and whitespace.
  */
-import { MarketplaceError } from "../errors.js";
+import { scrubDiagnosticSecrets } from "../../shared/dlp.js";
+import { MarketplaceError, type MarketplaceErrorDetail } from "../errors.js";
 
 type SourceUrlScheme = "https" | "http" | "ssh";
 
@@ -47,8 +48,12 @@ const UNRESERVED = /[A-Za-z0-9\-._~]/u;
 /** RFC 3986 pchar minus `%`, which is handled separately. */
 const PCHAR = /[A-Za-z0-9\-._~!$&'()*+,;=:@]/u;
 
-function reject(input: string, reason: string): never {
-  throw new MarketplaceError("SOURCE_URL_REJECTED", `source URL rejected (${reason}): ${input}`);
+/**
+ * The message echoes the input for *Copy details*, scrubbed: the refusal of
+ * `https://user:password@host/…` must not carry the password onward.
+ */
+function reject(input: string, reason: string, detail?: MarketplaceErrorDetail<"SOURCE_URL_REJECTED">): never {
+  throw new MarketplaceError("SOURCE_URL_REJECTED", `source URL rejected (${reason}): ${scrubDiagnosticSecrets(input)}`, detail ? { detail } : undefined);
 }
 
 /**
@@ -139,10 +144,10 @@ function parseParts(input: string, trimmed: string): ParsedParts {
   if (!match) reject(input, "not a URL");
   const scheme = match[1]!.toLowerCase();
   if (scheme !== "https" && scheme !== "http" && scheme !== "ssh") {
-    reject(input, `scheme "${scheme}" is not allowed`);
+    reject(input, `scheme "${scheme}" is not allowed`, { reason: "scheme-unsupported", scheme });
   }
   const rest = match[2]!;
-  if (rest.includes("?") || rest.includes("#")) reject(input, "query or fragment");
+  if (rest.includes("?") || rest.includes("#")) reject(input, "query or fragment", { reason: "format" });
   const slash = rest.indexOf("/");
   if (slash < 0) reject(input, "missing repository path");
   const authority = rest.slice(0, slash);
@@ -154,9 +159,8 @@ function parseParts(input: string, trimmed: string): ParsedParts {
   if (at >= 0) {
     const userInfo = authority.slice(0, at);
     hostPort = authority.slice(at + 1);
-    if (scheme !== "ssh" || userInfo.includes(":") || !SSH_USER.test(userInfo)) {
-      reject(input, "credentials in URL");
-    }
+    if (scheme !== "ssh" || userInfo.includes(":")) reject(input, "credentials in URL", { reason: "credentials-in-url" });
+    if (!SSH_USER.test(userInfo)) reject(input, "invalid ssh user");
     user = userInfo;
   }
 
@@ -195,7 +199,7 @@ export function normalizeDownloadPath(input: string, rawPath: string): string {
 export function normalizeSourceUrl(input: string): NormalizedSourceUrl {
   const trimmed = input.trim();
   if (!trimmed) reject(input, "empty");
-  if (/[\u0000- \u007f\\]/u.test(trimmed)) reject(input, "whitespace, control character or backslash");
+  if (/[\u0000- \u007f\\]/u.test(trimmed)) reject(input, "whitespace, control character or backslash", { reason: "format" });
   const parts = parseParts(input, trimmed);
   const path = `/${normalizePathSegments(input, parts.rawPath, true).join("/")}`;
   const normalized = { scheme: parts.scheme, user: parts.user, host: parts.host, port: parts.port, path };

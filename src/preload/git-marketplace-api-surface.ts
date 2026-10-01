@@ -43,6 +43,7 @@ export function buildGitMarketplaceApiSurface(): GitMarketplaceApi {
     removeSource: (id) => call(channels.sourcesRemove, id),
     setSourceEnabled: (id, enabled) => call(channels.sourcesSetEnabled, id, enabled),
     refreshSources: (id) => (id === undefined ? call(channels.sourcesRefresh) : call(channels.sourcesRefresh, id)),
+    repairSource: (id) => call(channels.sourcesRefresh, id, "repair"),
     acceptRewrite: (id, commit) => call(channels.sourcesAcceptRewrite, id, commit),
     setToken: (host, token) => call(channels.sourcesSetToken, host, token),
     deleteToken: (host) => call(channels.sourcesDeleteToken, host),

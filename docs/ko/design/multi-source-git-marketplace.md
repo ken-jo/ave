@@ -102,13 +102,33 @@ interface SourceState {       // marketplaces/<id>/state.json, every origin
   화면에 진단으로 보여 줍니다. 그런 항목도 id는 계속 차지합니다. 그 id로
   소스를 새로 추가할 수 없고, 같은 id의 제공 중인 소스를 제거하면 제공 중인
   항목만 지웁니다. `sources.json`을 읽을 수 없으면 공식·관리 소스만
-  제공하고, 복구될 때까지 쓰기를 거부해 사용자가 추가한 항목을 덮어쓰지
-  않습니다.
-- `state.json`을 읽을 수 없으면 그 소스의 동기화는 파일 이름을 밝히며
-  실패합니다. 핀이 없는 새 소스로 취급하지 않습니다. 첫 동기화는 어떤 이력도
-  받아들이기 때문입니다. `repo.git`이나 `snapshots/`가 있는데 `state.json`이
-  없는 것도 같은 실패입니다. 동기화는 저장소를 만들기 전에 상태를 먼저 쓰므로,
-  그런 모습은 파일을 잃었을 때만 생깁니다.
+  제공하고, 사용자가 파일을 고치거나 지울 때까지 `SOURCE_LIST_UNREADABLE`로
+  쓰기를 거부해 사용자가 추가한 항목을 덮어쓰지 않습니다. 사용자 데이터이므로
+  Ave가 고치지 않습니다.
+- `state.json`을 읽을 수 없으면 그 소스의 동기화는
+  `SOURCE_LOCAL_DATA_DAMAGED`(§18.8)로 실패합니다. 핀이 없는 새 소스로
+  취급하지 않습니다. 첫 동기화는 어떤 이력도 받아들이기 때문입니다.
+  `repo.git`이나 `snapshots/`가 있는데 `state.json`이 없는 것도 같은
+  실패입니다. 동기화는 저장소를 만들기 전에 상태를 먼저 쓰므로, 그런 모습은
+  파일을 잃었을 때만 생깁니다. 핀의 스냅숏을 읽을 수 없거나 그것이 다른
+  소스·커밋을 가리켜도, git이 열 수 없는 소스 저장소도 같은 코드입니다(동기화는
+  이를 네트워크 실패가 아니라 `repository-damaged`로 기록). 그러면 소스 행은
+  모든 출처에서 *복구*를 제공합니다. 복구는 소스 잠금 아래에서 충돌에
+  안전합니다. 옛 상태를 아직 읽을 수 있으면 먼저 핀과 스위치를 제자리에
+  원자적으로 되쓰고, 그다음 `marketplaces/<id>`의 나머지 항목을 하나씩
+  `.trash-<id>-<무작위>` 형제 디렉터리로 이름을 바꿔 옮깁니다(소스 id는 점으로
+  시작하지 않음). `state.json`은 떠나지 않으므로 어느 단계에서 실패하거나
+  중단돼도 핀이 남습니다. 읽을 수 있는 상태가 없으면 디렉터리 전체를 한 번에
+  옮깁니다. 옮긴 사본은 링크를 따라가지 않고 `lstat`으로 지우며, 남은 것은 다음
+  열기나 복구 때 치웁니다(목록을 읽지 못하면 기록만 남기고 열기나 복구를 실패시키지
+  않음). 쓰기 실패는 `repair-write-failed`, 이름 바꾸기 실패는 `repair-failed`
+  (유지할 핀이 없었으면 `repair-failed-unpinned`)이고, 어느 것도 읽을 수 있는 핀을
+  바꾸지 않습니다. git이 열 수 없는 소스 저장소는 다시 쓰인 이력이 검토를 기다리는
+  중에도 복구로 보이고, 그 검토를 수락해도 같은 오류로 알립니다. 읽을 수 있는
+  상태가 없으면 핀 없이 시작하므로 그 시점에 제공되는 이력을 받아들이는 것은
+  사용자의 복구이고, 행의 문장이 누르기 전에 그렇게 알립니다(`state-missing`,
+  `state-invalid`, `state-unreadable`). 스냅숏과 저장소 사유는 핀을 유지합니다.
+  설치된 패키지, 토큰, 정책, `sources.json`은 다른 곳에 있어 건드리지 않습니다.
 
 ### 2.2 스냅숏
 
@@ -1360,8 +1380,8 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
 모든 채널은 호스트 렌더러 전용(`validateHostRendererSender`)이고 지금처럼 감사
 로그를 남깁니다. `ave:git:runtime:install`은 여기에 더해 실시간 키보드 제스처를
 요구합니다. 마켓플레이스가 실행할 바이너리를 내려받기 때문입니다. `planId`와 `previewId`는 1회용이고 10분 뒤 만료됩니다
-(`PLAN_EXPIRED`). 현재 채널의 처리는 §16.2에 있습니다. 0.13.0 채널과 봉투의
-`detail`은 §18.9에 있습니다.
+(`PLAN_EXPIRED`). 현재 채널의 처리는 §16.2에 있습니다. 0.13.0 채널은 §18.9에
+있습니다.
 
 ### 13.1 구현 결과
 
@@ -1369,9 +1389,13 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
 `GitMarketplaceApi`)이 다르면 계약이 기준입니다.
 
 - 모든 응답은 봉투입니다. `{ ok: true, value }` 또는
-  `{ ok: false, code, message }`입니다. `code`는 §14 코드이거나,
+  `{ ok: false, code, message, detail? }`입니다. `code`는 §14 코드이거나,
   `invalid-request`(서비스에 닿기 전에 요청 형태가 거부됨), `unauthorized-frame`,
   `unavailable`(서비스가 시작하지 못했거나 마켓플레이스 오류가 아닌 이유로 실패함)입니다.
+  `detail`은 사유와 그 문장이 쓰는 값입니다(§14). `parseGitMarketplaceResult`는
+  사유가 그 코드에 속하고 필드가 선언된 타입인 `detail`만 남기고, 나머지는 코드와
+  메시지를 둔 채 버립니다. `message`는 main의 영어 문장이며 *세부 정보 복사*로만
+  보입니다.
 - `sources:preview`는 `{ input; ref?; subdir?; auth: "none" | "token" | "ssh";
   token? }`을 받아 마켓플레이스 미리보기나 단일 패키지 미리보기를 돌려줍니다.
   git 폴더에서 직접 설치하는 경로도 `subdir`를 붙여 이 채널을 씁니다.
@@ -1409,39 +1433,80 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
 
 ## 14. 오류 코드
 
-| 코드 | 언제 | 사용자 메시지(en 키) |
-|---|---|---|
-| `GIT_RUNTIME_MISSING` | 쓸 수 있는 git 없음 | `marketplace.error.gitMissing` |
-| `GIT_RUNTIME_TOO_OLD` | `system` 모드에서 시스템 git이 2.45.1 미만 | `marketplace.error.gitTooOld` |
-| `GIT_RUNTIME_INSTALL_FAILED` | 관리형 다운로드/검증/압축 해제/스모크 테스트 실패 | `marketplace.error.gitInstallFailed` |
-| `SOURCE_URL_REJECTED` | 스킴, URL 안의 자격 증명, 사설망 대상 | `marketplace.error.urlRejected` |
-| `SOURCE_POLICY_BLOCKED` | 관리 정책 allow/block | `marketplace.error.policyBlocked` |
-| `SOURCE_NAME_RESERVED` | 예약된 id | `marketplace.error.nameReserved` |
-| `SOURCE_ID_INVALID` | id가 2–63자의 소문자·숫자·`-`가 아님 | `marketplace.error.idInvalid` |
-| `SOURCE_ID_TAKEN` | 이미 쓰는 id | `marketplace.error.idTaken` |
-| `SOURCE_AUTH_REQUIRED` | 401/403, ssh 거부. 토큰 소스의 호스트가 404를 돌려주는데 그 호스트에 저장된 토큰이 없을 때도(GitHub는 비공개 저장소에 404로 답함) | `marketplace.error.authRequired` |
-| `SOURCE_SSH_HOST_UNKNOWN` | known_hosts에 없는 호스트 키 | `marketplace.error.sshHostUnknown` |
-| `SOURCE_REF_NOT_FOUND` | 브랜치나 태그 없음 | `marketplace.error.refNotFound` |
-| `SOURCE_UNREACHABLE` | 네트워크, DNS, 타임아웃 | `marketplace.error.unreachable` |
-| `SOURCE_NOT_A_MARKETPLACE` | 인식할 수 있는 것이 없음 | `marketplace.error.notMarketplace` |
-| `SOURCE_INDEX_INVALID` | 인덱스 검증 실패 | `marketplace.error.indexInvalid` |
-| `SOURCE_HISTORY_REWRITTEN` | 후손이 아닌 후보 | `marketplace.error.historyRewritten` |
-| `SOURCE_DISABLED` | 숨긴 소스에서 설치·업데이트 요청(그 소스에 묶인 패키지를 위해 동기화는 계속함, §7.3) | `marketplace.error.sourceDisabled` |
-| `PLAN_EXPIRED` | 만료되었거나 재사용된 계획/미리보기 id | `marketplace.error.planExpired` |
-| `PACKAGE_INCOMPATIBLE` | 이 설치에 제공되는 버전이 없음: `minAppVersion`이 앱 버전보다 높음, 다른 플랫폼, canary 없이 프리릴리스, 이 설치를 제외하는 롤아웃 | `marketplace.error.incompatible` |
-| `PACKAGE_COMPAT_UNDECLARED` | `requires.minAppVersion` 없는 git 설치 플러그인 | `marketplace.error.compatUndeclared` |
-| `PACKAGE_YANKED` / `PACKAGE_REVOKED` | 모든 버전이 회수되거나 폐기됨(모두 폐기면 revoked) | `marketplace.error.yanked` / `.revoked` |
-| `PACKAGE_ID_CONFLICT` | 같은 `(kind, name)`이 다른 소스에서, 또는 소스 없이 설치됨. git에 묶인 플러그인 위로 서명 카탈로그의 설치·업데이트·롤백을 할 때도 | `marketplace.error.idConflict` |
-| `PACKAGE_REQUIRED_BY_POLICY` | `requiredInstalls` 패키지의 제거·비활성화 | `marketplace.error.requiredByPolicy` |
-| `PACKAGE_POLICY_BLOCKED` | MCP 거버넌스 정책(Layer 1)이 서버를 거부함. 계획할 때와 설치할 때 확인 | `marketplace.error.policyBlocked` |
-| `ARTIFACT_NOT_PINNED` | 단계 건너뜀: git에 sha256 없음 | (단계 상세) |
-| `ARTIFACT_DIGEST_MISMATCH` | sha256 불일치 | (단계 상세) |
-| `MANIFEST_MISMATCH` | plugin.json과 디스크립터 불일치 | `marketplace.error.manifestMismatch` |
-| `NO_INSTALLABLE_ARTIFACT` | 모든 단계가 건너뛰어졌거나 실패(실패한 단계가 모두 로그인을 요구했으면 대신 `SOURCE_AUTH_REQUIRED`) | `marketplace.error.noArtifact` |
-| `CONTENT_RULE_VIOLATION` | 콘텐츠 종류 파일 규칙 위반 | `marketplace.error.contentRule` |
+모든 코드에는 사유 없는 문장이 있고, 사유가 있는 코드는 실패가 `detail`을 담을 때
+고르는 사유별 문장이 하나씩 있습니다(§13.1). 문장은 무슨 일이 있었고 무엇을 하면
+되는지 말합니다. main의 영어 `message`는 *세부 정보 복사*로만 볼 수 있습니다.
+`failureText`(`labels.ts`)는 `default` 없이 코드와 사유를 빠짐없이 다루고,
+`labels.test.ts`가 `MARKETPLACE_ERROR_CODES`와 `MARKETPLACE_ERROR_REASONS`
+(`errors.ts`)를 나열해 검사합니다. 키는 `gitMarketplace.error.*`에, 소스 정책 차단은
+`gitMarketplace.policy.*`에 두어 MCP 거버넌스 문장(`gitMarketplace.error.policyBlocked`)과
+섞이지 않습니다.
 
-0.13.0은 `SOURCE_CONFIRMATION_REQUIRED`와 `SOURCE_LOCAL_UNREADABLE`, 모든 코드의
-사유를 담은 `detail`, 모든 코드와 사유의 문장을 더합니다(§18.8).
+소스 실패의 문장은 그 실패가 무엇에 관한 것인지(`FailureSubject`)에 따라서도
+달라집니다. 입력 중인 주소(마켓플레이스 추가, Git URL로 설치), 출처·로그인
+방식·저장된 토큰 여부를 아는 목록의 소스, 또는 특정 소스가 없는 경우입니다.
+사용자가 바꿀 수 없는 칸을 확인하라고 하지 않습니다. 주소·브랜치·폴더 안내는
+입력 중인 주소와 사용자가 추가한 소스(*소스 제거* 후 다시 추가)에만 씁니다.
+공식 소스는 *새로 고침*과 마켓플레이스 운영자, 조직 소스는 관리자를 안내합니다.
+로그인 문장은 행이 제공하는 단계를 말합니다. 토큰 소스의 행에는 *토큰 설정…*
+(추가, 또는 권한이 없을 수 있는 저장된 토큰 교체), 토큰 없이 직접 추가한 소스는
+*소스 제거* 후 토큰과 함께 다시 추가, 토큰 없이 설정된 조직 소스는 관리자입니다.
+변형은 키 접미사(`.custom`, `.managed`, `.owned`, `.entry`, `.setToken`,
+`.rejected`, `.readd`, `.other`)이고, `labels.test.ts`가 모든 코드와 사유를 모든
+대상에 대해 두 카탈로그에서 검사합니다.
+
+| 코드 | 언제 | 사유(detail 필드) | 문장 키 |
+|---|---|---|---|
+| `GIT_RUNTIME_MISSING` | 쓸 수 있는 git 없음 | — | `gitMarketplace.error.gitMissing` |
+| `GIT_RUNTIME_TOO_OLD` | `system` 모드에서 시스템 git이 2.45.1 미만 | — | `.gitTooOld` |
+| `GIT_RUNTIME_INSTALL_FAILED` | 관리형 다운로드/검증/압축 해제/스모크 테스트 실패 | 단계: `checking`, `downloading`, `verifying`, `extracting`, `smoke-testing`, `installing`(마지막 제자리 이동) — 필드 없음 | `.gitInstallFailed`, `.gitInstallFailed.<phase>` |
+| `SOURCE_URL_REJECTED` | 스킴, URL 안의 자격 증명, 사설망 대상 | `credentials-in-url`, `scheme-unsupported`(scheme), `format`(쿼리, 프래그먼트, 공백, 제어 문자, 백슬래시) — 정규화기에서. 정규화기의 다른 거부, 다운로드 URL과 네트워크 게이트의 거부는 담지 않음 | `.urlRejected`, `.urlRejected.credentialsInUrl`, `.urlRejected.schemeUnsupported`, `.urlRejected.format` |
+| `SOURCE_POLICY_BLOCKED` | 관리 정책 allow/block, 또는 공식이 아닌 대상에 대해 읽을 수 없는 정책 | `blocked-by-pattern`(target, pattern, policyPath), `not-in-allow-list`(target, policyPath), `policy-invalid`(error) | `gitMarketplace.policy.blocked`, `.blockedByPattern`, `.notInAllowList`, `.policyInvalid` |
+| `SOURCE_NAME_RESERVED` | 예약된 id | — | `.nameReserved` |
+| `SOURCE_ID_INVALID` | id가 2–63자의 소문자·숫자·`-`가 아니거나, 그런 소스가 없음 | — | `.idInvalid` |
+| `SOURCE_ID_TAKEN` | 이미 쓰는 id나 이미 추가된 저장소 | — | `.idTaken` |
+| `SOURCE_AUTH_REQUIRED` | 401/403, ssh 거부. Ave가 저장된 토큰을 건넸는데 "저장소 없음"이 돌아올 때 | `token`(host), `token-no-access`(host: 저장된 토큰에 호스트가 "저장소 없음"으로 답함, 토큰에 권한이 없을 수 있음), `ssh`(host) — git 메시지에서. 다운로드 거부는 담지 않음(다운로드 호스트가 토큰의 호스트와 다를 수 있음) | `.authRequired`, `.authRequired.token`, `.authRequired.tokenNoAccess`, `.authRequired.ssh`와 아래 변형 |
+| `SOURCE_SSH_HOST_UNKNOWN` | known_hosts에 없거나 다른 호스트 키 | `unknown`(host, port), `changed`(host, port) — ssh가 "remote host identification has changed"를 출력하면 `changed`. 문장에 `ssh-keyscan`이나 `ssh-keygen -R` 명령이 들어가고 *명령 복사*가 그것을 복사함 | `.sshHostUnknown`, `.sshHostUnknown.unknown`, `.sshHostUnknown.changed` |
+| `SOURCE_REF_NOT_FOUND` | 브랜치나 태그 없음 | `missing`(ref, repository, available) — fetch가 실패한 뒤 `ls-remote`로 브랜치, 그다음 태그를 최대 10개 나열 | `.refNotFound`, `.refNotFound.missing` |
+| `SOURCE_UNREACHABLE` | 네트워크, DNS, 타임아웃, 저장소가 없다고 답하는 호스트 | `offline`, `dns`, `refused`, `timeout`, `http-status`(status), `tls`, `proxy`(proxy), `not-found`와 `not-found-ssh`(Ave 토큰 없이 호스트가 "저장소 없음"으로 답함. 비공개 저장소에도 같은 답을 하므로 어느 쪽이라고 단정하지 않음) — `offline` 외에는 host 포함. git 메시지, 게이트의 이름 풀이 오류, 실행 자체의 타임아웃, 쓸 수 없는 PAC 항목, 다운로드 상태 코드에서 | `.unreachable`, `.unreachable.<reason>` |
+| `SOURCE_NOT_A_MARKETPLACE` | 인식할 수 있는 것이 없음 | — | `.notAMarketplace`와 그 변형 |
+| `SOURCE_INDEX_INVALID` | 인덱스 검증 실패 | — | `.indexInvalid` |
+| `SOURCE_HISTORY_REWRITTEN` | 후손이 아닌 후보 | — | `.historyRewritten` |
+| `SOURCE_DISABLED` | 숨긴 소스에서 설치·업데이트 요청(그 소스에 묶인 패키지를 위해 동기화는 계속함, §7.3) | — | `.sourceDisabled` |
+| `SOURCE_LOCAL_DATA_DAMAGED` | 소스의 다운로드한 사본을 쓸 수 없음(§2.1), 또는 복구가 그것을 옮기거나 유지한 핀을 되쓰지 못함 | 핀 잃음: `state-missing`, `state-invalid`, `state-unreadable`; 핀 유지: `snapshot-invalid`, `snapshot-unreadable`, `repository-damaged`; 복구: `repair-failed`(유지한 핀 있음), `repair-failed-unpinned`(유지할 핀 없음), `repair-write-failed`(sourceId) — 메시지는 파일을 소스 기준 상대 이름으로, fs 오류는 코드로만 밝히며 홈 경로를 쓰지 않음. 문장은 소스를 행과 같은 이름으로 부름(공식 소스는 출처 이름, 그 밖은 라벨, 목록의 소스를 모를 때만 id) | `.localDataDamaged`, `.localDataDamaged.<reason>` |
+| `SOURCE_LIST_UNREADABLE` | 사용자가 추가한 소스 목록 `marketplaces/sources.json`을 읽을 수 없거나 Ave 형식이 아님. 사용자가 고치거나 지울 때까지 모든 소스 변경을 거부(사용자 데이터이므로 복구하지 않음) | `unreadable`(fsCode), `invalid` — 메시지는 파일 이름과 fs 오류 코드만 밝히며 홈 경로를 쓰지 않음 | `.listUnreadable`, `.listUnreadable.<reason>` |
+| `PLAN_EXPIRED` | 만료되었거나 재사용된 계획/미리보기 id | — | `.planExpired` |
+| `PACKAGE_INCOMPATIBLE` | 이 설치에 제공되는 버전이 없음: `minAppVersion`이 앱 버전보다 높음, 다른 플랫폼, canary 없이 프리릴리스, 이 설치를 제외하는 롤아웃 | `min_app_version`(name, version), `platform`(name, platform), `host_protocol`(name) — 제외된 버전을 알 때 | `.incompatible`, `.incompatible.minAppVersion`, `.incompatible.platform`, `.incompatible.hostProtocol` |
+| `PACKAGE_COMPAT_UNDECLARED` | `requires.minAppVersion` 없는 git 설치 플러그인 | — | `.compatUndeclared` |
+| `PACKAGE_YANKED` / `PACKAGE_REVOKED` | 모든 버전이 회수되거나 폐기됨(모두 폐기면 revoked) | — | `.yanked` / `.revoked` |
+| `PACKAGE_ID_CONFLICT` | 같은 `(kind, name)`이 다른 소스에서, 또는 소스 없이 설치됨. git에 묶인 플러그인 위로 서명 카탈로그의 설치·업데이트·롤백을 할 때도 | — | `.idConflict` |
+| `PACKAGE_REQUIRED_BY_POLICY` | `requiredInstalls` 패키지의 제거·비활성화 | — | `.requiredByPolicy` |
+| `PACKAGE_POLICY_BLOCKED` | MCP 거버넌스 정책(Layer 1)이 서버를 거부함. 계획할 때와 설치할 때 확인 | — | `.policyBlocked` |
+| `ARTIFACT_NOT_PINNED` | 단계 건너뜀: git에 sha256 없음 | — | `.artifactNotPinned` |
+| `ARTIFACT_DIGEST_MISMATCH` | sha256 불일치 | — | `.digestMismatch` |
+| `MANIFEST_MISMATCH` | plugin.json과 디스크립터 불일치 | — | `.manifestMismatch` |
+| `process-entry-unconfined` | OS 도구 샌드박스가 꺼져 있거나 Windows에서의 `process` 진입점(§18.4.9) | — | `formatIpcError.processEntryUnconfined` |
+| `process-entry-requires-pinned-artifact` | sha256으로 고정된 릴리스·아카이브 아티팩트에서 설치되지 않은 `process` 진입점(§18.4.9) | — | `formatIpcError.processEntryRequiresPinnedArtifact` |
+| `NO_INSTALLABLE_ARTIFACT` | 모든 단계가 건너뛰어졌거나 실패(실패한 단계가 모두 로그인을 요구했으면 대신 `SOURCE_AUTH_REQUIRED`) | — | `.noArtifact` |
+| `CONTENT_RULE_VIOLATION` | 콘텐츠 종류 파일 규칙 위반 | — | `.contentRule` |
+| `invalid-request`, `unauthorized-frame`, `unavailable` | 봉투에만(§13.1) | — | `.invalidRequest`, `.unauthorizedFrame`, `.unavailable` |
+
+실패는 `MarketplaceProblem`이 세 가지 톤 중 하나로 보여 줍니다(§18.8): 정책
+(`SOURCE_POLICY_BLOCKED`, `PACKAGE_POLICY_BLOCKED`, `PACKAGE_REQUIRED_BY_POLICY`),
+경고, 오류. 이 코드 밖의 실패(설정 저장, 플러그인 파일, 붙여넣은 MCP 설정)는 자기
+문장으로 오류 톤을 씁니다. 모든 메시지는 `scrubDiagnosticSecrets`(`src/shared/dlp.ts`:
+URL userinfo, authorization·토큰 값, 자격 증명 도우미 줄)로 지워집니다. main이 봉투에
+넣기 전에, 정규화기가 거부한 주소를 되풀이하기 전에, 그리고 *세부 정보 복사*가 복사하기
+전에 `MarketplaceProblem`이 다시 지웁니다.
+
+백그라운드 동기화의 실패는 `sources:list`로 소스 화면에 닿습니다. `SyncResult`가
+detail을 담고, 동기화기가 그것을 `state.json`의 `lastSync.detail`에 저장하고, 상태
+검증기는 사유가 `lastSync.result`에 속할 때만 남기고 아니면 코드는 두고 버리며,
+`sourceStatus`가 `unreachable`과 `auth-required` 보기에 복사합니다(§15.4).
+
+0.13.0은 `SOURCE_CONFIRMATION_REQUIRED`와 `SOURCE_LOCAL_UNREADABLE`, 그리고 이
+빌드가 아직 구분하지 않는 상황에 대해 §18.8이 나열한 사유를 더합니다. 코드나 사유를
+더하는 슬라이스가 그 문장도 더합니다(§18.8, §18.10).
 
 ## 15. UI 명세
 
@@ -1487,8 +1552,14 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
 ### 15.4 소스
 
 표: 소스(라벨, URL, 출처 배지), 핀 커밋(툴팁이 있는 짧은 SHA, 마지막 동기화
-상대 시각), 패키지 수, 상태(`Up to date`, `Syncing`,
-`Unreachable — showing cached`, `Auth required`, `History rewritten — review`),
+상대 시각), 패키지 수, 상태(`Up to date`, `Syncing`, `Auth required`,
+`History rewritten — review`, 그 밖의 동기화 실패는 코드별 칩: 호스트에 닿지
+못했을 때만 `Unreachable`, 그 외에는 `Repository not found`,
+`No marketplace found`, `Branch or tag not found`, `Marketplace index invalid`,
+`SSH host key not verified`, `Blocked by policy`, `Address refused`,
+`Git unavailable`, 다른 코드는 `Update failed`. 핀의 스냅숏을 보여 주는
+동안에는 각각 `— showing cached`를 붙임),
+연결할 수 없음·인증 필요 상태 아래에는 저장된 detail로 만든 실패 문장(§14),
 켜기 스위치, 더보기 메뉴(Refresh, Set token, Remove). 공식·관리 행에는 Remove가
 없고, 공식 스위치는 정책이 허용하지 않으면 잠겨 있고, 관리 행에는 자물쇠가
 표시됩니다.
@@ -2834,7 +2905,7 @@ argv에 있는 경로만 덮습니다(`plugin-bundled-command.ts:37-71`). 바뀌
 | · `internal-downloads` | W | "<소스>가 다른 사내 주소 <호스트>에서 내려받게 합니다. 사내 호스트를 지정할 수 있는 마켓플레이스는 Ave를 통해 사내망 장비(예: 공유기 설정 페이지)로 요청을 보낼 수 있고, 나중에 검사가 실패해도 이미 보낸 요청은 되돌릴 수 없습니다. 허용할까요?" | *사내망 다운로드 허용* |
 | · `network-folder` | W | "이 폴더를 읽으려고 Windows 계정으로 <서버>에 로그인합니다." | "계속할까요?" |
 | · `unencrypted-updates` | W | "<소스>의 업데이트는 http로 옵니다. 네트워크 경로의 누구나 자기 코드로 바꿀 수 있고, 그 코드는 묻지 않고 설치됩니다." | "그래도 자동 업데이트를 켤까요?" |
-| `SOURCE_URL_REJECTED` · `credentials-in-url` | R | "주소에 비밀번호나 토큰이 있습니다. Ave는 주소에 비밀을 저장하지 않습니다." | "빼고 추가한 뒤 *토큰 설정*을 쓰세요." |
+| `SOURCE_URL_REJECTED` · `credentials-in-url` | R | "주소에 비밀번호나 토큰이 있습니다. Ave는 주소에 비밀을 저장하지 않습니다." | "주소에서 빼고, *로그인*에서 *액세스 토큰*을 골라 그곳에 붙여 넣으세요." |
 | · `helper-transport` | R | "`<scheme>::` 주소는 가져오려고 프로그램을 실행하므로 쓸 수 없습니다." | "https나 ssh 주소를 쓰세요." |
 | · `scheme-unsupported` | R | "Ave는 `<scheme>:` 주소를 읽지 않습니다." | "같은 저장소의 https나 ssh 주소를 쓰세요." |
 | · `format` | R | "주소에 `?…`, `#…`, 공백이나 제어 문자가 있습니다." | "지우세요." |
@@ -2848,7 +2919,8 @@ argv에 있는 경로만 덮습니다(`plugin-bundled-command.ts:37-71`). 바뀌
 | `CONTENT_RULE_VIOLATION` · `link-outside-folder` | R | "<경로>가 폴더 밖(<대상>)을 가리킵니다. Ave는 폴더 안의 파일만 설치합니다." | "링크 대신 파일을 폴더 안으로 복사하세요." |
 | · `link-to-network` | R | "<경로>가 네트워크 위치(<대상>)를 가리킵니다. Ave는 다른 컴퓨터를 가리키는 링크를 따라가지 않습니다." | "링크 대신 파일을 폴더 안으로 복사하세요." |
 | · `special-file`, `case-collision`, `extension`, `limit` | R | 경로와 규칙(§5.4, §5.5) | "<경로>를 지우거나 이름을 바꾸세요." |
-| `SOURCE_AUTH_REQUIRED` · `token` | E | "<호스트>에 로그인해야 합니다." | *토큰 설정*; GitHub는 "Contents 읽기 권한이 있는 fine-grained 토큰" |
+| `SOURCE_AUTH_REQUIRED` · `token` | E | "<호스트>에 로그인해야 합니다." | 토큰 소스: 행의 *토큰 설정…*(저장된 토큰이 있으면 "<호스트>가 저장된 토큰을 받아들이지 않았습니다", *토큰 설정…*으로 교체); 토큰 없이 직접 추가: *소스 제거* 후 *액세스 토큰*으로 다시 추가; 토큰 없는 조직 소스: "관리자에게 알리세요"; 입력 중인 주소: *로그인*의 *액세스 토큰*; GitHub는 "Contents 읽기 권한이 있는 fine-grained 토큰" |
+| · `token-no-access` | E | "<호스트>가 저장된 토큰으로는 이 소스 주소에 저장소가 없다고 답했습니다. 토큰에 권한이 없을 수 있습니다." | *토큰 설정…*으로 교체. 직접 추가한 소스는 주소가 틀렸다면 *소스 제거* 후 다시 추가 |
 | · `token-unencrypted` | E | "<호스트>에 로그인해야 하는데, 이 소스는 http를 씁니다." | *허용…*(`token-unencrypted`) 후 *토큰 설정* |
 | · `ssh` | E | "<호스트>가 SSH 키를 거부했습니다." | "키를 불러오거나(`ssh-add`) <호스트> 계정에 추가하세요." |
 | `SOURCE_SSH_HOST_UNKNOWN` · `unknown` | E | "이 컴퓨터는 <호스트>에 SSH로 연결한 적이 없어 키를 확인할 수 없습니다." | "공개된 지문과 비교한 뒤 `ssh-keyscan -p <port> <host> >> ~/.ssh/known_hosts`를 실행하세요(Windows: `%USERPROFILE%\.ssh\known_hosts`)." *명령 복사* |
@@ -2859,16 +2931,23 @@ argv에 있는 경로만 덮습니다(`plugin-bundled-command.ts:37-71`). 바뀌
 | · `refused`, `timeout`, `http-status` | E | "<호스트>가 응답하지 않았습니다(<세부>)." | *다시 시도* |
 | · `tls` | E | "<호스트>의 인증서를 믿을 수 없습니다. 회사 네트워크는 트래픽을 다시 서명하는 경우가 많습니다." | "IT에 네트워크 루트 인증서를 시스템 저장소에 설치해 달라고 요청하세요. Ave가 읽습니다(§9.2)." |
 | · `proxy` | E | "시스템 프록시 설정이 <호스트>에 Ave가 쓸 수 없는 <종류>를 고릅니다." | "IT에 HTTP 프록시나 <호스트>로의 직접 경로를 요청하세요." |
+| · `not-found` | E | "<호스트>가 이 주소에 저장소가 없다고 답했습니다. 호스트는 로그인 없이 비공개 저장소를 요청할 때도 같은 답을 합니다." 어느 쪽이라고 단정하지 않음 | 저장된 토큰이 없는 토큰 소스: *토큰 설정…*(직접 추가한 소스는 주소가 틀렸다면 *소스 제거*, 조직 소스는 그렇지 않다면 관리자); 저장된 토큰이 있으면 `SOURCE_AUTH_REQUIRED` · `token-no-access`와 같음; 토큰 없이 직접 추가: *소스 제거* 후 올바른 주소나 *액세스 토큰*으로 다시 추가; 토큰 없는 조직 소스: "관리자에게 알리세요"; 입력 중인 주소: "주소를 확인하거나 *액세스 토큰*" |
+| · `not-found-ssh` | E | "<호스트>가 SSH로 이 주소에 저장소가 없다고 답했습니다. SSH 키의 계정이 비공개 저장소를 읽을 수 없을 때도 같은 답을 합니다." | "키를 불러왔는지(`ssh-add`), 저장소를 읽을 수 있는 <호스트> 계정의 키인지 확인하세요"; 입력 중인 주소와 직접 추가한 소스는 주소 안내, 조직 소스는 관리자 |
 | `SOURCE_LOCAL_UNREADABLE` · `not-found` | E | "폴더 <경로>가 없습니다: 옮겨졌거나 이름이 바뀌었거나 드라이브가 연결되지 않았습니다." | "드라이브를 연결하거나, 소스를 제거하고 폴더를 다시 추가하세요." |
 | · `permission`, `io` | E | "<경로>를 읽을 수 없습니다(<시스템 메시지>)." | "폴더 권한을 확인하세요. 다음 읽기에서 다시 시도합니다." |
 | · `moved` | E | "<경로>가 이제 <새 경로>를 가리킵니다." | "소스를 제거하고 원하는 폴더를 추가하세요." |
 | · `not-a-directory` | E | "<경로>는 폴더가 아닙니다." | "폴더를 고르세요." |
 | · `ambiguous-case` | E | "<경로>에 대소문자만 다른 폴더가 여럿 있습니다." | "정확한 대소문자로 경로를 입력하세요." |
 | · `changed-during-read` | E | "Ave가 읽는 동안 <경로>의 파일이 바뀌었습니다." | "다음 읽기 때 다시 시도합니다." |
-| `SOURCE_NOT_A_MARKETPLACE` · `nothing-found` | E | "<위치>에서 marketplace.2.json도, 패키지 폴더도, 단일 패키지도 찾지 못했습니다." | "주소와 브랜치, 저장소 안의 패키지라면 폴더 칸을 확인하세요." |
+| `SOURCE_NOT_A_MARKETPLACE` · `nothing-found` | E | "<위치>에서 marketplace.2.json도, 패키지 폴더도, 단일 패키지도 찾지 못했습니다." | 입력 중인 주소: "주소와 브랜치, 저장소 안의 패키지라면 폴더 칸을 확인하세요."; 직접 추가한 소스: 같은 안내를 *소스 제거* 후 다시 추가로; 공식: 나중에 *새로 고침*, 그다음 마켓플레이스 운영자; 조직: "관리자에게 알리세요" |
 | · `other-app-plugin` | E | "다른 앱용 플러그인입니다(`.claude-plugin/`나 `.codex-plugin/`)." | "플러그인 스튜디오의 *플러그인 가져오기*를 쓰세요(`extensions-and-plugins.md` §2.4)." |
 | `SOURCE_INDEX_INVALID` | E | "<소스>의 인덱스가 올바르지 않습니다(<파일>: <문제>). 마지막 정상 버전을 계속 씁니다." | "마켓플레이스 소유자에게 알리세요." *세부 정보 복사* |
 | `SOURCE_HISTORY_REWRITTEN` | E | 공식·관리: "<소스>의 이력이 다시 쓰여 마지막 정상 버전을 유지합니다." 커스텀·직접: "…새 이력을 검토한 뒤 쓰세요." | 커스텀·직접: *검토* |
+| `SOURCE_LOCAL_DATA_DAMAGED` · `state-missing`, `state-invalid`, `state-unreadable` | W | "<id> 소스의 다운로드한 사본이 손상되었습니다. Ave가 신뢰하는 버전의 기록이 없거나 읽을 수 없습니다." | "복구하면 소스를 다시 다운로드하고, 이전 버전과 대조하지 않은 채 지금 제공되는 버전을 신뢰합니다." 행의 *복구*(모든 출처, 새로 고침과 스위치 대신). `state-unreadable`은 폴더 권한을 고치면 대조가 유지됨; *세부 정보 복사* |
+| · `snapshot-invalid`, `snapshot-unreadable`, `repository-damaged` | E | "<id> 소스의 다운로드한 사본이 손상되었습니다(패키지 목록 또는 git 저장소)." | *복구*; "Ave가 신뢰하는 버전은 유지됩니다." |
+| · `repair-failed`, `repair-failed-unpinned` | E | "Ave가 <소스> 소스의 손상된 사본을 옮기지 못해 다시 다운로드하지 않았습니다." `repair-failed`만 "신뢰하는 버전은 유지됩니다"를 덧붙임 | "다른 Ave 창을 닫고 복구를 다시 누르세요." *세부 정보 복사* |
+| · `repair-write-failed` | E | "Ave가 <소스> 소스의 신뢰하는 버전 기록을 저장하지 못해 소스를 다시 다운로드하지 않았습니다." | "디스크 공간과 쓰기 권한을 확인한 뒤 복구를 다시 누르세요." |
+| `SOURCE_LIST_UNREADABLE` · `unreadable`, `invalid` | E | "Ave가 직접 추가한 소스 목록인 Ave 데이터 폴더의 `marketplaces/sources.json`을 읽을 수 없어(<fsCode>, 또는 Ave 형식이 아님), 고쳐질 때까지 어떤 소스도 바꾸지 않습니다." | "파일을 고치거나 지운 뒤 Ave를 다시 시작하세요. 지우면 직접 추가한 소스만 사라지고, 공식·조직 소스와 설치한 패키지는 그대로 남습니다." 형식 오류는 *세부 정보 복사* |
 | `SOURCE_DISABLED` | E | 지금 문장 | *소스 보이기* |
 | `SOURCE_NAME_RESERVED`, `SOURCE_ID_INVALID` | E | "<id>는 예약되었거나 올바른 ID가 아닙니다(소문자·숫자·`-` 2–63자)." | "다른 ID를 고르세요." |
 | `SOURCE_ID_TAKEN` | E | "<저장소나 폴더>는 이미 <id>로 추가되어 있습니다" 또는 "<id>는 이미 쓰입니다" | *<id> 보기* 또는 "다른 ID를 고르세요." |

@@ -63,7 +63,8 @@ export interface MarketplacePolicy {
   requiredInstalls: readonly PackageKey[];
 }
 
-export type PolicyLoad = { ok: true; policy: MarketplacePolicy } | { ok: false; error: string };
+/** The policy file's `marketplaces` section, or why it cannot be used; `path` is the file it came from, named in policy messages (§18.8). */
+export type PolicyLoad = { ok: true; policy: MarketplacePolicy; path: string } | { ok: false; error: string; path: string };
 
 export const EMPTY_MARKETPLACE_POLICY: MarketplacePolicy = Object.freeze({
   allow: null,
@@ -172,9 +173,20 @@ function packageKeys(value: unknown, path: string, sourceIds: ReadonlySet<string
   });
 }
 
+/** Why the policy blocks `url`: the first `block` pattern it matches, or an `allow` list it is not on; null when it does not. */
+export function policyBlock(
+  policy: MarketplacePolicy,
+  url: NormalizedSourceUrl,
+  target: PatternTarget = "repository",
+): { reason: "blocked-by-pattern"; pattern: string } | { reason: "not-in-allow-list" } | null {
+  const blocked = policy.block.find((pattern) => matchesSourcePattern(url, pattern, target));
+  if (blocked) return { reason: "blocked-by-pattern", pattern: blocked.text };
+  if (policy.allow !== null && !policy.allow.some((pattern) => matchesSourcePattern(url, pattern, target))) return { reason: "not-in-allow-list" };
+  return null;
+}
+
 export function isBlockedByPolicy(policy: MarketplacePolicy, url: NormalizedSourceUrl, target: PatternTarget = "repository"): boolean {
-  if (policy.block.some((pattern) => matchesSourcePattern(url, pattern, target))) return true;
-  return policy.allow !== null && !policy.allow.some((pattern) => matchesSourcePattern(url, pattern, target));
+  return policyBlock(policy, url, target) !== null;
 }
 
 /** An absent key is the empty list; `null` is a typo, not "nothing". */
@@ -247,17 +259,17 @@ export async function loadMarketplacePolicy(path: string = getAdminPolicyPath())
   try {
     text = await readFile(path, "utf8");
   } catch (error) {
-    if (isMissingPathError(error)) return { ok: true, policy: EMPTY_MARKETPLACE_POLICY };
-    return { ok: false, error: `cannot read ${path}: ${(error as Error).message}` };
+    if (isMissingPathError(error)) return { ok: true, policy: EMPTY_MARKETPLACE_POLICY, path };
+    return { ok: false, error: `cannot read ${path}: ${(error as Error).message}`, path };
   }
   try {
     const file = parseStrictJson(text);
-    if (!isRecord(file)) return { ok: false, error: `${path}: the policy file must be a JSON object` };
-    if (file.marketplaces === undefined) return { ok: true, policy: EMPTY_MARKETPLACE_POLICY };
-    return { ok: true, policy: parseSection(file.marketplaces) };
+    if (!isRecord(file)) return { ok: false, error: `${path}: the policy file must be a JSON object`, path };
+    if (file.marketplaces === undefined) return { ok: true, policy: EMPTY_MARKETPLACE_POLICY, path };
+    return { ok: true, policy: parseSection(file.marketplaces), path };
   } catch (error) {
     if (error instanceof PolicyShapeError || error instanceof StrictJsonError) {
-      return { ok: false, error: `${path}: ${error.message}` };
+      return { ok: false, error: `${path}: ${error.message}`, path };
     }
     throw error;
   }

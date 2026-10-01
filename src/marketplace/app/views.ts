@@ -14,7 +14,8 @@ import type {
 } from "../../shared/git-marketplace.js";
 import { versionExclusions, type CatalogRow, type VersionChoiceContext } from "../catalog/aggregate.js";
 import type { AgentPluginComponents, PackageKind, PluginArtifactPins, PluginAuthority, Revocation } from "../catalog/types.js";
-import type { MarketplaceErrorCode } from "../errors.js";
+import { parseMarketplaceErrorDetail, scrubMarketplaceErrorDetail, type MarketplaceError } from "../errors.js";
+import { scrubDiagnosticSecrets } from "../../shared/dlp.js";
 import { updateFor, type InstallAction, type InstalledPackage } from "../resolve/identity.js";
 import type { RungOutcome } from "../../plugins/plugin-install-receipt.js";
 import type { SourceState } from "../sources/registry.js";
@@ -163,18 +164,36 @@ export function versionViews(row: CatalogRow, revocations: readonly Revocation[]
   }));
 }
 
-const AUTH_CODES = new Set<MarketplaceErrorCode>(["SOURCE_AUTH_REQUIRED"]);
+/** A source whose downloaded copy cannot be used (`SOURCE_LOCAL_DATA_DAMAGED`), scrubbed for the renderer. */
+export function brokenStatus(problem: MarketplaceError): SourceStatusView {
+  const detail = parseMarketplaceErrorDetail("SOURCE_LOCAL_DATA_DAMAGED", problem.detail);
+  return { state: "broken", message: scrubDiagnosticSecrets(problem.message), ...(detail ? { detail: scrubMarketplaceErrorDetail("SOURCE_LOCAL_DATA_DAMAGED", detail) } : {}) };
+}
 
 /** A source's status column (§15.4) from its state, whether a sync runs, and whether its snapshot is served. */
 export function sourceStatus(state: SourceState, syncing: boolean, cached: boolean, reviewable: boolean): SourceStatusView {
   if (syncing) return { state: "syncing" };
-  if (state.pendingRewrite) return { state: "history-rewritten", candidate: state.pendingRewrite.candidate, reviewable };
   const last = state.lastSync;
+  // A sync that found the copy damaged (its repository): the row offers Repair, as for a state that does not read.
+  // Checked before a pending review, which cannot be accepted from a repository git cannot open.
+  if (last?.result === "SOURCE_LOCAL_DATA_DAMAGED") {
+    const detail = parseMarketplaceErrorDetail(last.result, last.detail);
+    return {
+      state: "broken",
+      message: `the last sync found the downloaded copy damaged${detail ? ` (${detail.reason})` : ""}`,
+      ...(detail ? { detail: scrubMarketplaceErrorDetail(last.result, detail) } : {}),
+    };
+  }
+  if (state.pendingRewrite) return { state: "history-rewritten", candidate: state.pendingRewrite.candidate, reviewable };
   if (!last) return state.pinnedCommit ? { state: "up-to-date" } : { state: "never-synced" };
   if (last.result === "ok") return { state: "up-to-date" };
   if (last.result === "SOURCE_HISTORY_REWRITTEN") {
     return { state: "history-rewritten", candidate: last.candidate ?? "", reviewable: false };
   }
-  if (AUTH_CODES.has(last.result)) return { state: "auth-required", cached };
-  return { state: "unreachable", code: last.result, cached };
+  if (last.result === "SOURCE_AUTH_REQUIRED") {
+    const detail = parseMarketplaceErrorDetail(last.result, last.detail);
+    return { state: "auth-required", ...(detail ? { detail: scrubMarketplaceErrorDetail(last.result, detail) } : {}), cached };
+  }
+  // The renderer gets a stored detail scrubbed, whatever wrote the state file.
+  return { state: "unreachable", code: last.result, ...(last.detail ? { detail: scrubMarketplaceErrorDetail(last.result, last.detail) } : {}), cached };
 }

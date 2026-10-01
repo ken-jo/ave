@@ -106,13 +106,36 @@ interface SourceState {       // marketplaces/<id>/state.json, every origin
   a diagnostic. It still holds its id: adding a source under that id is
   refused, and removing a served source with the same id removes only the
   served entry. A `sources.json` that cannot be read serves the official and
-  managed sources only and refuses writes until it is repaired, so nothing the
-  user added is overwritten.
-- A `state.json` that cannot be read fails that source's sync with the file
-  named. It is never treated as a fresh, unpinned source: a first sync accepts
-  any history. A missing `state.json` next to a `repo.git` or `snapshots/` is
-  the same failure; a sync writes the state before it creates the repository,
-  so only a lost file looks like that.
+  managed sources only and refuses writes with `SOURCE_LIST_UNREADABLE` until
+  the user fixes or deletes the file, so nothing the user added is
+  overwritten. Ave never repairs it: the file is the user's data.
+- A `state.json` that cannot be read fails that source's sync with
+  `SOURCE_LOCAL_DATA_DAMAGED` (§18.8). It is never treated as a fresh,
+  unpinned source: a first sync accepts any history. A missing `state.json`
+  next to a `repo.git` or `snapshots/` is the same failure; a sync writes the
+  state before it creates the repository, so only a lost file looks like that.
+  A snapshot at the pin that cannot be read or names another source or commit
+  is the same code, and so is a source repository git cannot open (a sync
+  records it as `repository-damaged`, never as a network failure). The
+  Sources row then offers *Repair*, for every origin. Under the source lock
+  it is crash-safe: when the old state still reads, it first writes the pin
+  and switch back atomically in place, then renames every other entry of
+  `marketplaces/<id>` into a `.trash-<id>-<random>` sibling (a source id never
+  starts with a dot), so `state.json` never leaves and a failure or crash at
+  any step keeps the pin. Without a readable state the whole directory is
+  renamed aside at once. The trash is then walked with `lstat`, never
+  following a link; a leftover is swept at the next open or Repair. A failed
+  write is `repair-write-failed`, a failed rename `repair-failed` (or
+  `repair-failed-unpinned` when there was no pin to keep), and none changes
+  what a readable pin says. The sweep never fails an open or a Repair: a
+  folder it cannot list is logged and left for later. A source repository
+  git cannot open is shown as Repair even while a rewritten history waits
+  for review, and accepting that review reports it the same way. Without a readable state the
+  source starts unpinned, so the user's Repair is what accepts the history
+  served then, and the row's sentence says so before they choose it
+  (`state-missing`, `state-invalid`, `state-unreadable`); the snapshot and
+  repository reasons keep the pin. Installed packages, tokens, policy and
+  `sources.json` live elsewhere and are not touched.
 
 ### 2.2 Snapshot
 
@@ -1456,7 +1479,7 @@ All channels are host-renderer only (`validateHostRendererSender`) and
 audited as today. `ave:git:runtime:install` also requires a live keyboard
 gesture: it downloads a binary the marketplace then runs. `planId` and `previewId` are single use and expire after 10
 minutes (`PLAN_EXPIRED`). Disposition of today's channels is in §16.2. The
-0.13.0 channels and the envelope's `detail` are in §18.9.
+0.13.0 channels are in §18.9.
 
 ### 13.1 As built
 
@@ -1465,10 +1488,14 @@ Where the table above and the shipped contract (`CHANNELS.gitMarketplace`,
 wins:
 
 - Every answer is an envelope: `{ ok: true, value }` or
-  `{ ok: false, code, message }`. `code` is a §14 code, `invalid-request`
+  `{ ok: false, code, message, detail? }`. `code` is a §14 code, `invalid-request`
   (the request shape was refused before the service saw it),
   `unauthorized-frame`, or `unavailable` (the service could not start, or
-  failed with something that is not a marketplace error).
+  failed with something that is not a marketplace error). `detail` is the
+  reason and the values its sentence names (§14); `parseGitMarketplaceResult`
+  keeps a `detail` whose reason belongs to the code and fields have the
+  declared types, and drops any other while keeping code and message.
+  `message` is main's English text, shown only behind *Copy details*.
 - `sources:preview` takes `{ input; ref?; subdir?; auth: "none" | "token" |
   "ssh"; token? }` and answers a marketplace preview or a direct-package
   preview; a direct install from a git folder goes through it with `subdir`.
@@ -1513,40 +1540,88 @@ wins:
 
 ## 14. Error codes
 
-| Code | When | User message (en key) |
-|---|---|---|
-| `GIT_RUNTIME_MISSING` | no usable git | `marketplace.error.gitMissing` |
-| `GIT_RUNTIME_TOO_OLD` | system git older than 2.45.1 in `system` mode | `marketplace.error.gitTooOld` |
-| `GIT_RUNTIME_INSTALL_FAILED` | managed download/verify/extract/smoke test failed | `marketplace.error.gitInstallFailed` |
-| `SOURCE_URL_REJECTED` | scheme, credentials in URL, private-network target | `marketplace.error.urlRejected` |
-| `SOURCE_POLICY_BLOCKED` | managed policy allow/block | `marketplace.error.policyBlocked` |
-| `SOURCE_NAME_RESERVED` | reserved id | `marketplace.error.nameReserved` |
-| `SOURCE_ID_INVALID` | id is not 2–63 lowercase letters, digits or `-` | `marketplace.error.idInvalid` |
-| `SOURCE_ID_TAKEN` | id already used | `marketplace.error.idTaken` |
-| `SOURCE_AUTH_REQUIRED` | 401/403, ssh denied; a 404 from a token source's host when no token is stored for it (GitHub answers 404 for a private repository) | `marketplace.error.authRequired` |
-| `SOURCE_SSH_HOST_UNKNOWN` | host key not in known_hosts | `marketplace.error.sshHostUnknown` |
-| `SOURCE_REF_NOT_FOUND` | branch or tag missing | `marketplace.error.refNotFound` |
-| `SOURCE_UNREACHABLE` | network, DNS, timeout | `marketplace.error.unreachable` |
-| `SOURCE_NOT_A_MARKETPLACE` | nothing recognizable | `marketplace.error.notMarketplace` |
-| `SOURCE_INDEX_INVALID` | index failed validation | `marketplace.error.indexInvalid` |
-| `SOURCE_HISTORY_REWRITTEN` | non-descendant candidate | `marketplace.error.historyRewritten` |
-| `SOURCE_DISABLED` | install or update requested from a hidden source (it still syncs for packages bound to it, §7.3) | `marketplace.error.sourceDisabled` |
-| `PLAN_EXPIRED` | plan/preview id expired or reused | `marketplace.error.planExpired` |
-| `PACKAGE_INCOMPATIBLE` | no version is offered to this installation: `minAppVersion` above the app version, another platform, a pre-release without canary, or a rollout that excludes it | `marketplace.error.incompatible` |
-| `PACKAGE_COMPAT_UNDECLARED` | git-installed plugin without `requires.minAppVersion` | `marketplace.error.compatUndeclared` |
-| `PACKAGE_YANKED` / `PACKAGE_REVOKED` | every version is yanked or revoked (revoked when all are revoked) | `marketplace.error.yanked` / `.revoked` |
-| `PACKAGE_ID_CONFLICT` | same `(kind, name)` installed from another source, or from no source; also a signed-catalog install, update or rollback over a git-bound plugin | `marketplace.error.idConflict` |
-| `PACKAGE_REQUIRED_BY_POLICY` | uninstall or disable of a `requiredInstalls` package | `marketplace.error.requiredByPolicy` |
-| `PACKAGE_POLICY_BLOCKED` | the MCP governance policy refuses the server (Layer 1), at plan and again at install | `marketplace.error.policyBlocked` |
-| `ARTIFACT_NOT_PINNED` | rung skipped: no sha256 in git | (rung detail) |
-| `ARTIFACT_DIGEST_MISMATCH` | sha256 differs | (rung detail) |
-| `MANIFEST_MISMATCH` | plugin.json vs descriptor | `marketplace.error.manifestMismatch` |
-| `NO_INSTALLABLE_ARTIFACT` | every rung skipped or failed (`SOURCE_AUTH_REQUIRED` instead when every failed rung needed sign-in) | `marketplace.error.noArtifact` |
-| `CONTENT_RULE_VIOLATION` | content kind file rules | `marketplace.error.contentRule` |
+Every code has a reason-less sentence; a code with reasons has one sentence
+per reason, chosen when the failure carries a `detail` (§13.1). The sentence
+says what happened and what to do; main's English `message` is reachable
+only through *Copy details*. `failureText` (`labels.ts`) is exhaustive over
+the codes and reasons, with no `default`, and `labels.test.ts` enumerates
+`MARKETPLACE_ERROR_CODES` and `MARKETPLACE_ERROR_REASONS` (`errors.ts`).
+Keys live under `gitMarketplace.error.*`; source policy blocks under
+`gitMarketplace.policy.*`, so the MCP governance sentence
+(`gitMarketplace.error.policyBlocked`) never mixes with them.
 
-0.13.0 adds `SOURCE_CONFIRMATION_REQUIRED` and `SOURCE_LOCAL_UNREADABLE`, a
-`detail` with a reason on every code, and a sentence for every code and
-reason (§18.8).
+A source failure's sentence also depends on what it is about
+(`FailureSubject`): an address being typed (Add marketplace, Install from Git
+URL), a listed source by its origin, sign-in and whether a token is stored,
+or no one source. It never asks the user to check a field they cannot
+change: an address, branch or folder is advice only for an address being
+typed or a source the user added (`Remove source`, then add it again). The
+official source gets *Refresh* and the marketplace's owner, an organization
+source the administrator. A sign-in sentence names the step the row offers:
+*Set token…* on a token source's row (to add one, or to replace a stored one
+that may lack access), *Remove source* and add again with a token for a
+source the user added without one, the administrator for an organization
+source set up without one. Each variant is a key suffix (`.custom`,
+`.managed`, `.owned`, `.entry`, `.setToken`, `.rejected`, `.readd`,
+`.other`), and `labels.test.ts` checks every code and reason against every
+subject in both catalogs.
+
+| Code | When | Reasons (detail fields) | Sentence key |
+|---|---|---|---|
+| `GIT_RUNTIME_MISSING` | no usable git | — | `gitMarketplace.error.gitMissing` |
+| `GIT_RUNTIME_TOO_OLD` | system git older than 2.45.1 in `system` mode | — | `.gitTooOld` |
+| `GIT_RUNTIME_INSTALL_FAILED` | managed download/verify/extract/smoke test failed | the phase: `checking`, `downloading`, `verifying`, `extracting`, `smoke-testing`, `installing` (the final move into place) — no fields | `.gitInstallFailed`, `.gitInstallFailed.<phase>` |
+| `SOURCE_URL_REJECTED` | scheme, credentials in URL, private-network target | `credentials-in-url`, `scheme-unsupported` (scheme), `format` (query, fragment, whitespace, control character or backslash) — from the normalizer; its other refusals, a download URL's and the network gate's carry none | `.urlRejected`, `.urlRejected.credentialsInUrl`, `.urlRejected.schemeUnsupported`, `.urlRejected.format` |
+| `SOURCE_POLICY_BLOCKED` | managed policy allow/block, or an unreadable policy for a non-official target | `blocked-by-pattern` (target, pattern, policyPath), `not-in-allow-list` (target, policyPath), `policy-invalid` (error) | `gitMarketplace.policy.blocked`, `.blockedByPattern`, `.notInAllowList`, `.policyInvalid` |
+| `SOURCE_NAME_RESERVED` | reserved id | — | `.nameReserved` |
+| `SOURCE_ID_INVALID` | id is not 2–63 lowercase letters, digits or `-`, or names no source | — | `.idInvalid` |
+| `SOURCE_ID_TAKEN` | id or repository already added | — | `.idTaken` |
+| `SOURCE_AUTH_REQUIRED` | 401/403, ssh denied; a "repository not found" after Ave offered the stored token | `token` (host), `token-no-access` (host: the host answered "repository not found" to the stored token, which may lack access), `ssh` (host) — from git's message; a download's refusal carries none, since its host need not be the token's | `.authRequired`, `.authRequired.token`, `.authRequired.tokenNoAccess`, `.authRequired.ssh`, each with the variants below |
+| `SOURCE_SSH_HOST_UNKNOWN` | host key not in known_hosts, or different from it | `unknown` (host, port), `changed` (host, port) — `changed` when ssh prints "remote host identification has changed"; the sentence carries the `ssh-keyscan` or `ssh-keygen -R` command, which *Copy command* copies | `.sshHostUnknown`, `.sshHostUnknown.unknown`, `.sshHostUnknown.changed` |
+| `SOURCE_REF_NOT_FOUND` | branch or tag missing | `missing` (ref, repository, available) — after the fetch fails, `ls-remote` lists up to 10 branches, then tags | `.refNotFound`, `.refNotFound.missing` |
+| `SOURCE_UNREACHABLE` | network, DNS, timeout, a host that reports no repository | `offline`, `dns`, `refused`, `timeout`, `http-status` (status), `tls`, `proxy` (proxy), `not-found` and `not-found-ssh` (the host answered "repository not found" without a token from Ave, which hosts also answer for a private repository, so neither is claimed) — each with host but `offline`; from git's message, the gate's resolver error, the run's own timeout, an unusable PAC entry, or a download's status | `.unreachable`, `.unreachable.<reason>` |
+| `SOURCE_NOT_A_MARKETPLACE` | nothing recognizable | — | `.notAMarketplace` and its variants |
+| `SOURCE_INDEX_INVALID` | index failed validation | — | `.indexInvalid` |
+| `SOURCE_HISTORY_REWRITTEN` | non-descendant candidate | — | `.historyRewritten` |
+| `SOURCE_DISABLED` | install or update requested from a hidden source (it still syncs for packages bound to it, §7.3) | — | `.sourceDisabled` |
+| `SOURCE_LOCAL_DATA_DAMAGED` | the source's downloaded copy cannot be used (§2.1); a Repair that could not move it aside or write the kept pin back | pin lost: `state-missing`, `state-invalid`, `state-unreadable`; pin kept: `snapshot-invalid`, `snapshot-unreadable`, `repository-damaged`; Repair: `repair-failed` (a pin was kept), `repair-failed-unpinned` (none to keep), `repair-write-failed` (sourceId) — a message names files relative to the source and an fs error by its code, never a home path; a sentence names the source as its row does (the official source by its origin's name, another by its label, the id only when no listed source is known) | `.localDataDamaged`, `.localDataDamaged.<reason>` |
+| `SOURCE_LIST_UNREADABLE` | `marketplaces/sources.json`, the list of sources the user added, cannot be read or is not in Ave's format; every source change is refused until the user fixes or deletes it (no repair: it is the user's data) | `unreadable` (fsCode), `invalid` — the message names the file and an fs error by its code, never a home path | `.listUnreadable`, `.listUnreadable.<reason>` |
+| `PLAN_EXPIRED` | plan/preview id expired or reused | — | `.planExpired` |
+| `PACKAGE_INCOMPATIBLE` | no version is offered to this installation: `minAppVersion` above the app version, another platform, a pre-release without canary, or a rollout that excludes it | `min_app_version` (name, version), `platform` (name, platform), `host_protocol` (name) — when the excluded version is known | `.incompatible`, `.incompatible.minAppVersion`, `.incompatible.platform`, `.incompatible.hostProtocol` |
+| `PACKAGE_COMPAT_UNDECLARED` | git-installed plugin without `requires.minAppVersion` | — | `.compatUndeclared` |
+| `PACKAGE_YANKED` / `PACKAGE_REVOKED` | every version is yanked or revoked (revoked when all are revoked) | — | `.yanked` / `.revoked` |
+| `PACKAGE_ID_CONFLICT` | same `(kind, name)` installed from another source, or from no source; also a signed-catalog install, update or rollback over a git-bound plugin | — | `.idConflict` |
+| `PACKAGE_REQUIRED_BY_POLICY` | uninstall or disable of a `requiredInstalls` package | — | `.requiredByPolicy` |
+| `PACKAGE_POLICY_BLOCKED` | the MCP governance policy refuses the server (Layer 1), at plan and again at install | — | `.policyBlocked` |
+| `ARTIFACT_NOT_PINNED` | rung skipped: no sha256 in git | — | `.artifactNotPinned` |
+| `ARTIFACT_DIGEST_MISMATCH` | sha256 differs | — | `.digestMismatch` |
+| `MANIFEST_MISMATCH` | plugin.json vs descriptor | — | `.manifestMismatch` |
+| `process-entry-unconfined` | a `process` entry while the OS tool sandbox is off, or on Windows (§18.4.9) | — | `formatIpcError.processEntryUnconfined` |
+| `process-entry-requires-pinned-artifact` | a `process` entry not installed from a sha256-pinned release or archive artifact (§18.4.9) | — | `formatIpcError.processEntryRequiresPinnedArtifact` |
+| `NO_INSTALLABLE_ARTIFACT` | every rung skipped or failed (`SOURCE_AUTH_REQUIRED` instead when every failed rung needed sign-in) | — | `.noArtifact` |
+| `CONTENT_RULE_VIOLATION` | content kind file rules | — | `.contentRule` |
+| `invalid-request`, `unauthorized-frame`, `unavailable` | envelope only (§13.1) | — | `.invalidRequest`, `.unauthorizedFrame`, `.unavailable` |
+
+A failure is shown by `MarketplaceProblem` in one of three tones (§18.8):
+policy (`SOURCE_POLICY_BLOCKED`, `PACKAGE_POLICY_BLOCKED`,
+`PACKAGE_REQUIRED_BY_POLICY`), warning, or error. A failure outside these
+codes (a settings write, a plugin file, a pasted MCP configuration) uses the
+error tone with its own sentence. Every message is scrubbed
+(`scrubDiagnosticSecrets`, `src/shared/dlp.ts`: URL userinfo, authorization
+and token values, credential-helper lines) by main before it enters the
+envelope, by the normalizer before it echoes a refused address, and again by
+`MarketplaceProblem` before *Copy details* copies it.
+
+A background sync's failure reaches the Sources view through `sources:list`:
+`SyncResult` carries the detail, the syncer stores it in
+`state.json` `lastSync.detail`, the state validator keeps it only when its
+reason belongs to `lastSync.result` (and drops it, keeping the code,
+otherwise), and `sourceStatus` copies it into the `unreachable` and
+`auth-required` views (§15.4).
+
+0.13.0 adds `SOURCE_CONFIRMATION_REQUIRED` and `SOURCE_LOCAL_UNREADABLE`, and
+the reasons §18.8 lists for situations this build does not yet distinguish;
+each slice that adds a code or reason adds its sentences (§18.8, §18.10).
 
 ## 15. UI specification
 
@@ -1599,9 +1674,15 @@ failure shows every rung's reason and a copyable diagnostic.
 
 Table: source (label, URL, origin badge), pinned commit (short SHA with
 tooltip, relative time of last sync), package count, status (`Up to date`,
-`Syncing`, `Unreachable — showing cached`, `Auth required`,
-`History rewritten — review`), enabled switch, overflow (Refresh, Set token,
-Remove). Official and managed rows have no Remove; the official switch is
+`Syncing`, `Auth required`, `History rewritten — review`, and for any other
+failed sync a chip by its code: `Unreachable` only when the host was not
+reached, else `Repository not found`, `No marketplace found`, `Branch or tag
+not found`, `Marketplace index invalid`, `SSH host key not verified`,
+`Blocked by policy`, `Address refused`, `Git unavailable`, or `Update failed`
+for any other code; each adds `— showing cached` while the pinned snapshot
+is served) with, under an unreachable or auth-required
+status, the failure's sentence from its stored detail (§14), enabled switch,
+overflow (Refresh, Set token, Remove). Official and managed rows have no Remove; the official switch is
 locked unless policy allows; managed rows show a lock.
 
 ### 15.5 Add marketplace dialog
@@ -3189,7 +3270,7 @@ the slice that adds the code or reason.
 | · `internal-downloads` | W | "<source> asks Ave to download from <host>, another internal address. A marketplace that can name internal hosts can make Ave send requests into your network, for example to a router's settings page; a later failed check cannot undo a request already sent." | *Allow internal downloads* | "마켓플레이스가 다른 사내 주소 <호스트>에서 내려받게 합니다. 이렇게 하면 마켓플레이스가 Ave를 통해 사내망 장비로 요청을 보낼 수 있고, 보낸 요청은 되돌릴 수 없습니다. 허용할까요?" |
 | · `network-folder` | W | "Ave signs in to <server> with your Windows account to read this folder." | "Continue?" | "이 폴더를 읽으려고 Windows 계정으로 <서버>에 로그인합니다. 계속할까요?" |
 | · `unencrypted-updates` | W | "Updates from <source> arrive over http. Anyone on the network path could replace them with their own code, and it would install without asking." | "Turn on automatic updates anyway?" | "…묻지 않고 설치될 수 있습니다. 그래도 자동 업데이트를 켤까요?" |
-| `SOURCE_URL_REJECTED` · `credentials-in-url` | R | "The address contains a password or token. Ave never keeps secrets in addresses." | "Remove it, add the source, then use *Set token*." | "주소에 비밀번호나 토큰이 있습니다. 빼고 추가한 뒤 토큰을 설정하세요." |
+| `SOURCE_URL_REJECTED` · `credentials-in-url` | R | "The address contains a password or token. Ave never keeps secrets in addresses." | "Remove it from the address, then choose *Access token* under *Sign-in* and paste the token there." | "주소에서 빼고, 로그인에서 액세스 토큰을 골라 그곳에 붙여 넣으세요." |
 | · `helper-transport` | R | "`<scheme>::` addresses run a program to fetch; Ave never runs one." | "Use the https or ssh address." | "`<scheme>::` 주소는 프로그램을 실행하므로 쓸 수 없습니다." |
 | · `scheme-unsupported` | R | "Ave does not read `<scheme>:` addresses." | "Use the https or ssh address of the same repository." | "같은 저장소의 https나 ssh 주소를 쓰세요." |
 | · `format` | R | "The address has `?…`, `#…`, spaces or control characters." | "Remove them." | "주소에서 해당 문자를 지우세요." |
@@ -3203,7 +3284,8 @@ the slice that adds the code or reason.
 | `CONTENT_RULE_VIOLATION` · `link-outside-folder` | R | "<path> links outside the folder (to <target>). Ave installs files from inside the folder only." | "Copy the file into the folder instead of linking it." | "폴더 밖을 가리키는 링크는 설치하지 않습니다. 파일을 폴더 안으로 복사하세요." |
 | · `link-to-network` | R | "<path> links to a network location (<target>). Ave does not follow links to other computers." | "Copy the file into the folder instead of linking it." | "다른 컴퓨터를 가리키는 링크는 따라가지 않습니다. 파일을 폴더 안으로 복사하세요." |
 | · `special-file`, `case-collision`, `extension`, `limit` | R | the path and the rule (§5.4, §5.5) | "Remove or rename <path>." | "<경로>를 지우거나 이름을 바꾸세요." |
-| `SOURCE_AUTH_REQUIRED` · `token` | E | "<host> needs sign-in." | *Set token*; for GitHub "a fine-grained token with read access to Contents" | today's key, with the host |
+| `SOURCE_AUTH_REQUIRED` · `token` | E | "<host> needs sign-in." | a token source: *Set token…* on its row (a stored token: "<host> did not accept the stored token", *Set token…* to replace it); added without a token: *Remove source*, then add again with *Access token*; organization without a token: "Tell your administrator"; an address being typed: *Access token* under *Sign-in*; for GitHub "a fine-grained token with read access to Contents" | "<호스트>에 로그인이 필요합니다." |
+| · `token-no-access` | E | "<host> reports no repository at this source's address to the token stored for <host>, so the token may lack access to it." | *Set token…* to replace it; a source the user added: or *Remove source* and add it again if the address is wrong | "토큰에 이 저장소 권한이 없을 수 있습니다." |
 | · `token-unencrypted` | E | "<host> needs sign-in, and this source uses http." | *Allow…* (`token-unencrypted`), then *Set token* | "http 소스라 로그인 정보를 보내기 전에 허용이 필요합니다." |
 | · `ssh` | E | "<host> refused the SSH key." | "Load your key (`ssh-add`) or add it to your account on <host>." | "SSH 키가 거부되었습니다." |
 | `SOURCE_SSH_HOST_UNKNOWN` · `unknown` | E | "This computer has not connected to <host> over SSH before, so its key cannot be checked." | "Compare the host's published fingerprint, then run `ssh-keyscan -p <port> <host> >> ~/.ssh/known_hosts` (Windows: `%USERPROFILE%\.ssh\known_hosts`)." *Copy command* | "호스트 키를 확인할 수 없습니다. 지문을 확인한 뒤 명령을 실행하세요." |
@@ -3214,17 +3296,24 @@ the slice that adds the code or reason.
 | · `refused`, `timeout`, `http-status` | E | "<host> did not answer (<detail>)." | *Retry* | "응답이 없습니다." |
 | · `tls` | E | "The certificate of <host> is not trusted. Company networks often re-sign traffic." | "Ask IT to install the network's root certificate in the system store; Ave reads it (§9.2)." | "회사 네트워크가 인증서를 바꾸는 경우가 많습니다. IT에 루트 인증서 설치를 요청하세요." |
 | · `proxy` | E | "The system proxy settings choose <kind> for <host>, which Ave cannot use." | "Ask IT for an HTTP proxy or a direct route to <host>." | "쓸 수 없는 프록시 종류입니다." |
+| · `not-found` | E | "<host> reports no repository at this address, which is also how hosts answer for a private repository without sign-in." Never claims either. | a token source without a stored token: *Set token…* (a source the user added: or *Remove source* if the address is wrong; an organization source: otherwise the administrator); with a stored token: as `SOURCE_AUTH_REQUIRED` · `token-no-access`; added without a token: *Remove source* and add again with the right address or *Access token*; organization without a token: "Tell your administrator"; an address being typed: "Check the address", or *Access token* | "<호스트>가 이 주소에 저장소가 없다고 답했습니다. 비공개 저장소에도 같은 답을 합니다." |
+| · `not-found-ssh` | E | "<host> reports no repository at this address over SSH, which is also how hosts answer when your SSH key's account cannot read a private repository." | "Make sure your key is loaded (`ssh-add`) and belongs to an account on <host> that can read the repository"; plus the address advice for an address being typed or a source the user added, the administrator for an organization source | "SSH 키의 계정이 읽을 수 없는 비공개 저장소에도 같은 답을 합니다." |
 | `SOURCE_LOCAL_UNREADABLE` · `not-found` | E | "The folder <path> does not exist: moved, renamed, or its drive is not connected." | "Reconnect the drive, or remove the source and add the folder again." | "폴더가 없습니다." |
 | · `permission`, `io` | E | "<path> cannot be read (<system message>)." | "Check the folder's permissions; Ave tries again at the next read." | "폴더를 읽을 수 없습니다." |
 | · `moved` | E | "<path> now points to <new path>." | "Remove the source and add the folder you mean." | "폴더가 다른 곳을 가리킵니다." |
 | · `not-a-directory` | E | "<path> is not a folder." | "Choose a folder." | "폴더를 선택하세요." |
 | · `ambiguous-case` | E | "<path> matches several folders that differ only in case." | "Enter the path with its exact case." | "대소문자만 다른 폴더가 여럿입니다. 정확한 대소문자로 입력하세요." |
 | · `changed-during-read` | E | "A file in <path> changed while Ave read it." | "Ave tries again at the next read." | "읽는 중에 파일이 바뀌었습니다." |
-| `SOURCE_NOT_A_MARKETPLACE` · `nothing-found` | E | "No marketplace.2.json, no package folders and no single package at <location>." | "Check the address, the branch and, for a package inside a repository, the folder field." | today's key, with the location |
+| `SOURCE_NOT_A_MARKETPLACE` · `nothing-found` | E | "No marketplace.2.json, no package folders and no single package at <location>." | an address being typed: "Check the address, the branch and, for a package inside a repository, the folder field."; a source the user added: the same, through *Remove source* and adding it again; official: *Refresh* later, then the marketplace's owner; organization: "Tell your administrator" | today's key, with the location |
 | · `other-app-plugin` | E | "This is a plugin written for another app (`.claude-plugin/` or `.codex-plugin/`)." | "Use *Import a plugin* in the plugin studio (`extensions-and-plugins.md` §2.4)." | "다른 앱용 플러그인입니다. 플러그인 스튜디오에서 가져오세요." |
 | `SOURCE_INDEX_INVALID` | E | "<source>'s index is invalid (<file>: <problem>); the last good version stays in use." | "Tell the marketplace's owner." *Copy details* | "마지막 정상 버전을 계속 씁니다." |
 | `SOURCE_HISTORY_REWRITTEN` | E | official, managed: "<source>'s history was rewritten; Ave keeps its last good version." custom, direct: "…Review the new history before using it." | custom, direct: *Review* | "기록이 다시 쓰였습니다." |
 | `SOURCE_DISABLED` | E | today's sentence | *Show source* | today's |
+| `SOURCE_LOCAL_DATA_DAMAGED` · `state-missing`, `state-invalid`, `state-unreadable` | W | "The downloaded copy of source <id> is damaged: <its record of the trusted version is missing, unreadable, or cannot be opened>." | "Repair downloads it again and trusts the version the source serves now, without checking it against the one you had." *Repair* on the row (every origin), in place of Refresh and the switch; for `state-unreadable`, fixing the folder's permissions keeps the check; *Copy details* | "복구하면 이전 버전과 대조하지 않은 채 지금 제공되는 버전을 신뢰합니다. 소스에서 복구를 누르세요." |
+| · `snapshot-invalid`, `snapshot-unreadable`, `repository-damaged` | E | "The downloaded copy of source <id> is damaged: <its package list or its git repository>." | *Repair*; "the version Ave trusts is kept" | "Ave가 신뢰하는 버전은 유지됩니다." |
+| · `repair-failed`, `repair-failed-unpinned` | E | "Ave could not move the damaged copy of the <source> source aside, so it was not downloaded again", adding "the version Ave trusts is kept" only for `repair-failed`. | "Quit other Ave windows and choose Repair again"; *Copy details* for the administrator | "다른 Ave 창을 닫고 복구를 다시 누르세요." |
+| · `repair-write-failed` | E | "Ave could not save the <source> source's record of the version it trusts, so the source was not downloaded again." | "Check the free disk space and that your account can write the Ave data folder, then choose Repair again." | "디스크 공간과 쓰기 권한을 확인한 뒤 복구를 다시 누르세요." |
+| `SOURCE_LIST_UNREADABLE` · `unreadable`, `invalid` | E | "Ave cannot read the list of sources you added, `marketplaces/sources.json` in the Ave data folder (<fsCode>, or not in the format Ave writes), so it changes no source until it is fixed." | "Fix the file or delete it, then restart Ave. Deleting it removes only the sources you added: the official and organization sources and your installed packages stay." *Copy details* for an invalid file | "직접 추가한 소스 목록(Ave 데이터 폴더의 marketplaces/sources.json)을 읽을 수 없습니다. 고치거나 지운 뒤 Ave를 다시 시작하세요. 지우면 직접 추가한 소스만 사라집니다." |
 | `SOURCE_NAME_RESERVED`, `SOURCE_ID_INVALID` | E | "<id> is reserved or not a valid id (2–63 lowercase letters, digits and `-`)." | "Choose another id." | "다른 ID를 고르세요." |
 | `SOURCE_ID_TAKEN` | E | "<repository or folder> is already added as <id>", or "<id> is taken" | *Show <id>*, or "Choose another id." | "이미 추가되어 있습니다." |
 | `GIT_RUNTIME_MISSING`, `GIT_RUNTIME_TOO_OLD` | E | today's sentences | *Install Git* | today's |

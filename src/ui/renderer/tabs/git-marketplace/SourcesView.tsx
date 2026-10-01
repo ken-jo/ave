@@ -1,7 +1,9 @@
 /**
  * The sources (design §15.4): each git repository the app reads packages
  * from, its pin, status and switch, with Refresh, Set token, Review (a
- * rewritten history) and Remove where the origin allows them.
+ * rewritten history) and Remove where the origin allows them. A source whose
+ * downloaded copy is damaged offers Repair in place of Refresh and its
+ * switch (§18.8), for every origin.
  */
 import { useState } from "react";
 import { Badge } from "../../../../components/ui/badge.js";
@@ -11,8 +13,10 @@ import { Input } from "../../../../components/ui/input.js";
 import { Switch } from "../../../../components/ui/switch.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import { cn } from "../../../../lib/utils.js";
-import type { GitMarketplaceApi, GitMarketplaceErrorCode, PackageKeyView, SourceView } from "../../../../shared/git-marketplace.js";
-import { failureText, kindLabel, originLabel, relativeTime, shortSha, sourceStatusLabel } from "./labels.js";
+import { scrubDiagnosticSecrets } from "../../../../shared/dlp.js";
+import type { GitMarketplaceApi, GitMarketplaceFailure, PackageKeyView, SourceView } from "../../../../shared/git-marketplace.js";
+import { kindLabel, originLabel, OTHER_SUBJECT, relativeTime, shortSha, sourceStatusDetail, sourceStatusLabel, sourceSubject, type FailureSubject } from "./labels.js";
+import { MarketplaceProblem } from "./MarketplaceProblem.js";
 
 export interface SourcesViewProps {
   api: GitMarketplaceApi;
@@ -29,7 +33,8 @@ type Confirm =
 export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps) {
   const { t, locale } = useTranslation();
   const [busy, setBusy] = useState<string | null>(null);
-  const [failure, setFailure] = useState<{ code: GitMarketplaceErrorCode; message: string } | null>(null);
+  /** The last action's failure, with the source it acted on (none for Refresh all), so its sentence names only that row's actions. */
+  const [failure, setFailure] = useState<{ failure: GitMarketplaceFailure; subject: FailureSubject } | null>(null);
   const [confirm, setConfirmState] = useState<Confirm | null>(null);
   const [token, setToken] = useState("");
   // A typed token belongs to the dialog it was typed in: opening or closing any dialog drops it, so a
@@ -40,13 +45,14 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
   };
   const [orphaned, setOrphaned] = useState<PackageKeyView[] | null>(null);
 
-  const run = async <T,>(key: string, action: () => Promise<{ ok: true; value: T } | { ok: false; code: GitMarketplaceErrorCode; message: string }>): Promise<T | null> => {
+  const run = async <T,>(key: string, action: () => Promise<{ ok: true; value: T } | ({ ok: false } & GitMarketplaceFailure)>): Promise<T | null> => {
     setBusy(key);
     setFailure(null);
     try {
       const result = await action();
       if (!result.ok) {
-        setFailure(result);
+        const source = sources.find((candidate) => candidate.id === key);
+        setFailure({ failure: result, subject: source ? sourceSubject(source) : OTHER_SUBJECT });
         return null;
       }
       onChanged();
@@ -81,7 +87,7 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
           <Button size="sm" onClick={onAdd}>{t("gitMarketplace.add.title")}</Button>
         </div>
       </div>
-      {failure && <p className="text-sm text-destructive">{failureText(t, failure)}</p>}
+      {failure && <MarketplaceProblem failure={failure.failure} subject={failure.subject} />}
       {orphaned && orphaned.length > 0 && (
         <p className="text-xs text-muted-foreground" data-testid="git-marketplace:sources:orphaned">
           {t("gitMarketplace.sources.orphaned", { packages: orphaned.map((key) => `${kindLabel(t, key.kind)} ${key.name}`).join(", ") })}
@@ -103,6 +109,7 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
             {sources.map((source) => {
               const status = source.status;
               const warn = status.state === "unreachable" || status.state === "auth-required" || status.state === "history-rewritten" || status.state === "broken";
+              const statusDetail = sourceStatusDetail(t, source);
               return (
                 <tr key={source.id} className="border-t align-top" data-testid={`git-marketplace:source:${source.id}`}>
                   <td className="px-3 py-2">
@@ -129,7 +136,21 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
                   </td>
                   <td className="px-3 py-2 text-xs">{source.packageCount}</td>
                   <td className={cn("px-3 py-2 text-xs", warn && "text-warning", status.state === "broken" && "text-destructive")}>
-                    <span title={status.state === "broken" ? status.problem : status.state === "unreachable" ? status.code : undefined}>{sourceStatusLabel(t, status)}</span>
+                    <span>{sourceStatusLabel(t, status)}</span>
+                    {status.state === "broken" && (
+                      <Button
+                        size="sm"
+                        variant="link"
+                        className="h-auto p-0 pl-1 text-xs"
+                        data-testid={`git-marketplace:source:${source.id}:copy-details`}
+                        onClick={() => void navigator.clipboard?.writeText(scrubDiagnosticSecrets(status.message))}
+                      >
+                        {t("gitMarketplace.action.copyDetails")}
+                      </Button>
+                    )}
+                    {statusDetail !== null && (
+                      <p className="mt-0.5 max-w-xs break-words text-muted-foreground" data-testid={`git-marketplace:source:${source.id}:status-detail`}>{statusDetail}</p>
+                    )}
                     {status.state === "history-rewritten" && status.reviewable && (
                       <Button size="sm" variant="link" className="h-auto p-0 pl-1 text-xs" onClick={() => setConfirm({ kind: "rewrite", source, candidate: status.candidate })}>
                         {t("gitMarketplace.sources.review")}
@@ -139,16 +160,29 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
                   <td className="px-3 py-2">
                     <Switch
                       checked={source.enabled}
-                      disabled={!source.canDisable || busy !== null}
+                      disabled={!source.canDisable || busy !== null || status.state === "broken"}
                       aria-label={t("gitMarketplace.sources.enabledLabel", { source: source.label })}
                       onCheckedChange={(checked) => void run(source.id, () => api.setSourceEnabled(source.id, checked))}
                     />
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex flex-wrap justify-end gap-1">
-                      <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" disabled={busy !== null || status.state === "broken"} onClick={() => void run(source.id, () => api.refreshSources(source.id))}>
-                        {busy === source.id ? t("gitMarketplace.sources.status.syncing") : t("gitMarketplace.sources.refresh")}
-                      </Button>
+                      {status.state === "broken" ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 px-2 text-xs"
+                          disabled={busy !== null}
+                          onClick={() => void run(source.id, () => api.repairSource(source.id))}
+                          data-testid={`git-marketplace:source:${source.id}:repair`}
+                        >
+                          {busy === source.id ? t("gitMarketplace.sources.status.repairing") : t("gitMarketplace.sources.repair")}
+                        </Button>
+                      ) : (
+                        <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" disabled={busy !== null} onClick={() => void run(source.id, () => api.refreshSources(source.id))}>
+                          {busy === source.id ? t("gitMarketplace.sources.status.syncing") : t("gitMarketplace.sources.refresh")}
+                        </Button>
+                      )}
                       {source.auth === "token" && source.tokenHost && (
                         <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => setConfirm({ kind: "token", source })}>
                           {t("gitMarketplace.sources.setToken")}

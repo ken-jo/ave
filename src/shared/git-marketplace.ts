@@ -9,10 +9,11 @@
  */
 import { PACKAGE_KINDS, type AgentPluginComponents, type PackageKind } from "../marketplace/catalog/types.js";
 import type { ComponentDelta } from "../marketplace/app/component-delta.js";
-import { MARKETPLACE_ERROR_CODES, type MarketplaceErrorCode } from "../marketplace/errors.js";
+import { MARKETPLACE_ERROR_CODES, parseMarketplaceErrorDetail, type MarketplaceErrorCode, type MarketplaceErrorDetail } from "../marketplace/errors.js";
 import type { DirectDetectedFile } from "../marketplace/sources/direct-package.js";
 
-export type { PackageKind };
+export type { MarketplaceErrorDetail, PackageKind };
+export { parseMarketplaceErrorDetail };
 
 export type SourceOriginKind = "official" | "managed" | "custom" | "direct";
 
@@ -36,13 +37,19 @@ export type SourceStatusView =
   | { state: "up-to-date" }
   | { state: "syncing" }
   | { state: "never-synced" }
-  /** The last sync failed with `code`; `cached` when the snapshot at the pin is still served. */
-  | { state: "unreachable"; code: MarketplaceErrorCode; cached: boolean }
-  | { state: "auth-required"; cached: boolean }
+  /**
+   * The last sync failed with `code`, and why when it was recorded (§18.8);
+   * `cached` when the snapshot at the pin is still served.
+   */
+  | { state: "unreachable"; code: MarketplaceErrorCode; detail?: MarketplaceErrorDetail; cached: boolean }
+  | { state: "auth-required"; detail?: MarketplaceErrorDetail<"SOURCE_AUTH_REQUIRED">; cached: boolean }
   /** Custom and direct sources show Review; official and managed keep the pin (design §7.3). */
   | { state: "history-rewritten"; candidate: string; reviewable: boolean }
-  /** Its state or snapshot file cannot be read: repair or remove it. */
-  | { state: "broken"; problem: string };
+  /**
+   * Its downloaded copy (state or snapshot) cannot be used: the row offers
+   * Repair (§18.8). `message` is main's scrubbed English, for Copy details.
+   */
+  | { state: "broken"; message: string; detail?: MarketplaceErrorDetail<"SOURCE_LOCAL_DATA_DAMAGED"> };
 
 export interface SourceView {
   id: string;
@@ -390,7 +397,18 @@ export function bootInstallNoticeIsEmpty(notice: BootInstallNoticeView): boolean
 
 export type GitMarketplaceErrorCode = MarketplaceErrorCode | "invalid-request" | "unauthorized-frame" | "unavailable";
 
-export type GitMarketplaceResult<T> = { ok: true; value: T } | { ok: false; code: GitMarketplaceErrorCode; message: string };
+/**
+ * A failed answer. `message` is main's English text, shown only behind *Copy
+ * details*; the sentence comes from `code` and, when present, `detail`, which
+ * always belongs to `code` (design §18.8).
+ */
+export interface GitMarketplaceFailure {
+  code: GitMarketplaceErrorCode;
+  message: string;
+  detail?: MarketplaceErrorDetail;
+}
+
+export type GitMarketplaceResult<T> = { ok: true; value: T } | ({ ok: false } & GitMarketplaceFailure);
 
 export interface SyncProgressView {
   sourceId: string;
@@ -418,6 +436,8 @@ export interface GitMarketplaceApi {
   removeSource(id: string): Promise<GitMarketplaceResult<{ orphanedPackages: PackageKeyView[] }>>;
   setSourceEnabled(id: string, enabled: boolean): Promise<GitMarketplaceResult<SourceView>>;
   refreshSources(id?: string): Promise<GitMarketplaceResult<SourceView[]>>;
+  /** Remove a source's damaged downloaded copy and sync it again (§18.8); answers the sources like a refresh. */
+  repairSource(id: string): Promise<GitMarketplaceResult<SourceView[]>>;
   acceptRewrite(id: string, commit: string): Promise<GitMarketplaceResult<SourceView>>;
   setToken(host: string, token: string): Promise<GitMarketplaceResult<{ host: string }>>;
   deleteToken(host: string): Promise<GitMarketplaceResult<{ host: string }>>;
@@ -451,13 +471,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * Shape check for a result crossing the bridge: the envelope is checked and
- * the value is trusted as main's own view. Anything else reads as unavailable.
+ * the value is trusted as main's own view. A failure keeps a `detail` whose
+ * reason belongs to its code and drops any other, keeping code and message.
+ * Anything else reads as unavailable.
  */
 export function parseGitMarketplaceResult<T>(value: unknown): GitMarketplaceResult<T> {
   if (isRecord(value)) {
     if (value.ok === true && "value" in value) return { ok: true, value: value.value as T };
     if (value.ok === false && typeof value.code === "string" && ENVELOPE_CODES.has(value.code) && typeof value.message === "string") {
-      return { ok: false, code: value.code as GitMarketplaceErrorCode, message: value.message };
+      const detail = value.detail === undefined ? undefined : parseMarketplaceErrorDetail(value.code, value.detail);
+      return { ok: false, code: value.code as GitMarketplaceErrorCode, message: value.message, ...(detail ? { detail } : {}) };
     }
   }
   return { ok: false, code: "unavailable", message: "the marketplace did not answer" };

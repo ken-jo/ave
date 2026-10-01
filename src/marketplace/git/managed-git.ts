@@ -31,7 +31,7 @@ import { renameDirectory } from "../../lib/transient-fs-lock-retry.js";
 import { canonicalZipEntryPathIdentity, sanitizeZipEntryPath } from "../../plugins/zip-entry-path.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
 import type { GitRuntimeProgress } from "../../shared/git-runtime.js";
-import { MarketplaceError, isMarketplaceError } from "../errors.js";
+import { MarketplaceError, isMarketplaceError, type MarketplaceErrorDetail } from "../errors.js";
 import { stallGuarded } from "../net/stall-guard.js";
 import type { ManagedGitInstall } from "./detect.js";
 import { parseGitVersion } from "./git-version.js";
@@ -151,6 +151,14 @@ const DOWNLOAD_STALL_MS = 60_000;
 
 function installFailed(message: string, cause?: unknown): MarketplaceError {
   return new MarketplaceError("GIT_RUNTIME_INSTALL_FAILED", message, cause === undefined ? undefined : { cause });
+}
+
+type InstallPhase = MarketplaceErrorDetail<"GIT_RUNTIME_INSTALL_FAILED">["reason"];
+
+/** An install failure names the phase it happened in; any other code (a policy block) passes unchanged. */
+function withPhase(error: MarketplaceError, phase: InstallPhase): MarketplaceError {
+  if (error.code !== "GIT_RUNTIME_INSTALL_FAILED") return error;
+  return new MarketplaceError(error.code, error.message, { ...(error.cause === undefined ? {} : { cause: error.cause }), detail: { reason: phase } });
 }
 
 /** Stream the body to `file` while hashing; never more than `size` bytes. */
@@ -307,6 +315,8 @@ async function runInstall(options: ManagedGitInstallOptions): Promise<ManagedGit
   const pins = options.pins ?? MANAGED_GIT;
   const report = (progress: GitRuntimeProgress) => options.onProgress?.(progress);
   const staging = join(options.runtimeRoot, `.staging-${randomBytes(8).toString("hex")}`);
+  // The phase a failure names (§18.8); `installing` is the move into place, which reports no progress.
+  let phase: InstallPhase = "checking";
   try {
     report({ phase: "checking" });
     const existing = await findManagedGit(options.runtimeRoot, platform, pins);
@@ -319,6 +329,7 @@ async function runInstall(options: ManagedGitInstallOptions): Promise<ManagedGit
 
     await mkdir(staging, { recursive: true, mode: 0o700 });
     const archive = join(staging, "git.tar.gz");
+    phase = "downloading";
     report({ phase: "downloading", bytes: 0, total: asset.size });
     let response: Response;
     try {
@@ -332,16 +343,20 @@ async function runInstall(options: ManagedGitInstallOptions): Promise<ManagedGit
       report({ phase: "downloading", bytes, total: asset.size }),
     );
 
+    phase = "verifying";
     report({ phase: "verifying" });
     if (digest !== asset.sha256) throw installFailed(`sha256 ${digest} does not match the pinned ${asset.sha256}`);
 
+    phase = "extracting";
     report({ phase: "extracting" });
     const extracted = join(staging, "root");
     await extract(archive, extracted);
     await rm(archive, { force: true });
 
+    phase = "smoke-testing";
     report({ phase: "smoke-testing" });
     await smokeTest(extracted, platform, pins);
+    phase = "installing";
     await writeFile(
       join(extracted, READY_MARKER),
       `${JSON.stringify({ version: pins.version, sha256: asset.sha256, installedAt: new Date().toISOString() })}\n`,
@@ -364,7 +379,7 @@ async function runInstall(options: ManagedGitInstallOptions): Promise<ManagedGit
     report({ phase: "ready", version: pins.version });
     return installed;
   } catch (error) {
-    const failure = isMarketplaceError(error) ? error : installFailed((error as Error).message, error);
+    const failure = withPhase(isMarketplaceError(error) ? error : installFailed((error as Error).message, error), phase);
     report({ phase: "failed", code: failure.code, message: failure.message });
     throw failure;
   } finally {

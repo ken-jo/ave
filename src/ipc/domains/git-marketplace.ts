@@ -42,7 +42,7 @@ import { AppliedDefaults } from "../../marketplace/boot-installs/applied.js";
 import { DEFAULT_INSTALLS } from "../../marketplace/boot-installs/default-installs.js";
 import { loadInstallationId } from "../../marketplace/catalog/installation-id.js";
 import { contentLedgerOrigins } from "../../marketplace/content/ledger.js";
-import { MarketplaceError } from "../../marketplace/errors.js";
+import { MarketplaceError, scrubMarketplaceErrorDetail } from "../../marketplace/errors.js";
 import { MarketplaceGit } from "../../marketplace/git/marketplace-git.js";
 import { migrateLegacyContent } from "../../marketplace/migration/legacy-content.js";
 import { migrateLegacyPlugins } from "../../marketplace/migration/legacy-plugins.js";
@@ -58,6 +58,7 @@ import { DEFAULT_MARKETPLACE_ARTIFACT_LIMITS } from "../../plugins/marketplace-a
 import { PluginArtifactStore } from "../../plugins/plugin-artifact-store.js";
 import { resolveUpdateCheckEnabled } from "../../plugins/update-detector.js";
 import { getAveAppVersion } from "../../shared/app-version.js";
+import { scrubDiagnosticSecrets } from "../../shared/dlp.js";
 import { errorMessage } from "../../shared/error-message.js";
 import {
   isPackageKind,
@@ -90,6 +91,7 @@ export type GitMarketplacePort = Pick<
   | "removeSource"
   | "setEnabled"
   | "refresh"
+  | "repairSource"
   | "acceptRewrite"
   | "setToken"
   | "deleteToken"
@@ -555,10 +557,12 @@ export function registerGitMarketplaceHandlers(
         const { service } = await loaded();
         return { ok: true, value: await run(service, args) };
       } catch (error) {
-        if (error instanceof MarketplaceError) return { ok: false, code: error.code, message: error.message };
-        if (error instanceof InvalidRequest) return { ok: false, code: "invalid-request", message: error.message };
-        log.error({ err: errorMessage(error), channel }, "git marketplace request failed");
-        return { ok: false, code: "unavailable", message: errorMessage(error) };
+        // A message or a detail's text can quote a git error or an address; it reaches the renderer and its clipboard only scrubbed.
+        if (error instanceof MarketplaceError) return { ok: false, code: error.code, message: scrubDiagnosticSecrets(error.message), ...(error.detail ? { detail: scrubMarketplaceErrorDetail(error.code, error.detail) } : {}) };
+        if (error instanceof InvalidRequest) return { ok: false, code: "invalid-request", message: scrubDiagnosticSecrets(error.message) };
+        const message = scrubDiagnosticSecrets(errorMessage(error));
+        log.error({ err: message, channel }, "git marketplace request failed");
+        return { ok: false, code: "unavailable", message };
       }
     });
   };
@@ -572,7 +576,12 @@ export function registerGitMarketplaceHandlers(
     if (typeof enabled !== "boolean") throw new InvalidRequest("enabled must be a boolean");
     return service.setEnabled(text(id, "id", 64), enabled);
   });
-  handle(channels.sourcesRefresh, (service, [id]) => service.refresh(id === undefined ? undefined : text(id, "id", 64)));
+  // Repair is a refresh with that intent (§18.8): it starts the source's downloaded copy over before the sync.
+  handle(channels.sourcesRefresh, (service, [id, intent]) => {
+    if (intent === undefined) return service.refresh(id === undefined ? undefined : text(id, "id", 64));
+    if (intent !== "repair") throw new InvalidRequest("intent must be repair");
+    return service.repairSource(text(id, "id", 64));
+  });
   handle(channels.sourcesAcceptRewrite, (service, [id, commit]) => service.acceptRewrite(text(id, "id", 64), text(commit, "commit", 40)));
   handle(channels.sourcesSetToken, (service, [host, token]) => service.setToken(text(host, "host", 255), text(token, "token")));
   handle(channels.sourcesDeleteToken, (service, [host]) => service.deleteToken(text(host, "host", 255)));

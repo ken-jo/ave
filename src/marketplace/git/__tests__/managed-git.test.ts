@@ -56,7 +56,7 @@ describe.skipIf(process.platform === "win32")("managed git install", () => {
   let server: Server;
   let origin: string;
   const bodies = new Map<string, { bytes: Buffer; mode: "full" | "truncate" | "extra" | "stall" }>();
-  const gate = new NetworkGate({ policy: { ok: true, policy: EMPTY_MARKETPLACE_POLICY }, allowLoopback: true });
+  const gate = new NetworkGate({ policy: { ok: true, policy: EMPTY_MARKETPLACE_POLICY, path: "/fixture/ave-policy.json" }, allowLoopback: true });
   const download = (url: string, signal?: AbortSignal) => gate.fetch(url, { fetchImpl: fetch, official: true, ...(signal ? { signal } : {}) });
 
   beforeAll(async () => {
@@ -143,15 +143,16 @@ describe.skipIf(process.platform === "win32")("managed git install", () => {
   });
 
   it.each([
-    ["a wrong hash", async (_bytes: Buffer, pins: ManagedGitPins) => ({ ...pins, assets: { [KEY]: { ...pins.assets[KEY]!, sha256: "0".repeat(64) } } })],
-    ["a truncated download", async (bytes: Buffer) => serve("/short.tar.gz", bytes, "truncate")],
-    ["a body longer than pinned", async (bytes: Buffer) => serve("/long.tar.gz", bytes, "extra")],
-    ["a missing asset", async (_bytes: Buffer, pins: ManagedGitPins) => ({ ...pins, assets: { [KEY]: { ...pins.assets[KEY]!, url: `${origin}/missing.tar.gz` } } })],
-  ])("fails on %s and leaves nothing behind", async (_label, variant) => {
+    ["a wrong hash", "verifying", async (_bytes: Buffer, pins: ManagedGitPins) => ({ ...pins, assets: { [KEY]: { ...pins.assets[KEY]!, sha256: "0".repeat(64) } } })],
+    ["a truncated download", "downloading", async (bytes: Buffer) => serve("/short.tar.gz", bytes, "truncate")],
+    ["a body longer than pinned", "downloading", async (bytes: Buffer) => serve("/long.tar.gz", bytes, "extra")],
+    ["a missing asset", "downloading", async (_bytes: Buffer, pins: ManagedGitPins) => ({ ...pins, assets: { [KEY]: { ...pins.assets[KEY]!, url: `${origin}/missing.tar.gz` } } })],
+  ])("fails on %s in the %s phase and leaves nothing behind", async (_label, phase, variant) => {
     const bytes = await buildArchive(dir, "good", standardLayout());
     const pins = await variant(bytes, serve("/git.tar.gz", bytes));
     const { error, progress } = await install(pins);
     expect(error?.code).toBe("GIT_RUNTIME_INSTALL_FAILED");
+    expect(error?.detail).toEqual({ reason: phase });
     expect(progress[progress.length - 1]).toMatchObject({ phase: "failed", code: "GIT_RUNTIME_INSTALL_FAILED" });
     expect(existsSync(join(runtimeRoot, VERSION))).toBe(false);
     expect(leftovers()).toEqual([]);
@@ -161,26 +162,27 @@ describe.skipIf(process.platform === "win32")("managed git install", () => {
     ["a symlink that leaves its directory", (root: string) => {
       standardLayout()(root);
       symlinkSync("../../../etc/passwd", join(root, "libexec/git-core/escape"));
-    }, "is not a sibling"],
+    }, "is not a sibling", "extracting"],
     ["an absolute symlink", (root: string) => {
       standardLayout()(root);
       symlinkSync("/etc/passwd", join(root, "bin/escape"));
-    }, "is not a sibling"],
+    }, "is not a sibling", "extracting"],
     ["a hard link", (root: string) => {
       standardLayout()(root);
       linkSync(join(root, "bin/git"), join(root, "bin/git-hard"));
-    }, "unsupported entry type Link"],
-    ["a copy that reports another version", standardLayout(fakeGitScript("2.52.0")), "reports git version 2.52.0"],
-    ["a copy that hashes wrongly", standardLayout(fakeGitScript(VERSION, "f".repeat(40))), "hashed a blob as"],
+    }, "unsupported entry type Link", "extracting"],
+    ["a copy that reports another version", standardLayout(fakeGitScript("2.52.0")), "reports git version 2.52.0", "smoke-testing"],
+    ["a copy that hashes wrongly", standardLayout(fakeGitScript(VERSION, "f".repeat(40))), "hashed a blob as", "smoke-testing"],
     ["a copy without the https helper", (root: string) => {
       put(root, "bin/git", fakeGitScript(), 0o755);
       put(root, "libexec/git-core/git", fakeGitScript(), 0o755);
-    }, "no https transport helper"],
-  ])("refuses %s", async (_label, layout, message) => {
+    }, "no https transport helper", "smoke-testing"],
+  ])("refuses %s", async (_label, layout, message, phase) => {
     const pins = serve("/bad.tar.gz", await buildArchive(dir, "bad", layout));
     const { error } = await install(pins);
     expect(error?.code).toBe("GIT_RUNTIME_INSTALL_FAILED");
     expect(error?.message).toContain(message);
+    expect(error?.detail).toEqual({ reason: phase });
     expect(existsSync(join(runtimeRoot, VERSION))).toBe(false);
     expect(leftovers()).toEqual([]);
   });
@@ -188,7 +190,7 @@ describe.skipIf(process.platform === "win32")("managed git install", () => {
   it("fails a download whose body stops arriving instead of waiting for it", async () => {
     const bytes = await buildArchive(dir, "good", standardLayout());
     const { error } = await install(serve("/stall.tar.gz", bytes, "stall"), { downloadStallMs: 200 });
-    expect(error).toMatchObject({ code: "GIT_RUNTIME_INSTALL_FAILED", message: expect.stringContaining("stalled") });
+    expect(error).toMatchObject({ code: "GIT_RUNTIME_INSTALL_FAILED", message: expect.stringContaining("stalled"), detail: { reason: "downloading" } });
     expect(leftovers()).toEqual([]);
   });
 
@@ -200,6 +202,7 @@ describe.skipIf(process.platform === "win32")("managed git install", () => {
     const broken = serve("/broken.tar.gz", Buffer.from("not a tar archive at all"));
     const failed = await install(broken, { force: true });
     expect(failed.error?.code).toBe("GIT_RUNTIME_INSTALL_FAILED");
+    expect(failed.error?.detail).toEqual({ reason: "extracting" });
     expect(readFileSync(join(installed!.root, ".ave-ready.json"), "utf8")).toBe(marker);
     expect(await findManagedGit(runtimeRoot, process.platform, good)).toEqual(installed);
 
@@ -210,6 +213,24 @@ describe.skipIf(process.platform === "win32")("managed git install", () => {
     const replaced = await install(replacement, { force: true });
     expect(replaced.error).toBeNull();
     expect(existsSync(join(runtimeRoot, VERSION, "share/new-file"))).toBe(true);
+    expect(leftovers()).toEqual([]);
+  });
+
+  it("names the final move as the failing phase when the copy cannot be put in place", async () => {
+    const pins = serve("/git.tar.gz", await buildArchive(dir, "good", standardLayout()));
+    const progress: GitRuntimeProgress[] = [];
+    const error = await installManagedGit({
+      runtimeRoot,
+      download,
+      pins,
+      // A dangling link where the copy goes: `existsSync` misses it, so nothing is moved aside, and the rename fails.
+      onProgress: (item) => {
+        progress.push(item);
+        if (item.phase === "smoke-testing") symlinkSync(join(dir, "nowhere"), join(runtimeRoot, VERSION));
+      },
+    }).catch((failure: unknown) => failure as MarketplaceError);
+    expect(error).toMatchObject({ code: "GIT_RUNTIME_INSTALL_FAILED", message: expect.stringContaining("cannot move the new copy into place"), detail: { reason: "installing" } });
+    expect(progress[progress.length - 1]).toMatchObject({ phase: "failed", code: "GIT_RUNTIME_INSTALL_FAILED" });
     expect(leftovers()).toEqual([]);
   });
 
@@ -231,6 +252,7 @@ describe.skipIf(process.platform === "win32")("managed git install", () => {
   it("refuses a platform without a pinned build", async () => {
     const { error } = await install({ version: VERSION, assets: {} });
     expect(error?.message).toContain(`no managed git build for ${KEY}`);
+    expect(error?.detail).toEqual({ reason: "checking" });
   });
 });
 
@@ -278,7 +300,7 @@ describe("managed git download policy", () => {
     const dir = mkdtempSync(join(tmpdir(), "ave-managed-policy-"));
     try {
       const blocked = new NetworkGate({
-        policy: { ok: true, policy: { ...EMPTY_MARKETPLACE_POLICY, block: [parseSourcePattern("host:github.com")] } },
+        policy: { ok: true, policy: { ...EMPTY_MARKETPLACE_POLICY, block: [parseSourcePattern("host:github.com")] }, path: "/fixture/ave-policy.json" },
         allowLoopback: false,
       });
       const error = await installManagedGit({
@@ -288,6 +310,7 @@ describe("managed git download policy", () => {
       }).catch((failure: unknown) => failure);
       expect(error).toBeInstanceOf(MarketplaceError);
       expect((error as MarketplaceError).code).toBe("SOURCE_POLICY_BLOCKED");
+      expect((error as MarketplaceError).detail?.reason).toBe("blocked-by-pattern");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

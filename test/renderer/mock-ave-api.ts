@@ -992,6 +992,7 @@ function mockGitMarketplace(sources: unknown[]) {
     removeSource: ok({ orphanedPackages: [] }),
     setSourceEnabled: ok(null),
     refreshSources: ok(sources),
+    repairSource: ok(sources),
     acceptRewrite: ok(null),
     setToken: ok({ host: "github.com" }),
     deleteToken: ok({ host: "github.com" }),

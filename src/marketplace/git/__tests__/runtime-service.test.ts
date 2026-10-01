@@ -41,7 +41,7 @@ function service(options: { mode?: GitRuntimeMode; versions?: Record<string, str
     runtimeRoot: root,
     mode: () => options.mode ?? "auto",
     download: async () => {
-      throw new Error("no network in this test");
+      throw new Error("no network in this test (via http://alice:proxy-canary@proxy.corp:8080)");
     },
     onProgress: (progress) => options.progress?.push(progress),
     platform: "linux",
@@ -83,8 +83,9 @@ describe("GitRuntimeService.install", () => {
   it("records a failed install in the status instead of throwing", async () => {
     const progress: GitRuntimeProgress[] = [];
     const status = await service({ progress }).install();
-    expect(status.lastInstallError).toMatchObject({ code: "GIT_RUNTIME_INSTALL_FAILED" });
-    expect(status.lastInstallError!.message).toContain("no network in this test");
+    expect(status.lastInstallError).toMatchObject({ code: "GIT_RUNTIME_INSTALL_FAILED", detail: { reason: "downloading" } });
+    // The status crosses to the renderer: its message goes scrubbed.
+    expect(status.lastInstallError!.message).toContain("no network in this test (via http://[REDACTED:CREDENTIALS]@proxy.corp:8080)");
     expect(progress[progress.length - 1]).toMatchObject({ phase: "failed", code: "GIT_RUNTIME_INSTALL_FAILED" });
     expect(status.managed.installed).toBe(false);
   });

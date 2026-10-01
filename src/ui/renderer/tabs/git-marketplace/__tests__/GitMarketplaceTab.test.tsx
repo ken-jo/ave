@@ -132,6 +132,25 @@ describe("GitMarketplaceTab browse", () => {
     await waitFor(() => expect(exportInstalled).toHaveBeenCalledWith("hook-kit", true));
   });
 
+  it("says an export that failed in its own words, with the studio's text only behind Copy details", async () => {
+    const item = entry(null, "agent-plugin", "hook-kit", { state: { state: "unbound", version: "1.0.0" },
+      sourceOrigin: null, sourceLabel: null });
+    const { api } = renderTab(fakeMarketplace({ entries: [item] }));
+    const exportInstalled = vi.fn(async () => ({ ok: false as const, code: "unavailable" as const, message: "Installed content is unavailable" }));
+    Object.assign(api, { pluginStudio: { exportInstalled } });
+    fireEvent.click(screen.getByTestId("git-marketplace:installed"));
+    const card = await screen.findByTestId("git-marketplace:card:unbound:agent-plugin:hook-kit");
+    const trigger = within(card).getByTestId("plugin-studio:export-installed:hook-kit");
+    fireEvent.pointerDown(trigger, { button: 0 });
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "호환 파일 포함" }));
+
+    const problem = await screen.findByTestId("git-marketplace:action-error");
+    expect(problem).toHaveTextContent("hook-kit을(를) 내보내지 못했습니다.");
+    expect(problem).not.toHaveTextContent("Installed content is unavailable");
+    expect(screen.queryByTestId("git-marketplace:error")).toBeNull();
+  });
+
   it("labels an installed code package from its catalog kind", async () => {
     const fake = fakeMarketplace({
       sources: [team],
@@ -384,7 +403,9 @@ describe("GitMarketplaceTab package sheet", () => {
     expect(await within(sheet).findByTestId("git-marketplace:confirm")).toBeDisabled();
   });
 
-  it("shows the failure's sentence and a diagnostic naming the plan", async () => {
+  it("shows the failure's sentence and copies a diagnostic naming the plan", async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
     const calendar = entry("team", "plugin", "calendar");
     const fake = fakeMarketplace({ sources: [team], entries: [calendar] });
     fake.market.planInstall.mockResolvedValue({ ok: true, value: installPlan(calendar) });
@@ -397,8 +418,10 @@ describe("GitMarketplaceTab package sheet", () => {
     fireEvent.click(await within(sheet).findByTestId("git-marketplace:confirm"));
 
     const failed = await within(sheet).findByTestId("git-marketplace:failed");
-    expect(failed).toHaveTextContent("이 계획은 더 이상 유효하지 않습니다.");
-    expect(failed).toHaveTextContent("PLAN_EXPIRED · plugin calendar 1.0.0 from team");
+    expect(failed).toHaveTextContent("검토한 내용이 더 이상 유효하지 않습니다.");
+    expect(failed).not.toHaveTextContent("plan plan-1 expired");
+    fireEvent.click(within(failed).getByRole("button", { name: "세부 정보 복사" }));
+    expect(writeText).toHaveBeenCalledWith("PLAN_EXPIRED · plugin calendar 1.0.0 from team\nplan plan-1 expired");
   });
 
   it("says to show a hidden source again when its plan is refused", async () => {
@@ -603,9 +626,22 @@ describe("GitMarketplaceTab maintenance", () => {
   it("keeps the switches off and says why when the saved values cannot be read", async () => {
     renderTab(fakeMarketplace({ sources: [team] }), { getSettings: () => Promise.reject(new Error("settings.json is unreadable")) });
 
-    expect(await screen.findByTestId("git-marketplace:maintenance:error")).toHaveTextContent("마켓플레이스가 응답하지 못했습니다. settings.json is unreadable");
+    expect(await screen.findByTestId("git-marketplace:maintenance:error")).toHaveTextContent("마켓플레이스가 시작하거나 응답하지 못했습니다(settings.json is unreadable).");
     expect(screen.getByTestId("git-marketplace:update-check")).toBeDisabled();
     expect(screen.getByTestId("git-marketplace:offline-cache")).toBeDisabled();
+  });
+
+  it("says a switch it could not save in its own words, not as the marketplace failing", async () => {
+    const { api } = renderTab(fakeMarketplace({ sources: [team] }), { getSettings: async () => ({ marketplace: { updateCheckEnabled: true, offlineCacheEnabled: true } }) });
+    Object.assign(api, { updateSettings: vi.fn(async () => ({ ok: false, error: "settings-write-failed", message: "EACCES: settings.json" })) });
+    const offline = await screen.findByTestId("git-marketplace:offline-cache");
+    await waitFor(() => expect(offline).toBeEnabled());
+
+    fireEvent.click(offline);
+    const problem = await screen.findByTestId("git-marketplace:maintenance:save-error");
+    expect(problem).toHaveTextContent("설정을 저장하지 못해 이전 값이 그대로 적용됩니다.");
+    expect(problem).not.toHaveTextContent("EACCES");
+    expect(screen.queryByTestId("git-marketplace:error")).toBeNull();
   });
 
   it("says when the environment decides a switch", async () => {

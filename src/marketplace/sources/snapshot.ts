@@ -27,7 +27,7 @@ import type {
 } from "../catalog/types.js";
 import type { ConditionalRevocation } from "../catalog/types.js";
 import { validateConditionalRevocationsText, validateDescriptorText, validateIndexText, validateRevocationsText, type CatalogDiagnostic } from "../catalog/validate.js";
-import { isMarketplaceError, type MarketplaceErrorCode } from "../errors.js";
+import { isMarketplaceError, type MarketplaceErrorCode, type MarketplaceErrorDetail } from "../errors.js";
 import { DIRECT_FILES, readDirectPackage } from "./direct-package.js";
 import type { ResolvedSource } from "./registry.js";
 
@@ -61,7 +61,9 @@ export interface SourceSnapshot {
 
 type MarketplaceIdentity = Pick<MarketplaceIndex, "name" | "displayName" | "description" | "owner">;
 
-export type SnapshotResult = { ok: true; snapshot: SourceSnapshot } | { ok: false; code: MarketplaceErrorCode; message: string };
+export type SnapshotResult =
+  | { ok: true; snapshot: SourceSnapshot }
+  | { ok: false; code: MarketplaceErrorCode; message: string; detail?: MarketplaceErrorDetail };
 
 const SNAPSHOT_FILE_LIMITS = {
   index: 16 * 1024 * 1024,
@@ -283,7 +285,8 @@ export class SnapshotBuilder {
       if (isMarketplaceError(error)) {
         // A blob fetch can still fail on the network, auth or a timeout; that
         // is the sync's result, not an exception past it.
-        return { ok: false, code: error.code === "CONTENT_RULE_VIOLATION" ? "SOURCE_INDEX_INVALID" : error.code, message: error.message };
+        if (error.code === "CONTENT_RULE_VIOLATION") return { ok: false, code: "SOURCE_INDEX_INVALID", message: error.message };
+        return { ok: false, code: error.code, message: error.message, ...(error.detail ? { detail: error.detail } : {}) };
       }
       throw error;
     }

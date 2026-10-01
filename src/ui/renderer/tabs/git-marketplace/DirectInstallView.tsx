@@ -8,9 +8,11 @@ import { Button } from "../../../../components/ui/button.js";
 import { Textarea } from "../../../../components/ui/textarea.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import { cn } from "../../../../lib/utils.js";
-import type { DirectMcpPreviewView, GitMarketplaceErrorCode } from "../../../../shared/git-marketplace.js";
+import { scrubDiagnosticSecrets } from "../../../../shared/dlp.js";
+import type { DirectMcpPreviewView, GitMarketplaceFailure } from "../../../../shared/git-marketplace.js";
 import type { AveApi } from "../../types.js";
-import { failureText } from "./labels.js";
+import { ENTRY_SUBJECT, importActionLabel, importFailureText } from "./labels.js";
+import { MarketplaceProblem } from "./MarketplaceProblem.js";
 import { McpRuntimeSummary } from "./McpRuntimeSummary.js";
 
 type Mode = "git" | "mcp" | "server-json" | "import";
@@ -31,7 +33,7 @@ export function DirectInstallView({ api, onGitAddress, onOpenMcpSettings, onInst
   const [serverJson, setServerJson] = useState("");
   const [select, setSelect] = useState<{ package?: number; remote?: number }>({});
   const [preview, setPreview] = useState<DirectMcpPreviewView | null>(null);
-  const [failure, setFailure] = useState<{ code: GitMarketplaceErrorCode; message: string } | null>(null);
+  const [failure, setFailure] = useState<GitMarketplaceFailure | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [config, setConfig] = useState("");
@@ -62,7 +64,7 @@ export function DirectInstallView({ api, onGitAddress, onOpenMcpSettings, onInst
       if (result.ok) {
         setDone(
           result.value.connectionWarning
-            ? `${t("gitMarketplace.install.done", { name: preview.name, version: preview.version })} ${t("gitMarketplace.install.notConnected", { message: result.value.connectionWarning })}`
+            ? `${t("gitMarketplace.install.done", { name: preview.name, version: preview.version })} ${t("gitMarketplace.install.notConnected", { message: scrubDiagnosticSecrets(result.value.connectionWarning) })}`
             : t("gitMarketplace.direct.connected", { name: preview.name }),
         );
         setPreview(null);
@@ -203,7 +205,7 @@ export function DirectInstallView({ api, onGitAddress, onOpenMcpSettings, onInst
                 </div>
               ))}
               {importPreview.errors.map((error) => (
-                <p key={error.id} className="text-destructive">{error.id}: {error.reason}</p>
+                <p key={error.id} className="text-destructive">{error.id}: {scrubDiagnosticSecrets(error.reason)}</p>
               ))}
               {importPreview.entries.length > 0 && !importResult && (
                 <Button
@@ -218,16 +220,21 @@ export function DirectInstallView({ api, onGitAddress, onOpenMcpSettings, onInst
                 </Button>
               )}
               {importResult && (importResult.ok
-                ? importResult.results.map((row) => (
-                    <p key={row.id}>{row.id}: {row.action}{row.reason ? ` — ${row.reason}` : ""}</p>
+                ? importResult.results.map((row) => row.action === "failed"
+                  ? <MarketplaceProblem key={row.id} tone="error" text={importFailureText(t, row.id, row.failure)} details={row.reason} testId={`git-marketplace:direct:import:${row.id}`} />
+                  : (
+                    <p key={row.id} data-testid={`git-marketplace:direct:import:${row.id}`}>
+                      {row.id}: {importActionLabel(t, row.action)}
+                      {row.reason ? ` — ${t("gitMarketplace.install.notConnected", { message: scrubDiagnosticSecrets(row.reason) })}` : ""}
+                    </p>
                   ))
-                : <p className="text-destructive">{importResult.error}</p>)}
+                : <MarketplaceProblem tone="error" text={t("gitMarketplace.direct.importFailed")} details={importResult.error} testId="git-marketplace:direct:import-error" />)}
             </div>
           )}
         </div>
       )}
 
-      {failure && <p className="text-sm text-destructive">{failureText(t, failure)}</p>}
+      {failure && <MarketplaceProblem failure={failure} subject={ENTRY_SUBJECT} />}
       {done && <p className="text-sm text-success" data-testid="git-marketplace:direct:done">{done}</p>}
     </div>
   );

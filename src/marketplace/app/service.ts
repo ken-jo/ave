@@ -52,7 +52,7 @@ import { parseStrictJson } from "../catalog/strict-json.js";
 import { stageContentPackage } from "../content/store.js";
 import { componentDelta } from "./component-delta.js";
 import { errorMessage } from "../../shared/error-message.js";
-import { MarketplaceError } from "../errors.js";
+import { MarketplaceError, isMarketplaceError, type MarketplaceErrorDetail } from "../errors.js";
 import { BareRepo } from "../git/repo.js";
 import type { GitCommands, GitRemote } from "../git/run-git.js";
 import type { NetworkGate } from "../net/network-gate.js";
@@ -81,6 +81,7 @@ import type { InstallerPorts, InstalledRecord, TokenStore } from "./ports.js";
 import {
   authorityDelta,
   authorityView,
+  brokenStatus,
   installActionView,
   rowState,
   rungOutcomeViews,
@@ -256,16 +257,18 @@ export class MarketplaceService implements RetirementEntryLookup {
 
   /**
    * A source's state and the snapshot at its pin. A state or snapshot file
-   * that cannot be read is reported as the source's problem, never read as a
-   * fresh source: the Sources view shows it and the catalog leaves the
-   * source out until it is repaired or removed.
+   * that cannot be used is reported as the source's problem, never read as a
+   * fresh source: the Sources view shows it with Repair, and the catalog
+   * leaves the source out until it is repaired (or removed). Any other error
+   * is a bug and propagates.
    */
-  private async read(source: ResolvedSource): Promise<{ state: SourceState; snapshot: SourceSnapshot | null } | { problem: string }> {
+  private async read(source: ResolvedSource): Promise<{ state: SourceState; snapshot: SourceSnapshot | null } | { problem: MarketplaceError }> {
     try {
       const state = await this.registry.readState(source.id);
       return { state, snapshot: await this.options.syncer.readSnapshot(source.id) };
     } catch (error) {
-      return { problem: errorMessage(error) };
+      if (isMarketplaceError(error) && error.code === "SOURCE_LOCAL_DATA_DAMAGED") return { problem: error };
+      throw error;
     }
   }
 
@@ -299,7 +302,7 @@ export class MarketplaceService implements RetirementEntryLookup {
           }
         : null,
       packageCount: snapshot?.packages.length ?? 0,
-      status: "problem" in read ? { state: "broken", problem: read.problem } : sourceStatus(read.state, this.syncing.has(source.id), snapshot !== null, reviewable),
+      status: "problem" in read ? brokenStatus(read.problem) : sourceStatus(read.state, this.syncing.has(source.id), snapshot !== null, reviewable),
       enabled: state ? this.registry.isEnabled(source, state) : !this.registry.canDisable(source),
       canDisable: this.registry.canDisable(source),
       canRemove: reviewable,
@@ -323,6 +326,23 @@ export class MarketplaceService implements RetirementEntryLookup {
     } finally {
       this.syncing.delete(id);
     }
+  }
+
+  /**
+   * Repair (design §18.8): move the source's downloaded copy aside and sync
+   * it again, for every origin. Installed packages stay bound to it; tokens,
+   * policy and `sources.json` are not touched. A failed move throws
+   * SOURCE_LOCAL_DATA_DAMAGED `repair-failed`, a failed write of the kept
+   * pin `repair-write-failed`; a failed sync is recorded like any other and
+   * shown on the source.
+   */
+  async repairSource(id: string): Promise<SourceView[]> {
+    const source = this.source(id);
+    await this.options.syncer.resetLocalData(source.id);
+    this.options.onCatalogChanged?.();
+    await this.syncOne(source.id);
+    await this.enforceRevocations();
+    return this.listSources();
   }
 
   /** Sync one source, or every source that is shown or has installed packages (§7.3). */
@@ -357,7 +377,7 @@ export class MarketplaceService implements RetirementEntryLookup {
 
   async acceptRewrite(id: string, commit: string): Promise<SourceView> {
     const result = await this.options.syncer.acceptRewrite(id, commit);
-    if (result.status === "failed") throw new MarketplaceError(result.code, result.message);
+    if (result.status === "failed") throw new MarketplaceError(result.code, result.message, result.detail ? { detail: result.detail } : undefined);
     return this.sourceView(this.source(id));
   }
 
@@ -450,7 +470,7 @@ export class MarketplaceService implements RetirementEntryLookup {
             suggestedId,
           };
         }
-        if (built.code !== "SOURCE_NOT_A_MARKETPLACE") throw new MarketplaceError(built.code, built.message);
+        if (built.code !== "SOURCE_NOT_A_MARKETPLACE") throw new MarketplaceError(built.code, built.message, built.detail ? { detail: built.detail } : undefined);
       }
       // A single package at the root or the given folder: a direct source (§7.2 step 4, §8.1).
       const read = await readDirectPackage({ repo, remote, commit, path: subdir ?? "" });
@@ -705,7 +725,16 @@ export class MarketplaceService implements RetirementEntryLookup {
       .filter((reason) => reason !== "rollout" && reason !== "prerelease");
     if (blocking.includes("revoked")) throw new MarketplaceError("PACKAGE_REVOKED", `${row.name} ${requested} is revoked by ${row.sourceId}`);
     if (blocking.includes("yanked")) throw new MarketplaceError("PACKAGE_YANKED", `${row.name} ${requested} is yanked`);
-    if (blocking.length > 0) throw new MarketplaceError("PACKAGE_INCOMPATIBLE", `${row.name} ${requested} cannot be installed here (${blocking.join(", ")})`);
+    if (blocking.length > 0) {
+      // The first exclusion in §6.1 order names the sentence; the message keeps all of them.
+      const first = blocking[0]!;
+      const detail: MarketplaceErrorDetail<"PACKAGE_INCOMPATIBLE"> | undefined =
+        first === "min_app_version" ? { reason: first, name: row.name, version: version.minAppVersion }
+          : first === "platform" ? { reason: first, name: row.name, platform: context.platform }
+            : first === "host_protocol" ? { reason: first, name: row.name }
+              : undefined;
+      throw new MarketplaceError("PACKAGE_INCOMPATIBLE", `${row.name} ${requested} cannot be installed here (${blocking.join(", ")})`, detail ? { detail } : undefined);
+    }
     return version;
   }
 

@@ -10,20 +10,23 @@ import { Checkbox } from "../../../../components/ui/checkbox.js";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../../../components/ui/dialog.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import { cn } from "../../../../lib/utils.js";
+import { scrubDiagnosticSecrets } from "../../../../shared/dlp.js";
 import type {
   AuthorityView,
   ComponentConsent,
   GitMarketplaceApi,
-  GitMarketplaceErrorCode,
+  GitMarketplaceFailure,
   InstallPlanView,
   InstallProgressView,
   InstallResultView,
   PackageDetailView,
   PackageKeyView,
   RungView,
+  SourceView,
   UpdatePlanView,
 } from "../../../../shared/git-marketplace.js";
-import { actionLabel, exclusionLabel, failureText, kindLabel, originLabel, shortSha, stateLabel } from "./labels.js";
+import { MarketplaceProblem } from "./MarketplaceProblem.js";
+import { actionLabel, exclusionLabel, kindLabel, originLabel, OTHER_SUBJECT, shortSha, sourceSubject, stateLabel } from "./labels.js";
 import { McpRuntimeSummary } from "./McpRuntimeSummary.js";
 import { componentInventory } from "../../../../marketplace/app/component-delta.js";
 import type { AgentPluginComponents } from "../../../../marketplace/catalog/types.js";
@@ -36,13 +39,15 @@ type Stage =
   | { stage: "review"; plan: InstallPlanView | UpdatePlanView }
   | { stage: "installing"; plan: InstallPlanView | UpdatePlanView; progress: InstallProgressView | null }
   | { stage: "done"; result: InstallResultView }
-  | { stage: "failed"; failure: { code: GitMarketplaceErrorCode; message: string }; plan: InstallPlanView | UpdatePlanView | null };
+  | { stage: "failed"; failure: GitMarketplaceFailure; plan: InstallPlanView | UpdatePlanView | null };
 
 export interface PackageSheetProps {
   api: GitMarketplaceApi;
   alertsApi?: AveApi;
   onOpenPluginSettings?: (pluginId: string) => void;
   target: { key: PackageKeyView; mode: "detail" | "update" } | null;
+  /** The target's source as Sources lists it, so a failure names only what its row offers; null when it is not listed. */
+  source: SourceView | null;
   onClose: () => void;
   /** Something was installed or removed: the catalog should be read again. */
   onChanged: () => void;
@@ -132,10 +137,12 @@ function ComponentsList({ components }: { components: AgentPluginComponents }) {
   ))}</ul>;
 }
 
-export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, onClose, onChanged }: PackageSheetProps) {
+export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, source, onClose, onChanged }: PackageSheetProps) {
   const { t, locale } = useTranslation();
   const [detail, setDetail] = useState<PackageDetailView | null>(null);
-  const [loadFailure, setLoadFailure] = useState<{ code: GitMarketplaceErrorCode; message: string } | null>(null);
+  const [loadFailure, setLoadFailure] = useState<GitMarketplaceFailure | null>(null);
+  // A package whose source Sources no longer lists has no row to point at.
+  const failureSubject = source ? sourceSubject(source) : OTHER_SUBJECT;
   const [stage, setStage] = useState<Stage>({ stage: "detail" });
   const [busy, setBusy] = useState(false);
   const [trustRewrite, setTrustRewrite] = useState(false);
@@ -266,7 +273,7 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, onC
         </DialogHeader>
 
         <div className="max-h-[60vh] space-y-3 overflow-y-auto pr-1">
-          {loadFailure && <p className="text-sm text-destructive">{failureText(t, loadFailure)}</p>}
+          {loadFailure && <MarketplaceProblem failure={loadFailure} subject={failureSubject} />}
 
           {stage.stage === "detail" && detail && (
             <>
@@ -487,14 +494,14 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, onC
               {stage.result.key.kind === "plugin" && alertsApi && onOpenPluginSettings && <InstalledPluginAlerts api={alertsApi} pluginId={stage.result.key.name} onOpen={(id) => { onClose(); onOpenPluginSettings(id); }} />}
               {stage.result.connectionWarning && (
                 <p className="text-xs text-warning" data-testid="git-marketplace:done:connection">
-                  {t("gitMarketplace.install.notConnected", { message: stage.result.connectionWarning })}
+                  {t("gitMarketplace.install.notConnected", { message: scrubDiagnosticSecrets(stage.result.connectionWarning) })}
                 </p>
               )}
               {stage.result.rungs.length > 0 && (
                 <ol className="text-xs text-muted-foreground">
                   {stage.result.rungs.map((rung) => (
                     <li key={rung.rung}>
-                      {rung.rung} · {rung.outcome === "used" ? t("gitMarketplace.rung.used") : rung.outcome === "skipped" ? t("gitMarketplace.rung.skipped", { reason: rung.reason }) : t("gitMarketplace.rung.failed", { code: rung.code, message: rung.message })}
+                      {rung.rung} · {rung.outcome === "used" ? t("gitMarketplace.rung.used") : rung.outcome === "skipped" ? t("gitMarketplace.rung.skipped", { reason: rung.reason }) : t("gitMarketplace.rung.failed", { code: rung.code, message: scrubDiagnosticSecrets(rung.message) })}
                     </li>
                   ))}
                 </ol>
@@ -503,13 +510,7 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, onC
           )}
 
           {stage.stage === "failed" && (
-            <div className="space-y-2" data-testid="git-marketplace:failed">
-              <p className="text-sm text-destructive">{failureText(t, stage.failure)}</p>
-              <pre className="whitespace-pre-wrap rounded-md bg-muted px-2 py-1.5 font-mono text-[11px]">{diagnostic}</pre>
-              <Button size="sm" variant="outline" onClick={() => void navigator.clipboard?.writeText(diagnostic)}>
-                {t("gitMarketplace.copyDiagnostic")}
-              </Button>
-            </div>
+            <MarketplaceProblem failure={stage.failure} subject={failureSubject} details={diagnostic} testId="git-marketplace:failed" />
           )}
         </div>
 

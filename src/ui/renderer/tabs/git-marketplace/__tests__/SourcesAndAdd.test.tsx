@@ -8,6 +8,7 @@ import "../../../../../../test/renderer/setup.js";
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { GitMarketplaceApi, MarketplacePreviewView, SourceView } from "../../../../../shared/git-marketplace.js";
+import type { GitRuntimeStatus } from "../../../../../shared/git-runtime.js";
 import type { AveApi } from "../../../types.js";
 import { AddSourceDialog } from "../AddSourceDialog.js";
 import { DirectInstallView } from "../DirectInstallView.js";
@@ -64,6 +65,120 @@ describe("SourcesView", () => {
 
     expect(screen.getByText("히스토리 재작성됨 — 고정 유지")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "검토" })).toBeNull();
+  });
+
+  it("says why a background sync failed, in the row, from the detail the status carries", () => {
+    const fake = fakeMarketplace();
+    sourcesView(fake, [
+      source({ id: "team", status: { state: "unreachable", code: "SOURCE_UNREACHABLE", detail: { reason: "dns", host: "nowhere.invalid" }, cached: true } }),
+      source({ id: "corp", status: { state: "auth-required", detail: { reason: "ssh", host: "git.example.com" }, cached: false } }),
+      source({ id: "old", status: { state: "unreachable", code: "SOURCE_UNREACHABLE", cached: false } }),
+    ]);
+
+    expect(screen.getByTestId("git-marketplace:source:team:status-detail")).toHaveTextContent("nowhere.invalid을(를) 찾을 수 없습니다. 주소나 VPN을 확인하세요.");
+    expect(screen.getByTestId("git-marketplace:source:corp:status-detail")).toHaveTextContent("git.example.com이(가) SSH 키를 거부했습니다.");
+    // A state written before details existed reads as its code's sentence.
+    expect(screen.getByTestId("git-marketplace:source:old:status-detail")).toHaveTextContent("이 소스에 연결하지 못했습니다. 주소와 네트워크를 확인한 뒤 다시 시도하세요.");
+  });
+
+  it("points an official source whose host reports no repository at the row's Set token…, never at fields it cannot edit", () => {
+    const notFound = { state: "unreachable", code: "SOURCE_UNREACHABLE", detail: { reason: "not-found", host: "github.com" }, cached: false } as const;
+    const official = { origin: "official", auth: "token", tokenHost: "github.com", canRemove: false, canDisable: false, status: notFound } as const;
+    sourcesView(fakeMarketplace(), [
+      source({ id: "ave", ...official }),
+      source({ id: "ave-stored", ...official, tokenStored: true }),
+      source({ id: "corp", origin: "managed", canRemove: false, canDisable: false, status: notFound }),
+    ]);
+
+    const row = within(screen.getByTestId("git-marketplace:source:ave"));
+    const detail = screen.getByTestId("git-marketplace:source:ave:status-detail");
+    expect(detail).toHaveTextContent(
+      "github.com이(가) 이 소스 주소에 저장소가 없다고 답했습니다. 호스트는 로그인 없이 비공개 저장소를 요청할 때도 같은 답을 합니다. 이 저장소에 권한이 있다면 소스에서 이 소스의 토큰 설정…을 눌러 저장소를 읽을 수 있는 github.com 토큰을 추가하세요.",
+    );
+    // The action the sentence names is on the row.
+    expect(row.getByRole("button", { name: "토큰 설정…" })).toBeInTheDocument();
+    expect(screen.getByTestId("git-marketplace:source:ave-stored:status-detail")).toHaveTextContent("토큰에 이 저장소 권한이 없을 수 있습니다.");
+    // An organization source without a token: no Set token…, no Remove, so the administrator.
+    const corp = screen.getByTestId("git-marketplace:source:corp:status-detail");
+    expect(corp).toHaveTextContent("관리자에게 알리세요.");
+    for (const text of [detail.textContent!, corp.textContent!]) {
+      expect(text).not.toMatch(/폴더 칸|주소와 브랜치|칸을 비워|소스 제거/u);
+    }
+    expect(corp.textContent).not.toContain("토큰 설정…");
+  });
+
+  it("labels a source whose host answered by what failed, not Unreachable", () => {
+    sourcesView(fakeMarketplace(), [
+      source({ id: "ave", origin: "official", auth: "token", tokenHost: "github.com", canRemove: false, canDisable: false, status: { state: "unreachable", code: "SOURCE_NOT_A_MARKETPLACE", cached: true } }),
+      source({ id: "team", status: { state: "unreachable", code: "SOURCE_UNREACHABLE", detail: { reason: "dns", host: "nowhere.invalid" }, cached: false } }),
+    ]);
+
+    const official = screen.getByTestId("git-marketplace:source:ave");
+    expect(official).toHaveTextContent("마켓플레이스를 찾을 수 없음 — 캐시 표시 중");
+    expect(official).not.toHaveTextContent("연결할 수 없음");
+    expect(screen.getByTestId("git-marketplace:source:team")).toHaveTextContent("연결할 수 없음");
+  });
+
+  it("keeps why a source cannot be read behind a scrubbed Copy details, not in a tooltip", () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    sourcesView(fakeMarketplace(), [
+      source({
+        id: "team",
+        status: { state: "broken", message: "state.json: unexpected token near https://alice:verifier-secret@example.com/x", detail: { reason: "state-invalid", sourceId: "team" } },
+      }),
+    ]);
+
+    const row = screen.getByTestId("git-marketplace:source:team:copy-details").closest("td")!;
+    expect(row).toHaveTextContent("다운로드한 사본 손상됨");
+    expect(row.innerHTML).not.toContain("state.json");
+    fireEvent.click(screen.getByTestId("git-marketplace:source:team:copy-details"));
+    expect(writeText).toHaveBeenCalledWith("state.json: unexpected token near https://[REDACTED:CREDENTIALS]@example.com/x");
+  });
+
+  it("offers Repair on a damaged official source, and the sentence names that action", async () => {
+    const fake = fakeMarketplace();
+    sourcesView(fake, [
+      source({
+        id: "ave",
+        origin: "official",
+        canRemove: false,
+        canDisable: false,
+        status: { state: "broken", message: "state.json of source ave is missing while its synced data remains", detail: { reason: "state-missing", sourceId: "ave" } },
+      }),
+    ]);
+
+    const row = within(screen.getByTestId("git-marketplace:source:ave"));
+    expect(screen.getByTestId("git-marketplace:source:ave:status-detail")).toHaveTextContent(
+      "Ave 공식 소스의 다운로드한 사본이 손상되었습니다. Ave가 신뢰하는 버전의 기록이 없습니다. 복구하면 소스를 다시 다운로드하고, 이전 버전과 대조하지 않은 채 지금 제공되는 버전을 신뢰합니다. 소스에서 복구를 누르세요.",
+    );
+    // Only actions the row can perform: no Refresh (it would fail again), no Remove, and the switch waits for the repair.
+    expect(row.queryByRole("button", { name: "새로 고침" })).toBeNull();
+    expect(row.queryByTestId("git-marketplace:source:ave:remove")).toBeNull();
+    expect(row.getByRole("switch")).toBeDisabled();
+    const repair = row.getByTestId("git-marketplace:source:ave:repair");
+    expect(repair).toHaveTextContent("복구");
+    expect(repair).toBeEnabled();
+    fireEvent.click(repair);
+    await waitFor(() => expect(fake.market.repairSource).toHaveBeenCalledWith("ave"));
+    expect(fake.market.refreshSources).not.toHaveBeenCalled();
+  });
+
+  it("shows a failed repair's own sentence with Copy details", async () => {
+    const fake = fakeMarketplace();
+    fake.market.repairSource.mockResolvedValueOnce({
+      ok: false,
+      code: "SOURCE_LOCAL_DATA_DAMAGED",
+      message: "could not move the downloaded copy of source team aside (EBUSY)",
+      detail: { reason: "repair-failed", sourceId: "team" },
+    } as never);
+    sourcesView(fake, [source({ id: "team", status: { state: "broken", message: "snapshot is invalid", detail: { reason: "snapshot-invalid", sourceId: "team" } } })]);
+
+    fireEvent.click(screen.getByTestId("git-marketplace:source:team:repair"));
+    const problem = await screen.findByRole("alert");
+    expect(problem).toHaveTextContent("Ave가 team 소스의 손상된 사본을 옮기지 못해 다시 다운로드하지 않았습니다");
+    expect(within(problem).getByRole("button", { name: "세부 정보 복사" })).toBeEnabled();
+    expect(screen.getByTestId("git-marketplace:source:team:repair")).toBeEnabled();
   });
 
   it("stores a token under the source's host", async () => {
@@ -155,7 +270,10 @@ describe("AddSourceDialog", () => {
     fireEvent.click(screen.getByTestId("git-marketplace:add:check"));
 
     await waitFor(() => expect(fake.market.previewSource).toHaveBeenCalledWith({ input: "example/skills", auth: "none", subdir: "skills/x" }));
-    expect(await screen.findByTestId("git-marketplace:add:error")).toHaveTextContent("그곳에서 마켓플레이스나 패키지를 찾지 못했습니다. no package at skills/x");
+    const problem = await screen.findByTestId("git-marketplace:add:error");
+    expect(problem).toHaveTextContent("이 주소에서 마켓플레이스나 패키지를 찾지 못했습니다. 주소와 브랜치, 저장소 안의 패키지라면 폴더 칸을 확인하세요.");
+    // Main's English message is behind Copy details, not in the sentence.
+    expect(problem).not.toHaveTextContent("no package at skills/x");
   });
 
   it("makes installing git the first step when git is missing", async () => {
@@ -193,6 +311,41 @@ describe("GitRuntimeCard", () => {
     await waitFor(() => expect(fake.gitRuntime.status).toHaveBeenCalledTimes(2));
   });
 
+  it("says a mode it could not save in its own words, with main's text only behind a scrubbed Copy details", async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const fake = fakeMarketplace();
+    const updateSettings = vi.fn(async () => ({ ok: false, error: "settings-write-failed", message: "EACCES: settings.json (token=s3cret)" }));
+    render(<GitRuntimeCard api={{ gitRuntime: fake.gitRuntime, updateSettings } as unknown as Pick<AveApi, "gitRuntime" | "updateSettings">} />);
+    await screen.findByTestId("git-runtime:ready");
+
+    fireEvent.click(screen.getByTestId("git-runtime:mode:managed"));
+    const problem = await screen.findByTestId("git-runtime:mode-error");
+    expect(problem).toHaveTextContent("git 선택을 저장하지 못해 이전 선택이 그대로 적용됩니다.");
+    expect(problem).not.toHaveTextContent("EACCES");
+    expect(problem).not.toHaveTextContent("settings-write-failed");
+    fireEvent.click(within(problem).getByRole("button", { name: "세부 정보 복사" }));
+    expect(writeText).toHaveBeenCalledWith("settings-write-failed\nEACCES: settings.json (token=[REDACTED:TOKEN]");
+  });
+
+  it("names the phase a managed install failed in", async () => {
+    const fake = fakeMarketplace({ git: "missing" });
+    const status: GitRuntimeStatus = {
+      mode: "auto",
+      state: "missing",
+      active: null,
+      systemTooOld: null,
+      managed: { version: "2.51.0", installed: false, available: true, size: 62_348_987 },
+      lastInstallError: { code: "GIT_RUNTIME_INSTALL_FAILED", message: `sha256 ${"1".repeat(64)} does not match the pinned ${"0".repeat(64)}`, detail: { reason: "verifying" } },
+    };
+    fake.gitRuntime.status.mockResolvedValue({ ok: true, status });
+    render(<GitRuntimeCard api={{ gitRuntime: fake.gitRuntime, updateSettings: vi.fn() } as unknown as Pick<AveApi, "gitRuntime" | "updateSettings">} />);
+
+    const failed = await screen.findByTestId("git-runtime:failed");
+    expect(failed).toHaveTextContent("git 설치가 검증 단계에서 실패했습니다. 내려받은 파일이 이 Ave 릴리스에 고정된 파일과 달라 버렸습니다.");
+    expect(failed).not.toHaveTextContent("sha256");
+  });
+
   it("says the status is unavailable when main cannot answer", async () => {
     const fake = fakeMarketplace();
     fake.gitRuntime.status.mockResolvedValue({ ok: false, error: "git-runtime-unavailable" });
@@ -227,8 +380,17 @@ function directView(fake: ReturnType<typeof fakeMarketplace>) {
   const onInstalled = vi.fn();
   const api = { gitMarketplace: fake.market, previewClaudeDesktopMcpImport: vi.fn(), applyClaudeDesktopMcpImport: vi.fn() };
   render(<DirectInstallView api={api as unknown as Pick<AveApi, "gitMarketplace" | "previewClaudeDesktopMcpImport" | "applyClaudeDesktopMcpImport">} onGitAddress={vi.fn()} onOpenMcpSettings={vi.fn()} onInstalled={onInstalled} />);
-  return { onInstalled };
+  return { onInstalled, api };
 }
+
+const PASTED = '{"mcpServers":{"notes":{"command":"npx","args":["notes-mcp"]},"files":{"command":"npx"}}}';
+const PASTED_PREVIEW = {
+  entries: [
+    { id: "notes", config: { id: "notes", transport: "stdio", command: "npx", args: ["notes-mcp"] }, suspectedSecretEnvKeys: [] },
+    { id: "files", config: { id: "files", transport: "stdio", command: "npx" }, suspectedSecretEnvKeys: [] },
+  ],
+  errors: [],
+};
 
 describe("DirectInstallView", () => {
   it("connects a pasted server.json bound to no source after its review", async () => {
@@ -252,6 +414,65 @@ describe("DirectInstallView", () => {
     await waitFor(() => expect(fake.market.executeInstall).toHaveBeenCalledWith("plan-docker"));
     expect(await screen.findByTestId("git-marketplace:direct:done")).toHaveTextContent("weather을(를) 연결했습니다.");
     expect(onInstalled).toHaveBeenCalledTimes(1);
+  });
+
+  it("says what became of each pasted server in words with a next action, with main's reason only behind a scrubbed Copy details", async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const { api } = directView(fakeMarketplace());
+    api.previewClaudeDesktopMcpImport.mockResolvedValue(PASTED_PREVIEW);
+    api.applyClaudeDesktopMcpImport.mockResolvedValue({
+      ok: true,
+      results: [
+        { id: "notes", action: "skipped-conflict" },
+        { id: "files", action: "failed", failure: "permission-denied", reason: "EACCES: permission denied, open settings.json (token=verifier-secret)" },
+        { id: "web", action: "failed", failure: "not-found", reason: "ENOENT: no such file or directory, open settings.json" },
+        { id: "logs", action: "failed", failure: "unreadable", reason: "EISDIR: illegal operation on a directory, read" },
+        { id: "misc", action: "failed", failure: "other", reason: "spawn failed for https://alice:verifier-secret@example.com/mcp" },
+        { id: "maps", action: "added", reason: "connect ECONNREFUSED https://alice:verifier-secret@example.com/mcp" },
+      ],
+      parseErrors: [],
+    });
+    fireEvent.click(screen.getByTestId("git-marketplace:direct:tab:import"));
+    fireEvent.change(screen.getByRole("textbox", { name: "설정 가져오기" }), { target: { value: PASTED } });
+    fireEvent.click(screen.getByRole("button", { name: "가져오기 미리 보기" }));
+    fireEvent.click(await screen.findByRole("button", { name: "서버 2개 추가" }));
+
+    expect(await screen.findByTestId("git-marketplace:direct:import:notes")).toHaveTextContent("notes: 건너뜀: 같은 ID의 서버가 이미 있습니다");
+    const sentences = {
+      files: "files을(를) 추가하지 못했습니다. Ave가 MCP 설정 파일에 쓸 권한이 없습니다. Ave 데이터 폴더에 쓸 수 있는지 확인한 뒤 다시 추가하세요.",
+      web: "web을(를) 추가하지 못했습니다. MCP 설정 파일이나 그 폴더가 없습니다. Ave를 다시 시작한 뒤 다시 추가하고, 계속되면 세부 정보를 복사해 알려 주세요.",
+      logs: "logs을(를) 추가하지 못했습니다. MCP 설정 파일을 읽을 수 없거나 형식이 올바르지 않습니다. MCP 설정에서 확인한 뒤 다시 추가하세요.",
+      misc: "misc을(를) 추가하지 못했습니다. 세부 정보를 복사해 원인을 확인한 뒤 다시 시도하고, 계속되면 그 내용과 함께 알려 주세요.",
+    };
+    for (const [id, sentence] of Object.entries(sentences)) {
+      const row = screen.getByTestId(`git-marketplace:direct:import:${id}`);
+      expect(row).toHaveTextContent(sentence);
+      expect(row).not.toHaveTextContent(/EACCES|ENOENT|EISDIR|spawn failed|verifier-secret/u);
+    }
+    const added = screen.getByTestId("git-marketplace:direct:import:maps");
+    expect(added).toHaveTextContent("maps: 추가됨 — 설정은 추가됐지만 아직 연결되지 않았습니다: connect ECONNREFUSED https://[REDACTED:CREDENTIALS]@example.com/mcp. MCP 설정에서 상태를 확인하고 다시 연결할 수 있습니다.");
+
+    fireEvent.click(within(screen.getByTestId("git-marketplace:direct:import:files")).getByRole("button", { name: "세부 정보 복사" }));
+    fireEvent.click(within(screen.getByTestId("git-marketplace:direct:import:misc")).getByRole("button", { name: "세부 정보 복사" }));
+    expect(writeText.mock.calls).toEqual([
+      ["EACCES: permission denied, open settings.json (token=[REDACTED:TOKEN]"],
+      ["spawn failed for https://[REDACTED:CREDENTIALS]@example.com/mcp"],
+    ]);
+  });
+
+  it("says an import main refused in its own words, with main's answer only behind Copy details", async () => {
+    const { api } = directView(fakeMarketplace());
+    api.previewClaudeDesktopMcpImport.mockResolvedValue(PASTED_PREVIEW);
+    api.applyClaudeDesktopMcpImport.mockResolvedValue({ ok: false, error: "unauthorized-frame" });
+    fireEvent.click(screen.getByTestId("git-marketplace:direct:tab:import"));
+    fireEvent.change(screen.getByRole("textbox", { name: "설정 가져오기" }), { target: { value: PASTED } });
+    fireEvent.click(screen.getByRole("button", { name: "가져오기 미리 보기" }));
+    fireEvent.click(await screen.findByRole("button", { name: "서버 2개 추가" }));
+
+    const problem = await screen.findByTestId("git-marketplace:direct:import-error");
+    expect(problem).toHaveTextContent("서버를 추가하지 못했습니다.");
+    expect(problem).not.toHaveTextContent("unauthorized-frame");
   });
 
   it("asks for a fresh review after a failed connect, and forgets the picked package when the document changes", async () => {

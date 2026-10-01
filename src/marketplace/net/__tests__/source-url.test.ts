@@ -90,6 +90,33 @@ describe("normalizeSourceUrl", () => {
     rejected(input);
   });
 
+  it.each([
+    ["https://user:secret@github.com/acme/tools", { reason: "credentials-in-url" }],
+    ["https://token@github.com/acme/tools", { reason: "credentials-in-url" }],
+    ["ssh://git:secret@github.com/acme/tools", { reason: "credentials-in-url" }],
+    ["file:///tmp/repo", { reason: "scheme-unsupported", scheme: "file" }],
+    ["GIT://github.com/acme/tools", { reason: "scheme-unsupported", scheme: "git" }],
+    ["https://github.com/acme/tools?ref=main", { reason: "format" }],
+    ["https://github.com/acme/tools#main", { reason: "format" }],
+    ["https://github.com/acme/to ols", { reason: "format" }],
+    ["https://github.com/acme\\tools", { reason: "format" }],
+  ])("names why %j is refused (§18.8)", (input, detail) => {
+    expect(rejected(input).detail).toEqual(detail);
+  });
+
+  it.each(["ssh://-l@github.com/acme/tools", "https://github.com/acme/../tools", "acme", "ext::sh"])(
+    "refuses %j without a reason it does not have",
+    (input) => {
+      expect(rejected(input).detail).toBeUndefined();
+    },
+  );
+
+  it("never carries the password of a refused address in its message", () => {
+    const error = rejected("https://alice:verifier-secret@example.com/owner/repo");
+    expect(error.message).not.toContain("verifier-secret");
+    expect(error.message).toContain("example.com/owner/repo");
+  });
+
   it("treats scheme, port, ssh user and path case as connection detail, not repository identity", () => {
     expect(
       sameSourceRepository(
