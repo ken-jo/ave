@@ -209,11 +209,15 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
    * served, and the next read tries again.
    */
   /**
-   * A folder that overlaps a folder source (§18.4.4): the same directory, one
-   * inside it, or one containing it, by path or through an alias. A new id
-   * cannot resolve these; the sentence says which source and what to do.
+   * A repository that is already a source under any spelling of its address
+   * (`url` is the address being added, normalized), or a folder that
+   * overlaps a folder source (§18.4.4): the same directory, one inside it,
+   * or one containing it, by path or through an alias. A new id cannot
+   * resolve these; the sentence says which source and what to do. A taken
+   * id alone has no detail: choosing another id resolves it.
    */
   SOURCE_ID_TAKEN: {
+    "repository-already-added": { url: "string", existingId: "string" },
     "folder-already-added": { path: "string", existingId: "string" },
     "folder-inside-source": { path: "string", existingId: "string", existingPath: "string" },
     "folder-contains-source": { path: "string", existingId: "string", existingPath: "string" },

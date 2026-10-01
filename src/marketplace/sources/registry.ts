@@ -738,7 +738,9 @@ export class SourceRegistry {
       (existing) => existing.transport === "git" && sameSourceRepository(existing.url, url) && (existing.subdir ?? null) === (source.subdir ?? null),
     );
     if (duplicate) {
-      throw new MarketplaceError("SOURCE_ID_TAKEN", `this repository is already added as ${duplicate.id}`);
+      throw new MarketplaceError("SOURCE_ID_TAKEN", `this repository is already added as ${duplicate.id}`, {
+        detail: { reason: "repository-already-added", url: url.url, existingId: duplicate.id },
+      });
     }
     return url;
   }

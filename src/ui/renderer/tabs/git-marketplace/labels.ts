@@ -439,6 +439,7 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
       const detail = parseMarketplaceErrorDetail(code, failure.detail);
       if (!detail) return t("gitMarketplace.error.idTaken");
       switch (detail.reason) {
+        case "repository-already-added": return t("gitMarketplace.error.idTaken.repositoryAlreadyAdded", { url: detail.url, id: detail.existingId });
         case "folder-already-added": return t("gitMarketplace.error.idTaken.folderAlreadyAdded", { path: detail.path, id: detail.existingId });
         case "folder-inside-source":
           return t("gitMarketplace.error.idTaken.folderInsideSource", { path: detail.path, id: detail.existingId, existingPath: detail.existingPath });

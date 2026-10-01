@@ -124,6 +124,12 @@ describe("SourceRegistry.add", () => {
     expect(await code(registry.add(custom({ id: "acme-4", url: "acme/market-2" })))).toBe("passed");
     expect(await code(registry.add(custom({ id: "corp-2", url: "https://git.corp.example/ave/market/" })))).toBe("SOURCE_ID_TAKEN");
     expect(await code(registry.add(custom({ id: "mine", url: "ken-jo/agent-marketplace" })))).toBe("SOURCE_ID_TAKEN");
+    // The refusal names the source it duplicates and the address as added, so the tab can offer *Show acme* (§18.8).
+    const taken = await failure(registry.add(custom({ id: "acme-5", url: "https://github.com/ACME/market/" })));
+    expect(taken.code).toBe("SOURCE_ID_TAKEN");
+    expect(taken.detail).toEqual({ reason: "repository-already-added", url: "https://github.com/ACME/market", existingId: "acme" });
+    // A taken id alone carries no detail: another id resolves it.
+    expect((await failure(registry.add(custom({ url: "acme/other" })))).detail).toBeUndefined();
   });
 
   it("allows two direct sources from one repository with different subdirs", async () => {

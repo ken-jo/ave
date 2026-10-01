@@ -448,7 +448,7 @@ describe("git marketplace IPC boundary", () => {
     expect(parseGitMarketplaceResult(answer)).toEqual(answer);
   });
 
-  describe("folder refusals the renderer turns into advice (§18.4, §18.8)", () => {
+  describe("source refusals the renderer turns into advice (§18.4, §18.8)", () => {
     /** The renderer's sentence for an envelope, in both catalogs. */
     const sentences = (answer: unknown) => {
       const parsed = parseGitMarketplaceResult(answer);
@@ -506,6 +506,27 @@ describe("git marketplace IPC boundary", () => {
         expect(same).toMatchObject({ ok: false, code: "SOURCE_ID_TAKEN", detail: { reason: "folder-already-added", path: "/m", existingId: "team" } });
         expect(sentences(same).en).toBe("/m is already added as team. Use team, or remove it before adding this folder again.");
         expect(sentences(same).ko).toBe("/m은(는) 이미 team(으)로 추가되어 있습니다. team을(를) 쓰거나, 지운 뒤 이 폴더를 다시 추가하세요.");
+      } finally {
+        harness.service.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("answers a repository that is already a source with that source's id, rendered as what to do instead of another id", async () => {
+      const root = mkdtempSync(join(tmpdir(), "ave-ipc-repository-"));
+      const harness = await folderService({ root, folders: { fs: new FakeVolume("linux"), platform: "linux", limits: TEST_FOLDER_LIMITS } });
+      try {
+        await harness.registry.add({ id: "acme", origin: "custom", url: "https://github.com/acme/market", auth: { kind: "none" } });
+        // The add a held git preview makes (the preview itself fetches): the registry's refusal crosses as it is.
+        await setup({
+          addSource: vi.fn(() => harness.registry.add({ id: "acme-ssh", origin: "custom", url: "git@github.com:Acme/Market.git", auth: { kind: "ssh" } })),
+        });
+        const answer = await invokeFileIpcHandler(handlers, channels.sourcesAdd, { previewId: "p", id: "acme-ssh" });
+        expect(answer).toMatchObject({ ok: false, code: "SOURCE_ID_TAKEN", detail: { reason: "repository-already-added", url: "ssh://git@github.com/Acme/Market", existingId: "acme" } });
+        expect(sentences(answer)).toEqual({
+          en: "ssh://git@github.com/Acme/Market is already added as acme. Use acme, or remove it before adding this repository again.",
+          ko: "ssh://git@github.com/Acme/Market은(는) 이미 acme(으)로 추가되어 있습니다. acme을(를) 쓰거나, 지운 뒤 이 저장소를 다시 추가하세요.",
+        });
       } finally {
         harness.service.close();
         rmSync(root, { recursive: true, force: true });
