@@ -1790,14 +1790,16 @@ Retry가 있는 `failed` 상태.
 #### 18.2.4 검사를 연결에 묶기
 
 해석된 주소에 따라 정해지는 거부와 정책 차단(§18.3 #3·#4, `blockPrivateNetworks`)은
-연결이 실제로 쓰는 주소에 적용합니다. 지금은 그렇지 않습니다:
+연결이 실제로 쓰는 주소에 적용합니다. 연결 주소에 대한 적용은 Ave가 소유한
+전송(다운로드, http/https 위 git)에 해당합니다. SSH는 사전 검사만 합니다(아래 ssh 위
+git). 지금은 검사와 연결이 따로입니다:
 `ensurePublicHttpUrl`이 해석한 뒤 `fetchPublicHttpResponse`가 호스트 이름을 Chromium
 전송에 넘기고(`network-guard.ts:435-455`, `boot/steps/desktop-network-fetch.ts:79`),
 git은 원격을 스스로 해석합니다. 그래서 검사에는 공개 주소를, 연결에는 루프백이나
 메타데이터 주소를 응답하는 이름이 통과합니다. 경고는 권고이므로 추가 시점 검사로
 충분하지만, 거부와 정책 차단은 그렇지 않습니다.
 
-- **연결마다 조회 한 번.** 마켓플레이스 연결은 호스트를
+- **연결마다 조회 한 번.** Ave가 소유한 연결은 호스트를
   `dns.lookup(host, { all: true, verbatim: true })`로 한 번 해석하고, 모든 응답을
   분류해 거부나 정책 차단이 금지하는 응답을 버린 뒤, 남은 응답에만 연결합니다. 남은
   응답이 없으면 버린 것 중 가장 엄격한 분류의 거부입니다. 남은 응답의 분류에 소스가
@@ -1813,15 +1815,18 @@ git은 원격을 스스로 해석합니다. 그래서 검사에는 공개 주소
   OS 저장소에 설치한 회사 루트 인증서가 계속 동작합니다(§9.2). Electron 44가 싣는
   Node 24.20.0에 둘 다 있습니다. 리다이렉트 홉마다 새 연결이고, 조회와 검사도 새로
   합니다.
-- **프록시는 신뢰합니다.** 시스템 설정이 연결을 프록시 — PAC의 http(s)나 SOCKS 프록시
-  (로컬이든 원격이든), 또는 ssh `ProxyCommand`나 `ProxyJump` — 로 보내면, Ave는 프록시
-  자신의 주소만 검사하고 프록시에만 연결하며, **목적지 제한은 프록시가 지킨다고
-  신뢰합니다**. Ave는 프록시가 연결하는 주소를 보지 못합니다. 이 컴퓨터의 프록시
-  (`PROXY 127.0.0.1:8080`, `nc`를 실행하는 `ProxyCommand`)는 이 컴퓨터에서 연결하므로,
+- **Ave가 소유한 전송의 프록시는 그 소켓 너머를 신뢰합니다.** PAC가 다운로드나 http(s)
+  위 git 연결을 http(s)나 SOCKS 프록시(로컬이든 원격이든)로 보내면, 프록시로 가는 소켓은
+  Ave가 소유합니다: 프록시 자신의 주소를 검사하고 프록시에만 연결하며, 그 너머의
+  **목적지 제한은 프록시가 지킨다고 신뢰합니다**. Ave는 프록시가 연결하는 주소를 보지
+  못합니다. 이 컴퓨터의 프록시(`PROXY 127.0.0.1:8080`)는 이 컴퓨터에서 연결하므로,
   카탈로그가 고른 이름을 그 프록시가 루프백이나 메타데이터 엔드포인트로 해석하면 그곳에
   닿습니다. 해석된 주소에 따른 거부와 차단(§18.3 #3·#4, `blockPrivateNetworks`)은 직접
   연결과 로컬에서 해석하는 프록시에 대해 지켜지고, 대상을 스스로 해석하는 프록시 너머에는
   미치지 않습니다. 이것이 명시한 경계입니다.
+- **ssh `ProxyCommand`와 `ProxyJump`**는 ssh가 실행합니다. Ave는 이것을 살피지도 묶지도
+  않습니다: 명령, 점프 호스트, 그 주소를 검사하지 않고, 어디로 연결하는지 보지 못합니다.
+  사용자가 설정한 다른 프로그램처럼 신뢰합니다. 첫 홉에 대한 보장은 없습니다.
 - **다운로드의 프록시.** 경로는 세션의 `resolveProxy(url)`로 정하며, git이 이미 쓰는
   해석기입니다(`run-git.ts:199-211`). 첫 항목만 쓰고, `DIRECT`로의 대체는 조용히 일어나지
   않습니다. 프록시 호스트는 위처럼 해석·검사합니다(`metadata`와 `unroutable`은 거부,
@@ -1849,34 +1854,17 @@ git은 원격을 스스로 해석합니다. 그래서 검사에는 공개 주소
   항목이 프록시 호스트를 고정하며, 검사는 다운로드와 같습니다. curl이 대상을 스스로
   해석하면(원격 해석이 없는 SOCKS 프록시) 첫 항목이 그것을 고정하고, 아니면 신뢰하는
   프록시 규칙에 따라 프록시가 해석합니다.
-- **ssh 위 git**은 사용자의 ssh 신뢰 식별을 유지합니다. 러너는 git 호출과 같은 환경으로
+- **ssh 위 git: 사전 검사만.** 러너는 git 호출과 같은 환경으로
   `ssh -G [-p <port>] [<user>@]<host>`를 돌려 유효 설정을 읽습니다. 이 명령은 `Host`와
-  `Match` 블록을 평가한 뒤의 설정을 출력합니다(ssh(1), `-G`). 쓰는 값은 `hostname`, `port`,
-  `hostkeyalias`, `proxycommand`, `proxyjump`입니다. OpenSSH는 `HostKeyAlias`가 있으면 그
-  값을 그대로, 없으면 유효 호스트 이름(포트가 22가 아니면 `[host]:port`)으로 호스트 키를
-  찾고 저장합니다. 호스트 인증서의 principal은 `HostKeyAlias`가 있으면 그것과, 없으면 포트
-  없는 호스트 이름과 비교합니다(`sshconnect.c`의 `get_hostfile_hostname_ipaddr`와
-  `check_host_key`; ssh_config(5) `HostKeyAlias`). 고정은 `-o HostName=<address>`를 넣으며,
-  두 식별 중 어느 것도 바꾸면 안 됩니다:
-  - **`proxycommand`나 `proxyjump`가 있음**: 고정하지 않습니다. 신뢰하는 프록시 규칙이
-    적용되고, 점프 호스트나 명령이 연결합니다.
-  - **사용자 `HostKeyAlias`가 있음**: `HostName`만 고정합니다. 사용자의 별칭이 계속 두
-    식별을 정합니다.
-  - **별칭 없음, 포트 22**: `-o HostKeyAlias=<유효 호스트 이름>`으로 고정합니다.
-    `[host]:22`는 그냥 `host`로 쓰이므로 known-hosts 이름과 인증서 principal이 고정하지 않을
-    때와 같습니다.
-  - **별칭 없음, 다른 포트**: 고정하지 않습니다. known-hosts 이름은 `[host]:port`인데
-    인증서 principal은 `host`여서, 둘을 다 지키는 별칭 하나가 없습니다. 이 연결은 사전
-    검사만 받으며, 기본이 아닌 포트의 ssh 호스트에 대한 재바인딩이 명시한 잔여
-    위험입니다.
-  - **모든 고정**은, 고정 옵션을 넣은 두 번째 `ssh -G`가 `hostname`(포트 22의 경우
-    `hostkeyalias`도)을 뺀 모든 키에서 첫 번째와 같은 값을 출력할 때만 받아들입니다.
-    아니면(예: `Match host` 블록이 주소를 보게 되면) 고정하지 않습니다.
-  - `CheckHostIP`는 넘기지 않습니다. 숫자 `HostName`이면 호스트 이름이 이미 주소이므로
-    OpenSSH가 주소 검사를 건너뜁니다.
-
-  고정하지 않은 호스트에 대한 ssh 자신의 해석은 연결 시점에 다시 검사하지 않으며,
-  §18.2.2의 사전 검사는 그대로 적용합니다.
+  `Match` 블록을 평가한 뒤의 설정을 출력합니다(ssh(1), `-G`). 러너는 출력된 `hostname`을
+  한 번 해석해 모든 응답을 분류하고, *연결마다 조회 한 번*과 같이 §18.3 #3·#4와
+  `blockPrivateNetworks`의 거부와 차단을 응답 묶음에 적용합니다. 남는 응답이 없으면 git을
+  시작하지 않습니다. `proxycommand`나 `proxyjump`가 있으면 대상은 프록시 너머에서
+  해석되므로, 대상을 스스로 해석하는 PAC 프록시와 마찬가지로 러너가 해석하지 않고 위의
+  ssh 프록시 규칙이 적용됩니다. 러너는 `HostName`, `HostKeyAlias`, `CheckHostIP` 옵션을
+  넘기지 않습니다: ssh는 계속 `ssh -o BatchMode=yes`(`run-git.ts:184`)로 돌고, 사용자의
+  ssh 설정, known-hosts 항목, 인증 기관을 그대로 씁니다. **잔여 위험:** 사전 검사와 ssh
+  자신의 조회 사이에 바뀐 DNS 응답은 묶이지 않으며, SSH의 신뢰 기준은 호스트 키 검증입니다.
 - **테스트**(슬라이스 C). 각 테스트의 해석기 가짜는 첫 조회에 공개 주소를, 이후 조회에
   `169.254.169.254`나 `127.0.0.1`을 응답합니다.
   - `pinned-fetch.test.ts`:
@@ -1894,17 +1882,16 @@ git은 원격을 스스로 해석합니다. 그래서 검사에는 공개 주소
     테스트와 §18.2.4를 함께 바꿉니다.
   - `run-git.test.ts`: argv에 첫 조회 주소의 `http.curloptResolve`가 있고, 러너는 두 번째
     조회를 하지 않습니다(되돌림: 옵션 제거).
-  - `ssh-pin.test.ts`. 호스트 키와 호스트 인증서를 가진 루프백 `sshd` 픽스처, 임시
-    `known_hosts`, 임시 `ssh -F` 설정을 씁니다:
-    - 포트 2222와 `[localhost]:2222` known-hosts 항목에서는 고정하지 않고 그 항목으로
-      받아들여집니다(되돌림: 별칭을 강제하면 그 항목이 더는 선택되지 않음);
-    - 설정된 `HostKeyAlias fixture-alias`와 `fixture-alias` 항목은 별칭을 유지한 채 고정되고
-      받아들여집니다;
-    - `@cert-authority fixture-alias` 항목과 principal이 `fixture-alias`인 인증서는 고정되고
-      검증됩니다;
-    - `ProxyCommand` 설정은 고정하지 않습니다;
-    - 픽스처가 22번 포트에 바인드할 수 없으므로 포트 22 별칭 규칙은 `ssh -G` 출력으로
-      단언합니다.
+  - `ssh-preflight.test.ts`. 유효 설정을 출력하는 `ssh -G` 가짜를 씁니다:
+    - git 환경의 ssh 명령은 정확히 `ssh -o BatchMode=yes`이고, 그 명령과 argv 어디에도
+      `HostName`, `HostKeyAlias`, `CheckHostIP` 옵션이 없습니다(되돌림: 고정 옵션 추가);
+    - 해석기 응답이 `169.254.169.254`인 `hostname`은 거부 #3으로 실패하고 git은 시작하지
+      않습니다(되돌림: 사전 검사 생략);
+    - `proxycommand`가 있는 설정은 러너가 해석하지 않습니다;
+    - 명시한 경계: 해석기 가짜가 사전 검사에는 공개 주소를, 이후 조회에는 `127.0.0.1`을
+      응답합니다. 사전 검사는 통과하고, 러너는 조회를 정확히 한 번 하며, git은 바뀌지 않은
+      ssh 명령으로 시작합니다. `trusted-proxy.test.ts`처럼 §18.2.4에 적은 잔여 위험을
+      고정하므로, 경계를 바꾸려면 이 테스트와 §18.2.4를 함께 바꿉니다.
 
 ### 18.3 남는 거부
 
@@ -1915,8 +1902,8 @@ git은 원격을 스스로 해석합니다. 그래서 검사에는 공개 주소
 |---|---|---|
 | 1 | `ext::`와 다른 모든 `<helper>::` 전송 | `ext::`는 그 텍스트를 명령으로 실행하고, `<helper>::`는 검색 경로의 `git-remote-<helper>`를 실행합니다. 주소가 코드 실행이 됩니다. git 자체도 `ext`의 기본값이 `never`이고, `GIT_ALLOW_PROTOCOL`은 허용 목록으로 남습니다(`run-git.ts:187`) |
 | 2 | URL 안의 자격 증명(`https://user:secret@…`, `https://token@…`) | 비밀이 `sources.json`, 소스 보기, 로그, 감사 기록, 백업, 그리고 다른 로컬 사용자가 프로세스 목록에서 읽을 수 있는 git 명령줄에 남습니다. Ave에는 암호화된 토큰 저장소가 있습니다(§2.1). ssh 사용자 이름(`git@`)은 자격 증명이 아닙니다 |
-| 3 | 모든 대상의 `metadata` 주소(정책 등재 호스트 포함), 직접 연결은 연결 주소에 적용; 대상을 스스로 해석하는 프록시 너머는 신뢰하는 프록시가 지킴(§18.2.4) | 클라우드 인스턴스의 메타데이터 서비스는 로컬 요청에 자격 증명을 내줍니다. 그곳에 git 서버는 없고, 사용자가 확인할 때 다른 곳을 가리키던 이름이 다음 연결 때 그곳으로 해석될 수 있습니다 |
-| 4 | 소스 자신의 호스트·포트가 아닌, 카탈로그가 지정한 `this-computer` 대상, 직접 연결은 연결 주소에 적용; 대상을 스스로 해석하는 프록시 너머는 신뢰하는 프록시가 지킴(§18.2.4) | 제3자 카탈로그가 앱을 시켜, 로컬 호출자를 모두 믿는 로컬 서비스(개발 서버, 다른 앱의 제어 엔드포인트)에 요청하게 합니다 |
+| 3 | 모든 대상의 `metadata` 주소(정책 등재 호스트 포함), Ave가 소유한 직접 연결(다운로드, http/https 위 git)은 연결 주소에 적용; SSH는 사전 검사만; 대상을 스스로 해석하는 프록시 너머는 신뢰하는 프록시가 지킴(§18.2.4) | 클라우드 인스턴스의 메타데이터 서비스는 로컬 요청에 자격 증명을 내줍니다. 그곳에 git 서버는 없고, 사용자가 확인할 때 다른 곳을 가리키던 이름이 다음 연결 때 그곳으로 해석될 수 있습니다 |
+| 4 | 소스 자신의 호스트·포트가 아닌, 카탈로그가 지정한 `this-computer` 대상, Ave가 소유한 직접 연결(다운로드, http/https 위 git)은 연결 주소에 적용; SSH는 사전 검사만; 대상을 스스로 해석하는 프록시 너머는 신뢰하는 프록시가 지킴(§18.2.4) | 제3자 카탈로그가 앱을 시켜, 로컬 호출자를 모두 믿는 로컬 서비스(개발 서버, 다른 앱의 제어 엔드포인트)에 요청하게 합니다 |
 | 5 | 로컬 폴더를 벗어나거나 네트워크 위치를 가리키는 링크를 따라 읽기(§18.4.5) | 남의 체크아웃인 폴더가 `skills/x/notes.md`를 `~/.ssh/id_ed25519`로 링크하면 설치가 키를 모델이 읽는 패키지로 복사합니다. Windows에서는 `\\server\share`로의 링크가 사용자 네트워크 자격 증명을 그 서버로 보냅니다 |
 | 6 | 로컬 폴더에 대한 모든 git 명령; git의 `file` 전송은 `never` 유지(`run-git.ts:158`) | git은 체크아웃 자신의 설정, alternates, 훅을 읽고, `core.fsmonitor` 같은 설정은 프로그램을 실행합니다 |
 | 7 | 딥 링크 안의 폴더 경로 | 웹 페이지가 UNC 공유(미리보기에서 자격 증명 전송)나 다운로드 폴더 같은 심어 둔 폴더를 고릅니다. 추가 대화상자는 비어서 열리고 이유를 알립니다 |
@@ -2242,8 +2229,9 @@ P3(`process` 런타임과 그 코드, `:3557`)와 P4(마켓플레이스 허용, 
 ```
 
 - `requireHttps`와 `blockPrivateNetworks`는 입력한 대상과 카탈로그가 지정한 대상,
-  다운로드와 리다이렉트 홉까지 적용합니다. `blockPrivateNetworks`는 직접 연결의 연결
-  주소에 적용하고, 대상을 스스로 해석하는 프록시 너머는 신뢰하는 프록시가 지킵니다
+  다운로드와 리다이렉트 홉까지 적용합니다. `blockPrivateNetworks`는 Ave가 소유한
+  전송(다운로드, http/https 위 git)의 직접 연결에서 연결 주소에 적용하고, SSH는 사전
+  검사만 하며, 대상을 스스로 해석하는 프록시 너머는 신뢰하는 프록시가 지킵니다
   (§18.2.4). 0.12의 거부를 어떤
   확인으로도 통과할 수 없는 차단으로 되살립니다.
 - **`path:` 패턴.** `path:<folder>`는 그 폴더, `path:<prefix>*`는 접두사 아래 모든 폴더,
@@ -2928,7 +2916,7 @@ argv에 있는 경로만 덮습니다(`plugin-bundled-command.ts:37-71`). 바뀌
 |---|---|---|---|---|
 | **A. 설계** | 이 절; §1–§17의 안내 문구; 아키텍처 제안서(결정 D11, D12, §8, §9.1); `extensions-and-plugins.md` §3.2 문장; 한국어 미러 | — | — | 없음 |
 | **B. 메시지** | 오류 `detail`, 봉투, `detail`의 소스 상태 경로(`SyncResult`, `lastSync.detail`, 검증기, `sourceStatus`), 사유 없는 문장을 포함한 빠짐없는 `failureText`, `MarketplaceProblem`, 기존 모든 코드·사유의 문장, git 실패 분류(호스트 키 변경, 나열된 ref, 닿지 않는 이유) | A | Publication 계획의 P3 | 없음 |
-| **C. 대상 분류, 경고, 연결 묶기(git과 다운로드)** | `classifyAddress`, `addressPolicy`, 고정 다운로드 전송과 git 주소 고정(§18.2.4), 게이트 판정, 미리보기 확인, `acknowledged`, `sources:acknowledge`, `internal-downloads`를 포함한 카탈로그 규칙, http 위 자격 증명, 정책 `requireHttps`·`blockPrivateNetworks`, `PolicySource`와 정책 새로 읽기(§18.6), 거부 #1–4와 #7, 추가 대화상자 확인, 배지, *허용…* | B | E | channel-inventory, host-renderer-only-channels, preload-shape |
+| **C. 대상 분류, 경고, 연결 묶기(git과 다운로드)** | `classifyAddress`, `addressPolicy`, 고정 다운로드 전송, git http 주소 고정, ssh 사전 검사(§18.2.4), 게이트 판정, 미리보기 확인, `acknowledged`, `sources:acknowledge`, `internal-downloads`를 포함한 카탈로그 규칙, http 위 자격 증명, 정책 `requireHttps`·`blockPrivateNetworks`, `PolicySource`와 정책 새로 읽기(§18.6), 거부 #1–4와 #7, 추가 대화상자 확인, 배지, *허용…* | B | E | channel-inventory, host-renderer-only-channels, preload-shape |
 | **D1. 폴더 소스: 엔진과 동의** | 네 단계의 `source-input.ts`, `native/windows-path-kind/`와 그 CI 실행, `FolderFs`, `SourceTree`와 `FolderTree`, 레지스트리 `path`, 리비전, 모든 종류의 폴더 읽기·스냅숏·계획 확보·설치, `folder` 단계와 영수증, 폴더 직접 설치, 정책 `path:`·`allowLocalSources`·`additional[].path`, `SOURCE_LOCAL_UNREADABLE`, `network-folder` 경고와 그 키, 거부 #5–6, 폴더 경로의 `process` 거부(§18.4.9) | C(확인 흐름과 `acknowledged`) | E | channel-inventory(변경 없음을 단언) |
 | **D2. 폴더 소스: UI** | `sources:pick-folder`, `sources:reveal`, *폴더 선택…*, 폴더 행과 출처 | D1 | E, F | channel-inventory, host-renderer-only-channels, preload-shape |
 | **E. 탐색과 상태** | 기한 규칙, 한 시간 기한 확인과 resume, 시도·성공 시각, `updates.json`, `UpdateStatusView`, `updates:status` / `updates:check` / `marketplace:update-status`, 설정 키, 읽기 전용 업데이트 카드, 알약 필터 | B | C, D1, D2 | settings-store, channel-inventory, host-renderer-only-channels, preload-shape |
@@ -2969,9 +2957,9 @@ D1 뒤에 D2; D1과 E 뒤에 F; G는 마지막입니다.
   저장 토큰도 `token-unencrypted` 없이는 askpass를 받지 못함; 실행 중 정책 파일을 바꾸면
   다음 미리보기가 막히고 기존 계획은 `policy-changed`로 만료; PAC 종류별(`PROXY`, `HTTPS`,
   `SOCKS5`, `SOCKS4`, 모르는 종류) 수용 사례; `trusted-proxy.test.ts`가 루프백 프록시 픽스처로
-  신뢰하는 프록시 경계를 문서화한 동작으로 보여 줌; `ssh-pin.test.ts`가 실제 `sshd` 픽스처로
-  `[localhost]:2222`(고정 안 함), 기존 별칭(별칭 유지하며 고정), `@cert-authority`(고정·검증),
-  `ProxyCommand`(고정 안 함)를 확인.
+  신뢰하는 프록시 경계를 문서화한 동작으로 보여 줌; `ssh-preflight.test.ts`가 고정 옵션이 없음,
+  메타데이터 응답에서 사전 검사 거부, `ProxyCommand`는 해석하지 않음, 사전 검사 뒤 바뀐
+  응답이라는 명시한 잔여 위험을 확인.
 - **D1**: 호출 기록 가짜로, UNC와 `\Device\Mup\…` 드라이브의 미리보기가
   `queryDosDevice` 말고는 호출 0개로 `confirm`을 응답; `allowLocalSources: false`도 호출
   0개로 차단; `root/a → root/b → \\attacker\share` 사슬과 조상의 정션이 `\\attacker`
@@ -3022,4 +3010,4 @@ D1 뒤에 D2; D1과 E 뒤에 F; G는 마지막입니다.
 | 8–15 | 폴더에 git 명령 없음, 작업 트리로 읽음, 제자리 읽기와 계획의 바이트 확보, 리비전 핀, 단일 `marketplace.json` URL과 `git://` 미지원, 정식 루트 아래에서 텍스트로 따라가는 링크 규칙, 루트 자체를 정할 때는 로컬 조상·루트 링크를 네트워크 검사 뒤 따라감, 디렉터리 사슬 재검사로 지속된 교체 감지(교체 후 되돌림은 명시한 잔여 위험), 폴더 소스는 내려받지 않음(`folder` 단계), 정식 경로나 `dev`/`ino` 식별과 보수적 대소문자 규칙 |
 | 16–17 | 탐색(동기화·폐기)은 6시간, 업데이트 적용 확인은 부팅 때와 하루 한 번이며 마지막 탐색이 하루보다 오래면 스스로 탐색; 실패 뒤에는 `lastAttemptAt`에서 한 시간마다, 성공 뒤에는 `lastSuccessAt`에서 간격만큼; 탐색은 적용 큐를 기다리지 않음 |
 | 18–28 | 모든 출처 기본 켬(http는 `unencrypted-updates` 전까지 끔), 결정 순서, 동의 지문·`unknown` 필드·승인을 잃는 구성 요소는 검토, `mcp`는 항상 검토, 로컬 실행 구성 요소가 없는 패키지만 텍스트·데이터 자동 적용, 승인 다이제스트는 선언·고정 파일·**패키지 전체**(`plugin.json` `version`만 정규화)이고 정할 수 없으면 `null`, 코드 없는 변경은 한 번의 승인으로 싸게 검토, 두 검사 지점과 늘 스테이징하는 수동 검토, 부팅 포함 `onIdle`과 30분 단계 올림, 에이전트 플러그인 MCP 리스 원천과 세대 주소 디렉터리, 필수 설치는 권한만 정책이 승인하고 승인 없는 구성 요소는 `approval-pending`, 롤백 시 건너뛰기, 동의 보류·커밋 뒤 실패는 시도가 아님 |
-| 29–39 | 오류와 소스 상태의 `detail`, 빠짐없는 문장, 스튜디오 *파일에서 설치*는 그대로, 정책 키와 작업마다 정책 다시 읽기, http 자격 증명은 등재로 생기지 않음, 딥 링크 폴더 거부, 파일 호출 전 `QueryDosDeviceW`로 네트워크 폴더 분류, `process` 규칙 비완화, 스위치는 설정·http 전제는 main, 슬라이스 순서(D1은 C 뒤, F는 D1·E 뒤), 주소에 따른 거부를 이 컴퓨터가 해석하는 연결에 묶고, 설정된 프록시(로컬·원격)와 ssh `ProxyCommand`·`ProxyJump`는 목적지 제한을 지킨다고 신뢰, ssh는 `ssh -G`로 신뢰 식별이 그대로일 때만 `HostName` 고정, 버전 2 승인 이관(활성 세대이고 선언 지문이 같으면 설치된 바이트로 다이제스트, 아니면 첫 업데이트 검토) |
+| 29–39 | 오류와 소스 상태의 `detail`, 빠짐없는 문장, 스튜디오 *파일에서 설치*는 그대로, 정책 키와 작업마다 정책 다시 읽기, http 자격 증명은 등재로 생기지 않음, 딥 링크 폴더 거부, 파일 호출 전 `QueryDosDeviceW`로 네트워크 폴더 분류, `process` 규칙 비완화, 스위치는 설정·http 전제는 main, 슬라이스 순서(D1은 C 뒤, F는 D1·E 뒤), 주소에 따른 거부를 Ave가 소유한 전송(다운로드, http/https 위 git)의 연결에 묶고, SSH는 `ssh -G` 호스트 이름의 사전 검사만 하며 고정 옵션 없음, PAC 프록시(로컬·원격)는 검사한 소켓 너머를 신뢰하고 ssh `ProxyCommand`·`ProxyJump`는 사용자가 설정한 프로그램처럼 신뢰, 버전 2 승인 이관(활성 세대이고 선언 지문이 같으면 설치된 바이트로 다이제스트, 아니면 첫 업데이트 검토) |

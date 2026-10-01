@@ -1928,15 +1928,18 @@ moves on.
 
 A refusal or policy block that depends on the resolved address (§18.3 #3 and
 #4, `blockPrivateNetworks`) is enforced on the address the connection
-actually uses. Today it is not: `ensurePublicHttpUrl` resolves, then
+actually uses. Enforcement on the connected address applies to the
+transports Ave owns (downloads, git over http/https). For SSH it is a
+preflight check only (git over ssh, below). Today the check and the
+connection are separate: `ensurePublicHttpUrl` resolves, then
 `fetchPublicHttpResponse` hands the hostname to the Chromium transport
-(`network-guard.ts:435-455`, `boot/steps/desktop-network-fetch.ts:79`), and git
-resolves the remote itself, so a name that answers a public address to the
-check and a loopback or metadata address to the connection passes. Warnings
-are advisory and may stay checked at add time; refusals and policy blocks
-may not.
+(`network-guard.ts:435-455`, `boot/steps/desktop-network-fetch.ts:79`), and
+git resolves the remote itself, so a name that answers a public address to
+the check and a loopback or metadata address to the connection passes.
+Warnings are advisory and may stay checked at add time; refusals and policy
+blocks may not.
 
-- **One lookup per connection.** Each marketplace connection resolves the
+- **One lookup per connection.** Each connection Ave owns resolves the
   host once with `dns.lookup(host, { all: true, verbatim: true })`, classifies
   every answer, drops the answers a refusal or policy block forbids, and
   connects only to the remaining answers. No answer left → the refusal of the
@@ -1955,18 +1958,22 @@ may not.
   so a company root installed in the OS store keeps working (§9.2). Electron
   44 ships Node 24.20.0, which has both. Each redirect hop is a new
   connection with its own lookup and checks.
-- **Proxies are trusted.** When the system configuration routes a
-  connection through a proxy — an http(s) or SOCKS proxy from PAC, local or
-  remote, or an ssh `ProxyCommand` or `ProxyJump` — Ave checks only the
-  proxy's own address, connects only to the proxy, and **trusts the proxy to
-  enforce destination restrictions**. Ave does not see the address the
-  proxy connects to. A proxy on this computer (`PROXY 127.0.0.1:8080`, a
-  `ProxyCommand` that runs `nc`) connects from this computer, so a
-  catalog-chosen name it resolves to loopback or to the metadata endpoint
-  reaches those targets. The refusals and blocks that depend on the
-  resolved address (§18.3 #3 and #4, `blockPrivateNetworks`) hold for
-  direct connections and for proxies that resolve locally, and not beyond a
-  proxy that resolves the target itself. This is the stated boundary.
+- **Proxies on the transports Ave owns are trusted beyond their socket.**
+  When PAC routes a download or a git http(s) connection through an http(s)
+  or SOCKS proxy, local or remote, Ave owns the socket to the proxy: it
+  checks the proxy's own address, connects only to it, and **trusts the
+  proxy to enforce destination restrictions** beyond it. Ave does not see
+  the address the proxy connects to. A proxy on this computer
+  (`PROXY 127.0.0.1:8080`) connects from this computer, so a catalog-chosen
+  name it resolves to loopback or to the metadata endpoint reaches those
+  targets. The refusals and blocks that depend on the resolved address
+  (§18.3 #3 and #4, `blockPrivateNetworks`) hold for direct connections and
+  for proxies that resolve locally, and not beyond a proxy that resolves
+  the target itself. This is the stated boundary.
+- **ssh `ProxyCommand` and `ProxyJump`** are executed by ssh. Ave neither
+  inspects nor binds them: it does not check the command, the jump host or
+  their addresses, and it does not see where they connect. They are trusted
+  like any program the user configured. There is no first-hop guarantee.
 - **Proxies for downloads.** The route comes from the session's
   `resolveProxy(url)`, the resolver git already uses (`run-git.ts:199-211`).
   Only its first entry is used: a fallback to `DIRECT` is never taken
@@ -1998,38 +2005,22 @@ may not.
   host, checked as for downloads. When curl resolves the target itself
   (a SOCKS proxy without remote resolution), the first entry pins it.
   Otherwise the proxy resolves it under the trusted-proxy rule.
-- **git over ssh** keeps the user's ssh trust identity. The runner reads the
-  effective configuration with `ssh -G [-p <port>] [<user>@]<host>`, run with
-  the same environment as the git call. That command prints the
-  configuration after evaluating `Host` and `Match` blocks (ssh(1), `-G`).
-  It uses `hostname`, `port`, `hostkeyalias`, `proxycommand` and
-  `proxyjump`. OpenSSH looks up and saves host keys under `HostKeyAlias`
-  verbatim when one is set, and otherwise under the effective host name with
-  the port appended as `[host]:port` when the port is not 22. It validates a
-  host certificate's principals against `HostKeyAlias` when set, otherwise
-  against the bare host name (`sshconnect.c`, `get_hostfile_hostname_ipaddr`
-  and `check_host_key`; ssh_config(5) `HostKeyAlias`). Pinning sets
-  `-o HostName=<address>` and must not change either identity:
-  - **`proxycommand` or `proxyjump` set**: no pin. The trusted-proxy rule
-    applies, and the jump host or command connects.
-  - **A user `HostKeyAlias`**: pin `HostName` only. The user's alias keeps
-    deciding both identities.
-  - **No alias, port 22**: pin with `-o HostKeyAlias=<effective hostname>`.
-    `[host]:22` is written as plain `host`, so the known-hosts name and the
-    certificate principal are the same as unpinned.
-  - **No alias, any other port**: no pin. The known-hosts name would be
-    `[host]:port` while the certificate principal is `host`, and no single
-    alias preserves both. This connection is checked at preflight only, and
-    a rebinding of an ssh host on a non-default port is the stated residual.
-  - **Any pin** is accepted only when a second `ssh -G` with the pin options
-    prints the same values as the first for every key except `hostname`
-    (and `hostkeyalias` in the port-22 case). Otherwise, for example when a
-    `Match host` block sees the address, there is no pin.
-  - `CheckHostIP` is not passed. With a numeric `HostName`, OpenSSH skips its
-    address check, because the host name already is the address.
-
-  ssh's own resolution of an unpinned host is not checked again at connect
-  time; the preflight check of §18.2.2 still applies.
+- **git over ssh: preflight check only.** The runner reads the effective
+  configuration with `ssh -G [-p <port>] [<user>@]<host>`, run with the same
+  environment as the git call. That command prints the configuration after
+  evaluating `Host` and `Match` blocks (ssh(1), `-G`). The runner resolves
+  the printed `hostname` once, classifies every answer, and applies the
+  refusals and blocks of §18.3 #3 and #4 and `blockPrivateNetworks` to the
+  answer set as in *One lookup per connection*; when they leave no answer,
+  git is not started. When `proxycommand` or `proxyjump` is set, the target
+  is resolved beyond the proxy, so the runner does not resolve it, the same
+  as a PAC proxy that resolves the target itself, and the ssh proxy rule
+  above applies. The runner passes no `HostName`, `HostKeyAlias` or
+  `CheckHostIP` option: ssh still runs as `ssh -o BatchMode=yes`
+  (`run-git.ts:184`), and the user's ssh configuration, known-hosts entries
+  and certificate authorities are used unchanged. **Residual:** a DNS
+  answer that changes between the preflight and ssh's own lookup is not
+  bound, and host-key verification is the trust anchor for SSH.
 - **Tests** (slice C), each with a resolver fake that answers a public
   address to the first lookup and `169.254.169.254` or `127.0.0.1` to any
   later one:
@@ -2054,19 +2045,20 @@ may not.
   - `run-git.test.ts`: argv carries `http.curloptResolve` with the
     first-lookup address, and the runner performs no second lookup (revert:
     drop the option).
-  - `ssh-pin.test.ts`, with a loopback `sshd` fixture holding a host key and
-    a host certificate, a temporary `known_hosts`, and a temporary
-    `ssh -F` config:
-    - on port 2222 with a `[localhost]:2222` known-hosts entry, there is no
-      pin, and the connection is accepted on that entry (revert: force an
-      alias, and the entry is no longer selected);
-    - a configured `HostKeyAlias fixture-alias` with a `fixture-alias`
-      entry is pinned with the alias preserved and accepted;
-    - an `@cert-authority fixture-alias` entry and a certificate whose
-      principal is `fixture-alias` are pinned and validated;
-    - a `ProxyCommand` config is not pinned;
-    - the port-22 alias rule is asserted on `ssh -G` output, since the
-      fixture cannot bind port 22.
+  - `ssh-preflight.test.ts`, with an `ssh -G` fake that prints the
+    effective configuration:
+    - the git environment's ssh command is exactly `ssh -o BatchMode=yes`,
+      and no `HostName`, `HostKeyAlias` or `CheckHostIP` option appears in
+      it or in argv (revert: add a pin option);
+    - a printed `hostname` whose resolver answer is `169.254.169.254` fails
+      with refusal #3 and git is not started (revert: skip the preflight);
+    - a config with `proxycommand` set is not resolved by the runner;
+    - the documented boundary: the resolver fake answers a public address
+      to the preflight and `127.0.0.1` to any later lookup. The preflight
+      passes, the runner makes exactly one lookup, and git starts with the
+      unchanged ssh command. Like `trusted-proxy.test.ts`, it pins the
+      residual stated in §18.2.4, so a change to the boundary changes this
+      test and §18.2.4 together.
 
 ### 18.3 Hard refusals
 
@@ -2077,8 +2069,8 @@ warning (§18.2) or a policy decision (§18.6).
 |---|---|---|
 | 1 | `ext::` and every other `<helper>::` transport | `ext::` runs its text as a command; `<helper>::` runs `git-remote-<helper>` from the search path. An address becomes code execution. git itself defaults `ext` to `never`; `GIT_ALLOW_PROTOCOL` stays an allow-list (`run-git.ts:187`) |
 | 2 | Credentials in a URL (`https://user:secret@…`, `https://token@…`) | the secret lands in `sources.json`, the Sources view, logs, audit records, backups and git's command line, which other local users can read in the process list. Ave has the encrypted token store (§2.1). An ssh user name (`git@`) is not a credential |
-| 3 | `metadata` addresses, for every target, policy-listed hosts included, enforced on the connected address of a direct connection; beyond a proxy that resolves the target itself, the trusted proxy enforces it (§18.2.4) | a cloud instance's metadata service hands credentials to any local request. No git server lives there, and a name that resolved elsewhere when the user confirmed it can resolve there at the next connection |
-| 4 | Catalog-supplied `this-computer` targets other than the source's own host and port, enforced on the connected address of a direct connection; beyond a proxy that resolves the target itself, the trusted proxy enforces it (§18.2.4) | a third-party catalog makes the app send requests to local services (development servers, other apps' control endpoints) that trust any local caller |
+| 3 | `metadata` addresses, for every target, policy-listed hosts included, enforced on the connected address of a direct connection Ave owns (downloads, git over http/https); for SSH a preflight check only; beyond a proxy that resolves the target itself, the trusted proxy enforces it (§18.2.4) | a cloud instance's metadata service hands credentials to any local request. No git server lives there, and a name that resolved elsewhere when the user confirmed it can resolve there at the next connection |
+| 4 | Catalog-supplied `this-computer` targets other than the source's own host and port, enforced on the connected address of a direct connection Ave owns (downloads, git over http/https); for SSH a preflight check only; beyond a proxy that resolves the target itself, the trusted proxy enforces it (§18.2.4) | a third-party catalog makes the app send requests to local services (development servers, other apps' control endpoints) that trust any local caller |
 | 5 | Reading through a link that leaves a local folder or names a network location (§18.4.5) | a folder that is someone else's checkout links `skills/x/notes.md` to `~/.ssh/id_ed25519`, and the install copies the key into a package the model reads. On Windows a link to `\\server\share` sends the user's network credentials to that server |
 | 6 | Any git command against a local folder; git's `file` transport stays `never` (`run-git.ts:158`) | git reads a checkout's own configuration, alternates and hooks; settings such as `core.fsmonitor` run programs |
 | 7 | A folder path in a deep link | a web page picks a UNC share (credentials sent on preview) or a planted folder such as Downloads. The Add dialog opens empty and says why |
@@ -2454,9 +2446,10 @@ states that a local directory source is refused like `installLocal`
 - `requireHttps` and `blockPrivateNetworks` apply to entered and
   catalog-supplied targets, downloads and redirect hops included.
   `blockPrivateNetworks` is enforced on the connected address of a direct
-  connection; beyond a proxy that resolves the target itself, the trusted
-  proxy enforces it (§18.2.4). They restore 0.12's refusals as blocks no
-  confirmation passes.
+  connection on the transports Ave owns (downloads, git over http/https);
+  for SSH it is a preflight check only; beyond a proxy that resolves the
+  target itself, the trusted proxy enforces it (§18.2.4). They restore
+  0.12's refusals as blocks no confirmation passes.
 - **`path:` patterns.** `path:<folder>` matches that folder,
   `path:<prefix>*` every folder under the prefix, and `path:*` every folder;
   `/` and `\` are equal.
@@ -3280,7 +3273,7 @@ and removes their pointers to §18.
 |---|---|---|---|---|
 | **A. Design** | this section; pointers in §1–§17; architecture proposal (decisions D11, D12, §8, §9.1); `extensions-and-plugins.md` §3.2 sentence; Korean mirrors | — | — | none |
 | **B. Messages** | error `detail`, envelope, the Sources status path for `detail` (`SyncResult`, `lastSync.detail`, validator, `sourceStatus`), exhaustive `failureText` with reason-less sentences, `MarketplaceProblem`, sentences for every existing code and reason, git failure classification (host key changed, refs listed, unreachable reasons) | A | the Publication plan's P3 | none |
-| **C. Target classes, warnings and connection binding (git and downloads)** | `classifyAddress`, `addressPolicy`, the pinned download transport and git address pinning (§18.2.4), gate verdicts, preview confirmation, `acknowledged`, `sources:acknowledge`, catalog rules with `internal-downloads`, credentials over http, policy `requireHttps` and `blockPrivateNetworks`, `PolicySource` and policy refresh (§18.6), refusals #1–4 and #7, Add-dialog confirmation, badges, *Allow…* | B | E | channel-inventory, host-renderer-only-channels, preload-shape |
+| **C. Target classes, warnings and connection binding (git and downloads)** | `classifyAddress`, `addressPolicy`, the pinned download transport, git http address pinning and the ssh preflight (§18.2.4), gate verdicts, preview confirmation, `acknowledged`, `sources:acknowledge`, catalog rules with `internal-downloads`, credentials over http, policy `requireHttps` and `blockPrivateNetworks`, `PolicySource` and policy refresh (§18.6), refusals #1–4 and #7, Add-dialog confirmation, badges, *Allow…* | B | E | channel-inventory, host-renderer-only-channels, preload-shape |
 | **D1. Folder sources: engine and consent** | `source-input.ts` with the four stages, `native/windows-path-kind/` and its CI run, `FolderFs`, `SourceTree` and `FolderTree`, registry `path`, revision, folder read/snapshot/plan capture/install for every kind, `folder` rung and receipt, direct folder, policy `path:`, `allowLocalSources`, `additional[].path`, `SOURCE_LOCAL_UNREADABLE`, `network-folder` warning and its key, refusals #5–6, the `process` refusal on the folder path (§18.4.9) | C (the confirmation flow and `acknowledged`) | E | channel-inventory (no change, asserted) |
 | **D2. Folder sources: UI** | `sources:pick-folder`, `sources:reveal`, *Choose folder…*, folder rows and provenance | D1 | E, F | channel-inventory, host-renderer-only-channels, preload-shape |
 | **E. Discovery and status** | due rules, hourly due check and resume, attempt/success times, `updates.json`, `UpdateStatusView`, `updates:status` / `updates:check` / `marketplace:update-status`, settings keys, read-only Updates card, pill filter | B | C, D1, D2 | settings-store, channel-inventory, host-renderer-only-channels, preload-shape |
@@ -3346,7 +3339,7 @@ The E2E flows named below run in `test/e2e/ui/`.
     - `requireHttps` blocks an acknowledged http source;
     - `blockPrivateNetworks` blocks an acknowledged internal source.
   - `pinned-fetch.test.ts` and `run-git.test.ts`: §18.2.4's rebinding
-    cases.
+    cases; `ssh-preflight.test.ts`: the ssh preflight and its residual.
   - `service.test.ts`:
     - a preview that needs a warning answers `confirm`, and the git runner
       and resolver record zero calls (revert: classify after the fetch);
@@ -3633,5 +3626,5 @@ The E2E flows named below run in `test/e2e/ui/`.
 | 35 | The `process` admission rule is not relaxed; folder receipts are categorically ineligible; the codes follow the Publication plan as it merges (§18.4.9) | It belongs to `plugin-hostapi-protocol.md` |
 | 36 | The switches live in settings; the http precondition is a source confirmation only main records (§18.9) | Main must enforce the http precondition; a settings write cannot |
 | 37 | Eight slices; B first; C and E in parallel; D1 after C; F after D1 and E (§18.10) | Each is coherent at its boundary; the first folder-accepting slice carries its own consent; F needs the folder contracts |
-| 38 | Address-dependent refusals and blocks bound to the connection where this computer resolves: pinned download transport for every supported PAC kind, `http.curloptResolve`, ssh `HostName` pinned only when `ssh -G` shows the trust identity is unchanged; a configured proxy, local or remote, and an ssh `ProxyCommand` or `ProxyJump` are trusted to enforce destination restrictions (§18.2.4) | A separate earlier lookup lets DNS rebinding pass a hard refusal; changing ssh trust identity would be worse than the residual; Ave cannot see where a proxy connects, so the boundary is stated rather than implied |
+| 38 | Address-dependent refusals and blocks bound to the connection on the transports Ave owns: pinned download transport for every supported PAC kind and `http.curloptResolve` for git over http/https. For SSH a preflight check only on the `ssh -G` host name, with no `HostName`, `HostKeyAlias` or `CheckHostIP` option. A PAC proxy, local or remote, is trusted beyond its checked socket; an ssh `ProxyCommand` or `ProxyJump` is run by ssh and trusted like any user-configured program (§18.2.4) | A separate earlier lookup lets DNS rebinding pass a hard refusal; pinning ssh changes the user's host-key and certificate identity, and host-key verification is the SSH trust anchor; Ave cannot see where a proxy connects, so the boundary is stated rather than implied |
 | 39 | A version-2 approval whose generation is active and whose fingerprint matches the installed declaration gets its approval digest from the installed bytes; any other gets `null` and its package's first update needs review (§18.7.3) | Those are the bytes the user approved and is running, already bound by the v2 identity; anything else cannot be shown equal |
