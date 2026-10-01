@@ -110,6 +110,7 @@ async function main() {
   // The host protocol schema's `$id` carries the app version, and the build
   // below refuses a committed schema that differs from its sources.
   run("bun", ["run", "generate:plugin-host-protocol-schema"]);
+  run("bun", ["run", "generate:plugin-host-protocol-client"]);
   run("node", ["scripts/sync-plugin-host-protocol-mirror.mjs"]);
 
   run("node", [

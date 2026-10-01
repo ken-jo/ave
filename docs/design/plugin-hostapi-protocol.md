@@ -2691,7 +2691,7 @@ own side. The third column is that order restricted to the file:
 | `schemas/plugin-manifest.schema.json`, `src/plugins/public-contract.ts`, `src/plugins/runtime/index.ts`, `process-entry.ts`, the closed code sets, both locale catalogs, `format-ipc-error.ts`, `labels.ts`, `PluginConfigTab.tsx` | P3 only | P4 consumes the codes P3 defines and touches none of these |
 | `src/marketplace/**`, `src/plugins/marketplace.ts` and their tests | P3 (the mechanical code rename at the seven sites, refusal still unconditional), P4 (the admission logic) | P3 → P4 |
 | `docs/guides/plugin-development.md` | P1 ("HostApi Boundaries"), P3 ("Manifest Basics"), P2 ("Testing Checklist") | P1 → P3 → P2 |
-| `knip.jsonc` | S1 (the type-assertions entry), P1 (the client-assertions entry), P2 (`cli.ts` entry, the raw-fixture glob) | S1 → P1 → P2 |
+| `knip.jsonc` | S1 (the type-assertions entry), P1 (the client-assertions entry and the client entry), P2 (`cli.ts` entry, the raw-fixture glob) | S1 → P1 → P2 |
 | `src/plugins/validate/validate-plugin.ts` | P2 only, with both arms | — |
 
 **The interface S1 freezes**, which P2, P3 and P5 are written against and which none of
@@ -2793,8 +2793,11 @@ no export beyond it.
   line.
 - `knip.jsonc`: `scripts/lib/plugin-host-protocol-client-assertions.ts` joins `entry`
   with its reason (compiled by the check's second program and by `typecheck`; nothing
-  imports it); the generated file has importers (the parity test, the assertions module)
-  and the script is named by `package.json`.
+  imports it); the script is named by `package.json`. The generated
+  `schemas/plugin-host-protocol/*/protocol-client.ts` is an `entry` too: it is the
+  published API surface plugin repositories vendor, so its exports are not debt, and
+  without the entry knip reports each exported type the parity test and the
+  assertions module leave unused (148 at this commit) against a fixed baseline.
 - `docs/guides/plugin-development.md` ("HostApi Boundaries", `:60`): a paragraph on the
   client and how a JS author who does not use the reference runtime pairs it with their
   own stdio loop.

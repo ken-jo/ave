@@ -42,6 +42,15 @@
         "scripts/sync-plugin-host-protocol-mirror.mjs",
         // Types-only assertions compiled by `typecheck`; nothing imports them.
         "scripts/lib/plugin-isolation-type-assertions.ts",
+        // Types-only equalities between the generated protocol client and the
+        // host. `check:plugin-host-protocol-client` compiles it as its own
+        // program and `typecheck` compiles it with the rest of scripts/;
+        // nothing imports it.
+        "scripts/lib/plugin-host-protocol-client-assertions.ts",
+        // The generated protocol client is a published artifact: plugin
+        // repositories vendor it, so every export is public API even where
+        // nothing in this repository imports it.
+        "schemas/plugin-host-protocol/*/protocol-client.ts",
         // Loaded through the local @ave/shell-parser-runtime package exports.
         "resources/shell-parser/wasm_exec.cjs",
         // Explicit parser rebuild entry documented in tools/shell-parser/README.md.
