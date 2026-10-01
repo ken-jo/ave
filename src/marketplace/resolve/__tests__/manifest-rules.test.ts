@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PluginAuthority } from "../../catalog/types.js";
 import { isMarketplaceError } from "../../errors.js";
-import { assertGitInstallManifest, gitInstallManifestMismatches, PLUGIN_AUTHORITY_FIELDS, type ExpectedPlugin } from "../manifest-rules.js";
+import { assertGitInstallManifest, expectedPluginOf, gitInstallManifestMismatches, PLUGIN_AUTHORITY_FIELDS, type ExpectedPlugin } from "../manifest-rules.js";
 
 const authority = (): PluginAuthority => ({
   capabilities: ["llm.chat"],
@@ -13,7 +13,7 @@ const authority = (): PluginAuthority => ({
   dependencies: [{ id: "notes", version: ">=1.0.0" }],
 });
 
-const expected = (): ExpectedPlugin => ({ name: "alpha", version: "1.2.0", minAppVersion: "0.12.0", authority: authority() });
+const expected = (): ExpectedPlugin => ({ name: "alpha", version: "1.2.0", minAppVersion: "0.12.0", authority: authority(), platforms: undefined, artifact: undefined });
 
 /** A plugin.json whose Ave block lists the authority keys in reverse order. */
 function manifest(patch: Record<string, unknown> = {}): Record<string, unknown> {
@@ -98,11 +98,75 @@ describe("git-install manifest rules (design §5.3)", () => {
     expect(() => assertGitInstallManifest(manifest(), expected())).not.toThrow();
   });
 
-  it("refuses a process extension before the install ladder can activate it", () => {
-    const document = manifest({ process: { command: "node" } });
+});
+
+describe("process-entry admission, declared half (§9.7 P4, decision 34)", () => {
+  const SHA = "c".repeat(64);
+  const processAuthority = (minAppVersion = "0.13.0"): PluginAuthority => ({
+    ...authority(),
+    requires: { capabilities: ["llm.chat"], minAppVersion, hostProtocol: "2" },
+  });
+  /** A descriptor that publishes a process entry the way admission requires. */
+  const admitted = (patch: Partial<ExpectedPlugin> = {}): ExpectedPlugin => ({
+    name: "alpha",
+    version: "1.2.0",
+    minAppVersion: "0.13.0",
+    hostProtocol: "2",
+    authority: processAuthority(),
+    platforms: ["darwin", "linux"],
+    artifact: { release: { repo: "acme/alpha", sha256: SHA } },
+    ...patch,
+  });
+  function processManifest(minAppVersion = "0.13.0"): Record<string, unknown> {
+    const document = manifest({ ...processAuthority(minAppVersion), process: { command: "./bin/plugin" }, tools: [] });
     delete (document.extensions as { "ai.agent-connector.ave": Record<string, unknown> })["ai.agent-connector.ave"].entry;
-    expect(() => assertGitInstallManifest(document, expected())).toThrow(
-      expect.objectContaining({ code: "process-entry-requires-pinned-artifact" }),
+    return document;
+  }
+
+  const PLATFORMS_UNDECLARED = 'platforms is not declared in ave-package.json; a process entry must list its platforms, without "win32"';
+  const WINDOWS = 'platforms in ave-package.json includes "win32", where a process entry cannot run';
+  const UNPINNED = "artifact in ave-package.json pins no release or archive by sha256, which a process entry is installed from";
+  const TREE = "artifact.tree is declared in ave-package.json; a process entry is never installed from the tree rung";
+
+  it("passes darwin and linux with a pinned release or archive and 0.13.0", () => {
+    expect(gitInstallManifestMismatches(processManifest(), admitted())).toEqual([]);
+    expect(() => assertGitInstallManifest(processManifest(), admitted())).not.toThrow();
+    const archive = admitted({ artifact: { archive: { url: "https://example.com/alpha-1.2.0.zip", sha256: SHA } } });
+    expect(gitInstallManifestMismatches(processManifest(), archive)).toEqual([]);
+  });
+
+  it.each<[string, Partial<ExpectedPlugin>, string[]]>([
+    ["without platforms", { platforms: undefined }, [PLATFORMS_UNDECLARED]],
+    ["with win32", { platforms: ["darwin", "win32", "linux"] }, [WINDOWS]],
+    ["with only a tree", { artifact: { tree: "plugins/alpha" } }, [UNPINNED, TREE]],
+    ["with a release and no sha256", { artifact: { release: { repo: "acme/alpha" } } }, [UNPINNED]],
+    ["with no artifact pins at all", { artifact: undefined }, [UNPINNED]],
+    ["with a tree beside a pinned release", { artifact: { release: { repo: "acme/alpha", sha256: SHA }, tree: "plugins/alpha" } }, [TREE]],
+  ])("is MANIFEST_MISMATCH %s, naming the field", (_label, patch, problems) => {
+    expect(gitInstallManifestMismatches(processManifest(), admitted(patch))).toEqual(problems);
+    expect(() => assertGitInstallManifest(processManifest(), admitted(patch))).toThrow(
+      expect.objectContaining({ code: "MANIFEST_MISMATCH", message: expect.stringContaining(problems[0]!) }),
     );
+  });
+
+  it("is MANIFEST_MISMATCH with minAppVersion below the first release that runs a process entry", () => {
+    // Manifest and descriptor agree on 0.12.0, so the floor is the only rule broken.
+    const below = admitted({ minAppVersion: "0.12.0", authority: processAuthority("0.12.0") });
+    expect(gitInstallManifestMismatches(processManifest("0.12.0"), below)).toEqual([
+      'minAppVersion in ave-package.json is "0.12.0"; a process entry needs 0.13.0 or newer, the first release that runs one',
+    ]);
+    expect(() => assertGitInstallManifest(processManifest("0.12.0"), below)).toThrow(expect.objectContaining({ code: "MANIFEST_MISMATCH" }));
+  });
+
+  it("leaves an entry manifest that runs on win32 from the tree rung untouched", () => {
+    const entryOnTree = { ...expected(), platforms: ["darwin", "win32", "linux"] as const, artifact: { tree: "plugins/alpha" } };
+    expect(gitInstallManifestMismatches(manifest(), entryOnTree)).toEqual([]);
+  });
+
+  it("takes platforms and artifact from the plan, so every plan-based producer checks them", () => {
+    const plan = { name: "alpha", version: "1.2.0", minAppVersion: "0.13.0", hostProtocol: "2", platforms: ["darwin" as const], authority: processAuthority(), artifact: { tree: "x" } };
+    expect(expectedPluginOf(plan)).toEqual({
+      name: "alpha", version: "1.2.0", minAppVersion: "0.13.0", hostProtocol: "2", authority: processAuthority(), platforms: ["darwin"], artifact: { tree: "x" },
+    });
   });
 });

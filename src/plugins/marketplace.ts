@@ -33,9 +33,11 @@ import {
   installReceiptPath,
   listFilesRecursive,
   restoreInstallReceiptRaw,
+  verifyInstallReceiptRaw,
 } from "./plugin-install-receipt.js";
-import { assertGitInstallManifest, manifestAuthority } from "../marketplace/resolve/manifest-rules.js";
+import { assertGitInstallManifest, expectedPluginOf, manifestAuthority } from "../marketplace/resolve/manifest-rules.js";
 import { classifyInstall, type InstallAction } from "../marketplace/resolve/identity.js";
+import { MarketplaceError } from "../marketplace/errors.js";
 import type { PluginAuthority } from "../marketplace/catalog/types.js";
 import type { PluginInstallPlan, StagedPluginArtifact } from "../marketplace/resolve/plugin-ladder.js";
 import { canonicalJSON } from "./secret-access/canonical-json.js";
@@ -50,7 +52,12 @@ import {
 } from "./plugin-removal-transaction.js";
 import type { PluginInstallReceipt } from "./plugin-install-receipt.js";
 import { flattenAgentPluginsManifest } from "./public-contract.js";
-import { hasProcessEntry, ProcessEntryRequiresPinnedArtifactError } from "./process-entry.js";
+import {
+  assertProcessEntryAdmitted,
+  hasProcessEntry,
+  processEntryProvenance,
+  ProcessEntryRequiresPinnedArtifactError,
+} from "./process-entry.js";
 import type { PluginRegistryEntry } from "./types.js";
 import { createLogger } from "../lib/logger.js";
 import { materializePluginContributions } from "./plugin-contributions.js";
@@ -166,6 +173,25 @@ function cleanupJournalAfterCommit(entry: PluginRegistryEntry): PluginRegistryEn
     if (!journal.some((candidate) => candidate.path === item.path)) journal.push(item);
   }
   return journal.length > 0 ? journal : undefined;
+}
+
+/**
+ * A process entry's admission trusts the rung and digest its receipt records
+ * (§9.7 P4), so the transaction binds them to the plan before writing one: a
+ * release or archive rung must carry exactly the sha256 the catalog pinned for
+ * it. The ladder already proved the bytes against that pin; this keeps the
+ * receipt from recording a digest the plan never pinned, whatever staged it.
+ */
+function assertStagedArtifactPinned(staged: StagedPluginArtifact): void {
+  const { plan, rung } = staged;
+  if (rung !== "release" && rung !== "archive") return;
+  const pin = plan.artifact[rung]?.sha256?.toLowerCase();
+  if (pin !== staged.artifactSha256) {
+    throw new MarketplaceError(
+      "ARTIFACT_DIGEST_MISMATCH",
+      `plugin ${plan.name}@${plan.version}: the staged ${rung} hashes to ${staged.artifactSha256}, the catalog pins ${pin ?? "nothing"}`,
+    );
+  }
 }
 
 export class PluginMarketplaceService {
@@ -633,13 +659,9 @@ export class PluginMarketplaceService {
         // The ladder checked the zip's plugin.json; this checks the file that
         // was actually extracted, which is the one that will run.
         assertManifest: async (manifestFile) => {
-          assertGitInstallManifest(JSON.parse(await readFile(manifestFile, "utf-8")) as unknown, {
-            name: plan.name,
-            version: plan.version,
-            minAppVersion: plan.minAppVersion,
-            hostProtocol: plan.hostProtocol,
-            authority: plan.authority,
-          });
+          const document = JSON.parse(await readFile(manifestFile, "utf-8")) as unknown;
+          assertGitInstallManifest(document, expectedPluginOf(plan));
+          if (hasProcessEntry(document)) assertStagedArtifactPinned(staged);
         },
         prepareReceipt: (pluginRoot, files) => this.prepareGitInstallReceipt(pluginId, pluginRoot, staged, files, options.reviewedAppVersion),
         approvedPluginAccess: plan.authority.pluginAccess as PluginAccessSpec | undefined,
@@ -830,11 +852,19 @@ export class PluginMarketplaceService {
             }
             await opts.assertManifest(manifestFile, pluginRoot);
             preparedDocument = JSON.parse(manifestRaw) as unknown;
-            // Refused unconditionally until marketplace admission reads the
-            // verified rung (§9.7 P4); the runtime gate covers what is on disk.
-            if (hasProcessEntry(preparedDocument)) throw new ProcessEntryRequiresPinnedArtifactError();
             preparedManifest = flattenAgentPluginsManifest(preparedDocument);
             preparedReceiptRaw = await opts.prepareReceipt(pluginRoot, [...files]);
+            if (preparedManifest.process !== undefined) {
+              // Admission trusts the rung this transaction commits, read back
+              // from its own receipt the way the runtime gate reads it
+              // (§9.7 P4, decision 35): only a git release or archive rung
+              // with a sha256 pin, never a tree rung or a catalog receipt.
+              const committing = await verifyInstallReceiptRaw(preparedReceiptRaw, pluginId, pluginRoot);
+              if (!committing.ok) {
+                throw new Error(`plugin "${pluginId}" prepared receipt does not verify against its staged payload: ${committing.reason}`);
+              }
+              assertProcessEntryAdmitted(preparedManifest, processEntryProvenance(committing.receipt));
+            }
             return opts.activatePreparedArtifact({
               installId: pluginId,
               pluginRoot,

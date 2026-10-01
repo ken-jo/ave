@@ -81,15 +81,15 @@ const PROCESS_MANIFEST: PluginManifest = {
   tools: [],
 };
 
-/** How the install on disk was made. */
-type Provenance = ArtifactRung | "v3" | "local-dev";
+/** How the install on disk was made. `direct-release`: a pinned release served by a direct source. */
+type Provenance = ArtifactRung | "direct-release" | "v3" | "local-dev";
 
-function gitRecord(rung: ArtifactRung): GitInstallRecord {
+function gitRecord(rung: ArtifactRung, sourceOrigin: GitInstallRecord["sourceOrigin"] = "custom"): GitInstallRecord {
   const skipped = (name: ArtifactRung) => ({ rung: name, outcome: "skipped" as const, reason: "NOT_DECLARED" as const });
   const ladder = { release: [], archive: [skipped("release")], tree: [skipped("release"), skipped("archive")] }[rung];
   return {
     sourceId: "acme",
-    sourceOrigin: "custom",
+    sourceOrigin,
     snapshotCommit: "a".repeat(40),
     versionCommit: "b".repeat(40),
     packagePath: "plugins/process-kit",
@@ -115,7 +115,7 @@ async function receiptFor(pluginDir: string, receiptId: string, provenance: Prov
     pluginId: receiptId,
     version: "1.0.0",
     artifactSha256: "c".repeat(64),
-    git: gitRecord(provenance),
+    git: provenance === "direct-release" ? gitRecord("release", "direct") : gitRecord(provenance),
     files,
   })).raw;
 }
@@ -193,6 +193,7 @@ async function unidentifiedRuntime(): Promise<PluginRuntime> {
 /** The variants the gate refuses, beside the provenance that sets them up. */
 const REFUSED: ReadonlyArray<[string, Provenance, boolean]> = [
   ["a tree-rung git receipt", "tree", false],
+  ["a pinned release from a direct source", "direct-release", false],
   ["a v3 marketplace receipt", "v3", false],
   ["a local-dev receipt under dev unlock", "local-dev", true],
 ];

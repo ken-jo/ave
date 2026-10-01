@@ -22,6 +22,7 @@ import { checkContentFiles, isContentKind } from "./content/rules.js";
 import { DESCRIPTOR_NAME, descriptorDiffersFromIndex, repoPath } from "./resolve/descriptor.js";
 import { gitInstallManifestMismatches } from "./resolve/manifest-rules.js";
 import { declaredMcpServer, mcpPayloadReadsServerJson, parseServerJson } from "./resolve/mcp.js";
+import { hasProcessEntry } from "../plugins/process-entry.js";
 import { AVE_EXTENSION_NAMESPACE } from "../plugins/public-contract.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
 import { errorMessage } from "../shared/error-message.js";
@@ -94,15 +95,17 @@ function pluginCopyDiffers(descriptor: PackageDescriptor, version: IndexVersion)
   return differs;
 }
 
-function manifestMismatches(document: unknown, descriptor: PackageDescriptor): string[] {
-  const payload = descriptor.payload as { authority: PluginAuthority };
+function manifestMismatches(document: unknown, descriptor: PackageDescriptor, descriptorPath: string): string[] {
+  const payload = descriptor.payload as { authority: PluginAuthority; artifact: PluginArtifactPins };
   return gitInstallManifestMismatches(document, {
     name: descriptor.name,
     version: descriptor.version,
     minAppVersion: descriptor.minAppVersion,
     hostProtocol: descriptor.hostProtocol,
     authority: payload.authority,
-  });
+    platforms: descriptor.platforms,
+    artifact: payload.artifact,
+  }, descriptorPath);
 }
 
 /** The manifest of a field pin without the `installPolicy` and `publisher` of its era; every other rule still holds. */
@@ -132,9 +135,21 @@ function checkReleasedManifests(entry: IndexPackage, released: ReadonlyMap<strin
       report(`a released plugin.json was supplied for ${key}, which the index does not list`);
       continue;
     }
-    const expected = { name: entry.name, version: version.version, minAppVersion: version.minAppVersion, hostProtocol: version.hostProtocol, authority: version.authority as PluginAuthority };
+    // Each version is held to its own released manifest: the process rules
+    // reach only a version whose plugin.json has a process entry (§9.7 P4).
+    const expected = {
+      name: entry.name,
+      version: version.version,
+      minAppVersion: version.minAppVersion,
+      hostProtocol: version.hostProtocol,
+      authority: version.authority as PluginAuthority,
+      platforms: version.platforms,
+      artifact: version.artifact,
+    };
     const held = version.yanked ? withoutLegacyFields(document) : document;
-    for (const mismatch of gitInstallManifestMismatches(held, expected)) report(`the released plugin.json of ${version.version}: ${mismatch}`);
+    for (const mismatch of gitInstallManifestMismatches(held, expected, repoPath(entry.path, DESCRIPTOR_NAME))) {
+      report(`the released plugin.json of ${version.version}: ${mismatch}`);
+    }
     checkRetiredNotificationDeclaration(held, version.minAppVersion, alertsReleaseVersion,
       (message) => report(`the released plugin.json of ${version.version}: ${message}`));
   }
@@ -173,7 +188,12 @@ function checkPlugin(
     report(`${manifestPath} does not parse: ${errorMessage(error)}`);
     return;
   }
-  for (const mismatch of manifestMismatches(document, descriptor)) report(`${manifestPath}: ${mismatch}`);
+  for (const mismatch of manifestMismatches(document, descriptor, repoPath(entry.path, DESCRIPTOR_NAME))) report(`${manifestPath}: ${mismatch}`);
+  // A plugin.json in the package directory is itself a tree rung (design §6.2),
+  // which a process entry never installs from.
+  if (hasProcessEntry(document)) {
+    report(`${manifestPath}: a process entry is never installed from the tree rung, which this file declares; publish it as a pinned release or archive only`);
+  }
   checkRetiredNotificationDeclaration(document, descriptor.minAppVersion, options.alertsReleaseVersion,
     (message) => report(`${manifestPath}: ${message}`));
 }

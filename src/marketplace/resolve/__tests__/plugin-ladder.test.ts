@@ -26,6 +26,20 @@ import { candidateVersion } from "../descriptor.js";
 import { LadderError, planPluginInstall, runPluginLadder, treeDigest, type LadderDeps, type PluginInstallPlan } from "../plugin-ladder.js";
 import { sha256Hex as sha } from "../../__tests__/fixtures/package-files.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+import type { ExpectedPlugin } from "../manifest-rules.js";
+
+/** Every expected input the ladder hands the manifest rules, observed rather than replaced. */
+const checkedAgainst = vi.hoisted(() => [] as unknown[]);
+vi.mock("../manifest-rules.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../manifest-rules.js")>();
+  return {
+    ...actual,
+    assertGitInstallManifest: (document: unknown, expected: ExpectedPlugin) => {
+      checkedAgainst.push(expected);
+      actual.assertGitInstallManifest(document, expected);
+    },
+  };
+});
 
 const AT = "2026-09-23T00:00:00.000Z";
 const INSTALLATION = "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b";
@@ -275,23 +289,133 @@ describe("plugin artifact ladder (design §6.2)", () => {
     server.file(releasePath, null);
   });
 
-  it("stops a process extension at the staged manifest before trying another install rung", async () => {
-    const { repo, name } = fixture();
-    const zip = new AdmZip();
-    zip.addFile("plugin.json", Buffer.from(JSON.stringify({
-      name: "alpha", version: "1.0.0", description: "Process extension",
-      extensions: { "ai.agent-connector.ave": { process: { command: "node" }, tools: [], ...authority() } },
-    })));
-    const release = zip.toBuffer();
-    server.file(releasePath, release);
-    market(repo, { release: { repo: "acme/alpha", sha256: sha(release) } }, {
-      "plugins/alpha/plugin.json": pluginJson("alpha", "1.0.0"),
-      "plugins/alpha/dist/index.js": ENTRY_JS,
+  describe("a process entry (§9.7 P4)", () => {
+    const processAuthority = authority({ requires: { minAppVersion: "0.13.0", hostProtocol: "2" } });
+
+    function processJson(command = "./bin/plugin"): string {
+      return `${JSON.stringify({ name: "alpha", version: "1.0.0", description: "alpha", extensions: { "ai.agent-connector.ave": { displayName: "alpha", process: { command }, tools: [], ...processAuthority } } }, null, 2)}\n`;
+    }
+
+    function processZip(): Buffer {
+      const zip = new AdmZip();
+      zip.addFile("plugin.json", Buffer.from(processJson()));
+      zip.addFile("bin/plugin", Buffer.from("#!/bin/sh\nexit 0\n"), "", 0o755);
+      return zip.toBuffer();
+    }
+
+    /** A marketplace whose `alpha` publishes a process entry: no Windows, 0.13.0, the given pins. */
+    function processMarket(repo: FixtureRepo, artifact: Record<string, unknown>, platforms: string[], extra: Record<string, string> = {}): void {
+      const described = { schemaVersion: 2, kind: "plugin", name: "alpha", version: "1.0.0", minAppVersion: "0.13.0", hostProtocol: "2", platforms, payload: { authority: processAuthority, artifact } };
+      repo.commit({
+        "marketplace.2.json": marketIndex([{ kind: "plugin", name: "alpha", path: "plugins/alpha" }]),
+        "plugins/alpha/ave-package.json": `${JSON.stringify(described)}\n`,
+        ...extra,
+      }, "publish alpha");
+    }
+
+    /** The row on an app that can select the version wherever this suite runs. */
+    async function processRow(syncer: SourceSyncer, origin: "custom" | "direct" = "custom"): Promise<CatalogRow> {
+      const result = await syncer.sync("acme");
+      expect(result, JSON.stringify(result)).toMatchObject({ status: "ok" });
+      const snapshot = (await syncer.readSnapshot("acme"))!;
+      const [found] = aggregateCatalog([{ sourceId: "acme", sourceOrigin: origin, snapshot }], {
+        appVersion: "0.13.0",
+        platform: "darwin",
+        canaryOptIn: false,
+        installationId: INSTALLATION,
+      });
+      return found!;
+    }
+
+    beforeEach(() => {
+      checkedAgainst.length = 0;
     });
-    const { gate, syncer } = await open(name);
-    const error = await ladder(syncer, gate, planPluginInstall(await row(syncer))).catch((caught: unknown) => caught);
-    expect(error).toMatchObject({ code: "process-entry-requires-pinned-artifact", rungs: [{ rung: "release", outcome: "failed", code: "process-entry-requires-pinned-artifact" }] });
-    server.file(releasePath, null);
+
+    it("stages it from a pinned release, records the release rung, and checks it against the plan's platforms and pins", async () => {
+      const { repo, name } = fixture();
+      const zip = processZip();
+      server.file(releasePath, zip);
+      const artifact = { release: { repo: "acme/alpha", sha256: sha(zip) } };
+      processMarket(repo, artifact, ["darwin", "linux"]);
+      const { gate, syncer } = await open(name);
+      const plan = planPluginInstall(await processRow(syncer));
+      const staged = await ladder(syncer, gate, plan);
+      expect(staged.rung).toBe("release");
+      expect(staged.rungs).toEqual([{ rung: "release", outcome: "used" }]);
+      expect(staged.artifactSha256).toBe(sha(zip));
+      expect(staged.manifestDocument).toMatchObject({ extensions: { "ai.agent-connector.ave": { process: { command: "./bin/plugin" } } } });
+      expect(checkedAgainst).toEqual([expect.objectContaining({ minAppVersion: "0.13.0", platforms: ["darwin", "linux"], artifact })]);
+      server.file(releasePath, null);
+    });
+
+    it("stops at the release rung when the descriptor lets it run on Windows, before any other rung", async () => {
+      const { repo, name } = fixture();
+      const zip = processZip();
+      server.file(releasePath, zip);
+      processMarket(repo, { release: { repo: "acme/alpha", sha256: sha(zip) } }, ["darwin", "win32", "linux"]);
+      const { gate, syncer } = await open(name);
+      const error = await ladder(syncer, gate, planPluginInstall(await processRow(syncer))).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(LadderError);
+      expect(error).toMatchObject({ code: "MANIFEST_MISMATCH", rungs: [{ rung: "release", outcome: "failed", code: "MANIFEST_MISMATCH" }] });
+      expect((error as Error).message).toContain('platforms in ave-package.json includes "win32"');
+      server.file(releasePath, null);
+    });
+
+    it("refuses it from a direct source with its own descriptor and a pinned release, on a first install and on an update from an entry", async () => {
+      const { repo, name } = fixture();
+      const entryZip = pluginZip("alpha", "1.0.0", processAuthority);
+      const zip = processZip();
+      const releaseOf = (version: string) => `/acme/alpha/releases/download/v${version}/alpha-${version}.zip`;
+      const directDescriptor = (version: string, pin: string) => `${JSON.stringify({
+        schemaVersion: 2, kind: "plugin", name: "alpha", version, minAppVersion: "0.13.0", hostProtocol: "2", platforms: ["darwin", "linux"],
+        payload: { authority: processAuthority, artifact: { release: { repo: "acme/alpha", sha256: pin } } },
+      })}\n`;
+      // 1.0.0 is an entry: a direct source installs it from its pinned release as before.
+      server.file(releaseOf("1.0.0"), entryZip);
+      repo.commit({ "ave-package.json": directDescriptor("1.0.0", sha(entryZip)) }, "entry");
+      const { gate, syncer } = await open(name, "direct");
+      const first = await ladder(syncer, gate, planPluginInstall(await processRow(syncer, "direct")), true);
+      expect(first.rungs).toEqual([{ rung: "release", outcome: "used" }]);
+
+      // The update to a process entry is refused where the staged manifest shows it.
+      const updated = new AdmZip(zip);
+      updated.updateFile("plugin.json", Buffer.from(processJson().replace('"version": "1.0.0"', '"version": "2.0.0"')));
+      const updatedZip = updated.toBuffer();
+      server.file(releaseOf("2.0.0"), updatedZip);
+      repo.commit({ "ave-package.json": directDescriptor("2.0.0", sha(updatedZip)) }, "process");
+      const plan = planPluginInstall(await processRow(syncer, "direct"));
+      expect(plan).toMatchObject({ sourceOrigin: "direct", packagePath: "", version: "2.0.0" });
+      const error = await ladder(syncer, gate, plan, true).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(LadderError);
+      expect(error).toMatchObject({
+        code: "process-entry-requires-pinned-artifact",
+        rungs: [{ rung: "release", outcome: "failed", code: "process-entry-requires-pinned-artifact" }],
+      });
+      expect((error as Error).message).toContain("a direct source serves a process entry");
+      server.file(releaseOf("1.0.0"), null);
+      server.file(releaseOf("2.0.0"), null);
+    });
+
+    it("stops with process-entry-requires-pinned-artifact when only the tree rung can reach it", async () => {
+      const { repo, name } = fixture();
+      // The release is declared without a pin, so the ladder skips it and falls to the tree.
+      processMarket(repo, { release: { repo: "acme/alpha" } }, ["darwin", "linux"], {
+        "plugins/alpha/plugin.json": processJson("./dist/plugin"),
+        "plugins/alpha/dist/plugin": "#!/bin/sh\nexit 0\n",
+      });
+      const { gate, syncer } = await open(name);
+      const error = await ladder(syncer, gate, planPluginInstall(await processRow(syncer))).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(LadderError);
+      expect(error).toMatchObject({
+        code: "process-entry-requires-pinned-artifact",
+        rungs: [
+          { rung: "release", outcome: "skipped", reason: "ARTIFACT_NOT_PINNED" },
+          { rung: "archive", outcome: "skipped", reason: "NOT_DECLARED" },
+          { rung: "tree", outcome: "failed", code: "process-entry-requires-pinned-artifact" },
+        ],
+      });
+      expect((error as Error).message).toContain("the tree rung staged a process entry");
+    });
   });
 
   it.each([

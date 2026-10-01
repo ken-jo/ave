@@ -35,8 +35,9 @@ import type { NormalizedSourceUrl } from "../net/source-url.js";
 import type { ArtifactCache } from "./artifact-cache.js";
 import { candidateVersion, DESCRIPTOR_NAME, planPackage, readDescriptorAtVersion, repoPath, type PackagePlan, type RepositoryAccess } from "./descriptor.js";
 import { downloadBounded } from "./download.js";
-import { assertGitInstallManifest } from "./manifest-rules.js";
+import { assertGitInstallManifest, expectedPluginOf } from "./manifest-rules.js";
 import {
+  hasProcessEntry,
   PROCESS_ENTRY_REQUIRES_PINNED_ARTIFACT_CODE,
   PROCESS_ENTRY_REQUIRES_PINNED_ARTIFACT_MESSAGE,
 } from "../../plugins/process-entry.js";
@@ -155,10 +156,10 @@ async function assertDescriptorAtVersion(plan: PluginInstallPlan, deps: LadderDe
 
 /** Read and check plugin.json from a zip that passed the preflight. */
 function stagedManifest(plan: PluginInstallPlan, zipBuffer: Buffer, deps: LadderDeps, rungs: readonly RungOutcome[], rung: ArtifactRung): unknown {
-  const stop = (code: MarketplaceErrorCode, message: string, cause: unknown) =>
+  const stop = (code: MarketplaceErrorCode, message: string, cause?: unknown) =>
     new LadderError(code, message, [...rungs, { rung, outcome: "failed", code, message: code === PROCESS_ENTRY_REQUIRES_PINNED_ARTIFACT_CODE
       ? PROCESS_ENTRY_REQUIRES_PINNED_ARTIFACT_MESSAGE
-      : code === "PACKAGE_COMPAT_UNDECLARED" ? "plugin.json does not declare requires.minAppVersion" : "plugin.json differs from the descriptor" }], { cause });
+      : code === "PACKAGE_COMPAT_UNDECLARED" ? "plugin.json does not declare requires.minAppVersion" : "plugin.json differs from the descriptor" }], cause === undefined ? undefined : { cause });
   let text: string;
   try {
     text = deps.zip.readRequiredRootTextFiles(plan.name, zipBuffer, [{ filename: "plugin.json", maxBytes: MANIFEST_LIMIT, packageLabel: "plugin" }])["plugin.json"]!;
@@ -171,8 +172,28 @@ function stagedManifest(plan: PluginInstallPlan, zipBuffer: Buffer, deps: Ladder
   } catch (error) {
     throw stop("MANIFEST_MISMATCH", `${plan.name}@${plan.version}: plugin.json does not parse: ${(error as Error).message}`, error);
   }
+  // A process entry is admitted only from a marketplace's pinned release or
+  // archive (§9.7 P4). A direct source is no marketplace, even with its own
+  // descriptor and a pinned release, so it is refused on every rung; this is
+  // where the entry kind of what it serves is first known, a first install and
+  // an entry→process update alike. Both the plan and the source say whether
+  // the source is direct, and either suffices to refuse.
+  if (hasProcessEntry(document) && (plan.sourceOrigin === "direct" || deps.direct)) {
+    throw stop(
+      PROCESS_ENTRY_REQUIRES_PINNED_ARTIFACT_CODE,
+      `${plan.name}@${plan.version}: a direct source serves a process entry, which is installed only from a marketplace release or archive pinned by sha256`,
+    );
+  }
+  // Defence in depth behind the declared-pin rule: the tree rung is the last,
+  // so stopping here hides no other rung.
+  if (rung === "tree" && hasProcessEntry(document)) {
+    throw stop(
+      PROCESS_ENTRY_REQUIRES_PINNED_ARTIFACT_CODE,
+      `${plan.name}@${plan.version}: the tree rung staged a process entry, which is installed only from a release or archive pinned by sha256`,
+    );
+  }
   try {
-    assertGitInstallManifest(document, { name: plan.name, version: plan.version, minAppVersion: plan.minAppVersion, hostProtocol: plan.hostProtocol, authority: plan.authority });
+    assertGitInstallManifest(document, expectedPluginOf(plan));
   } catch (error) {
     // PACKAGE_COMPAT_UNDECLARED or MANIFEST_MISMATCH; either stops the ladder.
     throw stop(isMarketplaceError(error) ? error.code : "MANIFEST_MISMATCH", (error as Error).message, error);

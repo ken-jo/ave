@@ -34,8 +34,8 @@ export function isPluginInstallFailureKind(value: unknown): value is PluginInsta
  *   - `process-entry-requires-pinned-artifact` — the extension runs its own
  *     program and its install is not pinned by a release or archive artifact.
  *     Reinstalling the same version from the same source yields the same
- *     provenance, and no install path of this version yields a pinned one,
- *     so the remedy is removing it, not a repair.
+ *     provenance, so the remedy is removing it and installing from a
+ *     marketplace that pins its release, not a repair.
  *   - `sandbox-grant-outside-ceiling` — reinstalling the version on disk keeps
  *     its declared filesystem grants and cannot restore a withdrawn approved
  *     directory. Change an eligible directory setting or approval, update to

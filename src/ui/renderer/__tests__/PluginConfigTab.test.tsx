@@ -450,8 +450,8 @@ describe("PluginConfigTab", () => {
     {
       kind: "process-entry-requires-pinned-artifact" as const,
       title: "고정되지 않은 익스텐션 설치",
-      detail: /이 설치는 거부되었습니다\. 이 버전의 Ave는 자체 프로그램을 실행하는 익스텐션의 지원되는 사본을 아직 설치할 수 없습니다/,
-      remedy: /설치된 이 사본은 거부되었습니다\..*이 버전은 아직 그런 사본을 설치할 수 없습니다\. 익스텐션을 제거하세요\. 어느 소스에서 다시 설치해도/,
+      detail: /이 사본은 거부되었습니다\. 릴리스를 고정한 마켓플레이스에서 설치하세요\./,
+      remedy: /설치된 이 사본은 거부되었습니다\..*익스텐션을 제거한 뒤 릴리스를 고정한 마켓플레이스에서 설치하세요\. 같은 소스에서 다시 설치해도/,
     },
     {
       kind: "process-entry-unconfined" as const,

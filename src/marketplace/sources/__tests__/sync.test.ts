@@ -11,6 +11,7 @@ import {
   startGitHttpServer,
 } from "../../__tests__/fixtures/git-http-server.js";
 import { createTestGitRunner, type TestGitRunner } from "../../__tests__/fixtures/git-runner.js";
+import { aggregateCatalog, versionExclusions } from "../../catalog/aggregate.js";
 import { MarketplaceError } from "../../errors.js";
 import { NetworkGate } from "../../net/network-gate.js";
 import { normalizeSourceUrl, parseSourcePattern } from "../../net/source-url.js";
@@ -607,6 +608,36 @@ describe("SourceSyncer", () => {
     await registry.add({ id: "process-src", origin: "direct", url: server.url(name), auth: { kind: "none" } });
     expectFailed(await syncer.sync("process-src"), "process-entry-requires-pinned-artifact");
     expect(await syncer.readSnapshot("process-src")).toBeNull();
+  });
+
+  it("lists a process-entry package with a pinned release, which a win32 app excludes by platforms (§9.7 P4)", async () => {
+    const { repo, name } = fixture();
+    const authority = { capabilities: [], requires: { minAppVersion: "0.13.0", hostProtocol: "2" } };
+    const artifact = { release: { repo: "acme/process-kit", sha256: "e".repeat(64) } };
+    repo.commit({
+      "marketplace.2.json": index("acme", [{ kind: "plugin", name: "process-kit", path: "plugins/process-kit" }]),
+      "plugins/process-kit/ave-package.json": `${JSON.stringify({
+        schemaVersion: 2, kind: "plugin", name: "process-kit", version: "1.0.0", minAppVersion: "0.13.0", hostProtocol: "2",
+        platforms: ["darwin", "linux"], payload: { authority, artifact },
+      })}\n`,
+    }, "publish process-kit");
+    const { registry, syncer } = await setup();
+    await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
+    expect(await syncer.sync("acme")).toMatchObject({ status: "ok" });
+    const snapshot = (await syncer.readSnapshot("acme"))!;
+    expect(snapshot.diagnostics).toEqual([]);
+    expect(snapshot.packages).toMatchObject([{
+      kind: "plugin", name: "process-kit", versions: [{ version: "1.0.0", minAppVersion: "0.13.0", platforms: ["darwin", "linux"], artifact }],
+    }]);
+    const offer = (platform: "darwin" | "win32") => aggregateCatalog([{ sourceId: "acme", sourceOrigin: "custom", snapshot }], {
+      appVersion: "0.13.0", platform, canaryOptIn: false, installationId: "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b",
+    })[0]!;
+    expect(offer("darwin").choice).toMatchObject({ state: "candidate", version: { version: "1.0.0" } });
+    const [listed] = snapshot.packages[0]!.versions!;
+    expect(versionExclusions("acme", "plugin", "process-kit", listed!, [], {
+      appVersion: "0.13.0", platform: "win32", canaryOptIn: false, installationId: "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b",
+    })).toEqual(["platform"]);
+    expect(offer("win32").choice).toEqual({ state: "unavailable", reason: "withheld" });
   });
 
   it("joins a sync that is already running for the same source", async () => {

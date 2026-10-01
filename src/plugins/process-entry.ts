@@ -16,7 +16,7 @@
  */
 import { realpathSync } from "node:fs";
 import { isSafeMcpEnvironmentName } from "../mcp/safe-names.js";
-import type { ArtifactRung } from "./plugin-install-receipt.js";
+import type { ArtifactRung, GitInstallRecord, PluginInstallReceipt } from "./plugin-install-receipt.js";
 import { AVE_EXTENSION_NAMESPACE, type PluginManifest } from "./public-contract.js";
 import { resolveBundledArgv, resolveProcessEntryEnvironmentValue } from "./resolve-bundled-argv.js";
 
@@ -35,8 +35,9 @@ const PROCESS_ENTRY_UNCONFINED_MESSAGE =
 
 export const PROCESS_ENTRY_REQUIRES_PINNED_ARTIFACT_CODE = "process-entry-requires-pinned-artifact";
 export const PROCESS_ENTRY_REQUIRES_PINNED_ARTIFACT_MESSAGE =
-  "Installation refused: this Ave version cannot yet install a supported copy of an extension that runs its own "
-  + "program. A supported copy comes from a release or archive artifact pinned by its sha256 hash.";
+  "This extension runs its own program, which Ave installs only from a marketplace release or archive pinned by its "
+  + "sha256 hash, so this copy was refused. Install it from a marketplace that pins its release; a direct or local "
+  + "install of it is always refused.";
 
 /** No sandbox that confines processes is live, so a `process` entry is not spawned. */
 export class ProcessEntryUnconfinedError extends Error {
@@ -78,15 +79,33 @@ export interface ProcessEntryProvenance {
   readonly installSource: "marketplace" | "local-dev" | "git";
   readonly artifactSha256: string | null;
   readonly rung: ArtifactRung | null;
+  /** The kind of git source the install came from; `null` for any other install. */
+  readonly sourceOrigin: GitInstallRecord["sourceOrigin"] | null;
+}
+
+/** The provenance a verified receipt records: what the gate reads from it. */
+export function processEntryProvenance(receipt: PluginInstallReceipt): ProcessEntryProvenance {
+  return {
+    installSource: receipt.installSource,
+    artifactSha256: receipt.artifactSha256,
+    rung: receipt.installSource === "git" ? receipt.git.rung : null,
+    sourceOrigin: receipt.installSource === "git" ? receipt.git.sourceOrigin : null,
+  };
 }
 
 /**
+ * The git sources that are marketplaces. A direct source is not one (§9.7 P4),
+ * and a source kind added later stays refused until it is listed here.
+ */
+const MARKETPLACE_SOURCE_ORIGINS: ReadonlySet<GitInstallRecord["sourceOrigin"]> = new Set(["official", "managed", "custom"]);
+
+/**
  * The provenance gate (decision 35). A no-op for an `entry` manifest; a
- * `process` manifest passes only with a verified `git` receipt whose artifact
- * came through the `release` or `archive` rung with a sha256 pin. Everything
- * else that reaches it — a tree-rung install, a v3 receipt, a `local-dev`
- * receipt under dev unlock, a valid receipt the path did not verify — is
- * refused.
+ * `process` manifest passes only with a verified `git` receipt from a
+ * marketplace source whose artifact came through the `release` or `archive`
+ * rung with a sha256 pin. Everything else that reaches it — a tree-rung
+ * install, a direct source, a v3 receipt, a `local-dev` receipt under dev
+ * unlock, a valid receipt the path did not verify — is refused.
  */
 export function assertProcessEntryAdmitted(
   manifest: PluginManifest,
@@ -97,6 +116,8 @@ export function assertProcessEntryAdmitted(
     verified?.installSource === "git"
     && (verified.rung === "release" || verified.rung === "archive")
     && verified.artifactSha256 !== null
+    && verified.sourceOrigin !== null
+    && MARKETPLACE_SOURCE_ORIGINS.has(verified.sourceOrigin)
   ) {
     return;
   }

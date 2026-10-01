@@ -104,14 +104,20 @@ whose `entryPath` is the resolved absolute path of `command`. Its rules:
 - `requires.minAppVersion` must be `0.13.0` or newer, the first release that
   runs a `process` extension, and `requires.hostProtocol` must be `"2"`.
 
-Two refusals apply to a `process` extension, each with what to do:
+Three refusals apply to a `process` extension, each with what to do:
 
-- `process-entry-requires-pinned-artifact`: the extension runs only from an
-  install pinned to a release or archive artifact by its sha256 hash. This
-  version of Ave cannot yet install a supported copy like that, so a
-  marketplace, direct, or local development install of one is refused at
-  install, and an installed copy without that pin is refused when it starts.
-  Remove such a copy; reinstalling it will not help.
+- `process-entry-requires-pinned-artifact`: the extension is installed and run
+  only from a marketplace release or archive pinned by its sha256 hash. A
+  direct or local development install of one is refused at install, and so is
+  a marketplace version that would come from the package's git tree. An
+  installed copy without that pin is refused when it starts: remove it, then
+  install it from a marketplace that pins its release.
+- `MANIFEST_MISMATCH` at a marketplace install: the package's
+  `ave-package.json` does not publish the extension the way a `process` entry
+  requires. Its `platforms` must be listed without `win32`, its `artifact` must
+  pin a `release` or an `archive` by `sha256` and declare no `tree`, and its
+  `minAppVersion` must be `0.13.0` or newer. The message names the field; the
+  marketplace's owner fixes it.
 - `process-entry-unconfined`: the program runs only inside the OS Tool Sandbox
   on macOS or Linux. With the sandbox off it is refused, and it cannot run on
   Windows, whose sandbox does not confine the processes a program starts.
