@@ -1253,10 +1253,16 @@ is contacted.
    `src/main/windows-path-kind-launcher.ts`) reads with `QueryDosDeviceW`: a
    volume, CD-ROM or floppy is local, a `subst` drive is its target's drive
    (followed a bounded number of times), and anything else — a redirector,
-   an unknown device, a failed query — is a network folder, with the server
-   when the mapping names one. On macOS `/Network/…` and on both macOS and
-   Linux `/net/<host>/…` are automount paths and network; any other path is
-   local: a mounted share was authenticated when it was mounted.
+   an unknown device, a drive the OS has no mapping for (the helper's exit
+   1) — is a network folder, with the server when the mapping names one. A
+   helper that is missing, cannot start, times out, or answers outside its
+   protocol is a broken install, not an answer about the drive: the input
+   fails with that cause and "Reinstall Ave". On macOS `/Network/…` and on
+   both macOS and Linux `/net/<host>/…` are automount paths and network,
+   compared ignoring case on macOS (its volumes ignore case by default, so
+   `/network/…` reaches `/Network/…`); `/` is network too, since reading it
+   reaches them. Any other path is local: a mounted share was authenticated
+   when it was mounted.
 3. **Policy, then consent.** `allowLocalSources` and the `path:` patterns
    (§12) are applied to the lexical path first, so a blocked folder costs no
    call at all, not even the drive's mapping. A network folder then needs
@@ -1267,17 +1273,29 @@ is contacted.
    component takes its on-disk spelling — on Windows an 8.3 short name
    (`PROGRA~1`) takes the long name of the entry with the same `dev` and
    `ino` — and a link in the entered path is
-   followed by its text: a text that names a network location is refused as
-   `CONTENT_RULE_VIOLATION` `link-to-network` before anything touches it.
-   The policy is applied again to the canonical path. The preview carries the
-   canonical `path`, and `resolvedFrom` (what was typed) when they differ.
+   followed by its text: a text that names a network location, or that
+   resolves against the link's directory to one (relative text such as
+   `Network/Servers/…` from `/`), is refused as `CONTENT_RULE_VIOLATION`
+   `link-to-network` before anything touches it. Every call of the walk, and
+   of the reading after it, goes through a fence (`fenceFolderFs`) that
+   classifies the path first: without `network-folder`, a path on another
+   computer — a spelling recovered from disk, a component after a local
+   link — answers `confirm` instead of being touched. The policy and the
+   network classification are applied again to the canonical path. The
+   preview carries the canonical `path`, and `resolvedFrom` (what was typed)
+   when they differ.
 
 **Reading** (`FolderTree`, `src/marketplace/sources/folder-tree.ts`; the
 rules are §18.4.5). Inside the folder a link is judged by its text before
 any call touches its target: one that leaves the folder is
-`link-outside-folder`, one naming another computer `link-to-network`, a
-loop or too many links `limit`; one that stays inside is read as a regular
-file holding its target's bytes. A file is opened without following a final
+`link-outside-folder`, one naming another computer, or resolving onto a
+network location other than its own, `link-to-network`, a loop or too many
+links `limit`; one that stays inside is read as a regular file holding its
+target's bytes. Each component a path names takes the spelling its parent
+lists, the entry with the same identity when the spelling differs (case, an
+8.3 or trailing-dot alias); a link whose target passes through a skipped
+entry is `link-to-skipped`, and a path naming one finds nothing. A hard
+link is a regular file and is read like one. A file is opened without following a final
 link, its `fstat` must be the file `lstat` saw, and after each read the
 chain of directories from the root is checked again; a difference is
 `SOURCE_LOCAL_UNREADABLE` `changed-during-read`. A swap that is undone
@@ -1305,7 +1323,10 @@ restart.
 equal byte for byte or their directories report the same non-zero `dev`
 and `ino`; nothing is folded by platform, so a case-sensitive volume keeps
 `/Approved/Tools` and `/approved/tools` as two. A folder that is a source,
-or contains or lies inside one, is refused with `SOURCE_ID_TAKEN`.
+or contains or lies inside one, is refused with `SOURCE_ID_TAKEN`: by path,
+and by the identities stage 4 records (the folder's and every directory's
+above it, kept in `state.json` at each read), so an alias of a source or of
+its ancestor — another drive letter, a share, a firmlink — is caught too.
 Confirmations are bound to the canonical path (§2.1).
 
 **Plan and install.** A plan reads the folder again (publishing a new
@@ -2198,7 +2219,7 @@ subject in both catalogs.
 | `process-entry-unconfined` | a `process` entry while the OS tool sandbox is off, or on Windows (§18.4.9) | — | `formatIpcError.processEntryUnconfined` |
 | `process-entry-requires-pinned-artifact` | a `process` entry not installed from a sha256-pinned release or archive artifact (§18.4.9) | — | `formatIpcError.processEntryRequiresPinnedArtifact` |
 | `NO_INSTALLABLE_ARTIFACT` | every rung skipped or failed (`SOURCE_AUTH_REQUIRED` instead when every failed rung needed sign-in) | `folder-has-no-build` (name: a folder plugin without `plugin.json`, §7.7) | `.noArtifact`, `.noArtifact.folderHasNoBuild` |
-| `CONTENT_RULE_VIOLATION` | content kind file rules; a folder's reading rules (§7.7) | `link-outside-folder` (path, target), `link-to-network` (path, target), `special-file` (path), `case-collision` (path), `limit` (path, limit) — `path` relative to the folder, `target` the link's own text | `.contentRule`, `.contentRule.<reason>` |
+| `CONTENT_RULE_VIOLATION` | content kind file rules; a folder's reading rules (§7.7) | `link-outside-folder` (path, target), `link-to-network` (path, target), `link-to-skipped` (path, target), `special-file` (path), `case-collision` (path), `limit` (path, limit) — `path` relative to the folder; `target` the link's own text, for `link-to-skipped` the skipped entry it reaches | `.contentRule`, `.contentRule.<reason>` |
 | `invalid-request`, `unauthorized-frame`, `unavailable` | envelope only (§13.1) | — | `.invalidRequest`, `.unauthorizedFrame`, `.unavailable` |
 
 A failure is shown by `MarketplaceProblem` in one of three tones (§18.8):
@@ -2584,7 +2605,7 @@ The tests of §18's slices are listed with each slice of §18.10.
 | Default and required installs | default: installed once through the ladder, never reinstalled after uninstall; required: reinstalled and updated at boot, uninstall and disable denied with `PACKAGE_REQUIRED_BY_POLICY`, becomes a user install when the entry is removed; both lists limited to official/managed sources; migration marks former admin installs as applied and unlocks unmatched entries |
 | Identity | reserved names, same `(kind, name)` across sources, `PACKAGE_ID_CONFLICT`, update binding, source switch keeps plugin data |
 | Direct install | each detection branch; `server.json` mapping for npm/pypi/oci/remote; `folder-direct.test.ts`: a direct folder's synthesized `0.0.0+t…` version, which changes with its files, and `allowDirectInstall: false` refusing it at the preview (a marketplace folder still previews), the add and the plan |
-| Local folders (§7.7) | `source-input.test.ts` under `path.posix` and `path.win32` rules: every accepted folder form normalizes and every refused form names its reason, and `a/b` stays the GitHub shorthand. With the recording volume of `fixtures/folder-fs.ts` (every call logged): `folder-consent.test.ts` — a UNC path answers `confirm` with no call at all and a share-mapped drive with only `queryDosDevice`, the same inputs under `allowLocalSources: false` are blocked with none, an acknowledged folder is read with no call outside the reader's own (no `realpath`), `/tmp → private/tmp` and a root that is itself a link resolve, an ancestor link to `\\attacker\share` is `link-to-network` with no call on it, a block found only on the canonical path ends the preview before a file is opened, a Windows 8.3 short name is spelled by its long name; `folder-real-fs.test.ts` on the machine's own filesystem (run on macOS and on Windows) — a network path answered before any call, a link inside (a junction on Windows) read and one leaving the folder refused unread, a directory reached twice a loop, and the volume's own case rule; `folder-tree.test.ts` — an inside link reads as a file, an outside link and a link chain or junction to a share stop at their text with no call on the target, a mapped network drive by its mapping, a loop, an `fstat` mismatch, an ancestor swap kept in place (`changed-during-read`, no outside byte in the package) and the stated residual of one undone before the recheck, the skip list, NFD/NFC and collisions, special files, a plugin's left-out entries; `folder-identity.test.ts` — a case-sensitive volume keeps two spellings as two sources, an `allow` `path:` admits only its spelling and a `block` every spelling, a case-insensitive volume and an aliased directory are one source by on-disk spelling and `dev`/`ino`, nesting is refused; `folder-sync.test.ts` — editing a `SKILL.md` changes the revision, no git command and no download run, only the folder's version is offered, a background `permission` failure keeps its reason through a reload and renders, a stored path now leading elsewhere is `moved` without reading the target; `folder-plan.test.ts` — a plugin file and a `SKILL.md` edited between plan and execute install the planned bytes, a declared release is never fetched, the executable bit survives, a `process` entry is refused with `process-entry-requires-pinned-artifact`, a folder with no `plugin.json` is `folder-has-no-build`, and the capture is deleted; `plugin-ladder.test.ts` — a git tree with `src/` still fails the tree rung; `policy.test.ts` — `allowLocalSources`, an `allow` list without `path:`, `path:` prefixes and Windows spellings, `path:` and git patterns kept apart, and `additional[].path` with its refusals; `registry.test.ts` — a folder entry and its identity round-trip, confirmations bound to the path, the pin paired with the transport, a managed folder holding `network-folder`; `windows-path-kind-launcher.test.ts` and, on Windows, `scripts/test-windows-path-kind.mjs` (CI step *Verify Windows folder classification*): `C:` maps to a volume, a `subst` drive (and a `subst` of one) to its target, and an unused or removed drive fails closed |
+| Local folders (§7.7) | `source-input.test.ts` under `path.posix` and `path.win32` rules: every accepted folder form normalizes and every refused form names its reason, and `a/b` stays the GitHub shorthand. With the recording volume of `fixtures/folder-fs.ts` (every call logged): `folder-consent.test.ts` — a UNC path answers `confirm` with no call at all and a share-mapped drive with only `queryDosDevice`, the same inputs under `allowLocalSources: false` are blocked with none, an acknowledged folder is read with no call outside the reader's own (no `realpath`), `/tmp → private/tmp` and a root that is itself a link resolve, an ancestor link to `\\attacker\share` is `link-to-network` with no call on it, a block found only on the canonical path ends the preview before a file is opened, a Windows 8.3 short name is spelled by its long name, a relative link onto an automount path is `link-to-network` (confirmed or not) with no call under it, another spelling of an automount path, components after a local link that reach one, and a canonical path holding the automount roots each answer `confirm` before it is touched, a drive with no mapping warns and a classifier that cannot run fails with its cause; `folder-real-fs.test.ts` on the machine's own filesystem (run on macOS and on Windows) — a network path answered before any call, a link inside (a junction on Windows) read and one leaving the folder refused unread, a directory reached twice a loop, the volume's own case rule, a link into `.git` refused with nothing beneath it touched, and a hard link read as a regular file; `folder-tree.test.ts` — an inside link reads as a file, an outside link and a link chain or junction to a share stop at their text with no call on the target, a mapped network drive by its mapping, a loop, an `fstat` mismatch, an ancestor swap kept in place (`changed-during-read`, no outside byte in the package) and the stated residual of one undone before the recheck, the skip list, a link into a skipped entry (also as `.GIT` or an 8.3 alias) as `link-to-skipped` and an index path naming one as absent, an automount path beneath an unconfirmed root stopped before it is touched, a relative link from a confirmed share to another server as `link-to-network`, NFD/NFC and collisions, special files, a plugin's left-out entries; `folder-identity.test.ts` — a case-sensitive volume keeps two spellings as two sources, an `allow` `path:` admits only its spelling and a `block` every spelling, a case-insensitive volume and an aliased directory are one source by on-disk spelling and `dev`/`ino`, nesting is refused, by path and through an alias in both orders; `folder-sync.test.ts` — editing a `SKILL.md` changes the revision, no git command and no download run, only the folder's version is offered, a background `permission` failure keeps its reason through a reload and renders, a stored path now leading elsewhere is `moved` without reading the target; `folder-plan.test.ts` — a plugin file and a `SKILL.md` edited between plan and execute install the planned bytes, a declared release is never fetched, the executable bit survives, a `process` entry is refused with `process-entry-requires-pinned-artifact`, a folder with no `plugin.json` is `folder-has-no-build`, and the capture is deleted; `plugin-ladder.test.ts` — a git tree with `src/` still fails the tree rung; `policy.test.ts` — `allowLocalSources`, an `allow` list without `path:`, `path:` prefixes and Windows spellings, `path:` and git patterns kept apart, and `additional[].path` with its refusals; `registry.test.ts` — a folder entry and its identity (with its ancestors) round-trip, confirmations bound to the path and dropped for any other spelling of it, the pin paired with the transport, a managed folder holding `network-folder`; `windows-path-kind-launcher.test.ts` (exit 1 is "no mapping"; a missing, unstartable, timed-out or off-protocol helper rejects with its cause and what to do) and, on Windows, `scripts/test-windows-path-kind.mjs` (CI step *Verify Windows folder classification*): `C:` maps to a volume, a `subst` drive (and a `subst` of one) to its target, and an unused or removed drive fails closed |
 | Service | `former-service.json` parsing, `movedTo` with and without `movedFrom`, reset on build-constant change, policy override, announcements parity, label fallback |
 | E2E | packaged dev build (loopback allowed by the dev flag) adds a local-HTTP git marketplace, installs one package of each kind, updates, removes the source; without the dev flag, the same kind of source asks for `unencrypted` and `this-computer` before the fixture server sees any request, and the preview, cards and Sources row show the badges |
 
@@ -2952,11 +2973,17 @@ UNC server is exactly what consent and policy must come before.
      `\Device\Floppy<n>`, or a `\??\<path>` (a `subst` drive) whose path is
      itself local by this rule. Anything else — `\Device\Mup\…`,
      `\Device\LanmanRedirector\…`, `\Device\WebDavRedirector\…`, `\??\UNC\…`,
-     an unknown device, or a failed call — is `network`. A wrong guess here
-     produces a warning, never a refusal.
+     an unknown device, or a call the OS answers with no mapping — is
+     `network`. A wrong guess here produces a warning, never a refusal. A
+     helper that is missing, cannot start, times out, or answers outside its
+     protocol is not an answer about the drive: the input fails with that
+     cause and what to do. Guessing `network` there would hide a broken
+     install behind a warning.
    - `GetDriveTypeW` is not used: it takes the drive's root path.
    - On macOS and Linux, automount paths are `network` lexically
-     (`/net/<host>/…`, and `/Network/…` on macOS). Any other path is local: a
+     (`/net/<host>/…`, and `/Network/…` on macOS), compared ignoring case on
+     macOS, whose volumes ignore case by default. `/` is `network` as well:
+     reading it reaches the automount roots. Any other path is local: a
      share that is already mounted was authenticated when it was mounted, and
      reading it sends no new credentials.
    - The call goes through a small native helper in the existing Windows
@@ -2974,9 +3001,9 @@ UNC server is exactly what consent and policy must come before.
    the root, a link or junction among the entered path's own components —
    an ancestor such as macOS's `/tmp → /private/tmp`, or the root itself —
    is handled by **root resolution**, not by package containment:
-   - its text is read with `readlink` and classified as in §18.4.5 rule 1;
-     network text is refused as `link-to-network`, and the target is never
-     touched;
+   - its text is read with `readlink` and classified as in §18.4.5 rule 1,
+     the text and the target it resolves to; a network location is refused
+     as `link-to-network`, and the target is never touched;
    - any other text is resolved lexically against the link's directory, and
      the walk continues there, with the same rule for every link it meets
      and the loop limit of §18.4.5 rule 4. No containment applies here: the
@@ -2991,8 +3018,21 @@ UNC server is exactly what consent and policy must come before.
    reason `ambiguous-case`. The result must be a directory; a regular file
    named `marketplace.2.json` or `marketplace.json` resolves to its directory.
    The policy of stage 3 is applied again to this **canonical path**, and a
-   block found only now ends the add. The stored `path` is the canonical
-   path, and the dialog shows "resolved from <input>" when it differs.
+   block found only now ends the add; so is the network classification, and
+   a canonical path on another computer without `network-folder` answers
+   `confirm` before anything beneath it is read. The stored `path` is the
+   canonical path, and the dialog shows "resolved from <input>" when it
+   differs.
+
+   **Every path is classified before it is touched.** Stage 2 judges the
+   entered text, but the walk can reach a network location the text did not
+   name: the on-disk spelling of `/network/…` is `/Network/…`, and after a
+   local link to `/` the next components can be `net/<host>`. So every
+   `lstat`, `readdir`, `readlink` and `open` of the walk and of the reading
+   after it goes through a fence (`fenceFolderFs`) that classifies its path
+   first, as stage 2 would. Without `network-folder` a path on another
+   computer answers `confirm` and is not touched; with it the fence is open,
+   and links are still judged by rule 1.
 
 Every later read of a stored folder (sync, plan, refresh) repeats stages 2–4
 from the stored path, so a drive letter remapped to a share, or a component
@@ -3072,7 +3112,14 @@ revision.
   two sources, which can list a package twice but admits nothing new.
 - A folder that is already a source, or that contains or lies inside one, is
   refused with `SOURCE_ID_TAKEN` naming that source: nesting would list
-  packages twice.
+  packages twice. Paths decide first; then identities, which see through an
+  alias (a second drive letter or share for one directory, a firmlink, a
+  bind mount). Stage 4 records the `dev`/`ino` of the folder and of every
+  directory above it on the canonical path, and each read stores them in
+  the source's `state.json` (`folder.ancestors`). A new folder lies inside a
+  source when one of its ancestors is that source's directory, and contains
+  one when it is among that source's recorded ancestors. Zero identities
+  take no part, as above.
 - A folder source and a git source are never the same source, even when the
   folder is a checkout of that repository. The same `(kind, name)` shows as two
   cards (§15.1); installing the second is a source switch.
@@ -3098,7 +3145,10 @@ recording fake.
   the target:
   1. Text naming a network location is refused from the text alone:
      `\\…`, `//…`, `\??\UNC\…`, `\\?\UNC\…`, a device path, a drive letter
-     that stage 2 classifies `network`, or an automount path.
+     that stage 2 classifies `network`, or an automount path. So is text
+     that resolves (rule 2's lexical resolution) onto a network location
+     other than the link's own: relative text can name one too
+     (`Network/Servers/…` from `/`, `../../other` under `/net/<host>`).
      `CONTENT_RULE_VIOLATION` reason `link-to-network` names the link. This
      holds inside a network-folder source too: the user consented to that
      share, not to the servers its links name.
@@ -3134,7 +3184,21 @@ recording fake.
   Ave contact a UNC server. This residual needs a concurrent local writer
   in a folder the user chose as a source, and it is stated, not defended.
 - Skipped silently at any depth, never read, digested or installed: `.git/`,
-  `.DS_Store`, `._*`, `Thumbs.db`, `desktop.ini`.
+  `.DS_Store`, `._*`, `Thumbs.db`, `desktop.ini`, compared ignoring case. The
+  rule holds for every path the reader follows, not only for names it
+  enumerates: each component takes the spelling its parent lists (the
+  entry with the same `dev`/`ino` when the typed spelling differs — a case
+  variant, a Windows 8.3 or trailing-dot alias), so `.GIT` or `GIT~1` is
+  `.git`. A link whose target passes through a skipped entry fails the
+  package with `CONTENT_RULE_VIOLATION` reason `link-to-skipped`, nothing
+  beneath it listed or opened; a path naming one (an index entry) finds
+  nothing.
+- **Hard links** are regular files, read like any other. Path containment is
+  what the reader enforces, not inode isolation: a hard link names a file,
+  never a directory, and never one on another volume or computer, so it
+  reaches no byte the user could not already read and no server. Refusing
+  link counts above one would refuse ordinary trees (package-manager stores,
+  `cp -al` copies) and protect nothing the containment rules do not.
 - Names are normalized to NFC (the form git stores). Two names equal after NFC,
   or differing only in case, fail the package (§5.5).
 - The execute bit comes from `lstat` on macOS and Linux; Windows has none, so
@@ -4020,6 +4084,7 @@ the slice that adds the code or reason.
 | · `deep-link-path` | R | "A link cannot choose a folder on this computer." | "Choose the folder yourself." | "링크로는 폴더를 지정할 수 없습니다. 직접 선택하세요." |
 | `CONTENT_RULE_VIOLATION` · `link-outside-folder` | R | "<path> links outside the folder (to <target>). Ave installs files from inside the folder only." | "Copy the file into the folder instead of linking it." | "폴더 밖을 가리키는 링크는 설치하지 않습니다. 파일을 폴더 안으로 복사하세요." |
 | · `link-to-network` | R | "<path> links to a network location (<target>). Ave does not follow links to other computers." | "Copy the file into the folder instead of linking it." | "다른 컴퓨터를 가리키는 링크는 따라가지 않습니다. 파일을 폴더 안으로 복사하세요." |
+| · `link-to-skipped` | R | "<path> links into <target>, which Ave never reads (version-control data or system files)." | "Copy the file into the folder instead of linking it." | "Ave가 읽지 않는 항목을 가리키는 링크입니다. 파일을 폴더 안으로 복사하세요." |
 | · `special-file`, `case-collision`, `extension`, `limit` | R | the path and the rule (§5.4, §5.5) | "Remove or rename <path>." | "<경로>를 지우거나 이름을 바꾸세요." |
 | `SOURCE_AUTH_REQUIRED` · `token` | E | "<host> needs sign-in." | a token source: *Set token…* on its row (a stored token: "<host> did not accept the stored token", *Set token…* to replace it); added without a token: *Remove source*, then add again with *Access token*; organization without a token: "Tell your administrator"; an address being typed: *Access token* under *Sign-in*; for GitHub "a fine-grained token with read access to Contents" | "<호스트>에 로그인이 필요합니다." |
 | · `token-no-access` | E | "<host> reports no repository at this source's address to the token stored for <host>, so the token may lack access to it." | *Set token…* to replace it; a source the user added: or *Remove source* and add it again if the address is wrong | "토큰에 이 저장소 권한이 없을 수 있습니다." |
@@ -4586,7 +4651,7 @@ The E2E flows named below run in `test/e2e/ui/`.
 | 10 | A folder's pin is a content revision covering every package digest; no history rule; only the folder's version installs (§18.4.3) | §7.3 needs a pin; an edit to a skill must count; a folder has no history and no other version |
 | 11 | No source type for a lone `marketplace.json` URL; such an address gets a message (§18.3) | Ave reads descriptors, content, icons and revocations from the tree, which a lone index cannot carry |
 | 12 | `git://` unsupported, with a message (§18.3) | The PAC proxy cannot route it; the same repository is served over https or ssh |
-| 13 | Beneath the canonical root, links are followed by text, component by component; links outside or to a network location are refused without touching the target; while the root itself is resolved, local ancestor and root links are followed after the same network check; persistent swaps are detected by re-checking the directory chain; OS metadata skipped; names NFC (§18.4.1, §18.4.5) | Following by text is the only way to refuse a UNC target before contacting it; containment protects the package, not the user's own path to the folder; a swap-and-restore race by a concurrent local writer is a stated residual, since Node offers no portable handle-anchored traversal |
+| 13 | Beneath the canonical root, links are followed by text, component by component; links outside or to a network location (by their text or the target it resolves to) are refused without touching the target; while the root itself is resolved, local ancestor and root links are followed after the same network check; every path the walk and the reader touch is classified first, and one on another computer without `network-folder` answers `confirm`; persistent swaps are detected by re-checking the directory chain; OS metadata skipped, through links and aliases too; hard links read as regular files; names NFC (§18.4.1, §18.4.5) | Following by text is the only way to refuse a UNC target before contacting it; classifying the text alone misses relative targets and recovered spellings, so the call itself is fenced; containment protects the package, not the user's own path to the folder; a hard link reaches no directory, volume or server; a swap-and-restore race by a concurrent local writer is a stated residual, since Node offers no portable handle-anchored traversal |
 | 14 | A folder source never downloads: one `folder` rung; extra top-level entries ignored and listed (§18.4.2) | A folder's declared pin lives in files anyone who can write the folder changes without trace, so it is not commit provenance; folder receipts stay ineligible for `process` admission; a developer's checkout always holds sources |
 | 15 | Folder identity is the canonical path or equal `dev`/`ino`; no platform case folding; `allow` matches with exact case, `block` without (§18.4.4, §18.6) | Case sensitivity is per volume, not per platform; when it is unknown, the conservative result admits less and blocks more |
 | 16 | Discovery (sync and revocations) every 6 hours; the update apply check at boot and once a day, always running or joining a discovery first; one scheduler (§18.7.1) | The owner's cadence is for updates; revocations ride the same fetch and 0.12 already delivers them within 6 hours, so a 24-hour discovery would keep a revoked package running four times as long; a daily check must not wait on a longer interval |

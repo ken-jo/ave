@@ -1159,10 +1159,16 @@ URL을 가져오게 만들지 못합니다.
    (`native/windows-path-kind/`, `src/main/windows-path-kind-launcher.ts`가
    실행)가 `QueryDosDeviceW`로 읽습니다. 볼륨·CD-ROM·플로피는 로컬, `subst`
    드라이브는 대상 드라이브(정해진 횟수까지 따라감), 그 밖의 것 — 리디렉터,
-   알 수 없는 장치, 실패한 조회 — 은 네트워크 폴더이고, 매핑이 서버를
-   밝히면 그 서버를 함께 둡니다. macOS의 `/Network/…`와 macOS·Linux의
-   `/net/<host>/…`는 자동 마운트 경로로 네트워크입니다. 그 밖의 경로는
-   로컬입니다. 이미 마운트된 공유는 마운트할 때 인증했습니다.
+   알 수 없는 장치, OS에 매핑이 없는 드라이브(도우미의 종료 코드 1) — 은
+   네트워크 폴더이고, 매핑이 서버를 밝히면 그 서버를 함께 둡니다. 도우미가
+   없거나, 시작하지 못하거나, 시간을 넘기거나, 약속한 형식 밖으로 답하면
+   드라이브에 대한 답이 아니라 깨진 설치입니다. 입력은 그 원인과
+   "Ave를 다시 설치하세요"로 실패합니다. macOS의 `/Network/…`와
+   macOS·Linux의 `/net/<host>/…`는 자동 마운트 경로로 네트워크이고, macOS에서는
+   대소문자를 무시하고 비교합니다(macOS 볼륨은 기본적으로 대소문자를 무시하므로
+   `/network/…`도 `/Network/…`에 닿음). `/`도 그 아래에 자동 마운트 루트가 있어
+   네트워크입니다. 그 밖의 경로는 로컬입니다. 이미 마운트된 공유는 마운트할 때
+   인증했습니다.
 3. **정책, 그다음 동의.** `allowLocalSources`와 `path:` 패턴(§12)을 어휘
    경로에 먼저 적용하므로, 차단된 폴더는 드라이브 매핑 조회조차 하지
    않습니다. 그다음 네트워크 폴더에는 `network-folder`가 필요하고, 없으면
@@ -1171,15 +1177,24 @@ URL을 가져오게 만들지 못합니다.
    없음)로 구성 요소마다 걷습니다. 각 구성 요소는 디스크의 철자를 따르고
    (Windows의 8.3 짧은 이름 `PROGRA~1`은 `dev`·`ino`가 같은 항목의 긴 이름으로),
    입력 경로 안의 링크는 텍스트로 따라갑니다. 텍스트가 네트워크 위치를
-   가리키면 무엇도 닿기 전에 `CONTENT_RULE_VIOLATION` `link-to-network`로
-   거부합니다. 정책은 정규 경로에 다시 적용합니다. 미리보기는 정규 `path`를,
+   가리키거나, 링크의 디렉터리를 기준으로 풀었을 때 네트워크 위치가 되면
+   (`/`에서의 `Network/Servers/…` 같은 상대 텍스트) 무엇도 닿기 전에
+   `CONTENT_RULE_VIOLATION` `link-to-network`로 거부합니다. 해석과 그 뒤의
+   읽기의 모든 호출은 경로를 먼저 분류하는 울타리(`fenceFolderFs`)를 거칩니다.
+   `network-folder`가 없으면 다른 컴퓨터의 경로 — 디스크에서 되찾은 철자,
+   로컬 링크 뒤의 구성 요소 — 는 건드리지 않고 `confirm`으로 답합니다. 정책과
+   네트워크 분류는 정규 경로에 다시 적용합니다. 미리보기는 정규 `path`를,
    다르면 입력값인 `resolvedFrom`도 함께 담습니다.
 
 **읽기** (`FolderTree`, `src/marketplace/sources/folder-tree.ts`. 규칙은
 §18.4.5). 폴더 안의 링크는 대상에 어떤 호출도 닿기 전에 텍스트로 판정합니다.
-폴더를 벗어나면 `link-outside-folder`, 다른 컴퓨터를 가리키면
-`link-to-network`, 고리나 너무 많은 링크는 `limit`이고, 안에 머무는 링크는
-대상의 바이트를 담은 일반 파일로 읽습니다. 파일은 마지막 링크를 따르지 않고
+폴더를 벗어나면 `link-outside-folder`, 다른 컴퓨터를 가리키거나 자신의 것이
+아닌 네트워크 위치로 풀리면 `link-to-network`, 고리나 너무 많은 링크는
+`limit`이고, 안에 머무는 링크는 대상의 바이트를 담은 일반 파일로 읽습니다.
+경로가 가리키는 구성 요소는 부모 목록의 철자를 따르며, 철자가 다르면(대소문자,
+8.3이나 끝 점 별칭) 식별자가 같은 항목입니다. 대상이 건너뛰는 항목을 지나는
+링크는 `link-to-skipped`이고, 건너뛰는 항목을 가리키는 경로는 아무것도
+찾지 못합니다. 하드 링크는 일반 파일이며 그렇게 읽습니다. 파일은 마지막 링크를 따르지 않고
 열며, `fstat`이 `lstat`이 본 파일이어야 하고, 읽을 때마다 루트부터의 디렉터리
 사슬을 다시 확인합니다. 다르면 `SOURCE_LOCAL_UNREADABLE`
 `changed-during-read`입니다. 그 확인 전에 되돌려진 교체는 §18.4.5가 밝힌 잔여
@@ -1205,7 +1220,10 @@ URL을 가져오게 만들지 못합니다.
 `dev`·`ino`를 보고하면 같은 소스입니다. 플랫폼으로 접어 비교하지 않으므로,
 대소문자를 구분하는 볼륨에서 `/Approved/Tools`와 `/approved/tools`는 둘입니다.
 이미 소스인 폴더, 또는 소스를 포함하거나 그 안에 있는 폴더는
-`SOURCE_ID_TAKEN`으로 거부합니다. 확인은 정규 경로에 묶입니다(§2.1).
+`SOURCE_ID_TAKEN`으로 거부합니다. 경로로, 그리고 4단계가 기록한 식별자(폴더와
+그 위 모든 디렉터리의 것, 읽을 때마다 `state.json`에 저장)로 판정하므로, 소스나
+그 조상의 별칭 — 다른 드라이브 문자, 공유, firmlink — 도 잡습니다. 확인은
+정규 경로에 묶입니다(§2.1).
 
 **계획과 설치.** 계획은 폴더를 다시 읽고(바뀌었으면 새 스냅숏을 게시)
 패키지를 작업 디렉터리 아래 사본으로 떠 둡니다. 사본의 다이제스트가 스냅숏과
@@ -2015,7 +2033,7 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
 | `process-entry-unconfined` | OS 도구 샌드박스가 꺼져 있거나 Windows에서의 `process` 진입점(§18.4.9) | — | `formatIpcError.processEntryUnconfined` |
 | `process-entry-requires-pinned-artifact` | sha256으로 고정된 릴리스·아카이브 아티팩트에서 설치되지 않은 `process` 진입점(§18.4.9) | — | `formatIpcError.processEntryRequiresPinnedArtifact` |
 | `NO_INSTALLABLE_ARTIFACT` | 모든 단계가 건너뛰어졌거나 실패(실패한 단계가 모두 로그인을 요구했으면 대신 `SOURCE_AUTH_REQUIRED`) | `folder-has-no-build`(name: `plugin.json`이 없는 폴더 플러그인, §7.7) | `.noArtifact`, `.noArtifact.folderHasNoBuild` |
-| `CONTENT_RULE_VIOLATION` | 콘텐츠 종류 파일 규칙 위반, 폴더 읽기 규칙 위반(§7.7) | `link-outside-folder`(path, target), `link-to-network`(path, target), `special-file`(path), `case-collision`(path), `limit`(path, limit) — `path`는 폴더 기준 상대 경로, `target`은 링크 자신의 텍스트 | `.contentRule`, `.contentRule.<reason>` |
+| `CONTENT_RULE_VIOLATION` | 콘텐츠 종류 파일 규칙 위반, 폴더 읽기 규칙 위반(§7.7) | `link-outside-folder`(path, target), `link-to-network`(path, target), `link-to-skipped`(path, target), `special-file`(path), `case-collision`(path), `limit`(path, limit) — `path`는 폴더 기준 상대 경로, `target`은 링크 자신의 텍스트이고 `link-to-skipped`에서는 링크가 닿는 건너뛰는 항목 | `.contentRule`, `.contentRule.<reason>` |
 | `invalid-request`, `unauthorized-frame`, `unavailable` | 봉투에만(§13.1) | — | `.invalidRequest`, `.unauthorizedFrame`, `.unavailable` |
 
 실패는 `MarketplaceProblem`이 세 가지 톤 중 하나로 보여 줍니다(§18.8): 정책
@@ -2361,7 +2379,7 @@ Retry가 있는 `failed` 상태.
 | 기본·필수 설치 | 기본: 사다리로 한 번 설치, 제거 후 재설치 없음. 필수: 부팅 때 재설치·업데이트, 제거·비활성화는 `PACKAGE_REQUIRED_BY_POLICY`로 거부, 항목을 빼면 사용자 설치가 됨. 두 목록 모두 공식·관리 소스로 제한. 이관은 이전 admin 설치를 적용됨으로 기록하고 맞지 않는 항목의 잠금을 해제 |
 | 식별 | 예약 이름, 소스 간 같은 `(kind, name)`, `PACKAGE_ID_CONFLICT`, 업데이트 바인딩, 소스 전환 시 플러그인 데이터 유지 |
 | 직접 설치 | 감지 분기별, npm/pypi/oci/remote에 대한 `server.json` 대응. `folder-direct.test.ts`: 직접 폴더의 합성 `0.0.0+t…` 버전이 파일과 함께 바뀜, `allowDirectInstall: false`가 미리보기(마켓플레이스 폴더는 여전히 미리보기 됨)·추가·계획에서 거부 |
-| 로컬 폴더(§7.7) | `source-input.test.ts`를 `path.posix`와 `path.win32` 규칙으로: 받아들이는 폴더 형태는 모두 정규화되고 거부하는 형태는 모두 사유를 밝히며, `a/b`는 GitHub 약식으로 남음. 모든 호출을 기록하는 `fixtures/folder-fs.ts`의 볼륨으로: `folder-consent.test.ts` — UNC 경로는 호출 없이, 공유에 매핑된 드라이브는 `queryDosDevice`만으로 `confirm`을 답함, 같은 입력이 `allowLocalSources: false`에서 호출 없이 차단됨, 확인한 폴더는 읽기 도구 자신의 호출로만 읽힘(`realpath` 없음), `/tmp → private/tmp`와 그 자체가 링크인 루트가 해석됨, `\\attacker\share`로 가는 상위 링크는 그곳에 호출 없이 `link-to-network`, 정규 경로에서만 보이는 차단은 파일을 열기 전에 미리보기를 끝냄, Windows 8.3 짧은 이름은 긴 이름으로 표기됨. `folder-real-fs.test.ts` — 이 컴퓨터의 실제 파일 시스템에서(macOS와 Windows에서 실행): 네트워크 경로는 호출 전에 답함, 안쪽 링크(Windows는 정션)는 읽고 폴더를 벗어나는 링크는 읽지 않고 거부, 두 번 닿는 디렉터리는 고리, 볼륨 자신의 대소문자 규칙. `folder-tree.test.ts` — 안쪽 링크는 파일로 읽힘, 바깥 링크와 공유로 가는 링크 사슬·정션은 대상에 호출 없이 텍스트에서 멈춤, 매핑으로 판정한 네트워크 드라이브, 고리, `fstat` 불일치, 그대로 남은 상위 교체(`changed-during-read`, 바깥 바이트는 패키지에 없음)와 재확인 전에 되돌린 교체라는 잔여 위험, 건너뛰는 목록, NFD/NFC와 충돌, 특수 파일, 플러그인에서 빠진 항목. `folder-identity.test.ts` — 대소문자 구분 볼륨은 두 철자를 두 소스로 둠, `allow` `path:`는 그 철자만, `block`은 모든 철자, 대소문자 무시 볼륨과 별칭 디렉터리는 디스크 철자와 `dev`/`ino`로 한 소스, 중첩 거부. `folder-sync.test.ts` — `SKILL.md`를 고치면 리비전이 바뀜, git 명령과 다운로드 없음, 폴더의 버전만 제공, 백그라운드 `permission` 실패가 다시 불러온 뒤에도 이유를 지니고 표시됨, 이제 다른 곳을 가리키는 저장 경로는 대상을 읽지 않고 `moved`. `folder-plan.test.ts` — 계획과 실행 사이에 고친 플러그인 파일과 `SKILL.md`는 계획한 바이트로 설치됨, 선언한 릴리스를 내려받지 않음, 실행 비트 유지, `process` 진입점은 `process-entry-requires-pinned-artifact`로 거부, `plugin.json` 없는 폴더는 `folder-has-no-build`, 사본은 지워짐. `plugin-ladder.test.ts` — `src/`가 있는 git 트리는 여전히 tree 단계에서 실패. `policy.test.ts` — `allowLocalSources`, `path:` 없는 `allow` 목록, `path:` 접두사와 Windows 철자, `path:`와 git 패턴의 분리, `additional[].path`와 그 거부. `registry.test.ts` — 폴더 항목과 식별자의 왕복, 경로에 묶인 확인, 전송과 짝지은 핀, `network-folder`를 지닌 관리 폴더. `windows-path-kind-launcher.test.ts`, 그리고 Windows에서 `scripts/test-windows-path-kind.mjs`(CI 단계 *Verify Windows folder classification*): `C:`는 볼륨으로, `subst` 드라이브(그리고 그 `subst`)는 대상으로, 쓰지 않거나 지운 드라이브는 닫힌 쪽으로 실패 |
+| 로컬 폴더(§7.7) | `source-input.test.ts`를 `path.posix`와 `path.win32` 규칙으로: 받아들이는 폴더 형태는 모두 정규화되고 거부하는 형태는 모두 사유를 밝히며, `a/b`는 GitHub 약식으로 남음. 모든 호출을 기록하는 `fixtures/folder-fs.ts`의 볼륨으로: `folder-consent.test.ts` — UNC 경로는 호출 없이, 공유에 매핑된 드라이브는 `queryDosDevice`만으로 `confirm`을 답함, 같은 입력이 `allowLocalSources: false`에서 호출 없이 차단됨, 확인한 폴더는 읽기 도구 자신의 호출로만 읽힘(`realpath` 없음), `/tmp → private/tmp`와 그 자체가 링크인 루트가 해석됨, `\\attacker\share`로 가는 상위 링크는 그곳에 호출 없이 `link-to-network`, 정규 경로에서만 보이는 차단은 파일을 열기 전에 미리보기를 끝냄, Windows 8.3 짧은 이름은 긴 이름으로 표기됨, 자동 마운트 경로로 가는 상대 링크는 확인 여부와 상관없이 그 아래 호출 없이 `link-to-network`, 자동 마운트 경로의 다른 철자·로컬 링크 뒤에 자동 마운트 경로에 닿는 구성 요소·자동 마운트 루트를 담은 정식 경로는 각각 건드리기 전에 `confirm`, 매핑 없는 드라이브는 경고하고 실행할 수 없는 분류 도우미는 그 원인으로 실패. `folder-real-fs.test.ts` — 이 컴퓨터의 실제 파일 시스템에서(macOS와 Windows에서 실행): 네트워크 경로는 호출 전에 답함, 안쪽 링크(Windows는 정션)는 읽고 폴더를 벗어나는 링크는 읽지 않고 거부, 두 번 닿는 디렉터리는 고리, 볼륨 자신의 대소문자 규칙, `.git`으로 가는 링크는 그 아래를 건드리지 않고 거부, 하드 링크는 일반 파일로 읽힘. `folder-tree.test.ts` — 안쪽 링크는 파일로 읽힘, 바깥 링크와 공유로 가는 링크 사슬·정션은 대상에 호출 없이 텍스트에서 멈춤, 매핑으로 판정한 네트워크 드라이브, 고리, `fstat` 불일치, 그대로 남은 상위 교체(`changed-during-read`, 바깥 바이트는 패키지에 없음)와 재확인 전에 되돌린 교체라는 잔여 위험, 건너뛰는 목록, 건너뛰는 항목으로 가는 링크(`.GIT`이나 8.3 별칭으로도)는 `link-to-skipped`이고 그런 항목을 가리키는 인덱스 경로는 없는 것, 확인 없는 루트 아래의 자동 마운트 경로는 건드리기 전에 멈춤, 확인한 공유에서 다른 서버로 가는 상대 링크는 `link-to-network`, NFD/NFC와 충돌, 특수 파일, 플러그인에서 빠진 항목. `folder-identity.test.ts` — 대소문자 구분 볼륨은 두 철자를 두 소스로 둠, `allow` `path:`는 그 철자만, `block`은 모든 철자, 대소문자 무시 볼륨과 별칭 디렉터리는 디스크 철자와 `dev`/`ino`로 한 소스, 중첩은 경로로, 그리고 별칭을 거쳐 양쪽 순서 모두 거부. `folder-sync.test.ts` — `SKILL.md`를 고치면 리비전이 바뀜, git 명령과 다운로드 없음, 폴더의 버전만 제공, 백그라운드 `permission` 실패가 다시 불러온 뒤에도 이유를 지니고 표시됨, 이제 다른 곳을 가리키는 저장 경로는 대상을 읽지 않고 `moved`. `folder-plan.test.ts` — 계획과 실행 사이에 고친 플러그인 파일과 `SKILL.md`는 계획한 바이트로 설치됨, 선언한 릴리스를 내려받지 않음, 실행 비트 유지, `process` 진입점은 `process-entry-requires-pinned-artifact`로 거부, `plugin.json` 없는 폴더는 `folder-has-no-build`, 사본은 지워짐. `plugin-ladder.test.ts` — `src/`가 있는 git 트리는 여전히 tree 단계에서 실패. `policy.test.ts` — `allowLocalSources`, `path:` 없는 `allow` 목록, `path:` 접두사와 Windows 철자, `path:`와 git 패턴의 분리, `additional[].path`와 그 거부. `registry.test.ts` — 폴더 항목과 식별자(조상 포함)의 왕복, 경로에 묶이고 그 경로의 다른 철자에는 없는 확인, 전송과 짝지은 핀, `network-folder`를 지닌 관리 폴더. `windows-path-kind-launcher.test.ts`(종료 코드 1은 "매핑 없음", 없거나 시작하지 못하거나 시간을 넘기거나 형식 밖인 도우미는 원인과 할 일로 거부), 그리고 Windows에서 `scripts/test-windows-path-kind.mjs`(CI 단계 *Verify Windows folder classification*): `C:`는 볼륨으로, `subst` 드라이브(그리고 그 `subst`)는 대상으로, 쓰지 않거나 지운 드라이브는 닫힌 쪽으로 실패 |
 | 서비스 | `former-service.json` 파싱, `movedFrom` 있을 때와 없을 때의 `movedTo`, 빌드 상수 변경 시 초기화, 정책 우선, 공지 동등성, 라벨 대체 |
 | E2E | 패키징된 개발 빌드(개발 플래그로 루프백 허용)에서 로컬 HTTP git 마켓플레이스를 추가하고, 종류별로 하나씩 설치하고, 업데이트하고, 소스를 제거. 개발 플래그 없이는 같은 종류의 소스가 픽스처 서버가 요청을 받기 전에 `unencrypted`와 `this-computer`를 묻고, 미리보기·카드·소스 행이 배지를 보임 |
 
@@ -2674,12 +2692,16 @@ git은 원격을 스스로 해석합니다. 그래서 검사에는 공개 주소
      `\Device\CdRom<n>`, `\Device\Floppy<n>`이거나, 경로가 이 규칙으로 다시 로컬인
      `\??\<path>`(`subst` 드라이브)일 때만 로컬입니다. 그 밖 — `\Device\Mup\…`,
      `\Device\LanmanRedirector\…`, `\Device\WebDavRedirector\…`, `\??\UNC\…`, 모르는
-     장치, 실패한 호출 — 은 `network`입니다. 여기서 잘못 짚으면 경고가 날 뿐, 거부가
-     되지는 않습니다.
+     장치, OS가 매핑 없음으로 답한 호출 — 은 `network`입니다. 여기서 잘못 짚으면 경고가
+     날 뿐, 거부가 되지는 않습니다. 도우미가 없거나, 시작하지 못하거나, 시간을 넘기거나,
+     약속한 형식 밖으로 답하면 드라이브에 대한 답이 아닙니다. 입력은 그 원인과 할 일을
+     밝히며 실패합니다. 그때 `network`로 짚으면 깨진 설치가 경고 뒤에 숨습니다.
    - `GetDriveTypeW`는 드라이브 루트 경로를 받으므로 쓰지 않습니다.
    - macOS와 Linux에서 자동 마운트 경로(`/net/<host>/…`, macOS의 `/Network/…`)는
-     어휘적으로 `network`입니다. 그 밖의 경로는 로컬입니다: 이미 마운트된 공유는
-     마운트할 때 인증했고, 읽어도 새 자격 증명을 보내지 않습니다.
+     어휘적으로 `network`이며, 볼륨이 기본적으로 대소문자를 무시하는 macOS에서는
+     대소문자를 무시하고 비교합니다. `/`도 읽으면 자동 마운트 루트에 닿으므로
+     `network`입니다. 그 밖의 경로는 로컬입니다: 이미 마운트된 공유는 마운트할 때
+     인증했고, 읽어도 새 자격 증명을 보내지 않습니다.
    - 호출은 기존 Windows 도우미 계열(`native/windows-job/`,
      `src/main/windows-job-launcher.ts`처럼 실행)의 작은 네이티브 도우미
      `native/windows-path-kind/`를 거칩니다. 이 도우미는 매핑을 출력할 뿐 다른 일은
@@ -2693,8 +2715,8 @@ git은 원격을 스스로 해석합니다. 그래서 검사에는 공개 주소
    `realpath`는 부르지 않습니다. 루트를 정하는 동안, 입력한 경로 자신의 구성 요소 중
    링크나 정션 — macOS의 `/tmp → /private/tmp` 같은 조상이나 루트 자체 — 은 패키지 포함
    규칙이 아니라 **루트 해석**으로 다룹니다:
-   - `readlink`로 텍스트를 읽어 §18.4.5 규칙 1처럼 분류합니다. 네트워크 텍스트는
-     `link-to-network`로 거부하고 대상은 건드리지 않습니다;
+   - `readlink`로 텍스트를 읽어 §18.4.5 규칙 1처럼, 텍스트와 그것이 풀리는 대상을
+     분류합니다. 네트워크 위치면 `link-to-network`로 거부하고 대상은 건드리지 않습니다;
    - 그 밖의 텍스트는 링크의 디렉터리에 대해 어휘적으로 해석하고 그곳에서 계속 걸어가며,
      만나는 모든 링크에 같은 규칙과 §18.4.5 규칙 4의 고리 한도를 적용합니다. 여기서는 포함
      규칙을 적용하지 않습니다: 사용자는 이 경로에 동의했고, 로컬 링크는 그 경로가 있는
@@ -2706,8 +2728,18 @@ git은 원격을 스스로 해석합니다. 그래서 검사에는 공개 주소
    그것입니다. 그런 항목이 여럿이면 `SOURCE_LOCAL_UNREADABLE` 사유 `ambiguous-case`로
    실패합니다. 결과는 디렉터리여야 하고, `marketplace.2.json`이나 `marketplace.json`이라는
    일반 파일은 그 디렉터리로 바꿉니다. 3단계의 정책을 이 **정식 경로**에 다시 적용하고,
-   이제야 드러난 차단이면 추가가 끝납니다. 저장하는 `path`는 정식 경로이고, 입력과
-   다르면 대화상자가 "<입력>에서 해석됨"을 보여 줍니다.
+   이제야 드러난 차단이면 추가가 끝납니다. 네트워크 분류도 다시 적용하며,
+   `network-folder` 없이 다른 컴퓨터에 있는 정식 경로는 그 아래를 읽기 전에 `confirm`으로
+   답합니다. 저장하는 `path`는 정식 경로이고, 입력과 다르면 대화상자가
+   "<입력>에서 해석됨"을 보여 줍니다.
+
+   **모든 경로는 건드리기 전에 분류합니다.** 2단계는 입력한 텍스트를 판정하지만, 걸어가는
+   동안 텍스트가 이름 붙이지 않은 네트워크 위치에 닿을 수 있습니다: `/network/…`의 디스크
+   표기는 `/Network/…`이고, `/`로 가는 로컬 링크 뒤의 구성 요소는 `net/<host>`일 수
+   있습니다. 그래서 해석과 그 뒤 읽기의 모든 `lstat`, `readdir`, `readlink`, `open`은 그
+   경로를 2단계처럼 먼저 분류하는 울타리(`fenceFolderFs`)를 거칩니다. `network-folder`가
+   없으면 다른 컴퓨터의 경로는 건드리지 않고 `confirm`으로 답하고, 있으면 울타리는
+   열리며 링크는 여전히 규칙 1로 판정합니다.
 
 저장된 폴더를 나중에 읽을 때(동기화, 계획, 새로 고침)마다 저장된 경로에서 2–4단계를
 되풀이하므로, 공유로 다시 매핑된 드라이브 문자나 링크로 바뀐 구성 요소를 읽기 전에
@@ -2776,7 +2808,13 @@ git은 원격을 스스로 해석합니다. 그래서 검사에는 공개 주소
   정합니다. 그러면 한 폴더의 두 표기가 두 소스가 되어 패키지가 두 번 보일 수 있지만,
   새로 허용되는 것은 없습니다.
 - 이미 소스인 폴더, 또는 소스를 포함하거나 소스 안에 있는 폴더는 그 소스를 명시한
-  `SOURCE_ID_TAKEN`으로 거부합니다: 중첩되면 패키지가 두 번 나열됩니다.
+  `SOURCE_ID_TAKEN`으로 거부합니다: 중첩되면 패키지가 두 번 나열됩니다. 먼저 경로로,
+  그다음 별칭(한 디렉터리의 다른 드라이브 문자나 공유, firmlink, bind 마운트)을
+  꿰뚫어 보는 식별자로 판정합니다. 4단계는 폴더와 정식 경로에서 그 위 모든
+  디렉터리의 `dev`/`ino`를 기록하고, 읽을 때마다 소스의 `state.json`
+  (`folder.ancestors`)에 저장합니다. 새 폴더의 조상 중 하나가 소스의 디렉터리면 그
+  안에 있는 것이고, 새 폴더가 소스의 기록된 조상 중 하나면 그것을 포함하는 것입니다.
+  0인 식별자는 위와 같이 판정에 쓰지 않습니다.
 - 폴더 소스와 git 소스는 폴더가 그 저장소의 체크아웃이더라도 같은 소스가 아닙니다. 같은
   `(kind, name)`은 카드 두 장으로 보이고(§15.1), 두 번째를 설치하면 소스 전환입니다.
 - `SourceEntry`(`registry.ts:39-49`)에 `url`과 배타적인 `path?: string`(슬라이스 D1)과
@@ -2798,8 +2836,10 @@ git은 원격을 스스로 해석합니다. 그래서 검사에는 공개 주소
   호출이 대상을 건드리기 전에 텍스트로 판단합니다:
   1. 네트워크 위치를 가리키는 텍스트는 텍스트만으로 거부합니다: `\\…`, `//…`,
      `\??\UNC\…`, `\\?\UNC\…`, 장치 경로, 2단계가 `network`로 분류하는 드라이브 문자,
-     자동 마운트 경로. `CONTENT_RULE_VIOLATION` 사유 `link-to-network`가 링크를
-     명시합니다. 네트워크 폴더 소스 안에서도 같습니다: 사용자는 그 공유에 동의했지,
+     자동 마운트 경로. 텍스트가 (규칙 2의 어휘적 해석으로) 링크 자신의 것이 아닌 네트워크
+     위치로 풀려도 같습니다: 상대 텍스트도 그런 곳을 가리킬 수 있습니다(`/`에서의
+     `Network/Servers/…`, `/net/<host>` 아래의 `../../other`).
+     `CONTENT_RULE_VIOLATION` 사유 `link-to-network`가 링크를 명시합니다. 네트워크 폴더 소스 안에서도 같습니다: 사용자는 그 공유에 동의했지,
      그 링크가 가리키는 서버들에 동의하지 않았습니다.
   2. 아니면 텍스트를 링크 자신의 디렉터리에 대해 **어휘적으로** 해석합니다. 소스 루트
      밖이면 사유 `link-outside-folder`이고 대상은 건드리지 않습니다.
@@ -2827,7 +2867,18 @@ git은 원격을 스스로 해석합니다. 그래서 검사에는 공개 주소
   사용자가 소스로 고른 폴더에 동시에 쓰는 로컬 프로세스가 필요하며, 막지 않고 명시해
   둡니다.
 - 어느 깊이에서든 조용히 건너뛰고, 읽거나 다이제스트하거나 설치하지 않음: `.git/`,
-  `.DS_Store`, `._*`, `Thumbs.db`, `desktop.ini`.
+  `.DS_Store`, `._*`, `Thumbs.db`, `desktop.ini`(대소문자 무시). 이 규칙은 나열하는
+  이름만이 아니라 읽기가 따라가는 모든 경로에 적용됩니다: 각 구성 요소는 부모 목록의
+  철자를 따르고(입력 철자가 다르면 — 대소문자 변형, Windows 8.3이나 끝 점 별칭 —
+  `dev`/`ino`가 같은 항목), 그래서 `.GIT`이나 `GIT~1`은 `.git`입니다. 대상이 건너뛰는
+  항목을 지나는 링크는 `CONTENT_RULE_VIOLATION` 사유 `link-to-skipped`로 패키지를
+  실패시키며 그 아래는 나열하지도 열지도 않습니다. 건너뛰는 항목을 가리키는 경로(인덱스
+  항목)는 아무것도 찾지 못합니다.
+- **하드 링크**는 일반 파일이고 다른 파일처럼 읽습니다. 읽기가 지키는 것은 inode
+  격리가 아니라 경로 포함입니다: 하드 링크는 파일만 가리키고, 디렉터리나 다른 볼륨,
+  다른 컴퓨터의 것은 가리키지 못하므로, 사용자가 이미 읽을 수 없던 바이트나 서버에
+  닿지 않습니다. 링크 수가 1보다 큰 파일을 거부하면 평범한 트리(패키지 관리자 저장소,
+  `cp -al` 사본)가 거부되고, 포함 규칙이 이미 막지 않는 것은 아무것도 막지 못합니다.
 - 이름은 NFC(git이 저장하는 형식)로 정규화합니다. NFC로 같아지거나 대소문자만 다른
   두 이름은 패키지를 실패시킵니다(§5.5).
 - 실행 비트는 macOS와 Linux에서 `lstat`에서 가져옵니다. Windows에는 없으므로 그곳에서는
@@ -3564,6 +3615,7 @@ argv에 있는 경로만 덮습니다(`plugin-bundled-command.ts:37-71`). 바뀌
 | · `deep-link-path` | R | "링크로는 이 컴퓨터의 폴더를 고를 수 없습니다." | "폴더를 직접 고르세요." |
 | `CONTENT_RULE_VIOLATION` · `link-outside-folder` | R | "<경로>가 폴더 밖(<대상>)을 가리킵니다. Ave는 폴더 안의 파일만 설치합니다." | "링크 대신 파일을 폴더 안으로 복사하세요." |
 | · `link-to-network` | R | "<경로>가 네트워크 위치(<대상>)를 가리킵니다. Ave는 다른 컴퓨터를 가리키는 링크를 따라가지 않습니다." | "링크 대신 파일을 폴더 안으로 복사하세요." |
+| · `link-to-skipped` | R | "<경로>가 Ave가 읽지 않는 <대상>(버전 관리 데이터나 시스템 파일)을 가리킵니다." | "링크 대신 파일을 폴더 안으로 복사하세요." |
 | · `special-file`, `case-collision`, `extension`, `limit` | R | 경로와 규칙(§5.4, §5.5) | "<경로>를 지우거나 이름을 바꾸세요." |
 | `SOURCE_AUTH_REQUIRED` · `token` | E | "<호스트>에 로그인해야 합니다." | 토큰 소스: 행의 *토큰 설정…*(저장된 토큰이 있으면 "<호스트>가 저장된 토큰을 받아들이지 않았습니다", *토큰 설정…*으로 교체); 토큰 없이 직접 추가: *소스 제거* 후 *액세스 토큰*으로 다시 추가; 토큰 없는 조직 소스: "관리자에게 알리세요"; 입력 중인 주소: *로그인*의 *액세스 토큰*; GitHub는 "Contents 읽기 권한이 있는 fine-grained 토큰" |
 | · `token-no-access` | E | "<호스트>가 저장된 토큰으로는 이 소스 주소에 저장소가 없다고 답했습니다. 토큰에 권한이 없을 수 있습니다." | *토큰 설정…*으로 교체. 직접 추가한 소스는 주소가 틀렸다면 *소스 제거* 후 다시 추가 |
@@ -3827,7 +3879,7 @@ D1 뒤에 D2; D1과 E 뒤에 F; G는 마지막입니다.
 |---|---|
 | 1–4 | 네 가지 결과, 입력·카탈로그 대상 표 분리, 주소 분류를 `network-guard.ts` 한 곳에서, 트래픽이나 폴더 접근 전 한 번 확인, 분류 단위 저장 |
 | 5–7 | 카탈로그 http 다운로드는 sha256 핀으로 수용; 다른 사내 호스트는 `internal-downloads` 확인(`internal-network`로 생기지 않음, 경고가 공격을 설명); 다른 포트의 루프백은 거부 |
-| 8–15 | 폴더에 git 명령 없음, 작업 트리로 읽음, 제자리 읽기와 계획의 바이트 확보, 리비전 핀, 단일 `marketplace.json` URL과 `git://` 미지원, 정식 루트 아래에서 텍스트로 따라가는 링크 규칙, 루트 자체를 정할 때는 로컬 조상·루트 링크를 네트워크 검사 뒤 따라감, 디렉터리 사슬 재검사로 지속된 교체 감지(교체 후 되돌림은 명시한 잔여 위험), 폴더 소스는 내려받지 않음(`folder` 단계), 정식 경로나 `dev`/`ino` 식별과 보수적 대소문자 규칙 |
+| 8–15 | 폴더에 git 명령 없음, 작업 트리로 읽음, 제자리 읽기와 계획의 바이트 확보, 리비전 핀, 단일 `marketplace.json` URL과 `git://` 미지원, 정식 루트 아래에서 텍스트로 따라가는 링크 규칙(텍스트와 그것이 풀리는 대상 모두 네트워크 검사), 루트 자체를 정할 때는 로컬 조상·루트 링크를 네트워크 검사 뒤 따라감, 걸음과 읽기가 건드리는 모든 경로를 먼저 분류하는 울타리, 링크와 별칭을 거쳐도 건너뛰는 항목, 일반 파일로 읽는 하드 링크, 디렉터리 사슬 재검사로 지속된 교체 감지(교체 후 되돌림은 명시한 잔여 위험), 폴더 소스는 내려받지 않음(`folder` 단계), 정식 경로나 `dev`/`ino` 식별과 보수적 대소문자 규칙 |
 | 16–17 | 탐색(동기화·폐기)은 6시간, 업데이트 적용 확인은 부팅 때와 하루 한 번이며 언제나 탐색을 먼저 돌리거나 합류; 실패 뒤에는 `lastAttemptAt`에서 한 시간마다, 성공 뒤에는 `lastSuccessAt`에서 간격만큼; 탐색은 적용 큐를 기다리지 않음 |
 | 18–28 | 모든 출처 기본 켬(http는 `unencrypted-updates` 전까지 끔), 결정 순서, 동의 지문·`unknown` 필드·승인을 잃는 구성 요소는 검토, `mcp`는 항상 검토, 로컬 실행 구성 요소가 없는 패키지만 텍스트·데이터 자동 적용, 승인 다이제스트는 선언·고정 파일·**패키지 전체**(`plugin.json` `version`만 정규화)이고 정할 수 없으면 `null`, 코드 없는 변경은 한 번의 승인으로 싸게 검토, 두 검사 지점과 늘 스테이징하는 수동 검토, 부팅 포함 `onIdle`과 30분 단계 올림, 에이전트 플러그인 MCP 리스 원천(등록 도구와 `withBundledLease`가 한 도우미로 획득)과 이전 `<version>/`과 겹치지 않는 `.installs/` 설치 주소 디렉터리, 필수 설치는 권한만 정책이 승인하고 승인 없는 구성 요소는 `approval-pending`, 롤백 시 건너뛰기, 동의 보류·커밋 뒤 실패는 시도가 아님 |
 | 29–39 | 오류와 소스 상태의 `detail`, 빠짐없는 문장, 스튜디오 *파일에서 설치*는 그대로, 정책 키와 작업마다 정책 다시 읽기, http 자격 증명은 등재로 생기지 않음, 딥 링크 폴더 거부, 파일 호출 전 `QueryDosDeviceW`로 네트워크 폴더 분류, `process` 규칙 비완화, 스위치는 설정·http 전제는 main, 슬라이스 순서(D1은 C 뒤, F는 D1·E 뒤), 주소에 따른 거부를 Ave가 소유한 전송(다운로드, http/https 위 git)의 연결에 묶고, SSH는 `ssh -G` 호스트 이름의 사전 검사만 하며 고정 옵션 없음, PAC 프록시(로컬·원격)는 검사한 소켓 너머를 신뢰하고 ssh `ProxyCommand`·`ProxyJump`는 사용자가 설정한 프로그램처럼 신뢰, 버전 2 승인 이관(활성 세대이고 선언 지문이 같으면 설치된 바이트로 다이제스트, 아니면 첫 업데이트 검토) |
