@@ -2009,10 +2009,17 @@ blocks may not.
   configuration with `ssh -G [-p <port>] [<user>@]<host>`, run with the same
   environment as the git call. That command prints the configuration after
   evaluating `Host` and `Match` blocks (ssh(1), `-G`). The runner resolves
-  the printed `hostname` once, classifies every answer, and applies the
-  refusals and blocks of §18.3 #3 and #4 and `blockPrivateNetworks` to the
-  answer set as in *One lookup per connection*; when they leave no answer,
-  git is not started. When `proxycommand` or `proxyjump` is set, the target
+  the printed `hostname` once and classifies every answer. **If any answer
+  violates a hard refusal (§18.3 #3 and #4) or a managed block
+  (`blockPrivateNetworks`), the operation is refused** with the refusal of
+  the most restrictive such class, and git is not started. The subset
+  filtering of *One lookup per connection* does not apply: ssh receives the
+  host name, not the checked answers, and may connect to any of them. This
+  is the baseline's rule for a git remote today (`checkRemote`,
+  `network-gate.ts:116-125`, through `ensurePublicHttpUrl`, which refuses
+  when any resolved address is blocked, `core/network-guard.ts:323-338`).
+  Answers that need a confirmation the source lacks give
+  `SOURCE_CONFIRMATION_REQUIRED` (§18.5), as elsewhere. When `proxycommand` or `proxyjump` is set, the target
   is resolved beyond the proxy, so the runner does not resolve it, the same
   as a PAC proxy that resolves the target itself, and the ssh proxy rule
   above applies. The runner passes no `HostName`, `HostKeyAlias` or
@@ -2052,6 +2059,12 @@ blocks may not.
       it or in argv (revert: add a pin option);
     - a printed `hostname` whose resolver answer is `169.254.169.254` fails
       with refusal #3 and git is not started (revert: skip the preflight);
+    - **mixed answers**, each from a fixed resolver fake answering both
+      addresses on every call: a public address plus `169.254.169.254`
+      fails with refusal #3, and a public address plus `10.0.0.5` under
+      `blockPrivateNetworks` fails with the policy block; git is never
+      started in either case (revert: keep the public answer and run
+      git);
     - a config with `proxycommand` set is not resolved by the runner;
     - the documented boundary: the resolver fake answers a public address
       to the preflight and `127.0.0.1` to any later lookup. The preflight
@@ -3011,7 +3024,8 @@ nor shown, and the next version is.
     reason `package-changed` (§18.8): "This package changed since you
     reviewed it. Review it again." The review then reloads. A component
     whose digest is `null` binds by generation alone: the reviewed
-    generation id must equal the installed one exactly, and that id names
+    generation (an agent plugin's `installId`, an extension's artifact
+    generation id) must equal the installed one exactly, and it names
     exactly one artifact (below).
   - **extensions**: *Review* opens the plugin's trust rows in
     `PluginConfigTab.tsx`. That tab lists through
@@ -3020,8 +3034,11 @@ nor shown, and the next version is.
     preload `internal-api-surface.ts:527-534`). The existing request is
     extended; no parallel channel is added:
     - list rows (`PluginContributionTrustRow`,
-      `plugin-bundle-lifecycle.ts:141-149`, which already carries
-      `generationId`) gain `approvalDigest`;
+      `plugin-bundle-lifecycle.ts:141-149`) gain `approvalDigest`. Their
+      `generationId` is already the projection's `owner.generationId`,
+      which the projections set from the **artifact** generation id
+      (`artifactGenerationId`, `plugin-mcp-projection.ts:206-212`,
+      `plugin-hook-projection.ts:78`), not the coordinator's generation id;
     - a `set` request with `approved: true` must carry `generationId` and
       `approvalDigest` from the row it shows; without them the handler
       returns `invalid-contribution-trust-request` (`plugins.ts:573`). A
@@ -3031,16 +3048,24 @@ nor shown, and the next version is.
       `updateHookTrust`/`updateMcpTrust` check it inside
       `serialize(pluginId)` (`plugin-bundle-lifecycle.ts:355-357`,
       `:383-385`), the serialization a new generation's publication takes:
-      the active generation's id must equal `generationId`, and the
-      projection's approval digest must equal `approvalDigest`. A plugin
-      generation id commits to every receipt-covered byte, so it identifies
-      the reviewed artifact. A mismatch returns
+      the active projection's `owner.generationId`, which is the active
+      generation's `artifactGenerationId`, must equal `generationId`, and
+      the projection's approval digest must equal `approvalDigest`. The
+      coordinator's generation id (`generation.generationId`) also hashes
+      `runtime.activationId` (`plugin-bundle-lifecycle.ts:546-551`), so it
+      changes when the same artifact is activated again; it stays the
+      activation identity (`owner.activationId`) and is never compared. The
+      artifact generation id hashes `plugin.json` and the install receipt
+      (`:546`), so it identifies the reviewed artifact. A mismatch returns
       `contribution-trust-review-stale`, which the tab shows with the same
       catalog sentence and then reloads its rows.
+    - an extension's `approval-pending` entry in `UpdateStatusView` carries
+      no `pendingApproval`: its review reads the trust list above.
   - **agent plugins**: *Review* opens the update review (§15.6) in
     component mode, showing the `consentDelta` rows of the unapproved
     components, from the package's `pendingApproval` in `UpdateStatusView`
-    (§18.9). Its approve action calls the new channel
+    (§18.9), which is present exactly for an agent plugin's
+    `approval-pending` entry. Its approve action calls the new channel
     `ave:marketplace:components:approve`
     `(key, installId, consents: ReviewedComponentConsent[])`, where each
     consent is the existing `ComponentConsent`
@@ -3285,11 +3310,16 @@ interface UpdateStatusView {
          | "applied" | "applied-not-running" | "approval-pending";   // §18.7.5, exactly
     reasons?: string[]; failure?: { code: GitMarketplaceErrorCode; detail?: MarketplaceErrorDetail; attempts: number };
     appliedAt?: string;
-    pendingApproval?: { installId: string; consentDelta: ConsentDelta;  // present exactly for "approval-pending"
-                        components: ReviewedComponentConsent[] } }>;
+    pendingApproval?: { installId: string; consentDelta: ConsentDelta;  // present exactly for an agent plugin's
+                        components: ReviewedComponentConsent[] } }>;  // "approval-pending"; an extension's has none (trust list)
 }
 type ReviewedComponentConsent = ComponentConsent & { approvalDigest: string | null };
 ```
+
+`pendingApproval` is present exactly for an agent plugin's
+`approval-pending` entry. An extension's `approval-pending` entry carries no
+payload; its review uses `ave:plugins:contribution-trust:list` and `:set`
+(§18.7.5).
 
 `CHANNELS.gitMarketplace` (`app-contract.ts:302-327`) gains `sourcesAcknowledge`,
 `sourcesPickFolder`, `sourcesReveal`, `updatesStatus`, `updatesCheck`,
@@ -3679,7 +3709,14 @@ The E2E flows named below run in `test/e2e/ui/`.
       returns `contribution-trust-review-stale`, and B's record is not
       approved (revert: approve the active generation);
     - with a `null`-digest component, the same replacement is rejected by
-      the generation check alone.
+      the generation check alone;
+    - **an unchanged generation's approval succeeds**: with no replacement,
+      `components:approve` with the current `installId` approves, and
+      `contribution-trust:set` with the row's `generationId` and
+      `approvalDigest` approves, also when the extension was activated
+      again between the list and the submit, which gives a new coordinator
+      generation id for the same artifact (revert: compare the coordinator's
+      `generation.generationId`).
   - E2E, `test/e2e/ui/git-marketplace-auto-update.spec.ts`, with its own
     fixture:
     - the app launches with an isolated `AVE_HOME` and
@@ -3742,4 +3779,4 @@ The E2E flows named below run in `test/e2e/ui/`.
 | 37 | Eight slices; B first; C and E in parallel; D1 after C; F after D1 and E (§18.10) | Each is coherent at its boundary; the first folder-accepting slice carries its own consent; F needs the folder contracts |
 | 38 | Address-dependent refusals and blocks bound to the connection on the transports Ave owns: pinned download transport for every supported PAC kind and `http.curloptResolve` for git over http/https. For SSH a preflight check only on the `ssh -G` host name, with no `HostName`, `HostKeyAlias` or `CheckHostIP` option. A PAC proxy, local or remote, is trusted beyond its checked socket; an ssh `ProxyCommand` or `ProxyJump` is run by ssh and trusted like any user-configured program (§18.2.4) | A separate earlier lookup lets DNS rebinding pass a hard refusal; pinning ssh changes the user's host-key and certificate identity, and host-key verification is the SSH trust anchor; Ave cannot see where a proxy connects, so the boundary is stated rather than implied |
 | 39 | A version-2 approval whose generation is active and whose fingerprint matches the installed declaration gets its approval digest from the installed bytes; any other gets `null` and its package's first update needs review (§18.7.3) | Those are the bytes the user approved and is running, already bound by the v2 identity; anything else cannot be shown equal |
-| 40 | An approval of an installed component carries the reviewed generation (`installId`, or a plugin's `generationId`) and each component's `approvalDigest`, re-validated under install and publication serialization; a mismatch approves nothing (§18.7.5) | A required update can replace the generation while the user reviews it, and a component digest does not cover the whole tree |
+| 40 | An approval of an installed component carries the reviewed generation (an agent plugin's `installId`, or an extension's artifact generation id, never the activation-bound coordinator id) and each component's `approvalDigest`, re-validated under install and publication serialization; a mismatch approves nothing (§18.7.5) | A required update can replace the generation while the user reviews it, and a component digest does not cover the whole tree |

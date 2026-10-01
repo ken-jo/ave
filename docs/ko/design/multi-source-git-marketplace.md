@@ -1857,9 +1857,14 @@ git은 원격을 스스로 해석합니다. 그래서 검사에는 공개 주소
 - **ssh 위 git: 사전 검사만.** 러너는 git 호출과 같은 환경으로
   `ssh -G [-p <port>] [<user>@]<host>`를 돌려 유효 설정을 읽습니다. 이 명령은 `Host`와
   `Match` 블록을 평가한 뒤의 설정을 출력합니다(ssh(1), `-G`). 러너는 출력된 `hostname`을
-  한 번 해석해 모든 응답을 분류하고, *연결마다 조회 한 번*과 같이 §18.3 #3·#4와
-  `blockPrivateNetworks`의 거부와 차단을 응답 묶음에 적용합니다. 남는 응답이 없으면 git을
-  시작하지 않습니다. `proxycommand`나 `proxyjump`가 있으면 대상은 프록시 너머에서
+  한 번 해석해 모든 응답을 분류합니다. **응답 중 하나라도 남는 거부(§18.3 #3·#4)나 관리
+  차단(`blockPrivateNetworks`)에 걸리면 작업을 거부하며**, 그런 분류 중 가장 엄격한 것의
+  거부로 실패하고 git을 시작하지 않습니다. *연결마다 조회 한 번*의 부분 집합 거르기는
+  적용하지 않습니다: ssh는 검사한 응답이 아니라 호스트 이름을 받으므로 어느 응답으로든
+  연결할 수 있습니다. 지금 git 원격에 대한 기준선 규칙과 같습니다(`checkRemote`,
+  `network-gate.ts:116-125`가 쓰는 `ensurePublicHttpUrl`은 해석된 주소 하나라도 막히면
+  거부, `core/network-guard.ts:323-338`). 소스가 갖지 않은 확인이 필요한 응답은 다른 곳처럼
+  `SOURCE_CONFIRMATION_REQUIRED`(§18.5)입니다. `proxycommand`나 `proxyjump`가 있으면 대상은 프록시 너머에서
   해석되므로, 대상을 스스로 해석하는 PAC 프록시와 마찬가지로 러너가 해석하지 않고 위의
   ssh 프록시 규칙이 적용됩니다. 러너는 `HostName`, `HostKeyAlias`, `CheckHostIP` 옵션을
   넘기지 않습니다: ssh는 계속 `ssh -o BatchMode=yes`(`run-git.ts:184`)로 돌고, 사용자의
@@ -1887,6 +1892,10 @@ git은 원격을 스스로 해석합니다. 그래서 검사에는 공개 주소
       `HostName`, `HostKeyAlias`, `CheckHostIP` 옵션이 없습니다(되돌림: 고정 옵션 추가);
     - 해석기 응답이 `169.254.169.254`인 `hostname`은 거부 #3으로 실패하고 git은 시작하지
       않습니다(되돌림: 사전 검사 생략);
+    - **섞인 응답**, 호출마다 두 주소를 모두 응답하는 고정 해석기 가짜로: 공개 주소와
+      `169.254.169.254`는 거부 #3으로, `blockPrivateNetworks` 아래 공개 주소와 `10.0.0.5`는
+      정책 차단으로 실패하며, 어느 경우에도 git은 시작하지 않습니다(되돌림: 공개 응답만
+      남기고 git 실행);
     - `proxycommand`가 있는 설정은 러너가 해석하지 않습니다;
     - 명시한 경계: 해석기 가짜가 사전 검사에는 공개 주소를, 이후 조회에는 `127.0.0.1`을
       응답합니다. 사전 검사는 통과하고, 러너는 조회를 정확히 한 번 하며, git은 바뀌지 않은
@@ -2692,26 +2701,35 @@ argv에 있는 경로만 덮습니다(`plugin-bundled-command.ts:37-71`). 바뀌
     아래에서** 둘 다 설치된 세대와 다시 대조합니다. 하나라도 다르면 아무것도 승인하지 않고
     `PLAN_EXPIRED` 사유 `package-changed`(§18.8)로 실패합니다: "검토한 뒤 패키지가
     바뀌었습니다. 다시 검토하세요." 그러면 검토가 다시 읽힙니다. 다이제스트가 `null`인 구성
-    요소는 세대만으로 묶입니다: 검토한 세대 id가 설치된 것과 정확히 같아야 하고, 그 id는
-    산출물 하나만 가리킵니다(아래).
+    요소는 세대만으로 묶입니다: 검토한 세대(에이전트 플러그인은 `installId`, 익스텐션은
+    산출물 세대 id)가 설치된 것과 정확히 같아야 하고, 그것은 산출물 하나만 가리킵니다(아래).
   - **익스텐션**: *검토*는 `PluginConfigTab.tsx`에서 플러그인의 신뢰 행을 엽니다. 그 탭은
     `ave:plugins:contribution-trust:list`로 나열하고 `ave:plugins:contribution-trust:set`으로
     승인합니다(`ipc/domains/plugins.ts:541-589`, preload `internal-api-surface.ts:527-534`).
     기존 요청을 넓히며, 나란한 채널은 더하지 않습니다:
-    - 나열 행(`PluginContributionTrustRow`, `plugin-bundle-lifecycle.ts:141-149`, 이미
-      `generationId`를 담음)에 `approvalDigest`를 더합니다;
+    - 나열 행(`PluginContributionTrustRow`, `plugin-bundle-lifecycle.ts:141-149`)에
+      `approvalDigest`를 더합니다. 행의 `generationId`는 이미 투영의 `owner.generationId`이고,
+      투영은 이것을 코디네이터의 세대 id가 아니라 **산출물** 세대 id(`artifactGenerationId`,
+      `plugin-mcp-projection.ts:206-212`, `plugin-hook-projection.ts:78`)로 채웁니다;
     - `approved: true`인 `set` 요청은 보여 준 행의 `generationId`와 `approvalDigest`를 담아야
       하며, 없으면 핸들러는 `invalid-contribution-trust-request`(`plugins.ts:573`)를
       돌려줍니다. 철회(`approved: false`)는 신뢰를 좁히기만 하므로 둘 다 받지 않습니다;
     - `approveHook`과 `approveMcpServer`가 그 묶음을 받고, `updateHookTrust`/`updateMcpTrust`가
       새 세대 게시가 쓰는 직렬화인 `serialize(pluginId)` 안에서
-      (`plugin-bundle-lifecycle.ts:355-357`, `:383-385`) 확인합니다: 활성 세대의 id가
-      `generationId`와 같고, 투영의 승인 다이제스트가 `approvalDigest`와 같아야 합니다.
-      플러그인 세대 id는 영수증이 덮는 모든 바이트를 묶으므로 검토한 산출물을 가리킵니다.
+      (`plugin-bundle-lifecycle.ts:355-357`, `:383-385`) 확인합니다: 활성 투영의
+      `owner.generationId`, 곧 활성 세대의 `artifactGenerationId`가 `generationId`와 같고,
+      투영의 승인 다이제스트가 `approvalDigest`와 같아야 합니다. 코디네이터의 세대
+      id(`generation.generationId`)는 `runtime.activationId`도 해시하므로
+      (`plugin-bundle-lifecycle.ts:546-551`) 같은 산출물을 다시 활성화하면 바뀝니다. 그것은
+      활성화 식별(`owner.activationId`)로 남고 비교하지 않습니다. 산출물 세대 id는
+      `plugin.json`과 설치 영수증을 해시하므로(`:546`) 검토한 산출물을 가리킵니다.
       다르면 `contribution-trust-review-stale`을 돌려주고, 탭은 같은 카탈로그 문장을 보여 준
       뒤 행을 다시 읽습니다.
+    - `UpdateStatusView`의 익스텐션 `approval-pending` 항목은 `pendingApproval`을 담지
+      않습니다: 그 검토는 위의 신뢰 목록을 읽습니다.
   - **에이전트 플러그인**: *검토*는 업데이트 검토(§15.6)를 구성 요소 모드로 열어,
-    `UpdateStatusView`에 있는 패키지의 `pendingApproval`(§18.9)에서 승인 없는 구성 요소의
+    `UpdateStatusView`에 있는 패키지의 `pendingApproval`(§18.9, 에이전트 플러그인의
+    `approval-pending` 항목에만 있음)에서 승인 없는 구성 요소의
     `consentDelta` 행을 보여 줍니다. 승인 동작은 새 채널
     `ave:marketplace:components:approve` `(key, installId, consents: ReviewedComponentConsent[])`를
     부르며, 각 동의는 기존 `ComponentConsent`(`shared/git-marketplace.ts:400-412`)에 보여 준
@@ -2917,6 +2935,9 @@ argv에 있는 경로만 덮습니다(`plugin-bundled-command.ts:37-71`). 바뀌
 
 타입(`SourceWarning`, `SourceWarningView`, `SourceView` 추가 필드, `UpdatePlanView.consentDelta`,
 `pendingApproval`과 `ReviewedComponentConsent`를 포함한 `UpdateStatusView`)은 원문 §18.9의 코드 블록과 같습니다.
+`pendingApproval`은 에이전트 플러그인의 `approval-pending` 항목에만 있습니다. 익스텐션의
+`approval-pending` 항목은 페이로드가 없고, 그 검토는 `ave:plugins:contribution-trust:list`와
+`:set`을 씁니다(§18.7.5).
 
 `CHANNELS.gitMarketplace`(`app-contract.ts:302-327`)에 `sourcesAcknowledge`,
 `sourcesPickFolder`, `sourcesReveal`, `updatesStatus`, `updatesCheck`, `updatesApplyNow`,
@@ -3009,7 +3030,7 @@ D1 뒤에 D2; D1과 E 뒤에 F; G는 마지막입니다.
   다음 미리보기가 막히고 기존 계획은 `policy-changed`로 만료; PAC 종류별(`PROXY`, `HTTPS`,
   `SOCKS5`, `SOCKS4`, 모르는 종류) 수용 사례; `trusted-proxy.test.ts`가 루프백 프록시 픽스처로
   신뢰하는 프록시 경계를 문서화한 동작으로 보여 줌; `ssh-preflight.test.ts`가 고정 옵션이 없음,
-  메타데이터 응답에서 사전 검사 거부, `ProxyCommand`는 해석하지 않음, 사전 검사 뒤 바뀐
+  메타데이터 응답과 섞인 응답(공개+메타데이터, 공개+정책 차단 사내 주소)에서 사전 검사 거부, `ProxyCommand`는 해석하지 않음, 사전 검사 뒤 바뀐
   응답이라는 명시한 잔여 위험을 확인.
 - **D1**: 호출 기록 가짜로, UNC와 `\Device\Mup\…` 드라이브의 미리보기가
   `queryDosDevice` 말고는 호출 0개로 `confirm`을 응답; `allowLocalSources: false`도 호출
@@ -3058,7 +3079,11 @@ D1 뒤에 D2; D1과 E 뒤에 F; G는 마지막입니다.
   `skills/helper/assets/rules.txt`만 바꾼 세대 B를 설치하면(서버의 구성 요소 다이제스트는
   그대로), A의 승인은 `components:approve`에서 `PLAN_EXPIRED` 사유 `package-changed`로,
   `contribution-trust:set`에서 `contribution-trust-review-stale`로 거부되고 B의 구성 요소는
-  승인되지 않으며, `null` 다이제스트 구성 요소는 세대 확인만으로 거부됨; 전용 E2E `git-marketplace-auto-update.spec.ts`는 `isE2eTestRuntime()`일 때만
+  승인되지 않으며, `null` 다이제스트 구성 요소는 세대 확인만으로 거부됨; **바뀌지 않은 세대의
+  승인은 성공** — 교체가 없으면 현재 `installId`의 `components:approve`와 행의
+  `generationId`·`approvalDigest`를 담은 `contribution-trust:set`이 승인하며, 목록과 제출
+  사이에 익스텐션이 다시 활성화되어 같은 산출물에 새 코디네이터 세대 id가 생겨도 성공;
+  전용 E2E `git-marketplace-auto-update.spec.ts`는 `isE2eTestRuntime()`일 때만
   읽는 `AVE_E2E_MARKETPLACE_SCHEDULER=1`로 실제 스케줄러를 띄우고, `unencrypted-updates`를
   확인한 뒤 *지금 확인*으로 실제 설치와 IPC 상태(`applied`)를 단언(상태 이벤트를 흉내 내지
   않음).
@@ -3075,4 +3100,4 @@ D1 뒤에 D2; D1과 E 뒤에 F; G는 마지막입니다.
 | 16–17 | 탐색(동기화·폐기)은 6시간, 업데이트 적용 확인은 부팅 때와 하루 한 번이며 언제나 탐색을 먼저 돌리거나 합류; 실패 뒤에는 `lastAttemptAt`에서 한 시간마다, 성공 뒤에는 `lastSuccessAt`에서 간격만큼; 탐색은 적용 큐를 기다리지 않음 |
 | 18–28 | 모든 출처 기본 켬(http는 `unencrypted-updates` 전까지 끔), 결정 순서, 동의 지문·`unknown` 필드·승인을 잃는 구성 요소는 검토, `mcp`는 항상 검토, 로컬 실행 구성 요소가 없는 패키지만 텍스트·데이터 자동 적용, 승인 다이제스트는 선언·고정 파일·**패키지 전체**(`plugin.json` `version`만 정규화)이고 정할 수 없으면 `null`, 코드 없는 변경은 한 번의 승인으로 싸게 검토, 두 검사 지점과 늘 스테이징하는 수동 검토, 부팅 포함 `onIdle`과 30분 단계 올림, 에이전트 플러그인 MCP 리스 원천(등록 도구와 `withBundledLease`가 한 도우미로 획득)과 이전 `<version>/`과 겹치지 않는 `.installs/` 설치 주소 디렉터리, 필수 설치는 권한만 정책이 승인하고 승인 없는 구성 요소는 `approval-pending`, 롤백 시 건너뛰기, 동의 보류·커밋 뒤 실패는 시도가 아님 |
 | 29–39 | 오류와 소스 상태의 `detail`, 빠짐없는 문장, 스튜디오 *파일에서 설치*는 그대로, 정책 키와 작업마다 정책 다시 읽기, http 자격 증명은 등재로 생기지 않음, 딥 링크 폴더 거부, 파일 호출 전 `QueryDosDeviceW`로 네트워크 폴더 분류, `process` 규칙 비완화, 스위치는 설정·http 전제는 main, 슬라이스 순서(D1은 C 뒤, F는 D1·E 뒤), 주소에 따른 거부를 Ave가 소유한 전송(다운로드, http/https 위 git)의 연결에 묶고, SSH는 `ssh -G` 호스트 이름의 사전 검사만 하며 고정 옵션 없음, PAC 프록시(로컬·원격)는 검사한 소켓 너머를 신뢰하고 ssh `ProxyCommand`·`ProxyJump`는 사용자가 설정한 프로그램처럼 신뢰, 버전 2 승인 이관(활성 세대이고 선언 지문이 같으면 설치된 바이트로 다이제스트, 아니면 첫 업데이트 검토) |
-| 40 | 설치된 구성 요소의 승인은 검토한 세대(`installId`, 플러그인은 `generationId`)와 구성 요소마다 `approvalDigest`를 담고, 설치·게시 직렬화 아래에서 다시 대조하며, 다르면 아무것도 승인하지 않음 |
+| 40 | 설치된 구성 요소의 승인은 검토한 세대(에이전트 플러그인은 `installId`, 익스텐션은 활성화에 묶인 코디네이터 id가 아닌 산출물 세대 id)와 구성 요소마다 `approvalDigest`를 담고, 설치·게시 직렬화 아래에서 다시 대조하며, 다르면 아무것도 승인하지 않음 |
