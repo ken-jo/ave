@@ -2509,8 +2509,8 @@ discovery (due: rule below)
   enforce revocations (§10.4)                    -- always, whatever the settings
   compute updates (updateFor, identity.ts:79); publish notices and status
 apply check (due: rule below)
-  if the last successful discovery is older than 24 hours: run a discovery first
-  classify each update (§18.7.2, §18.7.3)
+  run a discovery first, or join the one in flight
+  classify each update that discovery returned (§18.7.2, §18.7.3)
      automatic -> enqueue for the apply queue (§18.7.4)
 apply queue (separate, one package at a time, waits for idle)
 ```
@@ -2530,13 +2530,19 @@ apply queue (separate, one package at a time, waits for idle)
   succeeds.
 - **The apply check is due** at boot, on *Check now*, and when the last
   successful apply check (`applyCheckAt`) is 24 hours old or older. That is
-  the owner's "at boot and once a day" for updates. A due apply check never
-  waits for the next scheduled discovery: if the last successful discovery is
-  older than 24 hours (for example under a 48-hour `updateCheckIntervalMs`),
-  it runs a discovery itself first. If that discovery fails, the apply check
-  stays due and is retried with the hourly failed-attempt branch.
-  `applyCheckAt` is written only when the apply check has classified every
-  update.
+  the owner's "at boot and once a day" for updates. **A due apply check
+  always obtains a fresh discovery first**: it joins a discovery already in
+  flight, or starts one, and classifies only that discovery's results. There
+  is no freshness predicate, so the age of the last discovery and the phase
+  of the discovery interval never decide what is classified. That discovery
+  is an ordinary one: it records `lastAttemptAt` and `lastSuccessAt` and so
+  restarts the discovery interval. Its result decides the rest:
+  - `ok`: every update is classified, and `applyCheckAt` is written;
+  - `partial`: updates from the sources it reached are classified, the
+    others wait, and `applyCheckAt` is not written, so the apply check stays
+    due and joins the hourly retry of the failed-attempt branch;
+  - `offline` or `error`: nothing is classified, and the apply check stays
+    due the same way.
 - **Why discovery stays at 6 hours.** Revocations arrive in the same fetch as
   the index (§10.4). 0.12 delivers them to a running app within 6 hours, and
   stretching discovery to the 24-hour update cadence would leave a revoked
@@ -2551,10 +2557,12 @@ apply queue (separate, one package at a time, waits for idle)
 - **Timing guarantee.** While the app runs, is awake and reaches a source, a
   revocation or update published there is discovered within
   `updateCheckIntervalMs` + 1 hour (7 hours by default). Sleep is caught up
-  on `resume`. An eligible update is classified within 24 hours of
-  publication plus one hourly due check, and applied when the conversation
-  is next idle. **The wait for idle has no bound**: after 30 minutes the user
-  is told and can apply at once (§18.7.4), which is an escalation, not a
+  on `resume`. An eligible update is classified within 25 hours of
+  publication: the next apply check is due at most 24 hours after the last
+  one, runs at the next hourly due check, and always discovers first. It is
+  applied when the conversation is next idle. **The wait for idle has no
+  bound**: after 30 minutes the user is told and can apply at once
+  (§18.7.4), which is an escalation, not a
   limit. Exceptions:
   - `updateCheckIntervalMs: 0` — scheduled discovery only at boot and on
     *Check now*, plus hourly retries after a failure; the daily apply check
@@ -2787,7 +2795,11 @@ ledger entry.
   `authorityDelta` and `componentsDelta` (`service.ts:799-810`) become
   projections of it.
 - **Cheap review for code-free changes.** `changedFiles` lists, for a changed
-  approval digest, the package paths whose bytes differ. The renderer splits
+  approval digest, the package paths whose bytes differ, compared with the
+  **same single normalization** as `treeSha256`: `plugin.json` is compared
+  with its top-level `version` removed, and is listed only when the rest
+  differs, then always as `code`. A complete versioned release that edits
+  only `SKILL.md` therefore lists `SKILL.md` alone. The renderer splits
   them for display only: `nonCode` holds Markdown, plain text, images and
   JSON outside `plugin.json`; `code` holds everything else. When the only
   differing fields are approval digests (and `minAppVersion` is unchanged)
@@ -2900,9 +2912,14 @@ bundled server and hook.
     drains per activation (`agent-plugin-hook-runtime.ts:31-39`, `:61-63`).
   - **Owner.** Slice F gives MCP the same shape:
     - `McpManager.registerGenerationLeaseSource(prefix, acquireExact)` is
-      added, mirroring the hook manager's, and `withBundledLease` routes an
-      owner by the longest registered prefix, falling back to
-      `generationAccess`.
+      added, mirroring the hook manager's.
+    - **One acquisition helper.** A private `acquireOwnerLease(owner)`
+      routes an owner by the longest registered prefix and falls back to
+      `generationAccess`. It replaces **both** direct
+      `generationAccess.acquireExact` calls: the one in a registered tool's
+      `execute`, which `bindBundledTool` builds (`mcp-manager.ts:1308-1314`)
+      for every bundled tool (`:424`, `:471`), and the one in
+      `withBundledLease` (`:1326-1340`). Neither keeps its own acquisition.
     - `AgentPluginMcpRuntime` registers `agent-plugin/` and owns its leases:
       a per-activation count and drain waiters, as the hook runtime keeps.
     - **Admission closes** at publication. The old activation is marked
@@ -2916,22 +2933,31 @@ bundled server and hook.
     call's own tool timeout. The queue also applies an agent plugin only
     while its current activation holds no lease; otherwise the update stays
     `waiting`.
-  - **Payload directories are generation-addressed.** Today a same-version
-    reinstall, which is what every folder refresh is, moves the live version
-    directory aside before activation (`content/store.ts:247-249`,
-    `:286-294`) and deletes it with the scratch directory (`:306-310`). A
-    server or hook of the old generation then loses its paths while it
-    runs. From slice F:
-    - every install writes a new directory
-      `<root>/<kind>/<name>/<version>/<installId>/`, and
-      `LedgerEntry.origin` gains `payloadDir`. An entry without `payloadDir`
-      is an older install and keeps its `<version>/` path;
+  - **Payload directories are install-addressed, in their own namespace.**
+    Today a same-version reinstall, which is what every folder refresh is,
+    moves the live version directory aside before activation
+    (`content/store.ts:247-249`, `:286-294`) and deletes it with the scratch
+    directory (`:306-310`). A server or hook of the old generation then loses
+    its paths while it runs. From slice F:
+    - every install mints an `installId` (a random UUID) and writes a new
+      directory `<root>/<kind>/<name>/.installs/<installId>/`.
+      `LedgerEntry.origin` gains `installId` and `payloadDir`. The leading
+      `.` keeps this namespace disjoint from legacy version directories,
+      because a version directory name must match `SAFE_VERSION`, whose
+      first character is a letter or digit (`content/store.ts:173`, `:248`).
+      An entry without `payloadDir` is a legacy install and keeps its
+      `<version>/` path; no new payload is ever written under a `<version>/`
+      directory;
     - nothing that a live generation uses is moved or overwritten;
-    - `activation.activate` returns `{ retired: Promise<void> }`, and the
-      store removes the predecessor's directory when that promise resolves,
-      outside its serialization;
+    - `activation.activate` returns `{ retired: Promise<void> }`. When it
+      resolves, the store removes **exactly the retired install's own
+      directory**: its `payloadDir` for an install-addressed entry, or its
+      `<version>/` for a legacy entry, and a legacy `<version>/` only when
+      that legacy install is the one retired. This runs outside the store's
+      serialization;
     - a removal that fails, or a quit before it, is cleaned up by the boot
-      sweep of §18.7.4's table.
+      sweep of §18.7.4's table, which removes a `.installs/<installId>/` no
+      ledger entry names and a `<version>/` no legacy ledger entry names.
 
     The agent-plugin runtime already treats a changed directory as a new
     generation (`agent-plugin-mcp-runtime.ts:105`), so every install is one.
@@ -2973,21 +2999,65 @@ the table and the type list the same eight.
 nor shown, and the next version is.
 
 - **Review for `approval-pending`** reuses the existing approval surfaces:
+  - **Both surfaces bind the approval to what was reviewed.** A review
+    shows one installed generation; a required update can replace it before
+    the user submits, and a component digest alone does not cover the whole
+    package tree (`agent-plugin-components.ts:57-73`). So every approval
+    request carries the reviewed generation and, for each component, the
+    `approvalDigest` the review showed (`string | null`, §18.7.3). The
+    handler re-validates both against the installed generation **under the
+    serialization that installs and publications take**, before it approves
+    anything. On any mismatch it approves nothing and fails `PLAN_EXPIRED`
+    reason `package-changed` (§18.8): "This package changed since you
+    reviewed it. Review it again." The review then reloads. A component
+    whose digest is `null` binds by generation alone: the reviewed
+    generation id must equal the installed one exactly, and that id names
+    exactly one artifact (below).
   - **extensions**: *Review* opens the plugin's trust rows in
     `PluginConfigTab.tsx`. That tab lists through
     `ave:plugins:contribution-trust:list` and approves through
     `ave:plugins:contribution-trust:set` (`ipc/domains/plugins.ts:541-589`,
-    preload `internal-api-surface.ts:527-534`).
+    preload `internal-api-surface.ts:527-534`). The existing request is
+    extended; no parallel channel is added:
+    - list rows (`PluginContributionTrustRow`,
+      `plugin-bundle-lifecycle.ts:141-149`, which already carries
+      `generationId`) gain `approvalDigest`;
+    - a `set` request with `approved: true` must carry `generationId` and
+      `approvalDigest` from the row it shows; without them the handler
+      returns `invalid-contribution-trust-request` (`plugins.ts:573`). A
+      revoke (`approved: false`) takes neither, because a revoke only
+      narrows trust;
+    - `approveHook` and `approveMcpServer` take that binding, and
+      `updateHookTrust`/`updateMcpTrust` check it inside
+      `serialize(pluginId)` (`plugin-bundle-lifecycle.ts:355-357`,
+      `:383-385`), the serialization a new generation's publication takes:
+      the active generation's id must equal `generationId`, and the
+      projection's approval digest must equal `approvalDigest`. A plugin
+      generation id commits to every receipt-covered byte, so it identifies
+      the reviewed artifact. A mismatch returns
+      `contribution-trust-review-stale`, which the tab shows with the same
+      catalog sentence and then reloads its rows.
   - **agent plugins**: *Review* opens the update review (§15.6) in
     component mode, showing the `consentDelta` rows of the unapproved
-    components. Its approve action calls the new channel
-    `ave:marketplace:components:approve` `(key, consents)`. The handler is
-    in `ipc/domains/git-marketplace.ts`, and the service passes the call to
-    the content installer, which calls `AgentPluginMcpRuntime.activate` and
+    components, from the package's `pendingApproval` in `UpdateStatusView`
+    (§18.9). Its approve action calls the new channel
+    `ave:marketplace:components:approve`
+    `(key, installId, consents: ReviewedComponentConsent[])`, where each
+    consent is the existing `ComponentConsent`
+    (`shared/git-marketplace.ts:400-412`) plus the `approvalDigest` shown.
+    The handler is in `ipc/domains/git-marketplace.ts`. The service passes
+    the call to the content store, which, inside its install serialization
+    (`content/store.ts:253`), checks that the ledger entry's
+    `origin.installId` equals `installId` and that each named component's
+    approval digest, computed from that entry's `payloadDir`, equals the
+    consent's. Only then does it call `AgentPluginMcpRuntime.activate` and
     `AgentPluginHookRuntime.activate` with those consents on the installed
     generation (`agent-plugin-mcp-runtime.ts:139-142`,
     `agent-plugin-hook-runtime.ts:144-146`). Those methods already approve
-    and publish under their serialization.
+    and publish under their serialization, and still check each consent's
+    component digest (`agent-plugin-mcp-runtime.ts:91-97`). An `installId`
+    names exactly one payload directory, and nothing in it is overwritten
+    (§18.7.4).
   - The state clears when no component of the installed generation is
     unapproved.
 - **Offline**: when every source fails `SOURCE_UNREACHABLE` reason `offline`,
@@ -3134,7 +3204,7 @@ the slice that adds the code or reason.
 | `SOURCE_ID_TAKEN` | E | "<repository or folder> is already added as <id>", or "<id> is taken" | *Show <id>*, or "Choose another id." | "이미 추가되어 있습니다." |
 | `GIT_RUNTIME_MISSING`, `GIT_RUNTIME_TOO_OLD` | E | today's sentences | *Install Git* | today's |
 | `GIT_RUNTIME_INSTALL_FAILED` · `<phase>` | E | "Installing git failed while <phase> (<reason>)." | *Retry*; "If your network blocks GitHub downloads, install git yourself and choose *System*." | "git 설치가 <단계>에서 실패했습니다." |
-| `PLAN_EXPIRED` · `expired`, `replaced`, `folder-changed`, `policy-changed` | E | today's; for a folder "The folder changed while you were reviewing."; for policy "Your organization's policy changed while you were reviewing." | the review reopens with a fresh plan | today's; "검토하는 사이 조직 정책이 바뀌었습니다." |
+| `PLAN_EXPIRED` · `expired`, `replaced`, `folder-changed`, `policy-changed`, `package-changed` | E | today's; for a folder "The folder changed while you were reviewing."; for policy "Your organization's policy changed while you were reviewing."; for `package-changed` (an approval of §18.7.5 whose reviewed generation or approval digest no longer matches) "This package changed since you reviewed it. Review it again." | the review reopens with a fresh plan, or with the installed generation for `package-changed` | today's; "검토하는 사이 조직 정책이 바뀌었습니다."; "검토한 뒤 패키지가 바뀌었습니다. 다시 검토하세요." |
 | `PACKAGE_INCOMPATIBLE` · `min_app_version` / `platform` / `prerelease` / `rollout` / `host_protocol` | E | "<name> needs Ave <version>" / "not available for <OS>" / "only pre-releases exist" / "rolling out gradually; offered to you later" / "needs a newer plugin protocol" | *Update Ave* / — / "Turn on pre-releases under Updates" / — / *Update Ave* | reason by reason |
 | `PACKAGE_COMPAT_UNDECLARED` | E | "The plugin does not declare which Ave version it needs (`requires.minAppVersion`)." | "Ask its author to declare it." | "필요한 Ave 버전을 선언하지 않았습니다." |
 | `PACKAGE_YANKED`, `PACKAGE_REVOKED` | E | "Withdrawn by <source>: <reason>." | "Choose another version, or uninstall." | "<소스>가 철회했습니다." |
@@ -3187,7 +3257,9 @@ precondition is **not** a setting: it is the source confirmation
 | `ave:marketplace:updates:check` | new | `()`; joins a discovery in flight | `UpdateStatusView` when that discovery and its apply check end (§18.7.1) |
 | `ave:marketplace:updates:apply-now` | new | `()`; skips the idle gate for the queue (§18.7.4) | `UpdateStatusView` |
 | `ave:marketplace:install:execute` | changed | component consents accepted for `plugin` too (§18.7.3) | — |
-| `ave:marketplace:components:approve` | new | `(key: PackageKeyView, consents: ComponentConsent[])`; agent plugins in `approval-pending` (§18.7.5) | `UpdateStatusView` |
+| `ave:marketplace:components:approve` | new | `(key: PackageKeyView, installId: string, consents: ReviewedComponentConsent[])`; agent plugins in `approval-pending`; re-validated against the installed generation (§18.7.5) | `UpdateStatusView`; `PLAN_EXPIRED` reason `package-changed` on a mismatch |
+| `ave:plugins:contribution-trust:list` | changed | — | each row gains `approvalDigest: string \| null` (§18.7.5) |
+| `ave:plugins:contribution-trust:set` | changed | with `approved: true`, also `generationId` and `approvalDigest` from the reviewed row; a revoke takes neither (§18.7.5) | gains `error: "contribution-trust-review-stale"` on a mismatch |
 | `marketplace:update-status` | new event | — | `UpdateStatusView` on change |
 | `marketplace:updates-available` | kept | — | `PackageUpdateView` (`:351-356`) gains `state: "manual" \| "needs-review" \| "failed"`; only updates that need the user |
 | every channel | changed | — | failure envelope gains `detail?` (§18.8) |
@@ -3212,8 +3284,11 @@ interface UpdateStatusView {
     state: "automatic" | "waiting" | "needs-review" | "manual" | "failed"
          | "applied" | "applied-not-running" | "approval-pending";   // §18.7.5, exactly
     reasons?: string[]; failure?: { code: GitMarketplaceErrorCode; detail?: MarketplaceErrorDetail; attempts: number };
-    appliedAt?: string }>;
+    appliedAt?: string;
+    pendingApproval?: { installId: string; consentDelta: ConsentDelta;  // present exactly for "approval-pending"
+                        components: ReviewedComponentConsent[] } }>;
 }
+type ReviewedComponentConsent = ComponentConsent & { approvalDigest: string | null };
 ```
 
 `CHANNELS.gitMarketplace` (`app-contract.ts:302-327`) gains `sourcesAcknowledge`,
@@ -3277,7 +3352,7 @@ and removes their pointers to §18.
 | **D1. Folder sources: engine and consent** | `source-input.ts` with the four stages, `native/windows-path-kind/` and its CI run, `FolderFs`, `SourceTree` and `FolderTree`, registry `path`, revision, folder read/snapshot/plan capture/install for every kind, `folder` rung and receipt, direct folder, policy `path:`, `allowLocalSources`, `additional[].path`, `SOURCE_LOCAL_UNREADABLE`, `network-folder` warning and its key, refusals #5–6, the `process` refusal on the folder path (§18.4.9) | C (the confirmation flow and `acknowledged`) | E | channel-inventory (no change, asserted) |
 | **D2. Folder sources: UI** | `sources:pick-folder`, `sources:reveal`, *Choose folder…*, folder rows and provenance | D1 | E, F | channel-inventory, host-renderer-only-channels, preload-shape |
 | **E. Discovery and status** | due rules, hourly due check and resume, attempt/success times, `updates.json`, `UpdateStatusView`, `updates:status` / `updates:check` / `marketplace:update-status`, settings keys, read-only Updates card, pill filter | B | C, D1, D2 | settings-store, channel-inventory, host-renderer-only-channels, preload-shape |
-| **F. Automatic apply** | `consentFingerprint`, approval digest, baseline storage and its computation for existing installs, `ConsentDelta` and the review binding, extension component consents, trust store v3 and carry-forward on both paths, both checkpoints, v2 record migration, the approval-carrying precondition, apply queue with `onIdle` and the 30-minute escalation, idle gate at boot, `updates:apply-now`, the agent-plugin MCP lease source and drain, generation-addressed payload directories, outcome classification (consent deferral, failure, post-commit) and the content directory sweep, `approval-pending` and `components:approve`, the cheap non-code review, preconditions and resolution, required-install rules, failure counts, skip on rollback, `autoUpdated` notice, the switches, `unencrypted-updates` | C, D1, E | D2 | channel-inventory, host-renderer-only-channels, preload-shape |
+| **F. Automatic apply** | `consentFingerprint`, approval digest, baseline storage and its computation for existing installs, `ConsentDelta` and the review binding, extension component consents, trust store v3 and carry-forward on both paths, both checkpoints, v2 record migration, the approval-carrying precondition, apply queue with `onIdle` and the 30-minute escalation, idle gate at boot, `updates:apply-now`, the agent-plugin MCP lease source and drain, install-addressed payload directories under `.installs/`, outcome classification (consent deferral, failure, post-commit) and the content directory sweep, `approval-pending`, `components:approve` and the approval binding on both surfaces, the cheap non-code review, preconditions and resolution, required-install rules, failure counts, skip on rollback, `autoUpdated` notice, the switches, `unencrypted-updates` | C, D1, E | D2 | channel-inventory, host-renderer-only-channels, preload-shape |
 | **G. Docs and mockup** | `web/app/docs/marketplace/*` (ko, en) for folders, warnings and automatic updates; mockup states; remaining pointers folded | D2, F | — | none |
 
 **Order.** A, then B. Then C and E in parallel, each in its own checkout.
@@ -3448,9 +3523,21 @@ The E2E flows named below run in `test/e2e/ui/`.
       give a retry at hour 2 (revert: gate the retry on `lastSuccessAt`);
     - with the default interval, a successful discovery is not repeated for
       6 hours;
-    - the apply check is due 24 hours after the last one and at boot; with
-      `updateCheckIntervalMs` at 48 hours, a due apply check at hour 24 runs
-      its own discovery first (revert: ride on the next scheduled one);
+    - the apply check is due 24 hours after the last one and at boot;
+    - **exact boundary**: with `updateCheckIntervalMs` at 48 hours, a
+      discovery and an apply check at hour 0, and a release published at
+      hour 0 plus one minute, the apply check at hour 24 (the last
+      discovery exactly 24 hours old) runs a discovery first and classifies
+      the release (revert: classify when the last discovery is not older
+      than 24 hours);
+    - **independently phased**: with the default interval, discoveries at
+      hours 0, 6, 12, 18 and 24, and the last apply check at hour 3, the
+      apply check at hour 27 starts its own discovery although one
+      succeeded 3 hours earlier, and classifies a release published at
+      hour 25 (revert: reuse a recent discovery);
+    - an apply check that becomes due while a discovery runs joins it and
+      starts no second one; with that discovery `partial`, the reached
+      sources' updates are classified and `applyCheckAt` is not written;
     - a clock jump of 30 hours followed by `resume` runs a discovery
       (revert: plain `setInterval`);
     - an all-offline discovery publishes `offline`;
@@ -3486,7 +3573,8 @@ The E2E flows named below run in `test/e2e/ui/`.
       "Only these non-code files changed" delta, and *Approve update*
       approves every changed component in one call (revert: hash
       `version`, or drop the cheap form);
-    - a change to any other `plugin.json` field changes the digest;
+    - a change to any other `plugin.json` field changes the digest and
+      lists `plugin.json` under `changedFiles.code`;
     - `npx foo` and `image:latest` give `null` and never carry;
     - `npx foo@1.2.3` and an `@sha256:` image carry while unchanged.
   - `plugin-contribution-trust.test.ts`:
@@ -3509,6 +3597,12 @@ The E2E flows named below run in `test/e2e/ui/`.
     - `withBundledLease` for an `agent-plugin/` owner acquires from the
       runtime's lease source, not from `PluginBundleLifecycle` (revert: no
       prefix routing);
+    - a call through a **registered tool**, the `execute` that
+      `bindBundledTool` returned, for an `agent-plugin/` owner acquires from
+      the same lease source; a tool object bound to an activation that has
+      since retired, held from before publication, throws on `execute` and
+      runs nothing (revert: leave `bindBundledTool` on
+      `generationAccess`);
     - an MCP call in flight on the old activation while a **concurrent
       folder refresh of the same version** installs completes with its
       result; the old payload directory still exists while it runs; the
@@ -3521,9 +3615,17 @@ The E2E flows named below run in `test/e2e/ui/`.
     an unchanged approval digest carries; a changed one does not (revert:
     drop carry-forward). The extension design's "re-ask on update" test is
     rewritten to this rule.
-  - `store.test.ts`: two installs of one version write two `payloadDir`s;
-    an entry without `payloadDir` still resolves to `<version>/`; the boot
-    sweep removes a directory no ledger entry names.
+  - `store.test.ts`:
+    - two installs of one version write two `.installs/<installId>/`
+      directories, and none is under `<version>/`;
+    - an entry without `payloadDir` still resolves to `<version>/`;
+    - **legacy same-version refresh**: a legacy install at `<version>/` is
+      refreshed at the same version, its predecessor retires, and the app
+      reboots (boot sweep included); the replacement's files stay readable
+      and the legacy `<version>/` is gone (revert: write the replacement
+      under `<version>/`);
+    - the boot sweep removes a `.installs/<installId>/` no ledger entry
+      names.
   - `apply.test.ts`:
     - while a **session mutation with no turn** holds the coordinator busy,
       the installer is not called, and it is called when the mutation ends
@@ -3566,6 +3668,18 @@ The E2E flows named below run in `test/e2e/ui/`.
     named components of an `approval-pending` agent plugin through the
     runtimes' `activate`, refuses another package's key, and clears the
     state.
+  - **Replacement between review and submit**, on both surfaces. The review
+    reads generation A; a required update installs generation B, which
+    changes only `skills/helper/assets/rules.txt`, so the server's
+    component digest is unchanged; then the user submits A's approval:
+    - `components:approve` with A's `installId` fails `PLAN_EXPIRED`
+      reason `package-changed`, and no component of B is approved (revert:
+      drop the `installId` and digest check);
+    - `contribution-trust:set` with A's `generationId` and `approvalDigest`
+      returns `contribution-trust-review-stale`, and B's record is not
+      approved (revert: approve the active generation);
+    - with a `null`-digest component, the same replacement is rejected by
+      the generation check alone.
   - E2E, `test/e2e/ui/git-marketplace-auto-update.spec.ts`, with its own
     fixture:
     - the app launches with an isolated `AVE_HOME` and
@@ -3604,7 +3718,7 @@ The E2E flows named below run in `test/e2e/ui/`.
 | 13 | Beneath the canonical root, links are followed by text, component by component; links outside or to a network location are refused without touching the target; while the root itself is resolved, local ancestor and root links are followed after the same network check; persistent swaps are detected by re-checking the directory chain; OS metadata skipped; names NFC (§18.4.1, §18.4.5) | Following by text is the only way to refuse a UNC target before contacting it; containment protects the package, not the user's own path to the folder; a swap-and-restore race by a concurrent local writer is a stated residual, since Node offers no portable handle-anchored traversal |
 | 14 | A folder source never downloads: one `folder` rung; extra top-level entries ignored and listed (§18.4.2) | A folder's declared pin lives in files anyone who can write the folder changes without trace, so it is not commit provenance; folder receipts stay ineligible for `process` admission; a developer's checkout always holds sources |
 | 15 | Folder identity is the canonical path or equal `dev`/`ino`; no platform case folding; `allow` matches with exact case, `block` without (§18.4.4, §18.6) | Case sensitivity is per volume, not per platform; when it is unknown, the conservative result admits less and blocks more |
-| 16 | Discovery (sync and revocations) every 6 hours; the update apply check at boot and once a day, obtaining its own discovery when the last is older than a day; one scheduler (§18.7.1) | The owner's cadence is for updates; revocations ride the same fetch and 0.12 already delivers them within 6 hours, so a 24-hour discovery would keep a revoked package running four times as long; a daily check must not wait on a longer interval |
+| 16 | Discovery (sync and revocations) every 6 hours; the update apply check at boot and once a day, always running or joining a discovery first; one scheduler (§18.7.1) | The owner's cadence is for updates; revocations ride the same fetch and 0.12 already delivers them within 6 hours, so a 24-hour discovery would keep a revoked package running four times as long; a daily check must not wait on a longer interval |
 | 17 | Two due branches: after a failed attempt, retry hourly from `lastAttemptAt`; after success, wait the interval from `lastSuccessAt`; discovery never waits for the apply queue (§18.7.1) | A success-based rule would skip retries after an offline manual check, and an idle wait would delay revocations |
 | 18 | Automatic updates default on for every origin, folders included; http sources off until `unencrypted-updates` (§18.7.2) | The owner's instruction; the consent fingerprint holds back every update that changes what runs or what it may reach, so a broad default applies only text and data; the http attack is named |
 | 19 | Preconditions, then policy, package, source, global, default (§18.7.2) | Each precondition is a user or source decision no switch overrides; policy outranks the user |
@@ -3613,7 +3727,7 @@ The E2E flows named below run in `test/e2e/ui/`.
 | 22 | Packages with no local executable component (stdio MCP, command hook, `process` entry) apply changed text and data automatically (§18.7.3) | `extensions-and-plugins.md` decision 18 activates them without consent; a routine template creates nothing; nothing local runs that could read the changed files |
 | 23 | The approval digest covers declaration, anchored files and the **whole** package tree, normalizing only `plugin.json` `version`; an undeterminable closure is `null`; carry-forward is provisional until publication revalidates it; a code-free change gets a one-action review (§18.7.3) | No runtime boundary keeps an unchanged server from evaluating another package file, so exclusions by extension or execute bit are unsafe; the version bump is release bookkeeping that runs nothing; review stays cheap instead of being skipped |
 | 24 | Two checkpoints: catalog, then staged bytes before activation; a manual review stages and installs exactly those bytes (§18.7.3) | The index cannot show an extension's bundled servers and hooks; approval must cover the bytes that install |
-| 25 | Updates wait for `onIdle` across all four busy conditions, at boot too; after 30 minutes an escalation offers *Apply now*; agent-plugin MCP gets its own lease source and drain, and payload directories are generation-addressed (§18.7.4) | "Without interrupting a running turn"; startup order is not a barrier; the agent-plugin path had no lease owner, and a same-version refresh moved live files |
+| 25 | Updates wait for `onIdle` across all four busy conditions, at boot too; after 30 minutes an escalation offers *Apply now*; agent-plugin MCP gets its own lease source and drain, acquired by one helper for registered tools and `withBundledLease`, and payload directories are install-addressed under `.installs/`, disjoint from legacy `<version>/` (§18.7.4) | "Without interrupting a running turn"; startup order is not a barrier; the agent-plugin path had no lease owner, a same-version refresh moved live files, and a nested replacement would be deleted with its legacy predecessor |
 | 26 | Required installs update at every apply check through the apply queue; the policy approves authority, not MCP servers or hooks; an unapproved component is `approval-pending` with a notice and *Review* (§18.7.2, §18.7.5) | §10.2: the policy stands for authority consent; an unapproved projection is never published (`mcp-manager.ts:393`), so the pending approval must be visible and actionable |
 | 27 | A manual rollback records the newer version as skipped (§18.7.5) | Otherwise the next pass undoes the rollback |
 | 28 | Failures before commit show and retry; stop after three for one version; consent deferrals and post-commit failures are not attempts; every outcome maps to a state of the view (§18.7.4, §18.7.5) | "Visible status, not silent"; a deferral awaiting consent must not exhaust retries; after a durable commit there is nothing to install again |
@@ -3628,3 +3742,4 @@ The E2E flows named below run in `test/e2e/ui/`.
 | 37 | Eight slices; B first; C and E in parallel; D1 after C; F after D1 and E (§18.10) | Each is coherent at its boundary; the first folder-accepting slice carries its own consent; F needs the folder contracts |
 | 38 | Address-dependent refusals and blocks bound to the connection on the transports Ave owns: pinned download transport for every supported PAC kind and `http.curloptResolve` for git over http/https. For SSH a preflight check only on the `ssh -G` host name, with no `HostName`, `HostKeyAlias` or `CheckHostIP` option. A PAC proxy, local or remote, is trusted beyond its checked socket; an ssh `ProxyCommand` or `ProxyJump` is run by ssh and trusted like any user-configured program (§18.2.4) | A separate earlier lookup lets DNS rebinding pass a hard refusal; pinning ssh changes the user's host-key and certificate identity, and host-key verification is the SSH trust anchor; Ave cannot see where a proxy connects, so the boundary is stated rather than implied |
 | 39 | A version-2 approval whose generation is active and whose fingerprint matches the installed declaration gets its approval digest from the installed bytes; any other gets `null` and its package's first update needs review (§18.7.3) | Those are the bytes the user approved and is running, already bound by the v2 identity; anything else cannot be shown equal |
+| 40 | An approval of an installed component carries the reviewed generation (`installId`, or a plugin's `generationId`) and each component's `approvalDigest`, re-validated under install and publication serialization; a mismatch approves nothing (§18.7.5) | A required update can replace the generation while the user reviews it, and a component digest does not cover the whole tree |
