@@ -546,9 +546,12 @@ export interface GitMarketplaceRegistration {
   /**
    * Start the boot pass and the update scheduler (desktop only, once the
    * window has loaded). An isolated E2E run reports the pass skipped: it must
-   * not reach the official repository.
+   * not reach the official repository. Answers the scheduler's `started`:
+   * settled when the boot pass, its apply check and the first update list are
+   * done (already settled when nothing started), so a caller that must see
+   * that work finished waits for the work itself, not for what it published.
    */
-  startBackground(): void;
+  startBackground(): Promise<void>;
   /** `marketplace` settings were written: republish the updates under the new notice and skip settings, and run a due check. */
   settingsChanged(): void;
 }
@@ -707,10 +710,11 @@ export function registerGitMarketplaceHandlers(
       dropKeptArtifactsIfOff(deps, home);
     },
     startBackground: () => {
-      if (background || shutdown.signal.aborted) return;
+      if (background) return background.started;
+      if (shutdown.signal.aborted) return Promise.resolve();
       if (isE2eTestRuntime()) {
         notifyBootstrapStatus(deps.getMainWindow(), { phase: "complete", installed: [], failed: [], skipped: { reason: "e2e-isolated" } });
-        return;
+        return Promise.resolve();
       }
       background = startMarketplaceBackground({
         service: async () => (await loaded()).service,
@@ -738,6 +742,7 @@ export function registerGitMarketplaceHandlers(
         },
         log: { info: (message) => log.info(message), warn: (message) => log.warn(message) },
       });
+      return background.started;
     },
   };
 }

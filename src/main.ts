@@ -535,7 +535,7 @@ async function main() {
 
   // The marketplace's boot sync and installs, then the periodic sync (design
   // §7.3, §10.2). After the load so the renderer hears what they publish.
-  ipcRegistration.gitMarketplace.startBackground();
+  void ipcRegistration.gitMarketplace.startBackground();
 }
 
 // ave:// custom URI scheme.
