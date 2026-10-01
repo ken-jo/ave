@@ -10,6 +10,7 @@
  * `SOURCE_POLICY_BLOCKED` rather than guessing what a typo meant.
  */
 import { createHash } from "node:crypto";
+import type { Stats } from "node:fs";
 import { readFile, stat as fsStat } from "node:fs/promises";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import { getAdminPolicyPath } from "../../permissions/policy-store.js";
@@ -283,46 +284,113 @@ function parsePolicyText(path: string, text: string): PolicyLoad {
   }
 }
 
+/** The stat fields {@link statKey} compares. */
+type PolicyFileStat = Pick<Stats, "size" | "mtimeMs" | "ctimeMs" | "ino" | "dev">;
+
+/**
+ * The file system and clock a {@link FilePolicySource} reads through. Production
+ * uses node's; a test substitutes a file system whose clock did not tick
+ * between two writes, which real file systems do only by timing luck.
+ */
+export interface PolicyFileAccess {
+  stat(path: string): Promise<PolicyFileStat>;
+  readFile(path: string): Promise<string>;
+  /** Wall-clock milliseconds: the clock the file's times are stamped from. */
+  now(): number;
+}
+
+const NODE_FILE_ACCESS: PolicyFileAccess = {
+  stat: (path) => fsStat(path),
+  readFile: (path) => readFile(path, "utf8"),
+  now: () => Date.now(),
+};
+
+/**
+ * How long after the file's last change a read must begin before the stat it
+ * recorded is trusted to tell the next change apart. File times are stamped
+ * from a coarse clock: one kernel tick on NTFS (15.6 ms by default) and Linux,
+ * two seconds for a FAT modification time, the server's clock on SMB and NFS.
+ * A rewrite in the same tick as the change the read saw keeps every recorded
+ * time, and with the size kept and the modification time put back the stat is
+ * identical. A write that lands after a read began is stamped no earlier than
+ * that moment, less one tick, less how far the writer's clock lags this one,
+ * less how far this clock has stepped back since; while those three together
+ * stay under the window, a change older than the window cannot be stamped
+ * again. Three seconds covers the two-second FAT tick with a second for lag
+ * and steps. A change time ahead of the clock (skew, or a modification time
+ * set forward) is always racy, and a check that finds the clock behind the
+ * moment the recorded read began does not trust the stat. Outside these
+ * bounds a rewrite can be noticed late: at the next change that moves the
+ * compared fields.
+ */
+const RACY_WINDOW_MS = 3_000;
+
 /** One read of the policy file: its load, and the digest that names its content (§18.6). */
 interface PolicyRead {
   load: PolicyLoad;
   /** sha256 of the file, `absent` without one, `unreadable:<code>` when it cannot be read. */
   digest: string;
-  /** The file's identity and change times when read (see {@link statKey}), for the next comparison. */
-  stat: string;
+  /**
+   * The file's identity and change times when read (see {@link statKey}), for
+   * the next comparison, with the moment that read began; null when they
+   * cannot tell the next change apart and the next check must read the file
+   * again: the read was racy ({@link RACY_WINDOW_MS}), the file could not be
+   * read, or the policy in force came from an applied update.
+   */
+  stat: RecordedStat | null;
+}
+
+interface RecordedStat {
+  key: string;
+  /** `now()` when the read that recorded `key` began. */
+  readBegan: number;
 }
 
 /**
  * What tells a rewrite, a replacement or a permission change apart without
  * reading the file: size, modification and status-change times, and the
  * file's identity. `chmod` changes only the status-change time, and a file
- * renamed into place has a new inode.
+ * renamed into place has a new inode. Trusted only for a read that began
+ * clearly after the file's last change ({@link RACY_WINDOW_MS}).
  */
-function statKey(info: { size: number; mtimeMs: number; ctimeMs: number; ino: number; dev: number }): string {
+function statKey(info: PolicyFileStat): string {
   return `${info.size}:${info.mtimeMs}:${info.ctimeMs}:${info.ino}:${info.dev}`;
 }
 
-async function policyStat(path: string): Promise<string> {
+/** The file changed so close to `readBegan` (or after it) that a rewrite in the same clock tick would leave its stat unchanged. */
+function isRacy(info: PolicyFileStat, readBegan: number): boolean {
+  return Math.max(info.ctimeMs, info.mtimeMs) > readBegan - RACY_WINDOW_MS;
+}
+
+async function policyStat(path: string, access: PolicyFileAccess): Promise<string> {
   try {
-    return statKey(await fsStat(path));
+    return statKey(await access.stat(path));
   } catch (error) {
     if (isMissingPathError(error)) return "absent";
     return `unreadable:${(error as NodeJS.ErrnoException).code ?? "unknown"}`;
   }
 }
 
-async function readPolicy(path: string): Promise<PolicyRead> {
+async function readPolicy(path: string, access: PolicyFileAccess = NODE_FILE_ACCESS): Promise<PolicyRead> {
+  const began = access.now();
   let text: string;
-  let stat: string;
+  let info: PolicyFileStat;
   try {
-    stat = statKey(await fsStat(path));
-    text = await readFile(path, "utf8");
+    info = await access.stat(path);
+    text = await access.readFile(path);
   } catch (error) {
-    if (isMissingPathError(error)) return { load: { ok: true, policy: EMPTY_MARKETPLACE_POLICY, path }, digest: "absent", stat: "absent" };
+    if (isMissingPathError(error)) {
+      return { load: { ok: true, policy: EMPTY_MARKETPLACE_POLICY, path }, digest: "absent", stat: { key: "absent", readBegan: began } };
+    }
     const code = (error as NodeJS.ErrnoException).code ?? "unknown";
-    return { load: { ok: false, error: `cannot read ${path}: ${(error as Error).message}`, path }, digest: `unreadable:${code}`, stat: `unreadable:${code}` };
+    // A file that could not be read is read again each time.
+    return { load: { ok: false, error: `cannot read ${path}: ${(error as Error).message}`, path }, digest: `unreadable:${code}`, stat: null };
   }
-  return { load: parsePolicyText(path, text), digest: createHash("sha256").update(text, "utf8").digest("hex"), stat };
+  return {
+    load: parsePolicyText(path, text),
+    digest: createHash("sha256").update(text, "utf8").digest("hex"),
+    stat: isRacy(info, began) ? null : { key: statKey(info), readBegan: began },
+  };
 }
 
 /** Read the system policy file's `marketplaces` section. A file problem is a result; only a bug throws. */
@@ -356,16 +424,24 @@ export interface PolicySource {
   apply(update: PolicyUpdate): void;
 }
 
-/** The system policy file as a {@link PolicySource}: compared by identity, change times and sha256 at each check. */
+/**
+ * The system policy file as a {@link PolicySource}: compared by identity,
+ * change times and sha256 at each check, the times trusted only when the last
+ * read began clearly after the file's last change ({@link RACY_WINDOW_MS}).
+ */
 export class FilePolicySource implements PolicySource {
   private current: PolicyRead;
 
-  private constructor(private readonly path: string, first: PolicyRead) {
+  private constructor(
+    private readonly path: string,
+    private readonly access: PolicyFileAccess,
+    first: PolicyRead,
+  ) {
     this.current = first;
   }
 
-  static async open(path: string = getAdminPolicyPath()): Promise<FilePolicySource> {
-    return new FilePolicySource(path, await readPolicy(path));
+  static async open(path: string = getAdminPolicyPath(), access: PolicyFileAccess = NODE_FILE_ACCESS): Promise<FilePolicySource> {
+    return new FilePolicySource(path, access, await readPolicy(path, access));
   }
 
   get load(): PolicyLoad {
@@ -378,11 +454,14 @@ export class FilePolicySource implements PolicySource {
 
   async check(): Promise<PolicyUpdate | null> {
     const base = this.current;
-    // Unchanged identity and change times: the file was not written, replaced or re-permissioned since the last read.
-    // A file that could not be read is read again each time.
-    const readable = !base.digest.startsWith("unreadable:");
-    if (readable && base.stat !== "applied" && (await policyStat(this.path)) === base.stat) return null;
-    const next = await readPolicy(this.path);
+    // Unchanged identity and change times, recorded by a read that was not racy: the file was not written,
+    // replaced or re-permissioned since that read. A clock now behind that read has stepped back, and a write
+    // since may carry the recorded times again.
+    const recorded = base.stat;
+    if (recorded !== null && this.access.now() >= recorded.readBegan && (await policyStat(this.path, this.access)) === recorded.key) {
+      return null;
+    }
+    const next = await readPolicy(this.path, this.access);
     if (next.digest === base.digest) {
       // Same content, perhaps touched: nothing to apply; the next check compares against these times.
       this.current = { ...base, stat: next.stat };
@@ -393,6 +472,6 @@ export class FilePolicySource implements PolicySource {
 
   apply(update: PolicyUpdate): void {
     // The next check reads the file again and records its identity and times.
-    this.current = { load: update.load, digest: update.digest, stat: "applied" };
+    this.current = { load: update.load, digest: update.digest, stat: null };
   }
 }

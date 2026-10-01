@@ -1741,6 +1741,22 @@ files is a device-management action).
     times, inode and device with the last read. A permission change or a
     file renamed into place therefore counts as a change. When they differ,
     it reads the file and compares the sha256 of the content.
+  - The recorded times are trusted only when that read began at least
+    3 seconds after the file's last change. File times come from a coarse
+    clock (a kernel tick on NTFS and Linux, 2 seconds on FAT, the server's
+    clock on SMB and NFS), so a rewrite in the same tick as the change the
+    read saw, with the size kept and the modification time put back,
+    leaves every compared field as it was. After a read inside that
+    window, or one that found a change time ahead of the clock, the next
+    check reads the file and compares the sha256 again; the first read
+    outside the window restores the shortcut. A check that finds the clock
+    behind the moment the recorded read began also reads the file.
+  - The rule holds while the timestamp granularity, plus how far the
+    writer's timestamp clock lags this computer's clock, plus how far this
+    clock has stepped back since the read, stays under 3 seconds. Outside
+    those bounds (a file server clock lagging further, or a clock stepped
+    back and forward again between two checks) a rewrite can be noticed
+    late: at the next change that moves the compared fields.
   - A changed policy is applied under the service's exclusive operation
     lock. It takes effect in the gate, the registry's managed sources and
     filters, and the installers at once, so no operation sees a mixed
@@ -3078,7 +3094,7 @@ states that a local directory source is refused like `installLocal`
   - The service reads the policy through a `PolicySource`. At the start of
     every operation (preview, add, acknowledge, sync, discovery, plan,
     execute), it compares the file with the last read (as built: identity,
-    times and sha256, §12).
+    times trusted outside a racy window, and sha256, §12).
   - A change builds a new policy and swaps it into the gate, the registry
     filters and the installers in one step, under the service's operation
     lock, so no operation sees a mixed policy.
