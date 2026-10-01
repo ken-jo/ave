@@ -7,6 +7,7 @@
 import { describe, expect, it } from "vitest";
 import type { PayloadFile } from "../../../plugins/contribution-approval-digest.js";
 import type { AgentPluginComponents, IndexVersion } from "../../catalog/types.js";
+import { payloadFile as file } from "../../__tests__/fixtures/package-files.js";
 import {
   agentPluginConsent,
   catalogDelta,
@@ -19,7 +20,6 @@ import {
   type ConsentFingerprint,
 } from "../consent.js";
 
-const file = (path: string, text: string): PayloadFile => ({ path, data: Buffer.from(text, "utf8") });
 
 interface PluginShape {
   authority?: Record<string, unknown>;

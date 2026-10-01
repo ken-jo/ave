@@ -53,7 +53,7 @@ export interface FolderServiceHarness {
 
 const NO_CACHE = { read: async () => null, keep: async () => {} };
 
-export interface InstalledFixturePlugin {
+interface InstalledFixturePlugin {
   version: string;
   sourceId: string;
   originCommit: string;

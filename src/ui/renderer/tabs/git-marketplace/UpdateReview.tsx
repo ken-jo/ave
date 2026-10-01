@@ -32,7 +32,7 @@ import { MarketplaceProblem } from "./MarketplaceProblem.js";
 import { OTHER_SUBJECT } from "./labels.js";
 
 /** A consent field's label (§18.7.3's table). A field outside it is a contract violation between main and this renderer. */
-export function consentFieldLabel(t: Translate, field: string): string {
+function consentFieldLabel(t: Translate, field: string): string {
   if (field.startsWith("mcpServer:")) return t("gitMarketplace.consent.field.mcpServer", { id: field.slice("mcpServer:".length) });
   if (field.startsWith("hook:")) return t("gitMarketplace.consent.field.hook", { id: field.slice("hook:".length) });
   switch (field) {
@@ -100,7 +100,7 @@ function DeltaRow({ entry, approve }: { entry: ConsentDeltaEntry; approve?: { ch
 }
 
 /** The delta rows; a field listed in `approvable` gets an approve box. */
-export function ConsentDeltaRows({ delta, approvable, approved, onApprovedChange, disabled }: {
+function ConsentDeltaRows({ delta, approvable, approved, onApprovedChange, disabled }: {
   delta: ConsentDelta;
   approvable: ReadonlySet<string>;
   approved: Readonly<Record<string, boolean>>;

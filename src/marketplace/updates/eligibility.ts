@@ -23,7 +23,7 @@ import type { SourceOrigin } from "../sources/registry.js";
 /** The number of failed attempts at one version after which automatic attempts stop (§18.7.5). */
 export const MAX_AUTOMATIC_ATTEMPTS = 3;
 
-export type AutoUpdateSwitch = "on" | "off";
+type AutoUpdateSwitch = "on" | "off";
 
 /** The organization's `autoUpdate` (§18.6). */
 export type AutoUpdatePolicy = "user" | "on" | "off";

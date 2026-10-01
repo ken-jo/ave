@@ -44,7 +44,7 @@ export interface ComponentApprovalState {
  * The install options an automatic, required or reviewed install adds
  * (§18.7.3): checkpoint two, and the reviewed app version its receipt keeps.
  */
-export interface InstallConsentOptions {
+interface InstallConsentOptions {
   /** Sees the staged consent fingerprint before anything activates; a throw installs nothing. */
   assertConsent?: (consent: ConsentFingerprint) => void;
 }

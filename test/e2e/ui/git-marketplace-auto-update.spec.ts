@@ -17,7 +17,6 @@ import type {
   CatalogView,
   GitMarketplaceResult,
   InstallPlanView,
-  PackageKind,
   SourcePreviewResultView,
   SourceView,
   UpdateStatusView,
@@ -40,9 +39,6 @@ const SOURCE_ID = 'harbor-tools';
 const MIN_APP_VERSION = '0.11.0';
 
 type Entry = { path: string; mode: string; content: string };
-
-const descriptorText = (kind: PackageKind, name: string, version: string, payload: Record<string, unknown>) =>
-  jsonText({ schemaVersion: 2, kind, name, version, minAppVersion: MIN_APP_VERSION, ...(kind === 'plugin' ? { hostProtocol: '2' } : {}), payload });
 
 /** The repository at `version`; from 1.0.1 the extension also reaches `upload.example.com`. */
 function marketplaceTree(version: string): Entry[] {
@@ -71,10 +67,15 @@ function marketplaceTree(version: string): Entry[] {
         { kind: 'skill', name: 'harbor-review', path: 'skills/harbor-review' },
       ],
     })),
-    file('plugins/harbor-panel/ave-package.json', descriptorText('plugin', 'harbor-panel', version, { authority, artifact: { tree: 'plugins/harbor-panel' } })),
+    file('plugins/harbor-panel/ave-package.json', jsonText({
+      schemaVersion: 2, kind: 'plugin', name: 'harbor-panel', version, minAppVersion: MIN_APP_VERSION, hostProtocol: '2',
+      payload: { authority, artifact: { tree: 'plugins/harbor-panel' } },
+    })),
     file('plugins/harbor-panel/plugin.json', jsonText(plugin)),
     file('plugins/harbor-panel/dist/index.js', 'export default function createPlugin() {\n  return { handlers: { harbor_panel_ping: async () => "pong" }, start() {}, stop() {} };\n}\n'),
-    file('skills/harbor-review/ave-package.json', descriptorText('skill', 'harbor-review', version, { entry: 'SKILL.md' })),
+    file('skills/harbor-review/ave-package.json', jsonText({
+      schemaVersion: 2, kind: 'skill', name: 'harbor-review', version, minAppVersion: MIN_APP_VERSION, payload: { entry: 'SKILL.md' },
+    })),
     file('skills/harbor-review/SKILL.md', `---\nname: harbor-review\ndescription: Review a harbor change (${version}).\n---\nRead the diff first.\n`),
   ];
 }

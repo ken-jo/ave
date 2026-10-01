@@ -52,7 +52,7 @@ export interface UpdatesCardProps {
 }
 
 /** Why an update does not apply by itself (§18.7.2, §18.7.3). */
-export function updateReasonLabel(t: Translate, reason: UpdateReason): string {
+function updateReasonLabel(t: Translate, reason: UpdateReason): string {
   switch (reason) {
     case "disabled": return t("gitMarketplace.updates.reason.disabled");
     case "source-hidden": return t("gitMarketplace.updates.reason.sourceHidden");

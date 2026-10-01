@@ -266,7 +266,7 @@ export interface InstalledContentRuntime {
 }
 
 /** {@link InstalledContentRuntime.componentApprovals}: each component of the published generation. */
-export interface AgentPluginComponentApprovals {
+interface AgentPluginComponentApprovals {
   mcpServers: Array<{ name: string; approvalDigest: string | null; approved: boolean; recordDigest: string | null }>;
   hooks: Array<{ index: number; approvalDigest: string | null; approved: boolean; recordDigest: string | null }>;
 }

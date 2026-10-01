@@ -41,7 +41,7 @@ export interface PayloadFile {
   executable?: boolean;
 }
 
-export type ApprovalClosure =
+type ApprovalClosure =
   | { kind: "package"; treeSha256: string }
   | { kind: "launcher"; spec: string; treeSha256: string }
   | { kind: "remote" };

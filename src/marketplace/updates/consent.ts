@@ -31,10 +31,10 @@ import { flattenAgentPluginsManifest } from "../../plugins/public-contract.js";
 import type { McpRuntimeSpec } from "../../plugins/types.js";
 import { type AgentPluginComponents, type IndexVersion, type PackageKind, type PluginAuthority } from "../catalog/types.js";
 import { manifestAuthority } from "../resolve/manifest-rules.js";
-import type { ConsentDelta, ConsentDeltaEntry, ConsentJson } from "../../shared/git-marketplace.js";
+import type { ConsentDelta, ConsentJson } from "../../shared/git-marketplace.js";
 import { parseConsentFingerprint, type ConsentFingerprint } from "./consent-record.js";
 
-export type { ConsentDelta, ConsentDeltaEntry, ConsentJson };
+export type { ConsentDelta };
 
 export { parseConsentFingerprint, type ConsentFingerprint };
 
@@ -268,16 +268,6 @@ export function stagedDelta(baseline: ConsentFingerprint, staged: ConsentFingerp
     else if (isUnknown(staged, field) || !same(baseline.fields[field], after)) delta.push({ field, checkpoint, before: baseline.fields[field] ?? null, after });
   }
   return delta;
-}
-
-/** The approval digests a fingerprint records, by component field (`mcpServer:<id>`, `hook:<id>`). */
-export function componentDigests(print: ConsentFingerprint): Map<string, string | null> {
-  const digests = new Map<string, string | null>();
-  for (const [field, value] of Object.entries(print.fields)) {
-    if (!field.startsWith("mcpServer:") && !field.startsWith("hook:")) continue;
-    digests.set(field, typeof value === "string" ? value : null);
-  }
-  return digests;
 }
 
 function isComponentField(field: string): boolean {

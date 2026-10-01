@@ -11,11 +11,10 @@ import {
   extensionComponentDigests,
   launcherSpec,
   payloadTreeSha256,
-  type PayloadFile,
 } from "../contribution-approval-digest.js";
 import { isCodeFreeChange, pluginConsent, stagedDelta, withChangedFiles } from "../../marketplace/updates/consent.js";
+import { payloadFile as file } from "../../marketplace/__tests__/fixtures/package-files.js";
 
-const file = (path: string, text: string): PayloadFile => ({ path, data: Buffer.from(text, "utf8") });
 
 function extension(options: { server?: string | null; util?: string; rules?: string; skill?: string; version?: string; description?: string; mcp?: Record<string, unknown> } = {}) {
   const ave: Record<string, unknown> = {

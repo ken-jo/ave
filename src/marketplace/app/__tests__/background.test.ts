@@ -1132,7 +1132,7 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
 
   it("records a failure before commit with its attempt, retries at each apply check, and stops after the third", async () => {
     const error = new MarketplaceError("SOURCE_UNREACHABLE", "git fetch failed", { detail: { reason: "offline" } });
-    const h = applying([{ state: "failed", error }, { state: "failed", error }, { state: "failed", error: new Error("disk full at /Users/someone") }]);
+    const h = applying([{ state: "failed", error }, { state: "failed", error }, { state: "failed", error: new Error("disk full at /Users/example") }]);
     const background = startMarketplaceBackground(h.input);
     await idle(background);
     expect(h.store.saved?.packages["ave:plugin:meeting"]).toMatchObject({ state: "failed", attempts: 1, lastError: { code: "SOURCE_UNREACHABLE", detail: { reason: "offline" } } });
