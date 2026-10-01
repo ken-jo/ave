@@ -42,6 +42,15 @@ const log = createLogger("floating-dock");
  * with nothing in it has no state worth keeping alive, and a destroyed window
  * cannot be left floating by a bug in the visibility bookkeeping.
  */
+export interface ElectronFloatingDockSurfaceDeps {
+  /**
+   * Subscribe to the host theme broadcast (`host.theme.changed`, the payload
+   * plugin webviews receive). The dock's own chrome reads the theme once when
+   * its window loads; every later theme reaches it through this.
+   */
+  onThemeChanged(listener: (theme: unknown) => void): () => void;
+}
+
 export class ElectronFloatingDockSurface implements FloatingDockSurface {
   #window: BrowserWindow | null = null;
   #emit: ((event: DockSurfaceEvent) => void) | null = null;
@@ -49,7 +58,10 @@ export class ElectronFloatingDockSurface implements FloatingDockSurface {
   #pending: Array<{ channel: string; payload: unknown }> = [];
   #ready = false;
 
-  constructor() {
+  constructor(deps: ElectronFloatingDockSurfaceDeps) {
+    // The surface lives as long as the app, so this subscription is never undone.
+    // No window: nothing to repaint, and the next one asks `getTheme` itself.
+    deps.onThemeChanged((theme) => this.#post(CHANNELS.dock.theme, theme));
     // Registered ONCE, in the constructor, not per window: `show()` runs again
     // every time the dock comes back and per-window registration would stack a
     // second listener each time, so one click would report N closes.

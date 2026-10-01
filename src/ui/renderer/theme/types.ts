@@ -61,4 +61,12 @@ export interface ThemeContextValue {
   canFollowSystem: boolean;
   /** Toggle followSystem persistence. Only meaningful while `canFollowSystem`. */
   setFollowSystem: (next: boolean) => void;
+  /**
+   * Changes each time a theme's values have been written to `:root` — a
+   * different theme, the other side of a pair, or the same theme updated in
+   * place. Bumped after the write, so a consumer that copies theme values
+   * (into a canvas, a native title bar, an MCP app, another window) and lists
+   * this in its effect reads the new values, never the ones being replaced.
+   */
+  appliedRevision: number;
 }

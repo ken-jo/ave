@@ -137,6 +137,9 @@ export function McpAppView({
   const themeCtx = useOptionalTheme();
   const resolved = themeCtx?.resolved ?? "light";
   const effectiveBundleId = themeCtx?.effectiveBundleId ?? DEFAULT_BUNDLE_ID;
+  // Changes when the applied theme's values change — also for the same theme
+  // updated in place, which leaves `resolved` and `effectiveBundleId` as they were.
+  const appliedRevision = themeCtx?.appliedRevision ?? 0;
 
   // ── The card's ORIGIN session — the `onmessage` session binding ───────────────
   // A card belongs to the chat session it was rendered in. We latch the FIRST session
@@ -330,7 +333,9 @@ export function McpAppView({
       timeZone,
       displayMode: mountDisplayMode,
     });
-  }, [resolved, effectiveBundleId, locale, timeZone, mountDisplayMode]);
+    // appliedRevision: the registry's bundle under the same id has new tokens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolved, effectiveBundleId, appliedRevision, locale, timeZone, mountDisplayMode]);
 
   // Hold the latest builder in a ref so the ref-callback bridge lifecycle
   // (`attachWebview`, keyed only on [payload, bundle]) can seed the initial context
@@ -465,7 +470,7 @@ export function McpAppView({
   }, [payload, bundle, handleResize, getDisplayMode, applyDisplayMode]);
 
   // Push host-context updates to a mounted bridge when the theme shell, active bundle,
-  // or locale changes. `setHostContext` auto-diffs and only notifies the view of changed
+  // its applied values (`appliedRevision`), or locale changes. `setHostContext` auto-diffs and only notifies the view of changed
   // fields (no-op on the mount pass, which matches the seed). `displayMode` is NOT in
   // here: this mount's mode is fixed for its lifetime, so there is no mode update to push
   // — a mode change moves the card to the OTHER mount, whose seed carries the new mode.
@@ -473,7 +478,7 @@ export function McpAppView({
     const current = bridgeRef.current;
     if (!current) return;
     current.bridge.setHostContext(buildHostContextRef.current());
-  }, [resolved, effectiveBundleId, locale]);
+  }, [resolved, effectiveBundleId, appliedRevision, locale]);
 
   return (
     <div className="mt-2 overflow-hidden rounded border bg-background">

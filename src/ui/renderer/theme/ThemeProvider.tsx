@@ -50,6 +50,18 @@ function readGlobalInitialBundleId(): UnvalidatedBundleId | undefined {
  * both by the initial settings hydrate and by the `SETTINGS.updated`
  * cross-window broadcast handler so the two paths share one normalizer.
  */
+/** A value with every object's keys sorted, so two equal values serialize the same. */
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical((value as Record<string, unknown>)[key])]));
+}
+
+/** Whether two bundles hold the same values, whatever the order of their keys. */
+function sameBundleValues(a: ThemeBundle, b: ThemeBundle): boolean {
+  return a === b || JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
+}
+
 function resolveAppearanceSettings(settings: AppSettings): { bundleId: UnvalidatedBundleId; followSystem: boolean } {
   const appearance = settings.appearance as { schemaVersion?: number; bundleId?: string; followSystem?: boolean } | undefined;
   const rawId = (appearance?.schemaVersion === 2 && typeof appearance.bundleId === "string")
@@ -224,7 +236,7 @@ export function ThemeProvider({
     const bundle = findBundle(effectiveBundleId);
     if (!bundle) return;
     // A reload rebuilds every bundle object: keep the shown one when nothing in it changed.
-    setActiveBundle((shown) => (shown.id === bundle.id && JSON.stringify(shown) !== JSON.stringify(bundle) ? bundle : shown));
+    setActiveBundle((shown) => (shown.id === bundle.id && !sameBundleValues(shown, bundle) ? bundle : shown));
   }, [installedThemes, effectiveBundleId]);
 
   // A theme installed after this window started — the first-boot migration
@@ -244,11 +256,14 @@ export function ThemeProvider({
     };
   }, [api, installedThemes, applySettingsAppearance]);
 
-  // Apply bundle to DOM on every active bundle change.
+  // Apply bundle to DOM on every active bundle change, then tell the consumers
+  // that copy theme values: their effects run after this one has written :root.
+  const [appliedRevision, setAppliedRevision] = useState(0);
   useEffect(() => {
     if (typeof document === "undefined") return;
     if (activeBundle.id !== effectiveBundleId) return;
     applyBundleToDocument(activeBundle);
+    setAppliedRevision((revision) => revision + 1);
   }, [activeBundle, effectiveBundleId]);
 
   // Propagate bundle tokens to plugin webviews whenever active bundle changes.
@@ -335,8 +350,9 @@ export function ThemeProvider({
       followSystem,
       canFollowSystem: systemPair !== null,
       setFollowSystem,
+      appliedRevision,
     }),
-    [bundleId, effectiveBundleId, setBundle, resolved, followSystem, systemPair, setFollowSystem],
+    [bundleId, effectiveBundleId, setBundle, resolved, followSystem, systemPair, setFollowSystem, appliedRevision],
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;

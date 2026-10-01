@@ -15,6 +15,9 @@ import { MCP_APP_CARD_MAX_HEIGHT_PX } from "../../../../shared/mcp-app-card-size
 import { __resetMcpAppCardLocationStoreForTests } from "../../state/mcp-app-card-location-store.js";
 import type { McpUiPayload } from "../../../../mcp/types.js";
 import { mcpUiPayload as payload } from "./mcp-app-panel-fixture.js";
+import { applyInstalledContent, resetInstalledContentForTests } from "../../installed-content.js";
+import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
+import { installedTheme, installedThemeContent, NO_LANGUAGE_BRIDGE } from "../../../../../test/renderer/installed-theme.js";
 
 // The host-context WIRING test (below) needs to observe both the args
 // `createMcpAppBridge` is called with and the `bridge.setHostContext` calls that
@@ -133,6 +136,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   __resetMcpAppCardLocationStoreForTests();
+  resetInstalledContentForTests();
   setInstalledThemeBundles([]);
 });
 
@@ -255,6 +259,32 @@ describe("McpAppView — standard McpUiHostContext wiring (P0)", () => {
       expect((calls[calls.length - 1]![0] as { theme?: string }).theme).toBe("dark");
     });
     // The bridge was never re-created for a theme-only change.
+    expect(createMcpAppBridgeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("pushes the new values when the shown theme is updated in place (same id, same shell)", async () => {
+    const harbor = installedTheme("harbor", "dark", { background: "210 40% 12%" });
+    const { api } = makeMockAveApi({ settings: { appearance: { schemaVersion: 2, bundleId: "harbor" } } });
+    act(() => { applyInstalledContent(installedThemeContent([harbor]), NO_LANGUAGE_BRIDGE); });
+    render(
+      <ThemeProvider api={api as never} initialBundleId="harbor">
+        <McpAppView payload={payload("sample")} />
+      </ThemeProvider>,
+    );
+    await waitFor(() => expect(createMcpAppBridgeMock).toHaveBeenCalledTimes(1));
+    await act(async () => {});
+    const seeded = createMcpAppBridgeMock.mock.calls[0]![3] as { styles: { variables: Record<string, string> } };
+    expect(seeded.styles.variables["--color-background-primary"]).toBe("hsl(210, 40%, 12%)");
+    const appBridge = createMcpAppBridgeMock.mock.results[0]!.value.bridge as { setHostContext: ReturnType<typeof vi.fn> };
+    appBridge.setHostContext.mockClear();
+
+    await act(async () => {
+      applyInstalledContent(installedThemeContent([{ ...harbor, tokens: { ...harbor.tokens, background: "210 40% 18%" } }]), NO_LANGUAGE_BRIDGE);
+    });
+
+    await waitFor(() => expect(appBridge.setHostContext).toHaveBeenLastCalledWith(
+      expect.objectContaining({ styles: expect.objectContaining({ variables: expect.objectContaining({ "--color-background-primary": "hsl(210, 40%, 18%)" }) }) }),
+    ));
     expect(createMcpAppBridgeMock).toHaveBeenCalledTimes(1);
   });
 });

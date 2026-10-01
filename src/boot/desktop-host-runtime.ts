@@ -19,6 +19,7 @@ import { ElectronFloatingDockSurface } from "../main/floating-dock-surface.js";
 import { peekFloatingDock } from "./steps/plugin-runtime/host-api-factory.js";
 import { pickFoldersForPlugin } from "../main/host-api/pick-folders.js";
 import type { BootHost } from "./host-runtime.js";
+import { onEvent } from "./types.js";
 
 export function createDesktopBootHost(projectRoot: string): BootHost {
   return {
@@ -66,7 +67,8 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
       },
       powerMonitor: adaptPowerMonitor(powerMonitor),
       createAudioCaptureSurface: () => new ElectronAudioCaptureSurface(),
-      createFloatingDockSurface: () => new ElectronFloatingDockSurface(),
+      createFloatingDockSurface: () =>
+        new ElectronFloatingDockSurface({ onThemeChanged: (listener) => onEvent("host.theme.changed", listener) }),
       pickFolders: (pluginId, parentWindow) => pickFoldersForPlugin(pluginId, { parentWindow }),
       prepareRelease: prepareDesktopRelease,
       beforeShutdown: () => {

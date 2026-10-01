@@ -71,6 +71,8 @@ const dockBridge = {
   onMount: (handler: (slot: unknown) => void) => subscribe(CHANNELS.dock.mount, handler),
   onResize: (handler: (change: unknown) => void) => subscribe(CHANNELS.dock.resize, handler),
   onUnmount: (handler: (slot: unknown) => void) => subscribe(CHANNELS.dock.unmount, handler),
+  /** Each later host theme; `getTheme` answers the one current when the dock opened. */
+  onTheme: (handler: (theme: unknown) => void) => subscribe(CHANNELS.dock.theme, handler),
 
   /** The user pressed the dock's close control. */
   requestClose: (): void => {

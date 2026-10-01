@@ -27,8 +27,8 @@ import {
 import { moonstoneBundle } from "../theme/bundles/moonstone.js";
 import { applyInstalledContent, resetInstalledContentForTests } from "../installed-content.js";
 import type { InstalledContentView } from "../../../shared/installed-content.js";
-import { THEME_SURFACE_NAMES } from "../../../shared/theme-tokens.js";
 import { makeMockAveApi, MOCK_DEFAULT_SETTINGS } from "../../../../test/renderer/mock-ave-api.js";
+import { installedTheme, installedThemeContent, NO_LANGUAGE_BRIDGE } from "../../../../test/renderer/installed-theme.js";
 
 /** Every theme but Moonstone and Gallery is an installed package; these stand in for the ones used below. */
 function installed(id: string, shell: "light" | "dark", tokens: Partial<ThemeBundle["tokens"]> = {}, highContrast = false, pair?: string): ThemeBundle {
@@ -328,42 +328,95 @@ describe("<ThemeProvider>", () => {
     });
   });
 
-  it("applies the selected theme's new tokens when its package is updated, without selecting it again", async () => {
-    // Updating the active theme in the marketplace reloads the installed content under the same id.
-    const content = (bundle: ThemeBundle) =>
-      ({ themes: [{ ...bundle, preview: null }], languages: [], fonts: [], routineTemplates: [], broken: [] }) as unknown as InstalledContentView;
-    const bridge = { installed: vi.fn(), languageMessages: vi.fn() } as never;
-    // An installed package carries surfaces: its tokens are written on :root inline.
-    const surfaces = Object.fromEntries(THEME_SURFACE_NAMES.map((name) => [name, "228 20% 10%"])) as ThemeBundle["surfaces"];
-    const before = { ...installed("nord", "dark", { "muted-foreground": "227 6% 71%" }), surfaces };
-    const after = { ...installed("nord", "dark", { "muted-foreground": "227 6% 78%" }), surfaces };
-    setInstalledThemeBundles([before]);
-    const { api } = makeMockAveApi({ settings: { ...MOCK_DEFAULT_SETTINGS, appearance: { schemaVersion: 2, bundleId: "nord" } } });
-    act(() => {
-      applyInstalledContent(content(before), bridge);
-    });
+  describe("a theme package updated in place (same id)", () => {
+    // Updating a theme in the marketplace reloads the installed content: the
+    // registry gets new bundle objects under the same ids.
+    const reload = (themes: ThemeBundle[]) => act(() => { applyInstalledContent(installedThemeContent(themes), NO_LANGUAGE_BRIDGE); });
 
-    render(
-      <ThemeProvider api={api as never}>
-        <Probe onValue={() => undefined} />
-      </ThemeProvider>,
-    );
-    const root = document.documentElement;
-    await waitFor(() => {
+    async function showing(id: string, themes: ThemeBundle[], followSystem = false) {
+      const { api } = makeMockAveApi({ settings: { ...MOCK_DEFAULT_SETTINGS, appearance: { schemaVersion: 2, bundleId: id, followSystem } } });
+      reload(themes);
+      let revision = -1;
+      render(
+        <ThemeProvider api={api as never}>
+          <Probe onValue={(v) => { revision = v.appliedRevision; }} />
+        </ThemeProvider>,
+      );
+      return { api, revision: () => revision };
+    }
+
+    it("applies the selected theme's new tokens without selecting it again, and bumps appliedRevision", async () => {
+      const root = document.documentElement;
+      const before = installedTheme("nord", "dark", { "muted-foreground": "227 6% 71%" });
+      const after = installedTheme("nord", "dark", { "muted-foreground": "227 6% 78%" });
+      const { api, revision } = await showing("nord", [before]);
+      await waitFor(() => expect(root.style.getPropertyValue("--muted-foreground")).toBe("227 6% 71%"));
+      const applied = revision();
+
+      reload([after]);
+
+      await waitFor(() => {
+        expect(root.style.getPropertyValue("--muted-foreground")).toBe("227 6% 78%");
+        // Plugin webviews get the new tokens too.
+        expect(api.notifyPluginTheme).toHaveBeenLastCalledWith(expect.objectContaining({ bundleId: "nord", tokens: bundleToPluginTokens(after) }));
+        expect(revision()).toBeGreaterThan(applied);
+      });
       expect(root.getAttribute("data-theme-bundle")).toBe("nord");
-      expect(root.style.getPropertyValue("--muted-foreground")).toBe("227 6% 71%");
     });
 
-    act(() => {
-      applyInstalledContent(content(after), bridge);
+    it("re-sends nothing when a reload carries the same values, in any key order", async () => {
+      const nord = installedTheme("nord", "dark");
+      const { api, revision } = await showing("nord", [nord]);
+      await waitFor(() => expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("nord"));
+      await act(async () => {});
+      const applied = revision();
+      api.notifyPluginTheme.mockClear();
+
+      const reordered = { ...nord, tokens: Object.fromEntries(Object.entries(nord.tokens).reverse()) as ThemeBundle["tokens"] };
+      reload([JSON.parse(JSON.stringify(nord)) as ThemeBundle, installedTheme("other", "light")]);
+      reload([reordered]);
+      await act(async () => {});
+
+      expect(api.notifyPluginTheme).not.toHaveBeenCalled();
+      expect(revision()).toBe(applied);
     });
 
-    await waitFor(() => {
-      expect(root.style.getPropertyValue("--muted-foreground")).toBe("227 6% 78%");
-      // Plugin webviews get the new tokens too.
-      expect(api.notifyPluginTheme).toHaveBeenLastCalledWith(expect.objectContaining({ bundleId: "nord", tokens: bundleToPluginTokens(after) }));
+    it("follows an update to the side of a pair the OS shows, ignores the other side, and shows it on an OS switch", async () => {
+      let light = true;
+      const listeners = new Set<() => void>();
+      vi.stubGlobal("matchMedia", (query: string) => ({
+        matches: query.includes("light") ? light : false,
+        media: query,
+        addEventListener: (_: string, listener: () => void) => listeners.add(listener),
+        removeEventListener: (_: string, listener: () => void) => listeners.delete(listener),
+      }));
+      const root = document.documentElement;
+      const dark = installedTheme("harbor", "dark", { background: "210 40% 12%" }, "harbor-light");
+      const bright = installedTheme("harbor-light", "light", { background: "210 40% 92%" }, "harbor");
+      // The dark side is saved; the OS is light, so the light side shows.
+      const { api } = await showing("harbor", [dark, bright], true);
+      await waitFor(() => expect(root.style.getPropertyValue("--background")).toBe("210 40% 92%"));
+      await act(async () => {});
+
+      api.notifyPluginTheme.mockClear();
+      const brightNext = { ...bright, tokens: { ...bright.tokens, background: "210 40% 88%" } };
+      reload([dark, brightNext]);
+      await waitFor(() => expect(root.style.getPropertyValue("--background")).toBe("210 40% 88%"));
+      expect(api.notifyPluginTheme).toHaveBeenCalledTimes(1);
+      expect(api.notifyPluginTheme).toHaveBeenLastCalledWith(expect.objectContaining({ bundleId: "harbor-light", tokens: bundleToPluginTokens(brightNext) }));
+
+      // The side not shown changes: nothing on screen does.
+      api.notifyPluginTheme.mockClear();
+      const darkNext = { ...dark, tokens: { ...dark.tokens, background: "210 40% 22%" } };
+      reload([darkNext, brightNext]);
+      await act(async () => {});
+      expect(api.notifyPluginTheme).not.toHaveBeenCalled();
+      expect(root.style.getPropertyValue("--background")).toBe("210 40% 88%");
+
+      // The OS turns dark: the dark side shows with its new values.
+      await act(async () => { light = false; for (const listener of listeners) listener(); });
+      await waitFor(() => expect(root.style.getPropertyValue("--background")).toBe("210 40% 22%"));
     });
-    expect(root.getAttribute("data-theme-bundle")).toBe("nord");
   });
 
   it("useTheme throws when called outside the provider", () => {

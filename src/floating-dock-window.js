@@ -18,6 +18,8 @@
  */
 
 const dock = window.aveDock;
+/** Set once a pushed theme has painted: the opening `getTheme` answer is older than it. */
+let themePushed = false;
 
 const els = {
   activity: document.getElementById("activity"),
@@ -44,6 +46,11 @@ function main() {
   els.close.addEventListener("click", () => dock.requestClose());
 
   applyTheme();
+  // Every later theme — another theme, or the same one updated in place.
+  dock.onTheme((theme) => {
+    themePushed = true;
+    paintTheme(theme);
+  });
 
   dock.onActivity((activity) => {
     if (!activity || typeof activity.summary !== "string") {
@@ -98,24 +105,29 @@ function slotElementId(panelId) {
 async function applyTheme() {
   try {
     const theme = await dock.getTheme();
-    const tokens = theme && typeof theme === "object" ? theme.tokens : null;
-    if (!tokens || typeof tokens !== "object") return;
-    // Only the tokens this window actually uses. Copying the whole map onto a
-    // surface with five colours in it would make the dock's appearance depend
-    // on tokens nobody checked against a transparent background.
-    const pick = {
-      "--dock-fg": tokens["--ave-fg"],
-      "--dock-bg": tokens["--ave-bg-elevated"] ?? tokens["--ave-bg"],
-      "--dock-border": tokens["--ave-border"],
-      "--dock-accent": tokens["--ave-accent"],
-    };
-    for (const [name, value] of Object.entries(pick)) {
-      if (typeof value === "string" && value) document.documentElement.style.setProperty(name, value);
-    }
+    if (themePushed) return;
+    paintTheme(theme);
   } catch {
     // The stylesheet's fallbacks already cover this. A dock that refused to
     // paint because the theme was not ready would be worse than one in
     // default colours.
+  }
+}
+
+function paintTheme(theme) {
+  const tokens = theme && typeof theme === "object" ? theme.tokens : null;
+  if (!tokens || typeof tokens !== "object") return;
+  // Only the tokens this window actually uses. Copying the whole map onto a
+  // surface with five colours in it would make the dock's appearance depend
+  // on tokens nobody checked against a transparent background.
+  const pick = {
+    "--dock-fg": tokens["--ave-fg"],
+    "--dock-bg": tokens["--ave-bg-elevated"] ?? tokens["--ave-bg"],
+    "--dock-border": tokens["--ave-border"],
+    "--dock-accent": tokens["--ave-accent"],
+  };
+  for (const [name, value] of Object.entries(pick)) {
+    if (typeof value === "string" && value) document.documentElement.style.setProperty(name, value);
   }
 }
 
