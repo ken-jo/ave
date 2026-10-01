@@ -396,8 +396,8 @@ describe("git marketplace IPC boundary", () => {
     const { registration, service } = await setup({ approveComponents });
     // No scheduler yet: nothing is approved.
     await expect(invokeFileIpcHandler(handlers, channels.componentsApprove, key, "install-1", consents)).resolves.toMatchObject({ ok: false, code: "unavailable" });
-    registration.startBackground();
-    await vi.waitFor(() => expect(service.updates).toHaveBeenCalledTimes(2));
+    await registration.startBackground();
+    expect(service.updates).toHaveBeenCalledTimes(2);
 
     const answer = await invokeFileIpcHandler(handlers, channels.componentsApprove, key, "install-1", consents);
     expect(answer).toMatchObject({ ok: true, value: { packages: [] } });
@@ -418,8 +418,8 @@ describe("git marketplace IPC boundary", () => {
 
   it("applies queued updates now on Apply now, from the host renderer only (§18.7.4)", async () => {
     const { registration, service } = await setup();
-    registration.startBackground();
-    await vi.waitFor(() => expect(service.updates).toHaveBeenCalledTimes(2));
+    await registration.startBackground();
+    expect(service.updates).toHaveBeenCalledTimes(2);
     await expect(invokeFileIpcHandler(handlers, channels.updatesApplyNow)).resolves.toMatchObject({ ok: true, value: { waitingSince: null, escalated: false } });
     for (const channel of [channels.updatesApplyNow, channels.componentsApprove]) {
       await expect(invokeAppIpcHandlerFromFrame(handlers, channel, "file:///app/plugin-ui-shell.html"))
