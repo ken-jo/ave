@@ -1,9 +1,17 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { normalizeSourceUrl } from "../../net/source-url.js";
-import { EMPTY_MARKETPLACE_POLICY, FilePolicySource, isBlockedByPolicy, loadMarketplacePolicy, type MarketplacePolicy } from "../policy.js";
+import {
+  EMPTY_MARKETPLACE_POLICY,
+  FilePolicySource,
+  isBlockedByPolicy,
+  loadMarketplacePolicy,
+  type MarketplacePolicy,
+  type PolicyFileAccess,
+} from "../policy.js";
 
 let dir: string;
 let path: string;
@@ -200,19 +208,122 @@ describe("FilePolicySource (§18.6)", () => {
     expect(fixed?.load).toMatchObject({ ok: true, policy: { blockPrivateNetworks: true } });
   });
 
+  const FIRST = JSON.stringify({ version: 1, marketplaces: { requireHttps: false } });
+  // Other content of the same length.
+  const SECOND = JSON.stringify({ version: 1, marketplaces: { requireHttps: true } }).padEnd(FIRST.length, " ");
+
   it("notices a rewrite that keeps the size and the modification time", async () => {
     const fixed = new Date(Date.UTC(2026, 0, 1));
-    const first = JSON.stringify({ version: 1, marketplaces: { requireHttps: false } });
-    writeFileSync(path, first);
+    writeFileSync(path, FIRST);
     utimesSync(path, fixed, fixed);
     const source = await FilePolicySource.open(path);
-    // Other content of the same length, with the modification time put back: only the status-change time moved.
-    const second = JSON.stringify({ version: 1, marketplaces: { requireHttps: true } }).padEnd(first.length, " ");
-    expect(second.length).toBe(first.length);
-    writeFileSync(path, second);
+    // The modification time put back: only the status-change time can move, and on a coarse clock (NTFS) it often
+    // does not within one tick. The read above began within the racy window of that change, so the check reads
+    // the file again whatever the clock did.
+    expect(SECOND.length).toBe(FIRST.length);
+    writeFileSync(path, SECOND);
     utimesSync(path, fixed, fixed);
     expect(statSync(path).mtimeMs).toBe(fixed.getTime());
     expect((await source.check())?.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
+  });
+
+  /**
+   * node's file system under a clock that does not tick on its own: every write is stamped `clock.stamp`, and a
+   * read begins at `clock.now`. Counts the reads of the file's content.
+   */
+  function coarseClock(clock: { stamp: number; now: number }) {
+    const counts = { reads: 0 };
+    const access: PolicyFileAccess = {
+      stat: async (file) => {
+        const info = await stat(file);
+        return { size: info.size, ino: info.ino, dev: info.dev, mtimeMs: clock.stamp, ctimeMs: clock.stamp };
+      },
+      readFile: async (file) => {
+        counts.reads += 1;
+        return readFile(file, "utf8");
+      },
+      now: () => clock.now,
+    };
+    return { access, counts };
+  }
+
+  const T = Date.UTC(2026, 0, 1);
+
+  it("reads again after a read in the same clock tick as the change it saw", async () => {
+    // The change and the read land in one tick; so does the rewrite after it, with the same size and times:
+    // the stat is identical, and only the content tells the rewrite apart.
+    const clock = { stamp: T, now: T + 1 };
+    const { access, counts } = coarseClock(clock);
+    writeFileSync(path, FIRST);
+    const source = await FilePolicySource.open(path, access);
+    writeFileSync(path, SECOND);
+    const update = await source.check();
+    expect(update?.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
+    expect(counts.reads).toBe(2);
+  });
+
+  it("trusts the stat without reading once a read began clearly after the change, and reads again on a new one", async () => {
+    const clock = { stamp: T, now: T + 3_000 };
+    const { access, counts } = coarseClock(clock);
+    writeFileSync(path, FIRST);
+    const source = await FilePolicySource.open(path, access);
+    expect(counts.reads).toBe(1);
+    expect(await source.check()).toBeNull();
+    expect(await source.check()).toBeNull();
+    expect(counts.reads).toBe(1);
+    // A later write is stamped by a clock that has moved on since the read.
+    clock.stamp = T + 3_500;
+    writeFileSync(path, SECOND);
+    expect((await source.check())?.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
+    expect(counts.reads).toBe(2);
+  });
+
+  it("reads again while the last read was racy, and trusts the stat again after a read outside the window", async () => {
+    const clock = { stamp: T, now: T + 2_999 };
+    const { access, counts } = coarseClock(clock);
+    writeFileSync(path, FIRST);
+    const source = await FilePolicySource.open(path, access);
+    // Same content: nothing to apply, but each check reads, since the times cannot tell a same-tick rewrite apart.
+    expect(await source.check()).toBeNull();
+    expect(await source.check()).toBeNull();
+    expect(counts.reads).toBe(3);
+    clock.now = T + 3_000;
+    expect(await source.check()).toBeNull();
+    expect(counts.reads).toBe(4);
+    expect(await source.check()).toBeNull();
+    expect(counts.reads).toBe(4);
+  });
+
+  it("reads again when the clock has stepped back behind the read that recorded the stat", async () => {
+    const clock = { stamp: T, now: T + 5_000 };
+    const { access, counts } = coarseClock(clock);
+    writeFileSync(path, FIRST);
+    const source = await FilePolicySource.open(path, access);
+    expect(await source.check()).toBeNull();
+    expect(counts.reads).toBe(1);
+    // The clock steps back to the recorded change, and a rewrite carries the recorded times again.
+    clock.now = T;
+    writeFileSync(path, SECOND);
+    expect((await source.check())?.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
+    expect(counts.reads).toBe(2);
+  });
+
+  it("treats a change time ahead of the clock as racy until the clock passes it", async () => {
+    // A file server whose clock runs ahead of this one, or a modification time set forward.
+    const clock = { stamp: T + 60_000, now: T };
+    const { access, counts } = coarseClock(clock);
+    writeFileSync(path, FIRST);
+    const source = await FilePolicySource.open(path, access);
+    writeFileSync(path, SECOND);
+    const update = await source.check();
+    expect(update?.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
+    source.apply(update!);
+    expect(await source.check()).toBeNull();
+    expect(counts.reads).toBe(3);
+    clock.now = T + 63_000;
+    expect(await source.check()).toBeNull();
+    expect(await source.check()).toBeNull();
+    expect(counts.reads).toBe(4);
   });
 
   it("goes unreadable when the file can no longer be read, and back when it can (§12 fail closed)", async () => {
