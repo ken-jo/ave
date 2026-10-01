@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { PluginUpdatesPill } from "../PluginUpdatesPill.js";
 import type { PluginUpdatesPillProps } from "../PluginUpdatesPill.js";
-import type { PackageKind, PackageUpdateView } from "../../../../shared/git-marketplace.js";
+import { UPDATE_PACKAGE_STATES, type PackageKind, type PackageUpdateView } from "../../../../shared/git-marketplace.js";
 
 describe("PluginUpdatesPill", () => {
   afterEach(() => cleanup());
@@ -33,6 +33,30 @@ describe("PluginUpdatesPill", () => {
     expect(title).toContain("Dusk → 3.1.0");
     fireEvent.focus(pill);
     expect(screen.getByRole("tooltip").textContent).toContain("Ave Meeting → 2.0.0");
+  });
+
+  it("counts only the updates that need the user (design §18.7.5)", () => {
+    const onReview = vi.fn();
+    const every = UPDATE_PACKAGE_STATES.map((state) => ({ ...update("plugin", `p-${state}`, `P ${state}`, "2.0.0"), state }));
+    renderPill({ updates: every, onReview });
+
+    const pill = screen.getByTestId("marketplace-update-action");
+    expect(pill.textContent).toContain("업데이트 5개");
+    pill.click();
+    expect(onReview.mock.calls[0]![0].map((item: PackageUpdateView) => item.state)).toEqual([
+      "needs-review",
+      "manual",
+      "failed",
+      "applied-not-running",
+      "approval-pending",
+    ]);
+  });
+
+  it("renders nothing when every update is applying, waiting or applied", () => {
+    renderPill({
+      updates: (["automatic", "waiting", "applied"] as const).map((state) => ({ ...update("plugin", state, state, "2.0.0"), state })),
+    });
+    expect(screen.queryByTestId("marketplace-update-action")).toBeNull();
   });
 
   it("opens the review with the updates instead of installing them", () => {
@@ -72,5 +96,5 @@ function renderPill(overrides: Partial<PluginUpdatesPillProps> & { updates: Pack
 }
 
 function update(kind: PackageKind, name: string, displayName: string, to: string): PackageUpdateView {
-  return { key: { sourceId: "ave", kind, name }, displayName, from: "1.0.0", to };
+  return { key: { sourceId: "ave", kind, name }, displayName, from: "1.0.0", to, state: "manual" };
 }

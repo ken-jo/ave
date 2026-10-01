@@ -347,6 +347,7 @@ describe("preload contextBridge world shape lock", () => {
             "acknowledgeSource",
             "addSource",
             "bootInstallNotice",
+            "checkUpdates",
             "deleteToken",
             "dismissBootInstallNotice",
             "executeInstall",
@@ -357,6 +358,7 @@ describe("preload contextBridge world shape lock", () => {
             "onDeepLink",
             "onInstallProgress",
             "onSyncProgress",
+            "onUpdateStatus",
             "packageDetail",
             "planInstall",
             "planUpdate",
@@ -369,6 +371,7 @@ describe("preload contextBridge world shape lock", () => {
             "setToken",
             "takeDeepLink",
             "uninstall",
+            "updateStatus",
           ],
           "gitRuntime": [
             "install",

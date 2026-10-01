@@ -13,7 +13,7 @@ import { FilePolicySource } from "../../../marketplace/sources/policy.js";
 import { parseGitMarketplaceResult } from "../../../shared/git-marketplace.js";
 import { breakDiagnosticScrubberOn, DIAGNOSTIC_KEPT, DIAGNOSTIC_SECRET_PROBES } from "../../../shared/__tests__/fixtures/diagnostic-secret-probes.js";
 import { invokeAppIpcHandlerFromFrame, invokeFileIpcHandler } from "./test-helpers.js";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { latestBootstrapStatus } from "../../../boot/bootstrap-status.js";
@@ -21,14 +21,38 @@ import { revocationRegistry, type RevocationRule } from "../../../plugins/revoca
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
+const resumeListeners = new Set<() => void>();
+
 vi.mock("electron", () => ({
   app: { getPath: () => "/tmp" },
   session: { defaultSession: { resolveProxy: async () => "DIRECT" } },
+  powerMonitor: {
+    on: vi.fn((event: string, listener: () => void) => {
+      if (event === "resume") resumeListeners.add(listener);
+    }),
+    removeListener: vi.fn((event: string, listener: () => void) => {
+      if (event === "resume") resumeListeners.delete(listener);
+    }),
+  },
   ipcMain: {
     handle: vi.fn((channel: string, handler: (...args: unknown[]) => unknown) => {
       handlers.set(channel, handler);
     }),
   },
+}));
+
+/** The app's shutdown hooks, run by the test instead of `before-quit`. */
+const shutdownHooks = new Map<string, () => void>();
+/** The plugin port's install-state preparation, which needs the whole plugin runtime, is not under test here. */
+vi.mock("../plugins.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../plugins.js")>()),
+  pluginLifecycleServices: () => ({ ensureInstallStateReady: async () => {}, uninstall: async () => {}, retirement: {} }),
+}));
+vi.mock("../../../main/app-shutdown.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../main/app-shutdown.js")>()),
+  registerShutdownHook: vi.fn((name: string, stop: () => void) => {
+    shutdownHooks.set(name, stop);
+  }),
 }));
 
 const channels = CHANNELS.gitMarketplace;
@@ -57,6 +81,7 @@ async function setup(overrides: Record<string, unknown> = {}) {
     uninstall: vi.fn(async (request: unknown) => ({ key: request, keptDataDir: null })),
     previewDirectMcp: vi.fn(),
     updates: vi.fn(async () => []),
+    discover: vi.fn(async () => ({ result: "ok", reached: ["ave"] })),
     enforceRevocations: vi.fn(async () => {}),
     takeRevocationNotice: vi.fn(() => null),
     applyBootInstalls: vi.fn(async () => ({
@@ -71,18 +96,22 @@ async function setup(overrides: Record<string, unknown> = {}) {
   const home = mkdtempSync(join(tmpdir(), "ave-git-marketplace-ipc-"));
   const marketplace: Record<string, unknown> = { updateCheckIntervalMs: 0 };
   const settings = { get: () => marketplace };
+  // A lifetime of its own: the app's shared one (`getMarketplaceLifetime`) would outlive this test's shutdown.
+  const lifetime = new AbortController();
   const registration = registerGitMarketplaceHandlers(
     { auditLogger: { log: vi.fn() }, getMainWindow: () => null, settingsService: settings } as never,
     async () => null,
     create,
     onBuilt,
     home,
+    lifetime,
   );
-  return { service, create, onBuilt, registration, home, marketplace };
+  return { service, create, onBuilt, registration, home, marketplace, lifetime };
 }
 
 beforeEach(() => {
   handlers.clear();
+  resumeListeners.clear();
 });
 
 describe("git marketplace IPC boundary", () => {
@@ -159,11 +188,11 @@ describe("git marketplace IPC boundary", () => {
       ok: false,
       error: "the marketplace boot pass has not started",
     });
-    expect(service.refresh).not.toHaveBeenCalled();
+    expect(service.discover).not.toHaveBeenCalled();
 
     registration.startBackground();
     await vi.waitFor(() => expect(latestBootstrapStatus()).toEqual({ phase: "complete", installed: ["meeting"], failed: [] }));
-    expect(service.refresh).toHaveBeenCalledTimes(1);
+    expect(service.discover).toHaveBeenCalledTimes(1);
     expect(service.applyBootInstalls).toHaveBeenCalledTimes(1);
     expect(state.getBootInstallNotice()).toEqual({ forYou: [{ sourceId: "ave", kind: "plugin", name: "meeting" }], required: [], unmanaged: [], lostGrants: [], revoked: [] });
 
@@ -180,10 +209,126 @@ describe("git marketplace IPC boundary", () => {
     expect(service.updates).not.toHaveBeenCalled();
 
     registration.startBackground();
-    await vi.waitFor(() => expect(service.updates).toHaveBeenCalledTimes(1));
-    registration.settingsChanged();
+    // The boot's discovery, then the list after the boot installs.
     await vi.waitFor(() => expect(service.updates).toHaveBeenCalledTimes(2));
-    expect(service.refresh).toHaveBeenCalledTimes(1);
+    registration.settingsChanged();
+    await vi.waitFor(() => expect(service.updates).toHaveBeenCalledTimes(3));
+    expect(service.discover).toHaveBeenCalledTimes(1);
+    expect(service.refresh).not.toHaveBeenCalled();
+  });
+
+  it("answers the update scheduler's status and Check now from the host renderer only, once the scheduler runs", async () => {
+    const { registration, service, home } = await setup({ updates: vi.fn(async () => [{ key: { sourceId: "ave", kind: "plugin", name: "meeting" }, displayName: "Meeting", from: "1.0.0", to: "1.1.0" }]) });
+    // Before the window starts it there is no scheduler; the card says why.
+    await expect(invokeFileIpcHandler(handlers, channels.updatesStatus)).resolves.toEqual({ ok: false, code: "unavailable", message: "update checks have not started" });
+
+    registration.startBackground();
+    await vi.waitFor(async () => {
+      const status = await invokeFileIpcHandler(handlers, channels.updatesStatus) as { ok: true; value: { applyCheckAt: string | null } };
+      expect(status.ok && status.value.applyCheckAt).not.toBe(null);
+    });
+    const checked = await invokeFileIpcHandler(handlers, channels.updatesCheck) as { ok: true; value: { running: boolean; discovery: { result: string }; packages: unknown[] } };
+    expect(checked).toMatchObject({ ok: true, value: { running: false, discovery: { result: "ok" }, packages: [{ key: { name: "meeting" }, state: "manual" }] } });
+    expect(service.discover).toHaveBeenCalledTimes(2);
+    // Remembered in ~/.ave/marketplaces/updates.json.
+    expect(JSON.parse(readFileSync(join(home, "marketplaces", "updates.json"), "utf8"))).toMatchObject({ version: 1, discovery: { result: "ok" } });
+
+    for (const channel of [channels.updatesStatus, channels.updatesCheck]) {
+      await expect(invokeAppIpcHandlerFromFrame(handlers, channel, "file:///app/plugin-ui-shell.html"))
+        .resolves.toEqual({ ok: false, code: "unauthorized-frame", message: "unauthorized-frame" });
+    }
+    expect(service.discover).toHaveBeenCalledTimes(2);
+
+    // Waking from sleep runs a due check; nothing is due an instant after a check.
+    expect(resumeListeners.size).toBe(1);
+    resumeListeners.forEach((listener) => listener());
+    expect(service.discover).toHaveBeenCalledTimes(2);
+  });
+
+  it("answers every scheduler request with its declared refusal once the app has stopped the scheduler", async () => {
+    shutdownHooks.clear();
+    const { registration, service } = await setup();
+    registration.startBackground();
+    await vi.waitFor(() => expect(latestBootstrapStatus()).toMatchObject({ phase: "complete" }));
+    // One hook closes the domain's event boundary and stops the scheduler in the same step.
+    await vi.waitFor(() => expect(shutdownHooks.has("git-marketplace-events")).toBe(true));
+    shutdownHooks.get("git-marketplace-events")!();
+    const discoveries = service.discover.mock.calls.length;
+
+    // Retry: the {ok:false,error} envelope it declares, not a rejection across IPC.
+    await expect(invokeFileIpcHandler(handlers, CHANNELS.bootstrap.retry)).resolves.toEqual({ ok: false, error: "the update scheduler has stopped" });
+    // Check now: the marketplace envelope, `unavailable`.
+    await expect(invokeFileIpcHandler(handlers, channels.updatesCheck)).resolves.toEqual({ ok: false, code: "unavailable", message: "the update scheduler has stopped" });
+    // The status still answers with what the scheduler knew.
+    await expect(invokeFileIpcHandler(handlers, channels.updatesStatus)).resolves.toMatchObject({ ok: true });
+    // A settings write rechecks nothing and leaves no rejection behind.
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    try {
+      registration.settingsChanged();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
+    expect(unhandled).not.toHaveBeenCalled();
+    expect(service.discover.mock.calls.length).toBe(discoveries);
+    expect(service.applyBootInstalls).toHaveBeenCalledTimes(1);
+    // Nor does a scheduler start again after the shutdown.
+    registration.startBackground();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(service.discover.mock.calls.length).toBe(discoveries);
+  });
+
+  it("lets a plugin install that lands after the shutdown hook finish, without telling the host or refreshing the bridge", async () => {
+    shutdownHooks.clear();
+    const { lifetime } = await setup();
+    const { onEvent } = await import("../../../boot/types.js");
+    const { pluginInstaller } = await import("../git-marketplace.js");
+    const { whileRunning } = await import("../../../marketplace/app/background.js");
+    const announced = vi.fn();
+    const off = onEvent("plugin.installed", announced);
+    let land: () => void = () => {};
+    const installGitPlugin = vi.fn(
+      () =>
+        new Promise<{ pluginId: string; action: "install"; staged: false }>((resolve) => {
+          land = () => resolve({ pluginId: "calendar", action: "install", staged: false });
+        }),
+    );
+    const deps = {
+      pluginMarketplace: { installGitPlugin },
+      pluginRuntime: {
+        resolvePluginId: (id: string) => id,
+        resolvePluginInstallIdIfKnown: () => "calendar@1",
+        cancelPendingRestart: vi.fn(),
+        listPluginIds: () => ["calendar"],
+        activatePreparedArtifact: vi.fn(),
+      },
+      refreshPluginEventBridge: vi.fn(),
+    };
+    // The port the domain builds, with the domain's boundary over this registration's lifetime.
+    const port = pluginInstaller(deps as never, whileRunning(lifetime.signal));
+    const plan = { name: "calendar" } as never;
+    try {
+      // While the app runs, a landed install is announced and the bridge refreshed.
+      const first = port.install(plan, { stage: false, switchSource: false } as never);
+      await vi.waitFor(() => expect(installGitPlugin).toHaveBeenCalledTimes(1));
+      land();
+      await expect(first).resolves.toEqual({ action: "install", staged: false });
+      expect(announced).toHaveBeenCalledTimes(1);
+      expect(deps.refreshPluginEventBridge).toHaveBeenCalledTimes(1);
+
+      const second = port.install(plan, { stage: false, switchSource: false } as never);
+      await vi.waitFor(() => expect(installGitPlugin).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() => expect(shutdownHooks.has("git-marketplace-events")).toBe(true));
+      shutdownHooks.get("git-marketplace-events")!();
+      land();
+      // The install itself completes and answers; nothing after it reaches the host or the bridge.
+      await expect(second).resolves.toEqual({ action: "install", staged: false });
+      expect(announced).toHaveBeenCalledTimes(1);
+      expect(deps.refreshPluginEventBridge).toHaveBeenCalledTimes(1);
+    } finally {
+      off();
+    }
   });
 
   it("reports the boot pass skipped in an isolated E2E run, and never builds the marketplace", async () => {

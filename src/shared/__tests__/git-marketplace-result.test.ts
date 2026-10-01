@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseGitMarketplaceResult } from "../git-marketplace.js";
+import { parseGitMarketplaceResult, parseUpdateStatus } from "../git-marketplace.js";
 
 describe("the failure envelope across the bridge (design §18.8)", () => {
   it("keeps a detail whose reason belongs to the code", () => {
@@ -36,5 +36,29 @@ describe("the failure envelope across the bridge (design §18.8)", () => {
       code: "unavailable",
       message: "the marketplace did not answer",
     });
+  });
+});
+
+describe("the update status across the bridge (design §13.1)", () => {
+  const update = { key: { sourceId: "ave", kind: "plugin", name: "meeting" }, displayName: "Meeting", from: "1.0.0", to: "1.1.0", state: "manual" };
+  const status = (packages: unknown[]) => ({
+    discovery: { lastAttemptAt: "2026-10-01T00:00:00.000Z", lastSuccessAt: null, result: "partial", nextAt: "2026-10-01T01:00:00.000Z" },
+    applyCheckAt: null,
+    running: false,
+    historyReset: false,
+    packages,
+  });
+
+  it("keeps a package with its state, and one an earlier discovery showed, marked stale", () => {
+    const sent = status([update, { ...update, key: { ...update.key, name: "notes" }, stale: true }]);
+    expect(parseUpdateStatus(sent)).toEqual(sent);
+  });
+
+  it.each([
+    ["an unknown state", { ...update, state: "maybe" }],
+    ["a stale flag that is not true", { ...update, stale: false }],
+    ["a missing state", { ...update, state: undefined }],
+  ])("drops a status with %s", (_case, item) => {
+    expect(parseUpdateStatus(status([item]))).toBeNull();
   });
 });

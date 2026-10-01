@@ -41,6 +41,12 @@ export interface BootInstallInput {
   install(row: CatalogRow, options: { switchSource: boolean; required: boolean }): Promise<void>;
   applied: AppliedDefaults;
   now(): Date;
+  /**
+   * Aborted when the app shuts down (the update scheduler's stop): no
+   * further package is judged, installed or recorded, and the run rejects
+   * with the signal's reason. The install in progress finishes.
+   */
+  signal?: AbortSignal;
 }
 
 export interface BootInstallReport {
@@ -199,13 +205,18 @@ async function byDefault(key: PackageKey, input: BootInstallInput, report: BootI
 export async function runBootInstalls(input: BootInstallInput): Promise<BootInstallReport> {
   const report: BootInstallReport = { installed: [], updated: [], switched: [], skipped: [], failed: [] };
   const requiredIds = new Set(input.policy.requiredInstalls.map(packageKeyId));
-  for (const key of input.policy.requiredInstalls) await required(key, input, report);
+  for (const key of input.policy.requiredInstalls) {
+    input.signal?.throwIfAborted();
+    await required(key, input, report);
+  }
   const seen = new Set<string>();
   for (const key of [...input.defaults, ...input.policy.defaultInstalls]) {
+    input.signal?.throwIfAborted();
     const id = packageKeyId(key);
     if (seen.has(id) || requiredIds.has(id)) continue;
     seen.add(id);
     await byDefault(key, input, report);
   }
+  input.signal?.throwIfAborted();
   return report;
 }

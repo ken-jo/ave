@@ -1011,5 +1011,20 @@ function mockGitMarketplace(sources: unknown[]) {
     bootInstallNotice: ok(null),
     dismissBootInstallNotice: ok(null),
     onBootInstallsApplied: subscribe(),
+    updateStatus: ok({
+      discovery: { lastAttemptAt: null, lastSuccessAt: null, result: null, nextAt: "2026-10-01T00:00:00.000Z" },
+      applyCheckAt: null,
+      running: false,
+      historyReset: false,
+      packages: [],
+    }),
+    checkUpdates: ok({
+      discovery: { lastAttemptAt: null, lastSuccessAt: null, result: null, nextAt: "2026-10-01T00:00:00.000Z" },
+      applyCheckAt: null,
+      running: false,
+      historyReset: false,
+      packages: [],
+    }),
+    onUpdateStatus: subscribe(),
   };
 }

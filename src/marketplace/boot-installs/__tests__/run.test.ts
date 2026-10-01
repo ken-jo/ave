@@ -45,6 +45,9 @@ describe("runBootInstalls (design §10.2)", () => {
     rows?: CatalogRow[];
     synced?: Record<string, SourceOrigin>;
     failing?: Set<string>;
+    signal?: AbortSignal;
+    /** Runs inside each install, before it lands. */
+    during?: (name: string) => void;
   } = {}) {
     const input: BootInstallInput = {
       policy: { ...EMPTY_MARKETPLACE_POLICY, ...options.policy },
@@ -54,15 +57,32 @@ describe("runBootInstalls (design §10.2)", () => {
       installed: async (_kind, name) => installedState.get(name) ?? null,
       install: async (target, flags) => {
         calls.push({ name: target.name, source: target.sourceId, ...flags });
+        options.during?.(target.name);
         if (options.failing?.has(target.name)) throw new Error("network down");
         const choice = target.choice as { version: IndexVersion };
         installedState.set(target.name, { kind: target.kind, name: target.name, version: choice.version.version, sourceId: target.sourceId });
       },
       applied: await AppliedDefaults.open(file),
       now: () => AT,
+      ...(options.signal ? { signal: options.signal } : {}),
     };
     return runBootInstalls(input);
   }
+
+  it("lets the install in progress finish when the app shuts down, and judges, installs and records nothing after it", async () => {
+    const shutdown = new AbortController();
+    const reason = new Error("the update scheduler has stopped");
+    await expect(boot({ signal: shutdown.signal, during: () => shutdown.abort(reason) })).rejects.toBe(reason);
+    expect(calls.map((call) => call.name)).toEqual(["meeting"]);
+    const applied = await AppliedDefaults.open(file);
+    // The started install lands with its record; the next default is never reached.
+    expect(applied.get(key("meeting"))).toMatchObject({ result: "installed" });
+    expect(applied.has(key("local-indexer"))).toBe(false);
+
+    calls = [];
+    await expect(boot({ signal: shutdown.signal })).rejects.toBe(reason);
+    expect(calls).toEqual([]);
+  });
 
   it("installs the app's defaults once and never again after the user uninstalls them", async () => {
     const first = await boot();

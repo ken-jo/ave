@@ -19,6 +19,7 @@ vi.mock("electron", () => ({
 import { SettingsService, type SystemSettings } from "../settings-store.js";
 import { CredentialLeaseRegistry } from "../../plugins/secret-access/credential-lease-registry.js";
 import { DEFAULT_SETTINGS } from "../settings-defaults.js";
+import { normalizeMarketplace } from "../settings-normalization.js";
 import {
   LOG_RETENTION_DAYS,
   LOG_RETENTION_MIN_DAYS,
@@ -123,6 +124,40 @@ describe("SettingsService marketplace defaults", () => {
       expect(JSON.parse(readFileSync(path, "utf-8")).appliedMigrations).toContain("marketplace-server-settings-removed");
     });
     expect(readFileSync(path, "utf-8")).not.toMatch(/cloudBaseUrl|CloudBaseUrl|real-cloud|AllowPrivateNetwork/u);
+  });
+
+  it("normalizes the automatic-update switches, dropping invalid entries, and leaves the discovery interval as stored (design §18.9)", async () => {
+    const load = (marketplace: unknown) => {
+      writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({ marketplace }), "utf-8");
+      return new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("marketplace");
+    };
+    const read = load({
+      autoUpdate: false,
+      autoUpdateSources: { "acme-tools": "off", ave: "on", "Bad_Id": "on", corp: "maybe", "x": "on" },
+      autoUpdatePackages: { meeting: "off", "skill:review": "on", " notes ": "on", constructor: "off", calendar: true },
+      updateCheckIntervalMs: 60_000,
+    });
+    expect(read.autoUpdate).toBe(false);
+    expect(read.autoUpdateSources).toEqual({ "acme-tools": "off", ave: "on" });
+    expect(read.autoUpdatePackages).toEqual({ meeting: "off", "skill:review": "on", notes: "on" });
+    // The normalizer builds both maps without a prototype, so no id read off disk answers for an inherited member.
+    const normalized = normalizeMarketplace({ autoUpdateSources: { ave: "on" }, autoUpdatePackages: JSON.parse('{"__proto__":"on","meeting":"off"}') });
+    expect(Object.getPrototypeOf(normalized.autoUpdateSources)).toBeNull();
+    expect(Object.getPrototypeOf(normalized.autoUpdatePackages)).toBeNull();
+    expect(Object.keys(normalized.autoUpdatePackages!)).toEqual(["meeting"]);
+    // The discovery interval is read as stored; the 15-minute floor applies where it is used.
+    expect(read.updateCheckIntervalMs).toBe(60_000);
+
+    // Unset, or not a map, means the default decides: no key at all.
+    const unset = load({ autoUpdate: "yes", autoUpdateSources: ["ave"], autoUpdatePackages: null });
+    expect("autoUpdate" in unset).toBe(false);
+    expect("autoUpdateSources" in unset).toBe(false);
+    expect("autoUpdatePackages" in unset).toBe(false);
+
+    // A renderer patch goes through the same normalizer.
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.patch({ marketplace: { autoUpdateSources: { corp: "on", "-bad": "off" } } } as never);
+    expect(service.get("marketplace").autoUpdateSources).toEqual({ corp: "on" });
   });
 
   it("keeps a valid git runtime mode and drops anything else", () => {

@@ -14,7 +14,7 @@ export type UpdateReviewRequest = { kind: "package"; key: PackageKeyView } | { k
 let pending: UpdateReviewRequest | null = null;
 const listeners = new Set<() => void>();
 
-export function requestUpdateReview(updates: readonly PackageUpdateView[]): void {
+export function requestUpdateReview(updates: ReadonlyArray<Pick<PackageUpdateView, "key">>): void {
   pending = updates.length === 1 ? { kind: "package", key: updates[0]!.key } : { kind: "installed" };
   for (const listener of listeners) listener();
 }

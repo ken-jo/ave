@@ -11,6 +11,7 @@ import {
   parseGitMarketplaceResult,
   parseInstallProgress,
   parseSyncProgress,
+  parseUpdateStatus,
   type GitMarketplaceApi,
   type GitMarketplaceResult,
 } from "../shared/git-marketplace.js";
@@ -63,5 +64,8 @@ export function buildGitMarketplaceApiSurface(): GitMarketplaceApi {
     bootInstallNotice: () => call(channels.bootInstallsNotice),
     dismissBootInstallNotice: () => call(channels.bootInstallsDismiss),
     onBootInstallsApplied: (listener) => subscribe(channels.bootInstallsApplied, () => true, () => listener()),
+    updateStatus: () => call(channels.updatesStatus),
+    checkUpdates: () => call(channels.updatesCheck),
+    onUpdateStatus: (listener) => subscribe(channels.updateStatusChanged, parseUpdateStatus, listener),
   } satisfies GitMarketplaceApi);
 }

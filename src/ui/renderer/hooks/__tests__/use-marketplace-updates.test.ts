@@ -226,7 +226,7 @@ describe("useMarketplaceUpdates", () => {
 });
 
 function update(name: string, to: string, kind: PackageKind = "plugin"): PackageUpdateView {
-  return { key: { sourceId: "ave", kind, name }, displayName: `Ave ${name}`, from: "1.0.0", to };
+  return { key: { sourceId: "ave", kind, name }, displayName: `Ave ${name}`, from: "1.0.0", to, state: "manual" };
 }
 
 function defineSkippedSetting(

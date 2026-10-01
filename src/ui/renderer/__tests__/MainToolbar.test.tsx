@@ -97,7 +97,7 @@ describe("MainToolbar", () => {
     renderWithProvider(defaultProps({
       appUpdateState: { kind: "available", version: "9.9.9" },
       pluginUpdates: {
-        updates: [{ key: { sourceId: "ave", kind: "plugin", name: "meeting" }, displayName: "Ave Meeting", from: "1.0.0", to: "2.0.0" }],
+        updates: [{ key: { sourceId: "ave", kind: "plugin", name: "meeting" }, displayName: "Ave Meeting", from: "1.0.0", to: "2.0.0", state: "manual" }],
         onSkip: vi.fn(),
         onReview: vi.fn(),
       },

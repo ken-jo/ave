@@ -1,5 +1,5 @@
 import { Puzzle, X } from "lucide-react";
-import type { PackageUpdateView } from "../../../shared/git-marketplace.js";
+import { updateNeedsUser, type PackageUpdateView } from "../../../shared/git-marketplace.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { ToolbarStatusPill } from "./ToolbarStatusPill.js";
 
@@ -11,15 +11,18 @@ export interface PluginUpdatesPillProps {
 }
 
 /**
- * Toolbar pill for available package updates. An update installs only through
+ * Toolbar pill for package updates that need the user. An update installs only through
  * its review — commit range, version and authority change — so a click opens
  * that review in the marketplace tab rather than installing from here.
  *
  * The full list lives in the pill's hover text — the band has room for a
  * count, and a count is what the user acts on.
  */
-export function PluginUpdatesPill({ updates, onReview, onSkip }: PluginUpdatesPillProps) {
+export function PluginUpdatesPill({ updates: offered, onReview, onSkip }: PluginUpdatesPillProps) {
   const { t } = useTranslation();
+  // Only what waits for the user is counted (design §18.7.5): an update
+  // applying, waiting for idle or already applied needs nothing from them.
+  const updates = offered.filter((update) => updateNeedsUser(update.state));
   if (updates.length === 0) return null;
 
   const summary =

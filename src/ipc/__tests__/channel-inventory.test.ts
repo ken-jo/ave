@@ -325,6 +325,8 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:marketplace:sources:set-token",
         "ave:marketplace:uninstall",
         "ave:marketplace:update:plan",
+        "ave:marketplace:updates:check",
+        "ave:marketplace:updates:status",
         "ave:mcp:attach-resource",
         "ave:mcp:attach-resource-template",
         "ave:mcp:call-tool",

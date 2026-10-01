@@ -11,7 +11,7 @@ import { makeMockAveApi } from "../../../../../../test/renderer/mock-ave-api.js"
 import type { AveApi } from "../../../types.js";
 import { GitMarketplaceTab } from "../GitMarketplaceTab.js";
 import { requestUpdateReview } from "../update-review-request.js";
-import { COMMIT_A, COMMIT_B, detail, entry, fakeMarketplace, installPlan, source } from "./fixtures.js";
+import { COMMIT_A, COMMIT_B, detail, entry, fakeMarketplace, installPlan, source, updateStatus } from "./fixtures.js";
 
 function renderTab(fake: ReturnType<typeof fakeMarketplace>, overrides: Parameters<typeof makeMockAveApi>[0] = {}) {
   const { api } = makeMockAveApi(overrides);
@@ -59,8 +59,8 @@ describe("GitMarketplaceTab browse", () => {
 
     act(() => {
       requestUpdateReview([
-        { key: { sourceId: "ave-official", kind: "plugin", name: "calendar" }, displayName: "Calendar", from: "1.0.0", to: "1.1.0" },
-        { key: { sourceId: "team", kind: "skill", name: "proofread" }, displayName: "Proofread", from: "1.0.0", to: "2.0.0" },
+        { key: { sourceId: "ave-official", kind: "plugin", name: "calendar" } },
+        { key: { sourceId: "team", kind: "skill", name: "proofread" } },
       ]);
     });
 
@@ -744,7 +744,10 @@ describe("GitMarketplaceTab maintenance", () => {
   it("keeps the switches off and says why when the saved values cannot be read", async () => {
     renderTab(fakeMarketplace({ sources: [team] }), { getSettings: () => Promise.reject(new Error("settings.json is unreadable")) });
 
-    expect(await screen.findByTestId("git-marketplace:maintenance:error")).toHaveTextContent("마켓플레이스가 시작하거나 응답하지 못했습니다(settings.json is unreadable).");
+    const problem = await screen.findByTestId("git-marketplace:maintenance:error");
+    expect(problem).toHaveTextContent("마켓플레이스가 시작하거나 응답하지 못했습니다.");
+    // The reason is behind Copy details (§18.8).
+    expect(problem).not.toHaveTextContent("settings.json is unreadable");
     expect(screen.getByTestId("git-marketplace:update-check")).toBeDisabled();
     expect(screen.getByTestId("git-marketplace:offline-cache")).toBeDisabled();
   });
@@ -767,5 +770,109 @@ describe("GitMarketplaceTab maintenance", () => {
 
     expect(await screen.findByTestId("git-marketplace:offline-cache:forced")).toHaveTextContent("AVE_MARKETPLACE_USE_CACHE");
     expect(screen.queryByTestId("git-marketplace:update-check:forced")).toBeNull();
+  });
+});
+
+describe("GitMarketplaceTab Updates card (design §18.9)", () => {
+  const meeting = { key: { sourceId: "team", kind: "plugin" as const, name: "meeting" }, displayName: "Meeting", from: "1.0.0", to: "1.1.0" };
+  const checked = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+  const next = new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString();
+
+  it("says when it checks and when it last did, and opens an update's review from its row", async () => {
+    const fake = fakeMarketplace({
+      sources: [team],
+      entries: [entry("team", "plugin", "meeting", { state: { state: "update", from: "1.0.0", to: "1.1.0" } })],
+      updateStatus: updateStatus({
+        discovery: { lastAttemptAt: checked, lastSuccessAt: checked, result: "ok", nextAt: next },
+        applyCheckAt: checked,
+        packages: [{ ...meeting, state: "manual" }],
+      }),
+    });
+    renderTab(fake);
+
+    const cadence = await screen.findByTestId("git-marketplace:updates:cadence");
+    expect(cadence).toHaveTextContent("시작할 때와 하루에 한 번 업데이트를 확인합니다");
+    expect(cadence).toHaveTextContent("마지막 확인 5분 전");
+    expect(cadence).toHaveTextContent("다음 확인 6시간 후");
+    const row = screen.getByTestId("git-marketplace:updates:row:team:plugin:meeting");
+    expect(row).toHaveTextContent("1.0.0 → 1.1.0");
+    expect(within(row).getByTestId("git-marketplace:updates:state")).toHaveTextContent("업데이트 가능");
+    // Read-only: no switch here decides whether updates apply.
+    expect(within(screen.getByTestId("git-marketplace:updates")).queryByRole("switch")).toBeNull();
+
+    // The update review plans the update; that it opens is what this row owes.
+    fake.market.planUpdate.mockImplementation(() => new Promise(() => {}));
+    fireEvent.click(within(row).getByRole("button", { name: "검토" }));
+    await waitFor(() => expect(fake.market.planUpdate).toHaveBeenCalledWith(meeting.key));
+  });
+
+  it("says an offline check, a partial one with the way to the sources, a failed one and a lost history", async () => {
+    const fake = fakeMarketplace({
+      sources: [team],
+      updateStatus: updateStatus({ discovery: { lastAttemptAt: checked, lastSuccessAt: checked, result: "offline", nextAt: next } }),
+    });
+    renderTab(fake);
+    expect(await screen.findByTestId("git-marketplace:updates:offline")).toHaveTextContent("오프라인 — 마지막 확인 5분 전. 네트워크가 돌아오면 다시 확인합니다.");
+
+    act(() => fake.emitUpdateStatus(updateStatus({ discovery: { lastAttemptAt: checked, lastSuccessAt: null, result: "error", nextAt: next }, historyReset: true })));
+    expect(await screen.findByTestId("git-marketplace:updates:failed")).toHaveTextContent("마지막 확인을 끝내지 못해");
+    expect(screen.getByTestId("git-marketplace:updates:history-reset")).toHaveTextContent("marketplaces/updates.json");
+    expect(screen.getByTestId("git-marketplace:updates:cadence")).toHaveTextContent("아직 확인하지 않음");
+
+    act(() => fake.emitUpdateStatus(updateStatus({ discovery: { lastAttemptAt: checked, lastSuccessAt: checked, result: "partial", nextAt: next } })));
+    const partial = await screen.findByTestId("git-marketplace:updates:partial");
+    expect(partial).toHaveTextContent("일부 소스에 연결하지 못해");
+    fireEvent.click(within(partial).getByRole("button", { name: "소스 보기" }));
+    expect(await screen.findByText("Team tools")).toBeInTheDocument();
+  });
+
+  it("checks now, and shows the answer", async () => {
+    const fake = fakeMarketplace({ sources: [team] });
+    let answer: (value: unknown) => void = () => {};
+    fake.market.checkUpdates.mockImplementation(() => new Promise((resolve) => {
+      answer = resolve;
+    }));
+    renderTab(fake);
+    const button = await screen.findByTestId("git-marketplace:updates:check");
+    await waitFor(() => expect(button).toBeEnabled());
+
+    fireEvent.click(button);
+    expect(button).toBeDisabled();
+    expect(button).toHaveTextContent("확인 중…");
+    answer({ ok: true, value: updateStatus({ discovery: { lastAttemptAt: checked, lastSuccessAt: checked, result: "ok", nextAt: next }, applyCheckAt: checked }) });
+    // Not "up to date": a skipped version is left out of the list, so the list says only that nothing waits for review.
+    expect(await screen.findByTestId("git-marketplace:updates:none")).toHaveTextContent("검토할 업데이트가 없습니다.");
+    expect(button).toBeEnabled();
+    expect(fake.market.checkUpdates).toHaveBeenCalledOnce();
+  });
+
+  it("says in its own words when the scheduler does not answer, with main's message only behind Copy details, scrubbed", async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const fake = fakeMarketplace({ sources: [team] });
+    fake.market.updateStatus.mockResolvedValue({ ok: false, code: "unavailable", message: "update checks have not started; token=s3cretvalue" });
+    renderTab(fake);
+    const problem = await screen.findByTestId("git-marketplace:updates:error");
+    expect(problem).toHaveTextContent("지금은 업데이트를 확인할 수 없습니다.");
+    expect(problem).not.toHaveTextContent("update checks have not started");
+    fireEvent.click(within(problem).getByRole("button", { name: "세부 정보 복사" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledOnce());
+    const [copied] = writeText.mock.calls[0] as unknown as [string];
+    expect(copied).toContain("unavailable\nupdate checks have not started");
+    expect(copied).not.toContain("s3cretvalue");
+  });
+
+  it("marks an update whose source the last check did not reach as an earlier check's", async () => {
+    const fake = fakeMarketplace({
+      sources: [team],
+      updateStatus: updateStatus({
+        discovery: { lastAttemptAt: checked, lastSuccessAt: checked, result: "partial", nextAt: next },
+        packages: [{ ...meeting, state: "manual", stale: true }, { ...meeting, key: { ...meeting.key, name: "notes" }, displayName: "Notes", state: "manual" }],
+      }),
+    });
+    renderTab(fake);
+    const row = await screen.findByTestId("git-marketplace:updates:row:team:plugin:meeting");
+    expect(within(row).getByTestId("git-marketplace:updates:stale")).toHaveTextContent("마지막 확인에서 소스에 연결하지 못해 이전 확인의 상태로 표시합니다.");
+    expect(within(screen.getByTestId("git-marketplace:updates:row:team:plugin:notes")).queryByTestId("git-marketplace:updates:stale")).toBeNull();
   });
 });

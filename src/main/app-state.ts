@@ -66,6 +66,18 @@ export function takePendingGitMarketplaceLink(): GitMarketplaceDeepLink | null {
   return link;
 }
 
+/**
+ * The git marketplace's lifetime (design §7.3), shared by everything of it
+ * that reaches the renderer or starts work: the marketplace IPC domain, its
+ * git runtime's progress and its deep links. Aborted once, by the
+ * `git-marketplace-events` shutdown hook the marketplace domain registers;
+ * the work in progress then finishes, and nothing after it is sent.
+ */
+const marketplaceLifetime = new AbortController();
+export function getMarketplaceLifetime(): AbortController {
+  return marketplaceLifetime;
+}
+
 let bootInstallNotice: BootInstallNoticeView | null = null;
 /** Set by the boot-install step; an empty notice clears it. */
 export function setBootInstallNotice(value: BootInstallNoticeView | null): void {

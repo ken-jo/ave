@@ -14,7 +14,7 @@ import { sendToWindow } from "../ipc/safe-send.js";
 import { emitEvent as emitHostEvent } from "../boot/types.js";
 import { CHANNELS } from "../contract/app-contract.js";
 import { parseGitMarketplaceUri, parsePluginAuthUri } from "./ave-protocol.js";
-import { getMainWindow, getServices, setPendingGitMarketplaceLink, setPendingAveUri } from "./app-state.js";
+import { getMainWindow, getMarketplaceLifetime, getServices, setPendingGitMarketplaceLink, setPendingAveUri } from "./app-state.js";
 import { activateInlineSettings } from "./app-menu.js";
 
 const log = createLogger("ave");
@@ -52,6 +52,11 @@ export async function handleAveUri(url: string) {
 
   const gitLink = parseGitMarketplaceUri(url);
   if (gitLink) {
+    // Once the app is shutting down a marketplace link is refused: nothing is held, opened or sent.
+    if (getMarketplaceLifetime().signal.aborted) {
+      log.info("[ave] handleAveUri: marketplace link ignored while the app shuts down");
+      return;
+    }
     if (!getServices()) {
       setPendingAveUri(url);
       return;

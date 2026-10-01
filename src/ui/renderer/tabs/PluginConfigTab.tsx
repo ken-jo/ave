@@ -911,12 +911,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                           <div className="mt-2 text-xs" data-testid={`plugin-config:protocol-update:${selectedPlugin.id}`}>
                             {protocolUpdatePath.kind === "catalog" ? (
                               <Button size="sm" variant="outline" onClick={() => {
-                                requestUpdateReview([{
-                                  key: protocolUpdatePath.key,
-                                  displayName: selectedPlugin.name,
-                                  from: protocolUpdatePath.from,
-                                  to: protocolUpdatePath.version,
-                                }]);
+                                requestUpdateReview([{ key: protocolUpdatePath.key }]);
                                 onNavigate?.("marketplace");
                               }}>
                                 {t("pluginConfigTab.protocolUpdateCatalog", { version: protocolUpdatePath.version })}

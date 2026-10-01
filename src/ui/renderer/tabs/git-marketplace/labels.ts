@@ -19,6 +19,7 @@ import {
   type EnteredTargetWarningView,
   type SourceWarning,
   type SourceView,
+  type UpdatePackageState,
   type VersionExclusionView,
 } from "../../../../shared/git-marketplace.js";
 
@@ -66,6 +67,20 @@ export function stateLabel(t: Translate, state: PackageStateView): string {
       return state.sourceId === null ? t("gitMarketplace.state.installedWithoutSource") : t("gitMarketplace.state.installedFrom", { source: state.sourceId });
     case "source-removed": return t("gitMarketplace.state.sourceRemoved");
     case "unbound": return t("gitMarketplace.state.unbound");
+  }
+}
+
+/** An update's state (design §18.7.5), as the Updates card shows it. */
+export function updateStateLabel(t: Translate, state: UpdatePackageState): string {
+  switch (state) {
+    case "automatic": return t("gitMarketplace.updates.state.automatic");
+    case "waiting": return t("gitMarketplace.updates.state.waiting");
+    case "needs-review": return t("gitMarketplace.updates.state.needsReview");
+    case "manual": return t("gitMarketplace.updates.state.manual");
+    case "failed": return t("gitMarketplace.updates.state.failed");
+    case "applied": return t("gitMarketplace.updates.state.applied");
+    case "applied-not-running": return t("gitMarketplace.updates.state.appliedNotRunning");
+    case "approval-pending": return t("gitMarketplace.updates.state.approvalPending");
   }
 }
 
@@ -317,9 +332,8 @@ function signInOf(subject: FailureSubject): SignIn {
  * or a detail that was dropped). A source failure's sentence also depends on
  * `subject`: it never asks the user to check a field they cannot change,
  * and names the sign-in step the row actually offers. Main's English
- * `message` never shows here; it is behind *Copy details*
- * (`MarketplaceProblem`). Only `unavailable` names it, scrubbed, because it
- * is the only account of what failed.
+ * `message` never shows here, `unavailable`'s included; it is behind *Copy
+ * details* (`MarketplaceProblem`), scrubbed.
  */
 export function failureText(t: Translate, failure: GitMarketplaceFailure, subject: FailureSubject): string {
   const code = failure.code;
@@ -489,7 +503,7 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
     case "CONTENT_RULE_VIOLATION": return t("gitMarketplace.error.contentRule");
     case "invalid-request": return t("gitMarketplace.error.invalidRequest");
     case "unauthorized-frame": return t("gitMarketplace.error.unauthorizedFrame");
-    case "unavailable": return t("gitMarketplace.error.unavailable", { message: scrubDiagnosticSecrets(failure.message) });
+    case "unavailable": return t("gitMarketplace.error.unavailable");
   }
   return unhandled(code);
 }
