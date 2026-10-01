@@ -968,8 +968,8 @@ describe("MarketplaceService", () => {
       expect(withSignIn).toMatchObject({ type: "marketplace", credentialHelper: true });
       const added = await service.addSource({ previewId: previewIdOf(preview) });
       expect(added).toMatchObject({ acknowledged: ["unencrypted"], badges: ["unencrypted"], status: { state: "up-to-date" } });
-      const stored = JSON.parse(readFileSync(join(root, "marketplaces", "sources.json"), "utf8")) as { sources: Array<{ id: string; acknowledged?: string[] }> };
-      expect(stored.sources.find((entry) => entry.id === added.id)?.acknowledged).toEqual(["unencrypted"]);
+      const stored = JSON.parse(readFileSync(join(root, "marketplaces", "sources.json"), "utf8")) as { sources: Array<{ id: string; acknowledged?: unknown }> };
+      expect(stored.sources.find((entry) => entry.id === added.id)?.acknowledged).toEqual({ url: normalizeSourceUrl(named).url, warnings: ["unencrypted"] });
 
       // The name now answers an internal address: the sync asks before connecting to it.
       answers = ["10.0.0.5"];
@@ -1025,6 +1025,51 @@ describe("MarketplaceService", () => {
     await expect(service.previewSource({ input: url, auth: "none" })).rejects.toMatchObject({ code: "SOURCE_POLICY_BLOCKED", detail: { reason: "policy-invalid" } });
     write({ requireHttps: false });
     expect(await service.previewSource({ input: url, auth: "none" })).toMatchObject({ type: "marketplace" });
+  });
+
+  it("never lets a policy check that finished late put back a policy a newer one replaced (§18.6)", async () => {
+    const path = join(root, "ave-policy.json");
+    const write = (marketplaces: unknown) => writeFileSync(path, JSON.stringify({ version: 1, managed: true, marketplaces }));
+    write({});
+    const file = await FilePolicySource.open(path);
+    // The first check after `hold` is set completes its read, then waits until released.
+    let hold: Promise<void> | null = null;
+    let reachedHold: () => void = () => {};
+    const delayed: PolicySource = {
+      get load() {
+        return file.load;
+      },
+      get digest() {
+        return file.digest;
+      },
+      async check() {
+        const update = await file.check();
+        if (hold) {
+          const waiting = hold;
+          hold = null;
+          reachedHold();
+          await waiting;
+        }
+        return update;
+      },
+      apply: (update) => file.apply(update),
+    };
+    await build(delayed);
+
+    write({ allowHttpHosts: ["older.example"] });
+    let release: () => void = () => {};
+    hold = new Promise<void>((resolve) => (release = resolve));
+    const reached = new Promise<void>((resolve) => (reachedHold = resolve));
+    const older = service.listSources();
+    await reached;
+    // While the older check is held, the file changes again and another operation applies it.
+    write({ requireHttps: true });
+    await service.listSources();
+    expect(file.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
+
+    release();
+    await older;
+    expect(file.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
   });
 
   it("stores a token under its normalized host and refuses one that spans lines", async () => {

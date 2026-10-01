@@ -7,7 +7,7 @@
  * asked about before Ave contacts it: *Continue* checks again carrying the
  * confirmations, and *Add* stores exactly those (§18.5).
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "../../../../components/ui/button.js";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../../../components/ui/dialog.js";
 import { Input } from "../../../../components/ui/input.js";
@@ -54,14 +54,25 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
   /** What the user confirmed for the address as typed; a changed field asks again. */
   const [acknowledged, setAcknowledged] = useState<SourceWarning[]>([]);
 
-  /** A field edit: the confirmations were for the address as it was. */
+  /**
+   * Which fields an answer belongs to. A field edit, a newer check and reopening the
+   * dialog each move it on, so an answer to an earlier check (a warning, a preview, a
+   * failure) arriving late is dropped: a warning is only ever shown, and confirmed, for
+   * the address as it is now.
+   */
+  const generation = useRef(0);
+
+  /** A field edit: the confirmations, and any answer still on its way, were for the address as it was. */
   const edit = <T,>(set: (value: T) => void) => (value: T) => {
+    generation.current += 1;
     set(value);
     setWarnings(null);
     setAcknowledged([]);
+    setBusy(false);
   };
 
   useEffect(() => {
+    generation.current += 1;
     if (!open) return;
     setInput(initialInput);
     setRef("");
@@ -78,6 +89,7 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
   }, [open, api, initialInput, initialFailure]);
 
   const check = async (acknowledge: readonly SourceWarning[] = acknowledged) => {
+    const mine = ++generation.current;
     setBusy(true);
     setFailure(null);
     setWarnings(null);
@@ -91,6 +103,7 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
         ...(acknowledge.length > 0 ? { acknowledge: [...acknowledge] } : {}),
       };
       const result = await api.gitMarketplace.previewSource(request);
+      if (mine !== generation.current) return;
       if (result.ok) {
         if (result.value.type === "confirm") {
           setWarnings(result.value.warnings);
@@ -103,7 +116,7 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
         if (result.code === "GIT_RUNTIME_MISSING" || result.code === "GIT_RUNTIME_TOO_OLD") setGitReady(false);
       }
     } finally {
-      setBusy(false);
+      if (mine === generation.current) setBusy(false);
     }
   };
 

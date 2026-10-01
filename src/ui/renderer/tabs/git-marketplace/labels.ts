@@ -726,6 +726,18 @@ export function allowableWarning(failure: Pick<GitMarketplaceFailure, "code" | "
   return null;
 }
 
+/**
+ * The risk *Allow…* accepts, when the failure's own sentence does not say it.
+ * A confirmation failure's sentence is already the warning's question; a
+ * sign-in held back over http only says what to do, so its consent asks the
+ * full `token-unencrypted` warning, as Set token… does (§18.2.2).
+ */
+export function allowRisk(t: Translate, failure: Pick<GitMarketplaceFailure, "code" | "detail">): string | null {
+  if (failure.code !== "SOURCE_AUTH_REQUIRED") return null;
+  const detail = parseMarketplaceErrorDetail(failure.code, failure.detail);
+  return detail?.reason === "token-unencrypted" ? warningText(t, { warning: "token-unencrypted", host: detail.host, address: null }) : null;
+}
+
 /** Exhaustiveness, after each switch: a code or reason added without a sentence fails to compile here. */
 function unhandled(value: never): never {
   throw new Error(`no sentence for ${JSON.stringify(value)}`);

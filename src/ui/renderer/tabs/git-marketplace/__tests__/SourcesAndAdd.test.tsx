@@ -576,6 +576,56 @@ describe("confirmations, badges and Allow… (§18.5)", () => {
     expect(onChanged).toHaveBeenCalled();
   });
 
+  it("asks the full credential warning before Allow… lets a stored token travel over http", async () => {
+    const fake = fakeMarketplace();
+    const held = source({
+      id: "corp",
+      url: "http://git.corp.example/m",
+      auth: "token",
+      tokenHost: "git.corp.example",
+      acknowledged: ["unencrypted"],
+      status: { state: "auth-required", detail: { reason: "token-unencrypted", host: "git.corp.example" }, cached: true },
+    });
+    fake.market.acknowledgeSource.mockResolvedValue({ ok: true, value: { ...held, acknowledged: ["unencrypted", "token-unencrypted"], status: { state: "up-to-date" } } });
+    sourcesView(fake, [held]);
+
+    fireEvent.click(screen.getByTestId("git-marketplace:source:corp:allow"));
+    expect(await screen.findByText("git.corp.example 로그인 정보가 암호화되지 않은 채 전송되어 네트워크 경로에 있는 누구나 복사할 수 있습니다. 계속할까요?")).toBeInTheDocument();
+    expect(fake.market.acknowledgeSource).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("git-marketplace:sources:confirm"));
+    await waitFor(() => expect(fake.market.acknowledgeSource).toHaveBeenCalledWith("corp", ["token-unencrypted"]));
+  });
+
+  it("drops a check's answer that arrives after the address changed, so no warning or confirmation moves to the new address", async () => {
+    const fake = fakeMarketplace();
+    let answerFirst: (value: unknown) => void = () => {};
+    fake.market.previewSource
+      .mockImplementationOnce(() => new Promise((resolve) => (answerFirst = resolve)))
+      .mockResolvedValueOnce({ ok: true, value: { type: "confirm", warnings: [{ warning: "unencrypted", host: "second.example", address: null }] } })
+      .mockResolvedValue({ ok: true, value: { ...marketplacePreview, url: "http://second.example/m", badges: ["unencrypted"] } });
+    addDialog(fake);
+
+    await waitFor(() => expect(fake.gitRuntime.status).toHaveBeenCalled());
+    fireEvent.change(screen.getByTestId("git-marketplace:add:url"), { target: { value: "http://first.example/m" } });
+    await waitFor(() => expect(screen.getByTestId("git-marketplace:add:check")).toBeEnabled());
+    fireEvent.click(screen.getByTestId("git-marketplace:add:check"));
+    await waitFor(() => expect(fake.market.previewSource).toHaveBeenCalledTimes(1));
+
+    // Edited while the first check is still on its way, then the first answer arrives.
+    fireEvent.change(screen.getByTestId("git-marketplace:add:url"), { target: { value: "http://second.example/m" } });
+    answerFirst({ ok: true, value: { type: "confirm", warnings: [{ warning: "unencrypted", host: "first.example", address: null }] } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByTestId("git-marketplace:add:warnings")).toBeNull();
+
+    // The second address is asked about on its own, and Continue carries only its answer.
+    await waitFor(() => expect(screen.getByTestId("git-marketplace:add:check")).toBeEnabled());
+    fireEvent.click(screen.getByTestId("git-marketplace:add:check"));
+    expect(await screen.findByTestId("git-marketplace:add:warnings")).toHaveTextContent("second.example");
+    expect(fake.market.previewSource).toHaveBeenNthCalledWith(2, { input: "http://second.example/m", auth: "none" });
+    fireEvent.click(screen.getByTestId("git-marketplace:add:warnings:continue"));
+    await waitFor(() => expect(fake.market.previewSource).toHaveBeenNthCalledWith(3, { input: "http://second.example/m", auth: "none", acknowledge: ["unencrypted"] }));
+  });
+
   it("asks before Set token… on an http source sends sign-in unencrypted, then opens Set token…", async () => {
     const fake = fakeMarketplace();
     const http = source({ id: "corp", url: "http://git.corp.example/m", auth: "token", tokenHost: "git.corp.example", acknowledged: ["unencrypted"], badges: ["unencrypted"] });

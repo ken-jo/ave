@@ -221,7 +221,7 @@ describe("NetworkGate.checkRemote", () => {
     const source = policySource(policy());
     const live = new NetworkGate({ policy: source, allowLoopback: false, transport: fakeTransport({}).transport });
     expect(code(() => live.checkRemote(remote("https://1.1.1.1/acme/market"), OTHER))).toBe("passed");
-    source.apply({ load: policy({ block: [parseSourcePattern("host:1.1.1.1")] }), digest: "next" });
+    source.apply({ load: policy({ block: [parseSourcePattern("host:1.1.1.1")] }), digest: "next", sequence: 1 });
     expect(code(() => live.checkRemote(remote("https://1.1.1.1/acme/market"), OTHER))).toBe("SOURCE_POLICY_BLOCKED");
   });
 });
@@ -250,6 +250,23 @@ describe("NetworkGate.fetch", () => {
     expect(calls[2]!.headers.get("cookie")).toBeNull();
     expect(calls[2]!.headers.get("accept")).toBe("application/octet-stream");
     expect(calls.every((call) => call.redirect === "manual")).toBe(true);
+  });
+
+  it("never carries a sign-in onto plain http, not even to the same host the https request went to (§18.2.2)", async () => {
+    const { transport, calls } = fakeTransport({
+      "https://1.1.1.1/asset": redirect("http://1.1.1.1/blob"),
+      "http://1.1.1.1/blob": ok,
+    });
+    const response = await gate(undefined, false, transport).fetch("https://1.1.1.1/asset", {
+      official: false,
+      catalog: CATALOG,
+      headers: { authorization: "Bearer secret", cookie: "a=b" },
+    });
+    expect(response.status).toBe(200);
+    expect(calls.map((call) => call.url)).toEqual(["https://1.1.1.1/asset", "http://1.1.1.1/blob"]);
+    expect(calls[0]!.headers.get("authorization")).toBe("Bearer secret");
+    expect(calls[1]!.headers.get("authorization")).toBeNull();
+    expect(calls[1]!.headers.get("cookie")).toBeNull();
   });
 
   it("resolves each hop exactly once, in the transport, and connects only to the answers the rule keeps (§18.2.4)", async () => {
@@ -341,6 +358,25 @@ describe("NetworkGate.fetch for a catalog's downloads (§18.2.3)", () => {
     // internal-downloads never opens this computer.
     const anyway = fetchFrom({ ...local, acknowledged: new Set([...local.acknowledged, "internal-downloads"]) }, "http://127.0.0.1:9090/admin");
     expect(await codeOf(anyway.result)).toBe("SOURCE_URL_REJECTED");
+  });
+
+  it("refuses another service on this computer even when the policy lists that host (§18.3 #4 before any exemption)", async () => {
+    const listed = policy({ allowHttpHosts: new Set(["127.0.0.1", "localhost"]) });
+    // An unrelated public catalog, holding nothing.
+    const publicCatalog: CatalogSource = { ...CATALOG, url: remote("https://public.test/repo"), acknowledged: NONE };
+    for (const url of ["http://127.0.0.1:9555/admin", "http://localhost:9555/admin"]) {
+      const attempt = fetchFrom(publicCatalog, url, listed, { localhost: ["127.0.0.1"] });
+      const error = await failureOf(attempt.result);
+      expect(error.code).toBe("SOURCE_URL_REJECTED");
+      expect(error.detail).toMatchObject({ reason: "catalog-this-computer" });
+      expect(attempt.calls).toHaveLength(0);
+    }
+    // A listed loopback source's own catalog: its own port inherits, another port on the same host is refused.
+    const local: CatalogSource = { id: "dev", label: "Dev market", url: remote("http://127.0.0.1:8080/ave/market"), acknowledged: NONE };
+    expect((await fetchFrom(local, "http://127.0.0.1:8080/releases/x.tgz", listed).result).status).toBe(200);
+    expect(await codeOf(fetchFrom(local, "http://127.0.0.1:9090/admin", listed).result)).toBe("SOURCE_URL_REJECTED");
+    // The listing still exempts an internal host from internal-downloads.
+    expect((await fetchFrom(publicCatalog, "https://10.0.0.9/x.tgz", policy({ allowHttpHosts: new Set(["10.0.0.9"]) })).result).status).toBe(200);
   });
 
   it("refuses metadata for every catalog, and blocks internal hosts under blockPrivateNetworks", async () => {

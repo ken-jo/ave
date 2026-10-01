@@ -73,7 +73,7 @@ import { runLegacyMigration } from "../migration/run.js";
 import { readDirectPackage } from "../sources/direct-package.js";
 import { isReservedSourceId, OFFICIAL_MARKETPLACE, SOURCE_ID_RE, type SourceAuth } from "../sources/official.js";
 import { EMPTY_MARKETPLACE_POLICY, type MarketplacePolicy, type PackageKey, type PolicySource, type PolicyUpdate } from "../sources/policy.js";
-import type { ResolvedSource, SourceOrigin, SourceRegistry, SourceState } from "../sources/registry.js";
+import { confirmationsFor, type ResolvedSource, type SourceOrigin, type SourceRegistry, type SourceState } from "../sources/registry.js";
 import { SnapshotBuilder, type SourceSnapshot } from "../sources/snapshot.js";
 import { shouldSyncSource, type SourceSyncer } from "../sources/sync.js";
 import type { PluginConfigRetention } from "../../plugins/retired-config.js";
@@ -231,7 +231,7 @@ function idFrom(raw: string): string | null {
 
 /** The confirmations a source holds: its entry's (custom, direct) or its state's (official, managed), §18.5. */
 function acknowledgedOf(source: ResolvedSource, state: SourceState | null): SourceWarning[] {
-  return [...(source.origin === "custom" || source.origin === "direct" ? (source.acknowledged ?? []) : (state?.acknowledged ?? []))];
+  return source.origin === "custom" || source.origin === "direct" ? [...(source.acknowledged ?? [])] : confirmationsFor(state?.acknowledged, source.url);
 }
 
 /** What the source's row and cards show while it applies (§18.5): plain http, and each confirmed class. */
@@ -308,8 +308,14 @@ export class MarketplaceService implements RetirementEntryLookup {
    */
   private async operation<T>(fn: () => Promise<T>): Promise<T> {
     if (this.inOperation.getStore()) return fn();
-    const update = await this.options.policy.check();
-    if (update) await this.lock.exclusive(() => this.applyPolicy(update));
+    if (await this.options.policy.check()) {
+      // The read above only says the file changed. Read it again while no operation runs, so a
+      // check that finished late can never put back a policy a newer one replaced.
+      await this.lock.exclusive(async () => {
+        const fresh = await this.options.policy.check();
+        if (fresh) this.applyPolicy(fresh);
+      });
+    }
     return this.lock.shared(() => this.inOperation.run(true, fn));
   }
 

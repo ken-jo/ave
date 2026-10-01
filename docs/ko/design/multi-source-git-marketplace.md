@@ -2,7 +2,7 @@
 
 > 상태: **구현됨** (2026-09-25). 공개 릴리스와 서버 종료가 남았습니다.
 > 출시된 코드가 이 문서와 다른 곳은 §13.1과 §16.4에 적었습니다. §18은 0.13.0
-> 변경(평문 http와 로컬 폴더 소스, 거부 대신 주소 경고, 자동 업데이트)을
+> 다음의 변경(평문 http와 로컬 폴더 소스, 거부 대신 주소 경고, 자동 업데이트)을
 > 설계합니다. 영어 원문
 > [../../design/multi-source-git-marketplace.md](../../design/multi-source-git-marketplace.md)이
 > 기준이고, 이 문서는 그 한국어 미러입니다. 코드 블록과 스키마는 원문과 같습니다.
@@ -64,13 +64,13 @@ interface SourcesFile {
 interface SourceEntry {
   id: string;                 // ^[a-z0-9][a-z0-9-]{1,62}$, reserved names rejected (§5.1)
   origin: "custom" | "direct";
-  url: string;                // stored in normalized form (§7.1); http with `unencrypted` or a policy listing (§7.4; 0.13.0: a folder has `path` instead, §18.4.4)
+  url: string;                // stored in normalized form (§7.1); http with `unencrypted` or a policy listing (§7.4; under slice D1 a folder has `path` instead, §18.4.4)
   ref?: string;               // branch or tag; default = remote HEAD
   subdir?: string;            // direct sources only: package path inside the repo
   auth: { kind: "none" } | { kind: "token"; host: string } | { kind: "ssh" };
   addedAt: string;            // ISO-8601
   label?: string;             // user-visible override of displayName
-  acknowledged?: SourceWarning[];  // confirmations the source holds (§7.4); absent = none
+  acknowledged?: StoredConfirmations;  // confirmations the source holds (§7.4); absent = none
 }
 
 interface SourceState {       // marketplaces/<id>/state.json, every origin
@@ -78,7 +78,12 @@ interface SourceState {       // marketplaces/<id>/state.json, every origin
   enabled: boolean;              // browsing and installing only (§7.3)
   lastSync?: { at: string; result: "ok" | ErrorCode; candidate?: string };
   pendingRewrite?: { candidate: string; seenAt: string };   // custom/direct awaiting review
-  acknowledged?: SourceWarning[];  // official and managed sources' confirmations (§7.4)
+  acknowledged?: StoredConfirmations;  // official and managed sources' confirmations (§7.4)
+}
+
+interface StoredConfirmations {
+  url: string;                // the normalized address they were given for; another address holds none
+  warnings: SourceWarning[];  // each once
 }
 
 type SourceWarning = "unencrypted" | "token-unencrypted" | "internal-network" | "this-computer" | "internal-downloads";
@@ -786,7 +791,7 @@ tree 단계의 `artifactSha256`은 설치하는 모든 파일(디스크립터는
   - 쿼리, 프래그먼트, 공백, 제어 문자, 역슬래시: `format`. 점·빈 경로
     세그먼트.
 
-  0.13.0부터 `file:` URL이나 경로는 로컬 폴더입니다(§18.4.1, 슬라이스 D1).
+  슬라이스 D1부터 `file:` URL이나 경로는 로컬 폴더입니다(§18.4.1).
 
 정책 allow/block 매칭(§12), 예약 이름 검사, 토큰 조회, 중복 감지는 모두 정규화된
 형태를 씁니다. 이 비교에서 저장소의 동일성은 호스트와 대소문자를 무시한 경로이며,
@@ -912,11 +917,13 @@ release·archive URL, 관리 git 아카이브를 검사합니다. 서비스 엔�
      - 소스 자신의 호스트는 소스의 확인을 물려받습니다. `this-computer`는 같은
        포트여야 합니다. ssh 소스의 파생 `https://<host>`는 443 포트의 https로
        칩니다.
-     - 정책이 등록한 호스트는 받습니다.
-     - 다른 `internal` 호스트는 `internal-downloads`가 필요합니다.
-       `internal-network`가 이를 함축하지 않습니다.
      - 다른 `this-computer` 호스트나 포트는 거부합니다
-       (`catalog-this-computer`, §18.3 #4).
+       (`catalog-this-computer`, §18.3 #4). 이 거부는 모든 예외보다 먼저
+       옵니다. 한 소스를 위해 `127.0.0.1`을 등록한 정책이 다른 카탈로그에 이
+       컴퓨터의 다른 서비스를 열어 주지 않습니다.
+     - 다른 `internal` 호스트는 정책이 등록했으면 받고, 아니면
+       `internal-downloads`가 필요합니다. `internal-network`가 이를 함축하지
+       않습니다.
      - 어느 소스도 지정하지 않은 다운로드(`catalog: null`)는 확인을 가질 수
        없으므로, 평문 http나 사내망 주소로 가는 홉은
        `SOURCE_CONFIRMATION_REQUIRED`로 실패합니다.
@@ -941,7 +948,9 @@ release·archive URL, 관리 git 아카이브를 검사합니다. 서비스 엔�
      - 남은 답이 없으면 버린 분류 중 가장 엄격한 것(metadata, unroutable,
        this-computer, internal 순)의 거부로 홉이 실패합니다.
      - 소스에 없는 확인이 필요한 답은 홉을 실패시킵니다.
-     - 신뢰 저장소는 Node 기본 CA와 시스템 저장소입니다.
+     - 신뢰 저장소는 Node 기본 CA와 시스템 저장소이고, 인증서 검증을 명시적으로
+       TLS 연결마다 직접 켜므로, 프로세스 전체에 물려받은 인증서 검증 끄기
+       설정이 검증을 끄지 못합니다.
      - 경로는 세션 `resolveProxy(url)`의 첫 항목이며, 조용히 `DIRECT`로
        물러나지 않습니다.
 
@@ -954,14 +963,20 @@ release·archive URL, 관리 git 아카이브를 검사합니다. 서비스 엔�
        | `SOCKS` / `SOCKS4` | 대상의 검사한 IPv4 답을 보냄 |
 
      - 프록시 자신의 주소도 검사합니다. `metadata`와 `unroutable`은
-       거부하고, 나머지는 시스템 설정이 고른 것이므로 받습니다.
+       거부하고, 나머지는 시스템 설정이 고른 것이므로 받습니다. 리터럴
+       프록시 주소는 그 자체가 답 하나이며 같은 방식으로 판정합니다(IPv4 매핑과
+       NAT64 형태 포함).
      - 그 밖의 PAC 종류는 `SOURCE_UNREACHABLE` 사유 `proxy`로 실패합니다.
      - 대상을 스스로 해석하는 프록시 너머는 프록시를 신뢰합니다.
        `trusted-proxy.test.ts`가 이 경계를 고정합니다.
    - **http(s) git**:
+     - 호출마다 PAC 해석기에 한 번 묻습니다. git은 그 경로(`http.proxy`)로
+       설정되고 묶기도 같은 경로를 검사하므로, 두 질문 사이에 바뀐 PAC 답이 git을
+       검사하지 않은 프록시에 두지 못합니다.
      - 호출마다 호스트를 한 번 해석해 남은 답으로
        `-c http.curloptResolve=<host>:<port>:<address>[,…]`를 넘깁니다.
-     - PAC 해석기가 준 프록시 호스트도 같은 방식으로 고정합니다.
+     - 프록시 호스트는 다운로드처럼 검사하고 같은 방식으로 고정합니다. 리터럴
+       프록시 주소는 그 자체를 답 하나로 검사합니다.
      - 답이 모두 거부되면 git을 시작하지 않습니다.
    - **ssh git: 사전 검사만 합니다.**
      - git 호출과 같은 환경으로 `ssh -G [-p <port>] <user>@<host>`를 실행해
@@ -990,9 +1005,13 @@ release·archive URL, 관리 git 아카이브를 검사합니다. 서비스 엔�
   소스 행이 *허용…*을 제시합니다.
 - `GIT_ALLOW_PROTOCOL`은 게이트를 통과한 http 원격에만 `http`를 넣습니다.
 
-**확인**은 분류 단위이며 주소 단위가 아닙니다. 소스마다 자기 `acknowledged`
-목록을 저장합니다(§2.1). 사용자 지정·직접 소스는 `SourceEntry`에, 공식·관리
-소스는 `SourceState`에 둡니다.
+**확인**은 분류 단위이며 해석된 주소 단위가 아닙니다. 소스마다 자기
+`acknowledged` 기록을 저장합니다(§2.1). 사용자 지정·직접 소스는 `SourceEntry`에,
+공식·관리 소스는 `SourceState`에 둡니다. 기록은 확인을 준 정규화된 소스
+주소(스킴, 사용자, 호스트, 포트, 경로)를 담습니다. 주소가 다른 소스는 확인을
+지니지 않습니다. 관리자가 다른 곳을 가리키게 바꾼 관리 항목이나 손으로 고친
+`sources.json`은 재시작을 거쳐도 동의를 새 서비스로 옮기지 않습니다. 새 *허용…*은
+옛 기록을 대체합니다.
 
 - 대상이 나중에 소스에 없는 확인을 요구할 수 있습니다. 이름이 이제 사내망 주소로
   해석되거나, 카탈로그가 다른 사내망 호스트를 지정하는 경우입니다. 그러면 동기화,
@@ -1140,8 +1159,8 @@ smoke-testing → ready | failed(code)`. 다운로드는 PAC를 인식하는 단
 - `GIT_ASKPASS=<Ave askpass 헬퍼>`, `SSH_ASKPASS_REQUIRE=never`,
   `GIT_SSH_COMMAND="ssh -o BatchMode=yes"`(모르는 호스트 키는 프롬프트를
   기다리지 않고 `SOURCE_SSH_HOST_UNKNOWN`으로 바로 실패).
-- `GIT_ALLOW_PROTOCOL=https:ssh`, 소스 호스트가 `marketplaces.allowHttpHosts`에
-  있을 때만 `http` 추가. 원격이 없는 호출은 `none`.
+- `GIT_ALLOW_PROTOCOL=https:ssh`, 네트워크 게이트를 통과한 http 원격에만 `http`
+  추가(§7.4). 원격이 없는 호출은 `none`.
 - `GIT_LFS_SKIP_SMUDGE=1`.
 - `GIT_NO_LAZY_FETCH=1`: 없는 객체는 오류일 뿐, 게이트가 보지 못한 가져오기가
   되지 않습니다. blob은 게이트를 거치는 명시적 `ensureBlobs` 단계에서만
@@ -1487,8 +1506,8 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
   `blockPrivateNetworks`는 Ave가 소유한 전송(다운로드, http/https git)의 직접
   연결에서는 실제 연결 주소에 강제합니다. ssh에서는 사전 검사만 합니다. 대상을
   스스로 해석하는 프록시 너머는 신뢰한 프록시가 강제합니다. 둘 다 0.12의 거부를
-  어떤 확인도 통과하지 못하는 차단으로 되살립니다. 0.13.0 이전 앱은 모르는 키를
-  섹션 무효로 읽으므로, 0.13.0 이상에만 배포하세요.
+  어떤 확인도 통과하지 못하는 차단으로 되살립니다. 0.13.0까지의 앱은 모르는 키를
+  섹션 무효로 읽으므로, 슬라이스 C를 담은 릴리스 이상에만 배포하세요.
 - 호스트 필드(`host:` 패턴, `allowHttpHosts`, `auth.host`)에는 포트를 쓰지
   않습니다. 토큰의 `auth.host`는 소스 자신의 호스트여야 합니다.
 - 이 섹션은 적힌 그대로만 읽습니다. 알 수 없는 키, 중복 키, 목록 자리의 `null`,
@@ -1498,24 +1517,32 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
   공식 외 모든 소스가 `SOURCE_POLICY_BLOCKED`입니다. 오타가 열린 쪽으로 실패해서는
   안 됩니다.
 - `additional` 소스는 `managed` 출처로 미리 등록됩니다. 사용자는 제거하거나 숨길
-  수 없고, 이력 규칙은 공식 소스와 같습니다.
+  수 없고, 이력 규칙은 공식 소스와 같습니다. `additional` 소스는 그 자체가
+  등록이므로 평문 http 소스도 `allowHttpHosts` 항목이 필요 없습니다.
+  `requireHttps: true`일 때만 그 호스트가 `allowHttpHosts`에 있어야 하고, 없으면
+  섹션이 무효입니다.
 - `defaultInstalls`와 `requiredInstalls`는 §10.2를 따르며 공식·관리 소스만 지정할
   수 있습니다. 두 목록에 모두 있는 키는 필수로 취급합니다.
 - **정책 변경은 재시작 없이 다음 작업부터 적용됩니다.**
   - 서비스는 `PolicySource`(`FilePolicySource`,
     `src/marketplace/sources/policy.ts`)로 정책을 읽습니다. 모든 작업(미리보기,
-    추가, 확인 추가, 동기화, 계획, 실행, 목록) 시작 때 파일 크기와 수정 시각을
-    지난 읽기와 비교합니다. 다르면 내용의 sha256을 비교합니다.
-  - 바뀐 정책은 서비스의 배타적 작업 잠금 아래에서 적용됩니다. 게이트, 레지스트리의
+    추가, 확인 추가, 동기화, 계획, 실행, 목록) 시작 때 파일 크기, 수정 시각과
+    상태 변경 시각, inode와 장치를 지난 읽기와 비교합니다. 그래서 권한 변경이나
+    바꿔 놓은 파일도 변경으로 칩니다. 다르면 파일을 읽어 내용의 sha256을
+    비교합니다.
+  - 바뀐 정책은 서비스의 배타적 작업 잠금 아래에서 다시 읽어 적용합니다. 게이트, 레지스트리의
     관리 소스와 필터, 설치기에 한꺼번에 반영되므로, 어떤 작업도 섞인 정책을 보지
     않습니다.
   - 계획은 만들어질 때의 정책 다이제스트를 기록합니다. 다른 다이제스트 아래에서
     실행하면 `PLAN_EXPIRED` 사유 `policy-changed`로 실패하고, 시트가 *다시 검토*를
     제시합니다.
-  - 정책을 읽을 수 없거나 무효가 되면 시작 때 무효 정책과 같이 동작합니다. 공식
+  - 정책 세대는 앞으로만 갑니다. 읽기마다 시작할 때 번호를 받고, 업데이트는 그
+    뒤에 시작한 읽기를 대체하지 않습니다. 그래서 늦게 끝난 검사가 새 정책이
+    대체한 정책을 되살릴 수 없습니다.
+  - 정책을 읽을 수 없거나(권한 변경 포함) 무효가 되면 시작 때 무효 정책과 같이 동작합니다. 공식
     소스만 쓰고 `policy-invalid`를 보여 줍니다. 파일을 고친 뒤 첫 작업에서
     회복합니다.
-- 0.13.0은 이 밖에 `allowLocalSources`, `autoUpdate`, `path:` 패턴,
+- §18의 이후 슬라이스가 `allowLocalSources`, `autoUpdate`, `path:` 패턴,
   `additional[].path`를 더합니다(§18.6).
 
 ## 13. IPC 계약
@@ -1552,8 +1579,8 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
 모든 채널은 호스트 렌더러 전용(`validateHostRendererSender`)이고 지금처럼 감사
 로그를 남깁니다. `ave:git:runtime:install`은 여기에 더해 실시간 키보드 제스처를
 요구합니다. 마켓플레이스가 실행할 바이너리를 내려받기 때문입니다. `planId`와 `previewId`는 1회용이고 10분 뒤 만료됩니다
-(`PLAN_EXPIRED`). 현재 채널의 처리는 §16.2에 있습니다. 폴더와 자동 업데이트를
-위한 0.13.0 채널은 §18.9에 있습니다.
+(`PLAN_EXPIRED`). 현재 채널의 처리는 §16.2에 있습니다. 이후 슬라이스의 폴더와
+자동 업데이트 채널은 §18.9에 있습니다.
 
 ### 13.1 구현 결과
 
@@ -1693,14 +1720,14 @@ detail을 담고, 동기화기가 그것을 `state.json`의 `lastSync.detail`에
 검증기는 사유가 `lastSync.result`에 속할 때만 남기고 아니면 코드는 두고 버리며,
 `sourceStatus`가 `unreachable`과 `auth-required` 보기에 복사합니다(§15.4).
 
-0.13.0은 이 밖에 `SOURCE_LOCAL_UNREADABLE`, 그리고 이 빌드가 아직 구분하지 않는
+이후 슬라이스가 `SOURCE_LOCAL_UNREADABLE`, 그리고 이 빌드가 아직 구분하지 않는
 상황에 대해 §18.8이 나열한 폴더·업데이트 사유를 더합니다. 코드나 사유를 더하는
 슬라이스가 그 문장도 더합니다(§18.8, §18.10).
 
 ## 15. UI 명세
 
 목업은 아래 모든 상태를 보여 줍니다. 설정 → 마켓플레이스가 앱 안의 스토어가
-됩니다(웹 스토어는 없어짐). 0.13.0은 이 밖에 폴더 행과 업데이트 카드를 더합니다
+됩니다(웹 스토어는 없어짐). 이후 슬라이스가 폴더 행과 업데이트 카드를 더합니다
 (§18.4.8, §18.9).
 
 ### 15.1 둘러보기
@@ -1735,8 +1762,9 @@ release나 archive에는 "암호화되지 않은 다운로드 — 고정된 sha2
 표시), **버전**(회수·비호환 표시가 있는 이력).
 
 소스가 허용할 수 있는 설치 실패(§14)는 *허용…*을 제시합니다. 카탈로그가 다른
-사내망 호스트를 지정하면 버튼은 *사내 다운로드 허용*입니다. 버튼은
-`sources:acknowledge`를 부른 뒤 다시 계획합니다. 정책이 바뀌어 만료된 계획
+사내망 호스트를 지정하면 버튼은 *사내 다운로드 허용*입니다. http에서 보류된
+로그인이면 버튼 옆에 자격 증명 위험을 적습니다. 버튼은 `sources:acknowledge`를 부른
+뒤 다시 계획합니다. 정책이 바뀌어 만료된 계획
 (`PLAN_EXPIRED` `policy-changed`)은 새 계획을 만드는 *다시 검토*를 제시합니다.
 
 ### 15.3 설치 진행
@@ -1769,7 +1797,10 @@ release나 archive에는 "암호화되지 않은 다운로드 — 고정된 sha2
   바꿀 수 있습니다. 이 소스의 업데이트는 자동으로 설치되지 않습니다."
 - **허용…**은 마지막 동기화가 소스가 지닐 수 있는 확인 때문에 실패했을 때
   나타납니다(§14). 경고의 질문을 묻고, `sources:acknowledge`를 부른 뒤 다시
-  동기화합니다.
+  동기화합니다. http에서 보류된 로그인(`SOURCE_AUTH_REQUIRED`
+  `token-unencrypted`)이면 질문은 *토큰 설정…*처럼 `token-unencrypted` 경고
+  전체, 곧 로그인 정보가 암호화되지 않은 채 전송되어 네트워크 경로의 누구나 복사할
+  수 있다는 것입니다(`allowRisk`, `labels.ts`).
 - **http 소스의 토큰 설정…**은 소스가 이미 `token-unencrypted`를 지니지 않았다면
   먼저 그것을 묻습니다.
 
@@ -1779,7 +1810,9 @@ release나 archive에는 "암호화되지 않은 다운로드 — 고정된 sha2
 주소가 확인을 요구하면(§7.2 2단계) 트래픽 전에 확인 단계가 나옵니다. "Ave가
 연결하기 전에"와 경고마다 질문 하나를 경고 톤(*취소* / *계속*)으로 보여 줍니다.
 *계속*은 그 확인을 실어 다시 미리봅니다. 어느 칸이든 바꾸면 준 확인은
-버려집니다.
+버려집니다. 각 답은 물었을 때의 칸에 속합니다. 칸을 고치거나, 다시 확인하거나,
+대화상자를 다시 열면 아직 오는 중인 답은 버리므로, 이전 주소에 대한 늦은 경고가 새
+주소에 표시되거나 확인되지 않습니다.
 
 2단계(미리보기):
 - 마켓플레이스 이름, 소유자, 커밋, 종류별 개수;
@@ -1960,7 +1993,7 @@ Retry가 있는 `failed` 상태.
 
 ## 17. 테스트 계획
 
-0.13.0 테스트는 §18.10의 슬라이스마다 적었습니다.
+§18 슬라이스의 테스트는 §18.10의 슬라이스마다 적었습니다.
 
 | 계층 | 무엇으로 증명하는가 |
 |---|---|
@@ -1970,8 +2003,8 @@ Retry가 있는 `failed` 상태.
 | Git 런타임 | 버전 게이트용 가짜 `git` 바이너리(2.45.0 거부, 2.45.1 허용), 환경/플래그/전역 설정 계약, askpass 티켓의 호스트 바인딩, 로컬 픽스처 서버를 쓴 관리형 설치와 잘못된 해시 거부 |
 | 동기화 | 로컬 bare 저장소: 핀이 팁보다 한참 뒤인 fast-forward, 재작성(공식·관리는 거부, 커스텀은 검토), 잘못된 인덱스는 핀 유지, 미러 대체, 설치 패키지가 있는 숨긴 소스도 동기화 |
 | 네트워크 게이트 | 정규화 동치(scp/ssh/https, 대소문자, `.git`). `<helper>::` 전송과 URL 안의 자격 증명 거부. block이 allow보다 우선. `requireHttps`와 `blockPrivateNetworks`가 확인한 소스도 차단. 입력한 대상과 카탈로그가 지정한 대상의 주소 분류별 결과(`198.18.0.0/15`는 사내망, 등록된 호스트라도 메타데이터 거부, 다른 포트의 루프백 다운로드 거부, `internal-network`가 `internal-downloads`를 함축하지 않음, 등록이 `token-unencrypted`를 함축하지 않음). 차단된 호스트로의 리다이렉트 거부. 호스트 간 인증 헤더 없음 |
-| 연결 묶기(§7.4) | `pinned-fetch.test.ts`가 실제 로컬 서버로: 홉마다 조회 한 번, 검사한 답에만 연결, 메타데이터 답은 버림, PAC 종류별(`PROXY`의 http·https 대상, `HTTPS`, `SOCKS5`, `SOCKS4`, 모르는 종류는 `proxy`로 실패), `DIRECT`로 물러나지 않음. `trusted-proxy.test.ts`가 프록시 경계를 고정. `run-git.test.ts`: `http.curloptResolve` 고정, 거부된 답만 남으면 git을 시작하지 않음, `token-unencrypted` 없는 http에는 자격 증명 없음(등록된 호스트의 저장 토큰 포함). `ssh-preflight.test.ts`: git 전 사전 검사, 거부된 답 하나라도 실패, `proxyjump` 뒤에서는 조회 없음, 명시한 남는 위험 |
-| 확인과 정책 갱신 | `service.test.ts`: 확인이 필요한 미리보기는 git 명령도 조회도 없이 `confirm`으로 답함. *추가*는 실은 확인을 그대로 저장. 조회가 사내망 주소를 찾은 호스트는 묻고, *허용…*이 동기화함. 정책 파일을 다시 쓰면 다음 미리보기가 막히고 기존 계획이 `policy-changed`로 만료. 무효 파일 다음 고친 파일이면 공식만 썼다가 되돌아옴 |
+| 연결 묶기(§7.4) | `pinned-fetch.test.ts`가 실제 로컬 서버로: 홉마다 조회 한 번, 검사한 답에만 연결, 메타데이터 답은 버림, PAC 종류별(`PROXY`의 http·https 대상, `HTTPS`, `SOCKS5`, `SOCKS4`, 모르는 종류는 `proxy`로 실패), `DIRECT`로 물러나지 않음, 메타데이터·라우팅 불가 리터럴 프록시는 조회 없이 거부, 이름에 대한 인증서 검사, TLS 연결마다(대상과 `HTTPS` 프록시) 검증과 호스트 이름을 직접 요청, 평문 http 요청에는 TLS 연결 없음. `network-gate.test.ts`: https 요청과 같은 호스트라도 http 홉에는 로그인 정보를 싣지 않음. `trusted-proxy.test.ts`가 프록시 경계를 고정. `run-git.test.ts`: 리터럴 프록시는 git 시작 전 거부(IPv4, IPv6, 매핑, NAT64), 호출마다 PAC 답 하나로 설정과 묶기가 같은 경로, `http.curloptResolve` 고정, 거부된 답만 남으면 git을 시작하지 않음, `token-unencrypted` 없는 http에는 자격 증명 없음(등록된 호스트의 저장 토큰 포함), 그리고 게이트 판정부터 끝까지: http 소스는 조회 전에 묻고, `unencrypted`가 있어야 검사한 주소로만 닿으며, `token-unencrypted`까지 있어야 로그인함. `ssh-preflight.test.ts`: git 전 사전 검사, 거부된 답 하나라도 실패, `proxyjump` 뒤에서는 조회 없음, 명시한 남는 위험 |
+| 확인과 정책 갱신 | `service.test.ts`: 확인이 필요한 미리보기는 git 명령도 조회도 없이 `confirm`으로 답함. *추가*는 실은 확인을 그대로 저장. 조회가 사내망 주소를 찾은 호스트는 묻고, *허용…*이 동기화함. 정책 파일을 다시 쓰면 다음 미리보기가 막히고 기존 계획이 `policy-changed`로 만료. 무효 파일 다음 고친 파일이면 공식만 썼다가 되돌아옴. 늦게 끝난 검사가 대체된 정책을 되살리지 않음. `policy.test.ts`: 오래된 읽기가 새 읽기를 대체하지 않음, 크기·수정 시각이 같은 재작성과 권한 변경을 알아챔, http `additional` 소스는 그 자체가 등록. `registry.test.ts`: 관리 항목이나 `sources.json`이 소스를 다른 주소로 가리키면 확인을 버림. `network-gate.test.ts`: `127.0.0.1`을 등록해도 다른 카탈로그가 다른 로컬 포트에 닿지 못함. UI: 칸을 고친 뒤 늦게 온 미리보기 답은 버림, http 로그인 *허용…*은 자격 증명 위험을 말함 |
 | 특권 없음 | grant 대상과 같은 이름의 커스텀 패키지는 grant 없음, 다른 아티팩트 해시·tree 단계 설치·바뀐 매니페스트면 grant 실패, legacy 항목은 영수증 해시가 맞을 때만 grant 유지, 한 소스의 폐기는 다른 소스 패키지를 무시, 어떤 패키지도 자기 제거를 막지 못함, `installPolicy`가 있는 매니페스트는 설치에서 거부 |
 | 기본·필수 설치 | 기본: 사다리로 한 번 설치, 제거 후 재설치 없음. 필수: 부팅 때 재설치·업데이트, 제거·비활성화는 `PACKAGE_REQUIRED_BY_POLICY`로 거부, 항목을 빼면 사용자 설치가 됨. 두 목록 모두 공식·관리 소스로 제한. 이관은 이전 admin 설치를 적용됨으로 기록하고 맞지 않는 항목의 잠금을 해제 |
 | 식별 | 예약 이름, 소스 간 같은 `(kind, name)`, `PACKAGE_ID_CONFLICT`, 업데이트 바인딩, 소스 전환 시 플러그인 데이터 유지 |
@@ -1979,15 +2012,18 @@ Retry가 있는 `failed` 상태.
 | 서비스 | `former-service.json` 파싱, `movedFrom` 있을 때와 없을 때의 `movedTo`, 빌드 상수 변경 시 초기화, 정책 우선, 공지 동등성, 라벨 대체 |
 | E2E | 패키징된 개발 빌드(개발 플래그로 루프백 허용)에서 로컬 HTTP git 마켓플레이스를 추가하고, 종류별로 하나씩 설치하고, 업데이트하고, 소스를 제거. 개발 플래그 없이는 같은 종류의 소스가 픽스처 서버가 요청을 받기 전에 `unencrypted`와 `this-computer`를 묻고, 미리보기·카드·소스 행이 배지를 보임 |
 
-## 18. 소스 수용, 로컬 폴더, 자동 업데이트 (0.13.0)
+## 18. 소스 수용, 로컬 폴더, 자동 업데이트 (0.13.0 이후)
 
-> 상태: 앱 릴리스 0.13.0을 위해 2026-10-01에 **설계됨**.
+> 상태: 2026-10-01에 처음엔 앱 릴리스 0.13.0을 위해 **설계됨**. 0.13.0은
+> 슬라이스 B만 담아 출시됐고, 슬라이스 C는 다음 릴리스에, 그 뒤 슬라이스는 더
+> 나중에 들어갑니다. 이 절이 0.13.0이라고 말하는 곳은 그 슬라이스를 담는 릴리스로
+> 읽으세요.
 > - 슬라이스 B(메시지)와 슬라이스 C(대상 분류, 경고, 연결 묶기)는 구현됐습니다.
 >   §7, §12–§15, §17이 구현된 모습을 설명합니다. §18.2, §18.3 #1–4와 #7,
 >   §18.5의 분류·결과·묶기는 §7.4가, §18.6의 `requireHttps`,
 >   `blockPrivateNetworks`, 정책 갱신은 §12가 맡습니다.
 > - 나머지(폴더, 자동 업데이트와 그 설정, 슬라이스 D1–F)는 구현 전입니다. 이
->   절과 앞 절이 다르면 앞 절은 빌드를, 이 절은 0.13.0 목표를 설명합니다.
+>   절과 앞 절이 다르면 앞 절은 빌드를, 이 절은 목표를 설명합니다.
 > - §18.10의 각 슬라이스가 같은 변경에서 해당 절을 고쳐 쓰고 이 절을 가리키는
 >   문구를 지웁니다. 코드는 `e10c823e2` 기준으로 인용합니다.
 
@@ -2040,10 +2076,11 @@ Retry가 있는 `failed` 상태.
 | `metadata` | `169.254.0.0/16`, `fe80::/10`, `fd00:ec2::254`, `100.100.100.200` |
 | `unroutable` | `network-guard.ts:116-150`의 나머지 특수 용도 범위(문서용, 멀티캐스트, 예약, 브로드캐스트, 프로토콜 할당) |
 
-`fetchPublicHttpResponse`(`network-guard.ts:415`)는 선택적
-`addressPolicy(address, hop) => "allow" | NetworkGuardError`를 받아, 그 호출에서는 세
-개의 `allow*` 축을 대신합니다. 마켓플레이스 게이트만 이것을 넘기고, 다른 호출자는
-지금 동작을 유지합니다.
+구현에서는 별도의 `fetchAddressCheckedResponse(url, { addressPolicy, fetchImpl })`가
+세 개의 `allow*` 축 대신 `addressPolicy(address, hop) => "allow" | NetworkGuardError`를
+받습니다. 리다이렉트 반복은 `fetchPublicHttpResponse`와 공유하고, 그 시그니처는
+바뀌지 않습니다. 마켓플레이스 게이트만 이것을 부르고, 다른 호출자는 지금 동작을
+유지합니다.
 
 #### 18.2.2 입력한 대상
 
@@ -2572,8 +2609,8 @@ P3(`process` 런타임과 그 코드, `:3557`)와 P4(마켓플레이스 허용, 
 - **정책 변경이 적용되는 때.** 슬라이스 C 전에는 서비스를 만들 때 정책을 한 번
   읽고 서비스를 캐시했으므로 변경이 재시작을 기다렸습니다. 슬라이스 C부터:
   - 서비스는 `PolicySource`를 거쳐 정책을 읽습니다. 모든 작업(미리보기, 추가, 확인,
-    동기화, 탐색, 계획, 실행)을 시작할 때 파일의 크기, 수정 시각, sha256을 지난 읽기와
-    비교합니다.
+    동기화, 탐색, 계획, 실행)을 시작할 때 파일을 지난 읽기와 비교합니다(구현:
+    식별자, 시각, sha256, §12).
   - 바뀌었으면 새 정책을 만들어 게이트, 레지스트리 필터, 설치기에 서비스의 작업 잠금
     아래에서 한 번에 바꿔 넣으므로, 어떤 작업도 섞인 정책을 보지 않습니다.
   - 계획은 만들어질 때의 정책 다이제스트를 기록합니다. 다른 다이제스트에서 실행하면
@@ -2583,8 +2620,9 @@ P3(`process` 런타임과 그 코드, `:3557`)와 P4(마켓플레이스 허용, 
     작업에서 회복합니다.
   - 탐색(§18.7.1)도 작업이므로, 새 정책이 막는 소스는 재시작 없이 한 탐색 간격 안에
     막힙니다.
-- **배포.** 0.13.0 이전 앱은 이 절을 정확히 읽고 모르는 키가 있으면 절 전체를 무효로
-  보아, 공식이 아닌 모든 소스를 막습니다(§12). 이 키는 0.13.0 이상에만 배포합니다.
+- **배포.** 0.13.0까지의 앱은 이 절을 정확히 읽고 모르는 키가 있으면 절 전체를
+  무효로 보아, 공식이 아닌 모든 소스를 막습니다(§12). 각 키는 그 슬라이스를 담은
+  릴리스 이상에만 배포합니다.
 
 ### 18.7 자동 업데이트
 

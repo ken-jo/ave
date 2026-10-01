@@ -59,8 +59,24 @@ interface SourceEntry {
   auth: SourceAuth;
   addedAt: string;
   label?: string;
-  /** The confirmations the source holds (design §18.5); absent is none. */
-  acknowledged?: SourceWarning[];
+  /** The confirmations the source holds, for the address they were given at (design §18.5); absent is none. */
+  acknowledged?: StoredConfirmations;
+}
+
+/**
+ * Confirmations as stored: the warnings, and the normalized address (scheme,
+ * user, host, port and path) the user gave them for. A source whose address
+ * is no longer that one holds none: a managed entry or a hand-edited
+ * `sources.json` that points a source elsewhere never carries consent over.
+ */
+export interface StoredConfirmations {
+  url: string;
+  warnings: SourceWarning[];
+}
+
+/** The confirmations `stored` gives a source at `url`: its warnings when they were given for that address, else none. */
+export function confirmationsFor(stored: StoredConfirmations | undefined, url: NormalizedSourceUrl): SourceWarning[] {
+  return stored !== undefined && stored.url === url.url ? [...stored.warnings] : [];
 }
 
 export interface SourceState {
@@ -71,7 +87,7 @@ export interface SourceState {
   lastSync?: { at: string; result: "ok" | MarketplaceErrorCode; detail?: MarketplaceErrorDetail; candidate?: string };
   pendingRewrite?: { candidate: string; seenAt: string };
   /** Official and managed sources keep their confirmations here; custom and direct ones in `sources.json` (§18.5). */
-  acknowledged?: SourceWarning[];
+  acknowledged?: StoredConfirmations;
 }
 
 export interface ResolvedSource {
@@ -84,7 +100,7 @@ export interface ResolvedSource {
   subdir?: string;
   auth: SourceAuth;
   label?: string;
-  /** Custom and direct sources: the confirmations stored with the entry; official and managed keep theirs in the state. */
+  /** Custom and direct sources: the confirmations stored with the entry for this address; official and managed keep theirs in the state. */
   acknowledged?: readonly SourceWarning[];
 }
 
@@ -149,12 +165,23 @@ function checkAuth(value: unknown, url: NormalizedSourceUrl): SourceAuth {
   return { kind: "token", host };
 }
 
-/** A stored list of confirmations: known warnings, each once. */
-function checkAcknowledged(value: unknown): SourceWarning[] {
-  shape(Array.isArray(value), "acknowledged must be an array");
-  shape(value.every(isSourceWarning), "acknowledged holds an unknown confirmation");
-  shape(new Set(value).size === value.length, "acknowledged lists a confirmation twice");
-  return value as SourceWarning[];
+/** Stored confirmations: a normalized address, and known warnings, each once. */
+function checkAcknowledged(value: unknown): StoredConfirmations {
+  shape(isRecord(value), "acknowledged must be an object");
+  knownKeys(value, new Set(["url", "warnings"]), "acknowledged");
+  shape(typeof value.url === "string", "acknowledged.url must be a string");
+  let url: NormalizedSourceUrl;
+  try {
+    url = normalizeSourceUrl(value.url as string);
+  } catch {
+    throw new RegistryShapeError("acknowledged.url is not a source address");
+  }
+  shape(url.url === value.url, "acknowledged.url is not in normalized form");
+  const warnings = value.warnings;
+  shape(Array.isArray(warnings), "acknowledged.warnings must be an array");
+  shape(warnings.every(isSourceWarning), "acknowledged holds an unknown confirmation");
+  shape(new Set(warnings).size === warnings.length, "acknowledged lists a confirmation twice");
+  return { url: url.url, warnings: [...(warnings as SourceWarning[])] };
 }
 
 function checkRef(ref: unknown): void {
@@ -499,7 +526,7 @@ export class SourceRegistry {
         ...(entry.subdir !== undefined ? { subdir: entry.subdir } : {}),
         auth: entry.auth,
         ...(entry.label !== undefined ? { label: entry.label } : {}),
-        ...(entry.acknowledged !== undefined ? { acknowledged: [...entry.acknowledged] } : {}),
+        acknowledged: confirmationsFor(entry.acknowledged, url),
       });
     }
     this.stored = stored;
@@ -572,7 +599,7 @@ export class SourceRegistry {
         auth: source.auth.kind === "token" ? { kind: "token", host: normalizeSourceHost(source.auth.host, source.auth.host) } : source.auth,
         addedAt: (this.options.now?.() ?? new Date()).toISOString(),
         ...(source.label !== undefined ? { label: source.label } : {}),
-        ...(source.acknowledged !== undefined && source.acknowledged.length > 0 ? { acknowledged: [...source.acknowledged] } : {}),
+        ...(source.acknowledged !== undefined && source.acknowledged.length > 0 ? { acknowledged: { url: url.url, warnings: [...source.acknowledged] } } : {}),
       };
       try {
         checkEntry(entry);
@@ -684,7 +711,7 @@ export class SourceRegistry {
   /** The confirmations `source` holds: its entry's for custom and direct sources, its state's for official and managed ones (§18.5). */
   async acknowledged(source: ResolvedSource): Promise<ReadonlySet<SourceWarning>> {
     if (source.origin === "custom" || source.origin === "direct") return new Set(source.acknowledged ?? []);
-    return new Set((await this.readState(source.id)).acknowledged ?? []);
+    return new Set(confirmationsFor((await this.readState(source.id)).acknowledged, source.url));
   }
 
   /**
@@ -696,9 +723,10 @@ export class SourceRegistry {
     const source = this.get(id);
     if (!source) throw new MarketplaceError("SOURCE_ID_INVALID", `no source named ${id}`);
     if (source.origin === "official" || source.origin === "managed") {
+      // Confirmations given for another address are dropped, not merged.
       await this.updateState(id, (state) => {
-        const merged = [...new Set([...(state.acknowledged ?? []), ...warnings])];
-        return { ...state, acknowledged: merged };
+        const merged = [...new Set([...confirmationsFor(state.acknowledged, source.url), ...warnings])];
+        return { ...state, acknowledged: { url: source.url.url, warnings: merged } };
       });
       return;
     }
@@ -706,8 +734,8 @@ export class SourceRegistry {
       this.assertWritable();
       const raw = this.storedRaw.get(id);
       if (!isRecord(raw)) throw new Error(`source ${id} has no stored entry`);
-      const current = raw.acknowledged === undefined ? [] : checkAcknowledged(raw.acknowledged);
-      const next = { ...raw, acknowledged: [...new Set([...current, ...warnings])] };
+      const current = raw.acknowledged === undefined ? [] : confirmationsFor(checkAcknowledged(raw.acknowledged), source.url);
+      const next = { ...raw, acknowledged: { url: source.url.url, warnings: [...new Set([...current, ...warnings])] } };
       await this.writeSources(this.rawEntries.map((entry) => (entry === raw ? next : entry)));
     });
   }

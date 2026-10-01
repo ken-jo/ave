@@ -81,6 +81,15 @@ describe("MarketplaceProblem", () => {
     render(<MarketplaceProblem testId="auth" subject={ENTRY_SUBJECT} failure={{ code: "SOURCE_AUTH_REQUIRED", message: "", detail: { reason: "token-unencrypted", host: "git.corp.example" } }} />);
     expect(screen.getByTestId("auth")).toHaveAttribute("data-tone", "warning");
     expect(screen.queryByTestId("auth:allow")).toBeNull();
+    expect(screen.queryByTestId("auth:risk")).toBeNull();
+  });
+
+  it("says the credential risk next to an Allow… that lets sign-in travel over http (the package sheet's path)", () => {
+    const onAllow = vi.fn();
+    render(<MarketplaceProblem testId="auth" subject={ENTRY_SUBJECT} failure={{ code: "SOURCE_AUTH_REQUIRED", message: "", detail: { reason: "token-unencrypted", host: "git.corp.example" } }} onAllow={onAllow} />);
+    expect(screen.getByTestId("auth:risk")).toHaveTextContent("git.corp.example 로그인 정보가 암호화되지 않은 채 전송되어 네트워크 경로에 있는 누구나 복사할 수 있습니다. 계속할까요?");
+    fireEvent.click(screen.getByTestId("auth:allow"));
+    expect(onAllow).toHaveBeenCalledTimes(1);
   });
 
   it("lists every warning of one confirmation, each as its own sentence", () => {

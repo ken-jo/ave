@@ -618,10 +618,12 @@ every other package kind arrive through git marketplaces (`src/marketplace/`):
 the app syncs each source's repository, pins the commit it read, and installs
 only the bytes that commit names (release or archive by sha256, or the pinned
 tree). Every git remote and download a source names passes one network gate.
-The gate applies the machine's policy, then checks the class of the address
-the connection actually uses. Plain http, internal-network and this-computer
-targets are confirmed once per source. Metadata and unroutable addresses are
-always refused. The [multi-source git marketplace design](../design/multi-source-git-marketplace.md)
+The gate applies the machine's policy, then checks the class of each address.
+Downloads and git over http(s) connect only to the addresses checked. git over
+ssh is checked before git runs, and ssh's own later lookup is not bound. A
+proxy is checked at its own address and trusted beyond it. Plain http,
+internal-network and this-computer targets are confirmed once per source
+address. Metadata and unroutable addresses are always refused. The [multi-source git marketplace design](../design/multi-source-git-marketplace.md)
 owns those contracts (network targets: its §7.4).
 
 Key boundaries:

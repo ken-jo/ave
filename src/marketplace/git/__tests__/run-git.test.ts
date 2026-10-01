@@ -2,10 +2,13 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { classifyAddress, NetworkGuardError } from "../../../core/network-guard.js";
-import { MarketplaceError } from "../../errors.js";
+import { ConfirmationRequiredError, MarketplaceError } from "../../errors.js";
+import { NetworkGate } from "../../net/network-gate.js";
 import { normalizeSourceUrl } from "../../net/source-url.js";
+import type { SourceWarning } from "../../sources/warnings.js";
+import { policyLoad, policySource } from "../../__tests__/fixtures/policy.js";
 import {
   createFixtureRepo,
   type FixtureRepo,
@@ -15,7 +18,7 @@ import {
 } from "../../__tests__/fixtures/git-http-server.js";
 import { createTestGitRunner, type TestGitRunner } from "../../__tests__/fixtures/git-runner.js";
 import { BareRepo } from "../repo.js";
-import { classifyRemoteFailure, GIT_TIMEOUTS_MS, type GitRemote } from "../run-git.js";
+import { classifyRemoteFailure, GIT_TIMEOUTS_MS, GitRunner, type GitRemote, type GitResult } from "../run-git.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { gitFixtureEnv } from "../../../__tests__/support/git-fixture-env.mjs";
 
@@ -108,6 +111,57 @@ describe("GitRunner proxy from PAC", () => {
     try {
       expect(await t.runner.configArgs(remote("https://github.com/acme/tools"))).toContain(flag);
     } finally {
+      await t.cleanup();
+    }
+  });
+
+  it.each([
+    ["PROXY 169.254.169.254:80", "address-metadata"],
+    ["PROXY 192.0.2.1:80", "address-unroutable"],
+    ["PROXY [fd00:ec2::254]:80", "address-metadata"],
+    ["PROXY [::ffff:169.254.169.254]:80", "address-metadata"],
+    ["PROXY [64:ff9b::a9fe:a9fe]:80", "address-metadata"],
+    ["SOCKS5 169.254.169.254:1080", "address-metadata"],
+  ])("refuses the literal proxy of %j before git starts, on the preflight and on a call (§18.3 #3)", async (pac, reason) => {
+    const lookups: string[] = [];
+    const t = await createTestGitRunner({ resolveProxy: async () => pac, lookup: async (host) => (lookups.push(host), ["1.1.1.1"]) });
+    const spawn = vi.spyOn(GitRunner.prototype as unknown as { spawnGit: () => Promise<GitResult> }, "spawnGit");
+    try {
+      const target = remote("https://git.example.com/acme/tools");
+      expect((await expectCode(t.runner.preflight(target), "SOURCE_URL_REJECTED")).detail).toMatchObject({ reason });
+      expect((await expectCode(t.runner.run(["ls-remote", target.url.url], { remote: target, timeoutMs: 5_000 }), "SOURCE_URL_REJECTED")).detail).toMatchObject({ reason });
+      expect(spawn).not.toHaveBeenCalled();
+      // The literal is judged as its own answer: nothing resolves the proxy.
+      expect(lookups.filter((host) => host !== "git.example.com")).toEqual([]);
+    } finally {
+      spawn.mockRestore();
+      await t.cleanup();
+    }
+  });
+
+  it("configures git with the one route its binding checked, though the PAC answer changes between questions (§18.2.4)", async () => {
+    const routes = ["PROXY checked.test:3128", "PROXY unchecked.test:3128"];
+    let asked = 0;
+    const lookups: string[] = [];
+    const t = await createTestGitRunner({
+      resolveProxy: async () => routes[Math.min(asked++, routes.length - 1)]!,
+      lookup: async (host) => (lookups.push(host), ["127.0.0.1"]),
+    });
+    let argv: string[] = [];
+    const spawn = vi.spyOn(GitRunner.prototype as unknown as { spawnGit: (command: string, args: string[]) => Promise<GitResult> }, "spawnGit").mockImplementation(async (_command, args) => {
+      argv = args;
+      return { stdout: Buffer.alloc(0), stderr: "" };
+    });
+    try {
+      const target = remote("https://git.example.com/acme/tools");
+      await t.runner.run(["ls-remote", target.url.url], { remote: target, timeoutMs: 5_000 });
+      expect(asked).toBe(1);
+      expect(argv).toContain("http.proxy=http://checked.test:3128");
+      expect(argv).toContain("http.curloptResolve=checked.test:3128:127.0.0.1");
+      expect(argv.join(" ")).not.toContain("unchecked.test");
+      expect(lookups).toEqual(["checked.test"]);
+    } finally {
+      spawn.mockRestore();
       await t.cleanup();
     }
   });
@@ -379,6 +433,48 @@ describe("GitRunner authentication through the askpass broker", () => {
       expect(error.detail).toEqual({ reason: "token-unencrypted", host: "127.0.0.1" });
       // Neither askpass (holding the token) nor the user's own helper (holding it too) answered.
       expect(server.seen.every((request) => request.authorization === undefined)).toBe(true);
+    } finally {
+      await t.cleanup();
+    }
+  });
+
+  it("reaches an http source only once unencrypted is confirmed, at its one checked address, and signs in only with token-unencrypted (§18.2.2, §18.2.4)", async () => {
+    const lookups: string[] = [];
+    const t = await createTestGitRunner({ tokens: { "market.test": "s3cret-token" }, lookup: async (host) => (lookups.push(host), ["127.0.0.1"]) });
+    // git cannot resolve market.test itself: every request reaches the fixture only through the pinned address.
+    const url = server.url("private-tools").replace("127.0.0.1", "market.test");
+    const normalized = normalizeSourceUrl(url);
+    const gate = new NetworkGate({ policy: policySource(policyLoad()), allowLoopback: true, transport: async () => new Response(null, { status: 599 }) });
+    const remoteWith = (...warnings: SourceWarning[]): GitRemote => ({
+      url: normalized,
+      sourceId: "fixture",
+      useToken: true,
+      ...gate.checkRemote(normalized, { official: false, acknowledged: new Set(warnings) }),
+    });
+    server.seen.length = 0;
+    try {
+      // Without `unencrypted` the gate asks; nothing is looked up or contacted.
+      expect(() => remoteWith()).toThrow(ConfirmationRequiredError);
+      expect(lookups).toEqual([]);
+      expect(server.seen).toEqual([]);
+
+      // With `unencrypted` only: git reaches the checked address, and no credential answers.
+      const plain = remoteWith("unencrypted");
+      expect(plain).toMatchObject({ allowHttp: true, credentialsAllowed: false });
+      const error = await expectCode(t.runner.run(["ls-remote", url], { remote: plain, timeoutMs: GIT_TIMEOUTS_MS.lsRemote }), "SOURCE_AUTH_REQUIRED");
+      expect(error.detail).toEqual({ reason: "token-unencrypted", host: "market.test" });
+      expect(lookups).toEqual(["market.test"]);
+      expect(server.seen.length).toBeGreaterThan(0);
+      expect(server.seen.every((request) => request.authorization === undefined)).toBe(true);
+
+      // With token-unencrypted too: the stored token answers, still over the one checked address per call.
+      server.seen.length = 0;
+      const signedIn = remoteWith("unencrypted", "token-unencrypted");
+      const result = await t.runner.run(["ls-remote", url], { remote: signedIn, timeoutMs: GIT_TIMEOUTS_MS.lsRemote });
+      expect(result.stdout.toString()).toContain("refs/heads/main");
+      expect(lookups).toEqual(["market.test", "market.test"]);
+      const authorized = server.seen.find((request) => request.authorization);
+      expect(Buffer.from(authorized!.authorization!.slice(6), "base64").toString()).toBe("x-access-token:s3cret-token");
     } finally {
       await t.cleanup();
     }

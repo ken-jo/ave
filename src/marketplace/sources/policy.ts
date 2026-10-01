@@ -235,7 +235,11 @@ function parseSection(value: unknown): MarketplacePolicy {
     if (additional.some((other) => other.id === entry.id)) fail(`${at}.id`, `${entry.id} is used twice`);
     if (typeof entry.url !== "string") fail(`${at}.url`, "must be a string");
     const url = parsed(`${at}.url`, () => normalizeSourceUrl(entry.url as string));
-    if (url.scheme === "http" && !allowHttpHosts.has(url.host)) fail(`${at}.url`, `plain http needs ${url.host} in allowHttpHosts`);
+    // An additional source is itself a listing (§18.2.2): plain http needs no other entry, unless the
+    // same policy requires https, which only allowHttpHosts excepts.
+    if (url.scheme === "http" && policy.requireHttps && !allowHttpHosts.has(url.host)) {
+      fail(`${at}.url`, `plain http while requireHttps is true needs ${url.host} in allowHttpHosts`);
+    }
     if (isBlockedByPolicy(policy, url)) fail(`${at}.url`, "is blocked by this policy's own allow/block lists");
     if (sameSourceRepository(url, official) || additional.some((other) => sameSourceRepository(url, other.url))) {
       fail(`${at}.url`, "names a repository that is already a source");
@@ -284,15 +288,23 @@ interface PolicyRead {
   load: PolicyLoad;
   /** sha256 of the file, `absent` without one, `unreadable:<code>` when it cannot be read. */
   digest: string;
-  /** Size and modification time of the file read, for the next comparison. */
+  /** The file's identity and change times when read (see {@link statKey}), for the next comparison. */
   stat: string;
 }
 
-/** Size and modification time, in the form {@link PolicyRead.stat} records them. */
+/**
+ * What tells a rewrite, a replacement or a permission change apart without
+ * reading the file: size, modification and status-change times, and the
+ * file's identity. `chmod` changes only the status-change time, and a file
+ * renamed into place has a new inode.
+ */
+function statKey(info: { size: number; mtimeMs: number; ctimeMs: number; ino: number; dev: number }): string {
+  return `${info.size}:${info.mtimeMs}:${info.ctimeMs}:${info.ino}:${info.dev}`;
+}
+
 async function policyStat(path: string): Promise<string> {
   try {
-    const info = await fsStat(path);
-    return `${info.size}:${info.mtimeMs}`;
+    return statKey(await fsStat(path));
   } catch (error) {
     if (isMissingPathError(error)) return "absent";
     return `unreadable:${(error as NodeJS.ErrnoException).code ?? "unknown"}`;
@@ -303,8 +315,7 @@ async function readPolicy(path: string): Promise<PolicyRead> {
   let text: string;
   let stat: string;
   try {
-    const info = await fsStat(path);
-    stat = `${info.size}:${info.mtimeMs}`;
+    stat = statKey(await fsStat(path));
     text = await readFile(path, "utf8");
   } catch (error) {
     if (isMissingPathError(error)) return { load: { ok: true, policy: EMPTY_MARKETPLACE_POLICY, path }, digest: "absent", stat: "absent" };
@@ -323,6 +334,8 @@ export async function loadMarketplacePolicy(path: string = getAdminPolicyPath())
 export interface PolicyUpdate {
   readonly load: PolicyLoad;
   readonly digest: string;
+  /** When the read began, in the source's own order: an update never replaces one read after it. */
+  readonly sequence: number;
 }
 
 /**
@@ -330,7 +343,8 @@ export interface PolicyUpdate {
  * §18.6): the gate, the registry's managed sources and the installers read
  * {@link PolicySource.load} when they need it, so one {@link PolicySource.apply}
  * changes all of them at once. The service checks the file at the start of
- * every operation and applies a change under its operation lock.
+ * every operation and, when it changed, reads it again and applies it under
+ * its exclusive operation lock.
  */
 export interface PolicySource {
   /** The policy in force. */
@@ -339,15 +353,17 @@ export interface PolicySource {
   readonly digest: string;
   /** Read the file again: the update when its content changed, else null. */
   check(): Promise<PolicyUpdate | null>;
+  /** Put an update in force, unless one read after it already is (policy generations only move forward). */
   apply(update: PolicyUpdate): void;
 }
 
-/** The system policy file as a {@link PolicySource}: compared by size, modification time and sha256 at each check. */
+/** The system policy file as a {@link PolicySource}: compared by identity, change times and sha256 at each check. */
 export class FilePolicySource implements PolicySource {
-  private current: PolicyRead;
+  private current: PolicyRead & { sequence: number };
+  private reads = 0;
 
   private constructor(private readonly path: string, first: PolicyRead) {
-    this.current = first;
+    this.current = { ...first, sequence: 0 };
   }
 
   static async open(path: string = getAdminPolicyPath()): Promise<FilePolicySource> {
@@ -363,21 +379,25 @@ export class FilePolicySource implements PolicySource {
   }
 
   async check(): Promise<PolicyUpdate | null> {
-    // Unchanged size and modification time: the file was not written since the last read.
-    // A file that could not be read is read again: fixing its permissions changes neither.
-    const readable = !this.current.digest.startsWith("unreadable:");
-    if (readable && this.current.stat !== "applied" && (await policyStat(this.path)) === this.current.stat) return null;
+    const base = this.current;
+    const sequence = ++this.reads;
+    // Unchanged identity and change times: the file was not written, replaced or re-permissioned since the last read.
+    // A file that could not be read is read again each time.
+    const readable = !base.digest.startsWith("unreadable:");
+    if (readable && base.stat !== "applied" && (await policyStat(this.path)) === base.stat) return null;
     const next = await readPolicy(this.path);
     if (next.digest === this.current.digest) {
-      // Same content, perhaps touched: nothing to apply.
-      this.current = { ...this.current, stat: next.stat };
+      // Same content, perhaps touched: nothing to apply. Record the times only if nothing was applied meanwhile.
+      if (this.current === base) this.current = { ...base, stat: next.stat };
       return null;
     }
-    return { load: next.load, digest: next.digest };
+    return { load: next.load, digest: next.digest, sequence };
   }
 
   apply(update: PolicyUpdate): void {
-    // The next check reads the file again and records its size and time.
-    this.current = { load: update.load, digest: update.digest, stat: "applied" };
+    // A read that began before the one in force is older: applying it would restore a replaced policy.
+    if (update.sequence < this.current.sequence) return;
+    // The next check reads the file again and records its identity and times.
+    this.current = { load: update.load, digest: update.digest, stat: "applied", sequence: update.sequence };
   }
 }

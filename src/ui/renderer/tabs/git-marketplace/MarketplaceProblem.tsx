@@ -18,7 +18,7 @@ import { useTranslation } from "../../../../i18n/react.js";
 import { cn } from "../../../../lib/utils.js";
 import { scrubDiagnosticSecrets } from "../../../../shared/dlp.js";
 import type { GitMarketplaceErrorCode, GitMarketplaceFailure } from "../../../../shared/git-marketplace.js";
-import { allowableWarning, failureCommand, failureText, type FailureSubject } from "./labels.js";
+import { allowableWarning, allowRisk, failureCommand, failureText, type FailureSubject } from "./labels.js";
 
 /** Codes the organization decided: shown as policy, never as the user's mistake. */
 const POLICY_CODES: ReadonlySet<GitMarketplaceErrorCode> = new Set(["SOURCE_POLICY_BLOCKED", "PACKAGE_POLICY_BLOCKED", "PACKAGE_REQUIRED_BY_POLICY"]);
@@ -94,6 +94,8 @@ export function MarketplaceProblem(props: MarketplaceProblemProps) {
   const failure = props.tone === "error" ? null : props.failure;
   const policy = failure !== null && POLICY_CODES.has(failure.code);
   const allowable = failure !== null && allowableWarning(failure) !== null;
+  // Where Allow… is offered here, the risk it accepts is said here too.
+  const risk = allowable && props.tone !== "error" && props.onAllow ? allowRisk(t, failure!) : null;
   const command = failure === null ? null : failureCommand(failure);
   const text = props.tone === "error" ? props.text : failureText(t, props.failure, props.subject);
   const details = scrubDiagnosticSecrets(props.tone === "error" ? props.details : (props.details ?? failureDetails(props.failure)));
@@ -122,6 +124,11 @@ export function MarketplaceProblem(props: MarketplaceProblemProps) {
         {allowable ? <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" /> : !policy && <AlertCircle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />}
         <span className="break-words">{text}</span>
       </p>
+      {risk !== null && (
+        <p className="break-words font-medium" data-testid={props.testId ? `${props.testId}:risk` : undefined}>
+          {risk}
+        </p>
+      )}
       <div className="flex flex-wrap gap-2">
         {allowable && props.tone !== "error" && props.onAllow && (
           <Button size="sm" onClick={props.onAllow} data-testid={props.testId ? `${props.testId}:allow` : undefined}>

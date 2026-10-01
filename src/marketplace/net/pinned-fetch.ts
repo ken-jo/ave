@@ -85,16 +85,23 @@ export function routeFromPac(pac: string, targetHost: string): ProxyRoute {
   return { kind: mapped, proxy: { host: bare(match[1]!), port } };
 }
 
-/** A proxy's own addresses: the configuration chose it, so only metadata and unroutable answers are refused. */
-function proxyAnswers(host: string, answers: readonly string[]): string[] {
+/**
+ * A proxy's own addresses, on every transport that connects to one (this
+ * one and git over http, §18.2.4): the configuration chose the proxy, so
+ * only metadata and unroutable answers are refused. A literal proxy is its
+ * own one answer and is judged the same way. No answer left fails with the
+ * most restrictive refusal, metadata before unroutable.
+ */
+export function proxyAnswers(host: string, answers: readonly string[]): string[] {
   const kept = answers.filter((address) => {
     const kind = classifyAddress(address);
     return kind !== "metadata" && kind !== "unroutable";
   });
   if (kept.length > 0) return kept;
-  const refused = answers[0] ?? host;
+  const refused = answers.find((address) => classifyAddress(address) === "metadata") ?? answers[0];
+  if (refused === undefined) throw new MarketplaceError("SOURCE_UNREACHABLE", `the proxy ${host} has no address`, { detail: { reason: "dns", host } });
   const reason = classifyAddress(refused) === "metadata" ? "address-metadata" : "address-unroutable";
-  throw new MarketplaceError("SOURCE_URL_REJECTED", `the proxy ${host} resolves only to refused addresses`, { detail: { reason, host, address: refused } });
+  throw new MarketplaceError("SOURCE_URL_REJECTED", `the proxy ${host} is ${refused}, a refused address`, { detail: { reason, host, address: refused } });
 }
 
 function abortError(): Error {
@@ -167,6 +174,8 @@ function tls(socket: Socket, host: string, ca: readonly string[], signal: AbortS
       // SNI carries names only; an IP literal is checked against the certificate's IP entries.
       ...(isIP(name) === 0 ? { servername: name } : {}),
       ca: [...ca],
+      // Explicit, so an inherited process-wide override that disables certificate verification has no effect here.
+      rejectUnauthorized: true,
       ALPNProtocols: ["http/1.1"],
       minVersion: "TLSv1.2",
     });

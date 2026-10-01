@@ -292,8 +292,8 @@ export class NetworkGate {
       // The source's own host inherits the source's confirmations; on this computer only at its own port.
       const ownHost = host === catalog.url.host && (kind !== "this-computer" || webPort(hop) === webPort(catalog.url));
       if (ownHost) return this.enteredPolicy(host, hop.href, catalog.acknowledged)(address, hop);
-      if (this.listed(host)) return "allow";
-      if (this.policy?.blockPrivateNetworks) return this.privateBlock(kind, hop.href, address);
+      // A hard refusal (§18.3 #4) comes before every exemption: listing one service on this
+      // computer must not let any catalog reach the others.
       if (kind === "this-computer") {
         return verdict(
           new MarketplaceError("SOURCE_URL_REJECTED", `${catalog.label} points a download at this computer (${host}, ${address})`, {
@@ -302,6 +302,8 @@ export class NetworkGate {
           RANK[kind],
         );
       }
+      if (this.listed(host)) return "allow";
+      if (this.policy?.blockPrivateNetworks) return this.privateBlock(kind, hop.href, address);
       if (catalog.acknowledged.has("internal-downloads")) return "allow";
       return verdict(
         new MarketplaceError("SOURCE_CONFIRMATION_REQUIRED", `${catalog.label} names ${host} (${address}), another internal host; the source needs internal-downloads`, {

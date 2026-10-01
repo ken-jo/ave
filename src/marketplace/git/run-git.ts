@@ -36,9 +36,10 @@ import type { Readable } from "node:stream";
 import { proxyUrlFromPacEntry } from "../../shared/pac-proxy.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
 import { forceKillManagedChildProcess, spawnManaged } from "../../main/managed-child-processes.js";
-import { classifyAddress, selectAnswers, type AddressPolicy } from "../../core/network-guard.js";
+import { selectAnswers, type AddressPolicy } from "../../core/network-guard.js";
 import { MarketplaceError, type MarketplaceErrorCode, type MarketplaceErrorDetail } from "../errors.js";
 import { mapGuardError } from "../net/network-gate.js";
+import { proxyAnswers } from "../net/pinned-fetch.js";
 import type { NormalizedSourceUrl } from "../net/source-url.js";
 import { readSshConfig, sshPreflight, type SshConfigReader } from "./ssh-preflight.js";
 import type { AskpassBroker } from "./askpass.js";
@@ -283,9 +284,13 @@ export class GitRunner {
     await this.bindingArgs(remote, await this.proxyFor(remote), this.environment(remote));
   }
 
-  /** The `-c` flags every call carries, before the subcommand. */
+  /** The `-c` flags every call carries, before the subcommand, under the route the PAC resolver answers now. */
   async configArgs(remote: GitRemote | undefined): Promise<string[]> {
-    const proxy = await this.proxyFor(remote);
+    return this.configArgsFor(remote, await this.proxyFor(remote));
+  }
+
+  /** The `-c` flags for one call under one route: the same `proxy` its binding checked (§18.2.4). */
+  private configArgsFor(remote: GitRemote | undefined, proxy: string): string[] {
     return [
       "-c", "protocol.file.allow=never",
       "-c", "submodule.recurse=false",
@@ -379,13 +384,11 @@ export class GitRunner {
       }
       if (proxyUrl !== null) {
         const proxyHost = bareHost(proxyUrl.hostname);
-        if (isIP(proxyHost) === 0) {
-          // The system configuration chose the proxy: only metadata and unroutable answers are refused.
-          const kept = (await this.lookup(proxyHost)).filter((address) => {
-            const kind = classifyAddress(address);
-            return kind !== "metadata" && kind !== "unroutable";
-          });
-          if (kept.length === 0) throw new MarketplaceError("SOURCE_URL_REJECTED", `the proxy ${proxyHost} resolves only to refused addresses`);
+        // The system configuration chose the proxy: only metadata and unroutable answers are refused.
+        // A literal is its own one answer, judged the same way; curl does not resolve it, so it needs no pin.
+        const literal = isIP(proxyHost) !== 0;
+        const kept = proxyAnswers(proxyHost, literal ? [proxyHost] : await this.lookup(proxyHost));
+        if (!literal) {
           const defaultProxyPort = proxyUrl.protocol === "https:" ? 443 : proxyUrl.protocol === "http:" ? 80 : 1080;
           entries.push(curlResolveEntry(proxyHost, proxyUrl.port ? Number(proxyUrl.port) : defaultProxyPort, kept));
         }
@@ -406,8 +409,10 @@ export class GitRunner {
         ...(options.gitDir ? { GIT_DIR: options.gitDir } : { GIT_CEILING_DIRECTORIES: dirname(this.options.emptyDir) }),
         ...(ticket?.env ?? {}),
       };
-      const config = await this.configArgs(remote);
-      const binding = remote ? await this.bindingArgs(remote, await this.proxyFor(remote), env) : [];
+      // One PAC answer per call: the route git is configured with is the route the binding checked.
+      const proxy = await this.proxyFor(remote);
+      const config = this.configArgsFor(remote, proxy);
+      const binding = remote ? await this.bindingArgs(remote, proxy, env) : [];
       const argv = [...config, ...binding, ...args];
       const withheld = this.withholdsCredentials(remote);
       return await this.spawnGit(args[0] ?? "git", argv, env, options, () => ticket?.credentialOffered() ?? false, withheld);

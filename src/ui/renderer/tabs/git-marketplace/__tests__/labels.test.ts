@@ -4,7 +4,7 @@ import type { TranslationVars } from "../../../../../i18n/translate.js";
 import { MARKETPLACE_ERROR_CODES, MARKETPLACE_ERROR_DETAIL_FIELDS, MARKETPLACE_ERROR_REASONS } from "../../../../../marketplace/errors.js";
 import type { GitMarketplaceErrorCode, GitMarketplaceFailure, MarketplaceErrorDetail } from "../../../../../shared/git-marketplace.js";
 import type { SourceView } from "../../../../../shared/git-marketplace.js";
-import { ENTRY_SUBJECT, OTHER_SUBJECT, allowableWarning, failureCommand, failureText, kindLabel, sourceStatusDetail, sourceStatusLabel, sourceSubject, warningText, type FailureSubject } from "../labels.js";
+import { ENTRY_SUBJECT, OTHER_SUBJECT, allowableWarning, allowRisk, failureCommand, failureText, kindLabel, sourceStatusDetail, sourceStatusLabel, sourceSubject, warningText, type FailureSubject } from "../labels.js";
 
 describe("package kind display vocabulary", () => {
   it("labels code packages as extensions and entry-free bundles as plugins", () => {
@@ -414,5 +414,14 @@ describe("warning sentences (§18.5, §18.8)", () => {
     expect(allowableWarning({ code: "SOURCE_AUTH_REQUIRED", detail: { reason: "token", host: "h" } })).toBeNull();
     expect(allowableWarning({ code: "SOURCE_CONFIRMATION_REQUIRED" })).toBeNull();
     expect(allowableWarning({ code: "SOURCE_URL_REJECTED", detail: { reason: "address-metadata", host: "h", address: "169.254.169.254" } })).toBeNull();
+  });
+
+  it("states the credential risk Allow… accepts for sign-in held back over http, in both locales (§18.2.2)", () => {
+    const held = { code: "SOURCE_AUTH_REQUIRED", detail: { reason: "token-unencrypted", host: "git.corp.example" } } as const;
+    expect(allowRisk(t("en"), held)).toBe("Your sign-in for git.corp.example would travel unencrypted, and anyone on the network path could copy it. Continue?");
+    expect(allowRisk(t("ko"), held)).toBe("git.corp.example 로그인 정보가 암호화되지 않은 채 전송되어 네트워크 경로에 있는 누구나 복사할 수 있습니다. 계속할까요?");
+    // A confirmation failure's own sentence is already its question.
+    expect(allowRisk(t("en"), { code: "SOURCE_CONFIRMATION_REQUIRED", detail: { reason: "internal-downloads", source: "s", host: "h" } })).toBeNull();
+    expect(allowRisk(t("en"), { code: "SOURCE_AUTH_REQUIRED", detail: { reason: "token", host: "h" } })).toBeNull();
   });
 });

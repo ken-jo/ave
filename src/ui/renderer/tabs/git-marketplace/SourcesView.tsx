@@ -20,6 +20,7 @@ import { scrubDiagnosticSecrets } from "../../../../shared/dlp.js";
 import type { GitMarketplaceApi, GitMarketplaceFailure, PackageKeyView, SourceBadge, SourceView, SourceWarning } from "../../../../shared/git-marketplace.js";
 import {
   allowableWarning,
+  allowRisk,
   badgeLabel,
   badgeTooltip,
   failureText,
@@ -94,11 +95,12 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
   };
   const [orphaned, setOrphaned] = useState<PackageKeyView[] | null>(null);
 
-  /** *Allow…* for a failure on `source`, with the failure's own sentence as the risk. */
+  /** *Allow…* for a failure on `source`: the question names the risk accepted (`allowRisk`), else the failure's sentence is that question. */
   const allowFor = (source: SourceView, failure: Pick<GitMarketplaceFailure, "code" | "detail">) => {
     const warning = allowableWarning(failure);
     if (warning === null) return;
-    setConfirm({ kind: "allow", source, warning, text: failureText(t, { ...failure, message: "" }, sourceSubject(source)), then: null });
+    const text = allowRisk(t, failure) ?? failureText(t, { ...failure, message: "" }, sourceSubject(source));
+    setConfirm({ kind: "allow", source, warning, text, then: null });
   };
 
   /** Set token…: an http source sends no sign-in until the user accepts that it travels unencrypted (§18.2.2). */

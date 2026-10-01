@@ -2,11 +2,24 @@ import { createServer as createHttpServer, type IncomingMessage, type Server as 
 import { createServer as createHttpsServer } from "node:https";
 import { connect as netConnect, createServer as createNetServer, type AddressInfo, type Server as NetServer, type Socket } from "node:net";
 import type { Duplex } from "node:stream";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { connect as tlsConnect, type ConnectionOptions } from "node:tls";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { classifyAddress, NetworkGuardError, selectAnswers, type AddressPolicy } from "../../../core/network-guard.js";
 import { MarketplaceError } from "../../errors.js";
 import { createTestAuthority, type TestAuthority } from "../../__tests__/fixtures/test-certificates.js";
 import { createPinnedFetch, routeFromPac } from "../pinned-fetch.js";
+
+// The transport's own TLS calls pass through to Node unchanged; the spy records the options each
+// was given, so a test can read what the transport asked for rather than what the process defaults to.
+vi.mock("node:tls", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:tls")>();
+  return { ...actual, connect: vi.fn(actual.connect) };
+});
+
+/** The options of every TLS connection the transport opened since the last reset. */
+function tlsCalls(): ConnectionOptions[] {
+  return vi.mocked(tlsConnect).mock.calls.map((call) => call[0] as ConnectionOptions);
+}
 
 /** Drops metadata answers, keeps every other one: the shape of the gate's rule. */
 const dropMetadata: AddressPolicy = (address) => (classifyAddress(address) === "metadata" ? new NetworkGuardError(`${address} is metadata`, { rank: 4 }) : "allow");
@@ -174,6 +187,10 @@ describe("createPinnedFetch", () => {
     await Promise.all([plain, secure, httpProxy, httpsProxy, socks5, socks4].map(close));
   });
 
+  beforeEach(() => {
+    vi.mocked(tlsConnect).mockClear();
+  });
+
   /** A resolver over a table, recording each name it is asked. */
   function resolver(table: Record<string, readonly string[]>) {
     const lookups: string[] = [];
@@ -203,6 +220,8 @@ describe("createPinnedFetch", () => {
     expect(select).toHaveBeenCalledTimes(1);
     expect(select).toHaveBeenCalledWith(["127.0.0.1"]);
     expect(seen.at(-1)).toEqual({ method: "GET", url: "/direct?x=1", host: `pkg.test:${plainPort}` });
+    // Plain http is plain: no TLS connection is opened on the way.
+    expect(tlsCalls()).toEqual([]);
   });
 
   it("connects only to the answers the rule keeps: a public name that also answers metadata is used through its kept answer", async () => {
@@ -231,6 +250,22 @@ describe("createPinnedFetch", () => {
     await expect(createPinnedFetch({ lookup, ca: () => [createTestAuthority("Stranger").caPem] })(`https://pkg.test:${securePort}/secure`, {}, keepAll)).rejects.toThrow();
   });
 
+  it("asks every TLS connection itself to verify the certificate against the name, whatever the process default (§7.4)", async () => {
+    const { lookup } = resolver({ "pkg.test": ["127.0.0.1"], "proxy.test": ["127.0.0.1"] });
+    // To the target: connected by address, the certificate checked against the name.
+    await createPinnedFetch({ lookup, ca: () => [authority.caPem] })(`https://pkg.test:${securePort}/structural`, {}, keepAll);
+    expect(tlsCalls()).toEqual([expect.objectContaining({ host: "pkg.test", servername: "pkg.test", rejectUnauthorized: true })]);
+
+    // To an HTTPS proxy, and through it to the target: each connection carries the setting itself.
+    vi.mocked(tlsConnect).mockClear();
+    const viaProxy = createPinnedFetch({ lookup, ca: () => [authority.caPem], resolveProxy: async () => `HTTPS proxy.test:${httpsProxyPort}` });
+    await viaProxy(`https://pkg.test:${securePort}/structural-tunnel`, {}, keepAll);
+    expect(tlsCalls()).toEqual([
+      expect.objectContaining({ host: "proxy.test", servername: "proxy.test", rejectUnauthorized: true }),
+      expect.objectContaining({ host: "pkg.test", servername: "pkg.test", rejectUnauthorized: true }),
+    ]);
+  });
+
   it("returns a redirect as it is, with no body, for the guard to check the next hop", async () => {
     const { lookup } = resolver({ "pkg.test": ["127.0.0.1"] });
     const response = await createPinnedFetch({ lookup })(`http://pkg.test:${plainPort}/redirect`, {}, keepAll);
@@ -248,6 +283,7 @@ describe("createPinnedFetch", () => {
     expect(proxied.at(-1)).toBe(`http://pkg.test:${plainPort}/through`);
     expect(lookups).toEqual(["proxy.test"]);
     expect(select).not.toHaveBeenCalled();
+    expect(tlsCalls()).toEqual([]);
   });
 
   it("never falls back to DIRECT when the first PAC entry's proxy fails", async () => {
@@ -302,6 +338,16 @@ describe("createPinnedFetch", () => {
     const before = proxied.length;
     await expect(createPinnedFetch({ lookup, resolveProxy: async () => "PROXY proxy.test:8080" })(`http://pkg.test:${plainPort}/x`, {}, keepAll))
       .rejects.toMatchObject({ code: "SOURCE_URL_REJECTED", detail: { reason: "address-metadata", host: "proxy.test", address: "169.254.169.254" } });
+    // A literal proxy is its own one answer, judged the same way; nothing is looked up for it.
+    for (const [pac, reason] of [
+      ["PROXY 169.254.169.254:8080", "address-metadata"],
+      ["PROXY 192.0.2.1:8080", "address-unroutable"],
+      ["HTTPS [fd00:ec2::254]:443", "address-metadata"],
+      ["SOCKS5 [::ffff:169.254.169.254]:1080", "address-metadata"],
+    ] as const) {
+      await expect(createPinnedFetch({ lookup, resolveProxy: async () => pac })(`http://pkg.test:${plainPort}/x`, {}, keepAll)).rejects.toMatchObject({ code: "SOURCE_URL_REJECTED", detail: { reason } });
+    }
+    expect(lookup).toHaveBeenCalledTimes(1);
     await expect(createPinnedFetch({ lookup, resolveProxy: async () => "QUIC proxy.test:443" })(`http://pkg.test:${plainPort}/x`, {}, keepAll))
       .rejects.toMatchObject({ code: "SOURCE_UNREACHABLE", detail: { reason: "proxy" } });
     expect(proxied.length).toBe(before);
