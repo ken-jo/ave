@@ -276,6 +276,10 @@ export class MarketplaceService implements RetirementEntryLookup {
   private readonly lock = new OperationLock();
   /** Set while an operation runs, so its own nested calls neither re-check the policy nor take the lock again. */
   private readonly inOperation = new AsyncLocalStorage<true>();
+  /** The policy refresh now reading or applying; refreshes run one at a time, in order (§12). */
+  private refreshRunning: Promise<void> | null = null;
+  /** The one refresh waiting for the running one, shared by every operation that began meanwhile. */
+  private refreshQueued: Promise<void> | null = null;
 
   constructor(private readonly options: MarketplaceServiceOptions) {
     const now = () => (options.now?.() ?? new Date()).getTime();
@@ -301,27 +305,59 @@ export class MarketplaceService implements RetirementEntryLookup {
   }
 
   /**
-   * Run one operation (§18.6): first compare the policy file with the last
-   * read and, when it changed, apply the new policy while no operation runs;
-   * then run under the shared lock. A call made inside an operation runs as
-   * part of it.
+   * Run one operation (§18.6): first wait for a policy refresh that began
+   * after this operation did, then run under the shared lock with the policy
+   * that refresh left in force. A call made inside an operation runs as part
+   * of it.
    */
   private async operation<T>(fn: () => Promise<T>): Promise<T> {
     if (this.inOperation.getStore()) return fn();
-    if (await this.options.policy.check()) {
-      // The read above only says the file changed. Read it again while no operation runs, so a
-      // check that finished late can never put back a policy a newer one replaced.
-      await this.lock.exclusive(async () => {
-        const fresh = await this.options.policy.check();
-        if (fresh) this.applyPolicy(fresh);
-      });
-    }
+    await this.refreshPolicy();
     return this.lock.shared(() => this.inOperation.run(true, fn));
   }
 
+  /**
+   * A refresh that begins no earlier than now (§12). Refreshes run one at a
+   * time: each reads the file, compares it with the policy in force and, when
+   * it changed, applies it under the exclusive lock before the next begins, so
+   * the latest read is always the last applied and no read can finish out of
+   * order. A refresh already running began before this call and may have read
+   * the file too early, so the caller waits for the next one; every caller
+   * arriving meanwhile shares that one, so overlapping operations cost one
+   * extra read between them and still see a change within it.
+   */
+  private refreshPolicy(): Promise<void> {
+    if (this.refreshQueued) return this.refreshQueued;
+    if (!this.refreshRunning) return this.startRefresh();
+    const queued = this.refreshRunning.then(() => this.startRefresh());
+    this.refreshQueued = queued;
+    return queued;
+  }
+
+  private startRefresh(): Promise<void> {
+    // From here on this refresh is running: a caller arriving now must wait for a later one.
+    this.refreshQueued = null;
+    const running = this.refreshOnce();
+    // The queue moves on whatever this refresh met; its own callers see its failure.
+    const settled = running.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.refreshRunning = settled;
+    void settled.then(() => {
+      if (this.refreshRunning === settled) this.refreshRunning = null;
+    });
+    return running;
+  }
+
+  private async refreshOnce(): Promise<void> {
+    const update = await this.options.policy.check();
+    if (!update) return;
+    await this.lock.exclusive(() => this.applyPolicy(update));
+  }
+
   private applyPolicy(update: PolicyUpdate): void {
-    // A check that began after this read supersedes it; the policy in force stays.
-    if (!this.options.policy.apply(update)) return;
+    this.options.policy.apply(update);
     if (!update.load.ok) this.options.log.warn(`marketplace policy unreadable; only the official source is reachable: ${update.load.error}`);
     // Managed sources, blocks and required installs may all have changed.
     this.options.onCatalogChanged?.();

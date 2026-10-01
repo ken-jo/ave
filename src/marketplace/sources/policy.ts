@@ -334,40 +334,31 @@ export async function loadMarketplacePolicy(path: string = getAdminPolicyPath())
 export interface PolicyUpdate {
   readonly load: PolicyLoad;
   readonly digest: string;
-  /** When the read began, in the source's own order: an update applies only if no check began after it. */
-  readonly sequence: number;
 }
 
 /**
  * Where every part of the marketplace reads the managed policy (design
  * §18.6): the gate, the registry's managed sources and the installers read
  * {@link PolicySource.load} when they need it, so one {@link PolicySource.apply}
- * changes all of them at once. The service checks the file at the start of
- * every operation and, when it changed, reads it again and applies it under
- * its exclusive operation lock.
+ * changes all of them at once. The service refreshes it before every
+ * operation through one queue: one check at a time, its update applied under
+ * the exclusive operation lock before the next check begins (§12). A source
+ * relies on that order and keeps none of its own.
  */
 export interface PolicySource {
   /** The policy in force. */
   readonly load: PolicyLoad;
   /** Names the content `load` came from; a plan made under one digest expires under another. */
   readonly digest: string;
-  /** Read the file again: the update when its content changed, else null. */
+  /** Read the file again: the update when its content differs from the policy in force, else null. */
   check(): Promise<PolicyUpdate | null>;
-  /**
-   * Put an update in force, unless a check began after its read. That later
-   * check saw the file later: when it found a change it carries its own
-   * update, and when it found none the policy in force is already the file's.
-   * Either way the older read is superseded, so a read that finished late
-   * can never put a replaced policy back (§12). Returns whether it took effect.
-   */
-  apply(update: PolicyUpdate): boolean;
+  /** Put the update the last check returned in force. */
+  apply(update: PolicyUpdate): void;
 }
 
 /** The system policy file as a {@link PolicySource}: compared by identity, change times and sha256 at each check. */
 export class FilePolicySource implements PolicySource {
   private current: PolicyRead;
-  /** The number of the latest check begun, whatever it found: every look at the file is an observation. */
-  private reads = 0;
 
   private constructor(private readonly path: string, first: PolicyRead) {
     this.current = first;
@@ -387,25 +378,21 @@ export class FilePolicySource implements PolicySource {
 
   async check(): Promise<PolicyUpdate | null> {
     const base = this.current;
-    const sequence = ++this.reads;
     // Unchanged identity and change times: the file was not written, replaced or re-permissioned since the last read.
     // A file that could not be read is read again each time.
     const readable = !base.digest.startsWith("unreadable:");
     if (readable && base.stat !== "applied" && (await policyStat(this.path)) === base.stat) return null;
     const next = await readPolicy(this.path);
-    if (next.digest === this.current.digest) {
-      // Same content, perhaps touched: nothing to apply. Record the times only if nothing was applied meanwhile.
-      if (this.current === base) this.current = { ...base, stat: next.stat };
+    if (next.digest === base.digest) {
+      // Same content, perhaps touched: nothing to apply; the next check compares against these times.
+      this.current = { ...base, stat: next.stat };
       return null;
     }
-    return { load: next.load, digest: next.digest, sequence };
+    return { load: next.load, digest: next.digest };
   }
 
-  apply(update: PolicyUpdate): boolean {
-    // Superseded: a check began after this read, so this read is not the latest look at the file.
-    if (update.sequence < this.reads) return false;
+  apply(update: PolicyUpdate): void {
     // The next check reads the file again and records its identity and times.
     this.current = { load: update.load, digest: update.digest, stat: "applied" };
-    return true;
   }
 }

@@ -221,7 +221,7 @@ describe("NetworkGate.checkRemote", () => {
     const source = policySource(policy());
     const live = new NetworkGate({ policy: source, allowLoopback: false, transport: fakeTransport({}).transport });
     expect(code(() => live.checkRemote(remote("https://1.1.1.1/acme/market"), OTHER))).toBe("passed");
-    source.apply({ load: policy({ block: [parseSourcePattern("host:1.1.1.1")] }), digest: "next", sequence: 1 });
+    source.apply({ load: policy({ block: [parseSourcePattern("host:1.1.1.1")] }), digest: "next" });
     expect(code(() => live.checkRemote(remote("https://1.1.1.1/acme/market"), OTHER))).toBe("SOURCE_POLICY_BLOCKED");
   });
 });

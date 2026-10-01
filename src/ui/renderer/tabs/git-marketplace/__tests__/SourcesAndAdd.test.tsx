@@ -212,7 +212,7 @@ describe("SourcesView", () => {
 function addDialog(fake: ReturnType<typeof fakeMarketplace>, direct = false) {
   const onAdded = vi.fn();
   const api = { gitMarketplace: fake.market, gitRuntime: fake.gitRuntime, updateSettings: vi.fn(async () => ({ ok: true })) };
-  render(<AddSourceDialog api={api as unknown as Pick<AveApi, "gitMarketplace" | "gitRuntime" | "updateSettings">} open direct={direct} onClose={vi.fn()} onAdded={onAdded} />);
+  render(<AddSourceDialog api={api as unknown as Pick<AveApi, "gitMarketplace" | "gitRuntime" | "updateSettings">} open direct={direct} onClose={vi.fn()} onCommitted={vi.fn()} onAdded={onAdded} />);
   return { onAdded };
 }
 
@@ -633,7 +633,7 @@ describe("confirmations, badges and Allow… (§18.5)", () => {
       .mockImplementationOnce(() => new Promise((resolve) => (answerFirst = resolve)))
       .mockResolvedValue({ ok: true, value: { type: "confirm", warnings: [{ warning: "unencrypted", host: "deep.example", address: null }] } });
     const api = { gitMarketplace: fake.market, gitRuntime: fake.gitRuntime, updateSettings: vi.fn(async () => ({ ok: true })) } as unknown as Pick<AveApi, "gitMarketplace" | "gitRuntime" | "updateSettings">;
-    const dialog = (open: boolean, initialInput = "") => <AddSourceDialog api={api} open={open} initialInput={initialInput} onClose={vi.fn()} onAdded={vi.fn()} />;
+    const dialog = (open: boolean, initialInput = "") => <AddSourceDialog api={api} open={open} initialInput={initialInput} onClose={vi.fn()} onCommitted={vi.fn()} onAdded={vi.fn()} />;
     const { rerender } = render(dialog(true));
 
     await waitFor(() => expect(fake.gitRuntime.status).toHaveBeenCalled());

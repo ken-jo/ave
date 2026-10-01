@@ -1027,101 +1027,159 @@ describe("MarketplaceService", () => {
     expect(await service.previewSource({ input: url, auth: "none" })).toMatchObject({ type: "marketplace" });
   });
 
-  it("never lets a policy check that finished late put back a policy a newer one replaced (§18.6)", async () => {
-    const path = join(root, "ave-policy.json");
-    const write = (marketplaces: unknown) => writeFileSync(path, JSON.stringify({ version: 1, managed: true, marketplaces }));
-    write({});
-    const file = await FilePolicySource.open(path);
-    // The first check after `hold` is set completes its read, then waits until released.
-    let hold: Promise<void> | null = null;
-    let reachedHold: () => void = () => {};
-    const delayed: PolicySource = {
-      get load() {
-        return file.load;
-      },
-      get digest() {
-        return file.digest;
-      },
-      async check() {
-        const update = await file.check();
-        if (hold) {
-          const waiting = hold;
-          hold = null;
-          reachedHold();
-          await waiting;
-        }
-        return update;
-      },
-      apply: (update) => file.apply(update),
-    };
-    await build(delayed);
+  describe("policy refresh under overlapping operations (§12)", () => {
+    const policyPath = () => join(root, "ave-policy.json");
+    const write = (marketplaces: unknown) => writeFileSync(policyPath(), JSON.stringify({ version: 1, managed: true, marketplaces }));
 
-    write({ allowHttpHosts: ["older.example"] });
-    let release: () => void = () => {};
-    hold = new Promise<void>((resolve) => (release = resolve));
-    const reached = new Promise<void>((resolve) => (reachedHold = resolve));
-    const older = service.listSources();
-    await reached;
-    // While the older check is held, the file changes again and another operation applies it.
-    write({ requireHttps: true });
-    await service.listSources();
-    expect(file.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
+    /** The policy file as the service's source; each check is numbered and can be held once it has read the file. */
+    function heldPolicy(file: FilePolicySource) {
+      let checks = 0;
+      const holds = new Map<number, { entered: () => void; wait: Promise<void> }>();
+      const source: PolicySource = {
+        get load() {
+          return file.load;
+        },
+        get digest() {
+          return file.digest;
+        },
+        async check() {
+          const n = ++checks;
+          const update = await file.check();
+          const held = holds.get(n);
+          if (held) {
+            held.entered();
+            await held.wait;
+          }
+          return update;
+        },
+        apply: (update) => file.apply(update),
+      };
+      const hold = (n: number) => {
+        let release: () => void = () => {};
+        let entered: () => void = () => {};
+        const wait = new Promise<void>((resolve) => (release = resolve));
+        const reached = new Promise<void>((resolve) => (entered = resolve));
+        holds.set(n, { entered, wait });
+        return { reached, release };
+      };
+      return { source, hold, checks: () => checks };
+    }
 
-    release();
-    await older;
-    expect(file.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
-  });
+    /** An http preview's outcome; reaching git means the gate let it through under the policy in force. */
+    const preview = () =>
+      service.previewSource({ input: "http://public.example.test/repo", auth: "none", acknowledge: ["unencrypted"] }).then(
+        () => ({ code: "PREVIEWED" }),
+        (error: { code?: string; message: string; detail?: { reason?: string } }) => ({ code: error.code ?? error.message, ...(error.detail?.reason ? { reason: error.detail.reason } : {}) }),
+      );
+    let preflightSpy: { mockRestore(): void } | null = null;
+    afterEach(() => {
+      // The runner outlives this test; put its preflight back.
+      preflightSpy?.mockRestore();
+      preflightSpy = null;
+    });
+    const REACHED_GIT = { code: "reached git" };
+    const HTTPS_REQUIRED = { code: "SOURCE_POLICY_BLOCKED", reason: "https-required" };
 
-  it("keeps a strict policy when a permissive read under the lock finishes after the file went strict again (§12)", async () => {
-    const path = join(root, "ave-policy.json");
-    const write = (marketplaces: unknown) => writeFileSync(path, JSON.stringify({ version: 1, managed: true, marketplaces }));
-    write({ requireHttps: true });
-    const file = await FilePolicySource.open(path);
-    // Checks are counted; the one numbered `holdAt` completes its read, then waits until released.
-    let checks = 0;
-    let holdAt = 0;
-    let release: () => void = () => {};
-    const held = new Promise<void>((resolve) => (release = resolve));
-    const waiters = new Map<number, () => void>();
-    const checked = (n: number) => new Promise<void>((resolve) => waiters.set(n, resolve));
-    const delayed: PolicySource = {
-      get load() {
-        return file.load;
-      },
-      get digest() {
-        return file.digest;
-      },
-      async check() {
-        const n = ++checks;
-        const update = await file.check();
-        waiters.get(n)?.();
-        if (n === holdAt) await held;
-        return update;
-      },
-      apply: (update) => file.apply(update),
-    };
-    await build(delayed);
+    async function start(marketplaces: unknown) {
+      write(marketplaces);
+      const file = await FilePolicySource.open(policyPath());
+      const held = heldPolicy(file);
+      await build(held.source);
+      const preflight = vi.spyOn(git.runner, "preflight").mockRejectedValue(new Error("reached git"));
+      preflightSpy = preflight;
+      return { file, held, preflight };
+    }
 
-    // Permissive on disk: the older operation's first check sees the change, and its re-read under the
-    // exclusive lock reads `requireHttps: false`, then is held before it applies.
-    write({ requireHttps: false });
-    holdAt = checks + 2;
-    const reread = checked(holdAt);
-    const older = service.listSources();
-    await reread;
+    /**
+     * Each refresh is held after its read while the next operation arrives, so every operation
+     * overlaps another's refresh, for `rounds` operations.
+     */
+    async function overlapping(held: ReturnType<typeof heldPolicy>, rounds: number) {
+      let current = held.hold(1);
+      const outcomes = [preview()];
+      await current.reached;
+      for (let n = 2; n <= rounds; n += 1) {
+        const next = held.hold(n);
+        outcomes.push(preview());
+        current.release();
+        await next.reached;
+        current = next;
+      }
+      current.release();
+      return Promise.all(outcomes);
+    }
 
-    // Strict again before the held read applies. A newer operation looks at the file and finds the policy in force.
-    write({ requireHttps: true });
-    const look = checked(checks + 1);
-    const newer = service.listSources();
-    await look;
+    it("runs every operation under the policy on disk while each refresh overlaps the next operation", async () => {
+      const { file, held, preflight } = await start({ requireHttps: false });
+      write({ requireHttps: true });
+      expect(await overlapping(held, 9)).toEqual(Array.from({ length: 9 }, () => HTTPS_REQUIRED));
+      expect(preflight).not.toHaveBeenCalled();
+      expect(file.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
+      expect(catalogChanged).toBe(1);
+    });
 
-    release();
-    await Promise.all([older, newer]);
-    expect(file.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
-    // The next operation agrees with the file on disk.
-    await service.listSources();
-    expect(file.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
+    it.each([
+      ["malformed", () => writeFileSync(policyPath(), "{ not the policy any more")],
+      [
+        "unreadable",
+        () => {
+          // A directory where the file was: present, but not readable as a file, on every platform.
+          rmSync(policyPath());
+          mkdirSync(policyPath());
+        },
+      ],
+    ])("fails every overlapping operation closed when the file turns %s, warning once", async (_case, breakFile) => {
+      const { file, held, preflight } = await start({ requireHttps: false });
+      breakFile();
+      expect(await overlapping(held, 9)).toEqual(Array.from({ length: 9 }, () => ({ code: "SOURCE_POLICY_BLOCKED", reason: "policy-invalid" })));
+      expect(preflight).not.toHaveBeenCalled();
+      expect(file.load.ok).toBe(false);
+      expect(warnings.filter((message) => message.startsWith("marketplace policy unreadable"))).toHaveLength(1);
+      expect(catalogChanged).toBe(1);
+    });
+
+    it("runs an operation that began after the file went strict again under the strict policy, though an older refresh read it permissive", async () => {
+      const { file, held, preflight } = await start({ requireHttps: true });
+      write({ requireHttps: false });
+      const first = held.hold(1);
+      const older = preview();
+      await first.reached;
+      // Strict again before the held read applies; this operation began after that read, so it waits for the next.
+      write({ requireHttps: true });
+      const newer = preview();
+      first.release();
+      // The older operation began before the file went strict again and runs under what its refresh read.
+      expect(await older).toEqual(REACHED_GIT);
+      expect(await newer).toEqual(HTTPS_REQUIRED);
+      expect(preflight).toHaveBeenCalledTimes(1);
+      expect(file.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
+      expect(held.checks()).toBe(2);
+    });
+
+    it("sees a change within the one refresh queued behind the running one, however many operations keep arriving", async () => {
+      const { held, preflight } = await start({ requireHttps: false });
+      const first = held.hold(1);
+      const early = preview();
+      await first.reached;
+      // Changed while the first refresh runs: everything arriving now shares one queued refresh.
+      write({ requireHttps: true });
+      const second = held.hold(2);
+      const during = [preview(), preview(), preview(), preview()];
+      first.release();
+      await second.reached;
+      // Arriving while that one runs: one more queued refresh between them.
+      const third = held.hold(3);
+      const later = [preview(), preview(), preview(), preview()];
+      second.release();
+      await third.reached;
+      third.release();
+
+      expect(await early).toEqual(REACHED_GIT);
+      expect(await Promise.all(during)).toEqual(Array.from({ length: 4 }, () => HTTPS_REQUIRED));
+      expect(await Promise.all(later)).toEqual(Array.from({ length: 4 }, () => HTTPS_REQUIRED));
+      expect(preflight).toHaveBeenCalledTimes(1);
+      expect(held.checks()).toBe(3);
+    });
   });
 
   it("stores a token under its normalized host and refuses one that spans lines", async () => {

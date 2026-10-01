@@ -316,10 +316,9 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
     void loadCatalog();
   };
 
+  /** An add the dialog still shows finished: close it and, for a single package, open the package. */
   const onAdded = (source: SourceView, preview: SourcePreviewView) => {
     setAddOpen(null);
-    void loadSources();
-    void loadCatalog();
     if (preview.type === "package") {
       setSheet({ key: { sourceId: source.id, kind: preview.kind, name: preview.name }, mode: "detail" });
     }
@@ -622,6 +621,10 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
           setAddOpen(null);
           setAddInput("");
           setAddRefusal(null);
+        }}
+        onCommitted={() => {
+          void loadSources();
+          void loadCatalog();
         }}
         onAdded={(source, preview) => {
           setAddInput("");

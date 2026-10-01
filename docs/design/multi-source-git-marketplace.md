@@ -1642,17 +1642,24 @@ files is a device-management action).
     times, inode and device with the last read. A permission change or a
     file renamed into place therefore counts as a change. When they differ,
     it reads the file and compares the sha256 of the content.
-  - A changed policy is read again and applied under the service's
-    exclusive operation lock. It takes effect in the gate, the registry's
-    managed sources and filters, and the installers at once, so no operation
-    sees a mixed policy.
-  - Policy generations only move forward. Each check is numbered when it
-    begins, whether or not it finds a change, and an update applies only if
-    no check began after its read. A later check that found a change carries
-    its own update; one that found none saw the policy in force already
-    matching the file. A check that finished late can therefore never put
-    back a policy that a newer one replaced, including when the file
-    returned to the policy in force in between.
+  - A changed policy is applied under the service's exclusive operation
+    lock. It takes effect in the gate, the registry's managed sources and
+    filters, and the installers at once, so no operation sees a mixed
+    policy.
+  - Refreshes run through one queue, one at a time. Each one reads the
+    file, compares it and, if it changed, applies it before the next one
+    begins. The latest read is therefore always the last applied, and no
+    read can finish out of order.
+  - Every operation waits for a refresh that began no earlier than the
+    operation itself, then runs under the policy that refresh left in
+    force.
+    - A refresh already running may have read the file too early. The
+      operation waits for the next refresh instead.
+    - Every operation arriving meanwhile shares that one queued refresh.
+      Operations that keep overlapping therefore cost one extra read
+      between them, and they still see a change within it.
+  - A malformed or unreadable file is applied fail-closed with its warning,
+    exactly as a single read would apply it.
   - A plan records the digest of the policy it was made under. Executing it
     under another digest fails `PLAN_EXPIRED` reason `policy-changed`, and
     the sheet offers *Review again*.
@@ -1962,7 +1969,10 @@ confirmations given. Each answer belongs to the fields as they were when it
 was asked: an edit, a newer check or reopening the dialog drops any answer
 still on its way, so a late warning for an earlier address is never shown or
 confirmed for the new one. Opening or closing the dialog also ends the wait
-for that answer, so a reopened dialog can check its address at once.
+for that answer, so a reopened dialog can check its address at once. An
+add that finishes after its dialog was closed, or reopened for another
+address, still refreshes the source lists, but it neither closes the dialog
+now showing nor opens a package sheet.
 
 Step 2 (preview):
 - marketplace name, owner, commit, and counts per kind;
@@ -2169,7 +2179,7 @@ The tests of §18's slices are listed with each slice of §18.10.
 | Sync | local bare repos: fast-forward with the pin far behind the tip, rewrite (official and managed refuse, custom review), invalid index keeps pin, mirror fallback, a hidden source with installed packages still syncs |
 | Network gate | normalization equivalences (scp/ssh/https, case, `.git`); `<helper>::` transports and credentials in a URL refused; block beats allow; `requireHttps` and `blockPrivateNetworks` block acknowledged sources; each address class for entered and catalog-supplied targets (`198.18.0.0/15` is internal, metadata is refused for a listed host, a loopback download on another port is refused, `internal-network` does not imply `internal-downloads`, a listing never implies `token-unencrypted`); redirect to a blocked host refused; no auth header across hosts |
 | Connection binding (§7.4) | `pinned-fetch.test.ts` against real local servers: one lookup per hop, a connection to the checked answer only, a metadata answer dropped, each PAC kind (`PROXY` with an http and an https target, `HTTPS`, `SOCKS5`, `SOCKS4`, an unknown kind failing `proxy`), no fallback to `DIRECT`, literal metadata and unroutable proxies refused without a lookup, certificate checks against the name, every TLS connection (target and `HTTPS` proxy) asking for verification and the hostname itself, and no TLS connection for a plain http request; `network-gate.test.ts`: a sign-in never carried onto an http hop, even to the host the https request went to; `run-git.test.ts` also: literal proxies refused before git starts (IPv4, IPv6, mapped, NAT64), and one PAC answer per call configuring and binding the same route; `trusted-proxy.test.ts` pins the proxy boundary; `run-git.test.ts`: the `http.curloptResolve` pin, no git started when only refused answers remain, no credential over http without `token-unencrypted` (a stored token on a listed host included), and end to end from the gate's verdict: an http source asked for before any lookup, reached only at its checked address with `unencrypted`, signed in only with `token-unencrypted` too; `ssh-preflight.test.ts`: the preflight before git, any refused answer fails, no lookup behind `proxyjump`, and the stated residual |
-| Confirmations and policy refresh | `service.test.ts`: a preview that needs a confirmation answers `confirm` with no git command and no lookup; *Add* stores exactly the carried confirmations; a host whose lookup finds an internal address asks, and *Allow…* syncs it; rewriting the policy file blocks the next preview and expires an existing plan with `policy-changed`; an invalid file, then a fixed one, goes official-only and back; a check that finished late never puts back a replaced policy, nor a permissive read held under the lock while the file went strict again; `policy.test.ts`: an older read never replaces a newer one, nor one superseded by a later check that found nothing new, a same-size same-mtime rewrite and a permission change are noticed, an http `additional` source is its own listing; `registry.test.ts`: confirmations are dropped when a managed entry or `sources.json` points the source at another address; `network-gate.test.ts`: listing `127.0.0.1` lets no other catalog reach another local port; UI: a late preview answer is dropped after an edit, a dialog reopened during a check can check at once, and Allow… for sign-in over http states the credential risk |
+| Confirmations and policy refresh | `service.test.ts`: a preview that needs a confirmation answers `confirm` with no git command and no lookup; *Add* stores exactly the carried confirmations; a host whose lookup finds an internal address asks, and *Allow…* syncs it; rewriting the policy file blocks the next preview and expires an existing plan with `policy-changed`; an invalid file, then a fixed one, goes official-only and back; with every refresh overlapping the next operation, each operation runs under the policy on disk (strict: no git preflight) and a malformed or unreadable file fails all of them closed with one warning; an operation that began after the file went strict again runs strict though an older refresh read it permissive; operations that keep arriving see a change within the one queued refresh; `policy.test.ts`: a same-size same-mtime rewrite and a permission change are noticed, an http `additional` source is its own listing; `registry.test.ts`: confirmations are dropped when a managed entry or `sources.json` points the source at another address; `network-gate.test.ts`: listing `127.0.0.1` lets no other catalog reach another local port; UI: a late preview answer is dropped after an edit, a dialog reopened during a check can check at once, an earlier add that finishes leaves a dialog reopened for another address open (the lists still refresh), and Allow… for sign-in over http states the credential risk |
 | No privileges | a custom package with the same name as a granted plugin gets no grant; a grant fails for a different artifact hash, for a tree-rung install and for a swapped manifest; a legacy entry keeps the grant only with a matching receipt hash; a source's revocation ignores other sources' packages; no package can block its own uninstall; a manifest carrying `installPolicy` is rejected at install |
 | Default and required installs | default: installed once through the ladder, never reinstalled after uninstall; required: reinstalled and updated at boot, uninstall and disable denied with `PACKAGE_REQUIRED_BY_POLICY`, becomes a user install when the entry is removed; both lists limited to official/managed sources; migration marks former admin installs as applied and unlocks unmatched entries |
 | Identity | reserved names, same `(kind, name)` across sources, `PACKAGE_ID_CONFLICT`, update binding, source switch keeps plugin data |

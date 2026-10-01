@@ -33,11 +33,16 @@ export interface AddSourceDialogProps {
   /** Why a deep link filled nothing in (§18.3 #7), shown when the dialog opens. */
   initialFailure?: GitMarketplaceFailure | null;
   onClose: () => void;
-  /** The source was added; for a single package, the caller opens it. */
+  /**
+   * A source was added, whether or not this dialog still shows the request that added it (it may
+   * have been closed, or reopened for another address since): the caller refreshes what lists sources.
+   */
+  onCommitted: (source: SourceView) => void;
+  /** The add this dialog shows finished: the caller closes the dialog and, for a single package, opens it. */
   onAdded: (source: SourceView, preview: SourcePreviewView) => void;
 }
 
-export function AddSourceDialog({ api, open, direct = false, initialInput = "", initialFailure = null, onClose, onAdded }: AddSourceDialogProps) {
+export function AddSourceDialog({ api, open, direct = false, initialInput = "", initialFailure = null, onClose, onCommitted, onAdded }: AddSourceDialogProps) {
   const { t } = useTranslation();
   const [gitReady, setGitReady] = useState<boolean | null>(null);
   const [input, setInput] = useState("");
@@ -138,9 +143,12 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
     setFailure(null);
     try {
       const result = await api.gitMarketplace.addSource({ previewId: preview.previewId, ...(id.trim() ? { id: id.trim() } : {}) });
-      // The add happened either way, so the caller hears of it; a failure belongs to the dialog that asked.
+      // The add happened either way, so the lists refresh; closing the dialog and opening the package
+      // belong to the dialog that asked, as a failure does. A reopened dialog is another request.
+      if (result.ok) onCommitted(result.value);
+      if (mine !== generation.current) return;
       if (result.ok) onAdded(result.value, preview);
-      else if (mine === generation.current) setFailure(result);
+      else setFailure(result);
     } finally {
       if (mine === generation.current) setBusy(false);
     }

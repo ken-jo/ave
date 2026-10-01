@@ -18,7 +18,7 @@ export class TestPolicySource implements PolicySource {
   private generation = 0;
 
   constructor(load: PolicyLoad = policyLoad()) {
-    this.current = { load, digest: "fixture-0", sequence: 0 };
+    this.current = { load, digest: "fixture-0" };
   }
 
   get load(): PolicyLoad {
@@ -34,17 +34,14 @@ export class TestPolicySource implements PolicySource {
   }
 
   async check(): Promise<PolicyUpdate | null> {
-    // Every check is an observation, as in FilePolicySource: one that finds nothing still supersedes older reads.
-    this.generation += 1;
     if (this.pending === null) return null;
-    return { load: this.pending, digest: `fixture-${this.generation}`, sequence: this.generation };
+    this.generation += 1;
+    return { load: this.pending, digest: `fixture-${this.generation}` };
   }
 
-  apply(update: PolicyUpdate): boolean {
-    if (update.sequence < this.generation) return false;
+  apply(update: PolicyUpdate): void {
     this.current = update;
     this.pending = null;
-    return true;
   }
 }
 

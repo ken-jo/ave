@@ -518,6 +518,55 @@ describe("GitMarketplaceTab deep links", () => {
     expect(fake.market.uninstall).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["while the dialog stays open", false],
+    ["after Cancel", true],
+  ])("keeps a dialog opened for another address when an earlier add finishes (%s), and still refreshes the sources", async (_order, cancelFirst) => {
+    const fake = fakeMarketplace({ sources: [team], deepLink: { action: "add", url: "https://github.com/acme/first" } });
+    fake.market.previewSource.mockResolvedValue({
+      ok: true,
+      value: {
+        type: "marketplace",
+        previewId: "preview-first",
+        expiresAt: new Date(Date.now() + 600_000).toISOString(),
+        url: "https://github.com/acme/first.git",
+        badges: [],
+        ref: null,
+        commit: COMMIT_A,
+        marketplace: { name: "first", displayName: "First tools", description: null, owner: "acme" },
+        counts: { skill: 1 },
+        codeRunning: 0,
+        diagnostics: [],
+        credentialHelper: false,
+        suggestedId: "first",
+      },
+    });
+    let finishFirst: (value: unknown) => void = () => {};
+    fake.market.addSource.mockImplementationOnce(() => new Promise((resolve) => (finishFirst = resolve)));
+    renderTab(fake);
+
+    await screen.findByTestId("git-marketplace:add:url");
+    await waitFor(() => expect(screen.getByTestId("git-marketplace:add:check")).toBeEnabled());
+    fireEvent.click(screen.getByTestId("git-marketplace:add:check"));
+    fireEvent.click(await screen.findByTestId("git-marketplace:add:confirm"));
+    await waitFor(() => expect(fake.market.addSource).toHaveBeenCalledTimes(1));
+
+    if (cancelFirst) {
+      fireEvent.keyDown(screen.getByTestId("git-marketplace:add"), { key: "Escape" });
+      await waitFor(() => expect(screen.queryByTestId("git-marketplace:add")).toBeNull());
+    }
+    fake.deliverDeepLink({ action: "add", url: "https://github.com/acme/second" });
+    await waitFor(() => expect(screen.getByTestId<HTMLInputElement>("git-marketplace:add:url").value).toBe("https://github.com/acme/second"));
+    const listed = fake.market.listSources.mock.calls.length;
+
+    // The first add finishes: the source lists refresh, and the dialog for the second address stays as it is.
+    await act(async () => finishFirst({ ok: true, value: source({ id: "first", label: "First tools" }) }));
+    await waitFor(() => expect(fake.market.listSources.mock.calls.length).toBeGreaterThan(listed));
+    expect(screen.getByTestId("git-marketplace:add")).toBeInTheDocument();
+    expect(screen.getByTestId<HTMLInputElement>("git-marketplace:add:url").value).toBe("https://github.com/acme/second");
+    expect(screen.queryByTestId("git-marketplace:sheet")).toBeNull();
+  });
+
   it("opens the Add dialog with an add link's address filled in, unchecked, and takes the next link's address", async () => {
     const fake = fakeMarketplace({ sources: [team], deepLink: { action: "add", url: "https://github.com/acme/tools" } });
     renderTab(fake);
