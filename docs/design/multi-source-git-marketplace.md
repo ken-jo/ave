@@ -2,7 +2,9 @@
 
 > Status: **Implemented** (2026-09-25); the public release and the server's
 > retirement remain. Where the shipped code differs from this
-> page, §13.1 and §16.4 say how.
+> page, §13.1 and §16.4 say how. §18 designs the 0.13.0 change: plain http
+> and local folder sources, address warnings instead of refusals, and
+> automatic updates.
 > Architecture: [../architecture/proposals/multi-source-git-marketplace.md](../architecture/proposals/multi-source-git-marketplace.md) ·
 > Blueprint: [../blueprints/multi-source-git-marketplace.md](../blueprints/multi-source-git-marketplace.md) ·
 > Mockup: [multi-source-git-marketplace.html](./multi-source-git-marketplace.html) ·
@@ -20,7 +22,7 @@
 | **Marketplace repository** | A source whose root has `marketplace.json`, or that follows the conventional layout (§3.3). |
 | **Package** | One installable unit: `plugin`, `mcp`, `skill`, `agent`, `theme`, `font`, `language`, `provider`, `messaging-connection`. |
 | **Descriptor** | `ave-package.json` in a package directory: kind, name, version, minimum app version, declared authority, payload. |
-| **Pin** | The commit SHA a source is currently read at. |
+| **Pin** | The commit SHA a source is currently read at; for a local folder source, its content revision (§18.4.3). |
 | **Snapshot** | The parsed, validated catalog of one source at one pin. Immutable. |
 | **Install plan** | What the resolver will do for one package version, bound to one snapshot commit: artifact rungs, files, launcher, required consent. |
 | **Rung** | One step of the plugin artifact ladder: `release`, `archive`, `tree`. |
@@ -61,7 +63,7 @@ interface SourcesFile {
 interface SourceEntry {
   id: string;                 // ^[a-z0-9][a-z0-9-]{1,62}$, reserved names rejected (§5.1)
   origin: "custom" | "direct";
-  url: string;                // stored in normalized form (§7.1); http only for policy-listed hosts
+  url: string;                // stored in normalized form (§7.1); http only for policy-listed hosts (0.13.0: §18.2; a folder has `path` instead, §18.4.4)
   ref?: string;               // branch or tag; default = remote HEAD
   subdir?: string;            // direct sources only: package path inside the repo
   auth: { kind: "none" } | { kind: "token"; host: string } | { kind: "ssh" };
@@ -788,7 +790,8 @@ string:
 - host: lowercase, IDNA to ASCII, default port removed.
 - path: percent-encoding normalized, trailing `/` and `.git` removed.
 - rejected: `file:`, `ext::`, any other scheme, credentials in the URL, query
-  and fragment.
+  and fragment. From 0.13.0 a `file:` URL or a path is a local folder
+  (§18.4.1), and the refusals are §18.3's.
 
 Policy allow/block matching (§12), reserved-name checks, token lookup and
 duplicate detection all use the normalized form. Repository identity in those
@@ -800,7 +803,8 @@ port (§12).
 1. **Normalize** the input (§7.1) and apply the network gate (§7.4). Plain
    `http://` is accepted only for a host listed in
    `marketplaces.allowHttpHosts`; dev/test builds may also allow loopback, as
-   `cloudAllowPrivateNetwork` does today.
+   `cloudAllowPrivateNetwork` does today. From 0.13.0 http and non-public
+   targets are warnings confirmed before any traffic (§18.2.2, §18.5).
 2. **Probe** with `git ls-remote`. Auth failure returns `SOURCE_AUTH_REQUIRED`
    and the dialog asks for a token; an unknown SSH host key returns
    `SOURCE_SSH_HOST_UNKNOWN`; a missing ref returns `SOURCE_REF_NOT_FOUND`.
@@ -826,7 +830,9 @@ while running, and manually. The setting keeps its key and its `0` = no
 periodic sync meaning, but a tick now fetches every source, so the code
 default changes from today's 10 minutes to 6 hours and a stored value below
 15 minutes is raised to 15 minutes when read. The setting is optional and
-unset by default, so no stored value needs migrating. A source syncs while it is
+unset by default, so no stored value needs migrating. From 0.13.0 this tick
+is the discovery of §18.7.1, still every 6 hours, and the automatic update
+apply check runs at boot and once a day. A source syncs while it is
 enabled **or** while any installed package is bound to it, so revocations and
 update notices keep reaching installed packages from a hidden source.
 
@@ -874,7 +880,8 @@ archive URLs, and the service endpoint — goes through one gate:
    (moved to a shared module when that file is deleted): loopback,
    link-local, private and metadata addresses are refused unless the host is
    policy-listed or a dev build allows loopback. A NAT64 address
-   (`64:ff9b::/96`) is judged by the IPv4 address it embeds;
+   (`64:ff9b::/96`) is judged by the IPv4 address it embeds. From 0.13.0 the
+   address classes and outcomes of §18.2 replace this step;
 4. git never follows redirects (`http.followRedirects=false`); HTTPS
    downloads follow a redirect only after re-running this gate on the new
    URL, and never forward auth headers to a different host.
@@ -1411,6 +1418,8 @@ files is a device-management action).
   cannot remove or hide them and their history rule is the official one.
 - `defaultInstalls` and `requiredInstalls` follow §10.2 and may name official
   and managed sources only. A key in both lists is treated as required.
+- 0.13.0 adds `requireHttps`, `blockPrivateNetworks`, `allowLocalSources`,
+  `autoUpdate`, `path:` patterns and `additional[].path` (§18.6).
 
 ## 13. IPC contract
 
@@ -1446,7 +1455,8 @@ Events: `marketplace:sync-progress`, `marketplace:catalog-changed`,
 All channels are host-renderer only (`validateHostRendererSender`) and
 audited as today. `ave:git:runtime:install` also requires a live keyboard
 gesture: it downloads a binary the marketplace then runs. `planId` and `previewId` are single use and expire after 10
-minutes (`PLAN_EXPIRED`). Disposition of today's channels is in §16.2.
+minutes (`PLAN_EXPIRED`). Disposition of today's channels is in §16.2. The
+0.13.0 channels and the envelope's `detail` are in §18.9.
 
 ### 13.1 As built
 
@@ -1534,10 +1544,15 @@ wins:
 | `NO_INSTALLABLE_ARTIFACT` | every rung skipped or failed (`SOURCE_AUTH_REQUIRED` instead when every failed rung needed sign-in) | `marketplace.error.noArtifact` |
 | `CONTENT_RULE_VIOLATION` | content kind file rules | `marketplace.error.contentRule` |
 
+0.13.0 adds `SOURCE_CONFIRMATION_REQUIRED` and `SOURCE_LOCAL_UNREADABLE`, a
+`detail` with a reason on every code, and a sentence for every code and
+reason (§18.8).
+
 ## 15. UI specification
 
 The mockup shows every state below. Settings → Marketplace becomes the in-app
-store (the web store is gone).
+store (the web store is gone). 0.13.0 adds folder rows, warning badges and
+the Updates card (§18.4.8, §18.5, §18.9).
 
 ### 15.1 Browse
 
@@ -1781,6 +1796,8 @@ Where the sections above and the shipped code differ, the code wins:
 
 ## 17. Test plan
 
+The 0.13.0 tests are listed with each slice of §18.10.
+
 | Layer | What proves it |
 |---|---|
 | Schemas | fixture sets for every kind: valid, each invalid rule, unknown keys; a manifest with `installPolicy` is rejected by name at install and in the index CI; an installed legacy manifest with it loads with one warning |
@@ -1795,3 +1812,1971 @@ Where the sections above and the shipped code differ, the code wins:
 | Direct install | each detection branch; `server.json` mapping for npm/pypi/oci/remote |
 | Service | `former-service.json` parsing, `movedTo` with and without `movedFrom`, reset on build-constant change, policy override, announcements parity, label fallback |
 | E2E | packaged dev build (loopback allowed by the dev flag) adds a local-HTTP git marketplace, installs one package of each kind, updates, removes the source |
+
+## 18. Source acceptance, local folders and automatic updates (0.13.0)
+
+> Status: **Designed** 2026-10-01 for app release 0.13.0; not built. Where
+> this section and an earlier one disagree, the earlier section describes
+> 0.12.x and this section the 0.13.0 target. Each slice of §18.10 rewrites
+> the owning section in the same change and removes its pointer here. Code is
+> cited at `e10c823e2`.
+
+### 18.1 Owner decisions (2026-09-28, closed)
+
+1. Plain `http://` git sources and local folders are accepted, as
+   marketplaces and as direct packages, so that no ordinary way of hosting a
+   marketplace leaves the user asking why it does not work.
+2. The address guard warns instead of refusing, except where no decision by
+   the user can make a target safe (§18.3).
+3. Installed packages update automatically. The app checks for updates at
+   boot and once a day.
+4. Consent is never bypassed: an update that changes what runs, or what it may
+   reach, waits for the user.
+5. Administrators keep the strict behaviour through managed policy (§18.6).
+
+### 18.2 Outcomes, and who chose the target
+
+| Outcome | Meaning | Who can change it | UI tone |
+|---|---|---|---|
+| **Accept** | proceed | — | none |
+| **Warn** | proceed after one confirmation, stored on the source and shown as a badge while it applies (§18.5) | the user | amber; *Continue* / *Cancel* |
+| **Refuse** | never done; no confirmation exists (§18.3) | an app release | red; no *Continue* |
+| **Policy block** | the system policy file forbids it (§18.6) | the administrator | lock glyph, "Set by your organization"; no *Continue* |
+
+- **Entered** targets: what the user typed, pasted or picked (Add dialog,
+  *Install from Git URL or folder…*, a deep link once the dialog shows it),
+  plus the official source's build constant and a managed source's policy
+  entry.
+- **Catalog-supplied** targets: what a marketplace's files name —
+  `artifact.release.url`, `artifact.archive.url`, the derived release URL of
+  §6.2 — and every redirect hop of a download. A third party wrote them and
+  the user does not see them before the request.
+
+#### 18.2.1 Address classes
+
+One new function, `classifyAddress(address)`, exported from
+`src/core/network-guard.ts` beside `isGloballyRoutableAddress` (`:257`),
+classifies each address. A name that resolves to several addresses takes the
+most restrictive class for warnings; which answers may be connected to is
+§18.2.4's rule. IPv4-mapped IPv6 and NAT64 (`64:ff9b::/96`) take the class of
+the embedded IPv4 address, as today.
+
+| Class | Addresses |
+|---|---|
+| `public` | `isGloballyRoutableAddress` is true |
+| `internal` | `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`, `100.64.0.0/10`, and `198.18.0.0/15` (fake-IP proxy tools answer every name from this block) — minus the two metadata addresses below |
+| `this-computer` | `127.0.0.0/8`, `::1`, `0.0.0.0/8`, `::` |
+| `metadata` | `169.254.0.0/16`, `fe80::/10`, `fd00:ec2::254`, `100.100.100.200` |
+| `unroutable` | every other special-purpose block of `network-guard.ts:116-150` (documentation, multicast, reserved, broadcast, protocol assignments) |
+
+`fetchPublicHttpResponse` (`network-guard.ts:415`) gains an optional
+`addressPolicy(address, hop) => "allow" | NetworkGuardError` that replaces its
+three `allow*` axes for that call. Only the marketplace gate passes it; every
+other caller keeps today's behaviour.
+
+#### 18.2.2 Entered targets
+
+| Target | Outcome |
+|---|---|
+| `https` or `ssh`, `public` | accept |
+| `internal` | warn `internal-network` |
+| `this-computer` | warn `this-computer` |
+| scheme `http` | warn `unencrypted`, in addition to the address class |
+| `http` with token sign-in, or with an OS credential helper that answers for the host (§9.3) | warn `token-unencrypted`, in addition |
+| network folder (§18.4.1 step 3) | warn `network-folder` |
+| `metadata`, `unroutable` | refuse (§18.3) |
+
+- A host the policy lists (`allowHttpHosts`, an `allow` pattern, an
+  `additional` source; §12) is accepted without the `unencrypted`,
+  `internal-network` and `this-computer` warnings. `metadata` stays refused
+  for it, as §12 already says. **`token-unencrypted` is never implied by a
+  listing**: the policy authorizes the transport, not sending the user's
+  credentials over it.
+- An unpackaged build started with `AVE_DEV=1` accepts `this-computer`, and
+  plain http to it, without a warning (§16.4), so E2E fixtures need no
+  confirmation for the source itself. `unencrypted-updates` (§18.7.2) is not
+  exempted.
+- **Credentials over http**, one rule for every source origin, managed
+  included:
+  - Askpass (§9.3) answers for an `http` remote only when the source holds
+    `token-unencrypted`.
+  - Every call on an `http` remote without it carries `-c credential.helper=`,
+    so an OS helper never sends a stored password in the clear.
+  - A stored token on an http source without it is not offered; the sync
+    fails `SOURCE_AUTH_REQUIRED` reason `token-unencrypted`, and the row
+    offers *Allow…* for that warning.
+  - *Set token* on an http source asks for `token-unencrypted` before it
+    stores the token.
+  - The preview of an http source that answers 401 asks for
+    `token-unencrypted` before any credential is sent.
+
+#### 18.2.3 Catalog-supplied targets
+
+| Target | Outcome |
+|---|---|
+| `public`, `https` | accept |
+| `public`, `http` | accept; the Delivery row (§15.2) says "unencrypted download — verified by the pinned sha256". The pin comes from the source over the source's own transport, and a rung without a pin is skipped (§6.2) |
+| the source's own host (same normalized host; for `this-computer` also the same port; an ssh source's derived `https://<host>` counts) | inherits the source's confirmations |
+| `internal`, another host | accept only when the source holds `internal-downloads`; otherwise the rung fails with `SOURCE_CONFIRMATION_REQUIRED` naming the host, and the Sources row offers *Allow internal downloads*. `internal-network` does **not** imply it: confirming that a source is an expected internal server says nothing about the other hosts its catalog may name |
+| `this-computer`, another host or port | refuse (§18.3 #4) |
+| `metadata`, `unroutable` | refuse (§18.3) |
+
+Rung semantics are unchanged (§6.2): a failed rung is recorded and the ladder
+moves on.
+
+#### 18.2.4 Binding the check to the connection
+
+A refusal or policy block that depends on the resolved address (§18.3 #3 and
+#4, `blockPrivateNetworks`) is enforced on the address the connection
+actually uses. Enforcement on the connected address applies to the
+transports Ave owns (downloads, git over http/https). For SSH it is a
+preflight check only (git over ssh, below). Today the check and the
+connection are separate: `ensurePublicHttpUrl` resolves, then
+`fetchPublicHttpResponse` hands the hostname to the Chromium transport
+(`network-guard.ts:435-455`, `boot/steps/desktop-network-fetch.ts:79`), and
+git resolves the remote itself, so a name that answers a public address to
+the check and a loopback or metadata address to the connection passes.
+Warnings are advisory and may stay checked at add time; refusals and policy
+blocks may not.
+
+- **One lookup per connection.** Each connection Ave owns resolves the
+  host once with `dns.lookup(host, { all: true, verbatim: true })`, classifies
+  every answer, drops the answers a refusal or policy block forbids, and
+  connects only to the remaining answers. No answer left → the refusal of the
+  most restrictive dropped class. A remaining answer whose class needs a
+  confirmation the source lacks → `SOURCE_CONFIRMATION_REQUIRED` (§18.5).
+- **http downloads** (`MarketplaceNetworkGate.fetch`,
+  `network-gate.ts:138-172`). The Chromium transport has no hook between
+  resolution and connection, so marketplace downloads move to a new pinned
+  transport, `src/marketplace/net/pinned-fetch.ts`, built on the host's
+  existing pinned-connection pattern, `createA2AStrictTransport`
+  (`src/api/a2a-remote-transport.ts:74-232`). It resolves once, checks every
+  answer (`:102-106`), connects with a `lookup` that returns only the chosen
+  answer and fails a second call (`:135-142`), and keeps the hostname for SNI
+  and certificate checks (`servername`, `:131`). Its trust store is
+  `tls.getCACertificates("default")` plus `tls.getCACertificates("system")`,
+  so a company root installed in the OS store keeps working (§9.2). Electron
+  44 ships Node 24.20.0, which has both. Each redirect hop is a new
+  connection with its own lookup and checks.
+- **Proxies on the transports Ave owns are trusted beyond their socket.**
+  When PAC routes a download or a git http(s) connection through an http(s)
+  or SOCKS proxy, local or remote, Ave owns the socket to the proxy: it
+  checks the proxy's own address, connects only to it, and **trusts the
+  proxy to enforce destination restrictions** beyond it. Ave does not see
+  the address the proxy connects to. A proxy on this computer
+  (`PROXY 127.0.0.1:8080`) connects from this computer, so a catalog-chosen
+  name it resolves to loopback or to the metadata endpoint reaches those
+  targets. The refusals and blocks that depend on the resolved address
+  (§18.3 #3 and #4, `blockPrivateNetworks`) hold for direct connections and
+  for proxies that resolve locally, and not beyond a proxy that resolves
+  the target itself. This is the stated boundary.
+- **ssh `ProxyCommand` and `ProxyJump`** are executed by ssh. Ave neither
+  inspects nor binds them: it does not check the command, the jump host or
+  their addresses, and it does not see where they connect. They are trusted
+  like any program the user configured. There is no first-hop guarantee.
+- **Proxies for downloads.** The route comes from the session's
+  `resolveProxy(url)`, the resolver git already uses (`run-git.ts:199-211`).
+  Only its first entry is used: a fallback to `DIRECT` is never taken
+  silently. The proxy host is resolved and checked as above (`metadata` and
+  `unroutable` refused; `internal` and `this-computer` accepted, because the
+  system configuration chose them). The transport supports the kinds the
+  host already maps for subprocesses (`PROXY`, `HTTPS`, `SOCKS5`,
+  `src/shared/pac-proxy.ts:14-16`), plus `SOCKS`/`SOCKS4`, which git already
+  accepts (`run-git.ts:205-208`):
+
+  | PAC kind | Connection Ave makes and checks | Target resolution | TLS to an https target |
+  |---|---|---|---|
+  | `DIRECT` | the target's checked answer, pinned | this computer, checked | end to end, `servername` = target host |
+  | `PROXY host:port` | TCP to the checked proxy address; `CONNECT host:port` for https, an absolute-form request for http | the proxy (trusted) | inside the `CONNECT` tunnel, `servername` = target host, verified with the same CA set |
+  | `HTTPS host:port` | TLS to the checked proxy address (`servername` = proxy host, same CA set), then as `PROXY` inside it | the proxy (trusted) | a second TLS session inside the tunnel, `servername` = target host |
+  | `SOCKS5 host:port` | TCP to the checked proxy address; SOCKS5 `CONNECT` with the domain-name address type | the proxy (trusted) | inside the tunnel, `servername` = target host |
+  | `SOCKS host:port`, `SOCKS4 host:port` | TCP to the checked proxy address; SOCKS4 `CONNECT` carrying the target's checked IPv4 answer (SOCKS4 carries only an IPv4 address) | this computer, checked and pinned; no IPv4 answer → `SOURCE_UNREACHABLE` reason `dns` | inside the tunnel, `servername` = target host |
+
+  Any other kind (one only Chromium's own stack speaks, such as `QUIC`) fails
+  `SOURCE_UNREACHABLE` reason `proxy`, with the PAC entry in the detail. The
+  0.12 download transport reached those through Chromium; the message says
+  what to ask IT for. git refuses the kinds it cannot map in the same way
+  (`run-git.ts:210`).
+- **git over http(s).** `run-git.ts:156-171` adds
+  `-c http.curloptResolve=<host>:<port>:<address>[,<address>…]`, listing the
+  answers that remain after the check. libcurl uses that entry instead of its
+  own lookup. `http.followRedirects=false` (`:162`) already keeps every request
+  on that host. With a proxy from `proxyFor`, a second entry pins the proxy
+  host, checked as for downloads. When curl resolves the target itself
+  (a SOCKS proxy without remote resolution), the first entry pins it.
+  Otherwise the proxy resolves it under the trusted-proxy rule.
+- **git over ssh: preflight check only.** The runner reads the effective
+  configuration with `ssh -G [-p <port>] [<user>@]<host>`, run with the same
+  environment as the git call. That command prints the configuration after
+  evaluating `Host` and `Match` blocks (ssh(1), `-G`). The runner resolves
+  the printed `hostname` once and classifies every answer. **If any answer
+  violates a hard refusal (§18.3 #3 and #4) or a managed block
+  (`blockPrivateNetworks`), the operation is refused** with the refusal of
+  the most restrictive such class, and git is not started. The subset
+  filtering of *One lookup per connection* does not apply: ssh receives the
+  host name, not the checked answers, and may connect to any of them. This
+  is the baseline's rule for a git remote today (`checkRemote`,
+  `network-gate.ts:116-125`, through `ensurePublicHttpUrl`, which refuses
+  when any resolved address is blocked, `core/network-guard.ts:323-338`).
+  Answers that need a confirmation the source lacks give
+  `SOURCE_CONFIRMATION_REQUIRED` (§18.5), as elsewhere. When `proxycommand` or `proxyjump` is set, the target
+  is resolved beyond the proxy, so the runner does not resolve it, the same
+  as a PAC proxy that resolves the target itself, and the ssh proxy rule
+  above applies. The runner passes no `HostName`, `HostKeyAlias` or
+  `CheckHostIP` option: ssh still runs as `ssh -o BatchMode=yes`
+  (`run-git.ts:184`), and the user's ssh configuration, known-hosts entries
+  and certificate authorities are used unchanged. **Residual:** a DNS
+  answer that changes between the preflight and ssh's own lookup is not
+  bound, and host-key verification is the trust anchor for SSH.
+- **Tests** (slice C), each with a resolver fake that answers a public
+  address to the first lookup and `169.254.169.254` or `127.0.0.1` to any
+  later one:
+  - `pinned-fetch.test.ts`:
+    - the request goes to the first answer, and the lookup runs exactly once
+      per hop (revert: pass the hostname to the transport);
+    - an answer set of public plus metadata connects only to the public
+      answer;
+    - `PROXY p:8080; DIRECT` never connects directly;
+    - one acceptance case per PAC kind against local proxy fixtures:
+      `PROXY` with an http and an https target, `HTTPS` (TLS to the proxy,
+      then TLS to the target), `SOCKS5` (the request carries the domain name
+      type), `SOCKS4` (the request carries the checked IPv4 answer), and an
+      unknown kind failing `proxy`.
+  - `trusted-proxy.test.ts`, which demonstrates the documented boundary: a
+    loopback `PROXY` fixture configured through PAC, and a catalog download
+    whose host the fixture resolves to `127.0.0.1`. Ave checks and connects
+    only to the proxy address, the fixture reaches its loopback target, and
+    the test asserts exactly that. It pins documented behaviour rather than
+    a guard, so a change to the boundary changes this test and §18.2.4
+    together.
+  - `run-git.test.ts`: argv carries `http.curloptResolve` with the
+    first-lookup address, and the runner performs no second lookup (revert:
+    drop the option).
+  - `ssh-preflight.test.ts`, with an `ssh -G` fake that prints the
+    effective configuration:
+    - the git environment's ssh command is exactly `ssh -o BatchMode=yes`,
+      and no `HostName`, `HostKeyAlias` or `CheckHostIP` option appears in
+      it or in argv (revert: add a pin option);
+    - a printed `hostname` whose resolver answer is `169.254.169.254` fails
+      with refusal #3 and git is not started (revert: skip the preflight);
+    - **mixed answers**, each from a fixed resolver fake answering both
+      addresses on every call: a public address plus `169.254.169.254`
+      fails with refusal #3, and a public address plus `10.0.0.5` under
+      `blockPrivateNetworks` fails with the policy block; git is never
+      started in either case (revert: keep the public answer and run
+      git);
+    - a config with `proxycommand` set is not resolved by the runner;
+    - the documented boundary: the resolver fake answers a public address
+      to the preflight and `127.0.0.1` to any later lookup. The preflight
+      passes, the runner makes exactly one lookup, and git starts with the
+      unchanged ssh command. Like `trusted-proxy.test.ts`, it pins the
+      residual stated in §18.2.4, so a change to the boundary changes this
+      test and §18.2.4 together.
+
+### 18.3 Hard refusals
+
+Each is refused because no user decision makes it safe. Everything else is a
+warning (§18.2) or a policy decision (§18.6).
+
+| # | Refused | Attack it stops |
+|---|---|---|
+| 1 | `ext::` and every other `<helper>::` transport | `ext::` runs its text as a command; `<helper>::` runs `git-remote-<helper>` from the search path. An address becomes code execution. git itself defaults `ext` to `never`; `GIT_ALLOW_PROTOCOL` stays an allow-list (`run-git.ts:187`) |
+| 2 | Credentials in a URL (`https://user:secret@…`, `https://token@…`) | the secret lands in `sources.json`, the Sources view, logs, audit records, backups and git's command line, which other local users can read in the process list. Ave has the encrypted token store (§2.1). An ssh user name (`git@`) is not a credential |
+| 3 | `metadata` addresses, for every target, policy-listed hosts included, enforced on the connected address of a direct connection Ave owns (downloads, git over http/https); for SSH a preflight check only; beyond a proxy that resolves the target itself, the trusted proxy enforces it (§18.2.4) | a cloud instance's metadata service hands credentials to any local request. No git server lives there, and a name that resolved elsewhere when the user confirmed it can resolve there at the next connection |
+| 4 | Catalog-supplied `this-computer` targets other than the source's own host and port, enforced on the connected address of a direct connection Ave owns (downloads, git over http/https); for SSH a preflight check only; beyond a proxy that resolves the target itself, the trusted proxy enforces it (§18.2.4) | a third-party catalog makes the app send requests to local services (development servers, other apps' control endpoints) that trust any local caller |
+| 5 | Reading through a link that leaves a local folder or names a network location (§18.4.5) | a folder that is someone else's checkout links `skills/x/notes.md` to `~/.ssh/id_ed25519`, and the install copies the key into a package the model reads. On Windows a link to `\\server\share` sends the user's network credentials to that server |
+| 6 | Any git command against a local folder; git's `file` transport stays `never` (`run-git.ts:158`) | git reads a checkout's own configuration, alternates and hooks; settings such as `core.fsmonitor` run programs |
+| 7 | A folder path in a deep link | a web page picks a UNC share (credentials sent on preview) or a planted folder such as Downloads. The Add dialog opens empty and says why |
+| 8 | A `process` entry from anything but a sha256-pinned release or archive | owned by `plugin-hostapi-protocol.md` §2.1 and its Publication plan; listed so this table is complete (§18.4.9) |
+
+Not security refusals, but unsupported; each message says what to enter
+instead:
+
+- `git://`: the PAC proxy cannot route it, and the same repository is
+  served over https or ssh.
+- Any other scheme; a query or fragment; whitespace or control characters.
+- A relative path: a desktop app has no working directory, and `owner/repo`
+  stays the GitHub shorthand.
+- A Windows device path (`\\.\…`, `\\?\GLOBALROOT\…`, `\\?\Volume{…}\…`).
+- A `file://host/…` URL on macOS or Linux.
+- An `unroutable` address.
+- An `http(s)` address whose path ends in `marketplace.json` or
+  `marketplace.2.json` (decision 11).
+
+### 18.4 Local folders
+
+A folder is a marketplace source (its root holds `marketplace.2.json` or the
+conventional layout of §3.3) or a direct package (§8).
+
+#### 18.4.1 Input, classification, consent, then resolution
+
+`normalizeSourceInput(input, platform)`, new in
+`src/marketplace/net/source-input.ts`, decides folder or git address;
+`normalizeSourceUrl` (`source-url.ts:195`) keeps git addresses. A folder goes
+through four stages. **Stages 1–3 make no filesystem call on the path**: no
+`stat`, `lstat`, `realpath`, `readlink`, `open` or `readdir`. Contacting a
+UNC server is exactly what consent and policy must come before.
+
+1. **Lexical parse.** Pure string work:
+   - A `file:` URL is converted with `fileURLToPath` for the running platform
+     (`file:///C:/m`; `file://server/share/m` → `\\server\share\m` on
+     Windows). On macOS and Linux a host other than empty or `localhost` is
+     refused.
+   - Input starting with `/`, `~`, a drive (`C:\`, `C:/`), `\\` or `//` is a
+     folder. `~` expands to `os.homedir()`.
+   - `\\?\C:\…` → `C:\…`. `\\?\UNC\server\share\…` and `//server/share/…` →
+     `\\server\share\…`.
+   - A drive or UNC form on macOS or Linux is refused as a Windows path.
+     `C:foo` (drive-relative), `./` and `../` are refused as relative.
+   - `.` and `..` segments are removed lexically. A `..` that would climb
+     above the drive, share or `/` is refused.
+   - Anything else is a git address (§7.1).
+2. **Network classification.** Still no file access:
+   - Windows UNC (`\\server\share\…`) is `network`.
+   - A Windows drive letter is classified with `QueryDosDeviceW("X:")`.
+     It reads the drive letter's current mapping from the object manager's
+     MS-DOS device namespace for this logon session and opens nothing on the
+     drive. The drive is local only when the mapping is
+     `\Device\HarddiskVolume<n>`, `\Device\CdRom<n>` or
+     `\Device\Floppy<n>`, or a `\??\<path>` (a `subst` drive) whose path is
+     itself local by this rule. Anything else — `\Device\Mup\…`,
+     `\Device\LanmanRedirector\…`, `\Device\WebDavRedirector\…`, `\??\UNC\…`,
+     an unknown device, or a failed call — is `network`. A wrong guess here
+     produces a warning, never a refusal.
+   - `GetDriveTypeW` is not used: it takes the drive's root path.
+   - On macOS and Linux, automount paths are `network` lexically
+     (`/net/<host>/…`, and `/Network/…` on macOS). Any other path is local: a
+     share that is already mounted was authenticated when it was mounted, and
+     reading it sends no new credentials.
+   - The call goes through a small native helper in the existing Windows
+     helper family (`native/windows-job/`, launched as
+     `src/main/windows-job-launcher.ts` does), `native/windows-path-kind/`,
+     which prints the mapping and does nothing else. Slice D1 adds it, its
+     build step and its Windows CI run.
+3. **Policy, then consent.**
+   - `allowLocalSources`, `block` and the `path:` patterns of §18.6 are
+     applied to the lexical path. A block ends here.
+   - A `network` folder needs `network-folder` (§18.2.2). Without it, preview
+     answers `{ type: "confirm" }` (§18.5) and nothing is touched.
+4. **Resolution**, only after stage 3 passes. It walks the path component by
+   component with `lstat` and never calls `realpath`. While it establishes
+   the root, a link or junction among the entered path's own components —
+   an ancestor such as macOS's `/tmp → /private/tmp`, or the root itself —
+   is handled by **root resolution**, not by package containment:
+   - its text is read with `readlink` and classified as in §18.4.5 rule 1;
+     network text is refused as `link-to-network`, and the target is never
+     touched;
+   - any other text is resolved lexically against the link's directory, and
+     the walk continues there, with the same rule for every link it meets
+     and the loop limit of §18.4.5 rule 4. No containment applies here: the
+     user consented to this path, and the local link is part of where that
+     path lives.
+
+   Package containment (§18.4.5 rule 2) applies only **beneath** the
+   canonical root once it is established. The walk
+   records each component's on-disk spelling from a `readdir` of its parent:
+   the entry equal in bytes if one exists, otherwise the single entry equal
+   ignoring case. Several such entries fail with `SOURCE_LOCAL_UNREADABLE`
+   reason `ambiguous-case`. The result must be a directory; a regular file
+   named `marketplace.2.json` or `marketplace.json` resolves to its directory.
+   The policy of stage 3 is applied again to this **canonical path**, and a
+   block found only now ends the add. The stored `path` is the canonical
+   path, and the dialog shows "resolved from <input>" when it differs.
+
+Every later read of a stored folder (sync, plan, refresh) repeats stages 2–4
+from the stored path, so a drive letter remapped to a share, or a component
+replaced by a link, is caught before the read.
+
+#### 18.4.2 Read model: in place, captured by the plan
+
+A folder source is read **in place**. Nothing is copied when it is added or
+read. It is read at boot and at each discovery (§18.7.1), on *Refresh*, and
+when the Marketplace view opens (at most once a minute per source). There is
+no file watcher: network shares and large checkouts make one unreliable.
+
+- The snapshot builder and validation are the git ones (§2.2, §4), over a
+  `SourceTree` interface that `BareRepo` and a new `FolderTree` implement.
+- **The plan captures the bytes.** Planning an install or update of a folder
+  package re-reads the source, then copies the package into the plan's
+  staging directory under `workRoot` and computes its digest (§6.4).
+  Execution installs that copy and never reads the folder again, so what was
+  reviewed is what installs. An abandoned plan's copy is removed at expiry
+  (§13.1).
+- **A folder source never downloads.** Every kind installs from the files in
+  the folder. For a plugin the ladder has one rung, `folder`: `plugin.json`,
+  `dist/**` and `assets/**`, compared with the descriptor as in §6.2.
+  - Declared `release` or `archive` rungs are not tried.
+  - A plugin whose folder has no `plugin.json` fails with
+    `NO_INSTALLABLE_ARTIFACT` reason `folder-has-no-build` ("build the plugin
+    into `dist/`, or add the git repository instead").
+  - Other top-level entries (`src/`, `package.json`, `node_modules/`) are
+    ignored and listed in the plan as not installed. The git tree rung keeps
+    its stricter rule (§6.2).
+- A folder plugin writes receipt schema v4 with `installSource: "folder"` and
+  a `folder` record `{ sourceId, sourceOrigin, revision, packagePath,
+  treeSha256, authoritySha256, consent }` (`plugin-install-receipt.ts:86-100`
+  gains the union member; `consent` is §18.7.3's baseline). The registry
+  `origin.rung` is `"folder"` (`src/plugins/registry.ts:304-315`). It never
+  qualifies for a host-secret grant (§10.3 condition 2) or a `process` entry
+  (§18.4.9).
+
+#### 18.4.3 Revision, history and versions
+
+§7.3's pin is a commit; a folder's pin is a **revision**: `local-` + the hex
+sha256 of the lines `"<sha256(file)> <path>\n"`, sorted by path bytes, over
+every file the snapshot read (the index or the descriptors of §3.3,
+`policy/revocations.json`, the app-conditional revocations file), plus one line
+`"<tree digest> <package path>/"` per package, whose tree digest (§6.4) covers
+the files that package would install. Editing any installed file changes the
+revision.
+
+- The revision stands wherever a pin is stored: `pinnedCommit` in
+  `state.json`, `snapshots/<revision>.json`, `origin.commit` in the registry
+  and ledger, plan `snapshotCommit`, and retention (§2.1). The 40-hex checks
+  (`registry.ts:87`, `sync.ts:49`, the registry origin check at
+  `src/plugins/registry.ts:304-315`) accept `^local-[0-9a-f]{64}$` for a folder
+  source only, and a folder source refuses a 40-hex value.
+- No history rule: every read is the folder's current state. `pendingRewrite`
+  and `SOURCE_HISTORY_REWRITTEN` never apply.
+- Only the version whose files are in the folder can be installed. Other
+  `versions[]` entries of the index show as history and are not offered; their
+  `commit` values are not checked. The version in the folder must equal its
+  index copy (§6.2).
+- A git checkout is read as its **working tree**. `.git` is never read or
+  installed, and no git command runs (§18.3 #6). Uncommitted edits are
+  included, which is what an author iterating expects.
+
+#### 18.4.4 Identity and duplicates
+
+- Two folder sources are the same when their canonical paths (§18.4.1
+  stage 4) are equal byte for byte, or when both directories report the same
+  non-zero `dev` and `ino` from `fs.stat` with `bigint: true` (volume serial and
+  file index on Windows). No platform-wide case folding: on a case-sensitive
+  volume `/Approved/Tools` and `/approved/tools` are two folders and stay two
+  sources; on a case-insensitive one the walk's on-disk spelling and the
+  equal `dev`/`ino` make them one. This also catches a mapped drive and its
+  UNC path.
+- When `stat` reports `dev` or `ino` as zero (some network filesystems), only
+  the canonical path decides. Two spellings of one folder are then treated as
+  two sources, which can list a package twice but admits nothing new.
+- A folder that is already a source, or that contains or lies inside one, is
+  refused with `SOURCE_ID_TAKEN` naming that source: nesting would list
+  packages twice.
+- A folder source and a git source are never the same source, even when the
+  folder is a checkout of that repository. The same `(kind, name)` shows as two
+  cards (§15.1); installing the second is a source switch.
+- `SourceEntry` (`registry.ts:39-49`) gains `path?: string`, exclusive with
+  `url` (slice D1), and `acknowledged?: SourceWarning[]` (§18.5, slice C).
+  `ENTRY_KEYS` (`registry.ts:88`) gains each with its slice.
+- A folder entry has `auth: { kind: "none" }` and no `ref`. A stored `path`
+  whose walk no longer ends at the same directory (a component replaced by a
+  link, or `dev`/`ino` changed) is served as `SOURCE_LOCAL_UNREADABLE` reason
+  `moved`, and the new target is never read.
+
+#### 18.4.5 Reading the files
+
+`FolderTree` and the resolution walk share one link rule. Every filesystem
+call goes through a `FolderFs` interface (`lstat`, `readlink`, `readdir`,
+`open`, `fstat`, `read`, `queryDosDevice`), which the tests replace with a
+recording fake.
+
+- Directories are walked, regular files read. A device, socket or FIFO fails
+  the package: `CONTENT_RULE_VIOLATION` reason `special-file`.
+- **A symbolic link or junction** is never followed by the OS. Only its text
+  is read, with `readlink`, and the text is judged before any call touches
+  the target:
+  1. Text naming a network location is refused from the text alone:
+     `\\…`, `//…`, `\??\UNC\…`, `\\?\UNC\…`, a device path, a drive letter
+     that stage 2 classifies `network`, or an automount path.
+     `CONTENT_RULE_VIOLATION` reason `link-to-network` names the link. This
+     holds inside a network-folder source too: the user consented to that
+     share, not to the servers its links name.
+  2. Otherwise the text is resolved **lexically** against the link's own
+     directory. Outside the source root → reason `link-outside-folder`, and
+     the target is never touched.
+  3. Inside the root → the walk continues at the target, component by
+     component, with the same rule for every link it meets. A chain
+     `root/a → root/b → \\attacker\share` is therefore stopped at `b`'s text,
+     and nothing calls the server.
+  4. A directory reached twice, or more than 40 links in one resolution, is
+     a loop and fails the package.
+
+  The installed copy holds the target's bytes as a regular file. For the
+  index or a revocations file, a refused link fails the whole read.
+- **Opening a file** uses `O_NOFOLLOW` on macOS and Linux, which protects
+  only the final component. After the open, `fstat` must report the
+  `dev`/`ino` that the walk's `lstat` saw.
+- **Detecting persistent swaps.** The walk records each directory's
+  `dev`/`ino` when it enumerates it. After each file is read, it re-`lstat`s
+  the directory chain from the canonical root to that file's directory and
+  compares every entry; it compares the `fstat` of the file as well. Any
+  mismatch fails the read with `SOURCE_LOCAL_UNREADABLE` reason
+  `changed-during-read`, and the bytes are discarded. A swap that is still in
+  place when the file has been read is therefore caught.
+- **Concurrent replacement boundary, every platform.** Node has no portable
+  traversal anchored to held directory handles (`openat`), and this design
+  does not promise one. A process with write access to the source tree that
+  replaces an intermediate directory with a link and restores it between
+  the walk's checks can redirect a read. The bytes captured are bytes of a
+  file the user could already read, and they can reach the package. On
+  Windows, where Node's open follows reparse points, the same window can make
+  Ave contact a UNC server. This residual needs a concurrent local writer
+  in a folder the user chose as a source, and it is stated, not defended.
+- Skipped silently at any depth, never read, digested or installed: `.git/`,
+  `.DS_Store`, `._*`, `Thumbs.db`, `desktop.ini`.
+- Names are normalized to NFC (the form git stores). Two names equal after NFC,
+  or differing only in case, fail the package (§5.5).
+- The execute bit comes from `lstat` on macOS and Linux; Windows has none, so
+  every file is `100644` there.
+- §5.4's limits apply while reading; a read stops at the first one exceeded.
+- The repository check still refuses links when the package is published to
+  git; the preview's diagnostics say so.
+
+#### 18.4.6 Windows
+
+- Drive and UNC paths are accepted; a junction is a link (§18.4.5).
+- Reading a network folder signs in to its server as the user: the
+  entered-target warning `network-folder` (§18.2.2) says "Ave signs in to
+  <server> with your Windows account to read this folder". The server name
+  comes from the UNC path or from the drive's `QueryDosDeviceW` mapping.
+- A locked file, a cloud-storage placeholder that cannot download, or a
+  permission error fails the read with `SOURCE_LOCAL_UNREADABLE` reason `io`
+  and the OS message. The last good snapshot is served (§7.5) and the next
+  read retries.
+- The stored path never carries `\\?\`; Node adds the long-path prefix itself.
+- Bytes are read as they are: a CRLF checkout installs CRLF files.
+
+#### 18.4.7 Direct install from a folder
+
+*Install from Git URL or folder…* (§15.1) takes a folder path or *Choose
+folder…*. Detection is §8.1's, at the folder root. The result is a `direct`
+source with a `path`; it updates when the package's digest changes (§18.7.6).
+A synthesized version (§8.2) is `0.0.0+t<digest12>`.
+
+- The plugin studio's *Install from file* (`plugin-studio.ts:168-175`) stays a
+  one-time, source-less install of a zip or folder (decision 30).
+- The development-only local plugin install (`plugins.ts:449-453`, behind
+  `isDevModeUnlocked`) is unchanged.
+- Policy `allowDirectInstall: false` (§12) or `allowLocalSources: false`
+  (§18.6) refuses it.
+
+#### 18.4.8 How a folder source looks
+
+- **Sources** (§15.4):
+  - folder glyph and the label "Folder";
+  - the path, middle-truncated, with the full path in a tooltip;
+  - `folder · <revision 7>` and "read <time>";
+  - statuses *Up to date*, *Folder not found*, *Folder unreadable*,
+    *Folder moved*;
+  - overflow *Refresh*, *Show in Finder* / *Show in Explorer* /
+    *Show in file manager*, *Remove*. No *Set token*.
+- **Package sheet** (§15.2): Provenance "Folder <path>, read <time>, contents
+  <digest12>"; Versions "Only the version in the folder can be installed".
+- **Add dialog** (§15.5): the address field accepts a path and has *Choose
+  folder…*; the preview says "Changes in this folder are picked up at start-up,
+  every few hours and on Refresh".
+
+#### 18.4.9 `process` entries, http sources and folders
+
+`plugin-hostapi-protocol.md` §2.1, on `main`, admits a `process` entry only
+for an install whose artifact came through a sha256-pinned `release` or
+`archive` rung, recorded in the receipt. Its implementation is the
+Publication plan, §9.7 of that page (`plugin-hostapi-protocol.md:2222`, on
+`main` since #2592). Of its slices (`:2645-2650`), M1 has merged (#2591), S1
+and P1 are being built, and P3 (the `process` runtime and its codes,
+`:3557`) and P4 (marketplace admission, `:3871`) are unbuilt. P4 already
+states that a local directory source is refused like `installLocal`
+(`:3887-3889`). This design does not relax the rule.
+
+- **Codes over time.**
+  - Today `main` refuses every `process` entry with
+    `process-entry-unsupported` (`src/marketplace/errors.ts:37`,
+    `src/plugins/process-entry-support.ts:3`).
+  - P3 replaces that code with `process-entry-unconfined` and
+    `process-entry-requires-pinned-artifact`.
+  - §18.8 carries a sentence for all three, and slice B ships whichever exist
+    on `main` when it merges.
+- **Folder sources and direct folder installs** never use a release or archive
+  rung (§18.4.2). Their receipts (`installSource: "folder"`) are categorically
+  ineligible for `process` admission, under any later rule. Slice D1 refuses a
+  `process` manifest from a folder at the ladder:
+  - with `process-entry-unsupported` while that is the code on `main`;
+  - with `process-entry-requires-pinned-artifact` once P3 has merged.
+
+  Whichever of D1 and P4 merges second keeps that refusal on the folder path,
+  so it never lapses between them.
+- **http sources**: the rule holds as written. A network attacker can replace a
+  pin together with its artifact, which is why an http source's packages never
+  update automatically until the user accepts `unencrypted-updates` (§18.7.2).
+
+### 18.5 Add flow, confirmations and badges
+
+1. The user enters an address or chooses a folder.
+2. `sources:preview` parses it (§7.1, §18.4.1 stages 1–2) and applies the
+   refusals (§18.3) and the policy (§18.6). A refusal or a policy block ends
+   here.
+3. It classifies the target (§18.2.1, §18.4.1 stage 2). If a warning is
+   needed that the request does not carry in `acknowledge`, preview answers
+   `{ type: "confirm", warnings }` and runs **no git command, no DNS-dependent
+   connection and no filesystem call on the folder**. *Continue* repeats the
+   preview with `acknowledge`.
+4. Preview fetches or resolves and reads (§7.2, §18.4.1 stage 4, §18.4) and
+   classifies; warnings show as badges.
+5. *Add* stores exactly the confirmations the preview carried.
+
+- **Stored**: `SourceEntry.acknowledged` for custom and direct sources;
+  `SourceState.acknowledged` (`STATE_KEYS`, `registry.ts:89`) for official and
+  managed ones. Values: `unencrypted`, `token-unencrypted`, `internal-network`,
+  `this-computer`, `internal-downloads`, `network-folder`,
+  `unencrypted-updates`.
+- **A target that changes class** (a name now resolves to an internal address,
+  a drive letter now maps to a share) fails the sync, install or update with
+  `SOURCE_CONFIRMATION_REQUIRED`. The row shows *Allow…*, which calls
+  `sources:acknowledge` and syncs again. Confirmations are per class, not per
+  address.
+- **Badges** on the source row and its package cards, text plus tooltip, never
+  colour alone (§15.9): *Unencrypted (http)*, *Internal network*, *This
+  computer*, *Internal downloads*, *Network folder*, *Local folder*. The http
+  tooltip: "Anyone on the network path can read what this source sends and
+  change what it serves. Updates from it are not installed automatically."
+- Withdrawing a confirmation or changing the address means removing the
+  source and adding it again.
+
+### 18.6 Managed policy additions
+
+```jsonc
+"marketplaces": {
+  "requireHttps": false,          // true: plain http is a policy block (allowHttpHosts excepted)
+  "blockPrivateNetworks": false,  // true: internal and this-computer targets are a policy block (policy-listed hosts excepted)
+  "allowLocalSources": true,      // false: folder sources and folder installs are a policy block
+  "autoUpdate": "user",           // "user" | "on" | "off" (§18.7.2)
+  "allow": ["https://github.com/acme/*", "host:git.corp.example", "path:/opt/acme/marketplaces/*"],
+  "block": ["path:/tmp/*"],
+  "additional": [{ "id": "acme-local", "path": "/opt/acme/marketplaces/tools" }]
+}
+```
+
+- `requireHttps` and `blockPrivateNetworks` apply to entered and
+  catalog-supplied targets, downloads and redirect hops included.
+  `blockPrivateNetworks` is enforced on the connected address of a direct
+  connection on the transports Ave owns (downloads, git over http/https);
+  for SSH it is a preflight check only; beyond a proxy that resolves the
+  target itself, the trusted proxy enforces it (§18.2.4). They restore
+  0.12's refusals as blocks no confirmation passes.
+- **`path:` patterns.** `path:<folder>` matches that folder,
+  `path:<prefix>*` every folder under the prefix, and `path:*` every folder;
+  `/` and `\` are equal.
+  - They are compared with the lexical path at stage 3 and again with the
+    canonical path at stage 4 (§18.4.1). The case rule is conservative, since
+    the volume's case sensitivity is not known when the rule is written: an
+    `allow` pattern matches only with exact case, and a `block` pattern
+    matches ignoring case. A block therefore covers every spelling, and an
+    allow admits only the spelling the administrator wrote, which the walk
+    recovers from the disk on a case-insensitive volume.
+  - `path:` patterns apply to folders only; `host:` and URL patterns apply to
+    git sources only.
+  - When `allow` is present a folder must match one of its `path:` entries,
+    so an existing allow list blocks folders until the administrator adds one
+    (fail closed, as §12).
+- `additional[]` takes `path` instead of `url` for a provisioned folder:
+  origin `managed`, no warnings except `network-folder`, which the policy entry
+  implies, and not removable. An `additional` folder under
+  `allowLocalSources: false` makes the section invalid (§12).
+- User settings, confirmations and switches never override a policy block.
+- **When a policy change takes effect.** Today the policy is read once when
+  the service is built (`src/ipc/domains/git-marketplace.ts:252`), and the
+  service is cached (`:528-545`), so a change waits for a restart. From slice
+  C:
+  - The service reads the policy through a `PolicySource`. At the start of
+    every operation (preview, add, acknowledge, sync, discovery, plan,
+    execute), it compares the file's size, modification time and sha256 with
+    the last read.
+  - A change builds a new policy and swaps it into the gate, the registry
+    filters and the installers in one step, under the service's operation
+    lock, so no operation sees a mixed policy.
+  - A plan records the policy digest it was made under. Executing it under
+    another digest fails with `PLAN_EXPIRED` reason `policy-changed`, and the
+    review reopens with a fresh plan.
+  - A policy that becomes unreadable or invalid behaves as today's invalid
+    policy (`git-marketplace.ts:252-254`): official only, with
+    `policy-invalid` shown. It recovers at the first operation after the file
+    is fixed.
+  - Discovery (§18.7.1) is an operation, so a source the new policy blocks is
+    blocked within one discovery interval, without a restart.
+- **Rollout.** Apps before 0.13.0 read the section exactly and treat an unknown
+  key as an invalid section, which blocks every non-official source (§12).
+  Deploy these keys only to 0.13.0 and later.
+
+### 18.7 Automatic updates
+
+#### 18.7.1 One scheduler, two due rules
+
+The background tick (`background.ts:156-170`) stays the only scheduler. It
+runs a **due check** at boot (right after the boot pass, `background.ts:154`),
+every hour, on `powerMonitor` `resume`, on *Check now*, and on a settings
+change. The due check starts what is due:
+
+```
+discovery (due: rule below)
+  sync every source that syncs (§7.3; a folder source is read, §18.4.2)
+  enforce revocations (§10.4)                    -- always, whatever the settings
+  compute updates (updateFor, identity.ts:79); publish notices and status
+apply check (due: rule below)
+  run a discovery first, or join the one in flight
+  classify each update that discovery returned (§18.7.2, §18.7.3)
+     automatic -> enqueue for the apply queue (§18.7.4)
+apply queue (separate, one package at a time, waits for idle)
+```
+
+- **Discovery is due** by one of two branches:
+  - **after a failed attempt** (the last result is `offline` or `partial`, or
+    the attempt threw): when `lastAttemptAt` is at least 1 hour old, whatever
+    `lastSuccessAt` says. A failed or offline attempt, including one started
+    by *Check now*, is therefore retried at the next hourly due check;
+  - **after a successful attempt**: when `lastSuccessAt` is at least
+    `updateCheckIntervalMs` old.
+
+  `updateCheckIntervalMs` keeps its key, its 6-hour default
+  (`background.ts:23`), its `0` (boot and *Check now* only), its 15-minute
+  floor, and its lack of an upper bound (`background.ts:25-32`). With `0`,
+  the failed-attempt branch still retries hourly until a discovery
+  succeeds.
+- **The apply check is due** at boot, on *Check now*, and when the last
+  successful apply check (`applyCheckAt`) is 24 hours old or older. That is
+  the owner's "at boot and once a day" for updates. **A due apply check
+  always obtains a fresh discovery first**: it joins a discovery already in
+  flight, or starts one, and classifies only that discovery's results. There
+  is no freshness predicate, so the age of the last discovery and the phase
+  of the discovery interval never decide what is classified. That discovery
+  is an ordinary one: it records `lastAttemptAt` and `lastSuccessAt` and so
+  restarts the discovery interval. Its result decides the rest:
+  - `ok`: every update is classified, and `applyCheckAt` is written;
+  - `partial`: updates from the sources it reached are classified, the
+    others wait, and `applyCheckAt` is not written, so the apply check stays
+    due and joins the hourly retry of the failed-attempt branch;
+  - `offline` or `error`: nothing is classified, and the apply check stays
+    due the same way.
+- **Why discovery stays at 6 hours.** Revocations arrive in the same fetch as
+  the index (§10.4). 0.12 delivers them to a running app within 6 hours, and
+  stretching discovery to the 24-hour update cadence would leave a revoked
+  package running four times as long. Discovery costs one fetch per source,
+  and it applies nothing.
+- **Discovery never waits for apply.** The apply queue is a separate worker.
+  A discovery finishes, records its time and publishes status even while the
+  queue waits for idle (§18.7.4). `updates:check` resolves when its discovery
+  and apply check end; queued updates then show `waiting`. A later apply check
+  replaces queued entries with its own results and leaves a package that is
+  already applying alone.
+- **Timing guarantee.** While the app runs, is awake and reaches a source, a
+  revocation or update published there is discovered within
+  `updateCheckIntervalMs` + 1 hour (7 hours by default). Sleep is caught up
+  on `resume`. An eligible update is classified within 25 hours of
+  publication: the next apply check is due at most 24 hours after the last
+  one, runs at the next hourly due check, and always discovers first. It is
+  applied when the conversation is next idle. **The wait for idle has no
+  bound**: after 30 minutes the user is told and can apply at once
+  (§18.7.4), which is an escalation, not a
+  limit. Exceptions:
+  - `updateCheckIntervalMs: 0` — scheduled discovery only at boot and on
+    *Check now*, plus hourly retries after a failure; the daily apply check
+    still runs and obtains its own discovery;
+  - offline — retried hourly;
+  - a source failing — its packages wait, and the others proceed.
+- **Remembered**: `~/.ave/marketplaces/updates.json`:
+
+  ```
+  { version: 1,
+    discovery: { lastAttemptAt, lastSuccessAt, result: "ok" | "partial" | "offline" | "error" } | null,
+    applyCheckAt: string | null,
+    packages: { "<sourceId>:<kind>:<name>": { to, state, attempts, lastError?: { code, detail?, at }, appliedAt? } } }
+  ```
+
+  An unreadable file is replaced by an empty one and the Updates card says so.
+  That only moves timing and retry counts, never what applies.
+
+#### 18.7.2 Defaults and switches
+
+An update applies automatically only when every **precondition** holds:
+
+- the package is enabled (not disabled by the user or by a revocation);
+- its source is shown (a hidden source still syncs, but installs from it are
+  `SOURCE_DISABLED`, `service.ts:725-727`);
+- it is an upgrade: never a downgrade, never a source switch;
+- the source has no pending history rewrite (§7.3);
+- the version is not skipped (`skippedPluginUpdates`,
+  `skipped-plugin-updates.ts:95-103`);
+- it has not failed three apply attempts in a row (§18.7.5);
+- **every MCP server and hook approved in the running generation keeps its
+  approval**: each one either carries forward (§18.7.3) or is absent from
+  the new version. Otherwise the update is `needs-review`. This is an
+  invariant: an automatic update never leaves a previously approved
+  component unapproved;
+- for a source reached over plain http, the source holds
+  `unencrypted-updates` (a network attacker can serve a new commit with new
+  pins; applying it unattended would run their code with no action from the
+  user).
+
+Then the first of these that is set decides:
+
+1. policy `autoUpdate`: `"off"` or `"on"`;
+2. the package switch `marketplace.autoUpdatePackages[<key>]` (`"on"`/`"off"`;
+   key = `packageUpdateSkipKey`, `skipped-plugin-updates.ts:87`);
+3. the source switch `marketplace.autoUpdateSources[<sourceId>]`;
+4. the global switch `marketplace.autoUpdate` (`false` = off);
+5. the default for the origin:
+
+| Source | Default |
+|---|---|
+| official | on |
+| managed (`additional`) | on; policy `autoUpdate` may lock it |
+| custom, https or ssh | on |
+| custom or direct over http | **off** until the user turns it on and accepts `unencrypted-updates` |
+| direct (git) | on |
+| folder (custom or direct) | on: an author's edit reaches the app without a manual step |
+
+The default is broad because §18.7.3 holds back every update that changes
+what runs or what it may reach. An update that applies by itself changes
+only a package with no local executable component, or changes nothing its
+executable components can reach.
+
+**`requiredInstalls` (§10.2)** updates at every apply check, with
+`required: true` (`service.ts:1031-1033`), through the same apply queue as
+automatic updates, so it waits for idle like them, at boot too. The policy
+stands for the user's consent there, and only there. Exactly:
+
+| Rule | Required installs |
+|---|---|
+| global, source and package switches; skipped versions | overridden: they do not apply |
+| source switch to the policy's source | allowed, as today (`run.ts:136`) |
+| authority fields of the consent fingerprint (§18.7.3) | approved by the policy: `reviewedAuthority = true`, as today |
+| MCP servers and hooks | **not** approved by the policy. Carry-forward (§18.7.3) keeps an unchanged one approved. A new or changed one installs unapproved: the manager does not publish an unapproved projection (`mcp-manager.ts:393`), so it does not run, and the package enters `approval-pending` (§18.7.5) with a notice and *Review* right after the install. The approval-carrying invariant above is the one precondition required installs override, and `approval-pending` is how the override stays visible |
+| revocation | mandatory: a revoked version is never installed |
+| compatibility (`row.choice.state === "candidate"`, `run.ts:150-153`) and no downgrade (`updateFor`) | mandatory |
+| idle gate (§18.7.4) | mandatory, at boot too |
+| three-failure stop | does not apply: a failing required install is retried at every apply check and stays visible as `failed` |
+
+The first install of a package that is not yet present (a new default or
+required install, §10.2) keeps today's boot path (`service.ts:1004-1039`):
+it replaces no running generation, so it cannot interrupt a turn.
+
+#### 18.7.3 Consent: what never applies automatically
+
+An update applies automatically only when its **consent fingerprint** equals
+the installed **baseline**. Any difference, a narrowing included, makes the
+update `needs-review`.
+
+**Fingerprint.** `consentFingerprint(kind, subject)`, new in
+`src/marketplace/updates/consent.ts`, returns a typed record that is
+serialized as canonical JSON with sorted keys:
+
+| Kind | Fields |
+|---|---|
+| `plugin` (extension) | `minAppVersion`; `hostProtocol`; every `PluginAuthority` field (`capabilities`, `networkAccess`, `hostSecrets`, `pluginAccess`, `auth`, `requires.capabilities`, `dependencies`, `sandbox`); the entry form (`entry` or `process`); the set of bundled contribution kinds; every bundled MCP server and hook by local id with its **approval digest**; for a `process` entry, the package digest below |
+| `agent-plugin` | `minAppVersion`; `hostProtocol`; the set of component kinds present; every MCP server by name and every hook by local id with its approval digest; `mcpAuth` (`extensions-and-plugins.md` §5.2, decision 18) |
+| `mcp` | the resolved runtime spec (§5.2): transport, command, arguments, environment names and fixed values, URL, sign-in fields, docker options, package or image with version |
+| `provider` | `minAppVersion`, `providerId`, `baseUrl` |
+| `messaging-connection` | `minAppVersion`, the whole `connection.json` |
+| `skill`, `agent`, `theme`, `font`, `language` | `minAppVersion` |
+
+- This is the owner's list: new or changed permissions and grants (authority
+  fields), a changed MCP server or hook, `sandbox`, a protocol or
+  `minAppVersion` change, a new component kind.
+- An `mcp` package's version is part of its command, so every `mcp` update
+  needs review.
+- **Local executable component**: a stdio MCP server, a command hook, or a
+  `process` entry. A package that has none — skills, prompts, agent
+  profiles, routine templates, remote MCP servers, an extension whose code
+  runs only as its in-process entry under its declared authority — applies
+  changed text and data automatically: `extensions-and-plugins.md`
+  decision 18 activates them without a separate consent, and a routine
+  template creates nothing.
+- A package that has **any** local executable component needs review for
+  **any** change to its files (below). The review is made cheap, not
+  skipped (§18.7.3 "The delta").
+
+**Approval digest.** It covers what executes and everything it can read. The
+static fingerprint (`plugin-contributions.ts:249-271`) hashes only the
+declared descriptor file, and the anchored fingerprint covers only paths in
+argv (`plugin-bundled-command.ts:37-71`). No runtime boundary stops an
+unchanged server from reading another file of its package and evaluating
+it: an approved `server.js` can evaluate `skills/helper/assets/rules.txt`,
+and the content rules admit such resources (`content/rules.ts:45-69`). So no
+file of the package is excluded by extension, location or execute bit. For
+each bundled MCP server and hook,
+`approvalDigest(component, generationRoot)`, new in
+`src/plugins/contribution-approval-digest.ts`, is the sha256 of canonical
+JSON:
+
+```
+{ declaration: <static fingerprint, plugin-contributions.ts:269-271>,
+  anchored:    <the identities anchorBundledCommand hashes:
+                "<argv index>\0<relative path>\0<sha256(file)>", sorted
+                (plugin-bundled-command.ts:53-71)>,
+  closure:     { kind: "package",  treeSha256 }       // local code
+             | { kind: "launcher", spec, treeSha256 } // pinned runtime package
+             | { kind: "remote" } }                   // url transport; nothing local runs
+```
+
+- **`treeSha256`** is the tree digest (§6.4, the algorithm behind the
+  receipt's `artifactSha256`) over **every** installed payload file of the
+  package, with exactly **one normalization**: the top-level `version` field
+  of `plugin.json` is removed before that file is hashed (the file is parsed,
+  the field deleted, and the rest serialized as canonical JSON with sorted
+  keys). There is no other normalized field. A release must change that
+  field (`plugins/marketplace.ts:635-642`), and it changes nothing that
+  runs. Content packages need no normalization, because their descriptor
+  `ave-package.json` is not installed (`content/store.ts:114-128`).
+- **`launcher` closure.** For `npx`, `bunx`, `uvx`, `pipx run` and
+  `docker run` the spec names an immutable artifact: npm or PyPI at an exact
+  version (`name@1.2.3`, `name==1.2.3`), or an OCI image by `@sha256:` digest.
+  `treeSha256` is included as above, because the package's files may still
+  be read.
+- **`remote`**: a url transport component in a package with no local
+  executable component. A remote component in a package that also has a
+  local one stays `remote`: it runs nothing locally, and the local
+  components' digests already cover the tree.
+- **Undeterminable.** When the executable closure cannot be determined, the
+  approval digest is `null`. That covers a launcher spec without an immutable
+  pin (`npx foo`, `foo@latest`, an image tag), an `anchorBundledCommand`
+  failure, and a command type this list does not name. A `null` digest never
+  equals anything: that component has no carry-forward, re-asks on every
+  update, and its fingerprint always differs, so the update needs review.
+  This case fails closed.
+- A `process` entry is in the extension's fingerprint as the same
+  `treeSha256`, so a `process` extension needs review for any change.
+
+**Baseline storage.** The baseline is the fingerprint the user accepted,
+stored with the install. It is never derived from newly fetched catalog
+metadata. `planUpdate` stops preferring the current catalog's copy of the
+installed version (`service.ts:795-797`) and reads the baseline.
+
+| Kind | Stored in |
+|---|---|
+| `plugin` | the receipt's `git` or `folder` record gains `consent` (`plugin-install-receipt.ts:86-100`); optional, so existing receipts stay valid |
+| content kinds | `LedgerEntry.origin.consent` (`content/ledger.ts:22-48`; `ORIGIN_KEYS` gains `consent`, optional) |
+| `mcp` | the record in `~/.ave/packages/mcp-installs.json` (`app/mcp-installer.ts:38-62`) gains `consent` |
+
+**Existing installs** (no stored baseline) get one computed from what is
+installed, never from the catalog:
+
+- `plugin`: the receipt-covered `plugin.json` and payload.
+- Content: the installed package directory. `minAppVersion` comes from the
+  index row of the installed version in the retained
+  `snapshots/<origin.commit>.json`, which is the catalog the user installed
+  from, kept by snapshot retention (§2.1). Install itself discards
+  `ave-package.json` (`content/store.ts:114-128`).
+- `mcp`: the recorded runtime spec.
+
+A field that cannot be computed — a missing snapshot, or a folder install
+whose folder has changed since — is `unknown`. An `unknown` field never
+equals anything, so the first update needs review, and applying it stores a
+complete baseline. Each successful install or update, automatic, reviewed or
+required, writes the new baseline in the same transaction as the receipt or
+ledger entry.
+
+**Two checkpoints and the delta.**
+
+- **Checkpoint one, the catalog.** A field is *catalog-observable* when the
+  index copy of the version carries it (§2.2). A catalog-observable
+  difference stages the update as `needs-review` with no download. A field
+  the catalog does not carry is `pending`, never "equal".
+- **Checkpoint two, the staged bytes.** It runs only when checkpoint one
+  found no difference, before activation. `installGitPlugin` takes an
+  `assertConsent` callback, run beside `assertManifest`
+  (`plugins/marketplace.ts:635-643`). The callback computes the full
+  fingerprint, approval digests included, from the staged tree and throws
+  `UpdateNeedsReviewError` before `activatePreparedArtifact`. Content runs the
+  same check on the staged package before the ledger is written. Nothing
+  activates, and the staged files are dropped. The pass catches
+  `UpdateNeedsReviewError` itself (`installZipTransaction` rethrows it,
+  `plugins/marketplace.ts:831-836`, `:862-878`) and records `needs-review`. A
+  consent deferral is never a failure and never counts as an attempt.
+- **Manual review always stages.** Every manual review whose delta has any
+  `pending` field downloads, verifies and stages the artifact into the plan,
+  as a folder plan does (§18.4.2), and computes the complete fingerprint
+  **before** approval is offered, whatever checkpoint one found. An update
+  that adds a catalog-visible capability and a bundled hook therefore shows
+  both. The plan records the staged digest, and `executeInstall` installs
+  exactly those staged bytes and never downloads again, so approval covers
+  the bytes that install. An expired plan (§13.1) means a fresh review.
+- **The delta.** A typed
+  `ConsentDelta = Array<{ field: ConsentField; checkpoint: "catalog" | "staged"; before: Json | "unknown"; after: Json; changedFiles?: { code: string[]; nonCode: string[] } }>`,
+  where `ConsentField` names every row of the table above, for example
+  `authority.networkAccess`, `entryForm`, `mcpServer:<localId>`,
+  `hook:<localId>`, `mcpRuntime` and `connection`. After staging no `after`
+  is pending. `UpdatePlanView` gains `consentDelta`. The existing
+  `authorityDelta` and `componentsDelta` (`service.ts:799-810`) become
+  projections of it.
+- **Cheap review for code-free changes.** `changedFiles` lists, for a changed
+  approval digest, the package paths whose bytes differ, compared with the
+  **same single normalization** as `treeSha256`: `plugin.json` is compared
+  with its top-level `version` removed, and is listed only when the rest
+  differs, then always as `code`. A complete versioned release that edits
+  only `SKILL.md` therefore lists `SKILL.md` alone. The renderer splits
+  them for display only: `nonCode` holds Markdown, plain text, images and
+  JSON outside `plugin.json`; `code` holds everything else. When the only
+  differing fields are approval digests (and `minAppVersion` is unchanged)
+  and every `changedFiles.code` is empty, the review shows one row, "Only
+  these non-code files changed:" with the list, and one action, *Approve
+  update*. That action approves every changed component of the package in
+  one step. The split never decides eligibility; it only shortens the
+  review.
+- **Otherwise** the review renders one row per entry: the field's localized
+  label, before and after, and for `mcpServer:` and `hook:` rows an approve
+  check box with the command, its closure kind and its changed files.
+- **Extension components.** `executeInstall` today rejects component consents
+  for anything but an agent plugin (`service.ts:826-827`). From slice F it
+  accepts them for `plugin` too, by bundled local id, and the plugin
+  installer passes them to `PluginBundleLifecycle`, which approves them for
+  the new generation's `mcpTrust` and `hookTrust`.
+
+**Approval carry-forward.** Today the trust stores key on the exact
+generation and "approval never transfers across generations"
+(`plugin-contribution-trust.ts:7-13`, `:31`), so every update re-asks for every
+bundled server and hook.
+
+- **Schema.** The trust file goes from `{ version: 2 }` to `{ version: 3 }`.
+  Each record gains `approvalDigest: string | null` and an optional
+  `carriedFrom: <generationId>`. The loader accepts version 2 strictly as
+  today (`:40-53`) and version 3 strictly too; any other version fails as
+  today. The next write is version 3.
+- **Migrating a version-2 record**, once, when 0.13.0 first loads the store
+  (stated decision 39). If the record's generation is the active generation
+  of its plugin, and its fingerprint equals the fingerprint computed from
+  that installed generation's declaration, its `approvalDigest` is computed
+  from the installed bytes. Those are the bytes the user approved and is
+  running, and the v2 identity already bound them (the generation id commits
+  to every receipt-covered byte). Any other v2 record gets
+  `approvalDigest: null`. A null record cannot carry, so by the precondition
+  of §18.7.2 the package's first update is an explicit, one-time
+  `needs-review`, with the reason "approval from an earlier Ave version must
+  be confirmed".
+- **Prepare.** When a new generation G′ of plugin P is prepared, a component
+  c′ is carried when the active generation G holds an approved record with
+  the same plugin id and local id and a non-null `approvalDigest` equal to
+  c′'s. A carried component gets a **provisional** approval for G′ with
+  `carriedFrom: G`, written before preparation, because MCP admission happens
+  during preparation (`agent-plugin-mcp-runtime.ts:117-125`). It joins the
+  same list as new approvals.
+- **Publish.** Under the lifecycle's serialization, before the active
+  generation changes, each provisional record is revalidated: G must still be
+  active, and the source record must still be approved, so a revocation in
+  between is not undone. A record that fails revalidation is revoked, the
+  publication is abandoned, and an automatic update becomes `needs-review`,
+  so the invariant of §18.7.2 holds.
+- **Failure.** If preparation or publication fails, every provisional record
+  is revoked on the path that already revokes new approvals
+  (`agent-plugin-mcp-runtime.ts:126-133`; the hook runtime's equivalent at
+  `agent-plugin-hook-runtime.ts:134-139`). The store ends exactly as before
+  the attempt.
+- **Both paths implement it:**
+  - extensions, in `PluginBundleLifecycle` (`plugin-bundle-lifecycle.ts:136-190`,
+    which owns `hookTrust` and `mcpTrust`), feeding
+    `plugin-mcp-projection.ts` and `plugin-hook-projection.ts`;
+  - agent plugins, in `AgentPluginMcpRuntime.publishOne`
+    (`agent-plugin-mcp-runtime.ts:86-137`) and `AgentPluginHookRuntime`
+    (`agent-plugin-hook-runtime.ts:101-145`).
+- This applies to every update, automatic, reviewed or required.
+  Policy-fingerprint approvals are unchanged.
+
+#### 18.7.4 Applying without interrupting a turn
+
+- **Idle gate, boot included.** An automatic or required update starts only
+  while `ConversationActivityCoordinator.isBusy()` is false
+  (`conversation-activity-coordinator.ts:97-100`). That means no transition
+  admission, no session transition, no active turn and no session mutation.
+  The gate applies at boot as at any other time. Nothing relies on startup
+  order: the main interface loads before `startBackground()` runs, and that
+  call is not awaited (`main.ts:514-538`). Right after launch the gate
+  normally passes at once.
+  - Today only a settled turn notifies (`:112-115`); a mutation completing
+    (`:123-129`) and a transition admission released (`:150-152`) notify
+    nothing. Slice F adds `onIdle(listener)`, fired whenever `isBusy()`
+    becomes false from any of the four conditions.
+  - The queue subscribes first and then rechecks `isBusy()`, so an idle
+    moment between the check and the subscription is not missed.
+  - The gate is read before each package. A turn that starts while a package
+    is applying is not blocked; the apply holds no conversation lease.
+- **Escalation, not a bound.** A queue that has waited 30 minutes for idle
+  publishes a notice: "<n> updates are waiting for the conversation to
+  pause", with *Apply now*. *Apply now* is the user's decision and skips only
+  the idle gate; leases (below) still protect calls in flight. Without it the
+  queue keeps waiting, as long as it takes. Quitting drops the queue, and the
+  next boot's apply check classifies again.
+- **Extensions restart at the moment their update applies.**
+  - The new generation is prepared and started from the verified staging
+    tree (`activatePreparedArtifact`, `runtime/index.ts:4789`) and
+    published.
+  - The old generation retires after its instance leases are released
+    (`withPluginInstanceLease`, `runtime/index.ts:3255-3262`) and its HostApi
+    operations drain (10 s, `runtime/index.ts:1636`, `:2135-2150`).
+  - A call from a routine or sub-agent that starts after publication runs on
+    the new generation, with the same authority.
+- **Agent-plugin MCP servers and hooks.**
+  - **Today.** `publishOne` disconnects the predecessor right after
+    publishing the replacement (`agent-plugin-mcp-runtime.ts:135-136`,
+    through `mcp-manager.ts:622-627`, `:650-656`). A bundled MCP call takes
+    `withBundledLease` (`mcp-manager.ts:1326-1340`), but that asks the
+    `generationAccess` boot wires to `PluginBundleLifecycle`
+    (`boot.ts:824`), whose coordinator has no agent-plugin generations and
+    rejects them (`plugin-generation-coordinator.ts:212-217`). Hooks already
+    route `agent-plugin/` owners to the hook runtime's own lease source
+    (`script-hook-manager.ts:169-172`, `:542-546`), which counts leases and
+    drains per activation (`agent-plugin-hook-runtime.ts:31-39`, `:61-63`).
+  - **Owner.** Slice F gives MCP the same shape:
+    - `McpManager.registerGenerationLeaseSource(prefix, acquireExact)` is
+      added, mirroring the hook manager's.
+    - **One acquisition helper.** A private `acquireOwnerLease(owner)`
+      routes an owner by the longest registered prefix and falls back to
+      `generationAccess`. It replaces **both** direct
+      `generationAccess.acquireExact` calls: the one in a registered tool's
+      `execute`, which `bindBundledTool` builds (`mcp-manager.ts:1308-1314`)
+      for every bundled tool (`:424`, `:471`), and the one in
+      `withBundledLease` (`:1326-1340`). Neither keeps its own acquisition.
+    - `AgentPluginMcpRuntime` registers `agent-plugin/` and owns its leases:
+      a per-activation count and drain waiters, as the hook runtime keeps.
+    - **Admission closes** at publication. The old activation is marked
+      retired before its servers are unpublished, and `acquireExact` for a
+      retired activation throws, as the hook runtime's does
+      (`agent-plugin-hook-runtime.ts:34`). A new call therefore lands on the
+      new generation.
+    - `waitForDrain(activationId)` resolves when the count reaches zero.
+  - **Retirement.** The predecessor is disconnected only after its drain,
+    replacing the direct disconnect at `:136`. The drain is bounded by each
+    call's own tool timeout. The queue also applies an agent plugin only
+    while its current activation holds no lease; otherwise the update stays
+    `waiting`.
+  - **Payload directories are install-addressed, in their own namespace.**
+    Today a same-version reinstall, which is what every folder refresh is,
+    moves the live version directory aside before activation
+    (`content/store.ts:247-249`, `:286-294`) and deletes it with the scratch
+    directory (`:306-310`). A server or hook of the old generation then loses
+    its paths while it runs. From slice F:
+    - every install mints an `installId` (a random UUID) and writes a new
+      directory `<root>/<kind>/<name>/.installs/<installId>/`.
+      `LedgerEntry.origin` gains `installId` and `payloadDir`. The leading
+      `.` keeps this namespace disjoint from legacy version directories,
+      because a version directory name must match `SAFE_VERSION`, whose
+      first character is a letter or digit (`content/store.ts:173`, `:248`).
+      An entry without `payloadDir` is a legacy install and keeps its
+      `<version>/` path; no new payload is ever written under a `<version>/`
+      directory;
+    - nothing that a live generation uses is moved or overwritten;
+    - `activation.activate` returns `{ retired: Promise<void> }`. When it
+      resolves, the store removes **exactly the retired install's own
+      directory**: its `payloadDir` for an install-addressed entry, or its
+      `<version>/` for a legacy entry, and a legacy `<version>/` only when
+      that legacy install is the one retired. This runs outside the store's
+      serialization;
+    - a removal that fails, or a quit before it, is cleaned up by the boot
+      sweep of §18.7.4's table, which removes a `.installs/<installId>/` no
+      ledger entry names and a `<version>/` no legacy ledger entry names.
+
+    The agent-plugin runtime already treats a changed directory as a new
+    generation (`agent-plugin-mcp-runtime.ts:105`), so every install is one.
+- **Atomic, with defined outcomes.** Each package is its own transaction; a
+  pass is not all-or-nothing. Plugins go through `installGitPlugin` and
+  `installZipTransaction` (`plugins/marketplace.ts:592`, `:770`); content
+  goes through §5.5's install. The pass classifies what those calls throw:
+
+  | Outcome | Where | Installed afterwards | Update state | Attempt counted |
+  |---|---|---|---|---|
+  | consent deferral | `UpdateNeedsReviewError` at checkpoint two, or a carried approval that fails revalidation | the previous version, untouched | `needs-review` | no |
+  | failure before commit | download, verification, prepare, receipt write (`plugins/marketplace.ts:862-878`, `:894`); content activation inside the ledger transaction | the previous version, still running; receipt, registry entry and ledger restored | `failed` with code and detail | yes |
+  | publication failure after durable commit | `CommittedPluginGenerationPublicationError` (`committed-generation-publication-error.ts:4-27`), deliberately not rolled back (`plugins/marketplace.ts:899-900`) | the **new** version is committed. `outcome.state: "active"` → it is the active generation; `"inactive"` → installed but not running | `"active"` → `applied`; `"inactive"` → `applied-not-running`. The new baseline is stored | no; there is nothing to install again, and recovery is the runtime's (the next boot activates the committed generation) |
+  | retirement or cleanup failure | old generation retirement (`PluginRetirementJournal`), the old content directory | the new version, active | `applied`; the failure is logged | no; plugin retirement resumes from its journal at boot (`recoverRetirements`, `plugin-bundle-lifecycle.ts:280-297`), and slice F adds a boot sweep that removes content payload directories no ledger entry names |
+  | success | — | the new version, active | `applied`, or `approval-pending` for a required install that left a component unapproved (§18.7.2) | — |
+
+  The displayed installed version always comes from the committed receipt or
+  ledger entry, never from the attempt's target.
+- **Order**: plugins in dependency order (`dependency-resolver.ts`), then the
+  rest by key, one package at a time.
+
+#### 18.7.5 Status, failures, offline, skips and revocations
+
+Each state below is a member of `UpdateStatusView.packages[].state` (§18.9);
+the table and the type list the same eight.
+
+| State | Meaning | Shown |
+|---|---|---|
+| `automatic` | applies at this apply check | Updates card while running |
+| `waiting` | automatic or required, waiting for idle or for an agent plugin's calls (§18.7.4) | Updates card, package row; after 30 minutes the notice with *Apply now* |
+| `needs-review` | fingerprint differs, a field is `unknown`, a previously approved component would not keep its approval, or checkpoint two deferred it (§18.7.3) | pill, Updates card, row, *Review* |
+| `manual` | automatic updates off for it | pill (while update notices are on), row, *Update* |
+| `failed` | last attempt failed before commit: `code`, `detail`, `attempts` | pill, Updates card, row, *Retry*, *Details* |
+| `applied` | installed by an automatic or required update | the notice under "Updated automatically", the card's recent list |
+| `applied-not-running` | committed, but its generation did not start (§18.7.4) | pill, row "installed, not running — restart Ave" |
+| `approval-pending` | a required update installed with an MCP server or hook unapproved, so that component is not running (§18.7.2) | pill, row, and right after the install a notice "<name> was updated by your organization; <n> components need your approval" with *Review* |
+
+`skipped` is not a state of the view: a skipped version is neither applied
+nor shown, and the next version is.
+
+- **Review for `approval-pending`** reuses the existing approval surfaces:
+  - **Both surfaces bind the approval to what was reviewed.** A review
+    shows one installed generation; a required update can replace it before
+    the user submits, and a component digest alone does not cover the whole
+    package tree (`agent-plugin-components.ts:57-73`). So every approval
+    request carries the reviewed generation and, for each component, the
+    `approvalDigest` the review showed (`string | null`, §18.7.3). The
+    handler re-validates both against the installed generation **under the
+    serialization that installs and publications take**, before it approves
+    anything. On any mismatch it approves nothing and fails `PLAN_EXPIRED`
+    reason `package-changed` (§18.8): "This package changed since you
+    reviewed it. Review it again." The review then reloads. A component
+    whose digest is `null` binds by generation alone: the reviewed
+    generation (an agent plugin's `installId`, an extension's artifact
+    generation id) must equal the installed one exactly, and it names
+    exactly one artifact (below).
+  - **extensions**: *Review* opens the plugin's trust rows in
+    `PluginConfigTab.tsx`. That tab lists through
+    `ave:plugins:contribution-trust:list` and approves through
+    `ave:plugins:contribution-trust:set` (`ipc/domains/plugins.ts:541-589`,
+    preload `internal-api-surface.ts:527-534`). The existing request is
+    extended; no parallel channel is added:
+    - list rows (`PluginContributionTrustRow`,
+      `plugin-bundle-lifecycle.ts:141-149`) gain `approvalDigest`. Their
+      `generationId` is already the projection's `owner.generationId`,
+      which the projections set from the **artifact** generation id
+      (`artifactGenerationId`, `plugin-mcp-projection.ts:206-212`,
+      `plugin-hook-projection.ts:78`), not the coordinator's generation id;
+    - a `set` request with `approved: true` must carry `generationId` and
+      `approvalDigest` from the row it shows; without them the handler
+      returns `invalid-contribution-trust-request` (`plugins.ts:573`). A
+      revoke (`approved: false`) takes neither, because a revoke only
+      narrows trust;
+    - `approveHook` and `approveMcpServer` take that binding, and
+      `updateHookTrust`/`updateMcpTrust` check it inside
+      `serialize(pluginId)` (`plugin-bundle-lifecycle.ts:355-357`,
+      `:383-385`), the serialization a new generation's publication takes:
+      the active projection's `owner.generationId`, which is the active
+      generation's `artifactGenerationId`, must equal `generationId`, and
+      the projection's approval digest must equal `approvalDigest`. The
+      coordinator's generation id (`generation.generationId`) also hashes
+      `runtime.activationId` (`plugin-bundle-lifecycle.ts:546-551`), so it
+      changes when the same artifact is activated again; it stays the
+      activation identity (`owner.activationId`) and is never compared. The
+      artifact generation id hashes `plugin.json` and the install receipt
+      (`:546`), so it identifies the reviewed artifact. A mismatch returns
+      `contribution-trust-review-stale`, which the tab shows with the same
+      catalog sentence and then reloads its rows.
+    - an extension's `approval-pending` entry in `UpdateStatusView` carries
+      no `pendingApproval`: its review reads the trust list above.
+  - **agent plugins**: *Review* opens the update review (§15.6) in
+    component mode, showing the `consentDelta` rows of the unapproved
+    components, from the package's `pendingApproval` in `UpdateStatusView`
+    (§18.9), which is present exactly for an agent plugin's
+    `approval-pending` entry. Its approve action calls the new channel
+    `ave:marketplace:components:approve`
+    `(key, installId, consents: ReviewedComponentConsent[])`, where each
+    consent is the existing `ComponentConsent`
+    (`shared/git-marketplace.ts:400-412`) plus the `approvalDigest` shown.
+    The handler is in `ipc/domains/git-marketplace.ts`. The service passes
+    the call to the content store, which, inside its install serialization
+    (`content/store.ts:253`), checks that the ledger entry's
+    `origin.installId` equals `installId` and that each named component's
+    approval digest, computed from that entry's `payloadDir`, equals the
+    consent's. Only then does it call `AgentPluginMcpRuntime.activate` and
+    `AgentPluginHookRuntime.activate` with those consents on the installed
+    generation (`agent-plugin-mcp-runtime.ts:139-142`,
+    `agent-plugin-hook-runtime.ts:144-146`). Those methods already approve
+    and publish under their serialization, and still check each consent's
+    component digest (`agent-plugin-mcp-runtime.ts:91-97`). An `installId`
+    names exactly one payload directory, and nothing in it is overwritten
+    (§18.7.4).
+  - The state clears when no component of the installed generation is
+    unapproved.
+- **Offline**: when every source fails `SOURCE_UNREACHABLE` reason `offline`,
+  the discovery result is `offline`, nothing applies, and the card reads
+  "Offline — last checked <time>". The next hourly due check retries
+  (§18.7.1).
+- **A source fails**: its packages sit out this pass. The Sources row shows
+  the status with its detail (§18.8), and package rows say "Source
+  unreachable — showing the installed version".
+- **An update fails before commit**: the previous version stays. The state is
+  `failed` with code, detail and attempt count, and it is retried at the next
+  apply check. After three failed attempts for one version, automatic
+  attempts stop for it until a newer version or *Retry*; required installs
+  excepted (§18.7.2). Consent deferrals and failures after commit are not
+  attempts (§18.7.4's table).
+- **Applied**: listed once in the notice (§15.1) under "Updated automatically"
+  with versions and *What changed* (§15.6's commit range);
+  `BootInstallNoticeView` (`shared/git-marketplace.ts:373-384`) gains
+  `autoUpdated`.
+- **Pill** (`PluginUpdatesPill.tsx`) counts only updates that need the user:
+  `needs-review`, `failed`, `applied-not-running`, `approval-pending`, and
+  `manual` while update notices are on. `updateCheckEnabled` keeps its
+  meaning (whether notices reach the renderer) and does not switch automatic
+  updates.
+- **Rollback**: installing an older listed version by hand (§16.2) records the
+  version it left as skipped, so the next pass does not undo it.
+- **Revocations** are enforced at every discovery, before any update,
+  whatever the settings. An update never targets a revoked version (§6.1
+  step 6). A revocation-disabled package is not updated automatically; its
+  notice offers the update with one click into the review.
+
+#### 18.7.6 Folder sources
+
+A folder package has an update when its source's revision changed and its
+tree digest differs from the installed `artifactSha256` (plugin) or
+`contentSha256` (content).
+
+- A higher declared version is an upgrade.
+- An equal version is a **refresh**, which applies like an upgrade.
+- A lower version is a downgrade, offered by hand only.
+
+The default is on (§18.7.2), and consent (§18.7.3) applies unchanged.
+
+### 18.8 Messages: every refusal, warning and failure
+
+Today `failureText` (`labels.ts:103-118`) has a sentence for nine codes and
+prints `CODE · <main's English message>` for every other (`:116`). From 0.13.0:
+
+- `MarketplaceError` (`errors.ts:44-53`) gains an optional `detail`: a union
+  keyed by code, with a `reason` and the values the sentence needs (host,
+  address, path, pattern, ref, version). The envelope becomes
+  `{ ok: false, code, message, detail? }` (`shared/git-marketplace.ts:393`);
+  `parseGitMarketplaceResult` (`:456`) keeps a `detail` whose `reason` it knows
+  for the code and drops any other.
+- **The Sources status carries the detail too**, because a background sync's
+  failure reaches the UI through a successful `sources:list`, not through a
+  failed envelope:
+  - `SyncResult`'s failed variant gains `detail?`;
+  - `recordFailure` (`sources/sync.ts:129-133`) persists it in
+    `SourceState.lastSync.detail` (`sources/registry.ts:56`);
+  - the state validator accepts a `detail` only when its reason belongs to
+    the code, and drops any other while keeping the code;
+  - `sourceStatus` (`app/views.ts:169-179`) copies it into the `unreachable`
+    and `auth-required` views.
+- `failureText` becomes exhaustive over `GitMarketplaceErrorCode` and each
+  reason (`never` check, no `default`). Every code also has a reason-less
+  sentence, used when `detail` is absent: an older state file, or a dropped
+  detail. A test enumerates `MARKETPLACE_ERROR_CODES` and every reason and
+  fails when one has no catalog sentence. Main's English `message` shows only
+  behind *Copy details*.
+- One component, `MarketplaceProblem`, renders three tones: **policy** (lock,
+  "Set by your organization", the rule, the policy file path, no *Continue*),
+  **warning** (amber, the risk, *Continue* / *Cancel*), **error** (red, what
+  happened, the action).
+- Keys: `gitMarketplace.error.<code>.<reason>`, `gitMarketplace.warning.<warning>`,
+  `gitMarketplace.policy.<reason>`, `gitMarketplace.action.<action>`. The
+  existing `gitMarketplace.error.policyBlocked` stays the MCP governance
+  sentence (`PACKAGE_POLICY_BLOCKED`); source policy blocks use
+  `gitMarketplace.policy.*`, so the two never mix.
+- Korean uses the catalogs' formal register (`-습니다`, `-하세요`). A warning
+  ends in a question ("계속할까요?"). A policy sentence names the organization as
+  the cause ("조직 정책이 …"), never the user.
+
+Class: **P** policy block, **W** warning, **R** refusal, **E** fixable error,
+**S** status. Every row carries what happened, why, and the next action; the
+exact English and Korean text is written through the i18n generator (§15.9) in
+the slice that adds the code or reason.
+
+| Code · reason | Class | What happened, and why | Next action | Korean direction |
+|---|---|---|---|---|
+| `SOURCE_POLICY_BLOCKED` · `blocked-by-pattern` | P | "Your organization blocks <target> (rule `<pattern>`)." | "Ask your administrator. The rule is in <policy path>." | "조직 정책이 <대상>을 차단합니다(규칙 `<pattern>`). 관리자에게 문의하세요." |
+| · `not-in-allow-list` | P | "Your organization allows only listed sources; <target> is not listed." | as above | "조직 정책이 허용한 소스만 쓸 수 있고, <대상>은 목록에 없습니다." |
+| · `https-required` | P | "Your organization requires https; <target> uses http." | "Use the https address, or ask your administrator to list the host." | "조직 정책상 https만 쓸 수 있습니다." |
+| · `private-network-blocked` | P | "Your organization blocks sources on internal networks and on this computer." | as above | "조직 정책이 사내망과 이 컴퓨터의 소스를 막습니다." |
+| · `local-sources-blocked` | P | "Your organization does not allow folders as sources." | as above | "조직 정책이 폴더 소스를 허용하지 않습니다." |
+| · `direct-install-blocked` | P | "Your organization allows installs from marketplaces only." | as above | "조직 정책상 마켓플레이스를 거쳐서만 설치할 수 있습니다." |
+| · `policy-invalid` | P | "The organization's marketplace policy cannot be read (<error>), so only the official marketplace works." | "Ask your administrator to fix <policy path>." | "조직의 마켓플레이스 정책을 읽을 수 없어 공식 마켓플레이스만 동작합니다." |
+| `PACKAGE_POLICY_BLOCKED` | P | today's sentence (MCP governance) | "Ask your administrator." | today's |
+| `PACKAGE_REQUIRED_BY_POLICY` | P | "Your organization requires <name>, so it cannot be removed or turned off." | — | "조직이 <이름>을 필수로 지정해 제거하거나 끌 수 없습니다." |
+| `SOURCE_CONFIRMATION_REQUIRED` · `unencrypted` | W | "<host> uses http: the connection is not encrypted, so anyone on the network path can see and change what you download." | "Continue?" | "…암호화되지 않습니다. 계속할까요?" |
+| · `token-unencrypted` | W | "Your sign-in for <host> would travel unencrypted, and anyone on the path could copy it." | "Continue?" | "로그인 정보가 암호화되지 않은 채 전송됩니다. 계속할까요?" |
+| · `internal-network` | W | "<host> is on an internal network (<address>). This allows only this source's own server; downloads the marketplace points at other internal hosts are asked separately." For `198.18.0.0/15`, adds "Some proxy tools report every address in this range." | "Continue only if you expect this source inside your organization's network." | "<호스트>는 사내망 주소(<주소>)입니다. 이 소스의 서버만 허용하며, 다른 사내 호스트에서 내려받는 것은 따로 묻습니다. 조직 내부 소스가 맞을 때만 계속하세요." |
+| · `this-computer` | W | "<host> is this computer (<address>)." | "Continue only if you run this server yourself." | "<호스트>는 이 컴퓨터입니다. 직접 실행한 서버일 때만 계속하세요." |
+| · `internal-downloads` | W | "<source> asks Ave to download from <host>, another internal address. A marketplace that can name internal hosts can make Ave send requests into your network, for example to a router's settings page; a later failed check cannot undo a request already sent." | *Allow internal downloads* | "마켓플레이스가 다른 사내 주소 <호스트>에서 내려받게 합니다. 이렇게 하면 마켓플레이스가 Ave를 통해 사내망 장비로 요청을 보낼 수 있고, 보낸 요청은 되돌릴 수 없습니다. 허용할까요?" |
+| · `network-folder` | W | "Ave signs in to <server> with your Windows account to read this folder." | "Continue?" | "이 폴더를 읽으려고 Windows 계정으로 <서버>에 로그인합니다. 계속할까요?" |
+| · `unencrypted-updates` | W | "Updates from <source> arrive over http. Anyone on the network path could replace them with their own code, and it would install without asking." | "Turn on automatic updates anyway?" | "…묻지 않고 설치될 수 있습니다. 그래도 자동 업데이트를 켤까요?" |
+| `SOURCE_URL_REJECTED` · `credentials-in-url` | R | "The address contains a password or token. Ave never keeps secrets in addresses." | "Remove it, add the source, then use *Set token*." | "주소에 비밀번호나 토큰이 있습니다. 빼고 추가한 뒤 토큰을 설정하세요." |
+| · `helper-transport` | R | "`<scheme>::` addresses run a program to fetch; Ave never runs one." | "Use the https or ssh address." | "`<scheme>::` 주소는 프로그램을 실행하므로 쓸 수 없습니다." |
+| · `scheme-unsupported` | R | "Ave does not read `<scheme>:` addresses." | "Use the https or ssh address of the same repository." | "같은 저장소의 https나 ssh 주소를 쓰세요." |
+| · `format` | R | "The address has `?…`, `#…`, spaces or control characters." | "Remove them." | "주소에서 해당 문자를 지우세요." |
+| · `relative-path` | R | "A relative path cannot be read here." | "Enter a full path, or use *Choose folder…*." | "전체 경로를 입력하거나 폴더 선택을 쓰세요." |
+| · `device-path`, `windows-path`, `network-file-url` | R | the form, and why it is not a folder | "Enter the folder's normal path." | "폴더의 일반 경로를 입력하세요." |
+| · `index-file-url` | R | "Ave reads a marketplace as a repository or a folder, not a single marketplace.json." | "Enter the repository address instead." | "marketplace.json 파일이 아니라 저장소 주소를 입력하세요." |
+| · `address-metadata` | R | "<host> resolves to <address>, a link-local or cloud-metadata address. No marketplace lives there, and requests to it can expose this computer's credentials." | "Check the address and your network settings." | "…이 컴퓨터의 자격 증명이 노출될 수 있어 연결하지 않습니다." |
+| · `address-unroutable` | R | "<address> cannot be reached from any network." | "Check the address." | "어느 네트워크에서도 닿을 수 없는 주소입니다." |
+| · `catalog-this-computer` | R | "<source> points a download at this computer (<host>). A marketplace may not send requests to services on your computer." | "Tell the marketplace's owner." | "마켓플레이스가 이 컴퓨터의 서비스로 요청을 보내게 할 수 없습니다." |
+| · `deep-link-path` | R | "A link cannot choose a folder on this computer." | "Choose the folder yourself." | "링크로는 폴더를 지정할 수 없습니다. 직접 선택하세요." |
+| `CONTENT_RULE_VIOLATION` · `link-outside-folder` | R | "<path> links outside the folder (to <target>). Ave installs files from inside the folder only." | "Copy the file into the folder instead of linking it." | "폴더 밖을 가리키는 링크는 설치하지 않습니다. 파일을 폴더 안으로 복사하세요." |
+| · `link-to-network` | R | "<path> links to a network location (<target>). Ave does not follow links to other computers." | "Copy the file into the folder instead of linking it." | "다른 컴퓨터를 가리키는 링크는 따라가지 않습니다. 파일을 폴더 안으로 복사하세요." |
+| · `special-file`, `case-collision`, `extension`, `limit` | R | the path and the rule (§5.4, §5.5) | "Remove or rename <path>." | "<경로>를 지우거나 이름을 바꾸세요." |
+| `SOURCE_AUTH_REQUIRED` · `token` | E | "<host> needs sign-in." | *Set token*; for GitHub "a fine-grained token with read access to Contents" | today's key, with the host |
+| · `token-unencrypted` | E | "<host> needs sign-in, and this source uses http." | *Allow…* (`token-unencrypted`), then *Set token* | "http 소스라 로그인 정보를 보내기 전에 허용이 필요합니다." |
+| · `ssh` | E | "<host> refused the SSH key." | "Load your key (`ssh-add`) or add it to your account on <host>." | "SSH 키가 거부되었습니다." |
+| `SOURCE_SSH_HOST_UNKNOWN` · `unknown` | E | "This computer has not connected to <host> over SSH before, so its key cannot be checked." | "Compare the host's published fingerprint, then run `ssh-keyscan -p <port> <host> >> ~/.ssh/known_hosts` (Windows: `%USERPROFILE%\.ssh\known_hosts`)." *Copy command* | "호스트 키를 확인할 수 없습니다. 지문을 확인한 뒤 명령을 실행하세요." |
+| · `changed` | E | "<host>'s SSH key changed. A reinstalled server does this, and so does someone intercepting the connection." | "Confirm with the server's administrator, then `ssh-keygen -R <host>`." | "서버 재설치나 중간자 공격일 수 있습니다. 관리자에게 확인하세요." |
+| `SOURCE_REF_NOT_FOUND` | E | "`<ref>` is not a branch or tag of <repository>." | "Available: <up to 10>. Leave the field empty for the default branch." | "브랜치나 태그가 없습니다." |
+| `SOURCE_UNREACHABLE` · `offline` | E | "This computer is offline." | "Ave tries again when the network is back." | "오프라인입니다." |
+| · `dns` | E | "<host> could not be found." | "Check the address, or your VPN." | "주소나 VPN을 확인하세요." |
+| · `refused`, `timeout`, `http-status` | E | "<host> did not answer (<detail>)." | *Retry* | "응답이 없습니다." |
+| · `tls` | E | "The certificate of <host> is not trusted. Company networks often re-sign traffic." | "Ask IT to install the network's root certificate in the system store; Ave reads it (§9.2)." | "회사 네트워크가 인증서를 바꾸는 경우가 많습니다. IT에 루트 인증서 설치를 요청하세요." |
+| · `proxy` | E | "The system proxy settings choose <kind> for <host>, which Ave cannot use." | "Ask IT for an HTTP proxy or a direct route to <host>." | "쓸 수 없는 프록시 종류입니다." |
+| `SOURCE_LOCAL_UNREADABLE` · `not-found` | E | "The folder <path> does not exist: moved, renamed, or its drive is not connected." | "Reconnect the drive, or remove the source and add the folder again." | "폴더가 없습니다." |
+| · `permission`, `io` | E | "<path> cannot be read (<system message>)." | "Check the folder's permissions; Ave tries again at the next read." | "폴더를 읽을 수 없습니다." |
+| · `moved` | E | "<path> now points to <new path>." | "Remove the source and add the folder you mean." | "폴더가 다른 곳을 가리킵니다." |
+| · `not-a-directory` | E | "<path> is not a folder." | "Choose a folder." | "폴더를 선택하세요." |
+| · `ambiguous-case` | E | "<path> matches several folders that differ only in case." | "Enter the path with its exact case." | "대소문자만 다른 폴더가 여럿입니다. 정확한 대소문자로 입력하세요." |
+| · `changed-during-read` | E | "A file in <path> changed while Ave read it." | "Ave tries again at the next read." | "읽는 중에 파일이 바뀌었습니다." |
+| `SOURCE_NOT_A_MARKETPLACE` · `nothing-found` | E | "No marketplace.2.json, no package folders and no single package at <location>." | "Check the address, the branch and, for a package inside a repository, the folder field." | today's key, with the location |
+| · `other-app-plugin` | E | "This is a plugin written for another app (`.claude-plugin/` or `.codex-plugin/`)." | "Use *Import a plugin* in the plugin studio (`extensions-and-plugins.md` §2.4)." | "다른 앱용 플러그인입니다. 플러그인 스튜디오에서 가져오세요." |
+| `SOURCE_INDEX_INVALID` | E | "<source>'s index is invalid (<file>: <problem>); the last good version stays in use." | "Tell the marketplace's owner." *Copy details* | "마지막 정상 버전을 계속 씁니다." |
+| `SOURCE_HISTORY_REWRITTEN` | E | official, managed: "<source>'s history was rewritten; Ave keeps its last good version." custom, direct: "…Review the new history before using it." | custom, direct: *Review* | "기록이 다시 쓰였습니다." |
+| `SOURCE_DISABLED` | E | today's sentence | *Show source* | today's |
+| `SOURCE_NAME_RESERVED`, `SOURCE_ID_INVALID` | E | "<id> is reserved or not a valid id (2–63 lowercase letters, digits and `-`)." | "Choose another id." | "다른 ID를 고르세요." |
+| `SOURCE_ID_TAKEN` | E | "<repository or folder> is already added as <id>", or "<id> is taken" | *Show <id>*, or "Choose another id." | "이미 추가되어 있습니다." |
+| `GIT_RUNTIME_MISSING`, `GIT_RUNTIME_TOO_OLD` | E | today's sentences | *Install Git* | today's |
+| `GIT_RUNTIME_INSTALL_FAILED` · `<phase>` | E | "Installing git failed while <phase> (<reason>)." | *Retry*; "If your network blocks GitHub downloads, install git yourself and choose *System*." | "git 설치가 <단계>에서 실패했습니다." |
+| `PLAN_EXPIRED` · `expired`, `replaced`, `folder-changed`, `policy-changed`, `package-changed` | E | today's; for a folder "The folder changed while you were reviewing."; for policy "Your organization's policy changed while you were reviewing."; for `package-changed` (an approval of §18.7.5 whose reviewed generation or approval digest no longer matches) "This package changed since you reviewed it. Review it again." | the review reopens with a fresh plan, or with the installed generation for `package-changed` | today's; "검토하는 사이 조직 정책이 바뀌었습니다."; "검토한 뒤 패키지가 바뀌었습니다. 다시 검토하세요." |
+| `PACKAGE_INCOMPATIBLE` · `min_app_version` / `platform` / `prerelease` / `rollout` / `host_protocol` | E | "<name> needs Ave <version>" / "not available for <OS>" / "only pre-releases exist" / "rolling out gradually; offered to you later" / "needs a newer plugin protocol" | *Update Ave* / — / "Turn on pre-releases under Updates" / — / *Update Ave* | reason by reason |
+| `PACKAGE_COMPAT_UNDECLARED` | E | "The plugin does not declare which Ave version it needs (`requires.minAppVersion`)." | "Ask its author to declare it." | "필요한 Ave 버전을 선언하지 않았습니다." |
+| `PACKAGE_YANKED`, `PACKAGE_REVOKED` | E | "Withdrawn by <source>: <reason>." | "Choose another version, or uninstall." | "<소스>가 철회했습니다." |
+| `PACKAGE_ID_CONFLICT` | E | "<name> is installed from <other source>." | *Switch to <source>* (its data stays, §15.1) | today's key |
+| `ARTIFACT_NOT_PINNED` | S | rung list: "The marketplace did not pin this download, so it was skipped." | — | "고정되지 않은 다운로드라 건너뛰었습니다." |
+| `ARTIFACT_DIGEST_MISMATCH` | E | "The download from <host> is not the file the marketplace pinned; nothing was installed from it." | "Try again later; tell the owner if it persists." | "고정된 파일과 다릅니다." |
+| `MANIFEST_MISMATCH` · `<field>` | E | "The package's files disagree with its marketplace entry (<field>), so nothing was installed." | "Tell the marketplace's owner." *Copy details* | "파일과 마켓플레이스 항목이 다릅니다." |
+| `NO_INSTALLABLE_ARTIFACT` · `rungs`, `folder-has-no-build` | E | "No download for <name> could be used:" and each rung's sentence; for a folder "The folder has no built plugin (`plugin.json` and `dist/`)." | the first rung's action; for a folder "Build into `dist/`, or add the git repository instead." | "쓸 수 있는 산출물이 없습니다." |
+| `process-entry-unsupported` (on `main` today, `errors.ts:37`; removed by P3) | E | today's sentence (`labels.ts:114`, `formatIpcError.processEntryUnsupported`): this version does not run plugins that start their own process | "Use a version of the plugin without a separate process, or wait for an Ave update." | today's |
+| `process-entry-requires-pinned-artifact` (added by P3) | E | "This extension runs a program, which Ave installs only from a release pinned by its marketplace." | "Install it from a marketplace that pins its release." | owned by the Publication plan |
+| `process-entry-unconfined` (added by P3) | E | owned by the Publication plan (its runtime refusal) | owned by the Publication plan | owned by the Publication plan |
+| `invalid-request` | E | "Ave sent a request this version does not understand. This is a bug." | *Copy details* | "버그입니다." |
+| `unavailable` | E | "The marketplace could not start or answer (<message>)." | "Restart Ave; if it persists, *Copy details*." | today's |
+| `unauthorized-frame` | — | never shown: audited, no displayable answer | — | — |
+| update `needs-review` | S | "<name> <version> asks for more than the installed version:" and each `consentDelta` row. When only non-code files changed: "Only these non-code files changed:" and the list. For a migrated approval: "Approval from an earlier Ave version must be confirmed." | *Review*; for non-code changes *Approve update* | "설치된 버전과 권한·구성이 다릅니다. 검토하세요." / "코드가 아닌 파일만 바뀌었습니다." |
+| update `approval-pending` | S | "<name> was updated by your organization; <n> components need your approval and are not running." | *Review* | "조직이 <이름>을 업데이트했고, 구성 요소 <n>개가 승인을 기다리며 실행되지 않습니다." |
+| update `waiting` | S | "Waiting for the conversation to pause." After 30 minutes, as an escalation: "<n> updates are waiting for the conversation to pause." | after 30 minutes, *Apply now* | "대화가 멈추면 적용합니다." |
+| update `failed` | S | the failure's sentence and "Attempt <n> of 3" | *Retry*, *Details* | "<n>/3회 실패" |
+| update `applied-not-running` | S | "<name> <version> is installed but did not start." | "Restart Ave." | "설치했지만 시작하지 못했습니다. Ave를 다시 시작하세요." |
+| discovery `offline` | S | "Offline — last checked <time>." | "Ave checks again when the network is back." | "오프라인 — 마지막 확인 <시각>" |
+
+### 18.9 Settings, IPC, preload, lock suites and UI
+
+**Settings** — `MarketplaceSettings` (`settings-store.ts:893-959`),
+`normalizeMarketplace` (`settings-normalization.ts:921`):
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `autoUpdate` | `boolean` | unset = `true` | global switch |
+| `autoUpdateSources` | `Record<sourceId, "on" \| "off">` | unset | invalid ids (`SOURCE_ID_RE`) or values dropped by the normalizer; null-prototype map |
+| `autoUpdatePackages` | `Record<string, "on" \| "off">` | unset | keyed by `packageUpdateSkipKey`, normalized with `normalizeSkippedPluginUpdateKey` |
+| `updateCheckIntervalMs` | `number` | unset = 6 h | unchanged: the discovery interval (§18.7.1); `0` and the 15-minute floor unchanged. The 24-hour apply cadence is not a setting |
+| `updateCheckEnabled`, `skippedPluginUpdates` | — | — | unchanged |
+
+The renderer writes these through the existing settings channel. The http
+precondition is **not** a setting: it is the source confirmation
+`unencrypted-updates`, recorded only by main.
+
+**IPC and preload** — every new channel is host-renderer only
+(`validateHostRendererSender`) and audited (§13).
+
+| Channel | Change | Request | Response |
+|---|---|---|---|
+| `ave:marketplace:sources:preview` | changed | `SourcePreviewRequest` (`shared/git-marketplace.ts:73-82`) gains `acknowledge?: SourceWarning[]`; `input` also takes a folder | union gains `{ type: "confirm"; warnings: SourceWarningView[] }` |
+| `ave:marketplace:sources:list` | changed | — | `SourceStatusView` `unreachable` and `auth-required` gain `detail?` (§18.8) |
+| `ave:marketplace:sources:acknowledge` | new | `(id, warnings: SourceWarning[])` | `SourceView`, after a sync |
+| `ave:marketplace:sources:pick-folder` | new | `()`; main shows the folder dialog | `{ path } \| null` |
+| `ave:marketplace:sources:reveal` | new | `(id)`; folder sources only — an id, never a path | `null` |
+| `ave:marketplace:updates:status` | new | `()` | `UpdateStatusView` |
+| `ave:marketplace:updates:check` | new | `()`; joins a discovery in flight | `UpdateStatusView` when that discovery and its apply check end (§18.7.1) |
+| `ave:marketplace:updates:apply-now` | new | `()`; skips the idle gate for the queue (§18.7.4) | `UpdateStatusView` |
+| `ave:marketplace:install:execute` | changed | component consents accepted for `plugin` too (§18.7.3) | — |
+| `ave:marketplace:components:approve` | new | `(key: PackageKeyView, installId: string, consents: ReviewedComponentConsent[])`; agent plugins in `approval-pending`; re-validated against the installed generation (§18.7.5) | `UpdateStatusView`; `PLAN_EXPIRED` reason `package-changed` on a mismatch |
+| `ave:plugins:contribution-trust:list` | changed | — | each row gains `approvalDigest: string \| null` (§18.7.5) |
+| `ave:plugins:contribution-trust:set` | changed | with `approved: true`, also `generationId` and `approvalDigest` from the reviewed row; a revoke takes neither (§18.7.5) | gains `error: "contribution-trust-review-stale"` on a mismatch |
+| `marketplace:update-status` | new event | — | `UpdateStatusView` on change |
+| `marketplace:updates-available` | kept | — | `PackageUpdateView` (`:351-356`) gains `state: "manual" \| "needs-review" \| "failed"`; only updates that need the user |
+| every channel | changed | — | failure envelope gains `detail?` (§18.8) |
+
+```ts
+type SourceWarning = "unencrypted" | "token-unencrypted" | "internal-network" | "this-computer"
+  | "internal-downloads" | "network-folder" | "unencrypted-updates";
+interface SourceWarningView { warning: SourceWarning; host: string | null; address: string | null }
+// SourceView (shared/git-marketplace.ts:47-71) gains:
+//   transport: "git" | "folder"; path: string | null; acknowledged: SourceWarning[];
+//   autoUpdate: { effective: boolean; override: "on" | "off" | null; lockedByPolicy: boolean };
+// UpdatePlanView gains consentDelta: ConsentDelta (§18.7.3).
+interface UpdateStatusView {
+  discovery: { lastAttemptAt: string | null; lastSuccessAt: string | null;
+               result: "ok" | "partial" | "offline" | "error" | null; nextAt: string | null }; // nextAt null when the interval is 0
+  applyCheckAt: string | null;
+  running: boolean;
+  historyReset: boolean;               // updates.json was unreadable
+  waitingSince: string | null;         // the apply queue's idle wait (§18.7.4)
+  autoUpdate: { enabled: boolean; lockedByPolicy: "on" | "off" | null };
+  packages: Array<{ key: PackageKeyView; displayName: string; from: string; to: string;
+    state: "automatic" | "waiting" | "needs-review" | "manual" | "failed"
+         | "applied" | "applied-not-running" | "approval-pending";   // §18.7.5, exactly
+    reasons?: string[]; failure?: { code: GitMarketplaceErrorCode; detail?: MarketplaceErrorDetail; attempts: number };
+    appliedAt?: string;
+    pendingApproval?: { installId: string; consentDelta: ConsentDelta;  // present exactly for an agent plugin's
+                        components: ReviewedComponentConsent[] } }>;  // "approval-pending"; an extension's has none (trust list)
+}
+type ReviewedComponentConsent = ComponentConsent & { approvalDigest: string | null };
+```
+
+`pendingApproval` is present exactly for an agent plugin's
+`approval-pending` entry. An extension's `approval-pending` entry carries no
+payload; its review uses `ave:plugins:contribution-trust:list` and `:set`
+(§18.7.5).
+
+`CHANNELS.gitMarketplace` (`app-contract.ts:302-327`) gains `sourcesAcknowledge`,
+`sourcesPickFolder`, `sourcesReveal`, `updatesStatus`, `updatesCheck`,
+`updatesApplyNow`, `componentsApprove`, `updateStatusChanged`. `GitMarketplaceApi`
+(`shared/git-marketplace.ts:414-448`) and its preload surface
+(`git-marketplace-api-surface.ts:38-64`) gain `acknowledgeSource`,
+`pickFolder`, `revealSource`, `updateStatus`, `checkUpdates`,
+`applyUpdatesNow`, `approveComponents`, `onUpdateStatus`. `onMarketplaceUpdatesAvailable`
+(`internal-api-surface.ts:589-593`) keeps its name.
+
+**Lock suites**
+
+| Suite | Slice | Change |
+|---|---|---|
+| `src/data/__tests__/settings-store.test.ts` | E | three new keys and their normalization; `updateCheckIntervalMs` unchanged |
+| `src/ipc/__tests__/channel-inventory.test.ts` | C, D1, D2, E, F | C `sources:acknowledge`; D2 `sources:pick-folder`, `sources:reveal`; E `updates:status`, `updates:check`, `marketplace:update-status`; F `updates:apply-now`, `components:approve`. D1 adds no channel and runs the suite to prove it |
+| `src/ipc/__tests__/host-renderer-only-channels.test.ts` | C, D2, E, F | each new invoke channel |
+| `src/__tests__/preload-shape.test.ts` | C, D2, E, F | the `gitMarketplace` member list |
+| `src/ipc/__tests__/domain-exports.test.ts` | none | handlers join the existing `src/ipc/domains/git-marketplace.ts` export; no domain gains a runtime export |
+
+**UI**
+
+- **Updates card** (Settings → Marketplace, beside §15.7's Git runtime card):
+  - "Update packages automatically", locked with the policy's text under a
+    policy value;
+  - "Checks for updates at start-up and once a day · last checked <time> ·
+    next <time>";
+  - *Check now*, and *Apply now* while updates wait;
+  - the updates that need the user, with actions;
+  - recent automatic updates with *What changed*.
+- **Sources rows**: badges (§18.5); *Allow…*; status with its detail
+  (§18.8); an *Automatic updates* select (*Default (On)* / *On* / *Off*).
+  Turning it on for an http source shows `unencrypted-updates` first. Folder
+  rows per §18.4.8.
+- **Installed rows**: the update state (§18.7.5) and an *Automatic updates*
+  select.
+- **Add dialog**: *Choose folder…*, the confirmation step before any traffic
+  or folder access (§18.5), badges in the preview.
+- **Update review**: one row per `consentDelta` entry; approve boxes for
+  changed or new MCP servers and hooks, extensions included; the one-row
+  *Approve update* form when only non-code files changed (§18.7.3); a
+  component mode for `approval-pending` agent plugins (§18.7.5).
+- **Package sheet**: folder provenance; http and internal Delivery labels.
+- **Problems**: `MarketplaceProblem` (§18.8). The mockup gains these states in
+  slice G.
+
+### 18.10 Delivery
+
+Every slice merges to `main` independently, with its enforcement, tests and
+message keys. None lands an accepted input without its warning and refusal,
+and none adds a fallback to keep an intermediate commit green. Each slice
+rewrites the owning sections (§7, §12, §13, §14, §15, §17) for what it builds
+and removes their pointers to §18.
+
+| Slice | Scope | Depends on | Parallel with | Lock suites |
+|---|---|---|---|---|
+| **A. Design** | this section; pointers in §1–§17; architecture proposal (decisions D11, D12, §8, §9.1); `extensions-and-plugins.md` §3.2 sentence; Korean mirrors | — | — | none |
+| **B. Messages** | error `detail`, envelope, the Sources status path for `detail` (`SyncResult`, `lastSync.detail`, validator, `sourceStatus`), exhaustive `failureText` with reason-less sentences, `MarketplaceProblem`, sentences for every existing code and reason, git failure classification (host key changed, refs listed, unreachable reasons) | A | the Publication plan's P3 | none |
+| **C. Target classes, warnings and connection binding (git and downloads)** | `classifyAddress`, `addressPolicy`, the pinned download transport, git http address pinning and the ssh preflight (§18.2.4), gate verdicts, preview confirmation, `acknowledged`, `sources:acknowledge`, catalog rules with `internal-downloads`, credentials over http, policy `requireHttps` and `blockPrivateNetworks`, `PolicySource` and policy refresh (§18.6), refusals #1–4 and #7, Add-dialog confirmation, badges, *Allow…* | B | E | channel-inventory, host-renderer-only-channels, preload-shape |
+| **D1. Folder sources: engine and consent** | `source-input.ts` with the four stages, `native/windows-path-kind/` and its CI run, `FolderFs`, `SourceTree` and `FolderTree`, registry `path`, revision, folder read/snapshot/plan capture/install for every kind, `folder` rung and receipt, direct folder, policy `path:`, `allowLocalSources`, `additional[].path`, `SOURCE_LOCAL_UNREADABLE`, `network-folder` warning and its key, refusals #5–6, the `process` refusal on the folder path (§18.4.9) | C (the confirmation flow and `acknowledged`) | E | channel-inventory (no change, asserted) |
+| **D2. Folder sources: UI** | `sources:pick-folder`, `sources:reveal`, *Choose folder…*, folder rows and provenance | D1 | E, F | channel-inventory, host-renderer-only-channels, preload-shape |
+| **E. Discovery and status** | due rules, hourly due check and resume, attempt/success times, `updates.json`, `UpdateStatusView`, `updates:status` / `updates:check` / `marketplace:update-status`, settings keys, read-only Updates card, pill filter | B | C, D1, D2 | settings-store, channel-inventory, host-renderer-only-channels, preload-shape |
+| **F. Automatic apply** | `consentFingerprint`, approval digest, baseline storage and its computation for existing installs, `ConsentDelta` and the review binding, extension component consents, trust store v3 and carry-forward on both paths, both checkpoints, v2 record migration, the approval-carrying precondition, apply queue with `onIdle` and the 30-minute escalation, idle gate at boot, `updates:apply-now`, the agent-plugin MCP lease source and drain, install-addressed payload directories under `.installs/`, outcome classification (consent deferral, failure, post-commit) and the content directory sweep, `approval-pending`, `components:approve` and the approval binding on both surfaces, the cheap non-code review, preconditions and resolution, required-install rules, failure counts, skip on rollback, `autoUpdated` notice, the switches, `unencrypted-updates` | C, D1, E | D2 | channel-inventory, host-renderer-only-channels, preload-shape |
+| **G. Docs and mockup** | `web/app/docs/marketplace/*` (ko, en) for folders, warnings and automatic updates; mockup states; remaining pointers folded | D2, F | — | none |
+
+**Order.** A, then B. Then C and E in parallel, each in its own checkout.
+Then D1 after C, and D2 after D1; F after D1 and E; G last.
+
+- The second of C and E to merge rebases over textual conflicts in
+  `shared/git-marketplace.ts`, `app-contract.ts`, the preload surface and the
+  lock snapshots.
+- D1 and D2 are each independently mergeable. D1 accepts folder input through
+  the existing preview channel, with its consent, policy and refusals
+  complete. D2 only adds the dialogs and presentation.
+- The Publication plan (`plugin-hostapi-protocol.md` §9.7; P3 and P4 unbuilt; §18.4.9) touches `errors.ts`,
+  `labels.ts`, `plugin-ladder.ts`, `direct-package.ts` and
+  `plugins/marketplace.ts`:
+  - whichever of B and P3 merges second makes `failureText` cover the
+    `process` codes that exist then;
+  - whichever of D1 and P4 merges second keeps the folder refusal.
+
+**Gates for every slice**:
+
+- `bun run typecheck`;
+- targeted Vitest directories (`bun run test:vitest -- run <dirs>`);
+- the lock suites named above;
+- `bun run check:i18n-catalog` when keys change;
+- the naming gate with GNU grep;
+- the pre-push hook's full `bun run test` and `bun run build`, once, at
+  publication.
+
+The E2E flows named below run in `test/e2e/ui/`.
+
+**Revert-to-fail targets** (each test fails when its rule is reverted):
+
+- **B**:
+  - `labels.test.ts`: every code and reason maps to a catalog key, never
+    `CODE · message` (revert: restore `default`). A code without a `detail`
+    renders its reason-less sentence.
+  - A bridge test in `src/shared/__tests__/`: a known `detail` survives
+    `parseGitMarketplaceResult`; an unknown one is dropped, with code and
+    message kept.
+  - `sync.test.ts` and `views.test.ts`: a background sync failing with
+    `SOURCE_UNREACHABLE` reason `dns` (an existing code) persists the detail
+    with its host. After
+    the registry is reopened from disk, `sources:list` carries it, and
+    `SourcesAndAdd.test.tsx` shows the localized sentence (revert: persist
+    only the code).
+  - `run-git.test.ts`: a changed host key is `changed`, not `unknown`; a
+    missing ref carries the refs `ls-remote` listed.
+- **C**:
+  - `network-gate.test.ts`:
+    - an entered `10.0.0.5` is a warn verdict, not a throw;
+    - `198.18.0.1` is internal;
+    - `169.254.169.254`, `fd00:ec2::254` and `100.100.100.200` are refused
+      even for a listed host;
+    - a catalog download to `127.0.0.1` on another port is refused, and one
+      to the loopback source's own port is accepted;
+    - a catalog download to another internal host fails for a source
+      holding only `internal-network` and passes with `internal-downloads`
+      (revert: imply it);
+    - `requireHttps` blocks an acknowledged http source;
+    - `blockPrivateNetworks` blocks an acknowledged internal source.
+  - `pinned-fetch.test.ts` and `run-git.test.ts`: §18.2.4's rebinding
+    cases; `ssh-preflight.test.ts`: the ssh preflight and its residual.
+  - `service.test.ts`:
+    - a preview that needs a warning answers `confirm`, and the git runner
+      and resolver record zero calls (revert: classify after the fetch);
+    - *Add* stores exactly the carried confirmations;
+    - a sync whose host became internal fails with
+      `SOURCE_CONFIRMATION_REQUIRED`;
+    - rewriting the policy file while the service runs blocks the next
+      preview and expires an existing plan with `policy-changed`; an invalid
+      file then a fixed file goes official-only then back (revert: load
+      once).
+  - `run-git.test.ts`:
+    - `GIT_ALLOW_PROTOCOL` holds `http` only for an acknowledged or listed
+      source;
+    - an http remote without `token-unencrypted` carries
+      `-c credential.helper=` and gets no askpass ticket, **for a managed
+      http source with a stored token too** (revert: let a listing imply
+      it).
+  - `source-url.test.ts`: `ext::sh`, `fd::3` and `hg::https://…` are
+    `helper-transport`; `https://u:p@h/x` is `credentials-in-url`; `git@h:x`
+    stays accepted.
+  - `policy.test.ts`: the new keys parse exactly; an unknown key still
+    invalidates the section.
+  - `ave-protocol.test.ts`: a deep link with a folder path is refused.
+  - E2E (`git-marketplace-lifecycle.spec.ts`): add an http loopback source,
+    confirm, see the badge.
+- **D1**:
+  - `source-input.test.ts`, run with `path.posix` and `path.win32`:
+    - `~`, drive, UNC, `//server/share`, `\\?\`, `\\?\UNC\` and `file:`
+      normalize;
+    - `./x`, `C:foo`, `\\.\x`, `\\?\Volume{…}` and a drive path on POSIX
+      are refused;
+    - `a/b` stays the GitHub shorthand.
+  - `folder-consent.test.ts`, with the recording `FolderFs` fake:
+    - for `\\server\share\m`, and for a drive whose `queryDosDevice` answers
+      `\Device\Mup\…`, preview answers `confirm` with **zero** recorded calls
+      other than `queryDosDevice` (revert: resolve first);
+    - under `allowLocalSources: false`, the same input is blocked with zero
+      recorded calls;
+    - after `acknowledge`, the walk records `lstat` calls and never a
+      `realpath`;
+    - root resolution: `/tmp/market` with the ancestor link
+      `/tmp → private/tmp` resolves to `/private/tmp/market`; a root that is
+      itself a link (`~/m → /opt/m`) resolves to `/opt/m`; an ancestor link
+      whose text is `\\server\share` is refused as `link-to-network` with no
+      call on the server path (revert: apply package containment to the
+      root).
+  - `folder-tree.test.ts`, with the recording fake:
+    - an inside link installs as a regular file;
+    - an outside link is `link-outside-folder`, with no call on its target;
+    - a chain `root/a → root/b → \\attacker\share` and a junction
+      `root/j → \\attacker\share` in an ancestor of a package are both
+      `link-to-network`, with no recorded call on any `\\attacker` path
+      (revert: `realpath` inside links);
+    - an `fstat` identity mismatch is `changed-during-read`;
+    - **ancestor swap**: the fake replaces `root/d` with a link to an
+      outside directory after `root/d` is enumerated and before
+      `root/d/file` is opened, and keeps it replaced. The re-`lstat` of the
+      parent chain reports `changed-during-read`, and no byte of the outside
+      file reaches the package (revert: drop the parent-chain recheck). The
+      same swap restored before the recheck is recorded as the documented
+      residual: the test asserts the read completes and names the case;
+    - `.git/` and `.DS_Store` are skipped;
+    - NFD digests as NFC, and NFC-equal names are refused.
+  - `folder-identity.test.ts`, with a fake case-sensitive volume holding
+    both `/Approved/Tools` and `/approved/tools`:
+    - two sources;
+    - the `allow` rule `path:/Approved/Tools` does not admit
+      `/approved/tools`;
+    - `block` `path:/tmp/*` blocks `/TMP/x`.
+
+    With a fake case-insensitive volume, the two spellings are one source
+    through equal `dev`/`ino` (revert: platform case folding). Nesting is
+    refused.
+  - `folder-sync.test.ts`: a background read failing
+    `SOURCE_LOCAL_UNREADABLE` reason `permission` persists that detail through
+    slice B's path and renders after a reload (the folder case moved from B).
+    Editing a `SKILL.md` changes the revision
+    (revert: drop package digests), and the git runner records zero calls
+    for a folder source.
+  - `folder-plan.test.ts`: a file changed between plan and execute installs
+    the planned bytes (revert: read at execute).
+  - `plugin-ladder.test.ts`:
+    - a folder with `src/` installs and lists `src/` as not installed, while
+      a git tree with `src/` still fails the rung;
+    - a folder plugin with a declared release never calls `fetchImpl`;
+    - a `process` manifest from a folder is refused with the code `main`
+      has at merge time.
+  - `policy.test.ts`: `allowLocalSources: false` blocks a folder; an `allow`
+    list without `path:` blocks a folder; `path:/opt/a/*` admits `/opt/a/b`.
+  - Windows CI: `native/windows-path-kind/` maps `C:` to a local volume and
+    a `subst` drive to its target, and fails closed on an unknown drive.
+- **D2**:
+  - `git-marketplace.test.ts` (IPC domain): `reveal` refuses a git source
+    and an unknown id (revert: accept any id); `pick-folder` returns `null`
+    on cancel.
+  - `SourcesAndAdd.test.tsx`: the folder row, *Choose folder…*, the
+    `network-folder` warning.
+  - E2E: add a folder marketplace, install a skill, edit it, *Refresh*, and
+    see the package row offer the update. Applying it automatically is F's
+    E2E.
+- **E**:
+  - `background.test.ts`:
+    - an offline discovery is retried at the next hourly due check, not an
+      interval later (revert: due from the last completion);
+    - a successful discovery at hour 0 and an offline *Check now* at hour 1
+      give a retry at hour 2 (revert: gate the retry on `lastSuccessAt`);
+    - with the default interval, a successful discovery is not repeated for
+      6 hours;
+    - the apply check is due 24 hours after the last one and at boot;
+    - **exact boundary**: with `updateCheckIntervalMs` at 48 hours, a
+      discovery and an apply check at hour 0, and a release published at
+      hour 0 plus one minute, the apply check at hour 24 (the last
+      discovery exactly 24 hours old) runs a discovery first and classifies
+      the release (revert: classify when the last discovery is not older
+      than 24 hours);
+    - **independently phased**: with the default interval, discoveries at
+      hours 0, 6, 12, 18 and 24, and the last apply check at hour 3, the
+      apply check at hour 27 starts its own discovery although one
+      succeeded 3 hours earlier, and classifies a release published at
+      hour 25 (revert: reuse a recent discovery);
+    - an apply check that becomes due while a discovery runs joins it and
+      starts no second one; with that discovery `partial`, the reached
+      sources' updates are classified and `applyCheckAt` is not written;
+    - a clock jump of 30 hours followed by `resume` runs a discovery
+      (revert: plain `setInterval`);
+    - an all-offline discovery publishes `offline`;
+    - `updates:check` resolves when its discovery and apply check end, while
+      the apply queue still waits (revert: join the apply);
+    - an unreadable `updates.json` sets `historyReset` and runs a
+      discovery.
+  - `settings-store.test.ts`: the new keys normalize, and invalid entries
+    are dropped.
+  - `PluginUpdatesPill.test.tsx`: only states that need the user are
+    counted.
+- **F**:
+  - `consent.test.ts`:
+    - one row per fingerprint field of every kind; changing that field alone
+      gives `needs-review` (revert: remove the field, and its row fails);
+    - an `unknown` baseline field gives `needs-review`;
+    - the baseline is read from the receipt, ledger or MCP record, and a
+      catalog whose copy of the installed version differs does not change it
+      (revert: read the catalog).
+  - `approval-digest.test.ts`:
+    - changing `dist/server.js`, or a `dist/lib/util.js` it loads, while
+      `.mcp.json` stays byte-identical changes the digest; the update is
+      `needs-review`, and no approval carries (revert: digest the
+      declaration only);
+    - **indirect load**: an approved `server.js` evaluates
+      `skills/helper/assets/rules.txt`; changing only that file changes the
+      digest and gives `needs-review` (revert: exclude non-executable
+      files);
+    - **a complete versioned release** — `plugin.json` `version` bumped and
+      one `SKILL.md` edited — in a package **without** a local executable
+      component applies automatically; the same release in a package
+      **with** a stdio MCP server gives `needs-review` with the one-row
+      "Only these non-code files changed" delta, and *Approve update*
+      approves every changed component in one call (revert: hash
+      `version`, or drop the cheap form);
+    - a change to any other `plugin.json` field changes the digest and
+      lists `plugin.json` under `changedFiles.code`;
+    - `npx foo` and `image:latest` give `null` and never carry;
+    - `npx foo@1.2.3` and an `@sha256:` image carry while unchanged.
+  - `plugin-contribution-trust.test.ts`:
+    - a real version-2 trust file from 0.12 loads. A record whose
+      generation is active and whose fingerprint matches the installed
+      declaration gets an `approvalDigest` from the installed bytes and
+      carries; any other record gets `null`. The next write is version 3;
+    - a version-3 file round-trips;
+    - a provisional carried approval is revoked when publication throws, and
+      the store equals its state before the attempt;
+    - a source record revoked between prepare and publish is not carried,
+      and the automatic update becomes `needs-review`.
+  - `eligibility.test.ts`, the approval invariant: an update whose
+    fingerprint is equal but where an approved component (a remote MCP
+    server with a `null` migrated digest) would not carry is `needs-review`,
+    never automatic. After any automatic update in the suite, every
+    component approved before it is approved after it (revert: drop the
+    precondition).
+  - `agent-plugin-mcp-runtime.test.ts`, through the real `McpManager`:
+    - `withBundledLease` for an `agent-plugin/` owner acquires from the
+      runtime's lease source, not from `PluginBundleLifecycle` (revert: no
+      prefix routing);
+    - a call through a **registered tool**, the `execute` that
+      `bindBundledTool` returned, for an `agent-plugin/` owner acquires from
+      the same lease source; a tool object bound to an activation that has
+      since retired, held from before publication, throws on `execute` and
+      runs nothing (revert: leave `bindBundledTool` on
+      `generationAccess`);
+    - an MCP call in flight on the old activation while a **concurrent
+      folder refresh of the same version** installs completes with its
+      result; the old payload directory still exists while it runs; the
+      predecessor disconnects and its directory is removed only after the
+      drain (revert: disconnect at once, or install over the version
+      directory);
+    - a call started after publication lands on the new activation, and
+      `acquireExact` on the retired one throws.
+  - `agent-plugin-mcp-runtime.test.ts` and `agent-plugin-hook-runtime.test.ts`:
+    an unchanged approval digest carries; a changed one does not (revert:
+    drop carry-forward). The extension design's "re-ask on update" test is
+    rewritten to this rule.
+  - `store.test.ts`:
+    - two installs of one version write two `.installs/<installId>/`
+      directories, and none is under `<version>/`;
+    - an entry without `payloadDir` still resolves to `<version>/`;
+    - **legacy same-version refresh**: a legacy install at `<version>/` is
+      refreshed at the same version, its predecessor retires, and the app
+      reboots (boot sweep included); the replacement's files stay readable
+      and the legacy `<version>/` is gone (revert: write the replacement
+      under `<version>/`);
+    - the boot sweep removes a `.installs/<installId>/` no ledger entry
+      names.
+  - `apply.test.ts`:
+    - while a **session mutation with no turn** holds the coordinator busy,
+      the installer is not called, and it is called when the mutation ends
+      (revert: wait on `onTurnSettled` only);
+    - at boot, with a turn already running, the queue waits (revert: exempt
+      boot);
+    - after 30 minutes of waiting, the notice and `updates:apply-now`
+      appear, and without *Apply now* the queue keeps waiting;
+    - a failure before commit leaves the previous version, with state
+      `failed` and one attempt;
+    - `UpdateNeedsReviewError` at checkpoint two three passes in a row
+      leaves `needs-review` with zero attempts (revert: count it as a
+      failure);
+    - a `CommittedPluginGenerationPublicationError` with `outcome.state:
+      "inactive"` records the new version as installed and
+      `applied-not-running`, with `"active"` gives `applied`, and counts no
+      attempt (revert: treat it as `failed`);
+    - every state the pass writes is a member of the view's union (the test
+      enumerates both);
+    - the third failure stops automatic attempts;
+    - a staged `plugin.json` with a new bundled hook throws
+      `UpdateNeedsReviewError` before `activatePreparedArtifact` (revert:
+      skip the second checkpoint);
+    - a manual review of an update that adds a catalog-visible capability
+      and a bundled hook stages before approval and shows both (revert:
+      stage only when checkpoint one found nothing);
+    - a reviewed plan executes the staged bytes without a second download.
+  - `eligibility.test.ts`:
+    - disabled, hidden source, downgrade, switch, rewrite, skipped, and http
+      without `unencrypted-updates` are never automatic;
+    - policy `off` beats a package `on`, and policy `on` beats a package
+      `off`;
+    - a manual rollback records the skip;
+    - for a required install, a changed authority field applies with the
+      switch off; a changed MCP digest applies with that server unapproved
+      and the package `approval-pending`, while an unchanged one stays
+      approved; a revoked version and an incompatible version are not
+      applied (revert: the switches gate required installs).
+  - `git-marketplace.test.ts` (IPC domain): `components:approve` approves the
+    named components of an `approval-pending` agent plugin through the
+    runtimes' `activate`, refuses another package's key, and clears the
+    state.
+  - **Replacement between review and submit**, on both surfaces. The review
+    reads generation A; a required update installs generation B, which
+    changes only `skills/helper/assets/rules.txt`, so the server's
+    component digest is unchanged; then the user submits A's approval:
+    - `components:approve` with A's `installId` fails `PLAN_EXPIRED`
+      reason `package-changed`, and no component of B is approved (revert:
+      drop the `installId` and digest check);
+    - `contribution-trust:set` with A's `generationId` and `approvalDigest`
+      returns `contribution-trust-review-stale`, and B's record is not
+      approved (revert: approve the active generation);
+    - with a `null`-digest component, the same replacement is rejected by
+      the generation check alone;
+    - **an unchanged generation's approval succeeds**: with no replacement,
+      `components:approve` with the current `installId` approves, and
+      `contribution-trust:set` with the row's `generationId` and
+      `approvalDigest` approves, also when the extension was activated
+      again between the list and the submit, which gives a new coordinator
+      generation id for the same artifact (revert: compare the coordinator's
+      `generation.generationId`).
+  - E2E, `test/e2e/ui/git-marketplace-auto-update.spec.ts`, with its own
+    fixture:
+    - the app launches with an isolated `AVE_HOME` and
+      `AVE_E2E_MARKETPLACE_SCHEDULER=1`. `startBackground`
+      (`git-marketplace.ts:620-625`) honours the variable only when
+      `isE2eTestRuntime()` is true, and starts the real scheduler instead of
+      returning;
+    - a loopback http git fixture; the spec turns automatic updates on for
+      that source through the UI and confirms `unencrypted-updates`;
+    - the spec commits a new version to the fixture and presses *Check now*;
+      it then asserts through IPC that `updates:status` shows the package
+      `applied` and that the installed list holds the new version, and sees
+      "Updated automatically";
+    - a version that adds a capability shows *Review* and stays at the old
+      version.
+
+    No status event is mocked.
+- **G**: the site build, the docs gates, the naming gate.
+
+### 18.11 Decisions
+
+| # | Decision | Reason |
+|---|---|---|
+| 1 | Four outcomes; one table for entered targets, one for catalog-supplied (§18.2) | The owner separated the user's targets from a third party's; one vocabulary keeps the UI tones consistent |
+| 2 | Address classes computed once in `network-guard.ts`; `198.18.0.0/15` internal; unspecified addresses are this computer; metadata addresses carved out of ULA and CGNAT (§18.2.1) | One list of ranges; fake-IP proxy tools would otherwise make every source "unroutable"; `0.0.0.0` reaches loopback; metadata is refused wherever it lives |
+| 3 | Confirmation before any traffic or folder access, once, carried from preview to add (§18.5) | "After one confirmation"; a token, or a Windows sign-in, must not leave before consent |
+| 4 | Confirmations stored per class; asked again when a target's class grows (§18.5) | Addresses change inside a class; a new class is a new risk |
+| 5 | Catalog-supplied http downloads accepted with a Delivery label (§18.2.3) | The sha256 pin, read over the source's own transport, fixes the bytes; transport integrity adds nothing the pin lacks |
+| 6 | Catalog-supplied internal downloads on another host need `internal-downloads`, never implied by `internal-network`; the warning names the attack (§18.2.3, §18.8) | A catalog that can name internal hosts can send state-changing requests into the user's network, and a later digest failure cannot undo a request; confirming one server does not inform the user of that |
+| 7 | Catalog-supplied this-computer targets on another host or port refused (§18.3 #4) | Named attack on local services |
+| 8 | No git command runs against a folder; a checkout is read as its working tree (§18.4.3) | git reads the checkout's configuration, which can run programs |
+| 9 | Folders read in place; the plan captures the bytes (§18.4.2) | What the user reviewed is what installs |
+| 10 | A folder's pin is a content revision covering every package digest; no history rule; only the folder's version installs (§18.4.3) | §7.3 needs a pin; an edit to a skill must count; a folder has no history and no other version |
+| 11 | No source type for a lone `marketplace.json` URL; such an address gets a message (§18.3) | Ave reads descriptors, content, icons and revocations from the tree, which a lone index cannot carry |
+| 12 | `git://` unsupported, with a message (§18.3) | The PAC proxy cannot route it; the same repository is served over https or ssh |
+| 13 | Beneath the canonical root, links are followed by text, component by component; links outside or to a network location are refused without touching the target; while the root itself is resolved, local ancestor and root links are followed after the same network check; persistent swaps are detected by re-checking the directory chain; OS metadata skipped; names NFC (§18.4.1, §18.4.5) | Following by text is the only way to refuse a UNC target before contacting it; containment protects the package, not the user's own path to the folder; a swap-and-restore race by a concurrent local writer is a stated residual, since Node offers no portable handle-anchored traversal |
+| 14 | A folder source never downloads: one `folder` rung; extra top-level entries ignored and listed (§18.4.2) | A folder's declared pin lives in files anyone who can write the folder changes without trace, so it is not commit provenance; folder receipts stay ineligible for `process` admission; a developer's checkout always holds sources |
+| 15 | Folder identity is the canonical path or equal `dev`/`ino`; no platform case folding; `allow` matches with exact case, `block` without (§18.4.4, §18.6) | Case sensitivity is per volume, not per platform; when it is unknown, the conservative result admits less and blocks more |
+| 16 | Discovery (sync and revocations) every 6 hours; the update apply check at boot and once a day, always running or joining a discovery first; one scheduler (§18.7.1) | The owner's cadence is for updates; revocations ride the same fetch and 0.12 already delivers them within 6 hours, so a 24-hour discovery would keep a revoked package running four times as long; a daily check must not wait on a longer interval |
+| 17 | Two due branches: after a failed attempt, retry hourly from `lastAttemptAt`; after success, wait the interval from `lastSuccessAt`; discovery never waits for the apply queue (§18.7.1) | A success-based rule would skip retries after an offline manual check, and an idle wait would delay revocations |
+| 18 | Automatic updates default on for every origin, folders included; http sources off until `unencrypted-updates` (§18.7.2) | The owner's instruction; the consent fingerprint holds back every update that changes what runs or what it may reach, so a broad default applies only text and data; the http attack is named |
+| 19 | Preconditions, then policy, package, source, global, default (§18.7.2) | Each precondition is a user or source decision no switch overrides; policy outranks the user |
+| 20 | Any consent-fingerprint difference, a narrowing included, any `unknown` baseline field, and any previously approved component that would not keep its approval, needs review (§18.7.2, §18.7.3) | The owner's rule taken literally; equality is deterministic and testable; an automatic update must never silently disable a component the user approved |
+| 21 | Every `mcp` package update needs review (§18.7.3) | An MCP server declares no authority; its command is its authority, and its version is in the command |
+| 22 | Packages with no local executable component (stdio MCP, command hook, `process` entry) apply changed text and data automatically (§18.7.3) | `extensions-and-plugins.md` decision 18 activates them without consent; a routine template creates nothing; nothing local runs that could read the changed files |
+| 23 | The approval digest covers declaration, anchored files and the **whole** package tree, normalizing only `plugin.json` `version`; an undeterminable closure is `null`; carry-forward is provisional until publication revalidates it; a code-free change gets a one-action review (§18.7.3) | No runtime boundary keeps an unchanged server from evaluating another package file, so exclusions by extension or execute bit are unsafe; the version bump is release bookkeeping that runs nothing; review stays cheap instead of being skipped |
+| 24 | Two checkpoints: catalog, then staged bytes before activation; a manual review stages and installs exactly those bytes (§18.7.3) | The index cannot show an extension's bundled servers and hooks; approval must cover the bytes that install |
+| 25 | Updates wait for `onIdle` across all four busy conditions, at boot too; after 30 minutes an escalation offers *Apply now*; agent-plugin MCP gets its own lease source and drain, acquired by one helper for registered tools and `withBundledLease`, and payload directories are install-addressed under `.installs/`, disjoint from legacy `<version>/` (§18.7.4) | "Without interrupting a running turn"; startup order is not a barrier; the agent-plugin path had no lease owner, a same-version refresh moved live files, and a nested replacement would be deleted with its legacy predecessor |
+| 26 | Required installs update at every apply check through the apply queue; the policy approves authority, not MCP servers or hooks; an unapproved component is `approval-pending` with a notice and *Review* (§18.7.2, §18.7.5) | §10.2: the policy stands for authority consent; an unapproved projection is never published (`mcp-manager.ts:393`), so the pending approval must be visible and actionable |
+| 27 | A manual rollback records the newer version as skipped (§18.7.5) | Otherwise the next pass undoes the rollback |
+| 28 | Failures before commit show and retry; stop after three for one version; consent deferrals and post-commit failures are not attempts; every outcome maps to a state of the view (§18.7.4, §18.7.5) | "Visible status, not silent"; a deferral awaiting consent must not exhaust retries; after a durable commit there is nothing to install again |
+| 29 | Error envelope and persisted source status carry `detail`; `failureText` exhaustive with reason-less sentences; three tones (§18.8) | Today every unmapped code prints the code and an English message (`labels.ts:116`), and background failures lose their reason |
+| 30 | The studio's *Install from file* stays a one-time source-less install; *Install from Git URL or folder…* is the tracked install (§18.4.7) | A shipped flow keeps its meaning; a zip has nowhere to update from; the tracked path is the one that updates |
+| 31 | Policy gains `requireHttps`, `blockPrivateNetworks`, `allowLocalSources`, `autoUpdate`, `path:` patterns, `additional[].path`; an allow list without `path:` blocks folders; the policy is re-read per operation (§18.6) | Administrators keep the strict behaviour; fail closed as §12; a policy change must not wait for a restart |
+| 32 | Over http, askpass and credential helpers work only with `token-unencrypted`, which no policy listing implies (§18.2.2) | A password must not cross the network in the clear unannounced; a transport listing is not a credential grant |
+| 33 | Deep links never carry a folder (§18.3 #7) | A web page must not choose a folder, or a UNC server, on this computer |
+| 34 | Network folders need `network-folder`, classified lexically and through `QueryDosDeviceW` before any filesystem call (§18.4.1) | Reading one signs in to that server with the user's Windows account, so even a `stat` must wait for consent |
+| 35 | The `process` admission rule is not relaxed; folder receipts are categorically ineligible; the codes follow the Publication plan as it merges (§18.4.9) | It belongs to `plugin-hostapi-protocol.md` |
+| 36 | The switches live in settings; the http precondition is a source confirmation only main records (§18.9) | Main must enforce the http precondition; a settings write cannot |
+| 37 | Eight slices; B first; C and E in parallel; D1 after C; F after D1 and E (§18.10) | Each is coherent at its boundary; the first folder-accepting slice carries its own consent; F needs the folder contracts |
+| 38 | Address-dependent refusals and blocks bound to the connection on the transports Ave owns: pinned download transport for every supported PAC kind and `http.curloptResolve` for git over http/https. For SSH a preflight check only on the `ssh -G` host name, with no `HostName`, `HostKeyAlias` or `CheckHostIP` option. A PAC proxy, local or remote, is trusted beyond its checked socket; an ssh `ProxyCommand` or `ProxyJump` is run by ssh and trusted like any user-configured program (§18.2.4) | A separate earlier lookup lets DNS rebinding pass a hard refusal; pinning ssh changes the user's host-key and certificate identity, and host-key verification is the SSH trust anchor; Ave cannot see where a proxy connects, so the boundary is stated rather than implied |
+| 39 | A version-2 approval whose generation is active and whose fingerprint matches the installed declaration gets its approval digest from the installed bytes; any other gets `null` and its package's first update needs review (§18.7.3) | Those are the bytes the user approved and is running, already bound by the v2 identity; anything else cannot be shown equal |
+| 40 | An approval of an installed component carries the reviewed generation (an agent plugin's `installId`, or an extension's artifact generation id, never the activation-bound coordinator id) and each component's `approvalDigest`, re-validated under install and publication serialization; a mismatch approves nothing (§18.7.5) | A required update can replace the generation while the user reviews it, and a component digest does not cover the whole tree |

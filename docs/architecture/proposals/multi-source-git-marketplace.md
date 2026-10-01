@@ -51,6 +51,8 @@ That shape has three problems the owner wants removed:
 | D8 | Publish approval is **merge to the default branch**. Version compatibility is **declared in each package's manifest**. | No approval queue; `minAppVersion` is mandatory in every descriptor and in a git-installed plugin's `requires.minAppVersion`. |
 | D9 | Announcements move to a **static service endpoint** on our domain (option B), with the domain kept replaceable. Internal-only content becomes an **internal custom marketplace** the user registers. | Section 10. |
 | D10 | **No privileged packages.** The official marketplace is hard-coded in the app and gets an *Official* badge, nothing more. What a fresh install starts with is an app-owned list; what an organization requires (with an uninstall lock) is the system policy file; which plugins may read host LLM keys is an app-owned table. There is no cross-source kill switch. | `installPolicy: "admin"` and every managed-install path are removed (§9.4). |
+| D11 | Sources are accepted more broadly (2026-09-28): plain `http://` git sources and **local folders** (as marketplaces and as direct packages); an http or non-public target the user entered is a **warning** confirmed once, not a refusal. Hard refusals remain only where no user decision makes a target safe. Administrators keep the strict behaviour through policy. | Design §18.2–§18.6. |
+| D12 | Installed packages **update automatically**, checked at boot and once a day; sources and revocations are still fetched every 6 hours. Consent is never bypassed: an update that changes what runs or what it may reach, including the executable files behind an approved MCP server or hook, waits for review. | Design §18.7. |
 
 ## 3. System context
 
@@ -223,7 +225,8 @@ Rules:
 - **Hardened invocation** for every call: no prompts; an askpass helper that
   answers only for the host a single-use ticket names;
   `GIT_ALLOW_PROTOCOL=https:ssh` (plain `http` only for hosts the managed policy
-  names); `GIT_CONFIG_NOSYSTEM=1` and an Ave-generated global config that keeps
+  names; from 0.13.0 also for a source whose user accepted the http warning,
+  D11); `GIT_CONFIG_NOSYSTEM=1` and an Ave-generated global config that keeps
   only credential helpers and TLS settings from the user's own; no redirects;
   no file protocol, submodules, hooks, fsmonitor or LFS; proxy from the PAC
   resolver.
@@ -242,7 +245,7 @@ Rules:
 | A source silently changing what a version means | Versions resolve to commits; a version's commit is recorded at install and in the index. Re-publishing a version at a different commit is rejected by CI and flagged by the client. |
 | History rewrite / rollback of a source | §9.2. |
 | A custom source impersonating the official one | Reserved names; official identity bound to the built-in URL list, re-checked on every load. The *Official* badge grants nothing else (§9.4). |
-| A source aiming git or downloads at internal services | One network gate for every target: URL normalization, policy allow/block, private-network refusal, no git redirects, HTTPS redirects re-checked, no auth header across hosts. |
+| A source aiming git or downloads at internal services | One network gate for every target: URL normalization, policy allow/block, private-network refusal, no git redirects, HTTPS redirects re-checked, no auth header across hosts. From 0.13.0 (D11) a target the user entered is a warning, and a catalog-supplied one is judged separately: metadata and other-port loopback refused, other internal hosts confirmed per source (design §18.2, §18.3). Enforcement on the connected address applies to the transports Ave owns (downloads, git over http/https). For SSH it is a preflight check only: a DNS answer that changes before ssh's own lookup is not bound, and host-key verification is the trust anchor. A PAC proxy, local or remote, is trusted to enforce destination restrictions beyond its checked socket; an ssh `ProxyCommand` or `ProxyJump` is run by ssh and trusted like any user-configured program (design §18.2.4). |
 | A custom source pushing banners | Only the service endpoint issues announcements; sources cannot. |
 | Dependency confusion across sources | Installed packages are bound to their source (§5). |
 | Malicious code in a custom source | Explicit consent when the source is added, per-install permission review (existing capability, network and plugin-access review), update review with a capability diff, and managed policy (§9.3). |
