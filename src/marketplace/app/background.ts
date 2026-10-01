@@ -10,6 +10,7 @@
  * update notices are on: revocations reach installed packages through it, and
  * what they removed since the last notice is published as a notice.
  */
+import { AsyncResource } from "node:async_hooks";
 import type { AppBootstrapStatus } from "../../shared/bootstrap-status.js";
 import { errorMessage } from "../../shared/error-message.js";
 import type { BootInstallNoticeView, PackageUpdateView } from "../../shared/git-marketplace.js";
@@ -90,10 +91,16 @@ function updatesKey(updates: readonly PackageUpdateView[]): string {
 
 export function startMarketplaceBackground(input: MarketplaceBackgroundInput): MarketplaceBackground {
   const { log } = input;
+  // Background work is never part of the operation that asked for it (§18.6). A recheck can be asked
+  // for from inside a marketplace operation (a sync that published a snapshot, an install), and work
+  // started there would carry that operation's async context: its service calls would join an operation
+  // that may already be ending, without their own policy refresh or shared lock. Every entry below runs
+  // in the context the scheduler started in, so each service call is an operation of its own.
+  const detached = new AsyncResource("marketplace-background");
 
   let bootPass: Promise<void> | null = null;
   const bootInstalls = (): Promise<void> => {
-    bootPass ??= (async () => {
+    bootPass ??= detached.runInAsyncScope(async () => {
       input.publishStatus({ phase: "start" });
       try {
         const service = await input.service();
@@ -113,7 +120,7 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
         log.warn(`marketplace boot pass failed: ${errorMessage(error)}`);
         input.publishStatus({ phase: "error", message: errorMessage(error) });
       }
-    })().finally(() => {
+    }).finally(() => {
       bootPass = null;
     });
     return bootPass;
@@ -126,7 +133,7 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
   let lastPublished = updatesKey([]);
   let tail: Promise<void> = Promise.resolve();
   const checkUpdates = (sync: boolean): Promise<void> => {
-    tail = tail.then(async () => {
+    tail = detached.runInAsyncScope(() => tail.then(async () => {
       try {
         const service = await input.service();
         if (sync) await service.refresh();
@@ -147,7 +154,7 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
       } catch (error) {
         log.warn(`marketplace update check failed; the last list stays: ${errorMessage(error)}`);
       }
-    });
+    }));
     return tail;
   };
 

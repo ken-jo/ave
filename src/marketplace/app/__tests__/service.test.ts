@@ -27,6 +27,7 @@ import { moonstoneBundle } from "../../../ui/renderer/theme/bundles/moonstone.js
 import { OFFICIAL_MARKETPLACE, type OfficialMarketplace } from "../../sources/official.js";
 import { EMPTY_MARKETPLACE_POLICY, FilePolicySource, type PolicyLoad, type PolicySource } from "../../sources/policy.js";
 import { AppliedDefaults } from "../../boot-installs/applied.js";
+import { startMarketplaceBackground, type BackgroundService } from "../background.js";
 import { normalizeSourceUrl } from "../../net/source-url.js";
 import { SourceRegistry } from "../../sources/registry.js";
 import { SourceSyncer } from "../../sources/sync.js";
@@ -83,6 +84,8 @@ describe("MarketplaceService", () => {
   let catalogChanged: number;
   /** Run when the service reports a catalog change, as the background update check is started. */
   let afterCatalogChanged: (() => void) | null;
+  /** Run when a sync publishes a new snapshot of a source. */
+  let afterSourceSynced: ((sourceId: string) => void) | null;
   let legacyRuns: Array<(name: string) => OfficialPlugin | null>;
   let legacyReport: LegacyPluginReport;
   let legacyActivations: LegacyActivations;
@@ -115,6 +118,7 @@ describe("MarketplaceService", () => {
     now = AT;
     catalogChanged = 0;
     afterCatalogChanged = null;
+    afterSourceSynced = null;
     legacyRuns = [];
     legacyReport = { bound: [], unmanaged: [], lostGrants: [], failed: [] };
     legacyActivations = { themes: [], locales: [], providers: [] };
@@ -136,7 +140,16 @@ describe("MarketplaceService", () => {
     const gate = new NetworkGate({ policy, allowLoopback: true, transport: createPinnedFetch() });
     const marketplaces = join(root, "marketplaces");
     const registry = await SourceRegistry.open({ root: marketplaces, policy, now: () => now, ...(official ? { official } : {}) });
-    const syncer = new SourceSyncer({ registry, gate, runner, root: marketplaces, now: () => now, retainedCommits: async () => new Set() });
+    const syncer = new SourceSyncer({
+      registry,
+      gate,
+      runner,
+      root: marketplaces,
+      now: () => now,
+      retainedCommits: async () => new Set(),
+      // As the app wires it: the raw callback a published snapshot fires, inside the sync's operation.
+      onCatalogChanged: (sourceId) => afterSourceSynced?.(sourceId),
+    });
     store = await ContentStore.open({ root: join(root, "packages"), english: {}, activation: { activate: async (_content, _entry, _previous, adopt) => void adopting.push(adopt), deactivate: async () => {} }, now: () => now });
     const artifacts = new PluginArtifactStore({
       installRoot: join(root, "mcp"),
@@ -1073,6 +1086,67 @@ describe("MarketplaceService", () => {
       };
       await addMarket(url);
       await expect(recheck).rejects.toMatchObject({ code: "SOURCE_POLICY_BLOCKED", detail: { reason: "blocked-by-pattern" } });
+    });
+
+    it("runs the update check a sync's snapshot starts as its own operation, though it starts before that sync ends and outlives it", async () => {
+      const { url, publish } = market();
+      service.close();
+      const corp = { id: "corp", url: normalizeSourceUrl(url), auth: { kind: "none" as const } };
+      const policy = policySource(policyLoad({ additional: [corp] }));
+      await build(policy);
+      await service.refresh();
+      const key = { sourceId: "corp", kind: "skill" as const, name: "review" };
+      await service.executeInstall((await service.planInstall(key)).planId);
+
+      // The real scheduler, over the service; the check signals when it calls `updates()`.
+      let entered: () => void = () => {};
+      const checkEntered = new Promise<void>((resolve) => (entered = resolve));
+      const published: unknown[] = [];
+      const scheduled: BackgroundService = {
+        enforceRevocations: () => service.enforceRevocations(),
+        takeRevocationNotice: () => service.takeRevocationNotice(),
+        refresh: () => service.refresh(),
+        applyBootInstalls: (defaults, applied) => service.applyBootInstalls(defaults, applied),
+        updates: () => {
+          entered();
+          return service.updates();
+        },
+      };
+      const background = startMarketplaceBackground({
+        service: async () => scheduled,
+        appliedDefaults: () => AppliedDefaults.open(join(root, "packages", "default-installs.json")),
+        defaults: [],
+        settings: () => ({ updateNotices: true, updateCheckIntervalMs: 0 }),
+        publishStatus: () => {},
+        publishNotice: () => {},
+        publishUpdates: (updates) => void published.push(updates),
+        log: { info: () => {}, warn: () => {} },
+      });
+      await background.started;
+      expect(published).toEqual([]);
+      publish("1.1.0");
+
+      // The sync publishes corp's new snapshot; meanwhile the organization drops corp from the policy,
+      // and the snapshot asks for an update check, as the app's callback does.
+      let check: Promise<void> | null = null;
+      afterSourceSynced = (sourceId) => {
+        if (sourceId !== "corp" || check) return;
+        policy.change(policyLoad({}));
+        check = background.recheck();
+      };
+      // The sync's operation stays open until the check has called the service.
+      await service.asOneOperation(async () => {
+        await service.refresh("corp");
+        await checkEntered;
+      });
+      expect(check).not.toBeNull();
+      await check;
+
+      // The check refreshed the policy on its own: corp is gone, and no update is offered from it.
+      expect(policy.load).toMatchObject({ ok: true, policy: { additional: [] } });
+      expect(published).toEqual([]);
+      expect(await service.updates()).toEqual([]);
+      background.stop();
     });
 
     it("lets work started inside an operation, still running after it, enter an operation of its own", async () => {
